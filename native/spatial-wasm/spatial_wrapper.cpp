@@ -14,6 +14,20 @@
  * src/renderer/utils/virtualSpeakerLayout.ts). MIT_HRTF::get() negates again
  * into the MIT dataset's clockwise-positive degrees.
  *
+ * Timbre correction (baked into the filters, zero runtime cost):
+ *  - Diffuse-field EQ: the raw KEMAR responses carry the dummy head's ear
+ *    canal/concha resonance (~2-3 kHz), which headphones re-apply on top of
+ *    the listener's own ears — heard as a tinny, "pressurized" sound. At init
+ *    we average the HRTF power over a full azimuth ring, smooth it, and bake
+ *    the (clamped) inverse into every filter. Both ears share one EQ curve,
+ *    so ILD/ITD cues are preserved exactly.
+ *  - Bass crossover: the MIT measurement speaker rolls off low frequencies
+ *    and there are almost no directional cues below ~200 Hz anyway. Below
+ *    BASS_XOVER_HZ each filter cross-fades to a dry unity path (delayed to
+ *    the HRIR's bulk delay so the crossover region stays phase-coherent).
+ *  - Loudness: filters are normalized so a front-center source renders at
+ *    ~unity broadband gain, then OUTPUT_HEADROOM (-3 dB) is applied.
+ *
  * Filter changes fade over FADE_BLOCKS render quanta (per-bin linear
  * interpolation of the frequency-domain filters, equivalent to impulse
  * response interpolation) to avoid clicks while dragging.
@@ -43,19 +57,24 @@ constexpr int MAX_SPEAKERS = 8;
 constexpr int FADE_BLOCKS = 4;
 // Equal-power feed of the non-positional LFE channel into both ears.
 const float LFE_EAR_GAIN = std::sqrt(0.5f);
-// Extra safety margin on top of the 0.35 filter normalization so several
-// correlated speaker feeds summing at both ears stay below full scale.
-// Tuned by ear against Direct-mode loudness (stage 4).
+// Safety margin so several correlated speaker feeds summing at both ears
+// stay below full scale. Filters are unity-normalized (see globalScale).
 constexpr float OUTPUT_HEADROOM = 0.7f;
-// Matches SpeakersBinauralizer's post-normalization target.
-constexpr float FILTER_NORM_TARGET = 0.35f;
+// Below this the dry path takes over (no directional cues, weak HRIR data).
+constexpr float BASS_XOVER_HZ = 200.0f;
+// Diffuse-field EQ inversion limits.
+constexpr float DFEQ_MAX_GAIN = 3.981f;   // +12 dB
+constexpr float DFEQ_MIN_GAIN = 0.2512f;  // -12 dB
+// Band used both as the EQ's unity reference and the loudness probe.
+constexpr float REF_BAND_LO_HZ = 400.0f;
+constexpr float REF_BAND_HI_HZ = 3000.0f;
 
 struct SpeakerState {
   bool active = false;
   bool isLfe = false;
   float gain = 1.0f;
-  // Frequency-domain HRTF filters, [ear][bin]. `current` is what process()
-  // uses; while fadeRemaining > 0 it steps linearly toward `target`.
+  // Frequency-domain filters, [ear][bin]. `current` is what process() uses;
+  // while fadeRemaining > 0 it steps linearly toward `target`.
   kiss_fft_cpx* current[2] = {nullptr, nullptr};
   kiss_fft_cpx* target[2] = {nullptr, nullptr};
   int fadeRemaining = 0;
@@ -70,7 +89,7 @@ struct RendererState {
   int fftBins = 0;
   int tailLen = 0;  // taps - 1
   float fftScaler = 1.0f;
-  float normScaler = 1.0f;
+  float globalScale = 1.0f;
 
   kiss_fftr_cfg fftFwd = nullptr;
   kiss_fftr_cfg fftInv = nullptr;
@@ -83,10 +102,11 @@ struct RendererState {
   float* tail[2] = {nullptr, nullptr};
   float* lfeMix = nullptr;
 
-  float* timeScratch = nullptr;          // fftSize
-  kiss_fft_cpx* freqScratch = nullptr;   // fftBins
-  kiss_fft_cpx* freqAcc[2] = {nullptr, nullptr};  // fftBins per ear
-  float* hrtfScratch[2] = {nullptr, nullptr};     // taps per ear
+  float* timeScratch = nullptr;                    // fftSize
+  kiss_fft_cpx* freqScratch = nullptr;             // fftBins
+  kiss_fft_cpx* freqAcc[2] = {nullptr, nullptr};   // fftBins per ear
+  float* hrtfScratch[2] = {nullptr, nullptr};      // taps per ear
+  float* dfeqMag = nullptr;                        // fftBins, shared both ears
 };
 
 RendererState g;
@@ -114,9 +134,11 @@ void freeAll() {
   std::free(g.lfeMix);
   std::free(g.timeScratch);
   std::free(g.freqScratch);
+  std::free(g.dfeqMag);
   g.lfeMix = nullptr;
   g.timeScratch = nullptr;
   g.freqScratch = nullptr;
+  g.dfeqMag = nullptr;
   if (g.fftFwd) kiss_fftr_free(g.fftFwd);
   if (g.fftInv) kiss_fftr_free(g.fftInv);
   g.fftFwd = nullptr;
@@ -126,17 +148,179 @@ void freeAll() {
   g.ready = false;
 }
 
-// Bakes the frequency-domain HRTF filter pair for a speaker position into
-// `dst[2]`. Returns false if the HRTF lookup fails.
+float binFrequencyHz(int bin) {
+  return static_cast<float>(bin) * static_cast<float>(g.sampleRate) / static_cast<float>(g.fftSize);
+}
+
+// Zero-phase magnitude crossover: lowpass share in [0, 1]; highpass = 1 - lp.
+float bassLowpassShare(float freqHz) {
+  const float ratio = freqHz / BASS_XOVER_HZ;
+  return 1.0f / (1.0f + ratio * ratio * ratio * ratio);
+}
+
+/*
+ * Bakes the frequency-domain filter pair for a speaker position into
+ * `dst[2]`: diffuse-field-equalized HRTF above the bass crossover, a
+ * bulk-delayed dry path below it, everything scaled by globalScale.
+ * Returns false if the HRTF lookup fails.
+ */
 bool bakeFilters(float azimuthRad, float elevationRad, kiss_fft_cpx* dst[2]) {
   float* pfHRTF[2] = {g.hrtfScratch[0], g.hrtfScratch[1]};
   if (!g.hrtf->get(azimuthRad, elevationRad, pfHRTF)) return false;
   for (int ear = 0; ear < 2; ear++) {
-    for (int t = 0; t < g.taps; t++) g.timeScratch[t] = pfHRTF[ear][t] * g.normScaler;
+    // Bulk delay of this ear's response, so the dry bass path lines up with
+    // the convolved highs through the crossover region.
+    int onset = 0;
+    float peak = 0.0f;
+    for (int t = 0; t < g.taps; t++) {
+      const float v = std::fabs(pfHRTF[ear][t]);
+      if (v > peak) {
+        peak = v;
+        onset = t;
+      }
+    }
+
+    std::memcpy(g.timeScratch, pfHRTF[ear], g.taps * sizeof(float));
     std::memset(g.timeScratch + g.taps, 0, (g.fftSize - g.taps) * sizeof(float));
-    kiss_fftr(g.fftFwd, g.timeScratch, dst[ear]);
+    kiss_fftr(g.fftFwd, g.timeScratch, g.freqScratch);
+
+    for (int b = 0; b < g.fftBins; b++) {
+      const float lp = bassLowpassShare(binFrequencyHz(b));
+      const float hp = 1.0f - lp;
+      const float eq = (g.dfeqMag ? g.dfeqMag[b] : 1.0f) * hp;
+      float real = g.freqScratch[b].r * eq;
+      float imag = g.freqScratch[b].i * eq;
+      const float phase = (-2.0f * static_cast<float>(M_PI) * static_cast<float>(b) * static_cast<float>(onset)) / static_cast<float>(g.fftSize);
+      real += lp * std::cos(phase);
+      imag += lp * std::sin(phase);
+      dst[ear][b].r = real * g.globalScale;
+      dst[ear][b].i = imag * g.globalScale;
+    }
   }
   return true;
+}
+
+/*
+ * Averages HRTF power over a full azimuth ring (both ears), smooths it, and
+ * stores the clamped inverse in dfeqMag with the reference band at unity.
+ * Returns false if no HRTF could be sampled.
+ */
+bool computeDiffuseFieldEq() {
+  double* power = static_cast<double*>(std::calloc(g.fftBins, sizeof(double)));
+  double* smoothed = static_cast<double*>(std::calloc(g.fftBins, sizeof(double)));
+  if (!power || !smoothed) {
+    std::free(power);
+    std::free(smoothed);
+    return false;
+  }
+
+  float* pfHRTF[2] = {g.hrtfScratch[0], g.hrtfScratch[1]};
+  int sampledDirections = 0;
+  for (int azDeg = -180; azDeg < 180; azDeg += 10) {
+    const float azRad = (static_cast<float>(azDeg) * static_cast<float>(M_PI)) / 180.0f;
+    if (!g.hrtf->get(azRad, 0.0f, pfHRTF)) continue;
+    for (int ear = 0; ear < 2; ear++) {
+      std::memcpy(g.timeScratch, pfHRTF[ear], g.taps * sizeof(float));
+      std::memset(g.timeScratch + g.taps, 0, (g.fftSize - g.taps) * sizeof(float));
+      kiss_fftr(g.fftFwd, g.timeScratch, g.freqScratch);
+      for (int b = 0; b < g.fftBins; b++) {
+        power[b] += static_cast<double>(g.freqScratch[b].r) * g.freqScratch[b].r +
+                    static_cast<double>(g.freqScratch[b].i) * g.freqScratch[b].i;
+      }
+    }
+    sampledDirections++;
+  }
+  if (sampledDirections == 0) {
+    std::free(power);
+    std::free(smoothed);
+    return false;
+  }
+
+  // Two passes of a widening moving average ≈ fractional-octave smoothing.
+  for (int pass = 0; pass < 2; pass++) {
+    for (int b = 0; b < g.fftBins; b++) {
+      const int halfWidth = b / 8 > 2 ? b / 8 : 2;
+      int lo = b - halfWidth;
+      int hi = b + halfWidth;
+      if (lo < 0) lo = 0;
+      if (hi > g.fftBins - 1) hi = g.fftBins - 1;
+      double sum = 0.0;
+      for (int k = lo; k <= hi; k++) sum += power[k];
+      smoothed[b] = sum / static_cast<double>(hi - lo + 1);
+    }
+    std::memcpy(power, smoothed, g.fftBins * sizeof(double));
+  }
+
+  // Reference: mean power across the mid band, so eq ≈ 1 there.
+  double refSum = 0.0;
+  int refCount = 0;
+  for (int b = 0; b < g.fftBins; b++) {
+    const float f = binFrequencyHz(b);
+    if (f >= REF_BAND_LO_HZ && f <= REF_BAND_HI_HZ) {
+      refSum += power[b];
+      refCount++;
+    }
+  }
+  if (refCount == 0 || refSum <= 0.0) {
+    std::free(power);
+    std::free(smoothed);
+    return false;
+  }
+  const double refPower = refSum / static_cast<double>(refCount);
+
+  for (int b = 0; b < g.fftBins; b++) {
+    const double p = power[b] > 1e-12 ? power[b] : 1e-12;
+    float eq = static_cast<float>(std::sqrt(refPower / p));
+    if (eq > DFEQ_MAX_GAIN) eq = DFEQ_MAX_GAIN;
+    if (eq < DFEQ_MIN_GAIN) eq = DFEQ_MIN_GAIN;
+    g.dfeqMag[b] = eq;
+  }
+
+  std::free(power);
+  std::free(smoothed);
+  return true;
+}
+
+/*
+ * Normalizes overall level: bakes a probe filter for a front-center source
+ * and scales so its broadband magnitude across the reference band is ~1.
+ */
+bool computeGlobalScale() {
+  kiss_fft_cpx* probe[2] = {
+    static_cast<kiss_fft_cpx*>(std::calloc(g.fftBins, sizeof(kiss_fft_cpx))),
+    static_cast<kiss_fft_cpx*>(std::calloc(g.fftBins, sizeof(kiss_fft_cpx))),
+  };
+  if (!probe[0] || !probe[1]) {
+    std::free(probe[0]);
+    std::free(probe[1]);
+    return false;
+  }
+
+  g.globalScale = 1.0f;
+  const bool baked = bakeFilters(0.0f, 0.0f, probe);
+  bool ok = false;
+  if (baked) {
+    double sumSq = 0.0;
+    int count = 0;
+    for (int ear = 0; ear < 2; ear++) {
+      for (int b = 0; b < g.fftBins; b++) {
+        const float f = binFrequencyHz(b);
+        if (f < REF_BAND_LO_HZ || f > REF_BAND_HI_HZ) continue;
+        sumSq += static_cast<double>(probe[ear][b].r) * probe[ear][b].r +
+                 static_cast<double>(probe[ear][b].i) * probe[ear][b].i;
+        count++;
+      }
+    }
+    if (count > 0 && sumSq > 0.0) {
+      const double rms = std::sqrt(sumSq / static_cast<double>(count));
+      g.globalScale = static_cast<float>(1.0 / rms);
+      ok = true;
+    }
+  }
+
+  std::free(probe[0]);
+  std::free(probe[1]);
+  return ok;
 }
 
 }  // namespace
@@ -163,6 +347,7 @@ int spatial_init(int sampleRate, int blockSize) {
   while (g.fftSize < g.blockSize + g.taps - 1) g.fftSize <<= 1;
   g.fftBins = g.fftSize / 2 + 1;
   g.fftScaler = 1.0f / static_cast<float>(g.fftSize);
+  g.globalScale = 1.0f;
 
   g.fftFwd = kiss_fftr_alloc(g.fftSize, 0, nullptr, nullptr);
   g.fftInv = kiss_fftr_alloc(g.fftSize, 1, nullptr, nullptr);
@@ -179,26 +364,12 @@ int spatial_init(int sampleRate, int blockSize) {
   g.lfeMix = static_cast<float*>(std::calloc(g.blockSize, sizeof(float)));
   g.timeScratch = static_cast<float*>(std::calloc(g.fftSize, sizeof(float)));
   g.freqScratch = static_cast<kiss_fft_cpx*>(std::calloc(g.fftBins, sizeof(kiss_fft_cpx)));
+  g.dfeqMag = static_cast<float*>(std::calloc(g.fftBins, sizeof(float)));
 
-  // Fixed normalization independent of the active layout: scale so the
-  // loudest single-source direction (directly beside an ear) peaks at
-  // FILTER_NORM_TARGET. Keeping this constant across re-bakes means moving a
-  // speaker never shifts the overall level of the others.
-  float* pfHRTF[2] = {g.hrtfScratch[0], g.hrtfScratch[1]};
-  float maxTap = 0.0f;
-  if (g.hrtf->get(static_cast<float>(M_PI) / 2.0f, 0.0f, pfHRTF)) {
-    for (int ear = 0; ear < 2; ear++) {
-      for (int t = 0; t < g.taps; t++) {
-        float v = std::fabs(pfHRTF[ear][t]);
-        if (v > maxTap) maxTap = v;
-      }
-    }
-  }
-  if (maxTap <= 0.0f) {
+  if (!computeDiffuseFieldEq() || !computeGlobalScale()) {
     freeAll();
     return 0;
   }
-  g.normScaler = FILTER_NORM_TARGET / maxTap;
 
   g.ready = true;
   return g.taps;

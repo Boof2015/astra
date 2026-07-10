@@ -178,6 +178,74 @@ test('moving a speaker fades without producing NaN or instability', () => {
   assert.ok(maxAbs < 1.5, `sweep should not blow up (peak=${maxAbs})`)
 })
 
+test('bass survives the crossover and the response stays roughly flat', () => {
+  // Guards the diffuse-field EQ + bass crossover: raw MIT KEMAR filters lose
+  // most bass and carry a ~2.6 kHz ear-canal resonance; corrected filters
+  // must render a single speaker within a modest window across the band.
+  const exports = instantiate()
+
+  const toneGainDb = (freqHz: number): number => {
+    exports.spatial_init(44100, BLOCK)
+    exports.spatial_set_speaker(0, uiDegToRad(-30), 0, 1, 0)
+    let energyIn = 0
+    let energyOut = 0
+    for (let block = 0; block < 40; block++) {
+      const samples = new Float32Array(BLOCK)
+      for (let n = 0; n < BLOCK; n++) {
+        const v = Math.sin((2 * Math.PI * freqHz * (block * BLOCK + n)) / 44100)
+        samples[n] = v
+        energyIn += v * v
+      }
+      writeInput(exports, 0, samples)
+      exports.spatial_process(1, BLOCK)
+      for (const ear of [0, 1]) {
+        for (const v of readOutput(exports, ear)) energyOut += v * v
+      }
+    }
+    return 10 * Math.log10(energyOut / energyIn)
+  }
+
+  const gains = [60, 250, 1000, 2600, 5000].map(toneGainDb)
+  for (const [i, gain] of gains.entries()) {
+    assert.ok(gain > -9 && gain < 5, `tone ${i} gain out of window: ${gain.toFixed(2)} dB`)
+  }
+  const spread = Math.max(...gains) - Math.min(...gains)
+  assert.ok(spread < 10, `response spread too wide: ${spread.toFixed(2)} dB`)
+})
+
+test('a front-center source renders near unity loudness', () => {
+  const exports = instantiate()
+  assert.ok(exports.spatial_init(44100, BLOCK) > 0)
+  exports.spatial_set_speaker(0, 0, 0, 1, 0)
+
+  let seed = 1234
+  const rand = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff
+    return seed / 0x3fffffff - 1
+  }
+  let energyIn = 0
+  let energyLeft = 0
+  let energyRight = 0
+  for (let block = 0; block < 80; block++) {
+    const samples = new Float32Array(BLOCK)
+    for (let n = 0; n < BLOCK; n++) {
+      const v = rand() * 0.5
+      samples[n] = v
+      energyIn += v * v
+    }
+    writeInput(exports, 0, samples)
+    exports.spatial_process(1, BLOCK)
+    for (const v of readOutput(exports, 0)) energyLeft += v * v
+    for (const v of readOutput(exports, 1)) energyRight += v * v
+  }
+  const leftDb = 10 * Math.log10(energyLeft / energyIn)
+  const rightDb = 10 * Math.log10(energyRight / energyIn)
+  // Roughly direct-playback loudness minus the -3 dB headroom.
+  assert.ok(leftDb > -8 && leftDb < 0, `left ear gain out of window: ${leftDb.toFixed(2)} dB`)
+  assert.ok(rightDb > -8 && rightDb < 0, `right ear gain out of window: ${rightDb.toFixed(2)} dB`)
+  assert.ok(Math.abs(leftDb - rightDb) < 1, 'front-center must stay centered')
+})
+
 test('spatial_reset clears pending convolution tails', () => {
   const exports = instantiate()
   assert.ok(exports.spatial_init(48000, BLOCK) > 0)

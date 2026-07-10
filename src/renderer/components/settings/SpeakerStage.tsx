@@ -70,7 +70,12 @@ export default function SpeakerStage({
   disabledTitle,
 }: SpeakerStageProps) {
   const svgRef = useRef<SVGSVGElement | null>(null)
-  const dragStateRef = useRef<{ pointerId: number; speakerId: string; moved: boolean } | null>(null)
+  const dragStateRef = useRef<{
+    pointerId: number
+    speakerId: string
+    moved: boolean
+    wasSelected: boolean
+  } | null>(null)
 
   const positionalSpeakers = useMemo(
     () => speakers.filter((sp): sp is SpeakerStageSpeaker & { azimuth: number } => sp.azimuth !== null),
@@ -106,10 +111,22 @@ export default function SpeakerStage({
   ) => {
     event.stopPropagation()
     if (disabled) return
+    const wasSelected = selectedId === speaker.id
+    if (!speaker.draggable || !onAzimuthChange) {
+      // Static pucks toggle like buttons: click again to close the editor.
+      onSelect(wasSelected ? null : speaker.id)
+      return
+    }
+    // Draggable pucks select immediately (drag feedback); a clean click on an
+    // already-selected puck toggles it off on pointer-up instead.
     onSelect(speaker.id)
-    if (!speaker.draggable || !onAzimuthChange) return
     event.currentTarget.setPointerCapture(event.pointerId)
-    dragStateRef.current = { pointerId: event.pointerId, speakerId: speaker.id, moved: false }
+    dragStateRef.current = {
+      pointerId: event.pointerId,
+      speakerId: speaker.id,
+      moved: false,
+      wasSelected,
+    }
   }
 
   const handlePuckPointerMove = (
@@ -130,6 +147,9 @@ export default function SpeakerStage({
     if (!drag || drag.pointerId !== event.pointerId) return
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    if (event.type === 'pointerup' && !drag.moved && drag.wasSelected) {
+      onSelect(null)
     }
     dragStateRef.current = null
   }
@@ -163,9 +183,6 @@ export default function SpeakerStage({
         viewBox={`0 0 ${VIEW_WIDTH} ${VIEW_HEIGHT}`}
         role="group"
         aria-label="Speaker stage"
-        onPointerDown={() => {
-          if (!disabled) onSelect(null)
-        }}
       >
         {/* Ring + front marker */}
         <circle
@@ -243,7 +260,7 @@ export default function SpeakerStage({
               type="button"
               className={`speaker-stage-lfe-badge state-${speaker.state} ${speaker.id === selectedId ? 'selected' : ''}`}
               onClick={() => {
-                if (!disabled) onSelect(speaker.id)
+                if (!disabled) onSelect(selectedId === speaker.id ? null : speaker.id)
               }}
               disabled={disabled}
               title={`${speaker.label} (non-positional)`}
