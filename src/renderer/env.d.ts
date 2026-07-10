@@ -35,15 +35,11 @@ import type {
   ParallaxHostTimelinePublishOptions,
   ParallaxOutputLatencyMetrics,
   ParallaxPairedSink,
-  ParallaxPairResponse,
-  ParallaxPairingPin,
-  ParallaxSinkConnectionConfig,
   ParallaxSinkTelemetry,
   ParallaxStatus,
   ParallaxStreamInfo,
   ParallaxTimelineEvent,
-  ParallaxTimelineState,
-  PersistedParallaxSinkConnection
+  ParallaxTimelineState
 } from '../types/parallax'
 import type {
     LastFmAuthFinishResult,
@@ -399,10 +395,8 @@ declare global {
                 ) => Promise<{ sinkId: string; sinkName: string; sinkParallaxEndpointUuid: string | null }>
                 cancelPair: (pairingId: string) => Promise<{ ok: boolean }>
                 cancelIncomingPair: () => Promise<{ ok: true }>
+                approveIncomingPair: () => Promise<{ ok: boolean }>
                 setHostPort: (port: number) => Promise<ParallaxStatus>
-                createPairingPin: () => Promise<ParallaxPairingPin>
-                pairWithHost: (baseUrl: string, pin: string, sinkName: string) => Promise<ParallaxPairResponse>
-                connectSink: (config: ParallaxSinkConnectionConfig) => Promise<ParallaxStatus>
                 disconnectSink: () => Promise<ParallaxStatus>
                 publishHostStreamStart: (
                     info: Omit<ParallaxStreamInfo, 'chunkFrames' | 'groupLatencyMs' | 'createdAt'>,
@@ -430,8 +424,6 @@ declare global {
                     outputDeviceLabel: string | null,
                     advanceMs: number
                 ) => Promise<ParallaxStatus>
-                setSinkConnection: (config: PersistedParallaxSinkConnection) => Promise<PersistedParallaxSinkConnection | null>
-                getSinkConnection: () => Promise<PersistedParallaxSinkConnection | null>
                 forgetSinkConnection: () => Promise<ParallaxStatus>
                 reconnectFromPersisted: () => Promise<ParallaxStatus>
                 startAutoReconnect: () => Promise<{ scheduled: boolean; reason?: 'no-persisted-connection' | 'host-mode-active' }>

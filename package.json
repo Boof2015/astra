@@ -58,6 +58,7 @@
     "@boof2015/xlrc": "^0.2.1",
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
+    "@peculiar/x509": "^2.0.0",
     "better-sqlite3": "^12.10.0",
     "bonjour-service": "^1.4.0",
     "ffmpeg-static": "^5.2.0",
@@ -67,6 +68,8 @@
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-window": "^2.2.7",
+    "reflect-metadata": "^0.2.2",
+    "undici": "^8.7.0",
     "zustand": "^5.0.13"
   },
   "devDependencies": {

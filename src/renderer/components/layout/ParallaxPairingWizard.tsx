@@ -240,6 +240,7 @@ export default function ParallaxPairingWizard({ onClose }: Props) {
                       key={sinkRowKey(sink)}
                       type="button"
                       className="parallax-pairing-wizard-row"
+                      disabled={!sink.compatible}
                       onClick={() => void handleInitiate(sink.baseUrl)}
                     >
                       <div className="parallax-pairing-wizard-row-main">
@@ -248,7 +249,9 @@ export default function ParallaxPairingWizard({ onClose }: Props) {
                           {sink.address}:{sink.port}
                         </span>
                       </div>
-                      {matchedPair && (
+                      {!sink.compatible ? (
+                        <span className="parallax-pairing-wizard-row-badge">Update required</span>
+                      ) : matchedPair && (
                         <span className="parallax-pairing-wizard-row-badge">
                           Already paired{matchedPair.name && matchedPair.name !== sink.name ? ` as “${matchedPair.name}”` : ''}
                         </span>
@@ -351,7 +354,9 @@ function PinEntryPhase({
   return (
     <div className="parallax-pairing-wizard-pin">
       <div className="parallax-pairing-wizard-pin-prompt">
-        Enter the 6-digit PIN shown on <strong>{sinkName}</strong>.
+        {submitting
+          ? <>Code matched. Approve the connection on <strong>{sinkName}</strong>.</>
+          : <>Enter the 6-digit security code shown on <strong>{sinkName}</strong>.</>}
       </div>
       <input
         ref={pinInputRef}
@@ -359,6 +364,7 @@ function PinEntryPhase({
         inputMode="numeric"
         maxLength={6}
         className="parallax-pairing-wizard-pin-input"
+        disabled={submitting}
         value={pinInput}
         onChange={(event) => onChange(event.target.value.replace(/\D/g, ''))}
         onKeyDown={(event) => { if (event.key === 'Enter') onSubmit() }}

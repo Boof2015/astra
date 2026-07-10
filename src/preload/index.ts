@@ -35,18 +35,14 @@ import type {
   ParallaxDiscoveryEvent,
   ParallaxOutputLatencyMetrics,
   ParallaxPairedSink,
-  ParallaxPairResponse,
   ParallaxHostStreamStartInfo,
   ParallaxHostStreamStartOptions,
   ParallaxHostNextStreamStartOptions,
   ParallaxHostTimelinePublishOptions,
-  ParallaxPairingPin,
-  ParallaxSinkConnectionConfig,
   ParallaxSinkTelemetry,
   ParallaxStatus,
   ParallaxTimelineEvent,
-  ParallaxTimelineState,
-  PersistedParallaxSinkConnection
+  ParallaxTimelineState
 } from '../types/parallax'
 import type {
   DynamicPlaylistRulesV1,
@@ -960,12 +956,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('parallax:cancelPair', pairingId),
     cancelIncomingPair: (): Promise<{ ok: true }> =>
       ipcRenderer.invoke('parallax:cancelIncomingPair'),
+    approveIncomingPair: (): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('parallax:approveIncomingPair'),
     setHostPort: (port: number): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:setHostPort', port),
-    createPairingPin: (): Promise<ParallaxPairingPin> => ipcRenderer.invoke('parallax:createPairingPin'),
-    pairWithHost: (baseUrl: string, pin: string, sinkName: string): Promise<ParallaxPairResponse> =>
-      ipcRenderer.invoke('parallax:pairWithHost', baseUrl, pin, sinkName),
-    connectSink: (config: ParallaxSinkConnectionConfig): Promise<ParallaxStatus> =>
-      ipcRenderer.invoke('parallax:connectSink', config),
     disconnectSink: (): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:disconnectSink'),
     publishHostStreamStart: (
       info: ParallaxHostStreamStartInfo,
@@ -1010,10 +1003,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // §14.1.2. Sink-side durable pairing. `setSinkConnection` persists creds after a successful
     // pair; `getSinkConnection` populates the "paired with X" UI; `forgetSinkConnection` is the
     // sink-side symmetric of the host's "Revoke" — wipes creds and stops auto-reconnect.
-    setSinkConnection: (config: PersistedParallaxSinkConnection): Promise<PersistedParallaxSinkConnection | null> =>
-      ipcRenderer.invoke('parallax:setSinkConnection', config),
-    getSinkConnection: (): Promise<PersistedParallaxSinkConnection | null> =>
-      ipcRenderer.invoke('parallax:getSinkConnection'),
     forgetSinkConnection: (): Promise<ParallaxStatus> =>
       ipcRenderer.invoke('parallax:forgetSinkConnection'),
     reconnectFromPersisted: (): Promise<ParallaxStatus> =>
@@ -1597,10 +1586,8 @@ declare global {
         ) => Promise<{ sinkId: string; sinkName: string; sinkParallaxEndpointUuid: string | null }>
         cancelPair: (pairingId: string) => Promise<{ ok: boolean }>
         cancelIncomingPair: () => Promise<{ ok: true }>
+        approveIncomingPair: () => Promise<{ ok: boolean }>
         setHostPort: (port: number) => Promise<ParallaxStatus>
-        createPairingPin: () => Promise<ParallaxPairingPin>
-        pairWithHost: (baseUrl: string, pin: string, sinkName: string) => Promise<ParallaxPairResponse>
-        connectSink: (config: ParallaxSinkConnectionConfig) => Promise<ParallaxStatus>
         disconnectSink: () => Promise<ParallaxStatus>
         publishHostStreamStart: (
           info: ParallaxHostStreamStartInfo,
@@ -1629,8 +1616,6 @@ declare global {
           outputDeviceLabel: string | null,
           advanceMs: number
         ) => Promise<ParallaxStatus>
-        setSinkConnection: (config: PersistedParallaxSinkConnection) => Promise<PersistedParallaxSinkConnection | null>
-        getSinkConnection: () => Promise<PersistedParallaxSinkConnection | null>
         forgetSinkConnection: () => Promise<ParallaxStatus>
         reconnectFromPersisted: () => Promise<ParallaxStatus>
         startAutoReconnect: () => Promise<{ scheduled: boolean; reason?: 'no-persisted-connection' | 'host-mode-active' }>

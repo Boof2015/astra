@@ -1,10 +1,18 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createServer as createHttpServer, type Server as HttpServer } from 'node:http'
+import type { Server as HttpServer } from 'node:http'
+import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
 import { createServer as createNetServer } from 'node:net'
 import { ParallaxService } from './parallax.ts'
-import type { ParallaxHostConfig, ParallaxPairResponse } from '../../types/parallax.ts'
+import type { ParallaxHostConfig } from '../../types/parallax.ts'
 import { decodeParallaxAudioPacket } from '../../types/parallax.ts'
+import { createOpaqueSecret, hashToken } from './playbackHttpCore.ts'
+import {
+  createParallaxPinnedDispatcher,
+  createParallaxTlsIdentity,
+  type ParallaxTlsIdentity
+} from './parallaxSecurity.ts'
+import type { Agent } from 'undici'
 
 type ParallaxSseTestEvent = {
   type: string
@@ -27,7 +35,9 @@ async function getFreePort(): Promise<number> {
   })
 }
 
-async function listenHttpServer(server: HttpServer, port: number): Promise<void> {
+type TestServer = HttpServer | HttpsServer
+
+async function listenHttpServer(server: TestServer, port: number): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => {
       server.off('listening', onListening)
@@ -43,7 +53,7 @@ async function listenHttpServer(server: HttpServer, port: number): Promise<void>
   })
 }
 
-async function closeHttpServer(server: HttpServer): Promise<void> {
+async function closeHttpServer(server: TestServer): Promise<void> {
   await new Promise<void>((resolve) => {
     server.close(() => resolve())
   })
@@ -59,19 +69,38 @@ async function waitFor(predicate: () => boolean, timeoutMs: number = 1_000): Pro
   }
 }
 
-async function createStartedParallaxService(): Promise<{ service: ParallaxService; port: number; baseUrl: string }> {
+const dispatchersByBaseUrl = new Map<string, Agent>()
+
+async function fetchHost(baseUrl: string, path: string, init: RequestInit = {}): Promise<Response> {
+  const dispatcher = dispatchersByBaseUrl.get(baseUrl)
+  assert.ok(dispatcher, `missing pinned dispatcher for ${baseUrl}`)
+  return await fetch(`${baseUrl}${path}`, { ...init, dispatcher } as RequestInit & { dispatcher: Agent })
+}
+
+async function createStartedParallaxService(): Promise<{ service: ParallaxService; port: number; baseUrl: string; tlsIdentity: ParallaxTlsIdentity }> {
   const port = await getFreePort()
   const config: ParallaxHostConfig = { enabled: true, port }
-  const service = new ParallaxService({ config: { enabled: false, port }, pairedSinks: [] })
+  const tlsIdentity = await createParallaxTlsIdentity('Parallax Test Host')
+  const service = new ParallaxService({ config: { enabled: false, port }, pairedSinks: [], tlsIdentity })
   await service.applyHostConfig(config)
+  const baseUrl = `https://127.0.0.1:${port}`
+  const dispatcher = createParallaxPinnedDispatcher(tlsIdentity.certificatePem, tlsIdentity.fingerprint256)
+  dispatchersByBaseUrl.set(baseUrl, dispatcher)
+  const stop = service.stop.bind(service)
+  service.stop = async () => {
+    await stop()
+    dispatchersByBaseUrl.delete(baseUrl)
+    await dispatcher.close().catch(() => undefined)
+  }
   return {
     service,
     port,
-    baseUrl: `http://127.0.0.1:${port}`
+    baseUrl,
+    tlsIdentity
   }
 }
 
-async function tryCreateStartedParallaxService(): Promise<{ service: ParallaxService; port: number; baseUrl: string } | null> {
+async function tryCreateStartedParallaxService(): Promise<Awaited<ReturnType<typeof createStartedParallaxService>> | null> {
   try {
     return await createStartedParallaxService()
   } catch (error) {
@@ -82,15 +111,19 @@ async function tryCreateStartedParallaxService(): Promise<{ service: ParallaxSer
   }
 }
 
-async function pairSink(service: ParallaxService, baseUrl: string, sinkName: string = 'Desk'): Promise<ParallaxPairResponse> {
-  const pin = service.createPairingPin()
-  const pairedResponse = await fetch(`${baseUrl}/v1/parallax/pair`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pin: pin.pin, sinkName })
-  })
-  assert.equal(pairedResponse.status, 200)
-  return await pairedResponse.json() as ParallaxPairResponse
+async function pairSink(service: ParallaxService, _baseUrl: string, sinkName: string = 'Desk'): Promise<{ sinkId: string; token: string }> {
+  const sinkId = createOpaqueSecret(16)
+  const token = createOpaqueSecret(32)
+  service.replacePairedSinks([{
+    id: sinkId,
+    name: sinkName,
+    tokenHash: hashToken(token),
+    tokenPrefix: token.slice(0, 8),
+    createdAt: Date.now(),
+    lastSeenAt: null,
+    revokedAt: null
+  }])
+  return { sinkId, token }
 }
 
 async function readParallaxSseEvents(
@@ -121,7 +154,7 @@ async function readParallaxSseEvents(
   return events
 }
 
-test('Parallax host pairs sinks with an active PIN and requires bearer auth for join', async (t) => {
+test('Parallax host rejects the legacy pairing route and requires bearer auth for join', async (t) => {
   const started = await tryCreateStartedParallaxService()
   if (!started) {
     t.skip('Local socket binding is blocked in this environment.')
@@ -129,29 +162,22 @@ test('Parallax host pairs sinks with an active PIN and requires bearer auth for 
   }
   const { service, baseUrl } = started
   try {
-    const pin = service.createPairingPin()
-    const rejected = await fetch(`${baseUrl}/v1/parallax/pair`, {
+    const rejected = await fetchHost(baseUrl, '/v1/parallax/pair', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pin: '000000', sinkName: 'Kitchen' })
     })
-    assert.equal(rejected.status, 403)
+    assert.equal(rejected.status, 401)
 
-    const pairedResponse = await fetch(`${baseUrl}/v1/parallax/pair`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pin: pin.pin, sinkName: 'Kitchen' })
-    })
-    assert.equal(pairedResponse.status, 200)
-    const paired = await pairedResponse.json() as ParallaxPairResponse
+    const paired = await pairSink(service, baseUrl, 'Kitchen')
     assert.ok(paired.sinkId)
     assert.ok(paired.token)
     assert.equal(service.listPairedSinks().length, 1)
 
-    const unauthorizedJoin = await fetch(`${baseUrl}/v1/parallax/join`, { method: 'POST' })
+    const unauthorizedJoin = await fetchHost(baseUrl, '/v1/parallax/join', { method: 'POST' })
     assert.equal(unauthorizedJoin.status, 401)
 
-    const authorizedJoin = await fetch(`${baseUrl}/v1/parallax/join`, {
+    const authorizedJoin = await fetchHost(baseUrl, '/v1/parallax/join', {
       method: 'POST',
       headers: { Authorization: `Bearer ${paired.token}` }
     })
@@ -172,7 +198,7 @@ test('Parallax sink forget revokes host pairing and removes connected presence',
   let eventsResponse: Response | null = null
   try {
     const paired = await pairSink(service, baseUrl, 'Office')
-    eventsResponse = await fetch(`${baseUrl}/v1/parallax/events`, {
+    eventsResponse = await fetchHost(baseUrl, '/v1/parallax/events', {
       headers: { Authorization: `Bearer ${paired.token}` },
       signal: eventsAbort.signal
     })
@@ -183,7 +209,7 @@ test('Parallax sink forget revokes host pairing and removes connected presence',
         && status.host.connectedSinks.some((sink) => sink.sinkId === paired.sinkId && sink.online)
     })
 
-    const forgot = await fetch(`${baseUrl}/v1/parallax/sink/forget`, {
+    const forgot = await fetchHost(baseUrl, '/v1/parallax/sink/forget', {
       method: 'POST',
       headers: { Authorization: `Bearer ${paired.token}` }
     })
@@ -215,7 +241,7 @@ test('Parallax host presence cache can be cleared without removing pairing crede
   let eventsResponse: Response | null = null
   try {
     const paired = await pairSink(service, baseUrl, 'Office')
-    eventsResponse = await fetch(`${baseUrl}/v1/parallax/events`, {
+    eventsResponse = await fetchHost(baseUrl, '/v1/parallax/events', {
       headers: { Authorization: `Bearer ${paired.token}` },
       signal: eventsAbort.signal
     })
@@ -233,40 +259,16 @@ test('Parallax host presence cache can be cleared without removing pairing crede
 })
 
 test('Parallax host renames paired sink and updates connected status', async (t) => {
-  let port: number
-  try {
-    port = await getFreePort()
-  } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'EPERM') {
-      t.skip('Local socket binding is blocked in this environment.')
-      return
-    }
-    throw error
+  const started = await tryCreateStartedParallaxService()
+  if (!started) {
+    t.skip('Local socket binding is blocked in this environment.')
+    return
   }
-  const config: ParallaxHostConfig = { enabled: true, port }
-  let persistedNames: string[] = []
-  const service = new ParallaxService({
-    config: { enabled: false, port },
-    pairedSinks: [],
-    onPairedSinksChange: (sinks) => {
-      persistedNames = sinks.map((sink) => sink.name)
-    }
-  })
+  const { service, baseUrl } = started
   try {
-    try {
-      await service.applyHostConfig(config)
-    } catch (error) {
-      if (error && typeof error === 'object' && 'code' in error && error.code === 'EPERM') {
-        t.skip('Local socket binding is blocked in this environment.')
-        return
-      }
-      throw error
-    }
-
-    const baseUrl = `http://127.0.0.1:${port}`
     const paired = await pairSink(service, baseUrl, 'Desk')
     const eventsAbort = new AbortController()
-    const eventsResponse = await fetch(`${baseUrl}/v1/parallax/events`, {
+    const eventsResponse = await fetchHost(baseUrl, '/v1/parallax/events', {
       headers: { Authorization: `Bearer ${paired.token}` },
       signal: eventsAbort.signal
     })
@@ -278,7 +280,6 @@ test('Parallax host renames paired sink and updates connected status', async (t)
       assert.equal(renamed?.name, 'Living Room Sink')
       assert.equal(service.listPairedSinks().find((sink) => sink.id === paired.sinkId)?.name, 'Living Room Sink')
       assert.equal(service.getStatus().host.connectedSinks.find((sink) => sink.sinkId === paired.sinkId)?.name, 'Living Room Sink')
-      assert.equal(persistedNames[0], 'Living Room Sink')
 
       const capped = service.renamePairedSink(paired.sinkId, ` ${'A'.repeat(90)} `)
       assert.equal(capped?.name, 'A'.repeat(80))
@@ -321,7 +322,7 @@ test('Parallax host telemetry exposes connected sink RTT and preserves output tr
     const paired = await pairSink(service, baseUrl, 'Desk')
     service.setSinkTrim(paired.sinkId, 'speaker-default', 'Desk DAC', 15)
 
-    const telemetry = await fetch(`${baseUrl}/v1/parallax/telemetry`, {
+    const telemetry = await fetchHost(baseUrl, '/v1/parallax/telemetry', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -360,25 +361,22 @@ test('Parallax host telemetry exposes connected sink RTT and preserves output tr
   }
 })
 
-test('Parallax pairing PIN expires', async (t) => {
+test('Parallax legacy pairing endpoint cannot create credentials', async (t) => {
   const started = await tryCreateStartedParallaxService()
   if (!started) {
     t.skip('Local socket binding is blocked in this environment.')
     return
   }
   const { service, baseUrl } = started
-  const originalNow = Date.now
   try {
-    const pin = service.createPairingPin()
-    Date.now = () => pin.expiresAt + 1
-    const response = await fetch(`${baseUrl}/v1/parallax/pair`, {
+    const response = await fetchHost(baseUrl, '/v1/parallax/pair', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pin: pin.pin, sinkName: 'Desk' })
+      body: JSON.stringify({ pin: '123456', sinkName: 'Desk' })
     })
-    assert.equal(response.status, 409)
+    assert.equal(response.status, 401)
+    assert.equal(service.listPairedSinks().length, 0)
   } finally {
-    Date.now = originalNow
     await service.stop()
   }
 })
@@ -396,7 +394,6 @@ test('Parallax audio endpoint streams timestamped PCM packets', async (t) => {
     const timeline = service.publishHostStreamStart({
       streamId: 'stream-audio-test',
       trackId: 'track-audio-test',
-      trackPath: '/tmp/audio-test.flac',
       title: 'Audio Test',
       artist: 'Astra',
       album: 'Parallax',
@@ -417,7 +414,7 @@ test('Parallax audio endpoint streams timestamped PCM packets', async (t) => {
       pcmData: pcm.buffer
     })
 
-    const response = await fetch(`${baseUrl}/v1/parallax/audio?streamId=stream-audio-test&fromFrame=0`, {
+    const response = await fetchHost(baseUrl, '/v1/parallax/audio?streamId=stream-audio-test&fromFrame=0', {
       headers: { Authorization: `Bearer ${paired.token}` }
     })
     assert.equal(response.status, 200)
@@ -470,7 +467,6 @@ test('Parallax stream metadata carries host normalization gain through status an
     service.publishHostStreamStart({
       streamId: 'stream-normalized-test',
       trackId: 'track-normalized-test',
-      trackPath: '/tmp/normalized-test.flac',
       title: 'Normalized Test',
       artist: 'Astra',
       album: 'Parallax',
@@ -487,7 +483,7 @@ test('Parallax stream metadata carries host normalization gain through status an
     assert.equal(activeStream?.normalizationGainDb, -8.25)
     assert.equal(activeStream?.normalizationMode, 'replaygain')
 
-    const joinResponse = await fetch(`${baseUrl}/v1/parallax/join`, {
+    const joinResponse = await fetchHost(baseUrl, '/v1/parallax/join', {
       method: 'POST',
       headers: { Authorization: `Bearer ${paired.token}` }
     })
@@ -516,7 +512,7 @@ test('Parallax events endpoint delivers consecutive stream-start metadata update
   const { service, baseUrl } = started
   try {
     const paired = await pairSink(service, baseUrl)
-    const response = await fetch(`${baseUrl}/v1/parallax/events`, {
+    const response = await fetchHost(baseUrl, '/v1/parallax/events', {
       headers: { Authorization: `Bearer ${paired.token}` }
     })
     assert.equal(response.status, 200)
@@ -527,7 +523,6 @@ test('Parallax events endpoint delivers consecutive stream-start metadata update
       service.publishHostStreamStart({
         streamId: 'stream-one',
         trackId: 'track-one',
-        trackPath: '/tmp/one.flac',
         title: 'One',
         artist: 'Astra',
         album: 'Parallax',
@@ -541,7 +536,6 @@ test('Parallax events endpoint delivers consecutive stream-start metadata update
       service.publishHostStreamStart({
         streamId: 'stream-two',
         trackId: 'track-two',
-        trackPath: '/tmp/two.flac',
         title: 'Two',
         artist: 'Astra',
         album: 'Parallax',
@@ -553,7 +547,7 @@ test('Parallax events endpoint delivers consecutive stream-start metadata update
         normalizationMode: 'replaygain'
       })
 
-      const events = await readParallaxSseEvents(reader, 2)
+      const events = await readParallaxSseEvents(reader, 3)
       const streamStarts = events.filter((event) => event.type === 'stream-start')
       assert.deepEqual(
         streamStarts.map((event) => event.stream?.streamId),
@@ -577,10 +571,15 @@ test('Parallax events endpoint delivers consecutive stream-start metadata update
 
 test('Parallax sink auto-rejoins after an event stream failure', async () => {
   const port = await getFreePort()
-  const baseUrl = `http://127.0.0.1:${port}`
+  const tlsIdentity = await createParallaxTlsIdentity('Retry Test Host')
+  const baseUrl = `https://127.0.0.1:${port}`
   let joinCount = 0
   let eventRequestCount = 0
-  const server = createHttpServer((req, res) => {
+  const server = createHttpsServer({
+    key: tlsIdentity.privateKeyPem,
+    cert: tlsIdentity.certificatePem,
+    minVersion: 'TLSv1.2'
+  }, (req, res) => {
     const url = new URL(req.url ?? '/', baseUrl)
     if (req.method === 'POST' && url.pathname === '/v1/parallax/join') {
       joinCount += 1
@@ -631,9 +630,12 @@ test('Parallax sink auto-rejoins after an event stream failure', async () => {
   const sinkService = new ParallaxService({ config: { enabled: false, port }, pairedSinks: [] })
   try {
     await sinkService.connectSink({
+      protocolVersion: 2,
       baseUrl,
       sinkId: 'sink-retry',
-      token: 'token'
+      token: 'token',
+      hostCertificatePem: tlsIdentity.certificatePem,
+      hostCertificateFingerprint: tlsIdentity.fingerprint256
     })
     await waitFor(() => joinCount >= 2 && eventRequestCount >= 2 && sinkService.getStatus().sink.lastError === null)
     assert.equal(sinkService.getStatus().sink.connected, true)
@@ -682,8 +684,10 @@ async function createPairFixture(overrides: { sinkName?: string; hasPersisted?: 
   }, { pinTtlMs: overrides.pinTtlMs })
   await listener.start(sinkPort)
 
+  const tlsIdentity = await createParallaxTlsIdentity('Test Host')
   const host = new ParallaxService({
     config: { enabled: true, port: hostPort },
+    tlsIdentity,
     pairedSinks: [],
     getHostDisplayName: () => 'Test Host',
     getEndpointUuid: () => 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
@@ -747,8 +751,10 @@ test('§20 pair-confirm wrong PIN never activates host candidate', async () => {
   const fixture = await createPairFixture()
   try {
     const initiate = await fixture.host.initiatePair(fixture.sinkBaseUrl)
+    const incoming = fixture.incoming.at(-1) as { pin: string }
+    const wrongCode = incoming.pin === '000000' ? '111111' : '000000'
     await assert.rejects(
-      fixture.host.submitPairPin(initiate.pairingId, '000000'),
+      fixture.host.submitPairPin(initiate.pairingId, wrongCode),
       (error: any) => error?.status === 401
     )
     assert.equal(fixture.paired.length, 0, 'sink must not persist on wrong PIN')
@@ -767,7 +773,10 @@ test('§20 pair-confirm success persists sink credential AND activates host pair
   try {
     const initiate = await fixture.host.initiatePair(fixture.sinkBaseUrl)
     const lastIncoming = fixture.incoming.at(-1) as { pin: string }
-    const submitted = await fixture.host.submitPairPin(initiate.pairingId, lastIncoming.pin, 'Studio Desk')
+    const submitPromise = fixture.host.submitPairPin(initiate.pairingId, lastIncoming.pin, 'Studio Desk')
+    await waitFor(() => Boolean((fixture.incoming.at(-1) as { awaitingApproval?: boolean } | null)?.awaitingApproval))
+    assert.equal(fixture.listener.approvePending(), true)
+    const submitted = await submitPromise
     assert.equal(typeof submitted.sinkId, 'string')
     assert.equal(submitted.sinkName, 'Studio Desk')
 
@@ -779,7 +788,9 @@ test('§20 pair-confirm success persists sink credential AND activates host pair
     assert.equal(persistedInfo.token.length > 0, true)
     assert.equal(persistedInfo.hostName, 'Test Host')
     // Host URL derived from socket remote address — must be 127.0.0.1, NOT 0.0.0.0.
-    assert.match(persistedInfo.hostUrl, /^http:\/\/127\.0\.0\.1:\d+$/)
+    assert.match(persistedInfo.hostUrl, /^https:\/\/127\.0\.0\.1:\d+$/)
+    assert.equal(persistedInfo.protocolVersion, 2)
+    assert.ok(persistedInfo.hostCertificateFingerprint)
 
     // Host activated the candidate into pairedSinks.
     const status = fixture.host.getStatus()
@@ -790,24 +801,37 @@ test('§20 pair-confirm success persists sink credential AND activates host pair
   }
 })
 
-test('§20 / Pillar 4 a repeat pair-request from the same host supersedes the pending PIN', async () => {
+test('Parallax v2 rejects a second pair-request while approval is pending', async () => {
   const fixture = await createPairFixture()
   try {
     await fixture.host.initiatePair(fixture.sinkBaseUrl)
-    // Same host (same loopback remote address) sending a fresh pair-request means its previous
-    // attempt died — it crashed / restarted / slept mid-pair — and is retrying. The sink supersedes
-    // the stale pending and issues a new PIN instead of wedging on 409 "busy", so the user never has
-    // to manually reset the speaker to re-pair (Pillar 4). A genuinely *different* host (different
-    // remote IP) still gets 409; that path can't be exercised over loopback here.
+    // A fresh request cannot silently replace the code currently visible to the user.
     const second = await postJson(`${fixture.sinkBaseUrl}/v1/parallax/pair-request`, {
       pairingId: 'second',
       hostName: 'Same Host Retry',
       hostPort: fixture.hostPort,
       parallaxEndpointUuid: 'second-uuid'
     })
-    assert.equal(second.status, 200)
-    assert.equal(typeof second.payload?.sinkName, 'string')
-    assert.equal(typeof second.payload?.expiresInSeconds, 'number')
+    assert.equal(second.status, 409)
+    assert.equal(second.payload?.error, 'busy')
+  } finally {
+    await destroyPairFixture(fixture)
+  }
+})
+
+test('Parallax v2 rejects duplicate confirmations while sink approval is pending', async () => {
+  const fixture = await createPairFixture()
+  try {
+    const initiate = await fixture.host.initiatePair(fixture.sinkBaseUrl)
+    const incoming = fixture.incoming.at(-1) as { pin: string }
+    const firstConfirmation = fixture.host.submitPairPin(initiate.pairingId, incoming.pin)
+    await waitFor(() => Boolean((fixture.incoming.at(-1) as { awaitingApproval?: boolean } | null)?.awaitingApproval))
+    await assert.rejects(
+      fixture.host.submitPairPin(initiate.pairingId, incoming.pin),
+      /confirmation-already-pending/
+    )
+    assert.equal(fixture.listener.approvePending(), true)
+    await firstConfirmation
   } finally {
     await destroyPairFixture(fixture)
   }
@@ -890,6 +914,10 @@ test('§20 3 wrong PINs lock out further attempts', async () => {
     await assert.rejects(
       fixture.host.submitPairPin(initiate.pairingId, lastIncoming.pin),
       (error: any) => /Sink has no record|Pair candidate not found/.test(String(error?.message ?? ''))
+    )
+    await assert.rejects(
+      fixture.host.initiatePair(fixture.sinkBaseUrl),
+      /temporarily locked/i
     )
     const status = fixture.host.getStatus()
     assert.equal(status.host.pairedSinkCount, 0)

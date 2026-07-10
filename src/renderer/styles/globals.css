@@ -23639,6 +23639,40 @@ html[data-theme-tone="light"] .parallax-sink-error {
   margin-top: 2px;
 }
 
+.parallax-pair-card-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.parallax-pair-card-button {
+  min-width: 112px;
+  min-height: 38px;
+  padding: 8px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.parallax-pair-card-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.parallax-pair-card-button-secondary {
+  background: var(--glass-highlight);
+  color: var(--text-secondary);
+}
+
+.parallax-pair-card-button-primary {
+  border-color: rgba(var(--accent-rgb), 0.5);
+  background: rgba(var(--accent-rgb), 0.2);
+  color: var(--accent-text-strong, var(--text-primary));
+}
+
 /* Host-side Add Sink wizard. Modal over the normal shell; never appears in Zone Display because
  * Zone Display is sink-role and the wizard is host-role. */
 
@@ -24108,6 +24142,17 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.parallax-security-migration-card {
+  border-color: rgba(var(--accent-rgb), 0.34);
+}
+
+.parallax-security-migration-card p {
+  margin: 0;
+  padding: 12px 14px 14px;
+  color: var(--text-secondary);
+  line-height: 1.5;
 }
 
 .parallax-card-header {

@@ -6,7 +6,11 @@ import Bonjour from 'bonjour-service'
 // returns.
 import type { Service } from 'bonjour-service/dist/lib/service'
 import type { Browser } from 'bonjour-service/dist/lib/browser'
-import type { ParallaxDiscoveredSink, ParallaxDiscoveryEvent } from '../../types/parallax'
+import {
+  PARALLAX_PROTOCOL_VERSION,
+  type ParallaxDiscoveredSink,
+  type ParallaxDiscoveryEvent
+} from '../../types/parallax'
 
 // §20 / §14.1.5 Commit 2. Thin wrapper around `bonjour-service` for Astra zone-display
 // discovery. Two independent operations:
@@ -27,7 +31,7 @@ import type { ParallaxDiscoveredSink, ParallaxDiscoveryEvent } from '../../types
 
 export const PARALLAX_DISCOVERY_SERVICE_TYPE = 'astra-zone'
 export const PARALLAX_DISCOVERY_PROTOCOL: 'tcp' = 'tcp'
-const PARALLAX_DISCOVERY_TXT_VERSION = 1
+const PARALLAX_DISCOVERY_TXT_VERSION = PARALLAX_PROTOCOL_VERSION
 
 // Retry the PTR query on a stagger so a single packet drop or a sink-side rate-limit window
 // (mDNS responders defer 20-120ms per RFC 6762 §6 and won't repeat an identical answer inside
@@ -282,7 +286,9 @@ export class ParallaxDiscoveryService extends EventEmitter<ParallaxDiscoveryEven
         if (pickServiceTxt(service, 'endpoint_uuid') !== target) return
         const address = pickServiceAddress(service)
         if (!address || !Number.isFinite(service.port)) return
-        finish({ endpointUuid: target, baseUrl: `http://${address}:${service.port}`, address, port: service.port })
+        const version = Number(pickServiceTxt(service, 'version'))
+        if (version !== PARALLAX_PROTOCOL_VERSION) return
+        finish({ endpointUuid: target, baseUrl: `https://${address}:${service.port}`, address, port: service.port })
       }
       browser.on('up', consider)
       browser.on('srv-update', consider)
@@ -366,13 +372,15 @@ function mapServiceToDiscoveredSink(service: Service): ParallaxDiscoveredSink | 
   // that included a bind address like `0.0.0.0`) is ignored. The wizard's pair-request flow
   // needs a reachable URL, and the mDNS-resolved address is authoritative for that.
   const baseUrl = `http://${address}:${service.port}`
+  const normalizedVersion = Number.isFinite(version as number) ? (version as number) : null
   return {
     endpointUuid: endpointUuid || null,
     name,
     baseUrl,
     address,
     port: service.port,
-    version: Number.isFinite(version as number) ? (version as number) : null,
+    version: normalizedVersion,
+    compatible: normalizedVersion === PARALLAX_PROTOCOL_VERSION,
     lastSeenAt: Date.now()
   }
 }

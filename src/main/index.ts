@@ -66,6 +66,13 @@ import { PhoneRemoteDiscoveryService } from './services/phoneRemoteDiscovery'
 import { ParallaxService, type PersistedParallaxPairedSink } from './services/parallax'
 import { ParallaxDiscoveryService } from './services/parallaxDiscovery'
 import { ParallaxSinkListener } from './services/parallaxSinkListener'
+import {
+  createParallaxTlsIdentity,
+  normalizeParallaxFingerprint,
+  parallaxCertificateFingerprint,
+  validateParallaxTlsIdentity,
+  type ParallaxTlsIdentity
+} from './services/parallaxSecurity'
 import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
 import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
@@ -142,6 +149,7 @@ import {
   PARALLAX_MIN_PORT,
   PARALLAX_SINK_DEFAULT_PORT,
   decideParallaxSinkEnabledFromMeta,
+  decideParallaxSecurityV2Migration,
   type ParallaxAudioChunk,
   type ParallaxDiscoveryEvent,
   type ParallaxHostConfig,
@@ -150,7 +158,6 @@ import {
   type ParallaxHostTimelinePublishOptions,
   type ParallaxOutputLatencyMetrics,
   ParallaxAuthError,
-  type ParallaxSinkConnectionConfig,
   type ParallaxSinkTelemetry,
   type ParallaxStreamInfo,
   type ParallaxTimelineState,
@@ -469,6 +476,9 @@ const PARALLAX_SINK_ENABLED_META_KEY = 'parallax_sink_enabled_v1'
 // uses host-issued `sinkId` — this is discovery memory only ("seen before / renamed / already
 // paired"). Never a secret.
 const PARALLAX_ENDPOINT_UUID_META_KEY = 'parallax_endpoint_uuid_v1'
+const PARALLAX_TLS_IDENTITY_META_KEY = 'parallax_tls_identity_v2'
+const PARALLAX_SECURITY_VERSION_META_KEY = 'parallax_security_version'
+const PARALLAX_SECURITY_MIGRATION_NOTICE_META_KEY = 'parallax_security_migration_notice_v2'
 const LASTFM_ENABLED_META_KEY = 'lastfm_enabled_v1'
 const LASTFM_API_BASE_URL_META_KEY = 'lastfm_api_base_url_v1'
 const LASTFM_SESSION_KEY_META_KEY = 'lastfm_session_key_v1'
@@ -591,6 +601,8 @@ let parallaxSinkEnabled = false
 // §20.19(c). Role-neutral identity UUID per Astra install. Generated lazily at first read.
 // Discovery memory only (never a secret) — auth identity is still the host-issued `sinkId`.
 let parallaxEndpointUuid = ''
+let parallaxTlsIdentity: ParallaxTlsIdentity | null = null
+let parallaxSecurityMigrationRequired = false
 // §20 Commit 2. mDNS wrapper. Owns one bonjour-service instance for both advertise + browse.
 // Constructed eagerly (cheap, no sockets bound until start*); lifecycle hooks below honor the
 // sinkEnabled toggle for advertise and renderer-driven browse on/off for the wizard.
@@ -612,9 +624,12 @@ const parallaxSinkListener = new ParallaxSinkListener({
       console.warn('Failed to clear stale Parallax sink connection during pair-commit:', error)
     })
     const persisted = {
+      protocolVersion: info.protocolVersion,
       baseUrl: info.hostUrl,
       sinkId: info.sinkId,
       token: info.token,
+      hostCertificatePem: info.hostCertificatePem,
+      hostCertificateFingerprint: info.hostCertificateFingerprint,
       hostName: info.hostName,
       pairedAt: info.pairedAt,
       lastConnectedAt: null,
@@ -623,6 +638,7 @@ const parallaxSinkListener = new ParallaxSinkListener({
     const sanitized = sanitizeParallaxSinkConnection(persisted)
     if (sanitized) {
       await persistParallaxSinkConnection(sanitized)
+      await clearParallaxSecurityMigrationNotice()
       broadcastParallaxStatus()
       // Pair-confirm happens in the sink HTTP listener, but the actual sink connection must be
       // renderer-driven so the Standard-output gate, subscriptions, and audioEngine.stop() prep
@@ -975,6 +991,9 @@ const parallaxService = new ParallaxService({
     void persistParallaxPairedSinks(parallaxPairedSinks).catch((error) => {
       console.warn('Failed to persist Parallax paired sinks:', error)
     })
+    if (sinks.some((sink) => sink.revokedAt === null)) {
+      void clearParallaxSecurityMigrationNotice()
+    }
   },
   onStatusChange: () => {
     broadcastParallaxStatus()
@@ -1039,7 +1058,8 @@ const parallaxService = new ParallaxService({
   getHostDisplayName: () => hostname() || 'Astra Host',
   // §20 Commit 3 sink side. Reads the listener's live pending-pair so it lands in
   // ParallaxStatus.sink.incomingPairRequest on every status push.
-  getIncomingPairRequest: () => parallaxIncomingPairRequest
+  getIncomingPairRequest: () => parallaxIncomingPairRequest,
+  getSecurityMigrationRequired: () => parallaxSecurityMigrationRequired
 })
 
 const lastFmService = new LastFmService({
@@ -1605,6 +1625,107 @@ async function persistParallaxSinkEnabled(enabled: boolean): Promise<void> {
   await library.setAppMeta(PARALLAX_SINK_ENABLED_META_KEY, enabled ? '1' : '0')
 }
 
+interface ProtectedParallaxSecret {
+  protection: 'safe-storage' | 'plaintext-fallback'
+  value: string
+}
+
+function canUseSecureParallaxStorage(): boolean {
+  if (!safeStorage.isEncryptionAvailable()) return false
+  if (process.platform !== 'linux') return true
+  return safeStorage.getSelectedStorageBackend() !== 'basic_text'
+}
+
+function protectParallaxSecret(value: string): ProtectedParallaxSecret {
+  if (canUseSecureParallaxStorage()) {
+    return {
+      protection: 'safe-storage',
+      value: safeStorage.encryptString(value).toString('base64')
+    }
+  }
+  console.warn('Parallax secure OS storage is unavailable; using an explicit plaintext credential fallback.')
+  return { protection: 'plaintext-fallback', value }
+}
+
+function unprotectParallaxSecret(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+  if (record.protection === 'plaintext-fallback' && typeof record.value === 'string') {
+    return record.value
+  }
+  if (record.protection === 'safe-storage' && typeof record.value === 'string') {
+    try {
+      return safeStorage.decryptString(Buffer.from(record.value, 'base64'))
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+async function loadOrCreateParallaxTlsIdentity(): Promise<ParallaxTlsIdentity> {
+  const raw = library.getAppMeta(PARALLAX_TLS_IDENTITY_META_KEY)
+  let invalidExistingIdentity = false
+  if (raw) {
+    try {
+      const stored = JSON.parse(raw) as Record<string, unknown>
+      const privateKeyPem = unprotectParallaxSecret(stored.privateKey)
+      const candidate = privateKeyPem && typeof stored.certificatePem === 'string' && typeof stored.fingerprint256 === 'string'
+        ? validateParallaxTlsIdentity({
+          certificatePem: stored.certificatePem,
+          privateKeyPem,
+          fingerprint256: stored.fingerprint256
+        })
+        : null
+      if (candidate) return candidate
+    } catch {
+      // Regenerate below.
+    }
+    invalidExistingIdentity = true
+  }
+
+  const identity = await createParallaxTlsIdentity(hostname() || 'Astra Parallax')
+  await library.setAppMeta(PARALLAX_TLS_IDENTITY_META_KEY, JSON.stringify({
+    version: 2,
+    certificatePem: identity.certificatePem,
+    fingerprint256: identity.fingerprint256,
+    privateKey: protectParallaxSecret(identity.privateKeyPem)
+  }))
+  if (invalidExistingIdentity) {
+    parallaxSecurityMigrationRequired = true
+    await library.setAppMeta(PARALLAX_PAIRED_SINKS_META_KEY, '[]')
+    await library.setAppMeta(PARALLAX_SINK_CONNECTION_META_KEY, '')
+    await library.setAppMeta(PARALLAX_SECURITY_MIGRATION_NOTICE_META_KEY, '1')
+  }
+  return identity
+}
+
+async function migrateParallaxSecurityV2(): Promise<void> {
+  const currentVersion = library.getAppMeta(PARALLAX_SECURITY_VERSION_META_KEY)
+  const rawPairedSinks = library.getAppMeta(PARALLAX_PAIRED_SINKS_META_KEY)
+  const rawSinkConnection = library.getAppMeta(PARALLAX_SINK_CONNECTION_META_KEY)
+  const decision = decideParallaxSecurityV2Migration(currentVersion, rawPairedSinks, rawSinkConnection)
+  if (!decision.needsMigration) {
+    parallaxSecurityMigrationRequired = library.getAppMeta(PARALLAX_SECURITY_MIGRATION_NOTICE_META_KEY) === '1'
+    return
+  }
+  parallaxSecurityMigrationRequired = decision.showRepairNotice
+  await library.setAppMeta(PARALLAX_PAIRED_SINKS_META_KEY, '[]')
+  await library.setAppMeta(PARALLAX_SINK_CONNECTION_META_KEY, '')
+  await library.setAppMeta(PARALLAX_SECURITY_VERSION_META_KEY, '2')
+  await library.setAppMeta(
+    PARALLAX_SECURITY_MIGRATION_NOTICE_META_KEY,
+    parallaxSecurityMigrationRequired ? '1' : '0'
+  )
+}
+
+async function clearParallaxSecurityMigrationNotice(): Promise<void> {
+  if (!parallaxSecurityMigrationRequired) return
+  parallaxSecurityMigrationRequired = false
+  await library.setAppMeta(PARALLAX_SECURITY_MIGRATION_NOTICE_META_KEY, '0')
+  broadcastParallaxStatus()
+}
+
 // §20.19(c). Lazy load — generate and persist on first read. Validated as a v4-ish UUID; if a
 // persisted value is malformed (manual edit, schema mismatch), regenerate.
 async function loadParallaxEndpointUuidFromMeta(): Promise<string> {
@@ -1641,10 +1762,21 @@ let parallaxSinkConnection: PersistedParallaxSinkConnection | null = null
 function sanitizeParallaxSinkConnection(raw: unknown): PersistedParallaxSinkConnection | null {
   if (!raw || typeof raw !== 'object') return null
   const value = raw as Record<string, unknown>
+  if (value.protocolVersion !== 2) return null
   const baseUrl = typeof value.baseUrl === 'string' ? value.baseUrl.trim() : ''
   const sinkId = typeof value.sinkId === 'string' ? value.sinkId.trim() : ''
   const token = typeof value.token === 'string' ? value.token.trim() : ''
-  if (!baseUrl || !sinkId || !token) return null
+  const hostCertificatePem = typeof value.hostCertificatePem === 'string' ? value.hostCertificatePem.trim() : ''
+  const hostCertificateFingerprint = typeof value.hostCertificateFingerprint === 'string'
+    ? normalizeParallaxFingerprint(value.hostCertificateFingerprint)
+    : ''
+  if (!baseUrl || !sinkId || !token || !hostCertificatePem || !hostCertificateFingerprint) return null
+  try {
+    if (new URL(baseUrl).protocol !== 'https:') return null
+    if (parallaxCertificateFingerprint(hostCertificatePem) !== hostCertificateFingerprint) return null
+  } catch {
+    return null
+  }
   const hostName = typeof value.hostName === 'string' ? value.hostName.slice(0, 80) : null
   const pairedAt = typeof value.pairedAt === 'number' && Number.isFinite(value.pairedAt)
     ? Math.max(0, value.pairedAt)
@@ -1659,9 +1791,12 @@ function sanitizeParallaxSinkConnection(raw: unknown): PersistedParallaxSinkConn
     ? value.hostParallaxEndpointUuid.trim()
     : undefined
   return {
+    protocolVersion: 2,
     baseUrl,
     sinkId,
     token,
+    hostCertificatePem,
+    hostCertificateFingerprint,
     hostName,
     pairedAt,
     lastConnectedAt,
@@ -1673,7 +1808,9 @@ function loadParallaxSinkConnectionFromMeta(): PersistedParallaxSinkConnection |
   const raw = library.getAppMeta(PARALLAX_SINK_CONNECTION_META_KEY)
   if (!raw) return null
   try {
-    return sanitizeParallaxSinkConnection(JSON.parse(raw))
+    const stored = JSON.parse(raw) as Record<string, unknown>
+    const token = unprotectParallaxSecret(stored.protectedToken)
+    return token ? sanitizeParallaxSinkConnection({ ...stored, token }) : null
   } catch {
     return null
   }
@@ -1681,7 +1818,11 @@ function loadParallaxSinkConnectionFromMeta(): PersistedParallaxSinkConnection |
 
 async function persistParallaxSinkConnection(next: PersistedParallaxSinkConnection): Promise<void> {
   parallaxSinkConnection = { ...next }
-  await library.setAppMeta(PARALLAX_SINK_CONNECTION_META_KEY, JSON.stringify(parallaxSinkConnection))
+  const { token, ...publicFields } = parallaxSinkConnection
+  await library.setAppMeta(PARALLAX_SINK_CONNECTION_META_KEY, JSON.stringify({
+    ...publicFields,
+    protectedToken: protectParallaxSecret(token)
+  }))
 }
 
 async function clearParallaxSinkConnection(): Promise<void> {
@@ -1724,11 +1865,7 @@ async function attemptParallaxAutoReconnect(
   // (Pillar 3) updates it mid-loop, and we must not connect to / persist a stale baseUrl.
   const active = parallaxSinkConnection ?? connection
   try {
-    await parallaxService.connectSink({
-      baseUrl: active.baseUrl,
-      sinkId: active.sinkId,
-      token: active.token
-    })
+    await parallaxService.connectSink(active)
     if (generation !== parallaxAutoReconnectGeneration) return
     parallaxAutoReconnectAttempt = 0
     const updated: PersistedParallaxSinkConnection = { ...active, lastConnectedAt: Date.now() }
@@ -4454,6 +4591,9 @@ app.whenReady().then(async () => {
   localApiConfig = await loadLocalApiConfigFromMeta()
   phoneRemoteConfig = await loadPhoneRemoteConfigFromMeta(localApiConfig.controlsEnabled)
   parallaxHostConfig = await loadParallaxHostConfigFromMeta()
+  await migrateParallaxSecurityV2()
+  parallaxTlsIdentity = await loadOrCreateParallaxTlsIdentity()
+  parallaxService.setTlsIdentity(parallaxTlsIdentity)
   phoneRemotePairedDevices = await loadPhoneRemotePairedDevicesFromMeta()
   parallaxPairedSinks = await loadParallaxPairedSinksFromMeta()
   parallaxSinkConnection = loadParallaxSinkConnectionFromMeta()
@@ -5642,28 +5782,6 @@ ipcMain.handle('parallax:setHostPort', async (_event, rawPort: unknown) => {
   return applyParallaxHostConfig(nextConfig)
 })
 
-ipcMain.handle('parallax:createPairingPin', () => {
-  return parallaxService.createPairingPin()
-})
-
-ipcMain.handle('parallax:pairWithHost', async (_event, baseUrl: unknown, pin: unknown, sinkName: unknown) => {
-  if (typeof baseUrl !== 'string' || !baseUrl.trim()) {
-    throw new Error('Parallax host URL is required.')
-  }
-  if (typeof pin !== 'string' || !pin.trim()) {
-    throw new Error('Parallax pairing PIN is required.')
-  }
-  return parallaxService.pairWithHost(baseUrl, pin, typeof sinkName === 'string' ? sinkName : 'Astra Sink')
-})
-
-ipcMain.handle('parallax:connectSink', async (_event, config: ParallaxSinkConnectionConfig) => {
-  // §14.1.2 follow-up (Codex round 1, finding 2). The user clicked Connect manually — abandon
-  // any in-flight boot retry timer so it can't fire later with a stale connection reference
-  // and force a disconnect mid-session.
-  cancelParallaxAutoReconnect()
-  return parallaxService.connectSink(config)
-})
-
 // §14.1.2 follow-up (Codex round 1, finding 3). Renderer-facing manual-reconnect that reuses
 // the credential main already holds — eliminates the need for SettingsView to keep the raw
 // token in component state just so it can drive a Connect button.
@@ -5672,11 +5790,7 @@ ipcMain.handle('parallax:reconnectFromPersisted', async () => {
     throw new Error('No persisted Parallax sink connection.')
   }
   cancelParallaxAutoReconnect()
-  return parallaxService.connectSink({
-    baseUrl: parallaxSinkConnection.baseUrl,
-    sinkId: parallaxSinkConnection.sinkId,
-    token: parallaxSinkConnection.token
-  })
+  return parallaxService.connectSink(parallaxSinkConnection)
 })
 
 // §14.1.2 follow-up (Codex round 2, finding 1). Renderer calls this from parallaxStore.init()
@@ -5892,6 +6006,10 @@ ipcMain.handle('parallax:cancelIncomingPair', () => {
   return { ok: true as const }
 })
 
+ipcMain.handle('parallax:approveIncomingPair', () => {
+  return { ok: parallaxSinkListener.approvePending() }
+})
+
 ipcMain.handle('parallax:disconnectSink', async () => {
   return parallaxService.disconnectSink()
 })
@@ -5975,31 +6093,6 @@ ipcMain.handle('parallax:resetToDefaults', async () => {
   cancelParallaxAutoReconnect()
   await clearParallaxSinkConnection()
   return applyParallaxHostConfig(nextConfig)
-})
-
-// §14.1.2 / §16.8. Persist sink-side credential after successful pair. The renderer calls this
-// immediately after `/v1/parallax/pair` returns + before calling `connectSink`, so the durable
-// state lands before any reconnect could be attempted. Cancel any in-flight auto-reconnect
-// loop bound to the previous credential — the new one will get a fresh loop on next boot, or
-// the renderer drives connect directly this session.
-ipcMain.handle(
-  'parallax:setSinkConnection',
-  async (_event, raw: unknown) => {
-    const sanitized = sanitizeParallaxSinkConnection(raw)
-    if (!sanitized) {
-      throw new Error('Invalid Parallax sink connection payload.')
-    }
-    cancelParallaxAutoReconnect()
-    await persistParallaxSinkConnection(sanitized)
-    return parallaxSinkConnection
-  }
-)
-
-// §14.1.2 / §16.8. Renderer reads this to populate the "paired with <host>" display in
-// settings; null when not yet paired. Returns a snapshot copy so the renderer can never mutate
-// the in-memory cache.
-ipcMain.handle('parallax:getSinkConnection', () => {
-  return parallaxSinkConnection ? { ...parallaxSinkConnection } : null
 })
 
 // §14.1.2 / §16.6 / §16.8. "Forget host" path. Stops any in-flight reconnect, disconnects an
