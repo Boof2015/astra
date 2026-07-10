@@ -57,19 +57,22 @@ constexpr int MAX_SPEAKERS = 8;
 constexpr int FADE_BLOCKS = 4;
 // Equal-power feed of the non-positional LFE channel into both ears.
 const float LFE_EAR_GAIN = std::sqrt(0.5f);
-// Safety margin so several correlated speaker feeds summing at both ears
-// stay below full scale. Filters are unity-normalized (see globalScale).
-constexpr float OUTPUT_HEADROOM = 0.7f;
-// Output safety limiter: coherent bass across 5-7 virtual speakers sums to
-// several times the per-channel amplitude at each ear (physically correct —
-// real speakers sum in air — but it hard-clips a digital output and reads as
-// static riding on bass peaks). Gain is shared by both ears so imaging is
-// unaffected; below the threshold the limiter is bit-transparent.
-constexpr float LIMIT_THRESHOLD = 0.95f;
-constexpr int LIMIT_ATTACK_SAMPLES = 32;      // ~0.7 ms ramp to the new gain
-constexpr float LIMIT_RELEASE_SECONDS = 0.15f;
-// Last-resort soft ceiling for the attack ramp's brief overshoot.
-constexpr float SOFT_CEIL_START = 0.97f;
+// Static headroom: binaural rendering has real peak gain over the source —
+// the ipsilateral ear of an off-center speaker sits several dB above the
+// front-center reference, and correlated content sums across speakers at
+// each ear. Measured single-channel worst case is ~1.9x input peak before
+// this scale. 0.55 keeps typical material below the limiter threshold so the
+// limiter only catches genuine overs.
+constexpr float OUTPUT_HEADROOM = 0.55f;
+// Look-ahead brick-wall limiter (one render quantum of look-ahead, ~2.9 ms
+// added latency): output blocks are emitted one block late, so the gain can
+// ramp down across a full block BEFORE a peak plays — no reactive kinks, no
+// waveshaping. One gain for both ears keeps imaging intact; below the
+// threshold it is bit-transparent.
+constexpr float LIMIT_THRESHOLD = 0.98f;
+constexpr float LIMIT_RELEASE_SECONDS = 0.25f;
+// Emergency ceiling for block-granularity slack; effectively never active.
+constexpr float SOFT_CEIL_START = 0.995f;
 // Below this the dry path takes over (no directional cues, weak HRIR data).
 constexpr float BASS_XOVER_HZ = 200.0f;
 // Diffuse-field EQ inversion limits.
@@ -119,7 +122,11 @@ struct RendererState {
   float* dfeqMag = nullptr;                        // fftBins, shared both ears
 
   float limiterGain = 1.0f;
-  float limiterReleasePerSample = 0.0f;
+  float limiterReleasePerBlock = 0.0f;
+  // Look-ahead: the block currently held back, and the gain it needs.
+  float* pendingOut[2] = {nullptr, nullptr};
+  float pendingRequired = 1.0f;
+  bool pendingValid = false;
 };
 
 RendererState g;
@@ -139,11 +146,15 @@ void freeAll() {
     std::free(g.tail[ear]);
     std::free(g.freqAcc[ear]);
     std::free(g.hrtfScratch[ear]);
+    std::free(g.pendingOut[ear]);
     g.output[ear] = nullptr;
     g.tail[ear] = nullptr;
     g.freqAcc[ear] = nullptr;
     g.hrtfScratch[ear] = nullptr;
+    g.pendingOut[ear] = nullptr;
   }
+  g.pendingValid = false;
+  g.pendingRequired = 1.0f;
   std::free(g.lfeMix);
   std::free(g.timeScratch);
   std::free(g.freqScratch);
@@ -362,8 +373,10 @@ int spatial_init(int sampleRate, int blockSize) {
   g.fftScaler = 1.0f / static_cast<float>(g.fftSize);
   g.globalScale = 1.0f;
   g.limiterGain = 1.0f;
-  g.limiterReleasePerSample =
-    1.0f - std::exp(-1.0f / (LIMIT_RELEASE_SECONDS * static_cast<float>(sampleRate)));
+  g.limiterReleasePerBlock =
+    1.0f - std::exp(-(static_cast<float>(blockSize) / static_cast<float>(sampleRate)) / LIMIT_RELEASE_SECONDS);
+  g.pendingRequired = 1.0f;
+  g.pendingValid = false;
 
   g.fftFwd = kiss_fftr_alloc(g.fftSize, 0, nullptr, nullptr);
   g.fftInv = kiss_fftr_alloc(g.fftSize, 1, nullptr, nullptr);
@@ -376,6 +389,7 @@ int spatial_init(int sampleRate, int blockSize) {
     g.tail[ear] = static_cast<float*>(std::calloc(g.tailLen, sizeof(float)));
     g.freqAcc[ear] = static_cast<kiss_fft_cpx*>(std::calloc(g.fftBins, sizeof(kiss_fft_cpx)));
     g.hrtfScratch[ear] = static_cast<float*>(std::calloc(g.taps, sizeof(float)));
+    g.pendingOut[ear] = static_cast<float*>(std::calloc(g.blockSize, sizeof(float)));
   }
   g.lfeMix = static_cast<float*>(std::calloc(g.blockSize, sizeof(float)));
   g.timeScratch = static_cast<float*>(std::calloc(g.fftSize, sizeof(float)));
@@ -447,11 +461,16 @@ float* spatial_output_ptr(int ear) {
   return g.output[ear];
 }
 
-// Clears convolution tails and pending LFE (call on seek/flush so stale
-// reverb-like tails don't bleed into the new position).
+// Clears convolution tails and the limiter's look-ahead block (call on
+// seek/flush so stale audio doesn't bleed into the new position).
 void spatial_reset() {
   if (!g.ready) return;
-  for (int ear = 0; ear < 2; ear++) std::memset(g.tail[ear], 0, g.tailLen * sizeof(float));
+  for (int ear = 0; ear < 2; ear++) {
+    std::memset(g.tail[ear], 0, g.tailLen * sizeof(float));
+    std::memset(g.pendingOut[ear], 0, g.blockSize * sizeof(float));
+  }
+  g.pendingRequired = 1.0f;
+  g.limiterGain = 1.0f;
 }
 
 int spatial_tail_taps() { return g.ready ? g.taps : 0; }
@@ -530,7 +549,9 @@ int spatial_process(int numChannels, int frames) {
     }
   }
 
-  // Output safety limiter (see LIMIT_* constants): one gain for both ears.
+  // Look-ahead brick-wall limiter (see LIMIT_* constants). The freshly
+  // rendered block is held back one quantum; what plays now is the previous
+  // block, with a gain ramp that already anticipates the new block's peak.
   float peak = 0.0f;
   for (int ear = 0; ear < 2; ear++) {
     for (int n = 0; n < g.blockSize; n++) {
@@ -538,22 +559,40 @@ int spatial_process(int numChannels, int frames) {
       if (v > peak) peak = v;
     }
   }
-  const float desired = peak > LIMIT_THRESHOLD ? LIMIT_THRESHOLD / peak : 1.0f;
-  float gain = g.limiterGain;
-  for (int n = 0; n < g.blockSize; n++) {
-    if (desired < gain) {
-      // Attack: ramp down quickly toward the gain that tames this block.
-      const float step = (gain - desired) / static_cast<float>(LIMIT_ATTACK_SAMPLES);
-      gain -= step;
-      if (gain < desired) gain = desired;
-    } else if (gain < 1.0f) {
-      gain += (1.0f - gain) * g.limiterReleasePerSample;
-      if (gain > desired) gain = desired;
-    }
+  const float incomingRequired = peak > LIMIT_THRESHOLD ? LIMIT_THRESHOLD / peak : 1.0f;
+
+  if (!g.pendingValid) {
+    // First block after (re)start: prime the look-ahead with one quantum of
+    // silence (~2.9 ms, inaudible).
     for (int ear = 0; ear < 2; ear++) {
-      float v = g.output[ear][n] * gain;
-      // Soft ceiling catches the attack ramp's first fraction of a
-      // millisecond; transparent below SOFT_CEIL_START.
+      std::memcpy(g.pendingOut[ear], g.output[ear], g.blockSize * sizeof(float));
+      std::memset(g.output[ear], 0, g.blockSize * sizeof(float));
+    }
+    g.pendingRequired = incomingRequired;
+    g.pendingValid = true;
+    return 1;
+  }
+
+  // Gain at the end of the emitted block: attack ramps down across the whole
+  // block so it lands exactly when the loud (incoming) block plays; release
+  // recovers exponentially. Never above what the emitted block itself allows.
+  const float gainStart = g.limiterGain;
+  float gainEnd;
+  if (incomingRequired < gainStart) {
+    gainEnd = incomingRequired;
+  } else {
+    gainEnd = gainStart + (1.0f - gainStart) * g.limiterReleasePerBlock;
+    if (gainEnd > incomingRequired) gainEnd = incomingRequired;
+  }
+  if (gainEnd > g.pendingRequired) gainEnd = g.pendingRequired;
+
+  const float gainStep = (gainEnd - gainStart) / static_cast<float>(g.blockSize);
+  for (int n = 0; n < g.blockSize; n++) {
+    const float gain = gainStart + gainStep * static_cast<float>(n + 1);
+    for (int ear = 0; ear < 2; ear++) {
+      const float wet = g.output[ear][n];
+      float v = g.pendingOut[ear][n] * gain;
+      // Emergency ceiling for block-granularity slack; effectively inactive.
       const float mag = std::fabs(v);
       if (mag > SOFT_CEIL_START) {
         const float span = 1.0f - SOFT_CEIL_START;
@@ -561,9 +600,11 @@ int spatial_process(int numChannels, int frames) {
         v = v < 0.0f ? -squeezed : squeezed;
       }
       g.output[ear][n] = v;
+      g.pendingOut[ear][n] = wet;
     }
   }
-  g.limiterGain = gain;
+  g.limiterGain = gainEnd;
+  g.pendingRequired = incomingRequired;
 
   return 1;
 }

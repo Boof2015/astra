@@ -302,6 +302,57 @@ test('coherent multichannel bass never exceeds full scale (safety limiter)', () 
   assert.ok(gainDb > -4, `limiter must release after the loud passage (gain=${gainDb.toFixed(2)} dB)`)
 })
 
+test('the limiter stays clean while engaged (no distortion products)', () => {
+  // Regression: the first limiter implementation modulated its gain with
+  // per-block kinks, which read as static over the whole mix. While heavily
+  // limiting a steady tone, everything that is not the tone must stay far
+  // below it.
+  const exports = instantiate()
+  assert.ok(exports.spatial_init(44100, BLOCK) > 0)
+  const layout: Array<[number, number]> = [[-30, 0], [30, 0], [0, 0], [0, 1], [-110, 0], [110, 0]]
+  layout.forEach(([deg, isLfe], channel) => {
+    exports.spatial_set_speaker(channel, uiDegToRad(deg), 0, 1, isLfe)
+  })
+
+  const settleBlocks = 30
+  const captureBlocks = 80
+  const captured = new Float32Array(captureBlocks * BLOCK)
+  let t = 0
+  let idx = 0
+  for (let block = 0; block < settleBlocks + captureBlocks; block++) {
+    const samples = new Float32Array(BLOCK)
+    for (let n = 0; n < BLOCK; n++) {
+      samples[n] = 0.6 * Math.sin((2 * Math.PI * 60 * t) / 44100)
+      t++
+    }
+    for (let ch = 0; ch < layout.length; ch++) writeInput(exports, ch, samples)
+    exports.spatial_process(layout.length, BLOCK)
+    if (block >= settleBlocks) {
+      for (const v of readOutput(exports, 0)) captured[idx++] = v
+    }
+  }
+
+  const goertzelPower = (freqHz: number): number => {
+    let re = 0
+    let im = 0
+    const total = captured.length
+    for (let n = 0; n < total; n++) {
+      const window = 0.5 - 0.5 * Math.cos((2 * Math.PI * n) / (total - 1))
+      const phase = (2 * Math.PI * freqHz * n) / 44100
+      re += captured[n] * window * Math.cos(phase)
+      im -= captured[n] * window * Math.sin(phase)
+    }
+    return re * re + im * im
+  }
+
+  const tonePower = goertzelPower(60)
+  assert.ok(tonePower > 0)
+  for (const probeHz of [180, 344.5, 689, 1500, 3000, 6000]) {
+    const junkDb = 10 * Math.log10(goertzelPower(probeHz) / tonePower)
+    assert.ok(junkDb < -40, `limiter distortion at ${probeHz} Hz too high: ${junkDb.toFixed(1)} dB`)
+  }
+})
+
 test('spatial_reset clears pending convolution tails', () => {
   const exports = instantiate()
   assert.ok(exports.spatial_init(48000, BLOCK) > 0)
