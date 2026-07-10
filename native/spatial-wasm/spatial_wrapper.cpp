@@ -75,6 +75,17 @@ constexpr float LIMIT_RELEASE_SECONDS = 0.25f;
 constexpr float SOFT_CEIL_START = 0.995f;
 // Below this the dry path takes over (no directional cues, weak HRIR data).
 constexpr float BASS_XOVER_HZ = 200.0f;
+// The DF-EQ and crossover are zero-phase magnitude curves, so the composed
+// filter rings before and after the raw HRIR. Baked filters are therefore
+// re-windowed in the time domain: shifted right by FILTER_PRE_DELAY (makes
+// the pre-ring causal), truncated to filterLen with a fade, and only then
+// used for overlap-add. This keeps the convolution exactly linear —
+// without it the dropped/wrapped remainder is block-position-dependent and
+// audible as broadband static (-26 dB!) on all material.
+constexpr int FILTER_PRE_DELAY = 64;
+constexpr int FILTER_FADE_SAMPLES = 48;
+// Post-HRIR ring budget, in seconds, used to size the FFT.
+constexpr float FILTER_RING_SECONDS = 0.006f;
 // Diffuse-field EQ inversion limits.
 constexpr float DFEQ_MAX_GAIN = 3.981f;   // +12 dB
 constexpr float DFEQ_MIN_GAIN = 0.2512f;  // -12 dB
@@ -100,7 +111,8 @@ struct RendererState {
   int taps = 0;
   int fftSize = 0;
   int fftBins = 0;
-  int tailLen = 0;  // taps - 1
+  int filterLen = 0;  // windowed filter length; fftSize - blockSize
+  int tailLen = 0;    // filterLen - 1
   float fftScaler = 1.0f;
   float globalScale = 1.0f;
 
@@ -116,10 +128,12 @@ struct RendererState {
   float* lfeMix = nullptr;
 
   float* timeScratch = nullptr;                    // fftSize
+  float* irScratch = nullptr;                      // fftSize (filter windowing)
   kiss_fft_cpx* freqScratch = nullptr;             // fftBins
   kiss_fft_cpx* freqAcc[2] = {nullptr, nullptr};   // fftBins per ear
   float* hrtfScratch[2] = {nullptr, nullptr};      // taps per ear
   float* dfeqMag = nullptr;                        // fftBins, shared both ears
+  float* lfeDelay = nullptr;                       // FILTER_PRE_DELAY samples
 
   float limiterGain = 1.0f;
   float limiterReleasePerBlock = 0.0f;
@@ -157,12 +171,16 @@ void freeAll() {
   g.pendingRequired = 1.0f;
   std::free(g.lfeMix);
   std::free(g.timeScratch);
+  std::free(g.irScratch);
   std::free(g.freqScratch);
   std::free(g.dfeqMag);
+  std::free(g.lfeDelay);
   g.lfeMix = nullptr;
   g.timeScratch = nullptr;
+  g.irScratch = nullptr;
   g.freqScratch = nullptr;
   g.dfeqMag = nullptr;
+  g.lfeDelay = nullptr;
   if (g.fftFwd) kiss_fftr_free(g.fftFwd);
   if (g.fftInv) kiss_fftr_free(g.fftInv);
   g.fftFwd = nullptr;
@@ -186,6 +204,13 @@ float bassLowpassShare(float freqHz) {
  * Bakes the frequency-domain filter pair for a speaker position into
  * `dst[2]`: diffuse-field-equalized HRTF above the bass crossover, a
  * bulk-delayed dry path below it, everything scaled by globalScale.
+ *
+ * The composed response is then made explicitly time-limited: back to the
+ * time domain, shifted right by FILTER_PRE_DELAY (zero-phase EQ/crossover
+ * ring becomes causal), truncated to filterLen with a raised-cosine fade,
+ * and re-transformed. Overlap-add is exactly linear for such a filter; see
+ * the FILTER_PRE_DELAY comment for what happens without this step.
+ *
  * Returns false if the HRTF lookup fails.
  */
 bool bakeFilters(float azimuthRad, float elevationRad, kiss_fft_cpx* dst[2]) {
@@ -217,9 +242,26 @@ bool bakeFilters(float azimuthRad, float elevationRad, kiss_fft_cpx* dst[2]) {
       const float phase = (-2.0f * static_cast<float>(M_PI) * static_cast<float>(b) * static_cast<float>(onset)) / static_cast<float>(g.fftSize);
       real += lp * std::cos(phase);
       imag += lp * std::sin(phase);
-      dst[ear][b].r = real * g.globalScale;
-      dst[ear][b].i = imag * g.globalScale;
+      g.freqScratch[b].r = real * g.globalScale;
+      g.freqScratch[b].i = imag * g.globalScale;
     }
+
+    // Time-limit: ifft -> rotate right by FILTER_PRE_DELAY -> window to
+    // filterLen -> fft. Anything past filterLen becomes a fixed (inaudible)
+    // response ripple instead of block-position-dependent noise.
+    kiss_fftri(g.fftInv, g.freqScratch, g.timeScratch);
+    for (int n = 0; n < g.filterLen; n++) {
+      const int src = (n - FILTER_PRE_DELAY + g.fftSize) % g.fftSize;
+      float v = g.timeScratch[src] * g.fftScaler;
+      const int fromEnd = g.filterLen - 1 - n;
+      if (fromEnd < FILTER_FADE_SAMPLES) {
+        const float x = static_cast<float>(fromEnd) / static_cast<float>(FILTER_FADE_SAMPLES);
+        v *= 0.5f - 0.5f * std::cos(static_cast<float>(M_PI) * x);
+      }
+      g.irScratch[n] = v;
+    }
+    std::memset(g.irScratch + g.filterLen, 0, (g.fftSize - g.filterLen) * sizeof(float));
+    kiss_fftr(g.fftFwd, g.irScratch, dst[ear]);
   }
   return true;
 }
@@ -366,9 +408,14 @@ int spatial_init(int sampleRate, int blockSize) {
   g.sampleRate = sampleRate;
   g.blockSize = blockSize;
   g.taps = static_cast<int>(g.hrtf->getHRTFLen());
-  g.tailLen = g.taps - 1;
+  // The windowed filter must hold the HRIR plus the EQ/crossover ring plus
+  // the causalizing pre-delay (see bakeFilters).
+  const int ringSamples = static_cast<int>(FILTER_RING_SECONDS * static_cast<float>(sampleRate));
+  const int neededFilterLen = g.taps + FILTER_PRE_DELAY + ringSamples;
   g.fftSize = 1;
-  while (g.fftSize < g.blockSize + g.taps - 1) g.fftSize <<= 1;
+  while (g.fftSize - g.blockSize < neededFilterLen) g.fftSize <<= 1;
+  g.filterLen = g.fftSize - g.blockSize;
+  g.tailLen = g.filterLen - 1;
   g.fftBins = g.fftSize / 2 + 1;
   g.fftScaler = 1.0f / static_cast<float>(g.fftSize);
   g.globalScale = 1.0f;
@@ -393,8 +440,10 @@ int spatial_init(int sampleRate, int blockSize) {
   }
   g.lfeMix = static_cast<float*>(std::calloc(g.blockSize, sizeof(float)));
   g.timeScratch = static_cast<float*>(std::calloc(g.fftSize, sizeof(float)));
+  g.irScratch = static_cast<float*>(std::calloc(g.fftSize, sizeof(float)));
   g.freqScratch = static_cast<kiss_fft_cpx*>(std::calloc(g.fftBins, sizeof(kiss_fft_cpx)));
   g.dfeqMag = static_cast<float*>(std::calloc(g.fftBins, sizeof(float)));
+  g.lfeDelay = static_cast<float*>(std::calloc(FILTER_PRE_DELAY, sizeof(float)));
 
   if (!computeDiffuseFieldEq() || !computeGlobalScale()) {
     freeAll();
@@ -469,6 +518,7 @@ void spatial_reset() {
     std::memset(g.tail[ear], 0, g.tailLen * sizeof(float));
     std::memset(g.pendingOut[ear], 0, g.blockSize * sizeof(float));
   }
+  std::memset(g.lfeDelay, 0, FILTER_PRE_DELAY * sizeof(float));
   g.pendingRequired = 1.0f;
   g.limiterGain = 1.0f;
 }
@@ -486,14 +536,23 @@ int spatial_process(int numChannels, int frames) {
   for (int ear = 0; ear < 2; ear++) {
     std::memset(g.freqAcc[ear], 0, g.fftBins * sizeof(kiss_fft_cpx));
   }
+  // lfeMix is written one FILTER_PRE_DELAY behind the incoming samples so
+  // the dry LFE stays time-aligned with the (pre-delayed) binaural filters.
   std::memset(g.lfeMix, 0, g.blockSize * sizeof(float));
+  std::memcpy(g.lfeMix, g.lfeDelay, FILTER_PRE_DELAY * sizeof(float));
+  std::memset(g.lfeDelay, 0, FILTER_PRE_DELAY * sizeof(float));
 
   for (int i = 0; i < numChannels; i++) {
     SpeakerState& sp = g.speakers[i];
     if (!sp.active) continue;
 
     if (sp.isLfe) {
-      for (int n = 0; n < g.blockSize; n++) g.lfeMix[n] += g.input[i][n] * sp.gain;
+      for (int n = 0; n < g.blockSize - FILTER_PRE_DELAY; n++) {
+        g.lfeMix[n + FILTER_PRE_DELAY] += g.input[i][n] * sp.gain;
+      }
+      for (int n = 0; n < FILTER_PRE_DELAY; n++) {
+        g.lfeDelay[n] += g.input[i][g.blockSize - FILTER_PRE_DELAY + n] * sp.gain;
+      }
       continue;
     }
 

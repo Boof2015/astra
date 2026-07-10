@@ -144,9 +144,11 @@ test('silence in produces silence out, and tails decay after signal stops', () =
   assert.equal(silent.right, 0)
 
   // One block of signal, then silence: the convolution tail must decay to
-  // nothing (140 taps ≈ 2 blocks at 48 kHz), not ring forever or blow up.
+  // nothing, not ring forever or blow up. The windowed filters span up to
+  // fftSize - blockSize samples, plus one block of limiter look-ahead —
+  // 16 blocks of drain is a safe bound for every supported sample rate.
   energyOverBlocks(exports, 1, (block, n) => (block === 0 ? tone(0, n) : 0), 1)
-  const decayed = energyOverBlocks(exports, 1, () => 0, 6)
+  const decayed = energyOverBlocks(exports, 1, () => 0, 16)
   const lastBlocks = energyOverBlocks(exports, 1, () => 0, 2)
   assert.ok(decayed.left + decayed.right > 0, 'tail should carry some energy right after the signal')
   assert.equal(lastBlocks.left + lastBlocks.right, 0, 'tail should fully decay')
@@ -350,6 +352,46 @@ test('the limiter stays clean while engaged (no distortion products)', () => {
   for (const probeHz of [180, 344.5, 689, 1500, 3000, 6000]) {
     const junkDb = 10 * Math.log10(goertzelPower(probeHz) / tonePower)
     assert.ok(junkDb < -40, `limiter distortion at ${probeHz} Hz too high: ${junkDb.toFixed(1)} dB`)
+  }
+})
+
+test('the renderer is shift-invariant (impulse position must not matter)', () => {
+  // Regression for the broadband-static bug: when the baked filters exceed
+  // the overlap-add budget (zero-phase EQ/crossover ring), the response
+  // becomes dependent on where a sample lands inside the render quantum —
+  // heard as block-rate static over the whole mix (-26 dB before the fix).
+  // A linear time-invariant renderer answers an impulse identically at any
+  // in-block offset, just shifted.
+  const exports = instantiate()
+
+  const impulseResponse = (offset: number): Float32Array => {
+    exports.spatial_init(44100, BLOCK)
+    exports.spatial_set_speaker(0, uiDegToRad(-30), 0, 1, 0)
+    const blocks = 16
+    const out = new Float32Array(blocks * BLOCK)
+    let idx = 0
+    for (let block = 0; block < blocks; block++) {
+      const samples = new Float32Array(BLOCK)
+      if (block === 0) samples[offset] = 1
+      writeInput(exports, 0, samples)
+      exports.spatial_process(1, BLOCK)
+      for (const v of readOutput(exports, 0)) out[idx++] = v
+    }
+    return out
+  }
+
+  const reference = impulseResponse(0)
+  for (const offset of [37, 64, 127]) {
+    const shifted = impulseResponse(offset)
+    let errorEnergy = 0
+    let referenceEnergy = 0
+    for (let n = 0; n < reference.length - offset; n++) {
+      const diff = reference[n] - shifted[n + offset]
+      errorEnergy += diff * diff
+      referenceEnergy += reference[n] * reference[n]
+    }
+    const errorDb = 10 * Math.log10(errorEnergy / referenceEnergy)
+    assert.ok(errorDb < -80, `response depends on in-block position (offset ${offset}: ${errorDb.toFixed(1)} dB)`)
   }
 })
 
