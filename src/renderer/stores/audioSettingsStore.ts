@@ -105,6 +105,7 @@ interface AudioSettingsStore {
   setSpatialMode: (mode: SpatialMode) => Promise<void>
   setSpatialLayoutPreset: (presetId: SpatialLayoutPresetId) => Promise<void>
   setVirtualSpeakerAzimuth: (speakerId: string, azimuthDeg: number) => Promise<void>
+  setVirtualSpeakerElevation: (speakerId: string, elevationDeg: number) => Promise<void>
   resetSpatialSettings: () => Promise<void>
   setNormalizationEnabled: (enabled: boolean) => void
   setNormalizationTargetLufs: (targetLufs: number) => void
@@ -1337,6 +1338,21 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       if (index < 0) return
       const edited = normalizeVirtualSpeakers(
         active.map((sp, i) => (i === index ? { ...sp, azimuth: azimuthDeg } : sp))
+      )
+      if (!edited) return
+      // Editing a preset speaker turns the layout into a Custom copy.
+      set({ spatialLayoutPresetId: 'custom', customVirtualSpeakers: edited })
+      persistSpatialLayout('custom', edited)
+      await audioEngine.setVirtualSpeakers(edited)
+    },
+
+    setVirtualSpeakerElevation: async (speakerId: string, elevationDeg: number) => {
+      const state = get()
+      const active = buildVirtualSpeakerLayout(state.spatialLayoutPresetId, state.customVirtualSpeakers)
+      const index = active.findIndex((sp) => sp.id === speakerId)
+      if (index < 0) return
+      const edited = normalizeVirtualSpeakers(
+        active.map((sp, i) => (i === index ? { ...sp, elevation: elevationDeg } : sp))
       )
       if (!edited) return
       // Editing a preset speaker turns the layout into a Custom copy.

@@ -34,9 +34,13 @@
  *
  * LFE feeds bypass the HRTF entirely and mix equally into both ears.
  *
- * Deferred hooks (v2+): elevation is plumbed through but the UI pins it to 0;
- * distance/per-speaker gain are accepted but gain is currently always 1.0;
- * SOFA HRTFs can replace MIT_HRTF behind the same spaudio::HRTF interface.
+ * Elevation is UI-exposed; callers must clamp to the MIT HRTF's measured
+ * range (-40°..+90°) — spatial_set_speaker returns 0 and keeps the previous
+ * filter when the bake fails outside it.
+ *
+ * Deferred hooks (v2+): distance/per-speaker gain are accepted but gain is
+ * currently always 1.0; SOFA HRTFs can replace MIT_HRTF behind the same
+ * spaudio::HRTF interface.
  *
  * Supported sample rates (embedded MIT KEMAR HRTF): 44100, 48000, 88200,
  * 96000. spatial_init() returns 0 for anything else and the caller must
@@ -53,7 +57,7 @@
 
 namespace {
 
-constexpr int MAX_SPEAKERS = 8;
+constexpr int MAX_SPEAKERS = 12; // fits 7.1.4 (bed + 4 heights)
 constexpr int FADE_BLOCKS = 4;
 // Equal-power feed of the non-positional LFE channel into both ears.
 const float LFE_EAR_GAIN = std::sqrt(0.5f);

@@ -3,8 +3,8 @@
  *
  * Hosts the libspatialaudio-based binaural renderer (spatial-renderer.wasm,
  * built by scripts/build/build-spatial-wasm.sh). Takes an N-channel virtual
- * speaker bus (max 8 channels) and renders binaural stereo via per-speaker
- * HRTF convolution.
+ * speaker bus (max 12 channels — fits 7.1.4) and renders binaural stereo via
+ * per-speaker HRTF convolution.
  *
  * The WASM bytes arrive over the port (an AudioWorkletGlobalScope has no
  * fetch); until initialization succeeds — or if it ever fails — process()
@@ -15,12 +15,12 @@
  *          speakers: [{ azimuthRad, elevationRad, gain, isLfe }] }
  *   in : { type: 'set-speakers', speakers: [...] }
  *   in : { type: 'reset' }                     // clear convolution tails (seek)
- *   out: { type: 'ready', taps }
+ *   out: { type: 'ready', taps, maxSpeakers }  // maxSpeakers = wasm capacity
  *   out: { type: 'unsupported-samplerate', sampleRate }
  *   out: { type: 'error', message }
  */
 
-const SPATIAL_MAX_SPEAKERS = 8
+const SPATIAL_MAX_SPEAKERS = 12
 const RENDER_QUANTUM = 128
 
 class SpatialRendererProcessor extends AudioWorkletProcessor {
@@ -32,6 +32,7 @@ class SpatialRendererProcessor extends AudioWorkletProcessor {
     this.inputPtrs = []
     this.outputPtrs = []
     this.speakers = []
+    this.maxSpeakers = 0
     this.port.onmessage = (event) => {
       const data = event.data ?? {}
       if (data.type === 'init') {
@@ -84,13 +85,19 @@ class SpatialRendererProcessor extends AudioWorkletProcessor {
       this.inputPtrs = []
       this.outputPtrs = []
       for (let ch = 0; ch < SPATIAL_MAX_SPEAKERS; ch++) {
-        this.inputPtrs.push(exports.spatial_input_ptr(ch) / 4)
+        // A wasm built with a lower speaker cap returns a null pointer for
+        // out-of-range slots; probing keeps a stale binary safe (writing to
+        // pointer 0 would corrupt wasm low memory).
+        const ptr = exports.spatial_input_ptr(ch)
+        if (!ptr) break
+        this.inputPtrs.push(ptr / 4)
       }
+      this.maxSpeakers = this.inputPtrs.length
       this.outputPtrs.push(exports.spatial_output_ptr(0) / 4)
       this.outputPtrs.push(exports.spatial_output_ptr(1) / 4)
       this.state = 'ready'
       this.applySpeakers()
-      this.port.postMessage({ type: 'ready', taps })
+      this.port.postMessage({ type: 'ready', taps, maxSpeakers: this.maxSpeakers })
     } catch (err) {
       this.state = 'error'
       this.port.postMessage({ type: 'error', message: String(err && err.message ? err.message : err) })
@@ -99,18 +106,26 @@ class SpatialRendererProcessor extends AudioWorkletProcessor {
 
   applySpeakers() {
     try {
-      const count = Math.min(this.speakers.length, SPATIAL_MAX_SPEAKERS)
+      const count = Math.min(this.speakers.length, this.maxSpeakers)
       for (let i = 0; i < count; i++) {
         const sp = this.speakers[i] ?? {}
-        this.wasm.spatial_set_speaker(
+        const ok = this.wasm.spatial_set_speaker(
           i,
           Number.isFinite(sp.azimuthRad) ? sp.azimuthRad : 0,
           Number.isFinite(sp.elevationRad) ? sp.elevationRad : 0,
           Number.isFinite(sp.gain) ? sp.gain : 1,
           sp.isLfe ? 1 : 0
         )
+        if (!ok) {
+          // Filter bake failed (angles outside the HRTF's measured range);
+          // the renderer keeps the speaker's previous filter.
+          console.warn(
+            `[spatial-worklet] speaker ${i} filter bake failed ` +
+              `(azimuth ${sp.azimuthRad}, elevation ${sp.elevationRad})`
+          )
+        }
       }
-      for (let i = count; i < SPATIAL_MAX_SPEAKERS; i++) {
+      for (let i = count; i < this.maxSpeakers; i++) {
         this.wasm.spatial_clear_speaker(i)
       }
     } catch (err) {
@@ -135,7 +150,7 @@ class SpatialRendererProcessor extends AudioWorkletProcessor {
     try {
       const speakerCount = Math.min(
         Math.max(this.speakers.length, input.length),
-        SPATIAL_MAX_SPEAKERS
+        this.maxSpeakers
       )
       const heap = this.heapF32
       for (let ch = 0; ch < speakerCount; ch++) {

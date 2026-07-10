@@ -1509,6 +1509,11 @@ export class AudioEngine {
     )
   }
 
+  /** Output layout of the binaural render bus: one id per virtual speaker. */
+  private getVirtualSpeakerChannelIds(): string[] {
+    return this.virtualSpeakers.map((sp) => sp.sourceChannel)
+  }
+
   /**
    * The node per-source routing connects into: the spatial render stage when
    * binaural is active, otherwise the normalization gain (legacy behavior).
@@ -1633,6 +1638,10 @@ export class AudioEngine {
     const binauralActive = this.isBinauralActive()
     const effectiveMultichannel = this.multichannelEnabled || binauralActive
     const manualRoutingMap = binauralActive ? null : this.manualChannelRoutingMap
+    // The binaural render bus is ordered by the virtual speaker list, which
+    // for height layouts (5.1.2) is not the standard layout for its channel
+    // count — routing must see the explicit ids.
+    const outputChannelIds = binauralActive ? this.getVirtualSpeakerChannelIds() : null
 
     const outputChannels = this.getRoutingOutputChannelCount(sourceChannels)
     const shouldUseStereoAmbientUpmix = canUseStereoAmbientUpmix({
@@ -1641,10 +1650,11 @@ export class AudioEngine {
       multichannelEnabled: effectiveMultichannel,
       standardMode: this.playbackOutputMode === 'standard',
       stereoUpmixMode: this.stereoUpmixMode,
+      outputChannelIds,
     })
 
     if (shouldUseStereoAmbientUpmix) {
-      this.connectStereoAmbientUpmix(sourceNode, outputChannels)
+      this.connectStereoAmbientUpmix(sourceNode, outputChannels, outputChannelIds)
       return
     }
 
@@ -1654,6 +1664,7 @@ export class AudioEngine {
       multichannelEnabled: effectiveMultichannel,
       manualRoutingMap,
       includeLfeInDownmix: this.includeLfeInDownmix,
+      outputChannelIds,
     })
     const hasManualRouting = Boolean(
       effectiveMultichannel && manualRoutingMap && manualRoutingMap.length > 0
@@ -1702,12 +1713,16 @@ export class AudioEngine {
     })
   }
 
-  private connectStereoAmbientUpmix(sourceNode: AudioNode, outputChannels: number): void {
+  private connectStereoAmbientUpmix(
+    sourceNode: AudioNode,
+    outputChannels: number,
+    outputChannelIds: readonly string[] | null = null
+  ): void {
     if (!this.context || !this.normalizationGainNode) return
     const routingSink = this.getRoutingSinkNode()
     if (!routingSink) return
 
-    const plan = resolveStereoAmbientUpmixPlan(outputChannels)
+    const plan = resolveStereoAmbientUpmixPlan(outputChannels, outputChannelIds)
     const splitter = this.context.createChannelSplitter(2)
     const merger = this.context.createChannelMerger(Math.max(1, plan.outputChannels))
     const nodes: AudioNode[] = [splitter, merger]
@@ -3488,6 +3503,14 @@ export class AudioEngine {
     if (data.type === 'ready') {
       this.spatialWorkletState = 'ready'
       this.spatialTailTaps = Number(data.taps) || 0
+      const wasmMaxSpeakers = Number(data.maxSpeakers) || 0
+      if (wasmMaxSpeakers > 0 && wasmMaxSpeakers < SPATIAL_MAX_SPEAKERS) {
+        console.warn(
+          `Spatial renderer wasm supports ${wasmMaxSpeakers} speakers but the app expects ` +
+            `${SPATIAL_MAX_SPEAKERS}; layouts wider than ${wasmMaxSpeakers} will be truncated. ` +
+            'Rebuild via scripts/build/build-spatial-wasm.sh.'
+        )
+      }
       this.spatialStatusMessage = null
       this.spatialReadyResolver?.()
       this.spatialReadyResolver = null

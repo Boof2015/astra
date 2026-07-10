@@ -30,6 +30,11 @@ export interface SpeakerStageSpeaker {
   label: string
   /** UI degrees clockwise-from-front; null = non-positional (LFE badge). */
   azimuth: number | null
+  /**
+   * Degrees above (+) / below (-) ear level. The stage stays top-down —
+   * nonzero elevation renders as a caption on the puck, not a position.
+   */
+  elevation?: number
   state: SpeakerStagePuckState
   draggable?: boolean
 }
@@ -214,6 +219,10 @@ export default function SpeakerStage({
         {positionalSpeakers.map((speaker) => {
           const { x, y } = puckPosition(speaker.azimuth)
           const selected = speaker.id === selectedId
+          const elevationDeg = Math.round(speaker.elevation ?? 0)
+          const elevationCaption = elevationDeg !== 0
+            ? `${elevationDeg > 0 ? '↑' : '↓'}${Math.abs(elevationDeg)}°`
+            : null
           const classes = [
             'speaker-stage-puck',
             `state-${speaker.state}`,
@@ -242,11 +251,18 @@ export default function SpeakerStage({
               onPointerCancel={handlePuckPointerEnd}
               onKeyDown={(event) => handlePuckKeyDown(event, speaker)}
             >
-              <title>{`${speaker.label} (${Math.round(speaker.azimuth)}°)`}</title>
+              <title>
+                {`${speaker.label} (${Math.round(speaker.azimuth)}°${elevationCaption ? `, ${elevationDeg}° elevation` : ''})`}
+              </title>
               <circle className="speaker-stage-puck-body" r={PUCK_RADIUS} />
               <text className="speaker-stage-puck-id" dy="0.34em">
                 {speaker.channelId}
               </text>
+              {elevationCaption && (
+                <text className="speaker-stage-puck-elevation" y={PUCK_RADIUS + 9}>
+                  {elevationCaption}
+                </text>
+              )}
             </g>
           )
         })}

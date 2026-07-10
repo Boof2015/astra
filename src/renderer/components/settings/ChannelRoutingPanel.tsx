@@ -21,6 +21,8 @@ import {
   isVirtualSpeakerLfe,
   resolveRoutingTargetChannelCount,
   SPATIAL_LAYOUT_PRESETS,
+  SPATIAL_MAX_ELEVATION_DEG,
+  SPATIAL_MIN_ELEVATION_DEG,
   type SpatialLayoutPresetId,
 } from '../../utils/virtualSpeakerLayout'
 import SpeakerStage, { type SpeakerStageSpeaker } from './SpeakerStage'
@@ -75,6 +77,7 @@ export default function ChannelRoutingPanel() {
     setSpatialMode,
     setSpatialLayoutPreset,
     setVirtualSpeakerAzimuth,
+    setVirtualSpeakerElevation,
   } = useAudioSettingsStore()
   const bitPerfectModeActive = playbackOutputMode === 'bitperfect'
   const binauralSelected = spatialMode === 'binaural'
@@ -155,6 +158,7 @@ export default function ChannelRoutingPanel() {
     multichannelEnabled: true,
     standardMode: playbackOutputMode === 'standard',
     stereoUpmixMode,
+    outputChannelIds: virtualSpeakers.map((sp) => sp.sourceChannel),
   })
 
   const stereoAmbientUpmixRoutes = useMemo(() => {
@@ -332,6 +336,7 @@ export default function ChannelRoutingPanel() {
         channelId: sp.sourceChannel,
         label: `${sp.sourceChannel} virtual speaker`,
         azimuth: isVirtualSpeakerLfe(sp) ? null : sp.azimuth,
+        elevation: isVirtualSpeakerLfe(sp) ? undefined : sp.elevation,
         state: 'active' as const,
         draggable: !isVirtualSpeakerLfe(sp),
       }))
@@ -376,8 +381,25 @@ export default function ChannelRoutingPanel() {
     })
   }, [setVirtualSpeakerAzimuth])
 
+  const elevationFrameRef = useRef<number | null>(null)
+  const pendingElevationRef = useRef<{ speakerId: string; elevationDeg: number } | null>(null)
+
+  const handleSpeakerElevationChange = useCallback((speakerId: string, elevationDeg: number) => {
+    pendingElevationRef.current = { speakerId, elevationDeg }
+    if (elevationFrameRef.current !== null) return
+    elevationFrameRef.current = requestAnimationFrame(() => {
+      elevationFrameRef.current = null
+      const pending = pendingElevationRef.current
+      pendingElevationRef.current = null
+      if (pending) {
+        void setVirtualSpeakerElevation(pending.speakerId, pending.elevationDeg)
+      }
+    })
+  }, [setVirtualSpeakerElevation])
+
   useEffect(() => () => {
     if (dragFrameRef.current !== null) cancelAnimationFrame(dragFrameRef.current)
+    if (elevationFrameRef.current !== null) cancelAnimationFrame(elevationFrameRef.current)
   }, [])
 
   // ---- Render helpers ----
@@ -628,6 +650,26 @@ export default function ChannelRoutingPanel() {
                   : `${Math.round(selectedVirtualSpeaker.azimuth)}° · drag to reposition, Shift for 5° steps`}
               </span>
             </div>
+            {!isVirtualSpeakerLfe(selectedVirtualSpeaker) && (
+              <label className="pipeline-elevation-control" title={disabledTitle}>
+                <span className="pipeline-detail-sub">
+                  Elevation {Math.round(selectedVirtualSpeaker.elevation)}°
+                </span>
+                <input
+                  type="range"
+                  min={SPATIAL_MIN_ELEVATION_DEG}
+                  max={SPATIAL_MAX_ELEVATION_DEG}
+                  step={1}
+                  value={Math.round(selectedVirtualSpeaker.elevation)}
+                  onChange={(event) => handleSpeakerElevationChange(
+                    selectedVirtualSpeaker.id,
+                    Number(event.target.value)
+                  )}
+                  disabled={bitPerfectModeActive}
+                  aria-label={`${selectedVirtualSpeaker.sourceChannel} elevation in degrees`}
+                />
+              </label>
+            )}
           </div>
         )}
 

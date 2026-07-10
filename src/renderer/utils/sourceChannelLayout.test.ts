@@ -115,6 +115,148 @@ test('automatic matrix handles multichannel reductions beyond stereo', () => {
   )
 })
 
+test('7.1.4 source layout is named and folds heights down to flat layouts', () => {
+  assert.deepEqual(
+    buildSourceLayout(12).map((channel) => channel.id),
+    ['FL', 'FR', 'FC', 'LFE', 'BL', 'BR', 'SL', 'SR', 'TFL', 'TFR', 'TBL', 'TBR']
+  )
+  // 10ch stays generic: ambiguous between 7.1.2 and 5.1.4.
+  assert.equal(buildSourceLayout(10)[0].id, 'CH1')
+
+  // 12 -> 12 is identity.
+  assert.ok(isIdentityChannelMixMatrix(
+    resolveChannelMixMatrix({ sourceChannels: 12, outputChannels: 12, multichannelEnabled: true }),
+    12,
+    12
+  ))
+
+  // 12 -> 7.1: top-fronts fold into the fronts, top-backs into the backs.
+  assert.deepEqual(
+    compact(resolveChannelMixMatrix({
+      sourceChannels: 12,
+      outputChannels: 8,
+      multichannelEnabled: true,
+    })),
+    [
+      [[0, 1], [8, G]],
+      [[1, 1], [9, G]],
+      [[2, 1]],
+      [[3, 1]],
+      [[4, 1], [10, G]],
+      [[5, 1], [11, G]],
+      [[6, 1]],
+      [[7, 1]],
+    ]
+  )
+
+  // 12 -> 5.1: backs and top-backs land on the sides.
+  assert.deepEqual(
+    compact(resolveChannelMixMatrix({
+      sourceChannels: 12,
+      outputChannels: 6,
+      multichannelEnabled: true,
+    })),
+    [
+      [[0, 1], [8, G]],
+      [[1, 1], [9, G]],
+      [[2, 1]],
+      [[3, 1]],
+      [[4, G], [6, 1], [10, G]],
+      [[5, G], [7, 1], [11, G]],
+    ]
+  )
+
+  // 12 -> stereo safe mode: everything folds to the fronts, LFE omitted.
+  assert.deepEqual(
+    compact(resolveChannelMixMatrix({
+      sourceChannels: 12,
+      outputChannels: 8,
+      multichannelEnabled: false,
+    })),
+    [
+      [[0, 1], [2, G], [4, G], [6, G], [8, G], [10, G]],
+      [[1, 1], [2, G], [5, G], [7, G], [9, G], [11, G]],
+    ]
+  )
+})
+
+const FIVE_ONE_TWO_IDS = ['FL', 'FR', 'FC', 'LFE', 'SL', 'SR', 'TFL', 'TFR'] as const
+
+test('explicit outputChannelIds override the count-derived layout', () => {
+  // 7.1 source -> 8-wide 5.1.2 bus: matching counts must NOT shortcut to
+  // identity (that would dump SL/SR into the height slots). Backs fold to
+  // the sides; heights stay silent.
+  assert.deepEqual(
+    compact(resolveChannelMixMatrix({
+      sourceChannels: 8,
+      outputChannels: 8,
+      multichannelEnabled: true,
+      outputChannelIds: FIVE_ONE_TWO_IDS,
+    })),
+    [
+      [[0, 1]],
+      [[1, 1]],
+      [[2, 1]],
+      [[3, 1]],
+      [[4, G], [6, 1]],
+      [[5, G], [7, 1]],
+      [],
+      [],
+    ]
+  )
+
+  // Ids that do match the source elementwise keep the identity shortcut.
+  assert.ok(isIdentityChannelMixMatrix(
+    resolveChannelMixMatrix({
+      sourceChannels: 12,
+      outputChannels: 12,
+      multichannelEnabled: true,
+      outputChannelIds: ['FL', 'FR', 'FC', 'LFE', 'BL', 'BR', 'SL', 'SR', 'TFL', 'TFR', 'TBL', 'TBR'],
+    }),
+    12,
+    12
+  ))
+
+  // A length mismatch ignores the ids instead of misaligning rows.
+  assert.ok(isIdentityChannelMixMatrix(
+    resolveChannelMixMatrix({
+      sourceChannels: 6,
+      outputChannels: 6,
+      multichannelEnabled: true,
+      outputChannelIds: FIVE_ONE_TWO_IDS,
+    }),
+    6,
+    6
+  ))
+})
+
+test('stereo ambient upmix honors explicit output layouts', () => {
+  // 5.1.2 bus: ambience lands on SL/SR at indices 4/5 (not the 7.1 indices
+  // 6/7, which are the height slots here); no back routes, heights silent.
+  const plan = resolveStereoAmbientUpmixPlan(8, FIVE_ONE_TWO_IDS)
+  assert.deepEqual(
+    plan.routes.map((route) => [route.outputId, route.outputIndex, route.kind]),
+    [
+      ['FL', 0, 'direct'],
+      ['FR', 1, 'direct'],
+      ['SL', 4, 'ambience'],
+      ['SR', 5, 'ambience'],
+    ]
+  )
+
+  assert.equal(
+    canUseStereoAmbientUpmix({
+      sourceChannels: 2,
+      outputChannels: 8,
+      multichannelEnabled: true,
+      standardMode: true,
+      stereoUpmixMode: 'ambient',
+      outputChannelIds: FIVE_ONE_TWO_IDS,
+    }),
+    true
+  )
+})
+
 test('LFE fold-down is opt-in when the output has no LFE channel', () => {
   assert.deepEqual(
     compact(resolveChannelMixMatrix({

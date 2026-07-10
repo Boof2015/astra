@@ -19946,6 +19946,19 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-variant-numeric: tabular-nums;
 }
 
+.pipeline-elevation-control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.pipeline-elevation-control input[type="range"] {
+  width: 130px;
+  accent-color: var(--accent);
+}
+
 /* ============================================
    Speaker Stage (top-down room view)
    ============================================ */
@@ -20069,6 +20082,19 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 
 .speaker-stage-puck.selected .speaker-stage-puck-id {
   fill: var(--accent-text-strong);
+}
+
+.speaker-stage-puck-elevation {
+  font-size: 7.5px;
+  font-weight: 600;
+  fill: rgba(var(--tint), 0.5);
+  text-anchor: middle;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.speaker-stage-puck.selected .speaker-stage-puck-elevation {
+  fill: rgba(var(--accent-rgb), 0.85);
 }
 
 .speaker-stage-lfe-row {

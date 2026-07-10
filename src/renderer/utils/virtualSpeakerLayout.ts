@@ -3,19 +3,22 @@
  *
  * A virtual speaker layout is the render target when binaural mode is active:
  * the routing/upmix machinery produces one bus channel per virtual speaker
- * (ordered exactly like buildSpeakerLayout(n) in sourceChannelLayout.ts, so
- * the existing mix-matrix/upmix code needs no changes), and the spatial
- * worklet renders each bus channel at its speaker's azimuth.
+ * (in speaker-list order, passed to resolveChannelMixMatrix /
+ * resolveStereoAmbientUpmixPlan as explicit outputChannelIds), and the
+ * spatial worklet renders each bus channel at its speaker's azimuth and
+ * elevation.
  *
  * Azimuth convention: UI values are DEGREES, clockwise-from-front, so FR sits
  * at +30 and FL at -30. libspatialaudio expects RADIANS with positive =
  * counterclockwise (listener's left); uiDegreesToAmbisonicRadians is the only
- * place that conversion happens.
+ * place that conversion happens. Elevation is DEGREES above (+) / below (-)
+ * ear level, clamped to the MIT HRTF's measured -40..+90 range.
  *
- * Deferred hooks kept in the data model for later phases: elevation (pinned
- * to 0 in v1), per-speaker gain (pinned to 1), distance (unused), free
- * add/remove of speakers (layouts are preset-based in v1), SOFA HRTFs and
- * IAMF sources (consume the same VirtualSpeaker list).
+ * Deferred hooks kept in the data model for later phases: per-speaker gain
+ * (pinned to 1), distance (unused), free add/remove of speakers (layouts are
+ * preset-based), SOFA HRTFs. IAMF/Eclipsa sources will consume this same
+ * contract: a VirtualSpeaker list plus its outputChannelIds is everything the
+ * render bus needs.
  */
 
 export interface VirtualSpeaker {
@@ -25,7 +28,7 @@ export interface VirtualSpeaker {
   sourceChannel: string
   /** Degrees, clockwise-from-front, -180..180. */
   azimuth: number
-  /** Degrees, -90..90. Fixed at 0 in v1. */
+  /** Degrees, clamped to the MIT HRTF measurement range -40..+90. */
   elevation: number
   /** Linear gain. Fixed at 1 in v1. */
   gain: number
@@ -35,7 +38,15 @@ export interface VirtualSpeaker {
 
 export type SpatialMode = 'off' | 'binaural'
 
-export type SpatialLayoutPresetId = 'stereo' | 'quad' | '5.1' | '7.1' | 'wide-5.1' | 'custom'
+export type SpatialLayoutPresetId =
+  | 'stereo'
+  | 'quad'
+  | '5.1'
+  | 'wide-5.1'
+  | '5.1.2'
+  | '7.1'
+  | '7.1.4'
+  | 'custom'
 
 export interface SpatialWorkletSpeakerMessage {
   azimuthRad: number
@@ -44,28 +55,40 @@ export interface SpatialWorkletSpeakerMessage {
   isLfe: boolean
 }
 
-export const SPATIAL_MAX_SPEAKERS = 8
+export const SPATIAL_MAX_SPEAKERS = 12
+
+/**
+ * The embedded MIT KEMAR HRTF is only measured for elevations -40°..+90°.
+ * Outside that range the renderer's filter bake fails (silently keeping the
+ * previous filter), so every elevation entering the data model or the worklet
+ * message is clamped to this range.
+ */
+export const SPATIAL_MIN_ELEVATION_DEG = -40
+export const SPATIAL_MAX_ELEVATION_DEG = 90
 
 export const DEFAULT_SPATIAL_LAYOUT_PRESET_ID: Exclude<SpatialLayoutPresetId, 'custom'> = '5.1'
 
 /** Sample rates supported by the embedded MIT KEMAR HRTF. */
 const SPATIAL_SUPPORTED_SAMPLE_RATES = [44100, 48000, 88200, 96000]
 
-function speaker(sourceChannel: string, azimuth: number): VirtualSpeaker {
+function speaker(sourceChannel: string, azimuth: number, elevation = 0): VirtualSpeaker {
   return {
     id: `vs-${sourceChannel}`,
     sourceChannel,
     azimuth,
-    elevation: 0,
+    elevation,
     gain: 1,
   }
 }
 
-// Channel order of every preset matches STANDARD_LAYOUTS in
-// sourceChannelLayout.ts for the same channel count — that invariant is what
-// lets resolveChannelMixMatrix/resolveStereoAmbientUpmixPlan feed the spatial
-// worklet unchanged. Angles per ITU-R BS.775 (7.1 backs/sides per common
-// Dolby guidance); LFE is non-positional.
+// Height-free presets (and 7.1.4) match STANDARD_LAYOUTS in
+// sourceChannelLayout.ts for the same channel count; layouts that don't
+// (5.1.2's 8 speakers are not 7.1 — and future IAMF-decoded beds) are fed to
+// resolveChannelMixMatrix/resolveStereoAmbientUpmixPlan via explicit
+// outputChannelIds, so the render bus always follows the speaker list order.
+// Angles per ITU-R BS.775 (7.1 backs/sides per common Dolby guidance);
+// heights at 45° elevation per ITU-R BS.2051 / Dolby home guidance; LFE is
+// non-positional.
 const PRESET_SPEAKERS: Record<Exclude<SpatialLayoutPresetId, 'custom'>, VirtualSpeaker[]> = {
   stereo: [speaker('FL', -30), speaker('FR', 30)],
   quad: [speaker('FL', -45), speaker('FR', 45), speaker('SL', -135), speaker('SR', 135)],
@@ -95,14 +118,40 @@ const PRESET_SPEAKERS: Record<Exclude<SpatialLayoutPresetId, 'custom'>, VirtualS
     speaker('SL', -120),
     speaker('SR', 120),
   ],
+  '5.1.2': [
+    speaker('FL', -30),
+    speaker('FR', 30),
+    speaker('FC', 0),
+    speaker('LFE', 0),
+    speaker('SL', -110),
+    speaker('SR', 110),
+    speaker('TFL', -45, 45),
+    speaker('TFR', 45, 45),
+  ],
+  '7.1.4': [
+    speaker('FL', -30),
+    speaker('FR', 30),
+    speaker('FC', 0),
+    speaker('LFE', 0),
+    speaker('BL', -150),
+    speaker('BR', 150),
+    speaker('SL', -90),
+    speaker('SR', 90),
+    speaker('TFL', -45, 45),
+    speaker('TFR', 45, 45),
+    speaker('TBL', -135, 45),
+    speaker('TBR', 135, 45),
+  ],
 }
 
 export const SPATIAL_LAYOUT_PRESETS: Array<{ id: SpatialLayoutPresetId; label: string }> = [
   { id: 'stereo', label: 'Stereo' },
   { id: 'quad', label: 'Quad' },
   { id: '5.1', label: '5.1' },
-  { id: '7.1', label: '7.1' },
   { id: 'wide-5.1', label: 'Wide 5.1' },
+  { id: '5.1.2', label: '5.1.2' },
+  { id: '7.1', label: '7.1' },
+  { id: '7.1.4', label: '7.1.4' },
   { id: 'custom', label: 'Custom' },
 ]
 
@@ -131,6 +180,11 @@ function clampAzimuthDegrees(value: number): number {
   return deg
 }
 
+function clampElevationDegrees(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(SPATIAL_MIN_ELEVATION_DEG, Math.min(SPATIAL_MAX_ELEVATION_DEG, value))
+}
+
 /**
  * UI degrees (clockwise-from-front, FR = +30) to libspatialaudio radians
  * (positive = counterclockwise = listener's left). The only place this sign
@@ -156,9 +210,7 @@ export function normalizeVirtualSpeakers(value: unknown): VirtualSpeaker[] | nul
     if (seen.has(candidate.sourceChannel)) return null
     seen.add(candidate.sourceChannel)
     const azimuth = clampAzimuthDegrees(Number(candidate.azimuth))
-    const elevation = Number.isFinite(Number(candidate.elevation))
-      ? Math.max(-90, Math.min(90, Number(candidate.elevation)))
-      : 0
+    const elevation = clampElevationDegrees(Number(candidate.elevation))
     const gain = Number.isFinite(Number(candidate.gain))
       ? Math.max(0, Math.min(2, Number(candidate.gain)))
       : 1
@@ -196,7 +248,7 @@ export function buildSpatialSpeakerMessage(
 ): SpatialWorkletSpeakerMessage[] {
   return speakers.slice(0, SPATIAL_MAX_SPEAKERS).map((sp) => ({
     azimuthRad: uiDegreesToAmbisonicRadians(sp.azimuth),
-    elevationRad: (Math.max(-90, Math.min(90, sp.elevation)) * Math.PI) / 180,
+    elevationRad: (clampElevationDegrees(sp.elevation) * Math.PI) / 180,
     gain: sp.gain,
     isLfe: isVirtualSpeakerLfe(sp),
   }))
@@ -211,6 +263,10 @@ const ROLE_DISPLAY_AZIMUTHS: Record<string, number> = {
   SR: 110,
   BL: -150,
   BR: 150,
+  TFL: -45,
+  TFR: 45,
+  TBL: -135,
+  TBR: 135,
 }
 
 /**
@@ -225,6 +281,7 @@ export function getDisplayAzimuthsForLayout(channelIds: readonly string[]): Arra
     4: 'quad',
     6: '5.1',
     8: '7.1',
+    12: '7.1.4',
   }
   const presetId = presetForCount[channelIds.length]
   if (presetId) {

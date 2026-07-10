@@ -16,8 +16,11 @@ import {
 } from './virtualSpeakerLayout.ts'
 
 test('every preset matches buildSpeakerLayout channel order for its count', () => {
+  // 5.1.2 is intentionally exempt: its 8 speakers are not the standard
+  // 8-channel layout (7.1), so the render bus feeds routing via explicit
+  // outputChannelIds instead of the count-derived layout.
   for (const { id } of SPATIAL_LAYOUT_PRESETS) {
-    if (id === 'custom') continue
+    if (id === 'custom' || id === '5.1.2') continue
     const speakers = buildVirtualSpeakerLayout(id, null)
     const expected = buildSpeakerLayout(speakers.length).map((channel) => channel.id)
     assert.deepEqual(
@@ -26,6 +29,10 @@ test('every preset matches buildSpeakerLayout channel order for its count', () =
       `preset ${id} must follow the standard ${speakers.length}-channel layout order`
     )
   }
+  assert.deepEqual(
+    buildVirtualSpeakerLayout('5.1.2', null).map((sp) => sp.sourceChannel),
+    [...buildVirtualSpeakerLayout('5.1', null).map((sp) => sp.sourceChannel), 'TFL', 'TFR']
+  )
 })
 
 test('preset angles are symmetric and fronts sit in front', () => {
@@ -33,18 +40,26 @@ test('preset angles are symmetric and fronts sit in front', () => {
     if (id === 'custom') continue
     const speakers = buildVirtualSpeakerLayout(id, null)
     const byChannel = new Map(speakers.map((sp) => [sp.sourceChannel, sp]))
-    const pairs: Array<[string, string]> = [['FL', 'FR'], ['SL', 'SR'], ['BL', 'BR']]
+    const pairs: Array<[string, string]> = [
+      ['FL', 'FR'],
+      ['SL', 'SR'],
+      ['BL', 'BR'],
+      ['TFL', 'TFR'],
+      ['TBL', 'TBR'],
+    ]
     for (const [left, right] of pairs) {
       const l = byChannel.get(left)
       const r = byChannel.get(right)
       if (!l || !r) continue
       assert.equal(l.azimuth, -r.azimuth, `${id}: ${left}/${right} must mirror`)
       assert.ok(l.azimuth < 0, `${id}: ${left} must be on the left (negative degrees)`)
+      assert.equal(l.elevation, r.elevation, `${id}: ${left}/${right} elevation must match`)
     }
     const fc = byChannel.get('FC')
     if (fc) assert.equal(fc.azimuth, 0)
     for (const sp of speakers) {
-      assert.equal(sp.elevation, 0, 'v1 layouts are angle-only')
+      const isHeight = sp.sourceChannel.startsWith('T')
+      assert.equal(sp.elevation, isHeight ? 45 : 0, `${id}: only heights are elevated`)
       assert.equal(sp.gain, 1)
     }
   }
@@ -100,6 +115,19 @@ test('normalizeVirtualSpeakers round-trips presets and rejects junk', () => {
   assert.equal(clamped[0].elevation, 90)
   assert.equal(clamped[0].gain, 2)
   assert.equal(clamped[0].id, 'vs-FL')
+  // Elevation clamps to the MIT HRTF's measured floor (-40°), not -90°.
+  const low = normalizeVirtualSpeakers([{ sourceChannel: 'FL', azimuth: 0, elevation: -200 }])
+  assert.ok(low)
+  assert.equal(low[0].elevation, -40)
+})
+
+test('buildSpatialSpeakerMessage converts elevation and clamps to the HRTF range', () => {
+  const message = buildSpatialSpeakerMessage([
+    { id: 'vs-TFL', sourceChannel: 'TFL', azimuth: -45, elevation: 45, gain: 1 },
+    { id: 'vs-FL', sourceChannel: 'FL', azimuth: -30, elevation: -50, gain: 1 },
+  ])
+  assert.ok(Math.abs(message[0].elevationRad - Math.PI / 4) < 1e-9)
+  assert.ok(Math.abs(message[1].elevationRad - (-40 * Math.PI) / 180) < 1e-9)
 })
 
 test('custom layout falls back to the default preset without valid speakers', () => {
@@ -159,7 +187,7 @@ test('resolveRoutingTargetChannelCount truth table', () => {
   )
   assert.equal(
     resolveRoutingTargetChannelCount({ ...base, binauralActive: true, virtualSpeakerCount: 99 }),
-    8
+    12
   )
 
   // Direct mode mirrors the existing engine behavior exactly.
