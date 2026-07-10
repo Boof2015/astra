@@ -246,6 +246,62 @@ test('a front-center source renders near unity loudness', () => {
   assert.ok(Math.abs(leftDb - rightDb) < 1, 'front-center must stay centered')
 })
 
+test('coherent multichannel bass never exceeds full scale (safety limiter)', () => {
+  // Correlated bass across 5 speakers + LFE sums to several times the
+  // per-channel amplitude at each ear; without the limiter this hard-clips
+  // downstream and reads as static riding on bass peaks.
+  const exports = instantiate()
+  assert.ok(exports.spatial_init(44100, BLOCK) > 0)
+  const layout: Array<[number, number]> = [[-30, 0], [30, 0], [0, 0], [0, 1], [-110, 0], [110, 0]]
+  layout.forEach(([deg, isLfe], channel) => {
+    exports.spatial_set_speaker(channel, uiDegToRad(deg), 0, 1, isLfe)
+  })
+
+  let peak = 0
+  let t = 0
+  for (let block = 0; block < 120; block++) {
+    const samples = new Float32Array(BLOCK)
+    for (let n = 0; n < BLOCK; n++) {
+      samples[n] = 0.6 * Math.sin((2 * Math.PI * 50 * t) / 44100)
+      t++
+    }
+    for (let ch = 0; ch < layout.length; ch++) writeInput(exports, ch, samples)
+    exports.spatial_process(layout.length, BLOCK)
+    for (const ear of [0, 1]) {
+      for (const v of readOutput(exports, ear)) peak = Math.max(peak, Math.abs(v))
+    }
+  }
+  assert.ok(peak <= 1.0 + 1e-6, `limited output must stay within full scale (peak=${peak})`)
+  assert.ok(peak > 0.8, `limiter should ride near the ceiling, not crush (peak=${peak})`)
+
+  // After silence the limiter must release back to (near) unity.
+  const silent = new Float32Array(BLOCK)
+  for (let block = 0; block < 300; block++) {
+    for (let ch = 0; ch < layout.length; ch++) writeInput(exports, ch, silent)
+    exports.spatial_process(layout.length, BLOCK)
+  }
+  let energyIn = 0
+  let energyOut = 0
+  t = 0
+  for (let block = 0; block < 40; block++) {
+    const samples = new Float32Array(BLOCK)
+    for (let n = 0; n < BLOCK; n++) {
+      const v = 0.1 * Math.sin((2 * Math.PI * 500 * t) / 44100)
+      samples[n] = v
+      energyIn += v * v
+      t++
+    }
+    writeInput(exports, 0, samples)
+    for (let ch = 1; ch < layout.length; ch++) writeInput(exports, ch, silent)
+    exports.spatial_process(layout.length, BLOCK)
+    for (const ear of [0, 1]) {
+      for (const v of readOutput(exports, ear)) energyOut += v * v
+    }
+  }
+  const gainDb = 10 * Math.log10(energyOut / energyIn)
+  assert.ok(gainDb > -4, `limiter must release after the loud passage (gain=${gainDb.toFixed(2)} dB)`)
+})
+
 test('spatial_reset clears pending convolution tails', () => {
   const exports = instantiate()
   assert.ok(exports.spatial_init(48000, BLOCK) > 0)

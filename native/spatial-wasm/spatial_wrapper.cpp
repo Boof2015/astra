@@ -60,6 +60,16 @@ const float LFE_EAR_GAIN = std::sqrt(0.5f);
 // Safety margin so several correlated speaker feeds summing at both ears
 // stay below full scale. Filters are unity-normalized (see globalScale).
 constexpr float OUTPUT_HEADROOM = 0.7f;
+// Output safety limiter: coherent bass across 5-7 virtual speakers sums to
+// several times the per-channel amplitude at each ear (physically correct —
+// real speakers sum in air — but it hard-clips a digital output and reads as
+// static riding on bass peaks). Gain is shared by both ears so imaging is
+// unaffected; below the threshold the limiter is bit-transparent.
+constexpr float LIMIT_THRESHOLD = 0.95f;
+constexpr int LIMIT_ATTACK_SAMPLES = 32;      // ~0.7 ms ramp to the new gain
+constexpr float LIMIT_RELEASE_SECONDS = 0.15f;
+// Last-resort soft ceiling for the attack ramp's brief overshoot.
+constexpr float SOFT_CEIL_START = 0.97f;
 // Below this the dry path takes over (no directional cues, weak HRIR data).
 constexpr float BASS_XOVER_HZ = 200.0f;
 // Diffuse-field EQ inversion limits.
@@ -107,6 +117,9 @@ struct RendererState {
   kiss_fft_cpx* freqAcc[2] = {nullptr, nullptr};   // fftBins per ear
   float* hrtfScratch[2] = {nullptr, nullptr};      // taps per ear
   float* dfeqMag = nullptr;                        // fftBins, shared both ears
+
+  float limiterGain = 1.0f;
+  float limiterReleasePerSample = 0.0f;
 };
 
 RendererState g;
@@ -348,6 +361,9 @@ int spatial_init(int sampleRate, int blockSize) {
   g.fftBins = g.fftSize / 2 + 1;
   g.fftScaler = 1.0f / static_cast<float>(g.fftSize);
   g.globalScale = 1.0f;
+  g.limiterGain = 1.0f;
+  g.limiterReleasePerSample =
+    1.0f - std::exp(-1.0f / (LIMIT_RELEASE_SECONDS * static_cast<float>(sampleRate)));
 
   g.fftFwd = kiss_fftr_alloc(g.fftSize, 0, nullptr, nullptr);
   g.fftInv = kiss_fftr_alloc(g.fftSize, 1, nullptr, nullptr);
@@ -513,6 +529,41 @@ int spatial_process(int numChannels, int frames) {
       tail[j] = v;
     }
   }
+
+  // Output safety limiter (see LIMIT_* constants): one gain for both ears.
+  float peak = 0.0f;
+  for (int ear = 0; ear < 2; ear++) {
+    for (int n = 0; n < g.blockSize; n++) {
+      const float v = std::fabs(g.output[ear][n]);
+      if (v > peak) peak = v;
+    }
+  }
+  const float desired = peak > LIMIT_THRESHOLD ? LIMIT_THRESHOLD / peak : 1.0f;
+  float gain = g.limiterGain;
+  for (int n = 0; n < g.blockSize; n++) {
+    if (desired < gain) {
+      // Attack: ramp down quickly toward the gain that tames this block.
+      const float step = (gain - desired) / static_cast<float>(LIMIT_ATTACK_SAMPLES);
+      gain -= step;
+      if (gain < desired) gain = desired;
+    } else if (gain < 1.0f) {
+      gain += (1.0f - gain) * g.limiterReleasePerSample;
+      if (gain > desired) gain = desired;
+    }
+    for (int ear = 0; ear < 2; ear++) {
+      float v = g.output[ear][n] * gain;
+      // Soft ceiling catches the attack ramp's first fraction of a
+      // millisecond; transparent below SOFT_CEIL_START.
+      const float mag = std::fabs(v);
+      if (mag > SOFT_CEIL_START) {
+        const float span = 1.0f - SOFT_CEIL_START;
+        const float squeezed = SOFT_CEIL_START + span * std::tanh((mag - SOFT_CEIL_START) / span);
+        v = v < 0.0f ? -squeezed : squeezed;
+      }
+      g.output[ear][n] = v;
+    }
+  }
+  g.limiterGain = gain;
 
   return 1;
 }
