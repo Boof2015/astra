@@ -202,6 +202,49 @@ export function buildSpatialSpeakerMessage(
   }))
 }
 
+const ROLE_DISPLAY_AZIMUTHS: Record<string, number> = {
+  M: 0,
+  FL: -30,
+  FR: 30,
+  FC: 0,
+  SL: -110,
+  SR: 110,
+  BL: -150,
+  BR: 150,
+}
+
+/**
+ * Display angles for visualizing a physical output layout on the speaker
+ * stage (Direct mode). Standard layouts use their preset angles; other roles
+ * fall back to conventional positions; unknown channels spread evenly.
+ * LFE is non-positional and returns null.
+ */
+export function getDisplayAzimuthsForLayout(channelIds: readonly string[]): Array<number | null> {
+  const presetForCount: Partial<Record<number, Exclude<SpatialLayoutPresetId, 'custom'>>> = {
+    2: 'stereo',
+    4: 'quad',
+    6: '5.1',
+    8: '7.1',
+  }
+  const presetId = presetForCount[channelIds.length]
+  if (presetId) {
+    const preset = PRESET_SPEAKERS[presetId]
+    if (preset.every((sp, index) => sp.sourceChannel === channelIds[index])) {
+      return preset.map((sp) => (isVirtualSpeakerLfe(sp) ? null : sp.azimuth))
+    }
+  }
+  return channelIds.map((id, index) => {
+    if (id === 'LFE') return null
+    if (id in ROLE_DISPLAY_AZIMUTHS) return ROLE_DISPLAY_AZIMUTHS[id]
+    return normalizeUnknownDisplayAzimuth(index, channelIds.length)
+  })
+}
+
+function normalizeUnknownDisplayAzimuth(index: number, total: number): number {
+  const spread = (((index + 0.5) * 360) / Math.max(1, total)) - 180
+  return clampAzimuthDegrees(spread)
+}
+
 export interface RoutingTargetOptions {
   multichannelEnabled: boolean
   binauralActive: boolean
