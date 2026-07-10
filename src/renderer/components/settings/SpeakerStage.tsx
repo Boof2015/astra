@@ -31,8 +31,10 @@ export interface SpeakerStageSpeaker {
   /** UI degrees clockwise-from-front; null = non-positional (LFE badge). */
   azimuth: number | null
   /**
-   * Degrees above (+) / below (-) ear level. The stage stays top-down —
-   * nonzero elevation renders as a caption on the puck, not a position.
+   * Degrees above (+) / below (-) ear level. Rendered as a caption on the
+   * puck plus a top-down radial projection: the puck sits at cos(elevation)
+   * of the ring radius, so 45° draws at ~71% and 90° lands on the listener
+   * (directly overhead).
    */
   elevation?: number
   state: SpeakerStagePuckState
@@ -61,8 +63,11 @@ const DRAG_SNAP_COARSE_DEG = 5
 const KEYBOARD_STEP_DEG = 1
 const KEYBOARD_STEP_COARSE_DEG = 5
 
-function puckPosition(azimuthDeg: number): { x: number; y: number } {
-  const point = azimuthDegToStagePosition(azimuthDeg, RING_RADIUS)
+function puckPosition(azimuthDeg: number, elevationDeg = 0): { x: number; y: number } {
+  // Top-down projection: an elevated (or lowered) speaker's floor-plane
+  // distance from the listener shrinks by cos(elevation).
+  const radius = RING_RADIUS * Math.cos((elevationDeg * Math.PI) / 180)
+  const point = azimuthDegToStagePosition(azimuthDeg, radius)
   return { x: CENTER_X + point.x, y: CENTER_Y + point.y }
 }
 
@@ -217,7 +222,7 @@ export default function SpeakerStage({
 
         {/* Speaker pucks */}
         {positionalSpeakers.map((speaker) => {
-          const { x, y } = puckPosition(speaker.azimuth)
+          const { x, y } = puckPosition(speaker.azimuth, speaker.elevation ?? 0)
           const selected = speaker.id === selectedId
           const elevationDeg = Math.round(speaker.elevation ?? 0)
           const elevationCaption = elevationDeg !== 0
