@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import { join } from 'path'
+import { readFile } from 'fs/promises'
 import { getHeapSpaceStatistics } from 'v8'
 import type {
   MiniPlayerCommand,
@@ -1132,6 +1133,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openAudioFile: () => ipcRenderer.invoke('dialog:openAudioFile'),
   openAudioFolder: () => ipcRenderer.invoke('dialog:openAudioFolder'),
   loadAudioFile: (filePath: string, options?: AudioLoadOptions) => ipcRenderer.invoke('audio:loadFile', filePath, options),
+  // Binaural renderer WASM for the spatial worklet (an AudioWorkletGlobalScope
+  // cannot fetch; the preload reads the bytes like it loads the native addon).
+  getSpatialWasmBytes: async (): Promise<ArrayBuffer> => {
+    const isDev = process.env.NODE_ENV === 'development'
+    const wasmPath = isDev
+      ? join(__dirname, '../../src/renderer/public/spatial-renderer.wasm')
+      : join(__dirname, '../renderer/spatial-renderer.wasm')
+    const bytes = await readFile(wasmPath)
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+  },
   getAudioMetadata: (filePath: string) => ipcRenderer.invoke('audio:getMetadata', filePath) as Promise<AudioFileMetadata | null>,
   getAudioFileStat: (filePath: string) => ipcRenderer.invoke('audio:getFileStat', filePath) as Promise<AudioFileStatResult | null>,
   decodeAudioWithFfmpeg: (filePath: string) => ipcRenderer.invoke('audio:decodeWithFfmpeg', filePath),
@@ -1682,6 +1693,7 @@ declare global {
       openAudioFile: () => Promise<AudioFileResult | null>
       openAudioFolder: () => Promise<string | null>
       loadAudioFile: (filePath: string, options?: AudioLoadOptions) => Promise<AudioFileResult | null>
+      getSpatialWasmBytes: () => Promise<ArrayBuffer>
       getAudioMetadata: (filePath: string) => Promise<AudioFileMetadata | null>
       getAudioFileStat: (filePath: string) => Promise<AudioFileStatResult | null>
       decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>

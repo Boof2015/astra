@@ -516,6 +516,7 @@ declare global {
                 }
             } | null>
             openAudioFolder: () => Promise<string | null>
+            getSpatialWasmBytes: () => Promise<ArrayBuffer>
             loadAudioFile: (
                 filePath: string,
                 options?: { metadataMode?: 'full' | 'none' }

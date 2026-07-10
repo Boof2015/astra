@@ -44,8 +44,24 @@ import {
   type StereoAmbientUpmixRoute,
   type StereoUpmixMode
 } from '../utils/sourceChannelLayout'
+import {
+  buildSpatialSpeakerMessage,
+  resolveRoutingTargetChannelCount,
+  SPATIAL_MAX_SPEAKERS,
+  type SpatialMode,
+  type VirtualSpeaker
+} from '../utils/virtualSpeakerLayout'
 
 type EventCallback = (...args: unknown[]) => void
+
+export type SpatialWorkletState = 'idle' | 'loading' | 'ready' | 'error' | 'unsupported-samplerate'
+
+export interface SpatialStatus {
+  state: SpatialWorkletState
+  sampleRate: number | null
+  taps: number
+  message: string | null
+}
 
 const ANALYSIS_DELAY_MAX_MS = 2500
 const ANALYSIS_DELAY_MAX_SEC = ANALYSIS_DELAY_MAX_MS / 1000
@@ -409,6 +425,17 @@ export class AudioEngine {
   private includeLfeInDownmix: boolean = false
   private stereoUpmixMode: StereoUpmixMode = 'off'
   private manualChannelRoutingMap: number[] | null = null
+  // Astra Spatial Engine (binaural render stage). The worklet node is lazy:
+  // created on first enable, then kept for the AudioContext's lifetime.
+  private spatialMode: SpatialMode = 'off'
+  private virtualSpeakers: VirtualSpeaker[] = []
+  private spatialWorkletNode: AudioWorkletNode | null = null
+  private spatialWorkletState: SpatialWorkletState = 'idle'
+  private spatialWorkletModuleLoaded: boolean = false
+  private spatialWorkletConnected: boolean = false
+  private spatialTailTaps: number = 0
+  private spatialStatusMessage: string | null = null
+  private spatialReadyResolver: (() => void) | null = null
   private sourceRoutingNodes: WeakMap<AudioNode, {
     inputNode: AudioNode | null
     nodes: AudioNode[]
@@ -527,6 +554,12 @@ export class AudioEngine {
       if (this.context) {
         this.rebuildStandardAnalysisGraphRouting()
       }
+      if (this.spatialMode === 'binaural') {
+        // Re-arm the binaural renderer (it was inert while bit-perfect
+        // bypassed the Web Audio graph). Playback is stopped at this point,
+        // so this only prepares the worklet + routing prefs.
+        void this.setSpatialMode('binaural')
+      }
       this.syncVisualizerTransportState()
       return {
         activeMode: this.playbackOutputMode,
@@ -556,6 +589,7 @@ export class AudioEngine {
     this.currentNormalizationAnalysis = null
     this.playbackOutputMode = 'bitperfect'
     this.nativeModeMessage = BIT_PERFECT_UNSUPPORTED_MESSAGE
+    this.syncSpatialNodeConnection()
     this.notifyTrackChange()
     this.syncVisualizerTransportState()
     return {
@@ -1460,23 +1494,41 @@ export class AudioEngine {
     return buffer.length * buffer.numberOfChannels * 4
   }
 
+  /**
+   * True when the binaural spatial stage is live in the graph. Requires the
+   * worklet to be fully ready — a failed/unsupported renderer leaves the
+   * routing exactly as it was (Direct mode).
+   */
+  private isBinauralActive(): boolean {
+    return (
+      this.spatialMode === 'binaural' &&
+      this.playbackOutputMode === 'standard' &&
+      this.spatialWorkletState === 'ready' &&
+      this.spatialWorkletNode !== null &&
+      this.virtualSpeakers.length > 0
+    )
+  }
+
+  /**
+   * The node per-source routing connects into: the spatial render stage when
+   * binaural is active, otherwise the normalization gain (legacy behavior).
+   */
+  private getRoutingSinkNode(): AudioNode | null {
+    if (this.isBinauralActive()) return this.spatialWorkletNode
+    return this.normalizationGainNode
+  }
+
   private getRoutingOutputChannelCount(sourceChannels?: number): number {
-    const maxChannels = this.getMaxDestinationChannelCount()
-    if (!this.multichannelEnabled) {
-      return Math.max(1, Math.min(maxChannels, 2))
-    }
-
-    const manualMapChannelCount = this.manualChannelRoutingMap?.length ?? 0
-
-    if (manualMapChannelCount > 0) {
-      return Math.max(1, Math.min(maxChannels, manualMapChannelCount))
-    }
-
-    if ((sourceChannels && sourceChannels > 0) || (this.audioBuffer?.numberOfChannels ?? 0) > 0) {
-      return maxChannels
-    }
-
-    return Math.max(1, Math.min(maxChannels, 2))
+    return resolveRoutingTargetChannelCount({
+      multichannelEnabled: this.multichannelEnabled,
+      binauralActive: this.isBinauralActive(),
+      virtualSpeakerCount: this.virtualSpeakers.length,
+      maxDestinationChannels: this.getMaxDestinationChannelCount(),
+      manualMapLength: this.manualChannelRoutingMap?.length ?? 0,
+      hasSourceChannels: Boolean(
+        (sourceChannels && sourceChannels > 0) || (this.audioBuffer?.numberOfChannels ?? 0) > 0
+      ),
+    })
   }
 
   private applyNodeRoutingMode(
@@ -1516,7 +1568,12 @@ export class AudioEngine {
     if (!this.context) return
 
     const routingChannels = this.getRoutingOutputChannelCount(preferredChannels)
-    const useDiscreteRouting = routingChannels > 2
+    const binauralActive = this.isBinauralActive()
+    // When binaural is active the multichannel render bus ends at the spatial
+    // node; everything downstream of it (EQ, volume, destination) is plain
+    // stereo headphone audio.
+    const downstreamChannels = binauralActive ? 2 : routingChannels
+    const useDiscreteRouting = downstreamChannels > 2
     const mode: ChannelCountMode = useDiscreteRouting ? 'explicit' : 'max'
     const interpretation: ChannelInterpretation = useDiscreteRouting ? 'discrete' : 'speakers'
 
@@ -1532,7 +1589,17 @@ export class AudioEngine {
     ]
 
     for (const node of nodes) {
-      this.applyNodeRoutingMode(node, routingChannels, mode, interpretation)
+      this.applyNodeRoutingMode(node, downstreamChannels, mode, interpretation)
+    }
+
+    if (this.spatialWorkletNode) {
+      // Pin the spatial node's input to the render bus width so the worklet
+      // never sees a surprise channel-count change mid-process.
+      const spatialInputChannels = Math.max(
+        1,
+        Math.min(SPATIAL_MAX_SPEAKERS, binauralActive ? routingChannels : this.virtualSpeakers.length || 2)
+      )
+      this.applyNodeRoutingMode(this.spatialWorkletNode, spatialInputChannels, 'explicit', 'discrete')
     }
   }
 
@@ -1559,11 +1626,19 @@ export class AudioEngine {
 
     this.applyChannelRoutingPreferences(sourceChannels)
 
+    // Binaural rendering consumes the same multichannel render bus the
+    // Direct path produces — it just must not depend on the physical
+    // multichannel toggle (headphones are 2ch; that's the point). The manual
+    // routing map keeps physical-device semantics and is ignored here.
+    const binauralActive = this.isBinauralActive()
+    const effectiveMultichannel = this.multichannelEnabled || binauralActive
+    const manualRoutingMap = binauralActive ? null : this.manualChannelRoutingMap
+
     const outputChannels = this.getRoutingOutputChannelCount(sourceChannels)
     const shouldUseStereoAmbientUpmix = canUseStereoAmbientUpmix({
       sourceChannels,
       outputChannels,
-      multichannelEnabled: this.multichannelEnabled,
+      multichannelEnabled: effectiveMultichannel,
       standardMode: this.playbackOutputMode === 'standard',
       stereoUpmixMode: this.stereoUpmixMode,
     })
@@ -1576,12 +1651,12 @@ export class AudioEngine {
     const channelMixMatrix = resolveChannelMixMatrix({
       sourceChannels,
       outputChannels,
-      multichannelEnabled: this.multichannelEnabled,
-      manualRoutingMap: this.manualChannelRoutingMap,
+      multichannelEnabled: effectiveMultichannel,
+      manualRoutingMap,
       includeLfeInDownmix: this.includeLfeInDownmix,
     })
     const hasManualRouting = Boolean(
-      this.multichannelEnabled && this.manualChannelRoutingMap && this.manualChannelRoutingMap.length > 0
+      effectiveMultichannel && manualRoutingMap && manualRoutingMap.length > 0
     )
     const shouldUseRoutingMatrix = (
       hasManualRouting ||
@@ -1590,8 +1665,11 @@ export class AudioEngine {
       !isIdentityChannelMixMatrix(channelMixMatrix, sourceChannels, outputChannels)
     )
 
+    const routingSink = this.getRoutingSinkNode()
+    if (!routingSink) return
+
     if (!shouldUseRoutingMatrix) {
-      sourceNode.connect(this.normalizationGainNode)
+      sourceNode.connect(routingSink)
       this.sourceRoutingNodes.set(sourceNode, { inputNode: null, nodes: [] })
       return
     }
@@ -1617,7 +1695,7 @@ export class AudioEngine {
     }
     const silenceNodes = this.connectSilentMergerInputs(merger, outputChannels, connectedOutputs)
 
-    merger.connect(this.normalizationGainNode)
+    merger.connect(routingSink)
     this.sourceRoutingNodes.set(sourceNode, {
       inputNode: splitter,
       nodes: [splitter, ...gainNodes, ...silenceNodes, merger],
@@ -1626,6 +1704,8 @@ export class AudioEngine {
 
   private connectStereoAmbientUpmix(sourceNode: AudioNode, outputChannels: number): void {
     if (!this.context || !this.normalizationGainNode) return
+    const routingSink = this.getRoutingSinkNode()
+    if (!routingSink) return
 
     const plan = resolveStereoAmbientUpmixPlan(outputChannels)
     const splitter = this.context.createChannelSplitter(2)
@@ -1648,7 +1728,7 @@ export class AudioEngine {
     }
     nodes.push(...this.connectSilentMergerInputs(merger, plan.outputChannels, connectedOutputs))
 
-    merger.connect(this.normalizationGainNode)
+    merger.connect(routingSink)
     this.sourceRoutingNodes.set(sourceNode, {
       inputNode: splitter,
       nodes,
@@ -1931,6 +2011,10 @@ export class AudioEngine {
 
     if (this.normalizationGainNode) {
       try { sourceNode.disconnect(this.normalizationGainNode) } catch { /* ignore */ }
+    }
+
+    if (this.spatialWorkletNode) {
+      try { sourceNode.disconnect(this.spatialWorkletNode) } catch { /* ignore */ }
     }
 
     if (routingNodes.inputNode) {
@@ -3372,6 +3456,197 @@ export class AudioEngine {
     }
 
     await this.initContext()
+    this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+
+    if (this.rebuildRemoteStreamRoutingIfActive()) {
+      return
+    }
+    if (this.rebuildParallaxSinkRoutingIfActive()) {
+      return
+    }
+
+    if (this._playbackState === 'playing' && this.audioBuffer) {
+      await this.seek(this.currentTime)
+    }
+  }
+
+  getSpatialStatus(): SpatialStatus {
+    return {
+      state: this.spatialWorkletState,
+      sampleRate: this.context ? Math.round(this.context.sampleRate) : null,
+      taps: this.spatialTailTaps,
+      message: this.spatialStatusMessage,
+    }
+  }
+
+  private emitSpatialStatus(): void {
+    this.emit('spatialStatusChange', this.getSpatialStatus())
+  }
+
+  private handleSpatialWorkletMessage(event: MessageEvent): void {
+    const data = event.data ?? {}
+    if (data.type === 'ready') {
+      this.spatialWorkletState = 'ready'
+      this.spatialTailTaps = Number(data.taps) || 0
+      this.spatialStatusMessage = null
+      this.spatialReadyResolver?.()
+      this.spatialReadyResolver = null
+      this.emitSpatialStatus()
+      return
+    }
+    if (data.type === 'unsupported-samplerate') {
+      this.spatialWorkletState = 'unsupported-samplerate'
+      this.spatialStatusMessage = `The binaural renderer supports 44.1/48/88.2/96 kHz output; the audio device is running at ${Math.round(Number(data.sampleRate) || 0)} Hz.`
+      this.spatialReadyResolver?.()
+      this.spatialReadyResolver = null
+      this.emitSpatialStatus()
+      return
+    }
+    if (data.type === 'error') {
+      this.spatialWorkletState = 'error'
+      this.spatialStatusMessage = typeof data.message === 'string' && data.message.length > 0
+        ? data.message
+        : 'The binaural renderer failed to initialize.'
+      this.spatialReadyResolver?.()
+      this.spatialReadyResolver = null
+      this.emitSpatialStatus()
+    }
+  }
+
+  /**
+   * Loads the spatial worklet module, creates the persistent render node and
+   * initializes the WASM renderer. Resolves once the worklet reports a
+   * terminal state; the graph is only rewired through the node when the state
+   * lands on 'ready' (see isBinauralActive), so failures leave routing
+   * untouched.
+   */
+  private async ensureSpatialWorklet(): Promise<void> {
+    if (!this.context) return
+    // 'unsupported-samplerate' is terminal for this context (its rate never
+    // changes); 'error' allows a retry on the next enable attempt.
+    if (
+      this.spatialWorkletState === 'ready' ||
+      this.spatialWorkletState === 'loading' ||
+      this.spatialWorkletState === 'unsupported-samplerate'
+    ) {
+      return
+    }
+
+    this.spatialWorkletState = 'loading'
+    this.spatialStatusMessage = null
+    this.emitSpatialStatus()
+
+    try {
+      if (!this.spatialWorkletModuleLoaded) {
+        await this.context.audioWorklet.addModule('./spatial-worklet.js')
+        this.spatialWorkletModuleLoaded = true
+      }
+
+      if (!this.spatialWorkletNode) {
+        const node = new AudioWorkletNode(this.context, 'spatial-renderer-processor', {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [2],
+        })
+        node.port.onmessage = (event: MessageEvent) => this.handleSpatialWorkletMessage(event)
+        this.spatialWorkletNode = node
+      }
+      this.syncSpatialNodeConnection()
+
+      const wasmBytes = await window.electronAPI.getSpatialWasmBytes()
+      const ready = new Promise<void>((resolve) => {
+        this.spatialReadyResolver = resolve
+      })
+      this.spatialWorkletNode.port.postMessage(
+        {
+          type: 'init',
+          wasmBytes,
+          speakers: buildSpatialSpeakerMessage(this.virtualSpeakers),
+        },
+        [wasmBytes]
+      )
+      // The worklet always answers init with ready/error/unsupported; the
+      // timeout only guards against a wedged audio thread.
+      await Promise.race([
+        ready,
+        new Promise<void>((resolve) => setTimeout(resolve, 10_000)),
+      ])
+      if (this.spatialWorkletState === 'loading') {
+        this.spatialWorkletState = 'error'
+        this.spatialStatusMessage = 'Timed out initializing the binaural renderer.'
+        this.spatialReadyResolver = null
+        this.emitSpatialStatus()
+      }
+    } catch (error) {
+      this.spatialWorkletState = 'error'
+      this.spatialStatusMessage = error instanceof Error ? error.message : 'Failed to load the binaural renderer.'
+      this.spatialReadyResolver = null
+      this.emitSpatialStatus()
+    }
+  }
+
+  /** Keeps the persistent spatial node attached only while binaural is on. */
+  private syncSpatialNodeConnection(): void {
+    if (!this.spatialWorkletNode || !this.normalizationGainNode) return
+    const shouldConnect = this.spatialMode === 'binaural' && this.playbackOutputMode === 'standard'
+    if (shouldConnect && !this.spatialWorkletConnected) {
+      this.spatialWorkletNode.connect(this.normalizationGainNode)
+      this.spatialWorkletConnected = true
+    } else if (!shouldConnect && this.spatialWorkletConnected) {
+      try { this.spatialWorkletNode.disconnect() } catch { /* ignore */ }
+      this.spatialWorkletConnected = false
+    }
+  }
+
+  async setSpatialMode(mode: SpatialMode): Promise<void> {
+    this.spatialMode = mode === 'binaural' ? 'binaural' : 'off'
+    if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
+
+    await this.initContext()
+    if (this.spatialMode === 'binaural') {
+      await this.ensureSpatialWorklet()
+    }
+    this.syncSpatialNodeConnection()
+    this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+
+    if (this.rebuildRemoteStreamRoutingIfActive()) {
+      return
+    }
+    if (this.rebuildParallaxSinkRoutingIfActive()) {
+      return
+    }
+
+    if (this._playbackState === 'playing' && this.audioBuffer) {
+      await this.seek(this.currentTime)
+    }
+  }
+
+  /**
+   * Updates virtual speaker positions. Same-width updates (drags) only push
+   * new angles to the worklet — the renderer fades filters internally, no
+   * graph rebuild. Width changes (preset switches) rewire the render bus.
+   */
+  async setVirtualSpeakers(speakers: VirtualSpeaker[]): Promise<void> {
+    const previousCount = this.virtualSpeakers.length
+    this.virtualSpeakers = speakers.slice(0, SPATIAL_MAX_SPEAKERS)
+
+    if (this.spatialWorkletNode && this.spatialWorkletState === 'ready') {
+      this.spatialWorkletNode.port.postMessage({
+        type: 'set-speakers',
+        speakers: buildSpatialSpeakerMessage(this.virtualSpeakers),
+      })
+    }
+
+    if (this.playbackOutputMode === 'bitperfect') return
+    if (this.spatialMode !== 'binaural') return
+    if (this.virtualSpeakers.length === previousCount) return
+
+    await this.initContext()
+    if (this.spatialMode === 'binaural') {
+      await this.ensureSpatialWorklet()
+    }
     this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
 
     if (this.rebuildRemoteStreamRoutingIfActive()) {
