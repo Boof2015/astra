@@ -35,6 +35,7 @@ function makeDbTrack(path: string, artist = 'Artist A'): DbTrack {
     codec: null,
     codec_profile: null,
     is_atmos_joc: 0,
+    is_iamf: 0,
     bpm: null,
     musical_key: null,
     source_type: 'local',

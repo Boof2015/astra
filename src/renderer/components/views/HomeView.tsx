@@ -42,6 +42,7 @@ interface HomeTrack {
   codec?: string | null
   codec_profile?: string | null
   is_atmos_joc?: number | null
+  is_iamf?: number | null
 }
 
 interface HomeAlbum {

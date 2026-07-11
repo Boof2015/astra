@@ -89,6 +89,7 @@ function makeDbTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
     codec: overrides.codec ?? null,
     codec_profile: overrides.codec_profile ?? null,
     is_atmos_joc: overrides.is_atmos_joc ?? 0,
+    is_iamf: overrides.is_iamf ?? 0,
     bpm: overrides.bpm ?? null,
     musical_key: overrides.musical_key ?? null,
     source_type: overrides.source_type ?? 'local',

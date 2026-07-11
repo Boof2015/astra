@@ -344,6 +344,12 @@ export default function InfoSidebar() {
                 <div className="info-tech-value">Compatibility mode. Object rendering and mix quality are not guaranteed.</div>
               </div>
             )}
+            {currentTrack.isIamf && (
+              <div className="info-tech-item">
+                <div className="info-tech-label">Eclipsa Source</div>
+                <div className="info-tech-value">Eclipsa Audio (IAMF) decoded to 7.1.4.</div>
+              </div>
+            )}
           </div>
 
           <div className="info-sidebar-path">

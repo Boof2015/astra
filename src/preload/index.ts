@@ -218,6 +218,7 @@ export interface DbTrack {
   codec: string | null
   codec_profile: string | null
   is_atmos_joc: number | null
+  is_iamf: number | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
   bpm: number | null
