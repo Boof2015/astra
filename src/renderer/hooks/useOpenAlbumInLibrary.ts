@@ -41,8 +41,16 @@ export function useOpenAlbumInLibrary() {
     if (!album) return
 
     const resolvedArtist = resolveAlbumArtist(trackArtist, albumArtist)
+    const library = useLibraryStore.getState()
+    const isNestedLibraryDetail = useUIStore.getState().activeView === 'library'
+      && Boolean(library.selectedArtist || library.selectedGenre || library.selectedYear !== null)
 
-    await selectAlbum(album, resolvedArtist, 'library', albumIdentityKey)
+    await selectAlbum(
+      album,
+      resolvedArtist,
+      isNestedLibraryDetail ? 'library-detail' : 'library',
+      albumIdentityKey
+    )
     setActiveView('library')
   }, [selectAlbum, setActiveView])
 }

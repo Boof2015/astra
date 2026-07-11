@@ -183,6 +183,8 @@ export default function LibraryView() {
   const selectedArtist = useLibraryStore((state) => state.selectedArtist)
   const selectedGenre = useLibraryStore((state) => state.selectedGenre)
   const selectedYear = useLibraryStore((state) => state.selectedYear)
+  const selectionOrigin = useLibraryStore((state) => state.selectionOrigin)
+  const selectionHistory = useLibraryStore((state) => state.selectionHistory)
   const isLoading = useLibraryStore((state) => state.isLoading)
   const isScanning = useLibraryStore((state) => state.isScanning)
   const isCancelingScan = useLibraryStore((state) => state.isCancelingScan)
@@ -199,6 +201,7 @@ export default function LibraryView() {
   const selectGenre = useLibraryStore((state) => state.selectGenre)
   const selectYear = useLibraryStore((state) => state.selectYear)
   const clearSelection = useLibraryStore((state) => state.clearSelection)
+  const goBackSelection = useLibraryStore((state) => state.goBackSelection)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const showTracklistGenre = useLibraryStore((state) => state.showTracklistGenre)
   const showTracklistAddedDate = useLibraryStore((state) => state.showTracklistAddedDate)
@@ -558,7 +561,12 @@ export default function LibraryView() {
       albumGridScrollRef.current = albumViewportRef.current?.element?.scrollTop ?? 0
     }
     void runViewTransition(
-      () => selectAlbum(album.album, album.artist, 'library', album.identity_key),
+      () => selectAlbum(
+        album.album,
+        album.artist,
+        selectedYear !== null ? 'library-detail' : 'library',
+        album.identity_key
+      ),
       'library-context-forward'
     )
   }, [selectAlbum, selectedYear])
@@ -1001,7 +1009,29 @@ export default function LibraryView() {
                 : 'Search tracks...'
   const isAllSourcesFilterActive = selectedSourceFilters.size === 0
 
-  const handleBackToLibrary = async () => {
+  const contextualAlbumParent = selectedAlbum && selectionOrigin === 'library-detail'
+    ? selectionHistory[selectionHistory.length - 1] ?? null
+    : null
+  const detailBackLabel = contextualAlbumParent?.selectedArtist
+    ? `Back to ${contextualAlbumParent.selectedArtist}`
+    : contextualAlbumParent?.selectedGenre
+      ? `Back to ${contextualAlbumParent.selectedGenre}`
+      : contextualAlbumParent?.selectedYear !== null && contextualAlbumParent?.selectedYear !== undefined
+        ? `Back to ${formatLibraryYearKey(contextualAlbumParent.selectedYear)}`
+        : 'Back to Library'
+
+  const handleDetailBack = async () => {
+    if (contextualAlbumParent) {
+      if (contextualAlbumParent.selectedYear !== null) {
+        pendingScrollRef.current = 'year-albums'
+        setSearchQuery('')
+      }
+      await runViewTransition(async () => {
+        await goBackSelection()
+      }, 'library-context-backward')
+      return
+    }
+
     if (viewMode === 'albums') pendingScrollRef.current = 'albums'
     else if (viewMode === 'artists') pendingScrollRef.current = 'artists'
     else if (viewMode === 'genres') pendingScrollRef.current = 'genres'
@@ -1358,7 +1388,7 @@ export default function LibraryView() {
                     data-controller-context="true"
                     data-controller-key={`album:${album.identity_key}`}
                     onClick={() => void runViewTransition(
-                      () => selectAlbum(album.album, album.artist, 'library', album.identity_key),
+                      () => selectAlbum(album.album, album.artist, 'library-detail', album.identity_key),
                       'library-context-forward'
                     )}
                     onContextMenu={(event) => {
@@ -1564,9 +1594,9 @@ export default function LibraryView() {
           <div className="library-detail-toolbar-left">
             <button
               className="back-btn"
-              onClick={handleBackToLibrary}
-              title="Back to Library"
-              aria-label="Back to Library"
+              onClick={handleDetailBack}
+              title={detailBackLabel}
+              aria-label={detailBackLabel}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>

@@ -138,6 +138,41 @@ test('explicit Library root exit bypasses detail history and retains the active 
   assert.deepEqual(state.trackPaths, [])
 })
 
+test('album opened from an artist detail restores the artist context', async () => {
+  installLibraryMock()
+  resetLibraryNavigation()
+  useLibraryStore.getState().setViewMode('artists')
+
+  await useLibraryStore.getState().selectArtist('Artist A')
+  await useLibraryStore.getState().selectAlbum('Album A', 'Artist A', 'library-detail')
+
+  assert.equal(useLibraryStore.getState().selectionOrigin, 'library-detail')
+  assert.equal(await useLibraryStore.getState().goBackSelection(), true)
+
+  const state = useLibraryStore.getState()
+  assert.equal(state.viewMode, 'artists')
+  assert.equal(state.selectedArtist, 'Artist A')
+  assert.equal(state.selectedAlbum, null)
+})
+
+test('album opened from global search exits to the remembered Library root', async () => {
+  installLibraryMock()
+  resetLibraryNavigation()
+  useLibraryStore.getState().setViewMode('artists')
+
+  await useLibraryStore.getState().selectArtist('Artist A')
+  await useLibraryStore.getState().selectAlbum('Search Album', 'Artist B', 'library')
+
+  assert.equal(useLibraryStore.getState().selectionOrigin, 'library')
+  await useLibraryStore.getState().clearSelection()
+
+  const state = useLibraryStore.getState()
+  assert.equal(state.viewMode, 'artists')
+  assert.equal(state.selectedArtist, null)
+  assert.equal(state.selectedAlbum, null)
+  assert.deepEqual(state.selectionHistory, [])
+})
+
 test('root Tracks sort and source filters survive Library tab switches', () => {
   installLibraryMock()
   resetLibraryNavigation()

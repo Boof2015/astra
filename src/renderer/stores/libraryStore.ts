@@ -127,7 +127,7 @@ export interface FolderSubdirectoryEntry {
 }
 
 export type ViewMode = 'tracks' | 'albums' | 'artists' | 'genres' | 'years' | 'folders'
-type SelectionOrigin = 'home' | 'library' | null
+type SelectionOrigin = 'home' | 'library' | 'library-detail' | null
 export type LibraryArtistBrowseMode = 'strict' | 'canonical'
 export type LibraryFullTrackConsumer = 'library' | 'graph' | 'integrity'
 export type ArtworkVariant = 'full' | 'thumbnail' | 'card'
