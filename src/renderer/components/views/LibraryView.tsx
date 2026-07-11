@@ -9,6 +9,7 @@ import { useHorizontalWheelScroll } from '../../hooks/useHorizontalWheelScroll'
 import { usePresence } from '../../hooks/usePresence'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
 import { compareAlbumsByYearDescending } from '../../utils/albumYearSort'
+import { partitionArtistDiscography } from '../../utils/artistDiscography'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { matchesFuzzyFields } from '../../utils/fuzzySearch'
 import { runViewTransition } from '../../utils/viewTransitions'
@@ -23,7 +24,7 @@ import FolderTreeView from '../library/FolderTreeView'
 import GenreGrid, { type GenreGridViewportAPI } from '../library/GenreGrid'
 
 type SortDirection = 'asc' | 'desc'
-type ArtistAlbumRailMode = 'albums' | 'featured'
+type ArtistAlbumRailMode = 'albums' | 'singles' | 'featured'
 
 function formatTrackCount(count: number): string {
   return `${count} ${count === 1 ? 'track' : 'tracks'}`
@@ -788,10 +789,11 @@ export default function LibraryView() {
     return map
   }, [albums])
 
-  const { primaryArtistAlbums, featuredArtistAlbums } = useMemo(() => {
+  const { primaryArtistAlbums, primaryArtistSingles, featuredArtistAlbums } = useMemo(() => {
     if (!selectedArtist) {
       return {
         primaryArtistAlbums: [] as (typeof albums)[number][],
+        primaryArtistSingles: [] as (typeof albums)[number][],
         featuredArtistAlbums: [] as (typeof albums)[number][]
       }
     }
@@ -800,7 +802,10 @@ export default function LibraryView() {
     const UNKNOWN_ARTIST_NAME = 'Unknown Artist'
     const matchedIdentityKeys = new Set<string>()
     const selectedArtistKey = normalizeKey(selectedArtist)
-    const featuredSinglesByIdentityKey = new Map<string, (typeof albums)[number]>()
+    const unmatchedReleasesByIdentityKey = new Map<string, {
+      release: (typeof albums)[number]
+      isPrimary: boolean
+    }>()
 
     for (const track of sourceFilteredTracks) {
       const identityKey = track.album_identity_key || buildAlbumIdentityKeyFromTrack(track)
@@ -814,37 +819,40 @@ export default function LibraryView() {
         continue
       }
 
-      if (normalizeKey(browseArtist) === selectedArtistKey) continue
-
       const normalizedAlbumName = track.album.trim() || UNKNOWN_ALBUM_NAME
       if (normalizeKey(normalizedAlbumName) === normalizeKey(UNKNOWN_ALBUM_NAME)) continue
 
-      const existingSingle = featuredSinglesByIdentityKey.get(identityKey)
-      if (existingSingle) {
-        existingSingle.track_count += 1
-        if (existingSingle.year === null || ((track.year ?? -1) > existingSingle.year)) {
-          existingSingle.year = track.year
+      const existingRelease = unmatchedReleasesByIdentityKey.get(identityKey)
+      if (existingRelease) {
+        existingRelease.release.track_count += 1
+        if (existingRelease.release.year === null || ((track.year ?? -1) > existingRelease.release.year)) {
+          existingRelease.release.year = track.year
         }
-        if (!existingSingle.artwork_hash && track.artwork_hash) {
-          existingSingle.artwork_hash = track.artwork_hash
+        if (!existingRelease.release.artwork_hash && track.artwork_hash) {
+          existingRelease.release.artwork_hash = track.artwork_hash
         }
         continue
       }
 
-      featuredSinglesByIdentityKey.set(identityKey, {
-        identity_key: identityKey,
-        album: normalizedAlbumName,
-        artist: identityArtist || UNKNOWN_ARTIST_NAME,
-        primary_artist: resolveBrowseArtistForTrack(track, 'canonical'),
-        year: track.year,
-        artwork_hash: track.artwork_hash,
-        track_count: 1,
-        is_new: false
+      unmatchedReleasesByIdentityKey.set(identityKey, {
+        isPrimary: normalizeKey(browseArtist) === selectedArtistKey,
+        release: {
+          identity_key: identityKey,
+          album: normalizedAlbumName,
+          artist: identityArtist || UNKNOWN_ARTIST_NAME,
+          primary_artist: resolveBrowseArtistForTrack(track, 'canonical'),
+          year: track.year,
+          artwork_hash: track.artwork_hash,
+          track_count: 1,
+          is_new: false
+        }
       })
     }
 
-    const primary: (typeof albums)[number][] = []
-    const featured: (typeof albums)[number][] = []
+    const candidates: Array<{
+      release: (typeof albums)[number]
+      isPrimary: boolean
+    }> = []
 
     for (const album of albums) {
       if (!matchedIdentityKeys.has(album.identity_key)) continue
@@ -853,23 +861,25 @@ export default function LibraryView() {
         ? normalizeKey(album.artist)
         : normalizeKey(album.primary_artist ?? '')
 
-      if (primaryArtistKey === selectedArtistKey) {
-        primary.push(album)
-      } else {
-        featured.push(album)
-      }
+      candidates.push({
+        release: album,
+        isPrimary: primaryArtistKey === selectedArtistKey
+      })
     }
 
-    for (const single of featuredSinglesByIdentityKey.values()) {
-      featured.push(single)
+    for (const candidate of unmatchedReleasesByIdentityKey.values()) {
+      candidates.push(candidate)
     }
 
-    primary.sort(compareAlbumsByYearDescending)
-    featured.sort(compareAlbumsByYearDescending)
+    const sections = partitionArtistDiscography(candidates)
+    sections.albums.sort(compareAlbumsByYearDescending)
+    sections.singles.sort(compareAlbumsByYearDescending)
+    sections.featured.sort(compareAlbumsByYearDescending)
 
     return {
-      primaryArtistAlbums: primary,
-      featuredArtistAlbums: featured
+      primaryArtistAlbums: sections.albums,
+      primaryArtistSingles: sections.singles,
+      featuredArtistAlbums: sections.featured
     }
   }, [albumByIdentityKey, albumByKey, albums, artistBrowseMode, selectedArtist, sourceFilteredTracks])
 
@@ -1161,11 +1171,16 @@ export default function LibraryView() {
     }
 
     if (selectedArtist) {
-      const showingFeaturedAlbums = artistAlbumRailMode === 'featured'
-      const visibleArtistAlbums = showingFeaturedAlbums ? featuredArtistAlbums : primaryArtistAlbums
-      const railEmptyMessage = showingFeaturedAlbums
+      const visibleArtistAlbums = artistAlbumRailMode === 'featured'
+        ? featuredArtistAlbums
+        : artistAlbumRailMode === 'singles'
+          ? primaryArtistSingles
+          : primaryArtistAlbums
+      const railEmptyMessage = artistAlbumRailMode === 'featured'
         ? 'No featured appearances found in indexed albums or singles.'
-        : 'No primary albums found in indexed albums.'
+        : artistAlbumRailMode === 'singles'
+          ? 'No primary singles found in indexed releases.'
+          : 'No primary albums found in indexed albums.'
 
       return (
         <div className="library-artist-detail">
@@ -1188,6 +1203,14 @@ export default function LibraryView() {
                   </button>
                   <button
                     type="button"
+                    className={`library-artist-rail-toggle-btn ${artistAlbumRailMode === 'singles' ? 'active' : ''}`}
+                    onClick={() => setArtistAlbumRailMode('singles')}
+                    aria-pressed={artistAlbumRailMode === 'singles'}
+                  >
+                    Singles
+                  </button>
+                  <button
+                    type="button"
                     className={`library-artist-rail-toggle-btn ${artistAlbumRailMode === 'featured' ? 'active' : ''}`}
                     onClick={() => setArtistAlbumRailMode('featured')}
                     aria-pressed={artistAlbumRailMode === 'featured'}
@@ -1199,12 +1222,17 @@ export default function LibraryView() {
             </div>
 
             {visibleArtistAlbums.length > 0 ? (
-              <div className="library-artist-rail-row" ref={artistAlbumRailRef}>
-                {visibleArtistAlbums.map((album) => (
+              <div
+                key={`artist-rail:${artistAlbumRailMode}`}
+                className="library-artist-rail-row"
+                ref={artistAlbumRailRef}
+              >
+                {visibleArtistAlbums.map((album, index) => (
                   <button
                     key={album.identity_key}
                     type="button"
                     className="library-artist-rail-card"
+                    style={{ animationDelay: `${Math.min(index, 8) * 18}ms` }}
                     data-controller-focusable="true"
                     data-controller-context="true"
                     data-controller-key={`album:${album.identity_key}`}
@@ -1248,7 +1276,12 @@ export default function LibraryView() {
                 ))}
               </div>
             ) : (
-              <div className="library-artist-rail-empty">{railEmptyMessage}</div>
+              <div
+                key={`artist-rail-empty:${artistAlbumRailMode}`}
+                className="library-artist-rail-empty"
+              >
+                {railEmptyMessage}
+              </div>
             )}
           </section>
 
