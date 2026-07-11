@@ -3328,6 +3328,18 @@ export class AudioEngine {
       : 1
     source.connect(normalizationBypass)
     this.connectSourceWithRouting(normalizationBypass, this.testToneBuffer.numberOfChannels)
+    // The trim tone bypasses the normal play()/host-track path, so it must also undo a completed
+    // pause fade itself. Without this, the local audible chain can remain at zero while the
+    // independent Parallax publisher still sends the tone to sinks.
+    if (this.fadeGainNode) {
+      const fade = this.fadeGainNode.gain
+      const now = this.context.currentTime
+      const current = fade.value
+      fade.cancelScheduledValues(now)
+      fade.setValueAtTime(current, now)
+      fade.setValueAtTime(current, startAtContextTime)
+      fade.linearRampToValueAtTime(1, startAtContextTime + PLAYBACK_FADE_MS / 1000)
+    }
     source.start(startAtContextTime, 0)
     this.testToneSourceNode = source
     this.testToneNormalizationBypassNode = normalizationBypass
