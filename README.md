@@ -34,6 +34,12 @@ Dolby Atmos multichannel decoding is also supported without Atmos-compatible har
 
 Astra provides per-channel inspection and remapping, output delay calibration, and a Virtual Speaker Room for placing virtual speakers in 3D space. Drag them around the listener, add height/elevation, and hear the binaural render update live as you move them.
 
+## Parallax
+
+Play the same music in perfect sync across multiple machines on your local network. One machine hosts and controls playback; any number of others join as speakers and stay locked to it. A guided setup walks each machine through its role, speakers are paired with a PIN over the LAN, and per-speaker delay tuning corrects anything that sounds early or late. Playback stays gapless across track boundaries on every speaker. Local network only, no accounts, no cloud.
+
+Parallax is opt-in and still experimental (though stable) enable it from the Experimental section of Settings to reveal its controls.
+
 ## Visualizers
 
 Seven real-time visualizers powered by a native C++ module - oscilloscope, spectrum analyzer, vectorscope, and more. The entire scope rack is customizable: pick your scopes, drag and resize them into any layout, and save presets. The analysis path runs independently from output routing, so scopes always reflect the source material.
@@ -80,12 +86,6 @@ Everything that touches the network is optional and off by default.
 ## Astra API
 
 An optional local REST API lets external tools read the current track, playback position, and cover art, or control playback. Loopback only, bearer token auth, disabled by default. See the [API docs](https://github.com/Boof2015/astra/wiki/Astra-API) for details.
-
-## Parallax
-
-Play the same music in perfect sync across multiple machines on your local network. One machine hosts and controls playback; any number of others join as speakers and stay locked to it. A guided setup walks each machine through its role, speakers are paired with a PIN over the LAN, and per-speaker delay tuning corrects anything that sounds early or late. Playback stays gapless across track boundaries on every speaker. Local network only, no accounts, no cloud.
-
-Parallax is opt-in and still experimental (though stable) enable it from the Experimental section of Settings to reveal its controls.
 
 ## Experimental
 
