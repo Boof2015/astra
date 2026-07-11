@@ -6,7 +6,7 @@ export async function navigateInputBack(): Promise<boolean> {
   const ui = useUIStore.getState()
   if (ui.activeView === 'library') {
     const library = useLibraryStore.getState()
-    if (library.selectedAlbum || library.selectedArtist || library.selectedGenre) {
+    if (library.selectedAlbum || library.selectedArtist || library.selectedGenre || library.selectedYear !== null) {
       const shouldAlsoReturnToPreviousView =
         library.selectionHistory.length === 0 && library.selectionOrigin === 'home'
       let handled = false

@@ -31,6 +31,7 @@ test('combined navigation returns Home-origin Library details and restores them 
     selectedAlbum: null,
     selectedArtist: 'Artist A',
     selectedGenre: null,
+    selectedYear: null,
     selectionOrigin: 'home',
     selectionHistory: [],
     selectionForwardHistory: [],
@@ -61,6 +62,7 @@ test('Library genre detail back returns to Genres root', async () => {
     selectedAlbum: null,
     selectedArtist: null,
     selectedGenre: 'Electronic',
+    selectedYear: null,
     selectionOrigin: 'library',
     selectionHistory: [],
     selectionForwardHistory: [],
@@ -73,5 +75,32 @@ test('Library genre detail back returns to Genres root', async () => {
   assert.equal(useUIStore.getState().activeView, 'library')
   assert.equal(useLibraryStore.getState().selectedGenre, null)
   assert.deepEqual(useLibraryStore.getState().trackPaths, ['/music/a.flac', '/music/b.flac'])
+  assert.equal(useLibraryStore.getState().selectionForwardHistory.length, 1)
+})
+
+test('Library year detail back returns to Years root', async () => {
+  installNavigationMock()
+  useUIStore.setState({
+    activeView: 'library',
+    viewBackHistory: [],
+    viewForwardHistory: []
+  })
+  useLibraryStore.setState({
+    viewMode: 'years',
+    selectedAlbum: null,
+    selectedArtist: null,
+    selectedGenre: null,
+    selectedYear: 'unknown',
+    selectionOrigin: 'library',
+    selectionHistory: [],
+    selectionForwardHistory: [],
+    trackPaths: [],
+    fullTrackPaths: [],
+    trackByPath: new Map()
+  })
+
+  assert.equal(await navigateInputBack(), true)
+  assert.equal(useUIStore.getState().activeView, 'library')
+  assert.equal(useLibraryStore.getState().selectedYear, null)
   assert.equal(useLibraryStore.getState().selectionForwardHistory.length, 1)
 })

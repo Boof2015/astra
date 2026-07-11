@@ -2,7 +2,7 @@ import type { ViewMode } from '../stores/libraryStore'
 
 export type LibraryTabTransitionDirection = 'forward' | 'backward' | null
 
-const LIBRARY_TAB_MOTION_ORDER: ViewMode[] = ['tracks', 'albums', 'artists', 'genres', 'folders']
+const LIBRARY_TAB_MOTION_ORDER: ViewMode[] = ['tracks', 'albums', 'artists', 'genres', 'years', 'folders']
 
 export function resolveLibraryTabTransitionDirection(
   sourceMode: ViewMode | null | undefined,

@@ -1,5 +1,6 @@
 import { ASTRA_SESSION_STATE_STORAGE_KEY } from '../constants/settingsStorageKeys'
 import type { TrackSourceType } from '../../types/subsonic'
+import type { LibraryYearKey } from './libraryYears'
 
 export const SESSION_STATE_KIND = 'astra-session-state'
 export const SESSION_STATE_SCHEMA_VERSION = 1
@@ -7,7 +8,7 @@ export const SESSION_STATE_SCHEMA_VERSION = 1
 export type SessionAppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist'
 export type SessionTrackSortKey = 'title' | 'artist' | 'album' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added'
 export type SessionSortDirection = 'asc' | 'desc'
-export type SessionViewMode = 'tracks' | 'albums' | 'artists' | 'genres' | 'folders'
+export type SessionViewMode = 'tracks' | 'albums' | 'artists' | 'genres' | 'years' | 'folders'
 export type SessionAlbumSortMode = 'title' | 'artist'
 export type SessionArtistRootViewMode = 'list' | 'grid'
 export type SessionQueueItemOrigin = 'context' | 'manual'
@@ -120,6 +121,7 @@ export interface LibrarySessionSnapshot {
   } | null
   selectedArtist: string | null
   selectedGenre: string | null
+  selectedYear: LibraryYearKey | null
   trackListSortState: SessionTrackSortState | null
   selectedSourceFilters: string[]
   albumSortMode: SessionAlbumSortMode
@@ -227,9 +229,14 @@ export function normalizeAppView(value: unknown): SessionAppView {
 }
 
 function normalizeViewMode(value: unknown): SessionViewMode {
-  return value === 'albums' || value === 'artists' || value === 'genres' || value === 'folders' || value === 'tracks'
+  return value === 'albums' || value === 'artists' || value === 'genres' || value === 'years' || value === 'folders' || value === 'tracks'
     ? value
     : 'tracks'
+}
+
+function normalizeLibraryYearKey(value: unknown): LibraryYearKey | null {
+  if (value === 'unknown') return value
+  return typeof value === 'number' && Number.isInteger(value) ? value : null
 }
 
 function normalizeAlbumSortMode(value: unknown): SessionAlbumSortMode {
@@ -475,6 +482,7 @@ function normalizeLibrarySession(value: unknown): LibrarySessionSnapshot | null 
     selectedAlbum: normalizeSelectedAlbum(value.selectedAlbum),
     selectedArtist: stringValue(value.selectedArtist),
     selectedGenre: stringValue(value.selectedGenre),
+    selectedYear: normalizeLibraryYearKey(value.selectedYear),
     trackListSortState: normalizeTrackSortState(value.trackListSortState),
     selectedSourceFilters: requiredStringArray(value.selectedSourceFilters),
     albumSortMode: normalizeAlbumSortMode(value.albumSortMode),

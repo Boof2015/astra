@@ -20,6 +20,7 @@ import {
   type SessionTrackSortState
 } from '../utils/sessionState'
 import { normalizeKey } from '../utils/albumIdentity'
+import { albumMatchesLibraryYear, type LibraryYearKey } from '../utils/libraryYears'
 
 // Types matching preload
 export interface DbTrack {
@@ -105,6 +106,7 @@ interface LibrarySelectionSnapshot {
   selectedAlbum: { identity_key?: string; album: string; artist: string; is_new?: boolean } | null
   selectedArtist: string | null
   selectedGenre: string | null
+  selectedYear: LibraryYearKey | null
   selectionOrigin: SelectionOrigin
   trackPaths: string[]
   trackPathsPruned?: boolean
@@ -124,7 +126,7 @@ export interface FolderSubdirectoryEntry {
   audioFileCount: number
 }
 
-export type ViewMode = 'tracks' | 'albums' | 'artists' | 'genres' | 'folders'
+export type ViewMode = 'tracks' | 'albums' | 'artists' | 'genres' | 'years' | 'folders'
 type SelectionOrigin = 'home' | 'library' | null
 export type LibraryArtistBrowseMode = 'strict' | 'canonical'
 export type LibraryFullTrackConsumer = 'library' | 'graph' | 'integrity'
@@ -206,6 +208,7 @@ interface LibraryStore {
   selectedAlbum: { identity_key?: string; album: string; artist: string; is_new?: boolean } | null
   selectedArtist: string | null
   selectedGenre: string | null
+  selectedYear: LibraryYearKey | null
   selectionOrigin: SelectionOrigin
   selectionHistory: LibrarySelectionSnapshot[]
   selectionForwardHistory: LibrarySelectionSnapshot[]
@@ -274,6 +277,7 @@ interface LibraryStore {
   ) => Promise<void>
   selectArtist: (artist: string, origin?: Exclude<SelectionOrigin, null>) => Promise<void>
   selectGenre: (genre: string, origin?: Exclude<SelectionOrigin, null>) => Promise<void>
+  selectYear: (year: LibraryYearKey, origin?: Exclude<SelectionOrigin, null>) => void
   releaseFullTracks: (consumer?: LibraryFullTrackConsumer) => void
   clearSelection: () => Promise<void>
   goBackSelection: () => Promise<boolean>
@@ -511,6 +515,7 @@ type TrackCachePatch = Partial<Pick<
   | 'selectedAlbum'
   | 'selectedArtist'
   | 'selectedGenre'
+  | 'selectedYear'
   | 'selectionOrigin'
   | 'selectionHistory'
   | 'selectionForwardHistory'
@@ -577,14 +582,15 @@ function ingestTracksForPatch(
   return finalizeTrackCachePatch(state, patch, ingested.trackByPath, ingested.changed, options)
 }
 
-function snapshotCurrentSelection(state: Pick<LibraryStore, 'selectedAlbum' | 'selectedArtist' | 'selectedGenre' | 'selectionOrigin' | 'trackPaths'>): LibrarySelectionSnapshot | null {
-  if (!state.selectedAlbum && !state.selectedArtist && !state.selectedGenre) return null
+function snapshotCurrentSelection(state: Pick<LibraryStore, 'selectedAlbum' | 'selectedArtist' | 'selectedGenre' | 'selectedYear' | 'selectionOrigin' | 'trackPaths'>): LibrarySelectionSnapshot | null {
+  if (!state.selectedAlbum && !state.selectedArtist && !state.selectedGenre && state.selectedYear === null) return null
   const shouldPruneTrackPaths = state.trackPaths.length > MAX_SELECTION_HISTORY_TRACK_PATHS
 
   return {
     selectedAlbum: state.selectedAlbum ? { ...state.selectedAlbum } : null,
     selectedArtist: state.selectedArtist,
     selectedGenre: state.selectedGenre,
+    selectedYear: state.selectedYear,
     selectionOrigin: state.selectionOrigin,
     trackPaths: shouldPruneTrackPaths ? [] : [...state.trackPaths],
     ...(shouldPruneTrackPaths ? { trackPathsPruned: true } : {})
@@ -913,6 +919,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   selectedAlbum: null,
   selectedArtist: null,
   selectedGenre: null,
+  selectedYear: null,
   selectionOrigin: null,
   selectionHistory: [],
   selectionForwardHistory: [],
@@ -1600,6 +1607,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         selectedAlbum: null,
         selectedArtist: null,
         selectedGenre: null,
+        selectedYear: null,
         selectionOrigin: null,
         selectionHistory: [],
         selectionForwardHistory: [],
@@ -1630,6 +1638,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       trackPaths: getUniqueTrackPaths(tracks),
       selectedArtist: null,
       selectedGenre: null,
+      selectedYear: null,
       selectionOrigin: origin,
       selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state)),
       selectionForwardHistory: [],
@@ -1646,6 +1655,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       trackPaths: getUniqueTrackPaths(tracks),
       selectedAlbum: null,
       selectedGenre: null,
+      selectedYear: null,
       selectionOrigin: origin,
       selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state)),
       selectionForwardHistory: [],
@@ -1660,6 +1670,21 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       trackPaths: getUniqueTrackPaths(tracks),
       selectedAlbum: null,
       selectedArtist: null,
+      selectedYear: null,
+      selectionOrigin: origin,
+      selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state)),
+      selectionForwardHistory: [],
+      trackListSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE }
+    }))
+  },
+
+  selectYear: (year: LibraryYearKey, origin: Exclude<SelectionOrigin, null> = 'library') => {
+    set((state) => ({
+      selectedYear: year,
+      selectedAlbum: null,
+      selectedArtist: null,
+      selectedGenre: null,
+      trackPaths: [],
       selectionOrigin: origin,
       selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state)),
       selectionForwardHistory: [],
@@ -1690,6 +1715,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       selectedAlbum: null,
       selectedArtist: null,
       selectedGenre: null,
+      selectedYear: null,
       selectionOrigin: null,
       selectionHistory: [],
       selectionForwardHistory: [],
@@ -1709,6 +1735,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         selectedAlbum: null,
         selectedArtist: null,
         selectedGenre: null,
+        selectedYear: null,
         selectionOrigin: null,
         trackPaths: state.viewMode === 'tracks' || state.viewMode === 'genres' || state.viewMode === 'folders' ? state.fullTrackPaths : [],
         selectionForwardHistory: appendSelectionHistory(state.selectionForwardHistory, current),
@@ -1724,11 +1751,13 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     const restoredAlbum = previous.selectedAlbum ? { ...previous.selectedAlbum } : null
     const restoredArtist = previous.selectedArtist
     const restoredGenre = previous.selectedGenre
+    const restoredYear = previous.selectedYear
 
     set({
       selectedAlbum: restoredAlbum,
       selectedArtist: restoredArtist,
       selectedGenre: restoredGenre,
+      selectedYear: restoredYear,
       selectionOrigin: previous.selectionOrigin,
       trackPaths: restoredTracks.tracks.map((track) => track.path),
       selectionHistory: state.selectionHistory.slice(0, -1),
@@ -1777,11 +1806,13 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     const restoredAlbum = next.selectedAlbum ? { ...next.selectedAlbum } : null
     const restoredArtist = next.selectedArtist
     const restoredGenre = next.selectedGenre
+    const restoredYear = next.selectedYear
 
     set({
       selectedAlbum: restoredAlbum,
       selectedArtist: restoredArtist,
       selectedGenre: restoredGenre,
+      selectedYear: restoredYear,
       selectionOrigin: next.selectionOrigin,
       trackPaths: restoredTracks.tracks.map((track) => track.path),
       selectionHistory: appendSelectionHistory(state.selectionHistory, current),
@@ -2168,6 +2199,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       selectedAlbum: state.selectedAlbum ? { ...state.selectedAlbum } : null,
       selectedArtist: state.selectedArtist,
       selectedGenre: state.selectedGenre,
+      selectedYear: state.selectedYear,
       trackListSortState: state.trackListSortState ? { ...state.trackListSortState } : null,
       selectedSourceFilters: [...state.selectedSourceFilters],
       albumSortMode: state.albumSortMode,
@@ -2187,6 +2219,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       selectedAlbum: null,
       selectedArtist: null,
       selectedGenre: null,
+      selectedYear: null,
       selectionOrigin: null,
       selectionHistory: [],
       selectionForwardHistory: [],
@@ -2258,6 +2291,25 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
           selectedGenre: snapshot.selectedGenre,
           trackPaths: getUniqueTrackPaths(tracks)
         }))
+        return
+      }
+    }
+
+    if (snapshot.selectedYear !== null) {
+      const restoredYear = snapshot.selectedYear
+      if (snapshot.includeSinglesInAlbums && !get().albumsIncludingSinglesLoaded) {
+        await get().loadAlbumsIncludingSingles()
+      }
+      const yearAlbums = snapshot.includeSinglesInAlbums
+        ? get().albumsIncludingSingles
+        : get().albums
+      const matchedYear = yearAlbums.some((album) => albumMatchesLibraryYear(album, restoredYear))
+      if (matchedYear) {
+        set({
+          ...basePatch,
+          selectedYear: restoredYear,
+          trackPaths: []
+        })
         return
       }
     }

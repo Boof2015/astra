@@ -174,7 +174,8 @@ test('loadLibrary refreshes total track duration from the library API', async ()
     recentlyPlayedPaths: [],
     selectedAlbum: null,
     selectedArtist: null,
-    selectedGenre: null
+    selectedGenre: null,
+    selectedYear: null
   })
 
   await useLibraryStore.getState().loadLibrary()
