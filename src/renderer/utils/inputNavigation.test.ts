@@ -50,6 +50,36 @@ test('combined navigation returns Home-origin Library details and restores them 
   assert.equal(useLibraryStore.getState().selectedArtist, 'Artist A')
 })
 
+test('global Back continues to traverse Library detail history', async () => {
+  installNavigationMock()
+  useUIStore.setState({
+    activeView: 'library',
+    viewBackHistory: [],
+    viewForwardHistory: []
+  })
+  useLibraryStore.setState({
+    viewMode: 'tracks',
+    selectedAlbum: null,
+    selectedArtist: null,
+    selectedGenre: null,
+    selectedYear: null,
+    selectionOrigin: null,
+    selectionHistory: [],
+    selectionForwardHistory: [],
+    trackPaths: [],
+    fullTrackPaths: [],
+    trackByPath: new Map()
+  })
+
+  await useLibraryStore.getState().selectArtist('Artist A')
+  await useLibraryStore.getState().selectArtist('Artist B')
+
+  assert.equal(await navigateInputBack(), true)
+  assert.equal(useUIStore.getState().activeView, 'library')
+  assert.equal(useLibraryStore.getState().selectedArtist, 'Artist A')
+  assert.equal(useLibraryStore.getState().selectionForwardHistory.length, 1)
+})
+
 test('Library genre detail back returns to Genres root', async () => {
   installNavigationMock()
   useUIStore.setState({

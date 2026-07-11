@@ -44,6 +44,7 @@ test('session snapshot normalization tolerates corrupt fields and strips artwork
       showPipelineShelf: true,
       showLyricsShelf: true,
       lyricsShelfExpanded: true,
+      fullscreenLyricsVisible: 'yes',
     },
     library: {
       viewMode: 'albums',
@@ -127,6 +128,7 @@ test('session snapshot normalization tolerates corrupt fields and strips artwork
   assert.ok(snapshot)
   assert.equal(snapshot.savedAt, 0)
   assert.equal(snapshot.ui?.activeView, 'home')
+  assert.equal(snapshot.ui?.fullscreenLyricsVisible, false)
   assert.deepEqual(snapshot.library?.selectedSourceFilters, ['local'])
   assert.equal(snapshot.library?.selectedGenre, 'Electronic')
   assert.equal(snapshot.library?.selectedYear, 2025)
@@ -178,6 +180,7 @@ test('session snapshot normalization preserves genre track sort state', () => {
       selectedGenre: null,
       selectedYear: null,
       trackListSortState: { key: 'genre', direction: 'asc' },
+      tracksViewSortState: { key: 'duration', direction: 'desc' },
       selectedSourceFilters: [],
       albumSortMode: 'title',
       includeSinglesInAlbums: false,
@@ -188,6 +191,28 @@ test('session snapshot normalization preserves genre track sort state', () => {
 
   assert.ok(snapshot)
   assert.deepEqual(snapshot.library?.trackListSortState, { key: 'genre', direction: 'asc' })
+  assert.deepEqual(snapshot.library?.tracksViewSortState, { key: 'duration', direction: 'desc' })
+})
+
+test('session snapshot normalization defaults missing fullscreen lyrics visibility to hidden', () => {
+  const snapshot = normalizeSessionSnapshot({
+    kind: SESSION_STATE_KIND,
+    schemaVersion: SESSION_STATE_SCHEMA_VERSION,
+    savedAt: 1,
+    player: null,
+    library: null,
+    playlist: null,
+    ui: {
+      activeView: 'library',
+      showQueue: false,
+      showInfoSidebar: false,
+      showPipelineShelf: false,
+      showLyricsShelf: false,
+      lyricsShelfExpanded: false
+    }
+  })
+
+  assert.equal(snapshot?.ui?.fullscreenLyricsVisible, false)
 })
 
 test('session snapshot normalization preserves Years and Unknown Year selection', () => {

@@ -14,7 +14,6 @@ import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { matchesFuzzyFields } from '../../utils/fuzzySearch'
 import { runViewTransition } from '../../utils/viewTransitions'
 import { getLibraryTabTransitionScopeClasses } from '../../utils/libraryTabMotion'
-import { navigateInputBack } from '../../utils/inputNavigation'
 import {
   albumMatchesLibraryYear,
   buildLibraryYearGroups,
@@ -199,6 +198,7 @@ export default function LibraryView() {
   const selectArtist = useLibraryStore((state) => state.selectArtist)
   const selectGenre = useLibraryStore((state) => state.selectGenre)
   const selectYear = useLibraryStore((state) => state.selectYear)
+  const clearSelection = useLibraryStore((state) => state.clearSelection)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const showTracklistGenre = useLibraryStore((state) => state.showTracklistGenre)
   const showTracklistAddedDate = useLibraryStore((state) => state.showTracklistAddedDate)
@@ -1001,19 +1001,15 @@ export default function LibraryView() {
                 : 'Search tracks...'
   const isAllSourcesFilterActive = selectedSourceFilters.size === 0
 
-  const handleBack = async () => {
+  const handleBackToLibrary = async () => {
     if (viewMode === 'albums') pendingScrollRef.current = 'albums'
     else if (viewMode === 'artists') pendingScrollRef.current = 'artists'
     else if (viewMode === 'genres') pendingScrollRef.current = 'genres'
     else if (viewMode === 'years') {
-      const state = useLibraryStore.getState()
-      const previousSelection = state.selectionHistory[state.selectionHistory.length - 1]
-      pendingScrollRef.current = selectedAlbum && previousSelection && previousSelection.selectedYear !== null
-        ? 'year-albums'
-        : 'years'
+      pendingScrollRef.current = 'years'
       setSearchQuery('')
     }
-    await navigateInputBack()
+    await runViewTransition(() => clearSelection(), 'library-context-backward')
   }
 
   const handleOpenSelectedArtistInGraph = () => {
@@ -1566,7 +1562,12 @@ export default function LibraryView() {
       {inDetailView && (
         <div className="library-detail-toolbar">
           <div className="library-detail-toolbar-left">
-            <button className="back-btn" onClick={handleBack} title="Back" aria-label="Back">
+            <button
+              className="back-btn"
+              onClick={handleBackToLibrary}
+              title="Back to Library"
+              aria-label="Back to Library"
+            >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
               </svg>

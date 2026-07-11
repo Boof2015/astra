@@ -109,6 +109,7 @@ export interface UISessionSnapshot {
   showPipelineShelf: boolean
   showLyricsShelf: boolean
   lyricsShelfExpanded: boolean
+  fullscreenLyricsVisible?: boolean
 }
 
 export interface LibrarySessionSnapshot {
@@ -123,6 +124,7 @@ export interface LibrarySessionSnapshot {
   selectedGenre: string | null
   selectedYear: LibraryYearKey | null
   trackListSortState: SessionTrackSortState | null
+  tracksViewSortState?: SessionTrackSortState | null
   selectedSourceFilters: string[]
   albumSortMode: SessionAlbumSortMode
   includeSinglesInAlbums: boolean
@@ -459,7 +461,8 @@ function normalizeUISession(value: unknown): UISessionSnapshot | null {
     showInfoSidebar: value.showInfoSidebar === true,
     showPipelineShelf: value.showPipelineShelf === true,
     showLyricsShelf: value.showLyricsShelf === true,
-    lyricsShelfExpanded: value.lyricsShelfExpanded === true
+    lyricsShelfExpanded: value.lyricsShelfExpanded === true,
+    fullscreenLyricsVisible: value.fullscreenLyricsVisible === true
   }
 }
 
@@ -484,6 +487,9 @@ function normalizeLibrarySession(value: unknown): LibrarySessionSnapshot | null 
     selectedGenre: stringValue(value.selectedGenre),
     selectedYear: normalizeLibraryYearKey(value.selectedYear),
     trackListSortState: normalizeTrackSortState(value.trackListSortState),
+    ...(Object.hasOwn(value, 'tracksViewSortState')
+      ? { tracksViewSortState: normalizeTrackSortState(value.tracksViewSortState) }
+      : {}),
     selectedSourceFilters: requiredStringArray(value.selectedSourceFilters),
     albumSortMode: normalizeAlbumSortMode(value.albumSortMode),
     includeSinglesInAlbums: value.includeSinglesInAlbums === true,

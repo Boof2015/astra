@@ -28,7 +28,6 @@ function resolveAlbumArtist(trackArtist: string, albumArtist?: string | null): s
 }
 
 export function useOpenAlbumInLibrary() {
-  const setViewMode = useLibraryStore((s) => s.setViewMode)
   const selectAlbum = useLibraryStore((s) => s.selectAlbum)
   const setActiveView = useUIStore((s) => s.setActiveView)
 
@@ -43,8 +42,7 @@ export function useOpenAlbumInLibrary() {
 
     const resolvedArtist = resolveAlbumArtist(trackArtist, albumArtist)
 
-    setViewMode('tracks')
     await selectAlbum(album, resolvedArtist, 'library', albumIdentityKey)
     setActiveView('library')
-  }, [selectAlbum, setActiveView, setViewMode])
+  }, [selectAlbum, setActiveView])
 }

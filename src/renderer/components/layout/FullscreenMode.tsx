@@ -492,6 +492,8 @@ function FullscreenNextCueOverlay({
 
 export default function FullscreenMode() {
   const setFullscreen = useUIStore((s) => s.setFullscreen)
+  const showLyricsDock = useUIStore((s) => s.fullscreenLyricsVisible)
+  const toggleFullscreenLyricsVisible = useUIStore((s) => s.toggleFullscreenLyricsVisible)
   const currentTrack = usePlayerStore((s) => s.currentTrack)
   const playbackState = usePlayerStore((s) => s.playbackState)
   const shuffle = usePlayerStore((s) => s.shuffle)
@@ -518,7 +520,6 @@ export default function FullscreenMode() {
   const [isBackdropCrossfading, setIsBackdropCrossfading] = useState(false)
   const [heroPhase, setHeroPhase] = useState<HeroPhase>('steady')
   const [fullscreenTitleOverflows, setFullscreenTitleOverflows] = useState(false)
-  const [showLyricsDock, setShowLyricsDock] = useState(false)
 
   const backdropRequestTokenRef = useRef(0)
   const previousTrackIdRef = useRef<string | null>(null)
@@ -587,13 +588,13 @@ export default function FullscreenMode() {
 
       if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'l') {
         e.preventDefault()
-        setShowLyricsDock((visible) => !visible)
+        toggleFullscreenLyricsVisible()
       }
     }
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [setFullscreen])
+  }, [setFullscreen, toggleFullscreenLyricsVisible])
 
   useEffect(() => {
     checkFullscreenTitleOverflow()
@@ -787,7 +788,7 @@ export default function FullscreenMode() {
               <button
                 type="button"
                 className={`fullscreen-lyrics-toggle ${showLyricsDock ? 'active' : ''}`}
-                onClick={() => setShowLyricsDock((visible) => !visible)}
+                onClick={toggleFullscreenLyricsVisible}
                 title={showLyricsDock ? 'Hide lyrics (L)' : 'Show lyrics (L)'}
                 aria-label={showLyricsDock ? 'Hide lyrics' : 'Show lyrics'}
                 aria-pressed={showLyricsDock}

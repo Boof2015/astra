@@ -216,7 +216,6 @@ export default function GraphView() {
   const loadFullTracks = useLibraryStore((state) => state.loadFullTracks)
   const releaseFullTracks = useLibraryStore((state) => state.releaseFullTracks)
   const selectArtist = useLibraryStore((state) => state.selectArtist)
-  const setViewMode = useLibraryStore((state) => state.setViewMode)
 
   const mode = useGraphStore((state) => state.mode)
   const focusedArtistKey = useGraphStore((state) => state.focusedArtistKey)
@@ -965,10 +964,9 @@ export default function GraphView() {
   }
 
   const handleOpenArtistInLibrary = useCallback(async (artistName: string) => {
-    setViewMode('tracks')
     await selectArtist(artistName, 'library')
     setActiveView('library')
-  }, [selectArtist, setActiveView, setViewMode])
+  }, [selectArtist, setActiveView])
 
   const handleRecenter = () => {
     const centeredArtistKey = selectedArtistKey ?? visibleGraph.focusArtistKey

@@ -530,7 +530,6 @@ export default function QuickLaunchPalette() {
 
       if (result.kind === 'album') {
         const albumArtist = result.album.artist.trim()
-        setViewMode('tracks')
         await selectAlbum(
           result.album.album,
           albumArtist.length > 0 ? albumArtist : undefined,
@@ -543,7 +542,6 @@ export default function QuickLaunchPalette() {
       }
 
       if (result.kind === 'artist') {
-        setViewMode('tracks')
         await selectArtist(result.artist.artist, 'library')
         setActiveView('library')
         closeQuickLaunch()

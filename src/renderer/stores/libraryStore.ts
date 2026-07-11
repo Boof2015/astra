@@ -230,6 +230,7 @@ interface LibraryStore {
   showTracklistGenre: boolean
   showTracklistAddedDate: boolean
   trackListSortState: LibraryTrackListSortState | null
+  tracksViewSortState: LibraryTrackListSortState | null
   selectedSourceFilters: Set<string>
   albumSortMode: LibraryAlbumSortMode
   includeSinglesInAlbums: boolean
@@ -520,6 +521,7 @@ type TrackCachePatch = Partial<Pick<
   | 'selectionHistory'
   | 'selectionForwardHistory'
   | 'trackListSortState'
+  | 'tracksViewSortState'
   | 'selectedSourceFilters'
   | 'albumSortMode'
   | 'includeSinglesInAlbums'
@@ -941,6 +943,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   showTracklistGenre: loadTracklistGenreVisibilitySetting(),
   showTracklistAddedDate: loadTracklistAddedDateVisibilitySetting(),
   trackListSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE },
+  tracksViewSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE },
   selectedSourceFilters: new Set<string>(),
   albumSortMode: loadAlbumSortModeSetting(),
   includeSinglesInAlbums: loadIncludeSinglesInAlbumsSetting(),
@@ -1596,9 +1599,22 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   // Set view mode
   setViewMode: (mode: ViewMode) => {
     set((state) => {
+      const isLeavingRootTracks = state.viewMode === 'tracks'
+        && !state.selectedAlbum
+        && !state.selectedArtist
+        && !state.selectedGenre
+        && state.selectedYear === null
+      const tracksViewSortState = isLeavingRootTracks
+        ? state.trackListSortState
+        : state.tracksViewSortState
+
       // Allow detail navigation helpers to switch base mode to tracks without discarding active detail selection.
       if ((state.selectedAlbum || state.selectedArtist || state.selectedGenre) && mode === 'tracks') {
-        return { viewMode: mode, trackListSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE } }
+        return {
+          viewMode: mode,
+          trackListSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE },
+          tracksViewSortState: tracksViewSortState ? { ...tracksViewSortState } : null
+        }
       }
 
       return {
@@ -1611,7 +1627,10 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         selectionOrigin: null,
         selectionHistory: [],
         selectionForwardHistory: [],
-        trackListSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE }
+        trackListSortState: mode === 'tracks'
+          ? { ...(tracksViewSortState ?? DEFAULT_TRACK_LIST_SORT_STATE) }
+          : { ...DEFAULT_TRACK_LIST_SORT_STATE },
+        tracksViewSortState: tracksViewSortState ? { ...tracksViewSortState } : null
       }
     })
   },
@@ -1720,7 +1739,9 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       selectionHistory: [],
       selectionForwardHistory: [],
       trackPaths: state.viewMode === 'tracks' || state.viewMode === 'genres' || state.viewMode === 'folders' ? state.fullTrackPaths : [],
-      trackListSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE }
+      trackListSortState: state.viewMode === 'tracks'
+        ? { ...(state.tracksViewSortState ?? DEFAULT_TRACK_LIST_SORT_STATE) }
+        : { ...DEFAULT_TRACK_LIST_SORT_STATE }
     }))
   },
 
@@ -1731,7 +1752,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     if (!current) return false
     const historyLength = state.selectionHistory.length
     if (historyLength === 0) {
-      set({
+      set((latest) => ({
         selectedAlbum: null,
         selectedArtist: null,
         selectedGenre: null,
@@ -1739,8 +1760,10 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         selectionOrigin: null,
         trackPaths: state.viewMode === 'tracks' || state.viewMode === 'genres' || state.viewMode === 'folders' ? state.fullTrackPaths : [],
         selectionForwardHistory: appendSelectionHistory(state.selectionForwardHistory, current),
-        trackListSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE }
-      })
+        trackListSortState: state.viewMode === 'tracks'
+          ? { ...(latest.tracksViewSortState ?? DEFAULT_TRACK_LIST_SORT_STATE) }
+          : { ...DEFAULT_TRACK_LIST_SORT_STATE }
+      }))
       return true
     }
 
@@ -2103,13 +2126,34 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   setTrackListSortState: (sortState: LibraryTrackListSortState | null) => {
     const normalized = sortState ? normalizeTrackSortState(sortState) : null
-    set({ trackListSortState: normalized })
+    set((state) => {
+      const isRootTracks = state.viewMode === 'tracks'
+        && !state.selectedAlbum
+        && !state.selectedArtist
+        && !state.selectedGenre
+        && state.selectedYear === null
+      return {
+        trackListSortState: normalized,
+        ...(isRootTracks
+          ? { tracksViewSortState: normalized ? { ...normalized } : null }
+          : {})
+      }
+    })
   },
 
   resetTrackListSortState: () => {
-    set((state) => ({
-      trackListSortState: state.selectedAlbum ? null : { ...DEFAULT_TRACK_LIST_SORT_STATE }
-    }))
+    set((state) => {
+      const trackListSortState = state.selectedAlbum ? null : { ...DEFAULT_TRACK_LIST_SORT_STATE }
+      const isRootTracks = state.viewMode === 'tracks'
+        && !state.selectedAlbum
+        && !state.selectedArtist
+        && !state.selectedGenre
+        && state.selectedYear === null
+      return {
+        trackListSortState,
+        ...(isRootTracks ? { tracksViewSortState: trackListSortState } : {})
+      }
+    })
   },
 
   setSelectedSourceFilters: (filters: Iterable<string>) => {
@@ -2201,6 +2245,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       selectedGenre: state.selectedGenre,
       selectedYear: state.selectedYear,
       trackListSortState: state.trackListSortState ? { ...state.trackListSortState } : null,
+      tracksViewSortState: state.tracksViewSortState ? { ...state.tracksViewSortState } : null,
       selectedSourceFilters: [...state.selectedSourceFilters],
       albumSortMode: state.albumSortMode,
       includeSinglesInAlbums: state.includeSinglesInAlbums,
@@ -2211,6 +2256,14 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   restoreSession: async (snapshot: LibrarySessionSnapshot) => {
     const normalizedSortState = normalizeTrackSortState(snapshot.trackListSortState)
+    const isRootTracksSnapshot = snapshot.viewMode === 'tracks'
+      && !snapshot.selectedAlbum
+      && !snapshot.selectedArtist
+      && !snapshot.selectedGenre
+      && snapshot.selectedYear === null
+    const tracksViewSortState = normalizeTrackSortState(snapshot.tracksViewSortState)
+      ?? (isRootTracksSnapshot ? normalizedSortState : null)
+      ?? { ...DEFAULT_TRACK_LIST_SORT_STATE }
     const selectedSourceFilters = normalizeSourceFilters(snapshot.selectedSourceFilters)
     const albumSortMode = normalizeAlbumSortMode(snapshot.albumSortMode)
     const artistRootViewMode = normalizeArtistRootViewMode(snapshot.artistRootViewMode)
@@ -2223,7 +2276,10 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       selectionOrigin: null,
       selectionHistory: [],
       selectionForwardHistory: [],
-      trackListSortState: normalizedSortState,
+      trackListSortState: isRootTracksSnapshot
+        ? { ...tracksViewSortState }
+        : normalizedSortState,
+      tracksViewSortState: { ...tracksViewSortState },
       selectedSourceFilters,
       albumSortMode,
       includeSinglesInAlbums: Boolean(snapshot.includeSinglesInAlbums),
