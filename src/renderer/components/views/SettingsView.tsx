@@ -8,6 +8,7 @@ import BitPerfectModeWarningModal from '../settings/BitPerfectModeWarningModal'
 import LocalApiPairingModal from '../settings/LocalApiPairingModal'
 import KeybindSettings from '../settings/KeybindSettings'
 import SettingsTransferWizard from '../settings/SettingsTransferWizard'
+import SettingsSegmentedControl, { type SettingsSegmentedOption } from '../settings/SettingsSegmentedControl'
 import { renderPairingQrSvg } from '../../utils/pairingQr'
 import { usePresence } from '../../hooks/usePresence'
 import { useLibraryStore } from '../../stores/libraryStore'
@@ -29,7 +30,13 @@ import {
   type ReplayGainMode
 } from '../../stores/audioSettingsStore'
 import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
-import { DISCORD_PAUSE_CLEAR_MINUTE_PRESETS, useDiscordSettingsStore } from '../../stores/discordSettingsStore'
+import {
+  DISCORD_PAUSE_CLEAR_MINUTE_PRESETS,
+  useDiscordSettingsStore,
+  type DiscordRpcCompactStatusMode,
+  type DiscordRpcExpandedInfoMode,
+  type DiscordRpcLinkDestination,
+} from '../../stores/discordSettingsStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
 import { useParallaxStore } from '../../stores/parallaxStore'
@@ -104,6 +111,68 @@ function getScrobbleProtocolLabel(protocol: LastFmScrobbleProtocol): string {
   if (protocol === 'listenbrainz') return 'ListenBrainz'
   return 'Last.fm 2.0'
 }
+
+const ACCENT_SOURCE_OPTIONS: readonly SettingsSegmentedOption<AccentSource>[] = [
+  { value: 'theme', label: 'Theme Accent' },
+  { value: 'cover-art', label: 'Cover Art' },
+]
+
+const COVER_ART_ACCENT_METHOD_OPTIONS: readonly SettingsSegmentedOption<CoverArtAccentMethod>[] = [
+  { value: 'dominant', label: 'Dominant' },
+  { value: 'vibrant', label: 'Vibrant' },
+  { value: 'average', label: 'Average' },
+]
+
+const HOME_GREETING_TEXT_OPTIONS: readonly SettingsSegmentedOption<HomeGreetingTextMode>[] = [
+  { value: 'messages', label: 'Messages' },
+  { value: 'clock', label: 'Clock' },
+  { value: 'off', label: 'Off' },
+]
+
+const REPLAYGAIN_OPTIONS: readonly SettingsSegmentedOption<ReplayGainSelectorValue>[] = [
+  { value: 'disabled', label: 'Disabled' },
+  { value: 'auto', label: 'Auto' },
+  { value: 'track', label: 'Track' },
+  { value: 'album', label: 'Album' },
+]
+
+const MINI_PLAYER_VISUALIZER_OPTIONS: readonly SettingsSegmentedOption<MiniPlayerVisualizerMode>[] = [
+  { value: 'off', label: 'Off' },
+  { value: 'oscilloscope', label: 'Oscilloscope' },
+  { value: 'spectrum', label: 'Spectrum' },
+]
+
+const JUMP_TO_PLAYING_OPTIONS: readonly SettingsSegmentedOption<JumpToPlayingDestination>[] = [
+  { value: 'smart-source', label: 'Smart Source' },
+  { value: 'library-tracks', label: 'Library Tracks' },
+  { value: 'album', label: 'Album' },
+  { value: 'artist', label: 'Artist' },
+  { value: 'queue', label: 'Queue' },
+]
+
+const DISCORD_COMPACT_STATUS_OPTIONS: readonly SettingsSegmentedOption<DiscordRpcCompactStatusMode>[] = [
+  { value: 'title', label: 'Title' },
+  { value: 'artist', label: 'Artist' },
+]
+
+const DISCORD_EXPANDED_INFO_OPTIONS: readonly SettingsSegmentedOption<DiscordRpcExpandedInfoMode>[] = [
+  { value: 'file-info', label: 'File Info' },
+  { value: 'album', label: 'Album' },
+]
+
+const DISCORD_LINK_DESTINATION_OPTIONS: readonly SettingsSegmentedOption<DiscordRpcLinkDestination>[] = [
+  { value: 'ytmusic', label: 'YT Music' },
+  { value: 'lastfm', label: 'Last.fm' },
+  { value: 'off', label: 'Off' },
+]
+
+const DISCORD_PAUSE_CLEAR_OPTIONS: readonly SettingsSegmentedOption<number>[] = DISCORD_PAUSE_CLEAR_MINUTE_PRESETS.map(
+  (minutes) => ({ value: minutes, label: minutes === 0 ? 'Off' : `${minutes}m` })
+)
+
+const CUSTOM_SCROBBLE_PROTOCOL_OPTIONS: readonly SettingsSegmentedOption<LastFmScrobbleProtocol>[] = CUSTOM_SCROBBLE_PROTOCOLS.map(
+  (protocol) => ({ value: protocol, label: getScrobbleProtocolLabel(protocol) })
+)
 
 function getDefaultScrobbleProfileName(protocol: LastFmScrobbleProtocol): string {
   if (protocol === 'audioscrobbler') return 'AudioScrobbler endpoint'
@@ -1489,40 +1558,27 @@ export default function SettingsView() {
                       />
                     </div>
                   </label>
-                  <label className="settings-field">
+                  <div className="settings-field">
                     <span className="settings-field-label">Accent Source</span>
-                    <select
-                      className="settings-select"
+                    <SettingsSegmentedControl
+                      ariaLabel="Accent source"
+                      fullWidth
+                      options={ACCENT_SOURCE_OPTIONS}
                       value={accentSource}
-                      onChange={(event) => {
-                        const source: AccentSource = event.target.value === 'cover-art' ? 'cover-art' : 'theme'
-                        setAccentSource(source)
-                      }}
-                    >
-                      <option value="theme">Theme Accent</option>
-                      <option value="cover-art">Cover Art (Now Playing)</option>
-                    </select>
-                  </label>
+                      onChange={setAccentSource}
+                    />
+                  </div>
                   {accentSource === 'cover-art' && (
-                    <label className="settings-field">
+                    <div className="settings-field">
                       <span className="settings-field-label">Cover Art Method</span>
-                      <select
-                        className="settings-select"
+                      <SettingsSegmentedControl
+                        ariaLabel="Cover art accent method"
+                        fullWidth
+                        options={COVER_ART_ACCENT_METHOD_OPTIONS}
                         value={coverArtAccentMethod}
-                        onChange={(event) => {
-                          const method: CoverArtAccentMethod = event.target.value === 'average'
-                            ? 'average'
-                            : event.target.value === 'vibrant'
-                              ? 'vibrant'
-                              : 'dominant'
-                          setCoverArtAccentMethod(method)
-                        }}
-                      >
-                        <option value="dominant">Dominant</option>
-                        <option value="vibrant">Vibrant</option>
-                        <option value="average">Average</option>
-                      </select>
-                    </label>
+                        onChange={setCoverArtAccentMethod}
+                      />
+                    </div>
                   )}
                   <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">
@@ -1584,23 +1640,16 @@ export default function SettingsView() {
               <div className="settings-card">
                 <div className="settings-card-label">Home Greeting</div>
                 <div className="settings-grid">
-                  <label className="settings-field">
+                  <div className="settings-field">
                     <span className="settings-field-label">Text</span>
-                    <select
-                      className="settings-select"
+                    <SettingsSegmentedControl
+                      ariaLabel="Home greeting text"
+                      fullWidth
+                      options={HOME_GREETING_TEXT_OPTIONS}
                       value={homeGreetingTextMode}
-                      onChange={(event) => {
-                        const mode = event.target.value === 'clock' || event.target.value === 'off'
-                          ? event.target.value
-                          : 'messages'
-                        setHomeGreetingTextMode(mode as HomeGreetingTextMode)
-                      }}
-                    >
-                      <option value="messages">Messages</option>
-                      <option value="clock">Clock</option>
-                      <option value="off">Off</option>
-                    </select>
-                  </label>
+                      onChange={setHomeGreetingTextMode}
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -1682,20 +1731,17 @@ export default function SettingsView() {
                       </button>
                     </div>
                   </label>
-                  <label className="settings-field">
+                  <div className="settings-field">
                     <span className="settings-field-label">ReplayGain</span>
-                    <select
-                      className="settings-select"
+                    <SettingsSegmentedControl
+                      ariaLabel="ReplayGain preference"
+                      fullWidth
+                      options={REPLAYGAIN_OPTIONS}
                       value={replayGainSelectorValue}
                       disabled={bitPerfectModeActive}
-                      onChange={(event) => void handleReplayGainSelectorChange(event.target.value as ReplayGainSelectorValue)}
-                    >
-                      <option value="disabled">Disabled</option>
-                      <option value="auto">Auto</option>
-                      <option value="track">Track</option>
-                      <option value="album">Album</option>
-                    </select>
-                  </label>
+                      onChange={(value) => void handleReplayGainSelectorChange(value)}
+                    />
+                  </div>
                 </div>
               </div>
               <div className="settings-card">
@@ -1783,18 +1829,16 @@ export default function SettingsView() {
               <div className="settings-card">
                 <div className="settings-card-label">Visualizer</div>
                 <div className="settings-grid">
-                  <label className="settings-field">
+                  <div className="settings-field">
                     <span className="settings-field-label">Mini Player Visualizer</span>
-                    <select
-                      className="settings-select"
+                    <SettingsSegmentedControl
+                      ariaLabel="Mini player visualizer"
+                      fullWidth
+                      options={MINI_PLAYER_VISUALIZER_OPTIONS}
                       value={miniPlayerVisualizerMode}
-                      onChange={(event) => handleMiniPlayerVisualizerModeChange(event.target.value as MiniPlayerVisualizerMode)}
-                    >
-                      <option value="off">Off</option>
-                      <option value="oscilloscope">Oscilloscope</option>
-                      <option value="spectrum">Spectrum</option>
-                    </select>
-                  </label>
+                      onChange={handleMiniPlayerVisualizerModeChange}
+                    />
+                  </div>
                   <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">Visualizer</span>
                     <button
@@ -1887,22 +1931,16 @@ export default function SettingsView() {
               <div className="settings-card">
                 <div className="settings-card-label">Navigation</div>
                 <div className="settings-grid">
-                  <label className="settings-field">
+                  <div className="settings-field">
                     <span className="settings-field-label">Jump to Playing opens</span>
-                    <select
-                      className="settings-select"
+                    <SettingsSegmentedControl
+                      ariaLabel="Jump to Playing destination"
+                      fullWidth
+                      options={JUMP_TO_PLAYING_OPTIONS}
                       value={jumpToPlayingDestination}
-                      onChange={(event) => {
-                        setJumpToPlayingDestination(event.target.value as JumpToPlayingDestination)
-                      }}
-                    >
-                      <option value="smart-source">Smart Source</option>
-                      <option value="library-tracks">Library Tracks</option>
-                      <option value="album">Album</option>
-                      <option value="artist">Artist</option>
-                      <option value="queue">Queue</option>
-                    </select>
-                  </label>
+                      onChange={setJumpToPlayingDestination}
+                    />
+                  </div>
                 </div>
                 {jumpToPlayingDestination !== DEFAULT_JUMP_TO_PLAYING_DESTINATION && (
                   <p className="settings-note">Default: Smart Source</p>
@@ -2249,133 +2287,45 @@ export default function SettingsView() {
                   </div>
                   <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">Compact Status</span>
-                    <div
-                      className={`library-segmented-toggle settings-discord-segmented ${!discordEnabled ? 'is-disabled' : ''}`}
-                      role="group"
-                      aria-label="Discord compact status"
-                    >
-                      <span
-                        className="library-segmented-highlight"
-                        style={{ transform: discordCompactStatusMode === 'artist' ? 'translateX(100%)' : 'translateX(0)' }}
-                      />
-                      <button
-                        className={`library-segmented-btn ${discordCompactStatusMode === 'title' ? 'active' : ''}`}
-                        onClick={() => void setDiscordCompactStatusMode('title')}
-                        disabled={!discordEnabled}
-                        aria-pressed={discordCompactStatusMode === 'title'}
-                      >
-                        Title
-                      </button>
-                      <button
-                        className={`library-segmented-btn ${discordCompactStatusMode === 'artist' ? 'active' : ''}`}
-                        onClick={() => void setDiscordCompactStatusMode('artist')}
-                        disabled={!discordEnabled}
-                        aria-pressed={discordCompactStatusMode === 'artist'}
-                      >
-                        Artist
-                      </button>
-                    </div>
+                    <SettingsSegmentedControl
+                      ariaLabel="Discord compact status"
+                      disabled={!discordEnabled}
+                      options={DISCORD_COMPACT_STATUS_OPTIONS}
+                      value={discordCompactStatusMode}
+                      onChange={(value) => void setDiscordCompactStatusMode(value)}
+                    />
                   </div>
                   <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">Profile Info Line</span>
-                    <div
-                      className={`library-segmented-toggle settings-discord-segmented ${!discordEnabled ? 'is-disabled' : ''}`}
-                      role="group"
-                      aria-label="Discord profile info line"
-                    >
-                      <span
-                        className="library-segmented-highlight"
-                        style={{ transform: discordExpandedInfoMode === 'album' ? 'translateX(100%)' : 'translateX(0)' }}
-                      />
-                      <button
-                        className={`library-segmented-btn ${discordExpandedInfoMode === 'file-info' ? 'active' : ''}`}
-                        onClick={() => void setDiscordExpandedInfoMode('file-info')}
-                        disabled={!discordEnabled}
-                        aria-pressed={discordExpandedInfoMode === 'file-info'}
-                      >
-                        File Info
-                      </button>
-                      <button
-                        className={`library-segmented-btn ${discordExpandedInfoMode === 'album' ? 'active' : ''}`}
-                        onClick={() => void setDiscordExpandedInfoMode('album')}
-                        disabled={!discordEnabled}
-                        aria-pressed={discordExpandedInfoMode === 'album'}
-                      >
-                        Album
-                      </button>
-                    </div>
+                    <SettingsSegmentedControl
+                      ariaLabel="Discord profile info line"
+                      disabled={!discordEnabled}
+                      options={DISCORD_EXPANDED_INFO_OPTIONS}
+                      value={discordExpandedInfoMode}
+                      onChange={(value) => void setDiscordExpandedInfoMode(value)}
+                    />
                   </div>
                   <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">Title & Artist Links</span>
-                    <div
-                      className={`library-segmented-toggle settings-discord-links ${!discordEnabled ? 'is-disabled' : ''}`}
-                      role="group"
-                      aria-label="Discord title and artist links"
-                    >
-                      <span
-                        className="library-segmented-highlight"
-                        style={{
-                          transform: discordLinkDestination === 'lastfm'
-                            ? 'translateX(100%)'
-                            : discordLinkDestination === 'off'
-                              ? 'translateX(200%)'
-                              : 'translateX(0)'
-                        }}
-                      />
-                      <button
-                        className={`library-segmented-btn ${discordLinkDestination === 'ytmusic' ? 'active' : ''}`}
-                        onClick={() => void setDiscordLinkDestination('ytmusic')}
-                        disabled={!discordEnabled}
-                        aria-pressed={discordLinkDestination === 'ytmusic'}
-                      >
-                        YT Music
-                      </button>
-                      <button
-                        className={`library-segmented-btn ${discordLinkDestination === 'lastfm' ? 'active' : ''}`}
-                        onClick={() => void setDiscordLinkDestination('lastfm')}
-                        disabled={!discordEnabled}
-                        aria-pressed={discordLinkDestination === 'lastfm'}
-                      >
-                        Last.fm
-                      </button>
-                      <button
-                        className={`library-segmented-btn ${discordLinkDestination === 'off' ? 'active' : ''}`}
-                        onClick={() => void setDiscordLinkDestination('off')}
-                        disabled={!discordEnabled}
-                        aria-pressed={discordLinkDestination === 'off'}
-                      >
-                        Off
-                      </button>
-                    </div>
+                    <SettingsSegmentedControl
+                      ariaLabel="Discord title and artist links"
+                      className="settings-segmented-control-wide"
+                      disabled={!discordEnabled}
+                      options={DISCORD_LINK_DESTINATION_OPTIONS}
+                      value={discordLinkDestination}
+                      onChange={(value) => void setDiscordLinkDestination(value)}
+                    />
                   </div>
                   <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">Clear When Paused</span>
-                    <div
-                      className={`library-segmented-toggle settings-discord-pause ${!discordEnabled ? 'is-disabled' : ''}`}
-                      role="group"
-                      aria-label="Discord clear presence when paused"
-                    >
-                      <span
-                        className="library-segmented-highlight"
-                        style={{
-                          transform: `translateX(${Math.max(
-                            0,
-                            (DISCORD_PAUSE_CLEAR_MINUTE_PRESETS as readonly number[]).indexOf(discordPauseClearMinutes)
-                          ) * 100}%)`
-                        }}
-                      />
-                      {DISCORD_PAUSE_CLEAR_MINUTE_PRESETS.map((minutes) => (
-                        <button
-                          key={minutes}
-                          className={`library-segmented-btn ${discordPauseClearMinutes === minutes ? 'active' : ''}`}
-                          onClick={() => void setDiscordPauseClearMinutes(minutes)}
-                          disabled={!discordEnabled}
-                          aria-pressed={discordPauseClearMinutes === minutes}
-                        >
-                          {minutes === 0 ? 'Off' : `${minutes}m`}
-                        </button>
-                      ))}
-                    </div>
+                    <SettingsSegmentedControl
+                      ariaLabel="Discord clear presence when paused"
+                      className="settings-segmented-control-wide"
+                      disabled={!discordEnabled}
+                      options={DISCORD_PAUSE_CLEAR_OPTIONS}
+                      value={discordPauseClearMinutes}
+                      onChange={(value) => void setDiscordPauseClearMinutes(value)}
+                    />
                   </div>
                 </div>
                 <p className="settings-note">{discordStatusMessage}</p>
@@ -3143,20 +3093,16 @@ export default function SettingsView() {
                   onChange={(event) => setLastFmProfileNameInput(event.target.value)}
                 />
               </label>
-              <label className="settings-field">
+              <div className="settings-field">
                 <span className="settings-field-label">Protocol</span>
-                <select
-                  className="settings-select"
+                <SettingsSegmentedControl
+                  ariaLabel="Scrobble protocol"
+                  fullWidth
+                  options={CUSTOM_SCROBBLE_PROTOCOL_OPTIONS}
                   value={lastFmProfileProtocolInput}
-                  onChange={(event) => handleLastFmProfileProtocolChange(event.target.value as LastFmScrobbleProtocol)}
-                >
-                  {CUSTOM_SCROBBLE_PROTOCOLS.map((protocol) => (
-                    <option key={protocol} value={protocol}>
-                      {getScrobbleProtocolLabel(protocol)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  onChange={handleLastFmProfileProtocolChange}
+                />
+              </div>
               <label className="settings-field">
                 <span className="settings-field-label">API Base URL</span>
                 <input
