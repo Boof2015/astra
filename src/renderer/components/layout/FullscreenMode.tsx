@@ -550,6 +550,7 @@ export default function FullscreenMode() {
     currentCodec.includes('atmos') ||
     currentCodec.includes('joc')
   )
+  const showEclipsaBadge = Boolean(currentTrack?.isIamf || currentCodec === 'iamf')
 
   const checkFullscreenTitleOverflow = useCallback(() => {
     const outer = fullscreenTitleOuterRef.current
@@ -817,11 +818,16 @@ export default function FullscreenMode() {
                 </h1>
                 <p className="fullscreen-artist">{currentTrack?.artist ?? '\u2014'}</p>
                 <p className="fullscreen-album">{currentTrack?.album ?? '\u2014'}</p>
-                {(showAtmosBadge || isMultichannel) && (
+                {(showAtmosBadge || showEclipsaBadge || isMultichannel) && (
                   <div className="fullscreen-audio-badges">
                     {showAtmosBadge && (
                       <span className="fullscreen-audio-badge fullscreen-audio-badge-atmos">
                         ATMOS
+                      </span>
+                    )}
+                    {showEclipsaBadge && (
+                      <span className="fullscreen-audio-badge fullscreen-audio-badge-eclipsa">
+                        ECLIPSA
                       </span>
                     )}
                     {isMultichannel && (

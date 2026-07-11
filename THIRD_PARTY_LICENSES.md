@@ -79,6 +79,42 @@ Licensed under the BSD 3-Clause License:
 > ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 > POSSIBILITY OF SUCH DAMAGE.
 
+## IAMF decoder (`iamf-decoder.wasm`)
+
+The Eclipsa Audio / IAMF decoder is built from `native/iamf-wasm/iamf_wrapper.c`
+by `scripts/build/build-iamf-wasm.sh` and includes the following components
+(pinned as submodules under `third_party/`). AAC substream support is
+deliberately not compiled: libiamf's AAC path requires the Fraunhofer FDK AAC
+library, whose license is incompatible with GPLv3 distribution.
+
+### libiamf
+
+Copyright © Alliance for Open Media and contributors.
+Licensed under the BSD 3-Clause Clear License
+(`third_party/libiamf/LICENSE`) with the Alliance for Open Media Patent
+License 1.0 (`third_party/libiamf/PATENTS`). Pinned at tag v1.1.0. The build
+compiles the core decoder (`code/src/common`, `code/src/iamf_dec` with the
+Opus/FLAC/PCM codec glue); it includes the vendored Speex resampler
+(`resample.c`, BSD, Copyright © 2003–2008 Jean-Marc Valin).
+
+### Opus
+
+Copyright © Xiph.Org Foundation and contributors.
+Licensed under the BSD 3-Clause License (`third_party/opus/COPYING`).
+Pinned at tag v1.4, compiled with emscripten and statically linked.
+
+### FLAC (libFLAC)
+
+Copyright © 2000–2009 Josh Coalson, 2011–2023 Xiph.Org Foundation.
+Licensed under the BSD 3-Clause License (`third_party/flac/COPYING.Xiph`).
+Pinned at tag 1.4.3, compiled with emscripten and statically linked.
+
+### IAMF conformance test fixtures
+
+The files under `src/shared/iamf/__fixtures__/` are conformance vectors from
+the libiamf repository (`tests/` directory), used by the automated tests and
+covered by the same BSD 3-Clause Clear License.
+
 ## Bundled decoder binaries
 
 Astra bundles `ffmpeg` and `ffprobe` binaries via the `ffmpeg-static` and

@@ -211,6 +211,7 @@ const MAX_GAPLESS_PREBUFFER_TIMER_MS = 2_147_000_000
 export const MAX_PLAYBACK_HISTORY = 500
 export const PLAYER_VOLUME_STORAGE_KEY = 'astra-player-volume-v1'
 const BIT_PERFECT_REMOTE_FALLBACK_MESSAGE = 'Bit-perfect mode is only available for local files. Playback fell back to Standard.'
+const IAMF_BIT_PERFECT_FALLBACK_MESSAGE = 'Eclipsa (IAMF) tracks decode through the standard pipeline. Playback fell back to Standard.'
 let nextQueueItemId = 1
 
 function createQueueId(): string {
@@ -449,6 +450,7 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
     codec?: string | null
     codec_profile?: string | null
     is_atmos_joc?: number | null
+    is_iamf?: number | null
   }
 
   return {
@@ -476,6 +478,7 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
     codec: codecTrack.codec ?? undefined,
     codecProfile: codecTrack.codec_profile ?? undefined,
     isAtmosJoc: codecTrack.is_atmos_joc === 1,
+    isIamf: codecTrack.is_iamf === 1,
     replayGainTrackDb: dbTrack.replaygain_track_gain_db ?? undefined,
     replayGainAlbumDb: dbTrack.replaygain_album_gain_db ?? undefined,
     sourceType: dbTrack.source_type,
@@ -741,6 +744,7 @@ interface AssociatedAudioMetadata {
   codec?: string
   codecProfile?: string
   isAtmosJoc?: boolean
+  isIamf?: boolean
   replayGainTrackDb?: number
   replayGainAlbumDb?: number
   artworkHash?: string
@@ -776,6 +780,7 @@ export function mergeAssociatedTrackMetadata(track: Track, metadata: AssociatedA
     codec: metadata.codec ?? track.codec,
     codecProfile: metadata.codecProfile ?? track.codecProfile,
     isAtmosJoc: metadata.isAtmosJoc ?? track.isAtmosJoc,
+    isIamf: metadata.isIamf ?? track.isIamf,
     replayGainTrackDb: metadata.replayGainTrackDb ?? track.replayGainTrackDb,
     replayGainAlbumDb: metadata.replayGainAlbumDb ?? track.replayGainAlbumDb
   }
@@ -838,8 +843,19 @@ function requestTrackLoudnessAnalysis(
   return request.catch(() => null)
 }
 
+// IAMF (Eclipsa) tracks decode via the renderer wasm worker; every
+// ffmpeg-based path (bit-perfect, progressive streaming, compatibility
+// fallback) must route around them — the bundled ffmpeg 6.0 has no IAMF
+// support, so those paths cannot ever succeed.
+function isIamfTrack(track: Track | null | undefined): boolean {
+  if (!track) return false
+  if (track.isIamf) return true
+  return track.path.toLowerCase().endsWith('.iamf')
+}
+
 async function shouldUseLocalProgressivePath(track: Track): Promise<boolean> {
   if ((track.sourceType ?? 'local') !== 'local') return false
+  if (isIamfTrack(track)) return false
   if (useAudioSettingsStore.getState().playbackOutputMode !== 'standard') return false
 
   const estimatedDecodedBytes = estimateDecodedTrackBytes(track)
@@ -892,12 +908,14 @@ function shouldUseBitPerfectPath(track: Track | null | undefined): boolean {
   if (!track) return false
   const sourceType = track.sourceType ?? 'local'
   if (sourceType !== 'local') return false
+  if (isIamfTrack(track)) return false
   return useAudioSettingsStore.getState().playbackOutputMode === 'bitperfect'
 }
 
 async function ensureCompatiblePlaybackMode(track: Track): Promise<void> {
   const sourceType = track.sourceType ?? 'local'
-  if (sourceType === 'local') {
+  const iamf = isIamfTrack(track)
+  if (sourceType === 'local' && !iamf) {
     return
   }
 
@@ -908,7 +926,9 @@ async function ensureCompatiblePlaybackMode(track: Track): Promise<void> {
 
   await audioSettings.setPlaybackOutputMode('standard')
   useAudioSettingsStore.setState({
-    playbackModeStatusMessage: BIT_PERFECT_REMOTE_FALLBACK_MESSAGE
+    playbackModeStatusMessage: sourceType !== 'local'
+      ? BIT_PERFECT_REMOTE_FALLBACK_MESSAGE
+      : IAMF_BIT_PERFECT_FALLBACK_MESSAGE
   })
 }
 
@@ -1727,6 +1747,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           throwIfSupersededLoad(loadRequestId)
         } catch (primaryDecodeError) {
           if (isSupersededPlaybackLoad(primaryDecodeError, loadRequestId)) {
+            throw primaryDecodeError
+          }
+          // ffmpeg 6.0 cannot decode IAMF; the fallback would fail anyway.
+          if (isIamfTrack(track)) {
             throw primaryDecodeError
           }
           const fallbackData = await window.electronAPI.decodeAudioWithFfmpeg(track.path)
@@ -2640,6 +2664,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           if (isSupersededPlaybackLoad(primaryDecodeError, loadRequestId)) {
             throw primaryDecodeError
           }
+          // ffmpeg 6.0 cannot decode IAMF; the fallback would fail anyway.
+          if (isIamfTrack(track)) {
+            throw primaryDecodeError
+          }
           const fallbackData = await window.electronAPI.decodeAudioWithFfmpeg(track.path)
           throwIfSupersededLoad(loadRequestId)
           if (!fallbackData) {
@@ -2664,6 +2692,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           codec: result.metadata?.codec ?? track.codec,
           codecProfile: result.metadata?.codecProfile ?? track.codecProfile,
           isAtmosJoc: result.metadata?.isAtmosJoc ?? track.isAtmosJoc,
+          isIamf: result.metadata?.isIamf ?? track.isIamf,
           replayGainTrackDb: result.metadata?.replayGainTrackDb ?? track.replayGainTrackDb,
           replayGainAlbumDb: result.metadata?.replayGainAlbumDb ?? track.replayGainAlbumDb
         }

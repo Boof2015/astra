@@ -260,6 +260,7 @@ export default function TransportBar() {
     currentCodec.includes('atmos') ||
     currentCodec.includes('joc')
   )
+  const showEclipsaBadge = Boolean(currentTrack?.isIamf || currentCodec === 'iamf')
   const outputDeviceLabel = (() => {
     return resolveOutputDeviceLabel(selectedOutputDeviceId, availableOutputDevices, {
       defaultRouteFallbackLabel: 'System Default Output',
@@ -411,7 +412,7 @@ export default function TransportBar() {
                 )
                 : '\u2014'}
             </div>
-            {(showAtmosBadge || isMultichannel) && (
+            {(showAtmosBadge || showEclipsaBadge || isMultichannel) && (
               <div className="transport-audio-badges">
               {showAtmosBadge && (
                   <span
@@ -419,6 +420,14 @@ export default function TransportBar() {
                     title="Atmos metadata detected"
                   >
                     ATM
+                  </span>
+                )}
+                {showEclipsaBadge && (
+                  <span
+                    className="transport-audio-badge transport-audio-badge-eclipsa"
+                    title="Eclipsa Audio (IAMF) source, decoded to 7.1.4"
+                  >
+                    ECL
                   </span>
                 )}
                 {isMultichannel && (

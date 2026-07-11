@@ -1097,6 +1097,12 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   color: #fef3c7;
 }
 
+.transport-audio-badge-eclipsa {
+  border-color: rgba(45, 212, 191, 0.5);
+  background: rgba(45, 212, 191, 0.14);
+  color: #ccfbf1;
+}
+
 .transport-fav-btn {
   display: flex;
   align-items: center;
@@ -2246,6 +2252,12 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   border-color: rgba(251, 191, 36, 0.5);
   background: rgba(251, 191, 36, 0.16);
   color: #fef3c7;
+}
+
+.fullscreen-audio-badge-eclipsa {
+  border-color: rgba(45, 212, 191, 0.5);
+  background: rgba(45, 212, 191, 0.16);
+  color: #ccfbf1;
 }
 
 .fullscreen-hero.lyrics-active {
@@ -5584,6 +5596,12 @@ body:has(.fullscreen-overlay) .controller-hints {
   border-color: rgba(251, 191, 36, 0.45);
   background: rgba(251, 191, 36, 0.16);
   color: #fef3c7;
+}
+
+.track-channel-badge-eclipsa {
+  border-color: rgba(45, 212, 191, 0.45);
+  background: rgba(45, 212, 191, 0.16);
+  color: #ccfbf1;
 }
 
 .track-artist,

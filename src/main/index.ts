@@ -8,6 +8,8 @@ import { createHash, randomUUID } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
 import type { DynamicPlaylistRulesV1 } from '../shared/playlists/dynamicPlaylist'
+import { collectIamfStreamStats } from '../shared/iamf/obuWalker'
+import { mp4HasIamfTrack, readMp4DurationSeconds } from '../shared/iamf/mp4'
 import {
   deepScanFlacIntegrityTrack,
   isFlacTarget,
@@ -1171,7 +1173,7 @@ const SCOPE_POPOUT_DEFAULTS: Record<ScopeKind, {
 }
 
 // Supported audio formats
-const AUDIO_EXTENSIONS = ['mp3', 'flac', 'wav', 'ogg', 'aac', 'm4a', 'opus', 'wma', 'aiff', 'alac', 'ape', 'wv']
+const AUDIO_EXTENSIONS = ['mp3', 'flac', 'wav', 'ogg', 'aac', 'm4a', 'opus', 'wma', 'aiff', 'alac', 'ape', 'wv', 'iamf', 'mp4']
 const AUDIO_EXTENSION_SET = new Set(AUDIO_EXTENSIONS.map((extension) => `.${extension}`))
 const AUDIO_FILTERS = [
   {
@@ -7641,6 +7643,7 @@ interface LoadedAudioMetadata {
   codec?: string
   codecProfile?: string
   isAtmosJoc?: boolean
+  isIamf?: boolean
   replayGainTrackDb?: number
   replayGainAlbumDb?: number
 }
@@ -9300,6 +9303,10 @@ async function analyzeTrackLoudness(
 
   const inFlight = loudnessAnalysisInFlight.get(filePath)
   if (inFlight) return inFlight
+  // The bundled ffmpeg (6.0) cannot read IAMF, so skip the doomed ebur128
+  // spawn; the renderer's buffer-based analyzer computes and stores loudness
+  // after the wasm decode instead (returned from the DB above on later plays).
+  if (extname(filePath).toLowerCase() === '.iamf') return null
   return enqueueLoudnessAnalysisJob(filePath, fileStat, priority)
 }
 
@@ -9369,6 +9376,7 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
       codec: dbTrack.codec ?? undefined,
       codecProfile: dbTrack.codec_profile ?? undefined,
       isAtmosJoc: dbTrack.is_atmos_joc === 1,
+      isIamf: dbTrack.is_iamf === 1,
       replayGainTrackDb: replayGainScanEnabled
         ? (dbTrack.replaygain_track_gain_db ?? undefined)
         : undefined,
@@ -9389,6 +9397,34 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
     artist: 'Unknown Artist',
     album: 'Unknown Album',
     format
+  }
+
+  // IAMF (Eclipsa) sources: neither music-metadata nor the bundled ffprobe
+  // (6.0) can read them; duration comes from the OBU walker / moov and
+  // channels from the fixed 7.1.4 decode target.
+  if (format === 'iamf') {
+    try {
+      const stats = collectIamfStreamStats(new Uint8Array(await readFile(filePath)))
+      if (stats?.durationSeconds) metadata.duration = stats.durationSeconds
+    } catch {
+      // Filename-only metadata; playback surfaces the real error.
+    }
+    metadata.channels = 12
+    metadata.codec = 'iamf'
+    metadata.isIamf = true
+    return metadata
+  }
+  if (format === 'mp4') {
+    const moov = await library.readMp4MoovBox(filePath)
+    if (moov && mp4HasIamfTrack(moov)) {
+      metadata.duration = readMp4DurationSeconds(moov) ?? undefined
+      metadata.channels = 12
+      metadata.codec = 'iamf'
+      metadata.isIamf = true
+      return metadata
+    }
+    // Non-IAMF .mp4 falls through to the regular parsers (dialog-opened
+    // files only; the library scanner rejects them).
   }
 
   try {

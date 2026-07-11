@@ -411,7 +411,7 @@ export default function ChannelRoutingPanel() {
     : null
 
   const inputSummary = hasTrackChannels
-    ? `${formatChannels(trackChannels)}${currentTrack?.isAtmosJoc ? ' · Atmos JOC' : ''}`
+    ? `${formatChannels(trackChannels)}${currentTrack?.isAtmosJoc ? ' · Atmos JOC' : ''}${currentTrack?.isIamf ? ' · Eclipsa' : ''}`
     : 'No track playing'
 
   const renderSummary = binauralSelected
@@ -436,6 +436,11 @@ export default function ChannelRoutingPanel() {
             {currentTrack?.isAtmosJoc && (
               <span className="pipeline-chip pipeline-chip-accent" title="Dolby Atmos (Joint Object Coding) source">
                 Atmos JOC
+              </span>
+            )}
+            {currentTrack?.isIamf && (
+              <span className="pipeline-chip pipeline-chip-accent" title="Eclipsa Audio (IAMF) source, rendered to 7.1.4">
+                Eclipsa
               </span>
             )}
           </div>

@@ -18,7 +18,21 @@ Astra plays your local music - FLACs, MP3s, whatever your collection looks like.
 
 ## Playback
 
-Gapless playback with pre-buffering so albums flow the way they were intended. Supports MP3, FLAC, WAV, OGG, AAC, M4A, OPUS, WMA, AIFF, ALAC, APE, and WavPack natively, with an FFmpeg fallback for anything else. Dolby Atmos multichannel decoding works without Atmos-compatible hardware. Bit-perfect output bypasses the OS mixer for direct hardware delivery — WASAPI Exclusive on Windows, CoreAudio HAL on macOS, ALSA hw on Linux.
+Gapless playback with pre-buffering so albums flow the way they were intended. Supports MP3, FLAC, WAV, OGG, AAC, M4A, OPUS, WMA, AIFF, ALAC, APE, and WavPack natively, with an FFmpeg fallback for anything else.
+
+Bit-perfect output bypasses the OS mixer for direct hardware delivery — WASAPI Exclusive on Windows, CoreAudio HAL on macOS, and ALSA hw on Linux.
+
+## Spatial Audio
+
+Astra is the first general purpose desktop music library player with native IAMF/Eclipsa Audio playback.
+
+Astra treats Eclipsa Audio and IAMF as first-class local music formats. IAMF tracks are identified in the library, expose their rendered channel layout, and can be browsed, searched, queued, and played like any other track.
+
+Decoding and rendering are performed locally through Astra's spatial audio engine. Channel-based and scene-based content can be rendered binaurally for headphones, delivered directly to multichannel hardware, or adapted to the available output layout. No Eclipsa-certified playback hardware is required.
+
+Dolby Atmos multichannel decoding is also supported without Atmos-compatible hardware.
+
+Astra provides per-channel inspection and remapping, output delay calibration, and a Virtual Speaker Room for real time positioning and binaurally rendering virtual speaker layouts.
 
 ## Visualizers
 

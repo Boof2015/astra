@@ -1,7 +1,7 @@
 import * as mm from 'music-metadata'
 import { app, powerMonitor } from 'electron'
 import { join, extname, basename, dirname, isAbsolute as isAbsolutePath, normalize as normalizePath, resolve as resolvePath, relative as relativePath, sep as pathSep } from 'path'
-import { readdir, stat, mkdir, writeFile, readFile, access, rm, mkdtemp, copyFile } from 'fs/promises'
+import { readdir, stat, mkdir, writeFile, readFile, access, rm, mkdtemp, copyFile, open } from 'fs/promises'
 import { createHash, randomUUID } from 'crypto'
 import { execFile, type ExecFileOptions } from 'child_process'
 import { tmpdir, cpus } from 'os'
@@ -13,6 +13,8 @@ import {
   stripPlaylistEntryOuterQuotes
 } from './playlistPathResolver'
 import { getMusicMetadataParseOptions } from '../utils/musicMetadata'
+import { collectIamfStreamStats } from '../../shared/iamf/obuWalker'
+import { mp4HasIamfTrack, readMp4DurationSeconds } from '../../shared/iamf/mp4'
 import {
   buildAlbumIdentityKeyByTrackId,
   buildCanonicalAlbumIdentityKey,
@@ -101,7 +103,10 @@ const BetterSqliteDatabase = require('better-sqlite3') as BetterSqliteDatabaseCo
 // Supported audio extensions
 const AUDIO_EXTENSIONS = new Set([
   '.mp3', '.flac', '.wav', '.ogg', '.aac', '.m4a',
-  '.opus', '.wma', '.aiff', '.alac', '.ape', '.wv'
+  '.opus', '.wma', '.aiff', '.alac', '.ape', '.wv',
+  // Eclipsa Audio: standalone IAMF bitstreams, and IAMF-in-MP4 (only .mp4
+  // files with an IAMF audio track are indexed — see extractMetadata).
+  '.iamf', '.mp4'
 ])
 const FOLDER_ARTWORK_BASENAME_PRIORITY = [
   'cover',
@@ -153,6 +158,7 @@ export interface DbTrack {
   codec: string | null
   codec_profile: string | null
   is_atmos_joc: number | null
+  is_iamf?: number | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
   bpm: number | null
@@ -273,6 +279,7 @@ export interface SubsonicTrackUpsertInput {
   codec: string | null
   codec_profile: string | null
   is_atmos_joc: number | null
+  is_iamf?: number | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
   bpm: number | null
@@ -313,6 +320,7 @@ export interface JellyfinTrackUpsertInput {
   codec: string | null
   codec_profile: string | null
   is_atmos_joc: number | null
+  is_iamf?: number | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
   bpm: number | null
@@ -677,6 +685,7 @@ const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   t.codec AS codec,
   t.codec_profile AS codec_profile,
   t.is_atmos_joc AS is_atmos_joc,
+  t.is_iamf AS is_iamf,
   t.replaygain_track_gain_db AS replaygain_track_gain_db,
   t.replaygain_album_gain_db AS replaygain_album_gain_db,
   t.bpm AS bpm,
@@ -1890,6 +1899,7 @@ export async function initDatabase(): Promise<void> {
       codec TEXT,
       codec_profile TEXT,
       is_atmos_joc INTEGER,
+      is_iamf INTEGER,
       replaygain_track_gain_db REAL,
       replaygain_album_gain_db REAL,
       bpm REAL,
@@ -2040,6 +2050,11 @@ export async function initDatabase(): Promise<void> {
   }
   try {
     db.run('ALTER TABLE tracks ADD COLUMN is_atmos_joc INTEGER')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN is_iamf INTEGER')
   } catch {
     // Column already exists.
   }
@@ -5860,25 +5875,25 @@ export async function scanFolder(
 
       if (existing) {
         db.run(`
-          UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
+          UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, is_iamf=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
           WHERE path=?
         `, [
           metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.genreNamesJson, metadata.artworkHash, metadata.format, metadata.sampleRate,
-          metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
+          metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, metadata.isIamf,
           metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, now, filePath
         ])
         updated++
       } else {
         db.run(`
-          INSERT INTO tracks (path, title, artist, artist_names_json, album, album_artist, album_artist_names_json, duration, track_number, disc_number, year, genre, genre_names_json, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, file_created_at, sync_session_key, added_at, modified_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, ?, ?, ?)
+          INSERT INTO tracks (path, title, artist, artist_names_json, album, album_artist, album_artist_names_json, duration, track_number, disc_number, year, genre, genre_names_json, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, is_iamf, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, file_created_at, sync_session_key, added_at, modified_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, ?, ?, ?)
         `, [
           filePath, metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.genreNamesJson, metadata.artworkHash, metadata.format, metadata.sampleRate,
-          metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
+          metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, metadata.isIamf,
           metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, syncSessionKey, now, now
         ])
         added++
@@ -6539,6 +6554,10 @@ function shouldProbeWithFfprobe(
   codecProfile: string | null
 ): boolean {
   const extension = extname(filePath).toLowerCase()
+  // The bundled ffprobe (6.0) cannot read IAMF; skip the doomed spawn.
+  if (extension === '.iamf') {
+    return false
+  }
   if (extension === '.m4a' || extension === '.mp4' || extension === '.m4b' || extension === '.m4p' || extension === '.aac') {
     return true
   }
@@ -6611,9 +6630,7 @@ async function resolveCodecMetadata(
 }
 
 // Extract metadata from audio file
-async function extractMetadata(filePath: string, options: {
-  folderArtworkCache?: FolderArtworkScanCache
-} = {}): Promise<{
+interface ExtractedTrackMetadata {
   title: string
   artist: string
   artistNamesJson: string | null
@@ -6622,11 +6639,11 @@ async function extractMetadata(filePath: string, options: {
   albumArtistNamesJson: string | null
   duration: number
   trackNumber: number | null
-    discNumber: number | null
-    year: number | null
-    genre: string | null
-    genreNamesJson: string | null
-    artworkHash: string | null
+  discNumber: number | null
+  year: number | null
+  genre: string | null
+  genreNamesJson: string | null
+  artworkHash: string | null
   format: string
   sampleRate: number | null
   bitDepth: number | null
@@ -6635,11 +6652,147 @@ async function extractMetadata(filePath: string, options: {
   codec: string | null
   codecProfile: string | null
   isAtmosJoc: number
+  isIamf: number
   replayGainTrackDb: number | null
   replayGainAlbumDb: number | null
   bpm: number | null
   musicalKey: string | null
-}> {
+}
+
+/**
+ * Reads just the top-level moov box from an MP4 file (fd-based; never loads
+ * mdat, so multi-GB videos cost only a few header reads + the moov itself).
+ * Returns null when the file is not ISO-BMFF or has no moov.
+ */
+export async function readMp4MoovBox(filePath: string): Promise<Uint8Array | null> {
+  const MAX_MOOV_BYTES = 64 * 1024 * 1024 // sanity cap; music moov is ~KBs
+  let handle: Awaited<ReturnType<typeof open>> | null = null
+  try {
+    handle = await open(filePath, 'r')
+    const fileSize = (await handle.stat()).size
+    const header = Buffer.alloc(16)
+    let offset = 0
+    let sawFtyp = false
+    while (offset + 8 <= fileSize) {
+      const { bytesRead } = await handle.read(header, 0, 16, offset)
+      if (bytesRead < 8) return null
+      let size = header.readUInt32BE(0)
+      const type = header.toString('latin1', 4, 8)
+      let headerLength = 8
+      if (size === 1) {
+        if (bytesRead < 16) return null
+        const large = header.readBigUInt64BE(8)
+        if (large > BigInt(Number.MAX_SAFE_INTEGER)) return null
+        size = Number(large)
+        headerLength = 16
+      } else if (size === 0) {
+        size = fileSize - offset
+      }
+      if (size < headerLength) return null
+      if (offset === 0 && type !== 'ftyp') return null
+      if (type === 'ftyp') sawFtyp = true
+      if (type === 'moov' && sawFtyp) {
+        if (size > MAX_MOOV_BYTES) return null
+        const moov = Buffer.alloc(size)
+        const read = await handle.read(moov, 0, size, offset)
+        if (read.bytesRead !== size) return null
+        return new Uint8Array(moov)
+      }
+      offset += size
+    }
+    return null
+  } catch {
+    return null
+  } finally {
+    await handle?.close().catch(() => undefined)
+  }
+}
+
+// IAMF (Eclipsa) sources: music-metadata cannot parse them — and a throw
+// inside extractMetadata drops the file from the library entirely — so
+// metadata comes from the container (OBU walker / moov) plus filename and
+// folder-artwork fallbacks.
+async function buildIamfTrackMetadata(
+  filePath: string,
+  options: { folderArtworkCache?: FolderArtworkScanCache },
+  info: { duration: number; sampleRate: number | null; format: string }
+): Promise<ExtractedTrackMetadata> {
+  const fileName = basename(filePath, extname(filePath))
+  const folderArtworkCache = options.folderArtworkCache ?? createFolderArtworkScanCache()
+  const artworkHash = await resolveFolderArtworkHash(filePath, folderArtworkCache)
+
+  return {
+    title: fileName,
+    artist: 'Unknown Artist',
+    artistNamesJson: null,
+    album: 'Unknown Album',
+    albumArtist: null,
+    albumArtistNamesJson: null,
+    duration: info.duration,
+    trackNumber: null,
+    discNumber: null,
+    year: null,
+    genre: null,
+    genreNamesJson: null,
+    artworkHash,
+    format: info.format,
+    sampleRate: info.sampleRate,
+    bitDepth: null,
+    bitrate: null,
+    // The decoder always materializes 7.1.4 — this is what byte-budget
+    // estimates and the channels indicator should see.
+    channels: 12,
+    codec: 'iamf',
+    codecProfile: null,
+    isAtmosJoc: 0,
+    isIamf: 1,
+    replayGainTrackDb: null,
+    replayGainAlbumDb: null,
+    bpm: null,
+    musicalKey: null
+  }
+}
+
+async function extractIamfMetadata(filePath: string, options: {
+  folderArtworkCache?: FolderArtworkScanCache
+} = {}): Promise<ExtractedTrackMetadata> {
+  let duration = 0
+  let sampleRate: number | null = null
+  try {
+    const stats = collectIamfStreamStats(new Uint8Array(await readFile(filePath)))
+    if (stats) {
+      duration = stats.durationSeconds ?? 0
+      sampleRate = stats.sampleRate
+    }
+  } catch {
+    // Unreadable/corrupt stream: index with filename only; playback surfaces
+    // the real error.
+  }
+  return buildIamfTrackMetadata(filePath, options, { duration, sampleRate, format: 'iamf' })
+}
+
+async function extractMetadata(filePath: string, options: {
+  folderArtworkCache?: FolderArtworkScanCache
+} = {}): Promise<ExtractedTrackMetadata> {
+  const extension = extname(filePath).toLowerCase()
+  if (extension === '.iamf') {
+    return extractIamfMetadata(filePath, options)
+  }
+  if (extension === '.mp4') {
+    const moov = await readMp4MoovBox(filePath)
+    if (!moov || !mp4HasIamfTrack(moov)) {
+      // Deliberate: .mp4 is only indexed when it carries an IAMF track —
+      // plain video files must not enter the music library. (Throwing keeps
+      // today's behavior: the scanner counts an error and skips the file.)
+      throw new Error('.mp4 without an IAMF audio track is not indexed as music')
+    }
+    return buildIamfTrackMetadata(filePath, options, {
+      duration: readMp4DurationSeconds(moov) ?? 0,
+      sampleRate: null,
+      format: 'mp4'
+    })
+  }
+
   const metadata = await mm.parseFile(filePath, getMusicMetadataParseOptions(filePath))
   const common = metadata.common
   const format = metadata.format
@@ -6721,6 +6874,7 @@ async function extractMetadata(filePath: string, options: {
     codec: resolvedCodecMetadata.codec,
     codecProfile: resolvedCodecMetadata.codecProfile,
     isAtmosJoc: resolvedCodecMetadata.isAtmosJoc ? 1 : 0,
+    isIamf: 0,
     replayGainTrackDb: replayGain.trackGainDb,
     replayGainAlbumDb: replayGain.albumGainDb,
     bpm,
@@ -6753,7 +6907,9 @@ function getBackfillCandidatePaths(options: {
     candidateClauses.push(legacyAtmosClause)
   }
 
-  let sql = `SELECT path FROM tracks WHERE source_type = 'local' AND (${candidateClauses.join(' OR ')})`
+  // IAMF rows always have null codec_profile etc. and ffprobe can't fill
+  // them in — keep them out of the backfill queue permanently.
+  let sql = `SELECT path FROM tracks WHERE source_type = 'local' AND COALESCE(is_iamf, 0) = 0 AND (${candidateClauses.join(' OR ')})`
   const params: unknown[] = []
   if (options.folderPath) {
     sql += ' AND path LIKE ?'
@@ -7439,13 +7595,13 @@ async function updateTrackRowFromFileMetadata(trackPath: string): Promise<void> 
   const now = Date.now()
 
   db.run(`
-    UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
+    UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, is_iamf=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
     WHERE path=?
   `, [
     metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
     metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
     metadata.genre, metadata.genreNamesJson, metadata.artworkHash, metadata.format, metadata.sampleRate,
-    metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
+    metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, metadata.isIamf,
     metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, now, trackPath
   ])
 }

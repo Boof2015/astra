@@ -26,6 +26,8 @@ export interface Track {
   codec?: string
   codecProfile?: string
   isAtmosJoc?: boolean
+  /** Eclipsa Audio (IAMF) source — decoded by the wasm worker to 7.1.4. */
+  isIamf?: boolean
   replayGainTrackDb?: number
   replayGainAlbumDb?: number
   sourceType?: 'local' | 'subsonic' | 'jellyfin'

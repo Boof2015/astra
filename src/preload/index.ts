@@ -150,6 +150,7 @@ export interface AudioFileMetadata {
   codec?: string
   codecProfile?: string
   isAtmosJoc?: boolean
+  isIamf?: boolean
   replayGainTrackDb?: number
   replayGainAlbumDb?: number
   artworkHash?: string
@@ -1132,6 +1133,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const bytes = await readFile(wasmPath)
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
   },
+  // IAMF (Eclipsa Audio) decoder WASM for the renderer decode worker.
+  getIamfWasmBytes: async (): Promise<ArrayBuffer> => {
+    const isDev = process.env.NODE_ENV === 'development'
+    const wasmPath = isDev
+      ? join(__dirname, '../../src/renderer/public/iamf-decoder.wasm')
+      : join(__dirname, '../renderer/iamf-decoder.wasm')
+    const bytes = await readFile(wasmPath)
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+  },
   getAudioMetadata: (filePath: string) => ipcRenderer.invoke('audio:getMetadata', filePath) as Promise<AudioFileMetadata | null>,
   getAudioFileStat: (filePath: string) => ipcRenderer.invoke('audio:getFileStat', filePath) as Promise<AudioFileStatResult | null>,
   decodeAudioWithFfmpeg: (filePath: string) => ipcRenderer.invoke('audio:decodeWithFfmpeg', filePath),
@@ -1679,6 +1689,7 @@ declare global {
       openAudioFolder: () => Promise<string | null>
       loadAudioFile: (filePath: string, options?: AudioLoadOptions) => Promise<AudioFileResult | null>
       getSpatialWasmBytes: () => Promise<ArrayBuffer>
+      getIamfWasmBytes: () => Promise<ArrayBuffer>
       getAudioMetadata: (filePath: string) => Promise<AudioFileMetadata | null>
       getAudioFileStat: (filePath: string) => Promise<AudioFileStatResult | null>
       decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>

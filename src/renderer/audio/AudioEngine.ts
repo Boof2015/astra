@@ -27,6 +27,12 @@ import type { MultichannelAudioChunk } from '../../types/audioAnalysis'
 import type { ScopeKind } from '../../types/scopePopout'
 import { SCOPE_KINDS } from '../../types/scopePopout'
 import { ProgressiveWaveformAccumulator } from './waveformExtractor'
+import { detectIamfContainer, type IamfContainerKind } from '../../shared/iamf/detect'
+import {
+  IamfDecodeCancelledError,
+  IamfDecoderClient,
+  type IamfDecodeHandle,
+} from './iamfDecoder'
 import {
   ProgressiveKWeightedLoudnessAnalyzer,
   analyzeAudioBufferLoudness,
@@ -436,6 +442,8 @@ export class AudioEngine {
   private spatialTailTaps: number = 0
   private spatialStatusMessage: string | null = null
   private spatialReadyResolver: (() => void) | null = null
+  private iamfDecoder: IamfDecoderClient | null = null
+  private activeIamfDecodes: Set<IamfDecodeHandle> = new Set()
   private sourceRoutingNodes: WeakMap<AudioNode, {
     inputNode: AudioNode | null
     nodes: AudioNode[]
@@ -6085,6 +6093,44 @@ export class AudioEngine {
   }
 
   // Load audio from ArrayBuffer
+  /**
+   * Decodes an IAMF (Eclipsa Audio) file via the wasm decode worker into a
+   * 12-channel AudioBuffer in STANDARD_LAYOUTS[12] order — from there the
+   * existing multichannel routing (and the 7.1.4 binaural path) takes over.
+   * The worker does the heavy lifting off this thread; here we only copy
+   * planar channels into the buffer.
+   */
+  private async decodeIamfToAudioBuffer(
+    arrayBuffer: ArrayBuffer,
+    container: IamfContainerKind
+  ): Promise<AudioBuffer> {
+    if (!this.context) throw new Error('AudioContext not initialized')
+    this.iamfDecoder ??= new IamfDecoderClient()
+    const handle = this.iamfDecoder.decode(arrayBuffer, container)
+    this.activeIamfDecodes.add(handle)
+    try {
+      const decoded = await handle.promise
+      const buffer = this.context.createBuffer(decoded.channels, decoded.frames, decoded.sampleRate)
+      for (let channel = 0; channel < decoded.channels; channel++) {
+        buffer.copyToChannel(decoded.channelData[channel] as Float32Array<ArrayBuffer>, channel)
+        // Release each planar array right after its copy so peak overhead
+        // stays ~1/12 of the decoded size instead of 2x.
+        decoded.channelData[channel] = new Float32Array(0)
+      }
+      return buffer
+    } finally {
+      this.activeIamfDecodes.delete(handle)
+    }
+  }
+
+  /** Cancels in-flight IAMF decodes (current load and/or prebuffer). */
+  private cancelActiveIamfDecodes(): void {
+    for (const handle of this.activeIamfDecodes) {
+      handle.cancel()
+    }
+    this.activeIamfDecodes.clear()
+  }
+
   async loadAudioData(arrayBuffer: ArrayBuffer, options: AudioLoadDataOptions = {}): Promise<void> {
     if (this.playbackOutputMode === 'bitperfect') {
       throw new Error('Bit-perfect mode requires path-based native loading.')
@@ -6102,6 +6148,7 @@ export class AudioEngine {
       // Stop any current playback
       this.stopSource()
       this.clearNextBuffer()
+      this.cancelActiveIamfDecodes()
       await this.clearRemoteStreamState(true)
       this.clearParallaxSinkState()
       this.assertCurrentLoadOperation(loadOperation)
@@ -6112,9 +6159,14 @@ export class AudioEngine {
       this.pauseTime = 0
       this.currentReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
 
-      // Decode audio data
+      // Decode audio data. IAMF (Eclipsa) files must branch BEFORE
+      // decodeAudioData: Chromium cannot decode them and the ffmpeg fallback
+      // (6.0) cannot rescue them either.
       const decodeStart = performance.now()
-      const decodedBuffer = await this.context.decodeAudioData(arrayBuffer)
+      const iamfContainer = detectIamfContainer(arrayBuffer)
+      const decodedBuffer = iamfContainer
+        ? await this.decodeIamfToAudioBuffer(arrayBuffer, iamfContainer)
+        : await this.context.decodeAudioData(arrayBuffer)
       const decodeMs = Math.round(performance.now() - decodeStart)
       this.assertCurrentLoadOperation(loadOperation)
       const analysisStart = performance.now()
@@ -6164,9 +6216,13 @@ export class AudioEngine {
     if (!this.context) throw new Error('AudioContext not initialized')
 
     try {
-      // Clone the ArrayBuffer since decodeAudioData detaches it
+      // Clone the ArrayBuffer since decodeAudioData (and the IAMF worker
+      // transfer) detaches it
       const clonedBuffer = arrayBuffer.slice(0)
-      const decodedBuffer = await this.context.decodeAudioData(clonedBuffer)
+      const iamfContainer = detectIamfContainer(clonedBuffer)
+      const decodedBuffer = iamfContainer
+        ? await this.decodeIamfToAudioBuffer(clonedBuffer, iamfContainer)
+        : await this.context.decodeAudioData(clonedBuffer)
       this.assertCurrentPrebufferOperation(prebufferOperation)
       const nextReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
       const normalizationAnalysis = await this.resolveLoudnessAnalysisForLoad(decodedBuffer, options, nextReplayGainDb)
@@ -6183,6 +6239,11 @@ export class AudioEngine {
       }
     } catch (err) {
       if (isSupersededAudioLoadError(err) || prebufferOperation !== this.prebufferGeneration) {
+        return
+      }
+      if (err instanceof IamfDecodeCancelledError) {
+        // A new load cancelled the prebuffer decode; the load path resets
+        // prebuffer state itself.
         return
       }
       console.error('Failed to pre-buffer next track:', err)
