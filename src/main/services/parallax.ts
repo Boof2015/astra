@@ -3,6 +3,7 @@ import { type IncomingMessage, type ServerResponse } from 'http'
 import { createServer, type Server } from 'https'
 import { networkInterfaces } from 'os'
 import { performance } from 'perf_hooks'
+import { fetch as undiciFetch, type RequestInit as UndiciRequestInit } from 'undici'
 import type {
   ParallaxAudioChunk,
   ParallaxClockSample,
@@ -213,7 +214,7 @@ interface ParallaxServiceOptions {
   getSecurityMigrationRequired?: () => boolean
 }
 
-type ParallaxFetchInit = RequestInit & {
+type ParallaxFetchInit = UndiciRequestInit & {
   dispatcher: ReturnType<typeof createParallaxPinnedDispatcher>
 }
 
@@ -1502,7 +1503,7 @@ export class ParallaxService {
       connection.hostCertificateFingerprint
     )
     try {
-      const response = await fetch(`${connection.baseUrl}/v1/parallax/sink/forget`, {
+      const response = await undiciFetch(`${connection.baseUrl}/v1/parallax/sink/forget`, {
         method: 'POST',
         dispatcher,
         signal: AbortSignal.timeout(SINK_JSON_FETCH_TIMEOUT_MS),
@@ -2210,14 +2211,14 @@ export class ParallaxService {
 
   private async fetchSinkJson<T = unknown>(
     path: string,
-    init: RequestInit = {}
+    init: UndiciRequestInit = {}
   ): Promise<T> {
     const connection = this.sinkConnection
     if (!connection) {
       throw new Error('Parallax sink is not connected.')
     }
 
-    const response = await fetch(`${connection.baseUrl}${path}`, {
+    const response = await undiciFetch(`${connection.baseUrl}${path}`, {
       ...init,
       dispatcher: connection.dispatcher,
       signal: AbortSignal.any([connection.abortController.signal, AbortSignal.timeout(SINK_JSON_FETCH_TIMEOUT_MS)]),
@@ -2288,7 +2289,7 @@ export class ParallaxService {
     const trimmedStreamId = streamId.trim()
     if (!trimmedStreamId) return null
     try {
-      const response = await fetch(
+      const response = await undiciFetch(
         `${connection.baseUrl}/v1/parallax/artwork/current?streamId=${encodeURIComponent(trimmedStreamId)}`,
         {
           dispatcher: connection.dispatcher,
@@ -2592,7 +2593,7 @@ export class ParallaxService {
     const eventGeneration = connection.eventGeneration
     let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
     try {
-      const response = await fetch(`${connection.baseUrl}/v1/parallax/events`, {
+      const response = await undiciFetch(`${connection.baseUrl}/v1/parallax/events`, {
         method: 'GET',
         dispatcher: connection.dispatcher,
         signal: connection.abortController.signal,
@@ -2787,7 +2788,7 @@ export class ParallaxService {
 
     try {
       const requestFromFrame = this.getSinkReconnectFrame(streamId, fromFrame)
-      const response = await fetch(
+      const response = await undiciFetch(
         `${connection.baseUrl}/v1/parallax/audio?streamId=${encodeURIComponent(streamId)}&fromFrame=${requestFromFrame}`,
         {
           method: 'GET',
@@ -2913,7 +2914,7 @@ export class ParallaxService {
 
     try {
       const requestFromFrame = Math.max(0, Math.floor(fromFrame))
-      const response = await fetch(
+      const response = await undiciFetch(
         `${connection.baseUrl}/v1/parallax/audio?streamId=${encodeURIComponent(streamId)}&fromFrame=${requestFromFrame}`,
         {
           method: 'GET',

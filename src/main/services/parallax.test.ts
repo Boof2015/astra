@@ -12,7 +12,12 @@ import {
   createParallaxTlsIdentity,
   type ParallaxTlsIdentity
 } from './parallaxSecurity.ts'
-import type { Agent } from 'undici'
+import {
+  fetch as undiciFetch,
+  type Agent,
+  type RequestInit as UndiciRequestInit,
+  type Response as UndiciResponse
+} from 'undici'
 
 type ParallaxSseTestEvent = {
   type: string
@@ -71,10 +76,10 @@ async function waitFor(predicate: () => boolean, timeoutMs: number = 1_000): Pro
 
 const dispatchersByBaseUrl = new Map<string, Agent>()
 
-async function fetchHost(baseUrl: string, path: string, init: RequestInit = {}): Promise<Response> {
+async function fetchHost(baseUrl: string, path: string, init: UndiciRequestInit = {}): Promise<UndiciResponse> {
   const dispatcher = dispatchersByBaseUrl.get(baseUrl)
   assert.ok(dispatcher, `missing pinned dispatcher for ${baseUrl}`)
-  return await fetch(`${baseUrl}${path}`, { ...init, dispatcher } as RequestInit & { dispatcher: Agent })
+  return await undiciFetch(`${baseUrl}${path}`, { ...init, dispatcher })
 }
 
 async function createStartedParallaxService(): Promise<{ service: ParallaxService; port: number; baseUrl: string; tlsIdentity: ParallaxTlsIdentity }> {
@@ -195,7 +200,7 @@ test('Parallax sink forget revokes host pairing and removes connected presence',
   }
   const { service, baseUrl } = started
   const eventsAbort = new AbortController()
-  let eventsResponse: Response | null = null
+  let eventsResponse: UndiciResponse | null = null
   try {
     const paired = await pairSink(service, baseUrl, 'Office')
     eventsResponse = await fetchHost(baseUrl, '/v1/parallax/events', {
@@ -238,7 +243,7 @@ test('Parallax host presence cache can be cleared without removing pairing crede
   }
   const { service, baseUrl } = started
   const eventsAbort = new AbortController()
-  let eventsResponse: Response | null = null
+  let eventsResponse: UndiciResponse | null = null
   try {
     const paired = await pairSink(service, baseUrl, 'Office')
     eventsResponse = await fetchHost(baseUrl, '/v1/parallax/events', {
@@ -623,9 +628,13 @@ test('Parallax sink auto-rejoins after an event stream failure', async () => {
   await listenHttpServer(server, port)
 
   const originalSetTimeout = globalThis.setTimeout
+  const originalFetch = globalThis.fetch
   globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
     return originalSetTimeout(handler, timeout === 2_000 ? 0 : timeout, ...args)
   }) as typeof setTimeout
+  globalThis.fetch = (() => {
+    throw new Error('Pinned Parallax HTTPS must not use Electron/Node global fetch.')
+  }) as typeof fetch
 
   const sinkService = new ParallaxService({ config: { enabled: false, port }, pairedSinks: [] })
   try {
@@ -641,6 +650,7 @@ test('Parallax sink auto-rejoins after an event stream failure', async () => {
     assert.equal(sinkService.getStatus().sink.connected, true)
   } finally {
     globalThis.setTimeout = originalSetTimeout
+    globalThis.fetch = originalFetch
     await sinkService.stop()
     await closeHttpServer(server)
   }

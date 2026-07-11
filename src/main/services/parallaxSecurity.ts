@@ -48,6 +48,17 @@ export interface ParallaxSealedPayload {
   authTag: string
 }
 
+interface ParallaxReadableResponse {
+  headers: { get(name: string): string | null }
+  body: {
+    getReader(): {
+      read(): Promise<{ done: boolean; value?: Uint8Array }>
+      cancel(reason?: unknown): Promise<void>
+      releaseLock(): void
+    }
+  } | null
+}
+
 const PAIRING_INFO = Buffer.from('astra-parallax-v2-pairing', 'utf8')
 const PAIRING_AAD_PREFIX = Buffer.from('astra-parallax-v2-confirm:', 'utf8')
 
@@ -241,7 +252,7 @@ export function createParallaxPinnedDispatcher(
   })
 }
 
-export async function readBoundedBytesResponse(response: Response, maxBytes: number): Promise<Buffer> {
+export async function readBoundedBytesResponse(response: ParallaxReadableResponse, maxBytes: number): Promise<Buffer> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
     throw new Error('Parallax response limit is invalid.')
   }
@@ -271,7 +282,7 @@ export async function readBoundedBytesResponse(response: Response, maxBytes: num
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total)
 }
 
-export async function readBoundedJsonResponse<T>(response: Response): Promise<T> {
+export async function readBoundedJsonResponse<T>(response: ParallaxReadableResponse): Promise<T> {
   const body = (await readBoundedBytesResponse(response, PARALLAX_MAX_JSON_BYTES)).toString('utf8')
   if (!body.trim()) return null as T
   return JSON.parse(body) as T

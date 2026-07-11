@@ -15,7 +15,7 @@ import {
   validateParallaxTlsIdentity,
   type ParallaxPairingTranscript
 } from './parallaxSecurity.ts'
-import type { Agent } from 'undici'
+import { fetch as undiciFetch } from 'undici'
 
 async function freePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -114,10 +114,10 @@ test('Pinned Parallax HTTPS rejects the wrong certificate before sending Authori
   })
   const dispatcher = createParallaxPinnedDispatcher(expected.certificatePem, expected.fingerprint256)
   try {
-    await assert.rejects(fetch(`https://127.0.0.1:${port}/v1/parallax/join`, {
+    await assert.rejects(undiciFetch(`https://127.0.0.1:${port}/v1/parallax/join`, {
       headers: { Authorization: 'Bearer must-not-leak' },
       dispatcher
-    } as RequestInit & { dispatcher: Agent }))
+    }))
     assert.equal(receivedAuthorization, false)
   } finally {
     await dispatcher.close().catch(() => undefined)
