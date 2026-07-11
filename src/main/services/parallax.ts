@@ -1,7 +1,9 @@
 import { appendFileSync } from 'fs'
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
+import { type IncomingMessage, type ServerResponse } from 'http'
+import { createServer, type Server } from 'https'
 import { networkInterfaces } from 'os'
 import { performance } from 'perf_hooks'
+import { fetch as undiciFetch, type RequestInit as UndiciRequestInit } from 'undici'
 import type {
   ParallaxAudioChunk,
   ParallaxClockSample,
@@ -19,8 +21,6 @@ import type {
   ParallaxPairRequestBody,
   ParallaxPairRequestResponse,
   ParallaxPairedSink,
-  ParallaxPairResponse,
-  ParallaxPairingPin,
   ParallaxSinkConnectionConfig,
   ParallaxSinkTelemetry,
   ParallaxSinkTrim,
@@ -31,15 +31,22 @@ import type {
 } from '../../types/parallax'
 import {
   PARALLAX_AUDIO_CHUNK_FRAMES,
+  PARALLAX_AUDIO_PACKET_HEADER_BYTES,
   PARALLAX_CLOCK_SAMPLE_LIMIT,
   PARALLAX_DEFAULT_GROUP_LATENCY_MS,
   PARALLAX_LAN_HOST,
   PARALLAX_PAIR_CANDIDATE_TTL_MS,
+  PARALLAX_PAIR_LOCKOUT_COOLDOWN_MS,
+  PARALLAX_PAIR_PIN_MAX_FAILS,
+  PARALLAX_PROTOCOL_VERSION,
   ParallaxAuthError,
   buildParallaxClockSample,
   decodeParallaxAudioPacket,
   encodeParallaxAudioPacket,
+  parseParallaxJoinResponse,
+  parseParallaxTimelineEvent,
   resolveParallaxStreamNormalization,
+  readParallaxAudioPacketHeader,
   selectBestParallaxClockSample,
   selectFilteredParallaxClockOffsetMs
 } from '../../types/parallax'
@@ -51,9 +58,21 @@ import {
   secureTokenEquals,
   toSafeOptionalString
 } from './playbackHttpCore'
+import {
+  createParallaxEphemeralKeyPair,
+  createParallaxPinnedDispatcher,
+  deriveParallaxPairingCode,
+  deriveParallaxPairingKey,
+  openParallaxPairingPayload,
+  readBoundedBytesResponse,
+  readBoundedJsonResponse,
+  sealParallaxPairingPayload,
+  PARALLAX_MAX_SSE_EVENT_BYTES,
+  type ParallaxPairingTranscript,
+  type ParallaxTlsIdentity
+} from './parallaxSecurity'
 
 const TOKEN_PREFIX_LENGTH = 8
-const PAIRING_PIN_TTL_MS = 2 * 60_000
 const CLOCK_SYNC_INTERVAL_MS = 2_000
 // On connect/reconnect, fire a quick burst of clock probes so the host<->sink offset
 // converges (best-of-N lowest RTT) before first playback instead of after ~16s of the
@@ -137,6 +156,9 @@ interface ParallaxSinkConnectionState {
   baseUrl: string
   sinkId: string
   token: string
+  hostCertificatePem: string
+  hostCertificateFingerprint: string
+  dispatcher: ReturnType<typeof createParallaxPinnedDispatcher>
   abortController: AbortController
   eventReader: ReadableStreamDefaultReader<Uint8Array> | null
   audioReader: ReadableStreamDefaultReader<Uint8Array> | null
@@ -152,6 +174,7 @@ interface ParallaxSinkConnectionState {
 
 interface ParallaxServiceOptions {
   config: ParallaxHostConfig
+  tlsIdentity?: ParallaxTlsIdentity
   pairedSinks?: PersistedParallaxPairedSink[]
   onPairedSinksChange?: (sinks: PersistedParallaxPairedSink[]) => void
   onStatusChange?: (status: ParallaxStatus) => void
@@ -188,6 +211,11 @@ interface ParallaxServiceOptions {
   // payload without owning the listener — main holds the listener instance, the service just
   // reads its current state every getStatus(). Mirror pattern of `getSinkConnectionInfo`.
   getIncomingPairRequest?: () => ParallaxIncomingPairRequest | null
+  getSecurityMigrationRequired?: () => boolean
+}
+
+type ParallaxFetchInit = UndiciRequestInit & {
+  dispatcher: ReturnType<typeof createParallaxPinnedDispatcher>
 }
 
 function parallaxNowMs(): number {
@@ -231,20 +259,29 @@ function getParallaxLanUrls(port: number): string[] {
       if (addressInfo.family !== 'IPv4') continue
       const address = addressInfo.address.trim()
       if (!address) continue
-      urls.add(`http://${address}:${port}`)
+      urls.add(`https://${address}:${port}`)
     }
   }
 
   const allUrls = Array.from(urls).sort((left, right) => left.localeCompare(right))
-  const preferred192Urls = allUrls.filter((url) => /^http:\/\/192\.168\./.test(url))
+  const preferred192Urls = allUrls.filter((url) => /^https:\/\/192\.168\./.test(url))
   return preferred192Urls.length > 0 ? preferred192Urls : allUrls
 }
 
-function sanitizeBaseUrl(value: string): string {
+function sanitizePairingBaseUrl(value: string): string {
   const normalized = value.trim().replace(/\/+$/, '')
   const parsed = new URL(normalized)
   if (parsed.protocol !== 'http:') {
-    throw new Error('Parallax v1 only supports HTTP LAN hosts.')
+    throw new Error('Parallax pairing endpoints must use HTTP on the local network.')
+  }
+  return parsed.toString().replace(/\/+$/, '')
+}
+
+function sanitizeHostBaseUrl(value: string): string {
+  const normalized = value.trim().replace(/\/+$/, '')
+  const parsed = new URL(normalized)
+  if (parsed.protocol !== 'https:') {
+    throw new Error('Parallax v2 host connections require HTTPS.')
   }
   return parsed.toString().replace(/\/+$/, '')
 }
@@ -432,6 +469,7 @@ function byteViewFromArrayBuffer(buffer: ArrayBuffer): Uint8Array {
 
 export class ParallaxService {
   private config: ParallaxHostConfig
+  private tlsIdentity: ParallaxTlsIdentity | null
   private pairedSinks: PersistedParallaxPairedSink[]
   private readonly onPairedSinksChange?: (sinks: PersistedParallaxPairedSink[]) => void
   private readonly onStatusChange?: (status: ParallaxStatus) => void
@@ -448,12 +486,17 @@ export class ParallaxService {
   private readonly getEndpointUuid?: () => string
   private readonly getHostDisplayName?: () => string
   private readonly getIncomingPairRequest?: () => ParallaxIncomingPairRequest | null
+  private readonly getSecurityMigrationRequired?: () => boolean
   // §20 Commit 3. Host-side pre-staged candidates from `initiatePair`. Keyed by pairingId.
   // Cleared on activation, explicit cancel, or TTL expiry. Tokens here are raw — they move
   // into `pairedSinks` as tokenHash + tokenPrefix only on successful `submitPairPin`.
   private readonly pendingPairs = new Map<string, {
     sinkId: string
     token: string
+    transcript: ParallaxPairingTranscript
+    pairingKey: Buffer
+    pairingCode: string
+    failedCodeAttempts: number
     sinkBaseUrl: string
     sinkParallaxEndpointUuid: string | null
     sinkName: string
@@ -461,6 +504,7 @@ export class ParallaxService {
     expiresAtMs: number
     expiryTimer: ReturnType<typeof setTimeout>
   }>()
+  private readonly pairingLockoutUntilBySinkUrl = new Map<string, number>()
   private currentStreamArtwork: { streamId: string; mimeType: string; bytes: Buffer } | null = null
   // Codex finding 1 (high): the sink fetches artwork immediately when stream-start arrives, but
   // the host's hash→bytes resolve is async — a race could have the endpoint return 404 before the
@@ -477,7 +521,6 @@ export class ParallaxService {
   private server: Server | null = null
   private active = false
   private lastError: string | null = null
-  private activePairingPin: ParallaxPairingPin | null = null
   private activeStream: ActiveParallaxStream | null = null
   // §21 Gapless sink handoff. The pre-announced NEXT stream, held concurrently with `activeStream`
   // from the moment the host pre-buffers the next track until the boundary is crossed (promoted to
@@ -524,11 +567,25 @@ export class ParallaxService {
   // outputDeviceId) so a sink that's persistently stuck doesn't get hammered every second.
   // Storage key: `${sinkId}|${outputDeviceId}`.
   private readonly lastTrimResendAtMs = new Map<string, number>()
+  private readonly requestRateWindows = new Map<string, { startedAtMs: number; count: number }>()
   private readonly TRIM_RESEND_MIN_INTERVAL_MS = 3_000
   private readonly TRIM_APPLIED_TOLERANCE_MS = 0.5
 
+  private consumeRequestBudget(sinkId: string, category: string, limitPerSecond: number): boolean {
+    const key = `${sinkId}|${category}`
+    const now = Date.now()
+    const current = this.requestRateWindows.get(key)
+    if (!current || now - current.startedAtMs >= 1_000) {
+      this.requestRateWindows.set(key, { startedAtMs: now, count: 1 })
+      return true
+    }
+    current.count += 1
+    return current.count <= limitPerSecond
+  }
+
   constructor(options: ParallaxServiceOptions) {
     this.config = { ...options.config }
+    this.tlsIdentity = options.tlsIdentity ? { ...options.tlsIdentity } : null
     this.pairedSinks = [...(options.pairedSinks ?? [])]
     this.onPairedSinksChange = options.onPairedSinksChange
     this.onStatusChange = options.onStatusChange
@@ -542,10 +599,14 @@ export class ParallaxService {
     this.getEndpointUuid = options.getEndpointUuid
     this.getHostDisplayName = options.getHostDisplayName
     this.getIncomingPairRequest = options.getIncomingPairRequest
+    this.getSecurityMigrationRequired = options.getSecurityMigrationRequired
+  }
+
+  setTlsIdentity(identity: ParallaxTlsIdentity): void {
+    this.tlsIdentity = { ...identity }
   }
 
   getStatus(): ParallaxStatus {
-    this.cleanupExpiredPairingPin()
     const lanUrls = this.active ? getParallaxLanUrls(this.config.port) : []
     const bestClock = selectBestParallaxClockSample(this.sinkClockSamples)
     const activePairedSinkIds = new Set(
@@ -566,7 +627,6 @@ export class ParallaxService {
         bindHost: PARALLAX_LAN_HOST,
         port: this.config.port,
         lanUrls,
-        activePairingPin: this.activePairingPin,
         pairedSinkCount: this.pairedSinks.filter((sink) => sink.revokedAt === null).length,
         connectedSinkCount: new Set(Array.from(this.sseClients, (client) => client.sinkId)).size,
         activeStream: this.activeStream?.info ?? null,
@@ -609,7 +669,8 @@ export class ParallaxService {
       },
       identity: {
         endpointUuid: this.getEndpointUuid?.() ?? ''
-      }
+      },
+      securityMigrationRequired: this.getSecurityMigrationRequired?.() ?? false
     }
   }
 
@@ -672,7 +733,6 @@ export class ParallaxService {
 
     if (!this.config.enabled) {
       await this.stopHostServer()
-      this.activePairingPin = null
       this.lastError = null
       this.emitStatus()
       return this.getStatus()
@@ -707,22 +767,6 @@ export class ParallaxService {
   handleHostPowerSuspend(): void {
     if (!this.config.enabled) return
     this.closeAllHostClients()
-  }
-
-  createPairingPin(): ParallaxPairingPin {
-    this.cleanupExpiredPairingPin()
-    if (!this.config.enabled || !this.active) {
-      throw new Error('Parallax host pairing is only available while the host service is active.')
-    }
-
-    const createdAt = Date.now()
-    this.activePairingPin = {
-      pin: String(Math.floor(100000 + Math.random() * 900000)),
-      createdAt,
-      expiresAt: createdAt + PAIRING_PIN_TTL_MS
-    }
-    this.emitStatus()
-    return this.activePairingPin
   }
 
   revokePairedSink(id: string): ParallaxPairedSink | null {
@@ -1111,39 +1155,86 @@ export class ParallaxService {
     sinkName: string
     expiresInSeconds: number
   }> {
-    const normalizedBaseUrl = sanitizeBaseUrl(sinkBaseUrl)
+    if (!this.config.enabled || !this.active) {
+      throw new Error('Enable the Parallax host before pairing a speaker.')
+    }
+    if (!this.tlsIdentity) throw new Error('Parallax secure host identity is unavailable.')
+    const normalizedBaseUrl = sanitizePairingBaseUrl(sinkBaseUrl)
+    const lockoutUntil = this.pairingLockoutUntilBySinkUrl.get(normalizedBaseUrl) ?? 0
+    if (Date.now() < lockoutUntil) {
+      throw new Error('Pairing is temporarily locked after too many incorrect codes. Try again later.')
+    }
+    this.pairingLockoutUntilBySinkUrl.delete(normalizedBaseUrl)
     const pairingId = createOpaqueSecret(16)
     const sinkId = createOpaqueSecret(16)
     const token = createOpaqueSecret(32)
+    const ephemeral = createParallaxEphemeralKeyPair()
     const requestBody: ParallaxPairRequestBody = {
+      version: PARALLAX_PROTOCOL_VERSION,
       pairingId,
       hostName: this.getHostDisplayName?.() ?? 'Astra Host',
       hostPort: this.config.port,
-      parallaxEndpointUuid: this.getEndpointUuid?.() ?? ''
+      parallaxEndpointUuid: this.getEndpointUuid?.() ?? '',
+      hostEphemeralPublicKey: ephemeral.publicKey,
+      hostCertificatePem: this.tlsIdentity.certificatePem,
+      hostCertificateFingerprint: this.tlsIdentity.fingerprint256
     }
     const response = await fetch(`${normalizedBaseUrl}/v1/parallax/pair-request`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody)
+      body: JSON.stringify(requestBody),
+      signal: AbortSignal.timeout(10_000)
     })
-    const payload = await response.json().catch(() => null) as ParallaxPairRequestResponse | { error?: string } | null
+    const payload = await readBoundedJsonResponse<ParallaxPairRequestResponse | { error?: string } | null>(response).catch(() => null)
     if (!response.ok) {
       const errorMessage = (payload && 'error' in payload && payload.error) ? String(payload.error) : `Pair-request failed (${response.status}).`
       throw new Error(errorMessage)
     }
     const ok = payload as ParallaxPairRequestResponse
+    if (
+      ok?.version !== PARALLAX_PROTOCOL_VERSION
+      || !pickStringTrim(ok.sinkEphemeralPublicKey)
+      || pickStringTrim(ok.sinkEphemeralPublicKey).length > 256
+    ) {
+      throw new Error('Speaker does not support the secure Parallax v2 pairing protocol.')
+    }
     const now = Date.now()
     const expiresInSeconds = Math.min(
       Math.max(Number(ok.expiresInSeconds) || PARALLAX_PAIR_CANDIDATE_TTL_MS / 1000, 1),
       PARALLAX_PAIR_CANDIDATE_TTL_MS / 1000
     )
+    const parsedSinkEndpointUuid = pickStringTrim(ok.parallaxEndpointUuid)
+    const parsedSinkName = pickStringTrim(ok.sinkName)
+    if (parsedSinkEndpointUuid.length > 128 || parsedSinkName.length > 200) {
+      throw new Error('Speaker returned invalid secure pairing metadata.')
+    }
+    const sinkParallaxEndpointUuid = parsedSinkEndpointUuid || null
+    const transcript: ParallaxPairingTranscript = {
+      version: PARALLAX_PROTOCOL_VERSION,
+      pairingId,
+      hostEphemeralPublicKey: ephemeral.publicKey,
+      sinkEphemeralPublicKey: pickStringTrim(ok.sinkEphemeralPublicKey),
+      hostCertificateFingerprint: this.tlsIdentity.fingerprint256,
+      hostParallaxEndpointUuid: this.getEndpointUuid?.() ?? '',
+      sinkParallaxEndpointUuid: sinkParallaxEndpointUuid ?? '',
+      hostPort: this.config.port
+    }
+    const pairingKey = deriveParallaxPairingKey(
+      ephemeral.privateKey,
+      transcript.sinkEphemeralPublicKey,
+      transcript
+    )
     const expiryTimer = setTimeout(() => this.pendingPairs.delete(pairingId), expiresInSeconds * 1000)
     this.pendingPairs.set(pairingId, {
       sinkId,
       token,
+      transcript,
+      pairingKey,
+      pairingCode: deriveParallaxPairingCode(pairingKey, transcript),
+      failedCodeAttempts: 0,
       sinkBaseUrl: normalizedBaseUrl,
-      sinkParallaxEndpointUuid: pickStringTrim(ok.parallaxEndpointUuid) || null,
-      sinkName: pickStringTrim(ok.sinkName) || normalizedBaseUrl,
+      sinkParallaxEndpointUuid,
+      sinkName: parsedSinkName || normalizedBaseUrl,
       createdAtMs: now,
       expiresAtMs: now + expiresInSeconds * 1000,
       expiryTimer
@@ -1151,7 +1242,7 @@ export class ParallaxService {
     return {
       pairingId,
       sinkParallaxEndpointUuid: pickStringTrim(ok.parallaxEndpointUuid) || null,
-      sinkName: pickStringTrim(ok.sinkName) || normalizedBaseUrl,
+      sinkName: parsedSinkName || normalizedBaseUrl,
       expiresInSeconds
     }
   }
@@ -1164,22 +1255,40 @@ export class ParallaxService {
     const candidate = this.pendingPairs.get(pairingId)
     if (!candidate) throw new Error('Pair candidate not found.')
 
-    const body: ParallaxPairConfirmBody = {
-      pairingId,
-      pin: pin.trim(),
+    const normalizedPin = pin.replace(/\s+/g, '')
+    if (normalizedPin !== candidate.pairingCode) {
+      candidate.failedCodeAttempts += 1
+      if (candidate.failedCodeAttempts >= PARALLAX_PAIR_PIN_MAX_FAILS) {
+        this.pairingLockoutUntilBySinkUrl.set(
+          candidate.sinkBaseUrl,
+          Date.now() + PARALLAX_PAIR_LOCKOUT_COOLDOWN_MS
+        )
+        this.deletePendingPair(pairingId)
+        throw new ParallaxAuthError(401, 'Pairing code mismatch. Start pairing again.')
+      }
+      throw new ParallaxAuthError(401, 'Pairing code mismatch.')
+    }
+
+    const sealed = sealParallaxPairingPayload({
       sinkId: candidate.sinkId,
       token: candidate.token,
       sinkName: sinkName?.trim() || candidate.sinkName
+    }, candidate.pairingKey, candidate.transcript)
+    const body: ParallaxPairConfirmBody = {
+      pairingId,
+      ...sealed
     }
+    const remainingMs = Math.max(1_000, candidate.expiresAtMs - Date.now())
     const response = await fetch(`${candidate.sinkBaseUrl}/v1/parallax/pair-confirm`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(remainingMs)
     })
-    const payload = await response.json().catch(() => null) as ParallaxPairConfirmResponse | { error?: string } | null
+    const payload = await readBoundedJsonResponse<ParallaxPairConfirmResponse | { error?: string } | null>(response).catch(() => null)
 
     if (response.status === 401) {
-      throw new ParallaxAuthError(401, 'Wrong PIN.')
+      throw new ParallaxAuthError(401, 'Secure pairing confirmation was rejected.')
     }
     if (response.status === 410) {
       this.deletePendingPair(pairingId)
@@ -1194,7 +1303,21 @@ export class ParallaxService {
       throw new Error(errorMessage)
     }
 
-    const ok = payload as ParallaxPairConfirmResponse
+    let ok: { pairingId?: unknown; parallaxEndpointUuid?: unknown; sinkName?: unknown }
+    try {
+      ok = openParallaxPairingPayload(
+        payload as ParallaxPairConfirmResponse,
+        candidate.pairingKey,
+        candidate.transcript
+      )
+    } catch {
+      this.deletePendingPair(pairingId)
+      throw new Error('Speaker returned an invalid secure pairing confirmation.')
+    }
+    if (pickStringTrim(ok.pairingId) !== pairingId) {
+      this.deletePendingPair(pairingId)
+      throw new Error('Speaker pairing confirmation did not match this request.')
+    }
     const now = Date.now()
     const finalName = sinkName?.trim() || pickStringTrim(ok.sinkName) || candidate.sinkName
     const sink: PersistedParallaxPairedSink = {
@@ -1247,23 +1370,6 @@ export class ParallaxService {
     this.pendingPairs.delete(pairingId)
   }
 
-  async pairWithHost(baseUrl: string, pin: string, sinkName: string): Promise<ParallaxPairResponse> {
-    const normalizedBaseUrl = sanitizeBaseUrl(baseUrl)
-    const response = await fetch(`${normalizedBaseUrl}/v1/parallax/pair`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        pin,
-        sinkName: normalizeDeviceLabel(sinkName, 'Astra Sink')
-      })
-    })
-    const payload = await response.json().catch(() => null)
-    if (!response.ok) {
-      throw new Error(toSafeOptionalString((payload as { error?: unknown } | null)?.error) ?? `Parallax pairing failed (${response.status}).`)
-    }
-    return payload as ParallaxPairResponse
-  }
-
   // §14.1.2 follow-up (Codex 2026-06-06). The `connectSink()` catch block at the bottom of this
   // method ONLY handles failures DURING the initial connect attempt; the established-connection
   // backoff (`sinkReconnectTimer`, `sinkReconnectAttempts`) only kicks in for SSE/audio drops
@@ -1272,11 +1378,16 @@ export class ParallaxService {
 
   async connectSink(config: ParallaxSinkConnectionConfig): Promise<ParallaxStatus> {
     await this.disconnectSink()
-    const normalizedBaseUrl = sanitizeBaseUrl(config.baseUrl)
+    if (config.protocolVersion !== PARALLAX_PROTOCOL_VERSION) {
+      throw new Error('Parallax v1 credentials are no longer supported. Pair this speaker again.')
+    }
+    const normalizedBaseUrl = sanitizeHostBaseUrl(config.baseUrl)
     const normalizedSinkId = config.sinkId.trim()
     const normalizedToken = config.token.trim()
-    if (!normalizedSinkId || !normalizedToken) {
-      throw new Error('Parallax sink id and token are required.')
+    const hostCertificatePem = config.hostCertificatePem.trim()
+    const hostCertificateFingerprint = config.hostCertificateFingerprint.trim()
+    if (!normalizedSinkId || !normalizedToken || !hostCertificatePem || !hostCertificateFingerprint) {
+      throw new Error('Parallax sink credentials and pinned host certificate are required.')
     }
 
     const abortController = new AbortController()
@@ -1284,6 +1395,9 @@ export class ParallaxService {
       baseUrl: normalizedBaseUrl,
       sinkId: normalizedSinkId,
       token: normalizedToken,
+      hostCertificatePem,
+      hostCertificateFingerprint,
+      dispatcher: createParallaxPinnedDispatcher(hostCertificatePem, hostCertificateFingerprint),
       abortController,
       eventReader: null,
       audioReader: null,
@@ -1306,10 +1420,14 @@ export class ParallaxService {
     this.sinkHostReachable = true
 
     try {
-      const join = await this.fetchSinkJson<ParallaxJoinResponse>('/v1/parallax/join', {
+      const rawJoin = await this.fetchSinkJson<unknown>('/v1/parallax/join', {
         method: 'POST',
         body: JSON.stringify({ sinkId: normalizedSinkId })
       })
+      const join = parseParallaxJoinResponse(rawJoin)
+      if (!join || join.sinkId !== normalizedSinkId) {
+        throw new Error('Parallax host returned an invalid join response.')
+      }
       this.sinkReconnectAttempts = 0
       this.sinkActiveStream = join.stream
       // §14.1.2 follow-up. Successful connect clears the "removed by host" latch — covers the
@@ -1363,6 +1481,7 @@ export class ParallaxService {
 
     if (connection) {
       try { connection.abortController.abort() } catch { /* ignore */ }
+      void connection.dispatcher.close().catch(() => undefined)
       try { await connection.eventReader?.cancel() } catch { /* ignore */ }
       try { await connection.audioReader?.cancel() } catch { /* ignore */ }
       connection.eventReader = null
@@ -1376,23 +1495,34 @@ export class ParallaxService {
     return this.getStatus()
   }
 
-  async forgetSinkOnHost(connection: Pick<ParallaxSinkConnectionConfig, 'baseUrl' | 'token'>): Promise<void> {
-    const response = await fetch(`${connection.baseUrl}/v1/parallax/sink/forget`, {
-      method: 'POST',
-      signal: AbortSignal.timeout(SINK_JSON_FETCH_TIMEOUT_MS),
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${connection.token}`
+  async forgetSinkOnHost(
+    connection: Pick<ParallaxSinkConnectionConfig, 'baseUrl' | 'token' | 'hostCertificatePem' | 'hostCertificateFingerprint'>
+  ): Promise<void> {
+    const dispatcher = createParallaxPinnedDispatcher(
+      connection.hostCertificatePem,
+      connection.hostCertificateFingerprint
+    )
+    try {
+      const response = await undiciFetch(`${connection.baseUrl}/v1/parallax/sink/forget`, {
+        method: 'POST',
+        dispatcher,
+        signal: AbortSignal.timeout(SINK_JSON_FETCH_TIMEOUT_MS),
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${connection.token}`
+        }
+      } as ParallaxFetchInit)
+      const payload = await readBoundedJsonResponse<unknown>(response).catch(() => null)
+      if (!response.ok) {
+        const message = toSafeOptionalString((payload as { error?: unknown } | null)?.error)
+          ?? `Parallax host forget request failed (${response.status}).`
+        if (response.status === 401) {
+          throw new ParallaxAuthError(401, message)
+        }
+        throw new Error(message)
       }
-    })
-    const payload = await response.json().catch(() => null)
-    if (!response.ok) {
-      const message = toSafeOptionalString((payload as { error?: unknown } | null)?.error)
-        ?? `Parallax host forget request failed (${response.status}).`
-      if (response.status === 401) {
-        throw new ParallaxAuthError(401, message)
-      }
-      throw new Error(message)
+    } finally {
+      await dispatcher.close().catch(() => undefined)
     }
   }
 
@@ -1420,24 +1550,26 @@ export class ParallaxService {
     source: 'manual' | 'calibration' = 'manual'
   ): ParallaxStatus {
     if (!Number.isFinite(advanceMs)) return this.getStatus()
-    if (!sinkId || !outputDeviceId) return this.getStatus()
+    const normalizedOutputDeviceId = outputDeviceId.trim().slice(0, 256)
+    const normalizedOutputDeviceLabel = outputDeviceLabel?.trim().slice(0, 200) || null
+    if (!sinkId || !normalizedOutputDeviceId) return this.getStatus()
     const clamped = Math.max(-500, Math.min(500, advanceMs))
     const sink = this.pairedSinks.find((candidate) => candidate.id === sinkId)
     if (!sink) return this.getStatus()
     const existingTrims = sink.trims ?? []
     const nextEntry: ParallaxSinkTrim = {
-      outputDeviceId,
-      outputDeviceLabel,
+      outputDeviceId: normalizedOutputDeviceId,
+      outputDeviceLabel: normalizedOutputDeviceLabel,
       advanceMs: clamped,
       updatedAtMs: Date.now(),
       source
     }
-    const matchIdx = existingTrims.findIndex((trim) => trim.outputDeviceId === outputDeviceId)
+    const matchIdx = existingTrims.findIndex((trim) => trim.outputDeviceId === normalizedOutputDeviceId)
     sink.trims = matchIdx >= 0
       ? existingTrims.map((trim, i) => (i === matchIdx ? nextEntry : trim))
       : [...existingTrims, nextEntry]
     this.emitPairedSinksChange()
-    this.broadcastSinkTrimUpdate(sinkId, outputDeviceId, clamped)
+    this.broadcastSinkTrimUpdate(sinkId, normalizedOutputDeviceId, clamped)
     this.emitStatus()
     return this.getStatus()
   }
@@ -1480,20 +1612,20 @@ export class ParallaxService {
     const previousRttMs = state.rttMs
 
     if (typeof body.outputDeviceId === 'string') {
-      state.outputDeviceId = body.outputDeviceId
+      state.outputDeviceId = body.outputDeviceId.trim().slice(0, 256) || null
     } else if (body.outputDeviceId === null) {
       state.outputDeviceId = null
     }
     if (typeof body.outputDeviceLabel === 'string') {
-      state.outputDeviceLabel = body.outputDeviceLabel
+      state.outputDeviceLabel = body.outputDeviceLabel.trim().slice(0, 200) || null
     } else if (body.outputDeviceLabel === null) {
       state.outputDeviceLabel = null
     }
     if (Number.isFinite(body.appliedAdvanceMs)) {
-      state.appliedAdvanceMs = Number(body.appliedAdvanceMs)
+      state.appliedAdvanceMs = Math.max(-500, Math.min(500, Number(body.appliedAdvanceMs)))
     }
     if (Number.isFinite(body.rttMs)) {
-      state.rttMs = Number(body.rttMs)
+      state.rttMs = Math.max(0, Math.min(60_000, Number(body.rttMs)))
     } else if (body.rttMs === null) {
       state.rttMs = null
     }
@@ -1617,12 +1749,6 @@ export class ParallaxService {
     this.onPairedSinksChange?.(this.pairedSinks.map((sink) => ({ ...sink })))
   }
 
-  private cleanupExpiredPairingPin(): void {
-    if (!this.activePairingPin) return
-    if (this.activePairingPin.expiresAt > Date.now()) return
-    this.activePairingPin = null
-  }
-
   private closeSseClientsForSink(sinkId: string): void {
     let removed = false
     for (const client of this.sseClients) {
@@ -1666,9 +1792,23 @@ export class ParallaxService {
 
   private async startHostServer(): Promise<void> {
     await this.stopHostServer()
-    const server = createServer((req, res) => {
+    if (!this.tlsIdentity) {
+      this.active = false
+      this.lastError = 'Parallax secure host identity is unavailable.'
+      this.emitStatus()
+      return
+    }
+    const server = createServer({
+      key: this.tlsIdentity.privateKeyPem,
+      cert: this.tlsIdentity.certificatePem,
+      minVersion: 'TLSv1.2'
+    }, (req, res) => {
       void this.handleHostRequest(req, res)
     })
+    server.headersTimeout = 10_000
+    server.requestTimeout = 10_000
+    server.keepAliveTimeout = 5_000
+    server.maxConnections = 64
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -1706,7 +1846,6 @@ export class ParallaxService {
   private async stopHostServer(): Promise<void> {
     this.closeAllHostClients()
     this.activeStream = null
-    this.activePairingPin = null
     // Host going offline must also abandon any in-flight pair candidates — the wizard's
     // pair-confirm POST will fail anyway, and we don't want their TTL timers keeping us alive.
     this.clearAllPendingPairs()
@@ -1753,11 +1892,6 @@ export class ParallaxService {
     }
 
     const path = requestUrl.pathname
-    if (method === 'POST' && path === '/v1/parallax/pair') {
-      await this.handlePairRequest(req, res)
-      return
-    }
-
     const sink = this.authorizeHostRequest(req)
     if (!sink) {
       toJsonResponse(res, 401, { error: 'Unauthorized' })
@@ -1830,6 +1964,10 @@ export class ParallaxService {
     }
 
     if (method === 'POST' && path === '/v1/parallax/clock') {
+      if (!this.consumeRequestBudget(sink.id, 'clock', 4)) {
+        toJsonResponse(res, 429, { error: 'Clock rate limit exceeded.' })
+        return
+      }
       const hostReceivedAtMs = parallaxNowMs()
       let body: unknown
       try {
@@ -1852,6 +1990,10 @@ export class ParallaxService {
     }
 
     if (method === 'POST' && path === '/v1/parallax/telemetry') {
+      if (!this.consumeRequestBudget(sink.id, 'telemetry', 5)) {
+        toJsonResponse(res, 429, { error: 'Telemetry rate limit exceeded.' })
+        return
+      }
       try {
         const telemetryBody = await readJsonBody(req)
         // §14.1.1 follow-up. Look up the host's desired trim for the sink's currently-reported
@@ -1887,6 +2029,10 @@ export class ParallaxService {
     // state-of-truth intact per §15.2). The sink is identified by the existing token-auth
     // resolution (`sink.id`) — it cannot write trim for any other sink.
     if (method === 'POST' && path === '/v1/parallax/sink/trim') {
+      if (!this.consumeRequestBudget(sink.id, 'trim', 4)) {
+        toJsonResponse(res, 429, { error: 'Trim rate limit exceeded.' })
+        return
+      }
       let body: unknown
       try {
         body = await readJsonBody(req)
@@ -1929,55 +2075,16 @@ export class ParallaxService {
     toJsonResponse(res, 404, { error: 'Not found' })
   }
 
-  private async handlePairRequest(req: IncomingMessage, res: ServerResponse<IncomingMessage>): Promise<void> {
-    this.cleanupExpiredPairingPin()
-    if (!this.activePairingPin) {
-      toJsonResponse(res, 409, { error: 'No active Parallax pairing PIN.' })
-      return
-    }
-
-    let body: unknown
-    try {
-      body = await readJsonBody(req)
-    } catch {
-      toJsonResponse(res, 400, { error: 'Invalid pairing payload.' })
-      return
-    }
-
-    const rawPin = toSafeOptionalString((body as { pin?: unknown } | null)?.pin)
-    if (!rawPin || rawPin !== this.activePairingPin.pin) {
-      toJsonResponse(res, 403, { error: 'Invalid Parallax pairing PIN.' })
-      return
-    }
-
-    const now = Date.now()
-    const rawToken = createOpaqueSecret(32)
-    const sinkId = createOpaqueSecret(16)
-    const sink: PersistedParallaxPairedSink = {
-      id: sinkId,
-      name: normalizeDeviceLabel((body as { sinkName?: unknown } | null)?.sinkName, 'Astra Sink'),
-      tokenHash: hashToken(rawToken),
-      tokenPrefix: rawToken.slice(0, TOKEN_PREFIX_LENGTH),
-      createdAt: now,
-      lastSeenAt: null,
-      revokedAt: null
-    }
-    this.pairedSinks = [sink, ...this.pairedSinks]
-    this.activePairingPin = null
-    this.emitPairedSinksChange()
-    this.emitStatus()
-    toJsonResponse(res, 200, {
-      sinkId,
-      token: rawToken,
-      tokenPrefix: sink.tokenPrefix
-    } satisfies ParallaxPairResponse)
-  }
-
   private handleEventsRequest(
     req: IncomingMessage,
     res: ServerResponse<IncomingMessage>,
     sinkId: string
   ): void {
+    for (const existing of Array.from(this.sseClients)) {
+      if (existing.sinkId !== sinkId) continue
+      this.sseClients.delete(existing)
+      try { existing.response.end() } catch { /* ignore */ }
+    }
     res.statusCode = 200
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
     res.setHeader('Cache-Control', 'no-cache, no-transform')
@@ -2058,6 +2165,19 @@ export class ParallaxService {
       return
     }
 
+    for (const existing of Array.from(this.audioClients)) {
+      if (existing.sinkId !== sinkId || existing.streamId !== streamId) continue
+      this.audioClients.delete(existing)
+      try { existing.response.end() } catch { /* ignore */ }
+    }
+    const sameSinkClients = Array.from(this.audioClients).filter((client) => client.sinkId === sinkId)
+    while (sameSinkClients.length >= 2) {
+      const oldest = sameSinkClients.shift()
+      if (!oldest) break
+      this.audioClients.delete(oldest)
+      try { oldest.response.end() } catch { /* ignore */ }
+    }
+
     res.statusCode = 200
     res.setHeader('Content-Type', 'application/octet-stream')
     res.setHeader('Cache-Control', 'no-store')
@@ -2091,23 +2211,24 @@ export class ParallaxService {
 
   private async fetchSinkJson<T = unknown>(
     path: string,
-    init: RequestInit = {}
+    init: UndiciRequestInit = {}
   ): Promise<T> {
     const connection = this.sinkConnection
     if (!connection) {
       throw new Error('Parallax sink is not connected.')
     }
 
-    const response = await fetch(`${connection.baseUrl}${path}`, {
+    const response = await undiciFetch(`${connection.baseUrl}${path}`, {
       ...init,
+      dispatcher: connection.dispatcher,
       signal: AbortSignal.any([connection.abortController.signal, AbortSignal.timeout(SINK_JSON_FETCH_TIMEOUT_MS)]),
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${connection.token}`,
         ...(init.headers ?? {})
       }
-    })
-    const payload = await response.json().catch(() => null)
+    } as ParallaxFetchInit)
+    const payload = await readBoundedJsonResponse<unknown>(response).catch(() => null)
     if (!response.ok) {
       const message = toSafeOptionalString((payload as { error?: unknown } | null)?.error) ?? `Parallax host request failed (${response.status}).`
       // §14.1.2 / §16.12(c). 401 is the unambiguous "your credential is no longer valid"
@@ -2168,18 +2289,19 @@ export class ParallaxService {
     const trimmedStreamId = streamId.trim()
     if (!trimmedStreamId) return null
     try {
-      const response = await fetch(
+      const response = await undiciFetch(
         `${connection.baseUrl}/v1/parallax/artwork/current?streamId=${encodeURIComponent(trimmedStreamId)}`,
         {
+          dispatcher: connection.dispatcher,
           signal: AbortSignal.any([connection.abortController.signal, AbortSignal.timeout(SINK_JSON_FETCH_TIMEOUT_MS)]),
           headers: { Authorization: `Bearer ${connection.token}` }
-        }
+        } as ParallaxFetchInit
       )
       if (!response.ok) return null
       const contentType = response.headers.get('content-type')?.trim() || 'image/jpeg'
-      const arrayBuffer = await response.arrayBuffer()
-      if (arrayBuffer.byteLength === 0 || arrayBuffer.byteLength > PARALLAX_ARTWORK_MAX_BYTES) return null
-      const base64 = Buffer.from(arrayBuffer).toString('base64')
+      const artwork = await readBoundedBytesResponse(response, PARALLAX_ARTWORK_MAX_BYTES)
+      if (artwork.byteLength === 0) return null
+      const base64 = artwork.toString('base64')
       return `data:${contentType};base64,${base64}`
     } catch {
       return null
@@ -2350,7 +2472,7 @@ export class ParallaxService {
         const relocatedBaseUrl = await this.onSinkRelocate()
         if (this.sinkConnection !== connection) return
         if (relocatedBaseUrl) {
-          const normalized = sanitizeBaseUrl(relocatedBaseUrl)
+          const normalized = sanitizeHostBaseUrl(relocatedBaseUrl)
           if (normalized && normalized !== connection.baseUrl) {
             connection.baseUrl = normalized
             this.sinkReconnectAttempts = 0
@@ -2364,10 +2486,14 @@ export class ParallaxService {
       await this.primeClockSync(connection)
       if (this.sinkConnection !== connection) return
 
-      const join = await this.fetchSinkJson<ParallaxJoinResponse>('/v1/parallax/join', {
+      const rawJoin = await this.fetchSinkJson<unknown>('/v1/parallax/join', {
         method: 'POST',
         body: JSON.stringify({ sinkId: connection.sinkId })
       })
+      const join = parseParallaxJoinResponse(rawJoin)
+      if (!join || join.sinkId !== connection.sinkId) {
+        throw new Error('Parallax host returned an invalid join response.')
+      }
       if (this.sinkConnection !== connection) return
       this.sinkReconnectAttempts = 0
       this.sinkActiveStream = join.stream
@@ -2467,13 +2593,14 @@ export class ParallaxService {
     const eventGeneration = connection.eventGeneration
     let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
     try {
-      const response = await fetch(`${connection.baseUrl}/v1/parallax/events`, {
+      const response = await undiciFetch(`${connection.baseUrl}/v1/parallax/events`, {
         method: 'GET',
+        dispatcher: connection.dispatcher,
         signal: connection.abortController.signal,
         headers: {
           Authorization: `Bearer ${connection.token}`
         }
-      })
+      } as ParallaxFetchInit)
       if (!response.ok || !response.body) {
         // §14.1.2 follow-up. 401 here = host revoked the sink mid-session; bubble a status-bearing
         // error so consumeSinkEvents' catch can fire handleSinkAuthRevoked instead of scheduling
@@ -2503,9 +2630,15 @@ export class ParallaxService {
         let boundary = buffer.indexOf('\n\n')
         while (boundary >= 0) {
           const rawEvent = buffer.slice(0, boundary)
+          if (Buffer.byteLength(rawEvent, 'utf8') > PARALLAX_MAX_SSE_EVENT_BYTES) {
+            throw new Error('Parallax host sent an oversized event.')
+          }
           buffer = buffer.slice(boundary + 2)
           this.handleRawSseEvent(rawEvent)
           boundary = buffer.indexOf('\n\n')
+        }
+        if (Buffer.byteLength(buffer, 'utf8') > PARALLAX_MAX_SSE_EVENT_BYTES) {
+          throw new Error('Parallax host sent an oversized event.')
         }
       }
       if (this.sinkConnection === connection && connection.eventGeneration === eventGeneration) {
@@ -2556,12 +2689,14 @@ export class ParallaxService {
       .split(/\r?\n/)
       .find((line) => line.startsWith('data: '))
     if (!dataLine) return
-    let event: ParallaxTimelineEvent
+    let decoded: unknown
     try {
-      event = JSON.parse(dataLine.slice('data: '.length)) as ParallaxTimelineEvent
+      decoded = JSON.parse(dataLine.slice('data: '.length))
     } catch {
       return
     }
+    const event = parseParallaxTimelineEvent(decoded)
+    if (!event) return
     // Any parsed SSE event proves the control channel is live — feed the liveness watchdog.
     this.lastHostContactAtMs = Date.now()
 
@@ -2653,15 +2788,16 @@ export class ParallaxService {
 
     try {
       const requestFromFrame = this.getSinkReconnectFrame(streamId, fromFrame)
-      const response = await fetch(
+      const response = await undiciFetch(
         `${connection.baseUrl}/v1/parallax/audio?streamId=${encodeURIComponent(streamId)}&fromFrame=${requestFromFrame}`,
         {
           method: 'GET',
+          dispatcher: connection.dispatcher,
           signal: connection.abortController.signal,
           headers: {
             Authorization: `Bearer ${connection.token}`
           }
-        }
+        } as ParallaxFetchInit
       )
       if (!response.ok || !response.body) {
         // §14.1.2 follow-up. Same auth-revoked detection as the event stream.
@@ -2701,6 +2837,12 @@ export class ParallaxService {
         const received = new Uint8Array(value.byteLength)
         received.set(value)
         pending = mergeBytes(pending, received)
+        if (
+          pending.byteLength >= PARALLAX_AUDIO_PACKET_HEADER_BYTES
+          && !readParallaxAudioPacketHeader(pending)
+        ) {
+          throw new Error('Parallax host sent an invalid audio packet header.')
+        }
         while (true) {
           const decoded = decodeParallaxAudioPacket(pending)
           if (!decoded) break
@@ -2772,13 +2914,14 @@ export class ParallaxService {
 
     try {
       const requestFromFrame = Math.max(0, Math.floor(fromFrame))
-      const response = await fetch(
+      const response = await undiciFetch(
         `${connection.baseUrl}/v1/parallax/audio?streamId=${encodeURIComponent(streamId)}&fromFrame=${requestFromFrame}`,
         {
           method: 'GET',
+          dispatcher: connection.dispatcher,
           signal: connection.abortController.signal,
           headers: { Authorization: `Bearer ${connection.token}` }
-        }
+        } as ParallaxFetchInit
       )
       if (!response.ok || !response.body) {
         if (response.status === 401) {
@@ -2818,6 +2961,12 @@ export class ParallaxService {
         const received = new Uint8Array(value.byteLength)
         received.set(value)
         pending = mergeBytes(pending, received)
+        if (
+          pending.byteLength >= PARALLAX_AUDIO_PACKET_HEADER_BYTES
+          && !readParallaxAudioPacketHeader(pending)
+        ) {
+          throw new Error('Parallax host sent an invalid next-stream audio packet header.')
+        }
         while (true) {
           const decoded = decodeParallaxAudioPacket(pending)
           if (!decoded) break

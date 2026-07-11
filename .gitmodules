@@ -1,0 +1,12 @@
+[submodule "third_party/libspatialaudio"]
+	path = third_party/libspatialaudio
+	url = https://github.com/videolabs/libspatialaudio
+[submodule "third_party/libiamf"]
+	path = third_party/libiamf
+	url = https://github.com/AOMediaCodec/libiamf
+[submodule "third_party/opus"]
+	path = third_party/opus
+	url = https://github.com/xiph/opus
+[submodule "third_party/flac"]
+	path = third_party/flac
+	url = https://github.com/xiph/flac

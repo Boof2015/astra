@@ -35,6 +35,7 @@ function formatMmSs(seconds: number): string {
 export default function ParallaxIncomingPairCard({ variant = 'modal' }: Props) {
   const incoming = useParallaxStore((s) => s.status?.sink.incomingPairRequest ?? null)
   const remaining = useSecondsRemaining(incoming?.expiresAtMs ?? null)
+  const [submitting, setSubmitting] = useState(false)
 
   if (!incoming) return null
 
@@ -55,13 +56,41 @@ export default function ParallaxIncomingPairCard({ variant = 'modal' }: Props) {
         ))}
       </div>
       <div className="parallax-pair-card-instructions">
-        Tell the host this code.
+        {incoming.awaitingApproval
+          ? 'The host matched this code. Approve the connection to finish pairing.'
+          : 'Enter this code on the host, then approve the connection here.'}
       </div>
       <div className="parallax-pair-card-countdown">
         Expires in {formatMmSs(remaining)}
       </div>
       <div className="parallax-pair-card-footnote">
-        If this wasn't you, ignore.
+        If this wasn't you, reject the request.
+      </div>
+      <div className="parallax-pair-card-actions">
+        <button
+          type="button"
+          className="parallax-pair-card-button parallax-pair-card-button-secondary"
+          disabled={submitting}
+          onClick={() => {
+            setSubmitting(true)
+            void window.electronAPI.parallax.cancelIncomingPair().finally(() => setSubmitting(false))
+          }}
+        >
+          Reject
+        </button>
+        {incoming.awaitingApproval && (
+          <button
+            type="button"
+            className="parallax-pair-card-button parallax-pair-card-button-primary"
+            disabled={submitting}
+            onClick={() => {
+              setSubmitting(true)
+              void window.electronAPI.parallax.approveIncomingPair().finally(() => setSubmitting(false))
+            }}
+          >
+            Approve
+          </button>
+        )}
       </div>
     </div>
   )

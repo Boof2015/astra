@@ -27,6 +27,12 @@ import type { MultichannelAudioChunk } from '../../types/audioAnalysis'
 import type { ScopeKind } from '../../types/scopePopout'
 import { SCOPE_KINDS } from '../../types/scopePopout'
 import { ProgressiveWaveformAccumulator } from './waveformExtractor'
+import { detectIamfContainer, type IamfContainerKind } from '../../shared/iamf/detect'
+import {
+  IamfDecodeCancelledError,
+  IamfDecoderClient,
+  type IamfDecodeHandle,
+} from './iamfDecoder'
 import {
   ProgressiveKWeightedLoudnessAnalyzer,
   analyzeAudioBufferLoudness,
@@ -44,8 +50,24 @@ import {
   type StereoAmbientUpmixRoute,
   type StereoUpmixMode
 } from '../utils/sourceChannelLayout'
+import {
+  buildSpatialSpeakerMessage,
+  resolveRoutingTargetChannelCount,
+  SPATIAL_MAX_SPEAKERS,
+  type SpatialMode,
+  type VirtualSpeaker
+} from '../utils/virtualSpeakerLayout'
 
 type EventCallback = (...args: unknown[]) => void
+
+export type SpatialWorkletState = 'idle' | 'loading' | 'ready' | 'error' | 'unsupported-samplerate'
+
+export interface SpatialStatus {
+  state: SpatialWorkletState
+  sampleRate: number | null
+  taps: number
+  message: string | null
+}
 
 const ANALYSIS_DELAY_MAX_MS = 2500
 const ANALYSIS_DELAY_MAX_SEC = ANALYSIS_DELAY_MAX_MS / 1000
@@ -54,8 +76,19 @@ const REMOTE_STREAM_PLAYABLE_SECONDS = 0.75
 const REMOTE_NORMALIZATION_UPDATE_SECONDS = 5
 const REMOTE_NORMALIZATION_MIN_DELTA_DB = 1
 const REMOTE_NORMALIZATION_SLEW_MS = 250
+const REMOTE_WAVEFORM_UPDATE_INTERVAL_MS = 250
+const LOCAL_PROGRESSIVE_WAVEFORM_SAMPLE_BUDGET = 4096
 const PARALLAX_HOST_STREAM_LOOKAHEAD_MS = 3000
 const PARALLAX_HOST_STREAM_SLEEP_SLICE_MS = 250
+
+// Short fade applied to standard Web Audio playback so play/pause/skip transitions are not abrupt.
+const PLAYBACK_FADE_MS = 150
+// Extra delay before tearing down a faded-out source, so the audio-thread ramp fully reaches 0.
+const FADE_STOP_EPSILON_MS = 20
+// Sub-perceptual fade-node dip used when an instant manual skip promotes the prebuffered next
+// track immediately: the outgoing source is stopped at the bottom of the dip so its mid-sample
+// cutoff lands in silence (no click), while the incoming source's onset rides the dip back up.
+const SKIP_DECLICK_MS = 12
 
 const NORMALIZATION_MIN_GAIN_DB = -18
 const NORMALIZATION_MAX_GAIN_DB = 6
@@ -142,23 +175,43 @@ interface GainState {
 
 export interface VisualizerConsumerDemand {
   spectrum?: boolean
+  // Stereo side-line feed for the spectrum scope; only enqueued when a consumer
+  // actually renders it (side-line enabled), so the queue stays empty otherwise.
+  spectrumStereo?: boolean
   oscilloscope?: boolean
   vectorscope?: boolean
   spectrogram?: boolean
   vumeter?: boolean
   lufsmeter?: boolean
   waveform?: boolean
+  // Stereo waveform feed; only enqueued while a consumer runs in stereo mode.
+  waveformStereo?: boolean
   miniSpectrum?: boolean
   miniOscilloscope?: boolean
+}
+
+export interface ExternalLoudnessResult {
+  loudnessLufs: number
+  peakLinear: number | null
+}
+
+export interface AudioLoadTimings {
+  decodeMs: number
+  analysisMs: number
 }
 
 interface AudioLoadDataOptions {
   replayGainDb?: number | null
   trackPath?: string | null
+  // Pre-resolved loudness (DB lookup or main-process ffmpeg pass) so the
+  // load path can skip the in-renderer full-buffer analysis.
+  loudnessAnalysis?: Promise<ExternalLoudnessResult | null> | null
 }
 
 interface RemoteStreamLoadOptions {
   replayGainDb?: number | null
+  loudnessAnalysis?: ExternalLoudnessResult | null
+  startTimeSeconds?: number | null
 }
 
 interface PlaybackModeSwitchResult {
@@ -176,10 +229,12 @@ interface ProgressiveNormalizationAccumulator {
 interface RemoteStreamRuntimeState {
   sessionId: number
   path: string
-  sourceType: 'subsonic' | 'jellyfin'
+  sourceType: 'local' | 'subsonic' | 'jellyfin'
+  track: Track
   sampleRate: number
   channels: number
   durationSeconds: number
+  startFrame: number
   bufferedFrames: number
   analyzedFrames: number
   currentFrame: number
@@ -188,6 +243,8 @@ interface RemoteStreamRuntimeState {
   paused: boolean
   sourceEnded: boolean
   waveform: ProgressiveWaveformAccumulator
+  lastWaveformUpdateAt: number
+  waveformUpdateTimer: ReturnType<typeof setTimeout> | null
   normalization: ProgressiveNormalizationAccumulator | null
 }
 
@@ -284,6 +341,10 @@ export class AudioEngine {
   private context: AudioContext | null = null
   private sourceNode: AudioBufferSourceNode | null = null
   private gainNode: GainNode | null = null
+  // Final-stage gain used only for play/pause/skip fades, independent of volume/mute and normalization.
+  private fadeGainNode: GainNode | null = null
+  // Pending teardown of a faded-out source after pause(); cleared if play/stop/seek/load takes over.
+  private pauseFadeTimer: ReturnType<typeof setTimeout> | null = null
   private normalizationGainNode: GainNode | null = null
   private analysisNormalizationGainNode: GainNode | null = null
   private analysisDelayNode: DelayNode | null = null
@@ -314,13 +375,19 @@ export class AudioEngine {
   // Queue for accumulating oscilloscope samples (prevents sample loss)
   private pendingOscilloscopeSamples: Float32Array[] = []
   private pendingSpectrumSamples: Float32Array[] = []
+  // Stereo spectrum chunks for the ported mid/side spectrum mode (references the same
+  // left/right buffers; no extra allocation, only queued when spectrum is demanded).
+  private pendingSpectrumStereoSamples: { left: Float32Array; right: Float32Array }[] = []
   private pendingSpectrogramSamples: Float32Array[] = []
   private pendingVectorscopeSamples: { left: Float32Array; right: Float32Array }[] = []
   private pendingVUMeterSamples: MultichannelAudioChunk[] = []
   private pendingLUFSMeterSamples: { left: Float32Array; right: Float32Array }[] = []
   private pendingWaveformSamples: Float32Array[] = []
+  // Stereo waveform chunks for the ported stereo/multiband waveform mode.
+  private pendingWaveformStereoSamples: { left: Float32Array; right: Float32Array }[] = []
   private pendingMiniVisualizerChunks: { left: Float32Array; mono: Float32Array }[] = []
   private visualizerConsumerDemand: Map<string, VisualizerConsumerDemand> = new Map()
+  private static readonly EMPTY_SAMPLES = new Float32Array(0)
   private static readonly MAX_PENDING_CHUNKS = 20 // ~2560 samples at 128/chunk
   private static readonly MAX_PENDING_SPECTRUM_CHUNKS = 96 // ~0.25s at 48k/128
   private static readonly MAX_PENDING_VECTORSCOPE_CHUNKS = 20
@@ -331,6 +398,8 @@ export class AudioEngine {
   private nextBufferTrackPath: string | null = null
   private currentNormalizationAnalysis: LoudnessAnalysis | null = null
   private nextNormalizationAnalysis: LoudnessAnalysis | null = null
+  private pendingCurrentLoudnessTrackPath: string | null = null
+  private lastLoadTimings: AudioLoadTimings | null = null
   private startTime: number = 0
   private pauseTime: number = 0
   private _playbackState: PlaybackState = 'stopped'
@@ -362,6 +431,19 @@ export class AudioEngine {
   private includeLfeInDownmix: boolean = false
   private stereoUpmixMode: StereoUpmixMode = 'off'
   private manualChannelRoutingMap: number[] | null = null
+  // Astra Spatial Engine (binaural render stage). The worklet node is lazy:
+  // created on first enable, then kept for the AudioContext's lifetime.
+  private spatialMode: SpatialMode = 'off'
+  private virtualSpeakers: VirtualSpeaker[] = []
+  private spatialWorkletNode: AudioWorkletNode | null = null
+  private spatialWorkletState: SpatialWorkletState = 'idle'
+  private spatialWorkletModuleLoaded: boolean = false
+  private spatialWorkletConnected: boolean = false
+  private spatialTailTaps: number = 0
+  private spatialStatusMessage: string | null = null
+  private spatialReadyResolver: (() => void) | null = null
+  private iamfDecoder: IamfDecoderClient | null = null
+  private activeIamfDecodes: Set<IamfDecodeHandle> = new Set()
   private sourceRoutingNodes: WeakMap<AudioNode, {
     inputNode: AudioNode | null
     nodes: AudioNode[]
@@ -480,6 +562,12 @@ export class AudioEngine {
       if (this.context) {
         this.rebuildStandardAnalysisGraphRouting()
       }
+      if (this.spatialMode === 'binaural') {
+        // Re-arm the binaural renderer (it was inert while bit-perfect
+        // bypassed the Web Audio graph). Playback is stopped at this point,
+        // so this only prepares the worklet + routing prefs.
+        void this.setSpatialMode('binaural')
+      }
       this.syncVisualizerTransportState()
       return {
         activeMode: this.playbackOutputMode,
@@ -509,6 +597,7 @@ export class AudioEngine {
     this.currentNormalizationAnalysis = null
     this.playbackOutputMode = 'bitperfect'
     this.nativeModeMessage = BIT_PERFECT_UNSUPPORTED_MESSAGE
+    this.syncSpatialNodeConnection()
     this.notifyTrackChange()
     this.syncVisualizerTransportState()
     return {
@@ -535,11 +624,13 @@ export class AudioEngine {
     // Clear pending samples from previous track to prevent buffer pollution
     this.pendingOscilloscopeSamples = []
     this.pendingSpectrumSamples = []
+    this.pendingSpectrumStereoSamples = []
     this.pendingSpectrogramSamples = []
     this.pendingVectorscopeSamples = []
     this.pendingVUMeterSamples = []
     this.pendingLUFSMeterSamples = []
     this.pendingWaveformSamples = []
+    this.pendingWaveformStereoSamples = []
     this.pendingMiniVisualizerChunks = []
     this.clearLatestVisualizerChannels()
     this.resetBitPerfectVisualizerGain()
@@ -550,12 +641,14 @@ export class AudioEngine {
   setVisualizerConsumerDemand(consumerId: string, demand: VisualizerConsumerDemand): void {
     const nextDemand: VisualizerConsumerDemand = {
       spectrum: Boolean(demand.spectrum),
+      spectrumStereo: Boolean(demand.spectrumStereo),
       oscilloscope: Boolean(demand.oscilloscope),
       vectorscope: Boolean(demand.vectorscope),
       spectrogram: Boolean(demand.spectrogram),
       vumeter: Boolean(demand.vumeter),
       lufsmeter: Boolean(demand.lufsmeter),
       waveform: Boolean(demand.waveform),
+      waveformStereo: Boolean(demand.waveformStereo),
       miniSpectrum: Boolean(demand.miniSpectrum),
       miniOscilloscope: Boolean(demand.miniOscilloscope),
     }
@@ -577,7 +670,7 @@ export class AudioEngine {
     }
   }
 
-  private hasVisualizerDemand(scope: ScopeKind): boolean {
+  private hasVisualizerDemand(scope: Exclude<keyof VisualizerConsumerDemand, 'miniSpectrum' | 'miniOscilloscope'>): boolean {
     for (const demand of this.visualizerConsumerDemand.values()) {
       if (demand[scope]) {
         return true
@@ -714,6 +807,9 @@ export class AudioEngine {
     if (!this.hasVisualizerDemand('spectrum')) {
       this.pendingSpectrumSamples = []
     }
+    if (!this.hasVisualizerDemand('spectrumStereo')) {
+      this.pendingSpectrumStereoSamples = []
+    }
     if (!this.hasVisualizerDemand('spectrogram')) {
       this.pendingSpectrogramSamples = []
     }
@@ -728,6 +824,9 @@ export class AudioEngine {
     }
     if (!this.hasVisualizerDemand('waveform')) {
       this.pendingWaveformSamples = []
+    }
+    if (!this.hasVisualizerDemand('waveformStereo')) {
+      this.pendingWaveformStereoSamples = []
     }
     if (!this.hasMiniVisualizerDemand('spectrum') && !this.hasMiniVisualizerDemand('oscilloscope')) {
       this.pendingMiniVisualizerChunks = []
@@ -764,6 +863,10 @@ export class AudioEngine {
     }
   }
 
+  // Queued chunks are shared by reference across queues and consumers:
+  // every source hands the engine exclusively owned arrays (structured-clone
+  // worklet messages, native flush results, normalization copies) and flush
+  // consumers treat chunks as read only, so per-queue copies are unnecessary.
   private queueCompatibilityVisualizerSamples(channels: Float32Array[]): void {
     const normalizedLeft = channels[0]
     const normalizedRight = channels[1] ?? normalizedLeft
@@ -772,10 +875,12 @@ export class AudioEngine {
 
     const oscilloscopeDemand = this.hasVisualizerDemand('oscilloscope')
     const spectrumDemand = this.hasVisualizerDemand('spectrum')
+    const spectrumStereoDemand = this.hasVisualizerDemand('spectrumStereo')
     const spectrogramDemand = this.hasVisualizerDemand('spectrogram')
     const vectorscopeDemand = this.hasVisualizerDemand('vectorscope')
     const lufsMeterDemand = this.hasVisualizerDemand('lufsmeter')
     const waveformDemand = this.hasVisualizerDemand('waveform')
+    const waveformStereoDemand = this.hasVisualizerDemand('waveformStereo')
     const miniSpectrumDemand = this.hasMiniVisualizerDemand('spectrum')
     const miniOscilloscopeDemand = this.hasMiniVisualizerDemand('oscilloscope')
 
@@ -792,8 +897,7 @@ export class AudioEngine {
     }
 
     if (oscilloscopeDemand) {
-      const leftChunk = new Float32Array(normalizedLeft)
-      this.enqueueOscilloscopeSamples(leftChunk)
+      this.enqueueOscilloscopeSamples(normalizedLeft)
     }
 
     if (spectrumDemand && mono) {
@@ -803,6 +907,15 @@ export class AudioEngine {
         )
       }
       this.pendingSpectrumSamples.push(mono)
+    }
+
+    if (spectrumStereoDemand) {
+      if (this.pendingSpectrumStereoSamples.length >= AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS) {
+        this.pendingSpectrumStereoSamples = this.pendingSpectrumStereoSamples.slice(
+          -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)
+        )
+      }
+      this.pendingSpectrumStereoSamples.push({ left: normalizedLeft, right: normalizedRight })
     }
 
     if (spectrogramDemand && mono) {
@@ -821,8 +934,8 @@ export class AudioEngine {
         )
       }
       this.pendingMiniVisualizerChunks.push({
-        left: miniOscilloscopeDemand ? new Float32Array(normalizedLeft) : new Float32Array(0),
-        mono: miniSpectrumDemand && mono ? mono : new Float32Array(0),
+        left: miniOscilloscopeDemand ? normalizedLeft : AudioEngine.EMPTY_SAMPLES,
+        mono: miniSpectrumDemand && mono ? mono : AudioEngine.EMPTY_SAMPLES,
       })
     }
 
@@ -833,8 +946,8 @@ export class AudioEngine {
         )
       }
       this.pendingVectorscopeSamples.push({
-        left: new Float32Array(normalizedLeft),
-        right: new Float32Array(normalizedRight)
+        left: normalizedLeft,
+        right: normalizedRight
       })
     }
 
@@ -845,8 +958,8 @@ export class AudioEngine {
         )
       }
       this.pendingLUFSMeterSamples.push({
-        left: new Float32Array(normalizedLeft),
-        right: new Float32Array(normalizedRight)
+        left: normalizedLeft,
+        right: normalizedRight
       })
     }
 
@@ -856,7 +969,16 @@ export class AudioEngine {
           -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)
         )
       }
-      this.pendingWaveformSamples.push(new Float32Array(normalizedLeft))
+      this.pendingWaveformSamples.push(normalizedLeft)
+    }
+
+    if (waveformStereoDemand) {
+      if (this.pendingWaveformStereoSamples.length >= AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS) {
+        this.pendingWaveformStereoSamples = this.pendingWaveformStereoSamples.slice(
+          -Math.floor(AudioEngine.MAX_PENDING_SPECTRUM_CHUNKS / 2)
+        )
+      }
+      this.pendingWaveformStereoSamples.push({ left: normalizedLeft, right: normalizedRight })
     }
   }
 
@@ -869,9 +991,7 @@ export class AudioEngine {
       )
     }
 
-    this.pendingVUMeterSamples.push({
-      channels: channels.map((channel) => new Float32Array(channel)),
-    })
+    this.pendingVUMeterSamples.push({ channels })
   }
 
   private enqueueOscilloscopeSamples(chunk: Float32Array): void {
@@ -1199,6 +1319,8 @@ export class AudioEngine {
   }
 
   private beginLoadOperation(): number {
+    // A new load supersedes any pending pause-fade teardown (its stopSource runs in the load flow).
+    this.clearPauseFadeTimer()
     this.loadGeneration += 1
     this.prebufferGeneration += 1
     this.cancelParallaxHostPublishing()
@@ -1380,23 +1502,46 @@ export class AudioEngine {
     return buffer.length * buffer.numberOfChannels * 4
   }
 
+  /**
+   * True when the binaural spatial stage is live in the graph. Requires the
+   * worklet to be fully ready — a failed/unsupported renderer leaves the
+   * routing exactly as it was (Direct mode).
+   */
+  private isBinauralActive(): boolean {
+    return (
+      this.spatialMode === 'binaural' &&
+      this.playbackOutputMode === 'standard' &&
+      this.spatialWorkletState === 'ready' &&
+      this.spatialWorkletNode !== null &&
+      this.virtualSpeakers.length > 0
+    )
+  }
+
+  /** Output layout of the binaural render bus: one id per virtual speaker. */
+  private getVirtualSpeakerChannelIds(): string[] {
+    return this.virtualSpeakers.map((sp) => sp.sourceChannel)
+  }
+
+  /**
+   * The node per-source routing connects into: the spatial render stage when
+   * binaural is active, otherwise the normalization gain (legacy behavior).
+   */
+  private getRoutingSinkNode(): AudioNode | null {
+    if (this.isBinauralActive()) return this.spatialWorkletNode
+    return this.normalizationGainNode
+  }
+
   private getRoutingOutputChannelCount(sourceChannels?: number): number {
-    const maxChannels = this.getMaxDestinationChannelCount()
-    if (!this.multichannelEnabled) {
-      return Math.max(1, Math.min(maxChannels, 2))
-    }
-
-    const manualMapChannelCount = this.manualChannelRoutingMap?.length ?? 0
-
-    if (manualMapChannelCount > 0) {
-      return Math.max(1, Math.min(maxChannels, manualMapChannelCount))
-    }
-
-    if ((sourceChannels && sourceChannels > 0) || (this.audioBuffer?.numberOfChannels ?? 0) > 0) {
-      return maxChannels
-    }
-
-    return Math.max(1, Math.min(maxChannels, 2))
+    return resolveRoutingTargetChannelCount({
+      multichannelEnabled: this.multichannelEnabled,
+      binauralActive: this.isBinauralActive(),
+      virtualSpeakerCount: this.virtualSpeakers.length,
+      maxDestinationChannels: this.getMaxDestinationChannelCount(),
+      manualMapLength: this.manualChannelRoutingMap?.length ?? 0,
+      hasSourceChannels: Boolean(
+        (sourceChannels && sourceChannels > 0) || (this.audioBuffer?.numberOfChannels ?? 0) > 0
+      ),
+    })
   }
 
   private applyNodeRoutingMode(
@@ -1436,7 +1581,12 @@ export class AudioEngine {
     if (!this.context) return
 
     const routingChannels = this.getRoutingOutputChannelCount(preferredChannels)
-    const useDiscreteRouting = routingChannels > 2
+    const binauralActive = this.isBinauralActive()
+    // When binaural is active the multichannel render bus ends at the spatial
+    // node; everything downstream of it (EQ, volume, destination) is plain
+    // stereo headphone audio.
+    const downstreamChannels = binauralActive ? 2 : routingChannels
+    const useDiscreteRouting = downstreamChannels > 2
     const mode: ChannelCountMode = useDiscreteRouting ? 'explicit' : 'max'
     const interpretation: ChannelInterpretation = useDiscreteRouting ? 'discrete' : 'speakers'
 
@@ -1452,7 +1602,17 @@ export class AudioEngine {
     ]
 
     for (const node of nodes) {
-      this.applyNodeRoutingMode(node, routingChannels, mode, interpretation)
+      this.applyNodeRoutingMode(node, downstreamChannels, mode, interpretation)
+    }
+
+    if (this.spatialWorkletNode) {
+      // Pin the spatial node's input to the render bus width so the worklet
+      // never sees a surprise channel-count change mid-process.
+      const spatialInputChannels = Math.max(
+        1,
+        Math.min(SPATIAL_MAX_SPEAKERS, binauralActive ? routingChannels : this.virtualSpeakers.length || 2)
+      )
+      this.applyNodeRoutingMode(this.spatialWorkletNode, spatialInputChannels, 'explicit', 'discrete')
     }
   }
 
@@ -1479,29 +1639,43 @@ export class AudioEngine {
 
     this.applyChannelRoutingPreferences(sourceChannels)
 
+    // Binaural rendering consumes the same multichannel render bus the
+    // Direct path produces — it just must not depend on the physical
+    // multichannel toggle (headphones are 2ch; that's the point). The manual
+    // routing map keeps physical-device semantics and is ignored here.
+    const binauralActive = this.isBinauralActive()
+    const effectiveMultichannel = this.multichannelEnabled || binauralActive
+    const manualRoutingMap = binauralActive ? null : this.manualChannelRoutingMap
+    // The binaural render bus is ordered by the virtual speaker list, which
+    // for height layouts (5.1.2) is not the standard layout for its channel
+    // count — routing must see the explicit ids.
+    const outputChannelIds = binauralActive ? this.getVirtualSpeakerChannelIds() : null
+
     const outputChannels = this.getRoutingOutputChannelCount(sourceChannels)
     const shouldUseStereoAmbientUpmix = canUseStereoAmbientUpmix({
       sourceChannels,
       outputChannels,
-      multichannelEnabled: this.multichannelEnabled,
+      multichannelEnabled: effectiveMultichannel,
       standardMode: this.playbackOutputMode === 'standard',
       stereoUpmixMode: this.stereoUpmixMode,
+      outputChannelIds,
     })
 
     if (shouldUseStereoAmbientUpmix) {
-      this.connectStereoAmbientUpmix(sourceNode, outputChannels)
+      this.connectStereoAmbientUpmix(sourceNode, outputChannels, outputChannelIds)
       return
     }
 
     const channelMixMatrix = resolveChannelMixMatrix({
       sourceChannels,
       outputChannels,
-      multichannelEnabled: this.multichannelEnabled,
-      manualRoutingMap: this.manualChannelRoutingMap,
+      multichannelEnabled: effectiveMultichannel,
+      manualRoutingMap,
       includeLfeInDownmix: this.includeLfeInDownmix,
+      outputChannelIds,
     })
     const hasManualRouting = Boolean(
-      this.multichannelEnabled && this.manualChannelRoutingMap && this.manualChannelRoutingMap.length > 0
+      effectiveMultichannel && manualRoutingMap && manualRoutingMap.length > 0
     )
     const shouldUseRoutingMatrix = (
       hasManualRouting ||
@@ -1510,8 +1684,11 @@ export class AudioEngine {
       !isIdentityChannelMixMatrix(channelMixMatrix, sourceChannels, outputChannels)
     )
 
+    const routingSink = this.getRoutingSinkNode()
+    if (!routingSink) return
+
     if (!shouldUseRoutingMatrix) {
-      sourceNode.connect(this.normalizationGainNode)
+      sourceNode.connect(routingSink)
       this.sourceRoutingNodes.set(sourceNode, { inputNode: null, nodes: [] })
       return
     }
@@ -1537,17 +1714,23 @@ export class AudioEngine {
     }
     const silenceNodes = this.connectSilentMergerInputs(merger, outputChannels, connectedOutputs)
 
-    merger.connect(this.normalizationGainNode)
+    merger.connect(routingSink)
     this.sourceRoutingNodes.set(sourceNode, {
       inputNode: splitter,
       nodes: [splitter, ...gainNodes, ...silenceNodes, merger],
     })
   }
 
-  private connectStereoAmbientUpmix(sourceNode: AudioNode, outputChannels: number): void {
+  private connectStereoAmbientUpmix(
+    sourceNode: AudioNode,
+    outputChannels: number,
+    outputChannelIds: readonly string[] | null = null
+  ): void {
     if (!this.context || !this.normalizationGainNode) return
+    const routingSink = this.getRoutingSinkNode()
+    if (!routingSink) return
 
-    const plan = resolveStereoAmbientUpmixPlan(outputChannels)
+    const plan = resolveStereoAmbientUpmixPlan(outputChannels, outputChannelIds)
     const splitter = this.context.createChannelSplitter(2)
     const merger = this.context.createChannelMerger(Math.max(1, plan.outputChannels))
     const nodes: AudioNode[] = [splitter, merger]
@@ -1568,7 +1751,7 @@ export class AudioEngine {
     }
     nodes.push(...this.connectSilentMergerInputs(merger, plan.outputChannels, connectedOutputs))
 
-    merger.connect(this.normalizationGainNode)
+    merger.connect(routingSink)
     this.sourceRoutingNodes.set(sourceNode, {
       inputNode: splitter,
       nodes,
@@ -1781,8 +1964,14 @@ export class AudioEngine {
     try { this.workletNode?.disconnect() } catch { /* ignore */ }
     try { this.analysisTapSinkNode?.disconnect() } catch { /* ignore */ }
     try { this.gainNode.disconnect() } catch { /* ignore */ }
+    try { this.fadeGainNode?.disconnect() } catch { /* ignore */ }
 
-    this.gainNode.connect(this.context.destination)
+    if (this.fadeGainNode) {
+      this.gainNode.connect(this.fadeGainNode)
+      this.fadeGainNode.connect(this.context.destination)
+    } else {
+      this.gainNode.connect(this.context.destination)
+    }
 
     if (!this.shouldBypassStandardAnalysisGraph()) {
       if (this.eqAnalyserNode) {
@@ -1804,11 +1993,13 @@ export class AudioEngine {
     } else {
       this.pendingOscilloscopeSamples = []
       this.pendingSpectrumSamples = []
+      this.pendingSpectrumStereoSamples = []
       this.pendingSpectrogramSamples = []
       this.pendingVectorscopeSamples = []
       this.pendingVUMeterSamples = []
       this.pendingLUFSMeterSamples = []
       this.pendingWaveformSamples = []
+      this.pendingWaveformStereoSamples = []
       this.pendingMiniVisualizerChunks = []
       this.clearLatestVisualizerChannels()
       this.bitPerfectOscilloscopeRemainder = new Float32Array(0)
@@ -1843,6 +2034,10 @@ export class AudioEngine {
 
     if (this.normalizationGainNode) {
       try { sourceNode.disconnect(this.normalizationGainNode) } catch { /* ignore */ }
+    }
+
+    if (this.spatialWorkletNode) {
+      try { sourceNode.disconnect(this.spatialWorkletNode) } catch { /* ignore */ }
     }
 
     if (routingNodes.inputNode) {
@@ -1915,6 +2110,10 @@ export class AudioEngine {
 
   private async clearRemoteStreamState(cancelSession: boolean): Promise<void> {
     const remoteState = this.remoteStreamState
+    if (remoteState?.waveformUpdateTimer) {
+      clearTimeout(remoteState.waveformUpdateTimer)
+      remoteState.waveformUpdateTimer = null
+    }
     this.remoteStreamState = null
     this.currentBufferTrackPath = null
     this.disconnectRemoteStreamNode()
@@ -1924,7 +2123,7 @@ export class AudioEngine {
 
     if (remoteState && cancelSession) {
       try {
-        await window.electronAPI.cancelRemoteStream(remoteState.sessionId)
+        await window.electronAPI.cancelProgressiveStream(remoteState.sessionId)
       } catch {
         // Ignore cancellation failures while switching tracks or stopping playback.
       }
@@ -2091,6 +2290,15 @@ export class AudioEngine {
       return
     }
 
+    if (remoteState.sourceType === 'local') {
+      if (this.shouldAnalyzeLoudnessForLoad(this.currentReplayGainDb) && !this.currentNormalizationAnalysis) {
+        return
+      }
+      this.normalizationApproximate = false
+      this.applyNormalization()
+      return
+    }
+
     if (this._replayGainEnabled && this.currentReplayGainDb != null) {
       this.normalizationApproximate = false
       const clampedGainDb = this.clampGainDb(this.currentReplayGainDb)
@@ -2135,14 +2343,45 @@ export class AudioEngine {
 
   private emitRemoteWaveformUpdate(remoteState: RemoteStreamRuntimeState): void {
     const durationFrames = Math.max(1, Math.round(remoteState.durationSeconds * remoteState.sampleRate))
-    const bufferedRatio = Math.max(0, Math.min(1, remoteState.bufferedFrames / durationFrames))
-    const analyzedRatio = Math.max(0, Math.min(1, remoteState.analyzedFrames / durationFrames))
+    const bufferedAbsoluteFrames = remoteState.startFrame + remoteState.bufferedFrames
+    const analyzedAbsoluteFrames = remoteState.startFrame + remoteState.analyzedFrames
+    const bufferedRatio = Math.max(0, Math.min(1, bufferedAbsoluteFrames / durationFrames))
+    const analyzedRatio = Math.max(0, Math.min(1, analyzedAbsoluteFrames / durationFrames))
     this.emit('remoteWaveformUpdate', {
       waveformData: remoteState.waveform.getPeaks(),
       bufferedRatio,
       analyzedRatio,
-      bufferedSeconds: remoteState.bufferedFrames / remoteState.sampleRate
+      bufferedSeconds: bufferedAbsoluteFrames / remoteState.sampleRate
     })
+  }
+
+  private requestRemoteWaveformUpdate(
+    remoteState: RemoteStreamRuntimeState,
+    options: { force?: boolean } = {}
+  ): void {
+    if (this.remoteStreamState !== remoteState) return
+
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    const force = options.force === true
+    const elapsedMs = now - remoteState.lastWaveformUpdateAt
+
+    if (force || remoteState.lastWaveformUpdateAt === 0 || elapsedMs >= REMOTE_WAVEFORM_UPDATE_INTERVAL_MS) {
+      if (remoteState.waveformUpdateTimer) {
+        clearTimeout(remoteState.waveformUpdateTimer)
+        remoteState.waveformUpdateTimer = null
+      }
+      remoteState.lastWaveformUpdateAt = now
+      this.emitRemoteWaveformUpdate(remoteState)
+      return
+    }
+
+    if (remoteState.waveformUpdateTimer) return
+    remoteState.waveformUpdateTimer = setTimeout(() => {
+      remoteState.waveformUpdateTimer = null
+      if (this.remoteStreamState !== remoteState) return
+      remoteState.lastWaveformUpdateAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
+      this.emitRemoteWaveformUpdate(remoteState)
+    }, Math.max(0, REMOTE_WAVEFORM_UPDATE_INTERVAL_MS - elapsedMs))
   }
 
   private maybeStartRemotePlayback(): void {
@@ -2178,9 +2417,42 @@ export class AudioEngine {
     return channelData
   }
 
+  private handleLocalStreamChunk(chunk: RemoteStreamChunk, remoteState: RemoteStreamRuntimeState): void {
+    if (!this.remoteStreamNode) return
+
+    const interleaved = new Float32Array(chunk.pcmData)
+    const startFrame = remoteState.bufferedFrames
+    remoteState.bufferedFrames = Math.max(remoteState.bufferedFrames, chunk.decodedFrames)
+    remoteState.analyzedFrames = remoteState.bufferedFrames
+    remoteState.waveform.ingestInterleavedChunk(
+      interleaved,
+      chunk.channels,
+      chunk.frameCount,
+      remoteState.startFrame + startFrame,
+      { maxSamples: LOCAL_PROGRESSIVE_WAVEFORM_SAMPLE_BUDGET }
+    )
+
+    this.requestRemoteWaveformUpdate(remoteState)
+    this.remoteStreamNode.port.postMessage(
+      {
+        type: 'append-chunk',
+        frameCount: chunk.frameCount,
+        channelCount: chunk.channels,
+        interleavedData: interleaved
+      },
+      [interleaved.buffer]
+    )
+    this.maybeStartRemotePlayback()
+  }
+
   private handleRemoteStreamChunk(chunk: RemoteStreamChunk): void {
     const remoteState = this.remoteStreamState
     if (!remoteState || chunk.sessionId !== remoteState.sessionId || !this.remoteStreamNode) {
+      return
+    }
+
+    if (remoteState.sourceType === 'local') {
+      this.handleLocalStreamChunk(chunk, remoteState)
       return
     }
 
@@ -2188,7 +2460,7 @@ export class AudioEngine {
     const startFrame = remoteState.bufferedFrames
     remoteState.bufferedFrames = Math.max(remoteState.bufferedFrames, chunk.decodedFrames)
     remoteState.analyzedFrames = remoteState.bufferedFrames
-    remoteState.waveform.ingestChunk(channelData, startFrame)
+    remoteState.waveform.ingestChunk(channelData, remoteState.startFrame + startFrame)
 
     if (remoteState.normalization) {
       remoteState.normalization.analyzer.ingest(channelData)
@@ -2205,7 +2477,7 @@ export class AudioEngine {
       }
     }
 
-    this.emitRemoteWaveformUpdate(remoteState)
+    this.requestRemoteWaveformUpdate(remoteState)
     this.remoteStreamNode.port.postMessage(
       {
         type: 'append-chunk',
@@ -2228,6 +2500,7 @@ export class AudioEngine {
       } else {
         this.normalizationApproximate = false
       }
+      this.requestRemoteWaveformUpdate(remoteState, { force: true })
       this.remoteStreamNode?.port.postMessage({
         type: 'set-source-ended',
         ended: true
@@ -2253,7 +2526,7 @@ export class AudioEngine {
     }
   }
 
-  async loadRemoteStream(track: Track, options: RemoteStreamLoadOptions = {}): Promise<RemoteStreamInfo> {
+  async loadProgressiveStream(track: Track, options: RemoteStreamLoadOptions = {}): Promise<RemoteStreamInfo> {
     if (this.playbackOutputMode === 'bitperfect') {
       throw new Error('Bit-perfect mode requires path-based native loading.')
     }
@@ -2281,12 +2554,20 @@ export class AudioEngine {
     this.currentReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
     this.notifyTrackChange()
 
+    const sourceType = track.sourceType ?? 'local'
+    const requiresFixedLocalLoudness = sourceType === 'local'
+      && this.shouldAnalyzeLoudnessForLoad(this.currentReplayGainDb)
+    if (requiresFixedLocalLoudness && !options.loudnessAnalysis) {
+      throw new Error('Normalized local progressive playback requires precomputed loudness.')
+    }
+
     let info: RemoteStreamInfo
     try {
-      info = await window.electronAPI.startRemoteStream(
+      info = await window.electronAPI.startProgressiveStream(
         track.path,
         this.context.sampleRate,
-        track.channels ?? null
+        track.channels ?? null,
+        { startTimeSeconds: options.startTimeSeconds ?? 0 }
       )
     } catch (error) {
       if (loadOperation !== this.loadGeneration) {
@@ -2297,7 +2578,7 @@ export class AudioEngine {
 
     if (loadOperation !== this.loadGeneration) {
       try {
-        await window.electronAPI.cancelRemoteStream(info.sessionId)
+        await window.electronAPI.cancelProgressiveStream(info.sessionId)
       } catch {
         // Ignore cleanup failures for superseded stream sessions.
       }
@@ -2305,16 +2586,31 @@ export class AudioEngine {
     }
 
     this.remoteStreamNode = this.createRemoteStreamNode(info.channels)
+    const resolvedStartTimeSeconds = Number.isFinite(info.startTimeSeconds)
+      ? Math.max(0, Number(info.startTimeSeconds))
+      : Math.max(0, Number(options.startTimeSeconds ?? 0))
+    const durationSeconds = info.durationSeconds && info.durationSeconds > 0
+      ? info.durationSeconds
+      : Math.max(track.duration, 0)
+    const fixedLoudnessAnalysis = options.loudnessAnalysis && Number.isFinite(options.loudnessAnalysis.loudnessLufs)
+      ? {
+          loudnessLufs: options.loudnessAnalysis.loudnessLufs,
+          peakLinear: options.loudnessAnalysis.peakLinear ?? 0,
+          sampleRate: info.sampleRate,
+          frameCount: Math.max(1, Math.round(Math.max(durationSeconds, 1) * info.sampleRate))
+        }
+      : null
     this.currentBufferTrackPath = track.path
+    this.currentNormalizationAnalysis = fixedLoudnessAnalysis
     this.remoteStreamState = {
       sessionId: info.sessionId,
       path: track.path,
       sourceType: info.sourceType,
+      track,
       sampleRate: info.sampleRate,
       channels: info.channels,
-      durationSeconds: info.durationSeconds && info.durationSeconds > 0
-        ? info.durationSeconds
-        : Math.max(track.duration, 0),
+      durationSeconds,
+      startFrame: Math.max(0, Math.floor(resolvedStartTimeSeconds * info.sampleRate)),
       bufferedFrames: 0,
       analyzedFrames: 0,
       currentFrame: 0,
@@ -2323,10 +2619,14 @@ export class AudioEngine {
       paused: false,
       sourceEnded: false,
       waveform: new ProgressiveWaveformAccumulator(
-        info.durationSeconds && info.durationSeconds > 0 ? info.durationSeconds : Math.max(track.duration, 1),
+        durationSeconds > 0 ? durationSeconds : Math.max(track.duration, 1),
         info.sampleRate
       ),
-      normalization: this._replayGainEnabled && this.currentReplayGainDb != null
+      lastWaveformUpdateAt: 0,
+      waveformUpdateTimer: null,
+      normalization: sourceType === 'local'
+        ? null
+        : this._replayGainEnabled && this.currentReplayGainDb != null
         ? null
         : this.createProgressiveNormalizationAccumulator(info.sampleRate)
     }
@@ -2335,7 +2635,10 @@ export class AudioEngine {
     this.applyAnalysisRoutingPreferences(info.channels)
     this.emit('durationChange', this.remoteStreamState.durationSeconds)
 
-    if (this._replayGainEnabled && this.currentReplayGainDb != null) {
+    if (sourceType === 'local') {
+      this.normalizationApproximate = false
+      this.applyNormalization()
+    } else if (this._replayGainEnabled && this.currentReplayGainDb != null) {
       const clampedGainDb = this.clampGainDb(this.currentReplayGainDb)
       this.normalizationApproximate = false
       this.applyGainState({
@@ -2365,6 +2668,10 @@ export class AudioEngine {
 
     this.assertCurrentLoadOperation(loadOperation)
     return info
+  }
+
+  async loadRemoteStream(track: Track, options: RemoteStreamLoadOptions = {}): Promise<RemoteStreamInfo> {
+    return this.loadProgressiveStream(track, options)
   }
 
   async loadParallaxSinkStream(stream: ParallaxStreamInfo): Promise<void> {
@@ -2775,6 +3082,7 @@ export class AudioEngine {
     }
 
     this.stopSource()
+    this.clearPauseFadeTimer()
     this.cancelScheduledNext()
     this.clearParallaxSinkState()
 
@@ -2809,6 +3117,16 @@ export class AudioEngine {
     }
     this.startTime = startAtContextTime - offset
     this.pauseTime = offset
+    // A pause fade leaves fadeGainNode at 0 and only play() restores it, which this parallax
+    // path bypasses — fade back in, anchored at the scheduled start so the ramp tracks the
+    // source onset. When the gain is already at unity (seek while playing), leave the schedule
+    // untouched so the skip-declick dip from stopSource() above is not cancelled mid-dip.
+    if (this.fadeGainNode && this.fadeGainNode.gain.value < 0.999) {
+      const fade = this.fadeGainNode.gain
+      fade.cancelScheduledValues(this.context.currentTime)
+      fade.setValueAtTime(0, startAtContextTime)
+      fade.linearRampToValueAtTime(1, startAtContextTime + PLAYBACK_FADE_MS / 1000)
+    }
     this.sourceNode.start(startAtContextTime, offset)
     this._playbackState = 'playing'
     this.emit('stateChange', this._playbackState)
@@ -3175,6 +3493,205 @@ export class AudioEngine {
     }
   }
 
+  getSpatialStatus(): SpatialStatus {
+    return {
+      state: this.spatialWorkletState,
+      sampleRate: this.context ? Math.round(this.context.sampleRate) : null,
+      taps: this.spatialTailTaps,
+      message: this.spatialStatusMessage,
+    }
+  }
+
+  private emitSpatialStatus(): void {
+    this.emit('spatialStatusChange', this.getSpatialStatus())
+  }
+
+  private handleSpatialWorkletMessage(event: MessageEvent): void {
+    const data = event.data ?? {}
+    if (data.type === 'ready') {
+      this.spatialWorkletState = 'ready'
+      this.spatialTailTaps = Number(data.taps) || 0
+      const wasmMaxSpeakers = Number(data.maxSpeakers) || 0
+      if (wasmMaxSpeakers > 0 && wasmMaxSpeakers < SPATIAL_MAX_SPEAKERS) {
+        console.warn(
+          `Spatial renderer wasm supports ${wasmMaxSpeakers} speakers but the app expects ` +
+            `${SPATIAL_MAX_SPEAKERS}; layouts wider than ${wasmMaxSpeakers} will be truncated. ` +
+            'Rebuild via scripts/build/build-spatial-wasm.sh.'
+        )
+      }
+      this.spatialStatusMessage = null
+      this.spatialReadyResolver?.()
+      this.spatialReadyResolver = null
+      this.emitSpatialStatus()
+      return
+    }
+    if (data.type === 'unsupported-samplerate') {
+      this.spatialWorkletState = 'unsupported-samplerate'
+      this.spatialStatusMessage = `The binaural renderer supports 44.1/48/88.2/96 kHz output; the audio device is running at ${Math.round(Number(data.sampleRate) || 0)} Hz.`
+      this.spatialReadyResolver?.()
+      this.spatialReadyResolver = null
+      this.emitSpatialStatus()
+      return
+    }
+    if (data.type === 'error') {
+      this.spatialWorkletState = 'error'
+      this.spatialStatusMessage = typeof data.message === 'string' && data.message.length > 0
+        ? data.message
+        : 'The binaural renderer failed to initialize.'
+      this.spatialReadyResolver?.()
+      this.spatialReadyResolver = null
+      this.emitSpatialStatus()
+    }
+  }
+
+  /**
+   * Loads the spatial worklet module, creates the persistent render node and
+   * initializes the WASM renderer. Resolves once the worklet reports a
+   * terminal state; the graph is only rewired through the node when the state
+   * lands on 'ready' (see isBinauralActive), so failures leave routing
+   * untouched.
+   */
+  private async ensureSpatialWorklet(): Promise<void> {
+    if (!this.context) return
+    // 'unsupported-samplerate' is terminal for this context (its rate never
+    // changes); 'error' allows a retry on the next enable attempt.
+    if (
+      this.spatialWorkletState === 'ready' ||
+      this.spatialWorkletState === 'loading' ||
+      this.spatialWorkletState === 'unsupported-samplerate'
+    ) {
+      return
+    }
+
+    this.spatialWorkletState = 'loading'
+    this.spatialStatusMessage = null
+    this.emitSpatialStatus()
+
+    try {
+      if (!this.spatialWorkletModuleLoaded) {
+        await this.context.audioWorklet.addModule('./spatial-worklet.js')
+        this.spatialWorkletModuleLoaded = true
+      }
+
+      if (!this.spatialWorkletNode) {
+        const node = new AudioWorkletNode(this.context, 'spatial-renderer-processor', {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [2],
+        })
+        node.port.onmessage = (event: MessageEvent) => this.handleSpatialWorkletMessage(event)
+        this.spatialWorkletNode = node
+      }
+      this.syncSpatialNodeConnection()
+
+      const wasmBytes = await window.electronAPI.getSpatialWasmBytes()
+      const ready = new Promise<void>((resolve) => {
+        this.spatialReadyResolver = resolve
+      })
+      this.spatialWorkletNode.port.postMessage(
+        {
+          type: 'init',
+          wasmBytes,
+          speakers: buildSpatialSpeakerMessage(this.virtualSpeakers),
+        },
+        [wasmBytes]
+      )
+      // The worklet always answers init with ready/error/unsupported; the
+      // timeout only guards against a wedged audio thread.
+      await Promise.race([
+        ready,
+        new Promise<void>((resolve) => setTimeout(resolve, 10_000)),
+      ])
+      if (this.spatialWorkletState === 'loading') {
+        this.spatialWorkletState = 'error'
+        this.spatialStatusMessage = 'Timed out initializing the binaural renderer.'
+        this.spatialReadyResolver = null
+        this.emitSpatialStatus()
+      }
+    } catch (error) {
+      this.spatialWorkletState = 'error'
+      this.spatialStatusMessage = error instanceof Error ? error.message : 'Failed to load the binaural renderer.'
+      this.spatialReadyResolver = null
+      this.emitSpatialStatus()
+    }
+  }
+
+  /** Keeps the persistent spatial node attached only while binaural is on. */
+  private syncSpatialNodeConnection(): void {
+    if (!this.spatialWorkletNode || !this.normalizationGainNode) return
+    const shouldConnect = this.spatialMode === 'binaural' && this.playbackOutputMode === 'standard'
+    if (shouldConnect && !this.spatialWorkletConnected) {
+      this.spatialWorkletNode.connect(this.normalizationGainNode)
+      this.spatialWorkletConnected = true
+    } else if (!shouldConnect && this.spatialWorkletConnected) {
+      try { this.spatialWorkletNode.disconnect() } catch { /* ignore */ }
+      this.spatialWorkletConnected = false
+    }
+  }
+
+  async setSpatialMode(mode: SpatialMode): Promise<void> {
+    this.spatialMode = mode === 'binaural' ? 'binaural' : 'off'
+    if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
+
+    await this.initContext()
+    if (this.spatialMode === 'binaural') {
+      await this.ensureSpatialWorklet()
+    }
+    this.syncSpatialNodeConnection()
+    this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+
+    if (this.rebuildRemoteStreamRoutingIfActive()) {
+      return
+    }
+    if (this.rebuildParallaxSinkRoutingIfActive()) {
+      return
+    }
+
+    if (this._playbackState === 'playing' && this.audioBuffer) {
+      await this.seek(this.currentTime)
+    }
+  }
+
+  /**
+   * Updates virtual speaker positions. Same-width updates (drags) only push
+   * new angles to the worklet — the renderer fades filters internally, no
+   * graph rebuild. Width changes (preset switches) rewire the render bus.
+   */
+  async setVirtualSpeakers(speakers: VirtualSpeaker[]): Promise<void> {
+    const previousCount = this.virtualSpeakers.length
+    this.virtualSpeakers = speakers.slice(0, SPATIAL_MAX_SPEAKERS)
+
+    if (this.spatialWorkletNode && this.spatialWorkletState === 'ready') {
+      this.spatialWorkletNode.port.postMessage({
+        type: 'set-speakers',
+        speakers: buildSpatialSpeakerMessage(this.virtualSpeakers),
+      })
+    }
+
+    if (this.playbackOutputMode === 'bitperfect') return
+    if (this.spatialMode !== 'binaural') return
+    if (this.virtualSpeakers.length === previousCount) return
+
+    await this.initContext()
+    if (this.spatialMode === 'binaural') {
+      await this.ensureSpatialWorklet()
+    }
+    this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+
+    if (this.rebuildRemoteStreamRoutingIfActive()) {
+      return
+    }
+    if (this.rebuildParallaxSinkRoutingIfActive()) {
+      return
+    }
+
+    if (this._playbackState === 'playing' && this.audioBuffer) {
+      await this.seek(this.currentTime)
+    }
+  }
+
   private async initContext(options: { sampleRate?: number; allowSampleRateMismatch?: boolean } = {}): Promise<void> {
     if (!this.context) {
       const requestedSampleRate = Number.isFinite(options.sampleRate) && Number(options.sampleRate) > 0
@@ -3187,6 +3704,10 @@ export class AudioEngine {
       // Create persistent nodes
       this.gainNode = this.context.createGain()
       this.gainNode.gain.value = this._isMuted ? 0 : this._volume
+
+      // Fade node (after volume, last stage before destination) for play/pause/skip fades
+      this.fadeGainNode = this.context.createGain()
+      this.fadeGainNode.gain.value = 1.0
 
       // Normalization gain node (applied before volume)
       this.normalizationGainNode = this.context.createGain()
@@ -3240,13 +3761,13 @@ export class AudioEngine {
       }
 
       if (this.remoteStreamChunkUnsubscribe === null) {
-        this.remoteStreamChunkUnsubscribe = window.electronAPI.onRemoteStreamChunk((chunk) => {
+        this.remoteStreamChunkUnsubscribe = window.electronAPI.onProgressiveStreamChunk((chunk) => {
           this.handleRemoteStreamChunk(chunk)
         })
       }
 
       if (this.remoteStreamEventUnsubscribe === null) {
-        this.remoteStreamEventUnsubscribe = window.electronAPI.onRemoteStreamEvent((payload) => {
+        this.remoteStreamEventUnsubscribe = window.electronAPI.onProgressiveStreamEvent((payload) => {
           this.handleRemoteStreamEvent(payload)
         })
       }
@@ -3281,8 +3802,88 @@ export class AudioEngine {
     return typeof value === 'number' && Number.isFinite(value) ? value : null
   }
 
-  private async analyzeNormalizationForBuffer(buffer: AudioBuffer): Promise<LoudnessAnalysis> {
-    return analyzeAudioBufferLoudness(buffer)
+  // Loudness analysis is only worth computing when the resolved gain could
+  // actually depend on it (normalization on, no ReplayGain tag overriding it).
+  private shouldAnalyzeLoudnessForLoad(replayGainDb: number | null): boolean {
+    if (!this._normalizationEnabled) return false
+    if (this._replayGainEnabled && replayGainDb != null) return false
+    return true
+  }
+
+  private async resolveLoudnessAnalysisForLoad(
+    buffer: AudioBuffer,
+    options: AudioLoadDataOptions,
+    replayGainDb: number | null
+  ): Promise<LoudnessAnalysis | null> {
+    if (!this.shouldAnalyzeLoudnessForLoad(replayGainDb)) return null
+
+    if (options.loudnessAnalysis) {
+      try {
+        const external = await options.loudnessAnalysis
+        if (external && Number.isFinite(external.loudnessLufs)) {
+          return {
+            loudnessLufs: external.loudnessLufs,
+            peakLinear: external.peakLinear ?? 0,
+            sampleRate: buffer.sampleRate,
+            frameCount: buffer.length
+          }
+        }
+      } catch {
+        // Fall back to the in-renderer analyzer below.
+      }
+    }
+
+    const analysis = await analyzeAudioBufferLoudness(buffer)
+    if (options.trackPath && Number.isFinite(analysis.loudnessLufs)) {
+      void window.electronAPI.storeTrackLoudness(options.trackPath, {
+        loudnessLufs: analysis.loudnessLufs,
+        peakLinear: Number.isFinite(analysis.peakLinear) ? analysis.peakLinear : null,
+        method: 'kweight-ungated'
+      }).catch(() => false)
+    }
+    return analysis
+  }
+
+  // Fill in the current track's loudness after the fact when a settings toggle
+  // makes normalization need it (e.g. enabling normalization mid-track after
+  // the load-time analysis was skipped).
+  private ensureCurrentLoudnessAnalysis(): void {
+    if (this.playbackOutputMode === 'bitperfect' || this.remoteStreamState) return
+    if (!this._normalizationEnabled || this.currentNormalizationAnalysis) return
+    if (this._replayGainEnabled && this.currentReplayGainDb != null) return
+    const trackPath = this.currentBufferTrackPath
+    if (!trackPath || !this.audioBuffer) return
+    if (this.pendingCurrentLoudnessTrackPath === trackPath) return
+
+    this.pendingCurrentLoudnessTrackPath = trackPath
+    void window.electronAPI.analyzeTrackLoudness(trackPath)
+      .catch(() => null)
+      .then((result) => {
+        if (this.pendingCurrentLoudnessTrackPath === trackPath) {
+          this.pendingCurrentLoudnessTrackPath = null
+        }
+        if (!result || !Number.isFinite(result.loudnessLufs)) return
+        if (this.currentBufferTrackPath !== trackPath || !this.audioBuffer) return
+        if (this.currentNormalizationAnalysis) return
+        this.currentNormalizationAnalysis = {
+          loudnessLufs: result.loudnessLufs,
+          peakLinear: result.peakLinear ?? 0,
+          sampleRate: this.audioBuffer.sampleRate,
+          frameCount: this.audioBuffer.length
+        }
+        this.applyNormalization()
+      })
+  }
+
+  getLastLoadTimings(): AudioLoadTimings | null {
+    return this.lastLoadTimings ? { ...this.lastLoadTimings } : null
+  }
+
+  // Whether loading a track with this ReplayGain candidate would need a
+  // loudness analysis; lets callers pre-resolve one in parallel with decode.
+  needsLoudnessAnalysisForLoad(replayGainDb: number | null | undefined): boolean {
+    if (this.playbackOutputMode === 'bitperfect') return false
+    return this.shouldAnalyzeLoudnessForLoad(this.normalizeReplayGainCandidate(replayGainDb))
   }
 
   private computeNormalizationForAnalysis(
@@ -3470,6 +4071,7 @@ export class AudioEngine {
       })
     } else if (enabled && this.audioBuffer) {
       this.applyNormalization()
+      this.ensureCurrentLoudnessAnalysis()
     } else {
       this.applyGainState({
         gainDb: 0,
@@ -3506,6 +4108,7 @@ export class AudioEngine {
     }
     if (this._normalizationEnabled && this.audioBuffer) {
       this.applyNormalization()
+      this.ensureCurrentLoudnessAnalysis()
     }
 
     this.updateNextNormalizationCache()
@@ -3558,6 +4161,7 @@ export class AudioEngine {
 
     if (this.audioBuffer) {
       this.applyNormalization()
+      this.ensureCurrentLoudnessAnalysis()
     } else if (!this._normalizationEnabled) {
       this.applyGainState({
         gainDb: 0,
@@ -3582,9 +4186,11 @@ export class AudioEngine {
     }
 
     if (this.remoteStreamState) {
-      this.remoteStreamState.normalization = this._replayGainEnabled && this.currentReplayGainDb != null
+      this.remoteStreamState.normalization = this.remoteStreamState.sourceType === 'local'
         ? null
-        : this.remoteStreamState.normalization ?? this.createProgressiveNormalizationAccumulator(this.remoteStreamState.sampleRate)
+        : this._replayGainEnabled && this.currentReplayGainDb != null
+          ? null
+          : this.remoteStreamState.normalization ?? this.createProgressiveNormalizationAccumulator(this.remoteStreamState.sampleRate)
       this.applyRemoteNormalizationIfNeeded(this.remoteStreamState, {
         force: true,
         markComplete: this.remoteStreamState.sourceEnded
@@ -3598,6 +4204,7 @@ export class AudioEngine {
 
     if (this.audioBuffer) {
       this.applyNormalization()
+      this.ensureCurrentLoudnessAnalysis()
     } else if (!this._normalizationEnabled) {
       this.applyGainState({
         gainDb: 0,
@@ -3650,7 +4257,7 @@ export class AudioEngine {
     }
     if (this.remoteStreamState) {
       return this.remoteStreamState.sampleRate > 0
-        ? this.remoteStreamState.currentFrame / this.remoteStreamState.sampleRate
+        ? (this.remoteStreamState.startFrame + this.remoteStreamState.currentFrame) / this.remoteStreamState.sampleRate
         : 0
     }
     if (this.parallaxSinkState) {
@@ -3713,7 +4320,7 @@ export class AudioEngine {
 
   getRemoteBufferedSeconds(): number {
     if (!this.remoteStreamState || this.remoteStreamState.sampleRate <= 0) return 0
-    return this.remoteStreamState.bufferedFrames / this.remoteStreamState.sampleRate
+    return (this.remoteStreamState.startFrame + this.remoteStreamState.bufferedFrames) / this.remoteStreamState.sampleRate
   }
 
   isNormalizationApproximate(): boolean {
@@ -5418,6 +6025,13 @@ export class AudioEngine {
     return samples
   }
 
+  // Flush all pending stereo chunks for mid/side spectrum processing.
+  flushPendingSpectrumStereoSamples(): { left: Float32Array; right: Float32Array }[] {
+    const samples = this.pendingSpectrumStereoSamples
+    this.pendingSpectrumStereoSamples = []
+    return samples
+  }
+
   // Flush all pending mono chunks for spectrogram processing.
   flushPendingSpectrogramSamples(): Float32Array[] {
     const samples = this.pendingSpectrogramSamples
@@ -5453,6 +6067,13 @@ export class AudioEngine {
     return samples
   }
 
+  // Flush all pending stereo chunks for stereo/multiband waveform processing.
+  flushPendingWaveformStereoSamples(): { left: Float32Array; right: Float32Array }[] {
+    const samples = this.pendingWaveformStereoSamples
+    this.pendingWaveformStereoSamples = []
+    return samples
+  }
+
   // Flush all pending chunks for mini-player real-time visualizer stream.
   flushPendingMiniVisualizerChunks(): { left: Float32Array; mono: Float32Array }[] {
     const samples = this.pendingMiniVisualizerChunks
@@ -5472,6 +6093,44 @@ export class AudioEngine {
   }
 
   // Load audio from ArrayBuffer
+  /**
+   * Decodes an IAMF (Eclipsa Audio) file via the wasm decode worker into a
+   * 12-channel AudioBuffer in STANDARD_LAYOUTS[12] order — from there the
+   * existing multichannel routing (and the 7.1.4 binaural path) takes over.
+   * The worker does the heavy lifting off this thread; here we only copy
+   * planar channels into the buffer.
+   */
+  private async decodeIamfToAudioBuffer(
+    arrayBuffer: ArrayBuffer,
+    container: IamfContainerKind
+  ): Promise<AudioBuffer> {
+    if (!this.context) throw new Error('AudioContext not initialized')
+    this.iamfDecoder ??= new IamfDecoderClient()
+    const handle = this.iamfDecoder.decode(arrayBuffer, container)
+    this.activeIamfDecodes.add(handle)
+    try {
+      const decoded = await handle.promise
+      const buffer = this.context.createBuffer(decoded.channels, decoded.frames, decoded.sampleRate)
+      for (let channel = 0; channel < decoded.channels; channel++) {
+        buffer.copyToChannel(decoded.channelData[channel] as Float32Array<ArrayBuffer>, channel)
+        // Release each planar array right after its copy so peak overhead
+        // stays ~1/12 of the decoded size instead of 2x.
+        decoded.channelData[channel] = new Float32Array(0)
+      }
+      return buffer
+    } finally {
+      this.activeIamfDecodes.delete(handle)
+    }
+  }
+
+  /** Cancels in-flight IAMF decodes (current load and/or prebuffer). */
+  private cancelActiveIamfDecodes(): void {
+    for (const handle of this.activeIamfDecodes) {
+      handle.cancel()
+    }
+    this.activeIamfDecodes.clear()
+  }
+
   async loadAudioData(arrayBuffer: ArrayBuffer, options: AudioLoadDataOptions = {}): Promise<void> {
     if (this.playbackOutputMode === 'bitperfect') {
       throw new Error('Bit-perfect mode requires path-based native loading.')
@@ -5489,6 +6148,7 @@ export class AudioEngine {
       // Stop any current playback
       this.stopSource()
       this.clearNextBuffer()
+      this.cancelActiveIamfDecodes()
       await this.clearRemoteStreamState(true)
       this.clearParallaxSinkState()
       this.assertCurrentLoadOperation(loadOperation)
@@ -5499,10 +6159,19 @@ export class AudioEngine {
       this.pauseTime = 0
       this.currentReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
 
-      // Decode audio data
-      const decodedBuffer = await this.context.decodeAudioData(arrayBuffer)
+      // Decode audio data. IAMF (Eclipsa) files must branch BEFORE
+      // decodeAudioData: Chromium cannot decode them and the ffmpeg fallback
+      // (6.0) cannot rescue them either.
+      const decodeStart = performance.now()
+      const iamfContainer = detectIamfContainer(arrayBuffer)
+      const decodedBuffer = iamfContainer
+        ? await this.decodeIamfToAudioBuffer(arrayBuffer, iamfContainer)
+        : await this.context.decodeAudioData(arrayBuffer)
+      const decodeMs = Math.round(performance.now() - decodeStart)
       this.assertCurrentLoadOperation(loadOperation)
-      const normalizationAnalysis = await this.analyzeNormalizationForBuffer(decodedBuffer)
+      const analysisStart = performance.now()
+      const normalizationAnalysis = await this.resolveLoudnessAnalysisForLoad(decodedBuffer, options, this.currentReplayGainDb)
+      this.lastLoadTimings = { decodeMs, analysisMs: Math.round(performance.now() - analysisStart) }
       this.assertCurrentLoadOperation(loadOperation)
       this.audioBuffer = decodedBuffer
       this.currentNormalizationAnalysis = normalizationAnalysis
@@ -5547,13 +6216,18 @@ export class AudioEngine {
     if (!this.context) throw new Error('AudioContext not initialized')
 
     try {
-      // Clone the ArrayBuffer since decodeAudioData detaches it
+      // Clone the ArrayBuffer since decodeAudioData (and the IAMF worker
+      // transfer) detaches it
       const clonedBuffer = arrayBuffer.slice(0)
-      const decodedBuffer = await this.context.decodeAudioData(clonedBuffer)
+      const iamfContainer = detectIamfContainer(clonedBuffer)
+      const decodedBuffer = iamfContainer
+        ? await this.decodeIamfToAudioBuffer(clonedBuffer, iamfContainer)
+        : await this.context.decodeAudioData(clonedBuffer)
       this.assertCurrentPrebufferOperation(prebufferOperation)
-      const normalizationAnalysis = await this.analyzeNormalizationForBuffer(decodedBuffer)
+      const nextReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
+      const normalizationAnalysis = await this.resolveLoudnessAnalysisForLoad(decodedBuffer, options, nextReplayGainDb)
       this.assertCurrentPrebufferOperation(prebufferOperation)
-      this.nextReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
+      this.nextReplayGainDb = nextReplayGainDb
       this.nextBuffer = decodedBuffer
       this.nextNormalizationAnalysis = normalizationAnalysis
       this.nextBufferTrackPath = options.trackPath ?? null
@@ -5565,6 +6239,11 @@ export class AudioEngine {
       }
     } catch (err) {
       if (isSupersededAudioLoadError(err) || prebufferOperation !== this.prebufferGeneration) {
+        return
+      }
+      if (err instanceof IamfDecodeCancelledError) {
+        // A new load cancelled the prebuffer decode; the load path resets
+        // prebuffer state itself.
         return
       }
       console.error('Failed to pre-buffer next track:', err)
@@ -5611,6 +6290,8 @@ export class AudioEngine {
       if (this._playbackState === 'playing' && !this.isGaplessTransition) {
         this._playbackState = 'stopped'
         this.pauseTime = 0
+        this.stopSource()
+        this.releaseDecodedBuffers()
         this.emit('stateChange', this._playbackState)
         this.emit('ended')
         this.stopTimeUpdate()
@@ -5627,6 +6308,8 @@ export class AudioEngine {
       // No next track buffered, emit ended normally
       this._playbackState = 'stopped'
       this.pauseTime = 0
+      this.stopSource()
+      this.releaseDecodedBuffers()
       this.emit('stateChange', this._playbackState)
       this.emit('ended')
       this.stopTimeUpdate()
@@ -5688,7 +6371,103 @@ export class AudioEngine {
     this.emit('bufferReady', this.audioBuffer)
   }
 
+  // Promote the already-decoded prebuffered next track to "current" immediately, so a manual
+  // "Next" press is gapless instead of cold-loading from disk. Mirrors performGaplessTransition
+  // but starts the new source now (rather than at scheduledEndTime). Returns false when the
+  // prebuffer is unusable, so the caller can fall back to the cold-load path.
+  skipToPreBuffered(): boolean {
+    // Bit-perfect/remote backends manage their own next-track promotion elsewhere.
+    if (this.playbackOutputMode !== 'standard') return false
+    if (this.remoteStreamState) return false
+    if (this._playbackState !== 'playing') return false
+    if (!this.context || !this.nextBuffer || !this.audioBuffer || !this.sourceNode) return false
+
+    // A lingering pause fade-out timer would tear down the new source after we start it.
+    this.clearPauseFadeTimer()
+    this.isGaplessTransition = true
+
+    // Snapshot next-track state before cancelScheduledNext / the swap clears it.
+    const nextBuffer = this.nextBuffer
+    const nextBufferTrackPath = this.nextBufferTrackPath
+    const nextReplayGainDb = this.nextReplayGainDb
+    const nextNormalizationAnalysis = this.nextNormalizationAnalysis
+    const pendingNextNormalization = this.getPendingNextNormalization()
+    const oldSource = this.sourceNode
+
+    // Discard the future-scheduled gapless source (if any) and reset its normalization ramp.
+    this.cancelScheduledNext()
+
+    // Build and immediately start the new current source from the prebuffered buffer.
+    const newSource = this.context.createBufferSource()
+    newSource.buffer = nextBuffer
+    this.connectSourceWithRouting(newSource, nextBuffer.numberOfChannels)
+    this.connectSourceToAnalysisTap(newSource, nextBuffer.numberOfChannels)
+    newSource.onended = () => {
+      if (this._playbackState === 'playing') {
+        this.performGaplessTransition()
+      }
+    }
+
+    const now = this.context.currentTime
+    newSource.start(now, 0)
+
+    // Dip the shared fade node to silence and back; stop the outgoing source at the dip bottom.
+    const declickSec = SKIP_DECLICK_MS / 1000
+    const stopAt = this.fadeGainNode ? now + declickSec : now
+    if (this.fadeGainNode) {
+      const fade = this.fadeGainNode.gain
+      fade.cancelScheduledValues(now)
+      fade.setValueAtTime(fade.value, now)
+      fade.linearRampToValueAtTime(0, now + declickSec)
+      fade.linearRampToValueAtTime(1, now + declickSec * 2)
+    }
+    oldSource.onended = () => {
+      this.disconnectSourceRouting(oldSource)
+      try {
+        oldSource.buffer = null
+        oldSource.disconnect()
+      } catch { /* ignore */ }
+    }
+    try {
+      oldSource.stop(stopAt)
+    } catch { /* ignore */ }
+
+    // Swap buffers/bookkeeping (mirrors performGaplessTransition).
+    this.audioBuffer = nextBuffer
+    this.nextBuffer = null
+    this.currentNormalizationAnalysis = nextNormalizationAnalysis
+    this.nextNormalizationAnalysis = null
+    this.currentBufferTrackPath = nextBufferTrackPath
+    this.nextBufferTrackPath = null
+    this.currentReplayGainDb = nextReplayGainDb
+    this.nextReplayGainDb = null
+
+    this.sourceNode = newSource
+    this.nextSourceNode = null
+
+    // The new track starts at "now" from offset 0.
+    this.startTime = now
+    this.pauseTime = 0
+    this.applyGainState(pendingNextNormalization)
+    this.clearNextNormalizationCache()
+    this.applyChannelRoutingPreferences(this.audioBuffer.numberOfChannels)
+
+    this.isGaplessTransition = false
+
+    // Reset visualizers and notify consumers exactly like the natural transition.
+    this.notifyTrackChange()
+    this.emit('durationChange', this.audioBuffer.duration)
+    this.emit('gaplessTransition')
+    this.emit('bufferReady', this.audioBuffer)
+
+    return true
+  }
+
   // Clear pre-buffered next track
+  hasDecodedAudioBuffer(): boolean {
+    return this.audioBuffer !== null
+  }
+
   clearNextBuffer(): void {
     this.invalidatePrebufferOperations()
     this.nextNormalizationAnalysis = null
@@ -5776,8 +6555,25 @@ export class AudioEngine {
       this.assertCurrentLoadOperation(playLoadGeneration)
     }
 
+    // Rapid resume: a pause fade-out is still in flight and the source is still playing.
+    // Cancel the teardown and ramp back up instead of restarting — gapless and click-free.
+    if (this.pauseFadeTimer != null && this.sourceNode) {
+      this.clearPauseFadeTimer()
+      this._playbackState = 'playing'
+      this.emit('stateChange', this._playbackState)
+      this.startTimeUpdate()
+      this.rampFadeGain(1, PLAYBACK_FADE_MS)
+      if (this.nextBuffer) {
+        this.scheduleGaplessTransition()
+      }
+      return
+    }
+
     // If already playing, do nothing
     if (this._playbackState === 'playing') return
+
+    // A completed pause fade may have left a stale timer reference; clear before a fresh start.
+    this.clearPauseFadeTimer()
 
     // Stop existing source if any
     this.stopSource()
@@ -5795,9 +6591,15 @@ export class AudioEngine {
       }
     }
 
-    // Start from pause position
+    // Start from pause position, fading in from silence so the start is not abrupt.
     const offset = this.pauseTime
     this.startTime = this.context.currentTime - offset
+    if (this.fadeGainNode) {
+      const fadeStart = this.context.currentTime
+      this.fadeGainNode.gain.cancelScheduledValues(fadeStart)
+      this.fadeGainNode.gain.setValueAtTime(0, fadeStart)
+      this.fadeGainNode.gain.linearRampToValueAtTime(1, fadeStart + PLAYBACK_FADE_MS / 1000)
+    }
     this.sourceNode.start(0, offset)
 
     this._playbackState = 'playing'
@@ -5807,6 +6609,28 @@ export class AudioEngine {
     // If we have a next buffer, schedule the gapless transition
     if (this.nextBuffer) {
       this.scheduleGaplessTransition()
+    }
+  }
+
+  // Ramp the fade node toward `target` over `durationMs`, holding the live value first so a
+  // mid-fade reversal (rapid pause/play) stays smooth. No-op for bit-perfect/remote (no fade node).
+  private rampFadeGain(target: number, durationMs: number): void {
+    if (!this.context || !this.fadeGainNode) return
+    const now = this.context.currentTime
+    const gain = this.fadeGainNode.gain
+    // Read the live (possibly mid-ramp) value, then anchor it explicitly. linearRampToValueAtTime
+    // interpolates from the previous event, so a concrete setValueAtTime anchor is required —
+    // cancelAndHoldAtTime is not a reliable ramp anchor in Chromium (the ramp jumps to target).
+    const current = gain.value
+    gain.cancelScheduledValues(now)
+    gain.setValueAtTime(current, now)
+    gain.linearRampToValueAtTime(target, now + durationMs / 1000)
+  }
+
+  private clearPauseFadeTimer(): void {
+    if (this.pauseFadeTimer != null) {
+      clearTimeout(this.pauseFadeTimer)
+      this.pauseFadeTimer = null
     }
   }
 
@@ -5843,13 +6667,24 @@ export class AudioEngine {
 
     if (this._playbackState !== 'playing' || !this.context) return
 
+    // Record the pause position now so the seek bar/time stay correct while the audio fades out.
     this.pauseTime = this.context.currentTime - this.startTime
-    this.stopSource()
     this.cancelScheduledNext() // Cancel scheduled next track
 
     this._playbackState = 'paused'
     this.emit('stateChange', this._playbackState)
     this.stopTimeUpdate()
+
+    // Fade out, then tear down the source once it is silent. The source keeps playing during the
+    // fade so a quick play() can reverse it gaplessly (see play()'s rapid-resume branch).
+    this.rampFadeGain(0, PLAYBACK_FADE_MS)
+    this.clearPauseFadeTimer()
+    this.pauseFadeTimer = setTimeout(() => {
+      this.pauseFadeTimer = null
+      if (this._playbackState === 'paused') {
+        this.stopSource()
+      }
+    }, PLAYBACK_FADE_MS + FADE_STOP_EPSILON_MS)
   }
 
   // Toggle play/pause
@@ -5864,6 +6699,7 @@ export class AudioEngine {
   // Stop
   stop(): void {
     this.invalidateLoadOperations()
+    this.clearPauseFadeTimer()
     const stopLoadGeneration = this.loadGeneration
     if (this.playbackOutputMode === 'bitperfect') {
       this.nativeNextTrackBuffered = false
@@ -5904,6 +6740,7 @@ export class AudioEngine {
 
     this.stopSource()
     this.cancelScheduledNext()
+    this.releaseDecodedBuffers()
     this.pauseTime = 0
     this._playbackState = 'stopped'
     this.emit('stateChange', this._playbackState)
@@ -5911,8 +6748,19 @@ export class AudioEngine {
     this.stopTimeUpdate()
   }
 
+  // Decoded PCM is large (~10MB/min at 44.1k stereo); once playback has
+  // terminally stopped nothing can use it, so drop it instead of letting it
+  // sit until the next load. Pause intentionally keeps buffers for instant
+  // resume; restart-after-stop goes through the store's full reload path.
+  private releaseDecodedBuffers(): void {
+    this.audioBuffer = null
+    this.currentBufferTrackPath = null
+    this.clearNextBuffer()
+  }
+
   // Seek to time in seconds
   async seek(time: number): Promise<void> {
+    this.clearPauseFadeTimer()
     if (this.playbackOutputMode === 'bitperfect') {
       await this.seekNativeBitPerfect(time)
       return
@@ -5920,14 +6768,48 @@ export class AudioEngine {
 
     if (this.remoteStreamState) {
       const remoteState = this.remoteStreamState
-      const maxSeekTime = this.getRemoteBufferedSeconds()
-      const clampedTime = Math.max(0, Math.min(time, maxSeekTime))
-      remoteState.currentFrame = Math.max(0, Math.floor(clampedTime * remoteState.sampleRate))
+      const durationSeconds = Math.max(0, remoteState.durationSeconds)
+      const clampedAbsoluteTime = Math.max(0, Math.min(time, durationSeconds > 0 ? durationSeconds : time))
+      const bufferedStartTime = remoteState.sampleRate > 0 ? remoteState.startFrame / remoteState.sampleRate : 0
+      const bufferedEndTime = this.getRemoteBufferedSeconds()
+      const canSeekBuffered = clampedAbsoluteTime >= bufferedStartTime && clampedAbsoluteTime <= bufferedEndTime
+
+      if (remoteState.sourceType === 'local' && !canSeekBuffered) {
+        const wasPlaying = this._playbackState === 'playing'
+        const track = remoteState.track
+        const replayGainDb = this.currentReplayGainDb
+        const loudnessAnalysis = this.currentNormalizationAnalysis
+          ? {
+              loudnessLufs: this.currentNormalizationAnalysis.loudnessLufs,
+              peakLinear: this.currentNormalizationAnalysis.peakLinear
+            }
+          : null
+
+        await this.loadProgressiveStream(track, {
+          replayGainDb,
+          loudnessAnalysis,
+          startTimeSeconds: clampedAbsoluteTime
+        })
+
+        if (wasPlaying) {
+          await this.play()
+        } else {
+          this._playbackState = 'paused'
+          this.emit('stateChange', this._playbackState)
+          this.emit('timeUpdate', clampedAbsoluteTime)
+        }
+        return
+      }
+
+      const seekTime = remoteState.sourceType === 'local'
+        ? clampedAbsoluteTime - bufferedStartTime
+        : Math.max(0, Math.min(time, bufferedEndTime))
+      remoteState.currentFrame = Math.max(0, Math.floor(seekTime * remoteState.sampleRate))
       this.remoteStreamNode?.port.postMessage({
         type: 'seek',
         frame: remoteState.currentFrame
       })
-      this.emit('timeUpdate', clampedTime)
+      this.emit('timeUpdate', remoteState.sourceType === 'local' ? clampedAbsoluteTime : seekTime)
       return
     }
 
@@ -6244,6 +7126,11 @@ export class AudioEngine {
       this.analysisDelayNode = null
     }
 
+    if (this.fadeGainNode) {
+      try { this.fadeGainNode.disconnect() } catch { /* ignore */ }
+      this.fadeGainNode = null
+    }
+
     if (this.context) {
       this.context.close()
       this.context = null
@@ -6272,11 +7159,13 @@ export class AudioEngine {
     this.latestMonoChannel = new Float32Array(0)
     this.pendingOscilloscopeSamples = []
     this.pendingSpectrumSamples = []
+    this.pendingSpectrumStereoSamples = []
     this.pendingSpectrogramSamples = []
     this.pendingVectorscopeSamples = []
     this.pendingVUMeterSamples = []
     this.pendingLUFSMeterSamples = []
     this.pendingWaveformSamples = []
+    this.pendingWaveformStereoSamples = []
     this.pendingMiniVisualizerChunks = []
     this.eventListeners.clear()
   }

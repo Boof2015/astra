@@ -1,36 +1,68 @@
 import { audioEngine } from '../AudioEngine'
-import { vectorscope as nativeVectorscope, isNativeAvailable } from '../native/index'
-import { createStereoSilenceChunk, isPlaybackAnalyzerActive } from '../visualizerSilence'
-import type { VectorscopeMode } from '../../stores/visualizerSettingsStore'
-import { transformPoint, drawVectorscopeGridForMode, getVectorscopeLayout } from './vectorscopeGrids'
-import { MultibandSplitter, MultibandBuffer, BAND_COLORS } from './multibandSplitter'
-import { getCanvasBackingPixelRatio } from '../../utils/canvasSizing'
+import { vectorscope as nativeVectorscope, type VectorscopeNativeAnalyzer } from '../native/index'
+import {
+  drawVectorscopeGridForMode,
+  getVectorscopeLayout,
+  transformPoint,
+} from './vectorscopeGrids'
+import { MultibandSplitter, MultibandBuffer, createMultibandChunk, type MultibandChunk } from './multibandSplitter'
+import { defaultVisualizerSessionSource, type VisualizerSessionSource } from './dataSource'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
+
+import type { VectorscopeMode } from '../../stores/visualizerSettingsStore'
+export type { VectorscopeMode }
+
+export interface VectorscopeDataSource extends VisualizerSessionSource {
+  getPendingVectorscopeSamples: () => Array<{ left: Float32Array; right: Float32Array }>
+}
 
 export interface VectorscopeOptions {
   lineColor?: string
   lineWidth?: number
   backgroundColor?: string
   showGrid?: boolean
-  gridColor?: string
-  persistence?: number  // 0.0 (no trail) to 1.0 (infinite trail), default 0.10
-  displayPoints?: number  // how many points to request from native, default 4096
+  gridMajorColor?: string
+  gridMinorColor?: string
+  labelColor?: string
+  bandColors?: {
+    low: string
+    mid: string
+    high: string
+  }
+  persistence?: number
+  displayPoints?: number
   mode?: VectorscopeMode
   multiband?: boolean
+  dataSource?: VectorscopeDataSource
   frameScheduler?: FrameScheduler
+  nativeAnalyzer?: VectorscopeNativeAnalyzer | null
 }
 
-const defaultOptions: Required<Omit<VectorscopeOptions, 'frameScheduler'>> = {
+type ResolvedVectorscopeOptions = Required<Omit<VectorscopeOptions, 'dataSource' | 'frameScheduler' | 'nativeAnalyzer'>>
+
+const defaultOptions: ResolvedVectorscopeOptions = {
   lineColor: '#00ffff',
   lineWidth: 1.5,
   backgroundColor: 'transparent',
   showGrid: true,
-  gridColor: 'rgba(255, 255, 255, 0.1)',
+  gridMajorColor: 'rgba(255, 255, 255, 0.1)',
+  gridMinorColor: 'rgba(255, 255, 255, 0.05)',
+  labelColor: 'rgba(255, 255, 255, 0.1)',
+  bandColors: {
+    low: '#ff4444',
+    mid: '#44dd44',
+    high: '#4488ff',
+  },
   persistence: 0.10,
   displayPoints: 4096,
   mode: 'lissajous',
   multiband: false,
+}
+
+const defaultVectorscopeDataSource: VectorscopeDataSource = {
+  getPendingVectorscopeSamples: () => audioEngine.flushPendingVectorscopeSamples(),
+  ...defaultVisualizerSessionSource,
 }
 
 const BAND_ORDER = ['low', 'mid', 'high'] as const
@@ -42,14 +74,21 @@ export class Vectorscope {
   private offscreenCtx: CanvasRenderingContext2D
   private staticLayerCanvas: HTMLCanvasElement
   private staticLayerCtx: CanvasRenderingContext2D
-  private options: Required<Omit<VectorscopeOptions, 'frameScheduler'>>
+  private options: ResolvedVectorscopeOptions
+  private dataSource: VectorscopeDataSource
+  private nativeAnalyzer: VectorscopeNativeAnalyzer | null
   private frameLoop: VisualizerFrameLoop
-  private nativeInitialized: boolean = false
-  private lastSampleRate: number = 0
-  private unsubscribeTrackChange: (() => void) | null = null
-  private unsubscribePlaybackState: (() => void) | null = null
+  private nativeInitialized = false
+  private lastSampleRate = 0
+  private unsubscribeSessionChange: (() => void) | null = null
   private splitter: MultibandSplitter = new MultibandSplitter()
   private multibandBuffer: MultibandBuffer = new MultibandBuffer()
+  private multibandScratch: MultibandChunk = createMultibandChunk(0)
+  private multibandPointScratch: MultibandChunk = createMultibandChunk(0)
+  private nativePointX = new Float32Array(0)
+  private nativePointY = new Float32Array(0)
+  private pushScratchL = new Float32Array(0)
+  private pushScratchR = new Float32Array(0)
   private staticLayerKey = ''
 
   constructor(canvas: HTMLCanvasElement, options: VectorscopeOptions = {}) {
@@ -57,15 +96,17 @@ export class Vectorscope {
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Could not get 2D context')
     this.ctx = ctx
-    const { frameScheduler, ...optionOverrides } = options
+
+    const { dataSource, frameScheduler, nativeAnalyzer, ...optionOverrides } = options
     this.options = { ...defaultOptions, ...optionOverrides }
+    this.dataSource = dataSource ?? defaultVectorscopeDataSource
+    this.nativeAnalyzer = nativeAnalyzer === undefined ? nativeVectorscope : nativeAnalyzer
     this.frameLoop = new VisualizerFrameLoop({
       frameScheduler,
-      shouldRun: () => isPlaybackAnalyzerActive(audioEngine.playbackState),
+      shouldRun: () => this.dataSource.isPlaying(),
       onFrame: this.drawFrame,
     })
 
-    // Create offscreen canvas for persistence/fade
     this.offscreenCanvas = document.createElement('canvas')
     this.offscreenCanvas.width = canvas.width
     this.offscreenCanvas.height = canvas.height
@@ -77,45 +118,45 @@ export class Vectorscope {
     if (!staticLayerCtx) throw new Error('Could not get static offscreen 2D context')
     this.staticLayerCtx = staticLayerCtx
 
-    // Initialize native module if available
     this.initNative()
+    this.subscribeToSessionChanges()
+  }
 
-    // Subscribe to track changes for clean reset
-    this.unsubscribeTrackChange = audioEngine.onTrackChange(() => {
+  private subscribeToSessionChanges(): void {
+    if (this.unsubscribeSessionChange) {
+      this.unsubscribeSessionChange()
+    }
+    this.unsubscribeSessionChange = this.dataSource.subscribeToSessionChanges(() => {
       this.resetDisplay()
-    })
-    this.unsubscribePlaybackState = audioEngine.on('stateChange', () => {
-      this.invalidate()
     })
   }
 
   private initNative(): void {
-    if (isNativeAvailable() && !this.nativeInitialized) {
-      const sampleRate = audioEngine.getSampleRate()
+    if (this.isNativeAvailable() && !this.nativeInitialized) {
+      const sampleRate = this.dataSource.getSampleRate()
       this.lastSampleRate = sampleRate
-      nativeVectorscope.setSampleRate(sampleRate)
+      this.nativeAnalyzer?.setSampleRate(sampleRate)
       this.nativeInitialized = true
       console.log(`Vectorscope: Using native DSP (${sampleRate}Hz)`)
-    } else if (!isNativeAvailable()) {
+    } else if (!this.isNativeAvailable()) {
       console.log('Vectorscope: Using JavaScript fallback')
     }
   }
 
   private updateSampleRateIfNeeded(): void {
-    const currentRate = audioEngine.getSampleRate()
+    const currentRate = this.dataSource.getSampleRate()
     if (currentRate !== this.lastSampleRate && currentRate > 0) {
       this.lastSampleRate = currentRate
-      if (isNativeAvailable()) {
-        nativeVectorscope.setSampleRate(currentRate)
+      if (this.isNativeAvailable()) {
+        this.nativeAnalyzer?.setSampleRate(currentRate)
       }
       this.splitter.configure(currentRate)
     }
   }
 
   private resetDisplay(): void {
-    // Clear the offscreen canvas and reset native state
-    if (isNativeAvailable()) {
-      nativeVectorscope.reset()
+    if (this.isNativeAvailable()) {
+      this.nativeAnalyzer?.reset()
     }
     this.splitter.reset()
     this.multibandBuffer.reset()
@@ -124,8 +165,29 @@ export class Vectorscope {
   }
 
   setOptions(options: Partial<VectorscopeOptions>): void {
-    const { frameScheduler: _frameScheduler, ...optionUpdates } = options
-    this.options = { ...this.options, ...optionUpdates }
+    const { dataSource, frameScheduler: _frameScheduler, nativeAnalyzer, ...optionUpdates } = options
+    const nextOptions: ResolvedVectorscopeOptions = { ...this.options, ...optionUpdates }
+    const multibandChanged = nextOptions.multiband !== this.options.multiband
+    const modeChanged = nextOptions.mode !== this.options.mode
+    this.options = nextOptions
+    let shouldResetDisplay = false
+    if (nativeAnalyzer !== undefined && nativeAnalyzer !== this.nativeAnalyzer) {
+      this.nativeAnalyzer = nativeAnalyzer
+      this.nativeInitialized = false
+      this.initNative()
+      shouldResetDisplay = true
+    }
+    if (dataSource && dataSource !== this.dataSource) {
+      this.dataSource = dataSource
+      this.subscribeToSessionChanges()
+      shouldResetDisplay = true
+    }
+    if (multibandChanged || modeChanged) {
+      shouldResetDisplay = true
+    }
+    if (shouldResetDisplay) {
+      this.resetDisplay()
+    }
     this.staticLayerKey = ''
     this.invalidate()
   }
@@ -143,9 +205,12 @@ export class Vectorscope {
   }
 
   resize(): void {
-    // Canvas resize is handled externally; offscreen will sync in draw()
     this.staticLayerKey = ''
     this.invalidate()
+  }
+
+  private getProjectionScale(radius: number): number {
+    return radius
   }
 
   private drawFrame = (): void => {
@@ -153,72 +218,62 @@ export class Vectorscope {
     const width = canvas.width
     const height = canvas.height
     if (width <= 0 || height <= 0) return
-    const isPolar = options.mode === 'polar-unipolar' || options.mode === 'polar-bipolar'
-    const VISUAL_GAIN = isPolar ? 1.2 : 1.5
+
     const layout = getVectorscopeLayout(width, height, options.mode)
     const centerX = layout.centerX
     const centerY = layout.centerY
-    const scale = layout.radius * VISUAL_GAIN
+    const scale = this.getProjectionScale(layout.radius)
 
-    // Sync offscreen canvas size
     if (offscreenCanvas.width !== width || offscreenCanvas.height !== height) {
       offscreenCanvas.width = width
       offscreenCanvas.height = height
     }
 
-    // Update sample rate if changed
     this.updateSampleRateIfNeeded()
 
-    const playbackState = audioEngine.playbackState
-    const isPlaying = playbackState === 'playing'
-    const isActive = isPlaybackAnalyzerActive(playbackState)
-
-    if (!isActive) {
-      audioEngine.flushPendingVectorscopeSamples()
+    if (!this.dataSource.isPlaying()) {
       this.renderStaticLayer()
-      ctx.drawImage(offscreenCanvas, 0, 0)
       return
     }
 
-    // ---- PERSISTENCE FADE ----
     offscreenCtx.globalCompositeOperation = 'destination-in'
     offscreenCtx.fillStyle = `rgba(255, 255, 255, ${options.persistence})`
     offscreenCtx.fillRect(0, 0, width, height)
     offscreenCtx.globalCompositeOperation = 'source-over'
 
-    // ---- FLUSH SAMPLES ----
-    const pendingSamples = isPlaying
-      ? audioEngine.flushPendingVectorscopeSamples()
-      : (() => {
-          audioEngine.flushPendingVectorscopeSamples()
-          return [createStereoSilenceChunk(audioEngine.getSampleRate())]
-        })()
+    const pendingSamples = this.dataSource.getPendingVectorscopeSamples()
 
     if (options.multiband) {
-      // Multiband path: split into 3 bands, render each with its own color
-      this.drawMultibandPoints(offscreenCtx, pendingSamples, centerX, centerY, scale)
-    } else if (isNativeAvailable()) {
-      // Push all accumulated stereo chunks to native circular buffer
-      for (const chunk of pendingSamples) {
-        nativeVectorscope.pushSamples(chunk.left, chunk.right)
+      if (!this.drawNativeMultibandPoints(offscreenCtx, pendingSamples, centerX, centerY, scale)) {
+        this.drawMultibandPoints(offscreenCtx, pendingSamples, centerX, centerY, scale)
+      }
+    } else if (this.isNativeAvailable()) {
+      if (pendingSamples.length > 0) {
+        const { left, right } = this.concatStereoChunks(pendingSamples)
+        this.nativeAnalyzer?.pushSamples(left, right)
       }
 
-      // Get filtered points from native circular buffer
-      const pointsResult = nativeVectorscope.getPoints(options.displayPoints)
-
-      if (pointsResult && pointsResult.count > 0) {
-        this.drawPoints(offscreenCtx, pointsResult.x, pointsResult.y, pointsResult.count, centerX, centerY, scale)
+      const count = this.fillNativePoints(options.displayPoints)
+      if (count > 0) {
+        this.drawPoints(offscreenCtx, this.nativePointX, this.nativePointY, count, centerX, centerY, scale)
       }
     } else {
-      // JavaScript fallback: draw raw samples from pending chunks
       this.drawFallbackPoints(offscreenCtx, pendingSamples, centerX, centerY, scale)
     }
 
-    // ---- COMPOSITE TO VISIBLE CANVAS ----
     this.renderStaticLayer()
-
-    // Draw the accumulated vectorscope image on top
     ctx.drawImage(offscreenCanvas, 0, 0)
+  }
+
+  private isNativeAvailable(): boolean {
+    return Boolean(this.nativeAnalyzer) && this.nativeAnalyzer?.isAvailable?.() !== false
+  }
+
+  private isNativeMultibandAvailable(): boolean {
+    return this.isNativeAvailable()
+      && Boolean(this.nativeAnalyzer?.pushMultibandSamples)
+      && Boolean(this.nativeAnalyzer?.getMultibandPoints)
+      && this.nativeAnalyzer?.isMultibandAvailable?.() !== false
   }
 
   private renderStaticLayer(): void {
@@ -234,7 +289,9 @@ export class Vectorscope {
       canvas.height,
       options.backgroundColor,
       options.showGrid,
-      options.gridColor,
+      options.gridMajorColor,
+      options.gridMinorColor,
+      options.labelColor,
       options.mode,
     ].join(':')
 
@@ -252,8 +309,17 @@ export class Vectorscope {
     }
 
     if (options.showGrid) {
-      const dpr = getCanvasBackingPixelRatio(canvas)
-      drawVectorscopeGridForMode(this.staticLayerCtx, canvas.width, canvas.height, options.gridColor, options.mode, dpr)
+      const dpr = window.devicePixelRatio || 1
+      drawVectorscopeGridForMode(
+        this.staticLayerCtx,
+        canvas.width,
+        canvas.height,
+        options.gridMajorColor,
+        options.gridMinorColor,
+        options.labelColor,
+        options.mode,
+        dpr,
+      )
     }
 
     this.staticLayerKey = key
@@ -270,10 +336,9 @@ export class Vectorscope {
   ): void {
     const { options } = this
     const mode = options.mode
-    const dpr = getCanvasBackingPixelRatio(this.canvas)
+    const dpr = window.devicePixelRatio || 1
     const dotSize = options.lineWidth * dpr
 
-    // Draw dots with age-based opacity: oldest dimmer, newest brighter
     const segments = 8
     const pointsPerSegment = Math.ceil(count / segments)
 
@@ -282,20 +347,13 @@ export class Vectorscope {
       const endIdx = Math.min((seg + 1) * pointsPerSegment, count)
       if (startIdx >= count) break
 
-      // Older segments (lower seg) are dimmer
       const alpha = 0.15 + 0.85 * (seg / Math.max(segments - 1, 1))
 
       ctx.fillStyle = options.lineColor
       ctx.globalAlpha = alpha
 
       for (let i = startIdx; i < endIdx; i++) {
-        // Native returns x=Right, y=Left
-        const point = transformPoint(y[i], x[i], mode)
-        if (!point) continue
-
-        const px = centerX + point.dx * scale
-        const py = centerY - point.dy * scale
-        ctx.fillRect(px - dotSize / 2, py - dotSize / 2, dotSize, dotSize)
+        this.drawProjectedDot(ctx, y[i], x[i], mode, centerX, centerY, scale, dotSize)
       }
     }
     ctx.globalAlpha = 1.0
@@ -312,7 +370,7 @@ export class Vectorscope {
 
     const { options } = this
     const mode = options.mode
-    const dpr = getCanvasBackingPixelRatio(this.canvas)
+    const dpr = window.devicePixelRatio || 1
     const dotSize = options.lineWidth * dpr
 
     ctx.fillStyle = options.lineColor
@@ -320,12 +378,7 @@ export class Vectorscope {
 
     for (const chunk of pendingSamples) {
       for (let i = 0; i < chunk.left.length; i++) {
-        const point = transformPoint(chunk.left[i], chunk.right[i], mode)
-        if (!point) continue
-
-        const px = centerX + point.dx * scale
-        const py = centerY - point.dy * scale
-        ctx.fillRect(px - dotSize / 2, py - dotSize / 2, dotSize, dotSize)
+        this.drawProjectedDot(ctx, chunk.left[i], chunk.right[i], mode, centerX, centerY, scale, dotSize)
       }
     }
     ctx.globalAlpha = 1.0
@@ -340,89 +393,197 @@ export class Vectorscope {
   ): void {
     const { options } = this
     const mode = options.mode
-    const dpr = getCanvasBackingPixelRatio(this.canvas)
+    const dpr = window.devicePixelRatio || 1
     const dotSize = options.lineWidth * dpr
 
-    // Ensure splitter is configured
-    const sampleRate = audioEngine.getSampleRate()
+    const sampleRate = this.dataSource.getSampleRate()
     if (sampleRate > 0) {
       this.splitter.configure(sampleRate)
     }
 
-    // Also push to native so switching back to single-color is seamless
-    if (isNativeAvailable()) {
-      for (const chunk of pendingSamples) {
-        nativeVectorscope.pushSamples(chunk.left, chunk.right)
-      }
-    }
-
-    // Split new samples into bands and push into circular buffer
     for (const chunk of pendingSamples) {
-      const bands = this.splitter.split(chunk.left, chunk.right)
-      this.multibandBuffer.push(bands)
+      const bands = this.ensureMultibandScratch(chunk.left.length, chunk.right.length)
+      const count = this.splitter.splitInto(chunk.left, chunk.right, bands)
+      this.multibandBuffer.push(bands, count)
     }
 
-    // Read all buffered points and draw with age-based opacity (same as native path)
-    const result = this.multibandBuffer.getPoints(options.displayPoints)
-    if (result.count === 0) return
+    const result = this.ensureMultibandPointScratch(options.displayPoints)
+    const count = this.multibandBuffer.fillPointsInto(result, options.displayPoints)
+    if (count === 0) return
 
     const segments = 8
-    const pointsPerSegment = Math.ceil(result.count / segments)
+    const pointsPerSegment = Math.ceil(count / segments)
 
     for (let seg = 0; seg < segments; seg++) {
       const startIdx = seg * pointsPerSegment
-      const endIdx = Math.min((seg + 1) * pointsPerSegment, result.count)
-      if (startIdx >= result.count) break
+      const endIdx = Math.min((seg + 1) * pointsPerSegment, count)
+      if (startIdx >= count) break
 
       const alpha = 0.15 + 0.85 * (seg / Math.max(segments - 1, 1))
       ctx.globalAlpha = alpha
 
       for (const band of BAND_ORDER) {
-        const bandData = result.bands[band]
-        ctx.fillStyle = BAND_COLORS[band]
+        const bandData = result[band]
+        ctx.fillStyle = options.bandColors[band]
 
         for (let i = startIdx; i < endIdx; i++) {
-          const point = transformPoint(bandData.left[i], bandData.right[i], mode)
-          if (!point) continue
-
-          const px = centerX + point.dx * scale
-          const py = centerY - point.dy * scale
-          ctx.fillRect(px - dotSize / 2, py - dotSize / 2, dotSize, dotSize)
+          this.drawProjectedDot(ctx, bandData.left[i], bandData.right[i], mode, centerX, centerY, scale, dotSize)
         }
       }
     }
     ctx.globalAlpha = 1.0
   }
 
+  private drawNativeMultibandPoints(
+    ctx: CanvasRenderingContext2D,
+    pendingSamples: { left: Float32Array; right: Float32Array }[],
+    centerX: number,
+    centerY: number,
+    scale: number
+  ): boolean {
+    if (!this.isNativeMultibandAvailable()) {
+      return false
+    }
+
+    if (pendingSamples.length > 0) {
+      const { left, right } = this.concatStereoChunks(pendingSamples)
+      this.nativeAnalyzer?.pushMultibandSamples?.(left, right)
+    }
+
+    const result = this.nativeAnalyzer?.getMultibandPoints?.(this.options.displayPoints)
+    if (!result) {
+      return false
+    }
+
+    const count = Math.min(result.count, Math.floor(result.data.length / 6), this.options.displayPoints)
+    if (count === 0) {
+      return true
+    }
+
+    const mode = this.options.mode
+    const dpr = window.devicePixelRatio || 1
+    const dotSize = this.options.lineWidth * dpr
+    const segments = 8
+    const pointsPerSegment = Math.ceil(count / segments)
+    const bandOffsets: Record<(typeof BAND_ORDER)[number], [number, number]> = {
+      low: [0, 1],
+      mid: [2, 3],
+      high: [4, 5],
+    }
+
+    for (let seg = 0; seg < segments; seg++) {
+      const startIdx = seg * pointsPerSegment
+      const endIdx = Math.min((seg + 1) * pointsPerSegment, count)
+      if (startIdx >= count) break
+
+      const alpha = 0.15 + 0.85 * (seg / Math.max(segments - 1, 1))
+      ctx.globalAlpha = alpha
+
+      for (const band of BAND_ORDER) {
+        const [leftOffset, rightOffset] = bandOffsets[band]
+        ctx.fillStyle = this.options.bandColors[band]
+
+        for (let i = startIdx; i < endIdx; i++) {
+          const offset = i * 6
+          this.drawProjectedDot(ctx, result.data[offset + leftOffset], result.data[offset + rightOffset], mode, centerX, centerY, scale, dotSize)
+        }
+      }
+    }
+
+    ctx.globalAlpha = 1.0
+    return true
+  }
+
+  private ensureNativePointBuffers(displayPoints: number): void {
+    if (this.nativePointX.length !== displayPoints) {
+      this.nativePointX = new Float32Array(displayPoints)
+      this.nativePointY = new Float32Array(displayPoints)
+    }
+  }
+
+  private fillNativePoints(displayPoints: number): number {
+    this.ensureNativePointBuffers(displayPoints)
+    return this.nativeAnalyzer?.fillPoints(this.nativePointX, this.nativePointY) ?? 0
+  }
+
+  private ensureMultibandScratch(leftLength: number, rightLength: number): MultibandChunk {
+    const length = Math.min(leftLength, rightLength)
+    if (this.multibandScratch.low.left.length < length) {
+      this.multibandScratch = createMultibandChunk(length)
+    }
+    return this.multibandScratch
+  }
+
+  private ensureMultibandPointScratch(displayPoints: number): MultibandChunk {
+    if (this.multibandPointScratch.low.left.length !== displayPoints) {
+      this.multibandPointScratch = createMultibandChunk(displayPoints)
+    }
+    return this.multibandPointScratch
+  }
+
+  private concatStereoChunks(chunks: Array<{ left: Float32Array; right: Float32Array }>): { left: Float32Array; right: Float32Array } {
+    if (chunks.length === 1) return chunks[0]
+
+    let totalLength = 0
+    for (const chunk of chunks) {
+      totalLength += Math.min(chunk.left.length, chunk.right.length)
+    }
+
+    if (this.pushScratchL.length < totalLength) {
+      this.pushScratchL = new Float32Array(totalLength)
+      this.pushScratchR = new Float32Array(totalLength)
+    }
+
+    const left = this.pushScratchL.length === totalLength
+      ? this.pushScratchL
+      : this.pushScratchL.subarray(0, totalLength)
+    const right = this.pushScratchR.length === totalLength
+      ? this.pushScratchR
+      : this.pushScratchR.subarray(0, totalLength)
+
+    let offset = 0
+    for (const chunk of chunks) {
+      const len = Math.min(chunk.left.length, chunk.right.length)
+      left.set(chunk.left.subarray(0, len), offset)
+      right.set(chunk.right.subarray(0, len), offset)
+      offset += len
+    }
+
+    return { left, right }
+  }
+
+  private drawProjectedDot(
+    ctx: CanvasRenderingContext2D,
+    left: number,
+    right: number,
+    mode: VectorscopeMode,
+    centerX: number,
+    centerY: number,
+    scale: number,
+    dotSize: number,
+  ): void {
+    const point = transformPoint(left, right, mode)
+    if (!point) {
+      return
+    }
+
+    const { dx, dy } = point
+    const px = centerX + dx * scale
+    const py = centerY - dy * scale
+    ctx.fillRect(px - dotSize / 2, py - dotSize / 2, dotSize, dotSize)
+  }
+
   dispose(): void {
     this.stop()
     this.frameLoop.dispose()
 
-    // Unsubscribe from track changes
-    if (this.unsubscribeTrackChange) {
-      this.unsubscribeTrackChange()
-      this.unsubscribeTrackChange = null
-    }
-    if (this.unsubscribePlaybackState) {
-      this.unsubscribePlaybackState()
-      this.unsubscribePlaybackState = null
+    if (this.unsubscribeSessionChange) {
+      this.unsubscribeSessionChange()
+      this.unsubscribeSessionChange = null
     }
 
-    // Reset native module state
-    if (isNativeAvailable()) {
-      nativeVectorscope.reset()
+    if (this.isNativeAvailable()) {
+      this.nativeAnalyzer?.reset()
     }
-
-    this.splitter.reset()
-    this.multibandBuffer.reset()
-    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
-    this.offscreenCanvas.width = 0
-    this.offscreenCanvas.height = 0
-    this.staticLayerCanvas.width = 0
-    this.staticLayerCanvas.height = 0
-    this.canvas.width = 0
-    this.canvas.height = 0
-    this.staticLayerKey = ''
-    this.lastSampleRate = 0
   }
 }

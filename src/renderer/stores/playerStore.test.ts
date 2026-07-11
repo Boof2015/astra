@@ -8,6 +8,7 @@ import {
   getGaplessPrebufferDelayMs,
   getRecentPlayThresholdSecondsForDuration,
   MAX_PLAYBACK_HISTORY,
+  mergeAssociatedTrackMetadata,
   RECENT_PLAY_MIN_SECONDS,
   resolvePositiveDuration,
   shouldApplyDurationChange,
@@ -88,6 +89,7 @@ function makeDbTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
     codec: overrides.codec ?? null,
     codec_profile: overrides.codec_profile ?? null,
     is_atmos_joc: overrides.is_atmos_joc ?? 0,
+    is_iamf: overrides.is_iamf ?? 0,
     bpm: overrides.bpm ?? null,
     musical_key: overrides.musical_key ?? null,
     source_type: overrides.source_type ?? 'local',
@@ -298,6 +300,21 @@ test('associated external queue entries use sanitized snapshots instead of libra
   assert.equal(resolved?.track.title, 'Opened File Title')
   assert.equal(resolved?.track.origin, 'associated-external')
   assert.equal(Object.hasOwn(resolved?.track as unknown as Record<string, unknown>, 'artworkData'), false)
+})
+
+test('associated metadata prefers cached artwork hashes over embedded data URLs', () => {
+  const merged = mergeAssociatedTrackMetadata(makeTrack('/external/opened.flac', {
+    origin: 'associated-external',
+    artworkData: 'data:image/png;base64,large-old'
+  }), {
+    title: 'Opened Title',
+    artworkHash: 'cached-cover.png',
+    artwork: 'data:image/png;base64,large-new'
+  })
+
+  assert.equal(merged.title, 'Opened Title')
+  assert.equal(merged.artworkHash, 'cached-cover.png')
+  assert.equal(Object.hasOwn(merged as unknown as Record<string, unknown>, 'artworkData'), false)
 })
 
 test('gapless prebuffer delay waits until the late handoff window', () => {

@@ -1,7 +1,7 @@
 import type { MultichannelAudioChunk } from './audioAnalysis'
 import type { LUFSMeterMode } from './lufsmeter'
 import type { SpectrumDisplayMode } from './spectrum'
-import type { SpectrogramClarityMode, SpectrogramScaleMode } from './spectrogram'
+import type { SpectrogramClarityMode, SpectrogramScaleMode, SpectrogramOrientation } from './spectrogram'
 import type { VUMeterMode, VUMeterOrientation } from './vumeter'
 
 export type ScopeKind = 'spectrum' | 'oscilloscope' | 'vectorscope' | 'spectrogram' | 'vumeter' | 'lufsmeter' | 'waveform'
@@ -74,6 +74,9 @@ export interface ScopePopoutSpectrogramChunk extends ScopePopoutChunkBase {
   spectrogramScrollSpeed: number
   spectrogramClarityMode: SpectrogramClarityMode
   spectrogramScaleMode: SpectrogramScaleMode
+  spectrogramTiltDbPerOctave: number
+  spectrogramContrast: number
+  spectrogramOrientation: SpectrogramOrientation
 }
 
 export interface ScopePopoutVUMeterChunk extends ScopePopoutChunkBase {

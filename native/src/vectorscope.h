@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dsp_utils.h"
+#include "multiband.h"
 #include <vector>
 #include <cstddef>
 
@@ -25,10 +26,12 @@ public:
 
     // Push stereo samples into circular buffer (called per worklet chunk)
     void pushSamples(const float* leftChannel, const float* rightChannel, size_t length);
+    void pushMultibandSamples(const float* leftChannel, const float* rightChannel, size_t length);
 
     // Get the most recent N points for rendering (from circular buffer)
     // Returns count of valid points written to output arrays
     size_t getPoints(float* xOut, float* yOut, size_t maxPoints) const;
+    size_t getMultibandPoints(float* output, size_t maxPoints) const;
 
     // Get number of valid samples in buffer
     size_t getValidSamples() const { return validSamples_; }
@@ -52,12 +55,21 @@ private:
     // Circular buffers for filtered L/R
     std::vector<float> leftBuffer_;
     std::vector<float> rightBuffer_;
+    std::vector<float> lowLeftBuffer_;
+    std::vector<float> lowRightBuffer_;
+    std::vector<float> midLeftBuffer_;
+    std::vector<float> midRightBuffer_;
+    std::vector<float> highLeftBuffer_;
+    std::vector<float> highRightBuffer_;
 
     // Cascaded lowpass filters (4th order Butterworth at 8kHz per channel)
     DSP::BiquadFilter leftLowpass1_;
     DSP::BiquadFilter leftLowpass2_;
     DSP::BiquadFilter rightLowpass1_;
     DSP::BiquadFilter rightLowpass2_;
+    MultibandSplitter multibandSplitter_;
+    size_t multibandWritePos_;
+    size_t multibandValidSamples_;
 
     // Legacy
     std::vector<VectorscopePoint> points_;

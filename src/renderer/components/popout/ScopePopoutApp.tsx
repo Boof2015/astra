@@ -16,9 +16,15 @@ import {
   DEFAULT_SPECTROGRAM_CLARITY_MODE,
   DEFAULT_SPECTROGRAM_SCALE_MODE,
   DEFAULT_SPECTROGRAM_SCROLL_SPEED,
+  DEFAULT_SPECTROGRAM_TILT_DB_PER_OCTAVE,
+  DEFAULT_SPECTROGRAM_CONTRAST,
+  DEFAULT_SPECTROGRAM_ORIENTATION,
   clampSpectrogramScrollSpeed,
+  clampSpectrogramTiltDbPerOctave,
+  clampSpectrogramContrast,
   isSpectrogramClarityMode,
   isSpectrogramScaleMode,
+  isSpectrogramOrientation,
 } from '../../../types/spectrogram'
 import {
   DEFAULT_VU_METER_MODE,
@@ -251,8 +257,11 @@ function SpectrumScopeCanvas() {
             pendingChunksRef.current = []
             return pendingChunks
           },
+          // Popout streams mono chunks over IPC; mid/side stereo isn't relayed.
+          getPendingSpectrumStereoSamples: () => [],
           getSampleRate: () => sampleRateRef.current,
           isPlaying: () => isPlayingRef.current,
+          subscribeToSessionChanges: () => () => {},
         },
       })
     }
@@ -526,7 +535,15 @@ function VectorscopeScopeCanvas() {
       const centerY = layout.centerY
       const scale = layout.radius * visualGain
 
-      drawVectorscopeGridForMode(ctx, width, height, 'rgba(255, 255, 255, 0.08)', mode)
+      drawVectorscopeGridForMode(
+        ctx,
+        width,
+        height,
+        'rgba(255, 255, 255, 0.08)',
+        'rgba(255, 255, 255, 0.04)',
+        'rgba(255, 255, 255, 0.5)',
+        mode,
+      )
 
       const lineColor = lineColorRef.current
       const multiband = vectorscopeMultibandRef.current
@@ -674,6 +691,9 @@ function SpectrogramScopeCanvas() {
   const scrollSpeedRef = useRef(DEFAULT_SPECTROGRAM_SCROLL_SPEED)
   const clarityModeRef = useRef(DEFAULT_SPECTROGRAM_CLARITY_MODE)
   const scaleModeRef = useRef(DEFAULT_SPECTROGRAM_SCALE_MODE)
+  const tiltDbPerOctaveRef = useRef(DEFAULT_SPECTROGRAM_TILT_DB_PER_OCTAVE)
+  const contrastRef = useRef(DEFAULT_SPECTROGRAM_CONTRAST)
+  const orientationRef = useRef(DEFAULT_SPECTROGRAM_ORIENTATION)
   const isPlayingRef = useRef(false)
   const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
     onResize: () => visualizerRef.current?.resize(),
@@ -692,12 +712,20 @@ function SpectrogramScopeCanvas() {
       const nextScaleMode = isSpectrogramScaleMode(chunk.spectrogramScaleMode)
         ? chunk.spectrogramScaleMode
         : DEFAULT_SPECTROGRAM_SCALE_MODE
+      const nextTiltDbPerOctave = clampSpectrogramTiltDbPerOctave(chunk.spectrogramTiltDbPerOctave)
+      const nextContrast = clampSpectrogramContrast(chunk.spectrogramContrast)
+      const nextOrientation = isSpectrogramOrientation(chunk.spectrogramOrientation)
+        ? chunk.spectrogramOrientation
+        : DEFAULT_SPECTROGRAM_ORIENTATION
 
       fftSizeRef.current = nextFftSize
       lineColorRef.current = nextLineColor
       scrollSpeedRef.current = nextScrollSpeed
       clarityModeRef.current = nextClarityMode
       scaleModeRef.current = nextScaleMode
+      tiltDbPerOctaveRef.current = nextTiltDbPerOctave
+      contrastRef.current = nextContrast
+      orientationRef.current = nextOrientation
 
       if (chunk.reset) {
         pendingChunksRef.current = []
@@ -715,6 +743,9 @@ function SpectrogramScopeCanvas() {
         scrollSpeed: nextScrollSpeed,
         clarityMode: nextClarityMode,
         scaleMode: nextScaleMode,
+        tiltDbPerOctave: nextTiltDbPerOctave,
+        contrast: nextContrast,
+        orientation: nextOrientation,
       })
     })
 
@@ -731,6 +762,9 @@ function SpectrogramScopeCanvas() {
         scrollSpeed: scrollSpeedRef.current,
         clarityMode: clarityModeRef.current,
         scaleMode: scaleModeRef.current,
+        tiltDbPerOctave: tiltDbPerOctaveRef.current,
+        contrast: contrastRef.current,
+        orientation: orientationRef.current,
         colorScheme: 'heat',
         dataSource: {
           getPendingSpectrogramSamples: () => {
@@ -740,6 +774,7 @@ function SpectrogramScopeCanvas() {
           },
           getSampleRate: () => sampleRateRef.current,
           isPlaying: () => isPlayingRef.current,
+          subscribeToSessionChanges: () => () => {},
         },
       })
     }
@@ -802,6 +837,9 @@ function VUMeterScopeCanvas() {
 
       visualizerRef.current?.setOptions({
         lineColor: chunk.lineColor,
+        needleLeftColor: chunk.lineColor,
+        needleRightColor: chunk.lineColor,
+        needleCombinedColor: chunk.lineColor,
         mode: vuMeterModeRef.current,
         orientation: vuMeterOrientationRef.current,
       })
@@ -816,16 +854,24 @@ function VUMeterScopeCanvas() {
     if (canvasRef.current && !visualizerRef.current) {
       visualizerRef.current = new VUMeter(canvasRef.current, {
         lineColor: lineColorRef.current,
+        needleLeftColor: lineColorRef.current,
+        needleRightColor: lineColorRef.current,
+        needleCombinedColor: lineColorRef.current,
         mode: vuMeterModeRef.current,
         orientation: vuMeterOrientationRef.current,
         dataSource: {
           getPendingVUMeterSamples: () => {
             const chunks = pendingChunksRef.current
             pendingChunksRef.current = []
-            return chunks
+            // Relayed chunks are multichannel; the ported VU meter is stereo (L/R).
+            return chunks.map((chunk) => {
+              const left = chunk.channels[0] ?? new Float32Array(0)
+              return { left, right: chunk.channels[1] ?? left }
+            })
           },
           getSampleRate: () => sampleRateRef.current,
           isPlaying: () => isPlayingRef.current,
+          subscribeToSessionChanges: () => () => {},
         },
       })
     }
@@ -899,6 +945,7 @@ function LUFSMeterScopeCanvas() {
           },
           getSampleRate: () => sampleRateRef.current,
           isPlaying: () => isPlayingRef.current,
+          subscribeToSessionChanges: () => () => {},
         },
       })
     }
@@ -959,7 +1006,6 @@ function WaveformScopeCanvas() {
       visualizerRef.current?.setOptions({
         lineColor: chunk.lineColor,
         scrollSpeed: scrollSpeedRef.current,
-        gainDb: gainDbRef.current,
         multiband: multibandRef.current,
       })
     })
@@ -974,7 +1020,6 @@ function WaveformScopeCanvas() {
       visualizerRef.current = new Waveform(canvasRef.current, {
         lineColor: lineColorRef.current,
         scrollSpeed: scrollSpeedRef.current,
-        gainDb: gainDbRef.current,
         multiband: multibandRef.current,
         dataSource: {
           getPendingWaveformSamples: () => {
@@ -982,8 +1027,11 @@ function WaveformScopeCanvas() {
             pendingChunksRef.current = []
             return chunks
           },
+          // Popout relays mono chunks only; stereo/multiband waveform isn't streamed.
+          getPendingWaveformStereoSamples: () => [],
           getSampleRate: () => sampleRateRef.current,
           isPlaying: () => isPlayingRef.current,
+          subscribeToSessionChanges: () => () => {},
         },
       })
     }

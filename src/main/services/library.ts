@@ -1,8 +1,8 @@
 import * as mm from 'music-metadata'
 import { app, powerMonitor } from 'electron'
 import { join, extname, basename, dirname, isAbsolute as isAbsolutePath, normalize as normalizePath, resolve as resolvePath, relative as relativePath, sep as pathSep } from 'path'
-import { readdir, stat, mkdir, writeFile, readFile, access, rm, mkdtemp, copyFile } from 'fs/promises'
-import { createHash } from 'crypto'
+import { readdir, stat, mkdir, writeFile, readFile, access, rm, mkdtemp, copyFile, open } from 'fs/promises'
+import { createHash, randomUUID } from 'crypto'
 import { execFile, type ExecFileOptions } from 'child_process'
 import { tmpdir, cpus } from 'os'
 import { createRequire } from 'module'
@@ -13,6 +13,8 @@ import {
   stripPlaylistEntryOuterQuotes
 } from './playlistPathResolver'
 import { getMusicMetadataParseOptions } from '../utils/musicMetadata'
+import { collectIamfStreamStats } from '../../shared/iamf/obuWalker'
+import { mp4HasIamfTrack, readMp4DurationSeconds } from '../../shared/iamf/mp4'
 import {
   buildAlbumIdentityKeyByTrackId,
   buildCanonicalAlbumIdentityKey,
@@ -38,6 +40,14 @@ import {
   normalizeArtistNames,
   serializeArtistNames
 } from '../../shared/library/artistCredits'
+import { buildTrackSyncKey, normalizeSyncKeyPart } from '../../shared/sync/identity'
+import type {
+  SyncFavorite,
+  SyncKeyTombstone,
+  SyncPlaylist,
+  SyncPlaylistEntry,
+  SyncUidTombstone
+} from '../../types/phoneSync'
 import {
   createDefaultDynamicPlaylistRules,
   normalizeDynamicPlaylistRules,
@@ -93,7 +103,10 @@ const BetterSqliteDatabase = require('better-sqlite3') as BetterSqliteDatabaseCo
 // Supported audio extensions
 const AUDIO_EXTENSIONS = new Set([
   '.mp3', '.flac', '.wav', '.ogg', '.aac', '.m4a',
-  '.opus', '.wma', '.aiff', '.alac', '.ape', '.wv'
+  '.opus', '.wma', '.aiff', '.alac', '.ape', '.wv',
+  // Eclipsa Audio: standalone IAMF bitstreams, and IAMF-in-MP4 (only .mp4
+  // files with an IAMF audio track are indexed — see extractMetadata).
+  '.iamf', '.mp4'
 ])
 const FOLDER_ARTWORK_BASENAME_PRIORITY = [
   'cover',
@@ -145,6 +158,7 @@ export interface DbTrack {
   codec: string | null
   codec_profile: string | null
   is_atmos_joc: number | null
+  is_iamf?: number | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
   bpm: number | null
@@ -265,6 +279,7 @@ export interface SubsonicTrackUpsertInput {
   codec: string | null
   codec_profile: string | null
   is_atmos_joc: number | null
+  is_iamf?: number | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
   bpm: number | null
@@ -305,6 +320,7 @@ export interface JellyfinTrackUpsertInput {
   codec: string | null
   codec_profile: string | null
   is_atmos_joc: number | null
+  is_iamf?: number | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
   bpm: number | null
@@ -317,6 +333,7 @@ export interface LibraryFolder {
   id: number
   path: string
   added_at: number
+  hidden: number
 }
 
 export interface FolderSubfolderSummary {
@@ -573,6 +590,7 @@ class LibrarySqliteDatabase {
   }
 
   run(sql: string, params: unknown[] = []): { changes: number; lastInsertRowid: number | bigint } {
+    noteLibrarySqlMutation(sql)
     if (params.length > 0) {
       return this.database.prepare(sql).run(...params)
     }
@@ -582,6 +600,7 @@ class LibrarySqliteDatabase {
   }
 
   exec(sql: string): void {
+    noteLibrarySqlMutation(sql)
     this.database.exec(sql)
   }
 
@@ -666,6 +685,7 @@ const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   t.codec AS codec,
   t.codec_profile AS codec_profile,
   t.is_atmos_joc AS is_atmos_joc,
+  t.is_iamf AS is_iamf,
   t.replaygain_track_gain_db AS replaygain_track_gain_db,
   t.replaygain_album_gain_db AS replaygain_album_gain_db,
   t.bpm AS bpm,
@@ -978,9 +998,104 @@ function readAlbumIdentityRowsForTracks(tracks: readonly DbTrackRow[]): DbTrackR
   return readAlbumIdentityRowsByAlbumKeys(albumKeys)
 }
 
+// Cached, library-wide derived state for hot read paths. Album identity keys
+// depend on grouping context from the whole library, so computing them per
+// query forces full-table scans through the astra_normalize_album_key JS UDF;
+// the snapshot computes them once per write generation instead.
+interface LibraryTrackSnapshot {
+  generation: number
+  sortedPaths: string[]
+  identityKeysByPath: Map<string, string>
+  albumKeysByPath: Map<string, string>
+}
+
+let libraryWriteGeneration = 0
+let trackSnapshot: LibraryTrackSnapshot | null = null
+
+const SNAPSHOT_WRITE_STATEMENT_PATTERN = /^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/im
+const SNAPSHOT_ALWAYS_INVALIDATE_PATTERN = /^\s*(?:CREATE|DROP|ALTER|ROLLBACK)\b/im
+const SNAPSHOT_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|app_meta)\b/i
+
+function invalidateLibraryTrackSnapshot(): void {
+  libraryWriteGeneration += 1
+  trackSnapshot = null
+}
+
+function noteLibrarySqlMutation(sql: string): void {
+  if (SNAPSHOT_ALWAYS_INVALIDATE_PATTERN.test(sql)) {
+    invalidateLibraryTrackSnapshot()
+    return
+  }
+  if (SNAPSHOT_WRITE_STATEMENT_PATTERN.test(sql) && SNAPSHOT_SOURCE_TABLE_PATTERN.test(sql)) {
+    invalidateLibraryTrackSnapshot()
+  }
+}
+
+// The main process is single threaded and all library reads/writes are
+// synchronous, so a rebuild can never interleave with a write.
+function getLibraryTrackSnapshot(): LibraryTrackSnapshot | null {
+  if (!db) return null
+  if (trackSnapshot && trackSnapshot.generation === libraryWriteGeneration) {
+    return trackSnapshot
+  }
+
+  return measureLibraryQuery('rebuildTrackSnapshot', () => {
+    const generation = libraryWriteGeneration
+    const rows = readEffectiveTrackRows(`
+      SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${ALL_TRACKS_ORDER_BY_CLAUSE}
+    `)
+    const identityKeysByPath = buildAlbumIdentityKeysByPath(rows)
+    const sortedPaths: string[] = new Array(rows.length)
+    const albumKeysByPath = new Map<string, string>()
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index]
+      sortedPaths[index] = row.path
+      albumKeysByPath.set(row.path, normalizeSqliteAlbumKey(row.album))
+    }
+    trackSnapshot = { generation, sortedPaths, identityKeysByPath, albumKeysByPath }
+    return trackSnapshot
+  })
+}
+
+function readEffectiveTrackRowsByPaths(paths: readonly string[]): DbTrackRow[] {
+  if (!db || paths.length === 0) return []
+
+  const uniquePaths = Array.from(new Set(paths))
+  const rowsByPath = new Map<string, DbTrackRow>()
+  for (let offset = 0; offset < uniquePaths.length; offset += SQLITE_SAFE_MAX_VARIABLES) {
+    const chunk = uniquePaths.slice(offset, offset + SQLITE_SAFE_MAX_VARIABLES)
+    const placeholders = chunk.map(() => '?').join(', ')
+    for (const row of readEffectiveTrackRows(`
+      SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      WHERE t.path IN (${placeholders})
+    `, chunk)) {
+      rowsByPath.set(row.path, row)
+    }
+  }
+
+  const rows: DbTrackRow[] = []
+  for (const path of paths) {
+    const row = rowsByPath.get(path)
+    if (row) rows.push(row)
+  }
+  return rows
+}
+
 function readEffectiveTrackRowsByAlbumKey(albumKey: string): DbTrackRow[] {
   const normalizedAlbumKey = normalizeKey(albumKey)
   if (!normalizedAlbumKey) return []
+
+  const snapshot = getLibraryTrackSnapshot()
+  if (snapshot) {
+    const matchedPaths = snapshot.sortedPaths.filter((path) => (
+      snapshot.albumKeysByPath.get(path) === normalizedAlbumKey
+    ))
+    return readEffectiveTrackRowsByPaths(matchedPaths)
+  }
+
   return readEffectiveTrackRows(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
     ${EFFECTIVE_TRACK_FROM_CLAUSE}
@@ -1062,8 +1177,24 @@ function attachAlbumIdentityKeys(
 ): DbTrack[] {
   if (tracks.length === 0) return []
 
+  if (!libraryTracks) {
+    const snapshot = getLibraryTrackSnapshot()
+    if (snapshot) {
+      return attachAlbumIdentityKeysWithMap(tracks, snapshot.identityKeysByPath, latestSyncSummary)
+    }
+  }
+
   const effectiveLibraryTracks = libraryTracks ?? readAlbumIdentityRowsForTracks(tracks)
   const albumIdentityKeysByPath = buildAlbumIdentityKeysByPath(effectiveLibraryTracks)
+  return attachAlbumIdentityKeysWithMap(tracks, albumIdentityKeysByPath, latestSyncSummary)
+}
+
+function attachAlbumIdentityKeysWithMap(
+  tracks: readonly DbTrackRow[],
+  albumIdentityKeysByPath: ReadonlyMap<string, string>,
+  latestSyncSummary: LatestLibrarySyncSummary | null = getLatestLibrarySyncSummary()
+): DbTrack[] {
+  if (tracks.length === 0) return []
 
   return tracks.map((track) => {
     const {
@@ -1736,6 +1867,7 @@ export async function initDatabase(): Promise<void> {
 
   await backupExistingSqlJsDatabase()
 
+  invalidateLibraryTrackSnapshot()
   db = new LibrarySqliteDatabase(new BetterSqliteDatabase(dbPath, { timeout: 5000 }))
   db.pragma('foreign_keys = ON')
   db.pragma('busy_timeout = 5000')
@@ -1767,6 +1899,7 @@ export async function initDatabase(): Promise<void> {
       codec TEXT,
       codec_profile TEXT,
       is_atmos_joc INTEGER,
+      is_iamf INTEGER,
       replaygain_track_gain_db REAL,
       replaygain_album_gain_db REAL,
       bpm REAL,
@@ -1859,6 +1992,29 @@ export async function initDatabase(): Promise<void> {
     END;
   `)
 
+  // Per-track loudness analysis results. Deliberately a separate table from
+  // tracks: per-play writes here must not invalidate the library track snapshot.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS track_loudness (
+      track_path TEXT PRIMARY KEY NOT NULL,
+      loudness_lufs REAL NOT NULL,
+      peak_linear REAL,
+      method TEXT NOT NULL,
+      file_size INTEGER,
+      file_mtime_ms INTEGER,
+      analyzed_at INTEGER NOT NULL
+    )
+  `)
+
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS trg_track_loudness_cleanup
+    AFTER DELETE ON tracks
+    FOR EACH ROW
+    BEGIN
+      DELETE FROM track_loudness WHERE track_path = OLD.path;
+    END;
+  `)
+
   // Schema migration: existing libraries may not have channels yet.
   try {
     db.run('ALTER TABLE tracks ADD COLUMN channels INTEGER')
@@ -1894,6 +2050,11 @@ export async function initDatabase(): Promise<void> {
   }
   try {
     db.run('ALTER TABLE tracks ADD COLUMN is_atmos_joc INTEGER')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN is_iamf INTEGER')
   } catch {
     // Column already exists.
   }
@@ -1997,9 +2158,15 @@ export async function initDatabase(): Promise<void> {
     CREATE TABLE IF NOT EXISTS folders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       path TEXT UNIQUE NOT NULL,
-      added_at INTEGER NOT NULL
+      added_at INTEGER NOT NULL,
+      hidden INTEGER NOT NULL DEFAULT 0
     )
   `)
+  try {
+    db.run('ALTER TABLE folders ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    // Column already exists.
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS folder_exclusions (
@@ -2193,6 +2360,40 @@ export async function initDatabase(): Promise<void> {
   normalizePlaylistTrackMemberships()
   db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_playlist_tracks_membership ON playlist_tracks(playlist_id, track_path)')
 
+  // Desktop<->mobile LAN sync (phoneSync.ts): playlist sync identity, deletion
+  // tombstones, and incoming favorites that haven't matched a local track yet.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS favorite_tombstones (
+      sync_key TEXT PRIMARY KEY NOT NULL,
+      deleted_at INTEGER NOT NULL
+    )
+  `)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS favorite_sync_pending (
+      sync_key TEXT PRIMARY KEY NOT NULL,
+      title TEXT NOT NULL,
+      artist TEXT NOT NULL,
+      album TEXT NOT NULL,
+      added_at INTEGER NOT NULL
+    )
+  `)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS playlist_tombstones (
+      sync_uid TEXT PRIMARY KEY NOT NULL,
+      deleted_at INTEGER NOT NULL
+    )
+  `)
+  try {
+    db.run('ALTER TABLE playlists ADD COLUMN sync_uid TEXT')
+  } catch {
+    // Column already exists.
+  }
+  db.run(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_sync_uid
+    ON playlists(sync_uid)
+    WHERE sync_uid IS NOT NULL
+  `)
+
   // Generic app metadata table (schema/migration flags, etc.)
   db.run(`
     CREATE TABLE IF NOT EXISTS app_meta (
@@ -2211,6 +2412,7 @@ export function closeDatabase(): void {
     db.close()
     db = null
   }
+  invalidateLibraryTrackSnapshot()
 }
 
 export function setReplayGainScanEnabled(enabled: boolean): void {
@@ -3691,6 +3893,99 @@ export async function clearLyricsCache(): Promise<void> {
   await saveDatabase()
 }
 
+export interface TrackLoudnessEntry {
+  trackPath: string
+  loudnessLufs: number
+  peakLinear: number | null
+  method: string
+  fileSize: number | null
+  fileMtimeMs: number | null
+  analyzedAt: number
+}
+
+export interface TrackLoudnessUpsertInput {
+  trackPath: string
+  loudnessLufs: number
+  peakLinear: number | null
+  method: string
+  fileSize: number | null
+  fileMtimeMs: number | null
+}
+
+export function getTrackLoudness(trackPath: string): TrackLoudnessEntry | null {
+  if (!db) return null
+
+  const row = db.get<Record<string, unknown>>(`
+    SELECT
+      track_path,
+      loudness_lufs,
+      peak_linear,
+      method,
+      file_size,
+      file_mtime_ms,
+      analyzed_at
+    FROM track_loudness
+    WHERE track_path = ?
+    LIMIT 1
+  `, [trackPath])
+  if (!row) return null
+
+  const resolvedPath = toText(row.track_path)
+  const loudnessLufs = toNumber(row.loudness_lufs)
+  const method = toText(row.method)
+  if (!resolvedPath || loudnessLufs == null || !method) return null
+
+  return {
+    trackPath: resolvedPath,
+    loudnessLufs,
+    peakLinear: toNumber(row.peak_linear),
+    method,
+    fileSize: toNumber(row.file_size),
+    fileMtimeMs: toNumber(row.file_mtime_ms),
+    analyzedAt: toNumber(row.analyzed_at) ?? 0
+  }
+}
+
+export async function setTrackLoudness(entry: TrackLoudnessUpsertInput): Promise<void> {
+  if (!db) return
+  if (!entry.trackPath || !Number.isFinite(entry.loudnessLufs)) return
+
+  db.run(
+    `INSERT INTO track_loudness (
+      track_path,
+      loudness_lufs,
+      peak_linear,
+      method,
+      file_size,
+      file_mtime_ms,
+      analyzed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(track_path) DO UPDATE SET
+      loudness_lufs = excluded.loudness_lufs,
+      peak_linear = excluded.peak_linear,
+      method = excluded.method,
+      file_size = excluded.file_size,
+      file_mtime_ms = excluded.file_mtime_ms,
+      analyzed_at = excluded.analyzed_at`,
+    [
+      entry.trackPath,
+      entry.loudnessLufs,
+      entry.peakLinear,
+      entry.method,
+      entry.fileSize,
+      entry.fileMtimeMs,
+      Date.now()
+    ]
+  )
+  await saveDatabase()
+}
+
+export async function deleteTrackLoudness(trackPath: string): Promise<void> {
+  if (!db) return
+  db.run('DELETE FROM track_loudness WHERE track_path = ?', [trackPath])
+  await saveDatabase()
+}
+
 export function getLyricsTrackOverride(trackPath: string): LyricsTrackOverrideEntry | null {
   if (!db) return null
 
@@ -3899,6 +4194,10 @@ export function getAllTracks(): DbTrack[] {
       ${EFFECTIVE_TRACK_FROM_CLAUSE}
       ${ALL_TRACKS_ORDER_BY_CLAUSE}
     `)
+    const snapshot = getLibraryTrackSnapshot()
+    if (snapshot) {
+      return attachAlbumIdentityKeysWithMap(tracks, snapshot.identityKeysByPath)
+    }
     return attachAlbumIdentityKeys(tracks, tracks)
   })
 }
@@ -3906,8 +4205,9 @@ export function getAllTracks(): DbTrack[] {
 export function getTrackPage(request?: LibraryTrackPageRequest | null): LibraryTrackPage {
   return measureLibraryQuery('getTrackPage', () => {
     const { offset, limit } = normalizeLibraryTrackPageRequest(request)
-    const total = getTrackCount()
-    if (!db || total === 0 || offset >= total) {
+    const snapshot = getLibraryTrackSnapshot()
+    const total = snapshot ? snapshot.sortedPaths.length : 0
+    if (!snapshot || total === 0 || offset >= total) {
       return {
         tracks: [],
         offset,
@@ -3918,14 +4218,10 @@ export function getTrackPage(request?: LibraryTrackPageRequest | null): LibraryT
       }
     }
 
-    const rows = readEffectiveTrackRows(`
-      SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
-      ${ALL_TRACKS_ORDER_BY_CLAUSE}
-      LIMIT ? OFFSET ?
-    `, [limit, offset])
-    const tracks = attachAlbumIdentityKeys(rows)
-    const nextOffset = offset + rows.length
+    const pagePaths = snapshot.sortedPaths.slice(offset, offset + limit)
+    const rows = readEffectiveTrackRowsByPaths(pagePaths)
+    const tracks = attachAlbumIdentityKeysWithMap(rows, snapshot.identityKeysByPath)
+    const nextOffset = offset + pagePaths.length
 
     return {
       tracks,
@@ -3947,18 +4243,7 @@ export function getTracksByPaths(trackPaths: readonly string[] | null | undefine
     ))
     if (requestedPaths.length === 0) return []
 
-    const uniquePaths = Array.from(new Set(requestedPaths))
-    const rows: DbTrackRow[] = []
-    for (let offset = 0; offset < uniquePaths.length; offset += SQLITE_SAFE_MAX_VARIABLES) {
-      const chunk = uniquePaths.slice(offset, offset + SQLITE_SAFE_MAX_VARIABLES)
-      const placeholders = chunk.map(() => '?').join(', ')
-      rows.push(...readEffectiveTrackRows(`
-        SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-        ${EFFECTIVE_TRACK_FROM_CLAUSE}
-        WHERE t.path IN (${placeholders})
-      `, chunk))
-    }
-
+    const rows = readEffectiveTrackRowsByPaths(requestedPaths)
     const tracksByPath = new Map(attachAlbumIdentityKeys(rows).map((track) => [track.path, track]))
     const tracks: DbTrack[] = []
     for (const trackPath of requestedPaths) {
@@ -4013,10 +4298,7 @@ export function getTracksByArtist(artist: string, mode: ArtistBrowseMode = 'cano
       }
     }
 
-    return attachAlbumIdentityKeys(
-      matched.sort(compareTracksByAlbumDiscTrackTitle),
-      readAlbumIdentityRowsForTracks(matched)
-    )
+    return attachAlbumIdentityKeys(matched.sort(compareTracksByAlbumDiscTrackTitle))
   })
 }
 
@@ -5121,7 +5403,7 @@ export async function addLibraryFolder(folderPath: string): Promise<LibraryFolde
     const insertResult = db.run('INSERT INTO folders (path, added_at) VALUES (?, ?)', [folderPath, now])
     const id = Number(insertResult.lastInsertRowid)
     await saveDatabase()
-    return { id, path: folderPath, added_at: now }
+    return { id, path: folderPath, added_at: now, hidden: 0 }
   } catch {
     return null // Folder already exists
   }
@@ -5321,6 +5603,19 @@ export async function removeLibraryFolder(folderPath: string): Promise<void> {
   db.run('DELETE FROM folder_exclusions WHERE folder_id = ?', [folder.id])
   db.run('DELETE FROM folders WHERE id = ?', [folder.id])
   await saveDatabase()
+}
+
+// Toggle a library folder's visibility. Hidden folders stay fully indexed; their tracks are
+// filtered out of the browsable library in the renderer. This deletes nothing (unlike
+// removeLibraryFolder / folder exclusions).
+export async function setLibraryFolderHidden(folderPath: string, hidden: boolean): Promise<boolean> {
+  if (!db) return false
+  const folder = getLibraryFolderByPath(folderPath)
+  if (!folder) return false
+
+  db.run('UPDATE folders SET hidden = ? WHERE id = ?', [hidden ? 1 : 0, folder.id])
+  await saveDatabase()
+  return true
 }
 
 export async function resetMappedFoldersData(): Promise<{ clearedFolders: number; clearedTracks: number }> {
@@ -5580,25 +5875,25 @@ export async function scanFolder(
 
       if (existing) {
         db.run(`
-          UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
+          UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, is_iamf=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
           WHERE path=?
         `, [
           metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.genreNamesJson, metadata.artworkHash, metadata.format, metadata.sampleRate,
-          metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
+          metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, metadata.isIamf,
           metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, now, filePath
         ])
         updated++
       } else {
         db.run(`
-          INSERT INTO tracks (path, title, artist, artist_names_json, album, album_artist, album_artist_names_json, duration, track_number, disc_number, year, genre, genre_names_json, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, file_created_at, sync_session_key, added_at, modified_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, ?, ?, ?)
+          INSERT INTO tracks (path, title, artist, artist_names_json, album, album_artist, album_artist_names_json, duration, track_number, disc_number, year, genre, genre_names_json, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, is_iamf, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, file_created_at, sync_session_key, added_at, modified_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, ?, ?, ?)
         `, [
           filePath, metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.genreNamesJson, metadata.artworkHash, metadata.format, metadata.sampleRate,
-          metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
+          metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, metadata.isIamf,
           metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, syncSessionKey, now, now
         ])
         added++
@@ -6259,6 +6554,10 @@ function shouldProbeWithFfprobe(
   codecProfile: string | null
 ): boolean {
   const extension = extname(filePath).toLowerCase()
+  // The bundled ffprobe (6.0) cannot read IAMF; skip the doomed spawn.
+  if (extension === '.iamf') {
+    return false
+  }
   if (extension === '.m4a' || extension === '.mp4' || extension === '.m4b' || extension === '.m4p' || extension === '.aac') {
     return true
   }
@@ -6331,9 +6630,7 @@ async function resolveCodecMetadata(
 }
 
 // Extract metadata from audio file
-async function extractMetadata(filePath: string, options: {
-  folderArtworkCache?: FolderArtworkScanCache
-} = {}): Promise<{
+interface ExtractedTrackMetadata {
   title: string
   artist: string
   artistNamesJson: string | null
@@ -6342,11 +6639,11 @@ async function extractMetadata(filePath: string, options: {
   albumArtistNamesJson: string | null
   duration: number
   trackNumber: number | null
-    discNumber: number | null
-    year: number | null
-    genre: string | null
-    genreNamesJson: string | null
-    artworkHash: string | null
+  discNumber: number | null
+  year: number | null
+  genre: string | null
+  genreNamesJson: string | null
+  artworkHash: string | null
   format: string
   sampleRate: number | null
   bitDepth: number | null
@@ -6355,11 +6652,147 @@ async function extractMetadata(filePath: string, options: {
   codec: string | null
   codecProfile: string | null
   isAtmosJoc: number
+  isIamf: number
   replayGainTrackDb: number | null
   replayGainAlbumDb: number | null
   bpm: number | null
   musicalKey: string | null
-}> {
+}
+
+/**
+ * Reads just the top-level moov box from an MP4 file (fd-based; never loads
+ * mdat, so multi-GB videos cost only a few header reads + the moov itself).
+ * Returns null when the file is not ISO-BMFF or has no moov.
+ */
+export async function readMp4MoovBox(filePath: string): Promise<Uint8Array | null> {
+  const MAX_MOOV_BYTES = 64 * 1024 * 1024 // sanity cap; music moov is ~KBs
+  let handle: Awaited<ReturnType<typeof open>> | null = null
+  try {
+    handle = await open(filePath, 'r')
+    const fileSize = (await handle.stat()).size
+    const header = Buffer.alloc(16)
+    let offset = 0
+    let sawFtyp = false
+    while (offset + 8 <= fileSize) {
+      const { bytesRead } = await handle.read(header, 0, 16, offset)
+      if (bytesRead < 8) return null
+      let size = header.readUInt32BE(0)
+      const type = header.toString('latin1', 4, 8)
+      let headerLength = 8
+      if (size === 1) {
+        if (bytesRead < 16) return null
+        const large = header.readBigUInt64BE(8)
+        if (large > BigInt(Number.MAX_SAFE_INTEGER)) return null
+        size = Number(large)
+        headerLength = 16
+      } else if (size === 0) {
+        size = fileSize - offset
+      }
+      if (size < headerLength) return null
+      if (offset === 0 && type !== 'ftyp') return null
+      if (type === 'ftyp') sawFtyp = true
+      if (type === 'moov' && sawFtyp) {
+        if (size > MAX_MOOV_BYTES) return null
+        const moov = Buffer.alloc(size)
+        const read = await handle.read(moov, 0, size, offset)
+        if (read.bytesRead !== size) return null
+        return new Uint8Array(moov)
+      }
+      offset += size
+    }
+    return null
+  } catch {
+    return null
+  } finally {
+    await handle?.close().catch(() => undefined)
+  }
+}
+
+// IAMF (Eclipsa) sources: music-metadata cannot parse them — and a throw
+// inside extractMetadata drops the file from the library entirely — so
+// metadata comes from the container (OBU walker / moov) plus filename and
+// folder-artwork fallbacks.
+async function buildIamfTrackMetadata(
+  filePath: string,
+  options: { folderArtworkCache?: FolderArtworkScanCache },
+  info: { duration: number; sampleRate: number | null; format: string }
+): Promise<ExtractedTrackMetadata> {
+  const fileName = basename(filePath, extname(filePath))
+  const folderArtworkCache = options.folderArtworkCache ?? createFolderArtworkScanCache()
+  const artworkHash = await resolveFolderArtworkHash(filePath, folderArtworkCache)
+
+  return {
+    title: fileName,
+    artist: 'Unknown Artist',
+    artistNamesJson: null,
+    album: 'Unknown Album',
+    albumArtist: null,
+    albumArtistNamesJson: null,
+    duration: info.duration,
+    trackNumber: null,
+    discNumber: null,
+    year: null,
+    genre: null,
+    genreNamesJson: null,
+    artworkHash,
+    format: info.format,
+    sampleRate: info.sampleRate,
+    bitDepth: null,
+    bitrate: null,
+    // The decoder always materializes 7.1.4 — this is what byte-budget
+    // estimates and the channels indicator should see.
+    channels: 12,
+    codec: 'iamf',
+    codecProfile: null,
+    isAtmosJoc: 0,
+    isIamf: 1,
+    replayGainTrackDb: null,
+    replayGainAlbumDb: null,
+    bpm: null,
+    musicalKey: null
+  }
+}
+
+async function extractIamfMetadata(filePath: string, options: {
+  folderArtworkCache?: FolderArtworkScanCache
+} = {}): Promise<ExtractedTrackMetadata> {
+  let duration = 0
+  let sampleRate: number | null = null
+  try {
+    const stats = collectIamfStreamStats(new Uint8Array(await readFile(filePath)))
+    if (stats) {
+      duration = stats.durationSeconds ?? 0
+      sampleRate = stats.sampleRate
+    }
+  } catch {
+    // Unreadable/corrupt stream: index with filename only; playback surfaces
+    // the real error.
+  }
+  return buildIamfTrackMetadata(filePath, options, { duration, sampleRate, format: 'iamf' })
+}
+
+async function extractMetadata(filePath: string, options: {
+  folderArtworkCache?: FolderArtworkScanCache
+} = {}): Promise<ExtractedTrackMetadata> {
+  const extension = extname(filePath).toLowerCase()
+  if (extension === '.iamf') {
+    return extractIamfMetadata(filePath, options)
+  }
+  if (extension === '.mp4') {
+    const moov = await readMp4MoovBox(filePath)
+    if (!moov || !mp4HasIamfTrack(moov)) {
+      // Deliberate: .mp4 is only indexed when it carries an IAMF track —
+      // plain video files must not enter the music library. (Throwing keeps
+      // today's behavior: the scanner counts an error and skips the file.)
+      throw new Error('.mp4 without an IAMF audio track is not indexed as music')
+    }
+    return buildIamfTrackMetadata(filePath, options, {
+      duration: readMp4DurationSeconds(moov) ?? 0,
+      sampleRate: null,
+      format: 'mp4'
+    })
+  }
+
   const metadata = await mm.parseFile(filePath, getMusicMetadataParseOptions(filePath))
   const common = metadata.common
   const format = metadata.format
@@ -6441,6 +6874,7 @@ async function extractMetadata(filePath: string, options: {
     codec: resolvedCodecMetadata.codec,
     codecProfile: resolvedCodecMetadata.codecProfile,
     isAtmosJoc: resolvedCodecMetadata.isAtmosJoc ? 1 : 0,
+    isIamf: 0,
     replayGainTrackDb: replayGain.trackGainDb,
     replayGainAlbumDb: replayGain.albumGainDb,
     bpm,
@@ -6473,7 +6907,9 @@ function getBackfillCandidatePaths(options: {
     candidateClauses.push(legacyAtmosClause)
   }
 
-  let sql = `SELECT path FROM tracks WHERE source_type = 'local' AND (${candidateClauses.join(' OR ')})`
+  // IAMF rows always have null codec_profile etc. and ffprobe can't fill
+  // them in — keep them out of the backfill queue permanently.
+  let sql = `SELECT path FROM tracks WHERE source_type = 'local' AND COALESCE(is_iamf, 0) = 0 AND (${candidateClauses.join(' OR ')})`
   const params: unknown[] = []
   if (options.folderPath) {
     sql += ' AND path LIKE ?'
@@ -7159,13 +7595,13 @@ async function updateTrackRowFromFileMetadata(trackPath: string): Promise<void> 
   const now = Date.now()
 
   db.run(`
-    UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
+    UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, is_iamf=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
     WHERE path=?
   `, [
     metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
     metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
     metadata.genre, metadata.genreNamesJson, metadata.artworkHash, metadata.format, metadata.sampleRate,
-    metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc,
+    metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, metadata.isIamf,
     metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, now, trackPath
   ])
 }
@@ -7382,6 +7818,7 @@ export function getFavoritePaths(): string[] {
 export async function addFavorite(trackPath: string): Promise<void> {
   if (!db) return
   db.run('INSERT OR IGNORE INTO favorites (track_path, added_at) VALUES (?, ?)', [trackPath, Date.now()])
+  clearFavoriteSyncRowsForPaths([trackPath])
   await saveDatabase()
 }
 
@@ -7400,10 +7837,15 @@ export async function addFavoritePaths(
 
   const now = Date.now()
   let inserted = 0
+  const insertedTrackPaths: string[] = []
   for (const trackPath of uniqueTrackPaths) {
     const result = db.run('INSERT OR IGNORE INTO favorites (track_path, added_at) VALUES (?, ?)', [trackPath, now])
-    inserted += Number(result.changes) || 0
+    if (Number(result.changes) > 0) {
+      inserted += 1
+      insertedTrackPaths.push(trackPath)
+    }
   }
+  clearFavoriteSyncRowsForPaths(insertedTrackPaths)
 
   if (options.persist !== false && inserted > 0) {
     await saveDatabase()
@@ -7448,6 +7890,13 @@ export async function syncSubsonicFavoriteTrackIds(
 
 export async function removeFavorite(trackPath: string): Promise<void> {
   if (!db) return
+  // Record a deletion tombstone so a mobile LAN sync propagates the unfavorite
+  // instead of resurrecting it from the peer's copy (phoneSync.ts).
+  const syncKey = trackSyncKeyForPath(trackPath)
+  if (syncKey) {
+    db.run('INSERT OR REPLACE INTO favorite_tombstones (sync_key, deleted_at) VALUES (?, ?)', [syncKey, Date.now()])
+    db.run('DELETE FROM favorite_sync_pending WHERE sync_key = ?', [syncKey])
+  }
   db.run('DELETE FROM favorites WHERE track_path = ?', [trackPath])
   await saveDatabase()
 }
@@ -8024,6 +8473,20 @@ export async function renamePlaylist(id: number, name: string): Promise<void> {
 
 export async function deletePlaylist(id: number): Promise<void> {
   if (!db) return
+  // Tombstone sync-eligible playlists so a mobile LAN sync propagates the
+  // deletion (server-mirrored playlists are excluded from that sync).
+  const row = db.get<{ sync_uid?: unknown; remote_source_id?: unknown }>(
+    'SELECT sync_uid, remote_source_id FROM playlists WHERE id = ?',
+    [id]
+  )
+  if (
+    row &&
+    typeof row.sync_uid === 'string' &&
+    row.sync_uid.length > 0 &&
+    (row.remote_source_id === null || row.remote_source_id === undefined)
+  ) {
+    db.run('INSERT OR REPLACE INTO playlist_tombstones (sync_uid, deleted_at) VALUES (?, ?)', [row.sync_uid, Date.now()])
+  }
   db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [id])
   db.run('DELETE FROM playlists WHERE id = ?', [id])
   await saveDatabase()
@@ -8883,4 +9346,349 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
   }
 
   return removed
+}
+
+// ── Desktop<->Mobile LAN sync (phoneSync.ts) ─────────────────────────────────
+// Favorites and playlist entries cross devices as metadata identity keys
+// (shared/sync/identity.ts); playlists cross as sync_uid rows. Everything here
+// either serializes local state for GET /v1/sync/state or applies a merged
+// diff from POST /v1/sync/apply. Apply-variants deliberately use the caller's
+// timestamps and never write tombstones for the rows they touch — otherwise an
+// applied change would look like a fresh local edit on the next sync and
+// ping-pong between devices.
+
+export interface TrackMetadataQuery {
+  title: string
+  artist: string
+  album: string
+  sourcePath?: string | null
+}
+
+export type TrackMetadataMatch = MetadataMatchResult
+
+export type TrackMetadataMatcher = (query: TrackMetadataQuery) => TrackMetadataMatch
+
+function trackSyncKeyForPath(trackPath: string): string | null {
+  const row = readEffectiveTrackRowsByPaths([trackPath])[0]
+  if (!row) return null
+  if (!normalizeSyncKeyPart(row.title)) return null
+  return buildTrackSyncKey(row.title, row.artist, row.album)
+}
+
+function clearFavoriteSyncRowsForPaths(trackPaths: readonly string[]): void {
+  if (!db || trackPaths.length === 0) return
+  for (const row of readEffectiveTrackRowsByPaths(trackPaths)) {
+    if (!normalizeSyncKeyPart(row.title)) continue
+    const syncKey = buildTrackSyncKey(row.title, row.artist, row.album)
+    db.run('DELETE FROM favorite_tombstones WHERE sync_key = ?', [syncKey])
+    db.run('DELETE FROM favorite_sync_pending WHERE sync_key = ?', [syncKey])
+  }
+}
+
+export function createTrackMetadataMatcher(): TrackMetadataMatcher {
+  const lookup = buildPlaylistImportLookupIndex(readAllTrackRowsUnordered())
+  return (query) => {
+    const sourcePath = typeof query.sourcePath === 'string' ? query.sourcePath.trim() : ''
+    if (sourcePath) {
+      const normalizedPath = normalizePlaylistPathForLookup(sourcePath)
+      if (normalizedPath) {
+        const exact = lookup.exactPath.get(normalizedPath)
+        if (exact) return { kind: 'matched', trackPath: exact }
+        const caseInsensitive = lookup.caseInsensitivePath.get(normalizedPath.toLocaleLowerCase())
+        if (typeof caseInsensitive === 'string') return { kind: 'matched', trackPath: caseInsensitive }
+      }
+    }
+    return matchPlaylistEntryByMetadata(
+      { title: query.title, artist: query.artist, album: query.album },
+      lookup
+    )
+  }
+}
+
+export function ensurePlaylistSyncUids(): void {
+  if (!db) return
+  const rows = db.all<{ id?: unknown }>(`
+    SELECT id FROM playlists
+    WHERE sync_uid IS NULL
+      AND remote_source_type IS NULL
+      AND remote_source_id IS NULL
+  `)
+  for (const row of rows) {
+    const id = Number(row.id)
+    if (!Number.isInteger(id) || id <= 0) continue
+    // Assigning identity is not an edit: leave updated_at untouched.
+    db.run('UPDATE playlists SET sync_uid = ? WHERE id = ?', [randomUUID(), id])
+  }
+}
+
+export function getSyncFavoritesState(): { favorites: SyncFavorite[]; tombstones: SyncKeyTombstone[] } {
+  if (!db) return { favorites: [], tombstones: [] }
+
+  const addedAtByPath = new Map<string, number>()
+  for (const row of db.all<{ track_path?: unknown; added_at?: unknown }>('SELECT track_path, added_at FROM favorites')) {
+    if (typeof row.track_path === 'string' && row.track_path.length > 0) {
+      addedAtByPath.set(row.track_path, Number(row.added_at) || 0)
+    }
+  }
+
+  const favoritesByKey = new Map<string, SyncFavorite>()
+  for (const row of readEffectiveTrackRowsByPaths(Array.from(addedAtByPath.keys()))) {
+    if (!normalizeSyncKeyPart(row.title)) continue
+    const key = buildTrackSyncKey(row.title, row.artist, row.album)
+    const addedAt = addedAtByPath.get(row.path) ?? 0
+    const existing = favoritesByKey.get(key)
+    if (!existing || existing.addedAt < addedAt) {
+      favoritesByKey.set(key, { key, title: row.title, artist: row.artist, album: row.album, addedAt })
+    }
+  }
+
+  // Pending favorites re-enter sync state so they keep propagating to peers
+  // even while unresolved locally.
+  for (const row of db.all<{ sync_key?: unknown; title?: unknown; artist?: unknown; album?: unknown; added_at?: unknown }>(
+    'SELECT sync_key, title, artist, album, added_at FROM favorite_sync_pending'
+  )) {
+    if (typeof row.sync_key !== 'string' || row.sync_key.length === 0) continue
+    if (favoritesByKey.has(row.sync_key)) continue
+    favoritesByKey.set(row.sync_key, {
+      key: row.sync_key,
+      title: typeof row.title === 'string' ? row.title : '',
+      artist: typeof row.artist === 'string' ? row.artist : '',
+      album: typeof row.album === 'string' ? row.album : '',
+      addedAt: Number(row.added_at) || 0
+    })
+  }
+
+  const tombstones: SyncKeyTombstone[] = []
+  for (const row of db.all<{ sync_key?: unknown; deleted_at?: unknown }>('SELECT sync_key, deleted_at FROM favorite_tombstones')) {
+    if (typeof row.sync_key !== 'string' || row.sync_key.length === 0) continue
+    tombstones.push({ key: row.sync_key, deletedAt: Number(row.deleted_at) || 0 })
+  }
+
+  return { favorites: Array.from(favoritesByKey.values()), tombstones }
+}
+
+export function getFavoriteTrackPathsBySyncKey(): Map<string, string[]> {
+  const result = new Map<string, string[]>()
+  if (!db) return result
+  const paths = getFavoritePaths()
+  for (const row of readEffectiveTrackRowsByPaths(paths)) {
+    if (!normalizeSyncKeyPart(row.title)) continue
+    const key = buildTrackSyncKey(row.title, row.artist, row.album)
+    const bucket = result.get(key)
+    if (bucket) {
+      bucket.push(row.path)
+    } else {
+      result.set(key, [row.path])
+    }
+  }
+  return result
+}
+
+export function getSyncPlaylistsState(): { playlists: SyncPlaylist[]; tombstones: SyncUidTombstone[] } {
+  if (!db) return { playlists: [], tombstones: [] }
+
+  const playlists: SyncPlaylist[] = []
+  const rows = db.all<{
+    id?: unknown
+    name?: unknown
+    kind?: unknown
+    dynamic_rules_json?: unknown
+    created_at?: unknown
+    updated_at?: unknown
+    sync_uid?: unknown
+  }>(`
+    SELECT id, name, kind, dynamic_rules_json, created_at, updated_at, sync_uid
+    FROM playlists
+    WHERE sync_uid IS NOT NULL
+      AND remote_source_type IS NULL
+      AND remote_source_id IS NULL
+  `)
+
+  for (const row of rows) {
+    const id = Number(row.id)
+    if (!Number.isInteger(id) || id <= 0) continue
+    if (typeof row.sync_uid !== 'string' || row.sync_uid.length === 0) continue
+    const kind = row.kind === 'dynamic' ? 'dynamic' : 'normal'
+
+    let entries: SyncPlaylistEntry[] | null = null
+    if (kind === 'normal') {
+      entries = getPlaylistTrackEntries(id).map((entry) => ({
+        title: entry.track?.title ?? entry.title ?? '',
+        artist: entry.track?.artist ?? entry.artist ?? '',
+        album: entry.track?.album ?? entry.album ?? '',
+        durationSeconds: typeof entry.track?.duration === 'number' ? entry.track.duration : null,
+        position: entry.position,
+        addedAt: entry.added_at,
+        sourcePath: entry.track_path || null
+      }))
+    }
+
+    playlists.push({
+      syncUid: row.sync_uid,
+      name: typeof row.name === 'string' ? row.name : '',
+      kind,
+      dynamicRules: kind === 'dynamic' && typeof row.dynamic_rules_json === 'string' ? row.dynamic_rules_json : null,
+      createdAt: Number(row.created_at) || 0,
+      updatedAt: Number(row.updated_at) || 0,
+      entries
+    })
+  }
+
+  const tombstones: SyncUidTombstone[] = []
+  for (const row of db.all<{ sync_uid?: unknown; deleted_at?: unknown }>('SELECT sync_uid, deleted_at FROM playlist_tombstones')) {
+    if (typeof row.sync_uid !== 'string' || row.sync_uid.length === 0) continue
+    tombstones.push({ syncUid: row.sync_uid, deletedAt: Number(row.deleted_at) || 0 })
+  }
+
+  return { playlists, tombstones }
+}
+
+export function resolvePendingSyncFavorites(matcher?: TrackMetadataMatcher): number {
+  if (!db) return 0
+  const pending = db.all<{ sync_key?: unknown; title?: unknown; artist?: unknown; album?: unknown; added_at?: unknown }>(
+    'SELECT sync_key, title, artist, album, added_at FROM favorite_sync_pending'
+  )
+  if (pending.length === 0) return 0
+
+  const match = matcher ?? createTrackMetadataMatcher()
+  let resolved = 0
+  for (const row of pending) {
+    if (typeof row.sync_key !== 'string' || row.sync_key.length === 0) continue
+    const result = match({
+      title: typeof row.title === 'string' ? row.title : '',
+      artist: typeof row.artist === 'string' ? row.artist : '',
+      album: typeof row.album === 'string' ? row.album : ''
+    })
+    if (result.kind !== 'matched') continue
+    db.run('INSERT OR IGNORE INTO favorites (track_path, added_at) VALUES (?, ?)', [
+      result.trackPath,
+      Number(row.added_at) || Date.now()
+    ])
+    db.run('DELETE FROM favorite_sync_pending WHERE sync_key = ?', [row.sync_key])
+    resolved += 1
+  }
+  return resolved
+}
+
+export function upsertPendingSyncFavorite(item: SyncFavorite): void {
+  if (!db) return
+  db.run(
+    'INSERT OR REPLACE INTO favorite_sync_pending (sync_key, title, artist, album, added_at) VALUES (?, ?, ?, ?, ?)',
+    [item.key, item.title, item.artist, item.album, item.addedAt]
+  )
+}
+
+export function applySyncedFavoriteAdd(trackPath: string, syncKey: string, addedAt: number): void {
+  if (!db) return
+  db.run('INSERT OR REPLACE INTO favorites (track_path, added_at) VALUES (?, ?)', [trackPath, addedAt])
+  db.run('DELETE FROM favorite_tombstones WHERE sync_key = ?', [syncKey])
+  db.run('DELETE FROM favorite_sync_pending WHERE sync_key = ?', [syncKey])
+}
+
+export function applySyncedFavoriteRemove(trackPaths: readonly string[], syncKey: string, deletedAt: number): void {
+  if (!db) return
+  for (const trackPath of trackPaths) {
+    db.run('DELETE FROM favorites WHERE track_path = ?', [trackPath])
+  }
+  db.run('DELETE FROM favorite_sync_pending WHERE sync_key = ?', [syncKey])
+  db.run('INSERT OR REPLACE INTO favorite_tombstones (sync_key, deleted_at) VALUES (?, ?)', [syncKey, deletedAt])
+}
+
+export function replaceSyncedPlaylist(
+  input: SyncPlaylist,
+  matcher: TrackMetadataMatcher
+): { status: 'created' | 'replaced' | 'skipped-incompatible'; entriesMatched: number; entriesFallback: number } {
+  if (!db) throw new Error('Database not initialized')
+
+  const kind = input.kind === 'dynamic' ? 'dynamic' : 'normal'
+  let rulesJson: string | null = null
+  if (kind === 'dynamic') {
+    try {
+      rulesJson = serializeDynamicPlaylistRules(normalizeDynamicPlaylistRules(JSON.parse(input.dynamicRules ?? '')))
+    } catch {
+      return { status: 'skipped-incompatible', entriesMatched: 0, entriesFallback: 0 }
+    }
+  }
+
+  const existing = db.get<{ id?: unknown }>('SELECT id FROM playlists WHERE sync_uid = ?', [input.syncUid])
+  const existingId = existing ? Number(existing.id) : NaN
+  let playlistId: number
+  let created = false
+  if (Number.isInteger(existingId) && existingId > 0) {
+    playlistId = existingId
+    db.run('UPDATE playlists SET name = ?, kind = ?, dynamic_rules_json = ?, updated_at = ? WHERE id = ?', [
+      input.name,
+      kind,
+      rulesJson,
+      input.updatedAt,
+      playlistId
+    ])
+  } else {
+    const insertResult = db.run(
+      'INSERT INTO playlists (name, kind, dynamic_rules_json, created_at, updated_at, sync_uid) VALUES (?, ?, ?, ?, ?, ?)',
+      [input.name, kind, rulesJson, input.createdAt, input.updatedAt, input.syncUid]
+    )
+    playlistId = Number(insertResult.lastInsertRowid)
+    created = true
+  }
+
+  db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [playlistId])
+  db.run('DELETE FROM playlist_tombstones WHERE sync_uid = ?', [input.syncUid])
+
+  let entriesMatched = 0
+  let entriesFallback = 0
+  if (kind === 'normal' && Array.isArray(input.entries)) {
+    const orderedEntries = [...input.entries].sort((a, b) => a.position - b.position)
+    const seenTrackPaths = new Set<string>()
+    let position = 0
+    for (const entry of orderedEntries) {
+      const match = matcher({
+        title: entry.title,
+        artist: entry.artist,
+        album: entry.album,
+        sourcePath: entry.sourcePath
+      })
+      let trackPath: string
+      let matched = false
+      if (match.kind === 'matched') {
+        trackPath = match.trackPath
+        matched = true
+      } else {
+        const sourcePath = typeof entry.sourcePath === 'string' ? entry.sourcePath.trim() : ''
+        trackPath = sourcePath || `astra-sync://unmatched/${buildTrackSyncKey(entry.title, entry.artist, entry.album)}`
+      }
+      if (seenTrackPaths.has(trackPath)) continue
+      seenTrackPaths.add(trackPath)
+      db.run(
+        'INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [
+          playlistId,
+          trackPath,
+          position++,
+          Number(entry.addedAt) || input.updatedAt,
+          matched ? null : entry.title || null,
+          matched ? null : entry.artist || null,
+          matched ? null : entry.album || null
+        ]
+      )
+      if (matched) {
+        entriesMatched += 1
+      } else {
+        entriesFallback += 1
+      }
+    }
+  }
+
+  return { status: created ? 'created' : 'replaced', entriesMatched, entriesFallback }
+}
+
+export function applySyncedPlaylistDelete(syncUid: string, deletedAt: number): void {
+  if (!db) return
+  const row = db.get<{ id?: unknown }>('SELECT id FROM playlists WHERE sync_uid = ?', [syncUid])
+  const id = row ? Number(row.id) : NaN
+  if (Number.isInteger(id) && id > 0) {
+    db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [id])
+    db.run('DELETE FROM playlists WHERE id = ?', [id])
+  }
+  db.run('INSERT OR REPLACE INTO playlist_tombstones (sync_uid, deleted_at) VALUES (?, ?)', [syncUid, deletedAt])
 }

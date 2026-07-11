@@ -148,8 +148,12 @@ test('native-only visualizers warn once and stop retrying when native DSP is una
           getPendingSpectrumSamples: () => {
             throw new Error('missing-native spectrum should not consume samples')
           },
+          getPendingSpectrumStereoSamples: () => {
+            throw new Error('missing-native spectrum should not consume stereo samples')
+          },
           getSampleRate: () => 48000,
           isPlaying: () => true,
+          subscribeToSessionChanges: () => () => {},
         },
       }
     ))

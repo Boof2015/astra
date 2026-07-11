@@ -37,6 +37,8 @@ function createSnapshot(
     currentTime: 42,
     duration: 185,
     queueLength: 3,
+    shuffle: false,
+    repeat: 'none',
     outputDeviceLabel: 'Test Output',
     timeDisplayMode: DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE,
     visualizerLineColor: '#38bdf8',

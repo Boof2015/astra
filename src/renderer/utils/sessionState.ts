@@ -1,5 +1,6 @@
 import { ASTRA_SESSION_STATE_STORAGE_KEY } from '../constants/settingsStorageKeys'
 import type { TrackSourceType } from '../../types/subsonic'
+import type { LibraryYearKey } from './libraryYears'
 
 export const SESSION_STATE_KIND = 'astra-session-state'
 export const SESSION_STATE_SCHEMA_VERSION = 1
@@ -7,7 +8,7 @@ export const SESSION_STATE_SCHEMA_VERSION = 1
 export type SessionAppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist'
 export type SessionTrackSortKey = 'title' | 'artist' | 'album' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added'
 export type SessionSortDirection = 'asc' | 'desc'
-export type SessionViewMode = 'tracks' | 'albums' | 'artists' | 'genres' | 'folders'
+export type SessionViewMode = 'tracks' | 'albums' | 'artists' | 'genres' | 'years' | 'folders'
 export type SessionAlbumSortMode = 'title' | 'artist'
 export type SessionArtistRootViewMode = 'list' | 'grid'
 export type SessionQueueItemOrigin = 'context' | 'manual'
@@ -108,6 +109,7 @@ export interface UISessionSnapshot {
   showPipelineShelf: boolean
   showLyricsShelf: boolean
   lyricsShelfExpanded: boolean
+  fullscreenLyricsVisible?: boolean
 }
 
 export interface LibrarySessionSnapshot {
@@ -120,7 +122,9 @@ export interface LibrarySessionSnapshot {
   } | null
   selectedArtist: string | null
   selectedGenre: string | null
+  selectedYear: LibraryYearKey | null
   trackListSortState: SessionTrackSortState | null
+  tracksViewSortState?: SessionTrackSortState | null
   selectedSourceFilters: string[]
   albumSortMode: SessionAlbumSortMode
   includeSinglesInAlbums: boolean
@@ -227,9 +231,14 @@ export function normalizeAppView(value: unknown): SessionAppView {
 }
 
 function normalizeViewMode(value: unknown): SessionViewMode {
-  return value === 'albums' || value === 'artists' || value === 'genres' || value === 'folders' || value === 'tracks'
+  return value === 'albums' || value === 'artists' || value === 'genres' || value === 'years' || value === 'folders' || value === 'tracks'
     ? value
     : 'tracks'
+}
+
+function normalizeLibraryYearKey(value: unknown): LibraryYearKey | null {
+  if (value === 'unknown') return value
+  return typeof value === 'number' && Number.isInteger(value) ? value : null
 }
 
 function normalizeAlbumSortMode(value: unknown): SessionAlbumSortMode {
@@ -452,7 +461,8 @@ function normalizeUISession(value: unknown): UISessionSnapshot | null {
     showInfoSidebar: value.showInfoSidebar === true,
     showPipelineShelf: value.showPipelineShelf === true,
     showLyricsShelf: value.showLyricsShelf === true,
-    lyricsShelfExpanded: value.lyricsShelfExpanded === true
+    lyricsShelfExpanded: value.lyricsShelfExpanded === true,
+    fullscreenLyricsVisible: value.fullscreenLyricsVisible === true
   }
 }
 
@@ -475,7 +485,11 @@ function normalizeLibrarySession(value: unknown): LibrarySessionSnapshot | null 
     selectedAlbum: normalizeSelectedAlbum(value.selectedAlbum),
     selectedArtist: stringValue(value.selectedArtist),
     selectedGenre: stringValue(value.selectedGenre),
+    selectedYear: normalizeLibraryYearKey(value.selectedYear),
     trackListSortState: normalizeTrackSortState(value.trackListSortState),
+    ...(Object.hasOwn(value, 'tracksViewSortState')
+      ? { tracksViewSortState: normalizeTrackSortState(value.tracksViewSortState) }
+      : {}),
     selectedSourceFilters: requiredStringArray(value.selectedSourceFilters),
     albumSortMode: normalizeAlbumSortMode(value.albumSortMode),
     includeSinglesInAlbums: value.includeSinglesInAlbums === true,

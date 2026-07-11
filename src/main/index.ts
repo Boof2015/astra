@@ -1,6 +1,6 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage, powerMonitor, session, globalShortcut } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage, powerMonitor, protocol, session, globalShortcut } from 'electron'
 import { join, basename, extname } from 'path'
-import { readFile, writeFile, mkdtemp, rm, access, mkdir } from 'fs/promises'
+import { readFile, writeFile, mkdtemp, rm, access, mkdir, stat } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
 import { tmpdir, hostname, networkInterfaces } from 'os'
 import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, type ExecFileOptions } from 'child_process'
@@ -8,6 +8,8 @@ import { createHash, randomUUID } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
 import type { DynamicPlaylistRulesV1 } from '../shared/playlists/dynamicPlaylist'
+import { collectIamfStreamStats } from '../shared/iamf/obuWalker'
+import { mp4HasIamfTrack, readMp4DurationSeconds } from '../shared/iamf/mp4'
 import {
   deepScanFlacIntegrityTrack,
   isFlacTarget,
@@ -61,13 +63,22 @@ import { resolveDiscordCoverArtUrl } from './services/discordCoverArtLookup'
 import { checkForUpdates, RELEASES_PAGE_URL } from './services/updates'
 import { LocalApiService, generateLocalApiToken } from './services/localApi'
 import { PhoneRemoteService } from './services/phoneRemote'
+import { applyPhoneSyncChanges, buildPhoneSyncState, parsePhoneSyncApplyPayload } from './services/phoneSync'
 import { PhoneRemoteDiscoveryService } from './services/phoneRemoteDiscovery'
 import { ParallaxService, type PersistedParallaxPairedSink } from './services/parallax'
 import { ParallaxDiscoveryService } from './services/parallaxDiscovery'
 import { ParallaxSinkListener } from './services/parallaxSinkListener'
+import {
+  createParallaxTlsIdentity,
+  normalizeParallaxFingerprint,
+  parallaxCertificateFingerprint,
+  validateParallaxTlsIdentity,
+  type ParallaxTlsIdentity
+} from './services/parallaxSecurity'
 import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
 import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
+import { collectAppMemoryFootprint } from './services/appMemoryFootprint'
 import { getMusicMetadataParseOptions } from './utils/musicMetadata'
 import {
   MINI_WINDOW_MAX_HEIGHT,
@@ -94,6 +105,7 @@ import {
 import {
   mergeMiniPlayerSnapshots,
   type MiniPlayerCommand,
+  type MiniPlayerQueueSnapshot,
   type MiniPlayerSnapshot,
   type MiniPlayerVisualizerStreamChunk,
   type MiniPlayerWindowPrefs,
@@ -139,6 +151,7 @@ import {
   PARALLAX_MIN_PORT,
   PARALLAX_SINK_DEFAULT_PORT,
   decideParallaxSinkEnabledFromMeta,
+  decideParallaxSecurityV2Migration,
   type ParallaxAudioChunk,
   type ParallaxDiscoveryEvent,
   type ParallaxHostConfig,
@@ -147,7 +160,6 @@ import {
   type ParallaxHostTimelinePublishOptions,
   type ParallaxOutputLatencyMetrics,
   ParallaxAuthError,
-  type ParallaxSinkConnectionConfig,
   type ParallaxSinkTelemetry,
   type ParallaxStreamInfo,
   type ParallaxTimelineState,
@@ -448,6 +460,7 @@ const LOCAL_API_PORT_META_KEY = 'local_api_port_v1'
 const LOCAL_API_TOKEN_META_KEY = 'local_api_token_v1'
 const PHONE_REMOTE_ENABLED_META_KEY = 'local_api_remote_web_enabled_v1'
 const PHONE_REMOTE_PORT_META_KEY = 'phone_remote_port_v1'
+const PHONE_REMOTE_SYNC_ENABLED_META_KEY = 'phone_remote_sync_enabled_v1'
 const PHONE_REMOTE_PAIRED_DEVICES_META_KEY = 'local_api_paired_devices_v1'
 const PARALLAX_HOST_ENABLED_META_KEY = 'parallax_host_enabled_v1'
 const PARALLAX_HOST_PORT_META_KEY = 'parallax_host_port_v1'
@@ -465,6 +478,9 @@ const PARALLAX_SINK_ENABLED_META_KEY = 'parallax_sink_enabled_v1'
 // uses host-issued `sinkId` — this is discovery memory only ("seen before / renamed / already
 // paired"). Never a secret.
 const PARALLAX_ENDPOINT_UUID_META_KEY = 'parallax_endpoint_uuid_v1'
+const PARALLAX_TLS_IDENTITY_META_KEY = 'parallax_tls_identity_v2'
+const PARALLAX_SECURITY_VERSION_META_KEY = 'parallax_security_version'
+const PARALLAX_SECURITY_MIGRATION_NOTICE_META_KEY = 'parallax_security_migration_notice_v2'
 const LASTFM_ENABLED_META_KEY = 'lastfm_enabled_v1'
 const LASTFM_API_BASE_URL_META_KEY = 'lastfm_api_base_url_v1'
 const LASTFM_SESSION_KEY_META_KEY = 'lastfm_session_key_v1'
@@ -490,10 +506,33 @@ const JELLYFIN_STREAM_MAX_BITRATE_KBPS = 256
 const SUBSONIC_DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS = 80
 const REMOTE_STREAM_PLAYABLE_SECONDS = 0.75
 const REMOTE_STREAM_CHUNK_FRAMES = 4096
+const LOCAL_STREAM_STARTUP_CHUNK_FRAMES = 8192
+const LOCAL_STREAM_STEADY_CHUNK_FRAMES = 65_536
+const LOCAL_STREAM_STEADY_AFTER_SECONDS = 1
 const JELLYFIN_AUTH_CACHE_TTL_MS = 30 * 60 * 1000
 
+// Artwork is served to renderers over a custom protocol instead of base64
+// data URLs over IPC: bytes go through Chromium's network pipeline, images
+// get short stable URL keys with real cache semantics, and the renderer
+// needs no blob bookkeeping. Must be registered before app ready.
+const ARTWORK_PROTOCOL_SCHEME = 'astra-artwork'
+protocol.registerSchemesAsPrivileged([{
+  scheme: ARTWORK_PROTOCOL_SCHEME,
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    stream: true,
+    corsEnabled: true
+  }
+}])
+
 let artworkThumbnailCacheDir = ''
-const artworkThumbnailRequestCache = new Map<string, Promise<string | null>>()
+interface ArtworkBytes {
+  bytes: Buffer
+  mimeType: string
+}
+const artworkThumbnailRequestCache = new Map<string, Promise<ArtworkBytes | null>>()
 const subsonicArtworkResolveRequestCache = new Map<string, Promise<string | null>>()
 let subsonicStatusCache: SubsonicStatusSnapshot = {
   isSyncing: false,
@@ -511,6 +550,23 @@ const jellyfinAuthCacheBySourceId = new Map<number, { authContext: { accessToken
 const remoteStreamSessions = new Map<number, RemoteStreamSession>()
 let nextRemoteStreamSessionId = 1
 
+function getActiveMemoryFootprintChildProcessPids(): number[] {
+  const pids: number[] = []
+  const seen = new Set<number>()
+  for (const session of remoteStreamSessions.values()) {
+    if (session.done || session.cancelled) continue
+    const pid = session.ffmpeg.pid
+    if (typeof pid !== 'number' || !Number.isFinite(pid) || pid <= 0 || seen.has(pid)) continue
+    seen.add(pid)
+    pids.push(pid)
+  }
+  return pids
+}
+
+interface ProgressiveStreamStartOptions {
+  startTimeSeconds?: number | null
+}
+
 let localApiConfig: LocalApiServiceConfig = {
   enabled: false,
   controlsEnabled: false,
@@ -520,6 +576,7 @@ let localApiConfig: LocalApiServiceConfig = {
 let phoneRemoteConfig: PhoneRemoteServiceConfig = {
   enabled: false,
   controlsEnabled: false,
+  syncEnabled: true,
   port: PHONE_REMOTE_DEFAULT_PORT
 }
 let parallaxHostConfig: ParallaxHostConfig = {
@@ -546,6 +603,8 @@ let parallaxSinkEnabled = false
 // §20.19(c). Role-neutral identity UUID per Astra install. Generated lazily at first read.
 // Discovery memory only (never a secret) — auth identity is still the host-issued `sinkId`.
 let parallaxEndpointUuid = ''
+let parallaxTlsIdentity: ParallaxTlsIdentity | null = null
+let parallaxSecurityMigrationRequired = false
 // §20 Commit 2. mDNS wrapper. Owns one bonjour-service instance for both advertise + browse.
 // Constructed eagerly (cheap, no sockets bound until start*); lifecycle hooks below honor the
 // sinkEnabled toggle for advertise and renderer-driven browse on/off for the wizard.
@@ -567,9 +626,12 @@ const parallaxSinkListener = new ParallaxSinkListener({
       console.warn('Failed to clear stale Parallax sink connection during pair-commit:', error)
     })
     const persisted = {
+      protocolVersion: info.protocolVersion,
       baseUrl: info.hostUrl,
       sinkId: info.sinkId,
       token: info.token,
+      hostCertificatePem: info.hostCertificatePem,
+      hostCertificateFingerprint: info.hostCertificateFingerprint,
       hostName: info.hostName,
       pairedAt: info.pairedAt,
       lastConnectedAt: null,
@@ -578,6 +640,7 @@ const parallaxSinkListener = new ParallaxSinkListener({
     const sanitized = sanitizeParallaxSinkConnection(persisted)
     if (sanitized) {
       await persistParallaxSinkConnection(sanitized)
+      await clearParallaxSecurityMigrationNotice()
       broadcastParallaxStatus()
       // Pair-confirm happens in the sink HTTP listener, but the actual sink connection must be
       // renderer-driven so the Standard-output gate, subscriptions, and audioEngine.stop() prep
@@ -888,6 +951,23 @@ const phoneRemoteService = new PhoneRemoteService({
       console.warn('Failed to persist phone remote paired devices:', error)
     })
   },
+  getSyncState: () => buildPhoneSyncState(),
+  applySyncChanges: (rawPayload) => {
+    const payload = parsePhoneSyncApplyPayload(rawPayload)
+    if (!payload) return null
+    library.beginLibraryWriteTransaction()
+    let result
+    try {
+      result = applyPhoneSyncChanges(payload)
+      library.commitLibraryWriteTransaction()
+    } catch (error) {
+      library.rollbackLibraryWriteTransaction()
+      throw error
+    }
+    // The sync applied in the main process; the renderer stores are now stale.
+    mainWindow?.webContents.send('library:externalLibraryMutation')
+    return result
+  },
   onStatusChange: () => {
     broadcastPhoneRemoteStatus()
     const status = phoneRemoteService.getStatus()
@@ -913,6 +993,9 @@ const parallaxService = new ParallaxService({
     void persistParallaxPairedSinks(parallaxPairedSinks).catch((error) => {
       console.warn('Failed to persist Parallax paired sinks:', error)
     })
+    if (sinks.some((sink) => sink.revokedAt === null)) {
+      void clearParallaxSecurityMigrationNotice()
+    }
   },
   onStatusChange: () => {
     broadcastParallaxStatus()
@@ -977,7 +1060,8 @@ const parallaxService = new ParallaxService({
   getHostDisplayName: () => hostname() || 'Astra Host',
   // §20 Commit 3 sink side. Reads the listener's live pending-pair so it lands in
   // ParallaxStatus.sink.incomingPairRequest on every status push.
-  getIncomingPairRequest: () => parallaxIncomingPairRequest
+  getIncomingPairRequest: () => parallaxIncomingPairRequest,
+  getSecurityMigrationRequired: () => parallaxSecurityMigrationRequired
 })
 
 const lastFmService = new LastFmService({
@@ -1089,7 +1173,7 @@ const SCOPE_POPOUT_DEFAULTS: Record<ScopeKind, {
 }
 
 // Supported audio formats
-const AUDIO_EXTENSIONS = ['mp3', 'flac', 'wav', 'ogg', 'aac', 'm4a', 'opus', 'wma', 'aiff', 'alac', 'ape', 'wv']
+const AUDIO_EXTENSIONS = ['mp3', 'flac', 'wav', 'ogg', 'aac', 'm4a', 'opus', 'wma', 'aiff', 'alac', 'ape', 'wv', 'iamf', 'mp4']
 const AUDIO_EXTENSION_SET = new Set(AUDIO_EXTENSIONS.map((extension) => `.${extension}`))
 const AUDIO_FILTERS = [
   {
@@ -1511,6 +1595,7 @@ async function persistLocalApiConfig(config: LocalApiServiceConfig): Promise<voi
 
 async function persistPhoneRemoteConfig(config: PhoneRemoteServiceConfig): Promise<void> {
   await library.setAppMeta(PHONE_REMOTE_ENABLED_META_KEY, config.enabled ? '1' : '0')
+  await library.setAppMeta(PHONE_REMOTE_SYNC_ENABLED_META_KEY, config.syncEnabled ? '1' : '0')
   await library.setAppMeta(PHONE_REMOTE_PORT_META_KEY, String(config.port))
 }
 
@@ -1540,6 +1625,107 @@ async function loadParallaxSinkEnabledFromMeta(): Promise<boolean> {
 
 async function persistParallaxSinkEnabled(enabled: boolean): Promise<void> {
   await library.setAppMeta(PARALLAX_SINK_ENABLED_META_KEY, enabled ? '1' : '0')
+}
+
+interface ProtectedParallaxSecret {
+  protection: 'safe-storage' | 'plaintext-fallback'
+  value: string
+}
+
+function canUseSecureParallaxStorage(): boolean {
+  if (!safeStorage.isEncryptionAvailable()) return false
+  if (process.platform !== 'linux') return true
+  return safeStorage.getSelectedStorageBackend() !== 'basic_text'
+}
+
+function protectParallaxSecret(value: string): ProtectedParallaxSecret {
+  if (canUseSecureParallaxStorage()) {
+    return {
+      protection: 'safe-storage',
+      value: safeStorage.encryptString(value).toString('base64')
+    }
+  }
+  console.warn('Parallax secure OS storage is unavailable; using an explicit plaintext credential fallback.')
+  return { protection: 'plaintext-fallback', value }
+}
+
+function unprotectParallaxSecret(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+  if (record.protection === 'plaintext-fallback' && typeof record.value === 'string') {
+    return record.value
+  }
+  if (record.protection === 'safe-storage' && typeof record.value === 'string') {
+    try {
+      return safeStorage.decryptString(Buffer.from(record.value, 'base64'))
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+async function loadOrCreateParallaxTlsIdentity(): Promise<ParallaxTlsIdentity> {
+  const raw = library.getAppMeta(PARALLAX_TLS_IDENTITY_META_KEY)
+  let invalidExistingIdentity = false
+  if (raw) {
+    try {
+      const stored = JSON.parse(raw) as Record<string, unknown>
+      const privateKeyPem = unprotectParallaxSecret(stored.privateKey)
+      const candidate = privateKeyPem && typeof stored.certificatePem === 'string' && typeof stored.fingerprint256 === 'string'
+        ? validateParallaxTlsIdentity({
+          certificatePem: stored.certificatePem,
+          privateKeyPem,
+          fingerprint256: stored.fingerprint256
+        })
+        : null
+      if (candidate) return candidate
+    } catch {
+      // Regenerate below.
+    }
+    invalidExistingIdentity = true
+  }
+
+  const identity = await createParallaxTlsIdentity(hostname() || 'Astra Parallax')
+  await library.setAppMeta(PARALLAX_TLS_IDENTITY_META_KEY, JSON.stringify({
+    version: 2,
+    certificatePem: identity.certificatePem,
+    fingerprint256: identity.fingerprint256,
+    privateKey: protectParallaxSecret(identity.privateKeyPem)
+  }))
+  if (invalidExistingIdentity) {
+    parallaxSecurityMigrationRequired = true
+    await library.setAppMeta(PARALLAX_PAIRED_SINKS_META_KEY, '[]')
+    await library.setAppMeta(PARALLAX_SINK_CONNECTION_META_KEY, '')
+    await library.setAppMeta(PARALLAX_SECURITY_MIGRATION_NOTICE_META_KEY, '1')
+  }
+  return identity
+}
+
+async function migrateParallaxSecurityV2(): Promise<void> {
+  const currentVersion = library.getAppMeta(PARALLAX_SECURITY_VERSION_META_KEY)
+  const rawPairedSinks = library.getAppMeta(PARALLAX_PAIRED_SINKS_META_KEY)
+  const rawSinkConnection = library.getAppMeta(PARALLAX_SINK_CONNECTION_META_KEY)
+  const decision = decideParallaxSecurityV2Migration(currentVersion, rawPairedSinks, rawSinkConnection)
+  if (!decision.needsMigration) {
+    parallaxSecurityMigrationRequired = library.getAppMeta(PARALLAX_SECURITY_MIGRATION_NOTICE_META_KEY) === '1'
+    return
+  }
+  parallaxSecurityMigrationRequired = decision.showRepairNotice
+  await library.setAppMeta(PARALLAX_PAIRED_SINKS_META_KEY, '[]')
+  await library.setAppMeta(PARALLAX_SINK_CONNECTION_META_KEY, '')
+  await library.setAppMeta(PARALLAX_SECURITY_VERSION_META_KEY, '2')
+  await library.setAppMeta(
+    PARALLAX_SECURITY_MIGRATION_NOTICE_META_KEY,
+    parallaxSecurityMigrationRequired ? '1' : '0'
+  )
+}
+
+async function clearParallaxSecurityMigrationNotice(): Promise<void> {
+  if (!parallaxSecurityMigrationRequired) return
+  parallaxSecurityMigrationRequired = false
+  await library.setAppMeta(PARALLAX_SECURITY_MIGRATION_NOTICE_META_KEY, '0')
+  broadcastParallaxStatus()
 }
 
 // §20.19(c). Lazy load — generate and persist on first read. Validated as a v4-ish UUID; if a
@@ -1578,10 +1764,21 @@ let parallaxSinkConnection: PersistedParallaxSinkConnection | null = null
 function sanitizeParallaxSinkConnection(raw: unknown): PersistedParallaxSinkConnection | null {
   if (!raw || typeof raw !== 'object') return null
   const value = raw as Record<string, unknown>
+  if (value.protocolVersion !== 2) return null
   const baseUrl = typeof value.baseUrl === 'string' ? value.baseUrl.trim() : ''
   const sinkId = typeof value.sinkId === 'string' ? value.sinkId.trim() : ''
   const token = typeof value.token === 'string' ? value.token.trim() : ''
-  if (!baseUrl || !sinkId || !token) return null
+  const hostCertificatePem = typeof value.hostCertificatePem === 'string' ? value.hostCertificatePem.trim() : ''
+  const hostCertificateFingerprint = typeof value.hostCertificateFingerprint === 'string'
+    ? normalizeParallaxFingerprint(value.hostCertificateFingerprint)
+    : ''
+  if (!baseUrl || !sinkId || !token || !hostCertificatePem || !hostCertificateFingerprint) return null
+  try {
+    if (new URL(baseUrl).protocol !== 'https:') return null
+    if (parallaxCertificateFingerprint(hostCertificatePem) !== hostCertificateFingerprint) return null
+  } catch {
+    return null
+  }
   const hostName = typeof value.hostName === 'string' ? value.hostName.slice(0, 80) : null
   const pairedAt = typeof value.pairedAt === 'number' && Number.isFinite(value.pairedAt)
     ? Math.max(0, value.pairedAt)
@@ -1596,9 +1793,12 @@ function sanitizeParallaxSinkConnection(raw: unknown): PersistedParallaxSinkConn
     ? value.hostParallaxEndpointUuid.trim()
     : undefined
   return {
+    protocolVersion: 2,
     baseUrl,
     sinkId,
     token,
+    hostCertificatePem,
+    hostCertificateFingerprint,
     hostName,
     pairedAt,
     lastConnectedAt,
@@ -1610,7 +1810,9 @@ function loadParallaxSinkConnectionFromMeta(): PersistedParallaxSinkConnection |
   const raw = library.getAppMeta(PARALLAX_SINK_CONNECTION_META_KEY)
   if (!raw) return null
   try {
-    return sanitizeParallaxSinkConnection(JSON.parse(raw))
+    const stored = JSON.parse(raw) as Record<string, unknown>
+    const token = unprotectParallaxSecret(stored.protectedToken)
+    return token ? sanitizeParallaxSinkConnection({ ...stored, token }) : null
   } catch {
     return null
   }
@@ -1618,7 +1820,11 @@ function loadParallaxSinkConnectionFromMeta(): PersistedParallaxSinkConnection |
 
 async function persistParallaxSinkConnection(next: PersistedParallaxSinkConnection): Promise<void> {
   parallaxSinkConnection = { ...next }
-  await library.setAppMeta(PARALLAX_SINK_CONNECTION_META_KEY, JSON.stringify(parallaxSinkConnection))
+  const { token, ...publicFields } = parallaxSinkConnection
+  await library.setAppMeta(PARALLAX_SINK_CONNECTION_META_KEY, JSON.stringify({
+    ...publicFields,
+    protectedToken: protectParallaxSecret(token)
+  }))
 }
 
 async function clearParallaxSinkConnection(): Promise<void> {
@@ -1661,11 +1867,7 @@ async function attemptParallaxAutoReconnect(
   // (Pillar 3) updates it mid-loop, and we must not connect to / persist a stale baseUrl.
   const active = parallaxSinkConnection ?? connection
   try {
-    await parallaxService.connectSink({
-      baseUrl: active.baseUrl,
-      sinkId: active.sinkId,
-      token: active.token
-    })
+    await parallaxService.connectSink(active)
     if (generation !== parallaxAutoReconnectGeneration) return
     parallaxAutoReconnectAttempt = 0
     const updated: PersistedParallaxSinkConnection = { ...active, lastConnectedAt: Date.now() }
@@ -1817,6 +2019,7 @@ async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
 
 async function loadPhoneRemoteConfigFromMeta(controlsEnabled: boolean): Promise<PhoneRemoteServiceConfig> {
   const enabled = parseMetaBoolean(library.getAppMeta(PHONE_REMOTE_ENABLED_META_KEY), false)
+  const syncEnabled = parseMetaBoolean(library.getAppMeta(PHONE_REMOTE_SYNC_ENABLED_META_KEY), true)
 
   const rawPort = library.getAppMeta(PHONE_REMOTE_PORT_META_KEY)
   let port = PHONE_REMOTE_DEFAULT_PORT
@@ -1831,11 +2034,13 @@ async function loadPhoneRemoteConfigFromMeta(controlsEnabled: boolean): Promise<
   const normalized: PhoneRemoteServiceConfig = {
     enabled,
     controlsEnabled,
+    syncEnabled,
     port
   }
 
   const needsPersistence =
     library.getAppMeta(PHONE_REMOTE_ENABLED_META_KEY) !== (normalized.enabled ? '1' : '0') ||
+    library.getAppMeta(PHONE_REMOTE_SYNC_ENABLED_META_KEY) !== (normalized.syncEnabled ? '1' : '0') ||
     library.getAppMeta(PHONE_REMOTE_PORT_META_KEY) !== String(normalized.port)
 
   if (needsPersistence) {
@@ -4137,40 +4342,40 @@ function resizeArtworkForMaxEdge(sourceImage: Electron.NativeImage, maxEdgePx: n
   })
 }
 
-async function getArtworkDataUrlByHash(hash: string): Promise<string | null> {
+async function getArtworkBytesByHash(hash: string): Promise<ArtworkBytes | null> {
   if (!hash) return null
   const resolvedHash = await resolveSubsonicArtworkHash(hash)
   if (!resolvedHash) return null
   try {
     const artworkPath = library.getArtworkPath(resolvedHash)
     const data = await readFile(artworkPath)
-    return toDataUrl(detectArtworkMimeType(resolvedHash, data), data)
+    return { bytes: data, mimeType: detectArtworkMimeType(resolvedHash, data) }
   } catch {
     return null
   }
 }
 
-async function getArtworkThumbnailDataUrlByHash(
+async function getArtworkDataUrlByHash(hash: string): Promise<string | null> {
+  const artwork = await getArtworkBytesByHash(hash)
+  return artwork ? toDataUrl(artwork.mimeType, artwork.bytes) : null
+}
+
+async function resolveArtworkThumbnailBytesByHash(
   hash: string,
-  options?: {
-    maxEdgePx?: number
-    jpegQuality?: number
-  }
-): Promise<string | null> {
-  if (!hash) return null
+  maxEdgePx: number,
+  jpegQuality: number
+): Promise<ArtworkBytes | null> {
   const resolvedHash = await resolveSubsonicArtworkHash(hash)
   if (!resolvedHash) return null
 
   try {
     await ensureArtworkThumbnailCacheDirectory()
-    const maxEdgePx = options?.maxEdgePx ?? TRACKLIST_THUMB_MAX_EDGE_PX
-    const jpegQuality = options?.jpegQuality ?? TRACKLIST_THUMB_JPEG_QUALITY
     const thumbnailPath = join(artworkThumbnailCacheDir, `${getArtworkThumbnailCacheKey(resolvedHash, maxEdgePx)}.jpg`)
 
     try {
       const cached = await readFile(thumbnailPath)
       if (cached.length > 0) {
-        return toDataUrl('image/jpeg', cached)
+        return { bytes: cached, mimeType: 'image/jpeg' }
       }
     } catch {
       // Cache miss: generate and persist below.
@@ -4180,13 +4385,13 @@ async function getArtworkThumbnailDataUrlByHash(
     const sourceBuffer = await readFile(artworkPath)
     const sourceImage = nativeImage.createFromBuffer(sourceBuffer)
     if (sourceImage.isEmpty()) {
-      return getArtworkDataUrlByHash(resolvedHash)
+      return getArtworkBytesByHash(resolvedHash)
     }
 
     const resized = resizeArtworkForMaxEdge(sourceImage, maxEdgePx)
     const thumbnailBuffer = resized.toJPEG(jpegQuality)
     if (!thumbnailBuffer || thumbnailBuffer.length === 0) {
-      return getArtworkDataUrlByHash(resolvedHash)
+      return getArtworkBytesByHash(resolvedHash)
     }
 
     try {
@@ -4197,11 +4402,109 @@ async function getArtworkThumbnailDataUrlByHash(
       }
     }
 
-    return toDataUrl('image/jpeg', thumbnailBuffer)
+    return { bytes: thumbnailBuffer, mimeType: 'image/jpeg' }
   } catch (error) {
     console.warn('Failed to resolve artwork thumbnail data URL:', resolvedHash, error)
-    return getArtworkDataUrlByHash(resolvedHash)
+    return getArtworkBytesByHash(resolvedHash)
   }
+}
+
+function getArtworkThumbnailBytesByHash(
+  hash: string,
+  options?: {
+    maxEdgePx?: number
+    jpegQuality?: number
+  }
+): Promise<ArtworkBytes | null> {
+  if (!hash) return Promise.resolve(null)
+
+  const maxEdgePx = options?.maxEdgePx ?? TRACKLIST_THUMB_MAX_EDGE_PX
+  const jpegQuality = options?.jpegQuality ?? TRACKLIST_THUMB_JPEG_QUALITY
+
+  // Deduplicate concurrent generation per hash+size across all entry points
+  // (IPC, custom protocol, remote controller services).
+  const requestKey = getArtworkThumbnailCacheKey(hash, maxEdgePx)
+  const pending = artworkThumbnailRequestCache.get(requestKey)
+  if (pending) return pending
+
+  const request = resolveArtworkThumbnailBytesByHash(hash, maxEdgePx, jpegQuality)
+    .finally(() => {
+      artworkThumbnailRequestCache.delete(requestKey)
+    })
+  artworkThumbnailRequestCache.set(requestKey, request)
+  return request
+}
+
+async function getArtworkThumbnailDataUrlByHash(
+  hash: string,
+  options?: {
+    maxEdgePx?: number
+    jpegQuality?: number
+  }
+): Promise<string | null> {
+  const artwork = await getArtworkThumbnailBytesByHash(hash, options)
+  return artwork ? toDataUrl(artwork.mimeType, artwork.bytes) : null
+}
+
+// URL shape: astra-artwork://art/<thumb|card|full>/<encodeURIComponent(hash)>
+// Hashes are md5 hex with an optional extension, optionally prefixed with
+// "plc:" (playlist covers) or "ari:" (artist images).
+const ARTWORK_PROTOCOL_HASH_PATTERN = /^(?:plc:|ari:)?[A-Za-z0-9][A-Za-z0-9._ -]*$/
+
+function artworkProtocolNotFound(): Response {
+  return new Response(null, { status: 404 })
+}
+
+function registerArtworkProtocolHandler(): void {
+  protocol.handle(ARTWORK_PROTOCOL_SCHEME, async (request) => {
+    let variant: string
+    let hash: string
+    try {
+      const url = new URL(request.url)
+      if (url.hostname !== 'art') return artworkProtocolNotFound()
+      const segments = url.pathname.split('/').filter((segment) => segment.length > 0)
+      if (segments.length !== 2) return artworkProtocolNotFound()
+      variant = segments[0]
+      hash = decodeURIComponent(segments[1])
+    } catch {
+      return artworkProtocolNotFound()
+    }
+
+    // library.getArtworkPath joins the hash into a path, so reject anything
+    // that could traverse outside the artwork directories.
+    if (!ARTWORK_PROTOCOL_HASH_PATTERN.test(hash) || hash.includes('..')) {
+      return artworkProtocolNotFound()
+    }
+
+    let artwork: ArtworkBytes | null = null
+    if (variant === 'thumb') {
+      artwork = await getArtworkThumbnailBytesByHash(hash, {
+        maxEdgePx: TRACKLIST_THUMB_MAX_EDGE_PX,
+        jpegQuality: TRACKLIST_THUMB_JPEG_QUALITY
+      })
+    } else if (variant === 'card') {
+      artwork = await getArtworkThumbnailBytesByHash(hash, {
+        maxEdgePx: CARD_ARTWORK_MAX_EDGE_PX,
+        jpegQuality: CARD_ARTWORK_JPEG_QUALITY
+      })
+    } else if (variant === 'full') {
+      artwork = await getArtworkBytesByHash(hash)
+    } else {
+      return artworkProtocolNotFound()
+    }
+
+    if (!artwork) return artworkProtocolNotFound()
+
+    return new Response(new Uint8Array(artwork.bytes), {
+      headers: {
+        'Content-Type': artwork.mimeType,
+        // Hash-addressed and versioned via the on-disk thumb cache key, so
+        // responses never change for a given URL.
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'Access-Control-Allow-Origin': '*'
+      }
+    })
+  })
 }
 
 app.on('second-instance', (_event, commandLine) => {
@@ -4261,6 +4564,7 @@ app.whenReady().then(async () => {
   } catch (error) {
     console.warn('Failed to initialize artwork thumbnail cache directory:', error)
   }
+  registerArtworkProtocolHandler()
   const memoryDiagnosticsEnabled = await loadMemoryDiagnosticsEnabledFromMeta()
   memoryDiagnosticsService = new MemoryDiagnosticsService({
     userDataPath: app.getPath('userData'),
@@ -4289,6 +4593,9 @@ app.whenReady().then(async () => {
   localApiConfig = await loadLocalApiConfigFromMeta()
   phoneRemoteConfig = await loadPhoneRemoteConfigFromMeta(localApiConfig.controlsEnabled)
   parallaxHostConfig = await loadParallaxHostConfigFromMeta()
+  await migrateParallaxSecurityV2()
+  parallaxTlsIdentity = await loadOrCreateParallaxTlsIdentity()
+  parallaxService.setTlsIdentity(parallaxTlsIdentity)
   phoneRemotePairedDevices = await loadPhoneRemotePairedDevicesFromMeta()
   parallaxPairedSinks = await loadParallaxPairedSinksFromMeta()
   parallaxSinkConnection = loadParallaxSinkConnectionFromMeta()
@@ -4544,6 +4851,11 @@ ipcMain.on('mini-player:publishSnapshot', (_event, snapshot: MiniPlayerSnapshot)
   }
 })
 
+ipcMain.on('mini-player:publishQueueSnapshot', (_event, snapshot: MiniPlayerQueueSnapshot) => {
+  localApiService.publishQueueSnapshot(snapshot)
+  phoneRemoteService.publishQueueSnapshot(snapshot)
+})
+
 ipcMain.on('mini-player:publishVisualizerChunk', (_event, chunk: MiniPlayerVisualizerStreamChunk) => {
   latestMiniVisualizerChunk = chunk
   if (miniWindow && !miniWindow.isDestroyed()) {
@@ -4637,14 +4949,78 @@ ipcMain.handle('app:getBuildInfo', () => {
   return getAppBuildInfo()
 })
 
-ipcMain.handle('app:getPerformanceStats', () => {
+ipcMain.handle('app:getPerformanceStats', async (event) => {
   const metrics = app.getAppMetrics()
   const totalCpuPercent = metrics.reduce((sum, metric) => sum + metric.cpu.percentCPUUsage, 0)
   const totalWorkingSetKb = metrics.reduce((sum, metric) => sum + metric.memory.workingSetSize, 0)
+  const memoryFootprint = collectAppMemoryFootprint({
+    metrics,
+    extraPids: getActiveMemoryFootprintChildProcessPids(),
+    rawWorkingSetMb: totalWorkingSetKb / 1024
+  })
+
+  // Working sets double-count framework pages shared between Electron
+  // processes, so their sum badly overstates what the app actually costs.
+  // Build a private-memory total instead: per-process privateBytes where the
+  // platform reports it (Windows), a direct measurement for the main process,
+  // and working set only for processes that can't be measured (GPU/utility
+  // on macOS). The calling renderer is excluded here because it adds its own
+  // directly measured private value to this sum.
+  let callerPid: number | null = null
+  try {
+    callerPid = event.sender.getOSProcessId()
+  } catch {
+    // Sender may be gone mid-call; fall through with no private total.
+  }
+  let mainPrivateKb: number | null = null
+  try {
+    mainPrivateKb = (await process.getProcessMemoryInfo()).private
+  } catch {
+    // Process metrics can be briefly unavailable; report null below.
+  }
+
+  let mainProcessKb: number | null = null
+  let helperProcessesKb: number | null = 0
+  if (callerPid === null) {
+    helperProcessesKb = null
+  } else {
+    for (const metric of metrics) {
+      if (metric.pid === callerPid) continue
+      const privateKb = metric.memory.privateBytes
+      const measuredKb = typeof privateKb === 'number' && Number.isFinite(privateKb) && privateKb > 0
+        ? privateKb
+        : metric.type === 'Browser' && mainPrivateKb !== null
+          ? mainPrivateKb
+          : metric.memory.workingSetSize
+      if (metric.type === 'Browser') {
+        mainProcessKb = measuredKb
+      } else {
+        helperProcessesKb += measuredKb
+      }
+    }
+  }
+
+  const privateExcludingCallerKb = helperProcessesKb === null
+    ? null
+    : helperProcessesKb + (mainProcessKb ?? 0)
 
   return {
     cpuPercent: totalCpuPercent,
     workingSetMb: totalWorkingSetKb / 1024,
+    footprintMb: memoryFootprint.footprintMb,
+    appProcessFootprintMb: memoryFootprint.appProcessFootprintMb,
+    childProcessFootprintMb: memoryFootprint.childProcessFootprintMb,
+    footprintSource: memoryFootprint.footprintSource,
+    footprintComplete: memoryFootprint.footprintComplete,
+    footprintFailedPids: memoryFootprint.footprintFailedPids,
+    footprintProcessCount: memoryFootprint.footprintProcessCount,
+    footprintAppProcessCount: memoryFootprint.footprintAppProcessCount,
+    footprintChildProcessCount: memoryFootprint.footprintChildProcessCount,
+    privateMemoryExcludingCallerMb: privateExcludingCallerKb === null
+      ? null
+      : privateExcludingCallerKb / 1024,
+    mainProcessMemoryMb: mainProcessKb === null ? null : mainProcessKb / 1024,
+    helperProcessesMemoryMb: helperProcessesKb === null ? null : helperProcessesKb / 1024,
   }
 })
 
@@ -5223,6 +5599,7 @@ ipcMain.handle('local-api:resetToDefaults', async () => {
   const nextPhoneRemoteConfig: PhoneRemoteServiceConfig = {
     enabled: false,
     controlsEnabled: false,
+    syncEnabled: true,
     port: PHONE_REMOTE_DEFAULT_PORT
   }
   phoneRemoteService.replacePairedDevices([])
@@ -5290,10 +5667,40 @@ ipcMain.handle('phone-remote:setPort', async (_event, rawPort: unknown) => {
   return applyPhoneRemoteConfig(nextConfig)
 })
 
+ipcMain.handle('phone-remote:setSyncEnabled', async (_event, enabled: unknown) => {
+  const nextConfig: PhoneRemoteServiceConfig = {
+    ...phoneRemoteConfig,
+    syncEnabled: Boolean(enabled)
+  }
+  return applyPhoneRemoteConfig(nextConfig)
+})
+
+ipcMain.handle('phone-remote:requestSync', () => {
+  phoneRemoteService.requestSync()
+  return phoneRemoteService.getStatus()
+})
+
+ipcMain.handle('phone-remote:resolveSyncConflict', (_event, syncUid: unknown, resolution: unknown) => {
+  if (typeof syncUid !== 'string' || !syncUid.trim()) {
+    throw new Error('Invalid sync conflict id.')
+  }
+  if (
+    resolution !== 'desktop' &&
+    resolution !== 'phone' &&
+    resolution !== 'both' &&
+    resolution !== 'merge'
+  ) {
+    throw new Error('Invalid sync conflict resolution.')
+  }
+  phoneRemoteService.resolveSyncConflict(syncUid.trim(), resolution)
+  return phoneRemoteService.getStatus()
+})
+
 ipcMain.handle('phone-remote:resetToDefaults', async () => {
   const nextConfig: PhoneRemoteServiceConfig = {
     enabled: false,
     controlsEnabled: localApiConfig.controlsEnabled,
+    syncEnabled: true,
     port: PHONE_REMOTE_DEFAULT_PORT
   }
   phoneRemoteService.replacePairedDevices([])
@@ -5377,28 +5784,6 @@ ipcMain.handle('parallax:setHostPort', async (_event, rawPort: unknown) => {
   return applyParallaxHostConfig(nextConfig)
 })
 
-ipcMain.handle('parallax:createPairingPin', () => {
-  return parallaxService.createPairingPin()
-})
-
-ipcMain.handle('parallax:pairWithHost', async (_event, baseUrl: unknown, pin: unknown, sinkName: unknown) => {
-  if (typeof baseUrl !== 'string' || !baseUrl.trim()) {
-    throw new Error('Parallax host URL is required.')
-  }
-  if (typeof pin !== 'string' || !pin.trim()) {
-    throw new Error('Parallax pairing PIN is required.')
-  }
-  return parallaxService.pairWithHost(baseUrl, pin, typeof sinkName === 'string' ? sinkName : 'Astra Sink')
-})
-
-ipcMain.handle('parallax:connectSink', async (_event, config: ParallaxSinkConnectionConfig) => {
-  // §14.1.2 follow-up (Codex round 1, finding 2). The user clicked Connect manually — abandon
-  // any in-flight boot retry timer so it can't fire later with a stale connection reference
-  // and force a disconnect mid-session.
-  cancelParallaxAutoReconnect()
-  return parallaxService.connectSink(config)
-})
-
 // §14.1.2 follow-up (Codex round 1, finding 3). Renderer-facing manual-reconnect that reuses
 // the credential main already holds — eliminates the need for SettingsView to keep the raw
 // token in component state just so it can drive a Connect button.
@@ -5407,11 +5792,7 @@ ipcMain.handle('parallax:reconnectFromPersisted', async () => {
     throw new Error('No persisted Parallax sink connection.')
   }
   cancelParallaxAutoReconnect()
-  return parallaxService.connectSink({
-    baseUrl: parallaxSinkConnection.baseUrl,
-    sinkId: parallaxSinkConnection.sinkId,
-    token: parallaxSinkConnection.token
-  })
+  return parallaxService.connectSink(parallaxSinkConnection)
 })
 
 // §14.1.2 follow-up (Codex round 2, finding 1). Renderer calls this from parallaxStore.init()
@@ -5627,6 +6008,10 @@ ipcMain.handle('parallax:cancelIncomingPair', () => {
   return { ok: true as const }
 })
 
+ipcMain.handle('parallax:approveIncomingPair', () => {
+  return { ok: parallaxSinkListener.approvePending() }
+})
+
 ipcMain.handle('parallax:disconnectSink', async () => {
   return parallaxService.disconnectSink()
 })
@@ -5712,31 +6097,6 @@ ipcMain.handle('parallax:resetToDefaults', async () => {
   return applyParallaxHostConfig(nextConfig)
 })
 
-// §14.1.2 / §16.8. Persist sink-side credential after successful pair. The renderer calls this
-// immediately after `/v1/parallax/pair` returns + before calling `connectSink`, so the durable
-// state lands before any reconnect could be attempted. Cancel any in-flight auto-reconnect
-// loop bound to the previous credential — the new one will get a fresh loop on next boot, or
-// the renderer drives connect directly this session.
-ipcMain.handle(
-  'parallax:setSinkConnection',
-  async (_event, raw: unknown) => {
-    const sanitized = sanitizeParallaxSinkConnection(raw)
-    if (!sanitized) {
-      throw new Error('Invalid Parallax sink connection payload.')
-    }
-    cancelParallaxAutoReconnect()
-    await persistParallaxSinkConnection(sanitized)
-    return parallaxSinkConnection
-  }
-)
-
-// §14.1.2 / §16.8. Renderer reads this to populate the "paired with <host>" display in
-// settings; null when not yet paired. Returns a snapshot copy so the renderer can never mutate
-// the in-memory cache.
-ipcMain.handle('parallax:getSinkConnection', () => {
-  return parallaxSinkConnection ? { ...parallaxSinkConnection } : null
-})
-
 // §14.1.2 / §16.6 / §16.8. "Forget host" path. Stops any in-flight reconnect, disconnects an
 // established connection if any, and wipes the persisted credential. After this the sink is
 // back to the initial unpaired state — the only path forward is re-pair via PIN.
@@ -5801,7 +6161,12 @@ ipcMain.handle('dialog:openAudioFile', async () => {
   }
 
   const filePath = result.filePaths[0]
-  return loadAudioFile(filePath)
+  const metadata = await loadAudioMetadata(filePath)
+  return {
+    path: filePath,
+    name: basename(filePath),
+    metadata: metadata ?? undefined
+  }
 })
 
 // Open folder dialog
@@ -5824,6 +6189,7 @@ ipcMain.handle('dialog:openAudioFolder', async () => {
 ipcMain.handle('audio:loadFile', async (event, filePath: string, options?: LoadAudioFileOptions) => {
   return loadAudioFile(filePath, options, {
     onRemoteLoadProgress: (progress) => {
+      event.sender.send('audio:progressiveLoadProgress', progress)
       event.sender.send('audio:remoteLoadProgress', progress)
     }
   })
@@ -5833,17 +6199,57 @@ ipcMain.handle('audio:getMetadata', async (_event, filePath: string) => {
   return loadAudioMetadata(filePath)
 })
 
+ipcMain.handle('audio:getFileStat', async (_event, filePath: string) => {
+  if (!filePath || isSubsonicPath(filePath) || isJellyfinPath(filePath)) return null
+  try {
+    const fileStat = await stat(filePath)
+    return {
+      size: fileStat.size,
+      mtimeMs: Math.round(fileStat.mtimeMs)
+    }
+  } catch {
+    return null
+  }
+})
+
 // Decode with FFmpeg when WebAudio decodeAudioData cannot handle the codec.
 ipcMain.handle('audio:decodeWithFfmpeg', async (_event, filePath: string) => {
   return decodeAudioWithFfmpeg(filePath)
 })
 
+// Loudness for playback normalization: stored value or a fresh ffmpeg ebur128 pass.
+ipcMain.handle('audio:analyzeTrackLoudness', async (_event, filePath: string) => {
+  return analyzeTrackLoudness(filePath, 'interactive')
+})
+
+ipcMain.handle('audio:warmupTrackLoudness', async (_event, filePath: string) => {
+  return analyzeTrackLoudness(filePath, 'background')
+})
+
+ipcMain.handle('audio:storeTrackLoudness', async (_event, filePath: string, payload: RendererTrackLoudnessPayload) => {
+  return storeRendererTrackLoudness(filePath, payload)
+})
+
 ipcMain.handle('audio:startRemoteStream', async (event, filePath: string, outputSampleRate: number, expectedChannels?: number | null) => {
-  return startRemoteStreamSession(event.sender, filePath, outputSampleRate, expectedChannels)
+  return startProgressiveStreamSession(event.sender, filePath, outputSampleRate, expectedChannels)
 })
 
 ipcMain.handle('audio:cancelRemoteStream', async (_event, sessionId: number) => {
-  await cancelRemoteStreamSession(sessionId)
+  await cancelProgressiveStreamSession(sessionId)
+})
+
+ipcMain.handle('audio:startProgressiveStream', async (
+  event,
+  filePath: string,
+  outputSampleRate: number,
+  expectedChannels?: number | null,
+  options?: ProgressiveStreamStartOptions
+) => {
+  return startProgressiveStreamSession(event.sender, filePath, outputSampleRate, expectedChannels, options)
+})
+
+ipcMain.handle('audio:cancelProgressiveStream', async (_event, sessionId: number) => {
+  await cancelProgressiveStreamSession(sessionId)
 })
 
 ipcMain.handle('audio:getReplayGainScanEnabled', () => {
@@ -6735,6 +7141,14 @@ ipcMain.handle('library:removeFolder', async (_event, folderPath: string) => {
   return { success: true }
 })
 
+ipcMain.handle('library:setFolderHidden', async (_event, folderPath: string, hidden: boolean) => {
+  const updated = await library.setLibraryFolderHidden(folderPath, hidden)
+  if (!updated) {
+    return { success: false, error: 'Invalid folder path.' }
+  }
+  return { success: true }
+})
+
 ipcMain.handle(
   'library:setFolderSubfolderExcluded',
   async (_event, folderPath: string, relativePath: string, excluded: boolean) => {
@@ -7076,44 +7490,18 @@ ipcMain.handle('library:getArtworkDataUrl', async (_event, hash: string) => {
 
 // Get tracklist-sized artwork thumbnail as data URL
 ipcMain.handle('library:getArtworkThumbnailDataUrl', async (_event, hash: string) => {
-  if (!hash) return null
-
-  const requestKey = getArtworkThumbnailCacheKey(hash, TRACKLIST_THUMB_MAX_EDGE_PX)
-  if (artworkThumbnailRequestCache.has(requestKey)) {
-    return artworkThumbnailRequestCache.get(requestKey)!
-  }
-
-  const request = getArtworkThumbnailDataUrlByHash(hash, {
+  return getArtworkThumbnailDataUrlByHash(hash, {
     maxEdgePx: TRACKLIST_THUMB_MAX_EDGE_PX,
     jpegQuality: TRACKLIST_THUMB_JPEG_QUALITY
   })
-    .finally(() => {
-      artworkThumbnailRequestCache.delete(requestKey)
-    })
-
-  artworkThumbnailRequestCache.set(requestKey, request)
-  return request
 })
 
 // Get card-sized artwork thumbnail as data URL
 ipcMain.handle('library:getArtworkCardDataUrl', async (_event, hash: string) => {
-  if (!hash) return null
-
-  const requestKey = getArtworkThumbnailCacheKey(hash, CARD_ARTWORK_MAX_EDGE_PX)
-  if (artworkThumbnailRequestCache.has(requestKey)) {
-    return artworkThumbnailRequestCache.get(requestKey)!
-  }
-
-  const request = getArtworkThumbnailDataUrlByHash(hash, {
+  return getArtworkThumbnailDataUrlByHash(hash, {
     maxEdgePx: CARD_ARTWORK_MAX_EDGE_PX,
     jpegQuality: CARD_ARTWORK_JPEG_QUALITY
   })
-    .finally(() => {
-      artworkThumbnailRequestCache.delete(requestKey)
-    })
-
-  artworkThumbnailRequestCache.set(requestKey, request)
-  return request
 })
 
 // ============================================
@@ -7249,11 +7637,13 @@ interface LoadedAudioMetadata {
   albumArtistNames?: string[]
   duration?: number
   format: string
+  artworkHash?: string
   artwork?: string
   channels?: number
   codec?: string
   codecProfile?: string
   isAtmosJoc?: boolean
+  isIamf?: boolean
   replayGainTrackDb?: number
   replayGainAlbumDb?: number
 }
@@ -7280,6 +7670,7 @@ interface RemoteStreamSession {
   sender: Electron.WebContents
   filePath: string
   sourceType: RemoteStreamSourceType
+  startTimeSeconds: number
   sampleRate: number
   channels: number
   durationSeconds: number | null
@@ -7302,6 +7693,7 @@ interface RemoteStreamSession {
   cancelled: boolean
   emittedStartedEvent: boolean
   stdinClosed: boolean
+  releaseSenderHooks: (() => void) | null
 }
 
 function resolveRemoteTrackDurationSeconds(filePath: string): number | null {
@@ -7312,17 +7704,32 @@ function resolveRemoteTrackDurationSeconds(filePath: string): number | null {
     : null
 }
 
+function resolveProgressiveStreamSourceType(filePath: string): RemoteStreamSourceType {
+  if (isSubsonicPath(filePath)) return 'subsonic'
+  if (isJellyfinPath(filePath)) return 'jellyfin'
+  return 'local'
+}
+
+function normalizeProgressiveStartTimeSeconds(value: unknown): number {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0
+  return numeric
+}
+
 function buildRemoteLoadProgress(
   session: Pick<
     RemoteStreamSession,
-    'filePath' | 'sourceType' | 'loadedBytes' | 'totalBytes' | 'chunkCount' | 'decodedFrames' | 'sampleRate' | 'durationSeconds' | 'done' | 'failed'
+    'filePath' | 'sourceType' | 'startTimeSeconds' | 'loadedBytes' | 'totalBytes' | 'chunkCount' | 'decodedFrames' | 'sampleRate' | 'durationSeconds' | 'done' | 'failed'
   >,
   stage: RemoteAudioLoadProgress['stage']
 ): RemoteAudioLoadProgress {
   const percent = session.totalBytes && session.totalBytes > 0
     ? Math.max(0, Math.min(1, session.loadedBytes / session.totalBytes))
     : null
-  const bufferedSeconds = session.sampleRate > 0 ? session.decodedFrames / session.sampleRate : 0
+  const decodedSeconds = session.sampleRate > 0 ? session.decodedFrames / session.sampleRate : 0
+  const bufferedSeconds = session.sourceType === 'local'
+    ? session.startTimeSeconds + decodedSeconds
+    : decodedSeconds
   const bufferedPercent = session.durationSeconds && session.durationSeconds > 0
     ? Math.max(0, Math.min(1, bufferedSeconds / session.durationSeconds))
     : null
@@ -7352,12 +7759,19 @@ function safeSendRemoteLoadProgress(session: RemoteStreamSession, stage: RemoteA
     return
   }
   session.lastProgressEmitAt = now
-  session.sender.send('audio:remoteLoadProgress', buildRemoteLoadProgress(session, stage))
+  const progress = buildRemoteLoadProgress(session, stage)
+  session.sender.send('audio:progressiveLoadProgress', progress)
+  if (session.sourceType !== 'local') {
+    session.sender.send('audio:remoteLoadProgress', progress)
+  }
 }
 
 function safeSendRemoteStreamEvent(session: RemoteStreamSession, payload: RemoteStreamEvent): void {
   if (session.sender.isDestroyed()) return
-  session.sender.send('audio:remoteStreamEvent', payload)
+  session.sender.send('audio:progressiveStreamEvent', payload)
+  if (session.sourceType !== 'local') {
+    session.sender.send('audio:remoteStreamEvent', payload)
+  }
 }
 
 function settleRemoteStreamStartup(session: RemoteStreamSession, outcome: { ok: true } | { ok: false; error: Error }): void {
@@ -7371,6 +7785,7 @@ function settleRemoteStreamStartup(session: RemoteStreamSession, outcome: { ok: 
       sampleRate: session.sampleRate,
       channels: session.channels,
       durationSeconds: session.durationSeconds,
+      startTimeSeconds: session.startTimeSeconds,
       initialChunk: session.startupChunk
     })
   } else {
@@ -7388,6 +7803,7 @@ function emitRemoteStreamChunk(session: RemoteStreamSession, data: Buffer): void
   if (frameCount <= 0) return
 
   session.decodedFrames += frameCount
+  session.chunkCount += 1
   const payload: RemoteStreamChunk = {
     sessionId: session.id,
     path: session.filePath,
@@ -7395,7 +7811,7 @@ function emitRemoteStreamChunk(session: RemoteStreamSession, data: Buffer): void
     sampleRate: session.sampleRate,
     channels: session.channels,
     frameCount,
-    pcmData: Uint8Array.from(data).buffer,
+    pcmData: toStandaloneArrayBuffer(data),
     decodedFrames: session.decodedFrames,
     decodedSeconds: session.decodedFrames / session.sampleRate
   }
@@ -7410,11 +7826,15 @@ function emitRemoteStreamChunk(session: RemoteStreamSession, data: Buffer): void
       type: 'started',
       sampleRate: session.sampleRate,
       channels: session.channels,
-      durationSeconds: session.durationSeconds
+      durationSeconds: session.durationSeconds,
+      startTimeSeconds: session.startTimeSeconds
     })
     settleRemoteStreamStartup(session, { ok: true })
   } else {
-    session.sender.send('audio:remoteStreamChunk', payload)
+    session.sender.send('audio:progressiveStreamChunk', payload)
+    if (session.sourceType !== 'local') {
+      session.sender.send('audio:remoteStreamChunk', payload)
+    }
   }
 
   safeSendRemoteLoadProgress(session, 'streaming')
@@ -7431,6 +7851,9 @@ function finalizeRemoteStreamSession(
   session.failed = outcome === 'failed'
   session.cancelled = outcome === 'cancelled'
   remoteStreamSessions.delete(session.id)
+
+  session.releaseSenderHooks?.()
+  session.releaseSenderHooks = null
 
   try {
     session.abortController.abort()
@@ -7467,7 +7890,7 @@ function finalizeRemoteStreamSession(
     if (!session.emittedStartedEvent) {
       settleRemoteStreamStartup(session, {
         ok: false,
-        error: new Error('Remote stream produced no decodable audio.')
+        error: new Error('Progressive stream produced no decodable audio.')
       })
     }
     safeSendRemoteLoadProgress(session, 'complete', true)
@@ -7482,7 +7905,7 @@ function finalizeRemoteStreamSession(
     return
   }
 
-  const failure = error ?? new Error(outcome === 'cancelled' ? 'Remote stream was cancelled.' : 'Remote stream failed.')
+  const failure = error ?? new Error(outcome === 'cancelled' ? 'Progressive stream was cancelled.' : 'Progressive stream failed.')
   settleRemoteStreamStartup(session, { ok: false, error: failure })
   safeSendRemoteLoadProgress(session, 'failed', true)
   safeSendRemoteStreamEvent(session, outcome === 'cancelled'
@@ -7684,8 +8107,15 @@ function pumpRemoteStreamOutput(session: RemoteStreamSession, chunk: Buffer): vo
     ? Buffer.concat([session.stdoutRemainder, chunk])
     : chunk
 
-  const chunkSizeBytes = REMOTE_STREAM_CHUNK_FRAMES * frameSizeBytes
-  while (session.stdoutRemainder.length >= chunkSizeBytes) {
+  while (true) {
+    const chunkFrames = session.sourceType === 'local'
+      ? session.decodedFrames >= Math.floor(session.sampleRate * LOCAL_STREAM_STEADY_AFTER_SECONDS)
+        ? LOCAL_STREAM_STEADY_CHUNK_FRAMES
+        : LOCAL_STREAM_STARTUP_CHUNK_FRAMES
+      : REMOTE_STREAM_CHUNK_FRAMES
+    const chunkSizeBytes = chunkFrames * frameSizeBytes
+    if (session.stdoutRemainder.length < chunkSizeBytes) break
+
     const nextChunk = session.stdoutRemainder.subarray(0, chunkSizeBytes)
     session.stdoutRemainder = session.stdoutRemainder.subarray(chunkSizeBytes)
     emitRemoteStreamChunk(session, nextChunk)
@@ -7706,17 +8136,22 @@ function flushRemoteStreamOutput(session: RemoteStreamSession): void {
   session.stdoutRemainder = Buffer.alloc(0)
 }
 
-async function startRemoteStreamSession(
+async function startProgressiveStreamSession(
   sender: Electron.WebContents,
   filePath: string,
   outputSampleRate: number,
-  expectedChannels?: number | null
+  expectedChannels?: number | null,
+  options: ProgressiveStreamStartOptions = {}
 ): Promise<RemoteStreamInfo> {
   const ffmpegPath = await resolveBinary('ffmpeg')
   if (!ffmpegPath) {
-    throw new Error('FFmpeg could not be resolved for remote streaming.')
+    throw new Error('FFmpeg could not be resolved for progressive streaming.')
   }
 
+  const sourceType = resolveProgressiveStreamSourceType(filePath)
+  const requestedStartTimeSeconds = sourceType === 'local'
+    ? normalizeProgressiveStartTimeSeconds(options.startTimeSeconds)
+    : 0
   const normalizedSampleRate = Number.isFinite(outputSampleRate) && outputSampleRate > 0
     ? Math.max(8_000, Math.round(outputSampleRate))
     : 48_000
@@ -7725,21 +8160,35 @@ async function startRemoteStreamSession(
     ? Math.max(1, Math.min(8, Math.round(Number(expectedChannels))))
     : Math.max(1, Math.min(8, dbTrack?.channels ?? 2))
   const abortController = new AbortController()
-  const { response, sourceType } = await openRemoteStreamResponse(filePath, abortController.signal)
-  const reader = response.body?.getReader()
-  if (!reader) {
-    throw new Error('Remote stream response body was not readable.')
+
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
+  let totalBytes: number | null = null
+  if (sourceType === 'local') {
+    totalBytes = null
+  } else {
+    const { response } = await openRemoteStreamResponse(filePath, abortController.signal)
+    reader = response.body?.getReader() ?? null
+    if (!reader) {
+      throw new Error('Remote stream response body was not readable.')
+    }
+
+    const contentLengthHeader = response.headers.get('content-length')
+    const parsedContentLength = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : Number.NaN
+    totalBytes = Number.isFinite(parsedContentLength) && parsedContentLength > 0 ? parsedContentLength : null
   }
 
-  const contentLengthHeader = response.headers.get('content-length')
-  const parsedContentLength = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : Number.NaN
-  const totalBytes = Number.isFinite(parsedContentLength) && parsedContentLength > 0 ? parsedContentLength : null
+  const ffmpegInputArgs = sourceType === 'local'
+    ? [
+        ...(requestedStartTimeSeconds > 0 ? ['-ss', String(requestedStartTimeSeconds)] : []),
+        '-i', filePath
+      ]
+    : ['-i', 'pipe:0']
   const ffmpeg = spawn(
     ffmpegPath,
     [
       '-v', 'error',
       '-nostdin',
-      '-i', 'pipe:0',
+      ...ffmpegInputArgs,
       '-map', '0:a:0',
       '-vn',
       '-acodec', 'pcm_f32le',
@@ -7763,6 +8212,7 @@ async function startRemoteStreamSession(
       sender,
       filePath,
       sourceType,
+      startTimeSeconds: requestedStartTimeSeconds,
       sampleRate: normalizedSampleRate,
       channels: normalizedChannels,
       durationSeconds: resolveRemoteTrackDurationSeconds(filePath),
@@ -7784,11 +8234,38 @@ async function startRemoteStreamSession(
       failed: false,
       cancelled: false,
       emittedStartedEvent: false,
-      stdinClosed: false
+      stdinClosed: false,
+      releaseSenderHooks: null
     }
 
     remoteStreamSessions.set(session.id, session)
-    safeSendRemoteLoadProgress(session, 'downloading', true)
+
+    // Tear the session down if the renderer goes away mid-stream (window
+    // closed or reloaded); otherwise ffmpeg keeps decoding for nothing.
+    const handleSenderDestroyed = (): void => {
+      finalizeRemoteStreamSession(session, 'cancelled')
+    }
+    const handleSenderNavigation = (
+      _event: Electron.Event,
+      _url: string,
+      isInPlace: boolean,
+      isMainFrame: boolean
+    ): void => {
+      if (!isMainFrame || isInPlace) return
+      finalizeRemoteStreamSession(session, 'cancelled')
+    }
+    sender.once('destroyed', handleSenderDestroyed)
+    sender.on('did-start-navigation', handleSenderNavigation)
+    session.releaseSenderHooks = () => {
+      try {
+        sender.removeListener('destroyed', handleSenderDestroyed)
+        sender.removeListener('did-start-navigation', handleSenderNavigation)
+      } catch {
+        // Listener removal can race with sender teardown.
+      }
+    }
+
+    safeSendRemoteLoadProgress(session, sourceType === 'local' ? 'streaming' : 'downloading', true)
 
     ffmpeg.stderr.setEncoding('utf8')
     ffmpeg.stderr.on('data', (data: string | Buffer) => {
@@ -7815,7 +8292,7 @@ async function startRemoteStreamSession(
       finalizeRemoteStreamSession(
         session,
         'failed',
-        error instanceof Error ? error : new Error('Remote FFmpeg input pipe failed.')
+        error instanceof Error ? error : new Error('Progressive FFmpeg input pipe failed.')
       )
     })
 
@@ -7828,7 +8305,7 @@ async function startRemoteStreamSession(
     })
 
     ffmpeg.on('error', (error) => {
-      finalizeRemoteStreamSession(session, 'failed', error instanceof Error ? error : new Error('Remote FFmpeg process failed.'))
+      finalizeRemoteStreamSession(session, 'failed', error instanceof Error ? error : new Error('Progressive FFmpeg process failed.'))
     })
 
     ffmpeg.on('close', (code) => {
@@ -7846,39 +8323,48 @@ async function startRemoteStreamSession(
       const stderr = session.stderrChunks.join(' ').trim()
       finalizeRemoteStreamSession(session, 'failed', new Error(
         stderr.length > 0
-          ? `Remote stream decode failed: ${stderr}`
-          : `Remote stream decode failed (ffmpeg exit ${code ?? 'unknown'}).`
+          ? `Progressive stream decode failed: ${stderr}`
+          : `Progressive stream decode failed (ffmpeg exit ${code ?? 'unknown'}).`
       ))
     })
 
-    void (async () => {
+    if (sourceType === 'local') {
       try {
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          if (!value || value.byteLength === 0) continue
-
-          session.loadedBytes += value.byteLength
-          session.chunkCount += 1
-          safeSendRemoteLoadProgress(session, session.decodedFrames > 0 ? 'streaming' : 'downloading')
-          await writeRemoteStreamInput(session, value)
-        }
-
         if (!ffmpeg.stdin.destroyed) {
           ffmpeg.stdin.end()
         }
-      } catch (error) {
-        if (session.done || session.cancelled) return
-        if (isRemoteStreamPipeTeardownError(error)) return
-        finalizeRemoteStreamSession(session, 'failed', error instanceof Error ? error : new Error('Remote stream download failed.'))
+      } catch {
+        // FFmpeg reads local files directly; stdin is intentionally unused.
       }
-    })()
+    } else if (reader) {
+      void (async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            if (!value || value.byteLength === 0) continue
+
+            session.loadedBytes += value.byteLength
+            safeSendRemoteLoadProgress(session, session.decodedFrames > 0 ? 'streaming' : 'downloading')
+            await writeRemoteStreamInput(session, value)
+          }
+
+          if (!ffmpeg.stdin.destroyed) {
+            ffmpeg.stdin.end()
+          }
+        } catch (error) {
+          if (session.done || session.cancelled) return
+          if (isRemoteStreamPipeTeardownError(error)) return
+          finalizeRemoteStreamSession(session, 'failed', error instanceof Error ? error : new Error('Remote stream download failed.'))
+        }
+      })()
+    }
   })
 
   return infoPromise
 }
 
-async function cancelRemoteStreamSession(sessionId: number): Promise<void> {
+async function cancelProgressiveStreamSession(sessionId: number): Promise<void> {
   const session = remoteStreamSessions.get(sessionId)
   if (!session) return
   session.cancelled = true
@@ -8575,13 +9061,270 @@ async function decodeAudioWithFfmpeg(filePath: string): Promise<ArrayBuffer | nu
     )
 
     const decoded = await readFile(outputPath)
-    return decoded.buffer.slice(decoded.byteOffset, decoded.byteOffset + decoded.byteLength)
+    return toStandaloneArrayBuffer(decoded)
   } catch (error) {
     console.warn(`FFmpeg compatibility decode failed for ${filePath}:`, error)
     return null
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
   }
+}
+
+interface TrackLoudnessAnalysisResult {
+  loudnessLufs: number
+  peakLinear: number | null
+  method: string
+}
+
+interface RendererTrackLoudnessPayload {
+  loudnessLufs: number
+  peakLinear?: number | null
+  method?: string
+}
+
+const LOUDNESS_FFMPEG_TIMEOUT_MS = 180_000
+// The ebur128 filter logs a running line per 100ms of audio, so stderr for an
+// hour-long track runs to a few MB.
+const LOUDNESS_FFMPEG_MAX_STDERR_BYTES = 32 * 1024 * 1024
+
+type LoudnessAnalysisPriority = 'interactive' | 'background'
+
+interface LoudnessAnalysisJob {
+  filePath: string
+  fileStat: { size: number; mtimeMs: number }
+  priority: LoudnessAnalysisPriority
+  abortController: AbortController
+  resolve: (result: TrackLoudnessAnalysisResult | null) => void
+  reject: (error: unknown) => void
+}
+
+const loudnessAnalysisInFlight = new Map<string, Promise<TrackLoudnessAnalysisResult | null>>()
+const loudnessAnalysisQueue: LoudnessAnalysisJob[] = []
+let activeLoudnessAnalysisJob: LoudnessAnalysisJob | null = null
+
+function execFileCaptureStderr(
+  command: string,
+  args: string[],
+  options: ExecFileOptions = {},
+  signal?: AbortSignal
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      command,
+      args,
+      {
+        ...options,
+        ...(signal ? { signal } : {}),
+        encoding: 'utf8',
+        windowsHide: true
+      },
+      (error, _stdout, stderr) => {
+        if (error) {
+          reject(error)
+          return
+        }
+        resolve(stderr ?? '')
+      }
+    )
+  })
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const maybeError = error as { name?: unknown; code?: unknown }
+  return maybeError.name === 'AbortError' || maybeError.code === 'ABORT_ERR'
+}
+
+async function statForLoudness(filePath: string): Promise<{ size: number; mtimeMs: number } | null> {
+  try {
+    const stats = await stat(filePath)
+    return { size: stats.size, mtimeMs: Math.round(stats.mtimeMs) }
+  } catch {
+    return null
+  }
+}
+
+// Parse the summary block ffmpeg's ebur128 filter prints at the end of stderr.
+// Only summary lines start with the bare "I:"/"Peak:" labels; the per-frame
+// progress lines embed them mid-line. Use the last match to be safe.
+function parseEbur128Summary(stderr: string): { loudnessLufs: number; peakLinear: number | null } | null {
+  const integratedMatches = [...stderr.matchAll(/^\s+I:\s+(-?[\d.]+)\s+LUFS\s*$/gm)]
+  const lastIntegrated = integratedMatches[integratedMatches.length - 1]
+  if (!lastIntegrated) return null
+  const loudnessLufs = Number(lastIntegrated[1])
+  if (!Number.isFinite(loudnessLufs)) return null
+
+  const peakMatches = [...stderr.matchAll(/^\s+Peak:\s+(-?[\d.]+|-?inf)\s+dBFS\s*$/gm)]
+  const lastPeak = peakMatches[peakMatches.length - 1]
+  let peakLinear: number | null = null
+  if (lastPeak) {
+    if (lastPeak[1] === '-inf') {
+      peakLinear = 0
+    } else {
+      const peakDb = Number(lastPeak[1])
+      if (Number.isFinite(peakDb)) {
+        peakLinear = Math.pow(10, peakDb / 20)
+      }
+    }
+  }
+
+  return { loudnessLufs, peakLinear }
+}
+
+// Resolve a track's integrated loudness for playback normalization: stored DB
+// value when fresh, otherwise a single queued ffmpeg ebur128 pass (native
+// decode+analysis in a separate process, parallel to the renderer's decode).
+async function runLoudnessAnalysisJob(job: LoudnessAnalysisJob): Promise<TrackLoudnessAnalysisResult | null> {
+  const ffmpegPath = await resolveBinary('ffmpeg')
+  if (!ffmpegPath || job.abortController.signal.aborted) return null
+
+  const startMs = Date.now()
+  try {
+    const stderr = await execFileCaptureStderr(
+      ffmpegPath,
+      [
+        '-hide_banner',
+        '-nostats',
+        '-i', job.filePath,
+        '-map', '0:a:0',
+        '-vn',
+        '-af', 'ebur128=peak=sample',
+        '-f', 'null', '-'
+      ],
+      { timeout: LOUDNESS_FFMPEG_TIMEOUT_MS, maxBuffer: LOUDNESS_FFMPEG_MAX_STDERR_BYTES },
+      job.abortController.signal
+    )
+    const parsed = parseEbur128Summary(stderr)
+    if (!parsed) {
+      console.warn(`Loudness analysis produced no summary for ${job.filePath}`)
+      return null
+    }
+
+    await library.setTrackLoudness({
+      trackPath: job.filePath,
+      loudnessLufs: parsed.loudnessLufs,
+      peakLinear: parsed.peakLinear,
+      method: 'ebur128',
+      fileSize: job.fileStat.size,
+      fileMtimeMs: job.fileStat.mtimeMs
+    })
+    if (isDev) {
+      console.log(`[loudness] ebur128 analysis (${Date.now() - startMs}ms): ${parsed.loudnessLufs} LUFS`, job.filePath)
+    }
+    return { loudnessLufs: parsed.loudnessLufs, peakLinear: parsed.peakLinear, method: 'ebur128' }
+  } catch (error) {
+    if (isAbortError(error) || job.abortController.signal.aborted) {
+      return null
+    }
+    console.warn(`Loudness analysis failed for ${job.filePath}:`, error)
+    return null
+  }
+}
+
+function pumpLoudnessAnalysisQueue(): void {
+  if (activeLoudnessAnalysisJob) return
+  const job = loudnessAnalysisQueue.shift()
+  if (!job) return
+
+  activeLoudnessAnalysisJob = job
+  void runLoudnessAnalysisJob(job)
+    .then(job.resolve, job.reject)
+    .finally(() => {
+      if (activeLoudnessAnalysisJob === job) {
+        activeLoudnessAnalysisJob = null
+      }
+      pumpLoudnessAnalysisQueue()
+    })
+}
+
+function enqueueLoudnessAnalysisJob(
+  filePath: string,
+  fileStat: { size: number; mtimeMs: number },
+  priority: LoudnessAnalysisPriority
+): Promise<TrackLoudnessAnalysisResult | null> {
+  const existing = loudnessAnalysisInFlight.get(filePath)
+  if (existing) return existing
+
+  const abortController = new AbortController()
+  const promise = new Promise<TrackLoudnessAnalysisResult | null>((resolve, reject) => {
+    const job: LoudnessAnalysisJob = {
+      filePath,
+      fileStat,
+      priority,
+      abortController,
+      resolve,
+      reject
+    }
+
+    if (priority === 'interactive') {
+      loudnessAnalysisQueue.unshift(job)
+      if (
+        activeLoudnessAnalysisJob
+        && activeLoudnessAnalysisJob.priority === 'background'
+        && activeLoudnessAnalysisJob.filePath !== filePath
+      ) {
+        activeLoudnessAnalysisJob.abortController.abort()
+      }
+    } else {
+      loudnessAnalysisQueue.push(job)
+    }
+
+    pumpLoudnessAnalysisQueue()
+  }).finally(() => {
+    loudnessAnalysisInFlight.delete(filePath)
+  })
+
+  loudnessAnalysisInFlight.set(filePath, promise)
+  return promise
+}
+
+async function analyzeTrackLoudness(
+  filePath: string,
+  priority: LoudnessAnalysisPriority = 'interactive'
+): Promise<TrackLoudnessAnalysisResult | null> {
+  if (!filePath || isSubsonicPath(filePath) || isJellyfinPath(filePath)) return null
+
+  const fileStat = await statForLoudness(filePath)
+  if (!fileStat) return null
+
+  const stored = library.getTrackLoudness(filePath)
+  if (stored) {
+    const matchesFile = (stored.fileSize == null || stored.fileSize === fileStat.size)
+      && (stored.fileMtimeMs == null || stored.fileMtimeMs === fileStat.mtimeMs)
+    if (matchesFile) {
+      return {
+        loudnessLufs: stored.loudnessLufs,
+        peakLinear: stored.peakLinear,
+        method: stored.method
+      }
+    }
+    await library.deleteTrackLoudness(filePath)
+  }
+
+  const inFlight = loudnessAnalysisInFlight.get(filePath)
+  if (inFlight) return inFlight
+  // The bundled ffmpeg (6.0) cannot read IAMF, so skip the doomed ebur128
+  // spawn; the renderer's buffer-based analyzer computes and stores loudness
+  // after the wasm decode instead (returned from the DB above on later plays).
+  if (extname(filePath).toLowerCase() === '.iamf') return null
+  return enqueueLoudnessAnalysisJob(filePath, fileStat, priority)
+}
+
+// Persist a loudness value the renderer computed via its JS fallback analyzer.
+async function storeRendererTrackLoudness(filePath: string, payload: RendererTrackLoudnessPayload): Promise<boolean> {
+  if (!filePath || isSubsonicPath(filePath) || isJellyfinPath(filePath)) return false
+  if (typeof payload?.loudnessLufs !== 'number' || !Number.isFinite(payload.loudnessLufs)) return false
+
+  const fileStat = await statForLoudness(filePath)
+  await library.setTrackLoudness({
+    trackPath: filePath,
+    loudnessLufs: payload.loudnessLufs,
+    peakLinear: typeof payload.peakLinear === 'number' && Number.isFinite(payload.peakLinear) ? payload.peakLinear : null,
+    method: typeof payload.method === 'string' && payload.method.length > 0 ? payload.method : 'kweight-ungated',
+    fileSize: fileStat?.size ?? null,
+    fileMtimeMs: fileStat?.mtimeMs ?? null
+  })
+  return true
 }
 
 async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata | null> {
@@ -8605,7 +9348,9 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
           albumArtist: parsed.albumArtist ?? payload.track?.album_artist ?? dbTrack?.album_artist ?? undefined,
           albumArtistNames: parsed.albumArtistNames && parsed.albumArtistNames.length > 0 ? parsed.albumArtistNames : dbTrack?.album_artist_names,
           duration: parsed.duration ?? payload.track?.duration ?? dbTrack?.duration,
-          format: payload.track?.format ?? dbTrack?.format ?? parsed.format
+          format: payload.track?.format ?? dbTrack?.format ?? parsed.format,
+          artworkHash: parsed.artworkHash ?? dbTrack?.artwork_hash ?? undefined,
+          artwork: parsed.artworkHash || dbTrack?.artwork_hash ? undefined : parsed.artwork
         }
       }
     } catch {
@@ -8626,10 +9371,12 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
       albumArtistNames: dbTrack.album_artist_names,
       duration: dbTrack.duration,
       format: dbTrack.format,
+      artworkHash: dbTrack.artwork_hash ?? undefined,
       channels: dbTrack.channels ?? undefined,
       codec: dbTrack.codec ?? undefined,
       codecProfile: dbTrack.codec_profile ?? undefined,
       isAtmosJoc: dbTrack.is_atmos_joc === 1,
+      isIamf: dbTrack.is_iamf === 1,
       replayGainTrackDb: replayGainScanEnabled
         ? (dbTrack.replaygain_track_gain_db ?? undefined)
         : undefined,
@@ -8642,6 +9389,7 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
   const name = basename(filePath)
   const fallbackTitle = name.replace(/\.[^.]+$/, '')
   const format = filePath.split('.').pop()?.toLowerCase() ?? 'unknown'
+  const cachedDbTrack = library.getTrackByPath(filePath)
 
   // Extract metadata using music-metadata with ffprobe enrichment fallback.
   let metadata: LoadedAudioMetadata = {
@@ -8649,6 +9397,34 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
     artist: 'Unknown Artist',
     album: 'Unknown Album',
     format
+  }
+
+  // IAMF (Eclipsa) sources: neither music-metadata nor the bundled ffprobe
+  // (6.0) can read them; duration comes from the OBU walker / moov and
+  // channels from the fixed 7.1.4 decode target.
+  if (format === 'iamf') {
+    try {
+      const stats = collectIamfStreamStats(new Uint8Array(await readFile(filePath)))
+      if (stats?.durationSeconds) metadata.duration = stats.durationSeconds
+    } catch {
+      // Filename-only metadata; playback surfaces the real error.
+    }
+    metadata.channels = 12
+    metadata.codec = 'iamf'
+    metadata.isIamf = true
+    return metadata
+  }
+  if (format === 'mp4') {
+    const moov = await library.readMp4MoovBox(filePath)
+    if (moov && mp4HasIamfTrack(moov)) {
+      metadata.duration = readMp4DurationSeconds(moov) ?? undefined
+      metadata.channels = 12
+      metadata.codec = 'iamf'
+      metadata.isIamf = true
+      return metadata
+    }
+    // Non-IAMF .mp4 falls through to the regular parsers (dialog-opened
+    // files only; the library scanner rejects them).
   }
 
   try {
@@ -8666,12 +9442,17 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
         ? common.albumartist
         : formatArtistNames(parsedAlbumArtistNames) || undefined
 
-    // Convert artwork to base64 data URL
+    // Prefer cached artwork hashes so currentTrack does not retain large data URLs.
+    let artworkHash = cachedDbTrack?.artwork_hash ?? undefined
     let artworkDataUrl: string | undefined
-    if (common.picture && common.picture.length > 0) {
+    if (!artworkHash && common.picture && common.picture.length > 0) {
       const pic = common.picture[0]
-      const base64 = Buffer.from(pic.data).toString('base64')
-      artworkDataUrl = `data:${pic.format};base64,${base64}`
+      const pictureData = Buffer.from(pic.data)
+      artworkHash = (await library.cacheArtworkBuffer(pictureData, pic.format)) ?? undefined
+      if (!artworkHash) {
+        const base64 = pictureData.toString('base64')
+        artworkDataUrl = `data:${pic.format};base64,${base64}`
+      }
     }
 
     metadata = {
@@ -8683,6 +9464,7 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
       albumArtistNames: parsedAlbumArtistNames,
       duration: mm_metadata.format.duration,
       format,
+      artworkHash,
       artwork: artworkDataUrl,
       channels: mm_metadata.format.numberOfChannels,
       codec: mm_metadata.format.codec,
@@ -8714,6 +9496,15 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
   }
 
   return metadata
+}
+
+// readFile allocates an exact-size, non-pooled Buffer for anything >= Buffer.poolSize / 2
+// (4KB), so audio payloads can hand out the underlying ArrayBuffer without a full copy.
+function toStandaloneArrayBuffer(buffer: Buffer): ArrayBuffer {
+  const underlying = buffer.buffer as ArrayBuffer
+  return buffer.byteOffset === 0 && buffer.byteLength === underlying.byteLength
+    ? underlying
+    : underlying.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
 }
 
 async function loadAudioFile(
@@ -8768,7 +9559,7 @@ async function loadAudioFile(
       return {
         path: filePath,
         name,
-        data: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+        data: toStandaloneArrayBuffer(buffer)
       }
     }
 
@@ -8777,7 +9568,7 @@ async function loadAudioFile(
     const payload = {
       path: filePath,
       name: name,
-      data: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+      data: toStandaloneArrayBuffer(buffer),
       metadata: metadata ?? undefined
     }
     const elapsedMs = Date.now() - loadStartMs

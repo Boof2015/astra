@@ -3,10 +3,16 @@
  * Returns a normalized Float32Array that the renderer downsamples
  * adaptively based on the display width.
  */
+// Beyond a few thousand sampled frames per bin the binned RMS no longer
+// changes visibly, so long tracks are stride-sampled instead of reading
+// every frame.
+const MAX_SAMPLED_FRAMES_PER_BIN = 4096
+
 export function extractWaveformPeaks(buffer: AudioBuffer, resolution: number = 512): Float32Array {
   const length = buffer.length
   const channelCount = buffer.numberOfChannels
   const samplesPerBin = Math.floor(length / resolution)
+  const stride = Math.max(1, Math.floor(samplesPerBin / MAX_SAMPLED_FRAMES_PER_BIN))
   const peaks = new Float32Array(resolution)
 
   const channels: Float32Array[] = []
@@ -24,7 +30,7 @@ export function extractWaveformPeaks(buffer: AudioBuffer, resolution: number = 5
 
     for (let c = 0; c < channelCount; c++) {
       const data = channels[c]
-      for (let s = start; s < end; s++) {
+      for (let s = start; s < end; s += stride) {
         sumSquares += data[s] * data[s]
         count++
       }
@@ -133,6 +139,46 @@ export class ProgressiveWaveformAccumulator {
 
       this.sumSquares[binIndex] += frameSquareSum / channelData.length
       this.counts[binIndex] += 1
+    }
+  }
+
+  ingestInterleavedChunk(
+    interleaved: Float32Array,
+    channelCount: number,
+    frameCount: number,
+    startFrame: number,
+    options: { maxSamples?: number } = {}
+  ): void {
+    const normalizedChannelCount = Math.max(1, Math.floor(channelCount))
+    const normalizedFrameCount = Math.max(
+      0,
+      Math.min(Math.floor(frameCount), Math.floor(interleaved.length / normalizedChannelCount))
+    )
+    if (normalizedFrameCount <= 0) return
+
+    const maxSamples = Number.isFinite(options.maxSamples)
+      ? Math.max(1, Math.floor(Number(options.maxSamples)))
+      : normalizedFrameCount
+    const stride = Math.max(1, Math.ceil(normalizedFrameCount / maxSamples))
+
+    for (let frameIndex = 0; frameIndex < normalizedFrameCount; frameIndex += stride) {
+      const absoluteFrame = startFrame + frameIndex
+      if (absoluteFrame < 0) continue
+
+      const binIndex = Math.max(
+        0,
+        Math.min(this.resolution - 1, Math.floor((absoluteFrame / this.totalFrames) * this.resolution))
+      )
+      let frameSquareSum = 0
+      const baseIndex = frameIndex * normalizedChannelCount
+      for (let channelIndex = 0; channelIndex < normalizedChannelCount; channelIndex++) {
+        const sample = interleaved[baseIndex + channelIndex] ?? 0
+        frameSquareSum += sample * sample
+      }
+
+      const weight = Math.min(stride, normalizedFrameCount - frameIndex)
+      this.sumSquares[binIndex] += (frameSquareSum / normalizedChannelCount) * weight
+      this.counts[binIndex] += weight
     }
   }
 

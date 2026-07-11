@@ -43,7 +43,9 @@ function TransportWaveformSection({
   const waveformBufferedRatio = usePlayerStore((s) => s.waveformBufferedRatio)
   const waveformAnalyzedRatio = usePlayerStore((s) => s.waveformAnalyzedRatio)
   const remoteBufferedSeconds = usePlayerStore((s) => s.remoteBufferedSeconds)
-  const currentTime = usePlaybackClock()
+  // 30Hz keeps the waveform playhead visually smooth without re-rendering
+  // the transport section at display refresh rate.
+  const currentTime = usePlaybackClock(1 / 30)
   const duration = usePlayerStore((s) => s.duration)
   const seek = usePlayerStore((s) => s.seek)
   const currentTrack = usePlayerStore((s) => s.currentTrack)
@@ -115,6 +117,7 @@ export default function TransportBar() {
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const toggleRepeat = usePlayerStore((s) => s.toggleRepeat)
   const remoteLoadProgress = usePlayerStore((s) => s.remoteLoadProgress)
+  const loadingStatus = usePlayerStore((s) => s.loadingStatus)
   const resolvedQueueLength = usePlayerStore((s) => s.getResolvedQueueLength())
 
   const {
@@ -225,14 +228,16 @@ export default function TransportBar() {
     : null
   const loadingLabel = (() => {
     if (!isLoadingTrack || !currentTrack) return null
-    if (!currentTrack.sourceType || currentTrack.sourceType === 'local') return null
+    if (loadingStatus) return loadingStatus
+    if (!activeRemoteLoadProgress) return null
     if (activeRemoteLoadProgress?.stage === 'streaming') {
       const readySeconds = Math.max(0, activeRemoteLoadProgress.bufferedSeconds)
       const readyLabel = formatTime(readySeconds)
+      const streamingLabel = currentTrack.sourceType && currentTrack.sourceType !== 'local' ? 'Streaming' : 'Buffering'
       if (loadingPercent !== null) {
-        return `Streaming • ${readyLabel} ready • ${Math.round(loadingPercent * 100)}% downloaded`
+        return `${streamingLabel} • ${readyLabel} ready • ${Math.round(loadingPercent * 100)}% downloaded`
       }
-      return `Streaming • ${readyLabel} ready`
+      return `${streamingLabel} • ${readyLabel} ready`
     }
     if (loadingPercent !== null) {
       return `Buffering ${Math.round(loadingPercent * 100)}% • ${activeRemoteLoadProgress?.chunkCount ?? 0} chunks`
@@ -240,7 +245,9 @@ export default function TransportBar() {
     if ((activeRemoteLoadProgress?.chunkCount ?? 0) > 0) {
       return `Buffering ${activeRemoteLoadProgress!.chunkCount} chunks`
     }
-    return 'Buffering remote track...'
+    return currentTrack.sourceType && currentTrack.sourceType !== 'local'
+      ? 'Buffering remote track...'
+      : 'Buffering track...'
   })()
   const resolvedChannelCount = currentTrack?.channels ?? null
   const isMultichannel = (resolvedChannelCount ?? 0) > 2
@@ -253,6 +260,7 @@ export default function TransportBar() {
     currentCodec.includes('atmos') ||
     currentCodec.includes('joc')
   )
+  const showEclipsaBadge = Boolean(currentTrack?.isIamf || currentCodec === 'iamf')
   const outputDeviceLabel = (() => {
     return resolveOutputDeviceLabel(selectedOutputDeviceId, availableOutputDevices, {
       defaultRouteFallbackLabel: 'System Default Output',
@@ -404,7 +412,7 @@ export default function TransportBar() {
                 )
                 : '\u2014'}
             </div>
-            {(showAtmosBadge || isMultichannel) && (
+            {(showAtmosBadge || showEclipsaBadge || isMultichannel) && (
               <div className="transport-audio-badges">
               {showAtmosBadge && (
                   <span
@@ -412,6 +420,14 @@ export default function TransportBar() {
                     title="Atmos metadata detected"
                   >
                     ATM
+                  </span>
+                )}
+                {showEclipsaBadge && (
+                  <span
+                    className="transport-audio-badge transport-audio-badge-eclipsa"
+                    title="Eclipsa Audio (IAMF) source, decoded to 7.1.4"
+                  >
+                    ECL
                   </span>
                 )}
                 {isMultichannel && (

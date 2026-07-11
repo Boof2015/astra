@@ -1,35 +1,51 @@
 import { audioEngine } from '../AudioEngine'
-import { spectrum as nativeSpectrum, isNativeAvailable, warnNativeUnavailableOnce } from '../native/index'
+import { spectrum as defaultNativeSpectrum, warnNativeUnavailableOnce, type SpectrumNativeAnalyzer } from '../native/index'
+import { defaultVisualizerSessionSource, type VisualizerSessionSource } from './dataSource'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
-import { createMonoSilenceChunk, isPlaybackAnalyzerActive } from '../visualizerSilence'
-import { getCanvasBackingPixelRatio } from '../../utils/canvasSizing'
+import { parseColorToRgba } from '../../utils/color'
 import {
-  DEFAULT_SPECTRUM_DISPLAY_MODE,
   DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
   DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
   clampSpectrumTiltDbPerOctave,
   clampSpectrumHeatmapTiltDbPerOctave,
+  formatSpectrumPitchInfo,
+  resolveSpectrumPitchInfo,
+  DEFAULT_SPECTRUM_DISPLAY_MODE,
   type SpectrumDisplayMode,
+  type SpectrumPeakInfo,
 } from '../../../types/spectrum'
+import {
+  HEAT_LOW_DB,
+  HEAT_MID_DB,
+  normalizeHeatDb,
+} from './heatScale'
 
-export interface SpectrumAnalyzerDataSource {
+type SpectrumStereoChunk = {
+  left: Float32Array
+  right: Float32Array
+}
+
+export interface SpectrumAnalyzerDataSource extends VisualizerSessionSource {
   getPendingSpectrumSamples: () => Float32Array[]
-  getSampleRate: () => number
-  isPlaying: () => boolean
-  isActive?: () => boolean
+  getPendingSpectrumStereoSamples: () => SpectrumStereoChunk[]
 }
 
 export interface SpectrumAnalyzerOptions {
   lineColor?: string
+  secondaryLineColor?: string
   lineWidth?: number
   fillGradient?: boolean
   heatmapFill?: boolean
-  gradientColors?: string[]  // Bottom to top
+  heatmapSmoothing?: number
+  gradientColors?: string[]
+  heatColors?: [string, string, string]
+  heatBaseColor?: string
   backgroundColor?: string
   showGrid?: boolean
   gridColor?: string
   scaleType?: 'linear' | 'log'
+  displayMode?: SpectrumDisplayMode
   smoothing?: number
   minDecibels?: number
   maxDecibels?: number
@@ -39,53 +55,155 @@ export interface SpectrumAnalyzerOptions {
   heatmapTiltDbPerOctave?: number
   tiltReferenceHz?: number
   fftSize?: number
-  displayMode?: SpectrumDisplayMode
+  showSideLine?: boolean
+  capturePeakInfo?: boolean
+  onPeakInfo?: (peakInfo: SpectrumPeakInfo | null) => void
   dataSource?: SpectrumAnalyzerDataSource
   frameScheduler?: FrameScheduler
+  nativeAnalyzer?: SpectrumNativeAnalyzer | null
 }
 
-type ResolvedSpectrumAnalyzerOptions = Required<Omit<SpectrumAnalyzerOptions, 'dataSource' | 'frameScheduler'>>
+type ResolvedSpectrumAnalyzerOptions = Required<Omit<SpectrumAnalyzerOptions, 'dataSource' | 'frameScheduler' | 'nativeAnalyzer'>>
+type SpectrumPointFillResult = {
+  pointCount: number
+  peakInfo: SpectrumPeakInfo | null
+}
 
-// ---- Heat LUT for heatmap fill (same palette as Spectrogram) ----
-type HeatStop = { at: number; color: [number, number, number] }
-const HEAT_STOPS: readonly HeatStop[] = [
-  { at: 0, color: [0, 0, 0] },
-  { at: 0.14, color: [15, 7, 33] },
-  { at: 0.32, color: [61, 11, 94] },
-  { at: 0.54, color: [163, 26, 121] },
-  { at: 0.74, color: [255, 82, 87] },
-  { at: 0.9, color: [255, 166, 63] },
-  { at: 1, color: [255, 241, 209] },
+type SpectrumRangePeak = {
+  rawDb: number
+  frequencyHz: number
+}
+
+type HeatColor = [number, number, number, number]
+type HeatStop = { at: number; color: HeatColor }
+
+const LEGACY_DEFAULT_HEAT_COLORS: [string, string, string] = [
+  'rgb(15, 7, 33)',
+  'rgb(163, 26, 121)',
+  'rgb(255, 241, 209)',
 ]
 
-function buildHeatLUT(): Uint8Array {
-  const lut = new Uint8Array(256 * 3)
-  for (let i = 0; i < 256; i++) {
+const HEATMAP_GAMMA = 1.4
+
+// ISO 1/3-octave centre frequencies for the classic "bars" display (restored from
+// Astra's pre-port spectrum; Prism's port was curve/area only).
+const CLASSIC_BAR_FREQUENCIES = [
+  20, 25, 31.5, 40, 50, 63, 80, 100,
+  125, 160, 200, 250, 315, 400, 500, 630,
+  800, 1000, 1250, 1600, 2000, 2500, 3150, 4000,
+  5000, 6300, 8000, 10000, 12500, 16000, 20000,
+] as const
+const FFT_SILENCE_DB = -100
+const SIDE_LINE_WIDTH_RATIO = 0.75
+const PEAK_SELECTION_MAX_DISTANCE_OCTAVES = 0.5
+const PEAK_SELECTION_SWITCH_THRESHOLD_DB = 4
+const PEAK_SELECTION_LOW_FREQUENCY_BIAS_DB_PER_OCTAVE = 0.75
+const PEAK_SELECTION_UPWARD_SWITCH_THRESHOLD_DB = 2
+const NOOP_SPECTRUM_PEAK_INFO_CALLBACK = (_peakInfo: SpectrumPeakInfo | null): void => {}
+
+function clampSmoothing(value: number): number {
+  return Math.min(0.99, Math.max(0, value))
+}
+
+function isLegacyDefaultHeatColors(colors: [string, string, string]): boolean {
+  return colors.every((color, index) => {
+    const left = parseColorToRgba(color)
+    const right = parseColorToRgba(LEGACY_DEFAULT_HEAT_COLORS[index])
+    return !!left
+      && !!right
+      && left.r === right.r
+      && left.g === right.g
+      && left.b === right.b
+      && Math.round(left.a * 255) === Math.round(right.a * 255)
+  })
+}
+
+function resolveHeatColor(color: string, fallback: string): HeatColor {
+  const parsed = parseColorToRgba(color) ?? parseColorToRgba(fallback)
+  if (!parsed) {
+    return [0, 0, 0, 255]
+  }
+  return [parsed.r, parsed.g, parsed.b, Math.round(parsed.a * 255)]
+}
+
+function scaleHeatColor(color: HeatColor, factor: number): HeatColor {
+  return [
+    Math.round(color[0] * factor),
+    Math.round(color[1] * factor),
+    Math.round(color[2] * factor),
+    Math.round(color[3] * factor),
+  ]
+}
+
+function lerpChannel(start: number, end: number, amount: number): number {
+  return Math.round(start + ((end - start) * amount))
+}
+
+function buildHeatStops(colors: [string, string, string]): HeatStop[] {
+  if (isLegacyDefaultHeatColors(colors)) {
+    return [
+      { at: 0, color: [0, 0, 0, 0] },
+      { at: normalizeHeatDb(-80), color: [15, 7, 33, 255] },
+      { at: normalizeHeatDb(-70), color: [61, 11, 94, 255] },
+      { at: normalizeHeatDb(-60), color: [163, 26, 121, 255] },
+      { at: normalizeHeatDb(-45), color: [255, 82, 87, 255] },
+      { at: normalizeHeatDb(-35), color: [255, 166, 63, 255] },
+      { at: 1, color: [255, 241, 209, 255] },
+    ]
+  }
+
+  const low = resolveHeatColor(colors[0], LEGACY_DEFAULT_HEAT_COLORS[0])
+  const mid = resolveHeatColor(colors[1], LEGACY_DEFAULT_HEAT_COLORS[1])
+  const high = resolveHeatColor(colors[2], LEGACY_DEFAULT_HEAT_COLORS[2])
+
+  return [
+    { at: 0, color: [0, 0, 0, 0] },
+    { at: normalizeHeatDb(-90), color: scaleHeatColor(low, 0.5) },
+    { at: normalizeHeatDb(HEAT_LOW_DB), color: low },
+    { at: normalizeHeatDb(HEAT_MID_DB), color: mid },
+    { at: 1, color: high },
+  ]
+}
+
+function buildHeatLUT(colors: [string, string, string]): Uint8ClampedArray {
+  const heatStops = buildHeatStops(colors)
+  const lut = new Uint8ClampedArray(256 * 4)
+  for (let i = 0; i < 256; i += 1) {
     const t = i / 255
-    let s = HEAT_STOPS[0], e = HEAT_STOPS[HEAT_STOPS.length - 1]
-    for (let si = 0; si < HEAT_STOPS.length - 1; si++) {
-      if (t <= HEAT_STOPS[si + 1].at) { s = HEAT_STOPS[si]; e = HEAT_STOPS[si + 1]; break }
+    let start = heatStops[0]
+    let end = heatStops[heatStops.length - 1]
+    for (let stopIndex = 0; stopIndex < heatStops.length - 1; stopIndex += 1) {
+      if (t <= heatStops[stopIndex + 1].at) {
+        start = heatStops[stopIndex]
+        end = heatStops[stopIndex + 1]
+        break
+      }
     }
-    const a = Math.max(0, Math.min(1, (t - s.at) / Math.max(1e-6, e.at - s.at)))
-    lut[i * 3] = Math.round(s.color[0] + (e.color[0] - s.color[0]) * a)
-    lut[i * 3 + 1] = Math.round(s.color[1] + (e.color[1] - s.color[1]) * a)
-    lut[i * 3 + 2] = Math.round(s.color[2] + (e.color[2] - s.color[2]) * a)
+
+    const amount = Math.max(0, Math.min(1, (t - start.at) / Math.max(1e-6, end.at - start.at)))
+    lut[i * 4] = lerpChannel(start.color[0], end.color[0], amount)
+    lut[i * 4 + 1] = lerpChannel(start.color[1], end.color[1], amount)
+    lut[i * 4 + 2] = lerpChannel(start.color[2], end.color[2], amount)
+    lut[i * 4 + 3] = lerpChannel(start.color[3], end.color[3], amount)
   }
   return lut
 }
-const HEAT_LUT = buildHeatLUT()
-const HEATMAP_GAMMA = 1.4
 
 const defaultOptions: ResolvedSpectrumAnalyzerOptions = {
   lineColor: '#00ffff',
+  secondaryLineColor: 'rgba(0, 255, 255, 0.5)',
   lineWidth: 2,
   fillGradient: true,
   heatmapFill: false,
+  heatmapSmoothing: 0.5,
   gradientColors: ['rgba(0, 255, 255, 0)', 'rgba(0, 255, 255, 0.3)', 'rgba(138, 43, 226, 0.5)'],
+  heatColors: [...LEGACY_DEFAULT_HEAT_COLORS],
+  heatBaseColor: 'transparent',
   backgroundColor: 'transparent',
   showGrid: true,
   gridColor: 'rgba(255, 255, 255, 0.1)',
   scaleType: 'log',
+  displayMode: DEFAULT_SPECTRUM_DISPLAY_MODE,
   smoothing: 0.9,
   minDecibels: -90,
   maxDecibels: -10,
@@ -95,21 +213,15 @@ const defaultOptions: ResolvedSpectrumAnalyzerOptions = {
   heatmapTiltDbPerOctave: DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
   tiltReferenceHz: 1000,
   fftSize: 2048,
-  displayMode: DEFAULT_SPECTRUM_DISPLAY_MODE,
+  showSideLine: false,
+  capturePeakInfo: false,
+  onPeakInfo: NOOP_SPECTRUM_PEAK_INFO_CALLBACK,
 }
-
-const CLASSIC_BAR_FREQUENCIES = [
-  20, 25, 31.5, 40, 50, 63, 80, 100,
-  125, 160, 200, 250, 315, 400, 500, 630,
-  800, 1000, 1250, 1600, 2000, 2500, 3150, 4000,
-  5000, 6300, 8000, 10000, 12500, 16000, 20000,
-] as const
 
 const defaultSpectrumDataSource: SpectrumAnalyzerDataSource = {
   getPendingSpectrumSamples: () => audioEngine.flushPendingSpectrumSamples(),
-  getSampleRate: () => audioEngine.getSampleRate(),
-  isPlaying: () => audioEngine.playbackState === 'playing',
-  isActive: () => isPlaybackAnalyzerActive(audioEngine.playbackState),
+  getPendingSpectrumStereoSamples: () => audioEngine.flushPendingSpectrumStereoSamples(),
+  ...defaultVisualizerSessionSource,
 }
 
 export class SpectrumAnalyzer {
@@ -117,21 +229,42 @@ export class SpectrumAnalyzer {
   private ctx: CanvasRenderingContext2D
   private options: ResolvedSpectrumAnalyzerOptions
   private dataSource: SpectrumAnalyzerDataSource
+  private nativeAnalyzer: SpectrumNativeAnalyzer | null
   private frameLoop: VisualizerFrameLoop
-  private nativeInitialized: boolean = false
-  private sampleRate: number = 48000
-  private lastSampleRate: number = 0
+  private nativeInitialized = false
+  private sampleRate = 48000
+  private lastSampleRate = 0
+  private heatLut: Uint8ClampedArray
   private staticLayerCanvas: HTMLCanvasElement
   private staticLayerCtx: CanvasRenderingContext2D
   private staticLayerKey = ''
-  private unsubscribePlaybackState: (() => void) | null = null
+  private unsubscribeSessionChange: (() => void) | null = null
+
+  private nativeMagnitudeBuffer = new Float32Array(0)
+  private nativeRawMagnitudeBuffer = new Float32Array(0)
+  private nativeSideMagnitudeBuffer = new Float32Array(0)
+  private heatmapMagnitudeBuffer = new Float32Array(0)
+  private nativeBufferedSamples = 0
+  private nativeHasSpectrumData = false
+  private pushScratch = new Float32Array(0)
+  private pushScratchRight = new Float32Array(0)
+  private primaryPointX = new Float32Array(0)
+  private primaryPointY = new Float32Array(0)
+  private heatmapPointY = new Float32Array(0)
+  private primaryPointHeatmap = new Float32Array(0)
+  private secondaryPointX = new Float32Array(0)
+  private secondaryPointY = new Float32Array(0)
+  private primaryPointDb = new Float32Array(0)
+  private primaryPointFrequency = new Float32Array(0)
+  private lastSelectedPeakInfo: SpectrumPeakInfo | null = null
 
   constructor(canvas: HTMLCanvasElement, options: SpectrumAnalyzerOptions = {}) {
     this.canvas = canvas
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Could not get 2D context')
     this.ctx = ctx
-    const { dataSource, frameScheduler, ...optionOverrides } = options
+
+    const { dataSource, frameScheduler, nativeAnalyzer, ...optionOverrides } = options
     this.options = {
       ...defaultOptions,
       ...optionOverrides,
@@ -143,60 +276,111 @@ export class SpectrumAnalyzer {
       ),
     }
     this.dataSource = dataSource ?? defaultSpectrumDataSource
+    this.nativeAnalyzer = nativeAnalyzer === undefined ? defaultNativeSpectrum : nativeAnalyzer
+    this.heatLut = buildHeatLUT(this.options.heatColors)
     this.frameLoop = new VisualizerFrameLoop({
       frameScheduler,
-      shouldRun: () => this.nativeInitialized && this.isActive(),
+      // Spectrum DSP is native-only; stop the loop after one frame when native is
+      // unavailable (warned once) rather than spinning — preserves Astra fallback behavior.
+      shouldRun: () => this.isNativeAvailable() && this.dataSource.isPlaying(),
       onFrame: this.drawFrame,
     })
     this.staticLayerCanvas = document.createElement('canvas')
     const staticLayerCtx = this.staticLayerCanvas.getContext('2d')
     if (!staticLayerCtx) throw new Error('Could not get offscreen 2D context')
     this.staticLayerCtx = staticLayerCtx
-    this.unsubscribePlaybackState = audioEngine.on('stateChange', () => {
-      this.invalidate()
-    })
 
-    // Initialize native module
+    this.resetAnalyzerBuffers()
     this.initNative()
+    this.subscribeToSessionChanges()
+  }
+
+  private subscribeToSessionChanges(): void {
+    if (this.unsubscribeSessionChange) {
+      this.unsubscribeSessionChange()
+    }
+
+    this.unsubscribeSessionChange = this.dataSource.subscribeToSessionChanges(() => {
+      this.resetState()
+    })
   }
 
   private initNative(): void {
-    if (isNativeAvailable() && !this.nativeInitialized) {
-      this.sampleRate = Math.max(1, this.dataSource.getSampleRate())
-      this.lastSampleRate = this.sampleRate
-      nativeSpectrum.setFFTSize(this.options.fftSize)
-      nativeSpectrum.setSampleRate(this.sampleRate)
-      nativeSpectrum.setSmoothing(this.getNativeSmoothing())
+    this.sampleRate = Math.max(1, this.dataSource.getSampleRate())
+    this.lastSampleRate = 0
+
+    if (this.isNativeAvailable() && !this.nativeInitialized) {
+      this.nativeAnalyzer?.setFFTSize(this.options.fftSize)
+      this.nativeAnalyzer?.setSampleRate(this.sampleRate)
+      this.nativeAnalyzer?.setSmoothing(this.getNativeSmoothing())
       this.nativeInitialized = true
       console.log(`SpectrumAnalyzer: Using native DSP (${this.sampleRate}Hz)`)
-    } else if (!isNativeAvailable()) {
+    } else if (!this.isNativeAvailable()) {
       warnNativeUnavailableOnce('SpectrumAnalyzer')
     }
   }
 
+  private ensureMagnitudeBufferSize(): void {
+    const length = Math.max(1, Math.floor(this.options.fftSize / 2))
+    if (this.nativeMagnitudeBuffer.length !== length) {
+      this.nativeMagnitudeBuffer = new Float32Array(length)
+    }
+    if (this.nativeRawMagnitudeBuffer.length !== length) {
+      this.nativeRawMagnitudeBuffer = new Float32Array(length)
+    }
+    if (this.nativeSideMagnitudeBuffer.length !== length) {
+      this.nativeSideMagnitudeBuffer = new Float32Array(length)
+    }
+    if (this.heatmapMagnitudeBuffer.length !== length) {
+      this.heatmapMagnitudeBuffer = new Float32Array(length)
+    }
+  }
+
+  private resetAnalyzerBuffers(): void {
+    this.ensureMagnitudeBufferSize()
+    this.nativeMagnitudeBuffer.fill(FFT_SILENCE_DB)
+    this.nativeRawMagnitudeBuffer.fill(FFT_SILENCE_DB)
+    this.nativeSideMagnitudeBuffer.fill(FFT_SILENCE_DB)
+    this.heatmapMagnitudeBuffer.fill(FFT_SILENCE_DB)
+    this.nativeBufferedSamples = 0
+    this.nativeHasSpectrumData = false
+    this.lastSelectedPeakInfo = null
+  }
+
+  private isNativeAvailable(): boolean {
+    return Boolean(this.nativeAnalyzer) && this.nativeAnalyzer?.isAvailable?.() !== false
+  }
+
   private updateSampleRateIfNeeded(): void {
-    if (!isNativeAvailable()) return
     const currentRate = Math.max(1, this.dataSource.getSampleRate())
     if (currentRate !== this.lastSampleRate && currentRate > 0) {
       this.sampleRate = currentRate
       this.lastSampleRate = currentRate
-      nativeSpectrum.setSampleRate(currentRate)
+      if (this.isNativeAvailable()) {
+        this.nativeAnalyzer?.setSampleRate(currentRate)
+      }
       console.log(`SpectrumAnalyzer: Sample rate updated to ${currentRate}Hz`)
     }
   }
 
-  private isActive(): boolean {
-    return this.dataSource.isActive?.() ?? this.dataSource.isPlaying()
+  private getNativeSmoothing(): number {
+    const base = clampSmoothing(this.options.smoothing)
+    const fftRatio = Math.max(0.5, this.options.fftSize / 2048)
+    return clampSmoothing(Math.pow(base, fftRatio))
   }
 
-  private getNativeSmoothing(): number {
-    const base = Math.min(0.99, Math.max(0, this.options.smoothing))
-    const fftRatio = Math.max(0.5, this.options.fftSize / 2048)
-    return Math.min(0.99, Math.max(0, Math.pow(base, fftRatio)))
+  private resetState(): void {
+    if (this.isNativeAvailable()) {
+      this.nativeAnalyzer?.reset()
+    }
+    this.resetAnalyzerBuffers()
+    this.sampleRate = Math.max(1, this.dataSource.getSampleRate())
+    this.lastSampleRate = 0
+    this.invalidate()
   }
 
   setOptions(options: Partial<SpectrumAnalyzerOptions>): void {
-    const { dataSource, frameScheduler: _frameScheduler, ...optionUpdates } = options
+    const { dataSource, frameScheduler: _frameScheduler, nativeAnalyzer, ...optionUpdates } = options
     const nextOptions = { ...this.options, ...optionUpdates }
     if (optionUpdates.tiltDbPerOctave !== undefined) {
       nextOptions.tiltDbPerOctave = clampSpectrumTiltDbPerOctave(optionUpdates.tiltDbPerOctave)
@@ -204,22 +388,51 @@ export class SpectrumAnalyzer {
     if (optionUpdates.heatmapTiltDbPerOctave !== undefined) {
       nextOptions.heatmapTiltDbPerOctave = clampSpectrumHeatmapTiltDbPerOctave(optionUpdates.heatmapTiltDbPerOctave)
     }
+
+    const shouldResetForOptions = (
+      optionUpdates.fftSize !== undefined
+      || optionUpdates.smoothing !== undefined
+      || optionUpdates.heatmapSmoothing !== undefined
+      || optionUpdates.showSideLine !== undefined
+    )
+
     this.options = nextOptions
-    if (dataSource) {
-      this.dataSource = dataSource
+    this.heatLut = buildHeatLUT(this.options.heatColors)
+    let didReset = false
+
+    if (nativeAnalyzer !== undefined && nativeAnalyzer !== this.nativeAnalyzer) {
+      this.nativeAnalyzer = nativeAnalyzer
+      this.nativeInitialized = false
+      this.initNative()
+      this.resetState()
+      didReset = true
     }
 
-    // Update native module settings
-    if (isNativeAvailable()) {
+    if (dataSource && dataSource !== this.dataSource) {
+      this.dataSource = dataSource
+      this.subscribeToSessionChanges()
+      this.resetState()
+      didReset = true
+    }
+
+    if (this.isNativeAvailable()) {
       if (options.fftSize !== undefined) {
-        nativeSpectrum.setFFTSize(options.fftSize)
+        this.nativeAnalyzer?.setFFTSize(options.fftSize)
       }
       if (options.smoothing !== undefined || options.fftSize !== undefined) {
-        nativeSpectrum.setSmoothing(this.getNativeSmoothing())
+        this.nativeAnalyzer?.setSmoothing(this.getNativeSmoothing())
       }
     }
 
-    this.invalidate()
+    if (shouldResetForOptions && !didReset) {
+      this.resetState()
+      didReset = true
+    }
+
+    this.staticLayerKey = ''
+    if (!didReset) {
+      this.invalidate()
+    }
   }
 
   start(): void {
@@ -239,12 +452,10 @@ export class SpectrumAnalyzer {
     this.invalidate()
   }
 
-  // Linear interpolation helper
   private lerp(a: number, b: number, t: number): number {
     return a + (b - a) * t
   }
 
-  // Get interpolated value from frequency data
   private getInterpolatedValue(data: Float32Array, index: number): number {
     const i0 = Math.floor(index)
     const i1 = Math.min(i0 + 1, data.length - 1)
@@ -261,28 +472,63 @@ export class SpectrumAnalyzer {
     return minFrequency + t * (maxFrequency - minFrequency)
   }
 
-  private getPeakInRange(data: Float32Array, startIndex: number, endIndex: number): number {
+  private resolvePeakInRange(
+    data: Float32Array,
+    startIndex: number,
+    endIndex: number,
+    binWidth: number,
+  ): SpectrumRangePeak {
     const clampedStart = Math.max(0, Math.min(data.length - 1, startIndex))
     const clampedEnd = Math.max(0, Math.min(data.length - 1, endIndex))
     const lo = Math.floor(Math.min(clampedStart, clampedEnd))
     const hi = Math.ceil(Math.max(clampedStart, clampedEnd))
 
     if (hi <= lo) {
-      return this.getInterpolatedValue(data, clampedStart)
+      const rawDb = this.getInterpolatedValue(data, clampedStart)
+      return {
+        rawDb,
+        frequencyHz: Math.max(0, clampedStart * binWidth),
+      }
     }
 
-    let peak = -Infinity
-    for (let i = lo; i <= hi; i++) {
-      peak = Math.max(peak, data[i])
+    let peakBin = lo
+    let peakDb = Number.NEGATIVE_INFINITY
+    for (let i = lo; i <= hi; i += 1) {
+      if (data[i] > peakDb) {
+        peakDb = data[i]
+        peakBin = i
+      }
     }
 
-    return Math.max(
-      peak,
-      this.getInterpolatedValue(data, clampedStart),
-      this.getInterpolatedValue(data, clampedEnd)
-    )
+    if (peakBin > 0 && peakBin < data.length - 1) {
+      const y1 = data[peakBin - 1]
+      const y2 = data[peakBin]
+      const y3 = data[peakBin + 1]
+      const denominator = y1 - (2 * y2) + y3
+      if (Math.abs(denominator) > 1e-9) {
+        const offset = Math.max(-0.5, Math.min(0.5, 0.5 * (y1 - y3) / denominator))
+        const interpolatedDb = y2 - (0.25 * (y1 - y3) * offset)
+        return {
+          rawDb: interpolatedDb,
+          frequencyHz: Math.max(0, (peakBin + offset) * binWidth),
+        }
+      }
+    }
+
+    return {
+      rawDb: peakDb,
+      frequencyHz: Math.max(0, peakBin * binWidth),
+    }
   }
 
+  private applyTilt(db: number, frequency: number, tiltDbPerOctave = this.options.tiltDbPerOctave): number {
+    const safeFreq = Math.max(1, frequency)
+    const reference = Math.max(1, this.options.tiltReferenceHz)
+    const octaves = Math.log2(safeFreq / reference)
+    return db + tiltDbPerOctave * octaves
+  }
+
+  // Power-average the dB bins spanning [startIndex, endIndex] (restored from pre-port Astra).
   private getAverageDbInRange(data: Float32Array, startIndex: number, endIndex: number): number {
     const clampedStart = Math.max(0, Math.min(data.length - 1, startIndex))
     const clampedEnd = Math.max(0, Math.min(data.length - 1, endIndex))
@@ -309,44 +555,24 @@ export class SpectrumAnalyzer {
     return 10 * Math.log10(Math.max(1e-12, powerSum / count))
   }
 
-  private applyTilt(db: number, frequency: number, tiltDbPerOctave = this.options.tiltDbPerOctave): number {
-    const safeFreq = Math.max(1, frequency)
-    const reference = Math.max(1, this.options.tiltReferenceHz)
-    const octaves = Math.log2(safeFreq / reference)
-    return db + tiltDbPerOctave * octaves
-  }
-
-  private mergePendingSpectrumChunks(pendingSpectrum: Float32Array[]): Float32Array | null {
-    if (pendingSpectrum.length === 0) return null
-    if (pendingSpectrum.length === 1) return pendingSpectrum[0]
-
-    let totalLength = 0
-    for (const chunk of pendingSpectrum) totalLength += chunk.length
-
-    const monoData = new Float32Array(totalLength)
-    let offset = 0
-    for (const chunk of pendingSpectrum) {
-      monoData.set(chunk, offset)
-      offset += chunk.length
-    }
-
-    return monoData
-  }
-
+  // Classic ISO 1/3-octave bar rendering (restored from pre-port Astra). Draws onto the
+  // main context after the static grid layer; `frequencyData` holds native dB magnitudes.
   private drawBars(
     frequencyData: Float32Array,
     bufferLength: number,
-    binWidth: number,
     minFrequency: number,
     maxFrequency: number,
+    dpr: number,
   ): void {
-    const { canvas, ctx, options } = this
-    const width = canvas.width
-    const height = canvas.height
-    const dpr = getCanvasBackingPixelRatio(canvas)
-    const bandFrequencies = CLASSIC_BAR_FREQUENCIES.filter((frequency) => {
-      return frequency >= minFrequency && frequency <= maxFrequency
-    })
+    const { ctx, options } = this
+    const width = this.canvas.width
+    const height = this.canvas.height
+    const binWidth = this.sampleRate / options.fftSize
+    if (binWidth <= 0 || bufferLength <= 0) return
+
+    const bandFrequencies = CLASSIC_BAR_FREQUENCIES.filter(
+      (frequency) => frequency >= minFrequency && frequency <= maxFrequency,
+    )
     const barCount = bandFrequencies.length
     if (barCount === 0) return
 
@@ -372,11 +598,8 @@ export class SpectrumAnalyzer {
       const bin1 = Math.min(frequency1 / binWidth, bufferLength - 1)
       const rawDb = this.getAverageDbInRange(frequencyData, bin0, bin1)
       const db = this.applyTilt(rawDb, centerFrequency)
-      const heatmapDb = this.applyTilt(rawDb, centerFrequency, options.heatmapTiltDbPerOctave)
       const normalized = (db - options.minDecibels) / (options.maxDecibels - options.minDecibels)
-      const heatmapNormalized = (heatmapDb - options.minDecibels) / (options.maxDecibels - options.minDecibels)
       const clamped = Math.max(0, Math.min(1, normalized))
-      const heatmapIntensity = Math.pow(Math.max(0, Math.min(1, heatmapNormalized)), HEATMAP_GAMMA)
       const barHeight = clamped <= 0 ? 0 : Math.max(dpr, clamped * height)
       if (barHeight <= 0) continue
 
@@ -384,10 +607,12 @@ export class SpectrumAnalyzer {
       const y = Math.max(0, Math.floor(height - barHeight))
 
       if (options.heatmapFill) {
-        const li = Math.round(heatmapIntensity * 255)
-        const r = HEAT_LUT[li * 3]
-        const g = HEAT_LUT[li * 3 + 1]
-        const b = HEAT_LUT[li * 3 + 2]
+        const heatmapDb = this.applyTilt(rawDb, centerFrequency, options.heatmapTiltDbPerOctave)
+        const heatIntensity = Math.pow(Math.max(0, Math.min(1, normalizeHeatDb(heatmapDb))), HEATMAP_GAMMA)
+        const li = Math.max(0, Math.min(255, Math.round(heatIntensity * 255)))
+        const r = this.heatLut[li * 4]
+        const g = this.heatLut[li * 4 + 1]
+        const b = this.heatLut[li * 4 + 2]
         ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.88)`
       } else {
         ctx.fillStyle = options.lineColor
@@ -397,22 +622,457 @@ export class SpectrumAnalyzer {
     }
   }
 
-  private drawFrame = (): void => {
-    const { canvas, ctx, options } = this
-    const width = canvas.width
-    const height = canvas.height
-    const dpr = getCanvasBackingPixelRatio(canvas)
-    if (width <= 0 || height <= 0) {
+  private ensurePointBuffers(pointCount: number): void {
+    if (this.primaryPointX.length !== pointCount) {
+      this.primaryPointX = new Float32Array(pointCount)
+      this.primaryPointY = new Float32Array(pointCount)
+      this.heatmapPointY = new Float32Array(pointCount)
+      this.primaryPointHeatmap = new Float32Array(pointCount)
+      this.secondaryPointX = new Float32Array(pointCount)
+      this.secondaryPointY = new Float32Array(pointCount)
+      this.primaryPointDb = new Float32Array(pointCount)
+      this.primaryPointFrequency = new Float32Array(pointCount)
+    }
+  }
+
+  private recordNativeBufferedSamples(length: number): void {
+    if (length <= 0) {
+      return
+    }
+    this.nativeBufferedSamples = Math.min(this.options.fftSize, this.nativeBufferedSamples + length)
+  }
+
+  private pushPendingSpectrumChunks(pendingSpectrum: Float32Array[]): number {
+    if (pendingSpectrum.length === 0) return 0
+
+    if (pendingSpectrum.length === 1) {
+      if (pendingSpectrum[0].length > 0) {
+        this.nativeAnalyzer?.pushSamples(pendingSpectrum[0])
+        this.recordNativeBufferedSamples(pendingSpectrum[0].length)
+      }
+      return pendingSpectrum[0].length
+    }
+
+    let totalLength = 0
+    for (const chunk of pendingSpectrum) {
+      totalLength += chunk.length
+    }
+    if (totalLength === 0) return 0
+
+    if (this.pushScratch.length < totalLength) {
+      this.pushScratch = new Float32Array(totalLength)
+    }
+
+    const merged = this.pushScratch.length === totalLength
+      ? this.pushScratch
+      : this.pushScratch.subarray(0, totalLength)
+
+    let offset = 0
+    for (const chunk of pendingSpectrum) {
+      if (chunk.length > 0) {
+        merged.set(chunk, offset)
+        offset += chunk.length
+      }
+    }
+
+    this.nativeAnalyzer?.pushSamples(merged)
+    this.recordNativeBufferedSamples(totalLength)
+    return totalLength
+  }
+
+  private pushPendingSpectrumStereoChunks(pendingSpectrum: SpectrumStereoChunk[]): number {
+    if (pendingSpectrum.length === 0) return 0
+
+    if (pendingSpectrum.length === 1) {
+      const chunk = pendingSpectrum[0]
+      const length = Math.min(chunk.left.length, chunk.right.length)
+      if (length > 0) {
+        const left = chunk.left.length === length ? chunk.left : chunk.left.subarray(0, length)
+        const right = chunk.right.length === length ? chunk.right : chunk.right.subarray(0, length)
+        this.nativeAnalyzer?.pushStereoSamples(left, right)
+        this.recordNativeBufferedSamples(length)
+      }
+      return length
+    }
+
+    let totalLength = 0
+    for (const chunk of pendingSpectrum) {
+      totalLength += Math.min(chunk.left.length, chunk.right.length)
+    }
+    if (totalLength === 0) return 0
+
+    if (this.pushScratch.length < totalLength) {
+      this.pushScratch = new Float32Array(totalLength)
+    }
+    if (this.pushScratchRight.length < totalLength) {
+      this.pushScratchRight = new Float32Array(totalLength)
+    }
+
+    const mergedLeft = this.pushScratch.length === totalLength
+      ? this.pushScratch
+      : this.pushScratch.subarray(0, totalLength)
+    const mergedRight = this.pushScratchRight.length === totalLength
+      ? this.pushScratchRight
+      : this.pushScratchRight.subarray(0, totalLength)
+
+    let offset = 0
+    for (const chunk of pendingSpectrum) {
+      const length = Math.min(chunk.left.length, chunk.right.length)
+      if (length > 0) {
+        mergedLeft.set(chunk.left.subarray(0, length), offset)
+        mergedRight.set(chunk.right.subarray(0, length), offset)
+        offset += length
+      }
+    }
+
+    this.nativeAnalyzer?.pushStereoSamples(mergedLeft, mergedRight)
+    this.recordNativeBufferedSamples(totalLength)
+    return totalLength
+  }
+
+  private clearPendingSpectrumQueues(): void {
+    this.dataSource.getPendingSpectrumSamples()
+    this.dataSource.getPendingSpectrumStereoSamples()
+  }
+
+  private updateSmoothedMagnitudes(
+    rawMagnitudes: Float32Array,
+    dataLength: number,
+    smoothedMagnitudes: Float32Array,
+    smoothing: number,
+    bypassSmoothing: boolean,
+  ): number {
+    const count = Math.min(dataLength, rawMagnitudes.length, smoothedMagnitudes.length)
+    if (count <= 0) {
+      return 0
+    }
+
+    const smoothingAmount = clampSmoothing(smoothing)
+    for (let index = 0; index < count; index += 1) {
+      const rawDb = Number.isFinite(rawMagnitudes[index]) ? rawMagnitudes[index] : FFT_SILENCE_DB
+      if (bypassSmoothing) {
+        smoothedMagnitudes[index] = rawDb
+        continue
+      }
+
+      smoothedMagnitudes[index] = smoothingAmount * smoothedMagnitudes[index] + (1 - smoothingAmount) * rawDb
+      if (!Number.isFinite(smoothedMagnitudes[index])) {
+        smoothedMagnitudes[index] = FFT_SILENCE_DB
+      }
+    }
+
+    return count
+  }
+
+  private fillSpectrumPoints(
+    frequencyData: Float32Array,
+    dataLength: number,
+    width: number,
+    height: number,
+    minFrequency: number,
+    maxFrequency: number,
+    nyquist: number,
+    tiltDbPerOctave: number,
+    xOut: Float32Array,
+    yOut: Float32Array,
+    heatmapIntensityOut: Float32Array | null,
+    capturePeakInfo = false,
+  ): SpectrumPointFillResult {
+    const bufferLength = Math.min(dataLength, frequencyData.length)
+    if (bufferLength <= 0) {
+      return { pointCount: 0, peakInfo: null }
+    }
+    const binWidth = nyquist / bufferLength
+    const numPoints = Math.max(2, Math.floor(width))
+
+    for (let index = 0; index < numPoints; index += 1) {
+      const t0 = index / (numPoints - 1)
+      const t1 = Math.min(1, (index + 1) / (numPoints - 1))
+      const x = t0 * width
+
+      const frequency0 = this.frequencyAtPosition(t0, minFrequency, maxFrequency)
+      const frequency1 = this.frequencyAtPosition(t1, minFrequency, maxFrequency)
+      const centerFrequency = (frequency0 + frequency1) * 0.5
+      const bin0 = frequency0 / binWidth
+      const bin1 = frequency1 / binWidth
+      const centerBin = (bin0 + bin1) * 0.5
+      const binSpan = Math.abs(bin1 - bin0)
+      const resolvedPeak = (capturePeakInfo || binSpan > 1)
+        ? this.resolvePeakInRange(frequencyData, bin0, bin1, binWidth)
+        : null
+      const rawDb = binSpan <= 1
+        ? this.getInterpolatedValue(frequencyData, Math.min(centerBin, bufferLength - 1))
+        : (resolvedPeak?.rawDb ?? this.getInterpolatedValue(frequencyData, Math.min(centerBin, bufferLength - 1)))
+      const db = this.applyTilt(rawDb, centerFrequency, tiltDbPerOctave)
+
+      const normalized = (db - this.options.minDecibels) / (this.options.maxDecibels - this.options.minDecibels)
+      const clampedNormalized = Math.max(0, Math.min(1, normalized))
+
+      xOut[index] = x
+      yOut[index] = height - clampedNormalized * height
+      if (heatmapIntensityOut) {
+        heatmapIntensityOut[index] = Math.pow(normalizeHeatDb(db), HEATMAP_GAMMA)
+      }
+
+      if (capturePeakInfo) {
+        this.primaryPointDb[index] = db
+        this.primaryPointFrequency[index] = resolvedPeak?.frequencyHz ?? centerFrequency
+      }
+    }
+
+    return {
+      pointCount: numPoints,
+      peakInfo: capturePeakInfo ? this.selectPeakInfo(numPoints, height) : null,
+    }
+  }
+
+  private buildPeakInfoAt(index: number, height: number): SpectrumPeakInfo | null {
+    if (
+      index < 0
+      || index >= this.primaryPointDb.length
+      || index >= this.primaryPointFrequency.length
+      || index >= this.primaryPointX.length
+      || index >= this.primaryPointY.length
+    ) {
+      return null
+    }
+
+    const frequencyHz = this.primaryPointFrequency[index]
+    const db = this.primaryPointDb[index]
+    return {
+      db,
+      frequencyHz,
+      normalizedX: this.primaryPointX[index] / Math.max(1, this.canvas.width),
+      normalizedY: this.primaryPointY[index] / Math.max(1, height),
+      key: formatSpectrumPitchInfo(resolveSpectrumPitchInfo(frequencyHz)),
+    }
+  }
+
+  private isLocalPeak(index: number, pointCount: number): boolean {
+    const currentDb = this.primaryPointDb[index]
+    const previousDb = index > 0
+      ? this.primaryPointDb[index - 1]
+      : Number.NEGATIVE_INFINITY
+    const nextDb = index + 1 < pointCount
+      ? this.primaryPointDb[index + 1]
+      : Number.NEGATIVE_INFINITY
+
+    return currentDb >= previousDb
+      && currentDb >= nextDb
+      && (currentDb > previousDb || currentDb > nextDb)
+  }
+
+  private getPeakSelectionScore(index: number): number {
+    const frequencyHz = this.primaryPointFrequency[index]
+    const db = this.primaryPointDb[index]
+    if (!Number.isFinite(frequencyHz) || frequencyHz <= 0 || !Number.isFinite(db)) {
+      return Number.NEGATIVE_INFINITY
+    }
+
+    const referenceFrequencyHz = Math.max(1, this.options.minFrequency)
+    const octaveOffset = Math.max(0, Math.log2(frequencyHz / referenceFrequencyHz))
+    return db - octaveOffset * PEAK_SELECTION_LOW_FREQUENCY_BIAS_DB_PER_OCTAVE
+  }
+
+  private isBetterPeakIndex(candidateIndex: number, bestIndex: number): boolean {
+    const candidateScore = this.getPeakSelectionScore(candidateIndex)
+    const bestScore = this.getPeakSelectionScore(bestIndex)
+    if (candidateScore !== bestScore) {
+      return candidateScore > bestScore
+    }
+
+    const candidateDb = this.primaryPointDb[candidateIndex]
+    const bestDb = this.primaryPointDb[bestIndex]
+    if (candidateDb !== bestDb) {
+      return candidateDb > bestDb
+    }
+
+    return this.primaryPointFrequency[candidateIndex] < this.primaryPointFrequency[bestIndex]
+  }
+
+  private findBestPeakIndex(candidateIndices: number[]): number {
+    let bestIndex = candidateIndices[0]
+
+    for (let index = 1; index < candidateIndices.length; index += 1) {
+      const candidateIndex = candidateIndices[index]
+      if (this.isBetterPeakIndex(candidateIndex, bestIndex)) {
+        bestIndex = candidateIndex
+      }
+    }
+
+    return bestIndex
+  }
+
+  private findBestPointIndex(pointCount: number): number {
+    let bestIndex = 0
+
+    for (let index = 1; index < pointCount; index += 1) {
+      if (this.isBetterPeakIndex(index, bestIndex)) {
+        bestIndex = index
+      }
+    }
+
+    return bestIndex
+  }
+
+  private findBestNearbyPeakIndex(candidateIndices: number[], targetFrequencyHz: number): number {
+    let bestIndex = -1
+
+    for (const candidateIndex of candidateIndices) {
+      const candidateFrequencyHz = this.primaryPointFrequency[candidateIndex]
+      if (!Number.isFinite(candidateFrequencyHz) || candidateFrequencyHz <= 0) {
+        continue
+      }
+
+      const octaveDistance = Math.abs(Math.log2(candidateFrequencyHz / targetFrequencyHz))
+      if (octaveDistance > PEAK_SELECTION_MAX_DISTANCE_OCTAVES) {
+        continue
+      }
+
+      if (bestIndex === -1 || this.isBetterPeakIndex(candidateIndex, bestIndex)) {
+        bestIndex = candidateIndex
+      }
+    }
+
+    return bestIndex
+  }
+
+  private selectPeakInfo(pointCount: number, height: number): SpectrumPeakInfo | null {
+    if (pointCount <= 0) {
+      this.lastSelectedPeakInfo = null
+      return null
+    }
+
+    const candidateIndices: number[] = []
+    for (let index = 0; index < pointCount; index += 1) {
+      if (this.isLocalPeak(index, pointCount)) {
+        candidateIndices.push(index)
+      }
+    }
+
+    if (candidateIndices.length === 0) {
+      candidateIndices.push(this.findBestPointIndex(pointCount))
+    }
+
+    const strongestIndex = this.findBestPeakIndex(candidateIndices)
+    const strongestScore = this.getPeakSelectionScore(strongestIndex)
+
+    const previousPeak = this.lastSelectedPeakInfo
+    let selectedIndex = strongestIndex
+
+    if (previousPeak && Number.isFinite(previousPeak.frequencyHz) && previousPeak.frequencyHz > 0) {
+      const stickyIndex = this.findBestNearbyPeakIndex(candidateIndices, previousPeak.frequencyHz)
+
+      if (
+        stickyIndex !== -1
+        && strongestScore < (
+          this.getPeakSelectionScore(stickyIndex)
+          + PEAK_SELECTION_SWITCH_THRESHOLD_DB
+          + (
+            this.primaryPointFrequency[strongestIndex] > this.primaryPointFrequency[stickyIndex]
+              ? PEAK_SELECTION_UPWARD_SWITCH_THRESHOLD_DB
+              : 0
+          )
+        )
+      ) {
+        selectedIndex = stickyIndex
+      }
+    }
+
+    const peakInfo = this.buildPeakInfoAt(selectedIndex, height)
+    this.lastSelectedPeakInfo = peakInfo
+    return peakInfo
+  }
+
+  private emitPeakInfo(peakInfo: SpectrumPeakInfo | null): void {
+    if (peakInfo === null) {
+      this.lastSelectedPeakInfo = null
+    }
+    this.options.onPeakInfo(peakInfo)
+  }
+
+  private renderHeatmap(xPoints: Float32Array, yPoints: Float32Array, heatmapIntensity: Float32Array, pointCount: number, width: number, height: number): void {
+    const baseColor = this.options.heatBaseColor
+    const parsedBaseColor = baseColor ? parseColorToRgba(baseColor) : null
+    const shouldRenderBaseColor = !!baseColor && baseColor !== 'transparent' && (!parsedBaseColor || parsedBaseColor.a > 0)
+
+    for (let index = 0; index < pointCount; index += 1) {
+      const x = Math.floor(xPoints[index])
+      const y = yPoints[index]
+      const nextX = index < pointCount - 1 ? Math.floor(xPoints[index + 1]) : width
+      const columnWidth = Math.max(1, nextX - x)
+      const fillHeight = height - y
+      if (fillHeight <= 0) {
+        continue
+      }
+
+      if (shouldRenderBaseColor) {
+        this.ctx.fillStyle = baseColor
+        this.ctx.fillRect(x, Math.floor(y), columnWidth, Math.ceil(fillHeight))
+      }
+
+      const lutIndex = Math.round(heatmapIntensity[index] * 255)
+      const r = this.heatLut[lutIndex * 4]
+      const g = this.heatLut[lutIndex * 4 + 1]
+      const b = this.heatLut[lutIndex * 4 + 2]
+      const a = Math.round((this.heatLut[lutIndex * 4 + 3] * heatmapIntensity[index]))
+      if (a <= 0) {
+        continue
+      }
+
+      this.ctx.fillStyle = a >= 255
+        ? `rgb(${r}, ${g}, ${b})`
+        : `rgba(${r}, ${g}, ${b}, ${Number((a / 255).toFixed(3))})`
+      this.ctx.fillRect(x, Math.floor(y), columnWidth, Math.ceil(fillHeight))
+    }
+  }
+
+  private renderGradientFill(xPoints: Float32Array, yPoints: Float32Array, pointCount: number, width: number, height: number): void {
+    this.ctx.beginPath()
+    this.ctx.moveTo(xPoints[0], yPoints[0])
+
+    for (let index = 1; index < pointCount; index += 1) {
+      this.ctx.lineTo(xPoints[index], yPoints[index])
+    }
+
+    this.ctx.lineTo(width, height)
+    this.ctx.lineTo(0, height)
+    this.ctx.closePath()
+
+    const gradient = this.ctx.createLinearGradient(0, height, 0, 0)
+    const colors = this.options.gradientColors
+    for (let index = 0; index < colors.length; index += 1) {
+      gradient.addColorStop(index / (colors.length - 1), colors[index])
+    }
+
+    this.ctx.fillStyle = gradient
+    this.ctx.fill()
+  }
+
+  private renderStroke(xPoints: Float32Array, yPoints: Float32Array, pointCount: number, color: string, lineWidth: number): void {
+    if (pointCount === 0) {
       return
     }
 
-    // Get frequency data from native FFT
-    if (!isNativeAvailable()) {
-      const fallbackNyquist = this.sampleRate / 2
-      const fallbackMinFrequency = Math.max(1, Math.min(options.minFrequency, fallbackNyquist))
-      const fallbackMaxFrequency = Math.max(fallbackMinFrequency + 1, Math.min(options.maxFrequency, fallbackNyquist))
-      warnNativeUnavailableOnce('SpectrumAnalyzer')
-      this.renderStaticLayer(fallbackMinFrequency, fallbackMaxFrequency)
+    this.ctx.beginPath()
+    this.ctx.moveTo(xPoints[0], yPoints[0])
+    for (let index = 1; index < pointCount; index += 1) {
+      this.ctx.lineTo(xPoints[index], yPoints[index])
+    }
+
+    this.ctx.lineWidth = lineWidth
+    this.ctx.strokeStyle = color
+    this.ctx.lineCap = 'round'
+    this.ctx.lineJoin = 'round'
+    this.ctx.stroke()
+  }
+
+  private drawFrame = (): void => {
+    const { canvas, options } = this
+    const width = canvas.width
+    const height = canvas.height
+    const dpr = window.devicePixelRatio || 1
+    if (width <= 0 || height <= 0) {
       return
     }
 
@@ -422,139 +1082,148 @@ export class SpectrumAnalyzer {
     const minFrequency = Math.max(1, Math.min(options.minFrequency, nyquist))
     const maxFrequency = Math.max(minFrequency + 1, Math.min(options.maxFrequency, nyquist))
 
-    const isActive = this.isActive()
-    const isPlaying = this.dataSource.isPlaying()
-
-    if (!isActive) {
-      this.dataSource.getPendingSpectrumSamples()
-      nativeSpectrum.reset()
+    if (!this.dataSource.isPlaying()) {
+      this.clearPendingSpectrumQueues()
+      if (this.isNativeAvailable()) {
+        this.nativeAnalyzer?.reset()
+      }
+      this.resetAnalyzerBuffers()
       this.renderStaticLayer(minFrequency, maxFrequency)
+      this.emitPeakInfo(null)
       return
     }
 
-    const pendingSpectrum = this.dataSource.getPendingSpectrumSamples()
-    const monoData = isPlaying
-      ? this.mergePendingSpectrumChunks(pendingSpectrum)
-      : createMonoSilenceChunk(this.sampleRate, this.options.fftSize)
-    if (!monoData) {
+    let primaryData: Float32Array | null = null
+    let heatmapData: Float32Array | null = null
+    let secondaryData: Float32Array | null = null
+    let primaryDataLength = 0
+    let heatmapDataLength = 0
+    let secondaryDataLength = 0
+
+    if (!this.isNativeAvailable()) {
+      // Native DSP required; don't touch the sample queues (nothing can process them)
+      // and warn once instead of logging every frame.
+      warnNativeUnavailableOnce('SpectrumAnalyzer')
+      this.renderStaticLayer(minFrequency, maxFrequency)
+      this.emitPeakInfo(null)
       return
     }
 
-    const nativeResult = nativeSpectrum.process(monoData)
-    if (!nativeResult) {
+    const receivedNativeSamples = options.showSideLine
+      ? this.pushPendingSpectrumStereoChunks(this.dataSource.getPendingSpectrumStereoSamples())
+      : this.pushPendingSpectrumChunks(this.dataSource.getPendingSpectrumSamples())
+
+    this.ensureMagnitudeBufferSize()
+    primaryData = this.nativeMagnitudeBuffer
+    primaryDataLength = this.nativeAnalyzer?.fillMagnitudes(this.nativeMagnitudeBuffer) ?? 0
+
+    if (receivedNativeSamples > 0 || !this.nativeHasSpectrumData) {
+      heatmapDataLength = this.nativeAnalyzer?.fillRawMagnitudes(this.nativeRawMagnitudeBuffer) ?? 0
+      if (heatmapDataLength > 0) {
+        this.updateSmoothedMagnitudes(
+          this.nativeRawMagnitudeBuffer,
+          heatmapDataLength,
+          this.heatmapMagnitudeBuffer,
+          options.heatmapSmoothing,
+          this.nativeBufferedSamples < options.fftSize,
+        )
+        this.nativeHasSpectrumData = true
+      }
+    } else if (this.nativeHasSpectrumData) {
+      heatmapDataLength = this.heatmapMagnitudeBuffer.length
+    }
+
+    heatmapData = this.nativeHasSpectrumData ? this.heatmapMagnitudeBuffer : null
+
+    if (options.showSideLine) {
+      secondaryData = this.nativeSideMagnitudeBuffer
+      secondaryDataLength = this.nativeAnalyzer?.fillSideMagnitudes(this.nativeSideMagnitudeBuffer) ?? 0
+    }
+
+    if (!primaryData || primaryDataLength === 0) {
+      this.renderStaticLayer(minFrequency, maxFrequency)
+      this.emitPeakInfo(null)
       return
     }
 
-    let frequencyData = nativeResult
-    const bufferLength = frequencyData.length
-
-    if (bufferLength === 0) {
+    if (options.displayMode === 'bars') {
+      this.renderStaticLayer(minFrequency, maxFrequency)
+      this.drawBars(primaryData, primaryDataLength, minFrequency, maxFrequency, dpr)
+      this.emitPeakInfo(null)
       return
     }
+
+    const pointCount = Math.max(2, Math.floor(width))
+    this.ensurePointBuffers(pointCount)
+    const primaryRender = this.fillSpectrumPoints(
+      primaryData,
+      primaryDataLength,
+      width,
+      height,
+      minFrequency,
+      maxFrequency,
+      nyquist,
+      options.tiltDbPerOctave,
+      this.primaryPointX,
+      this.primaryPointY,
+      null,
+      options.capturePeakInfo,
+    )
+    const heatmapRender = heatmapData && heatmapDataLength > 0
+      ? this.fillSpectrumPoints(
+        heatmapData,
+        heatmapDataLength,
+        width,
+        height,
+        minFrequency,
+        maxFrequency,
+        nyquist,
+        options.heatmapTiltDbPerOctave,
+        this.primaryPointX,
+        this.heatmapPointY,
+        this.primaryPointHeatmap,
+      )
+      : { pointCount: 0, peakInfo: null }
+
+    const secondaryRender = secondaryData && secondaryDataLength > 0
+      ? this.fillSpectrumPoints(
+        secondaryData,
+        secondaryDataLength,
+        width,
+        height,
+        minFrequency,
+        maxFrequency,
+        nyquist,
+        options.tiltDbPerOctave,
+        this.secondaryPointX,
+        this.secondaryPointY,
+        null,
+      )
+      : { pointCount: 0, peakInfo: null }
 
     this.renderStaticLayer(minFrequency, maxFrequency)
 
-    // Calculate frequency mapping
-    const binWidth = nyquist / bufferLength
-
-    if (options.displayMode === 'bars') {
-      this.drawBars(frequencyData, bufferLength, binWidth, minFrequency, maxFrequency)
-      return
+    if (options.heatmapFill && heatmapRender.pointCount > 0) {
+      const renderPointCount = Math.min(primaryRender.pointCount, heatmapRender.pointCount)
+      this.renderHeatmap(
+        this.primaryPointX,
+        this.primaryPointY,
+        this.primaryPointHeatmap,
+        renderPointCount,
+        width,
+        height,
+      )
+    } else if (options.fillGradient && primaryRender.pointCount > 0) {
+      this.renderGradientFill(this.primaryPointX, this.primaryPointY, primaryRender.pointCount, width, height)
     }
 
-    // Build one point per horizontal pixel and preserve local peaks.
-    const points: { x: number; y: number; heatmapIntensity: number }[] = []
-    const numPoints = Math.max(2, Math.floor(width))
-
-    for (let i = 0; i < numPoints; i++) {
-      const t0 = i / (numPoints - 1)
-      const t1 = Math.min(1, (i + 1) / (numPoints - 1))
-      const x = t0 * width
-
-      const frequency0 = this.frequencyAtPosition(t0, minFrequency, maxFrequency)
-      const frequency1 = this.frequencyAtPosition(t1, minFrequency, maxFrequency)
-      const centerFrequency = (frequency0 + frequency1) * 0.5
-      const bin0 = frequency0 / binWidth
-      const bin1 = frequency1 / binWidth
-
-      const centerBin = (bin0 + bin1) * 0.5
-      const binSpan = Math.abs(bin1 - bin0)
-
-      // Low frequencies can look stepped because each pixel maps to <1 FFT bin.
-      // Use sub-bin interpolation there, and keep peak-hold for wider spans.
-      const rawDb = binSpan <= 1
-        ? this.getInterpolatedValue(frequencyData, Math.min(centerBin, bufferLength - 1))
-        : this.getPeakInRange(frequencyData, bin0, bin1)
-      const db = this.applyTilt(rawDb, centerFrequency)
-      const heatmapDb = this.applyTilt(rawDb, centerFrequency, options.heatmapTiltDbPerOctave)
-
-      // Normalize to 0-1 range
-      const normalized = (db - options.minDecibels) / (options.maxDecibels - options.minDecibels)
-      const heatmapNormalized = (heatmapDb - options.minDecibels) / (options.maxDecibels - options.minDecibels)
-      const y = height - Math.max(0, Math.min(1, normalized)) * height
-      const heatmapIntensity = Math.pow(Math.max(0, Math.min(1, heatmapNormalized)), HEATMAP_GAMMA)
-
-      points.push({ x, y, heatmapIntensity })
+    this.renderStroke(this.primaryPointX, this.primaryPointY, primaryRender.pointCount, options.lineColor, options.lineWidth * dpr)
+    if (secondaryRender.pointCount > 0) {
+      const secondaryLineWidth = Math.max(dpr, options.lineWidth * SIDE_LINE_WIDTH_RATIO * dpr)
+      this.renderStroke(this.secondaryPointX, this.secondaryPointY, secondaryRender.pointCount, options.secondaryLineColor, secondaryLineWidth)
     }
 
-    // Draw filled area
-    if (options.heatmapFill && points.length > 0) {
-      // Per-column heat-colored fill — each frequency colored by its intensity
-      for (let i = 0; i < points.length; i++) {
-        const x = Math.floor(points[i].x)
-        const y = points[i].y
-        const nextX = i < points.length - 1 ? Math.floor(points[i + 1].x) : width
-        const colWidth = Math.max(1, nextX - x)
-        const fillHeight = height - y
-        if (fillHeight <= 0) continue
-
-        const intensity = points[i].heatmapIntensity
-        const li = Math.round(intensity * 255)
-        const r = HEAT_LUT[li * 3]
-        const g = HEAT_LUT[li * 3 + 1]
-        const b = HEAT_LUT[li * 3 + 2]
-
-        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.85)`
-        ctx.fillRect(x, Math.floor(y), colWidth, Math.ceil(fillHeight))
-      }
-    } else if (options.fillGradient && points.length > 0) {
-      ctx.beginPath()
-      ctx.moveTo(points[0].x, points[0].y)
-
-      for (let i = 1; i < points.length; i++) {
-        ctx.lineTo(points[i].x, points[i].y)
-      }
-
-      // Complete path for fill
-      ctx.lineTo(width, height)
-      ctx.lineTo(0, height)
-      ctx.closePath()
-
-      // Create gradient
-      const gradient = ctx.createLinearGradient(0, height, 0, 0)
-      const colors = options.gradientColors
-      for (let i = 0; i < colors.length; i++) {
-        gradient.addColorStop(i / (colors.length - 1), colors[i])
-      }
-
-      ctx.fillStyle = gradient
-      ctx.fill()
-    }
-
-    // Draw the line on top
-    ctx.beginPath()
-    ctx.moveTo(points[0].x, points[0].y)
-
-    for (let i = 1; i < points.length; i++) {
-      ctx.lineTo(points[i].x, points[i].y)
-    }
-
-    ctx.lineWidth = options.lineWidth * dpr
-    ctx.strokeStyle = options.lineColor
-    ctx.lineCap = 'round'
-    ctx.lineJoin = 'round'
-    ctx.stroke()
-
+    this.emitPeakInfo(primaryRender.peakInfo)
   }
 
   private renderStaticLayer(minFrequency: number, maxFrequency: number): void {
@@ -602,12 +1271,11 @@ export class SpectrumAnalyzer {
     const { canvas, options } = this
     const width = canvas.width
     const height = canvas.height
-    const dpr = getCanvasBackingPixelRatio(canvas)
+    const dpr = window.devicePixelRatio || 1
 
     ctx.strokeStyle = options.gridColor
     ctx.lineWidth = dpr
 
-    // Horizontal dB lines
     const dbSteps = [-80, -60, -40, -20, 0]
     ctx.fillStyle = options.gridColor
     ctx.font = `${10 * dpr}px monospace`
@@ -625,7 +1293,6 @@ export class SpectrumAnalyzer {
       ctx.fillText(`${db}dB`, 4 * dpr, y - 2 * dpr)
     }
 
-    // Vertical frequency lines (log scale)
     const freqSteps = [50, 100, 200, 500, 1000, 2000, 5000, 10000]
     ctx.textAlign = 'center'
 
@@ -655,21 +1322,16 @@ export class SpectrumAnalyzer {
   dispose(): void {
     this.stop()
     this.frameLoop.dispose()
-    if (this.unsubscribePlaybackState) {
-      this.unsubscribePlaybackState()
-      this.unsubscribePlaybackState = null
+    if (this.unsubscribeSessionChange) {
+      this.unsubscribeSessionChange()
+      this.unsubscribeSessionChange = null
     }
 
-    // Reset native module state
-    if (isNativeAvailable()) {
-      nativeSpectrum.reset()
+    if (this.isNativeAvailable()) {
+      this.nativeAnalyzer?.reset()
     }
-    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
-    this.staticLayerCanvas.width = 0
-    this.staticLayerCanvas.height = 0
-    this.canvas.width = 0
-    this.canvas.height = 0
-    this.staticLayerKey = ''
+    this.resetAnalyzerBuffers()
     this.lastSampleRate = 0
+    this.emitPeakInfo(null)
   }
 }

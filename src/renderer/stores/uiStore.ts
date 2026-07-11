@@ -437,6 +437,7 @@ interface UIStore {
   showPipelineShelf: boolean
   showLyricsShelf: boolean
   lyricsShelfExpanded: boolean
+  fullscreenLyricsVisible: boolean
   isAnalyzerEditMode: boolean
   isAnalyzerRackVisible: boolean
   isFullscreen: boolean
@@ -471,6 +472,8 @@ interface UIStore {
   toggleLyricsShelf: () => void
   setLyricsShelfExpanded: (expanded: boolean) => void
   closeLyricsShelf: () => void
+  setFullscreenLyricsVisible: (visible: boolean) => void
+  toggleFullscreenLyricsVisible: () => void
   openAnalyzerEditMode: () => void
   closeAnalyzerEditMode: () => void
   toggleAnalyzerEditMode: () => void
@@ -531,6 +534,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   showPipelineShelf: false,
   showLyricsShelf: false,
   lyricsShelfExpanded: false,
+  fullscreenLyricsVisible: false,
   isAnalyzerEditMode: false,
   isAnalyzerRackVisible: initialAnalyzerRackVisible,
   isFullscreen: false,
@@ -641,6 +645,10 @@ export const useUIStore = create<UIStore>((set, get) => ({
     showLyricsShelf: false,
     lyricsShelfExpanded: false
   }),
+  setFullscreenLyricsVisible: (visible) => set({ fullscreenLyricsVisible: Boolean(visible) }),
+  toggleFullscreenLyricsVisible: () => set((state) => ({
+    fullscreenLyricsVisible: !state.fullscreenLyricsVisible
+  })),
   openAnalyzerEditMode: () => set({ isAnalyzerEditMode: true }),
   closeAnalyzerEditMode: () => set({ isAnalyzerEditMode: false }),
   toggleAnalyzerEditMode: () => set((s) => ({ isAnalyzerEditMode: !s.isAnalyzerEditMode })),
@@ -877,7 +885,8 @@ export const useUIStore = create<UIStore>((set, get) => ({
       showInfoSidebar: state.showInfoSidebar,
       showPipelineShelf: state.showPipelineShelf,
       showLyricsShelf: state.showLyricsShelf,
-      lyricsShelfExpanded: state.lyricsShelfExpanded
+      lyricsShelfExpanded: state.lyricsShelfExpanded,
+      fullscreenLyricsVisible: state.fullscreenLyricsVisible
     }
   },
   restoreSession: (snapshot) => {
@@ -891,6 +900,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
       showPipelineShelf: Boolean(snapshot.showPipelineShelf),
       showLyricsShelf,
       lyricsShelfExpanded: showLyricsShelf && Boolean(snapshot.lyricsShelfExpanded),
+      fullscreenLyricsVisible: Boolean(snapshot.fullscreenLyricsVisible),
       isFullscreen: false,
       isQuickLaunchOpen: false,
       pendingLibrarySearchQuery: null,

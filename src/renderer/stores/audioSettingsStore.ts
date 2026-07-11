@@ -5,6 +5,16 @@ import {
   normalizeStereoUpmixMode,
   type StereoUpmixMode,
 } from '../utils/sourceChannelLayout'
+import {
+  buildVirtualSpeakerLayout,
+  normalizeSpatialLayoutPresetId,
+  normalizeSpatialMode,
+  normalizeVirtualSpeakers,
+  type SpatialLayoutPresetId,
+  type SpatialMode,
+  type VirtualSpeaker,
+} from '../utils/virtualSpeakerLayout'
+import type { SpatialStatus } from '../audio/AudioEngine'
 import type { NativeAudioCapabilities, PlaybackOutputMode } from '../../types/nativeAudio'
 
 export interface AudioDevice {
@@ -63,6 +73,10 @@ interface AudioSettingsStore {
   includeLfeInDownmix: boolean
   stereoUpmixMode: StereoUpmixMode
   channelRoutingMap: number[] | null
+  spatialMode: SpatialMode
+  spatialLayoutPresetId: SpatialLayoutPresetId
+  customVirtualSpeakers: VirtualSpeaker[] | null
+  spatialStatus: SpatialStatus
   normalizationEnabled: boolean
   normalizationTargetLufs: number
   replayGainScanEnabled: boolean
@@ -88,6 +102,11 @@ interface AudioSettingsStore {
   setStereoUpmixMode: (mode: StereoUpmixMode) => Promise<void>
   setChannelRoutingMap: (map: number[] | null) => Promise<void>
   resetChannelRoutingMap: () => Promise<void>
+  setSpatialMode: (mode: SpatialMode) => Promise<void>
+  setSpatialLayoutPreset: (presetId: SpatialLayoutPresetId) => Promise<void>
+  setVirtualSpeakerAzimuth: (speakerId: string, azimuthDeg: number) => Promise<void>
+  setVirtualSpeakerElevation: (speakerId: string, elevationDeg: number) => Promise<void>
+  resetSpatialSettings: () => Promise<void>
   setNormalizationEnabled: (enabled: boolean) => void
   setNormalizationTargetLufs: (targetLufs: number) => void
   setReplayGainScanEnabled: (enabled: boolean) => Promise<void>
@@ -112,6 +131,8 @@ const CALIBRATION_INPUT_STORAGE_KEY = 'astra-audio-calibration-input-device'
 const MULTICHANNEL_STORAGE_KEY = 'astra-audio-multichannel-enabled'
 const INCLUDE_LFE_DOWNMIX_STORAGE_KEY = 'astra-audio-include-lfe-downmix-v1'
 const STEREO_UPMIX_MODE_STORAGE_KEY = 'astra-audio-stereo-upmix-mode-v1'
+const SPATIAL_MODE_STORAGE_KEY = 'astra-audio-spatial-mode-v1'
+const SPATIAL_LAYOUT_STORAGE_KEY = 'astra-audio-spatial-layout-v1'
 const ROUTING_STORAGE_KEY = 'astra-audio-channel-routing-map'
 export const NORMALIZATION_ENABLED_STORAGE_KEY = 'astra-audio-normalization-enabled-v1'
 export const NORMALIZATION_TARGET_STORAGE_KEY = 'astra-audio-normalization-target-lufs-v1'
@@ -990,6 +1011,17 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     mediaDeviceChangeListenerAttached = true
   }
 
+  const persistSpatialLayout = (
+    presetId: SpatialLayoutPresetId,
+    customSpeakers: VirtualSpeaker[] | null
+  ): void => {
+    localStorage.setItem(SPATIAL_LAYOUT_STORAGE_KEY, JSON.stringify({ presetId, customSpeakers }))
+  }
+
+  audioEngine.on('spatialStatusChange', (status) => {
+    set({ spatialStatus: status as SpatialStatus })
+  })
+
   const initialDisableGaplessPrebufferDev = readDevDisableGaplessPrebuffer()
   const initialDisableStandardAnalysisGraphDev = readDevDisableStandardAnalysisGraph()
   audioEngine.setDisableStandardAnalysisGraphDev(initialDisableStandardAnalysisGraphDev)
@@ -1009,6 +1041,10 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     includeLfeInDownmix: false,
     stereoUpmixMode: 'off',
     channelRoutingMap: null,
+    spatialMode: 'off',
+    spatialLayoutPresetId: '5.1',
+    customVirtualSpeakers: null,
+    spatialStatus: { state: 'idle', sampleRate: null, taps: 0, message: null },
     normalizationEnabled: true,
     normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
     replayGainScanEnabled: false,
@@ -1268,6 +1304,74 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
 
     resetChannelRoutingMap: async () => {
       await get().setChannelRoutingMap(null)
+    },
+
+    setSpatialMode: async (mode: SpatialMode) => {
+      const normalized = normalizeSpatialMode(mode)
+      set({ spatialMode: normalized })
+      localStorage.setItem(SPATIAL_MODE_STORAGE_KEY, normalized)
+      if (normalized === 'binaural') {
+        const state = get()
+        await audioEngine.setVirtualSpeakers(
+          buildVirtualSpeakerLayout(state.spatialLayoutPresetId, state.customVirtualSpeakers)
+        )
+      }
+      await audioEngine.setSpatialMode(normalized)
+      set({ spatialStatus: audioEngine.getSpatialStatus() })
+    },
+
+    setSpatialLayoutPreset: async (presetId: SpatialLayoutPresetId) => {
+      const normalized = normalizeSpatialLayoutPresetId(presetId)
+      set({ spatialLayoutPresetId: normalized })
+      persistSpatialLayout(normalized, get().customVirtualSpeakers)
+      await audioEngine.setVirtualSpeakers(
+        buildVirtualSpeakerLayout(normalized, get().customVirtualSpeakers)
+      )
+    },
+
+    // Store state updates synchronously for immediate visual feedback; the
+    // Virtual Speaker Room throttles its calls to this action while dragging.
+    setVirtualSpeakerAzimuth: async (speakerId: string, azimuthDeg: number) => {
+      const state = get()
+      const active = buildVirtualSpeakerLayout(state.spatialLayoutPresetId, state.customVirtualSpeakers)
+      const index = active.findIndex((sp) => sp.id === speakerId)
+      if (index < 0) return
+      const edited = normalizeVirtualSpeakers(
+        active.map((sp, i) => (i === index ? { ...sp, azimuth: azimuthDeg } : sp))
+      )
+      if (!edited) return
+      // Editing a preset speaker turns the layout into a Custom copy.
+      set({ spatialLayoutPresetId: 'custom', customVirtualSpeakers: edited })
+      persistSpatialLayout('custom', edited)
+      await audioEngine.setVirtualSpeakers(edited)
+    },
+
+    setVirtualSpeakerElevation: async (speakerId: string, elevationDeg: number) => {
+      const state = get()
+      const active = buildVirtualSpeakerLayout(state.spatialLayoutPresetId, state.customVirtualSpeakers)
+      const index = active.findIndex((sp) => sp.id === speakerId)
+      if (index < 0) return
+      const edited = normalizeVirtualSpeakers(
+        active.map((sp, i) => (i === index ? { ...sp, elevation: elevationDeg } : sp))
+      )
+      if (!edited) return
+      // Editing a preset speaker turns the layout into a Custom copy.
+      set({ spatialLayoutPresetId: 'custom', customVirtualSpeakers: edited })
+      persistSpatialLayout('custom', edited)
+      await audioEngine.setVirtualSpeakers(edited)
+    },
+
+    resetSpatialSettings: async () => {
+      localStorage.removeItem(SPATIAL_MODE_STORAGE_KEY)
+      localStorage.removeItem(SPATIAL_LAYOUT_STORAGE_KEY)
+      set({ spatialMode: 'off', spatialLayoutPresetId: '5.1', customVirtualSpeakers: null })
+      try {
+        await audioEngine.setVirtualSpeakers(buildVirtualSpeakerLayout('5.1', null))
+        await audioEngine.setSpatialMode('off')
+      } catch (error) {
+        console.warn('Failed to reset spatial mode:', error)
+      }
+      set({ spatialStatus: audioEngine.getSpatialStatus() })
     },
 
     setNormalizationEnabled: (enabled: boolean) => {
@@ -1719,6 +1823,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       localStorage.removeItem(MULTICHANNEL_STORAGE_KEY)
       localStorage.removeItem(INCLUDE_LFE_DOWNMIX_STORAGE_KEY)
       localStorage.removeItem(STEREO_UPMIX_MODE_STORAGE_KEY)
+      localStorage.removeItem(SPATIAL_MODE_STORAGE_KEY)
+      localStorage.removeItem(SPATIAL_LAYOUT_STORAGE_KEY)
       localStorage.removeItem(ROUTING_STORAGE_KEY)
       localStorage.removeItem(NORMALIZATION_ENABLED_STORAGE_KEY)
       localStorage.removeItem(NORMALIZATION_TARGET_STORAGE_KEY)
@@ -1750,6 +1856,13 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         await audioEngine.setStereoUpmixMode('off')
       } catch (error) {
         console.warn('Failed to reset stereo upmix mode:', error)
+      }
+
+      try {
+        await audioEngine.setSpatialMode('off')
+        await audioEngine.setVirtualSpeakers(buildVirtualSpeakerLayout('5.1', null))
+      } catch (error) {
+        console.warn('Failed to reset spatial mode:', error)
       }
 
       try {
@@ -1819,6 +1932,10 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         includeLfeInDownmix: false,
         stereoUpmixMode: 'off',
         channelRoutingMap: null,
+        spatialMode: 'off',
+        spatialLayoutPresetId: '5.1',
+        customVirtualSpeakers: null,
+        spatialStatus: audioEngine.getSpatialStatus(),
         normalizationEnabled: true,
         normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
         replayGainScanEnabled: false,
@@ -1943,6 +2060,31 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         localStorage.getItem(STEREO_UPMIX_MODE_STORAGE_KEY)
       )
       await get().setStereoUpmixMode(savedStereoUpmixMode)
+
+      const savedSpatialLayoutRaw = localStorage.getItem(SPATIAL_LAYOUT_STORAGE_KEY)
+      if (savedSpatialLayoutRaw) {
+        try {
+          const parsed = JSON.parse(savedSpatialLayoutRaw) as {
+            presetId?: unknown
+            customSpeakers?: unknown
+          }
+          set({
+            spatialLayoutPresetId: normalizeSpatialLayoutPresetId(parsed?.presetId),
+            customVirtualSpeakers: normalizeVirtualSpeakers(parsed?.customSpeakers),
+          })
+        } catch {
+          localStorage.removeItem(SPATIAL_LAYOUT_STORAGE_KEY)
+        }
+      }
+      const savedSpatialMode = normalizeSpatialMode(localStorage.getItem(SPATIAL_MODE_STORAGE_KEY))
+      if (savedSpatialMode === 'binaural') {
+        await get().setSpatialMode('binaural')
+      } else {
+        // Keep the engine's speaker list warm so enabling later is instant.
+        await audioEngine.setVirtualSpeakers(
+          buildVirtualSpeakerLayout(get().spatialLayoutPresetId, get().customVirtualSpeakers)
+        )
+      }
 
       const savedRoutingMap = localStorage.getItem(ROUTING_STORAGE_KEY)
       if (savedRoutingMap) {

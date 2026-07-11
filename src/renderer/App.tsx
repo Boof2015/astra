@@ -18,9 +18,11 @@ import AssociatedOpenCue from './components/layout/AssociatedOpenCue'
 import ParallaxSinkMode from './components/layout/ParallaxSinkMode'
 import ParallaxIncomingPairCard from './components/layout/ParallaxIncomingPairCard'
 import PhoneRemoteIncomingPairCard from './components/layout/PhoneRemoteIncomingPairCard'
+import PhoneSyncConflictResolverModal from './components/sync/PhoneSyncConflictResolverModal'
 import { runHostOutputCalibration } from './audio/parallaxCalibration'
 import ControllerHints from './components/layout/ControllerHints'
 import ControllerFocusRing from './components/layout/ControllerFocusRing'
+import ControllerRadialMenu from './components/layout/ControllerRadialMenu'
 import LibraryIntegrityPanel from './components/library/LibraryIntegrityPanel'
 import TrackIntegrityResultModal from './components/library/TrackIntegrityResultModal'
 import MetadataEditorPanel from './components/metadata/MetadataEditorPanel'
@@ -391,10 +393,16 @@ function App() {
     const unsubscribeBackfill = window.electronAPI.library.onAudioMetadataBackfillComplete(() => {
       void useLibraryStore.getState().loadLibrary()
     })
+    // A mobile LAN sync mutates favorites/playlists in the main process.
+    const unsubscribeExternalLibraryMutation = window.electronAPI.library.onExternalLibraryMutation(() => {
+      void useLibraryStore.getState().loadFavorites()
+      void usePlaylistStore.getState().loadPlaylists()
+    })
     return () => {
       didUnmount = true
       unsubscribeFileCreatedAtBackfill()
       unsubscribeBackfill()
+      unsubscribeExternalLibraryMutation()
       unsubscribeAssociatedOpenFiles()
       sessionPersistenceCleanup?.()
       if (!associatedOpenReady) {
@@ -497,6 +505,7 @@ function App() {
         <ParallaxSinkMode />
         <ParallaxIncomingPairCard />
         <PhoneRemoteIncomingPairCard />
+        <PhoneSyncConflictResolverModal />
         <DecodeFallbackCue />
         <OutputDelayCue />
         <AssociatedOpenCue />
@@ -509,7 +518,13 @@ function App() {
         <CollectionQueueContextMenu />
         {isFullscreen && <FullscreenMode />}
         <ControllerFocusRing active={controllerInput.active} />
-        <ControllerHints {...controllerInput} />
+        <ControllerRadialMenu
+          active={controllerInput.active}
+          family={controllerInput.family}
+          canOpenContext={controllerInput.canOpenContext}
+          radialMenu={controllerInput.radialMenu}
+        />
+        <ControllerHints active={controllerInput.active} family={controllerInput.family} />
       </div>
     </div>
   )

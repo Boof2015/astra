@@ -1,4 +1,5 @@
-export type RemoteStreamSourceType = 'subsonic' | 'jellyfin'
+export type ProgressiveStreamSourceType = 'local' | 'subsonic' | 'jellyfin'
+export type RemoteStreamSourceType = ProgressiveStreamSourceType
 
 export type RemoteLoadStage = 'downloading' | 'streaming' | 'complete' | 'failed'
 
@@ -26,6 +27,7 @@ export interface RemoteStreamInfo {
   sampleRate: number
   channels: number
   durationSeconds: number | null
+  startTimeSeconds: number
   initialChunk?: RemoteStreamChunk | null
 }
 
@@ -50,6 +52,7 @@ export type RemoteStreamEvent =
       sampleRate: number
       channels: number
       durationSeconds: number | null
+      startTimeSeconds: number
     }
   | {
       sessionId: number
@@ -76,3 +79,8 @@ export type RemoteStreamEvent =
       decodedFrames: number
       decodedSeconds: number
     }
+
+export type ProgressiveAudioLoadProgress = RemoteAudioLoadProgress
+export type ProgressiveStreamInfo = RemoteStreamInfo
+export type ProgressiveStreamChunk = RemoteStreamChunk
+export type ProgressiveStreamEvent = RemoteStreamEvent

@@ -3,6 +3,7 @@ import type { AppBuildInfo } from '../../../types/appBuildInfo'
 import { useUpdateStore } from '../../stores/updateStore'
 import { useLocalApiSettingsStore } from '../../stores/localApiSettingsStore'
 import ParallaxPresencePill from './ParallaxPresencePill'
+import PhoneSyncPresencePill from './PhoneSyncPresencePill'
 import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useAstraActivity } from '../../hooks/useAstraActivity'
@@ -13,6 +14,7 @@ import {
   TITLE_BAR_MEMORY_SAMPLE_INTERVAL_MS,
   type TitleBarPerformanceSample
 } from '../../utils/titleBarMemoryStats'
+import type { AppMemoryFootprintSource } from '../../../shared/processMemoryFootprint'
 import AstraActivityIndicator from '../activity/AstraActivityIndicator'
 import AstraLogo from '../icons/AstraLogo'
 
@@ -32,6 +34,29 @@ function formatMemoryMb(memoryMb: number | null, options: { zeroAsZeroMb?: boole
   return normalized >= 1024
     ? `${(normalized / 1024).toFixed(2)} GB`
     : `${normalized.toFixed(normalized >= 100 ? 0 : 1)} MB`
+}
+
+function formatFootprintSource(source: AppMemoryFootprintSource | null): string {
+  switch (source) {
+    case 'linux-pss':
+      return 'Linux PSS'
+    case 'macos-private-resident':
+      return 'macOS private resident'
+    case 'windows-private-working-set':
+      return 'Windows private working set'
+    case 'fallback-private-working-set':
+      return 'fallback private/working-set hybrid'
+    case 'unavailable':
+      return 'unavailable'
+    default:
+      return 'unknown'
+  }
+}
+
+function formatFailedPids(pids: readonly number[]): string {
+  if (pids.length === 0) return ''
+  const shown = pids.slice(0, 4).join(', ')
+  return pids.length > 4 ? `${shown}, +${pids.length - 4} more` : shown
 }
 
 function TitleBarActivityFallback({ rackVisible }: { rackVisible: boolean }) {
@@ -228,19 +253,26 @@ export default function TitleBar() {
     : '\u2014'
   const formattedRendererJsMemory = formatMemoryMb(memorySample.rendererHeapUsedMb)
   const formattedRendererPrivateMemory = formatMemoryMb(memorySample.rendererPrivateMb)
-  const formattedRendererExternalMemory = formatMemoryMb(memorySample.rendererExternalMb, { zeroAsZeroMb: true })
-  const formattedRendererArrayBuffersMemory = formatMemoryMb(memorySample.rendererArrayBuffersMb, { zeroAsZeroMb: true })
-  const formattedRendererOldSpaceMemory = formatMemoryMb(memorySample.rendererOldSpaceMb, { zeroAsZeroMb: true })
-  const formattedRendererLargeObjectSpaceMemory = formatMemoryMb(memorySample.rendererLargeObjectSpaceMb, { zeroAsZeroMb: true })
-  const formattedMainHeapMemory = formatMemoryMb(memorySample.mainHeapUsedMb)
-  const formattedMainRssMemory = formatMemoryMb(memorySample.mainRssMb)
-  const formattedMainExternalMemory = formatMemoryMb(memorySample.mainExternalMb, { zeroAsZeroMb: true })
-  const formattedMainArrayBuffersMemory = formatMemoryMb(memorySample.mainArrayBuffersMb, { zeroAsZeroMb: true })
+  const formattedMainProcessMemory = formatMemoryMb(memorySample.mainProcessMemoryMb)
+  const formattedHelperProcessesMemory = formatMemoryMb(memorySample.helperProcessesMemoryMb)
   const formattedBufferMemory = formatMemoryMb(memorySample.bufferMemoryMb, { zeroAsZeroMb: true })
   const formattedCurrentBufferMemory = formatMemoryMb(memorySample.currentBufferMemoryMb, { zeroAsZeroMb: true })
   const formattedNextBufferMemory = formatMemoryMb(memorySample.nextBufferMemoryMb, { zeroAsZeroMb: true })
-  const formattedNonRendererWorkingSetMemory = formatMemoryMb(memorySample.otherProcessMemoryMb)
+  const formattedAppFootprintMemory = formatMemoryMb(memorySample.appFootprintMb)
+  const formattedChildProcessFootprintMemory = formatMemoryMb(memorySample.childProcessFootprintMb, { zeroAsZeroMb: true })
+  const formattedCombinedFootprintMemory = formatMemoryMb(memorySample.combinedFootprintMb)
+  const formattedTotalPrivateMemory = formatMemoryMb(memorySample.totalPrivateMb)
   const formattedTotalMemory = formatMemoryMb(memorySample.totalWorkingSetMb)
+  const formattedHeadlineMemory = memorySample.appFootprintMb !== null
+    ? formattedAppFootprintMemory
+    : formattedTotalMemory
+  const hasChildProcessFootprint = (
+    memorySample.appFootprintChildProcessCount !== null && memorySample.appFootprintChildProcessCount > 0
+  ) || (
+    memorySample.childProcessFootprintMb !== null && memorySample.childProcessFootprintMb > 0
+  )
+  const footprintSourceLabel = formatFootprintSource(memorySample.appFootprintSource)
+  const failedFootprintPids = formatFailedPids(memorySample.appFootprintFailedPids)
   const formattedFps = fps > 0 ? `${fps}` : '\u2014'
   const appVersionLabel = appBuildInfo?.version ? `v${appBuildInfo.version}` : ''
   const appCommitLabel = appBuildInfo?.shortCommitHash
@@ -265,19 +297,31 @@ export default function TitleBar() {
         : `Phone remote active in read-only mode on ${phoneRemoteStatus.controllerUrl}`
       : `Phone remote active on port ${phoneRemoteStatus.port}`
     : 'Phone remote status unavailable'
-  const rendererJsTitle = `Renderer JS heap used from process.memoryUsage().heapUsed: ${formattedRendererJsMemory}.`
-  const rendererPrivateTitle = `Renderer private memory from process.getProcessMemoryInfo().private: ${formattedRendererPrivateMemory}.`
-  const rendererExternalTitle = `Renderer external memory from process.memoryUsage().external: ${formattedRendererExternalMemory}.`
-  const rendererArrayBuffersTitle = `Renderer ArrayBuffer memory from process.memoryUsage().arrayBuffers: ${formattedRendererArrayBuffersMemory}.`
-  const rendererOldSpaceTitle = `Renderer V8 old_space used: ${formattedRendererOldSpaceMemory}.`
-  const rendererLargeObjectSpaceTitle = `Renderer V8 large_object_space used: ${formattedRendererLargeObjectSpaceMemory}.`
-  const mainHeapTitle = `Main process heap used from process.memoryUsage().heapUsed: ${formattedMainHeapMemory}. Main RSS is shown in the breakdown.`
-  const mainRssTitle = `Main process RSS from process.memoryUsage().rss: ${formattedMainRssMemory}.`
-  const mainExternalTitle = `Main process external memory from process.memoryUsage().external: ${formattedMainExternalMemory}.`
-  const mainArrayBuffersTitle = `Main process ArrayBuffer memory from process.memoryUsage().arrayBuffers: ${formattedMainArrayBuffersMemory}.`
-  const bufferMemoryTitle = `Decoded audio buffers held by Astra. Current: ${formattedCurrentBufferMemory}. Next: ${formattedNextBufferMemory}.`
-  const nonRendererWorkingSetTitle = `Total Electron working set minus renderer private memory; includes main, GPU, utility, and other app processes: ${formattedNonRendererWorkingSetMemory}.`
-  const totalMemoryTitle = `Total Electron working set across renderer, main, GPU, and utility processes from app.getAppMetrics(): ${formattedTotalMemory}.`
+  const rendererTitle = `Interface process private memory (includes JS heap and decoded audio): ${formattedRendererPrivateMemory}.`
+  const rendererJsTitle = `JS heap used by Astra's code in the interface process: ${formattedRendererJsMemory}.`
+  const bufferMemoryTitle = `Decoded audio held for playback. Current track: ${formattedCurrentBufferMemory}. Next track (gapless): ${formattedNextBufferMemory}.`
+  const mainProcessTitle = `Main (background) process private memory: ${formattedMainProcessMemory}.`
+  const helperProcessesTitle = `GPU and system helper processes (working set; private memory is not reported for these): ${formattedHelperProcessesMemory}.`
+  const childProcessFootprintTitle = `External child processes started by Astra, such as active ffmpeg decoders: ${formattedChildProcessFootprintMemory}.`
+  const combinedFootprintTitle = `Astra process group plus external child processes: ${formattedCombinedFootprintMemory}.`
+  const fallbackPrivateMemoryTitle = `Private-memory estimate: measurable process private memory plus helper working sets: ${formattedTotalPrivateMemory}.`
+  const totalMemoryTitle = `Raw Electron working set across Electron processes: ${formattedTotalMemory}. Overstates app footprint because shared framework pages are counted once per process.`
+  const appFootprintIntro = memorySample.appFootprintSource === 'fallback-private-working-set'
+    ? `Astra private-process memory estimate: ${formattedAppFootprintMemory}. Source: ${footprintSourceLabel}.`
+    : `Astra process-group footprint: ${formattedAppFootprintMemory}. Source: ${footprintSourceLabel}.`
+  const footprintFallbackDetail = memorySample.appFootprintSource === 'fallback-private-working-set'
+    ? ` ${fallbackPrivateMemoryTitle}`
+    : ''
+  const childFootprintDetail = hasChildProcessFootprint
+    ? ` Child processes: ${formattedChildProcessFootprintMemory}. Combined app responsibility: ${formattedCombinedFootprintMemory}.`
+    : ''
+  const footprintCompleteness = memorySample.appFootprintComplete === false && failedFootprintPids
+    ? ` Sample incomplete; failed PIDs: ${failedFootprintPids}.`
+    : memorySample.appFootprintComplete === false
+      ? ' Sample used fallback or incomplete process data.'
+      : ''
+  const appFootprintTitle = `${appFootprintIntro} Raw Electron working set: ${formattedTotalMemory}.${childFootprintDetail}${footprintFallbackDetail}${footprintCompleteness}`
+  const headlineMemoryTitle = memorySample.appFootprintMb !== null ? appFootprintTitle : totalMemoryTitle
 
   return (
     <header className="titlebar">
@@ -325,6 +369,8 @@ export default function TitleBar() {
         {/* §18 — Parallax presence pill. Mounted unconditionally; renders null when neither host
             nor sink mode is active. Sibling to the API/PWA pills per share §18.1. */}
         <ParallaxPresencePill />
+        {/* Library-sync events (conflicts, completions) — same presence-pill language. */}
+        <PhoneSyncPresencePill />
         {apiIndicatorLabel && (
           <span className="titlebar-api-pill" title={apiIndicatorTitle}>
             <span className="titlebar-api-pill-dot" aria-hidden="true" />
@@ -352,9 +398,9 @@ export default function TitleBar() {
               <span className="titlebar-stat-label">BUF</span>
               <span>{formattedBufferMemory}</span>
             </span>
-            <span className="titlebar-stat" title={totalMemoryTitle}>
-              <span className="titlebar-stat-label">TOT</span>
-              <span>{formattedTotalMemory}</span>
+            <span className="titlebar-stat" title={headlineMemoryTitle}>
+              <span className="titlebar-stat-label">MEM</span>
+              <span>{formattedHeadlineMemory}</span>
             </span>
             <span className="titlebar-stat">
               <span className="titlebar-stat-label">FPS</span>
@@ -363,66 +409,42 @@ export default function TitleBar() {
           </div>
           <div className="titlebar-stats-breakdown" role="tooltip" aria-label="Memory breakdown">
             <div className="titlebar-stats-breakdown-title">Memory breakdown</div>
-            <div className="titlebar-stats-breakdown-row" title={rendererJsTitle}>
-              <span className="titlebar-stats-breakdown-label">Renderer JS heap</span>
-              <span className="titlebar-stats-breakdown-value">{formattedRendererJsMemory}</span>
-            </div>
-            <div className="titlebar-stats-breakdown-row" title={rendererPrivateTitle}>
-              <span className="titlebar-stats-breakdown-label">Renderer private</span>
+            <div className="titlebar-stats-breakdown-row" title={rendererTitle}>
+              <span className="titlebar-stats-breakdown-label">Interface</span>
               <span className="titlebar-stats-breakdown-value">{formattedRendererPrivateMemory}</span>
             </div>
-            <div className="titlebar-stats-breakdown-row" title={rendererExternalTitle}>
-              <span className="titlebar-stats-breakdown-label">Renderer external</span>
-              <span className="titlebar-stats-breakdown-value">{formattedRendererExternalMemory}</span>
-            </div>
-            <div className="titlebar-stats-breakdown-row" title={rendererArrayBuffersTitle}>
-              <span className="titlebar-stats-breakdown-label">Renderer ArrayBuffers</span>
-              <span className="titlebar-stats-breakdown-value">{formattedRendererArrayBuffersMemory}</span>
-            </div>
-            <div className="titlebar-stats-breakdown-row" title={rendererOldSpaceTitle}>
-              <span className="titlebar-stats-breakdown-label">Renderer old_space</span>
-              <span className="titlebar-stats-breakdown-value">{formattedRendererOldSpaceMemory}</span>
-            </div>
-            <div className="titlebar-stats-breakdown-row" title={rendererLargeObjectSpaceTitle}>
-              <span className="titlebar-stats-breakdown-label">Renderer large_object</span>
-              <span className="titlebar-stats-breakdown-value">{formattedRendererLargeObjectSpaceMemory}</span>
-            </div>
-            <div className="titlebar-stats-breakdown-row" title={mainHeapTitle}>
-              <span className="titlebar-stats-breakdown-label">Main heap used</span>
-              <span className="titlebar-stats-breakdown-value">{formattedMainHeapMemory}</span>
-            </div>
-            <div className="titlebar-stats-breakdown-row" title={mainRssTitle}>
-              <span className="titlebar-stats-breakdown-label">Main RSS</span>
-              <span className="titlebar-stats-breakdown-value">{formattedMainRssMemory}</span>
-            </div>
-            <div className="titlebar-stats-breakdown-row" title={mainExternalTitle}>
-              <span className="titlebar-stats-breakdown-label">Main external</span>
-              <span className="titlebar-stats-breakdown-value">{formattedMainExternalMemory}</span>
-            </div>
-            <div className="titlebar-stats-breakdown-row" title={mainArrayBuffersTitle}>
-              <span className="titlebar-stats-breakdown-label">Main ArrayBuffers</span>
-              <span className="titlebar-stats-breakdown-value">{formattedMainArrayBuffersMemory}</span>
+            <div className="titlebar-stats-breakdown-row" title={rendererJsTitle}>
+              <span className="titlebar-stats-breakdown-label">&nbsp;&nbsp;JS heap</span>
+              <span className="titlebar-stats-breakdown-value">{formattedRendererJsMemory}</span>
             </div>
             <div className="titlebar-stats-breakdown-row" title={bufferMemoryTitle}>
-              <span className="titlebar-stats-breakdown-label">Decoded buffers</span>
+              <span className="titlebar-stats-breakdown-label">&nbsp;&nbsp;Audio buffers</span>
               <span className="titlebar-stats-breakdown-value">{formattedBufferMemory}</span>
             </div>
-            <div className="titlebar-stats-breakdown-row" title={bufferMemoryTitle}>
-              <span className="titlebar-stats-breakdown-label">Current buf</span>
-              <span className="titlebar-stats-breakdown-value">{formattedCurrentBufferMemory}</span>
+            <div className="titlebar-stats-breakdown-row" title={mainProcessTitle}>
+              <span className="titlebar-stats-breakdown-label">Main process</span>
+              <span className="titlebar-stats-breakdown-value">{formattedMainProcessMemory}</span>
             </div>
-            <div className="titlebar-stats-breakdown-row" title={bufferMemoryTitle}>
-              <span className="titlebar-stats-breakdown-label">Next buf</span>
-              <span className="titlebar-stats-breakdown-value">{formattedNextBufferMemory}</span>
+            <div className="titlebar-stats-breakdown-row" title={helperProcessesTitle}>
+              <span className="titlebar-stats-breakdown-label">GPU &amp; helpers</span>
+              <span className="titlebar-stats-breakdown-value">{formattedHelperProcessesMemory}</span>
             </div>
-            <div className="titlebar-stats-breakdown-row" title={nonRendererWorkingSetTitle}>
-              <span className="titlebar-stats-breakdown-label">Non-renderer WS</span>
-              <span className="titlebar-stats-breakdown-value">{formattedNonRendererWorkingSetMemory}</span>
+            <div className="titlebar-stats-breakdown-row titlebar-stats-breakdown-row-total" title={appFootprintTitle}>
+              <span className="titlebar-stats-breakdown-label">Astra processes</span>
+              <span className="titlebar-stats-breakdown-value">{formattedAppFootprintMemory}</span>
             </div>
-            <div className="titlebar-stats-breakdown-row titlebar-stats-breakdown-row-total" title={totalMemoryTitle}>
-              <span className="titlebar-stats-breakdown-label">Total working set</span>
-              <span className="titlebar-stats-breakdown-value">{formattedTotalMemory}</span>
-            </div>
+            {hasChildProcessFootprint && (
+              <>
+                <div className="titlebar-stats-breakdown-row" title={childProcessFootprintTitle}>
+                  <span className="titlebar-stats-breakdown-label">Child processes</span>
+                  <span className="titlebar-stats-breakdown-value">{formattedChildProcessFootprintMemory}</span>
+                </div>
+                <div className="titlebar-stats-breakdown-row titlebar-stats-breakdown-row-total" title={combinedFootprintTitle}>
+                  <span className="titlebar-stats-breakdown-label">Combined</span>
+                  <span className="titlebar-stats-breakdown-value">{formattedCombinedFootprintMemory}</span>
+                </div>
+              </>
+            )}
           </div>
         </div>
 

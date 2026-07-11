@@ -1,12 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
-import { randomInt } from 'crypto'
 import { EventEmitter } from 'events'
 import {
   // Sink-side TTL is `PARALLAX_PAIR_PIN_TTL_MS`. The candidate TTL constant is host-side and
   // belongs in `parallax.ts` with `pendingPairs`.
   PARALLAX_PAIR_PIN_MAX_FAILS,
   PARALLAX_PAIR_PIN_TTL_MS,
+  PARALLAX_PAIR_LOCKOUT_COOLDOWN_MS,
   PARALLAX_PAIR_RATE_LIMIT_MS,
+  PARALLAX_PROTOCOL_VERSION,
   type ParallaxIncomingPairRequest,
   type ParallaxPairConfirmBody,
   type ParallaxPairConfirmResponse,
@@ -14,6 +15,17 @@ import {
   type ParallaxPairRequestResponse,
   type ParallaxSinkIdentityResponse
 } from '../../types/parallax'
+import {
+  createParallaxEphemeralKeyPair,
+  deriveParallaxPairingCode,
+  deriveParallaxPairingKey,
+  normalizeParallaxFingerprint,
+  openParallaxPairingPayload,
+  parallaxCertificateFingerprint,
+  sealParallaxPairingPayload,
+  type ParallaxEphemeralKeyPair,
+  type ParallaxPairingTranscript
+} from './parallaxSecurity'
 
 // §20 / §14.1.5 Commit 3. Sink-role HTTP listener — runs only while `parallaxSinkEnabled` is on
 // and exposes ONLY the pre-pair endpoints (sink-identity + pair-request + pair-confirm). Audio /
@@ -31,12 +43,19 @@ import {
 interface PendingPair {
   pairingId: string
   pin: string
+  pairingKey: Buffer
+  transcript: ParallaxPairingTranscript
+  sinkEphemeral: ParallaxEphemeralKeyPair
   hostName: string
   hostUrl: string
+  hostCertificatePem: string
+  hostCertificateFingerprint: string
   hostParallaxEndpointUuid: string | null
   startedAtMs: number
   expiresAtMs: number
   failCount: number
+  awaitingApproval: boolean
+  approvalResolve: ((approved: boolean) => void) | null
   expiryTimer: ReturnType<typeof setTimeout>
 }
 
@@ -53,10 +72,13 @@ export interface ParallaxSinkListenerCallbacks {
 }
 
 export interface ParallaxSinkListenerPairedInfo {
+  protocolVersion: 2
   hostUrl: string
   hostName: string
   sinkId: string
   token: string
+  hostCertificatePem: string
+  hostCertificateFingerprint: string
   hostParallaxEndpointUuid: string | null
   pairedAt: number
 }
@@ -81,7 +103,8 @@ export class ParallaxSinkListener extends EventEmitter<ParallaxSinkListenerEvent
   private port = 0
   private pending: PendingPair | null = null
   private expiredTombstones = new Map<string, ExpiredTombstone>()
-  private lastAcceptedRequestAtMs = 0
+  private readonly lastAcceptedRequestAtMs = new Map<string, number>()
+  private readonly lockoutUntilMs = new Map<string, number>()
   private readonly callbacks: ParallaxSinkListenerCallbacks
   // Test/debug hook: override the PIN TTL so a test can exercise the real expiry path without
   // hanging the suite for 90s. Defaults to `PARALLAX_PAIR_PIN_TTL_MS`.
@@ -106,6 +129,10 @@ export class ParallaxSinkListener extends EventEmitter<ParallaxSinkListenerEvent
           if (!res.headersSent) toJsonResponse(res, 500, { error: 'Internal sink error.' })
         })
       })
+      server.headersTimeout = 10_000
+      server.requestTimeout = 10_000
+      server.keepAliveTimeout = 5_000
+      server.maxConnections = 32
       server.once('error', (error) => reject(error))
       server.listen(port, '0.0.0.0', () => {
         server.removeAllListeners('error')
@@ -139,6 +166,15 @@ export class ParallaxSinkListener extends EventEmitter<ParallaxSinkListenerEvent
   // the actual UI distinguishes via the absence of incomingPairRequest in subsequent status.
   cancelPending(): void {
     this.clearPending(null)
+  }
+
+  approvePending(): boolean {
+    const pending = this.pending
+    if (!pending?.awaitingApproval || !pending.approvalResolve) return false
+    const resolve = pending.approvalResolve
+    pending.approvalResolve = null
+    resolve(true)
+    return true
   }
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse<IncomingMessage>): Promise<void> {
@@ -176,23 +212,17 @@ export class ParallaxSinkListener extends EventEmitter<ParallaxSinkListenerEvent
     const rawRemote = req.socket.remoteAddress ?? ''
     const remoteAddress = rawRemote.startsWith('::ffff:') ? rawRemote.slice('::ffff:'.length) : rawRemote
 
-    // §Pillar 4 — pairing self-heal. A pending pair normally locks the sink to one host at a time
-    // (§20.7 → 409 "busy"). But if the SAME host sends a fresh pair-request, its previous attempt
-    // died (it crashed / restarted / slept mid-pair) and is retrying — superseding the stale pending
-    // (and skipping the rate-limit wait) lets it re-pair without the user manually resetting the
-    // speaker. A request from a DIFFERENT host while one is mid-pair is still rejected with 409.
-    let superseding = false
     if (this.pending) {
-      const pendingHostAddress = parsePendingHostAddress(this.pending.hostUrl)
-      if (remoteAddress && pendingHostAddress && remoteAddress === pendingHostAddress) {
-        this.clearPending(null)
-        superseding = true
-      } else {
-        toJsonResponse(res, 409, { error: 'busy' })
-        return
-      }
+      toJsonResponse(res, 409, { error: 'busy' })
+      return
     }
-    if (!superseding && now < this.lastAcceptedRequestAtMs + PARALLAX_PAIR_RATE_LIMIT_MS) {
+    const lockoutUntil = this.lockoutUntilMs.get(remoteAddress) ?? 0
+    if (now < lockoutUntil) {
+      toJsonResponse(res, 429, { error: 'locked-out' })
+      return
+    }
+    const lastAccepted = this.lastAcceptedRequestAtMs.get(remoteAddress) ?? 0
+    if (now < lastAccepted + PARALLAX_PAIR_RATE_LIMIT_MS) {
       toJsonResponse(res, 429, { error: 'rate-limited' })
       return
     }
@@ -209,8 +239,31 @@ export class ParallaxSinkListener extends EventEmitter<ParallaxSinkListenerEvent
     const hostName = pickString(body.hostName) || 'Unknown host'
     const hostPort = Number(body.hostPort)
     const hostParallaxEndpointUuid = pickString(body.parallaxEndpointUuid) || null
-    if (!pairingId || !Number.isFinite(hostPort) || hostPort <= 0 || hostPort > 65535) {
-      toJsonResponse(res, 400, { error: 'pairingId and hostPort are required.' })
+    const hostEphemeralPublicKey = pickString(body.hostEphemeralPublicKey)
+    const hostCertificatePem = pickString(body.hostCertificatePem)
+    const hostCertificateFingerprint = normalizeParallaxFingerprint(pickString(body.hostCertificateFingerprint))
+    if (
+      body.version !== PARALLAX_PROTOCOL_VERSION
+      || !pairingId
+      || pairingId.length > 128
+      || !Number.isFinite(hostPort)
+      || hostPort <= 0
+      || hostPort > 65535
+      || !hostEphemeralPublicKey
+      || hostEphemeralPublicKey.length > 256
+      || hostCertificatePem.length > 16 * 1024
+      || !hostCertificateFingerprint
+    ) {
+      toJsonResponse(res, 400, { error: 'Invalid Parallax v2 pair-request.' })
+      return
+    }
+    try {
+      if (parallaxCertificateFingerprint(hostCertificatePem) !== hostCertificateFingerprint) {
+        toJsonResponse(res, 400, { error: 'Host certificate fingerprint mismatch.' })
+        return
+      }
+    } catch {
+      toJsonResponse(res, 400, { error: 'Invalid host certificate.' })
       return
     }
 
@@ -220,37 +273,64 @@ export class ParallaxSinkListener extends EventEmitter<ParallaxSinkListenerEvent
       toJsonResponse(res, 400, { error: 'Could not derive host address from request.' })
       return
     }
-    const hostUrl = `http://${remoteAddress}:${hostPort}`
+    const hostUrl = `https://${remoteAddress}:${hostPort}`
 
-    // PIN auto-show (§20.7). Cryptographically random 6-digit code.
-    const pin = String(randomInt(0, 1_000_000)).padStart(6, '0')
+    const sinkEphemeral = createParallaxEphemeralKeyPair()
+    const transcript: ParallaxPairingTranscript = {
+      version: PARALLAX_PROTOCOL_VERSION,
+      pairingId,
+      hostEphemeralPublicKey,
+      sinkEphemeralPublicKey: sinkEphemeral.publicKey,
+      hostCertificateFingerprint,
+      hostParallaxEndpointUuid: hostParallaxEndpointUuid ?? '',
+      sinkParallaxEndpointUuid: this.callbacks.getEndpointUuid(),
+      hostPort
+    }
+    let pairingKey: Buffer
+    try {
+      pairingKey = deriveParallaxPairingKey(sinkEphemeral.privateKey, hostEphemeralPublicKey, transcript)
+    } catch {
+      toJsonResponse(res, 400, { error: 'Invalid host pairing key.' })
+      return
+    }
+    const pin = deriveParallaxPairingCode(pairingKey, transcript)
     const expiresAtMs = now + this.pinTtlMs
     const expiryTimer = setTimeout(() => this.clearPending('expired'), this.pinTtlMs)
     this.pending = {
       pairingId,
       pin,
+      pairingKey,
+      transcript,
+      sinkEphemeral,
       hostName,
       hostUrl,
+      hostCertificatePem,
+      hostCertificateFingerprint,
       hostParallaxEndpointUuid,
       startedAtMs: now,
       expiresAtMs,
       failCount: 0,
+      awaitingApproval: false,
+      approvalResolve: null,
       expiryTimer
     }
-    this.lastAcceptedRequestAtMs = now
+    this.lastAcceptedRequestAtMs.set(remoteAddress, now)
     this.callbacks.onIncomingPairChange({
       pairingId,
       pin,
       hostName,
       hostParallaxEndpointUuid,
       hostUrl,
-      expiresAtMs
+      expiresAtMs,
+      awaitingApproval: false
     })
 
     const payload: ParallaxPairRequestResponse = {
-      expiresInSeconds: Math.round(PARALLAX_PAIR_PIN_TTL_MS / 1000),
+      version: PARALLAX_PROTOCOL_VERSION,
+      expiresInSeconds: Math.max(1, Math.round(this.pinTtlMs / 1000)),
       parallaxEndpointUuid: this.callbacks.getEndpointUuid(),
-      sinkName: this.callbacks.getSinkName()
+      sinkName: this.callbacks.getSinkName(),
+      sinkEphemeralPublicKey: sinkEphemeral.publicKey
     }
     toJsonResponse(res, 200, payload)
   }
@@ -281,6 +361,10 @@ export class ParallaxSinkListener extends EventEmitter<ParallaxSinkListenerEvent
       toJsonResponse(res, 404, { error: 'No pending pair-request.' })
       return
     }
+    if (pending.awaitingApproval) {
+      toJsonResponse(res, 409, { error: 'confirmation-already-pending' })
+      return
+    }
 
     const now = Date.now()
     if (now > pending.expiresAtMs) {
@@ -289,32 +373,60 @@ export class ParallaxSinkListener extends EventEmitter<ParallaxSinkListenerEvent
       return
     }
 
-    const pin = pickString(body.pin)
-    if (!pin || pin !== pending.pin) {
+    let confirmed: { sinkId?: unknown; token?: unknown; sinkName?: unknown }
+    try {
+      confirmed = openParallaxPairingPayload(body, pending.pairingKey, pending.transcript)
+    } catch {
       pending.failCount += 1
       if (pending.failCount >= PARALLAX_PAIR_PIN_MAX_FAILS) {
+        const remoteAddress = parsePendingHostAddress(pending.hostUrl)
+        if (remoteAddress) {
+          this.lockoutUntilMs.set(remoteAddress, Date.now() + PARALLAX_PAIR_LOCKOUT_COOLDOWN_MS)
+        }
         this.clearPending('lockout')
       }
-      // Codex round 1 amendment (f) — no remaining-attempts leak in the response body.
-      toJsonResponse(res, 401, { error: 'pin' })
+      toJsonResponse(res, 401, { error: 'confirmation' })
       return
     }
 
-    const sinkId = pickString(body.sinkId)
-    const token = pickString(body.token)
-    if (!sinkId || !token) {
+    const sinkId = pickString(confirmed.sinkId)
+    const token = pickString(confirmed.token)
+    if (!sinkId || sinkId.length > 128 || !token || token.length > 512) {
       toJsonResponse(res, 400, { error: 'sinkId and token are required.' })
       return
     }
 
-    // PIN matched — persist the credential through main's existing §14.1.2 path. Clear pending
-    // BEFORE the callback so a slow persistence path doesn't keep the busy lock held.
-    const sinkNameRequested = pickString(body.sinkName) || ''
+    const sinkNameRequested = pickString(confirmed.sinkName) || ''
+    if (sinkNameRequested.length > 200) {
+      toJsonResponse(res, 400, { error: 'Invalid sink name.' })
+      return
+    }
+    pending.awaitingApproval = true
+    this.callbacks.onIncomingPairChange({
+      pairingId: pending.pairingId,
+      pin: pending.pin,
+      hostName: pending.hostName,
+      hostParallaxEndpointUuid: pending.hostParallaxEndpointUuid,
+      hostUrl: pending.hostUrl,
+      expiresAtMs: pending.expiresAtMs,
+      awaitingApproval: true
+    })
+    const approved = await new Promise<boolean>((resolve) => {
+      pending.approvalResolve = resolve
+    })
+    if (!approved || this.pending !== pending || Date.now() > pending.expiresAtMs) {
+      if (!res.headersSent) toJsonResponse(res, 409, { error: 'pairing-not-approved' })
+      return
+    }
+
     const info: ParallaxSinkListenerPairedInfo = {
+      protocolVersion: PARALLAX_PROTOCOL_VERSION,
       hostUrl: pending.hostUrl,
       hostName: pending.hostName,
       sinkId,
       token,
+      hostCertificatePem: pending.hostCertificatePem,
+      hostCertificateFingerprint: pending.hostCertificateFingerprint,
       hostParallaxEndpointUuid: pending.hostParallaxEndpointUuid,
       pairedAt: now
     }
@@ -329,10 +441,11 @@ export class ParallaxSinkListener extends EventEmitter<ParallaxSinkListenerEvent
       return
     }
 
-    const payload: ParallaxPairConfirmResponse = {
+    const payload: ParallaxPairConfirmResponse = sealParallaxPairingPayload({
+      pairingId,
       parallaxEndpointUuid: this.callbacks.getEndpointUuid(),
       sinkName: sinkNameRequested || this.callbacks.getSinkName()
-    }
+    }, pending.pairingKey, pending.transcript)
     toJsonResponse(res, 200, payload)
   }
 
@@ -340,6 +453,9 @@ export class ParallaxSinkListener extends EventEmitter<ParallaxSinkListenerEvent
     if (!this.pending) return
     const cleared = this.pending
     clearTimeout(cleared.expiryTimer)
+    const approvalResolve = cleared.approvalResolve
+    cleared.approvalResolve = null
+    approvalResolve?.(false)
     this.pending = null
     // Codex round 1 finding (low): record an expired tombstone so a confirm arriving just
     // after the timer fires can still resolve to 410 instead of 404. `lockout` doesn't earn a

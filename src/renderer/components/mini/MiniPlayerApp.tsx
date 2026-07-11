@@ -27,6 +27,8 @@ const EMPTY_SNAPSHOT: MiniPlayerSnapshot = {
   currentTime: 0,
   duration: 0,
   queueLength: 0,
+  shuffle: false,
+  repeat: 'none',
   outputDeviceLabel: null,
   currentTrack: null,
   timeDisplayMode: DEFAULT_MINI_PLAYER_TIME_DISPLAY_MODE,

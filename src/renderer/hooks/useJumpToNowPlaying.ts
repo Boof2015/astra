@@ -95,7 +95,6 @@ async function revealTrackAlbum(track: Track): Promise<boolean> {
   if (!album) return revealTrackInLibrary(track.path)
 
   const library = useLibraryStore.getState()
-  library.setViewMode('tracks')
   await library.selectAlbum(album, resolveAlbumArtist(track), 'library', track.albumIdentityKey)
 
   const ui = useUIStore.getState()
@@ -110,7 +109,6 @@ async function revealTrackAlbum(track: Track): Promise<boolean> {
 
 async function selectArtistAndReveal(artist: string, trackPath: string): Promise<boolean> {
   const library = useLibraryStore.getState()
-  library.setViewMode('tracks')
   await library.selectArtist(artist, 'library')
 
   if (!useLibraryStore.getState().trackPaths.includes(trackPath)) {
@@ -185,7 +183,6 @@ async function revealTrackAlbumFromContext(
   if (!album) return revealTrackInLibrary(trackPath)
 
   const library = useLibraryStore.getState()
-  library.setViewMode('tracks')
   await library.selectAlbum(album, context.albumArtist, 'library', context.identityKey)
 
   if (!useLibraryStore.getState().trackPaths.includes(trackPath)) {

@@ -57,6 +57,7 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
   const loadFolders = useLibraryStore((state) => state.loadFolders)
   const addFolderWithoutScan = useLibraryStore((state) => state.addFolderWithoutScan)
   const removeFolder = useLibraryStore((state) => state.removeFolder)
+  const setFolderHidden = useLibraryStore((state) => state.setFolderHidden)
   const isScanning = useLibraryStore((state) => state.isScanning)
   const isCancelingScan = useLibraryStore((state) => state.isCancelingScan)
   const scanProgress = useLibraryStore((state) => state.scanProgress)
@@ -706,7 +707,7 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
 
                     return (
                       <div key={folder.path} className="folder-tree-root-group">
-                        <div className="folder-tree-node is-root">
+                        <div className={`folder-tree-node is-root ${folder.hidden ? 'is-hidden' : ''}`}>
                           <button
                             className={`folder-tree-chevron ${isExpanded ? 'is-expanded' : ''}`}
                             onClick={handleActionButtonClick(() => handleToggleExpand(folder.path, ''))}
@@ -734,6 +735,27 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
                             </span>
                           )}
                           {needsScan && <span className="folder-tree-badge needs-scan">Needs Scan</span>}
+                          {folder.hidden ? <span className="folder-tree-badge hidden">Hidden</span> : null}
+                          <button
+                            className="folder-visibility-toggle"
+                            role="checkbox"
+                            aria-checked={!folder.hidden}
+                            onClick={handleActionButtonClick(() => setFolderHidden(folder.path, !folder.hidden))}
+                            onPointerDown={handleActionButtonPointerDown}
+                            disabled={isScanning || isSavingChanges}
+                            title={folder.hidden ? 'Hidden from library — click to show' : 'Visible in library — click to hide'}
+                          >
+                            {folder.hidden ? (
+                              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <rect x="4" y="4" width="16" height="16" rx="3" />
+                              </svg>
+                            ) : (
+                              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <rect x="4" y="4" width="16" height="16" rx="3" />
+                                <path d="M8 12l3 3 5-6" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            )}
+                          </button>
                           <button
                             className="folder-remove"
                             onClick={handleActionButtonClick(() => handleRemoveFolder(folder.path))}

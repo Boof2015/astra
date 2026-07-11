@@ -56,6 +56,8 @@ export const RENDERER_SETTINGS_KEYS = [
   'astra-audio-calibration-input-device',
   'astra-audio-multichannel-enabled',
   'astra-audio-channel-routing-map',
+  'astra-audio-spatial-mode-v1',
+  'astra-audio-spatial-layout-v1',
   'astra-audio-normalization-enabled-v1',
   'astra-audio-normalization-target-lufs-v1',
   'astra-audio-delay-profiles-v1',

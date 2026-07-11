@@ -1,4 +1,4 @@
-import { DragEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { DragEvent, useCallback, useEffect, useMemo, useRef, useState, type UIEvent as ReactUIEvent } from 'react'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { usePlayerStore } from '../../stores/playerStore'
@@ -16,6 +16,7 @@ import TrackList, { type TrackListSortKey, type TrackListSortState } from '../li
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import DynamicPlaylistRuleEditor from '../playlists/DynamicPlaylistRuleEditor'
 import PlaylistCover from '../playlists/PlaylistCover'
+import QueueSplitButton from '../queue/QueueSplitButton'
 import ConfirmActionModal from '../settings/ConfirmActionModal'
 import {
   createDefaultDynamicPlaylistRules,
@@ -241,9 +242,8 @@ export default function PlaylistView() {
   const favoriteTrackPaths = useLibraryStore((s) => s.favoriteTrackPaths)
   const trackCacheVersion = useLibraryStore((s) => s.trackCacheVersion)
   const resolveTrackPaths = useLibraryStore((s) => s.resolveTrackPaths)
-  const queueItems = usePlayerStore((s) => s.queueItems)
-  const queueSourcePlaylistId = usePlayerStore((s) => s.queueSourcePlaylistId)
   const shuffle = usePlayerStore((s) => s.shuffle)
+  const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const startPlaybackContextByPaths = usePlayerStore((s) => s.startPlaybackContextByPaths)
   const favoriteTracks = useMemo(
     () => resolveTrackPaths(favoriteTrackPaths),
@@ -279,7 +279,8 @@ export default function PlaylistView() {
   const [playlistImportStatus, setPlaylistImportStatus] = useState<PlaylistImportStatus | null>(null)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [isDiscardReorderConfirmOpen, setIsDiscardReorderConfirmOpen] = useState(false)
-  const [isShufflePlayPending, setIsShufflePlayPending] = useState(false)
+  const [isPlayPending, setIsPlayPending] = useState(false)
+  const [isDetailHeaderCollapsed, setIsDetailHeaderCollapsed] = useState(false)
   const [isCoverMenuOpen, setIsCoverMenuOpen] = useState(false)
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
   const [isDynamicRulesModalOpen, setIsDynamicRulesModalOpen] = useState(false)
@@ -287,7 +288,7 @@ export default function PlaylistView() {
   const [dynamicRulesError, setDynamicRulesError] = useState<string | null>(null)
   const [isDynamicRulesLoading, setIsDynamicRulesLoading] = useState(false)
   const [isSavingDynamicRules, setIsSavingDynamicRules] = useState(false)
-  const shufflePlayPendingRef = useRef(false)
+  const playPendingRef = useRef(false)
   const coverControlRef = useRef<HTMLDivElement | null>(null)
   const moreMenuRef = useRef<HTMLDivElement | null>(null)
 
@@ -458,24 +459,7 @@ export default function PlaylistView() {
   }, [isFavoritesPlaylist, isReorderMode, isSavingReorder, loadPlaylists, selectPlaylist, selectedPlaylistId, trackCacheVersion])
 
   const canReorderTracks = !isFavoritesPlaylist && !isDynamicPlaylist && selectedPlaylistId !== null && selectedPlaylistId > 0
-  const isShufflePlayDisabled = isShufflePlayPending || isReorderMode || isSavingReorder || isDeletingPlaylist || displayPlayableTrackPaths.length === 0
-  const isShufflePlayActive = useMemo(() => {
-    if (!shuffle) return false
-    if (selectedPlaylistId === null) return false
-    if (queueSourcePlaylistId !== selectedPlaylistId) return false
-    const contextPaths = queueItems
-      .filter((item) => item.origin === 'context')
-      .map((item) => item.entry.path)
-    if (contextPaths.length === 0 || contextPaths.length !== displayPlayableTrackPaths.length) return false
-
-    for (let index = 0; index < contextPaths.length; index += 1) {
-      if (contextPaths[index] !== displayPlayableTrackPaths[index]) {
-        return false
-      }
-    }
-
-    return true
-  }, [displayPlayableTrackPaths, queueItems, queueSourcePlaylistId, selectedPlaylistId, shuffle])
+  const isPlayDisabled = isPlayPending || isReorderMode || isSavingReorder || isDeletingPlaylist || displayPlayableTrackPaths.length === 0
   const hasUnsavedReorderChanges = useMemo(() => {
     if (!isReorderMode || !reorderedEntries) return false
     if (reorderedEntries.length !== selectedPlaylistEntries.length) return true
@@ -682,27 +666,41 @@ export default function PlaylistView() {
     setSortState(null)
   }, [setSortState])
 
-  const handleShufflePlayPlaylist = useCallback(async () => {
-    if (shufflePlayPendingRef.current) return
+  const handlePlayPlaylist = useCallback(async () => {
+    if (playPendingRef.current) return
     if (selectedPlaylistId === null || displayPlayableTrackPaths.length === 0 || isReorderMode || isSavingReorder) return
 
-    shufflePlayPendingRef.current = true
-    setIsShufflePlayPending(true)
+    playPendingRef.current = true
+    setIsPlayPending(true)
 
     try {
-      const randomStartIndex = Math.floor(Math.random() * displayPlayableTrackPaths.length)
-      await startPlaybackContextByPaths(displayPlayableTrackPaths, randomStartIndex, {
+      // startShuffled respects the current shuffle toggle (mirrors the library detail header):
+      // shuffle on -> random start track, shuffle off -> play in order from the top.
+      await startPlaybackContextByPaths(displayPlayableTrackPaths, 0, {
         sourcePlaylistId: selectedPlaylistId,
         contextLabel: playlistName ?? 'Playlist',
-        shuffle: true
+        startShuffled: true
       })
     } catch (error) {
-      console.error('Failed to shuffle play playlist:', error)
+      console.error('Failed to play playlist:', error)
     } finally {
-      shufflePlayPendingRef.current = false
-      setIsShufflePlayPending(false)
+      playPendingRef.current = false
+      setIsPlayPending(false)
     }
   }, [displayPlayableTrackPaths, isReorderMode, isSavingReorder, playlistName, selectedPlaylistId, startPlaybackContextByPaths])
+
+  const handlePlaylistContentScrollCapture = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
+    const target = event.target
+    if (!(target instanceof HTMLElement)) return
+    if (target.scrollHeight <= target.clientHeight + 1) return
+
+    const scrollTop = target.scrollTop
+    setIsDetailHeaderCollapsed((isCollapsed) => (isCollapsed ? scrollTop > 8 : scrollTop > 40))
+  }, [])
+
+  useEffect(() => {
+    setIsDetailHeaderCollapsed(false)
+  }, [selectedPlaylistId])
 
   const handleToggleReorderMode = useCallback(() => {
     if (!canReorderTracks || isSavingReorder) return
@@ -938,15 +936,20 @@ export default function PlaylistView() {
 
   return (
     <div className="playlist-view">
-      <div className="playlist-header">
-        <div className="playlist-header-left">
+      <div className={`library-header library-detail-header ${isDetailHeaderCollapsed ? 'is-collapsed' : ''}`}>
+        {playlistCoverHash && (
+          <div className="library-detail-hero-backdrop" aria-hidden="true">
+            <AlbumArtwork hash={playlistCoverHash} alt="" variant="card" />
+          </div>
+        )}
+        <div className="library-header-left library-detail-header-left">
           <button className="back-btn" onClick={handleBack} title="Back">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
             </svg>
           </button>
           <div
-            className="playlist-header-cover-control"
+            className="playlist-detail-cover"
             ref={coverControlRef}
             onContextMenu={(event) => {
               event.preventDefault()
@@ -963,12 +966,14 @@ export default function PlaylistView() {
               })
             }}
           >
-            <PlaylistCover
-              hash={playlistCoverHash}
-              name={playlistName ?? FAVORITES_PLAYLIST_NAME}
-              isFavorites={isFavoritesPlaylist}
-              className="playlist-header-cover"
-            />
+            <div className="library-detail-artwork">
+              <PlaylistCover
+                hash={playlistCoverHash}
+                name={playlistName ?? FAVORITES_PLAYLIST_NAME}
+                isFavorites={isFavoritesPlaylist}
+                className="playlist-header-cover"
+              />
+            </div>
             {!isFavoritesPlaylist && (
               <>
                 <button
@@ -1015,7 +1020,7 @@ export default function PlaylistView() {
             )}
           </div>
           <div
-            className="playlist-header-meta"
+            className="library-detail-copy"
             onContextMenu={(event) => {
               event.preventDefault()
               event.stopPropagation()
@@ -1031,6 +1036,9 @@ export default function PlaylistView() {
               })
             }}
           >
+            <div className="library-detail-eyebrow-row">
+              <span className="library-detail-eyebrow">{isFavoritesPlaylist ? 'Favorites' : 'Playlist'}</span>
+            </div>
             {isRenaming ? (
               <input
                 className="playlist-rename-input"
@@ -1055,25 +1063,40 @@ export default function PlaylistView() {
                 {isDynamicPlaylist && <span className="playlist-kind-badge">Dynamic</span>}
               </h2>
             )}
-            <span className="track-count">
-              {selectedPlaylistTracks.length} {selectedPlaylistTracks.length === 1 ? 'track' : 'tracks'}
-              {playlistDurationLabel ? ` \u00b7 ${playlistDurationLabel}` : ''}
-              {playlistMissingCount > 0 && (
-                <span className="playlist-missing-count"> / {playlistMissingCount} missing</span>
-              )}
-            </span>
+            <div className="library-detail-meta-row">
+              <span className="library-detail-meta">
+                {selectedPlaylistTracks.length} {selectedPlaylistTracks.length === 1 ? 'track' : 'tracks'}
+                {playlistDurationLabel ? ` \u00b7 ${playlistDurationLabel}` : ''}
+                {playlistMissingCount > 0 && (
+                  <span className="playlist-missing-count"> / {playlistMissingCount} missing</span>
+                )}
+              </span>
+            </div>
           </div>
         </div>
-        <div className="playlist-header-actions">
+        <div className="library-header-right library-detail-header-actions">
           <button
             type="button"
-            className={`icon-btn library-shuffle-btn playlist-shuffle-btn ${isShufflePlayActive ? 'active' : ''}`}
+            className="icon-btn library-play-btn library-collection-action-btn"
             onClick={() => {
-              void handleShufflePlayPlaylist()
+              void handlePlayPlaylist()
             }}
-            title="Shuffle play playlist"
-            aria-label="Shuffle play playlist"
-            disabled={isShufflePlayDisabled}
+            title="Play playlist"
+            aria-label="Play playlist"
+            disabled={isPlayDisabled}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+            <span className="library-collection-action-label">Play</span>
+          </button>
+          <button
+            type="button"
+            className={`icon-btn library-shuffle-btn library-collection-action-btn ${shuffle ? 'active' : ''}`}
+            onClick={toggleShuffle}
+            title={shuffle ? 'Shuffle on' : 'Shuffle off'}
+            aria-label="Shuffle"
+            aria-pressed={shuffle}
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M16 3h5v5" />
@@ -1082,12 +1105,16 @@ export default function PlaylistView() {
               <path d="M15 15 21 21" />
               <path d="M4 4 9 9" />
             </svg>
-            <span className="library-shuffle-btn-label">Shuffle all</span>
+            <span className="library-shuffle-btn-label">Shuffle</span>
           </button>
+          <QueueSplitButton
+            trackPaths={displayPlayableTrackPaths}
+            disabled={displayPlayableTrackPaths.length === 0 || isReorderMode || isSavingReorder}
+          />
           {!isFavoritesPlaylist && (
             <button
               type="button"
-              className={`icon-btn playlist-header-icon-btn ${isReorderMode ? 'active' : ''}`}
+              className={`icon-btn library-collection-action-btn playlist-detail-icon-btn ${isReorderMode ? 'active' : ''}`}
               onClick={handleToggleReorderMode}
               disabled={isSavingReorder || isDeletingPlaylist || (!isReorderMode && playlistEntryCount < 2)}
               title={isReorderMode ? 'Exit reorder mode' : 'Reorder tracks'}
@@ -1102,7 +1129,7 @@ export default function PlaylistView() {
           <div className="playlist-header-menu-wrap" ref={moreMenuRef}>
             <button
               type="button"
-              className={`icon-btn playlist-header-icon-btn ${isMoreMenuOpen ? 'active' : ''}`}
+              className={`icon-btn library-collection-action-btn playlist-detail-icon-btn ${isMoreMenuOpen ? 'active' : ''}`}
               onClick={() => {
                 setIsMoreMenuOpen((isOpen) => !isOpen)
                 setIsCoverMenuOpen(false)
@@ -1183,7 +1210,7 @@ export default function PlaylistView() {
           </div>
         </div>
       </div>
-      <div className="playlist-content">
+      <div className="playlist-content" onScrollCapture={handlePlaylistContentScrollCapture}>
         {playlistImportStatus && <PlaylistImportStatusBanner status={playlistImportStatus} />}
         {isReorderMode && reorderedEntries ? (
           <>

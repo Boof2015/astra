@@ -151,6 +151,19 @@ test('track reveal requests clear only after the matching request id is consumed
   assert.equal(useUIStore.getState().queueNowPlayingRevealRequest, null)
 })
 
+test('fullscreen lyrics visibility toggles independently of fullscreen state', () => {
+  useUIStore.setState({ fullscreenLyricsVisible: false, isFullscreen: true })
+
+  useUIStore.getState().toggleFullscreenLyricsVisible()
+  assert.equal(useUIStore.getState().fullscreenLyricsVisible, true)
+
+  useUIStore.getState().setFullscreen(false)
+  assert.equal(useUIStore.getState().fullscreenLyricsVisible, true)
+
+  useUIStore.getState().setFullscreenLyricsVisible(false)
+  assert.equal(useUIStore.getState().fullscreenLyricsVisible, false)
+})
+
 test('session restore applies core view state without transient history or overlays', () => {
   useUIStore.setState({
     activeView: 'home',
@@ -161,6 +174,7 @@ test('session restore applies core view state without transient history or overl
     showPipelineShelf: false,
     showLyricsShelf: false,
     lyricsShelfExpanded: false,
+    fullscreenLyricsVisible: false,
     isFullscreen: true,
     isQuickLaunchOpen: true,
     pendingLibrarySearchQuery: 'query'
@@ -172,7 +186,8 @@ test('session restore applies core view state without transient history or overl
     showInfoSidebar: true,
     showPipelineShelf: true,
     showLyricsShelf: true,
-    lyricsShelfExpanded: true
+    lyricsShelfExpanded: true,
+    fullscreenLyricsVisible: true
   })
 
   const state = useUIStore.getState()
@@ -184,6 +199,7 @@ test('session restore applies core view state without transient history or overl
   assert.equal(state.showPipelineShelf, true)
   assert.equal(state.showLyricsShelf, true)
   assert.equal(state.lyricsShelfExpanded, true)
+  assert.equal(state.fullscreenLyricsVisible, true)
   assert.equal(state.isFullscreen, false)
   assert.equal(state.isQuickLaunchOpen, false)
   assert.equal(state.pendingLibrarySearchQuery, null)
@@ -193,6 +209,7 @@ test('session restore applies core view state without transient history or overl
     showInfoSidebar: true,
     showPipelineShelf: true,
     showLyricsShelf: true,
-    lyricsShelfExpanded: true
+    lyricsShelfExpanded: true,
+    fullscreenLyricsVisible: true
   })
 })

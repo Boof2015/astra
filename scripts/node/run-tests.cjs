@@ -67,9 +67,12 @@ function runNodeTests(files) {
     return 0
   }
 
+  // --experimental-default-type was removed in Node 23+ (module syntax
+  // detection is the default there).
+  const nodeMajor = Number(process.versions.node.split('.')[0])
   return run('Node tests', process.execPath, [
     '--experimental-strip-types',
-    '--experimental-default-type=module',
+    ...(nodeMajor >= 23 ? [] : ['--experimental-default-type=module']),
     '--loader',
     './scripts/node/electron-test-loader.mjs',
     '--test',

@@ -55,7 +55,16 @@ function ResultThumbnail({ hash, fallback }: { hash: string | null | undefined; 
   }, [hash, getArtwork])
 
   if (url) {
-    return <img src={url} className="ql-thumb" alt="" loading="lazy" decoding="async" />
+    return (
+      <img
+        src={url}
+        className="ql-thumb"
+        alt=""
+        loading="lazy"
+        decoding="async"
+        onError={() => setUrl(null)}
+      />
+    )
   }
   return <div className="ql-thumb ql-thumb-placeholder">{fallback}</div>
 }
@@ -521,7 +530,6 @@ export default function QuickLaunchPalette() {
 
       if (result.kind === 'album') {
         const albumArtist = result.album.artist.trim()
-        setViewMode('tracks')
         await selectAlbum(
           result.album.album,
           albumArtist.length > 0 ? albumArtist : undefined,
@@ -534,7 +542,6 @@ export default function QuickLaunchPalette() {
       }
 
       if (result.kind === 'artist') {
-        setViewMode('tracks')
         await selectArtist(result.artist.artist, 'library')
         setActiveView('library')
         closeQuickLaunch()

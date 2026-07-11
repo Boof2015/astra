@@ -1,9 +1,11 @@
 import { createHash, randomBytes, timingSafeEqual } from 'crypto'
 import type { IncomingMessage, ServerResponse } from 'http'
-import type { MiniPlayerCommand, MiniPlayerSnapshot } from '../../types/miniPlayer'
+import type { MiniPlayerCommand, MiniPlayerQueueSnapshot, MiniPlayerSnapshot } from '../../types/miniPlayer'
 import {
   type LocalApiControlCommand,
-  type LocalApiNowPlayingSnapshot
+  type LocalApiNowPlayingSnapshot,
+  type LocalApiQueueSnapshot,
+  type LocalApiRepeatMode
 } from '../../types/localApi'
 import {
   formatArtistNames,
@@ -19,8 +21,9 @@ export const CONTROL_MAX_BODY_BYTES = 1_024
 const ARTWORK_MAX_BYTES = 8 * 1024 * 1024
 
 type PlaybackControlBody =
-  | { command: Exclude<LocalApiControlCommand, 'seek'> }
+  | { command: Exclude<LocalApiControlCommand, 'seek' | 'play-queue-item'> }
   | { command: 'seek'; time: number }
+  | { command: 'play-queue-item'; queueId: string }
 
 interface ControlRateLimitState {
   count: number
@@ -102,6 +105,10 @@ function parseArtworkDataUrl(artworkData: string | null | undefined): ParsedArtw
   return { mimeType, bytes }
 }
 
+function sanitizeRepeatMode(value: unknown): LocalApiRepeatMode {
+  return value === 'one' || value === 'all' ? value : 'none'
+}
+
 function sanitizeSnapshot(
   snapshot: MiniPlayerSnapshot | null,
   artworkUrl: string | null,
@@ -115,6 +122,8 @@ function sanitizeSnapshot(
       currentTime: 0,
       duration: 0,
       queueLength: 0,
+      shuffle: false,
+      repeat: 'none',
       outputDeviceLabel: null,
       visualizerLineColor: '#38bdf8',
       currentTrack: null,
@@ -127,6 +136,8 @@ function sanitizeSnapshot(
     currentTime: toSafeNumber(snapshot.currentTime),
     duration: toSafeNumber(snapshot.duration),
     queueLength: Math.max(0, Math.floor(toSafeNumber(snapshot.queueLength))),
+    shuffle: Boolean(snapshot.shuffle),
+    repeat: sanitizeRepeatMode(snapshot.repeat),
     outputDeviceLabel: toSafeOptionalString(snapshot.outputDeviceLabel),
     visualizerLineColor: toSafeOptionalString(snapshot.visualizerLineColor) ?? '#38bdf8',
     currentTrack: snapshot.currentTrack
@@ -180,9 +191,36 @@ function mapControlCommand(command: PlaybackControlBody): MiniPlayerCommand {
       return { type: 'playPrevious' }
     case 'toggle-favorite':
       return { type: 'toggleFavoriteCurrent' }
+    case 'toggle-shuffle':
+      return { type: 'toggleShuffle' }
+    case 'toggle-repeat':
+      return { type: 'toggleRepeat' }
+    case 'play-queue-item':
+      return { type: 'playQueueItem', queueId: command.queueId }
     case 'seek':
       return { type: 'seek', time: command.time }
   }
+}
+
+function sanitizeQueueSnapshot(snapshot: MiniPlayerQueueSnapshot | null): LocalApiQueueSnapshot {
+  if (!snapshot || !Array.isArray(snapshot.items)) {
+    return { items: [], updatedAt: Date.now() }
+  }
+  const items: LocalApiQueueSnapshot['items'] = []
+  for (const item of snapshot.items) {
+    if (!item || typeof item !== 'object') continue
+    const queueId = toSafeOptionalString(item.queueId)
+    if (!queueId) continue
+    const durationSeconds = Number(item.durationSeconds)
+    items.push({
+      queueId,
+      title: typeof item.title === 'string' ? item.title : '',
+      artist: typeof item.artist === 'string' ? item.artist : '',
+      durationSeconds: Number.isFinite(durationSeconds) && durationSeconds > 0 ? durationSeconds : null,
+      isCurrent: Boolean(item.isCurrent)
+    })
+  }
+  return { items, updatedAt: Date.now() }
 }
 
 export function hasBearerToken(req: IncomingMessage): string | null {
@@ -210,6 +248,7 @@ export class PlaybackHttpCore<TAuthContext> {
     bytes: null
   }
   private latestSnapshot: LocalApiNowPlayingSnapshot
+  private latestQueueSnapshot: LocalApiQueueSnapshot = { items: [], updatedAt: 0 }
   private artworkResolveSequence = 0
   private artworkResolvingTrackId: string | null = null
 
@@ -228,6 +267,26 @@ export class PlaybackHttpCore<TAuthContext> {
     this.refreshLatestSnapshot(snapshot)
     if (this.sseClients.size === 0) return
     this.broadcastSseEvent('now-playing', this.latestSnapshot)
+  }
+
+  publishQueueSnapshot(snapshot: MiniPlayerQueueSnapshot | null): void {
+    this.latestQueueSnapshot = sanitizeQueueSnapshot(snapshot)
+    if (this.sseClients.size === 0) return
+    this.broadcastSseEvent('queue', this.latestQueueSnapshot)
+  }
+
+  /** One-off event to all connected SSE clients (e.g. sync-request nudges). */
+  broadcastEvent(event: string, payload: unknown): void {
+    if (this.sseClients.size === 0) return
+    this.broadcastSseEvent(event, payload)
+  }
+
+  handleQueue(req: IncomingMessage, res: ServerResponse<IncomingMessage>): void {
+    if (!this.options.authorizeRequest(req)) {
+      this.respondJson(res, 401, { error: 'Unauthorized' })
+      return
+    }
+    this.respondJson(res, 200, this.latestQueueSnapshot)
   }
 
   closeSseClients(predicate: (client: { authorization: TAuthContext }) => boolean): void {
@@ -577,7 +636,14 @@ export class PlaybackHttpCore<TAuthContext> {
       case 'next':
       case 'previous':
       case 'toggle-favorite':
+      case 'toggle-shuffle':
+      case 'toggle-repeat':
         return { command }
+      case 'play-queue-item': {
+        const queueId = toSafeOptionalString(candidate.queueId)
+        if (!queueId) return null
+        return { command, queueId }
+      }
       case 'seek': {
         const time = candidate.time
         if (typeof time !== 'number' || !Number.isFinite(time)) {

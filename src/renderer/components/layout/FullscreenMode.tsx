@@ -78,7 +78,8 @@ function usePrefersReducedMotion(): boolean {
 function FullscreenWaveformSection(): ReactElement {
   const waveformTimeDisplayMode = useUIStore((s) => s.waveformTimeDisplayMode)
   const toggleWaveformTimeDisplayMode = useUIStore((s) => s.toggleWaveformTimeDisplayMode)
-  const currentTime = usePlaybackClock()
+  // 30Hz keeps the playhead visually smooth without frame-rate re-renders.
+  const currentTime = usePlaybackClock(1 / 30)
   const duration = usePlayerStore((s) => s.duration)
   const waveformData = usePlayerStore((s) => s.waveformData)
   const waveformBufferedRatio = usePlayerStore((s) => s.waveformBufferedRatio)
@@ -134,7 +135,7 @@ function FullscreenLyricsFocusBand({
   currentTrack: Track | null
   showLyrics: boolean
 }): ReactElement {
-  const currentTime = usePlaybackClock()
+  const currentTime = usePlaybackClock(0.1)
   const duration = usePlayerStore((s) => s.duration)
   const seek = usePlayerStore((s) => s.seek)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
@@ -411,7 +412,7 @@ function FullscreenNextCueOverlay({
   repeat: 'none' | 'one' | 'all'
   setHeroPhase: Dispatch<SetStateAction<HeroPhase>>
 }): ReactElement | null {
-  const currentTime = usePlaybackClock()
+  const currentTime = usePlaybackClock(0.25)
   const duration = usePlayerStore((s) => s.duration)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const [cueState, setCueState] = useState<CueState>('hidden')
@@ -491,6 +492,8 @@ function FullscreenNextCueOverlay({
 
 export default function FullscreenMode() {
   const setFullscreen = useUIStore((s) => s.setFullscreen)
+  const showLyricsDock = useUIStore((s) => s.fullscreenLyricsVisible)
+  const toggleFullscreenLyricsVisible = useUIStore((s) => s.toggleFullscreenLyricsVisible)
   const currentTrack = usePlayerStore((s) => s.currentTrack)
   const playbackState = usePlayerStore((s) => s.playbackState)
   const shuffle = usePlayerStore((s) => s.shuffle)
@@ -517,7 +520,6 @@ export default function FullscreenMode() {
   const [isBackdropCrossfading, setIsBackdropCrossfading] = useState(false)
   const [heroPhase, setHeroPhase] = useState<HeroPhase>('steady')
   const [fullscreenTitleOverflows, setFullscreenTitleOverflows] = useState(false)
-  const [showLyricsDock, setShowLyricsDock] = useState(false)
 
   const backdropRequestTokenRef = useRef(0)
   const previousTrackIdRef = useRef<string | null>(null)
@@ -549,6 +551,7 @@ export default function FullscreenMode() {
     currentCodec.includes('atmos') ||
     currentCodec.includes('joc')
   )
+  const showEclipsaBadge = Boolean(currentTrack?.isIamf || currentCodec === 'iamf')
 
   const checkFullscreenTitleOverflow = useCallback(() => {
     const outer = fullscreenTitleOuterRef.current
@@ -585,13 +588,13 @@ export default function FullscreenMode() {
 
       if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'l') {
         e.preventDefault()
-        setShowLyricsDock((visible) => !visible)
+        toggleFullscreenLyricsVisible()
       }
     }
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [setFullscreen])
+  }, [setFullscreen, toggleFullscreenLyricsVisible])
 
   useEffect(() => {
     checkFullscreenTitleOverflow()
@@ -785,7 +788,7 @@ export default function FullscreenMode() {
               <button
                 type="button"
                 className={`fullscreen-lyrics-toggle ${showLyricsDock ? 'active' : ''}`}
-                onClick={() => setShowLyricsDock((visible) => !visible)}
+                onClick={toggleFullscreenLyricsVisible}
                 title={showLyricsDock ? 'Hide lyrics (L)' : 'Show lyrics (L)'}
                 aria-label={showLyricsDock ? 'Hide lyrics' : 'Show lyrics'}
                 aria-pressed={showLyricsDock}
@@ -816,11 +819,16 @@ export default function FullscreenMode() {
                 </h1>
                 <p className="fullscreen-artist">{currentTrack?.artist ?? '\u2014'}</p>
                 <p className="fullscreen-album">{currentTrack?.album ?? '\u2014'}</p>
-                {(showAtmosBadge || isMultichannel) && (
+                {(showAtmosBadge || showEclipsaBadge || isMultichannel) && (
                   <div className="fullscreen-audio-badges">
                     {showAtmosBadge && (
                       <span className="fullscreen-audio-badge fullscreen-audio-badge-atmos">
                         ATMOS
+                      </span>
+                    )}
+                    {showEclipsaBadge && (
+                      <span className="fullscreen-audio-badge fullscreen-audio-badge-eclipsa">
+                        ECLIPSA
                       </span>
                     )}
                     {isMultichannel && (

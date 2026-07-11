@@ -40,7 +40,7 @@ export default function ParallaxManagementView({ notify, onAddSpeaker, onChangeR
   const hostEnabled = status?.host.enabled ?? false
   const sinkEnabled = status?.sink.sinkEnabled ?? false
   const lanUrls = status?.host.lanUrls ?? []
-  const hostUrl = lanUrls[0] ?? `http://127.0.0.1:${PARALLAX_DEFAULT_PORT}`
+  const hostUrl = lanUrls[0] ?? `https://127.0.0.1:${PARALLAX_DEFAULT_PORT}`
   const sinkConnected = status?.sink.connected ?? false
   const removedByHost = status?.sink.removedByHost ?? false
   const hasPersistedConnection = status?.sink.hasPersistedConnection ?? false
@@ -141,6 +141,12 @@ export default function ParallaxManagementView({ notify, onAddSpeaker, onChangeR
 
   return (
     <div className="parallax-management">
+      {status?.securityMigrationRequired && (
+        <div className="settings-card parallax-security-migration-card" role="status">
+          <div className="settings-card-label">Parallax security update</div>
+          <p>Previous pairings were removed so Parallax can use encrypted, identity-pinned connections. Pair each speaker again once.</p>
+        </div>
+      )}
       {/* This machine — role identity + the one control that flips it */}
       <div className="settings-card">
         <div className="settings-card-label">This machine</div>

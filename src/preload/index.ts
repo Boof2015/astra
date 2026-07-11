@@ -1,8 +1,10 @@
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import { join } from 'path'
+import { readFile } from 'fs/promises'
 import { getHeapSpaceStatistics } from 'v8'
 import type {
   MiniPlayerCommand,
+  MiniPlayerQueueSnapshot,
   MiniPlayerSnapshot,
   MiniPlayerVisualizerMode,
   MiniPlayerVisualizerStreamChunk,
@@ -27,28 +29,26 @@ import type {
   PhoneRemotePendingPairingRequest,
   PhoneRemoteStatus
 } from '../types/phoneRemote'
+import type { PhoneSyncConflictResolution } from '../types/phoneSync'
 import type {
   ParallaxAudioChunk,
   ParallaxDiscoveryEvent,
   ParallaxOutputLatencyMetrics,
   ParallaxPairedSink,
-  ParallaxPairResponse,
   ParallaxHostStreamStartInfo,
   ParallaxHostStreamStartOptions,
   ParallaxHostNextStreamStartOptions,
   ParallaxHostTimelinePublishOptions,
-  ParallaxPairingPin,
-  ParallaxSinkConnectionConfig,
   ParallaxSinkTelemetry,
   ParallaxStatus,
   ParallaxTimelineEvent,
-  ParallaxTimelineState,
-  PersistedParallaxSinkConnection
+  ParallaxTimelineState
 } from '../types/parallax'
 import type {
   DynamicPlaylistRulesV1,
   PlaylistKind
 } from '../shared/playlists/dynamicPlaylist'
+import type { AppMemoryFootprintSource } from '../shared/processMemoryFootprint'
 import type {
   LastFmAuthFinishResult,
   LastFmAuthStartResult,
@@ -92,6 +92,10 @@ import type {
   NativeAudioVectorscopeChunk
 } from '../types/nativeAudio'
 import type {
+  ProgressiveAudioLoadProgress,
+  ProgressiveStreamChunk,
+  ProgressiveStreamEvent,
+  ProgressiveStreamInfo,
   RemoteAudioLoadProgress,
   RemoteStreamChunk,
   RemoteStreamEvent,
@@ -146,8 +150,10 @@ export interface AudioFileMetadata {
   codec?: string
   codecProfile?: string
   isAtmosJoc?: boolean
+  isIamf?: boolean
   replayGainTrackDb?: number
   replayGainAlbumDb?: number
+  artworkHash?: string
   artwork?: string
 }
 
@@ -155,12 +161,33 @@ export interface AudioFileMetadata {
 export interface AudioFileResult {
   path: string
   name: string
-  data: ArrayBuffer
+  data?: ArrayBuffer
   metadata?: AudioFileMetadata
 }
 
 export interface AudioLoadOptions {
   metadataMode?: 'full' | 'none'
+}
+
+export interface TrackLoudnessResult {
+  loudnessLufs: number
+  peakLinear: number | null
+  method: string
+}
+
+export interface TrackLoudnessStorePayload {
+  loudnessLufs: number
+  peakLinear?: number | null
+  method?: string
+}
+
+export interface AudioFileStatResult {
+  size: number
+  mtimeMs: number
+}
+
+export interface ProgressiveStreamStartOptions {
+  startTimeSeconds?: number | null
 }
 
 // Library types
@@ -191,6 +218,7 @@ export interface DbTrack {
   codec: string | null
   codec_profile: string | null
   is_atmos_joc: number | null
+  is_iamf: number | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
   bpm: number | null
@@ -226,6 +254,7 @@ export interface LibraryFolder {
   id: number
   path: string
   added_at: number
+  hidden: number
 }
 
 export interface FolderSubfolderSummary {
@@ -411,6 +440,18 @@ export interface TrackOverrideSnapshot {
 export interface AppPerformanceStats {
   cpuPercent: number
   workingSetMb: number
+  footprintMb: number | null
+  appProcessFootprintMb: number | null
+  childProcessFootprintMb: number | null
+  footprintSource: AppMemoryFootprintSource
+  footprintComplete: boolean
+  footprintFailedPids: number[]
+  footprintProcessCount: number
+  footprintAppProcessCount: number
+  footprintChildProcessCount: number
+  privateMemoryExcludingCallerMb: number | null
+  mainProcessMemoryMb: number | null
+  helperProcessesMemoryMb: number | null
 }
 
 export type MainProcessMemoryStats = MemoryDiagnosticsProcessMemoryStats
@@ -630,6 +671,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     toggleAlwaysOnTop: () => ipcRenderer.invoke('mini-player:toggleAlwaysOnTop'),
     getSnapshot: () => ipcRenderer.invoke('mini-player:getSnapshot'),
     publishSnapshot: (snapshot: MiniPlayerSnapshot) => ipcRenderer.send('mini-player:publishSnapshot', snapshot),
+    publishQueueSnapshot: (snapshot: MiniPlayerQueueSnapshot) => ipcRenderer.send('mini-player:publishQueueSnapshot', snapshot),
     publishVisualizerChunk: (chunk: MiniPlayerVisualizerStreamChunk) => ipcRenderer.send('mini-player:publishVisualizerChunk', chunk),
     sendCommand: (command: MiniPlayerCommand) => ipcRenderer.send('mini-player:sendCommand', command),
     onSnapshot: (callback: (snapshot: MiniPlayerSnapshot) => void) => {
@@ -735,6 +777,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     captureMemoryBundle: (tag?: string): Promise<MemoryDiagnosticsCaptureBundleResult> =>
       ipcRenderer.invoke('diagnostics:captureMemoryBundle', tag),
     getBlinkResourceUsage: (): MemoryDiagnosticsBlinkResourceUsageSnapshot => getBlinkResourceUsage(),
+    clearRendererCache: (): void => webFrame.clearCache(),
     publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) =>
       ipcRenderer.send('diagnostics:publishRendererSnapshot', requestId, snapshot),
     logEvent: (payload: MemoryDiagnosticsEventPayload): Promise<boolean> =>
@@ -819,6 +862,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setEnabled: (enabled: boolean): Promise<PhoneRemoteStatus> =>
       ipcRenderer.invoke('phone-remote:setEnabled', enabled),
     setPort: (port: number): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('phone-remote:setPort', port),
+    setSyncEnabled: (enabled: boolean): Promise<PhoneRemoteStatus> =>
+      ipcRenderer.invoke('phone-remote:setSyncEnabled', enabled),
+    requestSync: (): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('phone-remote:requestSync'),
+    resolveSyncConflict: (syncUid: string, resolution: PhoneSyncConflictResolution): Promise<PhoneRemoteStatus> =>
+      ipcRenderer.invoke('phone-remote:resolveSyncConflict', syncUid, resolution),
     resetToDefaults: (): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('phone-remote:resetToDefaults'),
     onStatus: (callback: (status: PhoneRemoteStatus) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: PhoneRemoteStatus) => callback(status)
@@ -910,12 +958,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('parallax:cancelPair', pairingId),
     cancelIncomingPair: (): Promise<{ ok: true }> =>
       ipcRenderer.invoke('parallax:cancelIncomingPair'),
+    approveIncomingPair: (): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('parallax:approveIncomingPair'),
     setHostPort: (port: number): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:setHostPort', port),
-    createPairingPin: (): Promise<ParallaxPairingPin> => ipcRenderer.invoke('parallax:createPairingPin'),
-    pairWithHost: (baseUrl: string, pin: string, sinkName: string): Promise<ParallaxPairResponse> =>
-      ipcRenderer.invoke('parallax:pairWithHost', baseUrl, pin, sinkName),
-    connectSink: (config: ParallaxSinkConnectionConfig): Promise<ParallaxStatus> =>
-      ipcRenderer.invoke('parallax:connectSink', config),
     disconnectSink: (): Promise<ParallaxStatus> => ipcRenderer.invoke('parallax:disconnectSink'),
     publishHostStreamStart: (
       info: ParallaxHostStreamStartInfo,
@@ -960,10 +1005,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // §14.1.2. Sink-side durable pairing. `setSinkConnection` persists creds after a successful
     // pair; `getSinkConnection` populates the "paired with X" UI; `forgetSinkConnection` is the
     // sink-side symmetric of the host's "Revoke" — wipes creds and stops auto-reconnect.
-    setSinkConnection: (config: PersistedParallaxSinkConnection): Promise<PersistedParallaxSinkConnection | null> =>
-      ipcRenderer.invoke('parallax:setSinkConnection', config),
-    getSinkConnection: (): Promise<PersistedParallaxSinkConnection | null> =>
-      ipcRenderer.invoke('parallax:getSinkConnection'),
     forgetSinkConnection: (): Promise<ParallaxStatus> =>
       ipcRenderer.invoke('parallax:forgetSinkConnection'),
     reconnectFromPersisted: (): Promise<ParallaxStatus> =>
@@ -1083,8 +1124,42 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openAudioFile: () => ipcRenderer.invoke('dialog:openAudioFile'),
   openAudioFolder: () => ipcRenderer.invoke('dialog:openAudioFolder'),
   loadAudioFile: (filePath: string, options?: AudioLoadOptions) => ipcRenderer.invoke('audio:loadFile', filePath, options),
+  // Binaural renderer WASM for the spatial worklet (an AudioWorkletGlobalScope
+  // cannot fetch; the preload reads the bytes like it loads the native addon).
+  getSpatialWasmBytes: async (): Promise<ArrayBuffer> => {
+    const isDev = process.env.NODE_ENV === 'development'
+    const wasmPath = isDev
+      ? join(__dirname, '../../src/renderer/public/spatial-renderer.wasm')
+      : join(__dirname, '../renderer/spatial-renderer.wasm')
+    const bytes = await readFile(wasmPath)
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+  },
+  // IAMF (Eclipsa Audio) decoder WASM for the renderer decode worker.
+  getIamfWasmBytes: async (): Promise<ArrayBuffer> => {
+    const isDev = process.env.NODE_ENV === 'development'
+    const wasmPath = isDev
+      ? join(__dirname, '../../src/renderer/public/iamf-decoder.wasm')
+      : join(__dirname, '../renderer/iamf-decoder.wasm')
+    const bytes = await readFile(wasmPath)
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+  },
   getAudioMetadata: (filePath: string) => ipcRenderer.invoke('audio:getMetadata', filePath) as Promise<AudioFileMetadata | null>,
+  getAudioFileStat: (filePath: string) => ipcRenderer.invoke('audio:getFileStat', filePath) as Promise<AudioFileStatResult | null>,
   decodeAudioWithFfmpeg: (filePath: string) => ipcRenderer.invoke('audio:decodeWithFfmpeg', filePath),
+  analyzeTrackLoudness: (filePath: string) =>
+    ipcRenderer.invoke('audio:analyzeTrackLoudness', filePath) as Promise<TrackLoudnessResult | null>,
+  warmupTrackLoudness: (filePath: string) =>
+    ipcRenderer.invoke('audio:warmupTrackLoudness', filePath) as Promise<TrackLoudnessResult | null>,
+  storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) =>
+    ipcRenderer.invoke('audio:storeTrackLoudness', filePath, payload) as Promise<boolean>,
+  startProgressiveStream: (
+    filePath: string,
+    outputSampleRate: number,
+    expectedChannels?: number | null,
+    options?: ProgressiveStreamStartOptions
+  ) =>
+    ipcRenderer.invoke('audio:startProgressiveStream', filePath, outputSampleRate, expectedChannels, options) as Promise<ProgressiveStreamInfo>,
+  cancelProgressiveStream: (sessionId: number) => ipcRenderer.invoke('audio:cancelProgressiveStream', sessionId) as Promise<void>,
   startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) =>
     ipcRenderer.invoke('audio:startRemoteStream', filePath, outputSampleRate, expectedChannels) as Promise<RemoteStreamInfo>,
   cancelRemoteStream: (sessionId: number) => ipcRenderer.invoke('audio:cancelRemoteStream', sessionId) as Promise<void>,
@@ -1095,15 +1170,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('audio:remoteLoadProgress', handler)
     return () => ipcRenderer.removeListener('audio:remoteLoadProgress', handler)
   },
+  onProgressiveLoadProgress: (callback: (progress: ProgressiveAudioLoadProgress) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: ProgressiveAudioLoadProgress) => callback(progress)
+    ipcRenderer.on('audio:progressiveLoadProgress', handler)
+    return () => ipcRenderer.removeListener('audio:progressiveLoadProgress', handler)
+  },
   onRemoteStreamChunk: (callback: (chunk: RemoteStreamChunk) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, chunk: RemoteStreamChunk) => callback(chunk)
     ipcRenderer.on('audio:remoteStreamChunk', handler)
     return () => ipcRenderer.removeListener('audio:remoteStreamChunk', handler)
   },
+  onProgressiveStreamChunk: (callback: (chunk: ProgressiveStreamChunk) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, chunk: ProgressiveStreamChunk) => callback(chunk)
+    ipcRenderer.on('audio:progressiveStreamChunk', handler)
+    return () => ipcRenderer.removeListener('audio:progressiveStreamChunk', handler)
+  },
   onRemoteStreamEvent: (callback: (payload: RemoteStreamEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: RemoteStreamEvent) => callback(payload)
     ipcRenderer.on('audio:remoteStreamEvent', handler)
     return () => ipcRenderer.removeListener('audio:remoteStreamEvent', handler)
+  },
+  onProgressiveStreamEvent: (callback: (payload: ProgressiveStreamEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: ProgressiveStreamEvent) => callback(payload)
+    ipcRenderer.on('audio:progressiveStreamEvent', handler)
+    return () => ipcRenderer.removeListener('audio:progressiveStreamEvent', handler)
   },
 
   // Generic file dialogs & I/O
@@ -1181,6 +1271,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       error?: string
     }>,
     removeFolder: (folderPath: string) => ipcRenderer.invoke('library:removeFolder', folderPath),
+    setFolderHidden: (folderPath: string, hidden: boolean) =>
+      ipcRenderer.invoke('library:setFolderHidden', folderPath, hidden) as Promise<{ success: boolean; error?: string }>,
     backfillReplayGainMetadata: () => ipcRenderer.invoke('library:backfillReplayGainMetadata') as Promise<{
       scanned: number
       updated: number
@@ -1261,6 +1353,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = (_event: Electron.IpcRendererEvent, progress: { current: number; total: number; trackPath: string }) => callback(progress)
       ipcRenderer.on('library:metadataEditProgress', handler)
       return () => ipcRenderer.removeListener('library:metadataEditProgress', handler)
+    },
+    // Fired after a mobile LAN sync mutates favorites/playlists in the main
+    // process; the renderer should reload both stores.
+    onExternalLibraryMutation: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('library:externalLibraryMutation', handler)
+      return () => ipcRenderer.removeListener('library:externalLibraryMutation', handler)
     },
 
     // Favorites
@@ -1374,6 +1473,7 @@ declare global {
         toggleAlwaysOnTop: () => Promise<MiniPlayerWindowState>
         getSnapshot: () => Promise<MiniPlayerSnapshot | null>
         publishSnapshot: (snapshot: MiniPlayerSnapshot) => void
+        publishQueueSnapshot: (snapshot: MiniPlayerQueueSnapshot) => void
         publishVisualizerChunk: (chunk: MiniPlayerVisualizerStreamChunk) => void
         sendCommand: (command: MiniPlayerCommand) => void
         onSnapshot: (callback: (snapshot: MiniPlayerSnapshot) => void) => () => void
@@ -1415,6 +1515,7 @@ declare global {
         revealPreviousLog: () => Promise<boolean>
         captureMemoryBundle: (tag?: string) => Promise<MemoryDiagnosticsCaptureBundleResult>
         getBlinkResourceUsage: () => MemoryDiagnosticsBlinkResourceUsageSnapshot
+        clearRendererCache: () => void
         publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) => void
         logEvent: (payload: MemoryDiagnosticsEventPayload) => Promise<boolean>
         onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => () => void
@@ -1460,6 +1561,9 @@ declare global {
         revokeAllPairedDevices: () => Promise<number>
         setEnabled: (enabled: boolean) => Promise<PhoneRemoteStatus>
         setPort: (port: number) => Promise<PhoneRemoteStatus>
+        setSyncEnabled: (enabled: boolean) => Promise<PhoneRemoteStatus>
+        requestSync: () => Promise<PhoneRemoteStatus>
+        resolveSyncConflict: (syncUid: string, resolution: PhoneSyncConflictResolution) => Promise<PhoneRemoteStatus>
         resetToDefaults: () => Promise<PhoneRemoteStatus>
         onStatus: (callback: (status: PhoneRemoteStatus) => void) => () => void
       }
@@ -1493,10 +1597,8 @@ declare global {
         ) => Promise<{ sinkId: string; sinkName: string; sinkParallaxEndpointUuid: string | null }>
         cancelPair: (pairingId: string) => Promise<{ ok: boolean }>
         cancelIncomingPair: () => Promise<{ ok: true }>
+        approveIncomingPair: () => Promise<{ ok: boolean }>
         setHostPort: (port: number) => Promise<ParallaxStatus>
-        createPairingPin: () => Promise<ParallaxPairingPin>
-        pairWithHost: (baseUrl: string, pin: string, sinkName: string) => Promise<ParallaxPairResponse>
-        connectSink: (config: ParallaxSinkConnectionConfig) => Promise<ParallaxStatus>
         disconnectSink: () => Promise<ParallaxStatus>
         publishHostStreamStart: (
           info: ParallaxHostStreamStartInfo,
@@ -1525,8 +1627,6 @@ declare global {
           outputDeviceLabel: string | null,
           advanceMs: number
         ) => Promise<ParallaxStatus>
-        setSinkConnection: (config: PersistedParallaxSinkConnection) => Promise<PersistedParallaxSinkConnection | null>
-        getSinkConnection: () => Promise<PersistedParallaxSinkConnection | null>
         forgetSinkConnection: () => Promise<ParallaxStatus>
         reconnectFromPersisted: () => Promise<ParallaxStatus>
         startAutoReconnect: () => Promise<{ scheduled: boolean; reason?: 'no-persisted-connection' | 'host-mode-active' }>
@@ -1589,15 +1689,31 @@ declare global {
       openAudioFile: () => Promise<AudioFileResult | null>
       openAudioFolder: () => Promise<string | null>
       loadAudioFile: (filePath: string, options?: AudioLoadOptions) => Promise<AudioFileResult | null>
+      getSpatialWasmBytes: () => Promise<ArrayBuffer>
+      getIamfWasmBytes: () => Promise<ArrayBuffer>
       getAudioMetadata: (filePath: string) => Promise<AudioFileMetadata | null>
+      getAudioFileStat: (filePath: string) => Promise<AudioFileStatResult | null>
       decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
+      analyzeTrackLoudness: (filePath: string) => Promise<TrackLoudnessResult | null>
+      warmupTrackLoudness: (filePath: string) => Promise<TrackLoudnessResult | null>
+      storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) => Promise<boolean>
+      startProgressiveStream: (
+        filePath: string,
+        outputSampleRate: number,
+        expectedChannels?: number | null,
+        options?: ProgressiveStreamStartOptions
+      ) => Promise<ProgressiveStreamInfo>
+      cancelProgressiveStream: (sessionId: number) => Promise<void>
       startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) => Promise<RemoteStreamInfo>
       cancelRemoteStream: (sessionId: number) => Promise<void>
       getReplayGainScanEnabled: () => Promise<boolean>
       setReplayGainScanEnabled: (enabled: boolean) => Promise<boolean>
       onRemoteLoadProgress: (callback: (progress: RemoteAudioLoadProgress) => void) => () => void
+      onProgressiveLoadProgress: (callback: (progress: ProgressiveAudioLoadProgress) => void) => () => void
       onRemoteStreamChunk: (callback: (chunk: RemoteStreamChunk) => void) => () => void
+      onProgressiveStreamChunk: (callback: (chunk: ProgressiveStreamChunk) => void) => () => void
       onRemoteStreamEvent: (callback: (payload: RemoteStreamEvent) => void) => () => void
+      onProgressiveStreamEvent: (callback: (payload: ProgressiveStreamEvent) => void) => () => void
 
       // Generic file dialogs & I/O
       showSaveDialog: (options: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>
@@ -1667,6 +1783,7 @@ declare global {
           error?: string
         }>
         removeFolder: (folderPath: string) => Promise<{ success: boolean }>
+        setFolderHidden: (folderPath: string, hidden: boolean) => Promise<{ success: boolean; error?: string }>
         backfillReplayGainMetadata: () => Promise<{
           scanned: number
           updated: number
@@ -1713,6 +1830,7 @@ declare global {
         onFileCreatedAtBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => () => void
         onAudioMetadataBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => () => void
         onMetadataEditProgress: (callback: (progress: { current: number; total: number; trackPath: string }) => void) => () => void
+        onExternalLibraryMutation: (callback: () => void) => () => void
 
         // Favorites
         getFavorites: () => Promise<DbTrack[]>

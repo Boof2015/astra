@@ -1,4 +1,5 @@
 export type MiniPlayerPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
+export type MiniPlayerRepeatMode = 'none' | 'one' | 'all'
 export type MiniPlayerTimeDisplayMode = 'remaining' | 'duration'
 export type MiniPlayerVisualizerMode = 'off' | 'oscilloscope' | 'spectrum'
 export type MiniPlayerLayoutMode = 'strip' | 'card' | 'cover'
@@ -72,10 +73,25 @@ export interface MiniPlayerSnapshot {
   currentTime: number
   duration: number
   queueLength: number
+  shuffle: boolean
+  repeat: MiniPlayerRepeatMode
   outputDeviceLabel: string | null
   currentTrack: MiniPlayerTrackSnapshot | null
   timeDisplayMode: MiniPlayerTimeDisplayMode
   visualizerLineColor: string
+}
+
+export interface MiniPlayerQueueItemSnapshot {
+  queueId: string
+  title: string
+  artist: string
+  durationSeconds: number | null
+  isCurrent: boolean
+}
+
+export interface MiniPlayerQueueSnapshot {
+  items: MiniPlayerQueueItemSnapshot[]
+  updatedAt: number
 }
 
 export interface MiniPlayerResolvedArtwork {
@@ -144,6 +160,9 @@ export type MiniPlayerCommand =
   | { type: 'playPrevious' }
   | { type: 'toggleTimeDisplayMode' }
   | { type: 'toggleFavoriteCurrent' }
+  | { type: 'toggleShuffle' }
+  | { type: 'toggleRepeat' }
+  | { type: 'playQueueItem'; queueId: string }
   | { type: 'seek'; time: number }
   | { type: 'toggleFavorite'; trackPath: string }
 

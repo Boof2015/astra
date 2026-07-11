@@ -6,14 +6,14 @@
  *
  * Crossover frequencies:
  *   Low ↔ Mid : 250 Hz
- *   Mid ↔ High: 4000 Hz
+ *   Mid ↔ High: 2500 Hz
  *
  * Each band carries independent left/right channels so the vectorscope
  * can render each band's stereo image in a distinct color.
  */
 
 const LOW_MID_CROSSOVER = 250
-const MID_HIGH_CROSSOVER = 4000
+const MID_HIGH_CROSSOVER = 2500
 
 export const BAND_COLORS = {
   low: '#ff4444',   // Red — bass
@@ -25,6 +25,14 @@ export interface MultibandChunk {
   low:  { left: Float32Array; right: Float32Array }
   mid:  { left: Float32Array; right: Float32Array }
   high: { left: Float32Array; right: Float32Array }
+}
+
+export function createMultibandChunk(length: number): MultibandChunk {
+  return {
+    low: { left: new Float32Array(length), right: new Float32Array(length) },
+    mid: { left: new Float32Array(length), right: new Float32Array(length) },
+    high: { left: new Float32Array(length), right: new Float32Array(length) },
+  }
 }
 
 // ---------- Biquad filter ----------
@@ -114,6 +122,15 @@ export class MultibandSplitter {
   private highHpR = new BiquadFilter()
 
   private configuredSampleRate = 0
+  private midTmpL = new Float32Array(0)
+  private midTmpR = new Float32Array(0)
+
+  private ensureScratch(size: number): void {
+    if (this.midTmpL.length !== size) {
+      this.midTmpL = new Float32Array(size)
+      this.midTmpR = new Float32Array(size)
+    }
+  }
 
   configure(sampleRate: number): void {
     if (sampleRate === this.configuredSampleRate) return
@@ -134,38 +151,42 @@ export class MultibandSplitter {
   }
 
   split(left: Float32Array, right: Float32Array): MultibandChunk {
-    const n = left.length
+    const target = createMultibandChunk(Math.min(left.length, right.length))
+    this.splitInto(left, right, target)
+    return target
+  }
 
-    const lowL = new Float32Array(n)
-    const lowR = new Float32Array(n)
-    const midL = new Float32Array(n)
-    const midR = new Float32Array(n)
-    const highL = new Float32Array(n)
-    const highR = new Float32Array(n)
-
-    // Temp buffers for mid band (highpass then lowpass)
-    const midTmpL = new Float32Array(n)
-    const midTmpR = new Float32Array(n)
-
-    // Low band
-    this.lowLpL.process(left, lowL)
-    this.lowLpR.process(right, lowR)
-
-    // Mid band (highpass → lowpass)
-    this.midHpL.process(left, midTmpL)
-    this.midHpR.process(right, midTmpR)
-    this.midLpL.process(midTmpL, midL)
-    this.midLpR.process(midTmpR, midR)
-
-    // High band
-    this.highHpL.process(left, highL)
-    this.highHpR.process(right, highR)
-
-    return {
-      low:  { left: lowL, right: lowR },
-      mid:  { left: midL, right: midR },
-      high: { left: highL, right: highR },
+  splitInto(left: Float32Array, right: Float32Array, target: MultibandChunk): number {
+    const n = Math.min(
+      left.length,
+      right.length,
+      target.low.left.length,
+      target.low.right.length,
+      target.mid.left.length,
+      target.mid.right.length,
+      target.high.left.length,
+      target.high.right.length,
+    )
+    if (n <= 0) {
+      return 0
     }
+
+    const leftInput = left.length === n ? left : left.subarray(0, n)
+    const rightInput = right.length === n ? right : right.subarray(0, n)
+    this.ensureScratch(n)
+
+    this.lowLpL.process(leftInput, target.low.left)
+    this.lowLpR.process(rightInput, target.low.right)
+
+    this.midHpL.process(leftInput, this.midTmpL)
+    this.midHpR.process(rightInput, this.midTmpR)
+    this.midLpL.process(this.midTmpL, target.mid.left)
+    this.midLpR.process(this.midTmpR, target.mid.right)
+
+    this.highHpL.process(leftInput, target.high.left)
+    this.highHpR.process(rightInput, target.high.right)
+
+    return n
   }
 
   reset(): void {
@@ -211,8 +232,16 @@ export class MultibandBuffer {
     }
   }
 
-  push(bands: MultibandChunk): void {
-    const n = bands.low.left.length
+  push(bands: MultibandChunk, count = bands.low.left.length): void {
+    const n = Math.min(
+      count,
+      bands.low.left.length,
+      bands.low.right.length,
+      bands.mid.left.length,
+      bands.mid.right.length,
+      bands.high.left.length,
+      bands.high.right.length,
+    )
     for (let i = 0; i < n; i++) {
       const pos = this.writePos
       this.buffers.low.left[pos] = bands.low.left[i]
@@ -233,6 +262,34 @@ export class MultibandBuffer {
    * Returns the most recent `maxPoints` samples for each band,
    * ordered oldest-first (matching the native getPoints() convention).
    */
+  fillPointsInto(target: MultibandChunk, maxPoints: number): number {
+    const count = Math.min(
+      maxPoints,
+      this.validSamples,
+      target.low.left.length,
+      target.low.right.length,
+      target.mid.left.length,
+      target.mid.right.length,
+      target.high.left.length,
+      target.high.right.length,
+    )
+    if (count === 0) {
+      return 0
+    }
+
+    for (let i = 0; i < count; i++) {
+      const idx = (this.writePos + this.capacity - count + i) % this.capacity
+      target.low.left[i] = this.buffers.low.left[idx]
+      target.low.right[i] = this.buffers.low.right[idx]
+      target.mid.left[i] = this.buffers.mid.left[idx]
+      target.mid.right[i] = this.buffers.mid.right[idx]
+      target.high.left[i] = this.buffers.high.left[idx]
+      target.high.right[i] = this.buffers.high.right[idx]
+    }
+
+    return count
+  }
+
   getPoints(maxPoints: number): {
     bands: Record<'low' | 'mid' | 'high', { left: Float32Array; right: Float32Array }>
     count: number
@@ -249,21 +306,8 @@ export class MultibandBuffer {
       }
     }
 
-    const out = {
-      low:  { left: new Float32Array(count), right: new Float32Array(count) },
-      mid:  { left: new Float32Array(count), right: new Float32Array(count) },
-      high: { left: new Float32Array(count), right: new Float32Array(count) },
-    }
-
-    for (let i = 0; i < count; i++) {
-      const idx = (this.writePos + this.capacity - count + i) % this.capacity
-      out.low.left[i] = this.buffers.low.left[idx]
-      out.low.right[i] = this.buffers.low.right[idx]
-      out.mid.left[i] = this.buffers.mid.left[idx]
-      out.mid.right[i] = this.buffers.mid.right[idx]
-      out.high.left[i] = this.buffers.high.left[idx]
-      out.high.right[i] = this.buffers.high.right[idx]
-    }
+    const out = createMultibandChunk(count)
+    this.fillPointsInto(out, count)
 
     return { bands: out, count }
   }

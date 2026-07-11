@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
-import type { MiniPlayerCommand, MiniPlayerSnapshot } from '../../types/miniPlayer'
+import type { MiniPlayerCommand, MiniPlayerQueueSnapshot, MiniPlayerSnapshot } from '../../types/miniPlayer'
 import {
   LOCAL_API_LOOPBACK_HOST,
   type LocalApiServiceConfig,
@@ -95,6 +95,10 @@ export class LocalApiService {
 
   publishSnapshot(snapshot: MiniPlayerSnapshot | null): void {
     this.core.publishSnapshot(snapshot)
+  }
+
+  publishQueueSnapshot(snapshot: MiniPlayerQueueSnapshot | null): void {
+    this.core.publishQueueSnapshot(snapshot)
   }
 
   async stop(): Promise<void> {
@@ -209,6 +213,11 @@ export class LocalApiService {
 
     if (method === 'GET' && path === '/v1/artwork/current') {
       this.core.handleArtwork(req, res, requestUrl)
+      return
+    }
+
+    if (method === 'GET' && path === '/v1/queue') {
+      this.core.handleQueue(req, res)
       return
     }
 

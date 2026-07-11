@@ -36,6 +36,7 @@ export interface QuickLaunchTrackRecord {
   codec?: string | null
   codec_profile?: string | null
   is_atmos_joc?: number | null
+  is_iamf?: number | null
 }
 
 export interface QuickLaunchAlbumRecord {

@@ -26,7 +26,7 @@ type InfoSidebarTab = 'info' | 'lyrics'
 
 export default function InfoSidebar() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
-  const currentTime = usePlaybackClock()
+  const currentTime = usePlaybackClock(0.1)
   const duration = usePlayerStore((s) => s.duration)
   const seek = usePlayerStore((s) => s.seek)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
@@ -342,6 +342,12 @@ export default function InfoSidebar() {
               <div className="info-tech-item info-tech-item-warning">
                 <div className="info-tech-label">Atmos Source</div>
                 <div className="info-tech-value">Compatibility mode. Object rendering and mix quality are not guaranteed.</div>
+              </div>
+            )}
+            {currentTrack.isIamf && (
+              <div className="info-tech-item">
+                <div className="info-tech-label">Eclipsa Source</div>
+                <div className="info-tech-value">Eclipsa Audio (IAMF) decoded to 7.1.4.</div>
               </div>
             )}
           </div>

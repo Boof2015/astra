@@ -5,10 +5,7 @@ import type {
   ParallaxAudioChunk,
   ParallaxHostStreamStartInfo,
   ParallaxPairedSink,
-  ParallaxPairResponse,
-  ParallaxPairingPin,
   ParallaxHostTimelinePublishOptions,
-  ParallaxSinkConnectionConfig,
   ParallaxStatus,
   ParallaxStreamInfo,
   ParallaxTimelineEvent,
@@ -39,7 +36,6 @@ import { useAudioSettingsStore } from './audioSettingsStore'
 interface ParallaxSettingsStore {
   status: ParallaxStatus | null
   pairedSinks: ParallaxPairedSink[]
-  activePairingPin: ParallaxPairingPin | null
   pendingSinkEvent: ParallaxTimelineEvent | null
   latestTimeline: ParallaxTimelineState | null
   sinkSnapshot: {
@@ -73,9 +69,6 @@ interface ParallaxSettingsStore {
   setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus | null>
   setSinkEnabled: (enabled: boolean) => Promise<ParallaxStatus | null>
   setHostPort: (port: number) => Promise<ParallaxStatus | null>
-  createPairingPin: () => Promise<ParallaxPairingPin | null>
-  pairWithHost: (baseUrl: string, pin: string, sinkName: string) => Promise<ParallaxPairResponse | null>
-  connectSink: (config: ParallaxSinkConnectionConfig) => Promise<ParallaxStatus | null>
   // §14.1.2 follow-up (Codex round 2, finding 2). Manual reconnect path that goes through the
   // same renderer-side prep as `connectSink()` (Standard-mode check, ensureSubscriptions,
   // audioEngine.stop), but reuses the credential main already holds rather than receiving it
@@ -219,7 +212,6 @@ function buildParallaxStreamInfo(
   return {
     streamId,
     trackId: track.id,
-    trackPath: track.path,
     title: track.title,
     artist: track.artist,
     album: track.album,
@@ -341,7 +333,6 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     const serviceError = status.sink.lastError ?? status.host.lastError ?? ''
     set({
       status,
-      activePairingPin: status.host.activePairingPin,
       errorMessage: serviceError
     })
 
@@ -664,7 +655,6 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       const info: ParallaxHostStreamStartInfo = {
         streamId,
         trackId: 'parallax-test-tone',
-        trackPath: 'parallax://test-tone',
         title: 'Parallax test tone',
         artist: 'Astra',
         album: 'Setup',
@@ -1321,7 +1311,6 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
   return {
     status: null,
     pairedSinks: [],
-    activePairingPin: null,
     pendingSinkEvent: null,
     latestTimeline: null,
     sinkSnapshot: {
@@ -1422,54 +1411,6 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       set({ isLoading: true })
       try {
         const status = await window.electronAPI.parallax.setHostPort(port)
-        return applyStatus(status)
-      } catch (error) {
-        set({ errorMessage: toErrorMessage(error) })
-        return null
-      } finally {
-        set({ isLoading: false })
-      }
-    },
-
-    createPairingPin: async () => {
-      set({ isLoading: true })
-      try {
-        const pin = await window.electronAPI.parallax.createPairingPin()
-        set({ activePairingPin: pin, errorMessage: '' })
-        return pin
-      } catch (error) {
-        set({ errorMessage: toErrorMessage(error) })
-        return null
-      } finally {
-        set({ isLoading: false })
-      }
-    },
-
-    pairWithHost: async (baseUrl, pin, sinkName) => {
-      set({ isLoading: true })
-      try {
-        const response = await window.electronAPI.parallax.pairWithHost(baseUrl, pin, sinkName)
-        set({ errorMessage: '' })
-        return response
-      } catch (error) {
-        set({ errorMessage: toErrorMessage(error) })
-        return null
-      } finally {
-        set({ isLoading: false })
-      }
-    },
-
-    connectSink: async (config) => {
-      if (useAudioSettingsStore.getState().playbackOutputMode === 'bitperfect') {
-        set({ errorMessage: 'Parallax sink mode is only available in Standard output mode.' })
-        return null
-      }
-
-      set({ isLoading: true })
-      try {
-        ensureSubscriptions()
-        audioEngine.stop()
-        const status = await window.electronAPI.parallax.connectSink(config)
         return applyStatus(status)
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
@@ -1660,7 +1601,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       //   - Existing stream for a DIFFERENT track → fresh start replaces (publishHostStreamStart
       //     overwrites main's activeStream slot).
       const existing = getActiveHostStream()
-      if (existing && existing.trackPath === track.path && !hostPublishingCanceledForActiveStream) {
+      if (existing && existing.trackId === track.id && !hostPublishingCanceledForActiveStream) {
         return null
       }
       const buffer = audioEngine.getAudioBuffer()
@@ -1676,7 +1617,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       // Rejoin-same-track path: reuse the existing streamId so the sink doesn't see a spurious
       // "new stream" event — publish a fresh mid-join timeline aligned to current acoustic
       // position + group lead. Fresh-start path: createStreamId for a brand-new identity.
-      const isRejoinRestart = existing !== null && existing.trackPath === track.path
+      const isRejoinRestart = existing !== null && existing.trackId === track.id
       const streamId = isRejoinRestart ? existing.streamId : createStreamId(track)
       ensureTelemetry()
       startHostEmitAnchorPublish()
@@ -1729,7 +1670,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       //     timeline reflects acoustic emit truth for the eventual joiner). Publish so future
       //     joiners see correct state, but return null so playerStore plays via audioEngine.play.
       const stream = getActiveHostStreamForControl()
-      if (!stream || !track || stream.trackPath !== track.path) return null
+      if (!stream || !track || stream.trackId !== track.id) return null
       const hasSinks = (get().status?.host.connectedSinkCount ?? 0) > 0
       const hostLatencyMs = audioEngine.getParallaxEndpointLatencyMs()
       // §17 round 2 (Codex MEDIUM). When this returns null (no sinks), playerStore calls

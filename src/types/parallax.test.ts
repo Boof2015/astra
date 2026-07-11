@@ -4,11 +4,13 @@ import {
   buildParallaxClockSample,
   decideParallaxSinkCorrection,
   decideParallaxSinkEnabledFromMeta,
+  decideParallaxSecurityV2Migration,
   decodeParallaxAudioPacket,
   encodeParallaxAudioPacket,
   fitHostEmitAnchorLine,
   hostEmitAnchorSlopeToPpm,
   mapHostTimeToSinkTimeMs,
+  parseParallaxStreamInfo,
   resolveParallaxStreamNormalization,
   selectBestParallaxClockSample,
   selectFilteredParallaxClockOffsetMs,
@@ -259,4 +261,61 @@ test('§20.19(d) migration: meta "0" pins false even when a credential exists', 
 test('§20.19(d) migration: malformed meta collapses to false without persisting', () => {
   // Defensive: unknown values shouldn't trigger the first-read migration write path.
   assert.deepEqual(decideParallaxSinkEnabledFromMeta('garbage', true), { enabled: false, needsPersist: false })
+})
+
+test('Parallax v2 migration clears legacy credentials and requests one-time re-pairing', () => {
+  assert.deepEqual(
+    decideParallaxSecurityV2Migration('1', '[{"id":"old"}]', '{"token":"old"}'),
+    { needsMigration: true, showRepairNotice: true }
+  )
+  assert.deepEqual(
+    decideParallaxSecurityV2Migration(null, '[]', ''),
+    { needsMigration: true, showRepairNotice: false }
+  )
+  assert.deepEqual(
+    decideParallaxSecurityV2Migration('2', '[{"id":"current"}]', '{"protocolVersion":2}'),
+    { needsMigration: false, showRepairNotice: false }
+  )
+})
+
+test('Parallax audio decoder rejects inconsistent and oversized payload declarations', () => {
+  const packet = new Uint8Array(encodeParallaxAudioPacket({
+    streamId: 'wire-guard',
+    sampleRate: 48_000,
+    channels: 2,
+    startFrame: 0,
+    frameCount: 2,
+    hostTimeMs: 1,
+    pcmData: new Float32Array(4).buffer
+  }))
+  const inconsistent = packet.slice()
+  new DataView(inconsistent.buffer).setUint32(24, 4, true)
+  assert.equal(decodeParallaxAudioPacket(inconsistent), null)
+
+  const oversized = packet.slice()
+  new DataView(oversized.buffer).setUint32(20, 4097, true)
+  assert.equal(decodeParallaxAudioPacket(oversized), null)
+})
+
+test('Parallax stream parser bounds peer metadata and strips host filesystem paths', () => {
+  const parsed = parseParallaxStreamInfo({
+    streamId: 'stream',
+    trackId: 'track',
+    trackPath: '/private/music/secret.flac',
+    title: 'Title',
+    artist: 'Artist',
+    album: 'Album',
+    sampleRate: 48_000,
+    channels: 2,
+    durationSeconds: 2,
+    totalFrames: 96_000,
+    chunkFrames: 4096,
+    groupLatencyMs: 1000,
+    createdAt: 1,
+    normalizationGainDb: 0,
+    normalizationMode: 'off'
+  })
+  assert.ok(parsed)
+  assert.equal('trackPath' in parsed, false)
+  assert.equal(parseParallaxStreamInfo({ ...parsed, title: 'x'.repeat(513) }), null)
 })

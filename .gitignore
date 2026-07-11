@@ -5,6 +5,7 @@ node_modules/
 out/
 dist/
 native/build/
+native/iamf-wasm/build/
 
 # Electron
 *.log

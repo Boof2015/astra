@@ -8,6 +8,10 @@ export type SourceChannelRole =
   | 'side-right'
   | 'back-left'
   | 'back-right'
+  | 'top-front-left'
+  | 'top-front-right'
+  | 'top-back-left'
+  | 'top-back-right'
   | 'unknown'
 
 export interface SourceChannel {
@@ -54,6 +58,14 @@ export interface ResolveChannelMixMatrixOptions {
   multichannelEnabled: boolean
   manualRoutingMap?: readonly number[] | null
   includeLfeInDownmix?: boolean
+  /**
+   * Explicit output layout (one id per output channel). Overrides the
+   * count-derived STANDARD_LAYOUTS lookup — required whenever the output bus
+   * isn't a standard layout for its channel count (e.g. the binaural render
+   * bus for 5.1.2, whose 8 speakers are not 7.1). Ignored when the length
+   * doesn't match outputChannels or when a manual routing map is in effect.
+   */
+  outputChannelIds?: readonly string[] | null
 }
 
 export interface CanUseStereoAmbientUpmixOptions {
@@ -62,6 +74,8 @@ export interface CanUseStereoAmbientUpmixOptions {
   multichannelEnabled: boolean
   standardMode: boolean
   stereoUpmixMode: StereoUpmixMode
+  /** See ResolveChannelMixMatrixOptions.outputChannelIds. */
+  outputChannelIds?: readonly string[] | null
 }
 
 const CENTER_GAIN = Math.SQRT1_2
@@ -90,8 +104,15 @@ const CHANNEL_DEFINITIONS: Record<string, Omit<SourceChannel, 'index'>> = {
   SR: { id: 'SR', label: 'Side Right', role: 'side-right' },
   BL: { id: 'BL', label: 'Back Left', role: 'back-left' },
   BR: { id: 'BR', label: 'Back Right', role: 'back-right' },
+  TFL: { id: 'TFL', label: 'Top Front Left', role: 'top-front-left' },
+  TFR: { id: 'TFR', label: 'Top Front Right', role: 'top-front-right' },
+  TBL: { id: 'TBL', label: 'Top Back Left', role: 'top-back-left' },
+  TBR: { id: 'TBR', label: 'Top Back Right', role: 'top-back-right' },
 }
 
+// 12ch is 7.1.4 in FFmpeg's native channel order (heights after the bed).
+// 10ch is deliberately absent: it is ambiguous between 7.1.2 and 5.1.4, so
+// 10-channel sources keep the generic CHn fallback.
 const STANDARD_LAYOUTS: Record<number, string[]> = {
   1: ['M'],
   2: ['FL', 'FR'],
@@ -100,6 +121,7 @@ const STANDARD_LAYOUTS: Record<number, string[]> = {
   5: ['FL', 'FR', 'FC', 'SL', 'SR'],
   6: ['FL', 'FR', 'FC', 'LFE', 'SL', 'SR'],
   8: ['FL', 'FR', 'FC', 'LFE', 'BL', 'BR', 'SL', 'SR'],
+  12: ['FL', 'FR', 'FC', 'LFE', 'BL', 'BR', 'SL', 'SR', 'TFL', 'TFR', 'TBL', 'TBR'],
 }
 
 function normalizeChannelCount(value: number): number {
@@ -118,6 +140,17 @@ function buildFallbackChannel(index: number): SourceChannel {
     role: 'unknown',
     index,
   }
+}
+
+/**
+ * Builds an output layout from explicit channel ids. Unknown ids keep their
+ * name (rather than becoming CHn) so exact-id routing still matches them.
+ */
+function buildLayoutFromChannelIds(ids: readonly string[]): SourceChannel[] {
+  return ids.map((id, index) => {
+    const definition = CHANNEL_DEFINITIONS[id]
+    return definition ? { ...definition, index } : { ...buildFallbackChannel(index), id, label: id }
+  })
 }
 
 export function buildStandardChannelLayout(channelCount: number): SourceChannel[] {
@@ -365,6 +398,34 @@ function routeAutomaticSource(
         SURROUND_GAIN
       )
       return
+    case 'TFL':
+      addMix(matrix, findOutputIndex(outputLayout, ['FL', 'M']), source.index, SURROUND_GAIN)
+      return
+    case 'TFR':
+      addMix(matrix, findOutputIndex(outputLayout, ['FR', 'M']), source.index, SURROUND_GAIN)
+      return
+    case 'TBL': {
+      // Prefer staying in the height layer (mirrors the SL->BL substitute),
+      // then fall down through the rear/side bed before reaching the fronts.
+      const topFrontLeft = findOutputIndex(outputLayout, ['TFL'])
+      addMix(
+        matrix,
+        topFrontLeft ?? findOutputIndex(outputLayout, ['BL', 'SL', 'FL', 'M']),
+        source.index,
+        topFrontLeft != null ? 1 : SURROUND_GAIN
+      )
+      return
+    }
+    case 'TBR': {
+      const topFrontRight = findOutputIndex(outputLayout, ['TFR'])
+      addMix(
+        matrix,
+        topFrontRight ?? findOutputIndex(outputLayout, ['BR', 'SR', 'FR', 'M']),
+        source.index,
+        topFrontRight != null ? 1 : SURROUND_GAIN
+      )
+      return
+    }
     case 'FL':
       addMix(matrix, findOutputIndex(outputLayout, ['M']), source.index, 0.5)
       return
@@ -381,14 +442,24 @@ function routeAutomaticSource(
 function buildAutomaticMatrix(
   sourceChannels: number,
   outputChannels: number,
-  includeLfeInDownmix: boolean
+  includeLfeInDownmix: boolean,
+  outputChannelIds: readonly string[] | null
 ): ChannelMixMatrix {
-  if (sourceChannels === outputChannels) {
+  const sourceLayout = buildSourceLayout(sourceChannels)
+  const outputLayout = outputChannelIds
+    ? buildLayoutFromChannelIds(outputChannelIds)
+    : buildSpeakerLayout(outputChannels)
+
+  // With explicit ids, matching counts no longer imply matching layouts
+  // (an 8-wide 5.1.2 bus is not 7.1) — identity requires id equality.
+  const isIdentity = outputChannelIds
+    ? sourceLayout.length === outputLayout.length &&
+      sourceLayout.every((channel, index) => channel.id === outputLayout[index].id)
+    : sourceChannels === outputChannels
+  if (isIdentity) {
     return buildIdentityMatrix(sourceChannels, outputChannels)
   }
 
-  const sourceLayout = buildSourceLayout(sourceChannels)
-  const outputLayout = buildSpeakerLayout(outputChannels)
   const matrix = createEmptyMatrix(outputChannels)
 
   for (const source of sourceLayout) {
@@ -414,7 +485,11 @@ export function resolveChannelMixMatrix(options: ResolveChannelMixMatrixOptions)
     return buildManualMatrix(sourceChannels, outputChannels, manualRoutingMap, includeLfeInDownmix)
   }
 
-  return buildAutomaticMatrix(sourceChannels, outputChannels, includeLfeInDownmix)
+  const outputChannelIds = options.outputChannelIds && options.outputChannelIds.length === outputChannels
+    ? options.outputChannelIds
+    : null
+
+  return buildAutomaticMatrix(sourceChannels, outputChannels, includeLfeInDownmix, outputChannelIds)
 }
 
 interface StereoAmbientRouteSpec {
@@ -447,9 +522,17 @@ function addStereoAmbientRoute(
   })
 }
 
-export function resolveStereoAmbientUpmixPlan(outputChannels: number): StereoAmbientUpmixPlan {
+export function resolveStereoAmbientUpmixPlan(
+  outputChannels: number,
+  outputChannelIds?: readonly string[] | null
+): StereoAmbientUpmixPlan {
   const normalizedOutputChannels = normalizeChannelCount(outputChannels)
-  const outputLayout = buildSpeakerLayout(normalizedOutputChannels)
+  // Ambience only targets the bed (SL/SR/BL/BR); with an explicit layout,
+  // speakers the layout doesn't have are simply skipped (5.1.2 gets side
+  // ambience only) and heights stay silent.
+  const outputLayout = outputChannelIds && outputChannelIds.length === normalizedOutputChannels
+    ? buildLayoutFromChannelIds(outputChannelIds)
+    : buildSpeakerLayout(normalizedOutputChannels)
   const routes: StereoAmbientUpmixRoute[] = []
 
   // Sign-flipped crossfeed emphasizes the stereo difference signal, but it is
@@ -528,7 +611,8 @@ export function canUseStereoAmbientUpmix(options: CanUseStereoAmbientUpmixOption
   const outputChannels = normalizeChannelCount(options.outputChannels)
   if (sourceChannels !== 2 || outputChannels <= 2) return false
 
-  return resolveStereoAmbientUpmixPlan(outputChannels).routes.some((route) => route.kind === 'ambience')
+  return resolveStereoAmbientUpmixPlan(outputChannels, options.outputChannelIds)
+    .routes.some((route) => route.kind === 'ambience')
 }
 
 export function isIdentityChannelMixMatrix(

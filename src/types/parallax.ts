@@ -1,4 +1,5 @@
 export const PARALLAX_LAN_HOST = '0.0.0.0'
+export const PARALLAX_PROTOCOL_VERSION = 2
 export const PARALLAX_DEFAULT_PORT = 38403
 export const PARALLAX_MIN_PORT = 1024
 export const PARALLAX_MAX_PORT = 65535
@@ -148,21 +149,18 @@ export interface ParallaxPairedSink {
   remoteParallaxEndpointUuid?: string
 }
 
-export interface ParallaxPairingPin {
-  pin: string
-  createdAt: number
-  expiresAt: number
-}
-
 export interface ParallaxHostConfig {
   enabled: boolean
   port: number
 }
 
 export interface ParallaxSinkConnectionConfig {
+  protocolVersion: 2
   baseUrl: string
   sinkId: string
   token: string
+  hostCertificatePem: string
+  hostCertificateFingerprint: string
 }
 
 // §14.1.2 / §16.2 — durable sink-side credential. Persisted on the sink machine via
@@ -172,9 +170,12 @@ export interface ParallaxSinkConnectionConfig {
 // which is also persisted in app-meta. Single slot today; multi-host belongs with the future
 // sink-mode UI per share §16.5.
 export interface PersistedParallaxSinkConnection {
+  protocolVersion: 2
   baseUrl: string
   sinkId: string
   token: string
+  hostCertificatePem: string
+  hostCertificateFingerprint: string
   hostName: string | null
   pairedAt: number
   lastConnectedAt: number | null
@@ -214,7 +215,6 @@ export interface ParallaxClockSample {
 export interface ParallaxStreamInfo extends ParallaxStreamNormalization {
   streamId: string
   trackId: string
-  trackPath: string
   title: string
   artist: string
   album: string
@@ -468,7 +468,6 @@ export interface ParallaxHostStatus {
   bindHost: string
   port: number
   lanUrls: string[]
-  activePairingPin: ParallaxPairingPin | null
   pairedSinkCount: number
   connectedSinkCount: number
   activeStream: ParallaxStreamInfo | null
@@ -535,6 +534,7 @@ export interface ParallaxIncomingPairRequest {
   hostParallaxEndpointUuid: string | null
   hostUrl: string
   expiresAtMs: number
+  awaitingApproval: boolean
 }
 
 export interface ParallaxIdentity {
@@ -556,6 +556,7 @@ export interface ParallaxDiscoveredSink {
   address: string
   port: number
   version: number | null
+  compatible: boolean
   lastSeenAt: number
 }
 
@@ -572,6 +573,7 @@ export interface ParallaxStatus {
   sink: ParallaxSinkStatus
   // §20.19(c). Same UUID surfaces in either role.
   identity?: ParallaxIdentity
+  securityMigrationRequired?: boolean
 }
 
 // §20.19(d) migration. Pure decision: given the persisted `parallax_sink_enabled_v1` meta value
@@ -589,52 +591,76 @@ export function decideParallaxSinkEnabledFromMeta(
   return { enabled: false, needsPersist: false }
 }
 
+export function decideParallaxSecurityV2Migration(
+  currentVersion: string | null,
+  rawPairedSinks: string | null,
+  rawSinkConnection: string | null
+): { needsMigration: boolean; showRepairNotice: boolean } {
+  if (currentVersion === String(PARALLAX_PROTOCOL_VERSION)) {
+    return { needsMigration: false, showRepairNotice: false }
+  }
+  let hadPairedSinks = false
+  if (rawPairedSinks?.trim()) {
+    try {
+      const parsed = JSON.parse(rawPairedSinks)
+      hadPairedSinks = Array.isArray(parsed) ? parsed.length > 0 : true
+    } catch {
+      hadPairedSinks = true
+    }
+  }
+  return {
+    needsMigration: true,
+    showRepairNotice: hadPairedSinks || Boolean(rawSinkConnection?.trim())
+  }
+}
+
 // §20 / §14.1.5 constants. PIN flow + listener.
 export const PARALLAX_SINK_DEFAULT_PORT = 38404
 export const PARALLAX_PAIR_PIN_TTL_MS = 90_000
 export const PARALLAX_PAIR_CANDIDATE_TTL_MS = 90_000
 export const PARALLAX_PAIR_PIN_MAX_FAILS = 3
 export const PARALLAX_PAIR_RATE_LIMIT_MS = 10_000
+export const PARALLAX_PAIR_LOCKOUT_COOLDOWN_MS = 60_000
 
 // §20.6 wire shapes. `pair-request` carries no credentials (Codex round 1 correction);
 // `pair-confirm` carries the candidate `(sinkId, token)` only after the user has read the PIN
 // from the sink screen, so the wire flow only after physical presence is established.
 export interface ParallaxPairRequestBody {
+  version: 2
   pairingId: string
   hostName: string
   hostPort: number
   parallaxEndpointUuid: string
+  hostEphemeralPublicKey: string
+  hostCertificatePem: string
+  hostCertificateFingerprint: string
 }
 
 export interface ParallaxPairRequestResponse {
+  version: 2
   expiresInSeconds: number
   parallaxEndpointUuid: string
   sinkName: string
+  sinkEphemeralPublicKey: string
 }
 
 export interface ParallaxPairConfirmBody {
   pairingId: string
-  pin: string
-  sinkId: string
-  token: string
-  sinkName?: string
+  nonce: string
+  ciphertext: string
+  authTag: string
 }
 
 export interface ParallaxPairConfirmResponse {
-  parallaxEndpointUuid: string
-  sinkName: string
+  nonce: string
+  ciphertext: string
+  authTag: string
 }
 
 export interface ParallaxSinkIdentityResponse {
   name: string
   endpoint_uuid: string
   paired: boolean
-}
-
-export interface ParallaxPairResponse {
-  sinkId: string
-  token: string
-  tokenPrefix: string
 }
 
 export interface ParallaxJoinResponse {
@@ -648,6 +674,161 @@ export interface ParallaxJoinResponse {
   // omitted when no next stream is pending.
   nextStream?: ParallaxStreamInfo | null
   nextTimeline?: ParallaxTimelineState | null
+}
+
+function parallaxRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function parallaxWireString(value: unknown, maxLength: number, allowEmpty = false): string | null {
+  if (typeof value !== 'string' || value.length > maxLength) return null
+  const normalized = value.trim()
+  return normalized || allowEmpty ? normalized : null
+}
+
+function parallaxFiniteNumber(value: unknown, min: number, max: number): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max
+    ? value
+    : null
+}
+
+export function parseParallaxStreamInfo(value: unknown): ParallaxStreamInfo | null {
+  const record = parallaxRecord(value)
+  if (!record) return null
+  const streamId = parallaxWireString(record.streamId, 128)
+  const trackId = parallaxWireString(record.trackId, 256, true)
+  const title = parallaxWireString(record.title, 512, true)
+  const artist = parallaxWireString(record.artist, 512, true)
+  const album = parallaxWireString(record.album, 512, true)
+  const sampleRate = parallaxFiniteNumber(record.sampleRate, 8_000, 384_000)
+  const channels = parallaxFiniteNumber(record.channels, 1, 8)
+  const durationSeconds = parallaxFiniteNumber(record.durationSeconds, 0, 7 * 24 * 60 * 60)
+  const totalFrames = parallaxFiniteNumber(record.totalFrames, 0, Number.MAX_SAFE_INTEGER)
+  const chunkFrames = parallaxFiniteNumber(record.chunkFrames, 1, PARALLAX_AUDIO_CHUNK_FRAMES)
+  const groupLatencyMs = parallaxFiniteNumber(record.groupLatencyMs, 0, 60_000)
+  const createdAt = parallaxFiniteNumber(record.createdAt, 0, Number.MAX_SAFE_INTEGER)
+  if (
+    streamId === null || trackId === null || title === null || artist === null || album === null
+    || sampleRate === null || channels === null || !Number.isInteger(channels)
+    || durationSeconds === null || totalFrames === null || !Number.isSafeInteger(totalFrames)
+    || chunkFrames === null || !Number.isInteger(chunkFrames)
+    || groupLatencyMs === null || createdAt === null
+  ) return null
+  return {
+    streamId,
+    trackId,
+    title,
+    artist,
+    album,
+    sampleRate,
+    channels,
+    durationSeconds,
+    totalFrames,
+    chunkFrames,
+    groupLatencyMs,
+    createdAt,
+    ...resolveParallaxStreamNormalization(record)
+  }
+}
+
+export function parseParallaxTimelineState(value: unknown): ParallaxTimelineState | null {
+  const record = parallaxRecord(value)
+  if (!record) return null
+  const streamId = parallaxWireString(record.streamId, 128)
+  const playbackState = record.playbackState
+  const startFrame = parallaxFiniteNumber(record.startFrame, 0, Number.MAX_SAFE_INTEGER)
+  const startHostTimeMs = parallaxFiniteNumber(record.startHostTimeMs, 0, Number.MAX_SAFE_INTEGER)
+  const updatedHostTimeMs = parallaxFiniteNumber(record.updatedHostTimeMs, 0, Number.MAX_SAFE_INTEGER)
+  const groupLatencyMs = parallaxFiniteNumber(record.groupLatencyMs, 0, 60_000)
+  if (
+    streamId === null
+    || (playbackState !== 'stopped' && playbackState !== 'playing' && playbackState !== 'paused' && playbackState !== 'loading')
+    || startFrame === null || !Number.isSafeInteger(startFrame)
+    || startHostTimeMs === null || updatedHostTimeMs === null || groupLatencyMs === null
+  ) return null
+  return { streamId, playbackState, startFrame, startHostTimeMs, updatedHostTimeMs, groupLatencyMs }
+}
+
+export function parseParallaxJoinResponse(value: unknown): ParallaxJoinResponse | null {
+  const record = parallaxRecord(value)
+  if (!record) return null
+  const sinkId = parallaxWireString(record.sinkId, 128)
+  const groupLatencyMs = parallaxFiniteNumber(record.groupLatencyMs, 0, 60_000)
+  const hostTimeMs = parallaxFiniteNumber(record.hostTimeMs, 0, Number.MAX_SAFE_INTEGER)
+  const stream = record.stream == null ? null : parseParallaxStreamInfo(record.stream)
+  const timeline = record.timeline == null ? null : parseParallaxTimelineState(record.timeline)
+  const nextStream = record.nextStream == null ? null : parseParallaxStreamInfo(record.nextStream)
+  const nextTimeline = record.nextTimeline == null ? null : parseParallaxTimelineState(record.nextTimeline)
+  if (
+    sinkId === null || groupLatencyMs === null || hostTimeMs === null
+    || (record.stream != null && stream === null) || (record.timeline != null && timeline === null)
+    || (record.nextStream != null && nextStream === null) || (record.nextTimeline != null && nextTimeline === null)
+    || ((stream === null) !== (timeline === null)) || ((nextStream === null) !== (nextTimeline === null))
+    || (stream && timeline && stream.streamId !== timeline.streamId)
+    || (nextStream && nextTimeline && nextStream.streamId !== nextTimeline.streamId)
+  ) return null
+  return { sinkId, groupLatencyMs, hostTimeMs, stream, timeline, nextStream, nextTimeline }
+}
+
+export function parseParallaxTimelineEvent(value: unknown): ParallaxTimelineEvent | null {
+  const record = parallaxRecord(value)
+  if (!record || typeof record.type !== 'string') return null
+  const emittedAtHostTimeMs = parallaxFiniteNumber(record.emittedAtHostTimeMs, 0, Number.MAX_SAFE_INTEGER)
+  if (emittedAtHostTimeMs === null) return null
+  if (record.type === 'stream-start' || record.type === 'next-stream-start') {
+    const stream = parseParallaxStreamInfo(record.stream)
+    const timeline = parseParallaxTimelineState(record.timeline)
+    if (!stream || !timeline || stream.streamId !== timeline.streamId) return null
+    return { type: record.type, stream, timeline, emittedAtHostTimeMs }
+  }
+  if (record.type === 'timeline') {
+    const timeline = parseParallaxTimelineState(record.timeline)
+    if (!timeline) return null
+    return { type: 'timeline', timeline, resetAudio: record.resetAudio === true, emittedAtHostTimeMs }
+  }
+  if (record.type === 'stop') {
+    const streamId = record.streamId == null ? null : parallaxWireString(record.streamId, 128)
+    if (record.streamId != null && streamId === null) return null
+    return { type: 'stop', streamId, emittedAtHostTimeMs }
+  }
+  if (record.type === 'next-stream-cancel' || record.type === 'next-stream-promote') {
+    const streamId = parallaxWireString(record.streamId, 128)
+    return streamId ? { type: record.type, streamId, emittedAtHostTimeMs } : null
+  }
+  if (record.type === 'sink-name-update') {
+    const sinkId = parallaxWireString(record.sinkId, 128)
+    const name = parallaxWireString(record.name, 80)
+    return sinkId && name ? { type: 'sink-name-update', sinkId, name, emittedAtHostTimeMs } : null
+  }
+  if (record.type === 'sink-trim-update') {
+    const sinkId = parallaxWireString(record.sinkId, 128)
+    const outputDeviceId = parallaxWireString(record.outputDeviceId, 256)
+    const advanceMs = parallaxFiniteNumber(record.advanceMs, -500, 500)
+    return sinkId && outputDeviceId && advanceMs !== null
+      ? { type: 'sink-trim-update', sinkId, outputDeviceId, advanceMs, emittedAtHostTimeMs }
+      : null
+  }
+  if (record.type === 'host-emit-anchor') {
+    const streamId = parallaxWireString(record.streamId, 128)
+    const hostWallTimeMs = parallaxFiniteNumber(record.hostWallTimeMs, 0, Number.MAX_SAFE_INTEGER)
+    const sourceFrameAtHostOutput = parallaxFiniteNumber(record.sourceFrameAtHostOutput, 0, Number.MAX_SAFE_INTEGER)
+    const hostOutputLatencyMs = parallaxFiniteNumber(record.hostOutputLatencyMs, 0, 60_000)
+    const hostBaseLatencyMs = parallaxFiniteNumber(record.hostBaseLatencyMs, 0, 60_000)
+    const sequence = parallaxFiniteNumber(record.sequence, 0, Number.MAX_SAFE_INTEGER)
+    const observedRatePpm = record.observedRatePpm == null
+      ? null
+      : parallaxFiniteNumber(record.observedRatePpm, -100_000, 100_000)
+    if (!streamId || hostWallTimeMs === null || sourceFrameAtHostOutput === null
+      || hostOutputLatencyMs === null || hostBaseLatencyMs === null || sequence === null
+      || (record.observedRatePpm != null && observedRatePpm === null)) return null
+    return {
+      type: 'host-emit-anchor', streamId, hostWallTimeMs, sourceFrameAtHostOutput,
+      hostOutputLatencyMs, hostBaseLatencyMs, observedRatePpm, sequence, emittedAtHostTimeMs
+    }
+  }
+  return null
 }
 
 export function buildParallaxClockSample(
@@ -831,14 +1012,26 @@ export function readParallaxAudioPacketHeader(
   const version = view.getUint16(4, true)
   if (version !== PARALLAX_AUDIO_PACKET_VERSION) return null
 
+  const sampleRate = view.getUint32(8, true)
+  const channels = view.getUint16(12, true)
+  const frameCount = view.getUint32(20, true)
+  const payloadBytes = view.getUint32(24, true)
+  const hostTimeMs = view.getFloat64(28, true)
+  if (sampleRate < 8_000 || sampleRate > 384_000) return null
+  if (channels < 1 || channels > 8) return null
+  if (frameCount < 1 || frameCount > PARALLAX_AUDIO_CHUNK_FRAMES) return null
+  if (payloadBytes !== frameCount * channels * Float32Array.BYTES_PER_ELEMENT) return null
+  if (payloadBytes > PARALLAX_AUDIO_CHUNK_FRAMES * 8 * Float32Array.BYTES_PER_ELEMENT) return null
+  if (!Number.isFinite(hostTimeMs) || hostTimeMs < 0) return null
+
   return {
     version,
-    sampleRate: view.getUint32(8, true),
-    channels: view.getUint16(12, true),
+    sampleRate,
+    channels,
     startFrame: view.getUint32(16, true),
-    frameCount: view.getUint32(20, true),
-    hostTimeMs: view.getFloat64(28, true),
-    payloadBytes: view.getUint32(24, true)
+    frameCount,
+    hostTimeMs,
+    payloadBytes
   }
 }
 

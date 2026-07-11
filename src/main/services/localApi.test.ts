@@ -28,6 +28,8 @@ function createSnapshot(overrides: Partial<MiniPlayerSnapshot> = {}): MiniPlayer
     currentTime: 42,
     duration: 185.5,
     queueLength: 3,
+    shuffle: false,
+    repeat: 'none',
     outputDeviceLabel: 'Test Output',
     timeDisplayMode: 'remaining',
     visualizerLineColor: '#38bdf8',

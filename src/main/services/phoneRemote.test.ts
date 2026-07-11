@@ -5,6 +5,7 @@ import test from 'node:test'
 import type { MiniPlayerCommand, MiniPlayerSnapshot } from '../../types/miniPlayer'
 import type { PhoneRemoteServiceConfig } from '../../types/phoneRemote'
 import { PHONE_REMOTE_PROTOCOL_VERSION } from '../../types/phoneRemote'
+import { PHONE_SYNC_FORMAT } from '../../types/phoneSync'
 import { PhoneRemoteDiscoveryService } from './phoneRemoteDiscovery.ts'
 import { PhoneRemoteService } from './phoneRemote.ts'
 import { hashToken } from './playbackHttpCore.ts'
@@ -31,6 +32,8 @@ function createSnapshot(overrides: Partial<MiniPlayerSnapshot> = {}): MiniPlayer
     currentTime: 42,
     duration: 185.5,
     queueLength: 3,
+    shuffle: false,
+    repeat: 'none',
     outputDeviceLabel: 'Test Output',
     timeDisplayMode: 'remaining',
     visualizerLineColor: '#38bdf8',
@@ -70,6 +73,7 @@ async function createHarness(options: HarnessOptions = {}) {
   const config: PhoneRemoteServiceConfig = {
     enabled: true,
     controlsEnabled: true,
+    syncEnabled: true,
     port,
     ...(options.config ?? {})
   }
@@ -113,6 +117,7 @@ test('phone remote binds to the LAN host when enabled', async (t) => {
   const config: PhoneRemoteServiceConfig = {
     enabled: false,
     controlsEnabled: false,
+    syncEnabled: true,
     port
   }
   const service = new PhoneRemoteService({
@@ -336,6 +341,98 @@ test('phone remote discovery advertises only non-secret identity fields', () => 
 
   service.stopAdvertising()
   assert.equal(stopped, 1)
+})
+
+test('sync conflict reports preserve rich playlist snapshots and allow legacy summaries', async (t) => {
+  const deviceToken = 'test-device-token'
+  const harness = await createHarness({ pairedDevices: [{
+    id: 'device-1',
+    name: 'Test Phone',
+    clientLabel: 'Android Phone',
+    tokenHash: hashToken(deviceToken),
+    tokenPrefix: deviceToken.slice(0, 8),
+    createdAt: Date.now(),
+    lastSeenAt: null,
+    revokedAt: null
+  }] })
+  t.after(async () => {
+    await harness.service.stop()
+  })
+
+  const response = await fetch(`http://127.0.0.1:${harness.port}/v1/sync/conflicts`, {
+    method: 'POST',
+    headers: {
+      ...authHeaders(deviceToken),
+      'Content-Type': 'application/json; charset=utf-8'
+    },
+    body: JSON.stringify({
+      syncFormat: PHONE_SYNC_FORMAT,
+      consumedResolutions: [],
+      conflicts: [{
+        kind: 'concurrent-edit',
+        syncUid: 'sync-1',
+        name: 'Road Mix',
+        playlistKind: 'normal',
+        phoneName: 'Road Mix',
+        desktopName: 'Road Mix Desktop',
+        phoneUpdatedAt: 20,
+        desktopUpdatedAt: 10,
+        phoneTrackCount: 1,
+        desktopTrackCount: 1,
+        phoneSnapshot: {
+          name: 'Road Mix',
+          kind: 'normal',
+          dynamicRules: null,
+          updatedAt: 20,
+          trackCount: 1,
+          entries: [{
+            title: 'Phone Track',
+            artist: 'Artist',
+            album: 'Album',
+            durationSeconds: 100,
+            position: 0,
+            addedAt: 20,
+            sourcePath: '/phone.flac'
+          }]
+        },
+        desktopSnapshot: {
+          name: 'Road Mix Desktop',
+          kind: 'normal',
+          dynamicRules: null,
+          updatedAt: 10,
+          trackCount: 1,
+          entries: [{
+            title: 'Desktop Track',
+            artist: 'Artist',
+            album: 'Album',
+            durationSeconds: 100,
+            position: 0,
+            addedAt: 10,
+            sourcePath: '/desktop.flac'
+          }]
+        }
+      }, {
+        kind: 'first-pairing',
+        syncUid: 'sync-legacy',
+        name: 'Legacy Mix',
+        playlistKind: 'normal',
+        phoneName: 'Legacy Mix',
+        desktopName: 'Legacy Mix',
+        phoneUpdatedAt: 1,
+        desktopUpdatedAt: 2,
+        phoneTrackCount: 2,
+        desktopTrackCount: 3
+      }]
+    })
+  })
+
+  assert.equal(response.status, 200)
+  const status = harness.service.getStatus()
+  assert.equal(status.sync.conflicts.length, 2)
+  assert.equal(status.sync.conflicts[0].phoneSnapshot?.entries?.[0].title, 'Phone Track')
+  assert.equal(status.sync.conflicts[0].desktopSnapshot?.entries?.[0].title, 'Desktop Track')
+  assert.equal(status.sync.conflicts[1].phoneSnapshot, undefined)
+  assert.equal(status.sync.conflicts[1].desktopSnapshot, undefined)
 })
 
 test('paired device tokens survive phone remote config changes and revocation closes device streams', async (t) => {

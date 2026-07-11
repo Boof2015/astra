@@ -56,7 +56,7 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
       const payload = event.data
       switch (payload.type) {
         case 'append-chunk':
-          this.appendChunk(payload.channelData, payload.frameCount)
+          this.appendChunk(payload)
           break
         case 'set-playing':
           this.playing = Boolean(payload.playing)
@@ -92,13 +92,32 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
     this.lastReportedFrame = -1
   }
 
-  appendChunk(channelData, frameCount) {
-    if (!Array.isArray(channelData) || frameCount <= 0) return
-    this.chunks.push({
-      startFrame: this.totalFrames,
-      frameCount,
-      channels: channelData
-    })
+  appendChunk(payload) {
+    const frameCount = Number(payload.frameCount)
+    if (!Number.isFinite(frameCount) || frameCount <= 0) return
+
+    const interleavedData = payload.interleavedData instanceof Float32Array
+      ? payload.interleavedData
+      : null
+    const channelCount = Number.isFinite(payload.channelCount)
+      ? Math.max(1, Math.floor(payload.channelCount))
+      : this.channelCount
+    const channelData = Array.isArray(payload.channelData) ? payload.channelData : null
+    if (!interleavedData && !channelData) return
+
+    this.chunks.push(interleavedData
+      ? {
+          startFrame: this.totalFrames,
+          frameCount,
+          interleaved: interleavedData,
+          channelCount
+        }
+      : {
+          startFrame: this.totalFrames,
+          frameCount,
+          channels: channelData
+        }
+    )
     this.totalFrames += frameCount
     if (this.currentChunkIndex >= this.chunks.length) {
       this.currentChunkIndex = Math.max(0, this.chunks.length - 1)
@@ -200,10 +219,20 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
 
       const availableFrames = chunk.frameCount - chunkOffset
       const framesToCopy = Math.min(remainingFrames, availableFrames)
-      for (let channel = 0; channel < output.length; channel++) {
-        const sourceChannel = chunk.channels[channel] || chunk.channels[0]
-        if (!sourceChannel) continue
-        output[channel].set(sourceChannel.subarray(chunkOffset, chunkOffset + framesToCopy), outputOffset)
+      if (chunk.interleaved) {
+        for (let channel = 0; channel < output.length; channel++) {
+          const sourceChannelIndex = channel < chunk.channelCount ? channel : 0
+          const target = output[channel]
+          for (let frame = 0; frame < framesToCopy; frame++) {
+            target[outputOffset + frame] = chunk.interleaved[((chunkOffset + frame) * chunk.channelCount) + sourceChannelIndex] || 0
+          }
+        }
+      } else {
+        for (let channel = 0; channel < output.length; channel++) {
+          const sourceChannel = chunk.channels[channel] || chunk.channels[0]
+          if (!sourceChannel) continue
+          output[channel].set(sourceChannel.subarray(chunkOffset, chunkOffset + framesToCopy), outputOffset)
+        }
       }
 
       this.currentFrame += framesToCopy

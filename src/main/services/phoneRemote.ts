@@ -4,7 +4,17 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { networkInterfaces } from 'os'
 import { extname, join, normalize } from 'path'
 import { fileURLToPath } from 'url'
-import type { MiniPlayerCommand, MiniPlayerSnapshot } from '../../types/miniPlayer'
+import type { MiniPlayerCommand, MiniPlayerQueueSnapshot, MiniPlayerSnapshot } from '../../types/miniPlayer'
+import type {
+  PhoneSyncApplyResult,
+  PhoneSyncConflictResolution,
+  PhoneSyncPendingResolution,
+  PhoneSyncReportedConflict,
+  PhoneSyncState,
+  SyncPlaylistEntry,
+  SyncPlaylistSnapshot
+} from '../../types/phoneSync'
+import { PHONE_SYNC_FORMAT } from '../../types/phoneSync'
 import type {
   PhoneRemoteIdentity,
   PhoneRemotePairedDevice,
@@ -28,6 +38,9 @@ import {
 } from './playbackHttpCore'
 
 const TOKEN_PREFIX_LENGTH = 8
+// Sync payloads carry whole favorites/playlists sets — far larger than control
+// bodies (CONTROL_MAX_BODY_BYTES is 1 KB).
+const SYNC_MAX_BODY_BYTES = 8 * 1024 * 1024
 const PAIRING_TICKET_TTL_MS = 2 * 60_000
 const PAIRING_REQUEST_TTL_MS = 2 * 60_000
 const PIN_PAIRING_MAX_FAILURES = 3
@@ -90,6 +103,11 @@ interface PhoneRemoteServiceOptions {
   pairedDevices?: PersistedPairedDevice[]
   onPairedDevicesChange?: (devices: PersistedPairedDevice[]) => void
   onStatusChange?: (status: PhoneRemoteStatus) => void
+  // Favorites/playlists LAN sync (phoneSync.ts), injected so this service stays
+  // decoupled from the library module. applySyncChanges returns null when the
+  // payload fails validation.
+  getSyncState?: () => PhoneSyncState
+  applySyncChanges?: (payload: unknown) => PhoneSyncApplyResult | null
 }
 
 type PhoneRemoteAuthorizationContext = { kind: 'device'; deviceId: string }
@@ -115,6 +133,88 @@ function getPhoneRemoteLanUrls(port: number): string[] {
 
 function createPairingPin(): string {
   return String(randomInt(0, 1_000_000)).padStart(6, '0')
+}
+
+const SYNC_CONFLICT_REPORT_MAX_ITEMS = 200
+
+function sanitizeSyncPlaylistEntry(raw: unknown): SyncPlaylistEntry | null {
+  if (!raw || typeof raw !== 'object') return null
+  const item = raw as Record<string, unknown>
+  const durationSeconds = Number(item.durationSeconds)
+  const position = Number(item.position)
+  const addedAt = Number(item.addedAt)
+  return {
+    title: typeof item.title === 'string' ? item.title : '',
+    artist: typeof item.artist === 'string' ? item.artist : '',
+    album: typeof item.album === 'string' ? item.album : '',
+    durationSeconds: Number.isFinite(durationSeconds) && durationSeconds > 0 ? durationSeconds : null,
+    position: Number.isFinite(position) ? position : 0,
+    addedAt: Number.isFinite(addedAt) && addedAt > 0 ? Math.floor(addedAt) : 0,
+    sourcePath: typeof item.sourcePath === 'string' && item.sourcePath.trim().length > 0 ? item.sourcePath : null
+  }
+}
+
+function sanitizeSyncPlaylistSnapshot(raw: unknown): SyncPlaylistSnapshot | null {
+  if (!raw || typeof raw !== 'object') return null
+  const item = raw as Record<string, unknown>
+  const kind = item.kind === 'dynamic' ? 'dynamic' : 'normal'
+  const updatedAt = Number(item.updatedAt)
+  const trackCount = Number(item.trackCount)
+  let entries: SyncPlaylistEntry[] | null = null
+  if (kind === 'normal' && Array.isArray(item.entries)) {
+    entries = item.entries
+      .map(sanitizeSyncPlaylistEntry)
+      .filter((entry): entry is SyncPlaylistEntry => entry !== null)
+  }
+  return {
+    name: typeof item.name === 'string' ? item.name : '',
+    kind,
+    dynamicRules: kind === 'dynamic' && typeof item.dynamicRules === 'string' ? item.dynamicRules : null,
+    updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? Math.floor(updatedAt) : 0,
+    trackCount: entries !== null
+      ? entries.length
+      : Number.isFinite(trackCount) && trackCount >= 0
+        ? Math.floor(trackCount)
+        : 0,
+    entries
+  }
+}
+
+function sanitizeReportedConflicts(raw: unknown): PhoneSyncReportedConflict[] {
+  if (!Array.isArray(raw)) return []
+  const conflicts: PhoneSyncReportedConflict[] = []
+  for (const item of raw) {
+    if (conflicts.length >= SYNC_CONFLICT_REPORT_MAX_ITEMS) break
+    if (!item || typeof item !== 'object') continue
+    const candidate = item as Record<string, unknown>
+    const syncUid = typeof candidate.syncUid === 'string' ? candidate.syncUid : ''
+    if (!syncUid) continue
+    const toCount = (value: unknown): number => {
+      const parsed = Number(value)
+      return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0
+    }
+    const toTimestamp = (value: unknown): number => {
+      const parsed = Number(value)
+      return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0
+    }
+    const phoneSnapshot = sanitizeSyncPlaylistSnapshot(candidate.phoneSnapshot)
+    const desktopSnapshot = sanitizeSyncPlaylistSnapshot(candidate.desktopSnapshot)
+    conflicts.push({
+      kind: candidate.kind === 'first-pairing' ? 'first-pairing' : 'concurrent-edit',
+      syncUid,
+      name: typeof candidate.name === 'string' ? candidate.name : '',
+      playlistKind: candidate.playlistKind === 'dynamic' ? 'dynamic' : 'normal',
+      phoneName: typeof candidate.phoneName === 'string' ? candidate.phoneName : '',
+      desktopName: typeof candidate.desktopName === 'string' ? candidate.desktopName : '',
+      phoneUpdatedAt: toTimestamp(candidate.phoneUpdatedAt),
+      desktopUpdatedAt: toTimestamp(candidate.desktopUpdatedAt),
+      phoneTrackCount: toCount(candidate.phoneTrackCount),
+      desktopTrackCount: toCount(candidate.desktopTrackCount),
+      ...(phoneSnapshot ? { phoneSnapshot } : {}),
+      ...(desktopSnapshot ? { desktopSnapshot } : {})
+    })
+  }
+  return conflicts
 }
 
 function getRemoteAssetPathname(requestPath: string): string | null {
@@ -159,11 +259,23 @@ export class PhoneRemoteService {
   private lastError: string | null = null
   private readonly core: PlaybackHttpCore<PhoneRemoteAuthorizationContext>
   private readonly getIdentitySnapshot: () => PhoneRemoteIdentity
+  private readonly getSyncState?: () => PhoneSyncState
+  private readonly applySyncChanges?: (payload: unknown) => PhoneSyncApplyResult | null
+  private syncApplyInFlight = false
+  // Sync session state: the phone is the merge authority, so the desktop only
+  // signals (sync requests, chosen resolutions) and mirrors what the phone
+  // reports (conflicts, last-synced time).
+  private syncRequestedAt: number | null = null
+  private syncLastSyncedAt: number | null = null
+  private syncConflicts: PhoneSyncReportedConflict[] = []
+  private readonly syncPendingResolutions = new Map<string, PhoneSyncPendingResolution>()
 
   constructor(options: PhoneRemoteServiceOptions) {
     this.config = { ...options.config }
     this.onPairedDevicesChange = options.onPairedDevicesChange
     this.onStatusChange = options.onStatusChange
+    this.getSyncState = options.getSyncState
+    this.applySyncChanges = options.applySyncChanges
     this.pairedDevices = [...(options.pairedDevices ?? [])]
     this.core = new PlaybackHttpCore({
       getSnapshot: options.getSnapshot,
@@ -196,8 +308,34 @@ export class PhoneRemoteService {
       pairedDeviceCount: this.pairedDevices.filter((device) => device.revokedAt === null).length,
       pendingPairingCount: this.getPendingPairingRequestsSnapshot().length,
       lastError: this.lastError,
-      identity: this.getIdentity()
+      identity: this.getIdentity(),
+      sync: {
+        enabled: this.config.syncEnabled,
+        requestedAt: this.syncRequestedAt,
+        lastSyncedAt: this.syncLastSyncedAt,
+        conflicts: [...this.syncConflicts],
+        pendingResolutions: [...this.syncPendingResolutions.values()]
+      }
     }
+  }
+
+  /** Desktop-side "Sync now": nudge connected phones over SSE and leave a flag
+   *  the phone's foreground poll picks up when it isn't connected. */
+  requestSync(): void {
+    this.syncRequestedAt = Date.now()
+    this.core.broadcastEvent('sync-request', { requestedAt: this.syncRequestedAt })
+    this.emitStatus()
+  }
+
+  /** Desktop-side conflict choice; delivered via /v1/sync/state and applied by
+   *  the phone on its next run (which requestSync() kicks off). */
+  resolveSyncConflict(syncUid: string, resolution: PhoneSyncConflictResolution): void {
+    this.syncPendingResolutions.set(syncUid, {
+      syncUid,
+      resolution,
+      decidedAt: Date.now()
+    })
+    this.requestSync()
   }
 
   listPairedDevices(): PhoneRemotePairedDevice[] {
@@ -347,6 +485,10 @@ export class PhoneRemoteService {
 
   publishSnapshot(snapshot: MiniPlayerSnapshot | null): void {
     this.core.publishSnapshot(snapshot)
+  }
+
+  publishQueueSnapshot(snapshot: MiniPlayerQueueSnapshot | null): void {
+    this.core.publishQueueSnapshot(snapshot)
   }
 
   async stop(): Promise<void> {
@@ -967,7 +1109,12 @@ export class PhoneRemoteService {
     }
 
     if (method === 'GET' && path === '/v1/identity') {
-      this.respondJson(res, 200, this.getIdentity())
+      // syncRequestedAt lets the phone's periodic foreground probe pick up a
+      // desktop-initiated sync without holding a connection open.
+      this.respondJson(res, 200, {
+        ...this.getIdentity(),
+        syncRequestedAt: this.config.syncEnabled ? this.syncRequestedAt : null
+      })
       return
     }
 
@@ -1006,11 +1153,158 @@ export class PhoneRemoteService {
       return
     }
 
+    if (method === 'GET' && path === '/v1/queue') {
+      this.core.handleQueue(req, res)
+      return
+    }
+
     if (method === 'POST' && path === '/v1/control') {
       await this.core.handleControl(req, res)
       return
     }
 
+    if (method === 'GET' && path === '/v1/sync/state') {
+      this.handleSyncState(req, res)
+      return
+    }
+
+    if (method === 'POST' && path === '/v1/sync/apply') {
+      await this.handleSyncApply(req, res)
+      return
+    }
+
+    if (method === 'POST' && path === '/v1/sync/conflicts') {
+      await this.handleSyncConflictsReport(req, res)
+      return
+    }
+
     this.respondJson(res, 404, { error: 'Not found' })
+  }
+
+  private handleSyncState(req: IncomingMessage, res: ServerResponse<IncomingMessage>): void {
+    if (!this.authorizeRequest(req)) {
+      this.respondJson(res, 401, { error: 'Unauthorized' })
+      return
+    }
+    if (!this.getSyncState) {
+      this.respondJson(res, 501, { error: 'Library sync is not available on this desktop.' })
+      return
+    }
+    if (!this.config.syncEnabled) {
+      this.respondJson(res, 403, { error: 'Library sync is disabled on this desktop.' })
+      return
+    }
+    try {
+      const state: PhoneSyncState = {
+        ...this.getSyncState(),
+        pendingResolutions: [...this.syncPendingResolutions.values()]
+      }
+      // Serving state means the phone is syncing — the request is being handled.
+      if (this.syncRequestedAt !== null) {
+        this.syncRequestedAt = null
+        this.emitStatus()
+      }
+      this.respondJson(res, 200, state)
+    } catch (error) {
+      console.error('Failed to build phone sync state:', error)
+      this.respondJson(res, 500, { error: 'Failed to build sync state.' })
+    }
+  }
+
+  private async handleSyncConflictsReport(
+    req: IncomingMessage,
+    res: ServerResponse<IncomingMessage>
+  ): Promise<void> {
+    if (!this.authorizeRequest(req)) {
+      this.respondJson(res, 401, { error: 'Unauthorized' })
+      return
+    }
+    if (!this.config.syncEnabled) {
+      this.respondJson(res, 403, { error: 'Library sync is disabled on this desktop.' })
+      return
+    }
+
+    const rawBody = await this.readRequestBody(req, SYNC_MAX_BODY_BYTES).catch(() => null)
+    if (rawBody === null) {
+      this.respondJson(res, 413, { error: 'Request body too large.' })
+      return
+    }
+    let parsedBody: unknown
+    try {
+      parsedBody = JSON.parse(rawBody || '{}')
+    } catch {
+      this.respondJson(res, 400, { error: 'Invalid JSON payload.' })
+      return
+    }
+    if (!parsedBody || typeof parsedBody !== 'object' || Number((parsedBody as Record<string, unknown>).syncFormat) !== PHONE_SYNC_FORMAT) {
+      this.respondJson(res, 400, { error: 'Invalid sync payload.' })
+      return
+    }
+    const body = parsedBody as Record<string, unknown>
+
+    this.syncConflicts = sanitizeReportedConflicts(body.conflicts)
+    const consumed = Array.isArray(body.consumedResolutions)
+      ? body.consumedResolutions.filter((uid): uid is string => typeof uid === 'string')
+      : []
+    for (const uid of consumed) {
+      this.syncPendingResolutions.delete(uid)
+    }
+    // Resolutions for conflicts the phone no longer reports are moot (the
+    // user resolved them on the phone directly).
+    const liveUids = new Set(this.syncConflicts.map((conflict) => conflict.syncUid))
+    for (const uid of [...this.syncPendingResolutions.keys()]) {
+      if (!liveUids.has(uid)) this.syncPendingResolutions.delete(uid)
+    }
+    this.syncLastSyncedAt = Date.now()
+    this.emitStatus()
+    this.respondJson(res, 200, { ok: true })
+  }
+
+  private async handleSyncApply(req: IncomingMessage, res: ServerResponse<IncomingMessage>): Promise<void> {
+    if (!this.authorizeRequest(req)) {
+      this.respondJson(res, 401, { error: 'Unauthorized' })
+      return
+    }
+    if (!this.applySyncChanges) {
+      this.respondJson(res, 501, { error: 'Library sync is not available on this desktop.' })
+      return
+    }
+    if (!this.config.syncEnabled) {
+      this.respondJson(res, 403, { error: 'Library sync is disabled on this desktop.' })
+      return
+    }
+    if (this.syncApplyInFlight) {
+      this.respondJson(res, 409, { error: 'Another sync apply is already in progress.' })
+      return
+    }
+
+    const rawBody = await this.readRequestBody(req, SYNC_MAX_BODY_BYTES).catch(() => null)
+    if (rawBody === null) {
+      this.respondJson(res, 413, { error: 'Request body too large.' })
+      return
+    }
+
+    let parsedBody: unknown
+    try {
+      parsedBody = JSON.parse(rawBody || '{}')
+    } catch {
+      this.respondJson(res, 400, { error: 'Invalid JSON payload.' })
+      return
+    }
+
+    this.syncApplyInFlight = true
+    try {
+      const result = this.applySyncChanges(parsedBody)
+      if (!result) {
+        this.respondJson(res, 400, { error: 'Invalid sync payload.' })
+        return
+      }
+      this.respondJson(res, 200, result)
+    } catch (error) {
+      console.error('Failed to apply phone sync changes:', error)
+      this.respondJson(res, 500, { error: 'Failed to apply sync changes.' })
+    } finally {
+      this.syncApplyInFlight = false
+    }
   }
 }

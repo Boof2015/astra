@@ -1,32 +1,36 @@
 import type { ControllerFamily } from '../../types/controller'
-import { getControllerPromptLabels } from '../../utils/controllerGamepad'
 import { useUIStore } from '../../stores/uiStore'
+import ControllerGlyph from './ControllerGlyph'
 
 interface ControllerHintsProps {
   active: boolean
   family: ControllerFamily
-  canOpenContext: boolean
-  context: 'browsing' | 'now-playing'
 }
 
-export default function ControllerHints({ active, family, canOpenContext, context }: ControllerHintsProps) {
+export default function ControllerHints({ active, family }: ControllerHintsProps) {
   const showQueue = useUIStore((state) => state.showQueue)
   if (!active) return null
 
-  const labels = getControllerPromptLabels(family)
   return (
     <div className="controller-hints" aria-hidden="true">
-      <span><kbd>{labels.activate}</kbd> Select</span>
-      <span><kbd>{labels.back}</kbd> Back</span>
-      {canOpenContext && <span><kbd>{labels.context}</kbd> More</span>}
+      <span><ControllerGlyph family={family} button="activate" /> Select</span>
+      <span><ControllerGlyph family={family} button="back" /> Back</span>
+      <span><ControllerGlyph family={family} button="playPause" /> Play/Pause</span>
       <span>
-        <kbd>{labels.bumperLeft}</kbd><kbd>{labels.bumperRight}</kbd>
-        {context === 'now-playing' ? ' Track' : ' Tabs'}
+        <ControllerGlyph family={family} button="bumperLeft" />
+        <ControllerGlyph family={family} button="bumperRight" />
+        Track
       </span>
-      <span><kbd>{labels.queue}</kbd> {showQueue ? 'Close Queue' : 'Queue'}</span>
-      <span><kbd>{labels.menu}</kbd> Play/Pause</span>
-      <span><kbd>{labels.stickLeft}</kbd> Sidebar</span>
-      <span><kbd>{labels.stickRight}</kbd> Now Playing</span>
+      <span>
+        <ControllerGlyph family={family} button="triggerLeft" />
+        <ControllerGlyph family={family} button="triggerRight" />
+        Seek
+      </span>
+      <span><ControllerGlyph family={family} button="stickRight" /> <kbd>←/→</kbd> Tabs</span>
+      <span><ControllerGlyph family={family} button="queue" /> {showQueue ? 'Close Queue' : 'Queue'}</span>
+      <span><ControllerGlyph family={family} button="radialMenu" /> Wheel</span>
+      <span><ControllerGlyph family={family} button="stickLeft" /> Sidebar</span>
+      <span><ControllerGlyph family={family} button="stickRight" /> Now Playing</span>
     </div>
   )
 }

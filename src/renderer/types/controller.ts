@@ -6,11 +6,11 @@ export type ControllerCommand =
   | { type: 'move'; direction: ControllerDirection }
   | { type: 'activate' }
   | { type: 'back' }
-  | { type: 'context' }
   | { type: 'toggle-queue' }
   | { type: 'playback-toggle' }
-  | { type: 'bumper-left' }
-  | { type: 'bumper-right' }
+  | { type: 'previous-track' }
+  | { type: 'next-track' }
+  | { type: 'open-radial' }
   | { type: 'jump-sidebar' }
   | { type: 'jump-transport' }
   | { type: 'seek-backward' }
@@ -28,11 +28,15 @@ export interface ControllerFrame {
 export interface ControllerPromptLabels {
   activate: string
   back: string
-  context: string
+  playPause: string
   queue: string
-  menu: string
+  radialMenu: string
   bumperLeft: string
   bumperRight: string
+  triggerLeft: string
+  triggerRight: string
   stickLeft: string
   stickRight: string
 }
+
+export type ControllerButtonRole = keyof ControllerPromptLabels

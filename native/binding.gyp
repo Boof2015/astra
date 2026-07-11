@@ -9,13 +9,19 @@
         "src/main.cpp",
         "src/oscilloscope.cpp",
         "src/spectrum.cpp",
+        "src/spectrogram.cpp",
         "src/vectorscope.cpp",
+        "src/multiband.cpp",
+        "src/waveform.cpp",
+        "src/vumeter.cpp",
+        "src/lufsmeter.cpp",
         "src/dsp_utils.cpp",
         "src/playback_engine.cpp",
         "src/coreaudio_hal_sink.cpp",
         "src/alsa_hw_sink.cpp",
         "src/wasapi_exclusive_sink.cpp",
-        "src/parallax_loopback.cpp"
+        "src/parallax_loopback.cpp",
+        "src/process_memory.cpp"
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")",
@@ -49,7 +55,8 @@
               "Ole32.lib",
               "Avrt.lib",
               "Mmdevapi.lib",
-              "Uuid.lib"
+              "Uuid.lib",
+              "Psapi.lib"
             ]
           }
         }],

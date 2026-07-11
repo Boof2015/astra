@@ -1,6 +1,6 @@
 {
   "name": "astra",
-  "version": "0.6.1-beta",
+  "version": "0.7.0-beta",
   "description": "Audiophile music player with advanced visualization",
   "main": "./out/main/index.js",
   "scripts": {
@@ -24,7 +24,7 @@
     "test:renderer-player-store": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/renderer/stores/playerStore.test.ts",
     "test:local-api": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/main/services/localApi.test.ts",
     "test:lastfm": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/main/services/lastFm.test.ts",
-    "test:phone-remote": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/main/services/phoneRemote.test.ts",
+    "test:phone-remote": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/main/services/phoneRemote.test.ts src/shared/sync/conflictPreview.test.ts",
     "test:activity-indicator": "node --experimental-strip-types --experimental-default-type=module --experimental-specifier-resolution=node --test src/renderer/utils/astraActivity.test.ts",
     "test:audio-loudness": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/renderer/audio/loudness.test.ts",
     "typecheck": "tsc --noEmit",
@@ -58,6 +58,7 @@
     "@boof2015/xlrc": "^0.2.1",
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
+    "@peculiar/x509": "^2.0.0",
     "better-sqlite3": "^12.10.0",
     "bonjour-service": "^1.4.0",
     "ffmpeg-static": "^5.2.0",
@@ -67,6 +68,8 @@
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-window": "^2.2.7",
+    "reflect-metadata": "^0.2.2",
+    "undici": "^8.7.0",
     "zustand": "^5.0.13"
   },
   "devDependencies": {
@@ -111,6 +114,10 @@
         "filter": [
           "*.node"
         ]
+      },
+      {
+        "from": "THIRD_PARTY_LICENSES.md",
+        "to": "THIRD_PARTY_LICENSES.md"
       }
     ],
     "win": {

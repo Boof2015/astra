@@ -6,9 +6,12 @@ import {
   gamepadToControllerFrame,
   getControllerButtonEdgeCommands,
   getControllerDirections,
+  getControllerRadialVector,
   getControllerScrollDelta,
+  getControllerTabDirections,
   hasMeaningfulControllerInput,
   isControllerButtonPressed,
+  isControllerButtonPressEdge,
   isStandardController,
   resolveControllerRepeat,
   selectActiveControllerFrame,
@@ -26,6 +29,18 @@ import {
   scrollActiveControllerRegion,
   switchControllerSection
 } from '../utils/controllerFocus'
+import {
+  CLOSED_CONTROLLER_RADIAL_MENU,
+  clampControllerRadialIndex,
+  createControllerRadialRoot,
+  getControllerRadialView,
+  resolveControllerRadialActivation,
+  resolveControllerRadialBack,
+  selectControllerRadialIndexFromVector,
+  type ControllerRadialAction,
+  type ControllerRadialMenuState,
+  type ControllerRadialVector
+} from '../utils/controllerRadial'
 import { navigateInputBack } from '../utils/inputNavigation'
 import { useUIStore } from '../stores/uiStore'
 import { useInputActionDispatcher } from './useInputActionDispatcher'
@@ -37,6 +52,7 @@ interface ControllerInputState {
   family: ControllerFamily
   canOpenContext: boolean
   context: ControllerContext
+  radialMenu: ControllerRadialMenuState
 }
 
 interface RepeatState {
@@ -44,6 +60,15 @@ interface RepeatState {
 }
 
 const directionRepeatKey = (direction: ControllerDirection): string => `direction:${direction}`
+const tabRepeatKey = (direction: 'previous' | 'next'): string => `tab:${direction}`
+
+function controllerRadialVectorsEqual(
+  left: ControllerRadialVector | null,
+  right: ControllerRadialVector | null
+): boolean {
+  if (!left || !right) return left === right
+  return Math.abs(left.x - right.x) < 0.01 && Math.abs(left.y - right.y) < 0.01
+}
 
 function getStandardControllerFrames(): ControllerFrame[] {
   if (typeof navigator.getGamepads !== 'function') return []
@@ -64,13 +89,15 @@ export function useControllerInput(): ControllerInputState {
     active: false,
     family: 'xbox',
     canOpenContext: false,
-    context: 'browsing'
+    context: 'browsing',
+    radialMenu: CLOSED_CONTROLLER_RADIAL_MENU
   })
   const activeControllerIndexRef = useRef<number | null>(null)
   const previousFramesRef = useRef(new Map<number, ControllerFrame>())
   const repeatStatesRef = useRef(new Map<string, RepeatState>())
   const activeRef = useRef(false)
   const familyRef = useRef<ControllerFamily>('xbox')
+  const radialMenuRef = useRef<ControllerRadialMenuState>(CLOSED_CONTROLLER_RADIAL_MENU)
   // Read the dispatcher through a ref so the polling effect never re-subscribes when its identity
   // changes. Re-running that effect would fire its cleanup, which clears data-input-modality while
   // a controller is still active.
@@ -85,9 +112,21 @@ export function useControllerInput(): ControllerInputState {
       : { ...current, canOpenContext, context })
   }, [])
 
+  const setRadialMenuState = useCallback((radialMenu: ControllerRadialMenuState) => {
+    const normalizedRadialMenu = {
+      open: radialMenu.open,
+      path: [...radialMenu.path],
+      selectedIndex: radialMenu.selectedIndex,
+      aimVector: radialMenu.aimVector ? { ...radialMenu.aimVector } : null
+    }
+    radialMenuRef.current = normalizedRadialMenu
+    setState((current) => ({ ...current, radialMenu: normalizedRadialMenu }))
+  }, [])
+
   const setControllerMode = useCallback((active: boolean, family?: ControllerFamily) => {
     activeRef.current = active
     if (family) familyRef.current = family
+    if (!active) radialMenuRef.current = CLOSED_CONTROLLER_RADIAL_MENU
     if (active) {
       document.documentElement.dataset.inputModality = 'controller'
       if (!document.activeElement || document.activeElement === document.body) {
@@ -100,14 +139,56 @@ export function useControllerInput(): ControllerInputState {
       active,
       family: family ?? current.family,
       canOpenContext: active ? controllerTargetSupportsContext() : false,
-      context: active && isNowPlayingContext() ? 'now-playing' : 'browsing'
+      context: active && isNowPlayingContext() ? 'now-playing' : 'browsing',
+      radialMenu: active ? current.radialMenu : CLOSED_CONTROLLER_RADIAL_MENU
     }))
+  }, [])
+
+  const createRadialRoot = useCallback(() => {
+    return createControllerRadialRoot({
+      canOpenContext: controllerTargetSupportsContext(),
+      showQueue: useUIStore.getState().showQueue
+    })
+  }, [])
+
+  const openControllerRadialMenu = useCallback(() => {
+    setRadialMenuState({ open: true, path: [], selectedIndex: 0, aimVector: null })
+  }, [setRadialMenuState])
+
+  const closeControllerRadialMenu = useCallback(() => {
+    setRadialMenuState(CLOSED_CONTROLLER_RADIAL_MENU)
+  }, [setRadialMenuState])
+
+  const executeControllerRadialAction = useCallback((action: ControllerRadialAction): void => {
+    switch (action) {
+      case 'more':
+        openControllerContextMenu()
+        return
+      case 'previous-tab':
+        switchControllerSection('previous')
+        return
+      case 'next-tab':
+        switchControllerSection('next')
+        return
+      case 'sidebar':
+        focusControllerRegion('sidebar')
+        return
+      case 'now-playing':
+        focusControllerRegion('transport')
+        return
+      case 'toggle-queue':
+        useUIStore.getState().toggleQueue()
+        return
+      default:
+        executeActionRef.current(action)
+    }
   }, [])
 
   useEffect(() => {
     if (!controllerSupportEnabled) {
       // Experimental feature is off: make sure we are not holding controller mode and skip polling.
       if (activeRef.current) setControllerMode(false)
+      if (radialMenuRef.current.open) closeControllerRadialMenu()
       return
     }
 
@@ -159,6 +240,70 @@ export function useControllerInput(): ControllerInputState {
           if (!activeRef.current || familyRef.current !== family) setControllerMode(true, family)
         }
 
+        if (radialMenuRef.current.open) {
+          const radialVector = getControllerRadialVector(frame)
+          if (!controllerRadialVectorsEqual(radialVector, radialMenuRef.current.aimVector)) {
+            setRadialMenuState({
+              ...radialMenuRef.current,
+              aimVector: radialVector
+            })
+          }
+          if (radialVector) {
+            const root = createRadialRoot()
+            const view = getControllerRadialView(root, radialMenuRef.current.path)
+            const selectedIndex = selectControllerRadialIndexFromVector(view.items.length, radialVector)
+            if (selectedIndex !== null && selectedIndex !== radialMenuRef.current.selectedIndex) {
+              markInput()
+              setRadialMenuState({
+                ...radialMenuRef.current,
+                selectedIndex,
+                aimVector: radialVector
+              })
+            }
+          }
+
+          if (isControllerButtonPressEdge(previous, frame, STANDARD_GAMEPAD_BUTTON.south)) {
+            markInput()
+            const root = createRadialRoot()
+            const view = getControllerRadialView(root, radialMenuRef.current.path)
+            const activation = resolveControllerRadialActivation(
+              root,
+              view.path,
+              clampControllerRadialIndex(radialMenuRef.current.selectedIndex, view.items.length)
+            )
+            switch (activation.type) {
+              case 'enter':
+                setRadialMenuState({ open: true, path: activation.path, selectedIndex: 0, aimVector: radialMenuRef.current.aimVector })
+                break
+              case 'execute':
+                executeControllerRadialAction(activation.action)
+                if (!activation.keepOpen) closeControllerRadialMenu()
+                break
+              case 'noop':
+                break
+            }
+            updateContextState()
+          }
+
+          if (isControllerButtonPressEdge(previous, frame, STANDARD_GAMEPAD_BUTTON.east)) {
+            markInput()
+            const next = resolveControllerRadialBack(radialMenuRef.current.path)
+            if (next.type === 'parent') setRadialMenuState({ open: true, path: next.path, selectedIndex: 0, aimVector: radialMenuRef.current.aimVector })
+            else closeControllerRadialMenu()
+            updateContextState()
+          }
+
+          if (isControllerButtonPressEdge(previous, frame, STANDARD_GAMEPAD_BUTTON.menu)) {
+            markInput()
+            closeControllerRadialMenu()
+            updateContextState()
+          }
+
+          previousFramesRef.current = nextFrames
+          animationFrame = window.requestAnimationFrame(poll)
+          return
+        }
+
         const directions = getControllerDirections(frame)
         const previousDirections = previous ? getControllerDirections(previous) : new Set<ControllerDirection>()
         for (const direction of ['up', 'down', 'left', 'right'] as const) {
@@ -175,6 +320,22 @@ export function useControllerInput(): ControllerInputState {
           )
         }
 
+        const tabDirections = getControllerTabDirections(frame)
+        const previousTabDirections = previous ? getControllerTabDirections(previous) : new Set<'previous' | 'next'>()
+        for (const direction of ['previous', 'next'] as const) {
+          emitRepeat(
+            tabRepeatKey(direction),
+            tabDirections.has(direction),
+            previousTabDirections.has(direction),
+            now,
+            () => {
+              markInput()
+              switchControllerSection(direction)
+              updateContextState()
+            }
+          )
+        }
+
         const executeButtonCommand = (command: ReturnType<typeof getControllerButtonEdgeCommands>[number]): void => {
           markInput()
           switch (command.type) {
@@ -184,22 +345,20 @@ export function useControllerInput(): ControllerInputState {
             case 'back':
               if (!closeTopControllerOverlay()) void navigateInputBack()
               break
-            case 'context':
-              openControllerContextMenu()
-              break
             case 'toggle-queue':
               useUIStore.getState().toggleQueue()
               break
             case 'playback-toggle':
               executeActionRef.current('playback-toggle')
               break
-            case 'bumper-left':
-              if (isNowPlayingContext()) executeActionRef.current('previous-track')
-              else switchControllerSection('previous')
+            case 'previous-track':
+              executeActionRef.current('previous-track')
               break
-            case 'bumper-right':
-              if (isNowPlayingContext()) executeActionRef.current('next-track')
-              else switchControllerSection('next')
+            case 'next-track':
+              executeActionRef.current('next-track')
+              break
+            case 'open-radial':
+              openControllerRadialMenu()
               break
             case 'jump-sidebar':
               focusControllerRegion('sidebar')
@@ -272,7 +431,16 @@ export function useControllerInput(): ControllerInputState {
       window.removeEventListener('gamepaddisconnected', handleGamepadDisconnected)
       delete document.documentElement.dataset.inputModality
     }
-  }, [controllerSupportEnabled, setControllerMode, updateContextState])
+  }, [
+    closeControllerRadialMenu,
+    controllerSupportEnabled,
+    createRadialRoot,
+    executeControllerRadialAction,
+    openControllerRadialMenu,
+    setControllerMode,
+    setRadialMenuState,
+    updateContextState
+  ])
 
   return state
 }

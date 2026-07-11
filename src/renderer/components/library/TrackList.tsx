@@ -64,6 +64,7 @@ interface DbTrack {
   codec?: string | null
   codec_profile?: string | null
   is_atmos_joc?: number | null
+  is_iamf?: number | null
 }
 
 export type TrackListSortKey = 'title' | 'artist' | 'album' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added'
@@ -465,6 +466,7 @@ function TrackListRowRenderer({
     || rowCodec.includes('joc')
   )
   const showAtmosBadge = Boolean(rowIsAtmosJoc || (isCurrent && currentTrackIsAtmosJoc))
+  const showEclipsaBadge = Boolean(track.is_iamf === 1 || rowCodec === 'iamf')
   const isDownmixingCurrentAtmos = Boolean(
     isCurrent
     && currentTrackIsAtmosJoc
@@ -584,6 +586,11 @@ function TrackListRowRenderer({
             {showAtmosBadge && (
               <span className="track-channel-badge track-channel-badge-atmos" title={atmosphereBadgeTitle}>
                 <span>ATMOS</span>
+              </span>
+            )}
+            {showEclipsaBadge && (
+              <span className="track-channel-badge track-channel-badge-eclipsa" title="Eclipsa Audio (IAMF) source, decoded to 7.1.4">
+                <span>ECLIPSA</span>
               </span>
             )}
             {isMultichannel && (

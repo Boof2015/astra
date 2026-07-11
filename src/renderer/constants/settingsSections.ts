@@ -45,7 +45,7 @@ export const SETTINGS_SECTIONS = [
   {
     id: 'audio',
     label: 'Audio Output',
-    keywords: ['output', 'device', 'routing', 'delay', 'channel', 'sample rate', 'bit depth', 'buffer', 'latency']
+    keywords: ['output', 'device', 'routing', 'delay', 'channel', 'sample rate', 'bit depth', 'buffer', 'latency', 'spatial', 'binaural', 'hrtf', 'headphones', 'speaker room', 'virtual speakers', 'upmix', 'surround']
   },
   {
     id: 'playback',
