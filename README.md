@@ -28,11 +28,11 @@ Astra is the first general purpose desktop music library player with native IAMF
 
 Astra treats Eclipsa Audio and IAMF as first-class local music formats. IAMF tracks are identified in the library, expose their rendered channel layout, and can be browsed, searched, queued, and played like any other track.
 
-Decoding and rendering are performed locally through Astra's spatial audio engine. Channel-based and scene-based content can be rendered binaurally for headphones, delivered directly to multichannel hardware, or adapted to the available output layout. No Eclipsa-certified playback hardware is required.
+Decoding and rendering are performed locally through the Astra Spatial Engine. Channel-based and scene-based content can be rendered binaurally for headphones, delivered directly to multichannel hardware, or adapted to the available output layout. No Eclipsa-certified playback hardware is required.
 
 Dolby Atmos multichannel decoding is also supported without Atmos-compatible hardware.
 
-Astra provides per-channel inspection and remapping, output delay calibration, and a Virtual Speaker Room for real time positioning and binaurally rendering virtual speaker layouts.
+Astra provides per-channel inspection and remapping, output delay calibration, and a Virtual Speaker Room for placing virtual speakers in 3D space. Drag them around the listener, add height/elevation, and hear the binaural render update live as you move them.
 
 ## Visualizers
 
