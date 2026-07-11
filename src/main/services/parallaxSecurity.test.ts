@@ -90,7 +90,9 @@ test('Parallax v2 rejects altered and replayed pairing payloads under a differen
   const pairingTranscript = transcript(host.publicKey, sink.publicKey)
   const key = deriveParallaxPairingKey(host.privateKey, sink.publicKey, pairingTranscript)
   const sealed = sealParallaxPairingPayload({ ok: true }, key, pairingTranscript)
-  const altered = { ...sealed, ciphertext: `${sealed.ciphertext.slice(0, -1)}A` }
+  const alteredCiphertext = Buffer.from(sealed.ciphertext, 'base64url')
+  alteredCiphertext[0] ^= 0x01
+  const altered = { ...sealed, ciphertext: alteredCiphertext.toString('base64url') }
   assert.throws(() => openParallaxPairingPayload(altered, key, pairingTranscript))
   assert.throws(() => openParallaxPairingPayload(
     sealed,

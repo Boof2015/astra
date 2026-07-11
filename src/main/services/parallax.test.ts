@@ -366,6 +366,36 @@ test('Parallax host telemetry exposes connected sink RTT and preserves output tr
   }
 })
 
+test('Parallax host accepts the complete startup clock-priming burst before rate limiting', async (t) => {
+  const started = await tryCreateStartedParallaxService()
+  if (!started) {
+    t.skip('Local socket binding is blocked in this environment.')
+    return
+  }
+  const { service, baseUrl } = started
+  try {
+    const paired = await pairSink(service, baseUrl, 'Clock Burst')
+    const statuses: number[] = []
+    for (let index = 0; index < 13; index += 1) {
+      const response = await fetchHost(baseUrl, '/v1/parallax/clock', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${paired.token}`
+        },
+        body: JSON.stringify({ sinkSentAtMs: Date.now() + index })
+      })
+      statuses.push(response.status)
+      await response.text()
+    }
+    assert.deepEqual(statuses.slice(0, 8), Array(8).fill(200))
+    assert.equal(statuses[11], 200)
+    assert.equal(statuses[12], 429)
+  } finally {
+    await service.stop()
+  }
+})
+
 test('Parallax legacy pairing endpoint cannot create credentials', async (t) => {
   const started = await tryCreateStartedParallaxService()
   if (!started) {

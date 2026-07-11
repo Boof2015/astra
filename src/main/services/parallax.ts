@@ -79,6 +79,9 @@ const CLOCK_SYNC_INTERVAL_MS = 2_000
 // slow 2s cadence. Without this, first play aligns from a single high-RTT sample.
 const CLOCK_PRIMING_PROBES = 8
 const CLOCK_PRIMING_INTERVAL_MS = 120
+// The initial eight-probe burst completes inside one second. Keep a small allowance for an
+// overlapping steady-state or reconnect probe while still bounding abusive clock traffic.
+const CLOCK_RATE_LIMIT_PER_SECOND = CLOCK_PRIMING_PROBES + 4
 // Bound short JSON requests (clock probe, join, pair) so a flaky/again-dropping link can't hang
 // them indefinitely. Long-lived event/audio streams are intentionally excluded. Without this, a
 // reconnect that awaits clock priming could stall forever on a hung probe instead of retrying.
@@ -1964,7 +1967,7 @@ export class ParallaxService {
     }
 
     if (method === 'POST' && path === '/v1/parallax/clock') {
-      if (!this.consumeRequestBudget(sink.id, 'clock', 4)) {
+      if (!this.consumeRequestBudget(sink.id, 'clock', CLOCK_RATE_LIMIT_PER_SECOND)) {
         toJsonResponse(res, 429, { error: 'Clock rate limit exceeded.' })
         return
       }

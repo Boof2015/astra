@@ -2772,12 +2772,26 @@ export class AudioEngine {
     }
 
     const playbackRatePpm = clampParallaxPlaybackRatePpm(options.playbackRatePpm ?? 0)
+    const startAtContextTime = Math.max(this.context.currentTime, options.startAtContextTime)
+    // pause() fades the shared audible output path to zero. Entering sink mode calls stop(),
+    // which clears the old source but intentionally preserves persistent graph state, including
+    // that zero gain. The Parallax worklet's separate analysis tap still drives scopes in this
+    // state, making the stream look healthy while speakers remain silent. Restore the audible
+    // path at the scheduled Parallax onset, matching host-side Parallax playback.
+    if (timeline.playbackState === 'playing' && this.fadeGainNode && this.fadeGainNode.gain.value < 0.999) {
+      const fade = this.fadeGainNode.gain
+      const now = this.context.currentTime
+      fade.cancelScheduledValues(now)
+      fade.setValueAtTime(fade.value, now)
+      fade.setValueAtTime(fade.value, startAtContextTime)
+      fade.linearRampToValueAtTime(1, startAtContextTime + PLAYBACK_FADE_MS / 1000)
+    }
     this.parallaxSinkState.currentFrame = Math.max(0, Math.floor(timeline.startFrame))
     this.parallaxSinkState.playbackRatePpm = playbackRatePpm
     this.parallaxSinkNode.port.postMessage({
       type: 'set-timeline',
       startFrame: this.parallaxSinkState.currentFrame,
-      startAtContextTime: Math.max(this.context.currentTime, options.startAtContextTime),
+      startAtContextTime,
       playing: timeline.playbackState === 'playing',
       playbackRatePpm
     })
