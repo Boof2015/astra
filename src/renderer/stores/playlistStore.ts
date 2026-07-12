@@ -145,6 +145,7 @@ interface PlaylistStore {
   clearSelection: () => void
   addToPlaylist: (playlistId: number, trackPaths: string[]) => Promise<void>
   removeFromPlaylist: (playlistId: number, trackPath: string) => Promise<void>
+  reassociatePlaylistEntry: (playlistId: number, entryId: number, targetTrackPath: string) => Promise<void>
   reorderPlaylistTracks: (playlistId: number, orderedTrackPaths: string[]) => Promise<void>
   setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => Promise<void>
   clearPlaylistCustomCover: (playlistId: number) => Promise<void>
@@ -343,6 +344,12 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
 
     removeFromPlaylist: async (playlistId: number, trackPath: string) => {
       await window.electronAPI.library.removeFromPlaylist(playlistId, trackPath)
+      await get().loadPlaylists()
+      await refreshSelectedPlaylist(playlistId)
+    },
+
+    reassociatePlaylistEntry: async (playlistId: number, entryId: number, targetTrackPath: string) => {
+      await window.electronAPI.library.reassociatePlaylistEntry(playlistId, entryId, targetTrackPath)
       await get().loadPlaylists()
       await refreshSelectedPlaylist(playlistId)
     },

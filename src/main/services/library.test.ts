@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, utimes, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join, relative } from 'path'
 import test from 'node:test'
@@ -1132,6 +1132,186 @@ test('playlist reorder preserves missing track entries after cleanup', async (t)
   const reorderedEntries = library.getPlaylistTrackEntries(playlist.id)
   assert.deepEqual(reorderedEntries.map((entry) => entry.track_path), [availableTrackPath, missingTrackPath])
   assert.deepEqual(reorderedEntries.map((entry) => entry.missing), [false, true])
+})
+
+test('playlist cleanup reassociates a renamed track by captured metadata', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const originalTrackPath = join(musicDir, 'before-rename.wav')
+  const renamedTrackPath = join(musicDir, 'after-rename.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(originalTrackPath, 'Stable Metadata Title', 'Stable Metadata Artist')
+
+  await library.scanFolder(musicDir)
+  const playlist = await library.createPlaylist('Rename Recovery')
+  await library.addToPlaylist(playlist.id, [originalTrackPath])
+  const originalEntry = library.getPlaylistTrackEntries(playlist.id)[0]
+  assert.ok(originalEntry)
+
+  await rename(originalTrackPath, renamedTrackPath)
+  const rescan = await library.scanFolder(musicDir)
+  assert.equal(rescan.added, 1)
+  assert.equal(library.getPlaylistTrackEntries(playlist.id)[0]?.track_path, originalTrackPath)
+
+  const removed = await library.cleanupMissingTracks()
+  assert.equal(removed, 1)
+
+  const recoveredEntry = library.getPlaylistTrackEntries(playlist.id)[0]
+  assert.ok(recoveredEntry)
+  assert.equal(recoveredEntry.id, originalEntry.id)
+  assert.equal(recoveredEntry.position, originalEntry.position)
+  assert.equal(recoveredEntry.added_at, originalEntry.added_at)
+  assert.equal(recoveredEntry.track_path, renamedTrackPath)
+  assert.equal(recoveredEntry.missing, false)
+  assert.equal(recoveredEntry.title, 'Stable Metadata Title')
+  assert.equal(recoveredEntry.artist, 'Stable Metadata Artist')
+  assert.equal(recoveredEntry.track?.path, renamedTrackPath)
+})
+
+test('playlist cleanup keeps ambiguous renamed tracks missing with fallback metadata', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const originalTrackPath = join(musicDir, 'ambiguous-before.wav')
+  const firstCandidatePath = join(musicDir, 'ambiguous-after-one.wav')
+  const secondCandidatePath = join(musicDir, 'ambiguous-after-two.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(originalTrackPath, 'Ambiguous Metadata Title', 'Ambiguous Metadata Artist')
+
+  await library.scanFolder(musicDir)
+  const playlist = await library.createPlaylist('Ambiguous Rename')
+  await library.addToPlaylist(playlist.id, [originalTrackPath])
+
+  await rename(originalTrackPath, firstCandidatePath)
+  await copyFile(firstCandidatePath, secondCandidatePath)
+  await library.scanFolder(musicDir)
+  await library.cleanupMissingTracks()
+
+  const entry = library.getPlaylistTrackEntries(playlist.id)[0]
+  assert.ok(entry)
+  assert.equal(entry.track_path, originalTrackPath)
+  assert.equal(entry.missing, true)
+  assert.equal(entry.title, 'Ambiguous Metadata Title')
+  assert.equal(entry.artist, 'Ambiguous Metadata Artist')
+})
+
+test('playlist cleanup does not merge a renamed entry into an existing playlist membership', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const missingTrackPath = join(musicDir, 'duplicate-before.wav')
+  const existingTargetPath = join(musicDir, 'duplicate-target.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(missingTrackPath, 'Duplicate Metadata Title', 'Duplicate Metadata Artist')
+  await writeTaggedWavFixture(existingTargetPath, 'Duplicate Metadata Title', 'Duplicate Metadata Artist')
+
+  await library.scanFolder(musicDir)
+  const playlist = await library.createPlaylist('Duplicate Target')
+  await library.addToPlaylist(playlist.id, [missingTrackPath, existingTargetPath])
+
+  await rm(missingTrackPath)
+  await library.cleanupMissingTracks()
+
+  const entries = library.getPlaylistTrackEntries(playlist.id)
+  assert.deepEqual(entries.map((entry) => entry.track_path), [missingTrackPath, existingTargetPath])
+  assert.deepEqual(entries.map((entry) => entry.missing), [true, false])
+})
+
+test('manual playlist reassociation replaces a missing entry and preserves its ordering metadata', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const anchorTrackPath = join(musicDir, 'manual-anchor.wav')
+  const missingTrackPath = join(musicDir, 'manual-missing.wav')
+  const targetTrackPath = join(musicDir, 'manual-target.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(anchorTrackPath, 'Manual Anchor', 'Manual Artist')
+  await writeTaggedWavFixture(missingTrackPath, 'Manual Missing', 'Manual Artist')
+  await writeTaggedWavFixture(targetTrackPath, 'Manual Target', 'Replacement Artist')
+
+  await library.scanFolder(musicDir)
+  const playlist = await library.createPlaylist('Manual Reassociation')
+  await library.addToPlaylist(playlist.id, [anchorTrackPath, missingTrackPath])
+  const originalEntry = library.getPlaylistTrackEntries(playlist.id)[1]
+  assert.ok(originalEntry)
+
+  await rm(missingTrackPath)
+  await library.cleanupMissingTracks()
+  await library.reassociatePlaylistEntry(playlist.id, originalEntry.id, targetTrackPath)
+
+  const reassociatedEntry = library.getPlaylistTrackEntries(playlist.id)[1]
+  assert.ok(reassociatedEntry)
+  assert.equal(reassociatedEntry.id, originalEntry.id)
+  assert.equal(reassociatedEntry.position, originalEntry.position)
+  assert.equal(reassociatedEntry.added_at, originalEntry.added_at)
+  assert.equal(reassociatedEntry.track_path, targetTrackPath)
+  assert.equal(reassociatedEntry.title, 'Manual Target')
+  assert.equal(reassociatedEntry.artist, 'Replacement Artist')
+  assert.equal(reassociatedEntry.missing, false)
+})
+
+test('manual playlist reassociation rejects invalid source and target combinations', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const availableTrackPath = join(musicDir, 'guard-available.wav')
+  const missingTrackPath = join(musicDir, 'guard-missing.wav')
+  const duplicateTargetPath = join(musicDir, 'guard-target.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(availableTrackPath, 'Guard Available', 'Guard Artist')
+  await writeTaggedWavFixture(missingTrackPath, 'Guard Missing', 'Guard Artist')
+  await writeTaggedWavFixture(duplicateTargetPath, 'Guard Target', 'Guard Artist')
+
+  await library.scanFolder(musicDir)
+  const playlist = await library.createPlaylist('Reassociation Guards')
+  await library.addToPlaylist(playlist.id, [availableTrackPath, missingTrackPath, duplicateTargetPath])
+  const initialEntries = library.getPlaylistTrackEntries(playlist.id)
+  const availableEntry = initialEntries[0]
+  const missingEntry = initialEntries[1]
+  assert.ok(availableEntry)
+  assert.ok(missingEntry)
+
+  await assert.rejects(
+    () => library.reassociatePlaylistEntry(playlist.id, availableEntry.id, duplicateTargetPath),
+    /Only missing playlist entries/
+  )
+
+  await rm(missingTrackPath)
+  await library.cleanupMissingTracks()
+
+  await assert.rejects(
+    () => library.reassociatePlaylistEntry(playlist.id, missingEntry.id, join(musicDir, 'not-indexed.wav')),
+    /isn't in your Astra library/
+  )
+  await assert.rejects(
+    () => library.reassociatePlaylistEntry(playlist.id + 999, missingEntry.id, duplicateTargetPath),
+    /Playlist not found/
+  )
+  await assert.rejects(
+    () => library.reassociatePlaylistEntry(playlist.id, missingEntry.id, duplicateTargetPath),
+    /already in this playlist/
+  )
 })
 
 test('playlist export writes extended M3U with relative local paths', async (t) => {

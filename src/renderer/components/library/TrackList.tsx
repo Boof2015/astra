@@ -88,6 +88,7 @@ interface TrackListProps {
   contextTrackNumbersByPath?: ReadonlyMap<string, number>
   externalScroll?: boolean
   playlistSourceId?: number | null
+  onChangeMissingPlaylistAssociation?: (trackPath: string) => void | Promise<void>
   sourceContext?: PlaybackSourceContext | null
   jumpToTrackRequest?: LibraryTrackRevealRequest | PlaylistTrackRevealRequest | null
   onJumpToTrackRequestConsumed?: (requestId: number) => void
@@ -772,6 +773,7 @@ export default function TrackList({
   contextTrackNumbersByPath,
   externalScroll = false,
   playlistSourceId = null,
+  onChangeMissingPlaylistAssociation,
   sourceContext = null,
   jumpToTrackRequest = null,
   onJumpToTrackRequestConsumed,
@@ -1653,6 +1655,14 @@ export default function TrackList({
     void removeTrackPathsFromCurrentPlaylist(trackContextMenu.tracks.map((track) => track.path))
   }, [removeTrackPathsFromCurrentPlaylist, trackContextMenu])
 
+  const handleChangeMissingPlaylistAssociation = useCallback(() => {
+    if (!trackContextMenu || trackContextMenu.tracks.length !== 1) return
+    const track = trackContextMenu.tracks[0]
+    if (!track || !isMissingPlaylistEntryTrack(track) || !onChangeMissingPlaylistAssociation) return
+    setTrackContextMenu(null)
+    void onChangeMissingPlaylistAssociation(track.path)
+  }, [onChangeMissingPlaylistAssociation, trackContextMenu])
+
   const handleOpenCreatePlaylistModal = useCallback(() => {
     if (!playlistPopup) return
     setPlaylistPopupFeedback(null)
@@ -1813,7 +1823,9 @@ export default function TrackList({
     if (!trackContextMenu) return undefined
 
     const panelWidth = 220
-    const panelHeight = integrityEnabled ? 252 : 194
+    const panelHeight = (integrityEnabled ? 252 : 194) + (
+      onChangeMissingPlaylistAssociation && playlistSourceId !== null && playlistSourceId > 0 ? 36 : 0
+    )
     const edgePadding = 8
     const left = Math.min(
       Math.max(edgePadding, trackContextMenu.x),
@@ -1825,7 +1837,7 @@ export default function TrackList({
     )
 
     return { top, left }
-  }, [integrityEnabled, trackContextMenu])
+  }, [integrityEnabled, onChangeMissingPlaylistAssociation, playlistSourceId, trackContextMenu])
 
   const listHeight = listViewportHeight > 0 ? listViewportHeight : trackRowHeight
   const virtualContentHeight = useMemo(() => (
@@ -1882,6 +1894,13 @@ export default function TrackList({
   const contextMenuLocalTrackCount = trackContextMenu?.tracks.filter((track) => track.source_type === 'local').length ?? 0
   const contextMenuContainsMissingPlaylistEntry = Boolean(
     trackContextMenu?.tracks.some((track) => isMissingPlaylistEntryTrack(track))
+  )
+  const canChangeMissingPlaylistAssociation = Boolean(
+    onChangeMissingPlaylistAssociation
+    && canRemoveFromPlaylist
+    && contextMenuTrackCount === 1
+    && trackContextMenu
+    && isMissingPlaylistEntryTrack(trackContextMenu.track)
   )
   const isContextIntegrityBusy = Boolean(
     trackContextMenu
@@ -2208,6 +2227,21 @@ export default function TrackList({
             </span>
             Add to Playlist...
           </button>
+          {canChangeMissingPlaylistAssociation && (
+            <button
+              type="button"
+              className="track-context-menu-item"
+              onClick={handleChangeMissingPlaylistAssociation}
+            >
+              <span className="track-context-menu-icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                </svg>
+              </span>
+              Change Associated File...
+            </button>
+          )}
           {canRemoveFromPlaylist && (
             <button
               type="button"

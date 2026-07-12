@@ -8663,6 +8663,64 @@ export async function removeFromPlaylist(playlistId: number, trackPath: string):
   await saveDatabase()
 }
 
+export async function reassociatePlaylistEntry(
+  playlistId: number,
+  entryId: number,
+  targetTrackPath: string
+): Promise<void> {
+  if (!db) throw new Error('Database not initialized')
+  if (!Number.isInteger(playlistId) || playlistId <= 0) {
+    throw new Error('Playlist not found.')
+  }
+  if (!Number.isInteger(entryId) || entryId <= 0) {
+    throw new Error('Playlist entry not found.')
+  }
+
+  const playlistKind = getPlaylistKindById(playlistId)
+  if (playlistKind === null) {
+    throw new Error('Playlist not found.')
+  }
+  if (playlistKind !== 'normal') {
+    throw new Error('Dynamic playlists cannot change associated files.')
+  }
+
+  const entry = db.get<{ track_path?: unknown; indexed_track_path?: unknown }>(`
+    SELECT pt.track_path, t.path AS indexed_track_path
+    FROM playlist_tracks pt
+    LEFT JOIN tracks t ON t.path = pt.track_path
+    WHERE pt.playlist_id = ? AND pt.id = ?
+    LIMIT 1
+  `, [playlistId, entryId])
+  if (!entry) {
+    throw new Error('Playlist entry not found.')
+  }
+  if (typeof entry.indexed_track_path === 'string') {
+    throw new Error('Only missing playlist entries can change their associated file.')
+  }
+
+  const normalizedTargetPath = typeof targetTrackPath === 'string' ? targetTrackPath.trim() : ''
+  const targetTrack = normalizedTargetPath ? getTrackByPath(normalizedTargetPath) : null
+  if (!targetTrack || targetTrack.source_type !== 'local' || targetTrack.is_available !== 1) {
+    throw new Error("That file isn't in your Astra library. Add or rescan its folder first.")
+  }
+
+  const duplicateEntry = db.get<{ id?: unknown }>(
+    'SELECT id FROM playlist_tracks WHERE playlist_id = ? AND track_path = ? AND id <> ? LIMIT 1',
+    [playlistId, targetTrack.path, entryId]
+  )
+  if (duplicateEntry) {
+    throw new Error('That file is already in this playlist.')
+  }
+
+  db.run(`
+    UPDATE playlist_tracks
+    SET track_path = ?, fallback_title = ?, fallback_artist = ?, fallback_album = ?
+    WHERE playlist_id = ? AND id = ?
+  `, [targetTrack.path, targetTrack.title, targetTrack.artist, targetTrack.album, playlistId, entryId])
+  db.run('UPDATE playlists SET updated_at = ? WHERE id = ?', [Date.now(), playlistId])
+  await saveDatabase()
+}
+
 export async function reorderPlaylistTracks(playlistId: number, orderedTrackPaths: string[]): Promise<void> {
   if (!db) return
   if (!Number.isInteger(playlistId) || playlistId <= 0) return
@@ -9171,6 +9229,27 @@ function reconcileMissingPlaylistEntriesByMetadata(): number {
   return reconciled
 }
 
+function snapshotPlaylistFallbackMetadata(track: { path: string; title: string; artist: string; album: string }): void {
+  if (!db) return
+  db.run(`
+    UPDATE playlist_tracks
+    SET
+      fallback_title = CASE
+        WHEN fallback_title IS NULL OR TRIM(fallback_title) = '' THEN ?
+        ELSE fallback_title
+      END,
+      fallback_artist = CASE
+        WHEN fallback_artist IS NULL OR TRIM(fallback_artist) = '' THEN ?
+        ELSE fallback_artist
+      END,
+      fallback_album = CASE
+        WHEN fallback_album IS NULL OR TRIM(fallback_album) = '' THEN ?
+        ELSE fallback_album
+      END
+    WHERE track_path = ?
+  `, [track.title, track.artist, track.album, track.path])
+}
+
 export async function importPlaylistFromFile(filePath: string): Promise<PlaylistImportResult> {
   if (!db) throw new Error('Database not initialized')
 
@@ -9321,7 +9400,17 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
   const { persist = true, signal, onIssue } = options
   if (!db) return 0
 
-  const tracks = db.all<{ id: number; path: string }>("SELECT id, path FROM tracks WHERE source_type = 'local'")
+  const tracks = db.all<{ id: number; path: string; title: string; artist: string; album: string }>(`
+    SELECT
+      t.id,
+      t.path,
+      COALESCE(o.title, t.title) AS title,
+      COALESCE(o.artist, t.artist) AS artist,
+      COALESCE(o.album, t.album) AS album
+    FROM tracks t
+    LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
+    WHERE t.source_type = 'local'
+  `)
   let removed = 0
 
   for (const track of tracks) {
@@ -9331,6 +9420,7 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
     } catch (err: unknown) {
       const code = getErrorCode(err)
       if (code === 'ENOENT' || code === 'ENOTDIR') {
+        snapshotPlaylistFallbackMetadata(track)
         db.run('DELETE FROM tracks WHERE id = ?', [track.id])
         removed++
       } else {
@@ -9341,7 +9431,8 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
   }
 
   throwIfScanCancelled(signal)
-  if (persist && removed > 0) {
+  const reconciled = reconcileMissingPlaylistEntriesByMetadata()
+  if (persist && (removed > 0 || reconciled > 0)) {
     await saveDatabase()
   }
 

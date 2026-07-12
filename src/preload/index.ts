@@ -1386,6 +1386,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getPlaylistTrackEntries: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTrackEntries', playlistId),
     addToPlaylist: (playlistId: number, trackPaths: string[]) => ipcRenderer.invoke('library:addToPlaylist', playlistId, trackPaths),
     removeFromPlaylist: (playlistId: number, trackPath: string) => ipcRenderer.invoke('library:removeFromPlaylist', playlistId, trackPath),
+    reassociatePlaylistEntry: (playlistId: number, entryId: number, targetTrackPath: string) =>
+      ipcRenderer.invoke('library:reassociatePlaylistEntry', playlistId, entryId, targetTrackPath),
     reorderPlaylistTracks: (playlistId: number, orderedTrackPaths: string[]) => ipcRenderer.invoke('library:reorderPlaylistTracks', playlistId, orderedTrackPaths),
     markPlaylistPlayed: (playlistId: number) => ipcRenderer.invoke('library:markPlaylistPlayed', playlistId),
     setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => ipcRenderer.invoke('library:setPlaylistCustomCoverFromFile', playlistId, imagePath),
@@ -1856,6 +1858,7 @@ declare global {
         getPlaylistTrackEntries: (playlistId: number) => Promise<PlaylistTrackEntry[]>
         addToPlaylist: (playlistId: number, trackPaths: string[]) => Promise<void>
         removeFromPlaylist: (playlistId: number, trackPath: string) => Promise<void>
+        reassociatePlaylistEntry: (playlistId: number, entryId: number, targetTrackPath: string) => Promise<void>
         reorderPlaylistTracks: (playlistId: number, orderedTrackPaths: string[]) => Promise<void>
         markPlaylistPlayed: (playlistId: number) => Promise<void>
         setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => Promise<void>

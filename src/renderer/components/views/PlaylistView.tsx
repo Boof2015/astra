@@ -25,6 +25,10 @@ import {
 } from '../../../shared/playlists/dynamicPlaylist'
 
 const PLAYLIST_IMPORT_STATUS_TIMEOUT_MS = 9000
+const PLAYLIST_ASSOCIATION_AUDIO_FILTER = [{
+  name: 'Audio Files',
+  extensions: ['mp3', 'flac', 'wav', 'ogg', 'aac', 'm4a', 'opus', 'wma', 'aiff', 'alac', 'ape', 'wv', 'iamf', 'mp4']
+}]
 
 type SortDirection = 'asc' | 'desc'
 type PlaylistTrack = ReturnType<typeof usePlaylistStore.getState>['selectedPlaylistTracks'][number]
@@ -228,6 +232,7 @@ export default function PlaylistView() {
     setPlaylistCustomCoverFromFile,
     clearPlaylistCustomCover,
     reorderPlaylistTracks,
+    reassociatePlaylistEntry,
     importPlaylistFromFile,
     exportPlaylistToM3u,
     sortState,
@@ -816,6 +821,39 @@ export default function PlaylistView() {
     setActiveView('library')
   }, [setActiveView])
 
+  const handleChangeMissingPlaylistAssociation = useCallback(async (trackPath: string) => {
+    if (selectedPlaylistId === null || selectedPlaylistId <= 0 || isDynamicPlaylist) return
+
+    const entry = selectedPlaylistEntries.find((candidate) => (
+      candidate.track_path === trackPath && (candidate.missing || candidate.track === null)
+    ))
+    if (!entry) {
+      setPlaylistImportStatus({ tone: 'error', message: 'That missing playlist entry is no longer available.' })
+      return
+    }
+
+    const targetTrackPath = await window.electronAPI.openFileDialog({
+      title: 'Change Associated Playlist File',
+      filters: PLAYLIST_ASSOCIATION_AUDIO_FILTER
+    })
+    if (!targetTrackPath) return
+
+    try {
+      await reassociatePlaylistEntry(selectedPlaylistId, entry.id, targetTrackPath)
+      const targetFileName = targetTrackPath.split(/[\\/]/).pop() || targetTrackPath
+      setPlaylistImportStatus({
+        tone: 'success',
+        message: `Associated "${getMissingPlaylistEntryLabel(entry)}" with "${targetFileName}".`
+      })
+    } catch (error) {
+      console.error('Failed to change playlist file association:', error)
+      setPlaylistImportStatus({
+        tone: 'error',
+        message: error instanceof Error ? error.message : 'Failed to change the associated playlist file.'
+      })
+    }
+  }, [isDynamicPlaylist, reassociatePlaylistEntry, selectedPlaylistEntries, selectedPlaylistId])
+
   const handleOpenPlaylist = useCallback(async (playlistId: number) => {
     await selectPlaylist(playlistId)
     setActiveView('playlist')
@@ -1304,6 +1342,7 @@ export default function PlaylistView() {
                 trackNumberMode="context"
                 contextTrackNumbersByPath={playlistTrackNumbersByPath}
                 playlistSourceId={isDynamicPlaylist ? null : selectedPlaylistId}
+                onChangeMissingPlaylistAssociation={handleChangeMissingPlaylistAssociation}
                 enableColumnSorting
                 sortState={sortState}
                 onSortColumnToggle={handleSortColumnToggle}
