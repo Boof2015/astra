@@ -13,6 +13,7 @@ import { useOpenAlbumInLibrary } from '../../hooks/useOpenAlbumInLibrary'
 import { Track } from '../../types/audio'
 import type { TrackSourceType } from '../../../types/subsonic'
 import { buildTrackListRows, type TrackListVirtualRow } from './trackListRows'
+import { shouldSuppressTrackRowDrag } from './trackDragTarget'
 import AlbumArtwork from './AlbumArtwork'
 import ArtistNameLinks from './ArtistNameLinks'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
@@ -1276,8 +1277,8 @@ export default function TrackList({
   const handleQueueInsertPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>, dbTrack: DbTrack, index: number) => {
     if (event.button !== 0) return
 
-    const target = event.target
-    if (target instanceof Element && target.closest('button, a, input, textarea, select, [role="button"]')) {
+    const target = event.target instanceof Element ? event.target : null
+    if (shouldSuppressTrackRowDrag(target, event.currentTarget)) {
       return
     }
 
