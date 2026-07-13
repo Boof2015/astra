@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type {
   PhoneRemotePairedDevice,
+  PhoneRemoteClientKind,
   PhoneRemotePairingTicket,
   PhoneRemotePendingPairingRequest,
   PhoneRemoteStatus
@@ -29,7 +30,7 @@ interface PhoneRemoteSettingsStore {
     resolution: PhoneSyncConflictResolution
   ) => Promise<PhoneRemoteStatus | null>
   resetToDefaults: () => Promise<PhoneRemoteStatus | null>
-  createPairingTicket: (baseUrl?: string) => Promise<PhoneRemotePairingTicket | null>
+  createPairingTicket: (baseUrl?: string, clientKind?: PhoneRemoteClientKind) => Promise<PhoneRemotePairingTicket | null>
   clearActivePairingTicket: () => void
   approvePairingRequest: (id: string) => Promise<void>
   rejectPairingRequest: (id: string) => Promise<void>
@@ -189,9 +190,9 @@ export const usePhoneRemoteSettingsStore = create<PhoneRemoteSettingsStore>((set
       }
     },
 
-    createPairingTicket: async (baseUrl?: string) => {
+    createPairingTicket: async (baseUrl?: string, clientKind: PhoneRemoteClientKind = 'native') => {
       try {
-        const ticket = await window.electronAPI.phoneRemote.createPairingTicket(baseUrl)
+        const ticket = await window.electronAPI.phoneRemote.createPairingTicket(baseUrl, clientKind)
         set({
           activePairingTicket: ticket,
           errorMessage: ''

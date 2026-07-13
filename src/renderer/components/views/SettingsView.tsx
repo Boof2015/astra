@@ -1279,9 +1279,19 @@ export default function SettingsView() {
   }
 
   const handleRefreshPhoneRemotePairingTicket = () => {
-    void createPhoneRemotePairingTicket(localApiSelectedPairingBaseUrl || undefined).then((ticket) => {
+    void createPhoneRemotePairingTicket(
+      localApiSelectedPairingBaseUrl || undefined,
+      phoneRemoteActivePairingTicket?.clientKind ?? 'native'
+    ).then((ticket) => {
       if (!ticket) return
       setPhoneRemoteFeedback('Pairing ticket refreshed.')
+    })
+  }
+
+  const handleCreatePhoneRemoteWebPairingTicket = () => {
+    void createPhoneRemotePairingTicket(localApiSelectedPairingBaseUrl || undefined, 'web').then((ticket) => {
+      if (!ticket) return
+      setPhoneRemoteFeedback('Control-only browser pairing ticket generated.')
     })
   }
 
@@ -3171,6 +3181,7 @@ export default function SettingsView() {
           onEnableRemoteControl={handleEnablePhoneRemoteControl}
           onSelectBaseUrl={setLocalApiSelectedPairingBaseUrl}
           onGenerateTicket={handleCreatePhoneRemotePairingTicket}
+          onGenerateWebTicket={handleCreatePhoneRemoteWebPairingTicket}
           onRefreshTicket={handleRefreshPhoneRemotePairingTicket}
           onCopyPairingUrl={() => {
             if (!phoneRemoteActivePairingTicket) return

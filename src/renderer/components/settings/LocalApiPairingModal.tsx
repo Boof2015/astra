@@ -24,6 +24,7 @@ interface LocalApiPairingModalProps {
   onEnableRemoteControl: () => void
   onSelectBaseUrl: (baseUrl: string) => void
   onGenerateTicket: () => void
+  onGenerateWebTicket: () => void
   onRefreshTicket: () => void
   onCopyPairingUrl: () => void
   onApproveRequest: (id: string) => void
@@ -69,6 +70,7 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
     onEnableRemoteControl,
     onSelectBaseUrl,
     onGenerateTicket,
+    onGenerateWebTicket,
     onRefreshTicket,
     onCopyPairingUrl,
     onApproveRequest,
@@ -239,13 +241,25 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
 
                   {hasLiveTicket && (
                     <>
-                      <p className="local-api-pairing-scan-hint">Scan with your phone camera</p>
+                      <p className="local-api-pairing-scan-hint">
+                        {ticket?.clientKind === 'web'
+                          ? 'Open in a browser for playback control only'
+                          : 'Scan in Astra Mobile for secure control and sync'}
+                      </p>
+                      {ticket?.clientKind === 'web' && (
+                        <p className="settings-note">
+                          Your browser will show a warning for Astra's private certificate. Verify this SHA-256 fingerprint before continuing: <code>{ticket.certificateFingerprint}</code>
+                        </p>
+                      )}
                       <div className="local-api-pairing-qr-actions">
                         <span className={`local-api-pairing-countdown${remainingMs < 60000 ? ' is-expiring' : ''}`}>
                           {formatCountdown(remainingMs)}
                         </span>
                         <button className="settings-btn settings-btn-primary" onClick={onCopyPairingUrl}>
                           Copy Link
+                        </button>
+                        <button className="settings-btn" onClick={ticket?.clientKind === 'web' ? onGenerateTicket : onGenerateWebTicket}>
+                          {ticket?.clientKind === 'web' ? 'Astra Mobile' : 'Browser Controller'}
                         </button>
                         <button className="settings-btn local-api-pairing-refresh-btn" onClick={onRefreshTicket} aria-label="Refresh pairing code">
                           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">

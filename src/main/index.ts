@@ -65,6 +65,12 @@ import { LocalApiService, generateLocalApiToken } from './services/localApi'
 import { PhoneRemoteService } from './services/phoneRemote'
 import { applyPhoneSyncChanges, buildPhoneSyncState, parsePhoneSyncApplyPayload } from './services/phoneSync'
 import { PhoneRemoteDiscoveryService } from './services/phoneRemoteDiscovery'
+import {
+  createPhoneRemoteTlsIdentity,
+  normalizePhoneRemoteFingerprint,
+  validatePhoneRemoteTlsIdentity,
+  type PhoneRemoteTlsIdentity
+} from './services/phoneRemoteSecurity'
 import { ParallaxService, type PersistedParallaxPairedSink } from './services/parallax'
 import { ParallaxDiscoveryService } from './services/parallaxDiscovery'
 import { ParallaxSinkListener } from './services/parallaxSinkListener'
@@ -142,6 +148,8 @@ import {
   PHONE_REMOTE_MAX_PORT,
   PHONE_REMOTE_MIN_PORT,
   PHONE_REMOTE_PROTOCOL_VERSION,
+  type PhoneRemoteClientKind,
+  type PhoneRemoteCredentialScope,
   type PhoneRemoteIdentity,
   type PhoneRemoteServiceConfig
 } from '../types/phoneRemote'
@@ -462,6 +470,10 @@ const PHONE_REMOTE_ENABLED_META_KEY = 'local_api_remote_web_enabled_v1'
 const PHONE_REMOTE_PORT_META_KEY = 'phone_remote_port_v1'
 const PHONE_REMOTE_SYNC_ENABLED_META_KEY = 'phone_remote_sync_enabled_v1'
 const PHONE_REMOTE_PAIRED_DEVICES_META_KEY = 'local_api_paired_devices_v1'
+const PHONE_REMOTE_TLS_IDENTITY_META_KEY = 'phone_remote_tls_identity_v3'
+const PHONE_REMOTE_TLS_FINGERPRINT_META_KEY = 'phone_remote_tls_fingerprint_v3'
+const PHONE_REMOTE_SECURITY_VERSION_META_KEY = 'phone_remote_security_version'
+const PHONE_REMOTE_SECURITY_MIGRATION_NOTICE_META_KEY = 'phone_remote_security_migration_notice_v3'
 const PARALLAX_HOST_ENABLED_META_KEY = 'parallax_host_enabled_v1'
 const PARALLAX_HOST_PORT_META_KEY = 'parallax_host_port_v1'
 const PARALLAX_PAIRED_SINKS_META_KEY = 'parallax_paired_sinks_v1'
@@ -587,8 +599,18 @@ type PersistedPhoneRemotePairedDevice = {
   id: string
   name: string
   clientLabel: string
-  tokenHash: string
   tokenPrefix: string
+  syncTokenPrefix: string | null
+  clientKind: PhoneRemoteClientKind
+  scopes: PhoneRemoteCredentialScope[]
+  credentialIssuedAt: number
+  credentialRotatedAt: number
+  expiresAt: number
+  controlTokenHash: string
+  syncTokenHash: string | null
+  previousControlTokenHash: string | null
+  previousSyncTokenHash: string | null
+  previousTokensValidUntil: number | null
   createdAt: number
   lastSeenAt: number | null
   revokedAt: number | null
@@ -603,6 +625,7 @@ let parallaxSinkEnabled = false
 // §20.19(c). Role-neutral identity UUID per Astra install. Generated lazily at first read.
 // Discovery memory only (never a secret) — auth identity is still the host-issued `sinkId`.
 let parallaxEndpointUuid = ''
+let phoneRemoteTlsIdentity: PhoneRemoteTlsIdentity | null = null
 let parallaxTlsIdentity: ParallaxTlsIdentity | null = null
 let parallaxSecurityMigrationRequired = false
 // §20 Commit 2. mDNS wrapper. Owns one bonjour-service instance for both advertise + browse.
@@ -1469,8 +1492,32 @@ function sanitizePhoneRemotePairedDevices(rawDevices: unknown): PersistedPhoneRe
     const id = typeof value.id === 'string' ? value.id.trim() : ''
     const name = typeof value.name === 'string' ? value.name.trim() : ''
     const clientLabel = typeof value.clientLabel === 'string' ? value.clientLabel.trim() : ''
-    const tokenHash = typeof value.tokenHash === 'string' ? value.tokenHash.trim() : ''
     const tokenPrefix = typeof value.tokenPrefix === 'string' ? value.tokenPrefix.trim() : ''
+    const syncTokenPrefix = typeof value.syncTokenPrefix === 'string' ? value.syncTokenPrefix.trim() : null
+    const clientKind = value.clientKind === 'native' || value.clientKind === 'web' ? value.clientKind : null
+    const scopes = Array.isArray(value.scopes)
+      ? value.scopes.filter((scope): scope is PhoneRemoteCredentialScope => scope === 'control' || scope === 'sync')
+      : []
+    const controlTokenHash = typeof value.controlTokenHash === 'string' ? value.controlTokenHash.trim() : ''
+    const syncTokenHash = typeof value.syncTokenHash === 'string' ? value.syncTokenHash.trim() : null
+    const previousControlTokenHash = typeof value.previousControlTokenHash === 'string'
+      ? value.previousControlTokenHash.trim()
+      : null
+    const previousSyncTokenHash = typeof value.previousSyncTokenHash === 'string'
+      ? value.previousSyncTokenHash.trim()
+      : null
+    const credentialIssuedAt = typeof value.credentialIssuedAt === 'number' && Number.isFinite(value.credentialIssuedAt)
+      ? Math.max(0, value.credentialIssuedAt)
+      : 0
+    const credentialRotatedAt = typeof value.credentialRotatedAt === 'number' && Number.isFinite(value.credentialRotatedAt)
+      ? Math.max(0, value.credentialRotatedAt)
+      : 0
+    const expiresAt = typeof value.expiresAt === 'number' && Number.isFinite(value.expiresAt)
+      ? Math.max(0, value.expiresAt)
+      : 0
+    const previousTokensValidUntil = typeof value.previousTokensValidUntil === 'number' && Number.isFinite(value.previousTokensValidUntil)
+      ? Math.max(0, value.previousTokensValidUntil)
+      : null
     const createdAt = typeof value.createdAt === 'number' && Number.isFinite(value.createdAt)
       ? Math.max(0, value.createdAt)
       : 0
@@ -1481,7 +1528,16 @@ function sanitizePhoneRemotePairedDevices(rawDevices: unknown): PersistedPhoneRe
       ? Math.max(0, value.revokedAt)
       : null
 
-    if (!id || !name || !clientLabel || !tokenHash || !tokenPrefix || createdAt <= 0) {
+    const expectedScopes: PhoneRemoteCredentialScope[] = clientKind === 'native'
+      ? ['control', 'sync']
+      : ['control']
+    if (
+      !id || !name || !clientLabel || !clientKind || !controlTokenHash || !tokenPrefix || createdAt <= 0 ||
+      credentialIssuedAt <= 0 || credentialRotatedAt <= 0 || expiresAt <= 0 ||
+      expectedScopes.some((scope) => !scopes.includes(scope)) ||
+      (clientKind === 'native' && (!syncTokenHash || !syncTokenPrefix)) ||
+      (clientKind === 'web' && (syncTokenHash || syncTokenPrefix || scopes.includes('sync')))
+    ) {
       continue
     }
 
@@ -1489,8 +1545,18 @@ function sanitizePhoneRemotePairedDevices(rawDevices: unknown): PersistedPhoneRe
       id,
       name: name.slice(0, 80),
       clientLabel: clientLabel.slice(0, 80),
-      tokenHash,
       tokenPrefix: tokenPrefix.slice(0, 16),
+      syncTokenPrefix: syncTokenPrefix?.slice(0, 16) ?? null,
+      clientKind,
+      scopes: expectedScopes,
+      credentialIssuedAt,
+      credentialRotatedAt,
+      expiresAt,
+      controlTokenHash,
+      syncTokenHash,
+      previousControlTokenHash,
+      previousSyncTokenHash,
+      previousTokensValidUntil,
       createdAt,
       lastSeenAt,
       revokedAt
@@ -1627,29 +1693,29 @@ async function persistParallaxSinkEnabled(enabled: boolean): Promise<void> {
   await library.setAppMeta(PARALLAX_SINK_ENABLED_META_KEY, enabled ? '1' : '0')
 }
 
-interface ProtectedParallaxSecret {
+interface ProtectedLocalSecret {
   protection: 'safe-storage' | 'plaintext-fallback'
   value: string
 }
 
-function canUseSecureParallaxStorage(): boolean {
+function canUseSecureLocalStorage(): boolean {
   if (!safeStorage.isEncryptionAvailable()) return false
   if (process.platform !== 'linux') return true
   return safeStorage.getSelectedStorageBackend() !== 'basic_text'
 }
 
-function protectParallaxSecret(value: string): ProtectedParallaxSecret {
-  if (canUseSecureParallaxStorage()) {
+function protectLocalSecret(value: string): ProtectedLocalSecret {
+  if (canUseSecureLocalStorage()) {
     return {
       protection: 'safe-storage',
       value: safeStorage.encryptString(value).toString('base64')
     }
   }
-  console.warn('Parallax secure OS storage is unavailable; using an explicit plaintext credential fallback.')
+  console.warn('Secure OS storage is unavailable; using an explicit plaintext local credential fallback.')
   return { protection: 'plaintext-fallback', value }
 }
 
-function unprotectParallaxSecret(value: unknown): string | null {
+function unprotectLocalSecret(value: unknown): string | null {
   if (!value || typeof value !== 'object') return null
   const record = value as Record<string, unknown>
   if (record.protection === 'plaintext-fallback' && typeof record.value === 'string') {
@@ -1671,7 +1737,7 @@ async function loadOrCreateParallaxTlsIdentity(): Promise<ParallaxTlsIdentity> {
   if (raw) {
     try {
       const stored = JSON.parse(raw) as Record<string, unknown>
-      const privateKeyPem = unprotectParallaxSecret(stored.privateKey)
+      const privateKeyPem = unprotectLocalSecret(stored.privateKey)
       const candidate = privateKeyPem && typeof stored.certificatePem === 'string' && typeof stored.fingerprint256 === 'string'
         ? validateParallaxTlsIdentity({
           certificatePem: stored.certificatePem,
@@ -1691,7 +1757,7 @@ async function loadOrCreateParallaxTlsIdentity(): Promise<ParallaxTlsIdentity> {
     version: 2,
     certificatePem: identity.certificatePem,
     fingerprint256: identity.fingerprint256,
-    privateKey: protectParallaxSecret(identity.privateKeyPem)
+    privateKey: protectLocalSecret(identity.privateKeyPem)
   }))
   if (invalidExistingIdentity) {
     parallaxSecurityMigrationRequired = true
@@ -1700,6 +1766,80 @@ async function loadOrCreateParallaxTlsIdentity(): Promise<ParallaxTlsIdentity> {
     await library.setAppMeta(PARALLAX_SECURITY_MIGRATION_NOTICE_META_KEY, '1')
   }
   return identity
+}
+
+async function loadOrCreatePhoneRemoteTlsIdentity(): Promise<PhoneRemoteTlsIdentity> {
+  const raw = library.getAppMeta(PHONE_REMOTE_TLS_IDENTITY_META_KEY)
+  const expectedFingerprint = normalizePhoneRemoteFingerprint(
+    library.getAppMeta(PHONE_REMOTE_TLS_FINGERPRINT_META_KEY) ?? ''
+  )
+  const rawPairings = library.getAppMeta(PHONE_REMOTE_PAIRED_DEVICES_META_KEY)
+  let hasPersistedPairings = false
+  try {
+    const parsed = rawPairings ? JSON.parse(rawPairings) : []
+    hasPersistedPairings = Array.isArray(parsed) && parsed.length > 0
+  } catch {
+    hasPersistedPairings = Boolean(rawPairings)
+  }
+  let invalidExistingIdentity = !raw && hasPersistedPairings
+  if (raw) {
+    try {
+      const stored = JSON.parse(raw) as Record<string, unknown>
+      const privateKeyPem = unprotectLocalSecret(stored.privateKey)
+      const candidate = privateKeyPem && typeof stored.certificatePem === 'string' && typeof stored.fingerprint256 === 'string'
+        ? validatePhoneRemoteTlsIdentity({
+          certificatePem: stored.certificatePem,
+          privateKeyPem,
+          fingerprint256: stored.fingerprint256
+        })
+        : null
+      if (candidate) {
+        if (expectedFingerprint && expectedFingerprint !== normalizePhoneRemoteFingerprint(candidate.fingerprint256)) {
+          invalidExistingIdentity = true
+        } else {
+          await library.setAppMeta(PHONE_REMOTE_TLS_FINGERPRINT_META_KEY, candidate.fingerprint256)
+          return candidate
+        }
+      }
+    } catch {
+      // Regenerate below and invalidate pairings. A replacement certificate is never trusted silently.
+    }
+    invalidExistingIdentity = true
+  }
+
+  const identity = await createPhoneRemoteTlsIdentity(hostname() || 'Astra Phone Remote')
+  await library.setAppMeta(PHONE_REMOTE_TLS_IDENTITY_META_KEY, JSON.stringify({
+    version: 3,
+    certificatePem: identity.certificatePem,
+    fingerprint256: identity.fingerprint256,
+    privateKey: protectLocalSecret(identity.privateKeyPem)
+  }))
+  await library.setAppMeta(PHONE_REMOTE_TLS_FINGERPRINT_META_KEY, identity.fingerprint256)
+  if (invalidExistingIdentity) {
+    phoneRemotePairedDevices = []
+    await library.setAppMeta(PHONE_REMOTE_PAIRED_DEVICES_META_KEY, '[]')
+    await library.setAppMeta(PHONE_REMOTE_SECURITY_MIGRATION_NOTICE_META_KEY, '1')
+  }
+  return identity
+}
+
+async function migratePhoneRemoteSecurityV3(): Promise<void> {
+  const version = library.getAppMeta(PHONE_REMOTE_SECURITY_VERSION_META_KEY)
+  if (version === '3') return
+  const rawDevices = library.getAppMeta(PHONE_REMOTE_PAIRED_DEVICES_META_KEY)
+  let hadLegacyPairing = false
+  if (rawDevices) {
+    try {
+      const parsed = JSON.parse(rawDevices)
+      hadLegacyPairing = Array.isArray(parsed) && parsed.length > 0
+    } catch {
+      hadLegacyPairing = true
+    }
+  }
+  phoneRemotePairedDevices = []
+  await library.setAppMeta(PHONE_REMOTE_PAIRED_DEVICES_META_KEY, '[]')
+  await library.setAppMeta(PHONE_REMOTE_SECURITY_VERSION_META_KEY, '3')
+  await library.setAppMeta(PHONE_REMOTE_SECURITY_MIGRATION_NOTICE_META_KEY, hadLegacyPairing ? '1' : '0')
 }
 
 async function migrateParallaxSecurityV2(): Promise<void> {
@@ -1811,7 +1951,7 @@ function loadParallaxSinkConnectionFromMeta(): PersistedParallaxSinkConnection |
   if (!raw) return null
   try {
     const stored = JSON.parse(raw) as Record<string, unknown>
-    const token = unprotectParallaxSecret(stored.protectedToken)
+    const token = unprotectLocalSecret(stored.protectedToken)
     return token ? sanitizeParallaxSinkConnection({ ...stored, token }) : null
   } catch {
     return null
@@ -1823,7 +1963,7 @@ async function persistParallaxSinkConnection(next: PersistedParallaxSinkConnecti
   const { token, ...publicFields } = parallaxSinkConnection
   await library.setAppMeta(PARALLAX_SINK_CONNECTION_META_KEY, JSON.stringify({
     ...publicFields,
-    protectedToken: protectParallaxSecret(token)
+    protectedToken: protectLocalSecret(token)
   }))
 }
 
@@ -4593,7 +4733,10 @@ app.whenReady().then(async () => {
   localApiConfig = await loadLocalApiConfigFromMeta()
   phoneRemoteConfig = await loadPhoneRemoteConfigFromMeta(localApiConfig.controlsEnabled)
   parallaxHostConfig = await loadParallaxHostConfigFromMeta()
+  await migratePhoneRemoteSecurityV3()
   await migrateParallaxSecurityV2()
+  phoneRemoteTlsIdentity = await loadOrCreatePhoneRemoteTlsIdentity()
+  phoneRemoteService.setTlsIdentity(phoneRemoteTlsIdentity)
   parallaxTlsIdentity = await loadOrCreateParallaxTlsIdentity()
   parallaxService.setTlsIdentity(parallaxTlsIdentity)
   phoneRemotePairedDevices = await loadPhoneRemotePairedDevicesFromMeta()
@@ -5613,8 +5756,11 @@ ipcMain.handle('phone-remote:getStatus', () => {
   return phoneRemoteService.getStatus()
 })
 
-ipcMain.handle('phone-remote:createPairingTicket', (_event, baseUrl?: unknown) => {
-  return phoneRemoteService.createPairingTicket(typeof baseUrl === 'string' ? baseUrl : undefined)
+ipcMain.handle('phone-remote:createPairingTicket', (_event, baseUrl?: unknown, clientKind?: unknown) => {
+  return phoneRemoteService.createPairingTicket(
+    typeof baseUrl === 'string' ? baseUrl : undefined,
+    clientKind === 'web' ? 'web' : 'native'
+  )
 })
 
 ipcMain.handle('phone-remote:listPairedDevices', () => {
@@ -5899,7 +6045,9 @@ function refreshPhoneRemoteDiscoveryAdvertisement(status = phoneRemoteService.ge
       name: identity.desktopName,
       port: status.port,
       endpointUuid: identity.endpointUuid,
-      protocolVersion: identity.protocolVersion
+      protocolVersion: identity.protocolVersion,
+      transport: 'https',
+      certificateFingerprint: phoneRemoteTlsIdentity?.fingerprint256 ?? ''
     })
   } catch (error) {
     console.warn('Failed to refresh phone remote discovery advertisement:', error)

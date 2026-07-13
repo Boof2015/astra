@@ -20,6 +20,8 @@ export interface PhoneRemoteDiscoveryAdvertiseOptions {
   port: number
   endpointUuid: string | null
   protocolVersion: number
+  transport: 'https'
+  certificateFingerprint: string
 }
 
 export interface PhoneRemoteDiscoveryServiceOptions {
@@ -43,7 +45,9 @@ export class PhoneRemoteDiscoveryService {
       endpointUuid: options.endpointUuid?.trim() || '',
       protocolVersion: Number.isFinite(options.protocolVersion)
         ? Math.max(1, Math.floor(options.protocolVersion))
-        : 1
+        : 1,
+      transport: options.transport,
+      certificateFingerprint: options.certificateFingerprint.trim()
     }
     const signature = JSON.stringify(normalized)
     if (this.advertisedSignature === signature && this.advertisedService) return
@@ -59,7 +63,9 @@ export class PhoneRemoteDiscoveryService {
         version: '1',
         name: normalized.name,
         endpoint_uuid: normalized.endpointUuid,
-        protocol_version: String(normalized.protocolVersion)
+        protocol_version: String(normalized.protocolVersion),
+        transport: normalized.transport,
+        certificate_fingerprint: normalized.certificateFingerprint
       }
     })
     this.advertisedSignature = signature

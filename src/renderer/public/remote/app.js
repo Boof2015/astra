@@ -1,5 +1,6 @@
 (function () {
-  const STORAGE_KEY = 'astra-remote-api-token-v1'
+  // v3 intentionally invalidates every pre-HTTPS browser credential.
+  const STORAGE_KEY = 'astra-remote-api-token-v3'
   const POLL_INTERVAL_MS = 5000
   const PAIR_POLL_INTERVAL_MS = 1500
   const RECONNECT_DELAY_MS = 2000

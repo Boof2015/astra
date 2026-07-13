@@ -14,6 +14,8 @@ import {
 
 const AUTH_PREFIX = 'Bearer '
 const MAX_SSE_CLIENTS = 8
+const MAX_QUEUE_ITEMS = 5_000
+const MAX_JSON_RESPONSE_BYTES = 8 * 1024 * 1024
 const SSE_HEARTBEAT_INTERVAL_MS = 20_000
 const CONTROL_RATE_LIMIT_WINDOW_MS = 60_000
 const CONTROL_RATE_LIMIT_MAX_REQUESTS = 120
@@ -208,14 +210,15 @@ function sanitizeQueueSnapshot(snapshot: MiniPlayerQueueSnapshot | null): LocalA
   }
   const items: LocalApiQueueSnapshot['items'] = []
   for (const item of snapshot.items) {
+    if (items.length >= MAX_QUEUE_ITEMS) break
     if (!item || typeof item !== 'object') continue
     const queueId = toSafeOptionalString(item.queueId)
     if (!queueId) continue
     const durationSeconds = Number(item.durationSeconds)
     items.push({
       queueId,
-      title: typeof item.title === 'string' ? item.title : '',
-      artist: typeof item.artist === 'string' ? item.artist : '',
+      title: typeof item.title === 'string' ? item.title.slice(0, 512) : '',
+      artist: typeof item.artist === 'string' ? item.artist.slice(0, 512) : '',
       durationSeconds: Number.isFinite(durationSeconds) && durationSeconds > 0 ? durationSeconds : null,
       isCurrent: Boolean(item.isCurrent)
     })
@@ -592,10 +595,16 @@ export class PlaybackHttpCore<TAuthContext> {
   }
 
   private respondJson(res: ServerResponse<IncomingMessage>, statusCode: number, body: unknown): void {
+    let encoded = Buffer.from(JSON.stringify(body), 'utf8')
+    if (encoded.byteLength > MAX_JSON_RESPONSE_BYTES) {
+      statusCode = 507
+      encoded = Buffer.from(JSON.stringify({ error: 'Response exceeds the transport limit.' }), 'utf8')
+    }
     res.statusCode = statusCode
     res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.setHeader('Content-Length', encoded.byteLength.toString())
     res.setHeader('Cache-Control', 'no-store')
-    res.end(JSON.stringify(body))
+    res.end(encoded)
   }
 
   private async readRequestBody(req: IncomingMessage, maxBytes: number): Promise<string | null> {

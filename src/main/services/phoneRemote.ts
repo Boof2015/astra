@@ -1,6 +1,6 @@
 import { readFile } from 'fs/promises'
-import { randomInt } from 'crypto'
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
+import { createServer, type Server } from 'https'
+import type { IncomingMessage, ServerResponse } from 'http'
 import { networkInterfaces } from 'os'
 import { extname, join, normalize } from 'path'
 import { fileURLToPath } from 'url'
@@ -17,6 +17,8 @@ import type {
 import { PHONE_SYNC_FORMAT } from '../../types/phoneSync'
 import type {
   PhoneRemoteIdentity,
+  PhoneRemoteClientKind,
+  PhoneRemoteCredentialScope,
   PhoneRemotePairedDevice,
   PhoneRemotePairingMode,
   PhoneRemotePairingState,
@@ -36,14 +38,32 @@ import {
   secureTokenEquals,
   toSafeOptionalString
 } from './playbackHttpCore'
+import {
+  PHONE_REMOTE_DEVICE_INACTIVITY_MS,
+  PHONE_REMOTE_PREVIOUS_TOKEN_GRACE_MS,
+  PHONE_REMOTE_TOKEN_ROTATE_AFTER_MS,
+  PHONE_REMOTE_TOKEN_ROTATE_REQUIRED_MS,
+  createPhoneRemoteEphemeralKeyPair,
+  derivePhoneRemotePairingCode,
+  derivePhoneRemotePairingKey,
+  normalizePhoneRemoteFingerprint,
+  sealPhoneRemotePairingPayload,
+  verifyPhoneRemotePairingProof,
+  type PhoneRemotePairingTranscript,
+  type PhoneRemoteTlsIdentity
+} from './phoneRemoteSecurity'
 
 const TOKEN_PREFIX_LENGTH = 8
 // Sync payloads carry whole favorites/playlists sets — far larger than control
 // bodies (CONTROL_MAX_BODY_BYTES is 1 KB).
 const SYNC_MAX_BODY_BYTES = 8 * 1024 * 1024
+const MAX_JSON_RESPONSE_BYTES = 16 * 1024 * 1024
+const MAX_REMOTE_ASSET_BYTES = 2 * 1024 * 1024
 const PAIRING_TICKET_TTL_MS = 2 * 60_000
 const PAIRING_REQUEST_TTL_MS = 2 * 60_000
 const PIN_PAIRING_MAX_FAILURES = 3
+const PIN_PAIRING_RATE_LIMIT_MS = 5_000
+const PIN_PAIRING_LOCKOUT_MS = 5 * 60_000
 const PAIRED_DEVICE_LAST_SEEN_PERSIST_INTERVAL_MS = 60_000
 const PHONE_REMOTE_MODULE_DIR = typeof __dirname === 'string'
   ? __dirname
@@ -66,7 +86,11 @@ const REMOTE_STATIC_CONTENT_TYPES: Record<string, string> = {
 }
 
 interface PersistedPairedDevice extends PhoneRemotePairedDevice {
-  tokenHash: string
+  controlTokenHash: string
+  syncTokenHash: string | null
+  previousControlTokenHash: string | null
+  previousSyncTokenHash: string | null
+  previousTokensValidUntil: number | null
 }
 
 interface PairingTicketState {
@@ -75,6 +99,7 @@ interface PairingTicketState {
   createdAt: number
   expiresAt: number
   claimedAt: number | null
+  clientKind: PhoneRemoteClientKind
 }
 
 interface PairingRequestState {
@@ -83,6 +108,7 @@ interface PairingRequestState {
   pollToken: string
   deviceName: string
   clientLabel: string
+  clientKind: PhoneRemoteClientKind
   requestedAt: number
   expiresAt: number
   baseUrl: string
@@ -91,7 +117,11 @@ interface PairingRequestState {
   failedPinAttempts: number
   state: PhoneRemotePairingState
   issuedDeviceId: string | null
-  issuedToken: string | null
+  issuedControlToken: string | null
+  issuedSyncToken: string | null
+  pairingKey: Buffer | null
+  transcript: PhoneRemotePairingTranscript | null
+  remoteAddress: string
 }
 
 interface PhoneRemoteServiceOptions {
@@ -108,9 +138,16 @@ interface PhoneRemoteServiceOptions {
   // payload fails validation.
   getSyncState?: () => PhoneSyncState
   applySyncChanges?: (payload: unknown) => PhoneSyncApplyResult | null
+  tlsIdentity?: PhoneRemoteTlsIdentity
 }
 
-type PhoneRemoteAuthorizationContext = { kind: 'device'; deviceId: string }
+type PhoneRemoteAuthorizationContext = {
+  kind: 'device'
+  deviceId: string
+  scope: PhoneRemoteCredentialScope
+  rotationRequired: boolean
+  usingPreviousCredential: boolean
+}
 
 function getPhoneRemoteLanUrls(port: number): string[] {
   const urls = new Set<string>()
@@ -122,17 +159,13 @@ function getPhoneRemoteLanUrls(port: number): string[] {
       if (addressInfo.family !== 'IPv4') continue
       const address = addressInfo.address.trim()
       if (!address) continue
-      urls.add(`http://${address}:${port}`)
+      urls.add(`https://${address}:${port}`)
     }
   }
 
   const allUrls = Array.from(urls).sort((left, right) => left.localeCompare(right))
-  const preferred192Urls = allUrls.filter((url) => /^http:\/\/192\.168\./.test(url))
+  const preferred192Urls = allUrls.filter((url) => /^https:\/\/192\.168\./.test(url))
   return preferred192Urls.length > 0 ? preferred192Urls : allUrls
-}
-
-function createPairingPin(): string {
-  return String(randomInt(0, 1_000_000)).padStart(6, '0')
 }
 
 const SYNC_CONFLICT_REPORT_MAX_ITEMS = 200
@@ -269,6 +302,9 @@ export class PhoneRemoteService {
   private syncLastSyncedAt: number | null = null
   private syncConflicts: PhoneSyncReportedConflict[] = []
   private readonly syncPendingResolutions = new Map<string, PhoneSyncPendingResolution>()
+  private tlsIdentity: PhoneRemoteTlsIdentity | null
+  private readonly pinPairingLastRequestAt = new Map<string, number>()
+  private readonly pinPairingLockoutUntil = new Map<string, number>()
 
   constructor(options: PhoneRemoteServiceOptions) {
     this.config = { ...options.config }
@@ -276,12 +312,13 @@ export class PhoneRemoteService {
     this.onStatusChange = options.onStatusChange
     this.getSyncState = options.getSyncState
     this.applySyncChanges = options.applySyncChanges
+    this.tlsIdentity = options.tlsIdentity ? { ...options.tlsIdentity } : null
     this.pairedDevices = [...(options.pairedDevices ?? [])]
     this.core = new PlaybackHttpCore({
       getSnapshot: options.getSnapshot,
       dispatchCommand: options.dispatchCommand,
       resolveArtworkDataUrl: options.resolveArtworkDataUrl,
-      authorizeRequest: (req) => this.authorizeRequest(req),
+      authorizeRequest: (req) => this.authorizeRequest(req, 'control'),
       buildArtworkUrl: (trackId) => `/v1/artwork/current?trackId=${encodeURIComponent(trackId)}`,
       getControlsEnabled: () => this.config.controlsEnabled,
       onConnectedClientsChange: () => this.emitStatus()
@@ -291,6 +328,25 @@ export class PhoneRemoteService {
 
   getIdentity(): PhoneRemoteIdentity {
     return this.getIdentitySnapshot()
+  }
+
+  setTlsIdentity(identity: PhoneRemoteTlsIdentity): void {
+    if (this.active) throw new Error('Stop Phone Remote before replacing its TLS identity.')
+    if (
+      this.tlsIdentity &&
+      normalizePhoneRemoteFingerprint(this.tlsIdentity.fingerprint256) !==
+        normalizePhoneRemoteFingerprint(identity.fingerprint256)
+    ) {
+      this.pairedDevices = []
+      this.core.closeAllSseClients()
+      this.emitPairedDevicesChange()
+    }
+    this.tlsIdentity = { ...identity }
+  }
+
+  private requireTlsIdentity(): PhoneRemoteTlsIdentity {
+    if (!this.tlsIdentity) throw new Error('Phone remote secure identity is unavailable.')
+    return this.tlsIdentity
   }
 
   getStatus(): PhoneRemoteStatus {
@@ -347,6 +403,12 @@ export class PhoneRemoteService {
         name: device.name,
         clientLabel: device.clientLabel,
         tokenPrefix: device.tokenPrefix,
+        syncTokenPrefix: device.syncTokenPrefix,
+        clientKind: device.clientKind,
+        scopes: [...device.scopes],
+        credentialIssuedAt: device.credentialIssuedAt,
+        credentialRotatedAt: device.credentialRotatedAt,
+        expiresAt: this.deviceExpiresAt(device),
         createdAt: device.createdAt,
         lastSeenAt: device.lastSeenAt,
         revokedAt: device.revokedAt
@@ -363,7 +425,7 @@ export class PhoneRemoteService {
     return this.getPendingPairingRequestsSnapshot()
   }
 
-  createPairingTicket(baseUrl?: string): PhoneRemotePairingTicket {
+  createPairingTicket(baseUrl?: string, clientKind: PhoneRemoteClientKind = 'native'): PhoneRemotePairingTicket {
     this.cleanupExpiredPairingState(true)
     if (!this.config.enabled || !this.active) {
       throw new Error('Phone remote pairing is only available while the phone remote is active.')
@@ -382,7 +444,14 @@ export class PhoneRemoteService {
     } catch {
       throw new Error('Selected pairing URL is invalid.')
     }
-    const samePortExplicitUrl = selectedUrl.protocol === 'http:' && selectedUrl.port === String(this.config.port)
+    const isCleanHttpsOrigin = selectedUrl.protocol === 'https:'
+      && selectedUrl.port === String(this.config.port)
+      && !selectedUrl.username
+      && !selectedUrl.password
+      && (selectedUrl.pathname === '' || selectedUrl.pathname === '/')
+      && !selectedUrl.search
+      && !selectedUrl.hash
+    const samePortExplicitUrl = isCleanHttpsOrigin
     if (!lanUrls.includes(selectedBaseUrl) && !samePortExplicitUrl) {
       throw new Error('Selected pairing URL is no longer available.')
     }
@@ -395,17 +464,22 @@ export class PhoneRemoteService {
       baseUrl: selectedBaseUrl,
       createdAt,
       expiresAt,
-      claimedAt: null
+      claimedAt: null,
+      clientKind
     })
     this.emitStatus()
     return {
       ticket,
       baseUrl: selectedBaseUrl,
       controllerUrl: `${selectedBaseUrl}/remote/`,
-      pairingUrl: `${selectedBaseUrl}/remote/#pair=${encodeURIComponent(ticket)}`,
+      pairingUrl: clientKind === 'native'
+        ? `astra://desktop-remote?baseUrl=${encodeURIComponent(selectedBaseUrl)}&ticket=${encodeURIComponent(ticket)}&endpointUuid=${encodeURIComponent(this.getIdentity().endpointUuid ?? '')}&fingerprint=${encodeURIComponent(this.requireTlsIdentity().fingerprint256)}&protocolVersion=${PHONE_REMOTE_PROTOCOL_VERSION}`
+        : `${selectedBaseUrl}/remote/#pair=${encodeURIComponent(ticket)}&fingerprint=${encodeURIComponent(this.requireTlsIdentity().fingerprint256)}`,
       createdAt,
       expiresAt,
-      identity: this.getIdentity()
+      identity: this.getIdentity(),
+      clientKind,
+      certificateFingerprint: this.requireTlsIdentity().fingerprint256
     }
   }
 
@@ -414,7 +488,7 @@ export class PhoneRemoteService {
     const request = this.pairingRequestsById.get(id)
     if (!request || request.state !== 'pending') return null
 
-    this.issuePairingDeviceToken(request)
+    this.issuePairingDeviceTokens(request)
     return this.toPendingPairingRequest(request)
   }
 
@@ -439,6 +513,12 @@ export class PhoneRemoteService {
       name: device.name,
       clientLabel: device.clientLabel,
       tokenPrefix: device.tokenPrefix,
+      syncTokenPrefix: device.syncTokenPrefix,
+      clientKind: device.clientKind,
+      scopes: [...device.scopes],
+      credentialIssuedAt: device.credentialIssuedAt,
+      credentialRotatedAt: device.credentialRotatedAt,
+      expiresAt: this.deviceExpiresAt(device),
       createdAt: device.createdAt,
       lastSeenAt: device.lastSeenAt,
       revokedAt: device.revokedAt
@@ -504,16 +584,33 @@ export class PhoneRemoteService {
     return { endpointUuid, desktopName, protocolVersion }
   }
 
-  private issuePairingDeviceToken(request: PairingRequestState): { token: string; deviceId: string } {
+  private issuePairingDeviceTokens(request: PairingRequestState): {
+    controlToken: string
+    syncToken: string | null
+    deviceId: string
+    issuedAt: number
+  } {
     const now = Date.now()
-    const rawToken = createOpaqueSecret(32)
+    const controlToken = createOpaqueSecret(32)
+    const syncToken = request.clientKind === 'web' ? null : createOpaqueSecret(32)
     const deviceId = createOpaqueSecret(16)
+    const clientKind = request.clientKind
     const device: PersistedPairedDevice = {
       id: deviceId,
       name: request.deviceName,
       clientLabel: request.clientLabel,
-      tokenHash: hashToken(rawToken),
-      tokenPrefix: rawToken.slice(0, TOKEN_PREFIX_LENGTH),
+      tokenPrefix: controlToken.slice(0, TOKEN_PREFIX_LENGTH),
+      syncTokenPrefix: syncToken?.slice(0, TOKEN_PREFIX_LENGTH) ?? null,
+      clientKind,
+      scopes: syncToken ? ['control', 'sync'] : ['control'],
+      credentialIssuedAt: now,
+      credentialRotatedAt: now,
+      expiresAt: now + PHONE_REMOTE_DEVICE_INACTIVITY_MS,
+      controlTokenHash: hashToken(controlToken),
+      syncTokenHash: syncToken ? hashToken(syncToken) : null,
+      previousControlTokenHash: null,
+      previousSyncTokenHash: null,
+      previousTokensValidUntil: null,
       createdAt: now,
       lastSeenAt: null,
       revokedAt: null
@@ -521,10 +618,15 @@ export class PhoneRemoteService {
     this.pairedDevices = [device, ...this.pairedDevices]
     request.state = 'approved'
     request.issuedDeviceId = deviceId
-    request.issuedToken = rawToken
+    request.issuedControlToken = controlToken
+    request.issuedSyncToken = syncToken
     this.emitPairedDevicesChange()
     this.emitStatus()
-    return { token: rawToken, deviceId }
+    return { controlToken, syncToken, deviceId, issuedAt: now }
+  }
+
+  private deviceExpiresAt(device: PersistedPairedDevice): number {
+    return (device.lastSeenAt ?? device.createdAt) + PHONE_REMOTE_DEVICE_INACTIVITY_MS
   }
 
   private getPendingPairingRequestsSnapshot(): PhoneRemotePendingPairingRequest[] {
@@ -578,15 +680,45 @@ export class PhoneRemoteService {
     }
   }
 
-  private authorizeRequest(req: IncomingMessage): PhoneRemoteAuthorizationContext | null {
+  private authorizeRequest(
+    req: IncomingMessage,
+    requiredScope: PhoneRemoteCredentialScope,
+    allowRotationRequired = false
+  ): PhoneRemoteAuthorizationContext | null {
     const suppliedToken = hasBearerToken(req)
     if (!suppliedToken) return null
     const suppliedHash = hashToken(suppliedToken)
+    const now = Date.now()
     for (const device of this.pairedDevices) {
       if (device.revokedAt !== null) continue
-      if (!secureTokenEquals(suppliedHash, device.tokenHash)) continue
+      if (this.deviceExpiresAt(device) <= now) {
+        device.revokedAt = now
+        this.emitPairedDevicesChange()
+        continue
+      }
+      if (!device.scopes.includes(requiredScope)) continue
+      const currentHash = requiredScope === 'control' ? device.controlTokenHash : device.syncTokenHash
+      const previousHash = requiredScope === 'control'
+        ? device.previousControlTokenHash
+        : device.previousSyncTokenHash
+      const matchesCurrent = Boolean(currentHash && secureTokenEquals(suppliedHash, currentHash))
+      const matchesPrevious = Boolean(
+        previousHash
+        && device.previousTokensValidUntil
+        && device.previousTokensValidUntil > now
+        && secureTokenEquals(suppliedHash, previousHash)
+      )
+      if (!matchesCurrent && !matchesPrevious) continue
+      const rotationRequired = now - device.credentialRotatedAt >= PHONE_REMOTE_TOKEN_ROTATE_REQUIRED_MS
+      if (rotationRequired && !allowRotationRequired) return null
       this.touchPairedDevice(device.id)
-      return { kind: 'device', deviceId: device.id }
+      return {
+        kind: 'device',
+        deviceId: device.id,
+        scope: requiredScope,
+        rotationRequired,
+        usingPreviousCredential: matchesPrevious
+      }
     }
 
     return null
@@ -600,15 +732,33 @@ export class PhoneRemoteService {
       return
     }
     device.lastSeenAt = now
+    device.expiresAt = now + PHONE_REMOTE_DEVICE_INACTIVITY_MS
     this.emitPairedDevicesChange()
   }
 
   private async startServer(): Promise<void> {
     await this.stopServer()
 
-    const server = createServer((req, res) => {
+    if (!this.tlsIdentity) {
+      this.active = false
+      this.lastError = 'Phone remote secure identity is unavailable.'
+      this.emitStatus()
+      return
+    }
+
+    const server = createServer({
+      key: this.tlsIdentity.privateKeyPem,
+      cert: this.tlsIdentity.certificatePem,
+      minVersion: 'TLSv1.2'
+    }, (req, res) => {
       void this.handleRequest(req, res)
     })
+    server.headersTimeout = 10_000
+    server.requestTimeout = 65_000
+    server.timeout = 65_000
+    server.keepAliveTimeout = 5_000
+    server.maxConnections = 64
+    server.maxRequestsPerSocket = 100
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -668,10 +818,16 @@ export class PhoneRemoteService {
   }
 
   private respondJson(res: ServerResponse<IncomingMessage>, statusCode: number, body: unknown): void {
+    let encoded = Buffer.from(JSON.stringify(body), 'utf8')
+    if (encoded.byteLength > MAX_JSON_RESPONSE_BYTES) {
+      statusCode = 507
+      encoded = Buffer.from(JSON.stringify({ error: 'Response exceeds the secure transport limit.' }), 'utf8')
+    }
     res.statusCode = statusCode
     res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.setHeader('Content-Length', encoded.byteLength.toString())
     res.setHeader('Cache-Control', 'no-store')
-    res.end(JSON.stringify(body))
+    res.end(encoded)
   }
 
   private respondFile(
@@ -744,36 +900,51 @@ export class PhoneRemoteService {
   private parsePinPairingRequestBody(payload: unknown): {
     deviceName: string
     clientLabel: string
+    phoneEphemeralPublicKey: string
+    observedCertificateFingerprint: string
   } | null {
     if (!payload || typeof payload !== 'object') return null
     const candidate = payload as Record<string, unknown>
     const clientLabel = normalizeDeviceLabel(candidate.clientLabel, 'Remote Controller')
     const fallbackName = clientLabel === 'Remote Controller' ? 'Remote Device' : clientLabel
+    const phoneEphemeralPublicKey = typeof candidate.phoneEphemeralPublicKey === 'string'
+      ? candidate.phoneEphemeralPublicKey.trim()
+      : ''
+    const observedCertificateFingerprint = normalizePhoneRemoteFingerprint(
+      typeof candidate.observedCertificateFingerprint === 'string'
+        ? candidate.observedCertificateFingerprint
+        : ''
+    )
+    if (
+      phoneEphemeralPublicKey.length < 64
+      || phoneEphemeralPublicKey.length > 256
+      || observedCertificateFingerprint !== normalizePhoneRemoteFingerprint(this.requireTlsIdentity().fingerprint256)
+    ) return null
     return {
       deviceName: normalizeDeviceLabel(candidate.deviceName, fallbackName),
-      clientLabel
+      clientLabel,
+      phoneEphemeralPublicKey,
+      observedCertificateFingerprint
     }
   }
 
   private parsePinPairingConfirmBody(payload: unknown): {
     requestId: string
-    pin: string
+    proof: string
   } | null {
     if (!payload || typeof payload !== 'object') return null
     const candidate = payload as Record<string, unknown>
     if (typeof candidate.requestId !== 'string' || !candidate.requestId.trim()) return null
-    if (typeof candidate.pin !== 'string') return null
-    const pin = candidate.pin.replace(/\s+/g, '')
-    if (!/^\d{6}$/.test(pin)) return null
+    if (typeof candidate.proof !== 'string' || candidate.proof.length < 32 || candidate.proof.length > 128) return null
     return {
       requestId: candidate.requestId.trim(),
-      pin
+      proof: candidate.proof
     }
   }
 
   private getRequestBaseUrl(req: IncomingMessage): string {
     const host = typeof req.headers.host === 'string' ? req.headers.host.trim() : ''
-    return host ? `http://${host}` : `http://127.0.0.1:${this.config.port}`
+    return host ? `https://${host}` : `https://127.0.0.1:${this.config.port}`
   }
 
   private async handlePairingClaim(
@@ -830,6 +1001,7 @@ export class PhoneRemoteService {
       pollToken,
       deviceName: claimBody.deviceName,
       clientLabel: claimBody.clientLabel,
+      clientKind: ticketState.clientKind,
       requestedAt: Date.now(),
       expiresAt: Date.now() + PAIRING_REQUEST_TTL_MS,
       baseUrl: ticketState.baseUrl,
@@ -838,7 +1010,11 @@ export class PhoneRemoteService {
       failedPinAttempts: 0,
       state: 'pending',
       issuedDeviceId: null,
-      issuedToken: null
+      issuedControlToken: null,
+      issuedSyncToken: null,
+      pairingKey: null,
+      transcript: null,
+      remoteAddress: req.socket.remoteAddress ?? ''
     }
     this.pairingRequestsById.set(request.id, request)
     this.pairingRequestIdByPollToken.set(request.pollToken, request.id)
@@ -861,6 +1037,17 @@ export class PhoneRemoteService {
     this.cleanupExpiredPairingState(true)
     if (!this.config.enabled || !this.active) {
       this.respondJson(res, 409, { error: 'Phone remote pairing is not available right now.' })
+      return
+    }
+
+    const remoteAddress = (req.socket.remoteAddress ?? 'unknown').replace(/^::ffff:/, '')
+    const now = Date.now()
+    if ((this.pinPairingLockoutUntil.get(remoteAddress) ?? 0) > now) {
+      this.respondJson(res, 429, { error: 'Pairing is temporarily locked for this device.' })
+      return
+    }
+    if (now - (this.pinPairingLastRequestAt.get(remoteAddress) ?? 0) < PIN_PAIRING_RATE_LIMIT_MS) {
+      this.respondJson(res, 429, { error: 'Pairing requests are arriving too quickly.' })
       return
     }
 
@@ -891,23 +1078,52 @@ export class PhoneRemoteService {
       return
     }
 
-    const now = Date.now()
+    const pairingId = createOpaqueSecret(16)
+    const desktopEphemeral = createPhoneRemoteEphemeralKeyPair()
+    const identity = this.getIdentity()
+    const transcript: PhoneRemotePairingTranscript = {
+      version: 3,
+      pairingId,
+      phoneEphemeralPublicKey: requestBody.phoneEphemeralPublicKey,
+      desktopEphemeralPublicKey: desktopEphemeral.publicKey,
+      desktopCertificateFingerprint: this.requireTlsIdentity().fingerprint256,
+      desktopEndpointUuid: identity.endpointUuid ?? '',
+      desktopPort: this.config.port
+    }
+    let pairingKey: Buffer
+    try {
+      pairingKey = derivePhoneRemotePairingKey(
+        desktopEphemeral.privateKey,
+        requestBody.phoneEphemeralPublicKey,
+        transcript
+      )
+    } catch {
+      this.respondJson(res, 400, { error: 'Invalid secure pairing key.' })
+      return
+    }
+    const pin = derivePhoneRemotePairingCode(pairingKey, transcript)
     const request: PairingRequestState = {
-      id: createOpaqueSecret(16),
+      id: pairingId,
       ticket: null,
       pollToken: createOpaqueSecret(24),
       deviceName: requestBody.deviceName,
       clientLabel: requestBody.clientLabel,
+      clientKind: 'native',
       requestedAt: now,
       expiresAt: now + PAIRING_REQUEST_TTL_MS,
       baseUrl: this.getRequestBaseUrl(req),
       pairingMode: 'pin',
-      pin: createPairingPin(),
+      pin,
       failedPinAttempts: 0,
       state: 'pending',
       issuedDeviceId: null,
-      issuedToken: null
+      issuedControlToken: null,
+      issuedSyncToken: null,
+      pairingKey,
+      transcript,
+      remoteAddress
     }
+    this.pinPairingLastRequestAt.set(remoteAddress, now)
     this.pairingRequestsById.set(request.id, request)
     this.pairingRequestIdByPollToken.set(request.pollToken, request.id)
     this.emitStatus()
@@ -918,7 +1134,10 @@ export class PhoneRemoteService {
       expiresAt: request.expiresAt,
       deviceName: request.deviceName,
       clientLabel: request.clientLabel,
-      identity: this.getIdentity()
+      identity,
+      desktopEphemeralPublicKey: desktopEphemeral.publicKey,
+      certificateFingerprint: this.requireTlsIdentity().fingerprint256,
+      protocolVersion: PHONE_REMOTE_PROTOCOL_VERSION
     })
   }
 
@@ -967,14 +1186,15 @@ export class PhoneRemoteService {
       this.respondJson(res, 403, { state: 'rejected', error: 'Pairing request was rejected.' })
       return
     }
-    if (request.state !== 'pending' || !request.pin) {
+    if (request.state !== 'pending' || !request.pin || !request.pairingKey || !request.transcript) {
       this.respondJson(res, 410, { state: request.state })
       return
     }
-    if (request.pin !== confirmBody.pin) {
+    if (!verifyPhoneRemotePairingProof(confirmBody.proof, request.pairingKey, request.transcript)) {
       request.failedPinAttempts += 1
       if (request.failedPinAttempts >= PIN_PAIRING_MAX_FAILURES) {
         request.state = 'rejected'
+        this.pinPairingLockoutUntil.set(request.remoteAddress, Date.now() + PIN_PAIRING_LOCKOUT_MS)
         this.emitStatus()
         this.respondJson(res, 403, { state: 'rejected', error: 'PIN attempts exceeded.' })
         return
@@ -983,17 +1203,28 @@ export class PhoneRemoteService {
       return
     }
 
-    const { token, deviceId } = this.issuePairingDeviceToken(request)
+    const credentials = this.issuePairingDeviceTokens(request)
+    const sealed = sealPhoneRemotePairingPayload({
+      controlToken: credentials.controlToken,
+      syncToken: credentials.syncToken,
+      deviceId: credentials.deviceId,
+      issuedAt: credentials.issuedAt,
+      identity: this.getIdentity(),
+      certificateFingerprint: this.requireTlsIdentity().fingerprint256
+    }, request.pairingKey, request.transcript)
     const responseBody = {
       state: 'approved' as const,
       expiresAt: request.expiresAt,
-      token,
-      deviceId,
-      identity: this.getIdentity()
+      sealed,
+      identity: this.getIdentity(),
+      certificateFingerprint: this.requireTlsIdentity().fingerprint256
     }
     request.state = 'consumed'
-    request.issuedToken = null
+    request.issuedControlToken = null
+    request.issuedSyncToken = null
     request.pin = null
+    request.pairingKey = null
+    request.transcript = null
     this.pairingRequestIdByPollToken.delete(request.pollToken)
     this.emitStatus()
     this.respondJson(res, 200, responseBody)
@@ -1023,16 +1254,23 @@ export class PhoneRemoteService {
       return
     }
 
-    if (request.state === 'approved' && request.issuedToken) {
+    if (request.state === 'approved' && request.issuedControlToken) {
+      const device = this.pairedDevices.find((candidate) => candidate.id === request.issuedDeviceId)
       const responseBody = {
         state: 'approved' as const,
         expiresAt: request.expiresAt,
-        token: request.issuedToken,
+        token: request.issuedControlToken,
+        controlToken: request.issuedControlToken,
+        syncToken: request.issuedSyncToken,
         deviceId: request.issuedDeviceId,
-        identity: this.getIdentity()
+        issuedAt: device?.credentialIssuedAt ?? Date.now(),
+        identity: this.getIdentity(),
+        certificateFingerprint: this.requireTlsIdentity().fingerprint256,
+        scopes: device?.scopes ?? ['control']
       }
       request.state = 'consumed'
-      request.issuedToken = null
+      request.issuedControlToken = null
+      request.issuedSyncToken = null
       this.respondJson(res, 200, responseBody)
       return
     }
@@ -1048,11 +1286,71 @@ export class PhoneRemoteService {
     })
   }
 
+  private handleSession(req: IncomingMessage, res: ServerResponse<IncomingMessage>): void {
+    const authorization = this.authorizeRequest(req, 'control')
+    if (!authorization) {
+      this.respondJson(res, 401, { error: 'Unauthorized' })
+      return
+    }
+    const device = this.pairedDevices.find((candidate) => candidate.id === authorization.deviceId)
+    if (!device) {
+      this.respondJson(res, 401, { error: 'Unauthorized' })
+      return
+    }
+    this.respondJson(res, 200, {
+      deviceId: device.id,
+      scopes: device.scopes,
+      issuedAt: device.credentialIssuedAt,
+      rotatedAt: device.credentialRotatedAt,
+      rotateAfter: device.credentialRotatedAt + PHONE_REMOTE_TOKEN_ROTATE_AFTER_MS,
+      rotateRequiredAt: device.credentialRotatedAt + PHONE_REMOTE_TOKEN_ROTATE_REQUIRED_MS,
+      expiresAt: this.deviceExpiresAt(device),
+      rotationRequired: authorization.rotationRequired,
+      usingPreviousCredential: authorization.usingPreviousCredential
+    })
+  }
+
+  private handleSessionRotate(req: IncomingMessage, res: ServerResponse<IncomingMessage>): void {
+    const authorization = this.authorizeRequest(req, 'control', true)
+    if (!authorization) {
+      this.respondJson(res, 401, { error: 'Unauthorized' })
+      return
+    }
+    const device = this.pairedDevices.find((candidate) => candidate.id === authorization.deviceId)
+    if (!device) {
+      this.respondJson(res, 401, { error: 'Unauthorized' })
+      return
+    }
+    const now = Date.now()
+    const controlToken = createOpaqueSecret(32)
+    const syncToken = device.scopes.includes('sync') ? createOpaqueSecret(32) : null
+    if (!authorization.usingPreviousCredential) {
+      device.previousControlTokenHash = device.controlTokenHash
+      device.previousSyncTokenHash = device.syncTokenHash
+    }
+    device.previousTokensValidUntil = now + PHONE_REMOTE_PREVIOUS_TOKEN_GRACE_MS
+    device.controlTokenHash = hashToken(controlToken)
+    device.syncTokenHash = syncToken ? hashToken(syncToken) : null
+    device.tokenPrefix = controlToken.slice(0, TOKEN_PREFIX_LENGTH)
+    device.syncTokenPrefix = syncToken?.slice(0, TOKEN_PREFIX_LENGTH) ?? null
+    device.credentialIssuedAt = now
+    device.credentialRotatedAt = now
+    this.emitPairedDevicesChange()
+    this.respondJson(res, 200, {
+      controlToken,
+      syncToken,
+      issuedAt: now,
+      previousValidUntil: device.previousTokensValidUntil,
+      rotateAfter: now + PHONE_REMOTE_TOKEN_ROTATE_AFTER_MS
+    })
+  }
+
   private async readRemoteAsset(relativePath: string): Promise<{ filePath: string; bytes: Buffer } | null> {
     for (const rootPath of REMOTE_STATIC_ROOT_CANDIDATES) {
       const resolvedPath = join(rootPath, relativePath)
       try {
         const bytes = await readFile(resolvedPath)
+        if (bytes.byteLength > MAX_REMOTE_ASSET_BYTES) return null
         return { filePath: relativePath, bytes }
       } catch {
         // Try the next candidate root.
@@ -1068,15 +1366,7 @@ export class PhoneRemoteService {
   ): Promise<boolean> {
     if (!this.config.enabled) return false
 
-    if (requestPath === '/remote') {
-      res.statusCode = 302
-      res.setHeader('Location', '/remote/')
-      res.setHeader('Cache-Control', 'no-store')
-      res.end()
-      return true
-    }
-
-    const assetPath = getRemoteAssetPathname(requestPath)
+    const assetPath = getRemoteAssetPathname(requestPath === '/remote' ? '/remote/' : requestPath)
     if (assetPath === null) return false
 
     const asset = await this.readRemoteAsset(assetPath)
@@ -1113,6 +1403,7 @@ export class PhoneRemoteService {
       // desktop-initiated sync without holding a connection open.
       this.respondJson(res, 200, {
         ...this.getIdentity(),
+        certificateFingerprint: this.requireTlsIdentity().fingerprint256,
         syncRequestedAt: this.config.syncEnabled ? this.syncRequestedAt : null
       })
       return
@@ -1135,6 +1426,16 @@ export class PhoneRemoteService {
 
     if (method === 'GET' && path === '/v1/pairing/status') {
       this.handlePairingStatus(res, requestUrl)
+      return
+    }
+
+    if (method === 'GET' && path === '/v1/session') {
+      this.handleSession(req, res)
+      return
+    }
+
+    if (method === 'POST' && path === '/v1/session/rotate') {
+      this.handleSessionRotate(req, res)
       return
     }
 
@@ -1182,7 +1483,7 @@ export class PhoneRemoteService {
   }
 
   private handleSyncState(req: IncomingMessage, res: ServerResponse<IncomingMessage>): void {
-    if (!this.authorizeRequest(req)) {
+    if (!this.authorizeRequest(req, 'sync')) {
       this.respondJson(res, 401, { error: 'Unauthorized' })
       return
     }
@@ -1215,7 +1516,7 @@ export class PhoneRemoteService {
     req: IncomingMessage,
     res: ServerResponse<IncomingMessage>
   ): Promise<void> {
-    if (!this.authorizeRequest(req)) {
+    if (!this.authorizeRequest(req, 'sync')) {
       this.respondJson(res, 401, { error: 'Unauthorized' })
       return
     }
@@ -1261,7 +1562,7 @@ export class PhoneRemoteService {
   }
 
   private async handleSyncApply(req: IncomingMessage, res: ServerResponse<IncomingMessage>): Promise<void> {
-    if (!this.authorizeRequest(req)) {
+    if (!this.authorizeRequest(req, 'sync')) {
       this.respondJson(res, 401, { error: 'Unauthorized' })
       return
     }

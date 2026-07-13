@@ -24,6 +24,7 @@ import type {
   LocalApiStatus
 } from '../types/localApi'
 import type {
+  PhoneRemoteClientKind,
   PhoneRemotePairedDevice,
   PhoneRemotePairingTicket,
   PhoneRemotePendingPairingRequest,
@@ -846,8 +847,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   phoneRemote: {
     getStatus: (): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('phone-remote:getStatus'),
-    createPairingTicket: (baseUrl?: string): Promise<PhoneRemotePairingTicket> =>
-      ipcRenderer.invoke('phone-remote:createPairingTicket', baseUrl),
+    createPairingTicket: (baseUrl?: string, clientKind?: PhoneRemoteClientKind): Promise<PhoneRemotePairingTicket> =>
+      ipcRenderer.invoke('phone-remote:createPairingTicket', baseUrl, clientKind),
     listPairedDevices: (): Promise<PhoneRemotePairedDevice[]> =>
       ipcRenderer.invoke('phone-remote:listPairedDevices'),
     listPendingPairingRequests: (): Promise<PhoneRemotePendingPairingRequest[]> =>
@@ -1554,7 +1555,7 @@ declare global {
       }
       phoneRemote: {
         getStatus: () => Promise<PhoneRemoteStatus>
-        createPairingTicket: (baseUrl?: string) => Promise<PhoneRemotePairingTicket>
+        createPairingTicket: (baseUrl?: string, clientKind?: PhoneRemoteClientKind) => Promise<PhoneRemotePairingTicket>
         listPairedDevices: () => Promise<PhoneRemotePairedDevice[]>
         listPendingPairingRequests: () => Promise<PhoneRemotePendingPairingRequest[]>
         approvePairingRequest: (id: string) => Promise<PhoneRemotePendingPairingRequest | null>
