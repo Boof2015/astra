@@ -12,6 +12,11 @@ import {
   secureTokenEquals
 } from './playbackHttpCore'
 
+const LOCAL_API_CORS_ALLOW_ORIGIN = '*'
+const LOCAL_API_CORS_ALLOW_METHODS = 'GET, POST, OPTIONS'
+const LOCAL_API_CORS_ALLOW_HEADERS = 'Authorization, Content-Type'
+const LOCAL_API_CORS_MAX_AGE_SECONDS = 600
+
 export function generateLocalApiToken(): string {
   return randomBytes(24).toString('hex')
 }
@@ -187,11 +192,30 @@ export class LocalApiService {
     res.end(JSON.stringify(body))
   }
 
+  private applyCorsHeaders(res: ServerResponse<IncomingMessage>): void {
+    res.setHeader('Access-Control-Allow-Origin', LOCAL_API_CORS_ALLOW_ORIGIN)
+  }
+
+  private respondCorsPreflight(res: ServerResponse<IncomingMessage>): void {
+    res.statusCode = 204
+    res.setHeader('Access-Control-Allow-Methods', LOCAL_API_CORS_ALLOW_METHODS)
+    res.setHeader('Access-Control-Allow-Headers', LOCAL_API_CORS_ALLOW_HEADERS)
+    res.setHeader('Access-Control-Max-Age', String(LOCAL_API_CORS_MAX_AGE_SECONDS))
+    res.end()
+  }
+
   private async handleRequest(
     req: IncomingMessage,
     res: ServerResponse<IncomingMessage>
   ): Promise<void> {
+    this.applyCorsHeaders(res)
+
     const method = req.method ?? 'GET'
+    if (method === 'OPTIONS') {
+      this.respondCorsPreflight(res)
+      return
+    }
+
     let requestUrl: URL
     try {
       requestUrl = new URL(req.url ?? '/', `http://${LOCAL_API_LOOPBACK_HOST}`)

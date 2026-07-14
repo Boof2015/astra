@@ -88,6 +88,8 @@ function authHeaders(token: string): HeadersInit {
   }
 }
 
+const CORS_TEST_ORIGIN = 'http://127.0.0.1:5173'
+
 test('local API always binds to loopback when enabled', async (t) => {
   const port = await getFreePort()
   const config: LocalApiServiceConfig = {
@@ -126,8 +128,11 @@ test('local API routes reject unauthorized requests', async (t) => {
     await harness.service.stop()
   })
 
-  const nowPlaying = await fetch(`http://127.0.0.1:${harness.port}/v1/now-playing`)
+  const nowPlaying = await fetch(`http://127.0.0.1:${harness.port}/v1/now-playing`, {
+    headers: { Origin: CORS_TEST_ORIGIN }
+  })
   assert.equal(nowPlaying.status, 401)
+  assert.equal(nowPlaying.headers.get('access-control-allow-origin'), '*')
 
   const events = await fetch(`http://127.0.0.1:${harness.port}/v1/events`)
   assert.equal(events.status, 401)
@@ -143,6 +148,53 @@ test('local API routes reject unauthorized requests', async (t) => {
     body: JSON.stringify({ command: 'play' })
   })
   assert.equal(control.status, 401)
+})
+
+test('local API answers GET CORS preflight requests', async (t) => {
+  const harness = await createHarness()
+  t.after(async () => {
+    await harness.service.stop()
+  })
+
+  const response = await fetch(`http://127.0.0.1:${harness.port}/v1/now-playing?inlineArtwork=1`, {
+    method: 'OPTIONS',
+    headers: {
+      Origin: CORS_TEST_ORIGIN,
+      'Access-Control-Request-Method': 'GET',
+      'Access-Control-Request-Headers': 'authorization'
+    }
+  })
+
+  assert.equal(response.status, 204)
+  assert.equal(response.headers.get('access-control-allow-origin'), '*')
+  assert.equal(response.headers.get('access-control-allow-methods'), 'GET, POST, OPTIONS')
+  assert.equal(response.headers.get('access-control-allow-headers'), 'Authorization, Content-Type')
+  assert.equal(response.headers.get('access-control-max-age'), '600')
+  assert.equal(response.headers.get('access-control-allow-credentials'), null)
+  assert.equal(await response.text(), '')
+})
+
+test('local API answers POST CORS preflight requests', async (t) => {
+  const harness = await createHarness()
+  t.after(async () => {
+    await harness.service.stop()
+  })
+
+  const response = await fetch(`http://127.0.0.1:${harness.port}/v1/control`, {
+    method: 'OPTIONS',
+    headers: {
+      Origin: CORS_TEST_ORIGIN,
+      'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Headers': 'authorization,content-type'
+    }
+  })
+
+  assert.equal(response.status, 204)
+  assert.equal(response.headers.get('access-control-allow-origin'), '*')
+  assert.equal(response.headers.get('access-control-allow-methods'), 'GET, POST, OPTIONS')
+  assert.equal(response.headers.get('access-control-allow-headers'), 'Authorization, Content-Type')
+  assert.equal(response.headers.get('access-control-max-age'), '600')
+  assert.equal(await response.text(), '')
 })
 
 test('now-playing exposes joined artist display and parsed artist arrays', async (t) => {
@@ -167,9 +219,13 @@ test('now-playing exposes joined artist display and parsed artist arrays', async
   }))
 
   const response = await fetch(`http://127.0.0.1:${harness.port}/v1/now-playing`, {
-    headers: authHeaders(harness.config.token)
+    headers: {
+      ...authHeaders(harness.config.token),
+      Origin: CORS_TEST_ORIGIN
+    }
   })
   assert.equal(response.status, 200)
+  assert.equal(response.headers.get('access-control-allow-origin'), '*')
 
   const body = await response.json() as Record<string, unknown>
   const currentTrack = body.currentTrack as Record<string, unknown>
