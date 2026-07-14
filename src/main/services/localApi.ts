@@ -1,6 +1,7 @@
 import { randomBytes } from 'crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import type { MiniPlayerCommand, MiniPlayerQueueSnapshot, MiniPlayerSnapshot } from '../../types/miniPlayer'
+import type { CompanionApiLibraryEvent, CompanionApiScope } from '../../types/companionApi'
 import {
   LOCAL_API_LOOPBACK_HOST,
   type LocalApiServiceConfig,
@@ -8,9 +9,14 @@ import {
 } from '../../types/localApi'
 import {
   PlaybackHttpCore,
+  hashToken,
   hasBearerToken,
   secureTokenEquals
 } from './playbackHttpCore'
+import {
+  CompanionApiV2,
+  type CompanionApiV2Options
+} from './companionApiV2'
 
 const LOCAL_API_CORS_ALLOW_ORIGIN = '*'
 const LOCAL_API_CORS_ALLOW_METHODS = 'GET, POST, OPTIONS'
@@ -27,6 +33,7 @@ interface LocalApiServiceOptions {
   dispatchCommand: (command: MiniPlayerCommand) => void
   resolveArtworkDataUrl?: (artworkHash: string) => Promise<string | null>
   onStatusChange?: (status: LocalApiStatus) => void
+  companionApi?: Omit<CompanionApiV2Options, 'transport' | 'authenticateRequest' | 'onConnectedClientsChange'>
 }
 
 type LocalApiAuthorizationContext = { kind: 'primary' }
@@ -38,6 +45,7 @@ export class LocalApiService {
   private active = false
   private lastError: string | null = null
   private readonly core: PlaybackHttpCore<LocalApiAuthorizationContext>
+  private readonly companionApi: CompanionApiV2 | null
 
   constructor(options: LocalApiServiceOptions) {
     this.config = { ...options.config }
@@ -52,19 +60,37 @@ export class LocalApiService {
       getControlsEnabled: () => this.config.controlsEnabled,
       onConnectedClientsChange: () => this.emitStatus()
     })
+    this.companionApi = options.companionApi
+      ? new CompanionApiV2({
+          ...options.companionApi,
+          transport: 'loopback',
+          authenticateRequest: (req) => {
+            const suppliedToken = hasBearerToken(req)
+            if (!suppliedToken || !secureTokenEquals(suppliedToken, this.config.token)) return null
+            const scopes = new Set<CompanionApiScope>(['observe'])
+            if (this.config.controlsEnabled) scopes.add('playback-control')
+            if (this.config.librarySearchEnabled) scopes.add('library-search')
+            if (this.config.libraryWriteEnabled) scopes.add('library-write')
+            return { id: `loopback:${hashToken(suppliedToken)}`, scopes }
+          },
+          onConnectedClientsChange: () => this.emitStatus()
+        })
+      : null
   }
 
   getStatus(): LocalApiStatus {
     return {
       enabled: this.config.enabled,
       controlsEnabled: this.config.controlsEnabled,
+      librarySearchEnabled: this.config.librarySearchEnabled,
+      libraryWriteEnabled: this.config.libraryWriteEnabled,
       bindHost: LOCAL_API_LOOPBACK_HOST,
       port: this.config.port,
       baseUrl: `http://${LOCAL_API_LOOPBACK_HOST}:${this.config.port}`,
       token: this.config.token,
       active: this.active,
       mode: !this.config.enabled ? 'off' : this.config.controlsEnabled ? 'api-control' : 'api',
-      connectedClients: this.core.getConnectedClientCount(),
+      connectedClients: this.core.getConnectedClientCount() + (this.companionApi?.getConnectedClientCount() ?? 0),
       lastError: this.lastError
     }
   }
@@ -72,7 +98,10 @@ export class LocalApiService {
   async applyConfig(config: LocalApiServiceConfig): Promise<LocalApiStatus> {
     const previous = this.config
     const restartNeeded = previous.port !== config.port || previous.enabled !== config.enabled
-    const tokenChanged = previous.token !== config.token
+    const authorizationChanged = previous.token !== config.token
+      || previous.controlsEnabled !== config.controlsEnabled
+      || previous.librarySearchEnabled !== config.librarySearchEnabled
+      || previous.libraryWriteEnabled !== config.libraryWriteEnabled
 
     this.config = { ...config }
 
@@ -90,8 +119,9 @@ export class LocalApiService {
       this.emitStatus()
     }
 
-    if (tokenChanged) {
+    if (authorizationChanged) {
       this.core.closeSseClients((client) => client.authorization.kind === 'primary')
+      this.companionApi?.closeAllSseClients()
       this.emitStatus()
     }
 
@@ -100,10 +130,16 @@ export class LocalApiService {
 
   publishSnapshot(snapshot: MiniPlayerSnapshot | null): void {
     this.core.publishSnapshot(snapshot)
+    this.companionApi?.publishCurrentPlayback()
   }
 
   publishQueueSnapshot(snapshot: MiniPlayerQueueSnapshot | null): void {
     this.core.publishQueueSnapshot(snapshot)
+    this.companionApi?.publishCurrentQueue()
+  }
+
+  publishLibraryEvent(event: CompanionApiLibraryEvent): void {
+    this.companionApi?.publishLibraryEvent(event)
   }
 
   async stop(): Promise<void> {
@@ -154,6 +190,7 @@ export class LocalApiService {
       this.active = true
       this.lastError = null
       this.core.startHeartbeat()
+      this.companionApi?.startHeartbeat()
       this.emitStatus()
     } catch (error) {
       this.server = null
@@ -167,6 +204,8 @@ export class LocalApiService {
   private async stopServer(): Promise<void> {
     this.core.stopHeartbeat()
     this.core.closeAllSseClients()
+    this.companionApi?.stopHeartbeat()
+    this.companionApi?.closeAllSseClients()
 
     if (!this.server) {
       this.active = false
@@ -210,12 +249,6 @@ export class LocalApiService {
   ): Promise<void> {
     this.applyCorsHeaders(res)
 
-    const method = req.method ?? 'GET'
-    if (method === 'OPTIONS') {
-      this.respondCorsPreflight(res)
-      return
-    }
-
     let requestUrl: URL
     try {
       requestUrl = new URL(req.url ?? '/', `http://${LOCAL_API_LOOPBACK_HOST}`)
@@ -224,6 +257,16 @@ export class LocalApiService {
       return
     }
     const path = requestUrl.pathname
+
+    if (this.companionApi && await this.companionApi.handleRequest(req, res, requestUrl)) {
+      return
+    }
+
+    const method = req.method ?? 'GET'
+    if (method === 'OPTIONS') {
+      this.respondCorsPreflight(res)
+      return
+    }
 
     if (method === 'GET' && path === '/v1/now-playing') {
       this.core.handleNowPlaying(req, res, requestUrl)

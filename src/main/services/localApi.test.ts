@@ -4,6 +4,10 @@ import { createServer } from 'node:http'
 import test from 'node:test'
 import type { MiniPlayerCommand, MiniPlayerSnapshot } from '../../types/miniPlayer'
 import type { LocalApiServiceConfig } from '../../types/localApi'
+import type {
+  CompanionApiRendererCommand,
+  CompanionApiTargetType
+} from '../../types/companionApi'
 import { LocalApiService, generateLocalApiToken } from './localApi.ts'
 
 async function getFreePort(): Promise<number> {
@@ -48,6 +52,8 @@ function createSnapshot(overrides: Partial<MiniPlayerSnapshot> = {}): MiniPlayer
 
 async function createHarness(configOverrides: Partial<LocalApiServiceConfig> = {}) {
   const commands: MiniPlayerCommand[] = []
+  const companionCommands: CompanionApiRendererCommand[] = []
+  let rendererAvailable = true
   const snapshotState: { current: MiniPlayerSnapshot | null } = {
     current: createSnapshot()
   }
@@ -55,6 +61,8 @@ async function createHarness(configOverrides: Partial<LocalApiServiceConfig> = {
   const config: LocalApiServiceConfig = {
     enabled: true,
     controlsEnabled: true,
+    librarySearchEnabled: false,
+    libraryWriteEnabled: false,
     port,
     token: generateLocalApiToken(),
     ...configOverrides
@@ -65,6 +73,76 @@ async function createHarness(configOverrides: Partial<LocalApiServiceConfig> = {
     getSnapshot: () => snapshotState.current,
     dispatchCommand: (command) => {
       commands.push(command)
+    },
+    companionApi: {
+      getPlayback: () => ({
+        state: snapshotState.current?.playbackState ?? 'stopped',
+        positionSeconds: snapshotState.current?.currentTime ?? 0,
+        durationSeconds: snapshotState.current?.duration ?? 0,
+        volume: 0.75,
+        muted: false,
+        shuffle: false,
+        repeat: 'none',
+        outputDeviceLabel: 'Test Output',
+        queueCount: 1,
+        currentTrack: snapshotState.current?.currentTrack
+          ? {
+              ref: 'track-ref',
+              title: snapshotState.current.currentTrack.title,
+              artist: snapshotState.current.currentTrack.artist,
+              artists: [snapshotState.current.currentTrack.artist],
+              album: snapshotState.current.currentTrack.album,
+              albumArtists: [],
+              durationSeconds: snapshotState.current.duration,
+              year: null,
+              genres: [],
+              format: 'flac',
+              sampleRateHz: 96_000,
+              bitDepth: 24,
+              channels: 2,
+              favorite: false,
+              artworkUrl: null
+            }
+          : null,
+        updatedAt: Date.now()
+      }),
+      getQueue: () => ({
+        items: [],
+        updatedAt: Date.now()
+      }),
+      search: (query, _types, limit) => ({
+        query,
+        limit,
+        results: [{
+          type: 'track',
+          ref: 'track-ref',
+          title: 'Test Track',
+          subtitle: 'Test Artist · Test Album',
+          artworkUrl: null
+        }]
+      }),
+      resolveTarget: (ref: string, expectedType?: CompanionApiTargetType) => {
+        if (ref !== 'track-ref' || (expectedType && expectedType !== 'track')) return null
+        return {
+          type: 'track',
+          ref,
+          trackPaths: ['/music/test.flac'],
+          openTarget: { type: 'track', trackPath: '/music/test.flac' }
+        }
+      },
+      dispatchRendererCommand: (command) => {
+        if (!rendererAvailable) return false
+        companionCommands.push(command)
+        return true
+      },
+      resolveArtworkDataUrl: async () => null,
+      setFavorite: async () => true,
+      createPlaylist: async (name) => ({ ref: 'playlist-ref', title: name }),
+      renamePlaylist: async () => true,
+      addPlaylistItems: async () => true,
+      removePlaylistItem: async () => true,
+      movePlaylistItem: async () => true,
+      getOpenApiDocument: () => ({ openapi: '3.1.0' })
     }
   })
 
@@ -74,7 +152,11 @@ async function createHarness(configOverrides: Partial<LocalApiServiceConfig> = {
     service,
     config,
     commands,
+    companionCommands,
     port,
+    setRendererAvailable: (available: boolean) => {
+      rendererAvailable = available
+    },
     publishSnapshot: (snapshot: MiniPlayerSnapshot | null) => {
       snapshotState.current = snapshot
       service.publishSnapshot(snapshot)
@@ -95,6 +177,8 @@ test('local API always binds to loopback when enabled', async (t) => {
   const config: LocalApiServiceConfig = {
     enabled: false,
     controlsEnabled: false,
+    librarySearchEnabled: false,
+    libraryWriteEnabled: false,
     port,
     token: generateLocalApiToken()
   }
@@ -302,7 +386,10 @@ test('rotating the token closes existing event streams and rejects the old token
     token: nextToken
   })
 
-  const finalChunk = await reader?.read()
+  let finalChunk = await reader?.read()
+  for (let index = 0; index < 4 && !finalChunk?.done; index += 1) {
+    finalChunk = await reader?.read()
+  }
   assert.equal(finalChunk?.done, true)
 
   const staleTokenResponse = await fetch(`http://127.0.0.1:${harness.port}/v1/now-playing`, {
@@ -314,4 +401,210 @@ test('rotating the token closes existing event streams and rejects the old token
     headers: authHeaders(nextToken)
   })
   assert.equal(freshTokenResponse.status, 200)
+})
+
+test('v2 serves its contract publicly but authenticates application resources', async (t) => {
+  const harness = await createHarness()
+  t.after(async () => harness.service.stop())
+
+  const contract = await fetch(`http://127.0.0.1:${harness.port}/v2/openapi.json`)
+  assert.equal(contract.status, 200)
+  assert.equal((await contract.json() as { openapi: string }).openapi, '3.1.0')
+
+  const unauthorized = await fetch(`http://127.0.0.1:${harness.port}/v2/capabilities`)
+  assert.equal(unauthorized.status, 401)
+  assert.deepEqual(await unauthorized.json(), {
+    error: { code: 'unauthorized', message: 'A valid bearer token is required.' }
+  })
+})
+
+test('v2 reports local scopes and keeps library permissions off by default', async (t) => {
+  const harness = await createHarness()
+  t.after(async () => harness.service.stop())
+
+  const response = await fetch(`http://127.0.0.1:${harness.port}/v2/capabilities`, {
+    headers: authHeaders(harness.config.token)
+  })
+  assert.equal(response.status, 200)
+  const body = await response.json() as { grantedScopes: string[]; transport: string }
+  assert.equal(body.transport, 'loopback')
+  assert.deepEqual(body.grantedScopes, ['observe', 'playback-control'])
+
+  const search = await fetch(`http://127.0.0.1:${harness.port}/v2/search?q=test`, {
+    headers: authHeaders(harness.config.token)
+  })
+  assert.equal(search.status, 403)
+  assert.equal((await search.json() as { error: { code: string } }).error.code, 'insufficient_scope')
+})
+
+test('v2 playback is sanitized and never returns the internal track path', async (t) => {
+  const harness = await createHarness()
+  t.after(async () => harness.service.stop())
+
+  const response = await fetch(`http://127.0.0.1:${harness.port}/v2/playback`, {
+    headers: authHeaders(harness.config.token)
+  })
+  assert.equal(response.status, 200)
+  const text = await response.text()
+  assert.equal(text.includes('/music/test.flac'), false)
+  const body = JSON.parse(text) as { currentTrack: { ref: string }; volume: number }
+  assert.equal(body.currentTrack.ref, 'track-ref')
+  assert.equal(body.volume, 0.75)
+})
+
+test('v2 bounded search validates queries and clamps result limits', async (t) => {
+  const harness = await createHarness({ librarySearchEnabled: true })
+  t.after(async () => harness.service.stop())
+
+  const missingQuery = await fetch(`http://127.0.0.1:${harness.port}/v2/search`, {
+    headers: authHeaders(harness.config.token)
+  })
+  assert.equal(missingQuery.status, 400)
+
+  const response = await fetch(`http://127.0.0.1:${harness.port}/v2/search?q=Test&types=track&limit=999`, {
+    headers: authHeaders(harness.config.token)
+  })
+  assert.equal(response.status, 200)
+  const body = await response.json() as { query: string; limit: number; results: unknown[] }
+  assert.equal(body.query, 'Test')
+  assert.equal(body.limit, 50)
+  assert.equal(body.results.length, 1)
+})
+
+test('v2 dispatches typed playback actions and high-level intents', async (t) => {
+  const harness = await createHarness({ librarySearchEnabled: true })
+  t.after(async () => harness.service.stop())
+
+  const action = await fetch(`http://127.0.0.1:${harness.port}/v2/playback/actions`, {
+    method: 'POST',
+    headers: { ...authHeaders(harness.config.token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'set-volume', volume: 0.42 })
+  })
+  assert.equal(action.status, 202)
+
+  const intent = await fetch(`http://127.0.0.1:${harness.port}/v2/intents`, {
+    method: 'POST',
+    headers: { ...authHeaders(harness.config.token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'enqueue', targetRef: 'track-ref', position: 'next' })
+  })
+  assert.equal(intent.status, 202)
+  assert.deepEqual(harness.companionCommands, [
+    { type: 'playback-action', action: { action: 'set-volume', volume: 0.42 } },
+    { type: 'enqueue-paths', trackPaths: ['/music/test.flac'], position: 'next' }
+  ])
+})
+
+test('v2 gates curated writes and answers mutation CORS preflight', async (t) => {
+  const harness = await createHarness({ libraryWriteEnabled: true })
+  t.after(async () => harness.service.stop())
+
+  const preflight = await fetch(`http://127.0.0.1:${harness.port}/v2/tracks/track-ref/favorite`, {
+    method: 'OPTIONS',
+    headers: {
+      Origin: CORS_TEST_ORIGIN,
+      'Access-Control-Request-Method': 'PUT',
+      'Access-Control-Request-Headers': 'authorization,content-type'
+    }
+  })
+  assert.equal(preflight.status, 204)
+  assert.equal(preflight.headers.get('access-control-allow-methods'), 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
+
+  const favorite = await fetch(`http://127.0.0.1:${harness.port}/v2/tracks/track-ref/favorite`, {
+    method: 'PUT',
+    headers: { ...authHeaders(harness.config.token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ favorite: true })
+  })
+  assert.equal(favorite.status, 200)
+  assert.deepEqual(await favorite.json(), { ref: 'track-ref', favorite: true })
+})
+
+test('v2 rejects deleted targets, malformed mutations, oversized bodies, and unavailable renderer commands', async (t) => {
+  const harness = await createHarness({ librarySearchEnabled: true, libraryWriteEnabled: true })
+  t.after(async () => harness.service.stop())
+  const jsonHeaders = { ...authHeaders(harness.config.token), 'Content-Type': 'application/json' }
+
+  const deletedTarget = await fetch(`http://127.0.0.1:${harness.port}/v2/intents`, {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ action: 'play', targetRef: 'deleted-ref' })
+  })
+  assert.equal(deletedTarget.status, 404)
+  assert.equal((await deletedTarget.json() as { error: { code: string } }).error.code, 'target_not_found')
+
+  const invalidTypes = await fetch(`http://127.0.0.1:${harness.port}/v2/search?q=test&types=track,path`, {
+    headers: authHeaders(harness.config.token)
+  })
+  assert.equal(invalidTypes.status, 400)
+  assert.equal((await invalidTypes.json() as { error: { code: string } }).error.code, 'invalid_types')
+
+  const oversizedBatch = await fetch(`http://127.0.0.1:${harness.port}/v2/playlists/playlist-ref/items`, {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ trackRefs: Array.from({ length: 101 }, () => 'track-ref') })
+  })
+  assert.equal(oversizedBatch.status, 400)
+  assert.equal((await oversizedBatch.json() as { error: { code: string } }).error.code, 'invalid_track_references')
+
+  const oversizedBody = await fetch(`http://127.0.0.1:${harness.port}/v2/playlists`, {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ name: 'x'.repeat(70_000) })
+  })
+  assert.equal(oversizedBody.status, 413)
+  assert.equal((await oversizedBody.json() as { error: { code: string } }).error.code, 'body_too_large')
+
+  const noPlaylistDelete = await fetch(`http://127.0.0.1:${harness.port}/v2/playlists/playlist-ref`, {
+    method: 'DELETE',
+    headers: authHeaders(harness.config.token)
+  })
+  assert.equal(noPlaylistDelete.status, 404)
+
+  harness.setRendererAvailable(false)
+  const rendererUnavailable = await fetch(`http://127.0.0.1:${harness.port}/v2/playback/actions`, {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ action: 'pause' })
+  })
+  assert.equal(rendererUnavailable.status, 503)
+  assert.equal((await rendererUnavailable.json() as { error: { code: string } }).error.code, 'renderer_unavailable')
+})
+
+test('v2 enforces event topic validation and the eight-stream ceiling', async (t) => {
+  const harness = await createHarness({ librarySearchEnabled: true })
+  t.after(async () => harness.service.stop())
+
+  const invalidTopics = await fetch(`http://127.0.0.1:${harness.port}/v2/events?topics=playback,secrets`, {
+    headers: authHeaders(harness.config.token)
+  })
+  assert.equal(invalidTopics.status, 400)
+  assert.equal((await invalidTopics.json() as { error: { code: string } }).error.code, 'invalid_topics')
+
+  const controllers = Array.from({ length: 8 }, () => new AbortController())
+  t.after(() => controllers.forEach((controller) => controller.abort()))
+  const streams = await Promise.all(controllers.map((controller) => fetch(
+    `http://127.0.0.1:${harness.port}/v2/events?topics=playback&positionIntervalMs=250`,
+    { headers: authHeaders(harness.config.token), signal: controller.signal }
+  )))
+  assert.equal(streams.every((response) => response.status === 200), true)
+
+  const ninth = await fetch(`http://127.0.0.1:${harness.port}/v2/events`, {
+    headers: authHeaders(harness.config.token)
+  })
+  assert.equal(ninth.status, 503)
+  assert.equal((await ninth.json() as { error: { code: string } }).error.code, 'event_stream_limit')
+})
+
+test('v2 applies a per-credential request rate limit', async (t) => {
+  const harness = await createHarness()
+  t.after(async () => harness.service.stop())
+
+  const responses = await Promise.all(Array.from({ length: 121 }, () => fetch(
+    `http://127.0.0.1:${harness.port}/v2/capabilities`,
+    { headers: authHeaders(harness.config.token) }
+  )))
+  const statuses = responses.map((response) => response.status)
+  assert.equal(statuses.filter((status) => status === 200).length, 120)
+  assert.equal(statuses.filter((status) => status === 429).length, 1)
+  const limited = responses.find((response) => response.status === 429)
+  assert.equal((await limited?.json() as { error: { code: string } }).error.code, 'rate_limit_exceeded')
 })

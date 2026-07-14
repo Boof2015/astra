@@ -408,6 +408,14 @@ export interface Playlist {
   missing_track_count: number
 }
 
+export interface CompanionApiPlaylistTarget {
+  id: number
+  name: string
+  kind: PlaylistKind
+  remote_source_id: number | null
+  artwork_hash: string | null
+}
+
 export interface PlaylistTrackEntry {
   id: number
   track_path: string
@@ -3303,6 +3311,17 @@ export function getTrackByPath(trackPath: string): DbTrack | null {
     WHERE t.path = ?
     LIMIT 1
   `, [trackPath]) ?? null
+  return row ? attachAlbumIdentityKeys([row])[0] ?? null : null
+}
+
+export function getTrackById(trackId: number): DbTrack | null {
+  if (!db || !Number.isInteger(trackId) || trackId <= 0) return null
+  const row = db.get<DbTrackRow>(`
+    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    WHERE t.id = ?
+    LIMIT 1
+  `, [trackId]) ?? null
   return row ? attachAlbumIdentityKeys([row])[0] ?? null : null
 }
 
@@ -8255,6 +8274,58 @@ export function getPlaylists(): Playlist[] {
   ))
 }
 
+export function getCompanionApiPlaylistTarget(playlistId: number): CompanionApiPlaylistTarget | null {
+  if (!db || !Number.isInteger(playlistId) || playlistId <= 0) return null
+  const row = db.get<{
+    id?: unknown
+    name?: unknown
+    kind?: unknown
+    remote_source_id?: unknown
+    custom_cover_hash?: unknown
+    auto_cover_hash?: unknown
+  }>(`
+    SELECT
+      p.id,
+      p.name,
+      p.kind,
+      p.remote_source_id,
+      p.custom_cover_hash,
+      (
+        SELECT t.artwork_hash
+        FROM playlist_tracks pt
+        INNER JOIN tracks t ON t.path = pt.track_path
+        WHERE pt.playlist_id = p.id
+        ORDER BY pt.position ASC, pt.id ASC
+        LIMIT 1
+      ) AS auto_cover_hash
+    FROM playlists p
+    WHERE p.id = ?
+    LIMIT 1
+  `, [playlistId])
+  const id = Number(row?.id)
+  if (!Number.isInteger(id) || id <= 0 || typeof row?.name !== 'string') return null
+  return {
+    id,
+    name: row.name,
+    kind: row.kind === 'dynamic' ? 'dynamic' : 'normal',
+    remote_source_id: row.remote_source_id !== null
+      && row.remote_source_id !== undefined
+      && Number.isInteger(Number(row.remote_source_id))
+      ? Number(row.remote_source_id)
+      : null,
+    artwork_hash: typeof row.custom_cover_hash === 'string'
+      ? row.custom_cover_hash
+      : typeof row.auto_cover_hash === 'string'
+        ? row.auto_cover_hash
+        : null
+  }
+}
+
+export function isCompanionApiPlaylistWritable(playlistId: number): boolean {
+  const playlist = getCompanionApiPlaylistTarget(playlistId)
+  return Boolean(playlist && playlist.kind === 'normal' && playlist.remote_source_id === null)
+}
+
 export async function createPlaylist(name: string): Promise<Playlist> {
   if (!db) throw new Error('Database not initialized')
   const now = Date.now()
@@ -8661,6 +8732,44 @@ export async function removeFromPlaylist(playlistId: number, trackPath: string):
   })
   db.run('UPDATE playlists SET updated_at = ? WHERE id = ?', [Date.now(), playlistId])
   await saveDatabase()
+}
+
+export async function moveCompanionApiPlaylistTrack(
+  playlistId: number,
+  trackPath: string,
+  requestedPosition: number
+): Promise<boolean> {
+  if (!db || !isCompanionApiPlaylistWritable(playlistId)) return false
+  if (typeof trackPath !== 'string' || !trackPath || !Number.isInteger(requestedPosition) || requestedPosition < 0) {
+    return false
+  }
+
+  const rows = db.all<{ id?: unknown; track_path?: unknown }>(`
+    SELECT id, track_path
+    FROM playlist_tracks
+    WHERE playlist_id = ?
+    ORDER BY position ASC, id ASC
+  `, [playlistId])
+  const currentIndex = rows.findIndex((row) => row.track_path === trackPath)
+  if (currentIndex < 0) return false
+
+  const [moved] = rows.splice(currentIndex, 1)
+  const targetIndex = Math.min(requestedPosition, rows.length)
+  rows.splice(targetIndex, 0, moved)
+  const now = Date.now()
+  beginLibraryWriteTransaction()
+  try {
+    rows.forEach((row, index) => {
+      db!.run('UPDATE playlist_tracks SET position = ? WHERE id = ?', [index, row.id])
+    })
+    db!.run('UPDATE playlists SET updated_at = ? WHERE id = ?', [now, playlistId])
+    commitLibraryWriteTransaction()
+  } catch (error) {
+    rollbackLibraryWriteTransaction()
+    throw error
+  }
+  await saveDatabase()
+  return true
 }
 
 export async function reassociatePlaylistEntry(

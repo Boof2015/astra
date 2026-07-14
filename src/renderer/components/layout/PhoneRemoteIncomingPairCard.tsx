@@ -39,7 +39,7 @@ export default function PhoneRemoteIncomingPairCard({ variant = 'modal' }: Props
 
   const card = (
     <div className={`parallax-pair-card parallax-pair-card-${variant}`} role="alert" aria-live="polite">
-      <div className="parallax-pair-card-kicker">Phone remote pair request</div>
+      <div className="parallax-pair-card-kicker">Astra companion pair request</div>
       <div className="parallax-pair-card-host">
         <strong>{incoming.deviceName || 'Astra Mobile'}</strong>
         <span className="parallax-pair-card-host-suffix">wants to pair</span>
@@ -50,7 +50,10 @@ export default function PhoneRemoteIncomingPairCard({ variant = 'modal' }: Props
         ))}
       </div>
       <div className="parallax-pair-card-instructions">
-        Enter this code on the phone.
+        Enter this code in the requesting app.
+      </div>
+      <div className="parallax-pair-card-footnote">
+        Requested: {incoming.requestedScopes.join(', ')}
       </div>
       <div className="parallax-pair-card-countdown">
         Expires in {formatMmSs(remaining)}

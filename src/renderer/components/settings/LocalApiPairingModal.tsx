@@ -6,6 +6,7 @@ import type {
 } from '../../../types/phoneRemote'
 import { renderPairingQrSvg } from '../../utils/pairingQr'
 import { usePresence } from '../../hooks/usePresence'
+import type { CompanionApiScope } from '../../../types/companionApi'
 
 interface LocalApiPairingModalProps {
   isOpen: boolean
@@ -27,7 +28,7 @@ interface LocalApiPairingModalProps {
   onGenerateWebTicket: () => void
   onRefreshTicket: () => void
   onCopyPairingUrl: () => void
-  onApproveRequest: (id: string) => void
+  onApproveRequest: (id: string, scopes: CompanionApiScope[]) => void
   onRejectRequest: (id: string) => void
   onRevokeDevice: (id: string) => void
   onRevokeAllDevices: () => void
@@ -52,6 +53,13 @@ const STEP_LABELS: { key: WizardStep; label: string }[] = [
   { key: 'qr', label: 'Scan' },
   { key: 'approve', label: 'Approve' }
 ]
+
+const SCOPE_LABELS: Record<CompanionApiScope, string> = {
+  observe: 'Observe playback',
+  'playback-control': 'Control playback',
+  'library-search': 'Search the library',
+  'library-write': 'Change favorites and playlists'
+}
 
 export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
   const {
@@ -82,6 +90,7 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
 
   const [now, setNow] = useState(() => Date.now())
   const [showLinkOnlyQr, setShowLinkOnlyQr] = useState(false)
+  const [grantedScopesByRequest, setGrantedScopesByRequest] = useState<Record<string, CompanionApiScope[]>>({})
   const autoGenerateAttempted = useRef(false)
 
   useEffect(() => {
@@ -298,10 +307,11 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
           {/* Approve step */}
           {wizardStep === 'approve' && (
             <div className="local-api-pairing-approve" key="approve">
-              <h4 className="local-api-pairing-approve-title">A phone wants to connect</h4>
+              <h4 className="local-api-pairing-approve-title">A device or integration wants to connect</h4>
               {pendingRequests.map((request) => {
                 const isPinRequest = request.pairingMode === 'pin' && Boolean(request.pin)
                 const pinDigits = request.pin?.split('') ?? []
+                const grantedScopes = grantedScopesByRequest[request.id] ?? request.requestedScopes
                 return (
                   <div key={request.id} className="local-api-pairing-approve-card">
                     <div className="local-api-pairing-approve-info">
@@ -309,6 +319,26 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
                       <span className="local-api-pairing-approve-detail">
                         {request.clientLabel} &middot; expires {new Date(request.expiresAt).toLocaleTimeString()}
                       </span>
+                      <div className="local-api-pairing-scope-list">
+                        {request.requestedScopes.map((scope) => (
+                          <label key={scope} className="local-api-pairing-scope-option">
+                            <input
+                              type="checkbox"
+                              checked={grantedScopes.includes(scope)}
+                              disabled={scope === 'observe' || isPinRequest}
+                              onChange={(event) => {
+                                setGrantedScopesByRequest((current) => {
+                                  const nextScopes = event.target.checked
+                                    ? Array.from(new Set([...(current[request.id] ?? request.requestedScopes), scope]))
+                                    : (current[request.id] ?? request.requestedScopes).filter((candidate) => candidate !== scope)
+                                  return { ...current, [request.id]: nextScopes }
+                                })
+                              }}
+                            />
+                            <span>{SCOPE_LABELS[scope]}</span>
+                          </label>
+                        ))}
+                      </div>
                       {isPinRequest && (
                         <>
                           <div className="local-api-pairing-pin" aria-label={`PIN ${request.pin}`}>
@@ -317,7 +347,7 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
                             ))}
                           </div>
                           <span className="local-api-pairing-approve-detail">
-                            Enter this PIN on the phone to finish pairing.
+                            Enter this PIN in the requesting app to finish pairing.
                           </span>
                         </>
                       )}
@@ -326,7 +356,7 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
                       {!isPinRequest && (
                         <button
                           className="settings-btn settings-btn-primary"
-                          onClick={() => onApproveRequest(request.id)}
+                          onClick={() => onApproveRequest(request.id, grantedScopes)}
                         >
                           Approve
                         </button>
@@ -349,7 +379,7 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
             <div className="local-api-pairing-paired">
               <div className="local-api-pairing-paired-header">
                 <span className="local-api-pairing-paired-count">
-                  {activeDevices.length} paired phone{activeDevices.length !== 1 ? 's' : ''}
+                  {activeDevices.length} paired device{activeDevices.length !== 1 ? 's' : ''}
                 </span>
                 {controllerUrl && (
                   <button

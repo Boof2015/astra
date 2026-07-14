@@ -1,4 +1,5 @@
 import type { PhoneSyncPendingResolution, PhoneSyncReportedConflict } from './phoneSync'
+import type { CompanionApiScope } from './companionApi'
 
 export const PHONE_REMOTE_LAN_HOST = '0.0.0.0'
 export const PHONE_REMOTE_DEFAULT_PORT = 38402
@@ -16,7 +17,7 @@ export interface PhoneRemoteIdentity {
 
 export type PhoneRemotePairingMode = 'approval' | 'pin'
 export type PhoneRemoteClientKind = 'native' | 'web'
-export type PhoneRemoteCredentialScope = 'control' | 'sync'
+export type PhoneRemoteCredentialScope = 'control' | 'sync' | CompanionApiScope
 
 export type PhoneRemotePairingState = 'pending' | 'approved' | 'rejected' | 'expired' | 'consumed'
 
@@ -53,6 +54,7 @@ export interface PhoneRemotePendingPairingRequest {
   baseUrl: string
   pairingMode: PhoneRemotePairingMode
   pin: string | null
+  requestedScopes: CompanionApiScope[]
 }
 
 export interface PhoneRemotePairingTicket {

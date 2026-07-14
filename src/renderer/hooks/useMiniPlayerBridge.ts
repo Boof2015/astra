@@ -44,6 +44,8 @@ export function useMiniPlayerBridge(): void {
   const playbackState = usePlayerStore((s) => s.playbackState)
   const currentTime = usePlayerStore((s) => s.currentTime)
   const duration = usePlayerStore((s) => s.duration)
+  const volume = usePlayerStore((s) => s.volume)
+  const isMuted = usePlayerStore((s) => s.isMuted)
   const queueLength = usePlayerStore((s) => s.getResolvedQueueLength())
   const shuffle = usePlayerStore((s) => s.shuffle)
   const repeat = usePlayerStore((s) => s.repeat)
@@ -332,6 +334,8 @@ export function useMiniPlayerBridge(): void {
       queueLength,
       shuffle,
       repeat,
+      volume,
+      isMuted,
       outputDeviceLabel,
       timeDisplayMode,
       visualizerLineColor: lineColor,
@@ -348,6 +352,13 @@ export function useMiniPlayerBridge(): void {
             artworkHash: currentTrack.artworkHash ?? null,
             artworkData: shouldIncludeArtwork ? effectiveArtworkData : undefined,
             isFavorite,
+            duration: currentTrack.duration,
+            year: currentTrack.year ?? null,
+            genres: currentTrack.genres ?? (currentTrack.genre ? [currentTrack.genre] : []),
+            format: currentTrack.format || null,
+            sampleRate: currentTrack.sampleRate ?? null,
+            bitDepth: currentTrack.bitDepth ?? null,
+            channels: currentTrack.channels ?? null,
           }
         : null
     }
@@ -400,6 +411,8 @@ export function useMiniPlayerBridge(): void {
     queueLength,
     shuffle,
     repeat,
+    volume,
+    isMuted,
     timeDisplayMode,
     selectedDeviceId,
     availableDevices,
@@ -422,7 +435,8 @@ export function useMiniPlayerBridge(): void {
         durationSeconds: Number.isFinite(currentTrack.duration) && currentTrack.duration > 0
           ? currentTrack.duration
           : null,
-        isCurrent: true
+        isCurrent: true,
+        trackPath: currentTrack.path
       })
     }
     for (const entry of player.getResolvedUpcomingEntries()) {
@@ -434,7 +448,8 @@ export function useMiniPlayerBridge(): void {
         durationSeconds: Number.isFinite(entry.track.duration) && entry.track.duration > 0
           ? entry.track.duration
           : null,
-        isCurrent: false
+        isCurrent: false,
+        trackPath: entry.track.path
       })
     }
 

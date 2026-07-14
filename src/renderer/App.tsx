@@ -47,6 +47,7 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useMediaSession } from './hooks/useMediaSession'
 import { useDiscordPresence } from './hooks/useDiscordPresence'
 import { useMiniPlayerBridge } from './hooks/useMiniPlayerBridge'
+import { useCompanionApiBridge } from './hooks/useCompanionApiBridge'
 import { useLyricsPopoutBridge } from './hooks/useLyricsPopoutBridge'
 import { useScopePopoutBridge } from './hooks/useScopePopoutBridge'
 import { useMemoryDiagnosticsBridge } from './hooks/useMemoryDiagnosticsBridge'
@@ -94,6 +95,7 @@ function App() {
   useMediaSession()
   useDiscordPresence()
   useMiniPlayerBridge()
+  useCompanionApiBridge()
   useLyricsPopoutBridge()
   useScopePopoutBridge()
   useMemoryDiagnosticsBridge()

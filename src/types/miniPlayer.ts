@@ -66,6 +66,13 @@ export interface MiniPlayerTrackSnapshot {
   artworkHash?: string | null
   artworkData?: string | null
   isFavorite: boolean
+  duration?: number
+  year?: number | null
+  genres?: string[]
+  format?: string | null
+  sampleRate?: number | null
+  bitDepth?: number | null
+  channels?: number | null
 }
 
 export interface MiniPlayerSnapshot {
@@ -75,6 +82,8 @@ export interface MiniPlayerSnapshot {
   queueLength: number
   shuffle: boolean
   repeat: MiniPlayerRepeatMode
+  volume?: number
+  isMuted?: boolean
   outputDeviceLabel: string | null
   currentTrack: MiniPlayerTrackSnapshot | null
   timeDisplayMode: MiniPlayerTimeDisplayMode
@@ -87,6 +96,7 @@ export interface MiniPlayerQueueItemSnapshot {
   artist: string
   durationSeconds: number | null
   isCurrent: boolean
+  trackPath?: string
 }
 
 export interface MiniPlayerQueueSnapshot {

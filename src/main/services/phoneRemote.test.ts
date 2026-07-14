@@ -4,6 +4,10 @@ import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import type { MiniPlayerCommand, MiniPlayerSnapshot } from '../../types/miniPlayer'
+import type {
+  CompanionApiRendererCommand,
+  CompanionApiTargetType
+} from '../../types/companionApi'
 import type { PhoneRemoteServiceConfig } from '../../types/phoneRemote'
 import { PHONE_REMOTE_PROTOCOL_VERSION } from '../../types/phoneRemote'
 import { PHONE_SYNC_FORMAT } from '../../types/phoneSync'
@@ -68,6 +72,7 @@ interface HarnessOptions {
 
 async function createHarness(options: HarnessOptions = {}) {
   const commands: MiniPlayerCommand[] = []
+  const companionCommands: CompanionApiRendererCommand[] = []
   const snapshotState: { current: MiniPlayerSnapshot | null } = {
     current: createSnapshot()
   }
@@ -86,6 +91,54 @@ async function createHarness(options: HarnessOptions = {}) {
     dispatchCommand: (command) => {
       commands.push(command)
     },
+    companionApi: {
+      getPlayback: () => ({
+        state: snapshotState.current?.playbackState ?? 'stopped',
+        positionSeconds: snapshotState.current?.currentTime ?? 0,
+        durationSeconds: snapshotState.current?.duration ?? 0,
+        volume: 0.75,
+        muted: false,
+        shuffle: false,
+        repeat: 'none',
+        outputDeviceLabel: 'Test Output',
+        queueCount: 0,
+        currentTrack: null,
+        updatedAt: Date.now()
+      }),
+      getQueue: () => ({ items: [], updatedAt: Date.now() }),
+      search: (query, _types, limit) => ({
+        query,
+        limit,
+        results: [{
+          type: 'track',
+          ref: 'track-ref',
+          title: 'Test Track',
+          subtitle: 'Test Artist',
+          artworkUrl: null
+        }]
+      }),
+      resolveTarget: (ref: string, expectedType?: CompanionApiTargetType) => {
+        if (ref !== 'track-ref' || (expectedType && expectedType !== 'track')) return null
+        return {
+          type: 'track',
+          ref,
+          trackPaths: ['/music/test.flac'],
+          openTarget: { type: 'track', trackPath: '/music/test.flac' }
+        }
+      },
+      dispatchRendererCommand: (command) => {
+        companionCommands.push(command)
+        return true
+      },
+      resolveArtworkDataUrl: async () => null,
+      setFavorite: async () => true,
+      createPlaylist: async (name) => ({ ref: 'playlist-ref', title: name }),
+      renamePlaylist: async () => true,
+      addPlaylistItems: async () => true,
+      removePlaylistItem: async () => true,
+      movePlaylistItem: async () => true,
+      getOpenApiDocument: () => ({ openapi: '3.1.0' })
+    },
     getIdentity: () => ({
       endpointUuid: 'desktop-test-uuid',
       desktopName: 'Test Desktop',
@@ -102,6 +155,7 @@ async function createHarness(options: HarnessOptions = {}) {
     service,
     config,
     commands,
+    companionCommands,
     port,
     tlsIdentity,
     publishSnapshot: (snapshot: MiniPlayerSnapshot | null) => {
@@ -276,7 +330,7 @@ test('pairing ticket flow issues a per-device token after approval', async (t) =
   assert.equal(typeof approvedPayload.token, 'string')
   assert.equal(typeof approvedPayload.controlToken, 'string')
   assert.equal(typeof approvedPayload.syncToken, 'string')
-  assert.deepEqual(approvedPayload.scopes, ['control', 'sync'])
+  assert.deepEqual(approvedPayload.scopes, ['control', 'observe', 'playback-control', 'sync'])
   assert.equal(approvedPayload.identity.endpointUuid, 'desktop-test-uuid')
 
   const pairedNowPlayingResponse = await fetch(`https://127.0.0.1:${harness.port}/v1/now-playing`, {
@@ -393,7 +447,7 @@ test('PIN pairing flow issues a per-device token after desktop PIN confirmation'
   assert.equal(consumedConfirmResponse.status, 410)
 })
 
-test('web pairing is control-only and cannot call sync endpoints', async (t) => {
+test('web pairing retains v1 control and cannot call sync endpoints', async (t) => {
   const harness = await createHarness()
   t.after(async () => harness.service.stop())
   const ticket = harness.service.createPairingTicket(
@@ -413,7 +467,7 @@ test('web pairing is control-only and cannot call sync endpoints', async (t) => 
   const status = await statusResponse.json()
   assert.equal(typeof status.controlToken, 'string')
   assert.equal(status.syncToken, null)
-  assert.deepEqual(status.scopes, ['control'])
+  assert.deepEqual(status.scopes, ['control', 'observe', 'playback-control'])
   const controlResponse = await fetch(`https://127.0.0.1:${harness.port}/v1/now-playing`, {
     headers: authHeaders(status.controlToken)
   })
@@ -422,6 +476,63 @@ test('web pairing is control-only and cannot call sync endpoints', async (t) => 
     headers: authHeaders(status.controlToken)
   })
   assert.equal(syncResponse.status, 401)
+})
+
+test('paired HTTPS grants only the approved companion scope subset', async (t) => {
+  const harness = await createHarness()
+  t.after(async () => harness.service.stop())
+  const ticket = harness.service.createPairingTicket(
+    `https://127.0.0.1:${harness.port}`,
+    'web'
+  )
+  const claimResponse = await fetch(`https://127.0.0.1:${harness.port}/v1/pairing/claim`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({
+      ticket: ticket.ticket,
+      deviceName: 'Playlist Maker',
+      clientLabel: 'Test Integration',
+      requestedScopes: ['observe', 'playback-control', 'library-search', 'library-write']
+    })
+  })
+  assert.equal(claimResponse.status, 200)
+  const claim = await claimResponse.json()
+  assert.deepEqual(
+    harness.service.listPendingPairingRequests()[0].requestedScopes,
+    ['observe', 'playback-control', 'library-search', 'library-write']
+  )
+  harness.service.approvePairingRequest(claim.requestId, ['observe', 'library-search'])
+
+  const statusResponse = await fetch(
+    `https://127.0.0.1:${harness.port}/v1/pairing/status?pollToken=${encodeURIComponent(claim.pollToken)}`
+  )
+  const status = await statusResponse.json()
+  assert.deepEqual(status.scopes, ['control', 'observe', 'library-search'])
+
+  const capabilitiesResponse = await fetch(`https://127.0.0.1:${harness.port}/v2/capabilities`, {
+    headers: authHeaders(status.controlToken)
+  })
+  assert.equal(capabilitiesResponse.status, 200)
+  assert.deepEqual((await capabilitiesResponse.json()).grantedScopes, ['library-search', 'observe'])
+
+  const searchResponse = await fetch(`https://127.0.0.1:${harness.port}/v2/search?q=test`, {
+    headers: authHeaders(status.controlToken)
+  })
+  assert.equal(searchResponse.status, 200)
+
+  const controlResponse = await fetch(`https://127.0.0.1:${harness.port}/v2/playback/actions`, {
+    method: 'POST',
+    headers: { ...authHeaders(status.controlToken), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'pause' })
+  })
+  assert.equal(controlResponse.status, 403)
+
+  const writeResponse = await fetch(`https://127.0.0.1:${harness.port}/v2/tracks/track-ref/favorite`, {
+    method: 'PUT',
+    headers: { ...authHeaders(status.controlToken), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ favorite: true })
+  })
+  assert.equal(writeResponse.status, 403)
 })
 
 test('credentials rotate after the required age and preserve a 24-hour recovery hash', async (t) => {

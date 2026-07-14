@@ -58,6 +58,8 @@ export interface LocalApiQueueSnapshot {
 export interface LocalApiServiceConfig {
   enabled: boolean
   controlsEnabled: boolean
+  librarySearchEnabled: boolean
+  libraryWriteEnabled: boolean
   port: number
   token: string
 }
@@ -65,6 +67,8 @@ export interface LocalApiServiceConfig {
 export interface LocalApiStatus {
   enabled: boolean
   controlsEnabled: boolean
+  librarySearchEnabled: boolean
+  libraryWriteEnabled: boolean
   bindHost: string
   port: number
   baseUrl: string

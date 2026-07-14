@@ -7,6 +7,7 @@ import type {
   PhoneRemoteStatus
 } from '../../types/phoneRemote'
 import type { PhoneSyncConflictResolution } from '../../types/phoneSync'
+import type { CompanionApiScope } from '../../types/companionApi'
 
 interface PhoneRemoteSettingsStore {
   status: PhoneRemoteStatus | null
@@ -32,7 +33,7 @@ interface PhoneRemoteSettingsStore {
   resetToDefaults: () => Promise<PhoneRemoteStatus | null>
   createPairingTicket: (baseUrl?: string, clientKind?: PhoneRemoteClientKind) => Promise<PhoneRemotePairingTicket | null>
   clearActivePairingTicket: () => void
-  approvePairingRequest: (id: string) => Promise<void>
+  approvePairingRequest: (id: string, grantedScopes?: CompanionApiScope[]) => Promise<void>
   rejectPairingRequest: (id: string) => Promise<void>
   revokePairedDevice: (id: string) => Promise<void>
   revokeAllPairedDevices: () => Promise<number>
@@ -208,9 +209,9 @@ export const usePhoneRemoteSettingsStore = create<PhoneRemoteSettingsStore>((set
       set({ activePairingTicket: null })
     },
 
-    approvePairingRequest: async (id: string) => {
+    approvePairingRequest: async (id: string, grantedScopes?: CompanionApiScope[]) => {
       try {
-        await window.electronAPI.phoneRemote.approvePairingRequest(id)
+        await window.electronAPI.phoneRemote.approvePairingRequest(id, grantedScopes)
         await refreshPairingState()
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })

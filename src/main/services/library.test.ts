@@ -737,6 +737,8 @@ test('subsonic sync helpers import starred tracks and server playlists', async (
   const playlist = library.getPlaylists().find((entry) => entry.name === 'Server Mix')
   assert.ok(playlist)
   assert.equal(playlist.track_count, 2)
+  assert.equal(library.getCompanionApiPlaylistTarget(playlist.id)?.remote_source_id, source.id)
+  assert.equal(library.isCompanionApiPlaylistWritable(playlist.id), false)
   assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), [firstPath, secondPath])
 
   const updatedSummary = await library.syncSubsonicRemotePlaylists(source.id, [
@@ -758,6 +760,26 @@ test('subsonic sync helpers import starred tracks and server playlists', async (
   const removedSummary = await library.syncSubsonicRemotePlaylists(source.id, [], { persist: false })
   assert.deepEqual(removedSummary, { created: 0, updated: 0, removed: 1 })
   assert.equal(library.getPlaylists().some((entry) => entry.id === playlist.id), false)
+})
+
+test('companion API writes accept only locally owned normal playlists', async (t) => {
+  await setupSeededLibrary(t)
+  const trackPaths = library.getAllTracks().slice(0, 2).map((track) => track.path)
+  assert.equal(trackPaths.length, 2)
+
+  const normal = await library.createPlaylist('Companion Normal')
+  await library.addToPlaylist(normal.id, trackPaths)
+  assert.equal(library.isCompanionApiPlaylistWritable(normal.id), true)
+  assert.equal(await library.moveCompanionApiPlaylistTrack(normal.id, trackPaths[1], 0), true)
+  assert.deepEqual(library.getPlaylistTracks(normal.id).map((track) => track.path), [trackPaths[1], trackPaths[0]])
+
+  const dynamic = await library.createDynamicPlaylist(
+    'Companion Dynamic',
+    createDefaultDynamicPlaylistRules()
+  )
+  assert.equal(library.getCompanionApiPlaylistTarget(dynamic.id)?.kind, 'dynamic')
+  assert.equal(library.isCompanionApiPlaylistWritable(dynamic.id), false)
+  assert.equal(await library.moveCompanionApiPlaylistTrack(dynamic.id, trackPaths[0], 0), false)
 })
 
 test('force scan rewrites unchanged local metadata that incremental scan skips', async (t) => {

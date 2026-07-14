@@ -85,7 +85,9 @@ Everything that touches the network is optional and off by default.
 
 ## Astra API
 
-An optional local REST API lets external tools read the current track, playback position, and cover art, or control playback. Loopback only, bearer token auth, disabled by default. See the [API docs](https://github.com/Boof2015/astra/wiki/Astra-API) for details.
+An optional companion API lets external tools observe and control playback, perform bounded library search, act on opaque track/album/artist/playlist references, edit the upcoming queue, and maintain favorites or local normal playlists. It is disabled by default, uses bearer authentication, and deliberately exposes no filesystem paths, audio streams, or unrestricted catalog browsing.
+
+Existing `/v1` widgets and remotes remain supported. The richer `/v2` contract works over loopback or user-approved paired HTTPS credentials with per-client scopes. See the [Companion API guide](docs/api/README.md), [OpenAPI 3.1 contract](docs/api/openapi-v2.json), and [runnable examples](docs/api/examples/).
 
 ## Experimental
 

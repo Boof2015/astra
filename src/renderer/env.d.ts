@@ -22,6 +22,10 @@ import type {
   LocalApiStatus
 } from '../types/localApi'
 import type {
+  CompanionApiRendererCommand,
+  CompanionApiScope
+} from '../types/companionApi'
+import type {
   PhoneRemoteClientKind,
   PhoneRemotePairedDevice,
   PhoneRemotePairingTicket,
@@ -247,12 +251,16 @@ declare global {
                 toggleAlwaysOnTop: () => Promise<MiniPlayerWindowState>
                 getSnapshot: () => Promise<MiniPlayerSnapshot | null>
                 publishSnapshot: (snapshot: MiniPlayerSnapshot) => void
+                publishQueueSnapshot: (snapshot: import('../types/miniPlayer').MiniPlayerQueueSnapshot) => void
                 publishVisualizerChunk: (chunk: MiniPlayerVisualizerStreamChunk) => void
                 sendCommand: (command: MiniPlayerCommand) => void
                 onSnapshot: (callback: (snapshot: MiniPlayerSnapshot) => void) => () => void
                 onCommand: (callback: (command: MiniPlayerCommand) => void) => () => void
                 onWindowState: (callback: (state: MiniPlayerWindowState) => void) => () => void
                 onVisualizerChunk: (callback: (chunk: MiniPlayerVisualizerStreamChunk) => void) => () => void
+            }
+            companionApi: {
+                onCommand: (callback: (command: CompanionApiRendererCommand) => void) => () => void
             }
             lyricsPopout: {
                 open: () => Promise<void>
@@ -348,6 +356,8 @@ declare global {
                 getStatus: () => Promise<LocalApiStatus>
                 setEnabled: (enabled: boolean) => Promise<LocalApiStatus>
                 setControlsEnabled: (enabled: boolean) => Promise<LocalApiStatus>
+                setLibrarySearchEnabled: (enabled: boolean) => Promise<LocalApiStatus>
+                setLibraryWriteEnabled: (enabled: boolean) => Promise<LocalApiStatus>
                 setPort: (port: number) => Promise<LocalApiStatus>
                 rotateToken: () => Promise<LocalApiStatus>
                 resetToDefaults: () => Promise<LocalApiStatus>
@@ -358,7 +368,7 @@ declare global {
                 createPairingTicket: (baseUrl?: string, clientKind?: PhoneRemoteClientKind) => Promise<PhoneRemotePairingTicket>
                 listPairedDevices: () => Promise<PhoneRemotePairedDevice[]>
                 listPendingPairingRequests: () => Promise<PhoneRemotePendingPairingRequest[]>
-                approvePairingRequest: (id: string) => Promise<PhoneRemotePendingPairingRequest | null>
+                approvePairingRequest: (id: string, grantedScopes?: CompanionApiScope[]) => Promise<PhoneRemotePendingPairingRequest | null>
                 rejectPairingRequest: (id: string) => Promise<PhoneRemotePendingPairingRequest | null>
                 revokePairedDevice: (id: string) => Promise<PhoneRemotePairedDevice | null>
                 revokeAllPairedDevices: () => Promise<number>

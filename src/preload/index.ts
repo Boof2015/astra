@@ -24,6 +24,10 @@ import type {
   LocalApiStatus
 } from '../types/localApi'
 import type {
+  CompanionApiRendererCommand,
+  CompanionApiScope
+} from '../types/companionApi'
+import type {
   PhoneRemoteClientKind,
   PhoneRemotePairedDevice,
   PhoneRemotePairingTicket,
@@ -697,6 +701,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  companionApi: {
+    onCommand: (callback: (command: CompanionApiRendererCommand) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, command: CompanionApiRendererCommand) => callback(command)
+      ipcRenderer.on('companion-api:command', handler)
+      return () => ipcRenderer.removeListener('companion-api:command', handler)
+    }
+  },
+
   lyricsPopout: {
     open: () => ipcRenderer.invoke('lyrics-popout:open'),
     close: () => ipcRenderer.invoke('lyrics-popout:close'),
@@ -835,6 +847,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setEnabled: (enabled: boolean): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:setEnabled', enabled),
     setControlsEnabled: (enabled: boolean): Promise<LocalApiStatus> =>
       ipcRenderer.invoke('local-api:setControlsEnabled', enabled),
+    setLibrarySearchEnabled: (enabled: boolean): Promise<LocalApiStatus> =>
+      ipcRenderer.invoke('local-api:setLibrarySearchEnabled', enabled),
+    setLibraryWriteEnabled: (enabled: boolean): Promise<LocalApiStatus> =>
+      ipcRenderer.invoke('local-api:setLibraryWriteEnabled', enabled),
     setPort: (port: number): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:setPort', port),
     rotateToken: (): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:rotateToken'),
     resetToDefaults: (): Promise<LocalApiStatus> => ipcRenderer.invoke('local-api:resetToDefaults'),
@@ -853,8 +869,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('phone-remote:listPairedDevices'),
     listPendingPairingRequests: (): Promise<PhoneRemotePendingPairingRequest[]> =>
       ipcRenderer.invoke('phone-remote:listPendingPairingRequests'),
-    approvePairingRequest: (id: string): Promise<PhoneRemotePendingPairingRequest | null> =>
-      ipcRenderer.invoke('phone-remote:approvePairingRequest', id),
+    approvePairingRequest: (id: string, grantedScopes?: CompanionApiScope[]): Promise<PhoneRemotePendingPairingRequest | null> =>
+      ipcRenderer.invoke('phone-remote:approvePairingRequest', id, grantedScopes),
     rejectPairingRequest: (id: string): Promise<PhoneRemotePendingPairingRequest | null> =>
       ipcRenderer.invoke('phone-remote:rejectPairingRequest', id),
     revokePairedDevice: (id: string): Promise<PhoneRemotePairedDevice | null> =>
@@ -1484,6 +1500,9 @@ declare global {
         onWindowState: (callback: (state: MiniPlayerWindowState) => void) => () => void
         onVisualizerChunk: (callback: (chunk: MiniPlayerVisualizerStreamChunk) => void) => () => void
       }
+      companionApi: {
+        onCommand: (callback: (command: CompanionApiRendererCommand) => void) => () => void
+      }
       lyricsPopout: {
         open: () => Promise<void>
         close: () => Promise<void>
@@ -1548,6 +1567,8 @@ declare global {
         getStatus: () => Promise<LocalApiStatus>
         setEnabled: (enabled: boolean) => Promise<LocalApiStatus>
         setControlsEnabled: (enabled: boolean) => Promise<LocalApiStatus>
+        setLibrarySearchEnabled: (enabled: boolean) => Promise<LocalApiStatus>
+        setLibraryWriteEnabled: (enabled: boolean) => Promise<LocalApiStatus>
         setPort: (port: number) => Promise<LocalApiStatus>
         rotateToken: () => Promise<LocalApiStatus>
         resetToDefaults: () => Promise<LocalApiStatus>
@@ -1558,7 +1579,7 @@ declare global {
         createPairingTicket: (baseUrl?: string, clientKind?: PhoneRemoteClientKind) => Promise<PhoneRemotePairingTicket>
         listPairedDevices: () => Promise<PhoneRemotePairedDevice[]>
         listPendingPairingRequests: () => Promise<PhoneRemotePendingPairingRequest[]>
-        approvePairingRequest: (id: string) => Promise<PhoneRemotePendingPairingRequest | null>
+        approvePairingRequest: (id: string, grantedScopes?: CompanionApiScope[]) => Promise<PhoneRemotePendingPairingRequest | null>
         rejectPairingRequest: (id: string) => Promise<PhoneRemotePendingPairingRequest | null>
         revokePairedDevice: (id: string) => Promise<PhoneRemotePairedDevice | null>
         revokeAllPairedDevices: () => Promise<number>

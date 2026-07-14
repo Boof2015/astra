@@ -5,6 +5,11 @@ import { networkInterfaces } from 'os'
 import { extname, join, normalize } from 'path'
 import { fileURLToPath } from 'url'
 import type { MiniPlayerCommand, MiniPlayerQueueSnapshot, MiniPlayerSnapshot } from '../../types/miniPlayer'
+import {
+  COMPANION_API_SCOPES,
+  type CompanionApiLibraryEvent,
+  type CompanionApiScope
+} from '../../types/companionApi'
 import type {
   PhoneSyncApplyResult,
   PhoneSyncConflictResolution,
@@ -38,6 +43,7 @@ import {
   secureTokenEquals,
   toSafeOptionalString
 } from './playbackHttpCore'
+import { CompanionApiV2, type CompanionApiV2Options } from './companionApiV2'
 import {
   PHONE_REMOTE_DEVICE_INACTIVITY_MS,
   PHONE_REMOTE_PREVIOUS_TOKEN_GRACE_MS,
@@ -122,6 +128,7 @@ interface PairingRequestState {
   pairingKey: Buffer | null
   transcript: PhoneRemotePairingTranscript | null
   remoteAddress: string
+  requestedScopes: CompanionApiScope[]
 }
 
 interface PhoneRemoteServiceOptions {
@@ -139,6 +146,7 @@ interface PhoneRemoteServiceOptions {
   getSyncState?: () => PhoneSyncState
   applySyncChanges?: (payload: unknown) => PhoneSyncApplyResult | null
   tlsIdentity?: PhoneRemoteTlsIdentity
+  companionApi?: Omit<CompanionApiV2Options, 'transport' | 'authenticateRequest' | 'onConnectedClientsChange'>
 }
 
 type PhoneRemoteAuthorizationContext = {
@@ -169,6 +177,18 @@ function getPhoneRemoteLanUrls(port: number): string[] {
 }
 
 const SYNC_CONFLICT_REPORT_MAX_ITEMS = 200
+
+function normalizeRequestedCompanionScopes(value: unknown): CompanionApiScope[] {
+  if (!Array.isArray(value)) return ['observe', 'playback-control']
+  const requested = new Set<CompanionApiScope>()
+  for (const scope of value) {
+    if (typeof scope === 'string' && COMPANION_API_SCOPES.includes(scope as CompanionApiScope)) {
+      requested.add(scope as CompanionApiScope)
+    }
+  }
+  requested.add('observe')
+  return Array.from(requested)
+}
 
 function sanitizeSyncPlaylistEntry(raw: unknown): SyncPlaylistEntry | null {
   if (!raw || typeof raw !== 'object') return null
@@ -291,6 +311,7 @@ export class PhoneRemoteService {
   private active = false
   private lastError: string | null = null
   private readonly core: PlaybackHttpCore<PhoneRemoteAuthorizationContext>
+  private readonly companionApi: CompanionApiV2 | null
   private readonly getIdentitySnapshot: () => PhoneRemoteIdentity
   private readonly getSyncState?: () => PhoneSyncState
   private readonly applySyncChanges?: (payload: unknown) => PhoneSyncApplyResult | null
@@ -323,6 +344,14 @@ export class PhoneRemoteService {
       getControlsEnabled: () => this.config.controlsEnabled,
       onConnectedClientsChange: () => this.emitStatus()
     })
+    this.companionApi = options.companionApi
+      ? new CompanionApiV2({
+          ...options.companionApi,
+          transport: 'paired-lan',
+          authenticateRequest: (req) => this.authenticateCompanionRequest(req),
+          onConnectedClientsChange: () => this.emitStatus()
+        })
+      : null
     this.getIdentitySnapshot = () => this.normalizeIdentity(options.getIdentity?.())
   }
 
@@ -339,6 +368,7 @@ export class PhoneRemoteService {
     ) {
       this.pairedDevices = []
       this.core.closeAllSseClients()
+      this.companionApi?.closeAllSseClients()
       this.emitPairedDevicesChange()
     }
     this.tlsIdentity = { ...identity }
@@ -360,7 +390,7 @@ export class PhoneRemoteService {
       lanUrls,
       controllerUrl: lanUrls[0] ? `${lanUrls[0]}/remote/` : null,
       active: this.active,
-      connectedClients: this.core.getConnectedClientCount(),
+      connectedClients: this.core.getConnectedClientCount() + (this.companionApi?.getConnectedClientCount() ?? 0),
       pairedDeviceCount: this.pairedDevices.filter((device) => device.revokedAt === null).length,
       pendingPairingCount: this.getPendingPairingRequestsSnapshot().length,
       lastError: this.lastError,
@@ -483,11 +513,17 @@ export class PhoneRemoteService {
     }
   }
 
-  approvePairingRequest(id: string): PhoneRemotePendingPairingRequest | null {
+  approvePairingRequest(id: string, grantedScopes?: readonly CompanionApiScope[]): PhoneRemotePendingPairingRequest | null {
     this.cleanupExpiredPairingState(true)
     const request = this.pairingRequestsById.get(id)
     if (!request || request.state !== 'pending') return null
 
+    if (grantedScopes) {
+      const requested = new Set(request.requestedScopes)
+      request.requestedScopes = normalizeRequestedCompanionScopes(grantedScopes)
+        .filter((scope) => requested.has(scope))
+      if (!request.requestedScopes.includes('observe')) request.requestedScopes.unshift('observe')
+    }
     this.issuePairingDeviceTokens(request)
     return this.toPendingPairingRequest(request)
   }
@@ -506,6 +542,7 @@ export class PhoneRemoteService {
     if (!device || device.revokedAt !== null) return null
     device.revokedAt = Date.now()
     this.core.closeSseClients((client) => client.authorization.deviceId === id)
+    this.companionApi?.closeAllSseClients()
     this.emitPairedDevicesChange()
     this.emitStatus()
     return {
@@ -535,6 +572,7 @@ export class PhoneRemoteService {
     }
     if (revokedCount === 0) return 0
     this.core.closeAllSseClients()
+    this.companionApi?.closeAllSseClients()
     this.emitPairedDevicesChange()
     this.emitStatus()
     return revokedCount
@@ -565,10 +603,16 @@ export class PhoneRemoteService {
 
   publishSnapshot(snapshot: MiniPlayerSnapshot | null): void {
     this.core.publishSnapshot(snapshot)
+    this.companionApi?.publishCurrentPlayback()
   }
 
   publishQueueSnapshot(snapshot: MiniPlayerQueueSnapshot | null): void {
     this.core.publishQueueSnapshot(snapshot)
+    this.companionApi?.publishCurrentQueue()
+  }
+
+  publishLibraryEvent(event: CompanionApiLibraryEvent): void {
+    this.companionApi?.publishLibraryEvent(event)
   }
 
   async stop(): Promise<void> {
@@ -602,7 +646,11 @@ export class PhoneRemoteService {
       tokenPrefix: controlToken.slice(0, TOKEN_PREFIX_LENGTH),
       syncTokenPrefix: syncToken?.slice(0, TOKEN_PREFIX_LENGTH) ?? null,
       clientKind,
-      scopes: syncToken ? ['control', 'sync'] : ['control'],
+      scopes: Array.from(new Set<PhoneRemoteCredentialScope>([
+        'control',
+        ...request.requestedScopes,
+        ...(syncToken ? ['sync' as const] : [])
+      ])),
       credentialIssuedAt: now,
       credentialRotatedAt: now,
       expiresAt: now + PHONE_REMOTE_DEVICE_INACTIVITY_MS,
@@ -645,7 +693,8 @@ export class PhoneRemoteService {
       expiresAt: request.expiresAt,
       baseUrl: request.baseUrl,
       pairingMode: request.pairingMode,
-      pin: request.pairingMode === 'pin' ? request.pin : null
+      pin: request.pairingMode === 'pin' ? request.pin : null,
+      requestedScopes: [...request.requestedScopes]
     }
   }
 
@@ -724,6 +773,52 @@ export class PhoneRemoteService {
     return null
   }
 
+  private authenticateCompanionRequest(req: IncomingMessage): { id: string; scopes: ReadonlySet<CompanionApiScope> } | null {
+    const suppliedToken = hasBearerToken(req)
+    if (!suppliedToken) return null
+    const suppliedHash = hashToken(suppliedToken)
+    const now = Date.now()
+    for (const device of this.pairedDevices) {
+      if (device.revokedAt !== null) continue
+      if (this.deviceExpiresAt(device) <= now) {
+        device.revokedAt = now
+        this.emitPairedDevicesChange()
+        continue
+      }
+      const matchesCurrent = secureTokenEquals(suppliedHash, device.controlTokenHash)
+      const matchesPrevious = Boolean(
+        device.previousControlTokenHash
+        && device.previousTokensValidUntil
+        && device.previousTokensValidUntil > now
+        && secureTokenEquals(suppliedHash, device.previousControlTokenHash)
+      )
+      if (!matchesCurrent && !matchesPrevious) continue
+      if (now - device.credentialRotatedAt >= PHONE_REMOTE_TOKEN_ROTATE_REQUIRED_MS) return null
+
+      const scopes = new Set<CompanionApiScope>()
+      const hasExplicitCompanionScopes = device.scopes.some((scope) => (
+        COMPANION_API_SCOPES.includes(scope as CompanionApiScope)
+      ))
+      // Pre-v2 pairings only carried the legacy `control` scope. Preserve their
+      // effective observation/control access, while respecting the exact subset
+      // approved for every pairing created after companion scopes were added.
+      if (device.scopes.includes('observe') || (!hasExplicitCompanionScopes && device.scopes.includes('control'))) {
+        scopes.add('observe')
+      }
+      if (this.config.controlsEnabled && (
+        device.scopes.includes('playback-control')
+        || (!hasExplicitCompanionScopes && device.scopes.includes('control'))
+      )) {
+        scopes.add('playback-control')
+      }
+      if (device.scopes.includes('library-search')) scopes.add('library-search')
+      if (device.scopes.includes('library-write')) scopes.add('library-write')
+      this.touchPairedDevice(device.id)
+      return { id: `paired:${device.id}`, scopes }
+    }
+    return null
+  }
+
   private touchPairedDevice(deviceId: string): void {
     const device = this.pairedDevices.find((candidate) => candidate.id === deviceId)
     if (!device || device.revokedAt !== null) return
@@ -786,6 +881,7 @@ export class PhoneRemoteService {
       this.active = true
       this.lastError = null
       this.core.startHeartbeat()
+      this.companionApi?.startHeartbeat()
       this.emitStatus()
     } catch (error) {
       this.server = null
@@ -799,6 +895,8 @@ export class PhoneRemoteService {
   private async stopServer(): Promise<void> {
     this.core.stopHeartbeat()
     this.core.closeAllSseClients()
+    this.companionApi?.stopHeartbeat()
+    this.companionApi?.closeAllSseClients()
 
     if (!this.server) {
       this.active = false
@@ -882,6 +980,7 @@ export class PhoneRemoteService {
     ticket: string
     deviceName: string
     clientLabel: string
+    requestedScopes: CompanionApiScope[]
   } | null {
     if (!payload || typeof payload !== 'object') return null
     const candidate = payload as Record<string, unknown>
@@ -893,7 +992,8 @@ export class PhoneRemoteService {
     return {
       ticket: candidate.ticket.trim(),
       deviceName: normalizeDeviceLabel(candidate.deviceName, fallbackName),
-      clientLabel
+      clientLabel,
+      requestedScopes: normalizeRequestedCompanionScopes(candidate.requestedScopes)
     }
   }
 
@@ -902,6 +1002,7 @@ export class PhoneRemoteService {
     clientLabel: string
     phoneEphemeralPublicKey: string
     observedCertificateFingerprint: string
+    requestedScopes: CompanionApiScope[]
   } | null {
     if (!payload || typeof payload !== 'object') return null
     const candidate = payload as Record<string, unknown>
@@ -924,7 +1025,8 @@ export class PhoneRemoteService {
       deviceName: normalizeDeviceLabel(candidate.deviceName, fallbackName),
       clientLabel,
       phoneEphemeralPublicKey,
-      observedCertificateFingerprint
+      observedCertificateFingerprint,
+      requestedScopes: normalizeRequestedCompanionScopes(candidate.requestedScopes)
     }
   }
 
@@ -1014,7 +1116,8 @@ export class PhoneRemoteService {
       issuedSyncToken: null,
       pairingKey: null,
       transcript: null,
-      remoteAddress: req.socket.remoteAddress ?? ''
+      remoteAddress: req.socket.remoteAddress ?? '',
+      requestedScopes: claimBody.requestedScopes
     }
     this.pairingRequestsById.set(request.id, request)
     this.pairingRequestIdByPollToken.set(request.pollToken, request.id)
@@ -1121,7 +1224,8 @@ export class PhoneRemoteService {
       issuedSyncToken: null,
       pairingKey,
       transcript,
-      remoteAddress
+      remoteAddress,
+      requestedScopes: requestBody.requestedScopes
     }
     this.pinPairingLastRequestAt.set(remoteAddress, now)
     this.pairingRequestsById.set(request.id, request)
@@ -1392,6 +1496,10 @@ export class PhoneRemoteService {
       return
     }
     const path = requestUrl.pathname
+
+    if (this.companionApi && await this.companionApi.handleRequest(req, res, requestUrl)) {
+      return
+    }
 
     if (method === 'GET' && path.startsWith('/remote')) {
       const handled = await this.handleRemoteAsset(res, path)

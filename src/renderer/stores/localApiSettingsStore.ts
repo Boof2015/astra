@@ -10,6 +10,8 @@ interface LocalApiSettingsStore {
   refresh: () => Promise<void>
   setEnabled: (enabled: boolean) => Promise<LocalApiStatus | null>
   setControlsEnabled: (enabled: boolean) => Promise<LocalApiStatus | null>
+  setLibrarySearchEnabled: (enabled: boolean) => Promise<LocalApiStatus | null>
+  setLibraryWriteEnabled: (enabled: boolean) => Promise<LocalApiStatus | null>
   setPort: (port: number) => Promise<LocalApiStatus | null>
   rotateToken: () => Promise<LocalApiStatus | null>
   resetToDefaults: () => Promise<LocalApiStatus | null>
@@ -87,6 +89,26 @@ export const useLocalApiSettingsStore = create<LocalApiSettingsStore>((set, get)
     setControlsEnabled: async (enabled: boolean) => {
       try {
         const status = await window.electronAPI.localApi.setControlsEnabled(enabled)
+        return applyStatus(status)
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      }
+    },
+
+    setLibrarySearchEnabled: async (enabled: boolean) => {
+      try {
+        const status = await window.electronAPI.localApi.setLibrarySearchEnabled(enabled)
+        return applyStatus(status)
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      }
+    },
+
+    setLibraryWriteEnabled: async (enabled: boolean) => {
+      try {
+        const status = await window.electronAPI.localApi.setLibraryWriteEnabled(enabled)
         return applyStatus(status)
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })

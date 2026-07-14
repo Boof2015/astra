@@ -4,7 +4,7 @@ import { readFile, writeFile, mkdtemp, rm, access, mkdir, stat } from 'fs/promis
 import { existsSync, readFileSync } from 'fs'
 import { tmpdir, hostname, networkInterfaces } from 'os'
 import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, type ExecFileOptions } from 'child_process'
-import { createHash, randomUUID } from 'crypto'
+import { createHash, randomBytes, randomUUID } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
 import type { DynamicPlaylistRulesV1 } from '../shared/playlists/dynamicPlaylist'
@@ -62,6 +62,8 @@ import {
 import { resolveDiscordCoverArtUrl } from './services/discordCoverArtLookup'
 import { checkForUpdates, RELEASES_PAGE_URL } from './services/updates'
 import { LocalApiService, generateLocalApiToken } from './services/localApi'
+import { CompanionApiLibrary } from './services/companionApiLibrary'
+import { CompanionApiReferenceSigner } from './services/companionApiRefs'
 import { PhoneRemoteService } from './services/phoneRemote'
 import { applyPhoneSyncChanges, buildPhoneSyncState, parsePhoneSyncApplyPayload } from './services/phoneSync'
 import { PhoneRemoteDiscoveryService } from './services/phoneRemoteDiscovery'
@@ -117,6 +119,11 @@ import {
   type MiniPlayerWindowPrefs,
   type MiniPlayerWindowState,
 } from '../types/miniPlayer'
+import type {
+  CompanionApiLibraryEvent,
+  CompanionApiRendererCommand
+} from '../types/companionApi'
+import companionApiOpenApiDocument from '../../docs/api/openapi-v2.json'
 import {
   formatArtistNames,
   normalizeArtistNames
@@ -271,6 +278,7 @@ let mainWindowPrefs: MainWindowPrefs | null = null
 let miniWindowPrefs: MiniPlayerWindowPrefs | null = null
 let lyricsPopoutWindowPrefs: LyricsPopoutWindowPrefs | null = null
 let latestMiniPlayerSnapshot: MiniPlayerSnapshot | null = null
+let latestMiniPlayerQueueSnapshot: MiniPlayerQueueSnapshot | null = null
 let latestMiniVisualizerChunk: MiniPlayerVisualizerStreamChunk | null = null
 let latestLyricsPopoutSnapshot: LyricsPopoutSnapshot | null = null
 const latestScopePopoutChunks: Partial<Record<ScopeKind, ScopePopoutChunk>> = {}
@@ -464,8 +472,11 @@ const MIN_RUNTIME_ICON_IMAGE_SIZE = 16
 const MAX_RUNTIME_ICON_IMAGE_SIZE = 2048
 const LOCAL_API_ENABLED_META_KEY = 'local_api_enabled_v1'
 const LOCAL_API_CONTROLS_ENABLED_META_KEY = 'local_api_controls_enabled_v1'
+const LOCAL_API_LIBRARY_SEARCH_ENABLED_META_KEY = 'local_api_library_search_enabled_v2'
+const LOCAL_API_LIBRARY_WRITE_ENABLED_META_KEY = 'local_api_library_write_enabled_v2'
 const LOCAL_API_PORT_META_KEY = 'local_api_port_v1'
 const LOCAL_API_TOKEN_META_KEY = 'local_api_token_v1'
+const COMPANION_API_REFERENCE_SECRET_META_KEY = 'companion_api_reference_secret_v2'
 const PHONE_REMOTE_ENABLED_META_KEY = 'local_api_remote_web_enabled_v1'
 const PHONE_REMOTE_PORT_META_KEY = 'phone_remote_port_v1'
 const PHONE_REMOTE_SYNC_ENABLED_META_KEY = 'phone_remote_sync_enabled_v1'
@@ -582,6 +593,8 @@ interface ProgressiveStreamStartOptions {
 let localApiConfig: LocalApiServiceConfig = {
   enabled: false,
   controlsEnabled: false,
+  librarySearchEnabled: false,
+  libraryWriteEnabled: false,
   port: LOCAL_API_DEFAULT_PORT,
   token: generateLocalApiToken(),
 }
@@ -935,10 +948,89 @@ function sendMiniPlayerCommand(command: MiniPlayerCommand): void {
   }
 }
 
+let companionApiReferenceSigner = new CompanionApiReferenceSigner(randomBytes(32))
+
+function sendCompanionApiRendererCommand(command: CompanionApiRendererCommand): boolean {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoadingMainFrame()) return false
+  if (command.type === 'open-target') {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  }
+  mainWindow.webContents.send('companion-api:command', command)
+  return true
+}
+
+function publishCompanionApiLibraryEvent(event: CompanionApiLibraryEvent): void {
+  localApiService.publishLibraryEvent(event)
+  phoneRemoteService.publishLibraryEvent(event)
+}
+
+function publishCompanionFavoriteEvent(trackPath: string, favorite: boolean): void {
+  const track = library.getTrackByPath(trackPath)
+  publishCompanionApiLibraryEvent({
+    kind: 'favorite',
+    change: 'favorite-set',
+    ref: track ? companionApiReferenceSigner.create('track', track.id) : null,
+    favorite,
+    updatedAt: Date.now()
+  })
+}
+
+function publishCompanionPlaylistEvent(
+  playlistId: number,
+  change: Extract<CompanionApiLibraryEvent['change'], 'created' | 'renamed' | 'items-changed' | 'deleted'>
+): void {
+  publishCompanionApiLibraryEvent({
+    kind: 'playlist',
+    change,
+    ref: companionApiReferenceSigner.create('playlist', playlistId),
+    updatedAt: Date.now()
+  })
+}
+
+const companionApiLibrary = new CompanionApiLibrary({
+  getSigner: () => companionApiReferenceSigner,
+  resolveArtworkByHash: async (artworkHash) => getArtworkThumbnailDataUrlByHash(artworkHash, {
+    maxEdgePx: REMOTE_CONTROLLER_ARTWORK_MAX_EDGE_PX,
+    jpegQuality: REMOTE_CONTROLLER_ARTWORK_JPEG_QUALITY,
+    allowOriginalFallback: false
+  }),
+  onLibraryEvent: publishCompanionApiLibraryEvent,
+  onRendererLibraryMutation: () => {
+    mainWindow?.webContents.send('library:externalLibraryMutation')
+  }
+})
+
+const companionApiOptions = {
+  getPlayback: () => companionApiLibrary.getPlayback(latestMiniPlayerSnapshot),
+  getQueue: () => companionApiLibrary.getQueue(latestMiniPlayerQueueSnapshot),
+  search: (
+    query: string,
+    types: ReadonlySet<import('../types/companionApi').CompanionApiTargetType>,
+    limit: number
+  ) => companionApiLibrary.search(query, types, limit),
+  resolveTarget: (ref: string, expectedType?: import('../types/companionApi').CompanionApiTargetType) => (
+    companionApiLibrary.resolveTarget(ref, expectedType)
+  ),
+  dispatchRendererCommand: sendCompanionApiRendererCommand,
+  resolveArtworkDataUrl: (ref: string) => companionApiLibrary.resolveArtworkDataUrl(ref),
+  setFavorite: (trackRef: string, favorite: boolean) => companionApiLibrary.setFavorite(trackRef, favorite),
+  createPlaylist: (name: string) => companionApiLibrary.createPlaylist(name),
+  renamePlaylist: (playlistRef: string, name: string) => companionApiLibrary.renamePlaylist(playlistRef, name),
+  addPlaylistItems: (playlistRef: string, trackRefs: string[]) => companionApiLibrary.addPlaylistItems(playlistRef, trackRefs),
+  removePlaylistItem: (playlistRef: string, trackRef: string) => companionApiLibrary.removePlaylistItem(playlistRef, trackRef),
+  movePlaylistItem: (playlistRef: string, trackRef: string, position: number) => (
+    companionApiLibrary.movePlaylistItem(playlistRef, trackRef, position)
+  ),
+  getOpenApiDocument: () => companionApiOpenApiDocument
+}
+
 const localApiService = new LocalApiService({
   config: localApiConfig,
   getSnapshot: () => latestMiniPlayerSnapshot,
   dispatchCommand: sendMiniPlayerCommand,
+  companionApi: companionApiOptions,
   resolveArtworkDataUrl: async (artworkHash) => getArtworkThumbnailDataUrlByHash(artworkHash, {
     maxEdgePx: REMOTE_CONTROLLER_ARTWORK_MAX_EDGE_PX,
     jpegQuality: REMOTE_CONTROLLER_ARTWORK_JPEG_QUALITY
@@ -962,6 +1054,7 @@ const phoneRemoteService = new PhoneRemoteService({
   config: phoneRemoteConfig,
   getSnapshot: () => latestMiniPlayerSnapshot,
   dispatchCommand: sendMiniPlayerCommand,
+  companionApi: companionApiOptions,
   getIdentity: () => getPhoneRemoteIdentity(),
   resolveArtworkDataUrl: async (artworkHash) => getArtworkThumbnailDataUrlByHash(artworkHash, {
     maxEdgePx: REMOTE_CONTROLLER_ARTWORK_MAX_EDGE_PX,
@@ -989,6 +1082,22 @@ const phoneRemoteService = new PhoneRemoteService({
     }
     // The sync applied in the main process; the renderer stores are now stale.
     mainWindow?.webContents.send('library:externalLibraryMutation')
+    if (result.favorites.added > 0 || result.favorites.removed > 0) {
+      publishCompanionApiLibraryEvent({
+        kind: 'favorite',
+        change: 'favorite-set',
+        ref: null,
+        updatedAt: Date.now()
+      })
+    }
+    if (result.playlists.length > 0) {
+      publishCompanionApiLibraryEvent({
+        kind: 'playlist',
+        change: 'items-changed',
+        ref: null,
+        updatedAt: Date.now()
+      })
+    }
     return result
   },
   onStatusChange: () => {
@@ -1496,7 +1605,14 @@ function sanitizePhoneRemotePairedDevices(rawDevices: unknown): PersistedPhoneRe
     const syncTokenPrefix = typeof value.syncTokenPrefix === 'string' ? value.syncTokenPrefix.trim() : null
     const clientKind = value.clientKind === 'native' || value.clientKind === 'web' ? value.clientKind : null
     const scopes = Array.isArray(value.scopes)
-      ? value.scopes.filter((scope): scope is PhoneRemoteCredentialScope => scope === 'control' || scope === 'sync')
+      ? value.scopes.filter((scope): scope is PhoneRemoteCredentialScope => (
+          scope === 'control'
+          || scope === 'sync'
+          || scope === 'observe'
+          || scope === 'playback-control'
+          || scope === 'library-search'
+          || scope === 'library-write'
+        ))
       : []
     const controlTokenHash = typeof value.controlTokenHash === 'string' ? value.controlTokenHash.trim() : ''
     const syncTokenHash = typeof value.syncTokenHash === 'string' ? value.syncTokenHash.trim() : null
@@ -1531,6 +1647,20 @@ function sanitizePhoneRemotePairedDevices(rawDevices: unknown): PersistedPhoneRe
     const expectedScopes: PhoneRemoteCredentialScope[] = clientKind === 'native'
       ? ['control', 'sync']
       : ['control']
+    const normalizedScopes = new Set<PhoneRemoteCredentialScope>(scopes)
+    const hasExplicitCompanionScopes = scopes.some((scope) => (
+      scope === 'observe'
+      || scope === 'playback-control'
+      || scope === 'library-search'
+      || scope === 'library-write'
+    ))
+    normalizedScopes.add('control')
+    // Only pre-v2 rows need the legacy control-to-companion migration. Newer
+    // rows already contain the exact subset approved for that credential.
+    normalizedScopes.add('observe')
+    if (!hasExplicitCompanionScopes) normalizedScopes.add('playback-control')
+    if (clientKind === 'native') normalizedScopes.add('sync')
+    else normalizedScopes.delete('sync')
     if (
       !id || !name || !clientLabel || !clientKind || !controlTokenHash || !tokenPrefix || createdAt <= 0 ||
       credentialIssuedAt <= 0 || credentialRotatedAt <= 0 || expiresAt <= 0 ||
@@ -1548,7 +1678,7 @@ function sanitizePhoneRemotePairedDevices(rawDevices: unknown): PersistedPhoneRe
       tokenPrefix: tokenPrefix.slice(0, 16),
       syncTokenPrefix: syncTokenPrefix?.slice(0, 16) ?? null,
       clientKind,
-      scopes: expectedScopes,
+      scopes: Array.from(normalizedScopes),
       credentialIssuedAt,
       credentialRotatedAt,
       expiresAt,
@@ -1655,6 +1785,8 @@ function sanitizeParallaxPairedSinks(rawSinks: unknown): PersistedParallaxPaired
 async function persistLocalApiConfig(config: LocalApiServiceConfig): Promise<void> {
   await library.setAppMeta(LOCAL_API_ENABLED_META_KEY, config.enabled ? '1' : '0')
   await library.setAppMeta(LOCAL_API_CONTROLS_ENABLED_META_KEY, config.controlsEnabled ? '1' : '0')
+  await library.setAppMeta(LOCAL_API_LIBRARY_SEARCH_ENABLED_META_KEY, config.librarySearchEnabled ? '1' : '0')
+  await library.setAppMeta(LOCAL_API_LIBRARY_WRITE_ENABLED_META_KEY, config.libraryWriteEnabled ? '1' : '0')
   await library.setAppMeta(LOCAL_API_PORT_META_KEY, String(config.port))
   await library.setAppMeta(LOCAL_API_TOKEN_META_KEY, config.token)
 }
@@ -2116,6 +2248,8 @@ async function relocateParallaxHost(): Promise<string | null> {
 async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
   const enabled = parseMetaBoolean(library.getAppMeta(LOCAL_API_ENABLED_META_KEY), false)
   const controlsEnabledStored = parseMetaBoolean(library.getAppMeta(LOCAL_API_CONTROLS_ENABLED_META_KEY), false)
+  const librarySearchEnabled = parseMetaBoolean(library.getAppMeta(LOCAL_API_LIBRARY_SEARCH_ENABLED_META_KEY), false)
+  const libraryWriteEnabled = parseMetaBoolean(library.getAppMeta(LOCAL_API_LIBRARY_WRITE_ENABLED_META_KEY), false)
 
   const rawPort = library.getAppMeta(LOCAL_API_PORT_META_KEY)
   let port = LOCAL_API_DEFAULT_PORT
@@ -2136,6 +2270,8 @@ async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
   const normalized: LocalApiServiceConfig = {
     enabled,
     controlsEnabled: controlsEnabledStored,
+    librarySearchEnabled,
+    libraryWriteEnabled,
     port,
     token
   }
@@ -2143,6 +2279,8 @@ async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
   const needsPersistence =
     library.getAppMeta(LOCAL_API_ENABLED_META_KEY) !== (normalized.enabled ? '1' : '0') ||
     library.getAppMeta(LOCAL_API_CONTROLS_ENABLED_META_KEY) !== (normalized.controlsEnabled ? '1' : '0') ||
+    library.getAppMeta(LOCAL_API_LIBRARY_SEARCH_ENABLED_META_KEY) !== (normalized.librarySearchEnabled ? '1' : '0') ||
+    library.getAppMeta(LOCAL_API_LIBRARY_WRITE_ENABLED_META_KEY) !== (normalized.libraryWriteEnabled ? '1' : '0') ||
     library.getAppMeta(LOCAL_API_PORT_META_KEY) !== String(normalized.port) ||
     library.getAppMeta(LOCAL_API_TOKEN_META_KEY) !== normalized.token
 
@@ -2155,6 +2293,21 @@ async function loadLocalApiConfigFromMeta(): Promise<LocalApiServiceConfig> {
   }
 
   return normalized
+}
+
+async function loadCompanionApiReferenceSigner(): Promise<CompanionApiReferenceSigner> {
+  const persisted = library.getAppMeta(COMPANION_API_REFERENCE_SECRET_META_KEY)?.trim() ?? ''
+  if (persisted) {
+    try {
+      return new CompanionApiReferenceSigner(persisted)
+    } catch {
+      // Replace invalid legacy or corrupted material below.
+    }
+  }
+
+  const secret = randomBytes(32).toString('base64url')
+  await library.setAppMeta(COMPANION_API_REFERENCE_SECRET_META_KEY, secret)
+  return new CompanionApiReferenceSigner(secret)
 }
 
 async function loadPhoneRemoteConfigFromMeta(controlsEnabled: boolean): Promise<PhoneRemoteServiceConfig> {
@@ -4503,7 +4656,8 @@ async function getArtworkDataUrlByHash(hash: string): Promise<string | null> {
 async function resolveArtworkThumbnailBytesByHash(
   hash: string,
   maxEdgePx: number,
-  jpegQuality: number
+  jpegQuality: number,
+  allowOriginalFallback: boolean
 ): Promise<ArtworkBytes | null> {
   const resolvedHash = await resolveSubsonicArtworkHash(hash)
   if (!resolvedHash) return null
@@ -4525,13 +4679,13 @@ async function resolveArtworkThumbnailBytesByHash(
     const sourceBuffer = await readFile(artworkPath)
     const sourceImage = nativeImage.createFromBuffer(sourceBuffer)
     if (sourceImage.isEmpty()) {
-      return getArtworkBytesByHash(resolvedHash)
+      return allowOriginalFallback ? getArtworkBytesByHash(resolvedHash) : null
     }
 
     const resized = resizeArtworkForMaxEdge(sourceImage, maxEdgePx)
     const thumbnailBuffer = resized.toJPEG(jpegQuality)
     if (!thumbnailBuffer || thumbnailBuffer.length === 0) {
-      return getArtworkBytesByHash(resolvedHash)
+      return allowOriginalFallback ? getArtworkBytesByHash(resolvedHash) : null
     }
 
     try {
@@ -4545,7 +4699,7 @@ async function resolveArtworkThumbnailBytesByHash(
     return { bytes: thumbnailBuffer, mimeType: 'image/jpeg' }
   } catch (error) {
     console.warn('Failed to resolve artwork thumbnail data URL:', resolvedHash, error)
-    return getArtworkBytesByHash(resolvedHash)
+    return allowOriginalFallback ? getArtworkBytesByHash(resolvedHash) : null
   }
 }
 
@@ -4554,20 +4708,22 @@ function getArtworkThumbnailBytesByHash(
   options?: {
     maxEdgePx?: number
     jpegQuality?: number
+    allowOriginalFallback?: boolean
   }
 ): Promise<ArtworkBytes | null> {
   if (!hash) return Promise.resolve(null)
 
   const maxEdgePx = options?.maxEdgePx ?? TRACKLIST_THUMB_MAX_EDGE_PX
   const jpegQuality = options?.jpegQuality ?? TRACKLIST_THUMB_JPEG_QUALITY
+  const allowOriginalFallback = options?.allowOriginalFallback !== false
 
   // Deduplicate concurrent generation per hash+size across all entry points
   // (IPC, custom protocol, remote controller services).
-  const requestKey = getArtworkThumbnailCacheKey(hash, maxEdgePx)
+  const requestKey = `${getArtworkThumbnailCacheKey(hash, maxEdgePx)}:${allowOriginalFallback ? 'fallback' : 'strict'}`
   const pending = artworkThumbnailRequestCache.get(requestKey)
   if (pending) return pending
 
-  const request = resolveArtworkThumbnailBytesByHash(hash, maxEdgePx, jpegQuality)
+  const request = resolveArtworkThumbnailBytesByHash(hash, maxEdgePx, jpegQuality, allowOriginalFallback)
     .finally(() => {
       artworkThumbnailRequestCache.delete(requestKey)
     })
@@ -4580,6 +4736,7 @@ async function getArtworkThumbnailDataUrlByHash(
   options?: {
     maxEdgePx?: number
     jpegQuality?: number
+    allowOriginalFallback?: boolean
   }
 ): Promise<string | null> {
   const artwork = await getArtworkThumbnailBytesByHash(hash, options)
@@ -4690,6 +4847,7 @@ app.whenReady().then(async () => {
 
   // Initialize library database
   await library.initDatabase()
+  companionApiReferenceSigner = await loadCompanionApiReferenceSigner()
   try {
     const orphanedRemoteDeleted = await library.cleanupOrphanedRemoteTracks()
     if (orphanedRemoteDeleted > 0) {
@@ -4995,6 +5153,7 @@ ipcMain.on('mini-player:publishSnapshot', (_event, snapshot: MiniPlayerSnapshot)
 })
 
 ipcMain.on('mini-player:publishQueueSnapshot', (_event, snapshot: MiniPlayerQueueSnapshot) => {
+  latestMiniPlayerQueueSnapshot = snapshot
   localApiService.publishQueueSnapshot(snapshot)
   phoneRemoteService.publishQueueSnapshot(snapshot)
 })
@@ -5715,6 +5874,20 @@ ipcMain.handle('local-api:setControlsEnabled', async (_event, controlsEnabled: u
   return applyLocalApiConfig(nextLocalConfig)
 })
 
+ipcMain.handle('local-api:setLibrarySearchEnabled', async (_event, enabled: unknown) => {
+  return applyLocalApiConfig({
+    ...localApiConfig,
+    librarySearchEnabled: Boolean(enabled)
+  })
+})
+
+ipcMain.handle('local-api:setLibraryWriteEnabled', async (_event, enabled: unknown) => {
+  return applyLocalApiConfig({
+    ...localApiConfig,
+    libraryWriteEnabled: Boolean(enabled)
+  })
+})
+
 ipcMain.handle('local-api:setPort', async (_event, rawPort: unknown) => {
   const nextPort = normalizeLocalApiPort(rawPort)
   const nextConfig: LocalApiServiceConfig = {
@@ -5736,6 +5909,8 @@ ipcMain.handle('local-api:resetToDefaults', async () => {
   const nextConfig: LocalApiServiceConfig = {
     enabled: false,
     controlsEnabled: false,
+    librarySearchEnabled: false,
+    libraryWriteEnabled: false,
     port: LOCAL_API_DEFAULT_PORT,
     token: generateLocalApiToken(),
   }
@@ -5771,11 +5946,19 @@ ipcMain.handle('phone-remote:listPendingPairingRequests', () => {
   return phoneRemoteService.listPendingPairingRequests()
 })
 
-ipcMain.handle('phone-remote:approvePairingRequest', (_event, id: unknown) => {
+ipcMain.handle('phone-remote:approvePairingRequest', (_event, id: unknown, grantedScopes?: unknown) => {
   if (typeof id !== 'string' || !id.trim()) {
     throw new Error('Invalid pairing request id.')
   }
-  return phoneRemoteService.approvePairingRequest(id.trim())
+  const normalizedScopes = Array.isArray(grantedScopes)
+    ? grantedScopes.filter((scope): scope is import('../types/companionApi').CompanionApiScope => (
+        scope === 'observe'
+        || scope === 'playback-control'
+        || scope === 'library-search'
+        || scope === 'library-write'
+      ))
+    : undefined
+  return phoneRemoteService.approvePairingRequest(id.trim(), normalizedScopes)
 })
 
 ipcMain.handle('phone-remote:rejectPairingRequest', (_event, id: unknown) => {
@@ -7666,10 +7849,12 @@ ipcMain.handle('library:getFavoritePaths', () => {
 
 ipcMain.handle('library:addFavorite', async (_event, trackPath: string) => {
   await library.addFavorite(trackPath)
+  publishCompanionFavoriteEvent(trackPath, true)
 })
 
 ipcMain.handle('library:removeFavorite', async (_event, trackPath: string) => {
   await library.removeFavorite(trackPath)
+  publishCompanionFavoriteEvent(trackPath, false)
 })
 
 // ============================================
@@ -7697,11 +7882,15 @@ ipcMain.handle('library:getPlaylists', () => {
 })
 
 ipcMain.handle('library:createPlaylist', async (_event, name: string) => {
-  return library.createPlaylist(name)
+  const playlist = await library.createPlaylist(name)
+  publishCompanionPlaylistEvent(playlist.id, 'created')
+  return playlist
 })
 
 ipcMain.handle('library:createDynamicPlaylist', async (_event, name: string, rules: DynamicPlaylistRulesV1) => {
-  return library.createDynamicPlaylist(name, rules)
+  const playlist = await library.createDynamicPlaylist(name, rules)
+  publishCompanionPlaylistEvent(playlist.id, 'created')
+  return playlist
 })
 
 ipcMain.handle('library:getDynamicPlaylistRules', (_event, playlistId: number) => {
@@ -7710,6 +7899,7 @@ ipcMain.handle('library:getDynamicPlaylistRules', (_event, playlistId: number) =
 
 ipcMain.handle('library:updateDynamicPlaylistRules', async (_event, playlistId: number, rules: DynamicPlaylistRulesV1) => {
   await library.updateDynamicPlaylistRules(playlistId, rules)
+  publishCompanionPlaylistEvent(playlistId, 'items-changed')
 })
 
 ipcMain.handle('library:previewDynamicPlaylist', (_event, rules: DynamicPlaylistRulesV1) => {
@@ -7718,10 +7908,12 @@ ipcMain.handle('library:previewDynamicPlaylist', (_event, rules: DynamicPlaylist
 
 ipcMain.handle('library:renamePlaylist', async (_event, id: number, name: string) => {
   await library.renamePlaylist(id, name)
+  publishCompanionPlaylistEvent(id, 'renamed')
 })
 
 ipcMain.handle('library:deletePlaylist', async (_event, id: number) => {
   await library.deletePlaylist(id)
+  publishCompanionPlaylistEvent(id, 'deleted')
 })
 
 ipcMain.handle('library:getPlaylistTracks', (_event, playlistId: number) => {
@@ -7734,10 +7926,12 @@ ipcMain.handle('library:getPlaylistTrackEntries', (_event, playlistId: number) =
 
 ipcMain.handle('library:addToPlaylist', async (_event, playlistId: number, trackPaths: string[]) => {
   await library.addToPlaylist(playlistId, trackPaths)
+  publishCompanionPlaylistEvent(playlistId, 'items-changed')
 })
 
 ipcMain.handle('library:removeFromPlaylist', async (_event, playlistId: number, trackPath: string) => {
   await library.removeFromPlaylist(playlistId, trackPath)
+  publishCompanionPlaylistEvent(playlistId, 'items-changed')
 })
 
 ipcMain.handle('library:reassociatePlaylistEntry', async (
@@ -7747,10 +7941,12 @@ ipcMain.handle('library:reassociatePlaylistEntry', async (
   targetTrackPath: string
 ) => {
   await library.reassociatePlaylistEntry(playlistId, entryId, targetTrackPath)
+  publishCompanionPlaylistEvent(playlistId, 'items-changed')
 })
 
 ipcMain.handle('library:reorderPlaylistTracks', async (_event, playlistId: number, orderedTrackPaths: string[]) => {
   await library.reorderPlaylistTracks(playlistId, orderedTrackPaths)
+  publishCompanionPlaylistEvent(playlistId, 'items-changed')
 })
 
 ipcMain.handle('library:markPlaylistPlayed', async (_event, playlistId: number) => {

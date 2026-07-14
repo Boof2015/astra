@@ -86,6 +86,7 @@ import {
 } from '../../../types/phoneRemote'
 import type { LastFmProfileStatus, LastFmScrobbleProtocol } from '../../../types/lastFm'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
+import type { CompanionApiScope } from '../../../types/companionApi'
 import ParallaxSettingsPanel from '../parallax/ParallaxSettingsPanel'
 
 type ResetActionId =
@@ -407,6 +408,8 @@ export default function SettingsView() {
     init: initLocalApi,
     setEnabled: setLocalApiEnabled,
     setControlsEnabled: setLocalApiControlsEnabled,
+    setLibrarySearchEnabled: setLocalApiLibrarySearchEnabled,
+    setLibraryWriteEnabled: setLocalApiLibraryWriteEnabled,
     setPort: setLocalApiPort,
     rotateToken: rotateLocalApiToken,
   } = useLocalApiSettingsStore()
@@ -889,6 +892,8 @@ export default function SettingsView() {
     : 'No update checks have run yet.'
   const localApiEnabled = localApiStatus?.enabled ?? false
   const localApiControlsEnabled = localApiStatus?.controlsEnabled ?? false
+  const localApiLibrarySearchEnabled = localApiStatus?.librarySearchEnabled ?? false
+  const localApiLibraryWriteEnabled = localApiStatus?.libraryWriteEnabled ?? false
   const localApiBaseUrl = localApiStatus?.baseUrl ?? `http://127.0.0.1:${LOCAL_API_DEFAULT_PORT}`
   const localApiToken = localApiStatus?.token ?? ''
   const phoneRemoteEnabled = phoneRemoteStatus?.enabled ?? false
@@ -1295,8 +1300,8 @@ export default function SettingsView() {
     })
   }
 
-  const handleApprovePhoneRemotePairingRequest = (id: string) => {
-    void approvePhoneRemotePairingRequest(id).then(() => {
+  const handleApprovePhoneRemotePairingRequest = (id: string, scopes: CompanionApiScope[]) => {
+    void approvePhoneRemotePairingRequest(id, scopes).then(() => {
       setPhoneRemoteFeedback('Pairing request approved.')
     })
   }
@@ -2344,7 +2349,7 @@ export default function SettingsView() {
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
                   <h4>Local API</h4>
-                  <p>Local-only API for external integrations like editors and tools.</p>
+                  <p>Companion API for local automations, launchers, widgets, and creative tools.</p>
                 </div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
@@ -2364,6 +2369,26 @@ export default function SettingsView() {
                       onClick={() => void setLocalApiControlsEnabled(!localApiControlsEnabled)}
                     >
                       {localApiControlsEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Library Search</span>
+                    <button
+                      className={`settings-toggle ${localApiLibrarySearchEnabled ? 'active' : ''}`}
+                      onClick={() => void setLocalApiLibrarySearchEnabled(!localApiLibrarySearchEnabled)}
+                    >
+                      {localApiLibrarySearchEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Favorites & Playlist Changes</span>
+                    <button
+                      className={`settings-toggle ${localApiLibraryWriteEnabled ? 'active' : ''}`}
+                      onClick={() => void setLocalApiLibraryWriteEnabled(!localApiLibraryWriteEnabled)}
+                    >
+                      {localApiLibraryWriteEnabled ? 'Enabled' : 'Disabled'}
                     </button>
                   </div>
 
@@ -2394,7 +2419,7 @@ export default function SettingsView() {
                       </span>
                       <button
                         className="settings-btn"
-                        onClick={() => void copyToClipboard(`${localApiBaseUrl}/v1/now-playing`, 'Endpoint')}
+                        onClick={() => void copyToClipboard(`${localApiBaseUrl}/v2/capabilities`, 'Endpoint')}
                       >
                         Copy
                       </button>
