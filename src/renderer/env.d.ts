@@ -212,6 +212,7 @@ declare global {
             isRunning(): boolean
         } | null
         visualizerAPI: VisualizerDSP | null
+        visualizerAddonStatus: { available: boolean; reason: string | null }
         nativeAudioAPI: {
             initialize: () => Promise<NativeAudioCapabilities>
             getCapabilities: () => Promise<NativeAudioCapabilities>

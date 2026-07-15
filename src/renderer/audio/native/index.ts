@@ -35,7 +35,11 @@ if (typeof window !== 'undefined' && window.visualizerAPI) {
   nativeModule = window.visualizerAPI as unknown as VisualizerDSP
   console.log('Native visualizer DSP module loaded via preload')
 } else {
-  loadError = new Error('Native module not found in window.visualizerAPI')
+  // Prefer the preload's specific load-failure message (e.g. a missing .node file vs a
+  // shared-library/ABI mismatch) so the console warning and the in-app notice both point at
+  // the actual cause; fall back to a generic message if the diagnostics global is absent.
+  const reason = typeof window !== 'undefined' ? window.visualizerAddonStatus?.reason : null
+  loadError = new Error(reason ?? 'Native module not found in window.visualizerAPI')
   warnNativeUnavailableOnce()
 }
 

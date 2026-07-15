@@ -112,6 +112,8 @@ Windows users can also `winget install Boof2015.Astra`
 
 These packages are maintained by third parties and are not built, audited, or officially supported by the Astra project. Packaging, signing, updates, and distribution are handled by their respective maintainers.
 
+> Packaging Astra? See [Native visualizer module — packaging & troubleshooting](docs/native-module.md) for how `visualizer_dsp.node` must be built and placed. If it's missing, the spectrum/oscilloscope/spectrogram/LUFS scopes render a "Native DSP unavailable" notice.
+
 - [AUR](https://aur.archlinux.org/packages/astra-music-git) - community maintained AUR source package
 - [TerraPKG](https://terrapkg.com/) - community maintained Fedora/RPM package
 
@@ -131,7 +133,7 @@ cd astra
 npm install
 ```
 
-The `postinstall` script compiles the native C++ visualizer module for your platform.
+The `postinstall` script compiles the native C++ visualizer module for your platform. For details on how this module is built, bundled, and troubleshot (including for packaging Astra yourself), see [docs/native-module.md](docs/native-module.md).
 
 ```bash
 npm run dev              # Development

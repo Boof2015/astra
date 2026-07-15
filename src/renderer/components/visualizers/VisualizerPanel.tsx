@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type
 import { audioEngine } from '../../audio/AudioEngine'
 import { LUFSMeter, Oscilloscope, SpectrumAnalyzer, Spectrogram, Vectorscope, VUMeter, Waveform } from '../../audio/visualizers'
 import { FrameScheduler } from '../../audio/visualizers/frameScheduler'
-import { isNativeAvailable } from '../../audio/native/index'
+import { getNativeLoadError, isNativeAvailable } from '../../audio/native/index'
+import { isNativeOnlyScope } from './nativeOnlyScopes'
 import { buildAnalyzerGridTemplateColumns } from '../layout/analyzerLayout'
 import { useScopePopoutStore } from '../../stores/scopePopoutStore'
 import { useThemeStore } from '../../stores/themeStore'
@@ -802,6 +803,30 @@ function scopeLabel(scope: ScopeKind): string {
   }
 }
 
+function NativeUnavailableNotice({
+  scope,
+  reason,
+}: {
+  scope: ScopeKind
+  reason: string | null
+}) {
+  return (
+    <div className="visualizer-native-unavailable" title={reason ?? undefined}>
+      <div className="visualizer-native-unavailable-glyph" aria-hidden="true">⚠</div>
+      <div className="visualizer-native-unavailable-title">Native DSP unavailable</div>
+      <div className="visualizer-native-unavailable-copy">
+        {scopeLabel(scope)} needs Astra&apos;s native audio module, which didn&apos;t load in this build.
+      </div>
+      {reason ? (
+        <div className="visualizer-native-unavailable-reason">{reason}</div>
+      ) : null}
+      <div className="visualizer-native-unavailable-hint">
+        Likely a packaging issue — reinstall an official build or report this message.
+      </div>
+    </div>
+  )
+}
+
 function PopoutPlaceholder({
   scope,
   onRecall
@@ -1232,6 +1257,8 @@ export default function VisualizerPanel({
         </div>
         {isPoppedOut ? (
           <PopoutPlaceholder scope={scope} onRecall={() => recallScopePopout(scope)} />
+        ) : !nativeVisualizersAvailable && isNativeOnlyScope(scope) ? (
+          <NativeUnavailableNotice scope={scope} reason={getNativeLoadError()?.message ?? null} />
         ) : scope === 'spectrum' ? (
           <DockedSpectrumTile
             frameScheduler={frameScheduler}

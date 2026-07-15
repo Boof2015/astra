@@ -12532,6 +12532,67 @@ body::after {
   background: rgba(var(--accent-rgb), 0.18);
 }
 
+/* Shown in place of a native-only scope's canvas when the native DSP addon failed to load. */
+.visualizer-native-unavailable {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 40px 12px 14px;
+  text-align: center;
+  min-width: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top, rgba(var(--accent-rgb), 0.06), transparent 60%),
+    var(--stage-bg);
+}
+
+.visualizer-native-unavailable-glyph {
+  font-size: 18px;
+  line-height: 1;
+  color: rgba(var(--tint), 0.5);
+}
+
+.visualizer-native-unavailable-title {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(var(--tint), 0.74);
+}
+
+.visualizer-native-unavailable-copy {
+  max-width: 260px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: rgba(var(--tint), 0.52);
+}
+
+.visualizer-native-unavailable-reason {
+  max-width: 100%;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.3;
+  color: rgba(var(--tint), 0.4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+
+.visualizer-native-unavailable-hint {
+  max-width: 260px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: rgba(var(--tint), 0.42);
+}
+
 .analyzer-edit-overlay-backdrop {
   position: fixed;
   top: calc(var(--titlebar-height) + var(--analyzer-height) + 12px);

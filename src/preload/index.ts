@@ -1418,6 +1418,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
 // Expose Visualizer API
 contextBridge.exposeInMainWorld('visualizerAPI', visualizerDSP)
+// Diagnostics sibling to `visualizerAPI` (which is `null` when the addon fails to load, so it
+// can't carry a reason itself). Lets the renderer surface *why* native-only visualizers are
+// blank — the reason string distinguishes a missing file from a shared-lib/ABI mismatch.
+contextBridge.exposeInMainWorld('visualizerAddonStatus', {
+  available: Boolean(visualizerDSP),
+  reason: nativeAddonLoadError,
+})
 contextBridge.exposeInMainWorld('nativeAudioAPI', nativeAudioController)
 // §22 Commit 1 — Parallax loopback (Windows-only WASAPI, stubbed elsewhere). Wrapped in plain
 // JS thunks rather than exposing the native sub-object directly — contextBridge handles
@@ -1894,6 +1901,10 @@ declare global {
 
     // Native Visualizer API - exposed as visualizerAPI global
     visualizerAPI: VisualizerDSP | null
+
+    // Load state for the native visualizer addon. `available` mirrors `visualizerAPI !== null`;
+    // `reason` carries the preload's load-failure message when it didn't load.
+    visualizerAddonStatus: { available: boolean; reason: string | null }
 
     // §22 Commit 1 — Parallax loopback (Windows-only). Null on platforms / builds where the
     // native module didn't load or the loopback exports aren't present.
