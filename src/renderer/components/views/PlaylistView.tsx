@@ -12,6 +12,7 @@ import {
 } from '../../utils/playlistSystem'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { formatPlaylistExportStatus, formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
+import { buildPlayableOccurrenceIndexes } from '../../utils/playlistOccurrences'
 import AlbumArtwork from '../library/AlbumArtwork'
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
@@ -35,8 +36,11 @@ type SortDirection = 'asc' | 'desc'
 type PlaylistTrack = ReturnType<typeof usePlaylistStore.getState>['selectedPlaylistTracks'][number]
 type PlaylistEntry = ReturnType<typeof usePlaylistStore.getState>['selectedPlaylistEntries'][number]
 
-function getPlaylistEntryPath(entry: PlaylistEntry): string {
-  return entry.track?.path ?? entry.track_path
+interface PlaylistDisplayRow {
+  track: PlaylistTrack
+  entryId: number | null
+  defaultNumber: number
+  instanceKey: string
 }
 
 function getMissingPlaylistEntryLabel(entry: PlaylistEntry): string {
@@ -255,7 +259,7 @@ export default function PlaylistView() {
     deletePlaylist,
     setPlaylistCustomCoverFromFile,
     clearPlaylistCustomCover,
-    reorderPlaylistTracks,
+    reorderPlaylistEntries,
     reassociatePlaylistEntry,
     importPlaylistFromFile,
     exportPlaylistToM3u,
@@ -428,49 +432,53 @@ export default function PlaylistView() {
     return playlist.custom_cover_hash ?? selectedPlaylistTracks[0]?.artwork_hash ?? playlist.auto_cover_hash
   }, [isFavoritesPlaylist, playlist, selectedPlaylistTracks])
 
-  const playlistDisplayTracks = useMemo(() => {
-    if (isFavoritesPlaylist) return selectedPlaylistTracks
-    return selectedPlaylistEntries.map((entry, index) => entry.track ?? createMissingPlaylistTrackPlaceholder(entry, index))
-  }, [isFavoritesPlaylist, selectedPlaylistEntries, selectedPlaylistTracks])
-
-  const playlistTrackNumbersByPath = useMemo(() => {
-    const numbersByPath = new Map<string, number>()
-
+  const playlistDisplayRows = useMemo<PlaylistDisplayRow[]>(() => {
     if (isFavoritesPlaylist) {
-      selectedPlaylistTracks.forEach((track, index) => {
-        numbersByPath.set(track.path, index + 1)
-      })
-      return numbersByPath
+      return selectedPlaylistTracks.map((track, index) => ({
+        track,
+        entryId: null,
+        defaultNumber: index + 1,
+        instanceKey: `favorite:${track.path}`
+      }))
     }
 
-    selectedPlaylistEntries.forEach((entry, index) => {
-      const position = Number.isFinite(entry.position) && entry.position >= 0 ? entry.position : index
-      numbersByPath.set(getPlaylistEntryPath(entry), position + 1)
-    })
-
-    return numbersByPath
+    return selectedPlaylistEntries.map((entry, index) => ({
+      track: entry.track ?? createMissingPlaylistTrackPlaceholder(entry, index),
+      entryId: entry.id,
+      defaultNumber: (Number.isFinite(entry.position) && entry.position >= 0 ? entry.position : index) + 1,
+      instanceKey: `playlist-entry:${entry.id}`
+    }))
   }, [isFavoritesPlaylist, selectedPlaylistEntries, selectedPlaylistTracks])
 
-  const displayTracks = useMemo(() => {
-    if (!sortState) return playlistDisplayTracks
+  const displayRows = useMemo(() => {
+    if (!sortState) return playlistDisplayRows
 
-    const indexedTracks = playlistDisplayTracks.map((track, index) => ({ track, index }))
-    indexedTracks.sort((left, right) => {
-      const comparison = comparePlaylistTracksBySort(left.track, right.track, sortState, trackRatings)
+    const indexedRows = playlistDisplayRows.map((row, index) => ({ row, index }))
+    indexedRows.sort((left, right) => {
+      const comparison = comparePlaylistTracksBySort(left.row.track, right.row.track, sortState, trackRatings)
       if (comparison !== 0) return comparison
 
-      const pathComparison = comparePath(left.track.path, right.track.path)
+      const pathComparison = comparePath(left.row.track.path, right.row.track.path)
       if (pathComparison !== 0) return pathComparison
 
       return left.index - right.index
     })
 
-    return indexedTracks.map(({ track }) => track)
-  }, [playlistDisplayTracks, sortState, trackRatings])
+    return indexedRows.map(({ row }) => row)
+  }, [playlistDisplayRows, sortState, trackRatings])
+
+  const displayTracks = useMemo(() => displayRows.map((row) => row.track), [displayRows])
+  const displayPlaylistEntryIds = useMemo(() => displayRows.map((row) => row.entryId), [displayRows])
+  const displayTrackNumbers = useMemo(() => displayRows.map((row) => row.defaultNumber), [displayRows])
+  const displayTrackInstanceKeys = useMemo(() => displayRows.map((row) => row.instanceKey), [displayRows])
 
   const displayPlayableTracks = useMemo(
     () => displayTracks.filter((track) => !isMissingPlaylistDisplayTrack(track)),
     [displayTracks]
+  )
+  const displayQueueSeedIndexes = useMemo(
+    () => buildPlayableOccurrenceIndexes(displayRows, (row) => !isMissingPlaylistDisplayTrack(row.track)),
+    [displayRows]
   )
   const displayPlayableTrackPaths = useMemo(
     () => displayPlayableTracks.map((track) => track.path),
@@ -499,7 +507,7 @@ export default function PlaylistView() {
     for (let index = 0; index < reorderedEntries.length; index += 1) {
       const reorderedEntry = reorderedEntries[index]
       const currentEntry = selectedPlaylistEntries[index]
-      if (!reorderedEntry || !currentEntry || getPlaylistEntryPath(reorderedEntry) !== getPlaylistEntryPath(currentEntry)) {
+      if (!reorderedEntry || !currentEntry || reorderedEntry.id !== currentEntry.id) {
         return true
       }
     }
@@ -814,7 +822,7 @@ export default function PlaylistView() {
     setIsSavingReorder(true)
     setReorderError(null)
     try {
-      await reorderPlaylistTracks(selectedPlaylistId, reorderedEntries.map(getPlaylistEntryPath))
+      await reorderPlaylistEntries(selectedPlaylistId, reorderedEntries.map((entry) => entry.id))
       setIsDiscardReorderConfirmOpen(false)
       setIsReorderMode(false)
       setReorderedEntries(null)
@@ -832,7 +840,7 @@ export default function PlaylistView() {
     } finally {
       setIsSavingReorder(false)
     }
-  }, [canReorderTracks, isSavingReorder, reorderedEntries, reorderPlaylistTracks, selectPlaylist, selectedPlaylistId, setSortState])
+  }, [canReorderTracks, isSavingReorder, reorderedEntries, reorderPlaylistEntries, selectPlaylist, selectedPlaylistId, setSortState])
 
   const handleConfirmDiscardReorder = useCallback(() => {
     if (isSavingReorder) return
@@ -848,11 +856,12 @@ export default function PlaylistView() {
     setActiveView('library')
   }, [setActiveView])
 
-  const handleChangeMissingPlaylistAssociation = useCallback(async (trackPath: string) => {
+  const handleChangeMissingPlaylistAssociation = useCallback(async (trackPath: string, entryId?: number | null) => {
     if (selectedPlaylistId === null || selectedPlaylistId <= 0 || isDynamicPlaylist) return
 
     const entry = selectedPlaylistEntries.find((candidate) => (
-      candidate.track_path === trackPath && (candidate.missing || candidate.track === null)
+      (typeof entryId === 'number' ? candidate.id === entryId : candidate.track_path === trackPath)
+      && (candidate.missing || candidate.track === null)
     ))
     if (!entry) {
       setPlaylistImportStatus({ tone: 'error', message: 'That missing playlist entry is no longer available.' })
@@ -1365,9 +1374,12 @@ export default function PlaylistView() {
               <TrackList
                 tracks={displayTracks}
                 queueSeedTracks={displayPlayableTracks}
+                queueSeedIndexes={displayQueueSeedIndexes}
                 queueContextLabel={playlistName ?? 'Playlist'}
                 trackNumberMode="context"
-                contextTrackNumbersByPath={playlistTrackNumbersByPath}
+                contextTrackNumbers={displayTrackNumbers}
+                trackInstanceKeys={displayTrackInstanceKeys}
+                playlistEntryIds={displayPlaylistEntryIds}
                 playlistSourceId={isDynamicPlaylist ? null : selectedPlaylistId}
                 onChangeMissingPlaylistAssociation={handleChangeMissingPlaylistAssociation}
                 enableColumnSorting

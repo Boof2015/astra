@@ -1409,9 +1409,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getPlaylistTrackEntries: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTrackEntries', playlistId),
     addToPlaylist: (playlistId: number, trackPaths: string[]) => ipcRenderer.invoke('library:addToPlaylist', playlistId, trackPaths),
     removeFromPlaylist: (playlistId: number, trackPath: string) => ipcRenderer.invoke('library:removeFromPlaylist', playlistId, trackPath),
+    removePlaylistEntry: (playlistId: number, entryId: number) => ipcRenderer.invoke('library:removePlaylistEntry', playlistId, entryId),
     reassociatePlaylistEntry: (playlistId: number, entryId: number, targetTrackPath: string) =>
       ipcRenderer.invoke('library:reassociatePlaylistEntry', playlistId, entryId, targetTrackPath),
-    reorderPlaylistTracks: (playlistId: number, orderedTrackPaths: string[]) => ipcRenderer.invoke('library:reorderPlaylistTracks', playlistId, orderedTrackPaths),
+    reorderPlaylistEntries: (playlistId: number, orderedEntryIds: number[]) => ipcRenderer.invoke('library:reorderPlaylistEntries', playlistId, orderedEntryIds),
     markPlaylistPlayed: (playlistId: number) => ipcRenderer.invoke('library:markPlaylistPlayed', playlistId),
     setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => ipcRenderer.invoke('library:setPlaylistCustomCoverFromFile', playlistId, imagePath),
     clearPlaylistCustomCover: (playlistId: number) => ipcRenderer.invoke('library:clearPlaylistCustomCover', playlistId),
@@ -1898,8 +1899,9 @@ declare global {
         getPlaylistTrackEntries: (playlistId: number) => Promise<PlaylistTrackEntry[]>
         addToPlaylist: (playlistId: number, trackPaths: string[]) => Promise<void>
         removeFromPlaylist: (playlistId: number, trackPath: string) => Promise<void>
+        removePlaylistEntry: (playlistId: number, entryId: number) => Promise<void>
         reassociatePlaylistEntry: (playlistId: number, entryId: number, targetTrackPath: string) => Promise<void>
-        reorderPlaylistTracks: (playlistId: number, orderedTrackPaths: string[]) => Promise<void>
+        reorderPlaylistEntries: (playlistId: number, orderedEntryIds: number[]) => Promise<void>
         markPlaylistPlayed: (playlistId: number) => Promise<void>
         setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => Promise<void>
         clearPlaylistCustomCover: (playlistId: number) => Promise<void>

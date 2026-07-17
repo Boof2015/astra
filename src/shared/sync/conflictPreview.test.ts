@@ -75,6 +75,22 @@ test('merge preview keeps newer order and appends missing older tracks', () => {
   )
 })
 
+test('merge preview preserves authored repeats and appends only missing occurrences', () => {
+  const merged = mergePlaylistEntriesForPreview(
+    [entry('A', 0), entry('A', 1), entry('B', 2)],
+    [entry('A', 0), entry('B', 1), entry('B', 2)]
+  )
+
+  assert.deepEqual(
+    merged.map((item) => item.title),
+    ['A', 'A', 'B', 'B']
+  )
+  assert.deepEqual(
+    merged.map((item) => item.position),
+    [0, 1, 2, 3]
+  )
+})
+
 test('resolution preview uses newer side for merge result name', () => {
   const desktop = syncPlaylistToSnapshot(playlist({
     name: 'Desktop Mix',

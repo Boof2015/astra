@@ -88,10 +88,13 @@ interface TrackListProps {
   showNewTrackIndicator?: boolean
   showDiscHeaders?: boolean
   trackNumberMode?: TrackNumberMode
-  contextTrackNumbersByPath?: ReadonlyMap<string, number>
+  contextTrackNumbers?: readonly number[]
+  trackInstanceKeys?: readonly string[]
+  playlistEntryIds?: readonly (number | null)[]
+  queueSeedIndexes?: readonly (number | null)[]
   externalScroll?: boolean
   playlistSourceId?: number | null
-  onChangeMissingPlaylistAssociation?: (trackPath: string) => void | Promise<void>
+  onChangeMissingPlaylistAssociation?: (trackPath: string, entryId?: number | null) => void | Promise<void>
   sourceContext?: PlaybackSourceContext | null
   jumpToTrackRequest?: LibraryTrackRevealRequest | PlaylistTrackRevealRequest | null
   onJumpToTrackRequestConsumed?: (requestId: number) => void
@@ -115,7 +118,8 @@ interface TrackListRowSharedProps {
   ratingsEnabled: boolean
   searchQuery: string
   trackNumberMode: TrackNumberMode
-  contextTrackNumbersByPath?: ReadonlyMap<string, number>
+  contextTrackNumbers?: readonly number[]
+  trackInstanceKeys?: readonly string[]
   currentTrackPath: string | null
   loadingTrackPath: string | null
   loadingTrackPercent: number | null
@@ -147,8 +151,8 @@ interface TrackListRowSharedProps {
   onAddToQueue: (event: React.MouseEvent, track: DbTrack) => void
   onToggleFavorite: (event: React.MouseEvent, trackPath: string) => void
   onOpenPlaylistPopup: (event: React.MouseEvent<HTMLButtonElement>, track: DbTrack) => void
-  onTrackContextMenu: (event: React.MouseEvent<HTMLDivElement>, track: DbTrack) => void
-  onRemoveFromPlaylist: (event: React.MouseEvent, track: DbTrack) => void
+  onTrackContextMenu: (event: React.MouseEvent<HTMLDivElement>, track: DbTrack, index: number) => void
+  onRemoveFromPlaylist: (event: React.MouseEvent, track: DbTrack, index: number) => void
   canRemoveFromPlaylist: boolean
   isRemovingFromPlaylist: boolean
   showQueueInsertAffordance: boolean
@@ -190,6 +194,7 @@ interface TrackPlaylistCreateState {
 interface TrackContextMenuState {
   track: DbTrack
   tracks: DbTrack[]
+  playlistEntryId: number | null
   x: number
   y: number
 }
@@ -244,11 +249,10 @@ function hasQueueActionFeedback(queueFeedback: Record<string, true>, action: 'qu
 }
 
 function resolveContextTrackNumber(
-  contextTrackNumbersByPath: ReadonlyMap<string, number> | undefined,
-  trackPath: string,
+  contextTrackNumbers: readonly number[] | undefined,
   index: number
 ): number {
-  const contextualNumber = contextTrackNumbersByPath?.get(trackPath)
+  const contextualNumber = contextTrackNumbers?.[index]
   if (typeof contextualNumber === 'number' && Number.isFinite(contextualNumber) && contextualNumber > 0) {
     return Math.trunc(contextualNumber)
   }
@@ -400,7 +404,8 @@ function TrackListRowRenderer({
   ratingsEnabled,
   searchQuery,
   trackNumberMode,
-  contextTrackNumbersByPath,
+  contextTrackNumbers,
+  trackInstanceKeys,
   currentTrackPath,
   loadingTrackPath,
   loadingTrackPercent,
@@ -505,8 +510,9 @@ function TrackListRowRenderer({
   const displayedTrackNumber = trackNumberMode === 'none'
     ? null
     : trackNumberMode === 'context'
-      ? resolveContextTrackNumber(contextTrackNumbersByPath, track.path, trackIndex)
+      ? resolveContextTrackNumber(contextTrackNumbers, trackIndex)
       : track.track_number ?? trackIndex + 1
+  const trackInstanceKey = trackInstanceKeys?.[trackIndex] ?? track.path
 
   return (
     <div className="track-list-item" style={style as CSSProperties} {...ariaAttributes}>
@@ -521,14 +527,14 @@ function TrackListRowRenderer({
         data-track-index={trackIndex}
         data-controller-focusable="true"
         data-controller-context={isMissingPlaylistEntry && !canRemoveFromPlaylist ? undefined : 'true'}
-        data-controller-key={`track:${track.path}`}
+        data-controller-key={`track:${trackInstanceKey}`}
         data-controller-index={trackIndex}
         tabIndex={-1}
         role="button"
         aria-label={`${track.title} by ${track.artist}`}
         onDragStart={showQueueInsertAffordance ? (event) => event.preventDefault() : undefined}
         onPointerDown={isMissingPlaylistEntry ? undefined : (event) => onQueueInsertPointerDown(event, track, trackIndex)}
-        onContextMenu={isMissingPlaylistEntry && !canRemoveFromPlaylist ? undefined : (event) => onTrackContextMenu(event, track)}
+        onContextMenu={isMissingPlaylistEntry && !canRemoveFromPlaylist ? undefined : (event) => onTrackContextMenu(event, track, trackIndex)}
         onClick={(event) => {
           if (isMissingPlaylistEntry) return
           void onTrackClick(event, track, trackIndex)
@@ -748,7 +754,7 @@ function TrackListRowRenderer({
             {canRemoveFromPlaylist && (
               <button
                 className="track-action-btn track-action-btn-danger"
-                onClick={(event) => onRemoveFromPlaylist(event, track)}
+                onClick={(event) => onRemoveFromPlaylist(event, track, trackIndex)}
                 title="Remove from playlist"
                 disabled={isRemovingFromPlaylist}
               >
@@ -780,7 +786,10 @@ export default function TrackList({
   showNewTrackIndicator = false,
   showDiscHeaders = false,
   trackNumberMode = 'album',
-  contextTrackNumbersByPath,
+  contextTrackNumbers,
+  trackInstanceKeys,
+  playlistEntryIds,
+  queueSeedIndexes,
   externalScroll = false,
   playlistSourceId = null,
   onChangeMissingPlaylistAssociation,
@@ -819,6 +828,7 @@ export default function TrackList({
   const addToPlaylist = usePlaylistStore((state) => state.addToPlaylist)
   const createPlaylistWithOptions = usePlaylistStore((state) => state.createPlaylistWithOptions)
   const removeFromPlaylist = usePlaylistStore((state) => state.removeFromPlaylist)
+  const removePlaylistEntry = usePlaylistStore((state) => state.removePlaylistEntry)
   const getPlaylistsContainingTracks = usePlaylistStore((state) => state.getPlaylistsContainingTracks)
   const openArtistInLibrary = useOpenArtistInLibrary()
   const openAlbumInLibrary = useOpenAlbumInLibrary()
@@ -1223,7 +1233,10 @@ export default function TrackList({
       setSelectedTrackPaths(new Set())
     }
 
-    const queueSeedIndex = queueSeedTrackPathToIndex.get(dbTrack.path)
+    const occurrenceQueueSeedIndex = queueSeedIndexes?.[index]
+    const queueSeedIndex = typeof occurrenceQueueSeedIndex === 'number'
+      ? occurrenceQueueSeedIndex
+      : queueSeedTrackPathToIndex.get(dbTrack.path)
     if (queueSeedIndex === undefined) {
       await startPlaybackContextByPaths(renderedQueueTrackPaths, index, {
         sourcePlaylistId: playlistSourceId,
@@ -1243,6 +1256,7 @@ export default function TrackList({
     sourceContext,
     queueSeedTrackPaths,
     queueSeedTrackPathToIndex,
+    queueSeedIndexes,
     queueContextLabel,
     renderedQueueTrackPaths,
     selectedTrackPaths.size,
@@ -1539,12 +1553,14 @@ export default function TrackList({
     openPlaylistPopupForTracks(event.currentTarget, resolveActionTracks(track))
   }, [openPlaylistPopupForTracks, resolveActionTracks])
 
-  const handleTrackContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>, track: DbTrack) => {
+  const handleTrackContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>, track: DbTrack, trackIndex: number) => {
     event.preventDefault()
     event.stopPropagation()
     closePlaylistPopup()
 
-    const contextTracks = selectedTrackPaths.has(track.path) && selectedDbTracks.length > 0
+    const hasRepeatedRenderedPath = playlistEntryIds !== undefined
+      && tracks.some((candidate, index) => index !== trackIndex && candidate.path === track.path)
+    const contextTracks = !hasRepeatedRenderedPath && selectedTrackPaths.has(track.path) && selectedDbTracks.length > 0
       ? selectedDbTracks
       : [track]
     if (contextTracks.length === 1 && contextTracks[0]?.path === track.path) {
@@ -1554,10 +1570,11 @@ export default function TrackList({
     setTrackContextMenu({
       track,
       tracks: contextTracks,
+      playlistEntryId: contextTracks.length === 1 ? playlistEntryIds?.[trackIndex] ?? null : null,
       x: event.clientX,
       y: event.clientY
     })
-  }, [closePlaylistPopup, selectedDbTracks, selectedTrackPaths])
+  }, [closePlaylistPopup, playlistEntryIds, selectedDbTracks, selectedTrackPaths, tracks])
 
   const handleCheckTrackIntegrity = useCallback(() => {
     if (!trackContextMenu) return
@@ -1665,22 +1682,45 @@ export default function TrackList({
     }
   }, [closePlaylistPopup, isRemovingFromPlaylist, playlistSourceId, removeFromPlaylist])
 
-  const handleRemoveTrackFromPlaylist = useCallback((event: React.MouseEvent, dbTrack: DbTrack) => {
+  const removePlaylistOccurrence = useCallback(async (entryId: number | null, fallbackTrackPath: string) => {
+    const playlistId = playlistSourceId
+    if (playlistId === null || playlistId <= 0 || isRemovingFromPlaylist) return
+
+    setIsRemovingFromPlaylist(true)
+    try {
+      if (typeof entryId === 'number' && Number.isInteger(entryId) && entryId > 0) {
+        await removePlaylistEntry(playlistId, entryId)
+      } else {
+        await removeFromPlaylist(playlistId, fallbackTrackPath)
+      }
+      closePlaylistPopup()
+      setTrackContextMenu(null)
+      setSelectedTrackPaths(new Set())
+    } finally {
+      setIsRemovingFromPlaylist(false)
+    }
+  }, [closePlaylistPopup, isRemovingFromPlaylist, playlistSourceId, removeFromPlaylist, removePlaylistEntry])
+
+  const handleRemoveTrackFromPlaylist = useCallback((event: React.MouseEvent, dbTrack: DbTrack, trackIndex: number) => {
     event.stopPropagation()
-    void removeTrackPathsFromCurrentPlaylist([dbTrack.path])
-  }, [removeTrackPathsFromCurrentPlaylist])
+    void removePlaylistOccurrence(playlistEntryIds?.[trackIndex] ?? null, dbTrack.path)
+  }, [playlistEntryIds, removePlaylistOccurrence])
 
   const handleContextRemoveFromPlaylist = useCallback(() => {
     if (!trackContextMenu) return
+    if (trackContextMenu.tracks.length === 1 && trackContextMenu.playlistEntryId !== null) {
+      void removePlaylistOccurrence(trackContextMenu.playlistEntryId, trackContextMenu.track.path)
+      return
+    }
     void removeTrackPathsFromCurrentPlaylist(trackContextMenu.tracks.map((track) => track.path))
-  }, [removeTrackPathsFromCurrentPlaylist, trackContextMenu])
+  }, [removePlaylistOccurrence, removeTrackPathsFromCurrentPlaylist, trackContextMenu])
 
   const handleChangeMissingPlaylistAssociation = useCallback(() => {
     if (!trackContextMenu || trackContextMenu.tracks.length !== 1) return
     const track = trackContextMenu.tracks[0]
     if (!track || !isMissingPlaylistEntryTrack(track) || !onChangeMissingPlaylistAssociation) return
     setTrackContextMenu(null)
-    void onChangeMissingPlaylistAssociation(track.path)
+    void onChangeMissingPlaylistAssociation(track.path, trackContextMenu.playlistEntryId)
   }, [onChangeMissingPlaylistAssociation, trackContextMenu])
 
   const handleOpenCreatePlaylistModal = useCallback(() => {
@@ -1946,7 +1986,8 @@ export default function TrackList({
     ratingsEnabled,
     searchQuery,
     trackNumberMode,
-    contextTrackNumbersByPath,
+    contextTrackNumbers,
+    trackInstanceKeys,
     currentTrackPath,
     loadingTrackPath,
     loadingTrackPercent,
@@ -1992,7 +2033,8 @@ export default function TrackList({
     ratingsEnabled,
     searchQuery,
     trackNumberMode,
-    contextTrackNumbersByPath,
+    contextTrackNumbers,
+    trackInstanceKeys,
     currentTrackPath,
     loadingTrackPath,
     loadingTrackPercent,

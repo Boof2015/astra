@@ -145,8 +145,9 @@ interface PlaylistStore {
   clearSelection: () => void
   addToPlaylist: (playlistId: number, trackPaths: string[]) => Promise<void>
   removeFromPlaylist: (playlistId: number, trackPath: string) => Promise<void>
+  removePlaylistEntry: (playlistId: number, entryId: number) => Promise<void>
   reassociatePlaylistEntry: (playlistId: number, entryId: number, targetTrackPath: string) => Promise<void>
-  reorderPlaylistTracks: (playlistId: number, orderedTrackPaths: string[]) => Promise<void>
+  reorderPlaylistEntries: (playlistId: number, orderedEntryIds: number[]) => Promise<void>
   setPlaylistCustomCoverFromFile: (playlistId: number, imagePath: string) => Promise<void>
   clearPlaylistCustomCover: (playlistId: number) => Promise<void>
   getPlaylistsContainingTrack: (trackPath: string) => Promise<number[]>
@@ -348,18 +349,24 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       await refreshSelectedPlaylist(playlistId)
     },
 
+    removePlaylistEntry: async (playlistId: number, entryId: number) => {
+      await window.electronAPI.library.removePlaylistEntry(playlistId, entryId)
+      await get().loadPlaylists()
+      await refreshSelectedPlaylist(playlistId)
+    },
+
     reassociatePlaylistEntry: async (playlistId: number, entryId: number, targetTrackPath: string) => {
       await window.electronAPI.library.reassociatePlaylistEntry(playlistId, entryId, targetTrackPath)
       await get().loadPlaylists()
       await refreshSelectedPlaylist(playlistId)
     },
 
-    reorderPlaylistTracks: async (playlistId: number, orderedTrackPaths: string[]) => {
+    reorderPlaylistEntries: async (playlistId: number, orderedEntryIds: number[]) => {
       if (isSystemFavoritesPlaylistId(playlistId)) return
       if (playlistId <= 0) return
-      if (!Array.isArray(orderedTrackPaths) || orderedTrackPaths.length === 0) return
+      if (!Array.isArray(orderedEntryIds) || orderedEntryIds.length === 0) return
 
-      await window.electronAPI.library.reorderPlaylistTracks(playlistId, orderedTrackPaths)
+      await window.electronAPI.library.reorderPlaylistEntries(playlistId, orderedEntryIds)
       await get().loadPlaylists()
       await refreshSelectedPlaylist(playlistId)
     },

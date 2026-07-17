@@ -7951,6 +7951,11 @@ ipcMain.handle('library:removeFromPlaylist', async (_event, playlistId: number, 
   publishCompanionPlaylistEvent(playlistId, 'items-changed')
 })
 
+ipcMain.handle('library:removePlaylistEntry', async (_event, playlistId: number, entryId: number) => {
+  await library.removePlaylistEntry(playlistId, entryId)
+  publishCompanionPlaylistEvent(playlistId, 'items-changed')
+})
+
 ipcMain.handle('library:reassociatePlaylistEntry', async (
   _event,
   playlistId: number,
@@ -7961,8 +7966,8 @@ ipcMain.handle('library:reassociatePlaylistEntry', async (
   publishCompanionPlaylistEvent(playlistId, 'items-changed')
 })
 
-ipcMain.handle('library:reorderPlaylistTracks', async (_event, playlistId: number, orderedTrackPaths: string[]) => {
-  await library.reorderPlaylistTracks(playlistId, orderedTrackPaths)
+ipcMain.handle('library:reorderPlaylistEntries', async (_event, playlistId: number, orderedEntryIds: number[]) => {
+  await library.reorderPlaylistEntries(playlistId, orderedEntryIds)
   publishCompanionPlaylistEvent(playlistId, 'items-changed')
 })
 

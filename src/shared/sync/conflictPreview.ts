@@ -124,13 +124,23 @@ export function mergePlaylistEntriesForPreview(
   older: readonly SyncPlaylistEntry[] | null | undefined
 ): SyncPlaylistEntry[] {
   const merged: SyncPlaylistEntry[] = []
-  const seenKeys = new Set<string>()
-  for (const entry of [...orderedEntries(newer), ...orderedEntries(older)]) {
+  const retainedCounts = new Map<string, number>()
+
+  for (const entry of orderedEntries(newer)) {
     const key = entryIdentity(entry)
-    if (seenKeys.has(key)) continue
-    seenKeys.add(key)
+    retainedCounts.set(key, (retainedCounts.get(key) ?? 0) + 1)
     merged.push({ ...entry, position: merged.length })
   }
+
+  const olderCounts = new Map<string, number>()
+  for (const entry of orderedEntries(older)) {
+    const key = entryIdentity(entry)
+    const occurrence = (olderCounts.get(key) ?? 0) + 1
+    olderCounts.set(key, occurrence)
+    if (occurrence <= (retainedCounts.get(key) ?? 0)) continue
+    merged.push({ ...entry, position: merged.length })
+  }
+
   return merged
 }
 

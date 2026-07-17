@@ -730,7 +730,8 @@ test('subsonic sync helpers import starred tracks and server playlists', async (
       name: 'Server Mix',
       tracks: [
         { path: firstPath, title: 'Remote A', artist: 'Remote Artist', album: 'Remote Album' },
-        { path: secondPath, title: 'Remote B', artist: 'Remote Artist', album: 'Remote Album' }
+        { path: secondPath, title: 'Remote B', artist: 'Remote Artist', album: 'Remote Album' },
+        { path: firstPath, title: 'Remote A', artist: 'Remote Artist', album: 'Remote Album' }
       ]
     }
   ], { persist: false })
@@ -738,16 +739,17 @@ test('subsonic sync helpers import starred tracks and server playlists', async (
 
   const playlist = library.getPlaylists().find((entry) => entry.name === 'Server Mix')
   assert.ok(playlist)
-  assert.equal(playlist.track_count, 2)
+  assert.equal(playlist.track_count, 3)
   assert.equal(library.getCompanionApiPlaylistTarget(playlist.id)?.remote_source_id, source.id)
   assert.equal(library.isCompanionApiPlaylistWritable(playlist.id), false)
-  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), [firstPath, secondPath])
+  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), [firstPath, secondPath, firstPath])
 
   const updatedSummary = await library.syncSubsonicRemotePlaylists(source.id, [
     {
       source_playlist_id: 'playlist-1',
       name: 'Server Mix Renamed',
       tracks: [
+        { path: secondPath, title: 'Remote B', artist: 'Remote Artist', album: 'Remote Album' },
         { path: secondPath, title: 'Remote B', artist: 'Remote Artist', album: 'Remote Album' }
       ]
     }
@@ -757,11 +759,41 @@ test('subsonic sync helpers import starred tracks and server playlists', async (
   const updatedPlaylist = library.getPlaylists().find((entry) => entry.id === playlist.id)
   assert.ok(updatedPlaylist)
   assert.equal(updatedPlaylist.name, 'Server Mix Renamed')
-  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), [secondPath])
+  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), [secondPath, secondPath])
 
   const removedSummary = await library.syncSubsonicRemotePlaylists(source.id, [], { persist: false })
   assert.deepEqual(removedSummary, { created: 0, updated: 0, removed: 1 })
   assert.equal(library.getPlaylists().some((entry) => entry.id === playlist.id), false)
+})
+
+test('desktop-mobile playlist replacement preserves repeated synced occurrences', async (t) => {
+  await setupSeededLibrary(t)
+  const track = library.getAllTracks()[0]
+  assert.ok(track)
+
+  const result = library.replaceSyncedPlaylist({
+    syncUid: 'duplicate-sync-playlist',
+    name: 'Synced Repeats',
+    kind: 'normal',
+    dynamicRules: null,
+    createdAt: 1_000,
+    updatedAt: 2_000,
+    entries: [0, 1].map((position) => ({
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      durationSeconds: track.duration,
+      position,
+      addedAt: 1_000 + position,
+      sourcePath: track.path
+    }))
+  }, library.createTrackMetadataMatcher())
+
+  assert.deepEqual(result, { status: 'created', entriesMatched: 2, entriesFallback: 0 })
+  const synced = library.getSyncPlaylistsState().playlists.find((playlist) => playlist.syncUid === 'duplicate-sync-playlist')
+  assert.ok(synced)
+  assert.deepEqual(synced.entries?.map((entry) => entry.sourcePath), [track.path, track.path])
+  assert.deepEqual(synced.entries?.map((entry) => entry.position), [0, 1])
 })
 
 test('companion API writes accept only locally owned normal playlists', async (t) => {
@@ -1112,6 +1144,104 @@ test('playlist import preserves unmatched local paths as missing playlist entrie
   assert.equal(playlistSummary.missing_track_count, 2)
 })
 
+test('playlist import preserves repeated available and missing occurrences', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'music')
+  const availableTrackPath = join(musicDir, 'repeated.wav')
+  const missingTrackPath = join(musicDir, 'repeated-missing.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(availableTrackPath, 'Repeated Track', 'Import Artist')
+  await library.scanFolder(musicDir)
+
+  const playlistPath = join(dir, 'repeated.m3u8')
+  await writeFile(playlistPath, [
+    '#EXTM3U',
+    relative(dir, availableTrackPath),
+    relative(dir, missingTrackPath),
+    relative(dir, availableTrackPath),
+    relative(dir, missingTrackPath),
+    ''
+  ].join('\n'), 'utf-8')
+
+  const result = await library.importPlaylistFromFile(playlistPath)
+  assert.equal(result.entriesTotal, 4)
+  assert.equal(result.importedCount, 2)
+  assert.equal(result.missingEntryCount, 2)
+  assert.ok(result.playlistId)
+
+  const entries = library.getPlaylistTrackEntries(result.playlistId)
+  assert.equal(new Set(entries.map((entry) => entry.id)).size, 4)
+  assert.deepEqual(entries.map((entry) => entry.track_path), [
+    availableTrackPath,
+    missingTrackPath,
+    availableTrackPath,
+    missingTrackPath
+  ])
+  assert.deepEqual(entries.map((entry) => entry.position), [0, 1, 2, 3])
+  assert.deepEqual(library.getPlaylistTracks(result.playlistId).map((track) => track.path), [
+    availableTrackPath,
+    availableTrackPath
+  ])
+
+  const playlistSummary = library.getPlaylists().find((playlist) => playlist.id === result.playlistId)
+  assert.equal(playlistSummary?.track_count, 2)
+  assert.equal(playlistSummary?.missing_track_count, 2)
+
+  const exportPath = join(dir, 'repeated-export.m3u8')
+  const exportResult = await library.exportPlaylistToM3u(result.playlistId, exportPath)
+  assert.equal(exportResult.exportedCount, 4)
+  const exportedPaths = (await readFile(exportPath, 'utf-8'))
+    .split(/\r?\n/)
+    .filter((line) => line.length > 0 && !line.startsWith('#'))
+  assert.deepEqual(exportedPaths, [
+    'music/repeated.wav',
+    'music/repeated-missing.wav',
+    'music/repeated.wav',
+    'music/repeated-missing.wav'
+  ])
+
+  await library.addToPlaylist(result.playlistId, [availableTrackPath, availableTrackPath])
+  assert.equal(library.getPlaylistTrackEntries(result.playlistId).length, 4)
+
+  await library.reorderPlaylistEntries(result.playlistId, entries.map((entry) => entry.id).reverse())
+  assert.deepEqual(library.getPlaylistTrackEntries(result.playlistId).map((entry) => entry.id), entries.map((entry) => entry.id).reverse())
+
+  await library.removePlaylistEntry(result.playlistId, entries[2].id)
+  assert.equal(library.getPlaylistTracks(result.playlistId).length, 1)
+
+  await library.removeFromPlaylist(result.playlistId, missingTrackPath)
+  assert.deepEqual(library.getPlaylistTrackEntries(result.playlistId).map((entry) => entry.track_path), [availableTrackPath])
+})
+
+test('database initialization removes the legacy unique playlist membership index', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  const playlist = await library.createPlaylist('Legacy Membership Index')
+  await library.addToPlaylist(playlist.id, ['/music/legacy.flac'])
+
+  library.closeDatabase()
+  withDirectLibraryDb(dir, (directDb) => {
+    directDb.prepare(`
+      CREATE UNIQUE INDEX idx_playlist_tracks_membership
+      ON playlist_tracks(playlist_id, track_path)
+    `).run()
+  })
+
+  await library.initDatabase()
+  const indexNames = withDirectLibraryDb(dir, (directDb) => (
+    directDb.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'playlist_tracks'").all()
+      .map((row) => (row as { name: string }).name)
+  ))
+  assert.equal(indexNames.includes('idx_playlist_tracks_membership'), false)
+
+  await library.addToPlaylist(playlist.id, ['/music/legacy.flac'])
+  assert.equal(library.getPlaylistTrackEntries(playlist.id).length, 1)
+})
+
 test('playlist reorder preserves missing track entries after cleanup', async (t) => {
   const dir = await setupEmptyLibrary(t)
   library.setReplayGainScanEnabled(false)
@@ -1152,7 +1282,8 @@ test('playlist reorder preserves missing track entries after cleanup', async (t)
   assert.equal(playlistSummary.missing_track_count, 1)
   assert.equal(playlistSummary.auto_cover_hash, library.getTrackByPath(availableTrackPath)?.artwork_hash ?? null)
 
-  await library.reorderPlaylistTracks(playlist.id, [availableTrackPath, missingTrackPath])
+  const entriesBeforeReorder = library.getPlaylistTrackEntries(playlist.id)
+  await library.reorderPlaylistEntries(playlist.id, [entriesBeforeReorder[1].id, entriesBeforeReorder[0].id])
   const reorderedEntries = library.getPlaylistTrackEntries(playlist.id)
   assert.deepEqual(reorderedEntries.map((entry) => entry.track_path), [availableTrackPath, missingTrackPath])
   assert.deepEqual(reorderedEntries.map((entry) => entry.missing), [false, true])
@@ -1228,7 +1359,7 @@ test('playlist cleanup keeps ambiguous renamed tracks missing with fallback meta
   assert.equal(entry.artist, 'Ambiguous Metadata Artist')
 })
 
-test('playlist cleanup does not merge a renamed entry into an existing playlist membership', async (t) => {
+test('playlist cleanup preserves a repeated occurrence when it matches an existing playlist entry', async (t) => {
   const dir = await setupEmptyLibrary(t)
   library.setReplayGainScanEnabled(false)
   t.after(() => {
@@ -1250,8 +1381,8 @@ test('playlist cleanup does not merge a renamed entry into an existing playlist 
   await library.cleanupMissingTracks()
 
   const entries = library.getPlaylistTrackEntries(playlist.id)
-  assert.deepEqual(entries.map((entry) => entry.track_path), [missingTrackPath, existingTargetPath])
-  assert.deepEqual(entries.map((entry) => entry.missing), [true, false])
+  assert.deepEqual(entries.map((entry) => entry.track_path), [existingTargetPath, existingTargetPath])
+  assert.deepEqual(entries.map((entry) => entry.missing), [false, false])
 })
 
 test('manual playlist reassociation replaces a missing entry and preserves its ordering metadata', async (t) => {
@@ -1291,7 +1422,7 @@ test('manual playlist reassociation replaces a missing entry and preserves its o
   assert.equal(reassociatedEntry.missing, false)
 })
 
-test('manual playlist reassociation rejects invalid source and target combinations', async (t) => {
+test('manual playlist reassociation rejects invalid inputs but permits repeated target occurrences', async (t) => {
   const dir = await setupEmptyLibrary(t)
   library.setReplayGainScanEnabled(false)
   t.after(() => {
@@ -1332,10 +1463,12 @@ test('manual playlist reassociation rejects invalid source and target combinatio
     () => library.reassociatePlaylistEntry(playlist.id + 999, missingEntry.id, duplicateTargetPath),
     /Playlist not found/
   )
-  await assert.rejects(
-    () => library.reassociatePlaylistEntry(playlist.id, missingEntry.id, duplicateTargetPath),
-    /already in this playlist/
-  )
+  await library.reassociatePlaylistEntry(playlist.id, missingEntry.id, duplicateTargetPath)
+  assert.deepEqual(library.getPlaylistTrackEntries(playlist.id).map((entry) => entry.track_path), [
+    availableTrackPath,
+    duplicateTargetPath,
+    duplicateTargetPath
+  ])
 })
 
 test('playlist export writes extended M3U with relative local paths', async (t) => {
@@ -1631,7 +1764,7 @@ test('dynamic playlists reject manual membership edits while normal playlists st
     /Dynamic playlists cannot remove tracks manually/
   )
   await assert.rejects(
-    () => library.reorderPlaylistTracks(dynamicPlaylist.id, [trackPath]),
+    () => library.reorderPlaylistEntries(dynamicPlaylist.id, [1]),
     /Dynamic playlists cannot reorder tracks manually/
   )
 
@@ -1930,7 +2063,7 @@ test('rescan merges pre-existing case-variant duplicate rows preserving user dat
   // On conflict the survivor's (older row's) rating wins; the duplicate's is dropped.
   assert.deepEqual(library.getTrackRatingEntries().map((entry) => [entry.track_path, entry.rating]), [[trackPath, 5]])
   assert.deepEqual(library.getFavoritePaths(), [trackPath])
-  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), [trackPath])
+  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), [trackPath, trackPath])
 })
 
 test('case-variant paths stay distinct when case folding is disabled', async (t) => {

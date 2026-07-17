@@ -2380,8 +2380,10 @@ export async function initDatabase(): Promise<void> {
     // Column already exists.
   }
   db.run('CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist ON playlist_tracks(playlist_id, position)')
-  normalizePlaylistTrackMemberships()
-  db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_playlist_tracks_membership ON playlist_tracks(playlist_id, track_path)')
+  // Playlist rows are ordered occurrences, not unique memberships. Older
+  // databases may still carry the legacy membership constraint, so remove it
+  // before any imports or path-repair work can create repeated occurrences.
+  db.run('DROP INDEX IF EXISTS idx_playlist_tracks_membership')
 
   // Desktop<->mobile LAN sync (phoneSync.ts): playlist sync identity, deletion
   // tombstones, and incoming favorites that haven't matched a local track yet.
@@ -2501,58 +2503,6 @@ export function getLatestLibrarySyncSummary(): LatestLibrarySyncSummary | null {
 
 export async function setLatestLibrarySyncSummary(summary: LatestLibrarySyncSummary): Promise<void> {
   await setAppMeta(LATEST_LIBRARY_SYNC_SUMMARY_META_KEY, JSON.stringify(summary))
-}
-
-function normalizePlaylistTrackMemberships(): void {
-  if (!db) return
-
-  const rows = db.iterate<{ id?: unknown; playlist_id?: unknown; track_path?: unknown }>(`
-    SELECT id, playlist_id, track_path
-    FROM playlist_tracks
-    ORDER BY playlist_id ASC, position ASC, id ASC
-  `)
-
-  const playlistRowIds = new Map<number, number[]>()
-  const playlistTrackPaths = new Map<number, Set<string>>()
-  const duplicateRowIds: number[] = []
-
-  for (const row of rows) {
-    const rowId = Number(row.id)
-    const playlistId = Number(row.playlist_id)
-    const trackPath = typeof row.track_path === 'string' ? row.track_path : ''
-    if (!Number.isInteger(rowId) || rowId <= 0 || !Number.isInteger(playlistId) || playlistId <= 0 || !trackPath) {
-      continue
-    }
-
-    let seenTrackPaths = playlistTrackPaths.get(playlistId)
-    if (!seenTrackPaths) {
-      seenTrackPaths = new Set<string>()
-      playlistTrackPaths.set(playlistId, seenTrackPaths)
-    }
-
-    if (seenTrackPaths.has(trackPath)) {
-      duplicateRowIds.push(rowId)
-      continue
-    }
-
-    seenTrackPaths.add(trackPath)
-    const rowIds = playlistRowIds.get(playlistId)
-    if (rowIds) {
-      rowIds.push(rowId)
-    } else {
-      playlistRowIds.set(playlistId, [rowId])
-    }
-  }
-
-  for (const rowId of duplicateRowIds) {
-    db.run('DELETE FROM playlist_tracks WHERE id = ?', [rowId])
-  }
-
-  for (const rowIds of playlistRowIds.values()) {
-    for (let index = 0; index < rowIds.length; index += 1) {
-      db.run('UPDATE playlist_tracks SET position = ? WHERE id = ?', [index, rowIds[index]])
-    }
-  }
 }
 
 function normalizeSubsonicLastStatus(value: unknown): SubsonicSourceLastStatus {
@@ -2954,12 +2904,14 @@ const UNIQUE_TRACK_PATH_KEYED_TABLES = [
   'lyrics_track_overrides',
   'track_loudness',
   'track_ratings',
-  'favorites',
-  'playlist_tracks'
+  'favorites'
 ] as const
 
 function moveTrackChildRows(oldPath: string, newPath: string): void {
   if (!db || oldPath === newPath) return
+  // Every playlist row is an occurrence, so carry all of them to the repaired
+  // path even when the target track already appears in the same playlist.
+  db.run('UPDATE playlist_tracks SET track_path = ? WHERE track_path = ?', [newPath, oldPath])
   for (const table of UNIQUE_TRACK_PATH_KEYED_TABLES) {
     db.run(`UPDATE OR IGNORE ${table} SET track_path = ? WHERE track_path = ?`, [newPath, oldPath])
     // Leftovers exist only when the target path already had a row (PK/UNIQUE
@@ -8727,11 +8679,9 @@ export async function syncSubsonicRemotePlaylists(
         : `Playlist ${sourcePlaylistId}`
 
       const tracks: PlaylistEntryInsertInput[] = []
-      const seenTrackPaths = new Set<string>()
       for (const track of playlist.tracks) {
         const trackPath = typeof track.path === 'string' ? track.path.trim() : ''
-        if (!trackPath || seenTrackPaths.has(trackPath)) continue
-        seenTrackPaths.add(trackPath)
+        if (!trackPath) continue
         tracks.push({
           trackPath,
           fallbackTitle: normalizeOptionalTextField(track.title ?? null),
@@ -8797,7 +8747,7 @@ export async function syncSubsonicRemotePlaylists(
     let position = 0
     for (const entry of playlist.tracks) {
       db.run(
-        'INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album) VALUES (?, ?, ?, ?, ?, ?, ?)',
         [
           playlistId,
           entry.trackPath,
@@ -8961,32 +8911,42 @@ interface PlaylistEntryInsertInput {
   fallbackAlbum?: string | null
 }
 
-async function addPlaylistEntries(playlistId: number, entries: PlaylistEntryInsertInput[]): Promise<void> {
+async function addPlaylistEntries(
+  playlistId: number,
+  entries: PlaylistEntryInsertInput[],
+  options: { preserveOccurrences?: boolean } = {}
+): Promise<void> {
   if (!db || entries.length === 0) return
 
-  const uniqueEntries: PlaylistEntryInsertInput[] = []
-  const seenTrackPaths = new Set<string>()
+  const normalizedEntries: PlaylistEntryInsertInput[] = []
   for (const entry of entries) {
     const trackPath = typeof entry.trackPath === 'string' ? entry.trackPath.trim() : ''
-    if (!trackPath || seenTrackPaths.has(trackPath)) continue
-    seenTrackPaths.add(trackPath)
-    uniqueEntries.push({
+    if (!trackPath) continue
+    normalizedEntries.push({
       trackPath,
       fallbackTitle: normalizeOptionalTextField(entry.fallbackTitle ?? null),
       fallbackArtist: normalizeOptionalTextField(entry.fallbackArtist ?? null),
       fallbackAlbum: normalizeOptionalTextField(entry.fallbackAlbum ?? null)
     })
   }
-  if (uniqueEntries.length === 0) return
+  if (normalizedEntries.length === 0) return
 
-  const existingTrackPaths = new Set<string>()
-  for (const row of db.iterate<{ track_path?: unknown }>('SELECT track_path FROM playlist_tracks WHERE playlist_id = ?', [playlistId])) {
-    if (typeof row.track_path === 'string' && row.track_path.length > 0) {
-      existingTrackPaths.add(row.track_path)
+  let pendingEntries = normalizedEntries
+  if (!options.preserveOccurrences) {
+    const existingTrackPaths = new Set<string>()
+    for (const row of db.iterate<{ track_path?: unknown }>('SELECT track_path FROM playlist_tracks WHERE playlist_id = ?', [playlistId])) {
+      if (typeof row.track_path === 'string' && row.track_path.length > 0) {
+        existingTrackPaths.add(row.track_path)
+      }
     }
-  }
 
-  const pendingEntries = uniqueEntries.filter((entry) => !existingTrackPaths.has(entry.trackPath))
+    const seenTrackPaths = new Set(existingTrackPaths)
+    pendingEntries = normalizedEntries.filter((entry) => {
+      if (seenTrackPaths.has(entry.trackPath)) return false
+      seenTrackPaths.add(entry.trackPath)
+      return true
+    })
+  }
   if (pendingEntries.length === 0) return
 
   const maxPosRow = db.get<{ max_pos?: unknown }>('SELECT COALESCE(MAX(position), -1) as max_pos FROM playlist_tracks WHERE playlist_id = ?', [playlistId])
@@ -9012,7 +8972,13 @@ export async function removeFromPlaylist(playlistId: number, trackPath: string):
   if (!db) return
   assertNormalPlaylist(playlistId, 'remove tracks manually')
   db.run('DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_path = ?', [playlistId, trackPath])
-  // Reorder positions
+  renumberPlaylistEntries(playlistId)
+  db.run('UPDATE playlists SET updated_at = ? WHERE id = ?', [Date.now(), playlistId])
+  await saveDatabase()
+}
+
+function renumberPlaylistEntries(playlistId: number): void {
+  if (!db) return
   const idRows: Array<{ id?: unknown }> = []
   for (const row of db.iterate<{ id?: unknown }>('SELECT id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, id ASC', [playlistId])) {
     idRows.push(row)
@@ -9020,6 +8986,17 @@ export async function removeFromPlaylist(playlistId: number, trackPath: string):
   idRows.forEach((row, i) => {
     db!.run('UPDATE playlist_tracks SET position = ? WHERE id = ?', [i, row.id])
   })
+}
+
+export async function removePlaylistEntry(playlistId: number, entryId: number): Promise<void> {
+  if (!db) return
+  assertNormalPlaylist(playlistId, 'remove tracks manually')
+  if (!Number.isInteger(entryId) || entryId <= 0) return
+
+  const result = db.run('DELETE FROM playlist_tracks WHERE playlist_id = ? AND id = ?', [playlistId, entryId])
+  if (result.changes <= 0) return
+
+  renumberPlaylistEntries(playlistId)
   db.run('UPDATE playlists SET updated_at = ? WHERE id = ?', [Date.now(), playlistId])
   await saveDatabase()
 }
@@ -9103,14 +9080,6 @@ export async function reassociatePlaylistEntry(
     throw new Error("That file isn't in your Astra library. Add or rescan its folder first.")
   }
 
-  const duplicateEntry = db.get<{ id?: unknown }>(
-    'SELECT id FROM playlist_tracks WHERE playlist_id = ? AND track_path = ? AND id <> ? LIMIT 1',
-    [playlistId, targetTrack.path, entryId]
-  )
-  if (duplicateEntry) {
-    throw new Error('That file is already in this playlist.')
-  }
-
   db.run(`
     UPDATE playlist_tracks
     SET track_path = ?, fallback_title = ?, fallback_artist = ?, fallback_album = ?
@@ -9120,68 +9089,45 @@ export async function reassociatePlaylistEntry(
   await saveDatabase()
 }
 
-export async function reorderPlaylistTracks(playlistId: number, orderedTrackPaths: string[]): Promise<void> {
+export async function reorderPlaylistEntries(playlistId: number, orderedEntryIds: number[]): Promise<void> {
   if (!db) return
   if (!Number.isInteger(playlistId) || playlistId <= 0) return
   assertNormalPlaylist(playlistId, 'reorder tracks manually')
-  if (!Array.isArray(orderedTrackPaths) || orderedTrackPaths.length === 0) return
+  if (!Array.isArray(orderedEntryIds) || orderedEntryIds.length === 0) return
 
-  const existingRows: Array<{ id: number; track_path: string }> = []
+  const existingEntryIds: number[] = []
 
-  for (const row of db.iterate<{ id?: unknown; track_path?: unknown }>('SELECT id, track_path FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, id ASC', [playlistId])) {
+  for (const row of db.iterate<{ id?: unknown }>('SELECT id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, id ASC', [playlistId])) {
     const rowId = Number(row.id)
-    const trackPath = typeof row.track_path === 'string' ? row.track_path : ''
-    if (!Number.isFinite(rowId) || rowId <= 0 || !trackPath) {
+    if (!Number.isInteger(rowId) || rowId <= 0) {
       throw new Error('Invalid playlist track rows for reorder operation.')
     }
-    existingRows.push({ id: rowId, track_path: trackPath })
+    existingEntryIds.push(rowId)
   }
 
-  if (existingRows.length === 0) {
+  if (existingEntryIds.length === 0) {
     throw new Error('Cannot reorder an empty playlist.')
   }
 
-  if (orderedTrackPaths.length !== existingRows.length) {
+  if (orderedEntryIds.length !== existingEntryIds.length) {
     throw new Error('Playlist reorder payload length does not match current playlist tracks.')
   }
 
-  const rowIdsByPath = new Map<string, number[]>()
-  for (const row of existingRows) {
-    const ids = rowIdsByPath.get(row.track_path)
-    if (ids) {
-      ids.push(row.id)
-    } else {
-      rowIdsByPath.set(row.track_path, [row.id])
+  const existingEntryIdSet = new Set(existingEntryIds)
+  const orderedEntryIdSet = new Set<number>()
+  for (const entryId of orderedEntryIds) {
+    if (!Number.isInteger(entryId) || entryId <= 0) {
+      throw new Error('Playlist reorder payload contains an invalid entry id.')
     }
-  }
-
-  const resolvedRowOrder: number[] = []
-  for (const path of orderedTrackPaths) {
-    if (typeof path !== 'string' || path.length === 0) {
-      throw new Error('Playlist reorder payload contains an invalid track path.')
-    }
-
-    const idsForPath = rowIdsByPath.get(path)
-    if (!idsForPath || idsForPath.length === 0) {
+    if (!existingEntryIdSet.has(entryId) || orderedEntryIdSet.has(entryId)) {
       throw new Error('Playlist reorder payload does not match current playlist content.')
     }
-
-    const nextRowId = idsForPath.shift()
-    if (!nextRowId) {
-      throw new Error('Playlist reorder payload could not be resolved.')
-    }
-    resolvedRowOrder.push(nextRowId)
-  }
-
-  for (const idsForPath of rowIdsByPath.values()) {
-    if (idsForPath.length > 0) {
-      throw new Error('Playlist reorder payload does not include all current playlist tracks.')
-    }
+    orderedEntryIdSet.add(entryId)
   }
 
   const now = Date.now()
-  for (let index = 0; index < resolvedRowOrder.length; index += 1) {
-    db.run('UPDATE playlist_tracks SET position = ? WHERE id = ?', [index, resolvedRowOrder[index]])
+  for (let index = 0; index < orderedEntryIds.length; index += 1) {
+    db.run('UPDATE playlist_tracks SET position = ? WHERE id = ?', [index, orderedEntryIds[index]])
   }
   db.run('UPDATE playlists SET updated_at = ? WHERE id = ?', [now, playlistId])
 
@@ -9610,12 +9556,6 @@ function reconcileMissingPlaylistEntriesByMetadata(): number {
     }, lookup)
     if (metadataMatch.kind !== 'matched') continue
 
-    const duplicateRow = db.get<{ id?: unknown }>(
-      'SELECT id FROM playlist_tracks WHERE playlist_id = ? AND track_path = ? LIMIT 1',
-      [playlistId, metadataMatch.trackPath]
-    )
-    if (duplicateRow) continue
-
     const result = db.run(
       'UPDATE playlist_tracks SET track_path = ? WHERE id = ?',
       [metadataMatch.trackPath, rowId]
@@ -9759,7 +9699,7 @@ export async function importPlaylistFromFile(filePath: string): Promise<Playlist
   if (playlistEntries.length > 0) {
     playlistName = deriveImportedPlaylistName(sourceFilePath)
     const playlist = await createPlaylist(playlistName)
-    await addPlaylistEntries(playlist.id, playlistEntries)
+    await addPlaylistEntries(playlist.id, playlistEntries, { preserveOccurrences: true })
     playlistId = playlist.id
   }
 
@@ -10157,7 +10097,6 @@ export function replaceSyncedPlaylist(
   let entriesFallback = 0
   if (kind === 'normal' && Array.isArray(input.entries)) {
     const orderedEntries = [...input.entries].sort((a, b) => a.position - b.position)
-    const seenTrackPaths = new Set<string>()
     let position = 0
     for (const entry of orderedEntries) {
       const match = matcher({
@@ -10175,8 +10114,6 @@ export function replaceSyncedPlaylist(
         const sourcePath = typeof entry.sourcePath === 'string' ? entry.sourcePath.trim() : ''
         trackPath = sourcePath || `astra-sync://unmatched/${buildTrackSyncKey(entry.title, entry.artist, entry.album)}`
       }
-      if (seenTrackPaths.has(trackPath)) continue
-      seenTrackPaths.add(trackPath)
       db.run(
         'INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album) VALUES (?, ?, ?, ?, ?, ?, ?)',
         [
