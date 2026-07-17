@@ -6,6 +6,7 @@ import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore } from '../../stores/uiStore'
 import { usePresence } from '../../hooks/usePresence'
 import { useGraphStore } from '../../stores/graphStore'
+import { useListeningStatsStore } from '../../stores/listeningStatsStore'
 import type {
   QuickLaunchAlbumRecord,
   QuickLaunchArtistRecord,
@@ -93,6 +94,7 @@ export default function QuickLaunchPalette() {
   const setPendingSettingsSection = useUIStore((state) => state.setPendingSettingsSection)
   const setActiveView = useUIStore((state) => state.setActiveView)
   const graphEnabled = useGraphStore((state) => state.enabled)
+  const listeningStatsEnabled = useListeningStatsStore((state) => state.enabled)
   const openFullMap = useGraphStore((state) => state.openFullMap)
   const presence = usePresence(isQuickLaunchOpen)
 
@@ -205,7 +207,10 @@ export default function QuickLaunchPalette() {
     if (!hasQuery) return []
 
     const scored = NAV_ENTRIES
-      .filter((entry) => graphEnabled || entry.view !== 'graph')
+      .filter((entry) => (
+        (graphEnabled || entry.view !== 'graph')
+        && (listeningStatsEnabled || entry.view !== 'stats')
+      ))
       .map((entry) => {
         const result = multiFieldScore(trimmedQuery, [
           { value: entry.label, weight: 1.5 },
@@ -222,7 +227,7 @@ export default function QuickLaunchPalette() {
       }).filter((r): r is NonNullable<typeof r> => r !== null)
 
     return scored.sort(compareScoredResults).slice(0, NAV_RESULT_LIMIT)
-  }, [graphEnabled, hasQuery, trimmedQuery])
+  }, [graphEnabled, hasQuery, listeningStatsEnabled, trimmedQuery])
 
   const settingResults = useMemo(() => {
     if (!hasQuery) return []

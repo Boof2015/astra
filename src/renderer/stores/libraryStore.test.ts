@@ -4,6 +4,7 @@ import {
   getUniqueTrackPaths,
   pruneCachedTracks,
   resolveCachedTrackPaths,
+  TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY,
   updateFullTrackConsumers,
   useLibraryStore,
   type DbTrack
@@ -110,6 +111,32 @@ test('getUniqueTrackPaths de-duplicates while preserving first-seen order', () =
     ]),
     ['/music/a.flac', '/music/b.flac', '/music/c.flac']
   )
+})
+
+test('play count column visibility is hidden by default and persists explicit changes', () => {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const values = new Map<string, string>()
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key)
+    }
+  })
+
+  try {
+    useLibraryStore.setState({ showTracklistPlayCount: false })
+    assert.equal(useLibraryStore.getState().showTracklistPlayCount, false)
+    useLibraryStore.getState().setShowTracklistPlayCount(true)
+    assert.equal(useLibraryStore.getState().showTracklistPlayCount, true)
+    assert.equal(values.get(TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY), '1')
+    useLibraryStore.getState().setShowTracklistPlayCount(false)
+    assert.equal(values.get(TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY), '0')
+  } finally {
+    if (originalDescriptor) Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
+  }
 })
 
 test('resolveCachedTrackPaths preserves requested order and reports incomplete caches', () => {

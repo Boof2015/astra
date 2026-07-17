@@ -13,6 +13,7 @@ import {
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { formatPlaylistExportStatus, formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
 import { buildPlayableOccurrenceIndexes } from '../../utils/playlistOccurrences'
+import { compareTrackPlayCounts } from '../../utils/trackPlayCountSort'
 import AlbumArtwork from '../library/AlbumArtwork'
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
@@ -238,6 +239,15 @@ function comparePlaylistTracksBySort(
       sortState.direction
     )
   }
+  if (sortState.key === 'play_count') {
+    return compareTrackPlayCounts(
+      a.play_count,
+      b.play_count,
+      sortState.direction,
+      isMissingPlaylistDisplayTrack(a),
+      isMissingPlaylistDisplayTrack(b)
+    )
+  }
   return compareNullableKey(a.musical_key, b.musical_key, sortState.direction)
 }
 
@@ -272,6 +282,7 @@ export default function PlaylistView() {
   const openCollectionQueueMenu = useUIStore((s) => s.openCollectionQueueMenu)
   const showTracklistBpmKey = useLibraryStore((s) => s.showTracklistBpmKey)
   const showTracklistGenre = useLibraryStore((s) => s.showTracklistGenre)
+  const showTracklistPlayCount = useLibraryStore((s) => s.showTracklistPlayCount)
   const ratingsEnabled = useRatingsStore((s) => s.enabled)
   const trackRatings = useRatingsStore((s) => s.ratings)
   const favoriteTrackPaths = useLibraryStore((s) => s.favoriteTrackPaths)
@@ -398,9 +409,10 @@ export default function PlaylistView() {
     const hideBpmKeySort = !showTracklistBpmKey && (sortState.key === 'bpm' || sortState.key === 'musical_key')
     const hideGenreSort = !showTracklistGenre && sortState.key === 'genre'
     const hideRatingSort = !ratingsEnabled && sortState.key === 'rating'
-    if (!hideBpmKeySort && !hideGenreSort && !hideRatingSort) return
+    const hidePlayCountSort = !showTracklistPlayCount && sortState.key === 'play_count'
+    if (!hideBpmKeySort && !hideGenreSort && !hideRatingSort && !hidePlayCountSort) return
     setSortState(null)
-  }, [ratingsEnabled, setSortState, showTracklistBpmKey, showTracklistGenre, sortState])
+  }, [ratingsEnabled, setSortState, showTracklistBpmKey, showTracklistGenre, showTracklistPlayCount, sortState])
 
   useEffect(() => {
     if (!playlistImportStatus) return
@@ -698,7 +710,7 @@ export default function PlaylistView() {
     }
     setSortState({
       key,
-      direction: 'asc'
+      direction: key === 'play_count' ? 'desc' : 'asc'
     })
   }, [setSortState])
 

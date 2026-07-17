@@ -5,8 +5,8 @@ import type { LibraryYearKey } from './libraryYears'
 export const SESSION_STATE_KIND = 'astra-session-state'
 export const SESSION_STATE_SCHEMA_VERSION = 1
 
-export type SessionAppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist'
-export type SessionTrackSortKey = 'title' | 'artist' | 'album' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added' | 'rating'
+export type SessionAppView = 'home' | 'library' | 'stats' | 'graph' | 'eq' | 'settings' | 'playlist'
+export type SessionTrackSortKey = 'title' | 'artist' | 'album' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added' | 'rating' | 'play_count'
 export type SessionSortDirection = 'asc' | 'desc'
 export type SessionViewMode = 'tracks' | 'albums' | 'artists' | 'genres' | 'years' | 'folders'
 export type SessionAlbumSortMode = 'title' | 'artist'
@@ -211,6 +211,7 @@ export function normalizeTrackSortState(value: unknown): SessionTrackSortState |
     && key !== 'musical_key'
     && key !== 'added'
     && key !== 'rating'
+    && key !== 'play_count'
   ) {
     return null
   }
@@ -222,6 +223,7 @@ export function normalizeTrackSortState(value: unknown): SessionTrackSortState |
 
 export function normalizeAppView(value: unknown): SessionAppView {
   return value === 'library'
+    || value === 'stats'
     || value === 'graph'
     || value === 'eq'
     || value === 'settings'

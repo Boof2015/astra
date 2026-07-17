@@ -119,6 +119,13 @@ import type {
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
 import type {
+  ListeningHistoryStatus,
+  ListeningSessionCheckpoint,
+  ListeningSessionCheckpointResult,
+  ListeningStatsDashboard,
+  ListeningStatsQuery
+} from '../types/listeningStats'
+import type {
   GlobalShortcutRegistrationRequest,
   GlobalShortcutRegistrationResult,
   InputActionId,
@@ -1395,6 +1402,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getRecentlyPlayed: (limit?: number) => ipcRenderer.invoke('library:getRecentlyPlayed', limit),
     markTrackLatestSyncSeen: (trackPath: string) => ipcRenderer.invoke('library:markTrackLatestSyncSeen', trackPath),
     addRecentlyPlayed: (trackPath: string) => ipcRenderer.invoke('library:addRecentlyPlayed', trackPath),
+    getListeningHistoryStatus: () => ipcRenderer.invoke('library:getListeningHistoryStatus') as Promise<ListeningHistoryStatus>,
+    checkpointListeningSession: (checkpoint: ListeningSessionCheckpoint) =>
+      ipcRenderer.invoke('library:checkpointListeningSession', checkpoint) as Promise<ListeningSessionCheckpointResult>,
+    getListeningStatsDashboard: (query: ListeningStatsQuery) =>
+      ipcRenderer.invoke('library:getListeningStatsDashboard', query) as Promise<ListeningStatsDashboard>,
+    clearDetailedListeningHistory: () =>
+      ipcRenderer.invoke('library:clearDetailedListeningHistory') as Promise<ListeningHistoryStatus>,
 
     // Playlists
     getPlaylists: () => ipcRenderer.invoke('library:getPlaylists'),
@@ -1885,6 +1899,10 @@ declare global {
         getRecentlyPlayed: (limit?: number) => Promise<DbTrack[]>
         markTrackLatestSyncSeen: (trackPath: string) => Promise<void>
         addRecentlyPlayed: (trackPath: string) => Promise<void>
+        getListeningHistoryStatus: () => Promise<ListeningHistoryStatus>
+        checkpointListeningSession: (checkpoint: ListeningSessionCheckpoint) => Promise<ListeningSessionCheckpointResult>
+        getListeningStatsDashboard: (query: ListeningStatsQuery) => Promise<ListeningStatsDashboard>
+        clearDetailedListeningHistory: () => Promise<ListeningHistoryStatus>
 
         // Playlists
         getPlaylists: () => Promise<Playlist[]>

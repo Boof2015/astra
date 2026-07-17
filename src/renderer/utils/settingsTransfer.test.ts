@@ -7,8 +7,10 @@ import {
   HOME_GREETING_TEXT_MODE_STORAGE_KEY,
   INPUT_BINDINGS_STORAGE_KEY,
   LYRICS_DISPLAY_SETTINGS_STORAGE_KEY,
+  LISTENING_STATS_ENABLED_STORAGE_KEY,
   NORMALIZATION_ENABLED_STORAGE_KEY,
   THEME_STORAGE_KEY,
+  TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY,
   UI_SCALE_STORAGE_KEY,
 } from '../constants/settingsStorageKeys.ts'
 import {
@@ -96,6 +98,24 @@ test('known machine-specific, sensitive, and cache keys are excluded from full e
   for (const key of SETTINGS_TRANSFER_EXCLUDED_STORAGE_KEYS) {
     assert.equal(exportedKeys.includes(key), false, `${key} should not be exported`)
   }
+})
+
+test('library view and experiment transfers include play count and Listening Stats preferences', () => {
+  const file = createSettingsTransferFile(['library_view', 'experiments'], {
+    storage: new MemoryStorage({
+      [TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY]: '1',
+      [LISTENING_STATS_ENABLED_STORAGE_KEY]: '1'
+    })
+  })
+
+  assert.equal(
+    file.categories.library_view?.localStorage[TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY],
+    '1'
+  )
+  assert.equal(
+    file.categories.experiments?.localStorage[LISTENING_STATS_ENABLED_STORAGE_KEY],
+    '1'
+  )
 })
 
 test('import replaces selected categories and leaves unselected categories untouched', async () => {

@@ -21,6 +21,7 @@ import type { Track } from '../types/audio.ts'
 import { resolveCollectionTrackPaths } from '../utils/collectionQueue.ts'
 import { FAVORITES_PLAYLIST_ID } from '../utils/playlistSystem.ts'
 import type { PlayerSessionSnapshot } from '../utils/sessionState.ts'
+import { audioEngine } from '../audio/AudioEngine.ts'
 
 function makeTrack(path: string, overrides: Partial<Track> = {}): Track {
   return {
@@ -794,5 +795,110 @@ test('playing a restored session lazily loads from the saved position', async ()
     assert.equal(usePlayerStore.getState().playbackState, 'playing')
   } finally {
     usePlayerStore.setState({ _loadAndPlayTrack: originalLoad })
+  }
+})
+
+test('detailed listening checkpoints exclude paused time, flush boundaries, and skip associated external files', async () => {
+  resetStores()
+  const checkpointCalls: Array<Record<string, unknown>> = []
+  const historyStatus = { generation: 'generation-a', startedAt: null }
+  const windowListeners = new Map<string, EventListener>()
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      addEventListener: (event: string, listener: EventListener) => windowListeners.set(event, listener),
+      removeEventListener: (event: string) => windowListeners.delete(event),
+      electronAPI: {
+        library: {
+          getListeningHistoryStatus: async () => historyStatus,
+          checkpointListeningSession: async (checkpoint: Record<string, unknown>) => {
+            checkpointCalls.push(checkpoint)
+            return { accepted: true, qualifiedNow: false, status: historyStatus }
+          },
+          markTrackLatestSyncSeen: async () => undefined
+        },
+        onProgressiveLoadProgress: () => () => undefined
+      }
+    }
+  })
+
+  let monotonicNow = 0
+  let wallNow = 10_000_000
+  const originalDateNow = Date.now
+  const originalPerformance = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  const originalPlay = audioEngine.play
+  const originalStop = audioEngine.stop
+  const emitAudioEvent = (event: string, ...args: unknown[]) => {
+    ;(audioEngine as unknown as { emit: (name: string, ...values: unknown[]) => void }).emit(event, ...args)
+  }
+
+  Date.now = () => wallNow
+  Object.defineProperty(globalThis, 'performance', {
+    configurable: true,
+    value: { now: () => monotonicNow }
+  })
+  audioEngine.play = async () => emitAudioEvent('stateChange', 'playing')
+  audioEngine.stop = () => emitAudioEvent('stateChange', 'stopped')
+
+  const flushCheckpoints = async () => {
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+
+  try {
+    usePlayerStore.getState()._initListeners()
+    usePlayerStore.setState({
+      currentTrack: makeTrack('/library/tracked.flac', { origin: 'library', duration: 180 }),
+      playbackState: 'loading',
+      duration: 180
+    })
+    await usePlayerStore.getState().play()
+
+    monotonicNow = 5_000
+    wallNow += 5_000
+    emitAudioEvent('stateChange', 'paused')
+    await flushCheckpoints()
+    assert.equal(checkpointCalls.length, 1)
+    assert.equal(checkpointCalls[0]?.sessionListenedSeconds, 5)
+    assert.equal(checkpointCalls[0]?.finalizeSegment, true)
+
+    monotonicNow = 25_000
+    wallNow += 20_000
+    emitAudioEvent('timeUpdate', 90)
+    await flushCheckpoints()
+    assert.equal(checkpointCalls.length, 1, 'paused wall time must not create listening time')
+
+    emitAudioEvent('stateChange', 'playing')
+    monotonicNow = 36_000
+    wallNow += 11_000
+    emitAudioEvent('timeUpdate', 101)
+    await flushCheckpoints()
+    assert.equal(checkpointCalls.length, 2)
+    assert.equal(checkpointCalls[1]?.sessionListenedSeconds, 16)
+    assert.equal(checkpointCalls[1]?.segmentListenedSeconds, 11)
+
+    usePlayerStore.getState().stop()
+    await flushCheckpoints()
+    assert.equal(checkpointCalls.at(-1)?.finalizeSession, true)
+
+    const trackedCallCount = checkpointCalls.length
+    usePlayerStore.setState({
+      currentTrack: makeTrack('/external/associated.flac', { origin: 'associated-external', duration: 180 }),
+      playbackState: 'loading',
+      duration: 180
+    })
+    await usePlayerStore.getState().play()
+    monotonicNow = 52_000
+    wallNow += 16_000
+    emitAudioEvent('timeUpdate', 16)
+    usePlayerStore.getState().stop()
+    await flushCheckpoints()
+    assert.equal(checkpointCalls.length, trackedCallCount)
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    Date.now = originalDateNow
+    if (originalPerformance) Object.defineProperty(globalThis, 'performance', originalPerformance)
+    audioEngine.play = originalPlay
+    audioEngine.stop = originalStop
   }
 })

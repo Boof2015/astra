@@ -5,10 +5,11 @@ import EQView from '../views/EQView'
 import HomeView from '../views/HomeView'
 import SettingsView from '../views/SettingsView'
 import PlaylistView from '../views/PlaylistView'
+import StatsView from '../views/StatsView'
 
 export default function ViewRouter() {
   const activeView = useUIStore((s) => s.activeView)
-  const controllerEnabledView = activeView === 'home' || activeView === 'library' || activeView === 'playlist'
+  const controllerEnabledView = activeView === 'home' || activeView === 'library' || activeView === 'stats' || activeView === 'playlist'
 
   let content
   switch (activeView) {
@@ -17,6 +18,9 @@ export default function ViewRouter() {
       break
     case 'library':
       content = <LibraryView />
+      break
+    case 'stats':
+      content = <StatsView />
       break
     case 'graph':
       content = <GraphView />

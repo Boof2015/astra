@@ -8,6 +8,7 @@ import { createHash, randomBytes, randomUUID } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
 import type { DynamicPlaylistRulesV1 } from '../shared/playlists/dynamicPlaylist'
+import type { ListeningSessionCheckpoint, ListeningStatsQuery } from '../types/listeningStats'
 import { collectIamfStreamStats } from '../shared/iamf/obuWalker'
 import { mp4HasIamfTrack, readMp4DurationSeconds } from '../shared/iamf/mp4'
 import {
@@ -7888,6 +7889,22 @@ ipcMain.handle('library:markTrackLatestSyncSeen', async (_event, trackPath: stri
 
 ipcMain.handle('library:addRecentlyPlayed', async (_event, trackPath: string) => {
   await library.addRecentlyPlayed(trackPath)
+})
+
+ipcMain.handle('library:getListeningHistoryStatus', () => {
+  return library.getListeningHistoryStatus()
+})
+
+ipcMain.handle('library:checkpointListeningSession', async (_event, checkpoint: ListeningSessionCheckpoint) => {
+  return library.checkpointListeningSession(checkpoint)
+})
+
+ipcMain.handle('library:getListeningStatsDashboard', (_event, query: ListeningStatsQuery) => {
+  return library.getListeningStatsDashboard(query)
+})
+
+ipcMain.handle('library:clearDetailedListeningHistory', async () => {
+  return library.clearDetailedListeningHistory()
 })
 
 // ============================================

@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { audioEngine, isSupersededAudioLoadError } from '../audio/AudioEngine'
 import type { Track, PlaybackState } from '../types/audio'
 import type { NativeAudioCapabilities } from '../../types/nativeAudio'
+import type { ListeningHistoryStatus } from '../../types/listeningStats'
 import { extractWaveformPeaks } from '../audio/waveformExtractor'
 import { useLibraryStore, type DbTrack } from './libraryStore'
 import { usePlaylistStore } from './playlistStore'
@@ -181,6 +182,7 @@ interface PlayerStore {
   clearAssociatedOpenNotice: () => void
   getSessionSnapshot: () => PlayerSessionSnapshot
   restoreSession: (snapshot: PlayerSessionSnapshot) => Promise<void>
+  resetListeningHistoryTracking: (status: ListeningHistoryStatus) => void
 
   // Internal
   _initListeners: () => void
@@ -199,6 +201,7 @@ const OUTPUT_DELAY_NOTICE_THRESHOLD_MS = 120
 export const RECENT_PLAY_MIN_SECONDS = 15
 const DEFAULT_PLAYER_VOLUME = 0.7
 const CURRENT_TIME_STORE_THROTTLE_MS = 100
+const LISTENING_HISTORY_CHECKPOINT_SECONDS = 10
 const BYTES_PER_FLOAT32_SAMPLE = 4
 const LARGE_LOCAL_FILE_BYTES = 128 * 1024 * 1024
 const MAX_STANDARD_PREBUFFER_TRACK_BYTES = 192 * 1024 * 1024
@@ -729,6 +732,25 @@ interface RecentPlaySession {
   counted: boolean
   allowDbWrite: boolean
   sourcePlaylistId: number | null
+  generation: string | null
+  sessionKey: string
+  sessionStartedAt: number
+  segmentKey: string
+  segmentStartedAt: number
+  segmentStartAccumulatedSeconds: number
+  lastCheckpointAccumulatedSeconds: number
+  trackDurationSeconds: number
+  qualificationEligible: boolean
+}
+
+let nextListeningHistoryKey = 1
+
+function createListeningHistoryKey(prefix: 'session' | 'segment'): string {
+  const randomId = globalThis.crypto?.randomUUID?.()
+  if (randomId) return `${prefix}:${randomId}`
+  const key = `${prefix}:${Date.now()}:${nextListeningHistoryKey}`
+  nextListeningHistoryKey += 1
+  return key
 }
 
 interface AssociatedAudioMetadata {
@@ -936,6 +958,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   // Track if listeners are initialized
   let listenersInitialized = false
   let remoteLoadProgressUnsubscribe: (() => void) | null = null
+  let listeningBeforeUnloadHandler: (() => void) | null = null
   let lastCommittedCurrentTimeMs = 0
   let ffmpegFallbackNoticeId = 0
   let outputDelayNoticeId = 0
@@ -943,6 +966,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   const associatedMetadataInflight = new Set<string>()
   let pendingManualLoadCueTrack: Track | null = null
   let recentPlaySession: RecentPlaySession | null = null
+  let listeningHistoryStatusPromise: Promise<ListeningHistoryStatus> | null = null
   let activeLoadRequestId = 0
   let activePrebufferRequestId = 0
   let currentSerializedLoad: Promise<void> | null = null
@@ -1016,7 +1040,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     if (!isParallaxSinkModeActive()) return false
     invalidateLoadRequest()
     pendingManualLoadCueTrack = null
-    recentPlaySession = null
+    finalizeRecentPlaySession()
     return true
   }
 
@@ -1179,16 +1203,95 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     return state.queueItems.find((item) => item.queueId === state.currentQueueItemId)?.sourcePlaylistId ?? null
   }
 
-  const commitRecentPlay = (session: RecentPlaySession): void => {
-    if (session.counted) return
-    session.counted = true
+  const getListeningHistoryStatus = (): Promise<ListeningHistoryStatus> => {
+    if (!listeningHistoryStatusPromise) {
+      listeningHistoryStatusPromise = window.electronAPI.library.getListeningHistoryStatus()
+        .catch((error: unknown) => {
+          listeningHistoryStatusPromise = null
+          throw error
+        })
+    }
+    return listeningHistoryStatusPromise
+  }
+
+  const restartDetailedSession = (session: RecentPlaySession, status: ListeningHistoryStatus): void => {
+    const wallNow = Date.now()
+    session.generation = status.generation
+    session.accumulatedSeconds = 0
+    session.lastAccumulatedAtMs = get().playbackState === 'playing' ? performance.now() : null
+    session.qualificationEligible = !session.counted
+    session.sessionKey = createListeningHistoryKey('session')
+    session.sessionStartedAt = wallNow
+    session.segmentKey = createListeningHistoryKey('segment')
+    session.segmentStartedAt = wallNow
+    session.segmentStartAccumulatedSeconds = session.accumulatedSeconds
+    session.lastCheckpointAccumulatedSeconds = session.accumulatedSeconds
+  }
+
+  const checkpointRecentPlay = (
+    session: RecentPlaySession,
+    options: { finalizeSegment?: boolean; finalizeSession?: boolean; observedAt?: number } = {}
+  ): void => {
     if (!session.allowDbWrite) return
-    void useLibraryStore.getState().recordPlay(session.trackPath)
+    const observedAt = options.observedAt ?? Date.now()
+    const sessionListenedSeconds = session.accumulatedSeconds
+    const segmentListenedSeconds = Math.max(0, sessionListenedSeconds - session.segmentStartAccumulatedSeconds)
+    const checkpointSessionKey = session.sessionKey
+    const checkpointSegmentKey = session.segmentKey
+
     void (async () => {
-      if (session.sourcePlaylistId !== null) {
-        await window.electronAPI.library.markPlaylistPlayed(session.sourcePlaylistId)
+      try {
+        const status = session.generation
+          ? { generation: session.generation, startedAt: null }
+          : await getListeningHistoryStatus()
+        if (!session.generation) session.generation = status.generation
+        const result = await window.electronAPI.library.checkpointListeningSession({
+          generation: status.generation,
+          sessionKey: checkpointSessionKey,
+          segmentKey: checkpointSegmentKey,
+          trackPath: session.trackPath,
+          sourcePlaylistId: session.sourcePlaylistId,
+          sessionStartedAt: session.sessionStartedAt,
+          segmentStartedAt: session.segmentStartedAt,
+          observedAt,
+          sessionListenedSeconds,
+          segmentListenedSeconds,
+          trackDurationSeconds: session.trackDurationSeconds,
+          qualificationEligible: session.qualificationEligible,
+          finalizeSegment: Boolean(options.finalizeSegment),
+          finalizeSession: Boolean(options.finalizeSession)
+        })
+        if (!result.accepted) {
+          listeningHistoryStatusPromise = Promise.resolve(result.status)
+          if (recentPlaySession === session && session.generation === status.generation) {
+            if (result.status.generation !== status.generation) {
+              restartDetailedSession(session, result.status)
+            } else {
+              session.allowDbWrite = false
+            }
+          }
+          return
+        }
+        if (session.sessionKey === checkpointSessionKey && session.generation === status.generation) {
+          session.lastCheckpointAccumulatedSeconds = Math.max(
+            session.lastCheckpointAccumulatedSeconds,
+            sessionListenedSeconds
+          )
+        }
+        if (result.qualifiedNow) {
+          session.counted = true
+          session.qualificationEligible = false
+          await Promise.all([
+            useLibraryStore.getState().loadRecentlyPlayed(),
+            usePlaylistStore.getState().loadPlaylists()
+          ])
+        }
+        if (typeof window.dispatchEvent === 'function') {
+          window.dispatchEvent(new Event('astra:listening-history-checkpoint'))
+        }
+      } catch (error) {
+        console.warn('Failed to checkpoint listening history:', error)
       }
-      await usePlaylistStore.getState().loadPlaylists()
     })()
   }
 
@@ -1196,7 +1299,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     playbackState: PlaybackState,
     nowMs: number = performance.now()
   ): RecentPlaySession | null => {
-    if (!recentPlaySession || recentPlaySession.counted) return recentPlaySession
+    if (!recentPlaySession) return recentPlaySession
 
     const next = advanceRecentPlayAccumulation(recentPlaySession, playbackState, nowMs)
     recentPlaySession.accumulatedSeconds = next.accumulatedSeconds
@@ -1206,10 +1309,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
   const commitRecentPlayNow = (): void => {
     const session = updateRecentPlayAccumulation(get().playbackState)
-    if (!session || session.counted) return
-    if (session.accumulatedSeconds >= session.thresholdSeconds) {
-      commitRecentPlay(session)
-    }
+    if (!session) return
+    if (
+      (!session.counted && session.accumulatedSeconds >= session.thresholdSeconds)
+      || session.accumulatedSeconds - session.lastCheckpointAccumulatedSeconds >= LISTENING_HISTORY_CHECKPOINT_SECONDS
+    ) checkpointRecentPlay(session)
   }
 
   const maybeCommitRecentPlay = (
@@ -1217,24 +1321,56 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     nowMs: number = performance.now()
   ): void => {
     const session = updateRecentPlayAccumulation(playbackState, nowMs)
-    if (!session || session.counted) return
-    if (session.accumulatedSeconds >= session.thresholdSeconds) {
-      commitRecentPlay(session)
-    }
+    if (!session) return
+    if (
+      (!session.counted && session.accumulatedSeconds >= session.thresholdSeconds)
+      || session.accumulatedSeconds - session.lastCheckpointAccumulatedSeconds >= LISTENING_HISTORY_CHECKPOINT_SECONDS
+    ) checkpointRecentPlay(session)
+  }
+
+  const finalizeRecentPlaySession = (playbackState: PlaybackState = get().playbackState): void => {
+    const session = updateRecentPlayAccumulation(playbackState)
+    if (!session) return
+    checkpointRecentPlay(session, { finalizeSegment: true, finalizeSession: true })
+    recentPlaySession = null
   }
 
   const startRecentPlaySession = (trackPath: string): void => {
+    if (recentPlaySession?.trackPath === trackPath) {
+      const state = get()
+      const duration = resolvePositiveDuration(state.currentTrack?.duration, state.duration)
+      recentPlaySession.trackDurationSeconds = Math.max(recentPlaySession.trackDurationSeconds, duration)
+      recentPlaySession.thresholdSeconds = getRecentPlayThresholdSecondsForDuration(duration)
+      return
+    }
+    finalizeRecentPlaySession()
     const state = get()
     const track = state.currentTrack
     const thresholdSeconds = getRecentPlayThresholdSeconds(track)
+    const wallNow = Date.now()
     recentPlaySession = {
       trackPath,
       thresholdSeconds,
       accumulatedSeconds: 0,
-      lastAccumulatedAtMs: null,
+      lastAccumulatedAtMs: state.playbackState === 'playing' ? performance.now() : null,
       counted: false,
       allowDbWrite: track?.origin !== 'associated-external',
-      sourcePlaylistId: resolveSourcePlaylistIdForState(state)
+      sourcePlaylistId: resolveSourcePlaylistIdForState(state),
+      generation: null,
+      sessionKey: createListeningHistoryKey('session'),
+      sessionStartedAt: wallNow,
+      segmentKey: createListeningHistoryKey('segment'),
+      segmentStartedAt: wallNow,
+      segmentStartAccumulatedSeconds: 0,
+      lastCheckpointAccumulatedSeconds: 0,
+      trackDurationSeconds: resolvePositiveDuration(track?.duration, state.duration),
+      qualificationEligible: true
+    }
+    const session = recentPlaySession
+    if (session.allowDbWrite) {
+      void getListeningHistoryStatus().then((status) => {
+        if (recentPlaySession === session && session.generation === null) session.generation = status.generation
+      }).catch(() => undefined)
     }
   }
 
@@ -1679,6 +1815,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         get()._initListeners()
       }
 
+      finalizeRecentPlaySession()
       set({
         currentTrack: track,
         currentTrackSource: 'standalone',
@@ -1696,6 +1833,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         restoredTrackNeedsLoad: false,
         restoredPlaybackTime: null
       })
+      startRecentPlaySession(track.path)
+      const loadListeningSession = recentPlaySession
 
       try {
         await ensureCompatiblePlaybackMode(track)
@@ -1809,6 +1948,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         if (isSupersededPlaybackLoad(error, loadRequestId)) {
           return false
         }
+        if (recentPlaySession === loadListeningSession) finalizeRecentPlaySession()
         console.error('Failed to load track:', error)
         logSlowPath('loadTrack', loadStart, {
           trackPath: track.path,
@@ -1919,7 +2059,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       void useParallaxStore.getState().stopHostPlayback()
       invalidateLoadRequest()
       pendingManualLoadCueTrack = null
-      recentPlaySession = null
+      finalizeRecentPlaySession()
       set({
         remoteBufferedSeconds: 0,
         loadingStatus: null,
@@ -2208,6 +2348,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       })
     },
 
+    resetListeningHistoryTracking: (status) => {
+      listeningHistoryStatusPromise = Promise.resolve(status)
+      if (recentPlaySession) restartDetailedSession(recentPlaySession, status)
+    },
+
     playQueuedItem: async (queueId, options) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
 
@@ -2401,6 +2546,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         get()._initListeners()
       }
 
+      finalizeRecentPlaySession()
       set({
         currentTrack: track,
         playbackState: 'loading',
@@ -2418,6 +2564,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         restoredTrackNeedsLoad: false,
         restoredPlaybackTime: null
       })
+      startRecentPlaySession(track.path)
+      const loadListeningSession = recentPlaySession
 
       try {
         await ensureCompatiblePlaybackMode(track)
@@ -2649,6 +2797,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             remoteBufferedSeconds: 0,
             remoteStreamSessionId: null
           })
+          if (recentPlaySession === loadListeningSession) finalizeRecentPlaySession()
           return 'failed'
         }
         if (!result.data) {
@@ -2755,6 +2904,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         if (isSupersededPlaybackLoad(error, loadRequestId)) {
           return 'superseded'
         }
+        if (recentPlaySession === loadListeningSession) finalizeRecentPlaySession()
         console.error('Failed to load track:', error)
         logMemoryDiagnosticsEvent('track_load_failed', {
           trackPath: track.path,
@@ -2937,6 +3087,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       if (listenersInitialized) return
       listenersInitialized = true
 
+      listeningBeforeUnloadHandler = () => finalizeRecentPlaySession()
+      window.addEventListener('beforeunload', listeningBeforeUnloadHandler)
+
       remoteLoadProgressUnsubscribe?.()
       remoteLoadProgressUnsubscribe = window.electronAPI.onProgressiveLoadProgress((progress) => {
         set((state) => {
@@ -2956,9 +3109,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         const previousPlaybackState = get().playbackState
         const now = performance.now()
         maybeCommitRecentPlay(previousPlaybackState, now)
-        if (recentPlaySession && nextPlaybackState !== 'playing') {
+        if (recentPlaySession && previousPlaybackState === 'playing' && nextPlaybackState !== 'playing') {
+          checkpointRecentPlay(recentPlaySession, { finalizeSegment: true })
           recentPlaySession.lastAccumulatedAtMs = null
-        } else if (recentPlaySession && previousPlaybackState !== 'playing') {
+        } else if (recentPlaySession && nextPlaybackState === 'playing' && previousPlaybackState !== 'playing') {
+          recentPlaySession.segmentKey = createListeningHistoryKey('segment')
+          recentPlaySession.segmentStartedAt = Date.now()
+          recentPlaySession.segmentStartAccumulatedSeconds = recentPlaySession.accumulatedSeconds
           recentPlaySession.lastAccumulatedAtMs = now
         }
         if (nextPlaybackState === 'playing') {
@@ -3183,8 +3340,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       // Handle non-gapless track end (when no next track buffered)
       audioEngine.on('ended', () => {
         if (isParallaxSinkModeActive()) return
-        commitRecentPlayNow()
-        recentPlaySession = null
+        finalizeRecentPlaySession('playing')
         set({
           currentTime: 0,
           remoteBufferedSeconds: 0,
@@ -3195,6 +3351,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       })
 
       audioEngine.on('error', (error) => {
+        finalizeRecentPlaySession()
         console.error('Audio engine error:', error)
         logMemoryDiagnosticsEvent('audio_engine_error', {
           message: error instanceof Error ? error.message : String(error)
@@ -3207,11 +3364,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     // Cleanup listeners
     _cleanupListeners: () => {
+      finalizeRecentPlaySession()
       clearScheduledPrebufferTimer()
       // Audio engine handles its own cleanup
       if (remoteLoadProgressUnsubscribe) {
         remoteLoadProgressUnsubscribe()
         remoteLoadProgressUnsubscribe = null
+      }
+      if (listeningBeforeUnloadHandler) {
+        window.removeEventListener('beforeunload', listeningBeforeUnloadHandler)
+        listeningBeforeUnloadHandler = null
       }
       listenersInitialized = false
     }

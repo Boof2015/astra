@@ -42,6 +42,7 @@ import { useLyricsStore } from './stores/lyricsStore'
 import { useSubsonicSettingsStore } from './stores/subsonicSettingsStore'
 import { useJellyfinSettingsStore } from './stores/jellyfinSettingsStore'
 import { useGraphStore } from './stores/graphStore'
+import { useListeningStatsStore } from './stores/listeningStatsStore'
 import { usePlayerStore } from './stores/playerStore'
 import { usePlaylistStore } from './stores/playlistStore'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
@@ -118,6 +119,7 @@ function App() {
   const [analyzerHeightPreviewPx, setAnalyzerHeightPreviewPx] = useState<number | null>(null)
   const [isCollapseToggleNearby, setIsCollapseToggleNearby] = useState(false)
   const graphEnabled = useGraphStore((s) => s.enabled)
+  const listeningStatsEnabled = useListeningStatsStore((s) => s.enabled)
   const queuePresence = usePresence(showQueue)
   const infoSidebarPresence = usePresence(showInfoSidebar)
 
@@ -140,7 +142,10 @@ function App() {
     if (activeView === 'graph' && !graphEnabled) {
       replaceActiveView('home')
     }
-  }, [activeView, graphEnabled, replaceActiveView])
+    if (activeView === 'stats' && !listeningStatsEnabled) {
+      replaceActiveView('home')
+    }
+  }, [activeView, graphEnabled, listeningStatsEnabled, replaceActiveView])
 
   useEffect(() => {
     if (!isAnalyzerRackVisible || isAnalyzerEditMode) {

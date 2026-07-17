@@ -13,6 +13,7 @@ export const ARTIST_BROWSE_MODE_STORAGE_KEY = 'astra-library-artist-browse-mode-
 export const TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-bpm-key-visible-v1'
 export const TRACKLIST_GENRE_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-genre-visible-v1'
 export const TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-added-date-visible-v1'
+export const TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY = 'astra-library-tracklist-play-count-visible-v1'
 export const ALBUM_SORT_MODE_STORAGE_KEY = 'astra-library-album-sort-mode-v1'
 export const INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY = 'astra-library-include-singles-in-albums-v1'
 export const INCLUDE_COLLAB_ARTISTS_STORAGE_KEY = 'astra-library-include-collab-artists-v1'
@@ -49,6 +50,7 @@ export const DISCORD_RPC_PAUSE_CLEAR_MINUTES_STORAGE_KEY = 'astra-discord-rpc-pa
 export const LYRICS_DISPLAY_SETTINGS_STORAGE_KEY = 'astra-lyrics-display-settings-v1'
 export const UPDATES_AUTO_CHECK_STORAGE_KEY = 'astra-updates-auto-check-enabled'
 export const LIBRARY_GRAPH_ENABLED_STORAGE_KEY = 'astra-experimental-library-graph-enabled-v1'
+export const LISTENING_STATS_ENABLED_STORAGE_KEY = 'astra-experimental-listening-stats-enabled-v1'
 export const LIBRARY_INTEGRITY_ENABLED_STORAGE_KEY = 'astra-experimental-library-integrity-enabled-v1'
 
 export const AUDIO_OUTPUT_DEVICE_STORAGE_KEY = 'astra-audio-output-device'

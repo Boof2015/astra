@@ -194,6 +194,47 @@ test('session snapshot normalization preserves genre track sort state', () => {
   assert.deepEqual(snapshot.library?.tracksViewSortState, { key: 'duration', direction: 'desc' })
 })
 
+test('session snapshot normalization preserves Stats routing and play count sorting', () => {
+  const snapshot = normalizeSessionSnapshot({
+    kind: SESSION_STATE_KIND,
+    schemaVersion: SESSION_STATE_SCHEMA_VERSION,
+    savedAt: 1,
+    ui: {
+      activeView: 'stats',
+      showQueue: false,
+      showInfoSidebar: false,
+      showPipelineShelf: false,
+      showLyricsShelf: false,
+      lyricsShelfExpanded: false,
+      fullscreenLyricsVisible: false
+    },
+    player: null,
+    playlist: {
+      selectedPlaylistId: 4,
+      sortState: { key: 'play_count', direction: 'desc' }
+    },
+    library: {
+      viewMode: 'tracks',
+      selectedAlbum: null,
+      selectedArtist: null,
+      selectedGenre: null,
+      selectedYear: null,
+      trackListSortState: { key: 'play_count', direction: 'desc' },
+      tracksViewSortState: { key: 'play_count', direction: 'desc' },
+      selectedSourceFilters: [],
+      albumSortMode: 'title',
+      includeSinglesInAlbums: true,
+      includeCollabArtists: false,
+      artistRootViewMode: 'list'
+    }
+  })
+
+  assert.equal(snapshot?.ui?.activeView, 'stats')
+  assert.deepEqual(snapshot?.library?.trackListSortState, { key: 'play_count', direction: 'desc' })
+  assert.deepEqual(snapshot?.library?.tracksViewSortState, { key: 'play_count', direction: 'desc' })
+  assert.deepEqual(snapshot?.playlist?.sortState, { key: 'play_count', direction: 'desc' })
+})
+
 test('session snapshot normalization defaults missing fullscreen lyrics visibility to hidden', () => {
   const snapshot = normalizeSessionSnapshot({
     kind: SESSION_STATE_KIND,

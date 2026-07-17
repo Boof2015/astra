@@ -11,7 +11,7 @@ import type { UIScaleShortcutAction } from '../../types/uiScale'
 import { runAppViewTransition, type AppViewTransitionDirection } from '../utils/viewTransitions.ts'
 import { normalizeAppView, type UISessionSnapshot } from '../utils/sessionState'
 
-export type AppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist'
+export type AppView = 'home' | 'library' | 'stats' | 'graph' | 'eq' | 'settings' | 'playlist'
 export type WaveformTimeDisplayMode = MiniPlayerTimeDisplayMode
 export type HomeGreetingTextMode = 'messages' | 'clock' | 'off'
 export type JumpToPlayingDestination = 'smart-source' | 'library-tracks' | 'album' | 'artist' | 'queue'
@@ -46,7 +46,7 @@ export const PARALLAX_SETUP_COMPLETE_STORAGE_KEY = 'astra-parallax-setup-complet
 // hostname". Persisted here (not main) since it's a display-only label for this surface.
 export const PARALLAX_ZONE_NAME_STORAGE_KEY = 'astra-parallax-zone-name-v1'
 
-const APP_VIEW_MOTION_ORDER: AppView[] = ['home', 'library', 'graph', 'eq', 'playlist', 'settings']
+const APP_VIEW_MOTION_ORDER: AppView[] = ['home', 'library', 'stats', 'graph', 'eq', 'playlist', 'settings']
 
 export function resolveAppViewTransitionDirection(
   sourceView: AppView | null | undefined,

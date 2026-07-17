@@ -14,6 +14,7 @@ import { partitionArtistDiscography } from '../../utils/artistDiscography'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { matchesFuzzyFields } from '../../utils/fuzzySearch'
 import { runViewTransition } from '../../utils/viewTransitions'
+import { compareTrackPlayCounts } from '../../utils/trackPlayCountSort'
 import { getLibraryTabTransitionScopeClasses } from '../../utils/libraryTabMotion'
 import {
   albumMatchesLibraryYear,
@@ -217,6 +218,7 @@ export default function LibraryView() {
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const showTracklistGenre = useLibraryStore((state) => state.showTracklistGenre)
   const showTracklistAddedDate = useLibraryStore((state) => state.showTracklistAddedDate)
+  const showTracklistPlayCount = useLibraryStore((state) => state.showTracklistPlayCount)
   const ratingsEnabled = useRatingsStore((state) => state.enabled)
   const ratings = useRatingsStore((state) => state.ratings)
   const sortState = useLibraryStore((state) => state.trackListSortState)
@@ -507,9 +509,10 @@ export default function LibraryView() {
     const hideGenreSort = !showTracklistGenre && sortState.key === 'genre'
     const hideAddedSort = !showTracklistAddedDate && sortState.key === 'added'
     const hideRatingSort = !ratingsEnabled && sortState.key === 'rating'
-    if (!hideBpmKeySort && !hideGenreSort && !hideAddedSort && !hideRatingSort) return
+    const hidePlayCountSort = !showTracklistPlayCount && sortState.key === 'play_count'
+    if (!hideBpmKeySort && !hideGenreSort && !hideAddedSort && !hideRatingSort && !hidePlayCountSort) return
     setSortState(selectedAlbum ? null : { key: 'title', direction: 'asc' })
-  }, [ratingsEnabled, selectedAlbum, setSortState, showTracklistAddedDate, showTracklistBpmKey, showTracklistGenre, sortState])
+  }, [ratingsEnabled, selectedAlbum, setSortState, showTracklistAddedDate, showTracklistBpmKey, showTracklistGenre, showTracklistPlayCount, sortState])
 
   const handleSortColumnToggle = useCallback((key: TrackListSortKey) => {
     const current = useLibraryStore.getState().trackListSortState
@@ -522,7 +525,7 @@ export default function LibraryView() {
     }
     setSortState({
       key,
-      direction: key === 'added' ? 'desc' : 'asc'
+      direction: key === 'added' || key === 'play_count' ? 'desc' : 'asc'
     })
   }, [setSortState])
 
@@ -671,6 +674,8 @@ export default function LibraryView() {
           ratings.get(b.path)?.rating ?? null,
           sortState.direction
         )
+      } else if (sortState.key === 'play_count') {
+        comparison = compareTrackPlayCounts(a.play_count, b.play_count, sortState.direction)
       } else {
         comparison = compareNullableKey(a.musical_key, b.musical_key, sortState.direction)
       }

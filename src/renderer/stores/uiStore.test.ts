@@ -44,6 +44,8 @@ test('normalizeJumpToPlayingDestination accepts known destinations and defaults 
 })
 
 test('resolveAppViewTransitionDirection follows sidebar order', () => {
+  assert.equal(resolveAppViewTransitionDirection('library', 'stats'), 'down')
+  assert.equal(resolveAppViewTransitionDirection('stats', 'library'), 'up')
   assert.equal(resolveAppViewTransitionDirection('library', 'eq'), 'down')
   assert.equal(resolveAppViewTransitionDirection('eq', 'library'), 'up')
   assert.equal(resolveAppViewTransitionDirection('library', 'library'), null)

@@ -46,6 +46,7 @@ import { useLyricsDisplaySettingsStore } from '../../stores/lyricsDisplaySetting
 import { useUpdateStore } from '../../stores/updateStore'
 import { useDiagnosticsStore } from '../../stores/diagnosticsStore'
 import { useGraphStore } from '../../stores/graphStore'
+import { useListeningStatsStore } from '../../stores/listeningStatsStore'
 import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
 import { useRatingsStore } from '../../stores/ratingsStore'
 import RemoteServersPanel from '../settings/RemoteServersPanel'
@@ -99,6 +100,7 @@ type ResetActionId =
   | 'reset-eq'
   | 'reset-all'
   | 'reset-ratings'
+  | 'reset-listening-history'
   | 'reset-folders'
   | 'factory-reset'
 
@@ -232,6 +234,7 @@ const RESET_ACTION_IDS: ResetActionId[] = [
   'reset-eq',
   'reset-all',
   'reset-ratings',
+  'reset-listening-history',
   'reset-folders',
   'factory-reset',
 ]
@@ -387,6 +390,8 @@ export default function SettingsView() {
   const setShowTracklistGenre = useLibraryStore((state) => state.setShowTracklistGenre)
   const showTracklistAddedDate = useLibraryStore((state) => state.showTracklistAddedDate)
   const setShowTracklistAddedDate = useLibraryStore((state) => state.setShowTracklistAddedDate)
+  const showTracklistPlayCount = useLibraryStore((state) => state.showTracklistPlayCount)
+  const setShowTracklistPlayCount = useLibraryStore((state) => state.setShowTracklistPlayCount)
   const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
   const setArtistBrowseMode = useLibraryStore((state) => state.setArtistBrowseMode)
   const {
@@ -539,6 +544,9 @@ export default function SettingsView() {
   const libraryGraphEnabled = useGraphStore((state) => state.enabled)
   const setLibraryGraphEnabled = useGraphStore((state) => state.setEnabled)
   const openFullGraph = useGraphStore((state) => state.openFullMap)
+  const listeningStatsEnabled = useListeningStatsStore((state) => state.enabled)
+  const setListeningStatsEnabled = useListeningStatsStore((state) => state.setEnabled)
+  const clearDetailedListeningHistory = useListeningStatsStore((state) => state.clearDetailedHistory)
   const libraryIntegrityEnabled = useLibraryIntegrityStore((state) => state.enabled)
   const setLibraryIntegrityEnabled = useLibraryIntegrityStore((state) => state.setEnabled)
   const openLibraryIntegrityPanel = useLibraryIntegrityStore((state) => state.openPanel)
@@ -857,6 +865,21 @@ export default function SettingsView() {
       run: resetTrackRatings,
     },
     {
+      id: 'reset-listening-history',
+      title: 'Clear Listening History',
+      description: 'Delete detailed Stats sessions and listening time while preserving play counts, recents, and last-played values.',
+      buttonLabel: 'Clear Listening History',
+      confirmTitle: 'Clear Detailed Listening History',
+      confirmMessage: 'This permanently removes detailed listening sessions, time totals, rankings, and the Stats baseline. Track play counts, recently played, last-played values, and dynamic playlist behavior are preserved.',
+      confirmLabel: 'Clear History',
+      destructive: true,
+      typedPhrase: 'CLEAR LISTENING HISTORY',
+      run: async () => {
+        await clearDetailedListeningHistory()
+        return 'Detailed listening history cleared. Play counts were preserved.'
+      },
+    },
+    {
       id: 'reset-folders',
       title: 'Reset Mapped Folders',
       description: 'Remove mapped folders and indexed library data while preserving playlists.',
@@ -882,7 +905,7 @@ export default function SettingsView() {
       disabled: isScanning,
       run: factoryResetApplication,
     },
-  ]), [isScanning])
+  ]), [clearDetailedListeningHistory, isScanning])
 
   const resetActionMap = useMemo(() => {
     return new Map<ResetActionId, ResetActionDefinition>(resetActions.map((action) => [action.id, action]))
@@ -1853,6 +1876,15 @@ export default function SettingsView() {
                       {showTracklistAddedDate ? 'Enabled' : 'Disabled'}
                     </button>
                   </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Play Count</span>
+                    <button
+                      className={`settings-toggle ${showTracklistPlayCount ? 'active' : ''}`}
+                      onClick={() => setShowTracklistPlayCount(!showTracklistPlayCount)}
+                    >
+                      {showTracklistPlayCount ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2567,6 +2599,33 @@ export default function SettingsView() {
                       Open Full Map
                     </button>
                   </div>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Listening Stats</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Listening Stats</span>
+                    <button
+                      className={`settings-toggle ${listeningStatsEnabled ? 'active' : ''}`}
+                      onClick={() => setListeningStatsEnabled(!listeningStatsEnabled)}
+                    >
+                      {listeningStatsEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Open Stats</span>
+                    <button
+                      className="settings-btn"
+                      disabled={!listeningStatsEnabled}
+                      onClick={() => setActiveView('stats')}
+                    >
+                      Open Listening Stats
+                    </button>
+                  </div>
+                  <p className="settings-note">
+                    Shows local listening time, plays, and rankings. Detailed history keeps recording on this installation even while the view is hidden.
+                  </p>
                 </div>
               </div>
               <div className="settings-card">

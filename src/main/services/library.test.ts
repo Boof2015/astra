@@ -262,6 +262,8 @@ async function setupLegacyPlaycountLibrary(t: test.TestContext): Promise<string>
 test('playcount migration adds fresh aggregate fields without backfilling recent history', async (t) => {
   await setupLegacyPlaycountLibrary(t)
 
+  assert.equal(library.getListeningHistoryStatus().startedAt, null)
+
   const track = library.getTrackByPath('/legacy/track.flac')
   assert.equal(track?.play_count, 0)
   assert.equal(track?.last_played_at, null)
@@ -304,6 +306,196 @@ test('qualified play records recent history and updates track aggregates', async
   } finally {
     Date.now = originalDateNow
   }
+})
+
+test('detailed listening checkpoints qualify once, stay idempotent, and reset without clearing play aggregates', async (t) => {
+  await setupEmptyLibrary(t)
+
+  const source = await library.createSubsonicSource({
+    name: 'Short Track Source',
+    base_url: 'https://short.example.test',
+    username: 'tester',
+    secret_encrypted: 'secret',
+    enabled: 1,
+    last_status: 'ok'
+  })
+  const trackPath = `subsonic://${source.id}/short`
+  await library.upsertSubsonicTracks(source.id, [createRemoteTrack({
+    path: trackPath,
+    source_track_id: 'short',
+    title: 'Five Seconds',
+    artist: 'Short Artist',
+    album: 'Short Album',
+    duration: 5
+  })])
+
+  const initialStatus = library.getListeningHistoryStatus()
+  assert.equal(initialStatus.startedAt, null)
+  const playlist = await library.createPlaylist('Checkpoint Playlist')
+  const first = await library.checkpointListeningSession({
+    generation: initialStatus.generation,
+    sessionKey: 'short-session',
+    segmentKey: 'short-segment',
+    trackPath,
+    sourcePlaylistId: playlist.id,
+    sessionStartedAt: 1_000_000,
+    segmentStartedAt: 1_000_000,
+    observedAt: 1_005_000,
+    sessionListenedSeconds: 5,
+    segmentListenedSeconds: 5,
+    trackDurationSeconds: 5,
+    qualificationEligible: true,
+    finalizeSegment: true,
+    finalizeSession: true
+  })
+  assert.equal(first.accepted, true)
+  assert.equal(first.qualifiedNow, true)
+  assert.equal(first.status.startedAt, 1_000_000)
+
+  const staleRetry = await library.checkpointListeningSession({
+    generation: initialStatus.generation,
+    sessionKey: 'short-session',
+    segmentKey: 'short-segment',
+    trackPath,
+    sourcePlaylistId: null,
+    sessionStartedAt: 1_000_000,
+    segmentStartedAt: 1_000_000,
+    observedAt: 1_003_000,
+    sessionListenedSeconds: 3,
+    segmentListenedSeconds: 3,
+    trackDurationSeconds: 5,
+    qualificationEligible: true
+  })
+  assert.equal(staleRetry.accepted, true)
+  assert.equal(staleRetry.qualifiedNow, false)
+  assert.equal(library.getTrackByPath(trackPath)?.play_count, 1)
+  assert.equal(library.getRecentlyPlayed(10).filter((track) => track.path === trackPath).length, 1)
+  assert.equal(library.getPlaylists().find((entry) => entry.id === playlist.id)?.last_played_at, 1_005_000)
+
+  const dashboard = library.getListeningStatsDashboard({ range: 'all', rankingMetric: 'plays', now: 1_006_000 })
+  assert.equal(dashboard.summary.listenedSeconds, 5)
+  assert.equal(dashboard.summary.qualifiedPlays, 1)
+  assert.equal(dashboard.summary.tracksPlayed, 1)
+
+  const clearedStatus = await library.clearDetailedListeningHistory()
+  assert.notEqual(clearedStatus.generation, initialStatus.generation)
+  assert.equal(clearedStatus.startedAt, null)
+  const staleAfterReset = await library.checkpointListeningSession({
+    generation: initialStatus.generation,
+    sessionKey: 'short-session',
+    segmentKey: 'short-segment',
+    trackPath,
+    sourcePlaylistId: null,
+    sessionStartedAt: 1_000_000,
+    segmentStartedAt: 1_000_000,
+    observedAt: 1_010_000,
+    sessionListenedSeconds: 10,
+    segmentListenedSeconds: 10,
+    trackDurationSeconds: 5,
+    qualificationEligible: true
+  })
+  assert.equal(staleAfterReset.accepted, false)
+  assert.equal(library.getListeningStatsDashboard({ range: 'all', rankingMetric: 'plays', now: 1_011_000 }).status.startedAt, null)
+  assert.equal(library.getTrackByPath(trackPath)?.play_count, 1)
+  assert.equal(library.getRecentlyPlayed(10).filter((track) => track.path === trackPath).length, 1)
+})
+
+test('listening stats allocate overlapping segments to local buckets', async (t) => {
+  await setupSeededLibrary(t)
+
+  const status = library.getListeningHistoryStatus()
+  const midnight = new Date(2026, 6, 10, 0, 0, 0, 0).getTime()
+  const segmentStart = midnight - 60_000
+  const segmentEnd = midnight + 60_000
+  await library.checkpointListeningSession({
+    generation: status.generation,
+    sessionKey: 'midnight-session',
+    segmentKey: 'midnight-segment',
+    trackPath: 'subsonic://1/split-a',
+    sourcePlaylistId: null,
+    sessionStartedAt: segmentStart,
+    segmentStartedAt: segmentStart,
+    observedAt: segmentEnd,
+    sessionListenedSeconds: 120,
+    segmentListenedSeconds: 120,
+    trackDurationSeconds: 180,
+    qualificationEligible: false,
+    finalizeSegment: true,
+    finalizeSession: true
+  })
+
+  const dashboard = library.getListeningStatsDashboard({
+    range: '30d',
+    rankingMetric: 'time',
+    now: midnight + 120_000
+  })
+  const previousDay = dashboard.activity.find((bucket) => bucket.startAt === midnight - 86_400_000)
+  const currentDay = dashboard.activity.find((bucket) => bucket.startAt === midnight)
+  assert.ok(previousDay)
+  assert.ok(currentDay)
+  assert.equal(Math.round(previousDay.listenedSeconds), 60)
+  assert.equal(Math.round(currentDay.listenedSeconds), 60)
+  assert.equal(Math.round(dashboard.summary.listenedSeconds), 120)
+  assert.equal(dashboard.summary.activeDays, 2)
+  assert.equal(dashboard.summary.qualifiedPlays, 0)
+
+  const sevenDays = library.getListeningStatsDashboard({ range: '7d', rankingMetric: 'time', now: midnight + 120_000 })
+  const oneYear = library.getListeningStatsDashboard({ range: '1y', rankingMetric: 'time', now: midnight + 120_000 })
+  const allTime = library.getListeningStatsDashboard({ range: 'all', rankingMetric: 'time', now: midnight + 120_000 })
+  assert.equal(sevenDays.granularity, 'day')
+  assert.equal(sevenDays.activity.length, 7)
+  assert.equal(oneYear.granularity, 'week')
+  assert.equal(oneYear.activity.length, 53)
+  assert.equal(allTime.granularity, 'month')
+  assert.equal(allTime.activity.length, 1)
+})
+
+test('listening rankings switch between plays and time and retain snapshots for removed tracks', async (t) => {
+  await setupSeededLibrary(t)
+
+  const status = library.getListeningHistoryStatus()
+  const base = new Date(2026, 6, 12, 12, 0, 0, 0).getTime()
+  const checkpoint = async (
+    sessionKey: string,
+    trackPath: string,
+    offsetSeconds: number,
+    listenedSeconds: number
+  ) => library.checkpointListeningSession({
+    generation: status.generation,
+    sessionKey,
+    segmentKey: `${sessionKey}-segment`,
+    trackPath,
+    sourcePlaylistId: null,
+    sessionStartedAt: base + offsetSeconds * 1000,
+    segmentStartedAt: base + offsetSeconds * 1000,
+    observedAt: base + (offsetSeconds + listenedSeconds) * 1000,
+    sessionListenedSeconds: listenedSeconds,
+    segmentListenedSeconds: listenedSeconds,
+    trackDurationSeconds: 180,
+    qualificationEligible: true,
+    finalizeSegment: true,
+    finalizeSession: true
+  })
+
+  await checkpoint('track-a-one', 'subsonic://1/split-a', 0, 20)
+  await checkpoint('track-a-two', 'subsonic://1/split-a', 30, 20)
+  await checkpoint('track-b-one', 'subsonic://1/split-b', 60, 100)
+
+  const queryNow = base + 180_000
+  const byPlays = library.getListeningStatsDashboard({ range: 'all', rankingMetric: 'plays', now: queryNow })
+  const byTime = library.getListeningStatsDashboard({ range: 'all', rankingMetric: 'time', now: queryNow })
+  assert.equal(byPlays.topTracks[0]?.title, 'Split A')
+  assert.equal(byPlays.topTracks[0]?.qualifiedPlays, 2)
+  assert.equal(byTime.topTracks[0]?.title, 'Split B')
+  assert.equal(Math.round(byTime.topTracks[0]?.listenedSeconds ?? 0), 100)
+
+  await library.deleteSubsonicSource(1, true)
+  const afterRemoval = library.getListeningStatsDashboard({ range: 'all', rankingMetric: 'plays', now: queryNow })
+  assert.equal(afterRemoval.topTracks[0]?.title, 'Split A')
+  assert.equal(afterRemoval.topTracks[0]?.available, false)
+  assert.equal(afterRemoval.topTracks[0]?.trackPath, null)
+  assert.equal(afterRemoval.topArtists.some((artist) => artist.artist === 'Artist A'), true)
+  assert.equal(afterRemoval.topAlbums.some((album) => album.album === 'Split Release'), true)
 })
 
 function updateStoredArtistCredits(userDataDir: string, trackPath: string, artistNames: readonly string[]): void {

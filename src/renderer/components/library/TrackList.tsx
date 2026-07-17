@@ -70,7 +70,7 @@ interface DbTrack {
   is_iamf?: number | null
 }
 
-export type TrackListSortKey = 'title' | 'artist' | 'album' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added' | 'rating'
+export type TrackListSortKey = 'title' | 'artist' | 'album' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added' | 'rating' | 'play_count'
 export type TrackNumberMode = 'album' | 'context' | 'none'
 
 export interface TrackListSortState {
@@ -114,6 +114,7 @@ interface TrackListRowSharedProps {
   showTracklistBpmKey: boolean
   showTracklistGenre: boolean
   showAddedDate: boolean
+  showTracklistPlayCount: boolean
   showNewTrackIndicator: boolean
   ratingsEnabled: boolean
   searchQuery: string
@@ -400,6 +401,7 @@ function TrackListRowRenderer({
   showTracklistBpmKey,
   showTracklistGenre,
   showAddedDate,
+  showTracklistPlayCount,
   showNewTrackIndicator,
   ratingsEnabled,
   searchQuery,
@@ -686,6 +688,11 @@ function TrackListRowRenderer({
             </span>
           </div>
         )}
+        {showTracklistPlayCount && (
+          <div className="track-col track-col-plays">
+            <span className="track-plays">{isMissingPlaylistEntry ? '--' : track.play_count}</span>
+          </div>
+        )}
         <div className="track-col track-col-duration">
           <span className="track-duration">{isMissingPlaylistEntry ? '--:--' : formatDuration(track.duration)}</span>
         </div>
@@ -821,6 +828,7 @@ export default function TrackList({
   const toggleFavorite = useLibraryStore((state) => state.toggleFavorite)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const showTracklistGenre = useLibraryStore((state) => state.showTracklistGenre)
+  const showTracklistPlayCount = useLibraryStore((state) => state.showTracklistPlayCount)
   const ratingsEnabled = useRatingsStore((state) => state.enabled)
   const ratings = useRatingsStore((state) => state.ratings)
   const setTrackRating = useRatingsStore((state) => state.setTrackRating)
@@ -1913,7 +1921,9 @@ export default function TrackList({
   const queueInsertPreview = isQueueInsertDragOwner ? trackDrag : null
   const isColumnSortingEnabled = enableColumnSorting && typeof onSortColumnToggle === 'function'
   const canResetDefaultOrder = enableDefaultOrderReset && typeof onDefaultOrderReset === 'function'
-  const getDefaultSortDirection = (key: TrackListSortKey): 'asc' | 'desc' => (key === 'added' || key === 'rating' ? 'desc' : 'asc')
+  const getDefaultSortDirection = (key: TrackListSortKey): 'asc' | 'desc' => (
+    key === 'added' || key === 'rating' || key === 'play_count' ? 'desc' : 'asc'
+  )
 
   const getAriaSort = (key: TrackListSortKey): 'none' | 'ascending' | 'descending' => {
     if (!isColumnSortingEnabled || !sortState || sortState.key !== key) return 'none'
@@ -1982,6 +1992,7 @@ export default function TrackList({
     showTracklistBpmKey,
     showTracklistGenre,
     showAddedDate,
+    showTracklistPlayCount,
     showNewTrackIndicator,
     ratingsEnabled,
     searchQuery,
@@ -2029,6 +2040,7 @@ export default function TrackList({
     showTracklistBpmKey,
     showTracklistGenre,
     showAddedDate,
+    showTracklistPlayCount,
     showNewTrackIndicator,
     ratingsEnabled,
     searchQuery,
@@ -2109,6 +2121,7 @@ export default function TrackList({
         {ratingsEnabled && renderSortableHeader('rating', 'Rating', 'track-col-rating')}
         <div className="track-col track-col-codec">Codec</div>
         {showAddedDate && renderSortableHeader('added', 'Added', 'track-col-added')}
+        {showTracklistPlayCount && renderSortableHeader('play_count', 'Plays', 'track-col-plays')}
         {renderSortableHeader('duration', 'Length', 'track-col-duration')}
         <div className="track-col track-col-actions" />
       </div>

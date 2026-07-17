@@ -10,7 +10,8 @@ import {
   INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY,
   TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY,
   TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY,
-  TRACKLIST_GENRE_VISIBILITY_STORAGE_KEY
+  TRACKLIST_GENRE_VISIBILITY_STORAGE_KEY,
+  TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY
 } from '../constants/settingsStorageKeys'
 import {
   normalizeTrackSortState,
@@ -143,7 +144,8 @@ export {
   INCLUDE_COLLAB_ARTISTS_STORAGE_KEY,
   INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY,
   TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY,
-  TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY
+  TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY,
+  TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY
 } from '../constants/settingsStorageKeys'
 
 export interface ArtworkRequestOptions {
@@ -229,6 +231,7 @@ interface LibraryStore {
   showTracklistBpmKey: boolean
   showTracklistGenre: boolean
   showTracklistAddedDate: boolean
+  showTracklistPlayCount: boolean
   trackListSortState: LibraryTrackListSortState | null
   tracksViewSortState: LibraryTrackListSortState | null
   selectedSourceFilters: Set<string>
@@ -298,6 +301,7 @@ interface LibraryStore {
   setShowTracklistBpmKey: (enabled: boolean) => void
   setShowTracklistGenre: (enabled: boolean) => void
   setShowTracklistAddedDate: (enabled: boolean) => void
+  setShowTracklistPlayCount: (enabled: boolean) => void
   setTrackListSortState: (sortState: LibraryTrackListSortState | null) => void
   resetTrackListSortState: () => void
   setSelectedSourceFilters: (filters: Iterable<string>) => void
@@ -664,6 +668,14 @@ function loadTracklistAddedDateVisibilitySetting(): boolean {
   }
 }
 
+function loadTracklistPlayCountVisibilitySetting(): boolean {
+  try {
+    return localStorage.getItem(TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
 function normalizeArtistBrowseMode(mode: LibraryArtistBrowseMode | string | null | undefined): LibraryArtistBrowseMode {
   return mode === 'strict' ? 'strict' : 'canonical'
 }
@@ -942,6 +954,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   showTracklistBpmKey: loadTracklistBpmKeyVisibilitySetting(),
   showTracklistGenre: loadTracklistGenreVisibilitySetting(),
   showTracklistAddedDate: loadTracklistAddedDateVisibilitySetting(),
+  showTracklistPlayCount: loadTracklistPlayCountVisibilitySetting(),
   trackListSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE },
   tracksViewSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE },
   selectedSourceFilters: new Set<string>(),
@@ -2119,6 +2132,17 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
     try {
       localStorage.setItem(TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY, normalized ? '1' : '0')
+    } catch {
+      // Ignore localStorage write failures in restricted environments.
+    }
+  },
+
+  setShowTracklistPlayCount: (enabled: boolean) => {
+    const normalized = Boolean(enabled)
+    set({ showTracklistPlayCount: normalized })
+
+    try {
+      localStorage.setItem(TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY, normalized ? '1' : '0')
     } catch {
       // Ignore localStorage write failures in restricted environments.
     }

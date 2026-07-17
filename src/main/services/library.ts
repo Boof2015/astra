@@ -74,6 +74,20 @@ import type {
   TrackSourceType
 } from '../../types/subsonic'
 import type { IntegrityScanScope } from '../../types/libraryIntegrity'
+import type {
+  ListeningHistoryStatus,
+  ListeningSessionCheckpoint,
+  ListeningSessionCheckpointResult,
+  ListeningStatsActivityBucket,
+  ListeningStatsBucketGranularity,
+  ListeningStatsDashboard,
+  ListeningStatsQuery,
+  ListeningStatsRange,
+  ListeningStatsRankedAlbum,
+  ListeningStatsRankedArtist,
+  ListeningStatsRankedTrack,
+  ListeningStatsRankingMetric
+} from '../../types/listeningStats'
 import {
   filterIntegrityTargetsByScope,
   type IntegrityScanTrackTarget
@@ -132,6 +146,9 @@ const FOLDER_ARTWORK_BASENAME_RANK = new Map<string, number>(
 const FOLDER_ARTWORK_EXTENSION_RANK = new Map<string, number>(
   FOLDER_ARTWORK_EXTENSION_PRIORITY.map((extension, index) => [extension, index])
 )
+const LISTENING_HISTORY_GENERATION_META_KEY = 'listening_history_generation_v1'
+const LISTENING_HISTORY_STARTED_AT_META_KEY = 'listening_history_started_at_v1'
+const LISTENING_STATS_TOP_LIMIT = 10
 
 export interface DbTrack {
   id: number
@@ -2272,6 +2289,53 @@ export async function initDatabase(): Promise<void> {
   `)
   db.run('CREATE INDEX IF NOT EXISTS idx_recently_played_time ON recently_played(played_at DESC)')
 
+  // Detailed local listening history. Sessions retain a metadata snapshot so
+  // personal history remains intelligible after a track leaves the library;
+  // segments represent only continuous wall-clock time spent in `playing`.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS listening_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      generation TEXT NOT NULL,
+      session_key TEXT NOT NULL,
+      track_id INTEGER,
+      track_path TEXT NOT NULL,
+      title TEXT NOT NULL,
+      artist TEXT NOT NULL,
+      album TEXT NOT NULL,
+      album_artist TEXT,
+      album_identity_key TEXT NOT NULL,
+      artwork_hash TEXT,
+      source_type TEXT NOT NULL,
+      duration_seconds REAL NOT NULL DEFAULT 0,
+      source_playlist_id INTEGER,
+      started_at INTEGER NOT NULL,
+      ended_at INTEGER,
+      listened_seconds REAL NOT NULL DEFAULT 0,
+      qualified_at INTEGER,
+      UNIQUE(generation, session_key),
+      FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE SET NULL,
+      FOREIGN KEY (source_playlist_id) REFERENCES playlists(id) ON DELETE SET NULL
+    )
+  `)
+  db.run('CREATE INDEX IF NOT EXISTS idx_listening_sessions_started ON listening_sessions(started_at)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_listening_sessions_qualified ON listening_sessions(qualified_at)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_listening_sessions_track ON listening_sessions(track_id)')
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS listening_segments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL,
+      segment_key TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      last_observed_at INTEGER NOT NULL,
+      ended_at INTEGER,
+      listened_seconds REAL NOT NULL DEFAULT 0,
+      UNIQUE(session_id, segment_key),
+      FOREIGN KEY (session_id) REFERENCES listening_sessions(id) ON DELETE CASCADE
+    )
+  `)
+  db.run('CREATE INDEX IF NOT EXISTS idx_listening_segments_time ON listening_segments(started_at, last_observed_at)')
+
   // Playlists table
   db.run(`
     CREATE TABLE IF NOT EXISTS playlists (
@@ -2976,6 +3040,7 @@ function mergeDuplicateTrackRows(survivorId: number, survivorPath: string, loser
   accumulateStats(db.get<TrackMergeStatsRow>('SELECT play_count, last_played_at, added_at FROM tracks WHERE id = ?', [survivorId]))
   for (const loser of losers) {
     accumulateStats(db.get<TrackMergeStatsRow>('SELECT play_count, last_played_at, added_at FROM tracks WHERE id = ?', [loser.id]))
+    db.run('UPDATE listening_sessions SET track_id = ? WHERE track_id = ?', [survivorId, loser.id])
     // Move children before deleting the loser row so its delete triggers and
     // FK cascades fire against an already-emptied path.
     moveTrackChildRows(loser.path, survivorPath)
@@ -5727,6 +5792,12 @@ export async function resetMappedFoldersData(): Promise<{ clearedFolders: number
   const clearedTracks = readCount('SELECT COUNT(*) FROM tracks')
 
   db.run('DELETE FROM playlist_tracks')
+  db.run('DELETE FROM listening_segments')
+  db.run('DELETE FROM listening_sessions')
+  db.run('DELETE FROM app_meta WHERE key IN (?, ?)', [
+    LISTENING_HISTORY_STARTED_AT_META_KEY,
+    LISTENING_HISTORY_GENERATION_META_KEY
+  ])
   db.run('DELETE FROM recently_played')
   db.run('DELETE FROM favorites')
   db.run('DELETE FROM track_ratings')
@@ -5747,6 +5818,8 @@ export async function factoryResetLibraryData(): Promise<void> {
   if (!db) return
 
   db.run('DELETE FROM playlist_tracks')
+  db.run('DELETE FROM listening_segments')
+  db.run('DELETE FROM listening_sessions')
   db.run('DELETE FROM playlists')
   db.run('DELETE FROM recently_played')
   db.run('DELETE FROM favorites')
@@ -8142,6 +8215,623 @@ export async function resetAllTrackRatings(): Promise<number> {
 }
 
 // ── Recently Played ──────────────────────────────────────
+
+interface ListeningSessionRow {
+  id: number
+  track_id: number | null
+  track_path: string
+  title: string
+  artist: string
+  album: string
+  album_artist: string | null
+  album_identity_key: string
+  artwork_hash: string | null
+  source_type: string
+  started_at: number
+  ended_at: number | null
+  listened_seconds: number
+  qualified_at: number | null
+  current_path: string | null
+  current_title: string | null
+  current_artist: string | null
+  current_album: string | null
+  current_album_artist: string | null
+  current_artwork_hash: string | null
+  current_is_available: number | null
+}
+
+interface ListeningSegmentRow {
+  session_id: number
+  started_at: number
+  last_observed_at: number
+  listened_seconds: number
+}
+
+interface ListeningIdentity {
+  trackKey: string
+  trackPath: string | null
+  title: string
+  artist: string
+  album: string
+  albumKey: string
+  artworkHash: string | null
+  available: boolean
+}
+
+interface ListeningAggregate {
+  listenedSeconds: number
+  qualifiedPlays: number
+}
+
+function finiteNonNegative(value: unknown): number {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? Math.max(0, numeric) : 0
+}
+
+function finiteTimestamp(value: unknown, fallback: number): number {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) && numeric > 0 ? Math.round(numeric) : fallback
+}
+
+function writeAppMetaValue(key: string, value: string, updatedAt: number = Date.now()): void {
+  if (!db) return
+  db.run(
+    `INSERT INTO app_meta (key, value, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    [key, value, updatedAt]
+  )
+}
+
+function ensureListeningHistoryGeneration(): string {
+  const existing = getAppMeta(LISTENING_HISTORY_GENERATION_META_KEY)?.trim()
+  if (existing) return existing
+  const generation = randomUUID()
+  writeAppMetaValue(LISTENING_HISTORY_GENERATION_META_KEY, generation)
+  return generation
+}
+
+function readListeningHistoryStartedAt(): number | null {
+  const raw = getAppMeta(LISTENING_HISTORY_STARTED_AT_META_KEY)
+  if (!raw) return null
+  const value = Number(raw)
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : null
+}
+
+export function getListeningHistoryStatus(): ListeningHistoryStatus {
+  return {
+    generation: ensureListeningHistoryGeneration(),
+    startedAt: readListeningHistoryStartedAt()
+  }
+}
+
+function qualifyListeningSession(track: DbTrack, sourcePlaylistId: number | null, qualifiedAt: number): void {
+  if (!db) return
+  db.run(
+    'UPDATE tracks SET play_count = play_count + 1, last_played_at = ? WHERE id = ?',
+    [qualifiedAt, track.id]
+  )
+  db.run('INSERT INTO recently_played (track_path, played_at) VALUES (?, ?)', [track.path, qualifiedAt])
+  db.run(`
+    DELETE FROM recently_played WHERE id NOT IN (
+      SELECT id FROM recently_played ORDER BY played_at DESC LIMIT 200
+    )
+  `)
+  if (sourcePlaylistId !== null) {
+    db.run('UPDATE playlists SET last_played_at = ? WHERE id = ?', [qualifiedAt, sourcePlaylistId])
+  }
+}
+
+export async function checkpointListeningSession(
+  checkpoint: ListeningSessionCheckpoint
+): Promise<ListeningSessionCheckpointResult> {
+  const status = getListeningHistoryStatus()
+  if (!db || checkpoint.generation !== status.generation) {
+    return { accepted: false, qualifiedNow: false, status }
+  }
+
+  const sessionKey = typeof checkpoint.sessionKey === 'string' ? checkpoint.sessionKey.trim() : ''
+  const segmentKey = typeof checkpoint.segmentKey === 'string' ? checkpoint.segmentKey.trim() : ''
+  const trackPath = typeof checkpoint.trackPath === 'string' ? checkpoint.trackPath.trim() : ''
+  if (!sessionKey || !segmentKey || !trackPath) {
+    return { accepted: false, qualifiedNow: false, status }
+  }
+
+  const track = getTrackByPath(trackPath)
+  if (!track) {
+    return { accepted: false, qualifiedNow: false, status }
+  }
+
+  const now = Date.now()
+  const observedAt = finiteTimestamp(checkpoint.observedAt, now)
+  const sessionStartedAt = Math.min(observedAt, finiteTimestamp(checkpoint.sessionStartedAt, observedAt))
+  const segmentStartedAt = Math.min(observedAt, finiteTimestamp(checkpoint.segmentStartedAt, observedAt))
+  const sessionListenedSeconds = finiteNonNegative(checkpoint.sessionListenedSeconds)
+  const segmentListenedSeconds = Math.min(
+    sessionListenedSeconds,
+    finiteNonNegative(checkpoint.segmentListenedSeconds)
+  )
+  const durationSeconds = finiteNonNegative(checkpoint.trackDurationSeconds || track.duration)
+  const sourcePlaylistId = Number.isInteger(checkpoint.sourcePlaylistId) && Number(checkpoint.sourcePlaylistId) > 0
+    ? Number(checkpoint.sourcePlaylistId)
+    : null
+  const sessionEndedAt = checkpoint.finalizeSession ? observedAt : null
+  const segmentEndedAt = checkpoint.finalizeSegment || checkpoint.finalizeSession ? observedAt : null
+  let qualifiedNow = false
+
+  beginLibraryWriteTransaction()
+  try {
+    if (sessionListenedSeconds > 0 && readListeningHistoryStartedAt() === null) {
+      writeAppMetaValue(LISTENING_HISTORY_STARTED_AT_META_KEY, String(segmentStartedAt), observedAt)
+    }
+
+    db.run(
+      `INSERT INTO listening_sessions (
+         generation, session_key, track_id, track_path, title, artist, album, album_artist,
+         album_identity_key, artwork_hash, source_type, duration_seconds, source_playlist_id,
+         started_at, ended_at, listened_seconds, qualified_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+       ON CONFLICT(generation, session_key) DO UPDATE SET
+         track_id = excluded.track_id,
+         duration_seconds = MAX(listening_sessions.duration_seconds, excluded.duration_seconds),
+         source_playlist_id = COALESCE(listening_sessions.source_playlist_id, excluded.source_playlist_id),
+         ended_at = CASE
+           WHEN excluded.ended_at IS NULL THEN listening_sessions.ended_at
+           WHEN listening_sessions.ended_at IS NULL THEN excluded.ended_at
+           ELSE MAX(listening_sessions.ended_at, excluded.ended_at)
+         END,
+         listened_seconds = MAX(listening_sessions.listened_seconds, excluded.listened_seconds)`,
+      [
+        status.generation,
+        sessionKey,
+        track.id,
+        track.path,
+        track.title,
+        track.artist,
+        track.album,
+        track.album_artist,
+        track.album_identity_key ?? `${normalizeKey(track.album_artist ?? track.artist)}\u0000${normalizeKey(track.album)}`,
+        track.artwork_hash,
+        track.source_type,
+        durationSeconds,
+        sourcePlaylistId,
+        sessionStartedAt,
+        sessionEndedAt,
+        sessionListenedSeconds
+      ]
+    )
+
+    const session = db.get<{ id: number; qualified_at: number | null; listened_seconds: number; duration_seconds: number }>(
+      'SELECT id, qualified_at, listened_seconds, duration_seconds FROM listening_sessions WHERE generation = ? AND session_key = ?',
+      [status.generation, sessionKey]
+    )
+    if (!session) throw new Error('Failed to persist listening session.')
+
+    db.run(
+      `INSERT INTO listening_segments (
+         session_id, segment_key, started_at, last_observed_at, ended_at, listened_seconds
+       ) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_id, segment_key) DO UPDATE SET
+         last_observed_at = MAX(listening_segments.last_observed_at, excluded.last_observed_at),
+         ended_at = CASE
+           WHEN excluded.ended_at IS NULL THEN listening_segments.ended_at
+           WHEN listening_segments.ended_at IS NULL THEN excluded.ended_at
+           ELSE MAX(listening_segments.ended_at, excluded.ended_at)
+         END,
+         listened_seconds = MAX(listening_segments.listened_seconds, excluded.listened_seconds)`,
+      [session.id, segmentKey, segmentStartedAt, observedAt, segmentEndedAt, segmentListenedSeconds]
+    )
+
+    const thresholdSeconds = session.duration_seconds > 0
+      ? Math.min(15, session.duration_seconds)
+      : 15
+    if (
+      checkpoint.qualificationEligible !== false
+      && session.qualified_at === null
+      && session.listened_seconds >= thresholdSeconds
+    ) {
+      const qualification = db.run(
+        'UPDATE listening_sessions SET qualified_at = ? WHERE id = ? AND qualified_at IS NULL',
+        [observedAt, session.id]
+      )
+      if (qualification.changes > 0) {
+        qualifiedNow = true
+        qualifyListeningSession(track, sourcePlaylistId, observedAt)
+      }
+    }
+
+    commitLibraryWriteTransaction()
+  } catch (error) {
+    rollbackLibraryWriteTransaction()
+    throw error
+  }
+
+  await saveDatabase()
+  return {
+    accepted: true,
+    qualifiedNow,
+    status: getListeningHistoryStatus()
+  }
+}
+
+function startOfLocalDay(timestamp: number): number {
+  const date = new Date(timestamp)
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+}
+
+function addLocalDays(timestamp: number, days: number): number {
+  const date = new Date(timestamp)
+  date.setDate(date.getDate() + days)
+  return date.getTime()
+}
+
+function addLocalMonths(timestamp: number, months: number): number {
+  const date = new Date(timestamp)
+  date.setMonth(date.getMonth() + months)
+  return date.getTime()
+}
+
+function startOfLocalMonth(timestamp: number): number {
+  const date = new Date(timestamp)
+  return new Date(date.getFullYear(), date.getMonth(), 1).getTime()
+}
+
+const shortBucketDateFormatter = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' })
+const monthBucketDateFormatter = new Intl.DateTimeFormat(undefined, { month: 'short', year: 'numeric' })
+
+function normalizeListeningStatsRange(value: unknown): ListeningStatsRange {
+  return value === '7d' || value === '1y' || value === 'all' ? value : '30d'
+}
+
+function normalizeListeningStatsRankingMetric(value: unknown): ListeningStatsRankingMetric {
+  return value === 'time' ? 'time' : 'plays'
+}
+
+function getListeningStatsRangeStart(range: ListeningStatsRange, now: number, baseline: number | null): number | null {
+  if (range === 'all') return baseline
+  const today = startOfLocalDay(now)
+  if (range === '7d') return addLocalDays(today, -6)
+  if (range === '1y') return addLocalDays(today, -364)
+  return addLocalDays(today, -29)
+}
+
+function buildListeningActivityBuckets(
+  range: ListeningStatsRange,
+  rangeStartAt: number | null,
+  now: number
+): { granularity: ListeningStatsBucketGranularity; buckets: ListeningStatsActivityBucket[] } {
+  if (rangeStartAt === null) {
+    return { granularity: range === 'all' ? 'month' : range === '1y' ? 'week' : 'day', buckets: [] }
+  }
+
+  const buckets: ListeningStatsActivityBucket[] = []
+  if (range === '7d' || range === '30d') {
+    let cursor = startOfLocalDay(rangeStartAt)
+    while (cursor <= now) {
+      const endAt = addLocalDays(cursor, 1)
+      buckets.push({
+        startAt: cursor,
+        endAt,
+        label: shortBucketDateFormatter.format(cursor),
+        listenedSeconds: 0,
+        qualifiedPlays: 0
+      })
+      cursor = endAt
+    }
+    return { granularity: 'day', buckets }
+  }
+
+  if (range === '1y') {
+    let cursor = startOfLocalDay(rangeStartAt)
+    while (cursor <= now) {
+      const endAt = addLocalDays(cursor, 7)
+      buckets.push({
+        startAt: cursor,
+        endAt,
+        label: shortBucketDateFormatter.format(cursor),
+        listenedSeconds: 0,
+        qualifiedPlays: 0
+      })
+      cursor = endAt
+    }
+    return { granularity: 'week', buckets }
+  }
+
+  let cursor = startOfLocalMonth(rangeStartAt)
+  while (cursor <= now) {
+    const endAt = addLocalMonths(cursor, 1)
+    buckets.push({
+      startAt: cursor,
+      endAt,
+      label: monthBucketDateFormatter.format(cursor),
+      listenedSeconds: 0,
+      qualifiedPlays: 0
+    })
+    cursor = endAt
+  }
+  return { granularity: 'month', buckets }
+}
+
+function getSegmentOverlapSeconds(
+  segment: ListeningSegmentRow,
+  startAt: number,
+  endAt: number
+): number {
+  const segmentStart = Number(segment.started_at)
+  const segmentEnd = Math.max(segmentStart, Number(segment.last_observed_at))
+  const listenedSeconds = finiteNonNegative(segment.listened_seconds)
+  if (listenedSeconds <= 0 || segmentEnd <= startAt || segmentStart >= endAt) return 0
+
+  const wallDurationMs = segmentEnd - segmentStart
+  if (wallDurationMs <= 0) {
+    return segmentStart >= startAt && segmentStart < endAt ? listenedSeconds : 0
+  }
+  const overlapMs = Math.max(0, Math.min(segmentEnd, endAt) - Math.max(segmentStart, startAt))
+  return listenedSeconds * Math.min(1, overlapMs / wallDurationMs)
+}
+
+function resolveListeningIdentity(session: ListeningSessionRow): ListeningIdentity {
+  const available = session.current_path !== null && session.current_is_available === 1
+  const title = session.current_title?.trim() || session.title
+  const artist = session.current_artist?.trim() || session.artist
+  const album = session.current_album?.trim() || session.album
+  const albumArtist = session.current_album_artist?.trim() || session.album_artist?.trim() || artist
+  const snapshotKey = `${normalizeKey(session.artist)}\u0000${normalizeKey(session.album)}\u0000${normalizeKey(session.title)}`
+  return {
+    trackKey: session.track_id !== null ? `track:${session.track_id}` : `snapshot:${snapshotKey}`,
+    trackPath: available ? session.current_path : null,
+    title,
+    artist,
+    album,
+    albumKey: session.album_identity_key || `${normalizeKey(albumArtist)}\u0000${normalizeKey(album)}`,
+    artworkHash: session.current_artwork_hash?.trim() || session.artwork_hash,
+    available
+  }
+}
+
+function compareListeningAggregate(
+  left: ListeningAggregate & { label: string },
+  right: ListeningAggregate & { label: string },
+  metric: ListeningStatsRankingMetric
+): number {
+  const primary = metric === 'time'
+    ? right.listenedSeconds - left.listenedSeconds
+    : right.qualifiedPlays - left.qualifiedPlays
+  if (primary !== 0) return primary
+  const secondary = metric === 'time'
+    ? right.qualifiedPlays - left.qualifiedPlays
+    : right.listenedSeconds - left.listenedSeconds
+  if (secondary !== 0) return secondary
+  return left.label.localeCompare(right.label, undefined, { sensitivity: 'base' })
+}
+
+export function getListeningStatsDashboard(query: ListeningStatsQuery): ListeningStatsDashboard {
+  const status = getListeningHistoryStatus()
+  const range = normalizeListeningStatsRange(query?.range)
+  const rankingMetric = normalizeListeningStatsRankingMetric(query?.rankingMetric)
+  const now = finiteTimestamp(query?.now, Date.now())
+  const rangeStartAt = getListeningStatsRangeStart(range, now, status.startedAt)
+  const bucketResult = buildListeningActivityBuckets(range, rangeStartAt, now)
+  const empty: ListeningStatsDashboard = {
+    status,
+    range,
+    rankingMetric,
+    rangeStartAt,
+    rangeEndAt: now,
+    granularity: bucketResult.granularity,
+    summary: { listenedSeconds: 0, qualifiedPlays: 0, tracksPlayed: 0, activeDays: 0 },
+    activity: bucketResult.buckets,
+    topTracks: [],
+    topArtists: [],
+    topAlbums: []
+  }
+  if (!db || rangeStartAt === null) return empty
+
+  const sessions = db.all<ListeningSessionRow>(`
+    SELECT
+      s.id,
+      s.track_id,
+      s.track_path,
+      s.title,
+      s.artist,
+      s.album,
+      s.album_artist,
+      s.album_identity_key,
+      s.artwork_hash,
+      s.source_type,
+      s.started_at,
+      s.ended_at,
+      s.listened_seconds,
+      s.qualified_at,
+      t.path AS current_path,
+      COALESCE(o.title, t.title) AS current_title,
+      COALESCE(o.artist, t.artist) AS current_artist,
+      COALESCE(o.album, t.album) AS current_album,
+      COALESCE(o.album_artist, t.album_artist) AS current_album_artist,
+      CASE WHEN o.artwork_cleared = 1 THEN NULL ELSE COALESCE(o.artwork_hash, t.artwork_hash) END AS current_artwork_hash,
+      t.is_available AS current_is_available
+    FROM listening_sessions s
+    LEFT JOIN tracks t ON t.id = s.track_id
+    LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
+    WHERE s.generation = ?
+      AND (
+        (s.started_at <= ? AND COALESCE(s.ended_at, ?) >= ?)
+        OR (s.qualified_at >= ? AND s.qualified_at <= ?)
+      )
+  `, [status.generation, now, now, rangeStartAt, rangeStartAt, now])
+  if (sessions.length === 0) return empty
+
+  const sessionIds = sessions.map((session) => session.id)
+  const segments: ListeningSegmentRow[] = []
+  for (let offset = 0; offset < sessionIds.length; offset += SQLITE_SAFE_MAX_VARIABLES) {
+    const chunk = sessionIds.slice(offset, offset + SQLITE_SAFE_MAX_VARIABLES)
+    const placeholders = chunk.map(() => '?').join(', ')
+    segments.push(...db.all<ListeningSegmentRow>(`
+      SELECT session_id, started_at, last_observed_at, listened_seconds
+      FROM listening_segments
+      WHERE session_id IN (${placeholders})
+        AND last_observed_at >= ?
+        AND started_at <= ?
+    `, [...chunk, rangeStartAt, now]))
+  }
+
+  const sessionsById = new Map(sessions.map((session) => [session.id, session]))
+  const trackAggregates = new Map<string, ListeningStatsRankedTrack>()
+  const artistAggregates = new Map<string, ListeningStatsRankedArtist>()
+  const albumAggregates = new Map<string, ListeningStatsRankedAlbum>()
+  const tracksPlayed = new Set<string>()
+  const activeDays = new Set<number>()
+  let listenedSeconds = 0
+  let qualifiedPlays = 0
+
+  const ensureAggregates = (identity: ListeningIdentity) => {
+    let track = trackAggregates.get(identity.trackKey)
+    if (!track) {
+      track = {
+        key: identity.trackKey,
+        trackPath: identity.trackPath,
+        title: identity.title,
+        artist: identity.artist,
+        album: identity.album,
+        artworkHash: identity.artworkHash,
+        listenedSeconds: 0,
+        qualifiedPlays: 0,
+        available: identity.available
+      }
+      trackAggregates.set(identity.trackKey, track)
+    }
+
+    const artistKey = normalizeKey(identity.artist) || identity.artist
+    let artist = artistAggregates.get(artistKey)
+    if (!artist) {
+      artist = {
+        key: artistKey,
+        artist: identity.artist,
+        artworkHash: identity.artworkHash,
+        listenedSeconds: 0,
+        qualifiedPlays: 0,
+        available: identity.available
+      }
+      artistAggregates.set(artistKey, artist)
+    } else {
+      artist.available ||= identity.available
+      artist.artworkHash ||= identity.artworkHash
+    }
+
+    let album = albumAggregates.get(identity.albumKey)
+    if (!album) {
+      album = {
+        key: identity.albumKey,
+        album: identity.album,
+        artist: identity.artist,
+        artworkHash: identity.artworkHash,
+        listenedSeconds: 0,
+        qualifiedPlays: 0,
+        available: identity.available
+      }
+      albumAggregates.set(identity.albumKey, album)
+    } else {
+      album.available ||= identity.available
+      album.artworkHash ||= identity.artworkHash
+    }
+    return { track, artist, album }
+  }
+
+  for (const segment of segments) {
+    const session = sessionsById.get(segment.session_id)
+    if (!session) continue
+    const overlapSeconds = getSegmentOverlapSeconds(segment, rangeStartAt, now + 1)
+    if (overlapSeconds <= 0) continue
+    const identity = resolveListeningIdentity(session)
+    const aggregates = ensureAggregates(identity)
+    aggregates.track.listenedSeconds += overlapSeconds
+    aggregates.artist.listenedSeconds += overlapSeconds
+    aggregates.album.listenedSeconds += overlapSeconds
+    tracksPlayed.add(identity.trackKey)
+    listenedSeconds += overlapSeconds
+
+    for (const bucket of bucketResult.buckets) {
+      bucket.listenedSeconds += getSegmentOverlapSeconds(segment, bucket.startAt, Math.min(bucket.endAt, now + 1))
+    }
+    let dayCursor = startOfLocalDay(Math.max(segment.started_at, rangeStartAt))
+    const dayEnd = Math.min(segment.last_observed_at, now)
+    while (dayCursor <= dayEnd) {
+      const nextDay = addLocalDays(dayCursor, 1)
+      if (getSegmentOverlapSeconds(segment, dayCursor, nextDay) > 0) activeDays.add(dayCursor)
+      dayCursor = nextDay
+    }
+  }
+
+  for (const session of sessions) {
+    if (session.qualified_at === null || session.qualified_at < rangeStartAt || session.qualified_at > now) continue
+    const identity = resolveListeningIdentity(session)
+    const aggregates = ensureAggregates(identity)
+    aggregates.track.qualifiedPlays += 1
+    aggregates.artist.qualifiedPlays += 1
+    aggregates.album.qualifiedPlays += 1
+    qualifiedPlays += 1
+    const bucket = bucketResult.buckets.find((candidate) => (
+      session.qualified_at !== null
+      && session.qualified_at >= candidate.startAt
+      && session.qualified_at < candidate.endAt
+    ))
+    if (bucket) bucket.qualifiedPlays += 1
+  }
+
+  const topTracks = Array.from(trackAggregates.values())
+    .sort((left, right) => compareListeningAggregate(
+      { ...left, label: `${left.title}\u0000${left.artist}` },
+      { ...right, label: `${right.title}\u0000${right.artist}` },
+      rankingMetric
+    ))
+    .slice(0, LISTENING_STATS_TOP_LIMIT)
+  const topArtists = Array.from(artistAggregates.values())
+    .sort((left, right) => compareListeningAggregate(
+      { ...left, label: left.artist },
+      { ...right, label: right.artist },
+      rankingMetric
+    ))
+    .slice(0, LISTENING_STATS_TOP_LIMIT)
+  const topAlbums = Array.from(albumAggregates.values())
+    .sort((left, right) => compareListeningAggregate(
+      { ...left, label: `${left.album}\u0000${left.artist}` },
+      { ...right, label: `${right.album}\u0000${right.artist}` },
+      rankingMetric
+    ))
+    .slice(0, LISTENING_STATS_TOP_LIMIT)
+
+  return {
+    ...empty,
+    summary: {
+      listenedSeconds,
+      qualifiedPlays,
+      tracksPlayed: tracksPlayed.size,
+      activeDays: activeDays.size
+    },
+    activity: bucketResult.buckets,
+    topTracks,
+    topArtists,
+    topAlbums
+  }
+}
+
+export async function clearDetailedListeningHistory(): Promise<ListeningHistoryStatus> {
+  if (!db) return { generation: randomUUID(), startedAt: null }
+  const generation = randomUUID()
+  beginLibraryWriteTransaction()
+  try {
+    db.run('DELETE FROM listening_segments')
+    db.run('DELETE FROM listening_sessions')
+    db.run('DELETE FROM app_meta WHERE key = ?', [LISTENING_HISTORY_STARTED_AT_META_KEY])
+    writeAppMetaValue(LISTENING_HISTORY_GENERATION_META_KEY, generation)
+    commitLibraryWriteTransaction()
+  } catch (error) {
+    rollbackLibraryWriteTransaction()
+    throw error
+  }
+  await saveDatabase()
+  return { generation, startedAt: null }
+}
 
 export function getRecentlyPlayed(limit: number = 50): DbTrack[] {
   return readEffectiveTracks(`

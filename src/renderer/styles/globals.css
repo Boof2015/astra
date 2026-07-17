@@ -5189,6 +5189,7 @@ body:has(.fullscreen-overlay) .controller-hints {
 .track-col-bpm .track-col-sort-btn,
 .track-col-key .track-col-sort-btn,
 .track-col-added .track-col-sort-btn,
+.track-col-plays .track-col-sort-btn,
 .track-col-duration .track-col-sort-btn {
   justify-content: flex-end;
 }
@@ -5550,6 +5551,15 @@ body:has(.fullscreen-overlay) .controller-hints {
 
 .track-col-added {
   width: 82px;
+  flex-shrink: 0;
+  text-align: right;
+  padding-right: 12px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.track-col-plays {
+  width: 62px;
   flex-shrink: 0;
   text-align: right;
   padding-right: 12px;
@@ -14922,6 +14932,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 }
 
 .track-col-added,
+.track-col-plays,
 .track-col-duration {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -15868,7 +15879,8 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   }
 
   .track-col-bpm,
-  .track-col-key {
+  .track-col-key,
+  .track-col-plays {
     display: none;
   }
 
@@ -24969,7 +24981,489 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
   z-index: 210;
 }
 
+/* Listening Stats */
+.listening-stats-view {
+  height: 100%;
+  overflow-y: auto;
+  padding: 30px 32px 180px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.listening-stats-header,
+.listening-stats-section-heading,
+.listening-stats-rankings-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.listening-stats-header h1 {
+  margin: 3px 0 8px;
+  font-size: clamp(26px, 3vw, 38px);
+  letter-spacing: -0.035em;
+}
+
+.listening-stats-header > div > p:last-child,
+.listening-stats-section-heading > span {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+.listening-stats-eyebrow,
+.listening-stats-section-heading p,
+.listening-stats-rankings-heading p {
+  margin: 0;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.listening-stats-range-control,
+.listening-stats-metric-control {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+}
+
+.listening-stats-range-control button,
+.listening-stats-metric-control button {
+  min-width: 48px;
+  border: 0;
+  border-radius: calc(var(--radius-md) - 3px);
+  padding: 7px 10px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.listening-stats-range-control button:hover,
+.listening-stats-metric-control button:hover {
+  color: var(--text-primary);
+}
+
+.listening-stats-range-control button.active,
+.listening-stats-metric-control button.active {
+  background: var(--accent);
+  color: var(--accent-contrast, #050505);
+}
+
+.listening-stats-range-control button:focus-visible,
+.listening-stats-metric-control button:focus-visible,
+.listening-stats-bar-target:focus-visible,
+.listening-stats-ranking-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.listening-stats-baseline {
+  margin: 22px 0 14px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.listening-stats-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.listening-stats-summary article,
+.listening-stats-activity-card,
+.listening-stats-ranking-card {
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+  box-shadow: 0 10px 32px var(--shadow-soft);
+}
+
+.listening-stats-summary article {
+  display: flex;
+  min-height: 100px;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 16px;
+}
+
+.listening-stats-summary span {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.listening-stats-summary strong {
+  font-family: var(--font-mono);
+  font-size: clamp(21px, 2.5vw, 30px);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.04em;
+}
+
+.listening-stats-state {
+  display: flex;
+  min-height: 180px;
+  margin-top: 24px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed var(--glass-border);
+  border-radius: var(--radius-lg);
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+.listening-stats-state strong {
+  color: var(--text-primary);
+  font-size: 16px;
+}
+
+.listening-stats-state button {
+  margin-top: 8px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 7px 12px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.listening-stats-state-error {
+  border-color: var(--danger, #e15c64);
+}
+
+.listening-stats-state-compact {
+  min-height: 130px;
+}
+
+.listening-stats-activity-card {
+  margin-top: 16px;
+  padding: 18px 18px 14px;
+}
+
+.listening-stats-section-heading h2,
+.listening-stats-rankings-heading h2,
+.listening-stats-ranking-card h2 {
+  margin: 3px 0 0;
+  font-size: 17px;
+}
+
+.listening-stats-chart {
+  display: flex;
+  height: 238px;
+  gap: clamp(2px, 0.6vw, 8px);
+  margin-top: 22px;
+  align-items: stretch;
+}
+
+.listening-stats-bar-column {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 0;
+  flex-direction: column;
+  align-items: center;
+}
+
+.listening-stats-bar-target {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 5px;
+  flex: 1;
+  align-items: flex-end;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px 4px 2px 2px;
+  padding: 0;
+  background: rgba(var(--tint), 0.035);
+  cursor: default;
+}
+
+.listening-stats-bar {
+  display: block;
+  width: 100%;
+  border-radius: 4px 4px 2px 2px;
+  background: linear-gradient(to top, var(--accent), color-mix(in srgb, var(--accent) 68%, white));
+  transform-origin: bottom;
+  animation: listening-stats-bar-enter 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transition: height var(--motion-structural-enter) var(--motion-structural-ease);
+}
+
+@keyframes listening-stats-bar-enter {
+  from {
+    opacity: 0.4;
+    transform: scaleY(0.04);
+  }
+
+  to {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+}
+
+.listening-stats-bar-target:hover .listening-stats-bar,
+.listening-stats-bar-target:focus-visible .listening-stats-bar {
+  filter: brightness(1.18);
+}
+
+.listening-stats-bar-detail {
+  position: absolute;
+  bottom: calc(100% + 7px);
+  z-index: 3;
+  display: none;
+  width: max-content;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 5px 7px;
+  background: var(--bg-tertiary, var(--bg-secondary));
+  box-shadow: 0 6px 18px var(--shadow-soft);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.listening-stats-bar-target:hover .listening-stats-bar-detail,
+.listening-stats-bar-target:focus-visible .listening-stats-bar-detail {
+  display: block;
+}
+
+.listening-stats-bar-label {
+  width: 100%;
+  margin-top: 7px;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 9px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.listening-stats-rankings-heading {
+  margin: 28px 0 12px;
+}
+
+.listening-stats-rankings-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.listening-stats-ranking-card {
+  min-width: 0;
+  padding: 15px;
+}
+
+.listening-stats-ranking-card h2 {
+  margin-bottom: 9px;
+}
+
+.listening-stats-ranking-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.listening-stats-ranking-list li + li {
+  border-top: 1px solid var(--glass-border);
+}
+
+.listening-stats-ranking-row {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: 20px 36px minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 8px 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.listening-stats-ranking-row:not(:disabled):hover {
+  background: rgba(var(--tint), 0.045);
+}
+
+.listening-stats-ranking-row:disabled {
+  cursor: default;
+  opacity: 0.52;
+}
+
+.listening-stats-ranking-position {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: center;
+}
+
+.listening-stats-ranking-artwork {
+  width: 36px;
+  height: 36px;
+  overflow: hidden;
+  border-radius: 5px;
+  object-fit: cover;
+}
+
+.listening-stats-ranking-copy,
+.listening-stats-ranking-values {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.listening-stats-ranking-title,
+.listening-stats-ranking-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.listening-stats-ranking-title {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.listening-stats-ranking-subtitle,
+.listening-stats-ranking-values,
+.listening-stats-ranking-empty {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.listening-stats-ranking-values {
+  align-items: flex-end;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.listening-stats-ranking-empty {
+  margin: 24px 0;
+  text-align: center;
+}
+
+@media (max-width: 1180px) {
+  .listening-stats-rankings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-height: 1050px) and (min-width: 781px) {
+  .listening-stats-view {
+    padding: 20px 26px 150px;
+  }
+
+  .listening-stats-header {
+    gap: 16px;
+  }
+
+  .listening-stats-header h1 {
+    margin: 2px 0 5px;
+    font-size: clamp(25px, 2.25vw, 32px);
+  }
+
+  .listening-stats-header > div > p:last-child,
+  .listening-stats-section-heading > span {
+    font-size: 12px;
+  }
+
+  .listening-stats-range-control button,
+  .listening-stats-metric-control button {
+    min-width: 44px;
+    padding: 5px 9px;
+  }
+
+  .listening-stats-baseline {
+    margin: 10px 0;
+  }
+
+  .listening-stats-summary {
+    gap: 10px;
+  }
+
+  .listening-stats-summary article {
+    min-height: 78px;
+    padding: 12px 14px;
+  }
+
+  .listening-stats-summary strong {
+    font-size: clamp(19px, 2vw, 24px);
+  }
+
+  .listening-stats-activity-card {
+    margin-top: 12px;
+    padding: 14px 14px 10px;
+  }
+
+  .listening-stats-section-heading h2,
+  .listening-stats-rankings-heading h2,
+  .listening-stats-ranking-card h2 {
+    font-size: 15px;
+  }
+
+  .listening-stats-chart {
+    height: 176px;
+    margin-top: 14px;
+  }
+
+  .listening-stats-rankings-heading {
+    margin: 20px 0 10px;
+  }
+
+  .listening-stats-ranking-card {
+    padding: 12px;
+  }
+
+  .listening-stats-ranking-row {
+    grid-template-columns: 18px 32px minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 6px 2px;
+  }
+
+  .listening-stats-ranking-artwork {
+    width: 32px;
+    height: 32px;
+  }
+}
+
+@media (max-width: 780px) {
+  .listening-stats-view {
+    padding: 22px 20px 160px;
+  }
+
+  .listening-stats-header,
+  .listening-stats-rankings-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .listening-stats-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .listening-stats-chart {
+    height: 190px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .listening-stats-bar {
+    animation: none;
+    transition: none;
+  }
+
   .app-view-transition-surface,
   .queue-sidebar,
   .info-sidebar-presence,

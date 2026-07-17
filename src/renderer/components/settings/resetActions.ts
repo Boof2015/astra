@@ -4,6 +4,7 @@ import { EQ_DEVICE_PROFILE_STORAGE_KEY, EQ_STORAGE_KEY, useEQStore } from '../..
 import { ARTIST_BROWSE_MODE_STORAGE_KEY, useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { useRatingsStore } from '../../stores/ratingsStore'
+import { useListeningStatsStore } from '../../stores/listeningStatsStore'
 import { useThemeStore } from '../../stores/themeStore'
 import {
   ANALYZER_PROFILES_STORAGE_KEY,
@@ -32,6 +33,8 @@ import {
   TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY,
   TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY,
   TRACKLIST_GENRE_VISIBILITY_STORAGE_KEY,
+  TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY,
+  LISTENING_STATS_ENABLED_STORAGE_KEY,
 } from '../../constants/settingsStorageKeys'
 import {
   ANALYZER_HEIGHT_STORAGE_KEY,
@@ -95,6 +98,8 @@ export const RENDERER_SETTINGS_KEYS = [
   TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY,
   TRACKLIST_GENRE_VISIBILITY_STORAGE_KEY,
   TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY,
+  TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY,
+  LISTENING_STATS_ENABLED_STORAGE_KEY,
   ALBUM_SORT_MODE_STORAGE_KEY,
   INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY,
   INCLUDE_COLLAB_ARTISTS_STORAGE_KEY,
@@ -166,6 +171,8 @@ export async function resetAllSettings(): Promise<string> {
   useUIStore.getState().resetHomeGreetingTextMode()
   useUIStore.getState().setActivityIndicatorExperimentEnabled(false)
   useUIStore.getState().resetJumpToPlayingDestination()
+  useLibraryStore.getState().setShowTracklistPlayCount(false)
+  useListeningStatsStore.getState().setEnabled(false)
   useInputBindingStore.getState().resetAll()
   clearPersistedSessionStateForReset()
   return 'All renderer settings reset.'
@@ -189,6 +196,8 @@ export async function resetMappedFolders(): Promise<string> {
     throw new Error('Failed to reset mapped folders.')
   }
 
+  const listeningStatus = await window.electronAPI.library.getListeningHistoryStatus()
+  usePlayerStore.getState().resetListeningHistoryTracking(listeningStatus)
   await reloadLibraryAndPlaylists()
   return `Mapped folders reset (${result.clearedFolders} folders, ${result.clearedTracks} tracks removed).`
 }
