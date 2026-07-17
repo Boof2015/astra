@@ -6,7 +6,7 @@ export const SESSION_STATE_KIND = 'astra-session-state'
 export const SESSION_STATE_SCHEMA_VERSION = 1
 
 export type SessionAppView = 'home' | 'library' | 'graph' | 'eq' | 'settings' | 'playlist'
-export type SessionTrackSortKey = 'title' | 'artist' | 'album' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added'
+export type SessionTrackSortKey = 'title' | 'artist' | 'album' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added' | 'rating'
 export type SessionSortDirection = 'asc' | 'desc'
 export type SessionViewMode = 'tracks' | 'albums' | 'artists' | 'genres' | 'years' | 'folders'
 export type SessionAlbumSortMode = 'title' | 'artist'
@@ -210,6 +210,7 @@ export function normalizeTrackSortState(value: unknown): SessionTrackSortState |
     && key !== 'bpm'
     && key !== 'musical_key'
     && key !== 'added'
+    && key !== 'rating'
   ) {
     return null
   }

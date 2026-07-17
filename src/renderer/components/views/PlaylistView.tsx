@@ -1,5 +1,6 @@
 import { DragEvent, useCallback, useEffect, useMemo, useRef, useState, type UIEvent as ReactUIEvent } from 'react'
 import { useLibraryStore } from '../../stores/libraryStore'
+import { useRatingsStore, type TrackRatingState } from '../../stores/ratingsStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -188,7 +189,23 @@ function compareNullableKey(
   return compareWithDirection(aValue.localeCompare(bValue, undefined, { sensitivity: 'base' }), direction)
 }
 
-function comparePlaylistTracksBySort(a: PlaylistTrack, b: PlaylistTrack, sortState: TrackListSortState): number {
+function compareNullableRating(a: number | null | undefined, b: number | null | undefined, direction: SortDirection): number {
+  const aMissing = typeof a !== 'number'
+  const bMissing = typeof b !== 'number'
+
+  if (aMissing && bMissing) return 0
+  if (aMissing) return 1
+  if (bMissing) return -1
+
+  return compareWithDirection(a - b, direction)
+}
+
+function comparePlaylistTracksBySort(
+  a: PlaylistTrack,
+  b: PlaylistTrack,
+  sortState: TrackListSortState,
+  ratings: ReadonlyMap<string, TrackRatingState>
+): number {
   if (sortState.key === 'title') {
     return compareWithDirection(compareTextValue(a.title, b.title), sortState.direction)
   }
@@ -209,6 +226,13 @@ function comparePlaylistTracksBySort(a: PlaylistTrack, b: PlaylistTrack, sortSta
   }
   if (sortState.key === 'added') {
     return compareWithDirection(resolveEffectiveAddedAt(a) - resolveEffectiveAddedAt(b), sortState.direction)
+  }
+  if (sortState.key === 'rating') {
+    return compareNullableRating(
+      ratings.get(a.path)?.rating ?? null,
+      ratings.get(b.path)?.rating ?? null,
+      sortState.direction
+    )
   }
   return compareNullableKey(a.musical_key, b.musical_key, sortState.direction)
 }
@@ -244,6 +268,8 @@ export default function PlaylistView() {
   const openCollectionQueueMenu = useUIStore((s) => s.openCollectionQueueMenu)
   const showTracklistBpmKey = useLibraryStore((s) => s.showTracklistBpmKey)
   const showTracklistGenre = useLibraryStore((s) => s.showTracklistGenre)
+  const ratingsEnabled = useRatingsStore((s) => s.enabled)
+  const trackRatings = useRatingsStore((s) => s.ratings)
   const favoriteTrackPaths = useLibraryStore((s) => s.favoriteTrackPaths)
   const trackCacheVersion = useLibraryStore((s) => s.trackCacheVersion)
   const resolveTrackPaths = useLibraryStore((s) => s.resolveTrackPaths)
@@ -367,9 +393,10 @@ export default function PlaylistView() {
     if (!sortState) return
     const hideBpmKeySort = !showTracklistBpmKey && (sortState.key === 'bpm' || sortState.key === 'musical_key')
     const hideGenreSort = !showTracklistGenre && sortState.key === 'genre'
-    if (!hideBpmKeySort && !hideGenreSort) return
+    const hideRatingSort = !ratingsEnabled && sortState.key === 'rating'
+    if (!hideBpmKeySort && !hideGenreSort && !hideRatingSort) return
     setSortState(null)
-  }, [setSortState, showTracklistBpmKey, showTracklistGenre, sortState])
+  }, [ratingsEnabled, setSortState, showTracklistBpmKey, showTracklistGenre, sortState])
 
   useEffect(() => {
     if (!playlistImportStatus) return
@@ -429,7 +456,7 @@ export default function PlaylistView() {
 
     const indexedTracks = playlistDisplayTracks.map((track, index) => ({ track, index }))
     indexedTracks.sort((left, right) => {
-      const comparison = comparePlaylistTracksBySort(left.track, right.track, sortState)
+      const comparison = comparePlaylistTracksBySort(left.track, right.track, sortState, trackRatings)
       if (comparison !== 0) return comparison
 
       const pathComparison = comparePath(left.track.path, right.track.path)
@@ -439,7 +466,7 @@ export default function PlaylistView() {
     })
 
     return indexedTracks.map(({ track }) => track)
-  }, [playlistDisplayTracks, sortState])
+  }, [playlistDisplayTracks, sortState, trackRatings])
 
   const displayPlayableTracks = useMemo(
     () => displayTracks.filter((track) => !isMissingPlaylistDisplayTrack(track)),

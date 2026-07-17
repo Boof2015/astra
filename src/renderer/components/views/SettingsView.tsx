@@ -47,6 +47,7 @@ import { useUpdateStore } from '../../stores/updateStore'
 import { useDiagnosticsStore } from '../../stores/diagnosticsStore'
 import { useGraphStore } from '../../stores/graphStore'
 import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
+import { useRatingsStore } from '../../stores/ratingsStore'
 import RemoteServersPanel from '../settings/RemoteServersPanel'
 import {
   SLEEP_TIMER_MAX_MINUTES,
@@ -72,6 +73,7 @@ import {
   resetIntegrationSettings,
   resetMappedFolders,
   resetThemeSettings,
+  resetTrackRatings,
 } from '../settings/resetActions'
 import type { MiniPlayerVisualizerMode } from '../../../types/miniPlayer'
 import {
@@ -96,6 +98,7 @@ type ResetActionId =
   | 'reset-discord-cover-art-cache'
   | 'reset-eq'
   | 'reset-all'
+  | 'reset-ratings'
   | 'reset-folders'
   | 'factory-reset'
 
@@ -228,6 +231,7 @@ const RESET_ACTION_IDS: ResetActionId[] = [
   'reset-discord-cover-art-cache',
   'reset-eq',
   'reset-all',
+  'reset-ratings',
   'reset-folders',
   'factory-reset',
 ]
@@ -530,6 +534,8 @@ export default function SettingsView() {
   const setActiveView = useUIStore((state) => state.setActiveView)
   const pendingSettingsSection = useUIStore((state) => state.pendingSettingsSection)
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
+  const trackRatingsEnabled = useRatingsStore((state) => state.enabled)
+  const setTrackRatingsEnabled = useRatingsStore((state) => state.setEnabled)
   const libraryGraphEnabled = useGraphStore((state) => state.enabled)
   const setLibraryGraphEnabled = useGraphStore((state) => state.setEnabled)
   const openFullGraph = useGraphStore((state) => state.openFullMap)
@@ -837,6 +843,18 @@ export default function SettingsView() {
       confirmLabel: 'Reset All',
       destructive: false,
       run: resetAllSettings,
+    },
+    {
+      id: 'reset-ratings',
+      title: 'Reset Track Ratings',
+      description: 'Permanently remove every star rating. Favorites, playlists, and library data are untouched.',
+      buttonLabel: 'Reset Ratings',
+      confirmTitle: 'Reset Track Ratings',
+      confirmMessage: 'This permanently deletes all star ratings from the library database. Dynamic playlists that filter by rating will match no rated tracks until you rate again.',
+      confirmLabel: 'Reset Ratings',
+      destructive: true,
+      typedPhrase: 'RESET RATINGS',
+      run: resetTrackRatings,
     },
     {
       id: 'reset-folders',
@@ -1783,6 +1801,26 @@ export default function SettingsView() {
                       </button>
                     </div>
                   </div>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Track Ratings</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Ratings</span>
+                    <button
+                      className={`settings-toggle ${trackRatingsEnabled ? 'active' : ''}`}
+                      onClick={() => setTrackRatingsEnabled(!trackRatingsEnabled)}
+                      title="Rate tracks with 1-5 stars in half-star steps"
+                    >
+                      {trackRatingsEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <p className="settings-note">
+                    Rate tracks with 1-5 stars in half-star steps. Adds a rating column to tracklists,
+                    a Rate entry to the track menu, and rating filters for dynamic playlists. Ratings
+                    are kept if you turn this off.
+                  </p>
                 </div>
               </div>
               <div className="settings-card">

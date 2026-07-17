@@ -5,6 +5,7 @@ import { useUIStore } from '../../stores/uiStore'
 import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
 import { useJellyfinSettingsStore } from '../../stores/jellyfinSettingsStore'
 import { useGraphStore } from '../../stores/graphStore'
+import { useRatingsStore } from '../../stores/ratingsStore'
 import { useHorizontalWheelScroll } from '../../hooks/useHorizontalWheelScroll'
 import { usePresence } from '../../hooks/usePresence'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
@@ -69,6 +70,17 @@ function compareNullableBpm(a: number | null | undefined, b: number | null | und
   if (bMissing) return -1
 
   return compareWithDirection(aValue - bValue, direction)
+}
+
+function compareNullableRating(a: number | null | undefined, b: number | null | undefined, direction: SortDirection): number {
+  const aMissing = typeof a !== 'number'
+  const bMissing = typeof b !== 'number'
+
+  if (aMissing && bMissing) return 0
+  if (aMissing) return 1
+  if (bMissing) return -1
+
+  return compareWithDirection(a - b, direction)
 }
 
 function compareNullableDuration(a: number | null | undefined, b: number | null | undefined, direction: SortDirection): number {
@@ -205,6 +217,8 @@ export default function LibraryView() {
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const showTracklistGenre = useLibraryStore((state) => state.showTracklistGenre)
   const showTracklistAddedDate = useLibraryStore((state) => state.showTracklistAddedDate)
+  const ratingsEnabled = useRatingsStore((state) => state.enabled)
+  const ratings = useRatingsStore((state) => state.ratings)
   const sortState = useLibraryStore((state) => state.trackListSortState)
   const setSortState = useLibraryStore((state) => state.setTrackListSortState)
   const selectedSourceFilters = useLibraryStore((state) => state.selectedSourceFilters)
@@ -492,9 +506,10 @@ export default function LibraryView() {
     const hideBpmKeySort = !showTracklistBpmKey && (sortState.key === 'bpm' || sortState.key === 'musical_key')
     const hideGenreSort = !showTracklistGenre && sortState.key === 'genre'
     const hideAddedSort = !showTracklistAddedDate && sortState.key === 'added'
-    if (!hideBpmKeySort && !hideGenreSort && !hideAddedSort) return
+    const hideRatingSort = !ratingsEnabled && sortState.key === 'rating'
+    if (!hideBpmKeySort && !hideGenreSort && !hideAddedSort && !hideRatingSort) return
     setSortState(selectedAlbum ? null : { key: 'title', direction: 'asc' })
-  }, [selectedAlbum, setSortState, showTracklistAddedDate, showTracklistBpmKey, showTracklistGenre, sortState])
+  }, [ratingsEnabled, selectedAlbum, setSortState, showTracklistAddedDate, showTracklistBpmKey, showTracklistGenre, sortState])
 
   const handleSortColumnToggle = useCallback((key: TrackListSortKey) => {
     const current = useLibraryStore.getState().trackListSortState
@@ -650,6 +665,12 @@ export default function LibraryView() {
         comparison = compareNullableKey(a.genre, b.genre, sortState.direction)
       } else if (sortState.key === 'added') {
         comparison = compareAddedAt(a, b, sortState.direction)
+      } else if (sortState.key === 'rating') {
+        comparison = compareNullableRating(
+          ratings.get(a.path)?.rating ?? null,
+          ratings.get(b.path)?.rating ?? null,
+          sortState.direction
+        )
       } else {
         comparison = compareNullableKey(a.musical_key, b.musical_key, sortState.direction)
       }
@@ -659,7 +680,7 @@ export default function LibraryView() {
     })
 
     return sorted
-  }, [sortState, sourceFilteredTracks])
+  }, [ratings, sortState, sourceFilteredTracks])
   const isCollectionPlayDisabled = isCollectionPlayPending || queueSeedSortedTracks.length === 0
   const queueTrackPaths = useMemo(() => queueSeedSortedTracks.map((track) => track.path), [queueSeedSortedTracks])
 
@@ -1115,6 +1136,21 @@ export default function LibraryView() {
   const selectedAlbumDurationLabel = selectedAlbum
     ? formatCompactTotalTrackDuration(sourceFilteredTracks)
     : null
+  // Average of the album's RATED tracks only, computed renderer-side from the
+  // loaded track list like the duration above. Unrated albums show nothing.
+  const selectedAlbumAverageRatingLabel = useMemo(() => {
+    if (!ratingsEnabled || !selectedAlbum) return null
+    let sum = 0
+    let count = 0
+    for (const track of sourceFilteredTracks) {
+      const entry = ratings.get(track.path)
+      if (entry) {
+        sum += entry.rating
+        count += 1
+      }
+    }
+    return count > 0 ? `★ ${(sum / count).toFixed(1)}` : null
+  }, [ratings, ratingsEnabled, selectedAlbum, sourceFilteredTracks])
   const selectedArtistDurationLabel = selectedArtist
     ? formatCompactTotalTrackDuration(sourceFilteredTracks)
     : null
@@ -1126,7 +1162,8 @@ export default function LibraryView() {
         selectedAlbumArtist || null,
         selectedAlbumYear ? String(selectedAlbumYear) : null,
         formatTrackCount(sourceFilteredTracks.length),
-        selectedAlbumDurationLabel
+        selectedAlbumDurationLabel,
+        selectedAlbumAverageRatingLabel
       ].filter((item): item is string => Boolean(item))
     : selectedArtist
       ? [

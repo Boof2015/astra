@@ -5322,7 +5322,7 @@ body:has(.fullscreen-overlay) .controller-hints {
   align-items: center;
   padding: 8px 16px;
   cursor: pointer;
-  transition: background var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+  transition: background var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), opacity var(--motion-structural-enter) ease;
   border-radius: var(--radius-sm);
   margin: 0;
   width: 100%;
@@ -5527,6 +5527,17 @@ body:has(.fullscreen-overlay) .controller-hints {
   text-align: right;
   padding-right: 12px;
   color: var(--text-tertiary);
+}
+
+.track-col-rating {
+  width: 96px;
+  flex-shrink: 0;
+  padding-right: 12px;
+  display: flex;
+  align-items: center;
+  /* The calibration ladder strips extend above/below the row from inside this
+     column; the base .track-col overflow: hidden would clip them away. */
+  overflow: visible;
 }
 
 .track-col-codec {
@@ -21101,6 +21112,23 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   flex-shrink: 0;
 }
 
+.track-context-menu-rating {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: rgba(var(--tint), 0.84);
+  font-size: 12px;
+}
+
+.track-context-menu-rating-label {
+  flex-shrink: 0;
+}
+
 .collection-queue-context-menu-title {
   overflow: hidden;
   padding: 7px 9px 8px;
@@ -24748,6 +24776,199 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
   border-bottom: 1px solid rgba(var(--tint), 0.07);
 }
 
+/* ── Track ratings ─────────────────────────────────────── */
+
+.star-rating {
+  position: relative;
+  display: inline-flex;
+  color: var(--text-tertiary);
+}
+
+.star-rating-stars {
+  display: flex;
+  gap: 0;
+}
+
+.star-rating-glyph {
+  flex-shrink: 0;
+}
+
+.star-rating-sm .star-rating-glyph {
+  width: 15px;
+  height: 15px;
+}
+
+.star-rating-md .star-rating-glyph {
+  width: 19px;
+  height: 19px;
+}
+
+.star-rating .star-rating-stars {
+  opacity: 0.28;
+}
+
+.star-rating-empty .star-rating-stars {
+  opacity: 0.18;
+}
+
+.star-rating-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  overflow: hidden;
+  color: var(--accent);
+  pointer-events: none;
+}
+
+.star-rating-indeterminate .star-rating-fill {
+  color: var(--text-tertiary);
+  opacity: 0.55;
+}
+
+.star-rating-interactive {
+  cursor: pointer;
+  touch-action: none;
+  border-radius: var(--radius-sm);
+}
+
+.star-rating-interactive:hover .star-rating-fill {
+  color: var(--accent-hover);
+}
+
+.star-rating-interactive:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.track-rating-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.playlist-dynamic-rating-value {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* Calibration ladder: floating chips hugging the hovered row — higher-rated
+   tracks stacked above the stars being dragged, lower-rated below, mini stars
+   aligned with the widget's star column. Anchored inside the widget so it
+   rides along with the row (no fixed-position anchor math, immune to the
+   transformed UI-scale wrapper). */
+
+.rating-ladder {
+  display: contents;
+}
+
+.rating-ladder-strip {
+  position: absolute;
+  /* Pull left so chip stars line up with the widget stars: chip padding (3px)
+     + artwork (22px) + gap (8px). */
+  left: -33px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: max-content;
+  max-width: 360px;
+  z-index: 221;
+  pointer-events: none;
+}
+
+.rating-ladder-above {
+  bottom: calc(100% + 6px);
+}
+
+.rating-ladder-below {
+  top: calc(100% + 6px);
+}
+
+.rating-ladder-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 12px 3px 3px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  box-shadow: 0 6px 18px var(--shadow-soft);
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity var(--motion-structural-enter) ease var(--ladder-delay, 0ms),
+    transform var(--motion-structural-enter) var(--motion-structural-ease) var(--ladder-delay, 0ms);
+}
+
+/* Nearest neighbors read strongest; farther ones recede. */
+.rating-ladder-chip[data-distance="1"] {
+  opacity: 0.78;
+}
+
+.rating-ladder[data-presence="entering"] .rating-ladder-above .rating-ladder-chip {
+  opacity: 0;
+  transform: translateY(7px);
+}
+
+.rating-ladder[data-presence="entering"] .rating-ladder-below .rating-ladder-chip {
+  opacity: 0;
+  transform: translateY(-7px);
+}
+
+.rating-ladder[data-presence="exiting"] .rating-ladder-chip {
+  opacity: 0;
+  transition-duration: var(--motion-structural-exit);
+  transition-delay: 0ms;
+}
+
+.rating-ladder-art {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  overflow: hidden;
+  flex-shrink: 0;
+  object-fit: cover;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rating-ladder-title {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+}
+
+/* While a ladder is showing, dim the other rows so the chips read as an
+   overlay. Dimming is per-row opacity (NOT an overlay scrim): react-window
+   positions each .track-list-item with transform: translateY(), which makes
+   every row wrapper its own stacking context — a body-level scrim would paint
+   above all of them and no z-index on the row could escape it. */
+.track-list-body:has(.rating-ladder) .track-row:not(:has(.rating-ladder)),
+.track-list-body:has(.rating-ladder) .track-disc-header {
+  opacity: 0.35;
+}
+
+.track-list-body:has(.rating-ladder[data-presence="exiting"]) .track-row:not(:has(.rating-ladder)),
+.track-list-body:has(.rating-ladder[data-presence="exiting"]) .track-disc-header {
+  opacity: 1;
+}
+
+.track-list-body .track-disc-header {
+  transition: opacity var(--motion-structural-enter) ease;
+}
+
+/* The row wrapper is already a stacking context (react-window's transform),
+   so an explicit z-index lifts the hovered row + its chips above the sibling
+   rows the chips overlap. */
+.track-list-item:has(.rating-ladder) {
+  z-index: 210;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .app-view-transition-surface,
   .queue-sidebar,
@@ -24760,6 +24981,7 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
   .metadata-editor-panel,
   .audio-output-dropdown,
   .eq-popover,
+  .rating-ladder-chip,
   .sidebar-playlist-popout-backdrop,
   .sidebar-playlist-popout,
   .library-header-artist-image-menu {

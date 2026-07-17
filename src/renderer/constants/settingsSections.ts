@@ -34,7 +34,11 @@ export const SETTINGS_SECTIONS = [
       'navidrome',
       'jellyfin',
       'remote source',
-      'remote server'
+      'remote server',
+      'rating',
+      'ratings',
+      'stars',
+      'star rating'
     ]
   },
   {
@@ -104,7 +108,7 @@ export const SETTINGS_SECTIONS = [
   {
     id: 'danger',
     label: 'Danger Zone',
-    keywords: ['reset', 'factory reset', 'clear', 'danger', 'troubleshoot', 'delete', 'wipe']
+    keywords: ['reset', 'factory reset', 'clear', 'danger', 'troubleshoot', 'delete', 'wipe', 'ratings', 'reset ratings']
   }
 ] as const satisfies readonly SettingsSectionDefinition[]
 

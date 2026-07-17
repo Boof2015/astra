@@ -7858,6 +7858,23 @@ ipcMain.handle('library:removeFavorite', async (_event, trackPath: string) => {
 })
 
 // ============================================
+// Track Ratings IPC handlers
+// ============================================
+
+ipcMain.handle('library:getTrackRatings', () => {
+  return library.getTrackRatingEntries()
+})
+
+ipcMain.handle('library:setTrackRating', async (_event, trackPaths: string[], rating: number | null) => {
+  await library.setTrackRatingForPaths(trackPaths, rating)
+})
+
+ipcMain.handle('library:resetTrackRatings', async () => {
+  const cleared = await library.resetAllTrackRatings()
+  return { success: true, cleared }
+})
+
+// ============================================
 // Recently Played IPC handlers
 // ============================================
 

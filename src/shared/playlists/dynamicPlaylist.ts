@@ -1,3 +1,5 @@
+import { normalizeTrackRating } from '../ratings/trackRating'
+
 export type PlaylistKind = 'normal' | 'dynamic'
 
 export type DynamicPlaylistTextField =
@@ -9,8 +11,8 @@ export type DynamicPlaylistTextField =
   | 'format'
   | 'musical_key'
 
-export type DynamicPlaylistExactField = 'source_type' | 'favorite'
-export type DynamicPlaylistNumericField = 'play_count' | 'year' | 'duration_seconds' | 'bpm'
+export type DynamicPlaylistExactField = 'source_type' | 'favorite' | 'rated'
+export type DynamicPlaylistNumericField = 'play_count' | 'year' | 'duration_seconds' | 'bpm' | 'rating'
 export type DynamicPlaylistDateField = 'last_played_at' | 'added_at'
 export type DynamicPlaylistSortField =
   | 'title'
@@ -22,6 +24,7 @@ export type DynamicPlaylistSortField =
   | 'year'
   | 'duration_seconds'
   | 'bpm'
+  | 'rating'
 
 export type DynamicPlaylistTextOperator = 'contains' | 'is' | 'is_not'
 export type DynamicPlaylistExactOperator = 'is' | 'is_not'
@@ -52,6 +55,15 @@ export interface DynamicPlaylistFavoriteCondition {
   value: boolean
 }
 
+// "rated is false" is the only way to reach unrated tracks: numeric rating
+// conditions compare against NULL for tracks without a rating row and never match.
+export interface DynamicPlaylistRatedCondition {
+  kind: 'exact'
+  field: 'rated'
+  operator: DynamicPlaylistExactOperator
+  value: boolean
+}
+
 export interface DynamicPlaylistNumericCondition {
   kind: 'numeric'
   field: DynamicPlaylistNumericField
@@ -77,6 +89,7 @@ export type DynamicPlaylistCondition =
   | DynamicPlaylistTextCondition
   | DynamicPlaylistSourceCondition
   | DynamicPlaylistFavoriteCondition
+  | DynamicPlaylistRatedCondition
   | DynamicPlaylistNumericCondition
   | DynamicPlaylistLastPlayedCondition
   | DynamicPlaylistAddedAtCondition
@@ -107,7 +120,8 @@ export const DYNAMIC_PLAYLIST_NUMERIC_FIELDS: readonly DynamicPlaylistNumericFie
   'play_count',
   'year',
   'duration_seconds',
-  'bpm'
+  'bpm',
+  'rating'
 ]
 
 export const DYNAMIC_PLAYLIST_SORT_FIELDS: readonly DynamicPlaylistSortField[] = [
@@ -119,7 +133,8 @@ export const DYNAMIC_PLAYLIST_SORT_FIELDS: readonly DynamicPlaylistSortField[] =
   'play_count',
   'year',
   'duration_seconds',
-  'bpm'
+  'bpm',
+  'rating'
 ]
 
 export const DYNAMIC_PLAYLIST_SOURCE_TYPES: readonly DynamicPlaylistSourceType[] = [
@@ -181,6 +196,13 @@ function normalizeNumericValue(value: unknown, fieldName: DynamicPlaylistNumeric
     throw new Error(`${fieldName} must be a number.`)
   }
   if (fieldName === 'year') return Math.trunc(numberValue)
+  if (fieldName === 'rating') {
+    const rating = normalizeTrackRating(numberValue)
+    if (rating === null) {
+      throw new Error('Rating must be between 0.5 and 5.')
+    }
+    return rating
+  }
   return numberValue
 }
 
@@ -194,8 +216,8 @@ function normalizeTextCondition(condition: Record<string, unknown>): DynamicPlay
   return { kind: 'text', field, operator, value }
 }
 
-function normalizeExactCondition(condition: Record<string, unknown>): DynamicPlaylistSourceCondition | DynamicPlaylistFavoriteCondition {
-  const field = requireArrayMember(condition.field, ['source_type', 'favorite'] as const, 'Exact field')
+function normalizeExactCondition(condition: Record<string, unknown>): DynamicPlaylistSourceCondition | DynamicPlaylistFavoriteCondition | DynamicPlaylistRatedCondition {
+  const field = requireArrayMember(condition.field, ['source_type', 'favorite', 'rated'] as const, 'Exact field')
   const operator = requireArrayMember(condition.operator, EXACT_OPERATORS, 'Exact operator')
 
   if (field === 'source_type') {
@@ -204,7 +226,7 @@ function normalizeExactCondition(condition: Record<string, unknown>): DynamicPla
   }
 
   if (typeof condition.value !== 'boolean') {
-    throw new Error('Favorite value must be true or false.')
+    throw new Error(`${field === 'rated' ? 'Rated' : 'Favorite'} value must be true or false.`)
   }
   return { kind: 'exact', field, operator, value: condition.value }
 }

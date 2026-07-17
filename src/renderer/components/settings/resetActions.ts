@@ -3,6 +3,7 @@ import { useDiscordSettingsStore } from '../../stores/discordSettingsStore'
 import { EQ_DEVICE_PROFILE_STORAGE_KEY, EQ_STORAGE_KEY, useEQStore } from '../../stores/eqStore'
 import { ARTIST_BROWSE_MODE_STORAGE_KEY, useLibraryStore } from '../../stores/libraryStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
+import { useRatingsStore } from '../../stores/ratingsStore'
 import { useThemeStore } from '../../stores/themeStore'
 import {
   ANALYZER_PROFILES_STORAGE_KEY,
@@ -190,6 +191,18 @@ export async function resetMappedFolders(): Promise<string> {
 
   await reloadLibraryAndPlaylists()
   return `Mapped folders reset (${result.clearedFolders} folders, ${result.clearedTracks} tracks removed).`
+}
+
+export async function resetTrackRatings(): Promise<string> {
+  const result = await window.electronAPI.library.resetTrackRatings()
+  if (!result.success) {
+    throw new Error('Failed to reset track ratings.')
+  }
+
+  await useRatingsStore.getState().loadRatings()
+  return result.cleared === 1
+    ? '1 rating removed.'
+    : `${result.cleared} ratings removed.`
 }
 
 export async function factoryResetApplication(): Promise<void> {

@@ -29,6 +29,7 @@ import MetadataEditorPanel from './components/metadata/MetadataEditorPanel'
 import LyricsEditorPanel from './components/lyrics/LyricsEditorPanel'
 import { useUIStore } from './stores/uiStore'
 import { useLibraryStore } from './stores/libraryStore'
+import { useRatingsStore } from './stores/ratingsStore'
 import { useAudioSettingsStore } from './stores/audioSettingsStore'
 import { useDiscordSettingsStore } from './stores/discordSettingsStore'
 import { useThemeStore } from './stores/themeStore'
@@ -360,6 +361,7 @@ function App() {
         }
 
         const libraryStore = useLibraryStore.getState()
+        void useRatingsStore.getState().loadRatings()
         await libraryStore.loadLibrary()
         if (sessionSnapshot?.library) {
           await libraryStore.restoreSession(sessionSnapshot.library)

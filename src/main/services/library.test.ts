@@ -1533,6 +1533,86 @@ test('dynamic playlist filters favorites, play counts, last played, sorting, and
   assert.equal(preview.track_count, 1)
 })
 
+test('track ratings persist, overwrite, remove, and validate values', async (t) => {
+  await setupSeededLibrary(t)
+
+  const changed = await library.setTrackRatingForPaths(['subsonic://1/teen-1', 'subsonic://1/teen-2'], 4)
+  assert.equal(changed, 2)
+  await library.setTrackRatingForPaths(['subsonic://1/teen-2'], 2.5)
+
+  let entries = library.getTrackRatingEntries()
+  assert.deepEqual(
+    entries.map((entry) => [entry.track_path, entry.rating]).sort(),
+    [['subsonic://1/teen-1', 4], ['subsonic://1/teen-2', 2.5]]
+  )
+  assert.ok(entries.every((entry) => entry.updated_at > 0))
+
+  await library.setTrackRatingForPaths(['subsonic://1/teen-1'], null)
+  entries = library.getTrackRatingEntries()
+  assert.deepEqual(entries.map((entry) => entry.track_path), ['subsonic://1/teen-2'])
+
+  await assert.rejects(
+    () => library.setTrackRatingForPaths(['subsonic://1/teen-2'], Number.NaN),
+    /Rating must be between/
+  )
+
+  const cleared = await library.resetAllTrackRatings()
+  assert.equal(cleared, 1)
+  assert.deepEqual(library.getTrackRatingEntries(), [])
+  assert.equal(await library.resetAllTrackRatings(), 0)
+})
+
+test('dynamic playlists filter by rating, target unrated tracks, and sort by rating without a rating condition', async (t) => {
+  await setupSeededLibrary(t)
+
+  await library.setTrackRatingForPaths(['subsonic://1/teen-1'], 5)
+  await library.setTrackRatingForPaths(['subsonic://1/teen-2'], 3)
+  await library.setTrackRatingForPaths(['subsonic://1/split-a'], 3.5)
+  // subsonic://1/split-b stays unrated.
+
+  const highlyRated = library.previewDynamicPlaylist({
+    version: 1,
+    conditions: [{ kind: 'numeric', field: 'rating', operator: 'gte', value: 3.5 }],
+    sort: { field: 'rating', direction: 'desc' },
+    limit: null
+  })
+  assert.deepEqual(highlyRated.tracks.map((track) => track.path), ['subsonic://1/teen-1', 'subsonic://1/split-a'])
+
+  // Half-star equality is exact (halves are IEEE754-exact).
+  const exact = library.previewDynamicPlaylist({
+    version: 1,
+    conditions: [{ kind: 'numeric', field: 'rating', operator: 'eq', value: 3.5 }],
+    sort: { field: 'title', direction: 'asc' },
+    limit: null
+  })
+  assert.deepEqual(exact.tracks.map((track) => track.path), ['subsonic://1/split-a'])
+
+  // Numeric rating conditions can never match unrated (NULL) tracks; the
+  // 'rated' exact field is how they are reached.
+  const unrated = library.previewDynamicPlaylist({
+    version: 1,
+    conditions: [{ kind: 'exact', field: 'rated', operator: 'is', value: false }],
+    sort: { field: 'title', direction: 'asc' },
+    limit: null
+  })
+  assert.deepEqual(unrated.tracks.map((track) => track.path), ['subsonic://1/split-b'])
+
+  // Regression: sorting by rating with no rating condition must still emit the
+  // track_ratings join for the ORDER BY. Unrated tracks sort last.
+  const sortOnly = library.previewDynamicPlaylist({
+    version: 1,
+    conditions: [],
+    sort: { field: 'rating', direction: 'desc' },
+    limit: null
+  })
+  assert.deepEqual(sortOnly.tracks.map((track) => track.path), [
+    'subsonic://1/teen-1',
+    'subsonic://1/split-a',
+    'subsonic://1/teen-2',
+    'subsonic://1/split-b'
+  ])
+})
+
 test('dynamic playlists reject manual membership edits while normal playlists still accept them', async (t) => {
   await setupSeededLibrary(t)
 

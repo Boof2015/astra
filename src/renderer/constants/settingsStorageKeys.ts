@@ -17,6 +17,7 @@ export const ALBUM_SORT_MODE_STORAGE_KEY = 'astra-library-album-sort-mode-v1'
 export const INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY = 'astra-library-include-singles-in-albums-v1'
 export const INCLUDE_COLLAB_ARTISTS_STORAGE_KEY = 'astra-library-include-collab-artists-v1'
 export const ARTIST_ROOT_VIEW_MODE_STORAGE_KEY = 'astra-library-artist-view-mode-v1'
+export const TRACK_RATINGS_ENABLED_STORAGE_KEY = 'astra-library-track-ratings-enabled-v1'
 
 export const ASTRA_SESSION_STATE_STORAGE_KEY = 'astra-session-state-v1'
 

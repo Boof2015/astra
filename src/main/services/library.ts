@@ -59,6 +59,7 @@ import {
   type DynamicPlaylistTextField,
   type PlaylistKind
 } from '../../shared/playlists/dynamicPlaylist'
+import { normalizeTrackRating, type TrackRatingEntry } from '../../shared/ratings/trackRating'
 import {
   isAlbumNewForLatestSync,
   isTrackNewForLatestSync,
@@ -2023,6 +2024,19 @@ export async function initDatabase(): Promise<void> {
     END;
   `)
 
+  // User-assigned track ratings (half-star steps, 0.5-5). Like favorites,
+  // deliberately NOT cleaned up by an AFTER DELETE trigger: remote resyncs
+  // delete and re-insert tracks, and ratings must survive that round trip.
+  // updated_at is the hook for a future mobile sync; note an unrate cannot be
+  // synced without tombstones (accepted for now).
+  db.run(`
+    CREATE TABLE IF NOT EXISTS track_ratings (
+      track_path TEXT PRIMARY KEY NOT NULL,
+      rating REAL NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+
   // Schema migration: existing libraries may not have channels yet.
   try {
     db.run('ALTER TABLE tracks ADD COLUMN channels INTEGER')
@@ -2911,6 +2925,7 @@ function deleteTrackRelatedRows(trackPaths: string[]): void {
     const placeholders = chunk.map(() => '?').join(', ')
     db.run(`DELETE FROM playlist_tracks WHERE track_path IN (${placeholders})`, chunk)
     db.run(`DELETE FROM favorites WHERE track_path IN (${placeholders})`, chunk)
+    db.run(`DELETE FROM track_ratings WHERE track_path IN (${placeholders})`, chunk)
     db.run(`DELETE FROM recently_played WHERE track_path IN (${placeholders})`, chunk)
     db.run(`DELETE FROM track_metadata_overrides WHERE track_path IN (${placeholders})`, chunk)
     db.run(`DELETE FROM lyrics_cache WHERE track_path IN (${placeholders})`, chunk)
@@ -2922,6 +2937,7 @@ function deleteTrackRelatedRowsByPathPattern(trackPathPattern: string): void {
   if (!db || trackPathPattern.trim().length === 0) return
   db.run('DELETE FROM playlist_tracks WHERE track_path LIKE ?', [trackPathPattern])
   db.run('DELETE FROM favorites WHERE track_path LIKE ?', [trackPathPattern])
+  db.run('DELETE FROM track_ratings WHERE track_path LIKE ?', [trackPathPattern])
   db.run('DELETE FROM recently_played WHERE track_path LIKE ?', [trackPathPattern])
   db.run('DELETE FROM track_metadata_overrides WHERE track_path LIKE ?', [trackPathPattern])
   db.run('DELETE FROM lyrics_cache WHERE track_path LIKE ?', [trackPathPattern])
@@ -5648,6 +5664,7 @@ export async function resetMappedFoldersData(): Promise<{ clearedFolders: number
   db.run('DELETE FROM playlist_tracks')
   db.run('DELETE FROM recently_played')
   db.run('DELETE FROM favorites')
+  db.run('DELETE FROM track_ratings')
   db.run('DELETE FROM lyrics_cache')
   db.run('DELETE FROM lyrics_track_overrides')
   db.run('DELETE FROM tracks')
@@ -5668,6 +5685,7 @@ export async function factoryResetLibraryData(): Promise<void> {
   db.run('DELETE FROM playlists')
   db.run('DELETE FROM recently_played')
   db.run('DELETE FROM favorites')
+  db.run('DELETE FROM track_ratings')
   db.run('DELETE FROM lyrics_cache')
   db.run('DELETE FROM lyrics_track_overrides')
   db.run('DELETE FROM tracks')
@@ -7920,6 +7938,77 @@ export async function removeFavorite(trackPath: string): Promise<void> {
   await saveDatabase()
 }
 
+// ── Track Ratings ────────────────────────────────────────
+
+export function getTrackRatingEntries(): TrackRatingEntry[] {
+  if (!db) return []
+  return db.all<{ track_path?: unknown; rating?: unknown; updated_at?: unknown }>(
+    'SELECT track_path, rating, updated_at FROM track_ratings'
+  )
+    .map((row) => {
+      if (typeof row.track_path !== 'string' || row.track_path.length === 0) return null
+      const rating = normalizeTrackRating(row.rating)
+      if (rating === null) return null
+      const updatedAt = typeof row.updated_at === 'number' ? row.updated_at : 0
+      return { track_path: row.track_path, rating, updated_at: updatedAt }
+    })
+    .filter((entry): entry is TrackRatingEntry => entry !== null)
+}
+
+export async function setTrackRatingForPaths(
+  trackPaths: string[],
+  rating: number | null,
+  options: { persist?: boolean } = {}
+): Promise<number> {
+  if (!db || trackPaths.length === 0) return 0
+
+  const uniqueTrackPaths = Array.from(new Set(
+    trackPaths
+      .map((trackPath) => (typeof trackPath === 'string' ? trackPath.trim() : ''))
+      .filter((trackPath) => trackPath.length > 0)
+  ))
+  if (uniqueTrackPaths.length === 0) return 0
+
+  let changed = 0
+  if (rating === null) {
+    for (const trackPath of uniqueTrackPaths) {
+      const result = db.run('DELETE FROM track_ratings WHERE track_path = ?', [trackPath])
+      changed += Number(result.changes) > 0 ? 1 : 0
+    }
+  } else {
+    const normalizedRating = normalizeTrackRating(rating)
+    if (normalizedRating === null) {
+      throw new Error('Rating must be between 0.5 and 5 in half-star steps.')
+    }
+    const now = Date.now()
+    for (const trackPath of uniqueTrackPaths) {
+      db.run(`
+        INSERT INTO track_ratings (track_path, rating, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(track_path) DO UPDATE SET rating = excluded.rating, updated_at = excluded.updated_at
+      `, [trackPath, normalizedRating, now])
+      changed += 1
+    }
+  }
+
+  if (options.persist !== false && changed > 0) {
+    await saveDatabase()
+  }
+  return changed
+}
+
+export async function resetAllTrackRatings(): Promise<number> {
+  if (!db) return 0
+  // Count first: the run() wrapper reports changes: 0 for parameterless
+  // statements (they go through exec).
+  const cleared = readCount('SELECT COUNT(*) FROM track_ratings')
+  db.run('DELETE FROM track_ratings')
+  if (cleared > 0) {
+    await saveDatabase()
+  }
+  return cleared
+}
+
 // ── Recently Played ──────────────────────────────────────
 
 export function getRecentlyPlayed(limit: number = 50): DbTrack[] {
@@ -7994,7 +8083,10 @@ const DYNAMIC_NUMERIC_FIELD_SQL: Record<DynamicPlaylistNumericField, string> = {
   play_count: 'COALESCE(t.play_count, 0)',
   year: 'COALESCE(o.year, t.year)',
   duration_seconds: 't.duration',
-  bpm: 't.bpm'
+  bpm: 't.bpm',
+  // NULL for unrated tracks, so numeric conditions never match them; the
+  // 'rated' exact field is the way to target unrated tracks.
+  rating: 'r.rating'
 }
 
 const DYNAMIC_DATE_FIELD_SQL: Record<DynamicPlaylistDateField, string> = {
@@ -8011,7 +8103,8 @@ const DYNAMIC_SORT_FIELD_SQL: Record<DynamicPlaylistSortField, { expression: str
   play_count: { expression: 'COALESCE(t.play_count, 0)', nullable: false },
   year: { expression: 'COALESCE(o.year, t.year)', nullable: true },
   duration_seconds: { expression: 't.duration', nullable: false },
-  bpm: { expression: 't.bpm', nullable: true }
+  bpm: { expression: 't.bpm', nullable: true },
+  rating: { expression: 'r.rating', nullable: true }
 }
 
 function normalizePlaylistKind(value: unknown): PlaylistKind {
@@ -8091,6 +8184,12 @@ function appendDynamicExactCondition(
     return
   }
 
+  if (condition.field === 'rated') {
+    const expectsRated = condition.operator === 'is' ? condition.value : !condition.value
+    whereClauses.push(`r.track_path IS ${expectsRated ? 'NOT NULL' : 'NULL'}`)
+    return
+  }
+
   const expectsFavorite = condition.operator === 'is' ? condition.value : !condition.value
   whereClauses.push(`f.track_path IS ${expectsFavorite ? 'NOT NULL' : 'NULL'}`)
 }
@@ -8148,6 +8247,13 @@ function buildDynamicPlaylistWhereClause(
   const needsFavoriteJoin = rules.conditions.some((condition) => (
     condition.kind === 'exact' && condition.field === 'favorite'
   ))
+  // The sort field must be part of the join check: these joins also feed the
+  // ORDER BY query, and sorting by rating without a rating condition would
+  // otherwise reference r.rating with no track_ratings join.
+  const needsRatingJoin = rules.sort.field === 'rating' || rules.conditions.some((condition) => (
+    (condition.kind === 'exact' && condition.field === 'rated')
+    || (condition.kind === 'numeric' && condition.field === 'rating')
+  ))
 
   for (const condition of rules.conditions) {
     if (condition.kind === 'text') {
@@ -8161,8 +8267,12 @@ function buildDynamicPlaylistWhereClause(
     }
   }
 
+  const joins: string[] = []
+  if (needsFavoriteJoin) joins.push('LEFT JOIN favorites f ON f.track_path = t.path')
+  if (needsRatingJoin) joins.push('LEFT JOIN track_ratings r ON r.track_path = t.path')
+
   return {
-    joins: needsFavoriteJoin ? 'LEFT JOIN favorites f ON f.track_path = t.path' : '',
+    joins: joins.join('\n      '),
     where: whereClauses.join('\n      AND '),
     params
   }

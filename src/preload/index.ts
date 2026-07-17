@@ -53,6 +53,7 @@ import type {
   DynamicPlaylistRulesV1,
   PlaylistKind
 } from '../shared/playlists/dynamicPlaylist'
+import type { TrackRatingEntry } from '../shared/ratings/trackRating'
 import type { AppMemoryFootprintSource } from '../shared/processMemoryFootprint'
 import type {
   LastFmAuthFinishResult,
@@ -1385,6 +1386,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     addFavorite: (trackPath: string) => ipcRenderer.invoke('library:addFavorite', trackPath),
     removeFavorite: (trackPath: string) => ipcRenderer.invoke('library:removeFavorite', trackPath),
 
+    // Track ratings
+    getTrackRatings: () => ipcRenderer.invoke('library:getTrackRatings'),
+    setTrackRating: (trackPaths: string[], rating: number | null) => ipcRenderer.invoke('library:setTrackRating', trackPaths, rating),
+    resetTrackRatings: () => ipcRenderer.invoke('library:resetTrackRatings'),
+
     // Recently played
     getRecentlyPlayed: (limit?: number) => ipcRenderer.invoke('library:getRecentlyPlayed', limit),
     markTrackLatestSyncSeen: (trackPath: string) => ipcRenderer.invoke('library:markTrackLatestSyncSeen', trackPath),
@@ -1868,6 +1874,11 @@ declare global {
         getFavoritePaths: () => Promise<string[]>
         addFavorite: (trackPath: string) => Promise<void>
         removeFavorite: (trackPath: string) => Promise<void>
+
+        // Track ratings
+        getTrackRatings: () => Promise<TrackRatingEntry[]>
+        setTrackRating: (trackPaths: string[], rating: number | null) => Promise<void>
+        resetTrackRatings: () => Promise<{ success: boolean; cleared: number }>
 
         // Recently played
         getRecentlyPlayed: (limit?: number) => Promise<DbTrack[]>

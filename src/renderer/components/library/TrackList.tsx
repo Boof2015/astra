@@ -6,6 +6,8 @@ import { getNormalPlaylists, usePlaylistStore } from '../../stores/playlistStore
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useUIStore, type LibraryTrackRevealRequest, type PlaylistTrackRevealRequest } from '../../stores/uiStore'
 import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
+import { useRatingsStore } from '../../stores/ratingsStore'
+import TrackRatingControl from '../ratings/TrackRatingControl'
 import { useMetadataEditorStore } from '../../stores/metadataEditorStore'
 import { useLyricsEditorStore } from '../../stores/lyricsEditorStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
@@ -68,7 +70,7 @@ interface DbTrack {
   is_iamf?: number | null
 }
 
-export type TrackListSortKey = 'title' | 'artist' | 'album' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added'
+export type TrackListSortKey = 'title' | 'artist' | 'album' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added' | 'rating'
 export type TrackNumberMode = 'album' | 'context' | 'none'
 
 export interface TrackListSortState {
@@ -110,6 +112,7 @@ interface TrackListRowSharedProps {
   showTracklistGenre: boolean
   showAddedDate: boolean
   showNewTrackIndicator: boolean
+  ratingsEnabled: boolean
   searchQuery: string
   trackNumberMode: TrackNumberMode
   contextTrackNumbersByPath?: ReadonlyMap<string, number>
@@ -394,6 +397,7 @@ function TrackListRowRenderer({
   showTracklistGenre,
   showAddedDate,
   showNewTrackIndicator,
+  ratingsEnabled,
   searchQuery,
   trackNumberMode,
   contextTrackNumbersByPath,
@@ -661,6 +665,11 @@ function TrackListRowRenderer({
             <span className="track-key">{track.musical_key?.trim() || '--'}</span>
           </div>
         )}
+        {ratingsEnabled && (
+          <div className="track-col track-col-rating">
+            {!isMissingPlaylistEntry && <TrackRatingControl trackPaths={[track.path]} size="sm" />}
+          </div>
+        )}
         <div className="track-col track-col-codec">
           <span className="track-codec">{isMissingPlaylistEntry ? 'MISSING' : track.format ? track.format.toUpperCase() : '\u2014'}</span>
         </div>
@@ -803,6 +812,9 @@ export default function TrackList({
   const toggleFavorite = useLibraryStore((state) => state.toggleFavorite)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const showTracklistGenre = useLibraryStore((state) => state.showTracklistGenre)
+  const ratingsEnabled = useRatingsStore((state) => state.enabled)
+  const ratings = useRatingsStore((state) => state.ratings)
+  const setTrackRating = useRatingsStore((state) => state.setTrackRating)
   const playlists = usePlaylistStore((state) => state.playlists)
   const addToPlaylist = usePlaylistStore((state) => state.addToPlaylist)
   const createPlaylistWithOptions = usePlaylistStore((state) => state.createPlaylistWithOptions)
@@ -1593,6 +1605,13 @@ export default function TrackList({
     setTrackContextMenu(null)
   }, [closeLyricsEditor, openMetadataEditor, trackContextMenu])
 
+  const handleContextRemoveRating = useCallback(() => {
+    if (!trackContextMenu) return
+    const trackPaths = trackContextMenu.tracks.map((track) => track.path)
+    void setTrackRating(trackPaths, null)
+    setTrackContextMenu(null)
+  }, [setTrackRating, trackContextMenu])
+
   const handleContextEditLyrics = useCallback(() => {
     if (!trackContextMenu) return
     const trackPaths = trackContextMenu.tracks.map((track) => track.path)
@@ -1826,7 +1845,7 @@ export default function TrackList({
     const panelWidth = 220
     const panelHeight = (integrityEnabled ? 252 : 194) + (
       onChangeMissingPlaylistAssociation && playlistSourceId !== null && playlistSourceId > 0 ? 36 : 0
-    )
+    ) + (ratingsEnabled ? 72 : 0)
     const edgePadding = 8
     const left = Math.min(
       Math.max(edgePadding, trackContextMenu.x),
@@ -1838,7 +1857,7 @@ export default function TrackList({
     )
 
     return { top, left }
-  }, [integrityEnabled, onChangeMissingPlaylistAssociation, playlistSourceId, trackContextMenu])
+  }, [integrityEnabled, onChangeMissingPlaylistAssociation, playlistSourceId, ratingsEnabled, trackContextMenu])
 
   const listHeight = listViewportHeight > 0 ? listViewportHeight : trackRowHeight
   const virtualContentHeight = useMemo(() => (
@@ -1854,7 +1873,7 @@ export default function TrackList({
   const queueInsertPreview = isQueueInsertDragOwner ? trackDrag : null
   const isColumnSortingEnabled = enableColumnSorting && typeof onSortColumnToggle === 'function'
   const canResetDefaultOrder = enableDefaultOrderReset && typeof onDefaultOrderReset === 'function'
-  const getDefaultSortDirection = (key: TrackListSortKey): 'asc' | 'desc' => (key === 'added' ? 'desc' : 'asc')
+  const getDefaultSortDirection = (key: TrackListSortKey): 'asc' | 'desc' => (key === 'added' || key === 'rating' ? 'desc' : 'asc')
 
   const getAriaSort = (key: TrackListSortKey): 'none' | 'ascending' | 'descending' => {
     if (!isColumnSortingEnabled || !sortState || sortState.key !== key) return 'none'
@@ -1896,6 +1915,13 @@ export default function TrackList({
   const contextMenuContainsMissingPlaylistEntry = Boolean(
     trackContextMenu?.tracks.some((track) => isMissingPlaylistEntryTrack(track))
   )
+  const contextMenuTrackPaths = useMemo(
+    () => trackContextMenu?.tracks.map((track) => track.path) ?? [],
+    [trackContextMenu]
+  )
+  const contextMenuHasRatedTrack = Boolean(
+    trackContextMenu?.tracks.some((track) => ratings.has(track.path))
+  )
   const canChangeMissingPlaylistAssociation = Boolean(
     onChangeMissingPlaylistAssociation
     && canRemoveFromPlaylist
@@ -1917,6 +1943,7 @@ export default function TrackList({
     showTracklistGenre,
     showAddedDate,
     showNewTrackIndicator,
+    ratingsEnabled,
     searchQuery,
     trackNumberMode,
     contextTrackNumbersByPath,
@@ -1962,6 +1989,7 @@ export default function TrackList({
     showTracklistGenre,
     showAddedDate,
     showNewTrackIndicator,
+    ratingsEnabled,
     searchQuery,
     trackNumberMode,
     contextTrackNumbersByPath,
@@ -2036,6 +2064,7 @@ export default function TrackList({
         {showTracklistGenre && renderSortableHeader('genre', 'Genre', 'track-col-genre')}
         {showTracklistBpmKey && renderSortableHeader('bpm', 'BPM', 'track-col-bpm')}
         {showTracklistBpmKey && renderSortableHeader('musical_key', 'Key', 'track-col-key')}
+        {ratingsEnabled && renderSortableHeader('rating', 'Rating', 'track-col-rating')}
         <div className="track-col track-col-codec">Codec</div>
         {showAddedDate && renderSortableHeader('added', 'Added', 'track-col-added')}
         {renderSortableHeader('duration', 'Length', 'track-col-duration')}
@@ -2228,6 +2257,34 @@ export default function TrackList({
             </span>
             Add to Playlist...
           </button>
+          {ratingsEnabled && !contextMenuContainsMissingPlaylistEntry && (
+            <div className="track-context-menu-rating">
+              <span className="track-context-menu-rating-label">
+                {contextMenuTrackCount > 1 ? `Rate (${contextMenuTrackCount})` : 'Rate'}
+              </span>
+              <TrackRatingControl
+                trackPaths={contextMenuTrackPaths}
+                size="md"
+                calibration={false}
+                onCommitted={() => setTrackContextMenu(null)}
+              />
+            </div>
+          )}
+          {ratingsEnabled && !contextMenuContainsMissingPlaylistEntry && contextMenuHasRatedTrack && (
+            <button
+              type="button"
+              className="track-context-menu-item"
+              onClick={handleContextRemoveRating}
+            >
+              <span className="track-context-menu-icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
+                  <path d="M4 4 20 20" />
+                </svg>
+              </span>
+              {contextMenuTrackCount > 1 ? `Remove Rating (${contextMenuTrackCount})` : 'Remove Rating'}
+            </button>
+          )}
           {canChangeMissingPlaylistAssociation && (
             <button
               type="button"

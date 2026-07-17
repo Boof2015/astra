@@ -10,12 +10,15 @@ import {
   type DynamicPlaylistLastPlayedCondition,
   type DynamicPlaylistNumericCondition,
   type DynamicPlaylistNumericField,
+  type DynamicPlaylistRatedCondition,
   type DynamicPlaylistRulesV1,
   type DynamicPlaylistSourceCondition,
   type DynamicPlaylistSortField,
   type DynamicPlaylistTextCondition,
   type DynamicPlaylistTextField
 } from '../../../shared/playlists/dynamicPlaylist'
+import { useRatingsStore } from '../../stores/ratingsStore'
+import StarRating from '../ratings/StarRating'
 
 interface DynamicPlaylistPreviewTrack {
   path: string
@@ -63,11 +66,15 @@ const FIELD_OPTIONS: readonly ConditionFieldOption[] = [
   { key: 'numeric:year', label: 'Year' },
   { key: 'numeric:duration_seconds', label: 'Duration' },
   { key: 'numeric:bpm', label: 'BPM' },
+  { key: 'numeric:rating', label: 'Rating' },
   { key: 'date:last_played_at', label: 'Last played' },
   { key: 'date:added_at', label: 'Added' },
   { key: 'exact:favorite', label: 'Favorite' },
+  { key: 'exact:rated', label: 'Rated' },
   { key: 'exact:source_type', label: 'Source' }
 ]
+
+const RATING_FIELD_KEYS: readonly ConditionFieldKey[] = ['numeric:rating', 'exact:rated']
 
 const SORT_FIELD_LABELS: Record<DynamicPlaylistSortField, string> = {
   title: 'Title',
@@ -78,7 +85,8 @@ const SORT_FIELD_LABELS: Record<DynamicPlaylistSortField, string> = {
   play_count: 'Play count',
   year: 'Year',
   duration_seconds: 'Duration',
-  bpm: 'BPM'
+  bpm: 'BPM',
+  rating: 'Rating'
 }
 
 const PRESETS: readonly DynamicPlaylistPreset[] = [
@@ -147,6 +155,9 @@ const PRESETS: readonly DynamicPlaylistPreset[] = [
 function createDefaultCondition(fieldKey: ConditionFieldKey = 'text:artist'): DynamicPlaylistCondition {
   const [kind, field] = fieldKey.split(':') as [DynamicPlaylistCondition['kind'], string]
   if (kind === 'numeric') {
+    if (field === 'rating') {
+      return { kind, field, operator: 'gte', value: 3.5 }
+    }
     return { kind, field: field as DynamicPlaylistNumericField, operator: 'gte', value: field === 'play_count' ? 1 : 0 }
   }
   if (kind === 'date') {
@@ -155,9 +166,14 @@ function createDefaultCondition(fieldKey: ConditionFieldKey = 'text:artist'): Dy
       : { kind, field: 'added_at', operator: 'within_days', value: 30 }
   }
   if (kind === 'exact') {
-    return field === 'source_type'
-      ? { kind, field, operator: 'is', value: 'local' }
-      : { kind, field: 'favorite', operator: 'is', value: true }
+    if (field === 'source_type') {
+      return { kind, field, operator: 'is', value: 'local' }
+    }
+    // "Rated is false" is the natural starting point: find my unrated tracks.
+    if (field === 'rated') {
+      return { kind, field, operator: 'is', value: false }
+    }
+    return { kind, field: 'favorite', operator: 'is', value: true }
   }
   return { kind, field: field as DynamicPlaylistTextField, operator: 'contains', value: '' }
 }
@@ -228,10 +244,10 @@ function updateDateOperator(
 }
 
 function updateExactOperator(
-  condition: DynamicPlaylistSourceCondition | DynamicPlaylistFavoriteCondition,
+  condition: DynamicPlaylistSourceCondition | DynamicPlaylistFavoriteCondition | DynamicPlaylistRatedCondition,
   operator: DynamicPlaylistSourceCondition['operator']
-): DynamicPlaylistSourceCondition | DynamicPlaylistFavoriteCondition {
-  return { ...condition, operator } as DynamicPlaylistSourceCondition | DynamicPlaylistFavoriteCondition
+): DynamicPlaylistSourceCondition | DynamicPlaylistFavoriteCondition | DynamicPlaylistRatedCondition {
+  return { ...condition, operator } as DynamicPlaylistSourceCondition | DynamicPlaylistFavoriteCondition | DynamicPlaylistRatedCondition
 }
 
 function renderConditionOperator(
@@ -305,6 +321,21 @@ function renderConditionValue(
   }
 
   if (condition.kind === 'numeric') {
+    if (condition.field === 'rating') {
+      return (
+        <div className="playlist-dynamic-rating-value">
+          <StarRating
+            value={Number.isFinite(condition.value) ? condition.value : null}
+            size="md"
+            ariaLabel="Rating filter value"
+            onCommit={disabled ? undefined : (value) => {
+              // A filter always needs a value; ignore the click-to-clear commit.
+              if (value !== null) onChange({ ...condition, value })
+            }}
+          />
+        </div>
+      )
+    }
     return (
       <input
         className="playlist-dynamic-input"
@@ -368,6 +399,26 @@ export default function DynamicPlaylistRuleEditor({
   const [preview, setPreview] = useState<DynamicPlaylistPreview | null>(null)
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [isPreviewLoading, setIsPreviewLoading] = useState(false)
+  const ratingsEnabled = useRatingsStore((s) => s.enabled)
+
+  // With ratings opted out, hide the rating fields for NEW conditions but keep
+  // them selectable on rows that already use them (existing playlists keep
+  // working; the select must not render an invalid value).
+  const visibleFieldOptions = useMemo(() => (
+    ratingsEnabled
+      ? FIELD_OPTIONS
+      : FIELD_OPTIONS.filter((option) => !RATING_FIELD_KEYS.includes(option.key))
+  ), [ratingsEnabled])
+
+  const fieldOptionsForCondition = (condition: DynamicPlaylistCondition): readonly ConditionFieldOption[] => (
+    RATING_FIELD_KEYS.includes(getConditionFieldKey(condition)) ? FIELD_OPTIONS : visibleFieldOptions
+  )
+
+  const visibleSortFields = useMemo(() => (
+    Object.entries(SORT_FIELD_LABELS).filter(([field]) => (
+      field !== 'rating' || ratingsEnabled || rules.sort.field === 'rating'
+    ))
+  ), [ratingsEnabled, rules.sort.field])
 
   const normalizedRulesError = useMemo(() => {
     try {
@@ -468,7 +519,7 @@ export default function DynamicPlaylistRuleEditor({
                     ))}
                     disabled={disabled}
                   >
-                    {FIELD_OPTIONS.map((option) => (
+                    {fieldOptionsForCondition(condition).map((option) => (
                       <option key={option.key} value={option.key}>{option.label}</option>
                     ))}
                   </select>
@@ -509,7 +560,7 @@ export default function DynamicPlaylistRuleEditor({
                 })}
                 disabled={disabled}
               >
-                {Object.entries(SORT_FIELD_LABELS).map(([field, label]) => (
+                {visibleSortFields.map(([field, label]) => (
                   <option key={field} value={field}>{label}</option>
                 ))}
               </select>
