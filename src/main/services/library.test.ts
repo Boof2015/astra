@@ -10,6 +10,8 @@ import { createDefaultDynamicPlaylistRules } from '../../shared/playlists/dynami
 
 interface TestSqliteStatement {
   run(...params: unknown[]): void
+  get(...params: unknown[]): unknown
+  all(...params: unknown[]): unknown[]
 }
 
 interface TestSqliteDatabase {
@@ -1781,4 +1783,311 @@ test('large library track pages stay fast and reflect writes', async (t) => {
   })])
   const afterWritePage = library.getTrackPage({ offset: 0, limit: 10 })
   assert.equal(afterWritePage.tracks[0]?.title, 'AAAA Renamed To Sort First')
+})
+
+// ── Casing-only folder renames (#180) ────────────────────
+
+function withDirectLibraryDb<T>(userDataDir: string, fn: (directDb: TestSqliteDatabase) => T): T {
+  const directDb = new TestSqliteDatabase(join(userDataDir, 'library.db'))
+  try {
+    return fn(directDb)
+  } finally {
+    directDb.close()
+  }
+}
+
+function getStoredTrackPaths(userDataDir: string): string[] {
+  return withDirectLibraryDb(userDataDir, (directDb) =>
+    (directDb.prepare('SELECT path FROM tracks ORDER BY id').all() as Array<{ path: string }>).map((row) => row.path)
+  )
+}
+
+async function isCaseInsensitiveFsDir(dir: string): Promise<boolean> {
+  const probePath = join(dir, 'case-probe.tmp')
+  await writeFile(probePath, 'probe')
+  try {
+    await stat(join(dir, 'CASE-PROBE.TMP'))
+    return true
+  } catch {
+    return false
+  } finally {
+    await rm(probePath, { force: true })
+  }
+}
+
+interface CasingRenameFixture {
+  userDataDir: string
+  musicDir: string
+  trackPath: string
+  stalePath: string
+}
+
+// Scans one track at its on-disk casing; tests then rewrite the stored path to
+// stalePath via direct SQL to simulate the library state after a casing-only
+// folder rename. Works on any host filesystem: the stale path either resolves
+// to the same inode (case-insensitive) or not at all (case-sensitive), and
+// both count as the same file for repair purposes.
+async function setupCasingRenameFixture(t: test.TestContext): Promise<CasingRenameFixture> {
+  const userDataDir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  library.setFsPathCaseFoldingForTests(true)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+    library.setFsPathCaseFoldingForTests(null)
+  })
+
+  const musicDir = join(userDataDir, 'music')
+  const artistDir = join(musicDir, 'artist')
+  const trackPath = join(artistDir, 'track.wav')
+  await mkdir(artistDir, { recursive: true })
+  await writeTaggedWavFixture(trackPath, 'Case Bug Title', 'Case Bug Artist')
+
+  const initialScan = await library.scanFolder(musicDir)
+  assert.equal(initialScan.added, 1)
+
+  return { userDataDir, musicDir, trackPath, stalePath: join(musicDir, 'Artist', 'track.wav') }
+}
+
+test('rescan after a real casing-only folder rename keeps a single entry (#180 repro)', async (t) => {
+  const { userDataDir, musicDir, trackPath } = await setupCasingRenameFixture(t)
+  await library.setTrackRatingForPaths([trackPath], 4)
+
+  const renamedDir = join(musicDir, 'ARTIST')
+  await rename(join(musicDir, 'artist'), renamedDir)
+  const renamedTrackPath = join(renamedDir, 'track.wav')
+
+  const rescan = await library.scanFolder(musicDir)
+  assert.equal(rescan.added, 0)
+  assert.equal(rescan.errors, 0)
+  assert.deepEqual(getStoredTrackPaths(userDataDir), [renamedTrackPath])
+  assert.deepEqual(library.getTrackRatingEntries().map((entry) => [entry.track_path, entry.rating]), [[renamedTrackPath, 4]])
+})
+
+test('rescan repairs a casing-only folder rename in place and keeps user data', async (t) => {
+  const { userDataDir, musicDir, trackPath, stalePath } = await setupCasingRenameFixture(t)
+
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare('UPDATE tracks SET path = ? WHERE path = ?').run(stalePath, trackPath)
+    directDb.prepare('INSERT INTO track_ratings (track_path, rating, updated_at) VALUES (?, ?, ?)').run(stalePath, 4.5, 1)
+    directDb.prepare(
+      "INSERT INTO lyrics_cache (track_path, metadata_signature, status, source, synced_lines_json, updated_at) VALUES (?, 'sig', 'found', 'remote', '[]', 1)"
+    ).run(stalePath)
+    directDb.prepare("INSERT INTO track_metadata_overrides (track_path, title, updated_at) VALUES (?, 'Overridden Title', 1)").run(stalePath)
+    directDb.prepare("INSERT INTO track_loudness (track_path, loudness_lufs, method, analyzed_at) VALUES (?, -14, 'ebur128', 1)").run(stalePath)
+  })
+  await library.addFavorite(stalePath)
+  const playlist = await library.createPlaylist('Casing Playlist')
+  await library.addToPlaylist(playlist.id, [stalePath])
+
+  const rescan = await library.scanFolder(musicDir)
+  assert.equal(rescan.added, 0)
+  assert.equal(rescan.errors, 0)
+
+  assert.deepEqual(getStoredTrackPaths(userDataDir), [trackPath])
+  assert.deepEqual(library.getTrackRatingEntries().map((entry) => [entry.track_path, entry.rating]), [[trackPath, 4.5]])
+  assert.deepEqual(library.getFavoritePaths(), [trackPath])
+  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), [trackPath])
+  const childPaths = withDirectLibraryDb(userDataDir, (directDb) => ({
+    lyrics: directDb.prepare('SELECT track_path FROM lyrics_cache').all(),
+    overrides: directDb.prepare('SELECT track_path FROM track_metadata_overrides').all(),
+    loudness: directDb.prepare('SELECT track_path FROM track_loudness').all()
+  }))
+  assert.deepEqual(childPaths.lyrics, [{ track_path: trackPath }])
+  assert.deepEqual(childPaths.overrides, [{ track_path: trackPath }])
+  assert.deepEqual(childPaths.loudness, [{ track_path: trackPath }])
+})
+
+test('rescan merges pre-existing case-variant duplicate rows preserving user data', async (t) => {
+  const { userDataDir, musicDir, trackPath, stalePath } = await setupCasingRenameFixture(t)
+
+  // The reporter's state: the pre-rename row (old casing) plus the duplicate a
+  // later scan inserted at the on-disk casing.
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare('UPDATE tracks SET path = ?, play_count = 3, last_played_at = 1000, added_at = 500 WHERE path = ?').run(stalePath, trackPath)
+    directDb.prepare(`
+      INSERT INTO tracks (path, title, artist, album, duration, format, play_count, last_played_at, added_at, modified_at)
+      SELECT ?, title, artist, album, duration, format, 2, 2000, 900, modified_at FROM tracks WHERE path = ?
+    `).run(trackPath, stalePath)
+    directDb.prepare('INSERT INTO track_ratings (track_path, rating, updated_at) VALUES (?, ?, ?)').run(stalePath, 5, 1)
+    directDb.prepare('INSERT INTO track_ratings (track_path, rating, updated_at) VALUES (?, ?, ?)').run(trackPath, 2, 2)
+  })
+  await library.addFavorite(stalePath)
+  const playlist = await library.createPlaylist('Merge Playlist')
+  await library.addToPlaylist(playlist.id, [stalePath, trackPath])
+  assert.equal(library.getPlaylistTracks(playlist.id).length, 2)
+
+  const rescan = await library.scanFolder(musicDir)
+  assert.equal(rescan.added, 0)
+  assert.equal(rescan.errors, 0)
+
+  assert.deepEqual(getStoredTrackPaths(userDataDir), [trackPath])
+  const merged = withDirectLibraryDb(userDataDir, (directDb) =>
+    directDb.prepare('SELECT play_count, last_played_at, added_at FROM tracks').get()
+  ) as { play_count: number; last_played_at: number | null; added_at: number }
+  assert.equal(merged.play_count, 5)
+  assert.equal(merged.last_played_at, 2000)
+  assert.equal(merged.added_at, 500)
+  // On conflict the survivor's (older row's) rating wins; the duplicate's is dropped.
+  assert.deepEqual(library.getTrackRatingEntries().map((entry) => [entry.track_path, entry.rating]), [[trackPath, 5]])
+  assert.deepEqual(library.getFavoritePaths(), [trackPath])
+  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), [trackPath])
+})
+
+test('case-variant paths stay distinct when case folding is disabled', async (t) => {
+  const { userDataDir, musicDir, trackPath, stalePath } = await setupCasingRenameFixture(t)
+  library.setFsPathCaseFoldingForTests(false)
+
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare('UPDATE tracks SET path = ? WHERE path = ?').run(stalePath, trackPath)
+  })
+
+  const rescan = await library.scanFolder(musicDir)
+  assert.equal(rescan.added, 1)
+  assert.deepEqual(getStoredTrackPaths(userDataDir), [stalePath, trackPath])
+})
+
+test('casing repair folds unicode paths, not just ascii', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  library.setFsPathCaseFoldingForTests(true)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+    library.setFsPathCaseFoldingForTests(null)
+  })
+
+  const musicDir = join(userDataDir, 'music')
+  const artistDir = join(musicDir, 'übermüt')
+  const trackPath = join(artistDir, 'track.wav')
+  await mkdir(artistDir, { recursive: true })
+  await writeTaggedWavFixture(trackPath, 'Unicode Title', 'Unicode Artist')
+  const initialScan = await library.scanFolder(musicDir)
+  assert.equal(initialScan.added, 1)
+
+  const stalePath = join(musicDir, 'ÜBERMÜT', 'track.wav')
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare('UPDATE tracks SET path = ? WHERE path = ?').run(stalePath, trackPath)
+  })
+
+  const rescan = await library.scanFolder(musicDir)
+  assert.equal(rescan.added, 0)
+  assert.deepEqual(getStoredTrackPaths(userDataDir), [trackPath])
+})
+
+test('casing repair matches NFD-stored unicode paths on macOS', async (t) => {
+  if (process.platform !== 'darwin') {
+    t.skip('NFC normalization of comparable paths only applies on darwin')
+    return
+  }
+  const userDataDir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  library.setFsPathCaseFoldingForTests(true)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+    library.setFsPathCaseFoldingForTests(null)
+  })
+
+  const musicDir = join(userDataDir, 'music')
+  const artistDir = join(musicDir, 'übermüt')
+  const trackPath = join(artistDir, 'track.wav')
+  await mkdir(artistDir, { recursive: true })
+  await writeTaggedWavFixture(trackPath, 'NFD Title', 'NFD Artist')
+  const initialScan = await library.scanFolder(musicDir)
+  assert.equal(initialScan.added, 1)
+
+  const stalePath = join(musicDir, 'ÜBERMÜT'.normalize('NFD'), 'track.wav')
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare('UPDATE tracks SET path = ? WHERE path = ?').run(stalePath, trackPath)
+  })
+
+  const rescan = await library.scanFolder(musicDir)
+  assert.equal(rescan.added, 0)
+  assert.deepEqual(getStoredTrackPaths(userDataDir), [trackPath])
+})
+
+test('genuinely distinct case-variant files never merge even with folding forced', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  library.setFsPathCaseFoldingForTests(true)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+    library.setFsPathCaseFoldingForTests(null)
+  })
+
+  const musicDir = join(userDataDir, 'music')
+  await mkdir(musicDir, { recursive: true })
+  if (await isCaseInsensitiveFsDir(musicDir)) {
+    t.skip('requires a case-sensitive filesystem')
+    return
+  }
+
+  await writeTaggedWavFixture(join(musicDir, 'dup.wav'), 'Lower Title', 'Dup Artist')
+  await writeTaggedWavFixture(join(musicDir, 'DUP.wav'), 'Upper Title', 'Dup Artist')
+
+  const scan = await library.scanFolder(musicDir)
+  assert.equal(scan.added, 2)
+  const rescan = await library.scanFolder(musicDir)
+  assert.equal(rescan.added, 0)
+  assert.equal(await library.cleanupMissingTracks(), 0)
+  assert.equal(getStoredTrackPaths(userDataDir).length, 2)
+})
+
+test('cleanupMissingTracks collapses case-variant duplicates of one physical file', async (t) => {
+  const { userDataDir, musicDir, trackPath, stalePath } = await setupCasingRenameFixture(t)
+  const caseInsensitiveFs = await isCaseInsensitiveFsDir(musicDir)
+
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare('UPDATE tracks SET path = ? WHERE path = ?').run(stalePath, trackPath)
+    directDb.prepare(`
+      INSERT INTO tracks (path, title, artist, album, duration, format, added_at, modified_at)
+      SELECT ?, title, artist, album, duration, format, added_at, modified_at FROM tracks WHERE path = ?
+    `).run(trackPath, stalePath)
+    directDb.prepare('INSERT INTO track_ratings (track_path, rating, updated_at) VALUES (?, 3, 1)').run(stalePath)
+  })
+
+  const removed = await library.cleanupMissingTracks()
+  assert.equal(removed, 1)
+  const remaining = getStoredTrackPaths(userDataDir)
+  assert.equal(remaining.length, 1)
+  if (caseInsensitiveFs) {
+    // The merge keeps the older row; its casing gets repaired by the folder's
+    // next scan, not by cleanup.
+    assert.deepEqual(remaining, [stalePath])
+    assert.deepEqual(library.getTrackRatingEntries().map((entry) => [entry.track_path, entry.rating]), [[stalePath, 3]])
+  } else {
+    // On a case-sensitive filesystem the stale path is simply missing.
+    assert.deepEqual(remaining, [trackPath])
+  }
+})
+
+test('casing repair works inside an outer library write transaction', async (t) => {
+  const { userDataDir, musicDir, trackPath, stalePath } = await setupCasingRenameFixture(t)
+
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare('UPDATE tracks SET path = ? WHERE path = ?').run(stalePath, trackPath)
+  })
+
+  library.beginLibraryWriteTransaction()
+  try {
+    const rescan = await library.scanFolder(musicDir)
+    assert.equal(rescan.added, 0)
+    library.commitLibraryWriteTransaction()
+  } catch (error) {
+    library.rollbackLibraryWriteTransaction()
+    throw error
+  }
+  assert.deepEqual(getStoredTrackPaths(userDataDir), [trackPath])
+})
+
+test('addLibraryFolder rejects a case-variant of an existing root when folding', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  library.setFsPathCaseFoldingForTests(true)
+  t.after(() => {
+    library.setFsPathCaseFoldingForTests(null)
+  })
+
+  const musicDir = join(userDataDir, 'music')
+  await mkdir(musicDir, { recursive: true })
+  assert.ok(await library.addLibraryFolder(musicDir))
+  assert.equal(await library.addLibraryFolder(join(userDataDir, 'Music')), null)
+  assert.equal(library.getLibraryFolders().length, 1)
 })

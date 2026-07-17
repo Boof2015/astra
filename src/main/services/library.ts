@@ -2,6 +2,7 @@ import * as mm from 'music-metadata'
 import { app, powerMonitor } from 'electron'
 import { join, extname, basename, dirname, isAbsolute as isAbsolutePath, normalize as normalizePath, resolve as resolvePath, relative as relativePath, sep as pathSep } from 'path'
 import { readdir, stat, mkdir, writeFile, readFile, access, rm, mkdtemp, copyFile, open } from 'fs/promises'
+import type { Stats } from 'fs'
 import { createHash, randomUUID } from 'crypto'
 import { execFile, type ExecFileOptions } from 'child_process'
 import { tmpdir, cpus } from 'os'
@@ -2944,6 +2945,96 @@ function deleteTrackRelatedRowsByPathPattern(trackPathPattern: string): void {
   db.run('DELETE FROM lyrics_track_overrides WHERE track_path LIKE ?', [trackPathPattern])
 }
 
+// Tables keyed by track_path with a PK/UNIQUE constraint on it. track_loudness
+// is deliberately absent from deleteTrackRelatedRows (its delete trigger covers
+// that path) but must move here or a path rewrite would orphan its rows.
+const UNIQUE_TRACK_PATH_KEYED_TABLES = [
+  'track_metadata_overrides',
+  'lyrics_cache',
+  'lyrics_track_overrides',
+  'track_loudness',
+  'track_ratings',
+  'favorites',
+  'playlist_tracks'
+] as const
+
+function moveTrackChildRows(oldPath: string, newPath: string): void {
+  if (!db || oldPath === newPath) return
+  for (const table of UNIQUE_TRACK_PATH_KEYED_TABLES) {
+    db.run(`UPDATE OR IGNORE ${table} SET track_path = ? WHERE track_path = ?`, [newPath, oldPath])
+    // Leftovers exist only when the target path already had a row (PK/UNIQUE
+    // conflict) — the surviving path's data wins.
+    db.run(`DELETE FROM ${table} WHERE track_path = ?`, [oldPath])
+  }
+  db.run('UPDATE recently_played SET track_path = ? WHERE track_path = ?', [newPath, oldPath])
+}
+
+// Rewrite a track's path in place (casing repair after a folder rename),
+// carrying every path-keyed child row along so ratings, favorites and playlist
+// membership survive. Callers must ensure no other tracks row occupies newPath.
+function renameTrackPath(oldPath: string, newPath: string): void {
+  if (!db || oldPath === newPath) return
+  const ownsTransaction = !db.inTransaction
+  if (ownsTransaction) beginLibraryWriteTransaction()
+  try {
+    // track_metadata_overrides / lyrics_track_overrides hold FKs on
+    // tracks(path); with immediate enforcement neither parent-first nor
+    // child-first rewrites can succeed, so defer checks until COMMIT.
+    db.pragma('defer_foreign_keys = ON')
+    db.run('UPDATE tracks SET path = ? WHERE path = ?', [newPath, oldPath])
+    moveTrackChildRows(oldPath, newPath)
+    if (ownsTransaction) commitLibraryWriteTransaction()
+  } catch (err) {
+    if (ownsTransaction) rollbackLibraryWriteTransaction()
+    throw err
+  }
+}
+
+interface DuplicateTrackRowRef {
+  id: number
+  path: string
+}
+
+interface TrackMergeStatsRow {
+  play_count: number | null
+  last_played_at: number | null
+  added_at: number | null
+}
+
+// Collapse case-variant duplicate rows for one physical file into the survivor,
+// preserving user data: child rows move to the survivor's path (survivor wins
+// on conflict), play counts sum, added_at keeps the earliest date.
+function mergeDuplicateTrackRows(survivorId: number, survivorPath: string, losers: DuplicateTrackRowRef[]): void {
+  if (!db || losers.length === 0) return
+  let playCount = 0
+  let lastPlayedAt: number | null = null
+  let addedAt: number | null = null
+
+  const accumulateStats = (row: TrackMergeStatsRow | undefined): void => {
+    if (!row) return
+    playCount += row.play_count ?? 0
+    if (row.last_played_at !== null && (lastPlayedAt === null || row.last_played_at > lastPlayedAt)) {
+      lastPlayedAt = row.last_played_at
+    }
+    if (row.added_at !== null && (addedAt === null || row.added_at < addedAt)) {
+      addedAt = row.added_at
+    }
+  }
+
+  accumulateStats(db.get<TrackMergeStatsRow>('SELECT play_count, last_played_at, added_at FROM tracks WHERE id = ?', [survivorId]))
+  for (const loser of losers) {
+    accumulateStats(db.get<TrackMergeStatsRow>('SELECT play_count, last_played_at, added_at FROM tracks WHERE id = ?', [loser.id]))
+    // Move children before deleting the loser row so its delete triggers and
+    // FK cascades fire against an already-emptied path.
+    moveTrackChildRows(loser.path, survivorPath)
+    db.run('DELETE FROM tracks WHERE id = ?', [loser.id])
+  }
+  db.run(
+    'UPDATE tracks SET play_count = ?, last_played_at = ?, added_at = COALESCE(?, added_at) WHERE id = ?',
+    [playCount, lastPlayedAt, addedAt, survivorId]
+  )
+}
+
 export async function deleteSubsonicSource(sourceId: number, purgeTracks: boolean): Promise<void> {
   if (!db) return
   const source = getSubsonicSourceById(sourceId)
@@ -5276,9 +5367,27 @@ interface FolderExclusionRow {
   absolute_path: string
 }
 
+let fsPathCaseFoldingOverrideForTests: boolean | null = null
+
+export function setFsPathCaseFoldingForTests(override: boolean | null): void {
+  fsPathCaseFoldingOverrideForTests = override
+}
+
+// Windows (NTFS) and macOS (APFS/HFS+) filesystems are case-insensitive by
+// default, so path comparisons must fold case there or a casing-only rename
+// makes the same file look like two different tracks (#180). Case-sensitive
+// APFS volumes are rare; the scan-side inode guard keeps genuinely distinct
+// case-variant files from being merged on them.
+function comparableFsPathFoldsCase(): boolean {
+  return fsPathCaseFoldingOverrideForTests ?? (process.platform === 'win32' || process.platform === 'darwin')
+}
+
 function normalizeComparableFsPath(pathValue: string): string {
   const normalized = normalizePath(resolvePath(pathValue))
-  return process.platform === 'win32' ? normalized.toLocaleLowerCase() : normalized
+  if (!comparableFsPathFoldsCase()) return normalized
+  // APFS/HFS+ are also Unicode-normalization-insensitive; NTFS is not.
+  const unicodeNormalized = process.platform === 'darwin' ? normalized.normalize('NFC') : normalized
+  return unicodeNormalized.toLocaleLowerCase()
 }
 
 function isSameOrDescendantPath(candidatePath: string, ancestorPath: string): boolean {
@@ -5433,6 +5542,10 @@ function deleteTracksByAbsolutePrefixes(absolutePrefixes: string[]): number {
 // Add library folder
 export async function addLibraryFolder(folderPath: string): Promise<LibraryFolder | null> {
   if (!db) return null
+  // The binary UNIQUE constraint on folders.path would let a case-variant of
+  // an existing root through, indexing every file twice on a case-insensitive
+  // filesystem.
+  if (getLibraryFolderByPath(folderPath)) return null
   const now = Date.now()
   try {
     const insertResult = db.run('INSERT INTO folders (path, added_at) VALUES (?, ?)', [folderPath, now])
@@ -5752,6 +5865,57 @@ function shouldSkipIncrementalTrackScan(
   )
 }
 
+interface ExistingTrackScanRow extends ExistingTrackScanState {
+  path: string
+}
+
+// Find the DB row for a scanned file among case-fold-equal candidates. A
+// stored path whose casing differs from disk (folder renamed, #180) is
+// repaired in place — and pre-existing case-variant duplicates are merged —
+// but only for rows proven to reference this physical file: same inode
+// (case-insensitive FS) or a path that no longer resolves. A candidate with a
+// different inode is a genuinely distinct file on a case-sensitive volume and
+// is left untouched.
+async function resolveExistingTrackForScannedFile(
+  filePath: string,
+  fileStat: Stats,
+  candidates: ExistingTrackScanRow[] | undefined
+): Promise<ExistingTrackScanState | undefined> {
+  if (!candidates || candidates.length === 0) return undefined
+  if (candidates.length === 1 && candidates[0].path === filePath) return candidates[0]
+
+  const verified: ExistingTrackScanRow[] = []
+  for (const candidate of candidates) {
+    if (candidate.path === filePath) {
+      verified.push(candidate)
+      continue
+    }
+    try {
+      const candidateStat = await stat(candidate.path)
+      if (candidateStat.dev === fileStat.dev && candidateStat.ino === fileStat.ino) {
+        verified.push(candidate)
+      }
+    } catch (err: unknown) {
+      const code = getErrorCode(err)
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        verified.push(candidate)
+      }
+      // Other errors (EACCES…): leave the row alone.
+    }
+  }
+  if (verified.length === 0) return undefined
+
+  // Everything below is synchronous, so it is atomic with respect to the
+  // other cooperative scan workers.
+  const survivor = verified.reduce((lowest, row) => (row.id < lowest.id ? row : lowest))
+  const losers = verified.filter((row) => row.id !== survivor.id)
+  mergeDuplicateTrackRows(survivor.id, survivor.path, losers)
+  if (survivor.path !== filePath) {
+    renameTrackPath(survivor.path, filePath)
+  }
+  return survivor
+}
+
 function createFolderArtworkScanCache(): FolderArtworkScanCache {
   return {
     candidatesByDirectory: new Map(),
@@ -5879,6 +6043,21 @@ export async function scanFolder(
   let errors = 0
   let processed = 0
 
+  // Existing rows keyed by case-folded path so a casing-only folder rename
+  // still matches the stored row instead of inserting a duplicate (#180).
+  const existingByComparablePath = new Map<string, ExistingTrackScanRow[]>()
+  if (files.length > 0) {
+    for (const row of db.iterate<ExistingTrackScanRow>(
+      "SELECT id, path, modified_at, file_created_at, artwork_hash, replaygain_track_gain_db, replaygain_album_gain_db FROM tracks WHERE source_type = 'local'"
+    )) {
+      if (!isSameOrDescendantPath(row.path, folderPath)) continue
+      const key = normalizeComparableFsPath(row.path)
+      const rows = existingByComparablePath.get(key)
+      if (rows) rows.push(row)
+      else existingByComparablePath.set(key, [row])
+    }
+  }
+
   const scanWorkerCount = resolveScanWorkerCount(files.length)
   const folderArtworkCache = createFolderArtworkScanCache()
 
@@ -5890,9 +6069,10 @@ export async function scanFolder(
       const fileStat = await stat(filePath)
       const fileCreatedAt = normalizeFileCreatedAtMs(fileStat.birthtimeMs)
 
-      const existing = db.get<ExistingTrackScanState>(
-        'SELECT id, modified_at, file_created_at, artwork_hash, replaygain_track_gain_db, replaygain_album_gain_db FROM tracks WHERE path = ?',
-        [filePath]
+      const existing = await resolveExistingTrackForScannedFile(
+        filePath,
+        fileStat,
+        existingByComparablePath.get(normalizeComparableFsPath(filePath))
       )
 
       const folderArtworkCandidate = mode === 'incremental'
@@ -9631,11 +9811,21 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
     WHERE t.source_type = 'local'
   `)
   let removed = 0
+  const caseFoldedGroups = comparableFsPathFoldsCase()
+    ? new Map<string, Array<{ id: number; path: string; dev: number; ino: number }>>()
+    : null
 
   for (const track of tracks) {
     throwIfScanCancelled(signal)
     try {
-      await stat(track.path)
+      const trackStat = await stat(track.path)
+      if (caseFoldedGroups) {
+        const key = normalizeComparableFsPath(track.path)
+        const entry = { id: track.id, path: track.path, dev: trackStat.dev, ino: trackStat.ino }
+        const group = caseFoldedGroups.get(key)
+        if (group) group.push(entry)
+        else caseFoldedGroups.set(key, [entry])
+      }
     } catch (err: unknown) {
       const code = getErrorCode(err)
       if (code === 'ENOENT' || code === 'ENOTDIR') {
@@ -9646,6 +9836,24 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
         onIssue?.(createLibraryScanIssue('cleanup', track.path, err))
         console.warn(`Failed to validate track during cleanup for ${track.path}:`, err)
       }
+    }
+  }
+
+  // Case-variant duplicate rows for one physical file (casing-only folder
+  // rename, #180): stat resolves for every casing on a case-insensitive FS,
+  // so the missing-file path above never prunes them. Collapse each group
+  // whose rows all point at the same inode; the folder's next scan repairs
+  // the surviving row's casing. Mixed inodes mean genuinely distinct files
+  // on a case-sensitive volume — leave those alone.
+  if (caseFoldedGroups) {
+    for (const group of caseFoldedGroups.values()) {
+      if (group.length < 2) continue
+      const first = group[0]
+      if (!group.every((entry) => entry.dev === first.dev && entry.ino === first.ino)) continue
+      const survivor = group.reduce((lowest, entry) => (entry.id < lowest.id ? entry : lowest))
+      const losers = group.filter((entry) => entry.id !== survivor.id)
+      mergeDuplicateTrackRows(survivor.id, survivor.path, losers)
+      removed += losers.length
     }
   }
 
