@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 
 interface ControllerFocusRingProps {
   active: boolean
@@ -78,5 +79,8 @@ export default function ControllerFocusRing({ active }: ControllerFocusRingProps
     }
   }, [active])
 
-  return <div ref={ringRef} className="controller-focus-ring" aria-hidden="true" />
+  return createPortal(
+    <div ref={ringRef} className="controller-focus-ring" aria-hidden="true" />,
+    document.body
+  )
 }
