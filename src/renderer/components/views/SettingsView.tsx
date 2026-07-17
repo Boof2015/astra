@@ -2570,7 +2570,7 @@ export default function SettingsView() {
                     </button>
                   </div>
                   <p className="settings-note">
-                    Replaces the scope editor rail dot with an adaptive 5x5 activity indicator for playback, scans, syncs, and transient background work.
+                    Replaces the scope editor rail dot with an adaptive 5x5 activity indicator for playback, Parallax connections, scans, syncs, and transient background work.
                   </p>
                 </div>
               </div>

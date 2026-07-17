@@ -9,11 +9,13 @@ import { useLocalApiSettingsStore } from '../stores/localApiSettingsStore'
 import { useLyricsStore } from '../stores/lyricsStore'
 import { useMetadataEditorStore } from '../stores/metadataEditorStore'
 import { usePhoneRemoteSettingsStore } from '../stores/phoneRemoteSettingsStore'
+import { useParallaxStore } from '../stores/parallaxStore'
 import { usePlayerStore } from '../stores/playerStore'
 import { useSubsonicSettingsStore } from '../stores/subsonicSettingsStore'
 import { useUpdateStore } from '../stores/updateStore'
 import {
   ASTRA_ACTIVITY_STATE_NOTES,
+  isParallaxConnectionActive,
   resolveAstraActivityEvent,
   resolveAstraActivityState,
   type AstraActivityEventFlags,
@@ -63,6 +65,7 @@ export function useAstraActivity(): AstraActivitySnapshot {
   const localApiError = useLocalApiSettingsStore((state) => Boolean(state.errorMessage || state.status?.lastError))
   const phoneRemoteConnected = usePhoneRemoteSettingsStore((state) => (state.status?.connectedClients ?? 0) > 0)
   const phoneRemoteError = usePhoneRemoteSettingsStore((state) => Boolean(state.errorMessage || state.status?.lastError))
+  const isParallaxConnected = useParallaxStore((state) => isParallaxConnectionActive(state.status))
   const lastFmError = useLastFmSettingsStore((state) => Boolean(state.errorMessage || state.status?.lastError))
   const updateError = useUpdateStore((state) => state.checkState === 'error')
 
@@ -91,6 +94,7 @@ export function useAstraActivity(): AstraActivitySnapshot {
     isRemoteSyncing: subsonicSyncing || jellyfinSyncing,
     isRemoteStreaming,
     isInternetLookup: isLyricsLookup || discordCoverArtLookupActive,
+    isParallaxConnected,
   })
 
   const eventFlags = useMemo<AstraActivityEventFlags>(() => ({

@@ -1,4 +1,5 @@
 import type { PlaybackState } from '../types/audio'
+import type { ParallaxStatus } from '../../types/parallax'
 
 export type AstraActivityState =
   | 'idle'
@@ -10,6 +11,7 @@ export type AstraActivityState =
   | 'remote-sync'
   | 'integrity-scan'
   | 'lyrics-lookup'
+  | 'parallax-connected'
 
 export type AstraActivityEvent =
   | 'metadata-saving'
@@ -24,6 +26,7 @@ export interface AstraActivityInputs {
   isRemoteStreaming?: boolean
   isInternetLookup?: boolean
   isLyricsLookup?: boolean
+  isParallaxConnected?: boolean
 }
 
 export interface AstraActivityEventFlags {
@@ -42,6 +45,7 @@ export const ASTRA_ACTIVITY_STATE_ORDER: readonly AstraActivityState[] = [
   'remote-sync',
   'integrity-scan',
   'lyrics-lookup',
+  'parallax-connected',
 ]
 
 export const ASTRA_ACTIVITY_STATE_NOTES: Record<AstraActivityState, string> = {
@@ -54,12 +58,21 @@ export const ASTRA_ACTIVITY_STATE_NOTES: Record<AstraActivityState, string> = {
   'remote-sync': 'Subsonic / Jellyfin sync',
   'integrity-scan': 'Verifying library integrity',
   'lyrics-lookup': 'Internet lookup active',
+  'parallax-connected': 'Parallax connection active',
 }
 
 export const ASTRA_ACTIVITY_EVENT_DURATIONS_MS: Record<AstraActivityEvent, number> = {
   'metadata-saving': 1000,
   'external-connected': 720,
   attention: 720,
+}
+
+export function isParallaxConnectionActive(status: ParallaxStatus | null | undefined): boolean {
+  if (!status) return false
+
+  const hostHasOnlineSink = status.host.connectedSinks.some((sink) => sink.online)
+  const sinkHasReachableHost = status.sink.connected && status.sink.hostReachable !== false
+  return hostHasOnlineSink || sinkHasReachableHost
 }
 
 export function resolveAstraActivityState(input: AstraActivityInputs): AstraActivityState {
@@ -69,6 +82,7 @@ export function resolveAstraActivityState(input: AstraActivityInputs): AstraActi
   if (input.playbackState === 'loading') return 'loading-track'
   if (input.isRemoteStreaming) return 'remote-streaming'
   if (input.isInternetLookup || input.isLyricsLookup) return 'lyrics-lookup'
+  if (input.isParallaxConnected) return 'parallax-connected'
   if (input.playbackState === 'playing') return 'playing'
   if (input.playbackState === 'paused') return 'paused'
   return 'idle'

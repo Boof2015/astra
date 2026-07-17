@@ -11836,6 +11836,14 @@ body::after {
   72% { opacity: 0.09; }
 }
 
+@keyframes astraActivityParallaxConnected {
+  0%, 100% { opacity: 0; }
+  8% { opacity: 1; }
+  18% { opacity: 0.72; }
+  32% { opacity: 0.18; }
+  46% { opacity: 0; }
+}
+
 @keyframes astraActivityTripleTapSoft {
   0%, 100% { opacity: 0; }
   15% { opacity: 0.85; }
@@ -11950,6 +11958,10 @@ body::after {
 
 .astra-activity-indicator:not(.is-event-active) .astra-activity-indicator-layer.is-on.astra-activity-indicator-state-lyrics-lookup .astra-activity-indicator-light {
   animation: astraActivityPulseSoft 1800ms infinite both;
+}
+
+.astra-activity-indicator:not(.is-event-active) .astra-activity-indicator-layer.is-on.astra-activity-indicator-state-parallax-connected .astra-activity-indicator-light {
+  animation: astraActivityParallaxConnected 2800ms ease-in-out infinite both;
 }
 
 .astra-activity-indicator-overlay[data-event="metadata-saving"].is-playing .astra-activity-indicator-light {

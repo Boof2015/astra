@@ -116,6 +116,17 @@ function bitDecode(): number[] {
   ]
 }
 
+function parallaxConnected(): number[] {
+  const out = Array(25).fill(-1)
+
+  // Four diagonal trails resolve into the perimeter of the centered 3x3 square.
+  for (const index of [0, 4, 20, 24]) out[index] = 0
+  for (const index of [6, 8, 16, 18]) out[index] = 320
+  for (const index of [7, 11, 13, 17]) out[index] = 650
+
+  return out
+}
+
 function metaFill(): number[] {
   const out: number[] = []
   for (let row = 0; row < 5; row += 1) {
@@ -143,6 +154,7 @@ const STATE_PATTERNS: Record<AstraActivityState, IndicatorPattern> = {
   'remote-sync': { delays: readingOrder(3000, false), extra: readingOrder(3000, true) },
   'integrity-scan': { delays: columnBlock(2800) },
   'lyrics-lookup': { delays: sonar(1800) },
+  'parallax-connected': { delays: parallaxConnected() },
 }
 
 const EVENT_PATTERNS: Record<AstraActivityEvent, number[]> = {
