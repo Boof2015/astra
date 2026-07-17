@@ -5,7 +5,7 @@ const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 
 const repoRoot = path.resolve(__dirname, '../..')
-const testRoots = ['src', 'scripts']
+const testRoots = ['src', 'scripts', 'receiver/src']
 const electronTestFiles = new Set([
   'src/main/services/library.test.ts'
 ])

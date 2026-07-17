@@ -1,0 +1,71 @@
+# astra-receiver
+
+Standalone headless Parallax receiver ("parallax headless node"): a 24/7 daemon for Raspberry
+Pi–class Linux devices that pairs with an Astra host and plays zone audio in sync — no Electron,
+no screen. It speaks Parallax protocol v2 unchanged and reuses the app's protocol, crypto,
+pairing-listener, and mDNS modules directly from `../src`.
+
+## How it fits together
+
+- `src/main.ts` — daemon assembly: config, mDNS advertise (`_astra-zone._tcp`, role=sink),
+  pairing listener (:38404), status/pairing web page (:38405), boot connect-retry loop.
+- `src/sinkClient.ts` — host network client (join / SSE events / PXLX audio / clock probes /
+  telemetry, watchdogs + reconnect-forever + mDNS host relocation), ported from the app's
+  `ParallaxService` sink role.
+- `src/sinkSession.ts` — drift control loop (NTP offset + host-emit-anchor Theil-Sen predictor,
+  hold/slew/snap with the fail-closed trust latch), ported from `parallaxStore` + `AudioEngine`.
+- `src/playout.ts` — `SinkPlayoutEngine` (port of the `parallax-sink-player` AudioWorklet) +
+  `PlayoutDriver` (write-ahead loop replacing Web Audio's pull model).
+- `src/output/` — `AlsaOutput` (Linux, via `receiver/native` addon, `snd_pcm_delay` as the
+  latency source) and `NullOutput` (mac dev / tests).
+
+Pairing works exactly like an Astra sink: the host's wizard discovers this device, the PIN and
+the Approve button appear on the web page (`http://<pi>:38405/`), and the credential persists in
+`~/.config/astra-receiver/config.json`.
+
+## Dev (any OS, no audio)
+
+```sh
+npm run receiver:dev        # runs with the null output backend on macOS
+npm run typecheck:receiver
+npm test                    # includes receiver unit tests
+```
+
+Protocol-level end-to-end on the dev machine: run `receiver:dev`, then pair + stream from Astra —
+join/SSE/audio/clock/telemetry all flow; only the DAC is fake.
+
+## Deploy to a Raspberry Pi
+
+On the dev machine:
+
+```sh
+npm run receiver:build      # → receiver/dist/astra-receiver.mjs (single file, deps bundled)
+rsync -a receiver/dist/astra-receiver.mjs receiver/native pi@<pi>:~/astra-receiver/
+```
+
+On the Pi (Node 20.19+ or 22+, once):
+
+```sh
+sudo apt install -y build-essential libasound2-dev
+cd ~/astra-receiver/native && npm install node-addon-api node-gyp && npx node-gyp rebuild
+cp build/Release/astra_receiver_alsa.node ~/astra-receiver/
+node ~/astra-receiver/astra-receiver.mjs   # first run; then install the systemd unit
+```
+
+Systemd: see `deploy/astra-receiver.service`. Config lives at
+`~/.config/astra-receiver/config.json` (`audioDevice`: use `default` or `plughw:…` — the plug
+layer converts Float32 for DACs that don't take it natively).
+
+## Env flags
+
+- `PARALLAX_DISABLE_HOST_PREDICTOR=1` — fall back to the Phase-1 nominal-timeline loop.
+- `PARALLAX_DISCOVERY_INTERFACE=<ip>` — pin mDNS to an interface.
+- `ASTRA_RECEIVER_CONFIG=<path>` — config file override.
+- `ASTRA_RECEIVER_ALSA_ADDON=<path>` — explicit .node addon path (used by the systemd unit).
+
+## Known MVP limits (stage 2)
+
+- §21 gapless: the pre-announced next stream is tracked but not pre-buffered into a second
+  playout engine — track changes promote via a quick re-fetch (sub-second seam) instead of a
+  sample-aligned crossover.
+- No artwork / Zone Display (headless by definition; the web page shows title/artist only).

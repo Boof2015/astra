@@ -1,0 +1,24 @@
+# systemd unit for the standalone Astra Parallax receiver.
+# Install:
+#   sudo cp astra-receiver.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now astra-receiver
+# Logs: journalctl -u astra-receiver -f
+#
+# Adjust User= and the paths below to where the receiver was deployed.
+
+[Unit]
+Description=Astra Parallax receiver (headless zone speaker)
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+ExecStart=/usr/bin/node /home/pi/astra-receiver/astra-receiver.mjs
+Environment=ASTRA_RECEIVER_ALSA_ADDON=/home/pi/astra-receiver/astra_receiver_alsa.node
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
