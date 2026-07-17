@@ -11,6 +11,7 @@ import type {
   VectorscopeResult,
   VectorscopePointsResult,
   VUMeterNativeSnapshot,
+  SpectrumBarNativeConfig,
 } from './visualizer-dsp'
 
 let nativeModule: VisualizerDSP | null = null
@@ -70,6 +71,9 @@ export interface SpectrumNativeAnalyzer {
   getSideMagnitudes(): Float32Array | null
   process(audioData: Float32Array): Float32Array | null
   binToFrequency(bin: number): number
+  configureBars?: (options: SpectrumBarNativeConfig) => void
+  getBarFrame?: () => Float32Array | null
+  supportsBarFrames?: () => boolean
   reset(): void
   isAvailable?: () => boolean
 }
@@ -231,6 +235,20 @@ export const spectrum: SpectrumNativeAnalyzer = {
 
   binToFrequency: (bin: number): number => {
     return nativeModule?.spectrum.binToFrequency(bin) ?? 0
+  },
+
+  supportsBarFrames: (): boolean => {
+    return typeof nativeModule?.spectrum.configureBars === 'function'
+      && typeof nativeModule?.spectrum.getBarFrame === 'function'
+  },
+
+  configureBars: (options: SpectrumBarNativeConfig): void => {
+    nativeModule?.spectrum.configureBars?.(options)
+  },
+
+  getBarFrame: (): Float32Array | null => {
+    if (!nativeModule?.spectrum.getBarFrame) return null
+    return nativeModule.spectrum.getBarFrame()
   },
 
   reset: (): void => {

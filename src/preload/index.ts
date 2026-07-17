@@ -572,6 +572,19 @@ export interface VisualizerDSP {
     setSmoothing(smoothing: number): void
     process(audioData: Float32Array): Float32Array
     binToFrequency(bin: number): number
+    configureBars(options: {
+      barCount: number
+      minFrequency: number
+      maxFrequency: number
+      minDecibels: number
+      maxDecibels: number
+      tiltDbPerOctave: number
+      heatmapTiltDbPerOctave: number
+      tiltReferenceHz: number
+      heatmapSmoothing: number
+      showPeaks: boolean
+    }): void
+    getBarFrame(): Float32Array
     reset(): void
   }
   vectorscope: {

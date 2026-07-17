@@ -31,6 +31,7 @@
     "test:phone-remote": "node --experimental-strip-types --loader ./scripts/node/resolve-ts-loader.mjs --test src/main/services/phoneRemote.test.ts src/shared/sync/conflictPreview.test.ts",
     "test:activity-indicator": "node --experimental-strip-types --experimental-default-type=module --experimental-specifier-resolution=node --test src/renderer/utils/astraActivity.test.ts",
     "test:audio-loudness": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/renderer/audio/loudness.test.ts",
+    "test:spectrum-native": "node --test native/test/spectrum-bars.test.mjs",
     "typecheck": "tsc --noEmit",
     "build:native": "cd native && node-gyp rebuild",
     "rebuild:astra-native": "node -e \"const e=require('electron/package.json').version;const a=process.arch;const{execSync}=require('child_process');execSync('node-gyp rebuild --target='+e+' --arch='+a+' --dist-url=https://electronjs.org/headers',{stdio:'inherit',cwd:'native'})\"",

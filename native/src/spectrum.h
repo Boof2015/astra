@@ -3,8 +3,23 @@
 #include "dsp_utils.h"
 #include <vector>
 #include <memory>
+#include <cstddef>
+#include <cstdint>
 
 namespace Visualizer {
+
+struct SpectrumBarConfig {
+    size_t requestedBarCount = 64;
+    float minFrequency = 20.0f;
+    float maxFrequency = 20000.0f;
+    float minDecibels = -90.0f;
+    float maxDecibels = -10.0f;
+    float tiltDbPerOctave = 2.0f;
+    float heatmapTiltDbPerOctave = 2.0f;
+    float tiltReferenceHz = 1000.0f;
+    float heatmapSmoothing = 0.5f;
+    bool showPeaks = false;
+};
 
 class Spectrum {
 public:
@@ -34,6 +49,12 @@ public:
     // Get frequency for a given bin
     float binToFrequency(int bin) const;
 
+    // Configure and read compact render-ready bar data. Each bar contributes
+    // [display level 0..1, heat intensity 0..1, held peak 0..1].
+    void configureBars(const SpectrumBarConfig& config);
+    const std::vector<float>& getBarFrame();
+    const std::vector<float>& getBarFrameAtTime(double nowMs);
+
     // Reset state
     void reset();
 
@@ -53,6 +74,20 @@ private:
     std::vector<float> sideSmoothedMagnitudes_;
     size_t bufferedSamples_;
 
+    SpectrumBarConfig barConfig_;
+    size_t barCount_ = 0;
+    bool barMappingDirty_ = true;
+    bool barStateInitialized_ = false;
+    std::vector<float> barFrequencyEdges_;
+    std::vector<float> barHeatDb_;
+    std::vector<float> barPeakDb_;
+    std::vector<double> barPeakHoldUntilMs_;
+    std::vector<float> barFrame_;
+    double lastBarPeakUpdateMs_ = 0.0;
+    bool hasLastBarPeakUpdate_ = false;
+    uint64_t magnitudeRevision_ = 0;
+    uint64_t barHeatRevision_ = 0;
+
     void applyWindow(const float* input, float* output, size_t length);
     void pushHistory(std::vector<float>& history, const float* input, size_t length);
     void pushZeroHistory(std::vector<float>& history, size_t length);
@@ -63,6 +98,14 @@ private:
     );
     void updateSilentSideMagnitudes();
     void updateMagnitudes();
+    void rebuildBarMapping();
+    void resetBarState();
+    float getInterpolatedMagnitude(const std::vector<float>& data, float bin) const;
+    float getPeakMagnitudeInRange(const std::vector<float>& data, float startBin, float endBin) const;
+    float applyTilt(float db, float frequency, float tiltDbPerOctave) const;
+    float normalizeBarDb(float db) const;
+    float normalizeHeatDb(float db) const;
+    static double currentTimeMs();
 };
 
 } // namespace Visualizer

@@ -44,10 +44,20 @@ import {
   DEFAULT_SPECTRUM_DISPLAY_MODE,
   DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
   DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
+  DEFAULT_SPECTRUM_BAR_DENSITY,
+  DEFAULT_SPECTRUM_BAR_GAP_PERCENT,
+  DEFAULT_SPECTRUM_BAR_CORNER_RADIUS_PX,
+  DEFAULT_SPECTRUM_SHOW_BAR_PEAKS,
+  DEFAULT_SPECTRUM_HEAT_PALETTE,
   clampSpectrumTiltDbPerOctave,
   clampSpectrumHeatmapTiltDbPerOctave,
+  clampSpectrumBarDensity,
+  clampSpectrumBarGapPercent,
+  clampSpectrumBarCornerRadiusPx,
   isSpectrumDisplayMode,
+  isSpectrumHeatPalette,
   type SpectrumDisplayMode,
+  type SpectrumHeatPalette,
 } from '../../types/spectrum'
 
 export type FFTSize = 1024 | 2048 | 4096 | 8192 | 16384
@@ -84,6 +94,11 @@ export interface AnalyzerProfileScopeSettings {
     showSideLine: boolean
     smoothing: number
     heatmapSmoothing: number
+    barDensity: number
+    barGapPercent: number
+    barCornerRadiusPx: number
+    showBarPeaks: boolean
+    heatPalette: SpectrumHeatPalette
   }
   oscilloscope: {
     pitchLock: boolean
@@ -149,6 +164,11 @@ interface VisualizerSettingsSnapshot {
   spectrumDisplayMode: SpectrumDisplayMode
   spectrumTiltDbPerOctave: number
   spectrumHeatmapTiltDbPerOctave: number
+  spectrumBarDensity: number
+  spectrumBarGapPercent: number
+  spectrumBarCornerRadiusPx: number
+  spectrumShowBarPeaks: boolean
+  spectrumHeatPalette: SpectrumHeatPalette
   profiles: Record<string, AnalyzerProfile>
   selectedProfileId: string
   selectedProfileName: string
@@ -221,14 +241,19 @@ interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   setSpectrumHeatmapSmoothing: (value: number) => void
   setSpectrumTiltDbPerOctave: (value: number) => void
   setSpectrumHeatmapTiltDbPerOctave: (value: number) => void
+  setSpectrumBarDensity: (value: number) => void
+  setSpectrumBarGapPercent: (value: number) => void
+  setSpectrumBarCornerRadiusPx: (value: number) => void
+  setSpectrumShowBarPeaks: (enabled: boolean) => void
+  setSpectrumHeatPalette: (palette: SpectrumHeatPalette) => void
   setVUMeterMode: (mode: VUMeterMode) => void
   setVUMeterOrientation: (orientation: VUMeterOrientation) => void
   setLUFSMeterMode: (mode: LUFSMeterMode) => void
   resetToDefaults: () => void
 }
 
-interface PersistedAnalyzerEnvelopeV3 {
-  version: 3
+interface PersistedAnalyzerEnvelopeV4 {
+  version: 4
   selectedProfileId: string
   workingState: AnalyzerWorkingState
   profiles: AnalyzerProfile[]
@@ -240,7 +265,7 @@ type SaveCurrentProfileAsResult =
 
 const FFT_SIZES: readonly FFTSize[] = [1024, 2048, 4096, 8192, 16384]
 
-const ANALYZER_PROFILE_STORAGE_VERSION = 3
+export const ANALYZER_PROFILE_STORAGE_VERSION = 4
 export const ANALYZER_PROFILES_STORAGE_KEY = 'astra-analyzer-profiles-v1'
 export const OSCILLOSCOPE_UNDERFILL_STORAGE_KEY = 'astra-oscilloscope-underfill-enabled'
 export const VECTORSCOPE_MULTIBAND_STORAGE_KEY = 'astra-vectorscope-multiband'
@@ -300,7 +325,7 @@ function workingStateFromProfile(profile: AnalyzerProfile): AnalyzerWorkingState
 }
 
 function buildProfile(id: string, name: string, builtIn: boolean, state: AnalyzerWorkingState): AnalyzerProfile {
-  const normalized = normalizeWorkingState(state)
+  const normalized = normalizeAnalyzerWorkingState(state)
   return {
     id,
     name,
@@ -323,6 +348,11 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
       showSideLine: false,
       smoothing: DEFAULT_SPECTRUM_SMOOTHING,
       heatmapSmoothing: DEFAULT_SPECTRUM_HEATMAP_SMOOTHING,
+      barDensity: DEFAULT_SPECTRUM_BAR_DENSITY,
+      barGapPercent: DEFAULT_SPECTRUM_BAR_GAP_PERCENT,
+      barCornerRadiusPx: DEFAULT_SPECTRUM_BAR_CORNER_RADIUS_PX,
+      showBarPeaks: DEFAULT_SPECTRUM_SHOW_BAR_PEAKS,
+      heatPalette: DEFAULT_SPECTRUM_HEAT_PALETTE,
     },
     oscilloscope: {
       pitchLock: DEFAULT_PITCH_LOCK,
@@ -561,6 +591,15 @@ function normalizeScopeSettings(
       showSideLine: typeof rawSpectrum.showSideLine === 'boolean' ? rawSpectrum.showSideLine : false,
       smoothing: clampSpectrumSmoothing(rawSpectrum.smoothing, DEFAULT_SPECTRUM_SMOOTHING),
       heatmapSmoothing: clampSpectrumSmoothing(rawSpectrum.heatmapSmoothing, DEFAULT_SPECTRUM_HEATMAP_SMOOTHING),
+      barDensity: clampSpectrumBarDensity(rawSpectrum.barDensity),
+      barGapPercent: clampSpectrumBarGapPercent(rawSpectrum.barGapPercent),
+      barCornerRadiusPx: clampSpectrumBarCornerRadiusPx(rawSpectrum.barCornerRadiusPx),
+      showBarPeaks: typeof rawSpectrum.showBarPeaks === 'boolean'
+        ? rawSpectrum.showBarPeaks
+        : DEFAULT_SPECTRUM_SHOW_BAR_PEAKS,
+      heatPalette: isSpectrumHeatPalette(rawSpectrum.heatPalette)
+        ? rawSpectrum.heatPalette
+        : DEFAULT_SPECTRUM_HEAT_PALETTE,
     },
     oscilloscope: {
       pitchLock: typeof rawOscilloscope.pitchLock === 'boolean'
@@ -612,7 +651,7 @@ function normalizeScopeSettings(
   }
 }
 
-function normalizeWorkingState(
+export function normalizeAnalyzerWorkingState(
   value: unknown,
   legacyUnderfillEnabled = DEFAULT_OSCILLOSCOPE_UNDERFILL_ENABLED,
   legacyAnalyzerPrefs?: LegacyAnalyzerPrefs
@@ -674,7 +713,7 @@ function normalizeProfile(
     id,
     normalizeProfileName(raw.name, id),
     Boolean(raw.builtIn),
-    normalizeWorkingState(raw, legacyUnderfillEnabled, legacyAnalyzerPrefs)
+    normalizeAnalyzerWorkingState(raw, legacyUnderfillEnabled, legacyAnalyzerPrefs)
   )
 }
 
@@ -755,6 +794,11 @@ function areWorkingStatesEqual(left: AnalyzerWorkingState, right: AnalyzerWorkin
     && left.scopeSettings.spectrum.showSideLine === right.scopeSettings.spectrum.showSideLine
     && left.scopeSettings.spectrum.smoothing === right.scopeSettings.spectrum.smoothing
     && left.scopeSettings.spectrum.heatmapSmoothing === right.scopeSettings.spectrum.heatmapSmoothing
+    && left.scopeSettings.spectrum.barDensity === right.scopeSettings.spectrum.barDensity
+    && left.scopeSettings.spectrum.barGapPercent === right.scopeSettings.spectrum.barGapPercent
+    && left.scopeSettings.spectrum.barCornerRadiusPx === right.scopeSettings.spectrum.barCornerRadiusPx
+    && left.scopeSettings.spectrum.showBarPeaks === right.scopeSettings.spectrum.showBarPeaks
+    && left.scopeSettings.spectrum.heatPalette === right.scopeSettings.spectrum.heatPalette
     && left.scopeSettings.oscilloscope.pitchLock === right.scopeSettings.oscilloscope.pitchLock
     && left.scopeSettings.oscilloscope.underfillEnabled === right.scopeSettings.oscilloscope.underfillEnabled
     && left.scopeSettings.oscilloscope.mode === right.scopeSettings.oscilloscope.mode
@@ -791,7 +835,7 @@ function persistState(
   selectedProfileId: string,
   workingState: AnalyzerWorkingState
 ): void {
-  const payload: PersistedAnalyzerEnvelopeV3 = {
+  const payload: PersistedAnalyzerEnvelopeV4 = {
     version: ANALYZER_PROFILE_STORAGE_VERSION,
     selectedProfileId,
     workingState: cloneWorkingState(workingState),
@@ -831,7 +875,7 @@ function buildSnapshot(
   workingStateInput: AnalyzerWorkingState,
 ): VisualizerSettingsSnapshot {
   const profiles = mergeProfiles(profilesInput)
-  const workingState = normalizeWorkingState(workingStateInput)
+  const workingState = normalizeAnalyzerWorkingState(workingStateInput)
   const normalizedSelectedProfileId = normalizeProfileId(requestedSelectedProfileId)
   const selectedProfile = normalizedSelectedProfileId
     ? profiles[normalizedSelectedProfileId] ?? null
@@ -856,6 +900,11 @@ function buildSnapshot(
     spectrumDisplayMode: workingState.scopeSettings.spectrum.displayMode,
     spectrumTiltDbPerOctave: workingState.scopeSettings.spectrum.tiltDbPerOctave,
     spectrumHeatmapTiltDbPerOctave: workingState.scopeSettings.spectrum.heatmapTiltDbPerOctave,
+    spectrumBarDensity: workingState.scopeSettings.spectrum.barDensity,
+    spectrumBarGapPercent: workingState.scopeSettings.spectrum.barGapPercent,
+    spectrumBarCornerRadiusPx: workingState.scopeSettings.spectrum.barCornerRadiusPx,
+    spectrumShowBarPeaks: workingState.scopeSettings.spectrum.showBarPeaks,
+    spectrumHeatPalette: workingState.scopeSettings.spectrum.heatPalette,
     profiles,
     selectedProfileId,
     selectedProfileName: resolvedSelectedProfile.name,
@@ -916,7 +965,7 @@ function loadInitialSnapshot(): VisualizerSettingsSnapshot {
       ?? normalizeProfileId(parsed.activeProfileId)
       ?? DEFAULT_PROFILE_ID
     const baseWorkingState = parsed.workingState !== undefined
-      ? normalizeWorkingState(parsed.workingState, legacyUnderfillEnabled, legacyAnalyzerPrefs)
+      ? normalizeAnalyzerWorkingState(parsed.workingState, legacyUnderfillEnabled, legacyAnalyzerPrefs)
       : requestedSelectedProfileId && mergedProfiles[requestedSelectedProfileId]
         ? requestedSelectedProfileId in BUILT_IN_PROFILES
           ? buildDefaultWorkingState(legacyAnalyzerPrefs)
@@ -946,7 +995,7 @@ function updateWorkingState(
   state: VisualizerSettingsStore,
   nextWorkingStateInput: AnalyzerWorkingState
 ): VisualizerSettingsSnapshot {
-  const nextWorkingState = normalizeWorkingState(nextWorkingStateInput)
+  const nextWorkingState = normalizeAnalyzerWorkingState(nextWorkingStateInput)
   return buildSnapshot(
     state.lineColor,
     state.isRunning,
@@ -1583,6 +1632,87 @@ export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, 
       },
     })
 
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrumBarDensity: (value) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrum: {
+          ...state.workingState.scopeSettings.spectrum,
+          barDensity: clampSpectrumBarDensity(value),
+        },
+      },
+    })
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrumBarGapPercent: (value) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrum: {
+          ...state.workingState.scopeSettings.spectrum,
+          barGapPercent: clampSpectrumBarGapPercent(value),
+        },
+      },
+    })
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrumBarCornerRadiusPx: (value) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrum: {
+          ...state.workingState.scopeSettings.spectrum,
+          barCornerRadiusPx: clampSpectrumBarCornerRadiusPx(value),
+        },
+      },
+    })
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrumShowBarPeaks: (enabled) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrum: {
+          ...state.workingState.scopeSettings.spectrum,
+          showBarPeaks: enabled,
+        },
+      },
+    })
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrumHeatPalette: (palette) => {
+    if (!isSpectrumHeatPalette(palette)) return
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrum: {
+          ...state.workingState.scopeSettings.spectrum,
+          heatPalette: palette,
+        },
+      },
+    })
     persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
     set(nextSnapshot)
   },

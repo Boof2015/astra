@@ -12,6 +12,13 @@ import {
   formatSpectrumPitchInfo,
   resolveSpectrumPitchInfo,
   DEFAULT_SPECTRUM_DISPLAY_MODE,
+  DEFAULT_SPECTRUM_BAR_DENSITY,
+  DEFAULT_SPECTRUM_BAR_GAP_PERCENT,
+  DEFAULT_SPECTRUM_BAR_CORNER_RADIUS_PX,
+  DEFAULT_SPECTRUM_SHOW_BAR_PEAKS,
+  clampSpectrumBarDensity,
+  clampSpectrumBarGapPercent,
+  clampSpectrumBarCornerRadiusPx,
   type SpectrumDisplayMode,
   type SpectrumPeakInfo,
 } from '../../../types/spectrum'
@@ -20,6 +27,7 @@ import {
   HEAT_MID_DB,
   normalizeHeatDb,
 } from './heatScale'
+import { CLASSIC_SPECTRUM_HEAT_COLORS } from './spectrumHeatPalette'
 
 type SpectrumStereoChunk = {
   left: Float32Array
@@ -56,6 +64,10 @@ export interface SpectrumAnalyzerOptions {
   tiltReferenceHz?: number
   fftSize?: number
   showSideLine?: boolean
+  barDensity?: number
+  barGapPercent?: number
+  barCornerRadiusPx?: number
+  showBarPeaks?: boolean
   capturePeakInfo?: boolean
   onPeakInfo?: (peakInfo: SpectrumPeakInfo | null) => void
   dataSource?: SpectrumAnalyzerDataSource
@@ -77,22 +89,7 @@ type SpectrumRangePeak = {
 type HeatColor = [number, number, number, number]
 type HeatStop = { at: number; color: HeatColor }
 
-const LEGACY_DEFAULT_HEAT_COLORS: [string, string, string] = [
-  'rgb(15, 7, 33)',
-  'rgb(163, 26, 121)',
-  'rgb(255, 241, 209)',
-]
-
 const HEATMAP_GAMMA = 1.4
-
-// ISO 1/3-octave centre frequencies for the classic "bars" display (restored from
-// Astra's pre-port spectrum; Prism's port was curve/area only).
-const CLASSIC_BAR_FREQUENCIES = [
-  20, 25, 31.5, 40, 50, 63, 80, 100,
-  125, 160, 200, 250, 315, 400, 500, 630,
-  800, 1000, 1250, 1600, 2000, 2500, 3150, 4000,
-  5000, 6300, 8000, 10000, 12500, 16000, 20000,
-] as const
 const FFT_SILENCE_DB = -100
 const SIDE_LINE_WIDTH_RATIO = 0.75
 const PEAK_SELECTION_MAX_DISTANCE_OCTAVES = 0.5
@@ -108,7 +105,7 @@ function clampSmoothing(value: number): number {
 function isLegacyDefaultHeatColors(colors: [string, string, string]): boolean {
   return colors.every((color, index) => {
     const left = parseColorToRgba(color)
-    const right = parseColorToRgba(LEGACY_DEFAULT_HEAT_COLORS[index])
+    const right = parseColorToRgba(CLASSIC_SPECTRUM_HEAT_COLORS[index])
     return !!left
       && !!right
       && left.r === right.r
@@ -152,9 +149,9 @@ function buildHeatStops(colors: [string, string, string]): HeatStop[] {
     ]
   }
 
-  const low = resolveHeatColor(colors[0], LEGACY_DEFAULT_HEAT_COLORS[0])
-  const mid = resolveHeatColor(colors[1], LEGACY_DEFAULT_HEAT_COLORS[1])
-  const high = resolveHeatColor(colors[2], LEGACY_DEFAULT_HEAT_COLORS[2])
+  const low = resolveHeatColor(colors[0], CLASSIC_SPECTRUM_HEAT_COLORS[0])
+  const mid = resolveHeatColor(colors[1], CLASSIC_SPECTRUM_HEAT_COLORS[1])
+  const high = resolveHeatColor(colors[2], CLASSIC_SPECTRUM_HEAT_COLORS[2])
 
   return [
     { at: 0, color: [0, 0, 0, 0] },
@@ -197,7 +194,7 @@ const defaultOptions: ResolvedSpectrumAnalyzerOptions = {
   heatmapFill: false,
   heatmapSmoothing: 0.5,
   gradientColors: ['rgba(0, 255, 255, 0)', 'rgba(0, 255, 255, 0.3)', 'rgba(138, 43, 226, 0.5)'],
-  heatColors: [...LEGACY_DEFAULT_HEAT_COLORS],
+  heatColors: [...CLASSIC_SPECTRUM_HEAT_COLORS],
   heatBaseColor: 'transparent',
   backgroundColor: 'transparent',
   showGrid: true,
@@ -214,6 +211,10 @@ const defaultOptions: ResolvedSpectrumAnalyzerOptions = {
   tiltReferenceHz: 1000,
   fftSize: 2048,
   showSideLine: false,
+  barDensity: DEFAULT_SPECTRUM_BAR_DENSITY,
+  barGapPercent: DEFAULT_SPECTRUM_BAR_GAP_PERCENT,
+  barCornerRadiusPx: DEFAULT_SPECTRUM_BAR_CORNER_RADIUS_PX,
+  showBarPeaks: DEFAULT_SPECTRUM_SHOW_BAR_PEAKS,
   capturePeakInfo: false,
   onPeakInfo: NOOP_SPECTRUM_PEAK_INFO_CALLBACK,
 }
@@ -239,6 +240,8 @@ export class SpectrumAnalyzer {
   private staticLayerCtx: CanvasRenderingContext2D
   private staticLayerKey = ''
   private unsubscribeSessionChange: (() => void) | null = null
+  private barConfigurationKey = ''
+  private warnedMissingBarFrames = false
 
   private nativeMagnitudeBuffer = new Float32Array(0)
   private nativeRawMagnitudeBuffer = new Float32Array(0)
@@ -273,6 +276,11 @@ export class SpectrumAnalyzer {
       ),
       heatmapTiltDbPerOctave: clampSpectrumHeatmapTiltDbPerOctave(
         optionOverrides.heatmapTiltDbPerOctave ?? defaultOptions.heatmapTiltDbPerOctave
+      ),
+      barDensity: clampSpectrumBarDensity(optionOverrides.barDensity ?? defaultOptions.barDensity),
+      barGapPercent: clampSpectrumBarGapPercent(optionOverrides.barGapPercent ?? defaultOptions.barGapPercent),
+      barCornerRadiusPx: clampSpectrumBarCornerRadiusPx(
+        optionOverrides.barCornerRadiusPx ?? defaultOptions.barCornerRadiusPx
       ),
     }
     this.dataSource = dataSource ?? defaultSpectrumDataSource
@@ -388,6 +396,15 @@ export class SpectrumAnalyzer {
     if (optionUpdates.heatmapTiltDbPerOctave !== undefined) {
       nextOptions.heatmapTiltDbPerOctave = clampSpectrumHeatmapTiltDbPerOctave(optionUpdates.heatmapTiltDbPerOctave)
     }
+    if (optionUpdates.barDensity !== undefined) {
+      nextOptions.barDensity = clampSpectrumBarDensity(optionUpdates.barDensity)
+    }
+    if (optionUpdates.barGapPercent !== undefined) {
+      nextOptions.barGapPercent = clampSpectrumBarGapPercent(optionUpdates.barGapPercent)
+    }
+    if (optionUpdates.barCornerRadiusPx !== undefined) {
+      nextOptions.barCornerRadiusPx = clampSpectrumBarCornerRadiusPx(optionUpdates.barCornerRadiusPx)
+    }
 
     const shouldResetForOptions = (
       optionUpdates.fftSize !== undefined
@@ -396,13 +413,35 @@ export class SpectrumAnalyzer {
       || optionUpdates.showSideLine !== undefined
     )
 
+    const heatColorsChanged = nextOptions.heatColors.some(
+      (color, index) => color !== this.options.heatColors[index]
+    )
     this.options = nextOptions
-    this.heatLut = buildHeatLUT(this.options.heatColors)
+    if (heatColorsChanged) {
+      this.heatLut = buildHeatLUT(this.options.heatColors)
+    }
+    if (
+      optionUpdates.barDensity !== undefined
+      || optionUpdates.showBarPeaks !== undefined
+      || optionUpdates.minFrequency !== undefined
+      || optionUpdates.maxFrequency !== undefined
+      || optionUpdates.minDecibels !== undefined
+      || optionUpdates.maxDecibels !== undefined
+      || optionUpdates.tiltDbPerOctave !== undefined
+      || optionUpdates.heatmapTiltDbPerOctave !== undefined
+      || optionUpdates.heatmapSmoothing !== undefined
+      || optionUpdates.tiltReferenceHz !== undefined
+      || optionUpdates.fftSize !== undefined
+    ) {
+      this.barConfigurationKey = ''
+    }
     let didReset = false
 
     if (nativeAnalyzer !== undefined && nativeAnalyzer !== this.nativeAnalyzer) {
       this.nativeAnalyzer = nativeAnalyzer
       this.nativeInitialized = false
+      this.barConfigurationKey = ''
+      this.warnedMissingBarFrames = false
       this.initNative()
       this.resetState()
       didReset = true
@@ -441,6 +480,10 @@ export class SpectrumAnalyzer {
 
   stop(): void {
     this.frameLoop.stop()
+    if (this.isNativeAvailable()) {
+      this.nativeAnalyzer?.reset()
+    }
+    this.resetAnalyzerBuffers()
   }
 
   invalidate(): void {
@@ -449,6 +492,7 @@ export class SpectrumAnalyzer {
 
   resize(): void {
     this.staticLayerKey = ''
+    this.barConfigurationKey = ''
     this.invalidate()
   }
 
@@ -528,97 +572,95 @@ export class SpectrumAnalyzer {
     return db + tiltDbPerOctave * octaves
   }
 
-  // Power-average the dB bins spanning [startIndex, endIndex] (restored from pre-port Astra).
-  private getAverageDbInRange(data: Float32Array, startIndex: number, endIndex: number): number {
-    const clampedStart = Math.max(0, Math.min(data.length - 1, startIndex))
-    const clampedEnd = Math.max(0, Math.min(data.length - 1, endIndex))
-    const lo = Math.floor(Math.min(clampedStart, clampedEnd))
-    const hi = Math.ceil(Math.max(clampedStart, clampedEnd))
-
-    if (hi <= lo) {
-      return this.getInterpolatedValue(data, clampedStart)
+  private configureNativeBars(minFrequency: number, maxFrequency: number, dpr: number): boolean {
+    if (!this.nativeAnalyzer?.supportsBarFrames?.()) {
+      if (!this.warnedMissingBarFrames) {
+        console.warn('SpectrumAnalyzer: Native addon does not support adaptive bar frames')
+        this.warnedMissingBarFrames = true
+      }
+      return false
     }
 
-    let powerSum = 0
-    let count = 0
-    for (let i = lo; i <= hi; i++) {
-      const db = data[i]
-      if (!Number.isFinite(db)) continue
-      powerSum += Math.pow(10, db / 10)
-      count += 1
+    const canvasCssWidth = this.canvas.width / Math.max(1, dpr)
+    const barCount = Math.min(512, Math.max(8, Math.round(
+      canvasCssWidth * this.options.barDensity / 100
+    )))
+    const key = [
+      barCount,
+      minFrequency,
+      maxFrequency,
+      this.options.minDecibels,
+      this.options.maxDecibels,
+      this.options.tiltDbPerOctave,
+      this.options.heatmapTiltDbPerOctave,
+      this.options.tiltReferenceHz,
+      this.options.heatmapSmoothing,
+      this.options.showBarPeaks,
+    ].join(':')
+    if (this.barConfigurationKey !== key) {
+      this.nativeAnalyzer.configureBars?.({
+        barCount,
+        minFrequency,
+        maxFrequency,
+        minDecibels: this.options.minDecibels,
+        maxDecibels: this.options.maxDecibels,
+        tiltDbPerOctave: this.options.tiltDbPerOctave,
+        heatmapTiltDbPerOctave: this.options.heatmapTiltDbPerOctave,
+        tiltReferenceHz: this.options.tiltReferenceHz,
+        heatmapSmoothing: this.options.heatmapSmoothing,
+        showPeaks: this.options.showBarPeaks,
+      })
+      this.barConfigurationKey = key
     }
-
-    if (count === 0) {
-      return this.getInterpolatedValue(data, clampedStart)
-    }
-
-    return 10 * Math.log10(Math.max(1e-12, powerSum / count))
+    return true
   }
 
-  // Classic ISO 1/3-octave bar rendering (restored from pre-port Astra). Draws onto the
-  // main context after the static grid layer; `frequencyData` holds native dB magnitudes.
-  private drawBars(
-    frequencyData: Float32Array,
-    bufferLength: number,
-    minFrequency: number,
-    maxFrequency: number,
-    dpr: number,
-  ): void {
-    const { ctx, options } = this
+  private renderNativeBars(frame: Float32Array, dpr: number): void {
+    const barCount = Math.floor(frame.length / 3)
+    if (barCount <= 0) return
+
     const width = this.canvas.width
     const height = this.canvas.height
-    const binWidth = this.sampleRate / options.fftSize
-    if (binWidth <= 0 || bufferLength <= 0) return
-
-    const bandFrequencies = CLASSIC_BAR_FREQUENCIES.filter(
-      (frequency) => frequency >= minFrequency && frequency <= maxFrequency,
-    )
-    const barCount = bandFrequencies.length
-    if (barCount === 0) return
-
     const slotWidth = width / barCount
-    const gapWidth = Math.min(slotWidth * 0.36, Math.max(dpr, 2 * dpr))
-    const barWidth = Math.max(1, slotWidth - gapWidth)
+    const gapWidth = slotWidth * (this.options.barGapPercent / 100)
+    const barWidth = Math.max(Math.min(dpr, slotWidth), slotWidth - gapWidth)
 
-    for (let i = 0; i < barCount; i++) {
-      const centerFrequency = bandFrequencies[i]
-      const lowerBandEdge = i === 0
-        ? barCount === 1
-          ? centerFrequency / Math.SQRT2
-          : centerFrequency / Math.sqrt(bandFrequencies[i + 1] / centerFrequency)
-        : Math.sqrt(bandFrequencies[i - 1] * centerFrequency)
-      const upperBandEdge = i === barCount - 1
-        ? barCount === 1
-          ? centerFrequency * Math.SQRT2
-          : centerFrequency * Math.sqrt(centerFrequency / bandFrequencies[i - 1])
-        : Math.sqrt(centerFrequency * bandFrequencies[i + 1])
-      const frequency0 = Math.max(minFrequency, lowerBandEdge)
-      const frequency1 = Math.min(maxFrequency, upperBandEdge)
-      const bin0 = frequency0 / binWidth
-      const bin1 = Math.min(frequency1 / binWidth, bufferLength - 1)
-      const rawDb = this.getAverageDbInRange(frequencyData, bin0, bin1)
-      const db = this.applyTilt(rawDb, centerFrequency)
-      const normalized = (db - options.minDecibels) / (options.maxDecibels - options.minDecibels)
-      const clamped = Math.max(0, Math.min(1, normalized))
-      const barHeight = clamped <= 0 ? 0 : Math.max(dpr, clamped * height)
-      if (barHeight <= 0) continue
-
-      const x = Math.floor((i * slotWidth) + (gapWidth / 2))
-      const y = Math.max(0, Math.floor(height - barHeight))
-
-      if (options.heatmapFill) {
-        const heatmapDb = this.applyTilt(rawDb, centerFrequency, options.heatmapTiltDbPerOctave)
-        const heatIntensity = Math.pow(Math.max(0, Math.min(1, normalizeHeatDb(heatmapDb))), HEATMAP_GAMMA)
-        const li = Math.max(0, Math.min(255, Math.round(heatIntensity * 255)))
-        const r = this.heatLut[li * 4]
-        const g = this.heatLut[li * 4 + 1]
-        const b = this.heatLut[li * 4 + 2]
-        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.88)`
-      } else {
-        ctx.fillStyle = options.lineColor
+    for (let index = 0; index < barCount; index += 1) {
+      const level = Math.max(0, Math.min(1, frame[index * 3]))
+      const barHeight = level * height
+      if (barHeight > 0) {
+        const x = (index * slotWidth) + ((slotWidth - barWidth) / 2)
+        const y = height - barHeight
+        const radius = Math.min(
+          this.options.barCornerRadiusPx * dpr,
+          barWidth / 2,
+          barHeight / 2,
+        )
+        if (this.options.heatmapFill) {
+          const heat = Math.max(0, Math.min(1, frame[index * 3 + 1]))
+          const lutIndex = Math.round(heat * 255)
+          const r = this.heatLut[lutIndex * 4]
+          const g = this.heatLut[lutIndex * 4 + 1]
+          const b = this.heatLut[lutIndex * 4 + 2]
+          this.ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.88)`
+        } else {
+          this.ctx.fillStyle = this.options.lineColor
+        }
+        this.ctx.beginPath()
+        this.ctx.roundRect(x, y, barWidth, barHeight, radius)
+        this.ctx.fill()
       }
 
-      ctx.fillRect(x, y, Math.ceil(barWidth), height - y)
+      if (this.options.showBarPeaks) {
+        const peak = Math.max(0, Math.min(1, frame[index * 3 + 2]))
+        const capThickness = Math.max(1, Math.min(2 * dpr, barWidth, height))
+        const capY = Math.max(0, Math.min(height - capThickness, height - (peak * height) - (capThickness / 2)))
+        const capX = (index * slotWidth) + ((slotWidth - barWidth) / 2)
+        this.ctx.fillStyle = this.options.lineColor
+        this.ctx.beginPath()
+        this.ctx.roundRect(capX, capY, barWidth, capThickness, Math.min(capThickness / 2, barWidth / 2))
+        this.ctx.fill()
+      }
     }
   }
 
@@ -1109,6 +1151,23 @@ export class SpectrumAnalyzer {
       return
     }
 
+    if (options.displayMode === 'bars') {
+      if (!this.configureNativeBars(minFrequency, maxFrequency, dpr)) {
+        this.renderBarNativeUnavailable(minFrequency, maxFrequency, dpr)
+        this.emitPeakInfo(null)
+        return
+      }
+
+      this.pushPendingSpectrumChunks(this.dataSource.getPendingSpectrumSamples())
+      const barFrame = this.nativeAnalyzer?.getBarFrame?.() ?? null
+      this.renderStaticLayer(minFrequency, maxFrequency)
+      if (barFrame && barFrame.length >= 3) {
+        this.renderNativeBars(barFrame, dpr)
+      }
+      this.emitPeakInfo(null)
+      return
+    }
+
     const receivedNativeSamples = options.showSideLine
       ? this.pushPendingSpectrumStereoChunks(this.dataSource.getPendingSpectrumStereoSamples())
       : this.pushPendingSpectrumChunks(this.dataSource.getPendingSpectrumSamples())
@@ -1142,13 +1201,6 @@ export class SpectrumAnalyzer {
 
     if (!primaryData || primaryDataLength === 0) {
       this.renderStaticLayer(minFrequency, maxFrequency)
-      this.emitPeakInfo(null)
-      return
-    }
-
-    if (options.displayMode === 'bars') {
-      this.renderStaticLayer(minFrequency, maxFrequency)
-      this.drawBars(primaryData, primaryDataLength, minFrequency, maxFrequency, dpr)
       this.emitPeakInfo(null)
       return
     }
@@ -1230,6 +1282,18 @@ export class SpectrumAnalyzer {
     this.ensureStaticLayer(minFrequency, maxFrequency)
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
     this.ctx.drawImage(this.staticLayerCanvas, 0, 0)
+  }
+
+  private renderBarNativeUnavailable(minFrequency: number, maxFrequency: number, dpr: number): void {
+    this.renderStaticLayer(minFrequency, maxFrequency)
+    this.ctx.fillStyle = this.options.gridColor
+    this.ctx.font = `${12 * dpr}px monospace`
+    this.ctx.textAlign = 'center'
+    this.ctx.fillText(
+      'Native adaptive bars unavailable',
+      this.canvas.width / 2,
+      this.canvas.height / 2,
+    )
   }
 
   private ensureStaticLayer(minFrequency: number, maxFrequency: number): void {

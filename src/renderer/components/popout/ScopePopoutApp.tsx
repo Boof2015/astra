@@ -44,10 +44,20 @@ import {
   DEFAULT_SPECTRUM_DISPLAY_MODE,
   DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
   DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
+  DEFAULT_SPECTRUM_BAR_DENSITY,
+  DEFAULT_SPECTRUM_BAR_GAP_PERCENT,
+  DEFAULT_SPECTRUM_BAR_CORNER_RADIUS_PX,
+  DEFAULT_SPECTRUM_SHOW_BAR_PEAKS,
   isSpectrumDisplayMode,
   type SpectrumDisplayMode,
 } from '../../../types/spectrum'
-import { isVectorscopeMode, type VectorscopeMode } from '../../stores/visualizerSettingsStore'
+import {
+  DEFAULT_SPECTRUM_HEATMAP_SMOOTHING,
+  DEFAULT_SPECTRUM_SMOOTHING,
+  isVectorscopeMode,
+  type VectorscopeMode,
+} from '../../stores/visualizerSettingsStore'
+import { CLASSIC_SPECTRUM_HEAT_COLORS } from '../../audio/visualizers/spectrumHeatPalette'
 import { useBufferedCanvasResize } from '../../hooks/useBufferedCanvasResize'
 import { transformPoint, drawVectorscopeGridForMode, getVectorscopeLayout } from '../../audio/visualizers/vectorscopeGrids'
 import { MultibandSplitter, MultibandBuffer, BAND_COLORS } from '../../audio/visualizers/multibandSplitter'
@@ -176,6 +186,13 @@ function SpectrumScopeCanvas() {
   const tiltDbPerOctaveRef = useRef(DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE)
   const heatmapRef = useRef(false)
   const heatmapTiltDbPerOctaveRef = useRef(DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE)
+  const smoothingRef = useRef(DEFAULT_SPECTRUM_SMOOTHING)
+  const heatmapSmoothingRef = useRef(DEFAULT_SPECTRUM_HEATMAP_SMOOTHING)
+  const barDensityRef = useRef(DEFAULT_SPECTRUM_BAR_DENSITY)
+  const barGapPercentRef = useRef(DEFAULT_SPECTRUM_BAR_GAP_PERCENT)
+  const barCornerRadiusPxRef = useRef(DEFAULT_SPECTRUM_BAR_CORNER_RADIUS_PX)
+  const showBarPeaksRef = useRef(DEFAULT_SPECTRUM_SHOW_BAR_PEAKS)
+  const heatColorsRef = useRef<[string, string, string]>([...CLASSIC_SPECTRUM_HEAT_COLORS])
   const isPlayingRef = useRef(false)
   const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
     onResize: () => visualizerRef.current?.resize(),
@@ -193,13 +210,27 @@ function SpectrumScopeCanvas() {
       const nextTiltDbPerOctave = chunk.spectrumTiltDbPerOctave
       const nextHeatmap = Boolean(chunk.spectrumHeatmap)
       const nextHeatmapTiltDbPerOctave = chunk.spectrumHeatmapTiltDbPerOctave
+      const nextSmoothing = chunk.spectrumSmoothing
+      const nextHeatmapSmoothing = chunk.spectrumHeatmapSmoothing
+      const nextBarDensity = chunk.spectrumBarDensity
+      const nextBarGapPercent = chunk.spectrumBarGapPercent
+      const nextBarCornerRadiusPx = chunk.spectrumBarCornerRadiusPx
+      const nextShowBarPeaks = Boolean(chunk.spectrumShowBarPeaks)
+      const nextHeatColors = chunk.spectrumHeatColors
       const optionsChanged =
         nextFftSize !== fftSizeRef.current ||
         nextDisplayMode !== displayModeRef.current ||
         nextLineColor !== lineColorRef.current ||
         nextTiltDbPerOctave !== tiltDbPerOctaveRef.current ||
         nextHeatmap !== heatmapRef.current ||
-        nextHeatmapTiltDbPerOctave !== heatmapTiltDbPerOctaveRef.current
+        nextHeatmapTiltDbPerOctave !== heatmapTiltDbPerOctaveRef.current ||
+        nextSmoothing !== smoothingRef.current ||
+        nextHeatmapSmoothing !== heatmapSmoothingRef.current ||
+        nextBarDensity !== barDensityRef.current ||
+        nextBarGapPercent !== barGapPercentRef.current ||
+        nextBarCornerRadiusPx !== barCornerRadiusPxRef.current ||
+        nextShowBarPeaks !== showBarPeaksRef.current ||
+        nextHeatColors.some((color, index) => color !== heatColorsRef.current[index])
 
       fftSizeRef.current = nextFftSize
       displayModeRef.current = nextDisplayMode
@@ -207,6 +238,13 @@ function SpectrumScopeCanvas() {
       tiltDbPerOctaveRef.current = nextTiltDbPerOctave
       heatmapRef.current = nextHeatmap
       heatmapTiltDbPerOctaveRef.current = nextHeatmapTiltDbPerOctave
+      smoothingRef.current = nextSmoothing
+      heatmapSmoothingRef.current = nextHeatmapSmoothing
+      barDensityRef.current = nextBarDensity
+      barGapPercentRef.current = nextBarGapPercent
+      barCornerRadiusPxRef.current = nextBarCornerRadiusPx
+      showBarPeaksRef.current = nextShowBarPeaks
+      heatColorsRef.current = nextHeatColors
 
       if (chunk.reset) {
         pendingChunksRef.current = []
@@ -227,6 +265,13 @@ function SpectrumScopeCanvas() {
           heatmapFill: nextHeatmap,
           tiltDbPerOctave: nextTiltDbPerOctave,
           heatmapTiltDbPerOctave: nextHeatmapTiltDbPerOctave,
+          smoothing: nextSmoothing,
+          heatmapSmoothing: nextHeatmapSmoothing,
+          barDensity: nextBarDensity,
+          barGapPercent: nextBarGapPercent,
+          barCornerRadiusPx: nextBarCornerRadiusPx,
+          showBarPeaks: nextShowBarPeaks,
+          heatColors: nextHeatColors,
           gradientColors: getSpectrumGradientColors(nextLineColor),
         })
       }
@@ -246,6 +291,13 @@ function SpectrumScopeCanvas() {
         heatmapFill: heatmapRef.current,
         tiltDbPerOctave: tiltDbPerOctaveRef.current,
         heatmapTiltDbPerOctave: heatmapTiltDbPerOctaveRef.current,
+        smoothing: smoothingRef.current,
+        heatmapSmoothing: heatmapSmoothingRef.current,
+        barDensity: barDensityRef.current,
+        barGapPercent: barGapPercentRef.current,
+        barCornerRadiusPx: barCornerRadiusPxRef.current,
+        showBarPeaks: showBarPeaksRef.current,
+        heatColors: heatColorsRef.current,
         fftSize: fftSizeRef.current,
         displayMode: displayModeRef.current,
         gradientColors: getSpectrumGradientColors(lineColorRef.current),

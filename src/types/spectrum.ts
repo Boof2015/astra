@@ -1,9 +1,59 @@
 export type SpectrumDisplayMode = 'curve' | 'bars'
+export type SpectrumHeatPalette = 'classic' | 'accent'
 
 export const DEFAULT_SPECTRUM_DISPLAY_MODE: SpectrumDisplayMode = 'curve'
+export const DEFAULT_SPECTRUM_HEAT_PALETTE: SpectrumHeatPalette = 'classic'
+
+export const DEFAULT_SPECTRUM_BAR_DENSITY = 10
+export const MIN_SPECTRUM_BAR_DENSITY = 4
+export const MAX_SPECTRUM_BAR_DENSITY = 24
+export const DEFAULT_SPECTRUM_BAR_GAP_PERCENT = 25
+export const MIN_SPECTRUM_BAR_GAP_PERCENT = 0
+export const MAX_SPECTRUM_BAR_GAP_PERCENT = 70
+export const DEFAULT_SPECTRUM_BAR_CORNER_RADIUS_PX = 2
+export const MIN_SPECTRUM_BAR_CORNER_RADIUS_PX = 0
+export const MAX_SPECTRUM_BAR_CORNER_RADIUS_PX = 12
+export const DEFAULT_SPECTRUM_SHOW_BAR_PEAKS = false
 
 export function isSpectrumDisplayMode(value: unknown): value is SpectrumDisplayMode {
   return value === 'curve' || value === 'bars'
+}
+
+export function isSpectrumHeatPalette(value: unknown): value is SpectrumHeatPalette {
+  return value === 'classic' || value === 'accent'
+}
+
+function clampRounded(value: unknown, fallback: number, min: number, max: number): number {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return fallback
+  return Math.min(max, Math.max(min, Math.round(numeric)))
+}
+
+export function clampSpectrumBarDensity(value: unknown): number {
+  return clampRounded(
+    value,
+    DEFAULT_SPECTRUM_BAR_DENSITY,
+    MIN_SPECTRUM_BAR_DENSITY,
+    MAX_SPECTRUM_BAR_DENSITY,
+  )
+}
+
+export function clampSpectrumBarGapPercent(value: unknown): number {
+  return clampRounded(
+    value,
+    DEFAULT_SPECTRUM_BAR_GAP_PERCENT,
+    MIN_SPECTRUM_BAR_GAP_PERCENT,
+    MAX_SPECTRUM_BAR_GAP_PERCENT,
+  )
+}
+
+export function clampSpectrumBarCornerRadiusPx(value: unknown): number {
+  return clampRounded(
+    value,
+    DEFAULT_SPECTRUM_BAR_CORNER_RADIUS_PX,
+    MIN_SPECTRUM_BAR_CORNER_RADIUS_PX,
+    MAX_SPECTRUM_BAR_CORNER_RADIUS_PX,
+  )
 }
 
 export const DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE = 2.0

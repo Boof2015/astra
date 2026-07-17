@@ -15,6 +15,7 @@ import type { SpectrogramClarityMode, SpectrogramScaleMode, SpectrogramOrientati
 import type { SpectrumDisplayMode } from '../../../types/spectrum'
 import type { VUMeterMode, VUMeterOrientation } from '../../../types/vumeter'
 import type { WaveformMode } from '../../../types/waveform'
+import { resolveSpectrumHeatColors } from '../../audio/visualizers/spectrumHeatPalette'
 
 interface VisualizerPanelProps {
   className?: string
@@ -190,6 +191,11 @@ function DockedSpectrumTile({
   showSideLine,
   smoothing,
   heatmapSmoothing,
+  heatColors,
+  barDensity,
+  barGapPercent,
+  barCornerRadiusPx,
+  showBarPeaks,
   isRunning,
   frameScheduler,
 }: {
@@ -203,6 +209,11 @@ function DockedSpectrumTile({
   showSideLine: boolean
   smoothing: number
   heatmapSmoothing: number
+  heatColors: [string, string, string]
+  barDensity: number
+  barGapPercent: number
+  barCornerRadiusPx: number
+  showBarPeaks: boolean
   isRunning: boolean
   frameScheduler: FrameScheduler
 }) {
@@ -232,6 +243,11 @@ function DockedSpectrumTile({
         showSideLine,
         smoothing,
         heatmapSmoothing,
+        heatColors,
+        barDensity,
+        barGapPercent,
+        barCornerRadiusPx,
+        showBarPeaks,
         secondaryLineColor: 'rgba(255, 255, 255, 0.42)',
         gradientColors: [
           'rgba(0, 255, 255, 0)',
@@ -264,6 +280,11 @@ function DockedSpectrumTile({
       showSideLine,
       smoothing,
       heatmapSmoothing,
+      heatColors,
+      barDensity,
+      barGapPercent,
+      barCornerRadiusPx,
+      showBarPeaks,
       fillGradient: !heatmapFill,
       heatmapFill,
       tiltDbPerOctave,
@@ -274,7 +295,7 @@ function DockedSpectrumTile({
         `${lineColor}66`
       ]
     })
-  }, [displayColors, lineColor, fftSize, displayMode, heatmapFill, tiltDbPerOctave, heatmapTiltDbPerOctave, showSideLine, smoothing, heatmapSmoothing])
+  }, [displayColors, lineColor, fftSize, displayMode, heatmapFill, tiltDbPerOctave, heatmapTiltDbPerOctave, showSideLine, smoothing, heatmapSmoothing, heatColors, barDensity, barGapPercent, barCornerRadiusPx, showBarPeaks])
 
   useEffect(() => {
     if (isRunning) {
@@ -884,6 +905,11 @@ export default function VisualizerPanel({
   const spectrumDisplayMode = useVisualizerSettingsStore((s) => s.spectrumDisplayMode)
   const spectrumTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumTiltDbPerOctave)
   const spectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumHeatmapTiltDbPerOctave)
+  const spectrumBarDensity = useVisualizerSettingsStore((s) => s.spectrumBarDensity)
+  const spectrumBarGapPercent = useVisualizerSettingsStore((s) => s.spectrumBarGapPercent)
+  const spectrumBarCornerRadiusPx = useVisualizerSettingsStore((s) => s.spectrumBarCornerRadiusPx)
+  const spectrumShowBarPeaks = useVisualizerSettingsStore((s) => s.spectrumShowBarPeaks)
+  const spectrumHeatPalette = useVisualizerSettingsStore((s) => s.spectrumHeatPalette)
   const waveformScrollSpeed = useVisualizerSettingsStore((s) => s.waveformScrollSpeed)
   const waveformGainDb = useVisualizerSettingsStore((s) => s.waveformGainDb)
   const waveformMultiband = useVisualizerSettingsStore((s) => s.waveformMultiband)
@@ -919,6 +945,15 @@ export default function VisualizerPanel({
     meterTextColor: visualizerTheme.stageText,
     meterMutedTextColor: visualizerTheme.stageTextMuted,
   }), [visualizerTheme])
+  const spectrumHeatColors = useMemo(
+    () => resolveSpectrumHeatColors(
+      spectrumHeatPalette,
+      lineColor,
+      visualizerTheme.stageBg,
+      visualizerTheme.isLight,
+    ),
+    [lineColor, spectrumHeatPalette, visualizerTheme.isLight, visualizerTheme.stageBg],
+  )
 
   const openScopePopout = useCallback((scope: ScopeKind) => {
     void window.electronAPI.scopePopout.open(scope)
@@ -1272,6 +1307,11 @@ export default function VisualizerPanel({
             showSideLine={spectrumShowSideLine}
             smoothing={spectrumSmoothing}
             heatmapSmoothing={spectrumHeatmapSmoothing}
+            heatColors={spectrumHeatColors}
+            barDensity={spectrumBarDensity}
+            barGapPercent={spectrumBarGapPercent}
+            barCornerRadiusPx={spectrumBarCornerRadiusPx}
+            showBarPeaks={spectrumShowBarPeaks}
             isRunning={isDockedAnalyzerActive && isRunning}
           />
         ) : scope === 'oscilloscope' ? (

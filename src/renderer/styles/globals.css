@@ -12956,8 +12956,16 @@ body::after {
   width: min(620px, calc(100vw - 64px));
 }
 
+.analyzer-edit-active-strip.is-spectrum-active {
+  flex: 0 0 auto;
+  width: min(1120px, calc(100vw - var(--sidebar-width) - 64px));
+  max-width: min(1120px, calc(100vw - var(--sidebar-width) - 64px));
+}
+
 .analyzer-edit-active-strip.is-waveform-active .analyzer-edit-active-headline,
-.analyzer-edit-active-strip.is-waveform-active .analyzer-edit-active-controls {
+.analyzer-edit-active-strip.is-waveform-active .analyzer-edit-active-controls,
+.analyzer-edit-active-strip.is-spectrum-active .analyzer-edit-active-headline,
+.analyzer-edit-active-strip.is-spectrum-active .analyzer-edit-active-controls {
   width: 100%;
 }
 
@@ -13019,6 +13027,59 @@ body::after {
 .analyzer-edit-active-controls-inline .analyzer-edit-button {
   flex: 0 0 auto;
   min-width: 128px;
+}
+
+.analyzer-edit-active-controls-spectrum {
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.analyzer-edit-spectrum-control-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  align-items: end;
+  gap: 8px 10px;
+  width: 100%;
+  min-width: 0;
+}
+
+.analyzer-edit-spectrum-primary-grid > .analyzer-edit-mini-control {
+  grid-column: span 3;
+}
+
+.analyzer-edit-spectrum-primary-grid > .analyzer-edit-button {
+  grid-column: span 2;
+}
+
+.analyzer-edit-spectrum-primary-grid > .analyzer-edit-spectrum-palette-control {
+  grid-column: span 2;
+}
+
+.analyzer-edit-spectrum-bar-grid > .analyzer-edit-mini-control-range,
+.analyzer-edit-spectrum-response-grid > .analyzer-edit-mini-control-range,
+.analyzer-edit-spectrum-bar-grid > .analyzer-edit-button {
+  grid-column: span 3;
+}
+
+.analyzer-edit-active-controls-spectrum .analyzer-edit-spectrum-control-grid > .analyzer-edit-mini-control,
+.analyzer-edit-active-controls-spectrum .analyzer-edit-spectrum-control-grid > .analyzer-edit-mini-control-range,
+.analyzer-edit-active-controls-spectrum .analyzer-edit-spectrum-control-grid > .analyzer-edit-active-control-wide {
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  flex: initial;
+}
+
+.analyzer-edit-active-controls-spectrum .analyzer-edit-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.analyzer-edit-active-controls-spectrum .analyzer-edit-range {
+  width: 100%;
 }
 
 .analyzer-edit-active-control-wide {
@@ -13250,6 +13311,11 @@ body::after {
     right: 0;
   }
 
+  .analyzer-edit-active-strip.is-spectrum-active {
+    width: min(1120px, calc(100vw - 32px));
+    max-width: min(1120px, calc(100vw - 32px));
+  }
+
   .analyzer-edit-stash-grid {
     grid-template-columns: repeat(auto-fit, minmax(176px, 200px));
   }
@@ -13318,8 +13384,44 @@ body::after {
     width: 100%;
   }
 
+  .analyzer-edit-spectrum-control-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .analyzer-edit-spectrum-primary-grid > .analyzer-edit-mini-control,
+  .analyzer-edit-spectrum-bar-grid > .analyzer-edit-mini-control-range,
+  .analyzer-edit-spectrum-response-grid > .analyzer-edit-mini-control-range,
+  .analyzer-edit-spectrum-bar-grid > .analyzer-edit-button {
+    grid-column: span 3;
+  }
+
+  .analyzer-edit-spectrum-primary-grid > .analyzer-edit-button,
+  .analyzer-edit-spectrum-primary-grid > .analyzer-edit-spectrum-palette-control {
+    grid-column: span 2;
+  }
+
+  .analyzer-edit-active-controls-spectrum .analyzer-edit-spectrum-control-grid > .analyzer-edit-mini-control,
+  .analyzer-edit-active-controls-spectrum .analyzer-edit-spectrum-control-grid > .analyzer-edit-mini-control-range,
+  .analyzer-edit-active-controls-spectrum .analyzer-edit-spectrum-control-grid > .analyzer-edit-active-control-wide {
+    width: auto;
+    min-width: 0;
+  }
+
   .analyzer-edit-empty-hint {
     bottom: 34%;
+  }
+}
+
+@media (max-width: 560px) {
+  .analyzer-edit-spectrum-control-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .analyzer-edit-spectrum-control-grid > .analyzer-edit-mini-control,
+  .analyzer-edit-spectrum-control-grid > .analyzer-edit-mini-control-range,
+  .analyzer-edit-spectrum-control-grid > .analyzer-edit-button,
+  .analyzer-edit-spectrum-primary-grid > .analyzer-edit-spectrum-palette-control {
+    grid-column: span 2;
   }
 }
 

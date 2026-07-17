@@ -113,7 +113,22 @@ export interface SpectrumModule {
   getSideMagnitudes(): Float32Array;
   process(audioData: Float32Array): Float32Array;
   binToFrequency(bin: number): number;
+  configureBars(options: SpectrumBarNativeConfig): void;
+  getBarFrame(nowMs?: number): Float32Array;
   reset(): void;
+}
+
+export interface SpectrumBarNativeConfig {
+  barCount: number;
+  minFrequency: number;
+  maxFrequency: number;
+  minDecibels: number;
+  maxDecibels: number;
+  tiltDbPerOctave: number;
+  heatmapTiltDbPerOctave: number;
+  tiltReferenceHz: number;
+  heatmapSmoothing: number;
+  showPeaks: boolean;
 }
 
 export interface SpectrogramModule {

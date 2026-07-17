@@ -1,5 +1,6 @@
 #include <napi.h>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <vector>
 #include <string>
@@ -448,6 +449,49 @@ Napi::Value SpectrumBinToFrequency(const Napi::CallbackInfo& info) {
     }
     float freq = spectrum.binToFrequency(info[0].As<Napi::Number>().Int32Value());
     return Napi::Number::New(env, freq);
+}
+
+Napi::Value SpectrumConfigureBars(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        Napi::TypeError::New(env, "Expected bar configuration object").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    const Napi::Object input = info[0].As<Napi::Object>();
+    Visualizer::SpectrumBarConfig config;
+    auto readNumber = [&](const char* key, double fallback) {
+        const Napi::Value value = input.Get(key);
+        return value.IsNumber() ? value.As<Napi::Number>().DoubleValue() : fallback;
+    };
+    const double requestedBarCount = readNumber("barCount", config.requestedBarCount);
+    config.requestedBarCount = std::isfinite(requestedBarCount)
+        ? static_cast<size_t>(std::clamp(requestedBarCount, 1.0, 512.0))
+        : config.requestedBarCount;
+    config.minFrequency = static_cast<float>(readNumber("minFrequency", config.minFrequency));
+    config.maxFrequency = static_cast<float>(readNumber("maxFrequency", config.maxFrequency));
+    config.minDecibels = static_cast<float>(readNumber("minDecibels", config.minDecibels));
+    config.maxDecibels = static_cast<float>(readNumber("maxDecibels", config.maxDecibels));
+    config.tiltDbPerOctave = static_cast<float>(readNumber("tiltDbPerOctave", config.tiltDbPerOctave));
+    config.heatmapTiltDbPerOctave = static_cast<float>(readNumber("heatmapTiltDbPerOctave", config.heatmapTiltDbPerOctave));
+    config.tiltReferenceHz = static_cast<float>(readNumber("tiltReferenceHz", config.tiltReferenceHz));
+    config.heatmapSmoothing = static_cast<float>(readNumber("heatmapSmoothing", config.heatmapSmoothing));
+    const Napi::Value showPeaks = input.Get("showPeaks");
+    config.showPeaks = showPeaks.IsBoolean() && showPeaks.As<Napi::Boolean>().Value();
+    spectrum.configureBars(config);
+    return env.Undefined();
+}
+
+Napi::Value SpectrumGetBarFrame(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    const auto& frame = info.Length() > 0 && info[0].IsNumber()
+        ? spectrum.getBarFrameAtTime(info[0].As<Napi::Number>().DoubleValue())
+        : spectrum.getBarFrame();
+    Napi::Float32Array result = Napi::Float32Array::New(env, frame.size());
+    if (!frame.empty()) {
+        memcpy(result.Data(), frame.data(), frame.size() * sizeof(float));
+    }
+    return result;
 }
 
 Napi::Value SpectrumReset(const Napi::CallbackInfo& info) {
@@ -1086,6 +1130,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     specExports.Set("getSideMagnitudes", Napi::Function::New(env, SpectrumGetSideMagnitudes));
     specExports.Set("process", Napi::Function::New(env, SpectrumProcess));
     specExports.Set("binToFrequency", Napi::Function::New(env, SpectrumBinToFrequency));
+    specExports.Set("configureBars", Napi::Function::New(env, SpectrumConfigureBars));
+    specExports.Set("getBarFrame", Napi::Function::New(env, SpectrumGetBarFrame));
     specExports.Set("reset", Napi::Function::New(env, SpectrumReset));
     exports.Set("spectrum", specExports);
 

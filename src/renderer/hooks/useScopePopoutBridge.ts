@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { audioEngine } from '../audio/AudioEngine'
 import { isNativeAvailable } from '../audio/native/index'
 import { getNormalizedOscilloscopeDisplaySamples } from '../audio/native/oscilloscopeDisplaySamples'
@@ -13,6 +13,8 @@ import {
 import { usePlayerStore } from '../stores/playerStore'
 import { useScopePopoutStore } from '../stores/scopePopoutStore'
 import { useVisualizerSettingsStore } from '../stores/visualizerSettingsStore'
+import { useThemeStore } from '../stores/themeStore'
+import { resolveSpectrumHeatColors } from '../audio/visualizers/spectrumHeatPalette'
 import { SCOPE_KINDS, type ScopeKind } from '../../types/scopePopout'
 
 const STREAM_INTERVAL_MS = 16
@@ -70,6 +72,14 @@ export function useScopePopoutBridge(): void {
   const spectrumDisplayMode = useVisualizerSettingsStore((s) => s.spectrumDisplayMode)
   const spectrumTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumTiltDbPerOctave)
   const spectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumHeatmapTiltDbPerOctave)
+  const spectrumSmoothing = useVisualizerSettingsStore((s) => s.spectrumSmoothing)
+  const spectrumHeatmapSmoothing = useVisualizerSettingsStore((s) => s.spectrumHeatmapSmoothing)
+  const spectrumBarDensity = useVisualizerSettingsStore((s) => s.spectrumBarDensity)
+  const spectrumBarGapPercent = useVisualizerSettingsStore((s) => s.spectrumBarGapPercent)
+  const spectrumBarCornerRadiusPx = useVisualizerSettingsStore((s) => s.spectrumBarCornerRadiusPx)
+  const spectrumShowBarPeaks = useVisualizerSettingsStore((s) => s.spectrumShowBarPeaks)
+  const spectrumHeatPalette = useVisualizerSettingsStore((s) => s.spectrumHeatPalette)
+  const visualizerTheme = useThemeStore((s) => s.resolvedTokens)
   const waveformScrollSpeed = useVisualizerSettingsStore((s) => s.waveformScrollSpeed)
   const waveformGainDb = useVisualizerSettingsStore((s) => s.waveformGainDb)
   const waveformMultiband = useVisualizerSettingsStore((s) => s.waveformMultiband)
@@ -84,6 +94,15 @@ export function useScopePopoutBridge(): void {
   const scopePopoutState = useScopePopoutStore((s) => s.state)
   const setScopePopoutState = useScopePopoutStore((s) => s.setState)
   const nativeVisualizersAvailable = isNativeAvailable()
+  const spectrumHeatColors = useMemo(
+    () => resolveSpectrumHeatColors(
+      spectrumHeatPalette,
+      lineColor,
+      visualizerTheme.stageBg,
+      visualizerTheme.isLight,
+    ),
+    [lineColor, spectrumHeatPalette, visualizerTheme.isLight, visualizerTheme.stageBg],
+  )
 
   const streamTimerRef = useRef<number | null>(null)
   const resetSentRef = useRef<ResetState>({ ...EMPTY_RESET_STATE })
@@ -163,6 +182,14 @@ export function useScopePopoutBridge(): void {
             spectrumTiltDbPerOctave,
             spectrumHeatmap,
             spectrumHeatmapTiltDbPerOctave,
+            spectrumSmoothing,
+            spectrumHeatmapSmoothing,
+            spectrumBarDensity,
+            spectrumBarGapPercent,
+            spectrumBarCornerRadiusPx,
+            spectrumShowBarPeaks,
+            spectrumHeatPalette,
+            spectrumHeatColors,
             lineColor,
             reset: true,
           })
@@ -272,6 +299,14 @@ export function useScopePopoutBridge(): void {
             spectrumTiltDbPerOctave,
             spectrumHeatmap,
             spectrumHeatmapTiltDbPerOctave,
+            spectrumSmoothing,
+            spectrumHeatmapSmoothing,
+            spectrumBarDensity,
+            spectrumBarGapPercent,
+            spectrumBarCornerRadiusPx,
+            spectrumShowBarPeaks,
+            spectrumHeatPalette,
+            spectrumHeatColors,
             lineColor,
             reset: false,
           })
@@ -402,6 +437,14 @@ export function useScopePopoutBridge(): void {
               spectrumTiltDbPerOctave,
               spectrumHeatmap,
               spectrumHeatmapTiltDbPerOctave,
+              spectrumSmoothing,
+              spectrumHeatmapSmoothing,
+              spectrumBarDensity,
+              spectrumBarGapPercent,
+              spectrumBarCornerRadiusPx,
+              spectrumShowBarPeaks,
+              spectrumHeatPalette,
+              spectrumHeatColors,
               lineColor,
               reset: false,
             })
@@ -537,6 +580,14 @@ export function useScopePopoutBridge(): void {
     spectrumTiltDbPerOctave,
     spectrumHeatmap,
     spectrumHeatmapTiltDbPerOctave,
+    spectrumSmoothing,
+    spectrumHeatmapSmoothing,
+    spectrumBarDensity,
+    spectrumBarGapPercent,
+    spectrumBarCornerRadiusPx,
+    spectrumShowBarPeaks,
+    spectrumHeatPalette,
+    spectrumHeatColors,
     spectrogramFftSize,
     spectrogramScrollSpeed,
     spectrogramClarityMode,

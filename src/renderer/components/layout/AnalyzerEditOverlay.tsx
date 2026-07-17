@@ -36,7 +36,17 @@ import {
   MAX_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
   MIN_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE,
   SPECTRUM_HEATMAP_TILT_STEP,
+  DEFAULT_SPECTRUM_BAR_DENSITY,
+  MIN_SPECTRUM_BAR_DENSITY,
+  MAX_SPECTRUM_BAR_DENSITY,
+  DEFAULT_SPECTRUM_BAR_GAP_PERCENT,
+  MIN_SPECTRUM_BAR_GAP_PERCENT,
+  MAX_SPECTRUM_BAR_GAP_PERCENT,
+  DEFAULT_SPECTRUM_BAR_CORNER_RADIUS_PX,
+  MIN_SPECTRUM_BAR_CORNER_RADIUS_PX,
+  MAX_SPECTRUM_BAR_CORNER_RADIUS_PX,
   type SpectrumDisplayMode,
+  type SpectrumHeatPalette,
 } from '../../../types/spectrum'
 import {
   useVisualizerSettingsStore,
@@ -327,6 +337,16 @@ export default function AnalyzerEditOverlay({
   const setSpectrumHeatmap = useVisualizerSettingsStore((state) => state.setSpectrumHeatmap)
   const setSpectrumTiltDbPerOctave = useVisualizerSettingsStore((state) => state.setSpectrumTiltDbPerOctave)
   const setSpectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((state) => state.setSpectrumHeatmapTiltDbPerOctave)
+  const spectrumBarDensity = useVisualizerSettingsStore((state) => state.spectrumBarDensity)
+  const spectrumBarGapPercent = useVisualizerSettingsStore((state) => state.spectrumBarGapPercent)
+  const spectrumBarCornerRadiusPx = useVisualizerSettingsStore((state) => state.spectrumBarCornerRadiusPx)
+  const spectrumShowBarPeaks = useVisualizerSettingsStore((state) => state.spectrumShowBarPeaks)
+  const spectrumHeatPalette = useVisualizerSettingsStore((state) => state.spectrumHeatPalette)
+  const setSpectrumBarDensity = useVisualizerSettingsStore((state) => state.setSpectrumBarDensity)
+  const setSpectrumBarGapPercent = useVisualizerSettingsStore((state) => state.setSpectrumBarGapPercent)
+  const setSpectrumBarCornerRadiusPx = useVisualizerSettingsStore((state) => state.setSpectrumBarCornerRadiusPx)
+  const setSpectrumShowBarPeaks = useVisualizerSettingsStore((state) => state.setSpectrumShowBarPeaks)
+  const setSpectrumHeatPalette = useVisualizerSettingsStore((state) => state.setSpectrumHeatPalette)
   const waveformScrollSpeed = useVisualizerSettingsStore((state) => state.waveformScrollSpeed)
   const waveformGainDb = useVisualizerSettingsStore((state) => state.waveformGainDb)
   const waveformMultiband = useVisualizerSettingsStore((state) => state.waveformMultiband)
@@ -480,123 +500,204 @@ export default function AnalyzerEditOverlay({
     switch (scope) {
       case 'spectrum':
         return (
-          <div className="analyzer-edit-active-controls analyzer-edit-active-controls-inline">
-            <div className="analyzer-edit-mini-control">
-              <span className="analyzer-edit-corner-label">Display</span>
-              <select
-                className="analyzer-edit-select"
-                value={spectrumDisplayMode}
-                onChange={(event) => setSpectrumDisplayMode(event.target.value as SpectrumDisplayMode)}
+          <div className="analyzer-edit-active-controls analyzer-edit-active-controls-inline analyzer-edit-active-controls-spectrum">
+            <div className="analyzer-edit-spectrum-control-grid analyzer-edit-spectrum-primary-grid">
+              <div className="analyzer-edit-mini-control">
+                <span className="analyzer-edit-corner-label">Display</span>
+                <select
+                  className="analyzer-edit-select"
+                  value={spectrumDisplayMode}
+                  onChange={(event) => setSpectrumDisplayMode(event.target.value as SpectrumDisplayMode)}
+                >
+                  <option value="curve">Curve</option>
+                  <option value="bars">Bars</option>
+                </select>
+              </div>
+              <div className="analyzer-edit-mini-control">
+                <span className="analyzer-edit-corner-label">FFT</span>
+                <select
+                  className="analyzer-edit-select"
+                  value={fftSize}
+                  onChange={(event) => setFftSize(Number(event.target.value) as FFTSize)}
+                >
+                  {FFT_OPTIONS.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                type="button"
+                className={`analyzer-edit-button ${spectrumHeatmap ? 'is-active' : ''}`.trim()}
+                onClick={() => setSpectrumHeatmap(!spectrumHeatmap)}
               >
-                <option value="curve">Curve</option>
-                <option value="bars">Bars</option>
-              </select>
-            </div>
-            <div className="analyzer-edit-mini-control">
-              <span className="analyzer-edit-corner-label">FFT</span>
-              <select
-                className="analyzer-edit-select"
-                value={fftSize}
-                onChange={(event) => setFftSize(Number(event.target.value) as FFTSize)}
+                Heat {spectrumHeatmap ? 'On' : 'Off'}
+              </button>
+              <button
+                type="button"
+                className={`analyzer-edit-button ${spectrumShowSideLine ? 'is-active' : ''} ${spectrumDisplayMode === 'bars' ? 'is-disabled' : ''}`.trim()}
+                onClick={() => setSpectrumShowSideLine(!spectrumShowSideLine)}
+                disabled={spectrumDisplayMode === 'bars'}
+                title={spectrumDisplayMode === 'bars' ? 'Curve only' : undefined}
               >
-                {FFT_OPTIONS.map((value) => (
-                  <option key={value} value={value}>
-                    {value}
-                  </option>
-                ))}
-              </select>
+                Side {spectrumDisplayMode === 'bars' ? 'Curve only' : spectrumShowSideLine ? 'On' : 'Off'}
+              </button>
+              {spectrumHeatmap ? (
+                <div className="analyzer-edit-mini-control analyzer-edit-spectrum-palette-control">
+                  <span className="analyzer-edit-corner-label">Heat Palette</span>
+                  <select
+                    className="analyzer-edit-select"
+                    value={spectrumHeatPalette}
+                    onChange={(event) => setSpectrumHeatPalette(event.target.value as SpectrumHeatPalette)}
+                  >
+                    <option value="classic">Classic</option>
+                    <option value="accent">Accent</option>
+                  </select>
+                </div>
+              ) : null}
             </div>
-            <button
-              type="button"
-              className={`analyzer-edit-button ${spectrumHeatmap ? 'is-active' : ''}`.trim()}
-              onClick={() => setSpectrumHeatmap(!spectrumHeatmap)}
-            >
-              Heat {spectrumHeatmap ? 'On' : 'Off'}
-            </button>
-            <button
-              type="button"
-              className={`analyzer-edit-button ${spectrumShowSideLine ? 'is-active' : ''}`.trim()}
-              onClick={() => setSpectrumShowSideLine(!spectrumShowSideLine)}
-            >
-              Side {spectrumShowSideLine ? 'On' : 'Off'}
-            </button>
-            <div
-              className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide"
-              onDoubleClick={() => setSpectrumTiltDbPerOctave(DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE)}
-              title={`Double-click to reset to ${DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE.toFixed(1)} dB/oct`}
-            >
-              <span className="analyzer-edit-corner-label">
-                Tilt {spectrumTiltDbPerOctave.toFixed(1)} dB/oct
-              </span>
-              <input
-                type="range"
-                className="analyzer-edit-range"
-                min={MIN_SPECTRUM_TILT_DB_PER_OCTAVE}
-                max={MAX_SPECTRUM_TILT_DB_PER_OCTAVE}
-                step={SPECTRUM_TILT_STEP}
-                value={spectrumTiltDbPerOctave}
-                aria-label="Spectrum tilt"
-                onChange={(event) => setSpectrumTiltDbPerOctave(Number(event.target.value))}
-              />
-            </div>
-            <div
-              className={`analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide ${spectrumHeatmap ? '' : 'is-disabled'}`.trim()}
-              onDoubleClick={() => setSpectrumHeatmapTiltDbPerOctave(DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE)}
-              title={`Double-click to reset to ${DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE.toFixed(1)} dB/oct`}
-            >
-              <span className="analyzer-edit-corner-label">
-                Heat Tilt {spectrumHeatmapTiltDbPerOctave.toFixed(1)} dB/oct
-              </span>
-              <input
-                type="range"
-                className="analyzer-edit-range"
-                min={MIN_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE}
-                max={MAX_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE}
-                step={SPECTRUM_HEATMAP_TILT_STEP}
-                value={spectrumHeatmapTiltDbPerOctave}
-                disabled={!spectrumHeatmap}
-                aria-label="Spectrum heatmap tilt"
-                onChange={(event) => setSpectrumHeatmapTiltDbPerOctave(Number(event.target.value))}
-              />
-            </div>
-            <div
-              className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide"
-              onDoubleClick={() => setSpectrumSmoothing(DEFAULT_SPECTRUM_SMOOTHING)}
-              title={`Double-click to reset to ${DEFAULT_SPECTRUM_SMOOTHING.toFixed(2)}`}
-            >
-              <span className="analyzer-edit-corner-label">
-                Smoothing {spectrumSmoothing.toFixed(2)}
-              </span>
-              <input
-                type="range"
-                className="analyzer-edit-range"
-                min={MIN_SPECTRUM_SMOOTHING}
-                max={MAX_SPECTRUM_SMOOTHING}
-                step={SPECTRUM_SMOOTHING_STEP}
-                value={spectrumSmoothing}
-                aria-label="Spectrum smoothing"
-                onChange={(event) => setSpectrumSmoothing(Number(event.target.value))}
-              />
-            </div>
-            <div
-              className={`analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide ${spectrumHeatmap ? '' : 'is-disabled'}`.trim()}
-              onDoubleClick={() => setSpectrumHeatmapSmoothing(DEFAULT_SPECTRUM_HEATMAP_SMOOTHING)}
-              title={`Double-click to reset to ${DEFAULT_SPECTRUM_HEATMAP_SMOOTHING.toFixed(2)}`}
-            >
-              <span className="analyzer-edit-corner-label">
-                Heat Smoothing {spectrumHeatmapSmoothing.toFixed(2)}
-              </span>
-              <input
-                type="range"
-                className="analyzer-edit-range"
-                min={MIN_SPECTRUM_SMOOTHING}
-                max={MAX_SPECTRUM_SMOOTHING}
-                step={SPECTRUM_SMOOTHING_STEP}
-                value={spectrumHeatmapSmoothing}
-                disabled={!spectrumHeatmap}
-                aria-label="Spectrum heatmap smoothing"
-                onChange={(event) => setSpectrumHeatmapSmoothing(Number(event.target.value))}
-              />
+            {spectrumDisplayMode === 'bars' ? (
+              <div className="analyzer-edit-spectrum-control-grid analyzer-edit-spectrum-bar-grid">
+                <div
+                  className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide"
+                  onDoubleClick={() => setSpectrumBarDensity(DEFAULT_SPECTRUM_BAR_DENSITY)}
+                  title={`Double-click to reset to ${DEFAULT_SPECTRUM_BAR_DENSITY}`}
+                >
+                  <span className="analyzer-edit-corner-label">Density {spectrumBarDensity}</span>
+                  <input
+                    type="range"
+                    className="analyzer-edit-range"
+                    min={MIN_SPECTRUM_BAR_DENSITY}
+                    max={MAX_SPECTRUM_BAR_DENSITY}
+                    step={1}
+                    value={spectrumBarDensity}
+                    aria-label="Spectrum bar density"
+                    onChange={(event) => setSpectrumBarDensity(Number(event.target.value))}
+                  />
+                </div>
+                <div
+                  className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide"
+                  onDoubleClick={() => setSpectrumBarGapPercent(DEFAULT_SPECTRUM_BAR_GAP_PERCENT)}
+                  title={`Double-click to reset to ${DEFAULT_SPECTRUM_BAR_GAP_PERCENT}%`}
+                >
+                  <span className="analyzer-edit-corner-label">Gap {spectrumBarGapPercent}%</span>
+                  <input
+                    type="range"
+                    className="analyzer-edit-range"
+                    min={MIN_SPECTRUM_BAR_GAP_PERCENT}
+                    max={MAX_SPECTRUM_BAR_GAP_PERCENT}
+                    step={1}
+                    value={spectrumBarGapPercent}
+                    aria-label="Spectrum bar gap"
+                    onChange={(event) => setSpectrumBarGapPercent(Number(event.target.value))}
+                  />
+                </div>
+                <div
+                  className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide"
+                  onDoubleClick={() => setSpectrumBarCornerRadiusPx(DEFAULT_SPECTRUM_BAR_CORNER_RADIUS_PX)}
+                  title={`Double-click to reset to ${DEFAULT_SPECTRUM_BAR_CORNER_RADIUS_PX}px`}
+                >
+                  <span className="analyzer-edit-corner-label">Radius {spectrumBarCornerRadiusPx}px</span>
+                  <input
+                    type="range"
+                    className="analyzer-edit-range"
+                    min={MIN_SPECTRUM_BAR_CORNER_RADIUS_PX}
+                    max={MAX_SPECTRUM_BAR_CORNER_RADIUS_PX}
+                    step={1}
+                    value={spectrumBarCornerRadiusPx}
+                    aria-label="Spectrum bar corner radius"
+                    onChange={(event) => setSpectrumBarCornerRadiusPx(Number(event.target.value))}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className={`analyzer-edit-button ${spectrumShowBarPeaks ? 'is-active' : ''}`.trim()}
+                  onClick={() => setSpectrumShowBarPeaks(!spectrumShowBarPeaks)}
+                >
+                  Peaks {spectrumShowBarPeaks ? 'On' : 'Off'}
+                </button>
+              </div>
+            ) : null}
+            <div className="analyzer-edit-spectrum-control-grid analyzer-edit-spectrum-response-grid">
+              <div
+                className="analyzer-edit-mini-control analyzer-edit-mini-control-range"
+                onDoubleClick={() => setSpectrumTiltDbPerOctave(DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE)}
+                title={`Double-click to reset to ${DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE.toFixed(1)} dB/oct`}
+              >
+                <span className="analyzer-edit-corner-label">
+                  Tilt {spectrumTiltDbPerOctave.toFixed(1)} dB/oct
+                </span>
+                <input
+                  type="range"
+                  className="analyzer-edit-range"
+                  min={MIN_SPECTRUM_TILT_DB_PER_OCTAVE}
+                  max={MAX_SPECTRUM_TILT_DB_PER_OCTAVE}
+                  step={SPECTRUM_TILT_STEP}
+                  value={spectrumTiltDbPerOctave}
+                  aria-label="Spectrum tilt"
+                  onChange={(event) => setSpectrumTiltDbPerOctave(Number(event.target.value))}
+                />
+              </div>
+              <div
+                className={`analyzer-edit-mini-control analyzer-edit-mini-control-range ${spectrumHeatmap ? '' : 'is-disabled'}`.trim()}
+                onDoubleClick={() => setSpectrumHeatmapTiltDbPerOctave(DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE)}
+                title={`Double-click to reset to ${DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE.toFixed(1)} dB/oct`}
+              >
+                <span className="analyzer-edit-corner-label">
+                  Heat Tilt {spectrumHeatmapTiltDbPerOctave.toFixed(1)} dB/oct
+                </span>
+                <input
+                  type="range"
+                  className="analyzer-edit-range"
+                  min={MIN_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE}
+                  max={MAX_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE}
+                  step={SPECTRUM_HEATMAP_TILT_STEP}
+                  value={spectrumHeatmapTiltDbPerOctave}
+                  disabled={!spectrumHeatmap}
+                  aria-label="Spectrum heatmap tilt"
+                  onChange={(event) => setSpectrumHeatmapTiltDbPerOctave(Number(event.target.value))}
+                />
+              </div>
+              <div
+                className="analyzer-edit-mini-control analyzer-edit-mini-control-range"
+                onDoubleClick={() => setSpectrumSmoothing(DEFAULT_SPECTRUM_SMOOTHING)}
+                title={`Double-click to reset to ${DEFAULT_SPECTRUM_SMOOTHING.toFixed(2)}`}
+              >
+                <span className="analyzer-edit-corner-label">
+                  Smoothing {spectrumSmoothing.toFixed(2)}
+                </span>
+                <input
+                  type="range"
+                  className="analyzer-edit-range"
+                  min={MIN_SPECTRUM_SMOOTHING}
+                  max={MAX_SPECTRUM_SMOOTHING}
+                  step={SPECTRUM_SMOOTHING_STEP}
+                  value={spectrumSmoothing}
+                  aria-label="Spectrum smoothing"
+                  onChange={(event) => setSpectrumSmoothing(Number(event.target.value))}
+                />
+              </div>
+              <div
+                className={`analyzer-edit-mini-control analyzer-edit-mini-control-range ${spectrumHeatmap ? '' : 'is-disabled'}`.trim()}
+                onDoubleClick={() => setSpectrumHeatmapSmoothing(DEFAULT_SPECTRUM_HEATMAP_SMOOTHING)}
+                title={`Double-click to reset to ${DEFAULT_SPECTRUM_HEATMAP_SMOOTHING.toFixed(2)}`}
+              >
+                <span className="analyzer-edit-corner-label">
+                  Heat Smoothing {spectrumHeatmapSmoothing.toFixed(2)}
+                </span>
+                <input
+                  type="range"
+                  className="analyzer-edit-range"
+                  min={MIN_SPECTRUM_SMOOTHING}
+                  max={MAX_SPECTRUM_SMOOTHING}
+                  step={SPECTRUM_SMOOTHING_STEP}
+                  value={spectrumHeatmapSmoothing}
+                  disabled={!spectrumHeatmap}
+                  aria-label="Spectrum heatmap smoothing"
+                  onChange={(event) => setSpectrumHeatmapSmoothing(Number(event.target.value))}
+                />
+              </div>
             </div>
           </div>
         )
@@ -1011,7 +1112,7 @@ export default function AnalyzerEditOverlay({
             style={{ gridColumn: `${activeScopeIndex + 1}` }}
           >
             <div
-              className={`analyzer-edit-active-strip ${activeScope === 'waveform' ? 'is-waveform-active' : ''}`.trim()}
+              className={`analyzer-edit-active-strip ${activeScope === 'waveform' ? 'is-waveform-active' : ''} ${activeScope === 'spectrum' ? 'is-spectrum-active' : ''}`.trim()}
               ref={activeStripRef}
               onMouseEnter={() => onScopeHoverChange(activeScope)}
             >
