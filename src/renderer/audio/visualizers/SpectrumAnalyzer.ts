@@ -389,7 +389,8 @@ export class SpectrumAnalyzer {
 
   setOptions(options: Partial<SpectrumAnalyzerOptions>): void {
     const { dataSource, frameScheduler: _frameScheduler, nativeAnalyzer, ...optionUpdates } = options
-    const nextOptions = { ...this.options, ...optionUpdates }
+    const previousOptions = this.options
+    const nextOptions = { ...previousOptions, ...optionUpdates }
     if (optionUpdates.tiltDbPerOctave !== undefined) {
       nextOptions.tiltDbPerOctave = clampSpectrumTiltDbPerOctave(optionUpdates.tiltDbPerOctave)
     }
@@ -406,32 +407,30 @@ export class SpectrumAnalyzer {
       nextOptions.barCornerRadiusPx = clampSpectrumBarCornerRadiusPx(optionUpdates.barCornerRadiusPx)
     }
 
-    const shouldResetForOptions = (
-      optionUpdates.fftSize !== undefined
-      || optionUpdates.smoothing !== undefined
-      || optionUpdates.heatmapSmoothing !== undefined
-      || optionUpdates.showSideLine !== undefined
-    )
+    const fftSizeChanged = nextOptions.fftSize !== previousOptions.fftSize
+    const smoothingChanged = nextOptions.smoothing !== previousOptions.smoothing
+    const showSideLineChanged = nextOptions.showSideLine !== previousOptions.showSideLine
+    const shouldResetForOptions = fftSizeChanged || showSideLineChanged
 
     const heatColorsChanged = nextOptions.heatColors.some(
-      (color, index) => color !== this.options.heatColors[index]
+      (color, index) => color !== previousOptions.heatColors[index]
     )
     this.options = nextOptions
     if (heatColorsChanged) {
       this.heatLut = buildHeatLUT(this.options.heatColors)
     }
     if (
-      optionUpdates.barDensity !== undefined
-      || optionUpdates.showBarPeaks !== undefined
-      || optionUpdates.minFrequency !== undefined
-      || optionUpdates.maxFrequency !== undefined
-      || optionUpdates.minDecibels !== undefined
-      || optionUpdates.maxDecibels !== undefined
-      || optionUpdates.tiltDbPerOctave !== undefined
-      || optionUpdates.heatmapTiltDbPerOctave !== undefined
-      || optionUpdates.heatmapSmoothing !== undefined
-      || optionUpdates.tiltReferenceHz !== undefined
-      || optionUpdates.fftSize !== undefined
+      nextOptions.barDensity !== previousOptions.barDensity
+      || nextOptions.showBarPeaks !== previousOptions.showBarPeaks
+      || nextOptions.minFrequency !== previousOptions.minFrequency
+      || nextOptions.maxFrequency !== previousOptions.maxFrequency
+      || nextOptions.minDecibels !== previousOptions.minDecibels
+      || nextOptions.maxDecibels !== previousOptions.maxDecibels
+      || nextOptions.tiltDbPerOctave !== previousOptions.tiltDbPerOctave
+      || nextOptions.heatmapTiltDbPerOctave !== previousOptions.heatmapTiltDbPerOctave
+      || nextOptions.heatmapSmoothing !== previousOptions.heatmapSmoothing
+      || nextOptions.tiltReferenceHz !== previousOptions.tiltReferenceHz
+      || fftSizeChanged
     ) {
       this.barConfigurationKey = ''
     }
@@ -455,10 +454,10 @@ export class SpectrumAnalyzer {
     }
 
     if (this.isNativeAvailable()) {
-      if (options.fftSize !== undefined) {
-        this.nativeAnalyzer?.setFFTSize(options.fftSize)
+      if (fftSizeChanged) {
+        this.nativeAnalyzer?.setFFTSize(nextOptions.fftSize)
       }
-      if (options.smoothing !== undefined || options.fftSize !== undefined) {
+      if (smoothingChanged || fftSizeChanged) {
         this.nativeAnalyzer?.setSmoothing(this.getNativeSmoothing())
       }
     }

@@ -72,7 +72,7 @@ const { SpectrumAnalyzer } = await import('./SpectrumAnalyzer.ts')
 
 function makeNative() {
   let config: SpectrumBarNativeConfig | null = null
-  const calls = { configure: 0, frame: 0, fill: 0, raw: 0, side: 0, push: 0 }
+  const calls = { configure: 0, frame: 0, fill: 0, raw: 0, side: 0, push: 0, reset: 0 }
   const analyzer: SpectrumNativeAnalyzer = {
     setFFTSize: () => undefined,
     getFFTSize: () => 4096,
@@ -99,7 +99,7 @@ function makeNative() {
         return 0.8
       })
     },
-    reset: () => undefined,
+    reset: () => { calls.reset += 1 },
     isAvailable: () => true,
   }
   return { analyzer, calls, getConfig: () => config }
@@ -192,6 +192,49 @@ test('a stale native addon does not fall back to JavaScript bar DSP', () => {
   assert.equal(monoReads, 0)
   assert.equal(native.calls.frame, 0)
   assert.equal(native.calls.fill + native.calls.raw + native.calls.side, 0)
+  visualizer.dispose()
+})
+
+test('appearance transitions and unchanged DSP options do not reset native spectrum history', () => {
+  const scheduler = new ManualFrameScheduler()
+  const native = makeNative()
+  const visualizer = new SpectrumAnalyzer(new FakeCanvas() as unknown as HTMLCanvasElement, {
+    frameScheduler: scheduler as unknown as FrameScheduler,
+    nativeAnalyzer: native.analyzer,
+    displayMode: 'bars',
+    fftSize: 4096,
+    smoothing: 0.9,
+    heatmapSmoothing: 0.5,
+    barDensity: 10,
+    showBarPeaks: true,
+    dataSource: {
+      getPendingSpectrumSamples: () => [new Float32Array(64)],
+      getPendingSpectrumStereoSamples: () => [],
+      getSampleRate: () => 48000,
+      isPlaying: () => true,
+      subscribeToSessionChanges: () => () => {},
+    },
+  })
+  visualizer.start()
+  scheduler.tick()
+  const resetCount = native.calls.reset
+  const configureCount = native.calls.configure
+
+  visualizer.setOptions({
+    lineColor: '#ff3366',
+    backgroundColor: '#100814',
+    gridColor: 'rgba(255, 255, 255, 0.12)',
+    heatColors: ['rgb(20, 5, 10)', 'rgb(255, 51, 102)', 'rgb(255, 220, 230)'],
+    fftSize: 4096,
+    smoothing: 0.9,
+    heatmapSmoothing: 0.5,
+    barDensity: 10,
+    showBarPeaks: true,
+  })
+  scheduler.tick()
+
+  assert.equal(native.calls.reset, resetCount)
+  assert.equal(native.calls.configure, configureCount)
   visualizer.dispose()
 })
 
