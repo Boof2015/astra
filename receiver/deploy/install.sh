@@ -61,6 +61,87 @@ if ! node_is_new_enough; then
 fi
 log "Using Node $("$NODE_BIN" -v) at $NODE_BIN"
 
+# ── Audio output selection ────────────────────────────────────────────────────
+# Enumerate sound cards from /proc/asound/cards (no alsa-utils dependency) and let the user pick
+# where the receiver should play. Piped installs have the script on stdin, so the prompt reads
+# from /dev/tty; without a terminal (automation) we keep the current/default device — the daemon
+# still has its own runtime fallback. Re-running the installer is the supported way to change
+# the device later; the menu defaults to whatever is currently configured.
+CARDS_FILE="${ASTRA_RECEIVER_CARDS_FILE:-/proc/asound/cards}"
+SELECTED_DEVICE=""
+
+current_config_device() {
+  [ -f "$INSTALL_DIR/config.json" ] || return 0
+  "$NODE_BIN" -e '
+    try {
+      const config = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))
+      if (typeof config.audioDevice === "string") process.stdout.write(config.audioDevice)
+    } catch {}
+  ' "$INSTALL_DIR/config.json" 2>/dev/null || true
+}
+
+choose_audio_device() {
+  local card_names=() card_descs=() line name
+  if [ -r "$CARDS_FILE" ]; then
+    while IFS= read -r line; do
+      if [[ "$line" =~ ^[[:space:]]*[0-9]+[[:space:]]+\[([^]]+)\]:[[:space:]]*(.*)$ ]]; then
+        name="$(printf '%s' "${BASH_REMATCH[1]}" | sed 's/[[:space:]]*$//')"
+        card_names+=("$name")
+        card_descs+=("${BASH_REMATCH[2]}")
+      fi
+    done < "$CARDS_FILE"
+  fi
+
+  if [ "${#card_names[@]}" -eq 0 ]; then
+    log "No sound cards detected yet — keeping the default device; the daemon retries at startup."
+    return 0
+  fi
+
+  local current_device
+  current_device="$(current_config_device)"
+
+  if [ "${#card_names[@]}" -eq 1 ]; then
+    SELECTED_DEVICE="plughw:${card_names[0]},0"
+    log "Audio output: ${card_names[0]} (${card_descs[0]})"
+    return 0
+  fi
+
+  local default_index=1 index
+  for index in "${!card_names[@]}"; do
+    if [ "plughw:${card_names[$index]},0" = "$current_device" ]; then
+      default_index=$((index + 1))
+    fi
+  done
+
+  if ! { : < /dev/tty; } 2>/dev/null; then
+    SELECTED_DEVICE="${current_device:-plughw:${card_names[0]},0}"
+    log "No terminal available — keeping audio output '$SELECTED_DEVICE'. Re-run interactively to change it."
+    return 0
+  fi
+
+  {
+    printf '\n\033[1mWhich output should this receiver play through?\033[0m\n'
+    printf '(HDMI ports are usually named vc4hdmi…; the 3.5mm jack is usually Headphones)\n'
+    for index in "${!card_names[@]}"; do
+      printf '  %d) %-16s %s\n' "$((index + 1))" "${card_names[$index]}" "${card_descs[$index]}"
+    done
+    printf 'Choice [%d]: ' "$default_index"
+  } > /dev/tty
+
+  local choice=""
+  read -r choice < /dev/tty || choice=""
+  case "$choice" in
+    ''|*[!0-9]*) choice="$default_index" ;;
+  esac
+  if [ "$choice" -lt 1 ] || [ "$choice" -gt "${#card_names[@]}" ]; then
+    choice="$default_index"
+  fi
+  SELECTED_DEVICE="plughw:${card_names[$((choice - 1))]},0"
+  log "Audio output: $SELECTED_DEVICE"
+}
+
+choose_audio_device
+
 # ── Locate the latest receiver release ────────────────────────────────────────
 log "Looking up the latest receiver release…"
 RELEASES_JSON="$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=30")"
@@ -105,6 +186,20 @@ fi
 mkdir -p "$INSTALL_DIR"
 install -m 0644 "$TMP_DIR/extracted/astra-receiver.mjs" "$INSTALL_DIR/astra-receiver.mjs"
 install -m 0644 "$TMP_DIR/extracted/astra_receiver_alsa.node" "$INSTALL_DIR/astra_receiver_alsa.node"
+
+# Apply the chosen audio device by MERGING into the existing config — a re-run must never wipe
+# the endpoint UUID or the pairing credential stored alongside it.
+if [ -n "$SELECTED_DEVICE" ]; then
+  "$NODE_BIN" -e '
+    const fs = require("fs")
+    const path = process.argv[1]
+    let config = {}
+    try { config = JSON.parse(fs.readFileSync(path, "utf8")) } catch {}
+    config.audioDevice = process.argv[2]
+    config.audioBackend = "alsa"
+    fs.writeFileSync(path, JSON.stringify(config, null, 2) + "\n")
+  ' "$INSTALL_DIR/config.json" "$SELECTED_DEVICE"
+fi
 chown -R "$SERVICE_USER":"$SERVICE_USER" "$INSTALL_DIR"
 
 # ── systemd unit ──────────────────────────────────────────────────────────────
@@ -140,4 +235,4 @@ IP_HINT="$(hostname -I 2>/dev/null | awk '{print $1}')"
 log "Done. The receiver is running and discoverable on your network."
 log "Pairing + status page: http://${IP_HINT:-$(hostname)}:$WEB_PORT/"
 log "Pair from Astra on the host machine (Parallax → Add Sink), approve on the page above."
-log "Logs: journalctl -u $SERVICE_NAME -f   |   Update: re-run this installer."
+log "Logs: journalctl -u $SERVICE_NAME -f   |   Update or change audio output: re-run this installer."

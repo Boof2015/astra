@@ -44,10 +44,11 @@ curl -fsSL https://raw.githubusercontent.com/Boof2015/astra/dev/receiver/deploy/
 
 The installer downloads the latest prebuilt `receiver-v*` GitHub release (JS bundle + N-API ALSA
 addon — ABI-stable, so one arm64 binary serves any modern Node), installs Node 24 LTS unless a
-Node ≥ 22.19 is present (the bundled undici requires it), sets up a service user in the `audio`
-group, and enables a systemd service. Then open
-`http://<pi>:38405/` and pair from Astra (Parallax → Add Sink). **Updating = re-run the same
-line.** Logs: `journalctl -u astra-receiver -f`.
+Node ≥ 22.19 is present (the bundled undici requires it), **asks which audio output to use when
+the device has more than one** (HDMI vs. headphone jack vs. USB DAC), sets up a service user in
+the `audio` group, and enables a systemd service. Then open `http://<pi>:38405/` and pair from
+Astra (Parallax → Add Sink). **Updating — or changing the audio output — = re-run the same
+line** (it merges config, so pairing survives). Logs: `journalctl -u astra-receiver -f`.
 
 ## Deploy from source (fallback / development)
 
