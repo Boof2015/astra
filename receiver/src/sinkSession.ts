@@ -71,6 +71,8 @@ export interface SinkSessionDiagnostics {
   underruns: number
   rebuffering: boolean
   lastSyncEvent: string | null
+  /** §21: title (or streamId) of the pre-announced next stream while its engine is staged. */
+  stagedNextTitle: string | null
 }
 
 export interface SinkSessionInfo {
@@ -88,15 +90,19 @@ function localNowMs(): number {
 
 export class SinkSession {
   private readonly backend: OutputBackend
-  private readonly engine: SinkPlayoutEngine
   private readonly driver: PlayoutDriver
   private client: ParallaxSinkClient | null = null
   private ownSinkId: string | null = null
 
   private latestTimeline: ParallaxTimelineState | null = null
-  private pendingSinkEvent: ParallaxTimelineEvent | null = null
+  private pendingSinkEvents: ParallaxTimelineEvent[] = []
   private pendingAudioChunks: ParallaxAudioChunk[] = []
   private activeStream: ParallaxStreamInfo | null = null
+  // §21: the pre-announced next stream whose engine is staged in the driver. The engine itself
+  // lives only in the driver (stagedEngine()/promoteStagedEngine()) so the swap has one owner.
+  private stagedStream: ParallaxStreamInfo | null = null
+  private stagedTimeline: ParallaxTimelineState | null = null
+  private volumePercent = 100
   private advanceMs = 0
   private assignedSinkName: string | null = null
 
@@ -125,13 +131,23 @@ export class SinkSession {
     hardSyncCount: 0,
     underruns: 0,
     rebuffering: false,
-    lastSyncEvent: null
+    lastSyncEvent: null,
+    stagedNextTitle: null
   }
 
   constructor(backend: OutputBackend) {
     this.backend = backend
-    this.engine = new SinkPlayoutEngine(backend.sampleRate, backend.channels)
-    this.driver = new PlayoutDriver({ backend, engine: this.engine })
+    this.driver = new PlayoutDriver({
+      backend,
+      engine: new SinkPlayoutEngine(backend.sampleRate, backend.channels)
+    })
+  }
+
+  // The engine bound to the live stream. Always dereferenced through the driver so a §21 promote
+  // (which swaps the staged engine into the active slot) can never leave the session holding the
+  // retired engine.
+  private get engine(): SinkPlayoutEngine {
+    return this.driver.activeEngine()
   }
 
   attachClient(client: ParallaxSinkClient, ownSinkId: string): void {
@@ -140,7 +156,9 @@ export class SinkSession {
   }
 
   setVolumePercent(volumePercent: number): void {
+    this.volumePercent = volumePercent
     this.engine.setVolumePercent(volumePercent)
+    this.driver.stagedEngine()?.setVolumePercent(volumePercent)
   }
 
   start(): void {
@@ -158,8 +176,11 @@ export class SinkSession {
     }
     this.driver.stop()
     this.engine.clearStream()
+    this.driver.setStagedEngine(null)
+    this.stagedStream = null
+    this.stagedTimeline = null
     this.latestTimeline = null
-    this.pendingSinkEvent = null
+    this.pendingSinkEvents = []
     this.pendingAudioChunks = []
     this.activeStream = null
     this.resetHostEmitAnchors()
@@ -180,17 +201,19 @@ export class SinkSession {
   // ── Client callbacks ─────────────────────────────────────────────────────────
 
   handleStatus(status: SinkClientStatus): void {
-    // Release a deferred event once clock priming produced a usable offset (parallaxStore's
-    // pendingSinkEvent mechanism).
-    const pending = this.pendingSinkEvent
-    if (pending && status.clockOffsetMs !== null) {
-      this.pendingSinkEvent = null
-      this.handleEvent(pending)
+    // Release deferred events once clock priming produced a usable offset (parallaxStore's
+    // pendingSinkEvent mechanism, widened to a queue so a deferred stream-start and the
+    // next-stream-start that may follow it replay in order).
+    if (this.pendingSinkEvents.length > 0 && status.clockOffsetMs !== null) {
+      const deferred = this.pendingSinkEvents
+      this.pendingSinkEvents = []
+      for (const event of deferred) this.handleEvent(event)
     }
     if (!status.connected) {
       this.engine.clearStream()
+      this.discardStagedEngine('disconnected')
       this.latestTimeline = null
-      this.pendingSinkEvent = null
+      this.pendingSinkEvents = []
       this.pendingAudioChunks = []
       this.activeStream = null
       this.resetHostEmitAnchors()
@@ -201,6 +224,12 @@ export class SinkSession {
     if (this.engine.getStreamId() === chunk.streamId) {
       this.engine.appendChunk(chunk)
       this.applyChunkTimelineIfNeeded(chunk)
+      return
+    }
+    // §21: pre-fetched next-stream chunks flow to the staged engine.
+    const staged = this.driver.stagedEngine()
+    if (staged && staged.getStreamId() === chunk.streamId) {
+      staged.appendChunk(chunk)
       return
     }
     // Early chunk — buffer until its stream-start configures the engine.
@@ -236,37 +265,45 @@ export class SinkSession {
     if (event.type === 'stop') {
       this.pendingAudioChunks = []
       this.engine.clearStream()
+      this.discardStagedEngine('stop')
       this.latestTimeline = null
-      this.pendingSinkEvent = null
+      this.pendingSinkEvents = []
       this.activeStream = null
       this.resetHostEmitAnchors()
       this.hardSyncCount = 0
       return
     }
-    if (event.type === 'next-stream-start' || event.type === 'next-stream-cancel') {
-      // §21 MVP: no staged engine — the client tracks the pending stream; nothing to do here.
+    if (event.type === 'next-stream-start') {
+      // §21: stage a second playout engine for the pre-announced next stream, scheduled to start
+      // at the boundary output frame. Placing the boundary needs the clock offset — defer like
+      // any timeline until priming completes.
+      const offsetMs = this.client?.getClockOffsetMs() ?? null
+      if (offsetMs === null) {
+        this.deferEvent(event)
+        return
+      }
+      this.stageNextStream(event.stream, event.timeline, offsetMs)
+      return
+    }
+    if (event.type === 'next-stream-cancel') {
+      if (this.stagedStream?.streamId === event.streamId) {
+        this.discardStagedEngine('canceled by host')
+      }
+      this.pendingAudioChunks = this.pendingAudioChunks.filter((chunk) => chunk.streamId !== event.streamId)
       return
     }
     if (event.type === 'next-stream-promote') {
-      // The client already switched its active stream and re-requested audio. Reconfigure the
-      // engine for the promoted stream on its boundary-anchored timeline (the documented §21
-      // fallback for sinks without a staged crossover).
-      const promoted = this.client?.getPromotedStream() ?? null
-      if (!promoted || promoted.stream.streamId !== event.streamId || !promoted.timeline) return
-      this.resetHostEmitAnchors()
-      this.hardSyncCount = 0
-      this.handleEvent({
-        type: 'stream-start',
-        stream: promoted.stream,
-        timeline: promoted.timeline,
-        emittedAtHostTimeMs: event.emittedAtHostTimeMs
-      })
+      this.promoteStagedStream(event)
       return
     }
 
     const timeline = event.timeline
     if (event.type === 'stream-start') {
       this.resetHostEmitAnchors()
+      // §21: a fresh stream-start supersedes any in-flight handoff — including one for the SAME
+      // streamId (a reconnect that crossed the boundary re-enters it as the primary stream, and
+      // a still-mixing staged engine would double the audio).
+      this.discardStagedEngine('superseded by stream-start')
       this.activeStream = event.stream
       if (this.engine.getStreamId() !== event.stream.streamId) {
         const normalization = resolveParallaxStreamNormalization(event.stream)
@@ -295,7 +332,7 @@ export class SinkSession {
 
     const offsetMs = this.client?.getClockOffsetMs() ?? null
     if (offsetMs === null) {
-      this.pendingSinkEvent = event
+      this.deferEvent(event)
       return
     }
 
@@ -315,6 +352,108 @@ export class SinkSession {
 
     this.latestTimeline = timeline
     this.applyTimelineFromHostClock(timeline, offsetMs, 0)
+  }
+
+  private deferEvent(event: ParallaxTimelineEvent): void {
+    this.pendingSinkEvents = [...this.pendingSinkEvents, event].slice(-16)
+  }
+
+  // ── §21 gapless handoff (staged engine lifecycle) ────────────────────────────
+
+  private stageNextStream(
+    stream: ParallaxStreamInfo,
+    timeline: ParallaxTimelineState,
+    offsetMs: number
+  ): void {
+    this.discardStagedEngine('replaced by newer pre-announce')
+    const engine = new SinkPlayoutEngine(this.backend.sampleRate, this.backend.channels)
+    const normalization = resolveParallaxStreamNormalization(stream)
+    engine.configureStream({
+      streamId: stream.streamId,
+      sourceSampleRate: stream.sampleRate,
+      channels: stream.channels,
+      normalizationGainDb: normalization.normalizationMode === 'off' ? 0 : normalization.normalizationGainDb
+    })
+    engine.setVolumePercent(this.volumePercent)
+    // Adopt pre-fetch chunks that raced ahead of this event.
+    const buffered = this.pendingAudioChunks.filter((chunk) => chunk.streamId === stream.streamId)
+    this.pendingAudioChunks = this.pendingAudioChunks.filter((chunk) => chunk.streamId !== stream.streamId)
+    for (const chunk of buffered) engine.appendChunk(chunk)
+    // The boundary: the next-stream timeline is future-anchored — startFrame leaves every
+    // speaker at startHostTimeMs. Same mapping as applyTimelineFromHostClock, applied once at
+    // stage time; the engine renders silence until this output frame, so the crossover is
+    // sample-aligned no matter when the promote bookkeeping event lands. Post-promote drift
+    // correction trues up any residual clock movement between staging and the boundary.
+    const sinkStartWallTimeMs = mapHostTimeToSinkTimeMs(timeline.startHostTimeMs, offsetMs)
+    const startAtOutputFrame = this.driver.outputFrameForWallTime(sinkStartWallTimeMs - this.advanceMs)
+    engine.setTimeline({
+      startFrame: timeline.startFrame,
+      startAtOutputFrame,
+      playing: timeline.playbackState === 'playing',
+      playbackRatePpm: 0
+    }, this.driver.currentOutputFrame())
+    this.stagedStream = stream
+    this.stagedTimeline = timeline
+    this.driver.setStagedEngine(engine)
+    const leadMs = Math.max(0, sinkStartWallTimeMs - localNowMs())
+    console.log(
+      `[astra-receiver] staged next stream "${stream.title ?? stream.streamId}" — boundary in ${(leadMs / 1000).toFixed(1)} s`
+    )
+  }
+
+  private discardStagedEngine(reason: string): void {
+    const staged = this.driver.stagedEngine()
+    if (staged === null && this.stagedStream === null) return
+    this.driver.setStagedEngine(null)
+    const title = this.stagedStream?.title ?? this.stagedStream?.streamId ?? staged?.getStreamId() ?? '?'
+    this.stagedStream = null
+    this.stagedTimeline = null
+    console.log(`[astra-receiver] staged next stream dropped (${reason}): "${title}"`)
+  }
+
+  private promoteStagedStream(
+    event: Extract<ParallaxTimelineEvent, { type: 'next-stream-promote' }>
+  ): void {
+    const staged = this.driver.stagedEngine()
+    if (
+      staged !== null
+      && this.stagedStream !== null
+      && this.stagedStream.streamId === event.streamId
+      && this.stagedTimeline !== null
+    ) {
+      // §21 gapless: the audible switch already happened at the staged engine's pre-scheduled
+      // boundary frame — promote is bookkeeping. Swap the staged engine into the active slot and
+      // hand the drift loop the boundary-anchored timeline; do NOT re-anchor the engine (that
+      // would undo the sample-aligned crossover). Anchors reset and predictor trust is re-earned
+      // for the new stream, mirroring the app.
+      const stream = this.stagedStream
+      const timeline = this.stagedTimeline
+      this.stagedStream = null
+      this.stagedTimeline = null
+      this.driver.promoteStagedEngine()
+      this.activeStream = stream
+      this.latestTimeline = timeline
+      this.resetHostEmitAnchors()
+      this.hardSyncCount = 0
+      this.snapPendingTicks = 0
+      console.log(`[astra-receiver] gapless promote -> "${stream.title ?? stream.streamId}"`)
+      return
+    }
+    // Nothing staged (joined inside the handoff window without the pre-announce, or staging was
+    // still deferred on clock priming): the client already switched its active stream and
+    // re-requested audio — reconfigure the engine on the boundary-anchored timeline (the
+    // documented §21 fallback, audible as a sub-second seam instead of a glitch).
+    this.discardStagedEngine('promote fallback')
+    const promoted = this.client?.getPromotedStream() ?? null
+    if (!promoted || promoted.stream.streamId !== event.streamId || !promoted.timeline) return
+    this.resetHostEmitAnchors()
+    this.hardSyncCount = 0
+    this.handleEvent({
+      type: 'stream-start',
+      stream: promoted.stream,
+      timeline: promoted.timeline,
+      emittedAtHostTimeMs: event.emittedAtHostTimeMs
+    })
   }
 
   // ── Timeline application (AudioEngine scheduling sites, re-based on the driver) ──
@@ -750,7 +889,8 @@ export class SinkSession {
       hardSyncCount: this.hardSyncCount,
       underruns: snapshot.underruns,
       rebuffering: snapshot.rebuffering,
-      lastSyncEvent: syncEvent ?? this.lastDiagnostics.lastSyncEvent
+      lastSyncEvent: syncEvent ?? this.lastDiagnostics.lastSyncEvent,
+      stagedNextTitle: this.stagedStream ? (this.stagedStream.title ?? this.stagedStream.streamId) : null
     }
     void client.publishTelemetry(telemetry)
   }

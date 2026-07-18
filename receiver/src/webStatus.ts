@@ -115,6 +115,7 @@ const PAGE_HTML = `<!doctype html>
     <div class="row"><span class="k">Anchors</span><span id="d-anchors"></span></div>
     <div class="row"><span class="k">Hard syncs</span><span id="d-syncs"></span></div>
     <div class="row"><span class="k">Underruns</span><span id="d-under"></span></div>
+    <div class="row"><span class="k">Gapless next</span><span id="d-next"></span></div>
   </div>
   <div class="muted" id="s-id" style="text-align:center"></div>
 </main>
@@ -188,6 +189,7 @@ async function refresh() {
       document.getElementById('d-anchors').textContent = d.anchors + (d.predictorTrusted ? ' (trusted)' : ' (settling)')
       document.getElementById('d-syncs').textContent = d.hardSyncCount + (d.lastSyncEvent ? ' (last: ' + d.lastSyncEvent + ')' : '')
       document.getElementById('d-under').textContent = String(d.underruns)
+      document.getElementById('d-next').textContent = d.stagedNextTitle ? d.stagedNextTitle + ' (staged)' : '—'
     } else {
       diag.style.display = 'none'
     }

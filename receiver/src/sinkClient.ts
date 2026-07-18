@@ -32,11 +32,12 @@ import {
 // priming, SSE/audio consumption, watchdogs, reconnect-forever backoff with mDNS relocation,
 // 401 → credential wipe — is a faithful port; constants match the app's.
 //
-// §21 note (MVP): the pre-announced next stream is TRACKED (pending stream/timeline) but its
-// audio is not pre-fetched into a second playout engine yet. On `next-stream-promote` the client
-// switches streams and re-requests audio from the live frame, which crosses a track boundary with
-// a sub-second seam instead of the app's sample-aligned crossover. The protocol explicitly
-// permits this fallback; stage 2 adds the dual-engine crossover.
+// §21 gapless: the pre-announced next stream's audio is pre-fetched on a SECOND concurrent
+// reader (a port of the app's consumeSinkNextAudio) and forwarded tagged by streamId — the
+// session routes those chunks to its staged playout engine. The pre-fetch is short-lived
+// (pre-announce → boundary) and best-effort: it does not auto-reconnect, because on the boundary
+// the promote cancels it and re-establishes the stream in the primary slot from the live frame
+// (re-sent backlog is idempotent — playback is by absolute frame).
 
 const CLOCK_SYNC_INTERVAL_MS = 2_000
 const CLOCK_PRIMING_PROBES = 8
@@ -84,6 +85,9 @@ interface SinkConnectionState {
   activeAudioStreamId: string | null
   eventGeneration: number
   audioGeneration: number
+  nextAudioReader: ReadableStreamDefaultReader<Uint8Array> | null
+  nextAudioStreamId: string | null
+  nextAudioGeneration: number
 }
 
 type ParallaxFetchInit = UndiciRequestInit & {
@@ -203,7 +207,10 @@ export class ParallaxSinkClient {
       audioReader: null,
       activeAudioStreamId: null,
       eventGeneration: 0,
-      audioGeneration: 0
+      audioGeneration: 0,
+      nextAudioReader: null,
+      nextAudioStreamId: null,
+      nextAudioGeneration: 0
     }
     this.clockSamples = []
     this.activeStream = null
@@ -246,6 +253,15 @@ export class ParallaxSinkClient {
       if (join.nextStream && join.nextTimeline) {
         this.pendingStream = join.nextStream
         this.pendingTimeline = join.nextTimeline
+        // Joining mid-handoff-window: surface the pre-announcement to the session (it stages an
+        // engine for it) and start the pre-fetch, exactly as if the SSE event had arrived.
+        this.callbacks.onEvent({
+          type: 'next-stream-start',
+          stream: join.nextStream,
+          timeline: join.nextTimeline,
+          emittedAtHostTimeMs: join.hostTimeMs
+        })
+        void this.consumeSinkNextAudio(join.nextStream.streamId, join.nextTimeline.startFrame)
       }
     } catch (error) {
       if (error instanceof ParallaxAuthError && error.status === 401) {
@@ -282,11 +298,15 @@ export class ParallaxSinkClient {
       void connection.dispatcher.close().catch(() => undefined)
       try { await connection.eventReader?.cancel() } catch { /* ignore */ }
       try { await connection.audioReader?.cancel() } catch { /* ignore */ }
+      try { await connection.nextAudioReader?.cancel() } catch { /* ignore */ }
       connection.eventReader = null
       connection.audioReader = null
       connection.activeAudioStreamId = null
+      connection.nextAudioReader = null
+      connection.nextAudioStreamId = null
       connection.eventGeneration += 1
       connection.audioGeneration += 1
+      connection.nextAudioGeneration += 1
     }
     this.emitStatus()
   }
@@ -498,18 +518,23 @@ export class ParallaxSinkClient {
     this.clockSamples = []
     connection.eventGeneration += 1
     connection.audioGeneration += 1
+    connection.nextAudioGeneration += 1
     connection.activeAudioStreamId = null
+    connection.nextAudioStreamId = null
 
     const previousAbortController = connection.abortController
     const eventReader = connection.eventReader
     const audioReader = connection.audioReader
+    const nextAudioReader = connection.nextAudioReader
     connection.eventReader = null
     connection.audioReader = null
+    connection.nextAudioReader = null
     connection.abortController = new AbortController()
 
     try { previousAbortController.abort() } catch { /* ignore */ }
     try { await eventReader?.cancel() } catch { /* ignore */ }
     try { await audioReader?.cancel() } catch { /* ignore */ }
+    try { await nextAudioReader?.cancel() } catch { /* ignore */ }
     if (this.connection !== connection) return
 
     this.emitStatus()
@@ -559,6 +584,13 @@ export class ParallaxSinkClient {
       if (join.nextStream && join.nextTimeline) {
         this.pendingStream = join.nextStream
         this.pendingTimeline = join.nextTimeline
+        this.callbacks.onEvent({
+          type: 'next-stream-start',
+          stream: join.nextStream,
+          timeline: join.nextTimeline,
+          emittedAtHostTimeMs: join.hostTimeMs
+        })
+        void this.consumeSinkNextAudio(join.nextStream.streamId, join.nextTimeline.startFrame)
       }
     } catch (error) {
       if (this.connection !== connection) return
@@ -704,9 +736,10 @@ export class ParallaxSinkClient {
     if (event.type === 'stream-start') {
       this.activeStream = event.stream
       this.timeline = event.timeline
-      // A fresh stream supersedes any in-flight gapless handoff.
+      // §21. A fresh stream supersedes any in-flight gapless handoff.
       this.pendingStream = null
       this.pendingTimeline = null
+      this.cancelSinkNextAudio(null)
       this.emitStatus()
       void this.consumeSinkAudio(event.stream.streamId, event.timeline.startFrame, true)
     } else if (event.type === 'timeline') {
@@ -716,14 +749,16 @@ export class ParallaxSinkClient {
         void this.consumeSinkAudio(event.timeline.streamId, event.timeline.startFrame, true)
       }
     } else if (event.type === 'next-stream-start') {
-      // §21 MVP: track the pending stream so the promote can switch immediately; no pre-fetch.
+      // §21. Pre-fetch the pre-announced next stream's audio concurrently with the current one.
       this.pendingStream = event.stream
       this.pendingTimeline = event.timeline
+      void this.consumeSinkNextAudio(event.stream.streamId, event.timeline.startFrame)
     } else if (event.type === 'next-stream-cancel') {
       if (this.pendingStream?.streamId === event.streamId) {
         this.pendingStream = null
         this.pendingTimeline = null
       }
+      this.cancelSinkNextAudio(event.streamId)
     } else if (event.type === 'next-stream-promote') {
       this.promotePendingStream(event.streamId)
     } else if (event.type === 'stop') {
@@ -738,21 +773,25 @@ export class ParallaxSinkClient {
         try { void connection.audioReader?.cancel() } catch { /* ignore */ }
         connection.audioReader = null
       }
+      this.cancelSinkNextAudio(null)
       this.emitStatus()
     }
 
     this.callbacks.onEvent(event)
   }
 
-  // §21 MVP fallback promote: switch the pending stream into the active slot and re-request its
-  // audio from the live frame. The session reconfigures the playout engine when it sees the
-  // promote event; the boundary-anchored timeline then aligns playback within a snap/slew cycle.
+  // §21. Boundary crossed — the pre-announced next stream becomes primary. Cancel the pre-fetch
+  // reader and re-establish the stream in the primary slot from the live frame (the host keeps
+  // streaming it post-boundary). Re-sent backlog is idempotent — the playout engine plays by
+  // absolute frame, so duplicate frames don't glitch. The session hears the same promote event
+  // (dispatched after this) and swaps its staged engine in as the active one.
   private promotePendingStream(streamId: string): void {
     if (this.pendingStream?.streamId !== streamId) return
     this.activeStream = this.pendingStream
     this.timeline = this.pendingTimeline
     this.pendingStream = null
     this.pendingTimeline = null
+    this.cancelSinkNextAudio(streamId)
     const resumeFrame = this.getSinkReconnectFrame(streamId, this.timeline?.startFrame ?? 0)
     this.lastAudioChunkAtMs = Date.now()
     this.emitStatus()
@@ -895,5 +934,120 @@ export class ParallaxSinkClient {
       this.lastError = error instanceof Error ? error.message : 'Parallax audio stream disconnected.'
       this.scheduleReconnect(connection, this.lastError)
     }
+  }
+
+  // §21 Gapless sink handoff. A lean second reader that pre-fetches the pre-announced next
+  // stream concurrently with the current one. Short-lived (pre-announce → boundary), so unlike
+  // consumeSinkAudio it does not auto-reconnect — on the boundary, promotePendingStream cancels
+  // it and re-establishes the stream in the primary slot.
+  private async consumeSinkNextAudio(streamId: string, fromFrame: number): Promise<void> {
+    const connection = this.connection
+    if (!connection) return
+    if (connection.nextAudioStreamId === streamId && connection.nextAudioReader) return
+
+    connection.nextAudioGeneration += 1
+    const audioGeneration = connection.nextAudioGeneration
+    connection.nextAudioStreamId = streamId
+    try {
+      await connection.nextAudioReader?.cancel()
+    } catch {
+      // Ignore replacement races.
+    }
+    connection.nextAudioReader = null
+
+    try {
+      const requestFromFrame = Math.max(0, Math.floor(fromFrame))
+      const response = await undiciFetch(
+        `${connection.baseUrl}/v1/parallax/audio?streamId=${encodeURIComponent(streamId)}&fromFrame=${requestFromFrame}`,
+        {
+          method: 'GET',
+          dispatcher: connection.dispatcher,
+          signal: connection.abortController.signal,
+          headers: { Authorization: `Bearer ${connection.token}` }
+        } as ParallaxFetchInit
+      )
+      if (!response.ok || !response.body) {
+        if (response.status === 401) {
+          throw new ParallaxAuthError(401, 'Parallax next audio stream unauthorized.')
+        }
+        throw new Error(`Parallax next audio stream failed (${response.status}).`)
+      }
+
+      const reader = response.body.getReader()
+      if (
+        this.connection !== connection
+        || connection.nextAudioStreamId !== streamId
+        || connection.nextAudioGeneration !== audioGeneration
+      ) {
+        await reader.cancel().catch(() => undefined)
+        return
+      }
+      connection.nextAudioReader = reader
+      this.lastHostContactAtMs = Date.now()
+      let pending: Uint8Array = new Uint8Array(0)
+      while (
+        this.connection === connection
+        && connection.nextAudioStreamId === streamId
+        && connection.nextAudioGeneration === audioGeneration
+      ) {
+        const { done, value } = await reader.read()
+        if (
+          this.connection !== connection
+          || connection.nextAudioStreamId !== streamId
+          || connection.nextAudioGeneration !== audioGeneration
+        ) {
+          return
+        }
+        if (done) break
+        if (!value) continue
+        this.lastHostContactAtMs = Date.now()
+        const received = new Uint8Array(value.byteLength)
+        received.set(value)
+        pending = mergeBytes(pending, received)
+        if (
+          pending.byteLength >= PARALLAX_AUDIO_PACKET_HEADER_BYTES
+          && !readParallaxAudioPacketHeader(pending)
+        ) {
+          throw new Error('Parallax host sent an invalid next-stream audio packet header.')
+        }
+        while (true) {
+          const decoded = decodeParallaxAudioPacket(pending)
+          if (!decoded) break
+          pending = pending.slice(decoded.bytesRead)
+          this.callbacks.onAudioChunk({ ...decoded.chunk, streamId })
+        }
+      }
+      if (
+        this.connection === connection
+        && connection.nextAudioStreamId === streamId
+        && connection.nextAudioGeneration === audioGeneration
+      ) {
+        connection.nextAudioReader = null
+      }
+    } catch (error) {
+      if (
+        this.connection !== connection
+        || connection.nextAudioStreamId !== streamId
+        || connection.nextAudioGeneration !== audioGeneration
+      ) return
+      connection.nextAudioReader = null
+      if (error instanceof ParallaxAuthError && error.status === 401) {
+        this.handleAuthRevoked()
+        return
+      }
+      // Non-fatal: pre-fetch is best-effort; the boundary promote re-fetches as the primary stream.
+    }
+  }
+
+  // §21. Stop the pre-fetch reader (skip / seek / queue edit / fresh stream-start / stop). Pass
+  // null to cancel whatever next stream is in flight; a streamId cancels only if it matches.
+  private cancelSinkNextAudio(streamId: string | null): void {
+    const connection = this.connection
+    if (!connection) return
+    if (streamId !== null && connection.nextAudioStreamId !== streamId) return
+    connection.nextAudioGeneration += 1
+    connection.nextAudioStreamId = null
+    try { void connection.nextAudioReader?.cancel() } catch { /* ignore */ }
+    connection.nextAudioReader = null
   }
 }

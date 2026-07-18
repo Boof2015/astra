@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { ParallaxAudioChunk } from '../../src/types/parallax'
+import type { OutputBackend } from './output/types'
 import { NullOutput } from './output/nullOutput'
 import { PlayoutDriver, SinkPlayoutEngine } from './playout'
 
@@ -216,4 +217,135 @@ test('driver keeps the backend queue at the target and maps wall time to output 
   assert.equal(driver.outputFrameForWallTime(now), head)
   assert.equal(driver.outputFrameForWallTime(now + 1000), head + DEVICE_RATE)
   assert.ok(Math.abs(driver.currentLatencyMs() - 120) < 1)
+})
+
+// ── §21 staged crossover ───────────────────────────────────────────────────────
+
+// NullOutput discards samples; the crossover tests need to inspect what actually reached the
+// device, so this backend records every written sample and consumes on the same injectable clock.
+class CaptureOutput implements OutputBackend {
+  readonly deviceId = 'capture'
+  readonly deviceLabel = 'Capture output'
+  readonly sampleRate = DEVICE_RATE
+  readonly channels = 2
+  readonly samples: number[] = []
+  private written = 0
+  private consumed = 0
+  private readonly clock: () => number
+  private readonly openedAtMs: number
+
+  constructor(clock: () => number) {
+    this.clock = clock
+    this.openedAtMs = clock()
+  }
+
+  /** Interleaved sample of output frame `frame`, channel 0. */
+  at(frame: number): number {
+    return this.samples[frame * this.channels]
+  }
+
+  write(interleaved: Float32Array, frames: number): number {
+    for (let index = 0; index < frames * this.channels; index += 1) {
+      this.samples.push(interleaved[index])
+    }
+    this.written += frames
+    return frames
+  }
+
+  framesWritten(): number {
+    return this.written
+  }
+
+  bufferedFrames(): number {
+    const elapsed = Math.floor(((this.clock() - this.openedAtMs) / 1000) * this.sampleRate)
+    this.consumed = Math.min(this.written, Math.max(this.consumed, elapsed))
+    return this.written - this.consumed
+  }
+
+  underruns(): number {
+    return 0
+  }
+
+  close(): void {}
+}
+
+function makeStreamEngine(streamId: string, level: number, frames: number): SinkPlayoutEngine {
+  const engine = new SinkPlayoutEngine(DEVICE_RATE, 2)
+  engine.configureStream({
+    streamId,
+    sourceSampleRate: DEVICE_RATE,
+    channels: 2,
+    normalizationGainDb: 0
+  })
+  engine.appendChunk(makeChunk(streamId, 0, frames, 2, DEVICE_RATE, () => level))
+  return engine
+}
+
+test('staged engine crosses over sample-aligned at its scheduled boundary frame', () => {
+  let now = 1_000_000
+  const nowMs = () => now
+  const backend = new CaptureOutput(nowMs)
+  const boundary = 4800 // 100 ms in
+
+  // Retiring stream: constant 0.25, exactly `boundary` frames — it runs dry ON the boundary.
+  const active = makeStreamEngine('a', 0.25, boundary)
+  active.setTimeline({ startFrame: 0, startAtOutputFrame: 0, playing: true, playbackRatePpm: 0 }, 0)
+  const driver = new PlayoutDriver({ backend, engine: active, targetBufferMs: 120, nowMs })
+
+  // Staged next stream: constant 0.5, scheduled to start emitting at the boundary output frame.
+  const staged = makeStreamEngine('b', 0.5, DEVICE_RATE)
+  staged.setTimeline({ startFrame: 0, startAtOutputFrame: boundary, playing: true, playbackRatePpm: 0 }, 0)
+  driver.setStagedEngine(staged)
+
+  // One tick fills 120 ms (5760 frames) — past the boundary in a single mixed write.
+  driver.tick()
+  assert.ok(backend.framesWritten() >= boundary + 100)
+  assert.ok(Math.abs(backend.at(boundary - 1) - 0.25) < 1e-6, 'last old-stream frame intact')
+  assert.ok(Math.abs(backend.at(boundary) - 0.5) < 1e-6, 'first next-stream frame lands ON the boundary')
+  // No silent seam anywhere around the boundary.
+  for (let frame = boundary - 8; frame < boundary + 8; frame += 1) {
+    assert.ok(Math.abs(backend.at(frame)) > 0.2, `frame ${frame} is not a gap`)
+  }
+  // The staged engine voiced frames this tick, so it carries a truthful position stamp.
+  assert.ok(staged.getSnapshot().currentFrameAtWallMs > 0)
+
+  // Promote (bookkeeping): the staged engine becomes active and keeps playing seamlessly.
+  const retired = driver.promoteStagedEngine()
+  assert.equal(retired?.getSnapshot().streamId, 'a')
+  assert.equal(driver.activeEngine().getSnapshot().streamId, 'b')
+  assert.equal(driver.stagedEngine(), null)
+  now += 60
+  const beforeSecondTick = backend.framesWritten()
+  driver.tick()
+  assert.ok(Math.abs(backend.at(beforeSecondTick) - 0.5) < 1e-6, 'post-promote audio continues')
+})
+
+test('staged engine stays silent and unstamped before its boundary', () => {
+  let now = 1_000_000
+  const nowMs = () => now
+  const backend = new CaptureOutput(nowMs)
+  const active = makeStreamEngine('a', 0.25, DEVICE_RATE)
+  active.setTimeline({ startFrame: 0, startAtOutputFrame: 0, playing: true, playbackRatePpm: 0 }, 0)
+  const driver = new PlayoutDriver({ backend, engine: active, targetBufferMs: 120, nowMs })
+
+  const staged = makeStreamEngine('b', 0.5, DEVICE_RATE)
+  staged.setTimeline({ startFrame: 0, startAtOutputFrame: DEVICE_RATE, playing: true, playbackRatePpm: 0 }, 0)
+  driver.setStagedEngine(staged)
+
+  driver.tick()
+  for (let frame = 0; frame < backend.framesWritten(); frame += 1) {
+    assert.ok(Math.abs(backend.at(frame) - 0.25) < 1e-6, `frame ${frame} is old stream only`)
+  }
+  // Pre-roll: cursor never moved, and no position stamp was taken (a stamp here would claim
+  // frame 0 emits "now" while the real emission is still ahead at the boundary).
+  assert.equal(staged.getSnapshot().currentFrame, 0)
+  assert.equal(staged.getSnapshot().currentFrameAtWallMs, 0)
+
+  // Cancel path: dropping the staged engine leaves the active stream untouched.
+  driver.setStagedEngine(null)
+  now += 60
+  const before = backend.framesWritten()
+  driver.tick()
+  assert.ok(Math.abs(backend.at(before) - 0.25) < 1e-6)
+  assert.equal(driver.promoteStagedEngine(), null, 'nothing to promote after cancel')
 })

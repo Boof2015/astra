@@ -228,12 +228,15 @@ export class SinkPlayoutEngine {
    * Render `frames` interleaved device frames into `out`, starting at output frame
    * `blockStartOutputFrame` (the backend's framesWritten before this block is pushed). Always
    * fills the full block — silence while paused/rebuffering/pre-roll — so the device stays fed.
+   * Returns how many output frames advanced the cursor (0 while paused/pre-roll/starved), which
+   * the driver uses to decide whether a position stamp for this engine would be truthful.
    */
-  render(out: Float32Array, frames: number, blockStartOutputFrame: number): void {
+  render(out: Float32Array, frames: number, blockStartOutputFrame: number): number {
     const channelCount = this.deviceChannels
     out.fill(0, 0, frames * channelCount)
-    if (!this.playing || this.streamId === null) return
+    if (!this.playing || this.streamId === null) return 0
 
+    let voicedFrames = 0
     const gain = this.gain()
     for (let outputFrame = 0; outputFrame < frames; outputFrame += 1) {
       if (blockStartOutputFrame + outputFrame < this.startAtOutputFrame) {
@@ -274,6 +277,7 @@ export class SinkPlayoutEngine {
 
       this.starvedFrames = 0
       this.currentFrameFloat += this.playbackRate
+      voicedFrames += 1
     }
 
     // Sustained starvation while connected: self-pause into rebuffering instead of free-running
@@ -283,6 +287,7 @@ export class SinkPlayoutEngine {
       this.rebuffering = true
       this.playing = false
     }
+    return voicedFrames
   }
 
   /** Called by the driver right after a block lands in the backend, with matching queue depth. */
@@ -340,7 +345,15 @@ export interface PlayoutDriverOptions {
 
 export class PlayoutDriver {
   private readonly backend: OutputBackend
-  private readonly engine: SinkPlayoutEngine
+  private engine: SinkPlayoutEngine
+  // §21 staged next-stream engine. It renders into every block ALONGSIDE the active engine and
+  // the two are summed — the exact analogue of the app's dual worklet nodes both feeding the
+  // audio graph. No explicit boundary split is needed: the staged engine emits silence before
+  // its scheduled startAtOutputFrame, and the retiring engine runs out of chunks at the old
+  // stream's end, so the audible switch is sample-aligned at the pre-scheduled boundary frame
+  // regardless of when the promote bookkeeping event arrives.
+  private staged: SinkPlayoutEngine | null = null
+  private stagedScratch: Float32Array | null = null
   private readonly targetBufferFrames: number
   private readonly tickMs: number
   private readonly nowMs: () => number
@@ -372,6 +385,33 @@ export class PlayoutDriver {
     }
   }
 
+  /** The engine currently bound to the live stream (changes on promoteStagedEngine). */
+  activeEngine(): SinkPlayoutEngine {
+    return this.engine
+  }
+
+  stagedEngine(): SinkPlayoutEngine | null {
+    return this.staged
+  }
+
+  /** Stage (or clear) the §21 next-stream engine; its startAtOutputFrame gates when it sounds. */
+  setStagedEngine(engine: SinkPlayoutEngine | null): void {
+    this.staged = engine
+  }
+
+  /**
+   * §21 promote bookkeeping: the staged engine becomes the active one. The audible crossover
+   * already happened at the staged engine's scheduled start frame — this only retargets which
+   * engine future stamps, snapshots, and timeline updates address. Returns the retired engine.
+   */
+  promoteStagedEngine(): SinkPlayoutEngine | null {
+    if (!this.staged) return null
+    const retired = this.engine
+    this.engine = this.staged
+    this.staged = null
+    return retired
+  }
+
   /**
    * Output frame (framesWritten domain) whose DAC emission lands at `wallMs`. The consumption
    * head is `framesWritten − bufferedFrames`; emission of frame W happens (W − head)/rate after
@@ -394,13 +434,25 @@ export class PlayoutDriver {
   tick(): void {
     let guard = 0
     let wroteFrames = 0
+    let stagedVoicedFrames = 0
     while (guard < 16) {
       guard += 1
       const buffered = this.backend.bufferedFrames()
       const deficit = this.targetBufferFrames - buffered
       if (deficit <= 0) break
       const frames = Math.min(this.blockFrames, deficit)
-      this.engine.render(this.scratch, frames, this.backend.framesWritten())
+      const blockStartOutputFrame = this.backend.framesWritten()
+      this.engine.render(this.scratch, frames, blockStartOutputFrame)
+      const staged = this.staged
+      if (staged) {
+        const stagedOut = this.stagedScratch
+          ?? (this.stagedScratch = new Float32Array(this.blockFrames * this.backend.channels))
+        stagedVoicedFrames += staged.render(stagedOut, frames, blockStartOutputFrame)
+        const samples = frames * this.backend.channels
+        for (let index = 0; index < samples; index += 1) {
+          this.scratch[index] += stagedOut[index]
+        }
+      }
       const accepted = this.backend.write(this.scratch, frames)
       wroteFrames += accepted
       if (accepted < frames) {
@@ -414,7 +466,16 @@ export class PlayoutDriver {
     // stamp taken then would feed the drift loop phantom lag. A slightly aged stamp is harmless
     // by design (drift is computed at the stamp instant, not "now").
     if (wroteFrames > 0) {
-      this.engine.stampPosition(this.nowMs(), this.currentLatencyMs())
+      const wallMs = this.nowMs()
+      const latencyMs = this.currentLatencyMs()
+      this.engine.stampPosition(wallMs, latencyMs)
+      // The staged engine gets a stamp only once it has voiced frames (its cursor moved): a
+      // stamp taken during its pre-roll would claim "startFrame emitted around now" while the
+      // real emission is still ahead at the boundary — phantom drift for the first post-promote
+      // telemetry tick.
+      if (this.staged && stagedVoicedFrames > 0) {
+        this.staged.stampPosition(wallMs, latencyMs)
+      }
     }
   }
 }

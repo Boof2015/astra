@@ -84,9 +84,15 @@ Float32 for DACs that don't take it natively).
 - `ASTRA_RECEIVER_CONFIG=<path>` — config file override.
 - `ASTRA_RECEIVER_ALSA_ADDON=<path>` — explicit .node addon path (used by the systemd unit).
 
-## Known MVP limits (stage 2)
+## Known limits
 
-- §21 gapless: the pre-announced next stream is tracked but not pre-buffered into a second
-  playout engine — track changes promote via a quick re-fetch (sub-second seam) instead of a
-  sample-aligned crossover.
 - No artwork / Zone Display (headless by definition; the web page shows title/artist only).
+
+## Gapless playback (§21)
+
+The daemon implements the full gapless sink handoff: the host's pre-announced next stream is
+pre-fetched on a second reader into a staged playout engine, scheduled to start emitting at the
+exact boundary output frame, and mixed into the same device blocks as the retiring stream — the
+track change is sample-aligned. If the daemon joins mid-handoff without the pre-announcement, it
+falls back to the protocol's promote re-fetch (sub-second seam). The web page's diagnostics card
+shows "Gapless next" while a stream is staged.
