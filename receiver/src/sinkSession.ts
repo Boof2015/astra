@@ -587,7 +587,7 @@ export class SinkSession {
 
     const liveSnapTarget = (): { targetFrame: number; leadSeconds: number } | null => {
       const effectiveLeadMs = Math.max(PARALLAX_RESYNC_LEAD_MS, schedulingLatencyMs + PARALLAX_RESYNC_GUARD_MS)
-      if (!PARALLAX_USE_HOST_PREDICTOR) {
+      const nominalTarget = (): { targetFrame: number; leadSeconds: number } => {
         const targetFrame = Math.max(
           0,
           Math.min(
@@ -598,7 +598,19 @@ export class SinkSession {
         )
         return { targetFrame, leadSeconds: effectiveLeadMs / 1000 }
       }
-      if (correction.loopSource !== 'predictor') return null
+      if (!PARALLAX_USE_HOST_PREDICTOR) {
+        return nominalTarget()
+      }
+      if (correction.loopSource !== 'predictor') {
+        // Streams with NO anchors at all — the host publishes emit-anchors only from its normal
+        // playback engine, so the trim TEST TONE never grows a predictor — still need snap-based
+        // correction: without this, env-on mode leaves them slew-only (1 ms/s) and a live trim
+        // change on the tone audibly does nothing (found on first Pi trim calibration). Gated on
+        // an empty anchor window so a transient gate blink on an anchored music stream keeps the
+        // app's no-phase1-snap rule (a nominal snap there could fight the predictor's truth).
+        if (this.hostEmitAnchors.length >= PARALLAX_HOST_EMIT_ANCHOR_MIN_SAMPLES) return null
+        return nominalTarget()
+      }
       if (!this.hostEmitPredictor) return null
       const targetWallMs = resolveHostNowMs() + effectiveLeadMs
       const predicted = this.hostEmitPredictor.intercept + this.hostEmitPredictor.slopeFramesPerMs * targetWallMs
@@ -658,6 +670,9 @@ export class SinkSession {
       // even before the latch sets; the snap lands the cursor on the host's real output clock,
       // drift collapses, and the latch then sets through the normal stability path.
       const anchorsMature = this.hostEmitAnchors.length >= PARALLAX_HOST_EMIT_ANCHOR_TRUSTED_SAMPLES
+      // Anchorless streams (trim test tone) snap against the nominal timeline — mirrored in
+      // liveSnapTarget, which only yields a phase-1 target when the anchor window is empty.
+      const anchorless = this.hostEmitAnchors.length < PARALLAX_HOST_EMIT_ANCHOR_MIN_SAMPLES
       const canSnap = isSnapSizedDrift
         && timeline.playbackState === 'playing'
         && hasOffset
@@ -665,6 +680,7 @@ export class SinkSession {
         && (
           !PARALLAX_USE_HOST_PREDICTOR
           || (correction.loopSource === 'predictor' && (this.predictorSnapTrusted || anchorsMature))
+          || anchorless
         )
       this.snapPendingTicks = canSnap ? this.snapPendingTicks + 1 : 0
       // For snap-sized drift always slew at max while the snap is suppressed, so the known-large
