@@ -43,8 +43,9 @@ curl -fsSL https://raw.githubusercontent.com/Boof2015/astra/dev/receiver/deploy/
 ```
 
 The installer downloads the latest prebuilt `receiver-v*` GitHub release (JS bundle + N-API ALSA
-addon — ABI-stable, so one arm64 binary serves every Node 20+), installs Node 22 if needed, sets
-up a service user in the `audio` group, and enables a systemd service. Then open
+addon — ABI-stable, so one arm64 binary serves any modern Node), installs Node 24 LTS unless a
+Node ≥ 22.19 is present (the bundled undici requires it), sets up a service user in the `audio`
+group, and enables a systemd service. Then open
 `http://<pi>:38405/` and pair from Astra (Parallax → Add Sink). **Updating = re-run the same
 line.** Logs: `journalctl -u astra-receiver -f`.
 
@@ -57,8 +58,8 @@ npm run receiver:build      # → receiver/dist/astra-receiver.mjs (single file,
 rsync -a receiver/dist/astra-receiver.mjs receiver/native pi@<pi>:~/astra-receiver/
 ```
 
-On the Pi (Node 20.19+ or 22+, once — needed only on 32-bit/armv7 systems the prebuilds don't
-cover, or when hacking on the addon):
+On the Pi (Node ≥ 22.19 — undici's floor — once; needed only on 32-bit/armv7 systems the
+prebuilds don't cover, or when hacking on the addon):
 
 ```sh
 sudo apt install -y build-essential libasound2-dev

@@ -5,7 +5,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/Boof2015/astra/dev/receiver/deploy/install.sh | sudo bash
 #
 # What it does:
-#   1. Installs Node.js 22 if no Node >= 20 is present (via NodeSource).
+#   1. Installs Node.js 24 LTS unless Node >= 22.19 is present (bundled undici requires 22.19+).
 #   2. Downloads the latest `receiver-v*` release tarball (prebuilt bundle + ALSA addon).
 #   3. Installs to /opt/astra-receiver, creates a service user in the `audio` group.
 #   4. Writes + enables a systemd unit. Re-running the script updates in place.
@@ -38,18 +38,24 @@ fi
 command -v curl >/dev/null 2>&1 || fail "curl is required."
 
 # ── Node.js ────────────────────────────────────────────────────────────────────
+# The bundle inlines undici, whose engines field requires Node >= 22.19.0 (it calls e.g.
+# worker_threads.markAsUncloneable unguarded). Compare full versions, not just the major — a
+# Node 22.5 passes a major check and still crashes at startup.
+REQUIRED_NODE_VERSION="22.19.0"
 NODE_BIN="$(command -v node || true)"
-NODE_MAJOR=0
-if [ -n "$NODE_BIN" ]; then
-  NODE_MAJOR="$("$NODE_BIN" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-fi
-if [ "$NODE_MAJOR" -lt 20 ]; then
+node_is_new_enough() {
+  [ -n "$NODE_BIN" ] || return 1
+  CURRENT_NODE_VERSION="$("$NODE_BIN" -v 2>/dev/null | tr -d 'v')"
+  [ -n "$CURRENT_NODE_VERSION" ] || return 1
+  [ "$(printf '%s\n%s\n' "$REQUIRED_NODE_VERSION" "$CURRENT_NODE_VERSION" | sort -V | head -n1)" = "$REQUIRED_NODE_VERSION" ]
+}
+if ! node_is_new_enough; then
   if [ -n "$NODE_BIN" ]; then
-    log "Node $("$NODE_BIN" -v 2>/dev/null || echo '?') is too old — installing Node.js 22…"
+    log "Node $("$NODE_BIN" -v 2>/dev/null || echo '?') is older than $REQUIRED_NODE_VERSION — installing Node.js 24 LTS…"
   else
-    log "Node.js not found — installing Node.js 22…"
+    log "Node.js not found — installing Node.js 24 LTS…"
   fi
-  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
+  curl -fsSL https://deb.nodesource.com/setup_24.x | bash - >/dev/null
   apt-get install -y nodejs >/dev/null
   NODE_BIN="$(command -v node)"
 fi
