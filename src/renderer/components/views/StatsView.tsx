@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type {
   ListeningStatsActivityBucket,
   ListeningStatsRange,
@@ -12,6 +12,7 @@ import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { formatExactDuration } from '../../utils/collectionDuration'
 import AlbumArtwork from '../library/AlbumArtwork'
+import StatsShareModal from '../stats/StatsShareModal'
 
 const RANGE_OPTIONS: Array<{ value: ListeningStatsRange; label: string }> = [
   { value: '7d', label: '7D' },
@@ -160,6 +161,7 @@ export default function StatsView() {
   const selectArtist = useLibraryStore((state) => state.selectArtist)
   const selectAlbum = useLibraryStore((state) => state.selectAlbum)
   const startPlaybackContextByPaths = usePlayerStore((state) => state.startPlaybackContextByPaths)
+  const [shareSnapshot, setShareSnapshot] = useState<typeof dashboard>(null)
 
   useEffect(() => {
     void loadDashboard()
@@ -217,18 +219,35 @@ export default function StatsView() {
           <h1>Listening Stats</h1>
           <p>Local listening time and qualified plays from this installation.</p>
         </div>
-        <div className="listening-stats-range-control" role="group" aria-label="Listening stats date range">
-          {RANGE_OPTIONS.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              className={range === option.value ? 'active' : ''}
-              aria-pressed={range === option.value}
-              onClick={() => setRange(option.value)}
-            >
-              {option.label}
-            </button>
-          ))}
+        <div className="listening-stats-header-actions">
+          <button
+            className="listening-stats-share-button"
+            type="button"
+            disabled={!dashboard || !hasDetailedHistory || !hasRangeActivity}
+            title={hasRangeActivity ? 'Create a shareable listening-stats image' : 'Listen to something in this range before sharing'}
+            onClick={() => setShareSnapshot(dashboard)}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="18" cy="5" r="3" />
+              <circle cx="6" cy="12" r="3" />
+              <circle cx="18" cy="19" r="3" />
+              <path d="m8.6 10.5 6.8-4M8.6 13.5l6.8 4" />
+            </svg>
+            Share
+          </button>
+          <div className="listening-stats-range-control" role="group" aria-label="Listening stats date range">
+            {RANGE_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                className={range === option.value ? 'active' : ''}
+                aria-pressed={range === option.value}
+                onClick={() => setRange(option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
       </header>
 
@@ -365,6 +384,12 @@ export default function StatsView() {
           )}
         </>
       )}
+
+      <StatsShareModal
+        isOpen={shareSnapshot !== null}
+        snapshot={shareSnapshot}
+        onClose={() => setShareSnapshot(null)}
+      />
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, screen, safeStorage, powerMonitor, protocol, session, globalShortcut } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, clipboard, screen, safeStorage, powerMonitor, protocol, session, globalShortcut } from 'electron'
 import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir, stat } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
@@ -88,6 +88,7 @@ import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
 import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
 import { collectAppMemoryFootprint } from './services/appMemoryFootprint'
+import { normalizeStatsShareFileName, validateStatsSharePng } from './services/statsShareImage'
 import { getMusicMetadataParseOptions } from './utils/musicMetadata'
 import {
   MINI_WINDOW_MAX_HEIGHT,
@@ -7905,6 +7906,27 @@ ipcMain.handle('library:getListeningStatsDashboard', (_event, query: ListeningSt
 
 ipcMain.handle('library:clearDetailedListeningHistory', async () => {
   return library.clearDetailedListeningHistory()
+})
+
+ipcMain.handle('stats-share:copy-png', (_event, input: unknown) => {
+  const bytes = validateStatsSharePng(input)
+  const image = nativeImage.createFromBuffer(Buffer.from(bytes))
+  if (image.isEmpty()) throw new Error('Share-card PNG could not be decoded.')
+  clipboard.writeImage(image)
+  return true
+})
+
+ipcMain.handle('stats-share:save-png', async (_event, input: unknown, suggestedFileName: unknown) => {
+  if (!mainWindow) return null
+  const bytes = validateStatsSharePng(input)
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save Listening Stats',
+    defaultPath: normalizeStatsShareFileName(suggestedFileName),
+    filters: [{ name: 'PNG Image', extensions: ['png'] }]
+  })
+  if (result.canceled || !result.filePath) return null
+  await writeFile(result.filePath, Buffer.from(bytes))
+  return result.filePath
 })
 
 // ============================================

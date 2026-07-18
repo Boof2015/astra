@@ -1244,6 +1244,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   writeFile: (filePath: string, content: string) => ipcRenderer.invoke('fs:writeTextFile', filePath, content),
   revealFileInFolder: (filePath: string) => ipcRenderer.invoke('fs:revealFileInFolder', filePath) as Promise<boolean>,
 
+  statsShare: {
+    copyPng: (bytes: Uint8Array) => ipcRenderer.invoke('stats-share:copy-png', bytes) as Promise<boolean>,
+    savePng: (bytes: Uint8Array, suggestedFileName: string) =>
+      ipcRenderer.invoke('stats-share:save-png', bytes, suggestedFileName) as Promise<string | null>
+  },
+
   // Library operations
   library: {
     getTracks: () => getAllLibraryTracksPaged(),
@@ -1787,6 +1793,11 @@ declare global {
       readFileAsDataUrl: (filePath: string) => Promise<string | null>
       writeFile: (filePath: string, content: string) => Promise<boolean>
       revealFileInFolder: (filePath: string) => Promise<boolean>
+
+      statsShare: {
+        copyPng: (bytes: Uint8Array) => Promise<boolean>
+        savePng: (bytes: Uint8Array, suggestedFileName: string) => Promise<string | null>
+      }
 
       // Library operations
       library: {

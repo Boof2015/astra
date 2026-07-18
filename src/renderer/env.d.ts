@@ -619,6 +619,10 @@ declare global {
             readFileAsDataUrl: (filePath: string) => Promise<string | null>
             writeFile: (filePath: string, content: string) => Promise<boolean>
             revealFileInFolder: (filePath: string) => Promise<boolean>
+            statsShare: {
+                copyPng: (bytes: Uint8Array) => Promise<boolean>
+                savePng: (bytes: Uint8Array, suggestedFileName: string) => Promise<string | null>
+            }
             library: {
                 getTracks: () => Promise<DbTrack[]>
                 getTracksPage: (request?: LibraryTrackPageRequest) => Promise<LibraryTrackPage>
