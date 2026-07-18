@@ -8,6 +8,12 @@ const here = dirname(fileURLToPath(import.meta.url))
 // single Node ESM file. Only the native .node addon stays external — it's loaded at runtime via
 // createRequire with a filesystem path. Deploy = dist/astra-receiver.mjs + receiver/native.
 export default defineConfig({
+  resolve: {
+    alias: {
+      // undici's optional sqlite cache store — see src/shims/nodeSqliteStub.ts.
+      'node:sqlite': join(here, 'src/shims/nodeSqliteStub.ts')
+    }
+  },
   build: {
     ssr: join(here, 'src/main.ts'),
     target: 'node20',
