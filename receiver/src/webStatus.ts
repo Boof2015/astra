@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
+import type { SinkSessionDiagnostics } from './sinkSession'
 
 // Tiny status/pairing page for the headless receiver. Replaces the Electron sink's PIN card and
 // Zone Display surface: during a pair window it shows the 6-digit PIN and — once the host has
@@ -28,6 +29,7 @@ export interface WebStatusState {
     awaitingApproval: boolean
     expiresAtMs: number
   } | null
+  diagnostics: SinkSessionDiagnostics | null
 }
 
 export interface WebStatusCallbacks {
@@ -103,6 +105,17 @@ const PAGE_HTML = `<!doctype html>
       <button class="danger" onclick="if(confirm('Forget the paired host?')) act('forget')">Forget host</button>
     </div>
   </div>
+  <div class="card" id="diag-card" style="display:none">
+    <div class="row"><span class="k">Sync diagnostics</span><span class="muted">1 Hz</span></div>
+    <div class="row"><span class="k">Drift (timeline)</span><span id="d-drift"></span></div>
+    <div class="row"><span class="k">Drift (predictor)</span><span id="d-p2"></span></div>
+    <div class="row"><span class="k">Loop</span><span id="d-loop"></span></div>
+    <div class="row"><span class="k">Rate nudge</span><span id="d-ppm"></span></div>
+    <div class="row"><span class="k">Buffered / latency</span><span id="d-buf"></span></div>
+    <div class="row"><span class="k">Anchors</span><span id="d-anchors"></span></div>
+    <div class="row"><span class="k">Hard syncs</span><span id="d-syncs"></span></div>
+    <div class="row"><span class="k">Underruns</span><span id="d-under"></span></div>
+  </div>
   <div class="muted" id="s-id" style="text-align:center"></div>
 </main>
 <script>
@@ -161,6 +174,23 @@ async function refresh() {
     if (document.activeElement !== vol) vol.value = s.volumePercent
     document.getElementById('vol-label').textContent = s.volumePercent + '%'
     document.getElementById('forget-actions').style.display = s.paired ? '' : 'none'
+    const diag = document.getElementById('diag-card')
+    if (s.diagnostics && s.playbackState !== 'stopped') {
+      diag.style.display = ''
+      const d = s.diagnostics
+      const ms = (v) => v === null ? '—' : v.toFixed(1) + ' ms'
+      document.getElementById('d-drift').textContent = ms(d.driftMs)
+      document.getElementById('d-p2').textContent = ms(d.phase2DriftMs)
+      document.getElementById('d-loop').textContent = (d.loopSource || '—')
+        + (d.rebuffering ? ' (rebuffering)' : '')
+      document.getElementById('d-ppm').textContent = d.appliedPpm + ' ppm'
+      document.getElementById('d-buf').textContent = d.bufferedMs.toFixed(0) + ' ms / ' + d.latencyMs.toFixed(1) + ' ms'
+      document.getElementById('d-anchors').textContent = d.anchors + (d.predictorTrusted ? ' (trusted)' : ' (settling)')
+      document.getElementById('d-syncs').textContent = d.hardSyncCount + (d.lastSyncEvent ? ' (last: ' + d.lastSyncEvent + ')' : '')
+      document.getElementById('d-under').textContent = String(d.underruns)
+    } else {
+      diag.style.display = 'none'
+    }
     document.getElementById('s-id').textContent = s.endpointUuid
   } catch { /* daemon restarting — keep polling */ }
 }

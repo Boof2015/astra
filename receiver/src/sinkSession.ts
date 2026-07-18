@@ -58,12 +58,28 @@ interface RateCorrection {
   loopSource: 'predictor' | 'phase1' | 'hold'
 }
 
+export interface SinkSessionDiagnostics {
+  driftMs: number | null
+  phase2DriftMs: number | null
+  loopSource: 'predictor' | 'phase1' | 'hold' | null
+  appliedPpm: number
+  bufferedMs: number
+  latencyMs: number
+  anchors: number
+  predictorTrusted: boolean
+  hardSyncCount: number
+  underruns: number
+  rebuffering: boolean
+  lastSyncEvent: string | null
+}
+
 export interface SinkSessionInfo {
   assignedSinkName: string | null
   appliedAdvanceMs: number
   streamTitle: string | null
   streamArtist: string | null
   playbackState: string
+  diagnostics: SinkSessionDiagnostics
 }
 
 function localNowMs(): number {
@@ -97,6 +113,20 @@ export class SinkSession {
   private hardSyncCount = 0
 
   private tickTimer: ReturnType<typeof setInterval> | null = null
+  private lastDiagnostics: SinkSessionDiagnostics = {
+    driftMs: null,
+    phase2DriftMs: null,
+    loopSource: null,
+    appliedPpm: 0,
+    bufferedMs: 0,
+    latencyMs: 0,
+    anchors: 0,
+    predictorTrusted: false,
+    hardSyncCount: 0,
+    underruns: 0,
+    rebuffering: false,
+    lastSyncEvent: null
+  }
 
   constructor(backend: OutputBackend) {
     this.backend = backend
@@ -142,7 +172,8 @@ export class SinkSession {
       appliedAdvanceMs: this.advanceMs,
       streamTitle: this.activeStream?.title ?? null,
       streamArtist: this.activeStream?.artist ?? null,
-      playbackState: this.latestTimeline?.playbackState ?? 'stopped'
+      playbackState: this.latestTimeline?.playbackState ?? 'stopped',
+      diagnostics: this.lastDiagnostics
     }
   }
 
@@ -608,13 +639,22 @@ export class SinkSession {
         }
       }
 
+      // Trust-latch bootstrap (deviation from the app's §17.2(c), deliberate): the latch's
+      // stability condition needs |drift| under the snap threshold for consecutive ticks — which
+      // is unreachable when the initial anchor lands far off (the daemon's ALSA emission model
+      // is not as tight as Web Audio's), so the latch could deadlock and the sink would never
+      // snap at all. Once the anchor window is MATURE (≥ TRUSTED_SAMPLES, ~3 s of anchors — the
+      // settling-fit risk §17.1 guarded against has passed) a predictor-target snap is allowed
+      // even before the latch sets; the snap lands the cursor on the host's real output clock,
+      // drift collapses, and the latch then sets through the normal stability path.
+      const anchorsMature = this.hostEmitAnchors.length >= PARALLAX_HOST_EMIT_ANCHOR_TRUSTED_SAMPLES
       const canSnap = isSnapSizedDrift
         && timeline.playbackState === 'playing'
         && hasOffset
         && snap !== null
         && (
           !PARALLAX_USE_HOST_PREDICTOR
-          || (correction.loopSource === 'predictor' && this.predictorSnapTrusted)
+          || (correction.loopSource === 'predictor' && (this.predictorSnapTrusted || anchorsMature))
         )
       this.snapPendingTicks = canSnap ? this.snapPendingTicks + 1 : 0
       // For snap-sized drift always slew at max while the snap is suppressed, so the known-large
@@ -665,6 +705,22 @@ export class SinkSession {
       outputDeviceId: this.backend.deviceId,
       outputDeviceLabel: this.backend.deviceLabel,
       appliedAdvanceMs: this.advanceMs
+    }
+    this.lastDiagnostics = {
+      driftMs: stream.sampleRate > 0 ? (correction.driftFrames / stream.sampleRate) * 1000 : null,
+      phase2DriftMs: phase2.phase2DriftFrames !== null && stream.sampleRate > 0
+        ? (phase2.phase2DriftFrames / stream.sampleRate) * 1000
+        : null,
+      loopSource: correction.loopSource,
+      appliedPpm,
+      bufferedMs: telemetry.bufferedMs,
+      latencyMs: sinkLatencyMs,
+      anchors: this.hostEmitAnchors.length,
+      predictorTrusted: this.predictorSnapTrusted,
+      hardSyncCount: this.hardSyncCount,
+      underruns: snapshot.underruns,
+      rebuffering: snapshot.rebuffering,
+      lastSyncEvent: syncEvent ?? this.lastDiagnostics.lastSyncEvent
     }
     void client.publishTelemetry(telemetry)
   }

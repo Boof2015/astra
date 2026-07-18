@@ -183,7 +183,8 @@ async function main(): Promise<void> {
               awaitingApproval: incomingPair.awaitingApproval,
               expiresAtMs: incomingPair.expiresAtMs
             }
-          : null
+          : null,
+        diagnostics: sessionInfo.diagnostics
       }
     },
     approvePair: () => listener.approvePending(),
