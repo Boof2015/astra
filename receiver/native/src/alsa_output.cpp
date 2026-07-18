@@ -52,22 +52,33 @@ Napi::Value Open(const Napi::CallbackInfo& info) {
     ThrowAlsa(env, "snd_pcm_open failed", err);
     return env.Undefined();
   }
-  // 500 ms device buffer: comfortably above the driver's ~120 ms write-ahead target so writes
-  // are never capped in steady state, small enough that a stale queue drains fast on stop.
-  err = snd_pcm_set_params(
-      g_pcm,
-      SND_PCM_FORMAT_FLOAT_LE,
-      SND_PCM_ACCESS_RW_INTERLEAVED,
-      g_channels,
-      g_sample_rate,
-      1 /* soft_resample */,
-      500000 /* latency us */);
+  // Explicit hw_params instead of snd_pcm_set_params: the convenience helper picks ~4 periods
+  // per buffer — ~125 ms periods for a 500 ms buffer. The hardware pointer (and therefore
+  // snd_pcm_delay, our emission clock) only advances per period, so a write-ahead loop holding
+  // ~120 ms sees the queue "full" for a whole period, freezes, then bursts — a built-in ~125 ms
+  // sawtooth the sync loop reads as drift and audibly chases (slew/snap oscillation observed on
+  // the first Pi 5 listen). Small periods make delay near-continuous; the buffer stays ~500 ms.
+  snd_pcm_hw_params_t* hw_params;
+  snd_pcm_hw_params_alloca(&hw_params);
+  snd_pcm_hw_params_any(g_pcm, hw_params);
+  err = snd_pcm_hw_params_set_access(g_pcm, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED);
+  if (err >= 0) err = snd_pcm_hw_params_set_format(g_pcm, hw_params, SND_PCM_FORMAT_FLOAT_LE);
+  if (err >= 0) err = snd_pcm_hw_params_set_channels(g_pcm, hw_params, g_channels);
+  unsigned int negotiated_rate = g_sample_rate;
+  if (err >= 0) err = snd_pcm_hw_params_set_rate_near(g_pcm, hw_params, &negotiated_rate, nullptr);
+  snd_pcm_uframes_t period_frames = 1024;  // ~21 ms at 48 kHz
+  int period_dir = 0;
+  if (err >= 0) err = snd_pcm_hw_params_set_period_size_near(g_pcm, hw_params, &period_frames, &period_dir);
+  snd_pcm_uframes_t buffer_frames = period_frames * 24;  // ~500 ms at 48 kHz
+  if (err >= 0) err = snd_pcm_hw_params_set_buffer_size_near(g_pcm, hw_params, &buffer_frames);
+  if (err >= 0) err = snd_pcm_hw_params(g_pcm, hw_params);
   if (err < 0) {
     snd_pcm_close(g_pcm);
     g_pcm = nullptr;
-    ThrowAlsa(env, "snd_pcm_set_params failed", err);
+    ThrowAlsa(env, "snd_pcm_hw_params failed", err);
     return env.Undefined();
   }
+  g_sample_rate = negotiated_rate;
 
   // snd_pcm_set_params sets the start threshold to (roughly) the full buffer size. A write-ahead
   // loop that keeps only ~120 ms queued never crosses a 500 ms threshold, so the device sits in

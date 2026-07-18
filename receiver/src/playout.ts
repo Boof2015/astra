@@ -393,6 +393,7 @@ export class PlayoutDriver {
 
   tick(): void {
     let guard = 0
+    let wroteFrames = 0
     while (guard < 16) {
       guard += 1
       const buffered = this.backend.bufferedFrames()
@@ -401,12 +402,19 @@ export class PlayoutDriver {
       const frames = Math.min(this.blockFrames, deficit)
       this.engine.render(this.scratch, frames, this.backend.framesWritten())
       const accepted = this.backend.write(this.scratch, frames)
+      wroteFrames += accepted
       if (accepted < frames) {
         // Device queue unexpectedly full — rendered-but-unwritten frames are dropped. Should not
         // happen while target depth < device buffer capacity.
         break
       }
     }
-    this.engine.stampPosition(this.nowMs(), this.currentLatencyMs())
+    // Stamp only when this tick actually pushed audio: on a tick where the device's queue report
+    // was stale (period granularity), both the cursor and the reported delay are frozen — a
+    // stamp taken then would feed the drift loop phantom lag. A slightly aged stamp is harmless
+    // by design (drift is computed at the stamp instant, not "now").
+    if (wroteFrames > 0) {
+      this.engine.stampPosition(this.nowMs(), this.currentLatencyMs())
+    }
   }
 }
