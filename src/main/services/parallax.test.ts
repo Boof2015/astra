@@ -21,10 +21,26 @@ import {
 
 type ParallaxSseTestEvent = {
   type: string
+  sinkId?: string
+  playbackEnabled?: boolean
+  streamId?: string | null
   stream?: {
     streamId: string
     normalizationGainDb?: number
     normalizationMode?: string
+  }
+}
+
+function makePersistedSink(id: string, token: string, name: string, playbackEnabled = true) {
+  return {
+    id,
+    name,
+    tokenHash: hashToken(token),
+    tokenPrefix: token.slice(0, 8),
+    createdAt: Date.now(),
+    lastSeenAt: null,
+    revokedAt: null,
+    playbackEnabled
   }
 }
 
@@ -119,15 +135,7 @@ async function tryCreateStartedParallaxService(): Promise<Awaited<ReturnType<typ
 async function pairSink(service: ParallaxService, _baseUrl: string, sinkName: string = 'Desk'): Promise<{ sinkId: string; token: string }> {
   const sinkId = createOpaqueSecret(16)
   const token = createOpaqueSecret(32)
-  service.replacePairedSinks([{
-    id: sinkId,
-    name: sinkName,
-    tokenHash: hashToken(token),
-    tokenPrefix: token.slice(0, 8),
-    createdAt: Date.now(),
-    lastSeenAt: null,
-    revokedAt: null
-  }])
+  service.replacePairedSinks([makePersistedSink(sinkId, token, sinkName)])
   return { sinkId, token }
 }
 
@@ -158,6 +166,161 @@ async function readParallaxSseEvents(
 
   return events
 }
+
+test('Parallax playback selection persists per pairing and bulk actions include offline sinks', () => {
+  const firstToken = createOpaqueSecret(32)
+  const secondToken = createOpaqueSecret(32)
+  const persistedSnapshots: boolean[][] = []
+  const service = new ParallaxService({
+    config: { enabled: false, port: 38403 },
+    pairedSinks: [
+      makePersistedSink('living-room', firstToken, 'Living Room'),
+      makePersistedSink('kitchen', secondToken, 'Kitchen')
+    ],
+    onPairedSinksChange: (sinks) => persistedSnapshots.push(sinks.map((sink) => sink.playbackEnabled))
+  })
+
+  assert.deepEqual(service.listPairedSinks().map((sink) => sink.playbackEnabled), [true, true])
+  const oneOff = service.setSinkPlaybackEnabled('living-room', false)
+  assert.equal(oneOff.host.connectedSinkCount, 0)
+  assert.equal(oneOff.host.activePlaybackSinkCount, 0)
+  assert.equal(service.listPairedSinks().find((sink) => sink.id === 'living-room')?.playbackEnabled, false)
+
+  service.setAllSinksPlaybackEnabled(false)
+  assert.deepEqual(
+    service.listPairedSinks().map((sink) => sink.playbackEnabled),
+    [false, false]
+  )
+  service.setAllSinksPlaybackEnabled(true)
+  assert.deepEqual(
+    service.listPairedSinks().map((sink) => sink.playbackEnabled),
+    [true, true]
+  )
+  assert.deepEqual(persistedSnapshots, [[false, true], [false, false], [true, true]])
+  assert.throws(() => service.setSinkPlaybackEnabled('missing', true), /no longer paired/i)
+})
+
+test('Parallax keeps inactive sinks connected while filtering playback delivery', async (t) => {
+  const started = await tryCreateStartedParallaxService()
+  if (!started) {
+    t.skip('Local socket binding is blocked in this environment.')
+    return
+  }
+  const { service, baseUrl } = started
+  const livingToken = createOpaqueSecret(32)
+  const kitchenToken = createOpaqueSecret(32)
+  service.replacePairedSinks([
+    makePersistedSink('living-room', livingToken, 'Living Room'),
+    makePersistedSink('kitchen', kitchenToken, 'Kitchen')
+  ])
+
+  const livingAbort = new AbortController()
+  const kitchenAbort = new AbortController()
+  let livingEvents: UndiciResponse | null = null
+  let kitchenEvents: UndiciResponse | null = null
+  try {
+    livingEvents = await fetchHost(baseUrl, '/v1/parallax/events', {
+      headers: { Authorization: `Bearer ${livingToken}` },
+      signal: livingAbort.signal
+    })
+    kitchenEvents = await fetchHost(baseUrl, '/v1/parallax/events', {
+      headers: { Authorization: `Bearer ${kitchenToken}` },
+      signal: kitchenAbort.signal
+    })
+    assert.ok(livingEvents.body)
+    assert.ok(kitchenEvents.body)
+    await waitFor(() => service.getStatus().host.connectedSinkCount === 2)
+    assert.equal(service.getStatus().host.activePlaybackSinkCount, 2)
+
+    const oneOff = service.setSinkPlaybackEnabled('living-room', false)
+    assert.equal(oneOff.host.connectedSinkCount, 2)
+    assert.equal(oneOff.host.activePlaybackSinkCount, 1)
+    assert.equal(
+      oneOff.host.connectedSinks.find((sink) => sink.sinkId === 'living-room')?.playbackEnabled,
+      false
+    )
+
+    service.publishHostStreamStart({
+      streamId: 'zone-stream',
+      trackId: 'zone-track',
+      title: 'Zone Test',
+      artist: 'Astra',
+      album: 'Parallax',
+      sampleRate: 48_000,
+      channels: 2,
+      durationSeconds: 1,
+      totalFrames: 48_000
+    })
+
+    const livingJoinResponse = await fetchHost(baseUrl, '/v1/parallax/join', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${livingToken}` }
+    })
+    const livingJoin = await livingJoinResponse.json() as { playbackEnabled: boolean; stream: unknown }
+    assert.equal(livingJoin.playbackEnabled, false)
+    assert.equal(livingJoin.stream, null)
+
+    const kitchenJoinResponse = await fetchHost(baseUrl, '/v1/parallax/join', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${kitchenToken}` }
+    })
+    const kitchenJoin = await kitchenJoinResponse.json() as { playbackEnabled: boolean; stream: { streamId: string } | null }
+    assert.equal(kitchenJoin.playbackEnabled, true)
+    assert.equal(kitchenJoin.stream?.streamId, 'zone-stream')
+
+    const rejectedAudio = await fetchHost(baseUrl, '/v1/parallax/audio?streamId=zone-stream&fromFrame=0', {
+      headers: { Authorization: `Bearer ${livingToken}` }
+    })
+    assert.equal(rejectedAudio.status, 409)
+
+    const livingControl = await readParallaxSseEvents(livingEvents.body.getReader(), 4)
+    assert.deepEqual(livingControl.map((event) => event.type), [
+      'sink-name-update',
+      'sink-playback-update',
+      'sink-playback-update',
+      'stop'
+    ])
+    const kitchenControl = await readParallaxSseEvents(kitchenEvents.body.getReader(), 3)
+    assert.deepEqual(kitchenControl.map((event) => event.type), [
+      'sink-name-update',
+      'sink-playback-update',
+      'stream-start'
+    ])
+
+    service.setAllSinksPlaybackEnabled(false)
+    assert.equal(service.getStatus().host.connectedSinkCount, 2)
+    assert.equal(service.getStatus().host.activePlaybackSinkCount, 0)
+
+    service.publishHostStreamStart({
+      streamId: 'targeted-tone',
+      trackId: 'parallax-test-tone',
+      title: 'Test tone',
+      artist: 'Astra',
+      album: 'Setup',
+      sampleRate: 48_000,
+      channels: 2,
+      durationSeconds: 1,
+      totalFrames: 48_000
+    }, { targetSinkId: 'living-room' })
+    const targetedJoinResponse = await fetchHost(baseUrl, '/v1/parallax/join', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${livingToken}` }
+    })
+    const targetedJoin = await targetedJoinResponse.json() as { playbackEnabled: boolean; stream: { streamId: string } | null }
+    assert.equal(targetedJoin.playbackEnabled, false)
+    assert.equal(targetedJoin.stream?.streamId, 'targeted-tone')
+    service.stopHostStream()
+
+    service.setAllSinksPlaybackEnabled(true)
+    assert.equal(service.getStatus().host.activePlaybackSinkCount, 2)
+  } finally {
+    livingAbort.abort()
+    kitchenAbort.abort()
+    await livingEvents?.body?.cancel().catch(() => undefined)
+    await kitchenEvents?.body?.cancel().catch(() => undefined)
+    await service.stop()
+  }
+})
 
 test('Parallax host rejects the legacy pairing route and requires bearer auth for join', async (t) => {
   const started = await tryCreateStartedParallaxService()
@@ -423,8 +586,16 @@ test('Parallax audio endpoint streams timestamped PCM packets', async (t) => {
     return
   }
   const { service, baseUrl } = started
+  const eventsAbort = new AbortController()
+  let eventsResponse: UndiciResponse | null = null
   try {
     const paired = await pairSink(service, baseUrl)
+    eventsResponse = await fetchHost(baseUrl, '/v1/parallax/events', {
+      headers: { Authorization: `Bearer ${paired.token}` },
+      signal: eventsAbort.signal
+    })
+    assert.equal(eventsResponse.status, 200)
+    await waitFor(() => service.getStatus().host.activePlaybackSinkCount === 1)
 
     const timeline = service.publishHostStreamStart({
       streamId: 'stream-audio-test',
@@ -486,6 +657,8 @@ test('Parallax audio endpoint streams timestamped PCM packets', async (t) => {
     assert.equal(decoded.chunk.hostTimeMs, timeline.startHostTimeMs)
     assert.deepEqual(Array.from(new Float32Array(decoded.chunk.pcmData)), Array.from(pcm))
   } finally {
+    eventsAbort.abort()
+    await eventsResponse?.body?.cancel().catch(() => undefined)
     await service.stop()
   }
 })
@@ -582,7 +755,7 @@ test('Parallax events endpoint delivers consecutive stream-start metadata update
         normalizationMode: 'replaygain'
       })
 
-      const events = await readParallaxSseEvents(reader, 3)
+      const events = await readParallaxSseEvents(reader, 4)
       const streamStarts = events.filter((event) => event.type === 'stream-start')
       assert.deepEqual(
         streamStarts.map((event) => event.stream?.streamId),
@@ -835,6 +1008,7 @@ test('§20 pair-confirm success persists sink credential AND activates host pair
     // Host activated the candidate into pairedSinks.
     const status = fixture.host.getStatus()
     assert.equal(status.host.pairedSinkCount, 1)
+    assert.equal(fixture.host.listPairedSinks()[0]?.playbackEnabled, true)
     assert.equal(fixture.host.getPendingPairSnapshot(initiate.pairingId), null)
   } finally {
     await destroyPairFixture(fixture)

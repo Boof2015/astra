@@ -35,6 +35,7 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
     revokePairedSink,
     clearHostPresenceCache,
     setSinkTrim,
+    setSinkPlaybackEnabled,
     isTestToneActive,
     testToneSinkId,
     startTestTone,
@@ -62,6 +63,7 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
   const normalizing = testingThis && normalizeRemainingMs > 0
 
   const online = Boolean(connected?.online)
+  const playbackEnabled = sink.playbackEnabled !== false
   const outputDeviceId = connected?.outputDeviceId ?? null
   const outputDeviceLabel = connected?.outputDeviceLabel ?? null
   const persistedTrim = outputDeviceId
@@ -77,8 +79,12 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
   const rttLabel = typeof connected?.rttMs === 'number' ? `${Math.round(connected.rttMs)} ms RTT` : 'RTT unknown'
 
   const statusLine = online
-    ? [rttLabel, activeStreamLabel].filter(Boolean).join(' · ')
-    : `Offline · last seen ${formatParallaxLastSeen(lastSeen)}`
+    ? playbackEnabled
+      ? [rttLabel, activeStreamLabel].filter(Boolean).join(' · ')
+      : 'Connected · Not selected for playback'
+    : playbackEnabled
+      ? `Offline · Will play when reconnected · last seen ${formatParallaxLastSeen(lastSeen)}`
+      : `Offline · Not selected for playback · last seen ${formatParallaxLastSeen(lastSeen)}`
 
   // Plain-language readout of the applied compensation. advanceMs > 0 pulls this speaker's audio
   // forward (it plays earlier, fixing a speaker that sounded late); < 0 holds it back.
@@ -138,7 +144,7 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
   }
 
   return (
-    <div className={`parallax-speaker-row ${online ? 'is-online' : 'is-offline'}`}>
+    <div className={`parallax-speaker-row ${online ? 'is-online' : 'is-offline'} ${playbackEnabled ? 'is-playback-active' : 'is-playback-inactive'}`}>
       <div className="parallax-speaker-row-head">
         <span className={`parallax-sink-status-dot ${online ? 'is-online' : 'is-offline'}`} />
         <div className="parallax-speaker-row-identity">
@@ -175,6 +181,19 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
             </>
           ) : (
             <>
+              <button
+                className={`settings-toggle parallax-zone-play-toggle ${playbackEnabled ? 'active' : ''}`}
+                aria-pressed={playbackEnabled}
+                aria-label={`${playbackEnabled ? 'Disable' : 'Enable'} playback in ${sink.name}`}
+                title="Play in this zone"
+                onClick={() => {
+                  void setSinkPlaybackEnabled(sink.id, !playbackEnabled).catch((error: unknown) => {
+                    notify(error instanceof Error ? error.message : 'Failed to update zone playback.')
+                  })
+                }}
+              >
+                {playbackEnabled ? 'Playing' : 'Play here'}
+              </button>
               {online && (
                 <button
                   className={`settings-btn ${tuneOpen ? 'settings-btn-primary' : ''}`}

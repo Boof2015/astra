@@ -262,6 +262,11 @@ export class SinkSession {
       this.assignedSinkName = event.name.trim() || null
       return
     }
+    if (event.type === 'sink-playback-update') {
+      // The network client owns the surfaced selection state; playout is stopped by the targeted
+      // stop event that follows a disable.
+      return
+    }
     if (event.type === 'stop') {
       this.pendingAudioChunks = []
       this.engine.clearStream()

@@ -169,6 +169,7 @@ import {
   PARALLAX_SINK_DEFAULT_PORT,
   decideParallaxSinkEnabledFromMeta,
   decideParallaxSecurityV2Migration,
+  resolveParallaxPlaybackEnabled,
   type ParallaxAudioChunk,
   type ParallaxDiscoveryEvent,
   type ParallaxHostConfig,
@@ -1140,6 +1141,7 @@ const parallaxService = new ParallaxService({
       hostActive: status.host.active,
       hostPort: status.host.port,
       connectedSinkCount: status.host.connectedSinkCount,
+      activePlaybackSinkCount: status.host.activePlaybackSinkCount,
       sinkConnected: status.sink.connected,
       activeStreamId: status.host.activeStream?.streamId ?? status.sink.activeStream?.streamId ?? null,
       hostLastError: status.host.lastError,
@@ -1645,7 +1647,6 @@ function sanitizePhoneRemotePairedDevices(rawDevices: unknown): PersistedPhoneRe
     const revokedAt = typeof value.revokedAt === 'number' && Number.isFinite(value.revokedAt)
       ? Math.max(0, value.revokedAt)
       : null
-
     const expectedScopes: PhoneRemoteCredentialScope[] = clientKind === 'native'
       ? ['control', 'sync']
       : ['control']
@@ -1740,6 +1741,8 @@ function sanitizeParallaxPairedSinks(rawSinks: unknown): PersistedParallaxPaired
     const revokedAt = typeof value.revokedAt === 'number' && Number.isFinite(value.revokedAt)
       ? Math.max(0, value.revokedAt)
       : null
+    // Active-by-default migration for pairings written before zone selection existed.
+    const playbackEnabled = resolveParallaxPlaybackEnabled(value.playbackEnabled)
 
     if (!id || !name || !tokenHash || !tokenPrefix || createdAt <= 0) {
       continue
@@ -1776,6 +1779,7 @@ function sanitizeParallaxPairedSinks(rawSinks: unknown): PersistedParallaxPaired
       createdAt,
       lastSeenAt,
       revokedAt,
+      playbackEnabled,
       trims: sanitizedTrims,
       ...(remoteParallaxEndpointUuid ? { remoteParallaxEndpointUuid } : {})
     })
@@ -6405,6 +6409,17 @@ ipcMain.handle('parallax:renamePairedSink', (_event, id: unknown, name: unknown)
     throw new Error('Parallax sink name is required.')
   }
   return parallaxService.renamePairedSink(id.trim(), name)
+})
+
+ipcMain.handle('parallax:setSinkPlaybackEnabled', (_event, id: unknown, enabled: unknown) => {
+  if (typeof id !== 'string' || !id.trim()) {
+    throw new Error('Invalid Parallax sink id.')
+  }
+  return parallaxService.setSinkPlaybackEnabled(id.trim(), Boolean(enabled))
+})
+
+ipcMain.handle('parallax:setAllSinksPlaybackEnabled', (_event, enabled: unknown) => {
+  return parallaxService.setAllSinksPlaybackEnabled(Boolean(enabled))
 })
 
 ipcMain.handle('parallax:revokeAllPairedSinks', () => {

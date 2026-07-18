@@ -3403,8 +3403,12 @@ useAudioSettingsStore.subscribe((nextState, prevState) => {
 // instead of waiting (and forcing a restart on the next play). See parallaxStore for the anchor.
 let hostAutoStreamStartInFlight = false
 useParallaxStore.subscribe((nextState, prevState) => {
-  const nextCount = nextState.status?.host.connectedSinkCount ?? 0
-  const prevCount = prevState.status?.host.connectedSinkCount ?? 0
+  const nextCount = nextState.status?.host.activePlaybackSinkCount ?? 0
+  const prevCount = prevState.status?.host.activePlaybackSinkCount ?? 0
+  if (prevCount > 0 && nextCount === 0) {
+    nextState.handleHostPlaybackAudienceLost()
+    return
+  }
   if (nextCount <= 0 || nextCount <= prevCount) return
   if (hostAutoStreamStartInFlight) return
 

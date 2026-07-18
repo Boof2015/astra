@@ -177,6 +177,7 @@ function ZoneIdleDashboard({
   const hasPersisted = sink?.hasPersistedConnection ?? false
   const removed = sink?.removedByHost ?? false
   const hostName = sink?.persistedHostName ?? null
+  const playbackEnabled = sink?.playbackEnabled !== false
 
   let statusLabel: string
   let tone: 'idle' | 'good' | 'warn' = 'idle'
@@ -192,6 +193,9 @@ function ZoneIdleDashboard({
     // Connection config lingers for auto-reconnect, but the host is actually gone.
     statusLabel = hostName ? `Lost connection to ${hostName}` : 'Lost connection to host'
     tone = 'warn'
+  } else if (connected && !playbackEnabled) {
+    statusLabel = 'Connected, not selected for playback'
+    tone = 'idle'
   } else if (connected) {
     statusLabel = hostName ? `Waiting for ${hostName}` : 'Waiting for music'
     tone = 'good'
@@ -254,6 +258,7 @@ export default function ZoneDisplay() {
   const sink = status?.sink ?? null
   const connected = sink?.connected ?? false
   const hostReachable = sink?.hostReachable ?? true
+  const playbackEnabled = sink?.playbackEnabled !== false
   const stream = sink?.activeStream ?? null
   const outputLabel = sink?.outputDeviceLabel ?? sink?.outputDeviceId ?? null
 
@@ -264,7 +269,7 @@ export default function ZoneDisplay() {
     || 'Astra Speaker'
   // Only "now playing" when the host is actually reachable — a quit/unreachable host must not leave
   // a frozen, stale track on screen (the connection config lingers for auto-reconnect).
-  const nowPlaying = connected && hostReachable && Boolean(stream)
+  const nowPlaying = connected && hostReachable && playbackEnabled && Boolean(stream)
 
   return (
     <div className={`zone-display fullscreen-overlay ${chromeVisible ? '' : 'is-idle'}`} role="main">

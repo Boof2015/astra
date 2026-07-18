@@ -428,6 +428,9 @@ declare global {
                 publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry) => Promise<void>
                 reportHostLatency: (metrics: ParallaxOutputLatencyMetrics) => Promise<void>
                 revokePairedSink: (id: string) => Promise<ParallaxPairedSink | null>
+                renamePairedSink: (id: string, name: string) => Promise<ParallaxPairedSink | null>
+                setSinkPlaybackEnabled: (id: string, enabled: boolean) => Promise<ParallaxStatus>
+                setAllSinksPlaybackEnabled: (enabled: boolean) => Promise<ParallaxStatus>
                 revokeAllPairedSinks: () => Promise<number>
                 clearHostPresenceCache: (sinkId?: string) => Promise<ParallaxStatus>
                 resetToDefaults: () => Promise<ParallaxStatus>

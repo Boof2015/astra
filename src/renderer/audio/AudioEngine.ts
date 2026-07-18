@@ -1337,6 +1337,47 @@ export class AudioEngine {
     this.parallaxHostPublishGeneration += 1
   }
 
+  // If the final playback zone is disabled during Parallax's pre-roll, collapse only the still-
+  // pending scheduled start to an ordinary immediate local start. Once audio has begun we leave it
+  // untouched so changing zones never restarts or skips audible host playback.
+  releasePendingParallaxHostStartDelay(): boolean {
+    const ctx = this.context
+    const buffer = this.audioBuffer
+    if (
+      this.playbackOutputMode === 'bitperfect'
+      || !ctx
+      || !buffer
+      || !this.sourceNode
+      || this._playbackState !== 'playing'
+    ) return false
+
+    const offset = Math.max(0, Math.min(buffer.duration, this.pauseTime))
+    const scheduledStartTime = this.startTime + offset
+    if (!Number.isFinite(scheduledStartTime) || scheduledStartTime <= ctx.currentTime) return false
+
+    this.stopSource()
+    this.cancelScheduledNext()
+    this.sourceNode = ctx.createBufferSource()
+    this.sourceNode.buffer = buffer
+    this.connectSourceWithRouting(this.sourceNode, buffer.numberOfChannels)
+    this.connectSourceToAnalysisTap(this.sourceNode, buffer.numberOfChannels)
+    this.sourceNode.onended = () => {
+      if (this._playbackState === 'playing') this.performGaplessTransition()
+    }
+    const startAt = ctx.currentTime
+    this.startTime = startAt - offset
+    this.pauseTime = offset
+    if (this.fadeGainNode) {
+      const fade = this.fadeGainNode.gain
+      fade.cancelScheduledValues(startAt)
+      fade.setValueAtTime(0, startAt)
+      fade.linearRampToValueAtTime(1, startAt + PLAYBACK_FADE_MS / 1000)
+    }
+    this.sourceNode.start(startAt, offset)
+    if (this.nextBuffer) this.scheduleGaplessTransition()
+    return true
+  }
+
   // Phase 2A — produce one host-emit-anchor's worth of state, derived from the live
   // `getOutputTimestamp()`. Returns null when there's no active host playback (no audioBuffer,
   // suspended/stopped context, source not started) — the store ignores nulls and waits for the

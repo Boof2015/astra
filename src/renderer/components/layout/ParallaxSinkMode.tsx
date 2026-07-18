@@ -11,6 +11,7 @@ export default function ParallaxSinkMode() {
   if (!status?.sink.connected) return null
 
   const stream = status.sink.activeStream
+  const playbackEnabled = status.sink.playbackEnabled !== false
   const clockLabel = status.sink.rttMs !== null
     ? `${Math.round(status.sink.rttMs)} ms RTT`
     : 'Clock syncing'
@@ -23,7 +24,9 @@ export default function ParallaxSinkMode() {
       <div className="parallax-sink-copy">
         <span className="parallax-sink-kicker">Parallax Sink</span>
         <span className="parallax-sink-title">
-          {stream ? `${stream.title} - ${stream.artist}` : 'Waiting for host playback'}
+          {!playbackEnabled
+            ? 'Connected, not selected for playback'
+            : stream ? `${stream.title} - ${stream.artist}` : 'Waiting for host playback'}
         </span>
         <span className="parallax-sink-meta">{status.sink.baseUrl} · {clockLabel} · {bufferLabel}</span>
         {errorMessage && <span className="parallax-sink-error">{errorMessage}</span>}

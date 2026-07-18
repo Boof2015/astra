@@ -10,7 +10,10 @@ import {
   fitHostEmitAnchorLine,
   hostEmitAnchorSlopeToPpm,
   mapHostTimeToSinkTimeMs,
+  parseParallaxJoinResponse,
   parseParallaxStreamInfo,
+  parseParallaxTimelineEvent,
+  resolveParallaxPlaybackEnabled,
   resolveParallaxStreamNormalization,
   selectBestParallaxClockSample,
   selectFilteredParallaxClockOffsetMs,
@@ -318,4 +321,42 @@ test('Parallax stream parser bounds peer metadata and strips host filesystem pat
   assert.ok(parsed)
   assert.equal('trackPath' in parsed, false)
   assert.equal(parseParallaxStreamInfo({ ...parsed, title: 'x'.repeat(513) }), null)
+})
+
+test('Parallax zone-control wire fields are additive and active by default', () => {
+  assert.equal(resolveParallaxPlaybackEnabled(undefined), true)
+  assert.equal(resolveParallaxPlaybackEnabled(true), true)
+  assert.equal(resolveParallaxPlaybackEnabled(false), false)
+  const legacyJoin = parseParallaxJoinResponse({
+    sinkId: 'living-room',
+    groupLatencyMs: 1000,
+    hostTimeMs: 100,
+    stream: null,
+    timeline: null
+  })
+  assert.ok(legacyJoin)
+  assert.equal(legacyJoin.playbackEnabled, true)
+
+  const inactiveJoin = parseParallaxJoinResponse({
+    sinkId: 'living-room',
+    groupLatencyMs: 1000,
+    hostTimeMs: 100,
+    playbackEnabled: false,
+    stream: null,
+    timeline: null
+  })
+  assert.ok(inactiveJoin)
+  assert.equal(inactiveJoin.playbackEnabled, false)
+
+  assert.deepEqual(parseParallaxTimelineEvent({
+    type: 'sink-playback-update',
+    sinkId: 'living-room',
+    playbackEnabled: false,
+    emittedAtHostTimeMs: 200
+  }), {
+    type: 'sink-playback-update',
+    sinkId: 'living-room',
+    playbackEnabled: false,
+    emittedAtHostTimeMs: 200
+  })
 })

@@ -12,6 +12,8 @@ export interface WebStatusState {
   paired: boolean
   hostName: string | null
   connected: boolean
+  playbackEnabled: boolean
+  statusLabel: string
   hostReachable: boolean
   clockOffsetMs: number | null
   rttMs: number | null
@@ -30,6 +32,19 @@ export interface WebStatusState {
     expiresAtMs: number
   } | null
   diagnostics: SinkSessionDiagnostics | null
+}
+
+export function resolveReceiverStatusLabel(state: Pick<
+  WebStatusState,
+  'paired' | 'connected' | 'hostReachable' | 'playbackEnabled'
+>): string {
+  if (!state.paired) return 'Not paired'
+  if (state.connected && state.hostReachable && !state.playbackEnabled) {
+    return 'Connected, not selected for playback'
+  }
+  if (state.connected && state.hostReachable) return 'Connected'
+  if (state.connected) return 'Reconnecting…'
+  return 'Waiting for host'
 }
 
 export interface WebStatusCallbacks {
@@ -151,12 +166,13 @@ async function refresh() {
       pair.style.display = 'none'
     }
     const status = document.getElementById('s-status')
-    if (!s.paired) { status.textContent = 'Not paired'; status.className = '' }
-    else if (s.connected && s.hostReachable) { status.textContent = 'Connected'; status.className = 'ok' }
-    else if (s.connected) { status.textContent = 'Reconnecting…'; status.className = 'bad' }
-    else { status.textContent = 'Waiting for host'; status.className = '' }
+    status.textContent = s.statusLabel
+    status.className = s.statusLabel === 'Connected' ? 'ok'
+      : s.statusLabel === 'Reconnecting…' ? 'bad' : ''
     document.getElementById('s-host').textContent = s.hostName || '—'
-    document.getElementById('s-np').textContent = s.streamTitle
+    document.getElementById('s-np').textContent = !s.playbackEnabled
+      ? 'Not selected for playback'
+      : s.streamTitle
       ? s.streamTitle + (s.streamArtist ? ' — ' + s.streamArtist : '') + ' (' + s.playbackState + ')'
       : '—'
     document.getElementById('s-clock').textContent = s.clockOffsetMs === null

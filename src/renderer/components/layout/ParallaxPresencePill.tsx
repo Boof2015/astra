@@ -153,7 +153,7 @@ export default function ParallaxPresencePill() {
       if (revokedSinkIdsThisDiff.has(sinkId)) continue
       const nextSink = nextConnectedMap.get(sinkId)
       if (nextSink && nextSink.online) continue
-      const duringActivity = parallaxStatus.host.activeStream !== null
+      const duringActivity = prevSink.playbackEnabled && parallaxStatus.host.activeStream !== null
       events.push({ kind: 'disconnected-unexpected', sinkId, name: prevSink.name, duringActivity })
       // Flap detection: rolling window of unexpected drops per sink.
       const history = flapHistoryBySink.get(sinkId) ?? []
@@ -267,9 +267,9 @@ export default function ParallaxPresencePill() {
 
   const mode: 'sink' | 'host-active' | 'host-idle' | null = useMemo(() => {
     if (sink?.connected) return 'sink'
-    if (host?.active) return host.connectedSinkCount > 0 ? 'host-active' : 'host-idle'
+    if (host?.active) return host.activePlaybackSinkCount > 0 ? 'host-active' : 'host-idle'
     return null
-  }, [host?.active, host?.connectedSinkCount, sink?.connected])
+  }, [host?.active, host?.activePlaybackSinkCount, sink?.connected])
 
   if (mode === null || !parallaxStatus) return null
 
@@ -279,7 +279,7 @@ export default function ParallaxPresencePill() {
 
   const label =
     mode === 'sink' ? 'SINK'
-    : mode === 'host-active' ? `PXLX • ${host?.connectedSinkCount ?? 0}`
+    : mode === 'host-active' ? `PXLX • ${host?.activePlaybackSinkCount ?? 0}`
     : 'PXLX'
   const labelWithIndicator = hasWarnings ? `${label} ⚠` : label
 
@@ -369,6 +369,7 @@ function ParallaxPresencePopoverContent({ mode, status, warnings, toast }: Popov
   const host = status.host
   const sinks = (host.connectedSinks ?? []).filter((sink) => sink.online)
   const count = host.connectedSinkCount
+  const playbackCount = host.activePlaybackSinkCount
 
   return (
     <div className="titlebar-parallax-pill-popover-inner">
@@ -376,7 +377,9 @@ function ParallaxPresencePopoverContent({ mode, status, warnings, toast }: Popov
       <div className="titlebar-parallax-pill-popover-row">
         <span className="titlebar-parallax-pill-popover-label">Status</span>
         <span className="titlebar-parallax-pill-popover-value">
-          {count === 0 ? 'No sinks connected' : `${count} sink${count === 1 ? '' : 's'} connected`}
+          {count === 0
+            ? 'No sinks connected'
+            : `${playbackCount} playing · ${count} connected`}
         </span>
       </div>
       {warnings.length > 0 && (
@@ -405,7 +408,9 @@ function ParallaxPresencePopoverContent({ mode, status, warnings, toast }: Popov
                   <span className="titlebar-parallax-pill-popover-sink-name">{s.name}</span>
                 </div>
                 <div className="titlebar-parallax-pill-popover-sink-detail">
-                  {s.outputDeviceLabel ?? 'Output unknown'} · Trim {trimText}
+                  {s.playbackEnabled
+                    ? `${s.outputDeviceLabel ?? 'Output unknown'} · Trim ${trimText}`
+                    : 'Not selected for playback'}
                 </div>
               </div>
             )

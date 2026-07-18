@@ -12,7 +12,7 @@ import { ConfigStore } from './config'
 import { createOutputBackend } from './output/backendFactory'
 import { ParallaxSinkClient } from './sinkClient'
 import { SinkSession } from './sinkSession'
-import { WebStatusServer, type WebStatusState } from './webStatus'
+import { WebStatusServer, resolveReceiverStatusLabel, type WebStatusState } from './webStatus'
 
 // astra-receiver — standalone headless Parallax sink daemon ("parallax headless node").
 // Reuses the app's protocol/crypto/discovery modules in place (src/types/parallax.ts +
@@ -159,12 +159,20 @@ async function main(): Promise<void> {
       const clientStatus = client.getStatus()
       const sessionInfo = session.getInfo()
       const current = configStore.get()
+      const connectionState = {
+        paired: current.connection !== null,
+        connected: clientStatus.connected,
+        hostReachable: clientStatus.hostReachable,
+        playbackEnabled: clientStatus.playbackEnabled
+      }
       return {
         sinkName: current.sinkName,
         endpointUuid: current.endpointUuid,
         paired: current.connection !== null,
         hostName: current.connection?.hostName ?? null,
         connected: clientStatus.connected,
+        playbackEnabled: clientStatus.playbackEnabled,
+        statusLabel: resolveReceiverStatusLabel(connectionState),
         hostReachable: clientStatus.hostReachable,
         clockOffsetMs: clientStatus.clockOffsetMs,
         rttMs: clientStatus.rttMs,
