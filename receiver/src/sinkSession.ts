@@ -213,10 +213,19 @@ export class SinkSession {
       return
     }
     if (event.type === 'sink-trim-update') {
-      // Targeted by sinkId; drop trims keyed to a different output device than ours.
-      if (!this.ownSinkId || this.ownSinkId !== event.sinkId) return
-      if (event.outputDeviceId !== this.backend.deviceId) return
+      // Targeted by sinkId; drop trims keyed to a different output device than ours. Logged
+      // either way — a silently-rejected trim looks exactly like "trim doesn't work" upstream.
+      if (!this.ownSinkId || this.ownSinkId !== event.sinkId) {
+        console.log(`[astra-receiver] trim update ignored: for sink ${event.sinkId}, we are ${this.ownSinkId ?? '(unset)'}`)
+        return
+      }
+      if (event.outputDeviceId !== this.backend.deviceId) {
+        console.log(`[astra-receiver] trim update ignored: keyed to device '${event.outputDeviceId}', ours is '${this.backend.deviceId}'`)
+        return
+      }
+      const previousAdvanceMs = this.advanceMs
       this.advanceMs = Math.max(-500, Math.min(500, event.advanceMs))
+      console.log(`[astra-receiver] trim update applied: ${previousAdvanceMs} -> ${this.advanceMs} ms`)
       return
     }
     if (event.type === 'sink-name-update') {
@@ -617,6 +626,7 @@ export class SinkSession {
         this.lastHardSyncAtMs = now
         this.hardSyncCount += 1
         syncEvent = 'rebuffer_snap'
+        console.log(`[astra-receiver] rebuffer snap -> frame ${snap.targetFrame} (advance ${this.advanceMs} ms)`)
       }
     } else {
       const decision = decideParallaxSinkCorrection(correction.driftFrames, stream.sampleRate)
@@ -674,6 +684,10 @@ export class SinkSession {
         appliedPpm = 0
         this.hardSyncCount += 1
         syncEvent = 'snap'
+        console.log(
+          `[astra-receiver] snap: drift was ${(correction.driftFrames / stream.sampleRate * 1000).toFixed(1)} ms `
+          + `(${correction.loopSource}) -> frame ${snap.targetFrame} (advance ${this.advanceMs} ms)`
+        )
       } else {
         this.engine.setRatePpm(appliedPpm)
       }
