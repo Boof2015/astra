@@ -69,6 +69,19 @@ Napi::Value Open(const Napi::CallbackInfo& info) {
     return env.Undefined();
   }
 
+  // snd_pcm_set_params sets the start threshold to (roughly) the full buffer size. A write-ahead
+  // loop that keeps only ~120 ms queued never crosses a 500 ms threshold, so the device sits in
+  // PREPARED forever — absorbing writes, reporting sane delay, playing nothing (observed on
+  // vc4hdmi: healthy daemon, total silence). Start as soon as the first driver block lands.
+  {
+    snd_pcm_sw_params_t* sw_params;
+    snd_pcm_sw_params_alloca(&sw_params);
+    if (snd_pcm_sw_params_current(g_pcm, sw_params) >= 0) {
+      snd_pcm_sw_params_set_start_threshold(g_pcm, sw_params, 2048);
+      snd_pcm_sw_params(g_pcm, sw_params);
+    }
+  }
+
   g_underruns = 0;
   Napi::Object result = Napi::Object::New(env);
   result.Set("sampleRate", Napi::Number::New(env, g_sample_rate));
