@@ -2,7 +2,11 @@
 #
 # Astra Parallax receiver — one-line installer for Raspberry Pi (64-bit) and other arm64 Linux.
 #
-#   curl -fsSL https://raw.githubusercontent.com/Boof2015/astra/dev/receiver/deploy/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/Boof2015/astra/dev/receiver/deploy/install.sh -o /tmp/astra-receiver-install.sh && sudo bash /tmp/astra-receiver-install.sh
+#
+# (Download-then-run rather than `| sudo bash`: modern sudo runs commands on a private pty, and
+# with the script arriving on stdin there is no route for keyboard input — the audio-output
+# question would be skipped. With the file form, stdin stays your terminal and prompts work.)
 #
 # What it does:
 #   1. Installs Node.js 24 LTS unless Node >= 22.19 is present (bundled undici requires 22.19+).
@@ -16,6 +20,8 @@ set -euo pipefail
 
 # Releases live in a dedicated repo so they never mix with the Astra app's own releases.
 REPO="Boof2015/astra-receiver"
+# Where this script itself lives (for self-referential instructions).
+REPO_SOURCE="Boof2015/astra"
 INSTALL_DIR="/opt/astra-receiver"
 SERVICE_NAME="astra-receiver"
 SERVICE_USER="astra-receiver"
@@ -129,7 +135,12 @@ choose_audio_device() {
   } > /dev/tty
 
   local choice=""
-  read -r choice < /dev/tty || choice=""
+  if ! read -r choice < /dev/tty 2>/dev/null; then
+    choice=""
+    log "Could not read from the terminal (piped install) — using option $default_index."
+    log "To choose interactively, run the download-then-run form:"
+    log "  curl -fsSL https://raw.githubusercontent.com/$REPO_SOURCE/dev/receiver/deploy/install.sh -o /tmp/astra-receiver-install.sh && sudo bash /tmp/astra-receiver-install.sh"
+  fi
   case "$choice" in
     ''|*[!0-9]*) choice="$default_index" ;;
   esac

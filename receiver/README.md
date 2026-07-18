@@ -39,8 +39,11 @@ join/SSE/audio/clock/telemetry all flow; only the DAC is fake.
 One line, on any 64-bit Pi OS (or other arm64 Linux):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Boof2015/astra/dev/receiver/deploy/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Boof2015/astra/dev/receiver/deploy/install.sh -o /tmp/astra-receiver-install.sh && sudo bash /tmp/astra-receiver-install.sh
 ```
+
+(Download-then-run, not `| sudo bash` — modern sudo puts commands on a private pty, and a
+stdin-piped script cannot receive keyboard input, which would skip the audio-output question.)
 
 The installer downloads the latest prebuilt `receiver-v*` GitHub release (JS bundle + N-API ALSA
 addon — ABI-stable, so one arm64 binary serves any modern Node), installs Node 24 LTS unless a

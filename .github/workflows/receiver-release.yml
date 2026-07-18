@@ -121,7 +121,7 @@ jobs:
               --notes "Standalone Parallax receiver for arm64 Linux (Raspberry Pi). Built from ${GITHUB_REPOSITORY}@${GITHUB_SHA}. Install/update with:
 
           \`\`\`sh
-          curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/dev/receiver/deploy/install.sh | sudo bash
+          curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/dev/receiver/deploy/install.sh -o /tmp/astra-receiver-install.sh && sudo bash /tmp/astra-receiver-install.sh
           \`\`\`"
           fi
           gh release upload "$TAG" --repo "$RELEASE_REPO" --clobber \
