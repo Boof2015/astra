@@ -34,7 +34,21 @@ npm test                    # includes receiver unit tests
 Protocol-level end-to-end on the dev machine: run `receiver:dev`, then pair + stream from Astra —
 join/SSE/audio/clock/telemetry all flow; only the DAC is fake.
 
-## Deploy to a Raspberry Pi
+## Install on a Raspberry Pi (the normal way)
+
+One line, on any 64-bit Pi OS (or other arm64 Linux):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Boof2015/astra/dev/receiver/deploy/install.sh | sudo bash
+```
+
+The installer downloads the latest prebuilt `receiver-v*` GitHub release (JS bundle + N-API ALSA
+addon — ABI-stable, so one arm64 binary serves every Node 20+), installs Node 22 if needed, sets
+up a service user in the `audio` group, and enables a systemd service. Then open
+`http://<pi>:38405/` and pair from Astra (Parallax → Add Sink). **Updating = re-run the same
+line.** Logs: `journalctl -u astra-receiver -f`.
+
+## Deploy from source (fallback / development)
 
 On the dev machine:
 
@@ -43,18 +57,20 @@ npm run receiver:build      # → receiver/dist/astra-receiver.mjs (single file,
 rsync -a receiver/dist/astra-receiver.mjs receiver/native pi@<pi>:~/astra-receiver/
 ```
 
-On the Pi (Node 20.19+ or 22+, once):
+On the Pi (Node 20.19+ or 22+, once — needed only on 32-bit/armv7 systems the prebuilds don't
+cover, or when hacking on the addon):
 
 ```sh
 sudo apt install -y build-essential libasound2-dev
-cd ~/astra-receiver/native && npm install node-addon-api node-gyp && npx node-gyp rebuild
+cd ~/astra-receiver/native && npm install && npx node-gyp rebuild
 cp build/Release/astra_receiver_alsa.node ~/astra-receiver/
 node ~/astra-receiver/astra-receiver.mjs   # first run; then install the systemd unit
 ```
 
-Systemd: see `deploy/astra-receiver.service`. Config lives at
-`~/.config/astra-receiver/config.json` (`audioDevice`: use `default` or `plughw:…` — the plug
-layer converts Float32 for DACs that don't take it natively).
+Systemd template for manual installs: `deploy/astra-receiver.service`. Config lives at
+`~/.config/astra-receiver/config.json` for manual runs, `/opt/astra-receiver/config.json` for
+installer-managed services (`audioDevice`: use `default` or `plughw:…` — the plug layer converts
+Float32 for DACs that don't take it natively).
 
 ## Env flags
 

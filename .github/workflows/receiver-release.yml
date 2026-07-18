@@ -1,0 +1,129 @@
+name: Receiver Release
+
+# Builds the standalone Parallax receiver ("parallax headless node") release artifacts:
+#   - astra-receiver.mjs        (vite SSR bundle, platform-independent)
+#   - astra_receiver_alsa.node  (N-API ALSA addon, built on a real arm64 runner — ABI-stable
+#                                across Node 20+, so one binary serves every device)
+# and publishes them as astra-receiver-linux-arm64.tar.gz on a `receiver-v<version>` release in
+# the SEPARATE releases repo below — never in this repo's own Releases list, so Astra app
+# releases stay untouched. receiver/deploy/install.sh downloads the latest of these.
+#
+# One-time setup this workflow needs:
+#   1. Create the public repo $RELEASE_REPO with at least one commit (a README is enough).
+#   2. Create a fine-grained PAT (github.com → Settings → Developer settings) scoped to ONLY
+#      that repo with "Contents: Read and write", and save it in THIS repo's
+#      Settings → Secrets and variables → Actions as RECEIVER_RELEASE_TOKEN.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Receiver version (e.g. 0.1.0) — release tag becomes receiver-v<version>'
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 22.x
+  RELEASE_REPO: Boof2015/astra-receiver
+
+jobs:
+  test:
+    name: Typecheck + receiver tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - name: Install dependencies (no native builds)
+        run: npm ci --ignore-scripts
+      - name: Typecheck receiver
+        run: npm run typecheck:receiver
+      - name: Receiver unit tests
+        run: >
+          node --experimental-strip-types --loader ./scripts/node/electron-test-loader.mjs
+          --test --test-concurrency=1 receiver/src/playout.test.ts receiver/src/config.test.ts
+
+  bundle:
+    name: Build JS bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - name: Install dependencies (no native builds)
+        run: npm ci --ignore-scripts
+      - name: Build receiver bundle
+        run: npm run receiver:build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: receiver-bundle
+          path: receiver/dist/astra-receiver.mjs
+          if-no-files-found: error
+
+  addon:
+    name: Build ALSA addon (arm64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install ALSA headers
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Build addon
+        working-directory: receiver/native
+        run: |
+          npm install
+          npx node-gyp rebuild
+      - uses: actions/upload-artifact@v4
+        with:
+          name: receiver-addon-arm64
+          path: receiver/native/build/Release/astra_receiver_alsa.node
+          if-no-files-found: error
+
+  release:
+    name: Publish release to the releases repo
+    needs: [test, bundle, addon]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: receiver-bundle
+          path: payload
+      - uses: actions/download-artifact@v4
+        with:
+          name: receiver-addon-arm64
+          path: payload
+      - name: Assemble tarball
+        run: |
+          tar -czf astra-receiver-linux-arm64.tar.gz -C payload .
+          sha256sum astra-receiver-linux-arm64.tar.gz > astra-receiver-linux-arm64.tar.gz.sha256
+      - name: Create or update release in the releases repo
+        env:
+          GH_TOKEN: ${{ secrets.RECEIVER_RELEASE_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::RECEIVER_RELEASE_TOKEN secret is not set — see the setup comment at the top of this workflow."
+            exit 1
+          fi
+          TAG="receiver-v${VERSION}"
+          if ! gh release view "$TAG" --repo "$RELEASE_REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$RELEASE_REPO" \
+              --title "Astra Receiver v${VERSION}" \
+              --notes "Standalone Parallax receiver for arm64 Linux (Raspberry Pi). Built from ${GITHUB_REPOSITORY}@${GITHUB_SHA}. Install/update with:
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/dev/receiver/deploy/install.sh | sudo bash
+          \`\`\`"
+          fi
+          gh release upload "$TAG" --repo "$RELEASE_REPO" --clobber \
+            astra-receiver-linux-arm64.tar.gz \
+            astra-receiver-linux-arm64.tar.gz.sha256
