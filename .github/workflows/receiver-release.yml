@@ -46,6 +46,10 @@ jobs:
         run: >
           node --experimental-strip-types --loader ./scripts/node/electron-test-loader.mjs
           --test --test-concurrency=1 receiver/src/playout.test.ts receiver/src/config.test.ts
+          receiver/src/webStatus.test.ts receiver/src/systemdNotify.test.ts
+          receiver/src/output/alsaDevices.test.ts
+      - name: Shellcheck deploy scripts
+        run: shellcheck receiver/deploy/*.sh
 
   bundle:
     name: Build JS bundle
@@ -92,6 +96,7 @@ jobs:
     needs: [test, bundle, addon]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: receiver-bundle
@@ -102,6 +107,10 @@ jobs:
           path: payload
       - name: Assemble tarball
         run: |
+          # Every release carries its own updater: the on-device auto-update timer runs
+          # current/update.sh, and the symlink swap means a running updater never sees itself
+          # change out from under it.
+          install -m 0755 receiver/deploy/update.sh payload/update.sh
           tar -czf astra-receiver-linux-arm64.tar.gz -C payload .
           sha256sum astra-receiver-linux-arm64.tar.gz > astra-receiver-linux-arm64.tar.gz.sha256
       - name: Create or update release in the releases repo

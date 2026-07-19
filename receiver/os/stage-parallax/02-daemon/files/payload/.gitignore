@@ -1,0 +1,5 @@
+# CI injects the receiver release tarball, its .sha256, receiver-tag.txt and update.sh here at
+# image-build time (see .github/workflows/parallax-os-release.yml). Nothing in this directory
+# is committed.
+*
+!.gitignore

@@ -1,0 +1,2 @@
+# Sourced by pi-gen's build.sh: marks this stage as the one that exports the flashable image.
+IMG_SUFFIX=""

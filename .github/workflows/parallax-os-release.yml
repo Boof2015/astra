@@ -1,0 +1,154 @@
+name: Parallax OS Release
+
+# Builds the flashable Parallax OS SD-card image (pi-gen, Pi OS Lite base + receiver/os/
+# stage-parallax) and publishes it as a `parallax-os-v<version>` release in the receiver
+# releases repo — with --latest=false so daemon (`receiver-v*`) releases keep the repo's
+# "Latest" badge; both the installer and the on-device updater filter by tag prefix, so the
+# two release families coexist safely.
+#
+# Runs on ubuntu-24.04-arm: native arm64, so pi-gen needs no qemu/binfmt. build-docker.sh is
+# pi-gen's supported path on non-Debian hosts and pins its own Debian toolchain inside the
+# container — immune to runner image drift. Its one constraint: the custom stage must live
+# INSIDE the pi-gen directory (only that dir is mounted into the container), hence the copies
+# in the assemble step.
+#
+# Uses the same one-time setup as receiver-release.yml (RECEIVER_RELEASE_TOKEN PAT scoped to
+# the releases repo).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Image version (e.g. 1.0.0) — release tag becomes parallax-os-v<version>'
+        required: true
+      receiver_tag:
+        description: 'Receiver release to bake (e.g. receiver-v0.2.0); empty = latest'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_REPO: Boof2015/astra-receiver
+  PI_GEN_URL: https://github.com/RPi-Distro/pi-gen
+  # arm64 branch, pinned 2026-07-19. Bumping this is the one-time moment to re-verify the
+  # stage against pi-gen's conventions (run scripts, EXPORT_IMAGE, SKIP_IMAGES, on_chroot).
+  PI_GEN_REF: ca8aeed0ae300c2a89f55ce9617d5f96a27e99e5
+  TARBALL_NAME: astra-receiver-linux-arm64.tar.gz
+
+jobs:
+  lint:
+    name: Shellcheck stage + deploy scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Shellcheck
+        run: |
+          shellcheck receiver/deploy/*.sh receiver/os/ci/*.sh \
+            receiver/os/stage-parallax/prerun.sh receiver/os/stage-parallax/*/*-run.sh
+          bash -n receiver/deploy/*.sh receiver/os/ci/*.sh \
+            receiver/os/stage-parallax/prerun.sh receiver/os/stage-parallax/*/*-run.sh
+
+  build:
+    name: Build image (pi-gen)
+    needs: lint
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve receiver release to bake
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.receiver_tag }}
+        run: |
+          if [ -n "$REQUESTED_TAG" ]; then
+            TAG="$REQUESTED_TAG"
+          else
+            TAG="$(gh release list --repo "$RELEASE_REPO" --limit 30 \
+              --json tagName,isDraft,isPrerelease \
+              --jq '[.[] | select(.tagName | startswith("receiver-v")) | select(.isDraft or .isPrerelease | not)][0].tagName')"
+          fi
+          [ -n "$TAG" ] || { echo "::error::No receiver-v* release found in $RELEASE_REPO"; exit 1; }
+          echo "RECEIVER_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "Baking $TAG"
+
+      - name: Download + verify receiver release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PAYLOAD=receiver/os/stage-parallax/02-daemon/files/payload
+          gh release download "$RECEIVER_TAG" --repo "$RELEASE_REPO" \
+            --pattern "$TARBALL_NAME" --pattern "$TARBALL_NAME.sha256" --dir "$PAYLOAD"
+          (cd "$PAYLOAD" && sha256sum -c "$TARBALL_NAME.sha256")
+          printf '%s\n' "$RECEIVER_TAG" > "$PAYLOAD/receiver-tag.txt"
+          install -m 0755 receiver/deploy/update.sh "$PAYLOAD/update.sh"
+
+      - name: Assemble pi-gen
+        run: |
+          git clone "$PI_GEN_URL" pi-gen
+          git -C pi-gen checkout "$PI_GEN_REF"
+          cp receiver/os/config pi-gen/config
+          cp -r receiver/os/stage-parallax pi-gen/
+          # Only stage-parallax exports an image (stage2 would otherwise export the plain Lite).
+          touch pi-gen/stage2/SKIP_IMAGES
+
+      - name: Build image
+        working-directory: pi-gen
+        run: sudo ./build-docker.sh -c config
+
+      - name: Verify image
+        run: |
+          IMG="$(ls pi-gen/deploy/*.img)"
+          sudo bash receiver/os/ci/verify-image.sh "$IMG"
+
+      - name: Compress + checksum
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          IMG="$(ls pi-gen/deploy/*.img)"
+          mv "$IMG" "parallax-os-v${VERSION}.img"
+          xz -T0 -6 "parallax-os-v${VERSION}.img"
+          sha256sum "parallax-os-v${VERSION}.img.xz" > "parallax-os-v${VERSION}.img.xz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parallax-os-image
+          path: |
+            parallax-os-v*.img.xz
+            parallax-os-v*.img.xz.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish release to the releases repo
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: parallax-os-image
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.RECEIVER_RELEASE_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::RECEIVER_RELEASE_TOKEN secret is not set — see receiver-release.yml's setup comment."
+            exit 1
+          fi
+          TAG="parallax-os-v${VERSION}"
+          if ! gh release view "$TAG" --repo "$RELEASE_REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$RELEASE_REPO" \
+              --latest=false \
+              --title "Parallax OS v${VERSION}" \
+              --notes "Flashable Raspberry Pi image for the Astra Parallax receiver. Built from ${GITHUB_REPOSITORY}@${GITHUB_SHA}.
+
+          **Flash with Raspberry Pi Imager**: Choose OS → Use custom → this \`.img.xz\`. In the customization dialog set a username/password and your Wi-Fi credentials (optionally enable SSH); keep the hostname \`parallax\`. First boot takes 2–3 minutes, then open http://parallax.local/ and pair from Astra.
+
+          The daemon auto-updates daily from this repo's \`receiver-v*\` releases — a new image is only needed for OS-level changes."
+          fi
+          gh release upload "$TAG" --repo "$RELEASE_REPO" --clobber \
+            parallax-os-v${VERSION}.img.xz \
+            parallax-os-v${VERSION}.img.xz.sha256

@@ -15,6 +15,12 @@
 
 #ifdef __linux__
 #include <alsa/asoundlib.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <cstddef>
+#include <cstdlib>
+#include <cstring>
 
 namespace {
 
@@ -165,6 +171,42 @@ Napi::Value Close(const Napi::CallbackInfo& info) {
   return info.Env().Undefined();
 }
 
+// sd_notify without libsystemd: NOTIFY_SOCKET is an AF_UNIX datagram socket, which Node's
+// dgram module (UDP-only) cannot reach. Sending from this process keeps systemd's default
+// NotifyAccess=main PID attribution intact. Returns false (never throws) when NOTIFY_SOCKET
+// is unset or the send fails — the daemon treats notification as best-effort.
+Napi::Value SdNotify(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsString()) {
+    Napi::TypeError::New(env, "sdNotify(state)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  const char* socket_path = std::getenv("NOTIFY_SOCKET");
+  if (socket_path == nullptr || socket_path[0] == '\0') {
+    return Napi::Boolean::New(env, false);
+  }
+  std::string state = info[0].As<Napi::String>().Utf8Value();
+
+  struct sockaddr_un addr;
+  std::memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  size_t path_len = std::strlen(socket_path);
+  if (path_len > sizeof(addr.sun_path)) {
+    return Napi::Boolean::New(env, false);
+  }
+  std::memcpy(addr.sun_path, socket_path, path_len);
+  // Leading '@' names an abstract-namespace socket (systemd in containers): byte 0 becomes NUL.
+  if (addr.sun_path[0] == '@') addr.sun_path[0] = '\0';
+
+  int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+  if (fd < 0) return Napi::Boolean::New(env, false);
+  socklen_t addr_len = static_cast<socklen_t>(offsetof(struct sockaddr_un, sun_path) + path_len);
+  ssize_t sent = sendto(fd, state.data(), state.size(), 0,
+                        reinterpret_cast<const struct sockaddr*>(&addr), addr_len);
+  close(fd);
+  return Napi::Boolean::New(env, sent == static_cast<ssize_t>(state.size()));
+}
+
 }  // namespace
 
 #else  // !__linux__ — stub so an accidental build off-Linux fails at runtime, not compile time.
@@ -179,6 +221,7 @@ Napi::Value Write(const Napi::CallbackInfo& info) { return Napi::Number::New(inf
 Napi::Value DelayFrames(const Napi::CallbackInfo& info) { return Napi::Number::New(info.Env(), 0); }
 Napi::Value Underruns(const Napi::CallbackInfo& info) { return Napi::Number::New(info.Env(), 0); }
 Napi::Value Close(const Napi::CallbackInfo& info) { return info.Env().Undefined(); }
+Napi::Value SdNotify(const Napi::CallbackInfo& info) { return Napi::Boolean::New(info.Env(), false); }
 
 }  // namespace
 
@@ -190,6 +233,7 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("delayFrames", Napi::Function::New(env, DelayFrames));
   exports.Set("underruns", Napi::Function::New(env, Underruns));
   exports.Set("close", Napi::Function::New(env, Close));
+  exports.Set("sdNotify", Napi::Function::New(env, SdNotify));
   return exports;
 }
 

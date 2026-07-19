@@ -1,0 +1,13 @@
+// Parallax OS: security patches for an unattended appliance. ${distro_codename} expands at
+// runtime, so this file is release-agnostic. The Raspberry Pi archive carries kernel/firmware.
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Debian,codename=${distro_codename},label=Debian-Security";
+        "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+        "origin=Raspberry Pi Foundation";
+};
+// Kernel updates need a reboot to apply. 04:30 sits after the 03:30 receiver-update timer
+// window. Flip to "false" if unsupervised reboots are unwanted.
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-Time "04:30";
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
