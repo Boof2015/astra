@@ -230,15 +230,20 @@ async function loadTimezones() {
   } catch { /* daemon busy — picker stays empty */ }
 }
 loadTimezones()
+let tzPending = null
 async function applyTimezone() {
   const timezone = document.getElementById('tz-select').value
   if (!timezone) return
   const res = await fetch('/api/timezone', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ timezone }) })
   tzDirty = false
-  document.getElementById('tz-hint').textContent = res.ok
-    ? 'Applying — the receiver restarts on the new timezone…'
-    : 'Could not set that timezone.'
+  if (res.ok) {
+    tzPending = timezone
+    document.getElementById('tz-hint').textContent =
+      'Applying — the receiver restarts, this takes ~15 seconds…'
+  } else {
+    document.getElementById('tz-hint').textContent = 'Could not set that timezone.'
+  }
 }
 let outDirty = false
 let outRestartingUntil = 0
@@ -319,6 +324,10 @@ async function refresh() {
     }
     const tzSelect = document.getElementById('tz-select')
     if (tzLoaded && !tzDirty && document.activeElement !== tzSelect) tzSelect.value = s.timezone
+    if (tzPending && s.timezone === tzPending) {
+      tzPending = null
+      document.getElementById('tz-hint').textContent = 'Timezone updated ✓'
+    }
     const vol = document.getElementById('vol')
     if (document.activeElement !== vol) vol.value = s.volumePercent
     document.getElementById('vol-label').textContent = s.volumePercent + '%'
@@ -459,9 +468,16 @@ let shownArtworkId = null
 let pos = null
 let lastStatus = null
 let statusReceivedAt = 0
+let pollFailures = 0
+// Tracks how long the current status label has been showing, so everyday states (host app
+// closed → "Waiting for host"/"Reconnecting…") quiet down to a clean clock after a while.
+let hintLabel = null
+let hintLabelSince = 0
 // Page-load counts as "recently playing" so an already-paused track shows before the timer runs.
 let lastAdvancingAt = Date.now()
 const PAUSED_IDLE_MS = 2 * 60 * 1000
+const HINT_QUIET_MS = 2 * 60 * 1000
+const QUIETABLE_LABELS = ['Waiting for host', 'Reconnecting…']
 
 function fmt(totalSeconds) {
   const t = Math.max(0, Math.floor(totalSeconds))
@@ -585,7 +601,10 @@ function render() {
     document.getElementById('idle-date').textContent = fmtClockDate(now, null)
     return
   }
+  // hostReachable false = the host app has been gone past its grace window — the "now
+  // playing" is definitionally over, drop to idle instead of showing a frozen track.
   const hasTrack = s.playbackEnabled && s.streamTitle && s.playbackState !== 'stopped'
+    && s.hostReachable !== false
   if (pos && pos.advancing) lastAdvancingAt = Date.now()
   // Hard stop / disconnect idles immediately; paused idles after the grace period.
   const showStage = hasTrack && (Date.now() - lastAdvancingAt < PAUSED_IDLE_MS)
@@ -603,7 +622,9 @@ function render() {
     document.getElementById('zone').textContent = zone
     document.getElementById('np-clock').textContent = clockText
     const next = s.diagnostics && s.diagnostics.stagedNextTitle
-    document.getElementById('next').textContent = next ? 'Up next: ' + next : ''
+    document.getElementById('next').textContent = pollFailures >= 3
+      ? 'Reconnecting to speaker…'
+      : next ? 'Up next: ' + next : ''
     const progress = document.getElementById('progress')
     if (pos) {
       progress.style.visibility = ''
@@ -636,8 +657,23 @@ function render() {
       // Server-anchored countdown; the 1 Hz poll keeps it fresh.
       hint.textContent = 'No network found — Wi-Fi setup starts in ~' + s.setup.apEtaSeconds + 's'
       hint.style.color = '#b5b5c2'
+    } else if (pollFailures >= 3) {
+      // The daemon itself is away (settings change, update, crash-restart) — say so instead
+      // of showing stale state with no explanation.
+      hint.textContent = 'Speaker restarting…'
+      hint.style.color = '#b5b5c2'
     } else {
-      hint.textContent = s.statusLabel === 'Connected' ? '' : s.statusLabel
+      let label = s.statusLabel === 'Connected' ? '' : s.statusLabel
+      if (label !== hintLabel) {
+        hintLabel = label
+        hintLabelSince = Date.now()
+      }
+      // A closed host app is an everyday state for an appliance — after a couple of minutes
+      // the hint retires and the idle screen is just a clean clock.
+      if (QUIETABLE_LABELS.indexOf(label) !== -1 && Date.now() - hintLabelSince > HINT_QUIET_MS) {
+        label = ''
+      }
+      hint.textContent = label
       hint.style.color = ''
     }
   }
@@ -648,6 +684,7 @@ async function refresh() {
     const s = await (await fetch('/api/status')).json()
     lastStatus = s
     statusReceivedAt = Date.now()
+    pollFailures = 0
     const hasTrack = s.playbackEnabled && s.streamTitle && s.playbackState !== 'stopped'
     pos = hasTrack && s.position ? Object.assign({ receivedAt: Date.now() }, s.position) : null
     const art = document.getElementById('art')
@@ -675,7 +712,12 @@ async function refresh() {
       shownArtworkId = null
     }
     render()
-  } catch { /* daemon restarting — keep polling */ }
+  } catch {
+    // Daemon restarting (settings change, update) — keep polling; render() surfaces it after
+    // a few consecutive failures.
+    pollFailures += 1
+    render()
+  }
 }
 refresh()
 setInterval(refresh, 1000)
