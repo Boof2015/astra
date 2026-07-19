@@ -116,6 +116,11 @@ test('GET /display serves the kiosk page', async () => {
     const html = await res.text()
     assert.match(html, /api\/status/)
     assert.match(html, /api\/artwork/)
+    // The page script lives in a TS template literal where an escaping slip is easy — make
+    // sure what we serve is at least syntactically valid JS (compile, don't run).
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)
+    assert.ok(script, 'display page has an inline script')
+    assert.doesNotThrow(() => new Function(script[1]))
   })
 })
 

@@ -302,127 +302,270 @@ const DISPLAY_HTML = `<!doctype html>
   html, body { height: 100%; }
   body { margin: 0; background: #000; color: #f2f2f6; font-family: system-ui, sans-serif;
          overflow: hidden; }
+
+  /* ── Now playing: full-bleed artwork + lower-third band ── */
   #backdrop { position: fixed; inset: -6vmax; background-size: cover; background-position: center;
-              filter: blur(6vmax) brightness(0.35); opacity: 0; transition: opacity 1.2s ease; }
-  #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-           gap: 5vmin; padding: 6vmin; }
-  #art { width: 56vmin; height: 56vmin; border-radius: 2.5vmin; object-fit: cover;
-         box-shadow: 0 3vmin 9vmin rgba(0,0,0,0.6); background: #16161c; display: none; }
-  #meta { max-width: 44vw; }
-  #title { font-size: 6.5vmin; font-weight: 700; line-height: 1.15; margin: 0;
-           overflow-wrap: anywhere; }
-  #artist { font-size: 3.6vmin; color: #b5b5c2; margin: 1.5vmin 0 0; overflow-wrap: anywhere; }
-  #album { font-size: 2.6vmin; color: #8b8b98; margin: 0.8vmin 0 0; overflow-wrap: anywhere; }
-  #state { font-size: 2.4vmin; color: #8b8b98; margin-top: 3vmin; text-transform: uppercase;
-           letter-spacing: 0.18em; }
-  #progress { margin-top: 3.5vmin; }
-  #bar { height: 0.7vmin; border-radius: 0.35vmin; background: rgba(255,255,255,0.16);
+              filter: blur(5vmax) brightness(0.5); opacity: 0; transition: opacity 1.2s ease; }
+  #scrim { position: fixed; inset: 0;
+           background: linear-gradient(to top, rgba(0,0,0,0.78) 0%, rgba(0,0,0,0.35) 34%,
+                                       rgba(0,0,0,0.06) 60%); }
+  #stage { position: fixed; inset: 0; display: flex; flex-direction: column;
+           justify-content: flex-end; padding: 0 5vmin 3.5vmin; }
+  #band { display: flex; align-items: flex-end; gap: 3.2vmin; }
+  #art { width: 24vmin; height: 24vmin; border-radius: 1.6vmin; object-fit: cover;
+         box-shadow: 0 1.5vmin 5vmin rgba(0,0,0,0.55); background: #16161c; display: none; }
+  #band-main { flex: 1; min-width: 0; }
+  #title { font-size: 5.5vmin; font-weight: 700; line-height: 1.12; margin: 0;
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+           text-shadow: 0 0.3vmin 1.5vmin rgba(0,0,0,0.5); }
+  #subtitle { font-size: 2.9vmin; color: #c9c9d4; margin: 1vmin 0 0;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #progress { margin-top: 2.6vmin; }
+  #bar { height: 0.7vmin; border-radius: 0.35vmin; background: rgba(255,255,255,0.22);
          overflow: hidden; }
   #bar-fill { height: 100%; width: 0; border-radius: 0.35vmin; background: #f2f2f6;
               transition: width 0.25s linear; }
-  #times { display: flex; justify-content: space-between; font-size: 2.2vmin; color: #8b8b98;
-           margin-top: 1.2vmin; font-variant-numeric: tabular-nums; }
-  #next { font-size: 2.2vmin; color: #6f6f7c; margin-top: 2.5vmin; }
-  #idle { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
-          justify-content: center; gap: 2vmin; }
-  #idle-clock { font-size: 16vmin; font-weight: 200; letter-spacing: 0.02em;
+  #times { display: flex; justify-content: space-between; font-size: 2.1vmin; color: #a5a5b2;
+           margin-top: 1vmin; font-variant-numeric: tabular-nums; }
+  #band-footer { display: flex; justify-content: space-between; align-items: baseline;
+                 gap: 3vmin; margin-top: 2.4vmin; font-size: 2vmin; color: #8b8b98; }
+  #zone { text-transform: uppercase; letter-spacing: 0.2em; }
+  #next { flex: 1; text-align: center; overflow: hidden; text-overflow: ellipsis;
+          white-space: nowrap; color: #6f6f7c; }
+  #np-clock { font-variant-numeric: tabular-nums; }
+
+  /* ── Idle: clock hero over a parallax constellation ── */
+  #idle { position: fixed; inset: 0; }
+  /* Faint specks on depth layers (deeper = bigger, faster, brighter) that link up when they
+     drift close — drawn on a canvas at ~30 fps, and ONLY while the idle screen is visible. */
+  #constellation { position: absolute; inset: 0; width: 100%; height: 100%; }
+  /* Two nested drift loops with co-prime-ish periods trace a slow Lissajous path — the
+     content never parks on the same pixels (OLED burn-in). */
+  #drift-x { position: absolute; inset: 0; animation: drift-x 380s ease-in-out infinite alternate; }
+  #drift-y { position: absolute; inset: 0; display: flex; flex-direction: column;
+             align-items: center; justify-content: center; gap: 2.2vmin;
+             animation: drift-y 260s ease-in-out infinite alternate; }
+  @keyframes drift-x { from { transform: translateX(-2vmin); } to { transform: translateX(2vmin); } }
+  @keyframes drift-y { from { transform: translateY(-1.6vmin); } to { transform: translateY(1.6vmin); } }
+  #idle-clock { font-size: 17vmin; font-weight: 200; letter-spacing: 0.02em;
                 font-variant-numeric: tabular-nums; line-height: 1; }
-  #idle-zone { font-size: 4vmin; font-weight: 600; letter-spacing: 0.04em; color: #b5b5c2; }
-  #idle-hint { font-size: 2.4vmin; color: #6f6f7c; }
+  #idle-date { font-size: 3vmin; color: #b5b5c2; font-weight: 300; }
+  #idle-zone { font-size: 2.2vmin; font-weight: 600; letter-spacing: 0.22em;
+               text-transform: uppercase; color: #6f6f7c; margin-top: 2.5vmin; }
+  #idle-hint { font-size: 2.3vmin; color: #8b6f6f; min-height: 2.8vmin; }
   .hidden { display: none !important; }
 </style>
 </head>
 <body>
 <div id="backdrop"></div>
+<div id="scrim"></div>
 <div id="stage" class="hidden">
-  <img id="art" alt="">
-  <div id="meta">
-    <h1 id="title"></h1>
-    <p id="artist"></p>
-    <p id="album"></p>
-    <div id="progress">
-      <div id="bar"><div id="bar-fill"></div></div>
-      <div id="times"><span id="t-elapsed"></span><span id="t-total"></span></div>
+  <div id="band">
+    <img id="art" alt="">
+    <div id="band-main">
+      <h1 id="title"></h1>
+      <p id="subtitle"></p>
+      <div id="progress">
+        <div id="bar"><div id="bar-fill"></div></div>
+        <div id="times"><span id="t-elapsed"></span><span id="t-total"></span></div>
+      </div>
     </div>
-    <div id="state"></div>
-    <div id="next"></div>
+  </div>
+  <div id="band-footer">
+    <span id="zone"></span>
+    <span id="next"></span>
+    <span id="np-clock"></span>
   </div>
 </div>
-<div id="idle">
-  <div id="idle-clock"></div>
-  <div id="idle-zone"></div>
-  <div id="idle-hint"></div>
+<div id="idle" class="hidden">
+  <canvas id="constellation"></canvas>
+  <div id="drift-x"><div id="drift-y">
+    <div id="idle-clock"></div>
+    <div id="idle-date"></div>
+    <div id="idle-zone"></div>
+    <div id="idle-hint"></div>
+  </div></div>
 </div>
 <script>
 let shownArtworkId = null
 let pos = null
+let lastStatus = null
+// Page-load counts as "recently playing" so an already-paused track shows before the timer runs.
+let lastAdvancingAt = Date.now()
+const PAUSED_IDLE_MS = 2 * 60 * 1000
+
 function fmt(totalSeconds) {
   const t = Math.max(0, Math.floor(totalSeconds))
   const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60
   const mm = h > 0 && m < 10 ? '0' + m : String(m)
   return (h > 0 ? h + ':' + mm : mm) + ':' + (s < 10 ? '0' + s : s)
 }
-function renderTick() {
-  const clock = document.getElementById('idle-clock')
-  if (!document.getElementById('idle').classList.contains('hidden')) {
-    clock.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+
+// Parallax constellation: specks on depth layers drift and link up when close. ~70 particles at
+// ~30 fps is a few thousand distance checks per frame — nothing, even on a Pi. Runs only while
+// the idle screen is visible.
+const stars = { canvas: null, ctx: null, parts: [], raf: 0, lastT: 0 }
+function starsResize() {
+  stars.canvas.width = window.innerWidth
+  stars.canvas.height = window.innerHeight
+  const wanted = Math.max(40, Math.min(90, Math.round(window.innerWidth * window.innerHeight / 26000)))
+  while (stars.parts.length < wanted) {
+    const depth = 0.35 + Math.random() * 0.65
+    stars.parts.push({
+      x: Math.random() * stars.canvas.width,
+      y: Math.random() * stars.canvas.height,
+      vx: (Math.random() - 0.5) * 26 * depth,
+      vy: (Math.random() - 0.5) * 26 * depth,
+      depth
+    })
   }
-  const progress = document.getElementById('progress')
-  if (!pos) { progress.style.visibility = 'hidden'; return }
-  progress.style.visibility = ''
-  let elapsed = pos.elapsedSeconds + (pos.advancing ? (Date.now() - pos.receivedAt) / 1000 : 0)
-  if (pos.durationSeconds !== null) elapsed = Math.min(elapsed, pos.durationSeconds)
-  document.getElementById('t-elapsed').textContent = fmt(elapsed)
-  document.getElementById('t-total').textContent = pos.durationSeconds !== null ? fmt(pos.durationSeconds) : '--:--'
-  document.getElementById('bar-fill').style.width = pos.durationSeconds
-    ? Math.min(100, (elapsed / pos.durationSeconds) * 100) + '%'
-    : '0'
+  stars.parts.length = wanted
 }
+function starsFrame(t) {
+  stars.raf = requestAnimationFrame(starsFrame)
+  if (t - stars.lastT < 33) return
+  const dt = stars.lastT ? Math.min(0.1, (t - stars.lastT) / 1000) : 0
+  stars.lastT = t
+  const ctx = stars.ctx
+  const w = stars.canvas.width, h = stars.canvas.height
+  ctx.clearRect(0, 0, w, h)
+  ctx.lineWidth = 1
+  const parts = stars.parts
+  for (const p of parts) {
+    p.x += p.vx * dt
+    p.y += p.vy * dt
+    if (p.x < -20) p.x = w + 20; else if (p.x > w + 20) p.x = -20
+    if (p.y < -20) p.y = h + 20; else if (p.y > h + 20) p.y = -20
+  }
+  const linkDist = Math.min(w, h) * 0.16
+  for (let i = 0; i < parts.length; i++) {
+    const a = parts[i]
+    for (let j = i + 1; j < parts.length; j++) {
+      const b = parts[j]
+      const dx = a.x - b.x, dy = a.y - b.y
+      const d2 = dx * dx + dy * dy
+      if (d2 > linkDist * linkDist) continue
+      const alpha = (1 - Math.sqrt(d2) / linkDist) * 0.4 * Math.min(a.depth, b.depth)
+      ctx.strokeStyle = 'rgba(170,185,225,' + alpha.toFixed(3) + ')'
+      ctx.beginPath()
+      ctx.moveTo(a.x, a.y)
+      ctx.lineTo(b.x, b.y)
+      ctx.stroke()
+    }
+    ctx.fillStyle = 'rgba(195,205,235,' + (0.16 + 0.26 * a.depth).toFixed(3) + ')'
+    ctx.beginPath()
+    ctx.arc(a.x, a.y, 1 + 1.8 * a.depth, 0, 6.2832)
+    ctx.fill()
+  }
+}
+function starsSetRunning(run) {
+  if (run && !stars.raf) {
+    stars.lastT = 0
+    stars.raf = requestAnimationFrame(starsFrame)
+  } else if (!run && stars.raf) {
+    cancelAnimationFrame(stars.raf)
+    stars.raf = 0
+  }
+}
+stars.canvas = document.getElementById('constellation')
+stars.ctx = stars.canvas.getContext('2d')
+starsResize()
+window.addEventListener('resize', starsResize)
+
+function render() {
+  const s = lastStatus
+  const now = new Date()
+  if (!s) {
+    // No status yet (kiosk up before the daemon, or daemon restarting): live clock over the
+    // constellation instead of a dead black screen.
+    document.getElementById('idle').classList.remove('hidden')
+    starsSetRunning(true)
+    document.getElementById('idle-clock').textContent = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    document.getElementById('idle-date').textContent = now.toLocaleDateString([], {
+      weekday: 'long', month: 'long', day: 'numeric'
+    })
+    return
+  }
+  const hasTrack = s.playbackEnabled && s.streamTitle && s.playbackState !== 'stopped'
+  if (pos && pos.advancing) lastAdvancingAt = Date.now()
+  // Hard stop / disconnect idles immediately; paused idles after the grace period.
+  const showStage = hasTrack && (Date.now() - lastAdvancingAt < PAUSED_IDLE_MS)
+  document.getElementById('stage').classList.toggle('hidden', !showStage)
+  document.getElementById('idle').classList.toggle('hidden', showStage)
+  starsSetRunning(!showStage)
+  document.getElementById('scrim').style.display = showStage ? '' : 'none'
+  document.getElementById('backdrop').style.opacity = showStage && shownArtworkId ? '1' : '0'
+  const zone = s.assignedSinkName || s.sinkName
+  const clockText = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  if (showStage) {
+    document.getElementById('title').textContent = s.streamTitle
+    document.getElementById('subtitle').textContent = (s.streamArtist || '')
+      + (s.streamAlbum ? ' — ' + s.streamAlbum : '')
+    document.getElementById('zone').textContent = zone
+    document.getElementById('np-clock').textContent = clockText
+    const next = s.diagnostics && s.diagnostics.stagedNextTitle
+    document.getElementById('next').textContent = next ? 'Up next: ' + next : ''
+    const progress = document.getElementById('progress')
+    if (pos) {
+      progress.style.visibility = ''
+      let elapsed = pos.elapsedSeconds + (pos.advancing ? (Date.now() - pos.receivedAt) / 1000 : 0)
+      if (pos.durationSeconds !== null) elapsed = Math.min(elapsed, pos.durationSeconds)
+      document.getElementById('t-elapsed').textContent = (s.playbackState === 'paused' ? 'Paused · ' : '') + fmt(elapsed)
+      document.getElementById('t-total').textContent = pos.durationSeconds !== null ? fmt(pos.durationSeconds) : '--:--'
+      document.getElementById('bar-fill').style.width = pos.durationSeconds
+        ? Math.min(100, (elapsed / pos.durationSeconds) * 100) + '%'
+        : '0'
+    } else {
+      progress.style.visibility = 'hidden'
+    }
+  } else {
+    document.getElementById('idle-clock').textContent = clockText
+    document.getElementById('idle-date').textContent = now.toLocaleDateString([], {
+      weekday: 'long', month: 'long', day: 'numeric'
+    })
+    document.getElementById('idle-zone').textContent = zone
+    // Quiet when everything is fine; only surface an abnormal state (not paired, host away,
+    // zone not selected).
+    document.getElementById('idle-hint').textContent = s.statusLabel === 'Connected' ? '' : s.statusLabel
+  }
+}
+
 async function refresh() {
   try {
     const s = await (await fetch('/api/status')).json()
-    const zone = s.assignedSinkName || s.sinkName
-    const playing = s.playbackEnabled && s.streamTitle && s.playbackState !== 'stopped'
-    document.getElementById('stage').classList.toggle('hidden', !playing)
-    document.getElementById('idle').classList.toggle('hidden', !!playing)
-    pos = playing && s.position ? Object.assign({ receivedAt: Date.now() }, s.position) : null
-    if (playing) {
-      document.getElementById('title').textContent = s.streamTitle
-      document.getElementById('artist').textContent = s.streamArtist || ''
-      document.getElementById('album').textContent = s.streamAlbum || ''
-      document.getElementById('state').textContent = s.playbackState === 'paused' ? 'Paused' : zone
-      const next = s.diagnostics && s.diagnostics.stagedNextTitle
-      document.getElementById('next').textContent = next ? 'Up next: ' + next : ''
-    } else {
-      document.getElementById('idle-zone').textContent = zone
-      document.getElementById('idle-hint').textContent = s.statusLabel === 'Connected'
-        ? 'Waiting for music'
-        : s.statusLabel
-    }
-    renderTick()
+    lastStatus = s
+    const hasTrack = s.playbackEnabled && s.streamTitle && s.playbackState !== 'stopped'
+    pos = hasTrack && s.position ? Object.assign({ receivedAt: Date.now() }, s.position) : null
     const art = document.getElementById('art')
     const backdrop = document.getElementById('backdrop')
-    const wantedId = playing ? s.artworkId : null
+    const wantedId = hasTrack ? s.artworkId : null
     if (wantedId !== shownArtworkId) {
       shownArtworkId = wantedId
       if (wantedId) {
         const url = '/api/artwork?id=' + encodeURIComponent(wantedId)
         art.src = url
-        art.style.display = ''
+        // 'block', never '' — clearing the inline style falls back to the stylesheet's
+        // display:none and the tile can never appear (the original missing-artwork bug).
+        art.style.display = 'block'
         backdrop.style.backgroundImage = 'url("' + url + '")'
-        backdrop.style.opacity = '1'
       } else {
         art.removeAttribute('src')
         art.style.display = 'none'
-        backdrop.style.opacity = '0'
+        backdrop.style.backgroundImage = ''
       }
     }
-    art.onerror = () => { art.style.display = 'none' }
+    art.onerror = () => {
+      // Transient failure (daemon restarting, gapless promote race): forget the id so the
+      // next poll retries instead of hiding the artwork for the rest of the track.
+      art.style.display = 'none'
+      shownArtworkId = null
+    }
+    render()
   } catch { /* daemon restarting — keep polling */ }
 }
 refresh()
 setInterval(refresh, 1000)
-setInterval(renderTick, 250)
+setInterval(render, 250)
 </script>
 </body>
 </html>
