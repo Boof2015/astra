@@ -74,9 +74,11 @@ function sanitizeConnection(value: unknown): PersistedParallaxSinkConnection | n
   }
 }
 
+// Floor is 1, not 1024: the Parallax OS appliance serves the status page on :80 (the unit grants
+// CAP_NET_BIND_SERVICE); privileged-port policy belongs to systemd, not config validation.
 function sanitizePort(value: unknown, fallback: number): number {
   const parsed = Number(value)
-  return Number.isInteger(parsed) && parsed >= 1024 && parsed <= 65535 ? parsed : fallback
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535 ? parsed : fallback
 }
 
 export class ConfigStore {

@@ -1,0 +1,4 @@
+{
+  "audioBackend": "alsa",
+  "webPort": 80
+}

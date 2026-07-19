@@ -1,0 +1,16 @@
+# Astra receiver auto-update: resolve latest receiver-v* release, sha256-verify, atomic swap,
+# restart with health gate, roll back on failure. Runs from current/ — every installed release
+# carries its own copy of update.sh, and the symlink swap means a running updater never sees
+# itself change.
+
+[Unit]
+Description=Astra receiver auto-update (verify, atomic swap, rollback)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/astra-receiver/current/update.sh
+TimeoutStartSec=900
+Nice=10
+IOSchedulingClass=idle

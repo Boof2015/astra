@@ -10,8 +10,10 @@ import {
 } from '../../src/main/services/parallaxSinkListener'
 import { ConfigStore } from './config'
 import { createOutputBackend } from './output/backendFactory'
+import { listAlsaDevices } from './output/alsaDevices'
 import { ParallaxSinkClient } from './sinkClient'
 import { SinkSession } from './sinkSession'
+import { createSystemdNotifier } from './systemdNotify'
 import { WebStatusServer, resolveReceiverStatusLabel, type WebStatusState } from './webStatus'
 
 // astra-receiver — standalone headless Parallax sink daemon ("parallax headless node").
@@ -41,7 +43,12 @@ async function sleep(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.())
 }
 
+// Grace period between answering POST /api/output and restarting onto the new device, so the
+// HTTP response reaches the page before the listener goes away.
+const OUTPUT_CHANGE_RESTART_DELAY_MS = 750
+
 async function main(): Promise<void> {
+  const notifier = createSystemdNotifier({ log: (message) => logError(message) })
   const configStore = new ConfigStore()
   const config = configStore.get()
   log(`config at ${configStore.path}`)
@@ -184,6 +191,8 @@ async function main(): Promise<void> {
         appliedAdvanceMs: sessionInfo.appliedAdvanceMs,
         volumePercent: current.volumePercent,
         outputDevice: backend.deviceLabel,
+        configuredDevice: current.audioDevice,
+        audioDevices: listAlsaDevices(),
         incomingPair: incomingPair
           ? {
               pin: incomingPair.pin,
@@ -211,6 +220,18 @@ async function main(): Promise<void> {
       configStore.update({ volumePercent: percent })
       session.setVolumePercent(percent)
     },
+    setOutputDevice: (device) => {
+      if (device !== 'default' && !listAlsaDevices().some((option) => option.id === device)) {
+        return false
+      }
+      if (device === configStore.get().audioDevice) return true
+      configStore.update({ audioDevice: device })
+      log(`audio output set to ${device} — restarting to reopen the device`)
+      // The ALSA handle and the frames-written emission clock can't be swapped live; a clean
+      // exit under Restart=always is the reliable reopen path. Delay so the response flushes.
+      setTimeout(() => void shutdown('output device change'), OUTPUT_CHANGE_RESTART_DELAY_MS)
+      return true
+    },
     forgetHost: async () => {
       await client.forgetOnHost().catch(() => undefined)
       connectGeneration += 1
@@ -232,6 +253,12 @@ async function main(): Promise<void> {
   })
   log(`advertising "_astra-zone._tcp" as "${config.sinkName}"`)
 
+  // The daemon is now genuinely serving (pairing listener, web page, mDNS). Under a Type=notify
+  // unit this releases systemd's start wait and arms the WatchdogSec keepalive; everywhere else
+  // the notifier is a no-op.
+  notifier.ready()
+  notifier.startWatchdog()
+
   if (configStore.get().connection) {
     void startConnectLoop()
   } else {
@@ -243,6 +270,8 @@ async function main(): Promise<void> {
     if (shuttingDown) return
     shuttingDown = true
     log(`${signal} — shutting down`)
+    notifier.stopping()
+    notifier.stopWatchdog()
     connectGeneration += 1
     await client.disconnect().catch(() => undefined)
     await web.stop().catch(() => undefined)

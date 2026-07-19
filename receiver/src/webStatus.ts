@@ -1,4 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
+import type { AddressInfo } from 'net'
+import type { AlsaDeviceOption } from './output/alsaDevices'
 import type { SinkSessionDiagnostics } from './sinkSession'
 
 // Tiny status/pairing page for the headless receiver. Replaces the Electron sink's PIN card and
@@ -25,6 +27,10 @@ export interface WebStatusState {
   appliedAdvanceMs: number
   volumePercent: number
   outputDevice: string
+  // The persisted audioDevice selection; `outputDevice` stays the ACTIVE backend's label so the
+  // page can show when the configured device failed to open and a fallback is playing instead.
+  configuredDevice: string
+  audioDevices: AlsaDeviceOption[]
   incomingPair: {
     pin: string
     hostName: string
@@ -53,6 +59,9 @@ export interface WebStatusCallbacks {
   rejectPair: () => void
   setName: (name: string) => void
   setVolume: (percent: number) => void
+  // Persists the device and restarts the daemon onto it (the ALSA handle and the frames-written
+  // clock cannot be swapped live). Returns false when the id is not an offered device.
+  setOutputDevice: (device: string) => boolean
   forgetHost: () => Promise<void>
 }
 
@@ -85,6 +94,8 @@ const PAGE_HTML = `<!doctype html>
   input[type=text] { background: #101014; color: #e8e8ee; border: 1px solid #3a3a46;
                      border-radius: 8px; padding: 0.4rem 0.6rem; width: 100%; box-sizing: border-box; }
   input[type=range] { width: 100%; }
+  select { background: #101014; color: #e8e8ee; border: 1px solid #3a3a46; border-radius: 8px;
+           padding: 0.4rem 0.6rem; flex: 1; min-width: 0; }
   .ok { color: #7fd88f; } .bad { color: #f2b8b8; }
 </style>
 </head>
@@ -114,6 +125,12 @@ const PAGE_HTML = `<!doctype html>
       <input type="text" id="name-input" maxlength="80">
       <button onclick="saveName()">Save</button>
     </div>
+    <div class="row" style="margin-top:0.8rem"><span class="k">Audio output</span></div>
+    <div style="display:flex; gap:0.6rem">
+      <select id="out-select"></select>
+      <button onclick="applyOutput()">Apply</button>
+    </div>
+    <div class="muted" id="out-hint" style="margin-top:0.35rem"></div>
     <div class="row" style="margin-top:0.8rem"><span class="k">Volume</span><span id="vol-label"></span></div>
     <input type="range" id="vol" min="0" max="100" step="1" onchange="saveVolume(this.value)">
     <div class="actions" id="forget-actions" style="display:none">
@@ -153,6 +170,48 @@ async function saveVolume(value) {
   await fetch('/api/volume', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ percent: Number(value) }) })
 }
+let outDirty = false
+let outRestartingUntil = 0
+document.getElementById('out-select').addEventListener('input', () => { outDirty = true })
+async function applyOutput() {
+  const device = document.getElementById('out-select').value
+  if (!device) return
+  const res = await fetch('/api/output', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ device }) })
+  outDirty = false
+  if (res.ok) {
+    outRestartingUntil = Date.now() + 10000
+    document.getElementById('out-hint').textContent = 'Restarting on the new output…'
+  }
+}
+function refreshOutput(s) {
+  const select = document.getElementById('out-select')
+  const options = [{ id: 'default', label: 'System default' }].concat(s.audioDevices)
+  if (s.configuredDevice && !options.some((o) => o.id === s.configuredDevice)) {
+    options.push({ id: s.configuredDevice, label: s.configuredDevice + ' (configured, unavailable)' })
+  }
+  const ids = options.map((o) => o.id).join('\\n')
+  if (select.dataset.ids !== ids) {
+    select.dataset.ids = ids
+    select.innerHTML = ''
+    for (const option of options) {
+      const el = document.createElement('option')
+      el.value = option.id
+      el.textContent = option.label
+      select.appendChild(el)
+    }
+    outDirty = false
+  }
+  if (!outDirty && document.activeElement !== select) select.value = s.configuredDevice
+  if (Date.now() < outRestartingUntil) return
+  // The active backend label is 'ALSA <device>'; anything else while cards exist means the
+  // configured device would not open and a fallback is playing.
+  const hint = document.getElementById('out-hint')
+  hint.textContent = s.audioDevices.length && s.outputDevice.indexOf('ALSA ') === 0
+    && s.outputDevice !== 'ALSA ' + s.configuredDevice
+    ? 'Configured output unavailable — using ' + s.outputDevice
+    : ''
+}
 async function refresh() {
   try {
     const s = await (await fetch('/api/status')).json()
@@ -180,6 +239,7 @@ async function refresh() {
       : s.clockOffsetMs.toFixed(1) + ' ms offset' + (s.rttMs === null ? '' : ', ' + s.rttMs.toFixed(1) + ' ms RTT')
     document.getElementById('s-out').textContent = s.outputDevice
       + (s.appliedAdvanceMs ? ' (trim ' + s.appliedAdvanceMs + ' ms)' : '')
+    refreshOutput(s)
     const errRow = document.getElementById('s-err-row')
     errRow.style.display = s.lastError ? '' : 'none'
     document.getElementById('s-err').textContent = s.lastError || ''
@@ -265,6 +325,11 @@ export class WebStatusServer {
     })
   }
 
+  port(): number | null {
+    const address = this.server?.address()
+    return address && typeof address === 'object' ? (address as AddressInfo).port : null
+  }
+
   async stop(): Promise<void> {
     if (!this.server) return
     const server = this.server
@@ -319,6 +384,22 @@ export class WebStatusServer {
       }
       this.callbacks.setVolume(Math.max(0, Math.min(100, percent)))
       toJsonResponse(res, 200, { ok: true })
+      return
+    }
+    if (method === 'POST' && path === '/api/output') {
+      const body = await readJsonBody(req).catch(() => null)
+      const device = typeof (body as { device?: unknown } | null)?.device === 'string'
+        ? String((body as { device: string }).device).trim().slice(0, 128)
+        : ''
+      if (!device) {
+        toJsonResponse(res, 400, { error: 'device is required.' })
+        return
+      }
+      if (!this.callbacks.setOutputDevice(device)) {
+        toJsonResponse(res, 400, { error: 'unknown device.' })
+        return
+      }
+      toJsonResponse(res, 200, { ok: true, restarting: true })
       return
     }
     if (method === 'POST' && path === '/api/forget') {

@@ -59,7 +59,7 @@ test('rejects malformed connections and clamps settings', () => {
     writeFileSync(path, JSON.stringify({
       endpointUuid: 'keep-me',
       volumePercent: 250,
-      listenerPort: 99,
+      listenerPort: 0,
       connection: { protocolVersion: 1, baseUrl: 'https://x', sinkId: 's', token: 't' }
     }))
     const store = new ConfigStore(path)
@@ -67,6 +67,20 @@ test('rejects malformed connections and clamps settings', () => {
     assert.equal(store.get().volumePercent, 100)
     assert.equal(store.get().listenerPort, 38404)
     assert.equal(store.get().connection, null)
+  })
+})
+
+test('privileged ports are valid, garbage ports fall back', () => {
+  withTempDir((dir) => {
+    // The Parallax OS image bakes webPort 80 (the unit grants CAP_NET_BIND_SERVICE).
+    const path = join(dir, 'config.json')
+    writeFileSync(path, JSON.stringify({ webPort: 80 }))
+    assert.equal(new ConfigStore(path).get().webPort, 80)
+
+    for (const bad of [0, -80, 65536, 1.5, 'eighty']) {
+      writeFileSync(path, JSON.stringify({ webPort: bad }))
+      assert.equal(new ConfigStore(path).get().webPort, 38405, `webPort ${String(bad)}`)
+    }
   })
 })
 

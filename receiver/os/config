@@ -1,0 +1,22 @@
+# pi-gen config for Parallax OS — the flashable Raspberry Pi appliance image for the Astra
+# Parallax receiver. Sourced by pi-gen's build.sh (the CI workflow copies this file plus
+# stage-parallax/ into a pinned pi-gen checkout; see .github/workflows/parallax-os-release.yml).
+#
+# Deliberately NOT set:
+#   FIRST_USER_NAME / FIRST_USER_PASS — leaving the stock Pi OS first-boot user mechanism intact
+#     is what makes Raspberry Pi Imager's OS-customization dialog (user, Wi-Fi, hostname
+#     override, SSH) work for free. That dialog is the v1 setup story.
+#   ENABLE_SSH — off by default like stock Pi OS; the Imager dialog toggles it per flash.
+
+IMG_NAME="ParallaxOS"
+# The pinned pi-gen arm64 ref defaults to trixie (current Pi OS); stated here for determinism.
+RELEASE="trixie"
+# The workflow verifies the raw .img (loop-mount asserts) and xz's it afterwards.
+DEPLOY_COMPRESSION="none"
+# Stock avahi advertises the hostname → http://parallax.local/ (auto-renames on conflict).
+# An Imager hostname override runs at first boot and wins, which is the desired behavior.
+TARGET_HOSTNAME="parallax"
+TIMEZONE_DEFAULT="UTC"
+# Lite base (stage0-2) + the appliance stage. CI touches stage2/SKIP_IMAGES so only
+# stage-parallax exports an image.
+STAGE_LIST="stage0 stage1 stage2 stage-parallax"

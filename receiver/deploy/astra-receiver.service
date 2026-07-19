@@ -1,4 +1,5 @@
-# systemd unit for the standalone Astra Parallax receiver.
+# systemd unit for the standalone Astra Parallax receiver (reference for manual/source installs;
+# install.sh writes its own equivalent pointing at /opt/astra-receiver/current/).
 # Install:
 #   sudo cp astra-receiver.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
@@ -6,19 +7,26 @@
 # Logs: journalctl -u astra-receiver -f
 #
 # Adjust User= and the paths below to where the receiver was deployed.
+#
+# Type=notify + WatchdogSec need daemon >= 0.2.0 (sends READY=1/WATCHDOG=1 via the addon's
+# sd_notify). For an older daemon, or a source build without the addon, set Type=simple and
+# drop WatchdogSec — a notify unit that never receives READY=1 restart-loops.
 
 [Unit]
 Description=Astra Parallax receiver (headless zone speaker)
 After=network-online.target sound.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
-Type=simple
+Type=notify
 User=pi
 ExecStart=/usr/bin/node /home/pi/astra-receiver/astra-receiver.mjs
 Environment=ASTRA_RECEIVER_ALSA_ADDON=/home/pi/astra-receiver/astra_receiver_alsa.node
 Restart=always
 RestartSec=3
+WatchdogSec=30
+TimeoutStartSec=90
 
 [Install]
 WantedBy=multi-user.target

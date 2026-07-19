@@ -10,23 +10,23 @@
 #
 # What it does:
 #   1. Installs Node.js 24 LTS unless Node >= 22.19 is present (bundled undici requires 22.19+).
-#   2. Downloads the latest `receiver-v*` release tarball (prebuilt bundle + ALSA addon).
-#   3. Installs to /opt/astra-receiver, creates a service user in the `audio` group.
-#   4. Writes + enables a systemd unit. Re-running the script updates in place.
+#   2. Runs update.sh (shared with the Parallax OS auto-updater): downloads the latest
+#      `receiver-v*` release tarball, sha256-verifies it, and atomically installs it under
+#      /opt/astra-receiver/releases/<tag> with a `current` symlink.
+#   3. Creates a service user in the `audio` group.
+#   4. Writes + enables a systemd unit (Type=notify + watchdog). Re-running = update.
 #
 # After install: open http://<this-device>:38405/ and pair from Astra on the host machine.
 
 set -euo pipefail
 
-# Releases live in a dedicated repo so they never mix with the Astra app's own releases.
-REPO="Boof2015/astra-receiver"
-# Where this script itself lives (for self-referential instructions).
+# Where this script itself lives (for self-referential instructions). The releases repo name
+# lives in update.sh (overridable via ASTRA_RECEIVER_REPO) — releases stay in a dedicated repo
+# so they never mix with the Astra app's own releases.
 REPO_SOURCE="Boof2015/astra"
 INSTALL_DIR="/opt/astra-receiver"
 SERVICE_NAME="astra-receiver"
 SERVICE_USER="astra-receiver"
-TARBALL_NAME="astra-receiver-linux-arm64.tar.gz"
-RELEASE_TAG_PREFIX="receiver-v"
 WEB_PORT=38405
 
 log() { printf '\033[1;36m[astra-receiver]\033[0m %s\n' "$*"; }
@@ -153,50 +153,32 @@ choose_audio_device() {
 
 choose_audio_device
 
-# ── Locate the latest receiver release ────────────────────────────────────────
-log "Looking up the latest receiver release…"
-RELEASES_JSON="$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=30")"
-DOWNLOAD_URL="$(printf '%s' "$RELEASES_JSON" | "$NODE_BIN" -e '
-  let raw = "";
-  process.stdin.on("data", (chunk) => { raw += chunk });
-  process.stdin.on("end", () => {
-    const releases = JSON.parse(raw);
-    for (const release of releases) {
-      if (!release.tag_name || !release.tag_name.startsWith(process.argv[1])) continue;
-      if (release.draft || release.prerelease) continue;
-      const asset = (release.assets || []).find((a) => a.name === process.argv[2]);
-      if (asset) { console.log(asset.browser_download_url); return; }
-    }
-  });
-' "$RELEASE_TAG_PREFIX" "$TARBALL_NAME")"
-[ -n "$DOWNLOAD_URL" ] || fail "No published '${RELEASE_TAG_PREFIX}*' release with $TARBALL_NAME found.
-Run the 'Receiver Release' GitHub workflow first, or install from source (receiver/README.md)."
-log "Downloading $DOWNLOAD_URL"
-
+# ── Install the latest release via the shared updater ─────────────────────────
+# update.sh owns download + sha256 verification + the atomic releases/<tag> + current symlink
+# swap (also used by the Parallax OS auto-update timer). No service stop needed: the swap is
+# a rename, and the running daemon keeps its open inodes until we restart it below.
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
-curl -fsSL -o "$TMP_DIR/$TARBALL_NAME" "$DOWNLOAD_URL"
-mkdir -p "$TMP_DIR/extracted"
-tar -xzf "$TMP_DIR/$TARBALL_NAME" -C "$TMP_DIR/extracted"
-[ -f "$TMP_DIR/extracted/astra-receiver.mjs" ] || fail "Tarball is missing astra-receiver.mjs."
-[ -f "$TMP_DIR/extracted/astra_receiver_alsa.node" ] || fail "Tarball is missing the ALSA addon."
-
-# ── Install files + service user ──────────────────────────────────────────────
-if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-  log "Stopping running service for update…"
-  systemctl stop "$SERVICE_NAME"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/update.sh" ]; then
+  cp "$SCRIPT_DIR/update.sh" "$TMP_DIR/update.sh"
+else
+  curl -fsSL -o "$TMP_DIR/update.sh" \
+    "https://raw.githubusercontent.com/$REPO_SOURCE/dev/receiver/deploy/update.sh"
 fi
+bash "$TMP_DIR/update.sh" --no-restart
+[ -f "$INSTALL_DIR/current/astra-receiver.mjs" ] || fail "update.sh did not produce $INSTALL_DIR/current/."
 
+# Pre-0.2.0 installs kept the bundle flat in $INSTALL_DIR — remove so nothing stale lingers.
+rm -f "$INSTALL_DIR/astra-receiver.mjs" "$INSTALL_DIR/astra_receiver_alsa.node"
+
+# ── Service user ──────────────────────────────────────────────────────────────
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
   log "Creating service user '$SERVICE_USER' (audio group)…"
   useradd --system --home-dir "$INSTALL_DIR" --shell /usr/sbin/nologin --groups audio "$SERVICE_USER"
 else
   usermod -aG audio "$SERVICE_USER" 2>/dev/null || true
 fi
-
-mkdir -p "$INSTALL_DIR"
-install -m 0644 "$TMP_DIR/extracted/astra-receiver.mjs" "$INSTALL_DIR/astra-receiver.mjs"
-install -m 0644 "$TMP_DIR/extracted/astra_receiver_alsa.node" "$INSTALL_DIR/astra_receiver_alsa.node"
 
 # Apply the chosen audio device by MERGING into the existing config — a re-run must never wipe
 # the endpoint UUID or the pairing credential stored alongside it.
@@ -214,31 +196,42 @@ fi
 chown -R "$SERVICE_USER":"$SERVICE_USER" "$INSTALL_DIR"
 
 # ── systemd unit ──────────────────────────────────────────────────────────────
+# Type=notify + WatchdogSec: the daemon (>= 0.2.0) sends READY=1 when it is genuinely serving
+# and WATCHDOG=1 keepalives via the addon's sd_notify. StartLimitIntervalSec=0: a 24/7 node
+# must never give up restarting.
 log "Writing systemd unit…"
 cat > "/etc/systemd/system/$SERVICE_NAME.service" <<UNIT
 [Unit]
 Description=Astra Parallax receiver (headless zone speaker)
 After=network-online.target sound.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
-Type=simple
+Type=notify
 User=$SERVICE_USER
-ExecStart=$NODE_BIN $INSTALL_DIR/astra-receiver.mjs
+ExecStart=$NODE_BIN $INSTALL_DIR/current/astra-receiver.mjs
 Environment=ASTRA_RECEIVER_CONFIG=$INSTALL_DIR/config.json
-Environment=ASTRA_RECEIVER_ALSA_ADDON=$INSTALL_DIR/astra_receiver_alsa.node
+Environment=ASTRA_RECEIVER_ALSA_ADDON=$INSTALL_DIR/current/astra_receiver_alsa.node
 Restart=always
 RestartSec=3
+WatchdogSec=30
+TimeoutStartSec=90
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable --now "$SERVICE_NAME"
+systemctl enable "$SERVICE_NAME" >/dev/null
+systemctl restart "$SERVICE_NAME"
 
-sleep 2
-if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+STARTED=0
+for _ in $(seq 1 20); do
+  if systemctl is-active --quiet "$SERVICE_NAME"; then STARTED=1; break; fi
+  sleep 1
+done
+if [ "$STARTED" -ne 1 ]; then
   fail "Service failed to start — check: journalctl -u $SERVICE_NAME -n 50"
 fi
 

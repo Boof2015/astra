@@ -53,6 +53,30 @@ the `audio` group, and enables a systemd service. Then open `http://<pi>:38405/`
 Astra (Parallax → Add Sink). **Updating — or changing the audio output — = re-run the same
 line** (it merges config, so pairing survives). Logs: `journalctl -u astra-receiver -f`.
 
+Since 0.2.0 the audio output can also be switched from the web page (Audio output → Apply); the
+daemon persists the choice and restarts itself onto the new device — the ALSA handle and the
+frames-written emission clock can't be swapped live, so a ~10 s blip is expected.
+
+### On-disk layout & updates (0.2.0+)
+
+`deploy/install.sh` delegates fetching to `deploy/update.sh` — the same script the Parallax OS
+appliance runs from a daily systemd timer. It keeps releases side by side and swaps atomically:
+
+```
+/opt/astra-receiver/
+  config.json                    # pairing + device config (never touched by updates)
+  current -> releases/<tag>      # the installed version IS this symlink's target
+  releases/<tag>/                # bundle + addon + update.sh (each release carries its updater)
+  releases/<previous-tag>/       # kept for rollback
+```
+
+`update.sh` sha256-verifies the tarball against the published `.sha256`, unpacks to a staging
+dir, atomically renames the `current` symlink, restarts the service and — if it doesn't come
+back healthy — swaps back to the previous release. Already-on-latest is a no-op that never
+touches the running service. The unit is `Type=notify` with `WatchdogSec=30`: the daemon reports
+READY/WATCHDOG through the addon's `sdNotify` (an AF_UNIX datagram Node core can't send), so a
+hung process is killed and restarted by systemd.
+
 ## Deploy from source (fallback / development)
 
 On the dev machine:

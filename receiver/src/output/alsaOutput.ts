@@ -1,7 +1,4 @@
-import { createRequire } from 'module'
-import { existsSync } from 'fs'
-import { dirname, join } from 'path'
-import { fileURLToPath } from 'url'
+import { loadAlsaAddon, type AlsaAddon } from './alsaAddon'
 import type { OutputBackend } from './types'
 
 // ALSA output backend for Linux (Raspberry Pi). Thin wrapper over the purpose-built
@@ -9,36 +6,6 @@ import type { OutputBackend } from './types'
 // DAC-accurate replacement for AudioContext.getOutputTimestamp(). Use 'default' or a plug device
 // ('plughw:0,0'); the plug layer converts Float32 → whatever the DAC speaks. Raw 'hw:' devices
 // only work when the hardware accepts FLOAT_LE directly.
-
-interface AlsaAddon {
-  open(device: string, sampleRate: number, channels: number): { sampleRate: number }
-  write(interleaved: Float32Array, frames: number): number
-  delayFrames(): number
-  underruns(): number
-  close(): void
-}
-
-function loadAddon(): AlsaAddon {
-  const require = createRequire(import.meta.url)
-  const override = process.env.ASTRA_RECEIVER_ALSA_ADDON?.trim()
-  const here = dirname(fileURLToPath(import.meta.url))
-  const candidates = [
-    override,
-    // From the bundled receiver/dist/astra-receiver.mjs
-    join(here, '../native/build/Release/astra_receiver_alsa.node'),
-    // From receiver/src/output/ when running unbundled in dev
-    join(here, '../../native/build/Release/astra_receiver_alsa.node')
-  ].filter((candidate): candidate is string => Boolean(candidate))
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return require(candidate) as AlsaAddon
-    }
-  }
-  throw new Error(
-    'ALSA addon not built. Run `npm run receiver:native` (needs libasound2-dev on Linux), '
-    + 'or set audioBackend to "null" in the receiver config.'
-  )
-}
 
 export class AlsaOutput implements OutputBackend {
   readonly deviceId: string
@@ -51,7 +18,7 @@ export class AlsaOutput implements OutputBackend {
   private closed = false
 
   constructor(device: string, sampleRate = 48000, channels = 2) {
-    this.addon = loadAddon()
+    this.addon = loadAlsaAddon()
     const opened = this.addon.open(device, sampleRate, channels)
     this.deviceId = device
     this.deviceLabel = `ALSA ${device}`
