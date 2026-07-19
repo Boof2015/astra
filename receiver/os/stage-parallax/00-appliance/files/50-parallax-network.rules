@@ -1,9 +1,11 @@
 // Parallax OS: let the receiver daemon's service user drive NetworkManager — the captive-portal
 // Wi-Fi onboarding (raise the Parallax-Setup hotspot, scan, join the chosen network) runs
-// inside the daemon via nmcli, without root.
+// inside the daemon via nmcli, without root. timedate1 powers the settings page's timezone
+// picker (timedatectl set-timezone).
 polkit.addRule(function (action, subject) {
   if (subject.user === "astra-receiver"
-      && action.id.indexOf("org.freedesktop.NetworkManager.") === 0) {
+      && (action.id.indexOf("org.freedesktop.NetworkManager.") === 0
+          || action.id.indexOf("org.freedesktop.timedate1.") === 0)) {
     return polkit.Result.YES;
   }
 });

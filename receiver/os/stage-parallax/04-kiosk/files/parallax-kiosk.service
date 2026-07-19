@@ -26,5 +26,7 @@ UtmpMode=user
 Restart=always
 RestartSec=5
 # parallax-blank is a shipped transparent Xcursor theme — cage's only way to hide the pointer.
+# The explicit size must match the theme's one (24x24) nominal size.
 Environment=XCURSOR_THEME=parallax-blank
+Environment=XCURSOR_SIZE=24
 ExecStart=/usr/bin/cage -- /usr/bin/cog --platform=wl http://127.0.0.1/display

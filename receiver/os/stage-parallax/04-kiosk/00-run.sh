@@ -12,16 +12,19 @@ install -m 0644 files/parallax-kiosk.service \
 install -m 0644 files/parallax-kiosk-detect.service \
   "${ROOTFS_DIR}/etc/systemd/system/parallax-kiosk-detect.service"
 
-# Transparent 1x1 Xcursor theme: cage has no hide-cursor option but honors XCURSOR_THEME
-# (set in the kiosk unit), and without this a default arrow sits dead-center on the TV forever.
-# The 68 constant bytes (Xcursor header + one TOC entry + one 1x1 transparent ARGB image) are
-# emitted directly — this runs HOST-side in pi-gen's container, which has no python, and the
-# bytes never change. Layout: "Xcur", u32le hdrsize=16/version/ntoc=1; TOC 0xFFFD0002/size 1/
-# offset 28; image chunk hdr 36/type/size/version/w=1/h=1/xhot/yhot/delay; pixel 0x00000000.
+# Transparent Xcursor theme: cage has no hide-cursor option but honors XCURSOR_THEME (set in
+# the kiosk unit), and without this a default arrow sits dead-center on the TV forever. The
+# cursor is 24x24 at NOMINAL SIZE 24 — matching the default XCURSOR_SIZE, because wlroots falls
+# back to its compiled-in arrow when a theme has no usable size (a 1x1/size-1 theme did exactly
+# that on the first TV test). Emitted host-side with printf+dd (pi-gen's container has no
+# python): 64-byte header/TOC/chunk prefix, then 24*24 transparent ARGB pixels (2304 zeros).
 mkdir -p "${ROOTFS_DIR}/usr/share/icons/parallax-blank/cursors"
 printf '[Icon Theme]\nName=parallax-blank\n' > "${ROOTFS_DIR}/usr/share/icons/parallax-blank/index.theme"
-printf '\130\143\165\162\020\000\000\000\000\000\001\000\001\000\000\000\002\000\375\377\001\000\000\000\034\000\000\000\044\000\000\000\002\000\375\377\001\000\000\000\001\000\000\000\001\000\000\000\001\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' \
-  > "${ROOTFS_DIR}/usr/share/icons/parallax-blank/cursors/left_ptr"
+CURSOR_FILE="${ROOTFS_DIR}/usr/share/icons/parallax-blank/cursors/left_ptr"
+printf '\130\143\165\162\020\000\000\000\000\000\001\000\001\000\000\000\002\000\375\377\030\000\000\000\034\000\000\000\044\000\000\000\002\000\375\377\030\000\000\000\001\000\000\000\030\000\000\000\030\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' \
+  > "${CURSOR_FILE}"
+dd if=/dev/zero bs=2304 count=1 >> "${CURSOR_FILE}" 2>/dev/null
+[ "$(wc -c < "${CURSOR_FILE}")" -eq 2368 ]
 ln -sf left_ptr "${ROOTFS_DIR}/usr/share/icons/parallax-blank/cursors/default"
 
 on_chroot << CHROOT

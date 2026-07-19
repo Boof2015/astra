@@ -1,3 +1,4 @@
+import { execFile } from 'child_process'
 import type {
   ParallaxIncomingPairRequest,
   PersistedParallaxSinkConnection
@@ -43,6 +44,30 @@ const BOOT_RELOCATE_AFTER_ATTEMPTS = 3
 
 async function sleep(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.())
+}
+
+function runCommand(command: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, { timeout: 10_000 }, (error, stdout, stderr) => {
+      if (error) reject(new Error((stderr || error.message || '').trim() || 'command failed'))
+      else resolve(stdout)
+    })
+  })
+}
+
+// System timezone via timedatectl (the image's polkit rule authorizes the service user). The
+// list is static per boot; cache it. Empty on non-systemd machines — the web UI hides the
+// picker then.
+let timezonesCache: string[] | null = null
+async function listTimezones(): Promise<string[]> {
+  if (timezonesCache) return timezonesCache
+  try {
+    const stdout = await runCommand('timedatectl', ['list-timezones', '--no-pager'])
+    timezonesCache = stdout.split('\n').map((line) => line.trim()).filter(Boolean)
+  } catch {
+    timezonesCache = []
+  }
+  return timezonesCache
 }
 
 // Grace period between answering POST /api/output and restarting onto the new device, so the
@@ -201,6 +226,7 @@ async function main(): Promise<void> {
         assignedSinkName: sessionInfo.assignedSinkName,
         appliedAdvanceMs: sessionInfo.appliedAdvanceMs,
         volumePercent: current.volumePercent,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         artworkId: client.getActiveArtwork()?.streamId ?? null,
         outputDevice: backend.deviceLabel,
         configuredDevice: current.audioDevice,
@@ -253,6 +279,21 @@ async function main(): Promise<void> {
     },
     getSetupNetworks: () => networkSetup.scanNetworks(),
     applySetupCredentials: (ssid, password) => networkSetup.applyCredentials(ssid, password),
+    getTimezones: () => listTimezones(),
+    setTimezone: async (timezone) => {
+      if (!(await listTimezones()).includes(timezone)) return false
+      try {
+        await runCommand('timedatectl', ['set-timezone', timezone])
+      } catch (error) {
+        logError('failed to set timezone', error)
+        return false
+      }
+      // Node caches the process timezone at startup — restart so status (and through it every
+      // clock on the display pages) reports the new zone.
+      log(`timezone set to ${timezone} — restarting to apply`)
+      setTimeout(() => void shutdown('timezone change'), OUTPUT_CHANGE_RESTART_DELAY_MS)
+      return true
+    },
     forgetHost: async () => {
       await client.forgetOnHost().catch(() => undefined)
       connectGeneration += 1

@@ -126,6 +126,7 @@ export function createNetworkSetup(options: NetworkSetupOptions): NetworkSetup {
   let cachedScan: WifiNetwork[] = []
   let timer: ReturnType<typeof setInterval> | null = null
   let stopped = false
+  let lastTickAtMs = 0
   // null until the first offline check looks it up. A device with NO saved Wi-Fi profiles is a
   // first boot — raise the AP fast (~30 s). With profiles, hold the full threshold so a router
   // blip doesn't flip a provisioned speaker into setup mode.
@@ -234,6 +235,7 @@ export function createNetworkSetup(options: NetworkSetupOptions): NetworkSetup {
 
   const tick = async (): Promise<void> => {
     if (stopped || connecting || apActive) return
+    lastTickAtMs = Date.now()
     try {
       if (await hasLanConnection()) {
         offlineChecks = 0
@@ -277,8 +279,12 @@ export function createNetworkSetup(options: NetworkSetupOptions): NetworkSetup {
       apActive,
       connecting,
       lastError,
+      // Anchored to the last check so the value decreases smoothly between 15 s ticks — the
+      // TV displays it verbatim (a client-side guess bounced between two values).
       apEtaSeconds: !apActive && !connecting && offlineChecks > 0
-        ? Math.max(0, Math.round(((effectiveThreshold() - offlineChecks) * checkIntervalMs) / 1000))
+        ? Math.max(0, Math.round(
+          ((effectiveThreshold() - offlineChecks) * checkIntervalMs - (Date.now() - lastTickAtMs)) / 1000
+        ))
         : null
     }),
     scanNetworks: async () => {

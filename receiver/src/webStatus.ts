@@ -30,6 +30,9 @@ export interface WebStatusState {
   assignedSinkName: string | null
   appliedAdvanceMs: number
   volumePercent: number
+  // The daemon's IANA timezone (system tz at process start); clock pages render with it so a
+  // remote browser — or a kiosk started before a tz change — still shows the speaker's time.
+  timezone: string
   // Active stream's artwork identity (its streamId) when the sink has bytes cached; the display
   // page uses it as an <img> cache-buster and only swaps the image when it changes.
   artworkId: string | null
@@ -84,6 +87,10 @@ export interface WebStatusCallbacks {
   // Wi-Fi onboarding (no-ops when apSetup is off).
   getSetupNetworks: () => Promise<WifiNetwork[]>
   applySetupCredentials: (ssid: string, password: string) => boolean
+  // System timezone via timedatectl; empty list = unsupported (picker hidden). Setting it
+  // restarts the daemon so every clock picks up the new zone.
+  getTimezones: () => Promise<string[]>
+  setTimezone: (timezone: string) => Promise<boolean>
   forgetHost: () => Promise<void>
 }
 
@@ -153,6 +160,14 @@ const PAGE_HTML = `<!doctype html>
       <button onclick="applyOutput()">Apply</button>
     </div>
     <div class="muted" id="out-hint" style="margin-top:0.35rem"></div>
+    <div id="tz-block">
+      <div class="row" style="margin-top:0.8rem"><span class="k">Timezone</span></div>
+      <div style="display:flex; gap:0.6rem">
+        <select id="tz-select"></select>
+        <button onclick="applyTimezone()">Apply</button>
+      </div>
+      <div class="muted" id="tz-hint" style="margin-top:0.35rem"></div>
+    </div>
     <div class="row" style="margin-top:0.8rem"><span class="k">Volume</span><span id="vol-label"></span></div>
     <input type="range" id="vol" min="0" max="100" step="1" onchange="saveVolume(this.value)">
     <div class="actions" id="forget-actions" style="display:none">
@@ -191,6 +206,39 @@ async function saveName() {
 async function saveVolume(value) {
   await fetch('/api/volume', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ percent: Number(value) }) })
+}
+let tzLoaded = false
+let tzDirty = false
+document.getElementById('tz-select').addEventListener('input', () => { tzDirty = true })
+async function loadTimezones() {
+  try {
+    const payload = await (await fetch('/api/timezones')).json()
+    const zones = payload.timezones || []
+    if (!zones.length) {
+      document.getElementById('tz-block').style.display = 'none'
+      return
+    }
+    const select = document.getElementById('tz-select')
+    select.innerHTML = ''
+    for (const zone of zones) {
+      const el = document.createElement('option')
+      el.value = zone
+      el.textContent = zone
+      select.appendChild(el)
+    }
+    tzLoaded = true
+  } catch { /* daemon busy — picker stays empty */ }
+}
+loadTimezones()
+async function applyTimezone() {
+  const timezone = document.getElementById('tz-select').value
+  if (!timezone) return
+  const res = await fetch('/api/timezone', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ timezone }) })
+  tzDirty = false
+  document.getElementById('tz-hint').textContent = res.ok
+    ? 'Applying — the receiver restarts on the new timezone…'
+    : 'Could not set that timezone.'
 }
 let outDirty = false
 let outRestartingUntil = 0
@@ -269,6 +317,8 @@ async function refresh() {
     if (!nameDirty && document.activeElement !== nameInput) {
       nameInput.value = s.assignedSinkName || s.sinkName
     }
+    const tzSelect = document.getElementById('tz-select')
+    if (tzLoaded && !tzDirty && document.activeElement !== tzSelect) tzSelect.value = s.timezone
     const vol = document.getElementById('vol')
     if (document.activeElement !== vol) vol.value = s.volumePercent
     document.getElementById('vol-label').textContent = s.volumePercent + '%'
@@ -419,6 +469,20 @@ function fmt(totalSeconds) {
   const mm = h > 0 && m < 10 ? '0' + m : String(m)
   return (h > 0 ? h + ':' + mm : mm) + ':' + (s < 10 ? '0' + s : s)
 }
+// Clocks render in the SPEAKER's timezone (from status), not the viewing browser's — and a
+// kiosk browser started before a tz change still shows the new zone without a restart.
+function fmtClockTime(now, tz) {
+  const base = { hour: 'numeric', minute: '2-digit' }
+  try {
+    return now.toLocaleTimeString([], tz ? Object.assign({ timeZone: tz }, base) : base)
+  } catch { return now.toLocaleTimeString([], base) }
+}
+function fmtClockDate(now, tz) {
+  const base = { weekday: 'long', month: 'long', day: 'numeric' }
+  try {
+    return now.toLocaleDateString([], tz ? Object.assign({ timeZone: tz }, base) : base)
+  } catch { return now.toLocaleDateString([], base) }
+}
 
 // Parallax constellation: specks on depth layers drift and link up when close. ~70 particles at
 // ~30 fps is a few thousand distance checks per frame — nothing, even on a Pi. Runs only while
@@ -517,10 +581,8 @@ function render() {
     // constellation instead of a dead black screen.
     document.getElementById('idle').classList.remove('hidden')
     starsSetRunning(true)
-    document.getElementById('idle-clock').textContent = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-    document.getElementById('idle-date').textContent = now.toLocaleDateString([], {
-      weekday: 'long', month: 'long', day: 'numeric'
-    })
+    document.getElementById('idle-clock').textContent = fmtClockTime(now, null)
+    document.getElementById('idle-date').textContent = fmtClockDate(now, null)
     return
   }
   const hasTrack = s.playbackEnabled && s.streamTitle && s.playbackState !== 'stopped'
@@ -533,7 +595,7 @@ function render() {
   document.getElementById('scrim').style.display = showStage ? '' : 'none'
   document.getElementById('backdrop').style.opacity = showStage && shownArtworkId ? '1' : '0'
   const zone = s.assignedSinkName || s.sinkName
-  const clockText = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  const clockText = fmtClockTime(now, s.timezone)
   if (showStage) {
     document.getElementById('title').textContent = s.streamTitle
     document.getElementById('subtitle').textContent = (s.streamArtist || '')
@@ -557,9 +619,7 @@ function render() {
     }
   } else {
     document.getElementById('idle-clock').textContent = clockText
-    document.getElementById('idle-date').textContent = now.toLocaleDateString([], {
-      weekday: 'long', month: 'long', day: 'numeric'
-    })
+    document.getElementById('idle-date').textContent = fmtClockDate(now, s.timezone)
     document.getElementById('idle-zone').textContent = zone
     // Setup mode owns the hint (with the join QR); otherwise quiet when everything is fine —
     // only surface an abnormal state (not paired, host away, zone not selected).
@@ -573,10 +633,8 @@ function render() {
       hint.textContent = 'Connecting to Wi-Fi…'
       hint.style.color = '#b5b5c2'
     } else if (s.setup && s.setup.apEtaSeconds !== null) {
-      // Live countdown between polls so the wait never looks dead.
-      const since = statusReceivedAt ? Math.round((Date.now() - statusReceivedAt) / 1000) : 0
-      const eta = Math.max(0, s.setup.apEtaSeconds - since)
-      hint.textContent = 'No network found — Wi-Fi setup starts in ~' + eta + 's'
+      // Server-anchored countdown; the 1 Hz poll keeps it fresh.
+      hint.textContent = 'No network found — Wi-Fi setup starts in ~' + s.setup.apEtaSeconds + 's'
       hint.style.color = '#b5b5c2'
     } else {
       hint.textContent = s.statusLabel === 'Connected' ? '' : s.statusLabel
@@ -932,6 +990,22 @@ export class WebStatusServer {
       }
       this.callbacks.setVolume(Math.max(0, Math.min(100, percent)))
       toJsonResponse(res, 200, { ok: true })
+      return
+    }
+    if (method === 'GET' && path === '/api/timezones') {
+      toJsonResponse(res, 200, { timezones: await this.callbacks.getTimezones() })
+      return
+    }
+    if (method === 'POST' && path === '/api/timezone') {
+      const body = await readJsonBody(req).catch(() => null)
+      const timezone = typeof (body as { timezone?: unknown } | null)?.timezone === 'string'
+        ? String((body as { timezone: string }).timezone).trim().slice(0, 64)
+        : ''
+      if (!timezone || !(await this.callbacks.setTimezone(timezone))) {
+        toJsonResponse(res, 400, { error: 'unknown timezone.' })
+        return
+      }
+      toJsonResponse(res, 200, { ok: true, restarting: true })
       return
     }
     if (method === 'POST' && path === '/api/output') {

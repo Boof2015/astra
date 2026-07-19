@@ -1,5 +1,5 @@
 import { execFile } from 'child_process'
-import { existsSync } from 'fs'
+import { readdirSync } from 'fs'
 
 // HDMI-CEC TV control for the Parallax OS TV mode: wake the TV and grab the active source when
 // a stream starts playing, put it on standby after an idle timeout once playback stops. Uses
@@ -18,7 +18,8 @@ export interface CecController {
 export interface CecControllerOptions {
   enabled: boolean
   standbyMinutes: number
-  devicePath?: string
+  /** CEC adapters to probe; defaults to every /dev/cec* (a Pi has one per HDMI port). */
+  devicePaths?: string[]
   exec?: (command: string, args: string[]) => Promise<{ stdout: string }>
   log?: (message: string) => void
 }
@@ -34,13 +35,19 @@ function defaultExec(command: string, args: string[]): Promise<{ stdout: string 
 
 export function createCecController(options: CecControllerOptions): CecController {
   const log = options.log ?? ((message) => console.log(`[astra-receiver] ${message}`))
-  const devicePath = options.devicePath ?? '/dev/cec0'
 
   if (!options.enabled) {
     return { enabled: false, notifyPlayback: () => undefined, stop: () => undefined }
   }
-  if (!existsSync(devicePath)) {
-    log(`CEC control enabled but ${devicePath} does not exist — TV control disabled.`)
+  // A Pi 4/5 has one CEC adapter PER HDMI PORT (/dev/cec0, /dev/cec1). Probe them all and
+  // drive the one that reports a real physical address — i.e. the port with the TV on it.
+  const devicePaths = options.devicePaths
+    ?? readdirSync('/dev')
+      .filter((name) => /^cec\d+$/.test(name))
+      .map((name) => `/dev/${name}`)
+      .sort()
+  if (devicePaths.length === 0) {
+    log('CEC control enabled but no /dev/cec* device exists — TV control disabled.')
     return { enabled: false, notifyPlayback: () => undefined, stop: () => undefined }
   }
 
@@ -50,6 +57,7 @@ export function createCecController(options: CecControllerOptions): CecControlle
   let playing = false
   let tvAwake = false
   let initialized = false
+  let selectedDevice: string | null = null
   let physicalAddress: string | null = null
   let standbyTimer: ReturnType<typeof setTimeout> | null = null
   let stopped = false
@@ -61,9 +69,9 @@ export function createCecController(options: CecControllerOptions): CecControlle
     log(message)
   }
 
-  const run = async (label: string, args: string[]): Promise<string | null> => {
+  const run = async (label: string, args: string[], device = selectedDevice): Promise<string | null> => {
     try {
-      const { stdout } = await exec('cec-ctl', args)
+      const { stdout } = await exec('cec-ctl', device ? ['-d', device, ...args] : args)
       return stdout
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
@@ -72,17 +80,30 @@ export function createCecController(options: CecControllerOptions): CecControlle
     }
   }
 
-  // Register as a CEC playback device once; the reply carries our physical address
-  // ("Physical Address : 1.0.0.0"), needed to claim the active source.
+  const parsePhysAddr = (stdout: string | null): string | null => {
+    const match = stdout?.match(/Physical Address\s*:\s*([0-9a-f]\.[0-9a-f]\.[0-9a-f]\.[0-9a-f])/i)
+    // f.f.f.f = adapter not connected to anything.
+    return match && match[1].toLowerCase() !== 'f.f.f.f' ? match[1] : null
+  }
+
+  // Register as a CEC playback device on the adapter whose HDMI port actually has the TV: the
+  // registration reply carries our physical address, and f.f.f.f means "nothing connected".
   const ensureInitialized = async (): Promise<void> => {
     if (initialized) return
     initialized = true
-    const stdout = await run('setup', ['--playback', '--osd-name', 'Parallax'])
-    const match = stdout?.match(/Physical Address\s*:\s*([0-9a-f]\.[0-9a-f]\.[0-9a-f]\.[0-9a-f])/i)
-    physicalAddress = match ? match[1] : null
-    if (!physicalAddress) {
-      warnOnce('phys-addr', 'Could not determine the CEC physical address — waking the TV will work, switching input may not.')
+    for (const device of devicePaths) {
+      const stdout = await run('setup', ['--playback', '--osd-name', 'Parallax'], device)
+      const physAddr = parsePhysAddr(stdout)
+      if (physAddr) {
+        selectedDevice = device
+        physicalAddress = physAddr
+        log(`CEC: registered as "Parallax" on ${device} (physical address ${physAddr}).`)
+        return
+      }
     }
+    // Nothing conclusive — fall back to the first adapter so wake at least goes somewhere.
+    selectedDevice = devicePaths[0]
+    warnOnce('phys-addr', `Could not determine the CEC physical address on ${devicePaths.join(', ')} — using ${selectedDevice}; waking may work, input switching may not.`)
   }
 
   const clearStandbyTimer = (): void => {
@@ -110,6 +131,11 @@ export function createCecController(options: CecControllerOptions): CecControlle
   const wake = async (): Promise<void> => {
     await ensureInitialized()
     if (stopped) return
+    // The physical address can be unknown when the TV was off during registration — re-ask
+    // the adapter at wake time so active-source (what actually switches inputs) can fire.
+    if (!physicalAddress) {
+      physicalAddress = parsePhysAddr(await run('phys-addr-query', []))
+    }
     await run('image-view-on', ['--to', '0', '--image-view-on'])
     if (physicalAddress) {
       await run('active-source', ['--active-source', `phys-addr=${physicalAddress}`])
@@ -129,7 +155,10 @@ export function createCecController(options: CecControllerOptions): CecControlle
       playing = nowPlaying
       if (nowPlaying) {
         clearStandbyTimer()
-        if (!tvAwake) void wake()
+        // Wake on EVERY play edge, not only when we believe the TV is asleep: the user can
+        // turn the TV off themselves and our tvAwake bookkeeping can't see that. A redundant
+        // image-view-on to a TV that is already on is harmless.
+        void wake()
       } else if (tvAwake) {
         scheduleStandby()
       }

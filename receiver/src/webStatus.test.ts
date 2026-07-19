@@ -28,6 +28,7 @@ function stubState(): WebStatusState {
     assignedSinkName: null,
     appliedAdvanceMs: 0,
     volumePercent: 100,
+    timezone: 'UTC',
     artworkId: null,
     outputDevice: 'ALSA plughw:vc4hdmi0,0',
     configuredDevice: 'plughw:vc4hdmi0,0',
@@ -55,6 +56,8 @@ async function withServer(
     getArtwork: () => null,
     getSetupNetworks: async () => [],
     applySetupCredentials: () => true,
+    getTimezones: async () => [],
+    setTimezone: async () => true,
     forgetHost: async () => undefined,
     ...overrides
   }
@@ -202,6 +205,33 @@ test('captive redirect fires only while the AP is hosted and spares the portal +
   await withServer({ getState: () => setupState({ apActive: false }) }, async (baseUrl) => {
     const normal = await fetch(`${baseUrl}/`, { redirect: 'manual' })
     assert.equal(normal.status, 200, 'no redirect while the AP is down')
+  })
+})
+
+test('timezone routes list zones and validate on set', async () => {
+  const applied: string[] = []
+  await withServer({
+    getTimezones: async () => ['UTC', 'America/New_York'],
+    setTimezone: async (timezone) => {
+      applied.push(timezone)
+      return timezone === 'America/New_York'
+    }
+  }, async (baseUrl) => {
+    const zones = await (await fetch(`${baseUrl}/api/timezones`)).json() as { timezones: string[] }
+    assert.deepEqual(zones.timezones, ['UTC', 'America/New_York'])
+    const good = await fetch(`${baseUrl}/api/timezone`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ timezone: 'America/New_York' })
+    })
+    assert.equal(good.status, 200)
+    const bad = await fetch(`${baseUrl}/api/timezone`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ timezone: 'Nope/Nowhere' })
+    })
+    assert.equal(bad.status, 400)
+    assert.deepEqual(applied, ['America/New_York', 'Nope/Nowhere'])
   })
 })
 

@@ -71,9 +71,13 @@ if [ -f "${ROOTFS_DIR}/var/lib/NetworkManager/NetworkManager.state" ]; then
   fi
 fi
 
-check "blank cursor theme for the kiosk"
-[ -f "${ROOTFS_DIR}/usr/share/icons/parallax-blank/cursors/left_ptr" ]
+check "blank cursor theme for the kiosk (24x24 — smaller themes make wlroots fall back)"
+[ "$(wc -c < "${ROOTFS_DIR}/usr/share/icons/parallax-blank/cursors/left_ptr")" -eq 2368 ]
 grep -q 'XCURSOR_THEME=parallax-blank' "${ROOTFS_DIR}/etc/systemd/system/parallax-kiosk.service"
+grep -q 'XCURSOR_SIZE=24' "${ROOTFS_DIR}/etc/systemd/system/parallax-kiosk.service"
+
+check "polkit rule covers NetworkManager and timedate1"
+grep -q 'org.freedesktop.timedate1' "${ROOTFS_DIR}/etc/polkit-1/rules.d/50-parallax-network.rules"
 on_chroot << 'CHROOT'
 set -e
 dpkg -s network-manager polkitd >/dev/null
