@@ -110,7 +110,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           IMG="$(ls pi-gen/deploy/*.img)"
-          mv "$IMG" "parallax-os-v${VERSION}.img"
+          # deploy/ is root-owned (build-docker.sh runs via sudo) — take ownership before packaging.
+          sudo mv "$IMG" "parallax-os-v${VERSION}.img"
+          sudo chown "$(id -u):$(id -g)" "parallax-os-v${VERSION}.img"
           xz -T0 -6 "parallax-os-v${VERSION}.img"
           sha256sum "parallax-os-v${VERSION}.img.xz" > "parallax-os-v${VERSION}.img.xz.sha256"
 
