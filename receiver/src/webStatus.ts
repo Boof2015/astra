@@ -26,6 +26,9 @@ export interface WebStatusState {
   assignedSinkName: string | null
   appliedAdvanceMs: number
   volumePercent: number
+  // Active stream's artwork identity (its streamId) when the sink has bytes cached; the display
+  // page uses it as an <img> cache-buster and only swaps the image when it changes.
+  artworkId: string | null
   outputDevice: string
   // The persisted audioDevice selection; `outputDevice` stays the ACTIVE backend's label so the
   // page can show when the configured device failed to open and a fallback is playing instead.
@@ -62,6 +65,8 @@ export interface WebStatusCallbacks {
   // Persists the device and restarts the daemon onto it (the ALSA handle and the frames-written
   // clock cannot be swapped live). Returns false when the id is not an offered device.
   setOutputDevice: (device: string) => boolean
+  // Active stream's artwork bytes (Zone Display port); null when none is cached yet.
+  getArtwork: () => { contentType: string; bytes: Buffer } | null
   forgetHost: () => Promise<void>
 }
 
@@ -279,6 +284,100 @@ setInterval(refresh, 1000)
 </html>
 `
 
+// Zone-Display-style TV page for the Parallax OS kiosk (Cage + WPE pointed at /display).
+// Same no-framework single-page pattern as the status page: 1 Hz /api/status polling that
+// survives daemon restarts. Artwork is swapped only when artworkId changes.
+const DISPLAY_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parallax</title>
+<style>
+  :root { color-scheme: dark; }
+  * { cursor: none; }
+  html, body { height: 100%; }
+  body { margin: 0; background: #000; color: #f2f2f6; font-family: system-ui, sans-serif;
+         overflow: hidden; }
+  #backdrop { position: fixed; inset: -6vmax; background-size: cover; background-position: center;
+              filter: blur(6vmax) brightness(0.35); opacity: 0; transition: opacity 1.2s ease; }
+  #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+           gap: 5vmin; padding: 6vmin; }
+  #art { width: 56vmin; height: 56vmin; border-radius: 2.5vmin; object-fit: cover;
+         box-shadow: 0 3vmin 9vmin rgba(0,0,0,0.6); background: #16161c; display: none; }
+  #meta { max-width: 44vw; }
+  #title { font-size: 6.5vmin; font-weight: 700; line-height: 1.15; margin: 0;
+           overflow-wrap: anywhere; }
+  #artist { font-size: 3.6vmin; color: #b5b5c2; margin: 1.5vmin 0 0; overflow-wrap: anywhere; }
+  #state { font-size: 2.4vmin; color: #8b8b98; margin-top: 3vmin; text-transform: uppercase;
+           letter-spacing: 0.18em; }
+  #idle { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
+          justify-content: center; gap: 2vmin; }
+  #idle-zone { font-size: 5vmin; font-weight: 600; letter-spacing: 0.04em; }
+  #idle-hint { font-size: 2.6vmin; color: #6f6f7c; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="backdrop"></div>
+<div id="stage" class="hidden">
+  <img id="art" alt="">
+  <div id="meta">
+    <h1 id="title"></h1>
+    <p id="artist"></p>
+    <div id="state"></div>
+  </div>
+</div>
+<div id="idle">
+  <div id="idle-zone"></div>
+  <div id="idle-hint"></div>
+</div>
+<script>
+let shownArtworkId = null
+async function refresh() {
+  try {
+    const s = await (await fetch('/api/status')).json()
+    const zone = s.assignedSinkName || s.sinkName
+    const playing = s.playbackEnabled && s.streamTitle && s.playbackState !== 'stopped'
+    document.getElementById('stage').classList.toggle('hidden', !playing)
+    document.getElementById('idle').classList.toggle('hidden', !!playing)
+    if (playing) {
+      document.getElementById('title').textContent = s.streamTitle
+      document.getElementById('artist').textContent = s.streamArtist || ''
+      document.getElementById('state').textContent = s.playbackState === 'paused' ? 'Paused' : zone
+    } else {
+      document.getElementById('idle-zone').textContent = zone
+      document.getElementById('idle-hint').textContent = s.statusLabel === 'Connected'
+        ? 'Waiting for music'
+        : s.statusLabel
+    }
+    const art = document.getElementById('art')
+    const backdrop = document.getElementById('backdrop')
+    const wantedId = playing ? s.artworkId : null
+    if (wantedId !== shownArtworkId) {
+      shownArtworkId = wantedId
+      if (wantedId) {
+        const url = '/api/artwork?id=' + encodeURIComponent(wantedId)
+        art.src = url
+        art.style.display = ''
+        backdrop.style.backgroundImage = 'url("' + url + '")'
+        backdrop.style.opacity = '1'
+      } else {
+        art.removeAttribute('src')
+        art.style.display = 'none'
+        backdrop.style.opacity = '0'
+      }
+    }
+    art.onerror = () => { art.style.display = 'none' }
+  } catch { /* daemon restarting — keep polling */ }
+}
+refresh()
+setInterval(refresh, 1000)
+</script>
+</body>
+</html>
+`
+
 function toJsonResponse(res: ServerResponse<IncomingMessage>, statusCode: number, payload: unknown): void {
   if (res.headersSent) return
   res.statusCode = statusCode
@@ -349,8 +448,28 @@ export class WebStatusServer {
       res.end(PAGE_HTML)
       return
     }
+    if (method === 'GET' && path === '/display') {
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'text/html; charset=utf-8')
+      res.setHeader('Cache-Control', 'no-store')
+      res.end(DISPLAY_HTML)
+      return
+    }
     if (method === 'GET' && path === '/api/status') {
       toJsonResponse(res, 200, this.callbacks.getState())
+      return
+    }
+    if (method === 'GET' && path === '/api/artwork') {
+      const artwork = this.callbacks.getArtwork()
+      if (!artwork) {
+        toJsonResponse(res, 404, { error: 'No artwork for the active stream.' })
+        return
+      }
+      res.statusCode = 200
+      res.setHeader('Content-Type', artwork.contentType)
+      // The URL carries ?id=<streamId>, so a given URL's bytes never change.
+      res.setHeader('Cache-Control', 'private, max-age=86400')
+      res.end(artwork.bytes)
       return
     }
     if (method === 'POST' && path === '/api/approve') {

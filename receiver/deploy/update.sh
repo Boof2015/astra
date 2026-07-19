@@ -46,8 +46,9 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -n "$FROM_TARBALL" ] || [ -n "$SHA256_FILE" ] || [ -n "$FORCED_TAG" ]; then
-  [ -n "$FROM_TARBALL" ] && [ -n "$SHA256_FILE" ] && [ -n "$FORCED_TAG" ] \
-    || fail "Offline mode needs all of --from-tarball, --sha256-file and --tag."
+  if [ -z "$FROM_TARBALL" ] || [ -z "$SHA256_FILE" ] || [ -z "$FORCED_TAG" ]; then
+    fail "Offline mode needs all of --from-tarball, --sha256-file and --tag."
+  fi
   [ -f "$FROM_TARBALL" ] || fail "Tarball not found: $FROM_TARBALL"
   [ -f "$SHA256_FILE" ] || fail "sha256 file not found: $SHA256_FILE"
 fi
@@ -150,8 +151,9 @@ fi
 # Compare digests directly instead of `sha256sum -c` so the tarball's on-disk name never matters.
 EXPECTED_SHA="$(awk 'NF { print $1; exit }' "$SHA_PATH")"
 ACTUAL_SHA="$(sha256_of "$TARBALL_PATH")"
-[ -n "$EXPECTED_SHA" ] && [ "$EXPECTED_SHA" = "$ACTUAL_SHA" ] \
-  || fail "sha256 mismatch for $NEW_TAG (expected $EXPECTED_SHA, got $ACTUAL_SHA) — refusing to install."
+if [ -z "$EXPECTED_SHA" ] || [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
+  fail "sha256 mismatch for $NEW_TAG (expected $EXPECTED_SHA, got $ACTUAL_SHA) — refusing to install."
+fi
 log "sha256 verified."
 
 STAGING_DIR="$INSTALL_DIR/releases/.staging-$NEW_TAG"

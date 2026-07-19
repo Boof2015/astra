@@ -51,7 +51,7 @@ CURRENT="$(/usr/bin/node -v | tr -d v)"
 CHROOT
 
 check "hostname is parallax"
-[ "$(cat "${ROOTFS_DIR}/etc/hostname" | tr -d ' \t\n\r')" = "parallax" ]
+[ "$(tr -d ' \t\n\r' < "${ROOTFS_DIR}/etc/hostname")" = "parallax" ]
 
 check "appliance drop-ins present"
 [ -f "${ROOTFS_DIR}/etc/systemd/system.conf.d/10-parallax-watchdog.conf" ]
@@ -63,6 +63,30 @@ check "required packages installed"
 on_chroot << 'CHROOT'
 set -e
 dpkg -s avahi-daemon unattended-upgrades nodejs alsa-utils >/dev/null
+CHROOT
+
+check "TV mode: kiosk packages, units, detect enabled, CEC group"
+on_chroot << 'CHROOT'
+set -e
+dpkg -s cage cog v4l-utils >/dev/null
+id -u parallax-kiosk >/dev/null
+id -nG astra-receiver | grep -qw video
+CHROOT
+[ -x "${ROOTFS_DIR}/usr/local/lib/parallax/hdmi-connected.sh" ]
+[ -x "${ROOTFS_DIR}/usr/local/lib/parallax/parallax-kiosk-launch.sh" ]
+grep -q '^Conflicts=getty@tty1.service' "${ROOTFS_DIR}/etc/systemd/system/parallax-kiosk.service"
+grep -q '/display' "${ROOTFS_DIR}/etc/systemd/system/parallax-kiosk.service"
+[ -L "${ROOTFS_DIR}/etc/systemd/system/multi-user.target.wants/parallax-kiosk-detect.service" ]
+# The kiosk unit itself must NOT be enabled — the detect service starts it only when HDMI is up.
+[ ! -e "${ROOTFS_DIR}/etc/systemd/system/multi-user.target.wants/parallax-kiosk.service" ]
+
+check "CEC control baked on"
+on_chroot << 'CHROOT'
+set -e
+node -e '
+  const config = JSON.parse(require("fs").readFileSync("/opt/astra-receiver/config.json", "utf8"))
+  if (config.cecControl !== true) throw new Error("cecControl not baked on")
+'
 CHROOT
 
 check "all assertions passed"

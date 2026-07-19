@@ -1,0 +1,13 @@
+# Parallax OS TV-mode detect: starts parallax-kiosk.service iff an HDMI display is connected
+# at boot. See parallax-kiosk-launch.sh for why this indirection exists.
+
+[Unit]
+Description=Parallax TV detect (start kiosk when HDMI is connected)
+After=multi-user.target astra-receiver.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/parallax/parallax-kiosk-launch.sh
+
+[Install]
+WantedBy=multi-user.target

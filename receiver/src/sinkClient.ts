@@ -23,6 +23,7 @@ import {
 } from '../../src/types/parallax'
 import {
   createParallaxPinnedDispatcher,
+  readBoundedBytesResponse,
   readBoundedJsonResponse,
   PARALLAX_MAX_SSE_EVENT_BYTES
 } from '../../src/main/services/parallaxSecurity'
@@ -43,6 +44,9 @@ const CLOCK_SYNC_INTERVAL_MS = 2_000
 const CLOCK_PRIMING_PROBES = 8
 const CLOCK_PRIMING_INTERVAL_MS = 120
 const SINK_JSON_FETCH_TIMEOUT_MS = 3_000
+// §19.18(e) — matches the app's PARALLAX_ARTWORK_MAX_BYTES bound on the same endpoint.
+const SINK_ARTWORK_MAX_BYTES = 4 * 1024 * 1024
+const SINK_ARTWORK_CACHE_MAX = 4
 const PARALLAX_AUDIO_STALL_MS = 1_200
 const PARALLAX_AUDIO_STALL_CHECK_MS = 400
 const PARALLAX_AUDIO_RECONNECT_BACKFILL_MS = 1_000
@@ -141,6 +145,10 @@ export class ParallaxSinkClient {
   private timeline: ParallaxTimelineState | null = null
   private pendingStream: ParallaxStreamInfo | null = null
   private pendingTimeline: ParallaxTimelineState | null = null
+  // §14.1.4 Zone Display artwork, keyed by streamId. `null` = the host answered "no artwork"
+  // (don't re-ask); missing key = never fetched (the next getActiveArtwork poll fetches).
+  private artworkCache = new Map<string, { contentType: string; bytes: Buffer } | null>()
+  private artworkFetchesInFlight = new Set<string>()
   private lastError: string | null = null
   private hostReachable = true
   private reconnectAttempts = 0
@@ -369,6 +377,56 @@ export class ParallaxSinkClient {
       throw new Error(message)
     }
     return payload as T
+  }
+
+  // ── Zone Display artwork (§14.1.4 / §19.18(e) port) ──────────────────────────
+  // Pull-based: the status/display page polls at 1 Hz; the first poll after a stream change
+  // misses the cache and kicks a background fetch, the next poll serves it. This deliberately
+  // touches none of the join/promote/stream-start machinery.
+
+  getActiveArtwork(): { streamId: string; contentType: string; bytes: Buffer } | null {
+    const stream = this.activeStream
+    if (!stream || !this.connection) return null
+    const cached = this.artworkCache.get(stream.streamId)
+    if (cached === undefined) {
+      void this.fetchArtwork(stream.streamId)
+      return null
+    }
+    return cached ? { streamId: stream.streamId, ...cached } : null
+  }
+
+  private async fetchArtwork(streamId: string): Promise<void> {
+    if (this.artworkFetchesInFlight.has(streamId)) return
+    const connection = this.connection
+    if (!connection) return
+    this.artworkFetchesInFlight.add(streamId)
+    try {
+      const response = await undiciFetch(
+        `${connection.baseUrl}/v1/parallax/artwork/current?streamId=${encodeURIComponent(streamId)}`,
+        {
+          dispatcher: connection.dispatcher,
+          signal: AbortSignal.any([connection.abortController.signal, AbortSignal.timeout(SINK_JSON_FETCH_TIMEOUT_MS)]),
+          headers: { Authorization: `Bearer ${connection.token}` }
+        } as ParallaxFetchInit
+      )
+      if (!response.ok) {
+        // The host has no artwork for this stream — remember that so we stop asking.
+        this.artworkCache.set(streamId, null)
+        return
+      }
+      const contentType = response.headers.get('content-type')?.trim() || 'image/jpeg'
+      const bytes = await readBoundedBytesResponse(response, SINK_ARTWORK_MAX_BYTES)
+      this.artworkCache.set(streamId, bytes.byteLength > 0 ? { contentType, bytes } : null)
+      while (this.artworkCache.size > SINK_ARTWORK_CACHE_MAX) {
+        const oldest = this.artworkCache.keys().next().value
+        if (oldest === undefined) break
+        this.artworkCache.delete(oldest)
+      }
+    } catch {
+      // Transient (timeout, reconnect) — stay uncached so the next poll retries.
+    } finally {
+      this.artworkFetchesInFlight.delete(streamId)
+    }
   }
 
   // ── Clock sync + liveness watchdogs ──────────────────────────────────────────

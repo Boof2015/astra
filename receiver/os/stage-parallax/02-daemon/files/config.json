@@ -1,4 +1,5 @@
 {
   "audioBackend": "alsa",
-  "webPort": 80
+  "webPort": 80,
+  "cecControl": true
 }

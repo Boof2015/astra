@@ -108,9 +108,17 @@ Float32 for DACs that don't take it natively).
 - `ASTRA_RECEIVER_CONFIG=<path>` — config file override.
 - `ASTRA_RECEIVER_ALSA_ADDON=<path>` — explicit .node addon path (used by the systemd unit).
 
-## Known limits
+## TV display + CEC (0.2.0+)
 
-- No artwork / Zone Display (headless by definition; the web page shows title/artist only).
+`GET /display` serves a fullscreen Zone-Display-style now-playing page (artwork + title/artist,
+idle screen with the zone name) — the Parallax OS kiosk points a WPE browser at it, but any
+browser works. Artwork is fetched lazily from the host's `/v1/parallax/artwork/current`
+endpoint (§19.18(e)) and cached per stream; `GET /api/artwork` serves the active stream's bytes.
+
+With `cecControl: true` in config.json (default on Parallax OS, off elsewhere) the daemon drives
+the TV over HDMI-CEC via `cec-ctl` (v4l-utils; the service user needs the `video` group for
+/dev/cec0): wake + claim active source when playback starts, standby after `cecStandbyMinutes`
+(default 10) of not playing.
 
 ## Gapless playback (§21)
 

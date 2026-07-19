@@ -20,6 +20,12 @@ releases in the receiver releases repo by the **Parallax OS Release** GitHub wor
   (`RuntimeWatchdogSec=15`) for kernel hangs. `Restart=always` with no start limit.
 - Node.js 24 LTS (NodeSource), journald capped at 64 M for SD longevity.
 
+- **TV mode** (Phase 2): if an HDMI display is connected at boot, a Cage + WPE kiosk starts on
+  tty1 showing the daemon's `/display` page — Zone-Display-style artwork + title/artist. No
+  display → the Pi stays headless; nothing else changes. HDMI-CEC is on by default
+  (`cecControl` in the daemon config): the TV wakes and switches input when a stream starts
+  playing, and goes to standby after 10 idle minutes.
+
 Deliberately stock: the first-boot user wizard and Raspberry Pi Imager's OS-customization
 (user, Wi-Fi, hostname override, SSH) work exactly like on plain Pi OS.
 

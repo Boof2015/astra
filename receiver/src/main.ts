@@ -8,6 +8,7 @@ import {
   ParallaxSinkListener,
   type ParallaxSinkListenerPairedInfo
 } from '../../src/main/services/parallaxSinkListener'
+import { createCecController } from './cecController'
 import { ConfigStore } from './config'
 import { createOutputBackend } from './output/backendFactory'
 import { listAlsaDevices } from './output/alsaDevices'
@@ -190,6 +191,7 @@ async function main(): Promise<void> {
         assignedSinkName: sessionInfo.assignedSinkName,
         appliedAdvanceMs: sessionInfo.appliedAdvanceMs,
         volumePercent: current.volumePercent,
+        artworkId: client.getActiveArtwork()?.streamId ?? null,
         outputDevice: backend.deviceLabel,
         configuredDevice: current.audioDevice,
         audioDevices: listAlsaDevices(),
@@ -232,6 +234,10 @@ async function main(): Promise<void> {
       setTimeout(() => void shutdown('output device change'), OUTPUT_CHANGE_RESTART_DELAY_MS)
       return true
     },
+    getArtwork: () => {
+      const artwork = client.getActiveArtwork()
+      return artwork ? { contentType: artwork.contentType, bytes: artwork.bytes } : null
+    },
     forgetHost: async () => {
       await client.forgetOnHost().catch(() => undefined)
       connectGeneration += 1
@@ -259,6 +265,18 @@ async function main(): Promise<void> {
   notifier.ready()
   notifier.startWatchdog()
 
+  // HDMI-CEC TV control (Parallax OS TV mode; no-op unless cecControl is set and /dev/cec0
+  // exists). Driven by a 1 Hz playback-state poll; the controller debounces transitions.
+  const cec = createCecController({
+    enabled: config.cecControl,
+    standbyMinutes: config.cecStandbyMinutes,
+    log
+  })
+  const cecPollTimer = setInterval(() => {
+    cec.notifyPlayback(session.getInfo().playbackState === 'playing')
+  }, 1_000)
+  cecPollTimer.unref?.()
+
   if (configStore.get().connection) {
     void startConnectLoop()
   } else {
@@ -272,6 +290,8 @@ async function main(): Promise<void> {
     log(`${signal} — shutting down`)
     notifier.stopping()
     notifier.stopWatchdog()
+    clearInterval(cecPollTimer)
+    cec.stop()
     connectGeneration += 1
     await client.disconnect().catch(() => undefined)
     await web.stop().catch(() => undefined)

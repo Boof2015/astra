@@ -46,9 +46,11 @@ jobs:
       - name: Shellcheck
         run: |
           shellcheck receiver/deploy/*.sh receiver/os/ci/*.sh \
-            receiver/os/stage-parallax/prerun.sh receiver/os/stage-parallax/*/*-run.sh
+            receiver/os/stage-parallax/prerun.sh receiver/os/stage-parallax/*/*-run.sh \
+            receiver/os/stage-parallax/*/files/*.sh
           bash -n receiver/deploy/*.sh receiver/os/ci/*.sh \
-            receiver/os/stage-parallax/prerun.sh receiver/os/stage-parallax/*/*-run.sh
+            receiver/os/stage-parallax/prerun.sh receiver/os/stage-parallax/*/*-run.sh \
+            receiver/os/stage-parallax/*/files/*.sh
 
   build:
     name: Build image (pi-gen)
