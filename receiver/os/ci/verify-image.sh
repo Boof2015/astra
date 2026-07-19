@@ -73,6 +73,11 @@ grep -q 'address=/#/10.42.0.1' "$MOUNT_DIR/etc/NetworkManager/dnsmasq-shared.d/p
   || fail "captive dnsmasq drop-in missing"
 grep -q '"apSetup": true' "$MOUNT_DIR/opt/astra-receiver/config.json" || fail "config.json lacks apSetup"
 grep -q '^parallax:!' "$MOUNT_DIR/etc/shadow" || fail "parallax user is not locked"
+if [ -f "$MOUNT_DIR/var/lib/NetworkManager/NetworkManager.state" ]; then
+  grep -q 'WirelessEnabled=false' "$MOUNT_DIR/var/lib/NetworkManager/NetworkManager.state" \
+    && fail "Wi-Fi is administratively disabled — WPA_COUNTRY missing from the pi-gen config"
+fi
+[ -f "$MOUNT_DIR/usr/share/icons/parallax-blank/cursors/left_ptr" ] || fail "blank cursor theme missing"
 
 check "TV mode: kiosk detect enabled, kiosk unit present but not enabled"
 [ -L "$MOUNT_DIR/etc/systemd/system/multi-user.target.wants/parallax-kiosk-detect.service" ] \

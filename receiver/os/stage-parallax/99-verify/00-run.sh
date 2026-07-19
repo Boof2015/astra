@@ -60,6 +60,20 @@ check "AP setup: polkit rule, captive DNS drop-in, NetworkManager, locked user"
 [ -f "${ROOTFS_DIR}/etc/polkit-1/rules.d/50-parallax-network.rules" ]
 [ -f "${ROOTFS_DIR}/etc/NetworkManager/dnsmasq-shared.d/parallax-captive.conf" ]
 grep -q 'address=/#/10.42.0.1' "${ROOTFS_DIR}/etc/NetworkManager/dnsmasq-shared.d/parallax-captive.conf"
+
+check "Wi-Fi radio not administratively disabled (WPA_COUNTRY was set)"
+# Without a regulatory domain, pi-gen writes WirelessEnabled=false and the setup AP can never
+# start — the first flash failed exactly this way.
+if [ -f "${ROOTFS_DIR}/var/lib/NetworkManager/NetworkManager.state" ]; then
+  if grep -q 'WirelessEnabled=false' "${ROOTFS_DIR}/var/lib/NetworkManager/NetworkManager.state"; then
+    echo "Wi-Fi is administratively disabled — WPA_COUNTRY missing from the pi-gen config" >&2
+    exit 1
+  fi
+fi
+
+check "blank cursor theme for the kiosk"
+[ -f "${ROOTFS_DIR}/usr/share/icons/parallax-blank/cursors/left_ptr" ]
+grep -q 'XCURSOR_THEME=parallax-blank' "${ROOTFS_DIR}/etc/systemd/system/parallax-kiosk.service"
 on_chroot << 'CHROOT'
 set -e
 dpkg -s network-manager polkitd >/dev/null

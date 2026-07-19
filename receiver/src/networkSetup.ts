@@ -21,6 +21,8 @@ export interface NetworkSetupState {
   apActive: boolean
   connecting: boolean
   lastError: string | null
+  /** Seconds until the setup AP raises, while offline and counting down; null otherwise. */
+  apEtaSeconds: number | null
 }
 
 export interface NetworkSetupOptions {
@@ -106,7 +108,7 @@ export function createNetworkSetup(options: NetworkSetupOptions): NetworkSetup {
     apSsid,
     start: () => undefined,
     stop: () => undefined,
-    getState: () => ({ apActive: false, connecting: false, lastError: null }),
+    getState: () => ({ apActive: false, connecting: false, lastError: null, apEtaSeconds: null }),
     scanNetworks: async () => [],
     applyCredentials: () => false,
     tick: async () => undefined
@@ -124,6 +126,10 @@ export function createNetworkSetup(options: NetworkSetupOptions): NetworkSetup {
   let cachedScan: WifiNetwork[] = []
   let timer: ReturnType<typeof setInterval> | null = null
   let stopped = false
+  // null until the first offline check looks it up. A device with NO saved Wi-Fi profiles is a
+  // first boot — raise the AP fast (~30 s). With profiles, hold the full threshold so a router
+  // blip doesn't flip a provisioned speaker into setup mode.
+  let hasWifiProfiles: boolean | null = null
 
   const nmcli = (args: string[], timeoutMs?: number): Promise<{ stdout: string }> =>
     exec('nmcli', args, timeoutMs)
@@ -159,6 +165,10 @@ export function createNetworkSetup(options: NetworkSetupOptions): NetworkSetup {
   }
 
   const raiseAp = async (): Promise<void> => {
+    // Pi OS ships Wi-Fi soft-blocked until a regulatory domain is set; the image bakes the
+    // domain (WPA_COUNTRY), and this defensive enable clears any residual soft-block through
+    // NetworkManager's own path (no root needed, unlike rfkill).
+    await nmcli(['radio', 'wifi', 'on']).catch(() => undefined)
     // Scan BEFORE hosting: the Pi radio can't reliably scan while it runs the AP, so the
     // portal serves this cached list.
     try {
@@ -219,6 +229,9 @@ export function createNetworkSetup(options: NetworkSetupOptions): NetworkSetup {
     }
   }
 
+  const effectiveThreshold = (): number =>
+    hasWifiProfiles === false ? Math.min(2, offlineThreshold) : offlineThreshold
+
   const tick = async (): Promise<void> => {
     if (stopped || connecting || apActive) return
     try {
@@ -226,8 +239,15 @@ export function createNetworkSetup(options: NetworkSetupOptions): NetworkSetup {
         offlineChecks = 0
         return
       }
+      if (hasWifiProfiles === null) {
+        const { stdout } = await nmcli(['-t', '-f', 'NAME,TYPE', 'connection', 'show'])
+        hasWifiProfiles = stdout.split('\n').some((line) => {
+          const [name, type] = parseNmcliTerse(line)
+          return Boolean(name) && type === '802-11-wireless' && name !== SETUP_AP_CONNECTION
+        })
+      }
       offlineChecks += 1
-      if (offlineChecks >= offlineThreshold) {
+      if (offlineChecks >= effectiveThreshold()) {
         await raiseAp()
       }
     } catch (error) {
@@ -253,7 +273,14 @@ export function createNetworkSetup(options: NetworkSetupOptions): NetworkSetup {
       }
       if (apActive) void dropAp()
     },
-    getState: () => ({ apActive, connecting, lastError }),
+    getState: () => ({
+      apActive,
+      connecting,
+      lastError,
+      apEtaSeconds: !apActive && !connecting && offlineChecks > 0
+        ? Math.max(0, Math.round(((effectiveThreshold() - offlineChecks) * checkIntervalMs) / 1000))
+        : null
+    }),
     scanNetworks: async () => {
       if (apActive) return cachedScan
       try {

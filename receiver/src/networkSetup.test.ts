@@ -26,6 +26,7 @@ interface ExecCall { args: string[] }
 function fakeNmcli(behavior: {
   state?: () => string
   connectFails?: boolean
+  wifiProfiles?: boolean
 }) {
   const calls: ExecCall[] = []
   const exec = async (_command: string, args: string[]) => {
@@ -33,6 +34,11 @@ function fakeNmcli(behavior: {
     const joined = args.join(' ')
     if (joined === '-t -f DEVICE,TYPE device') return { stdout: DEVICE_LIST }
     if (joined === '-t -f DEVICE,TYPE,STATE device') return { stdout: (behavior.state ?? (() => OFFLINE_STATE))() }
+    if (joined === '-t -f NAME,TYPE connection show') {
+      // Default: a provisioned device (has a saved Wi-Fi profile) so threshold tests use the
+      // full offline threshold; virgin-boot tests override.
+      return { stdout: behavior.wifiProfiles === false ? 'lo:loopback\n' : 'HomeNet:802-11-wireless\nlo:loopback\n' }
+    }
     if (joined.startsWith('-t -f SSID,SIGNAL,SECURITY device wifi list')) return { stdout: WIFI_LIST }
     if (joined.startsWith('device wifi connect')) {
       if (behavior.connectFails) throw new Error('Error: Connection activation failed: Secrets were required')
@@ -74,6 +80,20 @@ test('raises the open AP after sustained offline, not before', async () => {
   const before = calls.length
   await setup.tick()
   assert.equal(calls.length, before)
+})
+
+test('virgin device (no saved Wi-Fi) raises the AP fast and reports a countdown', async () => {
+  const { exec, calls } = fakeNmcli({ wifiProfiles: false })
+  const setup = createNetworkSetup({
+    enabled: true, exec, offlineChecksBeforeAp: 8, checkIntervalMs: 15_000, log: () => undefined
+  })
+  await setup.tick()
+  assert.equal(setup.getState().apEtaSeconds, 15, 'one fast check left → ~15s')
+  assert.ok(!calls.some((c) => c.args[1] === 'add'))
+  await setup.tick()
+  assert.ok(calls.some((c) => c.args[1] === 'add'), 'AP raised on the fast path')
+  assert.ok(calls.some((c) => c.args.join(' ') === 'radio wifi on'), 'defensive radio enable ran')
+  assert.equal(setup.getState().apEtaSeconds, null, 'no countdown while the AP is up')
 })
 
 test('online LAN resets the offline counter', async () => {

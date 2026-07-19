@@ -144,7 +144,10 @@ test('GET /api/artwork serves cached bytes and 404s when absent', async () => {
 function setupState(overrides: Partial<NonNullable<WebStatusState['setup']>> = {}): WebStatusState {
   return {
     ...stubState(),
-    setup: { apActive: false, apSsid: 'Parallax-Setup', connecting: false, lastError: null, ...overrides }
+    setup: {
+      apActive: false, apSsid: 'Parallax-Setup', connecting: false, lastError: null,
+      apEtaSeconds: null, ...overrides
+    }
   }
 }
 

@@ -12,6 +12,12 @@
 IMG_NAME="ParallaxOS"
 FIRST_USER_NAME="parallax"
 DISABLE_FIRST_BOOT_USER_RENAME=1
+# CRITICAL for AP onboarding: without a Wi-Fi country, raspberrypi-sys-mods ships the radio
+# rfkill-blocked AND pi-gen writes WirelessEnabled=false into NetworkManager's state — the
+# setup hotspot can never start (found the hard way on the first flash). US is the pragmatic
+# default; AP channels 1–11 are legal nearly everywhere, and a future portal version can
+# re-set the domain per user.
+WPA_COUNTRY="US"
 # The pinned pi-gen arm64 ref defaults to trixie (current Pi OS); stated here for determinism.
 RELEASE="trixie"
 # The workflow verifies the raw .img (loop-mount asserts) and xz's it afterwards.

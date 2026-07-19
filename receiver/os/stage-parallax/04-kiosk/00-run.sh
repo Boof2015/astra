@@ -12,6 +12,22 @@ install -m 0644 files/parallax-kiosk.service \
 install -m 0644 files/parallax-kiosk-detect.service \
   "${ROOTFS_DIR}/etc/systemd/system/parallax-kiosk-detect.service"
 
+# Transparent 1x1 Xcursor theme: cage has no hide-cursor option but honors XCURSOR_THEME
+# (set in the kiosk unit), and without this a default arrow sits dead-center on the TV forever.
+# The Xcursor binary format is simple enough to emit directly — no cursor tooling needed.
+mkdir -p "${ROOTFS_DIR}/usr/share/icons/parallax-blank/cursors"
+printf '[Icon Theme]\nName=parallax-blank\n' > "${ROOTFS_DIR}/usr/share/icons/parallax-blank/index.theme"
+python3 - "${ROOTFS_DIR}/usr/share/icons/parallax-blank/cursors/left_ptr" << 'PYEOF'
+import struct, sys
+# Xcursor: magic, header size, version, ntoc; one TOC entry; one 1x1 fully transparent image.
+header = struct.pack('<4sIII', b'Xcur', 16, 0x10000, 1)
+toc = struct.pack('<III', 0xFFFD0002, 1, 28)
+image = struct.pack('<IIIIIIIII', 36, 0xFFFD0002, 1, 1, 1, 1, 0, 0, 0) + struct.pack('<I', 0)
+with open(sys.argv[1], 'wb') as handle:
+    handle.write(header + toc + image)
+PYEOF
+ln -sf left_ptr "${ROOTFS_DIR}/usr/share/icons/parallax-blank/cursors/default"
+
 on_chroot << CHROOT
 set -e
 if ! id -u parallax-kiosk >/dev/null 2>&1; then

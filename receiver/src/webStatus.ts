@@ -45,8 +45,15 @@ export interface WebStatusState {
     expiresAtMs: number
   } | null
   // Captive-portal onboarding state; null when the apSetup feature is off (everywhere but the
-  // Parallax OS image). `apActive` drives the captive redirect and the TV's setup hint.
-  setup: { apActive: boolean; apSsid: string; connecting: boolean; lastError: string | null } | null
+  // Parallax OS image). `apActive` drives the captive redirect and the TV's setup hint;
+  // `apEtaSeconds` drives the TV's "setup starts in ~Ns" countdown while offline.
+  setup: {
+    apActive: boolean
+    apSsid: string
+    connecting: boolean
+    lastError: string | null
+    apEtaSeconds: number | null
+  } | null
   diagnostics: SinkSessionDiagnostics | null
 }
 
@@ -401,6 +408,7 @@ const DISPLAY_HTML = `<!doctype html>
 let shownArtworkId = null
 let pos = null
 let lastStatus = null
+let statusReceivedAt = 0
 // Page-load counts as "recently playing" so an already-paused track shows before the timer runs.
 let lastAdvancingAt = Date.now()
 const PAUSED_IDLE_MS = 2 * 60 * 1000
@@ -561,6 +569,15 @@ function render() {
     if (inSetup) {
       hint.textContent = 'To set up, join the Wi-Fi network "' + s.setup.apSsid + '" with your phone'
       hint.style.color = '#b5b5c2'
+    } else if (s.setup && s.setup.connecting) {
+      hint.textContent = 'Connecting to Wi-Fi…'
+      hint.style.color = '#b5b5c2'
+    } else if (s.setup && s.setup.apEtaSeconds !== null) {
+      // Live countdown between polls so the wait never looks dead.
+      const since = statusReceivedAt ? Math.round((Date.now() - statusReceivedAt) / 1000) : 0
+      const eta = Math.max(0, s.setup.apEtaSeconds - since)
+      hint.textContent = 'No network found — Wi-Fi setup starts in ~' + eta + 's'
+      hint.style.color = '#b5b5c2'
     } else {
       hint.textContent = s.statusLabel === 'Connected' ? '' : s.statusLabel
       hint.style.color = ''
@@ -572,6 +589,7 @@ async function refresh() {
   try {
     const s = await (await fetch('/api/status')).json()
     lastStatus = s
+    statusReceivedAt = Date.now()
     const hasTrack = s.playbackEnabled && s.streamTitle && s.playbackState !== 'stopped'
     pos = hasTrack && s.position ? Object.assign({ receivedAt: Date.now() }, s.position) : null
     const art = document.getElementById('art')

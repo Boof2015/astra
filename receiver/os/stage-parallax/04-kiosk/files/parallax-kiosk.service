@@ -25,4 +25,6 @@ UtmpIdentifier=tty1
 UtmpMode=user
 Restart=always
 RestartSec=5
+# parallax-blank is a shipped transparent Xcursor theme — cage's only way to hide the pointer.
+Environment=XCURSOR_THEME=parallax-blank
 ExecStart=/usr/bin/cage -- /usr/bin/cog --platform=wl http://127.0.0.1/display
