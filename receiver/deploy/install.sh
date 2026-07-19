@@ -159,7 +159,7 @@ choose_audio_device
 # a rename, and the running daemon keeps its open inodes until we restart it below.
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)" || SCRIPT_DIR=""
 if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/update.sh" ]; then
   cp "$SCRIPT_DIR/update.sh" "$TMP_DIR/update.sh"
 else

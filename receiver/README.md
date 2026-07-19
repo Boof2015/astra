@@ -108,7 +108,7 @@ Float32 for DACs that don't take it natively).
 - `ASTRA_RECEIVER_CONFIG=<path>` — config file override.
 - `ASTRA_RECEIVER_ALSA_ADDON=<path>` — explicit .node addon path (used by the systemd unit).
 
-## TV display + CEC (0.3.0+)
+## TV display + CEC (0.2.0+)
 
 `GET /display` serves a fullscreen Zone-Display-style now-playing page (artwork + title/artist,
 idle screen with the zone name) — the Parallax OS kiosk points a WPE browser at it, but any

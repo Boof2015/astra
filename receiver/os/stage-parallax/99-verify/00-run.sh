@@ -51,7 +51,7 @@ CURRENT="$(/usr/bin/node -v | tr -d v)"
 CHROOT
 
 check "hostname is parallax"
-[ "$(cat "${ROOTFS_DIR}/etc/hostname" | tr -d ' \t\n\r')" = "parallax" ]
+[ "$(tr -d ' \t\n\r' < "${ROOTFS_DIR}/etc/hostname")" = "parallax" ]
 
 check "appliance drop-ins present"
 [ -f "${ROOTFS_DIR}/etc/systemd/system.conf.d/10-parallax-watchdog.conf" ]
