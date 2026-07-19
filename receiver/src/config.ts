@@ -21,6 +21,11 @@ export interface ReceiverConfig {
   listenerPort: number
   /** Port for the local status/pairing web page. */
   webPort: number
+  /** HDMI-CEC TV control (Parallax OS TV mode): wake the TV when a stream starts playing,
+   *  standby after the idle timeout. Needs /dev/cec0 + cec-ctl (v4l-utils). */
+  cecControl: boolean
+  /** Minutes of not-playing before the TV is sent to standby. */
+  cecStandbyMinutes: number
   connection: PersistedParallaxSinkConnection | null
 }
 
@@ -43,6 +48,8 @@ function defaults(): ReceiverConfig {
     volumePercent: 100,
     listenerPort: 38404,
     webPort: DEFAULT_WEB_PORT,
+    cecControl: false,
+    cecStandbyMinutes: 10,
     connection: null
   }
 }
@@ -119,6 +126,11 @@ export class ConfigStore {
         : base.volumePercent,
       listenerPort: sanitizePort(record.listenerPort, base.listenerPort),
       webPort: sanitizePort(record.webPort, base.webPort),
+      cecControl: record.cecControl === true,
+      cecStandbyMinutes: Number.isInteger(record.cecStandbyMinutes as number)
+        && Number(record.cecStandbyMinutes) >= 1 && Number(record.cecStandbyMinutes) <= 720
+        ? Number(record.cecStandbyMinutes)
+        : base.cecStandbyMinutes,
       connection: sanitizeConnection(record.connection)
     }
     // Re-persist when the file was missing fields (first run after an upgrade) so the UUID and

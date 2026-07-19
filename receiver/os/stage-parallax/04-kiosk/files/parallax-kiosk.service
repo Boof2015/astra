@@ -1,0 +1,28 @@
+# Parallax OS TV display: Cage (single-app Wayland compositor) running the WPE browser (cog)
+# fullscreen on the daemon's /display page. Started by parallax-kiosk-detect.service when an
+# HDMI display is present — never enabled directly (the getty conflict must not fire headless).
+# The PAMName/TTY block is the standard cage-on-a-TTY systemd pattern: a logind session gives
+# the kiosk user seat/DRM access and XDG_RUNTIME_DIR without running anything as root.
+
+[Unit]
+Description=Parallax TV display (Cage + WPE kiosk)
+After=astra-receiver.service systemd-user-sessions.service getty@tty1.service
+Wants=astra-receiver.service
+Conflicts=getty@tty1.service
+
+[Service]
+Type=simple
+User=parallax-kiosk
+PAMName=login
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-fail
+StandardOutput=journal
+StandardError=journal
+UtmpIdentifier=tty1
+UtmpMode=user
+Restart=always
+RestartSec=5
+ExecStart=/usr/bin/cage -- /usr/bin/cog --platform=wl http://127.0.0.1/display

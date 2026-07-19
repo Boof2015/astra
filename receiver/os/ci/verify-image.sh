@@ -66,4 +66,14 @@ check "hostname + appliance drop-ins"
 check "node baked at /usr/bin/node"
 [ -e "$MOUNT_DIR/usr/bin/node" ] || fail "/usr/bin/node missing"
 
+check "TV mode: kiosk detect enabled, kiosk unit present but not enabled"
+[ -L "$MOUNT_DIR/etc/systemd/system/multi-user.target.wants/parallax-kiosk-detect.service" ] \
+  || fail "kiosk detect service not enabled"
+[ -f "$MOUNT_DIR/etc/systemd/system/parallax-kiosk.service" ] || fail "kiosk unit missing"
+[ ! -e "$MOUNT_DIR/etc/systemd/system/multi-user.target.wants/parallax-kiosk.service" ] \
+  || fail "kiosk unit must not be enabled directly (detect service starts it)"
+[ -x "$MOUNT_DIR/usr/local/lib/parallax/hdmi-connected.sh" ] || fail "hdmi-connected.sh missing"
+grep -q '"cecControl": true' "$MOUNT_DIR/opt/astra-receiver/config.json" \
+  || fail "config.json lacks cecControl"
+
 check "OK — image verified"
