@@ -80,7 +80,12 @@ export interface SinkSessionInfo {
   appliedAdvanceMs: number
   streamTitle: string | null
   streamArtist: string | null
+  streamAlbum: string | null
   playbackState: string
+  // Track position for the /display progress bar, interpolated SERVER-side at read time (the
+  // ZoneDisplay recipe: frame cursor + wall delta × rate). The viewing browser only ticks it
+  // forward between polls, so a laptop's clock skew against the Pi never shows up.
+  position: { elapsedSeconds: number; durationSeconds: number | null; advancing: boolean } | null
   diagnostics: SinkSessionDiagnostics
 }
 
@@ -193,9 +198,30 @@ export class SinkSession {
       appliedAdvanceMs: this.advanceMs,
       streamTitle: this.activeStream?.title ?? null,
       streamArtist: this.activeStream?.artist ?? null,
+      streamAlbum: this.activeStream?.album || null,
       playbackState: this.latestTimeline?.playbackState ?? 'stopped',
+      position: this.currentPosition(),
       diagnostics: this.lastDiagnostics
     }
+  }
+
+  // ZoneDisplay's position recipe against the daemon's playout snapshot: interpolate the frame
+  // cursor forward off the wall clock while playing, freeze on pause/rebuffer.
+  private currentPosition(): SinkSessionInfo['position'] {
+    const stream = this.activeStream
+    if (!stream || stream.sampleRate <= 0) return null
+    const snapshot = this.engine.getSnapshot()
+    if (snapshot.streamId !== stream.streamId) return null
+    const advancing = this.latestTimeline?.playbackState === 'playing' && !snapshot.rebuffering
+    let frame = snapshot.currentFrame
+    if (advancing && snapshot.currentFrameAtWallMs > 0) {
+      const deltaMs = localNowMs() - snapshot.currentFrameAtWallMs
+      frame += (deltaMs / 1000) * stream.sampleRate * (1 + snapshot.playbackRatePpm / 1e6)
+    }
+    const durationSeconds = stream.durationSeconds > 0 ? stream.durationSeconds : null
+    const raw = frame / stream.sampleRate
+    const elapsedSeconds = Math.max(0, durationSeconds !== null ? Math.min(raw, durationSeconds) : raw)
+    return { elapsedSeconds, durationSeconds, advancing }
   }
 
   // ── Client callbacks ─────────────────────────────────────────────────────────

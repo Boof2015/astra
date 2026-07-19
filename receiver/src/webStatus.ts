@@ -23,6 +23,9 @@ export interface WebStatusState {
   playbackState: string
   streamTitle: string | null
   streamArtist: string | null
+  streamAlbum: string | null
+  // Server-side-interpolated track position (see SinkSessionInfo.position).
+  position: { elapsedSeconds: number; durationSeconds: number | null; advancing: boolean } | null
   assignedSinkName: string | null
   appliedAdvanceMs: number
   volumePercent: number
@@ -309,12 +312,23 @@ const DISPLAY_HTML = `<!doctype html>
   #title { font-size: 6.5vmin; font-weight: 700; line-height: 1.15; margin: 0;
            overflow-wrap: anywhere; }
   #artist { font-size: 3.6vmin; color: #b5b5c2; margin: 1.5vmin 0 0; overflow-wrap: anywhere; }
+  #album { font-size: 2.6vmin; color: #8b8b98; margin: 0.8vmin 0 0; overflow-wrap: anywhere; }
   #state { font-size: 2.4vmin; color: #8b8b98; margin-top: 3vmin; text-transform: uppercase;
            letter-spacing: 0.18em; }
+  #progress { margin-top: 3.5vmin; }
+  #bar { height: 0.7vmin; border-radius: 0.35vmin; background: rgba(255,255,255,0.16);
+         overflow: hidden; }
+  #bar-fill { height: 100%; width: 0; border-radius: 0.35vmin; background: #f2f2f6;
+              transition: width 0.25s linear; }
+  #times { display: flex; justify-content: space-between; font-size: 2.2vmin; color: #8b8b98;
+           margin-top: 1.2vmin; font-variant-numeric: tabular-nums; }
+  #next { font-size: 2.2vmin; color: #6f6f7c; margin-top: 2.5vmin; }
   #idle { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
           justify-content: center; gap: 2vmin; }
-  #idle-zone { font-size: 5vmin; font-weight: 600; letter-spacing: 0.04em; }
-  #idle-hint { font-size: 2.6vmin; color: #6f6f7c; }
+  #idle-clock { font-size: 16vmin; font-weight: 200; letter-spacing: 0.02em;
+                font-variant-numeric: tabular-nums; line-height: 1; }
+  #idle-zone { font-size: 4vmin; font-weight: 600; letter-spacing: 0.04em; color: #b5b5c2; }
+  #idle-hint { font-size: 2.4vmin; color: #6f6f7c; }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -325,15 +339,45 @@ const DISPLAY_HTML = `<!doctype html>
   <div id="meta">
     <h1 id="title"></h1>
     <p id="artist"></p>
+    <p id="album"></p>
+    <div id="progress">
+      <div id="bar"><div id="bar-fill"></div></div>
+      <div id="times"><span id="t-elapsed"></span><span id="t-total"></span></div>
+    </div>
     <div id="state"></div>
+    <div id="next"></div>
   </div>
 </div>
 <div id="idle">
+  <div id="idle-clock"></div>
   <div id="idle-zone"></div>
   <div id="idle-hint"></div>
 </div>
 <script>
 let shownArtworkId = null
+let pos = null
+function fmt(totalSeconds) {
+  const t = Math.max(0, Math.floor(totalSeconds))
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60
+  const mm = h > 0 && m < 10 ? '0' + m : String(m)
+  return (h > 0 ? h + ':' + mm : mm) + ':' + (s < 10 ? '0' + s : s)
+}
+function renderTick() {
+  const clock = document.getElementById('idle-clock')
+  if (!document.getElementById('idle').classList.contains('hidden')) {
+    clock.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  }
+  const progress = document.getElementById('progress')
+  if (!pos) { progress.style.visibility = 'hidden'; return }
+  progress.style.visibility = ''
+  let elapsed = pos.elapsedSeconds + (pos.advancing ? (Date.now() - pos.receivedAt) / 1000 : 0)
+  if (pos.durationSeconds !== null) elapsed = Math.min(elapsed, pos.durationSeconds)
+  document.getElementById('t-elapsed').textContent = fmt(elapsed)
+  document.getElementById('t-total').textContent = pos.durationSeconds !== null ? fmt(pos.durationSeconds) : '--:--'
+  document.getElementById('bar-fill').style.width = pos.durationSeconds
+    ? Math.min(100, (elapsed / pos.durationSeconds) * 100) + '%'
+    : '0'
+}
 async function refresh() {
   try {
     const s = await (await fetch('/api/status')).json()
@@ -341,16 +385,21 @@ async function refresh() {
     const playing = s.playbackEnabled && s.streamTitle && s.playbackState !== 'stopped'
     document.getElementById('stage').classList.toggle('hidden', !playing)
     document.getElementById('idle').classList.toggle('hidden', !!playing)
+    pos = playing && s.position ? Object.assign({ receivedAt: Date.now() }, s.position) : null
     if (playing) {
       document.getElementById('title').textContent = s.streamTitle
       document.getElementById('artist').textContent = s.streamArtist || ''
+      document.getElementById('album').textContent = s.streamAlbum || ''
       document.getElementById('state').textContent = s.playbackState === 'paused' ? 'Paused' : zone
+      const next = s.diagnostics && s.diagnostics.stagedNextTitle
+      document.getElementById('next').textContent = next ? 'Up next: ' + next : ''
     } else {
       document.getElementById('idle-zone').textContent = zone
       document.getElementById('idle-hint').textContent = s.statusLabel === 'Connected'
         ? 'Waiting for music'
         : s.statusLabel
     }
+    renderTick()
     const art = document.getElementById('art')
     const backdrop = document.getElementById('backdrop')
     const wantedId = playing ? s.artworkId : null
@@ -373,6 +422,7 @@ async function refresh() {
 }
 refresh()
 setInterval(refresh, 1000)
+setInterval(renderTick, 250)
 </script>
 </body>
 </html>

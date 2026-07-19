@@ -23,6 +23,8 @@ function stubState(): WebStatusState {
     playbackState: 'stopped',
     streamTitle: null,
     streamArtist: null,
+    streamAlbum: null,
+    position: null,
     assignedSinkName: null,
     appliedAdvanceMs: 0,
     volumePercent: 100,

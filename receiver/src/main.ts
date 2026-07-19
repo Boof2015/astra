@@ -188,6 +188,8 @@ async function main(): Promise<void> {
         playbackState: sessionInfo.playbackState,
         streamTitle: sessionInfo.streamTitle,
         streamArtist: sessionInfo.streamArtist,
+        streamAlbum: sessionInfo.streamAlbum,
+        position: sessionInfo.position,
         assignedSinkName: sessionInfo.assignedSinkName,
         appliedAdvanceMs: sessionInfo.appliedAdvanceMs,
         volumePercent: current.volumePercent,
