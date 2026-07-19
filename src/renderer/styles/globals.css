@@ -24634,6 +24634,14 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
   border-bottom: 1px solid rgba(var(--tint), 0.07);
 }
 
+.parallax-card-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .settings-card-label-bare {
   padding: 0;
   border-bottom: 0;
@@ -24714,6 +24722,16 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+}
+
+.parallax-zone-play-toggle {
+  min-width: 82px;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.parallax-speaker-row.is-playback-inactive .parallax-speaker-row-name {
+  color: rgba(var(--tint), 0.68);
 }
 
 .parallax-speaker-row-tune {

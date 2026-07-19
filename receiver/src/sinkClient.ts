@@ -56,6 +56,7 @@ const PARALLAX_HOST_SILENCE_CHECK_MS = 1_000
 
 export interface SinkClientStatus {
   connected: boolean
+  playbackEnabled: boolean
   hostReachable: boolean
   clockOffsetMs: number | null
   rttMs: number | null
@@ -136,6 +137,7 @@ export class ParallaxSinkClient {
   private connection: SinkConnectionState | null = null
   private clockSamples: ParallaxClockSample[] = []
   private activeStream: ParallaxStreamInfo | null = null
+  private playbackEnabled = true
   private timeline: ParallaxTimelineState | null = null
   private pendingStream: ParallaxStreamInfo | null = null
   private pendingTimeline: ParallaxTimelineState | null = null
@@ -157,6 +159,7 @@ export class ParallaxSinkClient {
   getStatus(): SinkClientStatus {
     return {
       connected: this.connection !== null,
+      playbackEnabled: this.playbackEnabled,
       hostReachable: this.hostReachable,
       clockOffsetMs: selectFilteredParallaxClockOffsetMs(this.clockSamples),
       rttMs: this.bestRttMs(),
@@ -236,6 +239,7 @@ export class ParallaxSinkClient {
         throw new Error('Parallax host returned an invalid join response.')
       }
       this.reconnectAttempts = 0
+      this.playbackEnabled = join.playbackEnabled
       this.activeStream = join.stream
       this.emitStatus()
       void this.primeClockSync(connection)
@@ -567,6 +571,7 @@ export class ParallaxSinkClient {
       }
       if (this.connection !== connection) return
       this.reconnectAttempts = 0
+      this.playbackEnabled = join.playbackEnabled
       this.activeStream = join.stream
       this.lastError = null
       this.emitStatus()
@@ -742,6 +747,10 @@ export class ParallaxSinkClient {
       this.cancelSinkNextAudio(null)
       this.emitStatus()
       void this.consumeSinkAudio(event.stream.streamId, event.timeline.startFrame, true)
+    } else if (event.type === 'sink-playback-update') {
+      if (this.connection?.sinkId !== event.sinkId) return
+      this.playbackEnabled = event.playbackEnabled
+      this.emitStatus()
     } else if (event.type === 'timeline') {
       this.timeline = event.timeline
       this.lastAudioChunkAtMs = Date.now()

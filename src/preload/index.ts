@@ -1027,6 +1027,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('parallax:revokePairedSink', id),
     renamePairedSink: (id: string, name: string): Promise<ParallaxPairedSink | null> =>
       ipcRenderer.invoke('parallax:renamePairedSink', id, name),
+    setSinkPlaybackEnabled: (id: string, enabled: boolean): Promise<ParallaxStatus> =>
+      ipcRenderer.invoke('parallax:setSinkPlaybackEnabled', id, enabled),
+    setAllSinksPlaybackEnabled: (enabled: boolean): Promise<ParallaxStatus> =>
+      ipcRenderer.invoke('parallax:setAllSinksPlaybackEnabled', enabled),
     revokeAllPairedSinks: (): Promise<number> => ipcRenderer.invoke('parallax:revokeAllPairedSinks'),
     clearHostPresenceCache: (sinkId?: string): Promise<ParallaxStatus> =>
       ipcRenderer.invoke('parallax:clearHostPresenceCache', sinkId),
@@ -1689,6 +1693,8 @@ declare global {
         reportHostLatency: (metrics: ParallaxOutputLatencyMetrics) => Promise<void>
         revokePairedSink: (id: string) => Promise<ParallaxPairedSink | null>
         renamePairedSink: (id: string, name: string) => Promise<ParallaxPairedSink | null>
+        setSinkPlaybackEnabled: (id: string, enabled: boolean) => Promise<ParallaxStatus>
+        setAllSinksPlaybackEnabled: (enabled: boolean) => Promise<ParallaxStatus>
         revokeAllPairedSinks: () => Promise<number>
         clearHostPresenceCache: (sinkId?: string) => Promise<ParallaxStatus>
         resetToDefaults: () => Promise<ParallaxStatus>

@@ -541,6 +541,7 @@ export class ParallaxService {
   private sinkReconnectAttempts = 0
   private sinkActiveStream: ParallaxStreamInfo | null = null
   private sinkTimeline: ParallaxTimelineState | null = null
+  private sinkPlaybackEnabled = true
   // §21 Gapless sink handoff (sink side). The pre-announced next stream this sink is pre-fetching.
   private sinkPendingStream: ParallaxStreamInfo | null = null
   private sinkPendingTimeline: ParallaxTimelineState | null = null
@@ -573,6 +574,34 @@ export class ParallaxService {
   private readonly requestRateWindows = new Map<string, { startedAtMs: number; count: number }>()
   private readonly TRIM_RESEND_MIN_INTERVAL_MS = 3_000
   private readonly TRIM_APPLIED_TOLERANCE_MS = 0.5
+  // Set when host playback had an audience and that audience was explicitly reduced to zero.
+  // The next first-selected sink must be re-anchored by the renderer against its live local
+  // position instead of receiving a potentially stale cached timeline.
+  private requiresFreshPlaybackAudience = false
+
+  private isSinkPlaybackEnabled(sinkId: string): boolean {
+    const sink = this.pairedSinks.find((candidate) => candidate.id === sinkId && candidate.revokedAt === null)
+    return Boolean(sink && sink.playbackEnabled !== false)
+  }
+
+  private getActivePlaybackSinkCount(): number {
+    return new Set(
+      Array.from(this.sseClients)
+        .map((client) => client.sinkId)
+        .filter((sinkId) => this.isSinkPlaybackEnabled(sinkId))
+    ).size
+  }
+
+  private canSinkReceiveStream(sinkId: string, stream: ActiveParallaxStream): boolean {
+    return stream.targetSinkId ? stream.targetSinkId === sinkId : this.isSinkPlaybackEnabled(sinkId)
+  }
+
+  private requireFreshPlaybackAudienceIfEmpty(): void {
+    if (this.getActivePlaybackSinkCount() > 0 || this.activeStream?.targetSinkId) return
+    this.requiresFreshPlaybackAudience = true
+    if (this.activeStream) this.activeStream.packets = []
+    if (this.pendingStream) this.pendingStream.packets = []
+  }
 
   private consumeRequestBudget(sinkId: string, category: string, limitPerSecond: number): boolean {
     const key = `${sinkId}|${category}`
@@ -589,7 +618,10 @@ export class ParallaxService {
   constructor(options: ParallaxServiceOptions) {
     this.config = { ...options.config }
     this.tlsIdentity = options.tlsIdentity ? { ...options.tlsIdentity } : null
-    this.pairedSinks = [...(options.pairedSinks ?? [])]
+    this.pairedSinks = (options.pairedSinks ?? []).map((sink) => ({
+      ...sink,
+      playbackEnabled: sink.playbackEnabled !== false
+    }))
     this.onPairedSinksChange = options.onPairedSinksChange
     this.onStatusChange = options.onStatusChange
     this.onSinkEvent = options.onSinkEvent
@@ -632,6 +664,7 @@ export class ParallaxService {
         lanUrls,
         pairedSinkCount: this.pairedSinks.filter((sink) => sink.revokedAt === null).length,
         connectedSinkCount: new Set(Array.from(this.sseClients, (client) => client.sinkId)).size,
+        activePlaybackSinkCount: this.getActivePlaybackSinkCount(),
         activeStream: this.activeStream?.info ?? null,
         lastError: this.lastError,
         // §14.1.1. Snapshot copies so the renderer never mutates internal state. Revoked pairings
@@ -646,6 +679,7 @@ export class ParallaxService {
       },
       sink: {
         connected: sinkConnected,
+        playbackEnabled: this.sinkPlaybackEnabled,
         // §14.1.4 — false once the host's SSE control channel has been down past the grace window
         // (host quit / unreachable). Only meaningful while a connection config exists; reported
         // true otherwise so non-sink machines never look "unreachable".
@@ -709,6 +743,7 @@ export class ParallaxService {
       createdAt: sink.createdAt,
       lastSeenAt: sink.lastSeenAt,
       revokedAt: sink.revokedAt,
+      playbackEnabled: sink.playbackEnabled !== false,
       // §14.1.1. Trim list passes through so the renderer can preload existing values into the
       // stepper for any sink/device the user has already trimmed.
       trims: sink.trims ? sink.trims.map((trim) => ({ ...trim })) : [],
@@ -720,7 +755,10 @@ export class ParallaxService {
   }
 
   replacePairedSinks(sinks: PersistedParallaxPairedSink[]): void {
-    this.pairedSinks = sinks.map((sink) => ({ ...sink }))
+    this.pairedSinks = sinks.map((sink) => ({ ...sink, playbackEnabled: sink.playbackEnabled !== false }))
+    for (const state of this.connectedSinkStates.values()) {
+      state.playbackEnabled = this.isSinkPlaybackEnabled(state.sinkId)
+    }
     this.emitStatus()
   }
 
@@ -796,6 +834,56 @@ export class ParallaxService {
     return this.toPublicPairedSink(sink)
   }
 
+  setSinkPlaybackEnabled(id: string, playbackEnabled: boolean): ParallaxStatus {
+    const sink = this.pairedSinks.find((candidate) => candidate.id === id && candidate.revokedAt === null)
+    if (!sink) throw new Error('Parallax speaker is no longer paired.')
+    this.applySinkPlaybackSelection([sink], playbackEnabled)
+    return this.getStatus()
+  }
+
+  setAllSinksPlaybackEnabled(playbackEnabled: boolean): ParallaxStatus {
+    const sinks = this.pairedSinks.filter((candidate) => candidate.revokedAt === null)
+    this.applySinkPlaybackSelection(sinks, playbackEnabled)
+    return this.getStatus()
+  }
+
+  private applySinkPlaybackSelection(
+    sinks: PersistedParallaxPairedSink[],
+    playbackEnabled: boolean
+  ): void {
+    const changed = sinks.filter((sink) => (sink.playbackEnabled !== false) !== playbackEnabled)
+    if (changed.length === 0) return
+
+    const previousActiveCount = this.getActivePlaybackSinkCount()
+    for (const sink of changed) {
+      sink.playbackEnabled = playbackEnabled
+      const state = this.connectedSinkStates.get(sink.id)
+      if (state) state.playbackEnabled = playbackEnabled
+      this.broadcastSinkPlaybackUpdate(sink.id, playbackEnabled)
+      if (!playbackEnabled) {
+        this.broadcastTimelineEvent({
+          type: 'stop',
+          streamId: this.activeStream?.info.streamId ?? null,
+          emittedAtHostTimeMs: parallaxNowMs()
+        }, sink.id)
+        this.closeAudioClientsForSink(sink.id)
+      }
+    }
+
+    this.emitPairedSinksChange()
+    const nextActiveCount = this.getActivePlaybackSinkCount()
+    if (nextActiveCount === 0 && !playbackEnabled) {
+      this.requireFreshPlaybackAudienceIfEmpty()
+    } else if (playbackEnabled && previousActiveCount > 0) {
+      for (const sink of changed) {
+        if (Array.from(this.sseClients).some((client) => client.sinkId === sink.id)) {
+          this.replayHostStreamsToSink(sink.id)
+        }
+      }
+    }
+    this.emitStatus()
+  }
+
   revokeAllPairedSinks(): number {
     const now = Date.now()
     let revokedCount = 0
@@ -862,6 +950,7 @@ export class ParallaxService {
       targetSinkId: options.targetSinkId,
       packets: []
     }
+    this.requiresFreshPlaybackAudience = false
     // §14.1.4 — pre-resolve artwork bytes for sinks. Off-wire: never reaches `stream` payload.
     // Cleared first so the previous stream's image doesn't briefly serve under the new streamId.
     this.currentStreamArtwork = null
@@ -1022,16 +1111,41 @@ export class ParallaxService {
   publishHostTimeline(timeline: ParallaxTimelineState, options: ParallaxHostTimelinePublishOptions = {}): void {
     if (!this.activeStream || this.activeStream.info.streamId !== timeline.streamId) return
     const resetAudio = Boolean(options.resetAudio)
+    const activePlaybackSinkCount = this.getActivePlaybackSinkCount()
+    const restartingPlaybackAudience = Boolean(
+      this.requiresFreshPlaybackAudience
+      && activePlaybackSinkCount > 0
+      && !this.activeStream.targetSinkId
+    )
     if (resetAudio) {
       this.activeStream.packets = []
     }
     this.activeStream.timeline = { ...timeline }
-    this.broadcastTimelineEvent({
-      type: 'timeline',
-      timeline,
-      resetAudio: resetAudio || undefined,
-      emittedAtHostTimeMs: parallaxNowMs()
-    })
+    // Tracking-only timeline updates while no playback zones are online must not make a stale
+    // cached stream joinable. The first selected zone triggers a renderer re-anchor; that
+    // update arrives after the zone contributes to the active audience and clears this guard.
+    if (activePlaybackSinkCount > 0) {
+      this.requiresFreshPlaybackAudience = false
+    }
+    const emittedAtHostTimeMs = parallaxNowMs()
+    if (restartingPlaybackAudience) {
+      // Every inactive sink received a targeted stop and discarded its stream metadata. The
+      // renderer's first-audience re-anchor therefore has to reintroduce the existing stream,
+      // not send a bare timeline that the sink has nothing to attach to.
+      this.broadcastTimelineEvent({
+        type: 'stream-start',
+        stream: this.activeStream.info,
+        timeline,
+        emittedAtHostTimeMs
+      })
+    } else {
+      this.broadcastTimelineEvent({
+        type: 'timeline',
+        timeline,
+        resetAudio: resetAudio || undefined,
+        emittedAtHostTimeMs
+      })
+    }
     if (resetAudio) {
       this.closeAudioClientsForStream(timeline.streamId)
     }
@@ -1073,6 +1187,7 @@ export class ParallaxService {
       : this.pendingStream?.info.streamId === chunk.streamId ? this.pendingStream
       : null
     if (!target) return
+    if (!target.targetSinkId && this.getActivePlaybackSinkCount() === 0) return
     const packet = byteViewFromArrayBuffer(encodeParallaxAudioPacket(chunk))
     const startFrame = Math.max(0, Math.floor(chunk.startFrame))
     const endFrame = startFrame + Math.max(0, Math.floor(chunk.frameCount))
@@ -1085,7 +1200,7 @@ export class ParallaxService {
     const targetSinkId = target.targetSinkId
     for (const client of this.audioClients) {
       if (client.streamId !== chunk.streamId) continue
-      if (targetSinkId && client.sinkId !== targetSinkId) continue
+      if (targetSinkId ? client.sinkId !== targetSinkId : !this.isSinkPlaybackEnabled(client.sinkId)) continue
       if (endFrame <= client.fromFrame) continue
       try {
         client.response.write(packet)
@@ -1128,19 +1243,51 @@ export class ParallaxService {
     }
   }
 
+  private closeAudioClientsForSink(sinkId: string): void {
+    for (const client of Array.from(this.audioClients)) {
+      if (client.sinkId !== sinkId) continue
+      this.audioClients.delete(client)
+      try { client.response.end() } catch { /* ignore */ }
+    }
+  }
+
+  private replayHostStreamsToSink(sinkId: string): void {
+    const active = this.activeStream
+    if (active && this.canSinkReceiveStream(sinkId, active)) {
+      const emittedAtHostTimeMs = parallaxNowMs()
+      this.broadcastTimelineEvent({
+        type: 'stream-start',
+        stream: active.info,
+        timeline: this.getTimelineForNewSink(emittedAtHostTimeMs) ?? active.timeline,
+        emittedAtHostTimeMs
+      }, sinkId)
+    }
+    const pending = this.pendingStream
+    if (pending && this.canSinkReceiveStream(sinkId, pending)) {
+      this.broadcastTimelineEvent({
+        type: 'next-stream-start',
+        stream: pending.info,
+        timeline: pending.timeline,
+        emittedAtHostTimeMs: parallaxNowMs()
+      }, sinkId)
+    }
+  }
+
   stopHostStream(): void {
     const streamId = this.activeStream?.info.streamId ?? null
+    const targetSinkId = this.activeStream?.targetSinkId
     this.activeStream = null
     this.pendingStream = null
     this.currentStreamArtwork = null
     this.pendingStreamArtwork = null
     this.pendingStreamArtworkBytes = null
     this.pendingStreamArtworkResolve = null
+    this.requiresFreshPlaybackAudience = false
     this.broadcastTimelineEvent({
       type: 'stop',
       streamId,
       emittedAtHostTimeMs: parallaxNowMs()
-    })
+    }, targetSinkId)
     for (const client of this.audioClients) {
       try { client.response.end() } catch { /* ignore */ }
     }
@@ -1331,6 +1478,7 @@ export class ParallaxService {
       createdAt: now,
       lastSeenAt: null,
       revokedAt: null,
+      playbackEnabled: true,
       remoteParallaxEndpointUuid: pickStringTrim(ok.parallaxEndpointUuid) || candidate.sinkParallaxEndpointUuid || undefined
     }
     this.pairedSinks = [sink, ...this.pairedSinks]
@@ -1432,6 +1580,7 @@ export class ParallaxService {
         throw new Error('Parallax host returned an invalid join response.')
       }
       this.sinkReconnectAttempts = 0
+      this.sinkPlaybackEnabled = join.playbackEnabled
       this.sinkActiveStream = join.stream
       // §14.1.2 follow-up. Successful connect clears the "removed by host" latch — covers the
       // re-pair-after-revoke path (user pairs again with a fresh token).
@@ -1588,6 +1737,7 @@ export class ParallaxService {
       sinkId,
       name: paired?.name ?? sinkId,
       online: false,
+      playbackEnabled: paired?.playbackEnabled !== false,
       outputDeviceId: null,
       outputDeviceLabel: null,
       appliedAdvanceMs: 0,
@@ -1727,6 +1877,23 @@ export class ParallaxService {
     }
   }
 
+  private broadcastSinkPlaybackUpdate(sinkId: string, playbackEnabled: boolean): void {
+    const event: ParallaxTimelineEvent = {
+      type: 'sink-playback-update',
+      sinkId,
+      playbackEnabled,
+      emittedAtHostTimeMs: parallaxNowMs()
+    }
+    for (const client of this.sseClients) {
+      if (client.sinkId !== sinkId) continue
+      try {
+        writeSseEvent(client.response, 'parallax', event)
+      } catch {
+        this.sseClients.delete(client)
+      }
+    }
+  }
+
   // Phase 0 diagnostics: the host renderer reports its own output-latency signals (~1 Hz) so the
   // telemetry CSV can log both ends. Pure diagnostics; does not affect playback.
   recordHostLatencyMetrics(metrics: ParallaxOutputLatencyMetrics | null | undefined): void {
@@ -1769,6 +1936,7 @@ export class ParallaxService {
     // sink, since the on-close cleanup hook only fires for direct disconnects, not forced closes.
     if (removed) {
       this.setSinkOnline(sinkId, false)
+      this.requireFreshPlaybackAudienceIfEmpty()
       this.emitStatus()
     }
   }
@@ -1789,6 +1957,7 @@ export class ParallaxService {
     this.audioClients.clear()
     if (affectedSinks.size > 0) {
       for (const sinkId of affectedSinks) this.setSinkOnline(sinkId, false)
+      this.requireFreshPlaybackAudienceIfEmpty()
       this.emitStatus()
     }
   }
@@ -1903,21 +2072,32 @@ export class ParallaxService {
 
     if (method === 'POST' && path === '/v1/parallax/join') {
       const hostTimeMs = parallaxNowMs()
-      // A targeted stream (trim test tone) is only for its target sink. Anyone else joining sees
-      // no active stream, so they stay idle instead of playing the test.
-      const targetSinkId = this.activeStream?.targetSinkId
-      const visibleToThisSink = !targetSinkId || targetSinkId === sink.id
+      const playbackEnabled = this.isSinkPlaybackEnabled(sink.id)
+      // Targeted trim tones override the saved selection. A normal first audience after an
+      // explicit all-off transition waits for the renderer to publish a fresh current-position
+      // anchor rather than replaying the old cached timeline.
+      const activeVisible = Boolean(
+        this.activeStream
+        && this.canSinkReceiveStream(sink.id, this.activeStream)
+        && (!this.requiresFreshPlaybackAudience || this.activeStream.targetSinkId)
+      )
+      const pendingVisible = Boolean(
+        this.pendingStream
+        && this.canSinkReceiveStream(sink.id, this.pendingStream)
+        && !this.requiresFreshPlaybackAudience
+      )
       toJsonResponse(res, 200, {
         sinkId: sink.id,
         groupLatencyMs: PARALLAX_DEFAULT_GROUP_LATENCY_MS,
         hostTimeMs,
-        stream: visibleToThisSink ? (this.activeStream?.info ?? null) : null,
-        timeline: visibleToThisSink ? this.getTimelineForNewSink(hostTimeMs) : null,
+        playbackEnabled,
+        stream: activeVisible ? (this.activeStream?.info ?? null) : null,
+        timeline: activeVisible ? this.getTimelineForNewSink(hostTimeMs) : null,
         // §21. A late joiner also receives the pre-announced next stream so it can pre-stage. The
         // pending timeline is future-anchored to the boundary — pass it through as-is (do NOT
         // advance startFrame for elapsed time the way getTimelineForNewSink does for a live stream).
-        nextStream: this.pendingStream?.info ?? null,
-        nextTimeline: this.pendingStream
+        nextStream: pendingVisible ? (this.pendingStream?.info ?? null) : null,
+        nextTimeline: pendingVisible && this.pendingStream
           ? { ...this.pendingStream.timeline, updatedHostTimeMs: hostTimeMs }
           : null
       } satisfies ParallaxJoinResponse)
@@ -1941,6 +2121,14 @@ export class ParallaxService {
       // pending promise (capped) instead of returning 404 immediately. Otherwise a fast sink
       // permanently sees no artwork for the stream.
       const requestedStreamId = requestUrl.searchParams.get('streamId')?.trim() || null
+      if (
+        this.activeStream
+        && requestedStreamId === this.activeStream.info.streamId
+        && !this.canSinkReceiveStream(sink.id, this.activeStream)
+      ) {
+        toJsonResponse(res, 409, { error: 'This Parallax sink is not selected for playback.' })
+        return
+      }
       const pending = this.pendingStreamArtwork
       if (pending && requestedStreamId && pending.streamId === requestedStreamId && !this.currentStreamArtwork) {
         await Promise.race([
@@ -2103,6 +2291,7 @@ export class ParallaxService {
     this.setSinkOnline(sinkId, true)
     // §14.1.4. Push the host-assigned name so the speaker's Zone Display shows it immediately.
     this.broadcastSinkNameUpdate(sinkId)
+    this.broadcastSinkPlaybackUpdate(sinkId, this.isSinkPlaybackEnabled(sinkId))
     // §14.1.1 follow-up (Codex 2026-06-06). On SSE reconnect, if we already know this sink's
     // output device from a prior session, re-push the persisted trim immediately. Without this
     // the trim only flows on telemetry-triggered device-change (`ingestSinkTelemetry`), and a
@@ -2115,7 +2304,11 @@ export class ParallaxService {
       this.pushPersistedTrimForSink(sinkId, reconnectState.outputDeviceId)
     }
 
-    if (this.activeStream) {
+    if (
+      this.activeStream
+      && this.canSinkReceiveStream(sinkId, this.activeStream)
+      && (!this.requiresFreshPlaybackAudience || this.activeStream.targetSinkId)
+    ) {
       const emittedAtHostTimeMs = parallaxNowMs()
       writeSseEvent(res, 'parallax', {
         type: 'stream-start',
@@ -2125,7 +2318,11 @@ export class ParallaxService {
       } satisfies ParallaxTimelineEvent)
     }
     // §21. Replay the pre-announced next stream to a sink whose event channel connects mid-handoff.
-    if (this.pendingStream) {
+    if (
+      this.pendingStream
+      && this.canSinkReceiveStream(sinkId, this.pendingStream)
+      && !this.requiresFreshPlaybackAudience
+    ) {
       writeSseEvent(res, 'parallax', {
         type: 'next-stream-start',
         stream: this.pendingStream.info,
@@ -2143,6 +2340,7 @@ export class ParallaxService {
         // toggle the `online` flag so the UI can grey it.
         const stillConnected = Array.from(this.sseClients).some((c) => c.sinkId === sinkId)
         if (!stillConnected) this.setSinkOnline(sinkId, false)
+        this.requireFreshPlaybackAudienceIfEmpty()
         this.emitStatus()
       }
     }
@@ -2165,6 +2363,10 @@ export class ParallaxService {
       : null
     if (!streamId || !targetStream) {
       toJsonResponse(res, 409, { error: 'No matching Parallax stream is active.' })
+      return
+    }
+    if (!this.canSinkReceiveStream(sinkId, targetStream)) {
+      toJsonResponse(res, 409, { error: 'This Parallax sink is not selected for playback.' })
       return
     }
 
@@ -2204,6 +2406,7 @@ export class ParallaxService {
   private broadcastTimelineEvent(event: ParallaxTimelineEvent, onlySinkId?: string): void {
     for (const client of this.sseClients) {
       if (onlySinkId && client.sinkId !== onlySinkId) continue
+      if (!onlySinkId && !this.isSinkPlaybackEnabled(client.sinkId)) continue
       try {
         writeSseEvent(client.response, 'parallax', event)
       } catch {
@@ -2499,6 +2702,7 @@ export class ParallaxService {
       }
       if (this.sinkConnection !== connection) return
       this.sinkReconnectAttempts = 0
+      this.sinkPlaybackEnabled = join.playbackEnabled
       this.sinkActiveStream = join.stream
       this.sinkLastError = null
       this.emitStatus()
@@ -2712,6 +2916,10 @@ export class ParallaxService {
       this.cancelSinkNextAudio(null)
       this.emitStatus()
       void this.consumeSinkAudio(event.stream.streamId, event.timeline.startFrame, true)
+    } else if (event.type === 'sink-playback-update') {
+      if (this.sinkConnection?.sinkId !== event.sinkId) return
+      this.sinkPlaybackEnabled = event.playbackEnabled
+      this.emitStatus()
     } else if (event.type === 'timeline') {
       this.sinkTimeline = event.timeline
       // Give a fresh grace window after a state change (resume/seek) so the stall watchdog doesn't

@@ -77,12 +77,15 @@ interface ParallaxSettingsStore {
   disconnectSink: () => Promise<void>
   revokePairedSink: (id: string) => Promise<void>
   renamePairedSink: (id: string, name: string) => Promise<ParallaxPairedSink | null>
+  setSinkPlaybackEnabled: (id: string, enabled: boolean) => Promise<void>
+  setAllSinksPlaybackEnabled: (enabled: boolean) => Promise<void>
   // §14.1.1. Host-side action: persists trim per (sinkId, outputDeviceId) and pushes to the sink.
   setSinkTrim: (sinkId: string, outputDeviceId: string, outputDeviceLabel: string | null, advanceMs: number) => Promise<void>
   revokeAllPairedSinks: () => Promise<number>
   clearHostPresenceCache: (sinkId?: string) => Promise<ParallaxStatus | null>
   resetToDefaults: () => Promise<ParallaxStatus | null>
   shouldDelayHostPlayback: (track: Track | null | undefined) => boolean
+  handleHostPlaybackAudienceLost: () => void
   prepareHostPlayback: (track: Track) => Promise<ParallaxTimelineState | null>
   startHostStreamForCurrentPlayback: (
     track: Track | null | undefined,
@@ -158,11 +161,11 @@ let hostEmitOutgoingStreamId: string | null = null
 // track changes within a sink session, which is what the rig debug pass actually wants to see.
 let hostEmitHardSyncCount = 0
 // §17 round 2 (Codex finding 1). True when `cancelParallaxHostPublishing()` was called while
-// `activeStream` was still in main's cache AND no sinks were connected — i.e. the host went
+// `activeStream` was still in main's cache AND no playback sinks were active — i.e. the host went
 // from "publishing to sinks" to "tracking only" because all sinks left. On the next sink-connect
 // we need to restart publishing for the existing stream instead of early-returning. Set true in
 // the no-sink tracking paths (resumeHostPlayback / prepareHostSeek / pauseHostPlayback when
-// `connectedSinkCount === 0`) and false whenever publishCurrentBufferToParallax fires. Reset on
+// `activePlaybackSinkCount === 0`) and false whenever publishCurrentBufferToParallax fires. Reset on
 // stream lifecycle events (new stream, stop).
 //
 // §17 round 3 (Codex correctness cleanup). The pause-with-sinks case must NOT latch this —
@@ -366,7 +369,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
 
   // Host-side: publish one anchor (5 Hz timer body). Stops itself only when there's no active
   // host stream at all. Does NOT use `getActiveHostStream()` because that gates on
-  // `connectedSinkCount > 0`, which would strand the timer if every sink transiently disconnected
+  // `activePlaybackSinkCount > 0`, which would strand the timer if every zone became inactive
   // — a new sink joining later would then never receive anchors until host playback restarted.
   const publishOneHostEmitAnchor = (): void => {
     const hostStatus = get().status?.host
@@ -375,6 +378,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       stopHostEmitAnchorPublish()
       return
     }
+    if ((hostStatus?.activePlaybackSinkCount ?? 0) <= 0) return
     if (hostEmitOutgoingStreamId !== hostStream.streamId) {
       hostEmitOutgoingStreamId = hostStream.streamId
       hostEmitOutgoingSequence = 0
@@ -565,7 +569,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
   // active receiver. Pause/seek/resume must NOT use this — see `getActiveHostStreamForControl`.
   const getActiveHostStream = (): ParallaxStreamInfo | null => {
     const status = get().status
-    if (!status?.host.active || status.host.connectedSinkCount <= 0) return null
+    if (!status?.host.active || status.host.activePlaybackSinkCount <= 0) return null
     return status.host.activeStream
   }
 
@@ -696,7 +700,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       const status = get().status
       // Phase 0 diagnostics: when acting as host with a connected sink, report our own output-latency
       // signals to the main process so the host-side telemetry CSV can log both ends in one row.
-      if (status?.host.active && status.host.connectedSinkCount > 0) {
+      if (status?.host.active && status.host.activePlaybackSinkCount > 0) {
         void window.electronAPI.parallax.reportHostLatency(audioEngine.getOutputLatencyMetrics())
       }
       const stream = status?.sink.activeStream ?? null
@@ -1138,6 +1142,11 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       if (name !== get().assignedSinkName) set({ assignedSinkName: name })
       return
     }
+    if (event.type === 'sink-playback-update') {
+      // Main mirrors this into status.sink.playbackEnabled before forwarding the event. Keep this
+      // control-only variant out of the timeline/clock-offset handling below.
+      return
+    }
     const status = get().status
     if (event.type === 'stop') {
       pendingAudioChunks = []
@@ -1506,6 +1515,28 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       }
     },
 
+    setSinkPlaybackEnabled: async (id, enabled) => {
+      try {
+        const status = await window.electronAPI.parallax.setSinkPlaybackEnabled(id, enabled)
+        applyStatus(status)
+        await refreshPairedSinks()
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        throw error
+      }
+    },
+
+    setAllSinksPlaybackEnabled: async (enabled) => {
+      try {
+        const status = await window.electronAPI.parallax.setAllSinksPlaybackEnabled(enabled)
+        applyStatus(status)
+        await refreshPairedSinks()
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        throw error
+      }
+    },
+
     revokeAllPairedSinks: async () => {
       try {
         const revoked = await window.electronAPI.parallax.revokeAllPairedSinks()
@@ -1553,7 +1584,17 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       if (!track) return false
       if (track.sourceType && track.sourceType !== 'local') return false
       if (useAudioSettingsStore.getState().playbackOutputMode === 'bitperfect') return false
-      return Boolean(status?.host.active && status.host.connectedSinkCount > 0)
+      return Boolean(status?.host.active && status.host.activePlaybackSinkCount > 0)
+    },
+
+    handleHostPlaybackAudienceLost: () => {
+      clearNextStreamPublishTimer()
+      audioEngine.cancelParallaxHostPublishing()
+      audioEngine.cancelParallaxHostNextPublishing()
+      stopHostEmitAnchorPublish()
+      hostPublishingCanceledForActiveStream = Boolean(get().status?.host.activeStream)
+      void window.electronAPI.parallax.publishHostNextStreamCancel().catch(() => undefined)
+      audioEngine.releasePendingParallaxHostStartDelay()
     },
 
     prepareHostPlayback: async (track) => {
@@ -1671,7 +1712,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       //     joiners see correct state, but return null so playerStore plays via audioEngine.play.
       const stream = getActiveHostStreamForControl()
       if (!stream || !track || stream.trackId !== track.id) return null
-      const hasSinks = (get().status?.host.connectedSinkCount ?? 0) > 0
+      const hasSinks = (get().status?.host.activePlaybackSinkCount ?? 0) > 0
       const hostLatencyMs = audioEngine.getParallaxEndpointLatencyMs()
       // §17 round 2 (Codex MEDIUM). When this returns null (no sinks), playerStore calls
       // `audioEngine.play()`, which resumes from the write cursor (`audioEngine.currentTime`).
@@ -1761,7 +1802,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       // function's comment for the full rationale on tracking-only vs schedule-host.
       const stream = getActiveHostStreamForControl()
       if (!stream) return null
-      const hasSinks = (get().status?.host.connectedSinkCount ?? 0) > 0
+      const hasSinks = (get().status?.host.activePlaybackSinkCount ?? 0) > 0
       const delayMs = playing
         ? (hasSinks ? stream.groupLatencyMs : audioEngine.getParallaxEndpointLatencyMs())
         : 0
@@ -1820,7 +1861,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       // resume re-publishes the playing timeline + chunk flow naturally, no rejoin restart
       // needed.
       audioEngine.cancelParallaxHostPublishing()
-      if ((get().status?.host.connectedSinkCount ?? 0) === 0) {
+      if ((get().status?.host.activePlaybackSinkCount ?? 0) === 0) {
         hostPublishingCanceledForActiveStream = true
       }
       try {

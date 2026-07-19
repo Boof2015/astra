@@ -140,6 +140,9 @@ export interface ParallaxPairedSink {
   createdAt: number
   lastSeenAt: number | null
   revokedAt: number | null
+  // Host-owned zone selection. Missing values from pre-zone-control pairings resolve to true so
+  // existing installations preserve the previous "every connected sink plays" behavior.
+  playbackEnabled: boolean
   // §14.1.1. Empty array on existing rows; one entry per output device the user has trimmed for
   // this sink. Host stores; pushed to sink via §15.3 `sink-trim-update` events on connect + change.
   trims?: ParallaxSinkTrim[]
@@ -147,6 +150,10 @@ export interface ParallaxPairedSink {
   // Discovery memory only — host UI matches against the wizard's discovery list to render
   // "Already paired" / "Renamed device" badges. Absent on pre-§20 pairings.
   remoteParallaxEndpointUuid?: string
+}
+
+export function resolveParallaxPlaybackEnabled(value: unknown): boolean {
+  return value !== false
 }
 
 export interface ParallaxHostConfig {
@@ -334,6 +341,15 @@ export type ParallaxTimelineEvent =
       name: string
       emittedAtHostTimeMs: number
     }
+  // Host-owned playback selection, delivered even while the sink is inactive so its idle UI can
+  // distinguish "waiting for music" from "connected, but not selected". Older sinks safely ignore
+  // this additive event and still stop/start through the ordinary timeline events.
+  | {
+      type: 'sink-playback-update'
+      sinkId: string
+      playbackEnabled: boolean
+      emittedAtHostTimeMs: number
+    }
   // §21 Gapless sink handoff. Host pre-announces the NEXT stream ahead of the track boundary so a
   // sink can pre-load its audio and schedule a sample-aligned crossover, WITHOUT tearing down the
   // currently-playing stream. `timeline` is FUTURE-anchored: `startHostTimeMs` is the host-clock
@@ -453,6 +469,7 @@ export interface ParallaxConnectedSinkState {
   sinkId: string
   name: string
   online: boolean
+  playbackEnabled: boolean
   outputDeviceId: string | null
   outputDeviceLabel: string | null
   appliedAdvanceMs: number
@@ -470,6 +487,9 @@ export interface ParallaxHostStatus {
   lanUrls: string[]
   pairedSinkCount: number
   connectedSinkCount: number
+  // Selected AND currently connected sinks. Host scheduling/publishing must use this count rather
+  // than connectedSinkCount so inactive zones retain control presence without adding lookahead.
+  activePlaybackSinkCount: number
   activeStream: ParallaxStreamInfo | null
   lastError: string | null
   // §14.1.1. Per-sink connected-state list. Empty when no sinks are connected. Renderer reads to
@@ -484,6 +504,9 @@ export interface ParallaxHostStatus {
 
 export interface ParallaxSinkStatus {
   connected: boolean
+  // Host-authored zone selection. Optional for compatibility with status snapshots produced by
+  // older hosts; renderer surfaces should treat missing as enabled.
+  playbackEnabled?: boolean
   // §14.1.4 — host reachability from the SSE control channel. `connected` only means a connection
   // config exists (and auto-reconnect is running); `hostReachable` is false once the host has been
   // unreachable past the grace window (e.g. the host app quit). UI uses this to leave now-playing
@@ -667,6 +690,8 @@ export interface ParallaxJoinResponse {
   sinkId: string
   groupLatencyMs: number
   hostTimeMs: number
+  // Additive v2 field. Missing means enabled for compatibility with older hosts.
+  playbackEnabled: boolean
   stream: ParallaxStreamInfo | null
   timeline: ParallaxTimelineState | null
   // §21 Gapless sink handoff. A sink joining after the host pre-announced the next stream receives
@@ -757,6 +782,7 @@ export function parseParallaxJoinResponse(value: unknown): ParallaxJoinResponse 
   const sinkId = parallaxWireString(record.sinkId, 128)
   const groupLatencyMs = parallaxFiniteNumber(record.groupLatencyMs, 0, 60_000)
   const hostTimeMs = parallaxFiniteNumber(record.hostTimeMs, 0, Number.MAX_SAFE_INTEGER)
+  const playbackEnabled = typeof record.playbackEnabled === 'boolean' ? record.playbackEnabled : true
   const stream = record.stream == null ? null : parseParallaxStreamInfo(record.stream)
   const timeline = record.timeline == null ? null : parseParallaxTimelineState(record.timeline)
   const nextStream = record.nextStream == null ? null : parseParallaxStreamInfo(record.nextStream)
@@ -769,7 +795,7 @@ export function parseParallaxJoinResponse(value: unknown): ParallaxJoinResponse 
     || (stream && timeline && stream.streamId !== timeline.streamId)
     || (nextStream && nextTimeline && nextStream.streamId !== nextTimeline.streamId)
   ) return null
-  return { sinkId, groupLatencyMs, hostTimeMs, stream, timeline, nextStream, nextTimeline }
+  return { sinkId, groupLatencyMs, hostTimeMs, playbackEnabled, stream, timeline, nextStream, nextTimeline }
 }
 
 export function parseParallaxTimelineEvent(value: unknown): ParallaxTimelineEvent | null {
@@ -801,6 +827,12 @@ export function parseParallaxTimelineEvent(value: unknown): ParallaxTimelineEven
     const sinkId = parallaxWireString(record.sinkId, 128)
     const name = parallaxWireString(record.name, 80)
     return sinkId && name ? { type: 'sink-name-update', sinkId, name, emittedAtHostTimeMs } : null
+  }
+  if (record.type === 'sink-playback-update') {
+    const sinkId = parallaxWireString(record.sinkId, 128)
+    return sinkId && typeof record.playbackEnabled === 'boolean'
+      ? { type: 'sink-playback-update', sinkId, playbackEnabled: record.playbackEnabled, emittedAtHostTimeMs }
+      : null
   }
   if (record.type === 'sink-trim-update') {
     const sinkId = parallaxWireString(record.sinkId, 128)

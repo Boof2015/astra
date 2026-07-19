@@ -31,7 +31,8 @@ export default function ParallaxManagementView({ notify, onAddSpeaker, onChangeR
     revokeAllPairedSinks,
     reconnectFromPersisted,
     disconnectSink,
-    clearHostPresenceCache
+    clearHostPresenceCache,
+    setAllSinksPlaybackEnabled
   } = useParallaxStore()
   const openZoneDisplayOnLaunch = useUIStore((s) => s.openZoneDisplayOnLaunch)
   const setOpenZoneDisplayOnLaunch = useUIStore((s) => s.setOpenZoneDisplayOnLaunch)
@@ -46,8 +47,13 @@ export default function ParallaxManagementView({ notify, onAddSpeaker, onChangeR
   const hasPersistedConnection = status?.sink.hasPersistedConnection ?? false
   const persistedHostName = status?.sink.persistedHostName ?? null
   const connectedSinkCount = status?.host.connectedSinkCount ?? 0
+  const activePlaybackSinkCount = status?.host.activePlaybackSinkCount ?? 0
 
   const activeSinks = useMemo(() => pairedSinks.filter((sink) => sink.revokedAt == null), [pairedSinks])
+  const selectedSinkCount = useMemo(
+    () => activeSinks.filter((sink) => sink.playbackEnabled !== false).length,
+    [activeSinks]
+  )
   const connectedBySinkId = useMemo(() => {
     const rows = status?.host.connectedSinks ?? []
     return new Map<string, ParallaxConnectedSinkState>(rows.map((sink) => [sink.sinkId, sink]))
@@ -76,7 +82,7 @@ export default function ParallaxManagementView({ notify, onAddSpeaker, onChangeR
   const roleSummary = (() => {
     if (role === 'host') {
       return connectedSinkCount > 0
-        ? `This machine plays music, sending to ${connectedSinkCount} speaker${connectedSinkCount === 1 ? '' : 's'}.`
+        ? `This machine plays music. ${activePlaybackSinkCount} playing · ${connectedSinkCount} connected.`
         : 'This machine plays music. No speakers connected yet.'
     }
     if (role === 'sink') {
@@ -139,6 +145,12 @@ export default function ParallaxManagementView({ notify, onAddSpeaker, onChangeR
     })
   }
 
+  const handleSetAllPlayback = (enabled: boolean) => {
+    void setAllSinksPlaybackEnabled(enabled).catch((error: unknown) => {
+      notify(error instanceof Error ? error.message : 'Failed to update zone playback.')
+    })
+  }
+
   return (
     <div className="parallax-management">
       {status?.securityMigrationRequired && (
@@ -162,9 +174,25 @@ export default function ParallaxManagementView({ notify, onAddSpeaker, onChangeR
         <div className="settings-card parallax-speakers-card">
           <div className="parallax-card-header">
             <div className="settings-card-label settings-card-label-bare">
-              Speakers ({activeSinks.length})
+              Speakers ({activePlaybackSinkCount} playing · {connectedSinkCount} connected)
             </div>
-            <button className="settings-btn settings-btn-primary" onClick={onAddSpeaker}>Add speaker</button>
+            <div className="parallax-card-header-actions">
+              <button
+                className="settings-btn"
+                disabled={activeSinks.length === 0 || selectedSinkCount === activeSinks.length}
+                onClick={() => handleSetAllPlayback(true)}
+              >
+                Play all
+              </button>
+              <button
+                className="settings-btn"
+                disabled={activeSinks.length === 0 || selectedSinkCount === 0}
+                onClick={() => handleSetAllPlayback(false)}
+              >
+                Play none
+              </button>
+              <button className="settings-btn settings-btn-primary" onClick={onAddSpeaker}>Add speaker</button>
+            </div>
           </div>
           {managedSinks.length > 0 ? (
             <div className="parallax-speaker-list">
