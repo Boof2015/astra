@@ -53,6 +53,25 @@ CHROOT
 check "hostname is parallax"
 [ "$(tr -d ' \t\n\r' < "${ROOTFS_DIR}/etc/hostname")" = "parallax" ]
 
+check "custom.toml template on the boot partition"
+[ -f "${ROOTFS_DIR}/boot/firmware/custom.toml.example" ]
+
+check "AP setup: polkit rule, captive DNS drop-in, NetworkManager, locked user"
+[ -f "${ROOTFS_DIR}/etc/polkit-1/rules.d/50-parallax-network.rules" ]
+[ -f "${ROOTFS_DIR}/etc/NetworkManager/dnsmasq-shared.d/parallax-captive.conf" ]
+grep -q 'address=/#/10.42.0.1' "${ROOTFS_DIR}/etc/NetworkManager/dnsmasq-shared.d/parallax-captive.conf"
+on_chroot << 'CHROOT'
+set -e
+dpkg -s network-manager polkitd >/dev/null
+command -v nmcli >/dev/null
+# The baked user must be locked — a shipped image with a usable password would be a backdoor.
+passwd -S parallax | awk '{ exit ($2 == "L") ? 0 : 1 }'
+node -e '
+  const config = JSON.parse(require("fs").readFileSync("/opt/astra-receiver/config.json", "utf8"))
+  if (config.apSetup !== true) throw new Error("apSetup not baked on")
+'
+CHROOT
+
 check "appliance drop-ins present"
 [ -f "${ROOTFS_DIR}/etc/systemd/system.conf.d/10-parallax-watchdog.conf" ]
 [ -f "${ROOTFS_DIR}/etc/systemd/journald.conf.d/10-parallax-journald.conf" ]

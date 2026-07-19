@@ -92,6 +92,9 @@ jobs:
           git clone "$PI_GEN_URL" pi-gen
           git -C pi-gen checkout "$PI_GEN_REF"
           cp receiver/os/config pi-gen/config
+          # pi-gen requires FIRST_USER_PASS when the rename wizard is disabled. Random per
+          # build, and the appliance stage LOCKS the account anyway — never a usable secret.
+          echo "FIRST_USER_PASS=\"$(openssl rand -hex 16)\"" >> pi-gen/config
           cp -r receiver/os/stage-parallax pi-gen/
           # Only stage-parallax exports an image (stage2 would otherwise export the plain Lite).
           touch pi-gen/stage2/SKIP_IMAGES
@@ -149,7 +152,7 @@ jobs:
               --title "Parallax OS v${VERSION}" \
               --notes "Flashable Raspberry Pi image for the Astra Parallax receiver. Built from ${GITHUB_REPOSITORY}@${GITHUB_SHA}.
 
-          **Flash with Raspberry Pi Imager**: Choose OS → Use custom → this \`.img.xz\`. In the customization dialog set a username/password and your Wi-Fi credentials (optionally enable SSH); keep the hostname \`parallax\`. First boot takes 2–3 minutes, then open http://parallax.local/ and pair from Astra.
+          **Flash** this \`.img.xz\` with Raspberry Pi Imager (Use custom), Etcher, or dd, then just boot. First boot takes 2–3 minutes; on Wi-Fi, wait for the open **Parallax-Setup** network to appear (~2 min), join it with your phone and pick your Wi-Fi in the portal that opens. Then open http://parallax.local/ and pair from Astra. (SSH/console access or pre-set Wi-Fi: edit \`custom.toml.example\` on the boot partition before first boot.)
 
           The daemon auto-updates daily from this repo's \`receiver-v*\` releases — a new image is only needed for OS-level changes."
           fi

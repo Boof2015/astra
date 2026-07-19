@@ -10,6 +10,7 @@ import {
 } from '../../src/main/services/parallaxSinkListener'
 import { createCecController } from './cecController'
 import { ConfigStore } from './config'
+import { createNetworkSetup } from './networkSetup'
 import { createOutputBackend } from './output/backendFactory'
 import { listAlsaDevices } from './output/alsaDevices'
 import { ParallaxSinkClient } from './sinkClient'
@@ -57,6 +58,13 @@ async function main(): Promise<void> {
 
   const backend = createOutputBackend(config)
   log(`audio backend: ${backend.deviceLabel} @ ${backend.sampleRate} Hz, ${backend.channels}ch`)
+
+  // Captive-portal Wi-Fi onboarding (Parallax OS): no-op unless apSetup is set (and nmcli/
+  // NetworkManager exist, which only the appliance image guarantees).
+  const networkSetup = createNetworkSetup({
+    enabled: config.apSetup && process.platform === 'linux',
+    log
+  })
 
   const session = new SinkSession(backend)
   session.setVolumePercent(config.volumePercent)
@@ -205,6 +213,9 @@ async function main(): Promise<void> {
               expiresAtMs: incomingPair.expiresAtMs
             }
           : null,
+        setup: networkSetup.enabled
+          ? { ...networkSetup.getState(), apSsid: networkSetup.apSsid }
+          : null,
         diagnostics: sessionInfo.diagnostics
       }
     },
@@ -240,6 +251,8 @@ async function main(): Promise<void> {
       const artwork = client.getActiveArtwork()
       return artwork ? { contentType: artwork.contentType, bytes: artwork.bytes } : null
     },
+    getSetupNetworks: () => networkSetup.scanNetworks(),
+    applySetupCredentials: (ssid, password) => networkSetup.applyCredentials(ssid, password),
     forgetHost: async () => {
       await client.forgetOnHost().catch(() => undefined)
       connectGeneration += 1
@@ -266,6 +279,7 @@ async function main(): Promise<void> {
   // the notifier is a no-op.
   notifier.ready()
   notifier.startWatchdog()
+  networkSetup.start()
 
   // HDMI-CEC TV control (Parallax OS TV mode; no-op unless cecControl is set and /dev/cec0
   // exists). Driven by a 1 Hz playback-state poll; the controller debounces transitions.
@@ -294,6 +308,7 @@ async function main(): Promise<void> {
     notifier.stopWatchdog()
     clearInterval(cecPollTimer)
     cec.stop()
+    networkSetup.stop()
     connectGeneration += 1
     await client.disconnect().catch(() => undefined)
     await web.stop().catch(() => undefined)

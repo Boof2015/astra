@@ -25,18 +25,31 @@ releases in the receiver releases repo by the **Parallax OS Release** GitHub wor
   display → the Pi stays headless; nothing else changes. HDMI-CEC is on by default
   (`cecControl` in the daemon config): the TV wakes and switches input when a stream starts
   playing, and goes to standby after 10 idle minutes.
+- **Wi-Fi onboarding** (`apSetup`): with no network for ~2 minutes, the daemon raises an open
+  **Parallax-Setup** hotspot with a captive portal — join it with a phone (a connected TV shows
+  the instructions and a join QR), pick your Wi-Fi, enter the password, done. Wrong password →
+  the hotspot reappears with the error shown. Backed by NetworkManager + a polkit rule for the
+  service user + a shared-mode dnsmasq drop-in for the captive DNS. A `parallax` user is baked
+  but LOCKED (no login possible) purely so the first-boot wizard never blocks the kiosk.
 
 Deliberately stock: the first-boot user wizard and Raspberry Pi Imager's OS-customization
 (user, Wi-Fi, hostname override, SSH) work exactly like on plain Pi OS.
 
 ## Flashing
 
-1. Raspberry Pi Imager → Choose OS → *Use custom* → the `parallax-os-v*.img.xz` release asset.
-2. In the OS-customization dialog: set a username/password, your Wi-Fi credentials + country,
-   and optionally enable SSH. Leave the hostname as `parallax` (or override it — both work).
-3. Boot the Pi (first boot takes 2–3 minutes: filesystem resize + first-run config + reboot).
-4. Open `http://parallax.local/`, pair from Astra (Parallax → Add Sink), pick the audio output
+1. Flash `parallax-os-v*.img.xz` with Raspberry Pi Imager (*Use custom*), Etcher, or `dd`.
+   Imager's OS-customization dialog is NOT offered for third-party images — that's expected,
+   and with AP onboarding it isn't needed.
+2. Boot the Pi (first boot takes 2–3 minutes: filesystem resize + first-run config + reboot).
+   On Ethernet there is nothing more to set up. On Wi-Fi, wait ~2 minutes for the
+   **Parallax-Setup** network to appear, join it with your phone, and pick your Wi-Fi in the
+   portal that opens (a connected TV shows the instructions + a join QR).
+3. Open `http://parallax.local/`, pair from Astra (Parallax → Add Sink), pick the audio output
    on the page (HDMI / headphone jack / USB DAC), done.
+
+Power users: for SSH or a console login, put a `custom.toml` on the boot partition before
+first boot (template ships there as `custom.toml.example` — same mechanism Imager's dialog
+drives; consumed + deleted on first boot). It can also pre-set Wi-Fi, skipping the AP step.
 
 ## Building locally (Linux, needs Docker or a Debian-ish host)
 

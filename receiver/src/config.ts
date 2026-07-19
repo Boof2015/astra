@@ -26,6 +26,10 @@ export interface ReceiverConfig {
   cecControl: boolean
   /** Minutes of not-playing before the TV is sent to standby. */
   cecStandbyMinutes: number
+  /** Captive-portal Wi-Fi onboarding (Parallax OS): raise an open "Parallax-Setup" hotspot when
+   *  the device has no network, serve the setup portal on the web port. Needs NetworkManager
+   *  plus the image's polkit + dnsmasq drop-ins. */
+  apSetup: boolean
   connection: PersistedParallaxSinkConnection | null
 }
 
@@ -50,6 +54,7 @@ function defaults(): ReceiverConfig {
     webPort: DEFAULT_WEB_PORT,
     cecControl: false,
     cecStandbyMinutes: 10,
+    apSetup: false,
     connection: null
   }
 }
@@ -131,6 +136,7 @@ export class ConfigStore {
         && Number(record.cecStandbyMinutes) >= 1 && Number(record.cecStandbyMinutes) <= 720
         ? Number(record.cecStandbyMinutes)
         : base.cecStandbyMinutes,
+      apSetup: record.apSetup === true,
       connection: sanitizeConnection(record.connection)
     }
     // Re-persist when the file was missing fields (first run after an upgrade) so the UUID and

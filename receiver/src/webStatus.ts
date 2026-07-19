@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import type { AddressInfo } from 'net'
 import type { AlsaDeviceOption } from './output/alsaDevices'
+import type { WifiNetwork } from './networkSetup'
 import type { SinkSessionDiagnostics } from './sinkSession'
 
 // Tiny status/pairing page for the headless receiver. Replaces the Electron sink's PIN card and
@@ -43,6 +44,9 @@ export interface WebStatusState {
     awaitingApproval: boolean
     expiresAtMs: number
   } | null
+  // Captive-portal onboarding state; null when the apSetup feature is off (everywhere but the
+  // Parallax OS image). `apActive` drives the captive redirect and the TV's setup hint.
+  setup: { apActive: boolean; apSsid: string; connecting: boolean; lastError: string | null } | null
   diagnostics: SinkSessionDiagnostics | null
 }
 
@@ -70,6 +74,9 @@ export interface WebStatusCallbacks {
   setOutputDevice: (device: string) => boolean
   // Active stream's artwork bytes (Zone Display port); null when none is cached yet.
   getArtwork: () => { contentType: string; bytes: Buffer } | null
+  // Wi-Fi onboarding (no-ops when apSetup is off).
+  getSetupNetworks: () => Promise<WifiNetwork[]>
+  applySetupCredentials: (ssid: string, password: string) => boolean
   forgetHost: () => Promise<void>
 }
 
@@ -353,6 +360,9 @@ const DISPLAY_HTML = `<!doctype html>
   #idle-zone { font-size: 2.2vmin; font-weight: 600; letter-spacing: 0.22em;
                text-transform: uppercase; color: #6f6f7c; margin-top: 2.5vmin; }
   #idle-hint { font-size: 2.3vmin; color: #8b6f6f; min-height: 2.8vmin; }
+  #setup-qr-tile { display: none; background: #fff; padding: 2.2vmin; border-radius: 1.4vmin;
+                   margin-top: 2vmin; }
+  #setup-qr { width: 16vmin; height: 16vmin; display: block; image-rendering: pixelated; }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -384,6 +394,7 @@ const DISPLAY_HTML = `<!doctype html>
     <div id="idle-date"></div>
     <div id="idle-zone"></div>
     <div id="idle-hint"></div>
+    <div id="setup-qr-tile"><canvas id="setup-qr" width="29" height="29"></canvas></div>
   </div></div>
 </div>
 <script>
@@ -472,6 +483,24 @@ stars.ctx = stars.canvas.getContext('2d')
 starsResize()
 window.addEventListener('resize', starsResize)
 
+// Pre-generated QR for WIFI:T:nopass;S:Parallax-Setup;; (version 3, ECC M, 29x29) — the AP name
+// is constant, so the matrix is baked instead of shipping an encoder. Hex rows, MSB-first,
+// 29 bits used of each 32.
+const SETUP_QR_ROWS = ['fea9dbf8','8288da08','ba81cae8','ba28aae8','badbe2e8','8251b208','feaaabf8',
+  '003de000','9ff414b8','f0a484f0','cf9ddc08','95ecdcd0','5ee5b450','4ce69e88','d28cd348','298937f8',
+  'def24ca0','d1f6d580','e6119738','c81a07d8','f29f1f90','00bbb8f8','fec28a88','8283c8f0','baef5fd8',
+  'ba9112a0','ba4244f8','82658f40','fe8b68d0']
+{
+  const qr = document.getElementById('setup-qr').getContext('2d')
+  qr.fillStyle = '#000'
+  for (let y = 0; y < 29; y++) {
+    const bits = parseInt(SETUP_QR_ROWS[y], 16).toString(2).padStart(32, '0')
+    for (let x = 0; x < 29; x++) {
+      if (bits[x] === '1') qr.fillRect(x, y, 1, 1)
+    }
+  }
+}
+
 function render() {
   const s = lastStatus
   const now = new Date()
@@ -524,9 +553,18 @@ function render() {
       weekday: 'long', month: 'long', day: 'numeric'
     })
     document.getElementById('idle-zone').textContent = zone
-    // Quiet when everything is fine; only surface an abnormal state (not paired, host away,
-    // zone not selected).
-    document.getElementById('idle-hint').textContent = s.statusLabel === 'Connected' ? '' : s.statusLabel
+    // Setup mode owns the hint (with the join QR); otherwise quiet when everything is fine —
+    // only surface an abnormal state (not paired, host away, zone not selected).
+    const inSetup = s.setup && s.setup.apActive
+    document.getElementById('setup-qr-tile').style.display = inSetup ? 'block' : 'none'
+    const hint = document.getElementById('idle-hint')
+    if (inSetup) {
+      hint.textContent = 'To set up, join the Wi-Fi network "' + s.setup.apSsid + '" with your phone'
+      hint.style.color = '#b5b5c2'
+    } else {
+      hint.textContent = s.statusLabel === 'Connected' ? '' : s.statusLabel
+      hint.style.color = ''
+    }
   }
 }
 
@@ -566,6 +604,132 @@ async function refresh() {
 refresh()
 setInterval(refresh, 1000)
 setInterval(render, 250)
+</script>
+</body>
+</html>
+`
+
+// Wi-Fi onboarding portal, served while the daemon hosts the Parallax-Setup hotspot (and
+// reachable at /setup any time apSetup is on). Captive-portal probes from phones get 302'd
+// here. Crucial UX quirk: applying credentials TEARS DOWN the AP, so the phone loses this
+// page the moment it submits — the page warns first and the copy explains both outcomes.
+const SETUP_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parallax Setup</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; background: #101014; color: #e8e8ee; margin: 0;
+         display: flex; justify-content: center; padding: 2rem 1rem; }
+  main { width: 100%; max-width: 26rem; }
+  h1 { font-size: 1.3rem; font-weight: 700; margin: 0 0 0.3rem; }
+  .sub { color: #9a9aa8; font-size: 0.9rem; margin: 0 0 1.2rem; }
+  .card { background: #1a1a21; border: 1px solid #2a2a33; border-radius: 12px;
+          padding: 1rem 1.25rem; margin-bottom: 1rem; }
+  .net { display: flex; align-items: center; gap: 0.7rem; padding: 0.65rem 0.4rem;
+         border-radius: 8px; cursor: pointer; font-size: 0.95rem; }
+  .net:hover, .net.sel { background: #26262f; }
+  .net .bars { color: #7fd88f; font-size: 0.8rem; width: 2.2rem; }
+  .net .lock { color: #9a9aa8; margin-left: auto; font-size: 0.8rem; }
+  input[type=password], input[type=text] {
+    background: #101014; color: #e8e8ee; border: 1px solid #3a3a46; border-radius: 8px;
+    padding: 0.6rem 0.7rem; width: 100%; box-sizing: border-box; font-size: 1rem; }
+  button { background: #4a6cf7; color: #fff; border: none; border-radius: 8px; width: 100%;
+           padding: 0.7rem 1rem; font-size: 1rem; font-weight: 600; cursor: pointer;
+           margin-top: 0.8rem; }
+  button:disabled { background: #2b2b36; color: #6f6f7c; }
+  .err { background: #2a1a1d; border: 1px solid #5a2a30; color: #f2b8b8; border-radius: 8px;
+         padding: 0.7rem 0.9rem; font-size: 0.9rem; margin-bottom: 1rem; display: none; }
+  .muted { color: #9a9aa8; font-size: 0.82rem; line-height: 1.45; }
+  #applied { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Parallax Setup</h1>
+  <p class="sub">Connect this speaker to your Wi-Fi.</p>
+  <div class="err" id="error"></div>
+  <div id="chooser">
+    <div class="card" id="nets"><div class="muted">Scanning for networks…</div></div>
+    <div class="card" id="join" style="display:none">
+      <div style="margin-bottom:0.6rem"><strong id="join-ssid"></strong></div>
+      <input type="password" id="password" placeholder="Wi-Fi password" style="display:none">
+      <button id="connect" onclick="apply()">Connect</button>
+      <p class="muted" style="margin-bottom:0">When you tap Connect, the <strong>Parallax-Setup</strong>
+      network disappears while the speaker joins your Wi-Fi. If the password was wrong,
+      Parallax-Setup comes back — rejoin it to retry. Otherwise you're done: find the speaker at
+      <strong>http://parallax.local/</strong> from your normal Wi-Fi and pair from Astra.</p>
+    </div>
+  </div>
+  <div class="card" id="applied">
+    <strong>Connecting…</strong>
+    <p class="muted">The Parallax-Setup network is going away now. If it reappears in a minute,
+    the password didn't work — rejoin it and try again.</p>
+  </div>
+</main>
+<script>
+let networks = []
+let selected = null
+async function loadNetworks() {
+  try {
+    const payload = await (await fetch('/api/setup/networks')).json()
+    networks = payload.networks || []
+    const nets = document.getElementById('nets')
+    if (!networks.length) {
+      nets.innerHTML = '<div class="muted">No networks found yet — still scanning…</div>'
+      return
+    }
+    nets.innerHTML = ''
+    for (const network of networks) {
+      const row = document.createElement('div')
+      row.className = 'net' + (selected === network.ssid ? ' sel' : '')
+      const bars = network.signal > 66 ? '&#9679;&#9679;&#9679;' : network.signal > 33 ? '&#9679;&#9679;&#9675;' : '&#9679;&#9675;&#9675;'
+      row.innerHTML = '<span class="bars">' + bars + '</span><span class="ssid"></span>'
+        + (network.secured ? '<span class="lock">&#128274;</span>' : '')
+      row.querySelector('.ssid').textContent = network.ssid
+      row.onclick = () => select(network)
+      nets.appendChild(row)
+    }
+  } catch { /* daemon busy — keep polling */ }
+  try {
+    const s = await (await fetch('/api/status')).json()
+    const err = document.getElementById('error')
+    if (s.setup && s.setup.lastError) {
+      err.textContent = s.setup.lastError
+      err.style.display = 'block'
+    }
+  } catch { /* ignore */ }
+}
+function select(network) {
+  selected = network.ssid
+  document.getElementById('join').style.display = ''
+  document.getElementById('join-ssid').textContent = network.ssid
+  const password = document.getElementById('password')
+  password.style.display = network.secured ? '' : 'none'
+  password.value = ''
+  loadNetworks()
+}
+async function apply() {
+  if (!selected) return
+  const password = document.getElementById('password').value
+  document.getElementById('connect').disabled = true
+  try {
+    const res = await fetch('/api/setup/connect', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ssid: selected, password })
+    })
+    if (res.ok) {
+      document.getElementById('chooser').style.display = 'none'
+      document.getElementById('applied').style.display = 'block'
+      return
+    }
+  } catch { /* fall through */ }
+  document.getElementById('connect').disabled = false
+}
+loadNetworks()
+setInterval(loadNetworks, 10000)
 </script>
 </body>
 </html>
@@ -633,6 +797,60 @@ export class WebStatusServer {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'receiver'}`)
     const method = req.method ?? 'GET'
     const path = url.pathname
+
+    // Captive portal: while the setup AP is hosted, the image's dnsmasq drop-in resolves EVERY
+    // name to us, so phones' connectivity probes (generate_204, hotspot-detect.html, …) land
+    // here with foreign Host headers. Redirecting anything that isn't the portal itself makes
+    // iOS/Android pop the setup sheet automatically.
+    const setup = this.callbacks.getState().setup
+    if (
+      setup?.apActive
+      && !(req.headers.host ?? '').startsWith('10.42.0.1')
+      && path !== '/setup'
+      && !path.startsWith('/api/')
+    ) {
+      res.statusCode = 302
+      res.setHeader('Location', 'http://10.42.0.1/setup')
+      res.setHeader('Cache-Control', 'no-store')
+      res.end()
+      return
+    }
+
+    if (method === 'GET' && path === '/setup') {
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'text/html; charset=utf-8')
+      res.setHeader('Cache-Control', 'no-store')
+      res.end(SETUP_HTML)
+      return
+    }
+    if (method === 'GET' && path === '/api/setup/networks') {
+      if (!setup) {
+        toJsonResponse(res, 404, { error: 'Wi-Fi setup is not enabled on this receiver.' })
+        return
+      }
+      toJsonResponse(res, 200, { networks: await this.callbacks.getSetupNetworks() })
+      return
+    }
+    if (method === 'POST' && path === '/api/setup/connect') {
+      if (!setup) {
+        toJsonResponse(res, 404, { error: 'Wi-Fi setup is not enabled on this receiver.' })
+        return
+      }
+      const body = await readJsonBody(req).catch(() => null)
+      const record = (body ?? {}) as { ssid?: unknown; password?: unknown }
+      const ssid = typeof record.ssid === 'string' ? record.ssid.trim().slice(0, 64) : ''
+      const password = typeof record.password === 'string' ? record.password.slice(0, 128) : ''
+      if (!ssid) {
+        toJsonResponse(res, 400, { error: 'ssid is required.' })
+        return
+      }
+      if (!this.callbacks.applySetupCredentials(ssid, password)) {
+        toJsonResponse(res, 409, { error: 'Already applying credentials.' })
+        return
+      }
+      toJsonResponse(res, 200, { ok: true, applying: true })
+      return
+    }
 
     if (method === 'GET' && (path === '/' || path === '/index.html')) {
       res.statusCode = 200

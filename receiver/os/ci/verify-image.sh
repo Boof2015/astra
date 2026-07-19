@@ -33,6 +33,7 @@ mount -o ro "${LOOP_DEV}p1" "$BOOT_DIR"
 
 check "boot partition looks like a Pi boot partition"
 ls "$BOOT_DIR"/*.dtb >/dev/null 2>&1 || [ -f "$BOOT_DIR/config.txt" ] || fail "no config.txt/dtb in boot partition"
+[ -f "$BOOT_DIR/custom.toml.example" ] || fail "custom.toml.example missing from boot partition"
 
 check "daemon installed under current/"
 CURRENT_TARGET="$(readlink "$MOUNT_DIR/opt/astra-receiver/current")" || fail "current symlink missing"
@@ -65,6 +66,13 @@ check "hostname + appliance drop-ins"
 
 check "node baked at /usr/bin/node"
 [ -e "$MOUNT_DIR/usr/bin/node" ] || fail "/usr/bin/node missing"
+
+check "AP setup: polkit rule, captive DNS, apSetup baked, parallax user locked"
+[ -f "$MOUNT_DIR/etc/polkit-1/rules.d/50-parallax-network.rules" ] || fail "polkit rule missing"
+grep -q 'address=/#/10.42.0.1' "$MOUNT_DIR/etc/NetworkManager/dnsmasq-shared.d/parallax-captive.conf" \
+  || fail "captive dnsmasq drop-in missing"
+grep -q '"apSetup": true' "$MOUNT_DIR/opt/astra-receiver/config.json" || fail "config.json lacks apSetup"
+grep -q '^parallax:!' "$MOUNT_DIR/etc/shadow" || fail "parallax user is not locked"
 
 check "TV mode: kiosk detect enabled, kiosk unit present but not enabled"
 [ -L "$MOUNT_DIR/etc/systemd/system/multi-user.target.wants/parallax-kiosk-detect.service" ] \

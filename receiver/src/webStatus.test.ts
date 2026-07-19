@@ -36,6 +36,7 @@ function stubState(): WebStatusState {
       { id: 'plughw:Headphones,0', label: 'Headphones — bcm2835' }
     ],
     incomingPair: null,
+    setup: null,
     diagnostics: null
   }
 }
@@ -52,6 +53,8 @@ async function withServer(
     setVolume: () => undefined,
     setOutputDevice: () => true,
     getArtwork: () => null,
+    getSetupNetworks: async () => [],
+    applySetupCredentials: () => true,
     forgetHost: async () => undefined,
     ...overrides
   }
@@ -135,6 +138,67 @@ test('GET /api/artwork serves cached bytes and 404s when absent', async () => {
   await withServer({ getArtwork: () => null }, async (baseUrl) => {
     const res = await fetch(`${baseUrl}/api/artwork`)
     assert.equal(res.status, 404)
+  })
+})
+
+function setupState(overrides: Partial<NonNullable<WebStatusState['setup']>> = {}): WebStatusState {
+  return {
+    ...stubState(),
+    setup: { apActive: false, apSsid: 'Parallax-Setup', connecting: false, lastError: null, ...overrides }
+  }
+}
+
+test('setup routes 404 when the feature is off', async () => {
+  await withServer({}, async (baseUrl) => {
+    assert.equal((await fetch(`${baseUrl}/api/setup/networks`)).status, 404)
+    assert.equal((await fetch(`${baseUrl}/api/setup/connect`, { method: 'POST' })).status, 404)
+  })
+})
+
+test('setup routes serve networks and accept credentials when enabled', async () => {
+  const applied: string[][] = []
+  await withServer({
+    getState: () => setupState(),
+    getSetupNetworks: async () => [{ ssid: 'HomeNet', signal: 80, secured: true }],
+    applySetupCredentials: (ssid, password) => {
+      applied.push([ssid, password])
+      return true
+    }
+  }, async (baseUrl) => {
+    const networks = await (await fetch(`${baseUrl}/api/setup/networks`)).json() as { networks: unknown[] }
+    assert.equal((networks.networks[0] as { ssid: string }).ssid, 'HomeNet')
+    const res = await fetch(`${baseUrl}/api/setup/connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ssid: 'HomeNet', password: 'hunter22' })
+    })
+    assert.equal(res.status, 200)
+    assert.deepEqual(applied, [['HomeNet', 'hunter22']])
+    const missing = await fetch(`${baseUrl}/api/setup/connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'x' })
+    })
+    assert.equal(missing.status, 400)
+  })
+})
+
+test('captive redirect fires only while the AP is hosted and spares the portal + APIs', async () => {
+  await withServer({ getState: () => setupState({ apActive: true }) }, async (baseUrl) => {
+    // A phone's connectivity probe (foreign Host) gets pushed to the portal.
+    const probe = await fetch(`${baseUrl}/generate_204`, {
+      headers: { Host: 'connectivitycheck.gstatic.com' },
+      redirect: 'manual'
+    })
+    assert.equal(probe.status, 302)
+    assert.equal(probe.headers.get('location'), 'http://10.42.0.1/setup')
+    // The portal itself and API calls are never redirected.
+    assert.equal((await fetch(`${baseUrl}/setup`, { redirect: 'manual' })).status, 200)
+    assert.equal((await fetch(`${baseUrl}/api/status`, { redirect: 'manual' })).status, 200)
+  })
+  await withServer({ getState: () => setupState({ apActive: false }) }, async (baseUrl) => {
+    const normal = await fetch(`${baseUrl}/`, { redirect: 'manual' })
+    assert.equal(normal.status, 200, 'no redirect while the AP is down')
   })
 })
 

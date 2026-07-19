@@ -2,13 +2,16 @@
 # Parallax receiver. Sourced by pi-gen's build.sh (the CI workflow copies this file plus
 # stage-parallax/ into a pinned pi-gen checkout; see .github/workflows/parallax-os-release.yml).
 #
-# Deliberately NOT set:
-#   FIRST_USER_NAME / FIRST_USER_PASS — leaving the stock Pi OS first-boot user mechanism intact
-#     is what makes Raspberry Pi Imager's OS-customization dialog (user, Wi-Fi, hostname
-#     override, SSH) work for free. That dialog is the v1 setup story.
-#   ENABLE_SSH — off by default like stock Pi OS; the Imager dialog toggles it per flash.
+# User story: a `parallax` user is baked with a throwaway password (FIRST_USER_PASS is injected
+# per-build by the workflow) and then LOCKED by the appliance stage — so nothing shipped is
+# loginable, but the stock first-boot wizard never squats on tty1 where the TV kiosk lives.
+# Wi-Fi arrives via the daemon's captive-portal AP setup ("Parallax-Setup"); power users can
+# still set a real password / SSH keys with a custom.toml on the boot partition.
+# ENABLE_SSH stays off like stock Pi OS.
 
 IMG_NAME="ParallaxOS"
+FIRST_USER_NAME="parallax"
+DISABLE_FIRST_BOOT_USER_RENAME=1
 # The pinned pi-gen arm64 ref defaults to trixie (current Pi OS); stated here for determinism.
 RELEASE="trixie"
 # The workflow verifies the raw .img (loop-mount asserts) and xz's it afterwards.

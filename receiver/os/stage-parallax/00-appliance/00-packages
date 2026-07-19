@@ -4,3 +4,5 @@ alsa-utils
 ca-certificates
 curl
 gnupg
+network-manager
+polkitd
