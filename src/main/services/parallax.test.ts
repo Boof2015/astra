@@ -229,6 +229,8 @@ test('Parallax keeps inactive sinks connected while filtering playback delivery'
     })
     assert.ok(livingEvents.body)
     assert.ok(kitchenEvents.body)
+    const livingReader = livingEvents.body.getReader()
+    const kitchenReader = kitchenEvents.body.getReader()
     await waitFor(() => service.getStatus().host.connectedSinkCount === 2)
     assert.equal(service.getStatus().host.activePlaybackSinkCount, 2)
 
@@ -273,19 +275,28 @@ test('Parallax keeps inactive sinks connected while filtering playback delivery'
     })
     assert.equal(rejectedAudio.status, 409)
 
-    const livingControl = await readParallaxSseEvents(livingEvents.body.getReader(), 4)
+    const livingControl = await readParallaxSseEvents(livingReader, 4)
     assert.deepEqual(livingControl.map((event) => event.type), [
       'sink-name-update',
       'sink-playback-update',
       'sink-playback-update',
       'stop'
     ])
-    const kitchenControl = await readParallaxSseEvents(kitchenEvents.body.getReader(), 3)
+    const kitchenControl = await readParallaxSseEvents(kitchenReader, 3)
     assert.deepEqual(kitchenControl.map((event) => event.type), [
       'sink-name-update',
       'sink-playback-update',
       'stream-start'
     ])
+
+    service.setSinkPlaybackEnabled('living-room', true)
+    assert.equal(service.getStatus().host.activePlaybackSinkCount, 2)
+    const livingRejoin = await readParallaxSseEvents(livingReader, 2)
+    assert.deepEqual(livingRejoin.map((event) => event.type), [
+      'sink-playback-update',
+      'stream-start'
+    ])
+    assert.equal(livingRejoin[1]?.stream?.streamId, 'zone-stream')
 
     service.setAllSinksPlaybackEnabled(false)
     assert.equal(service.getStatus().host.connectedSinkCount, 2)
@@ -318,6 +329,72 @@ test('Parallax keeps inactive sinks connected while filtering playback delivery'
     kitchenAbort.abort()
     await livingEvents?.body?.cancel().catch(() => undefined)
     await kitchenEvents?.body?.cancel().catch(() => undefined)
+    await service.stop()
+  }
+})
+
+test('Parallax reintroduces stream metadata when the first playback zone rejoins mid-stream', async (t) => {
+  const started = await tryCreateStartedParallaxService()
+  if (!started) {
+    t.skip('Local socket binding is blocked in this environment.')
+    return
+  }
+  const { service, baseUrl } = started
+  const token = createOpaqueSecret(32)
+  service.replacePairedSinks([makePersistedSink('living-room', token, 'Living Room')])
+
+  const eventsAbort = new AbortController()
+  let eventsResponse: UndiciResponse | null = null
+  try {
+    eventsResponse = await fetchHost(baseUrl, '/v1/parallax/events', {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: eventsAbort.signal
+    })
+    assert.ok(eventsResponse.body)
+    await waitFor(() => service.getStatus().host.activePlaybackSinkCount === 1)
+
+    const initialTimeline = service.publishHostStreamStart({
+      streamId: 'mid-stream-rejoin',
+      trackId: 'zone-track',
+      title: 'Zone Test',
+      artist: 'Astra',
+      album: 'Parallax',
+      sampleRate: 48_000,
+      channels: 2,
+      durationSeconds: 180,
+      totalFrames: 8_640_000
+    })
+    const reader = eventsResponse.body.getReader()
+    const initialEvents = await readParallaxSseEvents(reader, 3)
+    assert.deepEqual(initialEvents.map((event) => event.type), [
+      'sink-name-update',
+      'sink-playback-update',
+      'stream-start'
+    ])
+
+    service.setSinkPlaybackEnabled('living-room', false)
+    const disabledEvents = await readParallaxSseEvents(reader, 2)
+    assert.deepEqual(disabledEvents.map((event) => event.type), [
+      'sink-playback-update',
+      'stop'
+    ])
+
+    service.setSinkPlaybackEnabled('living-room', true)
+    service.publishHostTimeline({
+      ...initialTimeline,
+      startFrame: 2_400_000,
+      startHostTimeMs: initialTimeline.startHostTimeMs + 50_000,
+      updatedHostTimeMs: initialTimeline.updatedHostTimeMs + 50_000
+    })
+    const rejoinEvents = await readParallaxSseEvents(reader, 2)
+    assert.deepEqual(rejoinEvents.map((event) => event.type), [
+      'sink-playback-update',
+      'stream-start'
+    ])
+    assert.equal(rejoinEvents[1]?.stream?.streamId, 'mid-stream-rejoin')
+  } finally {
+    eventsAbort.abort()
+    await eventsResponse?.body?.cancel().catch(() => undefined)
     await service.stop()
   }
 })

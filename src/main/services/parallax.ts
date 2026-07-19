@@ -1111,6 +1111,12 @@ export class ParallaxService {
   publishHostTimeline(timeline: ParallaxTimelineState, options: ParallaxHostTimelinePublishOptions = {}): void {
     if (!this.activeStream || this.activeStream.info.streamId !== timeline.streamId) return
     const resetAudio = Boolean(options.resetAudio)
+    const activePlaybackSinkCount = this.getActivePlaybackSinkCount()
+    const restartingPlaybackAudience = Boolean(
+      this.requiresFreshPlaybackAudience
+      && activePlaybackSinkCount > 0
+      && !this.activeStream.targetSinkId
+    )
     if (resetAudio) {
       this.activeStream.packets = []
     }
@@ -1118,15 +1124,28 @@ export class ParallaxService {
     // Tracking-only timeline updates while no playback zones are online must not make a stale
     // cached stream joinable. The first selected zone triggers a renderer re-anchor; that
     // update arrives after the zone contributes to the active audience and clears this guard.
-    if (this.getActivePlaybackSinkCount() > 0) {
+    if (activePlaybackSinkCount > 0) {
       this.requiresFreshPlaybackAudience = false
     }
-    this.broadcastTimelineEvent({
-      type: 'timeline',
-      timeline,
-      resetAudio: resetAudio || undefined,
-      emittedAtHostTimeMs: parallaxNowMs()
-    })
+    const emittedAtHostTimeMs = parallaxNowMs()
+    if (restartingPlaybackAudience) {
+      // Every inactive sink received a targeted stop and discarded its stream metadata. The
+      // renderer's first-audience re-anchor therefore has to reintroduce the existing stream,
+      // not send a bare timeline that the sink has nothing to attach to.
+      this.broadcastTimelineEvent({
+        type: 'stream-start',
+        stream: this.activeStream.info,
+        timeline,
+        emittedAtHostTimeMs
+      })
+    } else {
+      this.broadcastTimelineEvent({
+        type: 'timeline',
+        timeline,
+        resetAudio: resetAudio || undefined,
+        emittedAtHostTimeMs
+      })
+    }
     if (resetAudio) {
       this.closeAudioClientsForStream(timeline.streamId)
     }
