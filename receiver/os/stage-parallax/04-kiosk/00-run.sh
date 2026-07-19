@@ -14,18 +14,14 @@ install -m 0644 files/parallax-kiosk-detect.service \
 
 # Transparent 1x1 Xcursor theme: cage has no hide-cursor option but honors XCURSOR_THEME
 # (set in the kiosk unit), and without this a default arrow sits dead-center on the TV forever.
-# The Xcursor binary format is simple enough to emit directly — no cursor tooling needed.
+# The 68 constant bytes (Xcursor header + one TOC entry + one 1x1 transparent ARGB image) are
+# emitted directly — this runs HOST-side in pi-gen's container, which has no python, and the
+# bytes never change. Layout: "Xcur", u32le hdrsize=16/version/ntoc=1; TOC 0xFFFD0002/size 1/
+# offset 28; image chunk hdr 36/type/size/version/w=1/h=1/xhot/yhot/delay; pixel 0x00000000.
 mkdir -p "${ROOTFS_DIR}/usr/share/icons/parallax-blank/cursors"
 printf '[Icon Theme]\nName=parallax-blank\n' > "${ROOTFS_DIR}/usr/share/icons/parallax-blank/index.theme"
-python3 - "${ROOTFS_DIR}/usr/share/icons/parallax-blank/cursors/left_ptr" << 'PYEOF'
-import struct, sys
-# Xcursor: magic, header size, version, ntoc; one TOC entry; one 1x1 fully transparent image.
-header = struct.pack('<4sIII', b'Xcur', 16, 0x10000, 1)
-toc = struct.pack('<III', 0xFFFD0002, 1, 28)
-image = struct.pack('<IIIIIIIII', 36, 0xFFFD0002, 1, 1, 1, 1, 0, 0, 0) + struct.pack('<I', 0)
-with open(sys.argv[1], 'wb') as handle:
-    handle.write(header + toc + image)
-PYEOF
+printf '\130\143\165\162\020\000\000\000\000\000\001\000\001\000\000\000\002\000\375\377\001\000\000\000\034\000\000\000\044\000\000\000\002\000\375\377\001\000\000\000\001\000\000\000\001\000\000\000\001\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' \
+  > "${ROOTFS_DIR}/usr/share/icons/parallax-blank/cursors/left_ptr"
 ln -sf left_ptr "${ROOTFS_DIR}/usr/share/icons/parallax-blank/cursors/default"
 
 on_chroot << CHROOT
