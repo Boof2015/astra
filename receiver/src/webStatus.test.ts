@@ -32,7 +32,7 @@ function stubState(): WebStatusState {
     clockFormat: 'auto',
     version: 'v0.3.0',
     transportSupported: null,
-    cec: { available: true, control: true, wakeOn: 'play', switchInput: true, standbyMinutes: 10 },
+    cec: { available: true, control: true, wakeOn: 'play', switchInput: true, standbyMinutes: 10, lastKey: null },
     artworkId: null,
     outputDevice: 'ALSA plughw:vc4hdmi0,0',
     configuredDevice: 'plughw:vc4hdmi0,0',
@@ -48,7 +48,7 @@ function stubState(): WebStatusState {
 
 async function withServer(
   overrides: Partial<WebStatusCallbacks>,
-  run: (baseUrl: string) => Promise<void>
+  run: (baseUrl: string, server: WebStatusServer) => Promise<void>
 ): Promise<void> {
   const callbacks: WebStatusCallbacks = {
     getState: stubState,
@@ -72,7 +72,7 @@ async function withServer(
   const server = new WebStatusServer(callbacks)
   await server.start(0)
   try {
-    await run(`http://127.0.0.1:${server.port()}`)
+    await run(`http://127.0.0.1:${server.port()}`, server)
   } finally {
     await server.stop()
   }
@@ -296,6 +296,25 @@ test('POST /api/clock-format accepts the three formats only', async () => {
     })
     assert.equal(bad.status, 400)
     assert.deepEqual(applied, ['auto', '12', '24'])
+  })
+})
+
+test('/api/keys streams pushed TV-remote keys as SSE', async () => {
+  await withServer({}, async (baseUrl, server) => {
+    const controller = new AbortController()
+    const res = await fetch(`${baseUrl}/api/keys`, { signal: controller.signal })
+    assert.match(res.headers.get('content-type') ?? '', /text\/event-stream/)
+    const reader = res.body!.getReader()
+    server.pushRemoteKey('Enter', 'select')
+    const decoder = new TextDecoder()
+    let buffer = ''
+    while (!buffer.includes('data:')) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      buffer += decoder.decode(chunk.value)
+    }
+    assert.match(buffer, /data: \{"key":"Enter","raw":"select"\}/)
+    controller.abort()
   })
 })
 

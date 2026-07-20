@@ -176,13 +176,20 @@ async function main(): Promise<void> {
 
   // HDMI-CEC TV control (Parallax OS TV mode; inert unless cecControl is set and /dev/cec*
   // exists). Driven by a 1 Hz playback/connection poll; the controller debounces transitions.
-  // Created before the web server: getState exposes it, and settings changes apply live.
+  // Created before the web server: getState exposes it, and settings changes apply live. The
+  // web server is created after, so remote keys route through a late-bound forwarder.
+  let lastRemoteKey: { key: string | null; raw: string; atMs: number } | null = null
+  let forwardRemoteKey: (key: string | null, raw: string) => void = () => undefined
   const cec = createCecController({
     settings: {
       enabled: config.cecControl,
       wakeOn: config.cecWakeOn,
       switchInput: config.cecSwitchInput,
       standbyMinutes: config.cecStandbyMinutes
+    },
+    onRemoteKey: (key, raw) => {
+      lastRemoteKey = { key, raw, atMs: Date.now() }
+      forwardRemoteKey(key, raw)
     },
     log
   })
@@ -268,7 +275,8 @@ async function main(): Promise<void> {
           control: current.cecControl,
           wakeOn: current.cecWakeOn,
           switchInput: current.cecSwitchInput,
-          standbyMinutes: current.cecStandbyMinutes
+          standbyMinutes: current.cecStandbyMinutes,
+          lastKey: lastRemoteKey ? { raw: lastRemoteKey.raw, atMs: lastRemoteKey.atMs } : null
         },
         artworkId: client.getActiveArtwork()?.streamId ?? null,
         outputDevice: backend.deviceLabel,
@@ -391,6 +399,8 @@ async function main(): Promise<void> {
       log('forgot paired host')
     }
   })
+
+  forwardRemoteKey = (key, raw) => web.pushRemoteKey(key, raw)
 
   await listener.start(config.listenerPort)
   log(`pairing listener on :${config.listenerPort}`)

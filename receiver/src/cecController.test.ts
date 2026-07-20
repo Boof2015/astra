@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createCecController, type CecSettings } from './cecController.ts'
+import {
+  CEC_UI_TO_DOM_KEY,
+  createCecController,
+  parseCecFollowerLine,
+  type CecSettings
+} from './cecController.ts'
 
 const INIT_STDOUT = `Driver Info:
 \tPhysical Address           : 1.0.0.0
@@ -97,7 +102,86 @@ test("wakeOn 'off' never wakes and therefore never standbys", async (t) => {
   cec.notifyPlayback(false)
   t.mock.timers.tick(60 * 60_000)
   await flush()
-  assert.deepEqual(calls, [])
+  // Boot-time registration still happens (the TV must see a proper device for remote keys),
+  // but no wake/standby traffic ever fires.
+  assert.ok(!calls.some((args) => args.includes('--image-view-on')))
+  assert.ok(!calls.some((args) => args.includes('--active-source')))
+  assert.ok(!calls.some((args) => args.includes('--standby')))
+  cec.stop()
+})
+
+test('registration happens eagerly at construction when the master switch is on', async () => {
+  const calls: string[][] = []
+  const cec = createCecController({
+    settings: DEFAULTS,
+    devicePaths: ['/dev/cec0'],
+    exec: recordingExec(calls, (args) => args.includes('--playback') ? INIT_STDOUT : ''),
+    log: () => undefined
+  })
+  await flush()
+  assert.deepEqual(calls, [['-d', '/dev/cec0', '--playback', '--osd-name', 'Parallax']])
+  cec.stop()
+})
+
+test('parseCecFollowerLine reads both known cec-follower spellings', () => {
+  assert.equal(parseCecFollowerLine('\tui-cmd: select (0x00)'), 'select')
+  assert.equal(parseCecFollowerLine('USER_CONTROL_PRESSED (0x44): ui-cmd: up (0x01)'), 'up')
+  assert.equal(parseCecFollowerLine('   UI Command: Fast Forward'), 'fast-forward')
+  assert.equal(parseCecFollowerLine('Received from TV (0): USER_CONTROL_RELEASED (0x45)'), null)
+  assert.equal(parseCecFollowerLine(''), null)
+})
+
+test('CEC ui commands map onto the display page key names', () => {
+  assert.equal(CEC_UI_TO_DOM_KEY['select'], 'Enter')
+  assert.equal(CEC_UI_TO_DOM_KEY['up'], 'ArrowUp')
+  assert.equal(CEC_UI_TO_DOM_KEY['exit'], 'Escape')
+  assert.equal(CEC_UI_TO_DOM_KEY['play'], 'MediaPlayPause')
+  assert.equal(CEC_UI_TO_DOM_KEY['forward'], 'MediaTrackNext')
+  assert.equal(CEC_UI_TO_DOM_KEY['backward'], 'MediaTrackPrevious')
+})
+
+test('follower starts with a consumer, forwards keys, and dies with the master switch', async () => {
+  const keys: Array<[string | null, string]> = []
+  let followerDevice: string | null = null
+  let followerStopped = 0
+  let feed: ((line: string) => void) | null = null
+  const cec = createCecController({
+    settings: DEFAULTS,
+    devicePaths: ['/dev/cec1'],
+    exec: recordingExec([], () => INIT_STDOUT),
+    onRemoteKey: (key, raw) => keys.push([key, raw]),
+    followerFactory: (device, onLine) => {
+      followerDevice = device
+      feed = onLine
+      return { stop: () => { followerStopped += 1 } }
+    },
+    log: () => undefined
+  })
+  await flush()
+  assert.equal(followerDevice, '/dev/cec1')
+  feed!('\tui-cmd: select (0x00)')
+  feed!('\tui-cmd: down (0x02)')
+  feed!('\tui-cmd: f5 (0x75)') // unmapped — surfaces raw with a null key
+  feed!('noise line without keys')
+  assert.deepEqual(keys, [['Enter', 'select'], ['ArrowDown', 'down'], [null, 'f5']])
+  cec.updateSettings({ ...DEFAULTS, enabled: false })
+  assert.equal(followerStopped, 1)
+  feed!('\tui-cmd: up (0x01)')
+  assert.equal(keys.length, 3, 'keys must stop flowing once disabled')
+  cec.stop()
+})
+
+test('no follower spawns without an onRemoteKey consumer', async () => {
+  let factoryCalls = 0
+  const cec = createCecController({
+    settings: DEFAULTS,
+    devicePaths: ['/dev/cec0'],
+    exec: recordingExec([], () => INIT_STDOUT),
+    followerFactory: () => { factoryCalls += 1; return { stop: () => undefined } },
+    log: () => undefined
+  })
+  await flush()
+  assert.equal(factoryCalls, 0)
   cec.stop()
 })
 
@@ -134,7 +218,7 @@ test("wakeOn 'play' ignores connect edges", async () => {
   })
   cec.notifyConnection(true)
   await flush()
-  assert.deepEqual(calls, [])
+  assert.ok(!calls.some((args) => args.includes('--image-view-on')), 'connect edge must not wake')
   cec.stop()
 })
 

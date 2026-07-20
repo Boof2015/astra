@@ -48,6 +48,9 @@ export interface WebStatusState {
     wakeOn: CecWakeOn
     switchInput: boolean
     standbyMinutes: number
+    // Most recent TV-remote key received via cec-follower — the hardware-debugging window
+    // into whether (and what) the TV actually sends.
+    lastKey: { raw: string; atMs: number } | null
   }
   // Active stream's artwork identity (its streamId) when the sink has bytes cached; the display
   // page uses it as an <img> cache-buster and only swaps the image when it changes.
@@ -245,6 +248,7 @@ const PAGE_HTML = `<!doctype html>
       <button onclick="applyCec()">Apply</button>
     </div>
     <div class="muted" id="cec-hint" style="margin-top:0.35rem"></div>
+    <div class="muted" id="cec-remote" style="margin-top:0.35rem"></div>
   </div>
   <div class="card">
     <div class="row"><span class="k">Version</span><span id="s-ver"></span></div>
@@ -392,6 +396,10 @@ function refreshCec(s) {
   const card = document.getElementById('cec-card')
   if (!s.cec || !s.cec.available) { card.style.display = 'none'; return }
   card.style.display = ''
+  document.getElementById('cec-remote').textContent = !s.cec.control ? ''
+    : s.cec.lastKey
+    ? 'Last TV-remote key: ' + s.cec.lastKey.raw + ' (' + Math.max(0, Math.round((Date.now() - s.cec.lastKey.atMs) / 1000)) + 's ago)'
+    : 'No TV-remote keys received yet.'
   if (cecDirty) return
   const focus = document.activeElement
   const on = document.getElementById('cec-on')
@@ -1327,47 +1335,81 @@ document.getElementById('pair-reject').addEventListener('click', () => postJson(
 
 window.addEventListener('pointerdown', activity)
 window.addEventListener('pointermove', activity)
-window.addEventListener('keydown', (e) => {
-  const key = e.key
+// Real keyboard events and TV-remote keys (streamed from the daemon's cec-follower over
+// /api/keys SSE) share one handler. Synthetic keys can't rely on native button activation, so
+// Enter/Space explicitly .click() the focused element on that path. The cross-source dedupe
+// guards the day both pipes deliver (kernel RC passthrough AND cec-follower): the same key
+// from the *other* source within 150 ms is the same physical press.
+let lastKeyStamp = { key: '', at: 0, synthetic: false }
+window.addEventListener('keydown', (e) => handleKey(e.key, () => e.preventDefault(), false))
+const remoteKeys = new EventSource('/api/keys')
+remoteKeys.onmessage = (msg) => {
+  try {
+    const data = JSON.parse(msg.data)
+    if (data.key) handleKey(data.key, () => undefined, true)
+  } catch { /* ignore malformed frames */ }
+}
+function syntheticActivate(containerId) {
+  const active = document.activeElement
+  if (active && active.click && document.getElementById(containerId).contains(active)) {
+    active.click()
+    return true
+  }
+  return false
+}
+function handleKey(key, preventDefault, synthetic) {
+  const now = Date.now()
+  if (key === lastKeyStamp.key && synthetic !== lastKeyStamp.synthetic && now - lastKeyStamp.at < 150) {
+    lastKeyStamp = { key: key, at: now, synthetic: synthetic }
+    return
+  }
+  lastKeyStamp = { key: key, at: now, synthetic: synthetic }
   // Media keys act from every layer — they are what the TV remote's deck buttons become.
-  if (MEDIA_TOGGLE_KEYS.indexOf(key) !== -1) { e.preventDefault(); sendTransport('toggle-play'); return }
-  if (MEDIA_NEXT_KEYS.indexOf(key) !== -1) { e.preventDefault(); sendTransport('next'); return }
-  if (MEDIA_PREV_KEYS.indexOf(key) !== -1) { e.preventDefault(); sendTransport('previous'); return }
+  if (MEDIA_TOGGLE_KEYS.indexOf(key) !== -1) { preventDefault(); sendTransport('toggle-play'); return }
+  if (MEDIA_NEXT_KEYS.indexOf(key) !== -1) { preventDefault(); sendTransport('next'); return }
+  if (MEDIA_PREV_KEYS.indexOf(key) !== -1) { preventDefault(); sendTransport('previous'); return }
   const layer = topLayer()
   if (layer === 'pair') {
     if (key === 'ArrowLeft' || key === 'ArrowRight') {
-      e.preventDefault()
+      preventDefault()
       moveFocusIn([document.getElementById('pair-approve'), document.getElementById('pair-reject')],
         key === 'ArrowRight' ? 1 : -1, 0)
+      return
     }
-    return // Enter = native click on the focused button
+    if ((key === 'Enter' || key === ' ') && synthetic
+        && document.getElementById('pair-actions-tv').style.display === 'flex') {
+      if (!syntheticActivate('pair-modal')) document.getElementById('pair-approve').click()
+    }
+    return // real Enter = native click on the focused button
   }
   if (layer === 'osk') {
     armSheetTimer()
-    if (key === 'ArrowUp') { e.preventDefault(); oskMove(-1, 0); return }
-    if (key === 'ArrowDown') { e.preventDefault(); oskMove(1, 0); return }
-    if (key === 'ArrowLeft') { e.preventDefault(); oskMove(0, -1); return }
-    if (key === 'ArrowRight') { e.preventDefault(); oskMove(0, 1); return }
-    if (key === 'Escape') { e.preventDefault(); closeOsk(); return }
-    if (key === 'Backspace') { e.preventDefault(); oskValue = oskValue.slice(0, -1); oskRenderValue(); return }
-    if (key.length === 1 && key !== ' ') { e.preventDefault(); oskAppend(key); return } // physical keyboards type directly
+    if (key === 'ArrowUp') { preventDefault(); oskMove(-1, 0); return }
+    if (key === 'ArrowDown') { preventDefault(); oskMove(1, 0); return }
+    if (key === 'ArrowLeft') { preventDefault(); oskMove(0, -1); return }
+    if (key === 'ArrowRight') { preventDefault(); oskMove(0, 1); return }
+    if (key === 'Escape') { preventDefault(); closeOsk(); return }
+    if (key === 'Backspace') { preventDefault(); oskValue = oskValue.slice(0, -1); oskRenderValue(); return }
+    if ((key === 'Enter' || key === ' ') && synthetic) { syntheticActivate('osk'); return }
+    if (!synthetic && key.length === 1 && key !== ' ') { preventDefault(); oskAppend(key); return } // physical keyboards type directly
     return
   }
   if (layer === 'list') {
     armSheetTimer()
     if (key === 'ArrowUp' || key === 'ArrowDown') {
-      e.preventDefault()
+      preventDefault()
       moveFocusIn(Array.prototype.slice.call(document.querySelectorAll('#list-items .litem')),
         key === 'ArrowDown' ? 1 : -1)
       return
     }
-    if (key === 'Escape') { e.preventDefault(); closeList() }
+    if (key === 'Escape') { preventDefault(); closeList(); return }
+    if ((key === 'Enter' || key === ' ') && synthetic) syntheticActivate('list-overlay')
     return
   }
   if (layer === 'sheet') {
     armSheetTimer()
     if (key === 'ArrowUp' || key === 'ArrowDown') {
-      e.preventDefault()
+      preventDefault()
       moveFocusIn(Array.prototype.slice.call(document.querySelectorAll('#sheet-rows .srow')),
         key === 'ArrowDown' ? 1 : -1)
       return
@@ -1375,16 +1417,17 @@ window.addEventListener('keydown', (e) => {
     if (key === 'ArrowLeft' || key === 'ArrowRight') {
       const active = document.activeElement
       const entry = active && active.id && active.id.indexOf('srow-') === 0 ? sheetEls[active.id.slice(5)] : null
-      if (entry && entry.row.adj) { e.preventDefault(); entry.row.adj(key === 'ArrowRight' ? 1 : -1) }
+      if (entry && entry.row.adj) { preventDefault(); entry.row.adj(key === 'ArrowRight' ? 1 : -1) }
       return
     }
-    if (key === 'Escape') { e.preventDefault(); closeSheet() }
-    return // Enter/Space = native click on the focused row
+    if (key === 'Escape') { preventDefault(); closeSheet(); return }
+    if ((key === 'Enter' || key === ' ') && synthetic) syntheticActivate('sheet')
+    return
   }
   // Bottom layer: transport overlay + gear.
   const visible = document.getElementById('controls').classList.contains('visible')
   if (key === 'ArrowLeft' || key === 'ArrowRight') {
-    e.preventDefault()
+    preventDefault()
     controlsShow()
     if (visible) moveFocusIn(visibleControls(), key === 'ArrowRight' ? 1 : -1)
     else document.getElementById(controlsUsable ? 'ctl-play' : 'ctl-settings').focus()
@@ -1392,8 +1435,12 @@ window.addEventListener('keydown', (e) => {
   }
   if (key === 'Enter' || key === ' ') {
     const inControls = document.activeElement && document.getElementById('controls').contains(document.activeElement)
-    if (visible && inControls) { controlsShow(); return } // native click fires
-    e.preventDefault()
+    if (visible && inControls) {
+      controlsShow()
+      if (synthetic) syntheticActivate('controls')
+      return // real presses: native click fires
+    }
+    preventDefault()
     controlsShow()
     if (visible) sendTransport('toggle-play')
     else document.getElementById(controlsUsable ? 'ctl-play' : 'ctl-settings').focus()
@@ -1401,7 +1448,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (key === 'Escape') { controlsHide(); return }
   controlsShow()
-})
+}
 
 function render() {
   const s = lastStatus
@@ -1702,9 +1749,20 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 export class WebStatusServer {
   private readonly callbacks: WebStatusCallbacks
   private server: Server | null = null
+  // SSE subscribers of /api/keys (the display page) — TV-remote keys stream here.
+  private readonly keyClients = new Set<ServerResponse<IncomingMessage>>()
 
   constructor(callbacks: WebStatusCallbacks) {
     this.callbacks = callbacks
+  }
+
+  /** Broadcast a TV-remote key to every display page listening on /api/keys. */
+  pushRemoteKey(key: string | null, raw: string): void {
+    if (this.keyClients.size === 0) return
+    const payload = `data: ${JSON.stringify({ key, raw })}\n\n`
+    for (const client of this.keyClients) {
+      try { client.write(payload) } catch { this.keyClients.delete(client) }
+    }
   }
 
   async start(port: number): Promise<void> {
@@ -1733,6 +1791,11 @@ export class WebStatusServer {
     if (!this.server) return
     const server = this.server
     this.server = null
+    // Open SSE streams hold connections forever — end them or close() never resolves.
+    for (const client of this.keyClients) {
+      try { client.end() } catch { /* already gone */ }
+    }
+    this.keyClients.clear()
     await new Promise<void>((resolve) => server.close(() => resolve()))
   }
 
@@ -1811,6 +1874,16 @@ export class WebStatusServer {
     }
     if (method === 'GET' && path === '/api/status') {
       toJsonResponse(res, 200, this.callbacks.getState())
+      return
+    }
+    if (method === 'GET' && path === '/api/keys') {
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+      res.setHeader('Cache-Control', 'no-store')
+      res.setHeader('Connection', 'keep-alive')
+      res.write(': connected\n\n')
+      this.keyClients.add(res)
+      req.on('close', () => this.keyClients.delete(res))
       return
     }
     if (method === 'GET' && path === '/api/artwork') {

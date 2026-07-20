@@ -1,4 +1,4 @@
-import { execFile } from 'child_process'
+import { execFile, spawn } from 'child_process'
 import { readdirSync } from 'fs'
 
 // HDMI-CEC TV control for the Parallax OS TV mode: wake the TV (and optionally grab the active
@@ -8,6 +8,14 @@ import { readdirSync } from 'fs'
 // a dumb screen, and every failure is logged once rather than thrown (playback must never
 // depend on the TV). All settings apply live via updateSettings — a TV-behavior toggle must
 // never cost an audio restart.
+//
+// TV-remote input: when an `onRemoteKey` consumer is wired, a persistent `cec-follower`
+// process (v4l-utils) runs against the selected adapter. That does two jobs at once: it makes
+// the node a well-behaved CEC citizen (answers <Menu Request> and friends — several TV brands
+// only route remote keys to a device that responds properly, which a transmit-only setup never
+// does), and its stdout carries every <User Control Pressed> the TV sends, parsed here and
+// forwarded as DOM-style key names for the display page. This path needs no kernel RC support,
+// no keymaps, and no input subsystem.
 
 export type CecWakeOn = 'play' | 'connect' | 'off'
 
@@ -36,12 +44,53 @@ export interface CecController {
   stop(): void
 }
 
+export interface CecFollowerHandle {
+  stop(): void
+}
+
 export interface CecControllerOptions {
   settings: CecSettings
   /** CEC adapters to probe; defaults to every /dev/cec* (a Pi has one per HDMI port). */
   devicePaths?: string[]
   exec?: (command: string, args: string[]) => Promise<{ stdout: string }>
   log?: (message: string) => void
+  /** TV-remote key sink. `key` is the DOM KeyboardEvent name the display page understands
+   *  (null for CEC commands with no mapping); `raw` is the CEC ui-cmd name for diagnostics.
+   *  Providing this is what turns the cec-follower listener on. */
+  onRemoteKey?: (key: string | null, raw: string) => void
+  /** Test seam for the cec-follower process. */
+  followerFactory?: (device: string, onLine: (line: string) => void) => CecFollowerHandle
+}
+
+// CEC "UI command" names (as cec-follower/cec-ctl print them) → the DOM key names the display
+// page's handler already speaks. Unmapped commands still surface through `raw` diagnostics.
+export const CEC_UI_TO_DOM_KEY: Record<string, string> = {
+  'select': 'Enter',
+  'up': 'ArrowUp',
+  'down': 'ArrowDown',
+  'left': 'ArrowLeft',
+  'right': 'ArrowRight',
+  'exit': 'Escape',
+  'back': 'Escape',
+  'play': 'MediaPlayPause',
+  'pause': 'MediaPlayPause',
+  'pause-play-function': 'MediaPlayPause',
+  'stop': 'MediaPlayPause',
+  'fast-forward': 'MediaTrackNext',
+  'rewind': 'MediaTrackPrevious',
+  'forward': 'MediaTrackNext',
+  'backward': 'MediaTrackPrevious'
+}
+
+// Tolerant single-line parse of cec-follower output: any line carrying a `ui-cmd: <name>`
+// operand is a <User Control Pressed>; formats differ slightly across v4l-utils versions, so
+// also accept a "UI Command: <Name>" spelling and normalize to the hyphenated lowercase form.
+export function parseCecFollowerLine(line: string): string | null {
+  const modern = line.match(/ui-cmd:\s*([a-z0-9-]+)/i)
+  if (modern) return modern[1].toLowerCase()
+  const spelled = line.match(/UI Command:\s*([A-Za-z][A-Za-z /-]*)/)
+  if (spelled) return spelled[1].trim().toLowerCase().replace(/[ /]+/g, '-')
+  return null
 }
 
 function defaultExec(command: string, args: string[]): Promise<{ stdout: string }> {
@@ -51,6 +100,49 @@ function defaultExec(command: string, args: string[]): Promise<{ stdout: string 
       else resolve({ stdout })
     })
   })
+}
+
+// Long-running `cec-follower -v` on the chosen adapter, line-buffered, respawned with a 5 s
+// backoff if it exits (or was never installable — the error path just keeps retrying quietly).
+function defaultFollowerFactory(
+  device: string,
+  onLine: (line: string) => void
+): CecFollowerHandle {
+  let child: ReturnType<typeof spawn> | null = null
+  let respawnTimer: ReturnType<typeof setTimeout> | null = null
+  let stopped = false
+  const scheduleRespawn = (): void => {
+    if (stopped || respawnTimer) return
+    respawnTimer = setTimeout(() => {
+      respawnTimer = null
+      start()
+    }, 5_000)
+    respawnTimer.unref?.()
+  }
+  const start = (): void => {
+    if (stopped) return
+    child = spawn('cec-follower', ['-v', '-d', device], { stdio: ['ignore', 'pipe', 'ignore'] })
+    let buffer = ''
+    child.stdout?.on('data', (chunk: Buffer) => {
+      buffer += chunk.toString('utf8')
+      let newline
+      while ((newline = buffer.indexOf('\n')) !== -1) {
+        onLine(buffer.slice(0, newline))
+        buffer = buffer.slice(newline + 1)
+      }
+      if (buffer.length > 4096) buffer = ''
+    })
+    child.on('error', () => { child = null; scheduleRespawn() })
+    child.on('exit', () => { child = null; scheduleRespawn() })
+  }
+  start()
+  return {
+    stop: () => {
+      stopped = true
+      if (respawnTimer) { clearTimeout(respawnTimer); respawnTimer = null }
+      child?.kill()
+    }
+  }
 }
 
 export function createCecController(options: CecControllerOptions): CecController {
@@ -71,10 +163,11 @@ export function createCecController(options: CecControllerOptions): CecControlle
   let playing = false
   let connected = false
   let tvAwake = false
-  let initialized = false
+  let initPromise: Promise<void> | null = null
   let selectedDevice: string | null = null
   let physicalAddress: string | null = null
   let standbyTimer: ReturnType<typeof setTimeout> | null = null
+  let follower: CecFollowerHandle | null = null
   let stopped = false
   const warned = new Set<string>()
 
@@ -109,9 +202,9 @@ export function createCecController(options: CecControllerOptions): CecControlle
 
   // Register as a CEC playback device on the adapter whose HDMI port actually has the TV: the
   // registration reply carries our physical address, and f.f.f.f means "nothing connected".
-  const ensureInitialized = async (): Promise<void> => {
-    if (initialized) return
-    initialized = true
+  // The in-flight promise is shared so an eager boot-time registration and a wake racing it
+  // never double-register (and wake never transmits before a device is selected).
+  const doInitialize = async (): Promise<void> => {
     for (const device of devicePaths) {
       const stdout = await run('setup', ['--playback', '--osd-name', 'Parallax'], device)
       const physAddr = parsePhysAddr(stdout)
@@ -125,6 +218,32 @@ export function createCecController(options: CecControllerOptions): CecControlle
     // Nothing conclusive — fall back to the first adapter so wake at least goes somewhere.
     selectedDevice = devicePaths[0]
     warnOnce('phys-addr', `Could not determine the CEC physical address on ${devicePaths.join(', ')} — using ${selectedDevice}; waking may work, input switching may not.`)
+  }
+  const ensureInitialized = (): Promise<void> => {
+    if (!initPromise) initPromise = doInitialize()
+    return initPromise
+  }
+
+  const handleFollowerLine = (line: string): void => {
+    if (stopped || !settings.enabled) return
+    const raw = parseCecFollowerLine(line)
+    if (!raw) return
+    options.onRemoteKey?.(CEC_UI_TO_DOM_KEY[raw] ?? null, raw)
+  }
+  const startFollower = (): void => {
+    if (stopped || follower || !options.onRemoteKey || !settings.enabled || !available) return
+    const device = selectedDevice ?? devicePaths[0]
+    follower = (options.followerFactory ?? defaultFollowerFactory)(device, handleFollowerLine)
+    log(`CEC: listening for TV-remote keys on ${device} (cec-follower).`)
+  }
+  const stopFollower = (): void => {
+    follower?.stop()
+    follower = null
+  }
+  // Eager registration when the master switch is on: the TV should see a well-behaved device
+  // (and remote keys should work) from boot, not only after the first wake.
+  if (settings.enabled && available) {
+    void ensureInitialized().then(startFollower)
   }
 
   const clearStandbyTimer = (): void => {
@@ -205,7 +324,11 @@ export function createCecController(options: CecControllerOptions): CecControlle
       // Re-evaluate the idle timer under the new rules (full duration from now — close enough
       // for a settings click, and far simpler than pro-rating the elapsed idle time).
       clearStandbyTimer()
-      if (!settings.enabled) return
+      if (!settings.enabled) {
+        stopFollower()
+        return
+      }
+      void ensureInitialized().then(startFollower)
       if (tvAwake && !playing) scheduleStandby()
       // If the new trigger says the TV should be on right now and our bookkeeping says it
       // isn't, wake immediately — enabling CEC mid-song must light the TV up.
@@ -216,6 +339,7 @@ export function createCecController(options: CecControllerOptions): CecControlle
     stop: () => {
       stopped = true
       clearStandbyTimer()
+      stopFollower()
     }
   }
 }
