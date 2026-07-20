@@ -38,6 +38,9 @@ export interface WebStatusState {
   clockFormat: ClockFormat
   // Installed release tag ('v0.3.0') or 'dev' when running from source.
   version: string
+  // Phase-3 transport lane capability: null = untried, false = host predates the control
+  // route (hide the buttons), true = confirmed working.
+  transportSupported: boolean | null
   // TV control settings; the card is offered only when a CEC adapter exists (`available`).
   cec: {
     available: boolean
@@ -112,6 +115,8 @@ export interface WebStatusCallbacks {
     standbyMinutes: number
   }) => void
   setClockFormat: (format: ClockFormat) => void
+  // Pushes a transport command to the connected host over the authenticated sink channel.
+  sendTransport: (command: 'toggle-play' | 'next' | 'previous') => Promise<'ok' | 'unsupported' | 'failed'>
   // 'restart' exits cleanly (systemd's Restart=always brings it back); 'reboot' and 'update'
   // shell out via systemd and fail without the image's polkit grants — `error` carries the
   // user-facing explanation.
@@ -174,6 +179,11 @@ const PAGE_HTML = `<!doctype html>
     <div class="row"><span class="k">Clock offset</span><span id="s-clock"></span></div>
     <div class="row"><span class="k">Output</span><span id="s-out"></span></div>
     <div class="row" id="s-err-row" style="display:none"><span class="k">Last error</span><span id="s-err" class="bad"></span></div>
+    <div class="actions" id="transport-actions" style="display:none">
+      <button onclick="transport('previous')" title="Previous track">⏮</button>
+      <button onclick="transport('toggle-play')" title="Play/pause">⏯</button>
+      <button onclick="transport('next')" title="Next track">⏭</button>
+    </div>
   </div>
   <div class="card">
     <div class="row"><span class="k">Device name</span></div>
@@ -277,6 +287,10 @@ async function saveName() {
 async function saveVolume(value) {
   await fetch('/api/volume', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ percent: Number(value) }) })
+}
+async function transport(command) {
+  await fetch('/api/transport', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command }) })
 }
 let tzLoaded = false
 let tzDirty = false
@@ -457,6 +471,8 @@ async function refresh() {
     const errRow = document.getElementById('s-err-row')
     errRow.style.display = s.lastError ? '' : 'none'
     document.getElementById('s-err').textContent = s.lastError || ''
+    document.getElementById('transport-actions').style.display =
+      s.paired && s.connected && s.transportSupported !== false ? '' : 'none'
     const nameInput = document.getElementById('name-input')
     if (!nameDirty && document.activeElement !== nameInput) {
       nameInput.value = s.assignedSinkName || s.sinkName
@@ -572,6 +588,20 @@ const DISPLAY_HTML = `<!doctype html>
   #setup-qr-tile { display: none; background: #fff; padding: 2.2vmin; border-radius: 1.4vmin;
                    margin-top: 2vmin; }
   #setup-qr { width: 16vmin; height: 16vmin; display: block; image-rendering: pixelated; }
+
+  /* ── Transport controls: revealed by control activity (touch/mouse/remote keys), gone after
+     a few seconds of none — never a burn-in resident. Fixed above the lower-third band. ── */
+  #controls { position: fixed; left: 50%; bottom: 32vmin; transform: translateX(-50%);
+              display: flex; gap: 4vmin; opacity: 0; pointer-events: none;
+              transition: opacity 0.35s ease; z-index: 5; }
+  #controls.visible { opacity: 1; pointer-events: auto; }
+  #controls button { width: 11vmin; height: 11vmin; border-radius: 50%;
+                     border: 0.35vmin solid rgba(255,255,255,0.35);
+                     background: rgba(10,10,14,0.55); color: #f2f2f6; padding: 0;
+                     display: flex; align-items: center; justify-content: center; }
+  #controls button:focus { outline: none; border-color: #fff;
+                           background: rgba(255,255,255,0.18); }
+  #controls svg { width: 45%; height: 45%; }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -595,6 +625,17 @@ const DISPLAY_HTML = `<!doctype html>
     <span id="next"></span>
     <span id="np-clock"></span>
   </div>
+</div>
+<div id="controls">
+  <button id="ctl-prev" aria-label="Previous track">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2.4v14H6zM20 5v14L9.6 12z"/></svg>
+  </button>
+  <button id="ctl-play" aria-label="Play or pause">
+    <svg id="ctl-play-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+  </button>
+  <button id="ctl-next" aria-label="Next track">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.6 5H18v14h-2.4zM4 5v14l10.4-7z"/></svg>
+  </button>
 </div>
 <div id="idle" class="hidden">
   <canvas id="constellation"></canvas>
@@ -736,6 +777,76 @@ const SETUP_QR_ROWS = ['fea9dbf8','8288da08','ba81cae8','ba28aae8','badbe2e8','8
   }
 }
 
+// ── Transport controls overlay. Visibility runs on CONTROL inactivity (pointer/touch/keys),
+// deliberately independent of the playback-idle logic: tap → controls appear, no input for a
+// few seconds → they fade back to the plain display. Hidden entirely when the host is away or
+// predates the control lane (transportSupported false).
+const CONTROLS_HIDE_MS = 8000
+const CONTROL_IDS = ['ctl-prev', 'ctl-play', 'ctl-next']
+let controlsHideTimer = null
+let controlsUsable = false
+function controlsShow() {
+  if (!controlsUsable) return
+  document.getElementById('controls').classList.add('visible')
+  if (controlsHideTimer) clearTimeout(controlsHideTimer)
+  controlsHideTimer = setTimeout(() => {
+    controlsHideTimer = null
+    document.getElementById('controls').classList.remove('visible')
+    const active = document.activeElement
+    if (active && CONTROL_IDS.indexOf(active.id) !== -1) active.blur()
+  }, CONTROLS_HIDE_MS)
+}
+function controlsHide() {
+  if (controlsHideTimer) { clearTimeout(controlsHideTimer); controlsHideTimer = null }
+  document.getElementById('controls').classList.remove('visible')
+}
+async function sendTransport(command) {
+  controlsShow()
+  try {
+    await fetch('/api/transport', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command }) })
+  } catch { /* daemon restarting — the poll loop recovers */ }
+}
+document.getElementById('ctl-prev').addEventListener('click', () => sendTransport('previous'))
+document.getElementById('ctl-play').addEventListener('click', () => sendTransport('toggle-play'))
+document.getElementById('ctl-next').addEventListener('click', () => sendTransport('next'))
+function moveControlFocus(delta) {
+  const index = CONTROL_IDS.indexOf(document.activeElement ? document.activeElement.id : '')
+  const next = index === -1 ? 1 : Math.max(0, Math.min(CONTROL_IDS.length - 1, index + delta))
+  document.getElementById(CONTROL_IDS[next]).focus()
+}
+window.addEventListener('pointerdown', controlsShow)
+window.addEventListener('pointermove', controlsShow)
+// Keys work today with a keyboard and become the TV-remote path once CEC passthrough delivers
+// d-pad presses as input events. Media keys always act; d-pad reveals, then navigates; the
+// first Enter/Space reveals, after that native button activation does the clicking.
+window.addEventListener('keydown', (e) => {
+  if (!controlsUsable) return
+  const visible = document.getElementById('controls').classList.contains('visible')
+  if (e.key === 'MediaPlayPause') { sendTransport('toggle-play'); return }
+  if (e.key === 'MediaTrackNext') { sendTransport('next'); return }
+  if (e.key === 'MediaTrackPrevious') { sendTransport('previous'); return }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    e.preventDefault()
+    controlsShow()
+    if (visible) moveControlFocus(e.key === 'ArrowRight' ? 1 : -1)
+    else document.getElementById('ctl-play').focus()
+    return
+  }
+  if (e.key === 'Enter' || e.key === ' ') {
+    if (visible && document.activeElement && CONTROL_IDS.indexOf(document.activeElement.id) !== -1) {
+      controlsShow() // keep it open; the browser fires the button's click itself
+      return
+    }
+    e.preventDefault()
+    controlsShow()
+    if (visible) sendTransport('toggle-play')
+    else document.getElementById('ctl-play').focus()
+    return
+  }
+  controlsShow()
+})
+
 function render() {
   const s = lastStatus
   const now = new Date()
@@ -746,8 +857,15 @@ function render() {
     starsSetRunning(true)
     document.getElementById('idle-clock').textContent = fmtClockTime(now, null, null)
     document.getElementById('idle-date').textContent = fmtClockDate(now, null)
+    controlsUsable = false
+    controlsHide()
     return
   }
+  controlsUsable = !!(s.paired && s.connected && s.transportSupported !== false)
+  if (!controlsUsable) controlsHide()
+  document.getElementById('ctl-play-icon').innerHTML = s.playbackState === 'playing'
+    ? '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>'
+    : '<path d="M8 5v14l11-7z"/>'
   // hostReachable false = the host app has been gone past its grace window — the "now
   // playing" is definitionally over, drop to idle instead of showing a frozen track.
   const hasTrack = s.playbackEnabled && s.streamTitle && s.playbackState !== 'stopped'
@@ -1248,6 +1366,20 @@ export class WebStatusServer {
       }
       this.callbacks.setClockFormat(format)
       toJsonResponse(res, 200, { ok: true })
+      return
+    }
+    if (method === 'POST' && path === '/api/transport') {
+      const body = await readJsonBody(req).catch(() => null)
+      const command = (body as { command?: unknown } | null)?.command
+      if (command !== 'toggle-play' && command !== 'next' && command !== 'previous') {
+        toJsonResponse(res, 400, { error: 'unknown transport command.' })
+        return
+      }
+      const result = await this.callbacks.sendTransport(command)
+      toJsonResponse(res, result === 'ok' ? 200 : result === 'unsupported' ? 404 : 502, {
+        ok: result === 'ok',
+        result
+      })
       return
     }
     if (method === 'POST' && path === '/api/system') {

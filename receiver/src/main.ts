@@ -262,6 +262,7 @@ async function main(): Promise<void> {
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         clockFormat: current.clockFormat,
         version: installedVersion,
+        transportSupported: client.getControlSupported(),
         cec: {
           available: cec.available,
           control: current.cecControl,
@@ -355,6 +356,7 @@ async function main(): Promise<void> {
     setClockFormat: (format) => {
       configStore.update({ clockFormat: format })
     },
+    sendTransport: (command) => client.sendControl(command),
     systemAction: async (action) => {
       if (action === 'restart') {
         log('restart requested from the web page')

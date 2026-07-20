@@ -1123,6 +1123,9 @@ const phoneRemoteService = new PhoneRemoteService({
 const parallaxService = new ParallaxService({
   config: parallaxHostConfig,
   pairedSinks: parallaxPairedSinks,
+  // Phase-3 sink transport lane — play/pause/skip from a Parallax node's web page / touch
+  // screen / TV remote rides the same dispatch as the mini player and phone remote.
+  dispatchCommand: sendMiniPlayerCommand,
   onPairedSinksChange: (sinks) => {
     parallaxPairedSinks = sinks.map((sink) => ({ ...sink }))
     void persistParallaxPairedSinks(parallaxPairedSinks).catch((error) => {

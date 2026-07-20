@@ -149,6 +149,9 @@ export class ParallaxSinkClient {
   // (don't re-ask); missing key = never fetched (the next getActiveArtwork poll fetches).
   private artworkCache = new Map<string, { contentType: string; bytes: Buffer } | null>()
   private artworkFetchesInFlight = new Set<string>()
+  // Phase-3 transport lane capability: null until the first command is attempted, false when
+  // the host 404s it (host predates the /v1/parallax/control route — hide the buttons).
+  private controlSupported: boolean | null = null
   private lastError: string | null = null
   private hostReachable = true
   private reconnectAttempts = 0
@@ -383,6 +386,39 @@ export class ParallaxSinkClient {
   // Pull-based: the status/display page polls at 1 Hz; the first poll after a stream change
   // misses the cache and kicks a background fetch, the next poll serves it. This deliberately
   // touches none of the join/promote/stream-start machinery.
+
+  // ── Phase-3 transport lane (play/pause/skip pushed to the host) ──────────────
+
+  getControlSupported(): boolean | null {
+    return this.controlSupported
+  }
+
+  async sendControl(command: 'toggle-play' | 'next' | 'previous'): Promise<'ok' | 'unsupported' | 'failed'> {
+    const connection = this.connection
+    if (!connection) return 'failed'
+    try {
+      const response = await undiciFetch(`${connection.baseUrl}/v1/parallax/control`, {
+        method: 'POST',
+        dispatcher: connection.dispatcher,
+        signal: AbortSignal.any([connection.abortController.signal, AbortSignal.timeout(SINK_JSON_FETCH_TIMEOUT_MS)]),
+        headers: {
+          Authorization: `Bearer ${connection.token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ command })
+      } as ParallaxFetchInit)
+      await response.body?.cancel().catch(() => undefined)
+      if (response.status === 404) {
+        this.controlSupported = false
+        return 'unsupported'
+      }
+      if (!response.ok) return 'failed'
+      this.controlSupported = true
+      return 'ok'
+    } catch {
+      return 'failed'
+    }
+  }
 
   getActiveArtwork(): { streamId: string; contentType: string; bytes: Buffer } | null {
     const stream = this.activeStream

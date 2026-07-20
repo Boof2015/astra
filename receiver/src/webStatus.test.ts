@@ -31,6 +31,7 @@ function stubState(): WebStatusState {
     timezone: 'UTC',
     clockFormat: 'auto',
     version: 'v0.3.0',
+    transportSupported: null,
     cec: { available: true, control: true, wakeOn: 'play', switchInput: true, standbyMinutes: 10 },
     artworkId: null,
     outputDevice: 'ALSA plughw:vc4hdmi0,0',
@@ -63,6 +64,7 @@ async function withServer(
     setTimezone: async () => true,
     setCecSettings: () => undefined,
     setClockFormat: () => undefined,
+    sendTransport: async () => 'ok',
     systemAction: async () => ({ ok: true }),
     forgetHost: async () => undefined,
     ...overrides
@@ -294,6 +296,27 @@ test('POST /api/clock-format accepts the three formats only', async () => {
     })
     assert.equal(bad.status, 400)
     assert.deepEqual(applied, ['auto', '12', '24'])
+  })
+})
+
+test('POST /api/transport validates commands and maps sink-client results', async () => {
+  const sent: string[] = []
+  await withServer({
+    sendTransport: async (command) => {
+      sent.push(command)
+      return command === 'next' ? 'unsupported' : command === 'previous' ? 'failed' : 'ok'
+    }
+  }, async (baseUrl) => {
+    const post = (command: unknown) => fetch(`${baseUrl}/api/transport`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command })
+    })
+    assert.equal((await post('toggle-play')).status, 200)
+    assert.equal((await post('next')).status, 404)
+    assert.equal((await post('previous')).status, 502)
+    assert.equal((await post('eject')).status, 400)
+    assert.deepEqual(sent, ['toggle-play', 'next', 'previous'])
   })
 })
 

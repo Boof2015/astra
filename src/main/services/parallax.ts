@@ -4,6 +4,7 @@ import { createServer, type Server } from 'https'
 import { networkInterfaces } from 'os'
 import { performance } from 'perf_hooks'
 import { fetch as undiciFetch, type RequestInit as UndiciRequestInit } from 'undici'
+import type { MiniPlayerCommand } from '../../types/miniPlayer'
 import type {
   ParallaxAudioChunk,
   ParallaxClockSample,
@@ -215,6 +216,11 @@ interface ParallaxServiceOptions {
   // reads its current state every getStatus(). Mirror pattern of `getSinkConnectionInfo`.
   getIncomingPairRequest?: () => ParallaxIncomingPairRequest | null
   getSecurityMigrationRequired?: () => boolean
+  // Phase-3 sink transport lane: play/pause/skip pushed from a sink (its web page, touch
+  // screen, or TV remote) lands on the same MiniPlayerCommand dispatch the mini player and
+  // phone remote use, so the renderer treats it exactly like a local control press. Wired in
+  // main/index.ts to `sendMiniPlayerCommand`; when absent the control route answers 503.
+  dispatchCommand?: (command: MiniPlayerCommand) => void
 }
 
 type ParallaxFetchInit = UndiciRequestInit & {
@@ -490,6 +496,7 @@ export class ParallaxService {
   private readonly getHostDisplayName?: () => string
   private readonly getIncomingPairRequest?: () => ParallaxIncomingPairRequest | null
   private readonly getSecurityMigrationRequired?: () => boolean
+  private readonly dispatchCommand?: (command: MiniPlayerCommand) => void
   // §20 Commit 3. Host-side pre-staged candidates from `initiatePair`. Keyed by pairingId.
   // Cleared on activation, explicit cancel, or TTL expiry. Tokens here are raw — they move
   // into `pairedSinks` as tokenHash + tokenPrefix only on successful `submitPairPin`.
@@ -635,6 +642,7 @@ export class ParallaxService {
     this.getHostDisplayName = options.getHostDisplayName
     this.getIncomingPairRequest = options.getIncomingPairRequest
     this.getSecurityMigrationRequired = options.getSecurityMigrationRequired
+    this.dispatchCommand = options.dispatchCommand
   }
 
   setTlsIdentity(identity: ParallaxTlsIdentity): void {
@@ -2250,6 +2258,42 @@ export class ParallaxService {
         outputDeviceId,
         advanceMs: persisted?.advanceMs ?? 0
       })
+      return
+    }
+
+    // Phase-3 sink transport lane. Any paired sink may drive the transport — pairing is the
+    // trust boundary, and the host transport is global anyway (pausing pauses every zone). The
+    // command lands on the shared MiniPlayerCommand dispatch, so shuffle/repeat/queue semantics
+    // are identical to pressing the button in the app. Old hosts 404 here; the sink hides its
+    // controls when it sees that.
+    if (method === 'POST' && path === '/v1/parallax/control') {
+      if (!this.consumeRequestBudget(sink.id, 'control', 5)) {
+        toJsonResponse(res, 429, { error: 'Control rate limit exceeded.' })
+        return
+      }
+      const dispatch = this.dispatchCommand
+      if (!dispatch) {
+        toJsonResponse(res, 503, { error: 'Transport control is not available on this host.' })
+        return
+      }
+      let body: unknown
+      try {
+        body = await readJsonBody(req)
+      } catch {
+        toJsonResponse(res, 400, { error: 'Invalid control payload.' })
+        return
+      }
+      const command = (body as { command?: unknown } | null)?.command
+      if (command !== 'toggle-play' && command !== 'next' && command !== 'previous') {
+        toJsonResponse(res, 400, { error: 'Unknown control command.' })
+        return
+      }
+      dispatch(
+        command === 'toggle-play' ? { type: 'togglePlay' }
+          : command === 'next' ? { type: 'playNext' }
+          : { type: 'playPrevious' }
+      )
+      toJsonResponse(res, 200, { ok: true })
       return
     }
 

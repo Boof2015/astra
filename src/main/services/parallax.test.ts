@@ -4,6 +4,7 @@ import type { Server as HttpServer } from 'node:http'
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
 import { createServer as createNetServer } from 'node:net'
 import { ParallaxService } from './parallax.ts'
+import type { MiniPlayerCommand } from '../../types/miniPlayer.ts'
 import type { ParallaxHostConfig } from '../../types/parallax.ts'
 import { decodeParallaxAudioPacket } from '../../types/parallax.ts'
 import { createOpaqueSecret, hashToken } from './playbackHttpCore.ts'
@@ -98,11 +99,13 @@ async function fetchHost(baseUrl: string, path: string, init: UndiciRequestInit 
   return await undiciFetch(`${baseUrl}${path}`, { ...init, dispatcher })
 }
 
-async function createStartedParallaxService(): Promise<{ service: ParallaxService; port: number; baseUrl: string; tlsIdentity: ParallaxTlsIdentity }> {
+async function createStartedParallaxService(
+  dispatchCommand?: (command: MiniPlayerCommand) => void
+): Promise<{ service: ParallaxService; port: number; baseUrl: string; tlsIdentity: ParallaxTlsIdentity }> {
   const port = await getFreePort()
   const config: ParallaxHostConfig = { enabled: true, port }
   const tlsIdentity = await createParallaxTlsIdentity('Parallax Test Host')
-  const service = new ParallaxService({ config: { enabled: false, port }, pairedSinks: [], tlsIdentity })
+  const service = new ParallaxService({ config: { enabled: false, port }, pairedSinks: [], tlsIdentity, dispatchCommand })
   await service.applyHostConfig(config)
   const baseUrl = `https://127.0.0.1:${port}`
   const dispatcher = createParallaxPinnedDispatcher(tlsIdentity.certificatePem, tlsIdentity.fingerprint256)
@@ -121,9 +124,11 @@ async function createStartedParallaxService(): Promise<{ service: ParallaxServic
   }
 }
 
-async function tryCreateStartedParallaxService(): Promise<Awaited<ReturnType<typeof createStartedParallaxService>> | null> {
+async function tryCreateStartedParallaxService(
+  dispatchCommand?: (command: MiniPlayerCommand) => void
+): Promise<Awaited<ReturnType<typeof createStartedParallaxService>> | null> {
   try {
-    return await createStartedParallaxService()
+    return await createStartedParallaxService(dispatchCommand)
   } catch (error) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'EPERM') {
       return null
@@ -551,6 +556,34 @@ test('Parallax host rename returns null for missing or revoked sinks', async (t)
     const paired = await pairSink(service, baseUrl, 'Desk')
     assert.ok(service.revokePairedSink(paired.sinkId))
     assert.equal(service.renamePairedSink(paired.sinkId, 'Renamed'), null)
+  } finally {
+    await service.stop()
+  }
+})
+
+test('sink transport control rides the shared command dispatch', async (t) => {
+  const commands: MiniPlayerCommand[] = []
+  const started = await tryCreateStartedParallaxService((command) => commands.push(command))
+  if (!started) {
+    t.skip('Local socket binding is blocked in this environment.')
+    return
+  }
+  const { service, baseUrl } = started
+  try {
+    const { token } = await pairSink(service, baseUrl)
+    const post = (body: unknown, auth: string = token) => fetchHost(baseUrl, '/v1/parallax/control', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${auth}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+    assert.equal((await post({ command: 'toggle-play' })).status, 200)
+    assert.equal((await post({ command: 'next' })).status, 200)
+    assert.equal((await post({ command: 'previous' })).status, 200)
+    assert.deepEqual(commands, [{ type: 'togglePlay' }, { type: 'playNext' }, { type: 'playPrevious' }])
+    assert.equal((await post({ command: 'eject' })).status, 400)
+    assert.equal((await post({})).status, 400)
+    assert.equal((await post({ command: 'toggle-play' }, createOpaqueSecret(32))).status, 401)
+    assert.equal(commands.length, 3, 'rejected requests must never dispatch')
   } finally {
     await service.stop()
   }
