@@ -20,8 +20,9 @@
 set -euo pipefail
 
 # Repo name appears exactly once; a rename only needs ASTRA_RECEIVER_REPO (GitHub 301-redirects
-# renamed repos, and curl -L follows, so even that is not urgent).
-REPO="${ASTRA_RECEIVER_REPO:-Boof2015/astra-receiver}"
+# renamed repos, and curl -L follows, so even that is not urgent — deployed devices with the old
+# default keep updating through the redirect until a release ships them this new default).
+REPO="${ASTRA_RECEIVER_REPO:-Boof2015/parallax-os}"
 INSTALL_DIR="${ASTRA_RECEIVER_INSTALL_DIR:-/opt/astra-receiver}"
 SERVICE_NAME="astra-receiver"
 TARBALL_NAME="astra-receiver-linux-arm64.tar.gz"

@@ -4,8 +4,12 @@ Flashable SD-card image that turns a Raspberry Pi into a zero-maintenance Parall
 speaker: flash, boot, open `http://parallax.local/`, pair from Astra — 24/7 from there.
 
 Built with [pi-gen](https://github.com/RPi-Distro/pi-gen) (Raspberry Pi OS Lite base + the
-`stage-parallax` custom stage in this directory). Images are published as `parallax-os-v*`
-releases in the receiver releases repo by the **Parallax OS Release** GitHub workflow.
+`stage-parallax` custom stage in this directory). The **Parallax OS Release** GitHub workflow
+uploads each build as a `parallax-os-v*` **draft** release in the receiver releases repo —
+flash and test the draft's `.img.xz` on hardware, then publish it (release page "Publish
+release" with "Set as the latest release" unchecked, or
+`gh release edit parallax-os-v<version> --repo <releases repo> --draft=false --latest=false`).
+Drafts are invisible to non-collaborators, so an untested image is never downloadable.
 
 ## What the image adds on top of Pi OS Lite
 

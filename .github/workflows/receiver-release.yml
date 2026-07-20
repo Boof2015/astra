@@ -26,7 +26,7 @@ permissions:
 
 env:
   NODE_VERSION: 22.x
-  RELEASE_REPO: Boof2015/astra-receiver
+  RELEASE_REPO: Boof2015/parallax-os
 
 jobs:
   test:

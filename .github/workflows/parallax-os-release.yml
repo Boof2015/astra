@@ -1,10 +1,17 @@
 name: Parallax OS Release
 
 # Builds the flashable Parallax OS SD-card image (pi-gen, Pi OS Lite base + receiver/os/
-# stage-parallax) and publishes it as a `parallax-os-v<version>` release in the receiver
+# stage-parallax) and publishes it as a `parallax-os-v<version>` DRAFT release in the receiver
 # releases repo — with --latest=false so daemon (`receiver-v*`) releases keep the repo's
 # "Latest" badge; both the installer and the on-device updater filter by tag prefix, so the
 # two release families coexist safely.
+#
+# Draft-as-approval-gate: an image can't be smoke-tested in CI (it needs a flash + real
+# hardware), so nothing goes public automatically. Download the .img.xz from the draft
+# release page, flash and test it, then publish with:
+#   gh release edit parallax-os-v<version> --repo <releases repo> --draft=false --latest=false
+# (or the web UI — leave "Set as the latest release" unchecked there). Drafts are visible
+# only to repo collaborators and are excluded from the tag-prefix release queries.
 #
 # Runs on ubuntu-24.04-arm: native arm64, so pi-gen needs no qemu/binfmt. build-docker.sh is
 # pi-gen's supported path on non-Debian hosts and pins its own Debian toolchain inside the
@@ -30,7 +37,7 @@ permissions:
   contents: read
 
 env:
-  RELEASE_REPO: Boof2015/astra-receiver
+  RELEASE_REPO: Boof2015/parallax-os
   PI_GEN_URL: https://github.com/RPi-Distro/pi-gen
   # arm64 branch, pinned 2026-07-19. Bumping this is the one-time moment to re-verify the
   # stage against pi-gen's conventions (run scripts, EXPORT_IMAGE, SKIP_IMAGES, on_chroot).
@@ -128,14 +135,14 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Publish release to the releases repo
+    name: Create draft release in the releases repo
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: parallax-os-image
-      - name: Create release
+      - name: Create draft release
         env:
           GH_TOKEN: ${{ secrets.RECEIVER_RELEASE_TOKEN }}
           VERSION: ${{ inputs.version }}
@@ -145,17 +152,33 @@ jobs:
             exit 1
           fi
           TAG="parallax-os-v${VERSION}"
-          if ! gh release view "$TAG" --repo "$RELEASE_REPO" >/dev/null 2>&1; then
-            gh release create "$TAG" \
-              --repo "$RELEASE_REPO" \
-              --latest=false \
-              --title "Parallax OS v${VERSION}" \
-              --notes "Flashable Raspberry Pi image for the Astra Parallax receiver. Built from ${GITHUB_REPOSITORY}@${GITHUB_SHA}.
+          export TAG
+          # A published tag is immutable from here: people may already have its assets, so a
+          # rebuild must bump the version. (releases/tags/<tag> only resolves PUBLISHED tags —
+          # drafts have no git tag yet, which is exactly the distinction needed.)
+          if gh api "repos/${RELEASE_REPO}/releases/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::${TAG} is already published — bump the version instead of overwriting it."
+            exit 1
+          fi
+          # A leftover draft for this tag (failed upload, or a test round that never got
+          # published) is superseded by this build — delete and recreate.
+          DRAFT_ID="$(gh api "repos/${RELEASE_REPO}/releases" \
+            --jq '[.[] | select(.draft and .tag_name == env.TAG)] | .[0].id // empty')"
+          if [ -n "$DRAFT_ID" ]; then
+            echo "Replacing stale draft (release id ${DRAFT_ID})"
+            gh api -X DELETE "repos/${RELEASE_REPO}/releases/${DRAFT_ID}"
+          fi
+          gh release create "$TAG" \
+            --repo "$RELEASE_REPO" \
+            --draft \
+            --latest=false \
+            --title "Parallax OS v${VERSION}" \
+            --notes "Flashable Raspberry Pi image for the Astra Parallax receiver. Built from ${GITHUB_REPOSITORY}@${GITHUB_SHA}.
 
           **Flash** this \`.img.xz\` with Raspberry Pi Imager (Use custom), Etcher, or dd, then just boot. First boot takes 2–3 minutes; on Wi-Fi, wait for the open **Parallax-Setup** network to appear (~2 min), join it with your phone and pick your Wi-Fi in the portal that opens. Then open http://parallax.local/ and pair from Astra. (SSH/console access or pre-set Wi-Fi: edit \`custom.toml.example\` on the boot partition before first boot.)
 
-          The daemon auto-updates daily from this repo's \`receiver-v*\` releases — a new image is only needed for OS-level changes."
-          fi
-          gh release upload "$TAG" --repo "$RELEASE_REPO" --clobber \
+          The daemon auto-updates daily from this repo's \`receiver-v*\` releases — a new image is only needed for OS-level changes." \
             parallax-os-v${VERSION}.img.xz \
             parallax-os-v${VERSION}.img.xz.sha256
+          echo "Draft created. Flash + test, then publish with:"
+          echo "  gh release edit ${TAG} --repo ${RELEASE_REPO} --draft=false --latest=false"
