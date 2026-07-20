@@ -201,6 +201,38 @@ async function main(): Promise<void> {
 
   const installedVersion = resolveInstalledVersion()
 
+  // On-demand update runs: after kicking the updater unit, mirror its systemd ActiveState into
+  // status as `updating` so both UIs can show an honest "hold on" instead of instant success.
+  // (Reading unit state needs no polkit; if an update is found the updater restarts us and the
+  // fresh process reports updating=false — the pages detect completion by the version change.)
+  let updateRunActive = false
+  let updateWatchTimer: ReturnType<typeof setInterval> | null = null
+  const stopUpdateWatch = (): void => {
+    updateRunActive = false
+    if (updateWatchTimer) {
+      clearInterval(updateWatchTimer)
+      updateWatchTimer = null
+    }
+  }
+  const watchUpdateUnit = (): void => {
+    if (updateWatchTimer) return
+    updateRunActive = true
+    const startedAt = Date.now()
+    updateWatchTimer = setInterval(() => {
+      if (Date.now() - startedAt > 15 * 60_000) {
+        stopUpdateWatch()
+        return
+      }
+      void runCommand('systemctl', ['show', '-p', 'ActiveState', '--value', 'astra-receiver-update.service'])
+        .then((stdout) => {
+          const state = stdout.trim()
+          if (state !== 'active' && state !== 'activating') stopUpdateWatch()
+        })
+        .catch(() => stopUpdateWatch())
+    }, 2_000)
+    updateWatchTimer.unref?.()
+  }
+
   const listener = new ParallaxSinkListener({
     getEndpointUuid: () => configStore.get().endpointUuid,
     getSinkName: () => configStore.get().sinkName,
@@ -269,6 +301,7 @@ async function main(): Promise<void> {
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         clockFormat: current.clockFormat,
         version: installedVersion,
+        updating: updateRunActive,
         transportSupported: client.getControlSupported(),
         cec: {
           available: cec.available,
@@ -381,10 +414,40 @@ async function main(): Promise<void> {
           return { ok: false, error: 'Reboot is not permitted on this system.' }
         }
       }
+      if (action === 'reset-wifi') {
+        try {
+          const removed = await networkSetup.forgetWifiConnections()
+          log(`reset-wifi requested from the web page (${removed} profile(s) removed)`)
+          return { ok: true }
+        } catch (error) {
+          logError('reset-wifi failed', error)
+          return { ok: false, error: 'Could not remove the saved Wi-Fi networks.' }
+        }
+      }
+      if (action === 'factory-reset') {
+        log('FACTORY RESET requested — clearing pairing, identity, settings, and Wi-Fi')
+        // Best-effort courtesy: retire our sink id on the host so it doesn't linger there.
+        await client.forgetOnHost().catch(() => undefined)
+        connectGeneration += 1
+        await client.disconnect().catch(() => undefined)
+        await networkSetup.forgetWifiConnections().catch(() => undefined)
+        try {
+          configStore.factoryReset()
+        } catch (error) {
+          logError('factory reset could not rewrite the config file', error)
+          return { ok: false, error: 'Could not clear the configuration.' }
+        }
+        // Clean exit; the service restart boots as a factory-fresh device (new endpoint UUID,
+        // no pairing, user settings back to defaults) while the image's baked provisioning
+        // (port 80, apSetup, cecControl) survives — the setup AP re-raises as on first boot.
+        setTimeout(() => void shutdown('factory reset'), OUTPUT_CHANGE_RESTART_DELAY_MS)
+        return { ok: true }
+      }
       // 'update': kick the image's updater unit without waiting for it (a oneshot start blocks
       // until the unit finishes otherwise). If an update is found, update.sh restarts us.
       try {
         await runCommand('systemctl', ['start', '--no-block', 'astra-receiver-update.service'])
+        watchUpdateUnit()
         return { ok: true }
       } catch (error) {
         logError('update check failed to start', error)

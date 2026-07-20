@@ -189,4 +189,23 @@ export class ConfigStore {
   setConnection(connection: PersistedParallaxSinkConnection | null): void {
     this.update({ connection })
   }
+
+  // "As shipped" reset. Deliberately NOT a file wipe: the Parallax OS image bakes provisioning
+  // into this same file (webPort 80, apSetup, cecControl, alsa backend), and losing apSetup
+  // would leave a reset appliance with no setup hotspot — unrecoverable without SSH. So the
+  // deployment-shaped fields survive and everything user-owned resets: fresh endpoint UUID,
+  // no pairing, default name/output/volume/clock/CEC behavior.
+  factoryReset(): ReceiverConfig {
+    const fresh = defaults()
+    this.config = {
+      ...fresh,
+      audioBackend: this.config.audioBackend,
+      webPort: this.config.webPort,
+      listenerPort: this.config.listenerPort,
+      apSetup: this.config.apSetup,
+      cecControl: this.config.cecControl
+    }
+    this.persist(this.config)
+    return this.config
+  }
 }

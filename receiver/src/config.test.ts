@@ -118,6 +118,60 @@ test('CEC and clock settings default sensibly and reject garbage', () => {
   })
 })
 
+test('factory reset keeps image provisioning and resets everything user-owned', () => {
+  withTempDir((dir) => {
+    const path = join(dir, 'config.json')
+    // A provisioned + used appliance: image-baked fields plus user changes and a pairing.
+    writeFileSync(path, JSON.stringify({
+      endpointUuid: 'old-uuid',
+      sinkName: 'Living Room',
+      audioBackend: 'alsa',
+      audioDevice: 'plughw:vc4hdmi0,0',
+      volumePercent: 40,
+      webPort: 80,
+      apSetup: true,
+      cecControl: true,
+      cecWakeOn: 'connect',
+      cecStandbyMinutes: 0,
+      clockFormat: '24'
+    }))
+    const store = new ConfigStore(path)
+    store.setConnection({
+      protocolVersion: 2,
+      baseUrl: 'https://192.168.1.10:38403',
+      sinkId: 'sink-1',
+      token: 'token-1',
+      hostCertificatePem: 'pem',
+      hostCertificateFingerprint: 'AA'.repeat(32),
+      hostName: 'Studio Mac',
+      pairedAt: 123,
+      lastConnectedAt: null,
+      hostParallaxEndpointUuid: 'uuid-h'
+    })
+
+    const reset = store.factoryReset()
+    // Provisioning survives — losing apSetup/webPort would strand a reset appliance.
+    assert.equal(reset.webPort, 80)
+    assert.equal(reset.apSetup, true)
+    assert.equal(reset.cecControl, true)
+    assert.equal(reset.audioBackend, 'alsa')
+    // User-owned state is factory-fresh.
+    assert.notEqual(reset.endpointUuid, 'old-uuid')
+    assert.equal(reset.connection, null)
+    assert.notEqual(reset.sinkName, 'Living Room')
+    assert.equal(reset.audioDevice, 'default')
+    assert.equal(reset.volumePercent, 100)
+    assert.equal(reset.cecWakeOn, 'play')
+    assert.equal(reset.cecStandbyMinutes, 10)
+    assert.equal(reset.clockFormat, 'auto')
+    // And it is durable.
+    const reloaded = new ConfigStore(path).get()
+    assert.equal(reloaded.endpointUuid, reset.endpointUuid)
+    assert.equal(reloaded.connection, null)
+    assert.equal(reloaded.webPort, 80)
+  })
+})
+
 test('writes are atomic (no partial file left behind)', () => {
   withTempDir((dir) => {
     const path = join(dir, 'config.json')

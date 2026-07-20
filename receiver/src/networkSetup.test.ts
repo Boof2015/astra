@@ -34,6 +34,9 @@ function fakeNmcli(behavior: {
     const joined = args.join(' ')
     if (joined === '-t -f DEVICE,TYPE device') return { stdout: DEVICE_LIST }
     if (joined === '-t -f DEVICE,TYPE,STATE device') return { stdout: (behavior.state ?? (() => OFFLINE_STATE))() }
+    if (joined === '-t -f UUID,TYPE connection show') {
+      return { stdout: 'uuid-wifi-1:802-11-wireless\nuuid-setup-ap:802-11-wireless\nuuid-eth:802-3-ethernet\nlo-uuid:loopback\n' }
+    }
     if (joined === '-t -f NAME,TYPE connection show') {
       // Default: a provisioned device (has a saved Wi-Fi profile) so threshold tests use the
       // full offline threshold; virgin-boot tests override.
@@ -148,4 +151,22 @@ test('scan serves the pre-AP cache while hosting', async () => {
   assert.equal(networks[0].ssid, 'HomeNet')
   const scansAfter = calls.filter((c) => c.args.join(' ').startsWith('-t -f SSID,SIGNAL,SECURITY')).length
   assert.equal(scansAfter, scans, 'no live scan while the AP is hosted')
+})
+
+test('forgetWifiConnections deletes exactly the Wi-Fi profiles and resets the fast path', async () => {
+  const { exec, calls } = fakeNmcli({})
+  const setup = createNetworkSetup({ enabled: true, exec, log: () => undefined })
+  const removed = await setup.forgetWifiConnections()
+  assert.equal(removed, 2)
+  const deletes = calls.filter((c) => c.args[0] === 'connection' && c.args[1] === 'delete')
+  assert.deepEqual(deletes.map((c) => c.args[2]), ['uuid-wifi-1', 'uuid-setup-ap'])
+  // The wired profile survives.
+  assert.ok(!deletes.some((c) => c.args[2] === 'uuid-eth'))
+})
+
+test('disabled setup reports zero forgotten profiles without running nmcli', async () => {
+  const { exec, calls } = fakeNmcli({})
+  const setup = createNetworkSetup({ enabled: false, exec })
+  assert.equal(await setup.forgetWifiConnections(), 0)
+  assert.deepEqual(calls, [])
 })

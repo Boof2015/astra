@@ -38,6 +38,8 @@ export interface WebStatusState {
   clockFormat: ClockFormat
   // Installed release tag ('v0.3.0') or 'dev' when running from source.
   version: string
+  // True while an on-demand update run is in flight (mirrors the updater unit's ActiveState).
+  updating: boolean
   // Phase-3 transport lane capability: null = untried, false = host predates the control
   // route (hide the buttons), true = confirmed working.
   transportSupported: boolean | null
@@ -122,8 +124,11 @@ export interface WebStatusCallbacks {
   sendTransport: (command: 'toggle-play' | 'next' | 'previous') => Promise<'ok' | 'unsupported' | 'failed'>
   // 'restart' exits cleanly (systemd's Restart=always brings it back); 'reboot' and 'update'
   // shell out via systemd and fail without the image's polkit grants — `error` carries the
-  // user-facing explanation.
-  systemAction: (action: 'restart' | 'reboot' | 'update') => Promise<{ ok: boolean; error?: string }>
+  // user-facing explanation. 'reset-wifi' drops every saved Wi-Fi profile (setup AP re-raises);
+  // 'factory-reset' additionally wipes config (pairing, identity, settings) and restarts fresh.
+  systemAction: (
+    action: 'restart' | 'reboot' | 'update' | 'reset-wifi' | 'factory-reset'
+  ) => Promise<{ ok: boolean; error?: string }>
   forgetHost: () => Promise<void>
 }
 
@@ -166,6 +171,9 @@ const PAGE_HTML = `<!doctype html>
 <body>
 <main>
   <h1>Astra Receiver</h1>
+  <div class="card" id="busy-banner" style="display:none; padding:0.7rem 1.25rem">
+    <span id="busy-text"></span>
+  </div>
   <div id="pair" class="card pair-banner" style="display:none">
     <div class="muted" id="pair-host"></div>
     <div class="pin" id="pair-pin"></div>
@@ -257,6 +265,12 @@ const PAGE_HTML = `<!doctype html>
       <button onclick="systemAct('restart')">Restart receiver</button>
       <button class="danger" onclick="if(confirm('Reboot the speaker?')) systemAct('reboot')">Reboot device</button>
     </div>
+    <div class="actions" style="justify-content:flex-start; flex-wrap:wrap; margin-top:0.6rem">
+      <button class="danger" id="reset-wifi-btn" style="display:none"
+        onclick="if(confirm('Forget all saved Wi-Fi networks? The speaker goes back into setup mode.')) systemAct('reset-wifi')">Reset Wi-Fi</button>
+      <button class="danger"
+        onclick="if(confirm('Factory reset? This erases the pairing, name, settings, and Wi-Fi — the speaker starts over as brand new.')) systemAct('factory-reset')">Factory reset</button>
+    </div>
     <div class="muted" id="sys-hint" style="margin-top:0.35rem"></div>
   </div>
   <div class="card" id="diag-card" style="display:none">
@@ -274,6 +288,58 @@ const PAGE_HTML = `<!doctype html>
   <div class="muted" id="s-id" style="text-align:center"></div>
 </main>
 <script>
+// ── Busy banner: an honest "hold on" for every action that takes real time (daemon restarts,
+// update runs). Driven by actual signals — poll failures while the daemon is down, the
+// the updating flag mirroring the updater unit, and completion predicates checked against fresh
+// status — never by optimistic timers alone.
+let webPollFailures = 0
+let busy = null
+let bootVersion = null
+function showBanner(text, ok) {
+  const banner = document.getElementById('busy-banner')
+  banner.style.display = ''
+  banner.style.borderColor = ok ? '#3d7a4a' : '#4a6cf7'
+  document.getElementById('busy-text').textContent = text
+}
+function hideBanner() { document.getElementById('busy-banner').style.display = 'none' }
+function beginBusy(label, done, patienceMs) {
+  busy = { label: label, done: done, startedAt: Date.now(), sawFail: false, patienceMs: patienceMs || 90000 }
+  showBanner('⟳ ' + label, false)
+}
+function finishBusy(text) {
+  busy = null
+  showBanner('✓ ' + text, true)
+  setTimeout(() => { if (!busy) hideBanner() }, 6000)
+}
+function busyTick(s) {
+  if (bootVersion === null) bootVersion = s.version
+  else if (s.version !== bootVersion) {
+    // The daemon we're talking to is a different release than the page came from — reload so
+    // the UI matches it (this is also what keeps long-lived tabs current after auto-updates).
+    busy = null
+    showBanner('✓ Updated to ' + s.version + ' — refreshing…', true)
+    setTimeout(() => location.reload(), 1500)
+    bootVersion = s.version
+    return
+  }
+  if (!busy) return
+  const done = busy.done(s, busy)
+  if (done) finishBusy(done)
+  else if (Date.now() - busy.startedAt > busy.patienceMs) { busy = null; hideBanner() }
+}
+function busyPollFailed() {
+  webPollFailures += 1
+  if (busy) {
+    busy.sawFail = true
+    showBanner('⟳ ' + busy.label + ' — the speaker is restarting…', false)
+  } else if (webPollFailures >= 3) {
+    showBanner('⟳ Speaker unreachable — reconnecting…', false)
+  }
+}
+function busyPollRecovered() {
+  if (webPollFailures >= 3 && !busy) hideBanner()
+  webPollFailures = 0
+}
 let nameDirty = false
 document.getElementById('name-input').addEventListener('input', () => { nameDirty = true })
 async function act(name) {
@@ -328,6 +394,7 @@ async function applyTimezone() {
   tzDirty = false
   if (res.ok) {
     tzPending = timezone
+    beginBusy('Applying the timezone…', (s) => s.timezone === timezone ? 'Timezone updated' : false)
     document.getElementById('tz-hint').textContent =
       'Applying — the receiver restarts, this takes ~15 seconds…'
   } else {
@@ -345,6 +412,8 @@ async function applyOutput() {
   outDirty = false
   if (res.ok) {
     outRestartingUntil = Date.now() + 10000
+    beginBusy('Switching the audio output…',
+      (s, b) => b.sawFail && s.configuredDevice === device ? 'Audio output switched' : false)
     document.getElementById('out-hint').textContent = 'Restarting on the new output…'
   }
 }
@@ -432,15 +501,35 @@ document.getElementById('clock-select').addEventListener('change', async (e) => 
 async function systemAct(action) {
   const hint = document.getElementById('sys-hint')
   hint.textContent = action === 'update' ? 'Checking for updates…'
-    : action === 'restart' ? 'Restarting the receiver…' : 'Rebooting…'
+    : action === 'restart' ? 'Restarting the receiver…'
+    : action === 'reset-wifi' ? 'Removing saved Wi-Fi networks…'
+    : action === 'factory-reset' ? 'Resetting…' : 'Rebooting…'
   try {
     const res = await fetch('/api/system', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action }) })
     const payload = await res.json().catch(() => ({}))
     if (!res.ok) { hint.textContent = payload.error || 'Failed.'; return }
+    if (action === 'update') {
+      // A found update shows up as the version-change reload; this predicate only needs the
+      // "nothing to do" and "finished after a restart" endings.
+      beginBusy('Checking for updates…', (s, b) => {
+        if (!s.updating && Date.now() - b.startedAt > 8000) {
+          return b.sawFail ? 'Update finished' : 'Already up to date'
+        }
+        return false
+      }, 300000)
+    } else if (action === 'restart') {
+      beginBusy('Restarting the receiver…', (s, b) => b.sawFail ? 'Receiver restarted' : false)
+    } else if (action === 'reboot') {
+      beginBusy('Rebooting the speaker…', (s, b) => b.sawFail ? 'Speaker back online' : false, 180000)
+    } else if (action === 'factory-reset') {
+      beginBusy('Factory resetting…', (s, b) => b.sawFail && !s.paired ? 'Factory reset complete' : false, 180000)
+    }
     hint.textContent = action === 'update'
       ? 'Checking — if an update is found, the receiver restarts itself within a minute or two.'
       : action === 'restart' ? 'Restarting — back in ~15 seconds.'
+      : action === 'reset-wifi' ? 'Wi-Fi networks removed — the Parallax-Setup hotspot appears in ~30 seconds.'
+      : action === 'factory-reset' ? 'Factory reset done — the speaker restarts as brand new (setup hotspot in ~1 minute).'
       : 'Rebooting — back in about a minute.'
   } catch {
     // A dead fetch right after a reboot request is the reboot working; anything else self-heals
@@ -451,6 +540,8 @@ async function systemAct(action) {
 async function refresh() {
   try {
     const s = await (await fetch('/api/status')).json()
+    busyPollRecovered()
+    busyTick(s)
     const pair = document.getElementById('pair')
     if (s.incomingPair) {
       pair.style.display = ''
@@ -495,6 +586,7 @@ async function refresh() {
     const clockSelect = document.getElementById('clock-select')
     if (!clockDirty && document.activeElement !== clockSelect) clockSelect.value = s.clockFormat
     document.getElementById('s-ver').textContent = s.version
+    document.getElementById('reset-wifi-btn').style.display = s.setup ? '' : 'none'
     const vol = document.getElementById('vol')
     if (document.activeElement !== vol) vol.value = s.volumePercent
     document.getElementById('vol-label').textContent = s.volumePercent + '%'
@@ -518,7 +610,10 @@ async function refresh() {
       diag.style.display = 'none'
     }
     document.getElementById('s-id').textContent = s.endpointUuid
-  } catch { /* daemon restarting — keep polling */ }
+  } catch {
+    // Daemon restarting — keep polling; the busy banner tells the user what's happening.
+    busyPollFailed()
+  }
 }
 refresh()
 setInterval(refresh, 1000)
@@ -682,6 +777,12 @@ const DISPLAY_HTML = `<!doctype html>
                                   background: rgba(255,255,255,0.18); }
   #pair-approve.primary { background: #4a6cf7; border-color: #4a6cf7; }
   #pair-approve.primary:focus { background: #6a86f9; border-color: #fff; }
+
+  /* ── Busy pill: "the speaker is doing something" — updates, restarts — over every state ── */
+  #busy-pill { position: fixed; top: 3vmin; left: 50%; transform: translateX(-50%); z-index: 6;
+               background: rgba(12,12,17,0.8); border: 0.25vmin solid rgba(255,255,255,0.3);
+               border-radius: 5vmin; padding: 1vmin 2.8vmin; font-size: 2.1vmin; color: #c9c9d4;
+               display: none; }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -706,6 +807,7 @@ const DISPLAY_HTML = `<!doctype html>
     <span id="np-clock"></span>
   </div>
 </div>
+<div id="busy-pill"></div>
 <div id="controls">
   <button id="ctl-prev" aria-label="Previous track">
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2.4v14H6zM20 5v14L9.6 12z"/></svg>
@@ -758,6 +860,7 @@ let pos = null
 let lastStatus = null
 let statusReceivedAt = 0
 let pollFailures = 0
+let kioskBootVersion = null
 // Tracks how long the current status label has been showing, so everyday states (host app
 // closed → "Waiting for host"/"Reconnecting…") quiet down to a clean clock after a while.
 let hintLabel = null
@@ -1035,7 +1138,10 @@ function adjustVolume(delta) {
 }
 async function systemAct(action) {
   sheetHint(action === 'update' ? 'Checking for updates…'
-    : action === 'restart' ? 'Restarting — back in ~15 seconds…' : 'Rebooting — back in about a minute…')
+    : action === 'restart' ? 'Restarting — back in ~15 seconds…'
+    : action === 'reset-wifi' ? 'Wi-Fi removed — setup hotspot appears in ~30 seconds…'
+    : action === 'factory-reset' ? 'Resetting — the speaker starts over as brand new…'
+    : 'Rebooting — back in about a minute…')
   const res = await postJson('/api/system', { action })
   if (!res) return
   if (!res.ok) {
@@ -1075,6 +1181,8 @@ function sheetSpec(s) {
   rows.push({ id: 'update', label: 'Check for updates', value: '', act: () => systemAct('update') })
   rows.push({ id: 'restart', label: 'Restart receiver', value: '', confirm: true, act: () => systemAct('restart') })
   rows.push({ id: 'reboot', label: 'Reboot device', value: '', confirm: true, act: () => systemAct('reboot') })
+  if (s.setup) rows.push({ id: 'resetwifi', label: 'Reset Wi-Fi', value: '', confirm: true, act: () => systemAct('reset-wifi') })
+  rows.push({ id: 'factory', label: 'Factory reset', value: '', confirm: true, act: () => systemAct('factory-reset') })
   if (s.paired) rows.push({ id: 'forget', label: 'Forget host', value: '', confirm: true, act: forgetHost })
   return rows
 }
@@ -1450,7 +1558,20 @@ function handleKey(key, preventDefault, synthetic) {
   controlsShow()
 }
 
+function updateBusyPill() {
+  const pill = document.getElementById('busy-pill')
+  if (pollFailures >= 2) {
+    pill.style.display = 'block'
+    pill.textContent = 'Speaker restarting…'
+  } else if (lastStatus && lastStatus.updating) {
+    pill.style.display = 'block'
+    pill.textContent = 'Updating the speaker…'
+  } else {
+    pill.style.display = 'none'
+  }
+}
 function render() {
+  updateBusyPill()
   const s = lastStatus
   const now = new Date()
   if (!s) {
@@ -1554,6 +1675,14 @@ function render() {
 async function refresh() {
   try {
     const s = await (await fetch('/api/status')).json()
+    // The kiosk browser loads this page once at boot — when the daemon comes back as a newer
+    // release, reload so the TV runs the new UI (this is how updates reach the screen without
+    // a node reboot).
+    if (kioskBootVersion === null) kioskBootVersion = s.version
+    else if (s.version !== kioskBootVersion) {
+      kioskBootVersion = s.version
+      setTimeout(() => location.reload(), 1000)
+    }
     lastStatus = s
     statusReceivedAt = Date.now()
     pollFailures = 0
@@ -2018,7 +2147,10 @@ export class WebStatusServer {
     if (method === 'POST' && path === '/api/system') {
       const body = await readJsonBody(req).catch(() => null)
       const action = (body as { action?: unknown } | null)?.action
-      if (action !== 'restart' && action !== 'reboot' && action !== 'update') {
+      if (
+        action !== 'restart' && action !== 'reboot' && action !== 'update'
+        && action !== 'reset-wifi' && action !== 'factory-reset'
+      ) {
         toJsonResponse(res, 400, { error: 'invalid action.' })
         return
       }

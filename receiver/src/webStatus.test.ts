@@ -31,6 +31,7 @@ function stubState(): WebStatusState {
     timezone: 'UTC',
     clockFormat: 'auto',
     version: 'v0.3.0',
+    updating: false,
     transportSupported: null,
     cec: { available: true, control: true, wakeOn: 'play', switchInput: true, standbyMinutes: 10, lastKey: null },
     artworkId: null,
@@ -354,11 +355,13 @@ test('POST /api/system forwards actions and maps failures to 500', async () => {
     })
     assert.equal((await post('restart')).status, 200)
     assert.equal((await post('update')).status, 200)
+    assert.equal((await post('reset-wifi')).status, 200)
+    assert.equal((await post('factory-reset')).status, 200)
     const denied = await post('reboot')
     assert.equal(denied.status, 500)
     assert.match(((await denied.json()) as { error: string }).error, /not permitted/)
     assert.equal((await post('format-c')).status, 400)
-    assert.deepEqual(actions, ['restart', 'update', 'reboot'])
+    assert.deepEqual(actions, ['restart', 'update', 'reset-wifi', 'factory-reset', 'reboot'])
   })
 })
 

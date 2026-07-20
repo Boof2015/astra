@@ -43,6 +43,10 @@ export interface NetworkSetup {
   scanNetworks(): Promise<WifiNetwork[]>
   /** Accepts the credentials for an async apply. False = busy or feature off. */
   applyCredentials(ssid: string, password: string): boolean
+  /** Deletes every saved Wi-Fi profile (settings "Reset Wi-Fi" / factory reset) — the
+   *  connectivity checks then re-raise the setup AP on the first-boot fast path. Returns the
+   *  number of profiles removed; 0 when the feature is off. */
+  forgetWifiConnections(): Promise<number>
   /** One connectivity-check cycle; exposed for tests (start() runs it on an interval). */
   tick(): Promise<void>
 }
@@ -111,6 +115,7 @@ export function createNetworkSetup(options: NetworkSetupOptions): NetworkSetup {
     getState: () => ({ apActive: false, connecting: false, lastError: null, apEtaSeconds: null }),
     scanNetworks: async () => [],
     applyCredentials: () => false,
+    forgetWifiConnections: async () => 0,
     tick: async () => undefined
   }
   if (!options.enabled) return disabled
@@ -259,9 +264,28 @@ export function createNetworkSetup(options: NetworkSetupOptions): NetworkSetup {
     }
   }
 
+  const forgetWifiConnections = async (): Promise<number> => {
+    const { stdout } = await nmcli(['-t', '-f', 'UUID,TYPE', 'connection', 'show'])
+    const uuids: string[] = []
+    for (const line of stdout.split('\n')) {
+      const [uuid, type] = parseNmcliTerse(line)
+      if (uuid && type === '802-11-wireless') uuids.push(uuid)
+    }
+    for (const uuid of uuids) {
+      await nmcli(['connection', 'delete', uuid]).catch(() => undefined)
+    }
+    // Back to the first-boot state: the profile cache re-resolves to "none saved", which puts
+    // the connectivity checks on the fast path to raising the setup AP (~30 s).
+    hasWifiProfiles = null
+    offlineChecks = 0
+    log(`AP setup: removed ${uuids.length} saved Wi-Fi profile(s) — setup AP will re-raise.`)
+    return uuids.length
+  }
+
   return {
     enabled: true,
     apSsid,
+    forgetWifiConnections,
     start: () => {
       if (timer) return
       timer = setInterval(() => void tick(), checkIntervalMs)
