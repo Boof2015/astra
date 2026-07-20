@@ -1,23 +1,43 @@
 import { execFile } from 'child_process'
 import { readdirSync } from 'fs'
 
-// HDMI-CEC TV control for the Parallax OS TV mode: wake the TV and grab the active source when
-// a stream starts playing, put it on standby after an idle timeout once playback stops. Uses
-// the kernel CEC device (vc4 on Pi 4/5) via `cec-ctl` from v4l-utils — no libcec. Everything is
-// best-effort: a TV that ignores CEC just keeps working as a dumb screen, and every failure is
-// logged once rather than thrown (playback must never depend on the TV).
+// HDMI-CEC TV control for the Parallax OS TV mode: wake the TV (and optionally grab the active
+// source) when a stream starts playing or the host connects, put it on standby after an idle
+// timeout once playback stops. Uses the kernel CEC device (vc4 on Pi 4/5) via `cec-ctl` from
+// v4l-utils — no libcec. Everything is best-effort: a TV that ignores CEC just keeps working as
+// a dumb screen, and every failure is logged once rather than thrown (playback must never
+// depend on the TV). All settings apply live via updateSettings — a TV-behavior toggle must
+// never cost an audio restart.
+
+export type CecWakeOn = 'play' | 'connect' | 'off'
+
+export interface CecSettings {
+  /** Master switch (config cecControl). Everything is inert while false. */
+  enabled: boolean
+  /** What wakes the TV. 'connect' is a superset of 'play': the TV also comes on when the host
+   *  attaches, so it shows the idle/now-playing screen before any music starts. */
+  wakeOn: CecWakeOn
+  /** Claim the TV's input (active source) when waking; false = power control only. */
+  switchInput: boolean
+  /** Minutes of not-playing before the TV is sent to standby; 0 = never. */
+  standbyMinutes: number
+}
 
 export interface CecController {
-  readonly enabled: boolean
-  // Call with the current "is playing" state as often as convenient; transitions are debounced
-  // internally (wake fires on the not-playing → playing edge, standby after the idle timeout).
+  /** True when CEC adapters exist to drive (regardless of the master switch) — what decides
+   *  whether the settings UI offers TV control at all. */
+  readonly available: boolean
+  // Call with the current "is playing" / "host connected" state as often as convenient;
+  // transitions are debounced internally (wake fires on rising edges, standby after the idle
+  // timeout).
   notifyPlayback(playing: boolean): void
+  notifyConnection(connected: boolean): void
+  updateSettings(settings: CecSettings): void
   stop(): void
 }
 
 export interface CecControllerOptions {
-  enabled: boolean
-  standbyMinutes: number
+  settings: CecSettings
   /** CEC adapters to probe; defaults to every /dev/cec* (a Pi has one per HDMI port). */
   devicePaths?: string[]
   exec?: (command: string, args: string[]) => Promise<{ stdout: string }>
@@ -36,9 +56,6 @@ function defaultExec(command: string, args: string[]): Promise<{ stdout: string 
 export function createCecController(options: CecControllerOptions): CecController {
   const log = options.log ?? ((message) => console.log(`[astra-receiver] ${message}`))
 
-  if (!options.enabled) {
-    return { enabled: false, notifyPlayback: () => undefined, stop: () => undefined }
-  }
   // A Pi 4/5 has one CEC adapter PER HDMI PORT (/dev/cec0, /dev/cec1). Probe them all and
   // drive the one that reports a real physical address — i.e. the port with the TV on it.
   const devicePaths = options.devicePaths
@@ -46,15 +63,13 @@ export function createCecController(options: CecControllerOptions): CecControlle
       .filter((name) => /^cec\d+$/.test(name))
       .map((name) => `/dev/${name}`)
       .sort()
-  if (devicePaths.length === 0) {
-    log('CEC control enabled but no /dev/cec* device exists — TV control disabled.')
-    return { enabled: false, notifyPlayback: () => undefined, stop: () => undefined }
-  }
+  const available = devicePaths.length > 0
 
   const exec = options.exec ?? defaultExec
-  const standbyMs = Math.max(1, options.standbyMinutes) * 60_000
 
+  let settings: CecSettings = { ...options.settings }
   let playing = false
+  let connected = false
   let tvAwake = false
   let initialized = false
   let selectedDevice: string | null = null
@@ -68,6 +83,12 @@ export function createCecController(options: CecControllerOptions): CecControlle
     warned.add(key)
     log(message)
   }
+
+  if (settings.enabled && !available) {
+    warnOnce('no-adapters', 'CEC control enabled but no /dev/cec* device exists — TV control disabled.')
+  }
+
+  const active = (): boolean => settings.enabled && available && !stopped
 
   const run = async (label: string, args: string[], device = selectedDevice): Promise<string | null> => {
     try {
@@ -120,35 +141,37 @@ export function createCecController(options: CecControllerOptions): CecControlle
   }
 
   const scheduleStandby = (): void => {
-    if (standbyTimer) return
+    if (standbyTimer || !active() || settings.standbyMinutes <= 0) return
     standbyTimer = setTimeout(() => {
       standbyTimer = null
       void standby()
-    }, standbyMs)
+    }, settings.standbyMinutes * 60_000)
     standbyTimer.unref?.()
   }
 
   const wake = async (): Promise<void> => {
     await ensureInitialized()
     if (stopped) return
-    // The physical address can be unknown when the TV was off during registration — re-ask
-    // the adapter at wake time so active-source (what actually switches inputs) can fire.
-    if (!physicalAddress) {
-      physicalAddress = parsePhysAddr(await run('phys-addr-query', []))
-    }
     await run('image-view-on', ['--to', '0', '--image-view-on'])
-    if (physicalAddress) {
-      await run('active-source', ['--active-source', `phys-addr=${physicalAddress}`])
+    if (settings.switchInput) {
+      // The physical address can be unknown when the TV was off during registration — re-ask
+      // the adapter at wake time so active-source (what actually switches inputs) can fire.
+      if (!physicalAddress) {
+        physicalAddress = parsePhysAddr(await run('phys-addr-query', []))
+      }
+      if (physicalAddress) {
+        await run('active-source', ['--active-source', `phys-addr=${physicalAddress}`])
+      }
     }
     tvAwake = true
-    log('CEC: woke the TV and claimed the active source.')
+    log(settings.switchInput ? 'CEC: woke the TV and claimed the active source.' : 'CEC: woke the TV.')
     // Playback may already have stopped while the wake commands were in flight — a TV we woke
     // must always end up with a pending standby once nothing is playing.
     if (!playing && !stopped) scheduleStandby()
   }
 
   return {
-    enabled: true,
+    available,
     notifyPlayback: (nowPlaying: boolean) => {
       if (stopped) return
       if (nowPlaying === playing) return
@@ -158,10 +181,37 @@ export function createCecController(options: CecControllerOptions): CecControlle
         // Wake on EVERY play edge, not only when we believe the TV is asleep: the user can
         // turn the TV off themselves and our tvAwake bookkeeping can't see that. A redundant
         // image-view-on to a TV that is already on is harmless.
-        void wake()
+        if (active() && settings.wakeOn !== 'off') void wake()
       } else if (tvAwake) {
         scheduleStandby()
       }
+    },
+    notifyConnection: (nowConnected: boolean) => {
+      if (stopped) return
+      if (nowConnected === connected) return
+      connected = nowConnected
+      // wake() schedules its own standby when nothing is playing, so a connected-but-idle TV
+      // still times out. Disconnect needs nothing: mid-play it arrives with a playback stop
+      // (which schedules standby), and while idle a standby is already pending or done.
+      if (nowConnected && active() && settings.wakeOn === 'connect') void wake()
+    },
+    updateSettings: (next: CecSettings) => {
+      if (stopped) return
+      settings = { ...next }
+      if (settings.enabled && !available) {
+        warnOnce('no-adapters', 'CEC control enabled but no /dev/cec* device exists — TV control disabled.')
+        return
+      }
+      // Re-evaluate the idle timer under the new rules (full duration from now — close enough
+      // for a settings click, and far simpler than pro-rating the elapsed idle time).
+      clearStandbyTimer()
+      if (!settings.enabled) return
+      if (tvAwake && !playing) scheduleStandby()
+      // If the new trigger says the TV should be on right now and our bookkeeping says it
+      // isn't, wake immediately — enabling CEC mid-song must light the TV up.
+      const shouldBeAwake = (settings.wakeOn === 'play' && playing)
+        || (settings.wakeOn === 'connect' && (connected || playing))
+      if (shouldBeAwake && !tvAwake) void wake()
     },
     stop: () => {
       stopped = true

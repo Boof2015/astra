@@ -1,11 +1,22 @@
-// Parallax OS: let the receiver daemon's service user drive NetworkManager — the captive-portal
-// Wi-Fi onboarding (raise the Parallax-Setup hotspot, scan, join the chosen network) runs
-// inside the daemon via nmcli, without root. timedate1 powers the settings page's timezone
-// picker (timedatectl set-timezone).
+// Parallax OS: system access for the receiver daemon's service user — everything the settings
+// pages expose runs without root. NetworkManager powers the captive-portal Wi-Fi onboarding
+// (raise the Parallax-Setup hotspot, scan, join), timedate1 the timezone picker, login1.reboot*
+// the maintenance card's "Reboot device". (Filename says "network" for historical reasons —
+// v1.x images shipped it before it grew the rest.)
 polkit.addRule(function (action, subject) {
-  if (subject.user === "astra-receiver"
-      && (action.id.indexOf("org.freedesktop.NetworkManager.") === 0
-          || action.id.indexOf("org.freedesktop.timedate1.") === 0)) {
+  if (subject.user !== "astra-receiver") {
+    return polkit.Result.NOT_HANDLED;
+  }
+  if (action.id.indexOf("org.freedesktop.NetworkManager.") === 0
+      || action.id.indexOf("org.freedesktop.timedate1.") === 0
+      || action.id.indexOf("org.freedesktop.login1.reboot") === 0) {
     return polkit.Result.YES;
   }
+  // "Check for updates now" — may start ONLY the updater unit, nothing else.
+  if (action.id === "org.freedesktop.systemd1.manage-units"
+      && action.lookup("unit") === "astra-receiver-update.service"
+      && action.lookup("verb") === "start") {
+    return polkit.Result.YES;
+  }
+  return polkit.Result.NOT_HANDLED;
 });

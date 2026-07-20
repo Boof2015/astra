@@ -84,6 +84,40 @@ test('privileged ports are valid, garbage ports fall back', () => {
   })
 })
 
+test('CEC and clock settings default sensibly and reject garbage', () => {
+  withTempDir((dir) => {
+    const path = join(dir, 'config.json')
+    writeFileSync(path, JSON.stringify({}))
+    const defaults = new ConfigStore(path).get()
+    assert.equal(defaults.cecWakeOn, 'play')
+    assert.equal(defaults.cecSwitchInput, true)
+    assert.equal(defaults.cecStandbyMinutes, 10)
+    assert.equal(defaults.clockFormat, 'auto')
+
+    writeFileSync(path, JSON.stringify({
+      cecWakeOn: 'connect',
+      cecSwitchInput: false,
+      cecStandbyMinutes: 0, // 0 = never standby, and must survive
+      clockFormat: '24'
+    }))
+    const set = new ConfigStore(path).get()
+    assert.equal(set.cecWakeOn, 'connect')
+    assert.equal(set.cecSwitchInput, false)
+    assert.equal(set.cecStandbyMinutes, 0)
+    assert.equal(set.clockFormat, '24')
+
+    writeFileSync(path, JSON.stringify({
+      cecWakeOn: 'sometimes',
+      cecStandbyMinutes: -5,
+      clockFormat: '13'
+    }))
+    const garbage = new ConfigStore(path).get()
+    assert.equal(garbage.cecWakeOn, 'play')
+    assert.equal(garbage.cecStandbyMinutes, 10)
+    assert.equal(garbage.clockFormat, 'auto')
+  })
+})
+
 test('writes are atomic (no partial file left behind)', () => {
   withTempDir((dir) => {
     const path = join(dir, 'config.json')

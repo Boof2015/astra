@@ -1,4 +1,6 @@
 import { execFile } from 'child_process'
+import { realpathSync } from 'fs'
+import { basename, dirname } from 'path'
 import type {
   ParallaxIncomingPairRequest,
   PersistedParallaxSinkConnection
@@ -73,6 +75,17 @@ async function listTimezones(): Promise<string[]> {
 // Grace period between answering POST /api/output and restarting onto the new device, so the
 // HTTP response reaches the page before the listener goes away.
 const OUTPUT_CHANGE_RESTART_DELAY_MS = 750
+
+// Installed release tag, derived from where this script actually lives: the appliance/installer
+// layout runs /opt/astra-receiver/current/astra-receiver.mjs with current → releases/<tag>, so
+// the resolved parent directory IS the version stamp (same invariant update.sh relies on).
+function resolveInstalledVersion(): string {
+  try {
+    const dir = basename(dirname(realpathSync(process.argv[1] ?? '')))
+    if (dir.startsWith('receiver-v')) return dir.slice('receiver-'.length)
+  } catch { /* dev run from source */ }
+  return 'dev'
+}
 
 async function main(): Promise<void> {
   const notifier = createSystemdNotifier({ log: (message) => logError(message) })
@@ -161,6 +174,26 @@ async function main(): Promise<void> {
     }
   }
 
+  // HDMI-CEC TV control (Parallax OS TV mode; inert unless cecControl is set and /dev/cec*
+  // exists). Driven by a 1 Hz playback/connection poll; the controller debounces transitions.
+  // Created before the web server: getState exposes it, and settings changes apply live.
+  const cec = createCecController({
+    settings: {
+      enabled: config.cecControl,
+      wakeOn: config.cecWakeOn,
+      switchInput: config.cecSwitchInput,
+      standbyMinutes: config.cecStandbyMinutes
+    },
+    log
+  })
+  const cecPollTimer = setInterval(() => {
+    cec.notifyPlayback(session.getInfo().playbackState === 'playing')
+    cec.notifyConnection(client.getStatus().connected)
+  }, 1_000)
+  cecPollTimer.unref?.()
+
+  const installedVersion = resolveInstalledVersion()
+
   const listener = new ParallaxSinkListener({
     getEndpointUuid: () => configStore.get().endpointUuid,
     getSinkName: () => configStore.get().sinkName,
@@ -227,6 +260,15 @@ async function main(): Promise<void> {
         appliedAdvanceMs: sessionInfo.appliedAdvanceMs,
         volumePercent: current.volumePercent,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        clockFormat: current.clockFormat,
+        version: installedVersion,
+        cec: {
+          available: cec.available,
+          control: current.cecControl,
+          wakeOn: current.cecWakeOn,
+          switchInput: current.cecSwitchInput,
+          standbyMinutes: current.cecStandbyMinutes
+        },
         artworkId: client.getActiveArtwork()?.streamId ?? null,
         outputDevice: backend.deviceLabel,
         configuredDevice: current.audioDevice,
@@ -294,6 +336,51 @@ async function main(): Promise<void> {
       setTimeout(() => void shutdown('timezone change'), OUTPUT_CHANGE_RESTART_DELAY_MS)
       return true
     },
+    setCecSettings: (settings) => {
+      configStore.update({
+        cecControl: settings.control,
+        cecWakeOn: settings.wakeOn,
+        cecSwitchInput: settings.switchInput,
+        cecStandbyMinutes: settings.standbyMinutes
+      })
+      cec.updateSettings({
+        enabled: settings.control,
+        wakeOn: settings.wakeOn,
+        switchInput: settings.switchInput,
+        standbyMinutes: settings.standbyMinutes
+      })
+      log(`CEC settings updated: control ${settings.control ? 'on' : 'off'}, wake on ${settings.wakeOn}, `
+        + `switch input ${settings.switchInput ? 'on' : 'off'}, standby ${settings.standbyMinutes || 'never'}`)
+    },
+    setClockFormat: (format) => {
+      configStore.update({ clockFormat: format })
+    },
+    systemAction: async (action) => {
+      if (action === 'restart') {
+        log('restart requested from the web page')
+        setTimeout(() => void shutdown('web restart'), OUTPUT_CHANGE_RESTART_DELAY_MS)
+        return { ok: true }
+      }
+      if (action === 'reboot') {
+        log('reboot requested from the web page')
+        try {
+          await runCommand('systemctl', ['reboot'])
+          return { ok: true }
+        } catch (error) {
+          logError('reboot failed', error)
+          return { ok: false, error: 'Reboot is not permitted on this system.' }
+        }
+      }
+      // 'update': kick the image's updater unit without waiting for it (a oneshot start blocks
+      // until the unit finishes otherwise). If an update is found, update.sh restarts us.
+      try {
+        await runCommand('systemctl', ['start', '--no-block', 'astra-receiver-update.service'])
+        return { ok: true }
+      } catch (error) {
+        logError('update check failed to start', error)
+        return { ok: false, error: 'On-demand updates need the Parallax OS update service.' }
+      }
+    },
     forgetHost: async () => {
       await client.forgetOnHost().catch(() => undefined)
       connectGeneration += 1
@@ -321,18 +408,6 @@ async function main(): Promise<void> {
   notifier.ready()
   notifier.startWatchdog()
   networkSetup.start()
-
-  // HDMI-CEC TV control (Parallax OS TV mode; no-op unless cecControl is set and /dev/cec0
-  // exists). Driven by a 1 Hz playback-state poll; the controller debounces transitions.
-  const cec = createCecController({
-    enabled: config.cecControl,
-    standbyMinutes: config.cecStandbyMinutes,
-    log
-  })
-  const cecPollTimer = setInterval(() => {
-    cec.notifyPlayback(session.getInfo().playbackState === 'playing')
-  }, 1_000)
-  cecPollTimer.unref?.()
 
   if (configStore.get().connection) {
     void startConnectLoop()

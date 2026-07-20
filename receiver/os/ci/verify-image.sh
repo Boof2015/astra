@@ -69,6 +69,8 @@ check "node baked at /usr/bin/node"
 
 check "AP setup: polkit rule, captive DNS, apSetup baked, parallax user locked"
 [ -f "$MOUNT_DIR/etc/polkit-1/rules.d/50-parallax-network.rules" ] || fail "polkit rule missing"
+grep -q 'org.freedesktop.login1.reboot' "$MOUNT_DIR/etc/polkit-1/rules.d/50-parallax-network.rules" \
+  || fail "polkit rule lacks the reboot grant"
 grep -q 'address=/#/10.42.0.1' "$MOUNT_DIR/etc/NetworkManager/dnsmasq-shared.d/parallax-captive.conf" \
   || fail "captive dnsmasq drop-in missing"
 grep -q '"apSetup": true' "$MOUNT_DIR/opt/astra-receiver/config.json" || fail "config.json lacks apSetup"

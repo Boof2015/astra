@@ -29,6 +29,9 @@ function stubState(): WebStatusState {
     appliedAdvanceMs: 0,
     volumePercent: 100,
     timezone: 'UTC',
+    clockFormat: 'auto',
+    version: 'v0.3.0',
+    cec: { available: true, control: true, wakeOn: 'play', switchInput: true, standbyMinutes: 10 },
     artworkId: null,
     outputDevice: 'ALSA plughw:vc4hdmi0,0',
     configuredDevice: 'plughw:vc4hdmi0,0',
@@ -58,6 +61,9 @@ async function withServer(
     applySetupCredentials: () => true,
     getTimezones: async () => [],
     setTimezone: async () => true,
+    setCecSettings: () => undefined,
+    setClockFormat: () => undefined,
+    systemAction: async () => ({ ok: true }),
     forgetHost: async () => undefined,
     ...overrides
   }
@@ -232,6 +238,85 @@ test('timezone routes list zones and validate on set', async () => {
     })
     assert.equal(bad.status, 400)
     assert.deepEqual(applied, ['America/New_York', 'Nope/Nowhere'])
+  })
+})
+
+test('the status page script survives the template-literal escaping too', async () => {
+  await withServer({}, async (baseUrl) => {
+    const html = await (await fetch(`${baseUrl}/`)).text()
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)
+    assert.ok(script, 'status page has an inline script')
+    assert.doesNotThrow(() => new Function(script[1]))
+  })
+})
+
+test('POST /api/cec validates and forwards the settings', async () => {
+  const applied: unknown[] = []
+  await withServer({ setCecSettings: (settings) => { applied.push(settings) } }, async (baseUrl) => {
+    const good = await fetch(`${baseUrl}/api/cec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ control: true, wakeOn: 'connect', switchInput: false, standbyMinutes: 0 })
+    })
+    assert.equal(good.status, 200)
+    assert.deepEqual(applied, [{ control: true, wakeOn: 'connect', switchInput: false, standbyMinutes: 0 }])
+    for (const bad of [
+      { control: true, wakeOn: 'sometimes', switchInput: true, standbyMinutes: 10 },
+      { control: true, wakeOn: 'play', switchInput: true, standbyMinutes: -1 },
+      { control: true, wakeOn: 'play', switchInput: true, standbyMinutes: 2.5 }
+    ]) {
+      const res = await fetch(`${baseUrl}/api/cec`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bad)
+      })
+      assert.equal(res.status, 400, JSON.stringify(bad))
+    }
+    assert.equal(applied.length, 1, 'invalid settings must never reach the callback')
+  })
+})
+
+test('POST /api/clock-format accepts the three formats only', async () => {
+  const applied: string[] = []
+  await withServer({ setClockFormat: (format) => { applied.push(format) } }, async (baseUrl) => {
+    for (const format of ['auto', '12', '24']) {
+      const res = await fetch(`${baseUrl}/api/clock-format`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ format })
+      })
+      assert.equal(res.status, 200)
+    }
+    const bad = await fetch(`${baseUrl}/api/clock-format`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ format: '13' })
+    })
+    assert.equal(bad.status, 400)
+    assert.deepEqual(applied, ['auto', '12', '24'])
+  })
+})
+
+test('POST /api/system forwards actions and maps failures to 500', async () => {
+  const actions: string[] = []
+  await withServer({
+    systemAction: async (action) => {
+      actions.push(action)
+      return action === 'reboot' ? { ok: false, error: 'Reboot is not permitted on this system.' } : { ok: true }
+    }
+  }, async (baseUrl) => {
+    const post = (action: string) => fetch(`${baseUrl}/api/system`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action })
+    })
+    assert.equal((await post('restart')).status, 200)
+    assert.equal((await post('update')).status, 200)
+    const denied = await post('reboot')
+    assert.equal(denied.status, 500)
+    assert.match(((await denied.json()) as { error: string }).error, /not permitted/)
+    assert.equal((await post('format-c')).status, 400)
+    assert.deepEqual(actions, ['restart', 'update', 'reboot'])
   })
 })
 

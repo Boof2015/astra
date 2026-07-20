@@ -3,6 +3,10 @@ import { homedir, hostname } from 'os'
 import { dirname, join } from 'path'
 import { randomUUID } from 'crypto'
 import type { PersistedParallaxSinkConnection } from '../../src/types/parallax'
+import type { CecWakeOn } from './cecController'
+
+/** Clock rendering on the display pages: locale default, or forced 12/24-hour. */
+export type ClockFormat = 'auto' | '12' | '24'
 
 // JSON-file replacement for the app's better-sqlite3 app-meta persistence. One file holds the
 // durable identity (endpoint UUID), user-facing settings, and the single §14.1.2 paired-host
@@ -24,8 +28,15 @@ export interface ReceiverConfig {
   /** HDMI-CEC TV control (Parallax OS TV mode): wake the TV when a stream starts playing,
    *  standby after the idle timeout. Needs /dev/cec0 + cec-ctl (v4l-utils). */
   cecControl: boolean
-  /** Minutes of not-playing before the TV is sent to standby. */
+  /** What turns the TV on: playback starting, the host connecting (which also wakes on
+   *  playback), or nothing. */
+  cecWakeOn: CecWakeOn
+  /** Claim the TV's input (CEC active source) when waking; off = power control only. */
+  cecSwitchInput: boolean
+  /** Minutes of not-playing before the TV is sent to standby; 0 = never. */
   cecStandbyMinutes: number
+  /** Clock format on the display pages. */
+  clockFormat: ClockFormat
   /** Captive-portal Wi-Fi onboarding (Parallax OS): raise an open "Parallax-Setup" hotspot when
    *  the device has no network, serve the setup portal on the web port. Needs NetworkManager
    *  plus the image's polkit + dnsmasq drop-ins. */
@@ -53,7 +64,10 @@ function defaults(): ReceiverConfig {
     listenerPort: 38404,
     webPort: DEFAULT_WEB_PORT,
     cecControl: false,
+    cecWakeOn: 'play',
+    cecSwitchInput: true,
     cecStandbyMinutes: 10,
+    clockFormat: 'auto',
     apSetup: false,
     connection: null
   }
@@ -132,10 +146,18 @@ export class ConfigStore {
       listenerPort: sanitizePort(record.listenerPort, base.listenerPort),
       webPort: sanitizePort(record.webPort, base.webPort),
       cecControl: record.cecControl === true,
+      cecWakeOn: record.cecWakeOn === 'play' || record.cecWakeOn === 'connect' || record.cecWakeOn === 'off'
+        ? record.cecWakeOn
+        : base.cecWakeOn,
+      // Default true — only an explicit false opts out of input switching.
+      cecSwitchInput: record.cecSwitchInput !== false,
       cecStandbyMinutes: Number.isInteger(record.cecStandbyMinutes as number)
-        && Number(record.cecStandbyMinutes) >= 1 && Number(record.cecStandbyMinutes) <= 720
+        && Number(record.cecStandbyMinutes) >= 0 && Number(record.cecStandbyMinutes) <= 720
         ? Number(record.cecStandbyMinutes)
         : base.cecStandbyMinutes,
+      clockFormat: record.clockFormat === '12' || record.clockFormat === '24'
+        ? record.clockFormat
+        : base.clockFormat,
       apSetup: record.apSetup === true,
       connection: sanitizeConnection(record.connection)
     }

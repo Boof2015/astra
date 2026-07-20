@@ -1,6 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import type { AddressInfo } from 'net'
 import type { AlsaDeviceOption } from './output/alsaDevices'
+import type { CecWakeOn } from './cecController'
+import type { ClockFormat } from './config'
 import type { WifiNetwork } from './networkSetup'
 import type { SinkSessionDiagnostics } from './sinkSession'
 
@@ -33,6 +35,17 @@ export interface WebStatusState {
   // The daemon's IANA timezone (system tz at process start); clock pages render with it so a
   // remote browser — or a kiosk started before a tz change — still shows the speaker's time.
   timezone: string
+  clockFormat: ClockFormat
+  // Installed release tag ('v0.3.0') or 'dev' when running from source.
+  version: string
+  // TV control settings; the card is offered only when a CEC adapter exists (`available`).
+  cec: {
+    available: boolean
+    control: boolean
+    wakeOn: CecWakeOn
+    switchInput: boolean
+    standbyMinutes: number
+  }
   // Active stream's artwork identity (its streamId) when the sink has bytes cached; the display
   // page uses it as an <img> cache-buster and only swaps the image when it changes.
   artworkId: string | null
@@ -91,6 +104,18 @@ export interface WebStatusCallbacks {
   // restarts the daemon so every clock picks up the new zone.
   getTimezones: () => Promise<string[]>
   setTimezone: (timezone: string) => Promise<boolean>
+  // TV-control settings, applied live (values are validated in the route — no restart).
+  setCecSettings: (settings: {
+    control: boolean
+    wakeOn: CecWakeOn
+    switchInput: boolean
+    standbyMinutes: number
+  }) => void
+  setClockFormat: (format: ClockFormat) => void
+  // 'restart' exits cleanly (systemd's Restart=always brings it back); 'reboot' and 'update'
+  // shell out via systemd and fail without the image's polkit grants — `error` carries the
+  // user-facing explanation.
+  systemAction: (action: 'restart' | 'reboot' | 'update') => Promise<{ ok: boolean; error?: string }>
   forgetHost: () => Promise<void>
 }
 
@@ -126,6 +151,8 @@ const PAGE_HTML = `<!doctype html>
   select { background: #101014; color: #e8e8ee; border: 1px solid #3a3a46; border-radius: 8px;
            padding: 0.4rem 0.6rem; flex: 1; min-width: 0; }
   .ok { color: #7fd88f; } .bad { color: #f2b8b8; }
+  label.check { display: flex; gap: 0.55rem; align-items: center; font-size: 0.9rem;
+                padding: 0.3rem 0; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -168,11 +195,55 @@ const PAGE_HTML = `<!doctype html>
       </div>
       <div class="muted" id="tz-hint" style="margin-top:0.35rem"></div>
     </div>
+    <div class="row" style="margin-top:0.8rem"><span class="k">Clock format</span></div>
+    <div style="display:flex; gap:0.6rem">
+      <select id="clock-select">
+        <option value="auto">Automatic</option>
+        <option value="12">12-hour</option>
+        <option value="24">24-hour</option>
+      </select>
+    </div>
     <div class="row" style="margin-top:0.8rem"><span class="k">Volume</span><span id="vol-label"></span></div>
     <input type="range" id="vol" min="0" max="100" step="1" onchange="saveVolume(this.value)">
     <div class="actions" id="forget-actions" style="display:none">
       <button class="danger" onclick="if(confirm('Forget the paired host?')) act('forget')">Forget host</button>
     </div>
+  </div>
+  <div class="card" id="cec-card" style="display:none">
+    <div class="row"><span class="k">TV control (HDMI-CEC)</span></div>
+    <label class="check"><input type="checkbox" id="cec-on"> Control the TV over HDMI-CEC</label>
+    <div class="row" style="margin-top:0.5rem"><span class="k">Turn the TV on</span></div>
+    <div style="display:flex; gap:0.6rem">
+      <select id="cec-wake">
+        <option value="play">When music starts playing</option>
+        <option value="connect">When the host connects</option>
+        <option value="off">Never</option>
+      </select>
+    </div>
+    <label class="check" style="margin-top:0.4rem"><input type="checkbox" id="cec-input"> Switch the TV to this input when turning on</label>
+    <div class="row" style="margin-top:0.5rem"><span class="k">Turn the TV off after idle</span></div>
+    <div style="display:flex; gap:0.6rem">
+      <select id="cec-standby">
+        <option value="5">5 minutes</option>
+        <option value="10">10 minutes</option>
+        <option value="20">20 minutes</option>
+        <option value="30">30 minutes</option>
+        <option value="60">1 hour</option>
+        <option value="120">2 hours</option>
+        <option value="0">Never</option>
+      </select>
+      <button onclick="applyCec()">Apply</button>
+    </div>
+    <div class="muted" id="cec-hint" style="margin-top:0.35rem"></div>
+  </div>
+  <div class="card">
+    <div class="row"><span class="k">Version</span><span id="s-ver"></span></div>
+    <div class="actions" style="justify-content:flex-start; flex-wrap:wrap">
+      <button onclick="systemAct('update')">Check for updates</button>
+      <button onclick="systemAct('restart')">Restart receiver</button>
+      <button class="danger" onclick="if(confirm('Reboot the speaker?')) systemAct('reboot')">Reboot device</button>
+    </div>
+    <div class="muted" id="sys-hint" style="margin-top:0.35rem"></div>
   </div>
   <div class="card" id="diag-card" style="display:none">
     <div class="row"><span class="k">Sync diagnostics</span><span class="muted">1 Hz</span></div>
@@ -287,6 +358,74 @@ function refreshOutput(s) {
     ? 'Configured output unavailable — using ' + s.outputDevice
     : ''
 }
+let cecDirty = false
+for (const id of ['cec-on', 'cec-wake', 'cec-input', 'cec-standby']) {
+  document.getElementById(id).addEventListener('input', () => { cecDirty = true })
+}
+async function applyCec() {
+  const res = await fetch('/api/cec', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      control: document.getElementById('cec-on').checked,
+      wakeOn: document.getElementById('cec-wake').value,
+      switchInput: document.getElementById('cec-input').checked,
+      standbyMinutes: Number(document.getElementById('cec-standby').value)
+    }) })
+  cecDirty = false
+  document.getElementById('cec-hint').textContent = res.ok
+    ? 'TV settings saved ✓' : 'Could not save the TV settings.'
+}
+function refreshCec(s) {
+  const card = document.getElementById('cec-card')
+  if (!s.cec || !s.cec.available) { card.style.display = 'none'; return }
+  card.style.display = ''
+  if (cecDirty) return
+  const focus = document.activeElement
+  const on = document.getElementById('cec-on')
+  if (focus !== on) on.checked = s.cec.control
+  const wake = document.getElementById('cec-wake')
+  if (focus !== wake) wake.value = s.cec.wakeOn
+  const input = document.getElementById('cec-input')
+  if (focus !== input) input.checked = s.cec.switchInput
+  const standby = document.getElementById('cec-standby')
+  if (focus !== standby) {
+    const wanted = String(s.cec.standbyMinutes)
+    // A hand-edited config can hold a duration the preset list lacks — offer it rather than
+    // silently displaying the wrong value.
+    if (!Array.prototype.some.call(standby.options, (o) => o.value === wanted)) {
+      const el = document.createElement('option')
+      el.value = wanted
+      el.textContent = wanted + ' minutes'
+      standby.appendChild(el)
+    }
+    standby.value = wanted
+  }
+}
+let clockDirty = false
+document.getElementById('clock-select').addEventListener('change', async (e) => {
+  clockDirty = true
+  await fetch('/api/clock-format', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ format: e.target.value }) })
+  clockDirty = false
+})
+async function systemAct(action) {
+  const hint = document.getElementById('sys-hint')
+  hint.textContent = action === 'update' ? 'Checking for updates…'
+    : action === 'restart' ? 'Restarting the receiver…' : 'Rebooting…'
+  try {
+    const res = await fetch('/api/system', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }) })
+    const payload = await res.json().catch(() => ({}))
+    if (!res.ok) { hint.textContent = payload.error || 'Failed.'; return }
+    hint.textContent = action === 'update'
+      ? 'Checking — if an update is found, the receiver restarts itself within a minute or two.'
+      : action === 'restart' ? 'Restarting — back in ~15 seconds.'
+      : 'Rebooting — back in about a minute.'
+  } catch {
+    // A dead fetch right after a reboot request is the reboot working; anything else self-heals
+    // through the 1 Hz polling.
+    if (action === 'update') hint.textContent = 'Could not reach the receiver.'
+  }
+}
 async function refresh() {
   try {
     const s = await (await fetch('/api/status')).json()
@@ -328,6 +467,10 @@ async function refresh() {
       tzPending = null
       document.getElementById('tz-hint').textContent = 'Timezone updated ✓'
     }
+    refreshCec(s)
+    const clockSelect = document.getElementById('clock-select')
+    if (!clockDirty && document.activeElement !== clockSelect) clockSelect.value = s.clockFormat
+    document.getElementById('s-ver').textContent = s.version
     const vol = document.getElementById('vol')
     if (document.activeElement !== vol) vol.value = s.volumePercent
     document.getElementById('vol-label').textContent = s.volumePercent + '%'
@@ -487,8 +630,12 @@ function fmt(totalSeconds) {
 }
 // Clocks render in the SPEAKER's timezone (from status), not the viewing browser's — and a
 // kiosk browser started before a tz change still shows the new zone without a restart.
-function fmtClockTime(now, tz) {
+function fmtClockTime(now, tz, fmt) {
   const base = { hour: 'numeric', minute: '2-digit' }
+  // hourCycle (not hour12): hour12:false picks h23 OR h24 by locale, and 24:00 on a wall
+  // clock looks broken. 'auto' leaves the locale's own preference.
+  if (fmt === '12') base.hourCycle = 'h12'
+  else if (fmt === '24') base.hourCycle = 'h23'
   try {
     return now.toLocaleTimeString([], tz ? Object.assign({ timeZone: tz }, base) : base)
   } catch { return now.toLocaleTimeString([], base) }
@@ -597,7 +744,7 @@ function render() {
     // constellation instead of a dead black screen.
     document.getElementById('idle').classList.remove('hidden')
     starsSetRunning(true)
-    document.getElementById('idle-clock').textContent = fmtClockTime(now, null)
+    document.getElementById('idle-clock').textContent = fmtClockTime(now, null, null)
     document.getElementById('idle-date').textContent = fmtClockDate(now, null)
     return
   }
@@ -614,7 +761,7 @@ function render() {
   document.getElementById('scrim').style.display = showStage ? '' : 'none'
   document.getElementById('backdrop').style.opacity = showStage && shownArtworkId ? '1' : '0'
   const zone = s.assignedSinkName || s.sinkName
-  const clockText = fmtClockTime(now, s.timezone)
+  const clockText = fmtClockTime(now, s.timezone, s.clockFormat)
   if (showStage) {
     document.getElementById('title').textContent = s.streamTitle
     document.getElementById('subtitle').textContent = (s.streamArtist || '')
@@ -1064,6 +1211,54 @@ export class WebStatusServer {
         return
       }
       toJsonResponse(res, 200, { ok: true, restarting: true })
+      return
+    }
+    if (method === 'POST' && path === '/api/cec') {
+      const body = await readJsonBody(req).catch(() => null)
+      const record = (body ?? {}) as {
+        control?: unknown
+        wakeOn?: unknown
+        switchInput?: unknown
+        standbyMinutes?: unknown
+      }
+      const wakeOn = record.wakeOn
+      const standbyMinutes = Number(record.standbyMinutes)
+      if (
+        (wakeOn !== 'play' && wakeOn !== 'connect' && wakeOn !== 'off')
+        || !Number.isInteger(standbyMinutes) || standbyMinutes < 0 || standbyMinutes > 720
+      ) {
+        toJsonResponse(res, 400, { error: 'invalid TV control settings.' })
+        return
+      }
+      this.callbacks.setCecSettings({
+        control: record.control === true,
+        wakeOn,
+        switchInput: record.switchInput === true,
+        standbyMinutes
+      })
+      toJsonResponse(res, 200, { ok: true })
+      return
+    }
+    if (method === 'POST' && path === '/api/clock-format') {
+      const body = await readJsonBody(req).catch(() => null)
+      const format = (body as { format?: unknown } | null)?.format
+      if (format !== 'auto' && format !== '12' && format !== '24') {
+        toJsonResponse(res, 400, { error: 'invalid clock format.' })
+        return
+      }
+      this.callbacks.setClockFormat(format)
+      toJsonResponse(res, 200, { ok: true })
+      return
+    }
+    if (method === 'POST' && path === '/api/system') {
+      const body = await readJsonBody(req).catch(() => null)
+      const action = (body as { action?: unknown } | null)?.action
+      if (action !== 'restart' && action !== 'reboot' && action !== 'update') {
+        toJsonResponse(res, 400, { error: 'invalid action.' })
+        return
+      }
+      const result = await this.callbacks.systemAction(action)
+      toJsonResponse(res, result.ok ? 200 : 500, result)
       return
     }
     if (method === 'POST' && path === '/api/forget') {
