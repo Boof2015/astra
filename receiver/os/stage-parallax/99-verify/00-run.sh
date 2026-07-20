@@ -105,10 +105,14 @@ set -e
 dpkg -s avahi-daemon unattended-upgrades nodejs alsa-utils >/dev/null
 CHROOT
 
+check "TV-remote passthrough: keymap installed and registered"
+[ -f "${ROOTFS_DIR}/etc/rc_keymaps/parallax_cec.toml" ]
+grep -q 'rc-cec parallax_cec.toml' "${ROOTFS_DIR}/etc/rc_maps.cfg"
+
 check "TV mode: kiosk packages, units, detect enabled, CEC group"
 on_chroot << 'CHROOT'
 set -e
-dpkg -s cage cog v4l-utils >/dev/null
+dpkg -s cage cog v4l-utils ir-keytable >/dev/null
 id -u parallax-kiosk >/dev/null
 id -nG astra-receiver | grep -qw video
 CHROOT

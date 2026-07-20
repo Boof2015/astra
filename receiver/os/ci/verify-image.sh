@@ -80,6 +80,8 @@ if [ -f "$MOUNT_DIR/var/lib/NetworkManager/NetworkManager.state" ]; then
     && fail "Wi-Fi is administratively disabled — WPA_COUNTRY missing from the pi-gen config"
 fi
 [ -f "$MOUNT_DIR/usr/share/icons/parallax-blank/cursors/left_ptr" ] || fail "blank cursor theme missing"
+[ -f "$MOUNT_DIR/etc/rc_keymaps/parallax_cec.toml" ] || fail "CEC remote keymap missing"
+grep -q 'rc-cec parallax_cec.toml' "$MOUNT_DIR/etc/rc_maps.cfg" || fail "rc_maps.cfg lacks the CEC keymap entry"
 
 check "TV mode: kiosk detect enabled, kiosk unit present but not enabled"
 [ -L "$MOUNT_DIR/etc/systemd/system/multi-user.target.wants/parallax-kiosk-detect.service" ] \

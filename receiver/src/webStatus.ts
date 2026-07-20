@@ -602,6 +602,78 @@ const DISPLAY_HTML = `<!doctype html>
   #controls button:focus { outline: none; border-color: #fff;
                            background: rgba(255,255,255,0.18); }
   #controls svg { width: 45%; height: 45%; }
+
+  /* ── Settings sheet: the web UI's settings, 10-foot sized, driven by the same /api routes.
+     Same inactivity rule as the transport overlay, just with a longer (30 s) leash. ── */
+  #sheet { position: fixed; top: 0; right: 0; bottom: 0; width: 52vmin; box-sizing: border-box;
+           background: rgba(12,12,17,0.94); padding: 4vmin 3vmin 3vmin; z-index: 8;
+           transform: translateX(105%); transition: transform 0.3s ease;
+           display: flex; flex-direction: column; }
+  #sheet.open { transform: none; }
+  #sheet h2 { font-size: 2vmin; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase;
+              color: #9a9aa8; margin: 0 1.4vmin 1.6vmin; }
+  #sheet-rows { flex: 1; overflow-y: auto; min-height: 0; }
+  .srow { display: flex; justify-content: space-between; align-items: center; gap: 2vmin;
+          width: 100%; box-sizing: border-box; padding: 1.5vmin 1.4vmin; border-radius: 1vmin;
+          border: 0.28vmin solid transparent; background: none; color: #f2f2f6;
+          font-size: 2.2vmin; text-align: left; font-family: inherit; }
+  .srow:focus { outline: none; border-color: #fff; background: rgba(255,255,255,0.12); }
+  .srow .sv { color: #9a9aa8; text-align: right; overflow: hidden; text-overflow: ellipsis;
+              white-space: nowrap; max-width: 55%; }
+  .srow.confirm { border-color: #a33; }
+  .srow.confirm .sv { color: #f2b8b8; }
+  .sinfo { display: flex; justify-content: space-between; gap: 2vmin; padding: 0.7vmin 1.4vmin;
+           font-size: 1.9vmin; color: #8b8b98; }
+  .sinfo .sv { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
+  .shead { font-size: 1.7vmin; color: #6f6f7c; letter-spacing: 0.2em; text-transform: uppercase;
+           margin: 2.4vmin 1.4vmin 0.7vmin; }
+  #sheet-hint { min-height: 2.6vmin; font-size: 1.9vmin; color: #9a9aa8; margin: 1.4vmin 1.4vmin 0; }
+
+  /* ── Picker overlay: one tall focusable list (audio output, timezone) ── */
+  #list-overlay { position: fixed; inset: 0; z-index: 9; background: rgba(0,0,0,0.9);
+                  display: none; flex-direction: column; align-items: center;
+                  padding: 6vmin 0 5vmin; box-sizing: border-box; }
+  #list-overlay.open { display: flex; }
+  #list-title { font-size: 2.2vmin; letter-spacing: 0.2em; text-transform: uppercase;
+                color: #9a9aa8; margin-bottom: 2.5vmin; }
+  #list-items { flex: 1; min-height: 0; overflow-y: auto; width: 64vmin; }
+  .litem { display: block; width: 100%; box-sizing: border-box; padding: 1.3vmin 2.2vmin;
+           border-radius: 1vmin; border: 0.28vmin solid transparent; background: none;
+           color: #f2f2f6; font-size: 2.3vmin; text-align: left; font-family: inherit; }
+  .litem:focus { outline: none; border-color: #fff; background: rgba(255,255,255,0.12); }
+  .litem.current { color: #fff; font-weight: 700; }
+
+  /* ── On-screen keyboard for the name field (a TV has no other way to type) ── */
+  #osk { position: fixed; inset: 0; z-index: 10; background: rgba(0,0,0,0.92); display: none;
+         flex-direction: column; align-items: center; justify-content: center; gap: 2.4vmin; }
+  #osk.open { display: flex; }
+  #osk-value { font-size: 4vmin; min-height: 5.2vmin; border-bottom: 0.3vmin solid #4a4a56;
+               padding: 0 2vmin; letter-spacing: 0.06em; }
+  .osk-row { display: flex; gap: 1vmin; }
+  .osk-key { min-width: 6vmin; height: 6vmin; padding: 0 1.6vmin; box-sizing: border-box;
+             font-size: 2.5vmin; background: rgba(255,255,255,0.08); border-radius: 1vmin;
+             border: 0.28vmin solid transparent; color: #f2f2f6; font-family: inherit;
+             display: flex; align-items: center; justify-content: center; }
+  .osk-key:focus { outline: none; border-color: #fff; background: rgba(255,255,255,0.22); }
+
+  /* ── Pairing: PIN + approve directly on the TV — a touch/remote node never needs the web
+     page. Sits above every other layer. ── */
+  #pair-modal { position: fixed; inset: 0; z-index: 11; background: rgba(0,0,0,0.94);
+                display: none; flex-direction: column; align-items: center; justify-content: center;
+                gap: 2.4vmin; text-align: center; }
+  #pair-modal.open { display: flex; }
+  #pair-modal-host { font-size: 2.6vmin; color: #c9c9d4; }
+  #pair-modal-pin { font-size: 13vmin; font-weight: 700; letter-spacing: 0.3em;
+                    font-variant-numeric: tabular-nums; line-height: 1; }
+  #pair-modal-hint { font-size: 2.2vmin; color: #8b8b98; }
+  #pair-actions-tv { display: none; gap: 3vmin; margin-top: 2vmin; }
+  #pair-actions-tv button { font-size: 2.6vmin; padding: 1.6vmin 4vmin; border-radius: 6vmin;
+                            border: 0.3vmin solid rgba(255,255,255,0.35); font-family: inherit;
+                            background: rgba(10,10,14,0.55); color: #f2f2f6; }
+  #pair-actions-tv button:focus { outline: none; border-color: #fff;
+                                  background: rgba(255,255,255,0.18); }
+  #pair-approve.primary { background: #4a6cf7; border-color: #4a6cf7; }
+  #pair-approve.primary:focus { background: #6a86f9; border-color: #fff; }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -636,6 +708,31 @@ const DISPLAY_HTML = `<!doctype html>
   <button id="ctl-next" aria-label="Next track">
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.6 5H18v14h-2.4zM4 5v14l10.4-7z"/></svg>
   </button>
+  <button id="ctl-settings" aria-label="Settings">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.4 13c.04-.32.07-.65.07-1s-.03-.68-.07-1l2.1-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.6-.22l-2.49 1a7.3 7.3 0 0 0-1.73-1l-.38-2.65A.5.5 0 0 0 13.93 2h-4a.5.5 0 0 0-.5.42l-.37 2.65c-.63.26-1.2.6-1.74 1l-2.48-1a.5.5 0 0 0-.61.22l-2 3.46a.5.5 0 0 0 .12.64L4.55 11c-.05.32-.08.65-.08 1s.03.68.08 1l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46c.13.22.39.31.61.22l2.48-1c.54.42 1.12.76 1.74 1l.37 2.65a.5.5 0 0 0 .5.42h4a.5.5 0 0 0 .49-.42l.38-2.65c.63-.26 1.2-.6 1.73-1l2.49 1c.22.09.48 0 .6-.22l2-3.46a.5.5 0 0 0-.12-.64zM11.93 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/></svg>
+  </button>
+</div>
+<div id="sheet">
+  <h2>Settings</h2>
+  <div id="sheet-rows"></div>
+  <div id="sheet-hint"></div>
+</div>
+<div id="list-overlay">
+  <div id="list-title"></div>
+  <div id="list-items"></div>
+</div>
+<div id="osk">
+  <div id="osk-value"></div>
+  <div id="osk-rows"></div>
+</div>
+<div id="pair-modal">
+  <div id="pair-modal-host"></div>
+  <div id="pair-modal-pin"></div>
+  <div id="pair-modal-hint"></div>
+  <div id="pair-actions-tv">
+    <button id="pair-approve" class="primary">Approve</button>
+    <button id="pair-reject">Reject</button>
+  </div>
 </div>
 <div id="idle" class="hidden">
   <canvas id="constellation"></canvas>
@@ -777,73 +874,532 @@ const SETUP_QR_ROWS = ['fea9dbf8','8288da08','ba81cae8','ba28aae8','badbe2e8','8
   }
 }
 
-// ── Transport controls overlay. Visibility runs on CONTROL inactivity (pointer/touch/keys),
-// deliberately independent of the playback-idle logic: tap → controls appear, no input for a
-// few seconds → they fade back to the plain display. Hidden entirely when the host is away or
-// predates the control lane (transportSupported false).
+// ── Interactive layers, all driven by CONTROL activity (pointer/touch/keys) and deliberately
+// independent of the playback-idle logic. Stack (top wins): pairing modal > on-screen keyboard
+// > picker list > settings sheet > transport overlay. Transport fades after 8 s of control
+// inactivity, settings layers close after 30 s. Transport needs a connected host that supports
+// the control lane; the settings gear and pairing work always — a TV/touch node never needs
+// parallax.local. Keys work today with a keyboard and become the TV-remote path via the CEC RC
+// passthrough keymap (image ships arrows/Enter/Esc/media keys).
 const CONTROLS_HIDE_MS = 8000
-const CONTROL_IDS = ['ctl-prev', 'ctl-play', 'ctl-next']
+const SHEET_HIDE_MS = 30000
+const TRANSPORT_IDS = ['ctl-prev', 'ctl-play', 'ctl-next']
+const MEDIA_TOGGLE_KEYS = ['MediaPlayPause', 'MediaPlay', 'MediaPause', 'MediaStop', 'Play', 'Pause']
+const MEDIA_NEXT_KEYS = ['MediaTrackNext', 'MediaNextTrack', 'MediaFastForward']
+const MEDIA_PREV_KEYS = ['MediaTrackPrevious', 'MediaPreviousTrack', 'MediaRewind']
 let controlsHideTimer = null
+let sheetHideTimer = null
 let controlsUsable = false
+
+function isOpen(id) { return document.getElementById(id).classList.contains('open') }
+function topLayer() {
+  if (isOpen('pair-modal')) return 'pair'
+  if (isOpen('osk')) return 'osk'
+  if (isOpen('list-overlay')) return 'list'
+  if (isOpen('sheet')) return 'sheet'
+  return 'controls'
+}
 function controlsShow() {
-  if (!controlsUsable) return
   document.getElementById('controls').classList.add('visible')
   if (controlsHideTimer) clearTimeout(controlsHideTimer)
   controlsHideTimer = setTimeout(() => {
     controlsHideTimer = null
     document.getElementById('controls').classList.remove('visible')
     const active = document.activeElement
-    if (active && CONTROL_IDS.indexOf(active.id) !== -1) active.blur()
+    if (active && active.blur && document.getElementById('controls').contains(active)) active.blur()
   }, CONTROLS_HIDE_MS)
 }
 function controlsHide() {
   if (controlsHideTimer) { clearTimeout(controlsHideTimer); controlsHideTimer = null }
   document.getElementById('controls').classList.remove('visible')
 }
+function armSheetTimer() {
+  if (sheetHideTimer) clearTimeout(sheetHideTimer)
+  sheetHideTimer = setTimeout(closeAllLayers, SHEET_HIDE_MS)
+}
+function closeAllLayers() {
+  if (sheetHideTimer) { clearTimeout(sheetHideTimer); sheetHideTimer = null }
+  document.getElementById('osk').classList.remove('open')
+  document.getElementById('list-overlay').classList.remove('open')
+  document.getElementById('sheet').classList.remove('open')
+  controlsHide()
+}
+function activity() {
+  const layer = topLayer()
+  if (layer === 'controls') controlsShow()
+  else if (layer !== 'pair') armSheetTimer()
+}
 async function sendTransport(command) {
-  controlsShow()
+  if (!controlsUsable) return
+  if (topLayer() === 'controls') controlsShow()
   try {
     await fetch('/api/transport', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ command }) })
   } catch { /* daemon restarting — the poll loop recovers */ }
 }
+async function postJson(path, body) {
+  try {
+    return await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body) })
+  } catch { return null }
+}
 document.getElementById('ctl-prev').addEventListener('click', () => sendTransport('previous'))
 document.getElementById('ctl-play').addEventListener('click', () => sendTransport('toggle-play'))
 document.getElementById('ctl-next').addEventListener('click', () => sendTransport('next'))
-function moveControlFocus(delta) {
-  const index = CONTROL_IDS.indexOf(document.activeElement ? document.activeElement.id : '')
-  const next = index === -1 ? 1 : Math.max(0, Math.min(CONTROL_IDS.length - 1, index + delta))
-  document.getElementById(CONTROL_IDS[next]).focus()
+document.getElementById('ctl-settings').addEventListener('click', openSheet)
+
+function visibleControls() {
+  const buttons = []
+  for (const id of TRANSPORT_IDS.concat(['ctl-settings'])) {
+    const el = document.getElementById(id)
+    if (el.style.display !== 'none') buttons.push(el)
+  }
+  return buttons
 }
-window.addEventListener('pointerdown', controlsShow)
-window.addEventListener('pointermove', controlsShow)
-// Keys work today with a keyboard and become the TV-remote path once CEC passthrough delivers
-// d-pad presses as input events. Media keys always act; d-pad reveals, then navigates; the
-// first Enter/Space reveals, after that native button activation does the clicking.
-window.addEventListener('keydown', (e) => {
-  if (!controlsUsable) return
-  const visible = document.getElementById('controls').classList.contains('visible')
-  if (e.key === 'MediaPlayPause') { sendTransport('toggle-play'); return }
-  if (e.key === 'MediaTrackNext') { sendTransport('next'); return }
-  if (e.key === 'MediaTrackPrevious') { sendTransport('previous'); return }
-  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-    e.preventDefault()
-    controlsShow()
-    if (visible) moveControlFocus(e.key === 'ArrowRight' ? 1 : -1)
-    else document.getElementById('ctl-play').focus()
+function moveFocusIn(items, delta, fallbackIndex) {
+  if (!items.length) return
+  const index = items.indexOf(document.activeElement)
+  const next = index === -1
+    ? (fallbackIndex !== undefined ? fallbackIndex : (delta > 0 ? 0 : items.length - 1))
+    : Math.max(0, Math.min(items.length - 1, index + delta))
+  items[next].focus()
+  if (items[next].scrollIntoView) items[next].scrollIntoView({ block: 'nearest' })
+}
+
+// ── Settings sheet: 1:1 with the web page, driven by the same /api routes ──
+let tvZones = []
+function loadTvZones() {
+  fetch('/api/timezones').then((r) => r.json())
+    .then((payload) => { tvZones = payload.timezones || [] })
+    .catch(() => { /* daemon busy — retried on next sheet open */ })
+}
+loadTvZones()
+let sheetSig = ''
+let sheetEls = {}
+let armedAction = null
+let armedTimer = null
+const CEC_STANDBY_STEPS = [5, 10, 20, 30, 60, 120, 0]
+
+function wakeLabel(v) { return v === 'play' ? 'When music plays' : v === 'connect' ? 'When host connects' : 'Never' }
+function standbyLabel(v) { return v === 0 ? 'Never' : v >= 60 ? (v / 60) + ' h' : v + ' min' }
+function clockLabel(v) { return v === '12' ? '12-hour' : v === '24' ? '24-hour' : 'Automatic' }
+function sheetHint(text) { document.getElementById('sheet-hint').textContent = text }
+
+async function postCec(patch) {
+  const s = lastStatus
+  if (!s || !s.cec) return
+  const body = {
+    control: s.cec.control, wakeOn: s.cec.wakeOn,
+    switchInput: s.cec.switchInput, standbyMinutes: s.cec.standbyMinutes
+  }
+  for (const key in patch) body[key] = patch[key]
+  const res = await postJson('/api/cec', body)
+  sheetHint(res && res.ok ? 'TV settings saved' : 'Could not save.')
+}
+function toggleCecControl() { lastStatus.cec.control = !lastStatus.cec.control; postCec({ control: lastStatus.cec.control }); updateSheet() }
+function toggleCecInput() { lastStatus.cec.switchInput = !lastStatus.cec.switchInput; postCec({ switchInput: lastStatus.cec.switchInput }); updateSheet() }
+function cycleCecWake(delta) {
+  const order = ['play', 'connect', 'off']
+  const next = order[(order.indexOf(lastStatus.cec.wakeOn) + delta + order.length) % order.length]
+  lastStatus.cec.wakeOn = next
+  postCec({ wakeOn: next })
+  updateSheet()
+}
+function cycleCecStandby(delta) {
+  const index = CEC_STANDBY_STEPS.indexOf(lastStatus.cec.standbyMinutes)
+  const next = CEC_STANDBY_STEPS[((index === -1 ? 1 : index) + delta + CEC_STANDBY_STEPS.length) % CEC_STANDBY_STEPS.length]
+  lastStatus.cec.standbyMinutes = next
+  postCec({ standbyMinutes: next })
+  updateSheet()
+}
+function cycleClock(delta) {
+  const order = ['auto', '12', '24']
+  const next = order[(order.indexOf(lastStatus.clockFormat) + delta + order.length) % order.length]
+  lastStatus.clockFormat = next
+  postJson('/api/clock-format', { format: next }).then((res) => sheetHint(res && res.ok ? 'Saved' : 'Could not save.'))
+  updateSheet()
+}
+function adjustVolume(delta) {
+  const s = lastStatus
+  s.volumePercent = Math.max(0, Math.min(100, s.volumePercent + delta * 5))
+  postJson('/api/volume', { percent: s.volumePercent })
+  updateSheet()
+}
+async function systemAct(action) {
+  sheetHint(action === 'update' ? 'Checking for updates…'
+    : action === 'restart' ? 'Restarting — back in ~15 seconds…' : 'Rebooting — back in about a minute…')
+  const res = await postJson('/api/system', { action })
+  if (!res) return
+  if (!res.ok) {
+    let payload = null
+    try { payload = await res.json() } catch { /* no body */ }
+    sheetHint(payload && payload.error ? payload.error : 'Failed.')
     return
   }
-  if (e.key === 'Enter' || e.key === ' ') {
-    if (visible && document.activeElement && CONTROL_IDS.indexOf(document.activeElement.id) !== -1) {
-      controlsShow() // keep it open; the browser fires the button's click itself
+  if (action === 'update') sheetHint('Checking — the speaker restarts itself if an update is found.')
+}
+async function forgetHost() {
+  await postJson('/api/forget', {})
+  closeAllLayers()
+}
+
+function sheetSpec(s) {
+  const rows = []
+  rows.push({ head: 'Status' })
+  rows.push({ info: 'Status', value: s.statusLabel })
+  rows.push({ info: 'Host', value: s.hostName || '—' })
+  rows.push({ info: 'Output', value: s.outputDevice })
+  rows.push({ info: 'Version', value: s.version })
+  rows.push({ head: 'Speaker' })
+  rows.push({ id: 'name', label: 'Device name', value: s.assignedSinkName || s.sinkName, act: openNameOsk })
+  rows.push({ id: 'out', label: 'Audio output', value: s.configuredDevice === 'default' ? 'System default' : s.configuredDevice, act: openOutputList })
+  if (tvZones.length) rows.push({ id: 'tz', label: 'Timezone', value: s.timezone, act: openTimezoneList })
+  rows.push({ id: 'clockfmt', label: 'Clock format', value: clockLabel(s.clockFormat), act: () => cycleClock(1), adj: cycleClock })
+  rows.push({ id: 'vol', label: 'Volume', value: s.volumePercent + '%', act: () => adjustVolume(1), adj: adjustVolume })
+  if (s.cec && s.cec.available) {
+    rows.push({ head: 'TV control' })
+    rows.push({ id: 'cec', label: 'Control the TV (CEC)', value: s.cec.control ? 'On' : 'Off', act: toggleCecControl, adj: toggleCecControl })
+    rows.push({ id: 'cecwake', label: 'Turn the TV on', value: wakeLabel(s.cec.wakeOn), act: () => cycleCecWake(1), adj: cycleCecWake })
+    rows.push({ id: 'cecinput', label: 'Switch TV input', value: s.cec.switchInput ? 'On' : 'Off', act: toggleCecInput, adj: toggleCecInput })
+    rows.push({ id: 'cecstandby', label: 'TV off after idle', value: standbyLabel(s.cec.standbyMinutes), act: () => cycleCecStandby(1), adj: cycleCecStandby })
+  }
+  rows.push({ head: 'Maintenance' })
+  rows.push({ id: 'update', label: 'Check for updates', value: '', act: () => systemAct('update') })
+  rows.push({ id: 'restart', label: 'Restart receiver', value: '', confirm: true, act: () => systemAct('restart') })
+  rows.push({ id: 'reboot', label: 'Reboot device', value: '', confirm: true, act: () => systemAct('reboot') })
+  if (s.paired) rows.push({ id: 'forget', label: 'Forget host', value: '', confirm: true, act: forgetHost })
+  return rows
+}
+function buildSheet(spec) {
+  const container = document.getElementById('sheet-rows')
+  container.innerHTML = ''
+  sheetEls = {}
+  for (const row of spec) {
+    if (row.head) {
+      const el = document.createElement('div')
+      el.className = 'shead'
+      el.textContent = row.head
+      container.appendChild(el)
+      continue
+    }
+    if (row.info) {
+      const el = document.createElement('div')
+      el.className = 'sinfo'
+      el.innerHTML = '<span class="sk"></span><span class="sv"></span>'
+      el.firstChild.textContent = row.info
+      el.lastChild.textContent = row.value
+      sheetEls['info-' + row.info] = el.lastChild
+      container.appendChild(el)
+      continue
+    }
+    const btn = document.createElement('button')
+    btn.className = 'srow'
+    btn.id = 'srow-' + row.id
+    btn.innerHTML = '<span class="sk"></span><span class="sv"></span>'
+    btn.firstChild.textContent = row.label
+    btn.lastChild.textContent = row.value
+    btn.addEventListener('click', () => activateRow(sheetEls[row.id].row))
+    sheetEls[row.id] = { btn: btn, sv: btn.lastChild, row: row }
+    container.appendChild(btn)
+  }
+}
+function activateRow(row) {
+  armSheetTimer()
+  if (row.confirm && armedAction !== row.id) {
+    armedAction = row.id
+    if (armedTimer) clearTimeout(armedTimer)
+    armedTimer = setTimeout(() => { armedAction = null; updateSheet() }, 5000)
+    updateSheet()
+    return
+  }
+  if (row.confirm) {
+    armedAction = null
+    if (armedTimer) { clearTimeout(armedTimer); armedTimer = null }
+  }
+  row.act()
+}
+function updateSheet() {
+  const s = lastStatus
+  if (!s || !isOpen('sheet')) return
+  const spec = sheetSpec(s)
+  const sig = spec.map((row) => row.id || row.head || row.info).join('|')
+  if (sig !== sheetSig) {
+    sheetSig = sig
+    const focusedId = document.activeElement ? document.activeElement.id : ''
+    buildSheet(spec)
+    const again = focusedId && focusedId.indexOf('srow-') === 0 ? document.getElementById(focusedId) : null
+    if (again) again.focus()
+    else { const first = document.querySelector('#sheet-rows .srow'); if (first) first.focus() }
+    return
+  }
+  for (const row of spec) {
+    if (row.head) continue
+    if (row.info) { const el = sheetEls['info-' + row.info]; if (el) el.textContent = row.value; continue }
+    const entry = sheetEls[row.id]
+    if (!entry) continue
+    entry.row = row
+    const armed = armedAction === row.id
+    entry.btn.classList.toggle('confirm', armed)
+    entry.sv.textContent = armed ? 'Press again to confirm' : row.value
+  }
+}
+function openSheet() {
+  if (!lastStatus) return
+  if (!tvZones.length) loadTvZones()
+  controlsHide()
+  sheetSig = ''
+  sheetHint('')
+  document.getElementById('sheet').classList.add('open')
+  updateSheet()
+  armSheetTimer()
+}
+function closeSheet() {
+  document.getElementById('sheet').classList.remove('open')
+  if (sheetHideTimer) { clearTimeout(sheetHideTimer); sheetHideTimer = null }
+  controlsShow()
+}
+
+// ── Picker list overlay (audio output, timezone) ──
+let listReturnFocus = ''
+function openList(title, items, onPick) {
+  listReturnFocus = document.activeElement ? document.activeElement.id : ''
+  document.getElementById('list-title').textContent = title
+  const container = document.getElementById('list-items')
+  container.innerHTML = ''
+  let currentEl = null
+  for (const item of items) {
+    const btn = document.createElement('button')
+    btn.className = 'litem' + (item.current ? ' current' : '')
+    btn.textContent = item.label
+    btn.addEventListener('click', () => { closeList(); onPick(item.id) })
+    container.appendChild(btn)
+    if (item.current) currentEl = btn
+  }
+  document.getElementById('list-overlay').classList.add('open')
+  armSheetTimer()
+  const target = currentEl || container.firstChild
+  if (target) { target.focus(); if (target.scrollIntoView) target.scrollIntoView({ block: 'center' }) }
+}
+function closeList() {
+  document.getElementById('list-overlay').classList.remove('open')
+  const back = listReturnFocus ? document.getElementById(listReturnFocus) : null
+  if (back) back.focus()
+  armSheetTimer()
+}
+function openOutputList() {
+  const s = lastStatus
+  const items = [{ id: 'default', label: 'System default', current: s.configuredDevice === 'default' }]
+  for (const device of s.audioDevices) {
+    items.push({ id: device.id, label: device.label, current: device.id === s.configuredDevice })
+  }
+  openList('Audio output', items, (id) => {
+    sheetHint('Restarting on the new output…')
+    postJson('/api/output', { device: id })
+  })
+}
+function openTimezoneList() {
+  const s = lastStatus
+  openList('Timezone', tvZones.map((zone) => ({ id: zone, label: zone, current: zone === s.timezone })), (zone) => {
+    sheetHint('Applying — this takes ~15 seconds…')
+    postJson('/api/timezone', { timezone: zone })
+  })
+}
+
+// ── On-screen keyboard (device name — a TV has no other way to type) ──
+let oskValue = ''
+let oskUpper = true
+let oskGrid = []
+function oskRenderValue() { document.getElementById('osk-value').textContent = oskValue || ' ' }
+function oskAppend(ch) { if (oskValue.length < 80) { oskValue += ch; oskRenderValue() } }
+function buildOsk() {
+  const rowsSpec = ['1234567890', 'qwertyuiop', 'asdfghjkl', "zxcvbnm-'."]
+  const container = document.getElementById('osk-rows')
+  container.innerHTML = ''
+  oskGrid = []
+  for (const rowText of rowsSpec) {
+    const rowEl = document.createElement('div')
+    rowEl.className = 'osk-row'
+    const rowButtons = []
+    for (const raw of rowText) {
+      const ch = oskUpper ? raw.toUpperCase() : raw
+      const key = document.createElement('button')
+      key.className = 'osk-key'
+      key.textContent = ch
+      key.addEventListener('click', () => { oskAppend(ch); armSheetTimer() })
+      rowEl.appendChild(key)
+      rowButtons.push(key)
+    }
+    container.appendChild(rowEl)
+    oskGrid.push(rowButtons)
+  }
+  const special = document.createElement('div')
+  special.className = 'osk-row'
+  const specials = [
+    { label: oskUpper ? 'abc' : 'ABC', fn: rebuildOskPreserve },
+    { label: 'Space', fn: () => oskAppend(' ') },
+    { label: 'Delete', fn: () => { oskValue = oskValue.slice(0, -1); oskRenderValue() } },
+    { label: 'Cancel', fn: closeOsk },
+    { label: 'Save', fn: saveOskName }
+  ]
+  const rowButtons = []
+  for (const item of specials) {
+    const key = document.createElement('button')
+    key.className = 'osk-key'
+    key.textContent = item.label
+    key.addEventListener('click', () => { item.fn(); armSheetTimer() })
+    special.appendChild(key)
+    rowButtons.push(key)
+  }
+  container.appendChild(special)
+  oskGrid.push(rowButtons)
+}
+function oskPosition() {
+  for (let r = 0; r < oskGrid.length; r += 1) {
+    const c = oskGrid[r].indexOf(document.activeElement)
+    if (c !== -1) return { r: r, c: c }
+  }
+  return null
+}
+function oskMove(dr, dc) {
+  const position = oskPosition() || { r: 1, c: 0 }
+  const r = Math.max(0, Math.min(oskGrid.length - 1, position.r + dr))
+  let c = position.c
+  if (dr !== 0 && oskGrid[r].length !== oskGrid[position.r].length) {
+    c = Math.round(position.c * (oskGrid[r].length - 1) / Math.max(1, oskGrid[position.r].length - 1))
+  }
+  c = Math.max(0, Math.min(oskGrid[r].length - 1, c + dc))
+  oskGrid[r][c].focus()
+}
+function rebuildOskPreserve() {
+  oskUpper = !oskUpper
+  const position = oskPosition()
+  buildOsk()
+  const r = position ? position.r : 0
+  const c = position ? Math.min(position.c, oskGrid[r].length - 1) : 0
+  oskGrid[r][c].focus()
+}
+function openNameOsk() {
+  const s = lastStatus
+  oskValue = s.assignedSinkName || s.sinkName || ''
+  oskUpper = true
+  buildOsk()
+  oskRenderValue()
+  document.getElementById('osk').classList.add('open')
+  oskGrid[1][0].focus()
+  armSheetTimer()
+}
+function closeOsk() {
+  document.getElementById('osk').classList.remove('open')
+  const back = document.getElementById('srow-name')
+  if (back) back.focus()
+  armSheetTimer()
+}
+async function saveOskName() {
+  const name = oskValue.trim()
+  if (name) {
+    const res = await postJson('/api/name', { name: name })
+    sheetHint(res && res.ok ? 'Name saved' : 'Could not save the name.')
+  }
+  closeOsk()
+}
+
+// ── Pairing on the TV: PIN + approve, so a touch/remote node never needs the web page ──
+function updatePairModal(s) {
+  const modal = document.getElementById('pair-modal')
+  const pair = s ? s.incomingPair : null
+  if (!pair) {
+    modal.classList.remove('open')
+    return
+  }
+  modal.classList.add('open')
+  document.getElementById('pair-modal-host').textContent = pair.hostName + ' wants to pair'
+  document.getElementById('pair-modal-pin').textContent = pair.pin
+  document.getElementById('pair-modal-hint').textContent = pair.awaitingApproval
+    ? 'Approve to finish pairing'
+    : 'Enter this PIN in Astra to continue'
+  const actions = document.getElementById('pair-actions-tv')
+  const wasHidden = actions.style.display !== 'flex'
+  actions.style.display = pair.awaitingApproval ? 'flex' : 'none'
+  if (pair.awaitingApproval && wasHidden) document.getElementById('pair-approve').focus()
+}
+document.getElementById('pair-approve').addEventListener('click', () => postJson('/api/approve', {}))
+document.getElementById('pair-reject').addEventListener('click', () => postJson('/api/reject', {}))
+
+window.addEventListener('pointerdown', activity)
+window.addEventListener('pointermove', activity)
+window.addEventListener('keydown', (e) => {
+  const key = e.key
+  // Media keys act from every layer — they are what the TV remote's deck buttons become.
+  if (MEDIA_TOGGLE_KEYS.indexOf(key) !== -1) { e.preventDefault(); sendTransport('toggle-play'); return }
+  if (MEDIA_NEXT_KEYS.indexOf(key) !== -1) { e.preventDefault(); sendTransport('next'); return }
+  if (MEDIA_PREV_KEYS.indexOf(key) !== -1) { e.preventDefault(); sendTransport('previous'); return }
+  const layer = topLayer()
+  if (layer === 'pair') {
+    if (key === 'ArrowLeft' || key === 'ArrowRight') {
+      e.preventDefault()
+      moveFocusIn([document.getElementById('pair-approve'), document.getElementById('pair-reject')],
+        key === 'ArrowRight' ? 1 : -1, 0)
+    }
+    return // Enter = native click on the focused button
+  }
+  if (layer === 'osk') {
+    armSheetTimer()
+    if (key === 'ArrowUp') { e.preventDefault(); oskMove(-1, 0); return }
+    if (key === 'ArrowDown') { e.preventDefault(); oskMove(1, 0); return }
+    if (key === 'ArrowLeft') { e.preventDefault(); oskMove(0, -1); return }
+    if (key === 'ArrowRight') { e.preventDefault(); oskMove(0, 1); return }
+    if (key === 'Escape') { e.preventDefault(); closeOsk(); return }
+    if (key === 'Backspace') { e.preventDefault(); oskValue = oskValue.slice(0, -1); oskRenderValue(); return }
+    if (key.length === 1 && key !== ' ') { e.preventDefault(); oskAppend(key); return } // physical keyboards type directly
+    return
+  }
+  if (layer === 'list') {
+    armSheetTimer()
+    if (key === 'ArrowUp' || key === 'ArrowDown') {
+      e.preventDefault()
+      moveFocusIn(Array.prototype.slice.call(document.querySelectorAll('#list-items .litem')),
+        key === 'ArrowDown' ? 1 : -1)
       return
     }
+    if (key === 'Escape') { e.preventDefault(); closeList() }
+    return
+  }
+  if (layer === 'sheet') {
+    armSheetTimer()
+    if (key === 'ArrowUp' || key === 'ArrowDown') {
+      e.preventDefault()
+      moveFocusIn(Array.prototype.slice.call(document.querySelectorAll('#sheet-rows .srow')),
+        key === 'ArrowDown' ? 1 : -1)
+      return
+    }
+    if (key === 'ArrowLeft' || key === 'ArrowRight') {
+      const active = document.activeElement
+      const entry = active && active.id && active.id.indexOf('srow-') === 0 ? sheetEls[active.id.slice(5)] : null
+      if (entry && entry.row.adj) { e.preventDefault(); entry.row.adj(key === 'ArrowRight' ? 1 : -1) }
+      return
+    }
+    if (key === 'Escape') { e.preventDefault(); closeSheet() }
+    return // Enter/Space = native click on the focused row
+  }
+  // Bottom layer: transport overlay + gear.
+  const visible = document.getElementById('controls').classList.contains('visible')
+  if (key === 'ArrowLeft' || key === 'ArrowRight') {
+    e.preventDefault()
+    controlsShow()
+    if (visible) moveFocusIn(visibleControls(), key === 'ArrowRight' ? 1 : -1)
+    else document.getElementById(controlsUsable ? 'ctl-play' : 'ctl-settings').focus()
+    return
+  }
+  if (key === 'Enter' || key === ' ') {
+    const inControls = document.activeElement && document.getElementById('controls').contains(document.activeElement)
+    if (visible && inControls) { controlsShow(); return } // native click fires
     e.preventDefault()
     controlsShow()
     if (visible) sendTransport('toggle-play')
-    else document.getElementById('ctl-play').focus()
+    else document.getElementById(controlsUsable ? 'ctl-play' : 'ctl-settings').focus()
     return
   }
+  if (key === 'Escape') { controlsHide(); return }
   controlsShow()
 })
 
@@ -862,7 +1418,11 @@ function render() {
     return
   }
   controlsUsable = !!(s.paired && s.connected && s.transportSupported !== false)
-  if (!controlsUsable) controlsHide()
+  for (const id of TRANSPORT_IDS) {
+    document.getElementById(id).style.display = controlsUsable ? '' : 'none'
+  }
+  updatePairModal(s)
+  updateSheet()
   document.getElementById('ctl-play-icon').innerHTML = s.playbackState === 'playing'
     ? '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>'
     : '<path d="M8 5v14l11-7z"/>'

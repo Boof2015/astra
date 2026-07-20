@@ -1,0 +1,24 @@
+# TV-remote passthrough keymap. The kernel's CEC framework (CONFIG_MEDIA_CEC_RC) turns "User
+# Control Pressed" messages addressed to our registered playback device into input events on an
+# rc device — but the default rc-cec table emits RC-class keycodes (KEY_OK, KEY_PLAY, …) that
+# have no xkb keysym, so the kiosk browser would see nothing. This table remaps the handful of
+# keys the /display page uses onto ordinary keyboard codes: d-pad → arrows/Enter/Esc, deck and
+# skip keys → the media keys the page's transport handler already listens for. Loaded at rc
+# device add by ir-keytable's stock udev rule via the rc_maps.cfg entry (00-run.sh).
+[[protocols]]
+name = "parallax_cec"
+protocol = "cec"
+[protocols.scancodes]
+0x00 = "KEY_ENTER"          # Select
+0x01 = "KEY_UP"
+0x02 = "KEY_DOWN"
+0x03 = "KEY_LEFT"
+0x04 = "KEY_RIGHT"
+0x0d = "KEY_ESC"            # Exit / Back
+0x44 = "KEY_PLAYPAUSE"      # Play
+0x46 = "KEY_PLAYPAUSE"      # Pause
+0x45 = "KEY_PLAYPAUSE"      # Stop (treated as pause — the host owns real stop semantics)
+0x48 = "KEY_PREVIOUSSONG"   # Rewind
+0x49 = "KEY_NEXTSONG"       # Fast forward
+0x4b = "KEY_NEXTSONG"       # Forward (skip)
+0x4c = "KEY_PREVIOUSSONG"   # Backward (skip)

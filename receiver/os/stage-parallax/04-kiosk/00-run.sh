@@ -5,6 +5,16 @@
 
 install -D -m 0755 files/hdmi-connected.sh \
   "${ROOTFS_DIR}/usr/local/lib/parallax/hdmi-connected.sh"
+
+# TV-remote (CEC RC passthrough) keymap — see the comment in the file itself. The rc_maps.cfg
+# line makes ir-keytable's udev hook load it for any rc device whose default table is rc-cec
+# (the vc4 CEC adapters). Harmless when the kernel lacks CEC_RC: no rc device ever appears.
+install -D -m 0644 files/parallax_cec.toml \
+  "${ROOTFS_DIR}/etc/rc_keymaps/parallax_cec.toml"
+if ! grep -q 'parallax_cec' "${ROOTFS_DIR}/etc/rc_maps.cfg" 2>/dev/null; then
+  printf '\n# Parallax OS: TV-remote passthrough for the kiosk (see parallax_cec.toml).\n* rc-cec parallax_cec.toml\n' \
+    >> "${ROOTFS_DIR}/etc/rc_maps.cfg"
+fi
 install -D -m 0755 files/parallax-kiosk-launch.sh \
   "${ROOTFS_DIR}/usr/local/lib/parallax/parallax-kiosk-launch.sh"
 install -m 0644 files/parallax-kiosk.service \
