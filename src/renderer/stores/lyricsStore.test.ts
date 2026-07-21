@@ -11,6 +11,7 @@ function makeStatus(): LyricsStatus {
   return {
     enabled: true,
     provider: 'lrclib',
+    lrclibBaseUrl: 'https://lrclib.net',
     statusMessage: 'Lyrics ready.',
     lastError: null
   }
@@ -69,6 +70,7 @@ function resetLyricsStore(): void {
 type LyricsApiMock = {
   getStatus: () => Promise<LyricsStatus>
   setEnabled: () => Promise<LyricsStatus>
+  setLrclibBaseUrl: (baseUrl: string) => Promise<LyricsStatus>
   getForTrack: (query: LyricsTrackQuery) => Promise<LyricsLookupResult>
   refreshForTrack: (query: LyricsTrackQuery) => Promise<LyricsLookupResult>
   resetToDefaults: () => Promise<LyricsStatus>
@@ -79,6 +81,7 @@ function installLyricsApiMock(overrides: Partial<LyricsApiMock> = {}): void {
   const lyricsApi: LyricsApiMock = {
     getStatus: async () => makeStatus(),
     setEnabled: async () => makeStatus(),
+    setLrclibBaseUrl: async (baseUrl: string) => ({ ...makeStatus(), lrclibBaseUrl: baseUrl }),
     getForTrack: async (query: LyricsTrackQuery) => makeResult(query.path),
     refreshForTrack: async (query: LyricsTrackQuery) => makeResult(query.path),
     resetToDefaults: async () => makeStatus(),
@@ -95,6 +98,21 @@ function installLyricsApiMock(overrides: Partial<LyricsApiMock> = {}): void {
     }
   }
 }
+
+test('setLrclibBaseUrl applies the canonical endpoint returned by main', async () => {
+  installLyricsApiMock({
+    setLrclibBaseUrl: async () => ({
+      ...makeStatus(),
+      lrclibBaseUrl: 'http://lyrics.local:8080/mirror'
+    })
+  })
+  resetLyricsStore()
+
+  const status = await useLyricsStore.getState().setLrclibBaseUrl('http://lyrics.local:8080/mirror/')
+
+  assert.equal(status?.lrclibBaseUrl, 'http://lyrics.local:8080/mirror')
+  assert.equal(useLyricsStore.getState().status?.lrclibBaseUrl, 'http://lyrics.local:8080/mirror')
+})
 
 test('putLyricsResultInCache caps entries and keeps the current track result', () => {
   const currentPath = '/music/current.flac'

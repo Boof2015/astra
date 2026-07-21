@@ -32,6 +32,10 @@ import type {
   LyricsTrackOverride,
   LyricsTrackQuery,
 } from '../../types/lyrics'
+import {
+  LRCLIB_OFFICIAL_BASE_URL,
+  normalizeLrclibBaseUrl
+} from '../../types/lyrics'
 
 const MAX_TRACK_OFFSET_MS = 3_600_000
 
@@ -52,11 +56,13 @@ export interface LyricsOnlineLookupProvider {
     lookupKey: string,
     options?: { forceRefresh?: boolean }
   ) => Promise<LyricsOnlineLookupResult>
+  setBaseUrl?: (baseUrl: string) => void
 }
 
 interface LyricsServiceOptions {
   enabled: boolean
   appVersion: string
+  lrclibBaseUrl?: string
   requestTimeoutMs?: number
   now?: () => number
   onStatusChange?: (status: LyricsStatus) => void
@@ -183,6 +189,7 @@ async function resolveEmbeddedLyrics(trackPath: string): Promise<LyricsPayload |
 
 export class LyricsService {
   private enabled: boolean
+  private lrclibBaseUrl: string
   private lastError: string | null = null
   private readonly libraryApi: LyricsServiceLibraryApi
   private readonly sidecarLookup: typeof lookupSidecarLyrics
@@ -193,6 +200,7 @@ export class LyricsService {
 
   constructor(options: LyricsServiceOptions) {
     this.enabled = Boolean(options.enabled)
+    this.lrclibBaseUrl = normalizeLrclibBaseUrl(options.lrclibBaseUrl ?? LRCLIB_OFFICIAL_BASE_URL)
     this.libraryApi = options.libraryApi ?? library
     this.sidecarLookup = options.sidecarLookup ?? lookupSidecarLyrics
     this.embeddedResolver = options.embeddedResolver ?? resolveEmbeddedLyrics
@@ -202,6 +210,7 @@ export class LyricsService {
     }))
     this.lrclib = options.lrclibProvider ?? new LrclibLookupCoordinator(createLrclibClientConfig({
       appVersion: options.appVersion,
+      baseUrl: this.lrclibBaseUrl,
       requestTimeoutMs: options.requestTimeoutMs,
       now: options.now
     }))
@@ -213,6 +222,7 @@ export class LyricsService {
       return {
         enabled: false,
         provider: 'xlrcdb',
+        lrclibBaseUrl: this.lrclibBaseUrl,
         statusMessage: 'Online lyrics lookup is disabled. Astra will only use local lyrics and embedded lyrics.',
         lastError: this.lastError
       }
@@ -222,6 +232,7 @@ export class LyricsService {
       return {
         enabled: true,
         provider: 'xlrcdb',
+        lrclibBaseUrl: this.lrclibBaseUrl,
         statusMessage: 'Online lyrics lookup is enabled with XLRCDB and LRCLIB fallback, but the last request failed.',
         lastError: this.lastError
       }
@@ -230,13 +241,20 @@ export class LyricsService {
     return {
       enabled: true,
       provider: 'xlrcdb',
+      lrclibBaseUrl: this.lrclibBaseUrl,
       statusMessage: 'Online lyrics lookup is enabled with XLRCDB and LRCLIB fallback.',
       lastError: null
     }
   }
 
-  applyConfig(enabled: boolean): LyricsStatus {
+  applyConfig(enabled: boolean, lrclibBaseUrl: string = this.lrclibBaseUrl): LyricsStatus {
     this.enabled = Boolean(enabled)
+    const normalizedBaseUrl = normalizeLrclibBaseUrl(lrclibBaseUrl)
+    if (normalizedBaseUrl !== this.lrclibBaseUrl) {
+      this.lrclibBaseUrl = normalizedBaseUrl
+      this.lrclib.setBaseUrl?.(normalizedBaseUrl)
+      this.lastError = null
+    }
     if (!this.enabled) {
       this.lastError = null
     }

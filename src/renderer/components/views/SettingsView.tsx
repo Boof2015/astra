@@ -89,6 +89,7 @@ import {
   PHONE_REMOTE_MIN_PORT
 } from '../../../types/phoneRemote'
 import type { LastFmProfileStatus, LastFmScrobbleProtocol } from '../../../types/lastFm'
+import { LRCLIB_OFFICIAL_BASE_URL } from '../../../types/lyrics'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
 import type { CompanionApiScope } from '../../../types/companionApi'
 import ParallaxSettingsPanel from '../parallax/ParallaxSettingsPanel'
@@ -465,6 +466,7 @@ export default function SettingsView() {
     status: lyricsStatus,
     errorMessage: lyricsErrorMessage,
     setEnabled: setLyricsEnabled,
+    setLrclibBaseUrl: setLyricsLrclibBaseUrl,
   } = useLyricsStore()
   const lyricsDisplaySettings = useLyricsDisplaySettingsStore((state) => state.settings)
   const setLyricsWordTimingEnabled = useLyricsDisplaySettingsStore((state) => state.setWordTimingEnabled)
@@ -523,6 +525,7 @@ export default function SettingsView() {
   const [lyricsTranslationPriorityInput, setLyricsTranslationPriorityInput] = useState(() => (
     lyricsDisplaySettings.translationLanguagePriority.join(', ')
   ))
+  const [lyricsLrclibBaseUrlInput, setLyricsLrclibBaseUrlInput] = useState(LRCLIB_OFFICIAL_BASE_URL)
   const [showBitPerfectWarning, setShowBitPerfectWarning] = useState(false)
   const [dontShowBitPerfectWarningAgain, setDontShowBitPerfectWarningAgain] = useState(false)
   const [bitPerfectWarningDismissed, setBitPerfectWarningDismissed] = useState(() => {
@@ -713,6 +716,11 @@ export default function SettingsView() {
   useEffect(() => {
     setLyricsTranslationPriorityInput(lyricsDisplaySettings.translationLanguagePriority.join(', '))
   }, [lyricsDisplaySettings.translationLanguagePriority])
+
+  useEffect(() => {
+    if (!lyricsStatus?.lrclibBaseUrl) return
+    setLyricsLrclibBaseUrlInput(lyricsStatus.lrclibBaseUrl)
+  }, [lyricsStatus?.lrclibBaseUrl])
 
   useEffect(() => {
     if (!showBitPerfectWarning) {
@@ -2301,6 +2309,26 @@ export default function SettingsView() {
                       {lyricsEnabled ? 'Enabled' : 'Disabled'}
                     </button>
                   </div>
+                  <label className="settings-field">
+                    <span className="settings-field-label">LRCLIB Base URL</span>
+                    <input
+                      className="settings-select"
+                      type="url"
+                      value={lyricsLrclibBaseUrlInput}
+                      onChange={(event) => setLyricsLrclibBaseUrlInput(event.target.value)}
+                      onBlur={() => {
+                        if (lyricsLrclibBaseUrlInput.trim() === lyricsStatus?.lrclibBaseUrl) return
+                        void setLyricsLrclibBaseUrl(lyricsLrclibBaseUrlInput).then((status) => {
+                          if (status) setLyricsLrclibBaseUrlInput(status.lrclibBaseUrl)
+                        })
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') event.currentTarget.blur()
+                      }}
+                      placeholder={LRCLIB_OFFICIAL_BASE_URL}
+                      spellCheck={false}
+                    />
+                  </label>
                   <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">XLRC Word Timing</span>
                     <button
@@ -2355,6 +2383,7 @@ export default function SettingsView() {
                   </label>
                 </div>
                 <p className="settings-note">{lyricsStatusLabel}</p>
+                <p className="settings-note">Astra appends <code>/api/get</code> and <code>/api/search</code>. HTTP is supported for local mirrors.</p>
                 <p className="settings-note">XLRC translation codes are matched left to right, with the first available translation shown.</p>
                 {lyricsResolvedError && <p className="settings-note settings-note-error">{lyricsResolvedError}</p>}
               </div>

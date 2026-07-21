@@ -2416,3 +2416,45 @@ test('addLibraryFolder rejects a case-variant of an existing root when folding',
   assert.equal(await library.addLibraryFolder(join(userDataDir, 'Music')), null)
   assert.equal(library.getLibraryFolders().length, 1)
 })
+
+test('clearLyricsCacheMisses preserves cached lyric hits', async (t) => {
+  await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({
+    name: 'Lyrics Cache Source',
+    base_url: 'https://music.example.test',
+    username: 'tester',
+    secret_encrypted: 'secret',
+    enabled: 1,
+    last_status: 'ok'
+  })
+  await library.upsertSubsonicTracks(source.id, [
+    createRemoteTrack({ path: 'subsonic://lyrics/hit', title: 'Hit', artist: 'Artist', album: 'Album' }),
+    createRemoteTrack({ path: 'subsonic://lyrics/miss', title: 'Miss', artist: 'Artist', album: 'Album' })
+  ])
+
+  await library.upsertLyricsCache({
+    trackPath: 'subsonic://lyrics/hit',
+    metadataSignature: 'hit-signature',
+    status: 'hit',
+    source: 'lrclib',
+    provider: 'lrclib',
+    plainLyrics: 'Cached lyrics',
+    syncedLyrics: null,
+    syncedLines: []
+  })
+  await library.upsertLyricsCache({
+    trackPath: 'subsonic://lyrics/miss',
+    metadataSignature: 'miss-signature',
+    status: 'not_found',
+    source: 'xlrcdb',
+    provider: 'xlrcdb',
+    plainLyrics: null,
+    syncedLyrics: null,
+    syncedLines: []
+  })
+
+  await library.clearLyricsCacheMisses()
+
+  assert.equal(library.getLyricsCache('subsonic://lyrics/hit', 'hit-signature')?.status, 'hit')
+  assert.equal(library.getLyricsCache('subsonic://lyrics/miss', 'miss-signature'), null)
+})

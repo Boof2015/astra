@@ -1104,6 +1104,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   lyrics: {
     getStatus: (): Promise<LyricsStatus> => ipcRenderer.invoke('lyrics:getStatus'),
     setEnabled: (enabled: boolean): Promise<LyricsStatus> => ipcRenderer.invoke('lyrics:setEnabled', enabled),
+    setLrclibBaseUrl: (baseUrl: string): Promise<LyricsStatus> =>
+      ipcRenderer.invoke('lyrics:setLrclibBaseUrl', baseUrl),
     getForTrack: (query: LyricsTrackQuery): Promise<LyricsLookupResult> => ipcRenderer.invoke('lyrics:getForTrack', query),
     refreshForTrack: (query: LyricsTrackQuery): Promise<LyricsLookupResult> =>
       ipcRenderer.invoke('lyrics:refreshForTrack', query),
@@ -1736,6 +1738,7 @@ declare global {
       lyrics: {
         getStatus: () => Promise<LyricsStatus>
         setEnabled: (enabled: boolean) => Promise<LyricsStatus>
+        setLrclibBaseUrl: (baseUrl: string) => Promise<LyricsStatus>
         getForTrack: (query: LyricsTrackQuery) => Promise<LyricsLookupResult>
         refreshForTrack: (query: LyricsTrackQuery) => Promise<LyricsLookupResult>
         getTrackOverride: (trackPath: string) => Promise<LyricsTrackOverride>

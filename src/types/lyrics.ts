@@ -3,6 +3,31 @@ export type LyricsSource = 'embedded' | 'lrclib' | 'manual' | 'lrc' | 'xlrc' | '
 export type LyricsFormat = 'plain' | 'lrc' | 'xlrc'
 export type LyricsLookupStatus = 'hit' | 'not_found' | 'transient_error'
 
+export const LRCLIB_OFFICIAL_BASE_URL = 'https://lrclib.net'
+
+export function parseLrclibBaseUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+
+  try {
+    const parsed = new URL(trimmed)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
+    if (!parsed.hostname || parsed.username || parsed.password) return null
+
+    parsed.search = ''
+    parsed.hash = ''
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/'
+    return parsed.toString().replace(/\/$/, '')
+  } catch {
+    return null
+  }
+}
+
+export function normalizeLrclibBaseUrl(value: unknown): string {
+  return parseLrclibBaseUrl(value) ?? LRCLIB_OFFICIAL_BASE_URL
+}
+
 export interface LyricsFurigana {
   start: number
   end: number
@@ -56,6 +81,7 @@ export type LyricsLookupResult =
 export interface LyricsStatus {
   enabled: boolean
   provider: LyricsProvider
+  lrclibBaseUrl: string
   statusMessage: string
   lastError: string | null
 }

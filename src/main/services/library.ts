@@ -4036,6 +4036,12 @@ export async function clearLyricsCache(): Promise<void> {
   await saveDatabase()
 }
 
+export async function clearLyricsCacheMisses(): Promise<void> {
+  if (!db) return
+  db.run("DELETE FROM lyrics_cache WHERE status = 'not_found'")
+  await saveDatabase()
+}
+
 export interface TrackLoudnessEntry {
   trackPath: string
   loudnessLufs: number

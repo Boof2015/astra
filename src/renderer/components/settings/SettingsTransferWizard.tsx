@@ -213,6 +213,7 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
       const file = createSettingsTransferFile(selectedVisibleCategoryIds, {
         appVersion,
         lyricsOnlineEnabled: lyricsStatus?.enabled ?? false,
+        lyricsLrclibBaseUrl: lyricsStatus?.lrclibBaseUrl,
       })
       const today = new Date().toISOString().slice(0, 10)
       const filePath = await window.electronAPI.showSaveDialog({
@@ -246,6 +247,9 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
     const result = await applySettingsTransferFile(importFile.file, selectedVisibleCategoryIds, {
       setLyricsOnlineEnabled: async (enabled) => {
         await window.electronAPI.lyrics.setEnabled(enabled)
+      },
+      setLyricsLrclibBaseUrl: async (baseUrl) => {
+        await window.electronAPI.lyrics.setLrclibBaseUrl(baseUrl)
       },
     })
 

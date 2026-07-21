@@ -466,6 +466,7 @@ declare global {
             lyrics: {
                 getStatus: () => Promise<LyricsStatus>
                 setEnabled: (enabled: boolean) => Promise<LyricsStatus>
+                setLrclibBaseUrl: (baseUrl: string) => Promise<LyricsStatus>
                 getForTrack: (query: LyricsTrackQuery) => Promise<LyricsLookupResult>
                 refreshForTrack: (query: LyricsTrackQuery) => Promise<LyricsLookupResult>
                 getTrackOverride: (trackPath: string) => Promise<LyricsTrackOverride>

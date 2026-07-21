@@ -63,6 +63,7 @@ import {
   WAVEFORM_MULTIBAND_STORAGE_KEY,
   WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY,
 } from '../constants/settingsStorageKeys'
+import { LRCLIB_OFFICIAL_BASE_URL } from '../../types/lyrics'
 
 export const SETTINGS_TRANSFER_KIND = 'astra-settings-transfer'
 export const SETTINGS_TRANSFER_SCHEMA_VERSION = 1
@@ -119,11 +120,13 @@ export interface CreateSettingsTransferOptions {
   appVersion?: string | null
   exportedAt?: string
   lyricsOnlineEnabled?: boolean
+  lyricsLrclibBaseUrl?: string
 }
 
 export interface ApplySettingsTransferOptions {
   storage?: SettingsTransferStorage
   setLyricsOnlineEnabled?: (enabled: boolean) => Promise<void> | void
+  setLyricsLrclibBaseUrl?: (baseUrl: string) => Promise<void> | void
 }
 
 const SETTINGS_TRANSFER_CATEGORY_DEFINITIONS_INTERNAL: SettingsTransferCategoryDefinition[] = [
@@ -337,6 +340,9 @@ function buildCategoryPayload(
   if (categoryId === 'non_secret_integrations') {
     payload.values = {
       lyricsOnlineEnabled: Boolean(options.lyricsOnlineEnabled),
+      lyricsLrclibBaseUrl: typeof options.lyricsLrclibBaseUrl === 'string'
+        ? options.lyricsLrclibBaseUrl
+        : LRCLIB_OFFICIAL_BASE_URL,
     }
   }
 
@@ -461,6 +467,13 @@ export async function applySettingsTransferFile(
 
       if (categoryId === 'non_secret_integrations' && options.setLyricsOnlineEnabled) {
         await options.setLyricsOnlineEnabled(payload.values?.lyricsOnlineEnabled === true)
+      }
+      if (categoryId === 'non_secret_integrations' && options.setLyricsLrclibBaseUrl) {
+        await options.setLyricsLrclibBaseUrl(
+          typeof payload.values?.lyricsLrclibBaseUrl === 'string'
+            ? payload.values.lyricsLrclibBaseUrl
+            : LRCLIB_OFFICIAL_BASE_URL
+        )
       }
 
       importedCategoryIds.push(categoryId)

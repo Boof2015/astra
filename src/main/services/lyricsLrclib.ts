@@ -4,9 +4,11 @@ import {
   parseLrcSyncedLines
 } from './lyricsParsing'
 import type { LyricsPayload, LyricsTrackQuery } from '../../types/lyrics'
+import {
+  LRCLIB_OFFICIAL_BASE_URL,
+  normalizeLrclibBaseUrl
+} from '../../types/lyrics'
 
-export const LRCLIB_GET_URL = 'https://lrclib.net/api/get'
-export const LRCLIB_SEARCH_URL = 'https://lrclib.net/api/search'
 export const LRCLIB_PROJECT_URL = 'https://github.com/Boof2015/astra'
 export const LRCLIB_REQUEST_TIMEOUT_MS = 15_000
 export const LRCLIB_PROVIDER_UNAVAILABLE_MESSAGE = "LRCLIB didn't respond in time. A retry may work."
@@ -16,6 +18,7 @@ const UNKNOWN_APP_VERSION = 'unknown'
 
 export interface LrclibClientConfig {
   appVersion: string
+  baseUrl: string
   requestTimeoutMs: number
   now: () => number
 }
@@ -47,14 +50,26 @@ export function normalizeLrclibAppVersion(value: string | null | undefined): str
 
 export function createLrclibClientConfig(options: {
   appVersion: string
+  baseUrl?: string
   requestTimeoutMs?: number
   now?: () => number
 }): LrclibClientConfig {
   return {
     appVersion: normalizeLrclibAppVersion(options.appVersion),
+    baseUrl: normalizeLrclibBaseUrl(options.baseUrl ?? LRCLIB_OFFICIAL_BASE_URL),
     requestTimeoutMs: options.requestTimeoutMs ?? LRCLIB_REQUEST_TIMEOUT_MS,
     now: options.now ?? Date.now
   }
+}
+
+export function buildLrclibApiUrl(
+  config: Pick<LrclibClientConfig, 'baseUrl'>,
+  endpoint: 'get' | 'search',
+  params: URLSearchParams
+): string {
+  const url = new URL(`${config.baseUrl}/api/${endpoint}`)
+  url.search = params.toString()
+  return url.toString()
 }
 
 export function createLrclibClientHeaders(config: Pick<LrclibClientConfig, 'appVersion'>): Record<string, string> {
@@ -211,7 +226,7 @@ async function lookupLrclibByMetadata(
     params.set('duration', String(duration))
   }
 
-  const response = await fetchLrclibJson<Record<string, unknown>>(`${LRCLIB_GET_URL}?${params.toString()}`, config)
+  const response = await fetchLrclibJson<Record<string, unknown>>(buildLrclibApiUrl(config, 'get', params), config)
   if (response.kind === 'http_error') {
     if (response.status === 404) {
       return { status: 'not_found' }
@@ -258,7 +273,7 @@ async function lookupLrclibBySearch(
   if (!searchTerm) return { status: 'not_found' }
 
   const params = new URLSearchParams({ q: searchTerm })
-  const response = await fetchLrclibJson<unknown[]>(`${LRCLIB_SEARCH_URL}?${params.toString()}`, config)
+  const response = await fetchLrclibJson<unknown[]>(buildLrclibApiUrl(config, 'search', params), config)
   if (response.kind === 'http_error') {
     if (response.status === 404) return { status: 'not_found' }
     if (isTransientHttpStatus(response.status)) {
@@ -323,6 +338,7 @@ async function lookupLrclibRaw(
 export class LrclibLookupCoordinator {
   private readonly config: LrclibClientConfig
   private cooldownUntil = 0
+  private configRevision = 0
   private readonly inFlightLookups = new Map<string, Promise<LrclibLookupResult>>()
 
   constructor(config: LrclibClientConfig) {
@@ -331,6 +347,16 @@ export class LrclibLookupCoordinator {
 
   isCoolingDown(): boolean {
     return this.config.now() < this.cooldownUntil
+  }
+
+  setBaseUrl(baseUrl: string): void {
+    const normalized = normalizeLrclibBaseUrl(baseUrl)
+    if (normalized === this.config.baseUrl) return
+
+    this.config.baseUrl = normalized
+    this.cooldownUntil = 0
+    this.configRevision += 1
+    this.inFlightLookups.clear()
   }
 
   async lookup(
@@ -343,7 +369,11 @@ export class LrclibLookupCoordinator {
       return { status: 'provider_unavailable' }
     }
 
+    const revision = this.configRevision
     const result = await this.lookupDeduped(query, lookupKey)
+    if (revision !== this.configRevision) {
+      return { status: 'provider_unavailable' }
+    }
     if (result.status === 'transient_error') {
       if (!forceRefresh) {
         this.cooldownUntil = this.config.now() + LRCLIB_PROVIDER_COOLDOWN_MS

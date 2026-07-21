@@ -12,6 +12,7 @@ interface LyricsStore {
   init: () => Promise<void>
   refresh: () => Promise<void>
   setEnabled: (enabled: boolean) => Promise<LyricsStatus | null>
+  setLrclibBaseUrl: (baseUrl: string) => Promise<LyricsStatus | null>
   loadForTrack: (query: LyricsTrackQuery | null) => Promise<LyricsLookupResult | null>
   refreshForTrack: (query: LyricsTrackQuery | null) => Promise<LyricsLookupResult | null>
   resetToDefaults: () => Promise<LyricsStatus | null>
@@ -158,6 +159,16 @@ export const useLyricsStore = create<LyricsStore>((set, get) => {
     setEnabled: async (enabled: boolean) => {
       try {
         const status = await window.electronAPI.lyrics.setEnabled(enabled)
+        return applyStatus(status)
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      }
+    },
+
+    setLrclibBaseUrl: async (baseUrl: string) => {
+      try {
+        const status = await window.electronAPI.lyrics.setLrclibBaseUrl(baseUrl)
         return applyStatus(status)
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })

@@ -197,7 +197,12 @@ import {
   type LastFmProfileConfig,
   type LastFmServiceConfig
 } from '../types/lastFm'
-import type { LyricsFormat, LyricsTrackQuery } from '../types/lyrics'
+import {
+  LRCLIB_OFFICIAL_BASE_URL,
+  parseLrclibBaseUrl,
+  type LyricsFormat,
+  type LyricsTrackQuery
+} from '../types/lyrics'
 import type {
   JellyfinSource,
   JellyfinSourceCreateInput,
@@ -516,6 +521,7 @@ const LASTFM_PENDING_SCROBBLES_META_KEY = 'lastfm_pending_scrobbles_v1'
 const LASTFM_ACTIVE_PROFILE_ID_META_KEY = 'lastfm_active_profile_id_v1'
 const LASTFM_PROFILES_META_KEY = 'lastfm_profiles_v1'
 const LYRICS_ONLINE_ENABLED_META_KEY = 'lyrics_online_enabled_v1'
+const LYRICS_LRCLIB_BASE_URL_META_KEY = 'lyrics_lrclib_base_url_v1'
 const TRACKLIST_THUMB_MAX_EDGE_PX = 96
 const CARD_ARTWORK_MAX_EDGE_PX = 320
 const TRACKLIST_THUMB_JPEG_QUALITY = 78
@@ -719,6 +725,7 @@ let lastFmConfig: LastFmServiceConfig = {
   }]
 }
 let lyricsOnlineEnabled = false
+let lyricsLrclibBaseUrl = LRCLIB_OFFICIAL_BASE_URL
 let memoryDiagnosticsService: MemoryDiagnosticsService | null = null
 let isAppQuitting = false
 
@@ -1242,12 +1249,14 @@ const lastFmService = new LastFmService({
 const lyricsService = new LyricsService({
   enabled: lyricsOnlineEnabled,
   appVersion: app.getVersion(),
+  lrclibBaseUrl: lyricsLrclibBaseUrl,
   onStatusChange: () => {
     broadcastLyricsStatus()
     const status = lyricsService.getStatus()
     logMemoryDiagnosticsMainEvent('lyrics_status_changed', {
       enabled: status.enabled,
       provider: status.provider,
+      lrclibBaseUrl: status.lrclibBaseUrl,
       statusMessage: status.statusMessage,
       lastError: status.lastError
     })
@@ -2693,29 +2702,48 @@ async function applyLastFmConfig(config: LastFmServiceConfig): Promise<ReturnTyp
   return lastFmService.applyConfig(lastFmConfig)
 }
 
-async function persistLyricsConfig(enabled: boolean): Promise<void> {
-  await library.setAppMeta(LYRICS_ONLINE_ENABLED_META_KEY, enabled ? '1' : '0')
+interface PersistedLyricsConfig {
+  enabled: boolean
+  lrclibBaseUrl: string
 }
 
-async function loadLyricsConfigFromMeta(): Promise<boolean> {
+async function persistLyricsConfig(config: PersistedLyricsConfig): Promise<void> {
+  await library.setAppMeta(LYRICS_ONLINE_ENABLED_META_KEY, config.enabled ? '1' : '0')
+  await library.setAppMeta(LYRICS_LRCLIB_BASE_URL_META_KEY, config.lrclibBaseUrl)
+}
+
+async function loadLyricsConfigFromMeta(): Promise<PersistedLyricsConfig> {
   const enabled = parseMetaBoolean(library.getAppMeta(LYRICS_ONLINE_ENABLED_META_KEY), false)
+  const lrclibBaseUrl = parseLrclibBaseUrl(library.getAppMeta(LYRICS_LRCLIB_BASE_URL_META_KEY))
+    ?? LRCLIB_OFFICIAL_BASE_URL
 
   const normalizedStoredValue = enabled ? '1' : '0'
-  if (library.getAppMeta(LYRICS_ONLINE_ENABLED_META_KEY) !== normalizedStoredValue) {
+  if (
+    library.getAppMeta(LYRICS_ONLINE_ENABLED_META_KEY) !== normalizedStoredValue
+    || library.getAppMeta(LYRICS_LRCLIB_BASE_URL_META_KEY) !== lrclibBaseUrl
+  ) {
     try {
-      await persistLyricsConfig(enabled)
+      await persistLyricsConfig({ enabled, lrclibBaseUrl })
     } catch (error) {
       console.warn('Failed to persist normalized lyrics integration setting:', error)
     }
   }
 
-  return enabled
+  return { enabled, lrclibBaseUrl }
 }
 
-async function applyLyricsConfig(enabled: boolean): Promise<ReturnType<typeof lyricsService.getStatus>> {
-  lyricsOnlineEnabled = Boolean(enabled)
-  await persistLyricsConfig(lyricsOnlineEnabled)
-  return lyricsService.applyConfig(lyricsOnlineEnabled)
+async function applyLyricsConfig(config: PersistedLyricsConfig): Promise<ReturnType<typeof lyricsService.getStatus>> {
+  const endpointChanged = config.lrclibBaseUrl !== lyricsLrclibBaseUrl
+  lyricsOnlineEnabled = Boolean(config.enabled)
+  lyricsLrclibBaseUrl = config.lrclibBaseUrl
+  await persistLyricsConfig({
+    enabled: lyricsOnlineEnabled,
+    lrclibBaseUrl: lyricsLrclibBaseUrl
+  })
+  if (endpointChanged) {
+    await library.clearLyricsCacheMisses()
+  }
+  return lyricsService.applyConfig(lyricsOnlineEnabled, lyricsLrclibBaseUrl)
 }
 
 function normalizeLyricsTrackQuery(rawQuery: unknown): LyricsTrackQuery | null {
@@ -4945,8 +4973,10 @@ app.whenReady().then(async () => {
   // the saved connection in memory here and waits.
   lastFmConfig = await loadLastFmConfigFromMeta()
   await lastFmService.applyConfig(lastFmConfig)
-  lyricsOnlineEnabled = await loadLyricsConfigFromMeta()
-  lyricsService.applyConfig(lyricsOnlineEnabled)
+  const lyricsConfig = await loadLyricsConfigFromMeta()
+  lyricsOnlineEnabled = lyricsConfig.enabled
+  lyricsLrclibBaseUrl = lyricsConfig.lrclibBaseUrl
+  lyricsService.applyConfig(lyricsOnlineEnabled, lyricsLrclibBaseUrl)
   localApiService.publishSnapshot(latestMiniPlayerSnapshot)
   phoneRemoteService.publishSnapshot(latestMiniPlayerSnapshot)
   refreshSubsonicStatusCache(false)
@@ -5527,7 +5557,24 @@ ipcMain.handle('lyrics:getStatus', () => {
 })
 
 ipcMain.handle('lyrics:setEnabled', async (_event, enabled: unknown) => {
-  return applyLyricsConfig(Boolean(enabled))
+  return applyLyricsConfig({
+    enabled: Boolean(enabled),
+    lrclibBaseUrl: lyricsLrclibBaseUrl
+  })
+})
+
+ipcMain.handle('lyrics:setLrclibBaseUrl', async (_event, rawBaseUrl: unknown) => {
+  const input = typeof rawBaseUrl === 'string' ? rawBaseUrl.trim() : ''
+  const lrclibBaseUrl = input.length === 0
+    ? LRCLIB_OFFICIAL_BASE_URL
+    : parseLrclibBaseUrl(input)
+  if (!lrclibBaseUrl) {
+    throw new Error('Enter a valid HTTP or HTTPS LRCLIB base URL without credentials.')
+  }
+  return applyLyricsConfig({
+    enabled: lyricsOnlineEnabled,
+    lrclibBaseUrl
+  })
 })
 
 ipcMain.handle('lyrics:getForTrack', async (_event, rawQuery: unknown) => {
@@ -5584,7 +5631,10 @@ ipcMain.handle('lyrics:setTrackOffset', async (_event, rawTrackPaths: unknown, r
 
 ipcMain.handle('lyrics:resetToDefaults', async () => {
   await library.clearLyricsCache()
-  return applyLyricsConfig(false)
+  return applyLyricsConfig({
+    enabled: false,
+    lrclibBaseUrl: LRCLIB_OFFICIAL_BASE_URL
+  })
 })
 
 ipcMain.handle('subsonic:listSources', () => {

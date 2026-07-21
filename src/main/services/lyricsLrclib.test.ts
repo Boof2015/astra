@@ -2,12 +2,18 @@ import assert from 'node:assert/strict'
 import test, { afterEach } from 'node:test'
 import {
   LrclibLookupCoordinator,
+  buildLrclibApiUrl,
   createLrclibClientConfig,
   createLrclibClientHeaders,
   fetchLrclibJson,
   normalizeLrclibMetadataText
 } from './lyricsLrclib.ts'
-import type { LyricsTrackQuery } from '../../types/lyrics.ts'
+import {
+  LRCLIB_OFFICIAL_BASE_URL,
+  normalizeLrclibBaseUrl,
+  parseLrclibBaseUrl,
+  type LyricsTrackQuery
+} from '../../types/lyrics.ts'
 
 const originalFetch = globalThis.fetch
 
@@ -62,6 +68,32 @@ test('createLrclibClientHeaders sends current LRCLIB client identity', () => {
   assert.equal(headers['Lrclib-Client'], 'Astra/0.6.1-beta (https://github.com/Boof2015/astra)')
   assert.equal(headers['User-Agent'], headers['Lrclib-Client'])
   assert.equal(headers.Accept, 'application/json')
+})
+
+test('LRCLIB base URLs accept HTTP mirrors and normalize safe absolute URLs', () => {
+  assert.equal(parseLrclibBaseUrl(' http://lyrics.local:8080/mirror/?ignored=1#fragment '), 'http://lyrics.local:8080/mirror')
+  assert.equal(parseLrclibBaseUrl('https://mirror.example.test/'), 'https://mirror.example.test')
+  assert.equal(parseLrclibBaseUrl('ftp://mirror.example.test'), null)
+  assert.equal(parseLrclibBaseUrl('https://user:secret@mirror.example.test'), null)
+  assert.equal(parseLrclibBaseUrl('not a URL'), null)
+  assert.equal(normalizeLrclibBaseUrl(''), LRCLIB_OFFICIAL_BASE_URL)
+})
+
+test('buildLrclibApiUrl preserves mirror path prefixes and appends LRCLIB routes', () => {
+  const config = createLrclibClientConfig({
+    appVersion: '0.6.1-beta',
+    baseUrl: 'http://lyrics.local:8080/mirror/'
+  })
+  const params = new URLSearchParams({ track_name: 'Track & Mix', artist_name: 'Artist' })
+
+  assert.equal(
+    buildLrclibApiUrl(config, 'get', params),
+    'http://lyrics.local:8080/mirror/api/get?track_name=Track+%26+Mix&artist_name=Artist'
+  )
+  assert.equal(
+    buildLrclibApiUrl(config, 'search', new URLSearchParams({ q: 'Track Artist' })),
+    'http://lyrics.local:8080/mirror/api/search?q=Track+Artist'
+  )
 })
 
 test('fetchLrclibJson sends LRCLIB client headers', async () => {
@@ -160,4 +192,40 @@ test('LrclibLookupCoordinator deduplicates concurrent lookups for the same metad
   assert.equal(firstResult.status, 'hit')
   assert.equal(secondResult.status, 'hit')
   assert.equal(callCount, 1)
+})
+
+test('LrclibLookupCoordinator switches mirrors immediately and ignores stale responses', async () => {
+  let resolveOldFetch: (response: Response) => void = () => {}
+  const requestedUrls: string[] = []
+  globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+    requestedUrls.push(String(input))
+    if (requestedUrls.length === 1) {
+      return new Promise<Response>((resolve) => {
+        resolveOldFetch = resolve
+      })
+    }
+    return new Response(JSON.stringify({
+      trackName: 'Track',
+      artistName: 'Artist',
+      plainLyrics: 'Mirror lyrics'
+    }), { status: 200 })
+  }) as typeof fetch
+
+  const coordinator = new LrclibLookupCoordinator(createLrclibClientConfig({
+    appVersion: '0.6.1-beta'
+  }))
+  const staleLookup = coordinator.lookup(makeQuery(), 'same-track')
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  coordinator.setBaseUrl('http://lyrics.local:8080/mirror')
+  const mirrorLookup = coordinator.lookup(makeQuery(), 'same-track')
+  assert.equal((await mirrorLookup).status, 'hit')
+  assert.match(requestedUrls[1] ?? '', /^http:\/\/lyrics\.local:8080\/mirror\/api\/get\?/)
+
+  resolveOldFetch(new Response(JSON.stringify({
+    trackName: 'Track',
+    artistName: 'Artist',
+    plainLyrics: 'Stale lyrics'
+  }), { status: 200 }))
+  assert.deepEqual(await staleLookup, { status: 'provider_unavailable' })
 })

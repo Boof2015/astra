@@ -23,6 +23,7 @@ import {
   type AstraSettingsTransferFile,
   type SettingsTransferStorage,
 } from './settingsTransfer.ts'
+import { LRCLIB_OFFICIAL_BASE_URL } from '../../types/lyrics.ts'
 
 class MemoryStorage implements SettingsTransferStorage {
   private values = new Map<string, string>()
@@ -207,9 +208,13 @@ test('lyrics online preference is a non-secret integration value, not library or
       'astra-lyrics-cache-v1': 'cached lyrics',
     }),
     lyricsOnlineEnabled: true,
+    lyricsLrclibBaseUrl: 'http://lyrics.local:8080/mirror',
   })
 
-  assert.deepEqual(file.categories.non_secret_integrations?.values, { lyricsOnlineEnabled: true })
+  assert.deepEqual(file.categories.non_secret_integrations?.values, {
+    lyricsOnlineEnabled: true,
+    lyricsLrclibBaseUrl: 'http://lyrics.local:8080/mirror'
+  })
   assert.equal(
     file.categories.non_secret_integrations?.localStorage[LYRICS_DISPLAY_SETTINGS_STORAGE_KEY],
     '{"wordTimingEnabled":true}'
@@ -218,13 +223,44 @@ test('lyrics online preference is a non-secret integration value, not library or
   assert.equal(file.categories.non_secret_integrations?.localStorage['astra-lyrics-cache-v1'], undefined)
 
   let importedLyricsEnabled: boolean | null = null
+  let importedLrclibBaseUrl: string | null = null
   const result = await applySettingsTransferFile(file, ['non_secret_integrations'], {
     storage: new MemoryStorage(),
     setLyricsOnlineEnabled: (enabled) => {
       importedLyricsEnabled = enabled
     },
+    setLyricsLrclibBaseUrl: (baseUrl) => {
+      importedLrclibBaseUrl = baseUrl
+    },
   })
 
   assert.equal(result.ok, true)
   assert.equal(importedLyricsEnabled, true)
+  assert.equal(importedLrclibBaseUrl, 'http://lyrics.local:8080/mirror')
+})
+
+test('older settings transfers without an LRCLIB URL restore the official endpoint', async () => {
+  const file: AstraSettingsTransferFile = {
+    kind: 'astra-settings-transfer',
+    schemaVersion: 1,
+    exportedAt: '2026-06-25T00:00:00.000Z',
+    appVersion: '0.6.1-beta',
+    categories: {
+      non_secret_integrations: {
+        localStorage: {},
+        values: { lyricsOnlineEnabled: true }
+      }
+    }
+  }
+  let importedLrclibBaseUrl: string | null = null
+
+  const result = await applySettingsTransferFile(file, ['non_secret_integrations'], {
+    storage: new MemoryStorage(),
+    setLyricsLrclibBaseUrl: (baseUrl) => {
+      importedLrclibBaseUrl = baseUrl
+    }
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(importedLrclibBaseUrl, LRCLIB_OFFICIAL_BASE_URL)
 })
