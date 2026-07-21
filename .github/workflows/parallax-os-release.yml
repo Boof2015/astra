@@ -58,6 +58,10 @@ jobs:
           bash -n receiver/deploy/*.sh receiver/os/ci/*.sh \
             receiver/os/stage-parallax/prerun.sh receiver/os/stage-parallax/*/*-run.sh \
             receiver/os/stage-parallax/*/files/*.sh
+          if git grep -n -i 'custom[.]toml'; then
+            echo "::error::Legacy TOML provisioning references are not allowed"
+            exit 1
+          fi
 
   build:
     name: Build image (pi-gen)
@@ -175,7 +179,7 @@ jobs:
             --title "Parallax OS v${VERSION}" \
             --notes "Flashable Raspberry Pi image for the Astra Parallax receiver. Built from ${GITHUB_REPOSITORY}@${GITHUB_SHA}.
 
-          **Flash** this \`.img.xz\` with Raspberry Pi Imager (Use custom), Etcher, or dd, then just boot. First boot takes 2–3 minutes; on Wi-Fi, wait for the open **Parallax-Setup** network to appear (~2 min), join it with your phone and pick your Wi-Fi in the portal that opens. Then open http://parallax.local/ and pair from Astra. (SSH/console access or pre-set Wi-Fi: edit \`custom.toml.example\` on the boot partition before first boot.)
+          **Flash** this \`.img.xz\` with Raspberry Pi Imager (Use custom), Etcher, or dd, then just boot. First boot takes 2–3 minutes; on Wi-Fi, wait for the open **Parallax-Setup** network to appear (~2 min), join it with your phone and pick your Wi-Fi in the portal that opens. Then open http://parallax.local/ and pair from Astra. For SSH/console access or pre-set Wi-Fi, edit the active \`user-data\` and \`network-config\` files on the boot partition before first boot; they contain credential-safety instructions.
 
           The daemon auto-updates daily from this repo's \`receiver-v*\` releases — a new image is only needed for OS-level changes." \
             parallax-os-v${VERSION}.img.xz \

@@ -33,7 +33,75 @@ mount -o ro "${LOOP_DEV}p1" "$BOOT_DIR"
 
 check "boot partition looks like a Pi boot partition"
 ls "$BOOT_DIR"/*.dtb >/dev/null 2>&1 || [ -f "$BOOT_DIR/config.txt" ] || fail "no config.txt/dtb in boot partition"
-[ -f "$BOOT_DIR/custom.toml.example" ] || fail "custom.toml.example missing from boot partition"
+
+check "active cloud-init inputs are present in the exported boot partition"
+for seed_file in meta-data user-data network-config; do
+  [ -f "$BOOT_DIR/$seed_file" ] || fail "$seed_file missing from boot partition"
+done
+[ "$(head -n 1 "$BOOT_DIR/user-data")" = "#cloud-config" ] \
+  || fail "user-data is not cloud-config"
+ACTIVE_USER_DATA="$(awk '!/^[[:space:]]*(#|$)/' "$BOOT_DIR/user-data")"
+if [ "$ACTIVE_USER_DATA" != "{}" ]; then
+  fail "user-data is not an empty-map no-op by default"
+fi
+if grep -Eq '^[[:space:]]*[^#[:space:]]' "$BOOT_DIR/network-config"; then
+  fail "network-config is not a safe no-op by default"
+fi
+grep -q '^# user:$' "$BOOT_DIR/user-data" || fail "user-data lacks the account example"
+grep -q 'ssh_authorized_keys:' "$BOOT_DIR/user-data" || fail "user-data lacks SSH-key setup"
+grep -q 'lock_passwd: true' "$BOOT_DIR/user-data" || fail "user-data lacks key-only password locking"
+grep -q 'systemctl, enable, --now, ssh' "$BOOT_DIR/user-data" \
+  || fail "user-data does not enable SSH"
+grep -q 'REPLACE_WITH_YOUR_PUBLIC_KEY' "$BOOT_DIR/user-data" \
+  || fail "user-data lacks a public-key placeholder"
+grep -q 'REPLACE_WITH_A_SHA512_CRYPT_HASH' "$BOOT_DIR/user-data" \
+  || fail "user-data lacks a password-hash placeholder"
+grep -q 'BEGIN .*PRIVATE KEY' "$BOOT_DIR/user-data" \
+  && fail "user-data contains private-key material"
+grep -q 'does not delete the' "$BOOT_DIR/user-data" \
+  || fail "user-data lacks the credential-lifecycle warning"
+grep -q 'renderer: NetworkManager' "$BOOT_DIR/network-config" \
+  || fail "network-config does not select NetworkManager"
+grep -q 'ethernets:' "$BOOT_DIR/network-config" || fail "network-config lacks wired DHCP"
+grep -q 'wifis:' "$BOOT_DIR/network-config" || fail "network-config lacks Wi-Fi setup"
+grep -q 'regulatory-domain:' "$BOOT_DIR/network-config" \
+  || fail "network-config lacks the regulatory domain"
+grep -q 'REPLACE_WITH_WIFI_NAME' "$BOOT_DIR/network-config" \
+  || fail "network-config lacks the SSID placeholder"
+grep -q 'REPLACE_WITH_WIFI_PASSWORD' "$BOOT_DIR/network-config" \
+  || fail "network-config lacks the Wi-Fi password placeholder"
+grep -q 'physically protect the card' "$BOOT_DIR/network-config" \
+  || fail "network-config lacks the credential warning"
+LEGACY_PROVISIONING_FILE="custom."toml
+[ ! -e "$BOOT_DIR/$LEGACY_PROVISIONING_FILE" ] \
+  || fail "legacy TOML provisioning file present on boot partition"
+[ ! -e "$BOOT_DIR/$LEGACY_PROVISIONING_FILE.example" ] \
+  || fail "legacy TOML provisioning example present on boot partition"
+
+check "cloud-init installed and enabled in the exported root filesystem"
+[ -x "$MOUNT_DIR/usr/bin/cloud-init" ] || fail "cloud-init executable missing"
+[ -f "$MOUNT_DIR/var/lib/dpkg/info/cloud-init.list" ] || fail "cloud-init package not installed"
+[ -f "$MOUNT_DIR/var/lib/dpkg/info/rpi-cloud-init-mods.list" ] \
+  || fail "rpi-cloud-init-mods package not installed"
+[ -f "$MOUNT_DIR/var/lib/dpkg/info/netplan.io.list" ] || fail "netplan.io package not installed"
+CLOUD_INIT_CFG="$MOUNT_DIR/etc/cloud/cloud.cfg.d/99_raspberry-pi.cfg"
+[ -f "$CLOUD_INIT_CFG" ] || fail "Raspberry Pi cloud-init configuration missing"
+grep -Eq 'seedfrom:[[:space:]]*file:///boot/firmware/?$' "$CLOUD_INIT_CFG" \
+  || fail "NoCloud datasource does not read /boot/firmware"
+[ -x "$MOUNT_DIR/usr/lib/systemd/system-generators/cloud-init-generator" ] \
+  || fail "cloud-init systemd generator missing"
+[ -f "$MOUNT_DIR/usr/lib/systemd/system/cloud-init.target" ] \
+  || fail "cloud-init.target missing"
+[ ! -e "$MOUNT_DIR/etc/cloud/cloud-init.disabled" ] || fail "cloud-init disabled by marker file"
+if grep -Eq '(^|[[:space:]])cloud-init=disabled([[:space:]]|$)' "$BOOT_DIR/cmdline.txt"; then
+  fail "cloud-init disabled on the kernel command line"
+fi
+for unit in cloud-init-main.service cloud-init-local.service cloud-init-network.service \
+  cloud-config.service cloud-final.service; do
+  [ -f "$MOUNT_DIR/usr/lib/systemd/system/$unit" ] || fail "$unit missing"
+  [ -L "$MOUNT_DIR/etc/systemd/system/cloud-init.target.wants/$unit" ] \
+    || fail "$unit not enabled for cloud-init.target"
+done
 
 check "daemon installed under current/"
 CURRENT_TARGET="$(readlink "$MOUNT_DIR/opt/astra-receiver/current")" || fail "current symlink missing"

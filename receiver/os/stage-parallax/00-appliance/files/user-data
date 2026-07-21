@@ -1,0 +1,40 @@
+#cloud-config
+# Delete the `{}` no-op line when you uncomment the example below.
+{}
+#
+# Optional Parallax OS first-boot account and SSH setup.
+#
+# Edit this file on the boot partition BEFORE the first boot. The example below is entirely
+# commented out, so an unedited image keeps the baked `parallax` account locked and leaves SSH
+# disabled. Delete `{}`, uncomment the example, choose the login name, and replace every
+# REPLACE_ value.
+# Using `parallax` as the name keeps that name; a different name renames the baked UID-1000
+# account while preserving its Raspberry Pi OS groups.
+#
+# Recommended key-only SSH setup:
+#
+# user:
+#   name: yourname
+#   shell: /bin/bash
+#   lock_passwd: true
+#   ssh_authorized_keys:
+#     - "ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY"
+#
+# ssh_pwauth: false
+#
+# runcmd:
+#   - [ systemctl, enable, --now, ssh ]
+#
+# Optional console/password login: replace `lock_passwd: true` above with these two lines.
+# Generate a SHA-512 crypt hash locally; do not put a plaintext password in this file.
+#
+#   lock_passwd: false
+#   passwd: "$6$REPLACE_WITH_A_SHA512_CRYPT_HASH"
+#
+# SECURITY AND LIFECYCLE:
+# The boot partition is FAT and provides no useful file-permission protection. Anyone with the
+# card can read this file. Never place a private key here, and physically protect any card whose
+# file contains an account password hash or other credential. Cloud-init does not delete the
+# seed files after processing them. Keep meta-data and this user-data file in place: cloud-init
+# reads the NoCloud seed on later boots even though per-instance settings apply only on the first
+# boot. Editing this file after a successful first boot is not a supported reprovisioning path.

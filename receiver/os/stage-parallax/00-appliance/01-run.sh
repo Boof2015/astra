@@ -12,11 +12,14 @@ install -D -m 0644 files/20auto-upgrades \
 install -D -m 0644 files/51unattended-upgrades-parallax \
   "${ROOTFS_DIR}/etc/apt/apt.conf.d/51unattended-upgrades-parallax"
 
-# Lands on the FAT boot partition: the flasher's drive already sits mounted on their desk, so
-# setup = rename to custom.toml + edit. (Raspberry Pi Imager won't show its customization
-# dialog for third-party images — this template replaces it.)
-install -D -m 0644 files/custom.toml.example \
-  "${ROOTFS_DIR}/boot/firmware/custom.toml.example"
+# pi-gen's Trixie stage installs generic active NoCloud inputs on the FAT boot partition.
+# Replace them with Parallax-specific, credential-free templates that power users can edit in
+# place before first boot. meta-data stays owned by pi-gen because it supplies the instance ID
+# and local datasource mode needed to consume these files.
+install -D -m 0644 files/user-data \
+  "${ROOTFS_DIR}/boot/firmware/user-data"
+install -D -m 0644 files/network-config \
+  "${ROOTFS_DIR}/boot/firmware/network-config"
 
 # Captive-portal Wi-Fi onboarding: the daemon may drive NetworkManager (polkit rule), and the
 # hotspot's shared-mode dnsmasq resolves every name to the AP so phones auto-open the portal.
@@ -25,9 +28,9 @@ install -D -m 0644 files/50-parallax-network.rules \
 install -D -m 0644 files/parallax-captive.conf \
   "${ROOTFS_DIR}/etc/NetworkManager/dnsmasq-shared.d/parallax-captive.conf"
 
-# The baked `parallax` user exists only so the first-boot wizard never squats on tty1 (pi-gen
-# demands a FIRST_USER_PASS for that; the workflow injects a throwaway). Lock it: nothing
-# shipped is loginable until a custom.toml sets a real password or SSH keys.
+# The baked `parallax` UID-1000 user gives Raspberry Pi OS cloud-init an account to retain or
+# rename from user-data (pi-gen demands a FIRST_USER_PASS; the workflow injects a throwaway).
+# Lock it after the build: an uncustomized image ships no usable login.
 on_chroot << CHROOT
 set -e
 passwd -l parallax

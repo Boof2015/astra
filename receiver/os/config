@@ -2,12 +2,12 @@
 # Parallax receiver. Sourced by pi-gen's build.sh (the CI workflow copies this file plus
 # stage-parallax/ into a pinned pi-gen checkout; see .github/workflows/parallax-os-release.yml).
 #
-# User story: a `parallax` user is baked with a throwaway password (FIRST_USER_PASS is injected
-# per-build by the workflow) and then LOCKED by the appliance stage — so nothing shipped is
-# loginable, but the stock first-boot wizard never squats on tty1 where the TV kiosk lives.
-# Wi-Fi arrives via the daemon's captive-portal AP setup ("Parallax-Setup"); power users can
-# still set a real password / SSH keys with a custom.toml on the boot partition.
-# ENABLE_SSH stays off like stock Pi OS.
+# User story: a `parallax` UID-1000 user is baked with a throwaway password (FIRST_USER_PASS is
+# injected per-build by the workflow) and then LOCKED by the appliance stage, so an uncustomized
+# image ships no usable login. Raspberry Pi OS cloud-init can retain or rename that account from
+# boot/firmware/user-data. Wi-Fi normally arrives through the daemon's captive-portal AP setup
+# ("Parallax-Setup"), or power users can preconfigure boot/firmware/network-config.
+# ENABLE_SSH stays off; user-data must explicitly enable it when remote access is requested.
 
 IMG_NAME="ParallaxOS"
 FIRST_USER_NAME="parallax"
@@ -20,10 +20,12 @@ DISABLE_FIRST_BOOT_USER_RENAME=1
 WPA_COUNTRY="US"
 # The pinned pi-gen arm64 ref defaults to trixie (current Pi OS); stated here for determinism.
 RELEASE="trixie"
+# Pin the provisioning contract explicitly instead of relying on pi-gen's current default.
+ENABLE_CLOUD_INIT=1
 # The workflow verifies the raw .img (loop-mount asserts) and xz's it afterwards.
 DEPLOY_COMPRESSION="none"
 # Stock avahi advertises the hostname → http://parallax.local/ (auto-renames on conflict).
-# An Imager hostname override runs at first boot and wins, which is the desired behavior.
+# A cloud-init hostname override in user-data runs at first boot and wins when supplied.
 TARGET_HOSTNAME="parallax"
 TIMEZONE_DEFAULT="UTC"
 # Lite base (stage0-2) + the appliance stage. CI touches stage2/SKIP_IMAGES so only

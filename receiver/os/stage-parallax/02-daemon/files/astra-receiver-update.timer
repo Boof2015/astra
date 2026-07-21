@@ -1,4 +1,4 @@
-# Daily receiver update check. OnBootSec clears first-boot churn (Imager firstrun, filesystem
+# Daily receiver update check. OnBootSec clears first-boot churn (cloud-init, filesystem
 # resize, reboot) before the first check; Persistent catches up devices that were powered off
 # overnight; the randomized delay avoids a fleet stampeding the release API at 03:30 sharp.
 

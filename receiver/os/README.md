@@ -34,26 +34,47 @@ Drafts are invisible to non-collaborators, so an untested image is never downloa
   the instructions and a join QR), pick your Wi-Fi, enter the password, done. Wrong password →
   the hotspot reappears with the error shown. Backed by NetworkManager + a polkit rule for the
   service user + a shared-mode dnsmasq drop-in for the captive DNS. A `parallax` user is baked
-  but LOCKED (no login possible) purely so the first-boot wizard never blocks the kiosk.
+  but LOCKED, so an uncustomized image has no usable login.
 
-Deliberately stock: the first-boot user wizard and Raspberry Pi Imager's OS-customization
-(user, Wi-Fi, hostname override, SSH) work exactly like on plain Pi OS.
+Noninteractive first-boot provisioning uses Raspberry Pi OS Trixie's native cloud-init NoCloud
+datasource. Parallax supplies safe, active `user-data` and `network-config` templates on the boot
+partition; their examples are commented out so the normal captive-portal path remains the
+default.
 
 ## Flashing
 
 1. Flash `parallax-os-v*.img.xz` with Raspberry Pi Imager (*Use custom*), Etcher, or `dd`.
-   Imager's OS-customization dialog is NOT offered for third-party images — that's expected,
-   and with AP onboarding it isn't needed.
-2. Boot the Pi (first boot takes 2–3 minutes: filesystem resize + first-run config + reboot).
+   Imager's OS-customization dialog is not offered for a locally selected third-party image;
+   use the boot-partition files below if you want unattended setup.
+2. Boot the Pi (first boot takes 2–3 minutes: filesystem resize + cloud-init + reboot).
    On Ethernet there is nothing more to set up. On Wi-Fi, wait ~2 minutes for the
    **Parallax-Setup** network to appear, join it with your phone, and pick your Wi-Fi in the
    portal that opens (a connected TV shows the instructions + a join QR).
 3. Open `http://parallax.local/`, pair from Astra (Parallax → Add Sink), pick the audio output
    on the page (HDMI / headphone jack / USB DAC), done.
 
-Power users: for SSH or a console login, put a `custom.toml` on the boot partition before
-first boot (template ships there as `custom.toml.example` — same mechanism Imager's dialog
-drives; consumed + deleted on first boot). It can also pre-set Wi-Fi, skipping the AP step.
+### Optional unattended setup
+
+After flashing and before the first boot, open the FAT boot partition and edit these active files
+in place:
+
+- `user-data`: delete its `{}` no-op line and uncomment the example to choose the login name and
+  install an SSH public key. The recommended configuration keeps password authentication locked
+  and explicitly enables SSH. For console/password login, use the documented SHA-512
+  password-hash form; never put a plaintext password or private SSH key on the card. Naming the
+  account `parallax` retains the baked name; another name renames the UID-1000 account and
+  preserves its Raspberry Pi OS groups.
+- `network-config`: uncomment the complete example and set the Wi-Fi country, SSID, and password.
+  It retains DHCP on Ethernet as a fallback. Leave it commented to use Parallax-Setup onboarding.
+
+These two files are the only supported user-editable inputs for noninteractive provisioning;
+leave `meta-data` unchanged. The files are not consumed or deleted. Cloud-init applies their
+per-instance settings on the first boot but continues to use the seed on later boots, so keep the
+filenames and files in place and do not expect later edits to reprovision an existing card.
+
+The boot partition is FAT and does not protect file contents with useful Unix permissions. Anyone
+with the card can read any password hash or Wi-Fi credential left there. Parallax performs no
+automatic credential cleanup: prefer key-only SSH and physically protect provisioned cards.
 
 ## Building locally (Linux, needs Docker or a Debian-ish host)
 
@@ -69,8 +90,21 @@ sudo ./build-docker.sh -c config
 sudo ../receiver/os/ci/verify-image.sh deploy/*.img
 ```
 
+## Hardware release gate
+
+Keep every image release as a draft until fresh cards pass on both Pi 3B and Pi 5:
+
+1. Boot an unmodified flash twice. Confirm `cloud-init status --long` succeeds, `parallax`
+   remains locked, SSH is unavailable, and Parallax-Setup appears when no network is available.
+2. Make a second flash, edit both cloud-init files with disposable credentials, and boot twice.
+   Confirm the requested user and console password hash work, SSH accepts the supplied key but
+   not a password, Wi-Fi connects, Parallax-Setup is skipped, and cloud-init does not reapply
+   per-instance setup on the second boot.
+3. Confirm `user-data`, `network-config`, and `meta-data` remain on the boot partition exactly as
+   documented. Destroy the disposable credentials after the test.
+
 Iteration cost warning: every change to the stage means a full image build + flash + boot on
-real hardware. Put anything checkable at build time into `stage-parallax/03-verify/00-run.sh`
+real hardware. Put anything checkable at build time into `stage-parallax/99-verify/00-run.sh`
 (rootfs asserts) or `ci/verify-image.sh` (mounted-image asserts) instead of finding out on a Pi.
 
 Daemon behavior changes do NOT need an image release — they ship as `receiver-v*` releases and

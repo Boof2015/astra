@@ -1,0 +1,31 @@
+# Optional Parallax OS first-boot network setup.
+#
+# Edit this file on the boot partition BEFORE the first boot. The example is entirely commented
+# out, so an unedited image leaves networking to NetworkManager and the Parallax captive-portal
+# onboarding flow. Uncomment the complete block and replace every REPLACE_ value to preconfigure
+# Wi-Fi. Keep the Ethernet stanza: supplying cloud-init network configuration replaces the
+# distribution default, and this preserves wired DHCP as a fallback.
+#
+# network:
+#   version: 2
+#   renderer: NetworkManager
+#   ethernets:
+#     eth0:
+#       dhcp4: true
+#       dhcp6: true
+#       optional: true
+#   wifis:
+#     wlan0:
+#       dhcp4: true
+#       regulatory-domain: "REPLACE_WITH_TWO_LETTER_COUNTRY_CODE"
+#       access-points:
+#         "REPLACE_WITH_WIFI_NAME":
+#           password: "REPLACE_WITH_WIFI_PASSWORD"
+#       optional: true
+#
+# SECURITY AND LIFECYCLE:
+# The boot partition is FAT and provides no useful file-permission protection. Anyone with the
+# card can read this file, including its Wi-Fi credential, so physically protect the card.
+# Cloud-init does not delete the seed files after processing them. Leave this file in place;
+# per-instance configuration applies on the first boot, and editing it later is not a supported
+# reprovisioning path.

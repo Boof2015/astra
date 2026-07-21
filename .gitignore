@@ -30,3 +30,11 @@ yarn-error.log*
 Untitled-1.md
 PARALLAX_HANDOFF.md
 share
+docs/triage/parallax-os-tester-2026-07-21/01-cloud-init-provisioning.md
+docs/triage/parallax-os-tester-2026-07-21/02-cec-optional-pairing.md
+docs/triage/parallax-os-tester-2026-07-21/03-loopback-display-route.md
+docs/triage/parallax-os-tester-2026-07-21/04-bounded-receiver-shutdown.md
+docs/triage/parallax-os-tester-2026-07-21/05-alsa-degraded-mode.md
+docs/triage/parallax-os-tester-2026-07-21/06-join-response-diagnostics.md
+docs/triage/parallax-os-tester-2026-07-21/investigations.md
+docs/triage/parallax-os-tester-2026-07-21/README.md

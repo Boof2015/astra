@@ -53,8 +53,66 @@ CHROOT
 check "hostname is parallax"
 [ "$(tr -d ' \t\n\r' < "${ROOTFS_DIR}/etc/hostname")" = "parallax" ]
 
-check "custom.toml template on the boot partition"
-[ -f "${ROOTFS_DIR}/boot/firmware/custom.toml.example" ]
+check "cloud-init packages, Raspberry Pi NoCloud datasource, and enabled unit chain"
+on_chroot << 'CHROOT'
+set -e
+dpkg -s cloud-init rpi-cloud-init-mods netplan.io >/dev/null
+command -v cloud-init >/dev/null
+cloud-init schema --config-file /boot/firmware/user-data >/dev/null
+python3 -c 'import yaml; yaml.safe_load(open("/boot/firmware/network-config", encoding="utf-8"))'
+CHROOT
+CLOUD_INIT_CFG="${ROOTFS_DIR}/etc/cloud/cloud.cfg.d/99_raspberry-pi.cfg"
+[ -f "${CLOUD_INIT_CFG}" ]
+grep -Eq 'seedfrom:[[:space:]]*file:///boot/firmware/?$' "${CLOUD_INIT_CFG}"
+[ -x "${ROOTFS_DIR}/usr/lib/systemd/system-generators/cloud-init-generator" ]
+[ -f "${ROOTFS_DIR}/usr/lib/systemd/system/cloud-init.target" ]
+[ ! -e "${ROOTFS_DIR}/etc/cloud/cloud-init.disabled" ]
+if grep -Eq '(^|[[:space:]])cloud-init=disabled([[:space:]]|$)' \
+  "${ROOTFS_DIR}/boot/firmware/cmdline.txt"; then
+  echo "cloud-init is disabled on the kernel command line" >&2
+  exit 1
+fi
+for unit in cloud-init-main.service cloud-init-local.service cloud-init-network.service \
+  cloud-config.service cloud-final.service; do
+  [ -f "${ROOTFS_DIR}/usr/lib/systemd/system/${unit}" ]
+  [ -L "${ROOTFS_DIR}/etc/systemd/system/cloud-init.target.wants/${unit}" ]
+done
+
+check "active, credential-free cloud-init templates on the boot partition"
+for seed_file in meta-data user-data network-config; do
+  [ -f "${ROOTFS_DIR}/boot/firmware/${seed_file}" ]
+done
+[ "$(head -n 1 "${ROOTFS_DIR}/boot/firmware/user-data")" = "#cloud-config" ]
+ACTIVE_USER_DATA="$(awk '!/^[[:space:]]*(#|$)/' "${ROOTFS_DIR}/boot/firmware/user-data")"
+if [ "${ACTIVE_USER_DATA}" != "{}" ]; then
+  echo "user-data must contain only its empty-map no-op until the example is uncommented" >&2
+  exit 1
+fi
+if grep -Eq '^[[:space:]]*[^#[:space:]]' "${ROOTFS_DIR}/boot/firmware/network-config"; then
+  echo "network-config must be a no-op until its example is uncommented" >&2
+  exit 1
+fi
+grep -q '^# user:$' "${ROOTFS_DIR}/boot/firmware/user-data"
+grep -q 'ssh_authorized_keys:' "${ROOTFS_DIR}/boot/firmware/user-data"
+grep -q 'lock_passwd: true' "${ROOTFS_DIR}/boot/firmware/user-data"
+grep -q 'systemctl, enable, --now, ssh' "${ROOTFS_DIR}/boot/firmware/user-data"
+grep -q 'REPLACE_WITH_YOUR_PUBLIC_KEY' "${ROOTFS_DIR}/boot/firmware/user-data"
+grep -q 'REPLACE_WITH_A_SHA512_CRYPT_HASH' "${ROOTFS_DIR}/boot/firmware/user-data"
+if grep -q 'BEGIN .*PRIVATE KEY' "${ROOTFS_DIR}/boot/firmware/user-data"; then
+  echo "user-data contains private-key material" >&2
+  exit 1
+fi
+grep -q 'does not delete the' "${ROOTFS_DIR}/boot/firmware/user-data"
+grep -q 'renderer: NetworkManager' "${ROOTFS_DIR}/boot/firmware/network-config"
+grep -q 'ethernets:' "${ROOTFS_DIR}/boot/firmware/network-config"
+grep -q 'wifis:' "${ROOTFS_DIR}/boot/firmware/network-config"
+grep -q 'regulatory-domain:' "${ROOTFS_DIR}/boot/firmware/network-config"
+grep -q 'REPLACE_WITH_WIFI_NAME' "${ROOTFS_DIR}/boot/firmware/network-config"
+grep -q 'REPLACE_WITH_WIFI_PASSWORD' "${ROOTFS_DIR}/boot/firmware/network-config"
+grep -q 'physically protect the card' "${ROOTFS_DIR}/boot/firmware/network-config"
+LEGACY_PROVISIONING_FILE="custom."toml
+[ ! -e "${ROOTFS_DIR}/boot/firmware/${LEGACY_PROVISIONING_FILE}" ]
+[ ! -e "${ROOTFS_DIR}/boot/firmware/${LEGACY_PROVISIONING_FILE}.example" ]
 
 check "AP setup: polkit rule, captive DNS drop-in, NetworkManager, locked user"
 [ -f "${ROOTFS_DIR}/etc/polkit-1/rules.d/50-parallax-network.rules" ]
