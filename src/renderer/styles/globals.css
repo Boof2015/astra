@@ -1051,6 +1051,27 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   letter-spacing: 0.05em;
 }
 
+.transport-output-line-button {
+  width: 100%;
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.transport-output-line-button:hover {
+  color: var(--accent-text);
+}
+
+.transport-output-line-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 .transport-output-line-prefix {
   flex-shrink: 0;
   color: rgba(var(--tint), 0.34);

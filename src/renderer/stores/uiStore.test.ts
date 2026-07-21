@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { TRANSPORT_INFO_LINE_MODE_STORAGE_KEY } from '../constants/settingsStorageKeys.ts'
 import {
   DEFAULT_JUMP_TO_PLAYING_DESTINATION,
+  DEFAULT_TRANSPORT_INFO_LINE_MODE,
   DEFAULT_UI_SCALE_PERCENT,
   JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY,
   MAX_UI_SCALE_PERCENT,
@@ -9,6 +11,7 @@ import {
   UI_SCALE_STEP_PERCENT,
   getNextUIScalePercent,
   normalizeJumpToPlayingDestination,
+  normalizeTransportInfoLineMode,
   resolveAppViewTransitionDirection,
   useUIStore
 } from './uiStore.ts'
@@ -41,6 +44,14 @@ test('normalizeJumpToPlayingDestination accepts known destinations and defaults 
   assert.equal(normalizeJumpToPlayingDestination('queue'), 'queue')
   assert.equal(normalizeJumpToPlayingDestination('unknown'), DEFAULT_JUMP_TO_PLAYING_DESTINATION)
   assert.equal(normalizeJumpToPlayingDestination(null), DEFAULT_JUMP_TO_PLAYING_DESTINATION)
+})
+
+test('normalizeTransportInfoLineMode accepts known modes and defaults unknown values', () => {
+  assert.equal(normalizeTransportInfoLineMode('output'), 'output')
+  assert.equal(normalizeTransportInfoLineMode('album'), 'album')
+  assert.equal(normalizeTransportInfoLineMode('hidden'), 'hidden')
+  assert.equal(normalizeTransportInfoLineMode('unknown'), DEFAULT_TRANSPORT_INFO_LINE_MODE)
+  assert.equal(normalizeTransportInfoLineMode(null), DEFAULT_TRANSPORT_INFO_LINE_MODE)
 })
 
 test('resolveAppViewTransitionDirection follows sidebar order', () => {
@@ -111,6 +122,42 @@ test('jump to playing destination updates state and persists to localStorage', (
     assert.equal(values.get(JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY), DEFAULT_JUMP_TO_PLAYING_DESTINATION)
   } finally {
     useUIStore.setState({ jumpToPlayingDestination: DEFAULT_JUMP_TO_PLAYING_DESTINATION })
+    if (originalDescriptor) {
+      Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
+    } else {
+      delete (globalThis as { localStorage?: unknown }).localStorage
+    }
+  }
+})
+
+test('transport info line mode updates state, persists, and resets to output', () => {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const values = new Map<string, string>()
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value)
+    },
+    removeItem: (key: string) => {
+      values.delete(key)
+    }
+  }
+
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: storage
+  })
+
+  try {
+    useUIStore.getState().setTransportInfoLineMode('album')
+    assert.equal(useUIStore.getState().transportInfoLineMode, 'album')
+    assert.equal(values.get(TRANSPORT_INFO_LINE_MODE_STORAGE_KEY), 'album')
+
+    useUIStore.getState().resetTransportInfoLineMode()
+    assert.equal(useUIStore.getState().transportInfoLineMode, DEFAULT_TRANSPORT_INFO_LINE_MODE)
+    assert.equal(values.get(TRANSPORT_INFO_LINE_MODE_STORAGE_KEY), DEFAULT_TRANSPORT_INFO_LINE_MODE)
+  } finally {
+    useUIStore.setState({ transportInfoLineMode: DEFAULT_TRANSPORT_INFO_LINE_MODE })
     if (originalDescriptor) {
       Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
     } else {

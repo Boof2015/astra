@@ -6,6 +6,7 @@ export const ANALYZER_HEIGHT_STORAGE_KEY = 'astra-analyzer-height-px'
 export const ANALYZER_RACK_VISIBILITY_STORAGE_KEY = 'astra-show-analyzer-rack'
 export const JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY = 'astra-jump-to-playing-destination-v1'
 export const WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY = 'astra-waveform-time-display-mode'
+export const TRANSPORT_INFO_LINE_MODE_STORAGE_KEY = 'astra-transport-info-line-mode-v1'
 export const ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY = 'astra-experimental-activity-indicator-enabled-v1'
 export const CONTROLLER_SUPPORT_EXPERIMENT_STORAGE_KEY = 'astra-experimental-controller-support-enabled-v1'
 

@@ -35,6 +35,7 @@ import {
   TRACKLIST_GENRE_VISIBILITY_STORAGE_KEY,
   TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY,
   LISTENING_STATS_ENABLED_STORAGE_KEY,
+  TRANSPORT_INFO_LINE_MODE_STORAGE_KEY,
 } from '../../constants/settingsStorageKeys'
 import {
   ANALYZER_HEIGHT_STORAGE_KEY,
@@ -90,6 +91,7 @@ export const RENDERER_SETTINGS_KEYS = [
   UI_SCALE_STORAGE_KEY,
   HOME_GREETING_TEXT_MODE_STORAGE_KEY,
   JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY,
+  TRANSPORT_INFO_LINE_MODE_STORAGE_KEY,
   INPUT_BINDINGS_STORAGE_KEY,
   GLOBAL_INPUT_BINDINGS_STORAGE_KEY,
   'astra-updates-auto-check-enabled',
@@ -171,6 +173,7 @@ export async function resetAllSettings(): Promise<string> {
   useUIStore.getState().resetHomeGreetingTextMode()
   useUIStore.getState().setActivityIndicatorExperimentEnabled(false)
   useUIStore.getState().resetJumpToPlayingDestination()
+  useUIStore.getState().resetTransportInfoLineMode()
   useLibraryStore.getState().setShowTracklistPlayCount(false)
   useListeningStatsStore.getState().setEnabled(false)
   useInputBindingStore.getState().resetAll()

@@ -8,6 +8,7 @@ import {
   type MiniPlayerTimeDisplayMode
 } from '../../types/miniPlayer.ts'
 import type { UIScaleShortcutAction } from '../../types/uiScale'
+import { TRANSPORT_INFO_LINE_MODE_STORAGE_KEY } from '../constants/settingsStorageKeys'
 import { runAppViewTransition, type AppViewTransitionDirection } from '../utils/viewTransitions.ts'
 import { normalizeAppView, type UISessionSnapshot } from '../utils/sessionState'
 
@@ -15,6 +16,7 @@ export type AppView = 'home' | 'library' | 'stats' | 'graph' | 'eq' | 'settings'
 export type WaveformTimeDisplayMode = MiniPlayerTimeDisplayMode
 export type HomeGreetingTextMode = 'messages' | 'clock' | 'off'
 export type JumpToPlayingDestination = 'smart-source' | 'library-tracks' | 'album' | 'artist' | 'queue'
+export type TransportInfoLineMode = 'output' | 'album' | 'hidden'
 export const DEFAULT_ANALYZER_HEIGHT_PX = 196
 export const MIN_ANALYZER_HEIGHT_PX = 144
 export const MAX_ANALYZER_HEIGHT_PX = 320
@@ -31,6 +33,7 @@ export const ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY = 'astra-experimental-act
 export const CONTROLLER_SUPPORT_EXPERIMENT_STORAGE_KEY = 'astra-experimental-controller-support-enabled-v1'
 export const JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY = 'astra-jump-to-playing-destination-v1'
 export const DEFAULT_JUMP_TO_PLAYING_DESTINATION: JumpToPlayingDestination = 'smart-source'
+export const DEFAULT_TRANSPORT_INFO_LINE_MODE: TransportInfoLineMode = 'output'
 // §14.1.4 — persisted preference: open the Zone Display layout at launch. The session-state
 // `isZoneDisplayActive` derives its initial value from this OR the `--zone` launch flag, and
 // "Library" clears the session flag without touching the persisted preference.
@@ -202,6 +205,12 @@ export function normalizeJumpToPlayingDestination(value: unknown): JumpToPlaying
     : DEFAULT_JUMP_TO_PLAYING_DESTINATION
 }
 
+export function normalizeTransportInfoLineMode(value: unknown): TransportInfoLineMode {
+  return value === 'album' || value === 'hidden' || value === 'output'
+    ? value
+    : DEFAULT_TRANSPORT_INFO_LINE_MODE
+}
+
 function readWaveformTimeDisplayModePreference(): WaveformTimeDisplayMode {
   try {
     const saved = localStorage.getItem(WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY)
@@ -331,6 +340,22 @@ function persistJumpToPlayingDestinationPreference(destination: JumpToPlayingDes
   }
 }
 
+function readTransportInfoLineModePreference(): TransportInfoLineMode {
+  try {
+    return normalizeTransportInfoLineMode(localStorage.getItem(TRANSPORT_INFO_LINE_MODE_STORAGE_KEY))
+  } catch {
+    return DEFAULT_TRANSPORT_INFO_LINE_MODE
+  }
+}
+
+function persistTransportInfoLineModePreference(mode: TransportInfoLineMode): void {
+  try {
+    localStorage.setItem(TRANSPORT_INFO_LINE_MODE_STORAGE_KEY, normalizeTransportInfoLineMode(mode))
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
 function readOpenZoneDisplayOnLaunchPreference(): boolean {
   try {
     return localStorage.getItem(OPEN_ZONE_DISPLAY_ON_LAUNCH_STORAGE_KEY) === '1'
@@ -414,6 +439,7 @@ const initialHomeGreetingTextMode = readHomeGreetingTextModePreference()
 const initialActivityIndicatorExperimentEnabled = readActivityIndicatorExperimentPreference()
 const initialControllerSupportEnabled = readControllerSupportExperimentPreference()
 const initialJumpToPlayingDestination = readJumpToPlayingDestinationPreference()
+const initialTransportInfoLineMode = readTransportInfoLineModePreference()
 const initialOpenZoneDisplayOnLaunch = readOpenZoneDisplayOnLaunchPreference()
 const initialParallaxExperimentEnabled = readParallaxExperimentEnabledPreference()
 const initialParallaxSetupComplete = readParallaxSetupCompletePreference()
@@ -452,6 +478,7 @@ interface UIStore {
   activityIndicatorExperimentEnabled: boolean
   controllerSupportEnabled: boolean
   jumpToPlayingDestination: JumpToPlayingDestination
+  transportInfoLineMode: TransportInfoLineMode
   waveformTimeDisplayMode: WaveformTimeDisplayMode
   libraryTrackRevealRequest: LibraryTrackRevealRequest | null
   playlistTrackRevealRequest: PlaylistTrackRevealRequest | null
@@ -498,6 +525,8 @@ interface UIStore {
   setControllerSupportEnabled: (enabled: boolean) => void
   setJumpToPlayingDestination: (destination: JumpToPlayingDestination) => void
   resetJumpToPlayingDestination: () => void
+  setTransportInfoLineMode: (mode: TransportInfoLineMode) => void
+  resetTransportInfoLineMode: () => void
   toggleWaveformTimeDisplayMode: () => void
   requestLibraryTrackReveal: (trackPath: string) => void
   clearLibraryTrackRevealRequest: (requestId: number) => void
@@ -549,6 +578,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   activityIndicatorExperimentEnabled: initialActivityIndicatorExperimentEnabled,
   controllerSupportEnabled: initialControllerSupportEnabled,
   jumpToPlayingDestination: initialJumpToPlayingDestination,
+  transportInfoLineMode: initialTransportInfoLineMode,
   waveformTimeDisplayMode: initialWaveformTimeDisplayMode,
   libraryTrackRevealRequest: null,
   playlistTrackRevealRequest: null,
@@ -747,6 +777,15 @@ export const useUIStore = create<UIStore>((set, get) => ({
   resetJumpToPlayingDestination: () => {
     persistJumpToPlayingDestinationPreference(DEFAULT_JUMP_TO_PLAYING_DESTINATION)
     set({ jumpToPlayingDestination: DEFAULT_JUMP_TO_PLAYING_DESTINATION })
+  },
+  setTransportInfoLineMode: (mode) => {
+    const normalized = normalizeTransportInfoLineMode(mode)
+    persistTransportInfoLineModePreference(normalized)
+    set({ transportInfoLineMode: normalized })
+  },
+  resetTransportInfoLineMode: () => {
+    persistTransportInfoLineModePreference(DEFAULT_TRANSPORT_INFO_LINE_MODE)
+    set({ transportInfoLineMode: DEFAULT_TRANSPORT_INFO_LINE_MODE })
   },
   toggleWaveformTimeDisplayMode: () => set((s) => {
     const nextMode = getNextMiniPlayerTimeDisplayMode(s.waveformTimeDisplayMode)

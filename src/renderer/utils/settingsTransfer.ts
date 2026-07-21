@@ -56,6 +56,7 @@ import {
   TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY,
   TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY,
   TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY,
+  TRANSPORT_INFO_LINE_MODE_STORAGE_KEY,
   UI_SCALE_STORAGE_KEY,
   UPDATES_AUTO_CHECK_STORAGE_KEY,
   VECTORSCOPE_MULTIBAND_STORAGE_KEY,
@@ -134,7 +135,7 @@ const SETTINGS_TRANSFER_CATEGORY_DEFINITIONS_INTERNAL: SettingsTransferCategoryD
   {
     id: 'interface',
     label: 'Interface',
-    description: 'UI scale, home greeting, analyzer rack layout, and navigation preferences.',
+    description: 'UI scale, home greeting, transport display, analyzer rack layout, and navigation preferences.',
   },
   {
     id: 'library_view',
@@ -186,6 +187,7 @@ export const SETTINGS_TRANSFER_CATEGORY_STORAGE_KEYS: Record<SettingsTransferCat
     ANALYZER_RACK_VISIBILITY_STORAGE_KEY,
     JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY,
     WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY,
+    TRANSPORT_INFO_LINE_MODE_STORAGE_KEY,
   ],
   library_view: [
     ARTIST_BROWSE_MODE_STORAGE_KEY,

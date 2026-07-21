@@ -11,6 +11,7 @@ import {
   NORMALIZATION_ENABLED_STORAGE_KEY,
   THEME_STORAGE_KEY,
   TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY,
+  TRANSPORT_INFO_LINE_MODE_STORAGE_KEY,
   UI_SCALE_STORAGE_KEY,
 } from '../constants/settingsStorageKeys.ts'
 import {
@@ -118,6 +119,19 @@ test('library view and experiment transfers include play count and Listening Sta
   )
 })
 
+test('interface transfers include the transport info line preference', () => {
+  const file = createSettingsTransferFile(['interface'], {
+    storage: new MemoryStorage({
+      [TRANSPORT_INFO_LINE_MODE_STORAGE_KEY]: 'album'
+    })
+  })
+
+  assert.equal(
+    file.categories.interface?.localStorage[TRANSPORT_INFO_LINE_MODE_STORAGE_KEY],
+    'album'
+  )
+})
+
 test('import replaces selected categories and leaves unselected categories untouched', async () => {
   const storage = new MemoryStorage({
     [THEME_STORAGE_KEY]: 'old-theme',
@@ -141,6 +155,7 @@ test('missing keys inside a selected category reset those preferences to default
   const storage = new MemoryStorage({
     [UI_SCALE_STORAGE_KEY]: '125',
     [HOME_GREETING_TEXT_MODE_STORAGE_KEY]: 'clock',
+    [TRANSPORT_INFO_LINE_MODE_STORAGE_KEY]: 'hidden',
   })
   const file = createSettingsTransferFile(['interface'], {
     storage: new MemoryStorage({
@@ -153,6 +168,7 @@ test('missing keys inside a selected category reset those preferences to default
   assert.equal(result.ok, true)
   assert.equal(storage.getItem(UI_SCALE_STORAGE_KEY), '110')
   assert.equal(storage.getItem(HOME_GREETING_TEXT_MODE_STORAGE_KEY), null)
+  assert.equal(storage.getItem(TRANSPORT_INFO_LINE_MODE_STORAGE_KEY), null)
 })
 
 test('invalid schema and kind are rejected, unknown categories are ignored', () => {

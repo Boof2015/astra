@@ -21,7 +21,8 @@ import {
   UI_SCALE_STEP_PERCENT,
   useUIStore,
   type HomeGreetingTextMode,
-  type JumpToPlayingDestination
+  type JumpToPlayingDestination,
+  type TransportInfoLineMode
 } from '../../stores/uiStore'
 import {
   BIT_PERFECT_DSP_DISABLED_MESSAGE,
@@ -133,6 +134,12 @@ const HOME_GREETING_TEXT_OPTIONS: readonly SettingsSegmentedOption<HomeGreetingT
   { value: 'messages', label: 'Messages' },
   { value: 'clock', label: 'Clock' },
   { value: 'off', label: 'Off' },
+]
+
+const TRANSPORT_INFO_LINE_OPTIONS: readonly SettingsSegmentedOption<TransportInfoLineMode>[] = [
+  { value: 'output', label: 'Output Device' },
+  { value: 'album', label: 'Album' },
+  { value: 'hidden', label: 'Hidden' },
 ]
 
 const REPLAYGAIN_OPTIONS: readonly SettingsSegmentedOption<ReplayGainSelectorValue>[] = [
@@ -528,6 +535,8 @@ export default function SettingsView() {
   const resetUIScalePercent = useUIStore((state) => state.resetUIScalePercent)
   const homeGreetingTextMode = useUIStore((state) => state.homeGreetingTextMode)
   const setHomeGreetingTextMode = useUIStore((state) => state.setHomeGreetingTextMode)
+  const transportInfoLineMode = useUIStore((state) => state.transportInfoLineMode)
+  const setTransportInfoLineMode = useUIStore((state) => state.setTransportInfoLineMode)
   const activityIndicatorExperimentEnabled = useUIStore((state) => state.activityIndicatorExperimentEnabled)
   const setActivityIndicatorExperimentEnabled = useUIStore((state) => state.setActivityIndicatorExperimentEnabled)
   const controllerSupportEnabled = useUIStore((state) => state.controllerSupportEnabled)
@@ -1704,6 +1713,21 @@ export default function SettingsView() {
                       options={HOME_GREETING_TEXT_OPTIONS}
                       value={homeGreetingTextMode}
                       onChange={setHomeGreetingTextMode}
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Transport Bar</div>
+                <div className="settings-grid">
+                  <div className="settings-field">
+                    <span className="settings-field-label">Info Line</span>
+                    <SettingsSegmentedControl
+                      ariaLabel="Transport bar info line"
+                      fullWidth
+                      options={TRANSPORT_INFO_LINE_OPTIONS}
+                      value={transportInfoLineMode}
+                      onChange={setTransportInfoLineMode}
                     />
                   </div>
                 </div>

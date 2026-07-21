@@ -9,6 +9,7 @@ import {
   useAudioSettingsStore
 } from '../../stores/audioSettingsStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
+import { useOpenAlbumInLibrary } from '../../hooks/useOpenAlbumInLibrary'
 import { useJumpToNowPlaying } from '../../hooks/useJumpToNowPlaying'
 import { usePlaybackClock } from '../../hooks/usePlaybackClock'
 import { audioEngine } from '../../audio/AudioEngine'
@@ -23,6 +24,7 @@ import AudioPipelineShelf from './AudioPipelineShelf'
 import TransportLyricsShelf from './TransportLyricsShelf'
 import { useLyricsPopoutStore } from '../../stores/lyricsPopoutStore'
 import { useParallaxStore } from '../../stores/parallaxStore'
+import { resolveTransportInfoLine } from '../../utils/transportInfoLine'
 import type { MiniPlayerWindowState } from '../../../types/miniPlayer'
 
 function formatTime(seconds: number): string {
@@ -130,6 +132,7 @@ export default function TransportBar() {
     togglePipelineShelf,
     toggleLyricsShelf,
     closeLyricsShelf,
+    transportInfoLineMode,
     setFullscreen
   } = useUIStore()
   const lyricsPopoutIsOpen = useLyricsPopoutStore((s) => s.windowState.isOpen)
@@ -137,6 +140,7 @@ export default function TransportBar() {
   const favorites = useLibraryStore((s) => s.favorites)
   const toggleFavorite = useLibraryStore((s) => s.toggleFavorite)
   const openArtistInLibrary = useOpenArtistInLibrary()
+  const openAlbumInLibrary = useOpenAlbumInLibrary()
   const selectedOutputDeviceId = useAudioSettingsStore((s) => s.selectedDeviceId)
   const availableOutputDevices = useAudioSettingsStore((s) => s.availableDevices)
   const normalizationEnabled = useAudioSettingsStore((s) => s.normalizationEnabled)
@@ -267,6 +271,11 @@ export default function TransportBar() {
       selectedFallbackLabel: 'Selected Output'
     }).label
   })()
+  const transportInfoLine = resolveTransportInfoLine(
+    transportInfoLineMode,
+    outputDeviceLabel,
+    currentTrack?.album
+  )
   const bitPerfectStatusLabel = (() => {
     if (!bitPerfectModeActive) return null
 
@@ -441,10 +450,32 @@ export default function TransportBar() {
               </div>
             )}
           </div>
-          <div className="transport-output-line" title={outputDeviceLabel}>
-            <span className="transport-output-line-prefix">OUT</span>
-            <span className="transport-output-line-value">{outputDeviceLabel}</span>
-          </div>
+          {transportInfoLine && (
+            transportInfoLine.action === 'open-album' && currentTrack ? (
+              <button
+                type="button"
+                className="transport-output-line transport-output-line-button"
+                title={transportInfoLine.title}
+                aria-label={transportInfoLine.title}
+                onClick={() => {
+                  void openAlbumInLibrary(
+                    currentTrack.album,
+                    currentTrack.artist,
+                    currentTrack.albumArtist,
+                    currentTrack.albumIdentityKey
+                  )
+                }}
+              >
+                <span className="transport-output-line-prefix">{transportInfoLine.prefix}</span>
+                <span className="transport-output-line-value">{transportInfoLine.value}</span>
+              </button>
+            ) : (
+              <div className="transport-output-line" title={transportInfoLine.title}>
+                <span className="transport-output-line-prefix">{transportInfoLine.prefix}</span>
+                <span className="transport-output-line-value">{transportInfoLine.value}</span>
+              </div>
+            )
+          )}
           {bitPerfectStatusLabel && (
             <div className="transport-output-line" title={disabledControlMessage}>
               <span className="transport-output-line-prefix">BP</span>
