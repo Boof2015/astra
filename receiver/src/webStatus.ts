@@ -182,6 +182,9 @@ const PAGE_HTML = `<!doctype html>
       <button class="primary" onclick="act('approve')">Approve pairing</button>
       <button class="danger" onclick="act('reject')">Reject</button>
     </div>
+    <div class="muted" id="pair-approval-hint" style="display:none; text-align:center; margin-top:0.6rem">
+      Approve or reject here. A TV remote and HDMI-CEC are optional.
+    </div>
   </div>
   <div class="card">
     <div class="row"><span class="k">Status</span><span id="s-status"></span></div>
@@ -548,6 +551,7 @@ async function refresh() {
       document.getElementById('pair-host').textContent = s.incomingPair.hostName + ' wants to pair'
       document.getElementById('pair-pin').textContent = s.incomingPair.pin
       document.getElementById('pair-actions').style.display = s.incomingPair.awaitingApproval ? '' : 'none'
+      document.getElementById('pair-approval-hint').style.display = s.incomingPair.awaitingApproval ? '' : 'none'
     } else {
       pair.style.display = 'none'
     }

@@ -1125,6 +1125,27 @@ test('§20 pair-confirm success persists sink credential AND activates host pair
   }
 })
 
+test('§20 rejecting during explicit approval does not persist or activate the pairing', async () => {
+  const fixture = await createPairFixture()
+  try {
+    const initiate = await fixture.host.initiatePair(fixture.sinkBaseUrl)
+    const incoming = fixture.incoming.at(-1) as { pin: string }
+    const submitPromise = fixture.host.submitPairPin(initiate.pairingId, incoming.pin)
+    await waitFor(() => Boolean(
+      (fixture.incoming.at(-1) as { awaitingApproval?: boolean } | null)?.awaitingApproval
+    ))
+
+    fixture.listener.cancelPending()
+    await assert.rejects(submitPromise, /pairing-not-approved/)
+    assert.equal(fixture.listener.approvePending(), false)
+    assert.equal(fixture.incoming.at(-1), null)
+    assert.equal(fixture.paired.length, 0)
+    assert.equal(fixture.host.getStatus().host.pairedSinkCount, 0)
+  } finally {
+    await destroyPairFixture(fixture)
+  }
+})
+
 test('Parallax v2 rejects a second pair-request while approval is pending', async () => {
   const fixture = await createPairFixture()
   try {

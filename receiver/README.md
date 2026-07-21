@@ -19,9 +19,19 @@ pairing-listener, and mDNS modules directly from `../src`.
 - `src/output/` — `AlsaOutput` (Linux, via `receiver/native` addon, `snd_pcm_delay` as the
   latency source) and `NullOutput` (mac dev / tests).
 
-Pairing works exactly like an Astra sink: the host's wizard discovers this device, the PIN and
-the Approve button appear on the web page (`http://<pi>:38405/`), and the credential persists in
-`~/.config/astra-receiver/config.json`.
+Pairing works exactly like an Astra sink: the host's wizard discovers this device, and the PIN
+and explicit Approve/Reject controls appear on the receiver web page. For a standalone install,
+open `http://<pi>:38405/`; Parallax OS exposes the same page at `http://parallax.local/`. The
+credential persists in `~/.config/astra-receiver/config.json` only after approval.
+
+Approval must happen before the pairing window expires, but HDMI-CEC and a TV remote are
+optional:
+
+- **Headless:** read the PIN and approve or reject on the receiver web page.
+- **TV with working CEC:** read the PIN on the display and use the TV remote to approve or reject;
+  the web page remains available as an alternative.
+- **TV without CEC or without a usable remote:** read the PIN on the display or web page, enter it
+  in Astra, then approve or reject from the web page on another device on the same LAN.
 
 ## Dev (any OS, no audio)
 
@@ -118,7 +128,8 @@ endpoint (§19.18(e)) and cached per stream; `GET /api/artwork` serves the activ
 With `cecControl: true` in config.json (default on Parallax OS, off elsewhere) the daemon drives
 the TV over HDMI-CEC via `cec-ctl` (v4l-utils; the service user needs the `video` group for
 /dev/cec0): wake + claim active source when playback starts, standby after `cecStandbyMinutes`
-(default 10) of not playing.
+(default 10) of not playing. CEC is best-effort and optional for both playback and pairing; when
+no adapter or usable remote is present, use the receiver web page for pairing approval.
 
 ## Gapless playback (§21)
 

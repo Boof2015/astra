@@ -1,7 +1,8 @@
 # Parallax OS
 
 Flashable SD-card image that turns a Raspberry Pi into a zero-maintenance Parallax zone
-speaker: flash, boot, open `http://parallax.local/`, pair from Astra — 24/7 from there.
+speaker: flash, boot, open `http://parallax.local/`, pair from Astra, and explicitly approve on
+the page or display — 24/7 from there. HDMI-CEC and a TV remote are optional.
 
 Built with [pi-gen](https://github.com/RPi-Distro/pi-gen) (Raspberry Pi OS Lite base + the
 `stage-parallax` custom stage in this directory). The **Parallax OS Release** GitHub workflow
@@ -28,7 +29,8 @@ Drafts are invisible to non-collaborators, so an untested image is never downloa
   tty1 showing the daemon's `/display` page — Zone-Display-style artwork + title/artist. No
   display → the Pi stays headless; nothing else changes. HDMI-CEC is on by default
   (`cecControl` in the daemon config): the TV wakes and switches input when a stream starts
-  playing, and goes to standby after 10 idle minutes.
+  playing, and goes to standby after 10 idle minutes. CEC is best-effort, not a setup
+  requirement; pairing can always be approved or rejected at `http://parallax.local/`.
 - **Wi-Fi onboarding** (`apSetup`): with no network for ~2 minutes, the daemon raises an open
   **Parallax-Setup** hotspot with a captive portal — join it with a phone (a connected TV shows
   the instructions and a join QR), pick your Wi-Fi, enter the password, done. Wrong password →
@@ -50,8 +52,14 @@ default.
    On Ethernet there is nothing more to set up. On Wi-Fi, wait ~2 minutes for the
    **Parallax-Setup** network to appear, join it with your phone, and pick your Wi-Fi in the
    portal that opens (a connected TV shows the instructions + a join QR).
-3. Open `http://parallax.local/`, pair from Astra (Parallax → Add Sink), pick the audio output
-   on the page (HDMI / headphone jack / USB DAC), done.
+3. Open `http://parallax.local/` on a phone or computer on the same LAN, then start pairing from
+   Astra (Parallax → Add Sink). Enter the 6-digit PIN shown on the page or connected display,
+   then explicitly approve before the pairing window expires:
+   - **Headless:** use the Approve/Reject controls on `http://parallax.local/`.
+   - **TV with working CEC:** use the TV remote on the display, or use the web page instead.
+   - **TV without CEC or without a usable remote:** use the web page on the other device; no TV
+     remote is required.
+   After pairing, pick the audio output on the page (HDMI / headphone jack / USB DAC).
 
 ### Optional unattended setup
 

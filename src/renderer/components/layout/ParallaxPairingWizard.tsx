@@ -6,6 +6,7 @@ import {
   type ParallaxPairedSink
 } from '../../../types/parallax'
 import { useParallaxStore } from '../../stores/parallaxStore'
+import { ParallaxPairingPrompt } from './ParallaxPairingPrompt'
 
 // §20 / §14.1.5 Commit 4. Host-side "Add Sink" wizard. Two phases:
 //
@@ -354,9 +355,7 @@ function PinEntryPhase({
   return (
     <div className="parallax-pairing-wizard-pin">
       <div className="parallax-pairing-wizard-pin-prompt">
-        {submitting
-          ? <>Code matched. Approve the connection on <strong>{sinkName}</strong>.</>
-          : <>Enter the 6-digit security code shown on <strong>{sinkName}</strong>.</>}
+        <ParallaxPairingPrompt sinkName={sinkName} submitting={submitting} />
       </div>
       <input
         ref={pinInputRef}

@@ -253,6 +253,41 @@ test('the status page script survives the template-literal escaping too', async 
   })
 })
 
+test('root pairing controls explain and provide the fallback when CEC is unavailable', async () => {
+  let approved = 0
+  let rejected = 0
+  await withServer({
+    getState: () => ({
+      ...stubState(),
+      cec: { ...stubState().cec, available: false },
+      incomingPair: {
+        pin: '123456',
+        hostName: 'Test Host',
+        awaitingApproval: true,
+        expiresAtMs: Date.now() + 30_000
+      }
+    }),
+    approvePair: () => { approved += 1; return true },
+    rejectPair: () => { rejected += 1 }
+  }, async (baseUrl) => {
+    const html = await (await fetch(`${baseUrl}/`)).text()
+    assert.match(html, /Approve or reject here\. A TV remote and HDMI-CEC are optional\./)
+
+    const status = await (await fetch(`${baseUrl}/api/status`)).json() as WebStatusState
+    assert.equal(status.cec.available, false)
+
+    const approve = await fetch(`${baseUrl}/api/approve`, { method: 'POST' })
+    assert.equal(approve.status, 200)
+    assert.deepEqual(await approve.json(), { ok: true })
+
+    const reject = await fetch(`${baseUrl}/api/reject`, { method: 'POST' })
+    assert.equal(reject.status, 200)
+    assert.deepEqual(await reject.json(), { ok: true })
+    assert.equal(approved, 1)
+    assert.equal(rejected, 1)
+  })
+})
+
 test('POST /api/cec validates and forwards the settings', async () => {
   const applied: unknown[] = []
   await withServer({ setCecSettings: (settings) => { applied.push(settings) } }, async (baseUrl) => {
