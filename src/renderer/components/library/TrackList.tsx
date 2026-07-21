@@ -824,6 +824,7 @@ export default function TrackList({
   const updateTrackDragPointer = useUIStore((state) => state.updateTrackDragPointer)
   const clearTrackDrag = useUIStore((state) => state.clearTrackDrag)
   const openSidebarPlaylistCreateRequest = useUIStore((state) => state.openSidebarPlaylistCreateRequest)
+  const openSignalShare = useUIStore((state) => state.openSignalShare)
   const favorites = useLibraryStore((state) => state.favorites)
   const toggleFavorite = useLibraryStore((state) => state.toggleFavorite)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
@@ -1617,6 +1618,17 @@ export default function TrackList({
     setTrackContextMenu(null)
   }, [openPlaylistPopupForTracks, trackContextMenu])
 
+  const handleContextCreateSignal = useCallback(() => {
+    if (!trackContextMenu || trackContextMenu.tracks.length !== 1) return
+    const track = trackContextMenu.track
+    openSignalShare({
+      artist: track.artist,
+      title: track.title,
+      duration: track.duration
+    })
+    setTrackContextMenu(null)
+  }, [openSignalShare, trackContextMenu])
+
   const handleContextEditMetadata = useCallback(() => {
     if (!trackContextMenu) return
     const localTracks = trackContextMenu.tracks.filter((track) => track.source_type === 'local')
@@ -1893,7 +1905,7 @@ export default function TrackList({
     const panelWidth = 220
     const panelHeight = (integrityEnabled ? 252 : 194) + (
       onChangeMissingPlaylistAssociation && playlistSourceId !== null && playlistSourceId > 0 ? 36 : 0
-    ) + (ratingsEnabled ? 72 : 0)
+    ) + (ratingsEnabled ? 72 : 0) + (trackContextMenu.tracks.length === 1 ? 36 : 0)
     const edgePadding = 8
     const left = Math.min(
       Math.max(edgePadding, trackContextMenu.x),
@@ -2312,6 +2324,20 @@ export default function TrackList({
             </span>
             Add to Playlist...
           </button>
+          {contextMenuTrackCount === 1 && (
+            <button
+              type="button"
+              className="track-context-menu-item"
+              onClick={handleContextCreateSignal}
+            >
+              <span className="track-context-menu-icon" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 12h3l2-6 4 12 3-9 2 3h4" />
+                </svg>
+              </span>
+              Create Astra Signal...
+            </button>
+          )}
           {ratingsEnabled && !contextMenuContainsMissingPlaylistEntry && (
             <div className="track-context-menu-rating">
               <span className="track-context-menu-rating-label">

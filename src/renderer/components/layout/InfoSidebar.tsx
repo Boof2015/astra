@@ -31,6 +31,7 @@ export default function InfoSidebar() {
   const seek = usePlayerStore((s) => s.seek)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const toggleInfoSidebar = useUIStore((s) => s.toggleInfoSidebar)
+  const openSignalShare = useUIStore((s) => s.openSignalShare)
   const openArtistInLibrary = useOpenArtistInLibrary()
   const openAlbumInLibrary = useOpenAlbumInLibrary()
   const [activeTab, setActiveTab] = useState<InfoSidebarTab>('info')
@@ -190,11 +191,30 @@ export default function InfoSidebar() {
     <aside className={`info-sidebar${activeTab === 'lyrics' ? ' info-sidebar-lyrics-active' : ''}`}>
       <div className="info-sidebar-header">
         <span className="info-sidebar-label">NOW PLAYING</span>
-        <button className="info-sidebar-close" onClick={toggleInfoSidebar} title="Close">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
-          </svg>
-        </button>
+        <div className="info-sidebar-header-actions">
+          {currentTrack && (
+            <button
+              type="button"
+              className="info-sidebar-close info-sidebar-signal"
+              onClick={() => openSignalShare({
+                artist: currentTrack.artist,
+                title: currentTrack.title,
+                duration: currentTrack.duration
+              })}
+              title="Create Astra Signal"
+              aria-label="Create Astra Signal for the current track"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 12h3l2-6 4 12 3-9 2 3h4" />
+              </svg>
+            </button>
+          )}
+          <button className="info-sidebar-close" type="button" onClick={toggleInfoSidebar} title="Close" aria-label="Close track info">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+            </svg>
+          </button>
+        </div>
       </div>
 
       <div className="info-sidebar-tabs">

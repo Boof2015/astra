@@ -64,6 +64,7 @@
   },
   "license": "GPL-3.0-only",
   "dependencies": {
+    "@boof2015/astra-signal": "0.3.0",
     "@boof2015/xlrc": "^0.2.1",
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",

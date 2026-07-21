@@ -11,6 +11,7 @@ import type { UIScaleShortcutAction } from '../../types/uiScale'
 import { TRANSPORT_INFO_LINE_MODE_STORAGE_KEY } from '../constants/settingsStorageKeys'
 import { runAppViewTransition, type AppViewTransitionDirection } from '../utils/viewTransitions.ts'
 import { normalizeAppView, type UISessionSnapshot } from '../utils/sessionState'
+import type { SignalShareTarget } from '../utils/signalShare'
 
 export type AppView = 'home' | 'library' | 'stats' | 'graph' | 'eq' | 'settings' | 'playlist'
 export type WaveformTimeDisplayMode = MiniPlayerTimeDisplayMode
@@ -489,6 +490,7 @@ interface UIStore {
   trackDrag: TrackDragState | null
   sidebarPlaylistCreateRequest: SidebarPlaylistCreateRequest | null
   collectionQueueMenu: CollectionQueueMenuRequest | null
+  signalShareTarget: SignalShareTarget | null
   setActiveView: (view: AppView) => void
   replaceActiveView: (view: AppView) => void
   navigateViewBack: () => boolean
@@ -550,6 +552,8 @@ interface UIStore {
   clearSidebarPlaylistCreateRequest: () => void
   openCollectionQueueMenu: (request: CollectionQueueMenuRequest) => void
   closeCollectionQueueMenu: () => void
+  openSignalShare: (target: SignalShareTarget) => void
+  closeSignalShare: () => void
   getSessionSnapshot: () => UISessionSnapshot
   restoreSession: (snapshot: UISessionSnapshot) => void
 }
@@ -589,6 +593,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   trackDrag: null,
   sidebarPlaylistCreateRequest: null,
   collectionQueueMenu: null,
+  signalShareTarget: null,
   setActiveView: (view) => {
     const sourceView = pendingActiveView ?? get().activeView
     if (sourceView === view) return
@@ -916,6 +921,14 @@ export const useUIStore = create<UIStore>((set, get) => ({
     }
   }),
   closeCollectionQueueMenu: () => set({ collectionQueueMenu: null }),
+  openSignalShare: (target) => set({
+    signalShareTarget: {
+      artist: String(target.artist ?? ''),
+      title: String(target.title ?? ''),
+      duration: Number(target.duration)
+    }
+  }),
+  closeSignalShare: () => set({ signalShareTarget: null }),
   getSessionSnapshot: () => {
     const state = get()
     return {
@@ -945,6 +958,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
       pendingLibrarySearchQuery: null,
       pendingSettingsSection: null,
       collectionQueueMenu: null,
+      signalShareTarget: null,
       sidebarPlaylistCreateRequest: null,
       trackDrag: null
     })

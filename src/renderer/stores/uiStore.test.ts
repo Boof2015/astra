@@ -213,6 +213,22 @@ test('fullscreen lyrics visibility toggles independently of fullscreen state', (
   assert.equal(useUIStore.getState().fullscreenLyricsVisible, false)
 })
 
+test('Signal sharing freezes a metadata-only target until the modal closes', () => {
+  const target = { artist: 'ナナツカゼ', title: 'Replay', duration: 213.6 }
+
+  useUIStore.getState().openSignalShare(target)
+  target.title = 'Changed after opening'
+
+  assert.deepEqual(useUIStore.getState().signalShareTarget, {
+    artist: 'ナナツカゼ',
+    title: 'Replay',
+    duration: 213.6
+  })
+
+  useUIStore.getState().closeSignalShare()
+  assert.equal(useUIStore.getState().signalShareTarget, null)
+})
+
 test('session restore applies core view state without transient history or overlays', () => {
   useUIStore.setState({
     activeView: 'home',

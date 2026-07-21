@@ -626,6 +626,10 @@ declare global {
                 copyPng: (bytes: Uint8Array) => Promise<boolean>
                 savePng: (bytes: Uint8Array, suggestedFileName: string) => Promise<string | null>
             }
+            signalShare: {
+                copyPng: (bytes: Uint8Array) => Promise<boolean>
+                savePng: (bytes: Uint8Array, suggestedFileName: string) => Promise<string | null>
+            }
             library: {
                 getTracks: () => Promise<DbTrack[]>
                 getTracksPage: (request?: LibraryTrackPageRequest) => Promise<LibraryTrackPage>

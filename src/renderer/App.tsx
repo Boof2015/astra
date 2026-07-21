@@ -27,6 +27,7 @@ import LibraryIntegrityPanel from './components/library/LibraryIntegrityPanel'
 import TrackIntegrityResultModal from './components/library/TrackIntegrityResultModal'
 import MetadataEditorPanel from './components/metadata/MetadataEditorPanel'
 import LyricsEditorPanel from './components/lyrics/LyricsEditorPanel'
+import SignalShareModal from './components/signal/SignalShareModal'
 import { useUIStore } from './stores/uiStore'
 import { useLibraryStore } from './stores/libraryStore'
 import { useRatingsStore } from './stores/ratingsStore'
@@ -524,6 +525,7 @@ function App() {
         <TrackIntegrityResultModal />
         <MetadataEditorPanel />
         <LyricsEditorPanel />
+        <SignalShareModal />
         <CollectionQueueContextMenu />
         {isFullscreen && <FullscreenMode />}
         <ControllerFocusRing active={controllerInput.active} />

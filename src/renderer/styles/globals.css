@@ -1540,6 +1540,12 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   justify-content: space-between;
 }
 
+.info-sidebar-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .info-sidebar-tabs {
   display: flex;
   align-items: center;
@@ -1594,6 +1600,10 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 
 .info-sidebar-close:hover {
   color: var(--text-primary);
+}
+
+.info-sidebar-signal:hover {
+  color: var(--accent);
 }
 
 .info-sidebar-artwork {
@@ -25741,6 +25751,164 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
 
 .listening-stats-share-footer {
   flex: 0 0 auto;
+}
+
+.signal-share-overlay {
+  padding: 22px;
+}
+
+.signal-share-modal {
+  width: min(94vw, 900px);
+  max-width: 900px;
+  max-height: min(92vh, 720px);
+  overflow: hidden;
+}
+
+.signal-share-header {
+  flex: 0 0 auto;
+}
+
+.signal-share-heading {
+  min-width: 0;
+}
+
+.signal-share-heading p {
+  margin: 0 0 3px;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+}
+
+.signal-share-body {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px;
+}
+
+.signal-share-track {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+  text-align: center;
+}
+
+.signal-share-track strong,
+.signal-share-track span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signal-share-track strong {
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.signal-share-track span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.signal-share-preview-shell {
+  display: flex;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  padding: 18px;
+  background:
+    linear-gradient(135deg, rgba(var(--tint), 0.025), transparent 52%),
+    var(--bg-secondary);
+}
+
+.signal-share-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
+}
+
+.signal-share-guidance {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.signal-share-warning,
+.signal-share-generation-error,
+.signal-share-message {
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.signal-share-warning {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+  border-color: rgba(251, 191, 36, 0.3);
+  background: rgba(251, 191, 36, 0.07);
+  color: #fde68a;
+}
+
+.signal-share-warning strong {
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.signal-share-warning span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signal-share-generation-error,
+.signal-share-message.is-error {
+  border-color: rgba(248, 113, 113, 0.3);
+  color: #fca5a5;
+}
+
+.signal-share-message {
+  margin: 0;
+}
+
+.signal-share-message.is-success {
+  border-color: rgba(52, 211, 153, 0.28);
+  color: #86efac;
+}
+
+.signal-share-footer {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 620px) {
+  .signal-share-overlay {
+    padding: 12px;
+  }
+
+  .signal-share-preview-shell {
+    padding: 10px;
+  }
+
+  .signal-share-footer .settings-btn {
+    flex: 1 1 120px;
+  }
 }
 
 @media (max-width: 1180px) {

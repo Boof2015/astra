@@ -89,6 +89,7 @@ import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
 import { collectAppMemoryFootprint } from './services/appMemoryFootprint'
 import { normalizeStatsShareFileName, validateStatsSharePng } from './services/statsShareImage'
+import { normalizeSignalShareFileName, validateSignalSharePng } from './services/signalShareImage'
 import { getMusicMetadataParseOptions } from './utils/musicMetadata'
 import {
   MINI_WINDOW_MAX_HEIGHT,
@@ -7940,6 +7941,27 @@ ipcMain.handle('stats-share:save-png', async (_event, input: unknown, suggestedF
   const result = await dialog.showSaveDialog(mainWindow, {
     title: 'Save Listening Stats',
     defaultPath: normalizeStatsShareFileName(suggestedFileName),
+    filters: [{ name: 'PNG Image', extensions: ['png'] }]
+  })
+  if (result.canceled || !result.filePath) return null
+  await writeFile(result.filePath, Buffer.from(bytes))
+  return result.filePath
+})
+
+ipcMain.handle('signal-share:copy-png', (_event, input: unknown) => {
+  const bytes = validateSignalSharePng(input)
+  const image = nativeImage.createFromBuffer(Buffer.from(bytes))
+  if (image.isEmpty()) throw new Error('Signal PNG could not be decoded.')
+  clipboard.writeImage(image)
+  return true
+})
+
+ipcMain.handle('signal-share:save-png', async (_event, input: unknown, suggestedFileName: unknown) => {
+  if (!mainWindow) return null
+  const bytes = validateSignalSharePng(input)
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save Astra Signal',
+    defaultPath: normalizeSignalShareFileName(suggestedFileName),
     filters: [{ name: 'PNG Image', extensions: ['png'] }]
   })
   if (result.canceled || !result.filePath) return null

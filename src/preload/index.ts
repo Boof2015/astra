@@ -1254,6 +1254,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('stats-share:save-png', bytes, suggestedFileName) as Promise<string | null>
   },
 
+  signalShare: {
+    copyPng: (bytes: Uint8Array) => ipcRenderer.invoke('signal-share:copy-png', bytes) as Promise<boolean>,
+    savePng: (bytes: Uint8Array, suggestedFileName: string) =>
+      ipcRenderer.invoke('signal-share:save-png', bytes, suggestedFileName) as Promise<string | null>
+  },
+
   // Library operations
   library: {
     getTracks: () => getAllLibraryTracksPaged(),
@@ -1801,6 +1807,10 @@ declare global {
       revealFileInFolder: (filePath: string) => Promise<boolean>
 
       statsShare: {
+        copyPng: (bytes: Uint8Array) => Promise<boolean>
+        savePng: (bytes: Uint8Array, suggestedFileName: string) => Promise<string | null>
+      }
+      signalShare: {
         copyPng: (bytes: Uint8Array) => Promise<boolean>
         savePng: (bytes: Uint8Array, suggestedFileName: string) => Promise<string | null>
       }
