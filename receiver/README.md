@@ -121,8 +121,9 @@ Float32 for DACs that don't take it natively).
 ## TV display + CEC (0.2.0+)
 
 `GET /display` serves a fullscreen Zone-Display-style now-playing page (artwork + title/artist,
-idle screen with the zone name) — the Parallax OS kiosk points a WPE browser at it, but any
-browser works. Artwork is fetched lazily from the host's `/v1/parallax/artwork/current`
+idle screen with the zone name) — the Parallax OS kiosk points its receiver-local WPE browser at
+it. `/display` is restricted to loopback peers; LAN browsers should use `/` for status, settings,
+and pairing approval. Artwork is fetched lazily from the host's `/v1/parallax/artwork/current`
 endpoint (§19.18(e)) and cached per stream; `GET /api/artwork` serves the active stream's bytes.
 
 With `cecControl: true` in config.json (default on Parallax OS, off elsewhere) the daemon drives

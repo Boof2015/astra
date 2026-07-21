@@ -2,8 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   WebStatusServer,
+  isLoopbackAddress,
   resolveReceiverStatusLabel,
   type WebStatusCallbacks,
+  type WebStatusServerOptions,
   type WebStatusState
 } from './webStatus.ts'
 
@@ -49,7 +51,8 @@ function stubState(): WebStatusState {
 
 async function withServer(
   overrides: Partial<WebStatusCallbacks>,
-  run: (baseUrl: string, server: WebStatusServer) => Promise<void>
+  run: (baseUrl: string, server: WebStatusServer) => Promise<void>,
+  options: WebStatusServerOptions = {}
 ): Promise<void> {
   const callbacks: WebStatusCallbacks = {
     getState: stubState,
@@ -70,7 +73,7 @@ async function withServer(
     forgetHost: async () => undefined,
     ...overrides
   }
-  const server = new WebStatusServer(callbacks)
+  const server = new WebStatusServer(callbacks, options)
   await server.start(0)
   try {
     await run(`http://127.0.0.1:${server.port()}`, server)
@@ -78,6 +81,27 @@ async function withServer(
     await server.stop()
   }
 }
+
+test('loopback address detection handles IPv4, IPv6, and mapped peers', () => {
+  for (const address of [
+    '127.0.0.1',
+    '127.42.0.9',
+    '::1',
+    '::ffff:127.0.0.1'
+  ]) {
+    assert.equal(isLoopbackAddress(address), true, address)
+  }
+
+  for (const address of [
+    '192.168.1.20',
+    '::ffff:192.168.1.20',
+    'fe80::1',
+    'not-an-address',
+    undefined
+  ]) {
+    assert.equal(isLoopbackAddress(address), false, String(address))
+  }
+})
 
 test('headless receiver distinguishes connected inactive zones from generic idle', () => {
   assert.equal(resolveReceiverStatusLabel({
@@ -137,6 +161,43 @@ test('GET /display serves the kiosk page', async () => {
     assert.ok(script, 'display page has an inline script')
     assert.doesNotThrow(() => new Function(script[1]))
   })
+})
+
+test('GET /display permits IPv6 and IPv4-mapped loopback peers', async () => {
+  for (const address of ['::1', '::ffff:127.0.0.1']) {
+    await withServer({}, async (baseUrl) => {
+      const res = await fetch(`${baseUrl}/display`)
+      assert.equal(res.status, 200, address)
+      assert.match(res.headers.get('content-type') ?? '', /text\/html/)
+    }, { getPeerAddress: () => address })
+  }
+})
+
+test('remote /display is an unknown route and forwarding headers are ignored', async () => {
+  let approved = 0
+  await withServer({
+    approvePair: () => { approved += 1; return true }
+  }, async (baseUrl) => {
+    const display = await fetch(`${baseUrl}/display`, {
+      headers: {
+        Forwarded: 'for=127.0.0.1',
+        'X-Forwarded-For': '127.0.0.1'
+      }
+    })
+    const unknown = await fetch(`${baseUrl}/does-not-exist`)
+    assert.equal(display.status, 404)
+    assert.equal(unknown.status, 404)
+    assert.equal(display.headers.get('content-type'), unknown.headers.get('content-type'))
+    const displayBody = await display.json()
+    const unknownBody = await unknown.json()
+    assert.deepEqual(displayBody, { error: 'Not found' })
+    assert.deepEqual(displayBody, unknownBody)
+
+    assert.equal((await fetch(`${baseUrl}/`)).status, 200)
+    assert.equal((await fetch(`${baseUrl}/api/status`)).status, 200)
+    assert.equal((await fetch(`${baseUrl}/api/approve`, { method: 'POST' })).status, 200)
+    assert.equal(approved, 1)
+  }, { getPeerAddress: () => '192.168.1.20' })
 })
 
 test('GET /api/artwork serves cached bytes and 404s when absent', async () => {

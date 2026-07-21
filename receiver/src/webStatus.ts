@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
-import type { AddressInfo } from 'net'
+import { BlockList, isIP, type AddressInfo } from 'net'
 import type { AlsaDeviceOption } from './output/alsaDevices'
 import type { CecWakeOn } from './cecController'
 import type { ClockFormat } from './config'
@@ -94,6 +94,18 @@ export function resolveReceiverStatusLabel(state: Pick<
   return 'Waiting for host'
 }
 
+const LOOPBACK_ADDRESSES = new BlockList()
+LOOPBACK_ADDRESSES.addSubnet('127.0.0.0', 8, 'ipv4')
+LOOPBACK_ADDRESSES.addAddress('::1', 'ipv6')
+
+export function isLoopbackAddress(address: string | undefined): boolean {
+  if (!address) return false
+  const family = isIP(address)
+  if (family === 4) return LOOPBACK_ADDRESSES.check(address, 'ipv4')
+  if (family === 6) return LOOPBACK_ADDRESSES.check(address, 'ipv6')
+  return false
+}
+
 export interface WebStatusCallbacks {
   getState: () => WebStatusState
   approvePair: () => boolean
@@ -130,6 +142,10 @@ export interface WebStatusCallbacks {
     action: 'restart' | 'reboot' | 'update' | 'reset-wifi' | 'factory-reset'
   ) => Promise<{ ok: boolean; error?: string }>
   forgetHost: () => Promise<void>
+}
+
+export interface WebStatusServerOptions {
+  getPeerAddress?: (request: IncomingMessage) => string | undefined
 }
 
 const PAGE_HTML = `<!doctype html>
@@ -1866,6 +1882,10 @@ function toJsonResponse(res: ServerResponse<IncomingMessage>, statusCode: number
   res.end(JSON.stringify(payload))
 }
 
+function toNotFoundResponse(res: ServerResponse<IncomingMessage>): void {
+  toJsonResponse(res, 404, { error: 'Not found' })
+}
+
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = []
   let total = 0
@@ -1881,12 +1901,14 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 
 export class WebStatusServer {
   private readonly callbacks: WebStatusCallbacks
+  private readonly getPeerAddress: (request: IncomingMessage) => string | undefined
   private server: Server | null = null
   // SSE subscribers of /api/keys (the display page) — TV-remote keys stream here.
   private readonly keyClients = new Set<ServerResponse<IncomingMessage>>()
 
-  constructor(callbacks: WebStatusCallbacks) {
+  constructor(callbacks: WebStatusCallbacks, options: WebStatusServerOptions = {}) {
     this.callbacks = callbacks
+    this.getPeerAddress = options.getPeerAddress ?? ((request) => request.socket.remoteAddress)
   }
 
   /** Broadcast a TV-remote key to every display page listening on /api/keys. */
@@ -1936,6 +1958,13 @@ export class WebStatusServer {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'receiver'}`)
     const method = req.method ?? 'GET'
     const path = url.pathname
+
+    // The kiosk surface belongs only to the browser running on the receiver. The direct socket
+    // peer is authoritative; proxy forwarding headers are deliberately ignored.
+    if (path === '/display' && !isLoopbackAddress(this.getPeerAddress(req))) {
+      toNotFoundResponse(res)
+      return
+    }
 
     // Captive portal: while the setup AP is hosted, the image's dnsmasq drop-in resolves EVERY
     // name to us, so phones' connectivity probes (generate_204, hotspot-detect.html, …) land
@@ -2167,6 +2196,6 @@ export class WebStatusServer {
       toJsonResponse(res, 200, { ok: true })
       return
     }
-    toJsonResponse(res, 404, { error: 'Not found' })
+    toNotFoundResponse(res)
   }
 }
