@@ -14888,9 +14888,32 @@ html.library-tab-transition .library-content {
   view-transition-name: library-tab-content;
 }
 
+/* View-transition snapshots render above the live document. Keep the transport
+   layer in the same snapshot tree so its shelves and popovers continue to cover
+   Library content while the tab surface animates underneath them. */
+html.library-tab-transition .transport-bar {
+  view-transition-name: library-tab-transport;
+}
+
 ::view-transition-group(library-tab-content) {
   animation-duration: var(--motion-library-tab-enter);
   animation-timing-function: var(--motion-structural-ease);
+}
+
+::view-transition-group(library-tab-transport) {
+  z-index: 1;
+  animation: none;
+}
+
+::view-transition-old(library-tab-transport) {
+  animation: none;
+  opacity: 0;
+}
+
+::view-transition-new(library-tab-transport) {
+  animation: none;
+  opacity: 1;
+  mix-blend-mode: normal;
 }
 
 ::view-transition-old(library-tab-content),
