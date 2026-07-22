@@ -182,7 +182,10 @@ for module_dir in /lib/modules/*; do
   grep -q 'usr/share/plymouth/themes/parallax/pulse-23.png$' <<< "${initramfs_listing}"
   grep -q '/details.so$' <<< "${initramfs_listing}"
   grep -q '/text.so$' <<< "${initramfs_listing}"
-  grep -q '/label-freetype.so$' <<< "${initramfs_listing}"
+  if ! grep -q '/label-pango.so$' <<< "${initramfs_listing}"; then
+    echo "${initramfs} lacks the Plymouth Pango text-rendering plugin" >&2
+    exit 1
+  fi
   grep -q '/DejaVuSans.ttf$' <<< "${initramfs_listing}"
   kernel_count=$((kernel_count + 1))
 done

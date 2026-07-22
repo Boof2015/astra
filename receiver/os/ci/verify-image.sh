@@ -212,8 +212,8 @@ verify_boot_initramfs() {
     || fail "$(basename "$image") lacks pulse frames"
   grep -q '/details.so$' <<< "$listing" || fail "$(basename "$image") lacks details fallback"
   grep -q '/text.so$' <<< "$listing" || fail "$(basename "$image") lacks text fallback"
-  grep -q '/label-freetype.so$' <<< "$listing" \
-    || fail "$(basename "$image") lacks the text-rendering plugin"
+  grep -q '/label-pango.so$' <<< "$listing" \
+    || fail "$(basename "$image") lacks the Pango text-rendering plugin"
   grep -q '/DejaVuSans.ttf$' <<< "$listing" || fail "$(basename "$image") lacks its UI font"
 }
 verify_boot_initramfs "$BOOT_DIR/initramfs8"
