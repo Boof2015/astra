@@ -164,6 +164,85 @@ set -e
 dpkg -s avahi-daemon unattended-upgrades nodejs alsa-utils >/dev/null
 CHROOT
 
+check "Parallax Plymouth theme, native details fallback, and retained final framebuffer"
+SPLASH_THEME_DIR="${ROOTFS_DIR}/usr/share/plymouth/themes/parallax"
+on_chroot << 'CHROOT'
+set -e
+dpkg -s plymouth plymouth-label fonts-dejavu-core >/dev/null
+[ "$(plymouth-set-default-theme)" = "parallax" ]
+
+kernel_count=0
+for module_dir in /lib/modules/*; do
+  [ -d "${module_dir}" ] || continue
+  kernel_version="${module_dir##*/}"
+  initramfs="/boot/initrd.img-${kernel_version}"
+  [ -s "${initramfs}" ]
+  initramfs_listing="$(lsinitramfs "${initramfs}")"
+  grep -q 'usr/share/plymouth/themes/parallax/parallax.script$' <<< "${initramfs_listing}"
+  grep -q 'usr/share/plymouth/themes/parallax/pulse-23.png$' <<< "${initramfs_listing}"
+  grep -q '/details.so$' <<< "${initramfs_listing}"
+  grep -q '/text.so$' <<< "${initramfs_listing}"
+  grep -q '/label-freetype.so$' <<< "${initramfs_listing}"
+  grep -q '/DejaVuSans.ttf$' <<< "${initramfs_listing}"
+  kernel_count=$((kernel_count + 1))
+done
+[ "${kernel_count}" -ge 2 ]
+CHROOT
+[ -f "${SPLASH_THEME_DIR}/parallax.plymouth" ]
+[ -f "${SPLASH_THEME_DIR}/parallax.script" ]
+[ "$(find "${SPLASH_THEME_DIR}" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq 25 ]
+grep -q '^ModuleName=script$' "${SPLASH_THEME_DIR}/parallax.plymouth"
+grep -q '^Theme=parallax$' "${ROOTFS_DIR}/etc/plymouth/plymouthd.conf"
+grep -q '^ShowDelay=0$' "${ROOTFS_DIR}/etc/plymouth/plymouthd.conf"
+grep -q 'eased_t = 3 \* t \* t - 2 \* t \* t \* t' "${SPLASH_THEME_DIR}/parallax.script"
+grep -q 'cycle_frame < 27' "${SPLASH_THEME_DIR}/parallax.script"
+grep -q 'animation.tick % 69' "${SPLASH_THEME_DIR}/parallax.script"
+if grep -q 'SetKeyboardInputFunction' "${SPLASH_THEME_DIR}/parallax.script"; then
+  echo "the custom theme must leave Esc handling to Plymouth" >&2
+  exit 1
+fi
+grep -q '^update_initramfs=yes$' \
+  "${ROOTFS_DIR}/etc/initramfs-tools/update-initramfs.conf"
+grep -q '^ExecStart=-/usr/bin/plymouth quit --retain-splash$' \
+  "${ROOTFS_DIR}/etc/systemd/system/plymouth-quit.service.d/10-parallax-retain-splash.conf"
+
+check "Pi 3/Pi 5 firmware initramfs images and splash boot parameters"
+[ -s "${ROOTFS_DIR}/boot/firmware/initramfs8" ]
+[ -s "${ROOTFS_DIR}/boot/firmware/initramfs_2712" ]
+grep -q '^auto_initramfs=1$' "${ROOTFS_DIR}/boot/firmware/config.txt"
+grep -q '^disable_splash=1$' "${ROOTFS_DIR}/boot/firmware/config.txt"
+CMDLINE_FILE="${ROOTFS_DIR}/boot/firmware/cmdline.txt"
+[ "$(wc -l < "${CMDLINE_FILE}")" -eq 1 ]
+CMDLINE_TEXT="$(cat "${CMDLINE_FILE}")"
+read -r -a CMDLINE_TOKENS <<< "${CMDLINE_TEXT}"
+for required_token in console=tty1 quiet splash logo.nologo \
+  plymouth.ignore-serial-consoles vt.global_cursor_default=0; do
+  token_found=false
+  for token in "${CMDLINE_TOKENS[@]}"; do
+    [ "${token}" = "${required_token}" ] && token_found=true
+  done
+  [ "${token_found}" = true ]
+done
+serial_console_present=false
+root_argument_present=false
+rootfstype_argument_present=false
+splash_disabled=false
+for token in "${CMDLINE_TOKENS[@]}"; do
+  case "${token}" in
+    console=serial0,*|console=ttyAMA0,*|console=ttyS0,*) serial_console_present=true ;;
+    root=*) root_argument_present=true ;;
+    rootfstype=*) rootfstype_argument_present=true ;;
+    plymouth.enable=0|nosplash) splash_disabled=true ;;
+  esac
+done
+[ "${serial_console_present}" = true ]
+[ "${root_argument_present}" = true ]
+[ "${rootfstype_argument_present}" = true ]
+if [ "${splash_disabled}" = true ]; then
+  echo "splash is disabled on the baked kernel command line" >&2
+  exit 1
+fi
+
 check "TV-remote passthrough: keymap installed and registered"
 [ -f "${ROOTFS_DIR}/etc/rc_keymaps/parallax_cec.toml" ]
 grep -q 'rc-cec parallax_cec.toml' "${ROOTFS_DIR}/etc/rc_maps.cfg"

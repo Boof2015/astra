@@ -1,0 +1,179 @@
+# Parallax OS Plymouth theme. Esc handling deliberately stays with Plymouth so its native
+# splash/details toggle remains available even when the graphical theme is unhealthy.
+
+Window.SetBackgroundTopColor(0, 0, 0);
+Window.SetBackgroundBottomColor(0, 0, 0);
+
+mode = Plymouth.GetMode();
+is_boot = mode == "boot";
+status = "normal";
+
+Plymouth.SetRefreshRate(30);
+
+# Scale the 520x330 mark for both 720p and 1080p without making it dominate smaller modes.
+logo.width = Math.Min(Window.GetWidth() * 0.22, 320);
+logo.width = Math.Max(logo.width, 180);
+logo.height = logo.width * 330 / 520;
+logo.x = Window.GetX() + Window.GetWidth() / 2 - logo.width / 2;
+logo.y = Window.GetY() + Window.GetHeight() * 0.43 - logo.height / 2;
+
+logo.base = Image("logo-base.png");
+logo.base = logo.base.Scale(logo.width, logo.height);
+
+pulse.frames[0] = Image("pulse-00.png");
+pulse.frames[1] = Image("pulse-01.png");
+pulse.frames[2] = Image("pulse-02.png");
+pulse.frames[3] = Image("pulse-03.png");
+pulse.frames[4] = Image("pulse-04.png");
+pulse.frames[5] = Image("pulse-05.png");
+pulse.frames[6] = Image("pulse-06.png");
+pulse.frames[7] = Image("pulse-07.png");
+pulse.frames[8] = Image("pulse-08.png");
+pulse.frames[9] = Image("pulse-09.png");
+pulse.frames[10] = Image("pulse-10.png");
+pulse.frames[11] = Image("pulse-11.png");
+pulse.frames[12] = Image("pulse-12.png");
+pulse.frames[13] = Image("pulse-13.png");
+pulse.frames[14] = Image("pulse-14.png");
+pulse.frames[15] = Image("pulse-15.png");
+pulse.frames[16] = Image("pulse-16.png");
+pulse.frames[17] = Image("pulse-17.png");
+pulse.frames[18] = Image("pulse-18.png");
+pulse.frames[19] = Image("pulse-19.png");
+pulse.frames[20] = Image("pulse-20.png");
+pulse.frames[21] = Image("pulse-21.png");
+pulse.frames[22] = Image("pulse-22.png");
+pulse.frames[23] = Image("pulse-23.png");
+
+for (index = 0; index < 24; index++)
+  pulse.frames[index] = pulse.frames[index].Scale(logo.width, logo.height);
+
+logo.sprite = Sprite(logo.base);
+logo.sprite.SetPosition(logo.x, logo.y, 10);
+
+label.image = Image.Text("PARALLAX OS", 0.956, 0.956, 0.969, 1, "DejaVu Sans 16", "center");
+label.sprite = Sprite(label.image);
+label.x = Window.GetX() + Window.GetWidth() / 2 - label.image.GetWidth() / 2;
+label.y = logo.y + logo.height + Math.Max(16, Window.GetHeight() * 0.018);
+label.sprite.SetPosition(label.x, label.y, 10);
+
+hint.image = Image.Text("Esc  —  show boot details", 0.435, 0.435, 0.486, 1,
+                        "DejaVu Sans 13", "center");
+hint.sprite = Sprite(hint.image);
+hint.x = Window.GetX() + Window.GetWidth() / 2 - hint.image.GetWidth() / 2;
+hint.y = Window.GetY() + Window.GetHeight() - hint.image.GetHeight()
+         - Math.Max(24, Window.GetHeight() * 0.055);
+hint.sprite.SetPosition(hint.x, hint.y, 10);
+if (!is_boot)
+  hint.sprite.SetOpacity(0);
+
+# System prompts and Plymouth messages remain visible on top of the splash. The animation
+# pauses for interactive prompts; Esc is still handled exclusively by Plymouth itself.
+dialog.sprite = Sprite();
+dialog.sprite.SetPosition(0, 0, 20);
+message.sprite = Sprite();
+message.sprite.SetPosition(0, 0, 20);
+
+fun set_dialog_text(text)
+  {
+    dialog.image = Image.Text(text, 0.956, 0.956, 0.969, 1,
+                              "DejaVu Sans 14", "center");
+    dialog.sprite.SetImage(dialog.image);
+    dialog.sprite.SetPosition(Window.GetX() + Window.GetWidth() / 2
+                              - dialog.image.GetWidth() / 2,
+                              Window.GetY() + Window.GetHeight() * 0.72,
+                              20);
+    dialog.sprite.SetOpacity(1);
+  }
+
+fun display_normal_callback()
+  {
+    global.status = "normal";
+    dialog.sprite.SetOpacity(0);
+  }
+
+fun display_password_callback(prompt, bullets)
+  {
+    global.status = "dialog";
+    bullet_text = "";
+    for (index = 0; index < bullets; index++)
+      bullet_text += "•";
+    set_dialog_text(prompt + "  " + bullet_text);
+  }
+
+fun display_question_callback(prompt, entry_text)
+  {
+    global.status = "dialog";
+    set_dialog_text(prompt + "  " + entry_text);
+  }
+
+fun display_prompt_callback(prompt, entry_text, is_secret)
+  {
+    global.status = "dialog";
+    shown_text = entry_text;
+    if (is_secret)
+      {
+        shown_text = "";
+        for (index = 0; index < entry_text.Length(); index++)
+          shown_text += "•";
+      }
+    set_dialog_text(prompt + "  " + shown_text);
+  }
+
+fun display_message_callback(text)
+  {
+    message.image = Image.Text(text, 0.77, 0.82, 0.87, 1,
+                               "DejaVu Sans 12", "center");
+    message.sprite.SetImage(message.image);
+    message.sprite.SetPosition(Window.GetX() + Window.GetWidth() / 2
+                               - message.image.GetWidth() / 2,
+                               Window.GetY() + Window.GetHeight() * 0.78,
+                               20);
+    message.sprite.SetOpacity(1);
+  }
+
+fun hide_message_callback(text)
+  {
+    message.sprite.SetOpacity(0);
+  }
+
+Plymouth.SetDisplayNormalFunction(display_normal_callback);
+Plymouth.SetDisplayPasswordFunction(display_password_callback);
+Plymouth.SetDisplayQuestionFunction(display_question_callback);
+Plymouth.SetDisplayPromptFunction(display_prompt_callback);
+Plymouth.SetDisplayMessageFunction(display_message_callback);
+Plymouth.SetHideMessageFunction(hide_message_callback);
+
+# 27 refreshes at 30 fps = 900 ms of motion. The pulse then rests for 42 refreshes = 1.4 s.
+# The band follows a straight lower-left-to-upper-right path; only velocity is nonlinear.
+# smoothstep(t) = 3t² - 2t³ gives the requested slow-fast-slow Easy Ease movement.
+animation.tick = 0;
+fun refresh_callback()
+  {
+    if (is_boot && status == "normal")
+      {
+        cycle_frame = animation.tick % 69;
+        if (cycle_frame < 27)
+          {
+            t = cycle_frame / 26;
+            eased_t = 3 * t * t - 2 * t * t * t;
+            image_index = Math.Int(eased_t * 23);
+            logo.sprite.SetImage(pulse.frames[image_index]);
+          }
+        else
+          logo.sprite.SetImage(logo.base);
+        animation.tick++;
+      }
+  }
+
+Plymouth.SetRefreshFunction(refresh_callback);
+
+fun quit_callback()
+  {
+    logo.sprite.SetImage(logo.base);
+    hint.sprite.SetOpacity(0);
+    dialog.sprite.SetOpacity(0);
+    message.sprite.SetOpacity(0);
+  }
+
+Plymouth.SetQuitFunction(quit_callback);

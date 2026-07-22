@@ -24,6 +24,11 @@ Drafts are invisible to non-collaborators, so an untested image is never downloa
 - Watchdogs: daemon `WatchdogSec=30` via sd_notify keepalives, plus the Pi hardware watchdog
   (`RuntimeWatchdogSec=15`) for kernel hangs. `Restart=always` with no start limit.
 - Node.js 24 LTS (NodeSource), journald capped at 64 M for SD longevity.
+- **Boot splash:** a pure-black Plymouth screen with the single-layer Astra mark, a flat cyan
+  diagonal pulse using smooth Easy Ease timing, and a dim `Esc — show boot details` hint. Esc
+  uses Plymouth's native splash/details toggle; text/details themes remain in both Pi kernel
+  initramfs images as the non-graphical fallback. Shutdown and reboot use the static mark, and
+  the final boot frame stays up until Cage or tty1 paints over it.
 
 - **TV mode** (Phase 2): if an HDMI display is connected at boot, a Cage + WPE kiosk starts on
   tty1 showing the daemon's `/display` page — Zone-Display-style artwork + title/artist. No
@@ -84,9 +89,22 @@ The boot partition is FAT and does not protect file contents with useful Unix pe
 with the card can read any password hash or Wi-Fi credential left there. Parallax performs no
 automatic credential cleanup: prefer key-only SSH and physically protect provisioned cards.
 
+### Boot details and splash recovery
+
+Press **Esc** during boot to switch between the splash and live boot details. Early boot cannot
+receive HDMI-CEC or TV-remote input, so this requires a keyboard connected directly to the Pi;
+serial-console access remains available independently. Service failures shown in details mode are
+real boot output, not a simulated progress screen.
+
+If a display or graphics-driver problem makes the splash unusable, power down, mount the FAT boot
+partition on another computer, and add `plymouth.enable=0` to `cmdline.txt`. Keep every existing
+argument and keep the entire file on **one line**. This disables Plymouth for the next recovery
+boot; remove the argument after fixing the problem.
+
 ## Building locally (Linux, needs Docker or a Debian-ish host)
 
 ```sh
+sudo apt-get install initramfs-tools-core # needed by the exported-image verifier
 git clone --branch arm64 https://github.com/RPi-Distro/pi-gen && cd pi-gen
 git checkout <PI_GEN_REF from the workflow>
 cp ../receiver/os/config config
@@ -110,6 +128,15 @@ Keep every image release as a draft until fresh cards pass on both Pi 3B and Pi 
    per-instance setup on the second boot.
 3. Confirm `user-data`, `network-config`, and `meta-data` remain on the boot partition exactly as
    documented. Destroy the disposable credentials after the test.
+4. On both Pi 3B and Pi 5, test HDMI at 720p and 1080p. Confirm the single-layer logo stays visible,
+   the flat diagonal pulse runs for about 900 ms with slow-fast-slow motion, rests for about 1.4 s,
+   and continues without hitching throughout a long first-boot cloud-init run.
+5. With a directly connected keyboard, confirm Esc switches to live boot details and a second Esc
+   returns to the splash. Force a disposable service failure and confirm it remains visible and
+   diagnosable; then restore the service before release.
+6. Confirm healthy HDMI startup transitions straight from the retained splash into Cage without a
+   tty1 flash. Also test headless boot, serial access, getty fallback, the first-boot reboot, normal
+   shutdown, and reboot; shutdown/reboot must show only the static logo without the Esc hint.
 
 Iteration cost warning: every change to the stage means a full image build + flash + boot on
 real hardware. Put anything checkable at build time into `stage-parallax/99-verify/00-run.sh`

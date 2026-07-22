@@ -116,6 +116,10 @@ jobs:
 
       - name: Verify image
         run: |
+          if ! command -v lsinitramfs >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y initramfs-tools-core
+          fi
           IMG="$(ls pi-gen/deploy/*.img)"
           sudo bash receiver/os/ci/verify-image.sh "$IMG"
 

@@ -2,7 +2,7 @@
 #
 # Post-build verification of the exported Parallax OS image: loop-mount the raw .img and
 # re-assert the load-bearing facts against the ACTUAL artifact. The in-stage checks
-# (stage-parallax/03-verify) ran against the rootfs; this catches rootfs→image export bugs.
+# (stage-parallax/99-verify) ran against the rootfs; this catches rootfs→image export bugs.
 # Needs root (losetup/mount): the workflow runs it with sudo.
 #
 # Usage: verify-image.sh <path-to.img>
@@ -135,6 +135,89 @@ check "hostname + appliance drop-ins"
 
 check "node baked at /usr/bin/node"
 [ -e "$MOUNT_DIR/usr/bin/node" ] || fail "/usr/bin/node missing"
+
+check "Parallax Plymouth theme and selected configuration"
+[ -f "$MOUNT_DIR/var/lib/dpkg/info/plymouth.list" ] || fail "plymouth package not installed"
+[ -f "$MOUNT_DIR/var/lib/dpkg/info/plymouth-label.list" ] \
+  || fail "plymouth-label package not installed"
+[ -f "$MOUNT_DIR/var/lib/dpkg/info/fonts-dejavu-core.list" ] \
+  || fail "DejaVu font package not installed"
+SPLASH_THEME_DIR="$MOUNT_DIR/usr/share/plymouth/themes/parallax"
+[ -f "$SPLASH_THEME_DIR/parallax.plymouth" ] || fail "Parallax theme descriptor missing"
+[ -f "$SPLASH_THEME_DIR/parallax.script" ] || fail "Parallax theme script missing"
+[ "$(find "$SPLASH_THEME_DIR" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq 25 ] \
+  || fail "Parallax theme does not contain the base logo plus 24 pulse frames"
+grep -q '^Theme=parallax$' "$MOUNT_DIR/etc/plymouth/plymouthd.conf" \
+  || fail "Parallax is not the selected Plymouth theme"
+grep -q '^ExecStart=-/usr/bin/plymouth quit --retain-splash$' \
+  "$MOUNT_DIR/etc/systemd/system/plymouth-quit.service.d/10-parallax-retain-splash.conf" \
+  || fail "Plymouth final framebuffer is not retained"
+grep -q '^update_initramfs=yes$' "$MOUNT_DIR/etc/initramfs-tools/update-initramfs.conf" \
+  || fail "initramfs regeneration is disabled"
+grep -q 'eased_t = 3 \* t \* t - 2 \* t \* t \* t' "$SPLASH_THEME_DIR/parallax.script" \
+  || fail "splash does not use the smoothstep Easy Ease curve"
+grep -q 'SetKeyboardInputFunction' "$SPLASH_THEME_DIR/parallax.script" \
+  && fail "custom theme captures keyboard input instead of leaving Esc to Plymouth"
+
+check "single-line boot parameters preserve tty1, serial, and root arguments"
+[ "$(wc -l < "$BOOT_DIR/cmdline.txt")" -eq 1 ] || fail "cmdline.txt is not one line"
+CMDLINE_TEXT="$(cat "$BOOT_DIR/cmdline.txt")"
+read -r -a CMDLINE_TOKENS <<< "$CMDLINE_TEXT"
+has_cmdline_token() {
+  local wanted="$1"
+  local token
+  for token in "${CMDLINE_TOKENS[@]}"; do
+    [ "$token" = "$wanted" ] && return 0
+  done
+  return 1
+}
+has_cmdline_prefix() {
+  local wanted_prefix="$1"
+  local token
+  for token in "${CMDLINE_TOKENS[@]}"; do
+    case "$token" in
+      "$wanted_prefix"*) return 0 ;;
+    esac
+  done
+  return 1
+}
+for required_token in console=tty1 quiet splash logo.nologo \
+  plymouth.ignore-serial-consoles vt.global_cursor_default=0; do
+  has_cmdline_token "$required_token" || fail "cmdline.txt lacks $required_token"
+done
+serial_console_present=false
+for token in "${CMDLINE_TOKENS[@]}"; do
+  case "$token" in
+    console=serial0,*|console=ttyAMA0,*|console=ttyS0,*) serial_console_present=true ;;
+  esac
+done
+[ "$serial_console_present" = true ] || fail "cmdline.txt lost its serial console"
+has_cmdline_prefix 'root=' || fail "cmdline.txt lost its root argument"
+has_cmdline_prefix 'rootfstype=' || fail "cmdline.txt lost its rootfstype argument"
+has_cmdline_token 'plymouth.enable=0' && fail "splash is disabled in cmdline.txt"
+has_cmdline_token 'nosplash' && fail "splash is disabled by nosplash"
+grep -q '^auto_initramfs=1$' "$BOOT_DIR/config.txt" || fail "auto_initramfs is not enabled"
+grep -q '^disable_splash=1$' "$BOOT_DIR/config.txt" || fail "firmware rainbow is not disabled"
+
+check "Pi 3/Pi 5 boot initramfs files contain graphical and fallback themes"
+command -v lsinitramfs >/dev/null || fail "host lacks lsinitramfs (install initramfs-tools-core)"
+verify_boot_initramfs() {
+  local image="$1"
+  local listing
+  [ -s "$image" ] || fail "$(basename "$image") missing or empty"
+  listing="$(lsinitramfs "$image")"
+  grep -q 'usr/share/plymouth/themes/parallax/parallax.script$' <<< "$listing" \
+    || fail "$(basename "$image") lacks the Parallax theme"
+  grep -q 'usr/share/plymouth/themes/parallax/pulse-23.png$' <<< "$listing" \
+    || fail "$(basename "$image") lacks pulse frames"
+  grep -q '/details.so$' <<< "$listing" || fail "$(basename "$image") lacks details fallback"
+  grep -q '/text.so$' <<< "$listing" || fail "$(basename "$image") lacks text fallback"
+  grep -q '/label-freetype.so$' <<< "$listing" \
+    || fail "$(basename "$image") lacks the text-rendering plugin"
+  grep -q '/DejaVuSans.ttf$' <<< "$listing" || fail "$(basename "$image") lacks its UI font"
+}
+verify_boot_initramfs "$BOOT_DIR/initramfs8"
+verify_boot_initramfs "$BOOT_DIR/initramfs_2712"
 
 check "AP setup: polkit rule, captive DNS, apSetup baked, parallax user locked"
 [ -f "$MOUNT_DIR/etc/polkit-1/rules.d/50-parallax-network.rules" ] || fail "polkit rule missing"
