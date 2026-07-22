@@ -20,7 +20,7 @@ import {
  * hit-testing, focus and theming (CSS variables) for free.
  */
 
-export type SpeakerStagePuckState = 'active' | 'muted' | 'inactive'
+export type SpeakerStagePuckState = 'routed' | 'unused' | 'inactive'
 
 export interface SpeakerStageSpeaker {
   id: string
@@ -62,6 +62,17 @@ const DRAG_SNAP_DEG = 1
 const DRAG_SNAP_COARSE_DEG = 5
 const KEYBOARD_STEP_DEG = 1
 const KEYBOARD_STEP_COARSE_DEG = 5
+
+function usageStatusText(state: SpeakerStagePuckState): string {
+  switch (state) {
+    case 'routed':
+      return 'Routed from current track'
+    case 'unused':
+      return 'Not used by current track'
+    case 'inactive':
+      return 'Inactive'
+  }
+}
 
 function puckPosition(azimuthDeg: number, elevationDeg = 0): { x: number; y: number } {
   // Top-down projection: an elevated (or lowered) speaker's floor-plane
@@ -224,6 +235,7 @@ export default function SpeakerStage({
         {positionalSpeakers.map((speaker) => {
           const { x, y } = puckPosition(speaker.azimuth, speaker.elevation ?? 0)
           const selected = speaker.id === selectedId
+          const usageStatus = usageStatusText(speaker.state)
           const elevationDeg = Math.round(speaker.elevation ?? 0)
           const elevationCaption = elevationDeg !== 0
             ? `${elevationDeg > 0 ? '↑' : '↓'}${Math.abs(elevationDeg)}°`
@@ -243,8 +255,8 @@ export default function SpeakerStage({
               role={speaker.draggable ? 'slider' : 'button'}
               aria-label={
                 speaker.draggable
-                  ? `${speaker.label} position`
-                  : `${speaker.label} routing`
+                  ? `${speaker.label} position, ${usageStatus.toLowerCase()}`
+                  : `${speaker.label} routing, ${usageStatus.toLowerCase()}`
               }
               aria-valuenow={speaker.draggable ? Math.round(speaker.azimuth) : undefined}
               aria-valuemin={speaker.draggable ? -180 : undefined}
@@ -257,7 +269,7 @@ export default function SpeakerStage({
               onKeyDown={(event) => handlePuckKeyDown(event, speaker)}
             >
               <title>
-                {`${speaker.label} (${Math.round(speaker.azimuth)}°${elevationCaption ? `, ${elevationDeg}° elevation` : ''})`}
+                {`${speaker.label} (${Math.round(speaker.azimuth)}°${elevationCaption ? `, ${elevationDeg}° elevation` : ''}) — ${usageStatus}`}
               </title>
               <circle className="speaker-stage-puck-body" r={PUCK_RADIUS} />
               <text className="speaker-stage-puck-id" dy="0.34em">
@@ -284,7 +296,8 @@ export default function SpeakerStage({
                 if (!disabled) onSelect(selectedId === speaker.id ? null : speaker.id)
               }}
               disabled={disabled}
-              title={`${speaker.label} (non-positional)`}
+              title={`${speaker.label} (non-positional) — ${usageStatusText(speaker.state)}`}
+              aria-label={`${speaker.label}, non-positional, ${usageStatusText(speaker.state).toLowerCase()}`}
             >
               {speaker.channelId}
             </button>

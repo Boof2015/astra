@@ -25,6 +25,7 @@ import {
   SPATIAL_MIN_ELEVATION_DEG,
   type SpatialLayoutPresetId,
 } from '../../utils/virtualSpeakerLayout'
+import { resolveSpeakerStageUsage } from '../../utils/speakerStageUsage'
 import SpeakerStage, { type SpeakerStageSpeaker } from './SpeakerStage'
 
 /*
@@ -160,6 +161,23 @@ export default function ChannelRoutingPanel() {
     stereoUpmixMode,
     outputChannelIds: virtualSpeakers.map((sp) => sp.sourceChannel),
   })
+
+  const virtualSpeakerUsage = useMemo(() => resolveSpeakerStageUsage({
+    sourceChannels: hasTrackChannels ? resolvedTrackChannels : null,
+    outputChannelIds: virtualSpeakers.map((speaker) => speaker.sourceChannel),
+    rendererActive: binauralActive,
+    standardMode: playbackOutputMode === 'standard',
+    stereoUpmixMode,
+    includeLfeInDownmix,
+  }), [
+    binauralActive,
+    hasTrackChannels,
+    includeLfeInDownmix,
+    playbackOutputMode,
+    resolvedTrackChannels,
+    stereoUpmixMode,
+    virtualSpeakers,
+  ])
 
   const stereoAmbientUpmixRoutes = useMemo(() => {
     if (!stereoAmbientUpmixActive) return new Map<number, StereoAmbientUpmixRoute>()
@@ -331,13 +349,13 @@ export default function ChannelRoutingPanel() {
 
   const stageSpeakers = useMemo<SpeakerStageSpeaker[]>(() => {
     if (binauralSelected) {
-      return virtualSpeakers.map((sp) => ({
+      return virtualSpeakers.map((sp, index) => ({
         id: sp.id,
         channelId: sp.sourceChannel,
         label: `${sp.sourceChannel} virtual speaker`,
         azimuth: isVirtualSpeakerLfe(sp) ? null : sp.azimuth,
         elevation: isVirtualSpeakerLfe(sp) ? undefined : sp.elevation,
-        state: 'active' as const,
+        state: virtualSpeakerUsage[index] ?? 'inactive',
         draggable: !isVirtualSpeakerLfe(sp),
       }))
     }
@@ -346,10 +364,10 @@ export default function ChannelRoutingPanel() {
       channelId: route.channelId,
       label: route.label,
       azimuth: directDisplayAzimuths[index] ?? null,
-      state: route.active ? 'active' as const : (multichannelEnabled ? 'muted' as const : 'inactive' as const),
+      state: route.active ? 'routed' as const : (hasTrackChannels ? 'unused' as const : 'inactive' as const),
       draggable: false,
     }))
-  }, [binauralSelected, directDisplayAzimuths, directRoutes, multichannelEnabled, virtualSpeakers])
+  }, [binauralSelected, directDisplayAzimuths, directRoutes, hasTrackChannels, virtualSpeakers, virtualSpeakerUsage])
 
   // Selection carries no meaning across mode/layout switches.
   useEffect(() => {
