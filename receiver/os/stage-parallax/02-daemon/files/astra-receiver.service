@@ -20,6 +20,7 @@ Restart=always
 RestartSec=3
 WatchdogSec=30
 TimeoutStartSec=90
+TimeoutStopSec=15s
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]

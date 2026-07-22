@@ -22,6 +22,7 @@ check "current symlink is relative and points at the baked release"
 check "units present with the appliance settings"
 grep -q '^Type=notify' "${ROOTFS_DIR}/etc/systemd/system/astra-receiver.service"
 grep -q '^WatchdogSec=' "${ROOTFS_DIR}/etc/systemd/system/astra-receiver.service"
+grep -q '^TimeoutStopSec=15s$' "${ROOTFS_DIR}/etc/systemd/system/astra-receiver.service"
 grep -q '^AmbientCapabilities=CAP_NET_BIND_SERVICE' "${ROOTFS_DIR}/etc/systemd/system/astra-receiver.service"
 grep -q '^ExecStart=/usr/bin/node /opt/astra-receiver/current/' "${ROOTFS_DIR}/etc/systemd/system/astra-receiver.service"
 [ -f "${ROOTFS_DIR}/etc/systemd/system/astra-receiver-update.timer" ]

@@ -18,6 +18,7 @@ import { createOutputBackend } from './output/backendFactory'
 import { listAlsaDevices } from './output/alsaDevices'
 import { ParallaxSinkClient } from './sinkClient'
 import { SinkSession } from './sinkSession'
+import { createShutdownCoordinator } from './shutdown'
 import { createSystemdNotifier } from './systemdNotify'
 import { WebStatusServer, resolveReceiverStatusLabel, type WebStatusState } from './webStatus'
 
@@ -429,7 +430,6 @@ async function main(): Promise<void> {
         // Best-effort courtesy: retire our sink id on the host so it doesn't linger there.
         await client.forgetOnHost().catch(() => undefined)
         connectGeneration += 1
-        await client.disconnect().catch(() => undefined)
         await networkSetup.forgetWifiConnections().catch(() => undefined)
         try {
           configStore.factoryReset()
@@ -490,25 +490,29 @@ async function main(): Promise<void> {
     log('not paired yet — open the status page and pair from Astra on the host')
   }
 
-  let shuttingDown = false
-  const shutdown = async (signal: string): Promise<void> => {
-    if (shuttingDown) return
-    shuttingDown = true
-    log(`${signal} — shutting down`)
-    notifier.stopping()
-    notifier.stopWatchdog()
-    clearInterval(cecPollTimer)
-    cec.stop()
-    networkSetup.stop()
-    connectGeneration += 1
-    await client.disconnect().catch(() => undefined)
-    await web.stop().catch(() => undefined)
-    await listener.stop().catch(() => undefined)
-    discovery.destroy()
-    session.stop()
-    backend.close()
-    process.exit(0)
-  }
+  const shutdown = createShutdownCoordinator({
+    log,
+    exit: (code) => process.exit(code),
+    prepare: [
+      { name: 'systemd stopping notification', run: () => notifier.stopping() },
+      { name: 'systemd watchdog', run: () => notifier.stopWatchdog() },
+      { name: 'CEC poll', run: () => clearInterval(cecPollTimer) },
+      { name: 'CEC controller', run: () => cec.stop() },
+      { name: 'update watcher', run: stopUpdateWatch },
+      { name: 'network setup', run: () => networkSetup.stop() },
+      { name: 'host reconnect loop', run: () => { connectGeneration += 1 } }
+    ],
+    cleanup: [
+      { name: 'host client', run: () => client.disconnect() },
+      { name: 'web server', run: () => web.stop() },
+      { name: 'pairing listener', run: () => listener.stop() }
+    ],
+    finalizers: [
+      { name: 'discovery', run: () => discovery.destroy() },
+      { name: 'session', run: () => session.stop() },
+      { name: 'audio backend', run: () => backend.close() }
+    ]
+  })
   process.on('SIGINT', () => void shutdown('SIGINT'))
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
 }

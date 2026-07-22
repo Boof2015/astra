@@ -309,11 +309,9 @@ export class ParallaxSinkClient {
     this.lastError = null
 
     if (connection) {
-      try { connection.abortController.abort() } catch { /* ignore */ }
-      void connection.dispatcher.close().catch(() => undefined)
-      try { await connection.eventReader?.cancel() } catch { /* ignore */ }
-      try { await connection.audioReader?.cancel() } catch { /* ignore */ }
-      try { await connection.nextAudioReader?.cancel() } catch { /* ignore */ }
+      const eventReader = connection.eventReader
+      const audioReader = connection.audioReader
+      const nextAudioReader = connection.nextAudioReader
       connection.eventReader = null
       connection.audioReader = null
       connection.activeAudioStreamId = null
@@ -322,6 +320,27 @@ export class ParallaxSinkClient {
       connection.eventGeneration += 1
       connection.audioGeneration += 1
       connection.nextAudioGeneration += 1
+
+      // Detach and abort every fetch before waiting on reader cancellation. Some Web Streams
+      // implementations can leave cancel() pending indefinitely after a broken network path; all
+      // cancellation attempts still need to start, and receiver shutdown bounds this promise.
+      try { connection.abortController.abort() } catch { /* ignore */ }
+      this.emitStatus()
+
+      const cleanup: Array<Promise<unknown>> = []
+      const startCleanup = (operation: () => unknown): void => {
+        try {
+          cleanup.push(Promise.resolve(operation()))
+        } catch {
+          // A synchronous cleanup failure is best-effort, like a rejected cancellation.
+        }
+      }
+      startCleanup(() => connection.dispatcher.close())
+      if (eventReader) startCleanup(() => eventReader.cancel())
+      if (audioReader) startCleanup(() => audioReader.cancel())
+      if (nextAudioReader) startCleanup(() => nextAudioReader.cancel())
+      await Promise.allSettled(cleanup)
+      return
     }
     this.emitStatus()
   }

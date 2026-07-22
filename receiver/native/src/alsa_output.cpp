@@ -164,7 +164,9 @@ Napi::Value Underruns(const Napi::CallbackInfo& info) {
 
 Napi::Value Close(const Napi::CallbackInfo& info) {
   if (g_pcm != nullptr) {
-    snd_pcm_drain(g_pcm);
+    // Service shutdown/reboot has no audible-completion contract. Drop queued frames instead of
+    // draining them so a stalled device cannot block Node until systemd's stop deadline.
+    snd_pcm_drop(g_pcm);
     snd_pcm_close(g_pcm);
     g_pcm = nullptr;
   }

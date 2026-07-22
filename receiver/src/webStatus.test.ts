@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { Agent, get } from 'node:http'
 import test from 'node:test'
 import {
   WebStatusServer,
@@ -413,6 +414,37 @@ test('/api/keys streams pushed TV-remote keys as SSE', async () => {
     assert.match(buffer, /data: \{"key":"Enter","raw":"select"\}/)
     controller.abort()
   })
+})
+
+test('stop closes active status-key SSE and keep-alive connections', async () => {
+  const agent = new Agent({ keepAlive: true })
+  try {
+    await withServer({}, async (baseUrl, server) => {
+      const sse = await fetch(`${baseUrl}/api/keys`)
+      const reader = sse.body!.getReader()
+      const connected = await reader.read()
+      assert.equal(connected.done, false)
+
+      await new Promise<void>((resolve, reject) => {
+        const request = get(`${baseUrl}/api/status`, { agent }, (response) => {
+          response.resume()
+          response.once('end', resolve)
+        })
+        request.once('error', reject)
+      })
+      const keepAliveSockets = Object.values(agent.freeSockets).flat()
+        .filter((socket) => socket !== undefined)
+      assert.equal(keepAliveSockets.length > 0, true)
+
+      await server.stop()
+      const closed = await reader.read()
+      assert.equal(closed.done, true)
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      assert.equal(keepAliveSockets.every((socket) => socket.destroyed), true)
+    })
+  } finally {
+    agent.destroy()
+  }
 })
 
 test('POST /api/transport validates commands and maps sink-client results', async () => {

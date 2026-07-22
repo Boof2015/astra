@@ -217,6 +217,7 @@ Restart=always
 RestartSec=3
 WatchdogSec=30
 TimeoutStartSec=90
+TimeoutStopSec=15s
 
 [Install]
 WantedBy=multi-user.target

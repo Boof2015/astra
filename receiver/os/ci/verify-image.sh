@@ -116,6 +116,7 @@ esac
 check "units enabled with appliance settings"
 UNIT="$MOUNT_DIR/etc/systemd/system/astra-receiver.service"
 grep -q '^Type=notify' "$UNIT" || fail "unit is not Type=notify"
+grep -q '^TimeoutStopSec=15s$' "$UNIT" || fail "unit stop timeout is not 15 seconds"
 grep -q '^AmbientCapabilities=CAP_NET_BIND_SERVICE' "$UNIT" || fail "unit lacks CAP_NET_BIND_SERVICE"
 [ -L "$MOUNT_DIR/etc/systemd/system/multi-user.target.wants/astra-receiver.service" ] \
   || fail "astra-receiver.service not enabled"

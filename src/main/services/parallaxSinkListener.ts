@@ -100,6 +100,7 @@ interface ExpiredTombstone {
 
 export class ParallaxSinkListener extends EventEmitter<ParallaxSinkListenerEvents> {
   private server: Server | null = null
+  private stopPromise: Promise<void> | null = null
   private port = 0
   private pending: PendingPair | null = null
   private expiredTombstones = new Map<string, ExpiredTombstone>()
@@ -144,6 +145,7 @@ export class ParallaxSinkListener extends EventEmitter<ParallaxSinkListenerEvent
   }
 
   async stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise
     this.clearPending(null)
     // Tombstones hold their own setTimeouts; drain them too so stop() leaves no live handles.
     for (const [, tombstone] of this.expiredTombstones) {
@@ -151,10 +153,18 @@ export class ParallaxSinkListener extends EventEmitter<ParallaxSinkListenerEvent
     }
     this.expiredTombstones.clear()
     if (!this.server) return
-    await new Promise<void>((resolve) => {
-      this.server!.close(() => resolve())
-    })
+    const server = this.server
     this.server = null
+    const stopping = new Promise<void>((resolve) => {
+      server.close(() => resolve())
+    })
+    // Stop accepting first, then shed active/keep-alive/partially-read requests. A pairing client
+    // must not be able to hold server.close() open during app or receiver shutdown.
+    server.closeAllConnections()
+    this.stopPromise = stopping.finally(() => {
+      this.stopPromise = null
+    })
+    return this.stopPromise
   }
 
   get isRunning(): boolean {

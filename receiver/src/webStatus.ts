@@ -1903,6 +1903,7 @@ export class WebStatusServer {
   private readonly callbacks: WebStatusCallbacks
   private readonly getPeerAddress: (request: IncomingMessage) => string | undefined
   private server: Server | null = null
+  private stopPromise: Promise<void> | null = null
   // SSE subscribers of /api/keys (the display page) — TV-remote keys stream here.
   private readonly keyClients = new Set<ServerResponse<IncomingMessage>>()
 
@@ -1943,6 +1944,7 @@ export class WebStatusServer {
   }
 
   async stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise
     if (!this.server) return
     const server = this.server
     this.server = null
@@ -1951,7 +1953,14 @@ export class WebStatusServer {
       try { client.end() } catch { /* already gone */ }
     }
     this.keyClients.clear()
-    await new Promise<void>((resolve) => server.close(() => resolve()))
+    const stopping = new Promise<void>((resolve) => server.close(() => resolve()))
+    // close() stops accepts first; closeAllConnections() then destroys active requests and any
+    // keep-alive sockets that would otherwise let a client hold shutdown open.
+    server.closeAllConnections()
+    this.stopPromise = stopping.finally(() => {
+      this.stopPromise = null
+    })
+    return this.stopPromise
   }
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse<IncomingMessage>): Promise<void> {

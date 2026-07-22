@@ -46,7 +46,8 @@ jobs:
         run: >
           node --experimental-strip-types --loader ./scripts/node/electron-test-loader.mjs
           --test --test-concurrency=1 receiver/src/playout.test.ts receiver/src/config.test.ts
-          receiver/src/webStatus.test.ts receiver/src/systemdNotify.test.ts
+          receiver/src/webStatus.test.ts receiver/src/systemdNotify.test.ts receiver/src/shutdown.test.ts
+          receiver/src/sinkClientShutdown.test.ts receiver/src/parallaxSinkListenerShutdown.test.ts
           receiver/src/output/alsaDevices.test.ts receiver/src/cecController.test.ts
           receiver/src/networkSetup.test.ts
       - name: Shellcheck deploy scripts
