@@ -3,6 +3,9 @@ import { fetch as undiciFetch, type RequestInit as UndiciRequestInit } from 'und
 import type {
   ParallaxAudioChunk,
   ParallaxClockSample,
+  ParallaxJoinPhase,
+  ParallaxJoinResponse,
+  ParallaxJoinValidationDiagnostic,
   ParallaxSinkConnectionConfig,
   ParallaxSinkTelemetry,
   ParallaxStreamInfo,
@@ -15,11 +18,12 @@ import {
   PARALLAX_PROTOCOL_VERSION,
   ParallaxAuthError,
   buildParallaxClockSample,
+  buildParallaxJoinValidationDiagnostic,
   decodeParallaxAudioPacket,
-  parseParallaxJoinResponse,
   parseParallaxTimelineEvent,
   readParallaxAudioPacketHeader,
-  selectFilteredParallaxClockOffsetMs
+  selectFilteredParallaxClockOffsetMs,
+  validateParallaxJoinResponse
 } from '../../src/types/parallax'
 import {
   createParallaxPinnedDispatcher,
@@ -77,6 +81,10 @@ export interface SinkClientCallbacks {
   onAuthRevoked: () => void
   /** Resolve the host's current baseUrl via mDNS after repeated reconnect failures. */
   onRelocate?: () => Promise<string | null>
+  /** Sanitized join-validation diagnostics for the system journal. */
+  onDiagnostic?: (diagnostic: ParallaxJoinValidationDiagnostic) => void
+  /** Installed receiver release tag, or `dev` for source builds. */
+  softwareVersion?: string
 }
 
 interface SinkConnectionState {
@@ -97,6 +105,12 @@ interface SinkConnectionState {
 
 type ParallaxFetchInit = UndiciRequestInit & {
   dispatcher: ReturnType<typeof createParallaxPinnedDispatcher>
+}
+
+interface ParallaxJsonResponse<T> {
+  value: T
+  httpStatus: number
+  contentType: string | null
 }
 
 function parallaxNowMs(): number {
@@ -241,14 +255,7 @@ export class ParallaxSinkClient {
 
     const connection = this.connection
     try {
-      const rawJoin = await this.fetchSinkJson<unknown>('/v1/parallax/join', {
-        method: 'POST',
-        body: JSON.stringify({ sinkId })
-      })
-      const join = parseParallaxJoinResponse(rawJoin)
-      if (!join || join.sinkId !== sinkId) {
-        throw new Error('Parallax host returned an invalid join response.')
-      }
+      const join = await this.fetchValidatedJoin(sinkId, 'initial')
       this.reconnectAttempts = 0
       this.playbackEnabled = join.playbackEnabled
       this.activeStream = join.stream
@@ -374,7 +381,10 @@ export class ParallaxSinkClient {
     this.callbacks.onAuthRevoked()
   }
 
-  private async fetchSinkJson<T = unknown>(path: string, init: UndiciRequestInit = {}): Promise<T> {
+  private async fetchSinkJsonResponse<T = unknown>(
+    path: string,
+    init: UndiciRequestInit = {}
+  ): Promise<ParallaxJsonResponse<T>> {
     const connection = this.connection
     if (!connection) {
       throw new Error('Parallax sink is not connected.')
@@ -398,7 +408,43 @@ export class ParallaxSinkClient {
       }
       throw new Error(message)
     }
-    return payload as T
+    return {
+      value: payload as T,
+      httpStatus: response.status,
+      contentType: response.headers.get('content-type')?.trim() || null
+    }
+  }
+
+  private async fetchSinkJson<T = unknown>(path: string, init: UndiciRequestInit = {}): Promise<T> {
+    return (await this.fetchSinkJsonResponse<T>(path, init)).value
+  }
+
+  private async fetchValidatedJoin(
+    expectedSinkId: string,
+    joinPhase: ParallaxJoinPhase
+  ): Promise<ParallaxJoinResponse> {
+    const response = await this.fetchSinkJsonResponse<unknown>('/v1/parallax/join', {
+      method: 'POST',
+      body: JSON.stringify({ sinkId: expectedSinkId })
+    })
+    const validation = validateParallaxJoinResponse(response.value, expectedSinkId)
+    if (validation.ok) return validation.value
+
+    const diagnostic = buildParallaxJoinValidationDiagnostic({
+      value: response.value,
+      expectedSinkId,
+      joinPhase,
+      reason: validation.reason,
+      httpStatus: response.httpStatus,
+      contentType: response.contentType,
+      softwareVersion: this.callbacks.softwareVersion ?? 'unknown'
+    })
+    if (this.callbacks.onDiagnostic) {
+      this.callbacks.onDiagnostic(diagnostic)
+    } else {
+      console.error(`[astra-receiver] Parallax join validation failed: ${JSON.stringify(diagnostic)}`)
+    }
+    throw new Error(`Parallax host returned an invalid join response (${validation.reason}).`)
   }
 
   // ── Zone Display artwork (§14.1.4 / §19.18(e) port) ──────────────────────────
@@ -674,14 +720,7 @@ export class ParallaxSinkClient {
       await this.primeClockSync(connection)
       if (this.connection !== connection) return
 
-      const rawJoin = await this.fetchSinkJson<unknown>('/v1/parallax/join', {
-        method: 'POST',
-        body: JSON.stringify({ sinkId: connection.sinkId })
-      })
-      const join = parseParallaxJoinResponse(rawJoin)
-      if (!join || join.sinkId !== connection.sinkId) {
-        throw new Error('Parallax host returned an invalid join response.')
-      }
+      const join = await this.fetchValidatedJoin(connection.sinkId, 'reconnect')
       if (this.connection !== connection) return
       this.reconnectAttempts = 0
       this.playbackEnabled = join.playbackEnabled

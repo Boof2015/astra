@@ -701,6 +701,39 @@ export interface ParallaxJoinResponse {
   nextTimeline?: ParallaxTimelineState | null
 }
 
+export type ParallaxJoinValidationReason =
+  | 'response-not-object'
+  | 'invalid-sink-id'
+  | 'invalid-group-latency-ms'
+  | 'invalid-host-time-ms'
+  | 'invalid-stream-fields'
+  | 'invalid-timeline-fields'
+  | 'invalid-next-stream-fields'
+  | 'invalid-next-timeline-fields'
+  | 'active-presence-mismatch'
+  | 'next-presence-mismatch'
+  | 'active-id-mismatch'
+  | 'next-id-mismatch'
+  | 'sink-id-mismatch'
+
+export type ParallaxJoinValidationResult =
+  | { ok: true; value: ParallaxJoinResponse }
+  | { ok: false; reason: ParallaxJoinValidationReason }
+
+export type ParallaxJoinPhase = 'initial' | 'reconnect'
+
+export interface ParallaxJoinValidationDiagnostic {
+  event: 'parallax_join_validation_failed'
+  joinPhase: ParallaxJoinPhase
+  reason: ParallaxJoinValidationReason
+  httpStatus: number
+  contentType: string | null
+  protocolVersion: number
+  softwareVersion: string
+  expectedSinkId?: string
+  actualSinkId?: string
+}
+
 function parallaxRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -776,26 +809,74 @@ export function parseParallaxTimelineState(value: unknown): ParallaxTimelineStat
   return { streamId, playbackState, startFrame, startHostTimeMs, updatedHostTimeMs, groupLatencyMs }
 }
 
-export function parseParallaxJoinResponse(value: unknown): ParallaxJoinResponse | null {
+export function validateParallaxJoinResponse(
+  value: unknown,
+  expectedSinkId: string
+): ParallaxJoinValidationResult {
   const record = parallaxRecord(value)
-  if (!record) return null
+  if (!record) return { ok: false, reason: 'response-not-object' }
   const sinkId = parallaxWireString(record.sinkId, 128)
+  if (sinkId === null) return { ok: false, reason: 'invalid-sink-id' }
   const groupLatencyMs = parallaxFiniteNumber(record.groupLatencyMs, 0, 60_000)
+  if (groupLatencyMs === null) return { ok: false, reason: 'invalid-group-latency-ms' }
   const hostTimeMs = parallaxFiniteNumber(record.hostTimeMs, 0, Number.MAX_SAFE_INTEGER)
+  if (hostTimeMs === null) return { ok: false, reason: 'invalid-host-time-ms' }
   const playbackEnabled = typeof record.playbackEnabled === 'boolean' ? record.playbackEnabled : true
   const stream = record.stream == null ? null : parseParallaxStreamInfo(record.stream)
+  if (record.stream != null && stream === null) return { ok: false, reason: 'invalid-stream-fields' }
   const timeline = record.timeline == null ? null : parseParallaxTimelineState(record.timeline)
+  if (record.timeline != null && timeline === null) return { ok: false, reason: 'invalid-timeline-fields' }
   const nextStream = record.nextStream == null ? null : parseParallaxStreamInfo(record.nextStream)
+  if (record.nextStream != null && nextStream === null) return { ok: false, reason: 'invalid-next-stream-fields' }
   const nextTimeline = record.nextTimeline == null ? null : parseParallaxTimelineState(record.nextTimeline)
-  if (
-    sinkId === null || groupLatencyMs === null || hostTimeMs === null
-    || (record.stream != null && stream === null) || (record.timeline != null && timeline === null)
-    || (record.nextStream != null && nextStream === null) || (record.nextTimeline != null && nextTimeline === null)
-    || ((stream === null) !== (timeline === null)) || ((nextStream === null) !== (nextTimeline === null))
-    || (stream && timeline && stream.streamId !== timeline.streamId)
-    || (nextStream && nextTimeline && nextStream.streamId !== nextTimeline.streamId)
-  ) return null
-  return { sinkId, groupLatencyMs, hostTimeMs, playbackEnabled, stream, timeline, nextStream, nextTimeline }
+  if (record.nextTimeline != null && nextTimeline === null) return { ok: false, reason: 'invalid-next-timeline-fields' }
+  if ((stream === null) !== (timeline === null)) return { ok: false, reason: 'active-presence-mismatch' }
+  if ((nextStream === null) !== (nextTimeline === null)) return { ok: false, reason: 'next-presence-mismatch' }
+  if (stream && timeline && stream.streamId !== timeline.streamId) {
+    return { ok: false, reason: 'active-id-mismatch' }
+  }
+  if (nextStream && nextTimeline && nextStream.streamId !== nextTimeline.streamId) {
+    return { ok: false, reason: 'next-id-mismatch' }
+  }
+  if (sinkId !== expectedSinkId) return { ok: false, reason: 'sink-id-mismatch' }
+  return {
+    ok: true,
+    value: { sinkId, groupLatencyMs, hostTimeMs, playbackEnabled, stream, timeline, nextStream, nextTimeline }
+  }
+}
+
+function parallaxDiagnosticString(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string') return null
+  const sanitized = value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
+  return sanitized ? sanitized.slice(0, maxLength) : null
+}
+
+export function buildParallaxJoinValidationDiagnostic(options: {
+  value: unknown
+  expectedSinkId: string
+  joinPhase: ParallaxJoinPhase
+  reason: ParallaxJoinValidationReason
+  httpStatus: number
+  contentType: string | null
+  softwareVersion: string
+}): ParallaxJoinValidationDiagnostic {
+  const diagnostic: ParallaxJoinValidationDiagnostic = {
+    event: 'parallax_join_validation_failed',
+    joinPhase: options.joinPhase,
+    reason: options.reason,
+    httpStatus: options.httpStatus,
+    contentType: parallaxDiagnosticString(options.contentType, 256),
+    protocolVersion: PARALLAX_PROTOCOL_VERSION,
+    softwareVersion: parallaxDiagnosticString(options.softwareVersion, 128) ?? 'unknown'
+  }
+  if (options.reason !== 'sink-id-mismatch') return diagnostic
+  const expectedSinkId = parallaxDiagnosticString(options.expectedSinkId, 128)
+  const actualSinkId = parallaxRecord(options.value)
+    ? parallaxWireString((options.value as Record<string, unknown>).sinkId, 128)
+    : null
+  if (expectedSinkId) diagnostic.expectedSinkId = expectedSinkId
+  if (actualSinkId) diagnostic.actualSinkId = actualSinkId
+  return diagnostic
 }
 
 export function parseParallaxTimelineEvent(value: unknown): ParallaxTimelineEvent | null {

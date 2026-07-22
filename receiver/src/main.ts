@@ -93,6 +93,7 @@ async function main(): Promise<void> {
   const notifier = createSystemdNotifier({ log: (message) => logError(message) })
   const configStore = new ConfigStore()
   const config = configStore.get()
+  const installedVersion = resolveInstalledVersion()
   log(`config at ${configStore.path}`)
   log(`endpoint UUID ${config.endpointUuid}`)
 
@@ -120,6 +121,10 @@ async function main(): Promise<void> {
     onAudioChunk: (chunk) => session.handleAudioChunk(chunk),
     onStatus: (status) => {
       session.handleStatus(status)
+    },
+    softwareVersion: installedVersion,
+    onDiagnostic: (diagnostic) => {
+      logError('Parallax join validation failed', JSON.stringify(diagnostic))
     },
     onAuthRevoked: () => {
       log('host revoked this sink (401) — clearing credential; re-pair to reconnect')
@@ -201,8 +206,6 @@ async function main(): Promise<void> {
     cec.notifyConnection(client.getStatus().connected)
   }, 1_000)
   cecPollTimer.unref?.()
-
-  const installedVersion = resolveInstalledVersion()
 
   // On-demand update runs: after kicking the updater unit, mirror its systemd ActiveState into
   // status as `updating` so both UIs can show an honest "hold on" instead of instant success.

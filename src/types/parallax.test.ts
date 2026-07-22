@@ -10,13 +10,14 @@ import {
   fitHostEmitAnchorLine,
   hostEmitAnchorSlopeToPpm,
   mapHostTimeToSinkTimeMs,
-  parseParallaxJoinResponse,
   parseParallaxStreamInfo,
   parseParallaxTimelineEvent,
   resolveParallaxPlaybackEnabled,
   resolveParallaxStreamNormalization,
   selectBestParallaxClockSample,
   selectFilteredParallaxClockOffsetMs,
+  validateParallaxJoinResponse,
+  type ParallaxJoinValidationReason,
   type ParallaxAudioChunk
 } from './parallax.ts'
 
@@ -323,30 +324,190 @@ test('Parallax stream parser bounds peer metadata and strips host filesystem pat
   assert.equal(parseParallaxStreamInfo({ ...parsed, title: 'x'.repeat(513) }), null)
 })
 
+const validJoinStream = {
+  streamId: 'active-stream',
+  trackId: 'active-track',
+  title: 'Active title',
+  artist: 'Active artist',
+  album: 'Active album',
+  sampleRate: 48_000,
+  channels: 2,
+  durationSeconds: 120,
+  totalFrames: 5_760_000,
+  chunkFrames: 4096,
+  groupLatencyMs: 1000,
+  createdAt: 1
+}
+
+const validJoinTimeline = {
+  streamId: 'active-stream',
+  playbackState: 'playing',
+  startFrame: 0,
+  startHostTimeMs: 100,
+  updatedHostTimeMs: 100,
+  groupLatencyMs: 1000
+}
+
+const validNextJoinStream = {
+  ...validJoinStream,
+  streamId: 'next-stream',
+  trackId: 'next-track',
+  title: 'Next title'
+}
+
+const validNextJoinTimeline = {
+  ...validJoinTimeline,
+  streamId: 'next-stream',
+  startHostTimeMs: 120_100,
+  updatedHostTimeMs: 200
+}
+
+function validJoinResponse(): Record<string, unknown> {
+  return {
+    sinkId: 'living-room',
+    groupLatencyMs: 1000,
+    hostTimeMs: 100,
+    playbackEnabled: true,
+    stream: null,
+    timeline: null,
+    nextStream: null,
+    nextTimeline: null
+  }
+}
+
+test('Parallax join validation reports every failed invariant with stable precedence', () => {
+  const cases: Array<{
+    name: string
+    value: unknown
+    expectedSinkId?: string
+    reason: ParallaxJoinValidationReason
+  }> = [
+    { name: 'response is null', value: null, reason: 'response-not-object' },
+    { name: 'response is an array', value: [], reason: 'response-not-object' },
+    { name: 'sink ID is empty', value: { ...validJoinResponse(), sinkId: '   ' }, reason: 'invalid-sink-id' },
+    { name: 'sink ID is oversized', value: { ...validJoinResponse(), sinkId: 'x'.repeat(129) }, reason: 'invalid-sink-id' },
+    { name: 'latency is negative', value: { ...validJoinResponse(), groupLatencyMs: -1 }, reason: 'invalid-group-latency-ms' },
+    { name: 'latency is non-finite', value: { ...validJoinResponse(), groupLatencyMs: Number.POSITIVE_INFINITY }, reason: 'invalid-group-latency-ms' },
+    { name: 'host time exceeds safe range', value: { ...validJoinResponse(), hostTimeMs: Number.MAX_SAFE_INTEGER + 1 }, reason: 'invalid-host-time-ms' },
+    { name: 'host time is non-finite', value: { ...validJoinResponse(), hostTimeMs: Number.NaN }, reason: 'invalid-host-time-ms' },
+    {
+      name: 'active stream fields are malformed',
+      value: { ...validJoinResponse(), stream: { ...validJoinStream, sampleRate: 7999 } },
+      reason: 'invalid-stream-fields'
+    },
+    {
+      name: 'active timeline fields are malformed',
+      value: { ...validJoinResponse(), timeline: { ...validJoinTimeline, playbackState: 'buffering' } },
+      reason: 'invalid-timeline-fields'
+    },
+    {
+      name: 'next stream fields are malformed',
+      value: { ...validJoinResponse(), nextStream: { ...validNextJoinStream, channels: 0 } },
+      reason: 'invalid-next-stream-fields'
+    },
+    {
+      name: 'next timeline fields are malformed',
+      value: { ...validJoinResponse(), nextTimeline: { ...validNextJoinTimeline, startFrame: -1 } },
+      reason: 'invalid-next-timeline-fields'
+    },
+    {
+      name: 'active stream is missing its timeline',
+      value: { ...validJoinResponse(), stream: validJoinStream },
+      reason: 'active-presence-mismatch'
+    },
+    {
+      name: 'next timeline is missing its stream',
+      value: { ...validJoinResponse(), nextTimeline: validNextJoinTimeline },
+      reason: 'next-presence-mismatch'
+    },
+    {
+      name: 'active stream and timeline IDs differ',
+      value: {
+        ...validJoinResponse(),
+        stream: validJoinStream,
+        timeline: { ...validJoinTimeline, streamId: 'different-active-stream' }
+      },
+      reason: 'active-id-mismatch'
+    },
+    {
+      name: 'next stream and timeline IDs differ',
+      value: {
+        ...validJoinResponse(),
+        nextStream: validNextJoinStream,
+        nextTimeline: { ...validNextJoinTimeline, streamId: 'different-next-stream' }
+      },
+      reason: 'next-id-mismatch'
+    },
+    {
+      name: 'response sink differs from requested sink',
+      value: validJoinResponse(),
+      expectedSinkId: 'kitchen',
+      reason: 'sink-id-mismatch'
+    },
+    {
+      name: 'field syntax wins before expected sink mismatch',
+      value: { ...validJoinResponse(), groupLatencyMs: -1 },
+      expectedSinkId: 'kitchen',
+      reason: 'invalid-group-latency-ms'
+    }
+  ]
+
+  for (const entry of cases) {
+    const result = validateParallaxJoinResponse(entry.value, entry.expectedSinkId ?? 'living-room')
+    assert.deepEqual(result, { ok: false, reason: entry.reason }, entry.name)
+  }
+})
+
+test('Parallax join validation accepts field boundaries and complete gapless state', () => {
+  const lowerBoundary = validateParallaxJoinResponse({
+    sinkId: 'x'.repeat(128),
+    groupLatencyMs: 0,
+    hostTimeMs: 0,
+    stream: null,
+    timeline: null
+  }, 'x'.repeat(128))
+  assert.equal(lowerBoundary.ok, true)
+
+  const upperBoundary = validateParallaxJoinResponse({
+    sinkId: 'living-room',
+    groupLatencyMs: 60_000,
+    hostTimeMs: Number.MAX_SAFE_INTEGER,
+    stream: validJoinStream,
+    timeline: validJoinTimeline,
+    nextStream: validNextJoinStream,
+    nextTimeline: validNextJoinTimeline
+  }, 'living-room')
+  assert.equal(upperBoundary.ok, true)
+  if (upperBoundary.ok) {
+    assert.equal(upperBoundary.value.stream?.streamId, 'active-stream')
+    assert.equal(upperBoundary.value.nextStream?.streamId, 'next-stream')
+  }
+})
+
 test('Parallax zone-control wire fields are additive and active by default', () => {
   assert.equal(resolveParallaxPlaybackEnabled(undefined), true)
   assert.equal(resolveParallaxPlaybackEnabled(true), true)
   assert.equal(resolveParallaxPlaybackEnabled(false), false)
-  const legacyJoin = parseParallaxJoinResponse({
+  const legacyJoin = validateParallaxJoinResponse({
     sinkId: 'living-room',
     groupLatencyMs: 1000,
     hostTimeMs: 100,
     stream: null,
     timeline: null
-  })
-  assert.ok(legacyJoin)
-  assert.equal(legacyJoin.playbackEnabled, true)
+  }, 'living-room')
+  assert.equal(legacyJoin.ok, true)
+  if (legacyJoin.ok) assert.equal(legacyJoin.value.playbackEnabled, true)
 
-  const inactiveJoin = parseParallaxJoinResponse({
+  const inactiveJoin = validateParallaxJoinResponse({
     sinkId: 'living-room',
     groupLatencyMs: 1000,
     hostTimeMs: 100,
     playbackEnabled: false,
     stream: null,
     timeline: null
-  })
-  assert.ok(inactiveJoin)
-  assert.equal(inactiveJoin.playbackEnabled, false)
+  }, 'living-room')
+  assert.equal(inactiveJoin.ok, true)
+  if (inactiveJoin.ok) assert.equal(inactiveJoin.value.playbackEnabled, false)
 
   assert.deepEqual(parseParallaxTimelineEvent({
     type: 'sink-playback-update',

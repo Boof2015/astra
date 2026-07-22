@@ -5,8 +5,13 @@ import { createServer as createHttpsServer, type Server as HttpsServer } from 'n
 import { createServer as createNetServer } from 'node:net'
 import { ParallaxService } from './parallax.ts'
 import type { MiniPlayerCommand } from '../../types/miniPlayer.ts'
-import type { ParallaxHostConfig } from '../../types/parallax.ts'
+import type {
+  ParallaxHostConfig,
+  ParallaxJoinValidationDiagnostic,
+  ParallaxTimelineEvent
+} from '../../types/parallax.ts'
 import { decodeParallaxAudioPacket } from '../../types/parallax.ts'
+import { ParallaxSinkClient } from '../../../receiver/src/sinkClient.ts'
 import { createOpaqueSecret, hashToken } from './playbackHttpCore.ts'
 import {
   createParallaxPinnedDispatcher,
@@ -884,6 +889,319 @@ test('Parallax events endpoint delivers consecutive stream-start metadata update
     }
   } finally {
     await service.stop()
+  }
+})
+
+test('Parallax app sink initial join reports a structured sanitized validation diagnostic', async (t) => {
+  let port: number
+  try {
+    port = await getFreePort()
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'EPERM') {
+      t.skip('Local socket binding is blocked in this environment.')
+      return
+    }
+    throw error
+  }
+  const tlsIdentity = await createParallaxTlsIdentity('Invalid Initial Join Host')
+  const baseUrl = `https://127.0.0.1:${port}`
+  const token = 'app-test-bearer-token-never-log'
+  const rawPayloadMarker = 'app-raw-response-body-never-log'
+  const diagnostics: ParallaxJoinValidationDiagnostic[] = []
+  const server = createHttpsServer({
+    key: tlsIdentity.privateKeyPem,
+    cert: tlsIdentity.certificatePem,
+    minVersion: 'TLSv1.2'
+  }, (req, res) => {
+    assert.equal(req.headers.authorization, `Bearer ${token}`)
+    res.writeHead(200, { 'Content-Type': 'application/problem+json; charset=utf-8' })
+    res.end(JSON.stringify({
+      sinkId: 'app-sink',
+      groupLatencyMs: 1000,
+      hostTimeMs: Date.now(),
+      stream: null,
+      timeline: { marker: rawPayloadMarker },
+      secret: token
+    }))
+  })
+  await listenHttpServer(server, port)
+
+  const sinkService = new ParallaxService({
+    config: { enabled: false, port },
+    pairedSinks: [],
+    softwareVersion: 'astra-app-test',
+    onDiagnostic: (diagnostic) => diagnostics.push(diagnostic)
+  })
+  try {
+    await assert.rejects(sinkService.connectSink({
+      protocolVersion: 2,
+      baseUrl,
+      sinkId: 'app-sink',
+      token,
+      hostCertificatePem: tlsIdentity.certificatePem,
+      hostCertificateFingerprint: tlsIdentity.fingerprint256
+    }), /invalid join response \(invalid-timeline-fields\)/)
+
+    assert.deepEqual(diagnostics, [{
+      event: 'parallax_join_validation_failed',
+      joinPhase: 'initial',
+      reason: 'invalid-timeline-fields',
+      httpStatus: 200,
+      contentType: 'application/problem+json; charset=utf-8',
+      protocolVersion: 2,
+      softwareVersion: 'astra-app-test'
+    }])
+    assert.match(sinkService.getStatus().sink.lastError ?? '', /invalid-timeline-fields/)
+    const surfaced = JSON.stringify({ diagnostics, status: sinkService.getStatus() })
+    assert.equal(surfaced.includes(token), false)
+    assert.equal(surfaced.includes(rawPayloadMarker), false)
+  } finally {
+    await sinkService.stop()
+    await closeHttpServer(server)
+  }
+})
+
+test('Parallax app sink reconnect reports the exact failed invariant', async (t) => {
+  let port: number
+  try {
+    port = await getFreePort()
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'EPERM') {
+      t.skip('Local socket binding is blocked in this environment.')
+      return
+    }
+    throw error
+  }
+  const tlsIdentity = await createParallaxTlsIdentity('Invalid Reconnect Join Host')
+  const baseUrl = `https://127.0.0.1:${port}`
+  const diagnostics: ParallaxJoinValidationDiagnostic[] = []
+  let joinCount = 0
+  const server = createHttpsServer({
+    key: tlsIdentity.privateKeyPem,
+    cert: tlsIdentity.certificatePem,
+    minVersion: 'TLSv1.2'
+  }, (req, res) => {
+    const url = new URL(req.url ?? '/', baseUrl)
+    if (req.method === 'POST' && url.pathname === '/v1/parallax/join') {
+      joinCount += 1
+      const stream = {
+        streamId: 'active-stream',
+        trackId: 'track',
+        title: 'Title',
+        artist: 'Artist',
+        album: 'Album',
+        sampleRate: 48_000,
+        channels: 2,
+        durationSeconds: 1,
+        totalFrames: 48_000,
+        chunkFrames: 4096,
+        groupLatencyMs: 1000,
+        createdAt: 1
+      }
+      const timeline = {
+        streamId: joinCount === 1 ? 'active-stream' : 'different-stream',
+        playbackState: 'playing',
+        startFrame: 0,
+        startHostTimeMs: Date.now(),
+        updatedHostTimeMs: Date.now(),
+        groupLatencyMs: 1000
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        sinkId: 'app-sink',
+        groupLatencyMs: 1000,
+        hostTimeMs: Date.now(),
+        stream,
+        timeline
+      }))
+      return
+    }
+    if (req.method === 'POST' && url.pathname === '/v1/parallax/clock') {
+      const now = Date.now()
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ sinkSentAtMs: now, hostReceivedAtMs: now, hostSentAtMs: now }))
+      return
+    }
+    if (req.method === 'GET' && url.pathname === '/v1/parallax/events') {
+      res.writeHead(503, { 'Content-Type': 'text/plain' })
+      res.end('offline')
+      return
+    }
+    if (req.method === 'GET' && url.pathname === '/v1/parallax/audio') {
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'No audio' }))
+      return
+    }
+    res.writeHead(404, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Not found' }))
+  })
+  await listenHttpServer(server, port)
+
+  const originalSetTimeout = globalThis.setTimeout
+  globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+    return originalSetTimeout(handler, timeout === 2_000 || timeout === 120 ? 0 : timeout, ...args)
+  }) as typeof setTimeout
+  const sinkService = new ParallaxService({
+    config: { enabled: false, port },
+    pairedSinks: [],
+    softwareVersion: 'astra-app-test',
+    onDiagnostic: (diagnostic) => diagnostics.push(diagnostic)
+  })
+  try {
+    await sinkService.connectSink({
+      protocolVersion: 2,
+      baseUrl,
+      sinkId: 'app-sink',
+      token: 'token',
+      hostCertificatePem: tlsIdentity.certificatePem,
+      hostCertificateFingerprint: tlsIdentity.fingerprint256
+    })
+    await waitFor(() => diagnostics.some((diagnostic) => diagnostic.joinPhase === 'reconnect'), 3_000)
+
+    assert.deepEqual(diagnostics.find((diagnostic) => diagnostic.joinPhase === 'reconnect'), {
+      event: 'parallax_join_validation_failed',
+      joinPhase: 'reconnect',
+      reason: 'active-id-mismatch',
+      httpStatus: 200,
+      contentType: 'application/json',
+      protocolVersion: 2,
+      softwareVersion: 'astra-app-test'
+    })
+    assert.match(sinkService.getStatus().sink.lastError ?? '', /active-id-mismatch/)
+  } finally {
+    globalThis.setTimeout = originalSetTimeout
+    await sinkService.stop()
+    await closeHttpServer(server)
+  }
+})
+
+test('Parallax host and receiver lifecycle keeps stop, forget, re-pair, and gapless reconnect joins valid', async (t) => {
+  const started = await tryCreateStartedParallaxService()
+  if (!started) {
+    t.skip('Local socket binding is blocked in this environment.')
+    return
+  }
+  const { service: host, baseUrl, tlsIdentity } = started
+  const diagnostics: ParallaxJoinValidationDiagnostic[] = []
+  const events: ParallaxTimelineEvent[] = []
+  const receiver = new ParallaxSinkClient({
+    softwareVersion: 'receiver-integration-test',
+    onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    onEvent: (event) => events.push(event),
+    onAudioChunk: () => undefined,
+    onStatus: () => undefined,
+    onAuthRevoked: () => undefined
+  })
+  const originalSetTimeout = globalThis.setTimeout
+  const anchorAbort = new AbortController()
+  let anchorEventsResponse: UndiciResponse | null = null
+  globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+    return originalSetTimeout(handler, timeout === 2_000 || timeout === 120 ? 0 : timeout, ...args)
+  }) as typeof setTimeout
+
+  const connectReceiver = async (sinkId: string, token: string): Promise<void> => {
+    await receiver.connect({
+      protocolVersion: 2,
+      baseUrl,
+      sinkId,
+      token,
+      hostCertificatePem: tlsIdentity.certificatePem,
+      hostCertificateFingerprint: tlsIdentity.fingerprint256
+    })
+    await waitFor(() => host.getStatus().host.connectedSinkCount === 1, 3_000)
+  }
+
+  try {
+    const firstSinkId = 'receiver-before-repair'
+    const firstToken = createOpaqueSecret(32)
+    host.replacePairedSinks([makePersistedSink(firstSinkId, firstToken, 'Receiver Before Re-pair')])
+    await connectReceiver(firstSinkId, firstToken)
+
+    host.publishHostStreamStart({
+      streamId: 'stream-before-stop',
+      trackId: 'track-before-stop',
+      title: 'Before Stop',
+      artist: 'Astra',
+      album: 'Parallax',
+      sampleRate: 48_000,
+      channels: 2,
+      durationSeconds: 1,
+      totalFrames: 48_000
+    })
+    host.stopHostStream()
+    await waitFor(() => events.some((event) => event.type === 'stop'))
+
+    await receiver.disconnect()
+    await connectReceiver(firstSinkId, firstToken)
+    assert.equal(receiver.getStatus().activeStream, null)
+    assert.equal(receiver.getStatus().timeline, null)
+
+    await receiver.forgetOnHost()
+    await waitFor(() => host.getStatus().host.pairedSinkCount === 0)
+    await receiver.disconnect()
+
+    const repairedSinkId = 'receiver-after-repair'
+    const repairedToken = createOpaqueSecret(32)
+    const anchorSinkId = 'receiver-reconnect-anchor'
+    const anchorToken = createOpaqueSecret(32)
+    host.replacePairedSinks([
+      makePersistedSink(repairedSinkId, repairedToken, 'Receiver After Re-pair'),
+      makePersistedSink(anchorSinkId, anchorToken, 'Reconnect Anchor')
+    ])
+    await connectReceiver(repairedSinkId, repairedToken)
+    anchorEventsResponse = await fetchHost(baseUrl, '/v1/parallax/events', {
+      headers: { Authorization: `Bearer ${anchorToken}` },
+      signal: anchorAbort.signal
+    })
+    assert.equal(anchorEventsResponse.status, 200)
+    await waitFor(() => host.getStatus().host.connectedSinkCount === 2, 3_000)
+
+    const activeTimeline = host.publishHostStreamStart({
+      streamId: 'gapless-active',
+      trackId: 'gapless-active-track',
+      title: 'Gapless Active',
+      artist: 'Astra',
+      album: 'Parallax',
+      sampleRate: 48_000,
+      channels: 2,
+      durationSeconds: 120,
+      totalFrames: 5_760_000
+    })
+    host.publishHostNextStreamStart({
+      streamId: 'gapless-next',
+      trackId: 'gapless-next-track',
+      title: 'Gapless Next',
+      artist: 'Astra',
+      album: 'Parallax',
+      sampleRate: 48_000,
+      channels: 2,
+      durationSeconds: 120,
+      totalFrames: 5_760_000
+    }, { startHostTimeMs: activeTimeline.startHostTimeMs + 120_000 })
+    await waitFor(() => events.some((event) => event.type === 'next-stream-start'))
+
+    const activeEventsBeforeReconnect = events.filter((event) => event.type === 'stream-start').length
+    const nextEventsBeforeReconnect = events.filter((event) => event.type === 'next-stream-start').length
+    const receiverInternals = receiver as unknown as {
+      connection: object | null
+      reconnect: (connection: object) => Promise<void>
+    }
+    assert.ok(receiverInternals.connection)
+    await receiverInternals.reconnect(receiverInternals.connection)
+    await waitFor(() => (
+      events.filter((event) => event.type === 'stream-start').length > activeEventsBeforeReconnect
+      && events.filter((event) => event.type === 'next-stream-start').length > nextEventsBeforeReconnect
+    ), 3_000)
+
+    assert.equal(diagnostics.length, 0)
+    assert.equal(receiver.getStatus().lastError, null)
+    assert.equal(receiver.getStatus().activeStream?.streamId, 'gapless-active')
+  } finally {
+    globalThis.setTimeout = originalSetTimeout
+    anchorAbort.abort()
+    await anchorEventsResponse?.body?.cancel().catch(() => undefined)
+    await receiver.disconnect()
+    await host.stop()
   }
 })
 
