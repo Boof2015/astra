@@ -138,6 +138,7 @@ interface PlayerStore {
   pause: () => void
   togglePlay: () => Promise<void>
   stop: () => void
+  replaceLocalTrackPaths: (replacements: Record<string, string>) => Promise<void>
   seek: (time: number) => Promise<void>
   setVolume: (volume: number) => void
   toggleMute: () => void
@@ -2068,6 +2069,47 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         restoredPlaybackTime: null
       })
       audioEngine.stop()
+    },
+
+    replaceLocalTrackPaths: async (replacements) => {
+      const replacementEntries = Object.entries(replacements).filter(([fromPath, toPath]) => (
+        typeof fromPath === 'string'
+        && fromPath.length > 0
+        && typeof toPath === 'string'
+        && toPath.length > 0
+        && fromPath !== toPath
+      ))
+      if (replacementEntries.length === 0) return
+      const replacementByPath = new Map(replacementEntries)
+      const keepPaths = Array.from(new Set(replacementEntries.map(([, keepPath]) => keepPath)))
+      const resolvedKeepTracks = await useLibraryStore.getState().resolveTrackPathsWithFetch(keepPaths)
+      const keepTrackByPath = new Map(resolvedKeepTracks.map((track) => {
+        const playerTrack = dbTrackToTrack(track)
+        return [playerTrack.path, playerTrack]
+      }))
+      const remapEntry = (entry: QueueTrackEntry): QueueTrackEntry => {
+        const keepPath = replacementByPath.get(entry.path)
+        if (!keepPath) return entry
+        const keepTrack = keepTrackByPath.get(keepPath)
+        return keepTrack ? createQueueEntryFromTrack(keepTrack) : createQueueEntryFromPath(keepPath)
+      }
+
+      set((state) => {
+        const currentKeepPath = state.currentTrack ? replacementByPath.get(state.currentTrack.path) : undefined
+        const currentKeepTrack = currentKeepPath ? keepTrackByPath.get(currentKeepPath) : undefined
+        return {
+          queueItems: state.queueItems.map((item) => ({ ...item, entry: remapEntry(item.entry) })),
+          playbackHistory: state.playbackHistory.map((entry) => ({
+            ...entry,
+            item: { ...entry.item, entry: remapEntry(entry.item.entry) }
+          })),
+          currentTrack: currentKeepTrack && state.playbackState === 'stopped'
+            ? currentKeepTrack
+            : state.currentTrack
+        }
+      })
+      clearBufferedNextTrack()
+      schedulePreBufferNextTrack()
     },
 
     seek: async (time: number) => {

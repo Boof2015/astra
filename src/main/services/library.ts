@@ -3052,6 +3052,45 @@ function mergeDuplicateTrackRows(survivorId: number, survivorPath: string, loser
   )
 }
 
+export async function mergeLocalDuplicateTracks(keepPath: string, removedPaths: readonly string[]): Promise<string[]> {
+  if (!db) throw new Error('Database not initialized')
+  const normalizedKeepPath = typeof keepPath === 'string' ? keepPath.trim() : ''
+  const uniqueRemovedPaths = Array.from(new Set(
+    removedPaths
+      .map((trackPath) => (typeof trackPath === 'string' ? trackPath.trim() : ''))
+      .filter((trackPath) => trackPath.length > 0 && trackPath !== normalizedKeepPath)
+  ))
+  if (!normalizedKeepPath || uniqueRemovedPaths.length === 0) return []
+
+  const survivor = db.get<DuplicateTrackRowRef>(
+    "SELECT id, path FROM tracks WHERE path = ? AND source_type = 'local'",
+    [normalizedKeepPath]
+  )
+  if (!survivor) throw new Error('The selected Keep track is no longer in the local library.')
+
+  const losers: DuplicateTrackRowRef[] = []
+  for (const removedPath of uniqueRemovedPaths) {
+    const loser = db.get<DuplicateTrackRowRef>(
+      "SELECT id, path FROM tracks WHERE path = ? AND source_type = 'local'",
+      [removedPath]
+    )
+    if (!loser) throw new Error(`A trashed track is no longer indexed: ${removedPath}`)
+    losers.push(loser)
+  }
+
+  const ownsTransaction = !db.inTransaction
+  if (ownsTransaction) beginLibraryWriteTransaction()
+  try {
+    mergeDuplicateTrackRows(survivor.id, survivor.path, losers)
+    if (ownsTransaction) commitLibraryWriteTransaction()
+  } catch (error) {
+    if (ownsTransaction) rollbackLibraryWriteTransaction()
+    throw error
+  }
+  await saveDatabase()
+  return losers.map((loser) => loser.path)
+}
+
 export async function deleteSubsonicSource(sourceId: number, purgeTracks: boolean): Promise<void> {
   if (!db) return
   const source = getSubsonicSourceById(sourceId)

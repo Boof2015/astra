@@ -1,12 +1,19 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import type {
+  IntegrityDuplicateGroup,
+  IntegrityDuplicateTrashAction,
+  IntegrityDuplicateTrashOutcome,
   IntegrityFinding,
   IntegrityFindingSeverity,
   IntegrityScanScope
 } from '../../../types/libraryIntegrity'
 import { useLibraryStore, type DbTrack, type LibraryFolder } from '../../stores/libraryStore'
 import { useLibraryIntegrityStore, type IntegrityReportFilter } from '../../stores/libraryIntegrityStore'
+import { usePlayerStore } from '../../stores/playerStore'
+import { usePlaylistStore } from '../../stores/playlistStore'
+import { useRatingsStore } from '../../stores/ratingsStore'
 import { usePresence } from '../../hooks/usePresence'
+import { buildDuplicateTrashActions } from './duplicateCleanup'
 
 interface IntegrityFolderNode {
   name: string
@@ -262,12 +269,134 @@ export function IntegrityFindingList({ findings, emptyLabel }: IntegrityFindingL
   )
 }
 
+function formatDuplicateDuration(duration: number): string {
+  if (!Number.isFinite(duration) || duration <= 0) return '--:--'
+  const totalSeconds = Math.round(duration)
+  const minutes = Math.floor(totalSeconds / 60)
+  return `${minutes}:${String(totalSeconds % 60).padStart(2, '0')}`
+}
+
+function formatDuplicateSize(sizeBytes: number): string {
+  if (!Number.isFinite(sizeBytes) || sizeBytes < 0) return '--'
+  if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KiB`
+  return `${(sizeBytes / 1024 / 1024).toFixed(1)} MiB`
+}
+
+function formatDuplicateQuality(member: IntegrityDuplicateGroup['members'][number]): string {
+  const parts: string[] = []
+  if (member.sampleRate) parts.push(`${(member.sampleRate / 1000).toFixed(member.sampleRate % 1000 === 0 ? 0 : 1)} kHz`)
+  if (member.bitDepth) parts.push(`${member.bitDepth}-bit`)
+  if (member.bitrate) parts.push(`${Math.round(member.bitrate)} kbps`)
+  if (member.channels) parts.push(`${member.channels}ch`)
+  return parts.join(' / ') || 'Quality metadata unavailable'
+}
+
+function duplicateEvidenceLabel(evidence: IntegrityDuplicateGroup['evidence']): string {
+  if (evidence === 'exact') return 'Exact file match'
+  if (evidence === 'mixed') return 'Mixed evidence'
+  return 'Possible duplicate'
+}
+
+interface IntegrityDuplicateGroupListProps {
+  groups: IntegrityDuplicateGroup[]
+  keepByGroup: Record<string, string>
+  outcomeByPath: ReadonlyMap<string, IntegrityDuplicateTrashOutcome>
+  onChooseKeep: (groupId: string, path: string) => void
+}
+
+function IntegrityDuplicateGroupList({
+  groups,
+  keepByGroup,
+  outcomeByPath,
+  onChooseKeep
+}: IntegrityDuplicateGroupListProps) {
+  if (groups.length === 0) {
+    return <div className="library-integrity-empty">No duplicate groups found in this scope.</div>
+  }
+
+  return (
+    <div className="library-integrity-duplicate-list">
+      {groups.map((group) => {
+        const keepPath = keepByGroup[group.id] ?? ''
+        return (
+          <section key={group.id} className={`library-integrity-duplicate-group is-${group.evidence}`}>
+            <header className="library-integrity-duplicate-head">
+              <div>
+                <span className="library-integrity-duplicate-evidence">{duplicateEvidenceLabel(group.evidence)}</span>
+                <strong>{group.members[0]?.title || 'Duplicate tracks'}</strong>
+                <span>{group.members[0]?.artist || 'Unknown artist'} · {group.members.length} files</span>
+              </div>
+              <span className={`library-integrity-duplicate-decision ${keepPath ? 'is-decided' : ''}`}>
+                {keepPath ? `${group.members.length - 1} will move to Trash` : 'Choose one copy to keep'}
+              </span>
+            </header>
+            <div className="library-integrity-duplicate-members">
+              {group.members.map((member) => {
+                const isKeep = keepPath === member.path
+                const isStagedForTrash = Boolean(keepPath) && !isKeep
+                const outcome = outcomeByPath.get(member.path)
+                return (
+                  <div
+                    key={member.path}
+                    className={`library-integrity-duplicate-member ${isKeep ? 'is-keep' : ''} ${isStagedForTrash ? 'is-staged-trash' : ''}`}
+                  >
+                    <label className="library-integrity-duplicate-choice">
+                      <input
+                        type="radio"
+                        name={`duplicate-keep-${group.id}`}
+                        checked={isKeep}
+                        onChange={() => onChooseKeep(group.id, member.path)}
+                      />
+                      <span>{isKeep ? 'Keep' : keepPath ? 'Keep instead' : 'Keep this copy'}</span>
+                    </label>
+                    <div className="library-integrity-duplicate-member-main">
+                      <div className="library-integrity-duplicate-member-title">
+                        <strong>{member.title}</strong>
+                        <span>{member.artist}</span>
+                        {isKeep && <em className="is-keep-status">Keeping this copy</em>}
+                        {isStagedForTrash && <em className="is-trash-status">Will move to Trash</em>}
+                        {member.withinScope && <em>In selected scope</em>}
+                        {member.exactSetId && <em className="is-exact">Byte-identical</em>}
+                      </div>
+                      <div className="library-integrity-duplicate-member-meta">
+                        <span>{member.format.toUpperCase() || 'UNKNOWN'}</span>
+                        <span>{formatDuplicateDuration(member.duration)}</span>
+                        <span>{formatDuplicateSize(member.sizeBytes)}</span>
+                        <span>{formatDuplicateQuality(member)}</span>
+                      </div>
+                      <div className="library-integrity-duplicate-member-path" title={member.path}>{member.path}</div>
+                      {outcome && outcome.status !== 'trashed' && (
+                        <div className="library-integrity-duplicate-outcome is-error">
+                          {outcome.status === 'failed' ? 'Could not move to Trash' : 'Moved to Trash, but library merge failed'}
+                          {outcome.error ? `: ${outcome.error}` : ''}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="settings-btn"
+                      onClick={() => void window.electronAPI.revealFileInFolder(member.path)}
+                    >
+                      Reveal
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          </section>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function LibraryIntegrityPanel() {
   const folders = useLibraryStore((state) => state.folders)
   const fullTrackPaths = useLibraryStore((state) => state.fullTrackPaths)
   const trackCacheVersion = useLibraryStore((state) => state.trackCacheVersion)
   const resolveTrackPaths = useLibraryStore((state) => state.resolveTrackPaths)
   const loadFolders = useLibraryStore((state) => state.loadFolders)
+  const loadLibrary = useLibraryStore((state) => state.loadLibrary)
   const loadFullTracks = useLibraryStore((state) => state.loadFullTracks)
   const releaseFullTracks = useLibraryStore((state) => state.releaseFullTracks)
   const enabled = useLibraryIntegrityStore((state) => state.enabled)
@@ -282,6 +411,7 @@ export default function LibraryIntegrityPanel() {
   const isCanceling = useLibraryIntegrityStore((state) => state.isCanceling)
   const progress = useLibraryIntegrityStore((state) => state.progress)
   const findings = useLibraryIntegrityStore((state) => state.findings)
+  const duplicateGroups = useLibraryIntegrityStore((state) => state.duplicateGroups)
   const result = useLibraryIntegrityStore((state) => state.result)
   const filter = useLibraryIntegrityStore((state) => state.filter)
   const setFilter = useLibraryIntegrityStore((state) => state.setFilter)
@@ -289,7 +419,16 @@ export default function LibraryIntegrityPanel() {
   const cancelScan = useLibraryIntegrityStore((state) => state.cancelScan)
   const clearReport = useLibraryIntegrityStore((state) => state.clearReport)
   const errorMessage = useLibraryIntegrityStore((state) => state.errorMessage)
+  const isTrashingDuplicates = useLibraryIntegrityStore((state) => state.isTrashingDuplicates)
+  const duplicateTrashResult = useLibraryIntegrityStore((state) => state.duplicateTrashResult)
+  const duplicateTrashError = useLibraryIntegrityStore((state) => state.duplicateTrashError)
+  const trashDuplicates = useLibraryIntegrityStore((state) => state.trashDuplicates)
+  const currentTrackPath = usePlayerStore((state) => state.currentTrack?.path ?? null)
+  const playbackState = usePlayerStore((state) => state.playbackState)
+  const replaceLocalTrackPaths = usePlayerStore((state) => state.replaceLocalTrackPaths)
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set())
+  const [keepByGroup, setKeepByGroup] = useState<Record<string, string>>({})
+  const [isTrashConfirmationOpen, setTrashConfirmationOpen] = useState(false)
 
   useEffect(() => {
     if (!isPanelOpen) return
@@ -312,6 +451,11 @@ export default function LibraryIntegrityPanel() {
       return new Set(folders.map((folder) => folder.path))
     })
   }, [folders, fullTracks.length, isPanelOpen])
+
+  useEffect(() => {
+    setKeepByGroup({})
+    setTrashConfirmationOpen(false)
+  }, [result?.runId])
 
   const localTrackCount = useMemo(
     () => fullTracks.filter((track) => track.source_type === 'local').length,
@@ -336,7 +480,25 @@ export default function LibraryIntegrityPanel() {
     ? Math.max(0, Math.min(100, (progress.current / progress.total) * 100))
     : 0
   const selectedScopeLabel = formatScopeLabel(selectedScope)
-  const canClose = !isScanning
+  const canClose = !isScanning && !isTrashingDuplicates
+  const outcomeByPath = useMemo(
+    () => new Map((duplicateTrashResult?.outcomes ?? []).map((outcome) => [outcome.path, outcome])),
+    [duplicateTrashResult]
+  )
+  const duplicateTrashActions = useMemo<IntegrityDuplicateTrashAction[]>(() => {
+    return buildDuplicateTrashActions(duplicateGroups, keepByGroup)
+  }, [duplicateGroups, keepByGroup])
+  const selectedTrashCount = duplicateTrashActions.reduce((count, action) => count + action.trashPaths.length, 0)
+  const selectedTrashPaths = useMemo(
+    () => new Set(duplicateTrashActions.flatMap((action) => action.trashPaths)),
+    [duplicateTrashActions]
+  )
+  const selectedActiveTrack = Boolean(
+    currentTrackPath
+    && playbackState !== 'stopped'
+    && selectedTrashPaths.has(currentTrackPath)
+  )
+  const showDuplicateResults = result?.summary.mode === 'duplicates' || (mode === 'duplicates' && isScanning)
 
   const toggleFolder = (folderPath: string) => {
     setExpandedFolders((current) => {
@@ -359,6 +521,44 @@ export default function LibraryIntegrityPanel() {
     void startScan()
   }, [isScanning, mode, startScan])
 
+  const handleChooseKeep = useCallback((groupId: string, path: string) => {
+    setKeepByGroup((current) => ({ ...current, [groupId]: path }))
+  }, [])
+
+  const handleConfirmTrash = useCallback(async () => {
+    if (duplicateTrashActions.length === 0 || selectedActiveTrack || isTrashingDuplicates) return
+    const trashResult = await trashDuplicates(duplicateTrashActions)
+    setTrashConfirmationOpen(false)
+    if (!trashResult) return
+
+    const successfulReplacements = trashResult.replacements
+    if (Object.keys(successfulReplacements).length > 0) {
+      await loadLibrary()
+      const playlistStore = usePlaylistStore.getState()
+      const selectedPlaylistId = playlistStore.selectedPlaylistId
+      await Promise.all([
+        playlistStore.loadPlaylists(),
+        useRatingsStore.getState().loadRatings()
+      ])
+      if (selectedPlaylistId !== null) await usePlaylistStore.getState().selectPlaylist(selectedPlaylistId)
+      await replaceLocalTrackPaths(successfulReplacements)
+    }
+
+    if (!trashResult.stale) {
+      const remainingGroupIds = new Set(trashResult.remainingGroups.map((group) => group.id))
+      setKeepByGroup((current) => Object.fromEntries(
+        Object.entries(current).filter(([groupId]) => remainingGroupIds.has(groupId))
+      ))
+    }
+  }, [
+    duplicateTrashActions,
+    isTrashingDuplicates,
+    loadLibrary,
+    replaceLocalTrackPaths,
+    selectedActiveTrack,
+    trashDuplicates
+  ])
+
   if (!presence.shouldRender) return null
 
   return (
@@ -374,7 +574,7 @@ export default function LibraryIntegrityPanel() {
                 type="button"
                 className={`library-integrity-scope-row ${selectedScope.type === 'all' ? 'active' : ''}`}
                 onClick={() => setSelectedScope({ type: 'all' })}
-                disabled={isScanning}
+                disabled={isScanning || isTrashingDuplicates}
               >
                 <span>All Library</span>
                 <strong>{localTrackCount}</strong>
@@ -391,7 +591,7 @@ export default function LibraryIntegrityPanel() {
                       className={`library-integrity-folder-row ${scopeMatchesFolder(selectedScope, node.fullPath) ? 'active' : ''}`}
                       style={{ paddingLeft: 10 + depth * 16 }}
                       onClick={() => setSelectedScope({ type: 'folder', folderPath: node.fullPath })}
-                      disabled={isScanning}
+                      disabled={isScanning || isTrashingDuplicates}
                     >
                       <span
                         className={`library-integrity-folder-chevron ${isExpanded ? 'is-expanded' : ''} ${hasChildren ? '' : 'is-empty'}`}
@@ -428,20 +628,23 @@ export default function LibraryIntegrityPanel() {
 
             <section className="library-integrity-control-band">
               <div className="library-integrity-mode-toggle" role="group" aria-label="Integrity scan mode">
-                <button type="button" className={mode === 'quick' ? 'active' : ''} onClick={() => setMode('quick')} disabled={isScanning}>
+                <button type="button" className={mode === 'quick' ? 'active' : ''} onClick={() => setMode('quick')} disabled={isScanning || isTrashingDuplicates}>
                   Quick
                 </button>
-                <button type="button" className={mode === 'deep' ? 'active' : ''} onClick={() => setMode('deep')} disabled={isScanning}>
+                <button type="button" className={mode === 'deep' ? 'active' : ''} onClick={() => setMode('deep')} disabled={isScanning || isTrashingDuplicates}>
                   Deep
                 </button>
+                <button type="button" className={mode === 'duplicates' ? 'active' : ''} onClick={() => setMode('duplicates')} disabled={isScanning || isTrashingDuplicates}>
+                  Duplicates
+                </button>
               </div>
-              <button className="settings-btn settings-btn-primary" onClick={handleStartScan} disabled={isScanning || localTrackCount === 0}>
-                {isScanning ? 'Scanning...' : `Start ${mode === 'deep' ? 'Deep' : 'Quick'} Scan`}
+              <button className="settings-btn settings-btn-primary" onClick={handleStartScan} disabled={isScanning || isTrashingDuplicates || localTrackCount === 0}>
+                {isScanning ? 'Scanning...' : `Start ${mode === 'deep' ? 'Deep' : mode === 'duplicates' ? 'Duplicate' : 'Quick'} Scan`}
               </button>
               <button className="settings-btn" onClick={() => void cancelScan()} disabled={!isScanning || isCanceling}>
                 {isCanceling ? 'Canceling...' : 'Cancel'}
               </button>
-              <button className="settings-btn" onClick={clearReport} disabled={isScanning || findings.length === 0}>
+              <button className="settings-btn" onClick={clearReport} disabled={isScanning || isTrashingDuplicates || !result}>
                 Clear
               </button>
             </section>
@@ -460,18 +663,31 @@ export default function LibraryIntegrityPanel() {
             </section>
 
             <section className="library-integrity-summary">
-              <button className={`library-integrity-filter ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
-                All <strong>{findings.length}</strong>
-              </button>
-              {(['error', 'warning', 'info'] as const).map((severity) => (
-                <button
-                  key={severity}
-                  className={`library-integrity-filter ${filter === severity ? 'active' : ''} ${findingToneClass(severity)}`}
-                  onClick={() => setFilter(severity as IntegrityReportFilter)}
-                >
-                  {severityLabel(severity)} <strong>{findingCounts[severity]}</strong>
-                </button>
-              ))}
+              {showDuplicateResults ? (
+                <>
+                  <span className="library-integrity-result-state">Groups <strong>{result?.summary.duplicateGroups ?? duplicateGroups.length}</strong></span>
+                  <span className="library-integrity-result-state">Files <strong>{result?.summary.duplicateFiles ?? 0}</strong></span>
+                  <span className="library-integrity-result-state">Exact <strong>{result?.summary.exactDuplicateGroups ?? 0}</strong></span>
+                  <span className="library-integrity-result-state">Mixed <strong>{result?.summary.mixedDuplicateGroups ?? 0}</strong></span>
+                  <span className="library-integrity-result-state">Possible <strong>{result?.summary.possibleDuplicateGroups ?? 0}</strong></span>
+                  {findings.length > 0 && <span className="library-integrity-result-state is-warning">Scan issues <strong>{findings.length}</strong></span>}
+                </>
+              ) : (
+                <>
+                  <button className={`library-integrity-filter ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
+                    All <strong>{findings.length}</strong>
+                  </button>
+                  {(['error', 'warning', 'info'] as const).map((severity) => (
+                    <button
+                      key={severity}
+                      className={`library-integrity-filter ${filter === severity ? 'active' : ''} ${findingToneClass(severity)}`}
+                      onClick={() => setFilter(severity as IntegrityReportFilter)}
+                    >
+                      {severityLabel(severity)} <strong>{findingCounts[severity]}</strong>
+                    </button>
+                  ))}
+                </>
+              )}
               {result && (
                 <span
                   className={`library-integrity-result-state ${result.summary.canceled ? 'is-warning' : ''}`}
@@ -483,14 +699,76 @@ export default function LibraryIntegrityPanel() {
             </section>
 
             {errorMessage && <div className="library-integrity-error" role="alert">{errorMessage}</div>}
+            {duplicateTrashError && <div className="library-integrity-error" role="alert">{duplicateTrashError}</div>}
 
-            <IntegrityFindingList
-              findings={filteredFindings}
-              emptyLabel={isScanning ? 'No findings yet.' : 'No findings for this filter.'}
-            />
+            {showDuplicateResults ? (
+              <div className="library-integrity-duplicate-results">
+                <IntegrityDuplicateGroupList
+                  groups={duplicateGroups}
+                  keepByGroup={keepByGroup}
+                  outcomeByPath={outcomeByPath}
+                  onChooseKeep={handleChooseKeep}
+                />
+                {findings.length > 0 && (
+                  <section className="library-integrity-duplicate-issues">
+                    <h3>Scan issues</h3>
+                    <IntegrityFindingList findings={findings} emptyLabel="No scan issues." />
+                  </section>
+                )}
+              </div>
+            ) : (
+              <IntegrityFindingList
+                findings={filteredFindings}
+                emptyLabel={isScanning ? 'No findings yet.' : 'No findings for this filter.'}
+              />
+            )}
+
+            {showDuplicateResults && duplicateGroups.length > 0 && (
+              <section className="library-integrity-duplicate-action-bar">
+                <div>
+                  <strong>{selectedTrashCount > 0 ? `${selectedTrashCount} file${selectedTrashCount === 1 ? '' : 's'} ready for review` : 'Choose a copy to keep in any group'}</strong>
+                  <span>{selectedActiveTrack ? 'Stop the affected playing track before continuing.' : 'Nothing moves until you review and confirm.'}</span>
+                </div>
+                <button
+                  type="button"
+                  className="settings-btn library-integrity-trash-button"
+                  disabled={selectedTrashCount === 0 || selectedActiveTrack || isTrashingDuplicates}
+                  onClick={() => setTrashConfirmationOpen(true)}
+                >
+                  {isTrashingDuplicates ? 'Moving to Trash...' : `Review cleanup${selectedTrashCount > 0 ? ` · ${selectedTrashCount}` : ''}`}
+                </button>
+              </section>
+            )}
           </main>
         </div>
       </div>
+      {isTrashConfirmationOpen && (
+        <div className="modal-overlay library-integrity-trash-confirm-overlay" onClick={(event) => {
+          event.stopPropagation()
+          if (!isTrashingDuplicates) setTrashConfirmationOpen(false)
+        }}>
+          <div className="modal-content library-integrity-trash-confirm" onClick={(event) => event.stopPropagation()}>
+            <div className="library-integrity-kicker">Duplicate cleanup</div>
+            <h2>Move {selectedTrashCount} file{selectedTrashCount === 1 ? '' : 's'} to Trash?</h2>
+            <p>Astra will ask the operating system to move these files to Trash or the Recycle Bin. It will never fall back to permanent deletion.</p>
+            <div className="library-integrity-trash-confirm-list">
+              {duplicateTrashActions.flatMap((action) => action.trashPaths.map((trashPath) => (
+                <div key={trashPath}>
+                  <strong>Trash</strong>
+                  <span>{trashPath}</span>
+                  <em>Keep → {action.keepPath}</em>
+                </div>
+              )))}
+            </div>
+            <div className="library-integrity-trash-confirm-actions">
+              <button className="settings-btn" onClick={() => setTrashConfirmationOpen(false)} disabled={isTrashingDuplicates}>Cancel</button>
+              <button className="settings-btn library-integrity-trash-button" onClick={() => void handleConfirmTrash()} disabled={isTrashingDuplicates}>
+                {isTrashingDuplicates ? 'Moving...' : 'Move to Trash'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

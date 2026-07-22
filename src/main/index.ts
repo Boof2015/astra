@@ -18,6 +18,8 @@ import {
   quickScanIntegrityTrack,
   resolveIntegrityWorkerCount,
   runIntegrityWithConcurrency,
+  scanIntegrityDuplicates,
+  type IntegrityDuplicateSnapshotMember,
   type IntegrityFindingInput,
   type IntegrityScanTrackTarget
 } from './services/libraryIntegrity'
@@ -230,6 +232,9 @@ import type {
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
 import type {
+  IntegrityDuplicateGroup,
+  IntegrityDuplicateTrashRequest,
+  IntegrityDuplicateTrashResult,
   IntegrityFinding,
   IntegrityScanMode,
   IntegrityScanProgress,
@@ -7035,7 +7040,16 @@ ipcMain.handle('library:cancelScan', () => {
 
 let activeIntegrityScanAbortController: AbortController | null = null
 
+interface CompletedDuplicateScanSnapshot {
+  runId: string
+  groups: IntegrityDuplicateGroup[]
+  members: Map<string, IntegrityDuplicateSnapshotMember>
+}
+
+let latestDuplicateScanSnapshot: CompletedDuplicateScanSnapshot | null = null
+
 function normalizeIntegrityScanMode(value: unknown): IntegrityScanMode {
+  if (value === 'duplicates') return 'duplicates'
   return value === 'deep' ? 'deep' : 'quick'
 }
 
@@ -7145,6 +7159,7 @@ function buildIntegritySummary(
   mode: IntegrityScanMode,
   scope: IntegrityScanScope,
   findings: readonly IntegrityFinding[],
+  duplicateGroups: readonly IntegrityDuplicateGroup[],
   scanned: number,
   skipped: number,
   canceled: boolean,
@@ -7156,6 +7171,11 @@ function buildIntegritySummary(
     scanned,
     skipped,
     ...countIntegrityFindings(findings),
+    duplicateGroups: duplicateGroups.length,
+    duplicateFiles: new Set(duplicateGroups.flatMap((group) => group.members.map((member) => member.path))).size,
+    exactDuplicateGroups: duplicateGroups.filter((group) => group.evidence === 'exact').length,
+    possibleDuplicateGroups: duplicateGroups.filter((group) => group.evidence === 'possible').length,
+    mixedDuplicateGroups: duplicateGroups.filter((group) => group.evidence === 'mixed').length,
     canceled,
     startedAt,
     completedAt: Date.now()
@@ -7163,17 +7183,21 @@ function buildIntegritySummary(
 }
 
 function buildIntegrityResult(
+  runId: string,
   mode: IntegrityScanMode,
   scope: IntegrityScanScope,
   findings: IntegrityFinding[],
+  duplicateGroups: IntegrityDuplicateGroup[],
   scanned: number,
   skipped: number,
   canceled: boolean,
   startedAt: number
 ): IntegrityScanResult {
   return {
-    summary: buildIntegritySummary(mode, scope, findings, scanned, skipped, canceled, startedAt),
-    findings
+    runId,
+    summary: buildIntegritySummary(mode, scope, findings, duplicateGroups, scanned, skipped, canceled, startedAt),
+    findings,
+    duplicateGroups
   }
 }
 
@@ -7218,6 +7242,9 @@ async function runIntegrityScan(
   let total = 0
   let completed = 0
   let canceled = false
+  let duplicateGroups: IntegrityDuplicateGroup[] = []
+  let duplicateSnapshots = new Map<string, IntegrityDuplicateSnapshotMember>()
+  latestDuplicateScanSnapshot = null
 
   try {
     sendIntegrityScanProgress({
@@ -7230,68 +7257,102 @@ async function runIntegrityScan(
       phase: 'preparing'
     })
 
-    const allTargets = library.getIntegrityScanTrackTargets(scope)
-    const targets = mode === 'deep' ? allTargets.filter(isFlacTarget) : allTargets
-    skipped = mode === 'deep' ? allTargets.length - targets.length : 0
-    total = targets.length
-    const ffmpegPath = mode === 'deep' && targets.length > 0 ? await resolveBinary('ffmpeg') : null
-    const workerCount = resolveIntegrityWorkerCount(total, mode, {
-      onBattery: isOnBatteryPowerMain()
-    })
-
-    sendIntegrityScanProgress({
-      mode,
-      scope,
-      current: 0,
-      total,
-      filePath: getIntegrityScopePath(scope),
-      message: total === 0 ? 'No matching local tracks to scan.' : `Scanning with ${workerCount} worker${workerCount === 1 ? '' : 's'}...`,
-      phase: mode
-    })
-
-    await runIntegrityWithConcurrency(targets, workerCount, async (target) => {
-      const phase = mode === 'deep' ? 'deep' : 'quick'
+    if (mode === 'duplicates') {
+      const allTargets = library.getIntegrityScanTrackTargets({ type: 'all' })
+      total = allTargets.length
       sendIntegrityScanProgress({
         mode,
         scope,
-        current: completed,
+        current: 0,
         total,
-        filePath: target.path,
-        message: mode === 'deep' ? 'Decoding FLAC and checking quality signals...' : 'Checking file headers and metadata...',
-        phase
+        filePath: getIntegrityScopePath(scope),
+        message: total === 0 ? 'No local tracks to compare.' : 'Comparing duplicate candidates across the library...',
+        phase: 'duplicates'
+      })
+      const output = await scanIntegrityDuplicates(allTargets, scope, runId, {
+        signal: controller.signal,
+        onBattery: isOnBatteryPowerMain(),
+        onProgress: (current, progressTotal, filePath, message) => {
+          completed = current
+          total = progressTotal
+          sendIntegrityScanProgress({
+            mode,
+            scope,
+            current,
+            total: progressTotal,
+            filePath,
+            message,
+            phase: 'duplicates'
+          })
+        }
+      })
+      for (const finding of output.findings) recorder.record(finding)
+      duplicateGroups = output.groups
+      duplicateSnapshots = output.snapshots
+      scanned = output.scanned
+      skipped = output.skipped
+      completed = scanned + skipped
+      total = completed
+    } else {
+      const allTargets = library.getIntegrityScanTrackTargets(scope)
+      const targets = mode === 'deep' ? allTargets.filter(isFlacTarget) : allTargets
+      skipped = mode === 'deep' ? allTargets.length - targets.length : 0
+      total = targets.length
+      const ffmpegPath = mode === 'deep' && targets.length > 0 ? await resolveBinary('ffmpeg') : null
+      const workerCount = resolveIntegrityWorkerCount(total, mode, {
+        onBattery: isOnBatteryPowerMain()
       })
 
-      try {
-        const findings = await scanIntegrityTarget(target, mode, ffmpegPath, controller.signal)
-        for (const finding of findings) {
-          recorder.record(finding)
-        }
-      } catch (error) {
-        if (isIntegrityScanCancelledError(error)) {
-          throw error
-        }
-        recorder.record({
-          severity: 'error',
-          code: 'integrity_scan_failed',
-          path: target.path,
-          title: target.title,
-          message: 'Integrity scan failed for this file.',
-          detail: error instanceof Error ? error.message : 'Unknown error'
-        })
-      } finally {
-        scanned += 1
-        completed += 1
+      sendIntegrityScanProgress({
+        mode,
+        scope,
+        current: 0,
+        total,
+        filePath: getIntegrityScopePath(scope),
+        message: total === 0 ? 'No matching local tracks to scan.' : `Scanning with ${workerCount} worker${workerCount === 1 ? '' : 's'}...`,
+        phase: mode
+      })
+
+      await runIntegrityWithConcurrency(targets, workerCount, async (target) => {
+        const phase = mode === 'deep' ? 'deep' : 'quick'
         sendIntegrityScanProgress({
           mode,
           scope,
           current: completed,
           total,
           filePath: target.path,
-          message: completed >= total ? 'Finalizing report...' : 'Continuing integrity scan...',
+          message: mode === 'deep' ? 'Decoding FLAC and checking quality signals...' : 'Checking file headers and metadata...',
           phase
         })
-      }
-    }, { signal: controller.signal })
+
+        try {
+          const findings = await scanIntegrityTarget(target, mode, ffmpegPath, controller.signal)
+          for (const finding of findings) recorder.record(finding)
+        } catch (error) {
+          if (isIntegrityScanCancelledError(error)) throw error
+          recorder.record({
+            severity: 'error',
+            code: 'integrity_scan_failed',
+            path: target.path,
+            title: target.title,
+            message: 'Integrity scan failed for this file.',
+            detail: error instanceof Error ? error.message : 'Unknown error'
+          })
+        } finally {
+          scanned += 1
+          completed += 1
+          sendIntegrityScanProgress({
+            mode,
+            scope,
+            current: completed,
+            total,
+            filePath: target.path,
+            message: completed >= total ? 'Finalizing report...' : 'Continuing integrity scan...',
+            phase
+          })
+        }
+      }, { signal: controller.signal })
+    }
   } catch (error) {
     if (isIntegrityScanCancelledError(error)) {
       canceled = true
@@ -7304,7 +7365,24 @@ async function runIntegrityScan(
     }
   }
 
-  const result = buildIntegrityResult(mode, scope, recorder.findings, scanned, skipped, canceled, startedAt)
+  if (!canceled && mode === 'duplicates') {
+    latestDuplicateScanSnapshot = {
+      runId,
+      groups: duplicateGroups,
+      members: duplicateSnapshots
+    }
+  }
+  const result = buildIntegrityResult(
+    runId,
+    mode,
+    scope,
+    recorder.findings,
+    duplicateGroups,
+    scanned,
+    skipped,
+    canceled,
+    startedAt
+  )
   sendIntegrityScanProgress({
     mode,
     scope,
@@ -7332,6 +7410,193 @@ ipcMain.handle('library:cancelIntegrityScan', () => {
   return { canceled: true }
 })
 
+function staleDuplicateTrashResult(runId: string, error: string): IntegrityDuplicateTrashResult {
+  return {
+    runId,
+    stale: true,
+    error,
+    outcomes: [],
+    replacements: {},
+    remainingGroups: latestDuplicateScanSnapshot?.runId === runId
+      ? latestDuplicateScanSnapshot.groups
+      : []
+  }
+}
+
+function refreshDuplicateGroupEvidence(groups: readonly IntegrityDuplicateGroup[]): IntegrityDuplicateGroup[] {
+  return groups
+    .filter((group) => group.members.length >= 2)
+    .map((group) => {
+      const exactCounts = new Map<string, number>()
+      for (const member of group.members) {
+        if (!member.exactSetId) continue
+        exactCounts.set(member.exactSetId, (exactCounts.get(member.exactSetId) ?? 0) + 1)
+      }
+      const members: IntegrityDuplicateGroup['members'] = group.members.map((member) => {
+        if (!member.exactSetId || (exactCounts.get(member.exactSetId) ?? 0) < 2) {
+          const { exactSetId: _exactSetId, ...rest } = member
+          return rest
+        }
+        return member
+      })
+      const retainedExactIds = new Set(members.map((member) => member.exactSetId).filter(Boolean))
+      const allExact = retainedExactIds.size === 1 && members.every((member) => Boolean(member.exactSetId))
+      return {
+        ...group,
+        evidence: allExact ? 'exact' : retainedExactIds.size > 0 ? 'mixed' : 'possible',
+        members
+      }
+    })
+}
+
+async function handleDuplicateTrashRequest(request: IntegrityDuplicateTrashRequest): Promise<IntegrityDuplicateTrashResult> {
+  const runId = typeof request?.runId === 'string' ? request.runId.trim() : ''
+  const snapshot = latestDuplicateScanSnapshot
+  if (!runId || !snapshot || snapshot.runId !== runId) {
+    return staleDuplicateTrashResult(runId, 'This duplicate report is no longer current. Run Duplicate Scan again.')
+  }
+  if (activeIntegrityScanAbortController || activeLibraryScanAbortController) {
+    return staleDuplicateTrashResult(runId, 'Wait for the active library operation to finish before moving files to Trash.')
+  }
+  if (!Array.isArray(request.actions) || request.actions.length === 0) {
+    return staleDuplicateTrashResult(runId, 'No duplicate files were selected.')
+  }
+
+  const groupById = new Map(snapshot.groups.map((group) => [group.id, group]))
+  const normalizedActions: Array<{ groupId: string; keepPath: string; trashPaths: string[] }> = []
+  const seenGroups = new Set<string>()
+  const selectedPaths = new Set<string>()
+  const pathsToValidate = new Set<string>()
+
+  for (const input of request.actions) {
+    const groupId = typeof input?.groupId === 'string' ? input.groupId.trim() : ''
+    const keepPath = typeof input?.keepPath === 'string' ? input.keepPath.trim() : ''
+    const trashPaths = Array.isArray(input?.trashPaths)
+      ? Array.from(new Set(input.trashPaths.map((path) => (typeof path === 'string' ? path.trim() : '')).filter(Boolean)))
+      : []
+    const group = groupById.get(groupId)
+    if (!group || seenGroups.has(groupId)) {
+      return staleDuplicateTrashResult(runId, 'The duplicate selection does not match this report.')
+    }
+    seenGroups.add(groupId)
+    const memberPaths = new Set(group.members.map((member) => member.path))
+    if (!keepPath || !memberPaths.has(keepPath) || trashPaths.length === 0) {
+      return staleDuplicateTrashResult(runId, 'Choose one valid Keep file for every selected duplicate group.')
+    }
+    if (trashPaths.includes(keepPath) || trashPaths.length >= group.members.length) {
+      return staleDuplicateTrashResult(runId, 'Astra will not move the Keep file or every member of a duplicate group to Trash.')
+    }
+    for (const trashPath of trashPaths) {
+      if (!memberPaths.has(trashPath) || selectedPaths.has(trashPath)) {
+        return staleDuplicateTrashResult(runId, 'The duplicate selection contains an invalid or repeated file.')
+      }
+      selectedPaths.add(trashPath)
+      pathsToValidate.add(trashPath)
+    }
+    pathsToValidate.add(keepPath)
+    normalizedActions.push({ groupId, keepPath, trashPaths })
+  }
+
+  const currentTracks = library.getTracksByPaths(Array.from(pathsToValidate))
+  const currentByPath = new Map(currentTracks.map((track) => [track.path, track]))
+  if (currentByPath.size !== pathsToValidate.size) {
+    return staleDuplicateTrashResult(runId, 'One or more duplicate files are no longer indexed. Run Duplicate Scan again.')
+  }
+
+  for (const trackPath of pathsToValidate) {
+    const current = currentByPath.get(trackPath)
+    const original = snapshot.members.get(trackPath)
+    if (!current || current.source_type !== 'local' || !original) {
+      return staleDuplicateTrashResult(runId, 'Only unchanged local-library files can be moved to Trash from this report.')
+    }
+    if (current.title !== original.title || current.artist !== original.artist || current.duration !== original.duration) {
+      return staleDuplicateTrashResult(runId, 'Track metadata changed after the scan. Run Duplicate Scan again before removing files.')
+    }
+    try {
+      const currentStat = await stat(trackPath)
+      if (!currentStat.isFile()
+        || currentStat.size !== original.sizeBytes
+        || Math.abs(currentStat.mtimeMs - original.modifiedAtMs) > 0.5) {
+        return staleDuplicateTrashResult(runId, 'A duplicate file changed after the scan. Run Duplicate Scan again before removing files.')
+      }
+    } catch {
+      return staleDuplicateTrashResult(runId, 'A duplicate file is no longer readable. Run Duplicate Scan again.')
+    }
+  }
+
+  const outcomes: IntegrityDuplicateTrashResult['outcomes'] = []
+  const replacements: Record<string, string> = {}
+  let requiresRescan = false
+
+  for (const action of normalizedActions) {
+    const trashedPaths: string[] = []
+    for (const trashPath of action.trashPaths) {
+      try {
+        await shell.trashItem(trashPath)
+        trashedPaths.push(trashPath)
+      } catch (error) {
+        outcomes.push({
+          path: trashPath,
+          keepPath: action.keepPath,
+          status: 'failed',
+          error: getScanErrorMessage(error)
+        })
+      }
+    }
+
+    if (trashedPaths.length === 0) continue
+    try {
+      await library.mergeLocalDuplicateTracks(action.keepPath, trashedPaths)
+      for (const trashPath of trashedPaths) {
+        outcomes.push({ path: trashPath, keepPath: action.keepPath, status: 'trashed' })
+        replacements[trashPath] = action.keepPath
+        snapshot.members.delete(trashPath)
+      }
+    } catch (error) {
+      requiresRescan = true
+      for (const trashPath of trashedPaths) {
+        outcomes.push({
+          path: trashPath,
+          keepPath: action.keepPath,
+          status: 'trashed_merge_failed',
+          error: getScanErrorMessage(error)
+        })
+      }
+    }
+  }
+
+  if (requiresRescan) {
+    latestDuplicateScanSnapshot = null
+    return {
+      runId,
+      stale: false,
+      error: 'Some files reached Trash, but Astra could not merge their library records. Rescan the library before continuing.',
+      outcomes,
+      replacements,
+      remainingGroups: []
+    }
+  }
+
+  const successfullyTrashed = new Set(
+    outcomes.filter((outcome) => outcome.status === 'trashed').map((outcome) => outcome.path)
+  )
+  snapshot.groups = refreshDuplicateGroupEvidence(snapshot.groups.map((group) => ({
+    ...group,
+    members: group.members.filter((member) => !successfullyTrashed.has(member.path))
+  })))
+  return {
+    runId,
+    stale: false,
+    outcomes,
+    replacements,
+    remainingGroups: snapshot.groups
+  }
+}
+
+ipcMain.handle('library:trashIntegrityDuplicates', async (_event, request: IntegrityDuplicateTrashRequest) => {
+  return handleDuplicateTrashRequest(request)
+})
+
 function buildTrackIntegrityScope(trackPaths: string[]): IntegrityScanScope {
   if (trackPaths.length === 1) {
     return { type: 'track', trackPath: trackPaths[0] }
@@ -7355,7 +7620,7 @@ async function runTrackIntegrityCheck(trackPaths: string[]): Promise<IntegritySc
       path: '',
       message: 'No tracks were selected for integrity checking.'
     })
-    return buildIntegrityResult('quick', scope, recorder.findings, scanned, skipped, false, startedAt)
+    return buildIntegrityResult(runId, 'quick', scope, recorder.findings, [], scanned, skipped, false, startedAt)
   }
 
   const targetByPath = new Map(
@@ -7403,7 +7668,7 @@ async function runTrackIntegrityCheck(trackPaths: string[]): Promise<IntegritySc
     })
   }
 
-  return buildIntegrityResult(mode, scope, recorder.findings, scanned, skipped, false, startedAt)
+  return buildIntegrityResult(runId, mode, scope, recorder.findings, [], scanned, skipped, false, startedAt)
 }
 
 ipcMain.handle('library:checkTrackIntegrity', async (_event, trackPath: string) => {

@@ -280,6 +280,33 @@ test('path queue actions keep filename fallback for tracks missing from the libr
   assert.equal(item.entry.snapshot.format, 'mp3')
 })
 
+test('duplicate cleanup replacement remaps stopped current, queue, and playback history paths', async () => {
+  resetStores()
+  const removedPath = '/music/remove.flac'
+  const keepPath = '/music/keep.flac'
+  const keepTrack = makeDbTrack(keepPath, { title: 'Kept Duplicate' })
+  installMockTrackFetch((trackPaths) => trackPaths.includes(keepPath) ? [keepTrack] : [])
+  const removedEntry = createQueueEntryFromTrack(makeTrack(removedPath, { title: 'Removed Duplicate' }))
+  const queueItem = makeQueueItem(removedEntry, 'duplicate-queue')
+  const historyItem = makeQueueItem(removedEntry, 'duplicate-history')
+  usePlayerStore.setState({
+    currentTrack: makeTrack(removedPath, { title: 'Removed Duplicate' }),
+    playbackState: 'stopped',
+    queueItems: [queueItem],
+    baseUpcomingQueueIds: [queueItem.queueId],
+    upcomingQueueIds: [queueItem.queueId],
+    playbackHistory: [{ item: historyItem }]
+  })
+
+  await usePlayerStore.getState().replaceLocalTrackPaths({ [removedPath]: keepPath })
+
+  const state = usePlayerStore.getState()
+  assert.equal(state.currentTrack?.path, keepPath)
+  assert.equal(state.currentTrack?.title, 'Kept Duplicate')
+  assert.equal(state.queueItems[0]?.entry.path, keepPath)
+  assert.equal(state.playbackHistory[0]?.item.entry.path, keepPath)
+})
+
 test('associated external queue entries use sanitized snapshots instead of library hydration', () => {
   resetStores()
 

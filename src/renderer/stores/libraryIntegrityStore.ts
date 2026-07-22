@@ -1,5 +1,8 @@
 import { create } from 'zustand'
 import type {
+  IntegrityDuplicateGroup,
+  IntegrityDuplicateTrashAction,
+  IntegrityDuplicateTrashResult,
   IntegrityFinding,
   IntegrityFindingSeverity,
   IntegrityScanMode,
@@ -42,12 +45,16 @@ interface LibraryIntegrityStore {
   isCanceling: boolean
   progress: IntegrityScanProgress | null
   findings: IntegrityFinding[]
+  duplicateGroups: IntegrityDuplicateGroup[]
   result: IntegrityScanResult | null
   errorMessage: string
   singleTrackResult: IntegrityScanResult | null
   singleTrackBusyPath: string | null
   singleTrackBusyPaths: string[]
   singleTrackError: string
+  isTrashingDuplicates: boolean
+  duplicateTrashResult: IntegrityDuplicateTrashResult | null
+  duplicateTrashError: string
   setEnabled: (enabled: boolean) => void
   openPanel: () => void
   closePanel: () => void
@@ -57,6 +64,7 @@ interface LibraryIntegrityStore {
   clearReport: () => void
   startScan: () => Promise<void>
   cancelScan: () => Promise<boolean>
+  trashDuplicates: (actions: IntegrityDuplicateTrashAction[]) => Promise<IntegrityDuplicateTrashResult | null>
   checkTrack: (trackPath: string) => Promise<void>
   checkTracks: (trackPaths: string[]) => Promise<void>
   closeSingleTrackResult: () => void
@@ -83,6 +91,7 @@ function ensureIntegrityListeners(): void {
     useLibraryIntegrityStore.setState({
       result,
       findings: result.findings,
+      duplicateGroups: result.duplicateGroups,
       isScanning: false,
       isCanceling: false,
       progress: {
@@ -108,12 +117,16 @@ export const useLibraryIntegrityStore = create<LibraryIntegrityStore>((set, get)
   isCanceling: false,
   progress: null,
   findings: [],
+  duplicateGroups: [],
   result: null,
   errorMessage: '',
   singleTrackResult: null,
   singleTrackBusyPath: null,
   singleTrackBusyPaths: [],
   singleTrackError: '',
+  isTrashingDuplicates: false,
+  duplicateTrashResult: null,
+  duplicateTrashError: '',
 
   setEnabled: (enabled) => {
     const normalized = Boolean(enabled)
@@ -140,8 +153,11 @@ export const useLibraryIntegrityStore = create<LibraryIntegrityStore>((set, get)
   clearReport: () => set({
     progress: null,
     findings: [],
+    duplicateGroups: [],
     result: null,
-    errorMessage: ''
+    errorMessage: '',
+    duplicateTrashResult: null,
+    duplicateTrashError: ''
   }),
 
   startScan: async () => {
@@ -152,8 +168,11 @@ export const useLibraryIntegrityStore = create<LibraryIntegrityStore>((set, get)
       isCanceling: false,
       progress: null,
       findings: [],
+      duplicateGroups: [],
       result: null,
-      errorMessage: ''
+      errorMessage: '',
+      duplicateTrashResult: null,
+      duplicateTrashError: ''
     })
 
     try {
@@ -161,6 +180,7 @@ export const useLibraryIntegrityStore = create<LibraryIntegrityStore>((set, get)
       set({
         result,
         findings: result.findings,
+        duplicateGroups: result.duplicateGroups,
         isScanning: false,
         isCanceling: false
       })
@@ -188,6 +208,44 @@ export const useLibraryIntegrityStore = create<LibraryIntegrityStore>((set, get)
         errorMessage: error instanceof Error ? error.message : 'Could not cancel integrity scan.'
       })
       return false
+    }
+  },
+
+  trashDuplicates: async (actions) => {
+    const result = get().result
+    if (!result || result.summary.mode !== 'duplicates' || actions.length === 0) return null
+    set({ isTrashingDuplicates: true, duplicateTrashResult: null, duplicateTrashError: '' })
+    try {
+      const trashResult = await window.electronAPI.library.trashIntegrityDuplicates({
+        runId: result.runId,
+        actions
+      })
+      const duplicateGroups = trashResult.remainingGroups
+      const duplicateFiles = new Set(duplicateGroups.flatMap((group) => group.members.map((member) => member.path))).size
+      const updatedResult: IntegrityScanResult = {
+        ...result,
+        duplicateGroups,
+        summary: {
+          ...result.summary,
+          duplicateGroups: duplicateGroups.length,
+          duplicateFiles,
+          exactDuplicateGroups: duplicateGroups.filter((group) => group.evidence === 'exact').length,
+          possibleDuplicateGroups: duplicateGroups.filter((group) => group.evidence === 'possible').length,
+          mixedDuplicateGroups: duplicateGroups.filter((group) => group.evidence === 'mixed').length
+        }
+      }
+      set({
+        isTrashingDuplicates: false,
+        duplicateTrashResult: trashResult,
+        duplicateTrashError: trashResult.error ?? '',
+        duplicateGroups,
+        result: updatedResult
+      })
+      return trashResult
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not move duplicate files to Trash.'
+      set({ isTrashingDuplicates: false, duplicateTrashError: message })
+      return null
     }
   },
 

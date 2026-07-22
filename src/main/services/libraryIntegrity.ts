@@ -1,9 +1,13 @@
 import { spawn } from 'child_process'
+import { createReadStream } from 'fs'
 import { open, stat } from 'fs/promises'
+import { createHash } from 'crypto'
 import { cpus } from 'os'
 import { basename, extname } from 'path'
 import * as mm from 'music-metadata'
 import type {
+  IntegrityDuplicateGroup,
+  IntegrityDuplicateMember,
   IntegrityFinding,
   IntegrityScanMode,
   IntegrityScanScope
@@ -42,6 +46,33 @@ interface IntegrityWorkerOptions {
   onBattery?: boolean
 }
 
+export interface IntegrityDuplicateSnapshotMember {
+  path: string
+  title: string
+  artist: string
+  duration: number
+  sizeBytes: number
+  modifiedAtMs: number
+}
+
+export interface IntegrityDuplicateScanOutput {
+  groups: IntegrityDuplicateGroup[]
+  findings: IntegrityFindingInput[]
+  snapshots: Map<string, IntegrityDuplicateSnapshotMember>
+  scanned: number
+  skipped: number
+}
+
+export interface IntegrityDuplicateCandidate extends IntegrityScanTrackTarget {
+  sizeBytes: number
+  modifiedAtMs: number
+  contentHash?: string
+}
+
+interface IntegrityDuplicateScanOptions extends IntegrityWorkerOptions {
+  onProgress?: (current: number, total: number, filePath: string, message: string) => void
+}
+
 interface PcmAnalysisStats {
   sourceBitDepth: number | null
   lowBitSampleCount: number
@@ -67,6 +98,9 @@ const MAX_FLAC_METADATA_BLOCKS_TO_SCAN = 64
 const MAX_FLAC_METADATA_BYTES_TO_SCAN = 8 * 1024 * 1024
 const QUALITY_FFT_SIZE = 4096
 const QUALITY_MAX_SPECTRAL_WINDOWS = 24
+const DUPLICATE_DURATION_TOLERANCE_SECONDS = 2
+const DUPLICATE_STAT_MAX_WORKERS = 4
+const DUPLICATE_HASH_MAX_WORKERS = 2
 
 export class IntegrityScanCancelledError extends Error {
   constructor(message = 'Integrity scan canceled') {
@@ -184,6 +218,312 @@ export async function runIntegrityWithConcurrency<T>(
   const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
   if (rejected) {
     throw rejected.reason
+  }
+}
+
+function normalizeDuplicateText(value: string): string {
+  return value
+    .normalize('NFC')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLocaleLowerCase()
+}
+
+function getDuplicateMetadataKey(candidate: Pick<IntegrityScanTrackTarget, 'title' | 'artist'>): string | null {
+  const title = normalizeDuplicateText(candidate.title)
+  const artist = normalizeDuplicateText(candidate.artist)
+  if (!title || !artist) return null
+  return `${title}\u0000${artist}`
+}
+
+function buildMetadataDuplicateClusters(
+  candidates: readonly IntegrityDuplicateCandidate[]
+): number[][] {
+  const indicesByMetadata = new Map<string, number[]>()
+  candidates.forEach((candidate, index) => {
+    const key = getDuplicateMetadataKey(candidate)
+    if (!key || !Number.isFinite(candidate.duration) || candidate.duration <= 0) return
+    const indices = indicesByMetadata.get(key)
+    if (indices) indices.push(index)
+    else indicesByMetadata.set(key, [index])
+  })
+
+  const clusters: number[][] = []
+  for (const indices of indicesByMetadata.values()) {
+    const sorted = [...indices].sort((left, right) => (
+      candidates[left].duration - candidates[right].duration
+      || candidates[left].path.localeCompare(candidates[right].path)
+    ))
+    let cluster: number[] = []
+    let clusterMinimumDuration = 0
+    for (const index of sorted) {
+      const duration = candidates[index].duration
+      if (cluster.length === 0 || duration - clusterMinimumDuration <= DUPLICATE_DURATION_TOLERANCE_SECONDS) {
+        if (cluster.length === 0) clusterMinimumDuration = duration
+        cluster.push(index)
+        continue
+      }
+      if (cluster.length >= 2) clusters.push(cluster)
+      cluster = [index]
+      clusterMinimumDuration = duration
+    }
+    if (cluster.length >= 2) clusters.push(cluster)
+  }
+  return clusters
+}
+
+class DuplicateUnionFind {
+  private readonly parent: number[]
+  private readonly rank: number[]
+
+  constructor(size: number) {
+    this.parent = Array.from({ length: size }, (_, index) => index)
+    this.rank = Array.from({ length: size }, () => 0)
+  }
+
+  find(index: number): number {
+    const parent = this.parent[index]
+    if (parent !== index) this.parent[index] = this.find(parent)
+    return this.parent[index]
+  }
+
+  union(left: number, right: number): void {
+    const leftRoot = this.find(left)
+    const rightRoot = this.find(right)
+    if (leftRoot === rightRoot) return
+    if (this.rank[leftRoot] < this.rank[rightRoot]) {
+      this.parent[leftRoot] = rightRoot
+      return
+    }
+    this.parent[rightRoot] = leftRoot
+    if (this.rank[leftRoot] === this.rank[rightRoot]) this.rank[leftRoot] += 1
+  }
+}
+
+export function buildIntegrityDuplicateGroups(
+  candidates: readonly IntegrityDuplicateCandidate[],
+  scopedPaths: ReadonlySet<string>,
+  runId: string
+): IntegrityDuplicateGroup[] {
+  if (candidates.length < 2 || scopedPaths.size === 0) return []
+
+  const unionFind = new DuplicateUnionFind(candidates.length)
+  const exactSetIdByPath = new Map<string, string>()
+  const indicesByHash = new Map<string, number[]>()
+  candidates.forEach((candidate, index) => {
+    if (!candidate.contentHash) return
+    const indices = indicesByHash.get(candidate.contentHash)
+    if (indices) indices.push(index)
+    else indicesByHash.set(candidate.contentHash, [index])
+  })
+
+  let exactSequence = 0
+  const exactSets = Array.from(indicesByHash.values())
+    .filter((indices) => indices.length >= 2)
+    .sort((left, right) => candidates[left[0]].path.localeCompare(candidates[right[0]].path))
+  for (const indices of exactSets) {
+    exactSequence += 1
+    const exactSetId = `${runId}:exact:${exactSequence}`
+    const anchor = indices[0]
+    for (const index of indices) {
+      unionFind.union(anchor, index)
+      exactSetIdByPath.set(candidates[index].path, exactSetId)
+    }
+  }
+
+  for (const cluster of buildMetadataDuplicateClusters(candidates)) {
+    const anchor = cluster[0]
+    for (const index of cluster.slice(1)) unionFind.union(anchor, index)
+  }
+
+  const indicesByRoot = new Map<number, number[]>()
+  candidates.forEach((_candidate, index) => {
+    const root = unionFind.find(index)
+    const indices = indicesByRoot.get(root)
+    if (indices) indices.push(index)
+    else indicesByRoot.set(root, [index])
+  })
+
+  const components = Array.from(indicesByRoot.values())
+    .filter((indices) => indices.length >= 2 && indices.some((index) => scopedPaths.has(candidates[index].path)))
+    .sort((left, right) => candidates[left[0]].path.localeCompare(candidates[right[0]].path))
+
+  return components.map((indices, groupIndex) => {
+    const orderedIndices = [...indices].sort((left, right) => candidates[left].path.localeCompare(candidates[right].path))
+    const hashes = new Set(orderedIndices.map((index) => candidates[index].contentHash).filter(Boolean))
+    const allExactlyEqual = hashes.size === 1 && orderedIndices.every((index) => Boolean(candidates[index].contentHash))
+    const hasExactSubset = orderedIndices.some((index) => exactSetIdByPath.has(candidates[index].path))
+    const evidence = allExactlyEqual ? 'exact' : hasExactSubset ? 'mixed' : 'possible'
+    const members: IntegrityDuplicateMember[] = orderedIndices.map((index) => {
+      const candidate = candidates[index]
+      const exactSetId = exactSetIdByPath.get(candidate.path)
+      return {
+        path: candidate.path,
+        title: candidate.title,
+        artist: candidate.artist,
+        album: candidate.album,
+        duration: candidate.duration,
+        format: candidate.format,
+        sizeBytes: candidate.sizeBytes,
+        bitrate: candidate.bitrate,
+        sampleRate: candidate.sampleRate,
+        bitDepth: candidate.bitDepth,
+        channels: candidate.channels,
+        withinScope: scopedPaths.has(candidate.path),
+        ...(exactSetId ? { exactSetId } : {})
+      }
+    })
+    return {
+      id: `${runId}:duplicate:${groupIndex + 1}`,
+      evidence,
+      members
+    }
+  })
+}
+
+async function hashFileForDuplicateScan(filePath: string, signal?: AbortSignal): Promise<string> {
+  throwIfIntegrityScanCancelled(signal)
+  const hash = createHash('sha256')
+  try {
+    const stream = createReadStream(filePath, { signal })
+    for await (const chunk of stream) {
+      throwIfIntegrityScanCancelled(signal)
+      hash.update(chunk as Buffer)
+    }
+  } catch (error) {
+    if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+      throw new IntegrityScanCancelledError()
+    }
+    throw error
+  }
+  return hash.digest('hex')
+}
+
+function collectScopedMetadataCandidatePaths(
+  candidates: readonly IntegrityDuplicateCandidate[],
+  scopedPaths: ReadonlySet<string>
+): Set<string> {
+  const paths = new Set(scopedPaths)
+  for (const cluster of buildMetadataDuplicateClusters(candidates)) {
+    if (!cluster.some((index) => scopedPaths.has(candidates[index].path))) continue
+    for (const index of cluster) paths.add(candidates[index].path)
+  }
+  return paths
+}
+
+export async function scanIntegrityDuplicates(
+  allTargets: readonly IntegrityScanTrackTarget[],
+  scope: IntegrityScanScope,
+  runId: string,
+  options: IntegrityDuplicateScanOptions = {}
+): Promise<IntegrityDuplicateScanOutput> {
+  const findings: IntegrityFindingInput[] = []
+  const candidates: IntegrityDuplicateCandidate[] = []
+  const scopedPaths = new Set(filterIntegrityTargetsByScope(allTargets, scope).map((target) => target.path))
+  let progressCurrent = 0
+  let progressTotal = allTargets.length
+  let skipped = 0
+  const statWorkers = options.onBattery
+    ? 1
+    : Math.max(1, Math.min(DUPLICATE_STAT_MAX_WORKERS, Math.floor(cpus().length / 2)))
+
+  await runIntegrityWithConcurrency(allTargets, statWorkers, async (target) => {
+    try {
+      const fileStat = await stat(target.path)
+      if (!fileStat.isFile()) {
+        skipped += 1
+        findings.push(buildFinding(
+          target,
+          'error',
+          'duplicate_not_a_file',
+          'Duplicate comparison skipped a path that is not a normal file.'
+        ))
+        return
+      }
+      candidates.push({
+        ...target,
+        sizeBytes: fileStat.size,
+        modifiedAtMs: fileStat.mtimeMs
+      })
+    } catch (error) {
+      skipped += 1
+      findings.push(buildFinding(
+        target,
+        'error',
+        'duplicate_file_unreadable',
+        'Duplicate comparison could not read this file.',
+        toErrorMessage(error)
+      ))
+    } finally {
+      progressCurrent += 1
+      options.onProgress?.(
+        progressCurrent,
+        progressTotal,
+        target.path,
+        'Reading file sizes and timestamps...'
+      )
+    }
+  }, { signal: options.signal })
+
+  throwIfIntegrityScanCancelled(options.signal)
+  candidates.sort((left, right) => left.path.localeCompare(right.path))
+  const relevantPaths = collectScopedMetadataCandidatePaths(candidates, scopedPaths)
+  const candidatesBySize = new Map<number, IntegrityDuplicateCandidate[]>()
+  for (const candidate of candidates) {
+    const sameSize = candidatesBySize.get(candidate.sizeBytes)
+    if (sameSize) sameSize.push(candidate)
+    else candidatesBySize.set(candidate.sizeBytes, [candidate])
+  }
+  const hashTargets = Array.from(candidatesBySize.values())
+    .filter((sameSize) => sameSize.length >= 2 && sameSize.some((candidate) => relevantPaths.has(candidate.path)))
+    .flat()
+  progressTotal += hashTargets.length
+  const hashWorkers = options.onBattery ? 1 : DUPLICATE_HASH_MAX_WORKERS
+
+  await runIntegrityWithConcurrency(hashTargets, hashWorkers, async (candidate) => {
+    try {
+      candidate.contentHash = await hashFileForDuplicateScan(candidate.path, options.signal)
+    } catch (error) {
+      if (isIntegrityScanCancelledError(error)) throw error
+      findings.push(buildFinding(
+        candidate,
+        'warning',
+        'duplicate_hash_failed',
+        'Exact duplicate comparison failed for this file.',
+        toErrorMessage(error)
+      ))
+    } finally {
+      progressCurrent += 1
+      options.onProgress?.(
+        progressCurrent,
+        progressTotal,
+        candidate.path,
+        'Hashing same-size duplicate candidates...'
+      )
+    }
+  }, { signal: options.signal })
+
+  const groups = buildIntegrityDuplicateGroups(candidates, scopedPaths, runId)
+  const groupedPaths = new Set(groups.flatMap((group) => group.members.map((member) => member.path)))
+  const snapshots = new Map<string, IntegrityDuplicateSnapshotMember>()
+  for (const candidate of candidates) {
+    if (!groupedPaths.has(candidate.path)) continue
+    snapshots.set(candidate.path, {
+      path: candidate.path,
+      title: candidate.title,
+      artist: candidate.artist,
+      duration: candidate.duration,
+      sizeBytes: candidate.sizeBytes,
+      modifiedAtMs: candidate.modifiedAtMs
+    })
+  }
+
+  return {
+    groups,
+    findings,
+    snapshots,
+    scanned: candidates.length,
+    skipped
   }
 }
 

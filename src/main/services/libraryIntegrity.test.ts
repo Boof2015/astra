@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import test from 'node:test'
 import {
+  buildIntegrityDuplicateGroups,
   buildQualityFindings,
   filterIntegrityTargetsByScope,
   IntegrityScanCancelledError,
@@ -12,6 +13,8 @@ import {
   readFlacStreamInfo,
   resolveIntegrityWorkerCount,
   runIntegrityWithConcurrency,
+  scanIntegrityDuplicates,
+  type IntegrityDuplicateCandidate,
   type IntegrityScanTrackTarget
 } from './libraryIntegrity.ts'
 
@@ -100,6 +103,30 @@ const targets: IntegrityScanTrackTarget[] = [
     channels: 2
   }
 ]
+
+function duplicateCandidate(
+  path: string,
+  title: string,
+  artist: string,
+  duration: number,
+  overrides: Partial<IntegrityDuplicateCandidate> = {}
+): IntegrityDuplicateCandidate {
+  return {
+    path,
+    title,
+    artist,
+    album: 'Album',
+    duration,
+    format: 'flac',
+    sampleRate: 44100,
+    bitDepth: 16,
+    bitrate: 900,
+    channels: 2,
+    sizeBytes: 1000,
+    modifiedAtMs: 123,
+    ...overrides
+  }
+}
 
 test('parseFlacStreamInfoBlock reads packed STREAMINFO fields', () => {
   const block = buildStreamInfoBlock({
@@ -203,6 +230,91 @@ test('filterIntegrityTargetsByScope resolves all, folder, and track scopes', () 
       trackPaths: ['/music/B/three.flac', '/music/A/one.flac', '/music/B/three.flac']
     }).map((track) => track.path),
     ['/music/B/three.flac', '/music/A/one.flac']
+  )
+})
+
+test('duplicate grouping normalizes title and artist while enforcing a two-second duration span', () => {
+  const candidates = [
+    duplicateCandidate('/music/A.flac', '  Same   Song ', 'The Artist', 100),
+    duplicateCandidate('/music/B.mp3', 'same song', 'the artist', 102, { format: 'mp3' }),
+    duplicateCandidate('/music/C.flac', 'Same Song', 'The Artist', 102.01),
+    duplicateCandidate('/music/D.flac', 'Same Song', 'The Artist', 0)
+  ]
+
+  const groups = buildIntegrityDuplicateGroups(candidates, new Set(['/music/A.flac']), 'run')
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0].evidence, 'possible')
+  assert.deepEqual(groups[0].members.map((member) => member.path), ['/music/A.flac', '/music/B.mp3'])
+  assert.equal(groups[0].members[1].withinScope, false)
+})
+
+test('duplicate grouping marks byte-identical metadata mismatches as exact', () => {
+  const candidates = [
+    duplicateCandidate('/music/A.flac', 'One', 'Artist A', 100, { contentHash: 'same' }),
+    duplicateCandidate('/elsewhere/B.flac', 'Different tags', 'Artist B', 200, { contentHash: 'same' })
+  ]
+
+  const groups = buildIntegrityDuplicateGroups(candidates, new Set(['/music/A.flac']), 'run')
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0].evidence, 'exact')
+  assert.equal(groups[0].members.every((member) => Boolean(member.exactSetId)), true)
+})
+
+test('duplicate grouping combines exact subsets and cross-format metadata candidates without overlapping groups', () => {
+  const candidates = [
+    duplicateCandidate('/music/A.flac', 'Song', 'Artist', 100, { contentHash: 'same' }),
+    duplicateCandidate('/music/B.flac', 'Song', 'Artist', 100, { contentHash: 'same' }),
+    duplicateCandidate('/other/C.mp3', 'Song', 'Artist', 100.5, { format: 'mp3', sizeBytes: 500 }),
+    duplicateCandidate('/music/unrelated.flac', 'Other', 'Artist', 100)
+  ]
+
+  const groups = buildIntegrityDuplicateGroups(candidates, new Set(['/music/A.flac']), 'run')
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0].evidence, 'mixed')
+  assert.deepEqual(groups[0].members.map((member) => member.path), [
+    '/music/A.flac',
+    '/music/B.flac',
+    '/other/C.mp3'
+  ])
+})
+
+test('duplicate scan hashes same-size files by streaming and compares a track scope against the whole library', async () => {
+  await withTempDir(async (dir) => {
+    const firstPath = join(dir, 'first.mp3')
+    const secondPath = join(dir, 'nested-copy.flac')
+    const bytes = Buffer.from('identical audio payload')
+    await writeFile(firstPath, bytes)
+    await writeFile(secondPath, bytes)
+    const scanTargets: IntegrityScanTrackTarget[] = [
+      { ...targets[1], path: firstPath, title: 'First metadata' },
+      { ...targets[0], path: secondPath, title: 'Other metadata' }
+    ]
+
+    const output = await scanIntegrityDuplicates(
+      scanTargets,
+      { type: 'track', trackPath: firstPath },
+      'run'
+    )
+    assert.equal(output.groups.length, 1)
+    assert.equal(output.groups[0].evidence, 'exact')
+    assert.equal(output.groups[0].members.find((member) => member.path === secondPath)?.withinScope, false)
+    assert.equal(output.scanned, 2)
+    assert.equal(output.skipped, 0)
+  })
+})
+
+test('duplicate scan records unreadable files and honors cancellation', async () => {
+  const missingTarget = { ...targets[0], path: '/definitely-missing/astra-duplicate.flac' }
+  const output = await scanIntegrityDuplicates([missingTarget], { type: 'all' }, 'run')
+  assert.equal(output.scanned, 0)
+  assert.equal(output.skipped, 1)
+  assert.equal(output.findings[0]?.code, 'duplicate_file_unreadable')
+
+  const controller = new AbortController()
+  controller.abort()
+  await assert.rejects(
+    scanIntegrityDuplicates([missingTarget], { type: 'all' }, 'run-canceled', { signal: controller.signal }),
+    IntegrityScanCancelledError
   )
 })
 

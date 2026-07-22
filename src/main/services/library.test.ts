@@ -2258,6 +2258,77 @@ test('rescan merges pre-existing case-variant duplicate rows preserving user dat
   assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), [trackPath, trackPath])
 })
 
+test('mergeLocalDuplicateTracks preserves duplicate user data on the explicit Keep track', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => library.setReplayGainScanEnabled(true))
+
+  const musicDir = join(userDataDir, 'duplicate-merge')
+  const keepPath = join(musicDir, 'keep.wav')
+  const removedPath = join(musicDir, 'remove.wav')
+  await mkdir(musicDir, { recursive: true })
+  await writeTaggedWavFixture(keepPath, 'Duplicate Title', 'Duplicate Artist')
+  await writeTaggedWavFixture(removedPath, 'Duplicate Title', 'Duplicate Artist')
+  const scan = await library.scanFolder(musicDir)
+  assert.equal(scan.added, 2)
+
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare('UPDATE tracks SET play_count = 2, last_played_at = 2000, added_at = 900 WHERE path = ?').run(keepPath)
+    directDb.prepare('UPDATE tracks SET play_count = 3, last_played_at = 1000, added_at = 500 WHERE path = ?').run(removedPath)
+    directDb.prepare('INSERT INTO track_ratings (track_path, rating, updated_at) VALUES (?, 2, 2)').run(keepPath)
+    directDb.prepare('INSERT INTO track_ratings (track_path, rating, updated_at) VALUES (?, 5, 1)').run(removedPath)
+    directDb.prepare("INSERT INTO track_metadata_overrides (track_path, title, updated_at) VALUES (?, 'Moved Override', 1)").run(removedPath)
+    directDb.prepare(
+      "INSERT INTO lyrics_cache (track_path, metadata_signature, status, source, synced_lines_json, updated_at) VALUES (?, 'sig', 'not_found', 'embedded', '[]', 1)"
+    ).run(removedPath)
+    directDb.prepare("INSERT INTO track_loudness (track_path, loudness_lufs, method, analyzed_at) VALUES (?, -14, 'ebur128', 1)").run(removedPath)
+    directDb.prepare('INSERT INTO recently_played (track_path, played_at) VALUES (?, 1000)').run(removedPath)
+    const removedTrack = directDb.prepare('SELECT id FROM tracks WHERE path = ?').get(removedPath) as { id: number }
+    directDb.prepare(`
+      INSERT INTO listening_sessions (
+        generation, session_key, track_id, track_path, title, artist, album,
+        album_identity_key, source_type, duration_seconds, started_at, listened_seconds
+      ) VALUES ('test', 'removed-session', ?, ?, 'Duplicate Title', 'Duplicate Artist',
+        'Album', 'duplicate-artist-album', 'local', 1, 1, 1)
+    `).run(removedTrack.id, removedPath)
+  })
+  await library.addFavorite(removedPath)
+  const playlist = await library.createPlaylist('Duplicate Merge Playlist')
+  await library.addToPlaylist(playlist.id, [removedPath, keepPath])
+
+  assert.deepEqual(await library.mergeLocalDuplicateTracks(keepPath, [removedPath]), [removedPath])
+  assert.deepEqual(getStoredTrackPaths(userDataDir), [keepPath])
+  const merged = withDirectLibraryDb(userDataDir, (directDb) => ({
+    track: directDb.prepare('SELECT id, play_count, last_played_at, added_at FROM tracks WHERE path = ?').get(keepPath) as {
+      id: number
+      play_count: number
+      last_played_at: number
+      added_at: number
+    },
+    session: directDb.prepare("SELECT track_id, track_path FROM listening_sessions WHERE session_key = 'removed-session'").get() as {
+      track_id: number
+      track_path: string
+    },
+    override: directDb.prepare('SELECT track_path FROM track_metadata_overrides').get(),
+    lyrics: directDb.prepare('SELECT track_path FROM lyrics_cache').get(),
+    loudness: directDb.prepare('SELECT track_path FROM track_loudness').get(),
+    recent: directDb.prepare('SELECT track_path FROM recently_played').get()
+  }))
+  assert.deepEqual(
+    { play_count: merged.track.play_count, last_played_at: merged.track.last_played_at, added_at: merged.track.added_at },
+    { play_count: 5, last_played_at: 2000, added_at: 500 }
+  )
+  assert.equal(merged.session.track_id, merged.track.id)
+  assert.equal(merged.session.track_path, removedPath)
+  assert.deepEqual(merged.override, { track_path: keepPath })
+  assert.deepEqual(merged.lyrics, { track_path: keepPath })
+  assert.deepEqual(merged.loudness, { track_path: keepPath })
+  assert.deepEqual(merged.recent, { track_path: keepPath })
+  assert.deepEqual(library.getTrackRatingEntries().map((entry) => [entry.track_path, entry.rating]), [[keepPath, 2]])
+  assert.deepEqual(library.getFavoritePaths(), [keepPath])
+  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), [keepPath, keepPath])
+})
+
 test('case-variant paths stay distinct when case folding is disabled', async (t) => {
   const { userDataDir, musicDir, trackPath, stalePath } = await setupCasingRenameFixture(t)
   library.setFsPathCaseFoldingForTests(false)

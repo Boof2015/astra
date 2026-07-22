@@ -132,6 +132,8 @@ import type {
   RawBindingInput
 } from '../types/inputBindings'
 import type {
+  IntegrityDuplicateTrashRequest,
+  IntegrityDuplicateTrashResult,
   IntegrityFinding,
   IntegrityScanMode,
   IntegrityScanProgress,
@@ -1340,6 +1342,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     startIntegrityScan: (request: { mode: IntegrityScanMode; scope: IntegrityScanScope }) =>
       ipcRenderer.invoke('library:startIntegrityScan', request) as Promise<IntegrityScanResult>,
     cancelIntegrityScan: () => ipcRenderer.invoke('library:cancelIntegrityScan') as Promise<{ canceled: boolean }>,
+    trashIntegrityDuplicates: (request: IntegrityDuplicateTrashRequest) =>
+      ipcRenderer.invoke('library:trashIntegrityDuplicates', request) as Promise<IntegrityDuplicateTrashResult>,
     checkTrackIntegrity: (trackPath: string) =>
       ipcRenderer.invoke('library:checkTrackIntegrity', trackPath) as Promise<IntegrityScanResult>,
     checkTracksIntegrity: (trackPaths: string[]) =>
@@ -1889,6 +1893,7 @@ declare global {
         cancelScan: () => Promise<{ canceled: boolean }>
         startIntegrityScan: (request: { mode: IntegrityScanMode; scope: IntegrityScanScope }) => Promise<IntegrityScanResult>
         cancelIntegrityScan: () => Promise<{ canceled: boolean }>
+        trashIntegrityDuplicates: (request: IntegrityDuplicateTrashRequest) => Promise<IntegrityDuplicateTrashResult>
         checkTrackIntegrity: (trackPath: string) => Promise<IntegrityScanResult>
         checkTracksIntegrity: (trackPaths: string[]) => Promise<IntegrityScanResult>
         resetMappedFolders: () => Promise<{ success: boolean; clearedFolders: number; clearedTracks: number }>
