@@ -16,6 +16,7 @@ import { ConfigStore } from './config'
 import { createNetworkSetup } from './networkSetup'
 import { createOutputBackend } from './output/backendFactory'
 import { listAlsaDevices } from './output/alsaDevices'
+import { createOutputDeviceSetter } from './output/deviceSelection'
 import { ParallaxSinkClient } from './sinkClient'
 import { SinkSession } from './sinkSession'
 import { createShutdownCoordinator } from './shutdown'
@@ -95,7 +96,8 @@ async function main(): Promise<void> {
   log(`config at ${configStore.path}`)
   log(`endpoint UUID ${config.endpointUuid}`)
 
-  const backend = createOutputBackend(config)
+  const audio = createOutputBackend(config, { log })
+  const backend = audio.backend
   log(`audio backend: ${backend.deviceLabel} @ ${backend.sampleRate} Hz, ${backend.channels}ch`)
 
   // Captive-portal Wi-Fi onboarding (Parallax OS): no-op unless apSetup is set (and nmcli/
@@ -313,6 +315,8 @@ async function main(): Promise<void> {
           lastKey: lastRemoteKey ? { raw: lastRemoteKey.raw, atMs: lastRemoteKey.atMs } : null
         },
         artworkId: client.getActiveArtwork()?.streamId ?? null,
+        audioAvailable: audio.audioAvailable,
+        audioError: audio.audioError,
         outputDevice: backend.deviceLabel,
         configuredDevice: current.audioDevice,
         audioDevices: listAlsaDevices(),
@@ -346,18 +350,20 @@ async function main(): Promise<void> {
       configStore.update({ volumePercent: percent })
       session.setVolumePercent(percent)
     },
-    setOutputDevice: (device) => {
-      if (device !== 'default' && !listAlsaDevices().some((option) => option.id === device)) {
-        return false
-      }
-      if (device === configStore.get().audioDevice) return true
-      configStore.update({ audioDevice: device })
-      log(`audio output set to ${device} — restarting to reopen the device`)
+    setOutputDevice: createOutputDeviceSetter({
+      getConfiguredDevice: () => configStore.get().audioDevice,
+      listDevices: listAlsaDevices,
+      persistDevice: (device) => { configStore.update({ audioDevice: device }) },
+      log,
+      shouldRestartCurrentDevice: () => (
+        config.audioBackend === 'alsa' && backend.deviceId !== configStore.get().audioDevice
+      ),
       // The ALSA handle and the frames-written emission clock can't be swapped live; a clean
       // exit under Restart=always is the reliable reopen path. Delay so the response flushes.
-      setTimeout(() => void shutdown('output device change'), OUTPUT_CHANGE_RESTART_DELAY_MS)
-      return true
-    },
+      scheduleRestart: () => {
+        setTimeout(() => void shutdown('output device change'), OUTPUT_CHANGE_RESTART_DELAY_MS)
+      }
+    }),
     getArtwork: () => {
       const artwork = client.getActiveArtwork()
       return artwork ? { contentType: artwork.contentType, bytes: artwork.bytes } : null

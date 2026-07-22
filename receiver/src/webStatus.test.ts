@@ -38,6 +38,8 @@ function stubState(): WebStatusState {
     transportSupported: null,
     cec: { available: true, control: true, wakeOn: 'play', switchInput: true, standbyMinutes: 10, lastKey: null },
     artworkId: null,
+    audioAvailable: true,
+    audioError: null,
     outputDevice: 'ALSA plughw:vc4hdmi0,0',
     configuredDevice: 'plughw:vc4hdmi0,0',
     audioDevices: [
@@ -123,9 +125,50 @@ test('headless receiver distinguishes connected inactive zones from generic idle
 test('status payload carries the output picker fields', async () => {
   await withServer({}, async (baseUrl) => {
     const status = await (await fetch(`${baseUrl}/api/status`)).json() as WebStatusState
+    assert.equal(status.audioAvailable, true)
+    assert.equal(status.audioError, null)
     assert.equal(status.configuredDevice, 'plughw:vc4hdmi0,0')
     assert.deepEqual(status.audioDevices.map((device) => device.id),
       ['plughw:vc4hdmi0,0', 'plughw:Headphones,0'])
+  })
+})
+
+test('status payload distinguishes fallback, intentional null, and exhausted ALSA', async () => {
+  let state = stubState()
+  await withServer({ getState: () => state }, async (baseUrl) => {
+    state = {
+      ...stubState(),
+      outputDevice: 'ALSA default',
+      configuredDevice: 'plughw:Missing,0'
+    }
+    let status = await (await fetch(`${baseUrl}/api/status`)).json() as WebStatusState
+    assert.equal(status.audioAvailable, true)
+    assert.equal(status.audioError, null)
+    assert.equal(status.outputDevice, 'ALSA default')
+    assert.equal(status.configuredDevice, 'plughw:Missing,0')
+
+    state = {
+      ...stubState(),
+      audioAvailable: false,
+      audioError: null,
+      outputDevice: 'Null output (no audio)'
+    }
+    status = await (await fetch(`${baseUrl}/api/status`)).json() as WebStatusState
+    assert.equal(status.audioAvailable, false)
+    assert.equal(status.audioError, null)
+
+    state = {
+      ...stubState(),
+      audioAvailable: false,
+      audioError: 'No ALSA output device could be opened.',
+      outputDevice: 'Null output (no audio)',
+      configuredDevice: 'plughw:Missing,0'
+    }
+    status = await (await fetch(`${baseUrl}/api/status`)).json() as WebStatusState
+    assert.equal(status.audioAvailable, false)
+    assert.match(status.audioError ?? '', /No ALSA output device/)
+    assert.equal(status.outputDevice, 'Null output (no audio)')
+    assert.equal(status.configuredDevice, 'plughw:Missing,0')
   })
 })
 
@@ -311,6 +354,46 @@ test('the status page script survives the template-literal escaping too', async 
     const html = await (await fetch(`${baseUrl}/`)).text()
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)
     assert.ok(script, 'status page has an inline script')
+    assert.doesNotThrow(() => new Function(script[1]))
+  })
+})
+
+test('management and display pages expose degraded-audio recovery without hiding controls', async () => {
+  await withServer({
+    getState: () => ({
+      ...stubState(),
+      audioAvailable: false,
+      audioError: 'No ALSA output device could be opened.',
+      outputDevice: 'Null output (no audio)',
+      configuredDevice: 'plughw:Missing,0',
+      setup: {
+        apActive: false,
+        apSsid: 'Parallax-Setup',
+        connecting: false,
+        lastError: null,
+        apEtaSeconds: null
+      }
+    })
+  }, async (baseUrl) => {
+    const management = await (await fetch(`${baseUrl}/`)).text()
+    assert.match(management, /id="audio-degraded"/)
+    assert.match(management, /Audio unavailable/)
+    assert.match(management, /No ALSA outputs are currently detected/)
+    assert.match(management, /Null output is configured intentionally/)
+    assert.match(management, /s\.audioAvailable/)
+    assert.match(management, /s\.audioError/)
+    for (const required of [
+      'api/output', 'Approve pairing', 'Reset Wi-Fi', 'systemAct', 'Forget host', 'diag-card'
+    ]) assert.match(management, new RegExp(required))
+    assert.equal((await fetch(`${baseUrl}/setup`)).status, 200)
+
+    const display = await (await fetch(`${baseUrl}/display`)).text()
+    assert.match(display, /id="audio-pill"/)
+    assert.match(display, /Audio error/)
+    assert.match(display, /openOutputList/)
+    assert.match(display, /s\.audioError/)
+    const script = /<script>([\s\S]*?)<\/script>/.exec(display)
+    assert.ok(script)
     assert.doesNotThrow(() => new Function(script[1]))
   })
 })

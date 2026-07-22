@@ -57,6 +57,10 @@ export interface WebStatusState {
   // Active stream's artwork identity (its streamId) when the sink has bytes cached; the display
   // page uses it as an <img> cache-buster and only swaps the image when it changes.
   artworkId: string | null
+  // Startup audio health. Intentional null output is false/null; exhausted ALSA candidates are
+  // false with a sanitized error so management remains usable without conflating the two states.
+  audioAvailable: boolean
+  audioError: string | null
   outputDevice: string
   // The persisted audioDevice selection; `outputDevice` stays the ACTIVE backend's label so the
   // page can show when the configured device failed to open and a fallback is playing instead.
@@ -180,6 +184,10 @@ const PAGE_HTML = `<!doctype html>
   select { background: #101014; color: #e8e8ee; border: 1px solid #3a3a46; border-radius: 8px;
            padding: 0.4rem 0.6rem; flex: 1; min-width: 0; }
   .ok { color: #7fd88f; } .bad { color: #f2b8b8; }
+  .audio-degraded { border-color: #b45a45; background: #241a1a; }
+  .audio-degraded-title { color: #ffc0b4; font-weight: 700; margin-bottom: 0.45rem; }
+  .audio-degraded-detail { color: #f2b8b8; font-size: 0.9rem; line-height: 1.4; }
+  .audio-degraded-meta { color: #c9a9a3; font-size: 0.8rem; line-height: 1.4; margin-top: 0.45rem; }
   label.check { display: flex; gap: 0.55rem; align-items: center; font-size: 0.9rem;
                 padding: 0.3rem 0; cursor: pointer; }
 </style>
@@ -189,6 +197,13 @@ const PAGE_HTML = `<!doctype html>
   <h1>Astra Receiver</h1>
   <div class="card" id="busy-banner" style="display:none; padding:0.7rem 1.25rem">
     <span id="busy-text"></span>
+  </div>
+  <div class="card audio-degraded" id="audio-degraded" style="display:none" role="alert">
+    <div class="audio-degraded-title">Audio unavailable</div>
+    <div class="audio-degraded-detail" id="audio-degraded-error"></div>
+    <div class="audio-degraded-meta" id="audio-degraded-configured"></div>
+    <div class="audio-degraded-meta" id="audio-degraded-devices"></div>
+    <div class="audio-degraded-meta">Choose an available output below and apply it to restart audio. Pairing and management remain available.</div>
   </div>
   <div id="pair" class="card pair-banner" style="display:none">
     <div class="muted" id="pair-host"></div>
@@ -459,10 +474,24 @@ function refreshOutput(s) {
   // The active backend label is 'ALSA <device>'; anything else while cards exist means the
   // configured device would not open and a fallback is playing.
   const hint = document.getElementById('out-hint')
-  hint.textContent = s.audioDevices.length && s.outputDevice.indexOf('ALSA ') === 0
+  hint.textContent = !s.audioAvailable && !s.audioError
+    ? 'Null output is configured intentionally; audio playback is disabled.'
+    : s.audioAvailable && s.outputDevice.indexOf('ALSA ') === 0
     && s.outputDevice !== 'ALSA ' + s.configuredDevice
     ? 'Configured output unavailable — using ' + s.outputDevice
     : ''
+}
+function refreshAudioStatus(s) {
+  const banner = document.getElementById('audio-degraded')
+  const degraded = !s.audioAvailable && !!s.audioError
+  banner.style.display = degraded ? '' : 'none'
+  if (!degraded) return
+  document.getElementById('audio-degraded-error').textContent = s.audioError
+  document.getElementById('audio-degraded-configured').textContent =
+    'Configured output: ' + s.configuredDevice
+  document.getElementById('audio-degraded-devices').textContent = s.audioDevices.length
+    ? 'Detected outputs: ' + s.audioDevices.map((device) => device.label).join(' · ')
+    : 'No ALSA outputs are currently detected.'
 }
 let cecDirty = false
 for (const id of ['cec-on', 'cec-wake', 'cec-input', 'cec-standby']) {
@@ -586,6 +615,7 @@ async function refresh() {
       : s.clockOffsetMs.toFixed(1) + ' ms offset' + (s.rttMs === null ? '' : ', ' + s.rttMs.toFixed(1) + ' ms RTT')
     document.getElementById('s-out').textContent = s.outputDevice
       + (s.appliedAdvanceMs ? ' (trim ' + s.appliedAdvanceMs + ' ms)' : '')
+    refreshAudioStatus(s)
     refreshOutput(s)
     const errRow = document.getElementById('s-err-row')
     errRow.style.display = s.lastError ? '' : 'none'
@@ -803,6 +833,10 @@ const DISPLAY_HTML = `<!doctype html>
                background: rgba(12,12,17,0.8); border: 0.25vmin solid rgba(255,255,255,0.3);
                border-radius: 5vmin; padding: 1vmin 2.8vmin; font-size: 2.1vmin; color: #c9c9d4;
                display: none; }
+  #audio-pill { position: fixed; top: 9vmin; left: 50%; transform: translateX(-50%); z-index: 5;
+                background: rgba(52,22,20,0.9); border: 0.25vmin solid #b45a45;
+                border-radius: 5vmin; padding: 1vmin 2.8vmin; font-size: 2.1vmin; color: #ffc0b4;
+                display: none; }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -828,6 +862,7 @@ const DISPLAY_HTML = `<!doctype html>
   </div>
 </div>
 <div id="busy-pill"></div>
+<div id="audio-pill">Audio unavailable — open settings to choose an output</div>
 <div id="controls">
   <button id="ctl-prev" aria-label="Previous track">
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2.4v14H6zM20 5v14L9.6 12z"/></svg>
@@ -1183,6 +1218,8 @@ function sheetSpec(s) {
   rows.push({ info: 'Status', value: s.statusLabel })
   rows.push({ info: 'Host', value: s.hostName || '—' })
   rows.push({ info: 'Output', value: s.outputDevice })
+  if (s.audioError) rows.push({ info: 'Audio error', value: s.audioError })
+  else if (!s.audioAvailable) rows.push({ info: 'Audio', value: 'Null output (development)' })
   rows.push({ info: 'Version', value: s.version })
   rows.push({ head: 'Speaker' })
   rows.push({ id: 'name', label: 'Device name', value: s.assignedSinkName || s.sinkName, act: openNameOsk })
@@ -1595,6 +1632,7 @@ function render() {
   const s = lastStatus
   const now = new Date()
   if (!s) {
+    document.getElementById('audio-pill').style.display = 'none'
     // No status yet (kiosk up before the daemon, or daemon restarting): live clock over the
     // constellation instead of a dead black screen.
     document.getElementById('idle').classList.remove('hidden')
@@ -1605,6 +1643,7 @@ function render() {
     controlsHide()
     return
   }
+  document.getElementById('audio-pill').style.display = s.audioError ? 'block' : 'none'
   controlsUsable = !!(s.paired && s.connected && s.transportSupported !== false)
   for (const id of TRANSPORT_IDS) {
     document.getElementById(id).style.display = controlsUsable ? '' : 'none'
@@ -1675,6 +1714,9 @@ function render() {
       // of showing stale state with no explanation.
       hint.textContent = 'Speaker restarting…'
       hint.style.color = '#b5b5c2'
+    } else if (!s.audioAvailable && s.audioError) {
+      hint.textContent = 'Audio unavailable — open settings to choose an output'
+      hint.style.color = '#f2b8b8'
     } else {
       let label = s.statusLabel === 'Connected' ? '' : s.statusLabel
       if (label !== hintLabel) {
