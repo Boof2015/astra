@@ -76,6 +76,15 @@ const RoutingIcon = (
   </svg>
 )
 
+const SpatialIcon = (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 14v-2a8 8 0 0116 0v2" />
+    <path d="M4 14h2a2 2 0 012 2v3a2 2 0 01-2 2H5a1 1 0 01-1-1v-6z" />
+    <path d="M20 14h-2a2 2 0 00-2 2v3a2 2 0 002 2h1a1 1 0 001-1v-6z" />
+    <path d="M10 12a3 3 0 014 0" />
+  </svg>
+)
+
 const NormIcon = (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
     <path d="M2 20h20" />
@@ -133,6 +142,8 @@ export default function AudioPipelineShelf() {
   const playbackOutputMode = useAudioSettingsStore((s) => s.playbackOutputMode)
   const selectedOutputChannelCount = useAudioSettingsStore((s) => s.selectedOutputChannelCount)
   const nativeAudioCapabilities = useAudioSettingsStore((s) => s.nativeAudioCapabilities)
+  const spatialMode = useAudioSettingsStore((s) => s.spatialMode)
+  const spatialStatus = useAudioSettingsStore((s) => s.spatialStatus)
 
   const nodes = useMemo((): PipelineNode[] => {
     if (!currentTrack) return []
@@ -186,6 +197,20 @@ export default function AudioPipelineShelf() {
       stereoUpmixMode,
     })) {
       result.push({ id: 'upmix', icon: RoutingIcon, label: 'Upmix', detail: `2ch \u2192 ${upmixOutputChannels}ch` })
+    }
+
+    // Astra Spatial Engine
+    if (
+      playbackOutputMode === 'standard'
+      && spatialMode === 'binaural'
+      && spatialStatus.state === 'ready'
+    ) {
+      result.push({
+        id: 'spatial',
+        icon: SpatialIcon,
+        label: 'Spatial',
+        detail: 'Astra Spatial Engine'
+      })
     }
 
     // Normalization
@@ -243,6 +268,8 @@ export default function AudioPipelineShelf() {
     playbackOutputMode,
     selectedOutputChannelCount,
     nativeAudioCapabilities.activeSampleRate,
+    spatialMode,
+    spatialStatus.state,
   ])
 
   return (
