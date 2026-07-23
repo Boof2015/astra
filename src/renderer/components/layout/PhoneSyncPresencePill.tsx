@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 // Library-sync presence pill — title-bar surface, same interaction language as
 // ParallaxPresencePill (and reusing its CSS classes): appears on sync events,
 // auto-opens its popover briefly, stays amber while conflicts need attention,
@@ -132,20 +134,20 @@ export default function PhoneSyncPresencePill() {
           handleClick()
         }
       }}
-      aria-label={`${label} — open Library Sync settings`}
+      aria-label={translate('common:auto.phonesyncpresencepill.label_open_library_sync_settings', { label: label })}
     >
       <span className="titlebar-parallax-pill-dot" aria-hidden="true" />
       <span>{label}</span>
       <div className="titlebar-parallax-pill-popover" role="tooltip">
         <div className="titlebar-parallax-pill-popover-inner">
-          <div className="titlebar-parallax-pill-popover-header">Library Sync</div>
+          <div className="titlebar-parallax-pill-popover-header"><LocalizedText ns="common" i18nKey="auto.phonesyncpresencepill.library_sync" /></div>
           {hasConflicts && (
             <div className="titlebar-parallax-pill-popover-warnings">
               {conflicts.map((conflict) => (
                 <div key={conflict.syncUid} className="titlebar-parallax-pill-popover-warning">
                   <span className="titlebar-parallax-pill-popover-warning-icon" aria-hidden="true">⚠</span>
                   <span>
-                    “{conflict.name || conflict.desktopName}” differs between desktop and phone
+                    “{conflict.name || conflict.desktopName}<LocalizedText ns="common" i18nKey="auto.phonesyncpresencepill.differs_between_desktop_and_phone" />
                   </span>
                 </div>
               ))}
@@ -153,7 +155,7 @@ export default function PhoneSyncPresencePill() {
           )}
           {toast && <div className="titlebar-parallax-pill-popover-toast">{toast.message}</div>}
           <div className="titlebar-parallax-pill-popover-footer">
-            {hasConflicts ? 'Click to choose which versions to keep' : 'Click to open Library Sync settings'}
+            {hasConflicts ? translate('common:auto.phonesyncpresencepill.click_to_choose_which_versions_to_keep') : translate('common:auto.phonesyncpresencepill.click_to_open_library_sync_settings')}
           </div>
         </div>
       </div>

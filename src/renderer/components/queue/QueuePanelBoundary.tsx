@@ -1,3 +1,4 @@
+import LocalizedText from '../i18n/LocalizedText'
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 
 interface QueuePanelBoundaryProps {
@@ -26,11 +27,11 @@ export default class QueuePanelBoundary extends Component<QueuePanelBoundaryProp
       return (
         <div className="queue-panel">
           <div className="queue-header">
-            <h3>Queue</h3>
+            <h3><LocalizedText ns="playback" i18nKey="auto.queuepanelboundary.queue" /></h3>
           </div>
           <div className="queue-empty">
-            <p>Queue failed to render</p>
-            <p className="queue-empty-hint">Close and reopen the queue. Details were logged to the console.</p>
+            <p><LocalizedText ns="playback" i18nKey="auto.queuepanelboundary.queue_failed_to_render" /></p>
+            <p className="queue-empty-hint"><LocalizedText ns="playback" i18nKey="auto.queuepanelboundary.close_and_reopen_the_queue_details_were_logged_to_the_co" /></p>
           </div>
         </div>
       )

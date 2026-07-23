@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { formatLocaleDate, translate } from '../../i18n'
 import { useEffect, useMemo, useState } from 'react'
 import { usePresence } from '../../hooks/usePresence'
 import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
@@ -28,7 +30,9 @@ function fallbackSnapshot(conflict: PhoneSyncReportedConflict, side: 'desktop' |
 }
 
 function formatDate(value: number): string {
-  return value > 0 ? new Date(value).toLocaleString() : 'Unknown'
+  return value > 0
+    ? formatLocaleDate(value, { dateStyle: 'medium', timeStyle: 'short' })
+    : translate('common:states.unknown')
 }
 
 function sideMeta(snapshot: SyncPlaylistSnapshot): string {
@@ -135,13 +139,13 @@ function TrackSideList({
 }) {
   const sideName = side === 'desktop' ? 'desktop' : 'phone'
   if (sideOnlyRows.length === 0 && movedRows.length === 0) {
-    return <p className="phone-sync-empty-note">No songs only on {sideName}.</p>
+    return <p className="phone-sync-empty-note"><LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.no_songs_only_on" /> {sideName}.</p>
   }
   return (
     <div className="phone-sync-side-track-list">
       {sideOnlyRows.length > 0 && (
         <>
-          <div className="phone-sync-track-section-label">Only on {sideName}</div>
+          <div className="phone-sync-track-section-label"><LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.only_on" /> {sideName}</div>
           {sideOnlyRows.map((row) => (
             <TrackSideRow key={row.key} row={row} side={side} resolution={resolution} />
           ))}
@@ -149,7 +153,7 @@ function TrackSideList({
       )}
       {movedRows.length > 0 && (
         <>
-          <div className="phone-sync-track-section-label">Different order</div>
+          <div className="phone-sync-track-section-label"><LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.different_order" /></div>
           {movedRows.map((row) => (
             <TrackSideRow key={row.key} row={row} side={side} resolution={resolution} />
           ))}
@@ -214,15 +218,15 @@ export default function PhoneSyncConflictResolverModal() {
     <div className="modal-overlay" data-presence={presence.phase} aria-hidden={presence.phase === 'exiting'} onClick={close}>
       <div className="modal-content phone-sync-conflict-modal" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
-          <h2>Resolve Library Sync Conflicts</h2>
-          <button className="modal-close" onClick={close} aria-label="Close">
+          <h2><LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.resolve_library_sync_conflicts" /></h2>
+          <button className="modal-close" onClick={close} aria-label={translate('integrations:auto.phonesyncconflictresolvermodal.close')}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
               <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
             </svg>
           </button>
         </div>
         <div className="modal-body phone-sync-conflict-body">
-          <aside className="phone-sync-conflict-list" aria-label="Sync conflicts">
+          <aside className="phone-sync-conflict-list" aria-label={translate('integrations:auto.phonesyncconflictresolvermodal.sync_conflicts')}>
             {displayedConflicts.map((conflict) => {
               const pending = pendingByUid.get(conflict.syncUid)
               return (
@@ -234,7 +238,7 @@ export default function PhoneSyncConflictResolverModal() {
                 >
                   <span className="phone-sync-conflict-list-name">{conflict.name || conflict.desktopName || conflict.phoneName}</span>
                   <span className="phone-sync-conflict-list-detail">
-                    {pending ? `Waiting for phone: ${pending}` : describeConflict(conflict)}
+                    {pending ? translate('integrations:auto.phonesyncconflictresolvermodal.waiting_for_phone_pending', { pending: pending }) : describeConflict(conflict)}
                   </span>
                 </button>
               )
@@ -245,14 +249,14 @@ export default function PhoneSyncConflictResolverModal() {
             <div className="phone-sync-conflict-title-row">
               <div>
                 <h3>{activeConflict.name || activeConflict.desktopName || activeConflict.phoneName}</h3>
-                <p>Choose an outcome, preview it below, then confirm.</p>
+                <p><LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.choose_an_outcome_preview_it_below_then_confirm" /></p>
               </div>
               {pendingResolution && (
-                <span className="phone-sync-conflict-pending">Waiting for phone: {pendingResolution}</span>
+                <span className="phone-sync-conflict-pending"><LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.waiting_for_phone" /> {pendingResolution}</span>
               )}
             </div>
 
-            <div className="phone-sync-action-grid" aria-label="Conflict resolution actions">
+            <div className="phone-sync-action-grid" aria-label={translate('integrations:auto.phonesyncconflictresolvermodal.conflict_resolution_actions')}>
               {actions.map((resolution) => {
                 const preview = buildSyncConflictResolutionPreview(resolution, desktop, phone)
                 return (
@@ -267,7 +271,7 @@ export default function PhoneSyncConflictResolverModal() {
                     <span>
                       {preview.resultTrackCount === null
                         ? preview.detail
-                        : `${preview.resultTrackCount} song${preview.resultTrackCount === 1 ? '' : 's'} · ${preview.detail}`}
+                        : translate('integrations:auto.phonesyncconflictresolvermodal.resulttrackcount_song_value2_detail', { resulttrackcount: preview.resultTrackCount, value2: preview.resultTrackCount === 1 ? '' : 's', detail: preview.detail })}
                     </span>
                   </button>
                 )
@@ -276,24 +280,25 @@ export default function PhoneSyncConflictResolverModal() {
 
             <div className="phone-sync-outcome-preview" data-resolution={selectedResolution ?? 'none'}>
               <div>
-                <span className="phone-sync-resolution-preview-label">Preview</span>
-                <strong>{selectedPreviewCopy ? selectedPreviewCopy.title : 'No option selected'}</strong>
+                <span className="phone-sync-resolution-preview-label"><LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.preview" /></span>
+                <strong>{selectedPreviewCopy ? selectedPreviewCopy.title : translate('integrations:auto.phonesyncconflictresolvermodal.no_option_selected')}</strong>
                 <span>
                   {selectedPreviewCopy
                     ? selectedPreviewCopy.detail
-                    : 'Pick an option above to see which playlist stays, changes, or combines.'}
+                    : translate('integrations:auto.phonesyncconflictresolvermodal.pick_an_option_above_to_see_which_playlist_stays_changes')}
                 </span>
               </div>
               {selectedPreviewCopy && selectedPreviewCopy.resultTrackCount !== null && (
                 <div className="phone-sync-after-pill">
-                  After sync: {selectedPreviewCopy.resultName} · {selectedPreviewCopy.resultTrackCount} song{selectedPreviewCopy.resultTrackCount === 1 ? '' : 's'}
+
+                  <LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.after_sync" /> {selectedPreviewCopy.resultName} · {selectedPreviewCopy.resultTrackCount}  <LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.song" />{selectedPreviewCopy.resultTrackCount === 1 ? '' : translate('integrations:auto.phonesyncconflictresolvermodal.s')}
                 </div>
               )}
             </div>
 
             <div className="phone-sync-compare-grid">
               <div className={`phone-sync-compare-column ${columnStateClass('desktop', selectedResolution)}`.trim()}>
-                <div className="phone-sync-side-label">Desktop</div>
+                <div className="phone-sync-side-label"><LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.desktop" /></div>
                 <div className="phone-sync-side-name">{desktop.name}</div>
                 <div className="phone-sync-side-meta">{sideMeta(desktop)}</div>
                 {desktop.kind === 'dynamic' ? (
@@ -306,12 +311,12 @@ export default function PhoneSyncConflictResolverModal() {
                     resolution={selectedResolution}
                   />
                 ) : (
-                  <p className="phone-sync-empty-note">Track-level details are not available from this phone yet.</p>
+                  <p className="phone-sync-empty-note"><LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.track_level_details_are_not_available_from_this_phone_ye" /></p>
                 )}
               </div>
 
               <div className={`phone-sync-compare-column ${columnStateClass('phone', selectedResolution)}`.trim()}>
-                <div className="phone-sync-side-label">Phone</div>
+                <div className="phone-sync-side-label"><LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.phone" /></div>
                 <div className="phone-sync-side-name">{phone.name}</div>
                 <div className="phone-sync-side-meta">{sideMeta(phone)}</div>
                 {phone.kind === 'dynamic' ? (
@@ -324,20 +329,20 @@ export default function PhoneSyncConflictResolverModal() {
                     resolution={selectedResolution}
                   />
                 ) : (
-                  <p className="phone-sync-empty-note">Summary count: {phone.trackCount} song{phone.trackCount === 1 ? '' : 's'}.</p>
+                  <p className="phone-sync-empty-note"><LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.summary_count" /> {phone.trackCount}  <LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.song" />{phone.trackCount === 1 ? '' : translate('integrations:auto.phonesyncconflictresolvermodal.s')}.</p>
                 )}
               </div>
             </div>
 
             {diff && (
               <div className="phone-sync-compare-summary">
-                {diff.desktopOnlyCount} only on desktop · {diff.phoneOnlyCount} only on phone · {diff.movedCount} in a different order
+                {diff.desktopOnlyCount}  <LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.only_on_desktop" /> {diff.phoneOnlyCount}  <LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.only_on_phone" /> {diff.movedCount}  <LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.in_a_different_order" />
               </div>
             )}
           </section>
         </div>
         <div className="modal-footer">
-          <button className="settings-btn" onClick={close}>Close</button>
+          <button className="settings-btn" onClick={close}><LocalizedText ns="integrations" i18nKey="auto.phonesyncconflictresolvermodal.close" /></button>
           <button
             className="settings-btn settings-btn-primary"
             onClick={confirm}

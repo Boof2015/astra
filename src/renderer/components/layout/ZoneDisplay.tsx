@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { formatLocaleDate, translate } from '../../i18n'
 import { useEffect, useState } from 'react'
 import { useUIStore } from '../../stores/uiStore'
 import { useParallaxStore } from '../../stores/parallaxStore'
@@ -119,7 +121,7 @@ function ZoneNowPlaying({
 
       <div className="zone-display-np-art">
         {artworkUrl ? (
-          <img src={artworkUrl} alt={`Album art for ${stream.title}`} />
+          <img src={artworkUrl} alt={translate('common:auto.zonedisplay.album_art_for_title', { title: stream.title })} />
         ) : (
           <div className="fullscreen-artwork-placeholder">&#9835;</div>
         )}
@@ -204,8 +206,8 @@ function ZoneIdleDashboard({
     tone = 'warn'
   }
 
-  const [timeStr, ampm] = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).split(' ')
-  const date = now.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })
+  const [timeStr, ampm] = formatLocaleDate(now, { hour: 'numeric', minute: '2-digit' }).split(' ')
+  const date = formatLocaleDate(now, { weekday: 'long', month: 'long', day: 'numeric' })
   const findMe = identity && (identity.hostname || identity.lanIps.length > 0)
     ? [identity.hostname, identity.lanIps[0]].filter(Boolean).join(' · ')
     : null
@@ -292,9 +294,10 @@ export default function ZoneDisplay() {
         type="button"
         className="zone-display-exit"
         onClick={exitForSession}
-        title="Return to library (this session only)"
+        title={translate('common:auto.zonedisplay.return_to_library_this_session_only')}
       >
-        ← Library
+
+        <LocalizedText ns="common" i18nKey="auto.zonedisplay.library" />
       </button>
 
       <div className="zone-display-top-right">
@@ -302,7 +305,7 @@ export default function ZoneDisplay() {
           <button
             type="button"
             className="zone-display-output-chip"
-            title="Open zone settings"
+            title={translate('common:auto.zonedisplay.open_zone_settings')}
             onClick={() => setOverlayOpen(true)}
           >
             {outputLabel}
@@ -311,8 +314,8 @@ export default function ZoneDisplay() {
         <button
           type="button"
           className="zone-display-settings-btn"
-          title="Zone settings"
-          aria-label="Zone settings"
+          title={translate('common:auto.zonedisplay.zone_settings')}
+          aria-label={translate('common:auto.zonedisplay.zone_settings')}
           onClick={() => setOverlayOpen(true)}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

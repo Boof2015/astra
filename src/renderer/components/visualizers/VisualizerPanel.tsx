@@ -1,3 +1,5 @@
+import { translate } from '../../i18n'
+import LocalizedText from '../i18n/LocalizedText'
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import { audioEngine } from '../../audio/AudioEngine'
 import { LUFSMeter, Oscilloscope, SpectrumAnalyzer, Spectrogram, Vectorscope, VUMeter, Waveform } from '../../audio/visualizers'
@@ -834,15 +836,16 @@ function NativeUnavailableNotice({
   return (
     <div className="visualizer-native-unavailable" title={reason ?? undefined}>
       <div className="visualizer-native-unavailable-glyph" aria-hidden="true">⚠</div>
-      <div className="visualizer-native-unavailable-title">Native DSP unavailable</div>
+      <div className="visualizer-native-unavailable-title"><LocalizedText ns="common" i18nKey="auto.visualizerpanel.native_dsp_unavailable" /></div>
       <div className="visualizer-native-unavailable-copy">
-        {scopeLabel(scope)} needs Astra&apos;s native audio module, which didn&apos;t load in this build.
+        {scopeLabel(scope)}  <LocalizedText ns="common" i18nKey="auto.visualizerpanel.needs_astra_apos_s_native_audio_module_which_didn_apos_t" />
       </div>
       {reason ? (
         <div className="visualizer-native-unavailable-reason">{reason}</div>
       ) : null}
       <div className="visualizer-native-unavailable-hint">
-        Likely a packaging issue — reinstall an official build or report this message.
+
+        <LocalizedText ns="common" i18nKey="auto.visualizerpanel.likely_a_packaging_issue_reinstall_an_official_build_or_" />
       </div>
     </div>
   )
@@ -857,13 +860,14 @@ function PopoutPlaceholder({
 }) {
   return (
     <div className="visualizer-popout-placeholder">
-      <div className="visualizer-popout-placeholder-label">{scopeLabel(scope)} detached</div>
+      <div className="visualizer-popout-placeholder-label">{scopeLabel(scope)}  <LocalizedText ns="common" i18nKey="auto.visualizerpanel.detached" /></div>
       <button
         className="visualizer-popout-placeholder-btn"
         onClick={onRecall}
-        aria-label={`Recall ${scopeLabel(scope)}`}
+        aria-label={translate('common:auto.visualizerpanel.recall_value1', { value1: scopeLabel(scope) })}
       >
-        Recall
+
+        <LocalizedText ns="common" i18nKey="auto.visualizerpanel.recall" />
       </button>
     </div>
   )
@@ -1283,10 +1287,11 @@ export default function VisualizerPanel({
             <button
               className="visualizer-popout-btn"
               onClick={() => openScopePopout(scope)}
-              title={`Pop out ${scopeLabel(scope).toLowerCase()}`}
-              aria-label={`Pop out ${scopeLabel(scope).toLowerCase()}`}
+              title={translate('common:auto.visualizerpanel.pop_out_value1', { value1: scopeLabel(scope).toLowerCase() })}
+              aria-label={translate('common:auto.visualizerpanel.pop_out_value1', { value1: scopeLabel(scope).toLowerCase() })}
             >
-              Pop
+
+              <LocalizedText ns="common" i18nKey="auto.visualizerpanel.pop" />
             </button>
           )}
         </div>
@@ -1404,7 +1409,7 @@ export default function VisualizerPanel({
                 className="visualizer-resize-handle"
                 style={{ left: `${offset}px` }}
                 onPointerDown={(event) => startResizeDrag(index, event)}
-                aria-label={`Resize between ${scopeLabel(mountedVisibleScopes[index])} and ${scopeLabel(mountedVisibleScopes[index + 1])}`}
+                aria-label={translate('common:auto.visualizerpanel.resize_between_value1_and_value2', { value1: scopeLabel(mountedVisibleScopes[index]), value2: scopeLabel(mountedVisibleScopes[index + 1]) })}
               >
                 <span className="visualizer-resize-handle-grip" aria-hidden="true" />
               </button>
@@ -1414,19 +1419,20 @@ export default function VisualizerPanel({
           <div className="visualizer-empty-state">
             {isEditMode ? (
               <>
-                <div className="visualizer-empty-state-title">Rack is empty</div>
-                <div className="visualizer-empty-state-copy">Drag a stashed scope into the rack to bring it back.</div>
+                <div className="visualizer-empty-state-title"><LocalizedText ns="common" i18nKey="auto.visualizerpanel.rack_is_empty" /></div>
+                <div className="visualizer-empty-state-copy"><LocalizedText ns="common" i18nKey="auto.visualizerpanel.drag_a_stashed_scope_into_the_rack_to_bring_it_back" /></div>
               </>
             ) : (
               <>
-                <div className="visualizer-empty-state-title">All docked scopes are hidden</div>
-                <div className="visualizer-empty-state-copy">Open the scope editor to drag stashed scopes back into the rack.</div>
+                <div className="visualizer-empty-state-title"><LocalizedText ns="common" i18nKey="auto.visualizerpanel.all_docked_scopes_are_hidden" /></div>
+                <div className="visualizer-empty-state-copy"><LocalizedText ns="common" i18nKey="auto.visualizerpanel.open_the_scope_editor_to_drag_stashed_scopes_back_into_t" /></div>
                 <button
                   type="button"
                   className="visualizer-empty-state-btn"
                   onClick={openScopeEditor}
                 >
-                  Open Scope Editor
+
+                  <LocalizedText ns="common" i18nKey="auto.visualizerpanel.open_scope_editor" />
                 </button>
               </>
             )}

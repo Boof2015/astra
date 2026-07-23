@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useCallback, useMemo, useRef } from 'react'
 import {
   azimuthDegToStagePosition,
@@ -203,7 +205,7 @@ export default function SpeakerStage({
         className="speaker-stage-svg"
         viewBox={`0 0 ${VIEW_WIDTH} ${VIEW_HEIGHT}`}
         role="group"
-        aria-label="Speaker stage"
+        aria-label={translate('settings:auto.speakerstage.speaker_stage')}
       >
         {/* Ring + front marker */}
         <circle
@@ -220,7 +222,8 @@ export default function SpeakerStage({
           y2={CENTER_Y - RING_RADIUS + 6}
         />
         <text className="speaker-stage-front-label" x={CENTER_X} y={CENTER_Y - RING_RADIUS - 14}>
-          FRONT
+
+          <LocalizedText ns="settings" i18nKey="auto.speakerstage.front" />
         </text>
 
         {/* Listener */}
@@ -255,8 +258,8 @@ export default function SpeakerStage({
               role={speaker.draggable ? 'slider' : 'button'}
               aria-label={
                 speaker.draggable
-                  ? `${speaker.label} position, ${usageStatus.toLowerCase()}`
-                  : `${speaker.label} routing, ${usageStatus.toLowerCase()}`
+                  ? translate('settings:auto.speakerstage.label_position_value2', { label: speaker.label, value2: usageStatus.toLowerCase() })
+                  : translate('settings:auto.speakerstage.label_routing_value2', { label: speaker.label, value2: usageStatus.toLowerCase() })
               }
               aria-valuenow={speaker.draggable ? Math.round(speaker.azimuth) : undefined}
               aria-valuemin={speaker.draggable ? -180 : undefined}
@@ -269,7 +272,7 @@ export default function SpeakerStage({
               onKeyDown={(event) => handlePuckKeyDown(event, speaker)}
             >
               <title>
-                {`${speaker.label} (${Math.round(speaker.azimuth)}°${elevationCaption ? `, ${elevationDeg}° elevation` : ''}) — ${usageStatus}`}
+                {translate('settings:auto.speakerstage.label_value2_value3_usagestatus', { label: speaker.label, value2: Math.round(speaker.azimuth), value3: elevationCaption ? `, ${elevationDeg}° elevation` : '', usagestatus: usageStatus })}
               </title>
               <circle className="speaker-stage-puck-body" r={PUCK_RADIUS} />
               <text className="speaker-stage-puck-id" dy="0.34em">
@@ -296,8 +299,8 @@ export default function SpeakerStage({
                 if (!disabled) onSelect(selectedId === speaker.id ? null : speaker.id)
               }}
               disabled={disabled}
-              title={`${speaker.label} (non-positional) — ${usageStatusText(speaker.state)}`}
-              aria-label={`${speaker.label}, non-positional, ${usageStatusText(speaker.state).toLowerCase()}`}
+              title={translate('settings:auto.speakerstage.label_non_positional_value2', { label: speaker.label, value2: usageStatusText(speaker.state) })}
+              aria-label={translate('settings:auto.speakerstage.label_non_positional_value2_6da1dc1', { label: speaker.label, value2: usageStatusText(speaker.state).toLowerCase() })}
             >
               {speaker.channelId}
             </button>

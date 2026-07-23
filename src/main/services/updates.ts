@@ -1,3 +1,5 @@
+import { mainT } from '../i18n'
+
 const RELEASES_API_URL = 'https://api.github.com/repos/Boof2015/astra/releases?per_page=20'
 export const RELEASES_PAGE_URL = 'https://github.com/Boof2015/astra/releases'
 const RELEASES_FETCH_TIMEOUT_MS = 10_000
@@ -184,7 +186,7 @@ export async function checkForUpdates(currentVersion: string): Promise<UpdateChe
         releaseName: null,
         releaseUrl: RELEASES_PAGE_URL,
         checkedAt,
-        message: 'No published releases were found on GitHub.',
+        message: mainT('integrations:updates.noReleases'),
       }
     }
 
@@ -209,7 +211,7 @@ export async function checkForUpdates(currentVersion: string): Promise<UpdateChe
         releaseName: latestRelease.name,
         releaseUrl,
         checkedAt,
-        message: `Update available: ${latestTag} (current v${currentVersion}).`,
+        message: mainT('integrations:updates.available', { latestTag, currentVersion }),
       }
     }
 
@@ -222,7 +224,7 @@ export async function checkForUpdates(currentVersion: string): Promise<UpdateChe
       releaseName: latestRelease.name,
       releaseUrl,
       checkedAt,
-      message: `Astra is up to date (v${currentVersion}).`,
+      message: mainT('integrations:updates.upToDate', { currentVersion }),
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
@@ -235,7 +237,7 @@ export async function checkForUpdates(currentVersion: string): Promise<UpdateChe
       releaseName: null,
       releaseUrl: RELEASES_PAGE_URL,
       checkedAt,
-      message: `Failed to check for updates: ${errorMessage}`,
+      message: mainT('integrations:updates.failed', { error: errorMessage }),
     }
   }
 }

@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useEffect, useMemo, useState } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -56,17 +58,17 @@ export default function AssociatedOpenCue() {
       <div className="fullscreen-next-cue-card">
         <div className="fullscreen-next-cue-artwork">
           {artworkTrack?.artworkHash ? (
-            <AlbumArtwork hash={artworkTrack.artworkHash} alt="Open with Astra cue artwork" variant="card" />
+            <AlbumArtwork hash={artworkTrack.artworkHash} alt={translate('common:auto.associatedopencue.open_with_astra_cue_artwork')} variant="card" />
           ) : artworkTrack?.artworkData ? (
-            <img src={artworkTrack.artworkData} alt="Open with Astra cue artwork" />
+            <img src={artworkTrack.artworkData} alt={translate('common:auto.associatedopencue.open_with_astra_cue_artwork')} />
           ) : (
-            <div className="fullscreen-next-cue-placeholder">OA</div>
+            <div className="fullscreen-next-cue-placeholder"><LocalizedText ns="common" i18nKey="auto.associatedopencue.oa" /></div>
           )}
         </div>
 
         <div className="fullscreen-next-cue-meta">
-          <span className="fullscreen-next-cue-label">Open With Astra</span>
-          <div className="fullscreen-next-cue-title">Playing from {notice.sourceLabel}</div>
+          <span className="fullscreen-next-cue-label"><LocalizedText ns="common" i18nKey="auto.associatedopencue.open_with_astra" /></span>
+          <div className="fullscreen-next-cue-title"><LocalizedText ns="common" i18nKey="auto.associatedopencue.playing_from" /> {notice.sourceLabel}</div>
           <div className="fullscreen-next-cue-artist">{subtitleLine}</div>
         </div>
 

@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useEffect, useState } from 'react'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useParallaxStore } from '../../stores/parallaxStore'
@@ -124,20 +126,20 @@ export default function ZoneSettingsOverlay({ onClose }: Props) {
       className="zone-settings-overlay"
       role="dialog"
       aria-modal="true"
-      aria-label="Zone settings"
+      aria-label={translate('common:auto.zonesettingsoverlay.zone_settings')}
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose()
       }}
     >
       <div className="zone-settings-overlay-card">
         <div className="zone-settings-overlay-head">
-          <span className="zone-settings-overlay-title">Zone settings</span>
+          <span className="zone-settings-overlay-title"><LocalizedText ns="common" i18nKey="auto.zonesettingsoverlay.zone_settings" /></span>
           <button
             type="button"
             className="zone-settings-overlay-close"
             onClick={onClose}
-            title="Close"
-            aria-label="Close zone settings"
+            title={translate('common:auto.zonesettingsoverlay.close')}
+            aria-label={translate('common:auto.zonesettingsoverlay.close_zone_settings')}
           >
             ×
           </button>
@@ -145,7 +147,7 @@ export default function ZoneSettingsOverlay({ onClose }: Props) {
 
         <div className="zone-settings-overlay-section">
           <div className="zone-settings-overlay-section-head">
-            <span className="zone-settings-overlay-section-label">Zone name</span>
+            <span className="zone-settings-overlay-section-label"><LocalizedText ns="common" i18nKey="auto.zonesettingsoverlay.zone_name" /></span>
           </div>
           <input
             type="text"
@@ -154,18 +156,18 @@ export default function ZoneSettingsOverlay({ onClose }: Props) {
             placeholder={assignedName || identity?.hostname || 'Astra Speaker'}
             maxLength={60}
             onChange={(event) => setZoneName(event.target.value)}
-            aria-label="Zone name"
+            aria-label={translate('common:auto.zonesettingsoverlay.zone_name')}
           />
           <p className="zone-settings-overlay-note">
             {assignedName
-              ? <>The host calls this speaker <strong>{assignedName}</strong>, which takes priority here. This local name only applies when no host name is set.</>
-              : <>Shown on this display. Leave blank to use the device name ({identity?.hostname || 'hostname'}).</>}
+              ? <><LocalizedText ns="common" i18nKey="auto.zonesettingsoverlay.the_host_calls_this_speaker" /> <strong>{assignedName}</strong><LocalizedText ns="common" i18nKey="auto.zonesettingsoverlay.which_takes_priority_here_this_local_name_only_applies_w" /></>
+              : <><LocalizedText ns="common" i18nKey="auto.zonesettingsoverlay.shown_on_this_display_leave_blank_to_use_the_device_name" />{identity?.hostname || 'hostname'}).</>}
           </p>
         </div>
 
         <div className="zone-settings-overlay-section">
           <div className="zone-settings-overlay-section-head">
-            <span className="zone-settings-overlay-section-label">Output device</span>
+            <span className="zone-settings-overlay-section-label"><LocalizedText ns="common" i18nKey="auto.zonesettingsoverlay.output_device" /></span>
           </div>
           <select
             className="zone-settings-overlay-select"
@@ -173,7 +175,7 @@ export default function ZoneSettingsOverlay({ onClose }: Props) {
             onChange={(event) => void selectDevice(event.target.value)}
           >
             {availableDevices.length === 0 && (
-              <option value="">No output devices detected</option>
+              <option value=""><LocalizedText ns="common" i18nKey="auto.zonesettingsoverlay.no_output_devices_detected" /></option>
             )}
             {availableDevices.map((device) => (
               <option key={device.deviceId || device.label} value={device.deviceId}>
@@ -182,15 +184,16 @@ export default function ZoneSettingsOverlay({ onClose }: Props) {
             ))}
           </select>
           <p className="zone-settings-overlay-note">
-            Trim is keyed per output device. Changing this device may swap the trim slot too.
+
+            <LocalizedText ns="common" i18nKey="auto.zonesettingsoverlay.trim_is_keyed_per_output_device_changing_this_device_may" />
           </p>
         </div>
 
         <div className="zone-settings-overlay-section">
           <div className="zone-settings-overlay-section-head">
-            <span className="zone-settings-overlay-section-label">Trim</span>
+            <span className="zone-settings-overlay-section-label"><LocalizedText ns="common" i18nKey="auto.zonesettingsoverlay.trim" /></span>
             <span className="zone-settings-overlay-section-value">
-              {effectiveAdvanceMs !== null ? `${effectiveAdvanceMs.toFixed(0)} ms` : '—'}
+              {effectiveAdvanceMs !== null ? translate('common:auto.zonesettingsoverlay.value1_ms', { value1: effectiveAdvanceMs.toFixed(0) }) : '—'}
             </span>
           </div>
           <div className="zone-settings-overlay-stepper">
@@ -199,28 +202,28 @@ export default function ZoneSettingsOverlay({ onClose }: Props) {
               className="settings-btn"
               disabled={!canEditTrim}
               onClick={() => void handleTrimAdjust(-5)}
-              title="Trim −5 ms"
+              title={translate('common:auto.zonesettingsoverlay.trim_5_ms')}
             >-5</button>
             <button
               type="button"
               className="settings-btn"
               disabled={!canEditTrim}
               onClick={() => void handleTrimAdjust(-1)}
-              title="Trim −1 ms"
+              title={translate('common:auto.zonesettingsoverlay.trim_1_ms')}
             >-1</button>
             <button
               type="button"
               className="settings-btn"
               disabled={!canEditTrim}
               onClick={() => void handleTrimAdjust(+1)}
-              title="Trim +1 ms"
+              title={translate('common:auto.zonesettingsoverlay.trim_1_ms_aeec11a')}
             >+1</button>
             <button
               type="button"
               className="settings-btn"
               disabled={!canEditTrim}
               onClick={() => void handleTrimAdjust(+5)}
-              title="Trim +5 ms"
+              title={translate('common:auto.zonesettingsoverlay.trim_5_ms_0d1e45e')}
             >+5</button>
             {effectiveAdvanceMs !== null && effectiveAdvanceMs !== 0 && (
               <button
@@ -228,14 +231,14 @@ export default function ZoneSettingsOverlay({ onClose }: Props) {
                 className="settings-btn"
                 disabled={!canEditTrim}
                 onClick={() => void handleTrimReset()}
-                title="Reset trim to 0"
-              >Reset</button>
+                title={translate('common:auto.zonesettingsoverlay.reset_trim_to_0')}
+              ><LocalizedText ns="common" i18nKey="auto.zonesettingsoverlay.reset" /></button>
             )}
           </div>
           <p className="zone-settings-overlay-note">
             {outputDeviceLabel || outputDeviceId
-              ? <>Applied for <strong>{outputDeviceLabel ?? outputDeviceId}</strong>. Persisted on the host.</>
-              : 'Awaiting telemetry from sink.'}
+              ? <><LocalizedText ns="common" i18nKey="auto.zonesettingsoverlay.applied_for" /> <strong>{outputDeviceLabel ?? outputDeviceId}</strong><LocalizedText ns="common" i18nKey="auto.zonesettingsoverlay.persisted_on_the_host" /></>
+              : translate('common:auto.zonesettingsoverlay.awaiting_telemetry_from_sink')}
           </p>
           {trimError && (
             <p className="zone-settings-overlay-note zone-settings-overlay-note-error">{trimError}</p>

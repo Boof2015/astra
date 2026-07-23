@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate, translateSourceText } from '../../i18n'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { EQBand } from '../../types/audio'
 import { isPassEQBandType } from '../../utils/eq'
@@ -314,7 +316,7 @@ export default function EQBandSlider({
             setShowTypeMenu(false)
             onRemove()
           }}
-          title="Remove band"
+          title={translate('common:auto.eqbandslider.remove_band')}
         >
           <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
             <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
@@ -343,7 +345,7 @@ export default function EQBandSlider({
         aria-valuenow={gain}
         aria-valuemin={MIN_DB}
         aria-valuemax={MAX_DB}
-        aria-label={isPreamp ? 'Preamp' : `Band ${index + 1}: ${formatFreq(band.frequency)}`}
+        aria-label={isPreamp ? translate('common:auto.eqbandslider.preamp') : translate('common:auto.eqbandslider.band_value1_value2', { value1: index + 1, value2: formatFreq(band.frequency) })}
         aria-disabled={gainDisabled}
         title={gainTitle}
       >
@@ -365,7 +367,7 @@ export default function EQBandSlider({
 
       {/* Label */}
       {isPreamp ? (
-        <span className="eq-band-freq">PRE</span>
+        <span className="eq-band-freq"><LocalizedText ns="common" i18nKey="auto.eqbandslider.pre" /></span>
       ) : (
         renderEditableValue('frequency', formatFreq(band.frequency), 'eq-band-freq', `Band ${index + 1} frequency in Hz`)
       )}
@@ -378,8 +380,8 @@ export default function EQBandSlider({
             className="eq-band-type-btn"
             onPointerDown={(event) => event.stopPropagation()}
             onClick={handleTypeToggle}
-            title="Edit band type"
-            aria-label={`Band ${index + 1} type`}
+            title={translate('common:auto.eqbandslider.edit_band_type')}
+            aria-label={translate('common:auto.eqbandslider.band_value1_type', { value1: index + 1 })}
             aria-haspopup="menu"
             aria-expanded={showTypeMenu}
           >
@@ -402,7 +404,7 @@ export default function EQBandSlider({
                   aria-checked={band.type === option.value}
                 >
                   <BandTypeIcon type={option.value} className="eq-band-type-option-icon" />
-                  <span>{option.label}</span>
+                  <span>{translateSourceText(option.label)}</span>
                 </button>
               ))}
             </div>

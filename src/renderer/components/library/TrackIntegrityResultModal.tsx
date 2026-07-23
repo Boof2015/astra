@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useMemo } from 'react'
 import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
 import { IntegrityFindingList } from './LibraryIntegrityPanel'
@@ -55,10 +57,10 @@ export default function TrackIntegrityResultModal() {
       <div className="modal-content track-integrity-modal" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <div>
-            <div className="library-integrity-kicker">Track Integrity</div>
+            <div className="library-integrity-kicker"><LocalizedText ns="library" i18nKey="auto.trackintegrityresultmodal.track_integrity" /></div>
             <h2>{title}</h2>
           </div>
-          <button className="modal-close" onClick={close} disabled={isBusy} aria-label="Close">
+          <button className="modal-close" onClick={close} disabled={isBusy} aria-label={translate('library:auto.trackintegrityresultmodal.close')}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
               <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
             </svg>
@@ -70,10 +72,10 @@ export default function TrackIntegrityResultModal() {
               <span className="loading-spinner-small" />
               <span>
                 {busyPaths.length > 1
-                  ? `${busyPaths.length} selected tracks`
+                  ? translate('library:auto.trackintegrityresultmodal.length_selected_tracks', { length: busyPaths.length })
                   : busyPath
                     ? formatTrackPath(busyPath)
-                    : 'Preparing integrity check...'}
+                    : translate('library:auto.trackintegrityresultmodal.preparing_integrity_check')}
               </span>
             </div>
           ) : error ? (
@@ -82,13 +84,13 @@ export default function TrackIntegrityResultModal() {
             <>
               {result && (
                 <div className="track-integrity-summary">
-                  <span>{result.summary.mode === 'deep' ? 'Deep' : 'Quick'} scan</span>
+                  <span>{result.summary.mode === 'deep' ? translate('library:auto.trackintegrityresultmodal.deep') : translate('library:auto.trackintegrityresultmodal.quick')}  <LocalizedText ns="library" i18nKey="auto.trackintegrityresultmodal.scan" /></span>
                   {resultTrackCount !== null && (
-                    <span>{resultTrackCount} {resultTrackCount === 1 ? 'track' : 'tracks'}</span>
+                    <span>{resultTrackCount} {resultTrackCount === 1 ? translate('library:auto.trackintegrityresultmodal.track') : translate('library:auto.trackintegrityresultmodal.tracks')}</span>
                   )}
-                  <span>{result.summary.errors} errors</span>
-                  <span>{result.summary.warnings} warnings</span>
-                  <span>{result.summary.info} info</span>
+                  <span>{result.summary.errors}  <LocalizedText ns="library" i18nKey="auto.trackintegrityresultmodal.errors" /></span>
+                  <span>{result.summary.warnings}  <LocalizedText ns="library" i18nKey="auto.trackintegrityresultmodal.warnings" /></span>
+                  <span>{result.summary.info}  <LocalizedText ns="library" i18nKey="auto.trackintegrityresultmodal.info" /></span>
                 </div>
               )}
               <IntegrityFindingList
@@ -102,7 +104,8 @@ export default function TrackIntegrityResultModal() {
         </div>
         <div className="modal-footer">
           <button className="settings-btn settings-btn-primary" onClick={close} disabled={isBusy}>
-            Done
+
+            <LocalizedText ns="library" i18nKey="auto.trackintegrityresultmodal.done" />
           </button>
         </div>
       </div>

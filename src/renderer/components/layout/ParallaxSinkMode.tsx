@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useParallaxStore } from '../../stores/parallaxStore'
 import { useUIStore } from '../../stores/uiStore'
 
@@ -22,11 +24,11 @@ export default function ParallaxSinkMode() {
   return (
     <div className="parallax-sink-mode" role="status" aria-live="polite">
       <div className="parallax-sink-copy">
-        <span className="parallax-sink-kicker">Parallax Sink</span>
+        <span className="parallax-sink-kicker"><LocalizedText ns="common" i18nKey="auto.parallaxsinkmode.parallax_sink" /></span>
         <span className="parallax-sink-title">
           {!playbackEnabled
-            ? 'Connected, not selected for playback'
-            : stream ? `${stream.title} - ${stream.artist}` : 'Waiting for host playback'}
+            ? translate('common:auto.parallaxsinkmode.connected_not_selected_for_playback')
+            : stream ? translate('common:auto.parallaxsinkmode.title_artist', { title: stream.title, artist: stream.artist }) : translate('common:auto.parallaxsinkmode.waiting_for_host_playback')}
         </span>
         <span className="parallax-sink-meta">{status.sink.baseUrl} · {clockLabel} · {bufferLabel}</span>
         {errorMessage && <span className="parallax-sink-error">{errorMessage}</span>}
@@ -36,16 +38,18 @@ export default function ParallaxSinkMode() {
           type="button"
           className="settings-btn"
           onClick={enterZoneDisplay}
-          title="Open Zone Display"
+          title={translate('common:auto.parallaxsinkmode.open_zone_display')}
         >
-          Zone Display
+
+          <LocalizedText ns="common" i18nKey="auto.parallaxsinkmode.zone_display" />
         </button>
         <button
           type="button"
           className="settings-btn settings-btn-danger"
           onClick={() => void disconnectSink()}
         >
-          Disconnect
+
+          <LocalizedText ns="common" i18nKey="auto.parallaxsinkmode.disconnect" />
         </button>
       </div>
     </div>

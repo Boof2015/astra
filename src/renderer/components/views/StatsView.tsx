@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { formatLocaleDate, formatLocaleNumber, translate, translateSourceText } from '../../i18n'
 import { useEffect, useMemo, useState } from 'react'
 import type {
   ListeningStatsActivityBucket,
@@ -21,13 +23,13 @@ const RANGE_OPTIONS: Array<{ value: ListeningStatsRange; label: string }> = [
   { value: 'all', label: 'All' }
 ]
 
-function formatCount(value: number, noun: string): string {
+function formatCount(value: number): string {
   const rounded = Math.max(0, Math.round(value))
-  return `${rounded.toLocaleString()} ${noun}${rounded === 1 ? '' : 's'}`
+  return translate('common:counts.play', { count: rounded, formattedCount: formatLocaleNumber(rounded) })
 }
 
 function formatBaseline(timestamp: number): string {
-  return new Date(timestamp).toLocaleString([], {
+  return formatLocaleDate(timestamp, {
     year: 'numeric',
     month: 'long',
     day: 'numeric',
@@ -40,10 +42,10 @@ function ActivityChart({ buckets }: { buckets: ListeningStatsActivityBucket[] })
   const maxSeconds = Math.max(0, ...buckets.map((bucket) => bucket.listenedSeconds))
 
   return (
-    <div className="listening-stats-chart" role="group" aria-label="Listening time activity chart">
+    <div className="listening-stats-chart" role="group" aria-label={translate('common:auto.statsview.listening_time_activity_chart')}>
       {buckets.map((bucket, index) => {
         const exactTime = formatExactDuration(bucket.listenedSeconds)
-        const plays = formatCount(bucket.qualifiedPlays, 'play')
+        const plays = formatCount(bucket.qualifiedPlays)
         const height = maxSeconds > 0 && bucket.listenedSeconds > 0
           ? Math.max(2, (bucket.listenedSeconds / maxSeconds) * 100)
           : 0
@@ -72,7 +74,7 @@ function ActivityChart({ buckets }: { buckets: ListeningStatsActivityBucket[] })
 function RankingValue({ plays, seconds }: { plays: number; seconds: number }) {
   return (
     <span className="listening-stats-ranking-values">
-      <span>{formatCount(plays, 'play')}</span>
+      <span>{formatCount(plays)}</span>
       <span>{formatExactDuration(seconds)}</span>
     </span>
   )
@@ -121,7 +123,7 @@ function RankingCard<T>({
                   type="button"
                   disabled={!available}
                   onClick={() => onOpen(item)}
-                  title={available ? `Open ${getTitle(item)}` : `${getTitle(item)} is no longer in the library`}
+                  title={available ? translate('common:auto.statsview.open_value1', { value1: getTitle(item) }) : translate('common:auto.statsview.value1_is_no_longer_in_the_library', { value1: getTitle(item) })}
                 >
                   <span className="listening-stats-ranking-position">{index + 1}</span>
                   <AlbumArtwork
@@ -133,7 +135,7 @@ function RankingCard<T>({
                   <span className="listening-stats-ranking-copy">
                     <span className="listening-stats-ranking-title">{getTitle(item)}</span>
                     <span className="listening-stats-ranking-subtitle">
-                      {getSubtitle(item)}{available ? '' : ' · Removed from Library'}
+                      {getSubtitle(item)}{available ? '' : translate('common:auto.statsview.removed_from_library')}
                     </span>
                   </span>
                   <RankingValue plays={getPlays(item)} seconds={getSeconds(item)} />
@@ -215,16 +217,16 @@ export default function StatsView() {
     <div className="listening-stats-view">
       <header className="listening-stats-header">
         <div>
-          <p className="listening-stats-eyebrow">Your Library</p>
-          <h1>Listening Stats</h1>
-          <p>Local listening time and qualified plays from this installation.</p>
+          <p className="listening-stats-eyebrow"><LocalizedText ns="common" i18nKey="auto.statsview.your_library" /></p>
+          <h1><LocalizedText ns="common" i18nKey="auto.statsview.listening_stats" /></h1>
+          <p><LocalizedText ns="common" i18nKey="auto.statsview.local_listening_time_and_qualified_plays_from_this_insta" /></p>
         </div>
         <div className="listening-stats-header-actions">
           <button
             className="listening-stats-share-button"
             type="button"
             disabled={!dashboard || !hasDetailedHistory || !hasRangeActivity}
-            title={hasRangeActivity ? 'Create a shareable listening-stats image' : 'Listen to something in this range before sharing'}
+            title={hasRangeActivity ? translate('common:auto.statsview.create_a_shareable_listening_stats_image') : translate('common:auto.statsview.listen_to_something_in_this_range_before_sharing')}
             onClick={() => setShareSnapshot(dashboard)}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -233,9 +235,10 @@ export default function StatsView() {
               <circle cx="18" cy="19" r="3" />
               <path d="m8.6 10.5 6.8-4M8.6 13.5l6.8 4" />
             </svg>
-            Share
+
+            <LocalizedText ns="common" i18nKey="auto.statsview.share" />
           </button>
-          <div className="listening-stats-range-control" role="group" aria-label="Listening stats date range">
+          <div className="listening-stats-range-control" role="group" aria-label={translate('common:auto.statsview.listening_stats_date_range')}>
             {RANGE_OPTIONS.map((option) => (
               <button
                 key={option.value}
@@ -244,7 +247,7 @@ export default function StatsView() {
                 aria-pressed={range === option.value}
                 onClick={() => setRange(option.value)}
               >
-                {option.label}
+                {translateSourceText(option.label)}
               </button>
             ))}
           </div>
@@ -253,80 +256,82 @@ export default function StatsView() {
 
       {error && (
         <div className="listening-stats-state listening-stats-state-error" role="alert">
-          <strong>Listening Stats could not be loaded.</strong>
+          <strong><LocalizedText ns="common" i18nKey="auto.statsview.listening_stats_could_not_be_loaded" /></strong>
           <span>{error}</span>
-          <button type="button" onClick={() => void loadDashboard()}>Try Again</button>
+          <button type="button" onClick={() => void loadDashboard()}><LocalizedText ns="common" i18nKey="auto.statsview.try_again" /></button>
         </div>
       )}
 
       {!error && isLoading && !dashboard && (
-        <div className="listening-stats-state" role="status">Loading listening history…</div>
+        <div className="listening-stats-state" role="status"><LocalizedText ns="common" i18nKey="auto.statsview.loading_listening_history" /></div>
       )}
 
       {!error && dashboard && !hasDetailedHistory && (
         <div className="listening-stats-state">
-          <strong>No detailed listening history yet</strong>
-          <span>Play something from your library to begin. Existing play counts are intentionally not included here.</span>
+          <strong><LocalizedText ns="common" i18nKey="auto.statsview.no_detailed_listening_history_yet" /></strong>
+          <span><LocalizedText ns="common" i18nKey="auto.statsview.play_something_from_your_library_to_begin_existing_play_" /></span>
         </div>
       )}
 
       {!error && dashboard && hasDetailedHistory && (
         <>
           <p className="listening-stats-baseline">
-            Detailed history since {formatBaseline(dashboard.status.startedAt!)}
-            {isLoading ? <span role="status"> · Refreshing…</span> : null}
+
+            <LocalizedText ns="common" i18nKey="auto.statsview.detailed_history_since" /> {formatBaseline(dashboard.status.startedAt!)}
+            {isLoading ? <span role="status">  <LocalizedText ns="common" i18nKey="auto.statsview.refreshing" /></span> : null}
           </p>
 
-          <section className="listening-stats-summary" aria-label="Listening summary">
+          <section className="listening-stats-summary" aria-label={translate('common:auto.statsview.listening_summary')}>
             <article>
-              <span>Listening Time</span>
+              <span><LocalizedText ns="common" i18nKey="auto.statsview.listening_time" /></span>
               <strong>{formatExactDuration(dashboard.summary.listenedSeconds)}</strong>
             </article>
             <article>
-              <span>Qualified Plays</span>
-              <strong>{dashboard.summary.qualifiedPlays.toLocaleString()}</strong>
+              <span><LocalizedText ns="common" i18nKey="auto.statsview.qualified_plays" /></span>
+              <strong>{formatLocaleNumber(dashboard.summary.qualifiedPlays)}</strong>
             </article>
             <article>
-              <span>Tracks Played</span>
-              <strong>{dashboard.summary.tracksPlayed.toLocaleString()}</strong>
+              <span><LocalizedText ns="common" i18nKey="auto.statsview.tracks_played" /></span>
+              <strong>{formatLocaleNumber(dashboard.summary.tracksPlayed)}</strong>
             </article>
             <article>
-              <span>Active Days</span>
-              <strong>{dashboard.summary.activeDays.toLocaleString()}</strong>
+              <span><LocalizedText ns="common" i18nKey="auto.statsview.active_days" /></span>
+              <strong>{formatLocaleNumber(dashboard.summary.activeDays)}</strong>
             </article>
           </section>
 
           {!hasRangeActivity ? (
             <div className="listening-stats-state listening-stats-state-compact">
-              <strong>No listening in this range</strong>
-              <span>Choose another range or start playing a library track.</span>
+              <strong><LocalizedText ns="common" i18nKey="auto.statsview.no_listening_in_this_range" /></strong>
+              <span><LocalizedText ns="common" i18nKey="auto.statsview.choose_another_range_or_start_playing_a_library_track" /></span>
             </div>
           ) : (
             <>
               <section className="listening-stats-activity-card">
                 <div className="listening-stats-section-heading">
                   <div>
-                    <p>Activity</p>
-                    <h2>Listening Time</h2>
+                    <p><LocalizedText ns="common" i18nKey="auto.statsview.activity" /></p>
+                    <h2><LocalizedText ns="common" i18nKey="auto.statsview.listening_time" /></h2>
                   </div>
-                  <span>Focus or hover a bar for exact time.</span>
+                  <span><LocalizedText ns="common" i18nKey="auto.statsview.focus_or_hover_a_bar_for_exact_time" /></span>
                 </div>
                 <ActivityChart key={dashboard.range} buckets={dashboard.activity} />
               </section>
 
               <div className="listening-stats-rankings-heading">
                 <div>
-                  <p>Rankings</p>
-                  <h2>Your Top Listening</h2>
+                  <p><LocalizedText ns="common" i18nKey="auto.statsview.rankings" /></p>
+                  <h2><LocalizedText ns="common" i18nKey="auto.statsview.your_top_listening" /></h2>
                 </div>
-                <div className="listening-stats-metric-control" role="group" aria-label="Rank listening results by">
+                <div className="listening-stats-metric-control" role="group" aria-label={translate('common:auto.statsview.rank_listening_results_by')}>
                   <button
                     type="button"
                     className={rankingMetric === 'plays' ? 'active' : ''}
                     aria-pressed={rankingMetric === 'plays'}
                     onClick={() => setRankingMetric('plays')}
                   >
-                    Plays
+
+                    <LocalizedText ns="common" i18nKey="auto.statsview.plays" />
                   </button>
                   <button
                     type="button"
@@ -334,14 +339,15 @@ export default function StatsView() {
                     aria-pressed={rankingMetric === 'time'}
                     onClick={() => setRankingMetric('time')}
                   >
-                    Time
+
+                    <LocalizedText ns="common" i18nKey="auto.statsview.time" />
                   </button>
                 </div>
               </div>
 
               <div className="listening-stats-rankings-grid">
                 <RankingCard
-                  title="Top Tracks"
+                  title={translate('common:auto.statsview.top_tracks')}
                   items={dashboard.topTracks}
                   emptyLabel="No tracks in this range."
                   getKey={(track) => track.key}
@@ -354,7 +360,7 @@ export default function StatsView() {
                   onOpen={handlePlayTrack}
                 />
                 <RankingCard
-                  title="Top Artists"
+                  title={translate('common:auto.statsview.top_artists')}
                   items={dashboard.topArtists}
                   emptyLabel="No artists in this range."
                   getKey={(artist) => artist.key}
@@ -367,7 +373,7 @@ export default function StatsView() {
                   onOpen={handleOpenArtist}
                 />
                 <RankingCard
-                  title="Top Albums"
+                  title={translate('common:auto.statsview.top_albums')}
                   items={dashboard.topAlbums}
                   emptyLabel="No albums in this range."
                   getKey={(album) => album.key}

@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate, translateSourceText } from '../../i18n'
 import { useEffect, useMemo, useState } from 'react'
 import {
   createDefaultDynamicPlaylistRules,
@@ -258,9 +260,9 @@ function renderConditionOperator(
   if (condition.kind === 'text') {
     return (
       <select className="playlist-dynamic-select" value={condition.operator} onChange={(event) => onChange(updateTextOperator(condition, event.target.value as DynamicPlaylistTextCondition['operator']))} disabled={disabled}>
-        <option value="contains">contains</option>
-        <option value="is">is</option>
-        <option value="is_not">is not</option>
+        <option value="contains"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.contains" /></option>
+        <option value="is"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.is" /></option>
+        <option value="is_not"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.is_not" /></option>
       </select>
     )
   }
@@ -268,9 +270,9 @@ function renderConditionOperator(
   if (condition.kind === 'numeric') {
     return (
       <select className="playlist-dynamic-select" value={condition.operator} onChange={(event) => onChange(updateNumericOperator(condition, event.target.value as DynamicPlaylistNumericCondition['operator']))} disabled={disabled}>
-        <option value="eq">is</option>
-        <option value="gte">is at least</option>
-        <option value="lte">is at most</option>
+        <option value="eq"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.is" /></option>
+        <option value="gte"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.is_at_least" /></option>
+        <option value="lte"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.is_at_most" /></option>
       </select>
     )
   }
@@ -297,8 +299,8 @@ function renderConditionOperator(
 
   return (
     <select className="playlist-dynamic-select" value={condition.operator} onChange={(event) => onChange(updateExactOperator(condition, event.target.value as DynamicPlaylistSourceCondition['operator']))} disabled={disabled}>
-      <option value="is">is</option>
-      <option value="is_not">is not</option>
+      <option value="is"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.is" /></option>
+      <option value="is_not"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.is_not" /></option>
     </select>
   )
 }
@@ -314,7 +316,7 @@ function renderConditionValue(
         className="playlist-dynamic-input"
         value={condition.value}
         onChange={(event) => onChange({ ...condition, value: event.target.value })}
-        placeholder="Value"
+        placeholder={translate('common:auto.dynamicplaylistruleeditor.value')}
         disabled={disabled}
       />
     )
@@ -356,7 +358,7 @@ function renderConditionValue(
         min={1}
         value={needsValue ? String(condition.value ?? 30) : ''}
         onChange={(event) => onChange({ ...condition, value: Number(event.target.value) } as DynamicPlaylistCondition)}
-        placeholder={needsValue ? 'Days' : ''}
+        placeholder={needsValue ? translate('common:auto.dynamicplaylistruleeditor.days') : ''}
         disabled={disabled || !needsValue}
       />
     )
@@ -370,9 +372,9 @@ function renderConditionValue(
         onChange={(event) => onChange({ ...condition, value: event.target.value as DynamicPlaylistSourceCondition['value'] })}
         disabled={disabled}
       >
-        <option value="local">Local</option>
-        <option value="subsonic">Subsonic</option>
-        <option value="jellyfin">Jellyfin</option>
+        <option value="local"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.local" /></option>
+        <option value="subsonic"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.subsonic" /></option>
+        <option value="jellyfin"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.jellyfin" /></option>
       </select>
     )
   }
@@ -384,8 +386,8 @@ function renderConditionValue(
       onChange={(event) => onChange({ ...condition, value: event.target.value === 'true' })}
       disabled={disabled}
     >
-      <option value="true">True</option>
-      <option value="false">False</option>
+      <option value="true"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.true" /></option>
+      <option value="false"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.false" /></option>
     </select>
   )
 }
@@ -471,7 +473,7 @@ export default function DynamicPlaylistRuleEditor({
     <div className="playlist-dynamic-builder">
       <div className="playlist-dynamic-builder-main">
         <div className="playlist-dynamic-presets">
-          <span className="playlist-create-label">Starters</span>
+          <span className="playlist-create-label"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.starters" /></span>
           <div className="playlist-dynamic-preset-row">
             {PRESETS.map((preset) => (
               <button
@@ -481,7 +483,7 @@ export default function DynamicPlaylistRuleEditor({
                 onClick={() => onRulesChange(preset.rules)}
                 disabled={disabled}
               >
-                {preset.label}
+                {translateSourceText(preset.label)}
               </button>
             ))}
           </div>
@@ -489,25 +491,27 @@ export default function DynamicPlaylistRuleEditor({
 
         <div className="playlist-dynamic-section">
           <div className="playlist-dynamic-section-header">
-            <span className="playlist-create-label">Filters</span>
+            <span className="playlist-create-label"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.filters" /></span>
             <div className="playlist-dynamic-section-actions">
               <button type="button" className="playlist-create-cover-btn subtle" onClick={() => onRulesChange(createDefaultDynamicPlaylistRules())} disabled={disabled}>
-                Reset
+
+                <LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.reset" />
               </button>
               <button type="button" className="playlist-create-cover-btn" onClick={addCondition} disabled={disabled}>
-                Add filter
+
+                <LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.add_filter" />
               </button>
             </div>
           </div>
 
           {rules.conditions.length === 0 ? (
-            <div className="playlist-dynamic-empty-rule">No filters. All available tracks will match.</div>
+            <div className="playlist-dynamic-empty-rule"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.no_filters_all_available_tracks_will_match" /></div>
           ) : (
             <div className="playlist-dynamic-rule-list">
               {rules.conditions.map((condition, index) => (
                 <div className="playlist-dynamic-rule-row" key={index}>
                   <span className="playlist-dynamic-rule-prefix">
-                    {index === 0 ? 'Match tracks where' : 'and'}
+                    {index === 0 ? translate('common:auto.dynamicplaylistruleeditor.match_tracks_where') : translate('common:auto.dynamicplaylistruleeditor.and')}
                   </span>
                   <select
                     className="playlist-dynamic-select"
@@ -520,7 +524,7 @@ export default function DynamicPlaylistRuleEditor({
                     disabled={disabled}
                   >
                     {fieldOptionsForCondition(condition).map((option) => (
-                      <option key={option.key} value={option.key}>{option.label}</option>
+                      <option key={option.key} value={option.key}>{translateSourceText(option.label)}</option>
                     ))}
                   </select>
                   {renderConditionOperator(condition, (next) => onRulesChange(updateRulesCondition(rules, index, next)), disabled)}
@@ -529,10 +533,11 @@ export default function DynamicPlaylistRuleEditor({
                     type="button"
                     className="playlist-dynamic-remove-btn"
                     onClick={() => onRulesChange(removeRulesCondition(rules, index))}
-                    aria-label="Remove filter"
+                    aria-label={translate('common:auto.dynamicplaylistruleeditor.remove_filter')}
                     disabled={disabled}
                   >
-                    x
+
+                    <LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.x" />
                   </button>
                 </div>
               ))}
@@ -543,14 +548,14 @@ export default function DynamicPlaylistRuleEditor({
 
       <aside className="playlist-dynamic-preview" role={previewError || normalizedRulesError ? 'alert' : 'status'}>
         <div className="playlist-dynamic-preview-header">
-          <span>Preview</span>
-          <span>{isPreviewLoading ? 'Loading' : `${preview?.track_count ?? 0} ${preview?.track_count === 1 ? 'track' : 'tracks'}`}</span>
+          <span><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.preview" /></span>
+          <span>{isPreviewLoading ? translate('common:auto.dynamicplaylistruleeditor.loading') : translate('common:auto.dynamicplaylistruleeditor.value1_value2', { value1: preview?.track_count ?? 0, value2: preview?.track_count === 1 ? 'track' : 'tracks' })}</span>
         </div>
         <div className="playlist-dynamic-preview-order">
-          <span className="playlist-create-label">Result order</span>
+          <span className="playlist-create-label"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.result_order" /></span>
           <div className="playlist-dynamic-preview-order-grid">
             <label className="playlist-create-field">
-              <span className="playlist-create-label">By</span>
+              <span className="playlist-create-label"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.by" /></span>
               <select
                 className="playlist-dynamic-select"
                 value={rules.sort.field}
@@ -561,12 +566,12 @@ export default function DynamicPlaylistRuleEditor({
                 disabled={disabled}
               >
                 {visibleSortFields.map(([field, label]) => (
-                  <option key={field} value={field}>{label}</option>
+                  <option key={field} value={field}>{translateSourceText(label)}</option>
                 ))}
               </select>
             </label>
             <label className="playlist-create-field">
-              <span className="playlist-create-label">Direction</span>
+              <span className="playlist-create-label"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.direction" /></span>
               <select
                 className="playlist-dynamic-select"
                 value={rules.sort.direction}
@@ -576,12 +581,12 @@ export default function DynamicPlaylistRuleEditor({
                 })}
                 disabled={disabled}
               >
-                <option value="asc">Ascending</option>
-                <option value="desc">Descending</option>
+                <option value="asc"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.ascending" /></option>
+                <option value="desc"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.descending" /></option>
               </select>
             </label>
             <label className="playlist-create-field">
-              <span className="playlist-create-label">Limit</span>
+              <span className="playlist-create-label"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.limit" /></span>
               <input
                 className="playlist-dynamic-input playlist-dynamic-order-limit"
                 type="number"
@@ -592,7 +597,7 @@ export default function DynamicPlaylistRuleEditor({
                   ...rules,
                   limit: event.target.value.trim() ? Number(event.target.value) : null
                 })}
-                placeholder="None"
+                placeholder={translate('common:auto.dynamicplaylistruleeditor.none')}
                 disabled={disabled}
               />
             </label>
@@ -604,7 +609,8 @@ export default function DynamicPlaylistRuleEditor({
           <>
             {!hasConditions && (
               <div className="playlist-dynamic-preview-hint">
-                Add filters to narrow this playlist.
+
+                <LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.add_filters_to_narrow_this_playlist" />
               </div>
             )}
             {previewTracks.length > 0 ? (
@@ -617,7 +623,7 @@ export default function DynamicPlaylistRuleEditor({
                 ))}
               </div>
             ) : (
-              <div className="playlist-dynamic-preview-empty">No matching tracks</div>
+              <div className="playlist-dynamic-preview-empty"><LocalizedText ns="common" i18nKey="auto.dynamicplaylistruleeditor.no_matching_tracks" /></div>
             )}
           </>
         )}

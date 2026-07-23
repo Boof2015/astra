@@ -1,3 +1,5 @@
+import { translate } from '../../i18n'
+import LocalizedText from '../i18n/LocalizedText'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type { LyricsPopoutSnapshot } from '../../../types/lyricsPopout'
 import { useLyricsSyncedView } from '../../hooks/useLyricsSyncedView'
@@ -248,7 +250,7 @@ export default function LyricsPopoutApp() {
         <p className="transport-lyrics-shelf-state transport-lyrics-shelf-state-not-found">
           {bodyState.kind === 'not_found' && bodyState.reason === 'provider-unavailable'
             ? bodyState.message
-            : 'Lyrics not synced or not found.'}
+            : translate('playback:auto.lyricspopoutapp.lyrics_not_synced_or_not_found')}
         </p>
       )
     }
@@ -306,7 +308,7 @@ export default function LyricsPopoutApp() {
         <div className="lyrics-popout-top" title={trackLine || 'No track selected'}>
           <div className="lyrics-popout-top-drag-region" aria-hidden="true" />
           <header className="transport-lyrics-shelf-header lyrics-popout-top-header">
-            <span className="transport-lyrics-shelf-label lyrics-popout-top-text">Lyrics</span>
+            <span className="transport-lyrics-shelf-label lyrics-popout-top-text"><LocalizedText ns="playback" i18nKey="auto.lyricspopoutapp.lyrics" /></span>
             <span className="transport-lyrics-shelf-meta lyrics-popout-top-text">{metaChipText}</span>
             <div className="transport-lyrics-shelf-header-actions lyrics-popout-top-actions">
               {isExpanded && hasSyncedLyrics && followPaused && (
@@ -315,7 +317,8 @@ export default function LyricsPopoutApp() {
                   className="transport-lyrics-recenter-btn"
                   onClick={handleRecenter}
                 >
-                  Recenter
+
+                  <LocalizedText ns="playback" i18nKey="auto.lyricspopoutapp.recenter" />
                 </button>
               )}
               <button
@@ -324,21 +327,22 @@ export default function LyricsPopoutApp() {
                 onClick={() => window.electronAPI.lyricsPopout.sendCommand({ type: 'refresh' })}
                 disabled={!snapshot.currentTrack || snapshot.isLoading}
               >
-                {snapshot.isLoading ? 'Loading...' : 'Refresh'}
+                {snapshot.isLoading ? translate('playback:auto.lyricspopoutapp.loading') : translate('playback:auto.lyricspopoutapp.refresh')}
               </button>
               <button
                 type="button"
                 className="transport-lyrics-inline-action"
                 onClick={() => setIsExpanded((current) => !current)}
               >
-                {isExpanded ? 'Compact' : 'Expand'}
+                {isExpanded ? translate('playback:auto.lyricspopoutapp.compact') : translate('playback:auto.lyricspopoutapp.expand')}
               </button>
               <button
                 type="button"
                 className="transport-lyrics-inline-action"
                 onClick={() => void window.electronAPI.lyricsPopout.close()}
               >
-                Dock
+
+                <LocalizedText ns="playback" i18nKey="auto.lyricspopoutapp.dock" />
               </button>
             </div>
           </header>

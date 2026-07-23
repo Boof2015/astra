@@ -1,3 +1,4 @@
+import { translate } from './i18n'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import TitleBar from './components/layout/TitleBar'
 import Sidebar from './components/layout/Sidebar'
@@ -450,8 +451,8 @@ function App() {
                 type="button"
                 className="analyzer-rack-toggle analyzer-rack-collapse-toggle"
                 onClick={hideAnalyzerRack}
-                title="Hide analyzer rack"
-                aria-label="Hide analyzer rack"
+                title={translate('common:auto.app.hide_analyzer_rack')}
+                aria-label={translate('common:auto.app.hide_analyzer_rack')}
               >
                 <svg width="14" height="8" viewBox="0 0 14 8" fill="none" aria-hidden="true">
                   <path
@@ -471,8 +472,8 @@ function App() {
             type="button"
             className="analyzer-rack-toggle analyzer-rack-restore-toggle"
             onClick={showAnalyzerRack}
-            title="Show analyzer rack"
-            aria-label="Show analyzer rack"
+            title={translate('common:auto.app.show_analyzer_rack')}
+            aria-label={translate('common:auto.app.show_analyzer_rack')}
           >
             <svg width="14" height="8" viewBox="0 0 14 8" fill="none" aria-hidden="true">
               <path

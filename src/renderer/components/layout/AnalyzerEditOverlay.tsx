@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import type { ScopeKind } from '../../../types/scopePopout'
 import {
@@ -251,8 +253,8 @@ function ScopeGhost({ scope }: { scope: ScopeKind }) {
           <rect x="22" y="20" width="48" height="8" rx="1" opacity="0.7" />
           <rect x="22" y="36" width="70" height="8" rx="1" className="muted" />
           <rect x="22" y="36" width="38" height="8" rx="1" opacity="0.6" />
-          <text x="14" y="27" fontSize="8" opacity="0.5">L</text>
-          <text x="14" y="43" fontSize="8" opacity="0.5">R</text>
+          <text x="14" y="27" fontSize="8" opacity="0.5"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.l" /></text>
+          <text x="14" y="43" fontSize="8" opacity="0.5"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.r" /></text>
           <rect x="22" y="56" width="70" height="5" rx="1" className="muted" />
           <rect x="57" y="56" width="20" height="5" rx="1" opacity="0.5" />
           <line x1="57" y1="54" x2="57" y2="63" className="muted" />
@@ -267,9 +269,9 @@ function ScopeGhost({ scope }: { scope: ScopeKind }) {
           <rect x="54" y="38" width="16" height="28" rx="1" opacity="0.6" />
           <rect x="84" y="14" width="16" height="52" rx="1" className="muted" />
           <rect x="84" y="42" width="16" height="24" rx="1" opacity="0.5" />
-          <text x="29" y="76" fontSize="8" textAnchor="middle" opacity="0.5">M</text>
-          <text x="59" y="76" fontSize="8" textAnchor="middle" opacity="0.5">S</text>
-          <text x="89" y="76" fontSize="8" textAnchor="middle" opacity="0.5">I</text>
+          <text x="29" y="76" fontSize="8" textAnchor="middle" opacity="0.5"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.m" /></text>
+          <text x="59" y="76" fontSize="8" textAnchor="middle" opacity="0.5"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.s" /></text>
+          <text x="89" y="76" fontSize="8" textAnchor="middle" opacity="0.5"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.i" /></text>
           <line x1="20" y1="34" x2="104" y2="34" className="muted" strokeDasharray="3 2" />
         </svg>
       )
@@ -503,18 +505,18 @@ export default function AnalyzerEditOverlay({
           <div className="analyzer-edit-active-controls analyzer-edit-active-controls-inline analyzer-edit-active-controls-spectrum">
             <div className="analyzer-edit-spectrum-control-grid analyzer-edit-spectrum-primary-grid">
               <div className="analyzer-edit-mini-control">
-                <span className="analyzer-edit-corner-label">Display</span>
+                <span className="analyzer-edit-corner-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.display" /></span>
                 <select
                   className="analyzer-edit-select"
                   value={spectrumDisplayMode}
                   onChange={(event) => setSpectrumDisplayMode(event.target.value as SpectrumDisplayMode)}
                 >
-                  <option value="curve">Curve</option>
-                  <option value="bars">Bars</option>
+                  <option value="curve"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.curve" /></option>
+                  <option value="bars"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.bars" /></option>
                 </select>
               </div>
               <div className="analyzer-edit-mini-control">
-                <span className="analyzer-edit-corner-label">FFT</span>
+                <span className="analyzer-edit-corner-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.fft" /></span>
                 <select
                   className="analyzer-edit-select"
                   value={fftSize}
@@ -532,27 +534,29 @@ export default function AnalyzerEditOverlay({
                 className={`analyzer-edit-button ${spectrumHeatmap ? 'is-active' : ''}`.trim()}
                 onClick={() => setSpectrumHeatmap(!spectrumHeatmap)}
               >
-                Heat {spectrumHeatmap ? 'On' : 'Off'}
+
+                <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.heat" /> {spectrumHeatmap ? translate('common:auto.analyzereditoverlay.on') : translate('common:auto.analyzereditoverlay.off')}
               </button>
               <button
                 type="button"
                 className={`analyzer-edit-button ${spectrumShowSideLine ? 'is-active' : ''} ${spectrumDisplayMode === 'bars' ? 'is-disabled' : ''}`.trim()}
                 onClick={() => setSpectrumShowSideLine(!spectrumShowSideLine)}
                 disabled={spectrumDisplayMode === 'bars'}
-                title={spectrumDisplayMode === 'bars' ? 'Curve only' : undefined}
+                title={spectrumDisplayMode === 'bars' ? translate('common:auto.analyzereditoverlay.curve_only') : undefined}
               >
-                Side {spectrumDisplayMode === 'bars' ? 'Curve only' : spectrumShowSideLine ? 'On' : 'Off'}
+
+                <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.side" /> {spectrumDisplayMode === 'bars' ? translate('common:auto.analyzereditoverlay.curve_only') : spectrumShowSideLine ? translate('common:auto.analyzereditoverlay.on') : translate('common:auto.analyzereditoverlay.off')}
               </button>
               {spectrumHeatmap ? (
                 <div className="analyzer-edit-mini-control analyzer-edit-spectrum-palette-control">
-                  <span className="analyzer-edit-corner-label">Heat Palette</span>
+                  <span className="analyzer-edit-corner-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.heat_palette" /></span>
                   <select
                     className="analyzer-edit-select"
                     value={spectrumHeatPalette}
                     onChange={(event) => setSpectrumHeatPalette(event.target.value as SpectrumHeatPalette)}
                   >
-                    <option value="classic">Classic</option>
-                    <option value="accent">Accent</option>
+                    <option value="classic"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.classic" /></option>
+                    <option value="accent"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.accent" /></option>
                   </select>
                 </div>
               ) : null}
@@ -562,9 +566,9 @@ export default function AnalyzerEditOverlay({
                 <div
                   className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide"
                   onDoubleClick={() => setSpectrumBarDensity(DEFAULT_SPECTRUM_BAR_DENSITY)}
-                  title={`Double-click to reset to ${DEFAULT_SPECTRUM_BAR_DENSITY}`}
+                  title={translate('common:auto.analyzereditoverlay.double_click_to_reset_to_defaultspectrumbardensity', { defaultSpectrumBarDensity: DEFAULT_SPECTRUM_BAR_DENSITY })}
                 >
-                  <span className="analyzer-edit-corner-label">Density {spectrumBarDensity}</span>
+                  <span className="analyzer-edit-corner-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.density" /> {spectrumBarDensity}</span>
                   <input
                     type="range"
                     className="analyzer-edit-range"
@@ -572,16 +576,16 @@ export default function AnalyzerEditOverlay({
                     max={MAX_SPECTRUM_BAR_DENSITY}
                     step={1}
                     value={spectrumBarDensity}
-                    aria-label="Spectrum bar density"
+                    aria-label={translate('common:auto.analyzereditoverlay.spectrum_bar_density')}
                     onChange={(event) => setSpectrumBarDensity(Number(event.target.value))}
                   />
                 </div>
                 <div
                   className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide"
                   onDoubleClick={() => setSpectrumBarGapPercent(DEFAULT_SPECTRUM_BAR_GAP_PERCENT)}
-                  title={`Double-click to reset to ${DEFAULT_SPECTRUM_BAR_GAP_PERCENT}%`}
+                  title={translate('common:auto.analyzereditoverlay.double_click_to_reset_to_defaultspectrumbargappercent', { defaultSpectrumBarGapPercent: DEFAULT_SPECTRUM_BAR_GAP_PERCENT })}
                 >
-                  <span className="analyzer-edit-corner-label">Gap {spectrumBarGapPercent}%</span>
+                  <span className="analyzer-edit-corner-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.gap" /> {spectrumBarGapPercent}%</span>
                   <input
                     type="range"
                     className="analyzer-edit-range"
@@ -589,16 +593,16 @@ export default function AnalyzerEditOverlay({
                     max={MAX_SPECTRUM_BAR_GAP_PERCENT}
                     step={1}
                     value={spectrumBarGapPercent}
-                    aria-label="Spectrum bar gap"
+                    aria-label={translate('common:auto.analyzereditoverlay.spectrum_bar_gap')}
                     onChange={(event) => setSpectrumBarGapPercent(Number(event.target.value))}
                   />
                 </div>
                 <div
                   className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide"
                   onDoubleClick={() => setSpectrumBarCornerRadiusPx(DEFAULT_SPECTRUM_BAR_CORNER_RADIUS_PX)}
-                  title={`Double-click to reset to ${DEFAULT_SPECTRUM_BAR_CORNER_RADIUS_PX}px`}
+                  title={translate('common:auto.analyzereditoverlay.double_click_to_reset_to_defaultspectrumbarcornerradiusp', { defaultSpectrumBarCornerRadiusPx: DEFAULT_SPECTRUM_BAR_CORNER_RADIUS_PX })}
                 >
-                  <span className="analyzer-edit-corner-label">Radius {spectrumBarCornerRadiusPx}px</span>
+                  <span className="analyzer-edit-corner-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.radius" /> {spectrumBarCornerRadiusPx}<LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.px" /></span>
                   <input
                     type="range"
                     className="analyzer-edit-range"
@@ -606,7 +610,7 @@ export default function AnalyzerEditOverlay({
                     max={MAX_SPECTRUM_BAR_CORNER_RADIUS_PX}
                     step={1}
                     value={spectrumBarCornerRadiusPx}
-                    aria-label="Spectrum bar corner radius"
+                    aria-label={translate('common:auto.analyzereditoverlay.spectrum_bar_corner_radius')}
                     onChange={(event) => setSpectrumBarCornerRadiusPx(Number(event.target.value))}
                   />
                 </div>
@@ -615,7 +619,8 @@ export default function AnalyzerEditOverlay({
                   className={`analyzer-edit-button ${spectrumShowBarPeaks ? 'is-active' : ''}`.trim()}
                   onClick={() => setSpectrumShowBarPeaks(!spectrumShowBarPeaks)}
                 >
-                  Peaks {spectrumShowBarPeaks ? 'On' : 'Off'}
+
+                  <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.peaks" /> {spectrumShowBarPeaks ? translate('common:auto.analyzereditoverlay.on') : translate('common:auto.analyzereditoverlay.off')}
                 </button>
               </div>
             ) : null}
@@ -623,10 +628,11 @@ export default function AnalyzerEditOverlay({
               <div
                 className="analyzer-edit-mini-control analyzer-edit-mini-control-range"
                 onDoubleClick={() => setSpectrumTiltDbPerOctave(DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE)}
-                title={`Double-click to reset to ${DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE.toFixed(1)} dB/oct`}
+                title={translate('common:auto.analyzereditoverlay.double_click_to_reset_to_value1_db_oct', { value1: DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE.toFixed(1) })}
               >
                 <span className="analyzer-edit-corner-label">
-                  Tilt {spectrumTiltDbPerOctave.toFixed(1)} dB/oct
+
+                  <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.tilt" /> {spectrumTiltDbPerOctave.toFixed(1)}  <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.db_oct" />
                 </span>
                 <input
                   type="range"
@@ -635,17 +641,18 @@ export default function AnalyzerEditOverlay({
                   max={MAX_SPECTRUM_TILT_DB_PER_OCTAVE}
                   step={SPECTRUM_TILT_STEP}
                   value={spectrumTiltDbPerOctave}
-                  aria-label="Spectrum tilt"
+                  aria-label={translate('common:auto.analyzereditoverlay.spectrum_tilt')}
                   onChange={(event) => setSpectrumTiltDbPerOctave(Number(event.target.value))}
                 />
               </div>
               <div
                 className={`analyzer-edit-mini-control analyzer-edit-mini-control-range ${spectrumHeatmap ? '' : 'is-disabled'}`.trim()}
                 onDoubleClick={() => setSpectrumHeatmapTiltDbPerOctave(DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE)}
-                title={`Double-click to reset to ${DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE.toFixed(1)} dB/oct`}
+                title={translate('common:auto.analyzereditoverlay.double_click_to_reset_to_value1_db_oct', { value1: DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE.toFixed(1) })}
               >
                 <span className="analyzer-edit-corner-label">
-                  Heat Tilt {spectrumHeatmapTiltDbPerOctave.toFixed(1)} dB/oct
+
+                  <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.heat_tilt" /> {spectrumHeatmapTiltDbPerOctave.toFixed(1)}  <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.db_oct" />
                 </span>
                 <input
                   type="range"
@@ -655,17 +662,18 @@ export default function AnalyzerEditOverlay({
                   step={SPECTRUM_HEATMAP_TILT_STEP}
                   value={spectrumHeatmapTiltDbPerOctave}
                   disabled={!spectrumHeatmap}
-                  aria-label="Spectrum heatmap tilt"
+                  aria-label={translate('common:auto.analyzereditoverlay.spectrum_heatmap_tilt')}
                   onChange={(event) => setSpectrumHeatmapTiltDbPerOctave(Number(event.target.value))}
                 />
               </div>
               <div
                 className="analyzer-edit-mini-control analyzer-edit-mini-control-range"
                 onDoubleClick={() => setSpectrumSmoothing(DEFAULT_SPECTRUM_SMOOTHING)}
-                title={`Double-click to reset to ${DEFAULT_SPECTRUM_SMOOTHING.toFixed(2)}`}
+                title={translate('common:auto.analyzereditoverlay.double_click_to_reset_to_value1', { value1: DEFAULT_SPECTRUM_SMOOTHING.toFixed(2) })}
               >
                 <span className="analyzer-edit-corner-label">
-                  Smoothing {spectrumSmoothing.toFixed(2)}
+
+                  <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.smoothing" /> {spectrumSmoothing.toFixed(2)}
                 </span>
                 <input
                   type="range"
@@ -674,17 +682,18 @@ export default function AnalyzerEditOverlay({
                   max={MAX_SPECTRUM_SMOOTHING}
                   step={SPECTRUM_SMOOTHING_STEP}
                   value={spectrumSmoothing}
-                  aria-label="Spectrum smoothing"
+                  aria-label={translate('common:auto.analyzereditoverlay.spectrum_smoothing')}
                   onChange={(event) => setSpectrumSmoothing(Number(event.target.value))}
                 />
               </div>
               <div
                 className={`analyzer-edit-mini-control analyzer-edit-mini-control-range ${spectrumHeatmap ? '' : 'is-disabled'}`.trim()}
                 onDoubleClick={() => setSpectrumHeatmapSmoothing(DEFAULT_SPECTRUM_HEATMAP_SMOOTHING)}
-                title={`Double-click to reset to ${DEFAULT_SPECTRUM_HEATMAP_SMOOTHING.toFixed(2)}`}
+                title={translate('common:auto.analyzereditoverlay.double_click_to_reset_to_value1', { value1: DEFAULT_SPECTRUM_HEATMAP_SMOOTHING.toFixed(2) })}
               >
                 <span className="analyzer-edit-corner-label">
-                  Heat Smoothing {spectrumHeatmapSmoothing.toFixed(2)}
+
+                  <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.heat_smoothing" /> {spectrumHeatmapSmoothing.toFixed(2)}
                 </span>
                 <input
                   type="range"
@@ -694,7 +703,7 @@ export default function AnalyzerEditOverlay({
                   step={SPECTRUM_SMOOTHING_STEP}
                   value={spectrumHeatmapSmoothing}
                   disabled={!spectrumHeatmap}
-                  aria-label="Spectrum heatmap smoothing"
+                  aria-label={translate('common:auto.analyzereditoverlay.spectrum_heatmap_smoothing')}
                   onChange={(event) => setSpectrumHeatmapSmoothing(Number(event.target.value))}
                 />
               </div>
@@ -709,14 +718,16 @@ export default function AnalyzerEditOverlay({
               className={`analyzer-edit-button ${pitchLock ? 'is-active' : ''}`.trim()}
               onClick={() => setPitchLock(!pitchLock)}
             >
-              Pitch {pitchLock ? 'On' : 'Off'}
+
+              <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.pitch" /> {pitchLock ? translate('common:auto.analyzereditoverlay.on') : translate('common:auto.analyzereditoverlay.off')}
             </button>
             <button
               type="button"
               className={`analyzer-edit-button ${oscilloscopeUnderfillEnabled ? 'is-active' : ''}`.trim()}
               onClick={() => setOscilloscopeUnderfillEnabled(!oscilloscopeUnderfillEnabled)}
             >
-              Fill {oscilloscopeUnderfillEnabled ? 'On' : 'Off'}
+
+              <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.fill" /> {oscilloscopeUnderfillEnabled ? translate('common:auto.analyzereditoverlay.on') : translate('common:auto.analyzereditoverlay.off')}
             </button>
           </div>
         )
@@ -724,17 +735,17 @@ export default function AnalyzerEditOverlay({
         return (
           <div className="analyzer-edit-active-controls analyzer-edit-active-controls-inline">
             <div className="analyzer-edit-mini-control">
-              <span className="analyzer-edit-corner-label">Scope</span>
+              <span className="analyzer-edit-corner-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.scope" /></span>
               <select
                 className="analyzer-edit-select"
                 value={vectorscopeMode}
                 onChange={(event) => setVectorscopeMode(event.target.value as VectorscopeMode)}
               >
-                <option value="lissajous">Lissajous</option>
-                <option value="polar-unipolar">Polar (Uni)</option>
-                <option value="polar-bipolar">Polar (Bi)</option>
-                <option value="linear-unipolar">Linear (Uni)</option>
-                <option value="linear-bipolar">Linear (Bi)</option>
+                <option value="lissajous"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.lissajous" /></option>
+                <option value="polar-unipolar"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.polar_uni" /></option>
+                <option value="polar-bipolar"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.polar_bi" /></option>
+                <option value="linear-unipolar"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.linear_uni" /></option>
+                <option value="linear-bipolar"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.linear_bi" /></option>
               </select>
             </div>
             <button
@@ -742,7 +753,8 @@ export default function AnalyzerEditOverlay({
               className={`analyzer-edit-button ${vectorscopeMultiband ? 'is-active' : ''}`.trim()}
               onClick={() => setVectorscopeMultiband(!vectorscopeMultiband)}
             >
-              RGB {vectorscopeMultiband ? 'On' : 'Off'}
+
+              <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.rgb" /> {vectorscopeMultiband ? translate('common:auto.analyzereditoverlay.on') : translate('common:auto.analyzereditoverlay.off')}
             </button>
           </div>
         )
@@ -751,7 +763,7 @@ export default function AnalyzerEditOverlay({
           <div className="analyzer-edit-active-controls">
             <div className="analyzer-edit-spectrogram-selects">
             <div className="analyzer-edit-mini-control">
-              <span className="analyzer-edit-corner-label">FFT</span>
+              <span className="analyzer-edit-corner-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.fft" /></span>
               <select
                 className="analyzer-edit-select"
                 value={spectrogramFftSize}
@@ -765,43 +777,43 @@ export default function AnalyzerEditOverlay({
               </select>
             </div>
             <div className="analyzer-edit-mini-control">
-              <span className="analyzer-edit-corner-label">Scale</span>
+              <span className="analyzer-edit-corner-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.scale" /></span>
               <select
                 className="analyzer-edit-select"
                 value={spectrogramScaleMode}
                 onChange={(event) => setSpectrogramScaleMode(event.target.value as SpectrogramScaleMode)}
               >
-                <option value="mel">Mel</option>
-                <option value="log">Log</option>
-                <option value="linear">Linear</option>
+                <option value="mel"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.mel" /></option>
+                <option value="log"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.log" /></option>
+                <option value="linear"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.linear" /></option>
               </select>
             </div>
             <div className="analyzer-edit-mini-control">
-              <span className="analyzer-edit-corner-label">Mode</span>
+              <span className="analyzer-edit-corner-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.mode" /></span>
               <select
                 className="analyzer-edit-select"
                 value={spectrogramClarityMode}
                 onChange={(event) => setSpectrogramClarityMode(event.target.value as SpectrogramClarityMode)}
               >
-                <option value="classic">Classic</option>
-                <option value="sharp">Sharp</option>
-                <option value="sharper">Sharper</option>
+                <option value="classic"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.classic" /></option>
+                <option value="sharp"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.sharp" /></option>
+                <option value="sharper"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.sharper" /></option>
               </select>
             </div>
             <div className="analyzer-edit-mini-control">
-              <span className="analyzer-edit-corner-label">Orient</span>
+              <span className="analyzer-edit-corner-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.orient" /></span>
               <select
                 className="analyzer-edit-select"
                 value={spectrogramOrientation}
                 onChange={(event) => setSpectrogramOrientation(event.target.value as SpectrogramOrientation)}
               >
-                <option value="horizontal">Horizontal</option>
-                <option value="vertical">Vertical</option>
+                <option value="horizontal"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.horizontal" /></option>
+                <option value="vertical"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.vertical" /></option>
               </select>
             </div>
             </div>
             <div className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide">
-              <span className="analyzer-edit-corner-label">Speed x{spectrogramScrollSpeed.toFixed(1)}</span>
+              <span className="analyzer-edit-corner-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.speed_x" />{spectrogramScrollSpeed.toFixed(1)}</span>
               <input
                 type="range"
                 className="analyzer-edit-range"
@@ -815,10 +827,11 @@ export default function AnalyzerEditOverlay({
             <div
               className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide"
               onDoubleClick={() => setSpectrogramTiltDbPerOctave(DEFAULT_SPECTROGRAM_TILT_DB_PER_OCTAVE)}
-              title={`Double-click to reset to ${DEFAULT_SPECTROGRAM_TILT_DB_PER_OCTAVE.toFixed(1)} dB/oct`}
+              title={translate('common:auto.analyzereditoverlay.double_click_to_reset_to_value1_db_oct', { value1: DEFAULT_SPECTROGRAM_TILT_DB_PER_OCTAVE.toFixed(1) })}
             >
               <span className="analyzer-edit-corner-label">
-                Tilt {spectrogramTiltDbPerOctave.toFixed(1)} dB/oct
+
+                <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.tilt" /> {spectrogramTiltDbPerOctave.toFixed(1)}  <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.db_oct" />
               </span>
               <input
                 type="range"
@@ -827,17 +840,18 @@ export default function AnalyzerEditOverlay({
                 max={MAX_SPECTROGRAM_TILT_DB_PER_OCTAVE}
                 step={SPECTROGRAM_TILT_STEP}
                 value={spectrogramTiltDbPerOctave}
-                aria-label="Spectrogram tilt"
+                aria-label={translate('common:auto.analyzereditoverlay.spectrogram_tilt')}
                 onChange={(event) => setSpectrogramTiltDbPerOctave(Number(event.target.value))}
               />
             </div>
             <div
               className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide"
               onDoubleClick={() => setSpectrogramContrast(DEFAULT_SPECTROGRAM_CONTRAST)}
-              title={`Double-click to reset to ${DEFAULT_SPECTROGRAM_CONTRAST.toFixed(1)}`}
+              title={translate('common:auto.analyzereditoverlay.double_click_to_reset_to_value1', { value1: DEFAULT_SPECTROGRAM_CONTRAST.toFixed(1) })}
             >
               <span className="analyzer-edit-corner-label">
-                Contrast {spectrogramContrast.toFixed(1)}
+
+                <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.contrast" /> {spectrogramContrast.toFixed(1)}
               </span>
               <input
                 type="range"
@@ -846,7 +860,7 @@ export default function AnalyzerEditOverlay({
                 max={MAX_SPECTROGRAM_CONTRAST}
                 step={SPECTROGRAM_CONTRAST_STEP}
                 value={spectrogramContrast}
-                aria-label="Spectrogram contrast"
+                aria-label={translate('common:auto.analyzereditoverlay.spectrogram_contrast')}
                 onChange={(event) => setSpectrogramContrast(Number(event.target.value))}
               />
             </div>
@@ -856,32 +870,32 @@ export default function AnalyzerEditOverlay({
         return (
           <div className="analyzer-edit-active-controls">
             <div className="analyzer-edit-mini-control">
-              <span className="analyzer-edit-corner-label">VU</span>
+              <span className="analyzer-edit-corner-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.vu" /></span>
               <select
                 className="analyzer-edit-select"
                 value={vuMeterMode}
                 onChange={(event) => setVUMeterMode(event.target.value as VUMeterMode)}
               >
-                <option value="bar">Bar</option>
-                <option value="needle">Needle</option>
+                <option value="bar"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.bar" /></option>
+                <option value="needle"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.needle" /></option>
               </select>
             </div>
             <div className="analyzer-edit-mini-control">
-              <span className="analyzer-edit-corner-label">Orientation</span>
+              <span className="analyzer-edit-corner-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.orientation" /></span>
               <select
                 className="analyzer-edit-select"
                 value={vuMeterOrientation}
                 disabled={vuMeterMode !== 'bar'}
                 onChange={(event) => setVUMeterOrientation(event.target.value as VUMeterOrientation)}
               >
-                <option value="horizontal">Horizontal</option>
-                <option value="vertical">Vertical</option>
+                <option value="horizontal"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.horizontal" /></option>
+                <option value="vertical"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.vertical" /></option>
               </select>
             </div>
           </div>
         )
       case 'lufsmeter':
-        return <div className="analyzer-edit-active-note">No extra controls here</div>
+        return <div className="analyzer-edit-active-note"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.no_extra_controls_here" /></div>
       case 'waveform':
         return (
           <div className="analyzer-edit-active-controls analyzer-edit-active-controls-waveform">
@@ -890,21 +904,22 @@ export default function AnalyzerEditOverlay({
               className={`analyzer-edit-button ${waveformMode === 'stereo' ? 'is-active' : ''}`.trim()}
               onClick={() => setWaveformMode(waveformMode === 'stereo' ? 'mono' : 'stereo')}
             >
-              {waveformMode === 'stereo' ? 'Stereo' : 'Mono'}
+              {waveformMode === 'stereo' ? translate('common:auto.analyzereditoverlay.stereo') : translate('common:auto.analyzereditoverlay.mono')}
             </button>
             <button
               type="button"
               className={`analyzer-edit-button ${waveformMultiband ? 'is-active' : ''}`.trim()}
               onClick={() => setWaveformMultiband(!waveformMultiband)}
             >
-              RGB {waveformMultiband ? 'On' : 'Off'}
+
+              <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.rgb" /> {waveformMultiband ? translate('common:auto.analyzereditoverlay.on') : translate('common:auto.analyzereditoverlay.off')}
             </button>
             <div
               className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide"
               onDoubleClick={() => setWaveformGainDb(DEFAULT_WAVEFORM_GAIN_DB)}
-              title={`Double-click to reset to ${formatSignedDb(DEFAULT_WAVEFORM_GAIN_DB)} dB`}
+              title={translate('common:auto.analyzereditoverlay.double_click_to_reset_to_value1_db', { value1: formatSignedDb(DEFAULT_WAVEFORM_GAIN_DB) })}
             >
-              <span className="analyzer-edit-corner-label">Gain {formatSignedDb(waveformGainDb)} dB</span>
+              <span className="analyzer-edit-corner-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.gain" /> {formatSignedDb(waveformGainDb)} dB</span>
               <input
                 type="range"
                 className="analyzer-edit-range"
@@ -912,12 +927,12 @@ export default function AnalyzerEditOverlay({
                 max={MAX_WAVEFORM_GAIN_DB}
                 step={WAVEFORM_GAIN_DB_STEP}
                 value={waveformGainDb}
-                aria-label="Waveform gain"
+                aria-label={translate('common:auto.analyzereditoverlay.waveform_gain')}
                 onChange={(event) => setWaveformGainDb(Number(event.target.value))}
               />
             </div>
             <div className="analyzer-edit-mini-control analyzer-edit-mini-control-range analyzer-edit-active-control-wide">
-              <span className="analyzer-edit-corner-label">Speed x{waveformScrollSpeed.toFixed(1)}</span>
+              <span className="analyzer-edit-corner-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.speed_x" />{waveformScrollSpeed.toFixed(1)}</span>
               <input
                 type="range"
                 className="analyzer-edit-range"
@@ -941,7 +956,7 @@ export default function AnalyzerEditOverlay({
           onDragOver={onHiddenDragOver}
           onDrop={onHiddenDrop}
         >
-          <div className="analyzer-edit-stash-dropfield-label">Drop here to stash the scope</div>
+          <div className="analyzer-edit-stash-dropfield-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.drop_here_to_stash_the_scope" /></div>
         </div>
       )}
 
@@ -949,7 +964,8 @@ export default function AnalyzerEditOverlay({
         <div className="analyzer-edit-profile-toolbar">
           <div className="analyzer-edit-profile-picker">
             <label className="analyzer-edit-corner-label analyzer-edit-corner-label-inline" htmlFor="analyzer-edit-profile-select">
-              PROFILE
+
+              <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.profile" />
             </label>
             <select
               id="analyzer-edit-profile-select"
@@ -978,13 +994,14 @@ export default function AnalyzerEditOverlay({
             </select>
           </div>
 
-          <div className="analyzer-edit-profile-status" aria-label="Profile status">
+          <div className="analyzer-edit-profile-status" aria-label={translate('common:auto.analyzereditoverlay.profile_status')}>
             <div className="analyzer-edit-badge">
-              {selectedProfileBuiltIn ? 'Built-in' : 'Saved'}
+              {selectedProfileBuiltIn ? translate('common:auto.analyzereditoverlay.built_in') : translate('common:auto.analyzereditoverlay.saved')}
             </div>
             {hasUnsavedProfileChanges && (
               <div className="analyzer-edit-badge analyzer-edit-badge-accent">
-                Edited
+
+                <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.edited" />
               </div>
             )}
           </div>
@@ -995,7 +1012,7 @@ export default function AnalyzerEditOverlay({
                 type="text"
                 className="analyzer-edit-input"
                 value={saveAsName}
-                placeholder="New profile name..."
+                placeholder={translate('common:auto.analyzereditoverlay.new_profile_name')}
                 onChange={(event) => {
                   setSaveAsName(event.target.value)
                   setSaveAsError(null)
@@ -1018,7 +1035,8 @@ export default function AnalyzerEditOverlay({
                 disabled={saveAsName.trim().length === 0}
                 onClick={handleSaveAs}
               >
-                Create
+
+                <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.create" />
               </button>
               <button
                 type="button"
@@ -1029,7 +1047,8 @@ export default function AnalyzerEditOverlay({
                   setSaveAsError(null)
                 }}
               >
-                Cancel
+
+                <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.cancel" />
               </button>
             </div>
           ) : (
@@ -1040,7 +1059,8 @@ export default function AnalyzerEditOverlay({
                 disabled={selectedProfileBuiltIn || !hasUnsavedProfileChanges}
                 onClick={() => saveSelectedProfile()}
               >
-                Save
+
+                <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.save" />
               </button>
               <button
                 type="button"
@@ -1051,7 +1071,8 @@ export default function AnalyzerEditOverlay({
                   setSaveAsError(null)
                 }}
               >
-                Save As
+
+                <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.save_as" />
               </button>
               <button
                 type="button"
@@ -1059,7 +1080,8 @@ export default function AnalyzerEditOverlay({
                 disabled={!hasUnsavedProfileChanges}
                 onClick={() => revertToSelectedProfile()}
               >
-                Revert
+
+                <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.revert" />
               </button>
               <button
                 type="button"
@@ -1067,7 +1089,8 @@ export default function AnalyzerEditOverlay({
                 disabled={!selectedProfileCanDelete}
                 onClick={() => deleteProfile(selectedProfileId)}
               >
-                Delete
+
+                <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.delete" />
               </button>
             </div>
           )}
@@ -1090,14 +1113,16 @@ export default function AnalyzerEditOverlay({
           className="analyzer-edit-button"
           onClick={openAnalyzerSettings}
         >
-          Settings
+
+          <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.settings" />
         </button>
         <button
           type="button"
           className="analyzer-edit-button analyzer-edit-button-primary"
           onClick={closeAnalyzerEditMode}
         >
-          Done
+
+          <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.done" />
         </button>
       </div>
 
@@ -1138,7 +1163,7 @@ export default function AnalyzerEditOverlay({
                   )}
                 </div>
                 {isScopePinned && (
-                  <div className="analyzer-edit-active-pin-note">Pinned</div>
+                  <div className="analyzer-edit-active-pin-note"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.pinned" /></div>
                 )}
               </div>
               {renderActiveControls(activeScope)}
@@ -1149,20 +1174,24 @@ export default function AnalyzerEditOverlay({
 
       <div className="analyzer-edit-corner analyzer-edit-corner-bottom-left">
         <div className="analyzer-edit-help">
-          <div className="analyzer-edit-corner-label">EDIT MODE</div>
+          <div className="analyzer-edit-corner-label"><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.edit_mode" /></div>
           <div className="analyzer-edit-help-copy">
-            Hover a scope to edit it.
+
+            <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.hover_a_scope_to_edit_it" />
             <br />
-            Click a scope to pin its controls.
+
+            <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.click_a_scope_to_pin_its_controls" />
             <br />
-            Drag scopes to reorder, stash, or resize.
+
+            <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.drag_scopes_to_reorder_stash_or_resize" />
           </div>
         </div>
       </div>
 
       {hiddenScopes.length === 0 ? (
         <div className="analyzer-edit-empty-hint">
-          Nothing is stashed right now.
+
+          <LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.nothing_is_stashed_right_now" />
         </div>
       ) : (
         <div className="analyzer-edit-stash-grid">
@@ -1177,7 +1206,7 @@ export default function AnalyzerEditOverlay({
             >
               <div className="analyzer-edit-stash-header">
                 <span>{scopeLabel(scope).toUpperCase()}</span>
-                <span>STASHED</span>
+                <span><LocalizedText ns="common" i18nKey="auto.analyzereditoverlay.stashed" /></span>
               </div>
               <div className="analyzer-edit-stash-preview">
                 <ScopeGhost scope={scope} />

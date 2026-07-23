@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate, translateSourceText } from '../../i18n'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLyricsEditorStore } from '../../stores/lyricsEditorStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
@@ -246,8 +248,8 @@ export default function LyricsEditorPanel() {
     }
 
     const filePath = await window.electronAPI.openFileDialog({
-      title: 'Import lyrics file',
-      filters: [{ name: 'Lyrics', extensions: ['xlrc', 'lrc'] }]
+      title: translateSourceText('Import lyrics file'),
+      filters: [{ name: translate('common:dialogs.filters.lyrics'), extensions: ['xlrc', 'lrc'] }]
     })
     if (!filePath) return
 
@@ -389,12 +391,12 @@ export default function LyricsEditorPanel() {
     >
       <div className="metadata-panel-header">
         <div className="metadata-panel-heading">
-          <h2 id="lyrics-editor-panel-title">Edit Lyrics</h2>
+          <h2 id="lyrics-editor-panel-title"><LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.edit_lyrics" /></h2>
           <span className="metadata-panel-subtitle">
-            {selectedCount} track{selectedCount === 1 ? '' : 's'} · manual {manualLyricsCount}/{selectedCount}
+            {selectedCount}  <LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.track" />{selectedCount === 1 ? '' : translate('playback:auto.lyricseditorpanel.s')}  <LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.manual" /> {manualLyricsCount}/{selectedCount}
           </span>
         </div>
-        <button className="metadata-panel-close" onClick={handleClose} aria-label="Close lyrics editor" disabled={isActionRunning}>
+        <button className="metadata-panel-close" onClick={handleClose} aria-label={translate('playback:auto.lyricseditorpanel.close_lyrics_editor')} disabled={isActionRunning}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
             <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
           </svg>
@@ -403,17 +405,17 @@ export default function LyricsEditorPanel() {
 
       <div className="lyrics-panel-body">
         {isLoading ? (
-          <div className="metadata-panel-empty">Loading lyrics state...</div>
+          <div className="metadata-panel-empty"><LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.loading_lyrics_state" /></div>
         ) : (
           <>
             <section className="lyrics-panel-track-summary">
               <div className="lyrics-panel-track-title">
-                {selectedCount === 1 ? primaryTrack?.title ?? 'Selected track' : `${selectedCount} selected tracks`}
+                {selectedCount === 1 ? primaryTrack?.title ?? 'Selected track' : translate('playback:auto.lyricseditorpanel.selectedcount_selected_tracks', { selectedcount: selectedCount })}
               </div>
               <div className="lyrics-panel-track-meta">
                 {selectedCount === 1
-                  ? `${primaryTrack?.artist ?? 'Unknown Artist'} · ${formatSourceLabel(primaryTrack)}`
-                  : `${syncedLyricsCount} with synced manual lyrics · bulk offset and clear only`}
+                  ? translate('playback:auto.lyricseditorpanel.value1_value2', { value1: primaryTrack?.artist ?? 'Unknown Artist', value2: formatSourceLabel(primaryTrack) })
+                  : translate('playback:auto.lyricseditorpanel.syncedlyricscount_with_synced_manual_lyrics_bulk_offset_', { syncedlyricscount: syncedLyricsCount })}
               </div>
             </section>
 
@@ -455,8 +457,8 @@ export default function LyricsEditorPanel() {
                     </svg>
                   </div>
                   <div className="lyrics-drop-zone-copy">
-                    <span>Drop LRC or XLRC here</span>
-                    <small>Manual lyrics override sidecar files, embedded tags, and online results.</small>
+                    <span><LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.drop_lrc_or_xlrc_here" /></span>
+                    <small><LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.manual_lyrics_override_sidecar_files_embedded_tags_and_o" /></small>
                   </div>
                   <button
                     type="button"
@@ -464,15 +466,16 @@ export default function LyricsEditorPanel() {
                     onClick={() => void handleChooseLyricsFile()}
                     disabled={controlsDisabled}
                   >
-                    Choose File
+
+                    <LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.choose_file" />
                   </button>
                 </section>
 
                 <section className="lyrics-text-editor">
                   <div className="lyrics-section-header">
                     <div>
-                      <span>Manual Lyrics</span>
-                      <small>{lyricsTextMixed ? 'Mixed selected lyrics' : `${formatLyricsFormat(formatDraft)} editor`}</small>
+                      <span><LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.manual_lyrics" /></span>
+                      <small>{lyricsTextMixed ? translate('playback:auto.lyricseditorpanel.mixed_selected_lyrics') : translate('playback:auto.lyricseditorpanel.value1_editor', { value1: formatLyricsFormat(formatDraft) })}</small>
                     </div>
                     <select
                       className="settings-select lyrics-format-select"
@@ -484,11 +487,11 @@ export default function LyricsEditorPanel() {
                         }
                       }}
                       disabled={controlsDisabled}
-                      aria-label="Lyrics format"
+                      aria-label={translate('playback:auto.lyricseditorpanel.lyrics_format')}
                     >
-                      <option value="lrc">LRC</option>
-                      <option value="xlrc">XLRC</option>
-                      <option value="plain">Plain</option>
+                      <option value="lrc"><LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.lrc" /></option>
+                      <option value="xlrc"><LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.xlrc" /></option>
+                      <option value="plain"><LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.plain" /></option>
                     </select>
                   </div>
                   <textarea
@@ -499,7 +502,7 @@ export default function LyricsEditorPanel() {
                       setLyricsTextDirty(true)
                       setLyricsTextMixed(false)
                     }}
-                    placeholder={lyricsTextMixed ? 'Selected tracks have different manual lyrics.' : '[00:12.34]Paste synced lyrics or plain lyrics here...'}
+                    placeholder={lyricsTextMixed ? translate('playback:auto.lyricseditorpanel.selected_tracks_have_different_manual_lyrics') : translate('playback:auto.lyricseditorpanel.00_12_34_paste_synced_lyrics_or_plain_lyrics_here')}
                     disabled={controlsDisabled}
                     spellCheck={false}
                   />
@@ -510,7 +513,8 @@ export default function LyricsEditorPanel() {
                       onClick={() => void handleSaveTextDraft()}
                       disabled={controlsDisabled || lyricsTextDraft.trim().length === 0}
                     >
-                      Save Manual Lyrics
+
+                      <LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.save_manual_lyrics" />
                     </button>
                     <button
                       type="button"
@@ -518,7 +522,8 @@ export default function LyricsEditorPanel() {
                       onClick={() => void handleClearManualLyrics()}
                       disabled={controlsDisabled || manualLyricsCount === 0}
                     >
-                      Clear Manual Lyrics
+
+                      <LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.clear_manual_lyrics" />
                     </button>
                   </div>
                 </section>
@@ -529,8 +534,8 @@ export default function LyricsEditorPanel() {
               <section className="lyrics-bulk-actions">
                 <div className="lyrics-section-header">
                   <div>
-                    <span>Manual Lyrics</span>
-                    <small>{manualLyricsCount} selected track{manualLyricsCount === 1 ? '' : 's'} have manual lyrics</small>
+                    <span><LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.manual_lyrics" /></span>
+                    <small>{manualLyricsCount}  <LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.selected_track" />{manualLyricsCount === 1 ? '' : translate('playback:auto.lyricseditorpanel.s')}  <LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.have_manual_lyrics" /></small>
                   </div>
                 </div>
                 <button
@@ -539,7 +544,8 @@ export default function LyricsEditorPanel() {
                   onClick={() => void handleClearManualLyrics()}
                   disabled={controlsDisabled}
                 >
-                  Clear Manual Lyrics
+
+                  <LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.clear_manual_lyrics" />
                 </button>
               </section>
             )}
@@ -547,8 +553,8 @@ export default function LyricsEditorPanel() {
             <section className="lyrics-offset-card">
               <div className="lyrics-section-header">
                 <div>
-                  <span>Sync Offset</span>
-                  <small>{offsetMixed ? 'Mixed offsets' : 'Milliseconds applied at playback'}</small>
+                  <span><LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.sync_offset" /></span>
+                  <small>{offsetMixed ? translate('playback:auto.lyricseditorpanel.mixed_offsets') : translate('playback:auto.lyricseditorpanel.milliseconds_applied_at_playback')}</small>
                 </div>
               </div>
               <div className="lyrics-offset-controls">
@@ -570,7 +576,7 @@ export default function LyricsEditorPanel() {
                     setOffsetDirty(true)
                     setOffsetMixed(false)
                   }}
-                  placeholder={offsetMixed ? 'Mixed' : '0'}
+                  placeholder={offsetMixed ? translate('playback:auto.lyricseditorpanel.mixed') : '0'}
                   disabled={controlsDisabled}
                 />
                 <button
@@ -587,7 +593,8 @@ export default function LyricsEditorPanel() {
                   onClick={() => void handleApplyOffset()}
                   disabled={controlsDisabled}
                 >
-                  Apply
+
+                  <LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.apply" />
                 </button>
                 <button
                   type="button"
@@ -595,7 +602,8 @@ export default function LyricsEditorPanel() {
                   onClick={() => void applyOffset(0)}
                   disabled={controlsDisabled}
                 >
-                  Reset
+
+                  <LocalizedText ns="playback" i18nKey="auto.lyricseditorpanel.reset" />
                 </button>
               </div>
             </section>

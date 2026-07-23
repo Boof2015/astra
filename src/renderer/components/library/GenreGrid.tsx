@@ -1,3 +1,4 @@
+import { translate } from '../../i18n'
 import { CSSProperties, memo, ReactElement, Ref, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Grid, type CellComponentProps, type GridImperativeAPI } from 'react-window'
 import { resolveArtistGridLayout } from '../../utils/artistGridLayout'
@@ -97,7 +98,7 @@ function GenreGridCellRenderer({
         <div className="genre-card-info">
           <div className="genre-card-title">{highlightSearchMatch(genre.genre, searchQuery)}</div>
           <div className="genre-card-meta">
-            {formatTrackCount(genre.track_count)} · {genre.album_count} {genre.album_count === 1 ? 'album' : 'albums'}
+            {formatTrackCount(genre.track_count)} · {genre.album_count} {genre.album_count === 1 ? translate('library:auto.genregrid.album') : translate('library:auto.genregrid.albums')}
           </div>
         </div>
       </button>

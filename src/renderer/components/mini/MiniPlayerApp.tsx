@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import type {
   MiniPlayerLayoutMode,
@@ -342,13 +344,13 @@ export default function MiniPlayerApp() {
         <header className="mini-player-header">
           <div className="mini-player-drag">
             <span className="mini-player-drag-grip"><GripIcon /></span>
-            <span className="mini-player-brand">ASTRA MINI</span>
+            <span className="mini-player-brand"><LocalizedText ns="playback" i18nKey="auto.miniplayerapp.astra_mini" /></span>
           </div>
           <div className="mini-player-header-controls">
             <button
               className={`mini-header-btn ${windowState.alwaysOnTop ? 'active' : ''}`}
-              title={windowState.alwaysOnTop ? 'Unpin mini player' : 'Pin mini player'}
-              aria-label={windowState.alwaysOnTop ? 'Unpin mini player' : 'Pin mini player'}
+              title={windowState.alwaysOnTop ? translate('playback:auto.miniplayerapp.unpin_mini_player') : translate('playback:auto.miniplayerapp.pin_mini_player')}
+              aria-label={windowState.alwaysOnTop ? translate('playback:auto.miniplayerapp.unpin_mini_player') : translate('playback:auto.miniplayerapp.pin_mini_player')}
               onClick={() => void window.electronAPI.miniPlayer.toggleAlwaysOnTop().then(setWindowState)}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
@@ -357,8 +359,8 @@ export default function MiniPlayerApp() {
             </button>
             <button
               className={`mini-header-btn ${visualizerMode !== 'off' ? 'active' : ''}`}
-              title={`Mini visualizer: ${visualizerModeLabel}. Click to switch to ${nextVisualizerModeLabel}`}
-              aria-label={`Mini visualizer: ${visualizerModeLabel}. Click to switch to ${nextVisualizerModeLabel}`}
+              title={translate('playback:auto.miniplayerapp.mini_visualizer_visualizermodelabel_click_to_switch_to_n', { visualizermodelabel: visualizerModeLabel, nextvisualizermodelabel: nextVisualizerModeLabel })}
+              aria-label={translate('playback:auto.miniplayerapp.mini_visualizer_visualizermodelabel_click_to_switch_to_n', { visualizermodelabel: visualizerModeLabel, nextvisualizermodelabel: nextVisualizerModeLabel })}
               onClick={handleCycleVisualizerMode}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -376,8 +378,8 @@ export default function MiniPlayerApp() {
             </button>
             <button
               className="mini-header-btn"
-              title="Close mini player"
-              aria-label="Close mini player"
+              title={translate('playback:auto.miniplayerapp.close_mini_player')}
+              aria-label={translate('playback:auto.miniplayerapp.close_mini_player')}
               onClick={() => void window.electronAPI.miniPlayer.close()}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -393,7 +395,7 @@ export default function MiniPlayerApp() {
           <div className="mini-player-art-panel">
             <div className="mini-player-artwork">
               {track?.artworkData ? (
-                <img src={track.artworkData} alt="Album art" />
+                <img src={track.artworkData} alt={translate('playback:auto.miniplayerapp.album_art')} />
               ) : (
                 <div className="mini-player-artwork-placeholder">&#9835;</div>
               )}
@@ -411,7 +413,7 @@ export default function MiniPlayerApp() {
                 className="mini-control-btn"
                 onClick={() => window.electronAPI.miniPlayer.sendCommand({ type: 'playPrevious' })}
                 disabled={snapshot.queueLength === 0}
-                aria-label="Previous"
+                aria-label={translate('playback:auto.miniplayerapp.previous')}
               >
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="6" y1="5" x2="6" y2="19" /><polygon points="18,5 8,12 18,19" />
@@ -422,7 +424,7 @@ export default function MiniPlayerApp() {
                 className="mini-control-btn mini-control-btn-play"
                 onClick={() => window.electronAPI.miniPlayer.sendCommand({ type: 'togglePlay' })}
                 disabled={!hasTrack || isLoading}
-                aria-label={isPlaying ? 'Pause' : 'Play'}
+                aria-label={isPlaying ? translate('playback:auto.miniplayerapp.pause') : translate('playback:auto.miniplayerapp.play')}
               >
                 {isLoading ? (
                   <div className="mini-loading-spinner" />
@@ -441,7 +443,7 @@ export default function MiniPlayerApp() {
                 className="mini-control-btn"
                 onClick={() => window.electronAPI.miniPlayer.sendCommand({ type: 'playNext' })}
                 disabled={snapshot.queueLength === 0}
-                aria-label="Next"
+                aria-label={translate('playback:auto.miniplayerapp.next')}
               >
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="18" y1="5" x2="18" y2="19" /><polygon points="6,5 16,12 6,19" />
@@ -455,8 +457,8 @@ export default function MiniPlayerApp() {
                     if (track) window.electronAPI.miniPlayer.sendCommand({ type: 'toggleFavorite', trackPath: track.path })
                   }}
                   disabled={!track}
-                  aria-label={track?.isFavorite ? 'Remove favorite' : 'Add favorite'}
-                  title={track?.isFavorite ? 'Favorited' : 'Favorite'}
+                  aria-label={track?.isFavorite ? translate('playback:auto.miniplayerapp.remove_favorite') : translate('playback:auto.miniplayerapp.add_favorite')}
+                  title={track?.isFavorite ? translate('playback:auto.miniplayerapp.favorited') : translate('playback:auto.miniplayerapp.favorite')}
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M5 12.5 9.2 16.7 19 7" />
@@ -506,7 +508,7 @@ export default function MiniPlayerApp() {
                   }
                 }}
                 disabled={safeDuration <= 0 || !hasTrack}
-                aria-label="Seek"
+                aria-label={translate('playback:auto.miniplayerapp.seek')}
               />
             </div>
           </div>

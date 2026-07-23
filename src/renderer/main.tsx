@@ -10,6 +10,9 @@ import App from './App'
 import MiniPlayerApp from './components/mini/MiniPlayerApp'
 import LyricsPopoutApp from './components/popout/LyricsPopoutApp'
 import ScopePopoutApp from './components/popout/ScopePopoutApp'
+import { I18nextProvider } from 'react-i18next'
+import { initializeRendererI18n, rendererI18n } from './i18n'
+import LocaleRerenderBoundary from './components/i18n/LocaleRerenderBoundary'
 import './styles/globals.css'
 
 const windowMode = new URLSearchParams(window.location.search).get('window')
@@ -24,8 +27,17 @@ const RootComponent = windowMode === 'mini'
     ? ScopePopoutApp
     : App
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <RootComponent />
-  </React.StrictMode>
-)
+async function bootstrap(): Promise<void> {
+  await initializeRendererI18n()
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <I18nextProvider i18n={rendererI18n}>
+        <LocaleRerenderBoundary>
+          <RootComponent />
+        </LocaleRerenderBoundary>
+      </I18nextProvider>
+    </React.StrictMode>
+  )
+}
+
+void bootstrap()

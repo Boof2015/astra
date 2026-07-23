@@ -1,3 +1,5 @@
+import { translate } from '../../i18n'
+import LocalizedText from '../i18n/LocalizedText'
 // §18 Parallax presence pill — title-bar surface.
 //
 // Commit 1: pill mode derivation (sink / host-active / host-idle / null) + popover layout.
@@ -304,7 +306,7 @@ export default function ParallaxPresencePill() {
           handleClick()
         }
       }}
-      aria-label={`${labelWithIndicator} — open Parallax settings`}
+      aria-label={translate('common:auto.parallaxpresencepill.labelwithindicator_open_parallax_settings', { labelwithindicator: labelWithIndicator })}
     >
       <span className="titlebar-parallax-pill-dot" aria-hidden="true" />
       <span>{labelWithIndicator}</span>
@@ -336,31 +338,31 @@ function ParallaxPresencePopoverContent({ mode, status, warnings, toast }: Popov
       : '0 ms'
     return (
       <div className="titlebar-parallax-pill-popover-inner">
-        <div className="titlebar-parallax-pill-popover-header">Parallax — Sink</div>
+        <div className="titlebar-parallax-pill-popover-header"><LocalizedText ns="common" i18nKey="auto.parallaxpresencepill.parallax_sink" /></div>
         <div className="titlebar-parallax-pill-popover-row">
-          <span className="titlebar-parallax-pill-popover-label">Paired with</span>
+          <span className="titlebar-parallax-pill-popover-label"><LocalizedText ns="common" i18nKey="auto.parallaxpresencepill.paired_with" /></span>
           <span className="titlebar-parallax-pill-popover-value">{hostLabel}</span>
         </div>
         {sink.outputDeviceLabel && (
           <div className="titlebar-parallax-pill-popover-row">
-            <span className="titlebar-parallax-pill-popover-label">Output</span>
+            <span className="titlebar-parallax-pill-popover-label"><LocalizedText ns="common" i18nKey="auto.parallaxpresencepill.output" /></span>
             <span className="titlebar-parallax-pill-popover-value">{sink.outputDeviceLabel}</span>
           </div>
         )}
         <div className="titlebar-parallax-pill-popover-row">
-          <span className="titlebar-parallax-pill-popover-label">Trim</span>
+          <span className="titlebar-parallax-pill-popover-label"><LocalizedText ns="common" i18nKey="auto.parallaxpresencepill.trim" /></span>
           <span className="titlebar-parallax-pill-popover-value">{trimText}</span>
         </div>
         {typeof sink.rttMs === 'number' && (
           <div className="titlebar-parallax-pill-popover-row">
-            <span className="titlebar-parallax-pill-popover-label">RTT</span>
+            <span className="titlebar-parallax-pill-popover-label"><LocalizedText ns="common" i18nKey="auto.parallaxpresencepill.rtt" /></span>
             <span className="titlebar-parallax-pill-popover-value">{sink.rttMs.toFixed(0)} ms</span>
           </div>
         )}
         {toast && (
           <div className="titlebar-parallax-pill-popover-toast">{toast.message}</div>
         )}
-        <div className="titlebar-parallax-pill-popover-footer">Click to open Parallax settings</div>
+        <div className="titlebar-parallax-pill-popover-footer"><LocalizedText ns="common" i18nKey="auto.parallaxpresencepill.click_to_open_parallax_settings" /></div>
       </div>
     )
   }
@@ -373,13 +375,13 @@ function ParallaxPresencePopoverContent({ mode, status, warnings, toast }: Popov
 
   return (
     <div className="titlebar-parallax-pill-popover-inner">
-      <div className="titlebar-parallax-pill-popover-header">Parallax — Host</div>
+      <div className="titlebar-parallax-pill-popover-header"><LocalizedText ns="common" i18nKey="auto.parallaxpresencepill.parallax_host" /></div>
       <div className="titlebar-parallax-pill-popover-row">
-        <span className="titlebar-parallax-pill-popover-label">Status</span>
+        <span className="titlebar-parallax-pill-popover-label"><LocalizedText ns="common" i18nKey="auto.parallaxpresencepill.status" /></span>
         <span className="titlebar-parallax-pill-popover-value">
           {count === 0
-            ? 'No sinks connected'
-            : `${playbackCount} playing · ${count} connected`}
+            ? translate('common:auto.parallaxpresencepill.no_sinks_connected')
+            : translate('common:auto.parallaxpresencepill.playbackcount_playing_count_connected', { playbackcount: playbackCount, count: count })}
         </span>
       </div>
       {warnings.length > 0 && (
@@ -388,7 +390,7 @@ function ParallaxPresencePopoverContent({ mode, status, warnings, toast }: Popov
             <div key={w.sinkId} className="titlebar-parallax-pill-popover-warning">
               <span className="titlebar-parallax-pill-popover-warning-icon" aria-hidden="true">⚠</span>
               <span>
-                {w.reason === 'flapping' ? `${w.name} keeps dropping` : `${w.name} dropped`}
+                {w.reason === 'flapping' ? translate('common:auto.parallaxpresencepill.name_keeps_dropping', { name: w.name }) : translate('common:auto.parallaxpresencepill.name_dropped', { name: w.name })}
               </span>
             </div>
           ))}
@@ -409,8 +411,8 @@ function ParallaxPresencePopoverContent({ mode, status, warnings, toast }: Popov
                 </div>
                 <div className="titlebar-parallax-pill-popover-sink-detail">
                   {s.playbackEnabled
-                    ? `${s.outputDeviceLabel ?? 'Output unknown'} · Trim ${trimText}`
-                    : 'Not selected for playback'}
+                    ? translate('common:auto.parallaxpresencepill.value1_trim_trimtext', { value1: s.outputDeviceLabel ?? 'Output unknown', trimtext: trimText })
+                    : translate('common:auto.parallaxpresencepill.not_selected_for_playback')}
                 </div>
               </div>
             )
@@ -420,7 +422,7 @@ function ParallaxPresencePopoverContent({ mode, status, warnings, toast }: Popov
       {toast && (
         <div className="titlebar-parallax-pill-popover-toast">{toast.message}</div>
       )}
-      <div className="titlebar-parallax-pill-popover-footer">Click to open Parallax settings</div>
+      <div className="titlebar-parallax-pill-popover-footer"><LocalizedText ns="common" i18nKey="auto.parallaxpresencepill.click_to_open_parallax_settings" /></div>
     </div>
   )
 }

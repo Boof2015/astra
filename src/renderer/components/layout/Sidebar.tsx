@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate, translateSourceText } from '../../i18n'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type PointerEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useLibraryStore } from '../../stores/libraryStore'
@@ -608,9 +610,9 @@ export default function Sidebar() {
               key={item.id}
               className={`sidebar-icon-btn nav-btn ${activeView === item.id ? 'active' : ''}`}
               onClick={() => handleNavClick(item.id)}
-              aria-label={item.label}
+              aria-label={translateSourceText(item.label)}
               data-controller-tab={item.id}
-              data-sidebar-tooltip={item.label}
+              data-sidebar-tooltip={translateSourceText(item.label)}
             >
               {item.icon}
             </button>
@@ -653,7 +655,7 @@ export default function Sidebar() {
                     />
                   )}
                   {!playlist.isSystemFavorites && playlist.kind !== 'dynamic' && (
-                    <span className="sidebar-drop-label">Add to Playlist</span>
+                    <span className="sidebar-drop-label"><LocalizedText ns="common" i18nKey="auto.sidebar.add_to_playlist" /></span>
                   )}
                 </button>
               ))}
@@ -669,7 +671,7 @@ export default function Sidebar() {
                       updateOverflowPopoutPosition()
                     })
                   }}
-                  aria-label={isOverflowOpen ? 'Hide playlists' : `Show more playlists (${sidebarOverflowPlaylists.length})`}
+                  aria-label={isOverflowOpen ? translate('common:auto.sidebar.hide_playlists') : translate('common:auto.sidebar.show_more_playlists_length', { length: sidebarOverflowPlaylists.length })}
                   data-sidebar-tooltip={isOverflowOpen ? 'Hide playlists' : `More playlists (${sidebarOverflowPlaylists.length})`}
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -689,7 +691,7 @@ export default function Sidebar() {
               setCreatePlaylistTrackPaths(null)
               setIsCreatePlaylistModalOpen(true)
             }}
-            aria-label="Create playlist"
+            aria-label={translate('common:auto.sidebar.create_playlist')}
             data-sidebar-tooltip="Create playlist"
             data-sidebar-drop-target="create-playlist"
           >
@@ -697,7 +699,7 @@ export default function Sidebar() {
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
-            <span className="sidebar-drop-label">Create Playlist</span>
+            <span className="sidebar-drop-label"><LocalizedText ns="common" i18nKey="auto.sidebar.create_playlist_8637490" /></span>
           </button>
         </div>
       </div>
@@ -706,7 +708,7 @@ export default function Sidebar() {
         <button
           className={`sidebar-icon-btn nav-btn sidebar-settings-btn ${activeView === 'settings' ? 'active' : ''}`}
           onClick={() => setActiveView('settings')}
-          aria-label="Settings"
+          aria-label={translate('common:auto.sidebar.settings')}
           data-sidebar-tooltip="Settings"
         >
           {settingsIcon}
@@ -720,7 +722,7 @@ export default function Sidebar() {
             className="sidebar-playlist-popout-backdrop"
             data-presence={overflowPresence.phase}
             aria-hidden={overflowPresence.phase === 'exiting'}
-            aria-label="Close playlists"
+            aria-label={translate('common:auto.sidebar.close_playlists')}
             onClick={() => setIsOverflowOpen(false)}
           />
           <div
@@ -730,7 +732,7 @@ export default function Sidebar() {
             ref={popoutRef}
             style={overflowPopoutStyle ?? undefined}
           >
-            <div className="sidebar-playlist-popout-header">Playlists</div>
+            <div className="sidebar-playlist-popout-header"><LocalizedText ns="common" i18nKey="auto.sidebar.playlists" /></div>
             <div className="sidebar-playlist-popout-list">
               {sidebarOverflowPlaylists.map((playlist) => (
                 <button
@@ -760,10 +762,10 @@ export default function Sidebar() {
                   <span className="sidebar-playlist-popout-meta">
                     <span className="sidebar-playlist-popout-name">{playlist.name}</span>
                     <span className="sidebar-playlist-popout-count">
-                      {playlist.track_count} {playlist.track_count === 1 ? 'track' : 'tracks'}
+                      {playlist.track_count} {playlist.track_count === 1 ? translate('common:auto.sidebar.track') : translate('common:auto.sidebar.tracks')}
                     </span>
                   </span>
-                  {playlist.kind !== 'dynamic' && <span className="sidebar-drop-label">Add to Playlist</span>}
+                  {playlist.kind !== 'dynamic' && <span className="sidebar-drop-label"><LocalizedText ns="common" i18nKey="auto.sidebar.add_to_playlist" /></span>}
                 </button>
               ))}
             </div>
@@ -776,7 +778,7 @@ export default function Sidebar() {
           role="tooltip"
           style={{ left: sidebarTooltip.left, top: sidebarTooltip.top }}
         >
-          {sidebarTooltip.label}
+          {translateSourceText(sidebarTooltip.label)}
         </div>,
         document.body
       )}
@@ -789,7 +791,7 @@ export default function Sidebar() {
         allowDynamic={!createPlaylistTrackPaths}
         onImport={createPlaylistTrackPaths ? undefined : handleImportPlaylist}
         isImporting={isImportingPlaylist}
-        title={createPlaylistTrackPaths ? 'Create Playlist from Tracks' : 'Create Playlist'}
+        title={createPlaylistTrackPaths ? translate('common:auto.sidebar.create_playlist_from_tracks') : translate('common:auto.sidebar.create_playlist')}
         pendingTrackCount={createPlaylistTrackPaths?.length}
       />
     </aside>

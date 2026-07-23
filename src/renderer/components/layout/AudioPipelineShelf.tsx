@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translateSourceText } from '../../i18n'
 import React, { useMemo } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useEQStore } from '../../stores/eqStore'
@@ -37,7 +39,7 @@ function PipelineNodeCard({ node }: { node: PipelineNode }) {
     <div className="pipeline-node">
       <div className="pipeline-node-icon">{node.icon}</div>
       <div className="pipeline-node-text">
-        <span className="pipeline-node-label">{node.label}</span>
+        <span className="pipeline-node-label">{translateSourceText(node.label)}</span>
         <span className="pipeline-node-detail">{node.detail}</span>
       </div>
     </div>
@@ -276,7 +278,7 @@ export default function AudioPipelineShelf() {
     <div className={`pipeline-shelf${showShelf ? ' pipeline-shelf-open' : ''}`}>
       <div className="pipeline-shelf-content">
         {nodes.length === 0 ? (
-          <div className="pipeline-shelf-empty">No active signal chain</div>
+          <div className="pipeline-shelf-empty"><LocalizedText ns="common" i18nKey="auto.audiopipelineshelf.no_active_signal_chain" /></div>
         ) : (
           <div className="pipeline-shelf-chain">
             {nodes.map((node, i) => (

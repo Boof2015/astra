@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate, translateSourceText } from '../../i18n'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import AlbumArtwork from '../library/AlbumArtwork'
 import DiffConfirmModal, { type DiffEntry } from './DiffConfirmModal'
@@ -382,8 +384,8 @@ export default function MetadataEditorPanel() {
 
   const handleChooseArtwork = useCallback(async () => {
     const imagePath = await window.electronAPI.openFileDialog({
-      title: 'Choose track cover art',
-      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }]
+      title: translateSourceText('Choose track cover art'),
+      filters: [{ name: translate('common:dialogs.filters.images'), extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }]
     })
     if (!imagePath) return
     setArtworkDraft({ mode: 'replace', imagePath })
@@ -571,13 +573,13 @@ export default function MetadataEditorPanel() {
     >
       <div className="metadata-panel-header">
         <div className="metadata-panel-heading">
-          <h2 id="metadata-editor-panel-title">Edit Metadata</h2>
+          <h2 id="metadata-editor-panel-title"><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.edit_metadata" /></h2>
           <span className="metadata-panel-subtitle">
-            {selectedCount} editable track{selectedCount === 1 ? '' : 's'}
+            {selectedCount}  <LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.editable_track" />{selectedCount === 1 ? '' : translate('common:auto.metadataeditorpanel.s')}
             {skippedRemoteCount > 0 && ` · ${skippedRemoteCount} remote skipped`}
           </span>
         </div>
-        <button className="metadata-panel-close" onClick={handleClose} aria-label="Close metadata editor" disabled={isSaving}>
+        <button className="metadata-panel-close" onClick={handleClose} aria-label={translate('common:auto.metadataeditorpanel.close_metadata_editor')} disabled={isSaving}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
             <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
           </svg>
@@ -586,15 +588,15 @@ export default function MetadataEditorPanel() {
 
       <div className="metadata-panel-toolbar">
         <label className="metadata-mode-field">
-          <span>Save Mode</span>
+          <span><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.save_mode" /></span>
           <select
             className="settings-select"
             value={saveMode}
             onChange={(event) => setSaveMode(event.target.value === 'file' ? 'file' : 'virtual')}
             disabled={isSaving}
           >
-            <option value="virtual">Virtual (DB override)</option>
-            <option value="file">Write file tags</option>
+            <option value="virtual"><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.virtual_db_override" /></option>
+            <option value="file"><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.write_file_tags" /></option>
           </select>
         </label>
 
@@ -603,7 +605,8 @@ export default function MetadataEditorPanel() {
           onClick={() => setDefaultSaveMode(saveMode)}
           disabled={isSaving || defaultSaveMode === saveMode}
         >
-          Make Default
+
+          <LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.make_default" />
         </button>
       </div>
 
@@ -613,8 +616,8 @@ export default function MetadataEditorPanel() {
             className="settings-btn metadata-panel-icon-btn"
             onClick={() => void handleUndo()}
             disabled={undoStack.length === 0 || isSaving}
-            title="Undo last virtual save"
-            aria-label="Undo last virtual save"
+            title={translate('common:auto.metadataeditorpanel.undo_last_virtual_save')}
+            aria-label={translate('common:auto.metadataeditorpanel.undo_last_virtual_save')}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M9 14 4 9l5-5" />
@@ -625,8 +628,8 @@ export default function MetadataEditorPanel() {
             className="settings-btn metadata-panel-icon-btn"
             onClick={() => void handleRedo()}
             disabled={redoStack.length === 0 || isSaving}
-            title="Redo"
-            aria-label="Redo"
+            title={translate('common:auto.metadataeditorpanel.redo')}
+            aria-label={translate('common:auto.metadataeditorpanel.redo')}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="m15 14 5-5-5-5" />
@@ -638,7 +641,8 @@ export default function MetadataEditorPanel() {
             onClick={() => void handleClearOverrides()}
             disabled={selectedCount === 0 || isSaving}
           >
-            Clear Overrides
+
+            <LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.clear_overrides" />
           </button>
         </div>
         <button
@@ -654,7 +658,7 @@ export default function MetadataEditorPanel() {
           }}
           disabled={isSaving || selectedCount === 0 || !hasDirtyFields}
         >
-          {isSaving ? 'Saving...' : 'Save Changes'}
+          {isSaving ? translate('common:auto.metadataeditorpanel.saving') : translate('common:auto.metadataeditorpanel.save_changes')}
         </button>
       </div>
 
@@ -670,9 +674,9 @@ export default function MetadataEditorPanel() {
 
       <div className="metadata-panel-body">
         {isTracksLoading ? (
-          <div className="metadata-panel-empty">Loading selected tracks...</div>
+          <div className="metadata-panel-empty"><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.loading_selected_tracks" /></div>
         ) : selectedCount === 0 ? (
-          <div className="metadata-panel-empty">No editable local tracks selected.</div>
+          <div className="metadata-panel-empty"><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.no_editable_local_tracks_selected" /></div>
         ) : (
           <>
             <div className={`metadata-artwork-section ${overriddenFieldSet.has('artworkHash') ? 'metadata-artwork-section-overridden' : ''}`}>
@@ -680,29 +684,29 @@ export default function MetadataEditorPanel() {
                 {artworkDraft.mode === 'replace' && artworkDraftPreview ? (
                   <img
                     src={artworkDraftPreview}
-                    alt="Selected artwork preview"
+                    alt={translate('common:auto.metadataeditorpanel.selected_artwork_preview')}
                     className="metadata-artwork-thumbnail"
                   />
                 ) : artworkDraft.mode === 'replace' ? (
                   <div className="metadata-artwork-remove-preview">
-                    <span className="metadata-artwork-mixed-label">Loading preview...</span>
+                    <span className="metadata-artwork-mixed-label"><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.loading_preview" /></span>
                   </div>
                 ) : artworkDraft.mode === 'remove' ? (
                   <div className="metadata-artwork-remove-preview">
-                    <span className="metadata-artwork-mixed-label">Cover will be removed</span>
+                    <span className="metadata-artwork-mixed-label"><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.cover_will_be_removed" /></span>
                   </div>
                 ) : artworkState.mixed ? (
                   <div className="metadata-artwork-stacked">
                     <div className="metadata-artwork-stack-card" />
                     <div className="metadata-artwork-stack-card" />
                     <div className="metadata-artwork-stack-front">
-                      <span className="metadata-artwork-mixed-label">Multiple covers</span>
+                      <span className="metadata-artwork-mixed-label"><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.multiple_covers" /></span>
                     </div>
                   </div>
                 ) : (
                   <AlbumArtwork
                     hash={artworkState.hash}
-                    alt="Selected track artwork"
+                    alt={translate('common:auto.metadataeditorpanel.selected_track_artwork')}
                     className="metadata-artwork-thumbnail"
                   />
                 )}
@@ -713,8 +717,8 @@ export default function MetadataEditorPanel() {
                     className={`metadata-artwork-icon-btn ${artworkDraft.mode === 'replace' ? 'active' : ''}`}
                     onClick={() => void handleChooseArtwork()}
                     disabled={selectedCount === 0 || isSaving}
-                    aria-label="Choose cover image"
-                    title={artworkDraft.mode === 'replace' ? 'Change cover image' : 'Choose cover image'}
+                    aria-label={translate('common:auto.metadataeditorpanel.choose_cover_image')}
+                    title={artworkDraft.mode === 'replace' ? translate('common:auto.metadataeditorpanel.change_cover_image') : translate('common:auto.metadataeditorpanel.choose_cover_image')}
                   >
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -726,8 +730,8 @@ export default function MetadataEditorPanel() {
                     className={`metadata-artwork-icon-btn ${artworkDraft.mode === 'remove' ? 'active danger' : ''}`}
                     onClick={handleRemoveArtwork}
                     disabled={selectedCount === 0 || isSaving}
-                    aria-label={artworkDraft.mode === 'remove' ? 'Keep current cover' : 'Remove cover'}
-                    title={artworkDraft.mode === 'remove' ? 'Keep current cover' : 'Remove cover'}
+                    aria-label={artworkDraft.mode === 'remove' ? translate('common:auto.metadataeditorpanel.keep_current_cover') : translate('common:auto.metadataeditorpanel.remove_cover')}
+                    title={artworkDraft.mode === 'remove' ? translate('common:auto.metadataeditorpanel.keep_current_cover') : translate('common:auto.metadataeditorpanel.remove_cover')}
                   >
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <circle cx="12" cy="12" r="9" />
@@ -745,50 +749,50 @@ export default function MetadataEditorPanel() {
 
             <div className="metadata-form-grid metadata-panel-form-grid">
               <label className={`metadata-field ${overriddenFieldSet.has('title') ? 'metadata-field-overridden' : ''}`}>
-                <span>Title</span>
+                <span><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.title" /></span>
                 <input
                   className="settings-select"
                   type="text"
                   value={draft.title.value}
                   onChange={(event) => updateDraftField('title', event.target.value)}
-                  placeholder={selectionCommon.title.mixed ? 'Mixed values' : ''}
+                  placeholder={selectionCommon.title.mixed ? translate('common:auto.metadataeditorpanel.mixed_values') : ''}
                   disabled={selectedCount === 0}
                 />
               </label>
 
               <label className={`metadata-field ${overriddenFieldSet.has('artist') ? 'metadata-field-overridden' : ''}`}>
-                <span>Artist</span>
+                <span><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.artist" /></span>
                 <input
                   className="settings-select"
                   type="text"
                   value={draft.artist.value}
                   onChange={(event) => updateDraftField('artist', event.target.value)}
-                  placeholder={selectionCommon.artist.mixed ? 'Mixed values' : ''}
+                  placeholder={selectionCommon.artist.mixed ? translate('common:auto.metadataeditorpanel.mixed_values') : ''}
                   disabled={selectedCount === 0}
                 />
               </label>
 
               <label className={`metadata-field ${overriddenFieldSet.has('album') ? 'metadata-field-overridden' : ''}`}>
-                <span>Album</span>
+                <span><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.album" /></span>
                 <input
                   className="settings-select"
                   type="text"
                   value={draft.album.value}
                   onChange={(event) => updateDraftField('album', event.target.value)}
-                  placeholder={selectionCommon.album.mixed ? 'Mixed values' : ''}
+                  placeholder={selectionCommon.album.mixed ? translate('common:auto.metadataeditorpanel.mixed_values') : ''}
                   disabled={selectedCount === 0}
                 />
               </label>
 
               <label className={`metadata-field ${overriddenFieldSet.has('albumArtist') ? 'metadata-field-overridden' : ''}`}>
-                <span>Album Artist</span>
+                <span><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.album_artist" /></span>
                 <div className="metadata-field-inline">
                   <input
                     className="settings-select"
                     type="text"
                     value={draft.albumArtist.value}
                     onChange={(event) => updateDraftField('albumArtist', event.target.value)}
-                    placeholder={selectionCommon.albumArtist.mixed ? 'Mixed values' : ''}
+                    placeholder={selectionCommon.albumArtist.mixed ? translate('common:auto.metadataeditorpanel.mixed_values') : ''}
                     disabled={selectedCount === 0}
                   />
                   <button
@@ -797,20 +801,21 @@ export default function MetadataEditorPanel() {
                     onClick={() => updateDraftField('albumArtist', '')}
                     disabled={selectedCount === 0 || isSaving}
                   >
-                    Clear
+
+                    <LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.clear" />
                   </button>
                 </div>
               </label>
 
               <label className={`metadata-field ${overriddenFieldSet.has('genre') ? 'metadata-field-overridden' : ''}`}>
-                <span>Genre</span>
+                <span><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.genre" /></span>
                 <div className="metadata-field-inline">
                   <input
                     className="settings-select"
                     type="text"
                     value={draft.genre.value}
                     onChange={(event) => updateDraftField('genre', event.target.value)}
-                    placeholder={selectionCommon.genre.mixed ? 'Mixed values' : ''}
+                    placeholder={selectionCommon.genre.mixed ? translate('common:auto.metadataeditorpanel.mixed_values') : ''}
                     disabled={selectedCount === 0}
                   />
                   <button
@@ -819,13 +824,14 @@ export default function MetadataEditorPanel() {
                     onClick={() => updateDraftField('genre', '')}
                     disabled={selectedCount === 0 || isSaving}
                   >
-                    Clear
+
+                    <LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.clear" />
                   </button>
                 </div>
               </label>
 
               <label className={`metadata-field ${overriddenFieldSet.has('year') ? 'metadata-field-overridden' : ''}`}>
-                <span>Year</span>
+                <span><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.year" /></span>
                 <div className="metadata-field-inline">
                   <input
                     className="settings-select"
@@ -833,7 +839,7 @@ export default function MetadataEditorPanel() {
                     inputMode="numeric"
                     value={draft.year.value}
                     onChange={(event) => updateDraftField('year', event.target.value)}
-                    placeholder={selectionCommon.year.mixed ? 'Mixed values' : ''}
+                    placeholder={selectionCommon.year.mixed ? translate('common:auto.metadataeditorpanel.mixed_values') : ''}
                     disabled={selectedCount === 0}
                   />
                   <button
@@ -842,13 +848,14 @@ export default function MetadataEditorPanel() {
                     onClick={() => updateDraftField('year', '')}
                     disabled={selectedCount === 0 || isSaving}
                   >
-                    Clear
+
+                    <LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.clear" />
                   </button>
                 </div>
               </label>
 
               <label className={`metadata-field ${overriddenFieldSet.has('trackNumber') ? 'metadata-field-overridden' : ''}`}>
-                <span>Track #</span>
+                <span><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.track" /></span>
                 <div className="metadata-field-inline">
                   <input
                     className="settings-select"
@@ -856,7 +863,7 @@ export default function MetadataEditorPanel() {
                     inputMode="numeric"
                     value={draft.trackNumber.value}
                     onChange={(event) => updateDraftField('trackNumber', event.target.value)}
-                    placeholder={selectionCommon.trackNumber.mixed ? 'Mixed values' : ''}
+                    placeholder={selectionCommon.trackNumber.mixed ? translate('common:auto.metadataeditorpanel.mixed_values') : ''}
                     disabled={selectedCount === 0}
                   />
                   <button
@@ -865,13 +872,14 @@ export default function MetadataEditorPanel() {
                     onClick={() => updateDraftField('trackNumber', '')}
                     disabled={selectedCount === 0 || isSaving}
                   >
-                    Clear
+
+                    <LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.clear" />
                   </button>
                 </div>
               </label>
 
               <label className={`metadata-field ${overriddenFieldSet.has('discNumber') ? 'metadata-field-overridden' : ''}`}>
-                <span>Disc #</span>
+                <span><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.disc" /></span>
                 <div className="metadata-field-inline">
                   <input
                     className="settings-select"
@@ -879,7 +887,7 @@ export default function MetadataEditorPanel() {
                     inputMode="numeric"
                     value={draft.discNumber.value}
                     onChange={(event) => updateDraftField('discNumber', event.target.value)}
-                    placeholder={selectionCommon.discNumber.mixed ? 'Mixed values' : ''}
+                    placeholder={selectionCommon.discNumber.mixed ? translate('common:auto.metadataeditorpanel.mixed_values') : ''}
                     disabled={selectedCount === 0}
                   />
                   <button
@@ -888,7 +896,8 @@ export default function MetadataEditorPanel() {
                     onClick={() => updateDraftField('discNumber', '')}
                     disabled={selectedCount === 0 || isSaving}
                   >
-                    Clear
+
+                    <LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.clear" />
                   </button>
                 </div>
               </label>
@@ -898,7 +907,7 @@ export default function MetadataEditorPanel() {
 
         {skippedRemoteCount > 0 && (
           <div className="metadata-footnote">
-            {skippedRemoteCount} remote track{skippedRemoteCount === 1 ? '' : 's'} skipped. Remote metadata editing is not supported.
+            {skippedRemoteCount}  <LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.remote_track" />{skippedRemoteCount === 1 ? '' : translate('common:auto.metadataeditorpanel.s')}  <LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.skipped_remote_metadata_editing_is_not_supported" />
           </div>
         )}
         {validationError && (
@@ -911,10 +920,11 @@ export default function MetadataEditorPanel() {
         {lastResult && (
           <div className="metadata-result">
             <div className="metadata-result-title">
-              {lastResult.mode === 'file' ? 'File write result' : 'Virtual save result'}
+              {lastResult.mode === 'file' ? translate('common:auto.metadataeditorpanel.file_write_result') : translate('common:auto.metadataeditorpanel.virtual_save_result')}
             </div>
             <div className="metadata-result-summary">
-              Requested: {lastResult.requested} · Succeeded: {lastResult.succeeded} · Failed: {lastResult.failed}
+
+              <LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.requested" /> {lastResult.requested}  <LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.succeeded" /> {lastResult.succeeded}  <LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.failed" /> {lastResult.failed}
             </div>
             {lastResult.failed > 0 && (
               <>
@@ -922,7 +932,7 @@ export default function MetadataEditorPanel() {
                   className="settings-btn metadata-result-toggle"
                   onClick={() => setShowFailureDetails((value) => !value)}
                 >
-                  {showFailureDetails ? 'Hide failures' : 'Show failures'}
+                  {showFailureDetails ? translate('common:auto.metadataeditorpanel.hide_failures') : translate('common:auto.metadataeditorpanel.show_failures')}
                 </button>
                 {showFailureDetails && (
                   <ul className="metadata-failure-list">
@@ -939,7 +949,7 @@ export default function MetadataEditorPanel() {
           </div>
         )}
 
-        <div className="metadata-footnote">Default mode: {defaultSaveMode === 'file' ? 'Write file tags' : 'Virtual (DB override)'}</div>
+        <div className="metadata-footnote"><LocalizedText ns="common" i18nKey="auto.metadataeditorpanel.default_mode" /> {defaultSaveMode === 'file' ? translate('common:auto.metadataeditorpanel.write_file_tags') : translate('common:auto.metadataeditorpanel.virtual_db_override')}</div>
       </div>
 
       <DiffConfirmModal

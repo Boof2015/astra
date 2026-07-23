@@ -1,3 +1,5 @@
+import { translate } from '../../i18n'
+import LocalizedText from '../i18n/LocalizedText'
 import { useEffect, useState } from 'react'
 import { usePhoneRemoteSettingsStore } from '../../stores/phoneRemoteSettingsStore'
 
@@ -39,27 +41,31 @@ export default function PhoneRemoteIncomingPairCard({ variant = 'modal' }: Props
 
   const card = (
     <div className={`parallax-pair-card parallax-pair-card-${variant}`} role="alert" aria-live="polite">
-      <div className="parallax-pair-card-kicker">Astra companion pair request</div>
+      <div className="parallax-pair-card-kicker"><LocalizedText ns="common" i18nKey="auto.phoneremoteincomingpaircard.astra_companion_pair_request" /></div>
       <div className="parallax-pair-card-host">
         <strong>{incoming.deviceName || 'Astra Mobile'}</strong>
-        <span className="parallax-pair-card-host-suffix">wants to pair</span>
+        <span className="parallax-pair-card-host-suffix"><LocalizedText ns="common" i18nKey="auto.phoneremoteincomingpaircard.wants_to_pair" /></span>
       </div>
-      <div className="parallax-pair-card-pin" aria-label={`PIN ${incoming.pin}`}>
+      <div className="parallax-pair-card-pin" aria-label={translate('common:auto.phoneremoteincomingpaircard.pin_pin', { pin: incoming.pin })}>
         {pinDigits.map((digit, index) => (
           <span key={index} className="parallax-pair-card-pin-digit">{digit}</span>
         ))}
       </div>
       <div className="parallax-pair-card-instructions">
-        Enter this code in the requesting app.
+
+        <LocalizedText ns="common" i18nKey="auto.phoneremoteincomingpaircard.enter_this_code_in_the_requesting_app" />
       </div>
       <div className="parallax-pair-card-footnote">
-        Requested: {incoming.requestedScopes.join(', ')}
+
+        <LocalizedText ns="common" i18nKey="auto.phoneremoteincomingpaircard.requested" /> {incoming.requestedScopes.join(', ')}
       </div>
       <div className="parallax-pair-card-countdown">
-        Expires in {formatMmSs(remaining)}
+
+        <LocalizedText ns="common" i18nKey="auto.phoneremoteincomingpaircard.expires_in" /> {formatMmSs(remaining)}
       </div>
       <div className="parallax-pair-card-footnote">
-        If this wasn't you, ignore.
+
+        <LocalizedText ns="common" i18nKey="auto.phoneremoteincomingpaircard.if_this_wasn_t_you_ignore" />
       </div>
     </div>
   )

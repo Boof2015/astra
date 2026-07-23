@@ -1,3 +1,5 @@
+import { translate } from '../../i18n'
+import LocalizedText from '../i18n/LocalizedText'
 import { useEffect, useState } from 'react'
 import { usePresence } from '../../hooks/usePresence'
 
@@ -58,7 +60,7 @@ export default function ConfirmActionModal({
       >
         <div className="modal-header">
           <h2>{displayed.title}</h2>
-          <button className="modal-close" onClick={onCancel} aria-label="Close">
+          <button className="modal-close" onClick={onCancel} aria-label={translate('settings:auto.confirmactionmodal.close')}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
               <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
             </svg>
@@ -70,7 +72,8 @@ export default function ConfirmActionModal({
           {requiresTypedPhrase && (
             <label className="confirm-action-typed-wrap">
               <span className="confirm-action-typed-label">
-                Type <code>{displayed.typedPhrase}</code> to confirm
+
+                <LocalizedText ns="settings" i18nKey="auto.confirmactionmodal.type" /> <code>{displayed.typedPhrase}</code>  <LocalizedText ns="settings" i18nKey="auto.confirmactionmodal.to_confirm" />
               </span>
               <input
                 type="text"
@@ -92,7 +95,7 @@ export default function ConfirmActionModal({
             onClick={onConfirm}
             disabled={confirmDisabled}
           >
-            {isBusy ? 'Working...' : displayed.confirmLabel}
+            {isBusy ? translate('settings:auto.confirmactionmodal.working') : displayed.confirmLabel}
           </button>
         </div>
       </div>

@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { formatLocaleDate, translate } from '../../i18n'
 import { CSSProperties, memo, ReactElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
 import { usePlayerStore, type PlaybackSourceContext } from '../../stores/playerStore'
@@ -165,12 +167,6 @@ const TRACK_ROW_HEIGHT_FALLBACK_PX = 48
 const TRACK_DISC_HEADER_HEIGHT_FALLBACK_PX = 30
 const TRACK_LIST_OVERSCAN_COUNT = 8
 const TRACK_SELECTION_DRAG_THRESHOLD_PX = 6
-const trackAddedDateFormatter = new Intl.DateTimeFormat(undefined, {
-  month: 'numeric',
-  day: 'numeric',
-  year: '2-digit'
-})
-
 interface TrackPlaylistPopupState {
   trackPaths: string[]
   primaryTrackPath: string
@@ -310,7 +306,7 @@ function formatTrackAddedDate(track: Pick<DbTrack, 'source_type' | 'file_created
   if (!Number.isFinite(timestamp) || timestamp <= 0) return '--'
 
   try {
-    return trackAddedDateFormatter.format(new Date(timestamp))
+    return formatLocaleDate(timestamp, { month: 'numeric', day: 'numeric', year: '2-digit' })
   } catch {
     return '--'
   }
@@ -321,7 +317,7 @@ function formatTrackAddedDateTitle(track: Pick<DbTrack, 'source_type' | 'file_cr
   if (!Number.isFinite(timestamp) || timestamp <= 0) return 'Added date unavailable'
 
   try {
-    return new Date(timestamp).toLocaleString()
+    return formatLocaleDate(timestamp, { dateStyle: 'medium', timeStyle: 'short' })
   } catch {
     return 'Added date unavailable'
   }
@@ -448,8 +444,8 @@ function TrackListRowRenderer({
   if (row.kind === 'disc-header') {
     return (
       <div className="track-list-item track-list-disc-header-item" style={style as CSSProperties} {...ariaAttributes}>
-        <div className="track-disc-header" role="separator" aria-label={`Disc ${row.discNumber}`}>
-          <span className="track-disc-header-label">Disc {row.discNumber}</span>
+        <div className="track-disc-header" role="separator" aria-label={translate('library:auto.tracklist.disc_discnumber', { discnumber: row.discNumber })}>
+          <span className="track-disc-header-label"><LocalizedText ns="library" i18nKey="auto.tracklist.disc" /> {row.discNumber}</span>
           <span className="track-disc-header-rule" aria-hidden="true" />
         </div>
       </div>
@@ -533,7 +529,7 @@ function TrackListRowRenderer({
         data-controller-index={trackIndex}
         tabIndex={-1}
         role="button"
-        aria-label={`${track.title} by ${track.artist}`}
+        aria-label={translate('library:auto.tracklist.title_by_artist', { title: track.title, artist: track.artist })}
         onDragStart={showQueueInsertAffordance ? (event) => event.preventDefault() : undefined}
         onPointerDown={isMissingPlaylistEntry ? undefined : (event) => onQueueInsertPointerDown(event, track, trackIndex)}
         onContextMenu={isMissingPlaylistEntry && !canRemoveFromPlaylist ? undefined : (event) => onTrackContextMenu(event, track, trackIndex)}
@@ -544,12 +540,12 @@ function TrackListRowRenderer({
       >
         <div className="track-col track-col-num">
           {showNewTrackIndicator && track.is_new && (
-            <span className="track-new-indicator" title="Added in latest library sync" aria-hidden="true" />
+            <span className="track-new-indicator" title={translate('library:auto.tracklist.added_in_latest_library_sync')} aria-hidden="true" />
           )}
           {isCurrent && isPlaying ? (
             <span className="track-playing-icon">&#9654;</span>
           ) : isCurrentLoading ? (
-            <span className="track-loading-icon" title="Buffering track">
+            <span className="track-loading-icon" title={translate('library:auto.tracklist.buffering_track')}>
               <span className="loading-spinner-small track-loading-spinner" />
             </span>
           ) : displayedTrackNumber === null ? (
@@ -568,7 +564,7 @@ function TrackListRowRenderer({
               )}
             </div>
             {sourceLabel && (
-              <span className="track-source-badge" title={isUnavailable ? `${sourceLabel} (unavailable)` : sourceLabel}>
+              <span className="track-source-badge" title={isUnavailable ? translate('library:auto.tracklist.sourcelabel_unavailable', { sourcelabel: sourceLabel }) : sourceLabel}>
                 {track.source_type === 'jellyfin' ? (
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                     <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
@@ -586,25 +582,25 @@ function TrackListRowRenderer({
             )}
             <span className="track-title">{highlightSearchMatch(track.title, searchQuery)}</span>
             {isMissingPlaylistEntry && (
-              <span className="track-missing-playlist-label">Missing</span>
+              <span className="track-missing-playlist-label"><LocalizedText ns="library" i18nKey="auto.tracklist.missing" /></span>
             )}
             {isCurrentLoading && (
               <span className="track-loading-status">
                 {loadingPercentLabel
-                  ? `Buffering ${loadingPercentLabel}`
+                  ? translate('library:auto.tracklist.buffering_loadingpercentlabel', { loadingpercentlabel: loadingPercentLabel })
                   : loadingTrackChunkCount > 0
-                    ? `Buffering ${loadingTrackChunkCount} chunks`
-                    : 'Buffering...'}
+                    ? translate('library:auto.tracklist.buffering_loadingtrackchunkcount_chunks', { loadingtrackchunkcount: loadingTrackChunkCount })
+                    : translate('library:auto.tracklist.buffering')}
               </span>
             )}
             {showAtmosBadge && (
               <span className="track-channel-badge track-channel-badge-atmos" title={atmosphereBadgeTitle}>
-                <span>ATMOS</span>
+                <span><LocalizedText ns="library" i18nKey="auto.tracklist.atmos" /></span>
               </span>
             )}
             {showEclipsaBadge && (
-              <span className="track-channel-badge track-channel-badge-eclipsa" title="Eclipsa Audio (IAMF) source, decoded to 7.1.4">
-                <span>ECLIPSA</span>
+              <span className="track-channel-badge track-channel-badge-eclipsa" title={translate('library:auto.tracklist.eclipsa_audio_iamf_source_decoded_to_7_1_4')}>
+                <span><LocalizedText ns="library" i18nKey="auto.tracklist.eclipsa" /></span>
               </span>
             )}
             {isMultichannel && (
@@ -612,7 +608,7 @@ function TrackListRowRenderer({
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M3 10v4h4l5 5V5l-5 5H3zm13.5 2c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zm2.5 0c0 3.04-1.72 5.64-4.25 6.92l-.75-1.83c1.92-.98 3.25-2.97 3.25-5.09s-1.33-4.11-3.25-5.09l.75-1.83C17.28 6.36 19 8.96 19 12z" />
                 </svg>
-                <span>{resolvedChannelCount}CH</span>
+                <span>{resolvedChannelCount}<LocalizedText ns="library" i18nKey="auto.tracklist.ch" /></span>
               </span>
             )}
           </div>
@@ -647,7 +643,7 @@ function TrackListRowRenderer({
                   event.stopPropagation()
                   void openAlbumInLibrary(track.album, track.artist, track.album_artist, track.album_identity_key)
                 }}
-                title={`Show album ${track.album}`}
+                title={translate('library:auto.tracklist.show_album_album', { album: track.album })}
               >
                 {track.album}
               </button>
@@ -679,7 +675,7 @@ function TrackListRowRenderer({
           </div>
         )}
         <div className="track-col track-col-codec">
-          <span className="track-codec">{isMissingPlaylistEntry ? 'MISSING' : track.format ? track.format.toUpperCase() : '\u2014'}</span>
+          <span className="track-codec">{isMissingPlaylistEntry ? translate('library:auto.tracklist.missing') : track.format ? track.format.toUpperCase() : '\u2014'}</span>
         </div>
         {showAddedDate && (
           <div className="track-col track-col-added">
@@ -703,7 +699,7 @@ function TrackListRowRenderer({
                 <button
                   className={`track-action-btn ${favorites.has(track.path) ? 'active' : ''}`}
                   onClick={(event) => onToggleFavorite(event, track.path)}
-                  title={favorites.has(track.path) ? 'Remove from favorites' : 'Add to favorites'}
+                  title={favorites.has(track.path) ? translate('library:auto.tracklist.remove_from_favorites') : translate('library:auto.tracklist.add_to_favorites')}
                 >
                   {favorites.has(track.path) ? (
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
@@ -719,7 +715,7 @@ function TrackListRowRenderer({
                   <button
                     className={`track-action-btn ${playlistPopupTrackPath === track.path ? 'track-playlist-trigger-open' : ''}`}
                     onClick={(event) => onOpenPlaylistPopup(event, track)}
-                    title="Add to playlist"
+                    title={translate('library:auto.tracklist.add_to_playlist')}
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
@@ -729,7 +725,7 @@ function TrackListRowRenderer({
               <button
                 className={`track-action-btn ${showPlayNextCheck ? 'queued' : ''}`}
                 onClick={(event) => onPlayNext(event, track)}
-                title={showPlayNextCheck ? 'Queued to play next' : 'Play Next'}
+                title={showPlayNextCheck ? translate('library:auto.tracklist.queued_to_play_next') : translate('library:auto.tracklist.play_next')}
               >
                 {showPlayNextCheck ? (
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -744,7 +740,7 @@ function TrackListRowRenderer({
                 <button
                   className={`track-action-btn ${showAddQueueCheck ? 'queued' : ''}`}
                   onClick={(event) => onAddToQueue(event, track)}
-                  title={showAddQueueCheck ? 'In queue' : 'Add to Queue'}
+                  title={showAddQueueCheck ? translate('library:auto.tracklist.in_queue') : translate('library:auto.tracklist.add_to_queue')}
                 >
                   {showAddQueueCheck ? (
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -762,7 +758,7 @@ function TrackListRowRenderer({
               <button
                 className="track-action-btn track-action-btn-danger"
                 onClick={(event) => onRemoveFromPlaylist(event, track, trackIndex)}
-                title="Remove from playlist"
+                title={translate('library:auto.tracklist.remove_from_playlist')}
                 disabled={isRemovingFromPlaylist}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1960,7 +1956,7 @@ export default function TrackList({
           type="button"
           className={`track-col-sort-btn ${isActive ? 'active' : ''}`}
           onClick={() => onSortColumnToggle(key)}
-          aria-label={`${label}: ${currentDirectionLabel}. Activate to sort ${nextDirectionLabel}.`}
+          aria-label={translate('library:auto.tracklist.label_currentdirectionlabel_activate_to_sort_nextdirecti', { label: label, currentdirectionlabel: currentDirectionLabel, nextdirectionlabel: nextDirectionLabel })}
         >
           <span className="track-col-sort-label">{label}</span>
           <span
@@ -2096,7 +2092,7 @@ export default function TrackList({
   if (tracks.length === 0) {
     return (
       <div className="track-list-empty">
-        <p>No tracks found</p>
+        <p><LocalizedText ns="library" i18nKey="auto.tracklist.no_tracks_found" /></p>
       </div>
     )
   }
@@ -2116,7 +2112,7 @@ export default function TrackList({
               type="button"
               className={`track-col-sort-btn track-col-default-sort-btn ${sortState === null ? 'active' : ''}`}
               onClick={() => onDefaultOrderReset()}
-              aria-label={sortState === null ? 'Default order active.' : 'Restore default order.'}
+              aria-label={sortState === null ? translate('library:auto.tracklist.default_order_active') : translate('library:auto.tracklist.restore_default_order')}
             >
               <span className="track-col-sort-label">#</span>
             </button>
@@ -2131,7 +2127,7 @@ export default function TrackList({
         {showTracklistBpmKey && renderSortableHeader('bpm', 'BPM', 'track-col-bpm')}
         {showTracklistBpmKey && renderSortableHeader('musical_key', 'Key', 'track-col-key')}
         {ratingsEnabled && renderSortableHeader('rating', 'Rating', 'track-col-rating')}
-        <div className="track-col track-col-codec">Codec</div>
+        <div className="track-col track-col-codec"><LocalizedText ns="library" i18nKey="auto.tracklist.codec" /></div>
         {showAddedDate && renderSortableHeader('added', 'Added', 'track-col-added')}
         {showTracklistPlayCount && renderSortableHeader('play_count', 'Plays', 'track-col-plays')}
         {renderSortableHeader('duration', 'Length', 'track-col-duration')}
@@ -2172,15 +2168,15 @@ export default function TrackList({
             <span className="track-queue-insert-preview-count">{queueInsertPreview.tracks.length}</span>
           )}
           <div className="track-queue-insert-preview-content">
-            <span className="track-queue-insert-preview-kicker">Tracks</span>
+            <span className="track-queue-insert-preview-kicker"><LocalizedText ns="library" i18nKey="auto.tracklist.tracks" /></span>
             <span className="track-queue-insert-preview-title">
               {queueInsertPreview.tracks.length > 1
-                ? `${queueInsertPreview.tracks.length} tracks`
+                ? translate('library:auto.tracklist.length_tracks', { length: queueInsertPreview.tracks.length })
                 : queueInsertPreview.tracks[0]?.title ?? 'Track'}
             </span>
             <span className="track-queue-insert-preview-artist">
               {queueInsertPreview.tracks.length > 1
-                ? 'In tracklist order'
+                ? translate('library:auto.tracklist.in_tracklist_order')
                 : queueInsertPreview.tracks[0]?.artist ?? 'Unknown Artist'}
             </span>
           </div>
@@ -2195,13 +2191,13 @@ export default function TrackList({
         >
           <div className="track-playlist-popup-header">
             <div className="track-playlist-popup-header-copy">
-              <div className="track-playlist-popup-title" title={playlistPopup.trackPaths.length === 1 ? playlistPopupTrack?.title ?? 'Track' : `${playlistPopup.trackPaths.length} selected tracks`}>
-                {playlistPopup.trackPaths.length === 1 ? playlistPopupTrack?.title ?? 'Track' : `${playlistPopup.trackPaths.length} selected tracks`}
+              <div className="track-playlist-popup-title" title={playlistPopup.trackPaths.length === 1 ? playlistPopupTrack?.title ?? 'Track' : translate('library:auto.tracklist.length_selected_tracks', { length: playlistPopup.trackPaths.length })}>
+                {playlistPopup.trackPaths.length === 1 ? playlistPopupTrack?.title ?? 'Track' : translate('library:auto.tracklist.length_selected_tracks', { length: playlistPopup.trackPaths.length })}
               </div>
               <div className="track-playlist-popup-subtitle">
                 {playlistPopup.trackPaths.length === 1
-                  ? 'Add or remove this track from playlists'
-                  : 'Add selected tracks to playlists'}
+                  ? translate('library:auto.tracklist.add_or_remove_this_track_from_playlists')
+                  : translate('library:auto.tracklist.add_selected_tracks_to_playlists')}
               </div>
             </div>
             <button
@@ -2210,14 +2206,15 @@ export default function TrackList({
               onClick={() => handleOpenCreatePlaylistModal()}
               disabled={isPlaylistMembershipLoading || isPlaylistMembershipMutating}
             >
-              New playlist
+
+              <LocalizedText ns="library" i18nKey="auto.tracklist.new_playlist" />
             </button>
           </div>
           <div className="track-playlist-popup-search">
             <input
               type="text"
               className="track-playlist-popup-search-input"
-              placeholder="Search playlists..."
+              placeholder={translate('library:auto.tracklist.search_playlists')}
               value={playlistPopupSearch}
               onChange={(event) => setPlaylistPopupSearch(event.target.value)}
               autoFocus
@@ -2233,7 +2230,7 @@ export default function TrackList({
           )}
           <div className="track-playlist-popup-list">
             {isPlaylistMembershipLoading ? (
-              <div className="track-playlist-popup-empty">Loading...</div>
+              <div className="track-playlist-popup-empty"><LocalizedText ns="library" i18nKey="auto.tracklist.loading" /></div>
             ) : filteredPlaylists.length > 0 ? (
               filteredPlaylists.map((playlist) => {
                 const matchedTrackCount = playlistMembershipCounts[playlist.id] ?? 0
@@ -2273,7 +2270,7 @@ export default function TrackList({
                 )
               })
             ) : (
-              <div className="track-playlist-popup-empty">No matching playlists</div>
+              <div className="track-playlist-popup-empty"><LocalizedText ns="library" i18nKey="auto.tracklist.no_matching_playlists" /></div>
             )}
           </div>
         </div>
@@ -2296,7 +2293,7 @@ export default function TrackList({
                 <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
               </svg>
             </span>
-            {contextMenuTrackCount > 1 ? `Play Next (${contextMenuTrackCount})` : 'Play Next'}
+            {contextMenuTrackCount > 1 ? translate('library:auto.tracklist.play_next_contextmenutrackcount', { contextmenutrackcount: contextMenuTrackCount }) : translate('library:auto.tracklist.play_next')}
           </button>
           <button
             type="button"
@@ -2309,7 +2306,7 @@ export default function TrackList({
                 <path d="M13 7h-2v4H7v2h4v4h2v-4h4v-2h-4V7zm-1-5C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/>
               </svg>
             </span>
-            {contextMenuTrackCount > 1 ? `Add to Queue (${contextMenuTrackCount})` : 'Add to Queue'}
+            {contextMenuTrackCount > 1 ? translate('library:auto.tracklist.add_to_queue_contextmenutrackcount', { contextmenutrackcount: contextMenuTrackCount }) : translate('library:auto.tracklist.add_to_queue')}
           </button>
           <button
             type="button"
@@ -2322,7 +2319,8 @@ export default function TrackList({
                 <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
               </svg>
             </span>
-            Add to Playlist...
+
+            <LocalizedText ns="library" i18nKey="auto.tracklist.add_to_playlist" />
           </button>
           {contextMenuTrackCount === 1 && (
             <button
@@ -2335,13 +2333,14 @@ export default function TrackList({
                   <path d="M3 12h3l2-6 4 12 3-9 2 3h4" />
                 </svg>
               </span>
-              Create Astra Signal...
+
+              <LocalizedText ns="library" i18nKey="auto.tracklist.create_astra_signal" />
             </button>
           )}
           {ratingsEnabled && !contextMenuContainsMissingPlaylistEntry && (
             <div className="track-context-menu-rating">
               <span className="track-context-menu-rating-label">
-                {contextMenuTrackCount > 1 ? `Rate (${contextMenuTrackCount})` : 'Rate'}
+                {contextMenuTrackCount > 1 ? translate('library:auto.tracklist.rate_contextmenutrackcount', { contextmenutrackcount: contextMenuTrackCount }) : translate('library:auto.tracklist.rate')}
               </span>
               <TrackRatingControl
                 trackPaths={contextMenuTrackPaths}
@@ -2363,7 +2362,7 @@ export default function TrackList({
                   <path d="M4 4 20 20" />
                 </svg>
               </span>
-              {contextMenuTrackCount > 1 ? `Remove Rating (${contextMenuTrackCount})` : 'Remove Rating'}
+              {contextMenuTrackCount > 1 ? translate('library:auto.tracklist.remove_rating_contextmenutrackcount', { contextmenutrackcount: contextMenuTrackCount }) : translate('library:auto.tracklist.remove_rating')}
             </button>
           )}
           {canChangeMissingPlaylistAssociation && (
@@ -2378,7 +2377,8 @@ export default function TrackList({
                   <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
                 </svg>
               </span>
-              Change Associated File...
+
+              <LocalizedText ns="library" i18nKey="auto.tracklist.change_associated_file" />
             </button>
           )}
           {canRemoveFromPlaylist && (
@@ -2396,10 +2396,10 @@ export default function TrackList({
                 </svg>
               </span>
               {isRemovingFromPlaylist
-                ? 'Removing...'
+                ? translate('library:auto.tracklist.removing')
                 : contextMenuTrackCount > 1
-                  ? `Remove from Playlist (${contextMenuTrackCount})`
-                  : 'Remove from Playlist'}
+                  ? translate('library:auto.tracklist.remove_from_playlist_contextmenutrackcount', { contextmenutrackcount: contextMenuTrackCount })
+                  : translate('library:auto.tracklist.remove_from_playlist')}
             </button>
           )}
           <button
@@ -2414,7 +2414,7 @@ export default function TrackList({
                 <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
               </svg>
             </span>
-            {contextMenuLocalTrackCount > 1 ? `Edit Metadata (${contextMenuLocalTrackCount})` : 'Edit Metadata'}
+            {contextMenuLocalTrackCount > 1 ? translate('library:auto.tracklist.edit_metadata_contextmenulocaltrackcount', { contextmenulocaltrackcount: contextMenuLocalTrackCount }) : translate('library:auto.tracklist.edit_metadata')}
           </button>
           <button
             type="button"
@@ -2429,7 +2429,7 @@ export default function TrackList({
                 <circle cx="18" cy="16" r="3" />
               </svg>
             </span>
-            {contextMenuTrackCount > 1 ? `Edit Lyrics (${contextMenuTrackCount})` : 'Edit Lyrics'}
+            {contextMenuTrackCount > 1 ? translate('library:auto.tracklist.edit_lyrics_contextmenutrackcount', { contextmenutrackcount: contextMenuTrackCount }) : translate('library:auto.tracklist.edit_lyrics')}
           </button>
           {integrityEnabled && (
             <button
@@ -2444,10 +2444,10 @@ export default function TrackList({
                 </svg>
               </span>
               {isContextIntegrityBusy
-                ? 'Checking...'
+                ? translate('library:auto.tracklist.checking')
                 : contextMenuLocalTrackCount > 1
-                  ? `Check Integrity (${contextMenuLocalTrackCount})`
-                  : 'Check Integrity'}
+                  ? translate('library:auto.tracklist.check_integrity_contextmenulocaltrackcount', { contextmenulocaltrackcount: contextMenuLocalTrackCount })
+                  : translate('library:auto.tracklist.check_integrity')}
             </button>
           )}
         </div>
@@ -2456,7 +2456,7 @@ export default function TrackList({
         isOpen={createPlaylistTarget !== null}
         onClose={handleCloseCreatePlaylistModal}
         onCreate={handleCreatePlaylistForTrack}
-        title={createPlaylistTarget?.trackPaths.length === 1 ? 'Create Playlist for Track' : 'Create Playlist from Tracks'}
+        title={createPlaylistTarget?.trackPaths.length === 1 ? translate('library:auto.tracklist.create_playlist_for_track') : translate('library:auto.tracklist.create_playlist_from_tracks')}
         pendingTrackCount={createPlaylistTarget?.trackPaths.length}
       />
     </div>

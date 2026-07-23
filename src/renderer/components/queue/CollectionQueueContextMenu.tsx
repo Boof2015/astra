@@ -1,3 +1,4 @@
+import { translate } from '../../i18n'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { usePlayerStore } from '../../stores/playerStore'
@@ -96,7 +97,7 @@ export default function CollectionQueueContextMenu() {
       ref={menuRef}
       className="track-context-menu collection-queue-context-menu"
       role="menu"
-      aria-label={`Queue actions for ${label}`}
+      aria-label={translate('playback:auto.collectionqueuecontextmenu.queue_actions_for_label', { label: label })}
       style={{
         left: position?.left ?? request.x,
         top: position?.top ?? request.y,
@@ -119,7 +120,7 @@ export default function CollectionQueueContextMenu() {
             <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
           </svg>
         </span>
-        {busyAction === 'next' ? 'Adding...' : 'Play Next'}
+        {busyAction === 'next' ? translate('playback:auto.collectionqueuecontextmenu.adding') : translate('playback:auto.collectionqueuecontextmenu.play_next')}
       </button>
       <button
         type="button"
@@ -133,7 +134,7 @@ export default function CollectionQueueContextMenu() {
             <path d="M13 7h-2v4H7v2h4v4h2v-4h4v-2h-4V7zm-1-5C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8-8z" />
           </svg>
         </span>
-        {busyAction === 'end' ? 'Adding...' : 'Add to Queue'}
+        {busyAction === 'end' ? translate('playback:auto.collectionqueuecontextmenu.adding') : translate('playback:auto.collectionqueuecontextmenu.add_to_queue')}
       </button>
       {errorMessage && <div className="collection-queue-context-menu-error">{errorMessage}</div>}
     </div>,

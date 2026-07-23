@@ -1,3 +1,4 @@
+import { translate } from '../../i18n'
 import { useEffect, useState } from 'react'
 import { useLibraryStore } from '../../stores/libraryStore'
 
@@ -47,7 +48,7 @@ export default function PlaylistCover({
       {!isFavorites && artworkUrl ? (
         <img
           src={artworkUrl}
-          alt={`${name} cover`}
+          alt={translate('common:auto.playlistcover.name_cover', { name: name })}
           className="playlist-cover-image"
           loading="lazy"
           decoding="async"

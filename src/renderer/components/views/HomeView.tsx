@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { formatLocaleDate, translate } from '../../i18n'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
@@ -759,18 +761,18 @@ function getRecentArtistCandidate(
 }
 
 function formatHomeClockTime(date: Date): string {
-  return new Intl.DateTimeFormat(undefined, {
+  return formatLocaleDate(date, {
     hour: 'numeric',
     minute: '2-digit'
-  }).format(date)
+  })
 }
 
 function formatHomeClockDate(date: Date): string {
-  return new Intl.DateTimeFormat(undefined, {
+  return formatLocaleDate(date, {
     weekday: 'long',
     month: 'long',
     day: 'numeric'
-  }).format(date)
+  })
 }
 
 export default function HomeView() {
@@ -1177,8 +1179,8 @@ export default function HomeView() {
               <rect x="14" y="14" width="7" height="7" rx="1" />
             </svg>
           </div>
-          <h2>Home</h2>
-          <p>Add a folder in Library to populate this dashboard.</p>
+          <h2><LocalizedText ns="playback" i18nKey="auto.homeview.home" /></h2>
+          <p><LocalizedText ns="playback" i18nKey="auto.homeview.add_a_folder_in_library_to_populate_this_dashboard" /></p>
         </div>
       </div>
     )
@@ -1206,19 +1208,19 @@ export default function HomeView() {
           )}
           <div className="home-greeting-stats">
             <div className="home-greeting-stat home-greeting-stat-duration">
-              <span className="home-greeting-stat-label">Total Time</span>
+              <span className="home-greeting-stat-label"><LocalizedText ns="playback" i18nKey="auto.homeview.total_time" /></span>
               <span className="home-greeting-stat-value">{formatExactDuration(totalTrackDuration)}</span>
             </div>
             <div className="home-greeting-stat">
-              <span className="home-greeting-stat-label">Tracks</span>
+              <span className="home-greeting-stat-label"><LocalizedText ns="playback" i18nKey="auto.homeview.tracks" /></span>
               <span className="home-greeting-stat-value">{totalTrackCount}</span>
             </div>
             <div className="home-greeting-stat">
-              <span className="home-greeting-stat-label">Albums</span>
+              <span className="home-greeting-stat-label"><LocalizedText ns="playback" i18nKey="auto.homeview.albums" /></span>
               <span className="home-greeting-stat-value">{albums.length}</span>
             </div>
             <div className="home-greeting-stat">
-              <span className="home-greeting-stat-label">Artists</span>
+              <span className="home-greeting-stat-label"><LocalizedText ns="playback" i18nKey="auto.homeview.artists" /></span>
               <span className="home-greeting-stat-value">{artists.length}</span>
             </div>
           </div>
@@ -1226,7 +1228,7 @@ export default function HomeView() {
 
         <section className="home-section" data-controller-group="home-recent-tracks" data-controller-axis="horizontal">
           <div className="home-section-header">
-            <h2>RECENTLY PLAYED</h2>
+            <h2><LocalizedText ns="playback" i18nKey="auto.homeview.recently_played" /></h2>
           </div>
           {recentTracks.length > 0 ? (
             <div className="home-recent-row" ref={recentRowRef}>
@@ -1239,7 +1241,7 @@ export default function HomeView() {
                   data-controller-key={`home-track:${track.path}`}
                   tabIndex={-1}
                   role="button"
-                  aria-label={`Play ${track.title} by ${track.artist}`}
+                  aria-label={translate('playback:auto.homeview.play_title_by_artist', { title: track.title, artist: track.artist })}
                 >
                   <div className="home-track-artwork">
                     {track.artwork_hash ? (
@@ -1256,16 +1258,17 @@ export default function HomeView() {
               ))}
             </div>
           ) : (
-            <div className="home-empty-strip">No recent tracks yet. Start playing music!</div>
+            <div className="home-empty-strip"><LocalizedText ns="playback" i18nKey="auto.homeview.no_recent_tracks_yet_start_playing_music" /></div>
           )}
         </section>
 
         <section className="home-section" data-controller-group="home-recent-artists" data-controller-axis="grid">
           <div className="home-section-header">
-            <h2>RECENT ARTISTS</h2>
+            <h2><LocalizedText ns="playback" i18nKey="auto.homeview.recent_artists" /></h2>
             <div className="home-section-actions">
               <button className="home-section-link-btn" onClick={handleOpenArtistsLibrary}>
-                Open Library
+
+                <LocalizedText ns="playback" i18nKey="auto.homeview.open_library" />
               </button>
             </div>
           </div>
@@ -1280,13 +1283,13 @@ export default function HomeView() {
                   data-controller-key={`home-artist:${artist.artist}`}
                   tabIndex={-1}
                   role="button"
-                  aria-label={`Open ${artist.artist}`}
+                  aria-label={translate('playback:auto.homeview.open_artist', { artist: artist.artist })}
                 >
                   <div className="home-artist-avatar">
                     {artist.artwork_hash ? (
                       <AlbumArtwork
                         hash={artist.artwork_hash}
-                        alt={`${artist.artist} artwork`}
+                        alt={translate('playback:auto.homeview.artist_artwork', { artist: artist.artist })}
                         className="home-artist-artwork"
                         variant="card"
                       />
@@ -1296,22 +1299,23 @@ export default function HomeView() {
                   </div>
                   <div className="home-artist-name">{artist.artist}</div>
                   <div className="home-artist-count">
-                    {artist.track_count > 0 ? `${artist.track_count} tracks` : 'Recent play'}
+                    {artist.track_count > 0 ? translate('playback:auto.homeview.trackcount_tracks', { trackCount: artist.track_count }) : translate('playback:auto.homeview.recent_play')}
                   </div>
                 </div>
               ))}
             </div>
           ) : (
-            <div className="home-empty-strip">No recent artists yet. Play a few tracks first.</div>
+            <div className="home-empty-strip"><LocalizedText ns="playback" i18nKey="auto.homeview.no_recent_artists_yet_play_a_few_tracks_first" /></div>
           )}
         </section>
 
         <section className="home-section" data-controller-group="home-recent-albums" data-controller-axis="grid">
           <div className="home-section-header">
-            <h2>RECENT ALBUMS</h2>
+            <h2><LocalizedText ns="playback" i18nKey="auto.homeview.recent_albums" /></h2>
             <div className="home-section-actions">
               <button className="home-section-link-btn" onClick={handleOpenAlbumsLibrary}>
-                Open Library
+
+                <LocalizedText ns="playback" i18nKey="auto.homeview.open_library" />
               </button>
             </div>
           </div>
@@ -1327,7 +1331,7 @@ export default function HomeView() {
                   data-controller-key={`home-album:${album.identity_key}`}
                   tabIndex={-1}
                   role="button"
-                  aria-label={`Open ${album.album} by ${album.artist}`}
+                  aria-label={translate('playback:auto.homeview.open_album_by_artist', { album: album.album, artist: album.artist })}
                   onContextMenu={(event) => {
                     event.preventDefault()
                     event.stopPropagation()
@@ -1353,32 +1357,33 @@ export default function HomeView() {
                   <div className="home-album-title">{album.album}</div>
                   <div className="home-album-artist">{album.artist}</div>
                   <div className="home-album-meta">
-                    {album.track_count > 0 ? `${album.track_count} tracks` : 'Recent play'}
-                    {album.year ? ` \u00b7 ${album.year}` : ''}
+                    {album.track_count > 0 ? translate('playback:auto.homeview.trackcount_tracks', { trackCount: album.track_count }) : translate('playback:auto.homeview.recent_play')}
+                    {album.year ? translate('playback:auto.homeview.year', { year: album.year }) : ''}
                   </div>
                 </article>
               ))}
             </div>
           ) : (
-            <div className="home-empty-strip">No recent albums yet. Your latest albums will appear here.</div>
+            <div className="home-empty-strip"><LocalizedText ns="playback" i18nKey="auto.homeview.no_recent_albums_yet_your_latest_albums_will_appear_here" /></div>
           )}
         </section>
 
         <section className="home-section" data-controller-group="home-playlists" data-controller-axis="horizontal">
           <div className="home-section-header">
-            <h2>PLAYLISTS</h2>
+            <h2><LocalizedText ns="playback" i18nKey="auto.homeview.playlists" /></h2>
             <div className="home-section-actions">
               <button
                 className="home-section-link-btn"
                 onClick={() => void handleImportPlaylist()}
-                title="Import playlist"
+                title={translate('playback:auto.homeview.import_playlist')}
               >
-                Import
+
+                <LocalizedText ns="playback" i18nKey="auto.homeview.import" />
               </button>
               <button
                 className="home-create-playlist-btn"
                 onClick={() => setIsCreatePlaylistModalOpen(true)}
-                title="Create playlist"
+                title={translate('playback:auto.homeview.create_playlist')}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="12" y1="5" x2="12" y2="19" />
@@ -1406,7 +1411,7 @@ export default function HomeView() {
                   data-controller-key={`home-playlist:${playlist.id}`}
                   tabIndex={-1}
                   role="button"
-                  aria-label={`Open ${playlist.name}`}
+                  aria-label={translate('playback:auto.homeview.open_name', { name: playlist.name })}
                   onContextMenu={(event) => {
                     event.preventDefault()
                     event.stopPropagation()
@@ -1425,13 +1430,13 @@ export default function HomeView() {
                   />
                   <div className="home-playlist-rail-meta">
                     <div className="home-playlist-rail-name">{playlist.name}</div>
-                    <div className="home-playlist-rail-count">{playlist.kind === 'dynamic' ? 'Dynamic - ' : ''}{playlist.track_count} tracks</div>
+                    <div className="home-playlist-rail-count">{playlist.kind === 'dynamic' ? translate('playback:auto.homeview.dynamic') : ''}{playlist.track_count}  <LocalizedText ns="playback" i18nKey="auto.homeview.tracks" /></div>
                   </div>
                 </article>
               ))}
             </div>
           ) : (
-            <div className="home-empty-strip">No playlists yet. Click + to create one.</div>
+            <div className="home-empty-strip"><LocalizedText ns="playback" i18nKey="auto.homeview.no_playlists_yet_click_to_create_one" /></div>
           )}
         </section>
       </div>

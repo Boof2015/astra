@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { CSSProperties, memo, ReactElement, Ref, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Grid, type CellComponentProps, type GridImperativeAPI } from 'react-window'
 import { resolveArtistGridLayout } from '../../utils/artistGridLayout'
@@ -92,7 +94,7 @@ function AlbumGridCellRenderer({
         data-controller-index={albumIndex}
         tabIndex={-1}
         role="button"
-        aria-label={`Open ${album.album} by ${album.artist}`}
+        aria-label={translate('library:auto.albumgrid.open_album_by_artist', { album: album.album, artist: album.artist })}
         onClick={() => {
           onSelectAlbum(album)
         }}
@@ -103,8 +105,9 @@ function AlbumGridCellRenderer({
         }}
       >
         {album.is_new && (
-          <span className="library-latest-sync-pill album-card-sync-pill" title="Added in latest library sync">
-            NEW
+          <span className="library-latest-sync-pill album-card-sync-pill" title={translate('library:auto.albumgrid.added_in_latest_library_sync')}>
+
+            <LocalizedText ns="library" i18nKey="auto.albumgrid.new" />
           </span>
         )}
         <div className="album-artwork">
@@ -113,7 +116,7 @@ function AlbumGridCellRenderer({
         <div className="album-info">
           <div className="album-title">{highlightSearchMatch(album.album, searchQuery)}</div>
           <div className="album-artist">{highlightSearchMatch(album.artist, searchQuery)}</div>
-          <div className="album-meta">{formatTrackCount(album.track_count)}{album.year ? ` • ${album.year}` : ''}</div>
+          <div className="album-meta">{formatTrackCount(album.track_count)}{album.year ? translate('library:auto.albumgrid.year', { year: album.year }) : ''}</div>
         </div>
       </div>
     </div>

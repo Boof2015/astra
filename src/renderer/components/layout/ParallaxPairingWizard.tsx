@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   PARALLAX_SINK_DEFAULT_PORT,
@@ -210,29 +212,29 @@ export default function ParallaxPairingWizard({ onClose }: Props) {
       className="parallax-pairing-wizard-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-label="Add a speaker"
+      aria-label={translate('common:auto.parallaxpairingwizard.add_a_speaker')}
       onClick={(event) => { if (event.target === event.currentTarget) handleCancel() }}
     >
       <div className="parallax-pairing-wizard-card">
         <div className="parallax-pairing-wizard-head">
-          <span className="parallax-pairing-wizard-title">Add a speaker</span>
+          <span className="parallax-pairing-wizard-title"><LocalizedText ns="common" i18nKey="auto.parallaxpairingwizard.add_a_speaker" /></span>
           <button
             type="button"
             className="parallax-pairing-wizard-close"
             onClick={handleCancel}
-            aria-label="Close"
+            aria-label={translate('common:auto.parallaxpairingwizard.close')}
           >×</button>
         </div>
 
         {phase.kind === 'browse' && (
           <>
             <div className="parallax-pairing-wizard-section-head">
-              <span className="parallax-pairing-wizard-section-label">On this network</span>
+              <span className="parallax-pairing-wizard-section-label"><LocalizedText ns="common" i18nKey="auto.parallaxpairingwizard.on_this_network" /></span>
               <span className="parallax-pairing-wizard-section-count">{discoveredList.length}</span>
             </div>
             <div className="parallax-pairing-wizard-list">
               {discoveredList.length === 0 ? (
-                <div className="parallax-pairing-wizard-empty">Looking for speakers on this network…</div>
+                <div className="parallax-pairing-wizard-empty"><LocalizedText ns="common" i18nKey="auto.parallaxpairingwizard.looking_for_speakers_on_this_network" /></div>
               ) : (
                 discoveredList.map((sink) => {
                   const matchedPair = sink.endpointUuid ? pairedByEndpointUuid.get(sink.endpointUuid) : undefined
@@ -251,10 +253,11 @@ export default function ParallaxPairingWizard({ onClose }: Props) {
                         </span>
                       </div>
                       {!sink.compatible ? (
-                        <span className="parallax-pairing-wizard-row-badge">Update required</span>
+                        <span className="parallax-pairing-wizard-row-badge"><LocalizedText ns="common" i18nKey="auto.parallaxpairingwizard.update_required" /></span>
                       ) : matchedPair && (
                         <span className="parallax-pairing-wizard-row-badge">
-                          Already paired{matchedPair.name && matchedPair.name !== sink.name ? ` as “${matchedPair.name}”` : ''}
+
+                          <LocalizedText ns="common" i18nKey="auto.parallaxpairingwizard.already_paired" />{matchedPair.name && matchedPair.name !== sink.name ? translate('common:auto.parallaxpairingwizard.as_name', { name: matchedPair.name }) : ''}
                         </span>
                       )}
                     </button>
@@ -263,10 +266,10 @@ export default function ParallaxPairingWizard({ onClose }: Props) {
               )}
             </div>
 
-            <div className="parallax-pairing-wizard-divider">or</div>
+            <div className="parallax-pairing-wizard-divider"><LocalizedText ns="common" i18nKey="auto.parallaxpairingwizard.or" /></div>
 
             <form className="parallax-pairing-wizard-manual" onSubmit={handleManualSubmit}>
-              <label className="parallax-pairing-wizard-manual-label">Add by address</label>
+              <label className="parallax-pairing-wizard-manual-label"><LocalizedText ns="common" i18nKey="auto.parallaxpairingwizard.add_by_address" /></label>
               <div className="parallax-pairing-wizard-manual-row">
                 <input
                   type="text"
@@ -276,7 +279,8 @@ export default function ParallaxPairingWizard({ onClose }: Props) {
                   onChange={(event) => setManualUrl(event.target.value)}
                 />
                 <button type="submit" className="settings-btn settings-btn-primary" disabled={!manualUrl.trim()}>
-                  Pair
+
+                  <LocalizedText ns="common" i18nKey="auto.parallaxpairingwizard.pair" />
                 </button>
               </div>
             </form>
@@ -285,7 +289,8 @@ export default function ParallaxPairingWizard({ onClose }: Props) {
 
         {phase.kind === 'initiating' && (
           <div className="parallax-pairing-wizard-loading">
-            Connecting to {phase.baseUrl}…
+
+            <LocalizedText ns="common" i18nKey="auto.parallaxpairingwizard.connecting_to" /> {phase.baseUrl}…
           </div>
         )}
 
@@ -305,7 +310,7 @@ export default function ParallaxPairingWizard({ onClose }: Props) {
 
         {phase.kind === 'success' && (
           <div className="parallax-pairing-wizard-success">
-            <div className="parallax-pairing-wizard-success-kicker">Paired</div>
+            <div className="parallax-pairing-wizard-success-kicker"><LocalizedText ns="common" i18nKey="auto.parallaxpairingwizard.paired" /></div>
             <div className="parallax-pairing-wizard-success-name">{phase.sinkName}</div>
           </div>
         )}
@@ -320,14 +325,17 @@ export default function ParallaxPairingWizard({ onClose }: Props) {
                   className="settings-btn settings-btn-primary"
                   onClick={() => { const url = phase.retryBaseUrl; if (url) void handleInitiate(url) }}
                 >
-                  Try again
+
+                  <LocalizedText ns="common" i18nKey="auto.parallaxpairingwizard.try_again" />
                 </button>
               )}
               <button type="button" className="settings-btn" onClick={() => setPhase({ kind: 'browse' })}>
-                Back
+
+                <LocalizedText ns="common" i18nKey="auto.parallaxpairingwizard.back" />
               </button>
               <button type="button" className="settings-btn" onClick={onClose}>
-                Close
+
+                <LocalizedText ns="common" i18nKey="auto.parallaxpairingwizard.close" />
               </button>
             </div>
           </div>
@@ -369,18 +377,19 @@ function PinEntryPhase({
         onKeyDown={(event) => { if (event.key === 'Enter') onSubmit() }}
       />
       <div className="parallax-pairing-wizard-pin-meta">
-        Expires in {formatMmSs(secondsRemaining)}
-        {attempts > 0 && <span className="parallax-pairing-wizard-pin-attempts"> · Wrong PIN. Try again.</span>}
+
+        <LocalizedText ns="common" i18nKey="auto.parallaxpairingwizard.expires_in" /> {formatMmSs(secondsRemaining)}
+        {attempts > 0 && <span className="parallax-pairing-wizard-pin-attempts">  <LocalizedText ns="common" i18nKey="auto.parallaxpairingwizard.wrong_pin_try_again" /></span>}
       </div>
       <div className="parallax-pairing-wizard-row-actions">
-        <button type="button" className="settings-btn" onClick={onCancel}>Cancel</button>
+        <button type="button" className="settings-btn" onClick={onCancel}><LocalizedText ns="common" i18nKey="auto.parallaxpairingwizard.cancel" /></button>
         <button
           type="button"
           className="settings-btn settings-btn-primary"
           disabled={pinInput.length !== 6 || submitting}
           onClick={onSubmit}
         >
-          {submitting ? 'Pairing…' : 'Pair'}
+          {submitting ? translate('common:auto.parallaxpairingwizard.pairing') : translate('common:auto.parallaxpairingwizard.pair')}
         </button>
       </div>
     </div>

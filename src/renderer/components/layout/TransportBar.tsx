@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -350,8 +352,8 @@ export default function TransportBar() {
       <button
         className={`pipeline-shelf-toggle${showPipelineShelf ? ' pipeline-shelf-toggle-open' : ''}`}
         onClick={togglePipelineShelf}
-        title={showPipelineShelf ? 'Hide audio pipeline' : 'Show audio pipeline'}
-        aria-label="Toggle audio pipeline shelf"
+        title={showPipelineShelf ? translate('common:auto.transportbar.hide_audio_pipeline') : translate('common:auto.transportbar.show_audio_pipeline')}
+        aria-label={translate('common:auto.transportbar.toggle_audio_pipeline_shelf')}
       >
         <svg width="14" height="8" viewBox="0 0 14 8" fill="none">
           <path
@@ -374,12 +376,12 @@ export default function TransportBar() {
           data-controller-focusable="true"
           tabIndex={-1}
           role="button"
-          aria-label="Open fullscreen player"
+          aria-label={translate('common:auto.transportbar.open_fullscreen_player')}
         >
           {currentTrack?.artworkHash ? (
-            <AlbumArtwork hash={currentTrack.artworkHash} alt="Album art" variant="card" />
+            <AlbumArtwork hash={currentTrack.artworkHash} alt={translate('common:auto.transportbar.album_art')} variant="card" />
           ) : currentTrack?.artworkData ? (
-            <img src={currentTrack.artworkData} alt="Album art" />
+            <img src={currentTrack.artworkData} alt={translate('common:auto.transportbar.album_art')} />
           ) : (
             <div className="artwork-placeholder">&#9835;</div>
           )}
@@ -398,8 +400,8 @@ export default function TransportBar() {
               void jumpToNowPlaying()
             }}
             disabled={!currentTrack}
-            title="Jump to playing (J)"
-            aria-label="Jump to playing (J)"
+            title={translate('common:auto.transportbar.jump_to_playing_j')}
+            aria-label={translate('common:auto.transportbar.jump_to_playing_j')}
           >
             <span ref={titleInnerRef} className="now-playing-title-inner">
               {currentTrack?.title ?? 'No track playing'}
@@ -426,25 +428,27 @@ export default function TransportBar() {
               {showAtmosBadge && (
                   <span
                     className="transport-audio-badge transport-audio-badge-atmos"
-                    title="Atmos metadata detected"
+                    title={translate('common:auto.transportbar.atmos_metadata_detected')}
                   >
-                    ATM
+
+                    <LocalizedText ns="common" i18nKey="auto.transportbar.atm" />
                   </span>
                 )}
                 {showEclipsaBadge && (
                   <span
                     className="transport-audio-badge transport-audio-badge-eclipsa"
-                    title="Eclipsa Audio (IAMF) source, decoded to 7.1.4"
+                    title={translate('common:auto.transportbar.eclipsa_audio_iamf_source_decoded_to_7_1_4')}
                   >
-                    ECL
+
+                    <LocalizedText ns="common" i18nKey="auto.transportbar.ecl" />
                   </span>
                 )}
                 {isMultichannel && (
                   <span
                     className="transport-audio-badge transport-audio-badge-ch"
-                    title={`${resolvedChannelCount} channels`}
+                    title={translate('common:auto.transportbar.resolvedchannelcount_channels', { resolvedchannelcount: resolvedChannelCount })}
                   >
-                    <span>{resolvedChannelCount}CH</span>
+                    <span>{resolvedChannelCount}<LocalizedText ns="common" i18nKey="auto.transportbar.ch" /></span>
                   </span>
                 )}
               </div>
@@ -478,7 +482,7 @@ export default function TransportBar() {
           )}
           {bitPerfectStatusLabel && (
             <div className="transport-output-line" title={disabledControlMessage}>
-              <span className="transport-output-line-prefix">BP</span>
+              <span className="transport-output-line-prefix"><LocalizedText ns="common" i18nKey="auto.transportbar.bp" /></span>
               <span className="transport-output-line-value">{bitPerfectStatusLabel}</span>
             </div>
           )}
@@ -486,10 +490,10 @@ export default function TransportBar() {
         <button
           className={`transport-fav-btn ${isFavorite ? 'active' : ''}`}
           title={isAssociationTrack
-            ? 'Unavailable for files opened from your file explorer'
+            ? translate('common:auto.transportbar.unavailable_for_files_opened_from_your_file_explorer')
             : isFavorite
-              ? 'Remove from favorites'
-              : 'Add to favorites'}
+              ? translate('common:auto.transportbar.remove_from_favorites')
+              : translate('common:auto.transportbar.add_to_favorites')}
           onClick={() => currentTrack && toggleFavorite(currentTrack.path)}
           disabled={!currentTrack || isAssociationTrack}
         >
@@ -510,10 +514,10 @@ export default function TransportBar() {
         <div className="transport-controls">
           <button
             className={`control-btn control-btn-shuffle ${shuffle ? 'active' : ''}`}
-            aria-label="Shuffle"
+            aria-label={translate('common:auto.transportbar.shuffle')}
             onClick={toggleShuffle}
             disabled={transportControlsLocked}
-            title={shuffle ? 'Shuffle on' : 'Shuffle off'}
+            title={shuffle ? translate('common:auto.transportbar.shuffle_on') : translate('common:auto.transportbar.shuffle_off')}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
               <path d="M16 3h5v5" />
@@ -525,7 +529,7 @@ export default function TransportBar() {
           </button>
           <button
             className="control-btn control-btn-skip"
-            aria-label="Previous"
+            aria-label={translate('common:auto.transportbar.previous')}
             onClick={playPrevious}
             disabled={transportControlsLocked || resolvedQueueLength === 0}
           >
@@ -538,7 +542,7 @@ export default function TransportBar() {
             className="control-btn control-btn-play"
             onClick={togglePlay}
             disabled={transportControlsLocked || !currentTrack || isLoadingTrack}
-            aria-label={isPlaying ? 'Pause' : 'Play'}
+            aria-label={isPlaying ? translate('common:auto.transportbar.pause') : translate('common:auto.transportbar.play')}
           >
             {isLoadingTrack ? (
               <div className="loading-spinner" />
@@ -554,7 +558,7 @@ export default function TransportBar() {
           </button>
           <button
             className="control-btn control-btn-skip"
-            aria-label="Next"
+            aria-label={translate('common:auto.transportbar.next')}
             onClick={playNext}
             disabled={transportControlsLocked || resolvedQueueLength === 0}
           >
@@ -565,10 +569,10 @@ export default function TransportBar() {
           </button>
           <button
             className={`control-btn control-btn-repeat ${repeat !== 'none' ? 'active' : ''}`}
-            aria-label="Repeat"
+            aria-label={translate('common:auto.transportbar.repeat')}
             onClick={toggleRepeat}
             disabled={transportControlsLocked}
-            title={repeat === 'none' ? 'Repeat off' : repeat === 'all' ? 'Repeat all' : 'Repeat one'}
+            title={repeat === 'none' ? translate('common:auto.transportbar.repeat_off') : repeat === 'all' ? translate('common:auto.transportbar.repeat_all') : translate('common:auto.transportbar.repeat_one')}
           >
             {repeat === 'one' ? (
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
@@ -602,8 +606,8 @@ export default function TransportBar() {
           <button
             className={`transport-mini-btn transport-mini-btn-split-top ${miniWindowState.isOpen ? 'active' : ''} ${miniWindowState.alwaysOnTop ? 'pinned' : ''}`}
             onClick={() => void window.electronAPI.miniPlayer.open()}
-            title="Open mini player"
-            aria-label="Open mini player"
+            title={translate('common:auto.transportbar.open_mini_player')}
+            aria-label={translate('common:auto.transportbar.open_mini_player')}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
               <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
@@ -614,8 +618,8 @@ export default function TransportBar() {
           <button
             className={`transport-lyrics-btn ${showLyricsShelf ? 'active' : ''}`}
             onClick={handleLyricsToggle}
-            title={showLyricsShelf && lyricsPopoutIsOpen ? 'Close popped out lyrics' : 'Toggle lyrics shelf'}
-            aria-label="Toggle lyrics shelf"
+            title={showLyricsShelf && lyricsPopoutIsOpen ? translate('common:auto.transportbar.close_popped_out_lyrics') : translate('common:auto.transportbar.toggle_lyrics_shelf')}
+            aria-label={translate('common:auto.transportbar.toggle_lyrics_shelf')}
             aria-pressed={showLyricsShelf}
             disabled={!currentTrack}
           >
@@ -631,10 +635,10 @@ export default function TransportBar() {
         <button
           className={`transport-eq-btn ${showEQPopover ? 'active' : ''} ${eqEnabled ? 'enabled' : ''}${eqControlDisabled ? ' disabled' : ''}`}
           onClick={eqControlDisabled ? undefined : (() => setShowEQPopover(!showEQPopover))}
-          title={eqControlDisabled ? disabledControlMessage : 'Toggle equalizer'}
+          title={eqControlDisabled ? disabledControlMessage : translate('common:auto.transportbar.toggle_equalizer')}
           disabled={eqControlDisabled}
         >
-          <span className="transport-eq-label">EQ</span>
+          <span className="transport-eq-label"><LocalizedText ns="common" i18nKey="auto.transportbar.eq" /></span>
           <EQResponsePreview className="transport-eq-curve" width={80} height={30} showFill={false} />
         </button>
 
@@ -643,7 +647,7 @@ export default function TransportBar() {
           <button
             className={`transport-qi-btn ${showQueue ? 'active' : ''}`}
             onClick={toggleQueue}
-            title="Toggle queue"
+            title={translate('common:auto.transportbar.toggle_queue')}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
@@ -652,7 +656,7 @@ export default function TransportBar() {
           <button
             className={`transport-qi-btn ${showInfoSidebar ? 'active' : ''}`}
             onClick={toggleInfoSidebar}
-            title="Toggle track info"
+            title={translate('common:auto.transportbar.toggle_track_info')}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
@@ -663,19 +667,19 @@ export default function TransportBar() {
         {/* File info readout — 2x2 grid */}
         <div className="transport-file-readout">
           <div className="readout-cell">
-            <span className="readout-label">FMT</span>
+            <span className="readout-label"><LocalizedText ns="common" i18nKey="auto.transportbar.fmt" /></span>
             <span className="readout-value">{currentTrack?.format?.toUpperCase() ?? '—'}</span>
           </div>
           <div className="readout-cell">
-            <span className="readout-label">BIT</span>
+            <span className="readout-label"><LocalizedText ns="common" i18nKey="auto.transportbar.bit" /></span>
             <span className="readout-value">{currentTrack?.bitDepth ?? '—'}</span>
           </div>
           <div className="readout-cell">
-            <span className="readout-label">KHZ</span>
+            <span className="readout-label"><LocalizedText ns="common" i18nKey="auto.transportbar.khz" /></span>
             <span className="readout-value">{currentTrack?.sampleRate ? (currentTrack.sampleRate / 1000).toFixed(1) : '—'}</span>
           </div>
           <div className="readout-cell">
-            <span className="readout-label">NORM</span>
+            <span className="readout-label"><LocalizedText ns="common" i18nKey="auto.transportbar.norm" /></span>
             <span
               className={`readout-value${normalizationReadout.dim ? ' readout-value-dim' : ''}${normalizationReadout.accent ? ' readout-value-replaygain' : ''}${normalizationReadout.off ? ' readout-value-off' : ''}`}
             >

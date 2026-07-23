@@ -235,6 +235,9 @@ declare global {
             onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
         }
         electronAPI: {
+            localization: {
+                setLocale: (locale: string) => Promise<string>
+            }
             minimize: () => void
             maximize: () => void
             close: () => void

@@ -1,3 +1,4 @@
+import { translate } from '../../i18n'
 import { CSSProperties, memo, ReactElement, Ref, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Grid, List, type CellComponentProps, type GridImperativeAPI, type ListImperativeAPI, type RowComponentProps } from 'react-window'
 import type { ArtworkVariant } from '../../stores/libraryStore'
@@ -93,7 +94,7 @@ function ArtistAvatar({
       {artist.artwork_hash ? (
         <AlbumArtwork
           hash={artist.artwork_hash}
-          alt={`${artist.artist} artwork`}
+          alt={translate('library:auto.artistlist.artist_artwork', { artist: artist.artist })}
           className={artworkClassName}
           variant={artworkVariant}
         />
@@ -124,7 +125,7 @@ function ArtistListRowRenderer({
         data-controller-index={index}
         tabIndex={-1}
         role="button"
-        aria-label={`Open ${artist.artist}`}
+        aria-label={translate('library:auto.artistlist.open_artist', { artist: artist.artist })}
         onClick={() => {
           void onSelectArtist(artist.artist)
         }}

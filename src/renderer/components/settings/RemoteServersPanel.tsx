@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
 import { useJellyfinSettingsStore } from '../../stores/jellyfinSettingsStore'
@@ -528,14 +530,15 @@ export default function RemoteServersPanel() {
       <div className="settings-integration-card settings-library-remote-card">
         <div className="remote-wizard">
           <button className="remote-wizard-back" onClick={resetWizard}>
-            ← Back to Sources
+
+            <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.back_to_sources" />
           </button>
 
           <div className="remote-wizard-title-row">
             <h4 className="remote-wizard-title">
-              {wizardMode === 'add' ? 'Add Remote Server' : `Edit "${nameInput || 'Source'}"`}
+              {wizardMode === 'add' ? translate('settings:auto.remoteserverspanel.add_remote_server') : translate('settings:auto.remoteserverspanel.edit_value1', { value1: nameInput || 'Source' })}
             </h4>
-            <span className="remote-wizard-step-label">Step {wizardStep + 1} of 2</span>
+            <span className="remote-wizard-step-label"><LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.step" /> {wizardStep + 1}  <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.of_2" /></span>
           </div>
 
           {/* Step indicators */}
@@ -563,7 +566,7 @@ export default function RemoteServersPanel() {
             {wizardStep === 0 && (
               <>
                 <label className="settings-field">
-                  <span className="settings-field-label">Server URL</span>
+                  <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.server_url" /></span>
                   <input
                     className="settings-select"
                     type="text"
@@ -573,7 +576,7 @@ export default function RemoteServersPanel() {
                   />
                 </label>
                 <label className="settings-field">
-                  <span className="settings-field-label">Username</span>
+                  <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.username" /></span>
                   <input
                     className="settings-select"
                     type="text"
@@ -583,7 +586,8 @@ export default function RemoteServersPanel() {
                 </label>
                 <label className="settings-field">
                   <span className="settings-field-label">
-                    Password{editingSource !== null ? ' (leave blank to keep existing)' : ''}
+
+                    <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.password" />{editingSource !== null ? translate('settings:auto.remoteserverspanel.leave_blank_to_keep_existing') : ''}
                   </span>
                   <input
                     className="settings-select"
@@ -604,20 +608,21 @@ export default function RemoteServersPanel() {
                 {showTypeFallback && (
                   <div className="remote-type-fallback">
                     <p className="settings-note">
-                      Could not auto-detect. Select your server type:
+
+                      <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.could_not_auto_detect_select_your_server_type" />
                     </p>
                     <div className="remote-type-fallback-row">
                       <button
                         className={`remote-type-option ${fallbackType === 'subsonic' ? 'selected' : ''}`}
                         onClick={() => setFallbackType('subsonic')}
                       >
-                        <span className="remote-type-option-title">Subsonic / Navidrome</span>
+                        <span className="remote-type-option-title"><LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.subsonic_navidrome" /></span>
                       </button>
                       <button
                         className={`remote-type-option ${fallbackType === 'jellyfin' ? 'selected' : ''}`}
                         onClick={() => setFallbackType('jellyfin')}
                       >
-                        <span className="remote-type-option-title">Jellyfin</span>
+                        <span className="remote-type-option-title"><LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.jellyfin" /></span>
                       </button>
                     </div>
                     <button
@@ -625,7 +630,7 @@ export default function RemoteServersPanel() {
                       onClick={() => void handleTestWithFallbackType()}
                       disabled={testStatus === 'testing'}
                     >
-                      {testStatus === 'testing' ? 'Testing...' : 'Retry with Selected Type'}
+                      {testStatus === 'testing' ? translate('settings:auto.remoteserverspanel.testing') : translate('settings:auto.remoteserverspanel.retry_with_selected_type')}
                     </button>
                   </div>
                 )}
@@ -635,39 +640,39 @@ export default function RemoteServersPanel() {
             {wizardStep === 1 && (
               <>
                 <label className="settings-field">
-                  <span className="settings-field-label">Source Name</span>
+                  <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.source_name" /></span>
                   <input
                     className="settings-select"
                     type="text"
                     value={nameInput}
                     onChange={(e) => setNameInput(e.target.value)}
-                    placeholder="My Remote Library"
+                    placeholder={translate('settings:auto.remoteserverspanel.my_remote_library')}
                   />
                 </label>
                 <div className="settings-field settings-field-inline">
-                  <span className="settings-field-label">Enabled</span>
+                  <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.enabled" /></span>
                   <button
                     className={`settings-toggle ${enabledInput ? 'active' : ''}`}
                     onClick={() => setEnabledInput(!enabledInput)}
                   >
-                    {enabledInput ? 'Enabled' : 'Disabled'}
+                    {enabledInput ? translate('settings:auto.remoteserverspanel.enabled') : translate('settings:auto.remoteserverspanel.disabled')}
                   </button>
                 </div>
                 <div className="remote-summary">
                   <div className="remote-summary-row">
-                    <span className="remote-summary-label">Type</span>
+                    <span className="remote-summary-label"><LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.type" /></span>
                     <span className="remote-summary-value">
                       {resolvedServerType
                         ? REMOTE_PROVIDER_LABEL[resolvedServerType]
-                        : 'Unknown'}
+                        : translate('settings:auto.remoteserverspanel.unknown')}
                     </span>
                   </div>
                   <div className="remote-summary-row">
-                    <span className="remote-summary-label">URL</span>
+                    <span className="remote-summary-label"><LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.url" /></span>
                     <span className="remote-summary-value">{baseUrlInput.trim()}</span>
                   </div>
                   <div className="remote-summary-row">
-                    <span className="remote-summary-label">Username</span>
+                    <span className="remote-summary-label"><LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.username" /></span>
                     <span className="remote-summary-value">{usernameInput.trim()}</span>
                   </div>
                 </div>
@@ -678,7 +683,8 @@ export default function RemoteServersPanel() {
           {/* Footer */}
           <div className="remote-wizard-footer">
             <button className="settings-btn" onClick={resetWizard}>
-              Cancel
+
+              <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.cancel" />
             </button>
             <div className="remote-wizard-footer-right">
               {wizardStep > 0 && (
@@ -686,7 +692,8 @@ export default function RemoteServersPanel() {
                   className="settings-btn"
                   onClick={() => setWizardStep(0)}
                 >
-                  Back
+
+                  <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.back" />
                 </button>
               )}
               {wizardStep === 0 && !showTypeFallback && (
@@ -704,14 +711,15 @@ export default function RemoteServersPanel() {
                   onClick={() => void handleSaveSource()}
                   disabled={!nameInput.trim()}
                 >
-                  {wizardMode === 'add' ? 'Add Source' : 'Save Changes'}
+                  {wizardMode === 'add' ? translate('settings:auto.remoteserverspanel.add_source') : translate('settings:auto.remoteserverspanel.save_changes')}
                 </button>
               )}
             </div>
           </div>
 
           <p className="settings-note">
-            Passwords are encrypted with OS secure storage and never stored in track URLs.
+
+            <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.passwords_are_encrypted_with_os_secure_storage_and_never" />
           </p>
         </div>
       </div>
@@ -722,14 +730,15 @@ export default function RemoteServersPanel() {
   return (
     <div className="settings-integration-card settings-library-remote-card">
       <div className="settings-integration-card-head">
-        <h4>Remote Music Servers</h4>
-        <p>Connect to Subsonic/Navidrome and Jellyfin servers.</p>
+        <h4><LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.remote_music_servers" /></h4>
+        <p><LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.connect_to_subsonic_navidrome_and_jellyfin_servers" /></p>
       </div>
 
       <div className="remote-panel-header">
         <div className="remote-panel-header-actions">
           <button className="settings-btn settings-btn-primary" onClick={openAddWizard}>
-            + Add Server
+
+            <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.add_server" />
           </button>
         </div>
         <div className="remote-panel-header-actions">
@@ -738,7 +747,7 @@ export default function RemoteServersPanel() {
             onClick={handleSyncAll}
             disabled={isAnyRemoteSyncing || remoteSources.length === 0}
           >
-            {isAnyRemoteSyncing ? 'Syncing...' : 'Sync All'}
+            {isAnyRemoteSyncing ? translate('settings:auto.remoteserverspanel.syncing') : translate('settings:auto.remoteserverspanel.sync_all')}
           </button>
         </div>
       </div>
@@ -758,20 +767,25 @@ export default function RemoteServersPanel() {
               return (
                 <div key={key} className="remote-delete-confirm">
                   <p className="remote-delete-confirm-title">
-                    Delete {REMOTE_PROVIDER_LABEL[source.sourceType]} source "{source.name}"?
+
+                    <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.delete" /> {REMOTE_PROVIDER_LABEL[source.sourceType]}  <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.source" />{source.name}"?
                   </p>
                   <p className="remote-delete-confirm-desc">
-                    Choose whether to keep synced tracks as unavailable placeholders or purge them completely.
+
+                    <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.choose_whether_to_keep_synced_tracks_as_unavailable_plac" />
                   </p>
                   <div className="remote-delete-confirm-actions">
                     <button className="settings-btn" onClick={() => void handleDeleteSource(source, false)}>
-                      Keep Tracks
+
+                      <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.keep_tracks" />
                     </button>
                     <button className="settings-btn settings-btn-danger" onClick={() => void handleDeleteSource(source, true)}>
-                      Purge Tracks
+
+                      <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.purge_tracks" />
                     </button>
                     <button className="settings-btn" onClick={() => setDeleteConfirmKey(null)}>
-                      Cancel
+
+                      <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.cancel" />
                     </button>
                   </div>
                 </div>
@@ -793,19 +807,21 @@ export default function RemoteServersPanel() {
                 </p>
                 {statusText === 'error' && errorText && (
                   <p className="remote-source-card-status remote-source-card-status-error">
-                    Error: {errorText}
+
+                    <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.error" /> {errorText}
                   </p>
                 )}
                 {lastSyncTs && statusText !== 'error' && (
                   <p className="remote-source-card-status">
-                    Synced {formatTimeAgo(lastSyncTs)}
+
+                    <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.synced" /> {formatTimeAgo(lastSyncTs)}
                   </p>
                 )}
                 {progress && (
                   <p className="remote-source-card-progress">
                     {progress.activity}
-                    {progress.total !== null ? ` (${progress.current ?? 0}/${progress.total})` : ''}
-                    {progress.detail ? ` · ${progress.detail}` : ''}
+                    {progress.total !== null ? translate('settings:auto.remoteserverspanel.value1_total', { value1: progress.current ?? 0, total: progress.total }) : ''}
+                    {progress.detail ? translate('settings:auto.remoteserverspanel.detail', { detail: progress.detail }) : ''}
                   </p>
                 )}
                 <div className="remote-source-card-footer">
@@ -814,7 +830,8 @@ export default function RemoteServersPanel() {
                     onClick={() => handleSyncSource(source)}
                     disabled={isAnyRemoteSyncing || source.enabled !== 1}
                   >
-                    Sync
+
+                    <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.sync" />
                   </button>
                   <div className="remote-overflow-wrap" ref={openMenuKey === key ? menuRef : undefined}>
                     <button
@@ -826,10 +843,11 @@ export default function RemoteServersPanel() {
                     {openMenuKey === key && (
                       <div className="remote-overflow-menu">
                         <button className="remote-overflow-menu-item" onClick={() => openEditWizard(source)}>
-                          Edit
+
+                          <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.edit" />
                         </button>
                         <button className="remote-overflow-menu-item" onClick={() => handleToggleEnabled(source)}>
-                          {source.enabled === 1 ? 'Disable' : 'Enable'}
+                          {source.enabled === 1 ? translate('settings:auto.remoteserverspanel.disable') : translate('settings:auto.remoteserverspanel.enable')}
                         </button>
                         <button
                           className="remote-overflow-menu-item remote-overflow-menu-item-danger"
@@ -838,7 +856,8 @@ export default function RemoteServersPanel() {
                             setOpenMenuKey(null)
                           }}
                         >
-                          Delete
+
+                          <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.delete" />
                         </button>
                       </div>
                     )}
@@ -850,12 +869,14 @@ export default function RemoteServersPanel() {
         </div>
       ) : (
         <div className="remote-empty-state">
-          <p className="remote-empty-state-title">No remote servers configured</p>
+          <p className="remote-empty-state-title"><LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.no_remote_servers_configured" /></p>
           <p className="remote-empty-state-desc">
-            Connect a Subsonic, Navidrome, or Jellyfin server to stream your music library.
+
+            <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.connect_a_subsonic_navidrome_or_jellyfin_server_to_strea" />
           </p>
           <button className="settings-btn settings-btn-primary" onClick={openAddWizard}>
-            + Add Your First Server
+
+            <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.add_your_first_server" />
           </button>
         </div>
       )}
