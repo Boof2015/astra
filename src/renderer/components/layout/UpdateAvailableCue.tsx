@@ -1,3 +1,5 @@
+import { translate } from '../../i18n'
+import LocalizedText from '../i18n/LocalizedText'
 import { useEffect, useState } from 'react'
 import { useUIStore } from '../../stores/uiStore'
 import { useUpdateStore } from '../../stores/updateStore'
@@ -55,8 +57,8 @@ export default function UpdateAvailableCue() {
         </div>
 
         <div className="fullscreen-next-cue-meta">
-          <span className="fullscreen-next-cue-label">Update Available</span>
-          <div className="fullscreen-next-cue-title">{notice.latestTag} is ready to download</div>
+          <span className="fullscreen-next-cue-label"><LocalizedText ns="common" i18nKey="auto.updateavailablecue.update_available" /></span>
+          <div className="fullscreen-next-cue-title">{notice.latestTag}  <LocalizedText ns="common" i18nKey="auto.updateavailablecue.is_ready_to_download" /></div>
           <div className="fullscreen-next-cue-artist">{releaseSummary}</div>
         </div>
 
@@ -64,10 +66,11 @@ export default function UpdateAvailableCue() {
           type="button"
           className="update-available-cue-badge"
           onClick={handleOpenDownload}
-          aria-label={`Download update ${notice.latestTag}`}
-          title={`Download ${notice.latestTag}`}
+          aria-label={translate('common:auto.updateavailablecue.download_update_latesttag', { latesttag: notice.latestTag })}
+          title={translate('common:auto.updateavailablecue.download_latesttag', { latesttag: notice.latestTag })}
         >
-          Download
+
+          <LocalizedText ns="common" i18nKey="auto.updateavailablecue.download" />
         </button>
       </div>
 

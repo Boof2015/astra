@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate, translateSourceText } from '../../i18n'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type UIEvent as ReactUIEvent } from 'react'
 import { useLibraryStore, type LibraryArtistBrowseMode, type LibraryAlbumSortMode } from '../../stores/libraryStore'
 import { usePlayerStore, type PlaybackSourceContext } from '../../stores/playerStore'
@@ -1079,8 +1081,8 @@ export default function LibraryView() {
     setIsArtistImageMenuOpen(false)
 
     const imagePath = await window.electronAPI.openFileDialog({
-      title: 'Choose artist image',
-      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }]
+      title: translateSourceText('Choose artist image'),
+      filters: [{ name: translate('common:dialogs.filters.images'), extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }]
     })
     if (!imagePath) return
 
@@ -1223,8 +1225,8 @@ export default function LibraryView() {
             className="scan-cancel-btn"
             onClick={() => void cancelScan()}
             disabled={isCancelingScan}
-            aria-label="Cancel scan"
-            title="Cancel scan (Esc)"
+            aria-label={translate('library:auto.libraryview.cancel_scan')}
+            title={translate('library:auto.libraryview.cancel_scan_esc')}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
@@ -1237,7 +1239,7 @@ export default function LibraryView() {
             <div className="scan-bar-fill" style={{ width: `${displayPercent}%` }} />
           </div>
           {scanDetail && <div className="scan-file">{scanDetail}</div>}
-          <div className="scan-cancel-hint">{isCancelingScan ? 'Canceling...' : 'Press Esc to cancel'}</div>
+          <div className="scan-cancel-hint">{isCancelingScan ? translate('library:auto.libraryview.canceling') : translate('library:auto.libraryview.press_esc_to_cancel')}</div>
         </div>
       </div>
     )
@@ -1249,7 +1251,7 @@ export default function LibraryView() {
       return (
         <div className="library-loading">
           <div className="loading-spinner" />
-          <p>Loading library...</p>
+          <p><LocalizedText ns="library" i18nKey="auto.libraryview.loading_library" /></p>
         </div>
       )
     }
@@ -1259,8 +1261,8 @@ export default function LibraryView() {
       return (
         <div className="library-empty">
           <div className="empty-icon">&#9835;</div>
-          <p>Your library is empty</p>
-          <p className="empty-hint">Use Settings &gt; Library &gt; Add Folder to scan your music</p>
+          <p><LocalizedText ns="library" i18nKey="auto.libraryview.your_library_is_empty" /></p>
+          <p className="empty-hint"><LocalizedText ns="library" i18nKey="auto.libraryview.use_settings_gt_library_gt_add_folder_to_scan_your_music" /></p>
         </div>
       )
     }
@@ -1268,7 +1270,7 @@ export default function LibraryView() {
     if (hasSearchQuery && displayTracks.length === 0 && (selectedAlbum || selectedGenre || viewMode === 'tracks') && !selectedArtist) {
       return (
         <div className="library-empty">
-          <p>No tracks found for "{trimmedQueryForMessage}"</p>
+          <p>{translate('library:search.noTracks', { query: trimmedQueryForMessage })}</p>
         </div>
       )
     }
@@ -1282,8 +1284,8 @@ export default function LibraryView() {
     if (viewMode === 'albums' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null) {
       if (filteredAlbums.length === 0) {
         return hasSearchQuery
-          ? <div className="library-empty"><p>No albums found for "{trimmedQueryForMessage}"</p></div>
-          : <div className="library-empty"><p>No albums found</p></div>
+          ? <div className="library-empty"><p>{translate('library:search.noAlbums', { query: trimmedQueryForMessage })}</p></div>
+          : <div className="library-empty"><p><LocalizedText ns="library" i18nKey="auto.libraryview.no_albums_found" /></p></div>
       }
       return (
         <AlbumGrid
@@ -1300,8 +1302,8 @@ export default function LibraryView() {
     if (viewMode === 'artists' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null) {
       if (filteredArtists.length === 0) {
         return hasSearchQuery
-          ? <div className="library-empty"><p>No artists found for "{trimmedQueryForMessage}"</p></div>
-          : <div className="library-empty"><p>No artists found</p></div>
+          ? <div className="library-empty"><p>{translate('library:search.noArtists', { query: trimmedQueryForMessage })}</p></div>
+          : <div className="library-empty"><p><LocalizedText ns="library" i18nKey="auto.libraryview.no_artists_found" /></p></div>
       }
       return (
         <ArtistList
@@ -1317,8 +1319,8 @@ export default function LibraryView() {
     if (viewMode === 'genres' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null) {
       if (filteredGenres.length === 0) {
         return hasSearchQuery
-          ? <div className="library-empty"><p>No genres found for "{trimmedQueryForMessage}"</p></div>
-          : <div className="library-empty"><p>No genres found</p></div>
+          ? <div className="library-empty"><p>{translate('library:search.noGenres', { query: trimmedQueryForMessage })}</p></div>
+          : <div className="library-empty"><p><LocalizedText ns="library" i18nKey="auto.libraryview.no_genres_found" /></p></div>
       }
       return (
         <GenreGrid
@@ -1333,8 +1335,8 @@ export default function LibraryView() {
     if (isYearRootView) {
       if (filteredYears.length === 0) {
         return hasSearchQuery
-          ? <div className="library-empty"><p>No years found for "{trimmedQueryForMessage}"</p></div>
-          : <div className="library-empty"><p>No years found</p></div>
+          ? <div className="library-empty"><p>{translate('library:search.noYears', { query: trimmedQueryForMessage })}</p></div>
+          : <div className="library-empty"><p><LocalizedText ns="library" i18nKey="auto.libraryview.no_years_found" /></p></div>
       }
       return (
         <YearGrid
@@ -1349,8 +1351,8 @@ export default function LibraryView() {
     if (isYearDetailView) {
       if (selectedYearAlbums.length === 0) {
         return hasSearchQuery
-          ? <div className="library-empty"><p>No albums found for "{trimmedQueryForMessage}"</p></div>
-          : <div className="library-empty"><p>No albums found for {formatLibraryYearKey(selectedYear)}</p></div>
+          ? <div className="library-empty"><p>{translate('library:search.noAlbums', { query: trimmedQueryForMessage })}</p></div>
+          : <div className="library-empty"><p>{translate('library:search.noAlbumsForYear', { year: formatLibraryYearKey(selectedYear) })}</p></div>
       }
       return (
         <AlbumGrid
@@ -1383,7 +1385,7 @@ export default function LibraryView() {
             data-controller-axis="horizontal"
           >
             <div className="library-artist-rail-header">
-              <h3>Discography</h3>
+              <h3><LocalizedText ns="library" i18nKey="auto.libraryview.discography" /></h3>
               <div className="library-artist-rail-action-row">
                 <div className="library-artist-rail-actions">
                   <button
@@ -1392,7 +1394,8 @@ export default function LibraryView() {
                     onClick={() => setArtistAlbumRailMode('albums')}
                     aria-pressed={artistAlbumRailMode === 'albums'}
                   >
-                    Albums
+
+                    <LocalizedText ns="library" i18nKey="auto.libraryview.albums" />
                   </button>
                   <button
                     type="button"
@@ -1400,7 +1403,8 @@ export default function LibraryView() {
                     onClick={() => setArtistAlbumRailMode('singles')}
                     aria-pressed={artistAlbumRailMode === 'singles'}
                   >
-                    Singles
+
+                    <LocalizedText ns="library" i18nKey="auto.libraryview.singles" />
                   </button>
                   <button
                     type="button"
@@ -1408,7 +1412,8 @@ export default function LibraryView() {
                     onClick={() => setArtistAlbumRailMode('featured')}
                     aria-pressed={artistAlbumRailMode === 'featured'}
                   >
-                    Featured In
+
+                    <LocalizedText ns="library" i18nKey="auto.libraryview.featured_in" />
                   </button>
                 </div>
               </div>
@@ -1449,8 +1454,9 @@ export default function LibraryView() {
                     }}
                   >
                     {album.is_new && (
-                      <span className="library-latest-sync-pill album-card-sync-pill" title="Added in latest library sync">
-                        NEW
+                      <span className="library-latest-sync-pill album-card-sync-pill" title={translate('library:auto.libraryview.added_in_latest_library_sync')}>
+
+                        <LocalizedText ns="library" i18nKey="auto.libraryview.new" />
                       </span>
                     )}
                     <div className="library-artist-rail-artwork">
@@ -1463,7 +1469,7 @@ export default function LibraryView() {
                     <div className="library-artist-rail-title">{album.album}</div>
                     <div className="library-artist-rail-artist">{album.artist}</div>
                     <div className="library-artist-rail-meta">
-                      {formatTrackCount(album.track_count)}{album.year ? ` \u00b7 ${album.year}` : ''}
+                      {formatTrackCount(album.track_count)}{album.year ? translate('library:auto.libraryview.year', { year: album.year }) : ''}
                     </div>
                   </button>
                 ))}
@@ -1554,20 +1560,22 @@ export default function LibraryView() {
     if (!shouldShowSourceFilters) return null
 
     return (
-      <div className="library-source-filters" role="group" aria-label="Source filters">
+      <div className="library-source-filters" role="group" aria-label={translate('library:auto.libraryview.source_filters')}>
         <button
           type="button"
           className={`library-source-filter-chip ${isAllSourcesFilterActive ? 'active' : ''}`}
           onClick={handleResetSourceFilters}
         >
-          All
+
+          <LocalizedText ns="library" i18nKey="auto.libraryview.all" />
         </button>
         <button
           type="button"
           className={`library-source-filter-chip ${selectedSourceFilters.has('local') ? 'active' : ''}`}
           onClick={() => handleToggleSourceFilter('local')}
         >
-          Local
+
+          <LocalizedText ns="library" i18nKey="auto.libraryview.local" />
         </button>
         {sourceFilterOptions.map((source) => (
           <button
@@ -1604,8 +1612,8 @@ export default function LibraryView() {
         <button
           type="button"
           className="search-clear-btn"
-          aria-label="Clear search"
-          title="Clear search"
+          aria-label={translate('library:auto.libraryview.clear_search')}
+          title={translate('library:auto.libraryview.clear_search')}
           onClick={() => setSearchQuery('')}
         >
           ×
@@ -1620,8 +1628,8 @@ export default function LibraryView() {
       className="icon-btn"
       onClick={() => void rescan()}
       disabled={isScanning}
-      title="Scan for Changes"
-      aria-label="Scan for Changes"
+      title={translate('library:auto.libraryview.scan_for_changes')}
+      aria-label={translate('library:auto.libraryview.scan_for_changes')}
     >
       <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
         <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
@@ -1644,8 +1652,8 @@ export default function LibraryView() {
                 <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
               </svg>
             </button>
-              <div className="library-detail-breadcrumb" aria-label={`Library, ${detailTypeLabel} detail`}>
-                <span>Library</span>
+              <div className="library-detail-breadcrumb" aria-label={translate('library:auto.libraryview.library_detailtypelabel_detail', { detailtypelabel: detailTypeLabel })}>
+                <span><LocalizedText ns="library" i18nKey="auto.libraryview.library" /></span>
                 <span className="library-detail-breadcrumb-separator" aria-hidden="true">/</span>
                 <span>{detailTypeLabel}</span>
               </div>
@@ -1690,7 +1698,7 @@ export default function LibraryView() {
                 >
                   <AlbumArtwork
                     hash={selectedAlbumArtworkHash}
-                    alt={`${selectedAlbum.album} artwork`}
+                    alt={translate('library:auto.libraryview.album_artwork', { album: selectedAlbum.album })}
                     variant="thumbnail"
                   />
                 </div>
@@ -1702,7 +1710,7 @@ export default function LibraryView() {
                     {selectedArtistArtworkHash ? (
                       <AlbumArtwork
                         hash={selectedArtistArtworkHash}
-                        alt={`${selectedArtist} artwork`}
+                        alt={translate('library:auto.libraryview.selectedartist_artwork', { selectedartist: selectedArtist })}
                         className="library-header-artist-artwork"
                         variant="thumbnail"
                       />
@@ -1717,8 +1725,8 @@ export default function LibraryView() {
                     disabled={isUpdatingArtistImage}
                     aria-haspopup="menu"
                     aria-expanded={isArtistImageMenuOpen}
-                    aria-label="Edit artist image"
-                    title="Edit artist image"
+                    aria-label={translate('library:auto.libraryview.edit_artist_image')}
+                    title={translate('library:auto.libraryview.edit_artist_image')}
                   >
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                       <path d="M12 20h9" />
@@ -1738,7 +1746,8 @@ export default function LibraryView() {
                         role="menuitem"
                         onClick={() => void handleChangeSelectedArtistImage()}
                       >
-                        Change image
+
+                        <LocalizedText ns="library" i18nKey="auto.libraryview.change_image" />
                       </button>
                       <button
                         type="button"
@@ -1747,7 +1756,8 @@ export default function LibraryView() {
                         onClick={() => void handleResetSelectedArtistImage()}
                         disabled={!canResetSelectedArtistImage}
                       >
-                        Reset image
+
+                        <LocalizedText ns="library" i18nKey="auto.libraryview.reset_image" />
                       </button>
                     </div>
                   )}
@@ -1759,7 +1769,7 @@ export default function LibraryView() {
                     {selectedGenreArtworkHash ? (
                       <AlbumArtwork
                         hash={selectedGenreArtworkHash}
-                        alt={`${selectedGenre} artwork`}
+                        alt={translate('library:auto.libraryview.selectedgenre_artwork', { selectedgenre: selectedGenre })}
                         variant="thumbnail"
                       />
                     ) : (
@@ -1773,7 +1783,7 @@ export default function LibraryView() {
                     {selectedYearGroup?.artwork_hash ? (
                       <AlbumArtwork
                         hash={selectedYearGroup.artwork_hash}
-                        alt={`${formatLibraryYearKey(selectedYear)} artwork`}
+                        alt={translate('library:auto.libraryview.value1_artwork', { value1: formatLibraryYearKey(selectedYear) })}
                         variant="thumbnail"
                       />
                     ) : (
@@ -1802,8 +1812,9 @@ export default function LibraryView() {
                   <div className="library-detail-eyebrow-row">
                     <span className="library-detail-eyebrow">{detailTypeLabel}</span>
                   {selectedAlbum?.is_new && (
-                    <span className="library-latest-sync-pill library-header-sync-pill" title="Added in latest library sync">
-                      NEW
+                    <span className="library-latest-sync-pill library-header-sync-pill" title={translate('library:auto.libraryview.added_in_latest_library_sync')}>
+
+                      <LocalizedText ns="library" i18nKey="auto.libraryview.new" />
                     </span>
                   )}
                 </div>
@@ -1830,7 +1841,8 @@ export default function LibraryView() {
                     data-controller-key="library-tab:tracks"
                     onClick={() => handleSelectViewMode('tracks')}
                   >
-                    Tracks
+
+                    <LocalizedText ns="library" i18nKey="auto.libraryview.tracks" />
                   </button>
                   <button
                     className={`view-tab ${viewMode === 'albums' ? 'active' : ''}`}
@@ -1838,7 +1850,8 @@ export default function LibraryView() {
                     data-controller-key="library-tab:albums"
                     onClick={() => handleSelectViewMode('albums')}
                   >
-                    Albums
+
+                    <LocalizedText ns="library" i18nKey="auto.libraryview.albums" />
                   </button>
                   <button
                     className={`view-tab ${viewMode === 'artists' ? 'active' : ''}`}
@@ -1846,7 +1859,8 @@ export default function LibraryView() {
                     data-controller-key="library-tab:artists"
                     onClick={() => handleSelectViewMode('artists')}
                   >
-                    Artists
+
+                    <LocalizedText ns="library" i18nKey="auto.libraryview.artists" />
                   </button>
                   <button
                     className={`view-tab ${viewMode === 'genres' ? 'active' : ''}`}
@@ -1854,7 +1868,8 @@ export default function LibraryView() {
                     data-controller-key="library-tab:genres"
                     onClick={() => handleSelectViewMode('genres')}
                   >
-                    Genres
+
+                    <LocalizedText ns="library" i18nKey="auto.libraryview.genres" />
                   </button>
                   <button
                     className={`view-tab ${viewMode === 'years' ? 'active' : ''}`}
@@ -1862,7 +1877,8 @@ export default function LibraryView() {
                     data-controller-key="library-tab:years"
                     onClick={() => handleSelectViewMode('years')}
                   >
-                    Years
+
+                    <LocalizedText ns="library" i18nKey="auto.libraryview.years" />
                   </button>
                   <button
                     className={`view-tab ${viewMode === 'folders' ? 'active' : ''}`}
@@ -1870,7 +1886,8 @@ export default function LibraryView() {
                     data-controller-key="library-tab:folders"
                     onClick={() => handleSelectViewMode('folders')}
                   >
-                    Folders
+
+                    <LocalizedText ns="library" i18nKey="auto.libraryview.folders" />
                   </button>
                 </div>
               )}
@@ -1888,13 +1905,14 @@ export default function LibraryView() {
                 onClick={handleToggleIncludeSinglesInAlbums}
                 role="switch"
                 aria-checked={includeSinglesInAlbums}
-                aria-label="Include singles in albums"
-                title="Include singles in albums"
+                aria-label={translate('library:auto.libraryview.include_singles_in_albums')}
+                title={translate('library:auto.libraryview.include_singles_in_albums')}
               >
-                Singles
+
+                <LocalizedText ns="library" i18nKey="auto.libraryview.singles" />
               </button>
               {(isAlbumRootView || isYearDetailView) && (
-                <div className="library-segmented-toggle" role="group" aria-label="Album sort mode">
+                <div className="library-segmented-toggle" role="group" aria-label={translate('library:auto.libraryview.album_sort_mode')}>
                   <span
                     className="library-segmented-highlight"
                     aria-hidden="true"
@@ -1905,18 +1923,20 @@ export default function LibraryView() {
                     className={`library-segmented-btn ${albumSortMode === 'title' ? 'active' : ''}`}
                     onClick={() => handleSetAlbumSortMode('title')}
                     aria-pressed={albumSortMode === 'title'}
-                    title="Sort albums by title"
+                    title={translate('library:auto.libraryview.sort_albums_by_title')}
                   >
-                    Title
+
+                    <LocalizedText ns="library" i18nKey="auto.libraryview.title" />
                   </button>
                   <button
                     type="button"
                     className={`library-segmented-btn ${albumSortMode === 'artist' ? 'active' : ''}`}
                     onClick={() => handleSetAlbumSortMode('artist')}
                     aria-pressed={albumSortMode === 'artist'}
-                    title="Sort albums by artist"
+                    title={translate('library:auto.libraryview.sort_albums_by_artist')}
                   >
-                    Artist
+
+                    <LocalizedText ns="library" i18nKey="auto.libraryview.artist" />
                   </button>
                 </div>
               )}
@@ -1931,13 +1951,14 @@ export default function LibraryView() {
                   onClick={handleToggleIncludeCollabArtists}
                   role="switch"
                   aria-checked={includeCollabArtists}
-                  aria-label="Include collab-only artists"
-                  title="Include collab-only artists"
+                  aria-label={translate('library:auto.libraryview.include_collab_only_artists')}
+                  title={translate('library:auto.libraryview.include_collab_only_artists')}
                 >
-                  Collabs
+
+                  <LocalizedText ns="library" i18nKey="auto.libraryview.collabs" />
                 </button>
               )}
-              <div className="library-segmented-toggle library-artist-view-toggle" role="group" aria-label="Artist view mode">
+              <div className="library-segmented-toggle library-artist-view-toggle" role="group" aria-label={translate('library:auto.libraryview.artist_view_mode')}>
                 <span
                   className="library-segmented-highlight"
                   aria-hidden="true"
@@ -1947,9 +1968,9 @@ export default function LibraryView() {
                   type="button"
                   className={`library-segmented-btn ${artistRootViewMode === 'list' ? 'active' : ''}`}
                   onClick={() => setArtistRootViewMode('list')}
-                  aria-label="Show artists as list"
+                  aria-label={translate('library:auto.libraryview.show_artists_as_list')}
                   aria-pressed={artistRootViewMode === 'list'}
-                  title="List view"
+                  title={translate('library:auto.libraryview.list_view')}
                 >
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <path d="M8 6h13" />
@@ -1964,9 +1985,9 @@ export default function LibraryView() {
                   type="button"
                   className={`library-segmented-btn ${artistRootViewMode === 'grid' ? 'active' : ''}`}
                   onClick={() => setArtistRootViewMode('grid')}
-                  aria-label="Show artists as grid"
+                  aria-label={translate('library:auto.libraryview.show_artists_as_grid')}
                   aria-pressed={artistRootViewMode === 'grid'}
-                  title="Grid view"
+                  title={translate('library:auto.libraryview.grid_view')}
                 >
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <rect x="3" y="3" width="7" height="7" rx="1" />
@@ -1985,14 +2006,14 @@ export default function LibraryView() {
               onClick={() => {
                 void handlePlayTracklist()
               }}
-              title="Play tracklist"
-              aria-label="Play tracklist"
+              title={translate('library:auto.libraryview.play_tracklist')}
+              aria-label={translate('library:auto.libraryview.play_tracklist')}
               disabled={isCollectionPlayDisabled}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <path d="M8 5v14l11-7z" />
               </svg>
-              <span className="library-collection-action-label">Play</span>
+              <span className="library-collection-action-label"><LocalizedText ns="library" i18nKey="auto.libraryview.play" /></span>
             </button>
           )}
           {isTracklistContext && (
@@ -2000,8 +2021,8 @@ export default function LibraryView() {
               type="button"
               className={`icon-btn library-shuffle-btn ${inDetailView ? 'library-collection-action-btn' : ''} ${shuffle ? 'active' : ''}`}
               onClick={toggleShuffle}
-              title={shuffle ? 'Shuffle on' : 'Shuffle off'}
-              aria-label="Shuffle"
+              title={shuffle ? translate('library:auto.libraryview.shuffle_on') : translate('library:auto.libraryview.shuffle_off')}
+              aria-label={translate('library:auto.libraryview.shuffle')}
               aria-pressed={shuffle}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -2011,7 +2032,7 @@ export default function LibraryView() {
                 <path d="M15 15 21 21" />
                 <path d="M4 4 9 9" />
               </svg>
-              <span className="library-shuffle-btn-label">Shuffle</span>
+              <span className="library-shuffle-btn-label"><LocalizedText ns="library" i18nKey="auto.libraryview.shuffle" /></span>
             </button>
           )}
           {isTracklistContext && inDetailView && (
@@ -2022,8 +2043,8 @@ export default function LibraryView() {
               type="button"
               className="icon-btn library-collection-action-btn library-detail-graph-btn"
               onClick={handleOpenSelectedArtistInGraph}
-              title="Open in Graph"
-              aria-label="Open in Graph"
+              title={translate('library:auto.libraryview.open_in_graph')}
+              aria-label={translate('library:auto.libraryview.open_in_graph')}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <circle cx="5" cy="6" r="2.2" />
@@ -2033,7 +2054,7 @@ export default function LibraryView() {
                 <path d="m16.8 6.6-3.4 9.1" />
                 <path d="M7.3 6h9" />
               </svg>
-              <span className="library-collection-action-label">Graph</span>
+              <span className="library-collection-action-label"><LocalizedText ns="library" i18nKey="auto.libraryview.graph" /></span>
             </button>
           )}
           {!inDetailView && renderSearchControl()}

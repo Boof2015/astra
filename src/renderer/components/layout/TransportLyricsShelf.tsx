@@ -1,3 +1,5 @@
+import { translate } from '../../i18n'
+import LocalizedText from '../i18n/LocalizedText'
 import { useCallback, useEffect, useMemo, useRef, type CSSProperties } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -208,7 +210,8 @@ export default function TransportLyricsShelf() {
               onClick={refreshLyrics}
               disabled={lyricsIsLoading}
             >
-              Retry
+
+              <LocalizedText ns="common" i18nKey="auto.transportlyricsshelf.retry" />
             </button>
           </div>
         )
@@ -217,7 +220,7 @@ export default function TransportLyricsShelf() {
         <p className="transport-lyrics-shelf-state transport-lyrics-shelf-state-not-found">
           {bodyState.kind === 'not_found' && bodyState.reason === 'provider-unavailable'
             ? bodyState.message
-            : 'Lyrics not synced or not found.'}
+            : translate('common:auto.transportlyricsshelf.lyrics_not_synced_or_not_found')}
         </p>
       )
     }
@@ -282,33 +285,36 @@ export default function TransportLyricsShelf() {
       >
         <div className="transport-lyrics-shelf-content">
           <header className="transport-lyrics-shelf-header">
-            <span className="transport-lyrics-shelf-label">Lyrics</span>
-            <span className="transport-lyrics-shelf-meta">Popped Out</span>
+            <span className="transport-lyrics-shelf-label"><LocalizedText ns="common" i18nKey="auto.transportlyricsshelf.lyrics" /></span>
+            <span className="transport-lyrics-shelf-meta"><LocalizedText ns="common" i18nKey="auto.transportlyricsshelf.popped_out" /></span>
             <div className="transport-lyrics-shelf-header-actions">
               <button
                 type="button"
                 className="transport-lyrics-inline-action"
                 onClick={() => void window.electronAPI.lyricsPopout.open()}
               >
-                Show Window
+
+                <LocalizedText ns="common" i18nKey="auto.transportlyricsshelf.show_window" />
               </button>
               <button
                 type="button"
                 className="transport-lyrics-inline-action"
                 onClick={() => void window.electronAPI.lyricsPopout.close()}
               >
-                Recall
+
+                <LocalizedText ns="common" i18nKey="auto.transportlyricsshelf.recall" />
               </button>
             </div>
           </header>
           <div className="transport-lyrics-popout-stub-body">
             <p className="transport-lyrics-popout-stub-message">
-              Lyrics are detached in a floating window.
+
+              <LocalizedText ns="common" i18nKey="auto.transportlyricsshelf.lyrics_are_detached_in_a_floating_window" />
             </p>
             <p className="transport-lyrics-popout-stub-track">
               {currentTrack
-                ? `${currentTrack.title} • ${currentTrack.artist}`
-                : 'No track selected.'}
+                ? translate('common:auto.transportlyricsshelf.title_artist', { title: currentTrack.title, artist: currentTrack.artist })
+                : translate('common:auto.transportlyricsshelf.no_track_selected')}
             </p>
           </div>
         </div>
@@ -327,7 +333,7 @@ export default function TransportLyricsShelf() {
     >
       <div className="transport-lyrics-shelf-content">
         <header className="transport-lyrics-shelf-header">
-          <span className="transport-lyrics-shelf-label">Lyrics</span>
+          <span className="transport-lyrics-shelf-label"><LocalizedText ns="common" i18nKey="auto.transportlyricsshelf.lyrics" /></span>
           <span className="transport-lyrics-shelf-meta">{metaChipText}</span>
           <div className="transport-lyrics-shelf-header-actions">
             {lyricsShelfExpanded && hasSyncedLyrics && followPaused && (
@@ -336,7 +342,8 @@ export default function TransportLyricsShelf() {
                 className="transport-lyrics-recenter-btn"
                 onClick={handleRecenter}
               >
-                Recenter
+
+                <LocalizedText ns="common" i18nKey="auto.transportlyricsshelf.recenter" />
               </button>
             )}
             <button
@@ -345,7 +352,7 @@ export default function TransportLyricsShelf() {
               onClick={refreshLyrics}
               disabled={!currentTrack || lyricsIsLoading}
             >
-              {lyricsIsLoading ? 'Loading...' : 'Refresh'}
+              {lyricsIsLoading ? translate('common:auto.transportlyricsshelf.loading') : translate('common:auto.transportlyricsshelf.refresh')}
             </button>
             <button
               type="button"
@@ -353,14 +360,15 @@ export default function TransportLyricsShelf() {
               onClick={() => void window.electronAPI.lyricsPopout.open()}
               disabled={!currentTrack}
             >
-              Pop Out
+
+              <LocalizedText ns="common" i18nKey="auto.transportlyricsshelf.pop_out" />
             </button>
             <button
               type="button"
               className={`transport-lyrics-shelf-chevron${lyricsShelfExpanded ? ' expanded' : ''}`}
               onClick={() => setLyricsShelfExpanded(!lyricsShelfExpanded)}
-              title={lyricsShelfExpanded ? 'Collapse lyrics shelf' : 'Expand lyrics shelf'}
-              aria-label={lyricsShelfExpanded ? 'Collapse lyrics shelf' : 'Expand lyrics shelf'}
+              title={lyricsShelfExpanded ? translate('common:auto.transportlyricsshelf.collapse_lyrics_shelf') : translate('common:auto.transportlyricsshelf.expand_lyrics_shelf')}
+              aria-label={lyricsShelfExpanded ? translate('common:auto.transportlyricsshelf.collapse_lyrics_shelf') : translate('common:auto.transportlyricsshelf.expand_lyrics_shelf')}
             >
               <svg width="12" height="8" viewBox="0 0 12 8" fill="none">
                 <path

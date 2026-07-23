@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate, translateSourceText } from '../../i18n'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ListeningStatsDashboard } from '../../../types/listeningStats'
 import astraWordmarkUrl from '../../assets/astra-wordmark.svg'
@@ -162,10 +164,10 @@ export default function StatsShareModal({ isOpen, snapshot, onClose }: StatsShar
       >
         <div className="modal-header listening-stats-share-modal-header">
           <div>
-            <p>{LISTENING_STATS_SHARE_WIDTH} × {LISTENING_STATS_SHARE_HEIGHT} PNG</p>
-            <h2 id="listening-stats-share-title">Share Listening Stats</h2>
+            <p>{LISTENING_STATS_SHARE_WIDTH} × {LISTENING_STATS_SHARE_HEIGHT}  <LocalizedText ns="integrations" i18nKey="auto.statssharemodal.png" /></p>
+            <h2 id="listening-stats-share-title"><LocalizedText ns="integrations" i18nKey="auto.statssharemodal.share_listening_stats" /></h2>
           </div>
-          <button ref={closeButtonRef} className="modal-close" type="button" onClick={onClose} aria-label="Close share preview">
+          <button ref={closeButtonRef} className="modal-close" type="button" onClick={onClose} aria-label={translate('integrations:auto.statssharemodal.close_share_preview')}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
               <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
             </svg>
@@ -180,15 +182,15 @@ export default function StatsShareModal({ isOpen, snapshot, onClose }: StatsShar
               width={LISTENING_STATS_SHARE_WIDTH}
               height={LISTENING_STATS_SHARE_HEIGHT}
               role="img"
-              aria-label={`${model.title} share-card preview for ${model.rangeLabel}`}
+              aria-label={translate('integrations:auto.statssharemodal.title_share_card_preview_for_rangelabel', { title: model.title, rangelabel: model.rangeLabel })}
             />
-            {isPreparing && <div className="listening-stats-share-preview-state" role="status">Preparing artwork…</div>}
+            {isPreparing && <div className="listening-stats-share-preview-state" role="status"><LocalizedText ns="integrations" i18nKey="auto.statssharemodal.preparing_artwork" /></div>}
           </div>
 
-          <aside className="listening-stats-share-controls" aria-label="Share-card options">
+          <aside className="listening-stats-share-controls" aria-label={translate('integrations:auto.statssharemodal.share_card_options')}>
             <div>
-              <span className="listening-stats-share-control-label">Card</span>
-              <div className="listening-stats-share-lens-control" role="group" aria-label="Share-card type">
+              <span className="listening-stats-share-control-label"><LocalizedText ns="integrations" i18nKey="auto.statssharemodal.card" /></span>
+              <div className="listening-stats-share-lens-control" role="group" aria-label={translate('integrations:auto.statssharemodal.share_card_type')}>
                 {LENS_OPTIONS.map((option) => {
                   const unavailable = option.value === 'track'
                     ? displayedSnapshot.topTracks.length === 0
@@ -204,7 +206,7 @@ export default function StatsShareModal({ isOpen, snapshot, onClose }: StatsShar
                       disabled={unavailable || busyAction !== null}
                       onClick={() => setLens(option.value)}
                     >
-                      {option.label}
+                      {translateSourceText(option.label)}
                     </button>
                   )
                 })}
@@ -213,17 +215,18 @@ export default function StatsShareModal({ isOpen, snapshot, onClose }: StatsShar
 
             <dl className="listening-stats-share-details">
               <div>
-                <dt>Range</dt>
+                <dt><LocalizedText ns="integrations" i18nKey="auto.statssharemodal.range" /></dt>
                 <dd>{model.rangeLabel}</dd>
               </div>
               <div>
-                <dt>Ranking</dt>
+                <dt><LocalizedText ns="integrations" i18nKey="auto.statssharemodal.ranking" /></dt>
                 <dd>{model.rankingLabel.replace('RANKED BY ', '')}</dd>
               </div>
             </dl>
 
             <p className="listening-stats-share-note">
-              The preview is frozen from the stats currently on screen. No file paths or device information are included.
+
+              <LocalizedText ns="integrations" i18nKey="auto.statssharemodal.the_preview_is_frozen_from_the_stats_currently_on_screen" />
             </p>
 
             {(statusMessage || errorMessage) && (
@@ -244,7 +247,7 @@ export default function StatsShareModal({ isOpen, snapshot, onClose }: StatsShar
             disabled={isPreparing || busyAction !== null}
             onClick={() => void exportPng('copy')}
           >
-            {busyAction === 'copy' ? 'Copying…' : 'Copy Image'}
+            {busyAction === 'copy' ? translate('integrations:auto.statssharemodal.copying') : translate('integrations:auto.statssharemodal.copy_image')}
           </button>
           <button
             className="settings-btn settings-btn-primary"
@@ -252,7 +255,7 @@ export default function StatsShareModal({ isOpen, snapshot, onClose }: StatsShar
             disabled={isPreparing || busyAction !== null}
             onClick={() => void exportPng('save')}
           >
-            {busyAction === 'save' ? 'Saving…' : 'Save PNG'}
+            {busyAction === 'save' ? translate('integrations:auto.statssharemodal.saving') : translate('integrations:auto.statssharemodal.save_png')}
           </button>
         </div>
       </div>

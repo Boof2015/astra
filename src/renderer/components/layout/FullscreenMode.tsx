@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { type Dispatch, type ReactElement, type SetStateAction, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useUIStore } from '../../stores/uiStore'
 import { usePlayerStore } from '../../stores/playerStore'
@@ -375,7 +377,7 @@ function FullscreenLyricsFocusBand({
       ref={bandRef}
       className="fullscreen-lyrics-focus-band"
       aria-hidden={!showLyrics}
-      aria-label="Lyrics"
+      aria-label={translate('common:auto.fullscreenmode.lyrics')}
     >
       {shouldRenderLyricsContent && (
         <>
@@ -387,7 +389,8 @@ function FullscreenLyricsFocusBand({
               className="fullscreen-lyrics-recenter"
               onClick={handleRecenter}
             >
-              Recenter
+
+              <LocalizedText ns="common" i18nKey="auto.fullscreenmode.recenter" />
             </button>
           )}
         </>
@@ -463,21 +466,21 @@ function FullscreenNextCueOverlay({
       <div className="fullscreen-next-cue-card">
         <div className="fullscreen-next-cue-artwork">
           {nextTrack.artworkHash ? (
-            <AlbumArtwork hash={nextTrack.artworkHash} alt="Up next artwork" variant="card" />
+            <AlbumArtwork hash={nextTrack.artworkHash} alt={translate('common:auto.fullscreenmode.up_next_artwork')} variant="card" />
           ) : nextTrack.artworkData ? (
-            <img src={nextTrack.artworkData} alt="Up next artwork" />
+            <img src={nextTrack.artworkData} alt={translate('common:auto.fullscreenmode.up_next_artwork')} />
           ) : (
             <div className="fullscreen-next-cue-placeholder">&#9835;</div>
           )}
         </div>
 
         <div className="fullscreen-next-cue-meta">
-          <span className="fullscreen-next-cue-label">Up Next</span>
+          <span className="fullscreen-next-cue-label"><LocalizedText ns="common" i18nKey="auto.fullscreenmode.up_next" /></span>
           <div className="fullscreen-next-cue-title">{nextTrack.title}</div>
           <div className="fullscreen-next-cue-artist">{nextTrack.artist}</div>
         </div>
 
-        <div className="fullscreen-next-cue-countdown">{cueCountdown}s</div>
+        <div className="fullscreen-next-cue-countdown">{cueCountdown}<LocalizedText ns="common" i18nKey="auto.fullscreenmode.s" /></div>
       </div>
 
       <div className="fullscreen-next-cue-progress">
@@ -729,7 +732,7 @@ export default function FullscreenMode() {
       className="fullscreen-overlay"
       role="dialog"
       aria-modal="true"
-      aria-label="Fullscreen player"
+      aria-label={translate('common:auto.fullscreenmode.fullscreen_player')}
       data-controller-scope="overlay"
     >
       <div className="fullscreen-backdrop" aria-hidden="true">
@@ -763,8 +766,8 @@ export default function FullscreenMode() {
       <button
         className="fullscreen-close"
         onClick={() => setFullscreen(false)}
-        title="Exit fullscreen"
-        aria-label="Exit fullscreen"
+        title={translate('common:auto.fullscreenmode.exit_fullscreen')}
+        aria-label={translate('common:auto.fullscreenmode.exit_fullscreen')}
       >
         <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
           <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z" />
@@ -783,26 +786,27 @@ export default function FullscreenMode() {
               data-controller-auto-items="true"
             >
               <span className="fullscreen-status-label">
-                {isLoadingTrack ? 'Loading' : isPlaying ? 'Now Playing' : currentTrack ? 'Paused' : 'Ready'}
+                {isLoadingTrack ? translate('common:auto.fullscreenmode.loading') : isPlaying ? translate('common:auto.fullscreenmode.now_playing') : currentTrack ? translate('common:auto.fullscreenmode.paused') : translate('common:auto.fullscreenmode.ready')}
               </span>
               <button
                 type="button"
                 className={`fullscreen-lyrics-toggle ${showLyricsDock ? 'active' : ''}`}
                 onClick={toggleFullscreenLyricsVisible}
-                title={showLyricsDock ? 'Hide lyrics (L)' : 'Show lyrics (L)'}
-                aria-label={showLyricsDock ? 'Hide lyrics' : 'Show lyrics'}
+                title={showLyricsDock ? translate('common:auto.fullscreenmode.hide_lyrics_l') : translate('common:auto.fullscreenmode.show_lyrics_l')}
+                aria-label={showLyricsDock ? translate('common:auto.fullscreenmode.hide_lyrics') : translate('common:auto.fullscreenmode.show_lyrics')}
                 aria-pressed={showLyricsDock}
               >
-                Lyrics
+
+                <LocalizedText ns="common" i18nKey="auto.fullscreenmode.lyrics" />
               </button>
             </div>
 
             <div className="fullscreen-main-row">
               <div className="fullscreen-artwork">
                 {currentTrack?.artworkHash ? (
-                  <AlbumArtwork hash={currentTrack.artworkHash} alt="Album art" variant="card" />
+                  <AlbumArtwork hash={currentTrack.artworkHash} alt={translate('common:auto.fullscreenmode.album_art')} variant="card" />
                 ) : currentTrack?.artworkData ? (
-                  <img src={currentTrack.artworkData} alt="Album art" />
+                  <img src={currentTrack.artworkData} alt={translate('common:auto.fullscreenmode.album_art')} />
                 ) : (
                   <div className="fullscreen-artwork-placeholder">&#9835;</div>
                 )}
@@ -823,12 +827,14 @@ export default function FullscreenMode() {
                   <div className="fullscreen-audio-badges">
                     {showAtmosBadge && (
                       <span className="fullscreen-audio-badge fullscreen-audio-badge-atmos">
-                        ATMOS
+
+                        <LocalizedText ns="common" i18nKey="auto.fullscreenmode.atmos" />
                       </span>
                     )}
                     {showEclipsaBadge && (
                       <span className="fullscreen-audio-badge fullscreen-audio-badge-eclipsa">
-                        ECLIPSA
+
+                        <LocalizedText ns="common" i18nKey="auto.fullscreenmode.eclipsa" />
                       </span>
                     )}
                     {isMultichannel && (
@@ -836,7 +842,7 @@ export default function FullscreenMode() {
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                           <path d="M3 10v4h4l5 5V5l-5 5H3zm13.5 2c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zm2.5 0c0 3.04-1.72 5.64-4.25 6.92l-.75-1.83c1.92-.98 3.25-2.97 3.25-5.09s-1.33-4.11-3.25-5.09l.75-1.83C17.28 6.36 19 8.96 19 12z" />
                         </svg>
-                        <span>{resolvedChannelCount}CH</span>
+                        <span>{resolvedChannelCount}<LocalizedText ns="common" i18nKey="auto.fullscreenmode.ch" /></span>
                       </span>
                     )}
                   </div>
@@ -858,8 +864,8 @@ export default function FullscreenMode() {
               >
                 <button
                   className={`fullscreen-control-btn ${shuffle ? 'active' : ''}`}
-                  aria-label="Shuffle"
-                  title={shuffle ? 'Shuffle on' : 'Shuffle off'}
+                  aria-label={translate('common:auto.fullscreenmode.shuffle')}
+                  title={shuffle ? translate('common:auto.fullscreenmode.shuffle_on') : translate('common:auto.fullscreenmode.shuffle_off')}
                   onClick={toggleShuffle}
                   disabled={resolvedQueueLength === 0}
                 >
@@ -871,10 +877,10 @@ export default function FullscreenMode() {
                     <path d="M4 4 9 9" />
                   </svg>
                 </button>
-  
+
                 <button
                   className="fullscreen-control-btn"
-                  aria-label="Previous"
+                  aria-label={translate('common:auto.fullscreenmode.previous')}
                   onClick={() => void playPrevious()}
                   disabled={resolvedQueueLength === 0}
                 >
@@ -883,10 +889,10 @@ export default function FullscreenMode() {
                     <polygon points="18,5 8,12 18,19" />
                   </svg>
                 </button>
-  
+
                 <button
                   className="fullscreen-control-btn fullscreen-control-btn-play"
-                  aria-label={isPlaying ? 'Pause' : 'Play'}
+                  aria-label={isPlaying ? translate('common:auto.fullscreenmode.pause') : translate('common:auto.fullscreenmode.play')}
                   onClick={() => void togglePlay()}
                   disabled={!currentTrack || isLoadingTrack}
                 >
@@ -902,10 +908,10 @@ export default function FullscreenMode() {
                     </svg>
                   )}
                 </button>
-  
+
                 <button
                   className="fullscreen-control-btn"
-                  aria-label="Next"
+                  aria-label={translate('common:auto.fullscreenmode.next')}
                   onClick={() => void playNext()}
                   disabled={resolvedQueueLength === 0}
                 >
@@ -914,11 +920,11 @@ export default function FullscreenMode() {
                     <polygon points="6,5 16,12 6,19" />
                   </svg>
                 </button>
-  
+
                 <button
                   className={`fullscreen-control-btn ${repeat !== 'none' ? 'active' : ''}`}
-                  aria-label="Repeat"
-                  title={repeat === 'none' ? 'Repeat off' : repeat === 'all' ? 'Repeat all' : 'Repeat one'}
+                  aria-label={translate('common:auto.fullscreenmode.repeat')}
+                  title={repeat === 'none' ? translate('common:auto.fullscreenmode.repeat_off') : repeat === 'all' ? translate('common:auto.fullscreenmode.repeat_all') : translate('common:auto.fullscreenmode.repeat_one')}
                   onClick={toggleRepeat}
                   disabled={resolvedQueueLength === 0}
                 >
@@ -940,9 +946,9 @@ export default function FullscreenMode() {
                   )}
                 </button>
               </div>
-  
+
               <FullscreenWaveformSection />
-  
+
               <div className="fullscreen-footer">
                 <div
                   className="fullscreen-footer-primary"
@@ -952,8 +958,8 @@ export default function FullscreenMode() {
                 >
                   <button
                     className={`fullscreen-favorite-btn ${isFavorite ? 'active' : ''}`}
-                    aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
-                    title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+                    aria-label={isFavorite ? translate('common:auto.fullscreenmode.remove_from_favorites') : translate('common:auto.fullscreenmode.add_to_favorites')}
+                    title={isFavorite ? translate('common:auto.fullscreenmode.remove_from_favorites') : translate('common:auto.fullscreenmode.add_to_favorites')}
                     onClick={() => currentTrack && void toggleFavorite(currentTrack.path)}
                     disabled={!currentTrack}
                   >
@@ -966,21 +972,21 @@ export default function FullscreenMode() {
                         <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
                       </svg>
                     )}
-                    <span>{isFavorite ? 'Favorited' : 'Favorite'}</span>
+                    <span>{isFavorite ? translate('common:auto.fullscreenmode.favorited') : translate('common:auto.fullscreenmode.favorite')}</span>
                   </button>
-  
+
                   <VolumeControl
                     className="fullscreen-volume"
                     labelFormatter={(percent) => `${percent}%`}
                   />
                 </div>
-  
+
                 <div className="fullscreen-file-readout" aria-hidden={!currentTrack}>
                   <span>{currentTrack?.format?.toUpperCase() ?? '—'}</span>
-                  <span>{currentTrack?.bitDepth ? `${currentTrack.bitDepth}-bit` : '—'}</span>
+                  <span>{currentTrack?.bitDepth ? translate('common:auto.fullscreenmode.bitdepth_bit', { bitdepth: currentTrack.bitDepth }) : '—'}</span>
                   <span>
                     {currentTrack?.sampleRate
-                      ? `${(currentTrack.sampleRate / 1000).toFixed(1)} kHz`
+                      ? translate('common:auto.fullscreenmode.value1_khz', { value1: (currentTrack.sampleRate / 1000).toFixed(1) })
                       : '—'}
                   </span>
                 </div>

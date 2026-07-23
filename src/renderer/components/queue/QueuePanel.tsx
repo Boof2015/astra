@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate, translateSourceText } from '../../i18n'
 import {
   CSSProperties,
   DragEvent,
@@ -123,8 +125,8 @@ function QueueRowRenderer({
     return (
       <div className="queue-list-item" style={style as CSSProperties} {...ariaAttributes}>
         <div className={`queue-section-title ${row.faded ? 'queue-section-title-faded' : ''}`}>
-          {row.label}
-          {row.showShuffled && <span className="queue-section-shuffled">Shuffled</span>}
+          {translateSourceText(row.label)}
+          {row.showShuffled && <span className="queue-section-shuffled"><LocalizedText ns="playback" i18nKey="auto.queuepanel.shuffled" /></span>}
         </div>
       </div>
     )
@@ -160,7 +162,7 @@ function QueueRowRenderer({
         data-controller-index={index}
         tabIndex={canPlay ? -1 : undefined}
         role={canPlay ? 'button' : undefined}
-        aria-label={canPlay ? `Play ${row.track.title} by ${row.track.artist}` : undefined}
+        aria-label={canPlay ? translate('playback:auto.queuepanel.play_title_by_artist', { title: row.track.title, artist: row.track.artist }) : undefined}
         draggable={row.draggable}
         onDragStart={row.draggable && row.dragIndex !== null && row.queueId ? (event) => onDragStart(event, row.queueId!, row.dragIndex!) : undefined}
         onDragOver={row.draggable && row.dragIndex !== null ? (event) => onDragOver(event, row.dragIndex!) : undefined}
@@ -178,12 +180,12 @@ function QueueRowRenderer({
         <div className="queue-item-info">
           <div className="queue-item-title">
             {isLoadingRow && (
-              <span className="queue-item-loading-icon" title="Buffering track">
+              <span className="queue-item-loading-icon" title={translate('playback:auto.queuepanel.buffering_track')}>
                 <span className="loading-spinner-small queue-item-loading-spinner" />
               </span>
             )}
             {row.manual && (
-              <span className="queue-manual-badge" title="Queued by you" aria-label="Queued by you">
+              <span className="queue-manual-badge" title={translate('playback:auto.queuepanel.queued_by_you')} aria-label={translate('playback:auto.queuepanel.queued_by_you')}>
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <path d="M4 6h10M4 12h7M4 18h6" />
                   <path d="M18 13v8M14 17h8" />
@@ -191,7 +193,7 @@ function QueueRowRenderer({
               </span>
             )}
             {sourceLabel && (
-              <span className="queue-source-badge" title={isUnavailable ? `${sourceLabel} (unavailable)` : sourceLabel}>
+              <span className="queue-source-badge" title={isUnavailable ? translate('playback:auto.queuepanel.sourcelabel_unavailable', { sourcelabel: sourceLabel }) : sourceLabel}>
                 {row.track.sourceType === 'jellyfin' ? (
                   <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                     <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
@@ -213,10 +215,10 @@ function QueueRowRenderer({
           {isLoadingRow && (
             <div className="queue-item-loading-status">
               {loadingPercentLabel
-                ? `Buffering ${loadingPercentLabel}`
+                ? translate('playback:auto.queuepanel.buffering_loadingpercentlabel', { loadingpercentlabel: loadingPercentLabel })
                 : currentLoadingChunkCount > 0
-                  ? `Buffering ${currentLoadingChunkCount} chunks`
-                  : 'Buffering...'}
+                  ? translate('playback:auto.queuepanel.buffering_currentloadingchunkcount_chunks', { currentloadingchunkcount: currentLoadingChunkCount })
+                  : translate('playback:auto.queuepanel.buffering')}
             </div>
           )}
         </div>
@@ -225,7 +227,7 @@ function QueueRowRenderer({
           <button
             className="queue-item-remove"
             onClick={(event) => onRemoveTrack(event, row.queueId!)}
-            title="Remove from queue"
+            title={translate('playback:auto.queuepanel.remove_from_queue')}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
               <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
@@ -695,7 +697,7 @@ export default function QueuePanel() {
     return (
       <div className={`queue-panel ${isQueueDropActive ? 'queue-panel-drop-active' : ''} ${isQueueDropHover ? 'queue-panel-drop-hover' : ''} ${isDropSettling ? 'queue-panel-drop-settle' : ''}`} ref={controllerGroupRef} data-controller-region="true" data-controller-region-id="queue" data-controller-group="queue-items" data-controller-axis="vertical" data-controller-virtual="true">
         <div className="queue-header">
-          <h3>Queue</h3>
+          <h3><LocalizedText ns="playback" i18nKey="auto.queuepanel.queue" /></h3>
         </div>
         {isQueueDropActive && (
           <div className={`queue-drop-mode-label ${isQueueDropHover ? 'is-hover' : ''}`}>
@@ -704,9 +706,9 @@ export default function QueuePanel() {
         )}
         <div className="queue-empty-drop-zone-wrap" ref={queueContentRef}>
           <div className={`queue-empty-drop-zone ${trackDrag?.dropTarget?.surface === 'queue' && trackDrag.dropTarget.kind === 'empty' ? 'queue-empty-drop-zone-active' : ''}`}>
-            <p>No tracks in queue</p>
+            <p><LocalizedText ns="playback" i18nKey="auto.queuepanel.no_tracks_in_queue" /></p>
             <p className="queue-empty-hint">
-              {trackDrag ? 'Drop here to build a user queue' : 'Cmd/Ctrl-select tracks to drop them here'}
+              {trackDrag ? translate('playback:auto.queuepanel.drop_here_to_build_a_user_queue') : translate('playback:auto.queuepanel.cmd_ctrl_select_tracks_to_drop_them_here')}
             </p>
           </div>
         </div>
@@ -719,9 +721,10 @@ export default function QueuePanel() {
   return (
     <div className={`queue-panel ${isQueueDropActive ? 'queue-panel-drop-active' : ''} ${isQueueDropHover ? 'queue-panel-drop-hover' : ''} ${isDropSettling ? 'queue-panel-drop-settle' : ''}`} ref={controllerGroupRef} data-controller-region="true" data-controller-region-id="queue" data-controller-group="queue-items" data-controller-axis="vertical" data-controller-virtual="true">
       <div className="queue-header">
-        <h3>Queue</h3>
-        <button className="queue-clear-btn" onClick={clearAllQueues} title="Clear queue history and queued tracks">
-          Clear
+        <h3><LocalizedText ns="playback" i18nKey="auto.queuepanel.queue" /></h3>
+        <button className="queue-clear-btn" onClick={clearAllQueues} title={translate('playback:auto.queuepanel.clear_queue_history_and_queued_tracks')}>
+
+          <LocalizedText ns="playback" i18nKey="auto.queuepanel.clear" />
         </button>
       </div>
       {isQueueDropActive && (

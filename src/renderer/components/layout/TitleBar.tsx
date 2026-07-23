@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useState, useEffect } from 'react'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
 import { useUpdateStore } from '../../stores/updateStore'
@@ -66,7 +68,7 @@ function TitleBarActivityFallback({ rackVisible }: { rackVisible: boolean }) {
     <span
       className={`titlebar-activity-fallback ${rackVisible ? 'is-rack-visible' : 'is-rack-hidden'}`.trim()}
       title={activity.note}
-      aria-label={`Astra activity: ${activity.note}`}
+      aria-label={translate('common:auto.titlebar.astra_activity_note', { note: activity.note })}
     >
       <AstraActivityIndicator
         className="titlebar-activity-indicator"
@@ -337,8 +339,8 @@ export default function TitleBar() {
           type="button"
           className="titlebar-logo-link"
           onClick={handleOpenSupport}
-          aria-label="Support Astra on Ko-fi"
-          title="Support Astra on Ko-fi"
+          aria-label={translate('common:auto.titlebar.support_astra_on_ko_fi')}
+          title={translate('common:auto.titlebar.support_astra_on_ko_fi')}
         >
           <span className="titlebar-logo">
             <AstraLogo includeBackground={false} />
@@ -354,7 +356,7 @@ export default function TitleBar() {
             <span>{appVersionLabel}</span>
             {appCommitLabel && (
               <>
-                <span className="titlebar-version-separator" aria-hidden="true">&middot;</span>
+                <span className="titlebar-version-separator" aria-hidden="true"><LocalizedText ns="common" i18nKey="auto.titlebar.middot" /></span>
                 <span className="titlebar-build-hash">{appCommitLabel}</span>
               </>
             )}
@@ -387,60 +389,60 @@ export default function TitleBar() {
         <div
           className="titlebar-stats-shell"
           tabIndex={0}
-          aria-label="Astra performance stats with memory breakdown"
+          aria-label={translate('common:auto.titlebar.astra_performance_stats_with_memory_breakdown')}
         >
-          <div className="titlebar-stats" aria-label="Astra performance stats">
+          <div className="titlebar-stats" aria-label={translate('common:auto.titlebar.astra_performance_stats')}>
             <span className="titlebar-stat">
-              <span className="titlebar-stat-label">CPU</span>
+              <span className="titlebar-stat-label"><LocalizedText ns="common" i18nKey="auto.titlebar.cpu" /></span>
               <span>{formattedCpu}</span>
             </span>
             <span className="titlebar-stat" title={bufferMemoryTitle}>
-              <span className="titlebar-stat-label">BUF</span>
+              <span className="titlebar-stat-label"><LocalizedText ns="common" i18nKey="auto.titlebar.buf" /></span>
               <span>{formattedBufferMemory}</span>
             </span>
             <span className="titlebar-stat" title={headlineMemoryTitle}>
-              <span className="titlebar-stat-label">MEM</span>
+              <span className="titlebar-stat-label"><LocalizedText ns="common" i18nKey="auto.titlebar.mem" /></span>
               <span>{formattedHeadlineMemory}</span>
             </span>
             <span className="titlebar-stat">
-              <span className="titlebar-stat-label">FPS</span>
+              <span className="titlebar-stat-label"><LocalizedText ns="common" i18nKey="auto.titlebar.fps" /></span>
               <span>{formattedFps}</span>
             </span>
           </div>
-          <div className="titlebar-stats-breakdown" role="tooltip" aria-label="Memory breakdown">
-            <div className="titlebar-stats-breakdown-title">Memory breakdown</div>
+          <div className="titlebar-stats-breakdown" role="tooltip" aria-label={translate('common:auto.titlebar.memory_breakdown')}>
+            <div className="titlebar-stats-breakdown-title"><LocalizedText ns="common" i18nKey="auto.titlebar.memory_breakdown" /></div>
             <div className="titlebar-stats-breakdown-row" title={rendererTitle}>
-              <span className="titlebar-stats-breakdown-label">Interface</span>
+              <span className="titlebar-stats-breakdown-label"><LocalizedText ns="common" i18nKey="auto.titlebar.interface" /></span>
               <span className="titlebar-stats-breakdown-value">{formattedRendererPrivateMemory}</span>
             </div>
             <div className="titlebar-stats-breakdown-row" title={rendererJsTitle}>
-              <span className="titlebar-stats-breakdown-label">&nbsp;&nbsp;JS heap</span>
+              <span className="titlebar-stats-breakdown-label"><LocalizedText ns="common" i18nKey="auto.titlebar.nbsp_nbsp_js_heap" /></span>
               <span className="titlebar-stats-breakdown-value">{formattedRendererJsMemory}</span>
             </div>
             <div className="titlebar-stats-breakdown-row" title={bufferMemoryTitle}>
-              <span className="titlebar-stats-breakdown-label">&nbsp;&nbsp;Audio buffers</span>
+              <span className="titlebar-stats-breakdown-label"><LocalizedText ns="common" i18nKey="auto.titlebar.nbsp_nbsp_audio_buffers" /></span>
               <span className="titlebar-stats-breakdown-value">{formattedBufferMemory}</span>
             </div>
             <div className="titlebar-stats-breakdown-row" title={mainProcessTitle}>
-              <span className="titlebar-stats-breakdown-label">Main process</span>
+              <span className="titlebar-stats-breakdown-label"><LocalizedText ns="common" i18nKey="auto.titlebar.main_process" /></span>
               <span className="titlebar-stats-breakdown-value">{formattedMainProcessMemory}</span>
             </div>
             <div className="titlebar-stats-breakdown-row" title={helperProcessesTitle}>
-              <span className="titlebar-stats-breakdown-label">GPU &amp; helpers</span>
+              <span className="titlebar-stats-breakdown-label"><LocalizedText ns="common" i18nKey="auto.titlebar.gpu_amp_helpers" /></span>
               <span className="titlebar-stats-breakdown-value">{formattedHelperProcessesMemory}</span>
             </div>
             <div className="titlebar-stats-breakdown-row titlebar-stats-breakdown-row-total" title={appFootprintTitle}>
-              <span className="titlebar-stats-breakdown-label">Astra processes</span>
+              <span className="titlebar-stats-breakdown-label"><LocalizedText ns="common" i18nKey="auto.titlebar.astra_processes" /></span>
               <span className="titlebar-stats-breakdown-value">{formattedAppFootprintMemory}</span>
             </div>
             {hasChildProcessFootprint && (
               <>
                 <div className="titlebar-stats-breakdown-row" title={childProcessFootprintTitle}>
-                  <span className="titlebar-stats-breakdown-label">Child processes</span>
+                  <span className="titlebar-stats-breakdown-label"><LocalizedText ns="common" i18nKey="auto.titlebar.child_processes" /></span>
                   <span className="titlebar-stats-breakdown-value">{formattedChildProcessFootprintMemory}</span>
                 </div>
                 <div className="titlebar-stats-breakdown-row titlebar-stats-breakdown-row-total" title={combinedFootprintTitle}>
-                  <span className="titlebar-stats-breakdown-label">Combined</span>
+                  <span className="titlebar-stats-breakdown-label"><LocalizedText ns="common" i18nKey="auto.titlebar.combined" /></span>
                   <span className="titlebar-stats-breakdown-value">{formattedCombinedFootprintMemory}</span>
                 </div>
               </>
@@ -452,8 +454,8 @@ export default function TitleBar() {
           <button
             className="titlebar-button titlebar-button-update"
             onClick={handleOpenUpdate}
-            aria-label="Download update"
-            title="Update available - open downloads"
+            aria-label={translate('common:auto.titlebar.download_update')}
+            title={translate('common:auto.titlebar.update_available_open_downloads')}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <path d="M12 3v11" />
@@ -469,7 +471,7 @@ export default function TitleBar() {
             <button
               className="titlebar-button"
               onClick={handleMinimize}
-              aria-label="Minimize"
+              aria-label={translate('common:auto.titlebar.minimize')}
             >
               <svg width="12" height="12" viewBox="0 0 12 12">
                 <rect fill="currentColor" width="10" height="1" x="1" y="6" />
@@ -478,7 +480,7 @@ export default function TitleBar() {
             <button
               className="titlebar-button"
               onClick={handleMaximize}
-              aria-label={isMaximized ? 'Restore' : 'Maximize'}
+              aria-label={isMaximized ? translate('common:auto.titlebar.restore') : translate('common:auto.titlebar.maximize')}
             >
               {isMaximized ? (
                 <svg width="12" height="12" viewBox="0 0 12 12">
@@ -494,7 +496,7 @@ export default function TitleBar() {
             <button
               className="titlebar-button titlebar-button-close"
               onClick={handleClose}
-              aria-label="Close"
+              aria-label={translate('common:auto.titlebar.close')}
             >
               <svg width="12" height="12" viewBox="0 0 12 12">
                 <polygon fill="currentColor" points="11,1.5 10.5,1 6,5.5 1.5,1 1,1.5 5.5,6 1,10.5 1.5,11 6,6.5 10.5,11 11,10.5 6.5,6" />

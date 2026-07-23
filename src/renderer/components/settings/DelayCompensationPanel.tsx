@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate, translateSourceText } from '../../i18n'
 import { useMemo } from 'react'
 import {
   BIT_PERFECT_DSP_DISABLED_MESSAGE,
@@ -173,46 +175,47 @@ export default function DelayCompensationPanel() {
   return (
     <div className="delay-comp-panel">
       <div className="delay-comp-header">
-        <div className="delay-comp-title">Delay Compensation</div>
+        <div className="delay-comp-title"><LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.delay_compensation" /></div>
         <div className="delay-comp-device">{selectedOutputLabel}</div>
       </div>
 
       <div className="delay-comp-meta">
-        <span className="delay-comp-chip">Profile: {activeProfileLabel}</span>
+        <span className="delay-comp-chip"><LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.profile" /> {activeProfileLabel}</span>
         <span className="delay-comp-chip">
-          Calibration: {isDifferentialMethod ? 'New (Differential)' : 'Old (Legacy)'}
+
+          <LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.calibration" /> {isDifferentialMethod ? translate('settings:auto.delaycompensationpanel.new_differential') : translate('settings:auto.delaycompensationpanel.old_legacy')}
         </span>
         {!isDifferentialMethod && (
-          <span className="delay-comp-chip">Round-trip: {formatMetricMs(activeDelayProfile.lastRoundTripMs)}</span>
+          <span className="delay-comp-chip"><LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.round_trip" /> {formatMetricMs(activeDelayProfile.lastRoundTripMs)}</span>
         )}
         {!isDifferentialMethod && (
-          <span className="delay-comp-chip">Input baseline: {formatMetricMs(baselineRttMs)}</span>
+          <span className="delay-comp-chip"><LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.input_baseline" /> {formatMetricMs(baselineRttMs)}</span>
         )}
         {isDifferentialMethod && (
-          <span className="delay-comp-chip">Reference output: {referenceOutputLabel}</span>
+          <span className="delay-comp-chip"><LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.reference_output" /> {referenceOutputLabel}</span>
         )}
       </div>
 
       <div className="delay-comp-meta">
-        <span className="delay-comp-chip">Derived output: {formatMetricMs(activeDelayProfile.autoOffsetMs)}</span>
-        <span className="delay-comp-chip">Effective output: {effectiveDelayMs} ms</span>
+        <span className="delay-comp-chip"><LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.derived_output" /> {formatMetricMs(activeDelayProfile.autoOffsetMs)}</span>
+        <span className="delay-comp-chip"><LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.effective_output" /> {effectiveDelayMs} ms</span>
       </div>
 
       <div className="settings-grid">
         <div className="settings-field settings-field-inline">
-          <span className="settings-field-label">Compensation</span>
+          <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.compensation" /></span>
           <button
             type="button"
             className={`settings-toggle ${activeDelayProfile.enabled ? 'active' : ''}`}
             onClick={bitPerfectModeActive ? undefined : (() => void setDelayCompensationEnabled(!activeDelayProfile.enabled))}
             disabled={bitPerfectModeActive}
           >
-            {activeDelayProfile.enabled ? 'Enabled' : 'Disabled'}
+            {activeDelayProfile.enabled ? translate('settings:auto.delaycompensationpanel.enabled') : translate('settings:auto.delaycompensationpanel.disabled')}
           </button>
         </div>
 
         <label className="settings-field">
-          <span className="settings-field-label">Mode</span>
+          <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.mode" /></span>
           <select
             className="settings-select"
             value={activeDelayProfile.mode}
@@ -220,13 +223,13 @@ export default function DelayCompensationPanel() {
             onChange={(event) => void setDelayCompensationMode(event.target.value as DelayCompensationMode)}
           >
             {MODES.map((mode) => (
-              <option key={mode.value} value={mode.value}>{mode.label}</option>
+              <option key={mode.value} value={mode.value}>{translateSourceText(mode.label)}</option>
             ))}
           </select>
         </label>
 
         <label className="settings-field">
-          <span className="settings-field-label">Calibration Method</span>
+          <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.calibration_method" /></span>
           <select
             className="settings-select"
             value={activeDelayProfile.calibrationMethod}
@@ -234,21 +237,21 @@ export default function DelayCompensationPanel() {
             onChange={(event) => void setDelayCalibrationMethod(event.target.value as DelayCalibrationMethod)}
           >
             {CALIBRATION_METHODS.map((method) => (
-              <option key={method.value} value={method.value}>{method.label}</option>
+              <option key={method.value} value={method.value}>{translateSourceText(method.label)}</option>
             ))}
           </select>
         </label>
 
         {isDifferentialMethod && (
           <label className="settings-field">
-            <span className="settings-field-label">Reference Output</span>
+            <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.reference_output" /></span>
             <select
               className="settings-select"
               value={activeDelayProfile.differentialReferenceOutputDeviceId}
               disabled={bitPerfectModeActive}
               onChange={(event) => void setDifferentialReferenceOutputDeviceId(event.target.value)}
             >
-              <option value="">System Default Output</option>
+              <option value=""><LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.system_default_output" /></option>
               {availableDevices
                 .filter((device) => device.deviceId !== selectedDeviceId)
                 .map((device) => (
@@ -261,14 +264,14 @@ export default function DelayCompensationPanel() {
         )}
 
         <label className="settings-field">
-          <span className="settings-field-label">Calibration Input</span>
+          <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.calibration_input" /></span>
           <select
             className="settings-select"
             value={selectedCalibrationInputDeviceId}
             disabled={bitPerfectModeActive}
             onChange={(event) => setCalibrationInputDeviceId(event.target.value)}
           >
-            <option value="">System Default Input</option>
+            <option value=""><LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.system_default_input" /></option>
             {availableInputDevices.map((device) => (
               <option key={device.deviceId} value={device.deviceId}>
                 {device.label}
@@ -279,7 +282,7 @@ export default function DelayCompensationPanel() {
 
         <div className="settings-field">
           <span className="settings-field-label">
-            {activeDelayProfile.mode === 'auto' ? 'Fine Tune Offset (ms)' : 'Manual Offset (ms)'}
+            {activeDelayProfile.mode === 'auto' ? translate('settings:auto.delaycompensationpanel.fine_tune_offset_ms') : translate('settings:auto.delaycompensationpanel.manual_offset_ms')}
           </span>
           <div className="delay-comp-offset-row">
             <input
@@ -321,7 +324,8 @@ export default function DelayCompensationPanel() {
           onClick={bitPerfectModeActive ? undefined : (() => void resetDelayToAutoGuess())}
           disabled={!hasAutoEstimate || isRunningCalibration || bitPerfectModeActive}
         >
-          Reset to Auto Guess
+
+          <LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.reset_to_auto_guess" />
         </button>
       </div>
 

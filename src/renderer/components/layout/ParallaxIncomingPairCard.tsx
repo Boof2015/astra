@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useEffect, useState } from 'react'
 import { useParallaxStore } from '../../stores/parallaxStore'
 
@@ -45,26 +47,28 @@ export default function ParallaxIncomingPairCard({ variant = 'modal' }: Props) {
 
   const card = (
     <div className={`parallax-pair-card parallax-pair-card-${variant}`} role="alert" aria-live="polite">
-      <div className="parallax-pair-card-kicker">Pair request</div>
+      <div className="parallax-pair-card-kicker"><LocalizedText ns="common" i18nKey="auto.parallaxincomingpaircard.pair_request" /></div>
       <div className="parallax-pair-card-host">
         <strong>{incoming.hostName || 'Unknown host'}</strong>
-        <span className="parallax-pair-card-host-suffix">wants to pair</span>
+        <span className="parallax-pair-card-host-suffix"><LocalizedText ns="common" i18nKey="auto.parallaxincomingpaircard.wants_to_pair" /></span>
       </div>
-      <div className="parallax-pair-card-pin" aria-label={`PIN ${incoming.pin}`}>
+      <div className="parallax-pair-card-pin" aria-label={translate('common:auto.parallaxincomingpaircard.pin_pin', { pin: incoming.pin })}>
         {pinDigits.map((digit, index) => (
           <span key={index} className="parallax-pair-card-pin-digit">{digit}</span>
         ))}
       </div>
       <div className="parallax-pair-card-instructions">
         {incoming.awaitingApproval
-          ? 'The host matched this code. Approve the connection to finish pairing.'
-          : 'Enter this code on the host, then approve the connection here.'}
+          ? translate('common:auto.parallaxincomingpaircard.the_host_matched_this_code_approve_the_connection_to_fin')
+          : translate('common:auto.parallaxincomingpaircard.enter_this_code_on_the_host_then_approve_the_connection_')}
       </div>
       <div className="parallax-pair-card-countdown">
-        Expires in {formatMmSs(remaining)}
+
+        <LocalizedText ns="common" i18nKey="auto.parallaxincomingpaircard.expires_in" /> {formatMmSs(remaining)}
       </div>
       <div className="parallax-pair-card-footnote">
-        If this wasn't you, reject the request.
+
+        <LocalizedText ns="common" i18nKey="auto.parallaxincomingpaircard.if_this_wasn_t_you_reject_the_request" />
       </div>
       <div className="parallax-pair-card-actions">
         <button
@@ -76,7 +80,8 @@ export default function ParallaxIncomingPairCard({ variant = 'modal' }: Props) {
             void window.electronAPI.parallax.cancelIncomingPair().finally(() => setSubmitting(false))
           }}
         >
-          Reject
+
+          <LocalizedText ns="common" i18nKey="auto.parallaxincomingpaircard.reject" />
         </button>
         {incoming.awaitingApproval && (
           <button
@@ -88,7 +93,8 @@ export default function ParallaxIncomingPairCard({ variant = 'modal' }: Props) {
               void window.electronAPI.parallax.approveIncomingPair().finally(() => setSubmitting(false))
             }}
           >
-            Approve
+
+            <LocalizedText ns="common" i18nKey="auto.parallaxincomingpaircard.approve" />
           </button>
         )}
       </div>

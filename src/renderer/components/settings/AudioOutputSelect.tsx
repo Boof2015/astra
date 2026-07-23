@@ -1,3 +1,4 @@
+import LocalizedText from '../i18n/LocalizedText'
 import { useEffect, useRef, useState } from 'react'
 import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { usePresence } from '../../hooks/usePresence'
@@ -62,9 +63,9 @@ export default function AudioOutputSelect() {
           data-presence={presence.phase}
           aria-hidden={presence.phase === 'exiting'}
         >
-          <div className="audio-output-dropdown-title">Output Device</div>
+          <div className="audio-output-dropdown-title"><LocalizedText ns="settings" i18nKey="auto.audiooutputselect.output_device" /></div>
           {availableDevices.length === 0 ? (
-            <div className="audio-output-dropdown-empty">No devices found</div>
+            <div className="audio-output-dropdown-empty"><LocalizedText ns="settings" i18nKey="auto.audiooutputselect.no_devices_found" /></div>
           ) : (
             availableDevices.map(device => (
               <button

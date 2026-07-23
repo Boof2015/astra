@@ -28,6 +28,7 @@ import {
   ALBUM_SORT_MODE_STORAGE_KEY,
   ARTIST_ROOT_VIEW_MODE_STORAGE_KEY,
   ASTRA_SESSION_STATE_STORAGE_KEY,
+  DISPLAY_LANGUAGE_STORAGE_KEY,
   INCLUDE_COLLAB_ARTISTS_STORAGE_KEY,
   INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY,
   TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY,
@@ -46,6 +47,7 @@ import {
   UI_SCALE_STORAGE_KEY,
   useUIStore
 } from '../../stores/uiStore'
+import { setDisplayLanguage } from '../../i18n'
 import {
   GLOBAL_INPUT_BINDINGS_STORAGE_KEY,
   INPUT_BINDINGS_STORAGE_KEY,
@@ -87,6 +89,7 @@ export const RENDERER_SETTINGS_KEYS = [
   SPECTRUM_HEATMAP_STORAGE_KEY,
   ANALYZER_HEIGHT_STORAGE_KEY,
   ANALYZER_RACK_VISIBILITY_STORAGE_KEY,
+  DISPLAY_LANGUAGE_STORAGE_KEY,
   ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY,
   UI_SCALE_STORAGE_KEY,
   HOME_GREETING_TEXT_MODE_STORAGE_KEY,
@@ -167,6 +170,7 @@ export async function resetAllSettings(): Promise<string> {
   useLyricsDisplaySettingsStore.getState().resetToDefaults()
   useEQStore.getState().resetToDefaults()
   clearRendererSettingsKeys()
+  await setDisplayLanguage('en')
   useVisualizerSettingsStore.getState().resetToDefaults()
   useUIStore.getState().resetAnalyzerRackPreferences()
   useUIStore.getState().resetUIScalePercent()

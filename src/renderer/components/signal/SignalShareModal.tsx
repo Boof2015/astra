@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { usePresence } from '../../hooks/usePresence'
 import { useUIStore } from '../../stores/uiStore'
@@ -120,15 +122,15 @@ export default function SignalShareModal() {
       >
         <div className="modal-header signal-share-header">
           <div className="signal-share-heading">
-            <p>ASTRA SIGNAL • V3</p>
-            <h2 id="signal-share-title">Create Astra Signal</h2>
+            <p><LocalizedText ns="integrations" i18nKey="auto.signalsharemodal.astra_signal_v3" /></p>
+            <h2 id="signal-share-title"><LocalizedText ns="integrations" i18nKey="auto.signalsharemodal.create_astra_signal" /></h2>
           </div>
           <button
             ref={closeButtonRef}
             className="modal-close"
             type="button"
             onClick={closeSignalShare}
-            aria-label="Close Astra Signal"
+            aria-label={translate('integrations:auto.signalsharemodal.close_astra_signal')}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
               <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
@@ -148,7 +150,7 @@ export default function SignalShareModal() {
                 ref={canvasRef}
                 className="signal-share-canvas"
                 role="img"
-                aria-label={`Astra Signal for ${model.layout.payload.title} by ${model.layout.payload.artist}`}
+                aria-label={translate('integrations:auto.signalsharemodal.astra_signal_for_title_by_artist', { title: model.layout.payload.title, artist: model.layout.payload.artist })}
               />
             </div>
           ) : (
@@ -158,12 +160,13 @@ export default function SignalShareModal() {
           )}
 
           <p className="signal-share-guidance">
-            Keep the complete light card visible when scanning it with another device.
+
+            <LocalizedText ns="integrations" i18nKey="auto.signalsharemodal.keep_the_complete_light_card_visible_when_scanning_it_wi" />
           </p>
 
           {model?.metadataWasShortened && (
             <div className="signal-share-warning" role="status">
-              <strong>Metadata shortened to fit Signal v3</strong>
+              <strong><LocalizedText ns="integrations" i18nKey="auto.signalsharemodal.metadata_shortened_to_fit_signal_v3" /></strong>
               <span>{model.layout.payload.title || 'Untitled track'} — {model.layout.payload.artist || 'Unknown artist'}</span>
             </div>
           )}
@@ -185,7 +188,7 @@ export default function SignalShareModal() {
             disabled={!model || busyAction !== null}
             onClick={() => void runAction('link')}
           >
-            {busyAction === 'link' ? 'Copying…' : 'Copy Link'}
+            {busyAction === 'link' ? translate('integrations:auto.signalsharemodal.copying') : translate('integrations:auto.signalsharemodal.copy_link')}
           </button>
           <button
             className="settings-btn"
@@ -193,7 +196,7 @@ export default function SignalShareModal() {
             disabled={!model || !previewReady || busyAction !== null}
             onClick={() => void runAction('copy')}
           >
-            {busyAction === 'copy' ? 'Copying…' : 'Copy Image'}
+            {busyAction === 'copy' ? translate('integrations:auto.signalsharemodal.copying') : translate('integrations:auto.signalsharemodal.copy_image')}
           </button>
           <button
             className="settings-btn settings-btn-primary"
@@ -201,7 +204,7 @@ export default function SignalShareModal() {
             disabled={!model || !previewReady || busyAction !== null}
             onClick={() => void runAction('save')}
           >
-            {busyAction === 'save' ? 'Saving…' : 'Save PNG'}
+            {busyAction === 'save' ? translate('integrations:auto.signalsharemodal.saving') : translate('integrations:auto.signalsharemodal.save_png')}
           </button>
         </div>
       </div>

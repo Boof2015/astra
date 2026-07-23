@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { translate, translateSourceText } from '../i18n'
 import type { EQBand, EQPreset } from '../types/audio'
 import { audioEngine } from '../audio/AudioEngine'
 import { parseAutoEQ } from '../utils/autoEQParser'
@@ -527,9 +528,9 @@ export const useEQStore = create<EQStore>((set, get) => ({
     const exportData = serializeEQPresetData(preset)
 
     const filePath = await window.electronAPI.showSaveDialog({
-      title: 'Export EQ Preset',
+      title: translateSourceText('Export EQ Preset'),
       defaultPath: `${preset.name}.json`,
-      filters: [{ name: 'JSON Files', extensions: ['json'] }],
+      filters: [{ name: translate('common:dialogs.filters.jsonFiles'), extensions: ['json'] }],
     })
     if (filePath) {
       await window.electronAPI.writeFile(filePath, JSON.stringify(exportData, null, 2))
@@ -538,8 +539,8 @@ export const useEQStore = create<EQStore>((set, get) => ({
 
   importFromFile: async () => {
     const filePath = await window.electronAPI.openFileDialog({
-      title: 'Import EQ Preset',
-      filters: [{ name: 'JSON Files', extensions: ['json'] }],
+      title: translateSourceText('Import EQ Preset'),
+      filters: [{ name: translate('common:dialogs.filters.jsonFiles'), extensions: ['json'] }],
     })
     if (!filePath) return
 
@@ -554,10 +555,10 @@ export const useEQStore = create<EQStore>((set, get) => ({
 
   importAutoEQ: async () => {
     const filePath = await window.electronAPI.openFileDialog({
-      title: 'Import AutoEQ Profile',
+      title: translateSourceText('Import AutoEQ Profile'),
       filters: [
-        { name: 'AutoEQ Files', extensions: ['txt'] },
-        { name: 'All Files', extensions: ['*'] },
+        { name: translate('common:dialogs.filters.autoEqFiles'), extensions: ['txt'] },
+        { name: translate('common:dialogs.filters.allFiles'), extensions: ['*'] },
       ],
     })
     if (!filePath) return

@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useMemo, useState } from 'react'
 import { useParallaxStore } from '../../stores/parallaxStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -69,14 +71,14 @@ export default function ParallaxSetupFlow({ onClose, onAddSpeaker, hidden = fals
       <div className="parallax-pairing-wizard-card parallax-setup-card">
         <div className="parallax-setup-head">
           <div>
-            <span className="parallax-setup-kicker">Parallax setup</span>
+            <span className="parallax-setup-kicker"><LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.parallax_setup" /></span>
             <h3 className="parallax-setup-title">
               {step === 'role' && 'What is this machine?'}
               {step === 'host' && 'Add your speakers'}
               {step === 'sink' && 'This machine is a speaker'}
             </h3>
           </div>
-          <button type="button" className="modal-close parallax-setup-close" onClick={onClose} aria-label="Close setup">
+          <button type="button" className="modal-close parallax-setup-close" onClick={onClose} aria-label={translate('integrations:auto.parallaxsetupflow.close_setup')}>
             ✕
           </button>
         </div>
@@ -84,22 +86,23 @@ export default function ParallaxSetupFlow({ onClose, onAddSpeaker, hidden = fals
         {step === 'role' && (
           <div className="parallax-setup-step">
             <p className="parallax-setup-lead">
-              Parallax keeps audio in sync across machines on your network. Pick the job for this one.
+
+              <LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.parallax_keeps_audio_in_sync_across_machines_on_your_net" />
             </p>
             <div className="parallax-choice-grid">
               <button className="parallax-choice-card" disabled={busy} onClick={() => void pickHost()}>
                 <span className="parallax-choice-icon">♫</span>
-                <span className="parallax-choice-title">Plays music</span>
-                <span className="parallax-choice-desc">This is where you control playback. It sends audio to your speakers.</span>
+                <span className="parallax-choice-title"><LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.plays_music" /></span>
+                <span className="parallax-choice-desc"><LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.this_is_where_you_control_playback_it_sends_audio_to_you" /></span>
               </button>
               <button className="parallax-choice-card" disabled={busy} onClick={() => void pickSpeaker()}>
                 <span className="parallax-choice-icon">◉</span>
-                <span className="parallax-choice-title">Is a speaker</span>
-                <span className="parallax-choice-desc">This plays in sync with a host elsewhere on the network.</span>
+                <span className="parallax-choice-title"><LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.is_a_speaker" /></span>
+                <span className="parallax-choice-desc"><LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.this_plays_in_sync_with_a_host_elsewhere_on_the_network" /></span>
               </button>
             </div>
             <div className="parallax-setup-footer">
-              <button className="settings-btn" onClick={onClose}>Not now</button>
+              <button className="settings-btn" onClick={onClose}><LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.not_now" /></button>
             </div>
           </div>
         )}
@@ -107,24 +110,27 @@ export default function ParallaxSetupFlow({ onClose, onAddSpeaker, hidden = fals
         {step === 'host' && (
           <div className="parallax-setup-step">
             <p className="parallax-setup-lead">
-              Find a nearby Astra running in speaker mode and pair it. You can add more anytime.
+
+              <LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.find_a_nearby_astra_running_in_speaker_mode_and_pair_it_" />
             </p>
             {activeSinkCount > 0 ? (
               <div className="parallax-setup-status is-good">
-                ✓ {activeSinkCount} speaker{activeSinkCount === 1 ? '' : 's'} paired. Start playback to hear it in sync. Use <strong>Tune</strong> on a speaker if it sounds early or late.
+                ✓ {activeSinkCount}  <LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.speaker" />{activeSinkCount === 1 ? '' : translate('integrations:auto.parallaxsetupflow.s')}  <LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.paired_start_playback_to_hear_it_in_sync_use" /> <strong><LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.tune" /></strong>  <LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.on_a_speaker_if_it_sounds_early_or_late" />
               </div>
             ) : (
               <div className="parallax-setup-status">
-                No speakers yet. On the other machine, open Parallax and choose “Is a speaker.”
+
+                <LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.no_speakers_yet_on_the_other_machine_open_parallax_and_c" />
               </div>
             )}
             <button className="settings-btn settings-btn-primary parallax-setup-cta" onClick={onAddSpeaker}>
-              Add a speaker
+
+              <LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.add_a_speaker" />
             </button>
             <div className="parallax-setup-footer">
-              <button className="settings-btn" onClick={() => setStep('role')}>Back</button>
+              <button className="settings-btn" onClick={() => setStep('role')}><LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.back" /></button>
               <button className="settings-btn settings-btn-primary" onClick={onClose}>
-                {activeSinkCount > 0 ? 'Done' : 'Finish later'}
+                {activeSinkCount > 0 ? translate('integrations:auto.parallaxsetupflow.done') : translate('integrations:auto.parallaxsetupflow.finish_later')}
               </button>
             </div>
           </div>
@@ -133,35 +139,36 @@ export default function ParallaxSetupFlow({ onClose, onAddSpeaker, hidden = fals
         {step === 'sink' && (
           <div className="parallax-setup-step">
             <p className="parallax-setup-lead">
-              This machine is ready to play in sync. On your music machine, add this speaker, then confirm the PIN that appears here.
+
+              <LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.this_machine_is_ready_to_play_in_sync_on_your_music_mach" />
             </p>
             <div className="parallax-setup-identity">
               <div className="parallax-setup-identity-row">
-                <span className="parallax-setup-identity-label">Find it as</span>
+                <span className="parallax-setup-identity-label"><LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.find_it_as" /></span>
                 <span className="parallax-setup-identity-value">{identity?.hostname || '—'}</span>
               </div>
               <div className="parallax-setup-identity-row">
-                <span className="parallax-setup-identity-label">On network</span>
+                <span className="parallax-setup-identity-label"><LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.on_network" /></span>
                 <span className="parallax-setup-identity-value">
-                  {identity && identity.lanIps.length > 0 ? identity.lanIps.join(' · ') : 'Finding address…'}
+                  {identity && identity.lanIps.length > 0 ? identity.lanIps.join(' · ') : translate('integrations:auto.parallaxsetupflow.finding_address')}
                 </span>
               </div>
             </div>
             {status?.sink.incomingPairRequest
               ? <ParallaxIncomingPairCard variant="zone-display" />
-              : <div className="parallax-setup-status">Waiting for a host to start pairing…</div>}
+              : <div className="parallax-setup-status"><LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.waiting_for_a_host_to_start_pairing" /></div>}
             <div className="settings-field settings-field-inline parallax-setup-inline-toggle">
-              <span className="settings-field-label">Open Zone Display on launch</span>
+              <span className="settings-field-label"><LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.open_zone_display_on_launch" /></span>
               <button
                 className={`settings-toggle ${openZoneDisplayOnLaunch ? 'active' : ''}`}
                 onClick={() => setOpenZoneDisplayOnLaunch(!openZoneDisplayOnLaunch)}
               >
-                {openZoneDisplayOnLaunch ? 'Enabled' : 'Disabled'}
+                {openZoneDisplayOnLaunch ? translate('integrations:auto.parallaxsetupflow.enabled') : translate('integrations:auto.parallaxsetupflow.disabled')}
               </button>
             </div>
             <div className="parallax-setup-footer">
-              <button className="settings-btn" onClick={() => setStep('role')}>Back</button>
-              <button className="settings-btn settings-btn-primary" onClick={onClose}>Done</button>
+              <button className="settings-btn" onClick={() => setStep('role')}><LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.back" /></button>
+              <button className="settings-btn settings-btn-primary" onClick={onClose}><LocalizedText ns="integrations" i18nKey="auto.parallaxsetupflow.done" /></button>
             </div>
           </div>
         )}

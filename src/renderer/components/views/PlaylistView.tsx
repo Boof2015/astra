@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate, translateSourceText } from '../../i18n'
 import { DragEvent, useCallback, useEffect, useMemo, useRef, useState, type UIEvent as ReactUIEvent } from 'react'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { useRatingsStore, type TrackRatingState } from '../../stores/ratingsStore'
@@ -673,8 +675,8 @@ export default function PlaylistView() {
     setIsCoverMenuOpen(false)
     if (isFavoritesPlaylist || selectedPlaylistId === null || selectedPlaylistId <= 0 || isUpdatingCover || isReorderMode || isSavingReorder) return
     const imagePath = await window.electronAPI.openFileDialog({
-      title: 'Choose playlist cover',
-      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }]
+      title: translateSourceText('Choose playlist cover'),
+      filters: [{ name: translate('common:dialogs.filters.images'), extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }]
     })
     if (!imagePath) return
 
@@ -881,7 +883,7 @@ export default function PlaylistView() {
     }
 
     const targetTrackPath = await window.electronAPI.openFileDialog({
-      title: 'Change Associated Playlist File',
+      title: translateSourceText('Change Associated Playlist File'),
       filters: PLAYLIST_ASSOCIATION_AUDIO_FILTER
     })
     if (!targetTrackPath) return
@@ -913,8 +915,8 @@ export default function PlaylistView() {
         <div className="playlist-browser">
           <div className="playlist-browser-header">
             <div className="playlist-browser-copy">
-              <h2>Playlists</h2>
-              <p>{allPlaylists.length > 0 ? `${allPlaylists.length} collections ready to play` : 'Create a playlist to start organizing your library.'}</p>
+              <h2><LocalizedText ns="playback" i18nKey="auto.playlistview.playlists" /></h2>
+              <p>{allPlaylists.length > 0 ? translate('playback:auto.playlistview.length_collections_ready_to_play', { length: allPlaylists.length }) : translate('playback:auto.playlistview.create_a_playlist_to_start_organizing_your_library')}</p>
             </div>
             <div className="playlist-browser-actions">
               <button
@@ -925,7 +927,7 @@ export default function PlaylistView() {
                 }}
                 disabled={isImportingPlaylist}
               >
-                {isImportingPlaylist ? 'Importing...' : 'Import Playlist'}
+                {isImportingPlaylist ? translate('playback:auto.playlistview.importing') : translate('playback:auto.playlistview.import_playlist')}
               </button>
               <button
                 type="button"
@@ -933,7 +935,8 @@ export default function PlaylistView() {
                 onClick={() => setIsCreatePlaylistModalOpen(true)}
                 disabled={isImportingPlaylist}
               >
-                New Playlist
+
+                <LocalizedText ns="playback" i18nKey="auto.playlistview.new_playlist" />
               </button>
             </div>
           </div>
@@ -976,9 +979,9 @@ export default function PlaylistView() {
                   <span className="playlist-browser-card-meta">
                     <span className="playlist-browser-card-name">{entry.name}</span>
                     <span className="playlist-browser-card-count">
-                      {entry.kind === 'dynamic' ? 'Dynamic - ' : ''}
-                      {entry.track_count} {entry.track_count === 1 ? 'track' : 'tracks'}
-                      {entry.missing_track_count ? `, ${entry.missing_track_count} missing` : ''}
+                      {entry.kind === 'dynamic' ? translate('playback:auto.playlistview.dynamic') : ''}
+                      {entry.track_count} {entry.track_count === 1 ? translate('playback:auto.playlistview.track') : translate('playback:auto.playlistview.tracks')}
+                      {entry.missing_track_count ? translate('playback:auto.playlistview.missingtrackcount_missing', { missingTrackCount: entry.missing_track_count }) : ''}
                     </span>
                   </span>
                 </button>
@@ -986,8 +989,8 @@ export default function PlaylistView() {
             </div>
           ) : (
             <div className="library-empty playlist-browser-empty">
-              <p>No playlists yet</p>
-              <p className="empty-hint">Use the create button to make one from anywhere in the app.</p>
+              <p><LocalizedText ns="playback" i18nKey="auto.playlistview.no_playlists_yet" /></p>
+              <p className="empty-hint"><LocalizedText ns="playback" i18nKey="auto.playlistview.use_the_create_button_to_make_one_from_anywhere_in_the_a" /></p>
             </div>
           )}
         </div>
@@ -1009,12 +1012,12 @@ export default function PlaylistView() {
     return (
       <div className="playlist-view">
         <div className="playlist-header">
-          <button className="back-btn" onClick={handleBack} title="Back">
+          <button className="back-btn" onClick={handleBack} title={translate('playback:auto.playlistview.back')}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
             </svg>
           </button>
-          <h2>Playlist not found</h2>
+          <h2><LocalizedText ns="playback" i18nKey="auto.playlistview.playlist_not_found" /></h2>
         </div>
       </div>
     )
@@ -1029,7 +1032,7 @@ export default function PlaylistView() {
           </div>
         )}
         <div className="library-header-left library-detail-header-left">
-          <button className="back-btn" onClick={handleBack} title="Back">
+          <button className="back-btn" onClick={handleBack} title={translate('playback:auto.playlistview.back')}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
             </svg>
@@ -1072,8 +1075,8 @@ export default function PlaylistView() {
                   disabled={isUpdatingCover || isReorderMode || isSavingReorder || isDeletingPlaylist}
                   aria-haspopup="menu"
                   aria-expanded={isCoverMenuOpen}
-                  aria-label="Edit playlist cover"
-                  title="Edit playlist cover"
+                  aria-label={translate('playback:auto.playlistview.edit_playlist_cover')}
+                  title={translate('playback:auto.playlistview.edit_playlist_cover')}
                 >
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <path d="M12 20h9" />
@@ -1089,7 +1092,8 @@ export default function PlaylistView() {
                       onClick={() => void handleChangeCover()}
                       disabled={isUpdatingCover || isReorderMode || isSavingReorder || isDeletingPlaylist}
                     >
-                      Change cover
+
+                      <LocalizedText ns="playback" i18nKey="auto.playlistview.change_cover" />
                     </button>
                     <button
                       type="button"
@@ -1098,7 +1102,8 @@ export default function PlaylistView() {
                       onClick={() => void handleClearCover()}
                       disabled={isUpdatingCover || !playlist?.custom_cover_hash || isReorderMode || isSavingReorder || isDeletingPlaylist}
                     >
-                      Remove cover
+
+                      <LocalizedText ns="playback" i18nKey="auto.playlistview.remove_cover" />
                     </button>
                   </div>
                 )}
@@ -1123,7 +1128,7 @@ export default function PlaylistView() {
             }}
           >
             <div className="library-detail-eyebrow-row">
-              <span className="library-detail-eyebrow">{isFavoritesPlaylist ? 'Favorites' : 'Playlist'}</span>
+              <span className="library-detail-eyebrow">{isFavoritesPlaylist ? translate('playback:auto.playlistview.favorites') : translate('playback:auto.playlistview.playlist')}</span>
             </div>
             {isRenaming ? (
               <input
@@ -1146,15 +1151,15 @@ export default function PlaylistView() {
             ) : (
               <h2>
                 {playlistName}
-                {isDynamicPlaylist && <span className="playlist-kind-badge">Dynamic</span>}
+                {isDynamicPlaylist && <span className="playlist-kind-badge"><LocalizedText ns="playback" i18nKey="auto.playlistview.dynamic" /></span>}
               </h2>
             )}
             <div className="library-detail-meta-row">
               <span className="library-detail-meta">
-                {selectedPlaylistTracks.length} {selectedPlaylistTracks.length === 1 ? 'track' : 'tracks'}
-                {playlistDurationLabel ? ` \u00b7 ${playlistDurationLabel}` : ''}
+                {selectedPlaylistTracks.length} {selectedPlaylistTracks.length === 1 ? translate('playback:auto.playlistview.track') : translate('playback:auto.playlistview.tracks')}
+                {playlistDurationLabel ? translate('playback:auto.playlistview.playlistdurationlabel', { playlistdurationlabel: playlistDurationLabel }) : ''}
                 {playlistMissingCount > 0 && (
-                  <span className="playlist-missing-count"> / {playlistMissingCount} missing</span>
+                  <span className="playlist-missing-count"> / {playlistMissingCount}  <LocalizedText ns="playback" i18nKey="auto.playlistview.missing" /></span>
                 )}
               </span>
             </div>
@@ -1167,21 +1172,21 @@ export default function PlaylistView() {
             onClick={() => {
               void handlePlayPlaylist()
             }}
-            title="Play playlist"
-            aria-label="Play playlist"
+            title={translate('playback:auto.playlistview.play_playlist')}
+            aria-label={translate('playback:auto.playlistview.play_playlist')}
             disabled={isPlayDisabled}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
               <path d="M8 5v14l11-7z" />
             </svg>
-            <span className="library-collection-action-label">Play</span>
+            <span className="library-collection-action-label"><LocalizedText ns="playback" i18nKey="auto.playlistview.play" /></span>
           </button>
           <button
             type="button"
             className={`icon-btn library-shuffle-btn library-collection-action-btn ${shuffle ? 'active' : ''}`}
             onClick={toggleShuffle}
-            title={shuffle ? 'Shuffle on' : 'Shuffle off'}
-            aria-label="Shuffle"
+            title={shuffle ? translate('playback:auto.playlistview.shuffle_on') : translate('playback:auto.playlistview.shuffle_off')}
+            aria-label={translate('playback:auto.playlistview.shuffle')}
             aria-pressed={shuffle}
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1191,7 +1196,7 @@ export default function PlaylistView() {
               <path d="M15 15 21 21" />
               <path d="M4 4 9 9" />
             </svg>
-            <span className="library-shuffle-btn-label">Shuffle</span>
+            <span className="library-shuffle-btn-label"><LocalizedText ns="playback" i18nKey="auto.playlistview.shuffle" /></span>
           </button>
           <QueueSplitButton
             trackPaths={displayPlayableTrackPaths}
@@ -1203,8 +1208,8 @@ export default function PlaylistView() {
               className={`icon-btn library-collection-action-btn playlist-detail-icon-btn ${isReorderMode ? 'active' : ''}`}
               onClick={handleToggleReorderMode}
               disabled={isSavingReorder || isDeletingPlaylist || (!isReorderMode && playlistEntryCount < 2)}
-              title={isReorderMode ? 'Exit reorder mode' : 'Reorder tracks'}
-              aria-label={isReorderMode ? 'Exit reorder mode' : 'Reorder tracks'}
+              title={isReorderMode ? translate('playback:auto.playlistview.exit_reorder_mode') : translate('playback:auto.playlistview.reorder_tracks')}
+              aria-label={isReorderMode ? translate('playback:auto.playlistview.exit_reorder_mode') : translate('playback:auto.playlistview.reorder_tracks')}
               aria-pressed={isReorderMode}
             >
               <svg width="15" height="17" viewBox="0 0 320 512" fill="currentColor" aria-hidden="true">
@@ -1222,8 +1227,8 @@ export default function PlaylistView() {
               }}
               aria-haspopup="menu"
               aria-expanded={isMoreMenuOpen}
-              aria-label="More playlist actions"
-              title="More playlist actions"
+              aria-label={translate('playback:auto.playlistview.more_playlist_actions')}
+              title={translate('playback:auto.playlistview.more_playlist_actions')}
             >
               <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <circle cx="5" cy="12" r="1.8" />
@@ -1243,7 +1248,8 @@ export default function PlaylistView() {
                   }}
                   disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
                 >
-                  New playlist
+
+                  <LocalizedText ns="playback" i18nKey="auto.playlistview.new_playlist_a5474a8" />
                 </button>
                 {isDynamicPlaylist && (
                   <button
@@ -1255,7 +1261,8 @@ export default function PlaylistView() {
                     }}
                     disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
                   >
-                    Edit Rules
+
+                    <LocalizedText ns="playback" i18nKey="auto.playlistview.edit_rules" />
                   </button>
                 )}
                 <button
@@ -1267,7 +1274,7 @@ export default function PlaylistView() {
                   }}
                   disabled={isReorderMode || isSavingReorder || isDeletingPlaylist || isExportingPlaylist}
                 >
-                  {isExportingPlaylist ? 'Exporting...' : 'Export M3U'}
+                  {isExportingPlaylist ? translate('playback:auto.playlistview.exporting') : translate('playback:auto.playlistview.export_m3u')}
                 </button>
                 {!isFavoritesPlaylist && (
                   <>
@@ -1278,7 +1285,8 @@ export default function PlaylistView() {
                       onClick={handleStartRename}
                       disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
                     >
-                      Rename
+
+                      <LocalizedText ns="playback" i18nKey="auto.playlistview.rename" />
                     </button>
                     <button
                       type="button"
@@ -1287,7 +1295,8 @@ export default function PlaylistView() {
                       onClick={handleRequestDelete}
                       disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
                     >
-                      Delete
+
+                      <LocalizedText ns="playback" i18nKey="auto.playlistview.delete" />
                     </button>
                   </>
                 )}
@@ -1353,7 +1362,7 @@ export default function PlaylistView() {
                     <div className="playlist-reorder-index">{index + 1}</div>
                     <div className="playlist-reorder-title">{title}</div>
                     <div className="playlist-reorder-artist">{artist}</div>
-                    {isMissing && <div className="playlist-reorder-missing-label">Missing</div>}
+                    {isMissing && <div className="playlist-reorder-missing-label"><LocalizedText ns="playback" i18nKey="auto.playlistview.missing" /></div>}
                   </div>
                 )
               })}
@@ -1368,7 +1377,7 @@ export default function PlaylistView() {
                 }}
                 disabled={isSavingReorder || reorderedEntries.length === 0}
               >
-                {isSavingReorder ? 'Saving...' : 'Save Order'}
+                {isSavingReorder ? translate('playback:auto.playlistview.saving') : translate('playback:auto.playlistview.save_order')}
               </button>
               <button
                 type="button"
@@ -1376,7 +1385,8 @@ export default function PlaylistView() {
                 onClick={handleCancelReorder}
                 disabled={isSavingReorder}
               >
-                Cancel
+
+                <LocalizedText ns="playback" i18nKey="auto.playlistview.cancel" />
               </button>
             </div>
           </>
@@ -1410,18 +1420,19 @@ export default function PlaylistView() {
           </>
         ) : (
           <div className="library-empty">
-            <p>{selectedPlaylistId === FAVORITES_PLAYLIST_ID ? 'No favorites yet' : isDynamicPlaylist ? 'No matching tracks' : 'This playlist is empty'}</p>
+            <p>{selectedPlaylistId === FAVORITES_PLAYLIST_ID ? translate('playback:auto.playlistview.no_favorites_yet') : isDynamicPlaylist ? translate('playback:auto.playlistview.no_matching_tracks') : translate('playback:auto.playlistview.this_playlist_is_empty')}</p>
             <p className="empty-hint">
               {selectedPlaylistId === FAVORITES_PLAYLIST_ID
-                ? 'Click the heart icon on any track to add favorites.'
+                ? translate('playback:auto.playlistview.click_the_heart_icon_on_any_track_to_add_favorites')
                 : isDynamicPlaylist
-                  ? 'Edit the rules or add more music to the library.'
-                  : 'Add tracks from the Library view'}
+                  ? translate('playback:auto.playlistview.edit_the_rules_or_add_more_music_to_the_library')
+                  : translate('playback:auto.playlistview.add_tracks_from_the_library_view')}
             </p>
             {selectedPlaylistId !== FAVORITES_PLAYLIST_ID && !isDynamicPlaylist && (
               <div className="playlist-empty-actions">
                 <button type="button" className="settings-btn settings-btn-primary" onClick={handleOpenLibrary}>
-                  Open Library
+
+                  <LocalizedText ns="playback" i18nKey="auto.playlistview.open_library" />
                 </button>
               </div>
             )}
@@ -1450,11 +1461,11 @@ export default function PlaylistView() {
             onClick={(event) => event.stopPropagation()}
           >
             <div className="modal-header playlist-create-modal-header">
-              <h2>Edit Dynamic Rules</h2>
+              <h2><LocalizedText ns="playback" i18nKey="auto.playlistview.edit_dynamic_rules" /></h2>
               <button
                 className="modal-close"
                 onClick={() => setIsDynamicRulesModalOpen(false)}
-                aria-label="Close"
+                aria-label={translate('playback:auto.playlistview.close')}
                 disabled={isSavingDynamicRules}
               >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
@@ -1464,7 +1475,7 @@ export default function PlaylistView() {
             </div>
             <div className="modal-body playlist-create-modal-body">
               {isDynamicRulesLoading ? (
-                <div className="playlist-dynamic-preview-empty">Loading rules...</div>
+                <div className="playlist-dynamic-preview-empty"><LocalizedText ns="playback" i18nKey="auto.playlistview.loading_rules" /></div>
               ) : (
                 <DynamicPlaylistRuleEditor
                   rules={dynamicRulesDraft}
@@ -1486,7 +1497,8 @@ export default function PlaylistView() {
                   onClick={() => setIsDynamicRulesModalOpen(false)}
                   disabled={isSavingDynamicRules}
                 >
-                  Cancel
+
+                  <LocalizedText ns="playback" i18nKey="auto.playlistview.cancel" />
                 </button>
                 <button
                   className="settings-btn settings-btn-primary"
@@ -1495,7 +1507,7 @@ export default function PlaylistView() {
                   }}
                   disabled={isSavingDynamicRules || isDynamicRulesLoading || isDynamicRulesDraftInvalid}
                 >
-                  {isSavingDynamicRules ? 'Saving...' : 'Save Rules'}
+                  {isSavingDynamicRules ? translate('playback:auto.playlistview.saving') : translate('playback:auto.playlistview.save_rules')}
                 </button>
               </div>
             </div>
@@ -1504,7 +1516,7 @@ export default function PlaylistView() {
       )}
       <ConfirmActionModal
         isOpen={isDeleteConfirmOpen}
-        title="Delete Playlist?"
+        title={translate('playback:auto.playlistview.delete_playlist')}
         message={`Delete "${playlistName ?? 'this playlist'}"? This cannot be undone.`}
         confirmLabel="Delete Playlist"
         cancelLabel="Cancel"
@@ -1517,7 +1529,7 @@ export default function PlaylistView() {
       />
       <ConfirmActionModal
         isOpen={isDiscardReorderConfirmOpen}
-        title="Discard Unsaved Reorder?"
+        title={translate('playback:auto.playlistview.discard_unsaved_reorder')}
         message="You have unsaved playlist reorder changes. Leaving reorder mode will discard them."
         confirmLabel="Discard Changes"
         cancelLabel="Keep Editing"

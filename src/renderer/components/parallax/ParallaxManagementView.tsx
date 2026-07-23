@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useEffect, useMemo, useState } from 'react'
 import { useParallaxStore } from '../../stores/parallaxStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -155,17 +157,17 @@ export default function ParallaxManagementView({ notify, onAddSpeaker, onChangeR
     <div className="parallax-management">
       {status?.securityMigrationRequired && (
         <div className="settings-card parallax-security-migration-card" role="status">
-          <div className="settings-card-label">Parallax security update</div>
-          <p>Previous pairings were removed so Parallax can use encrypted, identity-pinned connections. Pair each speaker again once.</p>
+          <div className="settings-card-label"><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.parallax_security_update" /></div>
+          <p><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.previous_pairings_were_removed_so_parallax_can_use_encry" /></p>
         </div>
       )}
       {/* This machine — role identity + the one control that flips it */}
       <div className="settings-card">
-        <div className="settings-card-label">This machine</div>
+        <div className="settings-card-label"><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.this_machine" /></div>
         <div className="settings-grid">
           <div className="settings-field settings-field-inline">
             <span className="settings-field-label">{roleSummary}</span>
-            <button className="settings-btn" onClick={onChangeRole}>Change role</button>
+            <button className="settings-btn" onClick={onChangeRole}><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.change_role" /></button>
           </div>
         </div>
       </div>
@@ -174,7 +176,8 @@ export default function ParallaxManagementView({ notify, onAddSpeaker, onChangeR
         <div className="settings-card parallax-speakers-card">
           <div className="parallax-card-header">
             <div className="settings-card-label settings-card-label-bare">
-              Speakers ({activePlaybackSinkCount} playing · {connectedSinkCount} connected)
+
+              <LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.speakers" />{activePlaybackSinkCount}  <LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.playing" /> {connectedSinkCount}  <LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.connected" />
             </div>
             <div className="parallax-card-header-actions">
               <button
@@ -182,16 +185,18 @@ export default function ParallaxManagementView({ notify, onAddSpeaker, onChangeR
                 disabled={activeSinks.length === 0 || selectedSinkCount === activeSinks.length}
                 onClick={() => handleSetAllPlayback(true)}
               >
-                Play all
+
+                <LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.play_all" />
               </button>
               <button
                 className="settings-btn"
                 disabled={activeSinks.length === 0 || selectedSinkCount === 0}
                 onClick={() => handleSetAllPlayback(false)}
               >
-                Play none
+
+                <LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.play_none" />
               </button>
-              <button className="settings-btn settings-btn-primary" onClick={onAddSpeaker}>Add speaker</button>
+              <button className="settings-btn settings-btn-primary" onClick={onAddSpeaker}><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.add_speaker" /></button>
             </div>
           </div>
           {managedSinks.length > 0 ? (
@@ -207,17 +212,18 @@ export default function ParallaxManagementView({ notify, onAddSpeaker, onChangeR
               ))}
               {activeSinks.length >= 2 && (
                 <div className="parallax-speaker-list-footer">
-                  <button className="settings-btn" onClick={handleClearAllCache}>Clear cached status</button>
+                  <button className="settings-btn" onClick={handleClearAllCache}><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.clear_cached_status" /></button>
                   <button className="settings-btn settings-btn-danger" onClick={() => void revokeAllPairedSinks()}>
-                    Remove all
+
+                    <LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.remove_all" />
                   </button>
                 </div>
               )}
             </div>
           ) : (
             <div className="parallax-speaker-empty">
-              <span>No speakers yet.</span>
-              <button className="settings-btn settings-btn-primary" onClick={onAddSpeaker}>Add speaker</button>
+              <span><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.no_speakers_yet" /></span>
+              <button className="settings-btn settings-btn-primary" onClick={onAddSpeaker}><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.add_speaker" /></button>
             </div>
           )}
         </div>
@@ -225,43 +231,45 @@ export default function ParallaxManagementView({ notify, onAddSpeaker, onChangeR
 
       {role === 'sink' && (
         <div className="settings-card">
-          <div className="settings-card-label">This speaker</div>
+          <div className="settings-card-label"><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.this_speaker" /></div>
           <div className="settings-grid">
             {hasPersistedConnection ? (
               <div className="settings-field settings-field-inline">
-                <span className="settings-field-label">Paired host</span>
+                <span className="settings-field-label"><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.paired_host" /></span>
                 <div className="settings-inline-row">
                   <span className="settings-info-value">{persistedHostName ?? '—'}</span>
                   {sinkConnected ? (
-                    <button className="settings-btn" onClick={handleDisconnect}>Disconnect</button>
+                    <button className="settings-btn" onClick={handleDisconnect}><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.disconnect" /></button>
                   ) : (
                     <button
                       className="settings-btn settings-btn-primary"
                       disabled={!sinkEnabled}
                       onClick={handleReconnect}
-                      title={sinkEnabled ? 'Reconnect to paired host' : 'Enable Parallax to reconnect'}
+                      title={sinkEnabled ? translate('integrations:auto.parallaxmanagementview.reconnect_to_paired_host') : translate('integrations:auto.parallaxmanagementview.enable_parallax_to_reconnect')}
                     >
-                      Reconnect
+
+                      <LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.reconnect" />
                     </button>
                   )}
-                  <button className="settings-btn settings-btn-danger" onClick={handleForgetHost}>Forget host</button>
+                  <button className="settings-btn settings-btn-danger" onClick={handleForgetHost}><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.forget_host" /></button>
                 </div>
               </div>
             ) : (
               <div className="settings-field">
-                <span className="settings-field-label">Not paired to a host yet</span>
+                <span className="settings-field-label"><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.not_paired_to_a_host_yet" /></span>
                 <p className="settings-note">
-                  Open this machine's host and add it as a speaker. A PIN will appear here to confirm.
+
+                  <LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.open_this_machine_s_host_and_add_it_as_a_speaker_a_pin_w" />
                 </p>
               </div>
             )}
             <div className="settings-field settings-field-inline">
-              <span className="settings-field-label">Open Zone Display on launch</span>
+              <span className="settings-field-label"><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.open_zone_display_on_launch" /></span>
               <button
                 className={`settings-toggle ${openZoneDisplayOnLaunch ? 'active' : ''}`}
                 onClick={() => setOpenZoneDisplayOnLaunch(!openZoneDisplayOnLaunch)}
               >
-                {openZoneDisplayOnLaunch ? 'Enabled' : 'Disabled'}
+                {openZoneDisplayOnLaunch ? translate('integrations:auto.parallaxmanagementview.enabled') : translate('integrations:auto.parallaxmanagementview.disabled')}
               </button>
             </div>
           </div>
@@ -272,8 +280,8 @@ export default function ParallaxManagementView({ notify, onAddSpeaker, onChangeR
         <div className="settings-card">
           <div className="settings-grid">
             <div className="settings-field settings-field-inline">
-              <span className="settings-field-label">Parallax is on, but no role is chosen.</span>
-              <button className="settings-btn settings-btn-primary" onClick={onChangeRole}>Choose role</button>
+              <span className="settings-field-label"><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.parallax_is_on_but_no_role_is_chosen" /></span>
+              <button className="settings-btn settings-btn-primary" onClick={onChangeRole}><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.choose_role" /></button>
             </div>
           </div>
         </div>
@@ -281,28 +289,28 @@ export default function ParallaxManagementView({ notify, onAddSpeaker, onChangeR
 
       {/* Advanced — demoted raw controls */}
       <details className="parallax-advanced-disclosure">
-        <summary className="parallax-advanced-summary">Advanced</summary>
+        <summary className="parallax-advanced-summary"><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.advanced" /></summary>
         <div className="settings-grid">
           <div className="settings-field settings-field-inline">
-            <span className="settings-field-label">Enable Parallax Host</span>
+            <span className="settings-field-label"><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.enable_parallax_host" /></span>
             <button
               className={`settings-toggle ${hostEnabled ? 'active' : ''}`}
               onClick={() => void setHostEnabled(!hostEnabled)}
             >
-              {hostEnabled ? 'Enabled' : 'Disabled'}
+              {hostEnabled ? translate('integrations:auto.parallaxmanagementview.enabled') : translate('integrations:auto.parallaxmanagementview.disabled')}
             </button>
           </div>
           <div className="settings-field settings-field-inline">
-            <span className="settings-field-label">Enable Parallax Sink</span>
+            <span className="settings-field-label"><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.enable_parallax_sink" /></span>
             <button
               className={`settings-toggle ${sinkEnabled ? 'active' : ''}`}
               onClick={() => void setSinkEnabled(!sinkEnabled)}
             >
-              {sinkEnabled ? 'Enabled' : 'Disabled'}
+              {sinkEnabled ? translate('integrations:auto.parallaxmanagementview.enabled') : translate('integrations:auto.parallaxmanagementview.disabled')}
             </button>
           </div>
           <div className="settings-field">
-            <span className="settings-field-label">Parallax Port</span>
+            <span className="settings-field-label"><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.parallax_port" /></span>
             <div className="settings-inline-row">
               <input
                 className="settings-select settings-inline-input settings-inline-input-compact"
@@ -314,15 +322,16 @@ export default function ParallaxManagementView({ notify, onAddSpeaker, onChangeR
                 onChange={(event) => setPortInput(event.target.value)}
                 onBlur={handleSavePort}
               />
-              <button className="settings-btn" onClick={handleSavePort}>Save</button>
+              <button className="settings-btn" onClick={handleSavePort}><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.save" /></button>
             </div>
           </div>
           <div className="settings-field">
-            <span className="settings-field-label">Host Address</span>
+            <span className="settings-field-label"><LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.host_address" /></span>
             <div className="settings-inline-row">
               <span className="settings-chip settings-chip-mono settings-chip-grow">{hostUrl}</span>
               <button className="settings-btn" disabled={!hostEnabled} onClick={() => void handleCopyHostUrl()}>
-                Copy
+
+                <LocalizedText ns="integrations" i18nKey="auto.parallaxmanagementview.copy" />
               </button>
             </div>
           </div>

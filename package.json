@@ -10,6 +10,11 @@
     "preview": "electron-vite preview",
     "check:packaging-config": "node ./scripts/electron-builder/validate-config.cjs",
     "test": "node ./scripts/node/run-tests.cjs",
+    "test:i18n": "node --experimental-strip-types --test src/shared/i18n/core.test.ts",
+    "i18n:validate": "node ./scripts/i18n/validate-locales.mjs",
+    "i18n:check-ui": "node ./scripts/i18n/extract-static-ui.mjs --check",
+    "i18n:check-runtime": "node ./scripts/i18n/extract-runtime-copy.mjs --check",
+    "i18n:check": "npm run i18n:validate && npm run i18n:check-ui && npm run i18n:check-runtime",
     "test:node": "node ./scripts/node/run-tests.cjs --node",
     "test:electron": "node ./scripts/node/run-tests.cjs --electron",
     "test:album-eligibility": "node --experimental-strip-types --experimental-default-type=module --test src/shared/library/albumEligibility.test.ts",
@@ -73,10 +78,12 @@
     "bonjour-service": "^1.4.0",
     "ffmpeg-static": "^5.2.0",
     "ffprobe-static": "^3.1.0",
+    "i18next": "^26.3.6",
     "music-metadata": "^11.12.3",
     "node-addon-api": "^8.7.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
+    "react-i18next": "^17.0.11",
     "react-window": "^2.2.7",
     "reflect-metadata": "^0.2.2",
     "undici": "^8.7.0",
@@ -285,8 +292,17 @@
         "height": 440
       },
       "contents": [
-        { "x": 130, "y": 220, "type": "file" },
-        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+        {
+          "x": 130,
+          "y": 220,
+          "type": "file"
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
     },
     "nsis": {

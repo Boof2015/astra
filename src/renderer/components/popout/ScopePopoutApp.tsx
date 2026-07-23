@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useEffect, useMemo, useRef } from 'react'
 import {
   isNativeAvailable,
@@ -1137,8 +1139,8 @@ export default function ScopePopoutApp() {
     return (
       <div className="scope-popout-root">
         <div className="scope-popout-invalid">
-          <div className="scope-popout-invalid-title">Invalid scope target</div>
-          <div className="scope-popout-invalid-hint">Open popouts from the analyzer deck buttons.</div>
+          <div className="scope-popout-invalid-title"><LocalizedText ns="playback" i18nKey="auto.scopepopoutapp.invalid_scope_target" /></div>
+          <div className="scope-popout-invalid-hint"><LocalizedText ns="playback" i18nKey="auto.scopepopoutapp.open_popouts_from_the_analyzer_deck_buttons" /></div>
         </div>
       </div>
     )
@@ -1153,17 +1155,18 @@ export default function ScopePopoutApp() {
     <div className="scope-popout-root">
       <header className="scope-popout-header">
         <div className="scope-popout-drag">
-          <span className="scope-popout-badge">ASTRA</span>
+          <span className="scope-popout-badge"><LocalizedText ns="playback" i18nKey="auto.scopepopoutapp.astra" /></span>
           <span className="scope-popout-title">{label.toUpperCase()}</span>
         </div>
         <div className="scope-popout-controls">
           <button
             className="scope-popout-btn"
             onClick={handleRecall}
-            title="Dock back in Astra"
-            aria-label="Dock back in Astra"
+            title={translate('playback:auto.scopepopoutapp.dock_back_in_astra')}
+            aria-label={translate('playback:auto.scopepopoutapp.dock_back_in_astra')}
           >
-            Dock
+
+            <LocalizedText ns="playback" i18nKey="auto.scopepopoutapp.dock" />
           </button>
         </div>
       </header>

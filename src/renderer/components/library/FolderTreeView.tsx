@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { memo, ReactElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
 import { useLibraryStore, type DbTrack, type LibraryFolder } from '../../stores/libraryStore'
@@ -224,8 +226,8 @@ function FolderTreeRowRenderer({
               <button
                 type="button"
                 className="folder-browse-action-btn"
-                title={`Shuffle ${node.name}`}
-                aria-label={`Shuffle ${node.name}`}
+                title={translate('library:auto.foldertreeview.shuffle_name', { name: node.name })}
+                aria-label={translate('library:auto.foldertreeview.shuffle_name', { name: node.name })}
                 onClick={(event) => {
                   event.stopPropagation()
                   void onShuffleFolder(node)
@@ -242,8 +244,8 @@ function FolderTreeRowRenderer({
               <button
                 type="button"
                 className={`folder-browse-action-btn ${isPlaylistPopupOpen ? 'active' : ''}`}
-                title={`Add ${node.name} to playlist`}
-                aria-label={`Add ${node.name} to playlist`}
+                title={translate('library:auto.foldertreeview.add_name_to_playlist', { name: node.name })}
+                aria-label={translate('library:auto.foldertreeview.add_name_to_playlist', { name: node.name })}
                 onClick={(event) => onOpenPlaylistPopup(event, node)}
               >
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
@@ -747,8 +749,8 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
   const content = tree.length === 0 ? (
     <div className="library-empty">
       {trimmedSearchQuery
-        ? <p>No tracks found for &ldquo;{searchQuery.trim()}&rdquo;</p>
-        : <p>No folders with tracks</p>
+        ? <p><LocalizedText ns="library" i18nKey="auto.foldertreeview.no_tracks_found_for_ldquo" />{searchQuery.trim()}<LocalizedText ns="library" i18nKey="auto.foldertreeview.rdquo" /></p>
+        : <p><LocalizedText ns="library" i18nKey="auto.foldertreeview.no_folders_with_tracks" /></p>
       }
     </div>
   ) : (
@@ -786,7 +788,7 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
                 {currentFolderPlaylistNode.name}
               </div>
               <div className="folder-playlist-popup-subtitle">
-                {currentFolderPlaylistNode.totalTrackCount} {currentFolderPlaylistNode.totalTrackCount === 1 ? 'visible track' : 'visible tracks'}
+                {currentFolderPlaylistNode.totalTrackCount} {currentFolderPlaylistNode.totalTrackCount === 1 ? translate('library:auto.foldertreeview.visible_track') : translate('library:auto.foldertreeview.visible_tracks')}
               </div>
             </div>
             <button
@@ -795,14 +797,15 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
               onClick={() => handleOpenCreatePlaylistModal()}
               disabled={isFolderPlaylistMutating}
             >
-              New playlist
+
+              <LocalizedText ns="library" i18nKey="auto.foldertreeview.new_playlist" />
             </button>
           </div>
           <div className="track-playlist-popup-search">
             <input
               type="text"
               className="track-playlist-popup-search-input"
-              placeholder="Search playlists..."
+              placeholder={translate('library:auto.foldertreeview.search_playlists')}
               value={folderPlaylistSearch}
               onChange={(event) => setFolderPlaylistSearch(event.target.value)}
               autoFocus
@@ -832,12 +835,12 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
                   />
                   <span className="track-playlist-popup-item-name">{highlightSearchMatch(playlist.name, folderPlaylistSearch)}</span>
                   <span className="folder-playlist-popup-item-count">
-                    {playlist.track_count} {playlist.track_count === 1 ? 'track' : 'tracks'}
+                    {playlist.track_count} {playlist.track_count === 1 ? translate('library:auto.foldertreeview.track') : translate('library:auto.foldertreeview.tracks')}
                   </span>
                 </button>
               ))
             ) : (
-              <div className="track-playlist-popup-empty">No matching playlists</div>
+              <div className="track-playlist-popup-empty"><LocalizedText ns="library" i18nKey="auto.foldertreeview.no_matching_playlists" /></div>
             )}
           </div>
         </div>
@@ -847,7 +850,7 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
         initialName={createPlaylistTarget?.folderName ?? ''}
         onClose={handleCloseCreatePlaylistModal}
         onCreate={handleCreatePlaylistFromFolder}
-        title="Create Playlist from Folder"
+        title={translate('library:auto.foldertreeview.create_playlist_from_folder')}
       />
     </>
   )

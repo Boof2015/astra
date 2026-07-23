@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useEffect, useMemo, useState } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -63,19 +65,19 @@ export default function OutputDelayCue() {
       <div className="fullscreen-next-cue-card">
         <div className="fullscreen-next-cue-artwork">
           {artworkTrack?.artworkHash ? (
-            <AlbumArtwork hash={artworkTrack.artworkHash} alt="Output delay cue artwork" variant="card" />
+            <AlbumArtwork hash={artworkTrack.artworkHash} alt={translate('common:auto.outputdelaycue.output_delay_cue_artwork')} variant="card" />
           ) : artworkTrack?.artworkData ? (
-            <img src={artworkTrack.artworkData} alt="Output delay cue artwork" />
+            <img src={artworkTrack.artworkData} alt={translate('common:auto.outputdelaycue.output_delay_cue_artwork')} />
           ) : (
-            <div className="fullscreen-next-cue-placeholder">DL</div>
+            <div className="fullscreen-next-cue-placeholder"><LocalizedText ns="common" i18nKey="auto.outputdelaycue.dl" /></div>
           )}
         </div>
 
         <div className="fullscreen-next-cue-meta">
-          <span className="fullscreen-next-cue-label">Output Delay</span>
-          <div className="fullscreen-next-cue-title">Delay compensation active ({notice.delayMs} ms)</div>
+          <span className="fullscreen-next-cue-label"><LocalizedText ns="common" i18nKey="auto.outputdelaycue.output_delay" /></span>
+          <div className="fullscreen-next-cue-title">{translate('playback:delay.active', { delay: notice.delayMs })}</div>
           <div className="fullscreen-next-cue-artist">{titleLine} • {artistLine}</div>
-          <div className="fullscreen-next-cue-artist">{outputLabel} • heard playback starts shortly</div>
+          <div className="fullscreen-next-cue-artist">{outputLabel} • {translate('playback:delay.heardPlaybackStartsShortly')}</div>
         </div>
 
         <div className="output-delay-cue-badge">{notice.delayMs}ms</div>

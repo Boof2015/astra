@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useEQStore } from '../../stores/eqStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -91,13 +93,13 @@ export default function EQPanel() {
       {/* Header */}
       <div className="eq-header">
         <div className="eq-header-left">
-          <span className="eq-header-title">Equalizer</span>
+          <span className="eq-header-title"><LocalizedText ns="common" i18nKey="auto.eqpanel.equalizer" /></span>
           <div
             className={`eq-toggle-switch ${enabled ? 'active' : ''}`}
             onClick={toggleEnabled}
             role="switch"
             aria-checked={enabled}
-            title={enabled ? 'Disable EQ' : 'Enable EQ'}
+            title={enabled ? translate('common:auto.eqpanel.disable_eq') : translate('common:auto.eqpanel.enable_eq')}
           />
         </div>
 
@@ -110,7 +112,7 @@ export default function EQPanel() {
               if (preset) applyPreset(preset)
             }}
           >
-            <option value="">Custom</option>
+            <option value=""><LocalizedText ns="common" i18nKey="auto.eqpanel.custom" /></option>
             <optgroup label="Built-in">
               {builtInPresets.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -135,7 +137,7 @@ export default function EQPanel() {
               <input
                 className="eq-save-name-input"
                 type="text"
-                placeholder="Preset name..."
+                placeholder={translate('common:auto.eqpanel.preset_name')}
                 value={saveName}
                 onChange={(e) => setSaveName(e.target.value)}
                 onKeyDown={(e) => {
@@ -150,7 +152,7 @@ export default function EQPanel() {
               <button
                 className="eq-reset-btn"
                 onClick={handleSave}
-                title="Confirm save"
+                title={translate('common:auto.eqpanel.confirm_save')}
                 disabled={!saveName.trim()}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
@@ -162,7 +164,7 @@ export default function EQPanel() {
             <button
               className="eq-reset-btn"
               onClick={() => setShowSaveInput(true)}
-              title="Save as preset"
+              title={translate('common:auto.eqpanel.save_as_preset')}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z" />
@@ -175,7 +177,7 @@ export default function EQPanel() {
             <button
               className="eq-reset-btn"
               onClick={() => deleteCustomPreset(activePresetId!)}
-              title="Delete this preset"
+              title={translate('common:auto.eqpanel.delete_this_preset')}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
@@ -188,7 +190,7 @@ export default function EQPanel() {
             <button
               className="eq-reset-btn"
               onClick={() => setShowImportMenu(!showImportMenu)}
-              title="Import / Export"
+              title={translate('common:auto.eqpanel.import_export')}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" />
@@ -197,21 +199,24 @@ export default function EQPanel() {
             {showImportMenu && (
               <div className="eq-import-menu">
                 <button onClick={() => { importFromFile(); setShowImportMenu(false) }}>
-                  Import Preset
+
+                  <LocalizedText ns="common" i18nKey="auto.eqpanel.import_preset" />
                 </button>
                 <button onClick={() => { importAutoEQ(); setShowImportMenu(false) }}>
-                  Import AutoEQ
+
+                  <LocalizedText ns="common" i18nKey="auto.eqpanel.import_autoeq" />
                 </button>
                 {activePresetId && (
                   <button onClick={() => { exportPreset(activePresetId); setShowImportMenu(false) }}>
-                    Export Current
+
+                    <LocalizedText ns="common" i18nKey="auto.eqpanel.export_current" />
                   </button>
                 )}
               </div>
             )}
           </div>
 
-          <button className="eq-reset-btn" onClick={resetEQ} title="Reset EQ">
+          <button className="eq-reset-btn" onClick={resetEQ} title={translate('common:auto.eqpanel.reset_eq')}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" />
             </svg>
@@ -220,7 +225,7 @@ export default function EQPanel() {
           <button
             className="eq-close-btn"
             onClick={() => useUIStore.getState().setActiveView('library')}
-            title="Close EQ"
+            title={translate('common:auto.eqpanel.close_eq')}
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
               <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
@@ -287,7 +292,7 @@ export default function EQPanel() {
 
         {/* Add band button */}
         {bands.length < EQ_MAX_BANDS && (
-          <button className="eq-add-band" onClick={() => addBand()} title="Add band">
+          <button className="eq-add-band" onClick={() => addBand()} title={translate('common:auto.eqpanel.add_band')}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
             </svg>

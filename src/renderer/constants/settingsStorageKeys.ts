@@ -1,4 +1,5 @@
 export const THEME_STORAGE_KEY = 'astra-theme-settings-v1'
+export const DISPLAY_LANGUAGE_STORAGE_KEY = 'astra-display-language-v1'
 
 export const UI_SCALE_STORAGE_KEY = 'astra-ui-scale-percent-v1'
 export const HOME_GREETING_TEXT_MODE_STORAGE_KEY = 'astra-home-greeting-text-mode-v1'

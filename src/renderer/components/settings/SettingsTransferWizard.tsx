@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate, translateSourceText } from '../../i18n'
 import { useEffect, useMemo, useState } from 'react'
 import { usePresence } from '../../hooks/usePresence'
 import {
@@ -167,8 +169,8 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
     setIsBusy(true)
     try {
       const filePath = await window.electronAPI.openFileDialog({
-        title: 'Import Astra Settings',
-        filters: [{ name: 'Astra Settings', extensions: ['json'] }],
+        title: translateSourceText('Import Astra Settings'),
+        filters: [{ name: translate('common:dialogs.filters.astraSettings'), extensions: ['json'] }],
       })
       if (!filePath) return
 
@@ -217,9 +219,9 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
       })
       const today = new Date().toISOString().slice(0, 10)
       const filePath = await window.electronAPI.showSaveDialog({
-        title: 'Export Astra Settings',
+        title: translateSourceText('Export Astra Settings'),
         defaultPath: `astra-settings-${today}.json`,
-        filters: [{ name: 'Astra Settings', extensions: ['json'] }],
+        filters: [{ name: translate('common:dialogs.filters.astraSettings'), extensions: ['json'] }],
       })
       if (!filePath) return
 
@@ -282,42 +284,42 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
         <div className="modal-header settings-transfer-header">
           <div>
             <p className="settings-transfer-step-label">
-              {mode ? (mode === 'export' ? 'Export settings' : 'Import settings') : 'Settings transfer'}
+              {mode ? (mode === 'export' ? translate('settings:auto.settingstransferwizard.export_settings') : translate('settings:auto.settingstransferwizard.import_settings')) : translate('settings:auto.settingstransferwizard.settings_transfer')}
             </p>
-            <h2 id="settings-transfer-title">Move Astra settings</h2>
+            <h2 id="settings-transfer-title"><LocalizedText ns="settings" i18nKey="auto.settingstransferwizard.move_astra_settings" /></h2>
           </div>
-          <button className="modal-close" onClick={onClose} aria-label="Close" disabled={isBusy}>
+          <button className="modal-close" onClick={onClose} aria-label={translate('settings:auto.settingstransferwizard.close')} disabled={isBusy}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
               <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
             </svg>
           </button>
         </div>
 
-        <div className="settings-transfer-stepper" aria-label="Settings transfer progress">
+        <div className="settings-transfer-stepper" aria-label={translate('settings:auto.settingstransferwizard.settings_transfer_progress')}>
           {WIZARD_STEPS.map((stepLabel, index) => (
             <div
               key={stepLabel}
               className={`settings-transfer-step ${index === stage.index ? 'active' : ''} ${index < stage.index ? 'complete' : ''}`}
             >
               <span className="settings-transfer-step-dot">{index + 1}</span>
-              <span className="settings-transfer-step-text">{stepLabel}</span>
+              <span className="settings-transfer-step-text">{translateSourceText(stepLabel)}</span>
             </div>
           ))}
         </div>
 
         <div className="modal-body settings-transfer-body">
-          {statusMessage && <p className="settings-note settings-note-success">{statusMessage}</p>}
-          {errorMessage && <p className="settings-note settings-note-error">{errorMessage}</p>}
+          {statusMessage && <p className="settings-note settings-note-success">{translateSourceText(statusMessage)}</p>}
+          {errorMessage && <p className="settings-note settings-note-error">{translateSourceText(errorMessage)}</p>}
 
           <div className="settings-transfer-stage-card">
             <div>
-              <p className="settings-transfer-stage-eyebrow">{stage.eyebrow}</p>
-              <h3>{stage.title}</h3>
-              <p>{stage.description}</p>
+              <p className="settings-transfer-stage-eyebrow">{translateSourceText(stage.eyebrow)}</p>
+              <h3>{translateSourceText(stage.title)}</h3>
+              <p>{translateSourceText(stage.description)}</p>
             </div>
             {mode && (
               <span className="settings-transfer-stage-badge">
-                {mode === 'export' ? 'Export' : 'Import'}
+                {mode === 'export' ? translate('settings:auto.settingstransferwizard.export') : translate('settings:auto.settingstransferwizard.import')}
               </span>
             )}
           </div>
@@ -326,16 +328,18 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
             <div className="settings-transfer-mode-grid">
               <button type="button" className="settings-transfer-mode-card" onClick={() => selectMode('import')}>
                 <span className="settings-transfer-mode-number">01</span>
-                <span className="settings-transfer-mode-title">Import to this Astra</span>
+                <span className="settings-transfer-mode-title"><LocalizedText ns="settings" i18nKey="auto.settingstransferwizard.import_to_this_astra" /></span>
                 <span className="settings-transfer-mode-description">
-                  Bring portable settings from another Astra export into this install.
+
+                  <LocalizedText ns="settings" i18nKey="auto.settingstransferwizard.bring_portable_settings_from_another_astra_export_into_t" />
                 </span>
               </button>
               <button type="button" className="settings-transfer-mode-card" onClick={() => selectMode('export')}>
                 <span className="settings-transfer-mode-number">02</span>
-                <span className="settings-transfer-mode-title">Export from this Astra</span>
+                <span className="settings-transfer-mode-title"><LocalizedText ns="settings" i18nKey="auto.settingstransferwizard.export_from_this_astra" /></span>
                 <span className="settings-transfer-mode-description">
-                  Save portable settings from this install to a JSON file.
+
+                  <LocalizedText ns="settings" i18nKey="auto.settingstransferwizard.save_portable_settings_from_this_install_to_a_json_file" />
                 </span>
               </button>
             </div>
@@ -345,18 +349,18 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
             <div className="settings-transfer-flow">
               <div className="settings-transfer-file-row">
                 <div>
-                  <span className="settings-transfer-file-kicker">Source file</span>
+                  <span className="settings-transfer-file-kicker"><LocalizedText ns="settings" i18nKey="auto.settingstransferwizard.source_file" /></span>
                   <p className="settings-transfer-file-title">
-                    {importFile ? importFile.name : 'No settings file selected'}
+                    {importFile ? importFile.name : translate('settings:auto.settingstransferwizard.no_settings_file_selected')}
                   </p>
                   <p className="settings-transfer-file-description">
                     {importFile
-                      ? `Exported ${importFile.file.exportedAt || 'from another Astra install'}`
-                      : 'Choose a JSON file exported from Astra settings transfer.'}
+                      ? translate('settings:auto.settingstransferwizard.exported_value1', { value1: importFile.file.exportedAt || 'from another Astra install' })
+                      : translate('settings:auto.settingstransferwizard.choose_a_json_file_exported_from_astra_settings_transfer')}
                   </p>
                 </div>
                 <button className="settings-btn" onClick={chooseImportFile} disabled={isBusy}>
-                  {importFile ? 'Choose Different File' : 'Choose File'}
+                  {importFile ? translate('settings:auto.settingstransferwizard.choose_different_file') : translate('settings:auto.settingstransferwizard.choose_file')}
                 </button>
               </div>
 
@@ -366,10 +370,12 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
                     <span>{getCategorySummary(selectedVisibleCategoryIds)}</span>
                     <div className="settings-transfer-list-actions">
                       <button className="settings-link-btn" onClick={selectAllVisible} disabled={isBusy}>
-                        Select All
+
+                        <LocalizedText ns="settings" i18nKey="auto.settingstransferwizard.select_all" />
                       </button>
                       <button className="settings-link-btn" onClick={selectNone} disabled={isBusy}>
-                        None
+
+                        <LocalizedText ns="settings" i18nKey="auto.settingstransferwizard.none" />
                       </button>
                     </div>
                   </div>
@@ -388,9 +394,9 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
                             disabled={!available || isBusy}
                           />
                           <span>
-                            <span className="settings-transfer-category-title">{category.label}</span>
+                            <span className="settings-transfer-category-title">{translateSourceText(category.label)}</span>
                             <span className="settings-transfer-category-description">
-                              {available ? category.description : 'Not included in this file.'}
+                              {available ? translateSourceText(category.description) : translate('settings:auto.settingstransferwizard.not_included_in_this_file')}
                             </span>
                           </span>
                         </label>
@@ -408,10 +414,12 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
                 <span>{getCategorySummary(selectedVisibleCategoryIds)}</span>
                 <div className="settings-transfer-list-actions">
                   <button className="settings-link-btn" onClick={selectAllVisible} disabled={isBusy}>
-                    Select All
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingstransferwizard.select_all" />
                   </button>
                   <button className="settings-link-btn" onClick={selectNone} disabled={isBusy}>
-                    None
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingstransferwizard.none" />
                   </button>
                 </div>
               </div>
@@ -425,15 +433,15 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
                       disabled={isBusy}
                     />
                     <span>
-                      <span className="settings-transfer-category-title">{category.label}</span>
-                      <span className="settings-transfer-category-description">{category.description}</span>
+                      <span className="settings-transfer-category-title">{translateSourceText(category.label)}</span>
+                      <span className="settings-transfer-category-description">{translateSourceText(category.description)}</span>
                     </span>
                   </label>
                 ))}
               </div>
               <p className="settings-note">
-                Library data, servers, scrobble profiles, passwords, tokens, output devices, and machine-specific
-                assignments are not included.
+
+                <LocalizedText ns="settings" i18nKey="auto.settingstransferwizard.library_data_servers_scrobble_profiles_passwords_tokens_" />
               </p>
             </div>
           )}
@@ -441,7 +449,7 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
 
         <div className="modal-footer settings-transfer-footer">
           <button className="settings-btn" onClick={mode ? goBackToModeChoice : onClose} disabled={isBusy}>
-            {mode ? 'Back' : 'Cancel'}
+            {mode ? translate('settings:auto.settingstransferwizard.back') : translate('settings:auto.settingstransferwizard.cancel')}
           </button>
           <div className="settings-transfer-footer-actions">
             {mode === 'export' && (
@@ -450,7 +458,7 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
                 onClick={exportSettings}
                 disabled={isBusy || selectedVisibleCategoryIds.length === 0}
               >
-                {isBusy ? 'Exporting...' : 'Export'}
+                {isBusy ? translate('settings:auto.settingstransferwizard.exporting') : translate('settings:auto.settingstransferwizard.export')}
               </button>
             )}
             {mode === 'import' && (
@@ -459,7 +467,7 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
                 onClick={importSettings}
                 disabled={isBusy || !importFile || selectedVisibleCategoryIds.length === 0}
               >
-                {isBusy ? 'Importing...' : 'Import and Reload'}
+                {isBusy ? translate('settings:auto.settingstransferwizard.importing') : translate('settings:auto.settingstransferwizard.import_and_reload')}
               </button>
             )}
           </div>

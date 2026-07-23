@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import {
   useCallback,
   useEffect,
@@ -1070,7 +1072,7 @@ export default function GraphView() {
       <div className="graph-view">
         <div className="graph-loading">
           <div className="loading-spinner" />
-          <p>Preparing the library graph...</p>
+          <p><LocalizedText ns="library" i18nKey="auto.graphview.preparing_the_library_graph" /></p>
         </div>
       </div>
     )
@@ -1081,8 +1083,8 @@ export default function GraphView() {
       <div className="graph-view">
         <div className="graph-empty-state">
           <div className="empty-icon">&#9783;</div>
-          <p>Your library needs tracks before the graph can draw anything.</p>
-          <p className="empty-hint">Scan folders in Settings &gt; Library to start building relationships.</p>
+          <p><LocalizedText ns="library" i18nKey="auto.graphview.your_library_needs_tracks_before_the_graph_can_draw_anyt" /></p>
+          <p className="empty-hint"><LocalizedText ns="library" i18nKey="auto.graphview.scan_folders_in_settings_gt_library_to_start_building_re" /></p>
         </div>
       </div>
     )
@@ -1093,8 +1095,8 @@ export default function GraphView() {
       <div className="graph-view">
         <div className="graph-empty-state">
           <div className="empty-icon">&#9673;</div>
-          <p>No shared artist credits were found in the current metadata.</p>
-          <p className="empty-hint">The graph appears when tracks contain multi-artist credits such as features or collaborations.</p>
+          <p><LocalizedText ns="library" i18nKey="auto.graphview.no_shared_artist_credits_were_found_in_the_current_metad" /></p>
+          <p className="empty-hint"><LocalizedText ns="library" i18nKey="auto.graphview.the_graph_appears_when_tracks_contain_multi_artist_credi" /></p>
         </div>
       </div>
     )
@@ -1120,11 +1122,12 @@ export default function GraphView() {
           >
             <div className="graph-overlay-brand">
               <span className={`graph-mode-pill ${mode === 'focus' ? 'is-local' : 'is-global'}`}>
-                {mode === 'focus' ? 'Local Graph' : 'Global Graph'}
+                {mode === 'focus' ? translate('library:auto.graphview.local_graph') : translate('library:auto.graphview.global_graph')}
               </span>
               {focusNode && (
                 <span className="graph-status-pill graph-status-pill-soft">
-                  Focused on {focusNode.artist}
+
+                  <LocalizedText ns="library" i18nKey="auto.graphview.focused_on" /> {focusNode.artist}
                 </span>
               )}
             </div>
@@ -1142,7 +1145,7 @@ export default function GraphView() {
                     return nextValue
                   })
                 }}
-                aria-label="Toggle graph settings"
+                aria-label={translate('library:auto.graphview.toggle_graph_settings')}
               >
                 {settingsIcon}
               </button>
@@ -1155,7 +1158,8 @@ export default function GraphView() {
               onPointerDown={(event) => event.stopPropagation()}
               onClick={(event) => event.stopPropagation()}
             >
-              Drag to pan, scroll to zoom, hover to trace connections, click a node to inspect it.
+
+              <LocalizedText ns="library" i18nKey="auto.graphview.drag_to_pan_scroll_to_zoom_hover_to_trace_connections_cl" />
             </div>
           )}
 
@@ -1178,14 +1182,15 @@ export default function GraphView() {
             onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
-            <span className="graph-status-pill">Artists {revealedArtistCountLabel}</span>
-            <span className="graph-status-pill">Edges {revealedEdgeCountLabel}</span>
+            <span className="graph-status-pill"><LocalizedText ns="library" i18nKey="auto.graphview.artists" /> {revealedArtistCountLabel}</span>
+            <span className="graph-status-pill"><LocalizedText ns="library" i18nKey="auto.graphview.edges" /> {revealedEdgeCountLabel}</span>
             {mode === 'focus' && (
-              <span className="graph-status-pill">Local graph breadth {focusNeighborLimit}</span>
+              <span className="graph-status-pill"><LocalizedText ns="library" i18nKey="auto.graphview.local_graph_breadth" /> {focusNeighborLimit}</span>
             )}
             {visibleGraph.effectiveEdgeThreshold !== edgeWeightThreshold && (
               <span className="graph-status-pill graph-status-pill-accent">
-                Showing weaker links because the current filter hid everything.
+
+                <LocalizedText ns="library" i18nKey="auto.graphview.showing_weaker_links_because_the_current_filter_hid_ever" />
               </span>
             )}
             {searchFeedback && (
@@ -1201,14 +1206,14 @@ export default function GraphView() {
             >
               <div className="graph-flyout-head">
                 <div>
-                  <div className="graph-panel-eyebrow">Settings</div>
-                  <h3>{mode === 'focus' ? 'Local Graph' : 'Global Graph'}</h3>
+                  <div className="graph-panel-eyebrow"><LocalizedText ns="library" i18nKey="auto.graphview.settings" /></div>
+                  <h3>{mode === 'focus' ? translate('library:auto.graphview.local_graph') : translate('library:auto.graphview.global_graph')}</h3>
                 </div>
                 <button
                   type="button"
                   className="graph-icon-btn"
                   onClick={() => setShowSettings(false)}
-                  aria-label="Close graph settings"
+                  aria-label={translate('library:auto.graphview.close_graph_settings')}
                 >
                   {closeIcon}
                 </button>
@@ -1220,30 +1225,31 @@ export default function GraphView() {
                   type="text"
                   value={searchInput}
                   onChange={(event) => setSearchInput(event.target.value)}
-                  placeholder="Find artist..."
+                  placeholder={translate('library:auto.graphview.find_artist')}
                   spellCheck={false}
                 />
-                <button type="submit" className="settings-btn settings-btn-primary">Find</button>
+                <button type="submit" className="settings-btn settings-btn-primary"><LocalizedText ns="library" i18nKey="auto.graphview.find" /></button>
               </form>
 
               <div className="graph-settings-grid">
                 <label className="graph-toolbar-select">
-                  <span>Edge Strength</span>
+                  <span><LocalizedText ns="library" i18nKey="auto.graphview.edge_strength" /></span>
                   <select
                     className="settings-select"
                     value={edgeWeightThreshold}
                     onChange={(event) => setEdgeWeightThreshold(Number(event.target.value))}
                   >
-                    <option value={1}>1+ shared tracks</option>
-                    <option value={2}>2+ shared tracks</option>
-                    <option value={3}>3+ shared tracks</option>
-                    <option value={4}>4+ shared tracks</option>
+                    <option value={1}><LocalizedText ns="library" i18nKey="auto.graphview.1_shared_tracks" /></option>
+                    <option value={2}><LocalizedText ns="library" i18nKey="auto.graphview.2_shared_tracks" /></option>
+                    <option value={3}><LocalizedText ns="library" i18nKey="auto.graphview.3_shared_tracks" /></option>
+                    <option value={4}><LocalizedText ns="library" i18nKey="auto.graphview.4_shared_tracks" /></option>
                   </select>
                 </label>
 
                 <div className="graph-settings-actions">
                   <button type="button" className="settings-btn" onClick={handleRecenter}>
-                    Re-center View
+
+                    <LocalizedText ns="library" i18nKey="auto.graphview.re_center_view" />
                   </button>
                   {mode === 'focus' ? (
                     <>
@@ -1255,11 +1261,13 @@ export default function GraphView() {
                           openFullMap()
                         }}
                       >
-                        Show Full Graph
+
+                        <LocalizedText ns="library" i18nKey="auto.graphview.show_full_graph" />
                       </button>
                       {visibleGraph.hiddenFocusNeighborCount > 0 && (
                         <button type="button" className="settings-btn" onClick={() => expandFocusNeighbors()}>
-                          Show More ({visibleGraph.hiddenFocusNeighborCount})
+
+                          <LocalizedText ns="library" i18nKey="auto.graphview.show_more" />{visibleGraph.hiddenFocusNeighborCount})
                         </button>
                       )}
                     </>
@@ -1270,7 +1278,8 @@ export default function GraphView() {
                         className="settings-btn"
                         onClick={() => openFocusedGraph(selectedNode.artist)}
                       >
-                        Open Local Graph
+
+                        <LocalizedText ns="library" i18nKey="auto.graphview.open_local_graph" />
                       </button>
                     )
                   )}
@@ -1278,7 +1287,8 @@ export default function GraphView() {
               </div>
 
               <p className="graph-settings-note">
-                The global graph stays neutral until you interact with it. The local graph is only used when you explicitly focus one artist.
+
+                <LocalizedText ns="library" i18nKey="auto.graphview.the_global_graph_stays_neutral_until_you_interact_with_i" />
               </p>
             </aside>
           )}
@@ -1289,10 +1299,10 @@ export default function GraphView() {
               onPointerDown={(event) => event.stopPropagation()}
               onClick={(event) => event.stopPropagation()}
             >
-              <p>Building the graph…</p>
+              <p><LocalizedText ns="library" i18nKey="auto.graphview.building_the_graph" /></p>
             </div>
           ) : (
-            <svg className="graph-svg" role="img" aria-label="Artist relationship graph">
+            <svg className="graph-svg" role="img" aria-label={translate('library:auto.graphview.artist_relationship_graph')}>
               <g
                 transform={`translate(${(surfaceSize.width / 2) + viewport.panX} ${(surfaceSize.height / 2) + viewport.panY}) scale(${viewport.zoom})`}
               >
@@ -1454,7 +1464,7 @@ export default function GraphView() {
             >
               <div className="graph-flyout-head">
                 <div>
-                  <div className="graph-panel-eyebrow">Artist</div>
+                  <div className="graph-panel-eyebrow"><LocalizedText ns="library" i18nKey="auto.graphview.artist" /></div>
                   <h3>{selectedNode.artist}</h3>
                 </div>
                 <button
@@ -1464,7 +1474,7 @@ export default function GraphView() {
                     setSelectedArtistKey(null)
                     setComparisonArtistKey(null)
                   }}
-                  aria-label="Close artist inspector"
+                  aria-label={translate('library:auto.graphview.close_artist_inspector')}
                 >
                   {closeIcon}
                 </button>
@@ -1473,11 +1483,11 @@ export default function GraphView() {
               <div className="graph-inspector-stats">
                 <div className="graph-inspector-stat">
                   <strong>{selectedNode.trackCount}</strong>
-                  <span>Tracks</span>
+                  <span><LocalizedText ns="library" i18nKey="auto.graphview.tracks" /></span>
                 </div>
                 <div className="graph-inspector-stat">
                   <strong>{visibleSelectedNeighborCount}</strong>
-                  <span>Visible links</span>
+                  <span><LocalizedText ns="library" i18nKey="auto.graphview.visible_links" /></span>
                 </div>
               </div>
 
@@ -1487,7 +1497,8 @@ export default function GraphView() {
                   className="settings-btn settings-btn-primary"
                   onClick={() => void handleOpenArtistInLibrary(selectedNode.artist)}
                 >
-                  Open In Library
+
+                  <LocalizedText ns="library" i18nKey="auto.graphview.open_in_library" />
                 </button>
                 {(mode === 'full' || visibleGraph.focusArtistKey !== selectedNode.key) && (
                   <button
@@ -1495,13 +1506,14 @@ export default function GraphView() {
                     className="settings-btn"
                     onClick={() => openFocusedGraph(selectedNode.artist)}
                   >
-                    Local Graph
+
+                    <LocalizedText ns="library" i18nKey="auto.graphview.local_graph" />
                   </button>
                 )}
               </div>
 
               <section className="graph-panel-section">
-                <div className="graph-panel-section-title">Visible Connections</div>
+                <div className="graph-panel-section-title"><LocalizedText ns="library" i18nKey="auto.graphview.visible_connections" /></div>
                 {selectedNeighbors.length > 0 ? (
                   <div className="graph-collaborator-list">
                     {selectedNeighbors.slice(0, 10).map((neighbor) => (
@@ -1526,7 +1538,7 @@ export default function GraphView() {
                     ))}
                   </div>
                 ) : (
-                  <p className="graph-panel-empty">No visible connections for the current filter.</p>
+                  <p className="graph-panel-empty"><LocalizedText ns="library" i18nKey="auto.graphview.no_visible_connections_for_the_current_filter" /></p>
                 )}
               </section>
 
@@ -1539,33 +1551,33 @@ export default function GraphView() {
                   <div className="graph-panel-shared-stats">
                     <div className="graph-panel-stat-card">
                       <strong>{selectedComparison.sharedTrackCount}</strong>
-                      <span>Shared tracks</span>
+                      <span><LocalizedText ns="library" i18nKey="auto.graphview.shared_tracks" /></span>
                     </div>
                     <div className="graph-panel-stat-card">
                       <strong>{selectedComparison.sharedReleaseCount}</strong>
-                      <span>Shared releases</span>
+                      <span><LocalizedText ns="library" i18nKey="auto.graphview.shared_releases" /></span>
                     </div>
                   </div>
 
                   <div className="graph-panel-subsection">
-                    <div className="graph-panel-subtitle">Track Evidence</div>
+                    <div className="graph-panel-subtitle"><LocalizedText ns="library" i18nKey="auto.graphview.track_evidence" /></div>
                     <div className="graph-panel-item-list">
                       {selectedComparisonEdge.sampleTracks.map((track) => (
                         <div key={track.path} className="graph-panel-item">
                           <strong>{track.title}</strong>
-                          <span>{track.album}{track.year ? ` · ${track.year}` : ''}</span>
+                          <span>{track.album}{track.year ? translate('library:auto.graphview.year', { year: track.year }) : ''}</span>
                         </div>
                       ))}
                     </div>
                   </div>
 
                   <div className="graph-panel-subsection">
-                    <div className="graph-panel-subtitle">Shared Releases</div>
+                    <div className="graph-panel-subtitle"><LocalizedText ns="library" i18nKey="auto.graphview.shared_releases_3c96ad1" /></div>
                     <div className="graph-panel-item-list">
                       {selectedComparisonEdge.sampleReleases.map((release) => (
                         <div key={release.identityKey} className="graph-panel-item">
                           <strong>{release.album}</strong>
-                          <span>{release.year ? String(release.year) : 'Year unknown'}</span>
+                          <span>{release.year ? String(release.year) : translate('library:auto.graphview.year_unknown')}</span>
                         </div>
                       ))}
                     </div>
@@ -1573,7 +1585,8 @@ export default function GraphView() {
                 </section>
               ) : (
                 <p className="graph-panel-empty">
-                  Pick a connected artist to inspect the edge between them.
+
+                  <LocalizedText ns="library" i18nKey="auto.graphview.pick_a_connected_artist_to_inspect_the_edge_between_them" />
                 </p>
               )}
             </aside>

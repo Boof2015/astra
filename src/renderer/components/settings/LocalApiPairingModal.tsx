@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { formatLocaleDate, translate, translateSourceText } from '../../i18n'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   PhoneRemotePairedDevice,
@@ -44,8 +46,8 @@ function formatCountdown(remainingMs: number): string {
 }
 
 function formatTimestamp(value: number | null): string {
-  if (value == null) return 'Never'
-  return new Date(value).toLocaleString()
+  if (value == null) return translate('common:states.never')
+  return formatLocaleDate(value, { dateStyle: 'medium', timeStyle: 'short' })
 }
 
 const STEP_LABELS: { key: WizardStep; label: string }[] = [
@@ -175,8 +177,8 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
         aria-labelledby="local-api-pairing-title"
       >
         <div className="modal-header">
-          <h3 id="local-api-pairing-title">Pair a Phone</h3>
-          <button className="modal-close" onClick={onClose} aria-label="Close">
+          <h3 id="local-api-pairing-title"><LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.pair_a_phone" /></h3>
+          <button className="modal-close" onClick={onClose} aria-label={translate('settings:auto.localapipairingmodal.close')}>
             ×
           </button>
         </div>
@@ -201,7 +203,7 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
                       </svg>
                     )}
                   </div>
-                  <span className="local-api-pairing-step-label">{step.label}</span>
+                  <span className="local-api-pairing-step-label">{translateSourceText(step.label)}</span>
                 </div>
               )
             })}
@@ -217,9 +219,10 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
                 <path d="M32 24l6-3v10l-6-3" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.6" />
                 <path d="M10 24l-6-3v10l6-3" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.6" />
               </svg>
-              <p>Enable phone remote hosting to get started.</p>
+              <p><LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.enable_phone_remote_hosting_to_get_started" /></p>
               <button className="settings-btn settings-btn-primary" onClick={onEnableRemoteControl}>
-                Enable Phone Remote
+
+                <LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.enable_phone_remote" />
               </button>
             </div>
           )}
@@ -234,17 +237,19 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
                       <div className="local-api-pairing-qr" dangerouslySetInnerHTML={{ __html: svgMarkup }} />
                     ) : hasLiveTicket && !svgMarkup ? (
                       <p className="settings-note settings-note-error" style={{ margin: 0 }}>
-                        Could not render QR code. Use the copy button below.
+
+                        <LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.could_not_render_qr_code_use_the_copy_button_below" />
                       </p>
                     ) : ticket && remainingMs <= 0 ? (
                       <div className="local-api-pairing-qr-expired">
                         <div className="local-api-pairing-qr local-api-pairing-qr-dim" dangerouslySetInnerHTML={{ __html: svgMarkup }} />
                         <button className="settings-btn settings-btn-primary local-api-pairing-qr-expired-btn" onClick={onRefreshTicket}>
-                          Regenerate
+
+                          <LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.regenerate" />
                         </button>
                       </div>
                     ) : (
-                      <div className="local-api-pairing-qr-loading">Generating...</div>
+                      <div className="local-api-pairing-qr-loading"><LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.generating" /></div>
                     )}
                   </div>
 
@@ -252,12 +257,13 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
                     <>
                       <p className="local-api-pairing-scan-hint">
                         {ticket?.clientKind === 'web'
-                          ? 'Open in a browser for playback control only'
-                          : 'Scan in Astra Mobile for secure control and sync'}
+                          ? translate('settings:auto.localapipairingmodal.open_in_a_browser_for_playback_control_only')
+                          : translate('settings:auto.localapipairingmodal.scan_in_astra_mobile_for_secure_control_and_sync')}
                       </p>
                       {ticket?.clientKind === 'web' && (
                         <p className="settings-note">
-                          Your browser will show a warning for Astra's private certificate. Verify this SHA-256 fingerprint before continuing: <code>{ticket.certificateFingerprint}</code>
+
+                          <LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.your_browser_will_show_a_warning_for_astra_s_private_cer" /> <code>{ticket.certificateFingerprint}</code>
                         </p>
                       )}
                       <div className="local-api-pairing-qr-actions">
@@ -265,12 +271,13 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
                           {formatCountdown(remainingMs)}
                         </span>
                         <button className="settings-btn settings-btn-primary" onClick={onCopyPairingUrl}>
-                          Copy Link
+
+                          <LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.copy_link" />
                         </button>
                         <button className="settings-btn" onClick={ticket?.clientKind === 'web' ? onGenerateTicket : onGenerateWebTicket}>
-                          {ticket?.clientKind === 'web' ? 'Astra Mobile' : 'Browser Controller'}
+                          {ticket?.clientKind === 'web' ? translate('settings:auto.localapipairingmodal.astra_mobile') : translate('settings:auto.localapipairingmodal.browser_controller')}
                         </button>
-                        <button className="settings-btn local-api-pairing-refresh-btn" onClick={onRefreshTicket} aria-label="Refresh pairing code">
+                        <button className="settings-btn local-api-pairing-refresh-btn" onClick={onRefreshTicket} aria-label={translate('settings:auto.localapipairingmodal.refresh_pairing_code')}>
                           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                             <path d="M1.5 7a5.5 5.5 0 0 1 9.36-3.93M12.5 7a5.5 5.5 0 0 1-9.36 3.93" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
                             <path d="M10.5 1v2.5H13M3.5 13v-2.5H1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
@@ -281,7 +288,7 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
                   )}
 
                   {ticket && remainingMs <= 0 && (
-                    <p className="local-api-pairing-scan-hint">Pairing code expired</p>
+                    <p className="local-api-pairing-scan-hint"><LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.pairing_code_expired" /></p>
                   )}
 
                   {lanUrls.length > 1 && (
@@ -298,7 +305,8 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
                 </>
               ) : (
                 <div className="local-api-pairing-waiting">
-                  Waiting for a LAN address...
+
+                  <LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.waiting_for_a_lan_address" />
                 </div>
               )}
             </div>
@@ -307,7 +315,7 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
           {/* Approve step */}
           {wizardStep === 'approve' && (
             <div className="local-api-pairing-approve" key="approve">
-              <h4 className="local-api-pairing-approve-title">A device or integration wants to connect</h4>
+              <h4 className="local-api-pairing-approve-title"><LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.a_device_or_integration_wants_to_connect" /></h4>
               {pendingRequests.map((request) => {
                 const isPinRequest = request.pairingMode === 'pin' && Boolean(request.pin)
                 const pinDigits = request.pin?.split('') ?? []
@@ -317,7 +325,7 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
                     <div className="local-api-pairing-approve-info">
                       <span className="local-api-pairing-approve-name">{request.deviceName}</span>
                       <span className="local-api-pairing-approve-detail">
-                        {request.clientLabel} &middot; expires {new Date(request.expiresAt).toLocaleTimeString()}
+                        {request.clientLabel}  <LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.middot_expires" /> {new Date(request.expiresAt).toLocaleTimeString()}
                       </span>
                       <div className="local-api-pairing-scope-list">
                         {request.requestedScopes.map((scope) => (
@@ -341,13 +349,14 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
                       </div>
                       {isPinRequest && (
                         <>
-                          <div className="local-api-pairing-pin" aria-label={`PIN ${request.pin}`}>
+                          <div className="local-api-pairing-pin" aria-label={translate('settings:auto.localapipairingmodal.pin_pin', { pin: request.pin })}>
                             {pinDigits.map((digit, index) => (
                               <span key={index} className="local-api-pairing-pin-digit">{digit}</span>
                             ))}
                           </div>
                           <span className="local-api-pairing-approve-detail">
-                            Enter this PIN in the requesting app to finish pairing.
+
+                            <LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.enter_this_pin_in_the_requesting_app_to_finish_pairing" />
                           </span>
                         </>
                       )}
@@ -358,14 +367,16 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
                           className="settings-btn settings-btn-primary"
                           onClick={() => onApproveRequest(request.id, grantedScopes)}
                         >
-                          Approve
+
+                          <LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.approve" />
                         </button>
                       )}
                       <button
                         className="settings-btn"
                         onClick={() => onRejectRequest(request.id)}
                       >
-                        Deny
+
+                        <LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.deny" />
                       </button>
                     </div>
                   </div>
@@ -379,15 +390,15 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
             <div className="local-api-pairing-paired">
               <div className="local-api-pairing-paired-header">
                 <span className="local-api-pairing-paired-count">
-                  {activeDevices.length} paired device{activeDevices.length !== 1 ? 's' : ''}
+                  {activeDevices.length}  <LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.paired_device" />{activeDevices.length !== 1 ? translate('settings:auto.localapipairingmodal.s') : ''}
                 </span>
                 {controllerUrl && (
                   <button
                     className={`settings-btn${showLinkOnlyQr ? ' settings-btn-primary' : ''}`}
                     onClick={() => setShowLinkOnlyQr((prev) => !prev)}
-                    title="Show a QR code that opens the remote controller — no pairing needed for already-paired phones"
+                    title={translate('settings:auto.localapipairingmodal.show_a_qr_code_that_opens_the_remote_controller_no_pairi')}
                   >
-                    {showLinkOnlyQr ? 'Hide QR' : 'Open on Phone'}
+                    {showLinkOnlyQr ? translate('settings:auto.localapipairingmodal.hide_qr') : translate('settings:auto.localapipairingmodal.open_on_phone')}
                   </button>
                 )}
               </div>
@@ -395,14 +406,15 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
               {showLinkOnlyQr && controllerUrl && linkOnlyQrSvg && (
                 <div className="local-api-pairing-link-qr">
                   <div className="local-api-pairing-qr" dangerouslySetInnerHTML={{ __html: linkOnlyQrSvg }} />
-                  <p className="local-api-pairing-scan-hint">Scan to open the remote — no new pairing required</p>
+                  <p className="local-api-pairing-scan-hint"><LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.scan_to_open_the_remote_no_new_pairing_required" /></p>
                   <button
                     className="settings-btn settings-btn-primary"
                     onClick={() => {
                       void navigator.clipboard.writeText(controllerUrl)
                     }}
                   >
-                    Copy Link
+
+                    <LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.copy_link" />
                   </button>
                 </div>
               )}
@@ -413,20 +425,23 @@ export default function LocalApiPairingModal(props: LocalApiPairingModalProps) {
                     <div className="local-api-pairing-paired-device-info">
                       <span className="local-api-pairing-paired-device-name">{device.name}</span>
                       <span className="local-api-pairing-paired-device-detail">
-                        Last seen {formatTimestamp(device.lastSeenAt)}
+
+                        <LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.last_seen" /> {formatTimestamp(device.lastSeenAt)}
                       </span>
                     </div>
                     <button
                       className="settings-btn settings-btn-danger"
                       onClick={() => onRevokeDevice(device.id)}
                     >
-                      Revoke
+
+                      <LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.revoke" />
                     </button>
                   </div>
                 ))}
                 {activeDevices.length >= 2 && (
                   <button className="settings-btn settings-btn-danger" onClick={onRevokeAllDevices}>
-                    Revoke All
+
+                    <LocalizedText ns="settings" i18nKey="auto.localapipairingmodal.revoke_all" />
                   </button>
                 )}
               </div>

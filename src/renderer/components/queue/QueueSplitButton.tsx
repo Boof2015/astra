@@ -1,3 +1,4 @@
+import { translate } from '../../i18n'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 
@@ -48,8 +49,8 @@ export default function QueueSplitButton({ trackPaths, disabled, className }: Qu
         type="button"
         className="icon-btn library-collection-action-btn queue-split-btn-main"
         onClick={() => enqueue('end')}
-        title="Add to queue"
-        aria-label="Add to queue"
+        title={translate('playback:auto.queuesplitbutton.add_to_queue')}
+        aria-label={translate('playback:auto.queuesplitbutton.add_to_queue')}
         disabled={isDisabled}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -65,8 +66,8 @@ export default function QueueSplitButton({ trackPaths, disabled, className }: Qu
         type="button"
         className="queue-split-btn-flyout"
         onClick={() => enqueue('next')}
-        title="Play next"
-        aria-label="Play next"
+        title={translate('playback:auto.queuesplitbutton.play_next')}
+        aria-label={translate('playback:auto.queuesplitbutton.play_next')}
         disabled={isDisabled}
         tabIndex={isDisabled ? -1 : 0}
       >

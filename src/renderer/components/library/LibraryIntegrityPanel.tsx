@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   IntegrityDuplicateGroup,
@@ -233,14 +235,14 @@ export function IntegrityFindingList({ findings, emptyLabel }: IntegrityFindingL
               <div className="library-integrity-finding-head">
                 <span className="library-integrity-finding-severity">{finding.severity}</span>
                 {finding.confidence && (
-                  <span className="library-integrity-confidence">{finding.confidence} confidence</span>
+                  <span className="library-integrity-confidence">{finding.confidence}  <LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.confidence" /></span>
                 )}
                 <span className="library-integrity-code">{finding.code}</span>
               </div>
               <div className="library-integrity-finding-message">{finding.message}</div>
               {explanation && (
                 <div className="library-integrity-finding-meaning">
-                  <strong>Meaning:</strong> {explanation}
+                  <strong><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.meaning" /></strong> {explanation}
                 </div>
               )}
               {finding.detail && <div className="library-integrity-finding-detail">{finding.detail}</div>}
@@ -252,14 +254,16 @@ export function IntegrityFindingList({ findings, emptyLabel }: IntegrityFindingL
                 className="settings-btn"
                 onClick={() => void window.electronAPI.revealFileInFolder(finding.path)}
               >
-                Reveal
+
+                <LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.reveal" />
               </button>
               <button
                 type="button"
                 className="settings-btn"
                 onClick={() => void copyFindingToClipboard(finding)}
               >
-                Copy
+
+                <LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.copy" />
               </button>
             </div>
           </article>
@@ -311,7 +315,7 @@ function IntegrityDuplicateGroupList({
   onChooseKeep
 }: IntegrityDuplicateGroupListProps) {
   if (groups.length === 0) {
-    return <div className="library-integrity-empty">No duplicate groups found in this scope.</div>
+    return <div className="library-integrity-empty"><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.no_duplicate_groups_found_in_this_scope" /></div>
   }
 
   return (
@@ -324,10 +328,10 @@ function IntegrityDuplicateGroupList({
               <div>
                 <span className="library-integrity-duplicate-evidence">{duplicateEvidenceLabel(group.evidence)}</span>
                 <strong>{group.members[0]?.title || 'Duplicate tracks'}</strong>
-                <span>{group.members[0]?.artist || 'Unknown artist'} · {group.members.length} files</span>
+                <span>{group.members[0]?.artist || 'Unknown artist'} · {group.members.length}  <LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.files" /></span>
               </div>
               <span className={`library-integrity-duplicate-decision ${keepPath ? 'is-decided' : ''}`}>
-                {keepPath ? `${group.members.length - 1} will move to Trash` : 'Choose one copy to keep'}
+                {keepPath ? translate('library:auto.libraryintegritypanel.value1_will_move_to_trash', { value1: group.members.length - 1 }) : translate('library:auto.libraryintegritypanel.choose_one_copy_to_keep')}
               </span>
             </header>
             <div className="library-integrity-duplicate-members">
@@ -347,16 +351,16 @@ function IntegrityDuplicateGroupList({
                         checked={isKeep}
                         onChange={() => onChooseKeep(group.id, member.path)}
                       />
-                      <span>{isKeep ? 'Keep' : keepPath ? 'Keep instead' : 'Keep this copy'}</span>
+                      <span>{isKeep ? translate('library:auto.libraryintegritypanel.keep') : keepPath ? translate('library:auto.libraryintegritypanel.keep_instead') : translate('library:auto.libraryintegritypanel.keep_this_copy')}</span>
                     </label>
                     <div className="library-integrity-duplicate-member-main">
                       <div className="library-integrity-duplicate-member-title">
                         <strong>{member.title}</strong>
                         <span>{member.artist}</span>
-                        {isKeep && <em className="is-keep-status">Keeping this copy</em>}
-                        {isStagedForTrash && <em className="is-trash-status">Will move to Trash</em>}
-                        {member.withinScope && <em>In selected scope</em>}
-                        {member.exactSetId && <em className="is-exact">Byte-identical</em>}
+                        {isKeep && <em className="is-keep-status"><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.keeping_this_copy" /></em>}
+                        {isStagedForTrash && <em className="is-trash-status"><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.will_move_to_trash" /></em>}
+                        {member.withinScope && <em><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.in_selected_scope" /></em>}
+                        {member.exactSetId && <em className="is-exact"><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.byte_identical" /></em>}
                       </div>
                       <div className="library-integrity-duplicate-member-meta">
                         <span>{member.format.toUpperCase() || 'UNKNOWN'}</span>
@@ -367,8 +371,8 @@ function IntegrityDuplicateGroupList({
                       <div className="library-integrity-duplicate-member-path" title={member.path}>{member.path}</div>
                       {outcome && outcome.status !== 'trashed' && (
                         <div className="library-integrity-duplicate-outcome is-error">
-                          {outcome.status === 'failed' ? 'Could not move to Trash' : 'Moved to Trash, but library merge failed'}
-                          {outcome.error ? `: ${outcome.error}` : ''}
+                          {outcome.status === 'failed' ? translate('library:auto.libraryintegritypanel.could_not_move_to_trash') : translate('library:auto.libraryintegritypanel.moved_to_trash_but_library_merge_failed')}
+                          {outcome.error ? translate('library:auto.libraryintegritypanel.error', { error: outcome.error }) : ''}
                         </div>
                       )}
                     </div>
@@ -377,7 +381,8 @@ function IntegrityDuplicateGroupList({
                       className="settings-btn"
                       onClick={() => void window.electronAPI.revealFileInFolder(member.path)}
                     >
-                      Reveal
+
+                      <LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.reveal" />
                     </button>
                   </div>
                 )
@@ -569,14 +574,14 @@ export default function LibraryIntegrityPanel() {
         <div className="library-integrity-layout">
           <aside className="library-integrity-sidebar">
             <div className="library-integrity-sidebar-head">
-              <div className="library-integrity-kicker">Scope</div>
+              <div className="library-integrity-kicker"><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.scope" /></div>
               <button
                 type="button"
                 className={`library-integrity-scope-row ${selectedScope.type === 'all' ? 'active' : ''}`}
                 onClick={() => setSelectedScope({ type: 'all' })}
                 disabled={isScanning || isTrashingDuplicates}
               >
-                <span>All Library</span>
+                <span><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.all_library" /></span>
                 <strong>{localTrackCount}</strong>
               </button>
             </div>
@@ -616,10 +621,10 @@ export default function LibraryIntegrityPanel() {
           <main className="library-integrity-main">
             <header className="library-integrity-header">
               <div>
-                <div className="library-integrity-kicker">Library Integrity</div>
+                <div className="library-integrity-kicker"><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.library_integrity" /></div>
                 <h2>{selectedScopeLabel}</h2>
               </div>
-              <button className="modal-close" onClick={closePanel} disabled={!canClose} aria-label="Close">
+              <button className="modal-close" onClick={closePanel} disabled={!canClose} aria-label={translate('library:auto.libraryintegritypanel.close')}>
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
                 </svg>
@@ -627,35 +632,39 @@ export default function LibraryIntegrityPanel() {
             </header>
 
             <section className="library-integrity-control-band">
-              <div className="library-integrity-mode-toggle" role="group" aria-label="Integrity scan mode">
+              <div className="library-integrity-mode-toggle" role="group" aria-label={translate('library:auto.libraryintegritypanel.integrity_scan_mode')}>
                 <button type="button" className={mode === 'quick' ? 'active' : ''} onClick={() => setMode('quick')} disabled={isScanning || isTrashingDuplicates}>
-                  Quick
+
+                  <LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.quick" />
                 </button>
                 <button type="button" className={mode === 'deep' ? 'active' : ''} onClick={() => setMode('deep')} disabled={isScanning || isTrashingDuplicates}>
-                  Deep
+
+                  <LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.deep" />
                 </button>
                 <button type="button" className={mode === 'duplicates' ? 'active' : ''} onClick={() => setMode('duplicates')} disabled={isScanning || isTrashingDuplicates}>
-                  Duplicates
+
+                  <LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.duplicates" />
                 </button>
               </div>
               <button className="settings-btn settings-btn-primary" onClick={handleStartScan} disabled={isScanning || isTrashingDuplicates || localTrackCount === 0}>
-                {isScanning ? 'Scanning...' : `Start ${mode === 'deep' ? 'Deep' : mode === 'duplicates' ? 'Duplicate' : 'Quick'} Scan`}
+                {isScanning ? translate('library:auto.libraryintegritypanel.scanning') : translate('library:auto.libraryintegritypanel.start_value1_scan', { value1: mode === 'deep' ? 'Deep' : mode === 'duplicates' ? 'Duplicate' : 'Quick' })}
               </button>
               <button className="settings-btn" onClick={() => void cancelScan()} disabled={!isScanning || isCanceling}>
-                {isCanceling ? 'Canceling...' : 'Cancel'}
+                {isCanceling ? translate('library:auto.libraryintegritypanel.canceling') : translate('library:auto.libraryintegritypanel.cancel')}
               </button>
               <button className="settings-btn" onClick={clearReport} disabled={isScanning || isTrashingDuplicates || !result}>
-                Clear
+
+                <LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.clear" />
               </button>
             </section>
 
             <section className="library-integrity-progress">
               <div className="library-integrity-progress-top">
                 <span>{progress?.message ?? 'Ready to scan selected scope.'}</span>
-                <strong>{progress?.total ? `${progress.current}/${progress.total}` : result ? `${result.summary.scanned} scanned` : '--'}</strong>
+                <strong>{progress?.total ? translate('library:auto.libraryintegritypanel.current_total', { current: progress.current, total: progress.total }) : result ? translate('library:auto.libraryintegritypanel.scanned_scanned', { scanned: result.summary.scanned }) : '--'}</strong>
               </div>
               <div className="library-integrity-progress-path" title={progress?.filePath ?? ''}>
-                {progress?.filePath ? formatPathTail(progress.filePath) : 'No active file'}
+                {progress?.filePath ? formatPathTail(progress.filePath) : translate('library:auto.libraryintegritypanel.no_active_file')}
               </div>
               <div className="library-integrity-progress-bar">
                 <span style={{ width: `${progressPercent}%` }} />
@@ -665,17 +674,18 @@ export default function LibraryIntegrityPanel() {
             <section className="library-integrity-summary">
               {showDuplicateResults ? (
                 <>
-                  <span className="library-integrity-result-state">Groups <strong>{result?.summary.duplicateGroups ?? duplicateGroups.length}</strong></span>
-                  <span className="library-integrity-result-state">Files <strong>{result?.summary.duplicateFiles ?? 0}</strong></span>
-                  <span className="library-integrity-result-state">Exact <strong>{result?.summary.exactDuplicateGroups ?? 0}</strong></span>
-                  <span className="library-integrity-result-state">Mixed <strong>{result?.summary.mixedDuplicateGroups ?? 0}</strong></span>
-                  <span className="library-integrity-result-state">Possible <strong>{result?.summary.possibleDuplicateGroups ?? 0}</strong></span>
-                  {findings.length > 0 && <span className="library-integrity-result-state is-warning">Scan issues <strong>{findings.length}</strong></span>}
+                  <span className="library-integrity-result-state"><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.groups" /> <strong>{result?.summary.duplicateGroups ?? duplicateGroups.length}</strong></span>
+                  <span className="library-integrity-result-state"><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.files_6ce6c51" /> <strong>{result?.summary.duplicateFiles ?? 0}</strong></span>
+                  <span className="library-integrity-result-state"><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.exact" /> <strong>{result?.summary.exactDuplicateGroups ?? 0}</strong></span>
+                  <span className="library-integrity-result-state"><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.mixed" /> <strong>{result?.summary.mixedDuplicateGroups ?? 0}</strong></span>
+                  <span className="library-integrity-result-state"><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.possible" /> <strong>{result?.summary.possibleDuplicateGroups ?? 0}</strong></span>
+                  {findings.length > 0 && <span className="library-integrity-result-state is-warning"><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.scan_issues" /> <strong>{findings.length}</strong></span>}
                 </>
               ) : (
                 <>
                   <button className={`library-integrity-filter ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
-                    All <strong>{findings.length}</strong>
+
+                    <LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.all" /> <strong>{findings.length}</strong>
                   </button>
                   {(['error', 'warning', 'info'] as const).map((severity) => (
                     <button
@@ -691,9 +701,9 @@ export default function LibraryIntegrityPanel() {
               {result && (
                 <span
                   className={`library-integrity-result-state ${result.summary.canceled ? 'is-warning' : ''}`}
-                  title={result.summary.mode === 'deep' && result.summary.skipped > 0 ? 'Deep scan is FLAC-only in this version, so non-FLAC local tracks are skipped.' : undefined}
+                  title={result.summary.mode === 'deep' && result.summary.skipped > 0 ? translate('library:auto.libraryintegritypanel.deep_scan_is_flac_only_in_this_version_so_non_flac_local') : undefined}
                 >
-                  {result.summary.canceled ? 'Canceled' : 'Complete'} - {result.summary.mode === 'deep' && result.summary.skipped > 0 ? `${result.summary.skipped} non-FLAC skipped` : `${result.summary.skipped} skipped`}
+                  {result.summary.canceled ? translate('library:auto.libraryintegritypanel.canceled') : translate('library:auto.libraryintegritypanel.complete')} - {result.summary.mode === 'deep' && result.summary.skipped > 0 ? translate('library:auto.libraryintegritypanel.skipped_non_flac_skipped', { skipped: result.summary.skipped }) : translate('library:auto.libraryintegritypanel.skipped_skipped', { skipped: result.summary.skipped })}
                 </span>
               )}
             </section>
@@ -711,7 +721,7 @@ export default function LibraryIntegrityPanel() {
                 />
                 {findings.length > 0 && (
                   <section className="library-integrity-duplicate-issues">
-                    <h3>Scan issues</h3>
+                    <h3><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.scan_issues" /></h3>
                     <IntegrityFindingList findings={findings} emptyLabel="No scan issues." />
                   </section>
                 )}
@@ -726,8 +736,8 @@ export default function LibraryIntegrityPanel() {
             {showDuplicateResults && duplicateGroups.length > 0 && (
               <section className="library-integrity-duplicate-action-bar">
                 <div>
-                  <strong>{selectedTrashCount > 0 ? `${selectedTrashCount} file${selectedTrashCount === 1 ? '' : 's'} ready for review` : 'Choose a copy to keep in any group'}</strong>
-                  <span>{selectedActiveTrack ? 'Stop the affected playing track before continuing.' : 'Nothing moves until you review and confirm.'}</span>
+                  <strong>{selectedTrashCount > 0 ? translate('library:auto.libraryintegritypanel.selectedtrashcount_file_value2_ready_for_review', { selectedtrashcount: selectedTrashCount, value2: selectedTrashCount === 1 ? '' : 's' }) : translate('library:auto.libraryintegritypanel.choose_a_copy_to_keep_in_any_group')}</strong>
+                  <span>{selectedActiveTrack ? translate('library:auto.libraryintegritypanel.stop_the_affected_playing_track_before_continuing') : translate('library:auto.libraryintegritypanel.nothing_moves_until_you_review_and_confirm')}</span>
                 </div>
                 <button
                   type="button"
@@ -735,7 +745,7 @@ export default function LibraryIntegrityPanel() {
                   disabled={selectedTrashCount === 0 || selectedActiveTrack || isTrashingDuplicates}
                   onClick={() => setTrashConfirmationOpen(true)}
                 >
-                  {isTrashingDuplicates ? 'Moving to Trash...' : `Review cleanup${selectedTrashCount > 0 ? ` · ${selectedTrashCount}` : ''}`}
+                  {isTrashingDuplicates ? translate('library:auto.libraryintegritypanel.moving_to_trash') : translate('library:auto.libraryintegritypanel.review_cleanup_value1', { value1: selectedTrashCount > 0 ? ` · ${selectedTrashCount}` : '' })}
                 </button>
               </section>
             )}
@@ -748,22 +758,22 @@ export default function LibraryIntegrityPanel() {
           if (!isTrashingDuplicates) setTrashConfirmationOpen(false)
         }}>
           <div className="modal-content library-integrity-trash-confirm" onClick={(event) => event.stopPropagation()}>
-            <div className="library-integrity-kicker">Duplicate cleanup</div>
-            <h2>Move {selectedTrashCount} file{selectedTrashCount === 1 ? '' : 's'} to Trash?</h2>
-            <p>Astra will ask the operating system to move these files to Trash or the Recycle Bin. It will never fall back to permanent deletion.</p>
+            <div className="library-integrity-kicker"><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.duplicate_cleanup" /></div>
+            <h2><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.move" /> {selectedTrashCount}  <LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.file" />{selectedTrashCount === 1 ? '' : translate('library:auto.libraryintegritypanel.s')}  <LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.to_trash" /></h2>
+            <p><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.astra_will_ask_the_operating_system_to_move_these_files_" /></p>
             <div className="library-integrity-trash-confirm-list">
               {duplicateTrashActions.flatMap((action) => action.trashPaths.map((trashPath) => (
                 <div key={trashPath}>
-                  <strong>Trash</strong>
+                  <strong><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.trash" /></strong>
                   <span>{trashPath}</span>
-                  <em>Keep → {action.keepPath}</em>
+                  <em><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.keep_9530998" /> {action.keepPath}</em>
                 </div>
               )))}
             </div>
             <div className="library-integrity-trash-confirm-actions">
-              <button className="settings-btn" onClick={() => setTrashConfirmationOpen(false)} disabled={isTrashingDuplicates}>Cancel</button>
+              <button className="settings-btn" onClick={() => setTrashConfirmationOpen(false)} disabled={isTrashingDuplicates}><LocalizedText ns="library" i18nKey="auto.libraryintegritypanel.cancel" /></button>
               <button className="settings-btn library-integrity-trash-button" onClick={() => void handleConfirmTrash()} disabled={isTrashingDuplicates}>
-                {isTrashingDuplicates ? 'Moving...' : 'Move to Trash'}
+                {isTrashingDuplicates ? translate('library:auto.libraryintegritypanel.moving') : translate('library:auto.libraryintegritypanel.move_to_trash')}
               </button>
             </div>
           </div>

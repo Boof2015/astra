@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate, translateSourceText } from '../../i18n'
 import { useEffect, useMemo, useState } from 'react'
 import type { InputActionId, InputBinding, RawBindingInput } from '../../../types/inputBindings'
 import {
@@ -118,8 +120,8 @@ export default function KeybindSettings() {
       <section className="settings-section settings-section-panel keybind-settings">
         <div className="settings-section-head keybind-settings-head">
           <div>
-            <h3>Keybinds</h3>
-            <p>Assign up to two keyboard or mouse-side-button bindings to each action.</p>
+            <h3><LocalizedText ns="settings" i18nKey="auto.keybindsettings.keybinds" /></h3>
+            <p><LocalizedText ns="settings" i18nKey="auto.keybindsettings.assign_up_to_two_keyboard_or_mouse_side_button_bindings_" /></p>
           </div>
           <button
             type="button"
@@ -130,21 +132,23 @@ export default function KeybindSettings() {
               setFeedback('All keybinds restored to defaults.')
             }}
           >
-            Restore Defaults
+
+            <LocalizedText ns="settings" i18nKey="auto.keybindsettings.restore_defaults" />
           </button>
         </div>
 
         <p className="settings-note keybind-settings-note">
-          Click a binding slot, then press a key combination or Mouse 4/5. Esc cancels capture; Esc and Tab are reserved.
+
+          <LocalizedText ns="settings" i18nKey="auto.keybindsettings.click_a_binding_slot_then_press_a_key_combination_or_mou" />
         </p>
-        {feedback && <p className="settings-note keybind-feedback" role="status">{feedback}</p>}
+        {feedback && <p className="settings-note keybind-feedback" role="status">{translateSourceText(feedback)}</p>}
 
         <div className="keybind-groups">
           {INPUT_ACTION_GROUPS.map((group) => (
             <section key={group.id} className="settings-card keybind-group">
               <div className="keybind-group-head">
-                <div className="keybind-group-title">{group.label}</div>
-                <p>{group.description}</p>
+                <div className="keybind-group-title">{translateSourceText(group.label)}</div>
+                <p>{translateSourceText(group.description)}</p>
               </div>
 
               <div className="keybind-list">
@@ -153,8 +157,8 @@ export default function KeybindSettings() {
                   return (
                     <div className="keybind-row" key={definition.id}>
                       <div className="keybind-copy">
-                        <strong>{definition.action}</strong>
-                        <span>{definition.description}</span>
+                        <strong>{translateSourceText(definition.action)}</strong>
+                        <span>{translateSourceText(definition.description)}</span>
                       </div>
                       <div className="keybind-slots">
                         {slots.map((binding, slotIndex) => {
@@ -170,24 +174,24 @@ export default function KeybindSettings() {
                                 <button
                                   type="button"
                                   className={`keybind-slot ${isCapturing ? 'is-capturing' : ''}`}
-                                  aria-label={`${definition.action}, binding ${slotIndex + 1}`}
+                                  aria-label={translate('settings:auto.keybindsettings.action_binding_value2', { action: definition.action, value2: slotIndex + 1 })}
                                   onClick={() => {
                                     setFeedback('')
                                     setCaptureTarget({ actionId: definition.id, slotIndex })
                                   }}
                                 >
                                   {isCapturing
-                                    ? 'Press input…'
+                                    ? translate('settings:auto.keybindsettings.press_input')
                                     : binding
                                       ? formatInputBinding(binding, platform)
-                                      : 'Add binding'}
+                                      : translate('settings:auto.keybindsettings.add_binding')}
                                 </button>
                                 {binding && !isCapturing && (
                                   <button
                                     type="button"
                                     className="keybind-clear"
-                                    aria-label={`Clear ${definition.action} binding ${slotIndex + 1}`}
-                                    title="Clear binding"
+                                    aria-label={translate('settings:auto.keybindsettings.clear_action_binding_value2', { action: definition.action, value2: slotIndex + 1 })}
+                                    title={translate('settings:auto.keybindsettings.clear_binding')}
                                     onClick={() => {
                                       clearBinding(definition.id, slotIndex)
                                       setFeedback(`${definition.action} binding cleared.`)
@@ -203,9 +207,9 @@ export default function KeybindSettings() {
                                 aria-pressed={globalOn}
                                 disabled={!binding || !globalSupported || isCapturing}
                                 title={!binding
-                                  ? 'Add a binding first.'
+                                  ? translate('settings:auto.keybindsettings.add_a_binding_first')
                                   : !globalSupported
-                                    ? 'Mouse buttons cannot be registered globally by Electron.'
+                                    ? translate('settings:auto.keybindsettings.mouse_buttons_cannot_be_registered_globally_by_electron')
                                     : globalStatus?.message}
                                 onClick={() => {
                                   setGlobalEnabled(definition.id, slotIndex, !globalOn)
@@ -215,15 +219,16 @@ export default function KeybindSettings() {
                                 }}
                               >
                                 <span className="keybind-global-dot" />
-                                Global
+
+                                <LocalizedText ns="settings" i18nKey="auto.keybindsettings.global" />
                               </button>
                               {globalOn && (globalStatus?.state !== 'registered' || hasNoModifiers) && (
                                 <span className={`keybind-global-status ${globalStatus?.state === 'unavailable' || globalStatus?.state === 'unsupported' ? 'has-error' : hasNoModifiers && globalStatus?.state === 'registered' ? 'has-warning' : ''}`}>
                                   {globalStatus?.state === 'unavailable' || globalStatus?.state === 'unsupported'
                                     ? globalStatus.message
                                     : globalStatus?.state !== 'registered'
-                                      ? 'Registering…'
-                                      : 'No modifier: this key may interfere with typing or navigation in other apps.'}
+                                      ? translate('settings:auto.keybindsettings.registering')
+                                      : translate('settings:auto.keybindsettings.no_modifier_this_key_may_interfere_with_typing_or_naviga')}
                                 </span>
                               )}
                             </div>
@@ -239,7 +244,8 @@ export default function KeybindSettings() {
                           setFeedback(`${definition.action} restored to default.`)
                         }}
                       >
-                        Reset
+
+                        <LocalizedText ns="settings" i18nKey="auto.keybindsettings.reset" />
                       </button>
                     </div>
                   )
@@ -252,7 +258,7 @@ export default function KeybindSettings() {
 
       <ConfirmActionModal
         isOpen={pendingConflict !== null}
-        title="Reassign Binding?"
+        title={translate('settings:auto.keybindsettings.reassign_binding')}
         message={pendingConflict
           ? `${formatInputBinding(pendingConflict.binding, platform)} is assigned to ${getInputActionDefinition(pendingConflict.conflictActionId).action}. Move it to ${getInputActionDefinition(pendingConflict.actionId).action}?`
           : ''}

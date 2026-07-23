@@ -1,3 +1,4 @@
+import { translate } from '../../i18n'
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { ScopeKind } from '../../../types/scopePopout'
 import { useAstraActivity } from '../../hooks/useAstraActivity'
@@ -330,14 +331,14 @@ export default function AnalyzerDeck({ onAnalyzerHeightPreviewChange }: Analyzer
         className={`analyzer-brand-rail ${isAnalyzerEditMode ? 'is-editing' : ''}`.trim()}
         onClick={toggleAnalyzerEditMode}
         aria-pressed={isAnalyzerEditMode}
-        aria-label={isAnalyzerEditMode ? 'Close scope editor' : 'Open scope editor'}
-        title={isAnalyzerEditMode ? 'Close scope editor' : 'Open scope editor'}
+        aria-label={isAnalyzerEditMode ? translate('common:auto.analyzerdeck.close_scope_editor') : translate('common:auto.analyzerdeck.open_scope_editor')}
+        title={isAnalyzerEditMode ? translate('common:auto.analyzerdeck.close_scope_editor') : translate('common:auto.analyzerdeck.open_scope_editor')}
       >
         <AnalyzerBrandActivity />
         <div
           className={`analyzer-brand-label analyzer-brand-label-btn ${isAnalyzerEditMode ? 'active' : ''}`.trim()}
         >
-          {isAnalyzerEditMode ? 'DONE' : 'EDIT'}
+          {isAnalyzerEditMode ? translate('common:auto.analyzerdeck.done') : translate('common:auto.analyzerdeck.edit')}
         </div>
       </button>
 
@@ -385,7 +386,7 @@ export default function AnalyzerDeck({ onAnalyzerHeightPreviewChange }: Analyzer
           className="analyzer-deck-height-seam"
           onPointerDown={startHeightResizeDrag}
           onDoubleClick={handleHeightReset}
-          aria-label={`Resize analyzer rack height. Double-click to reset to ${DEFAULT_ANALYZER_HEIGHT_PX}px.`}
+          aria-label={translate('common:auto.analyzerdeck.resize_analyzer_rack_height_double_click_to_reset_to_def', { defaultAnalyzerHeightPx: DEFAULT_ANALYZER_HEIGHT_PX })}
         >
           <span className="analyzer-deck-height-seam-line" aria-hidden="true" />
           <span className="analyzer-deck-height-seam-grip" aria-hidden="true" />

@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useEQStore } from '../../stores/eqStore'
 import { useUIStore } from '../../stores/uiStore'
 import EQResponsePreview from './EQResponsePreview'
@@ -18,14 +20,14 @@ export default function EQPopover({ onClose, presencePhase }: EQPopoverProps) {
   return (
     <div className="eq-popover" data-presence={presencePhase} aria-hidden={presencePhase === 'exiting'}>
       <div className="eq-popover-header">
-        <span className="eq-popover-title">EQ PREVIEW</span>
+        <span className="eq-popover-title"><LocalizedText ns="common" i18nKey="auto.eqpopover.eq_preview" /></span>
         <div className="eq-popover-actions">
           <div
             className={`eq-toggle-switch ${enabled ? 'active' : ''}`}
             onClick={toggleEnabled}
             role="switch"
             aria-checked={enabled}
-            title={enabled ? 'Disable EQ' : 'Enable EQ'}
+            title={enabled ? translate('common:auto.eqpopover.disable_eq') : translate('common:auto.eqpopover.enable_eq')}
           />
           <select
             className="eq-preset-select"
@@ -35,7 +37,7 @@ export default function EQPopover({ onClose, presencePhase }: EQPopoverProps) {
               if (preset) applyPreset(preset)
             }}
           >
-            <option value="">Custom</option>
+            <option value=""><LocalizedText ns="common" i18nKey="auto.eqpopover.custom" /></option>
             {presets.map((p) => (
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
@@ -47,9 +49,10 @@ export default function EQPopover({ onClose, presencePhase }: EQPopoverProps) {
               onClose()
             }}
           >
-            OPEN FULL EQ
+
+            <LocalizedText ns="common" i18nKey="auto.eqpopover.open_full_eq" />
           </button>
-          <button className="eq-popover-close" onClick={onClose} title="Close">
+          <button className="eq-popover-close" onClick={onClose} title={translate('common:auto.eqpopover.close')}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
               <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
             </svg>
@@ -61,10 +64,10 @@ export default function EQPopover({ onClose, presencePhase }: EQPopoverProps) {
       </div>
       <div className="eq-popover-status">
         <span className="eq-popover-preset-name">
-          {activePreset ? activePreset.name : 'Custom'}
+          {activePreset ? activePreset.name : translate('common:auto.eqpopover.custom')}
         </span>
         <span className={`eq-popover-state ${enabled ? 'enabled' : ''}`}>
-          {enabled ? 'ON' : 'OFF'}
+          {enabled ? translate('common:auto.eqpopover.on') : translate('common:auto.eqpopover.off')}
         </span>
       </div>
     </div>

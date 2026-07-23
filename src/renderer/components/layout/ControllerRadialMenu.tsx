@@ -8,6 +8,7 @@ import {
 } from '../../utils/controllerRadial'
 import { useUIStore } from '../../stores/uiStore'
 import ControllerGlyph from './ControllerGlyph'
+import { translateSourceText } from '../../i18n'
 
 interface ControllerRadialMenuProps {
   active: boolean
@@ -265,7 +266,7 @@ export default function ControllerRadialMenu({
         </svg>
         <div className="controller-radial-center">
           <span>{view.title}</span>
-          <strong>{selectedItem?.label ?? ''}</strong>
+          <strong>{selectedItem ? translateSourceText(selectedItem.label) : ''}</strong>
         </div>
       </div>
       <div className="controller-radial-hints">

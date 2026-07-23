@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { translate, translateSourceText } from '../i18n'
 import { FAVORITES_PLAYLIST_ID, isSystemFavoritesPlaylistId } from '../utils/playlistSystem'
 import type { TrackSourceType } from '../../types/subsonic'
 import { normalizeTrackSortState, type PlaylistSessionSnapshot, type SessionTrackSortState } from '../utils/sessionState'
@@ -401,13 +402,13 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
 
     importPlaylistFromFile: async () => {
       const filePath = await window.electronAPI.openFileDialog({
-        title: 'Import Playlist',
+        title: translateSourceText('Import Playlist'),
         filters: [
-          { name: 'Playlist Files', extensions: ['csv', 'm3u', 'm3u8', 'xspf', 'xml', 'wpl', 'asx'] },
-          { name: 'CSV Files', extensions: ['csv'] },
-          { name: 'M3U Playlists', extensions: ['m3u', 'm3u8'] },
-          { name: 'XSPF Playlists', extensions: ['xspf'] },
-          { name: 'XML Playlists', extensions: ['xml', 'wpl', 'asx'] }
+          { name: translate('common:dialogs.filters.playlistFiles'), extensions: ['csv', 'm3u', 'm3u8', 'xspf', 'xml', 'wpl', 'asx'] },
+          { name: translate('common:dialogs.filters.csvFiles'), extensions: ['csv'] },
+          { name: translate('common:dialogs.filters.m3uPlaylists'), extensions: ['m3u', 'm3u8'] },
+          { name: translate('common:dialogs.filters.xspfPlaylists'), extensions: ['xspf'] },
+          { name: translate('common:dialogs.filters.xmlPlaylists'), extensions: ['xml', 'wpl', 'asx'] }
         ]
       })
       if (!filePath) return null
@@ -421,11 +422,11 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       if (!Number.isInteger(playlistId)) return null
 
       const filePath = await window.electronAPI.showSaveDialog({
-        title: 'Export Playlist',
+        title: translateSourceText('Export Playlist'),
         defaultPath: `${sanitizePlaylistExportFileName(playlistName)}.m3u8`,
         filters: [
-          { name: 'M3U8 Playlists', extensions: ['m3u8'] },
-          { name: 'M3U Playlists', extensions: ['m3u'] }
+          { name: translate('common:dialogs.filters.m3u8Playlists'), extensions: ['m3u8'] },
+          { name: translate('common:dialogs.filters.m3uPlaylists'), extensions: ['m3u'] }
         ]
       })
       if (!filePath) return null

@@ -144,6 +144,12 @@ npm run dist:win         # Windows (NSIS + Portable)
 npm run dist:linux       # Linux (AppImage + DEB + RPM + tarball)
 ```
 
+## Translation Contributions
+
+Astra's desktop UI uses repository-owned locale catalogs, and partial translations are welcome.
+See [Translating Astra](docs/translations.md) for the catalog format, validation commands, and
+layout review checklist.
+
 ## Documentation
 
 For detailed technical documentation, see the [Wiki](https://github.com/Boof2015/astra/wiki).

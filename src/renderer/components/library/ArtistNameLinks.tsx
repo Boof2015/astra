@@ -1,3 +1,4 @@
+import { translate } from '../../i18n'
 import { Fragment } from 'react'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { parseArtistMetadata } from '../../utils/artistMetadata'
@@ -59,7 +60,7 @@ export default function ArtistNameLinks({
           type="button"
           className={buttonClassName}
           onClick={(event) => handleArtistClick(event, strictTargetArtist)}
-          title={`Show tracks by ${strictTargetArtist}`}
+          title={translate('library:auto.artistnamelinks.show_tracks_by_stricttargetartist', { stricttargetartist: strictTargetArtist })}
         >
           {artistText}
         </button>
@@ -79,7 +80,7 @@ export default function ArtistNameLinks({
             type="button"
             className={buttonClassName}
             onClick={(event) => handleArtistClick(event, token.artist)}
-            title={`Show tracks by ${token.artist}`}
+            title={translate('library:auto.artistnamelinks.show_tracks_by_artist', { artist: token.artist })}
           >
             {token.artist}
           </button>

@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react'
+import { translateSourceText } from '../../i18n'
 
 export interface SettingsSegmentedOption<T extends string | number> {
   value: T
@@ -40,7 +41,7 @@ export default function SettingsSegmentedControl<T extends string | number>({
     <div
       className={`settings-segmented-control${fullWidth ? ' settings-segmented-control-full' : ''}${disabled ? ' is-disabled' : ''}${className ? ` ${className}` : ''}`}
       role="group"
-      aria-label={ariaLabel}
+      aria-label={translateSourceText(ariaLabel)}
       style={style}
     >
       <span className="settings-segmented-highlight" aria-hidden="true" />
@@ -56,7 +57,7 @@ export default function SettingsSegmentedControl<T extends string | number>({
             disabled={disabled || option.disabled}
             aria-pressed={isActive}
           >
-            {option.label}
+            {translateSourceText(option.label)}
           </button>
         )
       })}

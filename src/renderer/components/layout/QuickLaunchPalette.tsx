@@ -1,4 +1,7 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate, translateSourceText } from '../../i18n'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
+import { useTranslation } from 'react-i18next'
 import { NAV_ENTRIES, NON_HIDDEN_SETTINGS_SECTIONS } from '../../constants/settingsSections'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
@@ -88,6 +91,8 @@ const IconNav = () => (
 )
 
 export default function QuickLaunchPalette() {
+  const { i18n } = useTranslation()
+  const localeRevision = i18n.resolvedLanguage ?? i18n.language
   const isQuickLaunchOpen = useUIStore((state) => state.isQuickLaunchOpen)
   const closeQuickLaunch = useUIStore((state) => state.closeQuickLaunch)
   const setPendingLibrarySearchQuery = useUIStore((state) => state.setPendingLibrarySearchQuery)
@@ -212,30 +217,34 @@ export default function QuickLaunchPalette() {
         && (listeningStatsEnabled || entry.view !== 'stats')
       ))
       .map((entry) => {
+        const label = translate(`common:navigation.${entry.view}`)
+        const keywords = translate(`common:navigationKeywords.${entry.view}`)
         const result = multiFieldScore(trimmedQuery, [
-          { value: entry.label, weight: 1.5 },
-          { value: entry.keywords.join(' '), weight: 1.0 }
+          { value: label, weight: 1.5 },
+          { value: keywords, weight: 1.0 }
         ])
         if (!result || result < MIN_SCORE_THRESHOLD) return null
         return {
           kind: 'nav' as const,
           id: entry.id,
           score: result,
-          label: entry.label,
+          label,
           view: entry.view
         }
       }).filter((r): r is NonNullable<typeof r> => r !== null)
 
     return scored.sort(compareScoredResults).slice(0, NAV_RESULT_LIMIT)
-  }, [graphEnabled, hasQuery, listeningStatsEnabled, trimmedQuery])
+  }, [graphEnabled, hasQuery, listeningStatsEnabled, localeRevision, trimmedQuery])
 
   const settingResults = useMemo(() => {
     if (!hasQuery) return []
 
     const scored = NON_HIDDEN_SETTINGS_SECTIONS.map((section) => {
+      const label = translate(`settings:sections.${section.id}`)
+      const keywords = translate(`settings:searchKeywords.${section.id}`)
       const result = multiFieldScore(trimmedQuery, [
-        { value: section.label, weight: 1.4 },
-        { value: section.keywords.join(' '), weight: 1.0 }
+        { value: label, weight: 1.4 },
+        { value: keywords, weight: 1.0 }
       ])
       if (!result || result < MIN_SCORE_THRESHOLD) return null
 
@@ -244,13 +253,13 @@ export default function QuickLaunchPalette() {
         id: `setting:${section.id}`,
         score: result,
         sectionId: section.id,
-        label: section.label,
-        subtitle: section.keywords.join(' · ')
+        label,
+        subtitle: keywords.split(',').map((keyword) => keyword.trim()).join(' · ')
       }
     }).filter((result): result is NonNullable<typeof result> => result !== null)
 
     return scored.sort(compareScoredResults).slice(0, SETTINGS_RESULT_LIMIT)
-  }, [hasQuery, trimmedQuery])
+  }, [hasQuery, localeRevision, trimmedQuery])
 
   const trackResults = useMemo(() => {
     if (!hasQuery) return []
@@ -369,11 +378,12 @@ export default function QuickLaunchPalette() {
     const navResults = EMPTY_SHORTCUT_NAV_IDS.map((id) => {
       const entry = NAV_ENTRIES.find((candidate) => candidate.id === id)
       if (!entry) return null
+      const label = translate(`common:navigation.${entry.view}`)
       return {
         kind: 'nav' as const,
         id: entry.id,
         score: 0,
-        label: entry.label,
+        label,
         view: entry.view
       }
     }).filter((result): result is NonNullable<typeof result> => result !== null)
@@ -381,18 +391,20 @@ export default function QuickLaunchPalette() {
     const settingResults = EMPTY_SHORTCUT_SETTING_IDS.map((id) => {
       const section = NON_HIDDEN_SETTINGS_SECTIONS.find((candidate) => candidate.id === id)
       if (!section) return null
+      const label = translate(`settings:sections.${section.id}`)
+      const keywords = translate(`settings:searchKeywords.${section.id}`)
       return {
         kind: 'setting' as const,
         id: `setting:${section.id}`,
         score: 0,
         sectionId: section.id,
-        label: section.label,
-        subtitle: section.keywords.join(' · ')
+        label,
+        subtitle: keywords.split(',').map((keyword) => keyword.trim()).join(' · ')
       }
     }).filter((result): result is NonNullable<typeof result> => result !== null)
 
     return [...navResults, ...settingResults]
-  }, [hasQuery])
+  }, [hasQuery, localeRevision])
 
   const seeAllResult = useMemo<QuickLaunchSeeAllResult | null>(() => {
     if (!hasQuery) return null
@@ -691,7 +703,7 @@ export default function QuickLaunchPalette() {
         className="quick-launch-panel"
         role="dialog"
         aria-modal="true"
-        aria-label="Quick Launch"
+        aria-label={translate('common:auto.quicklaunchpalette.quick_launch')}
       >
         <div className="quick-launch-input-wrap">
           <input
@@ -703,31 +715,31 @@ export default function QuickLaunchPalette() {
               setQuery(event.target.value)
             }}
             onKeyDown={handleInputKeyDown}
-            placeholder="Search tracks, albums, artists, playlists, settings..."
+            placeholder={translate('common:auto.quicklaunchpalette.search_tracks_albums_artists_playlists_settings')}
             spellCheck={false}
             disabled={isExecuting}
           />
-          <span className="quick-launch-input-hint">Esc</span>
+          <span className="quick-launch-input-hint"><LocalizedText ns="common" i18nKey="auto.quicklaunchpalette.esc" /></span>
         </div>
 
         {isTrackCorpusLoading && (
-          <div className="quick-launch-status">Refreshing library index...</div>
+          <div className="quick-launch-status"><LocalizedText ns="common" i18nKey="auto.quicklaunchpalette.refreshing_library_index" /></div>
         )}
 
         <div className="quick-launch-results">
           {/* Empty query hint */}
           {!hasQuery && recentTrackResults.length === 0 && quickShortcutResults.length === 0 && (
-            <div className="ql-idle-hint">Type to search tracks, albums, artists, playlists, or settings</div>
+            <div className="ql-idle-hint"><LocalizedText ns="common" i18nKey="auto.quicklaunchpalette.type_to_search_tracks_albums_artists_playlists_or_settin" /></div>
           )}
 
           {/* No results */}
           {hasQuery && resultGroups.length === 0 && !isTrackCorpusLoading && (
-            <div className="ql-empty">No results for &ldquo;{trimmedQuery}&rdquo;</div>
+            <div className="ql-empty"><LocalizedText ns="common" i18nKey="auto.quicklaunchpalette.no_results_for_ldquo" />{trimmedQuery}<LocalizedText ns="common" i18nKey="auto.quicklaunchpalette.rdquo" /></div>
           )}
 
           {resultGroups.map((group) => (
             <div key={group.id} className="quick-launch-group">
-              <div className="quick-launch-group-label">{group.label}</div>
+              <div className="quick-launch-group-label">{translateSourceText(group.label)}</div>
               <div className="quick-launch-group-results">
                 {group.results.map((result) => {
                   rowIndex += 1
@@ -791,15 +803,15 @@ export default function QuickLaunchPalette() {
                       {isTrack && isSelected && (
                         <div className="ql-track-actions">
                           {showQueueAction ? (
-                            <span className="ql-action-badge">Queue</span>
+                            <span className="ql-action-badge"><LocalizedText ns="common" i18nKey="auto.quicklaunchpalette.queue" /></span>
                           ) : (
-                            <span className="ql-tab-hint"><kbd>Tab</kbd> queue</span>
+                            <span className="ql-tab-hint"><kbd><LocalizedText ns="common" i18nKey="auto.quicklaunchpalette.tab" /></kbd>  <LocalizedText ns="common" i18nKey="auto.quicklaunchpalette.queue" /></span>
                           )}
                           <button
                             type="button"
                             className="quick-launch-queue-btn"
                             onClick={(event) => handleQueueClick(event, result)}
-                            title="Queue next"
+                            title={translate('common:auto.quicklaunchpalette.queue_next')}
                           >
                             +
                           </button>
@@ -821,7 +833,7 @@ export default function QuickLaunchPalette() {
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => void executeResult(seeAllResult)}
             >
-              <span className="quick-launch-result-label">See all in Library &rarr;</span>
+              <span className="quick-launch-result-label"><LocalizedText ns="common" i18nKey="auto.quicklaunchpalette.see_all_in_library_rarr" /></span>
               <span className="quick-launch-result-subtitle">{seeAllResult.query}</span>
             </button>
           )}

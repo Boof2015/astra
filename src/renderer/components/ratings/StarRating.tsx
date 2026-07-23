@@ -1,3 +1,4 @@
+import { translate } from '../../i18n'
 import { useRef, useState } from 'react'
 import type { KeyboardEvent, PointerEvent, ReactElement } from 'react'
 import { MAX_TRACK_RATING, MIN_TRACK_RATING } from '../../../shared/ratings/trackRating'
@@ -175,7 +176,7 @@ export default function StarRating({
       aria-valuemax={interactive ? MAX_TRACK_RATING : undefined}
       aria-valuenow={interactive ? value ?? 0 : undefined}
       aria-valuetext={interactive ? formatRatingText(value) : undefined}
-      title={indeterminate && displayValue === null ? 'Mixed ratings' : formatRatingText(displayValue)}
+      title={indeterminate && displayValue === null ? translate('common:auto.starrating.mixed_ratings') : formatRatingText(displayValue)}
     >
       <div className="star-rating-stars" aria-hidden="true">
         <StarGlyphs />

@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useEffect, useState } from 'react'
 import { useParallaxStore } from '../../stores/parallaxStore'
 import { usePlayerStore } from '../../stores/playerStore'
@@ -165,9 +167,9 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
           <span className="parallax-speaker-row-status">{statusLine}</span>
           {canEditTrim && (
             <span className="parallax-speaker-row-substatus">
-              {`Output ${outputDeviceLabel ?? outputDeviceId} · Trim ${formatParallaxTrimMs(persistedAdvanceMs)}`}
+              {translate('integrations:auto.parallaxspeakerrow.output_value1_trim_value2', { value1: outputDeviceLabel ?? outputDeviceId, value2: formatParallaxTrimMs(persistedAdvanceMs) })}
               {echoMismatch && typeof sinkAppliedAdvanceMs === 'number'
-                ? ` (applying ${formatParallaxTrimMs(sinkAppliedAdvanceMs)}…)`
+                ? translate('integrations:auto.parallaxspeakerrow.applying_value1', { value1: formatParallaxTrimMs(sinkAppliedAdvanceMs) })
                 : ''}
             </span>
           )}
@@ -176,39 +178,40 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
         <div className="parallax-speaker-row-actions">
           {renaming ? (
             <>
-              <button className="settings-btn settings-btn-primary" onClick={saveRename}>Save</button>
-              <button className="settings-btn" onClick={() => setRenaming(false)}>Cancel</button>
+              <button className="settings-btn settings-btn-primary" onClick={saveRename}><LocalizedText ns="integrations" i18nKey="auto.parallaxspeakerrow.save" /></button>
+              <button className="settings-btn" onClick={() => setRenaming(false)}><LocalizedText ns="integrations" i18nKey="auto.parallaxspeakerrow.cancel" /></button>
             </>
           ) : (
             <>
               <button
                 className={`settings-toggle parallax-zone-play-toggle ${playbackEnabled ? 'active' : ''}`}
                 aria-pressed={playbackEnabled}
-                aria-label={`${playbackEnabled ? 'Disable' : 'Enable'} playback in ${sink.name}`}
-                title="Play in this zone"
+                aria-label={translate('integrations:auto.parallaxspeakerrow.value1_playback_in_name', { value1: playbackEnabled ? 'Disable' : 'Enable', name: sink.name })}
+                title={translate('integrations:auto.parallaxspeakerrow.play_in_this_zone')}
                 onClick={() => {
                   void setSinkPlaybackEnabled(sink.id, !playbackEnabled).catch((error: unknown) => {
                     notify(error instanceof Error ? error.message : 'Failed to update zone playback.')
                   })
                 }}
               >
-                {playbackEnabled ? 'Playing' : 'Play here'}
+                {playbackEnabled ? translate('integrations:auto.parallaxspeakerrow.playing') : translate('integrations:auto.parallaxspeakerrow.play_here')}
               </button>
               {online && (
                 <button
                   className={`settings-btn ${tuneOpen ? 'settings-btn-primary' : ''}`}
                   onClick={() => setTuneOpen((open) => !open)}
-                  title="Test and adjust this speaker's timing"
+                  title={translate('integrations:auto.parallaxspeakerrow.test_and_adjust_this_speaker_s_timing')}
                 >
-                  Tune
+
+                  <LocalizedText ns="integrations" i18nKey="auto.parallaxspeakerrow.tune" />
                 </button>
               )}
               <div className="parallax-row-menu-wrap">
                 <button
                   className="settings-btn parallax-row-menu-btn"
                   onClick={() => setMenuOpen((open) => !open)}
-                  aria-label="More actions"
-                  title="More actions"
+                  aria-label={translate('integrations:auto.parallaxspeakerrow.more_actions')}
+                  title={translate('integrations:auto.parallaxspeakerrow.more_actions')}
                 >
                   ⋯
                 </button>
@@ -216,15 +219,16 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
                   <>
                     <button className="parallax-row-menu-backdrop" onClick={() => setMenuOpen(false)} aria-hidden />
                     <div className="parallax-row-menu" role="menu">
-                      <button className="parallax-row-menu-item" onClick={startRename}>Rename</button>
+                      <button className="parallax-row-menu-item" onClick={startRename}><LocalizedText ns="integrations" i18nKey="auto.parallaxspeakerrow.rename" /></button>
                       <button
                         className="parallax-row-menu-item"
                         onClick={handleClearCache}
                         disabled={!connected}
                       >
-                        Clear cached status
+
+                        <LocalizedText ns="integrations" i18nKey="auto.parallaxspeakerrow.clear_cached_status" />
                       </button>
-                      <button className="parallax-row-menu-item is-danger" onClick={handleRevoke}>Remove speaker</button>
+                      <button className="parallax-row-menu-item is-danger" onClick={handleRevoke}><LocalizedText ns="integrations" i18nKey="auto.parallaxspeakerrow.remove_speaker" /></button>
                     </div>
                   </>
                 )}
@@ -236,7 +240,7 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
 
       {tuneOpen && online && (
         <div className="parallax-speaker-row-tune">
-          <span className="parallax-tune-label">Timing</span>
+          <span className="parallax-tune-label"><LocalizedText ns="integrations" i18nKey="auto.parallaxspeakerrow.timing" /></span>
           <button
             className={`settings-btn parallax-tune-test ${testingThis ? 'settings-btn-primary' : ''}`}
             disabled={isPlaying}
@@ -251,46 +255,47 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
               }
             }}
             title={isPlaying
-              ? 'Stop playback to use the test tone'
-              : 'Play a synced metronome on this speaker (and the host, as a reference) so you can hear the offset'}
+              ? translate('integrations:auto.parallaxspeakerrow.stop_playback_to_use_the_test_tone')
+              : translate('integrations:auto.parallaxspeakerrow.play_a_synced_metronome_on_this_speaker_and_the_host_as_')}
           >
-            {testingThis ? 'Stop test' : 'Test sound'}
+            {testingThis ? translate('integrations:auto.parallaxspeakerrow.stop_test') : translate('integrations:auto.parallaxspeakerrow.test_sound')}
           </button>
           {normalizing ? (
             <div className="parallax-tune-pending">
-              Letting this speaker settle… <span className="parallax-tune-countdown">{formatSecondsCentis(normalizeRemainingMs)}</span>
+
+              <LocalizedText ns="integrations" i18nKey="auto.parallaxspeakerrow.letting_this_speaker_settle" /> <span className="parallax-tune-countdown">{formatSecondsCentis(normalizeRemainingMs)}</span>
             </div>
           ) : canEditTrim ? (
             <>
               <div className="parallax-tune-control">
-                <span className="parallax-tune-side-label">Sounds early?</span>
+                <span className="parallax-tune-side-label"><LocalizedText ns="integrations" i18nKey="auto.parallaxspeakerrow.sounds_early" /></span>
                 <div className="parallax-tune-nudges">
-                  <button className="settings-btn" onClick={() => handleTrimAdjust(-5)} title="Nudge 5 ms later">-5</button>
-                  <button className="settings-btn" onClick={() => handleTrimAdjust(-1)} title="Nudge 1 ms later">-1</button>
+                  <button className="settings-btn" onClick={() => handleTrimAdjust(-5)} title={translate('integrations:auto.parallaxspeakerrow.nudge_5_ms_later')}>-5</button>
+                  <button className="settings-btn" onClick={() => handleTrimAdjust(-1)} title={translate('integrations:auto.parallaxspeakerrow.nudge_1_ms_later')}>-1</button>
                 </div>
                 <span className="parallax-tune-value">{trimReadout}</span>
                 <div className="parallax-tune-nudges">
-                  <button className="settings-btn" onClick={() => handleTrimAdjust(1)} title="Nudge 1 ms earlier">+1</button>
-                  <button className="settings-btn" onClick={() => handleTrimAdjust(5)} title="Nudge 5 ms earlier">+5</button>
+                  <button className="settings-btn" onClick={() => handleTrimAdjust(1)} title={translate('integrations:auto.parallaxspeakerrow.nudge_1_ms_earlier')}>+1</button>
+                  <button className="settings-btn" onClick={() => handleTrimAdjust(5)} title={translate('integrations:auto.parallaxspeakerrow.nudge_5_ms_earlier')}>+5</button>
                 </div>
-                <span className="parallax-tune-side-label">Sounds late?</span>
+                <span className="parallax-tune-side-label"><LocalizedText ns="integrations" i18nKey="auto.parallaxspeakerrow.sounds_late" /></span>
               </div>
               <div className="parallax-tune-footer">
                 <span className="parallax-tune-hint">
                   {testingThis
-                    ? 'Metronome playing on this speaker and the host. Nudge until they line up.'
-                    : 'Play audio or Test sound, then nudge until this speaker lines up with the others.'}
+                    ? translate('integrations:auto.parallaxspeakerrow.metronome_playing_on_this_speaker_and_the_host_nudge_unt')
+                    : translate('integrations:auto.parallaxspeakerrow.play_audio_or_test_sound_then_nudge_until_this_speaker_l')}
                 </span>
                 {persistedAdvanceMs !== 0 && (
-                  <button className="settings-btn parallax-tune-reset" onClick={handleTrimReset}>Reset</button>
+                  <button className="settings-btn parallax-tune-reset" onClick={handleTrimReset}><LocalizedText ns="integrations" i18nKey="auto.parallaxspeakerrow.reset" /></button>
                 )}
               </div>
             </>
           ) : (
             <div className="parallax-tune-pending">
               {testingThis
-                ? 'Listening for this speaker… the timing nudges appear once it reports its output.'
-                : 'Hit Test sound (or start playback) and the timing nudges appear once this speaker reports its output.'}
+                ? translate('integrations:auto.parallaxspeakerrow.listening_for_this_speaker_the_timing_nudges_appear_once')
+                : translate('integrations:auto.parallaxspeakerrow.hit_test_sound_or_start_playback_and_the_timing_nudges_a')}
             </div>
           )}
         </div>

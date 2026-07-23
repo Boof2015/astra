@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -112,9 +114,10 @@ export default function InfoSidebar() {
       return (
         <>
           <p className="info-lyrics-meta">
-            Source: {bodyState.sourceLabel}
-            {' • Synced'}
-            {bodyState.cached ? ' (cached)' : ''}
+
+            <LocalizedText ns="common" i18nKey="auto.infosidebar.source" /> {bodyState.sourceLabel}
+            {translate('common:auto.infosidebar.synced')}
+            {bodyState.cached ? translate('common:auto.infosidebar.cached') : ''}
           </p>
 
           <div
@@ -156,9 +159,10 @@ export default function InfoSidebar() {
       return (
         <>
           <p className="info-lyrics-meta">
-            Source: {bodyState.sourceLabel}
-            {' • Unsynced'}
-            {bodyState.cached ? ' (cached)' : ''}
+
+            <LocalizedText ns="common" i18nKey="auto.infosidebar.source" /> {bodyState.sourceLabel}
+            {translate('common:auto.infosidebar.unsynced')}
+            {bodyState.cached ? translate('common:auto.infosidebar.cached') : ''}
           </p>
           <pre className="info-lyrics-plain">{bodyState.plainLyrics}</pre>
         </>
@@ -169,9 +173,10 @@ export default function InfoSidebar() {
       return (
         <>
           <p className="info-lyrics-meta">
-            Source: {bodyState.sourceLabel}
-            {' • Unsynced'}
-            {bodyState.cached ? ' (cached)' : ''}
+
+            <LocalizedText ns="common" i18nKey="auto.infosidebar.source" /> {bodyState.sourceLabel}
+            {translate('common:auto.infosidebar.unsynced')}
+            {bodyState.cached ? translate('common:auto.infosidebar.cached') : ''}
           </p>
           <div className="info-lyrics-state">
             {bodyState.message}
@@ -190,7 +195,7 @@ export default function InfoSidebar() {
   return (
     <aside className={`info-sidebar${activeTab === 'lyrics' ? ' info-sidebar-lyrics-active' : ''}`}>
       <div className="info-sidebar-header">
-        <span className="info-sidebar-label">NOW PLAYING</span>
+        <span className="info-sidebar-label"><LocalizedText ns="common" i18nKey="auto.infosidebar.now_playing" /></span>
         <div className="info-sidebar-header-actions">
           {currentTrack && (
             <button
@@ -201,15 +206,15 @@ export default function InfoSidebar() {
                 title: currentTrack.title,
                 duration: currentTrack.duration
               })}
-              title="Create Astra Signal"
-              aria-label="Create Astra Signal for the current track"
+              title={translate('common:auto.infosidebar.create_astra_signal')}
+              aria-label={translate('common:auto.infosidebar.create_astra_signal_for_the_current_track')}
             >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M3 12h3l2-6 4 12 3-9 2 3h4" />
               </svg>
             </button>
           )}
-          <button className="info-sidebar-close" type="button" onClick={toggleInfoSidebar} title="Close" aria-label="Close track info">
+          <button className="info-sidebar-close" type="button" onClick={toggleInfoSidebar} title={translate('common:auto.infosidebar.close')} aria-label={translate('common:auto.infosidebar.close_track_info')}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
               <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
             </svg>
@@ -223,14 +228,16 @@ export default function InfoSidebar() {
           className={`info-sidebar-tab ${activeTab === 'info' ? 'active' : ''}`}
           onClick={() => setActiveTab('info')}
         >
-          Info
+
+          <LocalizedText ns="common" i18nKey="auto.infosidebar.info" />
         </button>
         <button
           type="button"
           className={`info-sidebar-tab ${activeTab === 'lyrics' ? 'active' : ''}`}
           onClick={() => setActiveTab('lyrics')}
         >
-          Lyrics
+
+          <LocalizedText ns="common" i18nKey="auto.infosidebar.lyrics" />
         </button>
       </div>
 
@@ -243,7 +250,8 @@ export default function InfoSidebar() {
                 className="info-lyrics-recenter-btn"
                 onClick={handleRecenter}
               >
-                Recenter
+
+                <LocalizedText ns="common" i18nKey="auto.infosidebar.recenter" />
               </button>
             )}
             <button
@@ -252,7 +260,7 @@ export default function InfoSidebar() {
               onClick={refreshLyrics}
               disabled={!currentTrack || lyricsIsLoading}
             >
-              {lyricsIsLoading ? 'Loading...' : 'Refresh'}
+              {lyricsIsLoading ? translate('common:auto.infosidebar.loading') : translate('common:auto.infosidebar.refresh')}
             </button>
           </div>
           {renderLyricsContent()}
@@ -261,9 +269,9 @@ export default function InfoSidebar() {
         <>
           <div className="info-sidebar-artwork">
             {currentTrack.artworkHash ? (
-              <AlbumArtwork hash={currentTrack.artworkHash} alt="Album art" variant="card" />
+              <AlbumArtwork hash={currentTrack.artworkHash} alt={translate('common:auto.infosidebar.album_art')} variant="card" />
             ) : currentTrack.artworkData ? (
-              <img src={currentTrack.artworkData} alt="Album art" />
+              <img src={currentTrack.artworkData} alt={translate('common:auto.infosidebar.album_art')} />
             ) : (
               <div className="artwork-placeholder">&#9835;</div>
             )}
@@ -286,7 +294,7 @@ export default function InfoSidebar() {
 
           <div className="info-sidebar-meta">
             <div className="info-meta-row">
-              <span className="info-meta-label">Album</span>
+              <span className="info-meta-label"><LocalizedText ns="common" i18nKey="auto.infosidebar.album" /></span>
               {currentTrack.album.trim().length > 0 ? (
                 <button
                   type="button"
@@ -299,7 +307,7 @@ export default function InfoSidebar() {
                       currentTrack.albumIdentityKey
                     )
                   }}
-                  title={`Show album ${currentTrack.album}`}
+                  title={translate('common:auto.infosidebar.show_album_album', { album: currentTrack.album })}
                 >
                   {currentTrack.album}
                 </button>
@@ -309,19 +317,19 @@ export default function InfoSidebar() {
             </div>
             {currentTrack.year && (
               <div className="info-meta-row">
-                <span className="info-meta-label">Year</span>
+                <span className="info-meta-label"><LocalizedText ns="common" i18nKey="auto.infosidebar.year" /></span>
                 <span className="info-meta-value">{currentTrack.year}</span>
               </div>
             )}
             {currentTrack.genre && (
               <div className="info-meta-row">
-                <span className="info-meta-label">Genre</span>
+                <span className="info-meta-label"><LocalizedText ns="common" i18nKey="auto.infosidebar.genre" /></span>
                 <span className="info-meta-value">{currentTrack.genre}</span>
               </div>
             )}
             {currentTrack.trackNumber && (
               <div className="info-meta-row">
-                <span className="info-meta-label">Track</span>
+                <span className="info-meta-label"><LocalizedText ns="common" i18nKey="auto.infosidebar.track" /></span>
                 <span className="info-meta-value">{currentTrack.trackNumber}</span>
               </div>
             )}
@@ -330,57 +338,57 @@ export default function InfoSidebar() {
           <div className="info-sidebar-technical">
             {currentTrack.format && (
               <div className="info-tech-item">
-                <div className="info-tech-label">Codec</div>
+                <div className="info-tech-label"><LocalizedText ns="common" i18nKey="auto.infosidebar.codec" /></div>
                 <div className="info-tech-value">{currentTrack.format.toUpperCase()}</div>
               </div>
             )}
             {currentTrack.bitDepth && (
               <div className="info-tech-item">
-                <div className="info-tech-label">Bit Depth</div>
-                <div className="info-tech-value">{currentTrack.bitDepth}-bit</div>
+                <div className="info-tech-label"><LocalizedText ns="common" i18nKey="auto.infosidebar.bit_depth" /></div>
+                <div className="info-tech-value">{currentTrack.bitDepth}<LocalizedText ns="common" i18nKey="auto.infosidebar.bit" /></div>
               </div>
             )}
             {currentTrack.sampleRate && (
               <div className="info-tech-item">
-                <div className="info-tech-label">Sample Rate</div>
-                <div className="info-tech-value">{currentTrack.sampleRate >= 1000 ? `${(currentTrack.sampleRate / 1000).toFixed(1)} kHz` : `${currentTrack.sampleRate} Hz`}</div>
+                <div className="info-tech-label"><LocalizedText ns="common" i18nKey="auto.infosidebar.sample_rate" /></div>
+                <div className="info-tech-value">{currentTrack.sampleRate >= 1000 ? translate('common:auto.infosidebar.value1_khz', { value1: (currentTrack.sampleRate / 1000).toFixed(1) }) : translate('common:auto.infosidebar.samplerate_hz', { samplerate: currentTrack.sampleRate })}</div>
               </div>
             )}
             {currentTrack.bitrate && (
               <div className="info-tech-item">
-                <div className="info-tech-label">Bitrate</div>
-                <div className="info-tech-value">{currentTrack.bitrate} kbps</div>
+                <div className="info-tech-label"><LocalizedText ns="common" i18nKey="auto.infosidebar.bitrate" /></div>
+                <div className="info-tech-value">{currentTrack.bitrate}  <LocalizedText ns="common" i18nKey="auto.infosidebar.kbps" /></div>
               </div>
             )}
             {currentTrack.channels && (
               <div className="info-tech-item">
-                <div className="info-tech-label">Channels</div>
+                <div className="info-tech-label"><LocalizedText ns="common" i18nKey="auto.infosidebar.channels" /></div>
                 <div className="info-tech-value">{currentTrack.channels}</div>
               </div>
             )}
             {currentTrack.isAtmosJoc && (
               <div className="info-tech-item info-tech-item-warning">
-                <div className="info-tech-label">Atmos Source</div>
-                <div className="info-tech-value">Compatibility mode. Object rendering and mix quality are not guaranteed.</div>
+                <div className="info-tech-label"><LocalizedText ns="common" i18nKey="auto.infosidebar.atmos_source" /></div>
+                <div className="info-tech-value"><LocalizedText ns="common" i18nKey="auto.infosidebar.compatibility_mode_object_rendering_and_mix_quality_are_" /></div>
               </div>
             )}
             {currentTrack.isIamf && (
               <div className="info-tech-item">
-                <div className="info-tech-label">Eclipsa Source</div>
-                <div className="info-tech-value">Eclipsa Audio (IAMF) decoded to 7.1.4.</div>
+                <div className="info-tech-label"><LocalizedText ns="common" i18nKey="auto.infosidebar.eclipsa_source" /></div>
+                <div className="info-tech-value"><LocalizedText ns="common" i18nKey="auto.infosidebar.eclipsa_audio_iamf_decoded_to_7_1_4" /></div>
               </div>
             )}
           </div>
 
           <div className="info-sidebar-path">
             <div className="info-path-header">
-              <div className="info-tech-label">File Path</div>
+              <div className="info-tech-label"><LocalizedText ns="common" i18nKey="auto.infosidebar.file_path" /></div>
               <button
                 type="button"
                 className="info-path-reveal-btn"
                 onClick={revealTrackInFolder}
-                title="Show in Folder"
-                aria-label="Show in Folder"
+                title={translate('common:auto.infosidebar.show_in_folder')}
+                aria-label={translate('common:auto.infosidebar.show_in_folder')}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                   <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
@@ -392,7 +400,7 @@ export default function InfoSidebar() {
         </>
       ) : (
         <div className="info-sidebar-empty">
-          <p>No track selected</p>
+          <p><LocalizedText ns="common" i18nKey="auto.infosidebar.no_track_selected" /></p>
         </div>
       )}
     </aside>

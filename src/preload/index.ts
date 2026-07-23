@@ -676,6 +676,9 @@ async function getAllLibraryTracksPaged(): Promise<DbTrack[]> {
 
 // Expose APIs to renderer
 contextBridge.exposeInMainWorld('electronAPI', {
+  localization: {
+    setLocale: (locale: string): Promise<string> => ipcRenderer.invoke('localization:setLocale', locale),
+  },
   // Window controls
   minimize: () => ipcRenderer.send('window:minimize'),
   maximize: () => ipcRenderer.send('window:maximize'),
@@ -1537,6 +1540,9 @@ declare global {
       onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
     }
     electronAPI: {
+      localization: {
+        setLocale: (locale: string) => Promise<string>
+      }
       // Window controls
       minimize: () => void
       maximize: () => void

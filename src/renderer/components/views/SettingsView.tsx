@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import LocalizedText from '../i18n/LocalizedText'
 import FolderSettings from '../settings/FolderSettings'
 import AudioOutputSelect from '../settings/AudioOutputSelect'
 import ChannelRoutingPanel from '../settings/ChannelRoutingPanel'
@@ -93,6 +95,7 @@ import { LRCLIB_OFFICIAL_BASE_URL } from '../../../types/lyrics'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
 import type { CompanionApiScope } from '../../../types/companionApi'
 import ParallaxSettingsPanel from '../parallax/ParallaxSettingsPanel'
+import { formatLocaleDate, getDisplayLanguageOptions, setDisplayLanguage, translate, translateSourceText } from '../../i18n'
 
 type ResetActionId =
   | 'reset-theme'
@@ -342,6 +345,9 @@ function formatBuildTooltip(buildInfo: AppBuildInfo): string | undefined {
 }
 
 export default function SettingsView() {
+  const { t, i18n } = useTranslation(['settings', 'common'])
+  const displayLanguageOptions = getDisplayLanguageOptions()
+  const displayLanguage = i18n.resolvedLanguage ?? i18n.language
   const [showFolderSettings, setShowFolderSettings] = useState(false)
   const [pendingResetId, setPendingResetId] = useState<ResetActionId | null>(null)
   const [activeSectionId, setActiveSectionId] = useState<SettingsSectionId>(SETTINGS_SECTIONS[0].id)
@@ -603,11 +609,11 @@ export default function SettingsView() {
   )
   const sleepTimerEndsAtLabel = useMemo(() => {
     if (sleepTimerExpiresAtMs == null) return null
-    return new Date(sleepTimerExpiresAtMs).toLocaleTimeString([], {
+    return formatLocaleDate(sleepTimerExpiresAtMs, {
       hour: 'numeric',
       minute: '2-digit'
     })
-  }, [sleepTimerExpiresAtMs])
+  }, [displayLanguage, sleepTimerExpiresAtMs])
   const sleepTimerStatusLabel = useMemo(() => {
     if (!sleepTimerIsActive) {
       return 'No active sleep timer.'
@@ -946,8 +952,8 @@ export default function SettingsView() {
         ? 'checking'
         : 'default'
   const lastCheckedLabel = lastCheckedAt
-    ? new Date(lastCheckedAt).toLocaleString()
-    : 'No update checks have run yet.'
+    ? formatLocaleDate(lastCheckedAt, { dateStyle: 'medium', timeStyle: 'short' })
+    : translate('settings:dates.noUpdateChecks')
   const localApiEnabled = localApiStatus?.enabled ?? false
   const localApiControlsEnabled = localApiStatus?.controlsEnabled ?? false
   const localApiLibrarySearchEnabled = localApiStatus?.librarySearchEnabled ?? false
@@ -1020,12 +1026,16 @@ export default function SettingsView() {
   const diagnosticsCurrentLogPath = diagnosticsStatus?.currentLogPath ?? 'Loading diagnostics paths...'
   const diagnosticsPreviousLogPath = diagnosticsStatus?.previousLogPath ?? 'Loading diagnostics paths...'
   const diagnosticsSessionLabel = diagnosticsStatus?.sessionStartedAt
-    ? `Current session started ${new Date(diagnosticsStatus.sessionStartedAt).toLocaleString()}.`
+    ? translate('settings:dates.diagnosticsSession', {
+        date: formatLocaleDate(diagnosticsStatus.sessionStartedAt, { dateStyle: 'medium', timeStyle: 'short' })
+      })
     : diagnosticsEnabled
       ? 'Waiting for the current diagnostics session header.'
       : 'Diagnostics are disabled.'
   const diagnosticsLastBundleLabel = diagnosticsLastCaptureResult
-    ? `Last bundle captured ${new Date(diagnosticsLastCaptureResult.capturedAt).toLocaleString()}.`
+    ? translate('settings:dates.diagnosticsBundle', {
+        date: formatLocaleDate(diagnosticsLastCaptureResult.capturedAt, { dateStyle: 'medium', timeStyle: 'short' })
+      })
     : 'No memory bundle captured in this session.'
 
   const handlePlaybackPathChange = (mode: 'standard' | 'bitperfect') => {
@@ -1507,11 +1517,11 @@ export default function SettingsView() {
         className={`settings-danger-item ${action.destructive ? 'settings-danger-item-destructive' : ''}`}
       >
         <div className="settings-danger-item-copy">
-          <p className="settings-danger-item-title">{action.title}</p>
-          <p className="settings-danger-item-description">{action.description}</p>
+          <p className="settings-danger-item-title">{translateSourceText(action.title)}</p>
+          <p className="settings-danger-item-description">{translateSourceText(action.description)}</p>
           {status.state !== 'idle' && (
             <p className={`settings-danger-status settings-danger-status-${status.state}`}>
-              {status.message}
+              {translateSourceText(status.message)}
             </p>
           )}
         </div>
@@ -1531,26 +1541,26 @@ export default function SettingsView() {
       <div className="settings-shell">
         <div className="settings-header">
           <div>
-            <p className="settings-kicker">System Controls</p>
-            <h2>Settings</h2>
-            <p className="settings-subtitle">Manage playback behavior, library scanning, and application preferences.</p>
+            <p className="settings-kicker">{t('settings:kicker')}</p>
+            <h2>{t('settings:title')}</h2>
+            <p className="settings-subtitle">{t('settings:subtitle')}</p>
           </div>
           {isScanning && (
             <div className="settings-scan-badge">
               <span>
                 {scanStage?.stage === 'backfill'
-                  ? 'Metadata'
+                  ? t('settings:scan.metadata')
                   : scanStage?.stage === 'cleanup'
-                    ? 'Finalizing'
-                    : 'Scanning'}
-                {scanProgress ? ` ${scanProgress.current}/${scanProgress.total}` : '...'}
+                    ? t('settings:scan.finalizing')
+                    : t('settings:scan.scanning')}
+                {scanProgress ? translate('settings:auto.settingsview.current_total', { current: scanProgress.current, total: scanProgress.total }) : '...'}
               </span>
               <button
                 className="settings-scan-badge-cancel"
                 onClick={() => void cancelScan()}
                 disabled={isCancelingScan}
-                aria-label="Cancel scan"
-                title="Cancel scan"
+                aria-label={t('common:accessibility.cancelScan')}
+                title={t('common:accessibility.cancelScan')}
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
@@ -1561,7 +1571,7 @@ export default function SettingsView() {
         </div>
 
         <div className="settings-layout">
-          <nav className="settings-sidebar" aria-label="Settings sections">
+          <nav className="settings-sidebar" aria-label={t('common:accessibility.settingsSections')}>
             {visibleSettingsSections.map((section) => (
               <button
                 key={section.id}
@@ -1570,7 +1580,7 @@ export default function SettingsView() {
                 aria-current={activeSectionId === section.id ? 'true' : undefined}
                 onClick={() => setActiveSectionId(section.id)}
               >
-                {section.label}
+                {t(`settings:sections.${section.id}`)}
               </button>
             ))}
           </nav>
@@ -1579,7 +1589,7 @@ export default function SettingsView() {
             {activeSectionId === 'appearance' && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
-              <h3>Appearance</h3>
+              <h3>{t('settings:sections.appearance')}</h3>
             </div>
             <div className="settings-theme-grid">
               {THEME_PRESET_LIST.map((preset) => (
@@ -1589,18 +1599,37 @@ export default function SettingsView() {
                   className={`settings-theme-card ${presetId === preset.id ? 'active' : ''}`}
                   onClick={() => setPreset(preset.id as ThemePresetId)}
                 >
-                  <span className="settings-theme-card-title">{preset.label}</span>
-                  <span className="settings-theme-card-description">{preset.description}</span>
+                  <span className="settings-theme-card-title">{translateSourceText(preset.label)}</span>
+                  <span className="settings-theme-card-description">{translateSourceText(preset.description)}</span>
                 </button>
               ))}
             </div>
             <div className="settings-cards">
               <div className="settings-card">
-                <div className="settings-card-label">Accent</div>
+                <div className="settings-card-label">{t('settings:appearance.language.cardTitle')}</div>
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span className="settings-field-label">{t('settings:appearance.language.fieldLabel')}</span>
+                    <select
+                      className="settings-select"
+                      value={displayLanguage}
+                      onChange={(event) => void setDisplayLanguage(event.target.value)}
+                      aria-label={t('settings:appearance.language.selectLabel')}
+                    >
+                      {displayLanguageOptions.map((locale) => (
+                        <option key={locale.code} value={locale.code}>{locale.nativeName}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <p className="settings-note">{t('settings:appearance.language.description')}</p>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.accent" /></div>
                 <div className="settings-grid">
                   <label className="settings-field">
                     <span className="settings-field-label">
-                      {accentSource === 'cover-art' ? 'Fallback Accent Color' : 'Accent Color'}
+                      {accentSource === 'cover-art' ? translate('settings:auto.settingsview.fallback_accent_color') : translate('settings:auto.settingsview.accent_color')}
                     </span>
                     <div className="settings-accent-inputs">
                       <input
@@ -1632,7 +1661,7 @@ export default function SettingsView() {
                     </div>
                   </label>
                   <div className="settings-field">
-                    <span className="settings-field-label">Accent Source</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.accent_source" /></span>
                     <SettingsSegmentedControl
                       ariaLabel="Accent source"
                       fullWidth
@@ -1643,7 +1672,7 @@ export default function SettingsView() {
                   </div>
                   {accentSource === 'cover-art' && (
                     <div className="settings-field">
-                      <span className="settings-field-label">Cover Art Method</span>
+                      <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.cover_art_method" /></span>
                       <SettingsSegmentedControl
                         ariaLabel="Cover art accent method"
                         fullWidth
@@ -1655,18 +1684,19 @@ export default function SettingsView() {
                   )}
                   <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">
-                      {accentSource === 'cover-art' ? 'Fallback Accent' : 'Preset Accent'}
+                      {accentSource === 'cover-art' ? translate('settings:auto.settingsview.fallback_accent') : translate('settings:auto.settingsview.preset_accent')}
                     </span>
                     {customAccent ? (
                       <button className="settings-btn" onClick={usePresetAccent}>
-                        Use Preset Accent
+
+                        <LocalizedText ns="settings" i18nKey="auto.settingsview.use_preset_accent" />
                       </button>
                     ) : (
-                      <span className="settings-chip">Using Preset Accent</span>
+                      <span className="settings-chip"><LocalizedText ns="settings" i18nKey="auto.settingsview.using_preset_accent" /></span>
                     )}
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Theme</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.theme" /></span>
                     <button
                       className="settings-btn settings-btn-primary"
                       onClick={() => {
@@ -1674,16 +1704,17 @@ export default function SettingsView() {
                         setAccentInputValue(defaultPresetAccent)
                       }}
                     >
-                      Reset Theme to Default
+
+                      <LocalizedText ns="settings" i18nKey="auto.settingsview.reset_theme_to_default" />
                     </button>
                   </div>
                 </div>
               </div>
               <div className="settings-card">
-                <div className="settings-card-label">Interface Scale</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.interface_scale" /></div>
                 <div className="settings-grid">
                   <label className="settings-field">
-                    <span className="settings-field-label">UI Scale</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.ui_scale" /></span>
                     <div className="settings-scale-row">
                       <input
                         className="settings-scale-slider"
@@ -1693,7 +1724,7 @@ export default function SettingsView() {
                         step={UI_SCALE_STEP_PERCENT}
                         value={uiScalePercent}
                         onChange={(event) => setUIScalePercent(Number(event.target.value))}
-                        aria-label="UI scale"
+                        aria-label={translate('settings:auto.settingsview.ui_scale_b24ae33')}
                       />
                       <span className="settings-chip settings-chip-mono settings-scale-value">
                         {uiScalePercent}%
@@ -1704,17 +1735,18 @@ export default function SettingsView() {
                         onClick={resetUIScalePercent}
                         disabled={uiScalePercent === DEFAULT_UI_SCALE_PERCENT}
                       >
-                        RESET
+
+                        <LocalizedText ns="settings" i18nKey="auto.settingsview.reset" />
                       </button>
                     </div>
                   </label>
                 </div>
               </div>
               <div className="settings-card">
-                <div className="settings-card-label">Home Greeting</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.home_greeting" /></div>
                 <div className="settings-grid">
                   <div className="settings-field">
-                    <span className="settings-field-label">Text</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.text" /></span>
                     <SettingsSegmentedControl
                       ariaLabel="Home greeting text"
                       fullWidth
@@ -1726,10 +1758,10 @@ export default function SettingsView() {
                 </div>
               </div>
               <div className="settings-card">
-                <div className="settings-card-label">Transport Bar</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.transport_bar" /></div>
                 <div className="settings-grid">
                   <div className="settings-field">
-                    <span className="settings-field-label">Info Line</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.info_line" /></span>
                     <SettingsSegmentedControl
                       ariaLabel="Transport bar info line"
                       fullWidth
@@ -1747,45 +1779,48 @@ export default function SettingsView() {
             {activeSectionId === 'library' && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
-              <h3>Library</h3>
+              <h3><LocalizedText ns="settings" i18nKey="auto.settingsview.library" /></h3>
             </div>
             <div className="settings-actions settings-actions-grid settings-actions-grid-spaced">
               <button className="settings-btn settings-btn-primary" onClick={() => setShowFolderSettings(true)}>
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
                 </svg>
-                Manage Folders
+
+                <LocalizedText ns="settings" i18nKey="auto.settingsview.manage_folders" />
               </button>
               <button className="settings-btn" onClick={rescan} disabled={isScanning}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
                 </svg>
-                Scan for Changes
+
+                <LocalizedText ns="settings" i18nKey="auto.settingsview.scan_for_changes" />
               </button>
               <button className="settings-btn" onClick={forceRescanAll} disabled={isScanning}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
                 </svg>
-                Force Rescan All
+
+                <LocalizedText ns="settings" i18nKey="auto.settingsview.force_rescan_all" />
               </button>
             </div>
             <div className="settings-cards">
               <div className="settings-card">
-                <div className="settings-card-label">Normalization</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.normalization" /></div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Normalization</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.normalization" /></span>
                     <button
                       className={`settings-toggle ${normalizationEnabled ? 'active' : ''}`}
                       onClick={handleNormalizationToggle}
                       disabled={bitPerfectModeActive}
                       title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
                     >
-                      {normalizationEnabled ? 'Enabled' : 'Disabled'}
+                      {normalizationEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <label className="settings-field">
-                    <span className="settings-field-label">Normalization Target</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.normalization_target" /></span>
                     <div className="settings-inline-row">
                       <input
                         className="settings-select settings-inline-input settings-inline-input-compact"
@@ -1815,12 +1850,13 @@ export default function SettingsView() {
                         disabled={!normalizationEnabled || bitPerfectModeActive}
                         onClick={resetNormalizationTarget}
                       >
-                        RESET
+
+                        <LocalizedText ns="settings" i18nKey="auto.settingsview.reset" />
                       </button>
                     </div>
                   </label>
                   <div className="settings-field">
-                    <span className="settings-field-label">ReplayGain</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.replaygain" /></span>
                     <SettingsSegmentedControl
                       ariaLabel="ReplayGain preference"
                       fullWidth
@@ -1833,88 +1869,89 @@ export default function SettingsView() {
                 </div>
               </div>
               <div className="settings-card">
-                <div className="settings-card-label">Artist Parsing</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.artist_parsing" /></div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Artist Parsing</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.artist_parsing" /></span>
                     <div className="settings-inline-row">
                       <button
                         className={`settings-toggle ${artistBrowseMode === 'strict' ? 'active' : ''}`}
                         onClick={() => setArtistBrowseMode('strict')}
                         aria-pressed={artistBrowseMode === 'strict'}
-                        title="Use stored Album Artist and Artist tags as written"
+                        title={translate('settings:auto.settingsview.use_stored_album_artist_and_artist_tags_as_written')}
                       >
-                        File tags
+
+                        <LocalizedText ns="settings" i18nKey="auto.settingsview.file_tags" />
                       </button>
                       <button
                         className={`settings-toggle ${artistBrowseMode === 'canonical' ? 'active' : ''}`}
                         onClick={() => setArtistBrowseMode('canonical')}
                         aria-pressed={artistBrowseMode === 'canonical'}
-                        title="Use Astra's primary artist and collaboration grouping"
+                        title={translate('settings:auto.settingsview.use_astra_s_primary_artist_and_collaboration_grouping')}
                       >
-                        Astra grouping
+
+                        <LocalizedText ns="settings" i18nKey="auto.settingsview.astra_grouping" />
                       </button>
                     </div>
                   </div>
                 </div>
               </div>
               <div className="settings-card">
-                <div className="settings-card-label">Track Ratings</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.track_ratings" /></div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Ratings</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.ratings" /></span>
                     <button
                       className={`settings-toggle ${trackRatingsEnabled ? 'active' : ''}`}
                       onClick={() => setTrackRatingsEnabled(!trackRatingsEnabled)}
-                      title="Rate tracks with 1-5 stars in half-star steps"
+                      title={translate('settings:auto.settingsview.rate_tracks_with_1_5_stars_in_half_star_steps')}
                     >
-                      {trackRatingsEnabled ? 'Enabled' : 'Disabled'}
+                      {trackRatingsEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <p className="settings-note">
-                    Rate tracks with 1-5 stars in half-star steps. Adds a rating column to tracklists,
-                    a Rate entry to the track menu, and rating filters for dynamic playlists. Ratings
-                    are kept if you turn this off.
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingsview.rate_tracks_with_1_5_stars_in_half_star_steps_adds_a_rat" />
                   </p>
                 </div>
               </div>
               <div className="settings-card">
-                <div className="settings-card-label">Tracklist Columns</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.tracklist_columns" /></div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">BPM / Key</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.bpm_key" /></span>
                     <button
                       className={`settings-toggle ${showTracklistBpmKey ? 'active' : ''}`}
                       onClick={() => setShowTracklistBpmKey(!showTracklistBpmKey)}
                     >
-                      {showTracklistBpmKey ? 'Enabled' : 'Disabled'}
+                      {showTracklistBpmKey ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Genre</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.genre" /></span>
                     <button
                       className={`settings-toggle ${showTracklistGenre ? 'active' : ''}`}
                       onClick={() => setShowTracklistGenre(!showTracklistGenre)}
                     >
-                      {showTracklistGenre ? 'Enabled' : 'Disabled'}
+                      {showTracklistGenre ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Added Date</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.added_date" /></span>
                     <button
                       className={`settings-toggle ${showTracklistAddedDate ? 'active' : ''}`}
                       onClick={() => setShowTracklistAddedDate(!showTracklistAddedDate)}
                     >
-                      {showTracklistAddedDate ? 'Enabled' : 'Disabled'}
+                      {showTracklistAddedDate ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Play Count</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.play_count" /></span>
                     <button
                       className={`settings-toggle ${showTracklistPlayCount ? 'active' : ''}`}
                       onClick={() => setShowTracklistPlayCount(!showTracklistPlayCount)}
                     >
-                      {showTracklistPlayCount ? 'Enabled' : 'Disabled'}
+                      {showTracklistPlayCount ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                 </div>
@@ -1930,7 +1967,8 @@ export default function SettingsView() {
             )}
             {!normalizationEnabled && (
               <p className="settings-note settings-note-error">
-                ReplayGain is configured but playback gain is bypassed while normalization is off.
+
+                <LocalizedText ns="settings" i18nKey="auto.settingsview.replaygain_is_configured_but_playback_gain_is_bypassed_w" />
               </p>
             )}
             <RemoteServersPanel />
@@ -1940,14 +1978,14 @@ export default function SettingsView() {
             {activeSectionId === 'analyzer' && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
-              <h3>Analyzer</h3>
+              <h3><LocalizedText ns="settings" i18nKey="auto.settingsview.analyzer" /></h3>
             </div>
             <div className="settings-cards">
               <div className="settings-card">
-                <div className="settings-card-label">Visualizer</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.visualizer" /></div>
                 <div className="settings-grid">
                   <div className="settings-field">
-                    <span className="settings-field-label">Mini Player Visualizer</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.mini_player_visualizer" /></span>
                     <SettingsSegmentedControl
                       ariaLabel="Mini player visualizer"
                       fullWidth
@@ -1957,12 +1995,12 @@ export default function SettingsView() {
                     />
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Visualizer</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.visualizer" /></span>
                     <button
                       className={`settings-toggle ${isRunning ? 'active' : ''}`}
                       onClick={() => setIsRunning(!isRunning)}
                     >
-                      {isRunning ? 'Running' : 'Paused'}
+                      {isRunning ? translate('settings:auto.settingsview.running') : translate('settings:auto.settingsview.paused')}
                     </button>
                   </div>
                 </div>
@@ -1974,36 +2012,39 @@ export default function SettingsView() {
             {activeSectionId === 'audio' && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
-              <h3>Audio Output</h3>
+              <h3><LocalizedText ns="settings" i18nKey="auto.settingsview.audio_output" /></h3>
             </div>
             <div className="settings-cards">
               <div className="settings-card">
-                <div className="settings-card-label">Playback Path</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.playback_path" /></div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Playback Path</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.playback_path" /></span>
                     <div className="settings-inline-row">
                       <button
                         className={`settings-toggle ${playbackOutputMode === 'standard' ? 'active' : ''}`}
                         onClick={() => handlePlaybackPathChange('standard')}
                       >
-                        Standard
+
+                        <LocalizedText ns="settings" i18nKey="auto.settingsview.standard" />
                       </button>
                       <div className="settings-inline-row">
                         <button
                           className={`settings-toggle ${playbackOutputMode === 'bitperfect' ? 'active' : ''}`}
                           onClick={() => handlePlaybackPathChange('bitperfect')}
                         >
-                          Bit-Perfect (Exclusive)
+
+                          <LocalizedText ns="settings" i18nKey="auto.settingsview.bit_perfect_exclusive" />
                         </button>
                         <span className="settings-chip settings-chip-mono settings-chip-danger">
-                          Experimental
+
+                          <LocalizedText ns="settings" i18nKey="auto.settingsview.experimental" />
                         </span>
                       </div>
                     </div>
                   </div>
                   <div className="settings-field">
-                    <span className="settings-field-label">Native Status</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.native_status" /></span>
                     <div className="settings-inline-row">
                       <span className="settings-chip settings-chip-mono">
                         {nativeBackendLabel}
@@ -2014,7 +2055,7 @@ export default function SettingsView() {
                         </span>
                       )}
                       <span className="settings-chip settings-chip-mono">
-                        {nativeAudioCapabilities.activeDeviceExclusive ? 'Exclusive' : 'Shared/Off'}
+                        {nativeAudioCapabilities.activeDeviceExclusive ? translate('settings:auto.settingsview.exclusive') : translate('settings:auto.settingsview.shared_off')}
                       </span>
                     </div>
                   </div>
@@ -2042,14 +2083,14 @@ export default function SettingsView() {
             {activeSectionId === 'playback' && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
-              <h3>Playback</h3>
+              <h3><LocalizedText ns="settings" i18nKey="auto.settingsview.playback" /></h3>
             </div>
             <div className="settings-cards">
               <div className="settings-card">
-                <div className="settings-card-label">Navigation</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.navigation" /></div>
                 <div className="settings-grid">
                   <div className="settings-field">
-                    <span className="settings-field-label">Jump to Playing opens</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.jump_to_playing_opens" /></span>
                     <SettingsSegmentedControl
                       ariaLabel="Jump to Playing destination"
                       fullWidth
@@ -2060,11 +2101,11 @@ export default function SettingsView() {
                   </div>
                 </div>
                 {jumpToPlayingDestination !== DEFAULT_JUMP_TO_PLAYING_DESTINATION && (
-                  <p className="settings-note">Default: Smart Source</p>
+                  <p className="settings-note"><LocalizedText ns="settings" i18nKey="auto.settingsview.default_smart_source" /></p>
                 )}
               </div>
               <div className="settings-card">
-                <div className="settings-card-label">Sleep Timer</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.sleep_timer" /></div>
                 <div className="settings-sleep-controls">
                   <div className="settings-sleep-presets">
                     {SLEEP_TIMER_PRESET_MINUTES.map((minutes) => (
@@ -2075,7 +2116,7 @@ export default function SettingsView() {
                         onClick={() => handleSleepTimerPreset(minutes)}
                         disabled={!canStartSleepTimer}
                       >
-                        {minutes} min
+                        {minutes}  <LocalizedText ns="settings" i18nKey="auto.settingsview.min" />
                       </button>
                     ))}
                   </div>
@@ -2100,7 +2141,7 @@ export default function SettingsView() {
                       onClick={handleSleepTimerCustomStart}
                       disabled={!canStartSleepTimer}
                     >
-                      {sleepTimerIsActive ? 'Replace Timer' : 'Start Timer'}
+                      {sleepTimerIsActive ? translate('settings:auto.settingsview.replace_timer') : translate('settings:auto.settingsview.start_timer')}
                     </button>
                     {sleepTimerIsActive && (
                       <button
@@ -2108,7 +2149,8 @@ export default function SettingsView() {
                         className="settings-btn"
                         onClick={handleSleepTimerCancel}
                       >
-                        Cancel
+
+                        <LocalizedText ns="settings" i18nKey="auto.settingsview.cancel" />
                       </button>
                     )}
                   </div>
@@ -2123,7 +2165,8 @@ export default function SettingsView() {
                 )}
                 {!canStartSleepTimer && (
                   <p className="settings-note">
-                    Load a track to start a sleep timer.
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingsview.load_a_track_to_start_a_sleep_timer" />
                   </p>
                 )}
               </div>
@@ -2136,34 +2179,35 @@ export default function SettingsView() {
             {activeSectionId === 'integrations' && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
-              <h3>Integrations</h3>
+              <h3><LocalizedText ns="settings" i18nKey="auto.settingsview.integrations" /></h3>
             </div>
             <div className="settings-integration-cards">
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
-                  <h4>Scrobbling</h4>
-                  <p>Now Playing updates and scrobbles for your connected destinations.</p>
+                  <h4><LocalizedText ns="settings" i18nKey="auto.settingsview.scrobbling" /></h4>
+                  <p><LocalizedText ns="settings" i18nKey="auto.settingsview.now_playing_updates_and_scrobbles_for_your_connected_des" /></p>
                 </div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Scrobbling</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.scrobbling" /></span>
                     <button
                       className={`settings-toggle ${lastFmEnabled ? 'active' : ''}`}
                       onClick={() => void setLastFmEnabled(!lastFmEnabled)}
                     >
-                      {lastFmEnabled ? 'Enabled' : 'Disabled'}
+                      {lastFmEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
 
                   <div className="settings-field settings-lastfm-profiles-field">
                     <div className="settings-lastfm-profiles-head">
-                      <span className="settings-field-label">Destinations</span>
+                      <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.destinations" /></span>
                       <button
                         type="button"
                         className="settings-btn settings-btn-primary"
                         onClick={openLastFmCreateProfileModal}
                       >
-                        Add Destination
+
+                        <LocalizedText ns="settings" i18nKey="auto.settingsview.add_destination" />
                       </button>
                     </div>
                     <div className="settings-lastfm-profile-list">
@@ -2189,7 +2233,7 @@ export default function SettingsView() {
                                 checked={profile.enabled}
                                 disabled={!canToggleProfile}
                                 onChange={() => handleToggleLastFmProfile(profile)}
-                                aria-label={`${profile.enabled ? 'Disable' : 'Enable'} ${profile.name}`}
+                                aria-label={translate('settings:auto.settingsview.value1_name', { value1: profile.enabled ? 'Disable' : 'Enable', name: profile.name })}
                               />
                               <span aria-hidden="true" />
                             </label>
@@ -2205,11 +2249,11 @@ export default function SettingsView() {
                                 <span>
                                   {profile.connected
                                     ? profile.username
-                                      ? `Connected as ${profile.username}`
-                                      : 'Token configured'
-                                    : 'Not connected'}
+                                      ? translate('settings:auto.settingsview.connected_as_username', { username: profile.username })
+                                      : translate('settings:auto.settingsview.token_configured')
+                                    : translate('settings:auto.settingsview.not_connected')}
                                 </span>
-                                <span>{profile.pendingScrobbles} pending</span>
+                                <span>{profile.pendingScrobbles}  <LocalizedText ns="settings" i18nKey="auto.settingsview.pending" /></span>
                                 {profile.lastError && (
                                   <span className="settings-lastfm-profile-error">{profile.lastError}</span>
                                 )}
@@ -2222,8 +2266,8 @@ export default function SettingsView() {
                                   className="settings-lastfm-icon-btn"
                                   onClick={() => void beginLastFmAuth(profile.id)}
                                   disabled={!canConnectProfile && !profileAuthPending}
-                                  title={profileAuthPending ? 'Authorization pending' : 'Connect'}
-                                  aria-label={profileAuthPending ? 'Authorization pending' : `Connect ${profile.name}`}
+                                  title={profileAuthPending ? translate('settings:auto.settingsview.authorization_pending') : translate('settings:auto.settingsview.connect')}
+                                  aria-label={profileAuthPending ? translate('settings:auto.settingsview.authorization_pending') : translate('settings:auto.settingsview.connect_name', { name: profile.name })}
                                 >
                                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                                     <path d="M10.5 13.5L13.5 10.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -2237,8 +2281,8 @@ export default function SettingsView() {
                                   type="button"
                                   className="settings-lastfm-icon-btn"
                                   onClick={() => void disconnectLastFmProfile(profile.id)}
-                                  title="Disconnect"
-                                  aria-label={`Disconnect ${profile.name}`}
+                                  title={translate('settings:auto.settingsview.disconnect')}
+                                  aria-label={translate('settings:auto.settingsview.disconnect_name', { name: profile.name })}
                                 >
                                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                                     <path d="M7 7L17 17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -2251,8 +2295,8 @@ export default function SettingsView() {
                                   type="button"
                                   className="settings-lastfm-icon-btn"
                                   onClick={() => openLastFmEditProfileModal(profile)}
-                                  title="Edit"
-                                  aria-label={`Edit ${profile.name}`}
+                                  title={translate('settings:auto.settingsview.edit')}
+                                  aria-label={translate('settings:auto.settingsview.edit_name', { name: profile.name })}
                                 >
                                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                                     <path d="M4 20H8.4L19.2 9.2C20.1 8.3 20.1 6.9 19.2 6L18 4.8C17.1 3.9 15.7 3.9 14.8 4.8L4 15.6V20Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
@@ -2265,8 +2309,8 @@ export default function SettingsView() {
                                   type="button"
                                   className="settings-lastfm-icon-btn danger"
                                   onClick={() => handleDeleteLastFmProfile(profile)}
-                                  title="Delete"
-                                  aria-label={`Delete ${profile.name}`}
+                                  title={translate('settings:auto.settingsview.delete')}
+                                  aria-label={translate('settings:auto.settingsview.delete_name', { name: profile.name })}
                                 >
                                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                                     <path d="M5 7H19" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -2289,28 +2333,29 @@ export default function SettingsView() {
                 {lastFmResolvedError && <p className="settings-note settings-note-error">{lastFmResolvedError}</p>}
                 {!lastFmHasApiCredentials && (
                   <p className="settings-note settings-note-error">
-                    Last.fm API credentials are missing in this build.
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingsview.last_fm_api_credentials_are_missing_in_this_build" />
                   </p>
                 )}
               </div>
 
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
-                  <h4>Lyrics</h4>
-                  <p>LRC, XLRC, embedded lyrics, and optional XLRCDB/LRCLIB lookup.</p>
+                  <h4><LocalizedText ns="settings" i18nKey="auto.settingsview.lyrics" /></h4>
+                  <p><LocalizedText ns="settings" i18nKey="auto.settingsview.lrc_xlrc_embedded_lyrics_and_optional_xlrcdb_lrclib_look" /></p>
                 </div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Online Lyrics Lookup</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.online_lyrics_lookup" /></span>
                     <button
                       className={`settings-toggle ${lyricsEnabled ? 'active' : ''}`}
                       onClick={() => void setLyricsEnabled(!lyricsEnabled)}
                     >
-                      {lyricsEnabled ? 'Enabled' : 'Disabled'}
+                      {lyricsEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <label className="settings-field">
-                    <span className="settings-field-label">LRCLIB Base URL</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.lrclib_base_url" /></span>
                     <input
                       className="settings-select"
                       type="url"
@@ -2330,43 +2375,43 @@ export default function SettingsView() {
                     />
                   </label>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">XLRC Word Timing</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.xlrc_word_timing" /></span>
                     <button
                       className={`settings-toggle ${lyricsDisplaySettings.wordTimingEnabled ? 'active' : ''}`}
                       onClick={() => setLyricsWordTimingEnabled(!lyricsDisplaySettings.wordTimingEnabled)}
                     >
-                      {lyricsDisplaySettings.wordTimingEnabled ? 'Enabled' : 'Disabled'}
+                      {lyricsDisplaySettings.wordTimingEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">XLRC Furigana</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.xlrc_furigana" /></span>
                     <button
                       className={`settings-toggle ${lyricsDisplaySettings.furiganaEnabled ? 'active' : ''}`}
                       onClick={() => setLyricsFuriganaEnabled(!lyricsDisplaySettings.furiganaEnabled)}
                     >
-                      {lyricsDisplaySettings.furiganaEnabled ? 'Enabled' : 'Disabled'}
+                      {lyricsDisplaySettings.furiganaEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">XLRC Translations</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.xlrc_translations" /></span>
                     <button
                       className={`settings-toggle ${lyricsDisplaySettings.translationsEnabled ? 'active' : ''}`}
                       onClick={() => setLyricsTranslationsEnabled(!lyricsDisplaySettings.translationsEnabled)}
                     >
-                      {lyricsDisplaySettings.translationsEnabled ? 'Enabled' : 'Disabled'}
+                      {lyricsDisplaySettings.translationsEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">XLRC Voice Labels</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.xlrc_voice_labels" /></span>
                     <button
                       className={`settings-toggle ${lyricsDisplaySettings.voiceLabelsEnabled ? 'active' : ''}`}
                       onClick={() => setLyricsVoiceLabelsEnabled(!lyricsDisplaySettings.voiceLabelsEnabled)}
                     >
-                      {lyricsDisplaySettings.voiceLabelsEnabled ? 'Enabled' : 'Disabled'}
+                      {lyricsDisplaySettings.voiceLabelsEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <label className="settings-field">
-                    <span className="settings-field-label">Translation Priority</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.translation_priority" /></span>
                     <input
                       className="settings-select"
                       type="text"
@@ -2378,53 +2423,53 @@ export default function SettingsView() {
                           setLyricsTranslationLanguagePriority(lyricsTranslationPriorityInput)
                         }
                       }}
-                      placeholder="en, ja-Latn"
+                      placeholder={translate('settings:auto.settingsview.en_ja_latn')}
                     />
                   </label>
                 </div>
                 <p className="settings-note">{lyricsStatusLabel}</p>
-                <p className="settings-note">Astra appends <code>/api/get</code> and <code>/api/search</code>. HTTP is supported for local mirrors.</p>
-                <p className="settings-note">XLRC translation codes are matched left to right, with the first available translation shown.</p>
+                <p className="settings-note"><LocalizedText ns="settings" i18nKey="auto.settingsview.astra_appends" /> <code><LocalizedText ns="settings" i18nKey="auto.settingsview.api_get" /></code>  <LocalizedText ns="settings" i18nKey="auto.settingsview.and" /> <code><LocalizedText ns="settings" i18nKey="auto.settingsview.api_search" /></code><LocalizedText ns="settings" i18nKey="auto.settingsview.http_is_supported_for_local_mirrors" /></p>
+                <p className="settings-note"><LocalizedText ns="settings" i18nKey="auto.settingsview.xlrc_translation_codes_are_matched_left_to_right_with_th" /></p>
                 {lyricsResolvedError && <p className="settings-note settings-note-error">{lyricsResolvedError}</p>}
               </div>
 
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
-                  <h4>Discord</h4>
-                  <p>Discord Rich Presence integration.</p>
+                  <h4><LocalizedText ns="settings" i18nKey="auto.settingsview.discord" /></h4>
+                  <p><LocalizedText ns="settings" i18nKey="auto.settingsview.discord_rich_presence_integration" /></p>
                 </div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Discord Rich Presence</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.discord_rich_presence" /></span>
                     <button
                       className={`settings-toggle ${discordEnabled ? 'active' : ''}`}
                       onClick={() => void setDiscordEnabled(!discordEnabled)}
                     >
-                      {discordEnabled ? 'Enabled' : 'Disabled'}
+                      {discordEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Discord Cover Art (Internet Lookup)</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.discord_cover_art_internet_lookup" /></span>
                     <button
                       className={`settings-toggle ${discordCoverArtEnabled ? 'active' : ''}`}
                       onClick={() => void setDiscordCoverArtEnabled(!discordCoverArtEnabled)}
                       disabled={!discordEnabled}
                     >
-                      {discordCoverArtEnabled ? 'Enabled' : 'Disabled'}
+                      {discordCoverArtEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Astra Icon on Cover Art</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.astra_icon_on_cover_art" /></span>
                     <button
                       className={`settings-toggle ${discordSmallIconEnabled ? 'active' : ''}`}
                       onClick={() => void setDiscordSmallIconEnabled(!discordSmallIconEnabled)}
                       disabled={!discordEnabled || !discordCoverArtEnabled}
                     >
-                      {discordSmallIconEnabled ? 'Enabled' : 'Disabled'}
+                      {discordSmallIconEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Compact Status</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.compact_status" /></span>
                     <SettingsSegmentedControl
                       ariaLabel="Discord compact status"
                       disabled={!discordEnabled}
@@ -2434,7 +2479,7 @@ export default function SettingsView() {
                     />
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Profile Info Line</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.profile_info_line" /></span>
                     <SettingsSegmentedControl
                       ariaLabel="Discord profile info line"
                       disabled={!discordEnabled}
@@ -2444,7 +2489,7 @@ export default function SettingsView() {
                     />
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Title & Artist Links</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.title_artist_links" /></span>
                     <SettingsSegmentedControl
                       ariaLabel="Discord title and artist links"
                       className="settings-segmented-control-wide"
@@ -2455,7 +2500,7 @@ export default function SettingsView() {
                     />
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Clear When Paused</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.clear_when_paused" /></span>
                     <SettingsSegmentedControl
                       ariaLabel="Discord clear presence when paused"
                       className="settings-segmented-control-wide"
@@ -2471,52 +2516,52 @@ export default function SettingsView() {
 
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
-                  <h4>Local API</h4>
-                  <p>Companion API for local automations, launchers, widgets, and creative tools.</p>
+                  <h4><LocalizedText ns="settings" i18nKey="auto.settingsview.local_api" /></h4>
+                  <p><LocalizedText ns="settings" i18nKey="auto.settingsview.companion_api_for_local_automations_launchers_widgets_an" /></p>
                 </div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Local Integration API</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.local_integration_api" /></span>
                     <button
                       className={`settings-toggle ${localApiEnabled ? 'active' : ''}`}
                       onClick={() => void setLocalApiEnabled(!localApiEnabled)}
                     >
-                      {localApiEnabled ? 'Enabled' : 'Disabled'}
+                      {localApiEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
 
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">External Playback Controls</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.external_playback_controls" /></span>
                     <button
                       className={`settings-toggle ${localApiControlsEnabled ? 'active' : ''}`}
                       onClick={() => void setLocalApiControlsEnabled(!localApiControlsEnabled)}
                     >
-                      {localApiControlsEnabled ? 'Enabled' : 'Disabled'}
+                      {localApiControlsEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
 
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Library Search</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.library_search" /></span>
                     <button
                       className={`settings-toggle ${localApiLibrarySearchEnabled ? 'active' : ''}`}
                       onClick={() => void setLocalApiLibrarySearchEnabled(!localApiLibrarySearchEnabled)}
                     >
-                      {localApiLibrarySearchEnabled ? 'Enabled' : 'Disabled'}
+                      {localApiLibrarySearchEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
 
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Favorites & Playlist Changes</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.favorites_playlist_changes" /></span>
                     <button
                       className={`settings-toggle ${localApiLibraryWriteEnabled ? 'active' : ''}`}
                       onClick={() => void setLocalApiLibraryWriteEnabled(!localApiLibraryWriteEnabled)}
                     >
-                      {localApiLibraryWriteEnabled ? 'Enabled' : 'Disabled'}
+                      {localApiLibraryWriteEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
 
                   <div className="settings-field">
-                    <span className="settings-field-label">Local API Port</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.local_api_port" /></span>
                     <div className="settings-inline-row">
                       <input
                         className="settings-select settings-inline-input settings-inline-input-compact"
@@ -2529,13 +2574,14 @@ export default function SettingsView() {
                         onBlur={handleSaveLocalApiPort}
                       />
                       <button className="settings-btn" onClick={handleSaveLocalApiPort}>
-                        Save
+
+                        <LocalizedText ns="settings" i18nKey="auto.settingsview.save" />
                       </button>
                     </div>
                   </div>
 
                   <div className="settings-field">
-                    <span className="settings-field-label">Local API Endpoint</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.local_api_endpoint" /></span>
                     <div className="settings-inline-row">
                       <span className="settings-chip settings-chip-mono settings-chip-grow">
                         {localApiBaseUrl}
@@ -2544,35 +2590,38 @@ export default function SettingsView() {
                         className="settings-btn"
                         onClick={() => void copyToClipboard(`${localApiBaseUrl}/v2/capabilities`, 'Endpoint')}
                       >
-                        Copy
+
+                        <LocalizedText ns="settings" i18nKey="auto.settingsview.copy" />
                       </button>
                     </div>
                   </div>
 
                   <div className="settings-field">
-                    <span className="settings-field-label">Local API Key</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.local_api_key" /></span>
                     <div className="settings-inline-row">
                       <span className="settings-chip settings-chip-mono settings-chip-grow">
                         {localApiToken
                           ? (showApiKey ? localApiToken : '•'.repeat(Math.min(localApiToken.length, 24)))
-                          : 'Unavailable'}
+                          : translate('settings:auto.settingsview.unavailable')}
                       </span>
                       <button
                         className="settings-btn"
                         onClick={() => setShowApiKey((v) => !v)}
                         disabled={!localApiToken}
                       >
-                        {showApiKey ? 'Hide' : 'Show'}
+                        {showApiKey ? translate('settings:auto.settingsview.hide') : translate('settings:auto.settingsview.show')}
                       </button>
                       <button
                         className="settings-btn"
                         onClick={() => void copyToClipboard(localApiToken, 'API key')}
                         disabled={!localApiToken}
                       >
-                        Copy
+
+                        <LocalizedText ns="settings" i18nKey="auto.settingsview.copy" />
                       </button>
                       <button className="settings-btn settings-btn-primary" onClick={handleRotateLocalApiToken}>
-                        Regenerate
+
+                        <LocalizedText ns="settings" i18nKey="auto.settingsview.regenerate" />
                       </button>
                     </div>
                   </div>
@@ -2588,59 +2637,59 @@ export default function SettingsView() {
             {activeSectionId === 'experimental' && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
-              <h3>Experimental</h3>
+              <h3><LocalizedText ns="settings" i18nKey="auto.settingsview.experimental" /></h3>
             </div>
             <div className="settings-cards">
               <div className="settings-card">
-                <div className="settings-card-label">Controller Support</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.controller_support" /></div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Controller Support</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.controller_support" /></span>
                     <button
                       className={`settings-toggle ${controllerSupportEnabled ? 'active' : ''}`}
                       onClick={() => setControllerSupportEnabled(!controllerSupportEnabled)}
                     >
-                      {controllerSupportEnabled ? 'Enabled' : 'Disabled'}
+                      {controllerSupportEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <p className="settings-note">
-                    Navigate Astra with an Xbox or PlayStation controller. D-pad/stick moves focus, A/Cross selects,
-                    X/Square plays or pauses, bumpers skip tracks, triggers seek, right stick switches tabs, and
-                    Menu/Options opens a radial menu for advanced controls.
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingsview.navigate_astra_with_an_xbox_or_playstation_controller_d_" />
                   </p>
                 </div>
               </div>
               <div className="settings-card">
-                <div className="settings-card-label">Activity Indicator</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.activity_indicator" /></div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Scope Rail Activity Indicator</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.scope_rail_activity_indicator" /></span>
                     <button
                       className={`settings-toggle ${activityIndicatorExperimentEnabled ? 'active' : ''}`}
                       onClick={() => setActivityIndicatorExperimentEnabled(!activityIndicatorExperimentEnabled)}
                     >
-                      {activityIndicatorExperimentEnabled ? 'Enabled' : 'Disabled'}
+                      {activityIndicatorExperimentEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <p className="settings-note">
-                    Replaces the scope editor rail dot with an adaptive 5x5 activity indicator for playback, Parallax connections, scans, syncs, and transient background work.
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingsview.replaces_the_scope_editor_rail_dot_with_an_adaptive_5x5_" />
                   </p>
                 </div>
               </div>
               <div className="settings-card">
-                <div className="settings-card-label">Library Graph</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.library_graph" /></div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Library Graph</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.library_graph" /></span>
                     <button
                       className={`settings-toggle ${libraryGraphEnabled ? 'active' : ''}`}
                       onClick={() => setLibraryGraphEnabled(!libraryGraphEnabled)}
                     >
-                      {libraryGraphEnabled ? 'Enabled' : 'Disabled'}
+                      {libraryGraphEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Open Graph</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.open_graph" /></span>
                     <button
                       className="settings-btn"
                       disabled={!libraryGraphEnabled}
@@ -2649,82 +2698,87 @@ export default function SettingsView() {
                         setActiveView('graph')
                       }}
                     >
-                      Open Full Map
+
+                      <LocalizedText ns="settings" i18nKey="auto.settingsview.open_full_map" />
                     </button>
                   </div>
                 </div>
               </div>
               <div className="settings-card">
-                <div className="settings-card-label">Listening Stats</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.listening_stats" /></div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Listening Stats</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.listening_stats" /></span>
                     <button
                       className={`settings-toggle ${listeningStatsEnabled ? 'active' : ''}`}
                       onClick={() => setListeningStatsEnabled(!listeningStatsEnabled)}
                     >
-                      {listeningStatsEnabled ? 'Enabled' : 'Disabled'}
+                      {listeningStatsEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Open Stats</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.open_stats" /></span>
                     <button
                       className="settings-btn"
                       disabled={!listeningStatsEnabled}
                       onClick={() => setActiveView('stats')}
                     >
-                      Open Listening Stats
+
+                      <LocalizedText ns="settings" i18nKey="auto.settingsview.open_listening_stats" />
                     </button>
                   </div>
                   <p className="settings-note">
-                    Shows local listening time, plays, and rankings. Detailed history keeps recording on this installation even while the view is hidden.
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingsview.shows_local_listening_time_plays_and_rankings_detailed_h" />
                   </p>
                 </div>
               </div>
               <div className="settings-card">
-                <div className="settings-card-label">Library Integrity Check</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.library_integrity_check" /></div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Integrity Check</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.integrity_check" /></span>
                     <button
                       className={`settings-toggle ${libraryIntegrityEnabled ? 'active' : ''}`}
                       onClick={() => setLibraryIntegrityEnabled(!libraryIntegrityEnabled)}
                     >
-                      {libraryIntegrityEnabled ? 'Enabled' : 'Disabled'}
+                      {libraryIntegrityEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Open Scanner</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.open_scanner" /></span>
                     <button
                       className="settings-btn"
                       disabled={!libraryIntegrityEnabled}
                       onClick={openLibraryIntegrityPanel}
                     >
-                      Open Integrity Check
+
+                      <LocalizedText ns="settings" i18nKey="auto.settingsview.open_integrity_check" />
                     </button>
                   </div>
                   <p className="settings-note">
-                    Quick scans inspect local file headers and metadata. Deep scans decode FLAC files and add quality-signal hints.
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingsview.quick_scans_inspect_local_file_headers_and_metadata_deep" />
                   </p>
                 </div>
               </div>
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
-                  <h4>Phone Remote</h4>
-                  <p>Opt-in LAN controller surface for the phone PWA.</p>
+                  <h4><LocalizedText ns="settings" i18nKey="auto.settingsview.phone_remote" /></h4>
+                  <p><LocalizedText ns="settings" i18nKey="auto.settingsview.opt_in_lan_controller_surface_for_the_phone_pwa" /></p>
                 </div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Phone Remote</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.phone_remote" /></span>
                     <button
                       className={`settings-toggle ${phoneRemoteEnabled ? 'active' : ''}`}
                       onClick={() => void setPhoneRemoteEnabled(!phoneRemoteEnabled)}
                     >
-                      {phoneRemoteEnabled ? 'Enabled' : 'Disabled'}
+                      {phoneRemoteEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <div className="settings-field">
-                    <span className="settings-field-label">Phone Remote Port</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.phone_remote_port" /></span>
                     <div className="settings-inline-row">
                       <input
                         className="settings-select settings-inline-input settings-inline-input-compact"
@@ -2737,21 +2791,23 @@ export default function SettingsView() {
                         onBlur={handleSavePhoneRemotePort}
                       />
                       <button className="settings-btn" onClick={handleSavePhoneRemotePort}>
-                        Save
+
+                        <LocalizedText ns="settings" i18nKey="auto.settingsview.save" />
                       </button>
                     </div>
                   </div>
                   <div className="settings-field">
-                    <span className="settings-field-label">Status</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.status" /></span>
                     <span className="settings-info-value">{localApiPhoneRemoteSummary}</span>
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Pair a New Phone</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.pair_a_new_phone" /></span>
                     <button
                       className="settings-btn settings-btn-primary"
                       onClick={handleOpenPhoneRemotePairingModal}
                     >
-                      Pair Phone
+
+                      <LocalizedText ns="settings" i18nKey="auto.settingsview.pair_phone" />
                     </button>
                   </div>
                 </div>
@@ -2763,14 +2819,14 @@ export default function SettingsView() {
                   <div className="local-api-inline-devices">
                     <div className="local-api-inline-devices-header">
                       <span className="local-api-inline-devices-count">
-                        {localApiActiveDevices.length} paired phone{localApiActiveDevices.length !== 1 ? 's' : ''}
+                        {localApiActiveDevices.length}  <LocalizedText ns="settings" i18nKey="auto.settingsview.paired_phone" />{localApiActiveDevices.length !== 1 ? translate('settings:auto.settingsview.s') : ''}
                       </span>
                       {localApiControllerUrl && localApiInlineQrSvg && (
                         <button
                           className={`settings-btn${showInlinePhoneQr ? ' settings-btn-primary' : ''}`}
                           onClick={() => setShowInlinePhoneQr((prev) => !prev)}
                         >
-                          {showInlinePhoneQr ? 'Hide QR' : 'Open on Phone'}
+                          {showInlinePhoneQr ? translate('settings:auto.settingsview.hide_qr') : translate('settings:auto.settingsview.open_on_phone')}
                         </button>
                       )}
                     </div>
@@ -2778,12 +2834,13 @@ export default function SettingsView() {
                     {showInlinePhoneQr && localApiControllerUrl && localApiInlineQrSvg && (
                       <div className="local-api-inline-qr">
                         <div className="local-api-pairing-qr" dangerouslySetInnerHTML={{ __html: localApiInlineQrSvg }} />
-                        <p className="settings-note" style={{ textAlign: 'center', margin: 0 }}>Scan to open the remote — no new pairing needed</p>
+                        <p className="settings-note" style={{ textAlign: 'center', margin: 0 }}><LocalizedText ns="settings" i18nKey="auto.settingsview.scan_to_open_the_remote_no_new_pairing_needed" /></p>
                         <button
                           className="settings-btn settings-btn-primary"
                           onClick={() => { void navigator.clipboard.writeText(localApiControllerUrl) }}
                         >
-                          Copy Link
+
+                          <LocalizedText ns="settings" i18nKey="auto.settingsview.copy_link" />
                         </button>
                       </div>
                     )}
@@ -2794,20 +2851,25 @@ export default function SettingsView() {
                           <div className="local-api-inline-device-info">
                             <span className="local-api-inline-device-name">{device.name}</span>
                             <span className="local-api-inline-device-detail">
-                              Last seen {device.lastSeenAt ? new Date(device.lastSeenAt).toLocaleString() : 'Never'}
+
+                              <LocalizedText ns="settings" i18nKey="auto.settingsview.last_seen" /> {device.lastSeenAt
+                                ? formatLocaleDate(device.lastSeenAt, { dateStyle: 'medium', timeStyle: 'short' })
+                                : translate('settings:auto.settingsview.never')}
                             </span>
                           </div>
                           <button
                             className="settings-btn settings-btn-danger"
                             onClick={() => handleRevokePhoneRemotePairedDevice(device.id)}
                           >
-                            Revoke
+
+                            <LocalizedText ns="settings" i18nKey="auto.settingsview.revoke" />
                           </button>
                         </div>
                       ))}
                       {localApiActiveDevices.length >= 2 && (
                         <button className="settings-btn settings-btn-danger" onClick={handleRevokeAllPhoneRemoteDevices}>
-                          Revoke All
+
+                          <LocalizedText ns="settings" i18nKey="auto.settingsview.revoke_all" />
                         </button>
                       )}
                     </div>
@@ -2816,35 +2878,35 @@ export default function SettingsView() {
               </div>
               <div className="settings-integration-card">
                 <div className="settings-integration-card-head">
-                  <h4>Library Sync</h4>
-                  <p>Two-way favorites and playlist sync with paired phones. Independent of playback controls.</p>
+                  <h4><LocalizedText ns="settings" i18nKey="auto.settingsview.library_sync" /></h4>
+                  <p><LocalizedText ns="settings" i18nKey="auto.settingsview.two_way_favorites_and_playlist_sync_with_paired_phones_i" /></p>
                 </div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Library Sync</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.library_sync" /></span>
                     <button
                       className={`settings-toggle ${phoneRemoteSyncEnabled ? 'active' : ''}`}
                       onClick={() => void setPhoneRemoteSyncEnabled(!phoneRemoteSyncEnabled)}
                     >
-                      {phoneRemoteSyncEnabled ? 'Enabled' : 'Disabled'}
+                      {phoneRemoteSyncEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Sync Now</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.sync_now" /></span>
                     <button
                       className="settings-btn settings-btn-primary"
                       disabled={!phoneRemoteEnabled || !phoneRemoteSyncEnabled || phoneRemotePairedDeviceCount === 0}
                       onClick={() => void requestPhoneRemoteSync()}
                     >
-                      {phoneRemoteSync?.requestedAt ? 'Waiting for phone…' : 'Sync Now'}
+                      {phoneRemoteSync?.requestedAt ? translate('settings:auto.settingsview.waiting_for_phone') : translate('settings:auto.settingsview.sync_now')}
                     </button>
                   </div>
                   <div className="settings-field">
-                    <span className="settings-field-label">Last Synced</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.last_synced" /></span>
                     <span className="settings-info-value">
                       {phoneRemoteSync?.lastSyncedAt
-                        ? new Date(phoneRemoteSync.lastSyncedAt).toLocaleString()
-                        : 'Never (the phone runs the sync — it picks requests up when it can reach this desktop)'}
+                        ? formatLocaleDate(phoneRemoteSync.lastSyncedAt, { dateStyle: 'medium', timeStyle: 'short' })
+                        : translate('settings:auto.settingsview.never_the_phone_runs_the_sync_it_picks_requests_up_when_')}
                     </span>
                   </div>
                 </div>
@@ -2852,36 +2914,36 @@ export default function SettingsView() {
                   <div className="local-api-inline-devices">
                     <div className="local-api-inline-devices-header">
                       <span className="local-api-inline-devices-count">
-                        {phoneRemoteSyncConflictCount} sync conflict{phoneRemoteSyncConflictCount !== 1 ? 's' : ''} need attention
+                        {phoneRemoteSyncConflictCount}  <LocalizedText ns="settings" i18nKey="auto.settingsview.sync_conflict" />{phoneRemoteSyncConflictCount !== 1 ? translate('settings:auto.settingsview.s') : ''}  <LocalizedText ns="settings" i18nKey="auto.settingsview.need_attention" />
                       </span>
                       <button className="settings-btn settings-btn-primary" onClick={openPhoneSyncConflictResolver}>
-                        Review conflicts
+
+                        <LocalizedText ns="settings" i18nKey="auto.settingsview.review_conflicts" />
                       </button>
                     </div>
                     <p className="settings-note">
                       {phoneRemoteSyncPendingCount > 0
-                        ? `${phoneRemoteSyncPendingCount} choice${phoneRemoteSyncPendingCount === 1 ? '' : 's'} waiting for the phone to pick up.`
-                        : 'Open the resolver to compare both playlists and preview the result before choosing.'}
+                        ? translate('settings:auto.settingsview.phoneremotesyncpendingcount_choice_value2_waiting_for_th', { phoneremotesyncpendingcount: phoneRemoteSyncPendingCount, value2: phoneRemoteSyncPendingCount === 1 ? '' : 's' })
+                        : translate('settings:auto.settingsview.open_the_resolver_to_compare_both_playlists_and_preview_')}
                     </p>
                   </div>
                 )}
               </div>
               <div className="settings-card">
-                <div className="settings-card-label">Parallax</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.parallax" /></div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Enable Parallax</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.enable_parallax" /></span>
                     <button
                       className={`settings-toggle ${parallaxExperimentEnabled ? 'active' : ''}`}
                       onClick={() => handleToggleParallaxExperiment(!parallaxExperimentEnabled)}
                     >
-                      {parallaxExperimentEnabled ? 'Enabled' : 'Disabled'}
+                      {parallaxExperimentEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                     </button>
                   </div>
                   <p className="settings-note">
-                    Experimental LAN multi-room sync. Reveals a dedicated <strong>Parallax</strong> section where
-                    you choose whether this machine plays music or acts as a speaker. Turning this off stops all
-                    Parallax networking on this machine and hides the section.
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingsview.experimental_lan_multi_room_sync_reveals_a_dedicated" /> <strong><LocalizedText ns="settings" i18nKey="auto.settingsview.parallax" /></strong>  <LocalizedText ns="settings" i18nKey="auto.settingsview.section_where_you_choose_whether_this_machine_plays_musi" />
                   </p>
                 </div>
               </div>
@@ -2892,7 +2954,7 @@ export default function SettingsView() {
             {activeSectionId === 'parallax' && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
-              <h3>Parallax</h3>
+              <h3><LocalizedText ns="settings" i18nKey="auto.settingsview.parallax" /></h3>
             </div>
             <div className="settings-cards">
               <ParallaxSettingsPanel />
@@ -2903,20 +2965,20 @@ export default function SettingsView() {
             {activeSectionId === 'info' && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
-              <h3>Info</h3>
+              <h3><LocalizedText ns="settings" i18nKey="auto.settingsview.info" /></h3>
             </div>
             <div className="settings-cards">
               <div className="settings-card">
-                <div className="settings-card-label">Updates</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.updates" /></div>
                 <div className="settings-grid">
                   <div className="settings-field">
-                    <span className="settings-field-label">App Version</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.app_version" /></span>
                     <div className="settings-version-inline">
                       <button
                         type="button"
                         className="settings-version-reveal-btn settings-info-value"
                         onClick={handleAppVersionClick}
-                        aria-label={developerSectionVisible ? 'Open developer settings' : 'App version'}
+                        aria-label={developerSectionVisible ? translate('settings:auto.settingsview.open_developer_settings') : translate('settings:auto.settingsview.app_version')}
                       >
                         {appVersionLabel}
                       </button>
@@ -2925,7 +2987,7 @@ export default function SettingsView() {
                           type="button"
                           className="settings-build-copy-btn"
                           title={appBuildTooltip || undefined}
-                          aria-label="Copy full build hash"
+                          aria-label={translate('settings:auto.settingsview.copy_full_build_hash')}
                           onClick={() => void copyInfoToClipboard(appBuildCopyValue, 'Build hash')}
                         >
                           {appBuildLabel}
@@ -2935,31 +2997,32 @@ export default function SettingsView() {
                   </div>
                   <div className="settings-fields-row">
                     <div className="settings-field settings-field-inline">
-                      <span className="settings-field-label">Auto-check on Startup</span>
+                      <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.auto_check_on_startup" /></span>
                       <button
                         className={`settings-toggle ${autoCheckEnabled ? 'active' : ''}`}
                         onClick={() => setAutoCheckEnabled(!autoCheckEnabled)}
                       >
-                        {autoCheckEnabled ? 'Enabled' : 'Disabled'}
+                        {autoCheckEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                       </button>
                     </div>
                     <div className="settings-field settings-field-inline">
-                      <span className="settings-field-label">Check for Updates</span>
+                      <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.check_for_updates" /></span>
                       <button
                         className="settings-btn settings-btn-primary"
                         onClick={() => void checkForUpdates()}
                         disabled={updateCheckState === 'checking'}
                       >
-                        {updateCheckState === 'checking' ? 'Checking...' : 'Check Now'}
+                        {updateCheckState === 'checking' ? translate('settings:auto.settingsview.checking') : translate('settings:auto.settingsview.check_now')}
                       </button>
                     </div>
                     <div className="settings-field settings-field-inline">
-                      <span className="settings-field-label">Download</span>
+                      <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.download" /></span>
                       <button
                         className="settings-btn"
                         onClick={() => void openReleasesPage()}
                       >
-                        Open Releases
+
+                        <LocalizedText ns="settings" i18nKey="auto.settingsview.open_releases" />
                       </button>
                     </div>
                   </div>
@@ -2974,82 +3037,90 @@ export default function SettingsView() {
                 </p>
                 {updateAvailable && latestTag && (
                   <p className="settings-note settings-update-meta">
-                    Latest release: {latestTag}{releaseName ? ` (${releaseName})` : ''}
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingsview.latest_release" /> {latestTag}{releaseName ? translate('settings:auto.settingsview.releasename', { releasename: releaseName }) : ''}
                   </p>
                 )}
                 <p className="settings-note settings-update-meta">
-                  {lastCheckedAt ? `Last checked: ${lastCheckedLabel}` : lastCheckedLabel}
+                  {lastCheckedAt ? translate('settings:auto.settingsview.last_checked_lastcheckedlabel', { lastcheckedlabel: lastCheckedLabel }) : lastCheckedLabel}
                 </p>
               </div>
             </div>
             <div className="settings-info-panels">
               <div className="settings-info-panel">
-                <h4>Attribution</h4>
-                <p>Astra is created and maintained by Boof2015.</p>
-                <p className="settings-info-meta">Contact: contact@novaml.ai</p>
+                <h4><LocalizedText ns="settings" i18nKey="auto.settingsview.attribution" /></h4>
+                <p><LocalizedText ns="settings" i18nKey="auto.settingsview.astra_is_created_and_maintained_by_boof2015" /></p>
+                <p className="settings-info-meta"><LocalizedText ns="settings" i18nKey="auto.settingsview.contact_contact_novaml_ai" /></p>
                 <div className="settings-info-links">
                   <button
                     type="button"
                     className="settings-btn settings-link-btn"
                     onClick={() => openExternalLink(ASTRA_REPOSITORY_URL)}
                   >
-                    GitHub Repository
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingsview.github_repository" />
                   </button>
                   <button
                     type="button"
                     className="settings-btn settings-link-btn"
                     onClick={() => openExternalLink(ASTRA_DISCORD_URL)}
                   >
-                    Discord
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingsview.discord" />
                   </button>
                   <button
                     type="button"
                     className="settings-btn settings-link-btn settings-link-btn-kofi"
                     onClick={() => openExternalLink(ASTRA_SUPPORT_URL)}
                   >
-                    Ko-fi
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingsview.ko_fi" />
                     <span className="settings-link-btn-heart" aria-hidden="true" />
                   </button>
                 </div>
               </div>
               <div className="settings-info-panel">
-                <h4>License</h4>
-                <p>Astra is distributed under GPL-3.0-only.</p>
+                <h4><LocalizedText ns="settings" i18nKey="auto.settingsview.license" /></h4>
+                <p><LocalizedText ns="settings" i18nKey="auto.settingsview.astra_is_distributed_under_gpl_3_0_only" /></p>
                 <div className="settings-info-links">
                   <button
                     type="button"
                     className="settings-btn settings-link-btn"
                     onClick={() => openExternalLink(ASTRA_LICENSE_URL)}
                   >
-                    View LICENSE
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingsview.view_license" />
                   </button>
                   <button
                     type="button"
                     className="settings-btn settings-link-btn"
                     onClick={() => openExternalLink(GPL_V3_URL)}
                   >
-                    GPL v3 Text
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingsview.gpl_v3_text" />
                   </button>
                 </div>
               </div>
             </div>
             <div className="settings-cards settings-info-transfer-card">
               <div className="settings-card">
-                <div className="settings-card-label">Settings Transfer</div>
+                <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.settings_transfer" /></div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Portable Settings</span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.portable_settings" /></span>
                     <button
                       type="button"
                       className="settings-btn settings-btn-primary"
                       onClick={() => setSettingsTransferWizardOpen(true)}
                     >
-                      Open Settings Transfer Wizard
+
+                      <LocalizedText ns="settings" i18nKey="auto.settingsview.open_settings_transfer_wizard" />
                     </button>
                   </div>
                 </div>
                 <p className="settings-note">
-                  Import or export your Astra settings to move preferences between installs.
+
+                  <LocalizedText ns="settings" i18nKey="auto.settingsview.import_or_export_your_astra_settings_to_move_preferences" />
                 </p>
               </div>
             </div>
@@ -3059,7 +3130,7 @@ export default function SettingsView() {
             {activeSectionId === 'developer' && developerSectionVisible && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
-              <h3>Developer</h3>
+              <h3><LocalizedText ns="settings" i18nKey="auto.settingsview.developer" /></h3>
             </div>
             <div className="settings-actions settings-info-actions">
               <button
@@ -3067,30 +3138,31 @@ export default function SettingsView() {
                 className="settings-btn"
                 onClick={handleHideDeveloperSection}
               >
-                Hide Developer Section
+
+                <LocalizedText ns="settings" i18nKey="auto.settingsview.hide_developer_section" />
               </button>
             </div>
             <div className="settings-info-panels">
               <div className="settings-info-panel">
-                <h4>Memory Diagnostics</h4>
+                <h4><LocalizedText ns="settings" i18nKey="auto.settingsview.memory_diagnostics" /></h4>
                 <p>
-                  Writes a CSV memory log every {diagnosticsSampleIntervalLabel} plus playback breadcrumbs
-                  so you can correlate growth with track changes, buffering, gapless handoffs, and remote streams.
+
+                  <LocalizedText ns="settings" i18nKey="auto.settingsview.writes_a_csv_memory_log_every" /> {diagnosticsSampleIntervalLabel}  <LocalizedText ns="settings" i18nKey="auto.settingsview.plus_playback_breadcrumbs_so_you_can_correlate_growth_wi" />
                 </p>
                 <div className="settings-field settings-field-inline">
-                  <span className="settings-field-label">Diagnostics Logging</span>
+                  <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.diagnostics_logging" /></span>
                   <button
                     type="button"
                     className={`settings-toggle ${diagnosticsEnabled ? 'active' : ''}`}
                     onClick={() => void setDiagnosticsEnabled(!diagnosticsEnabled)}
                     disabled={diagnosticsIsLoading && diagnosticsStatus === null}
                   >
-                    {diagnosticsEnabled ? 'Enabled' : 'Disabled'}
+                    {diagnosticsEnabled ? translate('settings:auto.settingsview.enabled') : translate('settings:auto.settingsview.disabled')}
                   </button>
                 </div>
-                <p className="settings-info-meta">Current log</p>
+                <p className="settings-info-meta"><LocalizedText ns="settings" i18nKey="auto.settingsview.current_log" /></p>
                 <p className="settings-info-path">{diagnosticsCurrentLogPath}</p>
-                <p className="settings-info-meta">Previous log</p>
+                <p className="settings-info-meta"><LocalizedText ns="settings" i18nKey="auto.settingsview.previous_log" /></p>
                 <p className="settings-info-path">{diagnosticsPreviousLogPath}</p>
                 <p className="settings-info-meta">{diagnosticsSessionLabel}</p>
                 <div className="settings-info-links">
@@ -3100,7 +3172,7 @@ export default function SettingsView() {
                     onClick={() => void captureDiagnosticsBundle()}
                     disabled={diagnosticsIsCapturingBundle}
                   >
-                    {diagnosticsIsCapturingBundle ? 'Capturing Bundle...' : 'Capture Memory Bundle'}
+                    {diagnosticsIsCapturingBundle ? translate('settings:auto.settingsview.capturing_bundle') : translate('settings:auto.settingsview.capture_memory_bundle')}
                   </button>
                 </div>
                 <p className="settings-info-meta">{diagnosticsLastBundleLabel}</p>
@@ -3117,7 +3189,8 @@ export default function SettingsView() {
                     onClick={() => void revealCurrentLog()}
                     disabled={!diagnosticsStatus?.hasCurrentLog}
                   >
-                    Reveal Current Log
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingsview.reveal_current_log" />
                   </button>
                   <button
                     type="button"
@@ -3125,47 +3198,51 @@ export default function SettingsView() {
                     onClick={() => void revealPreviousLog()}
                     disabled={!diagnosticsStatus?.hasPreviousLog}
                   >
-                    Reveal Previous Log
+
+                    <LocalizedText ns="settings" i18nKey="auto.settingsview.reveal_previous_log" />
                   </button>
                 </div>
               </div>
               <div className="settings-info-panel">
-                <h4>Playback Overrides</h4>
+                <h4><LocalizedText ns="settings" i18nKey="auto.settingsview.playback_overrides" /></h4>
                 {import.meta.env.DEV ? (
                   <>
-                    <p>Temporary switches for isolating standard-mode playback behavior during local debugging.</p>
+                    <p><LocalizedText ns="settings" i18nKey="auto.settingsview.temporary_switches_for_isolating_standard_mode_playback_" /></p>
                     <div className="settings-grid">
                       <div className="settings-field settings-field-inline">
-                        <span className="settings-field-label">Disable Gapless Prebuffer</span>
+                        <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.disable_gapless_prebuffer" /></span>
                         <button
                           className={`settings-toggle ${disableGaplessPrebufferDev ? 'active' : ''}`}
                           onClick={() => setDisableGaplessPrebufferDev(!disableGaplessPrebufferDev)}
                         >
-                          {disableGaplessPrebufferDev ? 'Disabled' : 'Enabled'}
+                          {disableGaplessPrebufferDev ? translate('settings:auto.settingsview.disabled') : translate('settings:auto.settingsview.enabled')}
                         </button>
                       </div>
                       <div className="settings-field settings-field-inline">
-                        <span className="settings-field-label">Disable Analysis/EQ Taps</span>
+                        <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.disable_analysis_eq_taps" /></span>
                         <button
                           className={`settings-toggle ${disableStandardAnalysisGraphDev ? 'active' : ''}`}
                           onClick={() => setDisableStandardAnalysisGraphDev(!disableStandardAnalysisGraphDev)}
                         >
-                          {disableStandardAnalysisGraphDev ? 'Disabled' : 'Enabled'}
+                          {disableStandardAnalysisGraphDev ? translate('settings:auto.settingsview.disabled') : translate('settings:auto.settingsview.enabled')}
                         </button>
                       </div>
                     </div>
                     <p className="settings-note">
-                      When gapless prebuffer is disabled, Astra stops preloading the next track and clears scheduled handoffs so you can compare memory growth without gapless-style buffering.
+
+                      <LocalizedText ns="settings" i18nKey="auto.settingsview.when_gapless_prebuffer_is_disabled_astra_stops_preloadin" />
                     </p>
                     <p className="settings-note">
-                      When analysis and EQ taps are disabled, Astra bypasses the standard post-EQ analyser and analysis-worklet branches while keeping normal playback and EQ filters active.
+
+                      <LocalizedText ns="settings" i18nKey="auto.settingsview.when_analysis_and_eq_taps_are_disabled_astra_bypasses_th" />
                     </p>
                   </>
                 ) : (
                   <>
-                    <p>Playback override switches are only available in development builds.</p>
+                    <p><LocalizedText ns="settings" i18nKey="auto.settingsview.playback_override_switches_are_only_available_in_develop" /></p>
                     <p className="settings-note">
-                      Production builds keep these toggles off and ignore their stored values.
+
+                      <LocalizedText ns="settings" i18nKey="auto.settingsview.production_builds_keep_these_toggles_off_and_ignore_thei" />
                     </p>
                   </>
                 )}
@@ -3177,22 +3254,24 @@ export default function SettingsView() {
             {activeSectionId === 'danger' && (
             <section className="settings-section settings-section-panel settings-danger-zone">
             <div className="settings-section-head">
-              <h3>Danger Zone</h3>
+              <h3><LocalizedText ns="settings" i18nKey="auto.settingsview.danger_zone" /></h3>
             </div>
             <div className="settings-danger-groups">
               <div className="settings-danger-group">
-                <p className="settings-danger-group-title">Safe Resets</p>
+                <p className="settings-danger-group-title"><LocalizedText ns="settings" i18nKey="auto.settingsview.safe_resets" /></p>
                 <p className="settings-danger-group-description">
-                  Reset app preferences while keeping primary library data.
+
+                  <LocalizedText ns="settings" i18nKey="auto.settingsview.reset_app_preferences_while_keeping_primary_library_data" />
                 </p>
                 <div className="settings-danger-list">
                   {safeResetActions.map((action) => renderResetAction(action))}
                 </div>
               </div>
               <div className="settings-danger-group settings-danger-group-destructive">
-                <p className="settings-danger-group-title">Destructive Resets</p>
+                <p className="settings-danger-group-title"><LocalizedText ns="settings" i18nKey="auto.settingsview.destructive_resets" /></p>
                 <p className="settings-danger-group-description">
-                  Remove indexed media data or perform a full wipe.
+
+                  <LocalizedText ns="settings" i18nKey="auto.settingsview.remove_indexed_media_data_or_perform_a_full_wipe" />
                 </p>
                 <div className="settings-danger-list">
                   {destructiveResetActions.map((action) => renderResetAction(action))}
@@ -3201,7 +3280,8 @@ export default function SettingsView() {
             </div>
             {isScanning && (
               <p className="settings-note settings-danger-note">
-                Destructive resets are disabled while library scanning is in progress.
+
+                <LocalizedText ns="settings" i18nKey="auto.settingsview.destructive_resets_are_disabled_while_library_scanning_i" />
               </p>
             )}
           </section>
@@ -3232,7 +3312,7 @@ export default function SettingsView() {
       />
       <ConfirmActionModal
         isOpen={normalizationDisableStep != null}
-        title={normalizationDisableStep === 'warning' ? 'Disable Normalization?' : 'Final Safety Check'}
+        title={normalizationDisableStep === 'warning' ? translate('settings:auto.settingsview.disable_normalization') : translate('settings:auto.settingsview.final_safety_check')}
         message={normalizationDisableStep === 'warning'
           ? 'Disabling normalization removes automatic loudness protection. Tracks can jump to unsafe levels and may cause hearing damage.'
           : 'You are about to disable all playback normalization (including ReplayGain gain application). Continue only if you understand the risks and control output volume carefully.'}
@@ -3261,7 +3341,7 @@ export default function SettingsView() {
           >
             <div className="modal-header">
               <h2>{lastFmProfilePresence.presentValue}</h2>
-              <button className="modal-close" onClick={closeLastFmProfileModal} aria-label="Close">
+              <button className="modal-close" onClick={closeLastFmProfileModal} aria-label={translate('settings:auto.settingsview.close')}>
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
                 </svg>
@@ -3269,7 +3349,7 @@ export default function SettingsView() {
             </div>
             <div className="modal-body settings-lastfm-profile-form">
               <label className="settings-field">
-                <span className="settings-field-label">Destination Name</span>
+                <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.destination_name" /></span>
                 <input
                   className="settings-select"
                   type="text"
@@ -3279,7 +3359,7 @@ export default function SettingsView() {
                 />
               </label>
               <div className="settings-field">
-                <span className="settings-field-label">Protocol</span>
+                <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.protocol" /></span>
                 <SettingsSegmentedControl
                   ariaLabel="Scrobble protocol"
                   fullWidth
@@ -3289,7 +3369,7 @@ export default function SettingsView() {
                 />
               </div>
               <label className="settings-field">
-                <span className="settings-field-label">API Base URL</span>
+                <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.api_base_url" /></span>
                 <input
                   className="settings-select"
                   type="url"
@@ -3314,7 +3394,7 @@ export default function SettingsView() {
                   className="settings-select"
                   type="password"
                   value={lastFmProfileSessionKeyInput}
-                  placeholder={lastFmProfileModalMode === 'edit' ? `Leave blank to keep current ${getScrobbleSecretLabel(lastFmProfileProtocolInput).toLowerCase()}` : ''}
+                  placeholder={lastFmProfileModalMode === 'edit' ? translate('settings:auto.settingsview.leave_blank_to_keep_current_value1', { value1: getScrobbleSecretLabel(lastFmProfileProtocolInput).toLowerCase() }) : ''}
                   autoComplete="off"
                   onChange={(event) => setLastFmProfileSessionKeyInput(event.target.value)}
                 />
@@ -3322,14 +3402,15 @@ export default function SettingsView() {
             </div>
             <div className="modal-footer">
               <button className="settings-btn" onClick={closeLastFmProfileModal}>
-                Cancel
+
+                <LocalizedText ns="settings" i18nKey="auto.settingsview.cancel" />
               </button>
               <button
                 className="settings-btn settings-btn-primary"
                 onClick={handleSaveLastFmProfile}
                 disabled={lastFmProfileSaveDisabled}
               >
-                {lastFmProfileModalMode === 'edit' ? 'Save Destination' : 'Add Destination'}
+                {lastFmProfileModalMode === 'edit' ? translate('settings:auto.settingsview.save_destination') : translate('settings:auto.settingsview.add_destination')}
               </button>
             </div>
           </div>

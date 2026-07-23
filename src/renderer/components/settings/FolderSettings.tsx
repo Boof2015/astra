@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { type FolderSubdirectoryEntry, type ScanIssueEntry, useLibraryStore } from '../../stores/libraryStore'
@@ -582,26 +584,26 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
             </span>
           )}
           {isInaccessible && (
-            <span className="folder-tree-badge inaccessible" title="Permission denied — cannot read this folder">Inaccessible</span>
+            <span className="folder-tree-badge inaccessible" title={translate('settings:auto.foldersettings.permission_denied_cannot_read_this_folder')}><LocalizedText ns="settings" i18nKey="auto.foldersettings.inaccessible" /></span>
           )}
           {issueCount > 0 && (
-            <span className="folder-tree-issue-count" title={`${issueCount} scan error${issueCount !== 1 ? 's' : ''} in this folder`}>
+            <span className="folder-tree-issue-count" title={translate('settings:auto.foldersettings.issuecount_scan_error_value2_in_this_folder', { issuecount: issueCount, value2: issueCount !== 1 ? 's' : '' })}>
               {issueCount}
             </span>
           )}
           {hasChildIssues && (
-            <span className="folder-tree-issue-hint" title="Contains subfolders with issues">&bull;</span>
+            <span className="folder-tree-issue-hint" title={translate('settings:auto.foldersettings.contains_subfolders_with_issues')}><LocalizedText ns="settings" i18nKey="auto.foldersettings.bull" /></span>
           )}
-          {entry.missing && <span className="folder-tree-badge missing">missing</span>}
-          {effectiveExcluded && <span className="folder-tree-badge excluded">Excluded</span>}
-          {hasPendingOverride && <span className="folder-tree-badge unsaved">Unsaved</span>}
+          {entry.missing && <span className="folder-tree-badge missing"><LocalizedText ns="settings" i18nKey="auto.foldersettings.missing" /></span>}
+          {effectiveExcluded && <span className="folder-tree-badge excluded"><LocalizedText ns="settings" i18nKey="auto.foldersettings.excluded" /></span>}
+          {hasPendingOverride && <span className="folder-tree-badge unsaved"><LocalizedText ns="settings" i18nKey="auto.foldersettings.unsaved" /></span>}
           <button
             className="folder-tree-toggle-btn"
             onClick={handleActionButtonClick(() => handleToggleExcluded(folderPath, entry))}
             onPointerDown={handleActionButtonPointerDown}
             disabled={isScanning || isSavingChanges}
           >
-            {effectiveExcluded ? 'Include' : 'Exclude'}
+            {effectiveExcluded ? translate('settings:auto.foldersettings.include') : translate('settings:auto.foldersettings.exclude')}
           </button>
         </div>
 
@@ -613,7 +615,7 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
               ))}
             </span>
             <div className="loading-spinner-small" />
-            <span>Loading...</span>
+            <span><LocalizedText ns="settings" i18nKey="auto.foldersettings.loading" /></span>
           </div>
         )}
 
@@ -637,7 +639,7 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
                     <span key={i} className={`folder-tree-guide-col ${hasLine ? 'has-line' : ''}`} />
                   ))}
                 </span>
-                <span style={{ opacity: 0.5 }}>(empty)</span>
+                <span style={{ opacity: 0.5 }}><LocalizedText ns="settings" i18nKey="auto.foldersettings.empty" /></span>
               </div>
             ) : (
               children.map((child, index) => (
@@ -673,8 +675,8 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
         <div className={`modal-content folder-settings ${showScanIssuePopout ? 'has-detached-issues' : ''}`}>
           <div className="folder-settings-main">
             <div className="modal-header">
-              <h2>Library Folders</h2>
-              <button className="modal-close" onClick={handleClose} aria-label="Close" disabled={!canClose}>
+              <h2><LocalizedText ns="settings" i18nKey="auto.foldersettings.library_folders" /></h2>
+              <button className="modal-close" onClick={handleClose} aria-label={translate('settings:auto.foldersettings.close')} disabled={!canClose}>
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
                 </svg>
@@ -684,14 +686,14 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
             <div className="modal-body folder-settings-body">
               {hasPendingChanges && (
                 <div className="folder-settings-pending-overview">
-                  {pendingScanCount} folder{pendingScanCount === 1 ? '' : 's'} queued for scan.
+                  {pendingScanCount}  <LocalizedText ns="settings" i18nKey="auto.foldersettings.folder" />{pendingScanCount === 1 ? '' : translate('settings:auto.foldersettings.s')}  <LocalizedText ns="settings" i18nKey="auto.foldersettings.queued_for_scan" />
                 </div>
               )}
 
               {folders.length === 0 ? (
                 <div className="folder-empty">
-                  <p>No folders added to library</p>
-                  <p className="folder-empty-hint">Add a folder to start scanning your music collection</p>
+                  <p><LocalizedText ns="settings" i18nKey="auto.foldersettings.no_folders_added_to_library" /></p>
+                  <p className="folder-empty-hint"><LocalizedText ns="settings" i18nKey="auto.foldersettings.add_a_folder_to_start_scanning_your_music_collection" /></p>
                 </div>
               ) : (
                 <div className="folder-tree">
@@ -726,16 +728,16 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
                             <span className="folder-tree-meta">
                               {summary
                                 ? formatSubfolderSummary(summary.totalSubfolders, summary.excludedSubfolders)
-                                : 'Loading...'}
+                                : translate('settings:auto.foldersettings.loading')}
                             </span>
                           </div>
                           {rootIssueCount > 0 && (
-                            <span className="folder-tree-issue-count" title={`${rootIssueCount} scan error${rootIssueCount !== 1 ? 's' : ''}`}>
+                            <span className="folder-tree-issue-count" title={translate('settings:auto.foldersettings.rootissuecount_scan_error_value2', { rootissuecount: rootIssueCount, value2: rootIssueCount !== 1 ? 's' : '' })}>
                               {rootIssueCount}
                             </span>
                           )}
-                          {needsScan && <span className="folder-tree-badge needs-scan">Needs Scan</span>}
-                          {folder.hidden ? <span className="folder-tree-badge hidden">Hidden</span> : null}
+                          {needsScan && <span className="folder-tree-badge needs-scan"><LocalizedText ns="settings" i18nKey="auto.foldersettings.needs_scan" /></span>}
+                          {folder.hidden ? <span className="folder-tree-badge hidden"><LocalizedText ns="settings" i18nKey="auto.foldersettings.hidden" /></span> : null}
                           <button
                             className="folder-visibility-toggle"
                             role="checkbox"
@@ -743,7 +745,7 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
                             onClick={handleActionButtonClick(() => setFolderHidden(folder.path, !folder.hidden))}
                             onPointerDown={handleActionButtonPointerDown}
                             disabled={isScanning || isSavingChanges}
-                            title={folder.hidden ? 'Hidden from library — click to show' : 'Visible in library — click to hide'}
+                            title={folder.hidden ? translate('settings:auto.foldersettings.hidden_from_library_click_to_show') : translate('settings:auto.foldersettings.visible_in_library_click_to_hide')}
                           >
                             {folder.hidden ? (
                               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -761,7 +763,7 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
                             onClick={handleActionButtonClick(() => handleRemoveFolder(folder.path))}
                             onPointerDown={handleActionButtonPointerDown}
                             disabled={removingPath === folder.path || isScanning || isSavingChanges}
-                            title="Remove folder"
+                            title={translate('settings:auto.foldersettings.remove_folder')}
                           >
                             {removingPath === folder.path ? (
                               <div className="loading-spinner-small" />
@@ -776,7 +778,7 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
                         {isLoading && (
                           <div className="folder-tree-status" style={{ paddingLeft: 20 }}>
                             <div className="loading-spinner-small" />
-                            <span>Loading...</span>
+                            <span><LocalizedText ns="settings" i18nKey="auto.foldersettings.loading" /></span>
                           </div>
                         )}
 
@@ -790,7 +792,7 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
                           <div className="folder-tree-children">
                             {children.length === 0 ? (
                               <div className="folder-tree-status" style={{ paddingLeft: 20 }}>
-                                <span style={{ opacity: 0.5 }}>(empty)</span>
+                                <span style={{ opacity: 0.5 }}><LocalizedText ns="settings" i18nKey="auto.foldersettings.empty" /></span>
                               </div>
                             ) : (
                               children.map((entry, index) => (
@@ -824,7 +826,8 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
                     onClick={handleDiscardAllPendingChanges}
                     disabled={isSavingChanges || isScanning}
                   >
-                    Discard
+
+                    <LocalizedText ns="settings" i18nKey="auto.foldersettings.discard" />
                   </button>
                 )}
 
@@ -833,7 +836,7 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
                   onClick={() => void handleAddFolder()}
                   disabled={isScanning || isSavingChanges}
                 >
-                  <span>+</span> Add Folder
+                  <span>+</span>  <LocalizedText ns="settings" i18nKey="auto.foldersettings.add_folder" />
                 </button>
 
                 <button
@@ -842,8 +845,8 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
                   disabled={isSavingChanges || isScanning || pendingScanCount === 0}
                 >
                   {(isSavingChanges || isScanning)
-                    ? 'Saving...'
-                    : `Save & Scan${pendingScanCount > 0 ? ` (${pendingScanCount})` : ''}`}
+                    ? translate('settings:auto.foldersettings.saving')
+                    : translate('settings:auto.foldersettings.save_scan_value1', { value1: pendingScanCount > 0 ? ` (${pendingScanCount})` : '' })}
                 </button>
               </div>
             </div>
@@ -855,8 +858,8 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
                     className="scan-cancel-btn"
                     onClick={() => void cancelScan()}
                     disabled={isCancelingScan}
-                    aria-label="Cancel scan"
-                    title="Cancel scan (Esc)"
+                    aria-label={translate('settings:auto.foldersettings.cancel_scan')}
+                    title={translate('settings:auto.foldersettings.cancel_scan_esc')}
                   >
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
@@ -869,7 +872,7 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
                     <div className="scan-bar-fill" style={{ width: `${displayScanPercent}%` }} />
                   </div>
                   {scanDetail && <div className="scan-file">{scanDetail}</div>}
-                  <div className="scan-cancel-hint">{isCancelingScan ? 'Canceling...' : 'Press Esc to cancel'}</div>
+                  <div className="scan-cancel-hint">{isCancelingScan ? translate('settings:auto.foldersettings.canceling') : translate('settings:auto.foldersettings.press_esc_to_cancel')}</div>
                 </div>
               </div>
             )}
@@ -879,10 +882,10 @@ export default function FolderSettings({ isOpen, onClose }: FolderSettingsProps)
         {showScanIssuePopout && lastScanIssueLog && (
           <div className="modal-content folder-scan-issues-window" aria-live="polite">
             <div className="folder-scan-issues-header">
-              <h3>Scan Errors</h3>
-              <p>{lastScanIssueLog.total} file{lastScanIssueLog.total === 1 ? '' : 's'} skipped and not indexed.</p>
+              <h3><LocalizedText ns="settings" i18nKey="auto.foldersettings.scan_errors" /></h3>
+              <p>{lastScanIssueLog.total}  <LocalizedText ns="settings" i18nKey="auto.foldersettings.file" />{lastScanIssueLog.total === 1 ? '' : translate('settings:auto.foldersettings.s')}  <LocalizedText ns="settings" i18nKey="auto.foldersettings.skipped_and_not_indexed" /></p>
               {lastScanIssueLog.truncated && (
-                <p className="folder-scan-issues-subtle">Showing {lastScanIssueLog.shown} of {lastScanIssueLog.total}.</p>
+                <p className="folder-scan-issues-subtle"><LocalizedText ns="settings" i18nKey="auto.foldersettings.showing" /> {lastScanIssueLog.shown}  <LocalizedText ns="settings" i18nKey="auto.foldersettings.of" /> {lastScanIssueLog.total}.</p>
               )}
             </div>
             <div className="folder-scan-issues-list">

@@ -62,6 +62,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Validate translations
+        run: npm run i18n:check
+
       - name: Test
         run: npm test
 

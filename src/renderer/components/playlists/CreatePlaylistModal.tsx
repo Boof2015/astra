@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate, translateSourceText } from '../../i18n'
 import { useEffect, useMemo, useState } from 'react'
 import PlaylistCover from './PlaylistCover'
 import { usePresence } from '../../hooks/usePresence'
@@ -105,9 +107,9 @@ export default function CreatePlaylistModal({
 
   const handleChooseCover = async () => {
     const filePath = await window.electronAPI.openFileDialog({
-      title: 'Choose playlist cover',
+      title: translateSourceText('Choose playlist cover'),
       filters: [
-        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }
+        { name: translate('common:dialogs.filters.images'), extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }
       ]
     })
 
@@ -181,12 +183,13 @@ export default function CreatePlaylistModal({
                 onClick={() => setPlaylistKind(null)}
                 disabled={isSubmitting}
               >
-                Back
+
+                <LocalizedText ns="common" i18nKey="auto.createplaylistmodal.back" />
               </button>
             )}
             <h2>{effectiveTitle}</h2>
           </div>
-          <button className="modal-close" onClick={onClose} aria-label="Close">
+          <button className="modal-close" onClick={onClose} aria-label={translate('common:auto.createplaylistmodal.close')}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
               <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
             </svg>
@@ -195,15 +198,15 @@ export default function CreatePlaylistModal({
 
         <div className="modal-body playlist-create-modal-body">
           {isChoosingKind ? (
-            <div className="playlist-create-choice-grid" role="radiogroup" aria-label="Playlist type">
+            <div className="playlist-create-choice-grid" role="radiogroup" aria-label={translate('common:auto.createplaylistmodal.playlist_type')}>
               <button
                 type="button"
                 className="playlist-create-kind-option"
                 onClick={() => setPlaylistKind('normal')}
                 disabled={isSubmitting}
               >
-                <span className="playlist-create-kind-title">Normal Playlist</span>
-                <span className="playlist-create-kind-subtitle">Fixed track list</span>
+                <span className="playlist-create-kind-title"><LocalizedText ns="common" i18nKey="auto.createplaylistmodal.normal_playlist" /></span>
+                <span className="playlist-create-kind-subtitle"><LocalizedText ns="common" i18nKey="auto.createplaylistmodal.fixed_track_list" /></span>
               </button>
               <button
                 type="button"
@@ -211,15 +214,15 @@ export default function CreatePlaylistModal({
                 onClick={() => setPlaylistKind('dynamic')}
                 disabled={isSubmitting}
               >
-                <span className="playlist-create-kind-title">Dynamic Playlist</span>
-                <span className="playlist-create-kind-subtitle">Rule-based track list</span>
+                <span className="playlist-create-kind-title"><LocalizedText ns="common" i18nKey="auto.createplaylistmodal.dynamic_playlist" /></span>
+                <span className="playlist-create-kind-subtitle"><LocalizedText ns="common" i18nKey="auto.createplaylistmodal.rule_based_track_list" /></span>
               </button>
             </div>
           ) : (
             <>
               <div className={isDynamicMode ? 'playlist-dynamic-builder-top' : 'playlist-create-normal-fields'}>
                 <label className="playlist-create-field">
-                  <span className="playlist-create-label">Name</span>
+                  <span className="playlist-create-label"><LocalizedText ns="common" i18nKey="auto.createplaylistmodal.name" /></span>
                   <input
                     type="text"
                     className="playlist-create-input"
@@ -231,7 +234,7 @@ export default function CreatePlaylistModal({
                         void handleCreate()
                       }
                     }}
-                    placeholder="Night drive"
+                    placeholder={translate('common:auto.createplaylistmodal.night_drive')}
                     maxLength={80}
                     autoFocus
                   />
@@ -239,19 +242,19 @@ export default function CreatePlaylistModal({
 
                 {typeof pendingTrackCount === 'number' && pendingTrackCount > 0 && (
                   <div className="playlist-create-track-count" role="status">
-                    {pendingTrackCount} {pendingTrackCount === 1 ? 'track' : 'tracks'} will be added after creation.
+                    {pendingTrackCount} {pendingTrackCount === 1 ? translate('common:auto.createplaylistmodal.track') : translate('common:auto.createplaylistmodal.tracks')}  <LocalizedText ns="common" i18nKey="auto.createplaylistmodal.will_be_added_after_creation" />
                   </div>
                 )}
 
                 {isDynamicMode ? (
                   <div className="playlist-create-cover-compact">
-                    <span className="playlist-create-label">Cover</span>
+                    <span className="playlist-create-label"><LocalizedText ns="common" i18nKey="auto.createplaylistmodal.cover" /></span>
                     <button
                       type="button"
                       className="playlist-create-cover-btn subtle"
                       onClick={() => void handleChooseCover()}
                     >
-                      {coverImagePath ? 'Change image' : 'Choose image'}
+                      {coverImagePath ? translate('common:auto.createplaylistmodal.change_image') : translate('common:auto.createplaylistmodal.choose_image')}
                     </button>
                     {coverImagePath && (
                       <button
@@ -259,7 +262,8 @@ export default function CreatePlaylistModal({
                         className="playlist-create-cover-btn subtle"
                         onClick={() => setCoverImagePath(null)}
                       >
-                        Remove
+
+                        <LocalizedText ns="common" i18nKey="auto.createplaylistmodal.remove" />
                       </button>
                     )}
                   </div>
@@ -269,7 +273,7 @@ export default function CreatePlaylistModal({
                       {coverPreviewSource ? (
                         <img
                           src={coverPreviewSource}
-                          alt="Playlist cover preview"
+                          alt={translate('common:auto.createplaylistmodal.playlist_cover_preview')}
                           className="playlist-create-cover-image"
                           onError={() => setCoverImagePath(null)}
                         />
@@ -283,13 +287,13 @@ export default function CreatePlaylistModal({
                     </div>
 
                     <div className="playlist-create-cover-actions">
-                      <span className="playlist-create-label">Cover (optional)</span>
+                      <span className="playlist-create-label"><LocalizedText ns="common" i18nKey="auto.createplaylistmodal.cover_optional" /></span>
                       <button
                         type="button"
                         className="playlist-create-cover-btn"
                         onClick={() => void handleChooseCover()}
                       >
-                        {coverImagePath ? 'Change image' : 'Choose image'}
+                        {coverImagePath ? translate('common:auto.createplaylistmodal.change_image') : translate('common:auto.createplaylistmodal.choose_image')}
                       </button>
                       {coverImagePath && (
                         <button
@@ -297,7 +301,8 @@ export default function CreatePlaylistModal({
                           className="playlist-create-cover-btn subtle"
                           onClick={() => setCoverImagePath(null)}
                         >
-                          Remove image
+
+                          <LocalizedText ns="common" i18nKey="auto.createplaylistmodal.remove_image" />
                         </button>
                       )}
                     </div>
@@ -331,12 +336,13 @@ export default function CreatePlaylistModal({
               onClick={() => void handleImport()}
               disabled={isSubmitting || isImporting}
             >
-              {isImporting ? 'Importing...' : importLabel}
+              {isImporting ? translate('common:auto.createplaylistmodal.importing') : importLabel}
             </button>
           )}
           <div className="playlist-create-modal-actions">
             <button className="settings-btn" onClick={onClose} disabled={isSubmitting}>
-              Cancel
+
+              <LocalizedText ns="common" i18nKey="auto.createplaylistmodal.cancel" />
             </button>
             {!isChoosingKind && (
               <button
@@ -344,7 +350,7 @@ export default function CreatePlaylistModal({
                 onClick={() => void handleCreate()}
                 disabled={isCreateDisabled}
               >
-                {isSubmitting ? 'Creating...' : isDynamicMode ? 'Create Dynamic' : 'Create'}
+                {isSubmitting ? translate('common:auto.createplaylistmodal.creating') : isDynamicMode ? translate('common:auto.createplaylistmodal.create_dynamic') : translate('common:auto.createplaylistmodal.create')}
               </button>
             )}
           </div>

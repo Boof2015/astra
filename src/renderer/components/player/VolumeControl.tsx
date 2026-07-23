@@ -1,3 +1,4 @@
+import { translate } from '../../i18n'
 import type { PointerEvent, ReactElement, WheelEvent } from 'react'
 import {
   BIT_PERFECT_DSP_DISABLED_MESSAGE,
@@ -104,8 +105,8 @@ export default function VolumeControl({
         type="button"
         className="volume-btn"
         onClick={volumeControlDisabled ? undefined : toggleMute}
-        aria-label={isMuted ? 'Unmute' : 'Mute'}
-        title={volumeControlDisabled ? disabledControlMessage : (isMuted ? 'Unmute' : 'Mute')}
+        aria-label={isMuted ? translate('playback:auto.volumecontrol.unmute') : translate('playback:auto.volumecontrol.mute')}
+        title={volumeControlDisabled ? disabledControlMessage : (isMuted ? translate('playback:auto.volumecontrol.unmute') : translate('playback:auto.volumecontrol.mute'))}
         disabled={volumeControlDisabled}
       >
         <VolumeIcon isMuted={isMuted} volume={volume} />
@@ -118,7 +119,7 @@ export default function VolumeControl({
         onPointerCancel={releaseVolumePointer}
         onWheel={handleVolumeWheel}
         role="slider"
-        aria-label="Playback volume"
+        aria-label={translate('playback:auto.volumecontrol.playback_volume')}
         aria-valuenow={visiblePercent}
         aria-valuemin={0}
         aria-valuemax={100}

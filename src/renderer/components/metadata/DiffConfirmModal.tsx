@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate, translateSourceText } from '../../i18n'
 import type { MetadataSaveMode } from '../../stores/metadataEditorStore'
 import { usePresence } from '../../hooks/usePresence'
 
@@ -35,8 +37,8 @@ export default function DiffConfirmModal({
         onClick={(event) => event.stopPropagation()}
       >
         <div className="modal-header">
-          <h2>Confirm Metadata Changes</h2>
-          <button className="modal-close" onClick={onCancel} aria-label="Close">
+          <h2><LocalizedText ns="common" i18nKey="auto.diffconfirmmodal.confirm_metadata_changes" /></h2>
+          <button className="modal-close" onClick={onCancel} aria-label={translate('common:auto.diffconfirmmodal.close')}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
               <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
             </svg>
@@ -45,26 +47,30 @@ export default function DiffConfirmModal({
 
         <div className="modal-body">
           <p className="metadata-diff-summary">
-            {displayed.trackCount} track{displayed.trackCount !== 1 ? 's' : ''} will be updated via{' '}
-            <strong>{displayed.mode === 'file' ? 'file tag write' : 'virtual override'}</strong>.
+            {translate('common:metadata.updateSummary', {
+              count: displayed.trackCount,
+              mode: translate(displayed.mode === 'file'
+                ? 'common:metadata.fileTagWrite'
+                : 'common:metadata.virtualOverride')
+            })}
           </p>
 
           <table className="metadata-diff-table">
             <thead>
               <tr>
-                <th>Field</th>
-                <th>Current</th>
+                <th><LocalizedText ns="common" i18nKey="auto.diffconfirmmodal.field" /></th>
+                <th><LocalizedText ns="common" i18nKey="auto.diffconfirmmodal.current" /></th>
                 <th />
-                <th>New</th>
+                <th><LocalizedText ns="common" i18nKey="auto.diffconfirmmodal.new" /></th>
               </tr>
             </thead>
             <tbody>
               {displayed.diffs.map((diff) => (
                 <tr key={diff.field}>
-                  <td>{diff.field}</td>
-                  <td className="metadata-diff-old">{diff.oldValue}</td>
-                  <td className="metadata-diff-arrow">&rarr;</td>
-                  <td className="metadata-diff-new">{diff.newValue}</td>
+                  <td>{translateSourceText(diff.field)}</td>
+                  <td className="metadata-diff-old">{translateSourceText(diff.oldValue)}</td>
+                  <td className="metadata-diff-arrow"><LocalizedText ns="common" i18nKey="auto.diffconfirmmodal.rarr" /></td>
+                  <td className="metadata-diff-new">{translateSourceText(diff.newValue)}</td>
                 </tr>
               ))}
             </tbody>
@@ -72,20 +78,22 @@ export default function DiffConfirmModal({
 
           {displayed.mode === 'file' && (
             <div className="metadata-diff-file-warning">
-              File tag writes are irreversible. The original file metadata will be overwritten.
+
+              <LocalizedText ns="common" i18nKey="auto.diffconfirmmodal.file_tag_writes_are_irreversible_the_original_file_metad" />
             </div>
           )}
         </div>
 
         <div className="modal-footer">
           <button className="settings-btn" onClick={onCancel}>
-            Cancel
+
+            <LocalizedText ns="common" i18nKey="auto.diffconfirmmodal.cancel" />
           </button>
           <button
             className={`settings-btn ${mode === 'file' ? 'settings-btn-danger' : 'settings-btn-primary'}`}
             onClick={onConfirm}
           >
-            {mode === 'file' ? 'Write to Files' : 'Save Changes'}
+            {mode === 'file' ? translate('common:auto.diffconfirmmodal.write_to_files') : translate('common:auto.diffconfirmmodal.save_changes')}
           </button>
         </div>
       </div>

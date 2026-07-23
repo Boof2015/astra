@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate, translateSourceText } from '../../i18n'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   BIT_PERFECT_DSP_DISABLED_MESSAGE,
@@ -441,29 +443,31 @@ export default function ChannelRoutingPanel() {
       {/* ---- Input ---- */}
       <div className="pipeline-card">
         <div className="pipeline-card-head">
-          <span className="pipeline-card-step">Input</span>
+          <span className="pipeline-card-step"><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.input" /></span>
           <span className="pipeline-card-summary">{inputSummary}</span>
         </div>
         {hasTrackChannels ? (
           <div className="pipeline-chip-row">
             {sourceLayout.map((channel) => (
-              <span key={channel.id} className="pipeline-chip" title={channel.label}>
+              <span key={channel.id} className="pipeline-chip" title={translateSourceText(channel.label)}>
                 {channel.id}
               </span>
             ))}
             {currentTrack?.isAtmosJoc && (
-              <span className="pipeline-chip pipeline-chip-accent" title="Dolby Atmos (Joint Object Coding) source">
-                Atmos JOC
+              <span className="pipeline-chip pipeline-chip-accent" title={translate('settings:auto.channelroutingpanel.dolby_atmos_joint_object_coding_source')}>
+
+                <LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.atmos_joc" />
               </span>
             )}
             {currentTrack?.isIamf && (
-              <span className="pipeline-chip pipeline-chip-accent" title="Eclipsa Audio (IAMF) source, rendered to 7.1.4">
-                Eclipsa
+              <span className="pipeline-chip pipeline-chip-accent" title={translate('settings:auto.channelroutingpanel.eclipsa_audio_iamf_source_rendered_to_7_1_4')}>
+
+                <LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.eclipsa" />
               </span>
             )}
           </div>
         ) : (
-          <p className="pipeline-note">Play a track to see its channel layout.</p>
+          <p className="pipeline-note"><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.play_a_track_to_see_its_channel_layout" /></p>
         )}
       </div>
 
@@ -474,8 +478,8 @@ export default function ChannelRoutingPanel() {
       {/* ---- Render ---- */}
       <div className="pipeline-card">
         <div className="pipeline-card-head">
-          <span className="pipeline-card-step">Render</span>
-          <div className="pipeline-mode-toggle" role="tablist" aria-label="Render mode">
+          <span className="pipeline-card-step"><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.render" /></span>
+          <div className="pipeline-mode-toggle" role="tablist" aria-label={translate('settings:auto.channelroutingpanel.render_mode')}>
             <button
               type="button"
               role="tab"
@@ -485,7 +489,8 @@ export default function ChannelRoutingPanel() {
               disabled={bitPerfectModeActive}
               title={disabledTitle}
             >
-              Direct
+
+              <LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.direct" />
             </button>
             <button
               type="button"
@@ -496,7 +501,8 @@ export default function ChannelRoutingPanel() {
               disabled={bitPerfectModeActive}
               title={disabledTitle ?? 'Render multichannel audio to headphones with virtual speakers (HRTF)'}
             >
-              Binaural
+
+              <LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.binaural" />
             </button>
           </div>
           <span className="pipeline-card-summary">{renderSummary}</span>
@@ -512,7 +518,7 @@ export default function ChannelRoutingPanel() {
               disabled={bitPerfectModeActive}
               title={disabledTitle}
             >
-              {multichannelEnabled ? 'Multichannel On' : 'Stereo Safe'}
+              {multichannelEnabled ? translate('settings:auto.channelroutingpanel.multichannel_on') : translate('settings:auto.channelroutingpanel.stereo_safe')}
             </button>
             <button
               type="button"
@@ -521,7 +527,7 @@ export default function ChannelRoutingPanel() {
               disabled={bitPerfectModeActive}
               title={disabledTitle}
             >
-              {includeLfeInDownmix ? 'LFE Fold On' : 'LFE Fold Off'}
+              {includeLfeInDownmix ? translate('settings:auto.channelroutingpanel.lfe_fold_on') : translate('settings:auto.channelroutingpanel.lfe_fold_off')}
             </button>
             <button
               type="button"
@@ -530,13 +536,14 @@ export default function ChannelRoutingPanel() {
               disabled={bitPerfectModeActive}
               title={disabledTitle}
             >
-              {stereoUpmixMode === 'ambient' ? 'Ambient Upmix On' : 'Ambient Upmix Off'}
+              {stereoUpmixMode === 'ambient' ? translate('settings:auto.channelroutingpanel.ambient_upmix_on') : translate('settings:auto.channelroutingpanel.ambient_upmix_off')}
             </button>
           </div>
         ) : (
           <div className="pipeline-control-row">
             <label className="pipeline-select-label">
-              Layout
+
+              <LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.layout" />
               <select
                 className="pipeline-select"
                 value={spatialLayoutPresetId}
@@ -550,7 +557,7 @@ export default function ChannelRoutingPanel() {
                     value={preset.id}
                     disabled={preset.id === 'custom' && !customVirtualSpeakers}
                   >
-                    {preset.label}
+                    {translateSourceText(preset.label)}
                   </option>
                 ))}
               </select>
@@ -562,7 +569,7 @@ export default function ChannelRoutingPanel() {
               disabled={bitPerfectModeActive}
               title={disabledTitle ?? 'Upmix stereo tracks into the virtual speaker layout'}
             >
-              {stereoUpmixMode === 'ambient' ? 'Ambient Upmix On' : 'Ambient Upmix Off'}
+              {stereoUpmixMode === 'ambient' ? translate('settings:auto.channelroutingpanel.ambient_upmix_on') : translate('settings:auto.channelroutingpanel.ambient_upmix_off')}
             </button>
           </div>
         )}
@@ -570,31 +577,33 @@ export default function ChannelRoutingPanel() {
         {/* Status chips */}
         <div className="pipeline-chip-row">
           {!binauralSelected && hasOutputChannels && (
-            <span className="pipeline-chip">Mapped {mappedChannels}/{formatChannels(outputChannels)}</span>
+            <span className="pipeline-chip"><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.mapped" /> {mappedChannels}/{formatChannels(outputChannels)}</span>
           )}
           {stereoAmbientUpmixActive && (
-            <span className="pipeline-chip pipeline-chip-accent">Upmix Active</span>
+            <span className="pipeline-chip pipeline-chip-accent"><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.upmix_active" /></span>
           )}
           {binauralUpmixActive && (
-            <span className="pipeline-chip pipeline-chip-accent">Upmix Active</span>
+            <span className="pipeline-chip pipeline-chip-accent"><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.upmix_active" /></span>
           )}
           {!binauralSelected && hasManualRouting && multichannelEnabled && !stereoAmbientUpmixActive && (
-            <span className="pipeline-chip pipeline-chip-accent">Remap Active</span>
+            <span className="pipeline-chip pipeline-chip-accent"><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.remap_active" /></span>
           )}
           {!binauralSelected && hasManualRouting && !multichannelEnabled && (
-            <span className="pipeline-chip">Remap Saved</span>
+            <span className="pipeline-chip"><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.remap_saved" /></span>
           )}
           {binauralSelected && spatialStatus.state === 'ready' && (
-            <span className="pipeline-chip" title="Head-related transfer function (MIT KEMAR)">
-              HRTF {formatHrtfRate(spatialStatus.sampleRate)}
+            <span className="pipeline-chip" title={translate('settings:auto.channelroutingpanel.head_related_transfer_function_mit_kemar')}>
+
+              <LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.hrtf" /> {formatHrtfRate(spatialStatus.sampleRate)}
             </span>
           )}
           {binauralSelected && spatialStatus.state === 'loading' && (
-            <span className="pipeline-chip">Loading renderer…</span>
+            <span className="pipeline-chip"><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.loading_renderer" /></span>
           )}
           {spatialNotice && (
             <span className="pipeline-chip pipeline-chip-warning" title={spatialNotice}>
-              Renderer unavailable
+
+              <LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.renderer_unavailable" />
             </span>
           )}
           {!binauralSelected && hasManualRouting && !stereoAmbientUpmixActive && (
@@ -605,7 +614,8 @@ export default function ChannelRoutingPanel() {
               disabled={bitPerfectModeActive}
               title={disabledTitle}
             >
-              Reset Routing
+
+              <LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.reset_routing" />
             </button>
           )}
         </div>
@@ -626,7 +636,7 @@ export default function ChannelRoutingPanel() {
           />
         )}
         {!binauralSelected && !hasOutputChannels && (
-          <p className="pipeline-note">Select an output device to detect available hardware channels.</p>
+          <p className="pipeline-note"><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.select_an_output_device_to_detect_available_hardware_cha" /></p>
         )}
 
         {/* Detail card for the selected speaker */}
@@ -634,7 +644,7 @@ export default function ChannelRoutingPanel() {
           <div className="pipeline-detail-card">
             <div className="pipeline-detail-text">
               <span className="pipeline-detail-title">
-                {selectedDirectRoute.channelId} · {selectedDirectRoute.label}
+                {selectedDirectRoute.channelId} · {translateSourceText(selectedDirectRoute.label)}
               </span>
               <span className="pipeline-detail-sub">{selectedDirectRoute.detail}</span>
             </div>
@@ -644,18 +654,18 @@ export default function ChannelRoutingPanel() {
               onChange={(event) => handleMappingChange(selectedDirectRoute.outputIndex, event.target.value)}
               disabled={selectedDirectRoute.selectDisabled}
               title={disabledTitle}
-              aria-label={`Route output channel ${selectedDirectRoute.channelId}`}
+              aria-label={translate('settings:auto.channelroutingpanel.route_output_channel_channelid', { channelid: selectedDirectRoute.channelId })}
             >
               {selectedDirectRoute.selectValue === 'upmix' && (
-                <option value="upmix">Generated upmix</option>
+                <option value="upmix"><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.generated_upmix" /></option>
               )}
               {selectedDirectRoute.selectValue === 'auto' && (
-                <option value="auto">Auto mix</option>
+                <option value="auto"><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.auto_mix" /></option>
               )}
-              <option value={-1}>Mute</option>
+              <option value={-1}><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.mute" /></option>
               {sourceOptions.map((option) => (
                 <option key={option.value} value={option.value}>
-                  {option.label}
+                  {translateSourceText(option.label)}
                 </option>
               ))}
             </select>
@@ -665,18 +675,19 @@ export default function ChannelRoutingPanel() {
           <div className="pipeline-detail-card">
             <div className="pipeline-detail-text">
               <span className="pipeline-detail-title">
-                {selectedVirtualSpeaker.sourceChannel} virtual speaker
+                {selectedVirtualSpeaker.sourceChannel}  <LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.virtual_speaker" />
               </span>
               <span className="pipeline-detail-sub">
                 {isVirtualSpeakerLfe(selectedVirtualSpeaker)
-                  ? 'Non-positional — mixed equally into both ears'
-                  : `${Math.round(selectedVirtualSpeaker.azimuth)}° · drag to reposition, Shift for 5° steps`}
+                  ? translate('settings:auto.channelroutingpanel.non_positional_mixed_equally_into_both_ears')
+                  : translate('settings:auto.channelroutingpanel.value1_drag_to_reposition_shift_for_5_steps', { value1: Math.round(selectedVirtualSpeaker.azimuth) })}
               </span>
             </div>
             {!isVirtualSpeakerLfe(selectedVirtualSpeaker) && (
               <label className="pipeline-elevation-control" title={disabledTitle}>
                 <span className="pipeline-detail-sub">
-                  Elevation {Math.round(selectedVirtualSpeaker.elevation)}°
+
+                  <LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.elevation" /> {Math.round(selectedVirtualSpeaker.elevation)}°
                 </span>
                 <input
                   type="range"
@@ -689,7 +700,7 @@ export default function ChannelRoutingPanel() {
                     Number(event.target.value)
                   )}
                   disabled={bitPerfectModeActive}
-                  aria-label={`${selectedVirtualSpeaker.sourceChannel} elevation in degrees`}
+                  aria-label={translate('settings:auto.channelroutingpanel.sourcechannel_elevation_in_degrees', { sourcechannel: selectedVirtualSpeaker.sourceChannel })}
                 />
               </label>
             )}
@@ -698,16 +709,17 @@ export default function ChannelRoutingPanel() {
 
         {/* Contextual notes (mirror the old empty states) */}
         {!binauralSelected && hasOutputChannels && !hasTrackChannels && (
-          <p className="pipeline-note">Play a track to visualize file channel mapping.</p>
+          <p className="pipeline-note"><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.play_a_track_to_visualize_file_channel_mapping" /></p>
         )}
         {!binauralSelected && hasOutputChannels && hasTrackChannels && !multichannelEnabled && (
-          <p className="pipeline-note">Stereo mode is enabled. Turn on multichannel to edit per-channel routing.</p>
+          <p className="pipeline-note"><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.stereo_mode_is_enabled_turn_on_multichannel_to_edit_per_" /></p>
         )}
         {binauralSelected && !bitPerfectModeActive && (
           <p className="pipeline-note">
-            Virtual Speaker Room — drag speakers around the listener to shape the headphone render.
+
+            <LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.virtual_speaker_room_drag_speakers_around_the_listener_t" />
             {stereoUpmixMode !== 'ambient' && hasTrackChannels && resolvedTrackChannels === 2 && virtualSpeakers.length > 2
-              ? ' Enable Ambient Upmix to fill the surround speakers from stereo tracks.'
+              ? translate('settings:auto.channelroutingpanel.enable_ambient_upmix_to_fill_the_surround_speakers_from_')
               : ''}
           </p>
         )}
@@ -723,9 +735,9 @@ export default function ChannelRoutingPanel() {
       {/* ---- Output ---- */}
       <div className="pipeline-card">
         <div className="pipeline-card-head">
-          <span className="pipeline-card-step">Output</span>
+          <span className="pipeline-card-step"><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.output" /></span>
           <span className="pipeline-card-summary">
-            {binauralActive ? '2ch stereo (binaural)' : formatChannels(hasOutputChannels ? effectiveOutputChannels : null)}
+            {binauralActive ? translate('settings:auto.channelroutingpanel.2ch_stereo_binaural') : formatChannels(hasOutputChannels ? effectiveOutputChannels : null)}
           </span>
         </div>
         <div className="pipeline-chip-row">
@@ -733,20 +745,22 @@ export default function ChannelRoutingPanel() {
             {selectedDeviceLabel}
           </span>
           {hasOutputChannels && (
-            <span className="pipeline-chip">Device {formatChannels(outputChannels)}</span>
+            <span className="pipeline-chip"><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.device" /> {formatChannels(outputChannels)}</span>
           )}
           {downmixActive && (
             <span className="pipeline-chip pipeline-chip-warning">
-              Downmix {resolvedTrackChannels}{'->'}{effectiveOutputChannels}
+
+              <LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.downmix" /> {resolvedTrackChannels}{'->'}{effectiveOutputChannels}
             </span>
           )}
           {bitPerfectModeActive && (
-            <span className="pipeline-chip pipeline-chip-accent">Bit-perfect</span>
+            <span className="pipeline-chip pipeline-chip-accent"><LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.bit_perfect" /></span>
           )}
         </div>
         {binauralActive && (
           <p className="pipeline-note">
-            Binaural rendering outputs stereo for headphones; the physical channel layout is not used.
+
+            <LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.binaural_rendering_outputs_stereo_for_headphones_the_phy" />
           </p>
         )}
       </div>

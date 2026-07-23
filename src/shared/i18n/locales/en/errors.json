@@ -1,0 +1,7 @@
+{
+  "generic": "Something went wrong.",
+  "unknown": "An unknown error occurred.",
+  "unavailable": "This feature is currently unavailable.",
+  "auto": {},
+  "runtime": {}
+}

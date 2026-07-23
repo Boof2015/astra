@@ -90,6 +90,7 @@ import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
 import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
 import { collectAppMemoryFootprint } from './services/appMemoryFootprint'
+import { initializeMainI18n, mainT, setMainLocale } from './i18n'
 import { normalizeStatsShareFileName, validateStatsSharePng } from './services/statsShareImage'
 import { normalizeSignalShareFileName, validateSignalSharePng } from './services/signalShareImage'
 import { getMusicMetadataParseOptions } from './utils/musicMetadata'
@@ -465,7 +466,7 @@ function resolveBuildMetadata(): ResolvedBuildMetadata {
 }
 
 const MINI_WINDOW_PERSIST_DEBOUNCE_MS = 220
-const MINI_WINDOW_TITLE = 'Astra Mini Player'
+const MINI_WINDOW_TITLE_KEY = 'windowTitles.miniPlayer'
 const MAIN_WINDOW_PERSIST_DEBOUNCE_MS = MINI_WINDOW_PERSIST_DEBOUNCE_MS
 const FILE_CREATED_AT_BACKFILL_STARTUP_DELAY_MS = 13_000
 const FILE_CREATED_AT_BACKFILL_MIGRATION_KEY = 'file_created_at_backfill_v1_done'
@@ -1273,56 +1274,56 @@ const lyricsService = new LyricsService({
 })
 
 const SCOPE_POPOUT_DEFAULTS: Record<ScopeKind, {
-  title: string
+  titleKey: string
   width: number
   height: number
   minWidth: number
   minHeight: number
 }> = {
   spectrum: {
-    title: 'Astra Spectrum',
+    titleKey: 'windowTitles.spectrum',
     width: 760,
     height: 320,
     minWidth: 420,
     minHeight: 220,
   },
   oscilloscope: {
-    title: 'Astra Oscilloscope',
+    titleKey: 'windowTitles.oscilloscope',
     width: 760,
     height: 320,
     minWidth: 420,
     minHeight: 220,
   },
   vectorscope: {
-    title: 'Astra Vectorscope',
+    titleKey: 'windowTitles.vectorscope',
     width: 440,
     height: 440,
     minWidth: 300,
     minHeight: 300,
   },
   spectrogram: {
-    title: 'Astra Spectrogram',
+    titleKey: 'windowTitles.spectrogram',
     width: 760,
     height: 320,
     minWidth: 420,
     minHeight: 220,
   },
   vumeter: {
-    title: 'Astra VU Meter',
+    titleKey: 'windowTitles.vuMeter',
     width: 480,
     height: 240,
     minWidth: 320,
     minHeight: 180,
   },
   lufsmeter: {
-    title: 'Astra LUFS Meter',
+    titleKey: 'windowTitles.lufsMeter',
     width: 480,
     height: 320,
     minWidth: 320,
     minHeight: 220,
   },
   waveform: {
-    title: 'Astra Waveform',
+    titleKey: 'windowTitles.waveform',
     width: 760,
     height: 320,
     minWidth: 420,
@@ -1330,15 +1331,30 @@ const SCOPE_POPOUT_DEFAULTS: Record<ScopeKind, {
   },
 }
 
+function updateNativeWindowTitles(): void {
+  if (miniWindow && !miniWindow.isDestroyed()) {
+    miniWindow.setTitle(mainT(MINI_WINDOW_TITLE_KEY))
+  }
+  if (lyricsPopoutWindow && !lyricsPopoutWindow.isDestroyed()) {
+    lyricsPopoutWindow.setTitle(mainT('windowTitles.lyrics'))
+  }
+  for (const scope of SCOPE_KINDS) {
+    const scopeWindow = getScopePopoutWindow(scope)
+    if (scopeWindow) {
+      scopeWindow.setTitle(mainT(SCOPE_POPOUT_DEFAULTS[scope].titleKey))
+    }
+  }
+}
+
 // Supported audio formats
 const AUDIO_EXTENSIONS = ['mp3', 'flac', 'wav', 'ogg', 'aac', 'm4a', 'opus', 'wma', 'aiff', 'alac', 'ape', 'wv', 'iamf', 'mp4']
 const AUDIO_EXTENSION_SET = new Set(AUDIO_EXTENSIONS.map((extension) => `.${extension}`))
-const AUDIO_FILTERS = [
-  {
-    name: 'Audio Files',
+function getAudioFilters() {
+  return [{
+    name: mainT('dialogs.filters.audioFiles'),
     extensions: AUDIO_EXTENSIONS
-  }
-]
+  }]
+}
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
@@ -2815,7 +2831,7 @@ async function createScopePopoutWindow(scope: ScopeKind): Promise<void> {
     resizable: true,
     maximizable: false,
     fullscreenable: false,
-    title: defaults.title,
+    title: mainT(defaults.titleKey),
     ...position,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -4115,7 +4131,7 @@ async function createMiniPlayerWindow(): Promise<void> {
     resizable: true,
     maximizable: false,
     fullscreenable: false,
-    title: MINI_WINDOW_TITLE,
+    title: mainT(MINI_WINDOW_TITLE_KEY),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -4130,7 +4146,7 @@ async function createMiniPlayerWindow(): Promise<void> {
 
   miniWindow.on('page-title-updated', (event) => {
     event.preventDefault()
-    miniWindow?.setTitle(MINI_WINDOW_TITLE)
+    miniWindow?.setTitle(mainT(MINI_WINDOW_TITLE_KEY))
   })
 
   miniWindow.on('ready-to-show', () => {
@@ -4206,7 +4222,7 @@ async function createLyricsPopoutWindow(): Promise<void> {
     resizable: true,
     maximizable: false,
     fullscreenable: false,
-    title: 'Astra Lyrics',
+    title: mainT('windowTitles.lyrics'),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -4882,6 +4898,7 @@ if (process.argv.includes('--zone')) {
 }
 
 app.whenReady().then(async () => {
+  await initializeMainI18n()
   // Grant audio-capture permission up front so Web Audio's AudioContext.outputLatency reports at
   // 1ms precision instead of 8ms — Blink quantizes it coarsely until the document holds microphone
   // permission, and Parallax output-latency compensation depends on accurate readings. This app
@@ -5742,7 +5759,7 @@ ipcMain.handle('subsonic:testSource', async (_event, rawInput: SubsonicSourceTes
     }
     return {
       ok: true,
-      message: 'Connection successful.'
+      message: mainT('integrations:connectionSuccessful')
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Connection test failed.'
@@ -5757,7 +5774,7 @@ ipcMain.handle('subsonic:testSource', async (_event, rawInput: SubsonicSourceTes
     }
     return {
       ok: false,
-      message: 'Connection failed.',
+      message: mainT('integrations:connectionFailed'),
       error: message
     }
   }
@@ -5878,7 +5895,7 @@ ipcMain.handle('jellyfin:testSource', async (_event, rawInput: JellyfinSourceTes
     }
     return {
       ok: true,
-      message: 'Connection successful.'
+      message: mainT('integrations:connectionSuccessful')
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Connection test failed.'
@@ -5893,7 +5910,7 @@ ipcMain.handle('jellyfin:testSource', async (_event, rawInput: JellyfinSourceTes
     }
     return {
       ok: false,
-      message: 'Connection failed.',
+      message: mainT('integrations:connectionFailed'),
       error: message
     }
   }
@@ -6557,13 +6574,19 @@ ipcMain.handle(
 // File dialog IPC handlers
 // ============================================
 
+ipcMain.handle('localization:setLocale', async (_event, locale: unknown) => {
+  const normalized = await setMainLocale(locale)
+  updateNativeWindowTitles()
+  return normalized
+})
+
 // Open file dialog for audio files
 ipcMain.handle('dialog:openAudioFile', async () => {
   if (!mainWindow) return null
 
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Open Audio File',
-    filters: AUDIO_FILTERS,
+    title: mainT('dialogs.openAudioFile'),
+    filters: getAudioFilters(),
     properties: ['openFile']
   })
 
@@ -6585,7 +6608,7 @@ ipcMain.handle('dialog:openAudioFolder', async () => {
   if (!mainWindow) return null
 
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Add Music Folder',
+    title: mainT('dialogs.addMusicFolder'),
     properties: ['openDirectory']
   })
 
@@ -8258,9 +8281,9 @@ ipcMain.handle('stats-share:save-png', async (_event, input: unknown, suggestedF
   if (!mainWindow) return null
   const bytes = validateStatsSharePng(input)
   const result = await dialog.showSaveDialog(mainWindow, {
-    title: 'Save Listening Stats',
+    title: mainT('dialogs.saveListeningStats'),
     defaultPath: normalizeStatsShareFileName(suggestedFileName),
-    filters: [{ name: 'PNG Image', extensions: ['png'] }]
+    filters: [{ name: mainT('dialogs.filters.pngImage'), extensions: ['png'] }]
   })
   if (result.canceled || !result.filePath) return null
   await writeFile(result.filePath, Buffer.from(bytes))
@@ -8279,9 +8302,9 @@ ipcMain.handle('signal-share:save-png', async (_event, input: unknown, suggested
   if (!mainWindow) return null
   const bytes = validateSignalSharePng(input)
   const result = await dialog.showSaveDialog(mainWindow, {
-    title: 'Save Astra Signal',
+    title: mainT('dialogs.saveAstraSignal'),
     defaultPath: normalizeSignalShareFileName(suggestedFileName),
-    filters: [{ name: 'PNG Image', extensions: ['png'] }]
+    filters: [{ name: mainT('dialogs.filters.pngImage'), extensions: ['png'] }]
   })
   if (result.canceled || !result.filePath) return null
   await writeFile(result.filePath, Buffer.from(bytes))

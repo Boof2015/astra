@@ -1,3 +1,5 @@
+import LocalizedText from '../i18n/LocalizedText'
+import { translate } from '../../i18n'
 import { useEffect, useMemo, useState } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -50,21 +52,21 @@ export default function DecodeFallbackCue() {
       <div className="fullscreen-next-cue-card">
         <div className="fullscreen-next-cue-artwork">
           {artworkTrack?.artworkHash ? (
-            <AlbumArtwork hash={artworkTrack.artworkHash} alt="Fallback decode artwork" variant="card" />
+            <AlbumArtwork hash={artworkTrack.artworkHash} alt={translate('common:auto.decodefallbackcue.fallback_decode_artwork')} variant="card" />
           ) : artworkTrack?.artworkData ? (
-            <img src={artworkTrack.artworkData} alt="Fallback decode artwork" />
+            <img src={artworkTrack.artworkData} alt={translate('common:auto.decodefallbackcue.fallback_decode_artwork')} />
           ) : (
-            <div className="fullscreen-next-cue-placeholder">FF</div>
+            <div className="fullscreen-next-cue-placeholder"><LocalizedText ns="common" i18nKey="auto.decodefallbackcue.ff" /></div>
           )}
         </div>
 
         <div className="fullscreen-next-cue-meta">
-          <span className="fullscreen-next-cue-label">Decode Fallback</span>
-          <div className="fullscreen-next-cue-title">Using FFmpeg compatibility decoding</div>
+          <span className="fullscreen-next-cue-label"><LocalizedText ns="common" i18nKey="auto.decodefallbackcue.decode_fallback" /></span>
+          <div className="fullscreen-next-cue-title"><LocalizedText ns="common" i18nKey="auto.decodefallbackcue.using_ffmpeg_compatibility_decoding" /></div>
           <div className="fullscreen-next-cue-artist">{titleLine} • {artistLine}</div>
         </div>
 
-        <div className="decode-fallback-cue-badge">FFmpeg</div>
+        <div className="decode-fallback-cue-badge"><LocalizedText ns="common" i18nKey="auto.decodefallbackcue.ffmpeg" /></div>
       </div>
 
       <div className="fullscreen-next-cue-progress">
