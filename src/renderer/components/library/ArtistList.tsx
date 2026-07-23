@@ -9,6 +9,7 @@ import {
   focusControllerTarget,
   type ControllerVirtualMoveDetail
 } from '../../utils/controllerFocus'
+import { resolveVirtualGridContentWidth } from '../../utils/virtualGridSizing'
 
 interface ArtistRecord {
   artist: string
@@ -276,14 +277,16 @@ export default function ArtistList({
     gap: artistGridGap
   }), [artistGridGap, artistGridMinColumnWidth, artists.length, availableGridContentWidth])
 
-  const handleGridResize = useCallback(({ width }: { height: number; width: number }) => {
+  const handleGridResize = useCallback(() => {
     const element = gridApiRef.current?.element
-    if (element && element.scrollLeft !== 0) {
+    if (!element) return
+
+    if (element.scrollLeft !== 0) {
       element.scrollLeft = 0
     }
 
-    if (!Number.isFinite(width) || width <= 0) return
-    const nextWidth = Math.floor(width)
+    const nextWidth = resolveVirtualGridContentWidth(element.clientWidth)
+    if (nextWidth <= 0) return
     setGridContentWidth((previous) => (previous === nextWidth ? previous : nextWidth))
   }, [])
 

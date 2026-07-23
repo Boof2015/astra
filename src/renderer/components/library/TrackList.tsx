@@ -27,6 +27,12 @@ import {
 } from '../../utils/controllerFocus'
 import { rankFuzzyMatches } from '../../utils/fuzzySearch'
 import { highlightSearchMatch } from '../../utils/searchHighlight'
+import {
+  clampFixedOverlayPosition,
+  viewportPointToAppLayout,
+  viewportRectToAppLayout,
+  viewportSizeToAppLayout
+} from '../../utils/overlayPositioning'
 
 interface DbTrack {
   id: number
@@ -818,6 +824,7 @@ export default function TrackList({
   const startPlaybackContextByPaths = usePlayerStore((state) => state.startPlaybackContextByPaths)
   const enqueueTrackPaths = usePlayerStore((state) => state.enqueueTrackPaths)
   const selectedOutputChannelCount = useAudioSettingsStore((state) => state.selectedOutputChannelCount)
+  const uiScalePercent = useUIStore((state) => state.uiScalePercent)
   const trackDrag = useUIStore((state) => state.trackDrag)
   const startTrackDrag = useUIStore((state) => state.startTrackDrag)
   const setTrackDragTracks = useUIStore((state) => state.setTrackDragTracks)
@@ -1502,6 +1509,11 @@ export default function TrackList({
     playlistPopupTriggerRef.current = null
   }, [])
 
+  useEffect(() => {
+    closePlaylistPopup()
+    setTrackContextMenu(null)
+  }, [closePlaylistPopup, uiScalePercent])
+
   const refreshPlaylistMembership = useCallback(async (trackPaths: string[]) => {
     const requestId = playlistMembershipRequestIdRef.current + 1
     playlistMembershipRequestIdRef.current = requestId
@@ -1882,22 +1894,35 @@ export default function TrackList({
     const gap = 8
     const edgePadding = 10
     const estimatedHeight = 344
+    const uiScale = uiScalePercent / 100
+    const anchor = viewportRectToAppLayout({
+      x: playlistPopup.anchor.left,
+      y: playlistPopup.anchor.top,
+      width: playlistPopup.anchor.right - playlistPopup.anchor.left,
+      height: playlistPopup.anchor.height,
+      right: playlistPopup.anchor.right,
+      bottom: playlistPopup.anchor.bottom
+    }, uiScale)
+    const viewport = viewportSizeToAppLayout({
+      width: window.innerWidth,
+      height: window.innerHeight
+    }, uiScale)
 
-    let left = playlistPopup.anchor.right + gap
-    if (left + panelWidth > window.innerWidth - edgePadding) {
-      left = Math.max(edgePadding, playlistPopup.anchor.left - panelWidth - gap)
+    let left = anchor.right + gap
+    if (left + panelWidth > viewport.width - edgePadding) {
+      left = Math.max(edgePadding, anchor.x - panelWidth - gap)
     }
 
-    let top = playlistPopup.anchor.top - 8
-    const maxTop = Math.max(edgePadding, window.innerHeight - edgePadding - estimatedHeight)
+    let top = anchor.y - 8
+    const maxTop = Math.max(edgePadding, viewport.height - edgePadding - estimatedHeight)
     top = Math.min(Math.max(top, edgePadding), maxTop)
 
     return {
       top,
       left,
-      maxHeight: Math.max(150, window.innerHeight - top - edgePadding)
+      maxHeight: Math.max(150, viewport.height - top - edgePadding)
     }
-  }, [playlistPopup])
+  }, [playlistPopup, uiScalePercent])
 
   const trackContextMenuStyle = useMemo(() => {
     if (!trackContextMenu) return undefined
@@ -1907,17 +1932,23 @@ export default function TrackList({
       onChangeMissingPlaylistAssociation && playlistSourceId !== null && playlistSourceId > 0 ? 36 : 0
     ) + (ratingsEnabled ? 72 : 0) + (trackContextMenu.tracks.length === 1 ? 36 : 0)
     const edgePadding = 8
-    const left = Math.min(
-      Math.max(edgePadding, trackContextMenu.x),
-      Math.max(edgePadding, window.innerWidth - panelWidth - edgePadding)
-    )
-    const top = Math.min(
-      Math.max(edgePadding, trackContextMenu.y),
-      Math.max(edgePadding, window.innerHeight - panelHeight - edgePadding)
-    )
+    const uiScale = uiScalePercent / 100
+    const anchor = viewportPointToAppLayout({
+      x: trackContextMenu.x,
+      y: trackContextMenu.y
+    }, uiScale)
+    const viewport = viewportSizeToAppLayout({
+      width: window.innerWidth,
+      height: window.innerHeight
+    }, uiScale)
 
-    return { top, left }
-  }, [integrityEnabled, onChangeMissingPlaylistAssociation, playlistSourceId, ratingsEnabled, trackContextMenu])
+    return clampFixedOverlayPosition({
+      anchor,
+      overlay: { width: panelWidth, height: panelHeight },
+      viewport,
+      edgePadding
+    })
+  }, [integrityEnabled, onChangeMissingPlaylistAssociation, playlistSourceId, ratingsEnabled, trackContextMenu, uiScalePercent])
 
   const listHeight = listViewportHeight > 0 ? listViewportHeight : trackRowHeight
   const virtualContentHeight = useMemo(() => (

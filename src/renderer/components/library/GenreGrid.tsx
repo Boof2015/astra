@@ -9,6 +9,10 @@ import {
   focusControllerTarget,
   type ControllerVirtualMoveDetail
 } from '../../utils/controllerFocus'
+import {
+  resolveGridHorizontalInset,
+  resolveVirtualGridContentWidth
+} from '../../utils/virtualGridSizing'
 
 interface GenreRecord {
   genre: string
@@ -170,10 +174,11 @@ export default function GenreGrid({
   }, [])
 
   // Cells carry gap/2 padding on every side; the scroller adds
-  // (padding - gap/2) so outer edges land at the CSS-grid padding. Once
-  // react-window measures its content box, prefer that width because it
-  // excludes both the scroller padding and any classic vertical scrollbar.
-  const fallbackGridContentWidth = Math.max(0, viewportSize.width - Math.max(0, (padding * 2) - gap))
+  // (padding - gap/2) so outer edges land at the CSS-grid padding. Prefer the
+  // mounted scroller's clientWidth because it excludes any classic vertical
+  // scrollbar; then remove the scroller padding to get the cell content width.
+  const horizontalInset = resolveGridHorizontalInset(padding, gap)
+  const fallbackGridContentWidth = resolveVirtualGridContentWidth(viewportSize.width, horizontalInset)
   const availableGridContentWidth = gridContentWidth > 0 ? gridContentWidth : fallbackGridContentWidth
   const gridLayout = useMemo(() => resolveArtistGridLayout({
     containerWidth: availableGridContentWidth,
@@ -182,16 +187,18 @@ export default function GenreGrid({
     gap
   }), [availableGridContentWidth, gap, genres.length, minColumnWidth])
 
-  const handleGridResize = useCallback(({ width }: { height: number; width: number }) => {
+  const handleGridResize = useCallback(() => {
     const element = gridApiRef.current?.element
-    if (element && element.scrollLeft !== 0) {
+    if (!element) return
+
+    if (element.scrollLeft !== 0) {
       element.scrollLeft = 0
     }
 
-    if (!Number.isFinite(width) || width <= 0) return
-    const nextWidth = Math.floor(width)
+    const nextWidth = resolveVirtualGridContentWidth(element.clientWidth, horizontalInset)
+    if (nextWidth <= 0) return
     setGridContentWidth((previous) => (previous === nextWidth ? previous : nextWidth))
-  }, [])
+  }, [horizontalInset])
 
   useLayoutEffect(() => {
     const element = gridApiRef.current?.element
