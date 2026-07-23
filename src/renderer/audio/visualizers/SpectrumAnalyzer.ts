@@ -622,13 +622,21 @@ export class SpectrumAnalyzer {
     const height = this.canvas.height
     const slotWidth = width / barCount
     const gapWidth = slotWidth * (this.options.barGapPercent / 100)
-    const barWidth = Math.max(Math.min(dpr, slotWidth), slotWidth - gapWidth)
+    const nominalBarWidth = Math.max(Math.min(dpr, slotWidth), slotWidth - gapWidth)
+    const shouldSnapBarEdges = this.options.barGapPercent === 0
 
     for (let index = 0; index < barCount; index += 1) {
+      const slotLeft = index * slotWidth
+      const slotRight = index === barCount - 1 ? width : (index + 1) * slotWidth
+      const nominalX = slotLeft + ((slotWidth - nominalBarWidth) / 2)
+      const x = shouldSnapBarEdges ? Math.floor(slotLeft) : nominalX
+      const right = shouldSnapBarEdges
+        ? Math.min(width, Math.ceil(slotRight))
+        : nominalX + nominalBarWidth
+      const barWidth = right - x
       const level = Math.max(0, Math.min(1, frame[index * 3]))
       const barHeight = level * height
       if (barHeight > 0) {
-        const x = (index * slotWidth) + ((slotWidth - barWidth) / 2)
         const y = height - barHeight
         const radius = Math.min(
           this.options.barCornerRadiusPx * dpr,
@@ -654,10 +662,9 @@ export class SpectrumAnalyzer {
         const peak = Math.max(0, Math.min(1, frame[index * 3 + 2]))
         const capThickness = Math.max(1, Math.min(2 * dpr, barWidth, height))
         const capY = Math.max(0, Math.min(height - capThickness, height - (peak * height) - (capThickness / 2)))
-        const capX = (index * slotWidth) + ((slotWidth - barWidth) / 2)
         this.ctx.fillStyle = this.options.lineColor
         this.ctx.beginPath()
-        this.ctx.roundRect(capX, capY, barWidth, capThickness, Math.min(capThickness / 2, barWidth / 2))
+        this.ctx.roundRect(x, capY, barWidth, capThickness, Math.min(capThickness / 2, barWidth / 2))
         this.ctx.fill()
       }
     }

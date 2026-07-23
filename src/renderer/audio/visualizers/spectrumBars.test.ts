@@ -51,10 +51,14 @@ function createContext(): CanvasRenderingContext2D {
 }
 
 class FakeCanvas {
-  width = 320
-  height = 180
+  width: number
+  height: number
   style: Partial<CSSStyleDeclaration> = {}
   private context = createContext()
+  constructor(width = 320, height = 180) {
+    this.width = width
+    this.height = height
+  }
   getContext(id: string): CanvasRenderingContext2D | null {
     return id === '2d' ? this.context : null
   }
@@ -148,6 +152,92 @@ test('Bars consumes only compact native frames, ignores Side, and clamps rounded
     assert.ok(rect.radius <= rect.width / 2 + 1e-6)
     assert.ok(rect.radius <= rect.height / 2 + 1e-6)
   }
+  visualizer.dispose()
+})
+
+test('zero-gap bars snap to physical pixels without seams and keep peak caps aligned', () => {
+  roundedRects.length = 0
+  fillStyles.length = 0
+  const scheduler = new ManualFrameScheduler()
+  const native = makeNative()
+  const canvas = new FakeCanvas(319, 180)
+  const visualizer = new SpectrumAnalyzer(canvas as unknown as HTMLCanvasElement, {
+    frameScheduler: scheduler as unknown as FrameScheduler,
+    nativeAnalyzer: native.analyzer,
+    displayMode: 'bars',
+    barDensity: 24,
+    barGapPercent: 0,
+    barCornerRadiusPx: 2,
+    showBarPeaks: true,
+    dataSource: {
+      getPendingSpectrumSamples: () => [new Float32Array(64)],
+      getPendingSpectrumStereoSamples: () => [],
+      getSampleRate: () => 48000,
+      isPlaying: () => true,
+      subscribeToSessionChanges: () => () => {},
+    },
+  })
+
+  visualizer.start()
+  scheduler.tick()
+
+  const barCount = native.getConfig()?.barCount ?? 0
+  assert.ok(barCount > 0)
+  assert.equal(roundedRects.length, barCount * 2)
+
+  const bars = roundedRects.filter((_, index) => index % 2 === 0)
+  const peakCaps = roundedRects.filter((_, index) => index % 2 === 1)
+  assert.equal(bars[0].x, 0)
+  assert.equal(bars[bars.length - 1].x + bars[bars.length - 1].width, canvas.width)
+
+  for (let index = 0; index < bars.length; index += 1) {
+    const bar = bars[index]
+    const peakCap = peakCaps[index]
+    assert.ok(Number.isInteger(bar.x))
+    assert.ok(Number.isInteger(bar.x + bar.width))
+    assert.equal(peakCap.x, bar.x)
+    assert.equal(peakCap.width, bar.width)
+    if (index > 0) {
+      const previousBar = bars[index - 1]
+      assert.ok(previousBar.x + previousBar.width >= bar.x)
+    }
+  }
+
+  visualizer.dispose()
+})
+
+test('positive bar gaps preserve intentional spacing', () => {
+  roundedRects.length = 0
+  fillStyles.length = 0
+  const scheduler = new ManualFrameScheduler()
+  const native = makeNative()
+  const visualizer = new SpectrumAnalyzer(new FakeCanvas(319, 180) as unknown as HTMLCanvasElement, {
+    frameScheduler: scheduler as unknown as FrameScheduler,
+    nativeAnalyzer: native.analyzer,
+    displayMode: 'bars',
+    barDensity: 24,
+    barGapPercent: 25,
+    barCornerRadiusPx: 0,
+    showBarPeaks: false,
+    dataSource: {
+      getPendingSpectrumSamples: () => [new Float32Array(64)],
+      getPendingSpectrumStereoSamples: () => [],
+      getSampleRate: () => 48000,
+      isPlaying: () => true,
+      subscribeToSessionChanges: () => () => {},
+    },
+  })
+
+  visualizer.start()
+  scheduler.tick()
+
+  assert.ok(roundedRects.length > 1)
+  for (let index = 1; index < roundedRects.length; index += 1) {
+    const previousBar = roundedRects[index - 1]
+    const bar = roundedRects[index]
+    assert.ok(previousBar.x + previousBar.width < bar.x)
+  }
+
   visualizer.dispose()
 })
 
