@@ -13467,9 +13467,13 @@ body::after {
 .transport-center {
   gap: 12px;
   padding: 0 10px 0 12px;
-  background: var(--bg-tertiary);
+  background: #0a0a0a;
   border-left: 1px solid rgba(var(--tint), 0.06);
   border-right: 1px solid rgba(var(--tint), 0.06);
+}
+
+html[data-theme-tone="light"] .transport-center {
+  background: var(--bg-tertiary);
 }
 
 .transport-right {
