@@ -116,10 +116,10 @@ export default function GenreGrid({
   searchQuery = ''
 }: GenreGridProps) {
   const [viewportSize, setViewportSize] = useState({ height: 0, width: 0 })
+  const [gridContentWidth, setGridContentWidth] = useState(0)
   const [minColumnWidth, setMinColumnWidth] = useState(GENRE_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX)
   const [gap, setGap] = useState(GENRE_GRID_GAP_FALLBACK_PX)
   const [padding, setPadding] = useState(GENRE_GRID_PADDING_FALLBACK_PX)
-  const [measuredCardHeight, setMeasuredCardHeight] = useState<number | null>(null)
   const bodyRef = useRef<HTMLDivElement | null>(null)
   const gridApiRef = useRef<GridImperativeAPI | null>(null)
 
@@ -170,37 +170,37 @@ export default function GenreGrid({
   }, [])
 
   // Cells carry gap/2 padding on every side; the scroller adds
-  // (padding - gap/2) so outer edges land at the CSS-grid padding.
+  // (padding - gap/2) so outer edges land at the CSS-grid padding. Once
+  // react-window measures its content box, prefer that width because it
+  // excludes both the scroller padding and any classic vertical scrollbar.
+  const fallbackGridContentWidth = Math.max(0, viewportSize.width - Math.max(0, (padding * 2) - gap))
+  const availableGridContentWidth = gridContentWidth > 0 ? gridContentWidth : fallbackGridContentWidth
   const gridLayout = useMemo(() => resolveArtistGridLayout({
-    containerWidth: Math.max(0, viewportSize.width - Math.max(0, (padding * 2) - gap)),
+    containerWidth: availableGridContentWidth,
     itemCount: genres.length,
     minColumnWidth,
     gap
-  }), [gap, genres.length, minColumnWidth, padding, viewportSize.width])
+  }), [availableGridContentWidth, gap, genres.length, minColumnWidth])
 
-  const measureCardHeight = useCallback(() => {
-    const card = bodyRef.current?.querySelector<HTMLElement>('.genre-card')
-    if (!card) return
-    const nextHeight = Math.ceil(card.getBoundingClientRect().height)
-    if (nextHeight <= 0) return
-    setMeasuredCardHeight((previous) => (previous === nextHeight ? previous : nextHeight))
+  const handleGridResize = useCallback(({ width }: { height: number; width: number }) => {
+    const element = gridApiRef.current?.element
+    if (element && element.scrollLeft !== 0) {
+      element.scrollLeft = 0
+    }
+
+    if (!Number.isFinite(width) || width <= 0) return
+    const nextWidth = Math.floor(width)
+    setGridContentWidth((previous) => (previous === nextWidth ? previous : nextWidth))
   }, [])
 
   useLayoutEffect(() => {
-    measureCardHeight()
-  }, [gridLayout.columnWidth, measureCardHeight, viewportSize.height])
-
-  useEffect(() => {
-    let cancelled = false
-    document.fonts?.ready?.then(() => {
-      if (!cancelled) measureCardHeight()
-    }).catch(() => undefined)
-    return () => {
-      cancelled = true
+    const element = gridApiRef.current?.element
+    if (element && element.scrollLeft !== 0) {
+      element.scrollLeft = 0
     }
-  }, [measureCardHeight])
+  }, [gridLayout.columnCount, gridLayout.columnWidth])
 
-  const rowHeight = (measuredCardHeight ?? GENRE_CARD_HEIGHT_ESTIMATE_PX) + gap
+  const rowHeight = GENRE_CARD_HEIGHT_ESTIMATE_PX + gap
 
   const cellProps = useMemo<GenreGridCellSharedProps>(() => ({
     genres,
@@ -273,10 +273,16 @@ export default function GenreGrid({
         defaultHeight={GENRE_CARD_HEIGHT_ESTIMATE_PX * 4}
         defaultWidth={GENRE_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX * 3}
         gridRef={gridApiRef}
+        onResize={handleGridResize}
         overscanCount={GENRE_GRID_OVERSCAN_COUNT}
         rowCount={gridLayout.rowCount}
         rowHeight={rowHeight}
-        style={{ height: viewportHeight, width: '100%' }}
+        style={{
+          height: viewportHeight,
+          width: '100%',
+          overflowX: 'hidden',
+          overflowY: 'auto'
+        }}
       />
     </div>
   )

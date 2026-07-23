@@ -132,6 +132,7 @@ export default function AlbumGrid({
   searchQuery = ''
 }: AlbumGridProps) {
   const [viewportSize, setViewportSize] = useState({ height: 0, width: 0 })
+  const [gridContentWidth, setGridContentWidth] = useState(0)
   const [minColumnWidth, setMinColumnWidth] = useState(ALBUM_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX)
   const [gap, setGap] = useState(ALBUM_GRID_GAP_FALLBACK_PX)
   const [padding, setPadding] = useState(ALBUM_GRID_PADDING_FALLBACK_PX)
@@ -186,13 +187,35 @@ export default function AlbumGrid({
   }, [])
 
   // Cells carry gap/2 padding on every side; the scroller adds
-  // (padding - gap/2) so outer edges land at the CSS-grid padding.
+  // (padding - gap/2) so outer edges land at the CSS-grid padding. Once
+  // react-window measures its content box, prefer that width because it
+  // excludes both the scroller padding and any classic vertical scrollbar.
+  const fallbackGridContentWidth = Math.max(0, viewportSize.width - Math.max(0, (padding * 2) - gap))
+  const availableGridContentWidth = gridContentWidth > 0 ? gridContentWidth : fallbackGridContentWidth
   const gridLayout = useMemo(() => resolveArtistGridLayout({
-    containerWidth: Math.max(0, viewportSize.width - Math.max(0, (padding * 2) - gap)),
+    containerWidth: availableGridContentWidth,
     itemCount: albums.length,
     minColumnWidth,
     gap
-  }), [albums.length, gap, minColumnWidth, padding, viewportSize.width])
+  }), [albums.length, availableGridContentWidth, gap, minColumnWidth])
+
+  const handleGridResize = useCallback(({ width }: { height: number; width: number }) => {
+    const element = gridApiRef.current?.element
+    if (element && element.scrollLeft !== 0) {
+      element.scrollLeft = 0
+    }
+
+    if (!Number.isFinite(width) || width <= 0) return
+    const nextWidth = Math.floor(width)
+    setGridContentWidth((previous) => (previous === nextWidth ? previous : nextWidth))
+  }, [])
+
+  useLayoutEffect(() => {
+    const element = gridApiRef.current?.element
+    if (element && element.scrollLeft !== 0) {
+      element.scrollLeft = 0
+    }
+  }, [gridLayout.columnCount, gridLayout.columnWidth])
 
   // Card height tracks column width (square artwork), so measure a mounted
   // card instead of hardcoding font metrics; falls back to an estimate for
@@ -294,10 +317,16 @@ export default function AlbumGrid({
         defaultHeight={ALBUM_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX * 3}
         defaultWidth={ALBUM_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX * 4}
         gridRef={gridApiRef}
+        onResize={handleGridResize}
         overscanCount={ALBUM_GRID_OVERSCAN_COUNT}
         rowCount={gridLayout.rowCount}
         rowHeight={rowHeight}
-        style={{ height: viewportHeight, width: '100%' }}
+        style={{
+          height: viewportHeight,
+          width: '100%',
+          overflowX: 'hidden',
+          overflowY: 'auto'
+        }}
       />
     </div>
   )

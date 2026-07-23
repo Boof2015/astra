@@ -1,4 +1,4 @@
-import { CSSProperties, memo, ReactElement, Ref, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { CSSProperties, memo, ReactElement, Ref, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Grid, List, type CellComponentProps, type GridImperativeAPI, type ListImperativeAPI, type RowComponentProps } from 'react-window'
 import type { ArtworkVariant } from '../../stores/libraryStore'
 import { resolveArtistGridLayout } from '../../utils/artistGridLayout'
@@ -203,6 +203,7 @@ export default function ArtistList({
   searchQuery = ''
 }: ArtistListProps) {
   const [viewportSize, setViewportSize] = useState({ height: 0, width: 0 })
+  const [gridContentWidth, setGridContentWidth] = useState(0)
   const [artistRowHeight, setArtistRowHeight] = useState(ARTIST_ROW_HEIGHT_FALLBACK_PX)
   const [artistGridRowHeight, setArtistGridRowHeight] = useState(ARTIST_GRID_ROW_HEIGHT_FALLBACK_PX)
   const [artistGridMinColumnWidth, setArtistGridMinColumnWidth] = useState(ARTIST_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX)
@@ -267,12 +268,37 @@ export default function ArtistList({
     searchQuery
   }), [artists, onSelectArtist, searchQuery])
 
+  const availableGridContentWidth = gridContentWidth > 0 ? gridContentWidth : viewportSize.width
   const gridLayout = useMemo(() => resolveArtistGridLayout({
-    containerWidth: viewportSize.width,
+    containerWidth: availableGridContentWidth,
     itemCount: artists.length,
     minColumnWidth: artistGridMinColumnWidth,
     gap: artistGridGap
-  }), [artistGridGap, artistGridMinColumnWidth, artists.length, viewportSize.width])
+  }), [artistGridGap, artistGridMinColumnWidth, artists.length, availableGridContentWidth])
+
+  const handleGridResize = useCallback(({ width }: { height: number; width: number }) => {
+    const element = gridApiRef.current?.element
+    if (element && element.scrollLeft !== 0) {
+      element.scrollLeft = 0
+    }
+
+    if (!Number.isFinite(width) || width <= 0) return
+    const nextWidth = Math.floor(width)
+    setGridContentWidth((previous) => (previous === nextWidth ? previous : nextWidth))
+  }, [])
+
+  useLayoutEffect(() => {
+    const element = gridApiRef.current?.element
+    if (element && element.scrollLeft !== 0) {
+      element.scrollLeft = 0
+    }
+  }, [gridLayout.columnCount, gridLayout.columnWidth])
+
+  useEffect(() => {
+    if (viewMode !== 'grid') {
+      setGridContentWidth(0)
+    }
+  }, [viewMode])
 
   const gridProps = useMemo<ArtistGridCellSharedProps>(() => ({
     artists,
@@ -350,10 +376,16 @@ export default function ArtistList({
           defaultHeight={ARTIST_GRID_ROW_HEIGHT_FALLBACK_PX * 4}
           defaultWidth={ARTIST_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX * 4}
           gridRef={gridApiRef}
+          onResize={handleGridResize}
           overscanCount={ARTIST_GRID_OVERSCAN_COUNT}
           rowCount={gridLayout.rowCount}
           rowHeight={artistGridRowHeight}
-          style={{ height: viewportHeight, width: '100%' }}
+          style={{
+            height: viewportHeight,
+            width: '100%',
+            overflowX: 'hidden',
+            overflowY: 'auto'
+          }}
         />
       </div>
     )

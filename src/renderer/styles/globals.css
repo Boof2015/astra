@@ -6142,20 +6142,22 @@ body:has(.fullscreen-overlay) .controller-hints {
 .album-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   gap: 20px;
   padding: 20px;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .album-card {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   position: relative;
   cursor: pointer;
   transition: transform var(--transition-fast);
-  content-visibility: auto;
-  contain: layout paint style;
-  contain-intrinsic-size: 160px 240px;
 }
 
 .album-card:hover {
@@ -6188,6 +6190,9 @@ body:has(.fullscreen-overlay) .controller-hints {
   --album-grid-padding: 20px;
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -6196,7 +6201,9 @@ body:has(.fullscreen-overlay) .controller-hints {
 
 .album-grid-virtualized {
   box-sizing: border-box;
+  min-width: 0;
   width: 100%;
+  max-width: 100%;
   overflow-x: hidden;
   padding: calc(var(--album-grid-padding) - var(--album-grid-gap) / 2);
 }
@@ -6212,10 +6219,14 @@ body:has(.fullscreen-overlay) .controller-hints {
 
 .genre-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   gap: 14px;
   padding: 20px;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .genre-grid-shell {
@@ -6224,6 +6235,9 @@ body:has(.fullscreen-overlay) .controller-hints {
   --genre-grid-padding: 20px;
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -6232,7 +6246,9 @@ body:has(.fullscreen-overlay) .controller-hints {
 
 .genre-grid-virtualized {
   box-sizing: border-box;
+  min-width: 0;
   width: 100%;
+  max-width: 100%;
   overflow-x: hidden;
   padding: calc(var(--genre-grid-padding) - var(--genre-grid-gap) / 2);
 }
@@ -6252,10 +6268,8 @@ body:has(.fullscreen-overlay) .controller-hints {
   align-items: center;
   gap: 12px;
   min-height: 76px;
+  min-width: 0;
   width: 100%;
-  content-visibility: auto;
-  contain: layout paint style;
-  contain-intrinsic-size: 220px 78px;
   padding: 10px;
   border: 1px solid rgba(var(--tint), 0.08);
   border-radius: 8px;
@@ -6317,13 +6331,17 @@ body:has(.fullscreen-overlay) .controller-hints {
 
 .year-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
   align-content: start;
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   gap: 14px;
   padding: 20px;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .year-card {
@@ -6332,6 +6350,8 @@ body:has(.fullscreen-overlay) .controller-hints {
   align-items: center;
   gap: 12px;
   min-height: 78px;
+  min-width: 0;
+  width: 100%;
   padding: 10px;
   border: 1px solid rgba(var(--tint), 0.08);
   border-radius: 8px;
@@ -7279,6 +7299,9 @@ body:has(.fullscreen-overlay) .controller-hints {
   --artist-grid-row-height: 168px;
   --artist-grid-gap: 12px;
   flex: 1;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -7354,7 +7377,9 @@ body:has(.fullscreen-overlay) .controller-hints {
 }
 
 .artist-grid {
+  min-width: 0;
   width: 100%;
+  max-width: 100%;
   overflow-x: hidden;
 }
 
@@ -7674,6 +7699,9 @@ body:has(.fullscreen-overlay) .controller-hints {
    ============================================ */
 .library-content {
   flex: 1;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
