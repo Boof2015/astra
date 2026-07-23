@@ -7,6 +7,10 @@ export interface LibraryYearAlbum {
   track_count: number
 }
 
+export interface LibraryYearTrack {
+  album_identity_key: string
+}
+
 export interface LibraryYearGroup {
   key: LibraryYearKey
   label: string
@@ -24,6 +28,19 @@ export function albumMatchesLibraryYear(
   key: LibraryYearKey
 ): boolean {
   return key === 'unknown' ? album.year === null : album.year === key
+}
+
+export function filterTracksByLibraryYearAlbums<T extends LibraryYearTrack>(
+  tracks: readonly T[],
+  albums: readonly Pick<LibraryYearAlbum, 'identity_key' | 'year'>[],
+  key: LibraryYearKey
+): T[] {
+  const matchingAlbumIdentityKeys = new Set(
+    albums
+      .filter((album) => albumMatchesLibraryYear(album, key))
+      .map((album) => album.identity_key)
+  )
+  return tracks.filter((track) => matchingAlbumIdentityKeys.has(track.album_identity_key))
 }
 
 export function buildLibraryYearGroups(albums: readonly LibraryYearAlbum[]): LibraryYearGroup[] {

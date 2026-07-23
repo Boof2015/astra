@@ -779,6 +779,128 @@ test('library genre queries normalize multi-genre tags and fall back to scalar g
   assert.deepEqual(library.getTracksByGenre('Jazz, Funk/ Fusion').map((track) => track.title), ['Multi Genre'])
 })
 
+test('library year queries return complete eligible album groups', async (t) => {
+  await setupEmptyLibrary(t)
+
+  const source = await library.createSubsonicSource({
+    name: 'Year Source',
+    base_url: 'https://music.example.test',
+    username: 'tester',
+    secret_encrypted: 'secret',
+    enabled: 1,
+    last_status: 'ok'
+  })
+
+  await library.upsertSubsonicTracks(source.id, [
+    createRemoteTrack({
+      path: 'subsonic://1/mixed-old',
+      title: 'Mixed Old',
+      artist: 'Year Artist',
+      album: 'Mixed Year Album',
+      album_artist: 'Year Artist',
+      track_number: 1,
+      year: 2024
+    }),
+    createRemoteTrack({
+      path: 'subsonic://1/mixed-new',
+      title: 'Mixed New',
+      artist: 'Year Artist',
+      album: 'Mixed Year Album',
+      album_artist: 'Year Artist',
+      track_number: 2,
+      year: 2025
+    }),
+    createRemoteTrack({
+      path: 'subsonic://1/prior-one',
+      title: 'Prior One',
+      artist: 'Prior Artist',
+      album: 'Prior Album',
+      album_artist: 'Prior Artist',
+      track_number: 1,
+      year: 2024
+    }),
+    createRemoteTrack({
+      path: 'subsonic://1/prior-two',
+      title: 'Prior Two',
+      artist: 'Prior Artist',
+      album: 'Prior Album',
+      album_artist: 'Prior Artist',
+      track_number: 2,
+      year: 2024
+    }),
+    createRemoteTrack({
+      path: 'subsonic://1/undated-one',
+      title: 'Undated One',
+      artist: 'Undated Artist',
+      album: 'Undated Album',
+      album_artist: 'Undated Artist',
+      track_number: 1
+    }),
+    createRemoteTrack({
+      path: 'subsonic://1/undated-two',
+      title: 'Undated Two',
+      artist: 'Undated Artist',
+      album: 'Undated Album',
+      album_artist: 'Undated Artist',
+      track_number: 2
+    }),
+    createRemoteTrack({
+      path: 'subsonic://1/single',
+      title: 'One Track Release',
+      artist: 'Singles Artist',
+      album: 'One Track Release',
+      album_artist: 'Singles Artist',
+      track_number: 1,
+      year: 2025
+    }),
+    createRemoteTrack({
+      path: 'subsonic://1/unknown-album-one',
+      title: 'Unknown Album One',
+      artist: 'Unknown Artist',
+      album: 'Unknown Album',
+      album_artist: 'Unknown Artist',
+      track_number: 1,
+      year: 2025
+    }),
+    createRemoteTrack({
+      path: 'subsonic://1/unknown-album-two',
+      title: 'Unknown Album Two',
+      artist: 'Unknown Artist',
+      album: 'Unknown Album',
+      album_artist: 'Unknown Artist',
+      track_number: 2,
+      year: 2025
+    })
+  ])
+
+  const tracks2025 = library.getTracksByYear(2025)
+  assert.deepEqual(tracks2025.map((track) => track.title), [
+    'Mixed Old',
+    'Mixed New',
+    'One Track Release'
+  ])
+
+  const mixedAlbum = library.getAlbums({ includeSingles: true })
+    .find((album) => album.album === 'Mixed Year Album')
+  assert.ok(mixedAlbum)
+  assert.equal(mixedAlbum.year, 2025)
+  assert.ok(
+    tracks2025
+      .filter((track) => track.album === 'Mixed Year Album')
+      .every((track) => track.album_identity_key === mixedAlbum.identity_key)
+  )
+
+  assert.deepEqual(library.getTracksByYear(2024).map((track) => track.title), [
+    'Prior One',
+    'Prior Two'
+  ])
+  assert.deepEqual(library.getTracksByYear(null).map((track) => track.title), [
+    'Undated One',
+    'Undated Two'
+  ])
+  assert.deepEqual(library.getTracksByYear(Number.NaN), [])
+})
+
 test('library search returns public track shape with album identities', async (t) => {
   await setupSeededLibrary(t)
 

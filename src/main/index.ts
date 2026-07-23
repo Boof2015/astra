@@ -6823,6 +6823,10 @@ ipcMain.handle('library:getTracksByGenre', (_event, genre: string) => {
   return library.getTracksByGenre(genre)
 })
 
+ipcMain.handle('library:getTracksByYear', (_event, year: number | null) => {
+  return library.getTracksByYear(year)
+})
+
 // Get tracks by album
 ipcMain.handle('library:getTracksByAlbum', (_event, album: string, artist?: string, identityKey?: string) => {
   return library.getTracksByAlbum(album, artist, identityKey)

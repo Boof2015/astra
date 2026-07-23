@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   albumMatchesLibraryYear,
   buildLibraryYearGroups,
+  filterTracksByLibraryYearAlbums,
   formatLibraryYearKey
 } from './libraryYears.ts'
 
@@ -44,4 +45,35 @@ test('year helpers distinguish an unknown year from no selection', () => {
   assert.equal(albumMatchesLibraryYear({ year: null }, 'unknown'), true)
   assert.equal(albumMatchesLibraryYear({ year: 2025 }, 2025), true)
   assert.equal(albumMatchesLibraryYear({ year: 2024 }, 2025), false)
+})
+
+test('year playback membership follows the supplied unsearched album collection', () => {
+  const tracks = [
+    { path: '/albums/visible.flac', album_identity_key: 'album:visible' },
+    { path: '/singles/optional.flac', album_identity_key: 'album:single' },
+    { path: '/albums/other-year.flac', album_identity_key: 'album:other-year' },
+    { path: '/albums/unknown-year.flac', album_identity_key: 'album:unknown-year' }
+  ]
+  const albumsWithoutSingles = [
+    { identity_key: 'album:visible', year: 2025 },
+    { identity_key: 'album:other-year', year: 2024 },
+    { identity_key: 'album:unknown-year', year: null }
+  ]
+  const albumsWithSingles = [
+    ...albumsWithoutSingles,
+    { identity_key: 'album:single', year: 2025 }
+  ]
+
+  assert.deepEqual(
+    filterTracksByLibraryYearAlbums(tracks, albumsWithoutSingles, 2025).map((track) => track.path),
+    ['/albums/visible.flac']
+  )
+  assert.deepEqual(
+    filterTracksByLibraryYearAlbums(tracks, albumsWithSingles, 2025).map((track) => track.path),
+    ['/albums/visible.flac', '/singles/optional.flac']
+  )
+  assert.deepEqual(
+    filterTracksByLibraryYearAlbums(tracks, albumsWithSingles, 'unknown').map((track) => track.path),
+    ['/albums/unknown-year.flac']
+  )
 })

@@ -58,7 +58,9 @@ function installLibraryMock(options: {
   artistTracks?: DbTrack[]
   albumTracks?: DbTrack[]
   genreTracks?: DbTrack[]
+  yearTracks?: DbTrack[]
   getTracksByAlbum?: (album: string, artist?: string, identityKey?: string) => Promise<DbTrack[]> | DbTrack[]
+  getTracksByYear?: (year: number | null) => Promise<DbTrack[]> | DbTrack[]
 } = {}): void {
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
@@ -72,6 +74,11 @@ function installLibraryMock(options: {
               : options.albumTracks ?? []
           },
           getTracksByGenre: async () => options.genreTracks ?? [],
+          getTracksByYear: async (year: number | null) => {
+            return options.getTracksByYear
+              ? options.getTracksByYear(year)
+              : options.yearTracks ?? []
+          },
           getGenres: async () => []
         }
       }
@@ -246,7 +253,14 @@ test('Library genre detail participates in backward and forward navigation', asy
 
 test('Library year and album details participate in backward and forward navigation', async () => {
   const albumTrack = makeDbTrack('/years/2025/album.flac', 'Year Artist')
-  installLibraryMock({ albumTracks: [albumTrack] })
+  const yearFetches: Array<number | null> = []
+  installLibraryMock({
+    albumTracks: [albumTrack],
+    getTracksByYear: (year) => {
+      yearFetches.push(year)
+      return [albumTrack]
+    }
+  })
   resetLibraryNavigation()
   useLibraryStore.setState({
     viewMode: 'years',
@@ -262,8 +276,10 @@ test('Library year and album details participate in backward and forward navigat
     }]
   })
 
-  useLibraryStore.getState().selectYear(2025)
+  await useLibraryStore.getState().selectYear(2025)
   assert.equal(useLibraryStore.getState().selectedYear, 2025)
+  assert.deepEqual(useLibraryStore.getState().trackPaths, [albumTrack.path])
+  assert.deepEqual(yearFetches, [2025])
 
   await useLibraryStore.getState().selectAlbum('Year Album', 'Year Artist', 'library', 'album:key')
   assert.equal(useLibraryStore.getState().selectedYear, null)
@@ -315,6 +331,56 @@ test('Library selection history prunes oversized track path snapshots and refetc
   assert.equal(useLibraryStore.getState().selectedAlbum?.album, 'Large Album')
   assert.equal(useLibraryStore.getState().trackPaths.length, largeAlbumTracks.length)
   assert.equal(albumFetches.filter((album) => album === 'Large Album').length, 2)
+})
+
+test('Library year history refetches an oversized year collection on restore', async () => {
+  const largeYearTracks = Array.from(
+    { length: MAX_SELECTION_HISTORY_TRACK_PATHS + 1 },
+    (_value, index) => makeDbTrack(`/large-year/${index}.flac`, 'Year Artist')
+  )
+  const albumTrack = makeDbTrack('/next-album/1.flac', 'Next Artist')
+  const yearFetches: Array<number | null> = []
+  installLibraryMock({
+    albumTracks: [albumTrack],
+    getTracksByYear: (year) => {
+      yearFetches.push(year)
+      return largeYearTracks
+    }
+  })
+  resetLibraryNavigation()
+  useLibraryStore.setState({ viewMode: 'years' })
+
+  await useLibraryStore.getState().selectYear(2025)
+  assert.equal(useLibraryStore.getState().trackPaths.length, largeYearTracks.length)
+
+  await useLibraryStore.getState().selectAlbum('Next Album', 'Next Artist')
+  const [historySnapshot] = useLibraryStore.getState().selectionHistory
+  assert.equal(historySnapshot?.selectedYear, 2025)
+  assert.equal(historySnapshot?.trackPathsPruned, true)
+  assert.deepEqual(historySnapshot?.trackPaths, [])
+
+  assert.equal(await useLibraryStore.getState().goBackSelection(), true)
+  assert.equal(useLibraryStore.getState().selectedYear, 2025)
+  assert.equal(useLibraryStore.getState().trackPaths.length, largeYearTracks.length)
+  assert.deepEqual(yearFetches, [2025, 2025])
+})
+
+test('releasing the full-library cache preserves selected Year tracks', async () => {
+  const yearTrack = makeDbTrack('/years/2025/track.flac', 'Year Artist')
+  installLibraryMock({ yearTracks: [yearTrack] })
+  resetLibraryNavigation()
+
+  await useLibraryStore.getState().selectYear(2025)
+  useLibraryStore.setState({
+    fullTrackConsumers: new Set(['library']),
+    fullTrackPaths: ['/library/other.flac'],
+    fullTracksStatus: 'complete'
+  })
+
+  useLibraryStore.getState().releaseFullTracks('library')
+
+  assert.deepEqual(useLibraryStore.getState().trackPaths, [yearTrack.path])
+  assert.deepEqual(useLibraryStore.getState().fullTrackPaths, [])
 })
 
 test('Library session restore applies valid detail, sort, and source filters', async () => {
@@ -477,7 +543,14 @@ test('Library session restore drops a stale genre detail and keeps root state', 
 })
 
 test('Library session restore preserves Unknown Year and drops a stale year', async () => {
-  installLibraryMock()
+  const yearTrack = makeDbTrack('/years/unknown/track.flac', 'Undated Artist')
+  const yearFetches: Array<number | null> = []
+  installLibraryMock({
+    getTracksByYear: (year) => {
+      yearFetches.push(year)
+      return [yearTrack]
+    }
+  })
   resetLibraryNavigation()
   useLibraryStore.setState({
     albums: [{
@@ -510,6 +583,8 @@ test('Library session restore preserves Unknown Year and drops a stale year', as
     selectedYear: 'unknown'
   })
   assert.equal(useLibraryStore.getState().selectedYear, 'unknown')
+  assert.deepEqual(useLibraryStore.getState().trackPaths, [yearTrack.path])
+  assert.deepEqual(yearFetches, [null])
 
   await useLibraryStore.getState().restoreSession({
     ...baseSnapshot,
@@ -517,4 +592,5 @@ test('Library session restore preserves Unknown Year and drops a stale year', as
   })
   assert.equal(useLibraryStore.getState().viewMode, 'years')
   assert.equal(useLibraryStore.getState().selectedYear, null)
+  assert.deepEqual(yearFetches, [null])
 })

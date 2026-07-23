@@ -4570,6 +4570,31 @@ export function getTracksByGenre(genre: string): DbTrack[] {
   })
 }
 
+export function getTracksByYear(year: number | null): DbTrack[] {
+  return measureLibraryQuery('getTracksByYear', () => {
+    if (!db) return []
+    if (year !== null && !Number.isInteger(year)) return []
+
+    const tracks = Array.from(iterateEffectiveTrackRows(`
+      SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    `))
+    const groups = buildAlbumGroups(tracks)
+    const matched: DbTrackRow[] = []
+
+    for (const group of groups.values()) {
+      if (group.year !== year) continue
+      if (!isAlbumGroupEligible(group, { includeSingles: true })) continue
+      matched.push(...group.tracks)
+    }
+
+    return attachAlbumIdentityKeys(
+      matched.sort(compareTracksByAlbumDiscTrackTitle),
+      tracks
+    )
+  })
+}
+
 export function getGenres(): GenreRecord[] {
   return measureLibraryQuery('getGenres', () => {
     if (!db) return []

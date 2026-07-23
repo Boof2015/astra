@@ -19,6 +19,7 @@ import { getLibraryTabTransitionScopeClasses } from '../../utils/libraryTabMotio
 import {
   albumMatchesLibraryYear,
   buildLibraryYearGroups,
+  filterTracksByLibraryYearAlbums,
   formatLibraryYearKey,
   type LibraryYearGroup
 } from '../../utils/libraryYears'
@@ -286,6 +287,7 @@ export default function LibraryView() {
   const isYearDetailView = viewMode === 'years' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear !== null
   const isReleaseBrowseView = isAlbumRootView || isYearRootView || isYearDetailView
   const isTracklistContext = Boolean(selectedAlbum || selectedArtist || selectedGenre || viewMode === 'tracks')
+  const isCollectionActionContext = isTracklistContext || selectedYear !== null
 
   // Folders the user has hidden stay indexed but are filtered out of every library browse surface.
   const hiddenFolderPrefixes = useMemo(
@@ -298,7 +300,7 @@ export default function LibraryView() {
     [folders, hasHiddenFolders]
   )
 
-  const shouldRetainFullTracks = !selectedAlbum && !selectedArtist && !selectedGenre && (
+  const shouldRetainFullTracks = !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null && (
     viewMode === 'tracks' || viewMode === 'genres' || viewMode === 'folders'
     || selectedSourceFilters.size > 0 || hasHiddenFolders
   )
@@ -642,8 +644,17 @@ export default function LibraryView() {
     })
   }, [selectedSourceFilters, shouldShowSourceFilters, visibleTracks])
 
+  const albumGridSourceAlbums = isReleaseBrowseView && includeSinglesInAlbums && albumsIncludingSinglesLoaded
+    ? albumsIncludingSingles
+    : albums
+
+  const collectionSeedTracks = useMemo(() => {
+    if (selectedYear === null) return sourceFilteredTracks
+    return filterTracksByLibraryYearAlbums(sourceFilteredTracks, albumGridSourceAlbums, selectedYear)
+  }, [albumGridSourceAlbums, selectedYear, sourceFilteredTracks])
+
   const queueSeedSortedTracks = useMemo(() => {
-    const sorted = [...sourceFilteredTracks]
+    const sorted = [...collectionSeedTracks]
 
     sorted.sort((a, b) => {
       if (!sortState) {
@@ -685,7 +696,7 @@ export default function LibraryView() {
     })
 
     return sorted
-  }, [ratings, sortState, sourceFilteredTracks])
+  }, [collectionSeedTracks, ratings, sortState])
   const isCollectionPlayDisabled = isCollectionPlayPending || queueSeedSortedTracks.length === 0
   const queueTrackPaths = useMemo(() => queueSeedSortedTracks.map((track) => track.path), [queueSeedSortedTracks])
 
@@ -700,7 +711,10 @@ export default function LibraryView() {
       const queueTrackPaths = queueSeedSortedTracks.map((track) => track.path)
 
       await startPlaybackContextByPaths(queueTrackPaths, 0, {
-        contextLabel: selectedAlbum?.album ?? selectedArtist ?? selectedGenre ?? 'Library',
+        contextLabel: selectedAlbum?.album
+          ?? selectedArtist
+          ?? selectedGenre
+          ?? (selectedYear !== null ? formatLibraryYearKey(selectedYear) : 'Library'),
         sourceContext: playbackSourceContext,
         startShuffled: true
       })
@@ -710,16 +724,20 @@ export default function LibraryView() {
       collectionPlayPendingRef.current = false
       setIsCollectionPlayPending(false)
     }
-  }, [playbackSourceContext, queueSeedSortedTracks, selectedAlbum?.album, selectedArtist, selectedGenre, startPlaybackContextByPaths])
+  }, [
+    playbackSourceContext,
+    queueSeedSortedTracks,
+    selectedAlbum?.album,
+    selectedArtist,
+    selectedGenre,
+    selectedYear,
+    startPlaybackContextByPaths
+  ])
 
   const displayTracks = useMemo(() => {
     if (!hasSearchQuery) return queueSeedSortedTracks
     return queueSeedSortedTracks.filter((track) => trackMatchesLibraryQuery(track, trimmedSearchQuery))
   }, [hasSearchQuery, trimmedSearchQuery, queueSeedSortedTracks])
-
-  const albumGridSourceAlbums = isReleaseBrowseView && includeSinglesInAlbums && albumsIncludingSinglesLoaded
-    ? albumsIncludingSingles
-    : albums
 
   const sourceFilteredAlbumIdentityKeys = useMemo(() => {
     const keys = new Set<string>()
@@ -1978,7 +1996,7 @@ export default function LibraryView() {
               </div>
             </div>
           )}
-          {isTracklistContext && (
+          {isCollectionActionContext && (
             <button
               type="button"
               className={`icon-btn library-play-btn ${inDetailView ? 'library-collection-action-btn' : ''}`}
@@ -1995,7 +2013,7 @@ export default function LibraryView() {
               <span className="library-collection-action-label">Play</span>
             </button>
           )}
-          {isTracklistContext && (
+          {isCollectionActionContext && (
             <button
               type="button"
               className={`icon-btn library-shuffle-btn ${inDetailView ? 'library-collection-action-btn' : ''} ${shuffle ? 'active' : ''}`}
@@ -2014,7 +2032,7 @@ export default function LibraryView() {
               <span className="library-shuffle-btn-label">Shuffle</span>
             </button>
           )}
-          {isTracklistContext && inDetailView && (
+          {isCollectionActionContext && inDetailView && (
             <QueueSplitButton trackPaths={queueTrackPaths} disabled={queueTrackPaths.length === 0} />
           )}
           {selectedArtist && graphEnabled && (

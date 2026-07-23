@@ -281,7 +281,7 @@ interface LibraryStore {
   ) => Promise<void>
   selectArtist: (artist: string, origin?: Exclude<SelectionOrigin, null>) => Promise<void>
   selectGenre: (genre: string, origin?: Exclude<SelectionOrigin, null>) => Promise<void>
-  selectYear: (year: LibraryYearKey, origin?: Exclude<SelectionOrigin, null>) => void
+  selectYear: (year: LibraryYearKey, origin?: Exclude<SelectionOrigin, null>) => Promise<void>
   releaseFullTracks: (consumer?: LibraryFullTrackConsumer) => void
   clearSelection: () => Promise<void>
   goBackSelection: () => Promise<boolean>
@@ -1710,13 +1710,14 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     }))
   },
 
-  selectYear: (year: LibraryYearKey, origin: Exclude<SelectionOrigin, null> = 'library') => {
-    set((state) => ({
+  selectYear: async (year: LibraryYearKey, origin: Exclude<SelectionOrigin, null> = 'library') => {
+    const tracks = await window.electronAPI.library.getTracksByYear(year === 'unknown' ? null : year)
+    set((state) => ingestTracksForPatch(state, tracks, {
       selectedYear: year,
       selectedAlbum: null,
       selectedArtist: null,
       selectedGenre: null,
-      trackPaths: [],
+      trackPaths: getUniqueTrackPaths(tracks),
       selectionOrigin: origin,
       selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state)),
       selectionForwardHistory: [],
@@ -1736,7 +1737,9 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         fullTrackConsumers: nextConsumers.consumers,
         fullTrackPaths: [],
         fullTracksStatus: 'idle',
-        ...(!state.selectedAlbum && !state.selectedArtist && !state.selectedGenre ? { trackPaths: [] } : {})
+        ...(!state.selectedAlbum && !state.selectedArtist && !state.selectedGenre && state.selectedYear === null
+          ? { trackPaths: [] }
+          : {})
       }, state.trackByPath, false)
     })
   },
@@ -1815,6 +1818,12 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         if (state.selectedGenre !== restoredGenre) return {}
         return ingestTracksForPatch(state, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
       })
+    } else if (restoredYear !== null && !restoredTracks.complete) {
+      const tracks = await window.electronAPI.library.getTracksByYear(restoredYear === 'unknown' ? null : restoredYear)
+      set((state) => {
+        if (state.selectedYear !== restoredYear) return {}
+        return ingestTracksForPatch(state, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
+      })
     } else if (restoredAlbum && !restoredTracks.complete) {
       const tracks = await window.electronAPI.library.getTracksByAlbum(
         restoredAlbum.album,
@@ -1867,6 +1876,12 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       const tracks = await window.electronAPI.library.getTracksByGenre(restoredGenre)
       set((latest) => {
         if (latest.selectedGenre !== restoredGenre) return {}
+        return ingestTracksForPatch(latest, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
+      })
+    } else if (restoredYear !== null && !restoredTracks.complete) {
+      const tracks = await window.electronAPI.library.getTracksByYear(restoredYear === 'unknown' ? null : restoredYear)
+      set((latest) => {
+        if (latest.selectedYear !== restoredYear) return {}
         return ingestTracksForPatch(latest, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
       })
     } else if (restoredAlbum && !restoredTracks.complete) {
@@ -2385,11 +2400,12 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         : get().albums
       const matchedYear = yearAlbums.some((album) => albumMatchesLibraryYear(album, restoredYear))
       if (matchedYear) {
-        set({
+        const tracks = await window.electronAPI.library.getTracksByYear(restoredYear === 'unknown' ? null : restoredYear)
+        set((state) => ingestTracksForPatch(state, tracks, {
           ...basePatch,
           selectedYear: restoredYear,
-          trackPaths: []
-        })
+          trackPaths: getUniqueTrackPaths(tracks)
+        }))
         return
       }
     }
