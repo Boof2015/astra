@@ -213,9 +213,32 @@ html.app-view-transition-active .app-view-transition-surface {
   view-transition-name: app-main-view;
 }
 
+/* The transport owns shelves and popovers that overlap the main view. Keep it
+   in a separate snapshot layer above the animated view so those surfaces do
+   not flash behind the view-transition overlay during primary navigation. */
+html.app-view-transition-active .transport-bar {
+  view-transition-name: app-view-transport;
+}
+
 ::view-transition-group(app-main-view) {
   animation-duration: var(--motion-app-view-enter);
   animation-timing-function: var(--motion-structural-ease);
+}
+
+::view-transition-group(app-view-transport) {
+  z-index: 1;
+  animation: none;
+}
+
+::view-transition-old(app-view-transport) {
+  animation: none;
+  opacity: 0;
+}
+
+::view-transition-new(app-view-transport) {
+  animation: none;
+  opacity: 1;
+  mix-blend-mode: normal;
 }
 
 ::view-transition-old(app-main-view),
