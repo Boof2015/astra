@@ -8,6 +8,8 @@ import {
   getLyricsMetaChipText,
   getPreferredLyricsTranslation,
   getLyricsSourceLabel,
+  getLyricsWordDisplayState,
+  getLyricsWordsForDisplay,
   getRenderableSyncedLines,
   getSyncedLyricsGapProgress,
   getSyncedLyricsDisplayLines,
@@ -304,13 +306,45 @@ test('getCompactSyncedLyricsLineHeights grows only affected rich rows', () => {
   }), [34, 34, 34])
 })
 
-test('resolveLyricsWordTiming resolves active word and progress', () => {
-  assert.deepEqual(resolveLyricsWordTiming([
+test('resolveLyricsWordTiming resolves whole-word timing boundaries', () => {
+  const words = [
     { timestampMs: 1_000, text: 'one' },
     { timestampMs: 2_000, text: 'two' },
     { timestampMs: 3_000, text: 'three' }
-  ], 2.5), {
-    activeWordIndex: 1,
-    progressByIndex: [1, 0.5, 0]
-  })
+  ]
+
+  assert.deepEqual(resolveLyricsWordTiming(words, 0.5), { activeWordIndex: -1 })
+  assert.deepEqual(resolveLyricsWordTiming(words, 2.5), { activeWordIndex: 1 })
+  assert.deepEqual(resolveLyricsWordTiming(words, 4), { activeWordIndex: 2 })
+})
+
+test('getLyricsWordDisplayState distinguishes upcoming, active, past, and inactive words', () => {
+  const beforeFirstWord = { activeWordIndex: -1 }
+  assert.equal(getLyricsWordDisplayState(0, beforeFirstWord), 'upcoming')
+
+  const duringSecondWord = { activeWordIndex: 1 }
+  assert.equal(getLyricsWordDisplayState(0, duringSecondWord), 'past')
+  assert.equal(getLyricsWordDisplayState(1, duringSecondWord), 'active')
+  assert.equal(getLyricsWordDisplayState(2, duringSecondWord), 'upcoming')
+
+  const duringFinalWord = { activeWordIndex: 2 }
+  assert.equal(getLyricsWordDisplayState(2, duringFinalWord), 'active')
+  assert.equal(getLyricsWordDisplayState(2, null), 'idle')
+})
+
+test('getLyricsWordsForDisplay requires enabled, complete word timing', () => {
+  const completeLine = {
+    timestampMs: 1_000,
+    text: 'Hello world',
+    words: [
+      { timestampMs: 1_000, text: 'Hello ' },
+      { timestampMs: 1_500, text: 'world' }
+    ]
+  }
+  assert.deepEqual(getLyricsWordsForDisplay(completeLine, true), completeLine.words)
+  assert.deepEqual(getLyricsWordsForDisplay(completeLine, false), [])
+  assert.deepEqual(getLyricsWordsForDisplay({
+    ...completeLine,
+    words: [{ timestampMs: 1_500, text: 'world' }]
+  }, true), [])
 })

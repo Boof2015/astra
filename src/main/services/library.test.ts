@@ -2529,3 +2529,51 @@ test('clearLyricsCacheMisses preserves cached lyric hits', async (t) => {
   assert.equal(library.getLyricsCache('subsonic://lyrics/hit', 'hit-signature')?.status, 'hit')
   assert.equal(library.getLyricsCache('subsonic://lyrics/miss', 'miss-signature'), null)
 })
+
+test('cached Enhanced LRC word timing keeps its LRC format', async (t) => {
+  await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({
+    name: 'Enhanced Lyrics Cache Source',
+    base_url: 'https://music.example.test',
+    username: 'tester',
+    secret_encrypted: 'secret',
+    enabled: 1,
+    last_status: 'ok'
+  })
+  const trackPath = 'subsonic://lyrics/enhanced'
+  await library.upsertSubsonicTracks(source.id, [
+    createRemoteTrack({
+      path: trackPath,
+      title: 'Enhanced',
+      artist: 'Artist',
+      album: 'Album'
+    })
+  ])
+
+  await library.upsertLyricsCache({
+    trackPath,
+    metadataSignature: 'enhanced-signature',
+    status: 'hit',
+    source: 'lrclib',
+    provider: 'lrclib',
+    plainLyrics: 'Hello world',
+    syncedLyrics: '[00:10.00]<00:10.00>Hello <00:10.30>world',
+    syncedLines: [
+      {
+        timestampMs: 10_000,
+        text: 'Hello world',
+        words: [
+          { timestampMs: 10_000, text: 'Hello ' },
+          { timestampMs: 10_300, text: 'world' }
+        ]
+      }
+    ]
+  })
+
+  const cached = library.getLyricsCache(trackPath, 'enhanced-signature')
+  assert.equal(cached?.format, 'lrc')
+  assert.deepEqual(cached?.syncedLines[0]?.words, [
+    { timestampMs: 10_000, text: 'Hello ' },
+    { timestampMs: 10_300, text: 'world' }
+  ])
+})

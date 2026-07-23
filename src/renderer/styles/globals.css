@@ -4174,29 +4174,27 @@ body:has(.fullscreen-overlay) .controller-hints {
 }
 
 .lyrics-word {
-  --lyrics-word-progress: 0;
   position: relative;
   display: inline;
   color: inherit;
-  background:
-    linear-gradient(
-      90deg,
-      rgba(var(--tint), 0.95) 0%,
-      rgba(var(--tint), 0.95) calc(var(--lyrics-word-progress) * 100%),
-      currentColor calc(var(--lyrics-word-progress) * 100%),
-      currentColor 100%
-    );
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  opacity: 1;
+  transition: color 120ms ease, opacity 120ms ease, text-shadow 120ms ease;
 }
 
 .lyrics-word.is-past {
-  opacity: 0.92;
+  color: inherit;
+  opacity: 1;
+}
+
+.lyrics-word.is-upcoming {
+  color: rgba(var(--tint), 0.38);
+  opacity: 0.78;
 }
 
 .lyrics-word.is-active {
-  text-shadow: 0 0 10px rgba(var(--tint), 0.12);
+  color: var(--accent-text-strong);
+  opacity: 1;
+  text-shadow: 0 0 10px rgba(var(--accent-rgb), 0.28);
 }
 
 .lyrics-line-voice {

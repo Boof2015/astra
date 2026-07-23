@@ -319,6 +319,16 @@ export const BASE_COMPACT_LYRICS_LINE_HEIGHT_PX = 34
 export const RICH_COMPACT_LYRICS_LINE_HEIGHT_PX = 58
 export const DENSE_RICH_COMPACT_LYRICS_LINE_HEIGHT_PX = 62
 
+export function getLyricsWordsForDisplay(
+  line: LyricsLine,
+  wordTimingEnabled: boolean
+): LyricsWord[] {
+  if (!wordTimingEnabled) return []
+  const words = line.words ?? []
+  if (words.length === 0) return []
+  return words.map((word) => word.text).join('') === line.text ? words : []
+}
+
 function hasUsableFurigana(furigana: LyricsLine['furigana'] | LyricsWord['furigana']): boolean {
   return Boolean(furigana?.some((entry) => (
     entry.reading.trim().length > 0
@@ -342,7 +352,7 @@ export function getEnabledLyricsLayerState(
   hasTranslation: boolean
   hasVoice: boolean
 } {
-  const hasWordTiming = settings.wordTimingEnabled && Boolean(line.words?.length)
+  const hasWordTiming = getLyricsWordsForDisplay(line, settings.wordTimingEnabled).length > 0
   const hasFurigana = hasEnabledLyricsFurigana(line, settings)
   const hasTranslation = settings.translationsEnabled
     && getPreferredLyricsTranslation(line, settings.translationLanguagePriority) !== null
@@ -391,7 +401,6 @@ export function getCompactSyncedLyricsLineHeights(
 
 export interface LyricsWordTimingState {
   activeWordIndex: number
-  progressByIndex: number[]
 }
 
 export function resolveLyricsWordTiming(
@@ -400,8 +409,7 @@ export function resolveLyricsWordTiming(
 ): LyricsWordTimingState {
   if (words.length === 0) {
     return {
-      activeWordIndex: -1,
-      progressByIndex: []
+      activeWordIndex: -1
     }
   }
 
@@ -415,19 +423,21 @@ export function resolveLyricsWordTiming(
     break
   }
 
-  const progressByIndex = words.map((word, index) => {
-    if (index < activeWordIndex) return 1
-    if (index > activeWordIndex || activeWordIndex < 0) return 0
-
-    const nextWord = words[index + 1] ?? null
-    if (!nextWord || nextWord.timestampMs <= word.timestampMs) return 1
-    return Math.max(0, Math.min(1, (currentTimeMs - word.timestampMs) / (nextWord.timestampMs - word.timestampMs)))
-  })
-
   return {
-    activeWordIndex,
-    progressByIndex
+    activeWordIndex
   }
+}
+
+export type LyricsWordDisplayState = 'idle' | 'past' | 'active' | 'upcoming'
+
+export function getLyricsWordDisplayState(
+  wordIndex: number,
+  timing: LyricsWordTimingState | null
+): LyricsWordDisplayState {
+  if (!timing) return 'idle'
+  if (wordIndex < timing.activeWordIndex) return 'past'
+  if (wordIndex === timing.activeWordIndex) return 'active'
+  return 'upcoming'
 }
 
 export function hasRenderableSyncedLines(lines: LyricsLine[]): boolean {

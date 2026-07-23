@@ -3956,9 +3956,13 @@ function inferLyricsFormat(entry: {
   syncedLyrics: string | null
   syncedLines: LyricsLine[]
 }): LyricsFormat {
-  if (entry.source === 'xlrcdb' && (entry.syncedLyrics !== null || entry.syncedLines.length > 0)) return 'xlrc'
+  const hasSyncedLyrics = entry.syncedLyrics !== null || entry.syncedLines.length > 0
+  if (entry.source === 'xlrcdb') return hasSyncedLyrics ? 'xlrc' : 'plain'
+  if (entry.source === 'lrclib' || entry.source === 'embedded') {
+    return hasSyncedLyrics ? 'lrc' : 'plain'
+  }
   if (entry.syncedLines.some(hasRichLyricsLine)) return 'xlrc'
-  if (entry.syncedLyrics !== null || entry.syncedLines.length > 0) return 'lrc'
+  if (hasSyncedLyrics) return 'lrc'
   return 'plain'
 }
 

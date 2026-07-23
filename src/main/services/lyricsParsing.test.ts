@@ -57,21 +57,86 @@ test('parseLrcSyncedLines applies offset and clamps shifted timestamps', () => {
   )
 })
 
-test('parseLrcSyncedLines strips enhanced LRC word timing tags', () => {
+test('parseLrcSyncedLines preserves Enhanced LRC word timing', () => {
   assert.deepEqual(
     parseLrcSyncedLines('[00:10.00]<00:10.00>Hello <00:10.30>world'),
+    [
+      {
+        timestampMs: 10_000,
+        text: 'Hello world',
+        words: [
+          { timestampMs: 10_000, text: 'Hello ' },
+          { timestampMs: 10_300, text: 'world' }
+        ]
+      }
+    ]
+  )
+})
+
+test('parseLyricsText keeps Enhanced LRC word timing in an LRC payload', () => {
+  const payload = parseLyricsText('[00:10.00]<00:10.00>Hello <00:10.30>world', 'lrc', 'lrc')
+
+  assert.ok(payload)
+  assert.equal(payload.format, 'lrc')
+  assert.deepEqual(payload.syncedLines, [
+    {
+      timestampMs: 10_000,
+      text: 'Hello world',
+      words: [
+        { timestampMs: 10_000, text: 'Hello ' },
+        { timestampMs: 10_300, text: 'world' }
+      ]
+    }
+  ])
+})
+
+test('parseLrcSyncedLines applies offsets to Enhanced LRC word timing', () => {
+  assert.deepEqual(
+    parseLrcSyncedLines(
+      '[offset:+250]\n[00:10.00]<00:10.00>Hello <00:10.30>world'
+    ),
+    [
+      {
+        timestampMs: 10_250,
+        text: 'Hello world',
+        words: [
+          { timestampMs: 10_250, text: 'Hello ' },
+          { timestampMs: 10_550, text: 'world' }
+        ]
+      }
+    ]
+  )
+})
+
+test('parseLrcSyncedLines falls back to complete line text for partial word timing', () => {
+  assert.deepEqual(
+    parseLrcSyncedLines('[00:10.00]Hello <00:10.30>world'),
     [
       { timestampMs: 10_000, text: 'Hello world' }
     ]
   )
 })
 
-test('parseLyricsText keeps Enhanced LRC word timing out of LRC rich fields', () => {
-  const payload = parseLyricsText('[00:10.00]<00:10.00>Hello <00:10.30>world', 'lrc', 'lrc')
+test('parseLrcSyncedLines keeps XLRC-only fields out of LRC payloads', () => {
+  const payload = parseLyricsText(
+    [
+      '[00:10.00]<00:10.00>私[わたし]',
+      '[>en]Me',
+      '[00:12.00][v:A]Next'
+    ].join('\n'),
+    'lrc',
+    'lrc'
+  )
 
   assert.ok(payload)
+  assert.equal(payload.format, 'lrc')
   assert.deepEqual(payload.syncedLines, [
-    { timestampMs: 10_000, text: 'Hello world' }
+    {
+      timestampMs: 10_000,
+      text: '私',
+      words: [{ timestampMs: 10_000, text: '私' }]
+    },
+    { timestampMs: 12_000, text: 'Next' }
   ])
 })
 

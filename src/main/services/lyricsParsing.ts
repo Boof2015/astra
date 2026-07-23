@@ -92,6 +92,10 @@ function sanitizeWords(raw: unknown): LyricsWord[] {
   return words
 }
 
+function hasCompleteWordCoverage(text: string, words: LyricsWord[]): boolean {
+  return words.length > 0 && words.map((word) => word.text).join('') === text
+}
+
 function sanitizeTranslations(raw: unknown): LyricsTranslation[] {
   if (!Array.isArray(raw)) return []
 
@@ -137,7 +141,8 @@ export function sanitizeLyricsLines(rawValue: unknown): LyricsLine[] {
     const text = record.text.trim()
     if (!text) continue
 
-    const words = sanitizeWords(record.words)
+    const sanitizedWords = sanitizeWords(record.words)
+    const words = hasCompleteWordCoverage(text, sanitizedWords) ? sanitizedWords : []
     const furigana = sanitizeFurigana(record.furigana, text)
     const translations = sanitizeTranslations(record.translations)
     const voice = typeof record.voice === 'string' && record.voice.trim()
@@ -170,7 +175,10 @@ function applyParsedOffsetMs(timestampMs: number, offsetMs: number): number {
 function mapParsedLine(
   line: XLRCLine,
   offsetMs: number,
-  preserveRichFields: boolean
+  options: {
+    preserveWordTiming: boolean
+    preserveXlrcFields: boolean
+  }
 ): LyricsLine {
   const timestampMs = applyParsedOffsetMs(line.timestamp, offsetMs)
   const text = line.text.trim()
@@ -182,24 +190,29 @@ function mapParsedLine(
     }
   }
 
-  if (!preserveRichFields) {
+  if (!options.preserveWordTiming && !options.preserveXlrcFields) {
     return { timestampMs, text }
   }
 
-  const words = line.words
-    .map((word): LyricsWord => {
-      const wordText = word.text
-      const wordFurigana = sanitizeFurigana(word.furigana, wordText)
-      return {
-        timestampMs: applyParsedOffsetMs(word.timestamp, offsetMs),
-        text: wordText,
-        ...(wordFurigana.length > 0 ? { furigana: wordFurigana } : {})
-      }
-    })
-    .filter((word) => word.text.trim().length > 0)
-  const furigana = sanitizeFurigana(line.furigana, text)
-  const translations = sanitizeTranslations(line.translations)
-  const voice = line.voice?.trim() || null
+  const parsedWords = options.preserveWordTiming
+    ? line.words
+      .map((word): LyricsWord => {
+        const wordText = word.text
+        const wordFurigana = options.preserveXlrcFields
+          ? sanitizeFurigana(word.furigana, wordText)
+          : []
+        return {
+          timestampMs: applyParsedOffsetMs(word.timestamp, offsetMs),
+          text: wordText,
+          ...(wordFurigana.length > 0 ? { furigana: wordFurigana } : {})
+        }
+      })
+      .filter((word) => word.text.trim().length > 0)
+    : []
+  const words = hasCompleteWordCoverage(text, parsedWords) ? parsedWords : []
+  const furigana = options.preserveXlrcFields ? sanitizeFurigana(line.furigana, text) : []
+  const translations = options.preserveXlrcFields ? sanitizeTranslations(line.translations) : []
+  const voice = options.preserveXlrcFields ? line.voice?.trim() || null : null
 
   return {
     timestampMs,
@@ -211,23 +224,39 @@ function mapParsedLine(
   }
 }
 
-function parsePackageSyncedLines(lyricsText: string, preserveRichFields: boolean): LyricsLine[] {
+const LRC_PARSE_OPTIONS = {
+  preserveWordTiming: true,
+  preserveXlrcFields: false
+} as const
+
+const XLRC_PARSE_OPTIONS = {
+  preserveWordTiming: true,
+  preserveXlrcFields: true
+} as const
+
+function parsePackageSyncedLines(
+  lyricsText: string,
+  options: {
+    preserveWordTiming: boolean
+    preserveXlrcFields: boolean
+  }
+): LyricsLine[] {
   const normalizedText = normalizeLyricsText(lyricsText)
   if (!normalizedText) return []
 
   const parsed = parseXLRC(normalizedText)
   const offsetMs = normalizeParsedOffsetMs(parsed)
   return sanitizeLyricsLines(parsed.lines.map((line) => (
-    mapParsedLine(line, offsetMs, preserveRichFields)
+    mapParsedLine(line, offsetMs, options)
   )))
 }
 
 export function parseLrcSyncedLines(lyricsText: string): LyricsLine[] {
-  return parsePackageSyncedLines(lyricsText, false)
+  return parsePackageSyncedLines(lyricsText, LRC_PARSE_OPTIONS)
 }
 
 function parseXlrcSyncedLines(lyricsText: string): LyricsLine[] {
-  return parsePackageSyncedLines(lyricsText, true)
+  return parsePackageSyncedLines(lyricsText, XLRC_PARSE_OPTIONS)
 }
 
 export function toPlainLyricsFromLines(lines: LyricsLine[]): string | null {
@@ -249,7 +278,10 @@ export function createLyricsPayload(
   const normalizedPlain = normalizeLyricsText(plainLyrics)
   const normalizedSynced = normalizeLyricsText(syncedLyrics)
   const parsedSyncedLines = normalizedSynced && (format === 'lrc' || format === 'xlrc')
-    ? parsePackageSyncedLines(normalizedSynced, format === 'xlrc')
+    ? parsePackageSyncedLines(
+        normalizedSynced,
+        format === 'xlrc' ? XLRC_PARSE_OPTIONS : LRC_PARSE_OPTIONS
+      )
     : []
   const sourceLines = parsedSyncedLines.length > 0 ? parsedSyncedLines : syncedLines
   const normalizedLines = sanitizeLyricsLines(sourceLines)

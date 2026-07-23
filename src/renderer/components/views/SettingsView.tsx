@@ -2330,7 +2330,7 @@ export default function SettingsView() {
                     />
                   </label>
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">XLRC Word Timing</span>
+                    <span className="settings-field-label">Word Timing</span>
                     <button
                       className={`settings-toggle ${lyricsDisplaySettings.wordTimingEnabled ? 'active' : ''}`}
                       onClick={() => setLyricsWordTimingEnabled(!lyricsDisplaySettings.wordTimingEnabled)}

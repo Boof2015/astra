@@ -1,9 +1,11 @@
-import type { CSSProperties, ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import type { LyricsFurigana } from '../../../types/lyrics'
 import type { LyricsDisplaySettings } from '../../stores/lyricsDisplaySettingsStore'
 import {
   hasEnabledLyricsLineExtra,
   getPreferredLyricsTranslation,
+  getLyricsWordDisplayState,
+  getLyricsWordsForDisplay,
   getSyncedLyricsGapProgress,
   resolveLyricsWordTiming,
   type SyncedLyricsDisplayLine
@@ -51,12 +53,6 @@ function renderTextWithFurigana(
   return parts.length > 0 ? parts : text
 }
 
-function getWordStyle(progress: number): CSSProperties {
-  return {
-    '--lyrics-word-progress': String(progress)
-  } as CSSProperties
-}
-
 export default function LyricsLineContent({
   displayLine,
   currentTimeSeconds,
@@ -80,7 +76,7 @@ export default function LyricsLineContent({
   }
 
   const line = displayLine.line
-  const words = settings.wordTimingEnabled ? line.words ?? [] : []
+  const words = getLyricsWordsForDisplay(line, settings.wordTimingEnabled)
   const wordTiming = isActive ? resolveLyricsWordTiming(words, currentTimeSeconds) : null
   const translation = settings.translationsEnabled
     ? getPreferredLyricsTranslation(line, settings.translationLanguagePriority)
@@ -103,18 +99,14 @@ export default function LyricsLineContent({
         {words.length > 0 ? (
           <span className="lyrics-word-sequence">
             {words.map((word, index) => {
-              const progress = wordTiming?.progressByIndex[index] ?? 0
-              const isActiveWord = wordTiming?.activeWordIndex === index
-              const isPastWord = wordTiming != null && index < wordTiming.activeWordIndex
+              const wordState = getLyricsWordDisplayState(index, wordTiming)
               return (
                 <span
                   key={`${word.timestampMs}-${index}`}
                   className={[
                     'lyrics-word',
-                    isActiveWord ? 'is-active' : '',
-                    isPastWord ? 'is-past' : ''
+                    wordState !== 'idle' ? `is-${wordState}` : ''
                   ].join(' ').trim()}
-                  style={getWordStyle(progress)}
                 >
                   {renderTextWithFurigana(word.text, word.furigana, settings.furiganaEnabled)}
                 </span>
