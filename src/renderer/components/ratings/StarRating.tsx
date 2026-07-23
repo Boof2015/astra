@@ -70,6 +70,7 @@ export default function StarRating({
 
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
     if (!interactive) return
+    event.stopPropagation()
     event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
     const next = ratingFromClientX(event.clientX, event.currentTarget)
@@ -166,6 +167,7 @@ export default function StarRating({
       onPointerUp={interactive ? handlePointerUp : undefined}
       onPointerLeave={interactive ? handlePointerLeave : undefined}
       onPointerCancel={interactive ? handlePointerCancel : undefined}
+      onClick={interactive ? (event) => event.stopPropagation() : undefined}
       onKeyDown={handleKeyDown}
       onBlur={interactive ? clearTentative : undefined}
       role={interactive ? 'slider' : 'img'}
