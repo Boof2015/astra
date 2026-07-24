@@ -92,6 +92,7 @@ import {
   filterIntegrityTargetsByScope,
   type IntegrityScanTrackTarget
 } from './libraryIntegrity'
+import { extractReplayGainDb } from '../utils/replayGain'
 
 interface BetterSqliteDatabaseConstructor {
   new(filename: string, options?: { timeout?: number; fileMustExist?: boolean }): BetterSqliteDatabase
@@ -6491,141 +6492,6 @@ function normalizeFileCreatedAtMs(value: unknown): number | null {
   const timestamp = toNumber(value)
   if (timestamp === null || timestamp <= 0) return null
   return timestamp
-}
-
-function normalizeReplayGainTagId(id: string): string {
-  return id.trim().toLowerCase().replace(/[\s-]+/g, '_')
-}
-
-function isTrackReplayGainTagId(id: string): boolean {
-  const normalized = normalizeReplayGainTagId(id)
-  return normalized.includes('replaygain_track_gain') || normalized.includes('rg_track_gain')
-}
-
-function isAlbumReplayGainTagId(id: string): boolean {
-  const normalized = normalizeReplayGainTagId(id)
-  return normalized.includes('replaygain_album_gain') || normalized.includes('rg_album_gain')
-}
-
-function normalizeReplayGainDb(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value
-  }
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      const parsed = normalizeReplayGainDb(entry)
-      if (parsed != null) return parsed
-    }
-    return null
-  }
-  if (typeof value === 'string') {
-    const trimmed = value.trim()
-    if (!trimmed) return null
-
-    const parsed = Number(trimmed)
-    if (Number.isFinite(parsed)) return parsed
-
-    const withDbSuffix = trimmed.replace(/\s*dB\s*$/i, '').trim()
-    const parsedWithDbSuffix = Number(withDbSuffix)
-    if (Number.isFinite(parsedWithDbSuffix)) return parsedWithDbSuffix
-
-    const match = trimmed.match(/[+-]?\d+(?:[.,]\d+)?/)
-    if (!match) return null
-    const parsedFromMatch = Number(match[0].replace(',', '.'))
-    return Number.isFinite(parsedFromMatch) ? parsedFromMatch : null
-  }
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>
-    const objectCandidates: unknown[] = [
-      record.dB,
-      record.db,
-      record.gain,
-      record.value,
-      record.text
-    ]
-    for (const candidate of objectCandidates) {
-      const parsed = normalizeReplayGainDb(candidate)
-      if (parsed != null) return parsed
-    }
-  }
-  return null
-}
-
-function extractReplayGainFromCommon(metadata: mm.IAudioMetadata): {
-  trackGainDb: number | null
-  albumGainDb: number | null
-} {
-  const common = metadata.common as unknown as Record<string, unknown>
-  let trackGainDb = normalizeReplayGainDb(common.replaygain_track_gain)
-  let albumGainDb = normalizeReplayGainDb(common.replaygain_album_gain)
-
-  for (const [key, rawValue] of Object.entries(common)) {
-    if (trackGainDb == null && isTrackReplayGainTagId(key)) {
-      trackGainDb = normalizeReplayGainDb(rawValue)
-    }
-    if (albumGainDb == null && isAlbumReplayGainTagId(key)) {
-      albumGainDb = normalizeReplayGainDb(rawValue)
-    }
-    if (trackGainDb != null && albumGainDb != null) {
-      break
-    }
-  }
-
-  return {
-    trackGainDb,
-    albumGainDb
-  }
-}
-
-function extractReplayGainFromNative(metadata: mm.IAudioMetadata): {
-  trackGainDb: number | null
-  albumGainDb: number | null
-} {
-  let trackGainDb: number | null = null
-  let albumGainDb: number | null = null
-  const nativeCollections = Object.values(metadata.native ?? {})
-
-  for (const tags of nativeCollections) {
-    if (!Array.isArray(tags)) continue
-    for (const rawTag of tags) {
-      if (!rawTag || typeof rawTag !== 'object') continue
-      const tag = rawTag as { id?: unknown; value?: unknown }
-      const id = typeof tag.id === 'string' ? tag.id : ''
-      if (!id) continue
-
-      if (trackGainDb == null && isTrackReplayGainTagId(id)) {
-        trackGainDb = normalizeReplayGainDb(tag.value)
-      }
-      if (albumGainDb == null && isAlbumReplayGainTagId(id)) {
-        albumGainDb = normalizeReplayGainDb(tag.value)
-      }
-
-      if (trackGainDb != null && albumGainDb != null) {
-        return { trackGainDb, albumGainDb }
-      }
-    }
-  }
-
-  return { trackGainDb, albumGainDb }
-}
-
-function extractReplayGainDb(metadata: mm.IAudioMetadata): {
-  trackGainDb: number | null
-  albumGainDb: number | null
-} {
-  const commonReplayGain = extractReplayGainFromCommon(metadata)
-  const nativeReplayGain = extractReplayGainFromNative(metadata)
-  const trackGainDb = commonReplayGain.trackGainDb
-    ?? normalizeReplayGainDb(metadata.format.trackGain)
-    ?? nativeReplayGain.trackGainDb
-  const albumGainDb = commonReplayGain.albumGainDb
-    ?? normalizeReplayGainDb(metadata.format.albumGain)
-    ?? nativeReplayGain.albumGainDb
-
-  return {
-    trackGainDb,
-    albumGainDb
-  }
 }
 
 function normalizeBpm(value: unknown): number | null {

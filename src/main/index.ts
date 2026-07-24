@@ -93,6 +93,7 @@ import { collectAppMemoryFootprint } from './services/appMemoryFootprint'
 import { normalizeStatsShareFileName, validateStatsSharePng } from './services/statsShareImage'
 import { normalizeSignalShareFileName, validateSignalSharePng } from './services/signalShareImage'
 import { getMusicMetadataParseOptions } from './utils/musicMetadata'
+import { extractReplayGainDb } from './utils/replayGain'
 import {
   MINI_WINDOW_MAX_HEIGHT,
   MINI_WINDOW_MAX_WIDTH,
@@ -477,7 +478,7 @@ const GENRE_METADATA_BACKFILL_STARTUP_DELAY_MS = 16_500
 const GENRE_METADATA_BACKFILL_MIGRATION_KEY = 'genre_metadata_backfill_v1_done'
 const REPLAYGAIN_BACKFILL_STARTUP_DELAY_MS = 17_000
 const REPLAYGAIN_SCAN_ENABLED_META_KEY = 'replaygain_scan_enabled_v1'
-const REPLAYGAIN_BACKFILL_MIGRATION_KEY = 'replaygain_backfill_v2_done'
+const REPLAYGAIN_BACKFILL_MIGRATION_KEY = 'replaygain_backfill_v3_done'
 const RUNTIME_ICON_DATA_URL_PREFIX = 'data:image/'
 const MAX_RUNTIME_ICON_DATA_URL_LENGTH = 2_000_000
 const MAX_RUNTIME_ICON_IMAGE_SET_DATA_URL_LENGTH = 3_500_000
@@ -9263,110 +9264,6 @@ function toNumberOrUndefined(value: unknown): number | undefined {
   return undefined
 }
 
-function normalizeReplayGainTagId(id: string): string {
-  return id.trim().toLowerCase().replace(/[\s-]+/g, '_')
-}
-
-function isTrackReplayGainTagId(id: string): boolean {
-  const normalized = normalizeReplayGainTagId(id)
-  return normalized.includes('replaygain_track_gain') || normalized.includes('rg_track_gain')
-}
-
-function isAlbumReplayGainTagId(id: string): boolean {
-  const normalized = normalizeReplayGainTagId(id)
-  return normalized.includes('replaygain_album_gain') || normalized.includes('rg_album_gain')
-}
-
-function toReplayGainNumberOrUndefined(value: unknown): number | undefined {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value
-  }
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      const parsed = toReplayGainNumberOrUndefined(entry)
-      if (parsed != null) return parsed
-    }
-    return undefined
-  }
-  if (typeof value === 'string') {
-    const trimmed = value.trim()
-    if (!trimmed) return undefined
-
-    const parsed = Number(trimmed)
-    if (Number.isFinite(parsed)) return parsed
-
-    const withDbSuffix = trimmed.replace(/\s*dB\s*$/i, '').trim()
-    const parsedWithDbSuffix = Number(withDbSuffix)
-    if (Number.isFinite(parsedWithDbSuffix)) return parsedWithDbSuffix
-
-    const match = trimmed.match(/[+-]?\d+(?:[.,]\d+)?/)
-    if (!match) return undefined
-    const parsedFromMatch = Number(match[0].replace(',', '.'))
-    return Number.isFinite(parsedFromMatch) ? parsedFromMatch : undefined
-  }
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>
-    const candidates: unknown[] = [record.dB, record.db, record.gain, record.value, record.text]
-    for (const candidate of candidates) {
-      const parsed = toReplayGainNumberOrUndefined(candidate)
-      if (parsed != null) return parsed
-    }
-  }
-  return undefined
-}
-
-function extractReplayGainDb(metadata: mm.IAudioMetadata): {
-  trackGainDb?: number
-  albumGainDb?: number
-} {
-  const common = metadata.common as unknown as Record<string, unknown>
-  let trackGainDb = toReplayGainNumberOrUndefined(common.replaygain_track_gain)
-  let albumGainDb = toReplayGainNumberOrUndefined(common.replaygain_album_gain)
-
-  for (const [key, rawValue] of Object.entries(common)) {
-    if (trackGainDb == null && isTrackReplayGainTagId(key)) {
-      trackGainDb = toReplayGainNumberOrUndefined(rawValue)
-    }
-    if (albumGainDb == null && isAlbumReplayGainTagId(key)) {
-      albumGainDb = toReplayGainNumberOrUndefined(rawValue)
-    }
-    if (trackGainDb != null && albumGainDb != null) {
-      break
-    }
-  }
-
-  if (trackGainDb == null || albumGainDb == null) {
-    const nativeCollections = Object.values(metadata.native ?? {})
-    for (const tags of nativeCollections) {
-      if (!Array.isArray(tags)) continue
-      for (const rawTag of tags) {
-        if (!rawTag || typeof rawTag !== 'object') continue
-        const tag = rawTag as { id?: unknown; value?: unknown }
-        const id = typeof tag.id === 'string' ? tag.id : ''
-        if (!id) continue
-
-        if (trackGainDb == null && isTrackReplayGainTagId(id)) {
-          trackGainDb = toReplayGainNumberOrUndefined(tag.value)
-        }
-        if (albumGainDb == null && isAlbumReplayGainTagId(id)) {
-          albumGainDb = toReplayGainNumberOrUndefined(tag.value)
-        }
-        if (trackGainDb != null && albumGainDb != null) {
-          break
-        }
-      }
-      if (trackGainDb != null && albumGainDb != null) {
-        break
-      }
-    }
-  }
-
-  return {
-    trackGainDb: trackGainDb ?? toReplayGainNumberOrUndefined(metadata.format.trackGain),
-    albumGainDb: albumGainDb ?? toReplayGainNumberOrUndefined(metadata.format.albumGain)
-  }
-}
-
 function collectFfprobeHints(stream: Record<string, unknown>, format?: Record<string, unknown>): string[] {
   const hints: string[] = []
   const push = (value: unknown) => {
@@ -10248,10 +10145,10 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
       codecProfile: mm_metadata.format.codecProfile,
       isAtmosJoc: isAtmosJocStream(mm_metadata.format.codec, mm_metadata.format.codecProfile),
       replayGainTrackDb: replayGainScanEnabled
-        ? replayGain.trackGainDb
+        ? (replayGain.trackGainDb ?? undefined)
         : undefined,
       replayGainAlbumDb: replayGainScanEnabled
-        ? replayGain.albumGainDb
+        ? (replayGain.albumGainDb ?? undefined)
         : undefined
     }
   } catch {
