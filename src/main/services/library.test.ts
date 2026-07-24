@@ -375,7 +375,12 @@ test('detailed listening checkpoints qualify once, stay idempotent, and reset wi
   assert.equal(library.getRecentlyPlayed(10).filter((track) => track.path === trackPath).length, 1)
   assert.equal(library.getPlaylists().find((entry) => entry.id === playlist.id)?.last_played_at, 1_005_000)
 
-  const dashboard = library.getListeningStatsDashboard({ range: 'all', rankingMetric: 'plays', now: 1_006_000 })
+  const dashboard = library.getListeningStatsDashboard({
+    range: 'all',
+    rankingMetric: 'plays',
+    artistBrowseMode: 'canonical',
+    now: 1_006_000
+  })
   assert.equal(dashboard.summary.listenedSeconds, 5)
   assert.equal(dashboard.summary.qualifiedPlays, 1)
   assert.equal(dashboard.summary.tracksPlayed, 1)
@@ -398,7 +403,12 @@ test('detailed listening checkpoints qualify once, stay idempotent, and reset wi
     qualificationEligible: true
   })
   assert.equal(staleAfterReset.accepted, false)
-  assert.equal(library.getListeningStatsDashboard({ range: 'all', rankingMetric: 'plays', now: 1_011_000 }).status.startedAt, null)
+  assert.equal(library.getListeningStatsDashboard({
+    range: 'all',
+    rankingMetric: 'plays',
+    artistBrowseMode: 'canonical',
+    now: 1_011_000
+  }).status.startedAt, null)
   assert.equal(library.getTrackByPath(trackPath)?.play_count, 1)
   assert.equal(library.getRecentlyPlayed(10).filter((track) => track.path === trackPath).length, 1)
 })
@@ -430,6 +440,7 @@ test('listening stats allocate overlapping segments to local buckets', async (t)
   const dashboard = library.getListeningStatsDashboard({
     range: '30d',
     rankingMetric: 'time',
+    artistBrowseMode: 'canonical',
     now: midnight + 120_000
   })
   const previousDay = dashboard.activity.find((bucket) => bucket.startAt === midnight - 86_400_000)
@@ -442,9 +453,15 @@ test('listening stats allocate overlapping segments to local buckets', async (t)
   assert.equal(dashboard.summary.activeDays, 2)
   assert.equal(dashboard.summary.qualifiedPlays, 0)
 
-  const sevenDays = library.getListeningStatsDashboard({ range: '7d', rankingMetric: 'time', now: midnight + 120_000 })
-  const oneYear = library.getListeningStatsDashboard({ range: '1y', rankingMetric: 'time', now: midnight + 120_000 })
-  const allTime = library.getListeningStatsDashboard({ range: 'all', rankingMetric: 'time', now: midnight + 120_000 })
+  const sevenDays = library.getListeningStatsDashboard({
+    range: '7d', rankingMetric: 'time', artistBrowseMode: 'canonical', now: midnight + 120_000
+  })
+  const oneYear = library.getListeningStatsDashboard({
+    range: '1y', rankingMetric: 'time', artistBrowseMode: 'canonical', now: midnight + 120_000
+  })
+  const allTime = library.getListeningStatsDashboard({
+    range: 'all', rankingMetric: 'time', artistBrowseMode: 'canonical', now: midnight + 120_000
+  })
   assert.equal(sevenDays.granularity, 'day')
   assert.equal(sevenDays.activity.length, 7)
   assert.equal(oneYear.granularity, 'week')
@@ -485,15 +502,21 @@ test('listening rankings switch between plays and time and retain snapshots for 
   await checkpoint('track-b-one', 'subsonic://1/split-b', 60, 100)
 
   const queryNow = base + 180_000
-  const byPlays = library.getListeningStatsDashboard({ range: 'all', rankingMetric: 'plays', now: queryNow })
-  const byTime = library.getListeningStatsDashboard({ range: 'all', rankingMetric: 'time', now: queryNow })
+  const byPlays = library.getListeningStatsDashboard({
+    range: 'all', rankingMetric: 'plays', artistBrowseMode: 'canonical', now: queryNow
+  })
+  const byTime = library.getListeningStatsDashboard({
+    range: 'all', rankingMetric: 'time', artistBrowseMode: 'canonical', now: queryNow
+  })
   assert.equal(byPlays.topTracks[0]?.title, 'Split A')
   assert.equal(byPlays.topTracks[0]?.qualifiedPlays, 2)
   assert.equal(byTime.topTracks[0]?.title, 'Split B')
   assert.equal(Math.round(byTime.topTracks[0]?.listenedSeconds ?? 0), 100)
 
   await library.deleteSubsonicSource(1, true)
-  const afterRemoval = library.getListeningStatsDashboard({ range: 'all', rankingMetric: 'plays', now: queryNow })
+  const afterRemoval = library.getListeningStatsDashboard({
+    range: 'all', rankingMetric: 'plays', artistBrowseMode: 'canonical', now: queryNow
+  })
   assert.equal(afterRemoval.topTracks[0]?.title, 'Split A')
   assert.equal(afterRemoval.topTracks[0]?.available, false)
   assert.equal(afterRemoval.topTracks[0]?.trackPath, null)
@@ -501,17 +524,117 @@ test('listening rankings switch between plays and time and retain snapshots for 
   assert.equal(afterRemoval.topAlbums.some((album) => album.album === 'Split Release'), true)
 })
 
-function updateStoredArtistCredits(userDataDir: string, trackPath: string, artistNames: readonly string[]): void {
+function updateStoredArtistCredits(
+  userDataDir: string,
+  trackPath: string,
+  artistNames: readonly string[],
+  albumArtistNames: readonly string[] | null = null
+): void {
   const directDb = new TestSqliteDatabase(join(userDataDir, 'library.db'))
   try {
-    directDb.prepare('UPDATE tracks SET artist_names_json = ? WHERE path = ?').run(
+    directDb.prepare(`
+      UPDATE tracks
+      SET artist_names_json = ?, album_artist_names_json = ?
+      WHERE path = ?
+    `).run(
       JSON.stringify(artistNames),
+      albumArtistNames ? JSON.stringify(albumArtistNames) : null,
       trackPath
     )
   } finally {
     directDb.close()
   }
 }
+
+test('listening stats follow strict and canonical artist grouping without inflating totals', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({
+    name: 'Stats Artist Source',
+    base_url: 'https://stats-artists.example.test',
+    username: 'tester',
+    secret_encrypted: 'secret',
+    enabled: 1,
+    last_status: 'ok'
+  })
+  const trackPath = 'subsonic://stats-artists/collaboration'
+  await library.upsertSubsonicTracks(source.id, [
+    createRemoteTrack({
+      path: trackPath,
+      source_track_id: 'collaboration',
+      title: 'Shared Song',
+      artist: 'Primary Artist & Guest Artist',
+      album: 'Shared Release',
+      album_artist: 'Primary Artist feat. Guest Artist',
+      duration: 180
+    })
+  ])
+  updateStoredArtistCredits(
+    userDataDir,
+    trackPath,
+    ['Primary Artist', 'Guest Artist'],
+    ['Primary Artist', 'Guest Artist']
+  )
+
+  const status = library.getListeningHistoryStatus()
+  const startedAt = 2_000_000
+  await library.checkpointListeningSession({
+    generation: status.generation,
+    sessionKey: 'artist-grouping-session',
+    segmentKey: 'artist-grouping-segment',
+    trackPath,
+    sourcePlaylistId: null,
+    sessionStartedAt: startedAt,
+    segmentStartedAt: startedAt,
+    observedAt: startedAt + 30_000,
+    sessionListenedSeconds: 30,
+    segmentListenedSeconds: 30,
+    trackDurationSeconds: 180,
+    qualificationEligible: true,
+    finalizeSegment: true,
+    finalizeSession: true
+  })
+
+  const queryNow = startedAt + 60_000
+  const strict = library.getListeningStatsDashboard({
+    range: 'all',
+    rankingMetric: 'plays',
+    artistBrowseMode: 'strict',
+    now: queryNow
+  })
+  assert.deepEqual(strict.topArtists.map((artist) => artist.artist), ['Primary Artist feat. Guest Artist'])
+  assert.equal(strict.topArtists[0]?.qualifiedPlays, 1)
+  assert.equal(strict.topArtists[0]?.listenedSeconds, 30)
+
+  const canonical = library.getListeningStatsDashboard({
+    range: 'all',
+    rankingMetric: 'plays',
+    artistBrowseMode: 'canonical',
+    now: queryNow
+  })
+  const primaryArtist = canonical.topArtists.find((artist) => artist.artist === 'Primary Artist')
+  const guestArtist = canonical.topArtists.find((artist) => artist.artist === 'Guest Artist')
+  assert.ok(primaryArtist)
+  assert.ok(guestArtist)
+  assert.equal(primaryArtist.qualifiedPlays, 1)
+  assert.equal(primaryArtist.listenedSeconds, 30)
+  assert.equal(guestArtist.qualifiedPlays, 1)
+  assert.equal(guestArtist.listenedSeconds, 30)
+  assert.equal(canonical.summary.qualifiedPlays, 1)
+  assert.equal(canonical.summary.listenedSeconds, 30)
+  assert.equal(canonical.summary.tracksPlayed, 1)
+
+  await library.deleteSubsonicSource(source.id, true)
+  const afterRemoval = library.getListeningStatsDashboard({
+    range: 'all',
+    rankingMetric: 'plays',
+    artistBrowseMode: 'canonical',
+    now: queryNow
+  })
+  assert.equal(afterRemoval.topTracks[0]?.title, 'Shared Song')
+  assert.equal(afterRemoval.topTracks[0]?.available, false)
+  assert.equal(afterRemoval.topArtists.length > 0, true)
+  assert.equal(afterRemoval.topArtists.every((artist) => !artist.available), true)
+})
 
 function updateStoredGenreStorage(
   userDataDir: string,
@@ -2751,7 +2874,12 @@ test('stats transfer round trips into the same library without changing anything
     lastPlayedAt: library.getTrackByPath('subsonic://1/teen-1')?.last_played_at,
     ratings: library.getTrackRatingEntries(),
     favorites: library.getFavorites().map((track) => track.path),
-    dashboard: library.getListeningStatsDashboard({ range: 'all', rankingMetric: 'plays', now: 1_700_000_100_000 })
+    dashboard: library.getListeningStatsDashboard({
+      range: 'all',
+      rankingMetric: 'plays',
+      artistBrowseMode: 'canonical',
+      now: 1_700_000_100_000
+    })
   }
 
   const bundle = library.exportListeningStatsTransfer({ includeHistory: true })
@@ -2771,7 +2899,12 @@ test('stats transfer round trips into the same library without changing anything
   assert.deepEqual(library.getTrackRatingEntries(), before.ratings)
   assert.deepEqual(library.getFavorites().map((track) => track.path), before.favorites)
 
-  const after = library.getListeningStatsDashboard({ range: 'all', rankingMetric: 'plays', now: 1_700_000_100_000 })
+  const after = library.getListeningStatsDashboard({
+    range: 'all',
+    rankingMetric: 'plays',
+    artistBrowseMode: 'canonical',
+    now: 1_700_000_100_000
+  })
   assert.equal(after.summary.listenedSeconds, before.dashboard.summary.listenedSeconds)
   assert.equal(after.summary.qualifiedPlays, before.dashboard.summary.qualifiedPlays)
 })
@@ -2970,6 +3103,7 @@ test('imported history lands under the local generation without touching play co
   const dashboard = library.getListeningStatsDashboard({
     range: 'all',
     rankingMetric: 'plays',
+    artistBrowseMode: 'canonical',
     now: 1_600_000_300_000
   })
   assert.equal(dashboard.status.generation, generation)
@@ -2998,6 +3132,7 @@ test('history for a track missing from this library still imports and renders', 
   const dashboard = library.getListeningStatsDashboard({
     range: 'all',
     rankingMetric: 'plays',
+    artistBrowseMode: 'canonical',
     now: 1_600_000_300_000
   })
   assert.equal(dashboard.summary.qualifiedPlays, 1)
@@ -3310,6 +3445,7 @@ test('counts and history resolve independently despite sharing index numbers', a
   const dashboard = library.getListeningStatsDashboard({
     range: 'all',
     rankingMetric: 'plays',
+    artistBrowseMode: 'canonical',
     now: 1_600_000_300_000
   })
   const ranked = dashboard.topTracks.find((entry) => entry.qualifiedPlays > 0)
@@ -3360,6 +3496,7 @@ test('stats from a different machine resolve onto the local library by metadata'
   const dashboard = library.getListeningStatsDashboard({
     range: 'all',
     rankingMetric: 'plays',
+    artistBrowseMode: 'canonical',
     now: 1_600_000_300_000
   })
   const ranked = dashboard.topTracks.find((entry) => entry.title === 'Teen Intro')
@@ -3444,7 +3581,7 @@ test('an external import lands on matched tracks and is attributed to its source
   assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 6)
 
   const dashboard = library.getListeningStatsDashboard({
-    range: 'all', rankingMetric: 'time', now: 1_750_500_000_000
+    range: 'all', rankingMetric: 'time', artistBrowseMode: 'canonical', now: 1_750_500_000_000
   })
   assert.equal(dashboard.summary.qualifiedPlays, 2)
   assert.equal(dashboard.summary.listenedSeconds, 360)
@@ -3501,12 +3638,12 @@ test('re-importing the same external file changes nothing', async (t) => {
 
   await library.applyExternalListeningImport(buildImportFile())
   const first = library.getListeningStatsDashboard({
-    range: 'all', rankingMetric: 'time', now: 1_750_500_000_000
+    range: 'all', rankingMetric: 'time', artistBrowseMode: 'canonical', now: 1_750_500_000_000
   })
 
   const second = await library.applyExternalListeningImport(buildImportFile())
   const after = library.getListeningStatsDashboard({
-    range: 'all', rankingMetric: 'time', now: 1_750_500_000_000
+    range: 'all', rankingMetric: 'time', artistBrowseMode: 'canonical', now: 1_750_500_000_000
   })
 
   assert.equal(second.sessionsInserted, 0)
@@ -3647,7 +3784,7 @@ test('removing an imported source leaves locally recorded listening intact', asy
   assert.deepEqual(library.getImportedListeningSources(), [])
 
   const dashboard = library.getListeningStatsDashboard({
-    range: 'all', rankingMetric: 'time', now: 1_750_500_000_000
+    range: 'all', rankingMetric: 'time', artistBrowseMode: 'canonical', now: 1_750_500_000_000
   })
   assert.equal(dashboard.summary.qualifiedPlays, 1)
   assert.equal(dashboard.summary.listenedSeconds, 90)
@@ -3707,7 +3844,7 @@ test('an external listen for a track outside the library still records', async (
 
   assert.equal(result.identitiesUnmatched, 1)
   const dashboard = library.getListeningStatsDashboard({
-    range: 'all', rankingMetric: 'time', now: 1_750_500_000_000
+    range: 'all', rankingMetric: 'time', artistBrowseMode: 'canonical', now: 1_750_500_000_000
   })
   const ranked = dashboard.topTracks.find((entry) => entry.title === 'Unknown Song')
   assert.ok(ranked)
@@ -3723,7 +3860,7 @@ test('an external listen can be recorded without counting as a play', async (t) 
   }))
 
   const dashboard = library.getListeningStatsDashboard({
-    range: 'all', rankingMetric: 'time', now: 1_750_500_000_000
+    range: 'all', rankingMetric: 'time', artistBrowseMode: 'canonical', now: 1_750_500_000_000
   })
   assert.equal(dashboard.summary.listenedSeconds, 180, 'time still counts')
   assert.equal(dashboard.summary.qualifiedPlays, 0, 'but it is not a play')

@@ -8294,8 +8294,10 @@ interface ListeningSessionRow {
   current_path: string | null
   current_title: string | null
   current_artist: string | null
+  current_artist_names_json: string | null
   current_album: string | null
   current_album_artist: string | null
+  current_album_artist_names_json: string | null
   current_artwork_hash: string | null
   current_is_available: number | null
 }
@@ -8312,6 +8314,7 @@ interface ListeningIdentity {
   trackPath: string | null
   title: string
   artist: string
+  browseArtists: string[]
   album: string
   albumKey: string
   artworkHash: string | null
@@ -8678,18 +8681,32 @@ function getSegmentOverlapSeconds(
   return listenedSeconds * Math.min(1, overlapMs / wallDurationMs)
 }
 
-function resolveListeningIdentity(session: ListeningSessionRow): ListeningIdentity {
+function resolveListeningIdentity(
+  session: ListeningSessionRow,
+  artistBrowseMode: ArtistBrowseMode
+): ListeningIdentity {
   const available = session.current_path !== null && session.current_is_available === 1
   const title = session.current_title?.trim() || session.title
   const artist = session.current_artist?.trim() || session.artist
   const album = session.current_album?.trim() || session.album
-  const albumArtist = session.current_album_artist?.trim() || session.album_artist?.trim() || artist
+  const currentAlbumArtist = session.current_album_artist?.trim() || session.album_artist?.trim() || null
+  const albumArtist = currentAlbumArtist || artist
+  const artistTrack = {
+    artist,
+    album_artist: currentAlbumArtist,
+    artist_names_json: session.current_artist_names_json,
+    album_artist_names_json: session.current_album_artist_names_json
+  }
+  const browseArtists = artistBrowseMode === 'strict'
+    ? [resolveStrictBrowseArtist(artistTrack)]
+    : getCanonicalArtistIndexNames(artistTrack)
   const snapshotKey = `${normalizeKey(session.artist)}\u0000${normalizeKey(session.album)}\u0000${normalizeKey(session.title)}`
   return {
     trackKey: session.track_id !== null ? `track:${session.track_id}` : `snapshot:${snapshotKey}`,
     trackPath: available ? session.current_path : null,
     title,
     artist,
+    browseArtists,
     album,
     albumKey: session.album_identity_key || `${normalizeKey(albumArtist)}\u0000${normalizeKey(album)}`,
     artworkHash: session.current_artwork_hash?.trim() || session.artwork_hash,
@@ -8717,6 +8734,7 @@ export function getListeningStatsDashboard(query: ListeningStatsQuery): Listenin
   const status = getListeningHistoryStatus()
   const range = normalizeListeningStatsRange(query?.range)
   const rankingMetric = normalizeListeningStatsRankingMetric(query?.rankingMetric)
+  const artistBrowseMode = normalizeArtistBrowseMode(query?.artistBrowseMode)
   const now = finiteTimestamp(query?.now, Date.now())
   const rangeStartAt = getListeningStatsRangeStart(range, now, status.startedAt)
   const bucketResult = buildListeningActivityBuckets(range, rangeStartAt, now)
@@ -8754,8 +8772,16 @@ export function getListeningStatsDashboard(query: ListeningStatsQuery): Listenin
       t.path AS current_path,
       COALESCE(o.title, t.title) AS current_title,
       COALESCE(o.artist, t.artist) AS current_artist,
+      CASE
+        WHEN o.artist IS NULL THEN t.artist_names_json
+        ELSE NULL
+      END AS current_artist_names_json,
       COALESCE(o.album, t.album) AS current_album,
       COALESCE(o.album_artist, t.album_artist) AS current_album_artist,
+      CASE
+        WHEN o.album_artist IS NULL THEN t.album_artist_names_json
+        ELSE NULL
+      END AS current_album_artist_names_json,
       CASE WHEN o.artwork_cleared = 1 THEN NULL ELSE COALESCE(o.artwork_hash, t.artwork_hash) END AS current_artwork_hash,
       t.is_available AS current_is_available
     FROM listening_sessions s
@@ -8809,21 +8835,25 @@ export function getListeningStatsDashboard(query: ListeningStatsQuery): Listenin
       trackAggregates.set(identity.trackKey, track)
     }
 
-    const artistKey = normalizeKey(identity.artist) || identity.artist
-    let artist = artistAggregates.get(artistKey)
-    if (!artist) {
-      artist = {
-        key: artistKey,
-        artist: identity.artist,
-        artworkHash: identity.artworkHash,
-        listenedSeconds: 0,
-        qualifiedPlays: 0,
-        available: identity.available
+    const artists: ListeningStatsRankedArtist[] = []
+    for (const browseArtist of identity.browseArtists) {
+      const artistKey = normalizeKey(browseArtist) || browseArtist
+      let artist = artistAggregates.get(artistKey)
+      if (!artist) {
+        artist = {
+          key: artistKey,
+          artist: browseArtist,
+          artworkHash: identity.artworkHash,
+          listenedSeconds: 0,
+          qualifiedPlays: 0,
+          available: identity.available
+        }
+        artistAggregates.set(artistKey, artist)
+      } else {
+        artist.available ||= identity.available
+        artist.artworkHash ||= identity.artworkHash
       }
-      artistAggregates.set(artistKey, artist)
-    } else {
-      artist.available ||= identity.available
-      artist.artworkHash ||= identity.artworkHash
+      artists.push(artist)
     }
 
     let album = albumAggregates.get(identity.albumKey)
@@ -8842,7 +8872,7 @@ export function getListeningStatsDashboard(query: ListeningStatsQuery): Listenin
       album.available ||= identity.available
       album.artworkHash ||= identity.artworkHash
     }
-    return { track, artist, album }
+    return { track, artists, album }
   }
 
   for (const segment of segments) {
@@ -8850,10 +8880,12 @@ export function getListeningStatsDashboard(query: ListeningStatsQuery): Listenin
     if (!session) continue
     const overlapSeconds = getSegmentOverlapSeconds(segment, rangeStartAt, now + 1)
     if (overlapSeconds <= 0) continue
-    const identity = resolveListeningIdentity(session)
+    const identity = resolveListeningIdentity(session, artistBrowseMode)
     const aggregates = ensureAggregates(identity)
     aggregates.track.listenedSeconds += overlapSeconds
-    aggregates.artist.listenedSeconds += overlapSeconds
+    for (const artist of aggregates.artists) {
+      artist.listenedSeconds += overlapSeconds
+    }
     aggregates.album.listenedSeconds += overlapSeconds
     tracksPlayed.add(identity.trackKey)
     listenedSeconds += overlapSeconds
@@ -8872,10 +8904,12 @@ export function getListeningStatsDashboard(query: ListeningStatsQuery): Listenin
 
   for (const session of sessions) {
     if (session.qualified_at === null || session.qualified_at < rangeStartAt || session.qualified_at > now) continue
-    const identity = resolveListeningIdentity(session)
+    const identity = resolveListeningIdentity(session, artistBrowseMode)
     const aggregates = ensureAggregates(identity)
     aggregates.track.qualifiedPlays += 1
-    aggregates.artist.qualifiedPlays += 1
+    for (const artist of aggregates.artists) {
+      artist.qualifiedPlays += 1
+    }
     aggregates.album.qualifiedPlays += 1
     qualifiedPlays += 1
     const bucket = bucketResult.buckets.find((candidate) => (

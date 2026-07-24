@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { ListeningHistoryStatus, ListeningStatsDashboard } from '../../types/listeningStats.ts'
+import type {
+  ListeningHistoryStatus,
+  ListeningStatsDashboard,
+  ListeningStatsQuery
+} from '../../types/listeningStats.ts'
+import { useLibraryStore } from './libraryStore.ts'
 import { useListeningStatsStore } from './listeningStatsStore.ts'
 import { usePlayerStore } from './playerStore.ts'
 
@@ -25,6 +30,42 @@ test('Listening Stats defaults to 30D and play rankings', () => {
   useListeningStatsStore.setState({ range: '30d', rankingMetric: 'plays' })
   assert.equal(useListeningStatsStore.getState().range, '30d')
   assert.equal(useListeningStatsStore.getState().rankingMetric, 'plays')
+})
+
+test('dashboard requests include the current artist browse mode', async () => {
+  const queries: ListeningStatsQuery[] = []
+  const originalArtistBrowseMode = useLibraryStore.getState().artistBrowseMode
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      electronAPI: {
+        library: {
+          getListeningStatsDashboard: async (query: ListeningStatsQuery) => {
+            queries.push(query)
+            return emptyDashboard({
+              range: query.range,
+              rankingMetric: query.rankingMetric
+            })
+          }
+        }
+      }
+    }
+  })
+
+  try {
+    useListeningStatsStore.setState({ range: '7d', rankingMetric: 'time' })
+    useLibraryStore.setState({ artistBrowseMode: 'strict' })
+    await useListeningStatsStore.getState().loadDashboard()
+    useLibraryStore.setState({ artistBrowseMode: 'canonical' })
+    await useListeningStatsStore.getState().loadDashboard()
+
+    assert.deepEqual(queries, [
+      { range: '7d', rankingMetric: 'time', artistBrowseMode: 'strict' },
+      { range: '7d', rankingMetric: 'time', artistBrowseMode: 'canonical' }
+    ])
+  } finally {
+    useLibraryStore.setState({ artistBrowseMode: originalArtistBrowseMode })
+  }
 })
 
 test('clearing detailed history resets active player tracking generation and reloads an empty dashboard', async () => {

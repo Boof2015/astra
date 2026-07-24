@@ -33,6 +33,7 @@ export interface ListeningSessionCheckpointResult {
 export interface ListeningStatsQuery {
   range: ListeningStatsRange
   rankingMetric: ListeningStatsRankingMetric
+  artistBrowseMode: 'strict' | 'canonical'
   now?: number
 }
 

@@ -6,6 +6,7 @@ import type {
   ListeningStatsRankingMetric
 } from '../../types/listeningStats'
 import { LISTENING_STATS_ENABLED_STORAGE_KEY } from '../constants/settingsStorageKeys'
+import { useLibraryStore } from './libraryStore'
 import { usePlayerStore } from './playerStore'
 
 function readEnabledPreference(): boolean {
@@ -71,7 +72,12 @@ export const useListeningStatsStore = create<ListeningStatsStore>((set, get) => 
     set({ isLoading: true, error: null })
     try {
       const { range, rankingMetric } = get()
-      const dashboard = await window.electronAPI.library.getListeningStatsDashboard({ range, rankingMetric })
+      const { artistBrowseMode } = useLibraryStore.getState()
+      const dashboard = await window.electronAPI.library.getListeningStatsDashboard({
+        range,
+        rankingMetric,
+        artistBrowseMode
+      })
       if (requestId !== dashboardRequestId) return
       set({ dashboard, isLoading: false, error: null })
     } catch (error) {

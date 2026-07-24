@@ -157,6 +157,7 @@ export default function StatsView() {
   const setRankingMetric = useListeningStatsStore((state) => state.setRankingMetric)
   const loadDashboard = useListeningStatsStore((state) => state.loadDashboard)
   const setActiveView = useUIStore((state) => state.setActiveView)
+  const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
   const setLibraryViewMode = useLibraryStore((state) => state.setViewMode)
   const selectArtist = useLibraryStore((state) => state.selectArtist)
   const selectAlbum = useLibraryStore((state) => state.selectAlbum)
@@ -182,7 +183,7 @@ export default function StatsView() {
       window.removeEventListener('astra:listening-history-checkpoint', handleCheckpoint)
       if (checkpointRefreshTimeout != null) window.clearTimeout(checkpointRefreshTimeout)
     }
-  }, [loadDashboard])
+  }, [artistBrowseMode, loadDashboard])
 
   const playableTrackPaths = useMemo(
     () => dashboard?.topTracks.flatMap((track) => track.available && track.trackPath ? [track.trackPath] : []) ?? [],
