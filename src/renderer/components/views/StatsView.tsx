@@ -135,7 +135,7 @@ function RankingCard<T>({
                   <span className="listening-stats-ranking-copy">
                     <span className="listening-stats-ranking-title">{getTitle(item)}</span>
                     <span className="listening-stats-ranking-subtitle">
-                      {getSubtitle(item)}{available ? '' : translate('common:auto.statsview.removed_from_library')}
+                      {getSubtitle(item)}{available ? '' : ' ' + translate('common:auto.statsview.removed_from_library')}
                     </span>
                   </span>
                   <RankingValue plays={getPlays(item)} seconds={getSeconds(item)} />

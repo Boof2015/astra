@@ -1212,7 +1212,7 @@ export default function HomeView() {
               <span className="home-greeting-stat-value">{formatExactDuration(totalTrackDuration)}</span>
             </div>
             <div className="home-greeting-stat">
-              <span className="home-greeting-stat-label"><LocalizedText ns="playback" i18nKey="auto.homeview.tracks" /></span>
+              <span className="home-greeting-stat-label"><LocalizedText ns="playback" i18nKey="auto.homeview.tracks_3dd1a4d" /></span>
               <span className="home-greeting-stat-value">{totalTrackCount}</span>
             </div>
             <div className="home-greeting-stat">
@@ -1430,7 +1430,7 @@ export default function HomeView() {
                   />
                   <div className="home-playlist-rail-meta">
                     <div className="home-playlist-rail-name">{playlist.name}</div>
-                    <div className="home-playlist-rail-count">{playlist.kind === 'dynamic' ? translate('playback:auto.homeview.dynamic') : ''}{playlist.track_count}  <LocalizedText ns="playback" i18nKey="auto.homeview.tracks" /></div>
+                    <div className="home-playlist-rail-count">{playlist.kind === 'dynamic' ? translate('playback:auto.homeview.dynamic') + ' ' : ''}{playlist.track_count}  <LocalizedText ns="playback" i18nKey="auto.homeview.tracks" /></div>
                   </div>
                 </article>
               ))}

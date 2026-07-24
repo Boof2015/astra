@@ -719,7 +719,7 @@ export default function ChannelRoutingPanel() {
 
             <LocalizedText ns="settings" i18nKey="auto.channelroutingpanel.virtual_speaker_room_drag_speakers_around_the_listener_t" />
             {stereoUpmixMode !== 'ambient' && hasTrackChannels && resolvedTrackChannels === 2 && virtualSpeakers.length > 2
-              ? translate('settings:auto.channelroutingpanel.enable_ambient_upmix_to_fill_the_surround_speakers_from_')
+              ? ' ' + translate('settings:auto.channelroutingpanel.enable_ambient_upmix_to_fill_the_surround_speakers_from_')
               : ''}
           </p>
         )}

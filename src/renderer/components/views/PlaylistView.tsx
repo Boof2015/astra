@@ -979,7 +979,7 @@ export default function PlaylistView() {
                   <span className="playlist-browser-card-meta">
                     <span className="playlist-browser-card-name">{entry.name}</span>
                     <span className="playlist-browser-card-count">
-                      {entry.kind === 'dynamic' ? translate('playback:auto.playlistview.dynamic') : ''}
+                      {entry.kind === 'dynamic' ? translate('playback:auto.playlistview.dynamic') + ' ' : ''}
                       {entry.track_count} {entry.track_count === 1 ? translate('playback:auto.playlistview.track') : translate('playback:auto.playlistview.tracks')}
                       {entry.missing_track_count ? translate('playback:auto.playlistview.missingtrackcount_missing', { missingTrackCount: entry.missing_track_count }) : ''}
                     </span>
@@ -1151,7 +1151,7 @@ export default function PlaylistView() {
             ) : (
               <h2>
                 {playlistName}
-                {isDynamicPlaylist && <span className="playlist-kind-badge"><LocalizedText ns="playback" i18nKey="auto.playlistview.dynamic" /></span>}
+                {isDynamicPlaylist && <span className="playlist-kind-badge"><LocalizedText ns="playback" i18nKey="auto.playlistview.dynamic_ceb739d" /></span>}
               </h2>
             )}
             <div className="library-detail-meta-row">
@@ -1362,7 +1362,7 @@ export default function PlaylistView() {
                     <div className="playlist-reorder-index">{index + 1}</div>
                     <div className="playlist-reorder-title">{title}</div>
                     <div className="playlist-reorder-artist">{artist}</div>
-                    {isMissing && <div className="playlist-reorder-missing-label"><LocalizedText ns="playback" i18nKey="auto.playlistview.missing" /></div>}
+                    {isMissing && <div className="playlist-reorder-missing-label"><LocalizedText ns="playback" i18nKey="auto.playlistview.missing_92185dc" /></div>}
                   </div>
                 )
               })}

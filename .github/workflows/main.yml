@@ -74,6 +74,9 @@ jobs:
       - name: Build project
         run: npm run build
 
+      - name: Verify bundled translations
+        run: npm run i18n:verify-bundle
+
   build-smoke:
     name: Build Smoke (${{ matrix.os }})
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'

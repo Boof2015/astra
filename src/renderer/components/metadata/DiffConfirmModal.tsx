@@ -1,3 +1,4 @@
+import { Trans } from 'react-i18next'
 import LocalizedText from '../i18n/LocalizedText'
 import { translate, translateSourceText } from '../../i18n'
 import type { MetadataSaveMode } from '../../stores/metadataEditorStore'
@@ -47,12 +48,18 @@ export default function DiffConfirmModal({
 
         <div className="modal-body">
           <p className="metadata-diff-summary">
-            {translate('common:metadata.updateSummary', {
-              count: displayed.trackCount,
-              mode: translate(displayed.mode === 'file'
-                ? 'common:metadata.fileTagWrite'
-                : 'common:metadata.virtualOverride')
-            })}
+            <Trans
+              ns="common"
+              i18nKey="metadata.updateSummary"
+              count={displayed.trackCount}
+              values={{
+                count: displayed.trackCount,
+                mode: translate(displayed.mode === 'file'
+                  ? 'common:metadata.fileTagWrite'
+                  : 'common:metadata.virtualOverride')
+              }}
+              components={{ mode: <strong /> }}
+            />
           </p>
 
           <table className="metadata-diff-table">

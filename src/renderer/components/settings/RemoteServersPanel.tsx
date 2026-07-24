@@ -587,7 +587,7 @@ export default function RemoteServersPanel() {
                 <label className="settings-field">
                   <span className="settings-field-label">
 
-                    <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.password" />{editingSource !== null ? translate('settings:auto.remoteserverspanel.leave_blank_to_keep_existing') : ''}
+                    <LocalizedText ns="settings" i18nKey="auto.remoteserverspanel.password" />{editingSource !== null ? ' ' + translate('settings:auto.remoteserverspanel.leave_blank_to_keep_existing') : ''}
                   </span>
                   <input
                     className="settings-select"

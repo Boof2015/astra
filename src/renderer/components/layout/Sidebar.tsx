@@ -691,7 +691,7 @@ export default function Sidebar() {
               setCreatePlaylistTrackPaths(null)
               setIsCreatePlaylistModalOpen(true)
             }}
-            aria-label={translate('common:auto.sidebar.create_playlist')}
+            aria-label={translate('common:auto.sidebar.create_playlist_62c9884')}
             data-sidebar-tooltip="Create playlist"
             data-sidebar-drop-target="create-playlist"
           >

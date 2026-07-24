@@ -86,7 +86,7 @@
   },
   "navigationKeywords": {
     "eq": "eq, equalizer, bands, frequency, bass, treble",
-    "graph": "graph, network, artists, relationships, collaboration, map",
+    "graph": "graph, network, artists, relationships, collab, collaboration, map",
     "stats": "stats, listening, history, plays, play count, time",
     "library": "library, tracks, songs, browse, collection",
     "home": "home, dashboard, main",
@@ -103,8 +103,8 @@
     "play_other": "{{formattedCount}} plays"
   },
   "metadata": {
-    "updateSummary_one": "{{count}} track will be updated via {{mode}}.",
-    "updateSummary_other": "{{count}} tracks will be updated via {{mode}}.",
+    "updateSummary_one": "{{count}} track will be updated via <mode>{{mode}}</mode>.",
+    "updateSummary_other": "{{count}} tracks will be updated via <mode>{{mode}}</mode>.",
     "fileTagWrite": "file tag write",
     "virtualOverride": "virtual override"
   },
@@ -424,6 +424,7 @@
       "refreshing_library_index": "Refreshing library index...",
       "type_to_search_tracks_albums_artists_playlists_or_settin": "Type to search tracks, albums, artists, playlists, or settings",
       "queue": "queue",
+      "queue_d325fcd": "Queue",
       "tab": "Tab",
       "queue_next": "Queue next",
       "see_all_in_library_rarr": "See all in Library →",
@@ -433,6 +434,7 @@
     "sidebar": {
       "add_to_playlist": "Add to Playlist",
       "create_playlist": "Create Playlist",
+      "create_playlist_62c9884": "Create playlist",
       "create_playlist_8637490": "Create Playlist",
       "settings": "Settings",
       "close_playlists": "Close playlists",

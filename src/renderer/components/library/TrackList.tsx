@@ -582,7 +582,7 @@ function TrackListRowRenderer({
             )}
             <span className="track-title">{highlightSearchMatch(track.title, searchQuery)}</span>
             {isMissingPlaylistEntry && (
-              <span className="track-missing-playlist-label"><LocalizedText ns="library" i18nKey="auto.tracklist.missing" /></span>
+              <span className="track-missing-playlist-label"><LocalizedText ns="library" i18nKey="auto.tracklist.missing_92185dc" /></span>
             )}
             {isCurrentLoading && (
               <span className="track-loading-status">
@@ -715,7 +715,7 @@ function TrackListRowRenderer({
                   <button
                     className={`track-action-btn ${playlistPopupTrackPath === track.path ? 'track-playlist-trigger-open' : ''}`}
                     onClick={(event) => onOpenPlaylistPopup(event, track)}
-                    title={translate('library:auto.tracklist.add_to_playlist')}
+                    title={translate('library:auto.tracklist.add_to_playlist_3e241e3')}
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>
@@ -758,7 +758,7 @@ function TrackListRowRenderer({
               <button
                 className="track-action-btn track-action-btn-danger"
                 onClick={(event) => onRemoveFromPlaylist(event, track, trackIndex)}
-                title={translate('library:auto.tracklist.remove_from_playlist')}
+                title={translate('library:auto.tracklist.remove_from_playlist_ad3e5d8')}
                 disabled={isRemovingFromPlaylist}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

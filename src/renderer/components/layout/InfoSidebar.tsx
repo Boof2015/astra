@@ -116,8 +116,8 @@ export default function InfoSidebar() {
           <p className="info-lyrics-meta">
 
             <LocalizedText ns="common" i18nKey="auto.infosidebar.source" /> {bodyState.sourceLabel}
-            {translate('common:auto.infosidebar.synced')}
-            {bodyState.cached ? translate('common:auto.infosidebar.cached') : ''}
+            {' ' + translate('common:auto.infosidebar.synced')}
+            {bodyState.cached ? ' ' + translate('common:auto.infosidebar.cached') : ''}
           </p>
 
           <div
@@ -161,8 +161,8 @@ export default function InfoSidebar() {
           <p className="info-lyrics-meta">
 
             <LocalizedText ns="common" i18nKey="auto.infosidebar.source" /> {bodyState.sourceLabel}
-            {translate('common:auto.infosidebar.unsynced')}
-            {bodyState.cached ? translate('common:auto.infosidebar.cached') : ''}
+            {' ' + translate('common:auto.infosidebar.unsynced')}
+            {bodyState.cached ? ' ' + translate('common:auto.infosidebar.cached') : ''}
           </p>
           <pre className="info-lyrics-plain">{bodyState.plainLyrics}</pre>
         </>
@@ -175,8 +175,8 @@ export default function InfoSidebar() {
           <p className="info-lyrics-meta">
 
             <LocalizedText ns="common" i18nKey="auto.infosidebar.source" /> {bodyState.sourceLabel}
-            {translate('common:auto.infosidebar.unsynced')}
-            {bodyState.cached ? translate('common:auto.infosidebar.cached') : ''}
+            {' ' + translate('common:auto.infosidebar.unsynced')}
+            {bodyState.cached ? ' ' + translate('common:auto.infosidebar.cached') : ''}
           </p>
           <div className="info-lyrics-state">
             {bodyState.message}

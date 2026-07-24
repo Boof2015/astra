@@ -803,7 +803,7 @@ export default function QuickLaunchPalette() {
                       {isTrack && isSelected && (
                         <div className="ql-track-actions">
                           {showQueueAction ? (
-                            <span className="ql-action-badge"><LocalizedText ns="common" i18nKey="auto.quicklaunchpalette.queue" /></span>
+                            <span className="ql-action-badge"><LocalizedText ns="common" i18nKey="auto.quicklaunchpalette.queue_d325fcd" /></span>
                           ) : (
                             <span className="ql-tab-hint"><kbd><LocalizedText ns="common" i18nKey="auto.quicklaunchpalette.tab" /></kbd>  <LocalizedText ns="common" i18nKey="auto.quicklaunchpalette.queue" /></span>
                           )}

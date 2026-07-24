@@ -66,13 +66,42 @@ function relativeImport(fromFile, target) {
   return path.replace(/\.tsx?$/, '')
 }
 
+// A literal like {' · Removed from Library'} sits next to other rendered text, so its edge
+// whitespace is layout rather than copy. Keeping it in the markup stops it from being trimmed
+// away here and from being silently dropped by translators later. Attribute values are exempt:
+// nothing renders beside them.
+function withEdgeWhitespace(expressionText, collapsed, isVisibleChild) {
+  if (!isVisibleChild) return expressionText
+  const leading = collapsed.startsWith(' ') ? "' ' + " : ''
+  const trailing = collapsed.endsWith(' ') ? " + ' '" : ''
+  return `${leading}${expressionText}${trailing}`
+}
+
 function setNested(target, path, value) {
   let cursor = target
   for (let index = 0; index < path.length - 1; index += 1) {
     cursor[path[index]] ??= {}
     cursor = cursor[path[index]]
   }
-  cursor[path.at(-1)] = value
+  const leaf = path.at(-1)
+  // Backstop for the de-duplication in catalogKey(): silently rewriting a message would change
+  // the copy at every other call site that already points at this key.
+  if (cursor[leaf] !== undefined && cursor[leaf] !== value) {
+    throw new Error(`${path.join('.')}: refusing to replace ${JSON.stringify(cursor[leaf])} with ${JSON.stringify(value)}.`)
+  }
+  cursor[leaf] = value
+}
+
+function flattenCatalog(value, prefix = '', result = new Map()) {
+  if (typeof value === 'string') {
+    result.set(prefix, value)
+    return result
+  }
+  if (!value || typeof value !== 'object') return result
+  for (const [key, child] of Object.entries(value)) {
+    flattenCatalog(child, prefix ? `${prefix}.${key}` : key, result)
+  }
+  return result
 }
 
 const catalogs = {}
@@ -81,7 +110,14 @@ for (const namespace of ['common', 'settings', 'library', 'playback', 'integrati
   catalogs[namespace].auto ??= {}
 }
 
+// Seeded from the catalogs on disk, not just from this run: two strings that slug identically
+// ("Dynamic" and "Dynamic - ") collide on one key, and a run that only saw the second one would
+// otherwise overwrite the first — silently changing the copy at the site that still uses it.
 const seenKeys = new Map()
+for (const [namespace, catalog] of Object.entries(catalogs)) {
+  for (const [key, message] of flattenCatalog(catalog)) seenKeys.set(`${namespace}:${key}`, message)
+}
+
 const files = await collectFiles(rendererRoot)
 let extractedTextCount = 0
 let extractedAttributeCount = 0
@@ -152,13 +188,14 @@ for (const filePath of files) {
     if ((isTranslatedAttributeExpression || isVisibleChildExpression) && node.expression) {
       const collectTerminals = (expression) => {
         if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
-          const value = expression.text.trim().replace(/\s+/g, ' ')
+          const collapsed = expression.text.replace(/\s+/g, ' ')
+          const value = collapsed.trim()
           if (!shouldTranslate(value)) return
           const key = catalogKey(value)
           replacements.push({
             start: expression.getStart(sourceFile),
             end: expression.getEnd(),
-            text: `translate('${namespace}:${key}')`,
+            text: withEdgeWhitespace(`translate('${namespace}:${key}')`, collapsed, isVisibleChildExpression),
           })
           needsTranslateImport = true
           extractedAttributeCount += 1

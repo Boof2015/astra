@@ -14,6 +14,7 @@
     "i18n:validate": "node ./scripts/i18n/validate-locales.mjs",
     "i18n:check-ui": "node ./scripts/i18n/extract-static-ui.mjs --check",
     "i18n:check-runtime": "node ./scripts/i18n/extract-runtime-copy.mjs --check",
+    "i18n:verify-bundle": "node ./scripts/i18n/verify-bundled-locales.mjs",
     "i18n:check": "npm run i18n:validate && npm run i18n:check-ui && npm run i18n:check-runtime",
     "test:node": "node ./scripts/node/run-tests.cjs --node",
     "test:electron": "node ./scripts/node/run-tests.cjs --electron",

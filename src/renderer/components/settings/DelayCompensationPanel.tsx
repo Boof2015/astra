@@ -244,7 +244,7 @@ export default function DelayCompensationPanel() {
 
         {isDifferentialMethod && (
           <label className="settings-field">
-            <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.reference_output" /></span>
+            <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.delaycompensationpanel.reference_output_0c807de" /></span>
             <select
               className="settings-select"
               value={activeDelayProfile.differentialReferenceOutputDeviceId}

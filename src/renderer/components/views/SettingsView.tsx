@@ -2972,7 +2972,7 @@ export default function SettingsView() {
                 <div className="settings-card-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.updates" /></div>
                 <div className="settings-grid">
                   <div className="settings-field">
-                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.app_version" /></span>
+                    <span className="settings-field-label"><LocalizedText ns="settings" i18nKey="auto.settingsview.app_version_055c4ce" /></span>
                     <div className="settings-version-inline">
                       <button
                         type="button"
