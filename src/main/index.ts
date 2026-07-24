@@ -8322,8 +8322,6 @@ ipcMain.handle('library:readListeningImportFile', async (_event, filePath: unkno
     trackCount: parsed.file.tracks.length,
     playCount: parsed.file.plays.length,
     eventCount: parsed.file.events.length,
-    ratingCount: parsed.file.ratings.length,
-    favoriteCount: parsed.file.favorites.length,
   }
 })
 

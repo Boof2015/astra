@@ -3427,8 +3427,6 @@ function buildImportFile(overrides: Record<string, unknown> = {}) {
     generatedAt: '2026-07-24T00:00:00.000Z',
     tracks: [['Teen Intro', 'Jane Remover', 'Teen Week', '']] as Array<[string, string, string, string]>,
     plays: [[0, 6, base]] as Array<[number, number, number | null]>,
-    ratings: [] as Array<[number, number, number]>,
-    favorites: [] as Array<[number, number]>,
     events: [
       [0, 'p1', base, base + 180_000, 180, true],
       [0, 'p2', base + 200_000, base + 380_000, 180, true]
@@ -3517,6 +3515,96 @@ test('re-importing the same external file changes nothing', async (t) => {
   assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 6)
 })
 
+test('external play counts sum when distinct source identities resolve to one local track', async (t) => {
+  await setupSeededLibrary(t)
+
+  const file = buildImportFile({
+    tracks: [
+      ['Teen Intro', 'Jane Remover', 'Edition A', ''],
+      ['Teen Intro', 'Jane Remover', 'Edition B', '']
+    ],
+    plays: [
+      [0, 5, 1_750_000_000_000],
+      [1, 7, 1_750_100_000_000]
+    ],
+    events: []
+  })
+
+  await library.applyExternalListeningImport(file)
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 12)
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.last_played_at, 1_750_100_000_000)
+
+  await library.applyExternalListeningImport(file)
+  assert.equal(
+    library.getTrackByPath('subsonic://1/teen-1')?.play_count,
+    12,
+    'the summed source contribution must remain idempotent'
+  )
+})
+
+test('skipping an unusable imported session does not shift segments onto a later session', async (t) => {
+  const dir = await setupSeededLibrary(t)
+  const base = 1_750_000_000_000
+
+  const result = await library.applyExternalListeningImport(buildImportFile({
+    tracks: [
+      ['', 'Unknown Artist', '', ''],
+      ['Teen Intro', 'Jane Remover', 'Teen Week', '']
+    ],
+    plays: [],
+    events: [
+      [0, 'skipped', base, base + 90_000, 90, true],
+      [1, 'kept', base + 200_000, base + 380_000, 180, true]
+    ]
+  }))
+
+  assert.equal(result.sessionsSkipped, 1)
+  assert.equal(result.sessionsInserted, 1)
+  assert.equal(result.segmentsInserted, 1)
+
+  const directDb = new TestSqliteDatabase(join(dir, 'library.db'))
+  try {
+    const rows = directDb.prepare(`
+      SELECT s.session_key, seg.segment_key, seg.started_at, seg.listened_seconds
+      FROM listening_sessions s
+      INNER JOIN listening_segments seg ON seg.session_id = s.id
+      WHERE s.source_type = 'import:lastfm'
+    `).all() as Array<{
+      session_key: string
+      segment_key: string
+      started_at: number
+      listened_seconds: number
+    }>
+
+    assert.deepEqual(rows, [{
+      session_key: 'import:lastfm:kept',
+      segment_key: 'kept:s',
+      started_at: base + 200_000,
+      listened_seconds: 180
+    }])
+  } finally {
+    directDb.close()
+  }
+})
+
+test('external history conversion supports more than 125,000 listens', async (t) => {
+  await setupSeededLibrary(t)
+  const eventCount = 125_001
+  const base = 1_750_000_000_000
+  const events = Array.from({ length: eventCount }, (_, index) => (
+    [0, `large-${index}`, base + index, base + index + 1, 0.001, false]
+  )) as Array<[number, string, number, number, number, boolean]>
+
+  const result = await library.applyExternalListeningImport(buildImportFile({
+    tracks: [['', 'Unknown Artist', '', '']],
+    plays: [],
+    events
+  }))
+
+  assert.equal(result.sessionsSkipped, eventCount)
+  assert.equal(result.sessionsInserted, 0)
+})
+
 test('imported sources are listed with their totals', async (t) => {
   await setupSeededLibrary(t)
   assert.deepEqual(library.getImportedListeningSources(), [])
@@ -3536,6 +3624,8 @@ test('imported sources are listed with their totals', async (t) => {
 test('removing an imported source leaves locally recorded listening intact', async (t) => {
   const dir = await setupSeededLibrary(t)
 
+  await library.setTrackRatingForPaths(['subsonic://1/teen-1'], 4.5)
+  await library.addFavoritePaths(['subsonic://1/teen-1'])
   const generation = library.getListeningHistoryStatus().generation
   await seedListeningSession(generation, {
     sessionKey: 'genuine', trackPath: 'subsonic://1/teen-1',
@@ -3549,6 +3639,11 @@ test('removing an imported source leaves locally recorded listening intact', asy
 
   // The local play survives; the imported ones are gone.
   assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 1)
+  assert.equal(
+    library.getTrackRatingEntries().find((entry) => entry.track_path === 'subsonic://1/teen-1')?.rating,
+    4.5
+  )
+  assert.deepEqual(library.getFavoritePaths(), ['subsonic://1/teen-1'])
   assert.deepEqual(library.getImportedListeningSources(), [])
 
   const dashboard = library.getListeningStatsDashboard({

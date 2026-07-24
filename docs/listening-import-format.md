@@ -27,15 +27,12 @@ Import it from **Settings → Info → Imported Listening Data → Import Listen
 
   "tracks":    [["Song Title", "Artist", "Album", "Album Artist"]],
   "plays":     [[0, 12, 1750000000000]],
-  "ratings":   [[0, 4.5, 1750000000000]],
-  "favorites": [[0, 1750000000000]],
   "events":    [[0, "play-1", 1750000000000, 1750000180000, 180, true]]
 }
 ```
 
-`tracks` is a dictionary; every other list refers to it by array index. `plays`, `ratings`,
-`favorites` and `events` are all optional individually, but the file must contain at least
-one of them.
+`tracks` is a dictionary; every other list refers to it by array index. `plays` and `events`
+are optional individually, but the file must contain at least one of them.
 
 ### Row shapes
 
@@ -43,11 +40,13 @@ one of them.
 |---|---|---|
 | `tracks` | `[title, artist, album, albumArtist]` | `albumArtist` may be `""`. A row with no title can never match. |
 | `plays` | `[trackIndex, playCount, lastPlayedAt]` | Total plays for that track. `lastPlayedAt` may be `null`. |
-| `ratings` | `[trackIndex, rating, updatedAt]` | `rating` in half steps, 0.5–5. Newer `updatedAt` wins against a local rating. |
-| `favorites` | `[trackIndex, addedAt]` | |
 | `events` | `[trackIndex, playKey, startedAt, endedAt, listenedSeconds, countsAsPlay]` | One individual listen. `endedAt` may be `null`. |
 
 **All timestamps are epoch milliseconds.**
+
+Ratings and favorites are intentionally outside this format. They can move between Astra
+installs through Settings Transfer, but an external listening import contains only data that
+can later be removed cleanly by `source`.
 
 ## Five things that will bite you
 
@@ -88,12 +87,14 @@ artist and album, without artwork, and are not clickable. A partial library is n
 
 ## What you cannot set
 
-Deliberately absent from the format, because Astra derives them:
+The format deliberately excludes internal identities and library state:
 
 - **Which install a play belongs to.** Everything is attributed to `import:<source>`, so a
   file cannot claim to be an Astra install and overwrite its counts.
 - **Session keys.** Namespaced with the same prefix, so a file cannot collide with local data.
 - **File paths.** External data has no meaningful local paths; matching is metadata-only.
+- **Ratings and favorites.** Those are library state rather than listening history and remain
+  exclusive to Astra-to-Astra Settings Transfer.
 
 ## `source`
 

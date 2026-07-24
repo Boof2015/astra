@@ -91,8 +91,6 @@ function convert(scrobbles) {
     generatedAt: new Date().toISOString(),
     tracks,
     plays: [...playCounts.entries()].map(([index, count]) => [index, count, lastPlayed.get(index) ?? null]),
-    ratings: [],
-    favorites: [],
     events
   }
 }

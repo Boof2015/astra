@@ -21,8 +21,6 @@ function build(overrides: Record<string, unknown> = {}): string {
     generatedAt: '2026-07-24T00:00:00.000Z',
     tracks: [['Teen Intro', 'Jane Remover', 'Teen Week', '']],
     plays: [[0, 4, T]],
-    ratings: [],
-    favorites: [],
     events: [[0, 'p1', T, T + 180_000, 180, true]],
     ...overrides
   })
@@ -115,6 +113,37 @@ test('far-future timestamps are dropped too', () => {
   assert.deepEqual(result.file.events, [])
 })
 
+test('event end times must be plausible and no earlier than their starts', () => {
+  const seconds = Math.floor(T / 1000)
+  const result = parse({
+    events: [
+      [0, 'seconds-end', T, seconds, 180, true],
+      [0, 'backwards-end', T, T - 1, 180, true],
+      [0, 'invalid-end', T, 'not-a-timestamp', 180, true],
+      [0, 'inferred-end', T, null, 180, true]
+    ]
+  })
+
+  assert.ok(result.ok)
+  assert.deepEqual(result.file.events.map((event) => event[1]), ['inferred-end'])
+  assert.ok(result.warnings.some((warning) => /invalid end time/i.test(warning)), result.warnings.join(' | '))
+  assert.ok(result.warnings.some((warning) => /milliseconds/i.test(warning)), result.warnings.join(' | '))
+})
+
+test('a null event end derives a plausible end from listened seconds', () => {
+  const result = parse({ plays: [], events: [[0, 'inferred', T, null, 180, true]] })
+  assert.ok(result.ok)
+  assert.deepEqual(result.file.events, [[0, 'inferred', T, null, 180, true]])
+})
+
+test('a file containing only invalid event ends names the problem', () => {
+  const result = parse({ plays: [], events: [[0, 'backwards', T, T - 1, 180, true]] })
+  assert.equal(result.ok, false)
+  assert.ok(!result.ok)
+  assert.match(result.error, /invalid end time/i)
+  assert.match(result.error, /no earlier than the listen start/i)
+})
+
 test('overlapping listens are accepted but warned about', () => {
   // Two plays 90s apart each claiming 180s: the classic "assume a full playthrough" bug.
   const result = parse({
@@ -165,7 +194,30 @@ test('rows referencing a missing track are dropped, and index alignment survives
 })
 
 test('a file with no usable data is rejected', () => {
-  const result = parse({ plays: [], ratings: [], favorites: [], events: [] })
+  const result = parse({ plays: [], events: [] })
+  assert.equal(result.ok, false)
+  assert.ok(!result.ok)
+  assert.match(result.error, /does not contain any listening data/i)
+})
+
+test('legacy ratings and favorites are ignored with a warning', () => {
+  const result = parse({
+    ratings: [[0, 4.5, T]],
+    favorites: [[0, T]]
+  })
+  assert.ok(result.ok)
+  assert.equal('ratings' in result.file, false)
+  assert.equal('favorites' in result.file, false)
+  assert.ok(result.warnings.some((warning) => /ratings and favorites.*ignored/i.test(warning)))
+})
+
+test('a file containing only legacy ratings or favorites is rejected', () => {
+  const result = parse({
+    plays: [],
+    events: [],
+    ratings: [[0, 4.5, T]],
+    favorites: [[0, T]]
+  })
   assert.equal(result.ok, false)
   assert.ok(!result.ok)
   assert.match(result.error, /does not contain any listening data/i)

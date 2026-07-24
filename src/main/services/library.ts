@@ -9314,14 +9314,20 @@ export async function applyExternalListeningImport(
     plays: file.plays.map(([trackIndex, playCount, lastPlayedAt]) => [
       trackIndex, 0, playCount, lastPlayedAt
     ]),
-    ratings: file.ratings,
-    favorites: file.favorites
+    // Ratings and favorites remain exclusive to Astra-to-Astra settings transfer. External
+    // listening imports carry only data that can be removed cleanly by source.
+    ratings: [],
+    favorites: []
   }
 
   const sessions: StatsTransferSessionTuple[] = []
   const segments: StatsTransferSegmentTuple[] = []
+  let historyStartedAt: number | null = null
   file.events.forEach(([trackIndex, playKey, startedAt, endedAt, listenedSeconds, countsAsPlay], index) => {
     const resolvedEnd = endedAt ?? startedAt + Math.round(listenedSeconds * 1000)
+    historyStartedAt = historyStartedAt === null
+      ? startedAt
+      : Math.min(historyStartedAt, startedAt)
     sessions.push([
       trackIndex,
       importSessionKey(file.source, playKey),
@@ -9340,7 +9346,7 @@ export async function applyExternalListeningImport(
 
   const history: ListeningHistoryPayload = {
     v: LISTENING_STATS_TRANSFER_VERSION,
-    historyStartedAt: sessions.length > 0 ? Math.min(...sessions.map((session) => session[4])) : null,
+    historyStartedAt,
     sessionsTotal: sessions.length,
     truncated: false,
     tracks,
@@ -9443,8 +9449,8 @@ export function getImportedListeningSources(): ImportedListeningSource[] {
 }
 
 /**
- * Removes everything one import contributed, leaving locally recorded listening untouched.
- * This is the safety net that makes accepting third-party files reasonable at all.
+ * Removes the play counts and sessions contributed by one external source. Third-party
+ * imports do not carry ratings or favorites, so no unrelated library state is involved.
  */
 export async function removeImportedListeningSource(source: string): Promise<ImportedListeningSourceRemoval> {
   const removal: ImportedListeningSourceRemoval = { source, sessionsRemoved: 0, tracksAffected: 0 }
@@ -9616,7 +9622,10 @@ function applyListeningCountsSection(
   // Each row is one install's running total for one track, so it merges with MAX against
   // the matching origin row. Distinct origins never collide, which is what lets counts from
   // several machines add up while a repeated import of the same file changes nothing.
-  const playRows: Array<[string, string, number, number | null]> = []
+  // Several source identities can resolve to the same local track (for example, editions
+  // with different album tags). Sum those rows within this payload before the idempotent
+  // MAX merge, otherwise only the largest contribution would survive the PK collision.
+  const playRowsByPath = new Map<string, Map<string, { playCount: number; lastPlayedAt: number | null }>>()
   const touchedPaths = new Set<string>()
   for (const [trackIndex, originIndex, playCount, lastPlayedAt] of payload.plays) {
     const originId = payload.origins[originIndex]
@@ -9624,8 +9633,30 @@ function applyListeningCountsSection(
     const resolution = resolveTrack(payload.tracks, trackIndex)
     if (!resolution.trackPath) continue
     if (!rowByPath.has(resolution.trackPath)) continue
-    playRows.push([resolution.trackPath, originId, playCount, lastPlayedAt])
+    let rowsByOrigin = playRowsByPath.get(resolution.trackPath)
+    if (!rowsByOrigin) {
+      rowsByOrigin = new Map()
+      playRowsByPath.set(resolution.trackPath, rowsByOrigin)
+    }
+    const existing = rowsByOrigin.get(originId)
+    if (existing) {
+      existing.playCount += playCount
+      if (
+        lastPlayedAt !== null
+        && (existing.lastPlayedAt === null || lastPlayedAt > existing.lastPlayedAt)
+      ) {
+        existing.lastPlayedAt = lastPlayedAt
+      }
+    } else {
+      rowsByOrigin.set(originId, { playCount, lastPlayedAt })
+    }
     touchedPaths.add(resolution.trackPath)
+  }
+  const playRows: Array<[string, string, number, number | null]> = []
+  for (const [trackPath, rowsByOrigin] of playRowsByPath) {
+    for (const [originId, row] of rowsByOrigin) {
+      playRows.push([trackPath, originId, row.playCount, row.lastPlayedAt])
+    }
   }
 
   if (playRows.length > 0) {
@@ -9759,10 +9790,12 @@ function applyListeningHistorySection(
   result.sessionsTruncatedAtExport = payload.truncated
 
   const sessionRows: unknown[][] = []
-  const sessionKeysInOrder: string[] = []
+  // Segment indices point into payload.sessions, including positions that may be skipped.
+  // Preserve that index space so a bad session cannot shift its segments onto a later row.
+  const sessionKeyByPayloadIndex: Array<string | null> = Array(payload.sessions.length).fill(null)
   let earliestStartedAt: number | null = payload.historyStartedAt
 
-  for (const session of payload.sessions) {
+  for (const [payloadIndex, session] of payload.sessions.entries()) {
     const [trackIndex, sessionKey, sourceType, durationSeconds, startedAt, endedAt, listenedSeconds, qualifiedAt] = session
     const tuple = payload.tracks[trackIndex]
     if (!tuple) {
@@ -9791,7 +9824,7 @@ function applyListeningHistorySection(
       ?? `astra-sync://unmatched/${buildTrackSyncKey(title, artist, album)}`
 
     const localRow = resolution.trackPath ? rowByPath.get(resolution.trackPath) : undefined
-    sessionKeysInOrder.push(sessionKey)
+    sessionKeyByPayloadIndex[payloadIndex] = sessionKey
     sessionRows.push([
       generation,
       sessionKey,
@@ -9873,7 +9906,7 @@ function applyListeningHistorySection(
 
   const segmentRows: unknown[][] = []
   for (const [sessionIndex, segmentKey, startedAt, lastObservedAt, endedAt, listenedSeconds] of payload.segments) {
-    const sessionKey = sessionKeysInOrder[sessionIndex]
+    const sessionKey = sessionKeyByPayloadIndex[sessionIndex]
     if (!sessionKey) continue
     const sessionId = sessionIdByKey.get(sessionKey)
     if (sessionId === undefined) continue

@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ImportedListeningSource, ListeningImportPreview } from '../../../types/listeningStats'
 
-// Listening data brought in from outside Astra, and the means to take it back out again.
-// Every import is tagged with the source it came from, which is what makes removal possible
-// without touching listening Astra recorded itself — the reason accepting third-party files
-// is reasonable at all.
+// Play counts and listening sessions brought in from outside Astra, and the means to take
+// them back out again. Every import is tagged with its source, so removal never touches
+// ratings, favorites, or listening Astra recorded itself.
 
 function formatCount(value: number): string {
   return value.toLocaleString()
@@ -179,8 +178,8 @@ export default function ImportedListeningDataCard() {
 
       <p className="settings-note">
         Astra reads the open <code>astra-listening-import</code> format, so third-party tools can bring in
-        history from other services. Imported data is merged with your own listening, never replacing it, and
-        each source can be removed again here without touching anything Astra recorded itself.
+        play counts and listening history from other services. Each source can be removed again here without
+        touching ratings, favorites, or anything Astra recorded itself.
       </p>
     </div>
   )

@@ -21,10 +21,6 @@ export const LISTENING_IMPORT_FORMAT_VERSION = 1
 export type ImportTrackTuple = [string, string, string, string]
 /** [trackIndex, playCount, lastPlayedAt|null] */
 export type ImportPlayTuple = [number, number, number | null]
-/** [trackIndex, rating, updatedAt] — rating in half steps, 0.5 to 5. */
-export type ImportRatingTuple = [number, number, number]
-/** [trackIndex, addedAt] */
-export type ImportFavoriteTuple = [number, number]
 /** [trackIndex, playKey, startedAt, endedAt|null, listenedSeconds, countsAsPlay] */
 export type ImportPlayEventTuple = [number, string, number, number | null, number, boolean]
 
@@ -42,8 +38,6 @@ export interface ListeningImportFile {
   generatedAt: string
   tracks: ImportTrackTuple[]
   plays: ImportPlayTuple[]
-  ratings: ImportRatingTuple[]
-  favorites: ImportFavoriteTuple[]
   /** Individual listens. Required for any listening-time or activity-chart figure. */
   events: ImportPlayEventTuple[]
 }
@@ -151,6 +145,11 @@ export function parseListeningImportFile(
         + `${MAX_SOURCE_LENGTH} characters). Astra needs it to label the import and to remove it later.`
     }
   }
+  if (parsed.ratings !== undefined || parsed.favorites !== undefined) {
+    warn(
+      'Third-party ratings and favorites are not part of the listening import format and were ignored.'
+    )
+  }
 
   const tracks: ImportTrackTuple[] = []
   if (!Array.isArray(parsed.tracks)) {
@@ -200,38 +199,10 @@ export function parseListeningImportFile(
     }
   }
 
-  const ratings: ImportRatingTuple[] = []
-  const seenRatingTracks = new Set<number>()
-  if (Array.isArray(parsed.ratings)) {
-    for (const row of parsed.ratings) {
-      if (!Array.isArray(row)) continue
-      const [trackIndex, rating, updatedAt] = row
-      if (!isTrackIndex(trackIndex) || seenRatingTracks.has(trackIndex)) continue
-      const ratingValue = finiteNumber(rating)
-      const updated = nonNegativeNumber(updatedAt)
-      if (ratingValue === null || updated === null) continue
-      seenRatingTracks.add(trackIndex)
-      ratings.push([trackIndex, ratingValue, updated])
-    }
-  }
-
-  const favorites: ImportFavoriteTuple[] = []
-  const seenFavoriteTracks = new Set<number>()
-  if (Array.isArray(parsed.favorites)) {
-    for (const row of parsed.favorites) {
-      if (!Array.isArray(row)) continue
-      const [trackIndex, addedAt] = row
-      if (!isTrackIndex(trackIndex) || seenFavoriteTracks.has(trackIndex)) continue
-      const added = nonNegativeNumber(addedAt)
-      if (added === null) continue
-      seenFavoriteTracks.add(trackIndex)
-      favorites.push([trackIndex, added])
-    }
-  }
-
   // Deduped on the converter's own key so a re-run merges rather than duplicating.
   const eventByKey = new Map<string, ImportPlayEventTuple>()
   let overlapping = 0
+  let invalidEventEnds = 0
   if (Array.isArray(parsed.events)) {
     const spansByTrack = new Map<number, Array<[number, number]>>()
     for (const row of parsed.events) {
@@ -243,20 +214,32 @@ export function parseListeningImportFile(
       const started = finiteNumber(startedAt)
       const listened = nonNegativeNumber(listenedSeconds)
       const ended = optionalTimestamp(endedAt)
-      if (started === null || listened === null || ended === undefined) continue
+      if (started === null || listened === null) continue
+      if (ended === undefined) {
+        invalidEventEnds += 1
+        continue
+      }
       if (!checkTimestamp(started)) continue
+      const resolvedEnd = ended ?? started + Math.round(listened * 1000)
+      if (!Number.isFinite(resolvedEnd) || resolvedEnd < started) {
+        invalidEventEnds += 1
+        continue
+      }
+      if (!checkTimestamp(resolvedEnd)) {
+        invalidEventEnds += 1
+        continue
+      }
 
       eventByKey.set(key, [trackIndex, key, started, ended, listened, countsAsPlay !== false])
 
       // Two listens by one person cannot occupy the same moment. When they do, the
       // converter has guessed durations longer than the gaps between plays, and listening
       // time will read high. Worth telling the user; not worth refusing the import.
-      const spanEnd = ended !== null ? ended : started + listened * 1000
       const spans = spansByTrack.get(trackIndex) ?? []
-      if (spans.some(([otherStart, otherEnd]) => started < otherEnd && spanEnd > otherStart)) {
+      if (spans.some(([otherStart, otherEnd]) => started < otherEnd && resolvedEnd > otherStart)) {
         overlapping += 1
       }
-      spans.push([started, spanEnd])
+      spans.push([started, resolvedEnd])
       spansByTrack.set(trackIndex, spans)
     }
   }
@@ -265,6 +248,12 @@ export function parseListeningImportFile(
     warn(
       `${droppedTimestamps} timestamps were outside a plausible range and were dropped. `
       + 'Astra expects epoch milliseconds — a value in seconds is 1000x too small and lands in 1970.'
+    )
+  }
+  if (invalidEventEnds > 0) {
+    warn(
+      `${invalidEventEnds} listens had an invalid end time and were dropped. `
+      + 'An end time must be epoch milliseconds, no earlier than the listen start.'
     )
   }
   if (overlapping > 0) {
@@ -277,7 +266,7 @@ export function parseListeningImportFile(
     warn('This file has play counts but no listens, so the Stats page will show plays with no listening time.')
   }
 
-  if (plays.length === 0 && ratings.length === 0 && favorites.length === 0 && eventByKey.size === 0) {
+  if (plays.length === 0 && eventByKey.size === 0) {
     // A file where every timestamp was in seconds ends up empty here. Say so specifically —
     // it is by far the likeliest reason, and "no usable data" would send an author looking
     // in the wrong place.
@@ -286,6 +275,13 @@ export function parseListeningImportFile(
         ok: false,
         error: 'Every timestamp in this file is outside a plausible range, so nothing could be imported. '
           + 'Astra expects epoch milliseconds; a value in seconds is 1000x too small and lands in 1970.'
+      }
+    }
+    if (invalidEventEnds > 0) {
+      return {
+        ok: false,
+        error: 'Every listen in this file has an invalid end time, so nothing could be imported. '
+          + 'An end time must be epoch milliseconds, no earlier than the listen start.'
       }
     }
     return { ok: false, error: 'This file does not contain any listening data Astra can use.' }
@@ -302,8 +298,6 @@ export function parseListeningImportFile(
       generatedAt: toText(parsed.generatedAt),
       tracks,
       plays,
-      ratings,
-      favorites,
       events: Array.from(eventByKey.values())
     }
   }

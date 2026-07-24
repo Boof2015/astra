@@ -157,6 +157,4 @@ export type ListeningImportPreview =
       trackCount: number
       playCount: number
       eventCount: number
-      ratingCount: number
-      favoriteCount: number
     }
