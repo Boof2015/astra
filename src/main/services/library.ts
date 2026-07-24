@@ -82,6 +82,12 @@ import {
   type StatsTransferTrackTuple
 } from '../../shared/stats/statsTransfer'
 import {
+  importOriginId,
+  importSessionKey,
+  isValidImportSource,
+  type ListeningImportFile
+} from '../../shared/stats/listeningImportFile'
+import {
   isAlbumNewForLatestSync,
   isTrackNewForLatestSync,
   type LatestLibrarySyncSummary
@@ -98,6 +104,8 @@ import type {
   ListeningHistoryStatus,
   ListeningSessionCheckpoint,
   ListeningSessionCheckpointResult,
+  ImportedListeningSource,
+  ImportedListeningSourceRemoval,
   ListeningStatsActivityBucket,
   ListeningStatsApplyRequest,
   ListeningStatsBucketGranularity,
@@ -9189,6 +9197,9 @@ function identityFromRow(row: Record<string, unknown>): StatsTransferTrackIdenti
   }
 }
 
+// Joins the fields of a track tuple into one comparable identity key.
+const STATS_TRANSFER_IDENTITY_SEPARATOR = '\u001f'
+
 interface StatsTransferResolution {
   trackPath: string | null
   ambiguous: boolean
@@ -9231,7 +9242,14 @@ function buildStatsTransferTrackResolver(): StatsTransferResolver {
     rowByPath,
     albumIdentityKeyByPath: buildAlbumIdentityKeysByPath(rows),
     resolutions() {
-      return Array.from(cache.values())
+      // Deduped by identity, not by tuple object: the counts and history payloads carry
+      // separate dictionaries, so a track appearing in both would otherwise be reported to
+      // the user twice ("4 of 6 tracks matched" for three songs).
+      const byIdentity = new Map<string, StatsTransferResolution>()
+      for (const [tuple, resolution] of cache) {
+        byIdentity.set(tuple.join(STATS_TRANSFER_IDENTITY_SEPARATOR), resolution)
+      }
+      return Array.from(byIdentity.values())
     },
     resolve(tuple) {
       const cached = cache.get(tuple)
@@ -9264,6 +9282,213 @@ function buildStatsTransferTrackResolver(): StatsTransferResolver {
       return resolution
     }
   }
+}
+
+// ── External listening imports ───────────────────────────
+//
+// Data from outside Astra (a Last.fm history, another player) arrives in the public format
+// in shared/stats/listeningImportFile.ts and is translated here into the internal payloads.
+// The translation is where provenance is enforced rather than trusted: the file supplies the
+// listening data, Astra supplies the origin id, the source type and the session-key prefix.
+// A file therefore cannot attribute plays to another install, and cannot collide with a
+// session this machine recorded itself.
+
+export async function applyExternalListeningImport(
+  file: ListeningImportFile
+): Promise<ListeningStatsImportResult> {
+  if (!db) return createEmptyListeningStatsImportResult()
+
+  const originId = importOriginId(file.source)
+  const sourceType = originId
+
+  // External data has no local paths, so both digest slots are empty and every row resolves
+  // through the metadata tiers — the same route data from another machine takes.
+  const tracks: StatsTransferTrackTuple[] = file.tracks.map(
+    ([title, artist, album, albumArtist]) => ['', '', title, artist, album, albumArtist]
+  )
+
+  const counts: ListeningCountsPayload = {
+    v: LISTENING_STATS_TRANSFER_VERSION,
+    tracks,
+    origins: [originId],
+    plays: file.plays.map(([trackIndex, playCount, lastPlayedAt]) => [
+      trackIndex, 0, playCount, lastPlayedAt
+    ]),
+    ratings: file.ratings,
+    favorites: file.favorites
+  }
+
+  const sessions: StatsTransferSessionTuple[] = []
+  const segments: StatsTransferSegmentTuple[] = []
+  file.events.forEach(([trackIndex, playKey, startedAt, endedAt, listenedSeconds, countsAsPlay], index) => {
+    const resolvedEnd = endedAt ?? startedAt + Math.round(listenedSeconds * 1000)
+    sessions.push([
+      trackIndex,
+      importSessionKey(file.source, playKey),
+      sourceType,
+      listenedSeconds,
+      startedAt,
+      resolvedEnd,
+      listenedSeconds,
+      // qualified_at is what makes a listen count as a play on the Stats page.
+      countsAsPlay ? startedAt : null
+    ])
+    // One segment per listen. Without it the listen contributes a play but no listening
+    // time, because every time figure on the dashboard is computed from segments.
+    segments.push([index, `${playKey}:s`, startedAt, resolvedEnd, resolvedEnd, listenedSeconds])
+  })
+
+  const history: ListeningHistoryPayload = {
+    v: LISTENING_STATS_TRANSFER_VERSION,
+    historyStartedAt: sessions.length > 0 ? Math.min(...sessions.map((session) => session[4])) : null,
+    sessionsTotal: sessions.length,
+    truncated: false,
+    tracks,
+    sessions,
+    segments
+  }
+
+  const result = await applyListeningStatsTransfer({
+    counts: encodeListeningCountsPayload(counts),
+    history: sessions.length > 0 ? encodeListeningHistoryPayload(history) : undefined
+  })
+
+  recordListeningImportSource(file.source, file.generator)
+  await saveDatabase()
+  return result
+}
+
+const LISTENING_IMPORT_SOURCES_META_KEY = 'listening_import_sources_v1'
+
+interface ListeningImportSourceRecord {
+  source: string
+  generator: string
+  importedAt: number
+}
+
+function readListeningImportSourceRecords(): ListeningImportSourceRecord[] {
+  const raw = getAppMeta(LISTENING_IMPORT_SOURCES_META_KEY)
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter((entry): entry is ListeningImportSourceRecord => (
+        Boolean(entry) && typeof entry === 'object' && typeof entry.source === 'string'
+      ))
+      .map((entry) => ({
+        source: entry.source,
+        generator: typeof entry.generator === 'string' ? entry.generator : '',
+        importedAt: Number(entry.importedAt) || 0
+      }))
+  } catch {
+    return []
+  }
+}
+
+function recordListeningImportSource(source: string, generator: string): void {
+  const records = readListeningImportSourceRecords().filter((entry) => entry.source !== source)
+  records.push({ source, generator, importedAt: Date.now() })
+  writeAppMetaValue(LISTENING_IMPORT_SOURCES_META_KEY, JSON.stringify(records))
+}
+
+export function getImportedListeningSources(): ImportedListeningSource[] {
+  if (!db) return []
+  const records = new Map(readListeningImportSourceRecords().map((entry) => [entry.source, entry]))
+  const generation = ensureListeningHistoryGeneration()
+  const sources = new Map<string, ImportedListeningSource>()
+
+  const ensure = (source: string): ImportedListeningSource => {
+    let entry = sources.get(source)
+    if (!entry) {
+      const record = records.get(source)
+      entry = {
+        source,
+        generator: record?.generator ?? '',
+        importedAt: record?.importedAt ?? 0,
+        sessionCount: 0,
+        trackCount: 0,
+        playCount: 0
+      }
+      sources.set(source, entry)
+    }
+    return entry
+  }
+
+  for (const row of db.all<{ source_type?: unknown; count?: unknown }>(`
+    SELECT source_type, COUNT(*) AS count
+    FROM listening_sessions
+    WHERE generation = ? AND source_type LIKE 'import:%'
+    GROUP BY source_type
+  `, [generation])) {
+    const sourceType = typeof row.source_type === 'string' ? row.source_type : ''
+    if (!sourceType.startsWith('import:')) continue
+    ensure(sourceType.slice('import:'.length)).sessionCount = Number(row.count) || 0
+  }
+
+  for (const row of db.all<{ origin_id?: unknown; tracks?: unknown; plays?: unknown }>(`
+    SELECT origin_id, COUNT(*) AS tracks, SUM(play_count) AS plays
+    FROM ${PLAY_ORIGIN_TABLE}
+    WHERE origin_id LIKE 'import:%'
+    GROUP BY origin_id
+  `)) {
+    const originId = typeof row.origin_id === 'string' ? row.origin_id : ''
+    if (!originId.startsWith('import:')) continue
+    const entry = ensure(originId.slice('import:'.length))
+    entry.trackCount = Number(row.tracks) || 0
+    entry.playCount = Number(row.plays) || 0
+  }
+
+  return Array.from(sources.values()).sort((a, b) => b.importedAt - a.importedAt)
+}
+
+/**
+ * Removes everything one import contributed, leaving locally recorded listening untouched.
+ * This is the safety net that makes accepting third-party files reasonable at all.
+ */
+export async function removeImportedListeningSource(source: string): Promise<ImportedListeningSourceRemoval> {
+  const removal: ImportedListeningSourceRemoval = { source, sessionsRemoved: 0, tracksAffected: 0 }
+  if (!db || !isValidImportSource(source)) return removal
+
+  const originId = importOriginId(source)
+  const affectedPaths = new Set<string>()
+  for (const row of db.all<{ track_path?: unknown }>(
+    `SELECT track_path FROM ${PLAY_ORIGIN_TABLE} WHERE origin_id = ?`,
+    [originId]
+  )) {
+    if (typeof row.track_path === 'string') affectedPaths.add(row.track_path)
+  }
+
+  beginLibraryWriteTransaction()
+  try {
+    // Segments are ON DELETE CASCADE from sessions, but the pragma is not guaranteed on
+    // every connection, so they are removed explicitly first.
+    db.run(`
+      DELETE FROM listening_segments
+      WHERE session_id IN (SELECT id FROM listening_sessions WHERE source_type = ?)
+    `, [originId])
+    const sessions = db.run('DELETE FROM listening_sessions WHERE source_type = ?', [originId])
+    removal.sessionsRemoved = Number(sessions.changes) || 0
+
+    db.run(`DELETE FROM ${PLAY_ORIGIN_TABLE} WHERE origin_id = ?`, [originId])
+    // The denormalized column has to be rebuilt from whatever origins remain.
+    removal.tracksAffected = recomputePlayCountsFromOrigins(Array.from(affectedPaths))
+
+    const records = readListeningImportSourceRecords().filter((entry) => entry.source !== source)
+    if (records.length > 0) {
+      writeAppMetaValue(LISTENING_IMPORT_SOURCES_META_KEY, JSON.stringify(records))
+    } else {
+      db.run('DELETE FROM app_meta WHERE key = ?', [LISTENING_IMPORT_SOURCES_META_KEY])
+    }
+
+    commitLibraryWriteTransaction()
+  } catch (error) {
+    rollbackLibraryWriteTransaction()
+    throw error
+  }
+
+  await saveDatabase()
+  return removal
 }
 
 export async function applyListeningStatsTransfer(

@@ -256,6 +256,7 @@ import {
 import { GlobalInputShortcutService } from './services/globalInputShortcuts'
 import type { InputActionId } from '../types/inputBindings'
 import { checkSettingsTransferWrite } from './utils/settingsTransferWrite'
+import { parseListeningImportFile } from '../shared/stats/listeningImportFile'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -8298,6 +8299,53 @@ ipcMain.handle('library:exportListeningStatsTransfer', (_event, request?: Listen
 
 ipcMain.handle('library:applyListeningStatsTransfer', async (_event, request: ListeningStatsApplyRequest) => {
   return library.applyListeningStatsTransfer(request)
+})
+
+// External listening imports. Parsing happens here rather than in the renderer so the
+// format contract has exactly one implementation, and so a hostile file never reaches the
+// database without going through it.
+ipcMain.handle('library:readListeningImportFile', async (_event, filePath: unknown) => {
+  if (typeof filePath !== 'string' || filePath.trim().length === 0) {
+    throw new Error('Invalid file path.')
+  }
+  if (extname(filePath).toLowerCase() !== '.json') {
+    throw new Error('Listening import files must be .json.')
+  }
+  const content = await readFile(filePath, 'utf-8')
+  const parsed = parseListeningImportFile(content)
+  if (!parsed.ok) return { ok: false as const, error: parsed.error }
+  return {
+    ok: true as const,
+    warnings: parsed.warnings,
+    source: parsed.file.source,
+    generator: parsed.file.generator,
+    trackCount: parsed.file.tracks.length,
+    playCount: parsed.file.plays.length,
+    eventCount: parsed.file.events.length,
+    ratingCount: parsed.file.ratings.length,
+    favoriteCount: parsed.file.favorites.length,
+  }
+})
+
+ipcMain.handle('library:applyListeningImportFile', async (_event, filePath: unknown) => {
+  if (typeof filePath !== 'string' || filePath.trim().length === 0) {
+    throw new Error('Invalid file path.')
+  }
+  if (extname(filePath).toLowerCase() !== '.json') {
+    throw new Error('Listening import files must be .json.')
+  }
+  const parsed = parseListeningImportFile(await readFile(filePath, 'utf-8'))
+  if (!parsed.ok) throw new Error(parsed.error)
+  return library.applyExternalListeningImport(parsed.file)
+})
+
+ipcMain.handle('library:getImportedListeningSources', () => {
+  return library.getImportedListeningSources()
+})
+
+ipcMain.handle('library:removeImportedListeningSource', async (_event, source: unknown) => {
+  if (typeof source !== 'string') throw new Error('Invalid source.')
+  return library.removeImportedListeningSource(source)
 })
 
 ipcMain.handle('stats-share:copy-png', (_event, input: unknown) => {

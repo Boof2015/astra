@@ -8,6 +8,7 @@ import BitPerfectModeWarningModal from '../settings/BitPerfectModeWarningModal'
 import LocalApiPairingModal from '../settings/LocalApiPairingModal'
 import KeybindSettings from '../settings/KeybindSettings'
 import SettingsTransferWizard from '../settings/SettingsTransferWizard'
+import ImportedListeningDataCard from '../settings/ImportedListeningDataCard'
 import SettingsSegmentedControl, { type SettingsSegmentedOption } from '../settings/SettingsSegmentedControl'
 import { renderPairingQrSvg } from '../../utils/pairingQr'
 import { usePresence } from '../../hooks/usePresence'
@@ -3052,6 +3053,7 @@ export default function SettingsView() {
                   Import or export your Astra settings to move preferences between installs.
                 </p>
               </div>
+              <ImportedListeningDataCard />
             </div>
           </section>
             )}

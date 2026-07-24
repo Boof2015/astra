@@ -3414,3 +3414,222 @@ test('an exported settings payload contains no filesystem paths', async (t) => {
     assert.equal(encoded.includes('/teen-1'), false)
   }
 })
+
+// ── External listening imports ───────────────────────────
+
+function buildImportFile(overrides: Record<string, unknown> = {}) {
+  const base = 1_750_000_000_000
+  return {
+    kind: 'astra-listening-import' as const,
+    formatVersion: 1 as const,
+    source: 'lastfm',
+    generator: 'test-converter',
+    generatedAt: '2026-07-24T00:00:00.000Z',
+    tracks: [['Teen Intro', 'Jane Remover', 'Teen Week', '']] as Array<[string, string, string, string]>,
+    plays: [[0, 6, base]] as Array<[number, number, number | null]>,
+    ratings: [] as Array<[number, number, number]>,
+    favorites: [] as Array<[number, number]>,
+    events: [
+      [0, 'p1', base, base + 180_000, 180, true],
+      [0, 'p2', base + 200_000, base + 380_000, 180, true]
+    ] as Array<[number, string, number, number | null, number, boolean]>,
+    ...overrides
+  }
+}
+
+test('an external import lands on matched tracks and is attributed to its source', async (t) => {
+  const dir = await setupSeededLibrary(t)
+
+  const result = await library.applyExternalListeningImport(buildImportFile())
+  assert.equal(result.identitiesMatched, 1)
+  assert.equal(result.sessionsInserted, 2)
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 6)
+
+  const dashboard = library.getListeningStatsDashboard({
+    range: 'all', rankingMetric: 'time', now: 1_750_500_000_000
+  })
+  assert.equal(dashboard.summary.qualifiedPlays, 2)
+  assert.equal(dashboard.summary.listenedSeconds, 360)
+
+  // Provenance is derived by Astra, never taken from the file.
+  const directDb = new TestSqliteDatabase(join(dir, 'library.db'))
+  try {
+    const session = directDb
+      .prepare('SELECT source_type, session_key FROM listening_sessions LIMIT 1')
+      .get() as { source_type: string; session_key: string }
+    const origin = directDb
+      .prepare('SELECT origin_id FROM track_play_origins WHERE track_path = ?')
+      .get('subsonic://1/teen-1') as { origin_id: string }
+
+    assert.equal(session.source_type, 'import:lastfm')
+    assert.ok(session.session_key.startsWith('import:lastfm:'))
+    assert.equal(origin.origin_id, 'import:lastfm')
+  } finally {
+    directDb.close()
+  }
+})
+
+test('an import file cannot claim another install as the origin of its plays', async (t) => {
+  const dir = await setupSeededLibrary(t)
+
+  // Local listening first, so there is a real origin row that must not be touched.
+  const generation = library.getListeningHistoryStatus().generation
+  await seedListeningSession(generation, {
+    sessionKey: 'genuine', trackPath: 'subsonic://1/teen-1',
+    startedAt: 1_700_000_000_000, listenedSeconds: 60
+  })
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 1)
+
+  // The public format has no field for an origin id, so nothing a converter writes can
+  // reach one. Play counts add rather than overwrite.
+  await library.applyExternalListeningImport(buildImportFile({ plays: [[0, 6, 1_750_000_000_000]] }))
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 7)
+
+  const directDb = new TestSqliteDatabase(join(dir, 'library.db'))
+  try {
+    const origins = directDb
+      .prepare('SELECT origin_id, play_count FROM track_play_origins WHERE track_path = ? ORDER BY origin_id')
+      .all('subsonic://1/teen-1') as Array<{ origin_id: string; play_count: number }>
+    assert.equal(origins.length, 2, 'local and imported plays stay in separate origin rows')
+    assert.equal(origins.find((o) => o.origin_id === 'import:lastfm')?.play_count, 6)
+    assert.equal(origins.find((o) => o.origin_id !== 'import:lastfm')?.play_count, 1)
+  } finally {
+    directDb.close()
+  }
+})
+
+test('re-importing the same external file changes nothing', async (t) => {
+  await setupSeededLibrary(t)
+
+  await library.applyExternalListeningImport(buildImportFile())
+  const first = library.getListeningStatsDashboard({
+    range: 'all', rankingMetric: 'time', now: 1_750_500_000_000
+  })
+
+  const second = await library.applyExternalListeningImport(buildImportFile())
+  const after = library.getListeningStatsDashboard({
+    range: 'all', rankingMetric: 'time', now: 1_750_500_000_000
+  })
+
+  assert.equal(second.sessionsInserted, 0)
+  assert.equal(second.sessionsMerged, 2)
+  assert.equal(after.summary.listenedSeconds, first.summary.listenedSeconds)
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 6)
+})
+
+test('imported sources are listed with their totals', async (t) => {
+  await setupSeededLibrary(t)
+  assert.deepEqual(library.getImportedListeningSources(), [])
+
+  await library.applyExternalListeningImport(buildImportFile())
+  const sources = library.getImportedListeningSources()
+
+  assert.equal(sources.length, 1)
+  assert.equal(sources[0].source, 'lastfm')
+  assert.equal(sources[0].generator, 'test-converter')
+  assert.equal(sources[0].sessionCount, 2)
+  assert.equal(sources[0].playCount, 6)
+  assert.equal(sources[0].trackCount, 1)
+  assert.ok(sources[0].importedAt > 0)
+})
+
+test('removing an imported source leaves locally recorded listening intact', async (t) => {
+  const dir = await setupSeededLibrary(t)
+
+  const generation = library.getListeningHistoryStatus().generation
+  await seedListeningSession(generation, {
+    sessionKey: 'genuine', trackPath: 'subsonic://1/teen-1',
+    startedAt: 1_700_000_000_000, listenedSeconds: 90
+  })
+  await library.applyExternalListeningImport(buildImportFile())
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 7)
+
+  const removal = await library.removeImportedListeningSource('lastfm')
+  assert.equal(removal.sessionsRemoved, 2)
+
+  // The local play survives; the imported ones are gone.
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 1)
+  assert.deepEqual(library.getImportedListeningSources(), [])
+
+  const dashboard = library.getListeningStatsDashboard({
+    range: 'all', rankingMetric: 'time', now: 1_750_500_000_000
+  })
+  assert.equal(dashboard.summary.qualifiedPlays, 1)
+  assert.equal(dashboard.summary.listenedSeconds, 90)
+
+  const directDb = new TestSqliteDatabase(join(dir, 'library.db'))
+  try {
+    const orphanSegments = directDb.prepare(`
+      SELECT COUNT(*) AS count FROM listening_segments
+      WHERE session_id NOT IN (SELECT id FROM listening_sessions)
+    `).get() as { count: number }
+    assert.equal(orphanSegments.count, 0, 'segments must not outlive their sessions')
+  } finally {
+    directDb.close()
+  }
+})
+
+test('removing one source leaves other imported sources alone', async (t) => {
+  await setupSeededLibrary(t)
+
+  await library.applyExternalListeningImport(buildImportFile())
+  await library.applyExternalListeningImport(buildImportFile({
+    source: 'itunes',
+    plays: [[0, 3, 1_750_000_000_000]],
+    events: [[0, 'q1', 1_750_100_000_000, 1_750_100_180_000, 180, true]]
+  }))
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 9)
+  assert.equal(library.getImportedListeningSources().length, 2)
+
+  await library.removeImportedListeningSource('lastfm')
+
+  const remaining = library.getImportedListeningSources()
+  assert.deepEqual(remaining.map((entry) => entry.source), ['itunes'])
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 3)
+})
+
+test('removing an unknown or malformed source is a no-op', async (t) => {
+  await setupSeededLibrary(t)
+  await library.applyExternalListeningImport(buildImportFile())
+
+  assert.deepEqual(await library.removeImportedListeningSource('nope'), {
+    source: 'nope', sessionsRemoved: 0, tracksAffected: 0
+  })
+  assert.deepEqual(await library.removeImportedListeningSource('NOT A SLUG'), {
+    source: 'NOT A SLUG', sessionsRemoved: 0, tracksAffected: 0
+  })
+  assert.equal(library.getImportedListeningSources().length, 1)
+})
+
+test('an external listen for a track outside the library still records', async (t) => {
+  await setupSeededLibrary(t)
+
+  const result = await library.applyExternalListeningImport(buildImportFile({
+    tracks: [['Unknown Song', 'Unknown Artist', 'Unknown Album', '']],
+    plays: [],
+    events: [[0, 'p1', 1_750_000_000_000, 1_750_000_180_000, 180, true]]
+  }))
+
+  assert.equal(result.identitiesUnmatched, 1)
+  const dashboard = library.getListeningStatsDashboard({
+    range: 'all', rankingMetric: 'time', now: 1_750_500_000_000
+  })
+  const ranked = dashboard.topTracks.find((entry) => entry.title === 'Unknown Song')
+  assert.ok(ranked)
+  assert.equal(ranked?.available, false)
+})
+
+test('an external listen can be recorded without counting as a play', async (t) => {
+  await setupSeededLibrary(t)
+
+  await library.applyExternalListeningImport(buildImportFile({
+    plays: [],
+    events: [[0, 'p1', 1_750_000_000_000, 1_750_000_180_000, 180, false]]
+  }))
+
+  const dashboard = library.getListeningStatsDashboard({
+    range: 'all', rankingMetric: 'time', now: 1_750_500_000_000
+  })
+  assert.equal(dashboard.summary.listenedSeconds, 180, 'time still counts')
+  assert.equal(dashboard.summary.qualifiedPlays, 0, 'but it is not a play')
+})

@@ -129,3 +129,34 @@ export interface ListeningStatsApplyRequest {
   counts?: string
   history?: string
 }
+
+/** One external data source that has been imported, as shown in Settings. */
+export interface ImportedListeningSource {
+  source: string
+  generator: string
+  importedAt: number
+  sessionCount: number
+  trackCount: number
+  playCount: number
+}
+
+export interface ImportedListeningSourceRemoval {
+  source: string
+  sessionsRemoved: number
+  tracksAffected: number
+}
+
+/** What an import file contains, read before the user commits to applying it. */
+export type ListeningImportPreview =
+  | { ok: false; error: string }
+  | {
+      ok: true
+      warnings: string[]
+      source: string
+      generator: string
+      trackCount: number
+      playCount: number
+      eventCount: number
+      ratingCount: number
+      favoriteCount: number
+    }

@@ -1,0 +1,6 @@
+[
+  { "artist": "Jane Remover", "track": "Teen Intro", "album": "Teen Week", "uts": 1750000000, "durationSeconds": 180 },
+  { "artist": "Jane Remover", "track": "Teen Intro", "album": "Teen Week", "uts": 1750086400, "durationSeconds": 180 },
+  { "artist": "Artist A", "track": "Split A", "album": "Split Release", "uts": 1750172800, "durationSeconds": 240 },
+  { "artist": "Some Band", "track": "A Song Not In The Library", "album": "Elsewhere", "uts": 1750259200 }
+]

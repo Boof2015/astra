@@ -119,6 +119,8 @@ import type {
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
 import type {
+  ImportedListeningSource,
+  ImportedListeningSourceRemoval,
   ListeningHistoryStatus,
   ListeningSessionCheckpoint,
   ListeningSessionCheckpointResult,
@@ -126,6 +128,7 @@ import type {
   ListeningStatsDashboard,
   ListeningStatsExportBundle,
   ListeningStatsExportRequest,
+  ListeningImportPreview,
   ListeningStatsQuery,
   ListeningStatsTransferAvailability
 } from '../types/listeningStats'
@@ -1462,6 +1465,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     applyListeningStatsTransfer: (request: ListeningStatsApplyRequest) =>
       ipcRenderer.invoke('library:applyListeningStatsTransfer', request) as Promise<ListeningStatsImportResult>,
 
+    // External listening imports (the public astra-listening-import format)
+    readListeningImportFile: (filePath: string) =>
+      ipcRenderer.invoke('library:readListeningImportFile', filePath) as Promise<ListeningImportPreview>,
+    applyListeningImportFile: (filePath: string) =>
+      ipcRenderer.invoke('library:applyListeningImportFile', filePath) as Promise<ListeningStatsImportResult>,
+    getImportedListeningSources: () =>
+      ipcRenderer.invoke('library:getImportedListeningSources') as Promise<ImportedListeningSource[]>,
+    removeImportedListeningSource: (source: string) =>
+      ipcRenderer.invoke('library:removeImportedListeningSource', source) as Promise<ImportedListeningSourceRemoval>,
+
     // Playlists
     getPlaylists: () => ipcRenderer.invoke('library:getPlaylists'),
     createPlaylist: (name: string) => ipcRenderer.invoke('library:createPlaylist', name),
@@ -1975,6 +1988,10 @@ declare global {
         getListeningStatsTransferAvailability: () => Promise<ListeningStatsTransferAvailability>
         exportListeningStatsTransfer: (request?: ListeningStatsExportRequest) => Promise<ListeningStatsExportBundle>
         applyListeningStatsTransfer: (request: ListeningStatsApplyRequest) => Promise<ListeningStatsImportResult>
+        readListeningImportFile: (filePath: string) => Promise<ListeningImportPreview>
+        applyListeningImportFile: (filePath: string) => Promise<ListeningStatsImportResult>
+        getImportedListeningSources: () => Promise<ImportedListeningSource[]>
+        removeImportedListeningSource: (source: string) => Promise<ImportedListeningSourceRemoval>
 
         // Playlists
         getPlaylists: () => Promise<Playlist[]>

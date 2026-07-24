@@ -20027,6 +20027,67 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-variant-numeric: tabular-nums;
 }
 
+/* Imported listening data */
+
+.settings-shell .settings-note-warning {
+  color: var(--warning);
+}
+
+.settings-import-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-import-sources {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.settings-import-source {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 11px 13px;
+  border: 1px solid rgba(var(--tint), 0.08);
+  border-radius: 8px;
+  background: rgba(var(--tint), 0.025);
+}
+
+.settings-import-source-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-import-source-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(var(--tint), 0.9);
+}
+
+.settings-import-source-meta {
+  font-size: 11px;
+  color: rgba(var(--tint), 0.58);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-import-source-generator {
+  font-size: 10px;
+  color: rgba(var(--tint), 0.42);
+}
+
+.settings-import-source-confirm {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .settings-transfer-footer {
   justify-content: space-between;
   gap: 10px;
