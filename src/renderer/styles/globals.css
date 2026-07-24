@@ -21234,6 +21234,11 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.25);
 }
 
+.playlist-dynamic-select option {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
 .playlist-dynamic-remove-btn {
   width: 30px;
   height: 30px;
