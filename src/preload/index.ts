@@ -122,9 +122,14 @@ import type {
   ListeningHistoryStatus,
   ListeningSessionCheckpoint,
   ListeningSessionCheckpointResult,
+  ListeningStatsApplyRequest,
   ListeningStatsDashboard,
-  ListeningStatsQuery
+  ListeningStatsExportBundle,
+  ListeningStatsExportRequest,
+  ListeningStatsQuery,
+  ListeningStatsTransferAvailability
 } from '../types/listeningStats'
+import type { ListeningStatsImportResult } from '../shared/stats/statsTransfer'
 import type {
   GlobalShortcutRegistrationRequest,
   GlobalShortcutRegistrationResult,
@@ -1250,6 +1255,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readTextFile: (filePath: string) => ipcRenderer.invoke('fs:readTextFile', filePath),
   readFileAsDataUrl: (filePath: string) => ipcRenderer.invoke('fs:readDataUrl', filePath) as Promise<string | null>,
   writeFile: (filePath: string, content: string) => ipcRenderer.invoke('fs:writeTextFile', filePath, content),
+  writeSettingsTransferFile: (filePath: string, content: string) =>
+    ipcRenderer.invoke('settings-transfer:writeFile', filePath, content) as Promise<boolean>,
   revealFileInFolder: (filePath: string) => ipcRenderer.invoke('fs:revealFileInFolder', filePath) as Promise<boolean>,
 
   statsShare: {
@@ -1446,6 +1453,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('library:getListeningStatsDashboard', query) as Promise<ListeningStatsDashboard>,
     clearDetailedListeningHistory: () =>
       ipcRenderer.invoke('library:clearDetailedListeningHistory') as Promise<ListeningHistoryStatus>,
+
+    // Listening stats transfer (settings import/export)
+    getListeningStatsTransferAvailability: () =>
+      ipcRenderer.invoke('library:getListeningStatsTransferAvailability') as Promise<ListeningStatsTransferAvailability>,
+    exportListeningStatsTransfer: (request?: ListeningStatsExportRequest) =>
+      ipcRenderer.invoke('library:exportListeningStatsTransfer', request) as Promise<ListeningStatsExportBundle>,
+    applyListeningStatsTransfer: (request: ListeningStatsApplyRequest) =>
+      ipcRenderer.invoke('library:applyListeningStatsTransfer', request) as Promise<ListeningStatsImportResult>,
 
     // Playlists
     getPlaylists: () => ipcRenderer.invoke('library:getPlaylists'),
@@ -1812,6 +1827,7 @@ declare global {
       openFileDialog: (options: { title?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>
       readTextFile: (filePath: string) => Promise<string>
       readFileAsDataUrl: (filePath: string) => Promise<string | null>
+      writeSettingsTransferFile: (filePath: string, content: string) => Promise<boolean>
       writeFile: (filePath: string, content: string) => Promise<boolean>
       revealFileInFolder: (filePath: string) => Promise<boolean>
 
@@ -1954,6 +1970,11 @@ declare global {
         checkpointListeningSession: (checkpoint: ListeningSessionCheckpoint) => Promise<ListeningSessionCheckpointResult>
         getListeningStatsDashboard: (query: ListeningStatsQuery) => Promise<ListeningStatsDashboard>
         clearDetailedListeningHistory: () => Promise<ListeningHistoryStatus>
+
+        // Listening stats transfer (settings import/export)
+        getListeningStatsTransferAvailability: () => Promise<ListeningStatsTransferAvailability>
+        exportListeningStatsTransfer: (request?: ListeningStatsExportRequest) => Promise<ListeningStatsExportBundle>
+        applyListeningStatsTransfer: (request: ListeningStatsApplyRequest) => Promise<ListeningStatsImportResult>
 
         // Playlists
         getPlaylists: () => Promise<Playlist[]>

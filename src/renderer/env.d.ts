@@ -621,6 +621,7 @@ declare global {
             openFileDialog: (options: { title?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>
             readTextFile: (filePath: string) => Promise<string>
             readFileAsDataUrl: (filePath: string) => Promise<string | null>
+            writeSettingsTransferFile: (filePath: string, content: string) => Promise<boolean>
             writeFile: (filePath: string, content: string) => Promise<boolean>
             revealFileInFolder: (filePath: string) => Promise<boolean>
             statsShare: {

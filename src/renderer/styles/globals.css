@@ -19998,6 +19998,35 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   color: rgba(var(--tint), 0.58);
 }
 
+/* Sits under the description in the text column, not beside the checkbox. */
+.settings-transfer-category-meta {
+  grid-column: 2;
+  margin-top: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(var(--tint), 0.44);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-transfer-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid rgba(var(--tint), 0.08);
+  border-radius: 8px;
+  background: rgba(var(--tint), 0.025);
+}
+
+.settings-transfer-summary-row {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(var(--tint), 0.7);
+  font-variant-numeric: tabular-nums;
+}
+
 .settings-transfer-footer {
   justify-content: space-between;
   gap: 10px;

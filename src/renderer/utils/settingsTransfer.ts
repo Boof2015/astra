@@ -64,6 +64,7 @@ import {
   WAVEFORM_TIME_DISPLAY_MODE_STORAGE_KEY,
 } from '../constants/settingsStorageKeys'
 import { LRCLIB_OFFICIAL_BASE_URL } from '../../types/lyrics'
+import type { ListeningStatsImportResult } from '../../shared/stats/statsTransfer'
 
 export const SETTINGS_TRANSFER_KIND = 'astra-settings-transfer'
 export const SETTINGS_TRANSFER_SCHEMA_VERSION = 1
@@ -78,9 +79,18 @@ export const SETTINGS_TRANSFER_CATEGORY_IDS = [
   'keybinds',
   'non_secret_integrations',
   'experiments',
+  'listening_stats',
+  'listening_history',
 ] as const
 
 export type SettingsTransferCategoryId = (typeof SETTINGS_TRANSFER_CATEGORY_IDS)[number]
+
+/**
+ * Pre-ticked on export. Detailed listening history is opt-in because it is by far the
+ * largest category and can push the file past the write size limit on its own.
+ */
+export const DEFAULT_EXPORT_SETTINGS_TRANSFER_CATEGORY_IDS: readonly SettingsTransferCategoryId[] =
+  SETTINGS_TRANSFER_CATEGORY_IDS.filter((categoryId) => categoryId !== 'listening_history')
 
 export interface SettingsTransferCategoryDefinition {
   id: SettingsTransferCategoryId
@@ -106,7 +116,11 @@ export type SettingsTransferParseResult =
   | { ok: false; error: string }
 
 export type SettingsTransferApplyResult =
-  | { ok: true; importedCategoryIds: SettingsTransferCategoryId[] }
+  | {
+      ok: true
+      importedCategoryIds: SettingsTransferCategoryId[]
+      listeningStats?: ListeningStatsImportResult
+    }
   | { ok: false; error: string }
 
 export interface SettingsTransferStorage {
@@ -121,12 +135,17 @@ export interface CreateSettingsTransferOptions {
   exportedAt?: string
   lyricsOnlineEnabled?: boolean
   lyricsLrclibBaseUrl?: string
+  listeningCountsEncoded?: string
+  listeningHistoryEncoded?: string
 }
 
 export interface ApplySettingsTransferOptions {
   storage?: SettingsTransferStorage
   setLyricsOnlineEnabled?: (enabled: boolean) => Promise<void> | void
   setLyricsLrclibBaseUrl?: (baseUrl: string) => Promise<void> | void
+  applyListeningStatsTransfer?: (
+    request: { counts?: string; history?: string }
+  ) => Promise<ListeningStatsImportResult>
 }
 
 const SETTINGS_TRANSFER_CATEGORY_DEFINITIONS_INTERNAL: SettingsTransferCategoryDefinition[] = [
@@ -174,6 +193,16 @@ const SETTINGS_TRANSFER_CATEGORY_DEFINITIONS_INTERNAL: SettingsTransferCategoryD
     id: 'experiments',
     label: 'Experiments',
     description: 'Portable experimental feature toggles.',
+  },
+  {
+    id: 'listening_stats',
+    label: 'Listening Counts & Ratings',
+    description: 'Play counts, last-played dates, star ratings, and favorites. Counts from each machine add together, and importing the same file twice changes nothing.',
+  },
+  {
+    id: 'listening_history',
+    label: 'Detailed Listening History',
+    description: 'Every listening session behind the Stats page. Merged, never replaced. This is the largest category by far.',
   },
 ]
 
@@ -239,6 +268,10 @@ export const SETTINGS_TRANSFER_CATEGORY_STORAGE_KEYS: Record<SettingsTransferCat
     CONTROLLER_SUPPORT_EXPERIMENT_STORAGE_KEY,
     ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY,
   ],
+  // These two live in the library database, not localStorage: their payloads travel in
+  // `values.encoded` and are applied through the main process.
+  listening_stats: [],
+  listening_history: [],
 }
 
 export const SETTINGS_TRANSFER_EXCLUDED_STORAGE_KEYS = [
@@ -346,6 +379,20 @@ function buildCategoryPayload(
     }
   }
 
+  // The listening payloads arrive pre-serialized from the main process. Keeping them as an
+  // opaque string means the surrounding file stays pretty-printed without the indent
+  // multiplying tens of thousands of stat rows past the 10 MB write limit.
+  if (categoryId === 'listening_stats') {
+    payload.values = {
+      encoded: typeof options.listeningCountsEncoded === 'string' ? options.listeningCountsEncoded : '',
+    }
+  }
+  if (categoryId === 'listening_history') {
+    payload.values = {
+      encoded: typeof options.listeningHistoryEncoded === 'string' ? options.listeningHistoryEncoded : '',
+    }
+  }
+
   return payload
 }
 
@@ -447,6 +494,9 @@ export async function applySettingsTransferFile(
 ): Promise<SettingsTransferApplyResult> {
   const storage = resolveStorage(options.storage)
   const importedCategoryIds: SettingsTransferCategoryId[] = []
+  let pendingListeningCounts: string | undefined
+  let pendingListeningHistory: string | undefined
+  let listeningStats: ListeningStatsImportResult | undefined
 
   try {
     for (const categoryId of normalizeCategorySelection(categoryIds)) {
@@ -476,7 +526,25 @@ export async function applySettingsTransferFile(
         )
       }
 
+      // Unlike the lyrics settings above, these are collected rather than applied in-loop:
+      // one apply call resolves the whole library's track identities once, where two would
+      // rebuild that index twice.
+      if (categoryId === 'listening_stats' && typeof payload.values?.encoded === 'string') {
+        pendingListeningCounts = payload.values.encoded
+      }
+      if (categoryId === 'listening_history' && typeof payload.values?.encoded === 'string') {
+        pendingListeningHistory = payload.values.encoded
+      }
+
       importedCategoryIds.push(categoryId)
+    }
+
+    const hasListeningPayload = Boolean(pendingListeningCounts) || Boolean(pendingListeningHistory)
+    if (hasListeningPayload && options.applyListeningStatsTransfer) {
+      listeningStats = await options.applyListeningStatsTransfer({
+        counts: pendingListeningCounts,
+        history: pendingListeningHistory,
+      })
     }
   } catch (error) {
     return {
@@ -487,5 +555,7 @@ export async function applySettingsTransferFile(
     }
   }
 
-  return { ok: true, importedCategoryIds }
+  return listeningStats
+    ? { ok: true, importedCategoryIds, listeningStats }
+    : { ok: true, importedCategoryIds }
 }

@@ -6,6 +6,7 @@ import test from 'node:test'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
 import * as library from './library.ts'
+import type { StatsTransferTrackTuple } from '../../shared/stats/statsTransfer.ts'
 import { createDefaultDynamicPlaylistRules } from '../../shared/playlists/dynamicPlaylist.ts'
 
 interface TestSqliteStatement {
@@ -118,8 +119,8 @@ function createRemoteTrack(
   }
 }
 
-async function setupSeededLibrary(t: test.TestContext): Promise<void> {
-  await setupEmptyLibrary(t)
+async function setupSeededLibrary(t: test.TestContext): Promise<string> {
+  const dir = await setupEmptyLibrary(t)
 
   const source = await library.createSubsonicSource({
     name: 'Test Source',
@@ -172,6 +173,8 @@ async function setupSeededLibrary(t: test.TestContext): Promise<void> {
       year: 2021
     })
   ])
+
+  return dir
 }
 
 async function setupLegacyPlaycountLibrary(t: test.TestContext): Promise<string> {
@@ -2698,4 +2701,716 @@ test('cached Enhanced LRC word timing keeps its LRC format', async (t) => {
     { timestampMs: 10_000, text: 'Hello ' },
     { timestampMs: 10_300, text: 'world' }
   ])
+})
+
+// ── Listening stats transfer ─────────────────────────────
+
+async function seedListeningSession(
+  generation: string,
+  options: {
+    sessionKey: string
+    trackPath: string
+    startedAt: number
+    listenedSeconds: number
+    durationSeconds?: number
+  }
+): Promise<void> {
+  await library.checkpointListeningSession({
+    generation,
+    sessionKey: options.sessionKey,
+    segmentKey: `${options.sessionKey}-segment`,
+    trackPath: options.trackPath,
+    sourcePlaylistId: null,
+    sessionStartedAt: options.startedAt,
+    segmentStartedAt: options.startedAt,
+    observedAt: options.startedAt + options.listenedSeconds * 1000,
+    sessionListenedSeconds: options.listenedSeconds,
+    segmentListenedSeconds: options.listenedSeconds,
+    trackDurationSeconds: options.durationSeconds ?? 180,
+    qualificationEligible: true,
+    finalizeSegment: true,
+    finalizeSession: true
+  })
+}
+
+test('stats transfer round trips into the same library without changing anything', async (t) => {
+  await setupSeededLibrary(t)
+
+  await library.setTrackRatingForPaths(['subsonic://1/teen-1'], 4.5)
+  await library.addFavoritePaths(['subsonic://1/split-a'])
+  const generation = library.getListeningHistoryStatus().generation
+  await seedListeningSession(generation, {
+    sessionKey: 'round-trip',
+    trackPath: 'subsonic://1/teen-1',
+    startedAt: 1_700_000_000_000,
+    listenedSeconds: 60
+  })
+
+  const before = {
+    playCount: library.getTrackByPath('subsonic://1/teen-1')?.play_count,
+    lastPlayedAt: library.getTrackByPath('subsonic://1/teen-1')?.last_played_at,
+    ratings: library.getTrackRatingEntries(),
+    favorites: library.getFavorites().map((track) => track.path),
+    dashboard: library.getListeningStatsDashboard({ range: 'all', rankingMetric: 'plays', now: 1_700_000_100_000 })
+  }
+
+  const bundle = library.exportListeningStatsTransfer({ includeHistory: true })
+  const result = await library.applyListeningStatsTransfer({
+    counts: bundle.counts.encoded,
+    history: bundle.history?.encoded
+  })
+
+  assert.equal(result.countsApplied, true)
+  assert.equal(result.historyApplied, true)
+  assert.equal(result.playCountsUpdated, 0, 'a same-library import should change no play counts')
+  assert.equal(result.sessionsInserted, 0)
+  assert.equal(result.sessionsMerged, 1)
+
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, before.playCount)
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.last_played_at, before.lastPlayedAt)
+  assert.deepEqual(library.getTrackRatingEntries(), before.ratings)
+  assert.deepEqual(library.getFavorites().map((track) => track.path), before.favorites)
+
+  const after = library.getListeningStatsDashboard({ range: 'all', rankingMetric: 'plays', now: 1_700_000_100_000 })
+  assert.equal(after.summary.listenedSeconds, before.dashboard.summary.listenedSeconds)
+  assert.equal(after.summary.qualifiedPlays, before.dashboard.summary.qualifiedPlays)
+})
+
+test('play counts from another install add to the local count', async (t) => {
+  await setupSeededLibrary(t)
+
+  const encoded = JSON.stringify({
+    v: 2,
+    tracks: [
+      ['', '', 'Teen Intro', 'Jane Remover', 'Teen Week', ''],
+      ['', '', 'Teen Feature', 'Jane Remover feat. Venturing', 'Teen Week', '']
+    ],
+    origins: ['remote-install'],
+    plays: [[0, 0, 25, 2_000_000], [1, 0, 4, 500]],
+    ratings: [],
+    favorites: []
+  })
+
+  const generation = library.getListeningHistoryStatus().generation
+  await seedListeningSession(generation, {
+    sessionKey: 'local-play',
+    trackPath: 'subsonic://1/teen-2',
+    startedAt: 3_000_000,
+    listenedSeconds: 60
+  })
+  const localTeen2 = library.getTrackByPath('subsonic://1/teen-2')
+  assert.equal(localTeen2?.play_count, 1)
+
+  const result = await library.applyListeningStatsTransfer({ counts: encoded })
+
+  // teen-1 had no local plays, so it shows only the imported install's count.
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 25)
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.last_played_at, 2_000_000)
+  // teen-2 was played on both machines: 1 local + 4 remote.
+  assert.equal(library.getTrackByPath('subsonic://1/teen-2')?.play_count, 5)
+  // last_played_at is still a MAX, so the newer local timestamp survives.
+  assert.equal(library.getTrackByPath('subsonic://1/teen-2')?.last_played_at, localTeen2?.last_played_at)
+  assert.equal(result.playCountsUpdated, 2)
+})
+
+test('re-importing the same counts file does not inflate the totals', async (t) => {
+  await setupSeededLibrary(t)
+
+  const encoded = JSON.stringify({
+    v: 2,
+    tracks: [['', '', 'Teen Intro', 'Jane Remover', 'Teen Week', '']],
+    origins: ['remote-install'],
+    plays: [[0, 0, 25, 2_000_000]],
+    ratings: [],
+    favorites: []
+  })
+
+  await library.applyListeningStatsTransfer({ counts: encoded })
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 25)
+
+  // The same origin merges with MAX, so applying the file again is a no-op even though
+  // counts from *different* origins would have added.
+  const second = await library.applyListeningStatsTransfer({ counts: encoded })
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 25)
+  assert.equal(second.playCountsUpdated, 0)
+
+  // A stale file reporting fewer plays than already recorded cannot lower the count.
+  const stale = JSON.stringify({
+    v: 2,
+    tracks: [['', '', 'Teen Intro', 'Jane Remover', 'Teen Week', '']],
+    origins: ['remote-install'],
+    plays: [[0, 0, 3, 1_000]],
+    ratings: [],
+    favorites: []
+  })
+  await library.applyListeningStatsTransfer({ counts: stale })
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 25)
+})
+
+test('a local play after an import adds to the imported total', async (t) => {
+  await setupSeededLibrary(t)
+
+  const encoded = JSON.stringify({
+    v: 2,
+    tracks: [['', '', 'Teen Intro', 'Jane Remover', 'Teen Week', '']],
+    origins: ['remote-install'],
+    plays: [[0, 0, 10, 1_000]],
+    ratings: [],
+    favorites: []
+  })
+  await library.applyListeningStatsTransfer({ counts: encoded })
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 10)
+
+  // The local play lands on this install's own origin row, so it adds rather than
+  // colliding with the imported one.
+  const generation = library.getListeningHistoryStatus().generation
+  await seedListeningSession(generation, {
+    sessionKey: 'after-import',
+    trackPath: 'subsonic://1/teen-1',
+    startedAt: 5_000_000,
+    listenedSeconds: 60
+  })
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 11)
+
+  // Re-exporting now carries both origins, so the other machine can take our play back.
+  const bundle = library.exportListeningStatsTransfer()
+  const payload = JSON.parse(bundle.counts.encoded) as { origins: string[] }
+  assert.equal(payload.origins.length, 2)
+  assert.ok(payload.origins.includes('remote-install'))
+})
+
+test('imported ratings apply only when newer than the local rating', async (t) => {
+  await setupSeededLibrary(t)
+
+  await library.setTrackRatingForPaths(['subsonic://1/teen-1'], 4)
+  const localUpdatedAt = library.getTrackRatingEntries()
+    .find((entry) => entry.track_path === 'subsonic://1/teen-1')?.updated_at ?? 0
+
+  const encoded = JSON.stringify({
+    v: 2,
+    tracks: [
+      ['', '', 'Teen Intro', 'Jane Remover', 'Teen Week', ''],
+      ['', '', 'Teen Feature', 'Jane Remover feat. Venturing', 'Teen Week', '']
+    ],
+    origins: [],
+    plays: [],
+    ratings: [[0, 1.5, localUpdatedAt - 1000], [1, 3.5, localUpdatedAt + 1000]],
+    favorites: []
+  })
+
+  const result = await library.applyListeningStatsTransfer({ counts: encoded })
+  const ratings = new Map(library.getTrackRatingEntries().map((entry) => [entry.track_path, entry.rating]))
+
+  assert.equal(ratings.get('subsonic://1/teen-1'), 4, 'the newer local rating should survive')
+  assert.equal(ratings.get('subsonic://1/teen-2'), 3.5)
+  assert.equal(result.ratingsKeptLocal, 1)
+  assert.equal(result.ratingsApplied, 1)
+})
+
+test('imported favorites union with the earliest added_at and clear stale tombstones', async (t) => {
+  await setupSeededLibrary(t)
+
+  await library.addFavoritePaths(['subsonic://1/split-a'])
+  // Unfavoriting writes a sync tombstone. Re-importing the favorite must clear it, or the
+  // next LAN sync would replay the tombstone and delete it again.
+  await library.removeFavorite('subsonic://1/split-a')
+
+  const encoded = JSON.stringify({
+    v: 2,
+    tracks: [['', '', 'Split A', 'Artist A', 'Split Release', '']],
+    origins: [],
+    plays: [],
+    ratings: [],
+    favorites: [[0, 1000]]
+  })
+
+  const result = await library.applyListeningStatsTransfer({ counts: encoded })
+
+  assert.deepEqual(library.getFavorites().map((track) => track.path), ['subsonic://1/split-a'])
+  assert.equal(result.favoritesAdded, 1)
+  assert.equal(result.favoriteTombstonesCleared, 1)
+  assert.equal(library.getSyncFavoritesState().tombstones.length, 0)
+
+  // A second import keeps the earliest added_at rather than overwriting it.
+  const laterEncoded = JSON.stringify({
+    v: 2,
+    tracks: [['', '', 'Split A', 'Artist A', 'Split Release', '']],
+    origins: [],
+    plays: [],
+    ratings: [],
+    favorites: [[0, 9_000_000]]
+  })
+  await library.applyListeningStatsTransfer({ counts: laterEncoded })
+  const favorite = library.getSyncFavoritesState().favorites[0]
+  assert.equal(favorite.addedAt, 1000)
+})
+
+test('imported history lands under the local generation without touching play counts', async (t) => {
+  await setupSeededLibrary(t)
+
+  const generation = library.getListeningHistoryStatus().generation
+  const encoded = JSON.stringify({
+    v: 2,
+    historyStartedAt: 1_600_000_000_000,
+    sessionsTotal: 1,
+    truncated: false,
+    tracks: [['', '', 'Teen Intro', 'Jane Remover', 'Teen Week', '']],
+    sessions: [[0, 'foreign-session', 'subsonic', 180, 1_600_000_000_000, 1_600_000_180_000, 180, 1_600_000_015_000]],
+    segments: [[0, 'foreign-segment', 1_600_000_000_000, 1_600_000_180_000, 1_600_000_180_000, 180]]
+  })
+
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 0)
+  const result = await library.applyListeningStatsTransfer({ history: encoded })
+
+  assert.equal(result.sessionsInserted, 1)
+  assert.equal(result.segmentsInserted, 1)
+  // Play counts are imported by the counts category, never replayed from qualified sessions.
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 0)
+
+  const dashboard = library.getListeningStatsDashboard({
+    range: 'all',
+    rankingMetric: 'plays',
+    now: 1_600_000_300_000
+  })
+  assert.equal(dashboard.status.generation, generation)
+  assert.equal(dashboard.summary.qualifiedPlays, 1)
+  assert.equal(dashboard.summary.listenedSeconds, 180)
+  assert.equal(dashboard.status.startedAt, 1_600_000_000_000)
+})
+
+test('history for a track missing from this library still imports and renders', async (t) => {
+  await setupSeededLibrary(t)
+
+  const encoded = JSON.stringify({
+    v: 2,
+    historyStartedAt: 1_600_000_000_000,
+    sessionsTotal: 1,
+    truncated: false,
+    tracks: [['', '', 'Ghost Track', 'Ghost Artist', 'Ghost Album', 'Ghost Artist']],
+    sessions: [[0, 'ghost-session', 'local', 200, 1_600_000_000_000, 1_600_000_200_000, 200, 1_600_000_015_000]],
+    segments: [[0, 'ghost-segment', 1_600_000_000_000, 1_600_000_200_000, 1_600_000_200_000, 200]]
+  })
+
+  const result = await library.applyListeningStatsTransfer({ history: encoded })
+  assert.equal(result.sessionsInserted, 1)
+  assert.equal(result.identitiesUnmatched, 1)
+
+  const dashboard = library.getListeningStatsDashboard({
+    range: 'all',
+    rankingMetric: 'plays',
+    now: 1_600_000_300_000
+  })
+  assert.equal(dashboard.summary.qualifiedPlays, 1)
+  const ghost = dashboard.topTracks.find((entry) => entry.title === 'Ghost Track')
+  assert.ok(ghost, 'the unmatched session should still rank')
+  assert.equal(ghost?.available, false)
+})
+
+test('imported sessions drop local-only columns and rebuild the album identity key', async (t) => {
+  const dir = await setupSeededLibrary(t)
+
+  const encoded = JSON.stringify({
+    v: 2,
+    historyStartedAt: 1_600_000_000_000,
+    sessionsTotal: 1,
+    truncated: false,
+    tracks: [['', '', 'Teen Intro', 'Jane Remover', 'Teen Week', 'Jane Remover']],
+    sessions: [[0, 'shape-session', 'subsonic', 180, 1_600_000_000_000, null, 180, null]],
+    segments: []
+  })
+  await library.applyListeningStatsTransfer({ history: encoded })
+
+  // Compare against what checkpointListeningSession writes for the same track.
+  const generation = library.getListeningHistoryStatus().generation
+  await seedListeningSession(generation, {
+    sessionKey: 'native-session',
+    trackPath: 'subsonic://1/teen-1',
+    startedAt: 1_700_000_000_000,
+    listenedSeconds: 60
+  })
+
+  const directDb = new TestSqliteDatabase(join(dir, 'library.db'))
+  try {
+    const imported = directDb
+      .prepare('SELECT artwork_hash, source_playlist_id, album_identity_key FROM listening_sessions WHERE session_key = ?')
+      .get('shape-session') as Record<string, unknown>
+    const native = directDb
+      .prepare('SELECT album_identity_key FROM listening_sessions WHERE session_key = ?')
+      .get('native-session') as Record<string, unknown>
+
+    assert.equal(imported.artwork_hash, null)
+    assert.equal(imported.source_playlist_id, null)
+    assert.equal(imported.album_identity_key, native.album_identity_key)
+  } finally {
+    directDb.close()
+  }
+})
+
+test('importing the same history twice is idempotent', async (t) => {
+  const dir = await setupSeededLibrary(t)
+
+  const encoded = JSON.stringify({
+    v: 2,
+    historyStartedAt: 1_600_000_000_000,
+    sessionsTotal: 1,
+    truncated: false,
+    tracks: [['', '', 'Teen Intro', 'Jane Remover', 'Teen Week', '']],
+    sessions: [[0, 'twice-session', 'subsonic', 180, 1_600_000_000_000, 1_600_000_180_000, 180, 1_600_000_015_000]],
+    segments: [[0, 'twice-segment', 1_600_000_000_000, 1_600_000_180_000, 1_600_000_180_000, 180]]
+  })
+
+  await library.applyListeningStatsTransfer({ history: encoded })
+  const second = await library.applyListeningStatsTransfer({ history: encoded })
+
+  assert.equal(second.sessionsInserted, 0)
+  assert.equal(second.sessionsMerged, 1)
+
+  const directDb = new TestSqliteDatabase(join(dir, 'library.db'))
+  try {
+    const sessions = directDb.prepare('SELECT COUNT(*) AS count FROM listening_sessions').get() as { count: number }
+    const segments = directDb.prepare('SELECT COUNT(*) AS count FROM listening_segments').get() as { count: number }
+    assert.equal(sessions.count, 1)
+    assert.equal(segments.count, 1)
+  } finally {
+    directDb.close()
+  }
+})
+
+test('the history baseline moves back to cover imported listens', async (t) => {
+  await setupSeededLibrary(t)
+
+  const generation = library.getListeningHistoryStatus().generation
+  await seedListeningSession(generation, {
+    sessionKey: 'local-recent',
+    trackPath: 'subsonic://1/teen-1',
+    startedAt: 1_700_000_000_000,
+    listenedSeconds: 60
+  })
+  assert.equal(library.getListeningHistoryStatus().startedAt, 1_700_000_000_000)
+
+  const older = JSON.stringify({
+    v: 2,
+    historyStartedAt: 1_500_000_000_000,
+    sessionsTotal: 1,
+    truncated: false,
+    tracks: [['', '', 'Teen Feature', 'Jane Remover feat. Venturing', 'Teen Week', '']],
+    sessions: [[0, 'older-session', 'subsonic', 180, 1_500_000_000_000, 1_500_000_180_000, 180, null]],
+    segments: []
+  })
+
+  const result = await library.applyListeningStatsTransfer({ history: older })
+  assert.equal(result.historyStartedAtMovedTo, 1_500_000_000_000)
+  assert.equal(library.getListeningHistoryStatus().startedAt, 1_500_000_000_000)
+
+  // A newer import must not push the baseline forward again.
+  const newer = JSON.stringify({
+    v: 2,
+    historyStartedAt: 1_900_000_000_000,
+    sessionsTotal: 1,
+    truncated: false,
+    tracks: [['', '', 'Teen Feature', 'Jane Remover feat. Venturing', 'Teen Week', '']],
+    sessions: [[0, 'newer-session', 'subsonic', 180, 1_900_000_000_000, null, 180, null]],
+    segments: []
+  })
+  await library.applyListeningStatsTransfer({ history: newer })
+  assert.equal(library.getListeningHistoryStatus().startedAt, 1_500_000_000_000)
+})
+
+test('history export honours the session budget and carries only surviving segments', async (t) => {
+  await setupSeededLibrary(t)
+
+  const generation = library.getListeningHistoryStatus().generation
+  for (let index = 0; index < 5; index += 1) {
+    await seedListeningSession(generation, {
+      sessionKey: `budget-${index}`,
+      trackPath: 'subsonic://1/teen-1',
+      startedAt: 1_600_000_000_000 + index * 600_000,
+      listenedSeconds: 60
+    })
+  }
+
+  const bundle = library.exportListeningStatsTransfer({ includeHistory: true, maxSessions: 2 })
+  assert.ok(bundle.history)
+  assert.equal(bundle.history?.sessionCount, 2)
+  assert.equal(bundle.history?.sessionsTotal, 5)
+  assert.equal(bundle.history?.truncated, true)
+  assert.equal(bundle.history?.segmentCount, 2)
+
+  const payload = JSON.parse(bundle.history?.encoded ?? '{}') as {
+    sessions: Array<[number, string]>
+    segments: unknown[]
+  }
+  // Newest first: budget-4 and budget-3.
+  assert.deepEqual(payload.sessions.map((session) => session[1]).sort(), ['budget-3', 'budget-4'])
+  assert.equal(payload.segments.length, 2)
+})
+
+test('ratings and favorites for tracks missing from the library still export and re-import', async (t) => {
+  const dir = await setupSeededLibrary(t)
+
+  // Ratings and favorites deliberately outlive their track rows across a remote resync.
+  const directDb = new TestSqliteDatabase(join(dir, 'library.db'))
+  try {
+    directDb.prepare('INSERT INTO track_ratings (track_path, rating, updated_at) VALUES (?, ?, ?)')
+      .run('subsonic://1/vanished', 3.5, 1000)
+    directDb.prepare('INSERT INTO favorites (track_path, added_at) VALUES (?, ?)')
+      .run('subsonic://1/vanished', 2000)
+  } finally {
+    directDb.close()
+  }
+
+  const bundle = library.exportListeningStatsTransfer()
+  const payload = JSON.parse(bundle.counts.encoded) as {
+    tracks: StatsTransferTrackTuple[]
+    ratings: Array<[number, number, number]>
+  }
+
+  // The row has no track to borrow metadata from, so its only identity is the path digest.
+  // That is still worth carrying: if the track reappears on this machine later, the digest
+  // re-attaches it. On another machine it simply cannot match, which is correct.
+  const orphanIndex = payload.tracks.findIndex((tuple) => tuple[2] === '' && tuple[0] !== '')
+  assert.ok(orphanIndex >= 0, 'the orphaned rating should still be exported')
+  assert.deepEqual(payload.tracks[orphanIndex].slice(2), ['', '', '', ''])
+  assert.ok(payload.ratings.some((rating) => rating[0] === orphanIndex))
+  assert.equal(bundle.counts.encoded.includes('vanished'), false, 'the path itself must not leak')
+})
+
+test('a path digest re-attaches stats on the machine that produced them', async (t) => {
+  await setupSeededLibrary(t)
+
+  await library.setTrackRatingForPaths(['subsonic://1/teen-1'], 4)
+  const exported = JSON.parse(library.exportListeningStatsTransfer().counts.encoded) as {
+    tracks: StatsTransferTrackTuple[]
+    ratings: Array<[number, number, number]>
+  }
+  const ratedIndex = exported.ratings[0][0]
+  const [pathHash, pathFoldHash] = exported.tracks[ratedIndex]
+  assert.ok(pathHash, 'a track with a real path should export a digest')
+
+  await library.resetAllTrackRatings()
+  assert.equal(library.getTrackRatingEntries().length, 0)
+
+  // Metadata deliberately blanked: only the digest can resolve this row, which is the
+  // same-machine fast path a backup restore relies on.
+  const digestOnly = JSON.stringify({
+    v: 2,
+    tracks: [[pathHash, pathFoldHash, '', '', '', '']],
+    origins: ['this-machine'],
+    plays: [],
+    ratings: [[0, 4.5, 9_000_000]],
+    favorites: []
+  })
+  const result = await library.applyListeningStatsTransfer({ counts: digestOnly })
+
+  assert.equal(result.identitiesMatched, 1)
+  const ratings = new Map(library.getTrackRatingEntries().map((entry) => [entry.track_path, entry.rating]))
+  assert.equal(ratings.get('subsonic://1/teen-1'), 4.5)
+})
+
+test('a malformed payload is rejected before any write happens', async (t) => {
+  await setupSeededLibrary(t)
+
+  await library.setTrackRatingForPaths(['subsonic://1/teen-1'], 4)
+  const before = library.getTrackRatingEntries()
+
+  await assert.rejects(
+    () => library.applyListeningStatsTransfer({ counts: '{"v":99,"tracks":[]}' }),
+    /unsupported listening data version/i
+  )
+  await assert.rejects(
+    () => library.applyListeningStatsTransfer({ counts: 'not json at all' }),
+    /could not be read/i
+  )
+
+  assert.deepEqual(library.getTrackRatingEntries(), before)
+})
+
+test('the denormalized play count always equals the sum of its origin rows', async (t) => {
+  const dir = await setupSeededLibrary(t)
+
+  const encoded = JSON.stringify({
+    v: 2,
+    tracks: [['', '', 'Teen Intro', 'Jane Remover', 'Teen Week', '']],
+    origins: ['remote-install'],
+    plays: [[0, 0, 9, 1000]],
+    ratings: [],
+    favorites: []
+  })
+  await library.applyListeningStatsTransfer({ counts: encoded })
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 9)
+
+  const generation = library.getListeningHistoryStatus().generation
+  await seedListeningSession(generation, {
+    sessionKey: 'sum-check',
+    trackPath: 'subsonic://1/teen-1',
+    startedAt: 5_000_000,
+    listenedSeconds: 60
+  })
+
+  const directDb = new TestSqliteDatabase(join(dir, 'library.db'))
+  try {
+    const summed = directDb
+      .prepare('SELECT SUM(play_count) AS total FROM track_play_origins WHERE track_path = ?')
+      .get('subsonic://1/teen-1') as { total: number }
+    const stored = directDb
+      .prepare('SELECT play_count FROM tracks WHERE path = ?')
+      .get('subsonic://1/teen-1') as { play_count: number }
+
+    assert.equal(summed.total, 10)
+    assert.equal(stored.play_count, summed.total)
+  } finally {
+    directDb.close()
+  }
+})
+
+test('stats transfer availability reports whether history exists', async (t) => {
+  await setupSeededLibrary(t)
+
+  assert.deepEqual(library.getListeningStatsTransferAvailability(), { hasHistory: false, sessionCount: 0 })
+  assert.equal(library.exportListeningStatsTransfer({ includeHistory: true }).history?.sessionCount, 0)
+
+  const generation = library.getListeningHistoryStatus().generation
+  await seedListeningSession(generation, {
+    sessionKey: 'availability',
+    trackPath: 'subsonic://1/teen-1',
+    startedAt: 1_600_000_000_000,
+    listenedSeconds: 60
+  })
+
+  assert.deepEqual(library.getListeningStatsTransferAvailability(), { hasHistory: true, sessionCount: 1 })
+})
+
+test('counts and history resolve independently despite sharing index numbers', async (t) => {
+  await setupSeededLibrary(t)
+
+  // The two payloads carry separate track dictionaries, so index 0 means a different track
+  // in each. Importing them together must not let one section's resolution leak into the other.
+  const counts = JSON.stringify({
+    v: 2,
+    tracks: [['', '', 'Teen Intro', 'Jane Remover', 'Teen Week', '']],
+    origins: ['remote-install'],
+    plays: [[0, 0, 11, 1000]],
+    ratings: [],
+    favorites: []
+  })
+  const history = JSON.stringify({
+    v: 2,
+    historyStartedAt: 1_600_000_000_000,
+    sessionsTotal: 1,
+    truncated: false,
+    tracks: [['', '', 'Split B', 'Artist B', 'Split Release', '']],
+    sessions: [[0, 'cross-session', 'subsonic', 180, 1_600_000_000_000, 1_600_000_180_000, 180, 1_600_000_015_000]],
+    segments: [[0, 'cross-segment', 1_600_000_000_000, 1_600_000_180_000, 1_600_000_180_000, 180]]
+  })
+
+  await library.applyListeningStatsTransfer({ counts, history })
+
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 11)
+
+  const dashboard = library.getListeningStatsDashboard({
+    range: 'all',
+    rankingMetric: 'plays',
+    now: 1_600_000_300_000
+  })
+  const ranked = dashboard.topTracks.find((entry) => entry.qualifiedPlays > 0)
+  assert.equal(ranked?.title, 'Split B', 'the session must resolve to its own dictionary entry')
+  assert.equal(ranked?.trackPath, 'subsonic://1/split-b')
+  assert.equal(ranked?.available, true)
+})
+
+test('stats from a different machine resolve onto the local library by metadata', async (t) => {
+  await setupSeededLibrary(t)
+
+  // The realistic cross-machine case: the other install stored the same music under
+  // completely different paths, so nothing matches on path and everything has to resolve
+  // through the metadata tiers.
+  const counts = JSON.stringify({
+    v: 2,
+    tracks: [
+      ['deadbeefdeadbeef', 'cafebabecafebabe', 'Teen Intro', 'Jane Remover', 'Teen Week', ''],
+      ['0123456789abcdef', 'fedcba9876543210', 'Split A', 'Artist A', 'Split Release', '']
+    ],
+    origins: ['other-machine'],
+    plays: [[0, 0, 9, 2_000_000], [1, 0, 4, 2_100_000]],
+    ratings: [[0, 5, 9_000_000]],
+    favorites: [[1, 1_500_000]]
+  })
+  const history = JSON.stringify({
+    v: 2,
+    historyStartedAt: 1_600_000_000_000,
+    sessionsTotal: 1,
+    truncated: false,
+    tracks: [['deadbeefdeadbeef', 'cafebabecafebabe', 'Teen Intro', 'Jane Remover', 'Teen Week', '']],
+    sessions: [[0, 'other-machine-session', 'local', 180, 1_600_000_000_000, 1_600_000_180_000, 180, 1_600_000_015_000]],
+    segments: [[0, 'other-machine-segment', 1_600_000_000_000, 1_600_000_180_000, 1_600_000_180_000, 180]]
+  })
+
+  const result = await library.applyListeningStatsTransfer({ counts, history })
+
+  // Path digests from another machine match nothing, yet every row still lands.
+  assert.equal(result.identitiesUnmatched, 0)
+  assert.equal(library.getTrackByPath('subsonic://1/teen-1')?.play_count, 9)
+  assert.equal(library.getTrackByPath('subsonic://1/split-a')?.play_count, 4)
+  assert.deepEqual(library.getFavorites().map((track) => track.path), ['subsonic://1/split-a'])
+
+  const ratings = new Map(library.getTrackRatingEntries().map((entry) => [entry.track_path, entry.rating]))
+  assert.equal(ratings.get('subsonic://1/teen-1'), 5)
+
+  // The session attaches to the real local track, not a synthetic unmatched placeholder.
+  const dashboard = library.getListeningStatsDashboard({
+    range: 'all',
+    rankingMetric: 'plays',
+    now: 1_600_000_300_000
+  })
+  const ranked = dashboard.topTracks.find((entry) => entry.title === 'Teen Intro')
+  assert.equal(ranked?.trackPath, 'subsonic://1/teen-1')
+  assert.equal(ranked?.available, true)
+})
+
+test('an unmatched cross-machine session stores a synthetic id, never a path digest', async (t) => {
+  const dir = await setupSeededLibrary(t)
+
+  const history = JSON.stringify({
+    v: 2,
+    historyStartedAt: 1_600_000_000_000,
+    sessionsTotal: 1,
+    truncated: false,
+    tracks: [['deadbeefdeadbeef', 'cafebabecafebabe', 'Foreign Song', 'Foreign Artist', 'Foreign Album', '']],
+    sessions: [[0, 'foreign', 'local', 180, 1_600_000_000_000, null, 180, null]],
+    segments: []
+  })
+  await library.applyListeningStatsTransfer({ history })
+
+  const directDb = new TestSqliteDatabase(join(dir, 'library.db'))
+  try {
+    const row = directDb
+      .prepare('SELECT track_path, track_id FROM listening_sessions WHERE session_key = ?')
+      .get('foreign') as { track_path: string; track_id: number | null }
+
+    assert.equal(row.track_id, null)
+    assert.ok(row.track_path.startsWith('astra-sync://unmatched/'))
+    assert.equal(row.track_path.includes('deadbeefdeadbeef'), false)
+  } finally {
+    directDb.close()
+  }
+})
+
+test('an exported settings payload contains no filesystem paths', async (t) => {
+  await setupSeededLibrary(t)
+
+  await library.setTrackRatingForPaths(['subsonic://1/teen-1'], 4)
+  await library.addFavoritePaths(['subsonic://1/split-a'])
+  const generation = library.getListeningHistoryStatus().generation
+  await seedListeningSession(generation, {
+    sessionKey: 'privacy',
+    trackPath: 'subsonic://1/teen-1',
+    startedAt: 1_600_000_000_000,
+    listenedSeconds: 60
+  })
+
+  const bundle = library.exportListeningStatsTransfer({ includeHistory: true })
+  for (const encoded of [bundle.counts.encoded, bundle.history?.encoded ?? '']) {
+    assert.equal(encoded.includes('subsonic://'), false, 'track paths must not be exported in the clear')
+    assert.equal(encoded.includes('/teen-1'), false)
+  }
 })

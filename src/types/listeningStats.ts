@@ -95,3 +95,37 @@ export interface ListeningStatsDashboard {
   topArtists: ListeningStatsRankedArtist[]
   topAlbums: ListeningStatsRankedAlbum[]
 }
+
+// ── Stats transfer (settings import/export) ──────────────
+
+export interface ListeningStatsTransferAvailability {
+  hasHistory: boolean
+  sessionCount: number
+}
+
+export interface ListeningStatsExportRequest {
+  includeHistory?: boolean
+  maxSessions?: number
+}
+
+export interface ListeningStatsExportBundle {
+  counts: {
+    encoded: string
+    trackCount: number
+    playCount: number
+    ratingCount: number
+    favoriteCount: number
+  }
+  history: {
+    encoded: string
+    sessionCount: number
+    segmentCount: number
+    sessionsTotal: number
+    truncated: boolean
+  } | null
+}
+
+export interface ListeningStatsApplyRequest {
+  counts?: string
+  history?: string
+}

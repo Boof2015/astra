@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { usePresence } from '../../hooks/usePresence'
 import {
+  DEFAULT_EXPORT_SETTINGS_TRANSFER_CATEGORY_IDS,
   SETTINGS_TRANSFER_CATEGORY_DEFINITIONS,
   applySettingsTransferFile,
   createSettingsTransferFile,
@@ -10,8 +11,27 @@ import {
   type AstraSettingsTransferFile,
   type SettingsTransferCategoryId,
 } from '../../utils/settingsTransfer'
+import type { ListeningStatsImportResult } from '../../../shared/stats/statsTransfer'
 
 type SettingsTransferMode = 'import' | 'export'
+
+// Settings exports go through their own write channel, which allows far more than the 10 MB
+// bound on the general-purpose one. Stop short of that ceiling so the wizard can name the
+// category responsible instead of surfacing the raw main-process error.
+const SETTINGS_TRANSFER_MAX_BYTES = 250 * 1024 * 1024
+
+interface ListeningStatsExportState {
+  countsEncoded: string
+  historyEncoded: string
+  countsBytes: number
+  historyBytes: number
+  playCount: number
+  ratingCount: number
+  favoriteCount: number
+  sessionCount: number
+  sessionsTotal: number
+  truncated: boolean
+}
 
 interface WizardStage {
   index: number
@@ -33,10 +53,101 @@ interface ImportFileState {
 }
 
 const ALL_CATEGORY_IDS = SETTINGS_TRANSFER_CATEGORY_DEFINITIONS.map((definition) => definition.id)
+const DEFAULT_EXPORT_CATEGORY_IDS = [...DEFAULT_EXPORT_SETTINGS_TRANSFER_CATEGORY_IDS]
 const WIZARD_STEPS = ['Direction', 'Details', 'Finish'] as const
 
 function getFileName(filePath: string): string {
   return filePath.split(/[\\/]/).pop() || filePath
+}
+
+function formatCount(value: number): string {
+  return value.toLocaleString()
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+function measureBytes(value: string): number {
+  return new TextEncoder().encode(value).length
+}
+
+function getExportCategoryMeta(
+  categoryId: SettingsTransferCategoryId,
+  statsExport: ListeningStatsExportState | null
+): string | null {
+  if (!statsExport) return null
+
+  if (categoryId === 'listening_stats') {
+    const parts = [`${formatCount(statsExport.playCount)} tracks`]
+    if (statsExport.ratingCount > 0) parts.push(`${formatCount(statsExport.ratingCount)} rated`)
+    if (statsExport.favoriteCount > 0) parts.push(`${formatCount(statsExport.favoriteCount)} favorites`)
+    return `${parts.join(' · ')} · ~${formatBytes(statsExport.countsBytes)}`
+  }
+
+  if (categoryId === 'listening_history' && statsExport.sessionCount > 0) {
+    return `${formatCount(statsExport.sessionCount)} sessions · ~${formatBytes(statsExport.historyBytes)}`
+  }
+
+  return null
+}
+
+function buildOversizeMessage(
+  bytes: number,
+  selectedCategoryIds: readonly SettingsTransferCategoryId[],
+  statsExport: ListeningStatsExportState | null
+): string {
+  const base = `This export is ${formatBytes(bytes)}, over the ${formatBytes(SETTINGS_TRANSFER_MAX_BYTES)} file limit.`
+  if (!statsExport) return `${base} Deselect a category and try again.`
+
+  const historySelected = selectedCategoryIds.includes('listening_history')
+  const countsSelected = selectedCategoryIds.includes('listening_stats')
+
+  if (historySelected && statsExport.historyBytes >= statsExport.countsBytes) {
+    return `${base} Detailed Listening History accounts for ${formatBytes(statsExport.historyBytes)} — deselect it, or export it on its own.`
+  }
+  if (countsSelected && statsExport.countsBytes > 0) {
+    return `${base} Listening Counts & Ratings accounts for ${formatBytes(statsExport.countsBytes)} — deselect it, or export it on its own.`
+  }
+  return `${base} Deselect a category and try again.`
+}
+
+function buildImportSummaryLines(result: ListeningStatsImportResult): string[] {
+  const lines: string[] = []
+
+  if (result.identitiesInPayload > 0) {
+    const unmatched = result.identitiesUnmatched > 0
+      ? ` (${formatCount(result.identitiesUnmatched)} not in this library)`
+      : ''
+    lines.push(
+      `${formatCount(result.identitiesMatched)} of ${formatCount(result.identitiesInPayload)} tracks matched${unmatched}.`
+    )
+  }
+
+  if (result.countsApplied) {
+    const parts = [
+      `Play counts updated on ${formatCount(result.playCountsUpdated)} tracks`,
+      `${formatCount(result.ratingsApplied)} ratings`,
+      `${formatCount(result.favoritesAdded)} favorites`,
+    ]
+    lines.push(`${parts.join(' · ')}.`)
+    if (result.ratingsKeptLocal > 0) {
+      lines.push(`${formatCount(result.ratingsKeptLocal)} ratings kept because this install had newer ones.`)
+    }
+  }
+
+  if (result.historyApplied) {
+    lines.push(
+      `${formatCount(result.sessionsInserted)} listening sessions added, ${formatCount(result.sessionsMerged)} merged.`
+    )
+    if (result.sessionsTruncatedAtExport) {
+      lines.push('The source file was truncated at export, so older sessions were not included.')
+    }
+  }
+
+  return lines
 }
 
 function getCategorySummary(categoryIds: readonly SettingsTransferCategoryId[]): string {
@@ -88,30 +199,80 @@ function getStage(
 
 export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTransferWizardProps) {
   const [mode, setMode] = useState<SettingsTransferMode | null>(null)
-  const [selectedCategoryIds, setSelectedCategoryIds] = useState<SettingsTransferCategoryId[]>(ALL_CATEGORY_IDS)
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<SettingsTransferCategoryId[]>(DEFAULT_EXPORT_CATEGORY_IDS)
   const [importFile, setImportFile] = useState<ImportFileState | null>(null)
   const [statusMessage, setStatusMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
   const [isBusy, setIsBusy] = useState(false)
+  const [statsExport, setStatsExport] = useState<ListeningStatsExportState | null>(null)
+  const [importSummaryLines, setImportSummaryLines] = useState<string[]>([])
+  const [awaitingReload, setAwaitingReload] = useState(false)
 
   const presence = usePresence(isOpen)
 
   useEffect(() => {
     if (!isOpen) return
     setMode(null)
-    setSelectedCategoryIds(ALL_CATEGORY_IDS)
+    setSelectedCategoryIds(DEFAULT_EXPORT_CATEGORY_IDS)
     setImportFile(null)
     setStatusMessage('')
     setErrorMessage('')
     setIsBusy(false)
+    setStatsExport(null)
+    setImportSummaryLines([])
+    setAwaitingReload(false)
   }, [isOpen])
+
+  // Loading the payloads up front lets each category show its real row count and size
+  // before the user commits to a save location.
+  useEffect(() => {
+    if (mode !== 'export') return
+    let cancelled = false
+
+    void (async () => {
+      try {
+        // Deliberately not gated on the Listening Stats experiment: sessions are recorded
+        // regardless of whether that page is switched on, so gating here would hide the
+        // user's own data from them. Only whether any sessions exist matters.
+        const availability = await window.electronAPI.library.getListeningStatsTransferAvailability()
+        const bundle = await window.electronAPI.library.exportListeningStatsTransfer({
+          includeHistory: availability.hasHistory,
+        })
+        if (cancelled) return
+        setStatsExport({
+          countsEncoded: bundle.counts.encoded,
+          historyEncoded: bundle.history?.encoded ?? '',
+          countsBytes: measureBytes(bundle.counts.encoded),
+          historyBytes: bundle.history ? measureBytes(bundle.history.encoded) : 0,
+          playCount: bundle.counts.playCount,
+          ratingCount: bundle.counts.ratingCount,
+          favoriteCount: bundle.counts.favoriteCount,
+          sessionCount: bundle.history?.sessionCount ?? 0,
+          sessionsTotal: bundle.history?.sessionsTotal ?? 0,
+          truncated: bundle.history?.truncated ?? false,
+        })
+      } catch {
+        if (!cancelled) setStatsExport(null)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [mode])
 
   const visibleCategoryIds = useMemo(() => {
     if (mode === 'import' && importFile) {
       return importFile.availableCategoryIds
     }
+    // History has nothing to offer when this install has no sessions, or when the stats
+    // experiment that produces them is off. Import is never gated this way — the same file
+    // may be switching the experiment on in the very same pass.
+    if (mode === 'export' && statsExport && statsExport.sessionCount === 0) {
+      return ALL_CATEGORY_IDS.filter((categoryId) => categoryId !== 'listening_history')
+    }
     return ALL_CATEGORY_IDS
-  }, [importFile, mode])
+  }, [importFile, mode, statsExport])
 
   const selectedVisibleCategoryIds = useMemo(
     () => selectedCategoryIds.filter((categoryId) => visibleCategoryIds.includes(categoryId)),
@@ -127,20 +288,21 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
   const resetMessages = () => {
     setStatusMessage('')
     setErrorMessage('')
+    setImportSummaryLines([])
   }
 
   const selectMode = (nextMode: SettingsTransferMode) => {
     resetMessages()
     setMode(nextMode)
     setImportFile(null)
-    setSelectedCategoryIds(nextMode === 'export' ? ALL_CATEGORY_IDS : [])
+    setSelectedCategoryIds(nextMode === 'export' ? DEFAULT_EXPORT_CATEGORY_IDS : [])
   }
 
   const goBackToModeChoice = () => {
     resetMessages()
     setMode(null)
     setImportFile(null)
-    setSelectedCategoryIds(ALL_CATEGORY_IDS)
+    setSelectedCategoryIds(DEFAULT_EXPORT_CATEGORY_IDS)
   }
 
   const toggleCategory = (categoryId: SettingsTransferCategoryId) => {
@@ -214,7 +376,21 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
         appVersion,
         lyricsOnlineEnabled: lyricsStatus?.enabled ?? false,
         lyricsLrclibBaseUrl: lyricsStatus?.lrclibBaseUrl,
+        listeningCountsEncoded: selectedVisibleCategoryIds.includes('listening_stats')
+          ? statsExport?.countsEncoded
+          : undefined,
+        listeningHistoryEncoded: selectedVisibleCategoryIds.includes('listening_history')
+          ? statsExport?.historyEncoded
+          : undefined,
       })
+
+      const content = serializeSettingsTransferFile(file)
+      const bytes = measureBytes(content)
+      if (bytes > SETTINGS_TRANSFER_MAX_BYTES) {
+        setErrorMessage(buildOversizeMessage(bytes, selectedVisibleCategoryIds, statsExport))
+        return
+      }
+
       const today = new Date().toISOString().slice(0, 10)
       const filePath = await window.electronAPI.showSaveDialog({
         title: 'Export Astra Settings',
@@ -223,8 +399,12 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
       })
       if (!filePath) return
 
-      await window.electronAPI.writeFile(filePath, serializeSettingsTransferFile(file))
-      setStatusMessage('Settings exported.')
+      await window.electronAPI.writeSettingsTransferFile(filePath, content)
+      setStatusMessage(
+        statsExport?.truncated && selectedVisibleCategoryIds.includes('listening_history')
+          ? `Settings exported. Listening history included the ${formatCount(statsExport.sessionCount)} most recent of ${formatCount(statsExport.sessionsTotal)} sessions.`
+          : 'Settings exported.'
+      )
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to export settings.')
     } finally {
@@ -251,10 +431,23 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
       setLyricsLrclibBaseUrl: async (baseUrl) => {
         await window.electronAPI.lyrics.setLrclibBaseUrl(baseUrl)
       },
+      applyListeningStatsTransfer: async (request) => {
+        return window.electronAPI.library.applyListeningStatsTransfer(request)
+      },
     })
 
     if (!result.ok) {
       setErrorMessage(result.error)
+      setIsBusy(false)
+      return
+    }
+
+    // A listening import produces counts worth reading, and the auto-reload would wipe them
+    // off screen. Hand the reload to the user instead.
+    if (result.listeningStats) {
+      setImportSummaryLines(buildImportSummaryLines(result.listeningStats))
+      setStatusMessage('Listening data imported.')
+      setAwaitingReload(true)
       setIsBusy(false)
       return
     }
@@ -308,6 +501,14 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
         <div className="modal-body settings-transfer-body">
           {statusMessage && <p className="settings-note settings-note-success">{statusMessage}</p>}
           {errorMessage && <p className="settings-note settings-note-error">{errorMessage}</p>}
+
+          {importSummaryLines.length > 0 && (
+            <div className="settings-transfer-summary">
+              {importSummaryLines.map((line) => (
+                <p key={line} className="settings-transfer-summary-row">{line}</p>
+              ))}
+            </div>
+          )}
 
           <div className="settings-transfer-stage-card">
             <div>
@@ -416,24 +617,31 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
                 </div>
               </div>
               <div className="settings-transfer-category-list">
-                {SETTINGS_TRANSFER_CATEGORY_DEFINITIONS.map((category) => (
-                  <label key={category.id} className="settings-transfer-category">
-                    <input
-                      type="checkbox"
-                      checked={selectedCategoryIds.includes(category.id)}
-                      onChange={() => toggleCategory(category.id)}
-                      disabled={isBusy}
-                    />
-                    <span>
-                      <span className="settings-transfer-category-title">{category.label}</span>
-                      <span className="settings-transfer-category-description">{category.description}</span>
-                    </span>
-                  </label>
-                ))}
+                {SETTINGS_TRANSFER_CATEGORY_DEFINITIONS
+                  .filter((category) => visibleCategoryIds.includes(category.id))
+                  .map((category) => {
+                    const meta = getExportCategoryMeta(category.id, statsExport)
+                    return (
+                      <label key={category.id} className="settings-transfer-category">
+                        <input
+                          type="checkbox"
+                          checked={selectedCategoryIds.includes(category.id)}
+                          onChange={() => toggleCategory(category.id)}
+                          disabled={isBusy}
+                        />
+                        <span>
+                          <span className="settings-transfer-category-title">{category.label}</span>
+                          <span className="settings-transfer-category-description">{category.description}</span>
+                        </span>
+                        {meta && <span className="settings-transfer-category-meta">{meta}</span>}
+                      </label>
+                    )
+                  })}
               </div>
               <p className="settings-note">
-                Library data, servers, scrobble profiles, passwords, tokens, output devices, and machine-specific
-                assignments are not included.
+                Servers, scrobble profiles, passwords, tokens, output devices, and machine-specific assignments are
+                not included. Library files themselves are not included — listening data travels as track names and
+                is matched against whatever this install already has.
               </p>
             </div>
           )}
@@ -453,7 +661,15 @@ export default function SettingsTransferWizard({ isOpen, onClose }: SettingsTran
                 {isBusy ? 'Exporting...' : 'Export'}
               </button>
             )}
-            {mode === 'import' && (
+            {mode === 'import' && awaitingReload && (
+              <button
+                className="settings-btn settings-btn-primary"
+                onClick={() => window.location.reload()}
+              >
+                Reload Astra
+              </button>
+            )}
+            {mode === 'import' && !awaitingReload && (
               <button
                 className="settings-btn settings-btn-primary"
                 onClick={importSettings}

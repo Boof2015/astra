@@ -15,15 +15,20 @@ import {
   UI_SCALE_STORAGE_KEY,
 } from '../constants/settingsStorageKeys.ts'
 import {
+  DEFAULT_EXPORT_SETTINGS_TRANSFER_CATEGORY_IDS,
   SETTINGS_TRANSFER_EXCLUDED_STORAGE_KEYS,
   applySettingsTransferFile,
   createSettingsTransferFile,
   getImportableSettingsTransferCategoryIds,
   parseSettingsTransferFile,
+  serializeSettingsTransferFile,
   type AstraSettingsTransferFile,
   type SettingsTransferStorage,
 } from './settingsTransfer.ts'
 import { LRCLIB_OFFICIAL_BASE_URL } from '../../types/lyrics.ts'
+import { createEmptyListeningStatsImportResult } from '../../shared/stats/statsTransfer.ts'
+
+const emptyImportResult = createEmptyListeningStatsImportResult()
 
 class MemoryStorage implements SettingsTransferStorage {
   private values = new Map<string, string>()
@@ -237,6 +242,135 @@ test('lyrics online preference is a non-secret integration value, not library or
   assert.equal(result.ok, true)
   assert.equal(importedLyricsEnabled, true)
   assert.equal(importedLrclibBaseUrl, 'http://lyrics.local:8080/mirror')
+})
+
+test('listening categories carry an encoded payload and contribute no localStorage keys', () => {
+  const file = createSettingsTransferFile(['listening_stats', 'listening_history'], {
+    storage: new MemoryStorage({
+      [THEME_STORAGE_KEY]: 'should-not-travel-here',
+      [LISTENING_STATS_ENABLED_STORAGE_KEY]: '1',
+    }),
+    listeningCountsEncoded: '{"v":1,"tracks":[],"plays":[],"ratings":[],"favorites":[]}',
+    listeningHistoryEncoded: '{"v":1,"tracks":[],"sessions":[],"segments":[]}',
+  })
+
+  assert.deepEqual(file.categories.listening_stats?.localStorage, {})
+  assert.deepEqual(file.categories.listening_history?.localStorage, {})
+  assert.deepEqual(collectExportedStorageKeys(file), [])
+  assert.equal(
+    file.categories.listening_stats?.values?.encoded,
+    '{"v":1,"tracks":[],"plays":[],"ratings":[],"favorites":[]}'
+  )
+  assert.equal(
+    file.categories.listening_history?.values?.encoded,
+    '{"v":1,"tracks":[],"sessions":[],"segments":[]}'
+  )
+})
+
+test('a listening category with no payload still exports a stable shape', () => {
+  const file = createSettingsTransferFile(['listening_stats'], { storage: new MemoryStorage() })
+  assert.deepEqual(file.categories.listening_stats?.values, { encoded: '' })
+})
+
+test('the encoded payload survives serialization while the file stays pretty-printed', () => {
+  const encoded = '{"v":1,"tracks":[["/music/a.flac","A","Artist","Album","AA"]],"plays":[[0,7,1700]],"ratings":[],"favorites":[]}'
+  const file = createSettingsTransferFile(['appearance', 'listening_stats'], {
+    storage: new MemoryStorage({ [THEME_STORAGE_KEY]: 'theme' }),
+    listeningCountsEncoded: encoded,
+  })
+
+  const serialized = serializeSettingsTransferFile(file)
+  assert.ok(serialized.includes('\n  "kind"'), 'the surrounding file should remain indented')
+
+  const parsed = parseSettingsTransferFile(serialized)
+  assert.equal(parsed.ok, true)
+  assert.ok(parsed.ok)
+  assert.equal(parsed.file.categories.listening_stats?.values?.encoded, encoded)
+})
+
+test('the listening apply callback runs once with both payloads', async () => {
+  const file = createSettingsTransferFile(['listening_stats', 'listening_history'], {
+    storage: new MemoryStorage(),
+    listeningCountsEncoded: 'counts-payload',
+    listeningHistoryEncoded: 'history-payload',
+  })
+
+  const calls: Array<{ counts?: string; history?: string }> = []
+  const result = await applySettingsTransferFile(file, ['listening_stats', 'listening_history'], {
+    storage: new MemoryStorage(),
+    applyListeningStatsTransfer: async (request) => {
+      calls.push(request)
+      return { ...emptyImportResult, countsApplied: true, historyApplied: true }
+    },
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0], { counts: 'counts-payload', history: 'history-payload' })
+  assert.ok(result.ok)
+  assert.equal(result.listeningStats?.countsApplied, true)
+})
+
+test('selecting only the counts category leaves the history payload undefined', async () => {
+  const file = createSettingsTransferFile(['listening_stats', 'listening_history'], {
+    storage: new MemoryStorage(),
+    listeningCountsEncoded: 'counts-payload',
+    listeningHistoryEncoded: 'history-payload',
+  })
+
+  const calls: Array<{ counts?: string; history?: string }> = []
+  await applySettingsTransferFile(file, ['listening_stats'], {
+    storage: new MemoryStorage(),
+    applyListeningStatsTransfer: async (request) => {
+      calls.push(request)
+      return emptyImportResult
+    },
+  })
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].counts, 'counts-payload')
+  assert.equal(calls[0].history, undefined)
+})
+
+test('an unselected listening category never reaches the apply callback', async () => {
+  const file = createSettingsTransferFile(['appearance', 'listening_history'], {
+    storage: new MemoryStorage({ [THEME_STORAGE_KEY]: 'theme' }),
+    listeningHistoryEncoded: 'history-payload',
+  })
+
+  let called = false
+  const result = await applySettingsTransferFile(file, ['appearance'], {
+    storage: new MemoryStorage(),
+    applyListeningStatsTransfer: async () => {
+      called = true
+      return emptyImportResult
+    },
+  })
+
+  assert.equal(called, false)
+  assert.ok(result.ok)
+  assert.equal(result.listeningStats, undefined)
+})
+
+test('a listening category with an empty payload does not invoke the apply callback', async () => {
+  const file = createSettingsTransferFile(['listening_stats'], { storage: new MemoryStorage() })
+
+  let called = false
+  await applySettingsTransferFile(file, ['listening_stats'], {
+    storage: new MemoryStorage(),
+    applyListeningStatsTransfer: async () => {
+      called = true
+      return emptyImportResult
+    },
+  })
+
+  assert.equal(called, false)
+})
+
+test('detailed listening history is the only category left unticked by default', () => {
+  assert.equal(DEFAULT_EXPORT_SETTINGS_TRANSFER_CATEGORY_IDS.includes('listening_history'), false)
+  assert.equal(DEFAULT_EXPORT_SETTINGS_TRANSFER_CATEGORY_IDS.includes('listening_stats'), true)
+  assert.equal(DEFAULT_EXPORT_SETTINGS_TRANSFER_CATEGORY_IDS.includes('appearance'), true)
 })
 
 test('older settings transfers without an LRCLIB URL restore the official endpoint', async () => {

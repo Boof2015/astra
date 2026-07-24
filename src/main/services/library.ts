@@ -62,6 +62,26 @@ import {
 } from '../../shared/playlists/dynamicPlaylist'
 import { normalizeTrackRating, type TrackRatingEntry } from '../../shared/ratings/trackRating'
 import {
+  LISTENING_STATS_TRANSFER_VERSION,
+  createEmptyListeningStatsImportResult,
+  createStatsTransferTrackDictionary,
+  decodeListeningCountsPayload,
+  decodeListeningHistoryPayload,
+  encodeListeningCountsPayload,
+  encodeListeningHistoryPayload,
+  shouldReplaceRating,
+  type ListeningCountsPayload,
+  type ListeningHistoryPayload,
+  type ListeningStatsImportResult,
+  type StatsTransferFavoriteTuple,
+  type StatsTransferPlayTuple,
+  type StatsTransferRatingTuple,
+  type StatsTransferSegmentTuple,
+  type StatsTransferSessionTuple,
+  type StatsTransferTrackIdentity,
+  type StatsTransferTrackTuple
+} from '../../shared/stats/statsTransfer'
+import {
   isAlbumNewForLatestSync,
   isTrackNewForLatestSync,
   type LatestLibrarySyncSummary
@@ -79,9 +99,13 @@ import type {
   ListeningSessionCheckpoint,
   ListeningSessionCheckpointResult,
   ListeningStatsActivityBucket,
+  ListeningStatsApplyRequest,
   ListeningStatsBucketGranularity,
   ListeningStatsDashboard,
+  ListeningStatsExportBundle,
+  ListeningStatsExportRequest,
   ListeningStatsQuery,
+  ListeningStatsTransferAvailability,
   ListeningStatsRange,
   ListeningStatsRankedAlbum,
   ListeningStatsRankedArtist,
@@ -149,6 +173,10 @@ const FOLDER_ARTWORK_EXTENSION_RANK = new Map<string, number>(
 )
 const LISTENING_HISTORY_GENERATION_META_KEY = 'listening_history_generation_v1'
 const LISTENING_HISTORY_STARTED_AT_META_KEY = 'listening_history_started_at_v1'
+// Identifies this install as the origin of the play counts it records, so counts from
+// several machines can be summed without any of them being counted twice.
+const INSTALL_ID_META_KEY = 'install_id_v1'
+const PLAY_ORIGIN_BACKFILL_META_KEY = 'track_play_origins_backfilled_v1'
 const LISTENING_STATS_TOP_LIMIT = 10
 
 export interface DbTrack {
@@ -2056,6 +2084,24 @@ export async function initDatabase(): Promise<void> {
     )
   `)
 
+  // Play counts broken down by the install that produced them, so stats imported from
+  // another machine ADD to the local count instead of one overwriting the other, while
+  // re-importing the same file stays a no-op (each origin merges with MAX, not addition).
+  // tracks.play_count is the denormalized sum over these rows and stays the read path for
+  // sorting, the tracklist column, and dynamic playlists.
+  // Path-keyed and trigger-free for the same reason as ratings and favorites: a remote
+  // resync deletes and re-inserts track rows, and counts must survive that.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS track_play_origins (
+      track_path TEXT NOT NULL,
+      origin_id TEXT NOT NULL,
+      play_count INTEGER NOT NULL DEFAULT 0,
+      last_played_at INTEGER,
+      PRIMARY KEY (track_path, origin_id)
+    )
+  `)
+  db.run('CREATE INDEX IF NOT EXISTS idx_track_play_origins_path ON track_play_origins(track_path)')
+
   // Schema migration: existing libraries may not have channels yet.
   try {
     db.run('ALTER TABLE tracks ADD COLUMN channels INTEGER')
@@ -2492,6 +2538,9 @@ export async function initDatabase(): Promise<void> {
       updated_at INTEGER NOT NULL
     )
   `)
+
+  // Last, because it reads its completion flag out of app_meta.
+  backfillTrackPlayOrigins()
 
   await saveDatabase()
 }
@@ -2942,6 +2991,7 @@ function deleteTrackRelatedRows(trackPaths: string[]): void {
     db.run(`DELETE FROM playlist_tracks WHERE track_path IN (${placeholders})`, chunk)
     db.run(`DELETE FROM favorites WHERE track_path IN (${placeholders})`, chunk)
     db.run(`DELETE FROM track_ratings WHERE track_path IN (${placeholders})`, chunk)
+    db.run(`DELETE FROM ${PLAY_ORIGIN_TABLE} WHERE track_path IN (${placeholders})`, chunk)
     db.run(`DELETE FROM recently_played WHERE track_path IN (${placeholders})`, chunk)
     db.run(`DELETE FROM track_metadata_overrides WHERE track_path IN (${placeholders})`, chunk)
     db.run(`DELETE FROM lyrics_cache WHERE track_path IN (${placeholders})`, chunk)
@@ -2954,6 +3004,7 @@ function deleteTrackRelatedRowsByPathPattern(trackPathPattern: string): void {
   db.run('DELETE FROM playlist_tracks WHERE track_path LIKE ?', [trackPathPattern])
   db.run('DELETE FROM favorites WHERE track_path LIKE ?', [trackPathPattern])
   db.run('DELETE FROM track_ratings WHERE track_path LIKE ?', [trackPathPattern])
+  db.run(`DELETE FROM ${PLAY_ORIGIN_TABLE} WHERE track_path LIKE ?`, [trackPathPattern])
   db.run('DELETE FROM recently_played WHERE track_path LIKE ?', [trackPathPattern])
   db.run('DELETE FROM track_metadata_overrides WHERE track_path LIKE ?', [trackPathPattern])
   db.run('DELETE FROM lyrics_cache WHERE track_path LIKE ?', [trackPathPattern])
@@ -2972,6 +3023,10 @@ const UNIQUE_TRACK_PATH_KEYED_TABLES = [
   'favorites'
 ] as const
 
+// Keyed on (track_path, origin_id) rather than track_path alone, so it needs its own
+// rename handling instead of riding UNIQUE_TRACK_PATH_KEYED_TABLES.
+const PLAY_ORIGIN_TABLE = 'track_play_origins'
+
 function moveTrackChildRows(oldPath: string, newPath: string): void {
   if (!db || oldPath === newPath) return
   // Every playlist row is an occurrence, so carry all of them to the repaired
@@ -2983,7 +3038,60 @@ function moveTrackChildRows(oldPath: string, newPath: string): void {
     // conflict) — the surviving path's data wins.
     db.run(`DELETE FROM ${table} WHERE track_path = ?`, [oldPath])
   }
+  movePlayOriginRows(oldPath, newPath)
   db.run('UPDATE recently_played SET track_path = ? WHERE track_path = ?', [newPath, oldPath])
+}
+
+/**
+ * Folds one path's play origins into another's. Unlike the other child tables, a collision
+ * here is summed rather than resolved in the survivor's favour: both rows are the same
+ * install's plays of the same physical file recorded under two path spellings, so dropping
+ * one would lose real plays.
+ */
+function movePlayOriginRows(oldPath: string, newPath: string): void {
+  if (!db || oldPath === newPath) return
+  db.run(`
+    INSERT INTO ${PLAY_ORIGIN_TABLE} (track_path, origin_id, play_count, last_played_at)
+    SELECT ?, origin_id, play_count, last_played_at FROM ${PLAY_ORIGIN_TABLE} WHERE track_path = ?
+    ON CONFLICT(track_path, origin_id) DO UPDATE SET
+      play_count = ${PLAY_ORIGIN_TABLE}.play_count + excluded.play_count,
+      last_played_at = CASE
+        WHEN excluded.last_played_at IS NULL THEN ${PLAY_ORIGIN_TABLE}.last_played_at
+        WHEN ${PLAY_ORIGIN_TABLE}.last_played_at IS NULL THEN excluded.last_played_at
+        ELSE MAX(${PLAY_ORIGIN_TABLE}.last_played_at, excluded.last_played_at)
+      END
+  `, [newPath, oldPath])
+  db.run(`DELETE FROM ${PLAY_ORIGIN_TABLE} WHERE track_path = ?`, [oldPath])
+}
+
+/** Rewrites tracks.play_count / last_played_at from the per-origin rows. */
+function recomputePlayCountsFromOrigins(trackPaths: readonly string[]): number {
+  if (!db || trackPaths.length === 0) return 0
+  let updated = 0
+  for (let offset = 0; offset < trackPaths.length; offset += SQLITE_SAFE_MAX_VARIABLES) {
+    const chunk = trackPaths.slice(offset, offset + SQLITE_SAFE_MAX_VARIABLES)
+    const placeholders = chunk.map(() => '?').join(', ')
+    db.run(`
+      UPDATE tracks SET
+        play_count = COALESCE((
+          SELECT SUM(o.play_count) FROM ${PLAY_ORIGIN_TABLE} o WHERE o.track_path = tracks.path
+        ), 0),
+        last_played_at = (
+          SELECT MAX(o.last_played_at) FROM ${PLAY_ORIGIN_TABLE} o WHERE o.track_path = tracks.path
+        )
+      WHERE tracks.path IN (${placeholders})
+        AND (
+          tracks.play_count IS NOT COALESCE((
+            SELECT SUM(o.play_count) FROM ${PLAY_ORIGIN_TABLE} o WHERE o.track_path = tracks.path
+          ), 0)
+          OR tracks.last_played_at IS NOT (
+            SELECT MAX(o.last_played_at) FROM ${PLAY_ORIGIN_TABLE} o WHERE o.track_path = tracks.path
+          )
+        )
+    `, chunk)
+    updated += Number(db.get<{ changed?: unknown }>('SELECT changes() AS changed')?.changed) || 0
+  }
+  return updated
 }
 
 // Rewrite a track's path in place (casing repair after a folder rename),
@@ -3051,6 +3159,8 @@ function mergeDuplicateTrackRows(survivorId: number, survivorPath: string, loser
     'UPDATE tracks SET play_count = ?, last_played_at = ?, added_at = COALESCE(?, added_at) WHERE id = ?',
     [playCount, lastPlayedAt, addedAt, survivorId]
   )
+  // moveTrackChildRows already folded each loser's origin rows into the survivor's path, so
+  // the breakdown and the summed column agree without recomputing from scratch.
 }
 
 export async function mergeLocalDuplicateTracks(keepPath: string, removedPaths: readonly string[]): Promise<string[]> {
@@ -5876,6 +5986,7 @@ export async function resetMappedFoldersData(): Promise<{ clearedFolders: number
   db.run('DELETE FROM recently_played')
   db.run('DELETE FROM favorites')
   db.run('DELETE FROM track_ratings')
+  db.run(`DELETE FROM ${PLAY_ORIGIN_TABLE}`)
   db.run('DELETE FROM lyrics_cache')
   db.run('DELETE FROM lyrics_track_overrides')
   db.run('DELETE FROM tracks')
@@ -5899,6 +6010,7 @@ export async function factoryResetLibraryData(): Promise<void> {
   db.run('DELETE FROM recently_played')
   db.run('DELETE FROM favorites')
   db.run('DELETE FROM track_ratings')
+  db.run(`DELETE FROM ${PLAY_ORIGIN_TABLE}`)
   db.run('DELETE FROM lyrics_cache')
   db.run('DELETE FROM lyrics_track_overrides')
   db.run('DELETE FROM tracks')
@@ -8223,6 +8335,14 @@ function writeAppMetaValue(key: string, value: string, updatedAt: number = Date.
   )
 }
 
+export function ensureInstallId(): string {
+  const existing = getAppMeta(INSTALL_ID_META_KEY)?.trim()
+  if (existing) return existing
+  const installId = randomUUID()
+  writeAppMetaValue(INSTALL_ID_META_KEY, installId)
+  return installId
+}
+
 function ensureListeningHistoryGeneration(): string {
   const existing = getAppMeta(LISTENING_HISTORY_GENERATION_META_KEY)?.trim()
   if (existing) return existing
@@ -8245,12 +8365,52 @@ export function getListeningHistoryStatus(): ListeningHistoryStatus {
   }
 }
 
+/**
+ * Seeds the per-origin breakdown from the counts a library already had. Everything recorded
+ * before this table existed necessarily came from this install, so it all lands under the
+ * local origin. Runs once — the flag matters because a later import writes foreign origin
+ * rows, and re-running would fold those into the local total.
+ */
+function backfillTrackPlayOrigins(): void {
+  if (!db) return
+  if (getAppMeta(PLAY_ORIGIN_BACKFILL_META_KEY)) return
+
+  const installId = ensureInstallId()
+  db.run(`
+    INSERT INTO track_play_origins (track_path, origin_id, play_count, last_played_at)
+    SELECT path, ?, play_count, last_played_at
+    FROM tracks
+    WHERE play_count > 0 OR last_played_at IS NOT NULL
+    ON CONFLICT(track_path, origin_id) DO UPDATE SET
+      play_count = MAX(track_play_origins.play_count, excluded.play_count),
+      last_played_at = CASE
+        WHEN excluded.last_played_at IS NULL THEN track_play_origins.last_played_at
+        WHEN track_play_origins.last_played_at IS NULL THEN excluded.last_played_at
+        ELSE MAX(track_play_origins.last_played_at, excluded.last_played_at)
+      END
+  `, [installId])
+  writeAppMetaValue(PLAY_ORIGIN_BACKFILL_META_KEY, '1')
+}
+
+/** Records one local play against this install's origin row. */
+function recordLocalPlayOrigin(trackPath: string, playedAt: number): void {
+  if (!db) return
+  db.run(`
+    INSERT INTO track_play_origins (track_path, origin_id, play_count, last_played_at)
+    VALUES (?, ?, 1, ?)
+    ON CONFLICT(track_path, origin_id) DO UPDATE SET
+      play_count = track_play_origins.play_count + 1,
+      last_played_at = MAX(COALESCE(track_play_origins.last_played_at, 0), excluded.last_played_at)
+  `, [trackPath, ensureInstallId(), playedAt])
+}
+
 function qualifyListeningSession(track: DbTrack, sourcePlaylistId: number | null, qualifiedAt: number): void {
   if (!db) return
   db.run(
     'UPDATE tracks SET play_count = play_count + 1, last_played_at = ? WHERE id = ?',
     [qualifiedAt, track.id]
   )
+  recordLocalPlayOrigin(track.path, qualifiedAt)
   db.run('INSERT INTO recently_played (track_path, played_at) VALUES (?, ?)', [track.path, qualifiedAt])
   db.run(`
     DELETE FROM recently_played WHERE id NOT IN (
@@ -8773,6 +8933,766 @@ export async function clearDetailedListeningHistory(): Promise<ListeningHistoryS
   return { generation, startedAt: null }
 }
 
+// ── Listening stats transfer ─────────────────────────────
+//
+// Serializes play counts, ratings, favorites and detailed listening history so they can
+// ride inside the settings transfer file, and merges them back on another install. Track
+// paths never match across machines, so every row travels with its metadata identity and
+// is re-resolved locally through the same matcher playlist import uses.
+//
+// Import is merge-only: the larger value always wins, so a mistaken import can never
+// destroy local stats. See shared/stats/statsTransfer.ts for the wire format.
+
+/**
+ * A backstop against pathological data rather than a real ceiling: settings exports have
+ * their own generous write limit, and at roughly 300 bytes per session this is far more
+ * history than continuous listening could produce in a lifetime.
+ */
+export const DEFAULT_LISTENING_HISTORY_EXPORT_MAX_SESSIONS = 500_000
+
+export function getListeningStatsTransferAvailability(): ListeningStatsTransferAvailability {
+  if (!db) return { hasHistory: false, sessionCount: 0 }
+  const generation = ensureListeningHistoryGeneration()
+  const row = db.get<{ count?: unknown }>(
+    'SELECT COUNT(*) AS count FROM listening_sessions WHERE generation = ?',
+    [generation]
+  )
+  const sessionCount = Number(row?.count) || 0
+  return { hasHistory: sessionCount > 0, sessionCount }
+}
+
+export function exportListeningStatsTransfer(
+  request: ListeningStatsExportRequest = {}
+): ListeningStatsExportBundle {
+  const emptyCounts: ListeningCountsPayload = {
+    v: LISTENING_STATS_TRANSFER_VERSION,
+    tracks: [],
+    origins: [],
+    plays: [],
+    ratings: [],
+    favorites: []
+  }
+  if (!db) {
+    return {
+      counts: {
+        encoded: encodeListeningCountsPayload(emptyCounts),
+        trackCount: 0,
+        playCount: 0,
+        ratingCount: 0,
+        favoriteCount: 0
+      },
+      history: null
+    }
+  }
+
+  const countsDictionary = createStatsTransferTrackDictionary()
+  const plays: StatsTransferPlayTuple[] = []
+  const ratings: StatsTransferRatingTuple[] = []
+  const favorites: StatsTransferFavoriteTuple[] = []
+
+  // Exported per originating install, not as a single total, so the receiving library can
+  // add this machine's plays to its own without either side being counted twice.
+  const originIds: string[] = []
+  const originIndexById = new Map<string, number>()
+  const originIndexOf = (originId: string): number => {
+    const existing = originIndexById.get(originId)
+    if (existing !== undefined) return existing
+    const index = originIds.length
+    originIds.push(originId)
+    originIndexById.set(originId, index)
+    return index
+  }
+
+  for (const row of db.all<Record<string, unknown>>(`
+    SELECT o.track_path AS path, o.origin_id, o.play_count, o.last_played_at,
+           t.title, t.artist, t.album, t.album_artist
+    FROM ${PLAY_ORIGIN_TABLE} o
+    LEFT JOIN tracks t ON t.path = o.track_path
+    WHERE o.play_count > 0 OR o.last_played_at IS NOT NULL
+  `)) {
+    const path = typeof row.path === 'string' ? row.path : ''
+    const originId = typeof row.origin_id === 'string' ? row.origin_id : ''
+    if (!path || !originId) continue
+    const lastPlayedAt = row.last_played_at === null ? null : Number(row.last_played_at) || null
+    plays.push([
+      countsDictionary.indexOf(identityFromRow(row)),
+      originIndexOf(originId),
+      Math.max(0, Math.trunc(Number(row.play_count) || 0)),
+      lastPlayedAt
+    ])
+  }
+
+  // LEFT JOIN, not INNER: track_ratings and favorites deliberately have no foreign key and
+  // no delete trigger so they survive a remote resync, which means they legitimately hold
+  // paths with no track row. Those export with path-only identity and re-match on the same
+  // machine via the exact-path fast path.
+  for (const row of db.all<Record<string, unknown>>(`
+    SELECT r.track_path AS path, r.rating, r.updated_at,
+           t.title, t.artist, t.album, t.album_artist
+    FROM track_ratings r
+    LEFT JOIN tracks t ON t.path = r.track_path
+  `)) {
+    const path = typeof row.path === 'string' ? row.path : ''
+    if (!path) continue
+    const rating = normalizeTrackRating(row.rating)
+    if (rating === null) continue
+    ratings.push([countsDictionary.indexOf(identityFromRow(row)), rating, Number(row.updated_at) || 0])
+  }
+
+  for (const row of db.all<Record<string, unknown>>(`
+    SELECT f.track_path AS path, f.added_at,
+           t.title, t.artist, t.album, t.album_artist
+    FROM favorites f
+    LEFT JOIN tracks t ON t.path = f.track_path
+  `)) {
+    const path = typeof row.path === 'string' ? row.path : ''
+    if (!path) continue
+    favorites.push([countsDictionary.indexOf(identityFromRow(row)), Number(row.added_at) || 0])
+  }
+
+  const counts: ListeningCountsPayload = {
+    v: LISTENING_STATS_TRANSFER_VERSION,
+    tracks: countsDictionary.tuples(),
+    origins: originIds,
+    plays,
+    ratings,
+    favorites
+  }
+
+  const bundle: ListeningStatsExportBundle = {
+    counts: {
+      encoded: encodeListeningCountsPayload(counts),
+      trackCount: countsDictionary.size(),
+      playCount: plays.length,
+      ratingCount: ratings.length,
+      favoriteCount: favorites.length
+    },
+    history: null
+  }
+
+  if (request.includeHistory !== true) return bundle
+
+  const generation = ensureListeningHistoryGeneration()
+  const maxSessions = Number.isFinite(Number(request.maxSessions)) && Number(request.maxSessions) > 0
+    ? Math.trunc(Number(request.maxSessions))
+    : DEFAULT_LISTENING_HISTORY_EXPORT_MAX_SESSIONS
+  const sessionsTotal = Number(db.get<{ count?: unknown }>(
+    'SELECT COUNT(*) AS count FROM listening_sessions WHERE generation = ?',
+    [generation]
+  )?.count) || 0
+
+  const historyDictionary = createStatsTransferTrackDictionary()
+  const sessions: StatsTransferSessionTuple[] = []
+  const sessionIndexById = new Map<number, number>()
+
+  for (const row of db.all<Record<string, unknown>>(`
+    SELECT id, session_key, track_path, title, artist, album, album_artist,
+           source_type, duration_seconds, started_at, ended_at, listened_seconds, qualified_at
+    FROM listening_sessions
+    WHERE generation = ?
+    ORDER BY started_at DESC, id DESC
+    LIMIT ?
+  `, [generation, maxSessions])) {
+    const sessionId = Number(row.id)
+    const sessionKey = typeof row.session_key === 'string' ? row.session_key : ''
+    if (!Number.isInteger(sessionId) || !sessionKey) continue
+
+    sessionIndexById.set(sessionId, sessions.length)
+    sessions.push([
+      historyDictionary.indexOf({
+        ...trackPathHashes(typeof row.track_path === 'string' ? row.track_path : ''),
+        title: typeof row.title === 'string' ? row.title : '',
+        artist: typeof row.artist === 'string' ? row.artist : '',
+        album: typeof row.album === 'string' ? row.album : '',
+        albumArtist: typeof row.album_artist === 'string' ? row.album_artist : ''
+      }),
+      sessionKey,
+      typeof row.source_type === 'string' ? row.source_type : 'local',
+      finiteNonNegative(row.duration_seconds),
+      Number(row.started_at) || 0,
+      row.ended_at === null ? null : Number(row.ended_at) || null,
+      finiteNonNegative(row.listened_seconds),
+      row.qualified_at === null ? null : Number(row.qualified_at) || null
+    ])
+  }
+
+  const segments: StatsTransferSegmentTuple[] = []
+  const sessionIds = Array.from(sessionIndexById.keys())
+  for (let offset = 0; offset < sessionIds.length; offset += SQLITE_SAFE_MAX_VARIABLES) {
+    const chunk = sessionIds.slice(offset, offset + SQLITE_SAFE_MAX_VARIABLES)
+    const placeholders = chunk.map(() => '?').join(', ')
+    for (const row of db.all<Record<string, unknown>>(`
+      SELECT session_id, segment_key, started_at, last_observed_at, ended_at, listened_seconds
+      FROM listening_segments
+      WHERE session_id IN (${placeholders})
+    `, chunk)) {
+      const sessionIndex = sessionIndexById.get(Number(row.session_id))
+      const segmentKey = typeof row.segment_key === 'string' ? row.segment_key : ''
+      if (sessionIndex === undefined || !segmentKey) continue
+      segments.push([
+        sessionIndex,
+        segmentKey,
+        Number(row.started_at) || 0,
+        Number(row.last_observed_at) || 0,
+        row.ended_at === null ? null : Number(row.ended_at) || null,
+        finiteNonNegative(row.listened_seconds)
+      ])
+    }
+  }
+
+  bundle.history = {
+    encoded: encodeListeningHistoryPayload({
+      v: LISTENING_STATS_TRANSFER_VERSION,
+      historyStartedAt: readListeningHistoryStartedAt(),
+      sessionsTotal,
+      truncated: sessionsTotal > sessions.length,
+      tracks: historyDictionary.tuples(),
+      sessions,
+      segments
+    }),
+    sessionCount: sessions.length,
+    segmentCount: segments.length,
+    sessionsTotal,
+    truncated: sessionsTotal > sessions.length
+  }
+
+  return bundle
+}
+
+/**
+ * A short digest of a track path, for same-machine matching without disclosing the path.
+ * Truncated to 16 hex chars: collisions within one library are negligible, and a miss just
+ * falls through to the metadata tiers, which is what a different machine does anyway.
+ */
+function hashTrackPathForTransfer(trackPath: string): string {
+  if (!trackPath) return ''
+  return createHash('sha256').update(trackPath).digest('hex').slice(0, 16)
+}
+
+function trackPathHashes(trackPath: string): { pathHash: string; pathFoldHash: string } {
+  const normalized = trackPath ? normalizePlaylistPathForLookup(trackPath) : ''
+  if (!normalized) return { pathHash: '', pathFoldHash: '' }
+  return {
+    pathHash: hashTrackPathForTransfer(normalized),
+    pathFoldHash: hashTrackPathForTransfer(normalized.toLocaleLowerCase())
+  }
+}
+
+function identityFromRow(row: Record<string, unknown>): StatsTransferTrackIdentity {
+  const path = typeof row.path === 'string' ? row.path : ''
+  return {
+    ...trackPathHashes(path),
+    title: typeof row.title === 'string' ? row.title : '',
+    artist: typeof row.artist === 'string' ? row.artist : '',
+    album: typeof row.album === 'string' ? row.album : '',
+    albumArtist: typeof row.album_artist === 'string' ? row.album_artist : ''
+  }
+}
+
+interface StatsTransferResolution {
+  trackPath: string | null
+  ambiguous: boolean
+}
+
+interface StatsTransferResolver {
+  resolve: (tuple: StatsTransferTrackTuple) => StatsTransferResolution
+  /** Every distinct identity resolved so far, for the import summary. */
+  resolutions: () => StatsTransferResolution[]
+  rowByPath: Map<string, DbTrackRow>
+  albumIdentityKeyByPath: ReadonlyMap<string, string>
+}
+
+/**
+ * One full-table read feeding the metadata matcher, a path lookup, and the album identity
+ * keys. `createTrackMetadataMatcher()` would do the same work but force a second read.
+ */
+function buildStatsTransferTrackResolver(): StatsTransferResolver {
+  const rows = readAllTrackRowsUnordered()
+  const lookup = buildPlaylistImportLookupIndex(rows)
+  const rowByPath = new Map<string, DbTrackRow>()
+  // Local path digests, so a file exported from this same install matches exactly. A file
+  // from another machine misses here by definition and resolves on metadata instead.
+  const pathByHash = new Map<string, string>()
+  const pathByFoldHash = new Map<string, string | null>()
+  for (const row of rows) {
+    rowByPath.set(row.path, row)
+    const { pathHash, pathFoldHash } = trackPathHashes(row.path)
+    if (pathHash) pathByHash.set(pathHash, row.path)
+    if (pathFoldHash) {
+      // null marks an ambiguous digest, mirroring buildPlaylistImportLookupIndex: on a
+      // case-sensitive filesystem two files can differ only in case.
+      pathByFoldHash.set(pathFoldHash, pathByFoldHash.has(pathFoldHash) ? null : row.path)
+    }
+  }
+
+  const cache = new Map<StatsTransferTrackTuple, StatsTransferResolution>()
+
+  return {
+    rowByPath,
+    albumIdentityKeyByPath: buildAlbumIdentityKeysByPath(rows),
+    resolutions() {
+      return Array.from(cache.values())
+    },
+    resolve(tuple) {
+      const cached = cache.get(tuple)
+      if (cached) return cached
+
+      let resolution: StatsTransferResolution = { trackPath: null, ambiguous: false }
+      const [pathHash, pathFoldHash, title, artist, album] = tuple
+
+      if (pathHash) {
+        const exact = pathByHash.get(pathHash)
+        if (exact) resolution = { trackPath: exact, ambiguous: false }
+      }
+      if (!resolution.trackPath && pathFoldHash) {
+        const folded = pathByFoldHash.get(pathFoldHash)
+        if (typeof folded === 'string') resolution = { trackPath: folded, ambiguous: false }
+      }
+
+      // The cross-machine path: paths never line up between installs, so metadata is what
+      // actually resolves these rows against whatever this library happens to hold.
+      if (!resolution.trackPath) {
+        const match = matchPlaylistEntryByMetadata({ title, artist, album }, lookup)
+        if (match.kind === 'matched') {
+          resolution = { trackPath: match.trackPath, ambiguous: false }
+        } else if (match.kind === 'ambiguous') {
+          resolution = { trackPath: null, ambiguous: true }
+        }
+      }
+
+      cache.set(tuple, resolution)
+      return resolution
+    }
+  }
+}
+
+export async function applyListeningStatsTransfer(
+  request: ListeningStatsApplyRequest
+): Promise<ListeningStatsImportResult> {
+  const result = createEmptyListeningStatsImportResult()
+  if (!db) return result
+
+  // Decode outside the transaction — a malformed payload must not open a write.
+  let counts: ListeningCountsPayload | null = null
+  if (typeof request.counts === 'string' && request.counts.trim().length > 0) {
+    const decoded = decodeListeningCountsPayload(request.counts)
+    if (!decoded.ok) throw new Error(decoded.error)
+    counts = decoded.payload
+  }
+
+  let history: ListeningHistoryPayload | null = null
+  if (typeof request.history === 'string' && request.history.trim().length > 0) {
+    const decoded = decodeListeningHistoryPayload(request.history)
+    if (!decoded.ok) throw new Error(decoded.error)
+    history = decoded.payload
+  }
+
+  if (!counts && !history) return result
+
+  // Every read that informs the merge happens here, before the first write. db.run
+  // invalidates the track snapshot cache, so a read interleaved with the write loop would
+  // rebuild it repeatedly — and a read after a partial write would see half-merged state.
+  const resolver = buildStatsTransferTrackResolver()
+  const generation = ensureListeningHistoryGeneration()
+  const localRatings = new Map<string, number>()
+  const localFavorites = new Set<string>()
+  const localSessionIdByKey = new Map<string, number>()
+
+  if (counts) {
+    for (const row of db.all<{ track_path?: unknown; updated_at?: unknown }>(
+      'SELECT track_path, updated_at FROM track_ratings'
+    )) {
+      if (typeof row.track_path === 'string') {
+        localRatings.set(row.track_path, Number(row.updated_at) || 0)
+      }
+    }
+    for (const row of db.all<{ track_path?: unknown }>('SELECT track_path FROM favorites')) {
+      if (typeof row.track_path === 'string') localFavorites.add(row.track_path)
+    }
+  }
+
+  if (history) {
+    for (const row of db.all<{ id?: unknown; session_key?: unknown }>(
+      'SELECT id, session_key FROM listening_sessions WHERE generation = ?',
+      [generation]
+    )) {
+      if (typeof row.session_key === 'string') {
+        localSessionIdByKey.set(row.session_key, Number(row.id))
+      }
+    }
+  }
+
+  const localHistoryStartedAt = readListeningHistoryStartedAt()
+
+  // Each payload carries its own track dictionary, so the same index means different tracks
+  // in the counts and history sections. Resolution is therefore keyed on the tuple itself
+  // (inside the resolver), never on the index.
+  const resolveTrack = (tuples: StatsTransferTrackTuple[], index: number): StatsTransferResolution => {
+    return resolver.resolve(tuples[index])
+  }
+
+  beginLibraryWriteTransaction()
+  try {
+    if (counts) {
+      applyListeningCountsSection(counts, {
+        resolveTrack,
+        rowByPath: resolver.rowByPath,
+        localRatings,
+        localFavorites,
+        result
+      })
+      result.countsApplied = true
+    }
+    if (history) {
+      applyListeningHistorySection(history, {
+        resolveTrack,
+        rowByPath: resolver.rowByPath,
+        albumIdentityKeyByPath: resolver.albumIdentityKeyByPath,
+        generation,
+        localSessionIdByKey,
+        localHistoryStartedAt,
+        result
+      })
+      result.historyApplied = true
+    }
+    commitLibraryWriteTransaction()
+  } catch (error) {
+    rollbackLibraryWriteTransaction()
+    throw error
+  }
+
+  const uniqueResolutions = resolver.resolutions()
+  result.identitiesInPayload = uniqueResolutions.length
+  result.identitiesMatched = uniqueResolutions.filter((entry) => entry.trackPath !== null).length
+  result.identitiesAmbiguous = uniqueResolutions.filter((entry) => entry.ambiguous).length
+  result.identitiesUnmatched = result.identitiesInPayload - result.identitiesMatched
+
+  await saveDatabase()
+  return result
+}
+
+type ResolveTrackFn = (tuples: StatsTransferTrackTuple[], index: number) => StatsTransferResolution
+
+interface ListeningCountsSectionContext {
+  resolveTrack: ResolveTrackFn
+  rowByPath: Map<string, DbTrackRow>
+  localRatings: Map<string, number>
+  localFavorites: Set<string>
+  result: ListeningStatsImportResult
+}
+
+function applyListeningCountsSection(
+  payload: ListeningCountsPayload,
+  context: ListeningCountsSectionContext
+): void {
+  if (!db) return
+  const { resolveTrack, rowByPath, localRatings, localFavorites, result } = context
+
+  // Each row is one install's running total for one track, so it merges with MAX against
+  // the matching origin row. Distinct origins never collide, which is what lets counts from
+  // several machines add up while a repeated import of the same file changes nothing.
+  const playRows: Array<[string, string, number, number | null]> = []
+  const touchedPaths = new Set<string>()
+  for (const [trackIndex, originIndex, playCount, lastPlayedAt] of payload.plays) {
+    const originId = payload.origins[originIndex]
+    if (!originId) continue
+    const resolution = resolveTrack(payload.tracks, trackIndex)
+    if (!resolution.trackPath) continue
+    if (!rowByPath.has(resolution.trackPath)) continue
+    playRows.push([resolution.trackPath, originId, playCount, lastPlayedAt])
+    touchedPaths.add(resolution.trackPath)
+  }
+
+  if (playRows.length > 0) {
+    const playsPerChunk = Math.floor(SQLITE_SAFE_MAX_VARIABLES / 4)
+    for (let offset = 0; offset < playRows.length; offset += playsPerChunk) {
+      const chunk = playRows.slice(offset, offset + playsPerChunk)
+      const placeholders = chunk.map(() => '(?, ?, ?, ?)').join(', ')
+      db.run(`
+        INSERT INTO ${PLAY_ORIGIN_TABLE} (track_path, origin_id, play_count, last_played_at)
+        VALUES ${placeholders}
+        ON CONFLICT(track_path, origin_id) DO UPDATE SET
+          play_count = MAX(${PLAY_ORIGIN_TABLE}.play_count, excluded.play_count),
+          last_played_at = CASE
+            WHEN excluded.last_played_at IS NULL THEN ${PLAY_ORIGIN_TABLE}.last_played_at
+            WHEN ${PLAY_ORIGIN_TABLE}.last_played_at IS NULL THEN excluded.last_played_at
+            ELSE MAX(${PLAY_ORIGIN_TABLE}.last_played_at, excluded.last_played_at)
+          END
+      `, chunk.flat())
+    }
+
+    // tracks.play_count is the denormalized sum, so it is rebuilt from the breakdown rather
+    // than merged directly. Only genuinely changed rows are counted.
+    result.playCountsUpdated = recomputePlayCountsFromOrigins(Array.from(touchedPaths))
+  }
+
+  const ratingRows: Array<[string, number, number]> = []
+  for (const [trackIndex, rating, updatedAt] of payload.ratings) {
+    const resolution = resolveTrack(payload.tracks, trackIndex)
+    if (!resolution.trackPath) continue
+    const normalizedRating = normalizeTrackRating(rating)
+    if (normalizedRating === null) continue
+    const localUpdatedAt = localRatings.get(resolution.trackPath)
+    if (localUpdatedAt !== undefined && !shouldReplaceRating(localUpdatedAt, updatedAt)) {
+      result.ratingsKeptLocal += 1
+      continue
+    }
+    ratingRows.push([resolution.trackPath, normalizedRating, updatedAt])
+  }
+
+  const ratingsPerChunk = Math.floor(SQLITE_SAFE_MAX_VARIABLES / 3)
+  for (let offset = 0; offset < ratingRows.length; offset += ratingsPerChunk) {
+    const chunk = ratingRows.slice(offset, offset + ratingsPerChunk)
+    const placeholders = chunk.map(() => '(?, ?, ?)').join(', ')
+    db.run(`
+      INSERT INTO track_ratings (track_path, rating, updated_at)
+      VALUES ${placeholders}
+      ON CONFLICT(track_path) DO UPDATE SET
+        rating = CASE
+          WHEN excluded.updated_at > track_ratings.updated_at THEN excluded.rating
+          ELSE track_ratings.rating
+        END,
+        updated_at = MAX(track_ratings.updated_at, excluded.updated_at)
+    `, chunk.flat())
+  }
+  result.ratingsApplied = ratingRows.length
+
+  const favoriteRows: Array<[string, number]> = []
+  const insertedFavoritePaths: string[] = []
+  for (const [trackIndex, addedAt] of payload.favorites) {
+    const resolution = resolveTrack(payload.tracks, trackIndex)
+    if (!resolution.trackPath) continue
+    favoriteRows.push([resolution.trackPath, addedAt])
+    if (localFavorites.has(resolution.trackPath)) {
+      result.favoritesAlreadyPresent += 1
+    } else {
+      insertedFavoritePaths.push(resolution.trackPath)
+    }
+  }
+
+  const favoritesPerChunk = Math.floor(SQLITE_SAFE_MAX_VARIABLES / 2)
+  for (let offset = 0; offset < favoriteRows.length; offset += favoritesPerChunk) {
+    const chunk = favoriteRows.slice(offset, offset + favoritesPerChunk)
+    const placeholders = chunk.map(() => '(?, ?)').join(', ')
+    db.run(`
+      INSERT INTO favorites (track_path, added_at)
+      VALUES ${placeholders}
+      ON CONFLICT(track_path) DO UPDATE SET added_at = MIN(favorites.added_at, excluded.added_at)
+    `, chunk.flat())
+  }
+  result.favoritesAdded = insertedFavoritePaths.length
+
+  // Mirrors addFavoritePaths: a newly favorited path must drop any unfavorite tombstone,
+  // otherwise the next LAN sync replays the tombstone and deletes the favorite again.
+  if (insertedFavoritePaths.length > 0) {
+    result.favoriteTombstonesCleared = countFavoriteTombstonesForPaths(insertedFavoritePaths)
+    clearFavoriteSyncRowsForPaths(insertedFavoritePaths)
+  }
+}
+
+/** Counts the unfavorite tombstones about to be cleared, for the import summary. */
+function countFavoriteTombstonesForPaths(trackPaths: readonly string[]): number {
+  if (!db || trackPaths.length === 0) return 0
+  let count = 0
+  for (const row of readEffectiveTrackRowsByPaths(trackPaths)) {
+    if (!normalizeSyncKeyPart(row.title)) continue
+    const syncKey = buildTrackSyncKey(row.title, row.artist, row.album)
+    const existing = db.get<{ count?: unknown }>(
+      'SELECT COUNT(*) AS count FROM favorite_tombstones WHERE sync_key = ?',
+      [syncKey]
+    )
+    if ((Number(existing?.count) || 0) > 0) count += 1
+  }
+  return count
+}
+
+interface ListeningHistorySectionContext {
+  resolveTrack: ResolveTrackFn
+  rowByPath: Map<string, DbTrackRow>
+  albumIdentityKeyByPath: ReadonlyMap<string, string>
+  generation: string
+  localSessionIdByKey: Map<string, number>
+  localHistoryStartedAt: number | null
+  result: ListeningStatsImportResult
+}
+
+function applyListeningHistorySection(
+  payload: ListeningHistoryPayload,
+  context: ListeningHistorySectionContext
+): void {
+  if (!db) return
+  const {
+    resolveTrack,
+    rowByPath,
+    albumIdentityKeyByPath,
+    generation,
+    localSessionIdByKey,
+    localHistoryStartedAt,
+    result
+  } = context
+
+  result.sessionsTruncatedAtExport = payload.truncated
+
+  const sessionRows: unknown[][] = []
+  const sessionKeysInOrder: string[] = []
+  let earliestStartedAt: number | null = payload.historyStartedAt
+
+  for (const session of payload.sessions) {
+    const [trackIndex, sessionKey, sourceType, durationSeconds, startedAt, endedAt, listenedSeconds, qualifiedAt] = session
+    const tuple = payload.tracks[trackIndex]
+    if (!tuple) {
+      result.sessionsSkipped += 1
+      continue
+    }
+    const resolution = resolveTrack(payload.tracks, trackIndex)
+    const title = tuple[2]
+    const artist = tuple[3]
+    const album = tuple[4]
+    const albumArtist = tuple[5]
+
+    // An unmatched session still imports with track_id NULL — resolveListeningIdentity
+    // falls back to the denormalized snapshot, so it renders on the Stats page. Only a row
+    // with no usable identity at all is unusable.
+    if (!resolution.trackPath && !title) {
+      result.sessionsSkipped += 1
+      continue
+    }
+
+    // A session from another machine names a file this library does not have, and the
+    // payload only carries a digest of that path anyway. Fall back to the same synthetic
+    // identifier the phone sync uses for unresolved entries rather than storing a hash that
+    // reads like a real path.
+    const trackPath = resolution.trackPath
+      ?? `astra-sync://unmatched/${buildTrackSyncKey(title, artist, album)}`
+
+    const localRow = resolution.trackPath ? rowByPath.get(resolution.trackPath) : undefined
+    sessionKeysInOrder.push(sessionKey)
+    sessionRows.push([
+      generation,
+      sessionKey,
+      localRow ? localRow.id : null,
+      trackPath,
+      title,
+      artist,
+      album,
+      albumArtist,
+      // A matched track reuses the library's own album identity so imported sessions group
+      // with locally recorded ones; only unmatched rows fall back to the derived key, which
+      // is the same precedence checkpointListeningSession applies.
+      (resolution.trackPath ? albumIdentityKeyByPath.get(resolution.trackPath) : undefined)
+        ?? `${normalizeKey(albumArtist || artist)}\u0000${normalizeKey(album)}`,
+      sourceType || 'local',
+      durationSeconds,
+      startedAt,
+      endedAt,
+      listenedSeconds,
+      qualifiedAt
+    ])
+
+    earliestStartedAt = earliestStartedAt === null ? startedAt : Math.min(earliestStartedAt, startedAt)
+    if (localSessionIdByKey.has(sessionKey)) {
+      result.sessionsMerged += 1
+    } else {
+      result.sessionsInserted += 1
+    }
+  }
+
+  // artwork_hash and source_playlist_id are local-only and written as literal NULL:
+  // the artwork hash names a file in this machine's cache, and the playlist id is a
+  // foreign key into a playlists table the source install's ids mean nothing in.
+  const sessionsPerChunk = Math.floor(SQLITE_SAFE_MAX_VARIABLES / 15)
+  for (let offset = 0; offset < sessionRows.length; offset += sessionsPerChunk) {
+    const chunk = sessionRows.slice(offset, offset + sessionsPerChunk)
+    const placeholders = chunk
+      .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, ?, ?, ?, ?)')
+      .join(', ')
+    db.run(`
+      INSERT INTO listening_sessions (
+        generation, session_key, track_id, track_path, title, artist, album, album_artist,
+        album_identity_key, artwork_hash, source_type, duration_seconds, source_playlist_id,
+        started_at, ended_at, listened_seconds, qualified_at
+      ) VALUES ${placeholders}
+      ON CONFLICT(generation, session_key) DO UPDATE SET
+        track_id = COALESCE(listening_sessions.track_id, excluded.track_id),
+        duration_seconds = MAX(listening_sessions.duration_seconds, excluded.duration_seconds),
+        started_at = MIN(listening_sessions.started_at, excluded.started_at),
+        ended_at = CASE
+          WHEN excluded.ended_at IS NULL THEN listening_sessions.ended_at
+          WHEN listening_sessions.ended_at IS NULL THEN excluded.ended_at
+          ELSE MAX(listening_sessions.ended_at, excluded.ended_at)
+        END,
+        listened_seconds = MAX(listening_sessions.listened_seconds, excluded.listened_seconds),
+        qualified_at = CASE
+          WHEN excluded.qualified_at IS NULL THEN listening_sessions.qualified_at
+          WHEN listening_sessions.qualified_at IS NULL THEN excluded.qualified_at
+          ELSE MIN(listening_sessions.qualified_at, excluded.qualified_at)
+        END
+    `, chunk.flat())
+  }
+
+  // qualifyListeningSession() is deliberately never called here: qualified_at travels
+  // verbatim, and play counts import through their own section. Replaying qualification
+  // would increment play_count a second time for every imported session.
+
+  if (sessionRows.length === 0) return
+
+  const sessionIdByKey = new Map<string, number>()
+  for (const row of db.all<{ id?: unknown; session_key?: unknown }>(
+    'SELECT id, session_key FROM listening_sessions WHERE generation = ?',
+    [generation]
+  )) {
+    if (typeof row.session_key === 'string') {
+      sessionIdByKey.set(row.session_key, Number(row.id))
+    }
+  }
+
+  const segmentRows: unknown[][] = []
+  for (const [sessionIndex, segmentKey, startedAt, lastObservedAt, endedAt, listenedSeconds] of payload.segments) {
+    const sessionKey = sessionKeysInOrder[sessionIndex]
+    if (!sessionKey) continue
+    const sessionId = sessionIdByKey.get(sessionKey)
+    if (sessionId === undefined) continue
+    segmentRows.push([sessionId, segmentKey, startedAt, lastObservedAt, endedAt, listenedSeconds])
+    if (localSessionIdByKey.has(sessionKey)) {
+      result.segmentsMerged += 1
+    } else {
+      result.segmentsInserted += 1
+    }
+  }
+
+  const segmentsPerChunk = Math.floor(SQLITE_SAFE_MAX_VARIABLES / 6)
+  for (let offset = 0; offset < segmentRows.length; offset += segmentsPerChunk) {
+    const chunk = segmentRows.slice(offset, offset + segmentsPerChunk)
+    const placeholders = chunk.map(() => '(?, ?, ?, ?, ?, ?)').join(', ')
+    db.run(`
+      INSERT INTO listening_segments (
+        session_id, segment_key, started_at, last_observed_at, ended_at, listened_seconds
+      ) VALUES ${placeholders}
+      ON CONFLICT(session_id, segment_key) DO UPDATE SET
+        started_at = MIN(listening_segments.started_at, excluded.started_at),
+        last_observed_at = MAX(listening_segments.last_observed_at, excluded.last_observed_at),
+        ended_at = CASE
+          WHEN excluded.ended_at IS NULL THEN listening_segments.ended_at
+          WHEN listening_segments.ended_at IS NULL THEN excluded.ended_at
+          ELSE MAX(listening_segments.ended_at, excluded.ended_at)
+        END,
+        listened_seconds = MAX(listening_segments.listened_seconds, excluded.listened_seconds)
+    `, chunk.flat())
+  }
+
+  // The "history since" baseline must move back to cover imported listens. When nothing was
+  // recorded locally the imported value wins outright rather than staying unset.
+  if (earliestStartedAt !== null && Number.isFinite(earliestStartedAt) && earliestStartedAt > 0) {
+    const next = localHistoryStartedAt === null
+      ? earliestStartedAt
+      : Math.min(localHistoryStartedAt, earliestStartedAt)
+    if (next !== localHistoryStartedAt) {
+      writeAppMetaValue(LISTENING_HISTORY_STARTED_AT_META_KEY, String(next))
+      result.historyStartedAtMovedTo = next
+    }
+  }
+}
+
 export function getRecentlyPlayed(limit: number = 50): DbTrack[] {
   return readEffectiveTracks(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
@@ -8797,6 +9717,7 @@ export async function addRecentlyPlayed(trackPath: string): Promise<void> {
     [playedAt, trackPath]
   )
   if (result.changes === 0) return
+  recordLocalPlayOrigin(trackPath, playedAt)
   db.run('INSERT INTO recently_played (track_path, played_at) VALUES (?, ?)', [trackPath, playedAt])
   // Prune old entries, keep last 200
   db.run(`

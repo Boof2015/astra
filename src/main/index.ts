@@ -8,7 +8,12 @@ import { createHash, randomBytes, randomUUID } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
 import type { DynamicPlaylistRulesV1 } from '../shared/playlists/dynamicPlaylist'
-import type { ListeningSessionCheckpoint, ListeningStatsQuery } from '../types/listeningStats'
+import type {
+  ListeningSessionCheckpoint,
+  ListeningStatsApplyRequest,
+  ListeningStatsExportRequest,
+  ListeningStatsQuery
+} from '../types/listeningStats'
 import { collectIamfStreamStats } from '../shared/iamf/obuWalker'
 import { mp4HasIamfTrack, readMp4DurationSeconds } from '../shared/iamf/mp4'
 import {
@@ -250,6 +255,7 @@ import {
 } from './inputBindings'
 import { GlobalInputShortcutService } from './services/globalInputShortcuts'
 import type { InputActionId } from '../types/inputBindings'
+import { checkSettingsTransferWrite } from './utils/settingsTransferWrite'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -6711,6 +6717,7 @@ ipcMain.handle('dialog:showSaveDialog', async (_event, options: {
     filters: options.filters,
   })
   if (result.canceled || !result.filePath) return null
+  rememberUserChosenSavePath(result.filePath)
   return result.filePath
 })
 
@@ -6736,6 +6743,20 @@ const FS_READ_IMAGE_ALLOWED_EXTENSIONS = new Set([
 ])
 const FS_WRITE_ALLOWED_EXTENSIONS = new Set(['.json', '.txt', '.lrc', '.csv'])
 const FS_WRITE_MAX_BYTES = 10 * 1024 * 1024 // 10 MB
+
+// Paths this process handed back from a save dialog, which the settings-transfer write
+// channel is restricted to. See main/utils/settingsTransferWrite.ts for the rationale.
+const userChosenSavePaths = new Set<string>()
+const USER_CHOSEN_SAVE_PATH_LIMIT = 32
+
+function rememberUserChosenSavePath(filePath: string): void {
+  // Bounded so a session of repeated exports cannot grow this without limit.
+  if (userChosenSavePaths.size >= USER_CHOSEN_SAVE_PATH_LIMIT) {
+    const oldest = userChosenSavePaths.values().next()
+    if (!oldest.done) userChosenSavePaths.delete(oldest.value)
+  }
+  userChosenSavePaths.add(filePath)
+}
 
 ipcMain.handle('fs:readTextFile', async (_event, filePath: unknown) => {
   if (typeof filePath !== 'string' || filePath.trim().length === 0) {
@@ -6776,6 +6797,22 @@ ipcMain.handle('fs:writeTextFile', async (_event, filePath: unknown, content: un
     throw new Error('Content exceeds maximum allowed size.')
   }
   await writeFile(filePath, content, 'utf-8')
+  return true
+})
+
+ipcMain.handle('settings-transfer:writeFile', async (_event, filePath: unknown, content: unknown) => {
+  const check = checkSettingsTransferWrite({
+    filePath,
+    content,
+    byteLength: typeof content === 'string' ? Buffer.byteLength(content, 'utf-8') : Number.NaN,
+    isUserChosenPath: (candidate) => userChosenSavePaths.has(candidate),
+    extensionOf: extname,
+  })
+  if (!check.ok) throw new Error(check.error)
+
+  await writeFile(filePath as string, content as string, 'utf-8')
+  // One dialog grants one write; re-exporting means picking a destination again.
+  userChosenSavePaths.delete(filePath as string)
   return true
 })
 
@@ -8249,6 +8286,18 @@ ipcMain.handle('library:getListeningStatsDashboard', (_event, query: ListeningSt
 
 ipcMain.handle('library:clearDetailedListeningHistory', async () => {
   return library.clearDetailedListeningHistory()
+})
+
+ipcMain.handle('library:getListeningStatsTransferAvailability', () => {
+  return library.getListeningStatsTransferAvailability()
+})
+
+ipcMain.handle('library:exportListeningStatsTransfer', (_event, request?: ListeningStatsExportRequest) => {
+  return library.exportListeningStatsTransfer(request)
+})
+
+ipcMain.handle('library:applyListeningStatsTransfer', async (_event, request: ListeningStatsApplyRequest) => {
+  return library.applyListeningStatsTransfer(request)
 })
 
 ipcMain.handle('stats-share:copy-png', (_event, input: unknown) => {
