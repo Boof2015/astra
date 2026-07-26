@@ -977,6 +977,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   let prebufferInFlightRequestId: number | null = null
   let prebufferInFlightTrackPath: string | null = null
   let prebufferAttemptedTrackPath: string | null = null
+  let manualGaplessTransitionInProgress = false
 
   const isParallaxSinkModeActive = (): boolean => {
     return Boolean(useParallaxStore.getState().status?.sink.connected)
@@ -1231,7 +1232,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
   const checkpointRecentPlay = (
     session: RecentPlaySession,
-    options: { finalizeSegment?: boolean; finalizeSession?: boolean; observedAt?: number } = {}
+    options: {
+      finalizeSegment?: boolean
+      finalizeSession?: boolean
+      completedNaturally?: boolean
+      observedAt?: number
+    } = {}
   ): void => {
     if (!session.allowDbWrite) return
     const observedAt = options.observedAt ?? Date.now()
@@ -1260,7 +1266,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           trackDurationSeconds: session.trackDurationSeconds,
           qualificationEligible: session.qualificationEligible,
           finalizeSegment: Boolean(options.finalizeSegment),
-          finalizeSession: Boolean(options.finalizeSession)
+          finalizeSession: Boolean(options.finalizeSession),
+          completedNaturally: Boolean(options.completedNaturally)
         })
         if (!result.accepted) {
           listeningHistoryStatusPromise = Promise.resolve(result.status)
@@ -1308,15 +1315,6 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     return recentPlaySession
   }
 
-  const commitRecentPlayNow = (): void => {
-    const session = updateRecentPlayAccumulation(get().playbackState)
-    if (!session) return
-    if (
-      (!session.counted && session.accumulatedSeconds >= session.thresholdSeconds)
-      || session.accumulatedSeconds - session.lastCheckpointAccumulatedSeconds >= LISTENING_HISTORY_CHECKPOINT_SECONDS
-    ) checkpointRecentPlay(session)
-  }
-
   const maybeCommitRecentPlay = (
     playbackState: PlaybackState = get().playbackState,
     nowMs: number = performance.now()
@@ -1329,10 +1327,17 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     ) checkpointRecentPlay(session)
   }
 
-  const finalizeRecentPlaySession = (playbackState: PlaybackState = get().playbackState): void => {
+  const finalizeRecentPlaySession = (
+    playbackState: PlaybackState = get().playbackState,
+    options: { completedNaturally?: boolean } = {}
+  ): void => {
     const session = updateRecentPlayAccumulation(playbackState)
     if (!session) return
-    checkpointRecentPlay(session, { finalizeSegment: true, finalizeSession: true })
+    checkpointRecentPlay(session, {
+      finalizeSegment: true,
+      finalizeSession: true,
+      completedNaturally: Boolean(options.completedNaturally)
+    })
     recentPlaySession = null
   }
 
@@ -2438,7 +2443,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         audioEngine.nextBufferedTrackPath === candidate.track.path
       ) {
         invalidateLoadRequest()
-        if (audioEngine.skipToPreBuffered()) return
+        manualGaplessTransitionInProgress = true
+        try {
+          if (audioEngine.skipToPreBuffered()) return
+        } finally {
+          manualGaplessTransitionInProgress = false
+        }
         // Fell through (buffer vanished): fall back to the cold-load path below.
       }
 
@@ -3310,7 +3320,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       // Handle gapless transition - advance queue without reloading
       audioEngine.on('gaplessTransition', () => {
         if (isParallaxSinkModeActive()) return
-        commitRecentPlayNow()
+        finalizeRecentPlaySession('playing', {
+          completedNaturally: !manualGaplessTransitionInProgress
+        })
         const state = get()
 
         if (state.repeat === 'one') {
@@ -3382,7 +3394,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       // Handle non-gapless track end (when no next track buffered)
       audioEngine.on('ended', () => {
         if (isParallaxSinkModeActive()) return
-        finalizeRecentPlaySession('playing')
+        finalizeRecentPlaySession('playing', { completedNaturally: true })
         set({
           currentTime: 0,
           remoteBufferedSeconds: 0,

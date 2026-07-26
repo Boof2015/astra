@@ -22,6 +22,7 @@ export interface ListeningSessionCheckpoint {
   qualificationEligible: boolean
   finalizeSegment?: boolean
   finalizeSession?: boolean
+  completedNaturally?: boolean
 }
 
 export interface ListeningSessionCheckpointResult {

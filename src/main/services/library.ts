@@ -8433,6 +8433,27 @@ function qualifyListeningSession(track: DbTrack, sourcePlaylistId: number | null
   }
 }
 
+const LISTENING_QUALIFICATION_SECONDS = 15
+const SHORT_TRACK_COMPLETION_TOLERANCE_SECONDS = 0.5
+const SHORT_TRACK_COMPLETION_TOLERANCE_RATIO = 0.1
+
+function listeningSessionQualifies(
+  checkpoint: ListeningSessionCheckpoint,
+  session: { listened_seconds: number; duration_seconds: number }
+): boolean {
+  if (session.duration_seconds > 0 && session.duration_seconds < LISTENING_QUALIFICATION_SECONDS) {
+    if (checkpoint.finalizeSession !== true || checkpoint.completedNaturally !== true) return false
+
+    const toleranceSeconds = Math.min(
+      SHORT_TRACK_COMPLETION_TOLERANCE_SECONDS,
+      session.duration_seconds * SHORT_TRACK_COMPLETION_TOLERANCE_RATIO
+    )
+    return session.listened_seconds >= session.duration_seconds - toleranceSeconds
+  }
+
+  return session.listened_seconds >= LISTENING_QUALIFICATION_SECONDS
+}
+
 export async function checkpointListeningSession(
   checkpoint: ListeningSessionCheckpoint
 ): Promise<ListeningSessionCheckpointResult> {
@@ -8533,13 +8554,10 @@ export async function checkpointListeningSession(
       [session.id, segmentKey, segmentStartedAt, observedAt, segmentEndedAt, segmentListenedSeconds]
     )
 
-    const thresholdSeconds = session.duration_seconds > 0
-      ? Math.min(15, session.duration_seconds)
-      : 15
     if (
       checkpoint.qualificationEligible !== false
       && session.qualified_at === null
-      && session.listened_seconds >= thresholdSeconds
+      && listeningSessionQualifies(checkpoint, session)
     ) {
       const qualification = db.run(
         'UPDATE listening_sessions SET qualified_at = ? WHERE id = ? AND qualified_at IS NULL',

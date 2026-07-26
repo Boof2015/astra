@@ -833,6 +833,7 @@ test('detailed listening checkpoints exclude paused time, flush boundaries, and 
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
+      location: { search: '?window=test' },
       addEventListener: (event: string, listener: EventListener) => windowListeners.set(event, listener),
       removeEventListener: (event: string) => windowListeners.delete(event),
       electronAPI: {
@@ -907,7 +908,97 @@ test('detailed listening checkpoints exclude paused time, flush boundaries, and 
     usePlayerStore.getState().stop()
     await flushCheckpoints()
     assert.equal(checkpointCalls.at(-1)?.finalizeSession, true)
+    assert.equal(checkpointCalls.at(-1)?.completedNaturally, false)
 
+    usePlayerStore.setState({
+      currentTrack: makeTrack('/library/natural-ended.flac', { origin: 'library', duration: 5 }),
+      playbackState: 'loading',
+      duration: 5
+    })
+    await usePlayerStore.getState().play()
+    monotonicNow += 4_500
+    wallNow += 4_500
+    emitAudioEvent('ended')
+    await flushCheckpoints()
+    const naturalEndedCheckpoint = checkpointCalls.find(
+      (checkpoint) => checkpoint.trackPath === '/library/natural-ended.flac'
+        && checkpoint.finalizeSession === true
+    )
+    assert.equal(naturalEndedCheckpoint?.completedNaturally, true)
+    assert.equal(naturalEndedCheckpoint?.sessionListenedSeconds, 4.5)
+
+    usePlayerStore.setState({
+      currentTrack: makeTrack('/library/natural-gapless.flac', { origin: 'library', duration: 5 }),
+      playbackState: 'loading',
+      duration: 5,
+      queueItems: [],
+      baseUpcomingQueueIds: [],
+      upcomingQueueIds: [],
+      currentQueueItemId: null
+    })
+    await usePlayerStore.getState().play()
+    monotonicNow += 4_500
+    wallNow += 4_500
+    emitAudioEvent('gaplessTransition')
+    await flushCheckpoints()
+    const naturalGaplessCheckpoint = checkpointCalls.find(
+      (checkpoint) => checkpoint.trackPath === '/library/natural-gapless.flac'
+        && checkpoint.finalizeSession === true
+    )
+    assert.equal(naturalGaplessCheckpoint?.completedNaturally, true)
+
+    const manualCurrentTrack = makeTrack('/library/manual-gapless.flac', { origin: 'library', duration: 5 })
+    const manualNextTrack = makeTrack('/library/manual-gapless-next.flac', { origin: 'library', duration: 5 })
+    const currentItem = makeQueueItem(createQueueEntryFromTrack(manualCurrentTrack), 'manual-gapless-current')
+    const nextItem = makeQueueItem(createQueueEntryFromTrack(manualNextTrack), 'manual-gapless-next')
+    usePlayerStore.setState({
+      currentTrack: manualCurrentTrack,
+      playbackState: 'loading',
+      duration: 5,
+      queueItems: [],
+      baseUpcomingQueueIds: [],
+      upcomingQueueIds: [],
+      currentQueueItemId: null
+    })
+    await usePlayerStore.getState().play()
+    usePlayerStore.setState({
+      queueItems: [currentItem, nextItem],
+      baseUpcomingQueueIds: [nextItem.queueId],
+      upcomingQueueIds: [nextItem.queueId],
+      currentQueueItemId: currentItem.queueId
+    })
+    monotonicNow += 4_500
+    wallNow += 4_500
+
+    const originalSkipToPreBuffered = audioEngine.skipToPreBuffered
+    const ownNextBufferedTrackPath = Object.getOwnPropertyDescriptor(audioEngine, 'nextBufferedTrackPath')
+    Object.defineProperty(audioEngine, 'nextBufferedTrackPath', {
+      configurable: true,
+      get: () => manualNextTrack.path
+    })
+    audioEngine.skipToPreBuffered = () => {
+      emitAudioEvent('gaplessTransition')
+      return true
+    }
+    try {
+      await usePlayerStore.getState().playNext()
+    } finally {
+      audioEngine.skipToPreBuffered = originalSkipToPreBuffered
+      if (ownNextBufferedTrackPath) {
+        Object.defineProperty(audioEngine, 'nextBufferedTrackPath', ownNextBufferedTrackPath)
+      } else {
+        delete (audioEngine as unknown as Record<string, unknown>).nextBufferedTrackPath
+      }
+    }
+    await flushCheckpoints()
+    const manualGaplessCheckpoint = checkpointCalls.find(
+      (checkpoint) => checkpoint.trackPath === manualCurrentTrack.path
+        && checkpoint.finalizeSession === true
+    )
+    assert.equal(manualGaplessCheckpoint?.completedNaturally, false)
+
+    usePlayerStore.getState().stop()
+    await flushCheckpoints()
     const trackedCallCount = checkpointCalls.length
     usePlayerStore.setState({
       currentTrack: makeTrack('/external/associated.flac', { origin: 'associated-external', duration: 180 }),

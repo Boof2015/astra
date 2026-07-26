@@ -352,7 +352,8 @@ test('detailed listening checkpoints qualify once, stay idempotent, and reset wi
     trackDurationSeconds: 5,
     qualificationEligible: true,
     finalizeSegment: true,
-    finalizeSession: true
+    finalizeSession: true,
+    completedNaturally: true
   })
   assert.equal(first.accepted, true)
   assert.equal(first.qualifiedNow, true)
@@ -414,6 +415,183 @@ test('detailed listening checkpoints qualify once, stay idempotent, and reset wi
   }).status.startedAt, null)
   assert.equal(library.getTrackByPath(trackPath)?.play_count, 1)
   assert.equal(library.getRecentlyPlayed(10).filter((track) => track.path === trackPath).length, 1)
+})
+
+test('short-track qualification requires natural completion and uses a bounded tolerance', async (t) => {
+  await setupEmptyLibrary(t)
+
+  const source = await library.createSubsonicSource({
+    name: 'Qualification Boundary Source',
+    base_url: 'https://qualification.example.test',
+    username: 'tester',
+    secret_encrypted: 'secret',
+    enabled: 1,
+    last_status: 'ok'
+  })
+  const trackPaths = {
+    five: `subsonic://${source.id}/five-seconds`,
+    one: `subsonic://${source.id}/one-second`,
+    fifteen: `subsonic://${source.id}/fifteen-seconds`,
+    unknown: `subsonic://${source.id}/unknown-duration`
+  }
+  await library.upsertSubsonicTracks(source.id, [
+    createRemoteTrack({
+      path: trackPaths.five,
+      title: 'Five Seconds',
+      artist: 'Boundary Artist',
+      album: 'Boundary Album',
+      duration: 5
+    }),
+    createRemoteTrack({
+      path: trackPaths.one,
+      title: 'One Second',
+      artist: 'Boundary Artist',
+      album: 'Boundary Album',
+      duration: 1
+    }),
+    createRemoteTrack({
+      path: trackPaths.fifteen,
+      title: 'Fifteen Seconds',
+      artist: 'Boundary Artist',
+      album: 'Boundary Album',
+      duration: 15
+    }),
+    createRemoteTrack({
+      path: trackPaths.unknown,
+      title: 'Unknown Duration',
+      artist: 'Boundary Artist',
+      album: 'Boundary Album',
+      duration: 0
+    })
+  ])
+
+  const status = library.getListeningHistoryStatus()
+  let nextStartedAt = 2_000_000
+  const checkpoint = async (options: {
+    sessionKey: string
+    trackPath: string
+    durationSeconds: number
+    listenedSeconds: number
+    completedNaturally?: boolean
+  }) => {
+    const startedAt = nextStartedAt
+    nextStartedAt += 30_000
+    return library.checkpointListeningSession({
+      generation: status.generation,
+      sessionKey: options.sessionKey,
+      segmentKey: `${options.sessionKey}-segment`,
+      trackPath: options.trackPath,
+      sourcePlaylistId: null,
+      sessionStartedAt: startedAt,
+      segmentStartedAt: startedAt,
+      observedAt: startedAt + Math.round(options.listenedSeconds * 1000),
+      sessionListenedSeconds: options.listenedSeconds,
+      segmentListenedSeconds: options.listenedSeconds,
+      trackDurationSeconds: options.durationSeconds,
+      qualificationEligible: true,
+      finalizeSegment: true,
+      finalizeSession: true,
+      completedNaturally: options.completedNaturally
+    })
+  }
+
+  const belowFiveSecondMargin = await checkpoint({
+    sessionKey: 'five-below-margin',
+    trackPath: trackPaths.five,
+    durationSeconds: 5,
+    listenedSeconds: 4.499,
+    completedNaturally: true
+  })
+  assert.equal(belowFiveSecondMargin.qualifiedNow, false)
+
+  const atFiveSecondMargin = await checkpoint({
+    sessionKey: 'five-at-margin',
+    trackPath: trackPaths.five,
+    durationSeconds: 5,
+    listenedSeconds: 4.5,
+    completedNaturally: true
+  })
+  assert.equal(atFiveSecondMargin.qualifiedNow, true)
+
+  const manualFiveSecondCompletion = await checkpoint({
+    sessionKey: 'five-manual',
+    trackPath: trackPaths.five,
+    durationSeconds: 5,
+    listenedSeconds: 5
+  })
+  assert.equal(manualFiveSecondCompletion.qualifiedNow, false)
+
+  const idempotentRetry = await library.checkpointListeningSession({
+    generation: status.generation,
+    sessionKey: 'five-at-margin',
+    segmentKey: 'five-at-margin-segment',
+    trackPath: trackPaths.five,
+    sourcePlaylistId: null,
+    sessionStartedAt: 2_030_000,
+    segmentStartedAt: 2_030_000,
+    observedAt: 2_035_000,
+    sessionListenedSeconds: 5,
+    segmentListenedSeconds: 5,
+    trackDurationSeconds: 5,
+    qualificationEligible: true,
+    finalizeSegment: true,
+    finalizeSession: true,
+    completedNaturally: true
+  })
+  assert.equal(idempotentRetry.qualifiedNow, false)
+  assert.equal(library.getTrackByPath(trackPaths.five)?.play_count, 1)
+
+  const belowOneSecondMargin = await checkpoint({
+    sessionKey: 'one-below-margin',
+    trackPath: trackPaths.one,
+    durationSeconds: 1,
+    listenedSeconds: 0.899,
+    completedNaturally: true
+  })
+  assert.equal(belowOneSecondMargin.qualifiedNow, false)
+
+  const atOneSecondMargin = await checkpoint({
+    sessionKey: 'one-at-margin',
+    trackPath: trackPaths.one,
+    durationSeconds: 1,
+    listenedSeconds: 0.9,
+    completedNaturally: true
+  })
+  assert.equal(atOneSecondMargin.qualifiedNow, true)
+
+  const incompleteFifteenSeconds = await checkpoint({
+    sessionKey: 'fifteen-incomplete',
+    trackPath: trackPaths.fifteen,
+    durationSeconds: 15,
+    listenedSeconds: 14.999,
+    completedNaturally: true
+  })
+  assert.equal(incompleteFifteenSeconds.qualifiedNow, false)
+
+  const completeFifteenSeconds = await checkpoint({
+    sessionKey: 'fifteen-complete',
+    trackPath: trackPaths.fifteen,
+    durationSeconds: 15,
+    listenedSeconds: 15
+  })
+  assert.equal(completeFifteenSeconds.qualifiedNow, true)
+
+  const incompleteUnknownDuration = await checkpoint({
+    sessionKey: 'unknown-incomplete',
+    trackPath: trackPaths.unknown,
+    durationSeconds: 0,
+    listenedSeconds: 14.999,
+    completedNaturally: true
+  })
+  assert.equal(incompleteUnknownDuration.qualifiedNow, false)
+
+  const completeUnknownDuration = await checkpoint({
+    sessionKey: 'unknown-complete',
+    trackPath: trackPaths.unknown,
+    durationSeconds: 0,
+    listenedSeconds: 15
+  })
+  assert.equal(completeUnknownDuration.qualifiedNow, true)
 })
 
 test('listening stats allocate overlapping segments to local buckets', async (t) => {
