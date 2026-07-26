@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   createDefaultDynamicPlaylistRules,
   normalizeDynamicPlaylistRules,
@@ -303,6 +303,58 @@ function renderConditionOperator(
   )
 }
 
+interface DynamicPlaylistDayInputProps {
+  condition: DynamicPlaylistLastPlayedCondition | DynamicPlaylistAddedAtCondition
+  needsValue: boolean
+  onChange: (condition: DynamicPlaylistCondition) => void
+  disabled: boolean
+}
+
+function DynamicPlaylistDayInput({
+  condition,
+  needsValue,
+  onChange,
+  disabled
+}: DynamicPlaylistDayInputProps) {
+  const initialValue = needsValue ? String(condition.value ?? 30) : ''
+  // Keep the DOM value uncontrolled so the browser can retain transient
+  // decimal text such as "0." while the rules continue to store a number.
+  const inputRef = useRef<HTMLInputElement>(null)
+  const lastEmittedValueRef = useRef(condition.value)
+  const lastNeedsValueRef = useRef(needsValue)
+
+  useEffect(() => {
+    if (
+      Object.is(condition.value, lastEmittedValueRef.current)
+      && needsValue === lastNeedsValueRef.current
+    ) return
+    lastEmittedValueRef.current = condition.value
+    lastNeedsValueRef.current = needsValue
+    if (inputRef.current) {
+      inputRef.current.value = needsValue ? String(condition.value ?? 30) : ''
+    }
+  }, [condition.value, needsValue])
+
+  return (
+    <input
+      ref={inputRef}
+      className="playlist-dynamic-input"
+      type="number"
+      min={0}
+      step={(condition.value ?? 0) < 1 ? 0.5 : 1}
+      defaultValue={initialValue}
+      onChange={(event) => {
+        const rawValue = event.target.value
+        const nextValue = rawValue.trim() ? Number(rawValue) : 0
+        lastEmittedValueRef.current = nextValue
+        onChange({ ...condition, value: nextValue } as DynamicPlaylistCondition)
+      }}
+      placeholder={needsValue ? 'Days' : ''}
+      disabled={disabled || !needsValue}
+    />
+  )
+}
+
 function renderConditionValue(
   condition: DynamicPlaylistCondition,
   onChange: (condition: DynamicPlaylistCondition) => void,
@@ -350,14 +402,11 @@ function renderConditionValue(
   if (condition.kind === 'date') {
     const needsValue = !(condition.field === 'last_played_at' && condition.operator === 'never')
     return (
-      <input
-        className="playlist-dynamic-input"
-        type="number"
-        min={1}
-        value={needsValue ? String(condition.value ?? 30) : ''}
-        onChange={(event) => onChange({ ...condition, value: Number(event.target.value) } as DynamicPlaylistCondition)}
-        placeholder={needsValue ? 'Days' : ''}
-        disabled={disabled || !needsValue}
+      <DynamicPlaylistDayInput
+        condition={condition}
+        needsValue={needsValue}
+        onChange={onChange}
+        disabled={disabled}
       />
     )
   }

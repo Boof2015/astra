@@ -182,9 +182,17 @@ function requireArrayMember<T extends string>(value: unknown, allowed: readonly 
   throw new Error(`${fieldName} is not supported.`)
 }
 
-function normalizePositiveInteger(value: unknown, fieldName: string): number {
+function normalizePositiveNumber(value: unknown, fieldName: string): number {
   const numberValue = typeof value === 'number' ? value : Number(value)
-  if (!Number.isFinite(numberValue) || numberValue < 1) {
+  if (!Number.isFinite(numberValue) || numberValue <= 0) {
+    throw new Error(`${fieldName} must be a positive number.`)
+  }
+  return numberValue
+}
+
+function normalizePositiveInteger(value: unknown, fieldName: string): number {
+  const numberValue = normalizePositiveNumber(value, fieldName)
+  if (numberValue < 1) {
     throw new Error(`${fieldName} must be a positive number.`)
   }
   return Math.trunc(numberValue)
@@ -250,7 +258,7 @@ function normalizeDateCondition(condition: Record<string, unknown>): DynamicPlay
       kind: 'date',
       field,
       operator,
-      value: normalizePositiveInteger(condition.value, 'Day value')
+      value: normalizePositiveNumber(condition.value, 'Day value')
     }
   }
 
@@ -259,7 +267,7 @@ function normalizeDateCondition(condition: Record<string, unknown>): DynamicPlay
     kind: 'date',
     field,
     operator,
-    value: normalizePositiveInteger(condition.value, 'Day value')
+    value: normalizePositiveNumber(condition.value, 'Day value')
   }
 }
 

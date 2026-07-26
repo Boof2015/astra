@@ -7,7 +7,10 @@ import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
 import * as library from './library.ts'
 import type { StatsTransferTrackTuple } from '../../shared/stats/statsTransfer.ts'
-import { createDefaultDynamicPlaylistRules } from '../../shared/playlists/dynamicPlaylist.ts'
+import {
+  createDefaultDynamicPlaylistRules,
+  type DynamicPlaylistCondition
+} from '../../shared/playlists/dynamicPlaylist.ts'
 
 interface TestSqliteStatement {
   run(...params: unknown[]): void
@@ -2106,6 +2109,74 @@ test('dynamic playlist filters favorites, play counts, last played, sorting, and
   })
   assert.deepEqual(preview.tracks.map((track) => track.path), [unplayedFavoritePath])
   assert.equal(preview.track_count, 1)
+})
+
+test('dynamic playlist date filters evaluate fractional-day rolling cutoffs', async (t) => {
+  const userDataDir = await setupSeededLibrary(t)
+  const originalDateNow = Date.now
+  const now = 2_000_000_000_000
+  const sixHours = 6 * 60 * 60 * 1000
+  const twelveHours = 12 * 60 * 60 * 1000
+  const eighteenHours = 18 * 60 * 60 * 1000
+
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    const updateDates = directDb.prepare(
+      'UPDATE tracks SET added_at = ?, last_played_at = ? WHERE path = ?'
+    )
+    updateDates.run(now - sixHours, now - sixHours, 'subsonic://1/split-a')
+    updateDates.run(now - twelveHours, now - twelveHours, 'subsonic://1/split-b')
+    updateDates.run(now - eighteenHours, now - eighteenHours, 'subsonic://1/teen-1')
+    updateDates.run(now - eighteenHours, null, 'subsonic://1/teen-2')
+  })
+
+  Date.now = () => now
+  try {
+    const previewPaths = (condition: DynamicPlaylistCondition) => library.previewDynamicPlaylist({
+      version: 1,
+      conditions: [condition],
+      sort: { field: 'title', direction: 'asc' },
+      limit: null
+    }).tracks.map((track) => track.path)
+
+    assert.deepEqual(previewPaths({
+      kind: 'date',
+      field: 'added_at',
+      operator: 'within_days',
+      value: 0.5
+    }), [
+      'subsonic://1/split-a',
+      'subsonic://1/split-b'
+    ])
+    assert.deepEqual(previewPaths({
+      kind: 'date',
+      field: 'added_at',
+      operator: 'older_than_days',
+      value: 0.5
+    }), [
+      'subsonic://1/teen-2',
+      'subsonic://1/teen-1'
+    ])
+    assert.deepEqual(previewPaths({
+      kind: 'date',
+      field: 'last_played_at',
+      operator: 'within_days',
+      value: 0.5
+    }), [
+      'subsonic://1/split-a',
+      'subsonic://1/split-b'
+    ])
+    assert.deepEqual(previewPaths({
+      kind: 'date',
+      field: 'last_played_at',
+      operator: 'not_within_days',
+      value: 0.5
+    }), [
+      'subsonic://1/teen-2',
+      'subsonic://1/teen-1'
+    ])
+  } finally {
+    Date.now = originalDateNow
+  }
 })
 
 test('track ratings persist, overwrite, remove, and validate values', async (t) => {
