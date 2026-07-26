@@ -49,10 +49,8 @@ interface VisualizerDisplayColors {
   backgroundColor: string
   gridColor: string
   gridMutedColor: string
-  meterBackgroundColor: string
   meterTickColor: string
   meterTextColor: string
-  meterMutedTextColor: string
 }
 
 const MIN_SCOPE_WIDTH_PX = 112
@@ -583,7 +581,7 @@ function DockedVUMeterTile({
       visualizerRef.current = new VUMeter(canvasRef.current, {
         frameScheduler,
         lineColor,
-        backgroundColor: displayColors.meterBackgroundColor,
+        backgroundColor: displayColors.backgroundColor,
         scaleColor: displayColors.meterTickColor,
         labelColor: displayColors.meterTextColor,
         needleLeftColor: lineColor,
@@ -608,7 +606,7 @@ function DockedVUMeterTile({
   useEffect(() => {
     visualizerRef.current?.setOptions({
       lineColor,
-      backgroundColor: displayColors.meterBackgroundColor,
+      backgroundColor: displayColors.backgroundColor,
       scaleColor: displayColors.meterTickColor,
       labelColor: displayColors.meterTextColor,
       needleLeftColor: lineColor,
@@ -940,10 +938,8 @@ export default function VisualizerPanel({
     backgroundColor: visualizerTheme.stageBg,
     gridColor: visualizerTheme.stageGrid,
     gridMutedColor: visualizerTheme.isLight ? 'rgba(15, 23, 42, 0.07)' : 'rgba(255, 255, 255, 0.04)',
-    meterBackgroundColor: visualizerTheme.isLight ? 'rgba(15, 23, 42, 0.055)' : 'rgba(255, 255, 255, 0.04)',
     meterTickColor: visualizerTheme.stageGrid,
     meterTextColor: visualizerTheme.stageText,
-    meterMutedTextColor: visualizerTheme.stageTextMuted,
   }), [visualizerTheme])
   const spectrumHeatColors = useMemo(
     () => resolveSpectrumHeatColors(
