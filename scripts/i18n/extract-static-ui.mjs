@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFile, readdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, relative, resolve, sep } from 'node:path'
 import ts from 'typescript'
+import { slug } from './lib/slug.mjs'
 
 const projectRoot = resolve(import.meta.dirname, '../..')
 const rendererRoot = resolve(projectRoot, 'src/renderer')
@@ -40,16 +41,6 @@ function namespaceFor(filePath) {
   if (/components\/(parallax|sync|signal|stats)/.test(normalized)) return 'integrations'
   if (/Boundary\.tsx$/.test(normalized)) return 'errors'
   return 'common'
-}
-
-function slug(value) {
-  return value
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 56) || 'text'
 }
 
 function componentSlug(filePath) {
@@ -145,6 +136,11 @@ for (const filePath of files) {
   }
 
   function visit(node) {
+    // A <Trans> subtree is already a single catalog message. Its children are the English source
+    // written inline so react-i18next can number the markup, not loose copy — descending into it
+    // would re-split the very sentence that was joined to make it translatable.
+    if (ts.isJsxElement(node) && node.openingElement.tagName.getText(sourceFile) === 'Trans') return
+
     if (ts.isJsxText(node) && node.text.trim()) {
       const value = decodeJsxEntities(node.text.trim().replace(/\s+/g, ' '))
       if (shouldTranslate(value)) {

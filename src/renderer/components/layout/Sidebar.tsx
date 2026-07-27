@@ -13,6 +13,7 @@ import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 import { usePresence } from '../../hooks/usePresence'
 import type { DynamicPlaylistRulesV1 } from '../../../shared/playlists/dynamicPlaylist'
+import { useTranslationSurface } from '../i18n/translationSurfaces'
 
 const baseNavItems: { id: AppView; label: string; icon: ReactNode }[] = [
   {
@@ -137,6 +138,7 @@ export default function Sidebar() {
 
   const [isOverflowOpen, setIsOverflowOpen] = useState(false)
   const [isCreatePlaylistModalOpen, setIsCreatePlaylistModalOpen] = useState(false)
+  useTranslationSurface('Playlists ▸ Create dialog', () => setIsCreatePlaylistModalOpen(true))
   const [createPlaylistTrackPaths, setCreatePlaylistTrackPaths] = useState<string[] | null>(null)
   const [isImportingPlaylist, setIsImportingPlaylist] = useState(false)
   const [isOverflowDragHover, setIsOverflowDragHover] = useState(false)

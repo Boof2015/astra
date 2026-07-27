@@ -11,7 +11,7 @@ let initializationPromise: Promise<void> | null = null
 export function initializeMainI18n(): Promise<void> {
   if (initializationPromise) return initializationPromise
   initializationPromise = mainI18n.init({
-    resources: createBundledResources(false),
+    resources: createBundledResources(),
     lng: localeManifest.defaultLocale,
     fallbackLng: localeManifest.defaultLocale,
     defaultNS: 'common',

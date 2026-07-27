@@ -119,3 +119,19 @@ for (const bundle of bundles) {
   }
   console.error(`${bundle.label}: locale catalogs did not reach the bundle, so those messages would render as their keys.`)
 }
+
+// The mirror image of the check above: translator context must stay OUT of the bundle. The glob
+// that pulls in catalogs matches any .json inside a locale directory, so a sidecar parked next to
+// them is silently inlined and shipped — 560KB of screens, notes and source paths downloaded by
+// every user, with nothing visibly broken to notice. Context lives in src/shared/i18n/context/
+// for exactly this reason, and this makes moving it back a build failure rather than a surprise.
+const CONTEXT_MARKERS = ['"neighbours"', 'Transport bar (bottom of the main window)']
+for (const bundle of bundles) {
+  const leaked = CONTEXT_MARKERS.filter((marker) => bundle.source.includes(marker))
+  if (leaked.length === 0) continue
+  process.exitCode = 1
+  console.error(
+    `${bundle.label}: translator context reached the bundle (${leaked.join(', ')}). `
+      + 'Context belongs in src/shared/i18n/context/, outside the locales glob in catalogs.ts.'
+  )
+}

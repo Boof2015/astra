@@ -257,6 +257,40 @@ if (process.platform === 'linux') {
   app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal')
 }
 
+/**
+ * Development-only display locales, opted into with `ASTRA_DEV_LOCALE=en-KEY npm run dev`.
+ *
+ * The renderer reads these from its own query string, but every window URL is built here, so
+ * without this there is no way to reach them short of retyping the address by hand. `en-XA`
+ * expands and accents every message to expose layouts that break under a longer language;
+ * `en-KEY` renders each message as its own catalog key, which turns the running app into a
+ * key-to-screen map for anyone writing translator context.
+ */
+const DEV_LOCALES = new Set(['en-XA', 'en-KEY'])
+
+/**
+ * Appends the localization development flags to a window URL.
+ *
+ * The renderer reads both from its own query string, but every window URL is built here, so
+ * without this there is no way to reach them short of retyping the address by hand.
+ * `ASTRA_I18N_INSPECT=1` turns on the hover inspector that reports which catalog key produced
+ * any string on screen.
+ */
+function withDevLocale(url: string): string {
+  if (!isDev) return url
+  const flags: string[] = []
+
+  const requestedLocale = process.env['ASTRA_DEV_LOCALE']
+  if (requestedLocale && DEV_LOCALES.has(requestedLocale)) flags.push(`locale=${requestedLocale}`)
+  if (process.env['ASTRA_I18N_INSPECT'] === '1') flags.push('i18nInspect=1')
+
+  const translateLocale = process.env['ASTRA_TRANSLATE']?.trim()
+  if (translateLocale) flags.push(`i18nTranslate=${encodeURIComponent(translateLocale)}`)
+
+  if (flags.length === 0) return url
+  return `${url}${url.includes('?') ? '&' : '?'}${flags.join('&')}`
+}
+
 const globalInputShortcutService = new GlobalInputShortcutService(globalShortcut)
 const GLOBAL_ACTIONS_THAT_FOCUS_MAIN_WINDOW = new Set<InputActionId>([
   'quick-launch-open',
@@ -2870,7 +2904,7 @@ async function createScopePopoutWindow(scope: ScopeKind): Promise<void> {
   })
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
-    await scopeWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}?window=scope-popout&scope=${scope}`)
+    await scopeWindow.loadURL(withDevLocale(`${process.env['ELECTRON_RENDERER_URL']}?window=scope-popout&scope=${scope}`))
   } else {
     await scopeWindow.loadFile(join(__dirname, '../renderer/index.html'), {
       query: { window: 'scope-popout', scope }
@@ -4185,7 +4219,7 @@ async function createMiniPlayerWindow(): Promise<void> {
   })
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
-    await miniWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}?window=mini`)
+    await miniWindow.loadURL(withDevLocale(`${process.env['ELECTRON_RENDERER_URL']}?window=mini`))
   } else {
     await miniWindow.loadFile(join(__dirname, '../renderer/index.html'), {
       query: { window: 'mini' }
@@ -4264,7 +4298,7 @@ async function createLyricsPopoutWindow(): Promise<void> {
   })
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
-    await lyricsPopoutWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}?window=lyrics-popout`)
+    await lyricsPopoutWindow.loadURL(withDevLocale(`${process.env['ELECTRON_RENDERER_URL']}?window=lyrics-popout`))
   } else {
     await lyricsPopoutWindow.loadFile(join(__dirname, '../renderer/index.html'), {
       query: { window: 'lyrics-popout' }
@@ -4366,7 +4400,7 @@ function createWindow(): void {
   })
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    mainWindow.loadURL(withDevLocale(process.env['ELECTRON_RENDERER_URL']))
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }

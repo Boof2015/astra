@@ -1,0 +1,5062 @@
+{
+  "auto.albumgrid.added_in_latest_library_sync": {
+    "text": "Added in latest library sync",
+    "role": "tooltip",
+    "screen": "Library ▸ Album grid",
+    "run": [],
+    "neighbours": [
+      "NEW",
+      "Open {{album}} by {{artist}}"
+    ],
+    "sites": [
+      "src/renderer/components/library/AlbumGrid.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.albumgrid.new": {
+    "text": "NEW",
+    "role": "button",
+    "screen": "Library ▸ Album grid",
+    "run": [],
+    "neighbours": [
+      "Added in latest library sync",
+      "Open {{album}} by {{artist}}"
+    ],
+    "sites": [
+      "src/renderer/components/library/AlbumGrid.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.albumgrid.open_album_by_artist": {
+    "text": "Open {{album}} by {{artist}}",
+    "role": "screen-reader",
+    "screen": "Library ▸ Album grid",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/AlbumGrid.tsx"
+    ],
+    "placeholders": {
+      "album": {
+        "expr": "album.album"
+      },
+      "artist": {
+        "expr": "album.artist"
+      }
+    },
+    "status": "current"
+  },
+  "auto.albumgrid.year": {
+    "text": " • {{year}}",
+    "role": "button",
+    "screen": "Library ▸ Album grid",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/AlbumGrid.tsx"
+    ],
+    "placeholders": {
+      "year": {
+        "expr": "album.year"
+      }
+    },
+    "status": "current"
+  },
+  "auto.artistlist.artist_artwork": {
+    "text": "{{artist}} artwork",
+    "role": "text",
+    "screen": "Library ▸ Artist list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/ArtistList.tsx"
+    ],
+    "placeholders": {
+      "artist": {
+        "expr": "artist.artist"
+      }
+    },
+    "status": "current"
+  },
+  "auto.artistlist.open_artist": {
+    "text": "Open {{artist}}",
+    "role": "screen-reader",
+    "screen": "Library ▸ Artist list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/ArtistList.tsx"
+    ],
+    "placeholders": {
+      "artist": {
+        "expr": "artist.artist"
+      }
+    },
+    "status": "current"
+  },
+  "auto.artistnamelinks.show_tracks_by_artist": {
+    "text": "Show tracks by {{artist}}",
+    "role": "tooltip",
+    "screen": "Library ▸ Track details",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/ArtistNameLinks.tsx"
+    ],
+    "placeholders": {
+      "artist": {
+        "expr": "token.artist"
+      }
+    },
+    "status": "current"
+  },
+  "auto.artistnamelinks.show_tracks_by_stricttargetartist": {
+    "text": "Show tracks by {{stricttargetartist}}",
+    "role": "tooltip",
+    "screen": "Library ▸ Track details",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/ArtistNameLinks.tsx"
+    ],
+    "placeholders": {
+      "stricttargetartist": {
+        "expr": "strictTargetArtist"
+      }
+    },
+    "status": "current"
+  },
+  "auto.foldertreeview.add_name_to_playlist": {
+    "text": "Add {{name}} to playlist",
+    "role": "tooltip",
+    "screen": "Library ▸ Folder tree",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/FolderTreeView.tsx"
+    ],
+    "placeholders": {
+      "name": {
+        "expr": "node.name"
+      }
+    },
+    "status": "current"
+  },
+  "auto.foldertreeview.create_playlist_from_folder": {
+    "text": "Create Playlist from Folder",
+    "role": "tooltip",
+    "screen": "Library ▸ Folder tree",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/FolderTreeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.foldertreeview.new_playlist": {
+    "text": "New playlist",
+    "role": "button",
+    "screen": "Library ▸ Folder tree",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/FolderTreeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.foldertreeview.no_folders_with_tracks": {
+    "text": "No folders with tracks",
+    "role": "body",
+    "screen": "Library ▸ Folder tree",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/FolderTreeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.foldertreeview.no_matching_playlists": {
+    "text": "No matching playlists",
+    "role": "text",
+    "screen": "Library ▸ Folder tree",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/FolderTreeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.foldertreeview.no_tracks_found_for_ldquo": {
+    "text": "No tracks found for “",
+    "role": "body",
+    "screen": "Library ▸ Folder tree",
+    "run": [
+      {
+        "text": "No tracks found for “",
+        "self": true
+      },
+      {
+        "dynamic": "searchQuery"
+      },
+      {
+        "text": "”"
+      }
+    ],
+    "neighbours": [
+      "”"
+    ],
+    "sites": [
+      "src/renderer/components/library/FolderTreeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.foldertreeview.rdquo": {
+    "text": "”",
+    "role": "body",
+    "screen": "Library ▸ Folder tree",
+    "run": [
+      {
+        "text": "No tracks found for “"
+      },
+      {
+        "dynamic": "searchQuery"
+      },
+      {
+        "text": "”",
+        "self": true
+      }
+    ],
+    "neighbours": [
+      "No tracks found for “"
+    ],
+    "sites": [
+      "src/renderer/components/library/FolderTreeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.foldertreeview.search_playlists": {
+    "text": "Search playlists...",
+    "role": "placeholder",
+    "screen": "Library ▸ Folder tree",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/FolderTreeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.foldertreeview.shuffle_name": {
+    "text": "Shuffle {{name}}",
+    "role": "tooltip",
+    "screen": "Library ▸ Folder tree",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/FolderTreeView.tsx"
+    ],
+    "placeholders": {
+      "name": {
+        "expr": "node.name"
+      }
+    },
+    "status": "current"
+  },
+  "auto.foldertreeview.track": {
+    "text": "track",
+    "role": "button",
+    "screen": "Library ▸ Folder tree",
+    "run": [],
+    "neighbours": [
+      "tracks"
+    ],
+    "sites": [
+      "src/renderer/components/library/FolderTreeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.foldertreeview.tracks": {
+    "text": "tracks",
+    "role": "button",
+    "screen": "Library ▸ Folder tree",
+    "run": [],
+    "neighbours": [
+      "track"
+    ],
+    "sites": [
+      "src/renderer/components/library/FolderTreeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.foldertreeview.visible_track": {
+    "text": "visible track",
+    "role": "text",
+    "screen": "Library ▸ Folder tree",
+    "run": [],
+    "neighbours": [
+      "visible tracks"
+    ],
+    "sites": [
+      "src/renderer/components/library/FolderTreeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.foldertreeview.visible_tracks": {
+    "text": "visible tracks",
+    "role": "text",
+    "screen": "Library ▸ Folder tree",
+    "run": [],
+    "neighbours": [
+      "visible track"
+    ],
+    "sites": [
+      "src/renderer/components/library/FolderTreeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.genregrid.album": {
+    "text": "album",
+    "role": "button",
+    "screen": "Library ▸ Genre grid",
+    "run": [],
+    "neighbours": [
+      "albums"
+    ],
+    "sites": [
+      "src/renderer/components/library/GenreGrid.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.genregrid.albums": {
+    "text": "albums",
+    "role": "button",
+    "screen": "Library ▸ Genre grid",
+    "run": [],
+    "neighbours": [
+      "album"
+    ],
+    "sites": [
+      "src/renderer/components/library/GenreGrid.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.1_shared_tracks": {
+    "text": "1+ shared tracks",
+    "role": "menu-item",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.2_shared_tracks": {
+    "text": "2+ shared tracks",
+    "role": "menu-item",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.3_shared_tracks": {
+    "text": "3+ shared tracks",
+    "role": "menu-item",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.4_shared_tracks": {
+    "text": "4+ shared tracks",
+    "role": "menu-item",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.artist": {
+    "text": "Artist",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.artist_relationship_graph": {
+    "text": "Artist relationship graph",
+    "role": "screen-reader",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.artists": {
+    "text": "Artists",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [
+      {
+        "text": "Artists",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "revealedArtistCountLabel"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Edges"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "revealedEdgeCountLabel"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "mode"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "effectiveEdgeThreshold"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "searchFeedback"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.building_the_graph": {
+    "text": "Building the graph…",
+    "role": "body",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.close_artist_inspector": {
+    "text": "Close artist inspector",
+    "role": "screen-reader",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.close_graph_settings": {
+    "text": "Close graph settings",
+    "role": "screen-reader",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.drag_to_pan_scroll_to_zoom_hover_to_trace_connections_cl": {
+    "text": "Drag to pan, scroll to zoom, hover to trace connections, click a node to inspect it.",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.edge_strength": {
+    "text": "Edge Strength",
+    "role": "label",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.edges": {
+    "text": "Edges",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [
+      {
+        "text": "Artists"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "revealedArtistCountLabel"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Edges",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "revealedEdgeCountLabel"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "mode"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "effectiveEdgeThreshold"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "searchFeedback"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.find": {
+    "text": "Find",
+    "role": "button",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [
+      "Find artist..."
+    ],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.find_artist": {
+    "text": "Find artist...",
+    "role": "placeholder",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.focused_on": {
+    "text": "Focused on",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.global_graph": {
+    "text": "Global Graph",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [
+      "Local Graph"
+    ],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.local_graph": {
+    "text": "Local Graph",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [
+      "Global Graph"
+    ],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.local_graph_breadth": {
+    "text": "Local graph breadth",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [
+      {
+        "text": "Artists"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "revealedArtistCountLabel"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Edges"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "revealedEdgeCountLabel"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "mode"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "effectiveEdgeThreshold"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "searchFeedback"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.no_shared_artist_credits_were_found_in_the_current_metad": {
+    "text": "No shared artist credits were found in the current metadata.",
+    "role": "body",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.no_visible_connections_for_the_current_filter": {
+    "text": "No visible connections for the current filter.",
+    "role": "body",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.open_in_library": {
+    "text": "Open In Library",
+    "role": "button",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.open_local_graph": {
+    "text": "Open Local Graph",
+    "role": "button",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.pick_a_connected_artist_to_inspect_the_edge_between_them": {
+    "text": "Pick a connected artist to inspect the edge between them.",
+    "role": "body",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.preparing_the_library_graph": {
+    "text": "Preparing the library graph...",
+    "role": "body",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.re_center_view": {
+    "text": "Re-center View",
+    "role": "button",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.scan_folders_in_settings_gt_library_to_start_building_re": {
+    "text": "Scan folders in Settings > Library to start building relationships.",
+    "role": "body",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.settings": {
+    "text": "Settings",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.shared_releases": {
+    "text": "Shared releases",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.shared_releases_3c96ad1": {
+    "text": "Shared Releases",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.shared_tracks": {
+    "text": "Shared tracks",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.show_full_graph": {
+    "text": "Show Full Graph",
+    "role": "button",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.show_more": {
+    "text": "Show More (",
+    "role": "button",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.showing_weaker_links_because_the_current_filter_hid_ever": {
+    "text": "Showing weaker links because the current filter hid everything.",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [
+      {
+        "text": "Artists"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "revealedArtistCountLabel"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Edges"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "revealedEdgeCountLabel"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "mode"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "effectiveEdgeThreshold"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "searchFeedback"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.the_global_graph_stays_neutral_until_you_interact_with_i": {
+    "text": "The global graph stays neutral until you interact with it. The local graph is only used when you explicitly focus one artist.",
+    "role": "body",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.the_graph_appears_when_tracks_contain_multi_artist_credi": {
+    "text": "The graph appears when tracks contain multi-artist credits such as features or collaborations.",
+    "role": "body",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.toggle_graph_settings": {
+    "text": "Toggle graph settings",
+    "role": "screen-reader",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.track_evidence": {
+    "text": "Track Evidence",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.tracks": {
+    "text": "Tracks",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.visible_connections": {
+    "text": "Visible Connections",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.visible_links": {
+    "text": "Visible links",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.year": {
+    "text": " · {{year}}",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {
+      "year": {
+        "expr": "track.year"
+      }
+    },
+    "status": "current"
+  },
+  "auto.graphview.year_unknown": {
+    "text": "Year unknown",
+    "role": "text",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.graphview.your_library_needs_tracks_before_the_graph_can_draw_anyt": {
+    "text": "Your library needs tracks before the graph can draw anything.",
+    "role": "body",
+    "screen": "Library graph",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/GraphView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.all": {
+    "text": "All",
+    "role": "button",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.all_library": {
+    "text": "All Library",
+    "role": "button",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.astra_will_ask_the_operating_system_to_move_these_files_": {
+    "text": "Astra will ask the operating system to move these files to Trash or the Recycle Bin. It will never fall back to permanent deletion.",
+    "role": "body",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.byte_identical": {
+    "text": "Byte-identical",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.cancel": {
+    "text": "Cancel",
+    "role": "button",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Canceling..."
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.canceled": {
+    "text": "Canceled",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Deep scan is FLAC-only in this version, so non-FLAC local tracks are skipped.",
+      "Complete",
+      "{{skipped}} non-FLAC skipped",
+      "{{skipped}} skipped"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.canceling": {
+    "text": "Canceling...",
+    "role": "button",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Cancel"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.choose_a_copy_to_keep_in_any_group": {
+    "text": "Choose a copy to keep in any group",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "{{selectedtrashcount}} file{{value2}} ready for review"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.choose_one_copy_to_keep": {
+    "text": "Choose one copy to keep",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "{{value1}} will move to Trash"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.clear": {
+    "text": "Clear",
+    "role": "button",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.close": {
+    "text": "Close",
+    "role": "screen-reader",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.complete": {
+    "text": "Complete",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Deep scan is FLAC-only in this version, so non-FLAC local tracks are skipped.",
+      "Canceled",
+      "{{skipped}} non-FLAC skipped",
+      "{{skipped}} skipped"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.confidence": {
+    "text": "confidence",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.copy": {
+    "text": "Copy",
+    "role": "button",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.could_not_move_to_trash": {
+    "text": "Could not move to Trash",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Moved to Trash, but library merge failed",
+      ": {{error}}"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.current_total": {
+    "text": "{{current}}/{{total}}",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "{{scanned}} scanned"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {
+      "current": {
+        "expr": "progress.current"
+      },
+      "total": {
+        "expr": "progress.total"
+      }
+    },
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.deep": {
+    "text": "Deep",
+    "role": "button",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Integrity scan mode"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.deep_scan_is_flac_only_in_this_version_so_non_flac_local": {
+    "text": "Deep scan is FLAC-only in this version, so non-FLAC local tracks are skipped.",
+    "role": "tooltip",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Canceled",
+      "Complete",
+      "{{skipped}} non-FLAC skipped",
+      "{{skipped}} skipped"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.duplicate_cleanup": {
+    "text": "Duplicate cleanup",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.duplicates": {
+    "text": "Duplicates",
+    "role": "button",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Integrity scan mode"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.error": {
+    "text": ": {{error}}",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Could not move to Trash",
+      "Moved to Trash, but library merge failed"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {
+      "error": {
+        "expr": "outcome.error"
+      }
+    },
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.exact": {
+    "text": "Exact",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [
+      {
+        "text": "Groups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "duplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Files"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "duplicateFiles"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Exact",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "exactDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Mixed"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "mixedDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Possible"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "possibleDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "length"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.file": {
+    "text": "file",
+    "role": "heading",
+    "screen": "Library ▸ Integrity panel",
+    "run": [
+      {
+        "text": "Move"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "selectedTrashCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "file",
+        "self": true
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "to Trash?"
+      }
+    ],
+    "neighbours": [
+      "Move",
+      "s",
+      "to Trash?"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.files": {
+    "text": "files",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.files_6ce6c51": {
+    "text": "Files",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [
+      {
+        "text": "Groups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "duplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Files",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "duplicateFiles"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Exact"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "exactDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Mixed"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "mixedDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Possible"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "possibleDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "length"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.groups": {
+    "text": "Groups",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [
+      {
+        "text": "Groups",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "duplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Files"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "duplicateFiles"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Exact"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "exactDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Mixed"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "mixedDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Possible"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "possibleDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "length"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.in_selected_scope": {
+    "text": "In selected scope",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.integrity_scan_mode": {
+    "text": "Integrity scan mode",
+    "role": "screen-reader",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.keep": {
+    "text": "Keep",
+    "role": "label",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Keep instead",
+      "Keep this copy"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.keep_9530998": {
+    "text": "Keep →",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [
+      {
+        "text": "Trash"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "trashPath"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Keep →",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "keepPath"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.keep_instead": {
+    "text": "Keep instead",
+    "role": "label",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Keep",
+      "Keep this copy"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.keep_this_copy": {
+    "text": "Keep this copy",
+    "role": "label",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Keep",
+      "Keep instead"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.keeping_this_copy": {
+    "text": "Keeping this copy",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.library_integrity": {
+    "text": "Library Integrity",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.meaning": {
+    "text": "Meaning:",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.mixed": {
+    "text": "Mixed",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [
+      {
+        "text": "Groups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "duplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Files"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "duplicateFiles"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Exact"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "exactDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Mixed",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "mixedDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Possible"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "possibleDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "length"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.move": {
+    "text": "Move",
+    "role": "heading",
+    "screen": "Library ▸ Integrity panel",
+    "run": [
+      {
+        "text": "Move",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "selectedTrashCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "file"
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "to Trash?"
+      }
+    ],
+    "neighbours": [
+      "file",
+      "s",
+      "to Trash?"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.move_to_trash": {
+    "text": "Move to Trash",
+    "role": "button",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Moving..."
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.moved_to_trash_but_library_merge_failed": {
+    "text": "Moved to Trash, but library merge failed",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Could not move to Trash",
+      ": {{error}}"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.moving": {
+    "text": "Moving...",
+    "role": "button",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Move to Trash"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.moving_to_trash": {
+    "text": "Moving to Trash...",
+    "role": "button",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Review cleanup{{value1}}"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.no_active_file": {
+    "text": "No active file",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.no_duplicate_groups_found_in_this_scope": {
+    "text": "No duplicate groups found in this scope.",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.nothing_moves_until_you_review_and_confirm": {
+    "text": "Nothing moves until you review and confirm.",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Stop the affected playing track before continuing."
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.possible": {
+    "text": "Possible",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [
+      {
+        "text": "Groups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "duplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Files"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "duplicateFiles"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Exact"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "exactDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Mixed"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "mixedDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Possible",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "possibleDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "length"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.quick": {
+    "text": "Quick",
+    "role": "button",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Integrity scan mode"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.reveal": {
+    "text": "Reveal",
+    "role": "button",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.review_cleanup_value1": {
+    "text": "Review cleanup{{value1}}",
+    "role": "button",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Moving to Trash..."
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {
+      "value1": {
+        "expr": "selectedTrashCount > 0 ? ` · ${selectedTrashCount}` : ''"
+      }
+    },
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.s": {
+    "text": "s",
+    "role": "heading",
+    "screen": "Library ▸ Integrity panel",
+    "run": [
+      {
+        "text": "Move"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "selectedTrashCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "file"
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "to Trash?"
+      }
+    ],
+    "neighbours": [
+      "Move",
+      "file",
+      "to Trash?"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.scan_issues": {
+    "text": "Scan issues",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [
+      {
+        "text": "Groups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "duplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Files"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "duplicateFiles"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Exact"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "exactDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Mixed"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "mixedDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Possible"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "possibleDuplicateGroups"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "length"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.scanned_scanned": {
+    "text": "{{scanned}} scanned",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "{{current}}/{{total}}"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {
+      "scanned": {
+        "expr": "result.summary.scanned"
+      }
+    },
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.scanning": {
+    "text": "Scanning...",
+    "role": "button",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Start {{value1}} Scan"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.scope": {
+    "text": "Scope",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.selectedtrashcount_file_value2_ready_for_review": {
+    "text": "{{selectedtrashcount}} file{{value2}} ready for review",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Choose a copy to keep in any group"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {
+      "selectedtrashcount": {
+        "expr": "selectedTrashCount"
+      },
+      "value2": {
+        "expr": "selectedTrashCount === 1 ? '' : 's'"
+      }
+    },
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.skipped_non_flac_skipped": {
+    "text": "{{skipped}} non-FLAC skipped",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Deep scan is FLAC-only in this version, so non-FLAC local tracks are skipped.",
+      "Canceled",
+      "Complete",
+      "{{skipped}} skipped"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {
+      "skipped": {
+        "expr": "result.summary.skipped"
+      }
+    },
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.skipped_skipped": {
+    "text": "{{skipped}} skipped",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Deep scan is FLAC-only in this version, so non-FLAC local tracks are skipped.",
+      "Canceled",
+      "Complete",
+      "{{skipped}} non-FLAC skipped"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {
+      "skipped": {
+        "expr": "result.summary.skipped"
+      }
+    },
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.start_value1_scan": {
+    "text": "Start {{value1}} Scan",
+    "role": "button",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Scanning..."
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {
+      "value1": {
+        "expr": "mode === 'deep' ? 'Deep' : mode === 'duplicates' ? 'Duplicate' : 'Quick'"
+      }
+    },
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.stop_the_affected_playing_track_before_continuing": {
+    "text": "Stop the affected playing track before continuing.",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Nothing moves until you review and confirm."
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.to_trash": {
+    "text": "to Trash?",
+    "role": "heading",
+    "screen": "Library ▸ Integrity panel",
+    "run": [
+      {
+        "text": "Move"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "selectedTrashCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "file"
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "to Trash?",
+        "self": true
+      }
+    ],
+    "neighbours": [
+      "Move",
+      "file",
+      "s"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.trash": {
+    "text": "Trash",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [
+      {
+        "text": "Trash",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "trashPath"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Keep →"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "keepPath"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.value1_will_move_to_trash": {
+    "text": "{{value1}} will move to Trash",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [
+      "Choose one copy to keep"
+    ],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {
+      "value1": {
+        "expr": "group.members.length - 1"
+      }
+    },
+    "status": "current"
+  },
+  "auto.libraryintegritypanel.will_move_to_trash": {
+    "text": "Will move to Trash",
+    "role": "text",
+    "screen": "Library ▸ Integrity panel",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/LibraryIntegrityPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.added_in_latest_library_sync": {
+    "text": "Added in latest library sync",
+    "role": "tooltip",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "NEW"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.album_artwork": {
+    "text": "{{album}} artwork",
+    "role": "text",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {
+      "album": {
+        "expr": "selectedAlbum.album"
+      }
+    },
+    "status": "current"
+  },
+  "auto.libraryview.album_sort_mode": {
+    "text": "Album sort mode",
+    "role": "screen-reader",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.albums": {
+    "text": "Albums",
+    "role": "button",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.all": {
+    "text": "All",
+    "role": "button",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Source filters"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.artist": {
+    "text": "Artist",
+    "role": "button",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Sort albums by artist",
+      "Album sort mode"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.artist_view_mode": {
+    "text": "Artist view mode",
+    "role": "screen-reader",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.artists": {
+    "text": "Artists",
+    "role": "button",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.cancel_scan": {
+    "text": "Cancel scan",
+    "role": "screen-reader",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Cancel scan (Esc)"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.cancel_scan_esc": {
+    "text": "Cancel scan (Esc)",
+    "role": "tooltip",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Cancel scan"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.canceling": {
+    "text": "Canceling...",
+    "role": "text",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Press Esc to cancel"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.change_image": {
+    "text": "Change image",
+    "role": "menu-item",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.clear_search": {
+    "text": "Clear search",
+    "role": "screen-reader",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.collabs": {
+    "text": "Collabs",
+    "role": "button",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Include collab-only artists"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.discography": {
+    "text": "Discography",
+    "role": "heading",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.edit_artist_image": {
+    "text": "Edit artist image",
+    "role": "screen-reader",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.featured_in": {
+    "text": "Featured In",
+    "role": "button",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.folders": {
+    "text": "Folders",
+    "role": "button",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.genres": {
+    "text": "Genres",
+    "role": "button",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.graph": {
+    "text": "Graph",
+    "role": "button",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Open in Graph"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.grid_view": {
+    "text": "Grid view",
+    "role": "tooltip",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Show artists as grid",
+      "Artist view mode"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.include_collab_only_artists": {
+    "text": "Include collab-only artists",
+    "role": "screen-reader",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Collabs"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.include_singles_in_albums": {
+    "text": "Include singles in albums",
+    "role": "screen-reader",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Singles"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.library": {
+    "text": "Library",
+    "role": "text",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Library, {{detailtypelabel}} detail"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.library_detailtypelabel_detail": {
+    "text": "Library, {{detailtypelabel}} detail",
+    "role": "screen-reader",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {
+      "detailtypelabel": {
+        "expr": "detailTypeLabel"
+      }
+    },
+    "status": "current"
+  },
+  "auto.libraryview.list_view": {
+    "text": "List view",
+    "role": "tooltip",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Show artists as list",
+      "Artist view mode"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.loading_library": {
+    "text": "Loading library...",
+    "role": "body",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.local": {
+    "text": "Local",
+    "role": "button",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Source filters"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.new": {
+    "text": "NEW",
+    "role": "button",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Added in latest library sync"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.no_albums_found": {
+    "text": "No albums found",
+    "role": "body",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.no_albums_found_for": {
+    "text": "No albums found for \"",
+    "role": "text",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.no_albums_found_for_2b401c8": {
+    "text": "No albums found for",
+    "role": "text",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.no_artists_found": {
+    "text": "No artists found",
+    "role": "body",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.no_artists_found_for": {
+    "text": "No artists found for \"",
+    "role": "text",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.no_genres_found": {
+    "text": "No genres found",
+    "role": "body",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.no_genres_found_for": {
+    "text": "No genres found for \"",
+    "role": "text",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.no_tracks_found_for": {
+    "text": "No tracks found for \"",
+    "role": "text",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.no_years_found": {
+    "text": "No years found",
+    "role": "body",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.no_years_found_for": {
+    "text": "No years found for \"",
+    "role": "text",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.open_in_graph": {
+    "text": "Open in Graph",
+    "role": "tooltip",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.play": {
+    "text": "Play",
+    "role": "button",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Play tracklist"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.play_tracklist": {
+    "text": "Play tracklist",
+    "role": "tooltip",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.press_esc_to_cancel": {
+    "text": "Press Esc to cancel",
+    "role": "text",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Canceling..."
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.reset_image": {
+    "text": "Reset image",
+    "role": "menu-item",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.scan_for_changes": {
+    "text": "Scan for Changes",
+    "role": "tooltip",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.selectedartist_artwork": {
+    "text": "{{selectedartist}} artwork",
+    "role": "text",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {
+      "selectedartist": {
+        "expr": "selectedArtist"
+      }
+    },
+    "status": "current"
+  },
+  "auto.libraryview.selectedgenre_artwork": {
+    "text": "{{selectedgenre}} artwork",
+    "role": "text",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {
+      "selectedgenre": {
+        "expr": "selectedGenre"
+      }
+    },
+    "status": "current"
+  },
+  "auto.libraryview.show_artists_as_grid": {
+    "text": "Show artists as grid",
+    "role": "screen-reader",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Grid view",
+      "Artist view mode"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.show_artists_as_list": {
+    "text": "Show artists as list",
+    "role": "screen-reader",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "List view",
+      "Artist view mode"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.shuffle": {
+    "text": "Shuffle",
+    "role": "screen-reader",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Shuffle on",
+      "Shuffle off"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.shuffle_off": {
+    "text": "Shuffle off",
+    "role": "tooltip",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Shuffle on",
+      "Shuffle"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.shuffle_on": {
+    "text": "Shuffle on",
+    "role": "tooltip",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Shuffle off",
+      "Shuffle"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.singles": {
+    "text": "Singles",
+    "role": "button",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.sort_albums_by_artist": {
+    "text": "Sort albums by artist",
+    "role": "tooltip",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Artist",
+      "Album sort mode"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.sort_albums_by_title": {
+    "text": "Sort albums by title",
+    "role": "tooltip",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Title",
+      "Album sort mode"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.source_filters": {
+    "text": "Source filters",
+    "role": "screen-reader",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.title": {
+    "text": "Title",
+    "role": "button",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [
+      "Sort albums by title",
+      "Album sort mode"
+    ],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.tracks": {
+    "text": "Tracks",
+    "role": "button",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.use_settings_gt_library_gt_add_folder_to_scan_your_music": {
+    "text": "Use Settings > Library > Add Folder to scan your music",
+    "role": "body",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.value1_artwork": {
+    "text": "{{value1}} artwork",
+    "role": "text",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {
+      "value1": {
+        "expr": "formatLibraryYearKey(selectedYear)"
+      }
+    },
+    "status": "current"
+  },
+  "auto.libraryview.year": {
+    "text": " · {{year}}",
+    "role": "button",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {
+      "year": {
+        "expr": "album.year"
+      }
+    },
+    "status": "current"
+  },
+  "auto.libraryview.years": {
+    "text": "Years",
+    "role": "button",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.libraryview.your_library_is_empty": {
+    "text": "Your library is empty",
+    "role": "body",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.trackintegrityresultmodal.close": {
+    "text": "Close",
+    "role": "screen-reader",
+    "screen": "Library ▸ Integrity result dialog",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackIntegrityResultModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.trackintegrityresultmodal.deep": {
+    "text": "Deep",
+    "role": "text",
+    "screen": "Library ▸ Integrity result dialog",
+    "run": [
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "scan"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "resultTrackCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "errors"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "errors"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "warnings"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "warnings"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "info"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "info"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "Quick",
+      "scan"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackIntegrityResultModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.trackintegrityresultmodal.done": {
+    "text": "Done",
+    "role": "button",
+    "screen": "Library ▸ Integrity result dialog",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackIntegrityResultModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.trackintegrityresultmodal.errors": {
+    "text": "errors",
+    "role": "text",
+    "screen": "Library ▸ Integrity result dialog",
+    "run": [
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "scan"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "resultTrackCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "errors"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "errors",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "warnings"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "warnings"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "info"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "info"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackIntegrityResultModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.trackintegrityresultmodal.info": {
+    "text": "info",
+    "role": "text",
+    "screen": "Library ▸ Integrity result dialog",
+    "run": [
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "scan"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "resultTrackCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "errors"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "errors"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "warnings"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "warnings"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "info"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "info",
+        "self": true
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackIntegrityResultModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.trackintegrityresultmodal.length_selected_tracks": {
+    "text": "{{length}} selected tracks",
+    "role": "text",
+    "screen": "Library ▸ Integrity result dialog",
+    "run": [],
+    "neighbours": [
+      "Preparing integrity check..."
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackIntegrityResultModal.tsx"
+    ],
+    "placeholders": {
+      "length": {
+        "expr": "busyPaths.length"
+      }
+    },
+    "status": "current"
+  },
+  "auto.trackintegrityresultmodal.preparing_integrity_check": {
+    "text": "Preparing integrity check...",
+    "role": "text",
+    "screen": "Library ▸ Integrity result dialog",
+    "run": [],
+    "neighbours": [
+      "{{length}} selected tracks"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackIntegrityResultModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.trackintegrityresultmodal.quick": {
+    "text": "Quick",
+    "role": "text",
+    "screen": "Library ▸ Integrity result dialog",
+    "run": [
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "scan"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "resultTrackCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "errors"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "errors"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "warnings"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "warnings"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "info"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "info"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "Deep",
+      "scan"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackIntegrityResultModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.trackintegrityresultmodal.scan": {
+    "text": "scan",
+    "role": "text",
+    "screen": "Library ▸ Integrity result dialog",
+    "run": [
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "scan",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "resultTrackCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "errors"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "errors"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "warnings"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "warnings"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "info"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "info"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "Deep",
+      "Quick"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackIntegrityResultModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.trackintegrityresultmodal.track": {
+    "text": "track",
+    "role": "text",
+    "screen": "Library ▸ Integrity result dialog",
+    "run": [
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "scan"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "resultTrackCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "errors"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "errors"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "warnings"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "warnings"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "info"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "info"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "tracks"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackIntegrityResultModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.trackintegrityresultmodal.track_integrity": {
+    "text": "Track Integrity",
+    "role": "text",
+    "screen": "Library ▸ Integrity result dialog",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackIntegrityResultModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.trackintegrityresultmodal.tracks": {
+    "text": "tracks",
+    "role": "text",
+    "screen": "Library ▸ Integrity result dialog",
+    "run": [
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "scan"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "resultTrackCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "errors"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "errors"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "warnings"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "warnings"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "info"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "info"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "track"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackIntegrityResultModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.trackintegrityresultmodal.warnings": {
+    "text": "warnings",
+    "role": "text",
+    "screen": "Library ▸ Integrity result dialog",
+    "run": [
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "scan"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "resultTrackCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "errors"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "errors"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "warnings"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "warnings",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "info"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "info"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackIntegrityResultModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.add_or_remove_this_track_from_playlists": {
+    "text": "Add or remove this track from playlists",
+    "role": "text",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Add selected tracks to playlists"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.add_selected_tracks_to_playlists": {
+    "text": "Add selected tracks to playlists",
+    "role": "text",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Add or remove this track from playlists"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.add_to_favorites": {
+    "text": "Add to favorites",
+    "role": "tooltip",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Remove from favorites"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.add_to_playlist": {
+    "text": "Add to Playlist...",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.add_to_playlist_3e241e3": {
+    "text": "Add to playlist",
+    "role": "tooltip",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.add_to_queue": {
+    "text": "Add to Queue",
+    "role": "tooltip",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "In queue"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.add_to_queue_contextmenutrackcount": {
+    "text": "Add to Queue ({{contextmenutrackcount}})",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Add to Queue"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {
+      "contextmenutrackcount": {
+        "expr": "contextMenuTrackCount"
+      }
+    },
+    "status": "current"
+  },
+  "auto.tracklist.added_in_latest_library_sync": {
+    "text": "Added in latest library sync",
+    "role": "tooltip",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "{{title}} by {{artist}}"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.atmos": {
+    "text": "ATMOS",
+    "role": "text",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.buffering": {
+    "text": "Buffering...",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Buffering {{loadingpercentlabel}}",
+      "Buffering {{loadingtrackchunkcount}} chunks"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.buffering_loadingpercentlabel": {
+    "text": "Buffering {{loadingpercentlabel}}",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Buffering {{loadingtrackchunkcount}} chunks",
+      "Buffering..."
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {
+      "loadingpercentlabel": {
+        "expr": "loadingPercentLabel"
+      }
+    },
+    "status": "current"
+  },
+  "auto.tracklist.buffering_loadingtrackchunkcount_chunks": {
+    "text": "Buffering {{loadingtrackchunkcount}} chunks",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Buffering {{loadingpercentlabel}}",
+      "Buffering..."
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {
+      "loadingtrackchunkcount": {
+        "expr": "loadingTrackChunkCount"
+      }
+    },
+    "status": "current"
+  },
+  "auto.tracklist.buffering_track": {
+    "text": "Buffering track",
+    "role": "tooltip",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Added in latest library sync"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.ch": {
+    "text": "CH",
+    "role": "text",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.change_associated_file": {
+    "text": "Change Associated File...",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.check_integrity": {
+    "text": "Check Integrity",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Checking...",
+      "Check Integrity ({{contextmenulocaltrackcount}})"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.check_integrity_contextmenulocaltrackcount": {
+    "text": "Check Integrity ({{contextmenulocaltrackcount}})",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Checking...",
+      "Check Integrity"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {
+      "contextmenulocaltrackcount": {
+        "expr": "contextMenuLocalTrackCount"
+      }
+    },
+    "status": "current"
+  },
+  "auto.tracklist.checking": {
+    "text": "Checking...",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Check Integrity ({{contextmenulocaltrackcount}})",
+      "Check Integrity"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.codec": {
+    "text": "Codec",
+    "role": "text",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.create_astra_signal": {
+    "text": "Create Astra Signal...",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.create_playlist_for_track": {
+    "text": "Create Playlist for Track",
+    "role": "tooltip",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Create Playlist from Tracks"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.create_playlist_from_tracks": {
+    "text": "Create Playlist from Tracks",
+    "role": "tooltip",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Create Playlist for Track"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.default_order_active": {
+    "text": "Default order active.",
+    "role": "screen-reader",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Restore default order."
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.disc": {
+    "text": "Disc",
+    "role": "text",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Disc {{discnumber}}"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.disc_discnumber": {
+    "text": "Disc {{discnumber}}",
+    "role": "screen-reader",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {
+      "discnumber": {
+        "expr": "row.discNumber"
+      }
+    },
+    "status": "current"
+  },
+  "auto.tracklist.eclipsa": {
+    "text": "ECLIPSA",
+    "role": "text",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Eclipsa Audio (IAMF) source, decoded to 7.1.4"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.eclipsa_audio_iamf_source_decoded_to_7_1_4": {
+    "text": "Eclipsa Audio (IAMF) source, decoded to 7.1.4",
+    "role": "tooltip",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.edit_lyrics": {
+    "text": "Edit Lyrics",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Edit Lyrics ({{contextmenutrackcount}})"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.edit_lyrics_contextmenutrackcount": {
+    "text": "Edit Lyrics ({{contextmenutrackcount}})",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Edit Lyrics"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {
+      "contextmenutrackcount": {
+        "expr": "contextMenuTrackCount"
+      }
+    },
+    "status": "current"
+  },
+  "auto.tracklist.edit_metadata": {
+    "text": "Edit Metadata",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Edit Metadata ({{contextmenulocaltrackcount}})"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.edit_metadata_contextmenulocaltrackcount": {
+    "text": "Edit Metadata ({{contextmenulocaltrackcount}})",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Edit Metadata"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {
+      "contextmenulocaltrackcount": {
+        "expr": "contextMenuLocalTrackCount"
+      }
+    },
+    "status": "current"
+  },
+  "auto.tracklist.in_queue": {
+    "text": "In queue",
+    "role": "tooltip",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Add to Queue"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.in_tracklist_order": {
+    "text": "In tracklist order",
+    "role": "text",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.label_currentdirectionlabel_activate_to_sort_nextdirecti": {
+    "text": "{{label}}: {{currentdirectionlabel}}. Activate to sort {{nextdirectionlabel}}.",
+    "role": "screen-reader",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {
+      "currentdirectionlabel": {
+        "expr": "currentDirectionLabel"
+      },
+      "label": {
+        "expr": "label"
+      },
+      "nextdirectionlabel": {
+        "expr": "nextDirectionLabel"
+      }
+    },
+    "status": "current"
+  },
+  "auto.tracklist.length_selected_tracks": {
+    "text": "{{length}} selected tracks",
+    "role": "tooltip",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {
+      "length": {
+        "expr": "playlistPopup.trackPaths.length"
+      }
+    },
+    "status": "current"
+  },
+  "auto.tracklist.length_tracks": {
+    "text": "{{length}} tracks",
+    "role": "text",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {
+      "length": {
+        "expr": "queueInsertPreview.tracks.length"
+      }
+    },
+    "status": "current"
+  },
+  "auto.tracklist.loading": {
+    "text": "Loading...",
+    "role": "text",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.missing": {
+    "text": "MISSING",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.missing_92185dc": {
+    "text": "Missing",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.new_playlist": {
+    "text": "New playlist",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.no_matching_playlists": {
+    "text": "No matching playlists",
+    "role": "text",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.no_tracks_found": {
+    "text": "No tracks found",
+    "role": "body",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.play_next": {
+    "text": "Play Next",
+    "role": "tooltip",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Queued to play next"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.play_next_contextmenutrackcount": {
+    "text": "Play Next ({{contextmenutrackcount}})",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Play Next"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {
+      "contextmenutrackcount": {
+        "expr": "contextMenuTrackCount"
+      }
+    },
+    "status": "current"
+  },
+  "auto.tracklist.queued_to_play_next": {
+    "text": "Queued to play next",
+    "role": "tooltip",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Play Next"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.rate": {
+    "text": "Rate",
+    "role": "text",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Rate ({{contextmenutrackcount}})"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.rate_contextmenutrackcount": {
+    "text": "Rate ({{contextmenutrackcount}})",
+    "role": "text",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Rate"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {
+      "contextmenutrackcount": {
+        "expr": "contextMenuTrackCount"
+      }
+    },
+    "status": "current"
+  },
+  "auto.tracklist.remove_from_favorites": {
+    "text": "Remove from favorites",
+    "role": "tooltip",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Add to favorites"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.remove_from_playlist": {
+    "text": "Remove from Playlist",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Removing...",
+      "Remove from Playlist ({{contextmenutrackcount}})"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.remove_from_playlist_ad3e5d8": {
+    "text": "Remove from playlist",
+    "role": "tooltip",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.remove_from_playlist_contextmenutrackcount": {
+    "text": "Remove from Playlist ({{contextmenutrackcount}})",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Removing...",
+      "Remove from Playlist"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {
+      "contextmenutrackcount": {
+        "expr": "contextMenuTrackCount"
+      }
+    },
+    "status": "current"
+  },
+  "auto.tracklist.remove_rating": {
+    "text": "Remove Rating",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Remove Rating ({{contextmenutrackcount}})"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.remove_rating_contextmenutrackcount": {
+    "text": "Remove Rating ({{contextmenutrackcount}})",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Remove Rating"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {
+      "contextmenutrackcount": {
+        "expr": "contextMenuTrackCount"
+      }
+    },
+    "status": "current"
+  },
+  "auto.tracklist.removing": {
+    "text": "Removing...",
+    "role": "button",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Remove from Playlist ({{contextmenutrackcount}})",
+      "Remove from Playlist"
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.restore_default_order": {
+    "text": "Restore default order.",
+    "role": "screen-reader",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [
+      "Default order active."
+    ],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.search_playlists": {
+    "text": "Search playlists...",
+    "role": "placeholder",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.tracklist.show_album_album": {
+    "text": "Show album {{album}}",
+    "role": "tooltip",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {
+      "album": {
+        "expr": "track.album"
+      }
+    },
+    "status": "current"
+  },
+  "auto.tracklist.sourcelabel_unavailable": {
+    "text": "{{sourcelabel}} (unavailable)",
+    "role": "tooltip",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {
+      "sourcelabel": {
+        "expr": "sourceLabel"
+      }
+    },
+    "status": "current"
+  },
+  "auto.tracklist.title_by_artist": {
+    "text": "{{title}} by {{artist}}",
+    "role": "screen-reader",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {
+      "artist": {
+        "expr": "track.artist"
+      },
+      "title": {
+        "expr": "track.title"
+      }
+    },
+    "status": "current"
+  },
+  "auto.tracklist.tracks": {
+    "text": "Tracks",
+    "role": "text",
+    "screen": "Library ▸ Track list",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/TrackList.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "empty": {
+    "text": "Your library is empty.",
+    "role": "text",
+    "screen": "Shared across the app",
+    "run": [],
+    "neighbours": [],
+    "sites": [],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.foldertreeview.message_all_visible_tracks_are_already_in_this_playlist_9b2ff65": {
+    "text": "All visible tracks are already in this playlist.",
+    "role": "body",
+    "screen": "Library ▸ Folder tree",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/library/FolderTreeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.librarystore.message_canceling_scan_3d32cfd": {
+    "text": "Canceling scan...",
+    "role": "body",
+    "screen": "Application state (surfaced in several places)",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/stores/libraryStore.ts"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.librarystore.message_processing_replaygain_metadata_7b43f5a": {
+    "text": "Processing ReplayGain metadata...",
+    "role": "body",
+    "screen": "Application state (surfaced in several places)",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/stores/libraryStore.ts"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.librarystore.message_rewriting_library_metadata_ce4e343": {
+    "text": "Rewriting library metadata...",
+    "role": "body",
+    "screen": "Application state (surfaced in several places)",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/stores/libraryStore.ts"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.librarystore.message_scanning_files_bf017b0": {
+    "text": "Scanning files...",
+    "role": "body",
+    "screen": "Application state (surfaced in several places)",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/stores/libraryStore.ts"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.libraryview.title_choose_artist_image_3add3fa": {
+    "text": "Choose artist image",
+    "role": "heading",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "search.noAlbums": {
+    "text": "No albums found for \"{{query}}\"",
+    "role": "body",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {
+      "query": {
+        "expr": "trimmedQueryForMessage"
+      }
+    },
+    "status": "current"
+  },
+  "search.noAlbumsForYear": {
+    "text": "No albums found for {{year}}",
+    "role": "body",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {
+      "year": {
+        "expr": "formatLibraryYearKey(selectedYear)"
+      }
+    },
+    "status": "current"
+  },
+  "search.noArtists": {
+    "text": "No artists found for \"{{query}}\"",
+    "role": "body",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {
+      "query": {
+        "expr": "trimmedQueryForMessage"
+      }
+    },
+    "status": "current"
+  },
+  "search.noGenres": {
+    "text": "No genres found for \"{{query}}\"",
+    "role": "body",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {
+      "query": {
+        "expr": "trimmedQueryForMessage"
+      }
+    },
+    "status": "current"
+  },
+  "search.noTracks": {
+    "text": "No tracks found for \"{{query}}\"",
+    "role": "body",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {
+      "query": {
+        "expr": "trimmedQueryForMessage"
+      }
+    },
+    "status": "current"
+  },
+  "search.noYears": {
+    "text": "No years found for \"{{query}}\"",
+    "role": "body",
+    "screen": "Library",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/LibraryView.tsx"
+    ],
+    "placeholders": {
+      "query": {
+        "expr": "trimmedQueryForMessage"
+      }
+    },
+    "status": "current"
+  },
+  "title": {
+    "text": "Library",
+    "role": "text",
+    "screen": "Shared across the app",
+    "run": [],
+    "neighbours": [],
+    "sites": [],
+    "placeholders": {},
+    "status": "current"
+  },
+  "unknownAlbum": {
+    "text": "Unknown Album",
+    "role": "text",
+    "screen": "Shared across the app",
+    "run": [],
+    "neighbours": [],
+    "sites": [],
+    "placeholders": {},
+    "status": "current",
+    "note": "Placeholder shown when a file has no album tag. Should read as a label, not a sentence."
+  },
+  "unknownArtist": {
+    "text": "Unknown Artist",
+    "role": "text",
+    "screen": "Shared across the app",
+    "run": [],
+    "neighbours": [],
+    "sites": [],
+    "placeholders": {},
+    "status": "current",
+    "note": "Placeholder shown when a file has no artist tag. Should read as a label, not a sentence."
+  }
+}

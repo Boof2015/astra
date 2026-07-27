@@ -423,13 +423,12 @@
       "esc": "Esc",
       "refreshing_library_index": "Refreshing library index...",
       "type_to_search_tracks_albums_artists_playlists_or_settin": "Type to search tracks, albums, artists, playlists, or settings",
-      "queue": "queue",
       "queue_d325fcd": "Queue",
-      "tab": "Tab",
       "queue_next": "Queue next",
       "see_all_in_library_rarr": "See all in Library →",
       "no_results_for_ldquo": "No results for “",
-      "rdquo": "”"
+      "rdquo": "”",
+      "0_tab_0_queue": "<0>Tab</0> queue"
     },
     "sidebar": {
       "add_to_playlist": "Add to Playlist",

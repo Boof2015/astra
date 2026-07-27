@@ -392,8 +392,6 @@
       "xlrc_voice_labels": "XLRC Voice Labels",
       "translation_priority": "Translation Priority",
       "en_ja_latn": "en, ja-Latn",
-      "api_get": "/api/get",
-      "api_search": "/api/search",
       "xlrc_translation_codes_are_matched_left_to_right_with_th": "XLRC translation codes are matched left to right, with the first available translation shown.",
       "discord": "Discord",
       "discord_rich_presence_integration": "Discord Rich Presence integration.",
@@ -518,9 +516,6 @@
       "pending": "pending",
       "authorization_pending": "Authorization pending",
       "connect": "Connect",
-      "astra_appends": "Astra appends",
-      "and": "and",
-      "http_is_supported_for_local_mirrors": ". HTTP is supported for local mirrors.",
       "unavailable": "Unavailable",
       "hide": "Hide",
       "show": "Show",
@@ -535,8 +530,6 @@
       "sync_conflict": "sync conflict",
       "need_attention": "need attention",
       "open_the_resolver_to_compare_both_playlists_and_preview_": "Open the resolver to compare both playlists and preview the result before choosing.",
-      "experimental_lan_multi_room_sync_reveals_a_dedicated": "Experimental LAN multi-room sync. Reveals a dedicated",
-      "section_where_you_choose_whether_this_machine_plays_musi": "section where you choose whether this machine plays music or acts as a speaker. Turning this off stops all Parallax networking on this machine and hides the section.",
       "open_developer_settings": "Open developer settings",
       "checking": "Checking...",
       "check_now": "Check Now",
@@ -559,7 +552,9 @@
       "phoneremotesyncpendingcount_choice_value2_waiting_for_th": "{{phoneremotesyncpendingcount}} choice{{value2}} waiting for the phone to pick up.",
       "releasename": " ({{releasename}})",
       "last_checked_lastcheckedlabel": "Last checked: {{lastcheckedlabel}}",
-      "leave_blank_to_keep_current_value1": "Leave blank to keep current {{value1}}"
+      "leave_blank_to_keep_current_value1": "Leave blank to keep current {{value1}}",
+      "astra_appends_1_api_get_1_and_3_api_search_3_http_is": "Astra appends <1>/api/get</1> and <3>/api/search</3>. HTTP is supported for local mirrors.",
+      "experimental_lan_multi_room_sync_reveals_a_dedicated_1": "Experimental LAN multi-room sync. Reveals a dedicated <1>Parallax</1> section where you choose whether this machine plays music or acts as a speaker. Turning this off stops all Parallax networking on this machine and hides the section."
     }
   },
   "runtime": {

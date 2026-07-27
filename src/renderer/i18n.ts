@@ -5,10 +5,12 @@ import {
   getLocaleEntry,
   localeManifest,
   normalizeSupportedLocale,
+  type DevLocale,
 } from '../shared/i18n/catalogs'
 import type { LocaleManifestEntry, SupportedLocale } from '../shared/i18n/types'
 import { DISPLAY_LANGUAGE_STORAGE_KEY } from './constants/settingsStorageKeys'
 import {
+  compareSourceLookupCandidates,
   formatDateForLocale,
   formatNumberForLocale,
   isLocaleStorageChange,
@@ -16,8 +18,17 @@ import {
   readStoredLocale,
 } from '../shared/i18n/core'
 
-const pseudoLocaleRequested = typeof window !== 'undefined'
-  && new URLSearchParams(window.location.search).get('locale') === 'en-XA'
+/**
+ * `?locale=en-XA` renders the expanded pseudo-locale for layout review; `?locale=en-KEY` renders
+ * every string as its own catalog key, which turns the running app into a key-to-screen map for
+ * anyone writing translator context. Neither is in the manifest, so neither can be selected by a
+ * user — they exist only behind this query parameter.
+ */
+const devLocaleRequested = ((): DevLocale | null => {
+  if (typeof window === 'undefined') return null
+  const requested = new URLSearchParams(window.location.search).get('locale')
+  return requested === 'en-XA' || requested === 'en-KEY' ? requested : null
+})()
 
 export const rendererI18n = i18next.createInstance()
 
@@ -25,9 +36,11 @@ let initializationPromise: Promise<void> | null = null
 let storageListenerInstalled = false
 let englishSourceLookup: Map<string, string> | null = null
 
-function addSourceMessages(value: unknown, keyPrefix: string, result: Map<string, string>): void {
+function addSourceMessages(value: unknown, keyPrefix: string, result: Map<string, string[]>): void {
   if (typeof value === 'string') {
-    if (!result.has(value)) result.set(value, keyPrefix)
+    const candidates = result.get(value)
+    if (candidates) candidates.push(keyPrefix)
+    else result.set(value, [keyPrefix])
     return
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return
@@ -38,14 +51,22 @@ function addSourceMessages(value: unknown, keyPrefix: string, result: Map<string
 
 function getEnglishSourceLookup(): Map<string, string> {
   if (englishSourceLookup) return englishSourceLookup
-  const result = new Map<string, string>()
+  const candidatesBySource = new Map<string, string[]>()
   for (const namespace of ['common', 'settings', 'library', 'playback', 'integrations', 'errors']) {
     const bundle = rendererI18n.getResourceBundle(localeManifest.defaultLocale, namespace) as unknown
-    const namespaceMessages = new Map<string, string>()
+    const namespaceMessages = new Map<string, string[]>()
     addSourceMessages(bundle, '', namespaceMessages)
-    for (const [source, key] of namespaceMessages) {
-      if (!result.has(source)) result.set(source, `${namespace}:${key}`)
+    for (const [source, keys] of namespaceMessages) {
+      const qualified = keys.map((key) => `${namespace}:${key}`)
+      const existing = candidatesBySource.get(source)
+      if (existing) existing.push(...qualified)
+      else candidatesBySource.set(source, qualified)
     }
+  }
+
+  const result = new Map<string, string>()
+  for (const [source, candidates] of candidatesBySource) {
+    result.set(source, candidates.sort(compareSourceLookupCandidates)[0])
   }
   englishSourceLookup = result
   return result
@@ -62,7 +83,7 @@ function applyDocumentLocale(locale: string): void {
 }
 
 async function applyLocale(locale: string, notifyMain: boolean): Promise<void> {
-  const normalized = locale === 'en-XA' && pseudoLocaleRequested
+  const normalized = locale === devLocaleRequested
     ? locale
     : normalizeSupportedLocale(locale)
   await rendererI18n.changeLanguage(normalized)
@@ -84,11 +105,11 @@ function installStorageListener(): void {
 export function initializeRendererI18n(): Promise<void> {
   if (initializationPromise) return initializationPromise
   initializationPromise = (async () => {
-    const initialLocale = pseudoLocaleRequested ? 'en-XA' : readPersistedLocale()
+    const initialLocale = devLocaleRequested ?? readPersistedLocale()
     await rendererI18n
       .use(initReactI18next)
       .init({
-        resources: createBundledResources(pseudoLocaleRequested),
+        resources: createBundledResources(devLocaleRequested),
         lng: initialLocale,
         fallbackLng: localeManifest.defaultLocale,
         defaultNS: 'common',

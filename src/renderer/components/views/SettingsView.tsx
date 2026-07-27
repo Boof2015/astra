@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useTranslation } from 'react-i18next'
+import { useTranslation, Trans } from 'react-i18next'
 import LocalizedText from '../i18n/LocalizedText'
 import FolderSettings from '../settings/FolderSettings'
 import AudioOutputSelect from '../settings/AudioOutputSelect'
@@ -96,6 +96,7 @@ import type { AppBuildInfo } from '../../../types/appBuildInfo'
 import type { CompanionApiScope } from '../../../types/companionApi'
 import ParallaxSettingsPanel from '../parallax/ParallaxSettingsPanel'
 import { formatLocaleDate, getDisplayLanguageOptions, setDisplayLanguage, translate, translateSourceText } from '../../i18n'
+import { useTranslationSurface } from '../i18n/translationSurfaces'
 
 type ResetActionId =
   | 'reset-theme'
@@ -359,6 +360,11 @@ export default function SettingsView() {
   const [localApiSelectedPairingBaseUrl, setLocalApiSelectedPairingBaseUrl] = useState('')
   const [localApiPairingModalOpen, setLocalApiPairingModalOpen] = useState(false)
   const [settingsTransferWizardOpen, setSettingsTransferWizardOpen] = useState(false)
+
+  // Studio surfaces: these dialogs hold a lot of copy and are awkward to reach by hand, so the
+  // translation studio can open them on demand. No-ops outside studio mode.
+  useTranslationSurface('Settings ▸ Transfer wizard', () => setSettingsTransferWizardOpen(true))
+  useTranslationSurface('Settings ▸ API pairing dialog', () => setLocalApiPairingModalOpen(true))
   const [showInlinePhoneQr, setShowInlinePhoneQr] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
@@ -533,6 +539,7 @@ export default function SettingsView() {
   ))
   const [lyricsLrclibBaseUrlInput, setLyricsLrclibBaseUrlInput] = useState(LRCLIB_OFFICIAL_BASE_URL)
   const [showBitPerfectWarning, setShowBitPerfectWarning] = useState(false)
+  useTranslationSurface('Settings ▸ Bit-perfect warning', () => setShowBitPerfectWarning(true))
   const [dontShowBitPerfectWarningAgain, setDontShowBitPerfectWarningAgain] = useState(false)
   const [bitPerfectWarningDismissed, setBitPerfectWarningDismissed] = useState(() => {
     return localStorage.getItem(BIT_PERFECT_WARNING_DISMISSED_STORAGE_KEY) === '1'
@@ -2428,7 +2435,7 @@ export default function SettingsView() {
                   </label>
                 </div>
                 <p className="settings-note">{lyricsStatusLabel}</p>
-                <p className="settings-note"><LocalizedText ns="settings" i18nKey="auto.settingsview.astra_appends" /> <code><LocalizedText ns="settings" i18nKey="auto.settingsview.api_get" /></code>  <LocalizedText ns="settings" i18nKey="auto.settingsview.and" /> <code><LocalizedText ns="settings" i18nKey="auto.settingsview.api_search" /></code><LocalizedText ns="settings" i18nKey="auto.settingsview.http_is_supported_for_local_mirrors" /></p>
+                <p className="settings-note"><Trans ns="settings" i18nKey="auto.settingsview.astra_appends_1_api_get_1_and_3_api_search_3_http_is">Astra appends <code>/api/get</code> and <code>/api/search</code>. HTTP is supported for local mirrors.</Trans></p>
                 <p className="settings-note"><LocalizedText ns="settings" i18nKey="auto.settingsview.xlrc_translation_codes_are_matched_left_to_right_with_th" /></p>
                 {lyricsResolvedError && <p className="settings-note settings-note-error">{lyricsResolvedError}</p>}
               </div>
@@ -2943,7 +2950,7 @@ export default function SettingsView() {
                   </div>
                   <p className="settings-note">
 
-                    <LocalizedText ns="settings" i18nKey="auto.settingsview.experimental_lan_multi_room_sync_reveals_a_dedicated" /> <strong><LocalizedText ns="settings" i18nKey="auto.settingsview.parallax" /></strong>  <LocalizedText ns="settings" i18nKey="auto.settingsview.section_where_you_choose_whether_this_machine_plays_musi" />
+                    <Trans ns="settings" i18nKey="auto.settingsview.experimental_lan_multi_room_sync_reveals_a_dedicated_1">Experimental LAN multi-room sync. Reveals a dedicated <strong>Parallax</strong> section where you choose whether this machine plays music or acts as a speaker. Turning this off stops all Parallax networking on this machine and hides the section.</Trans>
                   </p>
                 </div>
               </div>

@@ -1,9 +1,14 @@
 import { readFile, readdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { checkMessage } from './lib/rules.mjs'
+import { findStaleTranslations, readTranslationState } from './lib/state.mjs'
 
 const projectRoot = resolve(import.meta.dirname, '../..')
 const localesRoot = resolve(projectRoot, 'src/shared/i18n/locales')
 const namespaces = ['common', 'settings', 'library', 'playback', 'integrations', 'errors']
+
+/** Enough to act on without burying the summary line under a wall of text. */
+const STALE_REPORT_LIMIT = 20
 
 function flatten(value, prefix = '', result = new Map()) {
   if (typeof value === 'string') {
@@ -19,17 +24,24 @@ function flatten(value, prefix = '', result = new Map()) {
   return result
 }
 
-function placeholders(message) {
-  return Array.from(message.matchAll(/{{\s*([A-Za-z0-9_.-]+)(?:\s*,[^}]*)?\s*}}/g), (match) => match[1])
-    .filter((value, index, values) => values.indexOf(value) === index)
-    .sort()
-}
-
 async function readJson(path) {
   try {
     return JSON.parse(await readFile(path, 'utf8'))
   } catch (error) {
     throw new Error(`${path}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+/**
+ * Context sidecars supply the element role behind each message, which is what turns a raw
+ * character count into a meaningful width warning. They are optional here on purpose: a
+ * namespace with no sidecar still validates, it just carries no length advice.
+ */
+async function readContext(namespace) {
+  try {
+    return await readJson(resolve(projectRoot, 'src/shared/i18n/context', `${namespace}.json`))
+  } catch {
+    return {}
   }
 }
 
@@ -61,16 +73,20 @@ if (!localeCodes.has(manifest.defaultLocale)) {
 }
 
 const english = new Map()
+const context = new Map()
 for (const namespace of namespaces) {
   const path = resolve(localesRoot, manifest.defaultLocale, `${namespace}.json`)
   english.set(namespace, flatten(await readJson(path)))
+  context.set(namespace, await readContext(namespace))
 }
 
 let failed = false
 for (const locale of manifest.locales) {
   const files = new Set(await readdir(resolve(localesRoot, locale.code)))
+  const translatedByNamespace = new Map()
   let missingCount = 0
   let obsoleteCount = 0
+  let warningCount = 0
   for (const namespace of namespaces) {
     const fileName = `${namespace}.json`
     if (!files.has(fileName)) {
@@ -83,29 +99,60 @@ for (const locale of manifest.locales) {
       continue
     }
     const translated = flatten(await readJson(resolve(localesRoot, locale.code, fileName)))
+    translatedByNamespace.set(namespace, translated)
     const source = english.get(namespace)
+    const namespaceContext = context.get(namespace) ?? {}
     for (const [key, sourceMessage] of source) {
       const translatedMessage = translated.get(key)
       if (translatedMessage === undefined) {
         missingCount += 1
         continue
       }
-      if (/&(?:apos|quot|amp|lt|gt|nbsp|middot|ldquo|rdquo|lsquo|rsquo|rarr|larr|times|mdash);|&#39;/.test(translatedMessage)) {
-        console.error(`${locale.code}/${namespace}:${key} contains an HTML entity; use the Unicode character in JSON.`)
+      const { errors, warnings } = checkMessage(sourceMessage, translatedMessage, {
+        role: namespaceContext[key]?.role,
+      })
+      for (const message of errors) {
+        console.error(`${locale.code}/${namespace}:${key} ${message}`)
         failed = true
       }
-      const expected = placeholders(sourceMessage)
-      const actual = placeholders(translatedMessage)
-      if (expected.join('\0') !== actual.join('\0')) {
-        console.error(`${locale.code}/${namespace}:${key} placeholder mismatch (${expected.join(', ')} != ${actual.join(', ')})`)
-        failed = true
+      // Advisory: width is a judgement call the translator already saw in the workbench, and
+      // failing on it would only teach contributors to tune out this validator.
+      for (const message of warnings) {
+        console.warn(`${locale.code}/${namespace}:${key} ${message}`)
+        warningCount += 1
       }
     }
     for (const key of translated.keys()) {
       if (!source.has(key)) obsoleteCount += 1
     }
   }
-  console.log(`${locale.code}: ${missingCount} missing, ${obsoleteCount} obsolete key(s)`)
+  // A translation whose English has since been rewritten is structurally perfect and silently
+  // wrong, so it is invisible to every other check here.
+  let staleCount = 0
+  if (locale.code !== manifest.defaultLocale) {
+    const stale = findStaleTranslations(
+      await readTranslationState(projectRoot, locale.code),
+      english,
+      translatedByNamespace
+    )
+    staleCount = stale.length
+    for (const entry of stale.slice(0, STALE_REPORT_LIMIT)) {
+      console.warn(
+        `${locale.code}/${entry.namespace}:${entry.key} was translated from `
+          + `${JSON.stringify(entry.was)} but English now reads ${JSON.stringify(entry.now)}.`
+      )
+    }
+    if (staleCount > STALE_REPORT_LIMIT) {
+      console.warn(`${locale.code}: ${staleCount - STALE_REPORT_LIMIT} more stale translation(s) not listed.`)
+    }
+  }
+
+  const notes = [
+    warningCount > 0 ? `${warningCount} length warning(s)` : null,
+    staleCount > 0 ? `${staleCount} stale translation(s)` : null,
+  ].filter(Boolean)
+  const suffix = notes.length > 0 ? `, ${notes.join(', ')}` : ''
+  console.log(`${locale.code}: ${missingCount} missing, ${obsoleteCount} obsolete key(s)${suffix}`)
 }
 
 if (failed) process.exitCode = 1

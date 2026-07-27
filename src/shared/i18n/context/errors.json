@@ -1,0 +1,32 @@
+{
+  "generic": {
+    "text": "Something went wrong.",
+    "role": "text",
+    "screen": "Shared across the app",
+    "run": [],
+    "neighbours": [],
+    "sites": [],
+    "placeholders": {},
+    "status": "current"
+  },
+  "unavailable": {
+    "text": "This feature is currently unavailable.",
+    "role": "text",
+    "screen": "Shared across the app",
+    "run": [],
+    "neighbours": [],
+    "sites": [],
+    "placeholders": {},
+    "status": "current"
+  },
+  "unknown": {
+    "text": "An unknown error occurred.",
+    "role": "text",
+    "screen": "Shared across the app",
+    "run": [],
+    "neighbours": [],
+    "sites": [],
+    "placeholders": {},
+    "status": "current"
+  }
+}

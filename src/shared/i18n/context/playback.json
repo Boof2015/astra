@@ -1,0 +1,2819 @@
+{
+  "auto.collectionqueuecontextmenu.add_to_queue": {
+    "text": "Add to Queue",
+    "role": "menu-item",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [
+      "Adding...",
+      "Queue actions for {{label}}"
+    ],
+    "sites": [
+      "src/renderer/components/queue/CollectionQueueContextMenu.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.collectionqueuecontextmenu.adding": {
+    "text": "Adding...",
+    "role": "menu-item",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [
+      "Play Next",
+      "Queue actions for {{label}}"
+    ],
+    "sites": [
+      "src/renderer/components/queue/CollectionQueueContextMenu.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.collectionqueuecontextmenu.play_next": {
+    "text": "Play Next",
+    "role": "menu-item",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [
+      "Adding...",
+      "Queue actions for {{label}}"
+    ],
+    "sites": [
+      "src/renderer/components/queue/CollectionQueueContextMenu.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.collectionqueuecontextmenu.queue_actions_for_label": {
+    "text": "Queue actions for {{label}}",
+    "role": "screen-reader",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/queue/CollectionQueueContextMenu.tsx"
+    ],
+    "placeholders": {
+      "label": {
+        "expr": "label"
+      }
+    },
+    "status": "current"
+  },
+  "auto.homeview.add_a_folder_in_library_to_populate_this_dashboard": {
+    "text": "Add a folder in Library to populate this dashboard.",
+    "role": "body",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.albums": {
+    "text": "Albums",
+    "role": "text",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.artist_artwork": {
+    "text": "{{artist}} artwork",
+    "role": "text",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [
+      "Open {{artist}}"
+    ],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {
+      "artist": {
+        "expr": "artist.artist"
+      }
+    },
+    "status": "current"
+  },
+  "auto.homeview.artists": {
+    "text": "Artists",
+    "role": "text",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.create_playlist": {
+    "text": "Create playlist",
+    "role": "tooltip",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.dynamic": {
+    "text": "Dynamic -",
+    "role": "button",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [
+      "tracks"
+    ],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.home": {
+    "text": "Home",
+    "role": "heading",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.import": {
+    "text": "Import",
+    "role": "button",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [
+      "Import playlist"
+    ],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.import_playlist": {
+    "text": "Import playlist",
+    "role": "tooltip",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [
+      "Import"
+    ],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.no_playlists_yet_click_to_create_one": {
+    "text": "No playlists yet. Click + to create one.",
+    "role": "text",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.no_recent_albums_yet_your_latest_albums_will_appear_here": {
+    "text": "No recent albums yet. Your latest albums will appear here.",
+    "role": "text",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.no_recent_artists_yet_play_a_few_tracks_first": {
+    "text": "No recent artists yet. Play a few tracks first.",
+    "role": "text",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.no_recent_tracks_yet_start_playing_music": {
+    "text": "No recent tracks yet. Start playing music!",
+    "role": "text",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.open_album_by_artist": {
+    "text": "Open {{album}} by {{artist}}",
+    "role": "screen-reader",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {
+      "album": {
+        "expr": "album.album"
+      },
+      "artist": {
+        "expr": "album.artist"
+      }
+    },
+    "status": "current"
+  },
+  "auto.homeview.open_artist": {
+    "text": "Open {{artist}}",
+    "role": "screen-reader",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {
+      "artist": {
+        "expr": "artist.artist"
+      }
+    },
+    "status": "current"
+  },
+  "auto.homeview.open_library": {
+    "text": "Open Library",
+    "role": "button",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.open_name": {
+    "text": "Open {{name}}",
+    "role": "screen-reader",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {
+      "name": {
+        "expr": "playlist.name"
+      }
+    },
+    "status": "current"
+  },
+  "auto.homeview.play_title_by_artist": {
+    "text": "Play {{title}} by {{artist}}",
+    "role": "screen-reader",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {
+      "artist": {
+        "expr": "track.artist"
+      },
+      "title": {
+        "expr": "track.title"
+      }
+    },
+    "status": "current"
+  },
+  "auto.homeview.playlists": {
+    "text": "PLAYLISTS",
+    "role": "heading",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.recent_albums": {
+    "text": "RECENT ALBUMS",
+    "role": "heading",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.recent_artists": {
+    "text": "RECENT ARTISTS",
+    "role": "heading",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.recent_play": {
+    "text": "Recent play",
+    "role": "button",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [
+      "{{trackCount}} tracks",
+      "Open {{artist}}"
+    ],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.recently_played": {
+    "text": "RECENTLY PLAYED",
+    "role": "heading",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.total_time": {
+    "text": "Total Time",
+    "role": "text",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.trackcount_tracks": {
+    "text": "{{trackCount}} tracks",
+    "role": "button",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [
+      "Recent play",
+      "Open {{artist}}"
+    ],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {
+      "trackCount": {
+        "expr": "artist.track_count"
+      }
+    },
+    "status": "current"
+  },
+  "auto.homeview.tracks": {
+    "text": "tracks",
+    "role": "button",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [
+      "Dynamic -"
+    ],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.tracks_3dd1a4d": {
+    "text": "Tracks",
+    "role": "text",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.homeview.year": {
+    "text": " · {{year}}",
+    "role": "button",
+    "screen": "Home",
+    "run": [],
+    "neighbours": [
+      "{{trackCount}} tracks",
+      "Recent play",
+      "Open {{album}} by {{artist}}"
+    ],
+    "sites": [
+      "src/renderer/components/views/HomeView.tsx"
+    ],
+    "placeholders": {
+      "year": {
+        "expr": "album.year"
+      }
+    },
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.00_12_34_paste_synced_lyrics_or_plain_lyrics_here": {
+    "text": "[00:12.34]Paste synced lyrics or plain lyrics here...",
+    "role": "placeholder",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [
+      "Selected tracks have different manual lyrics."
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.apply": {
+    "text": "Apply",
+    "role": "button",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [
+      "Mixed"
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.choose_file": {
+    "text": "Choose File",
+    "role": "button",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.clear_manual_lyrics": {
+    "text": "Clear Manual Lyrics",
+    "role": "button",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.close_lyrics_editor": {
+    "text": "Close lyrics editor",
+    "role": "screen-reader",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.drop_lrc_or_xlrc_here": {
+    "text": "Drop LRC or XLRC here",
+    "role": "text",
+    "screen": "Lyrics editor",
+    "run": [
+      {
+        "text": "Drop LRC or XLRC here",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Manual lyrics override sidecar files, embedded tags, and online results."
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.edit_lyrics": {
+    "text": "Edit Lyrics",
+    "role": "heading",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.have_manual_lyrics": {
+    "text": "have manual lyrics",
+    "role": "text",
+    "screen": "Lyrics editor",
+    "run": [
+      {
+        "text": "Manual Lyrics"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "manualLyricsCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "selected track"
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "have manual lyrics",
+        "self": true
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "selected track",
+      "s"
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.loading_lyrics_state": {
+    "text": "Loading lyrics state...",
+    "role": "text",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.lrc": {
+    "text": "LRC",
+    "role": "menu-item",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [
+      "Lyrics format"
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.lyrics_format": {
+    "text": "Lyrics format",
+    "role": "screen-reader",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.manual": {
+    "text": "· manual",
+    "role": "text",
+    "screen": "Lyrics editor",
+    "run": [
+      {
+        "dynamic": "selectedCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "track"
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "· manual",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "manualLyricsCount"
+      },
+      {
+        "literal": "/"
+      },
+      {
+        "dynamic": "selectedCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "track",
+      "s"
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.manual_lyrics": {
+    "text": "Manual Lyrics",
+    "role": "text",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.manual_lyrics_override_sidecar_files_embedded_tags_and_o": {
+    "text": "Manual lyrics override sidecar files, embedded tags, and online results.",
+    "role": "text",
+    "screen": "Lyrics editor",
+    "run": [
+      {
+        "text": "Drop LRC or XLRC here"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Manual lyrics override sidecar files, embedded tags, and online results.",
+        "self": true
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.milliseconds_applied_at_playback": {
+    "text": "Milliseconds applied at playback",
+    "role": "text",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [
+      "Mixed offsets"
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.mixed": {
+    "text": "Mixed",
+    "role": "placeholder",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.mixed_offsets": {
+    "text": "Mixed offsets",
+    "role": "text",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [
+      "Milliseconds applied at playback"
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.mixed_selected_lyrics": {
+    "text": "Mixed selected lyrics",
+    "role": "text",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [
+      "{{value1}} editor"
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.plain": {
+    "text": "Plain",
+    "role": "menu-item",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [
+      "Lyrics format"
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.reset": {
+    "text": "Reset",
+    "role": "button",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [
+      "Mixed"
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.s": {
+    "text": "s",
+    "role": "text",
+    "screen": "Lyrics editor",
+    "run": [
+      {
+        "dynamic": "selectedCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "track"
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "· manual"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "manualLyricsCount"
+      },
+      {
+        "literal": "/"
+      },
+      {
+        "dynamic": "selectedCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "track",
+      "· manual"
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.save_manual_lyrics": {
+    "text": "Save Manual Lyrics",
+    "role": "button",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.selected_track": {
+    "text": "selected track",
+    "role": "text",
+    "screen": "Lyrics editor",
+    "run": [
+      {
+        "text": "Manual Lyrics"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "manualLyricsCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "selected track",
+        "self": true
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "have manual lyrics"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "s",
+      "have manual lyrics"
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.selected_tracks_have_different_manual_lyrics": {
+    "text": "Selected tracks have different manual lyrics.",
+    "role": "placeholder",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [
+      "[00:12.34]Paste synced lyrics or plain lyrics here..."
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.selectedcount_selected_tracks": {
+    "text": "{{selectedcount}} selected tracks",
+    "role": "text",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {
+      "selectedcount": {
+        "expr": "selectedCount"
+      }
+    },
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.sync_offset": {
+    "text": "Sync Offset",
+    "role": "text",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.syncedlyricscount_with_synced_manual_lyrics_bulk_offset_": {
+    "text": "{{syncedlyricscount}} with synced manual lyrics · bulk offset and clear only",
+    "role": "text",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [
+      "{{value1}} · {{value2}}"
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {
+      "syncedlyricscount": {
+        "expr": "syncedLyricsCount"
+      }
+    },
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.track": {
+    "text": "track",
+    "role": "text",
+    "screen": "Lyrics editor",
+    "run": [
+      {
+        "dynamic": "selectedCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "track",
+        "self": true
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "· manual"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "manualLyricsCount"
+      },
+      {
+        "literal": "/"
+      },
+      {
+        "dynamic": "selectedCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "s",
+      "· manual"
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.value1_editor": {
+    "text": "{{value1}} editor",
+    "role": "text",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [
+      "Mixed selected lyrics"
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {
+      "value1": {
+        "expr": "formatLyricsFormat(formatDraft)"
+      }
+    },
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.value1_value2": {
+    "text": "{{value1}} · {{value2}}",
+    "role": "text",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [
+      "{{syncedlyricscount}} with synced manual lyrics · bulk offset and clear only"
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {
+      "value1": {
+        "expr": "primaryTrack?.artist ?? 'Unknown Artist'"
+      },
+      "value2": {
+        "expr": "formatSourceLabel(primaryTrack)"
+      }
+    },
+    "status": "current"
+  },
+  "auto.lyricseditorpanel.xlrc": {
+    "text": "XLRC",
+    "role": "menu-item",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [
+      "Lyrics format"
+    ],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricspopoutapp.compact": {
+    "text": "Compact",
+    "role": "button",
+    "screen": "Lyrics popout window",
+    "run": [],
+    "neighbours": [
+      "Expand"
+    ],
+    "sites": [
+      "src/renderer/components/popout/LyricsPopoutApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricspopoutapp.dock": {
+    "text": "Dock",
+    "role": "button",
+    "screen": "Lyrics popout window",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/popout/LyricsPopoutApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricspopoutapp.expand": {
+    "text": "Expand",
+    "role": "button",
+    "screen": "Lyrics popout window",
+    "run": [],
+    "neighbours": [
+      "Compact"
+    ],
+    "sites": [
+      "src/renderer/components/popout/LyricsPopoutApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricspopoutapp.loading": {
+    "text": "Loading...",
+    "role": "button",
+    "screen": "Lyrics popout window",
+    "run": [],
+    "neighbours": [
+      "Refresh"
+    ],
+    "sites": [
+      "src/renderer/components/popout/LyricsPopoutApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricspopoutapp.lyrics": {
+    "text": "Lyrics",
+    "role": "text",
+    "screen": "Lyrics popout window",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/popout/LyricsPopoutApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricspopoutapp.lyrics_not_synced_or_not_found": {
+    "text": "Lyrics not synced or not found.",
+    "role": "body",
+    "screen": "Lyrics popout window",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/popout/LyricsPopoutApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricspopoutapp.recenter": {
+    "text": "Recenter",
+    "role": "button",
+    "screen": "Lyrics popout window",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/popout/LyricsPopoutApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.lyricspopoutapp.refresh": {
+    "text": "Refresh",
+    "role": "button",
+    "screen": "Lyrics popout window",
+    "run": [],
+    "neighbours": [
+      "Loading..."
+    ],
+    "sites": [
+      "src/renderer/components/popout/LyricsPopoutApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.miniplayerapp.add_favorite": {
+    "text": "Add favorite",
+    "role": "screen-reader",
+    "screen": "Mini player window",
+    "run": [],
+    "neighbours": [
+      "Remove favorite",
+      "Favorited",
+      "Favorite"
+    ],
+    "sites": [
+      "src/renderer/components/mini/MiniPlayerApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.miniplayerapp.album_art": {
+    "text": "Album art",
+    "role": "text",
+    "screen": "Mini player window",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/mini/MiniPlayerApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.miniplayerapp.astra_mini": {
+    "text": "ASTRA MINI",
+    "role": "text",
+    "screen": "Mini player window",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/mini/MiniPlayerApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.miniplayerapp.close_mini_player": {
+    "text": "Close mini player",
+    "role": "tooltip",
+    "screen": "Mini player window",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/mini/MiniPlayerApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.miniplayerapp.favorite": {
+    "text": "Favorite",
+    "role": "tooltip",
+    "screen": "Mini player window",
+    "run": [],
+    "neighbours": [
+      "Remove favorite",
+      "Add favorite",
+      "Favorited"
+    ],
+    "sites": [
+      "src/renderer/components/mini/MiniPlayerApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.miniplayerapp.favorited": {
+    "text": "Favorited",
+    "role": "tooltip",
+    "screen": "Mini player window",
+    "run": [],
+    "neighbours": [
+      "Remove favorite",
+      "Add favorite",
+      "Favorite"
+    ],
+    "sites": [
+      "src/renderer/components/mini/MiniPlayerApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.miniplayerapp.mini_visualizer_visualizermodelabel_click_to_switch_to_n": {
+    "text": "Mini visualizer: {{visualizermodelabel}}. Click to switch to {{nextvisualizermodelabel}}",
+    "role": "tooltip",
+    "screen": "Mini player window",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/mini/MiniPlayerApp.tsx"
+    ],
+    "placeholders": {
+      "nextvisualizermodelabel": {
+        "expr": "nextVisualizerModeLabel"
+      },
+      "visualizermodelabel": {
+        "expr": "visualizerModeLabel"
+      }
+    },
+    "status": "current"
+  },
+  "auto.miniplayerapp.next": {
+    "text": "Next",
+    "role": "screen-reader",
+    "screen": "Mini player window",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/mini/MiniPlayerApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.miniplayerapp.pause": {
+    "text": "Pause",
+    "role": "screen-reader",
+    "screen": "Mini player window",
+    "run": [],
+    "neighbours": [
+      "Play"
+    ],
+    "sites": [
+      "src/renderer/components/mini/MiniPlayerApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.miniplayerapp.pin_mini_player": {
+    "text": "Pin mini player",
+    "role": "tooltip",
+    "screen": "Mini player window",
+    "run": [],
+    "neighbours": [
+      "Unpin mini player"
+    ],
+    "sites": [
+      "src/renderer/components/mini/MiniPlayerApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.miniplayerapp.play": {
+    "text": "Play",
+    "role": "screen-reader",
+    "screen": "Mini player window",
+    "run": [],
+    "neighbours": [
+      "Pause"
+    ],
+    "sites": [
+      "src/renderer/components/mini/MiniPlayerApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.miniplayerapp.previous": {
+    "text": "Previous",
+    "role": "screen-reader",
+    "screen": "Mini player window",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/mini/MiniPlayerApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.miniplayerapp.remove_favorite": {
+    "text": "Remove favorite",
+    "role": "screen-reader",
+    "screen": "Mini player window",
+    "run": [],
+    "neighbours": [
+      "Add favorite",
+      "Favorited",
+      "Favorite"
+    ],
+    "sites": [
+      "src/renderer/components/mini/MiniPlayerApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.miniplayerapp.seek": {
+    "text": "Seek",
+    "role": "screen-reader",
+    "screen": "Mini player window",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/mini/MiniPlayerApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.miniplayerapp.unpin_mini_player": {
+    "text": "Unpin mini player",
+    "role": "tooltip",
+    "screen": "Mini player window",
+    "run": [],
+    "neighbours": [
+      "Pin mini player"
+    ],
+    "sites": [
+      "src/renderer/components/mini/MiniPlayerApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.add_tracks_from_the_library_view": {
+    "text": "Add tracks from the Library view",
+    "role": "body",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Click the heart icon on any track to add favorites.",
+      "Edit the rules or add more music to the library."
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.back": {
+    "text": "Back",
+    "role": "tooltip",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.cancel": {
+    "text": "Cancel",
+    "role": "button",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.change_cover": {
+    "text": "Change cover",
+    "role": "menu-item",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.click_the_heart_icon_on_any_track_to_add_favorites": {
+    "text": "Click the heart icon on any track to add favorites.",
+    "role": "body",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Edit the rules or add more music to the library.",
+      "Add tracks from the Library view"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.close": {
+    "text": "Close",
+    "role": "screen-reader",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.create_a_playlist_to_start_organizing_your_library": {
+    "text": "Create a playlist to start organizing your library.",
+    "role": "body",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "{{length}} collections ready to play"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.delete": {
+    "text": "Delete",
+    "role": "menu-item",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.delete_playlist": {
+    "text": "Delete Playlist?",
+    "role": "tooltip",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Discard Unsaved Reorder?"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.discard_unsaved_reorder": {
+    "text": "Discard Unsaved Reorder?",
+    "role": "tooltip",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Delete Playlist?"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.dynamic": {
+    "text": "Dynamic -",
+    "role": "button",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "track",
+      "tracks",
+      ", {{missingTrackCount}} missing"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.dynamic_ceb739d": {
+    "text": "Dynamic",
+    "role": "heading",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.edit_dynamic_rules": {
+    "text": "Edit Dynamic Rules",
+    "role": "heading",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.edit_playlist_cover": {
+    "text": "Edit playlist cover",
+    "role": "screen-reader",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.edit_rules": {
+    "text": "Edit Rules",
+    "role": "menu-item",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.edit_the_rules_or_add_more_music_to_the_library": {
+    "text": "Edit the rules or add more music to the library.",
+    "role": "body",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Click the heart icon on any track to add favorites.",
+      "Add tracks from the Library view"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.exit_reorder_mode": {
+    "text": "Exit reorder mode",
+    "role": "tooltip",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Reorder tracks"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.export_m3u": {
+    "text": "Export M3U",
+    "role": "menu-item",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Exporting..."
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.exporting": {
+    "text": "Exporting...",
+    "role": "menu-item",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Export M3U"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.favorites": {
+    "text": "Favorites",
+    "role": "text",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Playlist"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.import_playlist": {
+    "text": "Import Playlist",
+    "role": "button",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Importing..."
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.importing": {
+    "text": "Importing...",
+    "role": "button",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Import Playlist"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.length_collections_ready_to_play": {
+    "text": "{{length}} collections ready to play",
+    "role": "body",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Create a playlist to start organizing your library."
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {
+      "length": {
+        "expr": "allPlaylists.length"
+      }
+    },
+    "status": "current"
+  },
+  "auto.playlistview.loading_rules": {
+    "text": "Loading rules...",
+    "role": "text",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.missing": {
+    "text": "missing",
+    "role": "text",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "track",
+      "tracks",
+      " · {{playlistdurationlabel}}"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.missing_92185dc": {
+    "text": "Missing",
+    "role": "text",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.missingtrackcount_missing": {
+    "text": ", {{missingTrackCount}} missing",
+    "role": "button",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Dynamic -",
+      "track",
+      "tracks"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {
+      "missingTrackCount": {
+        "expr": "entry.missing_track_count"
+      }
+    },
+    "status": "current"
+  },
+  "auto.playlistview.more_playlist_actions": {
+    "text": "More playlist actions",
+    "role": "screen-reader",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.new_playlist": {
+    "text": "New Playlist",
+    "role": "button",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.new_playlist_a5474a8": {
+    "text": "New playlist",
+    "role": "menu-item",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.no_favorites_yet": {
+    "text": "No favorites yet",
+    "role": "body",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "No matching tracks",
+      "This playlist is empty"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.no_matching_tracks": {
+    "text": "No matching tracks",
+    "role": "body",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "No favorites yet",
+      "This playlist is empty"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.no_playlists_yet": {
+    "text": "No playlists yet",
+    "role": "body",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.open_library": {
+    "text": "Open Library",
+    "role": "button",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.play": {
+    "text": "Play",
+    "role": "button",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Play playlist"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.play_playlist": {
+    "text": "Play playlist",
+    "role": "tooltip",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.playlist": {
+    "text": "Playlist",
+    "role": "text",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Favorites"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.playlist_not_found": {
+    "text": "Playlist not found",
+    "role": "heading",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.playlistdurationlabel": {
+    "text": " · {{playlistdurationlabel}}",
+    "role": "text",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "track",
+      "tracks"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {
+      "playlistdurationlabel": {
+        "expr": "playlistDurationLabel"
+      }
+    },
+    "status": "current"
+  },
+  "auto.playlistview.playlists": {
+    "text": "Playlists",
+    "role": "heading",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.remove_cover": {
+    "text": "Remove cover",
+    "role": "menu-item",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.rename": {
+    "text": "Rename",
+    "role": "menu-item",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.reorder_tracks": {
+    "text": "Reorder tracks",
+    "role": "tooltip",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Exit reorder mode"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.save_order": {
+    "text": "Save Order",
+    "role": "button",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Saving..."
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.save_rules": {
+    "text": "Save Rules",
+    "role": "button",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Saving..."
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.saving": {
+    "text": "Saving...",
+    "role": "button",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Save Order"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.shuffle": {
+    "text": "Shuffle",
+    "role": "screen-reader",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Shuffle on",
+      "Shuffle off"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.shuffle_off": {
+    "text": "Shuffle off",
+    "role": "tooltip",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Shuffle on",
+      "Shuffle"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.shuffle_on": {
+    "text": "Shuffle on",
+    "role": "tooltip",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Shuffle off",
+      "Shuffle"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.this_playlist_is_empty": {
+    "text": "This playlist is empty",
+    "role": "body",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "No favorites yet",
+      "No matching tracks"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.track": {
+    "text": "track",
+    "role": "button",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Dynamic -",
+      "tracks",
+      ", {{missingTrackCount}} missing"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.tracks": {
+    "text": "tracks",
+    "role": "button",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [
+      "Dynamic -",
+      "track",
+      ", {{missingTrackCount}} missing"
+    ],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.playlistview.use_the_create_button_to_make_one_from_anywhere_in_the_a": {
+    "text": "Use the create button to make one from anywhere in the app.",
+    "role": "body",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.queuepanel.buffering": {
+    "text": "Buffering...",
+    "role": "text",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [
+      "Buffering {{loadingpercentlabel}}",
+      "Buffering {{currentloadingchunkcount}} chunks"
+    ],
+    "sites": [
+      "src/renderer/components/queue/QueuePanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.queuepanel.buffering_currentloadingchunkcount_chunks": {
+    "text": "Buffering {{currentloadingchunkcount}} chunks",
+    "role": "text",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [
+      "Buffering {{loadingpercentlabel}}",
+      "Buffering..."
+    ],
+    "sites": [
+      "src/renderer/components/queue/QueuePanel.tsx"
+    ],
+    "placeholders": {
+      "currentloadingchunkcount": {
+        "expr": "currentLoadingChunkCount"
+      }
+    },
+    "status": "current"
+  },
+  "auto.queuepanel.buffering_loadingpercentlabel": {
+    "text": "Buffering {{loadingpercentlabel}}",
+    "role": "text",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [
+      "Buffering {{currentloadingchunkcount}} chunks",
+      "Buffering..."
+    ],
+    "sites": [
+      "src/renderer/components/queue/QueuePanel.tsx"
+    ],
+    "placeholders": {
+      "loadingpercentlabel": {
+        "expr": "loadingPercentLabel"
+      }
+    },
+    "status": "current"
+  },
+  "auto.queuepanel.buffering_track": {
+    "text": "Buffering track",
+    "role": "tooltip",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/queue/QueuePanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.queuepanel.clear": {
+    "text": "Clear",
+    "role": "button",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [
+      "Clear queue history and queued tracks"
+    ],
+    "sites": [
+      "src/renderer/components/queue/QueuePanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.queuepanel.clear_queue_history_and_queued_tracks": {
+    "text": "Clear queue history and queued tracks",
+    "role": "tooltip",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [
+      "Clear"
+    ],
+    "sites": [
+      "src/renderer/components/queue/QueuePanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.queuepanel.cmd_ctrl_select_tracks_to_drop_them_here": {
+    "text": "Cmd/Ctrl-select tracks to drop them here",
+    "role": "body",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [
+      "Drop here to build a user queue"
+    ],
+    "sites": [
+      "src/renderer/components/queue/QueuePanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.queuepanel.drop_here_to_build_a_user_queue": {
+    "text": "Drop here to build a user queue",
+    "role": "body",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [
+      "Cmd/Ctrl-select tracks to drop them here"
+    ],
+    "sites": [
+      "src/renderer/components/queue/QueuePanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.queuepanel.no_tracks_in_queue": {
+    "text": "No tracks in queue",
+    "role": "body",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/queue/QueuePanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.queuepanel.play_title_by_artist": {
+    "text": "Play {{title}} by {{artist}}",
+    "role": "screen-reader",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/queue/QueuePanel.tsx"
+    ],
+    "placeholders": {
+      "artist": {
+        "expr": "row.track.artist"
+      },
+      "title": {
+        "expr": "row.track.title"
+      }
+    },
+    "status": "current"
+  },
+  "auto.queuepanel.queue": {
+    "text": "Queue",
+    "role": "heading",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/queue/QueuePanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.queuepanel.queued_by_you": {
+    "text": "Queued by you",
+    "role": "tooltip",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/queue/QueuePanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.queuepanel.remove_from_queue": {
+    "text": "Remove from queue",
+    "role": "tooltip",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [
+      "Play {{title}} by {{artist}}"
+    ],
+    "sites": [
+      "src/renderer/components/queue/QueuePanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.queuepanel.shuffled": {
+    "text": "Shuffled",
+    "role": "text",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/queue/QueuePanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.queuepanel.sourcelabel_unavailable": {
+    "text": "{{sourcelabel}} (unavailable)",
+    "role": "tooltip",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/queue/QueuePanel.tsx"
+    ],
+    "placeholders": {
+      "sourcelabel": {
+        "expr": "sourceLabel"
+      }
+    },
+    "status": "current"
+  },
+  "auto.queuepanelboundary.close_and_reopen_the_queue_details_were_logged_to_the_co": {
+    "text": "Close and reopen the queue. Details were logged to the console.",
+    "role": "body",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/queue/QueuePanelBoundary.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.queuepanelboundary.queue": {
+    "text": "Queue",
+    "role": "heading",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/queue/QueuePanelBoundary.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.queuepanelboundary.queue_failed_to_render": {
+    "text": "Queue failed to render",
+    "role": "body",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/queue/QueuePanelBoundary.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.queuesplitbutton.add_to_queue": {
+    "text": "Add to queue",
+    "role": "tooltip",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/queue/QueueSplitButton.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.queuesplitbutton.play_next": {
+    "text": "Play next",
+    "role": "tooltip",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/queue/QueueSplitButton.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.scopepopoutapp.astra": {
+    "text": "ASTRA",
+    "role": "text",
+    "screen": "Visualizer popout window",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/popout/ScopePopoutApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.scopepopoutapp.dock": {
+    "text": "Dock",
+    "role": "button",
+    "screen": "Visualizer popout window",
+    "run": [],
+    "neighbours": [
+      "Dock back in Astra"
+    ],
+    "sites": [
+      "src/renderer/components/popout/ScopePopoutApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.scopepopoutapp.dock_back_in_astra": {
+    "text": "Dock back in Astra",
+    "role": "tooltip",
+    "screen": "Visualizer popout window",
+    "run": [],
+    "neighbours": [
+      "Dock"
+    ],
+    "sites": [
+      "src/renderer/components/popout/ScopePopoutApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.scopepopoutapp.invalid_scope_target": {
+    "text": "Invalid scope target",
+    "role": "text",
+    "screen": "Visualizer popout window",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/popout/ScopePopoutApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.scopepopoutapp.open_popouts_from_the_analyzer_deck_buttons": {
+    "text": "Open popouts from the analyzer deck buttons.",
+    "role": "text",
+    "screen": "Visualizer popout window",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/popout/ScopePopoutApp.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.volumecontrol.mute": {
+    "text": "Mute",
+    "role": "screen-reader",
+    "screen": "Transport bar ▸ Volume",
+    "run": [],
+    "neighbours": [
+      "Unmute"
+    ],
+    "sites": [
+      "src/renderer/components/player/VolumeControl.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.volumecontrol.playback_volume": {
+    "text": "Playback volume",
+    "role": "screen-reader",
+    "screen": "Transport bar ▸ Volume",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/player/VolumeControl.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.volumecontrol.unmute": {
+    "text": "Unmute",
+    "role": "screen-reader",
+    "screen": "Transport bar ▸ Volume",
+    "run": [],
+    "neighbours": [
+      "Mute"
+    ],
+    "sites": [
+      "src/renderer/components/player/VolumeControl.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "delay.active": {
+    "text": "Delay compensation active ({{delay}} ms)",
+    "role": "text",
+    "screen": "Transient notification cue",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/layout/OutputDelayCue.tsx"
+    ],
+    "placeholders": {
+      "delay": {
+        "expr": "notice.delayMs"
+      }
+    },
+    "status": "current"
+  },
+  "delay.heardPlaybackStartsShortly": {
+    "text": "heard playback starts shortly",
+    "role": "text",
+    "screen": "Transient notification cue",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/layout/OutputDelayCue.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "nothingPlaying": {
+    "text": "Nothing playing",
+    "role": "text",
+    "screen": "Shared across the app",
+    "run": [],
+    "neighbours": [],
+    "sites": [],
+    "placeholders": {},
+    "status": "current"
+  },
+  "nowPlaying": {
+    "text": "Now Playing",
+    "role": "text",
+    "screen": "Shared across the app",
+    "run": [],
+    "neighbours": [],
+    "sites": [],
+    "placeholders": {},
+    "status": "current"
+  },
+  "queue": {
+    "text": "Queue",
+    "role": "text",
+    "screen": "Shared across the app",
+    "run": [],
+    "neighbours": [],
+    "sites": [],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.createplaylistmodal.title_choose_playlist_cover_b02ef90": {
+    "text": "Choose playlist cover",
+    "role": "heading",
+    "screen": "Playlists ▸ Create dialog",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/playlists/CreatePlaylistModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.dynamicplaylistruleeditor.label_added_b68734c": {
+    "text": "Added",
+    "role": "label",
+    "screen": "Playlists ▸ Dynamic rule editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/playlists/DynamicPlaylistRuleEditor.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.dynamicplaylistruleeditor.label_album_artist_f7fa2ee": {
+    "text": "Album artist",
+    "role": "label",
+    "screen": "Playlists ▸ Dynamic rule editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/playlists/DynamicPlaylistRuleEditor.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.dynamicplaylistruleeditor.label_bpm_2568757": {
+    "text": "BPM",
+    "role": "label",
+    "screen": "Playlists ▸ Dynamic rule editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/playlists/DynamicPlaylistRuleEditor.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.dynamicplaylistruleeditor.label_duration_1370004": {
+    "text": "Duration",
+    "role": "label",
+    "screen": "Playlists ▸ Dynamic rule editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/playlists/DynamicPlaylistRuleEditor.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.dynamicplaylistruleeditor.label_format_041a5de": {
+    "text": "Format",
+    "role": "label",
+    "screen": "Playlists ▸ Dynamic rule editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/playlists/DynamicPlaylistRuleEditor.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.dynamicplaylistruleeditor.label_key_c67dd20": {
+    "text": "Key",
+    "role": "label",
+    "screen": "Playlists ▸ Dynamic rule editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/playlists/DynamicPlaylistRuleEditor.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.dynamicplaylistruleeditor.label_last_played_7201a86": {
+    "text": "Last played",
+    "role": "label",
+    "screen": "Playlists ▸ Dynamic rule editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/playlists/DynamicPlaylistRuleEditor.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.dynamicplaylistruleeditor.label_local_only_dd2a305": {
+    "text": "Local only",
+    "role": "label",
+    "screen": "Playlists ▸ Dynamic rule editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/playlists/DynamicPlaylistRuleEditor.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.dynamicplaylistruleeditor.label_most_played_14202e8": {
+    "text": "Most played",
+    "role": "label",
+    "screen": "Playlists ▸ Dynamic rule editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/playlists/DynamicPlaylistRuleEditor.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.dynamicplaylistruleeditor.label_not_played_recently_98be4ae": {
+    "text": "Not played recently",
+    "role": "label",
+    "screen": "Playlists ▸ Dynamic rule editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/playlists/DynamicPlaylistRuleEditor.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.dynamicplaylistruleeditor.label_play_count_50a9570": {
+    "text": "Play count",
+    "role": "label",
+    "screen": "Playlists ▸ Dynamic rule editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/playlists/DynamicPlaylistRuleEditor.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.dynamicplaylistruleeditor.label_rated_f12045c": {
+    "text": "Rated",
+    "role": "label",
+    "screen": "Playlists ▸ Dynamic rule editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/playlists/DynamicPlaylistRuleEditor.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.dynamicplaylistruleeditor.label_rating_6437b7b": {
+    "text": "Rating",
+    "role": "label",
+    "screen": "Playlists ▸ Dynamic rule editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/playlists/DynamicPlaylistRuleEditor.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.dynamicplaylistruleeditor.label_recently_added_5369634": {
+    "text": "Recently added",
+    "role": "label",
+    "screen": "Playlists ▸ Dynamic rule editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/playlists/DynamicPlaylistRuleEditor.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.dynamicplaylistruleeditor.label_unplayed_4bb2598": {
+    "text": "Unplayed",
+    "role": "label",
+    "screen": "Playlists ▸ Dynamic rule editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/playlists/DynamicPlaylistRuleEditor.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.lyricseditorpanel.title_import_lyrics_file_6acda16": {
+    "text": "Import lyrics file",
+    "role": "heading",
+    "screen": "Lyrics editor",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/lyrics/LyricsEditorPanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.playlistview.message_that_missing_playlist_entry_is_no_longer_available_9136416": {
+    "text": "That missing playlist entry is no longer available.",
+    "role": "body",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.playlistview.title_change_associated_playlist_file_183d54e": {
+    "text": "Change Associated Playlist File",
+    "role": "heading",
+    "screen": "Playlists",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/views/PlaylistView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.queuepanel.label_previously_played_4facd05": {
+    "text": "Previously Played",
+    "role": "label",
+    "screen": "Play queue",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/queue/QueuePanel.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "volume": {
+    "text": "Volume",
+    "role": "text",
+    "screen": "Shared across the app",
+    "run": [],
+    "neighbours": [],
+    "sites": [],
+    "placeholders": {},
+    "status": "current"
+  }
+}

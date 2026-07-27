@@ -1,7 +1,7 @@
 import LocalizedText from '../i18n/LocalizedText'
 import { translate, translateSourceText } from '../../i18n'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
-import { useTranslation } from 'react-i18next'
+import { useTranslation, Trans } from 'react-i18next'
 import { NAV_ENTRIES, NON_HIDDEN_SETTINGS_SECTIONS } from '../../constants/settingsSections'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
@@ -805,7 +805,7 @@ export default function QuickLaunchPalette() {
                           {showQueueAction ? (
                             <span className="ql-action-badge"><LocalizedText ns="common" i18nKey="auto.quicklaunchpalette.queue_d325fcd" /></span>
                           ) : (
-                            <span className="ql-tab-hint"><kbd><LocalizedText ns="common" i18nKey="auto.quicklaunchpalette.tab" /></kbd>  <LocalizedText ns="common" i18nKey="auto.quicklaunchpalette.queue" /></span>
+                            <span className="ql-tab-hint"><Trans ns="common" i18nKey="auto.quicklaunchpalette.0_tab_0_queue"><kbd>Tab</kbd> queue</Trans></span>
                           )}
                           <button
                             type="button"

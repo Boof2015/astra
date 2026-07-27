@@ -1,0 +1,2646 @@
+{
+  "auto.parallaxmanagementview.add_speaker": {
+    "text": "Add speaker",
+    "role": "button",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.advanced": {
+    "text": "Advanced",
+    "role": "heading",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.change_role": {
+    "text": "Change role",
+    "role": "button",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.choose_role": {
+    "text": "Choose role",
+    "role": "button",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.clear_cached_status": {
+    "text": "Clear cached status",
+    "role": "button",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.connected": {
+    "text": "connected)",
+    "role": "text",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [
+      {
+        "text": "Speakers ("
+      },
+      {
+        "dynamic": "activePlaybackSinkCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "playing ·"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "connectedSinkCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "connected)",
+        "self": true
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "Speakers (",
+      "playing ·"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.copy": {
+    "text": "Copy",
+    "role": "button",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.disabled": {
+    "text": "Disabled",
+    "role": "button",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [
+      "Enabled"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.disconnect": {
+    "text": "Disconnect",
+    "role": "button",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.enable_parallax_host": {
+    "text": "Enable Parallax Host",
+    "role": "text",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.enable_parallax_sink": {
+    "text": "Enable Parallax Sink",
+    "role": "text",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.enable_parallax_to_reconnect": {
+    "text": "Enable Parallax to reconnect",
+    "role": "tooltip",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [
+      "Reconnect to paired host",
+      "Reconnect"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.enabled": {
+    "text": "Enabled",
+    "role": "button",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [
+      "Disabled"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.forget_host": {
+    "text": "Forget host",
+    "role": "button",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.host_address": {
+    "text": "Host Address",
+    "role": "text",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.no_speakers_yet": {
+    "text": "No speakers yet.",
+    "role": "text",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.not_paired_to_a_host_yet": {
+    "text": "Not paired to a host yet",
+    "role": "text",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.open_this_machine_s_host_and_add_it_as_a_speaker_a_pin_w": {
+    "text": "Open this machine's host and add it as a speaker. A PIN will appear here to confirm.",
+    "role": "body",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.open_zone_display_on_launch": {
+    "text": "Open Zone Display on launch",
+    "role": "text",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.paired_host": {
+    "text": "Paired host",
+    "role": "text",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.parallax_is_on_but_no_role_is_chosen": {
+    "text": "Parallax is on, but no role is chosen.",
+    "role": "text",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.parallax_port": {
+    "text": "Parallax Port",
+    "role": "text",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.parallax_security_update": {
+    "text": "Parallax security update",
+    "role": "text",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.play_all": {
+    "text": "Play all",
+    "role": "button",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.play_none": {
+    "text": "Play none",
+    "role": "button",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.playing": {
+    "text": "playing ·",
+    "role": "text",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [
+      {
+        "text": "Speakers ("
+      },
+      {
+        "dynamic": "activePlaybackSinkCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "playing ·",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "connectedSinkCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "connected)"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "Speakers (",
+      "connected)"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.previous_pairings_were_removed_so_parallax_can_use_encry": {
+    "text": "Previous pairings were removed so Parallax can use encrypted, identity-pinned connections. Pair each speaker again once.",
+    "role": "body",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.reconnect": {
+    "text": "Reconnect",
+    "role": "button",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [
+      "Reconnect to paired host",
+      "Enable Parallax to reconnect"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.reconnect_to_paired_host": {
+    "text": "Reconnect to paired host",
+    "role": "tooltip",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [
+      "Enable Parallax to reconnect",
+      "Reconnect"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.remove_all": {
+    "text": "Remove all",
+    "role": "button",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.save": {
+    "text": "Save",
+    "role": "button",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.speakers": {
+    "text": "Speakers (",
+    "role": "text",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [
+      {
+        "text": "Speakers (",
+        "self": true
+      },
+      {
+        "dynamic": "activePlaybackSinkCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "playing ·"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "connectedSinkCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "connected)"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "playing ·",
+      "connected)"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.this_machine": {
+    "text": "This machine",
+    "role": "text",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxmanagementview.this_speaker": {
+    "text": "This speaker",
+    "role": "text",
+    "screen": "Parallax ▸ Speaker management",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxManagementView.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.add_a_speaker": {
+    "text": "Add a speaker",
+    "role": "button",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.back": {
+    "text": "Back",
+    "role": "button",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.close_setup": {
+    "text": "Close setup",
+    "role": "screen-reader",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.disabled": {
+    "text": "Disabled",
+    "role": "button",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [
+      "Enabled"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.done": {
+    "text": "Done",
+    "role": "button",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [
+      "Finish later"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.enabled": {
+    "text": "Enabled",
+    "role": "button",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [
+      "Disabled"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.find_a_nearby_astra_running_in_speaker_mode_and_pair_it_": {
+    "text": "Find a nearby Astra running in speaker mode and pair it. You can add more anytime.",
+    "role": "body",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.find_it_as": {
+    "text": "Find it as",
+    "role": "text",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.finding_address": {
+    "text": "Finding address…",
+    "role": "text",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.finish_later": {
+    "text": "Finish later",
+    "role": "button",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [
+      "Done"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.is_a_speaker": {
+    "text": "Is a speaker",
+    "role": "button",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [
+      {
+        "literal": "◉"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Is a speaker",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "This plays in sync with a host elsewhere on the network."
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.no_speakers_yet_on_the_other_machine_open_parallax_and_c": {
+    "text": "No speakers yet. On the other machine, open Parallax and choose “Is a speaker.”",
+    "role": "text",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.not_now": {
+    "text": "Not now",
+    "role": "button",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.on_a_speaker_if_it_sounds_early_or_late": {
+    "text": "on a speaker if it sounds early or late.",
+    "role": "text",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [
+      {
+        "literal": " ✓ "
+      },
+      {
+        "dynamic": "activeSinkCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "speaker"
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "paired. Start playback to hear it in sync. Use"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Tune"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "on a speaker if it sounds early or late.",
+        "self": true
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "speaker",
+      "s",
+      "paired. Start playback to hear it in sync. Use"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.on_network": {
+    "text": "On network",
+    "role": "text",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.open_zone_display_on_launch": {
+    "text": "Open Zone Display on launch",
+    "role": "text",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.paired_start_playback_to_hear_it_in_sync_use": {
+    "text": "paired. Start playback to hear it in sync. Use",
+    "role": "text",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [
+      {
+        "literal": " ✓ "
+      },
+      {
+        "dynamic": "activeSinkCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "speaker"
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "paired. Start playback to hear it in sync. Use",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Tune"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "on a speaker if it sounds early or late."
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "speaker",
+      "s",
+      "on a speaker if it sounds early or late."
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.parallax_keeps_audio_in_sync_across_machines_on_your_net": {
+    "text": "Parallax keeps audio in sync across machines on your network. Pick the job for this one.",
+    "role": "body",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.parallax_setup": {
+    "text": "Parallax setup",
+    "role": "text",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.plays_music": {
+    "text": "Plays music",
+    "role": "button",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [
+      {
+        "literal": "♫"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Plays music",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "This is where you control playback. It sends audio to your speakers."
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.s": {
+    "text": "s",
+    "role": "text",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [
+      {
+        "literal": " ✓ "
+      },
+      {
+        "dynamic": "activeSinkCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "speaker"
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "paired. Start playback to hear it in sync. Use"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Tune"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "on a speaker if it sounds early or late."
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "speaker",
+      "paired. Start playback to hear it in sync. Use",
+      "on a speaker if it sounds early or late."
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.speaker": {
+    "text": "speaker",
+    "role": "text",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [
+      {
+        "literal": " ✓ "
+      },
+      {
+        "dynamic": "activeSinkCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "speaker",
+        "self": true
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "paired. Start playback to hear it in sync. Use"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Tune"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "on a speaker if it sounds early or late."
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "s",
+      "paired. Start playback to hear it in sync. Use",
+      "on a speaker if it sounds early or late."
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.this_is_where_you_control_playback_it_sends_audio_to_you": {
+    "text": "This is where you control playback. It sends audio to your speakers.",
+    "role": "button",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [
+      {
+        "literal": "♫"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Plays music"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "This is where you control playback. It sends audio to your speakers.",
+        "self": true
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.this_machine_is_ready_to_play_in_sync_on_your_music_mach": {
+    "text": "This machine is ready to play in sync. On your music machine, add this speaker, then confirm the PIN that appears here.",
+    "role": "body",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.this_plays_in_sync_with_a_host_elsewhere_on_the_network": {
+    "text": "This plays in sync with a host elsewhere on the network.",
+    "role": "button",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [
+      {
+        "literal": "◉"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Is a speaker"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "This plays in sync with a host elsewhere on the network.",
+        "self": true
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.tune": {
+    "text": "Tune",
+    "role": "text",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [
+      {
+        "literal": " ✓ "
+      },
+      {
+        "dynamic": "activeSinkCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "speaker"
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "paired. Start playback to hear it in sync. Use"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Tune",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "on a speaker if it sounds early or late."
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "speaker",
+      "s",
+      "paired. Start playback to hear it in sync. Use",
+      "on a speaker if it sounds early or late."
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxsetupflow.waiting_for_a_host_to_start_pairing": {
+    "text": "Waiting for a host to start pairing…",
+    "role": "text",
+    "screen": "Parallax ▸ First-run setup",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSetupFlow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.applying_value1": {
+    "text": " (applying {{value1}}…)",
+    "role": "text",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [
+      "Output {{value1}} · Trim {{value2}}"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {
+      "value1": {
+        "expr": "formatParallaxTrimMs(sinkAppliedAdvanceMs)"
+      }
+    },
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.cancel": {
+    "text": "Cancel",
+    "role": "button",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.clear_cached_status": {
+    "text": "Clear cached status",
+    "role": "button",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.hit_test_sound_or_start_playback_and_the_timing_nudges_a": {
+    "text": "Hit Test sound (or start playback) and the timing nudges appear once this speaker reports its output.",
+    "role": "text",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [
+      "Listening for this speaker… the timing nudges appear once it reports its output."
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.letting_this_speaker_settle": {
+    "text": "Letting this speaker settle…",
+    "role": "text",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.listening_for_this_speaker_the_timing_nudges_appear_once": {
+    "text": "Listening for this speaker… the timing nudges appear once it reports its output.",
+    "role": "text",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [
+      "Hit Test sound (or start playback) and the timing nudges appear once this speaker reports its output."
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.metronome_playing_on_this_speaker_and_the_host_nudge_unt": {
+    "text": "Metronome playing on this speaker and the host. Nudge until they line up.",
+    "role": "text",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [
+      "Play audio or Test sound, then nudge until this speaker lines up with the others."
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.more_actions": {
+    "text": "More actions",
+    "role": "screen-reader",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.nudge_1_ms_earlier": {
+    "text": "Nudge 1 ms earlier",
+    "role": "tooltip",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.nudge_1_ms_later": {
+    "text": "Nudge 1 ms later",
+    "role": "tooltip",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.nudge_5_ms_earlier": {
+    "text": "Nudge 5 ms earlier",
+    "role": "tooltip",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.nudge_5_ms_later": {
+    "text": "Nudge 5 ms later",
+    "role": "tooltip",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.output_value1_trim_value2": {
+    "text": "Output {{value1}} · Trim {{value2}}",
+    "role": "text",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [
+      " (applying {{value1}}…)"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {
+      "value1": {
+        "expr": "outputDeviceLabel ?? outputDeviceId"
+      },
+      "value2": {
+        "expr": "formatParallaxTrimMs(persistedAdvanceMs)"
+      }
+    },
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.play_a_synced_metronome_on_this_speaker_and_the_host_as_": {
+    "text": "Play a synced metronome on this speaker (and the host, as a reference) so you can hear the offset",
+    "role": "tooltip",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [
+      "Stop playback to use the test tone",
+      "Stop test",
+      "Test sound"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.play_audio_or_test_sound_then_nudge_until_this_speaker_l": {
+    "text": "Play audio or Test sound, then nudge until this speaker lines up with the others.",
+    "role": "text",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [
+      "Metronome playing on this speaker and the host. Nudge until they line up."
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.play_here": {
+    "text": "Play here",
+    "role": "button",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [
+      "{{value1}} playback in {{name}}",
+      "Play in this zone",
+      "Playing"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.play_in_this_zone": {
+    "text": "Play in this zone",
+    "role": "tooltip",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [
+      "{{value1}} playback in {{name}}",
+      "Playing",
+      "Play here"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.playing": {
+    "text": "Playing",
+    "role": "button",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [
+      "{{value1}} playback in {{name}}",
+      "Play in this zone",
+      "Play here"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.remove_speaker": {
+    "text": "Remove speaker",
+    "role": "button",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.rename": {
+    "text": "Rename",
+    "role": "button",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.reset": {
+    "text": "Reset",
+    "role": "button",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.save": {
+    "text": "Save",
+    "role": "button",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.sounds_early": {
+    "text": "Sounds early?",
+    "role": "text",
+    "screen": "Parallax",
+    "run": [
+      {
+        "text": "Sounds early?",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "trimReadout"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Sounds late?"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.sounds_late": {
+    "text": "Sounds late?",
+    "role": "text",
+    "screen": "Parallax",
+    "run": [
+      {
+        "text": "Sounds early?"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "trimReadout"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "Sounds late?",
+        "self": true
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.stop_playback_to_use_the_test_tone": {
+    "text": "Stop playback to use the test tone",
+    "role": "tooltip",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [
+      "Play a synced metronome on this speaker (and the host, as a reference) so you can hear the offset",
+      "Stop test",
+      "Test sound"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.stop_test": {
+    "text": "Stop test",
+    "role": "button",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [
+      "Stop playback to use the test tone",
+      "Play a synced metronome on this speaker (and the host, as a reference) so you can hear the offset",
+      "Test sound"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.test_and_adjust_this_speaker_s_timing": {
+    "text": "Test and adjust this speaker's timing",
+    "role": "tooltip",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [
+      "Tune"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.test_sound": {
+    "text": "Test sound",
+    "role": "button",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [
+      "Stop playback to use the test tone",
+      "Play a synced metronome on this speaker (and the host, as a reference) so you can hear the offset",
+      "Stop test"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.timing": {
+    "text": "Timing",
+    "role": "text",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.tune": {
+    "text": "Tune",
+    "role": "button",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [
+      "Test and adjust this speaker's timing"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.parallaxspeakerrow.value1_playback_in_name": {
+    "text": "{{value1}} playback in {{name}}",
+    "role": "screen-reader",
+    "screen": "Parallax",
+    "run": [],
+    "neighbours": [
+      "Play in this zone",
+      "Playing",
+      "Play here"
+    ],
+    "sites": [
+      "src/renderer/components/parallax/ParallaxSpeakerRow.tsx"
+    ],
+    "placeholders": {
+      "name": {
+        "expr": "sink.name"
+      },
+      "value1": {
+        "expr": "playbackEnabled ? 'Disable' : 'Enable'"
+      }
+    },
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.after_sync": {
+    "text": "After sync:",
+    "role": "text",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [
+      {
+        "text": "After sync:",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "resultName"
+      },
+      {
+        "literal": " · "
+      },
+      {
+        "dynamic": "resultTrackCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "song"
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "song",
+      "s"
+    ],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.choose_an_outcome_preview_it_below_then_confirm": {
+    "text": "Choose an outcome, preview it below, then confirm.",
+    "role": "body",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.close": {
+    "text": "Close",
+    "role": "screen-reader",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.conflict_resolution_actions": {
+    "text": "Conflict resolution actions",
+    "role": "screen-reader",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.desktop": {
+    "text": "Desktop",
+    "role": "text",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.different_order": {
+    "text": "Different order",
+    "role": "text",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.in_a_different_order": {
+    "text": "in a different order",
+    "role": "text",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [
+      {
+        "dynamic": "desktopOnlyCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "only on desktop ·"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "phoneOnlyCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "only on phone ·"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "movedCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "in a different order",
+        "self": true
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "only on desktop ·",
+      "only on phone ·"
+    ],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.no_option_selected": {
+    "text": "No option selected",
+    "role": "text",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.no_songs_only_on": {
+    "text": "No songs only on",
+    "role": "body",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.only_on": {
+    "text": "Only on",
+    "role": "text",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.only_on_desktop": {
+    "text": "only on desktop ·",
+    "role": "text",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [
+      {
+        "dynamic": "desktopOnlyCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "only on desktop ·",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "phoneOnlyCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "only on phone ·"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "movedCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "in a different order"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "only on phone ·",
+      "in a different order"
+    ],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.only_on_phone": {
+    "text": "only on phone ·",
+    "role": "text",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [
+      {
+        "dynamic": "desktopOnlyCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "only on desktop ·"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "phoneOnlyCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "only on phone ·",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "movedCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "in a different order"
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "only on desktop ·",
+      "in a different order"
+    ],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.phone": {
+    "text": "Phone",
+    "role": "text",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.pick_an_option_above_to_see_which_playlist_stays_changes": {
+    "text": "Pick an option above to see which playlist stays, changes, or combines.",
+    "role": "text",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.preview": {
+    "text": "Preview",
+    "role": "text",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.resolve_library_sync_conflicts": {
+    "text": "Resolve Library Sync Conflicts",
+    "role": "heading",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.resulttrackcount_song_value2_detail": {
+    "text": "{{resulttrackcount}} song{{value2}} · {{detail}}",
+    "role": "button",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {
+      "detail": {
+        "expr": "preview.detail"
+      },
+      "resulttrackcount": {
+        "expr": "preview.resultTrackCount"
+      },
+      "value2": {
+        "expr": "preview.resultTrackCount === 1 ? '' : 's'"
+      }
+    },
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.s": {
+    "text": "s",
+    "role": "text",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [
+      {
+        "text": "After sync:"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "resultName"
+      },
+      {
+        "literal": " · "
+      },
+      {
+        "dynamic": "resultTrackCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "song"
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "After sync:",
+      "song"
+    ],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.song": {
+    "text": "song",
+    "role": "text",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [
+      {
+        "text": "After sync:"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "resultName"
+      },
+      {
+        "literal": " · "
+      },
+      {
+        "dynamic": "resultTrackCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "song",
+        "self": true
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": " "
+      }
+    ],
+    "neighbours": [
+      "After sync:",
+      "s"
+    ],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.summary_count": {
+    "text": "Summary count:",
+    "role": "body",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [
+      {
+        "text": "Summary count:",
+        "self": true
+      },
+      {
+        "literal": " "
+      },
+      {
+        "dynamic": "trackCount"
+      },
+      {
+        "literal": " "
+      },
+      {
+        "text": "song"
+      },
+      {
+        "dynamic": ""
+      },
+      {
+        "literal": "."
+      }
+    ],
+    "neighbours": [
+      "song",
+      "s"
+    ],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.sync_conflicts": {
+    "text": "Sync conflicts",
+    "role": "screen-reader",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.track_level_details_are_not_available_from_this_phone_ye": {
+    "text": "Track-level details are not available from this phone yet.",
+    "role": "body",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.waiting_for_phone": {
+    "text": "Waiting for phone:",
+    "role": "text",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.phonesyncconflictresolvermodal.waiting_for_phone_pending": {
+    "text": "Waiting for phone: {{pending}}",
+    "role": "button",
+    "screen": "Phone sync ▸ Conflict resolver",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/sync/PhoneSyncConflictResolverModal.tsx"
+    ],
+    "placeholders": {
+      "pending": {
+        "expr": "pending"
+      }
+    },
+    "status": "current"
+  },
+  "auto.signalsharemodal.astra_signal_for_title_by_artist": {
+    "text": "Astra Signal for {{title}} by {{artist}}",
+    "role": "screen-reader",
+    "screen": "Astra Signal ▸ Share",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/signal/SignalShareModal.tsx"
+    ],
+    "placeholders": {
+      "artist": {
+        "expr": "model.layout.payload.artist"
+      },
+      "title": {
+        "expr": "model.layout.payload.title"
+      }
+    },
+    "status": "current"
+  },
+  "auto.signalsharemodal.astra_signal_v3": {
+    "text": "ASTRA SIGNAL • V3",
+    "role": "body",
+    "screen": "Astra Signal ▸ Share",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/signal/SignalShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.signalsharemodal.close_astra_signal": {
+    "text": "Close Astra Signal",
+    "role": "screen-reader",
+    "screen": "Astra Signal ▸ Share",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/signal/SignalShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.signalsharemodal.copy_image": {
+    "text": "Copy Image",
+    "role": "button",
+    "screen": "Astra Signal ▸ Share",
+    "run": [],
+    "neighbours": [
+      "Copying…"
+    ],
+    "sites": [
+      "src/renderer/components/signal/SignalShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.signalsharemodal.copy_link": {
+    "text": "Copy Link",
+    "role": "button",
+    "screen": "Astra Signal ▸ Share",
+    "run": [],
+    "neighbours": [
+      "Copying…"
+    ],
+    "sites": [
+      "src/renderer/components/signal/SignalShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.signalsharemodal.copying": {
+    "text": "Copying…",
+    "role": "button",
+    "screen": "Astra Signal ▸ Share",
+    "run": [],
+    "neighbours": [
+      "Copy Link"
+    ],
+    "sites": [
+      "src/renderer/components/signal/SignalShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.signalsharemodal.create_astra_signal": {
+    "text": "Create Astra Signal",
+    "role": "heading",
+    "screen": "Astra Signal ▸ Share",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/signal/SignalShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.signalsharemodal.keep_the_complete_light_card_visible_when_scanning_it_wi": {
+    "text": "Keep the complete light card visible when scanning it with another device.",
+    "role": "body",
+    "screen": "Astra Signal ▸ Share",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/signal/SignalShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.signalsharemodal.metadata_shortened_to_fit_signal_v3": {
+    "text": "Metadata shortened to fit Signal v3",
+    "role": "text",
+    "screen": "Astra Signal ▸ Share",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/signal/SignalShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.signalsharemodal.save_png": {
+    "text": "Save PNG",
+    "role": "button",
+    "screen": "Astra Signal ▸ Share",
+    "run": [],
+    "neighbours": [
+      "Saving…"
+    ],
+    "sites": [
+      "src/renderer/components/signal/SignalShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.signalsharemodal.saving": {
+    "text": "Saving…",
+    "role": "button",
+    "screen": "Astra Signal ▸ Share",
+    "run": [],
+    "neighbours": [
+      "Save PNG"
+    ],
+    "sites": [
+      "src/renderer/components/signal/SignalShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.statssharemodal.card": {
+    "text": "Card",
+    "role": "text",
+    "screen": "Listening stats ▸ Share",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/stats/StatsShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.statssharemodal.close_share_preview": {
+    "text": "Close share preview",
+    "role": "screen-reader",
+    "screen": "Listening stats ▸ Share",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/stats/StatsShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.statssharemodal.copy_image": {
+    "text": "Copy Image",
+    "role": "button",
+    "screen": "Listening stats ▸ Share",
+    "run": [],
+    "neighbours": [
+      "Copying…"
+    ],
+    "sites": [
+      "src/renderer/components/stats/StatsShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.statssharemodal.copying": {
+    "text": "Copying…",
+    "role": "button",
+    "screen": "Listening stats ▸ Share",
+    "run": [],
+    "neighbours": [
+      "Copy Image"
+    ],
+    "sites": [
+      "src/renderer/components/stats/StatsShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.statssharemodal.png": {
+    "text": "PNG",
+    "role": "body",
+    "screen": "Listening stats ▸ Share",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/stats/StatsShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.statssharemodal.preparing_artwork": {
+    "text": "Preparing artwork…",
+    "role": "text",
+    "screen": "Listening stats ▸ Share",
+    "run": [],
+    "neighbours": [
+      "{{title}} share-card preview for {{rangelabel}}"
+    ],
+    "sites": [
+      "src/renderer/components/stats/StatsShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.statssharemodal.range": {
+    "text": "Range",
+    "role": "text",
+    "screen": "Listening stats ▸ Share",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/stats/StatsShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.statssharemodal.ranking": {
+    "text": "Ranking",
+    "role": "text",
+    "screen": "Listening stats ▸ Share",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/stats/StatsShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.statssharemodal.save_png": {
+    "text": "Save PNG",
+    "role": "button",
+    "screen": "Listening stats ▸ Share",
+    "run": [],
+    "neighbours": [
+      "Saving…"
+    ],
+    "sites": [
+      "src/renderer/components/stats/StatsShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.statssharemodal.saving": {
+    "text": "Saving…",
+    "role": "button",
+    "screen": "Listening stats ▸ Share",
+    "run": [],
+    "neighbours": [
+      "Save PNG"
+    ],
+    "sites": [
+      "src/renderer/components/stats/StatsShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.statssharemodal.share_card_options": {
+    "text": "Share-card options",
+    "role": "screen-reader",
+    "screen": "Listening stats ▸ Share",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/stats/StatsShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.statssharemodal.share_card_type": {
+    "text": "Share-card type",
+    "role": "screen-reader",
+    "screen": "Listening stats ▸ Share",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/stats/StatsShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.statssharemodal.share_listening_stats": {
+    "text": "Share Listening Stats",
+    "role": "heading",
+    "screen": "Listening stats ▸ Share",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/stats/StatsShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.statssharemodal.the_preview_is_frozen_from_the_stats_currently_on_screen": {
+    "text": "The preview is frozen from the stats currently on screen. No file paths or device information are included.",
+    "role": "body",
+    "screen": "Listening stats ▸ Share",
+    "run": [],
+    "neighbours": [
+      "Share-card options"
+    ],
+    "sites": [
+      "src/renderer/components/stats/StatsShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "auto.statssharemodal.title_share_card_preview_for_rangelabel": {
+    "text": "{{title}} share-card preview for {{rangelabel}}",
+    "role": "screen-reader",
+    "screen": "Listening stats ▸ Share",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/stats/StatsShareModal.tsx"
+    ],
+    "placeholders": {
+      "rangelabel": {
+        "expr": "model.rangeLabel"
+      },
+      "title": {
+        "expr": "model.title"
+      }
+    },
+    "status": "current"
+  },
+  "connectionFailed": {
+    "text": "Connection failed.",
+    "role": "text",
+    "screen": "Native dialogs and window titles",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/main/index.ts"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "connectionSuccessful": {
+    "text": "Connection successful.",
+    "role": "text",
+    "screen": "Native dialogs and window titles",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/main/index.ts"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.parallaxstore.title_parallax_test_tone_5c376c3": {
+    "text": "Parallax test tone",
+    "role": "heading",
+    "screen": "Application state (surfaced in several places)",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/stores/parallaxStore.ts"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "runtime.statssharemodal.label_overview_0efc2e6": {
+    "text": "Overview",
+    "role": "label",
+    "screen": "Listening stats ▸ Share",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/renderer/components/stats/StatsShareModal.tsx"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "title": {
+    "text": "Integrations",
+    "role": "text",
+    "screen": "Shared across the app",
+    "run": [],
+    "neighbours": [],
+    "sites": [],
+    "placeholders": {},
+    "status": "current"
+  },
+  "updates.available": {
+    "text": "Update available: {{latestTag}} (current v{{currentVersion}}).",
+    "role": "text",
+    "screen": "Native dialogs and window titles",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/main/services/updates.ts"
+    ],
+    "placeholders": {
+      "currentVersion": {
+        "expr": "currentVersion"
+      },
+      "latestTag": {
+        "expr": "latestTag"
+      }
+    },
+    "status": "current"
+  },
+  "updates.failed": {
+    "text": "Failed to check for updates: {{error}}",
+    "role": "text",
+    "screen": "Native dialogs and window titles",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/main/services/updates.ts"
+    ],
+    "placeholders": {
+      "error": {
+        "expr": "errorMessage"
+      }
+    },
+    "status": "current"
+  },
+  "updates.noReleases": {
+    "text": "No published releases were found on GitHub.",
+    "role": "text",
+    "screen": "Native dialogs and window titles",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/main/services/updates.ts"
+    ],
+    "placeholders": {},
+    "status": "current"
+  },
+  "updates.upToDate": {
+    "text": "Astra is up to date (v{{currentVersion}}).",
+    "role": "text",
+    "screen": "Native dialogs and window titles",
+    "run": [],
+    "neighbours": [],
+    "sites": [
+      "src/main/services/updates.ts"
+    ],
+    "placeholders": {
+      "currentVersion": {
+        "expr": "currentVersion"
+      }
+    },
+    "status": "current"
+  }
+}

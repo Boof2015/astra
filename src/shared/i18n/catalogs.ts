@@ -8,7 +8,7 @@ import enIntegrations from './locales/en/integrations.json' with { type: 'json' 
 import enLibrary from './locales/en/library.json' with { type: 'json' }
 import enPlayback from './locales/en/playback.json' with { type: 'json' }
 import enSettings from './locales/en/settings.json' with { type: 'json' }
-import { normalizeLocaleCode, pseudoLocalizeMessage } from './core'
+import { buildKeyOverlayCatalog, normalizeLocaleCode, pseudoLocalizeMessage } from './core'
 import { I18N_NAMESPACES, type LocaleManifest, type LocaleManifestEntry } from './types'
 
 // The default locale is imported statically so English survives even where the glob below
@@ -67,7 +67,14 @@ function pseudoLocalize(value: unknown): unknown {
   return value
 }
 
-export function createBundledResources(includePseudoLocale = false): Resource {
+/**
+ * Development-only locales derived from English. `en-XA` expands and accents every message to
+ * expose layouts that cannot survive a longer language; `en-KEY` replaces each message with its
+ * own catalog key so the running UI doubles as a key-to-location map.
+ */
+export type DevLocale = 'en-XA' | 'en-KEY'
+
+export function createBundledResources(devLocale: DevLocale | null = null): Resource {
   const resources: Resource = {}
 
   for (const [modulePath, catalog] of Object.entries(localeModules)) {
@@ -79,13 +86,14 @@ export function createBundledResources(includePseudoLocale = false): Resource {
     resources[locale][namespace] = catalog
   }
 
-  if (includePseudoLocale) {
-    const english = resources[localeManifest.defaultLocale]
-    if (english) {
-      resources['en-XA'] = Object.fromEntries(
-        Object.entries(english).map(([namespace, catalog]) => [namespace, pseudoLocalize(catalog)])
-      ) as Record<string, ResourceLanguage>
-    }
+  const english = resources[localeManifest.defaultLocale]
+  if (devLocale && english) {
+    const transform = devLocale === 'en-KEY'
+      ? (namespace: string, catalog: unknown) => buildKeyOverlayCatalog(catalog, namespace)
+      : (_namespace: string, catalog: unknown) => pseudoLocalize(catalog)
+    resources[devLocale] = Object.fromEntries(
+      Object.entries(english).map(([namespace, catalog]) => [namespace, transform(namespace, catalog)])
+    ) as Record<string, ResourceLanguage>
   }
 
   return resources

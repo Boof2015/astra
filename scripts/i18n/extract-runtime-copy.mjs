@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFile, readdir, writeFile } from 'node:fs/promises'
 import { basename, resolve, sep } from 'node:path'
 import ts from 'typescript'
+import { slug } from './lib/slug.mjs'
 
 const projectRoot = resolve(import.meta.dirname, '../..')
 const rendererRoot = resolve(projectRoot, 'src/renderer')
@@ -27,16 +28,6 @@ function namespaceFor(filePath) {
   if (/components\/(player|queue|mini|lyrics|popout|playlists|views\/HomeView|views\/PlaylistView)/.test(normalized)) return 'playback'
   if (/components\/(parallax|sync|signal|stats)|stores\/(subsonic|jellyfin|parallax)/.test(normalized)) return 'integrations'
   return 'common'
-}
-
-function slug(value) {
-  return value
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 56) || 'text'
 }
 
 function shouldInclude(value) {

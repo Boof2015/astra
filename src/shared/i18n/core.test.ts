@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import i18next from 'i18next'
 import {
+  buildKeyOverlayCatalog,
   extractInterpolationVariables,
   formatDateForLocale,
   formatNumberForLocale,
@@ -91,4 +92,64 @@ test('i18next falls back, interpolates, and pluralizes partial locale catalogs',
   assert.equal(instance.t('greeting', { name: 'Astra' }), 'Bonjour, Astra')
   assert.equal(instance.t('track', { count: 1 }), '1 track')
   assert.equal(instance.t('track', { count: 3 }), '3 tracks')
+})
+
+test('buildKeyOverlayCatalog replaces every message with its own key', () => {
+  const overlay = buildKeyOverlayCatalog(
+    {
+      actions: { save: 'Save', nested: { deep: 'Deep' } },
+      title: 'Astra',
+    },
+    'common'
+  )
+
+  assert.deepEqual(overlay, {
+    actions: { save: 'common:actions.save', nested: { deep: 'common:actions.nested.deep' } },
+    title: 'common:title',
+  })
+})
+
+test('key overlay leaves non-string catalog values alone', () => {
+  // Catalogs are strings all the way down today, but a stray null must not become "ns:path".
+  assert.deepEqual(buildKeyOverlayCatalog({ a: null, b: 5 }, 'common'), { a: null, b: 5 })
+})
+
+test('key overlay output carries no interpolation for i18next to substitute', () => {
+  const overlay = buildKeyOverlayCatalog({ greeting: 'Hello, {{name}}' }, 'common') as Record<string, string>
+  assert.equal(overlay.greeting, 'common:greeting')
+  assert.ok(!overlay.greeting.includes('{{'))
+})
+
+test('createBundledResources exposes dev locales only when asked', async () => {
+  const { createBundledResources } = await import('./catalogs.ts')
+
+  const plain = createBundledResources()
+  assert.equal(plain['en-KEY'], undefined)
+  assert.equal(plain['en-XA'], undefined)
+  assert.ok(plain.en, 'English must always be present')
+
+  const overlay = createBundledResources('en-KEY')
+  assert.ok(overlay['en-KEY'], 'the key overlay locale must be built on request')
+  assert.equal(overlay['en-XA'], undefined, 'only the requested dev locale is built')
+  const common = overlay['en-KEY'].common as Record<string, Record<string, string>>
+  assert.equal(common.actions.save, 'common:actions.save')
+  assert.equal(common.states.loading, 'common:states.loading')
+
+  const pseudo = createBundledResources('en-XA')
+  assert.ok(pseudo['en-XA'])
+  assert.equal(pseudo['en-KEY'], undefined)
+  const pseudoCommon = pseudo['en-XA'].common as Record<string, Record<string, string>>
+  assert.match(pseudoCommon.actions.save, /^［.*］$/)
+})
+
+test('the key overlay covers every namespace, not just common', async () => {
+  const { createBundledResources } = await import('./catalogs.ts')
+  const overlay = createBundledResources('en-KEY')
+  for (const namespace of ['common', 'settings', 'library', 'playback', 'integrations', 'errors']) {
+    const catalog = overlay['en-KEY'][namespace]
+    assert.ok(catalog, `${namespace} must be present in the overlay`)
+    const first = JSON.stringify(catalog).match(/"([a-z]+:[^"]+)"/)
+    assert.ok(first, `${namespace} overlay should contain namespace-qualified keys`)
+    assert.ok(first[1].startsWith(namespace + ':'), `${namespace} keys must be prefixed with their own namespace`)
+  }
 })
