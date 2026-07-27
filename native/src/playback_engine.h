@@ -11,6 +11,7 @@ namespace NativePlayback {
 
 enum class SampleFormat {
     Int16,
+    Int24Packed,
     Int32,
     Float32
 };
@@ -38,6 +39,21 @@ struct OutputDeviceInfo {
     std::string label;
     uint32_t maxChannels = 2;
     bool isDefault = false;
+};
+
+// One rate/format pair an output device accepts in exclusive mode.
+struct DeviceFormatSupport {
+    uint32_t sampleRate = 0;
+    uint32_t channels = 0;
+    std::string sampleFormat;
+};
+
+struct DeviceFormatProbe {
+    std::string deviceId;
+    std::string deviceLabel;
+    bool supported = false;
+    std::vector<DeviceFormatSupport> formats;
+    std::string reason;
 };
 
 struct PlaybackSnapshot {
@@ -108,6 +124,14 @@ public:
     virtual std::vector<OutputDeviceInfo> enumerateOutputDevices(std::string* reason) const = 0;
     virtual uint32_t deviceMaxChannels(const std::string& deviceId) const = 0;
 
+    // Backends that can enumerate exact hardware format support override this. The default
+    // reports "unknown", which callers treat as "try it and see".
+    virtual DeviceFormatProbe probeDeviceFormats(const std::string& /*deviceId*/, uint32_t /*channels*/) const {
+        DeviceFormatProbe probe;
+        probe.reason = "This audio backend cannot enumerate device formats.";
+        return probe;
+    }
+
     virtual bool open(
         const std::string& deviceId,
         const TrackFormat& format,
@@ -135,6 +159,7 @@ public:
     ~PlaybackEngine();
 
     std::vector<OutputDeviceInfo> getOutputDevices(std::string* reason) const;
+    DeviceFormatProbe probeDeviceFormats(const std::string& deviceId, uint32_t channels) const;
     uint32_t getSelectedDeviceMaxChannels() const;
     std::string getSelectedDeviceId() const;
     void setSelectedDeviceId(const std::string& deviceId);
@@ -149,6 +174,10 @@ public:
     void clearNextTrack();
 
     PlaybackSnapshot play();
+    // Message for the exception play() last threw. `what()` on an exception unwound out of
+    // play() aliases storage that is freed during unwinding, so callers must read the
+    // message from here rather than from the caught exception.
+    std::string takeLastPlayError();
     PlaybackSnapshot pause();
     PlaybackSnapshot stop();
     PlaybackSnapshot seek(double seconds);
@@ -173,6 +202,7 @@ private:
     };
 
     bool ensureSinkOpen(std::string* error);
+    std::string recordPlayError(const std::string& error, const char* fallback);
     void pushEvent(const PlaybackEvent& event);
     bool tryPushEvent(const PlaybackEvent& event);
     void clearPendingEvents();
@@ -193,6 +223,8 @@ private:
     std::unique_ptr<AudioOutputSink> sink_;
     std::string selectedDeviceId_;
     std::string lastUnavailableReason_;
+    mutable std::mutex lastPlayErrorMutex_;
+    std::string lastPlayError_;
 
     State state_ = State::Stopped;
     TrackBuffer currentTrack_;

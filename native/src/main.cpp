@@ -872,6 +872,37 @@ Napi::Value PlaybackGetCapabilities(const Napi::CallbackInfo& info) {
     return CreateCapabilitiesObject(info.Env());
 }
 
+Napi::Value PlaybackProbeDeviceFormats(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    const std::string deviceId = info.Length() > 0 && info[0].IsString()
+        ? info[0].As<Napi::String>().Utf8Value()
+        : std::string();
+    const uint32_t channels = info.Length() > 1 && info[1].IsNumber()
+        ? info[1].As<Napi::Number>().Uint32Value()
+        : 2;
+
+    const auto probe = playbackEngine.probeDeviceFormats(deviceId, channels);
+
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("deviceId", ToNullableString(env, probe.deviceId));
+    obj.Set("deviceLabel", ToNullableString(env, probe.deviceLabel));
+    obj.Set("supported", Napi::Boolean::New(env, probe.supported));
+    obj.Set("reason", ToNullableString(env, probe.reason));
+
+    Napi::Array formatArray = Napi::Array::New(env, probe.formats.size());
+    for (size_t i = 0; i < probe.formats.size(); i++) {
+        const auto& entry = probe.formats[i];
+        Napi::Object formatObj = Napi::Object::New(env);
+        formatObj.Set("sampleRate", Napi::Number::New(env, entry.sampleRate));
+        formatObj.Set("channels", Napi::Number::New(env, entry.channels));
+        formatObj.Set("sampleFormat", Napi::String::New(env, entry.sampleFormat));
+        formatArray.Set(i, formatObj);
+    }
+    obj.Set("formats", formatArray);
+
+    return obj;
+}
+
 Napi::Value PlaybackSetOutputDevice(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     if (info.Length() < 1 || !info[0].IsString()) {
@@ -932,13 +963,20 @@ public:
         // can take ~1s per format change. Keeping it off V8 keeps the UI responsive.
         try {
             snapshot_ = playbackEngine.play();
-        } catch (const std::exception& e) {
-            errorMessage_ = e.what();
+        } catch (const std::exception&) {
+            // Deliberately not using what(): the message storage is released while the
+            // stack unwinds out of play(), so the pointer is dangling by the time we get
+            // here. Long messages are visibly corrupted, short ones silently read freed
+            // memory. The engine keeps an owned copy for exactly this reason.
+            errorMessage_ = playbackEngine.takeLastPlayError();
             if (errorMessage_.empty()) {
                 errorMessage_ = "Native playback start failed.";
             }
         } catch (...) {
-            errorMessage_ = "Native playback start failed with an unknown error.";
+            errorMessage_ = playbackEngine.takeLastPlayError();
+            if (errorMessage_.empty()) {
+                errorMessage_ = "Native playback start failed with an unknown error.";
+            }
         }
     }
 
@@ -1184,6 +1222,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     Napi::Object playbackExports = Napi::Object::New(env);
     playbackExports.Set("getCapabilities", Napi::Function::New(env, PlaybackGetCapabilities));
     playbackExports.Set("setOutputDevice", Napi::Function::New(env, PlaybackSetOutputDevice));
+    playbackExports.Set("probeDeviceFormats", Napi::Function::New(env, PlaybackProbeDeviceFormats));
     playbackExports.Set("loadTrack", Napi::Function::New(env, PlaybackLoadTrack));
     playbackExports.Set("preloadNextTrack", Napi::Function::New(env, PlaybackPreloadNextTrack));
     playbackExports.Set("promoteNextTrack", Napi::Function::New(env, PlaybackPromoteNextTrack));

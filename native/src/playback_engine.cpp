@@ -18,6 +18,15 @@ float readNormalizedSample(const uint8_t* sampleData, SampleFormat sampleFormat)
             std::memcpy(&value, sampleData, sizeof(int16_t));
             return static_cast<float>(value) / 32768.0f;
         }
+        case SampleFormat::Int24Packed: {
+            // Packed 24-bit little-endian: sign-extend the top byte into a 32-bit word.
+            const int32_t value = static_cast<int32_t>(
+                (static_cast<uint32_t>(sampleData[0]) << 8)
+                | (static_cast<uint32_t>(sampleData[1]) << 16)
+                | (static_cast<uint32_t>(sampleData[2]) << 24)
+            ) >> 8;
+            return static_cast<float>(value) / 8388608.0f;
+        }
         case SampleFormat::Int32: {
             int32_t value = 0;
             std::memcpy(&value, sampleData, sizeof(int32_t));
@@ -86,6 +95,8 @@ uint32_t TrackFormat::bytesPerSample() const {
     switch (sampleFormat) {
         case SampleFormat::Int16:
             return 2;
+        case SampleFormat::Int24Packed:
+            return 3;
         case SampleFormat::Int32:
         case SampleFormat::Float32:
         default:
@@ -101,6 +112,8 @@ std::string TrackFormat::sampleFormatId() const {
     switch (sampleFormat) {
         case SampleFormat::Int16:
             return "s16";
+        case SampleFormat::Int24Packed:
+            return "s24";
         case SampleFormat::Int32:
             return "s32";
         case SampleFormat::Float32:
@@ -121,6 +134,8 @@ TrackFormat BuildTrackFormat(uint32_t sampleRate, uint32_t channels, const std::
     format.channels = std::max<uint32_t>(1, channels);
     if (sampleFormatId == "s16") {
         format.sampleFormat = SampleFormat::Int16;
+    } else if (sampleFormatId == "s24") {
+        format.sampleFormat = SampleFormat::Int24Packed;
     } else if (sampleFormatId == "s32") {
         format.sampleFormat = SampleFormat::Int32;
     } else {
@@ -142,6 +157,15 @@ PlaybackEngine::~PlaybackEngine() = default;
 
 std::vector<OutputDeviceInfo> PlaybackEngine::getOutputDevices(std::string* reason) const {
     return sink_->enumerateOutputDevices(reason);
+}
+
+DeviceFormatProbe PlaybackEngine::probeDeviceFormats(const std::string& deviceId, uint32_t channels) const {
+    std::string resolvedDeviceId = deviceId;
+    if (resolvedDeviceId.empty()) {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        resolvedDeviceId = selectedDeviceId_;
+    }
+    return sink_->probeDeviceFormats(resolvedDeviceId, std::max<uint32_t>(1, channels));
 }
 
 uint32_t PlaybackEngine::getSelectedDeviceMaxChannels() const {
@@ -316,7 +340,7 @@ PlaybackSnapshot PlaybackEngine::play() {
     }
 
     if (!ensureSinkOpen(&error)) {
-        throw std::runtime_error(error.empty() ? "Failed to open native output." : error);
+        throw std::runtime_error(recordPlayError(error, "Failed to open native output."));
     }
 
     if (shouldReset) {
@@ -355,7 +379,7 @@ PlaybackSnapshot PlaybackEngine::play() {
             sink_->activeDeviceId(),
             ""
         });
-        throw std::runtime_error(error.empty() ? "Failed to start native output." : error);
+        throw std::runtime_error(recordPlayError(error, "Failed to start native output."));
     }
     return getSnapshot();
 }
@@ -731,6 +755,19 @@ size_t PlaybackEngine::renderInto(void* outputBuffer, size_t requestedFrames, bo
                                 std::memcpy(framePtr + ch * sizeof(int16_t), &value, sizeof(int16_t));
                                 break;
                             }
+                            case SampleFormat::Int24Packed: {
+                                uint8_t* samplePtr = framePtr + ch * 3;
+                                const int32_t value = static_cast<int32_t>(
+                                    (static_cast<uint32_t>(samplePtr[0]) << 8)
+                                    | (static_cast<uint32_t>(samplePtr[1]) << 16)
+                                    | (static_cast<uint32_t>(samplePtr[2]) << 24)
+                                ) >> 8;
+                                const int32_t scaled = static_cast<int32_t>(static_cast<float>(value) * gain);
+                                samplePtr[0] = static_cast<uint8_t>(scaled & 0xFF);
+                                samplePtr[1] = static_cast<uint8_t>((scaled >> 8) & 0xFF);
+                                samplePtr[2] = static_cast<uint8_t>((scaled >> 16) & 0xFF);
+                                break;
+                            }
                             case SampleFormat::Int32: {
                                 int32_t value = 0;
                                 std::memcpy(&value, framePtr + ch * sizeof(int32_t), sizeof(int32_t));
@@ -812,6 +849,22 @@ void PlaybackEngine::onFramesConsumed(size_t frames) {
         "",
         ""
     });
+}
+
+std::string PlaybackEngine::recordPlayError(const std::string& error, const char* fallback) {
+    std::string message = error.empty() ? std::string(fallback) : error;
+    {
+        std::lock_guard<std::mutex> lock(lastPlayErrorMutex_);
+        lastPlayError_ = message;
+    }
+    return message;
+}
+
+std::string PlaybackEngine::takeLastPlayError() {
+    std::lock_guard<std::mutex> lock(lastPlayErrorMutex_);
+    std::string message = std::move(lastPlayError_);
+    lastPlayError_.clear();
+    return message;
 }
 
 bool PlaybackEngine::ensureSinkOpen(std::string* error) {

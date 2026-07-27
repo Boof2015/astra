@@ -3,6 +3,7 @@ import { audioEngine, isSupersededAudioLoadError } from '../audio/AudioEngine'
 import type { Track, PlaybackState } from '../types/audio'
 import type { NativeAudioCapabilities } from '../../types/nativeAudio'
 import type { ListeningHistoryStatus } from '../../types/listeningStats'
+import { parseBitPerfectFormatError, stripBitPerfectFormatTag } from '../../shared/audio/bitPerfectFormatError'
 import { extractWaveformPeaks } from '../audio/waveformExtractor'
 import { useLibraryStore, type DbTrack } from './libraryStore'
 import { usePlaylistStore } from './playlistStore'
@@ -116,6 +117,17 @@ interface PlayerStore {
     fileCount: number
     sourceLabel: string
   } | null
+  // Persistent, not a timed cue: the output device refused this track's format in exclusive
+  // mode, which stays true until the device or the playback mode changes.
+  bitPerfectFormatNotice: {
+    id: number
+    trackTitle: string
+    deviceLabel: string | null
+    sampleRate: number | null
+    channels: number | null
+    sampleFormat: string | null
+    message: string
+  } | null
   restoredTrackNeedsLoad: boolean
   restoredPlaybackTime: number | null
 
@@ -174,6 +186,7 @@ interface PlayerStore {
   getResolvedQueueLength: () => number
   clearFfmpegFallbackNotice: () => void
   clearOutputDelayNotice: () => void
+  clearBitPerfectFormatNotice: () => void
   showAssociatedOpenNotice: (notice: {
     trackPath: string
     title: string
@@ -964,6 +977,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   let ffmpegFallbackNoticeId = 0
   let outputDelayNoticeId = 0
   let associatedOpenNoticeId = 0
+  let bitPerfectFormatNoticeId = 0
+  // One dialog per distinct device/format rejection, so a whole album at an unsupported
+  // rate doesn't reopen it on every track.
+  const surfacedBitPerfectFormatFailures = new Set<string>()
   const associatedMetadataInflight = new Set<string>()
   let pendingManualLoadCueTrack: Track | null = null
   let recentPlaySession: RecentPlaySession | null = null
@@ -1419,6 +1436,38 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     })
   }
 
+  /**
+   * Surfaces a device format rejection. Returns true when the error was one, so callers can
+   * skip the generic "load failed" path.
+   */
+  const showBitPerfectFormatNotice = (track: Track, error: unknown): boolean => {
+    const failure = parseBitPerfectFormatError(error)
+    if (!failure) return false
+
+    const dedupeKey = [
+      failure.deviceLabel ?? '',
+      failure.sampleRate ?? '',
+      failure.channels ?? '',
+      failure.sampleFormat ?? ''
+    ].join('|')
+    if (surfacedBitPerfectFormatFailures.has(dedupeKey)) return true
+    surfacedBitPerfectFormatFailures.add(dedupeKey)
+
+    bitPerfectFormatNoticeId += 1
+    set({
+      bitPerfectFormatNotice: {
+        id: bitPerfectFormatNoticeId,
+        trackTitle: track.title,
+        deviceLabel: failure.deviceLabel,
+        sampleRate: failure.sampleRate,
+        channels: failure.channels,
+        sampleFormat: failure.sampleFormat,
+        message: failure.message
+      }
+    })
+    return true
+  }
+
   const markTrackUnavailableInState = (trackPath: string, reason: string = 'source_unavailable'): void => {
     set((state) => ({
       queueItems: state.queueItems.map((item) => ({
@@ -1794,6 +1843,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     ffmpegFallbackNotice: null,
     outputDelayNotice: null,
     associatedOpenNotice: null,
+    bitPerfectFormatNotice: null,
     restoredTrackNeedsLoad: false,
     restoredPlaybackTime: null,
 
@@ -1955,10 +2005,18 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           return false
         }
         if (recentPlaySession === loadListeningSession) finalizeRecentPlaySession()
-        console.error('Failed to load track:', error)
+        const isFormatFailure = showBitPerfectFormatNotice(track, error)
+        if (isFormatFailure) {
+          console.warn('Bit-perfect playback rejected by the output device:', stripBitPerfectFormatTag(
+            error instanceof Error ? error.message : String(error)
+          ))
+        } else {
+          console.error('Failed to load track:', error)
+        }
         logSlowPath('loadTrack', loadStart, {
           trackPath: track.path,
-          failed: true
+          failed: true,
+          deviceFormatRejected: isFormatFailure
         })
         set({
           playbackState: 'stopped',
@@ -2255,6 +2313,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     clearOutputDelayNotice: () => {
       set({ outputDelayNotice: null })
+    },
+
+    clearBitPerfectFormatNotice: () => {
+      set({ bitPerfectFormatNotice: null })
     },
 
     showAssociatedOpenNotice: (notice) => {
@@ -2957,15 +3019,24 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           return 'superseded'
         }
         if (recentPlaySession === loadListeningSession) finalizeRecentPlaySession()
-        console.error('Failed to load track:', error)
+        const isFormatFailure = showBitPerfectFormatNotice(track, error)
+        const failureMessage = error instanceof Error
+          ? stripBitPerfectFormatTag(error.message)
+          : 'Unknown track load failure.'
+        if (isFormatFailure) {
+          console.warn('Bit-perfect playback rejected by the output device:', failureMessage)
+        } else {
+          console.error('Failed to load track:', error)
+        }
         logMemoryDiagnosticsEvent('track_load_failed', {
           trackPath: track.path,
           sourceType: track.sourceType ?? 'local',
-          message: error instanceof Error ? error.message : 'Unknown track load failure.'
+          message: failureMessage
         })
         logSlowPath('queueLoadAndPlayTrack', loadStart, {
           trackPath: track.path,
-          failed: true
+          failed: true,
+          deviceFormatRejected: isFormatFailure
         })
         if (track.sourceType && track.sourceType !== 'local') {
           markTrackUnavailableInState(track.path)

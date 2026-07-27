@@ -15,6 +15,7 @@ import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
 import OutputDelayCue from './components/layout/OutputDelayCue'
 import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
 import AssociatedOpenCue from './components/layout/AssociatedOpenCue'
+import BitPerfectFormatFailureDialog from './components/layout/BitPerfectFormatFailureDialog'
 import ParallaxSinkMode from './components/layout/ParallaxSinkMode'
 import ParallaxIncomingPairCard from './components/layout/ParallaxIncomingPairCard'
 import PhoneRemoteIncomingPairCard from './components/layout/PhoneRemoteIncomingPairCard'
@@ -520,6 +521,7 @@ function App() {
         <OutputDelayCue />
         <AssociatedOpenCue />
         <UpdateAvailableCue />
+        <BitPerfectFormatFailureDialog />
         <QuickLaunchPalette />
         <LibraryIntegrityPanel />
         <TrackIntegrityResultModal />

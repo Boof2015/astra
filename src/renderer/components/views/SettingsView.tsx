@@ -5,6 +5,7 @@ import ChannelRoutingPanel from '../settings/ChannelRoutingPanel'
 import DelayCompensationPanel from '../settings/DelayCompensationPanel'
 import ConfirmActionModal from '../settings/ConfirmActionModal'
 import BitPerfectModeWarningModal from '../settings/BitPerfectModeWarningModal'
+import NativeDeviceFormatsNote from '../settings/NativeDeviceFormatsNote'
 import LocalApiPairingModal from '../settings/LocalApiPairingModal'
 import KeybindSettings from '../settings/KeybindSettings'
 import SettingsTransferWizard from '../settings/SettingsTransferWizard'
@@ -110,6 +111,13 @@ type ResetActionId =
 type ResetActionState = 'idle' | 'running' | 'success' | 'error'
 type NormalizationDisableStep = 'warning' | 'final' | null
 type ReplayGainSelectorValue = ReplayGainMode | 'disabled'
+const NATIVE_SAMPLE_FORMAT_LABELS: Record<string, string> = {
+  s16: '16-bit',
+  s24: '24-bit',
+  s32: '32-bit',
+  f32: '32-bit float'
+}
+
 const NORMALIZATION_TARGET_MIN_LUFS = -30
 const NORMALIZATION_TARGET_MAX_LUFS = 0
 
@@ -2014,6 +2022,12 @@ export default function SettingsView() {
                           {(nativeAudioCapabilities.activeSampleRate / 1000).toFixed(1)} kHz
                         </span>
                       )}
+                      {nativeAudioCapabilities.activeSampleFormat && (
+                        <span className="settings-chip settings-chip-mono">
+                          {NATIVE_SAMPLE_FORMAT_LABELS[nativeAudioCapabilities.activeSampleFormat]
+                            ?? nativeAudioCapabilities.activeSampleFormat}
+                        </span>
+                      )}
                       <span className="settings-chip settings-chip-mono">
                         {nativeAudioCapabilities.activeDeviceExclusive ? 'Exclusive' : 'Shared/Off'}
                       </span>
@@ -2035,6 +2049,7 @@ export default function SettingsView() {
                 {BIT_PERFECT_DSP_DISABLED_MESSAGE}
               </p>
             )}
+            <NativeDeviceFormatsNote />
             <DelayCompensationPanel />
             <ChannelRoutingPanel />
           </section>

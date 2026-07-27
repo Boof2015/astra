@@ -20149,6 +20149,28 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   max-width: 560px;
 }
 
+.bit-perfect-format-modal {
+  max-width: 580px;
+}
+
+.bit-perfect-format-detail {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(var(--tint), 0.06);
+  border: 1px solid rgba(var(--tint), 0.1);
+  color: rgba(var(--tint), 0.9);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.bit-perfect-format-hint {
+  margin: 0;
+  color: rgba(var(--tint), 0.72);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .exclusive-mode-warning-list {
   margin: 0;
   padding-left: 18px;

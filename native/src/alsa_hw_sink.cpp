@@ -81,6 +81,9 @@ snd_pcm_format_t toAlsaFormat(SampleFormat sampleFormat) {
     switch (sampleFormat) {
         case SampleFormat::Int16:
             return SND_PCM_FORMAT_S16_LE;
+        case SampleFormat::Int24Packed:
+            // Packed 3-byte little-endian, not S24_LE (which is 24-in-32).
+            return SND_PCM_FORMAT_S24_3LE;
         case SampleFormat::Int32:
             return SND_PCM_FORMAT_S32_LE;
         case SampleFormat::Float32:

@@ -89,6 +89,7 @@ import type {
 import type {
   AudioBufferMemoryStats,
   NativeAudioCapabilities,
+  NativeAudioDeviceFormatProbe,
   NativeAudioEvent,
   NativeAudioPlaybackSnapshot,
   NativeAudioTrackLoadResult,
@@ -1549,6 +1550,7 @@ declare global {
       initialize: () => Promise<NativeAudioCapabilities>
       getCapabilities: () => Promise<NativeAudioCapabilities>
       setOutputDevice: (deviceId: string) => Promise<NativeAudioCapabilities>
+      probeDeviceFormats: (deviceId?: string, channels?: number) => Promise<NativeAudioDeviceFormatProbe>
       loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
       preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
       promoteNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>

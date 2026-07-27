@@ -5,6 +5,9 @@ import type {
   AudioBufferMemoryStats,
   NativeAudioBackendKind,
   NativeAudioCapabilities,
+  NativeAudioDeviceFormat,
+  NativeAudioDeviceFormatProbe,
+  NativeAudioProbedSampleFormat,
   NativeAudioEvent,
   NativeAudioOutputDevice,
   NativeAudioPlaybackSnapshot,
@@ -15,10 +18,12 @@ import type {
   NativeAudioVUMeterChunk,
   NativeAudioVectorscopeChunk
 } from '../types/nativeAudio'
+import { createBitPerfectFormatError } from '../shared/audio/bitPerfectFormatError'
 
 export interface NativeAudioAddonPlayback {
   getCapabilities(): NativeAudioCapabilities
   setOutputDevice(deviceId: string): NativeAudioCapabilities
+  probeDeviceFormats?(deviceId: string, channels: number): NativeAudioDeviceFormatProbe
   loadTrack(
     pcmData: Uint8Array,
     sampleRate: number,
@@ -56,6 +61,7 @@ interface NativeAudioControllerApi {
   initialize: () => Promise<NativeAudioCapabilities>
   getCapabilities: () => Promise<NativeAudioCapabilities>
   setOutputDevice: (deviceId: string) => Promise<NativeAudioCapabilities>
+  probeDeviceFormats: (deviceId?: string, channels?: number) => Promise<NativeAudioDeviceFormatProbe>
   loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
   preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
   promoteNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
@@ -448,6 +454,33 @@ function resolveSampleFormat(
     }
   }
 
+  // WASAPI exclusive endpoints on pro interfaces almost universally reject IEEE float, and
+  // many accept only packed 24-bit. Stay in integer PCM and match the source depth exactly;
+  // the sink's negotiation ladder widens from here if the device wants a bigger container.
+  if (backendKind === 'wasapi-exclusive') {
+    if (sampleFormat.startsWith('u8') || sampleFormat.startsWith('s8') || sampleFormat.startsWith('s16')) {
+      return 's16'
+    }
+
+    if (sampleFormat.startsWith('s24')) {
+      return 's24'
+    }
+
+    if (sampleFormat.startsWith('s32') || sampleFormat.startsWith('s64')) {
+      // ffprobe reports 24-bit FLAC/ALAC as s32 with bits_per_raw_sample of 24.
+      return Number.isFinite(bitDepth) && bitDepth > 0 && bitDepth <= 24 ? 's24' : 's32'
+    }
+
+    if (Number.isFinite(bitDepth) && bitDepth > 0) {
+      if (bitDepth <= 16) return 's16'
+      return bitDepth <= 24 ? 's24' : 's32'
+    }
+
+    // Lossy and float sources have no original integer depth to preserve; 24-bit is the
+    // widest container these devices reliably accept.
+    return 's24'
+  }
+
   if (LOSSY_CODECS.has(codec)) {
     return 'f32'
   }
@@ -475,10 +508,93 @@ function resolveSampleFormat(
   return 'f32'
 }
 
+/**
+ * True when the source has a real integer bit depth worth preserving. Lossy and float
+ * sources decode to whatever we ask for, so there is no "original" depth to be faithful to
+ * and we are free to pick whichever container the device likes best.
+ */
+function hasKnownIntegerDepth(stream: FfprobeStreamInfo, metadata?: NativeAudioTrackMetadata): boolean {
+  const codec = (stream.codec_name ?? metadata?.codec ?? '').trim().toLowerCase()
+  if (LOSSY_CODECS.has(codec)) return false
+
+  const sampleFormat = (stream.sample_fmt ?? '').trim().toLowerCase()
+  if (sampleFormat.startsWith('flt') || sampleFormat.startsWith('dbl')) return false
+
+  return sampleFormat.length > 0 || Number(stream.bits_per_raw_sample ?? metadata?.bitDepth ?? 0) > 0
+}
+
+/**
+ * Device wire formats that can carry each decode format without altering a sample.
+ * Widening a container is bit-exact zero padding, so these ladders only ever grow. Mirrors
+ * `buildFormatLadder` in native/src/wasapi_exclusive_sink.cpp.
+ */
+const DEVICE_FORMAT_LADDER: Record<NativeAudioSampleFormat, NativeAudioProbedSampleFormat[]> = {
+  s16: ['s16', 's24', 's24in32', 's32'],
+  s24: ['s24', 's24in32', 's32'],
+  s32: ['s32'],
+  f32: ['f32']
+}
+
+/** The PCM layout ffmpeg must produce for a given device wire format. */
+const DECODE_FORMAT_FOR_WIRE_FORMAT: Record<NativeAudioProbedSampleFormat, NativeAudioSampleFormat> = {
+  s16: 's16',
+  s24: 's24',
+  s24in32: 's24',
+  s32: 's32',
+  f32: 'f32'
+}
+
+/** Widest first — used only when the source has no bit depth of its own to preserve. */
+const PREFERRED_WIRE_FORMATS: NativeAudioProbedSampleFormat[] = ['s32', 's24in32', 's24', 's16']
+
+const WIRE_FORMAT_LABELS: Record<NativeAudioProbedSampleFormat, string> = {
+  s16: '16-bit',
+  s24: '24-bit',
+  s24in32: '24-bit (32-bit container)',
+  s32: '32-bit',
+  f32: '32-bit float'
+}
+
+function formatRateLabel(sampleRate: number): string {
+  const khz = sampleRate / 1000
+  return `${Number.isInteger(khz) ? khz : khz.toFixed(1)} kHz`
+}
+
+function buildUnsupportedFormatMessage(
+  probe: NativeAudioDeviceFormatProbe,
+  sampleRate: number,
+  channels: number,
+  sampleFormat: NativeAudioSampleFormat
+): string {
+  const deviceName = probe.deviceLabel ?? 'The selected output device'
+  const requested = `${formatRateLabel(sampleRate)} ${WIRE_FORMAT_LABELS[sampleFormat]} ${channels}-channel`
+
+  if (probe.formats.length === 0) {
+    return `${deviceName} rejected ${requested} in exclusive mode, and reports no exclusive-mode formats at all at ${channels} channels.`
+  }
+
+  const byRate = new Map<number, NativeAudioProbedSampleFormat[]>()
+  for (const entry of probe.formats) {
+    const existing = byRate.get(entry.sampleRate)
+    if (existing) existing.push(entry.sampleFormat)
+    else byRate.set(entry.sampleRate, [entry.sampleFormat])
+  }
+
+  const supported = [...byRate.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([rate, formats]) => `${formatRateLabel(rate)} (${formats.map((id) => WIRE_FORMAT_LABELS[id]).join(', ')})`)
+    .join('; ')
+
+  return `${deviceName} rejected ${requested} in exclusive mode. It currently accepts: ${supported}.`
+}
+
 function getFfmpegFormatArgs(sampleFormat: NativeAudioSampleFormat): string[] {
   switch (sampleFormat) {
     case 's16':
       return ['-c:a', 'pcm_s16le', '-f', 's16le']
+    case 's24':
+      // Packed 3-byte little-endian, exactly what WASAPI exclusive wants for 24-bit.
+      return ['-c:a', 'pcm_s24le', '-f', 's24le']
     case 's32':
       return ['-c:a', 'pcm_s32le', '-f', 's32le']
     case 'f32':
@@ -495,6 +611,7 @@ export function createNativeAudioController(
   let eventPollTimer: ReturnType<typeof setInterval> | null = null
   let currentTrackRequest: LoadedTrackRequest | null = null
   let nextTrackRequest: LoadedTrackRequest | null = null
+  const deviceFormatProbeCache = new Map<string, NativeAudioDeviceFormatProbe>()
   let loadGeneration = 0
   let prebufferGeneration = 0
   let currentBufferBytes = 0
@@ -568,6 +685,67 @@ export function createNativeAudioController(
     return capabilitiesCache
   }
 
+  const normalizeDeviceFormatProbe = (raw: NativeAudioDeviceFormatProbe): NativeAudioDeviceFormatProbe => ({
+    deviceId: typeof raw?.deviceId === 'string' ? raw.deviceId : null,
+    deviceLabel: typeof raw?.deviceLabel === 'string' ? raw.deviceLabel : null,
+    supported: raw?.supported === true,
+    reason: typeof raw?.reason === 'string' ? raw.reason : null,
+    formats: Array.isArray(raw?.formats)
+      ? raw.formats.filter(
+          (entry): entry is NativeAudioDeviceFormat =>
+            Number.isFinite(entry?.sampleRate) && typeof entry?.sampleFormat === 'string'
+        )
+      : []
+  })
+
+  const getDeviceFormatProbe = (deviceId: string, channels: number): NativeAudioDeviceFormatProbe | null => {
+    if (!playback?.probeDeviceFormats) return null
+
+    const cacheKey = `${deviceId}|${channels}`
+    const cached = deviceFormatProbeCache.get(cacheKey)
+    if (cached) return cached
+
+    try {
+      const probe = normalizeDeviceFormatProbe(playback.probeDeviceFormats(deviceId, channels))
+      deviceFormatProbeCache.set(cacheKey, probe)
+      return probe
+    } catch {
+      // Probing is an optimization; a failure just means we try the format and find out.
+      return null
+    }
+  }
+
+  const invalidateDeviceFormatProbes = (): void => {
+    deviceFormatProbeCache.clear()
+  }
+
+  /**
+   * The probe normally catches format rejections before decoding, but it can be stale (the
+   * user changed the device's rate in its control panel mid-session). When the sink rejects
+   * a format anyway, re-tag the raw native error so the renderer still gets a real dialog.
+   */
+  const asBitPerfectFormatError = (error: unknown, request: LoadedTrackRequest | null): unknown => {
+    if (capabilitiesCache.activeBackend !== 'wasapi-exclusive') return error
+
+    const message = error instanceof Error ? error.message : null
+    if (!message || !message.includes('in exclusive mode')) return error
+
+    invalidateDeviceFormatProbes()
+    const channels = request?.channels ?? 2
+    const probe = getDeviceFormatProbe(capabilitiesCache.selectedDeviceId ?? '', channels)
+
+    return createBitPerfectFormatError({
+      deviceLabel: probe?.deviceLabel ?? null,
+      sampleRate: request?.sampleRate ?? null,
+      channels: request?.channels ?? null,
+      sampleFormat: request?.sampleFormat ?? null,
+      message:
+        probe?.supported && request
+          ? buildUnsupportedFormatMessage(probe, request.sampleRate, request.channels, request.sampleFormat)
+          : message
+    })
+  }
+
   const ensureEventPoller = (): void => {
     if (!playback || eventPollTimer !== null) return
     eventPollTimer = setInterval(() => {
@@ -628,12 +806,49 @@ export function createNativeAudioController(
     const duration = Number.isFinite(Number(stream.duration))
       ? Math.max(0, Number(stream.duration))
       : 0
-    const sampleFormat = resolveSampleFormat(
-      stream,
-      metadata,
-      options.backendKind ?? capabilitiesCache.activeBackend,
-      options.forcedSampleFormat
-    )
+    const backendKind = options.backendKind ?? capabilitiesCache.activeBackend
+    let sampleFormat = resolveSampleFormat(stream, metadata, backendKind, options.forcedSampleFormat)
+
+    // Ask the endpoint what it actually accepts before spending time decoding. This turns a
+    // mid-playback HRESULT into an immediate, explainable failure.
+    if (backendKind === 'wasapi-exclusive' && !options.forcedSampleFormat) {
+      const probe = getDeviceFormatProbe(capabilitiesCache.selectedDeviceId ?? '', channels)
+      if (probe?.supported) {
+        const supportedAtRate = new Set(
+          probe.formats.filter((entry) => entry.sampleRate === sampleRate).map((entry) => entry.sampleFormat)
+        )
+
+        if (supportedAtRate.size === 0) {
+          throw createBitPerfectFormatError({
+            deviceLabel: probe.deviceLabel,
+            sampleRate,
+            channels,
+            sampleFormat,
+            message: buildUnsupportedFormatMessage(probe, sampleRate, channels, sampleFormat)
+          })
+        }
+
+        if (hasKnownIntegerDepth(stream, metadata)) {
+          // Preserve the source depth; the sink widens the container if the device needs it.
+          const canCarrySource = DEVICE_FORMAT_LADDER[sampleFormat].some((wire) => supportedAtRate.has(wire))
+          if (!canCarrySource) {
+            throw createBitPerfectFormatError({
+              deviceLabel: probe.deviceLabel,
+              sampleRate,
+              channels,
+              sampleFormat,
+              message: buildUnsupportedFormatMessage(probe, sampleRate, channels, sampleFormat)
+            })
+          }
+        } else {
+          // No original depth to protect, so take the widest container on offer.
+          const preferred = PREFERRED_WIRE_FORMATS.find((wire) => supportedAtRate.has(wire))
+          if (preferred) {
+            sampleFormat = DECODE_FORMAT_FOR_WIRE_FORMAT[preferred]
+          }
+        }
+      }
+    }
 
     const ffmpegArgs = [
       '-v', 'error',
@@ -706,8 +921,23 @@ export function createNativeAudioController(
 
     setOutputDevice: async (deviceId: string) => {
       const engine = await ensureAvailable()
+      invalidateDeviceFormatProbes()
       capabilitiesCache = normalizeCapabilities(engine.setOutputDevice(deviceId))
       return capabilitiesCache
+    },
+
+    probeDeviceFormats: async (deviceId?: string, channels = 2) => {
+      const caps = refreshCapabilities()
+      const targetDeviceId = deviceId ?? caps.selectedDeviceId ?? ''
+      return (
+        getDeviceFormatProbe(targetDeviceId, channels) ?? {
+          deviceId: targetDeviceId || null,
+          deviceLabel: null,
+          supported: false,
+          reason: caps.reasonUnavailable ?? 'This audio backend cannot enumerate device formats.',
+          formats: []
+        }
+      )
     },
 
     loadTrack: async (filePath: string, metadata?: NativeAudioTrackMetadata) => {
@@ -801,6 +1031,12 @@ export function createNativeAudioController(
       try {
         return normalizePlaybackSnapshot(await engine.play())
       } catch (error) {
+        if (capabilitiesCache.activeBackend === 'wasapi-exclusive') {
+          // Negotiation already happened natively; there is nothing useful to retry, so
+          // surface a message the renderer can turn into an actionable dialog.
+          throw asBitPerfectFormatError(error, currentTrackRequest)
+        }
+
         if (capabilitiesCache.activeBackend !== 'alsa-hw' || !currentTrackRequest) {
           throw error
         }

@@ -4,7 +4,26 @@ export type PlaybackOutputMode = 'standard' | 'bitperfect'
 
 export type NativeAudioPlaybackState = 'stopped' | 'playing' | 'paused' | 'loading'
 
-export type NativeAudioSampleFormat = 's16' | 's32' | 'f32'
+// 's24' is packed 24-bit little-endian (3 bytes per sample), the native exclusive-mode
+// format of most USB audio interfaces. Not the same as 24-in-32, which is reported by the
+// device probe as 's24in32' and consumed as 's32'.
+export type NativeAudioSampleFormat = 's16' | 's24' | 's32' | 'f32'
+
+export type NativeAudioProbedSampleFormat = NativeAudioSampleFormat | 's24in32'
+
+export interface NativeAudioDeviceFormat {
+  sampleRate: number
+  channels: number
+  sampleFormat: NativeAudioProbedSampleFormat
+}
+
+export interface NativeAudioDeviceFormatProbe {
+  deviceId: string | null
+  deviceLabel: string | null
+  supported: boolean
+  reason: string | null
+  formats: NativeAudioDeviceFormat[]
+}
 
 export type NativeAudioBackendKind = 'unavailable' | 'coreaudio' | 'wasapi-exclusive' | 'alsa-hw'
 

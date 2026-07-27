@@ -179,7 +179,13 @@ uint32_t getDeviceMaxChannels(IMMDevice* device) {
 
     WAVEFORMATEX* mixFormat = nullptr;
     hr = audioClient->GetMixFormat(&mixFormat);
-    if (FAILED(hr) || mixFormat == nullptr) {
+    if (FAILED(hr)) {
+        if (mixFormat != nullptr) {
+            CoTaskMemFree(mixFormat);
+        }
+        return 2;
+    }
+    if (mixFormat == nullptr) {
         return 2;
     }
 
@@ -211,35 +217,235 @@ DWORD buildChannelMask(uint32_t channels) {
     }
 }
 
-bool buildWaveFormat(const TrackFormat& format, WAVEFORMATEXTENSIBLE* outFormat, std::string* error) {
-    if (outFormat == nullptr) {
-        if (error != nullptr) {
-            *error = "WASAPI exclusive output could not build a native format description.";
-        }
-        return false;
-    }
-    if (format.sampleRate == 0 || format.channels == 0) {
-        if (error != nullptr) {
-            *error = "WASAPI exclusive output requires a valid track sample rate and channel count.";
-        }
-        return false;
-    }
+// One concrete wire format an exclusive endpoint might accept. `sampleFormat` is the PCM
+// layout Astra has to hand over; `containerBits`/`validBits` differ for 24-in-32, which is
+// a distinct format from plain s32 as far as drivers are concerned.
+struct ExclusiveFormatOption {
+    uint16_t containerBits;
+    uint16_t validBits;
+    bool isFloat;
+    SampleFormat sampleFormat;
+    const char* id;
+};
 
-    std::memset(outFormat, 0, sizeof(WAVEFORMATEXTENSIBLE));
-    outFormat->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-    outFormat->Format.nChannels = static_cast<WORD>(format.channels);
-    outFormat->Format.nSamplesPerSec = format.sampleRate;
-    outFormat->Format.wBitsPerSample = static_cast<WORD>(format.bytesPerSample() * 8);
-    outFormat->Format.nBlockAlign = static_cast<WORD>(format.bytesPerFrame());
-    outFormat->Format.nAvgBytesPerSec = format.sampleRate * format.bytesPerFrame();
-    outFormat->Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
-    outFormat->Samples.wValidBitsPerSample = outFormat->Format.wBitsPerSample;
-    outFormat->dwChannelMask = buildChannelMask(format.channels);
-    outFormat->SubFormat = format.sampleFormat == SampleFormat::Float32
+constexpr ExclusiveFormatOption kOptionS16     { 16, 16, false, SampleFormat::Int16,       "s16" };
+constexpr ExclusiveFormatOption kOptionS24     { 24, 24, false, SampleFormat::Int24Packed, "s24" };
+constexpr ExclusiveFormatOption kOptionS24In32 { 32, 24, false, SampleFormat::Int32,       "s24in32" };
+constexpr ExclusiveFormatOption kOptionS32     { 32, 32, false, SampleFormat::Int32,       "s32" };
+constexpr ExclusiveFormatOption kOptionF32     { 32, 32, true,  SampleFormat::Float32,     "f32" };
+
+// Every format worth asking a device about, for capability probing.
+constexpr ExclusiveFormatOption kProbeOptions[] = {
+    kOptionS16, kOptionS24, kOptionS24In32, kOptionS32, kOptionF32
+};
+
+constexpr uint32_t kProbeSampleRates[] = {
+    44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000
+};
+
+void fillWaveFormatExtensible(
+    WAVEFORMATEXTENSIBLE* out,
+    uint32_t sampleRate,
+    uint32_t channels,
+    const ExclusiveFormatOption& option
+) {
+    const WORD blockAlign = static_cast<WORD>((option.containerBits / 8) * channels);
+    std::memset(out, 0, sizeof(WAVEFORMATEXTENSIBLE));
+    out->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+    out->Format.nChannels = static_cast<WORD>(channels);
+    out->Format.nSamplesPerSec = sampleRate;
+    out->Format.wBitsPerSample = option.containerBits;
+    out->Format.nBlockAlign = blockAlign;
+    out->Format.nAvgBytesPerSec = sampleRate * blockAlign;
+    out->Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+    out->Samples.wValidBitsPerSample = option.validBits;
+    out->dwChannelMask = buildChannelMask(channels);
+    out->SubFormat = option.isFloat
         ? KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
         : KSDATAFORMAT_SUBTYPE_PCM;
+}
 
-    return true;
+// Builds the legacy non-extensible header, but into a WAVEFORMATEXTENSIBLE-sized buffer.
+// Drivers have been observed touching the full extensible footprint even when cbSize is 0,
+// so WASAPI is never handed a bare 18-byte WAVEFORMATEX object.
+void fillWaveFormatPlain(
+    WAVEFORMATEXTENSIBLE* out,
+    uint32_t sampleRate,
+    uint32_t channels,
+    const ExclusiveFormatOption& option
+) {
+    const WORD blockAlign = static_cast<WORD>((option.containerBits / 8) * channels);
+    std::memset(out, 0, sizeof(WAVEFORMATEXTENSIBLE));
+    out->Format.wFormatTag = option.isFloat ? WAVE_FORMAT_IEEE_FLOAT : WAVE_FORMAT_PCM;
+    out->Format.nChannels = static_cast<WORD>(channels);
+    out->Format.nSamplesPerSec = sampleRate;
+    out->Format.wBitsPerSample = option.containerBits;
+    out->Format.nBlockAlign = blockAlign;
+    out->Format.nAvgBytesPerSec = sampleRate * blockAlign;
+    out->Format.cbSize = 0;
+}
+
+bool isExclusiveFormatAccepted(IAudioClient* audioClient, const WAVEFORMATEX* waveFormat) {
+    if (audioClient == nullptr || waveFormat == nullptr) {
+        return false;
+    }
+
+    // ppClosestMatch must be null in exclusive mode. WASAPI documents it as unused there,
+    // and drivers may leave a non-CoTaskMem value in it — freeing that corrupts the heap.
+    // The candidate ladder is what finds a working format; there is no suggestion to read.
+    const HRESULT hr = audioClient->IsFormatSupported(
+        AUDCLNT_SHAREMODE_EXCLUSIVE,
+        waveFormat,
+        nullptr
+    );
+    // Exclusive mode answers S_OK or AUDCLNT_E_UNSUPPORTED_FORMAT; S_FALSE is shared-mode only.
+    return hr == S_OK;
+}
+
+// Formats Astra can feed a device without altering a single sample. Widening a container is
+// bit-exact zero padding; narrowing it is not, so the ladder only ever grows.
+std::vector<ExclusiveFormatOption> buildFormatLadder(SampleFormat sourceFormat) {
+    switch (sourceFormat) {
+        case SampleFormat::Int16:
+            return { kOptionS16, kOptionS24, kOptionS24In32, kOptionS32 };
+        case SampleFormat::Int24Packed:
+            return { kOptionS24, kOptionS24In32, kOptionS32 };
+        case SampleFormat::Int32:
+            return { kOptionS32 };
+        case SampleFormat::Float32:
+        default:
+            return { kOptionF32 };
+    }
+}
+
+struct NegotiatedExclusiveFormat {
+    WAVEFORMATEXTENSIBLE extensible {};
+    WAVEFORMATEXTENSIBLE plain {};
+    bool useExtensible = true;
+    ExclusiveFormatOption option = kOptionF32;
+    uint32_t bytesPerFrame = 0;
+    bool needsConversion = false;
+
+    WAVEFORMATEX* waveFormat() {
+        return reinterpret_cast<WAVEFORMATEX*>(useExtensible ? &extensible : &plain);
+    }
+};
+
+bool negotiateExclusiveFormat(
+    IAudioClient* audioClient,
+    const TrackFormat& track,
+    NegotiatedExclusiveFormat* out
+) {
+    if (audioClient == nullptr || out == nullptr || track.sampleRate == 0 || track.channels == 0) {
+        return false;
+    }
+
+    for (const ExclusiveFormatOption& option : buildFormatLadder(track.sampleFormat)) {
+        // Some drivers only accept WAVEFORMATEXTENSIBLE, others only the plain struct. The
+        // plain form cannot express validBits != containerBits, so 24-in-32 is extensible-only.
+        fillWaveFormatExtensible(&out->extensible, track.sampleRate, track.channels, option);
+        if (isExclusiveFormatAccepted(audioClient, reinterpret_cast<WAVEFORMATEX*>(&out->extensible))) {
+            out->useExtensible = true;
+        } else if (option.containerBits == option.validBits) {
+            fillWaveFormatPlain(&out->plain, track.sampleRate, track.channels, option);
+            if (!isExclusiveFormatAccepted(audioClient, reinterpret_cast<WAVEFORMATEX*>(&out->plain))) {
+                continue;
+            }
+            out->useExtensible = false;
+        } else {
+            continue;
+        }
+
+        out->option = option;
+        out->bytesPerFrame = (option.containerBits / 8) * track.channels;
+        out->needsConversion = option.sampleFormat != track.sampleFormat
+            || option.containerBits != track.bytesPerSample() * 8;
+        return true;
+    }
+
+    return false;
+}
+
+// Human-readable summary of what the endpoint will actually accept, for error messages.
+std::string describeExclusiveSupport(IAudioClient* audioClient, uint32_t channels) {
+    if (audioClient == nullptr || channels == 0) {
+        return {};
+    }
+
+    std::string summary;
+    for (const uint32_t sampleRate : kProbeSampleRates) {
+        std::string formats;
+        for (const ExclusiveFormatOption& option : kProbeOptions) {
+            WAVEFORMATEXTENSIBLE candidate {};
+            fillWaveFormatExtensible(&candidate, sampleRate, channels, option);
+            bool accepted = isExclusiveFormatAccepted(
+                audioClient, reinterpret_cast<WAVEFORMATEX*>(&candidate));
+            if (!accepted && option.containerBits == option.validBits) {
+                WAVEFORMATEXTENSIBLE plainCandidate {};
+                fillWaveFormatPlain(&plainCandidate, sampleRate, channels, option);
+                accepted = isExclusiveFormatAccepted(
+                    audioClient, reinterpret_cast<WAVEFORMATEX*>(&plainCandidate));
+            }
+            if (accepted) {
+                if (!formats.empty()) {
+                    formats += ", ";
+                }
+                formats += option.id;
+            }
+        }
+
+        if (!formats.empty()) {
+            if (!summary.empty()) {
+                summary += "; ";
+            }
+            summary += std::to_string(sampleRate) + " Hz (" + formats + ")";
+        }
+    }
+
+    return summary;
+}
+
+// Left-justify each sample into a wider container, zero-filling the new low bits. This is
+// bit-exact: the original sample is recoverable by shifting back down.
+void widenSampleBlock(
+    const uint8_t* source,
+    SampleFormat sourceFormat,
+    uint8_t* destination,
+    uint16_t destinationContainerBits,
+    size_t sampleCount
+) {
+    if (sourceFormat == SampleFormat::Int16 && destinationContainerBits == 24) {
+        for (size_t i = 0; i < sampleCount; i++) {
+            destination[i * 3 + 0] = 0;
+            destination[i * 3 + 1] = source[i * 2 + 0];
+            destination[i * 3 + 2] = source[i * 2 + 1];
+        }
+        return;
+    }
+
+    if (sourceFormat == SampleFormat::Int16 && destinationContainerBits == 32) {
+        for (size_t i = 0; i < sampleCount; i++) {
+            destination[i * 4 + 0] = 0;
+            destination[i * 4 + 1] = 0;
+            destination[i * 4 + 2] = source[i * 2 + 0];
+            destination[i * 4 + 3] = source[i * 2 + 1];
+        }
+        return;
+    }
+
+    if (sourceFormat == SampleFormat::Int24Packed && destinationContainerBits == 32) {
+        for (size_t i = 0; i < sampleCount; i++) {
+            destination[i * 4 + 0] = 0;
+            destination[i * 4 + 1] = source[i * 3 + 0];
+            destination[i * 4 + 2] = source[i * 3 + 1];
+            destination[i * 4 + 3] = source[i * 3 + 2];
+        }
+        return;
+    }
+
+    // Same width: straight copy.
+    const size_t bytesPerSample = destinationContainerBits / 8;
+    std::memcpy(destination, source, sampleCount * bytesPerSample);
 }
 
 std::vector<OutputDeviceInfo> enumerateWasapiDevices(std::string* reason) {
@@ -413,6 +619,14 @@ public:
     }
 
     uint32_t deviceMaxChannels(const std::string& deviceId) const override {
+        // resolveOutputDevice scopes its own COM init, so without an outer one the returned
+        // IMMDevice would be released after CoUninitialize has already torn the apartment
+        // down. That is undefined behavior and corrupts the heap intermittently.
+        ScopedCoInit coInit;
+        if (!coInit.ok()) {
+            return 2;
+        }
+
         ComPtr<IMMDevice> device;
         std::string resolvedId;
         std::string label;
@@ -424,12 +638,81 @@ public:
         return maxChannels;
     }
 
+    DeviceFormatProbe probeDeviceFormats(const std::string& deviceId, uint32_t channels) const override {
+        DeviceFormatProbe probe;
+
+        ScopedCoInit coInit;
+        if (!coInit.ok()) {
+            probe.reason = "Failed to initialize COM for WASAPI format probing ("
+                + formatHRESULT(coInit.hr()) + ").";
+            return probe;
+        }
+
+        ComPtr<IMMDevice> device;
+        std::string resolvedId;
+        std::string label;
+        if (!resolveOutputDevice(deviceId, &device, &resolvedId, &label, nullptr, &probe.reason)) {
+            return probe;
+        }
+
+        probe.deviceId = resolvedId;
+        probe.deviceLabel = label;
+
+        ComPtr<IAudioClient> audioClient;
+        const HRESULT hr = device->Activate(
+            __uuidof(IAudioClient),
+            CLSCTX_ALL,
+            nullptr,
+            reinterpret_cast<void**>(audioClient.GetAddressOf())
+        );
+        if (FAILED(hr) || audioClient == nullptr) {
+            probe.reason = "Failed to activate the WASAPI device for format probing ("
+                + formatHRESULT(hr) + ").";
+            return probe;
+        }
+
+        for (const uint32_t sampleRate : kProbeSampleRates) {
+            for (const ExclusiveFormatOption& option : kProbeOptions) {
+                WAVEFORMATEXTENSIBLE candidate {};
+                fillWaveFormatExtensible(&candidate, sampleRate, channels, option);
+                bool accepted = isExclusiveFormatAccepted(
+                    audioClient.Get(), reinterpret_cast<WAVEFORMATEX*>(&candidate));
+                if (!accepted && option.containerBits == option.validBits) {
+                    WAVEFORMATEXTENSIBLE plainCandidate {};
+                    fillWaveFormatPlain(&plainCandidate, sampleRate, channels, option);
+                    accepted = isExclusiveFormatAccepted(
+                        audioClient.Get(), reinterpret_cast<WAVEFORMATEX*>(&plainCandidate));
+                }
+                if (accepted) {
+                    probe.formats.push_back({ sampleRate, channels, option.id });
+                }
+            }
+        }
+
+        probe.supported = true;
+        if (probe.formats.empty()) {
+            probe.reason = "The device rejected every exclusive-mode format Astra can produce.";
+        }
+        return probe;
+    }
+
     bool open(
         const std::string& deviceId,
         const TrackFormat& format,
         PlaybackEngine* engine,
         std::string* error
     ) override {
+        // Keep a COM apartment alive for the whole call so the device and client pointers
+        // below stay valid past resolveOutputDevice's own scoped init.
+        ScopedCoInit coInit;
+        if (!coInit.ok()) {
+            if (error != nullptr) {
+                *error = "Failed to initialize COM for WASAPI device access ("
+                    + formatHRESULT(coInit.hr()) + ").";
+            }
+            return false;
+        }
+
         std::string resolvedDeviceId;
         std::string resolvedLabel;
         uint32_t maxChannels = 2;
@@ -451,6 +734,12 @@ public:
             }
         }
 
+        // Negotiate here rather than on the render thread so an unplayable track fails at
+        // load time with a message that names what the device will actually accept.
+        if (!validateExclusiveFormat(resolvedDevice.Get(), resolvedLabel, format, error)) {
+            return false;
+        }
+
         close();
         std::lock_guard<std::mutex> lock(mutex_);
         engine_ = engine;
@@ -470,6 +759,58 @@ public:
             }
         }
         return true;
+    }
+
+    // Confirms the device will take this track, and if not, explains what it will take.
+    // The message is parsed by the renderer to build the bit-perfect failure dialog, so the
+    // "Supported in exclusive mode: ..." / "no exclusive-mode formats" phrasing is load-bearing.
+    static bool validateExclusiveFormat(
+        IMMDevice* device,
+        const std::string& deviceLabel,
+        const TrackFormat& format,
+        std::string* error
+    ) {
+        if (device == nullptr) {
+            return true;
+        }
+
+        ComPtr<IAudioClient> audioClient;
+        const HRESULT hr = device->Activate(
+            __uuidof(IAudioClient),
+            CLSCTX_ALL,
+            nullptr,
+            reinterpret_cast<void**>(audioClient.GetAddressOf())
+        );
+        if (FAILED(hr) || audioClient == nullptr) {
+            if (error != nullptr) {
+                *error = "Failed to activate the selected WASAPI output device ("
+                    + formatHRESULT(hr) + ").";
+            }
+            return false;
+        }
+
+        NegotiatedExclusiveFormat negotiated;
+        if (negotiateExclusiveFormat(audioClient.Get(), format, &negotiated)) {
+            return true;
+        }
+
+        if (error != nullptr) {
+            const std::string supported = describeExclusiveSupport(audioClient.Get(), format.channels);
+            *error = (deviceLabel.empty() ? std::string("The selected WASAPI device") : deviceLabel)
+                + " cannot play "
+                + std::to_string(format.sampleRate)
+                + " Hz "
+                + std::to_string(format.channels)
+                + "-channel "
+                + format.sampleFormatId()
+                + " in exclusive mode. ";
+            if (supported.empty()) {
+                *error += "It reports no exclusive-mode formats at this channel count.";
+            } else {
+                *error += "Supported in exclusive mode: " + supported + ".";
+            }
+        }
+        return false;
     }
 
     bool start(std::string* error) override {
@@ -639,10 +980,8 @@ private:
             return;
         }
 
-        WAVEFORMATEXTENSIBLE waveFormat {};
-        std::string waveFormatError;
-        if (!buildWaveFormat(format, &waveFormat, &waveFormatError)) {
-            finishStart(false, waveFormatError);
+        if (format.sampleRate == 0 || format.channels == 0) {
+            finishStart(false, "WASAPI exclusive output requires a valid track sample rate and channel count.");
             return;
         }
 
@@ -658,25 +997,18 @@ private:
             return;
         }
 
-        hr = audioClient->IsFormatSupported(
-            AUDCLNT_SHAREMODE_EXCLUSIVE,
-            reinterpret_cast<WAVEFORMATEX*>(&waveFormat),
-            nullptr
-        );
-        if (hr != S_OK) {
-            finishStart(false,
-                "The selected WASAPI device does not support "
-                + std::to_string(format.sampleRate)
-                + " Hz "
-                + std::to_string(format.channels)
-                + "-channel "
-                + format.sampleFormatId()
-                + " in exclusive mode ("
-                + formatHRESULT(hr)
-                + ")."
-            );
+        NegotiatedExclusiveFormat negotiated;
+        if (!negotiateExclusiveFormat(audioClient.Get(), format, &negotiated)) {
+            std::string negotiateError;
+            validateExclusiveFormat(resolvedDevice.Get(), resolvedLabel, format, &negotiateError);
+            finishStart(false, negotiateError);
             return;
         }
+
+        WAVEFORMATEX* waveFormat = negotiated.waveFormat();
+        // Set when the device took a wider container than the decoded PCM; the render path
+        // then stages track-format frames here and left-justifies them on copy-out.
+        std::vector<uint8_t> conversionBuffer;
 
         REFERENCE_TIME defaultPeriod = 0;
         REFERENCE_TIME minimumPeriod = 0;
@@ -708,7 +1040,7 @@ private:
                 AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST,
                 period,
                 period,
-                reinterpret_cast<WAVEFORMATEX*>(&waveFormat),
+                waveFormat,
                 nullptr
             );
         };
@@ -777,33 +1109,21 @@ private:
             return;
         }
 
-        auto updatePlaybackProgress = [&](UINT32& queuedEndpointFrames, UINT32& queuedAudioFrames) {
-            if (queuedEndpointFrames == 0) {
+        // An exclusive event-driven stream completes exactly one buffer period per event, and
+        // GetCurrentPadding always reports the buffer as full on this path, so it cannot be
+        // used to measure consumption -- doing so yields zero consumed frames forever and the
+        // reported position never moves. Credit one period per event instead.
+        auto accountConsumedPeriod = [&](UINT32& queuedEndpointFrames, UINT32& queuedAudioFrames) {
+            queuedEndpointFrames = queuedEndpointFrames > bufferFrameCount
+                ? queuedEndpointFrames - bufferFrameCount
+                : 0;
+
+            const UINT32 consumedAudioFrames = std::min(queuedAudioFrames, bufferFrameCount);
+            if (consumedAudioFrames == 0) {
                 return;
             }
-
-            UINT32 padding = 0;
-            const HRESULT paddingHr = audioClient->GetCurrentPadding(&padding);
-            if (FAILED(paddingHr)) {
-                return;
-            }
-
-            if (padding > queuedEndpointFrames) {
-                queuedEndpointFrames = padding;
-                return;
-            }
-
-            const UINT32 consumedEndpointFrames = queuedEndpointFrames - padding;
-            queuedEndpointFrames = padding;
-            if (consumedEndpointFrames == 0) {
-                return;
-            }
-
-            const UINT32 consumedAudioFrames = std::min(queuedAudioFrames, consumedEndpointFrames);
             queuedAudioFrames -= consumedAudioFrames;
-            if (consumedAudioFrames > 0) {
-                engine->onFramesConsumed(consumedAudioFrames);
-            }
+            engine->onFramesConsumed(consumedAudioFrames);
         };
 
         auto fillBuffer = [&](UINT32 requestedFrames, UINT32* writtenAudioFrames, bool* reachedEndOfStream, std::string* fillError) -> bool {
@@ -817,8 +1137,29 @@ private:
             }
 
             bool streamEnded = false;
-            const size_t framesWritten = engine->renderInto(renderBuffer, requestedFrames, streamEnded);
-            const UINT32 bytesPerFrame = format.bytesPerFrame();
+            size_t framesWritten = 0;
+            if (negotiated.needsConversion) {
+                // Render in the track's own format, then left-justify into the device's
+                // wider container. The engine's taps and fade still see native samples.
+                const size_t trackBytesPerFrame = format.bytesPerFrame();
+                const size_t requiredBytes = static_cast<size_t>(requestedFrames) * trackBytesPerFrame;
+                if (conversionBuffer.size() < requiredBytes) {
+                    conversionBuffer.resize(requiredBytes);
+                }
+                framesWritten = engine->renderInto(conversionBuffer.data(), requestedFrames, streamEnded);
+                const size_t convertedFrames = std::min<size_t>(framesWritten, requestedFrames);
+                widenSampleBlock(
+                    conversionBuffer.data(),
+                    format.sampleFormat,
+                    renderBuffer,
+                    negotiated.option.containerBits,
+                    convertedFrames * format.channels
+                );
+            } else {
+                framesWritten = engine->renderInto(renderBuffer, requestedFrames, streamEnded);
+            }
+
+            const UINT32 bytesPerFrame = negotiated.bytesPerFrame;
             const UINT32 usedFrames = static_cast<UINT32>(std::min<size_t>(framesWritten, requestedFrames));
             if (usedFrames < requestedFrames && bytesPerFrame > 0) {
                 const UINT32 usedBytes = usedFrames * bytesPerFrame;
@@ -891,13 +1232,13 @@ private:
                     accountProgressOnStop_ = false;
                 }
                 if (accountProgress) {
-                    updatePlaybackProgress(queuedEndpointFrames, queuedAudioFrames);
+                    accountConsumedPeriod(queuedEndpointFrames, queuedAudioFrames);
                 }
                 break;
             }
 
             if (waitResult == WAIT_TIMEOUT) {
-                updatePlaybackProgress(queuedEndpointFrames, queuedAudioFrames);
+                // No event means the endpoint stalled; nothing was played, so credit nothing.
                 continue;
             }
 
@@ -905,7 +1246,7 @@ private:
                 break;
             }
 
-            updatePlaybackProgress(queuedEndpointFrames, queuedAudioFrames);
+            accountConsumedPeriod(queuedEndpointFrames, queuedAudioFrames);
 
             if (endOfStreamReached) {
                 if (queuedAudioFrames == 0 && queuedEndpointFrames == 0) {
@@ -914,28 +1255,17 @@ private:
                 continue;
             }
 
-            UINT32 padding = 0;
-            hr = audioClient->GetCurrentPadding(&padding);
-            if (FAILED(hr)) {
-                break;
-            }
-
-            const UINT32 availableFrames = bufferFrameCount > padding
-                ? bufferFrameCount - padding
-                : 0;
-            if (availableFrames == 0) {
-                queuedEndpointFrames = padding;
-                continue;
-            }
-
+            // Exclusive event-driven mode releases the entire endpoint buffer every period,
+            // so each wakeup must refill all of it. Sizing the write from GetCurrentPadding
+            // is the shared-mode/timer-driven pattern: it under-fills, the endpoint starves,
+            // and the device repeats stale buffer content as short audible glitches.
             UINT32 writtenFrames = 0;
             fillError.clear();
             bool streamEnded = false;
-            if (!fillBuffer(availableFrames, &writtenFrames, &streamEnded, &fillError)) {
+            if (!fillBuffer(bufferFrameCount, &writtenFrames, &streamEnded, &fillError)) {
                 break;
             }
-
-            queuedEndpointFrames = padding + availableFrames;
+            queuedEndpointFrames = bufferFrameCount;
             queuedAudioFrames = std::min<UINT32>(bufferFrameCount, queuedAudioFrames + writtenFrames);
             endOfStreamReached = streamEnded;
         }
