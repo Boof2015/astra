@@ -94,7 +94,8 @@ interface DiscordRpcApplicationAssetResponse {
 function normalizeText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const normalized = value.trim()
-  return normalized.length > 0 ? normalized : undefined
+  if (!normalized.length) return undefined;
+  return normalized.padEnd(2, "\u200B") // pad with U+200B to fix discord not liking single characters
 }
 
 function normalizeNumber(value: unknown): number | undefined {
