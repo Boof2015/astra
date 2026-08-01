@@ -1,13 +1,13 @@
 import { CSSProperties, memo, ReactElement, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
 import { usePlayerStore, type PlaybackSourceContext } from '../../stores/playerStore'
-import { useLibraryStore } from '../../stores/libraryStore'
+import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
 import { getNormalPlaylists, usePlaylistStore } from '../../stores/playlistStore'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useUIStore, type LibraryTrackRevealRequest, type PlaylistTrackRevealRequest } from '../../stores/uiStore'
 import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
-import { useRatingsStore } from '../../stores/ratingsStore'
-import TrackRatingControl from '../ratings/TrackRatingControl'
+import { useRatingsStore, type TrackRatingState } from '../../stores/ratingsStore'
+import TrackRatingControl, { TrackRatingControlValue } from '../ratings/TrackRatingControl'
 import { useMetadataEditorStore } from '../../stores/metadataEditorStore'
 import { useLyricsEditorStore } from '../../stores/lyricsEditorStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
@@ -17,7 +17,7 @@ import type { TrackSourceType } from '../../../types/subsonic'
 import { buildTrackListRows, type TrackListVirtualRow } from './trackListRows'
 import { shouldSuppressTrackRowDrag } from './trackDragTarget'
 import AlbumArtwork from './AlbumArtwork'
-import ArtistNameLinks from './ArtistNameLinks'
+import { ArtistNameLinksContent } from './ArtistNameLinks'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 import {
@@ -127,6 +127,9 @@ interface TrackListRowSharedProps {
   showTracklistPlayCount: boolean
   showNewTrackIndicator: boolean
   ratingsEnabled: boolean
+  ratings: ReadonlyMap<string, TrackRatingState>
+  setTrackRating: (trackPaths: string[], rating: number | null) => Promise<void>
+  artistBrowseMode: LibraryArtistBrowseMode
   searchQuery: string
   trackNumberMode: TrackNumberMode
   contextTrackNumbers?: readonly number[]
@@ -171,9 +174,15 @@ interface TrackListRowSharedProps {
   selectedTrackPaths: Set<string>
 }
 
+interface TrackListRatingProps {
+  trackPath: string
+  rating: number | null
+  setTrackRating: (trackPaths: string[], rating: number | null) => Promise<void>
+}
+
 const TRACK_ROW_HEIGHT_FALLBACK_PX = 48
 const TRACK_DISC_HEADER_HEIGHT_FALLBACK_PX = 30
-const TRACK_LIST_OVERSCAN_COUNT = 8
+const TRACK_LIST_OVERSCAN_COUNT = 4
 const TRACK_SELECTION_DRAG_THRESHOLD_PX = 6
 const trackAddedDateFormatter = new Intl.DateTimeFormat(undefined, {
   month: 'numeric',
@@ -400,6 +409,26 @@ function resolveSelectedTracksInOrder(selectedTrackPaths: Set<string>, tracks: T
   return tracks.filter((track) => selectedTrackPaths.has(track.path))
 }
 
+const TrackListRating = memo(function TrackListRating({
+  trackPath,
+  rating,
+  setTrackRating
+}: TrackListRatingProps) {
+  const trackPaths = useMemo(() => [trackPath], [trackPath])
+  const handleCommit = useCallback((nextRating: number | null) => {
+    void setTrackRating(trackPaths, nextRating)
+  }, [setTrackRating, trackPaths])
+
+  return (
+    <TrackRatingControlValue
+      trackPaths={trackPaths}
+      value={rating}
+      size="sm"
+      onCommit={handleCommit}
+    />
+  )
+})
+
 function TrackListRowRenderer({
   ariaAttributes,
   index,
@@ -414,6 +443,9 @@ function TrackListRowRenderer({
   showTracklistPlayCount,
   showNewTrackIndicator,
   ratingsEnabled,
+  ratings,
+  setTrackRating,
+  artistBrowseMode,
   searchQuery,
   trackNumberMode,
   contextTrackNumbers,
@@ -574,7 +606,12 @@ function TrackListRowRenderer({
               {isMissingPlaylistEntry ? (
                 <MissingPlaylistEntryIcon />
               ) : (
-                <AlbumArtwork hash={track.artwork_hash} alt={track.album || track.title} variant="thumbnail" />
+                <AlbumArtwork
+                  hash={track.artwork_hash}
+                  alt={track.album || track.title}
+                  variant="thumbnail"
+                  virtualized
+                />
               )}
             </div>
             {sourceLabel && (
@@ -632,7 +669,7 @@ function TrackListRowRenderer({
             {isMissingPlaylistEntry ? (
               <span className="track-artist">{track.artist}</span>
             ) : (
-              <ArtistNameLinks
+              <ArtistNameLinksContent
                 artistText={track.artist}
                 artistNames={track.artist_names}
                 browseArtistText={track.album_artist}
@@ -641,6 +678,7 @@ function TrackListRowRenderer({
                 className="track-artist"
                 linkClassName="artist-name-link-inline"
                 stopPropagation
+                artistBrowseMode={artistBrowseMode}
               />
             )}
           </div>
@@ -685,7 +723,13 @@ function TrackListRowRenderer({
         )}
         {ratingsEnabled && (
           <div className="track-col track-col-rating">
-            {!isMissingPlaylistEntry && <TrackRatingControl trackPaths={[track.path]} size="sm" />}
+            {!isMissingPlaylistEntry && (
+              <TrackListRating
+                trackPath={track.path}
+                rating={ratings.get(track.path)?.rating ?? null}
+                setTrackRating={setTrackRating}
+              />
+            )}
           </div>
         )}
         <div className="track-col track-col-codec">
@@ -842,6 +886,7 @@ export default function TrackList({
   const showTracklistGenre = useLibraryStore((state) => state.showTracklistGenre)
   const showTracklistPlayCount = useLibraryStore((state) => state.showTracklistPlayCount)
   const ratingsEnabled = useRatingsStore((state) => state.enabled)
+  const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
   const ratings = useRatingsStore((state) => state.ratings)
   const setTrackRating = useRatingsStore((state) => state.setTrackRating)
   const playlists = usePlaylistStore((state) => state.playlists)
@@ -2023,6 +2068,9 @@ export default function TrackList({
     showTracklistPlayCount,
     showNewTrackIndicator,
     ratingsEnabled,
+    ratings,
+    setTrackRating,
+    artistBrowseMode,
     searchQuery,
     trackNumberMode,
     contextTrackNumbers,
@@ -2071,6 +2119,9 @@ export default function TrackList({
     showTracklistPlayCount,
     showNewTrackIndicator,
     ratingsEnabled,
+    ratings,
+    setTrackRating,
+    artistBrowseMode,
     searchQuery,
     trackNumberMode,
     contextTrackNumbers,

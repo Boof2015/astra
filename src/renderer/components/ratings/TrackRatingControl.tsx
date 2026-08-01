@@ -14,6 +14,12 @@ interface TrackRatingControlProps {
   calibration?: boolean
 }
 
+interface TrackRatingControlValueProps extends TrackRatingControlProps {
+  value: number | null
+  indeterminate?: boolean
+  onCommit: (rating: number | null) => void
+}
+
 export default function TrackRatingControl({
   trackPaths,
   size = 'sm',
@@ -22,7 +28,6 @@ export default function TrackRatingControl({
 }: TrackRatingControlProps): ReactElement {
   const ratings = useRatingsStore((s) => s.ratings)
   const setTrackRating = useRatingsStore((s) => s.setTrackRating)
-  const [tentative, setTentative] = useState<number | null>(null)
 
   const { value, indeterminate } = useMemo(() => {
     let shared: number | null | undefined
@@ -40,6 +45,34 @@ export default function TrackRatingControl({
   const handleCommit = (rating: number | null) => {
     void setTrackRating(trackPaths, rating)
     onCommitted?.()
+  }
+
+  return (
+    <TrackRatingControlValue
+      trackPaths={trackPaths}
+      size={size}
+      calibration={calibration}
+      value={value}
+      indeterminate={indeterminate}
+      onCommit={handleCommit}
+    />
+  )
+}
+
+// Lets a virtualized parent select rating state once instead of mounting a
+// Zustand subscription for every recycled row.
+export function TrackRatingControlValue({
+  trackPaths,
+  value,
+  indeterminate = false,
+  size = 'sm',
+  onCommit,
+  calibration = true
+}: TrackRatingControlValueProps): ReactElement {
+  const [tentative, setTentative] = useState<number | null>(null)
+
+  const handleCommit = (rating: number | null) => {
+    onCommit(rating)
   }
 
   const ladderPresence = usePresence(calibration ? tentative : null)

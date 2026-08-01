@@ -162,7 +162,7 @@ const ARTWORK_PROTOCOL_VARIANT_SEGMENTS: Record<ArtworkVariant, string> = {
   full: 'full'
 }
 
-function buildArtworkProtocolUrl(hash: string, variant: ArtworkVariant): string {
+export function buildArtworkProtocolUrl(hash: string, variant: ArtworkVariant): string {
   return `astra-artwork://art/${ARTWORK_PROTOCOL_VARIANT_SEGMENTS[variant]}/${encodeURIComponent(hash)}`
 }
 

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { useLibraryStore } from '../../stores/libraryStore'
+import { memo, useEffect, useRef, useState } from 'react'
+import { buildArtworkProtocolUrl, useLibraryStore } from '../../stores/libraryStore'
 import type { ArtworkVariant } from '../../stores/libraryStore'
 import {
   ARTWORK_PRELOAD_MARGIN_PX,
@@ -12,6 +12,46 @@ interface AlbumArtworkProps {
   alt?: string
   className?: string
   variant?: ArtworkVariant
+  virtualized?: boolean
+}
+
+interface VirtualizedAlbumArtworkProps {
+  hash: string | null
+  alt: string
+  className: string
+  variant: ArtworkVariant
+}
+
+function ArtworkPlaceholder({ className }: { className: string }) {
+  return <div className={`album-artwork-placeholder ${className}`}>♫</div>
+}
+
+// react-window already limits these images to the visible rows plus a small
+// overscan. Avoid setting up an IntersectionObserver, ResizeObserver, timers,
+// a store subscription, and a second Image decode every time a row is recycled.
+function VirtualizedAlbumArtwork({
+  hash,
+  alt,
+  className,
+  variant
+}: VirtualizedAlbumArtworkProps) {
+  const artworkUrl = hash ? buildArtworkProtocolUrl(hash, variant) : null
+  const [failedArtworkUrl, setFailedArtworkUrl] = useState<string | null>(null)
+
+  if (!artworkUrl || failedArtworkUrl === artworkUrl) {
+    return <ArtworkPlaceholder className={className} />
+  }
+
+  return (
+    <img
+      src={artworkUrl}
+      alt={alt}
+      className={className}
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailedArtworkUrl(artworkUrl)}
+    />
+  )
 }
 
 function preloadArtwork(url: string): Promise<string> {
@@ -47,12 +87,33 @@ function preloadArtwork(url: string): Promise<string> {
   })
 }
 
-export default function AlbumArtwork({
+function AlbumArtwork({
   hash,
   alt = 'Album artwork',
   className = '',
-  variant = 'card'
+  variant = 'card',
+  virtualized = false
 }: AlbumArtworkProps) {
+  if (virtualized) {
+    return (
+      <VirtualizedAlbumArtwork
+        hash={hash}
+        alt={alt}
+        className={className}
+        variant={variant}
+      />
+    )
+  }
+
+  return <LazyAlbumArtwork hash={hash} alt={alt} className={className} variant={variant} />
+}
+
+function LazyAlbumArtwork({
+  hash,
+  alt,
+  className,
+  variant
+}: VirtualizedAlbumArtworkProps) {
   const [artworkUrl, setArtworkUrl] = useState<string | null>(null)
   const [isVisible, setIsVisible] = useState(false)
   const placeholderRef = useRef<HTMLDivElement | null>(null)
@@ -219,3 +280,5 @@ export default function AlbumArtwork({
     />
   )
 }
+
+export default memo(AlbumArtwork)

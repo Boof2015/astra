@@ -1,5 +1,5 @@
-import { Fragment } from 'react'
-import { useLibraryStore } from '../../stores/libraryStore'
+import { Fragment, memo } from 'react'
+import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
 import { parseArtistMetadata } from '../../utils/artistMetadata'
 import { buildArtistNameTokens } from '../../../shared/library/artistCredits.ts'
 
@@ -14,11 +14,24 @@ interface ArtistNameLinksProps {
   stopPropagation?: boolean
 }
 
+interface ArtistNameLinksContentProps extends ArtistNameLinksProps {
+  artistBrowseMode: LibraryArtistBrowseMode
+}
+
 function joinClasses(...classNames: Array<string | undefined>): string {
   return classNames.filter(Boolean).join(' ')
 }
 
 export default function ArtistNameLinks({
+  ...props
+}: ArtistNameLinksProps) {
+  const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
+  return <ArtistNameLinksContent {...props} artistBrowseMode={artistBrowseMode} />
+}
+
+// Virtualized lists can select the browse mode once at the list level instead
+// of subscribing every mounted row to the library store.
+function ArtistNameLinksContentRenderer({
   artistText,
   artistNames,
   browseArtistText,
@@ -26,9 +39,9 @@ export default function ArtistNameLinks({
   onArtistClick,
   className,
   linkClassName,
-  stopPropagation = false
-}: ArtistNameLinksProps) {
-  const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
+  stopPropagation = false,
+  artistBrowseMode
+}: ArtistNameLinksContentProps) {
   const normalizedArtistText = artistText.replace(/\s+/g, ' ').trim()
   const normalizedBrowseArtistText = (browseArtistText ?? '').replace(/\s+/g, ' ').trim()
   const parsedArtistTokens = artistNames && artistNames.length > 0
@@ -93,3 +106,5 @@ export default function ArtistNameLinks({
     </span>
   )
 }
+
+export const ArtistNameLinksContent = memo(ArtistNameLinksContentRenderer)
