@@ -1949,6 +1949,94 @@ test('playlist cleanup reassociates a renamed track by captured metadata', async
   assert.equal(recoveredEntry.track?.path, renamedTrackPath)
 })
 
+test('folder move recovery preserves stats and all path-keyed track data', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => library.setReplayGainScanEnabled(true))
+
+  const musicDir = join(userDataDir, 'music')
+  const originalTrackPath = join(musicDir, 'before-move.wav')
+  const movedTrackPath = join(musicDir, 'after-move.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(originalTrackPath, 'Move Recovery Title', 'Move Recovery Artist')
+  await library.scanFolder(musicDir)
+
+  const generation = library.getListeningHistoryStatus().generation
+  const firstStartedAt = 1_700_000_000_000
+  await seedListeningSession(generation, {
+    sessionKey: 'move-recovery-before',
+    trackPath: originalTrackPath,
+    startedAt: firstStartedAt,
+    listenedSeconds: 60
+  })
+  await library.setTrackRatingForPaths([originalTrackPath], 4.5)
+  await library.addFavorite(originalTrackPath)
+  const playlist = await library.createPlaylist('Move Recovery Playlist')
+  await library.addToPlaylist(playlist.id, [originalTrackPath])
+
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare(
+      "INSERT INTO track_metadata_overrides (track_path, title, album, updated_at) VALUES (?, 'Recovered Override', 'Recovered Album', 1)"
+    ).run(originalTrackPath)
+    directDb.prepare(
+      "INSERT INTO lyrics_cache (track_path, metadata_signature, status, source, synced_lines_json, updated_at) VALUES (?, 'move-sig', 'not_found', 'embedded', '[]', 1)"
+    ).run(originalTrackPath)
+    directDb.prepare(
+      "INSERT INTO track_loudness (track_path, loudness_lufs, method, analyzed_at) VALUES (?, -14, 'ebur128', 1)"
+    ).run(originalTrackPath)
+  })
+
+  await rename(originalTrackPath, movedTrackPath)
+  const rescan = await library.scanFolder(musicDir)
+  assert.equal(rescan.added, 1)
+  assert.equal(await library.cleanupMissingTracks(), 1)
+
+  assert.deepEqual(getStoredTrackPaths(userDataDir), [movedTrackPath])
+  assert.equal(library.getTrackByPath(movedTrackPath)?.play_count, 1)
+  assert.deepEqual(library.getTrackRatingEntries().map((entry) => [entry.track_path, entry.rating]), [[movedTrackPath, 4.5]])
+  assert.deepEqual(library.getFavoritePaths(), [movedTrackPath])
+  assert.deepEqual(library.getPlaylistTrackEntries(playlist.id).map((entry) => entry.track_path), [movedTrackPath])
+  assert.equal(library.getRecentlyPlayed(10)[0]?.path, movedTrackPath)
+
+  const stored = withDirectLibraryDb(userDataDir, (directDb) => ({
+    session: directDb.prepare(
+      "SELECT s.track_id, s.track_path, t.path AS current_path FROM listening_sessions s LEFT JOIN tracks t ON t.id = s.track_id WHERE s.session_key = 'move-recovery-before'"
+    ).get() as { track_id: number; track_path: string; current_path: string },
+    origins: directDb.prepare('SELECT track_path, SUM(play_count) AS plays FROM track_play_origins GROUP BY track_path').all(),
+    override: directDb.prepare('SELECT track_path, title FROM track_metadata_overrides').get(),
+    lyrics: directDb.prepare('SELECT track_path FROM lyrics_cache').get(),
+    loudness: directDb.prepare('SELECT track_path FROM track_loudness').get()
+  }))
+  assert.equal(stored.session.track_path, originalTrackPath, 'the historical path snapshot stays intact')
+  assert.equal(stored.session.current_path, movedTrackPath)
+  assert.deepEqual(stored.origins, [{ track_path: movedTrackPath, plays: 1 }])
+  assert.deepEqual(stored.override, { track_path: movedTrackPath, title: 'Recovered Override' })
+  assert.deepEqual(stored.lyrics, { track_path: movedTrackPath })
+  assert.deepEqual(stored.loudness, { track_path: movedTrackPath })
+
+  await seedListeningSession(generation, {
+    sessionKey: 'move-recovery-after',
+    trackPath: movedTrackPath,
+    startedAt: firstStartedAt + 120_000,
+    listenedSeconds: 60
+  })
+  const dashboard = library.getListeningStatsDashboard({
+    range: 'all',
+    rankingMetric: 'plays',
+    artistBrowseMode: 'canonical',
+    now: firstStartedAt + 240_000
+  })
+  assert.equal(dashboard.topTracks.length, 1)
+  assert.equal(dashboard.topTracks[0]?.title, 'Recovered Override')
+  assert.equal(dashboard.topTracks[0]?.trackPath, movedTrackPath)
+  assert.equal(dashboard.topTracks[0]?.available, true)
+  assert.equal(dashboard.topTracks[0]?.qualifiedPlays, 2)
+  assert.equal(dashboard.topAlbums.length, 1)
+  assert.equal(dashboard.topAlbums[0]?.album, 'Recovered Album')
+  assert.equal(dashboard.topAlbums[0]?.qualifiedPlays, 2)
+  assert.equal(library.getTrackByPath(movedTrackPath)?.play_count, 2)
+})
+
 test('playlist cleanup keeps ambiguous renamed tracks missing with fallback metadata', async (t) => {
   const dir = await setupEmptyLibrary(t)
   library.setReplayGainScanEnabled(false)
@@ -1964,6 +2052,14 @@ test('playlist cleanup keeps ambiguous renamed tracks missing with fallback meta
   await writeTaggedWavFixture(originalTrackPath, 'Ambiguous Metadata Title', 'Ambiguous Metadata Artist')
 
   await library.scanFolder(musicDir)
+  const generation = library.getListeningHistoryStatus().generation
+  await seedListeningSession(generation, {
+    sessionKey: 'ambiguous-move-history',
+    trackPath: originalTrackPath,
+    startedAt: 1_700_000_000_000,
+    listenedSeconds: 60
+  })
+  await library.setTrackRatingForPaths([originalTrackPath], 4)
   const playlist = await library.createPlaylist('Ambiguous Rename')
   await library.addToPlaylist(playlist.id, [originalTrackPath])
 
@@ -1978,6 +2074,197 @@ test('playlist cleanup keeps ambiguous renamed tracks missing with fallback meta
   assert.equal(entry.missing, true)
   assert.equal(entry.title, 'Ambiguous Metadata Title')
   assert.equal(entry.artist, 'Ambiguous Metadata Artist')
+  const dashboard = library.getListeningStatsDashboard({
+    range: 'all',
+    rankingMetric: 'plays',
+    artistBrowseMode: 'canonical',
+    now: 1_700_000_120_000
+  })
+  assert.equal(dashboard.topTracks[0]?.available, false)
+  assert.equal(dashboard.topTracks[0]?.trackPath, null)
+  assert.deepEqual(library.getTrackRatingEntries().map((rating) => rating.track_path), [originalTrackPath])
+  const originPaths = withDirectLibraryDb(dir, (directDb) => (
+    directDb.prepare('SELECT track_path FROM track_play_origins').all()
+  ))
+  assert.deepEqual(originPaths, [{ track_path: originalTrackPath }])
+})
+
+test('database initialization repairs already-orphaned history and path state idempotently', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => library.setReplayGainScanEnabled(true))
+
+  const musicDir = join(userDataDir, 'historical-recovery')
+  const currentTrackPath = join(musicDir, 'current.wav')
+  const staleTrackPath = join(musicDir, 'old-location.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(currentTrackPath, 'Historical Recovery', 'History Artist')
+  await library.scanFolder(musicDir)
+  const currentTrack = library.getTrackByPath(currentTrackPath)
+  assert.ok(currentTrack)
+
+  const playlist = await library.createPlaylist('Historical Recovery Playlist')
+  const generation = library.getListeningHistoryStatus().generation
+  const startedAt = 1_700_100_000_000
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare(`
+      INSERT INTO listening_sessions (
+        generation, session_key, track_id, track_path, title, artist, album,
+        album_identity_key, source_type, duration_seconds, started_at, ended_at,
+        listened_seconds, qualified_at
+      ) VALUES (?, 'historical-orphan', NULL, ?, ?, ?, ?, 'stale-album-key',
+        'local', 180, ?, ?, 60, ?)
+    `).run(
+      generation,
+      staleTrackPath,
+      currentTrack.title,
+      currentTrack.artist,
+      currentTrack.album,
+      startedAt,
+      startedAt + 60_000,
+      startedAt + 15_000
+    )
+    const session = directDb.prepare("SELECT id FROM listening_sessions WHERE session_key = 'historical-orphan'").get() as { id: number }
+    directDb.prepare(`
+      INSERT INTO listening_segments (
+        session_id, segment_key, started_at, last_observed_at, ended_at, listened_seconds
+      ) VALUES (?, 'historical-orphan-segment', ?, ?, ?, 60)
+    `).run(session.id, startedAt, startedAt + 60_000, startedAt + 60_000)
+    directDb.prepare(
+      'INSERT INTO track_play_origins (track_path, origin_id, play_count, last_played_at) VALUES (?, ?, 3, ?)'
+    ).run(staleTrackPath, 'historical-origin', startedAt + 15_000)
+    directDb.prepare('INSERT INTO track_ratings (track_path, rating, updated_at) VALUES (?, 4.5, 1)').run(staleTrackPath)
+    directDb.prepare('INSERT INTO favorites (track_path, added_at) VALUES (?, 1)').run(staleTrackPath)
+    directDb.prepare('INSERT INTO recently_played (track_path, played_at) VALUES (?, ?)').run(staleTrackPath, startedAt)
+    directDb.prepare(`
+      INSERT INTO playlist_tracks (
+        playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album
+      ) VALUES (?, ?, 0, 1, ?, ?, ?)
+    `).run(playlist.id, staleTrackPath, currentTrack.title, currentTrack.artist, currentTrack.album)
+    directDb.prepare(`
+      INSERT INTO app_meta (key, value, updated_at)
+      VALUES ('listening_history_started_at_v1', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(String(startedAt), startedAt)
+  })
+
+  library.closeDatabase()
+  await library.initDatabase()
+
+  const assertRecoveredState = () => {
+    assert.equal(library.getTrackByPath(currentTrackPath)?.play_count, 3)
+    assert.deepEqual(library.getTrackRatingEntries().map((entry) => [entry.track_path, entry.rating]), [[currentTrackPath, 4.5]])
+    assert.deepEqual(library.getFavoritePaths(), [currentTrackPath])
+    assert.equal(library.getRecentlyPlayed(10)[0]?.path, currentTrackPath)
+    assert.deepEqual(library.getPlaylistTrackEntries(playlist.id).map((entry) => entry.track_path), [currentTrackPath])
+
+    const stored = withDirectLibraryDb(userDataDir, (directDb) => ({
+      session: directDb.prepare(
+        "SELECT s.track_path, t.path AS current_path, s.album_identity_key FROM listening_sessions s LEFT JOIN tracks t ON t.id = s.track_id WHERE s.session_key = 'historical-orphan'"
+      ).get() as { track_path: string; current_path: string; album_identity_key: string },
+      origins: directDb.prepare('SELECT track_path, origin_id, play_count FROM track_play_origins').all()
+    }))
+    assert.equal(stored.session.track_path, staleTrackPath)
+    assert.equal(stored.session.current_path, currentTrackPath)
+    assert.notEqual(stored.session.album_identity_key, 'stale-album-key')
+    assert.deepEqual(stored.origins, [{ track_path: currentTrackPath, origin_id: 'historical-origin', play_count: 3 }])
+
+    const dashboard = library.getListeningStatsDashboard({
+      range: 'all',
+      rankingMetric: 'plays',
+      artistBrowseMode: 'canonical',
+      now: startedAt + 120_000
+    })
+    assert.equal(dashboard.topTracks[0]?.trackPath, currentTrackPath)
+    assert.equal(dashboard.topTracks[0]?.available, true)
+    assert.equal(dashboard.topTracks[0]?.qualifiedPlays, 1)
+  }
+
+  assertRecoveredState()
+  library.closeDatabase()
+  await library.initDatabase()
+  assertRecoveredState()
+})
+
+test('conflicting orphan identities relink sessions without migrating shared path state', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => library.setReplayGainScanEnabled(true))
+
+  const musicDir = join(userDataDir, 'conflicting-history')
+  const firstTrackPath = join(musicDir, 'first.wav')
+  const secondTrackPath = join(musicDir, 'second.wav')
+  const staleTrackPath = join(musicDir, 'reused-old-path.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(firstTrackPath, 'Conflicting First', 'First Artist')
+  await writeTaggedWavFixture(secondTrackPath, 'Conflicting Second', 'Second Artist')
+  await library.scanFolder(musicDir)
+  const firstTrack = library.getTrackByPath(firstTrackPath)
+  const secondTrack = library.getTrackByPath(secondTrackPath)
+  assert.ok(firstTrack)
+  assert.ok(secondTrack)
+
+  const generation = library.getListeningHistoryStatus().generation
+  const startedAt = 1_700_200_000_000
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    const insertSession = directDb.prepare(`
+      INSERT INTO listening_sessions (
+        generation, session_key, track_id, track_path, title, artist, album,
+        album_identity_key, source_type, duration_seconds, started_at, ended_at,
+        listened_seconds, qualified_at
+      ) VALUES (?, ?, NULL, ?, ?, ?, ?, 'stale-key', 'local', 180, ?, ?, 60, ?)
+    `)
+    insertSession.run(
+      generation, 'conflict-first', staleTrackPath, firstTrack.title, firstTrack.artist,
+      firstTrack.album, startedAt, startedAt + 60_000, startedAt + 15_000
+    )
+    insertSession.run(
+      generation, 'conflict-second', staleTrackPath, secondTrack.title, secondTrack.artist,
+      secondTrack.album, startedAt + 120_000, startedAt + 180_000, startedAt + 135_000
+    )
+    directDb.prepare(
+      'INSERT INTO track_play_origins (track_path, origin_id, play_count, last_played_at) VALUES (?, ?, 5, ?)'
+    ).run(staleTrackPath, 'conflicting-origin', startedAt)
+    directDb.prepare('INSERT INTO track_ratings (track_path, rating, updated_at) VALUES (?, 5, 1)').run(staleTrackPath)
+    directDb.prepare(`
+      INSERT INTO app_meta (key, value, updated_at)
+      VALUES ('listening_history_started_at_v1', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(String(startedAt), startedAt)
+  })
+
+  library.closeDatabase()
+  await library.initDatabase()
+
+  const stored = withDirectLibraryDb(userDataDir, (directDb) => ({
+    sessions: directDb.prepare(`
+      SELECT s.session_key, s.track_path, t.path AS current_path
+      FROM listening_sessions s
+      LEFT JOIN tracks t ON t.id = s.track_id
+      WHERE s.session_key LIKE 'conflict-%'
+      ORDER BY s.session_key
+    `).all(),
+    origins: directDb.prepare('SELECT track_path, origin_id, play_count FROM track_play_origins').all()
+  }))
+  assert.deepEqual(stored.sessions, [
+    { session_key: 'conflict-first', track_path: staleTrackPath, current_path: firstTrackPath },
+    { session_key: 'conflict-second', track_path: staleTrackPath, current_path: secondTrackPath }
+  ])
+  assert.deepEqual(stored.origins, [{ track_path: staleTrackPath, origin_id: 'conflicting-origin', play_count: 5 }])
+  assert.deepEqual(library.getTrackRatingEntries().map((entry) => entry.track_path), [staleTrackPath])
+  assert.equal(library.getTrackByPath(firstTrackPath)?.play_count, 0)
+  assert.equal(library.getTrackByPath(secondTrackPath)?.play_count, 0)
+
+  const dashboard = library.getListeningStatsDashboard({
+    range: 'all',
+    rankingMetric: 'plays',
+    artistBrowseMode: 'canonical',
+    now: startedAt + 240_000
+  })
+  assert.deepEqual(
+    dashboard.topTracks.map((entry) => [entry.trackPath, entry.available]).sort(),
+    [[firstTrackPath, true], [secondTrackPath, true]].sort()
+  )
 })
 
 test('playlist cleanup preserves a repeated occurrence when it matches an existing playlist entry', async (t) => {

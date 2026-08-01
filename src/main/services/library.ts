@@ -2550,6 +2550,10 @@ export async function initDatabase(): Promise<void> {
   // Last, because it reads its completion flag out of app_meta.
   backfillTrackPlayOrigins()
 
+  // Upgrade-time repair for histories and path-keyed user data orphaned by a
+  // folder reorganization in an older Astra version.
+  reconcileMissingTrackReferencesByMetadata()
+
   await saveDatabase()
 }
 
@@ -3099,6 +3103,28 @@ function recomputePlayCountsFromOrigins(trackPaths: readonly string[]): number {
     `, chunk)
     updated += Number(db.get<{ changed?: unknown }>('SELECT changes() AS changed')?.changed) || 0
   }
+  return updated
+}
+
+function refreshListeningSessionAlbumIdentities(trackPaths: readonly string[]): number {
+  if (!db || trackPaths.length === 0) return 0
+  const uniquePaths = new Set(trackPaths)
+  const allTracks = readAllTrackRowsUnordered()
+  const albumIdentityKeyByPath = buildAlbumIdentityKeysByPath(allTracks)
+  let updated = 0
+
+  for (const track of allTracks) {
+    if (!uniquePaths.has(track.path)) continue
+    const albumIdentityKey = albumIdentityKeyByPath.get(track.path)
+      ?? buildFallbackAlbumIdentityKeyFromTrack(track)
+    updated += db.run(`
+      UPDATE listening_sessions
+      SET album_identity_key = ?
+      WHERE track_id = ?
+        AND album_identity_key IS NOT ?
+    `, [albumIdentityKey, track.id, albumIdentityKey]).changes
+  }
+
   return updated
 }
 
@@ -6352,7 +6378,9 @@ export async function scanFolder(
   }, { signal })
 
   throwIfScanCancelled(signal)
-  reconcileMissingPlaylistEntriesByMetadata()
+  if (added > 0) {
+    reconcileMissingTrackReferencesByMetadata()
+  }
   if (persist) {
     await saveDatabase()
   }
@@ -11109,6 +11137,13 @@ type MetadataMatchResult =
   | { kind: 'ambiguous' }
   | { kind: 'none' }
 
+interface TrackReferenceQuery {
+  path?: string | null
+  title?: string | null
+  artist?: string | null
+  album?: string | null
+}
+
 function buildPlaylistImportLookupIndex(
   tracks: Array<Pick<DbTrackRow, 'path' | 'title' | 'artist' | 'artist_names_json' | 'album' | 'album_artist_names_json'>>
 ): PlaylistImportLookupIndex {
@@ -11195,6 +11230,32 @@ function matchPlaylistEntryByMetadata(entry: ParsedPlaylistEntry, index: Playlis
   if (titleOnlyCandidate === null) return { kind: 'ambiguous' }
 
   return { kind: 'none' }
+}
+
+// Shared identity resolver for playlist imports, mobile sync, and recovery of
+// path-keyed library state. A real path is stronger than metadata; metadata
+// then follows the same permissive-but-unambiguous tiers playlist import uses.
+function matchTrackReference(entry: TrackReferenceQuery, index: PlaylistImportLookupIndex): MetadataMatchResult {
+  const sourcePath = typeof entry.path === 'string' ? entry.path.trim() : ''
+  let pathWasAmbiguous = false
+  if (sourcePath) {
+    const normalizedPath = normalizePlaylistPathForLookup(sourcePath)
+    if (normalizedPath) {
+      const exact = index.exactPath.get(normalizedPath)
+      if (exact) return { kind: 'matched', trackPath: exact }
+      const caseInsensitive = index.caseInsensitivePath.get(normalizedPath.toLocaleLowerCase())
+      if (typeof caseInsensitive === 'string') return { kind: 'matched', trackPath: caseInsensitive }
+      pathWasAmbiguous = caseInsensitive === null
+    }
+  }
+
+  const metadataMatch = matchPlaylistEntryByMetadata({
+    title: entry.title ?? undefined,
+    artist: entry.artist ?? undefined,
+    album: entry.album ?? undefined
+  }, index)
+  if (metadataMatch.kind !== 'none') return metadataMatch
+  return pathWasAmbiguous ? { kind: 'ambiguous' } : metadataMatch
 }
 
 function deriveImportedPlaylistName(filePath: string): string {
@@ -11375,19 +11436,45 @@ export async function exportPlaylistToM3u(playlistId: number, filePath: string):
   }
 }
 
-function reconcileMissingPlaylistEntriesByMetadata(): number {
+interface MissingPlaylistReferenceRow {
+  id?: unknown
+  playlist_id?: unknown
+  track_path?: unknown
+  fallback_title?: unknown
+  fallback_artist?: unknown
+  fallback_album?: unknown
+}
+
+interface OrphanListeningReferenceRow {
+  id?: unknown
+  track_path?: unknown
+  title?: unknown
+  artist?: unknown
+  album?: unknown
+}
+
+interface StalePathResolutionState {
+  targets: Set<string>
+  unresolved: boolean
+}
+
+/**
+ * Reattaches references whose original track row has already disappeared. Listening
+ * sessions and playlist rows retain metadata snapshots, which makes this a best-effort
+ * upgrade path for libraries that were reorganized before path recovery existed.
+ *
+ * Individual rows are safe to relink on their own unique match. Path-keyed state is broader
+ * (ratings, favorites, play origins, recent plays...), so it moves only when every saved
+ * identity for that stale path resolves and all of them agree on one target.
+ */
+function reconcileMissingTrackReferencesByMetadata(): number {
   if (!db) return 0
 
-  const rows = db.all<{
-    id?: unknown
-    playlist_id?: unknown
-    fallback_title?: unknown
-    fallback_artist?: unknown
-    fallback_album?: unknown
-  }>(`
+  const playlistRows = db.all<MissingPlaylistReferenceRow>(`
     SELECT
       pt.id,
       pt.playlist_id,
+      pt.track_path,
       pt.fallback_title,
       pt.fallback_artist,
       pt.fallback_album
@@ -11398,34 +11485,121 @@ function reconcileMissingPlaylistEntriesByMetadata(): number {
       AND TRIM(pt.fallback_title) <> ''
     ORDER BY pt.playlist_id ASC, pt.position ASC, pt.id ASC
   `)
-  if (rows.length === 0) return 0
+  const sessionRows = db.all<OrphanListeningReferenceRow>(`
+    SELECT id, track_path, title, artist, album
+    FROM listening_sessions
+    WHERE track_id IS NULL
+      AND TRIM(title) <> ''
+    ORDER BY id ASC
+  `)
+  if (playlistRows.length === 0 && sessionRows.length === 0) return 0
 
-  const lookup = buildPlaylistImportLookupIndex(readAllTrackRowsUnordered())
-  let reconciled = 0
+  const allTracks = readAllTrackRowsUnordered()
+  const availableTracks = allTracks.filter((track) => track.is_available === 1)
+  if (availableTracks.length === 0) return 0
 
-  for (const row of rows) {
+  const lookup = buildPlaylistImportLookupIndex(availableTracks)
+  const targetByPath = new Map(availableTracks.map((track) => [track.path, track]))
+  const albumIdentityKeyByPath = buildAlbumIdentityKeysByPath(allTracks)
+  const stalePathStates = new Map<string, StalePathResolutionState>()
+  const matchedPlaylistRows: Array<{ id: number; trackPath: string }> = []
+  const matchedSessionIdsByPath = new Map<string, number[]>()
+  const matchByIdentity = new Map<string, MetadataMatchResult>()
+
+  const resolveReference = (entry: TrackReferenceQuery): MetadataMatchResult => {
+    const key = [entry.path ?? '', entry.title ?? '', entry.artist ?? '', entry.album ?? ''].join('\u001f')
+    const cached = matchByIdentity.get(key)
+    if (cached) return cached
+    const match = matchTrackReference(entry, lookup)
+    matchByIdentity.set(key, match)
+    return match
+  }
+
+  const recordResolution = (stalePath: string, match: MetadataMatchResult): void => {
+    let state = stalePathStates.get(stalePath)
+    if (!state) {
+      state = { targets: new Set(), unresolved: false }
+      stalePathStates.set(stalePath, state)
+    }
+    if (match.kind === 'matched') state.targets.add(match.trackPath)
+    else state.unresolved = true
+  }
+
+  for (const row of playlistRows) {
     const rowId = Number(row.id)
     const playlistId = Number(row.playlist_id)
-    if (!Number.isInteger(rowId) || rowId <= 0 || !Number.isInteger(playlistId) || playlistId <= 0) {
+    const stalePath = typeof row.track_path === 'string' ? row.track_path.trim() : ''
+    if (
+      !Number.isInteger(rowId) || rowId <= 0
+      || !Number.isInteger(playlistId) || playlistId <= 0
+      || !stalePath
+    ) {
       continue
     }
+    const match = resolveReference({
+      path: stalePath,
+      title: typeof row.fallback_title === 'string' ? row.fallback_title : null,
+      artist: typeof row.fallback_artist === 'string' ? row.fallback_artist : null,
+      album: typeof row.fallback_album === 'string' ? row.fallback_album : null
+    })
+    recordResolution(stalePath, match)
+    if (match.kind === 'matched') matchedPlaylistRows.push({ id: rowId, trackPath: match.trackPath })
+  }
 
-    const metadataMatch = matchPlaylistEntryByMetadata({
-      title: typeof row.fallback_title === 'string' ? row.fallback_title : undefined,
-      artist: typeof row.fallback_artist === 'string' ? row.fallback_artist : undefined,
-      album: typeof row.fallback_album === 'string' ? row.fallback_album : undefined
-    }, lookup)
-    if (metadataMatch.kind !== 'matched') continue
+  for (const row of sessionRows) {
+    const rowId = Number(row.id)
+    const stalePath = typeof row.track_path === 'string' ? row.track_path.trim() : ''
+    if (!Number.isInteger(rowId) || rowId <= 0 || !stalePath) continue
+    const match = resolveReference({
+      path: stalePath,
+      title: typeof row.title === 'string' ? row.title : null,
+      artist: typeof row.artist === 'string' ? row.artist : null,
+      album: typeof row.album === 'string' ? row.album : null
+    })
+    recordResolution(stalePath, match)
+    if (match.kind !== 'matched') continue
+    const ids = matchedSessionIdsByPath.get(match.trackPath)
+    if (ids) ids.push(rowId)
+    else matchedSessionIdsByPath.set(match.trackPath, [rowId])
+  }
 
-    const result = db.run(
+  let reconciled = 0
+  const migratedTargetPaths = new Set<string>()
+  for (const [stalePath, state] of stalePathStates) {
+    if (state.unresolved || state.targets.size !== 1) continue
+    const [targetPath] = state.targets
+    if (!targetByPath.has(targetPath) || stalePath === targetPath) continue
+    moveTrackChildRows(stalePath, targetPath)
+    migratedTargetPaths.add(targetPath)
+    reconciled += 1
+  }
+
+  for (const row of matchedPlaylistRows) {
+    reconciled += db.run(
       'UPDATE playlist_tracks SET track_path = ? WHERE id = ?',
-      [metadataMatch.trackPath, rowId]
-    )
-    if (result.changes > 0) {
-      reconciled += result.changes
+      [row.trackPath, row.id]
+    ).changes
+  }
+
+  for (const [targetPath, sessionIds] of matchedSessionIdsByPath) {
+    const target = targetByPath.get(targetPath)
+    if (!target) continue
+    const albumIdentityKey = albumIdentityKeyByPath.get(targetPath)
+      ?? buildFallbackAlbumIdentityKeyFromTrack(target)
+    const idsPerChunk = SQLITE_SAFE_MAX_VARIABLES - 2
+    for (let offset = 0; offset < sessionIds.length; offset += idsPerChunk) {
+      const chunk = sessionIds.slice(offset, offset + idsPerChunk)
+      const placeholders = chunk.map(() => '?').join(', ')
+      reconciled += db.run(`
+        UPDATE listening_sessions
+        SET track_id = ?, album_identity_key = ?
+        WHERE id IN (${placeholders})
+          AND track_id IS NULL
+      `, [target.id, albumIdentityKey, ...chunk]).changes
     }
   }
 
+  reconciled += recomputePlayCountsFromOrigins(Array.from(migratedTargetPaths))
   return reconciled
 }
 
@@ -11595,23 +11769,42 @@ export async function importPlaylistFromFile(filePath: string): Promise<Playlist
   }
 }
 
-// Remove tracks that no longer exist on disk
+interface MissingTrackCleanupRow {
+  id: number
+  path: string
+  title: string
+  artist: string
+  album: string
+  base_title: string
+  base_artist: string
+  base_album: string
+}
+
+// Remove tracks that no longer exist on disk. The filesystem pass finishes before
+// any write so moved files can be matched against the complete set of verified
+// survivors and merged before delete triggers discard path-keyed user data.
 export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Promise<number> {
   const { persist = true, signal, onIssue } = options
   if (!db) return 0
 
-  const tracks = db.all<{ id: number; path: string; title: string; artist: string; album: string }>(`
+  const tracks = db.all<MissingTrackCleanupRow>(`
     SELECT
       t.id,
       t.path,
       COALESCE(o.title, t.title) AS title,
       COALESCE(o.artist, t.artist) AS artist,
-      COALESCE(o.album, t.album) AS album
+      COALESCE(o.album, t.album) AS album,
+      t.title AS base_title,
+      t.artist AS base_artist,
+      t.album AS base_album
     FROM tracks t
     LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
     WHERE t.source_type = 'local'
   `)
   let removed = 0
+  let reconciled = 0
+  const missingTracks: MissingTrackCleanupRow[] = []
+  const survivingTrackIds = new Set<number>()
   const caseFoldedGroups = comparableFsPathFoldsCase()
     ? new Map<string, Array<{ id: number; path: string; dev: number; ino: number }>>()
     : null
@@ -11620,6 +11813,7 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
     throwIfScanCancelled(signal)
     try {
       const trackStat = await stat(track.path)
+      survivingTrackIds.add(track.id)
       if (caseFoldedGroups) {
         const key = normalizeComparableFsPath(track.path)
         const entry = { id: track.id, path: track.path, dev: trackStat.dev, ino: trackStat.ino }
@@ -11630,9 +11824,7 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
     } catch (err: unknown) {
       const code = getErrorCode(err)
       if (code === 'ENOENT' || code === 'ENOTDIR') {
-        snapshotPlaylistFallbackMetadata(track)
-        db.run('DELETE FROM tracks WHERE id = ?', [track.id])
-        removed++
+        missingTracks.push(track)
       } else {
         onIssue?.(createLibraryScanIssue('cleanup', track.path, err))
         console.warn(`Failed to validate track during cleanup for ${track.path}:`, err)
@@ -11640,26 +11832,75 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
     }
   }
 
-  // Case-variant duplicate rows for one physical file (casing-only folder
-  // rename, #180): stat resolves for every casing on a case-insensitive FS,
-  // so the missing-file path above never prunes them. Collapse each group
-  // whose rows all point at the same inode; the folder's next scan repairs
-  // the surviving row's casing. Mixed inodes mean genuinely distinct files
-  // on a case-sensitive volume — leave those alone.
-  if (caseFoldedGroups) {
-    for (const group of caseFoldedGroups.values()) {
-      if (group.length < 2) continue
-      const first = group[0]
-      if (!group.every((entry) => entry.dev === first.dev && entry.ino === first.ino)) continue
-      const survivor = group.reduce((lowest, entry) => (entry.id < lowest.id ? entry : lowest))
-      const losers = group.filter((entry) => entry.id !== survivor.id)
-      mergeDuplicateTrackRows(survivor.id, survivor.path, losers)
-      removed += losers.length
+  throwIfScanCancelled(signal)
+  const ownsTransaction = !db.inTransaction
+  if (ownsTransaction) beginLibraryWriteTransaction()
+  try {
+    const mergedTargetPaths = new Set<string>()
+    // Case-variant duplicate rows for one physical file (casing-only folder
+    // rename, #180): stat resolves for every casing on a case-insensitive FS,
+    // so the missing-file path above never prunes them. Collapse each group
+    // whose rows all point at the same inode. Mixed inodes are distinct files.
+    if (caseFoldedGroups) {
+      for (const group of caseFoldedGroups.values()) {
+        if (group.length < 2) continue
+        const first = group[0]
+        if (!group.every((entry) => entry.dev === first.dev && entry.ino === first.ino)) continue
+        const survivor = group.reduce((lowest, entry) => (entry.id < lowest.id ? entry : lowest))
+        const losers = group.filter((entry) => entry.id !== survivor.id)
+        mergeDuplicateTrackRows(survivor.id, survivor.path, losers)
+        mergedTargetPaths.add(survivor.path)
+        for (const loser of losers) survivingTrackIds.delete(loser.id)
+        removed += losers.length
+      }
     }
+
+    const survivingTracks = readAllTrackRowsUnordered().filter((track) => (
+      track.source_type === 'local'
+      && track.is_available === 1
+      && survivingTrackIds.has(track.id)
+    ))
+    const survivingLookup = buildPlaylistImportLookupIndex(survivingTracks)
+    const survivorByPath = new Map(survivingTracks.map((track) => [track.path, track]))
+
+    for (const track of missingTracks) {
+      throwIfScanCancelled(signal)
+      let match = matchTrackReference({
+        path: track.path,
+        title: track.base_title,
+        artist: track.base_artist,
+        album: track.base_album
+      }, survivingLookup)
+      if (match.kind === 'none') {
+        match = matchTrackReference({
+          path: track.path,
+          title: track.title,
+          artist: track.artist,
+          album: track.album
+        }, survivingLookup)
+      }
+
+      // Keep playlist display metadata even when the row can be merged directly;
+      // it remains useful if the recovered target disappears again later.
+      snapshotPlaylistFallbackMetadata(track)
+      const survivor = match.kind === 'matched' ? survivorByPath.get(match.trackPath) : undefined
+      if (survivor) {
+        mergeDuplicateTrackRows(survivor.id, survivor.path, [{ id: track.id, path: track.path }])
+        mergedTargetPaths.add(survivor.path)
+      } else {
+        db.run('DELETE FROM tracks WHERE id = ?', [track.id])
+      }
+      removed += 1
+    }
+
+    reconciled += refreshListeningSessionAlbumIdentities(Array.from(mergedTargetPaths))
+    reconciled += reconcileMissingTrackReferencesByMetadata()
+    if (ownsTransaction) commitLibraryWriteTransaction()
+  } catch (error) {
+    if (ownsTransaction) rollbackLibraryWriteTransaction()
+    throw error
   }
 
-  throwIfScanCancelled(signal)
-  const reconciled = reconcileMissingPlaylistEntriesByMetadata()
   if (persist && (removed > 0 || reconciled > 0)) {
     await saveDatabase()
   }
@@ -11706,22 +11947,12 @@ function clearFavoriteSyncRowsForPaths(trackPaths: readonly string[]): void {
 
 export function createTrackMetadataMatcher(): TrackMetadataMatcher {
   const lookup = buildPlaylistImportLookupIndex(readAllTrackRowsUnordered())
-  return (query) => {
-    const sourcePath = typeof query.sourcePath === 'string' ? query.sourcePath.trim() : ''
-    if (sourcePath) {
-      const normalizedPath = normalizePlaylistPathForLookup(sourcePath)
-      if (normalizedPath) {
-        const exact = lookup.exactPath.get(normalizedPath)
-        if (exact) return { kind: 'matched', trackPath: exact }
-        const caseInsensitive = lookup.caseInsensitivePath.get(normalizedPath.toLocaleLowerCase())
-        if (typeof caseInsensitive === 'string') return { kind: 'matched', trackPath: caseInsensitive }
-      }
-    }
-    return matchPlaylistEntryByMetadata(
-      { title: query.title, artist: query.artist, album: query.album },
-      lookup
-    )
-  }
+  return (query) => matchTrackReference({
+    path: query.sourcePath,
+    title: query.title,
+    artist: query.artist,
+    album: query.album
+  }, lookup)
 }
 
 export function ensurePlaylistSyncUids(): void {
