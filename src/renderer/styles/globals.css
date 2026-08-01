@@ -5298,23 +5298,6 @@ body:has(.fullscreen-overlay) .controller-hints {
   padding: 0;
 }
 
-.track-list-external-scroll {
-  flex: 0 0 auto;
-  overflow: visible;
-}
-
-.track-list-body-external-scroll {
-  flex: 0 0 auto;
-  overflow: visible;
-}
-
-.track-list-external-scroll .track-list-header {
-  position: sticky;
-  top: 0;
-  z-index: 12;
-  background: var(--bg-primary);
-}
-
 .track-list-virtualized {
   width: 100%;
   overflow-x: hidden !important;
@@ -6648,7 +6631,11 @@ body:has(.fullscreen-overlay) .controller-hints {
 }
 
 .year-detail-tracks {
-  padding-bottom: 16px;
+  box-sizing: border-box;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .year-detail-tracks-header {
@@ -6710,8 +6697,6 @@ body:has(.fullscreen-overlay) .controller-hints {
 .library-artist-detail {
   flex: 1;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -6722,6 +6707,12 @@ body:has(.fullscreen-overlay) .controller-hints {
   gap: 10px;
   padding: 12px 16px 10px;
   border-bottom: 1px solid var(--glass-border);
+}
+
+.library-artist-detail > .track-list {
+  box-sizing: border-box;
+  height: 100%;
+  min-height: 0;
 }
 
 .library-artist-rail-header {

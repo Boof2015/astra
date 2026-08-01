@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, clipboard, scr
 import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir, stat } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
-import { tmpdir, hostname, networkInterfaces } from 'os'
+import { tmpdir, hostname, networkInterfaces, setPriority, constants as osConstants } from 'os'
 import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, type ExecFileOptions } from 'child_process'
 import { createHash, randomBytes, randomUUID } from 'crypto'
 import * as mm from 'music-metadata'
@@ -29,6 +29,14 @@ import {
   type IntegrityScanTrackTarget
 } from './services/libraryIntegrity'
 import { LibraryLatestSyncCoordinator } from './services/libraryLatestSync'
+import {
+  buildEbur128Args,
+  LoudnessAnalysisJobQueue,
+  LOUDNESS_FFMPEG_MAX_STDERR_BYTES,
+  parseEbur128Summary,
+  type LoudnessAnalysisPriority,
+  type LoudnessJobRunContext
+} from './services/loudnessAnalysis'
 import {
   buildSubsonicStreamUrl,
   fetchSubsonicCoverArt,
@@ -9852,33 +9860,28 @@ interface RendererTrackLoudnessPayload {
 }
 
 const LOUDNESS_FFMPEG_TIMEOUT_MS = 180_000
-// The ebur128 filter logs a running line per 100ms of audio, so stderr for an
-// hour-long track runs to a few MB.
-const LOUDNESS_FFMPEG_MAX_STDERR_BYTES = 32 * 1024 * 1024
 
-type LoudnessAnalysisPriority = 'interactive' | 'background'
-
-interface LoudnessAnalysisJob {
+interface LoudnessAnalysisJobPayload {
   filePath: string
   fileStat: { size: number; mtimeMs: number }
-  priority: LoudnessAnalysisPriority
-  abortController: AbortController
-  resolve: (result: TrackLoudnessAnalysisResult | null) => void
-  reject: (error: unknown) => void
 }
 
-const loudnessAnalysisInFlight = new Map<string, Promise<TrackLoudnessAnalysisResult | null>>()
-const loudnessAnalysisQueue: LoudnessAnalysisJob[] = []
-let activeLoudnessAnalysisJob: LoudnessAnalysisJob | null = null
+interface LoudnessAnalysisExecutionResult {
+  result: TrackLoudnessAnalysisResult | null
+  outcome: 'success' | 'aborted' | 'failed' | 'no-binary' | 'no-summary'
+  capturedStderrBytes: number
+  backgroundPriorityApplied: boolean
+}
 
 function execFileCaptureStderr(
   command: string,
   args: string[],
   options: ExecFileOptions = {},
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onSpawn?: (pid: number | null) => void
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(
+    const child = execFile(
       command,
       args,
       {
@@ -9895,13 +9898,8 @@ function execFileCaptureStderr(
         resolve(stderr ?? '')
       }
     )
+    onSpawn?.(child.pid ?? null)
   })
-}
-
-function isAbortError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false
-  const maybeError = error as { name?: unknown; code?: unknown }
-  return maybeError.name === 'AbortError' || maybeError.code === 'ABORT_ERR'
 }
 
 async function statForLoudness(filePath: string): Promise<{ size: number; mtimeMs: number } | null> {
@@ -9913,60 +9911,55 @@ async function statForLoudness(filePath: string): Promise<{ size: number; mtimeM
   }
 }
 
-// Parse the summary block ffmpeg's ebur128 filter prints at the end of stderr.
-// Only summary lines start with the bare "I:"/"Peak:" labels; the per-frame
-// progress lines embed them mid-line. Use the last match to be safe.
-function parseEbur128Summary(stderr: string): { loudnessLufs: number; peakLinear: number | null } | null {
-  const integratedMatches = [...stderr.matchAll(/^\s+I:\s+(-?[\d.]+)\s+LUFS\s*$/gm)]
-  const lastIntegrated = integratedMatches[integratedMatches.length - 1]
-  if (!lastIntegrated) return null
-  const loudnessLufs = Number(lastIntegrated[1])
-  if (!Number.isFinite(loudnessLufs)) return null
-
-  const peakMatches = [...stderr.matchAll(/^\s+Peak:\s+(-?[\d.]+|-?inf)\s+dBFS\s*$/gm)]
-  const lastPeak = peakMatches[peakMatches.length - 1]
-  let peakLinear: number | null = null
-  if (lastPeak) {
-    if (lastPeak[1] === '-inf') {
-      peakLinear = 0
-    } else {
-      const peakDb = Number(lastPeak[1])
-      if (Number.isFinite(peakDb)) {
-        peakLinear = Math.pow(10, peakDb / 20)
-      }
-    }
-  }
-
-  return { loudnessLufs, peakLinear }
-}
-
 // Resolve a track's integrated loudness for playback normalization: stored DB
 // value when fresh, otherwise a single queued ffmpeg ebur128 pass (native
 // decode+analysis in a separate process, parallel to the renderer's decode).
-async function runLoudnessAnalysisJob(job: LoudnessAnalysisJob): Promise<TrackLoudnessAnalysisResult | null> {
+async function runLoudnessAnalysisJob(
+  job: LoudnessAnalysisJobPayload,
+  context: LoudnessJobRunContext
+): Promise<LoudnessAnalysisExecutionResult> {
   const ffmpegPath = await resolveBinary('ffmpeg')
-  if (!ffmpegPath || job.abortController.signal.aborted) return null
+  if (!ffmpegPath) {
+    return {
+      result: null,
+      outcome: 'no-binary',
+      capturedStderrBytes: 0,
+      backgroundPriorityApplied: false
+    }
+  }
 
-  const startMs = Date.now()
+  let backgroundPriorityApplied = false
   try {
     const stderr = await execFileCaptureStderr(
       ffmpegPath,
-      [
-        '-hide_banner',
-        '-nostats',
-        '-i', job.filePath,
-        '-map', '0:a:0',
-        '-vn',
-        '-af', 'ebur128=peak=sample',
-        '-f', 'null', '-'
-      ],
+      buildEbur128Args(job.filePath),
       { timeout: LOUDNESS_FFMPEG_TIMEOUT_MS, maxBuffer: LOUDNESS_FFMPEG_MAX_STDERR_BYTES },
-      job.abortController.signal
+      context.signal,
+      (pid) => {
+        if (context.priority !== 'background' || pid === null) return
+        try {
+          setPriority(pid, osConstants.priority.PRIORITY_BELOW_NORMAL)
+          backgroundPriorityApplied = true
+        } catch (error) {
+          if (isDev) {
+            console.debug('[loudness] could not lower background ffmpeg priority', {
+              pid,
+              message: error instanceof Error ? error.message : String(error)
+            })
+          }
+        }
+      }
     )
+    const capturedStderrBytes = Buffer.byteLength(stderr, 'utf8')
     const parsed = parseEbur128Summary(stderr)
     if (!parsed) {
       console.warn(`Loudness analysis produced no summary for ${job.filePath}`)
-      return null
+      return {
+        result: null,
+        outcome: 'no-summary',
+        capturedStderrBytes,
+        backgroundPriorityApplied
+      }
     }
 
     await library.setTrackLoudness({
@@ -9977,74 +9970,61 @@ async function runLoudnessAnalysisJob(job: LoudnessAnalysisJob): Promise<TrackLo
       fileSize: job.fileStat.size,
       fileMtimeMs: job.fileStat.mtimeMs
     })
-    if (isDev) {
-      console.log(`[loudness] ebur128 analysis (${Date.now() - startMs}ms): ${parsed.loudnessLufs} LUFS`, job.filePath)
+    return {
+      result: { loudnessLufs: parsed.loudnessLufs, peakLinear: parsed.peakLinear, method: 'ebur128' },
+      outcome: 'success',
+      capturedStderrBytes,
+      backgroundPriorityApplied
     }
-    return { loudnessLufs: parsed.loudnessLufs, peakLinear: parsed.peakLinear, method: 'ebur128' }
   } catch (error) {
-    if (isAbortError(error) || job.abortController.signal.aborted) {
-      return null
-    }
+    if (context.signal.aborted) throw error
     console.warn(`Loudness analysis failed for ${job.filePath}:`, error)
-    return null
+    return {
+      result: null,
+      outcome: 'failed',
+      capturedStderrBytes: 0,
+      backgroundPriorityApplied
+    }
   }
 }
 
-function pumpLoudnessAnalysisQueue(): void {
-  if (activeLoudnessAnalysisJob) return
-  const job = loudnessAnalysisQueue.shift()
-  if (!job) return
-
-  activeLoudnessAnalysisJob = job
-  void runLoudnessAnalysisJob(job)
-    .then(job.resolve, job.reject)
-    .finally(() => {
-      if (activeLoudnessAnalysisJob === job) {
-        activeLoudnessAnalysisJob = null
-      }
-      pumpLoudnessAnalysisQueue()
+const loudnessAnalysisJobQueue = new LoudnessAnalysisJobQueue<
+  LoudnessAnalysisJobPayload,
+  LoudnessAnalysisExecutionResult
+>({
+  run: runLoudnessAnalysisJob,
+  createAbortedResult: () => ({
+    result: null,
+    outcome: 'aborted',
+    capturedStderrBytes: 0,
+    backgroundPriorityApplied: false
+  }),
+  onSettled: (diagnostics, execution) => {
+    if (!isDev) return
+    console.log('[loudness] analysis job completed', {
+      trackPath: diagnostics.key,
+      initialPriority: diagnostics.initialPriority,
+      finalPriority: diagnostics.finalPriority,
+      durationMs: diagnostics.durationMs,
+      queueDepthAtStart: diagnostics.queueDepthAtStart,
+      attempts: diagnostics.attempts,
+      wasPromoted: diagnostics.wasPromoted,
+      wasAborted: diagnostics.wasAborted,
+      outcome: execution?.outcome ?? 'failed',
+      capturedStderrBytes: execution?.capturedStderrBytes ?? 0,
+      backgroundPriorityApplied: execution?.backgroundPriorityApplied ?? false
     })
-}
+  }
+})
 
 function enqueueLoudnessAnalysisJob(
   filePath: string,
   fileStat: { size: number; mtimeMs: number },
   priority: LoudnessAnalysisPriority
 ): Promise<TrackLoudnessAnalysisResult | null> {
-  const existing = loudnessAnalysisInFlight.get(filePath)
-  if (existing) return existing
-
-  const abortController = new AbortController()
-  const promise = new Promise<TrackLoudnessAnalysisResult | null>((resolve, reject) => {
-    const job: LoudnessAnalysisJob = {
-      filePath,
-      fileStat,
-      priority,
-      abortController,
-      resolve,
-      reject
-    }
-
-    if (priority === 'interactive') {
-      loudnessAnalysisQueue.unshift(job)
-      if (
-        activeLoudnessAnalysisJob
-        && activeLoudnessAnalysisJob.priority === 'background'
-        && activeLoudnessAnalysisJob.filePath !== filePath
-      ) {
-        activeLoudnessAnalysisJob.abortController.abort()
-      }
-    } else {
-      loudnessAnalysisQueue.push(job)
-    }
-
-    pumpLoudnessAnalysisQueue()
-  }).finally(() => {
-    loudnessAnalysisInFlight.delete(filePath)
-  })
-
-  loudnessAnalysisInFlight.set(filePath, promise)
-  return promise
+  return loudnessAnalysisJobQueue
+    .enqueue(filePath, { filePath, fileStat }, priority)
+    .then((execution) => execution.result)
 }
 
 async function analyzeTrackLoudness(
@@ -10070,8 +10050,6 @@ async function analyzeTrackLoudness(
     await library.deleteTrackLoudness(filePath)
   }
 
-  const inFlight = loudnessAnalysisInFlight.get(filePath)
-  if (inFlight) return inFlight
   // The bundled ffmpeg (6.0) cannot read IAMF, so skip the doomed ebur128
   // spawn; the renderer's buffer-based analyzer computes and stores loudness
   // after the wasm decode instead (returned from the DB above on later plays).

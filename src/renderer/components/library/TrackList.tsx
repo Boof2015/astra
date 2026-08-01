@@ -1,4 +1,4 @@
-import { CSSProperties, memo, ReactElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { CSSProperties, memo, ReactElement, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
 import { usePlayerStore, type PlaybackSourceContext } from '../../stores/playerStore'
 import { useLibraryStore } from '../../stores/libraryStore'
@@ -84,6 +84,10 @@ export interface TrackListSortState {
   direction: 'asc' | 'desc'
 }
 
+export interface TrackListViewportAPI {
+  get element(): HTMLDivElement | null
+}
+
 interface TrackListProps {
   tracks: DbTrack[]
   queueSeedTracks?: DbTrack[]
@@ -98,7 +102,7 @@ interface TrackListProps {
   trackInstanceKeys?: readonly string[]
   playlistEntryIds?: readonly (number | null)[]
   queueSeedIndexes?: readonly (number | null)[]
-  externalScroll?: boolean
+  viewportRef?: Ref<TrackListViewportAPI>
   playlistSourceId?: number | null
   onChangeMissingPlaylistAssociation?: (trackPath: string, entryId?: number | null) => void | Promise<void>
   sourceContext?: PlaybackSourceContext | null
@@ -803,7 +807,7 @@ export default function TrackList({
   trackInstanceKeys,
   playlistEntryIds,
   queueSeedIndexes,
-  externalScroll = false,
+  viewportRef,
   playlistSourceId = null,
   onChangeMissingPlaylistAssociation,
   sourceContext = null,
@@ -886,6 +890,12 @@ export default function TrackList({
   const playlistMembershipRequestIdRef = useRef(0)
   const consumedJumpRequestIdRef = useRef<number | null>(null)
 
+  useImperativeHandle(viewportRef, () => ({
+    get element() {
+      return listRef.current?.element ?? null
+    }
+  }), [])
+
   const virtualRows = useMemo(
     () => buildTrackListRows(tracks, showDiscHeaders),
     [showDiscHeaders, tracks]
@@ -919,13 +929,11 @@ export default function TrackList({
       if (targetVirtualIndex === undefined) return
       event.preventDefault()
 
-      if (!externalScroll) {
-        listRef.current?.scrollToRow({
-          index: targetVirtualIndex,
-          align: 'center',
-          behavior: 'auto'
-        })
-      }
+      listRef.current?.scrollToRow({
+        index: targetVirtualIndex,
+        align: 'center',
+        behavior: 'auto'
+      })
 
       let attempts = 8
       const focusMountedRow = (): void => {
@@ -947,7 +955,7 @@ export default function TrackList({
       window.cancelAnimationFrame(frameId)
       group.removeEventListener(CONTROLLER_VIRTUAL_MOVE_EVENT, handleVirtualMove)
     }
-  }, [externalScroll, tracks, virtualRowIndexByTrackPath])
+  }, [tracks, virtualRowIndexByTrackPath])
 
   const clearQueueInsertPointerListeners = useCallback(() => {
     queueInsertPointerCleanupRef.current?.()
@@ -1007,22 +1015,6 @@ export default function TrackList({
 
     const scrollToTarget = () => {
       if (canceled) return
-      if (externalScroll) {
-        const rowElement = listBodyRef.current?.querySelector<HTMLElement>(`.track-row[data-track-index="${targetTrackIndex}"]`)
-        if (!rowElement) {
-          scheduleRetry()
-          return
-        }
-
-        rowElement.scrollIntoView({
-          block: 'center',
-          inline: 'nearest',
-          behavior: 'smooth'
-        })
-        markRequestConsumed()
-        return
-      }
-
       if (!listRef.current) {
         scheduleRetry()
         return
@@ -1042,7 +1034,6 @@ export default function TrackList({
       window.cancelAnimationFrame(frameId)
     }
   }, [
-    externalScroll,
     jumpToTrackRequest,
     onJumpToTrackRequestConsumed,
     tracks,
@@ -1951,12 +1942,6 @@ export default function TrackList({
   }, [integrityEnabled, onChangeMissingPlaylistAssociation, playlistSourceId, ratingsEnabled, trackContextMenu, uiScalePercent])
 
   const listHeight = listViewportHeight > 0 ? listViewportHeight : trackRowHeight
-  const virtualContentHeight = useMemo(() => (
-    virtualRows.reduce((height, row) => height + getTrackListVirtualRowHeightPx(row, trackRowHeight, discHeaderHeight), 0)
-  ), [discHeaderHeight, trackRowHeight, virtualRows])
-  const resolvedListHeight = externalScroll
-    ? Math.max(trackRowHeight, virtualContentHeight)
-    : listHeight
   const resolveVirtualRowHeight = useCallback((rowIndex: number) => (
     getTrackListVirtualRowHeightPx(virtualRows[rowIndex], trackRowHeight, discHeaderHeight)
   ), [discHeaderHeight, trackRowHeight, virtualRows])
@@ -2134,7 +2119,7 @@ export default function TrackList({
 
   return (
     <div
-      className={`track-list ${externalScroll ? 'track-list-external-scroll' : ''} ${queueInsertPreview ? 'track-list-queue-insert-dragging' : ''}`}
+      className={`track-list ${queueInsertPreview ? 'track-list-queue-insert-dragging' : ''}`}
       ref={controllerGroupRef}
       data-controller-group="tracks"
       data-controller-axis="vertical"
@@ -2169,7 +2154,7 @@ export default function TrackList({
         <div className="track-col track-col-actions" />
       </div>
       <div
-        className={`track-list-body ${externalScroll ? 'track-list-body-external-scroll' : ''}`}
+        className="track-list-body"
         ref={listBodyRef}
         data-controller-scroll
       >
@@ -2177,13 +2162,13 @@ export default function TrackList({
           className="track-list-virtualized"
           defaultHeight={TRACK_ROW_HEIGHT_FALLBACK_PX * 8}
           listRef={listRef}
-          onScroll={externalScroll ? undefined : handleListScroll}
+          onScroll={handleListScroll}
           overscanCount={TRACK_LIST_OVERSCAN_COUNT}
           rowComponent={TrackListRow}
           rowCount={virtualRows.length}
           rowHeight={resolveVirtualRowHeight}
           rowProps={rowProps}
-          style={{ height: resolvedListHeight, width: '100%' }}
+          style={{ height: listHeight, width: '100%' }}
         />
       </div>
       {queueInsertPreview && (

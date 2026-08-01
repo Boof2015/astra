@@ -10,6 +10,7 @@ import { usePlaylistStore } from './playlistStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore'
 import { useParallaxStore } from './parallaxStore'
 import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
+import { selectUpcomingLoudnessWarmupTracks } from '../utils/loudnessWarmup'
 import {
   type PlayerSessionSnapshot,
   type SessionPlaybackSourceContext,
@@ -221,7 +222,7 @@ const LARGE_LOCAL_FILE_BYTES = 128 * 1024 * 1024
 const MAX_STANDARD_PREBUFFER_TRACK_BYTES = 192 * 1024 * 1024
 const MAX_STANDARD_PREBUFFER_TOTAL_BYTES = 384 * 1024 * 1024
 const LOCAL_PROGRESSIVE_DECODED_BYTES = MAX_STANDARD_PREBUFFER_TRACK_BYTES
-const LOUDNESS_WARMUP_UPCOMING_TRACKS = 2
+const LOUDNESS_WARMUP_UPCOMING_TRACKS = 1
 export const GAPLESS_PREBUFFER_LEAD_SECONDS = 15
 const GAPLESS_PREBUFFER_TIMER_TOLERANCE_MS = 250
 const MAX_GAPLESS_PREBUFFER_TIMER_MS = 2_147_000_000
@@ -1565,19 +1566,21 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   const warmupUpcomingLoudness = (): void => {
     const audioSettings = useAudioSettingsStore.getState()
     if (!audioSettings.normalizationEnabled || audioSettings.playbackOutputMode !== 'standard') return
+    const state = get()
+    if (state.repeat === 'one') return
 
-    const warmed = new Set<string>()
-    for (const candidate of collectNextCandidates(get())) {
-      if (warmed.size >= LOUDNESS_WARMUP_UPCOMING_TRACKS) break
-      const track = candidate.track
-      if (!track || (track.sourceType && track.sourceType !== 'local')) continue
-      if (isUnavailableRemoteTrack(track) || warmed.has(track.path)) continue
-
+    const tracks = selectUpcomingLoudnessWarmupTracks(
+      collectNextCandidates(state).map((candidate) => candidate.track),
+      (track) => {
+        const replayGainDb = getReplayGainCandidateDb(track, audioSettings.replayGainMode)
+        return audioEngine.needsLoudnessAnalysisForLoad(replayGainDb)
+      },
+      LOUDNESS_WARMUP_UPCOMING_TRACKS
+    )
+    for (const track of tracks) {
       const replayGainDb = getReplayGainCandidateDb(track, audioSettings.replayGainMode)
       const request = requestTrackLoudnessAnalysis(track, replayGainDb, 'background')
-      if (!request) continue
-      warmed.add(track.path)
-      void request
+      if (request) void request
     }
   }
 
