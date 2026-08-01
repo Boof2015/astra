@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { highlightSearchMatch } from '../../utils/searchHighlight'
 import { resolveYearAlbumPreviewLayout } from '../../utils/yearAlbumPreview'
 import AlbumArtwork from './AlbumArtwork'
@@ -108,7 +108,12 @@ export default function YearAlbumPreview({
             <button
               key={album.identity_key}
               type="button"
-              className={`year-album-preview-card ${album.is_new ? 'is-new' : ''}`}
+              className={`year-album-preview-card ${album.is_new ? 'is-new' : ''} ${
+                isExpanded && index >= layout.collapsedItemCount ? 'is-expansion-reveal' : ''
+              }`}
+              style={isExpanded && index >= layout.collapsedItemCount
+                ? { animationDelay: `${Math.min(index - layout.collapsedItemCount, 8) * 18}ms` } as CSSProperties
+                : undefined}
               data-controller-focusable="true"
               data-controller-context="true"
               data-controller-key={`album:${album.identity_key}`}
