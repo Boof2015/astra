@@ -3300,11 +3300,16 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   .associated-open-cue-fill,
   .update-available-cue-fill,
   .pipeline-shelf,
-  .transport-lyrics-shelf,
-  .transport-lyrics-focus-track,
   .transport-lyrics-expanded-list {
     transition-duration: 0.08s !important;
     animation-duration: 0.08s !important;
+  }
+
+  /* These transforms provide positioning, not decoration: the shelf transform
+     centers/stacks the overlay and the track transform advances compact lyrics. */
+  .transport-lyrics-shelf,
+  .transport-lyrics-focus-track {
+    transition: none !important;
   }
 
   .fullscreen-hero-enter {
@@ -3331,9 +3336,7 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   .decode-fallback-cue-visible,
   .output-delay-cue-visible,
   .associated-open-cue-visible,
-  .update-available-cue-visible,
-  .transport-lyrics-shelf,
-  .transport-lyrics-focus-track {
+  .update-available-cue-visible {
     transform: none !important;
   }
 
