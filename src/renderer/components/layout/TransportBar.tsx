@@ -601,9 +601,12 @@ export default function TransportBar() {
         <div className="transport-mini-lyrics-stack">
           <button
             className={`transport-mini-btn transport-mini-btn-split-top ${miniWindowState.isOpen ? 'active' : ''} ${miniWindowState.alwaysOnTop ? 'pinned' : ''}`}
-            onClick={() => void window.electronAPI.miniPlayer.open()}
-            title="Open mini player"
-            aria-label="Open mini player"
+            onClick={() => void (miniWindowState.isOpen
+              ? window.electronAPI.miniPlayer.close()
+              : window.electronAPI.miniPlayer.open())}
+            title={miniWindowState.isOpen ? 'Close mini player' : 'Open mini player'}
+            aria-label={miniWindowState.isOpen ? 'Close mini player' : 'Open mini player'}
+            aria-pressed={miniWindowState.isOpen}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
               <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
