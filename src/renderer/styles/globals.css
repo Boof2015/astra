@@ -14490,10 +14490,12 @@ html[data-theme-tone="light"] .home-greeting-message {
 }
 
 .library-detail-header {
+  --library-detail-header-expanded-height: 132px;
+  --library-detail-header-collapsed-height: 58px;
   position: relative;
   z-index: 1;
-  height: 132px;
-  min-height: 132px;
+  height: var(--library-detail-header-expanded-height);
+  min-height: var(--library-detail-header-expanded-height);
   padding: 18px 22px;
   background: var(--stage-bg);
   transition: height 180ms ease, min-height 180ms ease, padding 180ms ease;
@@ -14810,8 +14812,8 @@ html[data-theme-tone="light"] .library-detail-hero-backdrop::after {
 }
 
 .library-detail-header.is-collapsed {
-  height: 58px;
-  min-height: 58px;
+  height: var(--library-detail-header-collapsed-height);
+  min-height: var(--library-detail-header-collapsed-height);
   padding: 8px 14px;
 }
 
@@ -16186,8 +16188,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   }
 
   .library-detail-header {
-    height: 112px;
-    min-height: 112px;
+    --library-detail-header-expanded-height: 112px;
     padding: 16px 18px;
   }
 

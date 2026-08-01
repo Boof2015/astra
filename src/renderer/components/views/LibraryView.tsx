@@ -16,6 +16,7 @@ import { matchesFuzzyFields } from '../../utils/fuzzySearch'
 import { runViewTransition } from '../../utils/viewTransitions'
 import { compareTrackPlayCounts } from '../../utils/trackPlayCountSort'
 import { getLibraryTabTransitionScopeClasses } from '../../utils/libraryTabMotion'
+import { getDetailHeaderCollapseDistance, resolveDetailHeaderCollapsed } from '../../utils/detailHeaderScroll'
 import {
   albumMatchesLibraryYear,
   buildLibraryYearGroups,
@@ -261,6 +262,7 @@ export default function LibraryView() {
   const artistImageMenuPresence = usePresence(isArtistImageMenuOpen)
   const [isDetailHeaderCollapsed, setIsDetailHeaderCollapsed] = useState(false)
   const previousInDetailViewRef = useRef(false)
+  const detailHeaderRef = useRef<HTMLDivElement | null>(null)
   const collectionPlayPendingRef = useRef(false)
   const albumViewportRef = useRef<AlbumGridViewportAPI | null>(null)
   const albumGridScrollRef = useRef(0)
@@ -562,9 +564,15 @@ export default function LibraryView() {
     if (!(target instanceof HTMLElement)) return
     if (target.scrollHeight <= target.clientHeight + 1) return
 
-    const scrollTop = target.scrollTop
+    const collapseDistance = getDetailHeaderCollapseDistance(detailHeaderRef.current)
     setIsDetailHeaderCollapsed((isCollapsed) => (
-      isCollapsed ? scrollTop > 8 : scrollTop > 40
+      resolveDetailHeaderCollapsed({
+        isCollapsed,
+        scrollTop: target.scrollTop,
+        scrollHeight: target.scrollHeight,
+        clientHeight: target.clientHeight,
+        collapseDistance
+      })
     ))
   }, [inDetailView])
 
@@ -1675,7 +1683,10 @@ export default function LibraryView() {
           </div>
         </div>
       )}
-      <div className={`library-header ${inDetailView ? `library-detail-header ${isDetailHeaderCollapsed ? 'is-collapsed' : ''}` : ''}`}>
+      <div
+        className={`library-header ${inDetailView ? `library-detail-header ${isDetailHeaderCollapsed ? 'is-collapsed' : ''}` : ''}`}
+        ref={detailHeaderRef}
+      >
         {inDetailView && detailArtworkHash && (
           <div className="library-detail-hero-backdrop" aria-hidden="true">
             <AlbumArtwork

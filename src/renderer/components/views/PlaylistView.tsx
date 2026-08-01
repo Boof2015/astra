@@ -14,6 +14,7 @@ import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { formatPlaylistExportStatus, formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
 import { buildPlayableOccurrenceIndexes } from '../../utils/playlistOccurrences'
 import { compareTrackPlayCounts } from '../../utils/trackPlayCountSort'
+import { getDetailHeaderCollapseDistance, resolveDetailHeaderCollapsed } from '../../utils/detailHeaderScroll'
 import AlbumArtwork from '../library/AlbumArtwork'
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
@@ -335,6 +336,7 @@ export default function PlaylistView() {
   const [isDynamicRulesLoading, setIsDynamicRulesLoading] = useState(false)
   const [isSavingDynamicRules, setIsSavingDynamicRules] = useState(false)
   const playPendingRef = useRef(false)
+  const detailHeaderRef = useRef<HTMLDivElement | null>(null)
   const coverControlRef = useRef<HTMLDivElement | null>(null)
   const moreMenuRef = useRef<HTMLDivElement | null>(null)
 
@@ -746,8 +748,14 @@ export default function PlaylistView() {
     if (!(target instanceof HTMLElement)) return
     if (target.scrollHeight <= target.clientHeight + 1) return
 
-    const scrollTop = target.scrollTop
-    setIsDetailHeaderCollapsed((isCollapsed) => (isCollapsed ? scrollTop > 8 : scrollTop > 40))
+    const collapseDistance = getDetailHeaderCollapseDistance(detailHeaderRef.current)
+    setIsDetailHeaderCollapsed((isCollapsed) => resolveDetailHeaderCollapsed({
+      isCollapsed,
+      scrollTop: target.scrollTop,
+      scrollHeight: target.scrollHeight,
+      clientHeight: target.clientHeight,
+      collapseDistance
+    }))
   }, [])
 
   useEffect(() => {
@@ -1022,7 +1030,10 @@ export default function PlaylistView() {
 
   return (
     <div className="playlist-view">
-      <div className={`library-header library-detail-header ${isDetailHeaderCollapsed ? 'is-collapsed' : ''}`}>
+      <div
+        className={`library-header library-detail-header ${isDetailHeaderCollapsed ? 'is-collapsed' : ''}`}
+        ref={detailHeaderRef}
+      >
         {playlistCoverHash && (
           <div className="library-detail-hero-backdrop" aria-hidden="true">
             <AlbumArtwork hash={playlistCoverHash} alt="" variant="card" />
