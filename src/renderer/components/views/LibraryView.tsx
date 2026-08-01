@@ -31,6 +31,7 @@ import AlbumGrid, { type AlbumGridViewportAPI } from '../library/AlbumGrid'
 import ArtistList, { type ArtistListViewportAPI } from '../library/ArtistList'
 import FolderTreeView from '../library/FolderTreeView'
 import GenreGrid, { type GenreGridViewportAPI } from '../library/GenreGrid'
+import YearAlbumPreview from '../library/YearAlbumPreview'
 import YearGrid, { type YearGridViewportAPI } from '../library/YearGrid'
 
 type SortDirection = 'asc' | 'desc'
@@ -266,8 +267,8 @@ export default function LibraryView() {
   const collectionPlayPendingRef = useRef(false)
   const albumViewportRef = useRef<AlbumGridViewportAPI | null>(null)
   const albumGridScrollRef = useRef(0)
-  const yearAlbumViewportRef = useRef<AlbumGridViewportAPI | null>(null)
-  const yearAlbumGridScrollRef = useRef(0)
+  const yearDetailViewportRef = useRef<HTMLDivElement | null>(null)
+  const yearDetailScrollRef = useRef(0)
   const artistViewportRef = useRef<ArtistListViewportAPI | null>(null)
   const artistScrollRef = useRef(0)
   const genreViewportRef = useRef<GenreGridViewportAPI | null>(null)
@@ -276,7 +277,7 @@ export default function LibraryView() {
   const yearGridScrollRef = useRef(0)
   const artistImageControlRef = useRef<HTMLDivElement | null>(null)
   const artistAlbumRailRef = useRef<HTMLDivElement | null>(null)
-  const pendingScrollRef = useRef<'albums' | 'artists' | 'genres' | 'years' | 'year-albums' | null>(null)
+  const pendingScrollRef = useRef<'albums' | 'artists' | 'genres' | 'years' | 'year-detail' | null>(null)
 
   useHorizontalWheelScroll(artistAlbumRailRef)
 
@@ -501,8 +502,8 @@ export default function LibraryView() {
     } else if (pending === 'years' && yearViewportRef.current?.element) {
       yearViewportRef.current.element.scrollTop = yearGridScrollRef.current
       pendingScrollRef.current = null
-    } else if (pending === 'year-albums' && yearAlbumViewportRef.current?.element) {
-      yearAlbumViewportRef.current.element.scrollTop = yearAlbumGridScrollRef.current
+    } else if (pending === 'year-detail' && yearDetailViewportRef.current) {
+      yearDetailViewportRef.current.scrollTop = yearDetailScrollRef.current
       pendingScrollRef.current = null
     }
   })
@@ -583,7 +584,7 @@ export default function LibraryView() {
 
   const handleSelectAlbumFromGrid = useCallback((album: { album: string; artist: string; identity_key: string }) => {
     if (selectedYear !== null) {
-      yearAlbumGridScrollRef.current = yearAlbumViewportRef.current?.element?.scrollTop ?? 0
+      yearDetailScrollRef.current = yearDetailViewportRef.current?.scrollTop ?? 0
       setSearchQuery('')
     } else {
       albumGridScrollRef.current = albumViewportRef.current?.element?.scrollTop ?? 0
@@ -1045,7 +1046,7 @@ export default function LibraryView() {
 
   const trimmedQueryForMessage = searchQuery.trim()
   const searchPlaceholder = selectedYear !== null
-    ? 'Search albums...'
+    ? 'Search albums & tracks...'
     : inDetailView
       ? 'Search tracks...'
       : viewMode === 'albums'
@@ -1075,7 +1076,7 @@ export default function LibraryView() {
   const handleDetailBack = async () => {
     if (contextualAlbumParent) {
       if (contextualAlbumParent.selectedYear !== null) {
-        pendingScrollRef.current = 'year-albums'
+        pendingScrollRef.current = 'year-detail'
         setSearchQuery('')
       }
       await runViewTransition(async () => {
@@ -1373,19 +1374,60 @@ export default function LibraryView() {
     }
 
     if (isYearDetailView) {
-      if (selectedYearAlbums.length === 0) {
-        return hasSearchQuery
-          ? <div className="library-empty"><p>No albums found for "{trimmedQueryForMessage}"</p></div>
-          : <div className="library-empty"><p>No albums found for {formatLibraryYearKey(selectedYear)}</p></div>
-      }
+      const yearLabel = formatLibraryYearKey(selectedYear)
+      const albumEmptyMessage = hasSearchQuery
+        ? `No albums found for "${trimmedQueryForMessage}"`
+        : `No albums found for ${yearLabel}`
+      const trackEmptyMessage = hasSearchQuery
+        ? `No tracks found for "${trimmedQueryForMessage}"`
+        : `No tracks found for ${yearLabel}`
+
       return (
-        <AlbumGrid
-          albums={selectedYearAlbums}
-          viewportRef={yearAlbumViewportRef}
-          searchQuery={trimmedSearchQuery}
-          onSelectAlbum={handleSelectAlbumFromGrid}
-          onAlbumContextMenu={handleAlbumGridContextMenu}
-        />
+        <div
+          className="library-year-detail"
+          ref={yearDetailViewportRef}
+          data-controller-scroll
+        >
+          <YearAlbumPreview
+            key={`year-albums:${selectedYear}`}
+            albums={selectedYearAlbums}
+            searchQuery={trimmedSearchQuery}
+            emptyMessage={albumEmptyMessage}
+            onSelectAlbum={handleSelectAlbumFromGrid}
+            onAlbumContextMenu={handleAlbumGridContextMenu}
+          />
+
+          <section className="year-detail-section year-detail-tracks" aria-labelledby="year-detail-tracks-heading">
+            <div className="year-detail-section-header year-detail-tracks-header">
+              <div className="year-detail-section-heading-row">
+                <h3 id="year-detail-tracks-heading">Tracks</h3>
+                <span>{formatTrackCount(displayTracks.length)}</span>
+              </div>
+            </div>
+            {displayTracks.length > 0 ? (
+              <TrackList
+                tracks={displayTracks}
+                queueSeedTracks={queueSeedSortedTracks}
+                queueContextLabel={yearLabel}
+                sourceContext={playbackSourceContext}
+                showArtist
+                showAlbum
+                showAddedDate={showTracklistAddedDate}
+                showNewTrackIndicator
+                trackNumberMode="none"
+                externalScroll
+                enableColumnSorting
+                sortState={sortState}
+                onSortColumnToggle={handleSortColumnToggle}
+                jumpToTrackRequest={libraryTrackRevealRequest}
+                onJumpToTrackRequestConsumed={clearLibraryTrackRevealRequest}
+                searchQuery={trimmedSearchQuery}
+              />
+            ) : (
+              <div className="year-detail-section-empty year-detail-track-empty">{trackEmptyMessage}</div>
+            )}
+          </section>
+        </div>
       )
     }
 
