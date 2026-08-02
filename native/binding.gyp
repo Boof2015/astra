@@ -3,6 +3,8 @@
     {
       "target_name": "native_playback_state_tests",
       "type": "executable",
+      "cflags!": ["-fno-exceptions"],
+      "cflags_cc!": ["-fno-exceptions"],
       "cflags_cc": ["-std=c++17"],
       "sources": [
         "src/playback_engine.cpp",
@@ -10,6 +12,11 @@
       ],
       "include_dirs": ["src"],
       "conditions": [
+        ["OS=='mac'", {
+          "xcode_settings": {
+            "GCC_ENABLE_CPP_EXCEPTIONS": "YES"
+          }
+        }],
         ["OS=='win'", {
           "msvs_settings": {
             "VCCLCompilerTool": { "ExceptionHandling": 1 }
