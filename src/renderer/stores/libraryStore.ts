@@ -1,5 +1,9 @@
 import { create } from 'zustand'
 import type { TrackSourceType } from '../../types/subsonic'
+import type {
+  LibraryDiagnosticsOperationKind,
+  LibraryReloadStep
+} from '../../types/libraryDiagnostics'
 import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
 import { useUIStore } from './uiStore'
 import {
@@ -22,6 +26,18 @@ import {
 } from '../utils/sessionState'
 import { normalizeKey } from '../utils/albumIdentity'
 import { albumMatchesLibraryYear, type LibraryYearKey } from '../utils/libraryYears'
+
+interface LibraryReloadDiagnosticsContext {
+  runId: string
+  operationKind: LibraryDiagnosticsOperationKind
+  operationStartedAt: number
+  backendDurationMs: number
+}
+
+interface FullTrackPagingDiagnostics {
+  pageCount: number
+  trackCount: number
+}
 
 // Types matching preload
 export interface DbTrack {
@@ -243,9 +259,14 @@ interface LibraryStore {
   folderViewScrollTop: number
 
   // Actions
-  loadLibrary: () => Promise<void>
+  loadLibrary: (
+    diagnosticsContext?: LibraryReloadDiagnosticsContext | LibraryReloadDiagnosticsContext[]
+  ) => Promise<void>
   loadTracks: () => Promise<void>
-  loadFullTracks: (consumer?: LibraryFullTrackConsumer) => Promise<void>
+  loadFullTracks: (
+    consumer?: LibraryFullTrackConsumer,
+    onDiagnostics?: (diagnostics: FullTrackPagingDiagnostics) => void
+  ) => Promise<void>
   loadTrackCount: () => Promise<void>
   loadTrackDuration: () => Promise<void>
   loadAlbums: () => Promise<void>
@@ -966,7 +987,25 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   folderViewScrollTop: 0,
 
   // Load entire library
-  loadLibrary: async () => {
+  loadLibrary: async (diagnosticsContext) => {
+    const diagnosticsContexts = diagnosticsContext
+      ? (Array.isArray(diagnosticsContext) ? diagnosticsContext : [diagnosticsContext])
+      : []
+    const diagnosticsEnabled = diagnosticsContexts.length > 0
+    const reloadStartedAt = performance.now()
+    const stepDurationMs: Partial<Record<LibraryReloadStep, number>> = {}
+    const stepRequestCount: Partial<Record<LibraryReloadStep, number>> = {}
+    const stepResultCount: Partial<Record<LibraryReloadStep, number>> = {}
+    const measureReloadStep = async <T>(step: LibraryReloadStep, action: () => Promise<T>): Promise<T> => {
+      if (!diagnosticsEnabled) return action()
+      const startedAt = performance.now()
+      stepRequestCount[step] = 1
+      try {
+        return await action()
+      } finally {
+        stepDurationMs[step] = Math.round((performance.now() - startedAt) * 100) / 100
+      }
+    }
     set({ isLoading: true })
     const shouldReloadAlbumsIncludingSingles = get().albumsIncludingSinglesLoaded
     const currentSelection = {
@@ -977,18 +1016,26 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       hasFullTrackConsumers: get().fullTrackConsumers.size > 0
     }
     await Promise.all([
-      get().loadTrackCount(),
-      get().loadTrackDuration(),
-      get().loadAlbums(),
-      shouldReloadAlbumsIncludingSingles ? get().loadAlbumsIncludingSingles() : Promise.resolve(),
-      get().loadArtists(),
-      get().loadGenres(),
-      get().loadFolders(),
-      get().loadFavorites(),
-      get().loadRecentlyPlayed(),
-      currentSelection.hasFullTrackConsumers ? get().loadFullTracks() : Promise.resolve()
+      measureReloadStep('track_count', () => get().loadTrackCount()),
+      measureReloadStep('track_duration', () => get().loadTrackDuration()),
+      measureReloadStep('albums', () => get().loadAlbums()),
+      shouldReloadAlbumsIncludingSingles
+        ? measureReloadStep('albums_including_singles', () => get().loadAlbumsIncludingSingles())
+        : Promise.resolve(),
+      measureReloadStep('artists', () => get().loadArtists()),
+      measureReloadStep('genres', () => get().loadGenres()),
+      measureReloadStep('folders', () => get().loadFolders()),
+      measureReloadStep('favorites', () => get().loadFavorites()),
+      measureReloadStep('recently_played', () => get().loadRecentlyPlayed()),
+      currentSelection.hasFullTrackConsumers
+        ? measureReloadStep('full_tracks', () => get().loadFullTracks(undefined, (paging) => {
+            stepRequestCount.full_tracks = paging.pageCount
+            stepResultCount.full_tracks = paging.trackCount
+          }))
+        : Promise.resolve()
     ])
 
+    const activeSelectionStartedAt = performance.now()
     if (currentSelection.album) {
       const albumSelection = currentSelection.album
       const matchedAlbum = get().albums.find((candidate) => {
@@ -1036,8 +1083,40 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         return ingestTracksForPatch(state, tracks, { trackPaths: paths })
       })
     }
+    stepDurationMs.active_selection = Math.round((performance.now() - activeSelectionStartedAt) * 100) / 100
+    stepRequestCount.active_selection = currentSelection.album || currentSelection.artist || currentSelection.genre ? 1 : 0
 
     set({ isLoading: false })
+    if (diagnosticsEnabled) {
+      const completedAt = performance.now()
+      const finalState = get()
+      stepRequestCount.favorites = 2
+      stepResultCount.track_count = finalState.totalTrackCount
+      stepResultCount.albums = finalState.albums.length
+      if (shouldReloadAlbumsIncludingSingles) {
+        stepResultCount.albums_including_singles = finalState.albumsIncludingSingles.length
+      }
+      stepResultCount.artists = finalState.artists.length
+      stepResultCount.genres = finalState.genres.length
+      stepResultCount.folders = finalState.folders.length
+      stepResultCount.favorites = finalState.favoriteTrackPaths.length
+      stepResultCount.recently_played = finalState.recentlyPlayedPaths.length
+      stepResultCount.active_selection = finalState.trackPaths.length
+      for (const context of diagnosticsContexts) {
+        void window.electronAPI.libraryDiagnostics.logRendererTiming({
+          runId: context.runId,
+          operationKind: context.operationKind,
+          backendDurationMs: Math.round(context.backendDurationMs * 100) / 100,
+          reloadDurationMs: Math.round((completedAt - reloadStartedAt) * 100) / 100,
+          totalDurationMs: Math.round((completedAt - context.operationStartedAt) * 100) / 100,
+          stepDurationMs,
+          stepRequestCount,
+          stepResultCount
+        }).catch((error) => {
+          console.warn('Failed to record library reload diagnostics:', error)
+        })
+      }
+    }
   },
 
   // Load tracks
@@ -1045,7 +1124,10 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     await get().loadFullTracks('library')
   },
 
-  loadFullTracks: async (consumer?: LibraryFullTrackConsumer) => {
+  loadFullTracks: async (
+    consumer?: LibraryFullTrackConsumer,
+    onDiagnostics?: (diagnostics: FullTrackPagingDiagnostics) => void
+  ) => {
     if (consumer) {
       set((state) => {
         const nextConsumers = updateFullTrackConsumers(state.fullTrackConsumers, consumer, 'retain')
@@ -1064,6 +1146,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     let offset = 0
     let lastRevealAt = 0
     let completed = false
+    let pageCount = 0
 
     set((state) => (state.fullTracksStatus === 'loading' ? {} : { fullTracksStatus: 'loading' }))
 
@@ -1073,6 +1156,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
           offset,
           limit: FULL_TRACK_PAGE_LIMIT
         })
+        pageCount += 1
         if (requestId !== fullTracksRequestId) {
           return
         }
@@ -1127,6 +1211,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       }
 
       completed = true
+      onDiagnostics?.({ pageCount, trackCount: paths.length })
       set((state) => {
         if (requestId !== fullTracksRequestId || state.fullTrackConsumers.size === 0) {
           return {}
@@ -1278,7 +1363,9 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     })
 
     try {
+      const operationStartedAt = performance.now()
       const result = await window.electronAPI.library.rescanFolder(folderPath)
+      const backendDurationMs = performance.now() - operationStartedAt
       if (result.canceled) {
         return null
       }
@@ -1304,7 +1391,12 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         }))
       }
 
-      await get().loadLibrary()
+      await get().loadLibrary(result.diagnosticRunId ? {
+        runId: result.diagnosticRunId,
+        operationKind: 'rescan_folder',
+        operationStartedAt,
+        backendDurationMs
+      } : undefined)
       return result.summary ?? null
     } finally {
       unsubscribeProgress()
@@ -1341,9 +1433,20 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       let aggregatedScanIssueLog: ScanIssueLog | null = null
       let scannedFolders = 0
       let canceled = false
+      const diagnosticsContexts: LibraryReloadDiagnosticsContext[] = []
 
       for (const folderPath of uniqueFolderPaths) {
+        const operationStartedAt = performance.now()
         const result = await window.electronAPI.library.rescanFolder(folderPath)
+        const backendDurationMs = performance.now() - operationStartedAt
+        if (result.diagnosticRunId) {
+          diagnosticsContexts.push({
+            runId: result.diagnosticRunId,
+            operationKind: 'rescan_folder',
+            operationStartedAt,
+            backendDurationMs
+          })
+        }
         if (result.canceled) {
           canceled = true
           break
@@ -1373,7 +1476,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       })
 
       if (scannedFolders > 0) {
-        await get().loadLibrary()
+        await get().loadLibrary(diagnosticsContexts.length > 0 ? diagnosticsContexts : undefined)
       }
 
       return { scannedFolders, canceled }
@@ -1456,7 +1559,9 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     })
 
     try {
+      const operationStartedAt = performance.now()
       const result = await window.electronAPI.library.addFolder(folderPath)
+      const backendDurationMs = performance.now() - operationStartedAt
       if (result.canceled) {
         await get().loadFolders()
         return
@@ -1467,7 +1572,12 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
           set({ folderWarnings: { ...get().folderWarnings, [folderPath]: result.skippedDirs } })
         }
         // Reload library after scan
-        await get().loadLibrary()
+        await get().loadLibrary(result.diagnosticRunId ? {
+          runId: result.diagnosticRunId,
+          operationKind: 'add_folder',
+          operationStartedAt,
+          backendDurationMs
+        } : undefined)
       }
     } finally {
       unsubscribeProgress()
@@ -1478,11 +1588,18 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Remove folder and reload library state without rescanning all folders.
   removeFolder: async (path: string) => {
-    await window.electronAPI.library.removeFolder(path)
+    const operationStartedAt = performance.now()
+    const result = await window.electronAPI.library.removeFolder(path)
+    const backendDurationMs = performance.now() - operationStartedAt
     const { [path]: _, ...remaining } = get().folderWarnings
     const { [path]: __, ...remainingSummaries } = get().folderSubfolderSummaries
     set({ folderWarnings: remaining, folderSubfolderSummaries: remainingSummaries })
-    await get().loadLibrary()
+    await get().loadLibrary(result.diagnosticRunId ? {
+      runId: result.diagnosticRunId,
+      operationKind: 'remove_folder',
+      operationStartedAt,
+      backendDurationMs
+    } : undefined)
   },
 
   // Toggle a folder's visibility. Hidden folders stay indexed; their tracks are filtered out of
@@ -1524,7 +1641,9 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     })
 
     try {
+      const operationStartedAt = performance.now()
       const result = await window.electronAPI.library.rescan()
+      const backendDurationMs = performance.now() - operationStartedAt
       if (result.canceled) {
         return
       }
@@ -1534,7 +1653,12 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         set({ folderWarnings: {} })
       }
       set({ lastScanIssueLog: normalizeScanIssueLog(result.scanIssueLog) })
-      await get().loadLibrary()
+      await get().loadLibrary(result.diagnosticRunId ? {
+        runId: result.diagnosticRunId,
+        operationKind: 'rescan_all',
+        operationStartedAt,
+        backendDurationMs
+      } : undefined)
     } finally {
       unsubscribeProgress()
       unsubscribeStage()
@@ -1559,7 +1683,9 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     })
 
     try {
+      const operationStartedAt = performance.now()
       const result = await window.electronAPI.library.forceRescanAll()
+      const backendDurationMs = performance.now() - operationStartedAt
       if (result.canceled) {
         return
       }
@@ -1569,7 +1695,12 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         set({ folderWarnings: {} })
       }
       set({ lastScanIssueLog: normalizeScanIssueLog(result.scanIssueLog) })
-      await get().loadLibrary()
+      await get().loadLibrary(result.diagnosticRunId ? {
+        runId: result.diagnosticRunId,
+        operationKind: 'force_rescan_all',
+        operationStartedAt,
+        backendDurationMs
+      } : undefined)
     } finally {
       unsubscribeProgress()
       unsubscribeStage()

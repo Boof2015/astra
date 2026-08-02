@@ -48,6 +48,7 @@ import { useLyricsStore } from '../../stores/lyricsStore'
 import { useLyricsDisplaySettingsStore } from '../../stores/lyricsDisplaySettingsStore'
 import { useUpdateStore } from '../../stores/updateStore'
 import { useDiagnosticsStore } from '../../stores/diagnosticsStore'
+import { useLibraryDiagnosticsStore } from '../../stores/libraryDiagnosticsStore'
 import { useGraphStore } from '../../stores/graphStore'
 import { useListeningStatsStore } from '../../stores/listeningStatsStore'
 import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
@@ -508,6 +509,15 @@ export default function SettingsView() {
     revealCurrentLog,
     revealPreviousLog,
   } = useDiagnosticsStore()
+  const {
+    status: libraryDiagnosticsStatus,
+    isLoading: libraryDiagnosticsIsLoading,
+    errorMessage: libraryDiagnosticsErrorMessage,
+    init: initLibraryDiagnostics,
+    setEnabled: setLibraryDiagnosticsEnabled,
+    revealCurrentLog: revealCurrentLibraryDiagnosticsLog,
+    revealPreviousLog: revealPreviousLibraryDiagnosticsLog,
+  } = useLibraryDiagnosticsStore()
   const [accentInputValue, setAccentInputValue] = useState(resolvedTokens.accent)
   const [miniPlayerVisualizerMode, setMiniPlayerVisualizerMode] = useState<MiniPlayerVisualizerMode>('off')
   const [localApiPortInput, setLocalApiPortInput] = useState(String(LOCAL_API_DEFAULT_PORT))
@@ -664,6 +674,10 @@ export default function SettingsView() {
   useEffect(() => {
     void initDiagnostics()
   }, [initDiagnostics])
+
+  useEffect(() => {
+    void initLibraryDiagnostics()
+  }, [initLibraryDiagnostics])
 
   useEffect(() => {
     if (!localApiStatus) return
@@ -1037,6 +1051,9 @@ export default function SettingsView() {
   const diagnosticsLastBundleLabel = diagnosticsLastCaptureResult
     ? `Last bundle captured ${new Date(diagnosticsLastCaptureResult.capturedAt).toLocaleString()}.`
     : 'No memory bundle captured in this session.'
+  const libraryDiagnosticsEnabled = libraryDiagnosticsStatus?.enabled ?? false
+  const libraryDiagnosticsCurrentLogPath = libraryDiagnosticsStatus?.currentLogPath ?? 'Loading diagnostics paths...'
+  const libraryDiagnosticsPreviousLogPath = libraryDiagnosticsStatus?.previousLogPath ?? 'Loading diagnostics paths...'
 
   const handlePlaybackPathChange = (mode: 'standard' | 'bitperfect') => {
     if (mode === playbackOutputMode) return
@@ -1790,6 +1807,52 @@ export default function SettingsView() {
               </button>
             </div>
             <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Library Diagnostics</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Performance Logging</span>
+                    <button
+                      type="button"
+                      className={`settings-toggle ${libraryDiagnosticsEnabled ? 'active' : ''}`}
+                      onClick={() => void setLibraryDiagnosticsEnabled(!libraryDiagnosticsEnabled)}
+                      disabled={libraryDiagnosticsIsLoading}
+                    >
+                      {libraryDiagnosticsEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <p className="settings-note">
+                    To reproduce: run Scan for Changes twice, then Force Rescan All. To test folder removal,
+                    remove a mapped test folder; Astra removes only its library index entry, not files on disk.
+                    Logs contain aggregate timings and never include folder names or file paths.
+                  </p>
+                  <p className="settings-info-meta">Current log</p>
+                  <p className="settings-info-path">{libraryDiagnosticsCurrentLogPath}</p>
+                  <p className="settings-info-meta">Previous session log</p>
+                  <p className="settings-info-path">{libraryDiagnosticsPreviousLogPath}</p>
+                  <div className="settings-info-links">
+                    <button
+                      type="button"
+                      className="settings-btn settings-link-btn"
+                      onClick={() => void revealCurrentLibraryDiagnosticsLog()}
+                      disabled={!libraryDiagnosticsStatus?.hasCurrentLog}
+                    >
+                      Reveal Current Log
+                    </button>
+                    <button
+                      type="button"
+                      className="settings-btn settings-link-btn"
+                      onClick={() => void revealPreviousLibraryDiagnosticsLog()}
+                      disabled={!libraryDiagnosticsStatus?.hasPreviousLog}
+                    >
+                      Reveal Previous Log
+                    </button>
+                  </div>
+                  {libraryDiagnosticsErrorMessage && (
+                    <p className="settings-note settings-note-error">{libraryDiagnosticsErrorMessage}</p>
+                  )}
+                </div>
+              </div>
               <div className="settings-card">
                 <div className="settings-card-label">Normalization</div>
                 <div className="settings-grid">

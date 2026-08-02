@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, clipboard, scr
 import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir, stat } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
-import { tmpdir, hostname, networkInterfaces, setPriority, constants as osConstants } from 'os'
+import { cpus, tmpdir, hostname, networkInterfaces, setPriority, constants as osConstants } from 'os'
 import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, type ExecFileOptions } from 'child_process'
 import { createHash, randomBytes, randomUUID } from 'crypto'
 import * as mm from 'music-metadata'
@@ -102,6 +102,7 @@ import {
 import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
 import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
+import { LibraryDiagnosticsService } from './services/libraryDiagnostics'
 import { collectAppMemoryFootprint } from './services/appMemoryFootprint'
 import { normalizeStatsShareFileName, validateStatsSharePng } from './services/statsShareImage'
 import { normalizeSignalShareFileName, validateSignalSharePng } from './services/signalShareImage'
@@ -265,6 +266,11 @@ import { GlobalInputShortcutService } from './services/globalInputShortcuts'
 import type { InputActionId } from '../types/inputBindings'
 import { checkSettingsTransferWrite } from './utils/settingsTransferWrite'
 import { parseListeningImportFile } from '../shared/stats/listeningImportFile'
+import type {
+  LibraryDiagnosticsOperationKind,
+  LibraryDiagnosticsRendererTimingEvent,
+  LibraryReloadStep
+} from '../types/libraryDiagnostics'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -554,6 +560,7 @@ const RELEASES_URL_HOSTNAME = 'github.com'
 const RELEASES_URL_PATH_PREFIX = '/boof2015/astra/releases'
 const MEMORY_DIAGNOSTICS_ENABLED_META_KEY = 'memory_diagnostics_enabled_v1'
 const MEMORY_DIAGNOSTICS_SAMPLE_INTERVAL_MS = 15_000
+const LIBRARY_DIAGNOSTICS_ENABLED_META_KEY = 'library_diagnostics_enabled_v1'
 const SUBSONIC_SYNC_INTERVAL_MS = 20 * 60 * 1000
 const SUBSONIC_STREAM_MAX_BITRATE_KBPS = 256
 const JELLYFIN_STREAM_MAX_BITRATE_KBPS = 256
@@ -748,7 +755,79 @@ let lastFmConfig: LastFmServiceConfig = {
 let lyricsOnlineEnabled = false
 let lyricsLrclibBaseUrl = LRCLIB_OFFICIAL_BASE_URL
 let memoryDiagnosticsService: MemoryDiagnosticsService | null = null
+let libraryDiagnosticsService: LibraryDiagnosticsService | null = null
 let isAppQuitting = false
+
+function getLibraryRootKindCounts(): Record<string, number> {
+  const counts: Record<string, number> = {
+    drive_letter: 0,
+    unc: 0,
+    posix: 0,
+    relative_or_other: 0
+  }
+  for (const folder of library.getLibraryFolders()) {
+    if (/^\\\\/.test(folder.path)) counts.unc += 1
+    else if (/^[a-zA-Z]:[\\/]/.test(folder.path)) counts.drive_letter += 1
+    else if (folder.path.startsWith('/')) counts.posix += 1
+    else counts.relative_or_other += 1
+  }
+  return counts
+}
+
+function getLibraryDiagnosticsSessionDetails(): Record<string, unknown> {
+  const buildInfo = getAppBuildInfo()
+  const sourceCounts = library.getTrackSourceCounts()
+  let onBattery = false
+  try {
+    onBattery = powerMonitor.isOnBatteryPower()
+  } catch {
+    // powerMonitor can be unavailable during very early startup.
+  }
+  return {
+    appVersion: buildInfo.version,
+    commitHash: buildInfo.commitHash,
+    buildDirty: buildInfo.isDirty,
+    platform: process.platform,
+    arch: process.arch,
+    cpuCount: cpus().length,
+    onBattery,
+    replayGainScanEnabled,
+    totalTrackCount: sourceCounts.total,
+    localTrackCount: sourceCounts.local,
+    remoteTrackCount: sourceCounts.remote,
+    folderCount: library.getLibraryFolders().length,
+    rootKindCounts: getLibraryRootKindCounts()
+  }
+}
+
+function broadcastLibraryDiagnosticsStatus(): void {
+  if (!libraryDiagnosticsService || !mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.webContents.send('library-diagnostics:status', libraryDiagnosticsService.getStatus())
+}
+
+function syncLibraryQueryDiagnosticsReporter(): void {
+  if (!libraryDiagnosticsService?.getStatus().enabled) {
+    library.setLibraryQueryDiagnosticsReporter(null)
+    return
+  }
+  library.setLibraryQueryDiagnosticsReporter((diagnostics) => {
+    void libraryDiagnosticsService?.logEvent('library_query_finished', { ...diagnostics })
+  })
+}
+
+function getLibraryDiagnosticsStatusSnapshot() {
+  if (libraryDiagnosticsService) return libraryDiagnosticsService.getStatus()
+  const logsDir = join(app.getPath('userData'), 'logs')
+  return {
+    enabled: false,
+    schemaVersion: 1,
+    currentLogPath: join(logsDir, 'library-diagnostics-current.jsonl'),
+    previousLogPath: join(logsDir, 'library-diagnostics-prev.jsonl'),
+    hasCurrentLog: false,
+    hasPreviousLog: false,
+    sessionStartedAt: null
+  }
+}
 
 function getMemoryDiagnosticsProcessLabels(): Record<number, string> {
   const labels: Record<number, string> = {
@@ -1579,6 +1658,19 @@ async function loadMemoryDiagnosticsEnabledFromMeta(): Promise<boolean> {
       await library.setAppMeta(MEMORY_DIAGNOSTICS_ENABLED_META_KEY, normalizedStoredValue)
     } catch (error) {
       console.warn('Failed to persist normalized memory diagnostics setting:', error)
+    }
+  }
+  return enabled
+}
+
+async function loadLibraryDiagnosticsEnabledFromMeta(): Promise<boolean> {
+  const enabled = parseMetaBoolean(library.getAppMeta(LIBRARY_DIAGNOSTICS_ENABLED_META_KEY), false)
+  const normalizedStoredValue = enabled ? '1' : '0'
+  if (library.getAppMeta(LIBRARY_DIAGNOSTICS_ENABLED_META_KEY) !== normalizedStoredValue) {
+    try {
+      await library.setAppMeta(LIBRARY_DIAGNOSTICS_ENABLED_META_KEY, normalizedStoredValue)
+    } catch (error) {
+      console.warn('Failed to persist normalized library diagnostics setting:', error)
     }
   }
   return enabled
@@ -4948,6 +5040,18 @@ app.whenReady().then(async () => {
     }
   })
   await memoryDiagnosticsService.initialize(memoryDiagnosticsEnabled)
+  const libraryDiagnosticsEnabled = await loadLibraryDiagnosticsEnabledFromMeta()
+  libraryDiagnosticsService = new LibraryDiagnosticsService({
+    userDataPath: app.getPath('userData'),
+    getSessionDetails: getLibraryDiagnosticsSessionDetails,
+    showItemInFolder: (filePath) => shell.showItemInFolder(filePath),
+    onStatusChange: () => {
+      syncLibraryQueryDiagnosticsReporter()
+      broadcastLibraryDiagnosticsStatus()
+    }
+  })
+  await libraryDiagnosticsService.initialize(libraryDiagnosticsEnabled)
+  syncLibraryQueryDiagnosticsReporter()
   mainWindowPrefs = await loadMainWindowPrefs()
   miniWindowPrefs = await loadMiniWindowPrefs()
   lyricsPopoutWindowPrefs = await loadLyricsPopoutWindowPrefs()
@@ -5097,6 +5201,7 @@ app.on('before-quit', () => {
   void persistLyricsPopoutWindowPrefs()
   closeAllScopePopoutWindows()
   void memoryDiagnosticsService?.shutdown()
+  void libraryDiagnosticsService?.shutdown()
   void localApiService.stop()
   void phoneRemoteService.stop()
   phoneRemoteDiscoveryService.destroy()
@@ -5459,6 +5564,115 @@ ipcMain.on('diagnostics:publishRendererSnapshot', (_event, requestId: unknown, r
     return
   }
   memoryDiagnosticsService?.publishRendererSnapshot(requestId, rawSnapshot as MemoryDiagnosticsRendererSnapshot)
+})
+
+const LIBRARY_DIAGNOSTICS_OPERATION_KINDS = new Set<LibraryDiagnosticsOperationKind>([
+  'add_folder',
+  'rescan_folder',
+  'rescan_all',
+  'force_rescan_all',
+  'remove_folder'
+])
+const LIBRARY_RELOAD_STEPS = new Set<LibraryReloadStep>([
+  'track_count',
+  'track_duration',
+  'albums',
+  'albums_including_singles',
+  'artists',
+  'genres',
+  'folders',
+  'favorites',
+  'recently_played',
+  'full_tracks',
+  'active_selection'
+])
+
+function normalizeDiagnosticDuration(value: unknown): number | null {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric < 0 || numeric > 24 * 60 * 60 * 1000) return null
+  return Math.round(numeric * 100) / 100
+}
+
+function normalizeLibraryRendererTimingEvent(rawValue: unknown): LibraryDiagnosticsRendererTimingEvent | null {
+  if (!rawValue || typeof rawValue !== 'object') return null
+  const value = rawValue as Partial<LibraryDiagnosticsRendererTimingEvent>
+  if (typeof value.runId !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(value.runId)) return null
+  if (!value.operationKind || !LIBRARY_DIAGNOSTICS_OPERATION_KINDS.has(value.operationKind)) return null
+  const backendDurationMs = normalizeDiagnosticDuration(value.backendDurationMs)
+  const reloadDurationMs = normalizeDiagnosticDuration(value.reloadDurationMs)
+  const totalDurationMs = normalizeDiagnosticDuration(value.totalDurationMs)
+  if (backendDurationMs === null || reloadDurationMs === null || totalDurationMs === null) return null
+
+  const stepDurationMs: Partial<Record<LibraryReloadStep, number>> = {}
+  const stepRequestCount: Partial<Record<LibraryReloadStep, number>> = {}
+  const stepResultCount: Partial<Record<LibraryReloadStep, number>> = {}
+  if (value.stepDurationMs && typeof value.stepDurationMs === 'object') {
+    for (const [rawStep, rawDuration] of Object.entries(value.stepDurationMs)) {
+      if (!LIBRARY_RELOAD_STEPS.has(rawStep as LibraryReloadStep)) continue
+      const duration = normalizeDiagnosticDuration(rawDuration)
+      if (duration !== null) stepDurationMs[rawStep as LibraryReloadStep] = duration
+    }
+  }
+  if (value.stepRequestCount && typeof value.stepRequestCount === 'object') {
+    for (const [rawStep, rawCount] of Object.entries(value.stepRequestCount)) {
+      if (!LIBRARY_RELOAD_STEPS.has(rawStep as LibraryReloadStep)) continue
+      const count = Number(rawCount)
+      if (Number.isSafeInteger(count) && count >= 0 && count <= 10_000_000) {
+        stepRequestCount[rawStep as LibraryReloadStep] = count
+      }
+    }
+  }
+  if (value.stepResultCount && typeof value.stepResultCount === 'object') {
+    for (const [rawStep, rawCount] of Object.entries(value.stepResultCount)) {
+      if (!LIBRARY_RELOAD_STEPS.has(rawStep as LibraryReloadStep)) continue
+      const count = Number(rawCount)
+      if (Number.isSafeInteger(count) && count >= 0 && count <= 100_000_000) {
+        stepResultCount[rawStep as LibraryReloadStep] = count
+      }
+    }
+  }
+
+  return {
+    runId: value.runId,
+    operationKind: value.operationKind,
+    backendDurationMs,
+    reloadDurationMs,
+    totalDurationMs,
+    stepDurationMs,
+    stepRequestCount,
+    stepResultCount
+  }
+}
+
+ipcMain.handle('library-diagnostics:getStatus', () => getLibraryDiagnosticsStatusSnapshot())
+
+ipcMain.handle('library-diagnostics:setEnabled', async (_event, rawEnabled: unknown) => {
+  const enabled = Boolean(rawEnabled)
+  await library.setAppMeta(LIBRARY_DIAGNOSTICS_ENABLED_META_KEY, enabled ? '1' : '0')
+  if (!libraryDiagnosticsService) return getLibraryDiagnosticsStatusSnapshot()
+  return libraryDiagnosticsService.setEnabled(enabled)
+})
+
+ipcMain.handle('library-diagnostics:revealCurrentLog', () => (
+  libraryDiagnosticsService?.revealCurrentLog() ?? false
+))
+
+ipcMain.handle('library-diagnostics:revealPreviousLog', () => (
+  libraryDiagnosticsService?.revealPreviousLog() ?? false
+))
+
+ipcMain.handle('library-diagnostics:logRendererTiming', async (_event, rawValue: unknown) => {
+  const timing = normalizeLibraryRendererTimingEvent(rawValue)
+  if (!timing || !libraryDiagnosticsService) return false
+  return libraryDiagnosticsService.logEvent('renderer_reload_finished', {
+    operationKind: timing.operationKind,
+    backendDurationMs: timing.backendDurationMs,
+    reloadDurationMs: timing.reloadDurationMs,
+    totalDurationMs: timing.totalDurationMs,
+    stepDurationMs: timing.stepDurationMs,
+    stepRequestCount: timing.stepRequestCount,
+    stepResultCount: timing.stepResultCount
+  }, timing.runId)
 })
 
 ipcMain.handle('updates:check', async () => {
@@ -6968,6 +7182,123 @@ let activeLibraryScanAbortController: AbortController | null = null
 let activeLibraryScanStage: LibraryScanStage | null = null
 const LIBRARY_SCAN_ISSUE_LOG_LIMIT = 200
 
+interface LibraryWriteTransactionDiagnostics {
+  beginMs: number
+  commitMs: number
+  persistMs: number
+  rollbackMs: number
+}
+
+function mainDiagnosticNow(): number {
+  return Number(process.hrtime.bigint()) / 1_000_000
+}
+
+function roundMainDiagnosticMs(value: number): number {
+  return Math.round(Math.max(0, value) * 100) / 100
+}
+
+function createLibraryDiagnosticsRunId(): string {
+  return `${Date.now().toString(36)}-${randomUUID()}`
+}
+
+function getLibraryRootKind(folderPath: string): 'drive_letter' | 'unc' | 'posix' | 'relative_or_other' {
+  if (/^\\\\/.test(folderPath)) return 'unc'
+  if (/^[a-zA-Z]:[\\/]/.test(folderPath)) return 'drive_letter'
+  if (folderPath.startsWith('/')) return 'posix'
+  return 'relative_or_other'
+}
+
+function getLibraryOperationStartDetails(
+  operationKind: LibraryDiagnosticsOperationKind,
+  folderPath?: string
+): Record<string, unknown> {
+  const sourceCounts = library.getTrackSourceCounts()
+  return {
+    operationKind,
+    replayGainScanEnabled,
+    totalTrackCount: sourceCounts.total,
+    localTrackCount: sourceCounts.local,
+    remoteTrackCount: sourceCounts.remote,
+    folderCount: library.getLibraryFolders().length,
+    rootKind: folderPath ? getLibraryRootKind(folderPath) : null,
+    rootKindCounts: folderPath ? null : getLibraryRootKindCounts()
+  }
+}
+
+function logLibraryDiagnosticsEvent(
+  event: string,
+  details: Record<string, unknown>,
+  runId?: string,
+  options: { flush?: boolean } = {}
+): Promise<boolean> {
+  return libraryDiagnosticsService?.logEvent(event, details, runId, options) ?? Promise.resolve(false)
+}
+
+function isLibraryDiagnosticsEnabled(): boolean {
+  return libraryDiagnosticsService?.getStatus().enabled === true
+}
+
+async function logLibraryDiagnosticsOperationStart(
+  operationKind: LibraryDiagnosticsOperationKind,
+  runId: string,
+  folderPath?: string
+): Promise<void> {
+  if (!isLibraryDiagnosticsEnabled()) return
+  try {
+    await logLibraryDiagnosticsEvent(
+      'library_operation_started',
+      getLibraryOperationStartDetails(operationKind, folderPath),
+      runId,
+      { flush: true }
+    )
+  } catch (error) {
+    console.warn('Failed to prepare library operation diagnostics:', error)
+  }
+}
+
+function logLibraryFolderCheckpoint(
+  checkpoint: library.LibraryFolderRemovalCheckpoint,
+  runId: string
+): void {
+  libraryDiagnosticsService?.logCheckpointSync('folder_removal_checkpoint', { ...checkpoint }, runId)
+}
+
+function logFolderScanDiagnostics(
+  operationKind: LibraryDiagnosticsOperationKind,
+  runId: string,
+  folderIndex: number,
+  folderCount: number,
+  scanResult: library.LibraryFolderScanResult
+): void {
+  void logLibraryDiagnosticsEvent('scan_folder_finished', {
+    operationKind,
+    folderIndex,
+    folderCount,
+    added: scanResult.added,
+    updated: scanResult.updated,
+    errors: scanResult.errors,
+    skippedDirectoryCount: scanResult.skippedDirs.length,
+    ...scanResult.diagnostics
+  }, runId)
+}
+
+async function finishLibraryDiagnosticsOperation(
+  operationKind: LibraryDiagnosticsOperationKind,
+  runId: string,
+  startedAt: number,
+  outcome: 'succeeded' | 'canceled' | 'failed',
+  transaction: LibraryWriteTransactionDiagnostics | null,
+  details: Record<string, unknown> = {}
+): Promise<void> {
+  await logLibraryDiagnosticsEvent('library_operation_finished', {
+    operationKind,
+    outcome,
+    backendDurationMs: roundMainDiagnosticMs(mainDiagnosticNow() - startedAt),
+    transaction,
+    ...details
+  }, runId)
+}
+
 function sendLibraryScanStage(stage: LibraryScanStage, message: string): void {
   activeLibraryScanStage = stage
   mainWindow?.webContents.send('library:scanStage', { stage, message })
@@ -7044,25 +7375,40 @@ function createLibraryScanAbortController(): AbortController {
   return controller
 }
 
-async function runLibraryScanOperation<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+async function runLibraryScanOperation<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  onTransactionDiagnostics?: (diagnostics: LibraryWriteTransactionDiagnostics) => void
+): Promise<T> {
   const controller = createLibraryScanAbortController()
   let transactionStarted = false
+  let beginMs = 0
+  let commitMs = 0
+  let persistMs = 0
+  let rollbackMs = 0
 
   try {
+    const beginStartedAt = mainDiagnosticNow()
     library.beginLibraryWriteTransaction()
+    beginMs = mainDiagnosticNow() - beginStartedAt
     transactionStarted = true
 
     const result = await operation(controller.signal)
 
+    const commitStartedAt = mainDiagnosticNow()
     library.commitLibraryWriteTransaction()
+    commitMs = mainDiagnosticNow() - commitStartedAt
     transactionStarted = false
+    const persistStartedAt = mainDiagnosticNow()
     await library.persistLibraryDatabase()
+    persistMs = mainDiagnosticNow() - persistStartedAt
 
     return result
   } catch (error) {
     if (transactionStarted) {
       try {
+        const rollbackStartedAt = mainDiagnosticNow()
         library.rollbackLibraryWriteTransaction()
+        rollbackMs = mainDiagnosticNow() - rollbackStartedAt
       } catch (rollbackError) {
         console.warn('Failed to roll back canceled library scan transaction:', rollbackError)
       }
@@ -7073,6 +7419,18 @@ async function runLibraryScanOperation<T>(operation: (signal: AbortSignal) => Pr
       activeLibraryScanAbortController = null
     }
     activeLibraryScanStage = null
+    if (onTransactionDiagnostics) {
+      try {
+        onTransactionDiagnostics({
+          beginMs: roundMainDiagnosticMs(beginMs),
+          commitMs: roundMainDiagnosticMs(commitMs),
+          persistMs: roundMainDiagnosticMs(persistMs),
+          rollbackMs: roundMainDiagnosticMs(rollbackMs)
+        })
+      } catch (error) {
+        console.warn('Library transaction diagnostics callback failed:', error)
+      }
+    }
   }
 }
 
@@ -7790,9 +8148,29 @@ ipcMain.handle('library:backfillReplayGainMetadata', async () => {
 
 // Add library folder and scan
 ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
-  const folder = await library.addLibraryFolder(folderPath)
+  const operationKind: LibraryDiagnosticsOperationKind = 'add_folder'
+  const diagnosticRunId = createLibraryDiagnosticsRunId()
+  const diagnosticResultRunId = isLibraryDiagnosticsEnabled() ? diagnosticRunId : undefined
+  const diagnosticStartedAt = mainDiagnosticNow()
+  let diagnosticOutcome: 'succeeded' | 'canceled' | 'failed' = 'failed'
+  let transactionDiagnostics: LibraryWriteTransactionDiagnostics | null = null
+  if (diagnosticResultRunId) {
+    await logLibraryDiagnosticsOperationStart(operationKind, diagnosticRunId, folderPath)
+  }
+  let folder: Awaited<ReturnType<typeof library.addLibraryFolder>>
+  try {
+    folder = await library.addLibraryFolder(folderPath)
+  } catch (error) {
+    await finishLibraryDiagnosticsOperation(operationKind, diagnosticRunId, diagnosticStartedAt, 'failed', null, {
+      errorCode: getScanErrorCode(error) ?? null
+    })
+    throw error
+  }
   if (!folder) {
-    return { success: false, error: 'Folder already in library' }
+    await finishLibraryDiagnosticsOperation(operationKind, diagnosticRunId, diagnosticStartedAt, 'failed', null, {
+      failureReason: 'folder_already_mapped'
+    })
+    return { success: false, error: 'Folder already in library', diagnosticRunId: diagnosticResultRunId }
   }
 
   const folderLabel = basename(folderPath) || folderPath
@@ -7811,7 +8189,7 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
         issueCollector.record(issue, folderPath)
       }
 
-      let scanResult: { added: number; updated: number; errors: number; skippedDirs: string[] } = {
+      let scanResult: Pick<library.LibraryFolderScanResult, 'added' | 'updated' | 'errors' | 'skippedDirs'> = {
         added: 0,
         updated: 0,
         errors: 0,
@@ -7819,9 +8197,11 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
       }
       sendLibraryScanStage('scanning', `Scanning files in ${folderLabel}...`)
       try {
-        scanResult = await library.scanFolder(folderPath, (current, total, file) => {
+        const completedScan = await library.scanFolder(folderPath, (current, total, file) => {
           mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-        }, { signal, persist: false, onIssue, syncSessionKey })
+        }, { signal, persist: false, onIssue, syncSessionKey, diagnostics: Boolean(diagnosticResultRunId) })
+        scanResult = completedScan
+        logFolderScanDiagnostics(operationKind, diagnosticRunId, 0, 1, completedScan)
       } catch (error) {
         if (library.isLibraryScanCancelledError(error)) {
           throw error
@@ -7832,20 +8212,32 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
       }
 
       sendLibraryScanStage('cleanup', 'Updating artist images...')
-      await library.refreshDetectedArtistImages()
+      const artistImageDiagnostics = await library.refreshDetectedArtistImages()
+      void logLibraryDiagnosticsEvent('artist_image_refresh_finished', {
+        operationKind,
+        ...artistImageDiagnostics
+      }, diagnosticRunId)
 
       return { ...scanResult, scanIssueLog: issueCollector.build() }
-    })
+    }, (diagnostics) => { transactionDiagnostics = diagnostics })
 
     syncSessionSucceeded = true
-    return { success: true, canceled: false, folder, ...result }
+    diagnosticOutcome = 'succeeded'
+    return { success: true, canceled: false, folder, ...result, diagnosticRunId: diagnosticResultRunId }
   } catch (error) {
     if (library.isLibraryScanCancelledError(error)) {
       logMemoryDiagnosticsMainEvent('library_scan_canceled', {
         kind: 'add_folder',
         folderPath
       })
-      return { success: false, canceled: true, folder, scanIssueLog: issueCollector.build() }
+      diagnosticOutcome = 'canceled'
+      return {
+        success: false,
+        canceled: true,
+        folder,
+        scanIssueLog: issueCollector.build(),
+        diagnosticRunId: diagnosticResultRunId
+      }
     }
     throw error
   } finally {
@@ -7854,13 +8246,51 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
       kind: 'add_folder',
       folderPath
     })
+    await finishLibraryDiagnosticsOperation(
+      operationKind,
+      diagnosticRunId,
+      diagnosticStartedAt,
+      diagnosticOutcome,
+      transactionDiagnostics
+    )
   }
 })
 
 // Remove library folder
 ipcMain.handle('library:removeFolder', async (_event, folderPath: string) => {
-  await library.removeLibraryFolder(folderPath)
-  return { success: true }
+  const operationKind: LibraryDiagnosticsOperationKind = 'remove_folder'
+  const diagnosticRunId = createLibraryDiagnosticsRunId()
+  const diagnosticResultRunId = isLibraryDiagnosticsEnabled() ? diagnosticRunId : undefined
+  const diagnosticStartedAt = mainDiagnosticNow()
+  if (diagnosticResultRunId) {
+    await logLibraryDiagnosticsOperationStart(operationKind, diagnosticRunId, folderPath)
+  }
+  try {
+    const removalDiagnostics = await library.removeLibraryFolder(
+      folderPath,
+      diagnosticResultRunId
+        ? { onCheckpoint: (checkpoint) => logLibraryFolderCheckpoint(checkpoint, diagnosticRunId) }
+        : {}
+    )
+    await logLibraryDiagnosticsEvent('folder_removal_finished', {
+      operationKind,
+      ...removalDiagnostics
+    }, diagnosticRunId)
+    await finishLibraryDiagnosticsOperation(
+      operationKind,
+      diagnosticRunId,
+      diagnosticStartedAt,
+      'succeeded',
+      null,
+      { rowsMatched: removalDiagnostics.rowsMatched }
+    )
+    return { success: true, diagnosticRunId: diagnosticResultRunId }
+  } catch (error) {
+    await finishLibraryDiagnosticsOperation(operationKind, diagnosticRunId, diagnosticStartedAt, 'failed', null, {
+      errorCode: getScanErrorCode(error) ?? null
+    })
+    throw error
+  }
 })
 
 ipcMain.handle('library:setFolderHidden', async (_event, folderPath: string, hidden: boolean) => {
@@ -7888,6 +8318,15 @@ ipcMain.handle(
 ipcMain.handle(
   'library:rescanFolder',
   async (_event, folderPath: string) => {
+    const operationKind: LibraryDiagnosticsOperationKind = 'rescan_folder'
+    const diagnosticRunId = createLibraryDiagnosticsRunId()
+    const diagnosticResultRunId = isLibraryDiagnosticsEnabled() ? diagnosticRunId : undefined
+    const diagnosticStartedAt = mainDiagnosticNow()
+    let diagnosticOutcome: 'succeeded' | 'canceled' | 'failed' = 'failed'
+    let transactionDiagnostics: LibraryWriteTransactionDiagnostics | null = null
+    if (diagnosticResultRunId) {
+      await logLibraryDiagnosticsOperationStart(operationKind, diagnosticRunId, folderPath)
+    }
     const folderLabel = basename(folderPath) || folderPath
     const issueCollector = createLibraryScanIssueCollector()
     logMemoryDiagnosticsMainEvent('library_scan_started', {
@@ -7903,7 +8342,7 @@ ipcMain.handle(
           issueCollector.record(issue, folderPath)
         }
 
-        let scanResult: { added: number; updated: number; errors: number; skippedDirs: string[] } = {
+        let scanResult: Pick<library.LibraryFolderScanResult, 'added' | 'updated' | 'errors' | 'skippedDirs'> = {
           added: 0,
           updated: 0,
           errors: 0,
@@ -7911,9 +8350,11 @@ ipcMain.handle(
         }
         sendLibraryScanStage('scanning', `Scanning files in ${folderLabel}...`)
         try {
-          scanResult = await library.scanFolder(folderPath, (current, total, file) => {
+          const completedScan = await library.scanFolder(folderPath, (current, total, file) => {
             mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-          }, { signal, persist: false, onIssue, syncSessionKey })
+          }, { signal, persist: false, onIssue, syncSessionKey, diagnostics: Boolean(diagnosticResultRunId) })
+          scanResult = completedScan
+          logFolderScanDiagnostics(operationKind, diagnosticRunId, 0, 1, completedScan)
         } catch (error) {
           if (library.isLibraryScanCancelledError(error)) {
             throw error
@@ -7926,7 +8367,17 @@ ipcMain.handle(
         sendLibraryScanStage('cleanup', `Finalizing ${folderLabel}...`)
         let removed = 0
         try {
-          removed = await library.cleanupMissingTracks({ signal, persist: false, onIssue })
+          removed = await library.cleanupMissingTracks({
+            signal,
+            persist: false,
+            onIssue,
+            onCleanupDiagnostics: (diagnostics) => {
+              void logLibraryDiagnosticsEvent('missing_track_cleanup_finished', {
+                operationKind,
+                ...diagnostics
+              }, diagnosticRunId)
+            }
+          })
         } catch (error) {
           if (library.isLibraryScanCancelledError(error)) {
             throw error
@@ -7944,20 +8395,31 @@ ipcMain.handle(
         }
 
         sendLibraryScanStage('cleanup', 'Updating artist images...')
-        await library.refreshDetectedArtistImages()
+        const artistImageDiagnostics = await library.refreshDetectedArtistImages()
+        void logLibraryDiagnosticsEvent('artist_image_refresh_finished', {
+          operationKind,
+          ...artistImageDiagnostics
+        }, diagnosticRunId)
 
         return { ...scanResult, removed, summary, scanIssueLog: issueCollector.build() }
-      })
+      }, (diagnostics) => { transactionDiagnostics = diagnostics })
 
       syncSessionSucceeded = true
-      return { success: true, canceled: false, ...result }
+      diagnosticOutcome = 'succeeded'
+      return { success: true, canceled: false, ...result, diagnosticRunId: diagnosticResultRunId }
     } catch (error) {
       if (library.isLibraryScanCancelledError(error)) {
         logMemoryDiagnosticsMainEvent('library_scan_canceled', {
           kind: 'rescan_folder',
           folderPath
         })
-        return { success: false, canceled: true, scanIssueLog: issueCollector.build() }
+        diagnosticOutcome = 'canceled'
+        return {
+          success: false,
+          canceled: true,
+          scanIssueLog: issueCollector.build(),
+          diagnosticRunId: diagnosticResultRunId
+        }
       }
       throw error
     } finally {
@@ -7966,6 +8428,13 @@ ipcMain.handle(
         kind: 'rescan_folder',
         folderPath
       })
+      await finishLibraryDiagnosticsOperation(
+        operationKind,
+        diagnosticRunId,
+        diagnosticStartedAt,
+        diagnosticOutcome,
+        transactionDiagnostics
+      )
     }
   }
 )
@@ -7986,6 +8455,15 @@ ipcMain.handle('library:factoryReset', async () => {
 
 // Rescan all folders
 ipcMain.handle('library:rescan', async () => {
+  const operationKind: LibraryDiagnosticsOperationKind = 'rescan_all'
+  const diagnosticRunId = createLibraryDiagnosticsRunId()
+  const diagnosticResultRunId = isLibraryDiagnosticsEnabled() ? diagnosticRunId : undefined
+  const diagnosticStartedAt = mainDiagnosticNow()
+  let diagnosticOutcome: 'succeeded' | 'canceled' | 'failed' = 'failed'
+  let transactionDiagnostics: LibraryWriteTransactionDiagnostics | null = null
+  if (diagnosticResultRunId) {
+    await logLibraryDiagnosticsOperationStart(operationKind, diagnosticRunId)
+  }
   const issueCollector = createLibraryScanIssueCollector()
   logMemoryDiagnosticsMainEvent('library_scan_started', {
     kind: 'rescan_all',
@@ -8013,10 +8491,17 @@ ipcMain.handle('library:rescan', async () => {
         try {
           const scanResult = await library.scanFolder(folder.path, (current, total, file) => {
             mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-          }, { signal, persist: false, onIssue: onFolderIssue, syncSessionKey })
+          }, {
+            signal,
+            persist: false,
+            onIssue: onFolderIssue,
+            syncSessionKey,
+            diagnostics: Boolean(diagnosticResultRunId)
+          })
           totalAdded += scanResult.added
           totalUpdated += scanResult.updated
           totalErrors += scanResult.errors
+          logFolderScanDiagnostics(operationKind, diagnosticRunId, folderIndex, totalFolders, scanResult)
           if (scanResult.skippedDirs.length > 0) {
             folderWarnings[folder.path] = scanResult.skippedDirs
           }
@@ -8039,7 +8524,13 @@ ipcMain.handle('library:rescan', async () => {
         removed = await library.cleanupMissingTracks({
           signal,
           persist: false,
-          onIssue: (issue) => issueCollector.record(issue)
+          onIssue: (issue) => issueCollector.record(issue),
+          onCleanupDiagnostics: (diagnostics) => {
+            void logLibraryDiagnosticsEvent('missing_track_cleanup_finished', {
+              operationKind,
+              ...diagnostics
+            }, diagnosticRunId)
+          }
         })
       } catch (error) {
         if (library.isLibraryScanCancelledError(error)) {
@@ -8051,7 +8542,11 @@ ipcMain.handle('library:rescan', async () => {
       }
 
       sendLibraryScanStage('cleanup', 'Updating artist images...')
-      await library.refreshDetectedArtistImages()
+      const artistImageDiagnostics = await library.refreshDetectedArtistImages()
+      void logLibraryDiagnosticsEvent('artist_image_refresh_finished', {
+        operationKind,
+        ...artistImageDiagnostics
+      }, diagnosticRunId)
 
       return {
         added: totalAdded,
@@ -8061,15 +8556,17 @@ ipcMain.handle('library:rescan', async () => {
         folderWarnings,
         scanIssueLog: issueCollector.build()
       }
-    })
+    }, (diagnostics) => { transactionDiagnostics = diagnostics })
 
     syncSessionSucceeded = true
-    return { ...result, canceled: false }
+    diagnosticOutcome = 'succeeded'
+    return { ...result, canceled: false, diagnosticRunId: diagnosticResultRunId }
   } catch (error) {
     if (library.isLibraryScanCancelledError(error)) {
       logMemoryDiagnosticsMainEvent('library_scan_canceled', {
         kind: 'rescan_all'
       })
+      diagnosticOutcome = 'canceled'
       return {
         added: 0,
         updated: 0,
@@ -8077,7 +8574,8 @@ ipcMain.handle('library:rescan', async () => {
         removed: 0,
         folderWarnings: {},
         scanIssueLog: issueCollector.build(),
-        canceled: true
+        canceled: true,
+        diagnosticRunId: diagnosticResultRunId
       }
     }
     throw error
@@ -8086,10 +8584,26 @@ ipcMain.handle('library:rescan', async () => {
     logMemoryDiagnosticsMainEvent('library_scan_finished', {
       kind: 'rescan_all'
     })
+    await finishLibraryDiagnosticsOperation(
+      operationKind,
+      diagnosticRunId,
+      diagnosticStartedAt,
+      diagnosticOutcome,
+      transactionDiagnostics
+    )
   }
 })
 
 ipcMain.handle('library:forceRescanAll', async () => {
+  const operationKind: LibraryDiagnosticsOperationKind = 'force_rescan_all'
+  const diagnosticRunId = createLibraryDiagnosticsRunId()
+  const diagnosticResultRunId = isLibraryDiagnosticsEnabled() ? diagnosticRunId : undefined
+  const diagnosticStartedAt = mainDiagnosticNow()
+  let diagnosticOutcome: 'succeeded' | 'canceled' | 'failed' = 'failed'
+  let transactionDiagnostics: LibraryWriteTransactionDiagnostics | null = null
+  if (diagnosticResultRunId) {
+    await logLibraryDiagnosticsOperationStart(operationKind, diagnosticRunId)
+  }
   const issueCollector = createLibraryScanIssueCollector()
   logMemoryDiagnosticsMainEvent('library_scan_started', {
     kind: 'force_rescan_all',
@@ -8117,10 +8631,18 @@ ipcMain.handle('library:forceRescanAll', async () => {
         try {
           const scanResult = await library.scanFolder(folder.path, (current, total, file) => {
             mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-          }, { signal, persist: false, onIssue: onFolderIssue, syncSessionKey, mode: 'force' })
+          }, {
+            signal,
+            persist: false,
+            onIssue: onFolderIssue,
+            syncSessionKey,
+            mode: 'force',
+            diagnostics: Boolean(diagnosticResultRunId)
+          })
           totalAdded += scanResult.added
           totalUpdated += scanResult.updated
           totalErrors += scanResult.errors
+          logFolderScanDiagnostics(operationKind, diagnosticRunId, folderIndex, totalFolders, scanResult)
           if (scanResult.skippedDirs.length > 0) {
             folderWarnings[folder.path] = scanResult.skippedDirs
           }
@@ -8141,7 +8663,13 @@ ipcMain.handle('library:forceRescanAll', async () => {
         removed = await library.cleanupMissingTracks({
           signal,
           persist: false,
-          onIssue: (issue) => issueCollector.record(issue)
+          onIssue: (issue) => issueCollector.record(issue),
+          onCleanupDiagnostics: (diagnostics) => {
+            void logLibraryDiagnosticsEvent('missing_track_cleanup_finished', {
+              operationKind,
+              ...diagnostics
+            }, diagnosticRunId)
+          }
         })
       } catch (error) {
         if (library.isLibraryScanCancelledError(error)) {
@@ -8153,7 +8681,11 @@ ipcMain.handle('library:forceRescanAll', async () => {
       }
 
       sendLibraryScanStage('cleanup', 'Updating artist images...')
-      await library.refreshDetectedArtistImages()
+      const artistImageDiagnostics = await library.refreshDetectedArtistImages()
+      void logLibraryDiagnosticsEvent('artist_image_refresh_finished', {
+        operationKind,
+        ...artistImageDiagnostics
+      }, diagnosticRunId)
 
       return {
         added: totalAdded,
@@ -8163,15 +8695,17 @@ ipcMain.handle('library:forceRescanAll', async () => {
         folderWarnings,
         scanIssueLog: issueCollector.build()
       }
-    })
+    }, (diagnostics) => { transactionDiagnostics = diagnostics })
 
     syncSessionSucceeded = true
-    return { ...result, canceled: false }
+    diagnosticOutcome = 'succeeded'
+    return { ...result, canceled: false, diagnosticRunId: diagnosticResultRunId }
   } catch (error) {
     if (library.isLibraryScanCancelledError(error)) {
       logMemoryDiagnosticsMainEvent('library_scan_canceled', {
         kind: 'force_rescan_all'
       })
+      diagnosticOutcome = 'canceled'
       return {
         added: 0,
         updated: 0,
@@ -8179,7 +8713,8 @@ ipcMain.handle('library:forceRescanAll', async () => {
         removed: 0,
         folderWarnings: {},
         scanIssueLog: issueCollector.build(),
-        canceled: true
+        canceled: true,
+        diagnosticRunId: diagnosticResultRunId
       }
     }
     throw error
@@ -8188,6 +8723,13 @@ ipcMain.handle('library:forceRescanAll', async () => {
     logMemoryDiagnosticsMainEvent('library_scan_finished', {
       kind: 'force_rescan_all'
     })
+    await finishLibraryDiagnosticsOperation(
+      operationKind,
+      diagnosticRunId,
+      diagnosticStartedAt,
+      diagnosticOutcome,
+      transactionDiagnostics
+    )
   }
 })
 

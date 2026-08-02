@@ -59,6 +59,12 @@ function makeTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
 
 interface MockLibraryApi {
   getTracksByPaths: (trackPaths: string[]) => Promise<DbTrack[]> | DbTrack[]
+  getTracksPage: (request: { offset?: number; limit?: number }) => Promise<{
+    tracks: DbTrack[]
+    total: number
+    hasMore: boolean
+    nextOffset: number | null
+  }>
   getTrackCount: () => Promise<number> | number
   getTotalTrackDuration: () => Promise<number> | number
   getAlbums: () => Promise<unknown[]> | unknown[]
@@ -73,6 +79,7 @@ interface MockLibraryApi {
 function installMockLibraryApi(overrides: Partial<MockLibraryApi> = {}): void {
   const libraryApi: MockLibraryApi = {
     getTracksByPaths: async () => [],
+    getTracksPage: async () => ({ tracks: [], total: 0, hasMore: false, nextOffset: null }),
     getTrackCount: async () => 0,
     getTotalTrackDuration: async () => 0,
     getAlbums: async () => [],
@@ -89,7 +96,10 @@ function installMockLibraryApi(overrides: Partial<MockLibraryApi> = {}): void {
     configurable: true,
     value: {
       electronAPI: {
-        library: libraryApi
+        library: libraryApi,
+        libraryDiagnostics: {
+          logRendererTiming: async () => true
+        }
       }
     }
   })
@@ -210,6 +220,79 @@ test('loadLibrary refreshes total track duration from the library API', async ()
   const state = useLibraryStore.getState()
   assert.equal(state.totalTrackCount, 3)
   assert.equal(state.totalTrackDuration, 90061)
+})
+
+test('loadLibrary submits a correlated aggregate reload summary', async () => {
+  const timings: Record<string, unknown>[] = []
+  let pageRequests = 0
+  const firstPageTrack = makeTrack('/music/first.flac')
+  const secondPageTrack = makeTrack('/music/second.flac')
+  installMockLibraryApi({
+    getTrackCount: async () => 3,
+    getTotalTrackDuration: async () => 540,
+    getAlbums: async () => [{ album: 'Album' }],
+    getArtists: async () => [{ artist: 'Artist' }],
+    getGenres: async () => ['Rock'],
+    getFolders: async () => [{ path: '/music' }],
+    getFavoritePaths: async () => ['/music/favorite.flac'],
+    getRecentlyPlayed: async () => [makeTrack('/music/recent.flac')],
+    getTracksPage: async () => {
+      pageRequests += 1
+      return pageRequests === 1
+        ? { tracks: [firstPageTrack], total: 2, hasMore: true, nextOffset: 1 }
+        : { tracks: [secondPageTrack], total: 2, hasMore: false, nextOffset: null }
+    }
+  })
+  ;(window.electronAPI.libraryDiagnostics as unknown as {
+    logRendererTiming: (event: Record<string, unknown>) => Promise<boolean>
+  }).logRendererTiming = async (event) => {
+    timings.push(event)
+    return true
+  }
+  useLibraryStore.setState({
+    trackByPath: new Map(),
+    trackCacheVersion: 0,
+    trackPaths: [],
+    fullTrackPaths: [],
+    fullTrackConsumers: new Set(['library']),
+    totalTrackCount: 0,
+    totalTrackDuration: 0,
+    albums: [],
+    albumsIncludingSingles: [],
+    albumsIncludingSinglesLoaded: false,
+    artists: [],
+    genres: [],
+    folders: [],
+    favorites: new Set(),
+    favoriteTrackPaths: [],
+    recentlyPlayedPaths: [],
+    selectedAlbum: null,
+    selectedArtist: null,
+    selectedGenre: null,
+    selectedYear: null
+  })
+
+  const operationStartedAt = performance.now()
+  await useLibraryStore.getState().loadLibrary({
+    runId: 'diagnostic-run-1',
+    operationKind: 'rescan_all',
+    operationStartedAt,
+    backendDurationMs: 12.5
+  })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  const timing = timings[0]
+  assert.ok(timing)
+  assert.equal(timing.runId, 'diagnostic-run-1')
+  assert.equal(timing.operationKind, 'rescan_all')
+  assert.equal((timing.stepRequestCount as Record<string, number>).albums, 1)
+  assert.equal((timing.stepRequestCount as Record<string, number>).favorites, 2)
+  assert.equal((timing.stepRequestCount as Record<string, number>).full_tracks, 2)
+  assert.equal((timing.stepRequestCount as Record<string, number>).active_selection, 0)
+  assert.equal((timing.stepResultCount as Record<string, number>).track_count, 3)
+  assert.equal((timing.stepResultCount as Record<string, number>).folders, 1)
+  assert.equal((timing.stepResultCount as Record<string, number>).full_tracks, 2)
+  assert.equal(typeof (timing.stepDurationMs as Record<string, number>).artists, 'number')
 })
 
 test('resolveTrackPathsWithFetch hydrates missing cached tracks without pruning retained cache', async () => {

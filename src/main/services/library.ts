@@ -598,10 +598,104 @@ type LibraryFolderScanMode = 'incremental' | 'force'
 interface ScanWriteOptions extends ScanControlOptions {
   persist?: boolean
   syncSessionKey?: string | null
+  onCleanupDiagnostics?: (diagnostics: LibraryCleanupDiagnostics) => void
 }
 
 interface FolderScanOptions extends ScanWriteOptions {
   mode?: LibraryFolderScanMode
+  diagnostics?: boolean
+}
+
+export type LibraryIncrementalReparseReason =
+  | 'new_file'
+  | 'file_modified'
+  | 'replaygain_track_missing'
+  | 'replaygain_album_missing'
+  | 'file_created_at_missing'
+  | 'folder_artwork_backfill'
+  | 'folder_artwork_newer'
+  | 'force_mode'
+
+export interface LibraryExtensionTimingDiagnostics {
+  count: number
+  cumulativeMs: number
+  medianMs: number
+  p95Ms: number
+  maxMs: number
+}
+
+export interface LibraryFolderScanDiagnostics {
+  mode: LibraryFolderScanMode
+  totalMs: number
+  excludedTrackCleanupMs: number
+  excludedTrackCount: number
+  discoveryMs: number
+  discoveredFileCount: number
+  discoveredDirectoryCount: number
+  discoveredEntryCount: number
+  existingIndexMs: number
+  existingRowsVisited: number
+  existingFolderRowsIndexed: number
+  workerCount: number
+  processingWallMs: number
+  cumulativeFileStatMs: number
+  cumulativeArtworkLookupMs: number
+  cumulativeMetadataParseMs: number
+  skippedKnownFileCount: number
+  metadataParsedFileCount: number
+  newFileCount: number
+  reparseReasonCounts: Partial<Record<LibraryIncrementalReparseReason, number>>
+  metadataTimingByExtension: Record<string, LibraryExtensionTimingDiagnostics>
+}
+
+export interface LibraryFolderScanResult {
+  added: number
+  updated: number
+  errors: number
+  skippedDirs: string[]
+  diagnostics: LibraryFolderScanDiagnostics
+}
+
+export interface LibraryCleanupDiagnostics {
+  totalMs: number
+  queryMs: number
+  localTrackCount: number
+  filesystemValidationMs: number
+  filesystemMissingCount: number
+  filesystemErrorCount: number
+  caseDuplicateMergeCount: number
+  missingTrackMergeCount: number
+  missingTrackDeleteCount: number
+  reconcileMs: number
+  reconciledReferenceCount: number
+}
+
+export interface LibraryArtistImageRefreshDiagnostics {
+  totalMs: number
+  localTrackCount: number
+  canonicalMs: number
+  strictMs: number
+}
+
+export interface LibraryFolderRemovalDiagnostics {
+  totalMs: number
+  rowsInspected: number
+  rowsMatched: number
+  matchingMs: number
+  deletionMs: number
+  triggerDatabaseMs: number
+  exclusionDeleteMs: number
+  folderDeleteMs: number
+  persistMs: number
+  lastCompletedCheckpoint: LibraryFolderRemovalCheckpoint | null
+}
+
+export interface LibraryFolderRemovalCheckpoint {
+  phase: 'matching_finished' | 'deleting'
+  rowsInspected: number
+  rowsMatched: number
+  deletedCount: number
+  elapsedMs: number
 }
 
 export class LibraryScanCancelledError extends Error {
@@ -712,6 +806,14 @@ const PLAYLIST_COVER_HASH_PREFIX = 'plc:'
 const ARTIST_IMAGE_HASH_PREFIX = 'ari:'
 const LATEST_LIBRARY_SYNC_SUMMARY_META_KEY = 'library_latest_sync_summary_v1'
 const LIBRARY_QUERY_METRICS_ENV = 'ASTRA_LIBRARY_QUERY_METRICS'
+
+function libraryDiagnosticNow(): number {
+  return Number(process.hrtime.bigint()) / 1_000_000
+}
+
+function roundDiagnosticMs(value: number): number {
+  return Math.round(Math.max(0, value) * 100) / 100
+}
 const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   t.id AS id,
   t.path AS path,
@@ -932,6 +1034,22 @@ function isLibraryQueryMetricsEnabled(): boolean {
   return value === '1' || value?.toLowerCase() === 'true'
 }
 
+export interface LibraryQueryDiagnostics {
+  name: string
+  durationMs: number
+  resultCount: number | null
+  heapDeltaBytes: number
+  rssDeltaBytes: number
+}
+
+let libraryQueryDiagnosticsReporter: ((diagnostics: LibraryQueryDiagnostics) => void) | null = null
+
+export function setLibraryQueryDiagnosticsReporter(
+  reporter: ((diagnostics: LibraryQueryDiagnostics) => void) | null
+): void {
+  libraryQueryDiagnosticsReporter = reporter
+}
+
 function countQueryResultRows(result: unknown): number | null {
   if (Array.isArray(result)) return result.length
   return null
@@ -942,7 +1060,8 @@ function formatMetricBytes(bytes: number): string {
 }
 
 function measureLibraryQuery<T>(name: string, query: () => T): T {
-  if (!isLibraryQueryMetricsEnabled()) {
+  const consoleMetricsEnabled = isLibraryQueryMetricsEnabled()
+  if (!consoleMetricsEnabled && !libraryQueryDiagnosticsReporter) {
     return query()
   }
 
@@ -953,17 +1072,32 @@ function measureLibraryQuery<T>(name: string, query: () => T): T {
   const afterMemory = process.memoryUsage()
   const resultCount = countQueryResultRows(result)
 
-  console.info('[library:sqlite-query]', {
-    name,
-    durationMs: Number(durationMs.toFixed(2)),
-    resultCount,
-    heapBefore: formatMetricBytes(beforeMemory.heapUsed),
-    heapAfter: formatMetricBytes(afterMemory.heapUsed),
-    heapDelta: formatMetricBytes(afterMemory.heapUsed - beforeMemory.heapUsed),
-    rssBefore: formatMetricBytes(beforeMemory.rss),
-    rssAfter: formatMetricBytes(afterMemory.rss),
-    rssDelta: formatMetricBytes(afterMemory.rss - beforeMemory.rss),
-  })
+  if (consoleMetricsEnabled) {
+    console.info('[library:sqlite-query]', {
+      name,
+      durationMs: Number(durationMs.toFixed(2)),
+      resultCount,
+      heapBefore: formatMetricBytes(beforeMemory.heapUsed),
+      heapAfter: formatMetricBytes(afterMemory.heapUsed),
+      heapDelta: formatMetricBytes(afterMemory.heapUsed - beforeMemory.heapUsed),
+      rssBefore: formatMetricBytes(beforeMemory.rss),
+      rssAfter: formatMetricBytes(afterMemory.rss),
+      rssDelta: formatMetricBytes(afterMemory.rss - beforeMemory.rss),
+    })
+  }
+  if (libraryQueryDiagnosticsReporter) {
+    try {
+      libraryQueryDiagnosticsReporter({
+        name,
+        durationMs: roundDiagnosticMs(durationMs),
+        resultCount,
+        heapDeltaBytes: afterMemory.heapUsed - beforeMemory.heapUsed,
+        rssDeltaBytes: afterMemory.rss - beforeMemory.rss
+      })
+    } catch (error) {
+      console.warn('Library query diagnostics reporter failed:', error)
+    }
+  }
 
   return result
 }
@@ -5158,12 +5292,23 @@ async function refreshDetectedArtistImagesForMode(
   }
 }
 
-export async function refreshDetectedArtistImages(): Promise<void> {
-  if (!db) return
+export async function refreshDetectedArtistImages(): Promise<LibraryArtistImageRefreshDiagnostics> {
+  if (!db) return { totalMs: 0, localTrackCount: 0, canonicalMs: 0, strictMs: 0 }
 
+  const totalStartedAt = libraryDiagnosticNow()
   const localTracks = readAllTrackRowsUnordered().filter((track) => track.source_type === 'local')
+  const canonicalStartedAt = libraryDiagnosticNow()
   await refreshDetectedArtistImagesForMode('canonical', localTracks)
+  const canonicalMs = libraryDiagnosticNow() - canonicalStartedAt
+  const strictStartedAt = libraryDiagnosticNow()
   await refreshDetectedArtistImagesForMode('strict', localTracks)
+  const strictMs = libraryDiagnosticNow() - strictStartedAt
+  return {
+    totalMs: roundDiagnosticMs(libraryDiagnosticNow() - totalStartedAt),
+    localTrackCount: localTracks.length,
+    canonicalMs: roundDiagnosticMs(canonicalMs),
+    strictMs: roundDiagnosticMs(strictMs)
+  }
 }
 
 // Get unique artists
@@ -5741,20 +5886,49 @@ function getExcludedAbsolutePathsForFolder(folderPath: string): string[] {
   return Array.from(uniquePaths)
 }
 
-function deleteTracksByAbsolutePrefixes(absolutePrefixes: string[]): number {
-  if (!db || absolutePrefixes.length === 0) return 0
+interface PrefixDeletionDiagnostics {
+  removed: number
+  rowsInspected: number
+  matchingMs: number
+  deletionMs: number
+}
 
+function runFolderRemovalCheckpoint(
+  callback: ((checkpoint: LibraryFolderRemovalCheckpoint) => void) | undefined,
+  checkpoint: LibraryFolderRemovalCheckpoint
+): void {
+  if (!callback) return
+  try {
+    callback(checkpoint)
+  } catch (error) {
+    console.warn('Library folder removal diagnostics checkpoint failed:', error)
+  }
+}
+
+function deleteTracksByAbsolutePrefixesWithDiagnostics(
+  absolutePrefixes: string[],
+  onCheckpoint?: (checkpoint: LibraryFolderRemovalCheckpoint) => void
+): PrefixDeletionDiagnostics {
+  if (!db || absolutePrefixes.length === 0) {
+    return { removed: 0, rowsInspected: 0, matchingMs: 0, deletionMs: 0 }
+  }
+
+  const matchingStartedAt = libraryDiagnosticNow()
   const normalizedPrefixes = Array.from(new Set(
     absolutePrefixes
       .map((prefix) => prefix.trim())
       .filter((prefix) => prefix.length > 0)
       .map((prefix) => normalizeComparableFsPath(prefix))
   ))
-  if (normalizedPrefixes.length === 0) return 0
+  if (normalizedPrefixes.length === 0) {
+    return { removed: 0, rowsInspected: 0, matchingMs: 0, deletionMs: 0 }
+  }
 
   const trackIdsToRemove: number[] = []
+  let rowsInspected = 0
 
   for (const track of db.iterate<{ id: number; path: string }>("SELECT id, path FROM tracks WHERE source_type = 'local'")) {
+    rowsInspected += 1
     const normalizedTrackPath = normalizeComparableFsPath(track.path)
     const matchesExcludedPrefix = normalizedPrefixes.some((normalizedPrefix) => {
       if (normalizedTrackPath === normalizedPrefix) return true
@@ -5767,12 +5941,42 @@ function deleteTracksByAbsolutePrefixes(absolutePrefixes: string[]): number {
 
     trackIdsToRemove.push(track.id)
   }
+  const matchingMs = libraryDiagnosticNow() - matchingStartedAt
+  runFolderRemovalCheckpoint(onCheckpoint, {
+    phase: 'matching_finished',
+    rowsInspected,
+    rowsMatched: trackIdsToRemove.length,
+    deletedCount: 0,
+    elapsedMs: roundDiagnosticMs(matchingMs)
+  })
 
-  for (const trackId of trackIdsToRemove) {
+  const deletionStartedAt = libraryDiagnosticNow()
+  const checkpointInterval = Math.max(1, Math.ceil(trackIdsToRemove.length / 20))
+  for (let index = 0; index < trackIdsToRemove.length; index += 1) {
+    const trackId = trackIdsToRemove[index]
     db.run('DELETE FROM tracks WHERE id = ?', [trackId])
+    const deletedCount = index + 1
+    if (onCheckpoint && (deletedCount % checkpointInterval === 0 || deletedCount === trackIdsToRemove.length)) {
+      runFolderRemovalCheckpoint(onCheckpoint, {
+        phase: 'deleting',
+        rowsInspected,
+        rowsMatched: trackIdsToRemove.length,
+        deletedCount,
+        elapsedMs: roundDiagnosticMs(libraryDiagnosticNow() - deletionStartedAt)
+      })
+    }
   }
 
-  return trackIdsToRemove.length
+  return {
+    removed: trackIdsToRemove.length,
+    rowsInspected,
+    matchingMs: roundDiagnosticMs(matchingMs),
+    deletionMs: roundDiagnosticMs(libraryDiagnosticNow() - deletionStartedAt)
+  }
+}
+
+function deleteTracksByAbsolutePrefixes(absolutePrefixes: string[]): number {
+  return deleteTracksByAbsolutePrefixesWithDiagnostics(absolutePrefixes).removed
 }
 
 // Add library folder
@@ -5978,15 +6182,69 @@ export async function setFolderSubfolderExcluded(
 }
 
 // Remove library folder
-export async function removeLibraryFolder(folderPath: string): Promise<void> {
-  if (!db) return
+export async function removeLibraryFolder(
+  folderPath: string,
+  options: { onCheckpoint?: (checkpoint: LibraryFolderRemovalCheckpoint) => void } = {}
+): Promise<LibraryFolderRemovalDiagnostics> {
+  const totalStartedAt = libraryDiagnosticNow()
+  if (!db) {
+    return {
+      totalMs: 0,
+      rowsInspected: 0,
+      rowsMatched: 0,
+      matchingMs: 0,
+      deletionMs: 0,
+      triggerDatabaseMs: 0,
+      exclusionDeleteMs: 0,
+      folderDeleteMs: 0,
+      persistMs: 0,
+      lastCompletedCheckpoint: null
+    }
+  }
   const folder = getLibraryFolderByPath(folderPath)
-  if (!folder) return
+  if (!folder) {
+    return {
+      totalMs: roundDiagnosticMs(libraryDiagnosticNow() - totalStartedAt),
+      rowsInspected: 0,
+      rowsMatched: 0,
+      matchingMs: 0,
+      deletionMs: 0,
+      triggerDatabaseMs: 0,
+      exclusionDeleteMs: 0,
+      folderDeleteMs: 0,
+      persistMs: 0,
+      lastCompletedCheckpoint: null
+    }
+  }
 
-  deleteTracksByAbsolutePrefixes([folder.path])
+  let lastCompletedCheckpoint: LibraryFolderRemovalCheckpoint | null = null
+  const deletion = deleteTracksByAbsolutePrefixesWithDiagnostics([folder.path], (checkpoint) => {
+    lastCompletedCheckpoint = checkpoint
+    runFolderRemovalCheckpoint(options.onCheckpoint, checkpoint)
+  })
+  const exclusionDeleteStartedAt = libraryDiagnosticNow()
   db.run('DELETE FROM folder_exclusions WHERE folder_id = ?', [folder.id])
+  const exclusionDeleteMs = libraryDiagnosticNow() - exclusionDeleteStartedAt
+  const folderDeleteStartedAt = libraryDiagnosticNow()
   db.run('DELETE FROM folders WHERE id = ?', [folder.id])
+  const folderDeleteMs = libraryDiagnosticNow() - folderDeleteStartedAt
+  const persistStartedAt = libraryDiagnosticNow()
   await saveDatabase()
+  const persistMs = libraryDiagnosticNow() - persistStartedAt
+  const roundedExclusionDeleteMs = roundDiagnosticMs(exclusionDeleteMs)
+  const roundedFolderDeleteMs = roundDiagnosticMs(folderDeleteMs)
+  return {
+    totalMs: roundDiagnosticMs(libraryDiagnosticNow() - totalStartedAt),
+    rowsInspected: deletion.rowsInspected,
+    rowsMatched: deletion.removed,
+    matchingMs: deletion.matchingMs,
+    deletionMs: deletion.deletionMs,
+    triggerDatabaseMs: roundDiagnosticMs(deletion.deletionMs + exclusionDeleteMs + folderDeleteMs),
+    exclusionDeleteMs: roundedExclusionDeleteMs,
+    folderDeleteMs: roundedFolderDeleteMs,
+    persistMs: roundDiagnosticMs(persistMs),
+    lastCompletedCheckpoint
+  }
 }
 
 // Toggle a library folder's visibility. Hidden folders stay fully indexed; their tracks are
@@ -6079,36 +6337,34 @@ interface FolderArtworkScanCache {
   hashesByPath: Map<string, Promise<string | null>>
 }
 
-function shouldSkipIncrementalTrackScan(
+function classifyIncrementalTrackScan(
   existing: ExistingTrackScanState | undefined,
   fileModifiedAtMs: number,
   folderArtworkCandidate: FolderArtworkCandidate | null
-): boolean {
+): { skip: boolean; reasons: LibraryIncrementalReparseReason[] } {
   if (!existing) {
-    return false
+    return { skip: false, reasons: ['new_file'] }
   }
 
-  const replayGainMissing = Boolean(
-    replayGainScanEnabled
-    && (
-      existing.replaygain_track_gain_db == null
-      || existing.replaygain_album_gain_db == null
-    )
-  )
+  const reasons: LibraryIncrementalReparseReason[] = []
+  if (existing.modified_at < fileModifiedAtMs) reasons.push('file_modified')
+  if (replayGainScanEnabled && existing.replaygain_track_gain_db == null) {
+    reasons.push('replaygain_track_missing')
+  }
+  if (replayGainScanEnabled && existing.replaygain_album_gain_db == null) {
+    reasons.push('replaygain_album_missing')
+  }
   const fileCreatedAtMissing = existing.file_created_at == null
+  if (fileCreatedAtMissing) reasons.push('file_created_at_missing')
   const folderArtworkBackfillAvailable = existing.artwork_hash == null && folderArtworkCandidate !== null
+  if (folderArtworkBackfillAvailable) reasons.push('folder_artwork_backfill')
   const folderArtworkNewerThanLastScan = Boolean(
     folderArtworkCandidate
     && folderArtworkCandidate.modifiedAtMs > existing.modified_at
   )
+  if (folderArtworkNewerThanLastScan) reasons.push('folder_artwork_newer')
 
-  return (
-    existing.modified_at >= fileModifiedAtMs
-    && !replayGainMissing
-    && !fileCreatedAtMissing
-    && !folderArtworkBackfillAvailable
-    && !folderArtworkNewerThanLastScan
-  )
+  return { skip: reasons.length === 0, reasons }
 }
 
 interface ExistingTrackScanRow extends ExistingTrackScanState {
@@ -6269,50 +6525,141 @@ async function resolveFolderArtworkHash(
   return getFolderArtworkHash(candidate, cache)
 }
 
+function summarizeExtensionTimings(
+  timingsByExtension: Map<string, number[]>
+): Record<string, LibraryExtensionTimingDiagnostics> {
+  const summary: Record<string, LibraryExtensionTimingDiagnostics> = {}
+  for (const [extension, rawDurations] of timingsByExtension.entries()) {
+    if (rawDurations.length === 0) continue
+    const durations = rawDurations.slice().sort((left, right) => left - right)
+    const percentile = (ratio: number): number => {
+      const index = Math.max(0, Math.min(durations.length - 1, Math.ceil(durations.length * ratio) - 1))
+      return durations[index]
+    }
+    summary[extension] = {
+      count: durations.length,
+      cumulativeMs: roundDiagnosticMs(durations.reduce((sum, value) => sum + value, 0)),
+      medianMs: roundDiagnosticMs(percentile(0.5)),
+      p95Ms: roundDiagnosticMs(percentile(0.95)),
+      maxMs: roundDiagnosticMs(durations[durations.length - 1])
+    }
+  }
+  return summary
+}
+
+function createEmptyFolderScanDiagnostics(mode: LibraryFolderScanMode): LibraryFolderScanDiagnostics {
+  return {
+    mode,
+    totalMs: 0,
+    excludedTrackCleanupMs: 0,
+    excludedTrackCount: 0,
+    discoveryMs: 0,
+    discoveredFileCount: 0,
+    discoveredDirectoryCount: 0,
+    discoveredEntryCount: 0,
+    existingIndexMs: 0,
+    existingRowsVisited: 0,
+    existingFolderRowsIndexed: 0,
+    workerCount: 1,
+    processingWallMs: 0,
+    cumulativeFileStatMs: 0,
+    cumulativeArtworkLookupMs: 0,
+    cumulativeMetadataParseMs: 0,
+    skippedKnownFileCount: 0,
+    metadataParsedFileCount: 0,
+    newFileCount: 0,
+    reparseReasonCounts: {},
+    metadataTimingByExtension: {}
+  }
+}
+
 export async function scanFolder(
   folderPath: string,
   onProgress?: (current: number, total: number, file: string) => void,
   options: FolderScanOptions = {}
-): Promise<{ added: number; updated: number; errors: number; skippedDirs: string[] }> {
-  const { persist = true, signal, onIssue, syncSessionKey = null, mode = 'incremental' } = options
-  if (!db) return { added: 0, updated: 0, errors: 0, skippedDirs: [] }
+): Promise<LibraryFolderScanResult> {
+  const {
+    persist = true,
+    signal,
+    onIssue,
+    syncSessionKey = null,
+    mode = 'incremental',
+    diagnostics: diagnosticsEnabled = false
+  } = options
+  if (!db) {
+    return { added: 0, updated: 0, errors: 0, skippedDirs: [], diagnostics: createEmptyFolderScanDiagnostics(mode) }
+  }
+  const totalStartedAt = diagnosticsEnabled ? libraryDiagnosticNow() : 0
   throwIfScanCancelled(signal)
 
   const excludedAbsolutePaths = getExcludedAbsolutePathsForFolder(folderPath)
+  const excludedCleanupStartedAt = diagnosticsEnabled ? libraryDiagnosticNow() : 0
+  let excludedTrackCount = 0
   if (excludedAbsolutePaths.length > 0) {
-    deleteTracksByAbsolutePrefixes(excludedAbsolutePaths)
+    excludedTrackCount = deleteTracksByAbsolutePrefixes(excludedAbsolutePaths)
   }
+  const excludedTrackCleanupMs = diagnosticsEnabled ? libraryDiagnosticNow() - excludedCleanupStartedAt : 0
 
-  const { files, skippedDirs } = await collectAudioFiles(folderPath, excludedAbsolutePaths, { signal, onIssue })
+  const discoveryStartedAt = diagnosticsEnabled ? libraryDiagnosticNow() : 0
+  const {
+    files,
+    skippedDirs,
+    directoryCount: discoveredDirectoryCount,
+    entryCount: discoveredEntryCount
+  } = await collectAudioFiles(folderPath, excludedAbsolutePaths, { signal, onIssue })
+  const discoveryMs = diagnosticsEnabled ? libraryDiagnosticNow() - discoveryStartedAt : 0
   let added = 0
   let updated = 0
   let errors = 0
   let processed = 0
+  let existingRowsVisited = 0
+  let existingFolderRowsIndexed = 0
+  let cumulativeFileStatMs = 0
+  let cumulativeArtworkLookupMs = 0
+  let cumulativeMetadataParseMs = 0
+  let skippedKnownFileCount = 0
+  let metadataParsedFileCount = 0
+  let newFileCount = 0
+  const reparseReasonCounts: Partial<Record<LibraryIncrementalReparseReason, number>> = {}
+  const metadataTimingsByExtension = new Map<string, number[]>()
+  const recordReason = (reason: LibraryIncrementalReparseReason): void => {
+    reparseReasonCounts[reason] = (reparseReasonCounts[reason] ?? 0) + 1
+  }
 
   // Existing rows keyed by case-folded path so a casing-only folder rename
   // still matches the stored row instead of inserting a duplicate (#180).
+  const existingIndexStartedAt = diagnosticsEnabled ? libraryDiagnosticNow() : 0
   const existingByComparablePath = new Map<string, ExistingTrackScanRow[]>()
   if (files.length > 0) {
     for (const row of db.iterate<ExistingTrackScanRow>(
       "SELECT id, path, modified_at, file_created_at, artwork_hash, replaygain_track_gain_db, replaygain_album_gain_db FROM tracks WHERE source_type = 'local'"
     )) {
+      if (diagnosticsEnabled) existingRowsVisited += 1
       if (!isSameOrDescendantPath(row.path, folderPath)) continue
+      if (diagnosticsEnabled) existingFolderRowsIndexed += 1
       const key = normalizeComparableFsPath(row.path)
       const rows = existingByComparablePath.get(key)
       if (rows) rows.push(row)
       else existingByComparablePath.set(key, [row])
     }
   }
+  const existingIndexMs = diagnosticsEnabled ? libraryDiagnosticNow() - existingIndexStartedAt : 0
 
   const scanWorkerCount = resolveScanWorkerCount(files.length)
   const folderArtworkCache = createFolderArtworkScanCache()
 
+  const processingStartedAt = diagnosticsEnabled ? libraryDiagnosticNow() : 0
   await runWithConcurrency(files, scanWorkerCount, async (filePath) => {
     try {
       throwIfScanCancelled(signal)
       if (!db) return
 
-      const fileStat = await stat(filePath)
+      const fileStatStartedAt = diagnosticsEnabled ? libraryDiagnosticNow() : 0
+      const fileStat = diagnosticsEnabled
+        ? await stat(filePath).finally(() => {
+            cumulativeFileStatMs += libraryDiagnosticNow() - fileStatStartedAt
+          })
+        : await stat(filePath)
       const fileCreatedAt = normalizeFileCreatedAtMs(fileStat.birthtimeMs)
 
       const existing = await resolveExistingTrackForScannedFile(
@@ -6320,20 +6667,39 @@ export async function scanFolder(
         fileStat,
         existingByComparablePath.get(normalizeComparableFsPath(filePath))
       )
+      if (diagnosticsEnabled && !existing) newFileCount += 1
 
-      const folderArtworkCandidate = mode === 'incremental'
-        ? await getFolderArtworkCandidate(dirname(filePath), folderArtworkCache)
-        : null
-      const shouldSkipKnownFile = mode === 'incremental' && shouldSkipIncrementalTrackScan(
-        existing,
-        fileStat.mtimeMs,
-        folderArtworkCandidate
-      )
-      if (shouldSkipKnownFile) {
+      let folderArtworkCandidate: FolderArtworkCandidate | null = null
+      if (mode === 'incremental') {
+        const artworkLookupStartedAt = diagnosticsEnabled ? libraryDiagnosticNow() : 0
+        folderArtworkCandidate = await getFolderArtworkCandidate(dirname(filePath), folderArtworkCache)
+        if (diagnosticsEnabled) {
+          cumulativeArtworkLookupMs += libraryDiagnosticNow() - artworkLookupStartedAt
+        }
+      }
+      const decision = mode === 'incremental'
+        ? classifyIncrementalTrackScan(existing, fileStat.mtimeMs, folderArtworkCandidate)
+        : { skip: false, reasons: ['force_mode'] as LibraryIncrementalReparseReason[] }
+      if (decision.skip) {
+        if (diagnosticsEnabled) skippedKnownFileCount += 1
         return
       }
+      if (diagnosticsEnabled) {
+        for (const reason of decision.reasons) recordReason(reason)
+      }
 
-      const metadata = await extractMetadata(filePath, { folderArtworkCache })
+      if (diagnosticsEnabled) metadataParsedFileCount += 1
+      const metadataStartedAt = diagnosticsEnabled ? libraryDiagnosticNow() : 0
+      const metadata = diagnosticsEnabled
+        ? await extractMetadata(filePath, { folderArtworkCache }).finally(() => {
+            const durationMs = libraryDiagnosticNow() - metadataStartedAt
+            cumulativeMetadataParseMs += durationMs
+            const extension = extname(filePath).toLowerCase() || '(none)'
+            const durations = metadataTimingsByExtension.get(extension)
+            if (durations) durations.push(durationMs)
+            else metadataTimingsByExtension.set(extension, [durationMs])
+          })
+        : await extractMetadata(filePath, { folderArtworkCache })
       const now = Date.now()
 
       if (existing) {
@@ -6376,6 +6742,7 @@ export async function scanFolder(
       onProgress?.(processed, files.length, filePath)
     }
   }, { signal })
+  const processingWallMs = diagnosticsEnabled ? libraryDiagnosticNow() - processingStartedAt : 0
 
   throwIfScanCancelled(signal)
   if (added > 0) {
@@ -6384,7 +6751,35 @@ export async function scanFolder(
   if (persist) {
     await saveDatabase()
   }
-  return { added, updated, errors, skippedDirs }
+  return {
+    added,
+    updated,
+    errors,
+    skippedDirs,
+    diagnostics: diagnosticsEnabled ? {
+      mode,
+      totalMs: roundDiagnosticMs(libraryDiagnosticNow() - totalStartedAt),
+      excludedTrackCleanupMs: roundDiagnosticMs(excludedTrackCleanupMs),
+      excludedTrackCount,
+      discoveryMs: roundDiagnosticMs(discoveryMs),
+      discoveredFileCount: files.length,
+      discoveredDirectoryCount,
+      discoveredEntryCount,
+      existingIndexMs: roundDiagnosticMs(existingIndexMs),
+      existingRowsVisited,
+      existingFolderRowsIndexed,
+      workerCount: scanWorkerCount,
+      processingWallMs: roundDiagnosticMs(processingWallMs),
+      cumulativeFileStatMs: roundDiagnosticMs(cumulativeFileStatMs),
+      cumulativeArtworkLookupMs: roundDiagnosticMs(cumulativeArtworkLookupMs),
+      cumulativeMetadataParseMs: roundDiagnosticMs(cumulativeMetadataParseMs),
+      skippedKnownFileCount,
+      metadataParsedFileCount,
+      newFileCount,
+      reparseReasonCounts,
+      metadataTimingByExtension: summarizeExtensionTimings(metadataTimingsByExtension)
+    } : createEmptyFolderScanDiagnostics(mode)
+  }
 }
 
 function isDirectoryExcludedPath(directoryPath: string, excludedDirectories: string[]): boolean {
@@ -6403,9 +6798,11 @@ async function collectAudioFiles(
   dir: string,
   excludedAbsoluteDirs: string[] = [],
   options: ScanControlOptions = {}
-): Promise<{ files: string[]; skippedDirs: string[] }> {
+): Promise<{ files: string[]; skippedDirs: string[]; directoryCount: number; entryCount: number }> {
   const files: string[] = []
   const skippedDirs: string[] = []
+  let directoryCount = 0
+  let entryCount = 0
   const normalizedExcludedDirectories = Array.from(new Set(
     excludedAbsoluteDirs
       .map((excludedPath) => excludedPath.trim())
@@ -6418,6 +6815,7 @@ async function collectAudioFiles(
     if (isDirectoryExcludedPath(currentDir, normalizedExcludedDirectories)) {
       return
     }
+    directoryCount += 1
 
     let entries
     try {
@@ -6435,6 +6833,7 @@ async function collectAudioFiles(
     }
 
     for (const entry of entries) {
+      entryCount += 1
       throwIfScanCancelled(options.signal)
       const fullPath = join(currentDir, entry.name)
 
@@ -6454,7 +6853,7 @@ async function collectAudioFiles(
 
   throwIfScanCancelled(options.signal)
   await walk(dir)
-  return { files, skippedDirs }
+  return { files, skippedDirs, directoryCount, entryCount }
 }
 
 interface ResolvedCodecMetadata {
@@ -7772,6 +8171,13 @@ export function getArtworkPath(hash: string): string {
 export function getTrackCount(): number {
   if (!db) return 0
   return Number(db.get<{ count?: unknown }>('SELECT COUNT(*) as count FROM tracks')?.count ?? 0)
+}
+
+export function getTrackSourceCounts(): { total: number; local: number; remote: number } {
+  if (!db) return { total: 0, local: 0, remote: 0 }
+  const local = readCount("SELECT COUNT(*) FROM tracks WHERE source_type = 'local'")
+  const total = readCount('SELECT COUNT(*) FROM tracks')
+  return { total, local, remote: Math.max(0, total - local) }
 }
 
 export function getTotalTrackDuration(): number {
@@ -11784,9 +12190,11 @@ interface MissingTrackCleanupRow {
 // any write so moved files can be matched against the complete set of verified
 // survivors and merged before delete triggers discard path-keyed user data.
 export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Promise<number> {
-  const { persist = true, signal, onIssue } = options
+  const { persist = true, signal, onIssue, onCleanupDiagnostics } = options
   if (!db) return 0
 
+  const totalStartedAt = libraryDiagnosticNow()
+  const queryStartedAt = libraryDiagnosticNow()
   const tracks = db.all<MissingTrackCleanupRow>(`
     SELECT
       t.id,
@@ -11801,14 +12209,20 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
     LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
     WHERE t.source_type = 'local'
   `)
+  const queryMs = libraryDiagnosticNow() - queryStartedAt
   let removed = 0
   let reconciled = 0
+  let filesystemErrorCount = 0
+  let caseDuplicateMergeCount = 0
+  let missingTrackMergeCount = 0
+  let missingTrackDeleteCount = 0
   const missingTracks: MissingTrackCleanupRow[] = []
   const survivingTrackIds = new Set<number>()
   const caseFoldedGroups = comparableFsPathFoldsCase()
     ? new Map<string, Array<{ id: number; path: string; dev: number; ino: number }>>()
     : null
 
+  const filesystemValidationStartedAt = libraryDiagnosticNow()
   for (const track of tracks) {
     throwIfScanCancelled(signal)
     try {
@@ -11826,11 +12240,13 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
       if (code === 'ENOENT' || code === 'ENOTDIR') {
         missingTracks.push(track)
       } else {
+        filesystemErrorCount += 1
         onIssue?.(createLibraryScanIssue('cleanup', track.path, err))
         console.warn(`Failed to validate track during cleanup for ${track.path}:`, err)
       }
     }
   }
+  const filesystemValidationMs = libraryDiagnosticNow() - filesystemValidationStartedAt
 
   throwIfScanCancelled(signal)
   const ownsTransaction = !db.inTransaction
@@ -11852,6 +12268,7 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
         mergedTargetPaths.add(survivor.path)
         for (const loser of losers) survivingTrackIds.delete(loser.id)
         removed += losers.length
+        caseDuplicateMergeCount += losers.length
       }
     }
 
@@ -11887,15 +12304,39 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
       if (survivor) {
         mergeDuplicateTrackRows(survivor.id, survivor.path, [{ id: track.id, path: track.path }])
         mergedTargetPaths.add(survivor.path)
+        missingTrackMergeCount += 1
       } else {
         db.run('DELETE FROM tracks WHERE id = ?', [track.id])
+        missingTrackDeleteCount += 1
       }
       removed += 1
     }
 
+    const reconcileStartedAt = libraryDiagnosticNow()
     reconciled += refreshListeningSessionAlbumIdentities(Array.from(mergedTargetPaths))
     reconciled += reconcileMissingTrackReferencesByMetadata()
+    const reconcileMs = libraryDiagnosticNow() - reconcileStartedAt
     if (ownsTransaction) commitLibraryWriteTransaction()
+
+    if (onCleanupDiagnostics) {
+      try {
+        onCleanupDiagnostics({
+          totalMs: roundDiagnosticMs(libraryDiagnosticNow() - totalStartedAt),
+          queryMs: roundDiagnosticMs(queryMs),
+          localTrackCount: tracks.length,
+          filesystemValidationMs: roundDiagnosticMs(filesystemValidationMs),
+          filesystemMissingCount: missingTracks.length,
+          filesystemErrorCount,
+          caseDuplicateMergeCount,
+          missingTrackMergeCount,
+          missingTrackDeleteCount,
+          reconcileMs: roundDiagnosticMs(reconcileMs),
+          reconciledReferenceCount: reconciled
+        })
+      } catch (error) {
+        console.warn('Library cleanup diagnostics callback failed:', error)
+      }
+    }
   } catch (error) {
     if (ownsTransaction) rollbackLibraryWriteTransaction()
     throw error

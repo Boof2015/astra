@@ -119,6 +119,10 @@ import type {
   MemoryDiagnosticsSnapshotRequest,
   MemoryDiagnosticsStatus
 } from '../types/diagnostics'
+import type {
+  LibraryDiagnosticsRendererTimingEvent,
+  LibraryDiagnosticsStatus
+} from '../types/libraryDiagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
 import type {
   ImportedListeningSource,
@@ -839,6 +843,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return () => ipcRenderer.removeListener('diagnostics:requestRendererSnapshot', handler)
     }
   },
+  libraryDiagnostics: {
+    getStatus: (): Promise<LibraryDiagnosticsStatus> => ipcRenderer.invoke('library-diagnostics:getStatus'),
+    setEnabled: (enabled: boolean): Promise<LibraryDiagnosticsStatus> =>
+      ipcRenderer.invoke('library-diagnostics:setEnabled', enabled),
+    revealCurrentLog: (): Promise<boolean> => ipcRenderer.invoke('library-diagnostics:revealCurrentLog'),
+    revealPreviousLog: (): Promise<boolean> => ipcRenderer.invoke('library-diagnostics:revealPreviousLog'),
+    logRendererTiming: (timing: LibraryDiagnosticsRendererTimingEvent): Promise<boolean> =>
+      ipcRenderer.invoke('library-diagnostics:logRendererTiming', timing),
+    onStatus: (callback: (status: LibraryDiagnosticsStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: LibraryDiagnosticsStatus) => callback(status)
+      ipcRenderer.on('library-diagnostics:status', handler)
+      return () => ipcRenderer.removeListener('library-diagnostics:status', handler)
+    }
+  },
 
   updates: {
     checkForUpdates: (): Promise<UpdateCheckResult> => ipcRenderer.invoke('updates:check'),
@@ -1323,6 +1341,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       }>,
     rescanFolder: (folderPath: string) => ipcRenderer.invoke('library:rescanFolder', folderPath) as Promise<{
       success: boolean
+      diagnosticRunId?: string
       canceled?: boolean
       added?: number
       updated?: number
@@ -1334,6 +1353,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }>,
     addFolder: (folderPath: string) => ipcRenderer.invoke('library:addFolder', folderPath) as Promise<{
       success: boolean
+      diagnosticRunId?: string
       canceled?: boolean
       added?: number
       updated?: number
@@ -1342,7 +1362,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       scanIssueLog?: ScanIssueLog
       error?: string
     }>,
-    removeFolder: (folderPath: string) => ipcRenderer.invoke('library:removeFolder', folderPath),
+    removeFolder: (folderPath: string) => ipcRenderer.invoke('library:removeFolder', folderPath) as Promise<{
+      success: boolean
+      diagnosticRunId?: string
+    }>,
     setFolderHidden: (folderPath: string, hidden: boolean) =>
       ipcRenderer.invoke('library:setFolderHidden', folderPath, hidden) as Promise<{ success: boolean; error?: string }>,
     backfillReplayGainMetadata: () => ipcRenderer.invoke('library:backfillReplayGainMetadata') as Promise<{
@@ -1365,6 +1388,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     resetMappedFolders: () => ipcRenderer.invoke('library:resetMappedFolders'),
     factoryReset: () => ipcRenderer.invoke('library:factoryReset'),
     rescan: () => ipcRenderer.invoke('library:rescan') as Promise<{
+      diagnosticRunId?: string
       added: number
       updated: number
       errors: number
@@ -1374,6 +1398,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       canceled?: boolean
     }>,
     forceRescanAll: () => ipcRenderer.invoke('library:forceRescanAll') as Promise<{
+      diagnosticRunId?: string
       added: number
       updated: number
       errors: number
@@ -1640,6 +1665,14 @@ declare global {
         onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => () => void
         onSnapshotRequest: (callback: (request: MemoryDiagnosticsSnapshotRequest) => void) => () => void
       }
+      libraryDiagnostics: {
+        getStatus: () => Promise<LibraryDiagnosticsStatus>
+        setEnabled: (enabled: boolean) => Promise<LibraryDiagnosticsStatus>
+        revealCurrentLog: () => Promise<boolean>
+        revealPreviousLog: () => Promise<boolean>
+        logRendererTiming: (timing: LibraryDiagnosticsRendererTimingEvent) => Promise<boolean>
+        onStatus: (callback: (status: LibraryDiagnosticsStatus) => void) => () => void
+      }
       updates: {
         checkForUpdates: () => Promise<UpdateCheckResult>
         openReleasesPage: (releaseUrl?: string) => Promise<boolean>
@@ -1898,6 +1931,7 @@ declare global {
         }>
         rescanFolder: (folderPath: string) => Promise<{
           success: boolean
+          diagnosticRunId?: string
           canceled?: boolean
           added?: number
           updated?: number
@@ -1909,6 +1943,7 @@ declare global {
         }>
         addFolder: (folderPath: string) => Promise<{
           success: boolean
+          diagnosticRunId?: string
           canceled?: boolean
           added?: number
           updated?: number
@@ -1917,7 +1952,7 @@ declare global {
           scanIssueLog?: ScanIssueLog
           error?: string
         }>
-        removeFolder: (folderPath: string) => Promise<{ success: boolean }>
+        removeFolder: (folderPath: string) => Promise<{ success: boolean; diagnosticRunId?: string }>
         setFolderHidden: (folderPath: string, hidden: boolean) => Promise<{ success: boolean; error?: string }>
         backfillReplayGainMetadata: () => Promise<{
           scanned: number
@@ -1935,6 +1970,7 @@ declare global {
         resetMappedFolders: () => Promise<{ success: boolean; clearedFolders: number; clearedTracks: number }>
         factoryReset: () => Promise<{ success: boolean }>
         rescan: () => Promise<{
+          diagnosticRunId?: string
           added: number
           updated: number
           errors: number
@@ -1944,6 +1980,7 @@ declare global {
           canceled?: boolean
         }>
         forceRescanAll: () => Promise<{
+          diagnosticRunId?: string
           added: number
           updated: number
           errors: number

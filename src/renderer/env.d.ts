@@ -112,6 +112,10 @@ import type {
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
 import type {
+    LibraryDiagnosticsRendererTimingEvent,
+    LibraryDiagnosticsStatus
+} from '../types/libraryDiagnostics'
+import type {
   GlobalShortcutRegistrationRequest,
   GlobalShortcutRegistrationResult,
   InputActionId,
@@ -304,6 +308,14 @@ declare global {
                 logEvent: (payload: MemoryDiagnosticsEventPayload) => Promise<boolean>
                 onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => () => void
                 onSnapshotRequest: (callback: (request: MemoryDiagnosticsSnapshotRequest) => void) => () => void
+            }
+            libraryDiagnostics: {
+                getStatus: () => Promise<LibraryDiagnosticsStatus>
+                setEnabled: (enabled: boolean) => Promise<LibraryDiagnosticsStatus>
+                revealCurrentLog: () => Promise<boolean>
+                revealPreviousLog: () => Promise<boolean>
+                logRendererTiming: (timing: LibraryDiagnosticsRendererTimingEvent) => Promise<boolean>
+                onStatus: (callback: (status: LibraryDiagnosticsStatus) => void) => () => void
             }
             updates: {
                 checkForUpdates: () => Promise<{
