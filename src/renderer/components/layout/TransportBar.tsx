@@ -147,6 +147,7 @@ export default function TransportBar() {
   const replayGainScanEnabled = useAudioSettingsStore((s) => s.replayGainScanEnabled)
   const playbackOutputMode = useAudioSettingsStore((s) => s.playbackOutputMode)
   const nativeAudioCapabilities = useAudioSettingsStore((s) => s.nativeAudioCapabilities)
+  const nativeAudioOutputStatus = useAudioSettingsStore((s) => s.nativeAudioOutputStatus)
   const playbackModeStatusMessage = useAudioSettingsStore((s) => s.playbackModeStatusMessage)
   const parallaxSinkConnected = useParallaxStore((s) => Boolean(s.status?.sink.connected))
   const jumpToNowPlaying = useJumpToNowPlaying()
@@ -277,7 +278,7 @@ export default function TransportBar() {
     currentTrack?.album
   )
   const bitPerfectStatusLabel = (() => {
-    if (!bitPerfectModeActive) return null
+    if (!bitPerfectModeActive || !nativeAudioOutputStatus?.bitPerfectActive) return null
 
     const backendLabel = (() => {
       switch (nativeAudioCapabilities.activeBackend) {
@@ -292,9 +293,9 @@ export default function TransportBar() {
       }
     })()
 
-    const sampleRate = nativeAudioCapabilities.activeSampleRate ?? audioEngine.getSampleRate()
+    const sampleRate = nativeAudioOutputStatus.wireFormat.sampleRate ?? audioEngine.getSampleRate()
     const sampleRateLabel = sampleRate > 0 ? `${(sampleRate / 1000).toFixed(1)} kHz` : 'native rate'
-    const exclusivityLabel = nativeAudioCapabilities.activeDeviceExclusive ? 'Exclusive' : 'Direct'
+    const exclusivityLabel = nativeAudioOutputStatus.transport ?? 'Native transport'
     return `${backendLabel} • ${sampleRateLabel} • ${exclusivityLabel}`
   })()
   const normalizationReadout = (() => {

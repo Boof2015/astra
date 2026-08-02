@@ -15,7 +15,7 @@ import {
   type VirtualSpeaker,
 } from '../utils/virtualSpeakerLayout'
 import type { SpatialStatus } from '../audio/AudioEngine'
-import type { NativeAudioCapabilities, PlaybackOutputMode } from '../../types/nativeAudio'
+import type { NativeAudioCapabilities, NativeAudioOutputStatus, PlaybackOutputMode } from '../../types/nativeAudio'
 
 export interface AudioDevice {
   deviceId: string
@@ -63,6 +63,7 @@ interface AudioSettingsStore {
   disableGaplessPrebufferDev: boolean
   disableStandardAnalysisGraphDev: boolean
   nativeAudioCapabilities: NativeAudioCapabilities
+  nativeAudioOutputStatus: NativeAudioOutputStatus | null
   playbackModeStatusMessage: string | null
   selectedDeviceId: string
   availableDevices: AudioDevice[]
@@ -165,9 +166,6 @@ const DEFAULT_NATIVE_AUDIO_CAPABILITIES: NativeAudioCapabilities = {
   bitPerfectAvailable: false,
   reasonUnavailable: 'Native bit-perfect playback is unavailable in this build.',
   activeBackend: 'unavailable',
-  activeDeviceExclusive: false,
-  activeSampleRate: null,
-  activeSampleFormat: null,
   selectedDeviceId: null,
   selectedDeviceMaxChannels: null,
   devices: []
@@ -1021,6 +1019,9 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
   audioEngine.on('spatialStatusChange', (status) => {
     set({ spatialStatus: status as SpatialStatus })
   })
+  audioEngine.on('nativeOutputStatusChange', (status) => {
+    set({ nativeAudioOutputStatus: status as NativeAudioOutputStatus })
+  })
 
   const initialDisableGaplessPrebufferDev = readDevDisableGaplessPrebuffer()
   const initialDisableStandardAnalysisGraphDev = readDevDisableStandardAnalysisGraph()
@@ -1031,6 +1032,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     disableGaplessPrebufferDev: initialDisableGaplessPrebufferDev,
     disableStandardAnalysisGraphDev: initialDisableStandardAnalysisGraphDev,
     nativeAudioCapabilities: { ...DEFAULT_NATIVE_AUDIO_CAPABILITIES },
+    nativeAudioOutputStatus: null,
     playbackModeStatusMessage: null,
     selectedDeviceId: '',
     availableDevices: [],
@@ -1124,6 +1126,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       set({
         playbackOutputMode: fallbackMode,
         nativeAudioCapabilities: capabilities,
+        nativeAudioOutputStatus: audioEngine.getNativeAudioOutputStatus(),
         playbackModeStatusMessage: result.message ?? audioEngine.getPlaybackModeStatusMessage()
       })
 

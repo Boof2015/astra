@@ -49,6 +49,85 @@ Napi::Value ToNullableString(Napi::Env env, const std::string& value) {
     return Napi::String::New(env, value);
 }
 
+Napi::Object CreatePcmFormatObject(Napi::Env env, const NativePlayback::NativePcmFormat& format) {
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("sampleRate", format.sampleRate > 0 ? Napi::Number::New(env, format.sampleRate) : env.Null());
+    obj.Set("channels", format.channels > 0 ? Napi::Number::New(env, format.channels) : env.Null());
+    obj.Set("sampleFormat", ToNullableString(env, format.sampleFormat));
+    obj.Set("containerBits", format.containerBits > 0 ? Napi::Number::New(env, format.containerBits) : env.Null());
+    obj.Set("validBits", format.validBits > 0 ? Napi::Number::New(env, format.validBits) : env.Null());
+    obj.Set("channelMask", Napi::Number::New(env, static_cast<double>(format.channelMask)));
+    obj.Set("channelLayout", ToNullableString(env, format.channelLayout));
+    obj.Set("representation", ToNullableString(env, format.representation));
+    return obj;
+}
+
+Napi::Object CreateOutputAttemptObject(Napi::Env env, const NativePlayback::NativeOutputAttempt& attempt) {
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("index", Napi::Number::New(env, attempt.index));
+    obj.Set("backend", Napi::String::New(env, attempt.backend));
+    obj.Set("deviceId", ToNullableString(env, attempt.deviceId));
+    obj.Set("deviceLabel", ToNullableString(env, attempt.deviceLabel));
+    obj.Set("sourceFormat", CreatePcmFormatObject(env, attempt.sourceFormat));
+    obj.Set("processingFormat", CreatePcmFormatObject(env, attempt.processingFormat));
+    obj.Set("wireFormat", CreatePcmFormatObject(env, attempt.wireFormat));
+    obj.Set("transport", ToNullableString(env, attempt.transport));
+    obj.Set("probeResult", ToNullableString(env, attempt.probeResult));
+    obj.Set("requestedPeriodMs", Napi::Number::New(env, attempt.requestedPeriodMs));
+    obj.Set("alignedPeriodMs", Napi::Number::New(env, attempt.alignedPeriodMs));
+    obj.Set("actualPeriodMs", Napi::Number::New(env, attempt.actualPeriodMs));
+    obj.Set("bufferFrames", Napi::Number::New(env, attempt.bufferFrames));
+    obj.Set("deviceResolved", Napi::Boolean::New(env, attempt.deviceResolved));
+    obj.Set("formatNegotiated", Napi::Boolean::New(env, attempt.formatNegotiated));
+    obj.Set("streamInitialized", Napi::Boolean::New(env, attempt.streamInitialized));
+    obj.Set("bufferPrimed", Napi::Boolean::New(env, attempt.bufferPrimed));
+    obj.Set("streamStarted", Napi::Boolean::New(env, attempt.streamStarted));
+    obj.Set("finalVerified", Napi::Boolean::New(env, attempt.finalVerified));
+    obj.Set("failureStage", ToNullableString(env, attempt.failureStage));
+    obj.Set("osErrorSymbol", ToNullableString(env, attempt.osErrorSymbol));
+    obj.Set("osErrorCode", Napi::Number::New(env, static_cast<double>(attempt.osErrorCode)));
+    obj.Set("message", ToNullableString(env, attempt.message));
+    return obj;
+}
+
+Napi::Object CreateOutputStatusObject(Napi::Env env, const NativePlayback::NativeOutputStatus& status) {
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("outputOpen", Napi::Boolean::New(env, status.outputOpen));
+    obj.Set("deviceResolved", Napi::Boolean::New(env, status.deviceResolved));
+    obj.Set("formatNegotiated", Napi::Boolean::New(env, status.formatNegotiated));
+    obj.Set("streamInitialized", Napi::Boolean::New(env, status.streamInitialized));
+    obj.Set("streamStarted", Napi::Boolean::New(env, status.streamStarted));
+    obj.Set("streamRunning", Napi::Boolean::New(env, status.streamRunning));
+    obj.Set("exclusiveRequested", Napi::Boolean::New(env, status.exclusiveRequested));
+    obj.Set("exclusiveAcquired", Napi::Boolean::New(env, status.exclusiveAcquired));
+    obj.Set("systemMixerBypassed", Napi::Boolean::New(env, status.systemMixerBypassed));
+    obj.Set("sourceSamplesModified", Napi::Boolean::New(env, status.sourceSamplesModified));
+    obj.Set("wireFormatCanCarrySourceExactly", Napi::Boolean::New(env, status.wireFormatCanCarrySourceExactly));
+    obj.Set("bitPerfectActive", Napi::Boolean::New(env, status.bitPerfectActive));
+    obj.Set("sourceFormat", CreatePcmFormatObject(env, status.sourceFormat));
+    obj.Set("processingFormat", CreatePcmFormatObject(env, status.processingFormat));
+    obj.Set("wireFormat", CreatePcmFormatObject(env, status.wireFormat));
+    obj.Set("backend", Napi::String::New(env, status.backend));
+    obj.Set("deviceId", ToNullableString(env, status.deviceId));
+    obj.Set("deviceLabel", ToNullableString(env, status.deviceLabel));
+    obj.Set("transport", ToNullableString(env, status.transport));
+    obj.Set("requestedPeriodMs", Napi::Number::New(env, status.requestedPeriodMs));
+    obj.Set("actualPeriodMs", Napi::Number::New(env, status.actualPeriodMs));
+    obj.Set("requestedPeriodFrames", Napi::Number::New(env, status.requestedPeriodFrames));
+    obj.Set("actualPeriodFrames", Napi::Number::New(env, status.actualPeriodFrames));
+    obj.Set("bufferFrames", Napi::Number::New(env, status.bufferFrames));
+    obj.Set("failureStage", ToNullableString(env, status.failureStage));
+    obj.Set("osErrorSymbol", ToNullableString(env, status.osErrorSymbol));
+    obj.Set("osErrorCode", Napi::Number::New(env, static_cast<double>(status.osErrorCode)));
+    obj.Set("failureSummary", ToNullableString(env, status.failureSummary));
+    Napi::Array attempts = Napi::Array::New(env, status.attempts.size());
+    for (size_t i = 0; i < status.attempts.size(); i++) {
+        attempts.Set(i, CreateOutputAttemptObject(env, status.attempts[i]));
+    }
+    obj.Set("attempts", attempts);
+    return obj;
+}
+
 Napi::Object CreatePlaybackSnapshotObject(Napi::Env env, const NativePlayback::PlaybackSnapshot& snapshot) {
     Napi::Object obj = Napi::Object::New(env);
     obj.Set("playbackState", Napi::String::New(env, snapshot.playbackState));
@@ -59,9 +138,7 @@ Napi::Object CreatePlaybackSnapshotObject(Napi::Env env, const NativePlayback::P
     obj.Set("sampleFormat", ToNullableString(env, snapshot.sampleFormat));
     obj.Set("deviceId", ToNullableString(env, snapshot.deviceId));
     obj.Set("deviceLabel", ToNullableString(env, snapshot.deviceLabel));
-    obj.Set("activeBackend", Napi::String::New(env, snapshot.activeBackend));
-    obj.Set("activeDeviceExclusive", Napi::Boolean::New(env, snapshot.activeDeviceExclusive));
-    obj.Set("bitPerfectActive", Napi::Boolean::New(env, snapshot.bitPerfectActive));
+    obj.Set("outputStatus", CreateOutputStatusObject(env, snapshot.outputStatus));
     return obj;
 }
 
@@ -96,16 +173,11 @@ Napi::Object CreateCapabilitiesObject(Napi::Env env) {
     std::string reason;
     const bool bitPerfectAvailable = playbackEngine.isBitPerfectAvailable(&reason);
     const auto devices = playbackEngine.getOutputDevices(&reason);
-    const auto snapshot = playbackEngine.getSnapshot();
-    const int activeDeviceSampleRate = playbackEngine.getActiveDeviceSampleRate();
 
     Napi::Object obj = Napi::Object::New(env);
     obj.Set("bitPerfectAvailable", Napi::Boolean::New(env, bitPerfectAvailable));
     obj.Set("reasonUnavailable", bitPerfectAvailable ? env.Null() : ToNullableString(env, reason));
     obj.Set("activeBackend", Napi::String::New(env, playbackEngine.backendKind()));
-    obj.Set("activeDeviceExclusive", Napi::Boolean::New(env, snapshot.activeDeviceExclusive));
-    obj.Set("activeSampleRate", activeDeviceSampleRate > 0 ? Napi::Number::New(env, activeDeviceSampleRate) : env.Null());
-    obj.Set("activeSampleFormat", ToNullableString(env, snapshot.sampleFormat));
     obj.Set("selectedDeviceId", ToNullableString(env, playbackEngine.getSelectedDeviceId()));
 
     Napi::Array deviceArray = Napi::Array::New(env, devices.size());
@@ -872,6 +944,10 @@ Napi::Value PlaybackGetCapabilities(const Napi::CallbackInfo& info) {
     return CreateCapabilitiesObject(info.Env());
 }
 
+Napi::Value PlaybackGetNativeAudioDiagnosticReport(const Napi::CallbackInfo& info) {
+    return Napi::String::New(info.Env(), playbackEngine.getNativeAudioDiagnosticReport());
+}
+
 Napi::Value PlaybackProbeDeviceFormats(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     const std::string deviceId = info.Length() > 0 && info[0].IsString()
@@ -1221,6 +1297,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     // Native playback
     Napi::Object playbackExports = Napi::Object::New(env);
     playbackExports.Set("getCapabilities", Napi::Function::New(env, PlaybackGetCapabilities));
+    playbackExports.Set("getNativeAudioDiagnosticReport", Napi::Function::New(env, PlaybackGetNativeAudioDiagnosticReport));
     playbackExports.Set("setOutputDevice", Napi::Function::New(env, PlaybackSetOutputDevice));
     playbackExports.Set("probeDeviceFormats", Napi::Function::New(env, PlaybackProbeDeviceFormats));
     playbackExports.Set("loadTrack", Napi::Function::New(env, PlaybackLoadTrack));

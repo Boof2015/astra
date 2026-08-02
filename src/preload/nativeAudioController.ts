@@ -7,9 +7,13 @@ import type {
   NativeAudioCapabilities,
   NativeAudioDeviceFormat,
   NativeAudioDeviceFormatProbe,
+  NativeAudioDiagnosticReport,
   NativeAudioProbedSampleFormat,
   NativeAudioEvent,
   NativeAudioOutputDevice,
+  NativeAudioOutputAttempt,
+  NativeAudioOutputStatus,
+  NativePcmFormat,
   NativeAudioPlaybackSnapshot,
   NativeAudioSampleFormat,
   NativeAudioTrackLoadResult,
@@ -22,6 +26,7 @@ import { createBitPerfectFormatError } from '../shared/audio/bitPerfectFormatErr
 
 export interface NativeAudioAddonPlayback {
   getCapabilities(): NativeAudioCapabilities
+  getNativeAudioDiagnosticReport?(): string
   setOutputDevice(deviceId: string): NativeAudioCapabilities
   probeDeviceFormats?(deviceId: string, channels: number): NativeAudioDeviceFormatProbe
   loadTrack(
@@ -71,6 +76,7 @@ interface NativeAudioControllerApi {
   seek: (seconds: number) => Promise<NativeAudioPlaybackSnapshot>
   clearNextTrack: () => Promise<void>
   getPlaybackSnapshot: () => Promise<NativeAudioPlaybackSnapshot>
+  getNativeAudioDiagnosticReport: () => Promise<NativeAudioDiagnosticReport>
   getBufferMemoryStats: () => Promise<AudioBufferMemoryStats>
   setVisualizerTapDemand: (demand: NativeAudioVisualizerTapDemand) => Promise<void>
   flushOscilloscopeChunks: () => Float32Array[]
@@ -98,11 +104,11 @@ interface DecodedPcmTrack {
   sampleFormat: NativeAudioSampleFormat
   duration: number
   pcmData: Buffer
+  sourceMetadata: NativeAudioTrackMetadata
 }
 
 interface DecodeFileOptions {
   backendKind?: NativeAudioBackendKind
-  forcedSampleFormat?: NativeAudioSampleFormat
 }
 
 interface LoadedTrackRequest {
@@ -144,12 +150,52 @@ const DEFAULT_UNAVAILABLE_CAPABILITIES: NativeAudioCapabilities = {
   bitPerfectAvailable: false,
   reasonUnavailable: 'Native bit-perfect playback is unavailable in this build.',
   activeBackend: 'unavailable',
-  activeDeviceExclusive: false,
-  activeSampleRate: null,
-  activeSampleFormat: null,
   selectedDeviceId: null,
   selectedDeviceMaxChannels: null,
   devices: []
+}
+
+const EMPTY_PCM_FORMAT: NativePcmFormat = {
+  sampleRate: null,
+  channels: null,
+  sampleFormat: null,
+  containerBits: null,
+  validBits: null,
+  channelMask: 0,
+  channelLayout: null,
+  representation: null
+}
+
+const EMPTY_OUTPUT_STATUS: NativeAudioOutputStatus = {
+  outputOpen: false,
+  deviceResolved: false,
+  formatNegotiated: false,
+  streamInitialized: false,
+  streamStarted: false,
+  streamRunning: false,
+  exclusiveRequested: true,
+  exclusiveAcquired: false,
+  systemMixerBypassed: false,
+  sourceSamplesModified: false,
+  wireFormatCanCarrySourceExactly: false,
+  bitPerfectActive: false,
+  sourceFormat: EMPTY_PCM_FORMAT,
+  processingFormat: EMPTY_PCM_FORMAT,
+  wireFormat: EMPTY_PCM_FORMAT,
+  backend: 'unavailable',
+  deviceId: null,
+  deviceLabel: null,
+  transport: null,
+  requestedPeriodMs: 0,
+  actualPeriodMs: 0,
+  requestedPeriodFrames: 0,
+  actualPeriodFrames: 0,
+  bufferFrames: 0,
+  failureStage: null,
+  osErrorSymbol: null,
+  osErrorCode: 0,
+  failureSummary: null,
+  attempts: []
 }
 
 const EMPTY_AUDIO_BUFFER_MEMORY_STATS: AudioBufferMemoryStats = {
@@ -180,8 +226,124 @@ function normalizeBackendKind(value: unknown): NativeAudioBackendKind {
 }
 
 function normalizeSampleFormat(value: unknown): NativeAudioSampleFormat | null {
-  if (value === 's16' || value === 's32' || value === 'f32') return value
+  if (value === 's16' || value === 's24' || value === 's32' || value === 'f32') return value
   return null
+}
+
+function normalizeProbedSampleFormat(value: unknown): NativeAudioProbedSampleFormat | null {
+  if (value === 's24in32') return value
+  return normalizeSampleFormat(value)
+}
+
+function normalizeNullableText(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null
+}
+
+function normalizeNonNegativeNumber(value: unknown): number {
+  return Number.isFinite(value) ? Math.max(0, Number(value)) : 0
+}
+
+function normalizePcmFormat(value: unknown): NativePcmFormat {
+  if (!value || typeof value !== 'object') return { ...EMPTY_PCM_FORMAT }
+  const raw = value as Partial<NativePcmFormat>
+  return {
+    sampleRate: Number.isFinite(raw.sampleRate) && Number(raw.sampleRate) > 0 ? Math.round(Number(raw.sampleRate)) : null,
+    channels: Number.isFinite(raw.channels) && Number(raw.channels) > 0 ? Math.round(Number(raw.channels)) : null,
+    sampleFormat: normalizeProbedSampleFormat(raw.sampleFormat),
+    containerBits: Number.isFinite(raw.containerBits) && Number(raw.containerBits) > 0 ? Math.round(Number(raw.containerBits)) : null,
+    validBits: Number.isFinite(raw.validBits) && Number(raw.validBits) > 0 ? Math.round(Number(raw.validBits)) : null,
+    channelMask: normalizeNonNegativeNumber(raw.channelMask),
+    channelLayout: normalizeNullableText(raw.channelLayout),
+    representation: normalizeNullableText(raw.representation)
+  }
+}
+
+function normalizeOutputAttempt(value: unknown): NativeAudioOutputAttempt | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as Partial<NativeAudioOutputAttempt>
+  return {
+    index: Math.max(0, Math.round(normalizeNonNegativeNumber(raw.index))),
+    backend: normalizeBackendKind(raw.backend),
+    deviceId: normalizeNullableText(raw.deviceId),
+    deviceLabel: normalizeNullableText(raw.deviceLabel),
+    sourceFormat: normalizePcmFormat(raw.sourceFormat),
+    processingFormat: normalizePcmFormat(raw.processingFormat),
+    wireFormat: normalizePcmFormat(raw.wireFormat),
+    transport: normalizeNullableText(raw.transport),
+    probeResult: normalizeNullableText(raw.probeResult),
+    requestedPeriodMs: normalizeNonNegativeNumber(raw.requestedPeriodMs),
+    alignedPeriodMs: normalizeNonNegativeNumber(raw.alignedPeriodMs),
+    actualPeriodMs: normalizeNonNegativeNumber(raw.actualPeriodMs),
+    bufferFrames: Math.round(normalizeNonNegativeNumber(raw.bufferFrames)),
+    deviceResolved: Boolean(raw.deviceResolved),
+    formatNegotiated: Boolean(raw.formatNegotiated),
+    streamInitialized: Boolean(raw.streamInitialized),
+    bufferPrimed: Boolean(raw.bufferPrimed),
+    streamStarted: Boolean(raw.streamStarted),
+    finalVerified: Boolean(raw.finalVerified),
+    failureStage: normalizeNullableText(raw.failureStage),
+    osErrorSymbol: normalizeNullableText(raw.osErrorSymbol),
+    osErrorCode: Number.isFinite(raw.osErrorCode) ? Number(raw.osErrorCode) : 0,
+    message: normalizeNullableText(raw.message)
+  }
+}
+
+export function normalizeNativeAudioOutputStatus(value: unknown): NativeAudioOutputStatus {
+  if (!value || typeof value !== 'object') {
+    return {
+      ...EMPTY_OUTPUT_STATUS,
+      sourceFormat: { ...EMPTY_PCM_FORMAT },
+      processingFormat: { ...EMPTY_PCM_FORMAT },
+      wireFormat: { ...EMPTY_PCM_FORMAT },
+      attempts: []
+    }
+  }
+  const raw = value as Partial<NativeAudioOutputStatus>
+  const streamRunning = Boolean(raw.streamRunning)
+  const exclusiveAcquired = Boolean(raw.exclusiveAcquired)
+  const systemMixerBypassed = Boolean(raw.systemMixerBypassed)
+  const sourceSamplesModified = Boolean(raw.sourceSamplesModified)
+  const wireFormatCanCarrySourceExactly = Boolean(raw.wireFormatCanCarrySourceExactly)
+  return {
+    outputOpen: Boolean(raw.outputOpen),
+    deviceResolved: Boolean(raw.deviceResolved),
+    formatNegotiated: Boolean(raw.formatNegotiated),
+    streamInitialized: Boolean(raw.streamInitialized),
+    streamStarted: Boolean(raw.streamStarted),
+    streamRunning,
+    exclusiveRequested: raw.exclusiveRequested !== false,
+    exclusiveAcquired,
+    systemMixerBypassed,
+    sourceSamplesModified,
+    wireFormatCanCarrySourceExactly,
+    bitPerfectActive: streamRunning
+      && exclusiveAcquired
+      && systemMixerBypassed
+      && !sourceSamplesModified
+      && wireFormatCanCarrySourceExactly,
+    sourceFormat: normalizePcmFormat(raw.sourceFormat),
+    processingFormat: normalizePcmFormat(raw.processingFormat),
+    wireFormat: normalizePcmFormat(raw.wireFormat),
+    backend: normalizeBackendKind(raw.backend),
+    deviceId: normalizeNullableText(raw.deviceId),
+    deviceLabel: normalizeNullableText(raw.deviceLabel),
+    transport: normalizeNullableText(raw.transport),
+    requestedPeriodMs: normalizeNonNegativeNumber(raw.requestedPeriodMs),
+    actualPeriodMs: normalizeNonNegativeNumber(raw.actualPeriodMs),
+    requestedPeriodFrames: Math.round(normalizeNonNegativeNumber(raw.requestedPeriodFrames)),
+    actualPeriodFrames: Math.round(normalizeNonNegativeNumber(raw.actualPeriodFrames)),
+    bufferFrames: Math.round(normalizeNonNegativeNumber(raw.bufferFrames)),
+    failureStage: normalizeNullableText(raw.failureStage),
+    osErrorSymbol: normalizeNullableText(raw.osErrorSymbol),
+    osErrorCode: Number.isFinite(raw.osErrorCode) ? Number(raw.osErrorCode) : 0,
+    failureSummary: normalizeNullableText(raw.failureSummary),
+    attempts: Array.isArray(raw.attempts)
+      ? raw.attempts.flatMap((attempt) => {
+          const normalized = normalizeOutputAttempt(attempt)
+          return normalized ? [normalized] : []
+        })
+      : []
+  }
 }
 
 function normalizeOutputDevices(value: unknown): NativeAudioOutputDevice[] {
@@ -214,9 +376,6 @@ function normalizeCapabilities(value: unknown): NativeAudioCapabilities {
       ? raw.reasonUnavailable.trim()
       : null,
     activeBackend: normalizeBackendKind(raw.activeBackend),
-    activeDeviceExclusive: Boolean(raw.activeDeviceExclusive),
-    activeSampleRate: Number.isFinite(raw.activeSampleRate) ? Math.max(1, Math.round(Number(raw.activeSampleRate))) : null,
-    activeSampleFormat: normalizeSampleFormat(raw.activeSampleFormat),
     selectedDeviceId: typeof raw.selectedDeviceId === 'string' && raw.selectedDeviceId.trim().length > 0
       ? raw.selectedDeviceId.trim()
       : null,
@@ -238,14 +397,12 @@ function normalizePlaybackSnapshot(value: unknown): NativeAudioPlaybackSnapshot 
       sampleFormat: null,
       deviceId: null,
       deviceLabel: null,
-      activeBackend: 'unavailable',
-      activeDeviceExclusive: false,
-      bitPerfectActive: false
+      outputStatus: normalizeNativeAudioOutputStatus(null)
     }
   }
 
   const raw = value as Partial<NativeAudioPlaybackSnapshot>
-  const playbackState = raw.playbackState === 'playing' || raw.playbackState === 'paused' || raw.playbackState === 'loading'
+  const playbackState = raw.playbackState === 'starting' || raw.playbackState === 'playing' || raw.playbackState === 'paused' || raw.playbackState === 'loading'
     ? raw.playbackState
     : 'stopped'
 
@@ -258,9 +415,7 @@ function normalizePlaybackSnapshot(value: unknown): NativeAudioPlaybackSnapshot 
     sampleFormat: normalizeSampleFormat(raw.sampleFormat),
     deviceId: typeof raw.deviceId === 'string' && raw.deviceId.trim().length > 0 ? raw.deviceId.trim() : null,
     deviceLabel: typeof raw.deviceLabel === 'string' && raw.deviceLabel.trim().length > 0 ? raw.deviceLabel.trim() : null,
-    activeBackend: normalizeBackendKind(raw.activeBackend),
-    activeDeviceExclusive: Boolean(raw.activeDeviceExclusive),
-    bitPerfectActive: Boolean(raw.bitPerfectActive)
+    outputStatus: normalizeNativeAudioOutputStatus(raw.outputStatus)
   }
 }
 
@@ -271,7 +426,7 @@ function normalizeEvent(value: unknown): NativeAudioEvent | null {
     case 'stateChange':
       return {
         type: 'stateChange',
-        playbackState: raw.playbackState === 'playing' || raw.playbackState === 'paused' || raw.playbackState === 'loading'
+        playbackState: raw.playbackState === 'starting' || raw.playbackState === 'playing' || raw.playbackState === 'paused' || raw.playbackState === 'loading'
           ? raw.playbackState
           : 'stopped'
       }
@@ -308,6 +463,11 @@ function normalizeEvent(value: unknown): NativeAudioEvent | null {
           ? raw.message.trim()
           : 'Unknown native audio error.'
       }
+    case 'outputStatusChanged':
+      return {
+        type: 'outputStatusChanged',
+        ...(typeof raw.message === 'string' && raw.message.trim().length > 0 ? { message: raw.message.trim() } : {})
+      }
     default:
       return null
   }
@@ -321,8 +481,7 @@ function normalizeTrackLoadResult(
     sampleRate: snapshot.sampleRate ?? decoded.sampleRate,
     channels: snapshot.channels ?? decoded.channels,
     sampleFormat: snapshot.sampleFormat ?? decoded.sampleFormat,
-    duration: snapshot.duration > 0 ? snapshot.duration : decoded.duration,
-    bitPerfectActive: snapshot.bitPerfectActive
+    duration: snapshot.duration > 0 ? snapshot.duration : decoded.duration
   }
 }
 
@@ -334,8 +493,7 @@ function normalizePromotedTrackLoadResult(
     sampleRate: snapshot.sampleRate ?? fallback?.sampleRate ?? fallback?.metadata?.sampleRate ?? 0,
     channels: snapshot.channels ?? fallback?.channels ?? fallback?.metadata?.channels ?? 2,
     sampleFormat: snapshot.sampleFormat ?? fallback?.sampleFormat ?? 'f32',
-    duration: snapshot.duration > 0 ? snapshot.duration : fallback?.duration ?? 0,
-    bitPerfectActive: snapshot.bitPerfectActive
+    duration: snapshot.duration > 0 ? snapshot.duration : fallback?.duration ?? 0
   }
 }
 
@@ -418,13 +576,8 @@ function parseSampleRate(value: string | number | undefined): number | null {
 function resolveSampleFormat(
   stream: FfprobeStreamInfo,
   metadata?: NativeAudioTrackMetadata,
-  backendKind: NativeAudioBackendKind = 'unavailable',
-  forcedSampleFormat?: NativeAudioSampleFormat
+  backendKind: NativeAudioBackendKind = 'unavailable'
 ): NativeAudioSampleFormat {
-  if (forcedSampleFormat) {
-    return forcedSampleFormat
-  }
-
   const codec = (stream.codec_name ?? metadata?.codec ?? '').trim().toLowerCase()
   const sampleFormat = (stream.sample_fmt ?? '').trim().toLowerCase()
   const bitDepth = Number(stream.bits_per_raw_sample ?? metadata?.bitDepth ?? 0)
@@ -434,23 +587,28 @@ function resolveSampleFormat(
   // for Linux hardware output when the source does not provide integer samples.
   if (backendKind === 'alsa-hw') {
     if (sampleFormat.startsWith('u8') || sampleFormat.startsWith('s8') || sampleFormat.startsWith('s16')) {
-      return 's32'
-    }
-
-    if (sampleFormat.startsWith('s24') || sampleFormat.startsWith('s32') || sampleFormat.startsWith('s64')) {
-      return 's32'
-    }
-
-    if (Number.isFinite(bitDepth) && bitDepth > 0) {
-      return bitDepth > 16 ? 's32' : 's32'
-    }
-
-    if (LOSSY_CODECS.has(codec)) {
       return 's16'
     }
 
+    if (sampleFormat.startsWith('s24')) {
+      return 's24'
+    }
+
+    if (sampleFormat.startsWith('s32') || sampleFormat.startsWith('s64')) {
+      return Number.isFinite(bitDepth) && bitDepth > 0 && bitDepth <= 24 ? 's24' : 's32'
+    }
+
+    if (Number.isFinite(bitDepth) && bitDepth > 0) {
+      if (bitDepth <= 16) return 's16'
+      return bitDepth <= 24 ? 's24' : 's32'
+    }
+
+    if (LOSSY_CODECS.has(codec)) {
+      return 'f32'
+    }
+
     if (sampleFormat.startsWith('flt') || sampleFormat.startsWith('dbl')) {
-      return Number.isFinite(bitDepth) && bitDepth > 16 ? 's32' : 's16'
+      return 'f32'
     }
   }
 
@@ -508,86 +666,6 @@ function resolveSampleFormat(
   return 'f32'
 }
 
-/**
- * True when the source has a real integer bit depth worth preserving. Lossy and float
- * sources decode to whatever we ask for, so there is no "original" depth to be faithful to
- * and we are free to pick whichever container the device likes best.
- */
-function hasKnownIntegerDepth(stream: FfprobeStreamInfo, metadata?: NativeAudioTrackMetadata): boolean {
-  const codec = (stream.codec_name ?? metadata?.codec ?? '').trim().toLowerCase()
-  if (LOSSY_CODECS.has(codec)) return false
-
-  const sampleFormat = (stream.sample_fmt ?? '').trim().toLowerCase()
-  if (sampleFormat.startsWith('flt') || sampleFormat.startsWith('dbl')) return false
-
-  return sampleFormat.length > 0 || Number(stream.bits_per_raw_sample ?? metadata?.bitDepth ?? 0) > 0
-}
-
-/**
- * Device wire formats that can carry each decode format without altering a sample.
- * Widening a container is bit-exact zero padding, so these ladders only ever grow. Mirrors
- * `buildFormatLadder` in native/src/wasapi_exclusive_sink.cpp.
- */
-const DEVICE_FORMAT_LADDER: Record<NativeAudioSampleFormat, NativeAudioProbedSampleFormat[]> = {
-  s16: ['s16', 's24', 's24in32', 's32'],
-  s24: ['s24', 's24in32', 's32'],
-  s32: ['s32'],
-  f32: ['f32']
-}
-
-/** The PCM layout ffmpeg must produce for a given device wire format. */
-const DECODE_FORMAT_FOR_WIRE_FORMAT: Record<NativeAudioProbedSampleFormat, NativeAudioSampleFormat> = {
-  s16: 's16',
-  s24: 's24',
-  s24in32: 's24',
-  s32: 's32',
-  f32: 'f32'
-}
-
-/** Widest first — used only when the source has no bit depth of its own to preserve. */
-const PREFERRED_WIRE_FORMATS: NativeAudioProbedSampleFormat[] = ['s32', 's24in32', 's24', 's16']
-
-const WIRE_FORMAT_LABELS: Record<NativeAudioProbedSampleFormat, string> = {
-  s16: '16-bit',
-  s24: '24-bit',
-  s24in32: '24-bit (32-bit container)',
-  s32: '32-bit',
-  f32: '32-bit float'
-}
-
-function formatRateLabel(sampleRate: number): string {
-  const khz = sampleRate / 1000
-  return `${Number.isInteger(khz) ? khz : khz.toFixed(1)} kHz`
-}
-
-function buildUnsupportedFormatMessage(
-  probe: NativeAudioDeviceFormatProbe,
-  sampleRate: number,
-  channels: number,
-  sampleFormat: NativeAudioSampleFormat
-): string {
-  const deviceName = probe.deviceLabel ?? 'The selected output device'
-  const requested = `${formatRateLabel(sampleRate)} ${WIRE_FORMAT_LABELS[sampleFormat]} ${channels}-channel`
-
-  if (probe.formats.length === 0) {
-    return `${deviceName} rejected ${requested} in exclusive mode, and reports no exclusive-mode formats at all at ${channels} channels.`
-  }
-
-  const byRate = new Map<number, NativeAudioProbedSampleFormat[]>()
-  for (const entry of probe.formats) {
-    const existing = byRate.get(entry.sampleRate)
-    if (existing) existing.push(entry.sampleFormat)
-    else byRate.set(entry.sampleRate, [entry.sampleFormat])
-  }
-
-  const supported = [...byRate.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([rate, formats]) => `${formatRateLabel(rate)} (${formats.map((id) => WIRE_FORMAT_LABELS[id]).join(', ')})`)
-    .join('; ')
-
-  return `${deviceName} rejected ${requested} in exclusive mode. It currently accepts: ${supported}.`
-}
-
 function getFfmpegFormatArgs(sampleFormat: NativeAudioSampleFormat): string[] {
   switch (sampleFormat) {
     case 's16':
@@ -616,6 +694,7 @@ export function createNativeAudioController(
   let prebufferGeneration = 0
   let currentBufferBytes = 0
   let nextBufferBytes = 0
+  let lastDiagnosticReport: NativeAudioDiagnosticReport | null = null
   const fallbackUnavailableReason = options.unavailableReason?.trim() || DEFAULT_UNAVAILABLE_CAPABILITIES.reasonUnavailable
   let capabilitiesCache: NativeAudioCapabilities = {
     ...DEFAULT_UNAVAILABLE_CAPABILITIES,
@@ -627,6 +706,36 @@ export function createNativeAudioController(
     nextBytes: nextBufferBytes,
     totalBytes: currentBufferBytes + nextBufferBytes
   })
+
+  const buildDiagnosticReport = (engine: NativeAudioAddonPlayback): NativeAudioDiagnosticReport => {
+    const snapshot = normalizePlaybackSnapshot(engine.getPlaybackSnapshot())
+    const track: NativeAudioTrackMetadata | null = currentTrackRequest
+      ? {
+          ...currentTrackRequest.metadata,
+          path: currentTrackRequest.filePath,
+          sampleRate: currentTrackRequest.sampleRate,
+          channels: currentTrackRequest.channels
+        }
+      : null
+    const sourceLines = track
+      ? [
+          '',
+          'Track / FFprobe Metadata',
+          `Path: ${track.path}`,
+          `Codec: ${track.codec ?? 'unknown'}`,
+          `Original bit depth: ${track.bitDepth ?? 'unknown'}`,
+          `Decoded PCM: ${currentTrackRequest?.sampleRate ?? 'unknown'} Hz, ${currentTrackRequest?.channels ?? 'unknown'} ch, ${currentTrackRequest?.sampleFormat ?? 'unknown'}`
+        ]
+      : []
+    const nativeText = engine.getNativeAudioDiagnosticReport?.().trim()
+      || 'Astra Native Audio Diagnostic Report\nNative diagnostic text is unavailable in this addon build.'
+    return {
+      generatedAt: new Date().toISOString(),
+      text: [nativeText, ...sourceLines].join('\n'),
+      outputStatus: snapshot.outputStatus,
+      track
+    }
+  }
 
   const beginLoadOperation = (): number => {
     loadGeneration += 1
@@ -666,6 +775,10 @@ export function createNativeAudioController(
       nextBufferBytes = 0
       currentTrackRequest = nextTrackRequest
       nextTrackRequest = null
+    }
+
+    if (event.type === 'outputStatusChanged' && playback) {
+      lastDiagnosticReport = buildDiagnosticReport(playback)
     }
 
     for (const listener of listeners) {
@@ -719,30 +832,25 @@ export function createNativeAudioController(
     deviceFormatProbeCache.clear()
   }
 
-  /**
-   * The probe normally catches format rejections before decoding, but it can be stale (the
-   * user changed the device's rate in its control panel mid-session). When the sink rejects
-   * a format anyway, re-tag the raw native error so the renderer still gets a real dialog.
-   */
-  const asBitPerfectFormatError = (error: unknown, request: LoadedTrackRequest | null): unknown => {
-    if (capabilitiesCache.activeBackend !== 'wasapi-exclusive') return error
-
-    const message = error instanceof Error ? error.message : null
-    if (!message || !message.includes('in exclusive mode')) return error
-
+  const asNativeOutputFailure = (
+    engine: NativeAudioAddonPlayback,
+    error: unknown,
+    request: LoadedTrackRequest | null
+  ): Error => {
+    const message = error instanceof Error ? error.message : 'Native exclusive output failed.'
     invalidateDeviceFormatProbes()
-    const channels = request?.channels ?? 2
-    const probe = getDeviceFormatProbe(capabilitiesCache.selectedDeviceId ?? '', channels)
-
+    lastDiagnosticReport = buildDiagnosticReport(engine)
+    const status = lastDiagnosticReport.outputStatus
+    const osCode = status.osErrorSymbol ?? (status.osErrorCode !== 0 ? status.osErrorCode : null)
     return createBitPerfectFormatError({
-      deviceLabel: probe?.deviceLabel ?? null,
-      sampleRate: request?.sampleRate ?? null,
-      channels: request?.channels ?? null,
-      sampleFormat: request?.sampleFormat ?? null,
-      message:
-        probe?.supported && request
-          ? buildUnsupportedFormatMessage(probe, request.sampleRate, request.channels, request.sampleFormat)
-          : message
+      deviceLabel: status.deviceLabel,
+      sampleRate: request?.sampleRate ?? status.sourceFormat.sampleRate,
+      channels: request?.channels ?? status.sourceFormat.channels,
+      sampleFormat: request?.sampleFormat ?? status.sourceFormat.sampleFormat,
+      message: status.failureSummary ?? message,
+      failureStage: status.failureStage ?? 'start',
+      osCode,
+      report: lastDiagnosticReport.text
     })
   }
 
@@ -753,7 +861,13 @@ export function createNativeAudioController(
         const drained = playback.drainEvents()
         for (const rawEvent of drained) {
           const event = normalizeEvent(rawEvent)
-          if (event) notify(event)
+          if (!event) continue
+          if (event.type === 'error') {
+            const failure = asNativeOutputFailure(playback, new Error(event.message), currentTrackRequest)
+            notify({ type: 'error', message: failure.message })
+          } else {
+            notify(event)
+          }
         }
       } catch (error) {
         notify({
@@ -807,47 +921,12 @@ export function createNativeAudioController(
       ? Math.max(0, Number(stream.duration))
       : 0
     const backendKind = options.backendKind ?? capabilitiesCache.activeBackend
-    let sampleFormat = resolveSampleFormat(stream, metadata, backendKind, options.forcedSampleFormat)
+    const sampleFormat = resolveSampleFormat(stream, metadata, backendKind)
 
-    // Ask the endpoint what it actually accepts before spending time decoding. This turns a
-    // mid-playback HRESULT into an immediate, explainable failure.
-    if (backendKind === 'wasapi-exclusive' && !options.forcedSampleFormat) {
-      const probe = getDeviceFormatProbe(capabilitiesCache.selectedDeviceId ?? '', channels)
-      if (probe?.supported) {
-        const supportedAtRate = new Set(
-          probe.formats.filter((entry) => entry.sampleRate === sampleRate).map((entry) => entry.sampleFormat)
-        )
-
-        if (supportedAtRate.size === 0) {
-          throw createBitPerfectFormatError({
-            deviceLabel: probe.deviceLabel,
-            sampleRate,
-            channels,
-            sampleFormat,
-            message: buildUnsupportedFormatMessage(probe, sampleRate, channels, sampleFormat)
-          })
-        }
-
-        if (hasKnownIntegerDepth(stream, metadata)) {
-          // Preserve the source depth; the sink widens the container if the device needs it.
-          const canCarrySource = DEVICE_FORMAT_LADDER[sampleFormat].some((wire) => supportedAtRate.has(wire))
-          if (!canCarrySource) {
-            throw createBitPerfectFormatError({
-              deviceLabel: probe.deviceLabel,
-              sampleRate,
-              channels,
-              sampleFormat,
-              message: buildUnsupportedFormatMessage(probe, sampleRate, channels, sampleFormat)
-            })
-          }
-        } else {
-          // No original depth to protect, so take the widest container on offer.
-          const preferred = PREFERRED_WIRE_FORMATS.find((wire) => supportedAtRate.has(wire))
-          if (preferred) {
-            sampleFormat = DECODE_FORMAT_FOR_WIRE_FORMAT[preferred]
-          }
-        }
-      }
+    // Probes are advisory only. Native start attempts still run for probe-negative formats
+    // because real drivers sometimes accept Initialize even after IsFormatSupported refused.
+    if (backendKind === 'wasapi-exclusive') {
+      getDeviceFormatProbe(capabilitiesCache.selectedDeviceId ?? '', channels)
     }
 
     const ffmpegArgs = [
@@ -890,7 +969,18 @@ export function createNativeAudioController(
       channels,
       sampleFormat,
       duration,
-      pcmData
+      pcmData,
+      sourceMetadata: {
+        ...metadata,
+        path: filePath,
+        codec: stream.codec_name ?? metadata?.codec,
+        sampleRate,
+        channels,
+        bitDepth: Number.isFinite(Number(stream.bits_per_raw_sample)) && Number(stream.bits_per_raw_sample) > 0
+          ? Number(stream.bits_per_raw_sample)
+          : metadata?.bitDepth,
+        format: stream.sample_fmt ?? metadata?.format
+      }
     }
   }
 
@@ -951,7 +1041,7 @@ export function createNativeAudioController(
         assertCurrentLoadOperation(loadOperation)
         currentTrackRequest = {
           filePath,
-          metadata,
+          metadata: decoded.sourceMetadata,
           sampleRate: decoded.sampleRate,
           channels: decoded.channels,
           sampleFormat: decoded.sampleFormat,
@@ -987,7 +1077,7 @@ export function createNativeAudioController(
         nextBufferBytes = decodedByteLength
         nextTrackRequest = {
           filePath,
-          metadata,
+          metadata: decoded.sourceMetadata,
           sampleRate: decoded.sampleRate,
           channels: decoded.channels,
           sampleFormat: decoded.sampleFormat,
@@ -1029,49 +1119,13 @@ export function createNativeAudioController(
     play: async () => {
       const engine = await ensureAvailable()
       try {
-        return normalizePlaybackSnapshot(await engine.play())
+        const snapshot = normalizePlaybackSnapshot(await engine.play())
+        lastDiagnosticReport = buildDiagnosticReport(engine)
+        return snapshot
       } catch (error) {
-        if (capabilitiesCache.activeBackend === 'wasapi-exclusive') {
-          // Negotiation already happened natively; there is nothing useful to retry, so
-          // surface a message the renderer can turn into an actionable dialog.
-          throw asBitPerfectFormatError(error, currentTrackRequest)
-        }
-
-        if (capabilitiesCache.activeBackend !== 'alsa-hw' || !currentTrackRequest) {
-          throw error
-        }
-
-        const retrySampleFormat = currentTrackRequest.sampleFormat === 'f32'
-          ? 's16'
-          : currentTrackRequest.sampleFormat === 's16'
-            ? 's32'
-            : null
-
-        if (!retrySampleFormat) {
-          throw error
-        }
-
-        const decoded = await decodeFileToPcm(currentTrackRequest.filePath, currentTrackRequest.metadata, {
-          backendKind: capabilitiesCache.activeBackend,
-          forcedSampleFormat: retrySampleFormat
-        })
-        const decodedByteLength = decoded.pcmData.byteLength
-        currentTrackRequest = {
-          ...currentTrackRequest,
-          sampleRate: decoded.sampleRate,
-          channels: decoded.channels,
-          sampleFormat: decoded.sampleFormat,
-          duration: decoded.duration
-        }
-        try {
-          loadDecodedTrack(engine, decoded)
-          currentBufferBytes = decodedByteLength
-          nextBufferBytes = 0
-          nextTrackRequest = null
-          return normalizePlaybackSnapshot(await engine.play())
-        } finally {
-          releaseDecodedPcmBuffer(decoded)
-        }
+        // Exclusive mode is fail-closed. The user explicitly chooses Standard mode from
+        // the failure dialog; preload never re-decodes or falls back automatically.
+        throw asNativeOutputFailure(engine, error, currentTrackRequest)
       }
     },
 
@@ -1102,6 +1156,18 @@ export function createNativeAudioController(
     getPlaybackSnapshot: async () => {
       const engine = await ensureAvailable()
       return normalizePlaybackSnapshot(engine.getPlaybackSnapshot())
+    },
+
+    getNativeAudioDiagnosticReport: async () => {
+      if (playback) {
+        lastDiagnosticReport = buildDiagnosticReport(playback)
+      }
+      return lastDiagnosticReport ?? {
+        generatedAt: new Date().toISOString(),
+        text: `Astra Native Audio Diagnostic Report\n${fallbackUnavailableReason}`,
+        outputStatus: normalizeNativeAudioOutputStatus(null),
+        track: null
+      }
     },
 
     getBufferMemoryStats: async () => {

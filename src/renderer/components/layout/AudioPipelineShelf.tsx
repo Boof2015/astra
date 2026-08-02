@@ -141,7 +141,7 @@ export default function AudioPipelineShelf() {
   const replayGainScanEnabled = useAudioSettingsStore((s) => s.replayGainScanEnabled)
   const playbackOutputMode = useAudioSettingsStore((s) => s.playbackOutputMode)
   const selectedOutputChannelCount = useAudioSettingsStore((s) => s.selectedOutputChannelCount)
-  const nativeAudioCapabilities = useAudioSettingsStore((s) => s.nativeAudioCapabilities)
+  const nativeAudioOutputStatus = useAudioSettingsStore((s) => s.nativeAudioOutputStatus)
   const spatialMode = useAudioSettingsStore((s) => s.spatialMode)
   const spatialStatus = useAudioSettingsStore((s) => s.spatialStatus)
 
@@ -245,7 +245,7 @@ export default function AudioPipelineShelf() {
       selectedFallbackLabel: 'Selected Output'
     }).label
     const outputSampleRate = playbackOutputMode === 'bitperfect'
-      ? (nativeAudioCapabilities.activeSampleRate ?? currentTrack.sampleRate ?? audioEngine.getSampleRate())
+      ? (nativeAudioOutputStatus?.wireFormat.sampleRate ?? currentTrack.sampleRate ?? audioEngine.getSampleRate())
       : contextSR
     const outSR = outputSampleRate > 0 ? (outputSampleRate / 1000).toFixed(1) : null
     const outputDetail = outSR ? `${deviceLabel} @ ${outSR} kHz` : deviceLabel
@@ -267,7 +267,7 @@ export default function AudioPipelineShelf() {
     replayGainScanEnabled,
     playbackOutputMode,
     selectedOutputChannelCount,
-    nativeAudioCapabilities.activeSampleRate,
+    nativeAudioOutputStatus?.wireFormat.sampleRate,
     spatialMode,
     spatialStatus.state,
   ])

@@ -80,6 +80,7 @@ import type {
 import type {
     AudioBufferMemoryStats,
     NativeAudioCapabilities,
+    NativeAudioDiagnosticReport,
     NativeAudioDeviceFormatProbe,
     NativeAudioEvent,
     NativeAudioPlaybackSnapshot,
@@ -228,6 +229,7 @@ declare global {
             seek: (seconds: number) => Promise<NativeAudioPlaybackSnapshot>
             clearNextTrack: () => Promise<void>
             getPlaybackSnapshot: () => Promise<NativeAudioPlaybackSnapshot>
+            getNativeAudioDiagnosticReport: () => Promise<NativeAudioDiagnosticReport>
             getBufferMemoryStats: () => Promise<AudioBufferMemoryStats>
             setVisualizerTapDemand: (demand: NativeAudioVisualizerTapDemand) => Promise<void>
             flushOscilloscopeChunks: () => Float32Array[]

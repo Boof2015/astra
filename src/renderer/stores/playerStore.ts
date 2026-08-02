@@ -128,6 +128,9 @@ interface PlayerStore {
     channels: number | null
     sampleFormat: string | null
     message: string
+    failureStage: string | null
+    osCode: string | number | null
+    report: string | null
   } | null
   restoredTrackNeedsLoad: boolean
   restoredPlaybackTime: number | null
@@ -1449,7 +1452,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       failure.deviceLabel ?? '',
       failure.sampleRate ?? '',
       failure.channels ?? '',
-      failure.sampleFormat ?? ''
+      failure.sampleFormat ?? '',
+      failure.failureStage ?? ''
     ].join('|')
     if (surfacedBitPerfectFormatFailures.has(dedupeKey)) return true
     surfacedBitPerfectFormatFailures.add(dedupeKey)
@@ -1463,7 +1467,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         sampleRate: failure.sampleRate,
         channels: failure.channels,
         sampleFormat: failure.sampleFormat,
-        message: failure.message
+        message: failure.message,
+        failureStage: failure.failureStage,
+        osCode: failure.osCode,
+        report: failure.report
       }
     })
     return true
@@ -3480,7 +3487,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       audioEngine.on('error', (error) => {
         finalizeRecentPlaySession()
-        console.error('Audio engine error:', error)
+        const currentTrack = get().currentTrack
+        const surfacedNativeFailure = currentTrack
+          ? showBitPerfectFormatNotice(currentTrack, error)
+          : false
+        if (!surfacedNativeFailure) console.error('Audio engine error:', error)
         logMemoryDiagnosticsEvent('audio_engine_error', {
           message: error instanceof Error ? error.message : String(error)
         })

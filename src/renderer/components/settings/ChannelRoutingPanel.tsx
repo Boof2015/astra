@@ -65,6 +65,7 @@ export default function ChannelRoutingPanel() {
     includeLfeInDownmix,
     stereoUpmixMode,
     playbackOutputMode,
+    nativeAudioOutputStatus,
     setMultichannelEnabled,
     setIncludeLfeInDownmix,
     setStereoUpmixMode,
@@ -81,6 +82,7 @@ export default function ChannelRoutingPanel() {
     setVirtualSpeakerElevation,
   } = useAudioSettingsStore()
   const bitPerfectModeActive = playbackOutputMode === 'bitperfect'
+  const bitPerfectVerifiedActive = bitPerfectModeActive && Boolean(nativeAudioOutputStatus?.bitPerfectActive)
   const binauralSelected = spatialMode === 'binaural'
   const binauralActive = binauralSelected && !bitPerfectModeActive && spatialStatus.state === 'ready'
 
@@ -740,7 +742,7 @@ export default function ChannelRoutingPanel() {
               Downmix {resolvedTrackChannels}{'->'}{effectiveOutputChannels}
             </span>
           )}
-          {bitPerfectModeActive && (
+          {bitPerfectVerifiedActive && (
             <span className="pipeline-chip pipeline-chip-accent">Bit-perfect</span>
           )}
         </div>

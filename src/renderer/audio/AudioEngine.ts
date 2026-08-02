@@ -16,8 +16,10 @@ import {
 import type {
   AudioBufferMemoryStats,
   NativeAudioCapabilities,
+  NativeAudioDiagnosticReport,
   NativeAudioEvent,
   NativeAudioPlaybackSnapshot,
+  NativeAudioOutputStatus,
   NativeAudioTrackMetadata,
   NativeAudioTrackLoadResult,
   NativeAudioVisualizerTapDemand,
@@ -453,9 +455,6 @@ export class AudioEngine {
     bitPerfectAvailable: false,
     reasonUnavailable: 'Native bit-perfect playback is unavailable in this build.',
     activeBackend: 'unavailable',
-    activeDeviceExclusive: false,
-    activeSampleRate: null,
-    activeSampleFormat: null,
     selectedDeviceId: null,
     selectedDeviceMaxChannels: null,
     devices: []
@@ -533,7 +532,15 @@ export class AudioEngine {
   }
 
   isBitPerfectActive(): boolean {
-    return this.playbackOutputMode === 'bitperfect' && Boolean(this.nativeSnapshot?.bitPerfectActive)
+    return this.playbackOutputMode === 'bitperfect' && Boolean(this.nativeSnapshot?.outputStatus.bitPerfectActive)
+  }
+
+  getNativeAudioOutputStatus(): NativeAudioOutputStatus | null {
+    return this.nativeSnapshot?.outputStatus ?? null
+  }
+
+  async getNativeAudioDiagnosticReport(): Promise<NativeAudioDiagnosticReport> {
+    return window.nativeAudioAPI.getNativeAudioDiagnosticReport()
   }
 
   isBitPerfectRouteActive(): boolean {
@@ -542,10 +549,13 @@ export class AudioEngine {
 
   getPlaybackModeStatusMessage(): string | null {
     if (this.playbackOutputMode !== 'bitperfect') return null
-    if (this.nativeCapabilities.bitPerfectAvailable && this.nativeSnapshot?.bitPerfectActive) {
+    if (this.nativeCapabilities.bitPerfectAvailable && this.nativeSnapshot?.outputStatus.bitPerfectActive) {
       return null
     }
-    return this.getBitPerfectUnavailableMessage()
+    return this.nativeSnapshot?.outputStatus.failureSummary
+      ?? (this.nativeCapabilities.bitPerfectAvailable
+        ? 'Exclusive output requested; bit-perfect status is verified only while the native stream is running.'
+        : this.getBitPerfectUnavailableMessage())
   }
 
   async setPlaybackOutputMode(mode: PlaybackOutputMode): Promise<PlaybackModeSwitchResult> {
@@ -1159,6 +1169,7 @@ export class AudioEngine {
     }
     try {
       this.nativeSnapshot = await window.nativeAudioAPI.getPlaybackSnapshot()
+      this.emit('nativeOutputStatusChange', this.nativeSnapshot.outputStatus)
       return this.nativeSnapshot
     } catch {
       return this.nativeSnapshot
@@ -1242,6 +1253,11 @@ export class AudioEngine {
         break
       case 'error':
         this.emit('error', new Error(event.message))
+        break
+      case 'outputStatusChanged':
+        void this.refreshNativeSnapshot().then(() => {
+          if (event.message) this.nativeModeMessage = event.message
+        })
         break
     }
   }
@@ -4499,7 +4515,6 @@ export class AudioEngine {
   getSampleRate(): number {
     if (this.playbackOutputMode === 'bitperfect') {
       return this.nativeSnapshot?.sampleRate
-        ?? this.nativeCapabilities.activeSampleRate
         ?? 48000
     }
     return this.context?.sampleRate ?? 48000
@@ -6574,6 +6589,7 @@ export class AudioEngine {
       await this.initNativeAudio()
       this.assertCurrentLoadOperation(playLoadGeneration)
       this.nativeSnapshot = await window.nativeAudioAPI.play()
+      this.emit('nativeOutputStatusChange', this.nativeSnapshot.outputStatus)
       this.assertCurrentLoadOperation(playLoadGeneration)
       await this.refreshNativeCapabilities()
       this.assertCurrentLoadOperation(playLoadGeneration)
@@ -6706,6 +6722,7 @@ export class AudioEngine {
     if (this.playbackOutputMode === 'bitperfect') {
       void window.nativeAudioAPI.pause().then((snapshot) => {
         this.nativeSnapshot = snapshot
+        this.emit('nativeOutputStatusChange', snapshot.outputStatus)
         this._playbackState = snapshot.playbackState as PlaybackState
         this.emit('stateChange', this._playbackState)
         this.syncNativeScopePolling()
@@ -6775,6 +6792,7 @@ export class AudioEngine {
       void window.nativeAudioAPI.stop().then((snapshot) => {
         if (stopLoadGeneration !== this.loadGeneration) return
         this.nativeSnapshot = snapshot
+        this.emit('nativeOutputStatusChange', snapshot.outputStatus)
         this._playbackState = snapshot.playbackState as PlaybackState
         this.emit('stateChange', this._playbackState)
         this.emit('timeUpdate', 0)

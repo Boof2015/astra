@@ -4,7 +4,9 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 
 namespace NativePlayback {
@@ -144,6 +146,187 @@ TrackFormat BuildTrackFormat(uint32_t sampleRate, uint32_t channels, const std::
     return format;
 }
 
+NativePcmFormat DescribeTrackFormat(const TrackFormat& format) {
+    NativePcmFormat described;
+    described.sampleRate = static_cast<int>(format.sampleRate);
+    described.channels = static_cast<int>(format.channels);
+    described.sampleFormat = format.sampleFormatId();
+    described.containerBits = static_cast<int>(format.bytesPerSample() * 8);
+    described.validBits = format.sampleFormat == SampleFormat::Int24Packed
+        ? 24
+        : described.containerBits;
+    described.channelLayout = format.channels == 1
+        ? "mono"
+        : (format.channels == 2 ? "stereo" : "discrete");
+    described.representation = "interleaved";
+    return described;
+}
+
+void RecomputeBitPerfectActive(NativeOutputStatus& status) {
+    status.bitPerfectActive = status.streamRunning
+        && status.exclusiveAcquired
+        && status.systemMixerBypassed
+        && !status.sourceSamplesModified
+        && status.wireFormatCanCarrySourceExactly;
+}
+
+namespace {
+
+std::string describePcm(const NativePcmFormat& format) {
+    if (format.sampleRate <= 0 || format.channels <= 0) {
+        return "unavailable";
+    }
+    std::ostringstream text;
+    text << format.sampleRate << " Hz, " << format.channels << " ch, "
+         << format.sampleFormat << " (" << format.validBits << " valid / "
+         << format.containerBits << " container bits, "
+         << (format.representation.empty() ? "unspecified" : format.representation) << ")";
+    if (!format.channelLayout.empty()) text << ", layout=" << format.channelLayout;
+    if (format.channelMask != 0) text << ", mask=0x" << std::hex << format.channelMask << std::dec;
+    return text.str();
+}
+
+} // namespace
+
+std::string BuildNativeAudioDiagnosticReport(const NativeOutputStatus& status) {
+    std::ostringstream report;
+    report << "Astra Native Audio Diagnostic Report\n"
+           << "Backend: " << (status.backend.empty() ? "unavailable" : status.backend) << "\n"
+           << "Device: " << (status.deviceLabel.empty() ? status.deviceId : status.deviceLabel)
+           << " [" << status.deviceId << "]\n"
+           << "Transport: " << (status.transport.empty() ? "not started" : status.transport) << "\n"
+           << "Source PCM: " << describePcm(status.sourceFormat) << "\n"
+           << "Processing PCM: " << describePcm(status.processingFormat) << "\n"
+           << "Wire PCM: " << describePcm(status.wireFormat) << "\n"
+           << std::boolalpha
+           << "Lifecycle: open=" << status.outputOpen
+           << ", deviceResolved=" << status.deviceResolved
+           << ", formatNegotiated=" << status.formatNegotiated
+           << ", initialized=" << status.streamInitialized
+           << ", started=" << status.streamStarted
+           << ", running=" << status.streamRunning << "\n"
+           << "Integrity: exclusiveRequested=" << status.exclusiveRequested
+           << ", exclusiveAcquired=" << status.exclusiveAcquired
+           << ", mixerBypassed=" << status.systemMixerBypassed
+           << ", sourceModified=" << status.sourceSamplesModified
+           << ", exactCarry=" << status.wireFormatCanCarrySourceExactly
+           << ", bitPerfectActive=" << status.bitPerfectActive << "\n"
+           << "Period: requested=" << status.requestedPeriodMs << " ms ("
+           << status.requestedPeriodFrames << " frames), actual=" << status.actualPeriodMs
+           << " ms (" << status.actualPeriodFrames << " frames), buffer="
+           << status.bufferFrames << " frames\n";
+    if (!status.failureStage.empty() || !status.failureSummary.empty()) {
+        report << "Latest failure: stage=" << status.failureStage
+               << ", symbol=" << status.osErrorSymbol
+               << ", code=" << status.osErrorCode
+               << ", summary=" << status.failureSummary << "\n";
+    }
+    report << "Attempts (" << status.attempts.size() << "):\n";
+    for (const auto& attempt : status.attempts) {
+        report << "  #" << attempt.index
+               << " transport=" << attempt.transport
+               << " probe=" << attempt.probeResult
+               << " wire={" << describePcm(attempt.wireFormat) << "}"
+               << " requested=" << attempt.requestedPeriodMs << "ms"
+               << " aligned=" << attempt.alignedPeriodMs << "ms"
+               << " actual=" << attempt.actualPeriodMs << "ms"
+               << " buffer=" << attempt.bufferFrames
+               << " resolved=" << attempt.deviceResolved
+               << " negotiated=" << attempt.formatNegotiated
+               << " initialized=" << attempt.streamInitialized
+               << " primed=" << attempt.bufferPrimed
+               << " started=" << attempt.streamStarted
+               << " verified=" << attempt.finalVerified;
+        if (!attempt.failureStage.empty()) {
+            report << " failureStage=" << attempt.failureStage
+                   << " os=" << attempt.osErrorSymbol << "(" << attempt.osErrorCode << ")"
+                   << " message=" << attempt.message;
+        }
+        report << "\n";
+    }
+    return report.str();
+}
+
+bool WidenIntegerSamplesLeftJustified(
+    const uint8_t* source,
+    int sourceBits,
+    uint8_t* destination,
+    int destinationBits,
+    size_t sampleCount
+) {
+    if (source == nullptr || destination == nullptr || sourceBits >= destinationBits) return false;
+    if (sourceBits == 16 && destinationBits == 24) {
+        for (size_t i = 0; i < sampleCount; i++) {
+            destination[i * 3] = 0;
+            destination[i * 3 + 1] = source[i * 2];
+            destination[i * 3 + 2] = source[i * 2 + 1];
+        }
+        return true;
+    }
+    if (sourceBits == 16 && destinationBits == 32) {
+        for (size_t i = 0; i < sampleCount; i++) {
+            destination[i * 4] = 0;
+            destination[i * 4 + 1] = 0;
+            destination[i * 4 + 2] = source[i * 2];
+            destination[i * 4 + 3] = source[i * 2 + 1];
+        }
+        return true;
+    }
+    if (sourceBits == 24 && destinationBits == 32) {
+        for (size_t i = 0; i < sampleCount; i++) {
+            destination[i * 4] = 0;
+            destination[i * 4 + 1] = source[i * 3];
+            destination[i * 4 + 2] = source[i * 3 + 1];
+            destination[i * 4 + 3] = source[i * 3 + 2];
+        }
+        return true;
+    }
+    return false;
+}
+
+std::vector<size_t> OrderExactFormatCandidates(const std::vector<ExactFormatOrderKey>& candidates) {
+    std::vector<size_t> order(candidates.size());
+    for (size_t index = 0; index < candidates.size(); index++) order[index] = index;
+    std::stable_sort(order.begin(), order.end(), [&candidates](size_t left, size_t right) {
+        const auto& a = candidates[left];
+        const auto& b = candidates[right];
+        if (a.probeAccepted != b.probeAccepted) return a.probeAccepted > b.probeAccepted;
+        if (a.extensible != b.extensible) return a.extensible > b.extensible;
+        return a.ladderRank < b.ladderRank;
+    });
+    return order;
+}
+
+std::vector<ExclusiveAttemptPlanEntry> BuildExclusiveAttemptPlan(
+    size_t formatCandidateCount,
+    const std::vector<int64_t>& preferredPeriods,
+    int64_t conservativePeriod
+) {
+    std::vector<ExclusiveAttemptPlanEntry> plan;
+    auto appendPhase = [&](const char* transport, const std::vector<int64_t>& periods, bool conservative) {
+        for (size_t formatIndex = 0; formatIndex < formatCandidateCount; formatIndex++) {
+            for (const int64_t period : periods) {
+                if (period > 0) plan.push_back({formatIndex, transport, period, conservative});
+            }
+        }
+    };
+    appendPhase("event-driven", preferredPeriods, false);
+    appendPhase("timer-driven", preferredPeriods, false);
+    if (conservativePeriod > 0) appendPhase("timer-driven", {conservativePeriod}, true);
+    return plan;
+}
+
+int64_t ComputeAlignedExclusivePeriod(
+    uint64_t alignedBufferFrames,
+    uint32_t sampleRate,
+    int64_t timeUnitsPerSecond
+) {
+    if (alignedBufferFrames == 0 || sampleRate == 0 || timeUnitsPerSecond <= 0) return 0;
+    return static_cast<int64_t>(
+        (alignedBufferFrames * static_cast<uint64_t>(timeUnitsPerSecond) + sampleRate - 1)
+        / sampleRate);
+}
+
 PlaybackEngine::PlaybackEngine()
     : sink_(CreatePlatformAudioSink())
     , oscilloscopeTap_(kMaxTapSamples)
@@ -196,22 +379,59 @@ void PlaybackEngine::setSelectedDeviceId(const std::string& deviceId) {
         return;
     }
 
+    if (shouldRestart) {
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            state_ = State::Starting;
+            platformStartVerified_ = false;
+            nativeEndPending_ = false;
+        }
+        pushEvent({"outputStatusChanged", "", 0.0, 0.0, 0, "", deviceId, ""});
+    }
+
     if (!ensureSinkOpen(&error)) {
+        if (shouldRestart) {
+            {
+                std::lock_guard<std::mutex> lock(stateMutex_);
+                state_ = State::Paused;
+                nextRenderFrame_ = playedFrame_;
+                nativeEndPending_ = false;
+            }
+            clearTapBuffers();
+            pushEvent({"outputStatusChanged", "", 0.0, 0.0, 0, "", deviceId, error});
+        }
         throw std::runtime_error(error.empty() ? "Failed to select native output device." : error);
     }
 
     if (shouldRestart) {
         sink_->reset();
         if (!sink_->start(&error)) {
+            {
+                std::lock_guard<std::mutex> lock(stateMutex_);
+                state_ = State::Paused;
+                nextRenderFrame_ = playedFrame_;
+                nativeEndPending_ = false;
+            }
+            clearTapBuffers();
+            pushEvent({"outputStatusChanged", "", 0.0, 0.0, 0, "", sink_->activeDeviceId(), error});
             throw std::runtime_error(error.empty() ? "Failed to restart native output after device change." : error);
         }
+        bool endPending = false;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            state_ = State::Playing;
+            endPending = nativeEndPending_;
+            nativeEndPending_ = false;
+        }
+        pushEvent({"outputStatusChanged", "", 0.0, 0.0, 0, "", sink_->activeDeviceId(), ""});
+        if (endPending) onNativeStreamEnded();
     } else if (wasPaused) {
         sink_->reset();
     }
 }
 
 bool PlaybackEngine::isBitPerfectAvailable(std::string* reason) const {
-    if (sink_->supportsBitPerfect()) {
+    if (sink_->isAvailable()) {
         if (reason) reason->clear();
         return true;
     }
@@ -227,8 +447,37 @@ std::string PlaybackEngine::backendKind() const {
     return sink_->backendKind();
 }
 
-int PlaybackEngine::getActiveDeviceSampleRate() const {
-    return sink_->activeDeviceSampleRate();
+NativeOutputStatus PlaybackEngine::getOutputStatus() const {
+    NativeOutputStatus status = sink_->outputStatus();
+    bool hasTrack = false;
+    State state = State::Stopped;
+    TrackFormat trackFormat {};
+    std::string unavailableReason;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        hasTrack = hasCurrentTrack_;
+        state = state_;
+        if (hasTrack) trackFormat = currentTrack_.format;
+        unavailableReason = lastUnavailableReason_;
+    }
+    if (hasTrack) {
+        status.sourceFormat = DescribeTrackFormat(trackFormat);
+        status.processingFormat = status.sourceFormat;
+    }
+    if (!status.outputOpen && status.failureSummary.empty() && !unavailableReason.empty()) {
+        status.failureStage = "device-resolution";
+        status.failureSummary = unavailableReason;
+    }
+    // Priming and pause may retain native ownership, but neither is active playback.
+    if (state != State::Playing) {
+        status.streamRunning = false;
+    }
+    RecomputeBitPerfectActive(status);
+    return status;
+}
+
+std::string PlaybackEngine::getNativeAudioDiagnosticReport() const {
+    return BuildNativeAudioDiagnosticReport(getOutputStatus());
 }
 
 void PlaybackEngine::loadTrack(TrackBuffer track) {
@@ -249,7 +498,7 @@ void PlaybackEngine::loadTrack(TrackBuffer track) {
         nextRenderFrame_ = 0;
         playedFrame_ = 0;
         lastTimeUpdateFrame_ = 0;
-        fadeInRemaining_ = 0;
+        nativeEndPending_ = false;
         state_ = State::Stopped;
     }
     clearTapBuffers();
@@ -294,7 +543,7 @@ bool PlaybackEngine::promoteNextTrack() {
         nextRenderFrame_ = 0;
         playedFrame_ = 0;
         lastTimeUpdateFrame_ = 0;
-        fadeInRemaining_ = 0;
+        nativeEndPending_ = false;
         state_ = State::Stopped;
     }
     clearTapBuffers();
@@ -328,7 +577,7 @@ PlaybackSnapshot PlaybackEngine::play() {
         std::lock_guard<std::mutex> lock(stateMutex_);
         if (!hasCurrentTrack_) {
             alreadyPlaying = true;
-        } else if (state_ == State::Playing) {
+        } else if (state_ == State::Playing || state_ == State::Starting) {
             alreadyPlaying = true;
         } else {
             previousState = state_;
@@ -349,10 +598,29 @@ PlaybackSnapshot PlaybackEngine::play() {
 
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
-        state_ = State::Playing;
-        if (shouldReset) {
-            fadeInRemaining_ = kFadeInFrames;
+        state_ = State::Starting;
+        platformStartVerified_ = false;
+        nativeEndPending_ = false;
+    }
+    pushEvent({"outputStatusChanged", "", 0.0, 0.0, 0, "", sink_->activeDeviceId(), ""});
+
+    if (!sink_->start(&error)) {
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            state_ = previousState;
+            nextRenderFrame_ = playedFrame_;
+            nativeEndPending_ = false;
         }
+        clearTapBuffers();
+        pushEvent({"outputStatusChanged", "", 0.0, 0.0, 0, "", sink_->activeDeviceId(), error});
+        throw std::runtime_error(recordPlayError(error, "Failed to start native output."));
+    }
+    bool endPending = false;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        state_ = State::Playing;
+        endPending = nativeEndPending_;
+        nativeEndPending_ = false;
         pushEvent({
             "stateChange",
             "playing",
@@ -364,23 +632,8 @@ PlaybackSnapshot PlaybackEngine::play() {
             ""
         });
     }
-
-    if (!sink_->start(&error)) {
-        std::lock_guard<std::mutex> lock(stateMutex_);
-        state_ = previousState;
-        nextRenderFrame_ = playedFrame_;
-        pushEvent({
-            "stateChange",
-            previousState == State::Paused ? "paused" : "stopped",
-            static_cast<double>(playedFrame_) / static_cast<double>(std::max<uint32_t>(1, currentTrack_.format.sampleRate)),
-            currentTrack_.duration,
-            static_cast<int>(currentTrack_.format.sampleRate),
-            currentTrack_.format.sampleFormatId(),
-            sink_->activeDeviceId(),
-            ""
-        });
-        throw std::runtime_error(recordPlayError(error, "Failed to start native output."));
-    }
+    pushEvent({"outputStatusChanged", "", 0.0, 0.0, 0, "", sink_->activeDeviceId(), ""});
+    if (endPending) onNativeStreamEnded();
     return getSnapshot();
 }
 
@@ -412,6 +665,7 @@ PlaybackSnapshot PlaybackEngine::pause() {
             ""
         });
     }
+    pushEvent({"outputStatusChanged", "", 0.0, 0.0, 0, "", sink_->activeDeviceId(), ""});
     return getSnapshot();
 }
 
@@ -428,7 +682,7 @@ PlaybackSnapshot PlaybackEngine::stop() {
         nextRenderFrame_ = 0;
         playedFrame_ = 0;
         lastTimeUpdateFrame_ = 0;
-        fadeInRemaining_ = 0;
+        nativeEndPending_ = false;
         hadTrack = hasCurrentTrack_;
         if (hadTrack) {
             duration = currentTrack_.duration;
@@ -462,6 +716,7 @@ PlaybackSnapshot PlaybackEngine::stop() {
     }
 
     sink_->stop();
+    pushEvent({"outputStatusChanged", "", 0.0, 0.0, 0, "", activeDeviceId, ""});
     return getSnapshot();
 }
 
@@ -482,6 +737,15 @@ PlaybackSnapshot PlaybackEngine::seek(double seconds) {
     }
 
     if (hasTrack && shouldRestart) {
+        if (wasPlaying) {
+            {
+                std::lock_guard<std::mutex> lock(stateMutex_);
+                state_ = State::Starting;
+                platformStartVerified_ = false;
+                nativeEndPending_ = false;
+            }
+            pushEvent({"outputStatusChanged", "", 0.0, 0.0, 0, "", sink_->activeDeviceId(), ""});
+        }
         sink_->beginSeek(wasPlaying);
     }
 
@@ -494,7 +758,7 @@ PlaybackSnapshot PlaybackEngine::seek(double seconds) {
             nextRenderFrame_ = targetFrame;
             playedFrame_ = targetFrame;
             lastTimeUpdateFrame_ = targetFrame;
-            fadeInRemaining_ = kFadeInFrames;
+            nativeEndPending_ = false;
             currentTime = static_cast<double>(targetFrame) / static_cast<double>(std::max<uint32_t>(1, currentTrack_.format.sampleRate));
         }
     }
@@ -520,8 +784,25 @@ PlaybackSnapshot PlaybackEngine::seek(double seconds) {
         if (wasPlaying) {
             std::string error;
             if (!sink_->start(&error)) {
+                {
+                    std::lock_guard<std::mutex> lock(stateMutex_);
+                    state_ = State::Paused;
+                    nextRenderFrame_ = playedFrame_;
+                    nativeEndPending_ = false;
+                }
+                clearTapBuffers();
+                pushEvent({"outputStatusChanged", "", 0.0, 0.0, 0, "", sink_->activeDeviceId(), error});
                 throw std::runtime_error(error.empty() ? "Failed to restart native output after seek." : error);
             }
+            bool endPending = false;
+            {
+                std::lock_guard<std::mutex> lock(stateMutex_);
+                state_ = State::Playing;
+                endPending = nativeEndPending_;
+                nativeEndPending_ = false;
+            }
+            pushEvent({"outputStatusChanged", "", 0.0, 0.0, 0, "", sink_->activeDeviceId(), ""});
+            if (endPending) onNativeStreamEnded();
         }
     }
 
@@ -529,32 +810,43 @@ PlaybackSnapshot PlaybackEngine::seek(double seconds) {
 }
 
 PlaybackSnapshot PlaybackEngine::getSnapshot() const {
-    std::lock_guard<std::mutex> lock(stateMutex_);
     PlaybackSnapshot snapshot;
-    switch (state_) {
-        case State::Playing:
-            snapshot.playbackState = "playing";
-            break;
-        case State::Paused:
-            snapshot.playbackState = "paused";
-            break;
-        case State::Stopped:
-        default:
-            snapshot.playbackState = "stopped";
-            break;
+    State state = State::Stopped;
+    bool hasTrack = false;
+    TrackFormat trackFormat {};
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        state = state_;
+        hasTrack = hasCurrentTrack_;
+        if (hasTrack) trackFormat = currentTrack_.format;
+        switch (state) {
+            case State::Playing:
+                snapshot.playbackState = "playing";
+                break;
+            case State::Starting:
+                snapshot.playbackState = "starting";
+                break;
+            case State::Paused:
+                snapshot.playbackState = "paused";
+                break;
+            case State::Stopped:
+            default:
+                snapshot.playbackState = "stopped";
+                break;
+        }
+        snapshot.currentTime = hasTrack
+            ? static_cast<double>(playedFrame_) / static_cast<double>(std::max<uint32_t>(1, trackFormat.sampleRate))
+            : 0.0;
+        snapshot.duration = hasTrack ? currentTrack_.duration : 0.0;
     }
-    snapshot.currentTime = hasCurrentTrack_
-        ? static_cast<double>(playedFrame_) / static_cast<double>(std::max<uint32_t>(1, currentTrack_.format.sampleRate))
-        : 0.0;
-    snapshot.duration = hasCurrentTrack_ ? currentTrack_.duration : 0.0;
-    snapshot.sampleRate = hasCurrentTrack_ ? static_cast<int>(currentTrack_.format.sampleRate) : 0;
-    snapshot.channels = hasCurrentTrack_ ? static_cast<int>(currentTrack_.format.channels) : 0;
-    snapshot.sampleFormat = hasCurrentTrack_ ? currentTrack_.format.sampleFormatId() : "";
-    snapshot.deviceId = sink_->activeDeviceId();
-    snapshot.deviceLabel = sink_->activeDeviceLabel();
-    snapshot.activeBackend = sink_->backendKind();
-    snapshot.activeDeviceExclusive = sink_->isExclusive();
-    snapshot.bitPerfectActive = hasCurrentTrack_ && sink_->supportsBitPerfect() && sink_->isExclusive();
+    snapshot.sampleRate = hasTrack ? static_cast<int>(trackFormat.sampleRate) : 0;
+    snapshot.channels = hasTrack ? static_cast<int>(trackFormat.channels) : 0;
+    snapshot.sampleFormat = hasTrack ? trackFormat.sampleFormatId() : "";
+    snapshot.outputStatus = getOutputStatus();
+    if (state != State::Playing) snapshot.outputStatus.streamRunning = false;
+    RecomputeBitPerfectActive(snapshot.outputStatus);
+    snapshot.deviceId = snapshot.outputStatus.deviceId;
+    snapshot.deviceLabel = snapshot.outputStatus.deviceLabel;
     return snapshot;
 }
 
@@ -646,17 +938,17 @@ size_t PlaybackEngine::renderInto(void* outputBuffer, size_t requestedFrames, bo
     size_t tapChunkCount = 0;
     VisualizerTapDemand tapDemand {};
     bool shouldCaptureTaps = false;
-    bool shouldClearTapBuffers = false;
     size_t totalFramesWritten = 0;
 
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
-        if (state_ != State::Playing || !hasCurrentTrack_) {
+        if ((state_ != State::Playing && state_ != State::Starting) || !hasCurrentTrack_) {
             return 0;
         }
 
         tapDemand = visualizerTapDemand_;
-        shouldCaptureTaps = tapDemand.oscilloscope || tapDemand.spectrum || tapDemand.vectorscope || tapDemand.vumeter;
+        shouldCaptureTaps = state_ == State::Playing
+            && (tapDemand.oscilloscope || tapDemand.spectrum || tapDemand.vectorscope || tapDemand.vumeter);
 
         uint8_t* output = static_cast<uint8_t*>(outputBuffer);
         size_t framesWritten = 0;
@@ -695,28 +987,7 @@ size_t PlaybackEngine::renderInto(void* outputBuffer, size_t requestedFrames, bo
                     continue;
                 }
 
-                state_ = State::Stopped;
                 streamEnded = true;
-                pushEvent({
-                    "stateChange",
-                    "stopped",
-                    currentTrack_.duration,
-                    currentTrack_.duration,
-                    static_cast<int>(currentTrack_.format.sampleRate),
-                    currentTrack_.format.sampleFormatId(),
-                    sink_->activeDeviceId(),
-                    ""
-                });
-                pushEvent({
-                    "ended",
-                    "",
-                    0.0,
-                    0.0,
-                    0,
-                    "",
-                    "",
-                    ""
-                });
                 break;
             }
 
@@ -727,59 +998,6 @@ size_t PlaybackEngine::renderInto(void* outputBuffer, size_t requestedFrames, bo
             ));
             const uint8_t* source = currentTrack_.data.data() + (nextRenderFrame_ * bytesPerFrame);
             std::memcpy(output + (framesWritten * bytesPerFrame), source, framesToCopy * bytesPerFrame);
-
-            if (fadeInRemaining_ > 0) {
-                const size_t fadeFrames = std::min(framesToCopy, static_cast<size_t>(fadeInRemaining_));
-                uint8_t* fadeStart = output + (framesWritten * bytesPerFrame);
-                const uint32_t channels = currentTrack_.format.channels;
-                const size_t fadeOffset = kFadeInFrames - fadeInRemaining_;
-
-                for (size_t i = 0; i < fadeFrames; i++) {
-                    const float gain = static_cast<float>(fadeOffset + i + 1)
-                                     / static_cast<float>(kFadeInFrames);
-                    uint8_t* framePtr = fadeStart + (i * bytesPerFrame);
-
-                    for (uint32_t ch = 0; ch < channels; ch++) {
-                        switch (currentTrack_.format.sampleFormat) {
-                            case SampleFormat::Float32: {
-                                float value = 0.0f;
-                                std::memcpy(&value, framePtr + ch * sizeof(float), sizeof(float));
-                                value *= gain;
-                                std::memcpy(framePtr + ch * sizeof(float), &value, sizeof(float));
-                                break;
-                            }
-                            case SampleFormat::Int16: {
-                                int16_t value = 0;
-                                std::memcpy(&value, framePtr + ch * sizeof(int16_t), sizeof(int16_t));
-                                value = static_cast<int16_t>(static_cast<float>(value) * gain);
-                                std::memcpy(framePtr + ch * sizeof(int16_t), &value, sizeof(int16_t));
-                                break;
-                            }
-                            case SampleFormat::Int24Packed: {
-                                uint8_t* samplePtr = framePtr + ch * 3;
-                                const int32_t value = static_cast<int32_t>(
-                                    (static_cast<uint32_t>(samplePtr[0]) << 8)
-                                    | (static_cast<uint32_t>(samplePtr[1]) << 16)
-                                    | (static_cast<uint32_t>(samplePtr[2]) << 24)
-                                ) >> 8;
-                                const int32_t scaled = static_cast<int32_t>(static_cast<float>(value) * gain);
-                                samplePtr[0] = static_cast<uint8_t>(scaled & 0xFF);
-                                samplePtr[1] = static_cast<uint8_t>((scaled >> 8) & 0xFF);
-                                samplePtr[2] = static_cast<uint8_t>((scaled >> 16) & 0xFF);
-                                break;
-                            }
-                            case SampleFormat::Int32: {
-                                int32_t value = 0;
-                                std::memcpy(&value, framePtr + ch * sizeof(int32_t), sizeof(int32_t));
-                                value = static_cast<int32_t>(static_cast<float>(value) * gain);
-                                std::memcpy(framePtr + ch * sizeof(int32_t), &value, sizeof(int32_t));
-                                break;
-                            }
-                        }
-                    }
-                }
-                fadeInRemaining_ -= fadeFrames;
-            }
 
             if (shouldCaptureTaps && tapChunkCount < tapChunks.size()) {
                 tapChunks[tapChunkCount++] = {
@@ -792,14 +1010,7 @@ size_t PlaybackEngine::renderInto(void* outputBuffer, size_t requestedFrames, bo
             framesWritten += framesToCopy;
         }
 
-        if (streamEnded) {
-            shouldClearTapBuffers = true;
-        }
         totalFramesWritten = framesWritten;
-    }
-
-    if (shouldClearTapBuffers) {
-        clearTapBuffers();
     }
 
     for (size_t i = 0; i < tapChunkCount; i++) {
@@ -820,6 +1031,7 @@ void PlaybackEngine::onFramesConsumed(size_t frames) {
         if (!hasCurrentTrack_ || currentTrack_.format.sampleRate == 0 || frames == 0) {
             return;
         }
+        if (state_ == State::Starting && !platformStartVerified_) return;
 
         playedFrame_ = std::min<uint64_t>(nextRenderFrame_, playedFrame_ + frames);
         const uint64_t minFramesBetweenUpdates = std::max<uint64_t>(
@@ -849,6 +1061,77 @@ void PlaybackEngine::onFramesConsumed(size_t frames) {
         "",
         ""
     });
+}
+
+void PlaybackEngine::onPlatformStartVerified() {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    if (state_ == State::Starting) platformStartVerified_ = true;
+}
+
+void PlaybackEngine::onNativeStreamEnded() {
+    double duration = 0.0;
+    int sampleRate = 0;
+    std::string sampleFormat;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        if (!hasCurrentTrack_) return;
+        if (state_ == State::Starting) {
+            nativeEndPending_ = true;
+            return;
+        }
+        if (state_ != State::Playing) return;
+
+        state_ = State::Stopped;
+        playedFrame_ = currentTrack_.totalFrames();
+        nextRenderFrame_ = playedFrame_;
+        lastTimeUpdateFrame_ = playedFrame_;
+        duration = currentTrack_.duration;
+        sampleRate = static_cast<int>(currentTrack_.format.sampleRate);
+        sampleFormat = currentTrack_.format.sampleFormatId();
+    }
+
+    clearTapBuffers();
+    pushEvent({"timeUpdate", "", duration, 0.0, 0, "", "", ""});
+    pushEvent({"stateChange", "stopped", duration, duration, sampleRate, sampleFormat, sink_->activeDeviceId(), ""});
+    pushEvent({"outputStatusChanged", "", 0.0, 0.0, 0, "", sink_->activeDeviceId(), ""});
+    pushEvent({"ended", "", 0.0, 0.0, 0, "", "", ""});
+}
+
+void PlaybackEngine::rollbackSpeculativeRender() {
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        nextRenderFrame_ = playedFrame_;
+    }
+    clearTapBuffers();
+}
+
+void PlaybackEngine::onNativeOutputStatusChanged(const std::string& message) {
+    pushEvent({"outputStatusChanged", "", 0.0, 0.0, 0, "", sink_->activeDeviceId(), message});
+}
+
+void PlaybackEngine::onNativeOutputRuntimeFailure(const std::string& message) {
+    double currentTime = 0.0;
+    double duration = 0.0;
+    int sampleRate = 0;
+    std::string sampleFormat;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        if (state_ != State::Playing && state_ != State::Starting) return;
+        state_ = State::Paused;
+        nextRenderFrame_ = playedFrame_;
+        nativeEndPending_ = false;
+        if (hasCurrentTrack_) {
+            sampleRate = static_cast<int>(currentTrack_.format.sampleRate);
+            sampleFormat = currentTrack_.format.sampleFormatId();
+            duration = currentTrack_.duration;
+            currentTime = static_cast<double>(playedFrame_)
+                / static_cast<double>(std::max<uint32_t>(1, currentTrack_.format.sampleRate));
+        }
+    }
+    clearTapBuffers();
+    pushEvent({"stateChange", "paused", currentTime, duration, sampleRate, sampleFormat, sink_->activeDeviceId(), message});
+    pushEvent({"outputStatusChanged", "", 0.0, 0.0, 0, "", sink_->activeDeviceId(), message});
+    pushEvent({"error", "", 0.0, 0.0, 0, "", sink_->activeDeviceId(), message});
 }
 
 std::string PlaybackEngine::recordPlayError(const std::string& error, const char* fallback) {
@@ -893,6 +1176,11 @@ bool PlaybackEngine::ensureSinkOpen(std::string* error) {
             ? *error
             : "Failed to open the selected native output device.";
         return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        lastUnavailableReason_.clear();
     }
 
     const std::string activeDeviceId = sink_->activeDeviceId();

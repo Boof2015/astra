@@ -56,6 +56,95 @@ struct DeviceFormatProbe {
     std::string reason;
 };
 
+// A complete PCM description for the decoded source, any internal processing
+// representation, and the bytes ultimately submitted to the native device.
+struct NativePcmFormat {
+    int sampleRate = 0;
+    int channels = 0;
+    std::string sampleFormat;
+    int containerBits = 0;
+    int validBits = 0;
+    uint64_t channelMask = 0;
+    std::string channelLayout;
+    std::string representation;
+};
+
+struct NativeOutputAttempt {
+    int index = 0;
+    std::string backend;
+    std::string deviceId;
+    std::string deviceLabel;
+    NativePcmFormat sourceFormat;
+    NativePcmFormat processingFormat;
+    NativePcmFormat wireFormat;
+    std::string transport;
+    std::string probeResult;
+    double requestedPeriodMs = 0.0;
+    double alignedPeriodMs = 0.0;
+    double actualPeriodMs = 0.0;
+    int bufferFrames = 0;
+    bool deviceResolved = false;
+    bool formatNegotiated = false;
+    bool streamInitialized = false;
+    bool bufferPrimed = false;
+    bool streamStarted = false;
+    bool finalVerified = false;
+    std::string failureStage;
+    std::string osErrorSymbol;
+    int64_t osErrorCode = 0;
+    std::string message;
+};
+
+struct NativeOutputStatus {
+    bool outputOpen = false;
+    bool deviceResolved = false;
+    bool formatNegotiated = false;
+    bool streamInitialized = false;
+    bool streamStarted = false;
+    bool streamRunning = false;
+
+    bool exclusiveRequested = true;
+    bool exclusiveAcquired = false;
+    bool systemMixerBypassed = false;
+
+    bool sourceSamplesModified = false;
+    bool wireFormatCanCarrySourceExactly = false;
+    bool bitPerfectActive = false;
+
+    NativePcmFormat sourceFormat;
+    NativePcmFormat processingFormat;
+    NativePcmFormat wireFormat;
+
+    std::string backend;
+    std::string deviceId;
+    std::string deviceLabel;
+    std::string transport;
+    double requestedPeriodMs = 0.0;
+    double actualPeriodMs = 0.0;
+    int requestedPeriodFrames = 0;
+    int actualPeriodFrames = 0;
+    int bufferFrames = 0;
+
+    std::string failureStage;
+    std::string osErrorSymbol;
+    int64_t osErrorCode = 0;
+    std::string failureSummary;
+    std::vector<NativeOutputAttempt> attempts;
+};
+
+struct ExactFormatOrderKey {
+    int ladderRank = 0;
+    bool extensible = true;
+    bool probeAccepted = false;
+};
+
+struct ExclusiveAttemptPlanEntry {
+    size_t formatCandidateIndex = 0;
+    std::string transport;
+    int64_t requestedPeriod = 0;
+    bool conservative = false;
+};
+
 struct PlaybackSnapshot {
     std::string playbackState;
     double currentTime = 0.0;
@@ -65,9 +154,7 @@ struct PlaybackSnapshot {
     std::string sampleFormat;
     std::string deviceId;
     std::string deviceLabel;
-    std::string activeBackend;
-    bool activeDeviceExclusive = false;
-    bool bitPerfectActive = false;
+    NativeOutputStatus outputStatus;
 };
 
 struct PlaybackEvent {
@@ -119,7 +206,7 @@ class AudioOutputSink {
 public:
     virtual ~AudioOutputSink() = default;
 
-    virtual bool supportsBitPerfect() const = 0;
+    virtual bool isAvailable() const = 0;
     virtual std::string backendKind() const = 0;
     virtual std::vector<OutputDeviceInfo> enumerateOutputDevices(std::string* reason) const = 0;
     virtual uint32_t deviceMaxChannels(const std::string& deviceId) const = 0;
@@ -147,8 +234,7 @@ public:
     virtual void resetAfterSeek(bool /*wasPlaying*/) { reset(); }
     virtual bool shouldCloseOnTrackChange(const TrackFormat&, const TrackFormat&) const { return true; }
 
-    virtual bool isExclusive() const = 0;
-    virtual int activeDeviceSampleRate() const = 0;
+    virtual NativeOutputStatus outputStatus() const = 0;
     virtual std::string activeDeviceId() const = 0;
     virtual std::string activeDeviceLabel() const = 0;
 };
@@ -166,7 +252,8 @@ public:
 
     bool isBitPerfectAvailable(std::string* reason) const;
     std::string backendKind() const;
-    int getActiveDeviceSampleRate() const;
+    NativeOutputStatus getOutputStatus() const;
+    std::string getNativeAudioDiagnosticReport() const;
 
     void loadTrack(TrackBuffer track);
     void preloadNextTrack(TrackBuffer track);
@@ -193,10 +280,16 @@ public:
 
     size_t renderInto(void* outputBuffer, size_t requestedFrames, bool& streamEnded);
     void onFramesConsumed(size_t frames);
+    void onPlatformStartVerified();
+    void onNativeStreamEnded();
+    void rollbackSpeculativeRender();
+    void onNativeOutputStatusChanged(const std::string& message = {});
+    void onNativeOutputRuntimeFailure(const std::string& message);
 
 private:
     enum class State {
         Stopped,
+        Starting,
         Playing,
         Paused
     };
@@ -234,11 +327,11 @@ private:
     uint64_t nextRenderFrame_ = 0;
     uint64_t playedFrame_ = 0;
     uint64_t lastTimeUpdateFrame_ = 0;
+    bool platformStartVerified_ = false;
+    bool nativeEndPending_ = false;
 
     static constexpr size_t kMaxTapSamples = 32768;
     static constexpr uint32_t kTimeUpdateRateHz = 30;
-    static constexpr size_t kFadeInFrames = 64;
-    uint64_t fadeInRemaining_ = 0;
     VisualizerTapDemand visualizerTapDemand_ {};
 
     std::vector<PlaybackEvent> pendingEvents_;
@@ -251,5 +344,22 @@ private:
 
 std::unique_ptr<AudioOutputSink> CreatePlatformAudioSink();
 TrackFormat BuildTrackFormat(uint32_t sampleRate, uint32_t channels, const std::string& sampleFormatId);
+NativePcmFormat DescribeTrackFormat(const TrackFormat& format);
+void RecomputeBitPerfectActive(NativeOutputStatus& status);
+std::string BuildNativeAudioDiagnosticReport(const NativeOutputStatus& status);
+bool WidenIntegerSamplesLeftJustified(
+    const uint8_t* source,
+    int sourceBits,
+    uint8_t* destination,
+    int destinationBits,
+    size_t sampleCount
+);
+std::vector<size_t> OrderExactFormatCandidates(const std::vector<ExactFormatOrderKey>& candidates);
+std::vector<ExclusiveAttemptPlanEntry> BuildExclusiveAttemptPlan(
+    size_t formatCandidateCount,
+    const std::vector<int64_t>& preferredPeriods,
+    int64_t conservativePeriod
+);
+int64_t ComputeAlignedExclusivePeriod(uint64_t alignedBufferFrames, uint32_t sampleRate, int64_t timeUnitsPerSecond);
 
 } // namespace NativePlayback

@@ -400,6 +400,7 @@ export default function SettingsView() {
   const disableStandardAnalysisGraphDev = useAudioSettingsStore((state) => state.disableStandardAnalysisGraphDev)
   const setDisableStandardAnalysisGraphDev = useAudioSettingsStore((state) => state.setDisableStandardAnalysisGraphDev)
   const nativeAudioCapabilities = useAudioSettingsStore((state) => state.nativeAudioCapabilities)
+  const nativeAudioOutputStatus = useAudioSettingsStore((state) => state.nativeAudioOutputStatus)
   const playbackModeStatusMessage = useAudioSettingsStore((state) => state.playbackModeStatusMessage)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const setShowTracklistBpmKey = useLibraryStore((state) => state.setShowTracklistBpmKey)
@@ -1050,6 +1051,16 @@ export default function SettingsView() {
     }
 
     setShowBitPerfectWarning(true)
+  }
+
+  const handleCopyNativeAudioReport = async () => {
+    try {
+      const report = await window.nativeAudioAPI.getNativeAudioDiagnosticReport()
+      await copyInfoToClipboard(report.text, 'Native audio report')
+    } catch {
+      setInfoFeedbackTone('error')
+      setInfoFeedback('Failed to copy native audio report.')
+    }
   }
 
   const handleConfirmBitPerfectWarning = () => {
@@ -2017,20 +2028,43 @@ export default function SettingsView() {
                       <span className="settings-chip settings-chip-mono">
                         {nativeBackendLabel}
                       </span>
-                      {nativeAudioCapabilities.activeSampleRate && (
+                      {nativeAudioOutputStatus?.wireFormat.sampleRate && (
                         <span className="settings-chip settings-chip-mono">
-                          {(nativeAudioCapabilities.activeSampleRate / 1000).toFixed(1)} kHz
+                          {(nativeAudioOutputStatus.wireFormat.sampleRate / 1000).toFixed(1)} kHz wire
                         </span>
                       )}
-                      {nativeAudioCapabilities.activeSampleFormat && (
+                      {nativeAudioOutputStatus?.wireFormat.sampleFormat && (
                         <span className="settings-chip settings-chip-mono">
-                          {NATIVE_SAMPLE_FORMAT_LABELS[nativeAudioCapabilities.activeSampleFormat]
-                            ?? nativeAudioCapabilities.activeSampleFormat}
+                          {NATIVE_SAMPLE_FORMAT_LABELS[nativeAudioOutputStatus.wireFormat.sampleFormat as keyof typeof NATIVE_SAMPLE_FORMAT_LABELS]
+                            ?? nativeAudioOutputStatus.wireFormat.sampleFormat}
                         </span>
                       )}
                       <span className="settings-chip settings-chip-mono">
-                        {nativeAudioCapabilities.activeDeviceExclusive ? 'Exclusive' : 'Shared/Off'}
+                        Exclusive requested: {bitPerfectModeActive ? 'Yes' : 'No'}
                       </span>
+                      <span className="settings-chip settings-chip-mono">
+                        Exclusive reserved: {nativeAudioOutputStatus?.exclusiveAcquired ? 'Yes' : 'No'}
+                      </span>
+                      <span className="settings-chip settings-chip-mono">
+                        Stream initialized: {nativeAudioOutputStatus?.streamInitialized ? 'Yes' : 'No'}
+                      </span>
+                      <span className="settings-chip settings-chip-mono">
+                        Bit-perfect active: {nativeAudioOutputStatus?.bitPerfectActive ? 'Yes' : 'No'}
+                      </span>
+                      {nativeAudioOutputStatus?.transport && (
+                        <span className="settings-chip settings-chip-mono">{nativeAudioOutputStatus.transport}</span>
+                      )}
+                      {nativeAudioOutputStatus && nativeAudioOutputStatus.actualPeriodMs > 0 && (
+                        <span className="settings-chip settings-chip-mono">
+                          {nativeAudioOutputStatus.actualPeriodMs.toFixed(2)} ms period
+                        </span>
+                      )}
+                      <button
+                        className="settings-toggle"
+                        onClick={() => void handleCopyNativeAudioReport()}
+                      >
+                        Copy Native Audio Report
+                      </button>
                     </div>
                   </div>
                 </div>
