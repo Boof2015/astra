@@ -397,6 +397,16 @@ Napi::Value SpectrumSetSmoothing(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
+Napi::Value SpectrumSetSideEnabled(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsBoolean()) {
+        Napi::TypeError::New(env, "Expected Side enabled boolean").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    spectrum.setSideEnabled(info[0].As<Napi::Boolean>().Value());
+    return env.Undefined();
+}
+
 Napi::Value SpectrumPushSamples(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     if (info.Length() < 1 || !info[0].IsTypedArray()) {
@@ -443,6 +453,37 @@ Napi::Value SpectrumGetSideMagnitudes(const Napi::CallbackInfo& info) {
     Napi::Float32Array result = Napi::Float32Array::New(env, magnitudes.size());
     memcpy(result.Data(), magnitudes.data(), magnitudes.size() * sizeof(float));
     return result;
+}
+
+Napi::Value SpectrumGetFrame(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    bool includeRaw = false;
+    bool includeSide = false;
+    if (info.Length() > 0 && info[0].IsObject()) {
+        const Napi::Object options = info[0].As<Napi::Object>();
+        const Napi::Value rawValue = options.Get("includeRaw");
+        const Napi::Value sideValue = options.Get("includeSide");
+        includeRaw = rawValue.IsBoolean() && rawValue.As<Napi::Boolean>().Value();
+        includeSide = sideValue.IsBoolean() && sideValue.As<Napi::Boolean>().Value();
+    }
+
+    auto copyPlane = [&](const std::vector<float>& source) {
+        Napi::Float32Array output = Napi::Float32Array::New(env, source.size());
+        if (!source.empty()) {
+            memcpy(output.Data(), source.data(), source.size() * sizeof(float));
+        }
+        return output;
+    };
+
+    Napi::Object frame = Napi::Object::New(env);
+    frame.Set("primary", copyPlane(spectrum.getMagnitudes()));
+    if (includeRaw) {
+        frame.Set("raw", copyPlane(spectrum.getRawMagnitudes()));
+    }
+    if (includeSide) {
+        frame.Set("side", copyPlane(spectrum.getSideMagnitudes()));
+    }
+    return frame;
 }
 
 Napi::Value SpectrumFillRawMagnitudes(const Napi::CallbackInfo& info) {
@@ -1234,6 +1275,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     specExports.Set("getFFTSize", Napi::Function::New(env, SpectrumGetFFTSize));
     specExports.Set("setSampleRate", Napi::Function::New(env, SpectrumSetSampleRate));
     specExports.Set("setSmoothing", Napi::Function::New(env, SpectrumSetSmoothing));
+    specExports.Set("setSideEnabled", Napi::Function::New(env, SpectrumSetSideEnabled));
     specExports.Set("pushSamples", Napi::Function::New(env, SpectrumPushSamples));
     specExports.Set("pushStereoSamples", Napi::Function::New(env, SpectrumPushStereoSamples));
     specExports.Set("fillRawMagnitudes", Napi::Function::New(env, SpectrumFillRawMagnitudes));
@@ -1242,6 +1284,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     specExports.Set("getRawMagnitudes", Napi::Function::New(env, SpectrumGetRawMagnitudes));
     specExports.Set("getMagnitudes", Napi::Function::New(env, SpectrumGetMagnitudes));
     specExports.Set("getSideMagnitudes", Napi::Function::New(env, SpectrumGetSideMagnitudes));
+    specExports.Set("getFrame", Napi::Function::New(env, SpectrumGetFrame));
     specExports.Set("process", Napi::Function::New(env, SpectrumProcess));
     specExports.Set("binToFrequency", Napi::Function::New(env, SpectrumBinToFrequency));
     specExports.Set("configureBars", Napi::Function::New(env, SpectrumConfigureBars));

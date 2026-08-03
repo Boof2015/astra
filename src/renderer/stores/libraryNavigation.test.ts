@@ -59,6 +59,7 @@ function installLibraryMock(options: {
   albumTracks?: DbTrack[]
   genreTracks?: DbTrack[]
   yearTracks?: DbTrack[]
+  getTracksByArtist?: (artist: string, mode: 'strict' | 'canonical') => Promise<DbTrack[]> | DbTrack[]
   getTracksByAlbum?: (album: string, artist?: string, identityKey?: string) => Promise<DbTrack[]> | DbTrack[]
   getTracksByYear?: (year: number | null) => Promise<DbTrack[]> | DbTrack[]
 } = {}): void {
@@ -67,7 +68,11 @@ function installLibraryMock(options: {
     value: {
       electronAPI: {
         library: {
-          getTracksByArtist: async () => options.artistTracks ?? [],
+          getTracksByArtist: async (artist: string, mode: 'strict' | 'canonical') => {
+            return options.getTracksByArtist
+              ? options.getTracksByArtist(artist, mode)
+              : options.artistTracks ?? []
+          },
           getTracksByAlbum: async (album: string, artist?: string, identityKey?: string) => {
             return options.getTracksByAlbum
               ? options.getTracksByAlbum(album, artist, identityKey)
@@ -227,6 +232,53 @@ test('Library root participates in forward navigation and fresh selection clears
   await useLibraryStore.getState().selectArtist('Artist C')
   assert.equal(useLibraryStore.getState().selectionForwardHistory.length, 0)
   assert.equal(await useLibraryStore.getState().goForwardSelection(), false)
+})
+
+test('prepared history can move forward from the Library root after Back', async () => {
+  installLibraryMock()
+  resetLibraryNavigation()
+
+  await useLibraryStore.getState().selectArtist('Artist A')
+  const preparedBack = await useLibraryStore.getState().prepareSelection({
+    kind: 'history',
+    direction: 'back'
+  })
+  assert.ok(preparedBack)
+  assert.equal(useLibraryStore.getState().commitPreparedSelection(preparedBack), true)
+  assert.equal(useLibraryStore.getState().selectedArtist, null)
+
+  const preparedForward = await useLibraryStore.getState().prepareSelection({
+    kind: 'history',
+    direction: 'forward'
+  })
+  assert.ok(preparedForward)
+  assert.equal(useLibraryStore.getState().commitPreparedSelection(preparedForward), true)
+  assert.equal(useLibraryStore.getState().selectedArtist, 'Artist A')
+})
+
+test('prepared selections are last-intent-wins when IPC results resolve out of order', async () => {
+  const pending = new Map<string, (tracks: DbTrack[]) => void>()
+  installLibraryMock({
+    getTracksByArtist: (artist) => new Promise((resolve) => {
+      pending.set(artist, resolve)
+    })
+  })
+  resetLibraryNavigation()
+
+  const slowRequest = useLibraryStore.getState().prepareSelection({ kind: 'artist', artist: 'Slow Artist' })
+  const fastRequest = useLibraryStore.getState().prepareSelection({ kind: 'artist', artist: 'Fast Artist' })
+
+  pending.get('Fast Artist')?.([makeDbTrack('/fast.flac', 'Fast Artist')])
+  const fastPrepared = await fastRequest
+  assert.ok(fastPrepared)
+  assert.equal(useLibraryStore.getState().selectedArtist, null)
+  assert.equal(useLibraryStore.getState().commitPreparedSelection(fastPrepared), true)
+  assert.equal(useLibraryStore.getState().commitPreparedSelection(fastPrepared), false)
+
+  pending.get('Slow Artist')?.([makeDbTrack('/slow.flac', 'Slow Artist')])
+  assert.equal(await slowRequest, null)
+  assert.equal(useLibraryStore.getState().selectedArtist, 'Fast Artist')
+  assert.deepEqual(useLibraryStore.getState().trackPaths, ['/fast.flac'])
 })
 
 test('Library genre detail participates in backward and forward navigation', async () => {

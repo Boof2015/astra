@@ -21,6 +21,7 @@ class ManualFrameScheduler {
 type RoundedRect = { x: number; y: number; width: number; height: number; radius: number }
 const roundedRects: RoundedRect[] = []
 const fillStyles: string[] = []
+let linearGradientCreations = 0
 
 function createContext(): CanvasRenderingContext2D {
   let fillStyle = ''
@@ -28,7 +29,10 @@ function createContext(): CanvasRenderingContext2D {
     beginPath: () => undefined,
     clearRect: () => undefined,
     closePath: () => undefined,
-    createLinearGradient: () => ({ addColorStop: () => undefined }) as CanvasGradient,
+    createLinearGradient: () => {
+      linearGradientCreations += 1
+      return { addColorStop: () => undefined } as CanvasGradient
+    },
     drawImage: () => undefined,
     fill: () => fillStyles.push(fillStyle),
     fillRect: () => undefined,
@@ -76,20 +80,29 @@ const { SpectrumAnalyzer } = await import('./SpectrumAnalyzer.ts')
 
 function makeNative() {
   let config: SpectrumBarNativeConfig | null = null
-  const calls = { configure: 0, frame: 0, fill: 0, raw: 0, side: 0, push: 0, reset: 0 }
+  let primaryFrame: Float32Array = new Float32Array(2048).fill(-60)
+  let rawFrame: Float32Array = new Float32Array(2048).fill(-60)
+  let sideFrame: Float32Array = new Float32Array(2048).fill(-100)
+  const frameOptions: Array<{ includeRaw?: boolean; includeSide?: boolean }> = []
+  const sideEnabled: boolean[] = []
+  const calls = { configure: 0, frame: 0, curveFrame: 0, push: 0, pushStereo: 0, reset: 0 }
   const analyzer: SpectrumNativeAnalyzer = {
     setFFTSize: () => undefined,
     getFFTSize: () => 4096,
     setSampleRate: () => undefined,
     setSmoothing: () => undefined,
+    setSideEnabled: (enabled) => { sideEnabled.push(enabled) },
     pushSamples: () => { calls.push += 1 },
-    pushStereoSamples: () => { throw new Error('bars must not push Side/stereo samples') },
-    getMagnitudes: () => null,
-    getRawMagnitudes: () => null,
-    getSideMagnitudes: () => null,
-    fillMagnitudes: () => { calls.fill += 1; return 0 },
-    fillRawMagnitudes: () => { calls.raw += 1; return 0 },
-    fillSideMagnitudes: () => { calls.side += 1; return 0 },
+    pushStereoSamples: () => { calls.pushStereo += 1 },
+    getFrame: (options = {}) => {
+      calls.curveFrame += 1
+      frameOptions.push({ ...options })
+      return {
+        primary: primaryFrame,
+        ...(options.includeRaw ? { raw: rawFrame } : {}),
+        ...(options.includeSide ? { side: sideFrame } : {}),
+      }
+    },
     process: () => null,
     binToFrequency: () => 0,
     supportsBarFrames: () => true,
@@ -106,7 +119,18 @@ function makeNative() {
     reset: () => { calls.reset += 1 },
     isAvailable: () => true,
   }
-  return { analyzer, calls, getConfig: () => config }
+  return {
+    analyzer,
+    calls,
+    frameOptions,
+    sideEnabled,
+    getConfig: () => config,
+    setFrames: (frames: { primary?: Float32Array; raw?: Float32Array; side?: Float32Array }) => {
+      if (frames.primary) primaryFrame = frames.primary
+      if (frames.raw) rawFrame = frames.raw
+      if (frames.side) sideFrame = frames.side
+    },
+  }
 }
 
 test('Bars consumes only compact native frames, ignores Side, and clamps rounded geometry', () => {
@@ -141,9 +165,7 @@ test('Bars consumes only compact native frames, ignores Side, and clamps rounded
   assert.equal(native.getConfig()?.barCount, 77)
   assert.equal(monoReads, 1)
   assert.equal(stereoReads, 0)
-  assert.equal(native.calls.fill, 0)
-  assert.equal(native.calls.raw, 0)
-  assert.equal(native.calls.side, 0)
+  assert.equal(native.calls.curveFrame, 0)
   assert.equal(native.calls.frame, 1)
   assert.equal(roundedRects.length, 154)
   for (const rect of roundedRects) {
@@ -281,7 +303,7 @@ test('a stale native addon does not fall back to JavaScript bar DSP', () => {
   scheduler.tick()
   assert.equal(monoReads, 0)
   assert.equal(native.calls.frame, 0)
-  assert.equal(native.calls.fill + native.calls.raw + native.calls.side, 0)
+  assert.equal(native.calls.curveFrame, 0)
   visualizer.dispose()
 })
 
@@ -325,6 +347,147 @@ test('appearance transitions and unchanged DSP options do not reset native spect
 
   assert.equal(native.calls.reset, resetCount)
   assert.equal(native.calls.configure, configureCount)
+  visualizer.dispose()
+})
+
+test('curve frames request only the enabled native planes', () => {
+  const scheduler = new ManualFrameScheduler()
+  const native = makeNative()
+  let monoReads = 0
+  let stereoReads = 0
+  const visualizer = new SpectrumAnalyzer(new FakeCanvas(64, 32) as unknown as HTMLCanvasElement, {
+    frameScheduler: scheduler as unknown as FrameScheduler,
+    nativeAnalyzer: native.analyzer,
+    heatmapFill: false,
+    showSideLine: false,
+    dataSource: {
+      getPendingSpectrumSamples: () => { monoReads += 1; return [new Float32Array(2048)] },
+      getPendingSpectrumStereoSamples: () => { stereoReads += 1; return [] },
+      getSampleRate: () => 48000,
+      isPlaying: () => true,
+      subscribeToSessionChanges: () => () => {},
+    },
+  })
+
+  visualizer.start()
+  scheduler.tick()
+
+  assert.equal(monoReads, 1)
+  assert.equal(stereoReads, 0)
+  assert.deepEqual(native.frameOptions, [{ includeRaw: false, includeSide: false }])
+  visualizer.dispose()
+})
+
+test('curve geometry and fill gradient are reused across unchanged frames', () => {
+  linearGradientCreations = 0
+  const scheduler = new ManualFrameScheduler()
+  const native = makeNative()
+  const visualizer = new SpectrumAnalyzer(new FakeCanvas(64, 32) as unknown as HTMLCanvasElement, {
+    frameScheduler: scheduler as unknown as FrameScheduler,
+    nativeAnalyzer: native.analyzer,
+    dataSource: {
+      getPendingSpectrumSamples: () => [new Float32Array(128)],
+      getPendingSpectrumStereoSamples: () => [],
+      getSampleRate: () => 48000,
+      isPlaying: () => true,
+      subscribeToSessionChanges: () => () => {},
+    },
+  })
+  const internals = visualizer as unknown as {
+    frequencyAtPosition: (position: number, minFrequency: number, maxFrequency: number) => number
+  }
+  const frequencyAtPosition = internals.frequencyAtPosition.bind(visualizer)
+  let frequencyMappings = 0
+  internals.frequencyAtPosition = (position, minFrequency, maxFrequency) => {
+    frequencyMappings += 1
+    return frequencyAtPosition(position, minFrequency, maxFrequency)
+  }
+
+  visualizer.start()
+  scheduler.tick()
+  scheduler.tick()
+
+  assert.equal(frequencyMappings, 128)
+  assert.equal(linearGradientCreations, 1)
+  visualizer.dispose()
+})
+
+test('Heat primes from the current raw frame and does not retain disabled history', () => {
+  const scheduler = new ManualFrameScheduler()
+  const native = makeNative()
+  const visualizer = new SpectrumAnalyzer(new FakeCanvas(64, 32) as unknown as HTMLCanvasElement, {
+    frameScheduler: scheduler as unknown as FrameScheduler,
+    nativeAnalyzer: native.analyzer,
+    heatmapFill: false,
+    heatmapSmoothing: 0.5,
+    fftSize: 4096,
+    dataSource: {
+      getPendingSpectrumSamples: () => [new Float32Array(4096)],
+      getPendingSpectrumStereoSamples: () => [],
+      getSampleRate: () => 48000,
+      isPlaying: () => true,
+      subscribeToSessionChanges: () => () => {},
+    },
+  })
+  const state = visualizer as unknown as { heatmapMagnitudeBuffer: Float32Array }
+
+  visualizer.start()
+  scheduler.tick()
+  native.setFrames({ raw: new Float32Array(2048).fill(-40) })
+  visualizer.setOptions({ heatmapFill: true })
+  scheduler.tick()
+  assert.equal(state.heatmapMagnitudeBuffer[100], -40)
+
+  native.setFrames({ raw: new Float32Array(2048).fill(-20) })
+  scheduler.tick()
+  assert.equal(state.heatmapMagnitudeBuffer[100], -30)
+
+  visualizer.setOptions({ heatmapFill: false })
+  scheduler.tick()
+  native.setFrames({ raw: new Float32Array(2048).fill(-10) })
+  visualizer.setOptions({ heatmapFill: true })
+  scheduler.tick()
+  assert.equal(state.heatmapMagnitudeBuffer[100], -10)
+  assert.equal(native.frameOptions.filter((options) => options.includeRaw).length, 3)
+  visualizer.dispose()
+})
+
+test('Side enablement switches DSP input without resetting primary history', () => {
+  const scheduler = new ManualFrameScheduler()
+  const native = makeNative()
+  let monoReads = 0
+  let stereoReads = 0
+  const visualizer = new SpectrumAnalyzer(new FakeCanvas(64, 32) as unknown as HTMLCanvasElement, {
+    frameScheduler: scheduler as unknown as FrameScheduler,
+    nativeAnalyzer: native.analyzer,
+    showSideLine: false,
+    dataSource: {
+      getPendingSpectrumSamples: () => { monoReads += 1; return [new Float32Array(128)] },
+      getPendingSpectrumStereoSamples: () => {
+        stereoReads += 1
+        return [{ left: new Float32Array(128), right: new Float32Array(128) }]
+      },
+      getSampleRate: () => 48000,
+      isPlaying: () => true,
+      subscribeToSessionChanges: () => () => {},
+    },
+  })
+
+  visualizer.start()
+  scheduler.tick()
+  const resetsBeforeToggle = native.calls.reset
+  visualizer.setOptions({ showSideLine: true })
+  scheduler.tick()
+  visualizer.setOptions({ showSideLine: false })
+  scheduler.tick()
+
+  assert.deepEqual(native.sideEnabled, [false, true, false])
+  assert.equal(native.calls.reset, resetsBeforeToggle)
+  assert.equal(monoReads, 2)
+  assert.equal(stereoReads, 1)
+  assert.equal(native.calls.push, 2)
+  assert.equal(native.calls.pushStereo, 1)
+  assert.deepEqual(native.frameOptions.map((options) => Boolean(options.includeSide)), [false, true, false])
   visualizer.dispose()
 })
 

@@ -209,6 +209,13 @@ button, .titlebar {
   min-height: 0;
 }
 
+/* Scope transitions to their named surfaces. Capturing the implicit root
+   snapshot here would also rasterize the analyzer rack and every overlay even
+   though none of them participate in the navigation animation. */
+html.view-transition-root-opt-out {
+  view-transition-name: none;
+}
+
 html.app-view-transition-active .app-view-transition-surface {
   view-transition-name: app-main-view;
 }
@@ -15098,6 +15105,13 @@ html.library-context-forward .library-detail-breadcrumb,
 html.library-context-backward .view-tabs,
 html.library-context-backward .library-detail-breadcrumb {
   view-transition-name: library-context-nav;
+}
+
+/* Keep transport shelves/popovers in the overlay stack above the contextual
+   Library surface now that the document root itself is not captured. */
+html.library-context-forward .transport-bar,
+html.library-context-backward .transport-bar {
+  view-transition-name: app-view-transport;
 }
 
 ::view-transition-old(root),

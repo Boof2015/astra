@@ -29,6 +29,10 @@ import type { MultichannelAudioChunk } from '../../types/audioAnalysis'
 import type { ScopeKind } from '../../types/scopePopout'
 import { SCOPE_KINDS } from '../../types/scopePopout'
 import { ProgressiveWaveformAccumulator } from './waveformExtractor'
+import {
+  deinterleaveProgressivePcm,
+  shouldUsePlanarLocalProgressiveChunk,
+} from './progressivePcm'
 import { detectIamfContainer, type IamfContainerKind } from '../../shared/iamf/detect'
 import {
   IamfDecodeCancelledError,
@@ -2464,14 +2468,11 @@ export class AudioEngine {
   }
 
   private deinterleaveRemoteChunk(chunk: RemoteStreamChunk): Float32Array[] {
-    const interleaved = new Float32Array(chunk.pcmData)
-    const channelData = Array.from({ length: chunk.channels }, () => new Float32Array(chunk.frameCount))
-    for (let frameIndex = 0; frameIndex < chunk.frameCount; frameIndex++) {
-      for (let channelIndex = 0; channelIndex < chunk.channels; channelIndex++) {
-        channelData[channelIndex][frameIndex] = interleaved[(frameIndex * chunk.channels) + channelIndex] ?? 0
-      }
-    }
-    return channelData
+    return deinterleaveProgressivePcm(
+      new Float32Array(chunk.pcmData),
+      chunk.channels,
+      chunk.frameCount,
+    )
   }
 
   private handleLocalStreamChunk(chunk: RemoteStreamChunk, remoteState: RemoteStreamRuntimeState): void {
@@ -2490,15 +2491,31 @@ export class AudioEngine {
     )
 
     this.requestRemoteWaveformUpdate(remoteState)
-    this.remoteStreamNode.port.postMessage(
-      {
-        type: 'append-chunk',
-        frameCount: chunk.frameCount,
-        channelCount: chunk.channels,
-        interleavedData: interleaved
-      },
-      [interleaved.buffer]
-    )
+    if (shouldUsePlanarLocalProgressiveChunk(chunk.frameCount)) {
+      const channelData = chunk.channels === 1
+        ? [interleaved]
+        : deinterleaveProgressivePcm(interleaved, chunk.channels, chunk.frameCount)
+      this.remoteStreamNode.port.postMessage(
+        {
+          type: 'append-chunk',
+          frameCount: chunk.frameCount,
+          channelData
+        },
+        channelData.map((channel) => channel.buffer)
+      )
+    } else {
+      // Preserve the interleaved worklet path for small startup chunks and
+      // compatibility with older producers.
+      this.remoteStreamNode.port.postMessage(
+        {
+          type: 'append-chunk',
+          frameCount: chunk.frameCount,
+          channelCount: chunk.channels,
+          interleavedData: interleaved
+        },
+        [interleaved.buffer]
+      )
+    }
     this.maybeStartRemotePlayback()
   }
 

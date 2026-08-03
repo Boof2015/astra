@@ -5426,7 +5426,7 @@ ipcMain.handle('app:getPerformanceStats', async (event) => {
   const metrics = app.getAppMetrics()
   const totalCpuPercent = metrics.reduce((sum, metric) => sum + metric.cpu.percentCPUUsage, 0)
   const totalWorkingSetKb = metrics.reduce((sum, metric) => sum + metric.memory.workingSetSize, 0)
-  const memoryFootprint = collectAppMemoryFootprint({
+  const memoryFootprint = await collectAppMemoryFootprint({
     metrics,
     extraPids: getActiveMemoryFootprintChildProcessPids(),
     rawWorkingSetMb: totalWorkingSetKb / 1024

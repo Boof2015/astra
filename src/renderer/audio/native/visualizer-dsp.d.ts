@@ -103,8 +103,11 @@ export interface SpectrumModule {
   getFFTSize(): number;
   setSampleRate(sampleRate: number): void;
   setSmoothing(smoothing: number): void;
+  setSideEnabled(enabled: boolean): void;
   pushSamples(audioData: Float32Array): void;
   pushStereoSamples(leftChannel: Float32Array, rightChannel: Float32Array): void;
+  getFrame(options?: SpectrumFrameOptions): SpectrumNativeFrame;
+  // Legacy per-plane accessors kept at the native boundary for compatibility.
   fillRawMagnitudes(output: Float32Array): number;
   fillMagnitudes(output: Float32Array): number;
   fillSideMagnitudes(output: Float32Array): number;
@@ -116,6 +119,17 @@ export interface SpectrumModule {
   configureBars(options: SpectrumBarNativeConfig): void;
   getBarFrame(nowMs?: number): Float32Array;
   reset(): void;
+}
+
+export interface SpectrumFrameOptions {
+  includeRaw?: boolean;
+  includeSide?: boolean;
+}
+
+export interface SpectrumNativeFrame {
+  primary: Float32Array;
+  raw?: Float32Array;
+  side?: Float32Array;
 }
 
 export interface SpectrumBarNativeConfig {

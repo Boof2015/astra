@@ -119,7 +119,7 @@ export interface LibraryFolder {
   hidden: number
 }
 
-interface LibrarySelectionSnapshot {
+export interface LibrarySelectionSnapshot {
   selectedAlbum: { identity_key?: string; album: string; artist: string; is_new?: boolean } | null
   selectedArtist: string | null
   selectedGenre: string | null
@@ -144,7 +144,8 @@ export interface FolderSubdirectoryEntry {
 }
 
 export type ViewMode = 'tracks' | 'albums' | 'artists' | 'genres' | 'years' | 'folders'
-type SelectionOrigin = 'home' | 'library' | 'library-detail' | null
+export type LibrarySelectionOrigin = 'home' | 'library' | 'library-detail' | null
+type SelectionOrigin = LibrarySelectionOrigin
 export type LibraryArtistBrowseMode = 'strict' | 'canonical'
 export type LibraryFullTrackConsumer = 'library' | 'graph' | 'integrity'
 export type ArtworkVariant = 'full' | 'thumbnail' | 'card'
@@ -152,6 +153,77 @@ type ArtworkResponseFormat = 'object-url' | 'data-url'
 export type LibraryAlbumSortMode = SessionAlbumSortMode
 export type LibraryArtistRootViewMode = SessionArtistRootViewMode
 export type LibraryTrackListSortState = SessionTrackSortState
+
+export type LibrarySelectionRequest =
+  | {
+      kind: 'album'
+      album: string
+      artist?: string
+      origin?: Exclude<LibrarySelectionOrigin, null>
+      identityKey?: string
+    }
+  | {
+      kind: 'artist'
+      artist: string
+      origin?: Exclude<LibrarySelectionOrigin, null>
+    }
+  | {
+      kind: 'genre'
+      genre: string
+      origin?: Exclude<LibrarySelectionOrigin, null>
+    }
+  | {
+      kind: 'year'
+      year: LibraryYearKey
+      origin?: Exclude<LibrarySelectionOrigin, null>
+    }
+  | {
+      kind: 'history'
+      direction: 'back' | 'forward'
+    }
+
+interface PreparedLibrarySelectionBase {
+  requestGeneration: number
+}
+
+export type PreparedLibrarySelection =
+  | (PreparedLibrarySelectionBase & {
+      kind: 'album'
+      album: string
+      artist: string
+      origin: Exclude<LibrarySelectionOrigin, null>
+      identityKey?: string
+      tracks: DbTrack[]
+    })
+  | (PreparedLibrarySelectionBase & {
+      kind: 'artist'
+      artist: string
+      origin: Exclude<LibrarySelectionOrigin, null>
+      artistBrowseMode: LibraryArtistBrowseMode
+      tracks: DbTrack[]
+    })
+  | (PreparedLibrarySelectionBase & {
+      kind: 'genre'
+      genre: string
+      origin: Exclude<LibrarySelectionOrigin, null>
+      tracks: DbTrack[]
+    })
+  | (PreparedLibrarySelectionBase & {
+      kind: 'year'
+      year: LibraryYearKey
+      origin: Exclude<LibrarySelectionOrigin, null>
+      tracks: DbTrack[]
+    })
+  | (PreparedLibrarySelectionBase & {
+      kind: 'history'
+      direction: 'back' | 'forward'
+      current: LibrarySelectionSnapshot | null
+      target: LibrarySelectionSnapshot | null
+      tracks: DbTrack[]
+      tracksWereFetched: boolean
+      artistBrowseMode: LibraryArtistBrowseMode | null
+      sourceViewMode: ViewMode
+    })
 
 export {
   ALBUM_SORT_MODE_STORAGE_KEY,
@@ -294,6 +366,8 @@ interface LibraryStore {
   forceRescanAll: () => Promise<void>
   backfillReplayGainMetadata: () => Promise<void>
   setViewMode: (mode: ViewMode) => void
+  prepareSelection: (request: LibrarySelectionRequest) => Promise<PreparedLibrarySelection | null>
+  commitPreparedSelection: (selection: PreparedLibrarySelection) => boolean
   selectAlbum: (
     album: string,
     artist?: string,
@@ -350,6 +424,8 @@ const DEFAULT_TRACK_LIST_SORT_STATE: LibraryTrackListSortState = { key: 'title',
 // artwork outside this renderer, e.g. media session and remote controllers).
 const artworkRequestCache = new Map<string, Promise<string | null>>()
 let fullTracksRequestId = 0
+let selectionRequestGeneration = 0
+let committedSelectionGeneration = 0
 
 // Blink's decoded-image cache accumulates while browsing artwork-heavy views
 // and is never released on its own. Once the user has been away from all of
@@ -642,18 +718,6 @@ function resolveTracksFromSelectionSnapshot(
   }
 }
 
-function isSameAlbumSelection(
-  current: LibraryStore['selectedAlbum'],
-  target: NonNullable<LibraryStore['selectedAlbum']>
-): boolean {
-  return Boolean(
-    current &&
-    current.identity_key === target.identity_key &&
-    current.album === target.album &&
-    current.artist === target.artist
-  )
-}
-
 function appendSelectionHistory(
   history: LibrarySelectionSnapshot[],
   snapshot: LibrarySelectionSnapshot | null
@@ -663,6 +727,59 @@ function appendSelectionHistory(
   const next = history.concat(snapshot)
   if (next.length <= MAX_SELECTION_HISTORY_ENTRIES) return next
   return next.slice(next.length - MAX_SELECTION_HISTORY_ENTRIES)
+}
+
+async function resolvePreparedHistoryTracks(
+  target: LibrarySelectionSnapshot,
+  trackByPath: ReadonlyMap<string, DbTrack>,
+  artistBrowseMode: LibraryArtistBrowseMode
+): Promise<{ tracks: DbTrack[]; tracksWereFetched: boolean }> {
+  const restoredTracks = resolveTracksFromSelectionSnapshot(target, trackByPath)
+
+  // Artist and genre membership can change without invalidating the renderer's
+  // path cache, so keep the existing navigation behavior of refreshing them.
+  if (target.selectedArtist) {
+    return {
+      tracks: await window.electronAPI.library.getTracksByArtist(target.selectedArtist, artistBrowseMode),
+      tracksWereFetched: true
+    }
+  }
+
+  if (target.selectedGenre) {
+    return {
+      tracks: await window.electronAPI.library.getTracksByGenre(target.selectedGenre),
+      tracksWereFetched: true
+    }
+  }
+
+  if (target.selectedYear !== null && !restoredTracks.complete) {
+    return {
+      tracks: await window.electronAPI.library.getTracksByYear(
+        target.selectedYear === 'unknown' ? null : target.selectedYear
+      ),
+      tracksWereFetched: true
+    }
+  }
+
+  if (target.selectedAlbum && !restoredTracks.complete) {
+    return {
+      tracks: await window.electronAPI.library.getTracksByAlbum(
+        target.selectedAlbum.album,
+        target.selectedAlbum.artist,
+        target.selectedAlbum.identity_key
+      ),
+      tracksWereFetched: true
+    }
+  }
+
+  return {
+    tracks: restoredTracks.tracks,
+    tracksWereFetched: false
+  }
+}
+
+function invalidatePreparedSelections(): void {
+  selectionRequestGeneration += 1
 }
 
 function loadTracklistBpmKeyVisibilitySetting(): boolean {
@@ -1742,6 +1859,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Set view mode
   setViewMode: (mode: ViewMode) => {
+    invalidatePreparedSelections()
     set((state) => {
       const isLeavingRootTracks = state.viewMode === 'tracks'
         && !state.selectedAlbum
@@ -1779,81 +1897,257 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     })
   },
 
-  // Select album
+  prepareSelection: async (request: LibrarySelectionRequest) => {
+    const requestGeneration = ++selectionRequestGeneration
+    let prepared: PreparedLibrarySelection | null
+
+    switch (request.kind) {
+      case 'album': {
+        const tracks = await window.electronAPI.library.getTracksByAlbum(
+          request.album,
+          request.artist,
+          request.identityKey
+        )
+        prepared = {
+          kind: 'album',
+          requestGeneration,
+          album: request.album,
+          artist: request.artist ?? '',
+          origin: request.origin ?? 'library',
+          identityKey: request.identityKey,
+          tracks
+        }
+        break
+      }
+      case 'artist': {
+        const artistBrowseMode = get().artistBrowseMode
+        const tracks = await window.electronAPI.library.getTracksByArtist(request.artist, artistBrowseMode)
+        prepared = {
+          kind: 'artist',
+          requestGeneration,
+          artist: request.artist,
+          origin: request.origin ?? 'library',
+          artistBrowseMode,
+          tracks
+        }
+        break
+      }
+      case 'genre': {
+        const tracks = await window.electronAPI.library.getTracksByGenre(request.genre)
+        prepared = {
+          kind: 'genre',
+          requestGeneration,
+          genre: request.genre,
+          origin: request.origin ?? 'library',
+          tracks
+        }
+        break
+      }
+      case 'year': {
+        const tracks = await window.electronAPI.library.getTracksByYear(
+          request.year === 'unknown' ? null : request.year
+        )
+        prepared = {
+          kind: 'year',
+          requestGeneration,
+          year: request.year,
+          origin: request.origin ?? 'library',
+          tracks
+        }
+        break
+      }
+      case 'history': {
+        const state = get()
+        const current = snapshotCurrentSelection(state)
+        if (request.direction === 'back' && !current) return null
+
+        const target = request.direction === 'back'
+          ? state.selectionHistory[state.selectionHistory.length - 1] ?? null
+          : state.selectionForwardHistory[state.selectionForwardHistory.length - 1] ?? null
+        if (request.direction === 'forward' && !target) return null
+
+        const artistBrowseMode = target?.selectedArtist ? state.artistBrowseMode : null
+        const resolved = target
+          ? await resolvePreparedHistoryTracks(target, state.trackByPath, state.artistBrowseMode)
+          : { tracks: [], tracksWereFetched: false }
+        prepared = {
+          kind: 'history',
+          requestGeneration,
+          direction: request.direction,
+          current,
+          target,
+          tracks: resolved.tracks,
+          tracksWereFetched: resolved.tracksWereFetched,
+          artistBrowseMode,
+          sourceViewMode: state.viewMode
+        }
+        break
+      }
+    }
+
+    // A newer click/navigation intent supersedes this result while its IPC was
+    // in flight. Returning null prevents even a no-op transition from starting.
+    return requestGeneration === selectionRequestGeneration ? prepared : null
+  },
+
+  commitPreparedSelection: (selection: PreparedLibrarySelection) => {
+    if (
+      selection.requestGeneration !== selectionRequestGeneration ||
+      selection.requestGeneration <= committedSelectionGeneration
+    ) {
+      return false
+    }
+
+    const state = get()
+    if (selection.kind === 'artist' && state.artistBrowseMode !== selection.artistBrowseMode) {
+      return false
+    }
+    if (selection.kind === 'history' && (
+      state.viewMode !== selection.sourceViewMode ||
+      (selection.artistBrowseMode !== null && state.artistBrowseMode !== selection.artistBrowseMode)
+    )) {
+      return false
+    }
+    if (selection.kind === 'history') {
+      const current = snapshotCurrentSelection(state)
+      const target = selection.direction === 'back'
+        ? state.selectionHistory[state.selectionHistory.length - 1] ?? null
+        : state.selectionForwardHistory[state.selectionForwardHistory.length - 1] ?? null
+      if ((selection.direction === 'back' && !current) || (selection.direction === 'forward' && !target)) {
+        return false
+      }
+    }
+
+    committedSelectionGeneration = selection.requestGeneration
+
+    switch (selection.kind) {
+      case 'album': {
+        const matchedAlbum = state.albums.find((candidate) => {
+          if (selection.identityKey && candidate.identity_key === selection.identityKey) return true
+          return candidate.album === selection.album && candidate.artist === selection.artist
+        })
+        set((latest) => ingestTracksForPatch(latest, selection.tracks, {
+          selectedAlbum: {
+            identity_key: selection.identityKey,
+            album: selection.album,
+            artist: selection.artist,
+            is_new: matchedAlbum?.is_new ?? false
+          },
+          trackPaths: getUniqueTrackPaths(selection.tracks),
+          selectedArtist: null,
+          selectedGenre: null,
+          selectedYear: null,
+          selectionOrigin: selection.origin,
+          selectionHistory: appendSelectionHistory(latest.selectionHistory, snapshotCurrentSelection(latest)),
+          selectionForwardHistory: [],
+          trackListSortState: null
+        }))
+        return true
+      }
+      case 'artist':
+        set((latest) => ingestTracksForPatch(latest, selection.tracks, {
+          selectedArtist: selection.artist,
+          trackPaths: getUniqueTrackPaths(selection.tracks),
+          selectedAlbum: null,
+          selectedGenre: null,
+          selectedYear: null,
+          selectionOrigin: selection.origin,
+          selectionHistory: appendSelectionHistory(latest.selectionHistory, snapshotCurrentSelection(latest)),
+          selectionForwardHistory: [],
+          trackListSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE }
+        }))
+        return true
+      case 'genre':
+        set((latest) => ingestTracksForPatch(latest, selection.tracks, {
+          selectedGenre: selection.genre,
+          trackPaths: getUniqueTrackPaths(selection.tracks),
+          selectedAlbum: null,
+          selectedArtist: null,
+          selectedYear: null,
+          selectionOrigin: selection.origin,
+          selectionHistory: appendSelectionHistory(latest.selectionHistory, snapshotCurrentSelection(latest)),
+          selectionForwardHistory: [],
+          trackListSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE }
+        }))
+        return true
+      case 'year':
+        set((latest) => ingestTracksForPatch(latest, selection.tracks, {
+          selectedYear: selection.year,
+          selectedAlbum: null,
+          selectedArtist: null,
+          selectedGenre: null,
+          trackPaths: getUniqueTrackPaths(selection.tracks),
+          selectionOrigin: selection.origin,
+          selectionHistory: appendSelectionHistory(latest.selectionHistory, snapshotCurrentSelection(latest)),
+          selectionForwardHistory: [],
+          trackListSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE }
+        }))
+        return true
+      case 'history': {
+        const current = snapshotCurrentSelection(state)
+        const target = selection.direction === 'back'
+          ? state.selectionHistory[state.selectionHistory.length - 1] ?? null
+          : state.selectionForwardHistory[state.selectionForwardHistory.length - 1] ?? null
+        const patch = {
+          selectedAlbum: target?.selectedAlbum ? { ...target.selectedAlbum } : null,
+          selectedArtist: target?.selectedArtist ?? null,
+          selectedGenre: target?.selectedGenre ?? null,
+          selectedYear: target?.selectedYear ?? null,
+          selectionOrigin: target?.selectionOrigin ?? null,
+          trackPaths: target
+            ? getUniqueTrackPaths(selection.tracks)
+            : selection.sourceViewMode === 'tracks' || selection.sourceViewMode === 'genres' || selection.sourceViewMode === 'folders'
+              ? state.fullTrackPaths
+              : [],
+          selectionHistory: selection.direction === 'back'
+            ? state.selectionHistory.slice(0, -1)
+            : appendSelectionHistory(state.selectionHistory, current),
+          selectionForwardHistory: selection.direction === 'back'
+            ? appendSelectionHistory(state.selectionForwardHistory, current)
+            : state.selectionForwardHistory.slice(0, -1),
+          trackListSortState: target?.selectedAlbum
+            ? null
+            : target
+              ? { ...DEFAULT_TRACK_LIST_SORT_STATE }
+              : selection.sourceViewMode === 'tracks'
+                ? { ...(state.tracksViewSortState ?? DEFAULT_TRACK_LIST_SORT_STATE) }
+                : { ...DEFAULT_TRACK_LIST_SORT_STATE }
+        }
+
+        if (target && selection.tracksWereFetched) {
+          set((latest) => ingestTracksForPatch(latest, selection.tracks, patch))
+        } else {
+          set(patch)
+        }
+        return true
+      }
+    }
+  },
+
+  // Compatibility actions keep fetch-before-commit semantics for non-animated callers.
   selectAlbum: async (
     album: string,
     artist?: string,
     origin: Exclude<SelectionOrigin, null> = 'library',
     identityKey?: string
   ) => {
-    const tracks = await window.electronAPI.library.getTracksByAlbum(album, artist, identityKey)
-    const matchedAlbum = get().albums.find((candidate) => {
-      if (identityKey && candidate.identity_key === identityKey) return true
-      return candidate.album === album && candidate.artist === (artist ?? '')
-    })
-    set((state) => ingestTracksForPatch(state, tracks, {
-      selectedAlbum: {
-        identity_key: identityKey,
-        album,
-        artist: artist ?? '',
-        is_new: matchedAlbum?.is_new ?? false
-      },
-      trackPaths: getUniqueTrackPaths(tracks),
-      selectedArtist: null,
-      selectedGenre: null,
-      selectedYear: null,
-      selectionOrigin: origin,
-      selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state)),
-      selectionForwardHistory: [],
-      trackListSortState: null
-    }))
+    const prepared = await get().prepareSelection({ kind: 'album', album, artist, origin, identityKey })
+    if (prepared) get().commitPreparedSelection(prepared)
   },
 
-  // Select artist
   selectArtist: async (artist: string, origin: Exclude<SelectionOrigin, null> = 'library') => {
-    const mode = get().artistBrowseMode
-    const tracks = await window.electronAPI.library.getTracksByArtist(artist, mode)
-    set((state) => ingestTracksForPatch(state, tracks, {
-      selectedArtist: artist,
-      trackPaths: getUniqueTrackPaths(tracks),
-      selectedAlbum: null,
-      selectedGenre: null,
-      selectedYear: null,
-      selectionOrigin: origin,
-      selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state)),
-      selectionForwardHistory: [],
-      trackListSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE }
-    }))
+    const prepared = await get().prepareSelection({ kind: 'artist', artist, origin })
+    if (prepared) get().commitPreparedSelection(prepared)
   },
 
   selectGenre: async (genre: string, origin: Exclude<SelectionOrigin, null> = 'library') => {
-    const tracks = await window.electronAPI.library.getTracksByGenre(genre)
-    set((state) => ingestTracksForPatch(state, tracks, {
-      selectedGenre: genre,
-      trackPaths: getUniqueTrackPaths(tracks),
-      selectedAlbum: null,
-      selectedArtist: null,
-      selectedYear: null,
-      selectionOrigin: origin,
-      selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state)),
-      selectionForwardHistory: [],
-      trackListSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE }
-    }))
+    const prepared = await get().prepareSelection({ kind: 'genre', genre, origin })
+    if (prepared) get().commitPreparedSelection(prepared)
   },
 
   selectYear: async (year: LibraryYearKey, origin: Exclude<SelectionOrigin, null> = 'library') => {
-    const tracks = await window.electronAPI.library.getTracksByYear(year === 'unknown' ? null : year)
-    set((state) => ingestTracksForPatch(state, tracks, {
-      selectedYear: year,
-      selectedAlbum: null,
-      selectedArtist: null,
-      selectedGenre: null,
-      trackPaths: getUniqueTrackPaths(tracks),
-      selectionOrigin: origin,
-      selectionHistory: appendSelectionHistory(state.selectionHistory, snapshotCurrentSelection(state)),
-      selectionForwardHistory: [],
-      trackListSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE }
-    }))
+    const prepared = await get().prepareSelection({ kind: 'year', year, origin })
+    if (prepared) get().commitPreparedSelection(prepared)
   },
 
   releaseFullTracks: (consumer?: LibraryFullTrackConsumer) => {
@@ -1877,6 +2171,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Clear selection
   clearSelection: async () => {
+    invalidatePreparedSelections()
     set((state) => ({
       selectedAlbum: null,
       selectedArtist: null,
@@ -1894,140 +2189,13 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Restore previous detail selection when available.
   goBackSelection: async () => {
-    const state = get()
-    const current = snapshotCurrentSelection(state)
-    if (!current) return false
-    const historyLength = state.selectionHistory.length
-    if (historyLength === 0) {
-      set((latest) => ({
-        selectedAlbum: null,
-        selectedArtist: null,
-        selectedGenre: null,
-        selectedYear: null,
-        selectionOrigin: null,
-        trackPaths: state.viewMode === 'tracks' || state.viewMode === 'genres' || state.viewMode === 'folders' ? state.fullTrackPaths : [],
-        selectionForwardHistory: appendSelectionHistory(state.selectionForwardHistory, current),
-        trackListSortState: state.viewMode === 'tracks'
-          ? { ...(latest.tracksViewSortState ?? DEFAULT_TRACK_LIST_SORT_STATE) }
-          : { ...DEFAULT_TRACK_LIST_SORT_STATE }
-      }))
-      return true
-    }
-
-    const previous = state.selectionHistory[historyLength - 1]
-    if (!previous) return false
-
-    const restoredTracks = resolveTracksFromSelectionSnapshot(previous, state.trackByPath)
-    const restoredAlbum = previous.selectedAlbum ? { ...previous.selectedAlbum } : null
-    const restoredArtist = previous.selectedArtist
-    const restoredGenre = previous.selectedGenre
-    const restoredYear = previous.selectedYear
-
-    set({
-      selectedAlbum: restoredAlbum,
-      selectedArtist: restoredArtist,
-      selectedGenre: restoredGenre,
-      selectedYear: restoredYear,
-      selectionOrigin: previous.selectionOrigin,
-      trackPaths: restoredTracks.tracks.map((track) => track.path),
-      selectionHistory: state.selectionHistory.slice(0, -1),
-      selectionForwardHistory: appendSelectionHistory(state.selectionForwardHistory, current),
-      trackListSortState: restoredAlbum ? null : { ...DEFAULT_TRACK_LIST_SORT_STATE }
-    })
-
-    if (restoredArtist) {
-      const mode = get().artistBrowseMode
-      const tracks = await window.electronAPI.library.getTracksByArtist(restoredArtist, mode)
-      set((state) => {
-        if (state.selectedArtist !== restoredArtist) return {}
-        if (state.artistBrowseMode !== mode) return {}
-        return ingestTracksForPatch(state, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
-      })
-    } else if (restoredGenre) {
-      const tracks = await window.electronAPI.library.getTracksByGenre(restoredGenre)
-      set((state) => {
-        if (state.selectedGenre !== restoredGenre) return {}
-        return ingestTracksForPatch(state, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
-      })
-    } else if (restoredYear !== null && !restoredTracks.complete) {
-      const tracks = await window.electronAPI.library.getTracksByYear(restoredYear === 'unknown' ? null : restoredYear)
-      set((state) => {
-        if (state.selectedYear !== restoredYear) return {}
-        return ingestTracksForPatch(state, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
-      })
-    } else if (restoredAlbum && !restoredTracks.complete) {
-      const tracks = await window.electronAPI.library.getTracksByAlbum(
-        restoredAlbum.album,
-        restoredAlbum.artist,
-        restoredAlbum.identity_key
-      )
-      set((state) => {
-        if (!isSameAlbumSelection(state.selectedAlbum, restoredAlbum)) return {}
-        return ingestTracksForPatch(state, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
-      })
-    }
-
-    return true
+    const prepared = await get().prepareSelection({ kind: 'history', direction: 'back' })
+    return prepared ? get().commitPreparedSelection(prepared) : false
   },
 
   goForwardSelection: async () => {
-    const state = get()
-    const forwardLength = state.selectionForwardHistory.length
-    if (forwardLength === 0) return false
-
-    const next = state.selectionForwardHistory[forwardLength - 1]
-    if (!next) return false
-    const current = snapshotCurrentSelection(state)
-    const restoredTracks = resolveTracksFromSelectionSnapshot(next, state.trackByPath)
-    const restoredAlbum = next.selectedAlbum ? { ...next.selectedAlbum } : null
-    const restoredArtist = next.selectedArtist
-    const restoredGenre = next.selectedGenre
-    const restoredYear = next.selectedYear
-
-    set({
-      selectedAlbum: restoredAlbum,
-      selectedArtist: restoredArtist,
-      selectedGenre: restoredGenre,
-      selectedYear: restoredYear,
-      selectionOrigin: next.selectionOrigin,
-      trackPaths: restoredTracks.tracks.map((track) => track.path),
-      selectionHistory: appendSelectionHistory(state.selectionHistory, current),
-      selectionForwardHistory: state.selectionForwardHistory.slice(0, -1),
-      trackListSortState: restoredAlbum ? null : { ...DEFAULT_TRACK_LIST_SORT_STATE }
-    })
-
-    if (restoredArtist) {
-      const mode = get().artistBrowseMode
-      const tracks = await window.electronAPI.library.getTracksByArtist(restoredArtist, mode)
-      set((latest) => {
-        if (latest.selectedArtist !== restoredArtist || latest.artistBrowseMode !== mode) return {}
-        return ingestTracksForPatch(latest, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
-      })
-    } else if (restoredGenre) {
-      const tracks = await window.electronAPI.library.getTracksByGenre(restoredGenre)
-      set((latest) => {
-        if (latest.selectedGenre !== restoredGenre) return {}
-        return ingestTracksForPatch(latest, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
-      })
-    } else if (restoredYear !== null && !restoredTracks.complete) {
-      const tracks = await window.electronAPI.library.getTracksByYear(restoredYear === 'unknown' ? null : restoredYear)
-      set((latest) => {
-        if (latest.selectedYear !== restoredYear) return {}
-        return ingestTracksForPatch(latest, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
-      })
-    } else if (restoredAlbum && !restoredTracks.complete) {
-      const tracks = await window.electronAPI.library.getTracksByAlbum(
-        restoredAlbum.album,
-        restoredAlbum.artist,
-        restoredAlbum.identity_key
-      )
-      set((latest) => {
-        if (!isSameAlbumSelection(latest.selectedAlbum, restoredAlbum)) return {}
-        return ingestTracksForPatch(latest, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
-      })
-    }
-
-    return true
+    const prepared = await get().prepareSelection({ kind: 'history', direction: 'forward' })
+    return prepared ? get().commitPreparedSelection(prepared) : false
   },
 
   // Search
@@ -2227,6 +2395,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     const normalized = normalizeArtistBrowseMode(mode)
     if (get().artistBrowseMode === normalized) return
 
+    invalidatePreparedSelections()
     set({ artistBrowseMode: normalized })
 
     try {
@@ -2425,6 +2594,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   },
 
   restoreSession: async (snapshot: LibrarySessionSnapshot) => {
+    invalidatePreparedSelections()
     const normalizedSortState = normalizeTrackSortState(snapshot.trackListSortState)
     const isRootTracksSnapshot = snapshot.viewMode === 'tracks'
       && !snapshot.selectedAlbum

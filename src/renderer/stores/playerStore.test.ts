@@ -1020,3 +1020,75 @@ test('detailed listening checkpoints exclude paused time, flush boundaries, and 
     audioEngine.stop = originalStop
   }
 })
+
+test('gapless prebuffer scheduling is event-driven instead of running on time updates', async () => {
+  resetStores()
+  const currentTrack = makeTrack('/music/current.flac', { duration: 180 })
+  const nextTrack = makeTrack('/music/next.flac', { duration: 180 })
+  const currentItem = makeQueueItem(createQueueEntryFromTrack(currentTrack), 'current')
+  const nextItem = makeQueueItem(createQueueEntryFromTrack(nextTrack), 'next')
+  usePlayerStore.setState({
+    currentTrack,
+    playbackState: 'playing',
+    duration: 180,
+    queueItems: [currentItem, nextItem],
+    baseUpcomingQueueIds: [nextItem.queueId],
+    upcomingQueueIds: [nextItem.queueId],
+    currentQueueItemId: currentItem.queueId
+  })
+
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      electronAPI: {
+        onProgressiveLoadProgress: () => () => undefined
+      }
+    }
+  })
+
+  const originalSetTimeout = globalThis.setTimeout
+  const originalSeek = audioEngine.seek
+  const ownCurrentTime = Object.getOwnPropertyDescriptor(audioEngine, 'currentTime')
+  const ownDuration = Object.getOwnPropertyDescriptor(audioEngine, 'duration')
+  let scheduledTimers = 0
+  let engineCurrentTime = 20
+
+  Object.defineProperty(audioEngine, 'currentTime', { configurable: true, get: () => engineCurrentTime })
+  Object.defineProperty(audioEngine, 'duration', { configurable: true, get: () => 180 })
+  audioEngine.seek = async (time) => {
+    engineCurrentTime = time
+  }
+  globalThis.setTimeout = ((callback: TimerHandler, delay?: number) => {
+    void callback
+    void delay
+    scheduledTimers += 1
+    return scheduledTimers as unknown as ReturnType<typeof setTimeout>
+  }) as unknown as typeof setTimeout
+
+  const emitAudioEvent = (event: string, ...args: unknown[]) => {
+    ;(audioEngine as unknown as { emit: (name: string, ...values: unknown[]) => void }).emit(event, ...args)
+  }
+
+  try {
+    usePlayerStore.getState()._initListeners()
+    emitAudioEvent('timeUpdate', 20)
+    assert.equal(scheduledTimers, 0, 'regular clock updates must not rebuild the prebuffer deadline')
+
+    await usePlayerStore.getState().seek(20)
+    assert.equal(scheduledTimers, 1, 'a seek must recalculate the prebuffer deadline')
+
+    await usePlayerStore.getState().playPrevious()
+    assert.equal(engineCurrentTime, 0, 'Previous restarts the current track after three seconds')
+    assert.equal(scheduledTimers, 2, 'restarting the current track must replace the prebuffer deadline')
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    globalThis.setTimeout = originalSetTimeout
+    audioEngine.seek = originalSeek
+    if (ownCurrentTime) Object.defineProperty(audioEngine, 'currentTime', ownCurrentTime)
+    else delete (audioEngine as unknown as Record<string, unknown>).currentTime
+    if (ownDuration) Object.defineProperty(audioEngine, 'duration', ownDuration)
+    else delete (audioEngine as unknown as Record<string, unknown>).duration
+  }
+})

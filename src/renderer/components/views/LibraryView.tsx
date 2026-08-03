@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type UIEvent as ReactUIEvent } from 'react'
-import { useLibraryStore, type LibraryArtistBrowseMode, type LibraryAlbumSortMode } from '../../stores/libraryStore'
+import {
+  useLibraryStore,
+  type LibraryAlbumSortMode,
+  type LibraryArtistBrowseMode,
+  type LibrarySelectionRequest
+} from '../../stores/libraryStore'
 import { usePlayerStore, type PlaybackSourceContext } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
@@ -212,12 +217,9 @@ export default function LibraryView() {
   const loadFullTracks = useLibraryStore((state) => state.loadFullTracks)
   const releaseFullTracks = useLibraryStore((state) => state.releaseFullTracks)
   const setViewMode = useLibraryStore((state) => state.setViewMode)
-  const selectAlbum = useLibraryStore((state) => state.selectAlbum)
-  const selectArtist = useLibraryStore((state) => state.selectArtist)
-  const selectGenre = useLibraryStore((state) => state.selectGenre)
-  const selectYear = useLibraryStore((state) => state.selectYear)
+  const prepareSelection = useLibraryStore((state) => state.prepareSelection)
+  const commitPreparedSelection = useLibraryStore((state) => state.commitPreparedSelection)
   const clearSelection = useLibraryStore((state) => state.clearSelection)
-  const goBackSelection = useLibraryStore((state) => state.goBackSelection)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const showTracklistGenre = useLibraryStore((state) => state.showTracklistGenre)
   const showTracklistAddedDate = useLibraryStore((state) => state.showTracklistAddedDate)
@@ -582,10 +584,27 @@ export default function LibraryView() {
     ))
   }, [inDetailView])
 
+  const runPreparedSelectionTransition = useCallback(async (
+    request: LibrarySelectionRequest,
+    scopeClassName: string
+  ): Promise<boolean> => {
+    const prepared = await prepareSelection(request)
+    if (!prepared) return false
+
+    let committed = false
+    await runViewTransition(() => {
+      committed = commitPreparedSelection(prepared)
+    }, scopeClassName)
+    return committed
+  }, [commitPreparedSelection, prepareSelection])
+
   const handleSelectArtistFromList = useCallback(async (artistName: string) => {
     artistScrollRef.current = artistViewportRef.current?.element?.scrollTop ?? 0
-    await runViewTransition(() => selectArtist(artistName, 'library'), 'library-context-forward')
-  }, [selectArtist])
+    await runPreparedSelectionTransition(
+      { kind: 'artist', artist: artistName, origin: 'library' },
+      'library-context-forward'
+    )
+  }, [runPreparedSelectionTransition])
 
   const handleSelectAlbumFromGrid = useCallback((album: { album: string; artist: string; identity_key: string }) => {
     if (selectedYear !== null) {
@@ -595,16 +614,17 @@ export default function LibraryView() {
     } else {
       albumGridScrollRef.current = albumViewportRef.current?.element?.scrollTop ?? 0
     }
-    void runViewTransition(
-      () => selectAlbum(
-        album.album,
-        album.artist,
-        selectedYear !== null ? 'library-detail' : 'library',
-        album.identity_key
-      ),
+    void runPreparedSelectionTransition(
+      {
+        kind: 'album',
+        album: album.album,
+        artist: album.artist,
+        origin: selectedYear !== null ? 'library-detail' : 'library',
+        identityKey: album.identity_key
+      },
       'library-context-forward'
     )
-  }, [selectAlbum, selectedYear])
+  }, [runPreparedSelectionTransition, selectedYear])
 
   const handleAlbumGridContextMenu = useCallback((album: { album: string; artist: string; identity_key: string }, x: number, y: number) => {
     openCollectionQueueMenu({
@@ -621,19 +641,19 @@ export default function LibraryView() {
 
   const handleSelectGenreFromGrid = useCallback((genre: { genre: string }) => {
     genreGridScrollRef.current = genreViewportRef.current?.element?.scrollTop ?? 0
-    void runViewTransition(
-      () => selectGenre(genre.genre, 'library'),
+    void runPreparedSelectionTransition(
+      { kind: 'genre', genre: genre.genre, origin: 'library' },
       'library-context-forward'
     )
-  }, [selectGenre])
+  }, [runPreparedSelectionTransition])
 
   const handleSelectYearFromGrid = useCallback((year: LibraryYearGroup) => {
     yearGridScrollRef.current = yearViewportRef.current?.element?.scrollTop ?? 0
-    void runViewTransition(
-      () => selectYear(year.key, 'library'),
+    void runPreparedSelectionTransition(
+      { kind: 'year', year: year.key, origin: 'library' },
       'library-context-forward'
     )
-  }, [selectYear])
+  }, [runPreparedSelectionTransition])
 
   const handleSelectViewMode = useCallback((mode: Parameters<typeof setViewMode>[0]) => {
     if (viewMode === mode) return
@@ -1081,12 +1101,14 @@ export default function LibraryView() {
 
   const handleDetailBack = async () => {
     if (contextualAlbumParent) {
+      const prepared = await prepareSelection({ kind: 'history', direction: 'back' })
+      if (!prepared) return
       if (contextualAlbumParent.selectedYear !== null) {
         pendingScrollRef.current = 'year-detail'
         setSearchQuery('')
       }
-      await runViewTransition(async () => {
-        await goBackSelection()
+      await runViewTransition(() => {
+        commitPreparedSelection(prepared)
       }, 'library-context-backward')
       return
     }
@@ -1503,8 +1525,14 @@ export default function LibraryView() {
                     data-controller-focusable="true"
                     data-controller-context="true"
                     data-controller-key={`album:${album.identity_key}`}
-                    onClick={() => void runViewTransition(
-                      () => selectAlbum(album.album, album.artist, 'library-detail', album.identity_key),
+                    onClick={() => void runPreparedSelectionTransition(
+                      {
+                        kind: 'album',
+                        album: album.album,
+                        artist: album.artist,
+                        origin: 'library-detail',
+                        identityKey: album.identity_key
+                      },
                       'library-context-forward'
                     )}
                     onContextMenu={(event) => {

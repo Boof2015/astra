@@ -586,6 +586,14 @@ export interface VisualizerDSP {
     getFFTSize(): number
     setSampleRate(sampleRate: number): void
     setSmoothing(smoothing: number): void
+    setSideEnabled(enabled: boolean): void
+    pushSamples(audioData: Float32Array): void
+    pushStereoSamples(leftChannel: Float32Array, rightChannel: Float32Array): void
+    getFrame(options?: { includeRaw?: boolean; includeSide?: boolean }): {
+      primary: Float32Array
+      raw?: Float32Array
+      side?: Float32Array
+    }
     process(audioData: Float32Array): Float32Array
     binToFrequency(bin: number): number
     configureBars(options: {

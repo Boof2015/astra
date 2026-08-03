@@ -1069,7 +1069,7 @@ export default function VisualizerPanel({
     const waveformDemand = isDockedAnalyzerActive && isRunning && visibleScopeSet.has('waveform') && !scopePopoutState.waveform
     audioEngine.setVisualizerConsumerDemand('docked-deck', {
       spectrum: spectrumDemand,
-      spectrumStereo: spectrumDemand && spectrumShowSideLine,
+      spectrumStereo: spectrumDemand && spectrumDisplayMode === 'curve' && spectrumShowSideLine,
       oscilloscope: nativeVisualizersAvailable && isDockedAnalyzerActive && isRunning && visibleScopeSet.has('oscilloscope') && !scopePopoutState.oscilloscope,
       vectorscope: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('vectorscope') && !scopePopoutState.vectorscope,
       spectrogram: isDockedAnalyzerActive && isRunning && visibleScopeSet.has('spectrogram') && !scopePopoutState.spectrogram,
@@ -1082,7 +1082,7 @@ export default function VisualizerPanel({
     return () => {
       audioEngine.clearVisualizerConsumerDemand('docked-deck')
     }
-  }, [isDockedAnalyzerActive, isRunning, mountedVisibleScopes, nativeVisualizersAvailable, scopePopoutState, spectrumShowSideLine, waveformMode])
+  }, [isDockedAnalyzerActive, isRunning, mountedVisibleScopes, nativeVisualizersAvailable, scopePopoutState, spectrumDisplayMode, spectrumShowSideLine, waveformMode])
 
   const openScopeEditor = useCallback(() => {
     openAnalyzerEditMode()

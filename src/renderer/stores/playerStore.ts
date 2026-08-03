@@ -2214,9 +2214,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       )
       if (parallaxSeekTimeline && state.playbackState === 'playing') {
         await audioEngine.playCurrentBufferOnParallaxTimeline(parallaxSeekTimeline)
+        schedulePreBufferNextTrack()
         return
       }
       await audioEngine.seek(seekTime)
+      schedulePreBufferNextTrack()
     },
 
     // Volume controls
@@ -2539,7 +2541,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       // If more than 3 seconds into track, restart it
       if (state.currentTime > 3) {
-        await audioEngine.seek(0)
+        await get().seek(0)
         return
       }
 
@@ -3284,10 +3286,6 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         maybeCommitRecentPlay()
 
         const state = get()
-        if (state.playbackState === 'playing' || state.playbackState === 'paused') {
-          schedulePreBufferNextTrack()
-        }
-
         if (state.playbackState === 'loading') {
           if (normalizedTime !== 0) {
             return

@@ -11,6 +11,7 @@ type ViewTransitionDocument = Document & {
 
 const activeScopedTransitions = new Map<string, AstraViewTransition>()
 let transitionUpdateDepth = 0
+export const VIEW_TRANSITION_ROOT_OPT_OUT_CLASS = 'view-transition-root-opt-out'
 
 type ViewTransitionScope = string | string[] | undefined
 
@@ -49,11 +50,19 @@ export async function runViewTransition(
     return
   }
 
-  const scopeClassNames = normalizeScopeClassNames(scopeClassName)
+  const requestedScopeClassNames = normalizeScopeClassNames(scopeClassName)
+  const scopeClassNames = requestedScopeClassNames.length > 0
+    ? normalizeScopeClassNames([...requestedScopeClassNames, VIEW_TRANSITION_ROOT_OPT_OUT_CLASS])
+    : []
 
   if (scopeClassNames.length > 0) {
+    const transitionsToSkip = new Set<AstraViewTransition>()
     for (const className of scopeClassNames) {
-      activeScopedTransitions.get(className)?.skipTransition()
+      const activeTransition = activeScopedTransitions.get(className)
+      if (activeTransition) transitionsToSkip.add(activeTransition)
+    }
+    for (const activeTransition of transitionsToSkip) {
+      activeTransition.skipTransition()
     }
     document.documentElement.classList.add(...scopeClassNames)
   }

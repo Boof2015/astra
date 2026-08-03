@@ -65,6 +65,9 @@ jobs:
       - name: Test native playback state machine
         run: npm run test:native-playback
 
+      - name: Test native DSP contracts
+        run: npm run test:native-dsp
+
       - name: Test
         run: npm test
 
@@ -126,6 +129,9 @@ jobs:
 
       - name: Test native playback state machine
         run: npm run test:native-playback
+
+      - name: Test native DSP contracts
+        run: npm run test:native-dsp
 
       - name: Validate packaging config
         run: npm run check:packaging-config
