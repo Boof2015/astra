@@ -2,7 +2,7 @@ import * as mm from 'music-metadata'
 import { app, powerMonitor } from 'electron'
 import { join, extname, basename, dirname, isAbsolute as isAbsolutePath, normalize as normalizePath, resolve as resolvePath, relative as relativePath, sep as pathSep } from 'path'
 import { readdir, stat, mkdir, writeFile, readFile, access, rm, mkdtemp, copyFile, open } from 'fs/promises'
-import type { Stats } from 'fs'
+import type { Dirent, Stats } from 'fs'
 import { createHash, randomUUID } from 'crypto'
 import { execFile, type ExecFileOptions } from 'child_process'
 import { tmpdir, cpus } from 'os'
@@ -2100,6 +2100,8 @@ export async function initDatabase(): Promise<void> {
       is_iamf INTEGER,
       replaygain_track_gain_db REAL,
       replaygain_album_gain_db REAL,
+      replaygain_track_gain_scanned INTEGER NOT NULL DEFAULT 0,
+      replaygain_album_gain_scanned INTEGER NOT NULL DEFAULT 0,
       bpm REAL,
       musical_key TEXT,
       source_type TEXT NOT NULL DEFAULT 'local',
@@ -2109,6 +2111,7 @@ export async function initDatabase(): Promise<void> {
       is_available INTEGER NOT NULL DEFAULT 1,
       availability_reason TEXT,
       file_created_at INTEGER,
+      file_created_at_scanned INTEGER NOT NULL DEFAULT 0,
       play_count INTEGER NOT NULL DEFAULT 0,
       last_played_at INTEGER,
       sync_session_key TEXT,
@@ -2298,6 +2301,16 @@ export async function initDatabase(): Promise<void> {
     // Column already exists.
   }
   try {
+    db.run('ALTER TABLE tracks ADD COLUMN replaygain_track_gain_scanned INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN replaygain_album_gain_scanned INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    // Column already exists.
+  }
+  try {
     db.run('ALTER TABLE tracks ADD COLUMN bpm REAL')
   } catch {
     // Column already exists.
@@ -2342,6 +2355,32 @@ export async function initDatabase(): Promise<void> {
   } catch {
     // Column already exists.
   }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN file_created_at_scanned INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    // Column already exists.
+  }
+  // Existing non-null values were necessarily obtained by an earlier scan or
+  // backfill. Null remains unchecked once after migration, then the explicit
+  // flags distinguish a legitimate absent tag/timestamp from unfinished work.
+  db.run(`
+    UPDATE tracks
+    SET replaygain_track_gain_scanned = 1
+    WHERE replaygain_track_gain_db IS NOT NULL
+      AND replaygain_track_gain_scanned = 0
+  `)
+  db.run(`
+    UPDATE tracks
+    SET replaygain_album_gain_scanned = 1
+    WHERE replaygain_album_gain_db IS NOT NULL
+      AND replaygain_album_gain_scanned = 0
+  `)
+  db.run(`
+    UPDATE tracks
+    SET file_created_at_scanned = 1
+    WHERE file_created_at IS NOT NULL
+      AND file_created_at_scanned = 0
+  `)
   try {
     db.run('ALTER TABLE tracks ADD COLUMN sync_session_key TEXT')
   } catch {
@@ -2680,6 +2719,37 @@ export async function initDatabase(): Promise<void> {
       updated_at INTEGER NOT NULL
     )
   `)
+
+  // Older versions recorded completion for these whole-library backfills but
+  // could not distinguish "checked and absent" from "not checked" per row.
+  // Carry the completed migration state into the new per-track flags so an
+  // upgrade does not force one unnecessary full metadata pass.
+  const replayGainBackfillCompleted = db.get<{ value?: unknown }>(
+    "SELECT value FROM app_meta WHERE key = 'replaygain_backfill_v3_done' LIMIT 1"
+  )?.value === '1'
+  if (replayGainBackfillCompleted) {
+    db.run(`
+      UPDATE tracks
+      SET replaygain_track_gain_scanned = 1,
+          replaygain_album_gain_scanned = 1
+      WHERE source_type = 'local'
+        AND (
+          replaygain_track_gain_scanned = 0
+          OR replaygain_album_gain_scanned = 0
+        )
+    `)
+  }
+  const fileCreatedAtBackfillCompleted = db.get<{ value?: unknown }>(
+    "SELECT value FROM app_meta WHERE key = 'file_created_at_backfill_v1_done' LIMIT 1"
+  )?.value === '1'
+  if (fileCreatedAtBackfillCompleted) {
+    db.run(`
+      UPDATE tracks
+      SET file_created_at_scanned = 1
+      WHERE source_type = 'local'
+        AND file_created_at_scanned = 0
+    `)
+  }
 
   // Last, because it reads its completion flag out of app_meta.
   backfillTrackPlayOrigins()
@@ -5951,12 +6021,32 @@ function deleteTracksByAbsolutePrefixesWithDiagnostics(
   })
 
   const deletionStartedAt = libraryDiagnosticNow()
+  const ownsTransaction = !db.inTransaction
   const checkpointInterval = Math.max(1, Math.ceil(trackIdsToRemove.length / 20))
-  for (let index = 0; index < trackIdsToRemove.length; index += 1) {
-    const trackId = trackIdsToRemove[index]
-    db.run('DELETE FROM tracks WHERE id = ?', [trackId])
-    const deletedCount = index + 1
-    if (onCheckpoint && (deletedCount % checkpointInterval === 0 || deletedCount === trackIdsToRemove.length)) {
+  let deletedCount = 0
+
+  if (ownsTransaction) beginLibraryWriteTransaction()
+  try {
+    // A standalone DELETE per track makes SQLite start and fsync one transaction per
+    // row. Delete bounded groups inside one transaction instead; triggers and foreign
+    // keys retain their existing per-row semantics while large removals avoid minutes
+    // of main-process blocking.
+    while (deletedCount < trackIdsToRemove.length) {
+      const checkpointTarget = Math.min(
+        trackIdsToRemove.length,
+        deletedCount + checkpointInterval
+      )
+      while (deletedCount < checkpointTarget) {
+        const chunkEnd = Math.min(
+          checkpointTarget,
+          deletedCount + SQLITE_SAFE_MAX_VARIABLES
+        )
+        const chunk = trackIdsToRemove.slice(deletedCount, chunkEnd)
+        const placeholders = chunk.map(() => '?').join(', ')
+        db.run(`DELETE FROM tracks WHERE id IN (${placeholders})`, chunk)
+        deletedCount = chunkEnd
+      }
+
       runFolderRemovalCheckpoint(onCheckpoint, {
         phase: 'deleting',
         rowsInspected,
@@ -5965,6 +6055,10 @@ function deleteTracksByAbsolutePrefixesWithDiagnostics(
         elapsedMs: roundDiagnosticMs(libraryDiagnosticNow() - deletionStartedAt)
       })
     }
+    if (ownsTransaction) commitLibraryWriteTransaction()
+  } catch (error) {
+    if (ownsTransaction) rollbackLibraryWriteTransaction()
+    throw error
   }
 
   return {
@@ -6218,16 +6312,28 @@ export async function removeLibraryFolder(
   }
 
   let lastCompletedCheckpoint: LibraryFolderRemovalCheckpoint | null = null
-  const deletion = deleteTracksByAbsolutePrefixesWithDiagnostics([folder.path], (checkpoint) => {
-    lastCompletedCheckpoint = checkpoint
-    runFolderRemovalCheckpoint(options.onCheckpoint, checkpoint)
-  })
-  const exclusionDeleteStartedAt = libraryDiagnosticNow()
-  db.run('DELETE FROM folder_exclusions WHERE folder_id = ?', [folder.id])
-  const exclusionDeleteMs = libraryDiagnosticNow() - exclusionDeleteStartedAt
-  const folderDeleteStartedAt = libraryDiagnosticNow()
-  db.run('DELETE FROM folders WHERE id = ?', [folder.id])
-  const folderDeleteMs = libraryDiagnosticNow() - folderDeleteStartedAt
+  let deletion: PrefixDeletionDiagnostics
+  let exclusionDeleteMs = 0
+  let folderDeleteMs = 0
+  const transactionStartedAt = libraryDiagnosticNow()
+  beginLibraryWriteTransaction()
+  try {
+    deletion = deleteTracksByAbsolutePrefixesWithDiagnostics([folder.path], (checkpoint) => {
+      lastCompletedCheckpoint = checkpoint
+      runFolderRemovalCheckpoint(options.onCheckpoint, checkpoint)
+    })
+    const exclusionDeleteStartedAt = libraryDiagnosticNow()
+    db.run('DELETE FROM folder_exclusions WHERE folder_id = ?', [folder.id])
+    exclusionDeleteMs = libraryDiagnosticNow() - exclusionDeleteStartedAt
+    const folderDeleteStartedAt = libraryDiagnosticNow()
+    db.run('DELETE FROM folders WHERE id = ?', [folder.id])
+    folderDeleteMs = libraryDiagnosticNow() - folderDeleteStartedAt
+    commitLibraryWriteTransaction()
+  } catch (error) {
+    rollbackLibraryWriteTransaction()
+    throw error
+  }
+  const transactionMs = libraryDiagnosticNow() - transactionStartedAt
   const persistStartedAt = libraryDiagnosticNow()
   await saveDatabase()
   const persistMs = libraryDiagnosticNow() - persistStartedAt
@@ -6239,7 +6345,7 @@ export async function removeLibraryFolder(
     rowsMatched: deletion.removed,
     matchingMs: deletion.matchingMs,
     deletionMs: deletion.deletionMs,
-    triggerDatabaseMs: roundDiagnosticMs(deletion.deletionMs + exclusionDeleteMs + folderDeleteMs),
+    triggerDatabaseMs: roundDiagnosticMs(transactionMs),
     exclusionDeleteMs: roundedExclusionDeleteMs,
     folderDeleteMs: roundedFolderDeleteMs,
     persistMs: roundDiagnosticMs(persistMs),
@@ -6322,9 +6428,12 @@ interface ExistingTrackScanState {
   id: number
   modified_at: number
   file_created_at: number | null
+  file_created_at_scanned: number
   artwork_hash: string | null
   replaygain_track_gain_db: number | null
   replaygain_album_gain_db: number | null
+  replaygain_track_gain_scanned: number
+  replaygain_album_gain_scanned: number
 }
 
 interface FolderArtworkCandidate {
@@ -6334,6 +6443,7 @@ interface FolderArtworkCandidate {
 
 interface FolderArtworkScanCache {
   candidatesByDirectory: Map<string, Promise<FolderArtworkCandidate | null>>
+  discoveredCandidatePathsByDirectory: Map<string, string | null>
   hashesByPath: Map<string, Promise<string | null>>
 }
 
@@ -6348,13 +6458,13 @@ function classifyIncrementalTrackScan(
 
   const reasons: LibraryIncrementalReparseReason[] = []
   if (existing.modified_at < fileModifiedAtMs) reasons.push('file_modified')
-  if (replayGainScanEnabled && existing.replaygain_track_gain_db == null) {
+  if (replayGainScanEnabled && existing.replaygain_track_gain_scanned !== 1) {
     reasons.push('replaygain_track_missing')
   }
-  if (replayGainScanEnabled && existing.replaygain_album_gain_db == null) {
+  if (replayGainScanEnabled && existing.replaygain_album_gain_scanned !== 1) {
     reasons.push('replaygain_album_missing')
   }
-  const fileCreatedAtMissing = existing.file_created_at == null
+  const fileCreatedAtMissing = existing.file_created_at_scanned !== 1
   if (fileCreatedAtMissing) reasons.push('file_created_at_missing')
   const folderArtworkBackfillAvailable = existing.artwork_hash == null && folderArtworkCandidate !== null
   if (folderArtworkBackfillAvailable) reasons.push('folder_artwork_backfill')
@@ -6421,6 +6531,7 @@ async function resolveExistingTrackForScannedFile(
 function createFolderArtworkScanCache(): FolderArtworkScanCache {
   return {
     candidatesByDirectory: new Map(),
+    discoveredCandidatePathsByDirectory: new Map(),
     hashesByPath: new Map()
   }
 }
@@ -6437,14 +6548,10 @@ function getFolderArtworkCandidateRank(fileName: string): { basenameRank: number
   return { basenameRank, extensionRank }
 }
 
-async function discoverFolderArtworkCandidate(directoryPath: string): Promise<FolderArtworkCandidate | null> {
-  let entries
-  try {
-    entries = await readdir(directoryPath, { withFileTypes: true })
-  } catch {
-    return null
-  }
-
+function pickFolderArtworkCandidatePath(
+  directoryPath: string,
+  entries: readonly Dirent[]
+): string | null {
   const rankedCandidates = entries
     .filter((entry) => entry.isFile())
     .map((entry) => {
@@ -6469,17 +6576,35 @@ async function discoverFolderArtworkCandidate(directoryPath: string): Promise<Fo
     ))
 
   const [candidate] = rankedCandidates
-  if (!candidate) return null
+  return candidate?.path ?? null
+}
 
+async function resolveFolderArtworkCandidatePath(
+  candidatePath: string | null
+): Promise<FolderArtworkCandidate | null> {
+  if (!candidatePath) return null
   try {
-    const candidateStat = await stat(candidate.path)
+    const candidateStat = await stat(candidatePath)
     return {
-      path: candidate.path,
+      path: candidatePath,
       modifiedAtMs: candidateStat.mtimeMs
     }
   } catch {
     return null
   }
+}
+
+async function discoverFolderArtworkCandidate(directoryPath: string): Promise<FolderArtworkCandidate | null> {
+  let entries
+  try {
+    entries = await readdir(directoryPath, { withFileTypes: true })
+  } catch {
+    return null
+  }
+
+  return resolveFolderArtworkCandidatePath(
+    pickFolderArtworkCandidatePath(directoryPath, entries)
+  )
 }
 
 function getFolderArtworkCandidate(
@@ -6489,7 +6614,10 @@ function getFolderArtworkCandidate(
   const cached = cache.candidatesByDirectory.get(directoryPath)
   if (cached) return cached
 
-  const lookup = discoverFolderArtworkCandidate(directoryPath)
+  const discoveredCandidatePath = cache.discoveredCandidatePathsByDirectory.get(directoryPath)
+  const lookup = cache.discoveredCandidatePathsByDirectory.has(directoryPath)
+    ? resolveFolderArtworkCandidatePath(discoveredCandidatePath ?? null)
+    : discoverFolderArtworkCandidate(directoryPath)
   cache.candidatesByDirectory.set(directoryPath, lookup)
   return lookup
 }
@@ -6600,13 +6728,18 @@ export async function scanFolder(
   }
   const excludedTrackCleanupMs = diagnosticsEnabled ? libraryDiagnosticNow() - excludedCleanupStartedAt : 0
 
+  const folderArtworkCache = createFolderArtworkScanCache()
   const discoveryStartedAt = diagnosticsEnabled ? libraryDiagnosticNow() : 0
   const {
     files,
     skippedDirs,
     directoryCount: discoveredDirectoryCount,
     entryCount: discoveredEntryCount
-  } = await collectAudioFiles(folderPath, excludedAbsolutePaths, { signal, onIssue })
+  } = await collectAudioFiles(folderPath, excludedAbsolutePaths, {
+    signal,
+    onIssue,
+    folderArtworkCache
+  })
   const discoveryMs = diagnosticsEnabled ? libraryDiagnosticNow() - discoveryStartedAt : 0
   let added = 0
   let updated = 0
@@ -6632,7 +6765,7 @@ export async function scanFolder(
   const existingByComparablePath = new Map<string, ExistingTrackScanRow[]>()
   if (files.length > 0) {
     for (const row of db.iterate<ExistingTrackScanRow>(
-      "SELECT id, path, modified_at, file_created_at, artwork_hash, replaygain_track_gain_db, replaygain_album_gain_db FROM tracks WHERE source_type = 'local'"
+      "SELECT id, path, modified_at, file_created_at, file_created_at_scanned, artwork_hash, replaygain_track_gain_db, replaygain_album_gain_db, replaygain_track_gain_scanned, replaygain_album_gain_scanned FROM tracks WHERE source_type = 'local'"
     )) {
       if (diagnosticsEnabled) existingRowsVisited += 1
       if (!isSameOrDescendantPath(row.path, folderPath)) continue
@@ -6646,7 +6779,6 @@ export async function scanFolder(
   const existingIndexMs = diagnosticsEnabled ? libraryDiagnosticNow() - existingIndexStartedAt : 0
 
   const scanWorkerCount = resolveScanWorkerCount(files.length)
-  const folderArtworkCache = createFolderArtworkScanCache()
 
   const processingStartedAt = diagnosticsEnabled ? libraryDiagnosticNow() : 0
   await runWithConcurrency(files, scanWorkerCount, async (filePath) => {
@@ -6690,8 +6822,16 @@ export async function scanFolder(
 
       if (diagnosticsEnabled) metadataParsedFileCount += 1
       const metadataStartedAt = diagnosticsEnabled ? libraryDiagnosticNow() : 0
+      const metadataOptions: ExtractMetadataOptions = diagnosticsEnabled
+        ? {
+            folderArtworkCache,
+            onFolderArtworkTiming: (durationMs) => {
+              cumulativeArtworkLookupMs += durationMs
+            }
+          }
+        : { folderArtworkCache }
       const metadata = diagnosticsEnabled
-        ? await extractMetadata(filePath, { folderArtworkCache }).finally(() => {
+        ? await extractMetadata(filePath, metadataOptions).finally(() => {
             const durationMs = libraryDiagnosticNow() - metadataStartedAt
             cumulativeMetadataParseMs += durationMs
             const extension = extname(filePath).toLowerCase() || '(none)'
@@ -6699,31 +6839,34 @@ export async function scanFolder(
             if (durations) durations.push(durationMs)
             else metadataTimingsByExtension.set(extension, [durationMs])
           })
-        : await extractMetadata(filePath, { folderArtworkCache })
+        : await extractMetadata(filePath, metadataOptions)
       const now = Date.now()
+      const replayGainScanned = replayGainScanEnabled ? 1 : 0
 
       if (existing) {
         db.run(`
-          UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, is_iamf=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
+          UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, is_iamf=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, replaygain_track_gain_scanned=?, replaygain_album_gain_scanned=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, file_created_at_scanned=1, modified_at=?
           WHERE path=?
         `, [
           metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.genreNamesJson, metadata.artworkHash, metadata.format, metadata.sampleRate,
           metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, metadata.isIamf,
-          metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, now, filePath
+          metadata.replayGainTrackDb, metadata.replayGainAlbumDb, replayGainScanned, replayGainScanned,
+          metadata.bpm, metadata.musicalKey, fileCreatedAt, now, filePath
         ])
         updated++
       } else {
         db.run(`
-          INSERT INTO tracks (path, title, artist, artist_names_json, album, album_artist, album_artist_names_json, duration, track_number, disc_number, year, genre, genre_names_json, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, is_iamf, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, file_created_at, sync_session_key, added_at, modified_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, ?, ?, ?)
+          INSERT INTO tracks (path, title, artist, artist_names_json, album, album_artist, album_artist_names_json, duration, track_number, disc_number, year, genre, genre_names_json, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, is_iamf, replaygain_track_gain_db, replaygain_album_gain_db, replaygain_track_gain_scanned, replaygain_album_gain_scanned, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, file_created_at, file_created_at_scanned, sync_session_key, added_at, modified_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, 1, ?, ?, ?)
         `, [
           filePath, metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
           metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
           metadata.genre, metadata.genreNamesJson, metadata.artworkHash, metadata.format, metadata.sampleRate,
           metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, metadata.isIamf,
-          metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, syncSessionKey, now, now
+          metadata.replayGainTrackDb, metadata.replayGainAlbumDb, replayGainScanned, replayGainScanned,
+          metadata.bpm, metadata.musicalKey, fileCreatedAt, syncSessionKey, now, now
         ])
         added++
       }
@@ -6794,10 +6937,14 @@ function isDirectoryExcludedPath(directoryPath: string, excludedDirectories: str
 }
 
 // Collect all audio files in a directory recursively
+interface AudioFileCollectionOptions extends ScanControlOptions {
+  folderArtworkCache?: FolderArtworkScanCache
+}
+
 async function collectAudioFiles(
   dir: string,
   excludedAbsoluteDirs: string[] = [],
-  options: ScanControlOptions = {}
+  options: AudioFileCollectionOptions = {}
 ): Promise<{ files: string[]; skippedDirs: string[]; directoryCount: number; entryCount: number }> {
   const files: string[] = []
   const skippedDirs: string[] = []
@@ -6831,6 +6978,14 @@ async function collectAudioFiles(
       }
       return
     }
+
+    // Discovery already has the complete directory listing. Seed the artwork
+    // cache from it so unchanged scans and force scans never re-read the same
+    // directory solely to look for cover/folder/front artwork.
+    options.folderArtworkCache?.discoveredCandidatePathsByDirectory.set(
+      currentDir,
+      pickFolderArtworkCandidatePath(currentDir, entries)
+    )
 
     for (const entry of entries) {
       entryCount += 1
@@ -7388,6 +7543,32 @@ interface ExtractedTrackMetadata {
   musicalKey: string | null
 }
 
+interface ExtractMetadataOptions {
+  folderArtworkCache?: FolderArtworkScanCache
+  onFolderArtworkTiming?: (durationMs: number) => void
+}
+
+async function resolveMetadataFolderArtworkHash(
+  filePath: string,
+  options: ExtractMetadataOptions
+): Promise<string | null> {
+  const folderArtworkCache = options.folderArtworkCache ?? createFolderArtworkScanCache()
+  if (!options.onFolderArtworkTiming) {
+    return resolveFolderArtworkHash(filePath, folderArtworkCache)
+  }
+
+  const startedAt = libraryDiagnosticNow()
+  try {
+    return await resolveFolderArtworkHash(filePath, folderArtworkCache)
+  } finally {
+    try {
+      options.onFolderArtworkTiming(libraryDiagnosticNow() - startedAt)
+    } catch {
+      // Diagnostics must never fail metadata extraction.
+    }
+  }
+}
+
 /**
  * Reads just the top-level moov box from an MP4 file (fd-based; never loads
  * mdat, so multi-GB videos cost only a few header reads + the moov itself).
@@ -7443,12 +7624,11 @@ export async function readMp4MoovBox(filePath: string): Promise<Uint8Array | nul
 // folder-artwork fallbacks.
 async function buildIamfTrackMetadata(
   filePath: string,
-  options: { folderArtworkCache?: FolderArtworkScanCache },
+  options: ExtractMetadataOptions,
   info: { duration: number; sampleRate: number | null; format: string }
 ): Promise<ExtractedTrackMetadata> {
   const fileName = basename(filePath, extname(filePath))
-  const folderArtworkCache = options.folderArtworkCache ?? createFolderArtworkScanCache()
-  const artworkHash = await resolveFolderArtworkHash(filePath, folderArtworkCache)
+  const artworkHash = await resolveMetadataFolderArtworkHash(filePath, options)
 
   return {
     title: fileName,
@@ -7482,9 +7662,10 @@ async function buildIamfTrackMetadata(
   }
 }
 
-async function extractIamfMetadata(filePath: string, options: {
-  folderArtworkCache?: FolderArtworkScanCache
-} = {}): Promise<ExtractedTrackMetadata> {
+async function extractIamfMetadata(
+  filePath: string,
+  options: ExtractMetadataOptions = {}
+): Promise<ExtractedTrackMetadata> {
   let duration = 0
   let sampleRate: number | null = null
   try {
@@ -7500,9 +7681,10 @@ async function extractIamfMetadata(filePath: string, options: {
   return buildIamfTrackMetadata(filePath, options, { duration, sampleRate, format: 'iamf' })
 }
 
-async function extractMetadata(filePath: string, options: {
-  folderArtworkCache?: FolderArtworkScanCache
-} = {}): Promise<ExtractedTrackMetadata> {
+async function extractMetadata(
+  filePath: string,
+  options: ExtractMetadataOptions = {}
+): Promise<ExtractedTrackMetadata> {
   const extension = extname(filePath).toLowerCase()
   if (extension === '.iamf') {
     return extractIamfMetadata(filePath, options)
@@ -7566,8 +7748,7 @@ async function extractMetadata(filePath: string, options: {
     }
   }
   if (!artworkHash) {
-    const folderArtworkCache = options.folderArtworkCache ?? createFolderArtworkScanCache()
-    artworkHash = await resolveFolderArtworkHash(filePath, folderArtworkCache)
+    artworkHash = await resolveMetadataFolderArtworkHash(filePath, options)
   }
 
   const fileName = basename(filePath, extname(filePath))
@@ -7661,8 +7842,8 @@ function getReplayGainBackfillCandidatePaths(): string[] {
     FROM tracks
     WHERE source_type = 'local'
       AND (
-        replaygain_track_gain_db IS NULL
-        OR replaygain_album_gain_db IS NULL
+        replaygain_track_gain_scanned = 0
+        OR replaygain_album_gain_scanned = 0
       )
   `)
     .map((row) => (typeof row.path === 'string' ? row.path : null))
@@ -7675,7 +7856,7 @@ function getFileCreatedAtBackfillCandidatePaths(): string[] {
     SELECT path
     FROM tracks
     WHERE source_type = 'local'
-      AND file_created_at IS NULL
+      AND file_created_at_scanned = 0
   `)
     .map((row) => (typeof row.path === 'string' ? row.path : null))
     .filter((value): value is string => value !== null)
@@ -7795,7 +7976,7 @@ async function backfillTrackReplayGainMetadata(path: string): Promise<void> {
   }
 
   db.run(
-    "UPDATE tracks SET replaygain_track_gain_db = ?, replaygain_album_gain_db = ? WHERE path = ? AND source_type = 'local'",
+    "UPDATE tracks SET replaygain_track_gain_db = ?, replaygain_album_gain_db = ?, replaygain_track_gain_scanned = 1, replaygain_album_gain_scanned = 1 WHERE path = ? AND source_type = 'local'",
     [replayGainTrackDb, replayGainAlbumDb, path]
   )
 }
@@ -7806,7 +7987,7 @@ async function backfillTrackFileCreatedAt(path: string): Promise<void> {
   const fileCreatedAt = normalizeFileCreatedAtMs(fileStat.birthtimeMs)
 
   db.run(
-    "UPDATE tracks SET file_created_at = ? WHERE path = ? AND source_type = 'local'",
+    "UPDATE tracks SET file_created_at = ?, file_created_at_scanned = 1 WHERE path = ? AND source_type = 'local'",
     [fileCreatedAt, path]
   )
 }
@@ -8329,16 +8510,18 @@ async function updateTrackRowFromFileMetadata(trackPath: string): Promise<void> 
   const fileStat = await stat(trackPath)
   const fileCreatedAt = normalizeFileCreatedAtMs(fileStat.birthtimeMs)
   const now = Date.now()
+  const replayGainScanned = replayGainScanEnabled ? 1 : 0
 
   db.run(`
-    UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, is_iamf=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
+    UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, is_iamf=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, replaygain_track_gain_scanned=?, replaygain_album_gain_scanned=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, file_created_at_scanned=1, modified_at=?
     WHERE path=?
   `, [
     metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
     metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
     metadata.genre, metadata.genreNamesJson, metadata.artworkHash, metadata.format, metadata.sampleRate,
     metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, metadata.isIamf,
-    metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, now, trackPath
+    metadata.replayGainTrackDb, metadata.replayGainAlbumDb, replayGainScanned, replayGainScanned,
+    metadata.bpm, metadata.musicalKey, fileCreatedAt, now, trackPath
   ])
 }
 

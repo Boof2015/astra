@@ -1490,7 +1490,7 @@ test('force scan rewrites unchanged local metadata that incremental scan skips',
   assert.equal(library.getTrackByPath(trackPath)?.artist, 'Updated Artist')
 })
 
-test('incremental scan diagnostics explain repeated metadata parsing without changing scan behavior', async (t) => {
+test('incremental scans check missing optional metadata once without reparsing legitimate absences forever', async (t) => {
   const userDataDir = await setupEmptyLibrary(t)
   const musicDir = join(userDataDir, 'diagnostic-music')
   const trackPath = join(musicDir, 'track.wav')
@@ -1502,19 +1502,42 @@ test('incremental scan diagnostics explain repeated metadata parsing without cha
 
   const initialScan = await library.scanFolder(musicDir, undefined, { diagnostics: true })
   assert.equal(initialScan.added, 1)
+  const unchangedAfterInitialScan = await library.scanFolder(musicDir, undefined, { diagnostics: true })
+  assert.equal(unchangedAfterInitialScan.updated, 0)
+  assert.equal(unchangedAfterInitialScan.diagnostics.metadataParsedFileCount, 0)
+  assert.equal(unchangedAfterInitialScan.diagnostics.skippedKnownFileCount, 1)
+
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare(`
+      UPDATE tracks
+      SET replaygain_track_gain_scanned = 0,
+          replaygain_album_gain_scanned = 0
+      WHERE path = ?
+    `).run(trackPath)
+  })
   const replayGainRetry = await library.scanFolder(musicDir, undefined, { diagnostics: true })
   assert.equal(replayGainRetry.updated, 1)
   assert.equal(replayGainRetry.diagnostics.metadataParsedFileCount, 1)
   assert.equal(replayGainRetry.diagnostics.reparseReasonCounts.replaygain_track_missing, 1)
   assert.equal(replayGainRetry.diagnostics.reparseReasonCounts.replaygain_album_missing, 1)
+  const replayGainAbsenceRecorded = await library.scanFolder(musicDir, undefined, { diagnostics: true })
+  assert.equal(replayGainAbsenceRecorded.updated, 0)
+  assert.equal(replayGainAbsenceRecorded.diagnostics.metadataParsedFileCount, 0)
 
   library.setReplayGainScanEnabled(false)
   withDirectLibraryDb(userDataDir, (directDb) => {
-    directDb.prepare('UPDATE tracks SET file_created_at = NULL WHERE path = ?').run(trackPath)
+    directDb.prepare('UPDATE tracks SET file_created_at = NULL, file_created_at_scanned = 0 WHERE path = ?').run(trackPath)
   })
   const creationTimeRetry = await library.scanFolder(musicDir, undefined, { diagnostics: true })
   assert.equal(creationTimeRetry.updated, 1)
   assert.equal(creationTimeRetry.diagnostics.reparseReasonCounts.file_created_at_missing, 1)
+
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare('UPDATE tracks SET file_created_at = NULL, file_created_at_scanned = 1 WHERE path = ?').run(trackPath)
+  })
+  const unavailableCreationTimeRecorded = await library.scanFolder(musicDir, undefined, { diagnostics: true })
+  assert.equal(unavailableCreationTimeRecorded.updated, 0)
+  assert.equal(unavailableCreationTimeRecorded.diagnostics.metadataParsedFileCount, 0)
 
   const currentStat = await stat(trackPath)
   await utimes(trackPath, currentStat.atime, new Date(Date.now() + 5_000))
@@ -1522,6 +1545,44 @@ test('incremental scan diagnostics explain repeated metadata parsing without cha
   assert.equal(changedFileScan.updated, 1)
   assert.equal(changedFileScan.diagnostics.reparseReasonCounts.file_modified, 1)
   assert.equal(changedFileScan.diagnostics.metadataTimingByExtension['.wav']?.count, 1)
+})
+
+test('completed legacy backfills migrate null optional metadata to checked state', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  const musicDir = join(userDataDir, 'legacy-checked-metadata')
+  const trackPath = join(musicDir, 'track.wav')
+  await mkdir(musicDir)
+  await writeTaggedWavFixture(trackPath, 'Legacy Title', 'Legacy Artist')
+
+  library.setReplayGainScanEnabled(true)
+  const initialScan = await library.scanFolder(musicDir)
+  assert.equal(initialScan.added, 1)
+
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare(`
+      UPDATE tracks
+      SET replaygain_track_gain_db = NULL,
+          replaygain_album_gain_db = NULL,
+          replaygain_track_gain_scanned = 0,
+          replaygain_album_gain_scanned = 0,
+          file_created_at = NULL,
+          file_created_at_scanned = 0
+      WHERE path = ?
+    `).run(trackPath)
+    const upsertMeta = directDb.prepare(`
+      INSERT OR REPLACE INTO app_meta (key, value, updated_at)
+      VALUES (?, '1', 1)
+    `)
+    upsertMeta.run('replaygain_backfill_v3_done')
+    upsertMeta.run('file_created_at_backfill_v1_done')
+  })
+
+  library.closeDatabase()
+  await library.initDatabase()
+  const migratedScan = await library.scanFolder(musicDir, undefined, { diagnostics: true })
+  assert.equal(migratedScan.updated, 0)
+  assert.equal(migratedScan.diagnostics.metadataParsedFileCount, 0)
+  assert.equal(migratedScan.diagnostics.skippedKnownFileCount, 1)
 })
 
 test('mapped folder removal diagnostics checkpoint large synchronous deletes without deleting files', async (t) => {
@@ -1533,14 +1594,21 @@ test('mapped folder removal diagnostics checkpoint large synchronous deletes wit
   const folder = await library.addLibraryFolder(musicDir)
   assert.ok(folder)
 
-  const trackCount = 300
+  const trackCount = 12_000
   withDirectLibraryDb(userDataDir, (directDb) => {
     const insert = directDb.prepare(`
       INSERT INTO tracks (path, title, artist, album, duration, format, added_at, modified_at)
       VALUES (?, ?, 'Removal Artist', 'Removal Album', 180, 'flac', 1, 1)
     `)
-    for (let index = 0; index < trackCount; index += 1) {
-      insert.run(join(musicDir, `track-${index}.flac`), `Track ${index}`)
+    directDb.prepare('BEGIN').run()
+    try {
+      for (let index = 0; index < trackCount; index += 1) {
+        insert.run(join(musicDir, `track-${index}.flac`), `Track ${index}`)
+      }
+      directDb.prepare('COMMIT').run()
+    } catch (error) {
+      directDb.prepare('ROLLBACK').run()
+      throw error
     }
   })
 
@@ -1554,11 +1622,58 @@ test('mapped folder removal diagnostics checkpoint large synchronous deletes wit
   assert.equal(checkpoints[0]?.phase, 'matching_finished')
   assert.equal(checkpoints.at(-1)?.phase, 'deleting')
   assert.equal(checkpoints.at(-1)?.deletedCount, trackCount)
+  assert.equal(checkpoints.length <= 21, true)
+  const deletionCounts = checkpoints
+    .filter((checkpoint) => checkpoint.phase === 'deleting')
+    .map((checkpoint) => checkpoint.deletedCount)
+  assert.deepEqual(deletionCounts, [...deletionCounts].sort((left, right) => left - right))
   assert.deepEqual(diagnostics.lastCompletedCheckpoint, checkpoints.at(-1))
   assert.equal(diagnostics.triggerDatabaseMs >= diagnostics.deletionMs, true)
   assert.equal(library.getTrackCount(), 0)
   assert.equal(library.getLibraryFolders().length, 0)
   assert.equal(await readFile(markerPath, 'utf8'), 'still on disk')
+})
+
+test('mapped folder removal rolls back every batch when a later delete fails', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  const musicDir = join(userDataDir, 'removal-rollback')
+  await mkdir(musicDir)
+  const folder = await library.addLibraryFolder(musicDir)
+  assert.ok(folder)
+
+  const trackCount = 1_050
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    const insert = directDb.prepare(`
+      INSERT INTO tracks (path, title, artist, album, duration, format, added_at, modified_at)
+      VALUES (?, ?, 'Rollback Artist', 'Rollback Album', 180, 'flac', 1, 1)
+    `)
+    directDb.prepare('BEGIN').run()
+    try {
+      for (let index = 0; index < trackCount; index += 1) {
+        insert.run(join(musicDir, `track-${index}.flac`), `Track ${index}`)
+      }
+      directDb.prepare('COMMIT').run()
+    } catch (error) {
+      directDb.prepare('ROLLBACK').run()
+      throw error
+    }
+    directDb.prepare(`
+      CREATE TRIGGER abort_test_folder_removal
+      BEFORE DELETE ON tracks
+      FOR EACH ROW
+      WHEN OLD.title = 'Track 1000'
+      BEGIN
+        SELECT RAISE(ABORT, 'test removal blocked');
+      END;
+    `).run()
+  })
+
+  await assert.rejects(
+    library.removeLibraryFolder(musicDir),
+    /test removal blocked/
+  )
+  assert.equal(library.getTrackCount(), trackCount)
+  assert.equal(library.getLibraryFolders().length, 1)
 })
 
 test('local scan uses same-folder cover image when embedded artwork is missing', async (t) => {
@@ -1575,15 +1690,20 @@ test('local scan uses same-folder cover image when embedded artwork is missing',
   await writeTaggedWavFixture(trackPath, 'Sidecar Title', 'Sidecar Artist')
   await writeFile(coverPath, TINY_PNG_FIXTURE)
 
-  const scan = await library.scanFolder(musicDir)
+  const scan = await library.scanFolder(musicDir, undefined, { diagnostics: true })
   assert.equal(scan.added, 1)
   assert.equal(scan.updated, 0)
   assert.equal(scan.errors, 0)
+  assert.equal(scan.diagnostics.cumulativeArtworkLookupMs > 0, true)
 
   const artworkHash = library.getTrackByPath(trackPath)?.artwork_hash
   assert.ok(artworkHash)
   assert.equal(artworkHash.endsWith('.png'), true)
   assert.deepEqual(await readFile(library.getArtworkPath(artworkHash)), TINY_PNG_FIXTURE)
+
+  const forceScan = await library.scanFolder(musicDir, undefined, { mode: 'force', diagnostics: true })
+  assert.equal(forceScan.updated, 1)
+  assert.equal(forceScan.diagnostics.cumulativeArtworkLookupMs > 0, true)
 })
 
 test('local scan finds folder artwork names case-insensitively', async (t) => {
