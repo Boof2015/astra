@@ -29,6 +29,7 @@ import {
   type IntegrityScanTrackTarget
 } from './services/libraryIntegrity'
 import { LibraryLatestSyncCoordinator } from './services/libraryLatestSync'
+import { createThrottledLibraryScanProgressReporter } from './libraryScanProgress'
 import {
   buildEbur128Args,
   LoudnessAnalysisJobQueue,
@@ -7304,6 +7305,12 @@ function sendLibraryScanStage(stage: LibraryScanStage, message: string): void {
   mainWindow?.webContents.send('library:scanStage', { stage, message })
 }
 
+function createLibraryScanProgressReporter(): (current: number, total: number, file: string) => void {
+  return createThrottledLibraryScanProgressReporter(({ current, total, file }) => {
+    mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+  })
+}
+
 function getScanErrorCode(error: unknown): string | undefined {
   if (!error || typeof error !== 'object' || !('code' in error)) return undefined
   return typeof error.code === 'string' ? error.code : undefined
@@ -8096,9 +8103,7 @@ ipcMain.handle('library:backfillReplayGainMetadata', async () => {
   try {
     const result = await runLibraryScanOperation(async (signal) => {
       sendLibraryScanStage('backfill', 'Processing ReplayGain metadata...')
-      return library.backfillMissingReplayGainMetadata((current, total, file) => {
-        mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-      }, {
+      return library.backfillMissingReplayGainMetadata(createLibraryScanProgressReporter(), {
         signal,
         persist: false,
         onIssue: (issue) => issueCollector.record(issue)
@@ -8197,9 +8202,11 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
       }
       sendLibraryScanStage('scanning', `Scanning files in ${folderLabel}...`)
       try {
-        const completedScan = await library.scanFolder(folderPath, (current, total, file) => {
-          mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-        }, { signal, persist: false, onIssue, syncSessionKey, diagnostics: Boolean(diagnosticResultRunId) })
+        const completedScan = await library.scanFolder(
+          folderPath,
+          createLibraryScanProgressReporter(),
+          { signal, persist: false, onIssue, syncSessionKey, diagnostics: Boolean(diagnosticResultRunId) }
+        )
         scanResult = completedScan
         logFolderScanDiagnostics(operationKind, diagnosticRunId, 0, 1, completedScan)
       } catch (error) {
@@ -8350,9 +8357,11 @@ ipcMain.handle(
         }
         sendLibraryScanStage('scanning', `Scanning files in ${folderLabel}...`)
         try {
-          const completedScan = await library.scanFolder(folderPath, (current, total, file) => {
-            mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-          }, { signal, persist: false, onIssue, syncSessionKey, diagnostics: Boolean(diagnosticResultRunId) })
+          const completedScan = await library.scanFolder(
+            folderPath,
+            createLibraryScanProgressReporter(),
+            { signal, persist: false, onIssue, syncSessionKey, diagnostics: Boolean(diagnosticResultRunId) }
+          )
           scanResult = completedScan
           logFolderScanDiagnostics(operationKind, diagnosticRunId, 0, 1, completedScan)
         } catch (error) {
@@ -8489,9 +8498,7 @@ ipcMain.handle('library:rescan', async () => {
         sendLibraryScanStage('scanning', `Scanning ${folderLabel} (${folderIndex + 1}/${totalFolders})...`)
 
         try {
-          const scanResult = await library.scanFolder(folder.path, (current, total, file) => {
-            mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-          }, {
+          const scanResult = await library.scanFolder(folder.path, createLibraryScanProgressReporter(), {
             signal,
             persist: false,
             onIssue: onFolderIssue,
@@ -8629,9 +8636,7 @@ ipcMain.handle('library:forceRescanAll', async () => {
         sendLibraryScanStage('scanning', `Rewriting metadata in ${folderLabel} (${folderIndex + 1}/${totalFolders})...`)
 
         try {
-          const scanResult = await library.scanFolder(folder.path, (current, total, file) => {
-            mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-          }, {
+          const scanResult = await library.scanFolder(folder.path, createLibraryScanProgressReporter(), {
             signal,
             persist: false,
             onIssue: onFolderIssue,

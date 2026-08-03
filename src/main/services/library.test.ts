@@ -1728,7 +1728,7 @@ test('local scan finds folder artwork names case-insensitively', async (t) => {
   assert.deepEqual(await readFile(library.getArtworkPath(artworkHash)), TINY_PNG_FIXTURE)
 })
 
-test('incremental local scan backfills sidecar artwork for unchanged tracks', async (t) => {
+test('incremental local scan backfills new sidecar artwork without probing replacements', async (t) => {
   const dir = await setupEmptyLibrary(t)
   library.setReplayGainScanEnabled(false)
   t.after(() => {
@@ -1762,8 +1762,13 @@ test('incremental local scan backfills sidecar artwork for unchanged tracks', as
   const coverStat = await stat(coverPath)
   await utimes(coverPath, coverStat.atime, new Date(Date.now() + 5_000))
   const changedArtworkScan = await library.scanFolder(musicDir, undefined, { mode: 'incremental', diagnostics: true })
-  assert.equal(changedArtworkScan.updated, 1)
-  assert.equal(changedArtworkScan.diagnostics.reparseReasonCounts.folder_artwork_newer, 1)
+  assert.equal(changedArtworkScan.updated, 0)
+  assert.equal(changedArtworkScan.diagnostics.metadataParsedFileCount, 0)
+  assert.equal(changedArtworkScan.diagnostics.cumulativeArtworkLookupMs, 0)
+
+  const changedArtworkForceScan = await library.scanFolder(musicDir, undefined, { mode: 'force', diagnostics: true })
+  assert.equal(changedArtworkForceScan.updated, 1)
+  assert.equal(changedArtworkForceScan.diagnostics.reparseReasonCounts.force_mode, 1)
 })
 
 test('playlist import matches percent-encoded local M3U paths', async (t) => {

@@ -5254,7 +5254,8 @@ async function readArtistImageCandidatesInDirectory(directoryPath: string): Prom
 
 async function refreshDetectedArtistImagesForMode(
   mode: ArtistBrowseMode,
-  localTracks: DbTrackRow[]
+  localTracks: DbTrackRow[],
+  directoryCandidateCache: Map<string, Promise<ArtistImageCandidate[]>>
 ): Promise<void> {
   if (!db) return
 
@@ -5278,7 +5279,6 @@ async function refreshDetectedArtistImagesForMode(
   }
 
   const existingRows = readArtistImageRowsForMode(mode)
-  const directoryCandidateCache = new Map<string, Promise<ArtistImageCandidate[]>>()
   const now = Date.now()
 
   for (const [artistKey, entry] of artists.entries()) {
@@ -5367,11 +5367,15 @@ export async function refreshDetectedArtistImages(): Promise<LibraryArtistImageR
 
   const totalStartedAt = libraryDiagnosticNow()
   const localTracks = readAllTrackRowsUnordered().filter((track) => track.source_type === 'local')
+  // Canonical and strict artist modes search the same physical directories.
+  // Share one filesystem result cache so every directory and image is read and
+  // statted once per refresh rather than once per browse mode.
+  const directoryCandidateCache = new Map<string, Promise<ArtistImageCandidate[]>>()
   const canonicalStartedAt = libraryDiagnosticNow()
-  await refreshDetectedArtistImagesForMode('canonical', localTracks)
+  await refreshDetectedArtistImagesForMode('canonical', localTracks, directoryCandidateCache)
   const canonicalMs = libraryDiagnosticNow() - canonicalStartedAt
   const strictStartedAt = libraryDiagnosticNow()
-  await refreshDetectedArtistImagesForMode('strict', localTracks)
+  await refreshDetectedArtistImagesForMode('strict', localTracks, directoryCandidateCache)
   const strictMs = libraryDiagnosticNow() - strictStartedAt
   return {
     totalMs: roundDiagnosticMs(libraryDiagnosticNow() - totalStartedAt),
@@ -6552,31 +6556,35 @@ function pickFolderArtworkCandidatePath(
   directoryPath: string,
   entries: readonly Dirent[]
 ): string | null {
-  const rankedCandidates = entries
-    .filter((entry) => entry.isFile())
-    .map((entry) => {
-      const rank = getFolderArtworkCandidateRank(entry.name)
-      if (!rank) return null
-      return {
-        ...rank,
-        name: entry.name,
-        path: join(directoryPath, entry.name)
-      }
-    })
-    .filter((candidate): candidate is {
-      basenameRank: number
-      extensionRank: number
-      name: string
-      path: string
-    } => candidate !== null)
-    .sort((a, b) => (
-      a.basenameRank - b.basenameRank
-      || a.extensionRank - b.extensionRank
-      || a.name.localeCompare(b.name)
-    ))
+  let best: {
+    basenameRank: number
+    extensionRank: number
+    name: string
+  } | null = null
 
-  const [candidate] = rankedCandidates
-  return candidate?.path ?? null
+  for (const entry of entries) {
+    if (!entry.isFile()) continue
+    const rank = getFolderArtworkCandidateRank(entry.name)
+    if (!rank) continue
+    if (
+      !best
+      || rank.basenameRank < best.basenameRank
+      || (
+        rank.basenameRank === best.basenameRank
+        && (
+          rank.extensionRank < best.extensionRank
+          || (
+            rank.extensionRank === best.extensionRank
+            && entry.name.localeCompare(best.name) < 0
+          )
+        )
+      )
+    ) {
+      best = { ...rank, name: entry.name }
+    }
+  }
+
+  return best ? join(directoryPath, best.name) : null
 }
 
 async function resolveFolderArtworkCandidatePath(
@@ -6802,7 +6810,13 @@ export async function scanFolder(
       if (diagnosticsEnabled && !existing) newFileCount += 1
 
       let folderArtworkCandidate: FolderArtworkCandidate | null = null
-      if (mode === 'incremental') {
+      // Scan for Changes only needs to look up sidecar artwork when a known
+      // track still has no artwork. Probing cover.jpg/folder.jpg timestamps for
+      // every already-covered album added one random filesystem read per
+      // directory and dominated scans on large HDD/network libraries. A force
+      // scan still re-reads metadata and detects replacements of existing
+      // sidecar artwork.
+      if (mode === 'incremental' && existing?.artwork_hash == null) {
         const artworkLookupStartedAt = diagnosticsEnabled ? libraryDiagnosticNow() : 0
         folderArtworkCandidate = await getFolderArtworkCandidate(dirname(filePath), folderArtworkCache)
         if (diagnosticsEnabled) {
@@ -12455,44 +12469,46 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
       }
     }
 
-    const survivingTracks = readAllTrackRowsUnordered().filter((track) => (
-      track.source_type === 'local'
-      && track.is_available === 1
-      && survivingTrackIds.has(track.id)
-    ))
-    const survivingLookup = buildPlaylistImportLookupIndex(survivingTracks)
-    const survivorByPath = new Map(survivingTracks.map((track) => [track.path, track]))
+    if (missingTracks.length > 0) {
+      const survivingTracks = readAllTrackRowsUnordered().filter((track) => (
+        track.source_type === 'local'
+        && track.is_available === 1
+        && survivingTrackIds.has(track.id)
+      ))
+      const survivingLookup = buildPlaylistImportLookupIndex(survivingTracks)
+      const survivorByPath = new Map(survivingTracks.map((track) => [track.path, track]))
 
-    for (const track of missingTracks) {
-      throwIfScanCancelled(signal)
-      let match = matchTrackReference({
-        path: track.path,
-        title: track.base_title,
-        artist: track.base_artist,
-        album: track.base_album
-      }, survivingLookup)
-      if (match.kind === 'none') {
-        match = matchTrackReference({
+      for (const track of missingTracks) {
+        throwIfScanCancelled(signal)
+        let match = matchTrackReference({
           path: track.path,
-          title: track.title,
-          artist: track.artist,
-          album: track.album
+          title: track.base_title,
+          artist: track.base_artist,
+          album: track.base_album
         }, survivingLookup)
-      }
+        if (match.kind === 'none') {
+          match = matchTrackReference({
+            path: track.path,
+            title: track.title,
+            artist: track.artist,
+            album: track.album
+          }, survivingLookup)
+        }
 
-      // Keep playlist display metadata even when the row can be merged directly;
-      // it remains useful if the recovered target disappears again later.
-      snapshotPlaylistFallbackMetadata(track)
-      const survivor = match.kind === 'matched' ? survivorByPath.get(match.trackPath) : undefined
-      if (survivor) {
-        mergeDuplicateTrackRows(survivor.id, survivor.path, [{ id: track.id, path: track.path }])
-        mergedTargetPaths.add(survivor.path)
-        missingTrackMergeCount += 1
-      } else {
-        db.run('DELETE FROM tracks WHERE id = ?', [track.id])
-        missingTrackDeleteCount += 1
+        // Keep playlist display metadata even when the row can be merged directly;
+        // it remains useful if the recovered target disappears again later.
+        snapshotPlaylistFallbackMetadata(track)
+        const survivor = match.kind === 'matched' ? survivorByPath.get(match.trackPath) : undefined
+        if (survivor) {
+          mergeDuplicateTrackRows(survivor.id, survivor.path, [{ id: track.id, path: track.path }])
+          mergedTargetPaths.add(survivor.path)
+          missingTrackMergeCount += 1
+        } else {
+          db.run('DELETE FROM tracks WHERE id = ?', [track.id])
+          missingTrackDeleteCount += 1
+        }
+        removed += 1
       }
-      removed += 1
     }
 
     const reconcileStartedAt = libraryDiagnosticNow()
