@@ -1,0 +1,139 @@
+export type FixedRowAlignment = 'auto' | 'center' | 'end' | 'smart' | 'start'
+
+export interface FixedRowRange {
+  visibleStartIndex: number
+  visibleStopIndex: number
+  overscanStartIndex: number
+  overscanStopIndex: number
+}
+
+interface FixedRowRangeOptions {
+  rowCount: number
+  rowHeight: number
+  viewportHeight: number
+  scrollTop: number
+  overscanCount: number
+}
+
+interface FixedRowScrollOffsetOptions {
+  align: FixedRowAlignment
+  currentScrollTop: number
+  index: number
+  rowCount: number
+  rowHeight: number
+  viewportHeight: number
+}
+
+const EMPTY_FIXED_ROW_RANGE: FixedRowRange = {
+  visibleStartIndex: 0,
+  visibleStopIndex: -1,
+  overscanStartIndex: 0,
+  overscanStopIndex: -1
+}
+
+function normalizeNonNegativeInteger(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0
+  return Math.floor(value)
+}
+
+function normalizePositiveFinite(value: number): number {
+  return Number.isFinite(value) && value > 0 ? value : 0
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(maximum, value))
+}
+
+export function getFixedRowTotalHeight(rowCount: number, rowHeight: number): number {
+  return normalizeNonNegativeInteger(rowCount) * normalizePositiveFinite(rowHeight)
+}
+
+export function getFixedRowRange({
+  rowCount,
+  rowHeight,
+  viewportHeight,
+  scrollTop,
+  overscanCount
+}: FixedRowRangeOptions): FixedRowRange {
+  const normalizedRowCount = normalizeNonNegativeInteger(rowCount)
+  const normalizedRowHeight = normalizePositiveFinite(rowHeight)
+  const normalizedViewportHeight = normalizePositiveFinite(viewportHeight)
+  if (normalizedRowCount === 0 || normalizedRowHeight === 0 || normalizedViewportHeight === 0) {
+    return EMPTY_FIXED_ROW_RANGE
+  }
+
+  const totalHeight = normalizedRowCount * normalizedRowHeight
+  const maximumScrollTop = Math.max(0, totalHeight - normalizedViewportHeight)
+  const normalizedScrollTop = Number.isFinite(scrollTop)
+    ? clamp(scrollTop, 0, maximumScrollTop)
+    : 0
+  const normalizedOverscanCount = normalizeNonNegativeInteger(overscanCount)
+  const visibleStartIndex = Math.min(
+    normalizedRowCount - 1,
+    Math.floor(normalizedScrollTop / normalizedRowHeight)
+  )
+  const visibleStopIndex = Math.min(
+    normalizedRowCount - 1,
+    Math.max(
+      visibleStartIndex,
+      Math.ceil((normalizedScrollTop + normalizedViewportHeight) / normalizedRowHeight) - 1
+    )
+  )
+
+  return {
+    visibleStartIndex,
+    visibleStopIndex,
+    overscanStartIndex: Math.max(0, visibleStartIndex - normalizedOverscanCount),
+    overscanStopIndex: Math.min(normalizedRowCount - 1, visibleStopIndex + normalizedOverscanCount)
+  }
+}
+
+export function getFixedRowScrollOffset({
+  align,
+  currentScrollTop,
+  index,
+  rowCount,
+  rowHeight,
+  viewportHeight
+}: FixedRowScrollOffsetOptions): number {
+  const normalizedRowCount = normalizeNonNegativeInteger(rowCount)
+  if (!Number.isInteger(index) || index < 0 || index >= normalizedRowCount) {
+    throw new RangeError(`Invalid row index ${index}; expected 0-${Math.max(0, normalizedRowCount - 1)}`)
+  }
+
+  const normalizedRowHeight = normalizePositiveFinite(rowHeight)
+  const normalizedViewportHeight = normalizePositiveFinite(viewportHeight)
+  if (normalizedRowHeight === 0 || normalizedViewportHeight === 0) return 0
+
+  const totalHeight = normalizedRowCount * normalizedRowHeight
+  const maximumScrollTop = Math.max(0, totalHeight - normalizedViewportHeight)
+  const normalizedCurrentScrollTop = Number.isFinite(currentScrollTop)
+    ? clamp(currentScrollTop, 0, maximumScrollTop)
+    : 0
+  const rowStart = index * normalizedRowHeight
+  const startOffset = clamp(rowStart, 0, maximumScrollTop)
+  const endOffset = clamp(rowStart + normalizedRowHeight - normalizedViewportHeight, 0, maximumScrollTop)
+  const centerOffset = clamp(
+    rowStart + (normalizedRowHeight / 2) - (normalizedViewportHeight / 2),
+    0,
+    maximumScrollTop
+  )
+  const isVisible = normalizedCurrentScrollTop >= endOffset && normalizedCurrentScrollTop <= startOffset
+
+  const resolvedAlign = align === 'smart'
+    ? (isVisible ? 'auto' : 'center')
+    : align
+
+  switch (resolvedAlign) {
+    case 'start':
+      return startOffset
+    case 'end':
+      return endOffset
+    case 'center':
+      return centerOffset
+    case 'auto':
+    default:
+      if (isVisible) return normalizedCurrentScrollTop
+      return normalizedCurrentScrollTop < endOffset ? endOffset : startOffset
+  }
+}

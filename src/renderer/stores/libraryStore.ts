@@ -1260,6 +1260,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     const requestId = ++fullTracksRequestId
     const paths: string[] = []
     const seenPaths = new Set<string>()
+    let stagedTracks: DbTrack[] = []
     let offset = 0
     let lastRevealAt = 0
     let completed = false
@@ -1286,6 +1287,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
           seenPaths.add(track.path)
           paths.push(track.path)
         }
+        stagedTracks.push(...page.tracks)
 
         const isLastPage = !page.hasMore || page.tracks.length === 0
 
@@ -1300,22 +1302,26 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
           lastRevealAt = now
         }
 
-        set((state) => {
-          if (requestId !== fullTracksRequestId || state.fullTrackConsumers.size === 0) {
-            return {}
-          }
-          const patch: Parameters<typeof ingestTracksForPatch>[2] = {}
-          if (shouldReveal) {
-            patch.fullTrackPaths = paths.slice()
+        if (shouldReveal) {
+          const tracksToPublish = stagedTracks
+          stagedTracks = []
+          set((state) => {
+            if (requestId !== fullTracksRequestId || state.fullTrackConsumers.size === 0) {
+              return {}
+            }
+            const revealedPaths = paths.slice()
+            const patch: Parameters<typeof ingestTracksForPatch>[2] = {
+              fullTrackPaths: revealedPaths
+            }
             const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && !state.selectedGenre && (
               state.viewMode === 'tracks' || state.viewMode === 'genres' || state.viewMode === 'folders'
             )
             if (shouldUseAsVisibleTracks) {
-              patch.trackPaths = paths.slice()
+              patch.trackPaths = revealedPaths
             }
-          }
-          return ingestTracksForPatch(state, page.tracks, patch, { mutate: true, prune: false })
-        })
+            return ingestTracksForPatch(state, tracksToPublish, patch, { mutate: true, prune: false })
+          })
+        }
 
         if (isLastPage) {
           break
@@ -1329,6 +1335,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
       completed = true
       onDiagnostics?.({ pageCount, trackCount: paths.length })
+      const tracksToPublish = stagedTracks
+      stagedTracks = []
       set((state) => {
         if (requestId !== fullTracksRequestId || state.fullTrackConsumers.size === 0) {
           return {}
@@ -1337,11 +1345,12 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && !state.selectedGenre && (
           state.viewMode === 'tracks' || state.viewMode === 'genres' || state.viewMode === 'folders'
         )
+        const ingested = ingestTracksIntoCache(state.trackByPath, tracksToPublish, { mutate: true })
         return finalizeTrackCachePatch(state, {
           fullTrackPaths: paths,
           fullTracksStatus: 'complete',
           ...(shouldUseAsVisibleTracks ? { trackPaths: paths } : {})
-        }, state.trackByPath, false)
+        }, ingested.trackByPath, ingested.changed)
       })
     } finally {
       if (!completed && requestId === fullTracksRequestId) {

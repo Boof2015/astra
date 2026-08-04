@@ -20,6 +20,7 @@ import AlbumArtwork from './AlbumArtwork'
 import { ArtistNameLinksContent } from './ArtistNameLinks'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
+import FixedRowList from '../virtualization/FixedRowList'
 import {
   CONTROLLER_VIRTUAL_MOVE_EVENT,
   focusControllerTarget,
@@ -117,7 +118,7 @@ interface TrackListProps {
 }
 
 interface TrackListRowSharedProps {
-  rows: TrackListVirtualRow[]
+  rows: readonly TrackListVirtualRow[] | null
   tracks: DbTrack[]
   showArtist: boolean
   showAlbum: boolean
@@ -484,10 +485,9 @@ function TrackListRowRenderer({
   queueInsertArmedTrackPath,
   selectedTrackPaths
 }: RowComponentProps<TrackListRowSharedProps>): ReactElement | null {
-  const row = rows[index]
-  if (!row) return null
+  const row = rows?.[index]
 
-  if (row.kind === 'disc-header') {
+  if (row?.kind === 'disc-header') {
     return (
       <div className="track-list-item track-list-disc-header-item" style={style as CSSProperties} {...ariaAttributes}>
         <div className="track-disc-header" role="separator" aria-label={`Disc ${row.discNumber}`}>
@@ -498,7 +498,7 @@ function TrackListRowRenderer({
     )
   }
 
-  const trackIndex = row.trackIndex
+  const trackIndex = row?.kind === 'track' ? row.trackIndex : index
   const track = tracks[trackIndex]
   if (!track) return null
 
@@ -941,11 +941,12 @@ export default function TrackList({
     }
   }), [])
 
-  const virtualRows = useMemo(
-    () => buildTrackListRows(tracks, showDiscHeaders),
-    [showDiscHeaders, tracks]
-  )
+  const virtualRows = useMemo(() => {
+    if (!showDiscHeaders) return null
+    return buildTrackListRows(tracks, true)
+  }, [showDiscHeaders, tracks])
   const virtualRowIndexByTrackPath = useMemo(() => {
+    if (!virtualRows) return null
     const indexByPath = new Map<string, number>()
     virtualRows.forEach((row, virtualIndex) => {
       if (row.kind !== 'track') return
@@ -968,9 +969,9 @@ export default function TrackList({
       const nextTrackIndex = event.detail.currentIndex + delta
       if (nextTrackIndex < 0 || nextTrackIndex >= tracks.length) return
       const nextTrack = tracks[nextTrackIndex]
-      const targetVirtualIndex = nextTrack
-        ? virtualRowIndexByTrackPath.get(nextTrack.path)
-        : undefined
+      const targetVirtualIndex = virtualRows
+        ? (nextTrack ? virtualRowIndexByTrackPath?.get(nextTrack.path) : undefined)
+        : nextTrackIndex
       if (targetVirtualIndex === undefined) return
       event.preventDefault()
 
@@ -1000,7 +1001,7 @@ export default function TrackList({
       window.cancelAnimationFrame(frameId)
       group.removeEventListener(CONTROLLER_VIRTUAL_MOVE_EVENT, handleVirtualMove)
     }
-  }, [tracks, virtualRowIndexByTrackPath])
+  }, [tracks, virtualRowIndexByTrackPath, virtualRows])
 
   const clearQueueInsertPointerListeners = useCallback(() => {
     queueInsertPointerCleanupRef.current?.()
@@ -1040,7 +1041,9 @@ export default function TrackList({
     const targetTrackIndex = tracks.findIndex((track) => track.path === jumpToTrackRequest.trackPath)
     if (targetTrackIndex < 0) return
 
-    const targetVirtualIndex = virtualRowIndexByTrackPath.get(jumpToTrackRequest.trackPath)
+    const targetVirtualIndex = virtualRows
+      ? virtualRowIndexByTrackPath?.get(jumpToTrackRequest.trackPath)
+      : targetTrackIndex
     if (targetVirtualIndex === undefined) return
 
     let canceled = false
@@ -1083,6 +1086,7 @@ export default function TrackList({
     onJumpToTrackRequestConsumed,
     tracks,
     virtualRowIndexByTrackPath,
+    virtualRows,
     listViewportHeight,
     trackRowHeight,
     discHeaderHeight
@@ -1538,7 +1542,9 @@ export default function TrackList({
     setPlaylistPopup(null)
     setPlaylistPopupSearch('')
     setPlaylistPopupFeedback(null)
-    setPlaylistMembershipCounts({})
+    setPlaylistMembershipCounts((current) => (
+      Object.keys(current).length === 0 ? current : {}
+    ))
     setIsPlaylistMembershipLoading(false)
     setIsPlaylistMembershipMutating(false)
     setCreatePlaylistTarget(null)
@@ -1822,9 +1828,9 @@ export default function TrackList({
   }, [createPlaylistTarget, createPlaylistWithOptions, refreshPlaylistMembership])
 
   const handleListScroll = useCallback(() => {
-    closePlaylistPopup()
-    setTrackContextMenu(null)
-  }, [closePlaylistPopup])
+    if (playlistPopup || createPlaylistTarget) closePlaylistPopup()
+    if (trackContextMenu) setTrackContextMenu(null)
+  }, [closePlaylistPopup, createPlaylistTarget, playlistPopup, trackContextMenu])
 
   const isCreatePlaylistModalOpen = createPlaylistTarget !== null
 
@@ -1988,7 +1994,7 @@ export default function TrackList({
 
   const listHeight = listViewportHeight > 0 ? listViewportHeight : trackRowHeight
   const resolveVirtualRowHeight = useCallback((rowIndex: number) => (
-    getTrackListVirtualRowHeightPx(virtualRows[rowIndex], trackRowHeight, discHeaderHeight)
+    getTrackListVirtualRowHeightPx(virtualRows?.[rowIndex], trackRowHeight, discHeaderHeight)
   ), [discHeaderHeight, trackRowHeight, virtualRows])
   const playlistPopupTrackPath = playlistPopup?.primaryTrackPath ?? null
   const queueInsertPreview = isQueueInsertDragOwner ? trackDrag : null
@@ -2209,18 +2215,33 @@ export default function TrackList({
         ref={listBodyRef}
         data-controller-scroll
       >
-        <List
-          className="track-list-virtualized"
-          defaultHeight={TRACK_ROW_HEIGHT_FALLBACK_PX * 8}
-          listRef={listRef}
-          onScroll={handleListScroll}
-          overscanCount={TRACK_LIST_OVERSCAN_COUNT}
-          rowComponent={TrackListRow}
-          rowCount={virtualRows.length}
-          rowHeight={resolveVirtualRowHeight}
-          rowProps={rowProps}
-          style={{ height: listHeight, width: '100%' }}
-        />
+        {virtualRows ? (
+          <List
+            className="track-list-virtualized"
+            defaultHeight={TRACK_ROW_HEIGHT_FALLBACK_PX * 8}
+            listRef={listRef}
+            onScroll={handleListScroll}
+            overscanCount={TRACK_LIST_OVERSCAN_COUNT}
+            rowComponent={TrackListRow}
+            rowCount={virtualRows.length}
+            rowHeight={resolveVirtualRowHeight}
+            rowProps={rowProps}
+            style={{ height: listHeight, width: '100%' }}
+          />
+        ) : (
+          <FixedRowList
+            className="track-list-virtualized"
+            defaultHeight={TRACK_ROW_HEIGHT_FALLBACK_PX * 8}
+            listRef={listRef}
+            onScroll={handleListScroll}
+            overscanCount={TRACK_LIST_OVERSCAN_COUNT}
+            rowComponent={TrackListRow}
+            rowCount={tracks.length}
+            rowHeight={trackRowHeight}
+            rowProps={rowProps}
+            style={{ height: listHeight, width: '100%' }}
+          />
+        )}
       </div>
       {queueInsertPreview && (
         <div

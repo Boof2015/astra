@@ -14,6 +14,7 @@ import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { formatPlaylistExportStatus, formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
 import { buildPlayableOccurrenceIndexes } from '../../utils/playlistOccurrences'
 import { compareTrackPlayCounts } from '../../utils/trackPlayCountSort'
+import { compareBaseLocaleText } from '../../utils/localeSort'
 import { getDetailHeaderCollapseDistance, resolveDetailHeaderCollapsed } from '../../utils/detailHeaderScroll'
 import AlbumArtwork from '../library/AlbumArtwork'
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
@@ -122,7 +123,7 @@ function normalizeSortText(value: string | null | undefined): string {
 }
 
 function compareTextValue(a: string | null | undefined, b: string | null | undefined): number {
-  return normalizeSortText(a).localeCompare(normalizeSortText(b), undefined, { sensitivity: 'base' })
+  return compareBaseLocaleText(normalizeSortText(a), normalizeSortText(b))
 }
 
 function compareWithDirection(value: number, direction: SortDirection): number {
@@ -130,7 +131,7 @@ function compareWithDirection(value: number, direction: SortDirection): number {
 }
 
 function comparePath(a: string, b: string): number {
-  return a.localeCompare(b, undefined, { sensitivity: 'base' })
+  return compareBaseLocaleText(a, b)
 }
 
 function toSortableBpm(value: number | null | undefined): number | null {
@@ -192,7 +193,7 @@ function compareNullableKey(
   if (aMissing) return 1
   if (bMissing) return -1
 
-  return compareWithDirection(aValue.localeCompare(bValue, undefined, { sensitivity: 'base' }), direction)
+  return compareWithDirection(compareBaseLocaleText(aValue, bValue), direction)
 }
 
 function compareNullableRating(a: number | null | undefined, b: number | null | undefined, direction: SortDirection): number {

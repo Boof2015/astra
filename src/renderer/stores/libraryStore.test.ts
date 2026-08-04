@@ -295,6 +295,75 @@ test('loadLibrary submits a correlated aggregate reload summary', async () => {
   assert.equal(typeof (timing.stepDurationMs as Record<string, number>).artists, 'number')
 })
 
+test('loadFullTracks publishes only revealed pages and the final staged page', async () => {
+  const tracks = [
+    makeTrack('/music/one.flac'),
+    makeTrack('/music/two.flac'),
+    makeTrack('/music/three.flac'),
+    makeTrack('/music/four.flac')
+  ]
+  const revealTimes = [1000, 1100, 1300, 1350]
+  const requestSnapshots: Array<{ version: number; paths: string[] }> = []
+  let requestIndex = 0
+  let now = revealTimes[0]
+
+  installMockLibraryApi({
+    getTracksPage: async () => {
+      const index = requestIndex++
+      const state = useLibraryStore.getState()
+      requestSnapshots.push({
+        version: state.trackCacheVersion,
+        paths: [...state.fullTrackPaths]
+      })
+      now = revealTimes[index]
+      return {
+        tracks: [tracks[index]],
+        total: tracks.length,
+        hasMore: index < tracks.length - 1,
+        nextOffset: index < tracks.length - 1 ? index + 1 : null
+      }
+    }
+  })
+  useLibraryStore.setState({
+    trackByPath: new Map(),
+    trackCacheVersion: 0,
+    trackPaths: [],
+    fullTrackPaths: [],
+    fullTracksStatus: 'idle',
+    fullTrackConsumers: new Set(['library']),
+    selectedAlbum: null,
+    selectedArtist: null,
+    selectedGenre: null,
+    selectedYear: null,
+    viewMode: 'tracks'
+  })
+
+  const originalDateNow = Date.now
+  Date.now = () => now
+  try {
+    await useLibraryStore.getState().loadFullTracks()
+  } finally {
+    Date.now = originalDateNow
+  }
+
+  assert.deepEqual(requestSnapshots, [
+    { version: 0, paths: [] },
+    { version: 1, paths: [tracks[0].path] },
+    { version: 1, paths: [tracks[0].path] },
+    { version: 2, paths: tracks.slice(0, 3).map((track) => track.path) }
+  ])
+
+  const state = useLibraryStore.getState()
+  assert.equal(state.trackCacheVersion, 3)
+  assert.equal(state.fullTracksStatus, 'complete')
+  assert.deepEqual(state.fullTrackPaths, tracks.map((track) => track.path))
+  assert.deepEqual(state.trackPaths, tracks.map((track) => track.path))
+  assert.deepEqual(
+    state.resolveTrackPaths(state.fullTrackPaths).map((track) => track.path),
+    tracks.map((track) => track.path)
+  )
+})
+
 test('resolveTrackPathsWithFetch hydrates missing cached tracks without pruning retained cache', async () => {
   const cachedTrack = makeTrack('/music/cached.flac', { title: 'Cached' })
   const fetchedTrack = makeTrack('/music/fetched.flac', { title: 'Fetched' })

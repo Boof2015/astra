@@ -18,6 +18,7 @@ import { compareAlbumsByYearDescending } from '../../utils/albumYearSort'
 import { partitionArtistDiscography } from '../../utils/artistDiscography'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { matchesFuzzyFields } from '../../utils/fuzzySearch'
+import { compareBaseLocaleText } from '../../utils/localeSort'
 import { runViewTransition } from '../../utils/viewTransitions'
 import { compareTrackPlayCounts } from '../../utils/trackPlayCountSort'
 import { getLibraryTabTransitionScopeClasses } from '../../utils/libraryTabMotion'
@@ -51,7 +52,7 @@ function normalizeSortText(value: string | null | undefined): string {
 }
 
 function compareTextValue(a: string | null | undefined, b: string | null | undefined): number {
-  return normalizeSortText(a).localeCompare(normalizeSortText(b), undefined, { sensitivity: 'base' })
+  return compareBaseLocaleText(normalizeSortText(a), normalizeSortText(b))
 }
 
 function compareWithDirection(value: number, direction: SortDirection): number {
@@ -136,11 +137,11 @@ function compareNullableKey(
   if (aMissing) return 1
   if (bMissing) return -1
 
-  return compareWithDirection(aValue.localeCompare(bValue, undefined, { sensitivity: 'base' }), direction)
+  return compareWithDirection(compareBaseLocaleText(aValue, bValue), direction)
 }
 
 function comparePath(a: string, b: string): number {
-  return a.localeCompare(b, undefined, { sensitivity: 'base' })
+  return compareBaseLocaleText(a, b)
 }
 
 function compareAlbumSequence(
@@ -290,6 +291,7 @@ export default function LibraryView() {
   const inDetailView = Boolean(selectedAlbum || selectedArtist || selectedGenre || selectedYear !== null)
   const isAlbumRootView = viewMode === 'albums' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null
   const isArtistRootView = viewMode === 'artists' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null
+  const isGenreRootView = viewMode === 'genres' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null
   const isYearRootView = viewMode === 'years' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null
   const isYearDetailView = viewMode === 'years' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear !== null
   const isReleaseBrowseView = isAlbumRootView || isYearRootView || isYearDetailView
@@ -372,6 +374,7 @@ export default function LibraryView() {
     ]
   }, [jellyfinSources, subsonicSources])
   const shouldShowSourceFilters = sourceFilterOptions.length > 0
+  const hasEffectiveLibraryFilters = hasHiddenFolders || (shouldShowSourceFilters && selectedSourceFilters.size > 0)
   const selectedArtistRecord = useMemo(() => {
     if (!selectedArtist) return null
     const selectedArtistKey = normalizeKey(selectedArtist)
@@ -775,19 +778,22 @@ export default function LibraryView() {
   }, [hasSearchQuery, trimmedSearchQuery, queueSeedSortedTracks])
 
   const sourceFilteredAlbumIdentityKeys = useMemo(() => {
+    if (!isReleaseBrowseView || !hasEffectiveLibraryFilters) return null
     const keys = new Set<string>()
     for (const track of sourceFilteredTracks) {
       keys.add(track.album_identity_key || buildAlbumIdentityKeyFromTrack(track))
     }
     return keys
-  }, [sourceFilteredTracks])
+  }, [hasEffectiveLibraryFilters, isReleaseBrowseView, sourceFilteredTracks])
 
   const sourceFilteredAlbums = useMemo(() => {
-    if ((!shouldShowSourceFilters || selectedSourceFilters.size === 0) && !hasHiddenFolders) return albumGridSourceAlbums
+    if (!isReleaseBrowseView) return []
+    if (!sourceFilteredAlbumIdentityKeys) return albumGridSourceAlbums
     return albumGridSourceAlbums.filter((album) => sourceFilteredAlbumIdentityKeys.has(album.identity_key))
-  }, [albumGridSourceAlbums, selectedSourceFilters.size, shouldShowSourceFilters, hasHiddenFolders, sourceFilteredAlbumIdentityKeys])
+  }, [albumGridSourceAlbums, isReleaseBrowseView, sourceFilteredAlbumIdentityKeys])
 
   const filteredAlbums = useMemo(() => {
+    if (!isAlbumRootView && !isYearDetailView) return []
     const shouldFilterByQuery = hasSearchQuery && (isAlbumRootView || isYearDetailView)
     const visibleAlbums = !shouldFilterByQuery
       ? sourceFilteredAlbums
@@ -815,12 +821,13 @@ export default function LibraryView() {
     return sortedAlbums
   }, [albumSortMode, hasSearchQuery, isAlbumRootView, isYearDetailView, trimmedSearchQuery, sourceFilteredAlbums])
 
-  const yearGroups = useMemo(
-    () => buildLibraryYearGroups(sourceFilteredAlbums),
-    [sourceFilteredAlbums]
-  )
+  const yearGroups = useMemo(() => {
+    if (!isYearRootView && !isYearDetailView) return []
+    return buildLibraryYearGroups(sourceFilteredAlbums)
+  }, [isYearDetailView, isYearRootView, sourceFilteredAlbums])
   const filteredYears = useMemo(() => {
-    if (!hasSearchQuery || !isYearRootView) return yearGroups
+    if (!isYearRootView) return []
+    if (!hasSearchQuery) return yearGroups
     return yearGroups.filter((year) => matchesFuzzyFields(trimmedSearchQuery, [
       { value: year.label, weight: 1.5 }
     ]))
@@ -830,11 +837,12 @@ export default function LibraryView() {
     return yearGroups.find((year) => year.key === selectedYear) ?? null
   }, [selectedYear, yearGroups])
   const selectedYearAlbums = useMemo(() => {
-    if (selectedYear === null) return []
+    if (!isYearDetailView || selectedYear === null) return []
     return filteredAlbums.filter((album) => albumMatchesLibraryYear(album, selectedYear))
-  }, [filteredAlbums, selectedYear])
+  }, [filteredAlbums, isYearDetailView, selectedYear])
 
   const sourceFilteredArtistKeys = useMemo(() => {
+    if (!isArtistRootView) return null
     if ((!shouldShowSourceFilters || selectedSourceFilters.size === 0) && !hasHiddenFolders) return null
     const keys = new Set<string>()
     for (const track of sourceFilteredTracks) {
@@ -855,9 +863,10 @@ export default function LibraryView() {
       }
     }
     return keys
-  }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, hasHiddenFolders, sourceFilteredTracks])
+  }, [artistBrowseMode, hasHiddenFolders, isArtistRootView, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
 
   const sourceFilteredPrimaryArtistKeys = useMemo(() => {
+    if (!isArtistRootView) return null
     if (artistBrowseMode !== 'canonical') return null
     if ((!shouldShowSourceFilters || selectedSourceFilters.size === 0) && !hasHiddenFolders) return null
 
@@ -867,14 +876,16 @@ export default function LibraryView() {
       if (browseArtistKey) keys.add(browseArtistKey)
     }
     return keys
-  }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, hasHiddenFolders, sourceFilteredTracks])
+  }, [artistBrowseMode, hasHiddenFolders, isArtistRootView, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
 
   const visibleArtists = useMemo(() => {
+    if (!isArtistRootView) return []
     if (!sourceFilteredArtistKeys) return artists
     return artists.filter((artist) => sourceFilteredArtistKeys.has(normalizeKey(artist.artist)))
-  }, [artists, sourceFilteredArtistKeys])
+  }, [artists, isArtistRootView, sourceFilteredArtistKeys])
 
   const rootVisibleArtists = useMemo(() => {
+    if (!isArtistRootView) return []
     if (artistBrowseMode !== 'canonical' || includeCollabArtists) return visibleArtists
 
     if (sourceFilteredPrimaryArtistKeys) {
@@ -882,16 +893,18 @@ export default function LibraryView() {
     }
 
     return visibleArtists.filter((artist) => artist.primary_track_count > 0)
-  }, [artistBrowseMode, includeCollabArtists, sourceFilteredPrimaryArtistKeys, visibleArtists])
+  }, [artistBrowseMode, includeCollabArtists, isArtistRootView, sourceFilteredPrimaryArtistKeys, visibleArtists])
 
   const filteredArtists = useMemo(() => {
+    if (!isArtistRootView) return []
     if (!hasSearchQuery) return rootVisibleArtists
     return rootVisibleArtists.filter((artist) => matchesFuzzyFields(trimmedSearchQuery, [
       { value: artist.artist, weight: 1.5 }
     ]))
-  }, [hasSearchQuery, trimmedSearchQuery, rootVisibleArtists])
+  }, [hasSearchQuery, isArtistRootView, trimmedSearchQuery, rootVisibleArtists])
 
   const sourceFilteredGenreKeys = useMemo(() => {
+    if (!isGenreRootView) return null
     if ((!shouldShowSourceFilters || selectedSourceFilters.size === 0) && !hasHiddenFolders) return null
     const keys = new Set<string>()
     for (const track of sourceFilteredTracks) {
@@ -901,38 +914,42 @@ export default function LibraryView() {
       }
     }
     return keys
-  }, [selectedSourceFilters.size, shouldShowSourceFilters, hasHiddenFolders, sourceFilteredTracks])
+  }, [hasHiddenFolders, isGenreRootView, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
 
   const visibleGenres = useMemo(() => {
+    if (!isGenreRootView) return []
     if (!sourceFilteredGenreKeys) return genres
     return genres.filter((genre) => sourceFilteredGenreKeys.has(normalizeKey(genre.genre)))
-  }, [genres, sourceFilteredGenreKeys])
+  }, [genres, isGenreRootView, sourceFilteredGenreKeys])
 
   const filteredGenres = useMemo(() => {
+    if (!isGenreRootView) return []
     if (!hasSearchQuery) return visibleGenres
     return visibleGenres.filter((genre) => matchesFuzzyFields(trimmedSearchQuery, [
       { value: genre.genre, weight: 1.5 }
     ]))
-  }, [hasSearchQuery, trimmedSearchQuery, visibleGenres])
+  }, [hasSearchQuery, isGenreRootView, trimmedSearchQuery, visibleGenres])
 
   const albumByKey = useMemo(() => {
     const map = new Map<string, (typeof albums)[number]>()
+    if (!selectedArtist) return map
     for (const album of albums) {
       const key = buildAlbumKey(album.album, album.artist)
       if (map.has(key)) continue
       map.set(key, album)
     }
     return map
-  }, [albums])
+  }, [albums, selectedArtist])
 
   const albumByIdentityKey = useMemo(() => {
     const map = new Map<string, (typeof albums)[number]>()
+    if (!selectedArtist) return map
     for (const album of albums) {
       if (map.has(album.identity_key)) continue
       map.set(album.identity_key, album)
     }
     return map
-  }, [albums])
+  }, [albums, selectedArtist])
 
   const { primaryArtistAlbums, primaryArtistSingles, featuredArtistAlbums } = useMemo(() => {
     if (!selectedArtist) {
@@ -1309,7 +1326,12 @@ export default function LibraryView() {
       )
     }
 
-    const hasContent = sourceFilteredTracks.length > 0 || sourceFilteredAlbums.length > 0 || visibleArtists.length > 0 || visibleGenres.length > 0
+    // When filters are active, every browse collection is derived from this
+    // same filtered track set. Otherwise the aggregate metadata arrays retain
+    // the previous empty-library semantics without deriving inactive tabs.
+    const hasContent = hasEffectiveLibraryFilters
+      ? sourceFilteredTracks.length > 0
+      : sourceFilteredTracks.length > 0 || albumGridSourceAlbums.length > 0 || artists.length > 0 || genres.length > 0
     if (!hasContent && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null) {
       return (
         <div className="library-empty">
