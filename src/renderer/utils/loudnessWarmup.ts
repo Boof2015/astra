@@ -5,7 +5,7 @@ export interface LoudnessWarmupTrackLike {
 }
 
 export function selectUpcomingLoudnessWarmupTracks<T extends LoudnessWarmupTrackLike>(
-  candidates: readonly T[],
+  candidates: Iterable<T>,
   shouldAnalyze: (track: T) => boolean,
   limit = 1
 ): T[] {

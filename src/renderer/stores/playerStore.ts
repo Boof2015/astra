@@ -183,7 +183,7 @@ interface PlayerStore {
   toggleShuffle: () => void
   toggleRepeat: () => void
   getResolvedUpcomingTracks: () => Track[]
-  getResolvedUpcomingEntries: () => ResolvedQueueTrack[]
+  getResolvedUpcomingEntries: (limit?: number) => ResolvedQueueTrack[]
   getResolvedPreviousTracks: () => Track[]
   getResolvedPreviousEntries: () => ResolvedQueueTrack[]
   getResolvedNextTrack: () => Track | null
@@ -1499,16 +1499,38 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     }))
   }
 
+  const queueItemsByIdCache = new WeakMap<QueueItem[], ReadonlyMap<string, QueueItem>>()
+
+  const getQueueItemsById = (queueItems: QueueItem[]): ReadonlyMap<string, QueueItem> => {
+    const cached = queueItemsByIdCache.get(queueItems)
+    if (cached) return cached
+
+    const itemsById = new Map<string, QueueItem>()
+    for (const item of queueItems) {
+      itemsById.set(item.queueId, item)
+    }
+    queueItemsByIdCache.set(queueItems, itemsById)
+    return itemsById
+  }
+
   const buildResolvedUpcomingEntries = (
-    state: Pick<PlayerStore, 'queueItems' | 'upcomingQueueIds'>
+    state: Pick<PlayerStore, 'queueItems' | 'upcomingQueueIds'>,
+    limit?: number
   ): ResolvedQueueTrack[] => {
-    const itemsById = new Map(state.queueItems.map((item) => [item.queueId, item]))
+    const normalizedLimit = limit === undefined || limit === Number.POSITIVE_INFINITY
+      ? Number.POSITIVE_INFINITY
+      : Number.isFinite(limit)
+        ? Math.max(0, Math.floor(limit))
+        : 0
+    if (normalizedLimit === 0) return []
+
+    const itemsById = getQueueItemsById(state.queueItems)
     const resolved: ResolvedQueueTrack[] = []
-    state.upcomingQueueIds.forEach((queueId, index) => {
+    for (let index = 0; index < state.upcomingQueueIds.length; index += 1) {
+      const queueId = state.upcomingQueueIds[index]!
       const item = itemsById.get(queueId)
       const track = resolveQueueEntryTrack(item?.entry)
-      if (!item || !track) return
-      if (!track) return
+      if (!item || !track) continue
       resolved.push({
         queueId,
         source: 'upcoming',
@@ -1516,40 +1538,41 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         track,
         index
       })
-    })
+      if (resolved.length >= normalizedLimit) break
+    }
 
     return resolved
   }
 
-  const collectNextCandidates = (state: PlayerStore): NextCandidate[] => {
+  function* iterateNextCandidates(state: PlayerStore): Generator<NextCandidate> {
     if (state.repeat === 'one' && state.currentTrack) {
-      return [{ kind: 'current', track: state.currentTrack }]
+      yield { kind: 'current', track: state.currentTrack }
+      return
     }
 
-    const itemsById = new Map(state.queueItems.map((item) => [item.queueId, item]))
-    const candidates: NextCandidate[] = []
-    state.upcomingQueueIds.forEach((queueId, index) => {
+    const itemsById = getQueueItemsById(state.queueItems)
+    let foundQueueCandidate = false
+    for (let index = 0; index < state.upcomingQueueIds.length; index += 1) {
+      const queueId = state.upcomingQueueIds[index]!
       const item = itemsById.get(queueId)
       const track = resolveQueueEntryTrack(item?.entry)
-      if (!item || !track) return
-      candidates.push({ kind: 'queue', item, track, index })
-    })
+      if (!item || !track) continue
+      foundQueueCandidate = true
+      yield { kind: 'queue', item, track, index }
+    }
 
-    if (candidates.length === 0 && state.repeat === 'all' && state.currentTrack) {
+    if (!foundQueueCandidate && state.repeat === 'all' && state.currentTrack) {
       const currentItem = state.currentQueueItemId
         ? itemsById.get(state.currentQueueItemId)
         : null
       if (currentItem && state.queueItems.length === 1) {
-        candidates.push({ kind: 'current', track: state.currentTrack })
+        yield { kind: 'current', track: state.currentTrack }
       }
     }
-
-    return candidates
   }
 
   const findNextPlayableCandidate = (state: PlayerStore): NextCandidate | null => {
-    const candidates = collectNextCandidates(state)
-    for (const candidate of candidates) {
+    for (const candidate of iterateNextCandidates(state)) {
       if (isUnavailableRemoteTrack(candidate.track)) continue
       return candidate
     }
@@ -1559,7 +1582,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   const resolveExpectedPrebufferTrackPath = (state: PlayerStore = get()): string | null => {
     if (state.repeat === 'one') return null
 
-    for (const candidate of collectNextCandidates(state)) {
+    for (const candidate of iterateNextCandidates(state)) {
       const candidateTrack = candidate.track
       if (!candidateTrack) continue
       if (candidateTrack.sourceType && candidateTrack.sourceType !== 'local') continue
@@ -1576,8 +1599,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     const state = get()
     if (state.repeat === 'one') return
 
+    const upcomingTracks = (function* (): Generator<Track> {
+      for (const candidate of iterateNextCandidates(state)) {
+        yield candidate.track
+      }
+    })()
     const tracks = selectUpcomingLoudnessWarmupTracks(
-      collectNextCandidates(state).map((candidate) => candidate.track),
+      upcomingTracks,
       (track) => {
         const replayGainDb = getReplayGainCandidateDb(track, audioSettings.replayGainMode)
         return audioEngine.needsLoudnessAnalysisForLoad(replayGainDb)
@@ -2611,8 +2639,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       return buildResolvedUpcomingEntries(get()).map((entry) => entry.track)
     },
 
-    getResolvedUpcomingEntries: () => {
-      return buildResolvedUpcomingEntries(get())
+    getResolvedUpcomingEntries: (limit) => {
+      return buildResolvedUpcomingEntries(get(), limit)
     },
 
     getResolvedPreviousTracks: () => {
@@ -2643,7 +2671,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
     getResolvedQueueLength: () => {
       const state = get()
-      return state.playbackHistory.length + (state.currentTrack ? 1 : 0) + buildResolvedUpcomingEntries(state).length
+      return state.playbackHistory.length + (state.currentTrack ? 1 : 0) + state.upcomingQueueIds.length
     },
 
     _getNextEntry: () => {
@@ -3093,10 +3121,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           return
         }
 
-        const candidates = collectNextCandidates(state)
-        if (candidates.length === 0) return
-
-        for (const candidate of candidates) {
+        for (const candidate of iterateNextCandidates(state)) {
           const nextTrack = candidate.track
           if (!nextTrack) continue
           if (nextTrack.sourceType && nextTrack.sourceType !== 'local') {

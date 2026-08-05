@@ -1,9 +1,14 @@
-import { ASTRA_SESSION_STATE_STORAGE_KEY } from '../constants/settingsStorageKeys'
+import {
+  ASTRA_SESSION_POSITION_CHECKPOINT_STORAGE_KEY,
+  ASTRA_SESSION_STATE_STORAGE_KEY
+} from '../constants/settingsStorageKeys'
 import type { TrackSourceType } from '../../types/subsonic'
 import type { LibraryYearKey } from './libraryYears'
 
 export const SESSION_STATE_KIND = 'astra-session-state'
 export const SESSION_STATE_SCHEMA_VERSION = 1
+export const SESSION_POSITION_CHECKPOINT_KIND = 'astra-session-position-checkpoint'
+export const SESSION_POSITION_CHECKPOINT_SCHEMA_VERSION = 1
 
 export type SessionAppView = 'home' | 'library' | 'stats' | 'graph' | 'eq' | 'settings' | 'playlist'
 export type SessionTrackSortKey = 'title' | 'artist' | 'album' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added' | 'rating' | 'play_count'
@@ -145,6 +150,17 @@ export interface SessionSnapshotV1 {
   ui: UISessionSnapshot | null
   library: LibrarySessionSnapshot | null
   playlist: PlaylistSessionSnapshot | null
+}
+
+export interface SessionPositionCheckpointV1 {
+  kind: typeof SESSION_POSITION_CHECKPOINT_KIND
+  schemaVersion: typeof SESSION_POSITION_CHECKPOINT_SCHEMA_VERSION
+  savedAt: number
+  baseSessionSavedAt: number
+  currentTrackPath: string
+  currentQueueItemId: string | null
+  currentTrackSource: SessionQueueTrackSource
+  currentTime: number
 }
 
 export type SessionStorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
@@ -404,8 +420,10 @@ function normalizeQueueItems(value: unknown): SessionQueueItem[] {
 function filterQueueIds(value: unknown, validIds: ReadonlySet<string>): string[] {
   if (!Array.isArray(value)) return []
   const out: string[] = []
+  const seenIds = new Set<string>()
   for (const item of value) {
-    if (typeof item !== 'string' || !validIds.has(item) || out.includes(item)) continue
+    if (typeof item !== 'string' || !validIds.has(item) || seenIds.has(item)) continue
+    seenIds.add(item)
     out.push(item)
   }
   return out
@@ -525,11 +543,104 @@ export function normalizeSessionSnapshot(value: unknown): SessionSnapshotV1 | nu
   }
 }
 
+export function normalizeSessionPositionCheckpoint(value: unknown): SessionPositionCheckpointV1 | null {
+  if (!isPlainRecord(value)) return null
+  if (value.kind !== SESSION_POSITION_CHECKPOINT_KIND) return null
+  if (value.schemaVersion !== SESSION_POSITION_CHECKPOINT_SCHEMA_VERSION) return null
+
+  const savedAt = finiteNumber(value.savedAt)
+  const baseSessionSavedAt = finiteNumber(value.baseSessionSavedAt)
+  const currentTrackPath = stringValue(value.currentTrackPath)
+  const currentTime = finiteNumber(value.currentTime)
+  const currentTrackSource = value.currentTrackSource
+  if (
+    savedAt === null
+    || savedAt < 0
+    || baseSessionSavedAt === null
+    || baseSessionSavedAt < 0
+    || savedAt <= baseSessionSavedAt
+    || !currentTrackPath
+    || currentTime === null
+    || currentTime < 0
+    || (
+      currentTrackSource !== 'context'
+      && currentTrackSource !== 'manual'
+      && currentTrackSource !== 'standalone'
+    )
+  ) {
+    return null
+  }
+
+  const currentQueueItemId = value.currentQueueItemId === null
+    ? null
+    : stringValue(value.currentQueueItemId)
+  if (value.currentQueueItemId !== null && !currentQueueItemId) return null
+
+  return {
+    kind: SESSION_POSITION_CHECKPOINT_KIND,
+    schemaVersion: SESSION_POSITION_CHECKPOINT_SCHEMA_VERSION,
+    savedAt,
+    baseSessionSavedAt,
+    currentTrackPath,
+    currentQueueItemId,
+    currentTrackSource,
+    currentTime
+  }
+}
+
+export function mergeSessionPositionCheckpoint(
+  snapshot: SessionSnapshotV1,
+  checkpoint: SessionPositionCheckpointV1 | null
+): SessionSnapshotV1 {
+  const player = snapshot.player
+  if (
+    !player
+    || !checkpoint
+    || checkpoint.savedAt <= snapshot.savedAt
+    || checkpoint.baseSessionSavedAt !== snapshot.savedAt
+    || checkpoint.currentTrackPath !== player.currentTrack?.path
+    || checkpoint.currentQueueItemId !== player.currentQueueItemId
+    || checkpoint.currentTrackSource !== player.currentTrackSource
+  ) {
+    return snapshot
+  }
+
+  const availableDuration = player.duration > 0
+    ? player.duration
+    : Math.max(0, player.currentTrack?.duration ?? 0)
+  const currentTime = availableDuration > 0
+    ? Math.min(checkpoint.currentTime, availableDuration)
+    : checkpoint.currentTime
+
+  return {
+    ...snapshot,
+    player: {
+      ...player,
+      currentTime
+    }
+  }
+}
+
+export function readSessionPositionCheckpoint(
+  storage: SessionStorageLike = localStorage
+): SessionPositionCheckpointV1 | null {
+  try {
+    const raw = storage.getItem(ASTRA_SESSION_POSITION_CHECKPOINT_STORAGE_KEY)
+    if (!raw) return null
+    return normalizeSessionPositionCheckpoint(JSON.parse(raw))
+  } catch {
+    return null
+  }
+}
+
 export function readSessionSnapshot(storage: SessionStorageLike = localStorage): SessionSnapshotV1 | null {
   try {
     const raw = storage.getItem(ASTRA_SESSION_STATE_STORAGE_KEY)
     if (!raw) return null
-    return normalizeSessionSnapshot(JSON.parse(raw))
+    const snapshot = normalizeSessionSnapshot(JSON.parse(raw))
+    return snapshot
+      ? mergeSessionPositionCheckpoint(snapshot, readSessionPositionCheckpoint(storage))
+      : null
   } catch {
     return null
   }
@@ -542,6 +653,18 @@ export function writeSessionSnapshot(
   storage.setItem(ASTRA_SESSION_STATE_STORAGE_KEY, JSON.stringify(snapshot))
 }
 
+export function writeSessionPositionCheckpoint(
+  checkpoint: SessionPositionCheckpointV1,
+  storage: SessionStorageLike = localStorage
+): void {
+  storage.setItem(ASTRA_SESSION_POSITION_CHECKPOINT_STORAGE_KEY, JSON.stringify(checkpoint))
+}
+
+export function clearSessionPositionCheckpoint(storage: SessionStorageLike = localStorage): void {
+  storage.removeItem(ASTRA_SESSION_POSITION_CHECKPOINT_STORAGE_KEY)
+}
+
 export function clearSessionSnapshot(storage: SessionStorageLike = localStorage): void {
   storage.removeItem(ASTRA_SESSION_STATE_STORAGE_KEY)
+  storage.removeItem(ASTRA_SESSION_POSITION_CHECKPOINT_STORAGE_KEY)
 }

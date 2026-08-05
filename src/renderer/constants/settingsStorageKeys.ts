@@ -22,6 +22,7 @@ export const ARTIST_ROOT_VIEW_MODE_STORAGE_KEY = 'astra-library-artist-view-mode
 export const TRACK_RATINGS_ENABLED_STORAGE_KEY = 'astra-library-track-ratings-enabled-v1'
 
 export const ASTRA_SESSION_STATE_STORAGE_KEY = 'astra-session-state-v1'
+export const ASTRA_SESSION_POSITION_CHECKPOINT_STORAGE_KEY = 'astra-session-position-checkpoint-v1'
 
 export const ANALYZER_PROFILES_STORAGE_KEY = 'astra-analyzer-profiles-v1'
 export const OSCILLOSCOPE_UNDERFILL_STORAGE_KEY = 'astra-oscilloscope-underfill-enabled'

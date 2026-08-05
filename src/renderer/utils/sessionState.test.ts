@@ -1,15 +1,25 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  SESSION_POSITION_CHECKPOINT_KIND,
+  SESSION_POSITION_CHECKPOINT_SCHEMA_VERSION,
   SESSION_STATE_KIND,
   SESSION_STATE_SCHEMA_VERSION,
   clearSessionSnapshot,
+  normalizeSessionPositionCheckpoint,
   normalizeSessionSnapshot,
+  readSessionPositionCheckpoint,
   readSessionSnapshot,
+  writeSessionPositionCheckpoint,
   writeSessionSnapshot,
+  type SessionPositionCheckpointV1,
+  type SessionSnapshotV1,
   type SessionStorageLike,
 } from './sessionState.ts'
-import { ASTRA_SESSION_STATE_STORAGE_KEY } from '../constants/settingsStorageKeys.ts'
+import {
+  ASTRA_SESSION_POSITION_CHECKPOINT_STORAGE_KEY,
+  ASTRA_SESSION_STATE_STORAGE_KEY
+} from '../constants/settingsStorageKeys.ts'
 
 class MemoryStorage implements SessionStorageLike {
   private values = new Map<string, string>()
@@ -24,6 +34,73 @@ class MemoryStorage implements SessionStorageLike {
 
   removeItem(key: string): void {
     this.values.delete(key)
+  }
+}
+
+function createQueuedSessionSnapshot(savedAt = 10): SessionSnapshotV1 {
+  const snapshot = normalizeSessionSnapshot({
+    kind: SESSION_STATE_KIND,
+    schemaVersion: SESSION_STATE_SCHEMA_VERSION,
+    savedAt,
+    ui: null,
+    library: null,
+    playlist: null,
+    player: {
+      currentTrack: {
+        path: '/music/a.flac',
+        title: 'A',
+        artist: 'Artist',
+        album: 'Album',
+        duration: 120,
+        format: 'flac',
+      },
+      currentTrackSource: 'context',
+      savedPlaybackState: 'playing',
+      currentTime: 12,
+      duration: 120,
+      queueItems: [{
+        queueId: 'queue-a',
+        origin: 'context',
+        entry: {
+          path: '/music/a.flac',
+          snapshot: {
+            path: '/music/a.flac',
+            title: 'A',
+            artist: 'Artist',
+            album: 'Album',
+            duration: 120,
+            format: 'flac',
+          },
+        },
+      }],
+      baseUpcomingQueueIds: ['queue-a'],
+      upcomingQueueIds: ['queue-a'],
+      currentQueueItemId: 'queue-a',
+      queueSourcePlaylistId: null,
+      queueSourceContext: null,
+      queueContextLabel: null,
+      shuffle: false,
+      repeat: 'none',
+      playbackHistory: [],
+    },
+  })
+  assert.ok(snapshot)
+  return snapshot
+}
+
+function createPositionCheckpoint(
+  overrides: Partial<SessionPositionCheckpointV1> = {}
+): SessionPositionCheckpointV1 {
+  return {
+    kind: SESSION_POSITION_CHECKPOINT_KIND,
+    schemaVersion: SESSION_POSITION_CHECKPOINT_SCHEMA_VERSION,
+    savedAt: 20,
+    baseSessionSavedAt: 10,
+    currentTrackPath: '/music/a.flac',
+    currentQueueItemId: 'queue-a',
+    currentTrackSource: 'context',
+    currentTime: 45,
+    ...overrides,
   }
 }
 
@@ -158,11 +235,86 @@ test('session snapshots round-trip through storage and clear cleanly', () => {
   assert.ok(snapshot)
 
   writeSessionSnapshot(snapshot, storage)
+  writeSessionPositionCheckpoint(createPositionCheckpoint(), storage)
   assert.equal(storage.getItem(ASTRA_SESSION_STATE_STORAGE_KEY)?.includes(SESSION_STATE_KIND), true)
   assert.deepEqual(readSessionSnapshot(storage), snapshot)
 
   clearSessionSnapshot(storage)
   assert.equal(readSessionSnapshot(storage), null)
+  assert.equal(storage.getItem(ASTRA_SESSION_POSITION_CHECKPOINT_STORAGE_KEY), null)
+})
+
+test('a newer matching position checkpoint overlays only the restored playback time', () => {
+  const storage = new MemoryStorage()
+  const snapshot = createQueuedSessionSnapshot()
+  const checkpoint = createPositionCheckpoint()
+
+  writeSessionSnapshot(snapshot, storage)
+  writeSessionPositionCheckpoint(checkpoint, storage)
+
+  assert.deepEqual(readSessionPositionCheckpoint(storage), checkpoint)
+  assert.deepEqual(readSessionSnapshot(storage), {
+    ...snapshot,
+    player: {
+      ...snapshot.player!,
+      currentTime: checkpoint.currentTime,
+    },
+  })
+})
+
+test('position checkpoints are ignored unless they are newer and match track and queue identity', () => {
+  const snapshot = createQueuedSessionSnapshot()
+  const cases: Array<{ checkpoint: SessionPositionCheckpointV1; label: string }> = [
+    { checkpoint: createPositionCheckpoint({ savedAt: snapshot.savedAt }), label: 'same timestamp' },
+    { checkpoint: createPositionCheckpoint({ savedAt: snapshot.savedAt - 1 }), label: 'older timestamp' },
+    { checkpoint: createPositionCheckpoint({ baseSessionSavedAt: snapshot.savedAt - 1 }), label: 'other base session' },
+    { checkpoint: createPositionCheckpoint({ currentTrackPath: '/music/other.flac' }), label: 'other track' },
+    { checkpoint: createPositionCheckpoint({ currentQueueItemId: 'queue-other' }), label: 'other queue item' },
+    { checkpoint: createPositionCheckpoint({ currentTrackSource: 'manual' }), label: 'other track source' },
+  ]
+
+  for (const { checkpoint, label } of cases) {
+    const storage = new MemoryStorage()
+    writeSessionSnapshot(snapshot, storage)
+    writeSessionPositionCheckpoint(checkpoint, storage)
+    assert.deepEqual(readSessionSnapshot(storage), snapshot, label)
+  }
+})
+
+test('a corrupt position checkpoint never prevents full v1 session recovery', () => {
+  const storage = new MemoryStorage()
+  const snapshot = createQueuedSessionSnapshot()
+  writeSessionSnapshot(snapshot, storage)
+  storage.setItem(ASTRA_SESSION_POSITION_CHECKPOINT_STORAGE_KEY, '{not json')
+
+  assert.equal(readSessionPositionCheckpoint(storage), null)
+  assert.deepEqual(readSessionSnapshot(storage), snapshot)
+})
+
+test('position checkpoint normalization rejects incomplete and invalid records', () => {
+  assert.equal(normalizeSessionPositionCheckpoint({}), null)
+  assert.equal(normalizeSessionPositionCheckpoint({
+    ...createPositionCheckpoint(),
+    currentQueueItemId: undefined,
+  }), null)
+  assert.equal(normalizeSessionPositionCheckpoint({
+    ...createPositionCheckpoint(),
+    currentTime: Number.NaN,
+  }), null)
+  assert.equal(normalizeSessionPositionCheckpoint({
+    ...createPositionCheckpoint(),
+    savedAt: 10,
+    baseSessionSavedAt: 10,
+  }), null)
+})
+
+test('a matching position checkpoint is clamped to the restored track duration', () => {
+  const storage = new MemoryStorage()
+  const snapshot = createQueuedSessionSnapshot()
+  writeSessionSnapshot(snapshot, storage)
+  writeSessionPositionCheckpoint(createPositionCheckpoint({ currentTime: 500 }), storage)
+
+  assert.equal(readSessionSnapshot(storage)?.player?.currentTime, 120)
 })
 
 test('session snapshot normalization preserves genre track sort state', () => {

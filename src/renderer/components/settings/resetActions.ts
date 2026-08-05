@@ -27,6 +27,7 @@ import { PLAYER_VOLUME_STORAGE_KEY, usePlayerStore } from '../../stores/playerSt
 import {
   ALBUM_SORT_MODE_STORAGE_KEY,
   ARTIST_ROOT_VIEW_MODE_STORAGE_KEY,
+  ASTRA_SESSION_POSITION_CHECKPOINT_STORAGE_KEY,
   ASTRA_SESSION_STATE_STORAGE_KEY,
   INCLUDE_COLLAB_ARTISTS_STORAGE_KEY,
   INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY,
@@ -69,6 +70,7 @@ export const RENDERER_SETTINGS_KEYS = [
   'astra-audio-delay-profiles-v2',
   PLAYER_VOLUME_STORAGE_KEY,
   ASTRA_SESSION_STATE_STORAGE_KEY,
+  ASTRA_SESSION_POSITION_CHECKPOINT_STORAGE_KEY,
   'astra-discord-rpc-enabled',
   'astra-discord-rpc-cover-art-enabled',
   'astra-discord-rpc-small-icon-enabled',

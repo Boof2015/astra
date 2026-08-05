@@ -224,6 +224,135 @@ test('path queue entries hydrate snapshots from cached library metadata', () => 
   assert.equal(resolved?.track.artworkHash, 'art-hash')
 })
 
+test('queue length stays constant-time for a large queue without resolving tracks', () => {
+  resetStores()
+
+  const originalResolveTrackPaths = useLibraryStore.getState().resolveTrackPaths
+  let resolvedPathCount = 0
+  useLibraryStore.setState({
+    resolveTrackPaths: (trackPaths) => {
+      resolvedPathCount += trackPaths.length
+      return originalResolveTrackPaths(trackPaths)
+    }
+  })
+
+  try {
+    const entry = createQueueEntryFromTrack(makeTrack('/queue/shared.flac'))
+    const queueItems = Array.from(
+      { length: 21_500 },
+      (_, index) => makeQueueItem(entry, `large-queue-${index}`, 'context')
+    )
+    const upcomingQueueIds = queueItems.map((item) => item.queueId)
+
+    usePlayerStore.setState({
+      currentTrack: makeTrack('/queue/current.flac'),
+      queueItems,
+      baseUpcomingQueueIds: upcomingQueueIds,
+      upcomingQueueIds,
+      playbackHistory: [{ item: makeQueueItem(entry, 'large-history', 'context') }]
+    })
+
+    assert.equal(usePlayerStore.getState().getResolvedQueueLength(), 21_502)
+    assert.equal(resolvedPathCount, 0)
+  } finally {
+    useLibraryStore.setState({ resolveTrackPaths: originalResolveTrackPaths })
+    resetStores()
+  }
+})
+
+test('next-track lookup resolves only the first playable entry in a large queue', () => {
+  resetStores()
+
+  const queueItems = Array.from({ length: 21_500 }, (_, index) => {
+    const entry = createQueueEntryFromTrack(makeTrack(`/queue/${index}.flac`))
+    return makeQueueItem(entry, `lazy-next-${index}`, 'context')
+  })
+  const upcomingQueueIds = queueItems.map((item) => item.queueId)
+  usePlayerStore.setState({
+    queueItems,
+    baseUpcomingQueueIds: upcomingQueueIds,
+    upcomingQueueIds
+  })
+
+  const originalResolveTrackPaths = useLibraryStore.getState().resolveTrackPaths
+  let resolvedPathCount = 0
+  useLibraryStore.setState({
+    resolveTrackPaths: (trackPaths) => {
+      resolvedPathCount += trackPaths.length
+      return originalResolveTrackPaths(trackPaths)
+    }
+  })
+
+  try {
+    assert.equal(usePlayerStore.getState().getResolvedNextTrack()?.path, '/queue/0.flac')
+    assert.equal(resolvedPathCount, 1)
+  } finally {
+    useLibraryStore.setState({ resolveTrackPaths: originalResolveTrackPaths })
+    resetStores()
+  }
+})
+
+test('bounded upcoming resolution stops at the requested cap and preserves entry order and shape', () => {
+  resetStores()
+
+  const queueItems = Array.from({ length: 250 }, (_, index) => {
+    const entry = createQueueEntryFromTrack(makeTrack(`/queue/${index}.flac`, {
+      title: `Track ${index}`
+    }))
+    return makeQueueItem(entry, `bounded-queue-${index}`, index % 2 === 0 ? 'context' : 'manual')
+  })
+  const orderedItems = [...queueItems].reverse()
+  const upcomingQueueIds = orderedItems.map((item) => item.queueId)
+  usePlayerStore.setState({
+    queueItems,
+    baseUpcomingQueueIds: upcomingQueueIds,
+    upcomingQueueIds
+  })
+
+  const originalResolveTrackPaths = useLibraryStore.getState().resolveTrackPaths
+  let resolvedPathCount = 0
+  useLibraryStore.setState({
+    resolveTrackPaths: (trackPaths) => {
+      resolvedPathCount += trackPaths.length
+      return originalResolveTrackPaths(trackPaths)
+    }
+  })
+
+  try {
+    assert.deepEqual(usePlayerStore.getState().getResolvedUpcomingEntries(0), [])
+    assert.equal(resolvedPathCount, 0)
+
+    const boundedEntries = usePlayerStore.getState().getResolvedUpcomingEntries(200)
+    assert.equal(resolvedPathCount, 200)
+    assert.deepEqual(
+      boundedEntries.map((entry) => ({
+        queueId: entry.queueId,
+        source: entry.source,
+        origin: entry.origin,
+        path: entry.track.path,
+        title: entry.track.title,
+        index: entry.index
+      })),
+      orderedItems.slice(0, 200).map((item, index) => ({
+        queueId: item.queueId,
+        source: 'upcoming',
+        origin: item.origin,
+        path: item.entry.path,
+        title: item.entry.snapshot.title,
+        index
+      }))
+    )
+
+    resolvedPathCount = 0
+    const allEntries = usePlayerStore.getState().getResolvedUpcomingEntries()
+    assert.equal(resolvedPathCount, 250)
+    assert.deepEqual(allEntries.map((entry) => entry.queueId), upcomingQueueIds)
+  } finally {
+    useLibraryStore.setState({ resolveTrackPaths: originalResolveTrackPaths })
+    resetStores()
+  }
+})
+
 test('path queue actions fetch missing library metadata before queueing', async () => {
   resetStores()
 

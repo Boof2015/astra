@@ -476,7 +476,9 @@ function App() {
         console.error('Failed to restore Astra session:', error)
       } finally {
         if (!didUnmount) {
-          sessionPersistenceCleanup = installSessionPersistence()
+          sessionPersistenceCleanup = installSessionPersistence({
+            persistedSessionSavedAt: sessionSnapshot?.savedAt ?? null
+          })
           window.electronAPI.associatedOpenFiles.markReady()
           associatedOpenReady = true
         }

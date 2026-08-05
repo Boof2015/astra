@@ -439,7 +439,8 @@ export function useMiniPlayerBridge(): void {
         trackPath: currentTrack.path
       })
     }
-    for (const entry of player.getResolvedUpcomingEntries()) {
+    const upcomingCapacity = Math.max(0, QUEUE_SNAPSHOT_MAX_ITEMS - items.length)
+    for (const entry of player.getResolvedUpcomingEntries(upcomingCapacity)) {
       if (items.length >= QUEUE_SNAPSHOT_MAX_ITEMS) break
       items.push({
         queueId: entry.queueId,

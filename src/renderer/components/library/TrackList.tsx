@@ -1,6 +1,6 @@
 import { CSSProperties, memo, ReactElement, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
-import { usePlayerStore, type PlaybackSourceContext } from '../../stores/playerStore'
+import { usePlayerStore, type PlaybackSourceContext, type QueueItem } from '../../stores/playerStore'
 import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
 import { getNormalPlaylists, usePlaylistStore } from '../../stores/playlistStore'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
@@ -228,6 +228,12 @@ interface TrackSelectionPointerState {
   mode: 'modifier-selection' | 'selected-drag'
   baseSelectedPaths: Set<string>
   activeSelectedPaths: Set<string> | null
+}
+
+interface ManualUpcomingQueueCache {
+  queueItems: readonly QueueItem[]
+  upcomingQueueIds: readonly string[]
+  orderedManualQueueIds: readonly string[]
 }
 
 // Convert DbTrack to Track
@@ -934,6 +940,7 @@ export default function TrackList({
   const playlistPopupTriggerRef = useRef<HTMLButtonElement | null>(null)
   const playlistMembershipRequestIdRef = useRef(0)
   const consumedJumpRequestIdRef = useRef<number | null>(null)
+  const manualUpcomingQueueCacheRef = useRef<ManualUpcomingQueueCache | null>(null)
 
   useImperativeHandle(viewportRef, () => ({
     get element() {
@@ -1125,16 +1132,57 @@ export default function TrackList({
     }
   }, [])
 
-  const manualUpcomingItems = useMemo(() => {
-    const itemById = new Map(queueItems.map((item) => [item.queueId, item]))
-    return upcomingQueueIds
-      .map((queueId) => itemById.get(queueId))
-      .filter((item) => item?.origin === 'manual')
-  }, [queueItems, upcomingQueueIds])
-  const queuedTrackPaths = useMemo(
-    () => new Set(manualUpcomingItems.map((item) => item!.entry.path)),
-    [manualUpcomingItems]
-  )
+  const manualQueueItemsById = useMemo(() => {
+    const itemsById = new Map<string, QueueItem>()
+    for (const item of queueItems) {
+      if (item.origin === 'manual') {
+        itemsById.set(item.queueId, item)
+      }
+    }
+    return itemsById
+  }, [queueItems])
+  const manualUpcomingQueueIds = useMemo(() => {
+    const previous = manualUpcomingQueueCacheRef.current
+    let orderedManualQueueIds: readonly string[]
+
+    if (manualQueueItemsById.size === 0) {
+      orderedManualQueueIds = []
+    } else if (
+      previous
+      && previous.queueItems === queueItems
+      && upcomingQueueIds.length === previous.upcomingQueueIds.length - 1
+      && previous.upcomingQueueIds[0] !== undefined
+      && upcomingQueueIds[0] === previous.upcomingQueueIds[1]
+    ) {
+      const removedQueueId = previous.upcomingQueueIds[0]
+      orderedManualQueueIds = manualQueueItemsById.has(removedQueueId)
+        ? previous.orderedManualQueueIds.filter((queueId) => queueId !== removedQueueId)
+        : previous.orderedManualQueueIds
+    } else {
+      const nextManualQueueIds: string[] = []
+      for (const queueId of upcomingQueueIds) {
+        if (manualQueueItemsById.has(queueId)) {
+          nextManualQueueIds.push(queueId)
+        }
+      }
+      orderedManualQueueIds = nextManualQueueIds
+    }
+
+    manualUpcomingQueueCacheRef.current = {
+      queueItems,
+      upcomingQueueIds,
+      orderedManualQueueIds
+    }
+    return orderedManualQueueIds
+  }, [manualQueueItemsById, queueItems, upcomingQueueIds])
+  const queuedTrackPaths = useMemo(() => {
+    const paths = new Set<string>()
+    for (const queueId of manualUpcomingQueueIds) {
+      const item = manualQueueItemsById.get(queueId)
+      if (item) paths.add(item.entry.path)
+    }
+    return paths
+  }, [manualQueueItemsById, manualUpcomingQueueIds])
   const renderedQueueTracks = useMemo(() => tracks.map(dbTrackToTrack), [tracks])
   const renderedQueueTrackPaths = useMemo(() => tracks.map((track) => track.path), [tracks])
   const selectedQueueTracks = useMemo(
@@ -1153,7 +1201,10 @@ export default function TrackList({
     })
     return indexByPath
   }, [queueSeedTracks])
-  const nextQueuedTrackPath = manualUpcomingItems[0]?.entry.path ?? null
+  const nextManualQueueItem = manualUpcomingQueueIds[0]
+    ? manualQueueItemsById.get(manualUpcomingQueueIds[0])
+    : null
+  const nextQueuedTrackPath = nextManualQueueItem?.entry.path ?? null
 
   const canRemoveFromPlaylist = playlistSourceId !== null && playlistSourceId > 0
   const currentTrackPath = currentTrack?.path ?? null
