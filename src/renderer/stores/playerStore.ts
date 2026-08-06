@@ -4151,6 +4151,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         && prebufferInFlightPromise
       ) {
         attempt.prebufferStatus = 'in_flight'
+        audioEngine.promoteMatchingPrebufferDecode(candidate.track.path)
         // Preserve the transition immediately (so rapid Next presses still advance
         // every queue/history step), while allowing the prebuffer request to finish
         // against the target that is now current in queue state.
@@ -4729,63 +4730,88 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
 
         attemptBackend = 'standard'
-        const fileLoadStart = performance.now()
         // Resolve loudness (stored value or main-process ffmpeg pass) in
-        // parallel with the file read + decode below.
+        // parallel with whichever decoder wins below. The same promise is
+        // reused if the native float32 path needs Chromium fallback.
         const loudnessAnalysis = requestTrackLoudnessAnalysis(track, replayGainDb)
-        // Load audio file from path
-        const result = await window.electronAPI.loadAudioFile(track.path, { metadataMode: 'none' })
-          .finally(() => {
-            attemptFileReadMs = performance.now() - fileLoadStart
-          })
-        throwIfSupersededLoad(loadRequestId)
-        const fileLoadMs = Math.round(performance.now() - fileLoadStart)
-        if (!result) {
-          console.error('Failed to load audio file:', track.path)
-          logSlowPath('queueLoadAndPlayTrack', loadStart, {
-            trackPath: track.path,
-            failed: true,
-            stage: 'fileLoad'
-          })
-          set({
-            playbackState: 'stopped',
-            remoteLoadProgress: null,
-            loadingStatus: null,
-            remoteBufferedSeconds: 0,
-            remoteStreamSessionId: null
-          })
-          if (recentPlaySession === loadListeningSession) finalizeRecentPlaySession()
-          finishAttempt('failed')
-          return 'failed'
-        }
-        if (!result.data) {
-          throw new Error('Audio file data missing from full decode load.')
-        }
-
+        let result: Awaited<ReturnType<typeof window.electronAPI.loadAudioFile>> = null
+        let fileLoadMs: number | null = null
+        let usedFfmpegPcm = false
         let usedFfmpegFallback = false
         const decodeStart = performance.now()
         try {
-          try {
-            await audioEngine.loadAudioData(result.data, { replayGainDb, trackPath: track.path, loudnessAnalysis })
+          const canUseFfmpegPcm = !isIamfTrack(track)
+            && Number.isInteger(track.channels)
+            && Number(track.channels) >= 1
+            && Number(track.channels) <= 8
+            && typeof window.electronAPI.decodeLocalAudioToPcm === 'function'
+
+          if (canUseFfmpegPcm) {
+            const pcmOutcome = await audioEngine.loadStandardTrackFromPath(track, {
+              replayGainDb,
+              trackPath: track.path,
+              loudnessAnalysis,
+              priority: 'interactive'
+            })
             throwIfSupersededLoad(loadRequestId)
-          } catch (primaryDecodeError) {
-            if (isSupersededPlaybackLoad(primaryDecodeError, loadRequestId)) {
-              throw primaryDecodeError
+            if (pcmOutcome === 'cancelled') {
+              throw new SupersededPlaybackLoadError()
             }
-            // ffmpeg 6.0 cannot decode IAMF; the fallback would fail anyway.
-            if (isIamfTrack(track)) {
-              throw primaryDecodeError
-            }
-            const fallbackData = await window.electronAPI.decodeAudioWithFfmpeg(track.path)
+            usedFfmpegPcm = pcmOutcome === 'loaded'
+          }
+
+          if (!usedFfmpegPcm) {
+            const fileLoadStart = performance.now()
+            result = await window.electronAPI.loadAudioFile(track.path, { metadataMode: 'none' })
+              .finally(() => {
+                attemptFileReadMs = performance.now() - fileLoadStart
+              })
             throwIfSupersededLoad(loadRequestId)
-            if (!fallbackData) {
-              throw primaryDecodeError
+            fileLoadMs = Math.round(performance.now() - fileLoadStart)
+            if (!result) {
+              console.error('Failed to load audio file:', track.path)
+              logSlowPath('queueLoadAndPlayTrack', loadStart, {
+                trackPath: track.path,
+                failed: true,
+                stage: 'fileLoad'
+              })
+              set({
+                playbackState: 'stopped',
+                remoteLoadProgress: null,
+                loadingStatus: null,
+                remoteBufferedSeconds: 0,
+                remoteStreamSessionId: null
+              })
+              if (recentPlaySession === loadListeningSession) finalizeRecentPlaySession()
+              finishAttempt('failed')
+              return 'failed'
+            }
+            if (!result.data) {
+              throw new Error('Audio file data missing from full decode load.')
             }
 
-            usedFfmpegFallback = true
-            console.warn(`Primary decode failed for ${track.path}; using FFmpeg compatibility decode.`)
-            await audioEngine.loadAudioData(fallbackData, { replayGainDb, trackPath: track.path, loudnessAnalysis })
-            throwIfSupersededLoad(loadRequestId)
+            try {
+              await audioEngine.loadAudioData(result.data, { replayGainDb, trackPath: track.path, loudnessAnalysis })
+              throwIfSupersededLoad(loadRequestId)
+            } catch (primaryDecodeError) {
+              if (isSupersededPlaybackLoad(primaryDecodeError, loadRequestId)) {
+                throw primaryDecodeError
+              }
+              // ffmpeg 6.0 cannot decode IAMF; the fallback would fail anyway.
+              if (isIamfTrack(track)) {
+                throw primaryDecodeError
+              }
+              const fallbackData = await window.electronAPI.decodeAudioWithFfmpeg(track.path)
+              throwIfSupersededLoad(loadRequestId)
+              if (!fallbackData) {
+                throw primaryDecodeError
+              }
+
+              usedFfmpegFallback = true
+              console.warn(`Primary decode failed for ${track.path}; using FFmpeg compatibility decode.`)
+              await audioEngine.loadAudioData(fallbackData, { replayGainDb, trackPath: track.path, loudnessAnalysis })
+              throwIfSupersededLoad(loadRequestId)
+            }
           }
         } finally {
           attemptDecodeMs = performance.now() - decodeStart
@@ -4794,18 +4820,18 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         const detectedChannels = audioEngine.getCurrentTrackChannelCount()
         const metadataResolvedTrack: Track = {
           ...track,
-          title: result.metadata?.title ?? track.title,
-          artist: result.metadata?.artist ?? track.artist,
-          album: result.metadata?.album ?? track.album,
-          albumArtist: result.metadata?.albumArtist ?? track.albumArtist,
-          duration: result.metadata?.duration ?? track.duration,
-          channels: detectedChannels ?? result.metadata?.channels ?? track.channels,
-          codec: result.metadata?.codec ?? track.codec,
-          codecProfile: result.metadata?.codecProfile ?? track.codecProfile,
-          isAtmosJoc: result.metadata?.isAtmosJoc ?? track.isAtmosJoc,
-          isIamf: result.metadata?.isIamf ?? track.isIamf,
-          replayGainTrackDb: result.metadata?.replayGainTrackDb ?? track.replayGainTrackDb,
-          replayGainAlbumDb: result.metadata?.replayGainAlbumDb ?? track.replayGainAlbumDb
+          title: result?.metadata?.title ?? track.title,
+          artist: result?.metadata?.artist ?? track.artist,
+          album: result?.metadata?.album ?? track.album,
+          albumArtist: result?.metadata?.albumArtist ?? track.albumArtist,
+          duration: result?.metadata?.duration ?? track.duration,
+          channels: detectedChannels ?? result?.metadata?.channels ?? track.channels,
+          codec: result?.metadata?.codec ?? track.codec,
+          codecProfile: result?.metadata?.codecProfile ?? track.codecProfile,
+          isAtmosJoc: result?.metadata?.isAtmosJoc ?? track.isAtmosJoc,
+          isIamf: result?.metadata?.isIamf ?? track.isIamf,
+          replayGainTrackDb: result?.metadata?.replayGainTrackDb ?? track.replayGainTrackDb,
+          replayGainAlbumDb: result?.metadata?.replayGainAlbumDb ?? track.replayGainAlbumDb
         }
         const resolvedDuration = resolvePositiveDuration(audioEngine.duration, metadataResolvedTrack.duration)
         const resolvedTrack: Track = {
@@ -4847,14 +4873,23 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         const engineTimings = audioEngine.getLastLoadTimings()
         attemptDecodeMs = engineTimings?.decodeMs ?? attemptDecodeMs
         attemptLoudnessMs = engineTimings?.analysisMs ?? null
+        nativeProbeMs = usedFfmpegPcm ? engineTimings?.nativeProbeMs ?? null : null
+        nativeDecodeMs = usedFfmpegPcm ? engineTimings?.nativeDecodeMs ?? null : null
         logMemoryDiagnosticsEvent('track_load_success', {
           trackPath: track.path,
           sourceType: resolvedTrack.sourceType ?? 'local',
-          loadPath: usedFfmpegFallback ? 'file_ffmpeg_fallback' : 'file_decode',
+          loadPath: usedFfmpegPcm
+            ? 'file_ffmpeg_pcm'
+            : usedFfmpegFallback
+              ? 'file_ffmpeg_fallback'
+              : 'file_decode',
           fileLoadMs,
           decodeMs,
           decodeOnlyMs: engineTimings?.decodeMs ?? null,
           loudnessAnalysisMs: engineTimings?.analysisMs ?? null,
+          nativePcmProbeMs: usedFfmpegPcm ? engineTimings?.nativeProbeMs ?? null : null,
+          nativePcmDecodeMs: usedFfmpegPcm ? engineTimings?.nativeDecodeMs ?? null : null,
+          usedFfmpegPcm,
           usedFfmpegFallback
         })
 
@@ -4867,6 +4902,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           decodeMs,
           decodeOnlyMs: engineTimings?.decodeMs ?? null,
           loudnessAnalysisMs: engineTimings?.analysisMs ?? null,
+          nativePcmProbeMs: usedFfmpegPcm ? engineTimings?.nativeProbeMs ?? null : null,
+          nativePcmDecodeMs: usedFfmpegPcm ? engineTimings?.nativeDecodeMs ?? null : null,
+          usedFfmpegPcm,
           usedFfmpegFallback
         })
         finishAttempt('loaded')
@@ -5027,49 +5065,82 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             }
 
             const nextReplayGainDb = getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
-            // Resolve loudness in parallel with the prebuffer file read + decode.
-            const nextLoudnessAnalysis = requestTrackLoudnessAnalysis(nextTrack, nextReplayGainDb)
-            const result = await window.electronAPI.loadAudioFile(nextTrack.path, { metadataMode: 'none' })
-            if (!canApplyPrebufferResult(nextTrack)) {
-              return
-            }
-            if (result?.data) {
-              await audioEngine.preBufferNext(result.data, {
+            // Resolve loudness in parallel with the native decode. Reuse the
+            // same result if this track needs the Chromium fallback.
+            const nextLoudnessAnalysis = requestTrackLoudnessAnalysis(
+              nextTrack,
+              nextReplayGainDb,
+              'background'
+            )
+            const canUseFfmpegPcm = !isIamfTrack(nextTrack)
+              && Number.isInteger(nextTrack.channels)
+              && Number(nextTrack.channels) >= 1
+              && Number(nextTrack.channels) <= 8
+              && typeof window.electronAPI.decodeLocalAudioToPcm === 'function'
+            let usedFfmpegPcm = false
+
+            if (canUseFfmpegPcm) {
+              const pcmOutcome = await audioEngine.preBufferNextStandardTrackFromPath(nextTrack, {
                 replayGainDb: nextReplayGainDb,
                 trackPath: nextTrack.path,
-                loudnessAnalysis: nextLoudnessAnalysis
+                loudnessAnalysis: nextLoudnessAnalysis,
+                priority: 'background'
               })
               if (!canApplyPrebufferResult(nextTrack)) {
-                audioEngine.clearNextBuffer()
+                if (pcmOutcome === 'loaded') audioEngine.clearNextBuffer()
                 return
               }
-              // AudioEngine intentionally absorbs decoder/analysis failures so
-              // background prebuffering cannot disrupt playback. Verify that it
-              // actually installed this target before declaring success; an
-              // eager miss gets one retry in the final 15-second window.
-              if (audioEngine.nextBufferedTrackPath !== nextTrack.path) {
+              if (pcmOutcome === 'cancelled') return
+              usedFfmpegPcm = pcmOutcome === 'loaded'
+            }
+
+            if (!usedFfmpegPcm) {
+              const result = await window.electronAPI.loadAudioFile(nextTrack.path, { metadataMode: 'none' })
+              if (!canApplyPrebufferResult(nextTrack)) {
+                return
+              }
+              if (result?.data) {
+                await audioEngine.preBufferNext(result.data, {
+                  replayGainDb: nextReplayGainDb,
+                  trackPath: nextTrack.path,
+                  loudnessAnalysis: nextLoudnessAnalysis
+                })
+                if (!canApplyPrebufferResult(nextTrack)) {
+                  audioEngine.clearNextBuffer()
+                  return
+                }
+              } else {
                 if (isActivePrebufferRequest(prebufferRequestId)) {
                   prebufferRetryAtLateTrackPath = nextTrack.path
                 }
                 return
               }
-              logSlowPath('preBufferNextTrack', bufferStart, {
-                trackPath: nextTrack.path,
-                loaded: true
-              })
-              prebufferRetryAtLateTrackPath = null
-              // §21 Gapless sink handoff — the next track is decoded; pre-announce it to connected
-              // sinks so they pre-buffer and cross the boundary gaplessly. No-op unless hosting with
-              // sinks on a non-bitperfect local track.
-              void useParallaxStore.getState().publishHostNextStream(nextTrack)
+            }
+
+            // Both decoders intentionally install an ordinary AudioBuffer.
+            // Verify ownership before declaring success; an eager miss gets
+            // one retry in the final 15-second window.
+            if (audioEngine.nextBufferedTrackPath !== nextTrack.path) {
+              if (isActivePrebufferRequest(prebufferRequestId)) {
+                prebufferRetryAtLateTrackPath = nextTrack.path
+              }
               return
             }
-            if (isActivePrebufferRequest(prebufferRequestId)) {
-              prebufferRetryAtLateTrackPath = nextTrack.path
-            }
-            if (isActivePrebufferRequest(prebufferRequestId) && nextTrack.sourceType && nextTrack.sourceType !== 'local') {
-              markTrackUnavailableInState(nextTrack.path)
-            }
+            logSlowPath('preBufferNextTrack', bufferStart, {
+              trackPath: nextTrack.path,
+              loaded: true,
+              usedFfmpegPcm
+            })
+            logMemoryDiagnosticsEvent('prebuffer_complete', {
+              trackPath: nextTrack.path,
+              decoder: usedFfmpegPcm ? 'ffmpeg_pcm' : 'webaudio'
+            })
+            prebufferRetryAtLateTrackPath = null
+            // §21 Gapless sink handoff — the next track is decoded; pre-announce it to connected
+            // sinks so they pre-buffer and cross the boundary gaplessly. No-op unless hosting with
+            // sinks on a non-bitperfect local track.
+            void useParallaxStore.getState().publishHostNextStream(nextTrack)
+            return
           } catch (error) {
             if (isSupersededAudioLoadError(error) || !isActivePrebufferRequest(prebufferRequestId)) {
               return

@@ -188,6 +188,18 @@ interface LibraryTrackPage {
     hasMore: boolean
 }
 
+interface LocalAudioPcmDecodeResult {
+    requestId: number
+    sampleRate: number
+    channels: number
+    frames: number
+    pcmByteLength: number
+    interleavedPcm: ArrayBuffer
+    probeMs: number
+    decodeMs: number
+    backgroundPriorityApplied: boolean
+}
+
 declare global {
     interface Window {
         // §22 Commit 1 — Parallax loopback (Windows-only WASAPI). See preload/index.ts for
@@ -599,6 +611,15 @@ declare global {
                 mtimeMs: number
             } | null>
             decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
+            decodeLocalAudioToPcm: (
+                requestId: number,
+                filePath: string,
+                outputSampleRate: number,
+                expectedChannels?: number | null,
+                priority?: 'interactive' | 'background'
+            ) => Promise<LocalAudioPcmDecodeResult | null>
+            cancelLocalAudioDecode: (requestId: number) => Promise<void>
+            promoteLocalAudioDecode: (requestId: number) => Promise<void>
             analyzeTrackLoudness: (filePath: string) => Promise<{
                 loudnessLufs: number
                 peakLinear: number | null

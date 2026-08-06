@@ -215,6 +215,18 @@ export interface AudioFileStatResult {
   mtimeMs: number
 }
 
+export interface LocalAudioPcmDecodeResult {
+  requestId: number
+  sampleRate: number
+  channels: number
+  frames: number
+  pcmByteLength: number
+  interleavedPcm: ArrayBuffer
+  probeMs: number
+  decodeMs: number
+  backgroundPriorityApplied: boolean
+}
+
 export interface ProgressiveStreamStartOptions {
   startTimeSeconds?: number | null
 }
@@ -1228,6 +1240,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAudioMetadata: (filePath: string) => ipcRenderer.invoke('audio:getMetadata', filePath) as Promise<AudioFileMetadata | null>,
   getAudioFileStat: (filePath: string) => ipcRenderer.invoke('audio:getFileStat', filePath) as Promise<AudioFileStatResult | null>,
   decodeAudioWithFfmpeg: (filePath: string) => ipcRenderer.invoke('audio:decodeWithFfmpeg', filePath),
+  decodeLocalAudioToPcm: (
+    requestId: number,
+    filePath: string,
+    outputSampleRate: number,
+    expectedChannels?: number | null,
+    priority?: 'interactive' | 'background'
+  ) => ipcRenderer.invoke(
+    'audio:decodeLocalAudioToPcm',
+    requestId,
+    filePath,
+    outputSampleRate,
+    expectedChannels,
+    priority
+  ) as Promise<LocalAudioPcmDecodeResult | null>,
+  cancelLocalAudioDecode: (requestId: number) =>
+    ipcRenderer.invoke('audio:cancelLocalAudioDecode', requestId) as Promise<void>,
+  promoteLocalAudioDecode: (requestId: number) =>
+    ipcRenderer.invoke('audio:promoteLocalAudioDecode', requestId) as Promise<void>,
   analyzeTrackLoudness: (filePath: string) =>
     ipcRenderer.invoke('audio:analyzeTrackLoudness', filePath) as Promise<TrackLoudnessResult | null>,
   warmupTrackLoudness: (filePath: string) =>
@@ -1862,6 +1892,15 @@ declare global {
       getAudioMetadata: (filePath: string) => Promise<AudioFileMetadata | null>
       getAudioFileStat: (filePath: string) => Promise<AudioFileStatResult | null>
       decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
+      decodeLocalAudioToPcm: (
+        requestId: number,
+        filePath: string,
+        outputSampleRate: number,
+        expectedChannels?: number | null,
+        priority?: 'interactive' | 'background'
+      ) => Promise<LocalAudioPcmDecodeResult | null>
+      cancelLocalAudioDecode: (requestId: number) => Promise<void>
+      promoteLocalAudioDecode: (requestId: number) => Promise<void>
       analyzeTrackLoudness: (filePath: string) => Promise<TrackLoudnessResult | null>
       warmupTrackLoudness: (filePath: string) => Promise<TrackLoudnessResult | null>
       supersedeTrackLoudness: (filePath: string | null) => Promise<void>

@@ -33,6 +33,11 @@ import {
   deinterleaveProgressivePcm,
   shouldUsePlanarLocalProgressiveChunk,
 } from './progressivePcm'
+import {
+  copyCompleteFloat32PcmToChannels,
+  validateCompleteFloat32Pcm,
+  type CompleteFloat32Pcm,
+} from './completePcm'
 import { detectIamfContainer, type IamfContainerKind } from '../../shared/iamf/detect'
 import {
   IamfDecodeCancelledError,
@@ -211,12 +216,18 @@ export interface AudioLoadTimings {
   nativeDeviceStartMs?: number
 }
 
+export type StandardPcmLoadOutcome = 'loaded' | 'failed' | 'cancelled'
+
 interface AudioLoadDataOptions {
   replayGainDb?: number | null
   trackPath?: string | null
   // Pre-resolved loudness (DB lookup or main-process ffmpeg pass) so the
   // load path can skip the in-renderer full-buffer analysis.
   loudnessAnalysis?: Promise<ExternalLoudnessResult | null> | null
+}
+
+interface StandardTrackDecodeOptions extends AudioLoadDataOptions {
+  priority?: 'interactive' | 'background'
 }
 
 interface RemoteStreamLoadOptions {
@@ -497,6 +508,11 @@ export class AudioEngine {
   private normalizationApproximate: boolean = false
   private loadGeneration = 0
   private prebufferGeneration = 0
+  private currentPcmDecodeGeneration = 0
+  private nextLocalPcmDecodeRequestId = 1
+  private activeCurrentPcmDecodeRequestId: number | null = null
+  private activePrebufferPcmDecodeRequestId: number | null = null
+  private activePrebufferPcmDecodeTrackPath: string | null = null
   private parallaxHostPublishGeneration = 0
   // §21 Gapless sink handoff (host side). The next-buffer publish loop streams the WHOLE next track
   // (captured by reference) and must survive the gapless swap that makes that buffer the current
@@ -1416,9 +1432,73 @@ export class AudioEngine {
     }
   }
 
+  private allocateLocalPcmDecodeRequestId(): number {
+    const requestId = this.nextLocalPcmDecodeRequestId
+    this.nextLocalPcmDecodeRequestId = requestId >= Number.MAX_SAFE_INTEGER
+      ? 1
+      : requestId + 1
+    return requestId
+  }
+
+  private cancelCurrentPcmDecode(): void {
+    // This generation is independent from playback/loadGeneration: a native
+    // decode can be superseded without touching the live source or Parallax.
+    this.currentPcmDecodeGeneration += 1
+    const requestId = this.activeCurrentPcmDecodeRequestId
+    if (requestId == null) return
+    this.activeCurrentPcmDecodeRequestId = null
+    const cancel = window.electronAPI?.cancelLocalAudioDecode
+    if (!cancel) return
+    void cancel(requestId).catch(() => {
+      // The generation guard still prevents a late decode from committing.
+    })
+  }
+
+  private beginCurrentPcmDecodeOperation(): number {
+    this.cancelCurrentPcmDecode()
+    return this.currentPcmDecodeGeneration
+  }
+
+  private assertCurrentPcmDecodeOperation(generation: number): void {
+    if (generation !== this.currentPcmDecodeGeneration) {
+      throw new SupersededAudioLoadError('Native PCM decode was superseded by a newer request.')
+    }
+  }
+
+  /** Best-effort priority promotion when Next adopts an active background decode. */
+  promoteMatchingPrebufferDecode(trackPath: string): boolean {
+    const requestId = this.activePrebufferPcmDecodeRequestId
+    if (requestId == null || this.activePrebufferPcmDecodeTrackPath !== trackPath) return false
+
+    const promote = window.electronAPI?.promoteLocalAudioDecode
+    if (!promote) return false
+    try {
+      void promote(requestId).catch(() => {
+        // Priority is advisory; the existing decode remains valid if promotion fails.
+      })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private cancelPrebufferPcmDecode(): void {
+    const requestId = this.activePrebufferPcmDecodeRequestId
+    this.activePrebufferPcmDecodeRequestId = null
+    this.activePrebufferPcmDecodeTrackPath = null
+    if (requestId == null) return
+    const cancel = window.electronAPI?.cancelLocalAudioDecode
+    if (!cancel) return
+    void cancel(requestId).catch(() => {
+      // The generation guard still prevents a late prebuffer from committing.
+    })
+  }
+
   private beginLoadOperation(): number {
     // A new load supersedes any pending pause-fade teardown (its stopSource runs in the load flow).
     this.clearPauseFadeTimer()
+    this.cancelCurrentPcmDecode()
+    this.cancelPrebufferPcmDecode()
     this.loadGeneration += 1
     this.prebufferGeneration += 1
     this.cancelParallaxHostPublishing()
@@ -1426,6 +1506,8 @@ export class AudioEngine {
   }
 
   private invalidateLoadOperations(): void {
+    this.cancelCurrentPcmDecode()
+    this.cancelPrebufferPcmDecode()
     this.loadGeneration += 1
     this.prebufferGeneration += 1
     this.cancelParallaxHostPublishing()
@@ -1436,6 +1518,7 @@ export class AudioEngine {
    * result while leaving an independently decoded next-track buffer reusable.
    */
   supersedeCurrentLoadPreservingPrebuffer(): void {
+    this.cancelCurrentPcmDecode()
     this.loadGeneration += 1
     if (this._playbackState === 'loading' && this.remoteStreamState) {
       this.remoteStreamState.playRequested = false
@@ -1531,11 +1614,13 @@ export class AudioEngine {
   }
 
   private beginPrebufferOperation(): number {
+    this.cancelPrebufferPcmDecode()
     this.prebufferGeneration += 1
     return this.prebufferGeneration
   }
 
   private invalidatePrebufferOperations(): void {
+    this.cancelPrebufferPcmDecode()
     this.prebufferGeneration += 1
   }
 
@@ -1569,6 +1654,7 @@ export class AudioEngine {
     // Invalidate renderer-side work even when cancellation lands before preload has
     // created its ffprobe/FFmpeg controller. An active device-start call is allowed
     // to return; its following generation check suppresses the obsolete result.
+    this.cancelCurrentPcmDecode()
     this.loadGeneration += 1
     this.invalidatePrebufferOperations()
     const cancelPendingDecode = window.nativeAudioAPI?.cancelPendingDecode
@@ -4668,6 +4754,22 @@ export class AudioEngine {
     }
   }
 
+  /**
+   * Returns the actual Standard-mode AudioContext rate so native decoding
+   * performs the same resampling decodeAudioData would have performed.
+   */
+  async getStandardDecodeSampleRate(): Promise<number> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      throw new Error('Standard decoding is unavailable while bit-perfect mode is active.')
+    }
+    await this.initContext()
+    if (this.getPlaybackOutputMode() === 'bitperfect') {
+      throw new Error('Standard decoding is unavailable while bit-perfect mode is active.')
+    }
+    if (!this.context) throw new Error('AudioContext not initialized')
+    return this.context.sampleRate
+  }
+
   // Get actual sample rate from AudioContext (for native DSP sync)
   getSampleRate(): number {
     if (this.playbackOutputMode === 'bitperfect') {
@@ -6362,6 +6464,30 @@ export class AudioEngine {
     }
   }
 
+  /**
+   * Installs a complete native float32 decode into a regular AudioBuffer.
+   * The rest of Standard playback deliberately cannot distinguish this from
+   * an AudioBuffer produced by decodeAudioData().
+   */
+  private createAudioBufferFromPcm(pcm: CompleteFloat32Pcm): AudioBuffer {
+    if (!this.context) throw new Error('AudioContext not initialized')
+    // Validate before asking Web Audio for a potentially large allocation.
+    validateCompleteFloat32Pcm(pcm)
+    const buffer = this.context.createBuffer(pcm.channels, pcm.frames, pcm.sampleRate)
+    const destinationChannels = Array.from(
+      { length: pcm.channels },
+      (_, channelIndex) => buffer.getChannelData(channelIndex),
+    )
+    copyCompleteFloat32PcmToChannels(pcm, destinationChannels)
+    // The AudioBuffer now owns the only samples playback needs. Drop the
+    // interleaved IPC payload before loudness resolution can keep this async
+    // load alive, avoiding a full-track duplicate throughout that wait.
+    if (!Object.isFrozen(pcm)) {
+      pcm.interleavedPcm = new ArrayBuffer(0)
+    }
+    return buffer
+  }
+
   /** Cancels in-flight IAMF decodes (current load and/or prebuffer). */
   private cancelActiveIamfDecodes(): void {
     for (const handle of this.activeIamfDecodes) {
@@ -6449,6 +6575,187 @@ export class AudioEngine {
     }
   }
 
+  /**
+   * Loads a complete native float32 decode through the same AudioBuffer path
+   * as loadAudioData. Only compressed decoding changes; routing, DSP,
+   * Parallax, visualizers, seeking, and gapless playback remain unchanged.
+   */
+  private async loadPcmDataForOperation(
+    pcm: CompleteFloat32Pcm,
+    options: AudioLoadDataOptions,
+    loadOperation: number,
+  ): Promise<void> {
+    this.assertCurrentLoadOperation(loadOperation)
+    if (!this.context) throw new Error('AudioContext not initialized')
+
+    this._playbackState = 'loading'
+    this.emit('stateChange', this._playbackState)
+    this.stopTimeUpdate()
+
+    try {
+      this.stopSource()
+      this.clearNextBuffer()
+      this.cancelActiveIamfDecodes()
+      await this.clearRemoteStreamState(true)
+      this.clearParallaxSinkState()
+      this.assertCurrentLoadOperation(loadOperation)
+      this.audioBuffer = null
+      this.currentNormalizationAnalysis = null
+      this.currentBufferTrackPath = null
+      this.pauseTime = 0
+      this.currentReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
+
+      const bufferCopyStart = performance.now()
+      const decodedBuffer = this.createAudioBufferFromPcm(pcm)
+      const bufferCopyMs = performance.now() - bufferCopyStart
+      const nativeProbeMs = typeof pcm.probeMs === 'number'
+        && Number.isFinite(pcm.probeMs)
+        && pcm.probeMs >= 0
+        ? pcm.probeMs
+        : null
+      const nativeDecodeMs = typeof pcm.decodeMs === 'number'
+        && Number.isFinite(pcm.decodeMs)
+        && pcm.decodeMs >= 0
+        ? pcm.decodeMs
+        : null
+      const decodeMs = Math.round(bufferCopyMs + (nativeProbeMs ?? 0) + (nativeDecodeMs ?? 0))
+      this.assertCurrentLoadOperation(loadOperation)
+      const analysisStart = performance.now()
+      const normalizationAnalysis = await this.resolveLoudnessAnalysisForLoad(
+        decodedBuffer,
+        options,
+        this.currentReplayGainDb,
+        () => this.assertCurrentLoadOperation(loadOperation)
+      )
+      this.lastLoadTimings = {
+        decodeMs,
+        analysisMs: Math.round(performance.now() - analysisStart),
+        ...(nativeProbeMs == null ? {} : { nativeProbeMs: Math.round(nativeProbeMs) }),
+        ...(nativeDecodeMs == null ? {} : { nativeDecodeMs: Math.round(nativeDecodeMs) }),
+      }
+      this.assertCurrentLoadOperation(loadOperation)
+      this.audioBuffer = decodedBuffer
+      this.currentNormalizationAnalysis = normalizationAnalysis
+      this.currentBufferTrackPath = options.trackPath ?? null
+      this.applyChannelRoutingPreferences(this.audioBuffer.numberOfChannels)
+
+      this.notifyTrackChange()
+      this.applyNormalization()
+
+      this._playbackState = 'stopped'
+      this.pauseTime = 0
+      this.emit('stateChange', this._playbackState)
+      this.emit('durationChange', this.audioBuffer.duration)
+      this.emit('bufferReady', this.audioBuffer)
+    } catch (err) {
+      if (isSupersededAudioLoadError(err) || loadOperation !== this.loadGeneration) {
+        throw new SupersededAudioLoadError()
+      }
+      this.audioBuffer = null
+      this.currentNormalizationAnalysis = null
+      this.currentBufferTrackPath = null
+      this.pauseTime = 0
+      this.currentReplayGainDb = null
+      this._playbackState = 'stopped'
+      this.emit('stateChange', this._playbackState)
+      this.emit('durationChange', 0)
+      this.emit('error', err instanceof Error ? err : new Error('Failed to load decoded PCM'))
+      throw err
+    }
+  }
+
+  async loadPcmData(pcm: CompleteFloat32Pcm, options: AudioLoadDataOptions = {}): Promise<void> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      throw new Error('Bit-perfect mode requires path-based native loading.')
+    }
+    const loadOperation = this.beginLoadOperation()
+    await this.initContext()
+    await this.loadPcmDataForOperation(pcm, options, loadOperation)
+  }
+
+  /**
+   * Decodes one known local track outside Chromium, then installs it through
+   * the ordinary full-buffer Standard path. A failed native decode is kept
+   * distinct from cancellation so the caller can safely choose whether to
+   * fall back to decodeAudioData().
+   */
+  async loadStandardTrackFromPath(
+    track: Track,
+    options: StandardTrackDecodeOptions = {},
+  ): Promise<StandardPcmLoadOutcome> {
+    if (this.playbackOutputMode === 'bitperfect') return 'failed'
+    if (track.sourceType && track.sourceType !== 'local') return 'failed'
+    if (!Number.isInteger(track.channels) || Number(track.channels) < 1 || Number(track.channels) > 8) {
+      // Never guess a channel count: FFmpeg's raw output has no layout header,
+      // and forcing a fallback stereo count would silently downmix a source.
+      return 'failed'
+    }
+
+    // Decoding is intentionally separate from a playback load operation. The
+    // currently playing source and Parallax publisher stay untouched until a
+    // complete, still-current PCM result is ready to commit.
+    const decodeOperation = this.beginCurrentPcmDecodeOperation()
+    let pcm: CompleteFloat32Pcm & { requestId: number }
+    try {
+      const sampleRate = await this.getStandardDecodeSampleRate()
+      this.assertCurrentPcmDecodeOperation(decodeOperation)
+      const decode = window.electronAPI?.decodeLocalAudioToPcm
+      if (!decode) return 'failed'
+
+      const requestId = this.allocateLocalPcmDecodeRequestId()
+      this.activeCurrentPcmDecodeRequestId = requestId
+      let result: Awaited<ReturnType<typeof decode>>
+      try {
+        result = await decode(
+          requestId,
+          track.path,
+          sampleRate,
+          track.channels,
+          options.priority ?? 'interactive',
+        )
+      } catch {
+        if (
+          this.activeCurrentPcmDecodeRequestId !== requestId
+          || decodeOperation !== this.currentPcmDecodeGeneration
+        ) return 'cancelled'
+        return 'failed'
+      } finally {
+        if (this.activeCurrentPcmDecodeRequestId === requestId) {
+          this.activeCurrentPcmDecodeRequestId = null
+        }
+      }
+
+      if (decodeOperation !== this.currentPcmDecodeGeneration || !result) return 'cancelled'
+      if (result.requestId !== requestId) return 'failed'
+      // contextBridge may freeze returned objects. Own a shallow wrapper so
+      // the large backing-buffer reference can be dropped after AudioBuffer copy.
+      pcm = { ...result }
+      result = null
+    } catch (error) {
+      if (isSupersededAudioLoadError(error) || decodeOperation !== this.currentPcmDecodeGeneration) {
+        return 'cancelled'
+      }
+      return 'failed'
+    }
+
+    // Enter the destructive playback load only after native decoding has
+    // succeeded. No await occurs between the final decode-generation check
+    // above and this claim, so a newer JS intent cannot slip in and let stale
+    // PCM become current.
+    const loadOperation = this.beginLoadOperation()
+    try {
+      await this.loadPcmDataForOperation(pcm, {
+        ...options,
+        trackPath: options.trackPath ?? track.path,
+      }, loadOperation)
+      return 'loaded'
+    } catch (error) {
+      return isSupersededAudioLoadError(error) || loadOperation !== this.loadGeneration
+        ? 'cancelled'
+        : 'failed'
+    }
+  }
+
   // Pre-buffer the next track for gapless playback
   async preBufferNext(arrayBuffer: ArrayBuffer, options: AudioLoadDataOptions = {}): Promise<void> {
     if (this.playbackOutputMode === 'bitperfect') {
@@ -6501,6 +6808,117 @@ export class AudioEngine {
       this.nextBufferTrackPath = null
       this.nextReplayGainDb = null
       this.clearNextNormalizationCache()
+    }
+  }
+
+  private async commitNextPcmBuffer(
+    pcm: CompleteFloat32Pcm,
+    options: AudioLoadDataOptions,
+    prebufferOperation: number,
+  ): Promise<void> {
+    const decodedBuffer = this.createAudioBufferFromPcm(pcm)
+    this.assertCurrentPrebufferOperation(prebufferOperation)
+    const nextReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
+    const normalizationAnalysis = await this.resolveLoudnessAnalysisForLoad(
+      decodedBuffer,
+      options,
+      nextReplayGainDb,
+      () => this.assertCurrentPrebufferOperation(prebufferOperation)
+    )
+    this.assertCurrentPrebufferOperation(prebufferOperation)
+    this.nextReplayGainDb = nextReplayGainDb
+    this.nextBuffer = decodedBuffer
+    this.nextNormalizationAnalysis = normalizationAnalysis
+    this.nextBufferTrackPath = options.trackPath ?? null
+    this.updateNextNormalizationCache()
+
+    if (this._playbackState === 'playing' && this.audioBuffer) {
+      this.scheduleGaplessTransition()
+    }
+  }
+
+  /** Prebuffers a native float32 decode without changing gapless semantics. */
+  async preBufferNextPcm(pcm: CompleteFloat32Pcm, options: AudioLoadDataOptions = {}): Promise<void> {
+    if (this.playbackOutputMode === 'bitperfect') {
+      throw new Error('Bit-perfect mode requires path-based native prebuffering.')
+    }
+    const prebufferOperation = this.beginPrebufferOperation()
+    await this.initContext()
+    this.assertCurrentPrebufferOperation(prebufferOperation)
+    if (!this.context) throw new Error('AudioContext not initialized')
+
+    try {
+      await this.commitNextPcmBuffer(pcm, options, prebufferOperation)
+    } catch (err) {
+      if (isSupersededAudioLoadError(err) || prebufferOperation !== this.prebufferGeneration) {
+        return
+      }
+      console.error('Failed to pre-buffer decoded PCM:', err)
+      this.nextBuffer = null
+      this.nextNormalizationAnalysis = null
+      this.nextBufferTrackPath = null
+      this.nextReplayGainDb = null
+      this.clearNextNormalizationCache()
+    }
+  }
+
+  /** Native full-buffer decode for the ordinary Standard next-track lane. */
+  async preBufferNextStandardTrackFromPath(
+    track: Track,
+    options: StandardTrackDecodeOptions = {},
+  ): Promise<StandardPcmLoadOutcome> {
+    if (this.playbackOutputMode === 'bitperfect') return 'failed'
+    if (track.sourceType && track.sourceType !== 'local') return 'failed'
+    if (!Number.isInteger(track.channels) || Number(track.channels) < 1 || Number(track.channels) > 8) {
+      return 'failed'
+    }
+
+    const prebufferOperation = this.beginPrebufferOperation()
+    try {
+      const sampleRate = await this.getStandardDecodeSampleRate()
+      this.assertCurrentPrebufferOperation(prebufferOperation)
+      const decode = window.electronAPI?.decodeLocalAudioToPcm
+      if (!decode) return 'failed'
+
+      const requestId = this.allocateLocalPcmDecodeRequestId()
+      this.activePrebufferPcmDecodeRequestId = requestId
+      this.activePrebufferPcmDecodeTrackPath = track.path
+      let result: Awaited<ReturnType<typeof decode>>
+      try {
+        result = await decode(
+          requestId,
+          track.path,
+          sampleRate,
+          track.channels,
+          options.priority ?? 'background',
+        )
+      } catch {
+        if (
+          this.activePrebufferPcmDecodeRequestId !== requestId
+          || prebufferOperation !== this.prebufferGeneration
+        ) return 'cancelled'
+        return 'failed'
+      } finally {
+        if (this.activePrebufferPcmDecodeRequestId === requestId) {
+          this.activePrebufferPcmDecodeRequestId = null
+          this.activePrebufferPcmDecodeTrackPath = null
+        }
+      }
+
+      if (prebufferOperation !== this.prebufferGeneration || !result) return 'cancelled'
+      if (result.requestId !== requestId) return 'failed'
+      const ownedPcm = { ...result }
+      result = null
+      await this.commitNextPcmBuffer(ownedPcm, {
+        ...options,
+        trackPath: options.trackPath ?? track.path,
+      }, prebufferOperation)
+      return 'loaded'
+    } catch (error) {
+      if (isSupersededAudioLoadError(error) || prebufferOperation !== this.prebufferGeneration) {
+        return 'cancelled'
+      }
+      return 'failed'
     }
   }
 

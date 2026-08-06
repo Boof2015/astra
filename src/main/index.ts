@@ -622,6 +622,13 @@ function getActiveMemoryFootprintChildProcessPids(): number[] {
     seen.add(pid)
     pids.push(pid)
   }
+  for (const session of localPcmDecodeSessions.values()) {
+    if (session.settled || session.cancelled) continue
+    const pid = session.ffmpeg?.pid
+    if (typeof pid !== 'number' || !Number.isFinite(pid) || pid <= 0 || seen.has(pid)) continue
+    seen.add(pid)
+    pids.push(pid)
+  }
   return pids
 }
 
@@ -6859,6 +6866,28 @@ ipcMain.handle('audio:decodeWithFfmpeg', async (_event, filePath: string) => {
   return decodeAudioWithFfmpeg(filePath)
 })
 
+// Decode a local Standard-mode source directly to the float32 PCM consumed by
+// WebAudio. Keeping this separate from the compatibility WAV decoder above
+// lets callers opt in while retaining decodeAudioData as a safe fallback.
+ipcMain.handle('audio:decodeLocalAudioToPcm', async (
+  event,
+  requestId: number,
+  filePath: string,
+  outputSampleRate: number,
+  expectedChannels?: number | null,
+  priority?: 'interactive' | 'background'
+) => {
+  return decodeLocalAudioToPcm(event.sender, requestId, filePath, outputSampleRate, expectedChannels, priority)
+})
+
+ipcMain.handle('audio:cancelLocalAudioDecode', async (event, requestId: number) => {
+  cancelLocalAudioDecode(event.sender, requestId)
+})
+
+ipcMain.handle('audio:promoteLocalAudioDecode', async (event, requestId: number) => {
+  promoteLocalAudioDecode(event.sender, requestId)
+})
+
 // Loudness for playback normalization: stored value or a fresh ffmpeg ebur128 pass.
 ipcMain.handle('audio:analyzeTrackLoudness', async (_event, filePath: string) => {
   return analyzeTrackLoudness(filePath, 'interactive')
@@ -9097,6 +9126,49 @@ const binaryPathCache: Record<'ffmpeg' | 'ffprobe', string | null | undefined> =
   ffprobe: undefined
 }
 
+const LOCAL_PCM_DECODE_MAX_BYTES = 192 * 1024 * 1024
+const LOCAL_PCM_DECODE_TIMEOUT_MS = 180_000
+
+interface LocalPcmDecodeResult {
+  requestId: number
+  sampleRate: number
+  channels: number
+  frames: number
+  pcmByteLength: number
+  interleavedPcm: ArrayBuffer
+  probeMs: number
+  decodeMs: number
+  backgroundPriorityApplied: boolean
+}
+
+interface LocalPcmDecodeSession {
+  key: string
+  requestId: number
+  sender: Electron.WebContents
+  filePath: string
+  sampleRate: number
+  expectedChannels: number | null
+  channels: number
+  initialPriority: 'interactive' | 'background'
+  priority: 'interactive' | 'background'
+  backgroundPriorityApplied: boolean
+  probeAbortController: AbortController | null
+  probeMs: number
+  ffmpeg: ChildProcessWithoutNullStreams | null
+  ffmpegStartedAtMs: number | null
+  outputBuffer: Buffer | null
+  totalBytes: number
+  stderrChunks: string[]
+  settled: boolean
+  cancelled: boolean
+  decodeTimeout: NodeJS.Timeout | null
+  releaseSenderHooks: (() => void) | null
+  resolve: (result: LocalPcmDecodeResult | null) => void
+  reject: (error: Error) => void
+}
+
+const localPcmDecodeSessions = new Map<string, LocalPcmDecodeSession>()
+
 interface RemoteStreamSession {
   id: number
   sender: Electron.WebContents
@@ -10395,6 +10467,549 @@ async function decodeAudioWithFfmpeg(filePath: string): Promise<ArrayBuffer | nu
     return null
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+  }
+}
+
+function localPcmDecodeSessionKey(sender: Electron.WebContents, requestId: number): string {
+  return `${sender.id}:${requestId}`
+}
+
+function normalizeLocalPcmDecodeRequest(
+  requestIdValue: unknown,
+  filePathValue: unknown,
+  outputSampleRateValue: unknown,
+  expectedChannelsValue?: unknown,
+  priorityValue?: unknown
+): {
+  requestId: number
+  filePath: string
+  sampleRate: number
+  expectedChannels: number | null
+  priority: 'interactive' | 'background'
+} {
+  const requestId = Number(requestIdValue)
+  if (!Number.isSafeInteger(requestId) || requestId < 0) {
+    throw new Error('Local audio decode requires a non-negative integer request ID.')
+  }
+
+  if (typeof filePathValue !== 'string' || filePathValue.trim().length === 0) {
+    throw new Error('Local audio decode requires a file path.')
+  }
+  const filePath = filePathValue
+  if (isSubsonicPath(filePath) || isJellyfinPath(filePath)) {
+    throw new Error('Local audio decode does not accept remote track paths.')
+  }
+
+  const outputSampleRate = Number(outputSampleRateValue)
+  if (!Number.isFinite(outputSampleRate) || outputSampleRate <= 0) {
+    throw new Error('Local audio decode requires a valid output sample rate.')
+  }
+  const sampleRate = Math.min(384_000, Math.max(8_000, Math.round(outputSampleRate)))
+
+  const requestedChannels = Number(expectedChannelsValue)
+  const expectedChannels = Number.isFinite(requestedChannels) && requestedChannels > 0
+    ? Math.round(requestedChannels)
+    : null
+  if (expectedChannels !== null && expectedChannels > 8) {
+    throw new Error('Local FFmpeg decode supports at most 8 channels; falling back to Chromium decoding.')
+  }
+  const priority = priorityValue === 'background' ? 'background' : 'interactive'
+
+  return { requestId, filePath, sampleRate, expectedChannels, priority }
+}
+
+interface LocalPcmStreamProbe {
+  channels: number
+  durationSeconds: number | null
+}
+
+function parseFfprobeTimeBase(value: unknown): number | null {
+  if (typeof value !== 'string') return null
+  const [numeratorValue, denominatorValue] = value.split('/', 2)
+  const numerator = Number(numeratorValue)
+  const denominator = Number(denominatorValue)
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) return null
+  const seconds = numerator / denominator
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null
+}
+
+async function probeLocalPcmStream(
+  session: LocalPcmDecodeSession,
+  ffprobePath: string
+): Promise<LocalPcmStreamProbe> {
+  const controller = new AbortController()
+  session.probeAbortController = controller
+  try {
+    const stdout = await execFileAsync(
+      ffprobePath,
+      [
+        '-v', 'error',
+        '-print_format', 'json',
+        '-show_entries', 'stream=channels,duration,duration_ts,time_base:format=duration',
+        '-select_streams', 'a:0',
+        session.filePath
+      ],
+      {
+        timeout: 10_000,
+        maxBuffer: 256 * 1024,
+        signal: controller.signal
+      }
+    )
+    const parsed = JSON.parse(stdout) as {
+      streams?: Array<Record<string, unknown>>
+      format?: Record<string, unknown>
+    }
+    const stream = parsed.streams?.[0]
+    const channels = Math.round(toNumberOrUndefined(stream?.channels) ?? 0)
+    if (channels < 1 || channels > 8) {
+      throw new Error(
+        channels > 8
+          ? 'Local FFmpeg decode supports at most 8 channels; falling back to Chromium decoding.'
+          : 'FFprobe could not determine the local audio stream channel count.'
+      )
+    }
+
+    const durationTs = toNumberOrUndefined(stream?.duration_ts)
+    const timeBaseSeconds = parseFfprobeTimeBase(stream?.time_base)
+    const durationFromTimeBase = durationTs !== undefined && timeBaseSeconds !== null
+      ? durationTs * timeBaseSeconds
+      : null
+    const durationCandidates = [
+      durationFromTimeBase,
+      toNumberOrUndefined(stream?.duration),
+      toNumberOrUndefined(parsed.format?.duration)
+    ]
+    const durationSeconds = durationCandidates.find(
+      (candidate): candidate is number => typeof candidate === 'number'
+        && Number.isFinite(candidate)
+        && candidate > 0
+    ) ?? null
+
+    return { channels, durationSeconds }
+  } finally {
+    if (session.probeAbortController === controller) {
+      session.probeAbortController = null
+    }
+  }
+}
+
+function allocateInitialLocalPcmOutput(
+  durationSeconds: number | null,
+  sampleRate: number,
+  channels: number
+): Buffer {
+  const frameSizeBytes = channels * Float32Array.BYTES_PER_ELEMENT
+  const fallbackBytes = 8 * 1024 * 1024
+  const minimumBytes = 64 * 1024
+  let capacity = fallbackBytes
+  if (durationSeconds !== null) {
+    const estimatedFrames = Math.ceil(durationSeconds * sampleRate)
+    const resamplerSlackFrames = 4096
+    const estimatedPcmBytes = estimatedFrames * frameSizeBytes
+    if (
+      !Number.isSafeInteger(estimatedPcmBytes)
+      || estimatedPcmBytes > LOCAL_PCM_DECODE_MAX_BYTES
+    ) {
+      throw new Error('Decoded audio exceeds the 192 MiB Standard playback limit.')
+    }
+    const allocationBytes = (estimatedFrames + resamplerSlackFrames) * frameSizeBytes
+    if (Number.isSafeInteger(allocationBytes) && allocationBytes > 0) {
+      capacity = allocationBytes
+    }
+  }
+  capacity = Math.max(minimumBytes, Math.min(LOCAL_PCM_DECODE_MAX_BYTES, Math.ceil(capacity)))
+  return Buffer.allocUnsafe(capacity)
+}
+
+function ensureLocalPcmOutputCapacity(session: LocalPcmDecodeSession, requiredBytes: number): Buffer {
+  if (requiredBytes > LOCAL_PCM_DECODE_MAX_BYTES) {
+    throw new Error('Decoded audio exceeds the 192 MiB Standard playback limit.')
+  }
+  const current = session.outputBuffer
+  if (current && requiredBytes <= current.byteLength) return current
+
+  const previousCapacity = current?.byteLength ?? 0
+  const grownCapacity = Math.max(requiredBytes, Math.ceil(previousCapacity * 1.5), 64 * 1024)
+  const next = Buffer.allocUnsafe(Math.min(LOCAL_PCM_DECODE_MAX_BYTES, grownCapacity))
+  if (current && session.totalBytes > 0) {
+    current.copy(next, 0, 0, session.totalBytes)
+  }
+  session.outputBuffer = next
+  return next
+}
+
+function settleLocalPcmDecodeSession(
+  session: LocalPcmDecodeSession,
+  outcome:
+    | { type: 'success'; pcm: Buffer; pcmByteLength: number }
+    | { type: 'cancelled' }
+    | { type: 'failed'; error: Error }
+): void {
+  if (session.settled) return
+  session.settled = true
+  session.cancelled = outcome.type === 'cancelled'
+  localPcmDecodeSessions.delete(session.key)
+
+  session.releaseSenderHooks?.()
+  session.releaseSenderHooks = null
+  if (session.decodeTimeout) {
+    clearTimeout(session.decodeTimeout)
+    session.decodeTimeout = null
+  }
+  session.probeAbortController?.abort()
+  session.probeAbortController = null
+
+  const ffmpeg = session.ffmpeg
+  if (outcome.type !== 'success' && ffmpeg && !ffmpeg.killed) {
+    try {
+      ffmpeg.kill('SIGKILL')
+    } catch {
+      // Process teardown can race with a natural FFmpeg exit.
+    }
+  }
+
+  session.outputBuffer = null
+
+  const frameSizeBytes = session.channels * Float32Array.BYTES_PER_ELEMENT
+  const successValidationError = outcome.type === 'success' && (
+    outcome.pcmByteLength === 0
+    || outcome.pcmByteLength > outcome.pcm.byteLength
+    || outcome.pcmByteLength % frameSizeBytes !== 0
+  )
+    ? new Error('FFmpeg produced invalid or frame-misaligned PCM audio.')
+    : null
+  const diagnosticOutcome = successValidationError ? 'failed' : outcome.type
+
+  logMemoryDiagnosticsMainEvent('local_pcm_decode_completed', {
+    requestId: session.requestId,
+    trackPath: session.filePath,
+    outcome: diagnosticOutcome,
+    initialPriority: session.initialPriority,
+    finalPriority: session.priority,
+    backgroundPriorityApplied: session.backgroundPriorityApplied,
+    expectedChannels: session.expectedChannels,
+    probedChannels: session.channels > 0 ? session.channels : null,
+    pcmByteLength: outcome.type === 'success' && !successValidationError ? outcome.pcmByteLength : null,
+    probeMs: roundMainDiagnosticMs(session.probeMs),
+    decodeMs: session.ffmpegStartedAtMs === null
+      ? null
+      : roundMainDiagnosticMs(mainDiagnosticNow() - session.ffmpegStartedAtMs),
+    error: successValidationError?.message ?? (outcome.type === 'failed' ? outcome.error.message : null)
+  })
+
+  if (outcome.type === 'cancelled') {
+    session.resolve(null)
+    return
+  }
+  if (outcome.type === 'failed') {
+    session.reject(outcome.error)
+    return
+  }
+  if (successValidationError) {
+    session.reject(successValidationError)
+    return
+  }
+
+  session.resolve({
+    requestId: session.requestId,
+    sampleRate: session.sampleRate,
+    channels: session.channels,
+    frames: outcome.pcmByteLength / frameSizeBytes,
+    pcmByteLength: outcome.pcmByteLength,
+    interleavedPcm: toStandaloneArrayBuffer(outcome.pcm),
+    probeMs: roundMainDiagnosticMs(session.probeMs),
+    decodeMs: roundMainDiagnosticMs(
+      session.ffmpegStartedAtMs === null ? 0 : mainDiagnosticNow() - session.ffmpegStartedAtMs
+    ),
+    backgroundPriorityApplied: session.backgroundPriorityApplied
+  })
+}
+
+async function decodeLocalAudioToPcm(
+  sender: Electron.WebContents,
+  requestIdValue: unknown,
+  filePathValue: unknown,
+  outputSampleRateValue: unknown,
+  expectedChannelsValue?: unknown,
+  priorityValue?: unknown
+): Promise<LocalPcmDecodeResult | null> {
+  const request = normalizeLocalPcmDecodeRequest(
+    requestIdValue,
+    filePathValue,
+    outputSampleRateValue,
+    expectedChannelsValue,
+    priorityValue
+  )
+  const key = localPcmDecodeSessionKey(sender, request.requestId)
+
+  // Reusing an active request ID supersedes that exact request without
+  // affecting unrelated foreground/prebuffer work owned by the renderer.
+  const existing = localPcmDecodeSessions.get(key)
+  if (existing) {
+    settleLocalPcmDecodeSession(existing, { type: 'cancelled' })
+  }
+
+  return new Promise<LocalPcmDecodeResult | null>((resolve, reject) => {
+    const session: LocalPcmDecodeSession = {
+      key,
+      requestId: request.requestId,
+      sender,
+      filePath: request.filePath,
+      sampleRate: request.sampleRate,
+      expectedChannels: request.expectedChannels,
+      channels: 0,
+      initialPriority: request.priority,
+      priority: request.priority,
+      backgroundPriorityApplied: false,
+      probeAbortController: null,
+      probeMs: 0,
+      ffmpeg: null,
+      ffmpegStartedAtMs: null,
+      outputBuffer: null,
+      totalBytes: 0,
+      stderrChunks: [],
+      settled: false,
+      cancelled: false,
+      decodeTimeout: null,
+      releaseSenderHooks: null,
+      resolve,
+      reject
+    }
+    localPcmDecodeSessions.set(key, session)
+
+    const handleSenderDestroyed = (): void => {
+      settleLocalPcmDecodeSession(session, { type: 'cancelled' })
+    }
+    const handleSenderNavigation = (
+      _event: Electron.Event,
+      _url: string,
+      isInPlace: boolean,
+      isMainFrame: boolean
+    ): void => {
+      if (!isMainFrame || isInPlace) return
+      settleLocalPcmDecodeSession(session, { type: 'cancelled' })
+    }
+    sender.once('destroyed', handleSenderDestroyed)
+    sender.on('did-start-navigation', handleSenderNavigation)
+    session.releaseSenderHooks = () => {
+      try {
+        sender.removeListener('destroyed', handleSenderDestroyed)
+        sender.removeListener('did-start-navigation', handleSenderNavigation)
+      } catch {
+        // Listener removal can race with renderer teardown.
+      }
+    }
+
+    session.decodeTimeout = setTimeout(() => {
+      settleLocalPcmDecodeSession(session, {
+        type: 'failed',
+        error: new Error('Local FFmpeg decode timed out after 180 seconds; falling back to Chromium decoding.')
+      })
+    }, LOCAL_PCM_DECODE_TIMEOUT_MS)
+    session.decodeTimeout.unref()
+
+    void (async () => {
+      const [ffmpegPath, ffprobePath] = await Promise.all([
+        resolveBinary('ffmpeg'),
+        resolveBinary('ffprobe')
+      ])
+      if (session.settled) return
+      if (!ffmpegPath || !ffprobePath) {
+        settleLocalPcmDecodeSession(session, {
+          type: 'failed',
+          error: new Error('FFmpeg and FFprobe are required for safe local audio decoding.')
+        })
+        return
+      }
+
+      const probeStartedAtMs = mainDiagnosticNow()
+      const probe = await probeLocalPcmStream(session, ffprobePath)
+      session.probeMs = mainDiagnosticNow() - probeStartedAtMs
+      if (session.settled) return
+      session.channels = probe.channels
+      session.outputBuffer = allocateInitialLocalPcmOutput(
+        probe.durationSeconds,
+        session.sampleRate,
+        session.channels
+      )
+      if (
+        isDev
+        && session.expectedChannels !== null
+        && session.expectedChannels !== session.channels
+      ) {
+        console.debug('[audio-decode] using probed channel count instead of stale metadata', {
+          filePath: session.filePath,
+          expectedChannels: session.expectedChannels,
+          probedChannels: session.channels
+        })
+      }
+
+      session.ffmpegStartedAtMs = mainDiagnosticNow()
+      const ffmpeg = spawn(
+        ffmpegPath,
+        [
+          '-v', 'error',
+          '-nostdin',
+          '-i', session.filePath,
+          '-map', '0:a:0',
+          '-vn',
+          '-acodec', 'pcm_f32le',
+          '-f', 'f32le',
+          '-ar', String(session.sampleRate),
+          'pipe:1'
+        ],
+        {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true
+        }
+      )
+      session.ffmpeg = ffmpeg
+
+      if (session.priority === 'background' && typeof ffmpeg.pid === 'number') {
+        try {
+          setPriority(ffmpeg.pid, osConstants.priority.PRIORITY_BELOW_NORMAL)
+          session.backgroundPriorityApplied = true
+        } catch (error) {
+          if (isDev) {
+            console.debug('[audio-decode] could not lower background ffmpeg priority', {
+              pid: ffmpeg.pid,
+              message: error instanceof Error ? error.message : String(error)
+            })
+          }
+        }
+      }
+
+      ffmpeg.stderr.setEncoding('utf8')
+      ffmpeg.stderr.on('data', (data: string | Buffer) => {
+        session.stderrChunks.push(String(data))
+        if (session.stderrChunks.length > 8) {
+          session.stderrChunks.shift()
+        }
+      })
+
+      ffmpeg.stdin.on('error', (error) => {
+        if (session.settled || isRemoteStreamPipeTeardownError(error)) return
+        settleLocalPcmDecodeSession(session, {
+          type: 'failed',
+          error: error instanceof Error ? error : new Error('Local FFmpeg input pipe failed.')
+        })
+      })
+
+      ffmpeg.stdout.on('data', (chunk: Buffer) => {
+        if (session.settled || chunk.byteLength === 0) return
+        const nextTotalBytes = session.totalBytes + chunk.byteLength
+        try {
+          const output = ensureLocalPcmOutputCapacity(session, nextTotalBytes)
+          chunk.copy(output, session.totalBytes)
+          session.totalBytes = nextTotalBytes
+        } catch (error) {
+          settleLocalPcmDecodeSession(session, {
+            type: 'failed',
+            error: error instanceof Error
+              ? error
+              : new Error('Decoded audio exceeds the Standard playback limit.')
+          })
+        }
+      })
+
+      ffmpeg.stdout.on('error', (error) => {
+        if (session.settled) return
+        settleLocalPcmDecodeSession(session, {
+          type: 'failed',
+          error: error instanceof Error ? error : new Error('Local FFmpeg output pipe failed.')
+        })
+      })
+
+      ffmpeg.on('error', (error) => {
+        settleLocalPcmDecodeSession(session, {
+          type: 'failed',
+          error: error instanceof Error ? error : new Error('Local FFmpeg decode failed to start.')
+        })
+      })
+
+      ffmpeg.on('close', (code) => {
+        if (session.settled) return
+        if (session.cancelled) {
+          settleLocalPcmDecodeSession(session, { type: 'cancelled' })
+          return
+        }
+        if (code !== 0) {
+          const stderr = session.stderrChunks.join(' ').trim()
+          settleLocalPcmDecodeSession(session, {
+            type: 'failed',
+            error: new Error(
+              stderr.length > 0
+                ? `Local FFmpeg decode failed: ${stderr}`
+                : `Local FFmpeg decode failed (exit ${code ?? 'unknown'}).`
+            )
+          })
+          return
+        }
+
+        try {
+          const pcm = session.outputBuffer
+          if (!pcm || session.totalBytes === 0) {
+            throw new Error('Local FFmpeg decode produced no PCM audio.')
+          }
+          // Preallocation avoids a second full-track Buffer.concat copy. Any
+          // small unused tail must be zeroed before its ArrayBuffer crosses IPC.
+          if (session.totalBytes < pcm.byteLength) {
+            pcm.fill(0, session.totalBytes)
+          }
+          settleLocalPcmDecodeSession(session, {
+            type: 'success',
+            pcm,
+            pcmByteLength: session.totalBytes
+          })
+        } catch (error) {
+          settleLocalPcmDecodeSession(session, {
+            type: 'failed',
+            error: error instanceof Error ? error : new Error('Local FFmpeg PCM assembly failed.')
+          })
+        }
+      })
+
+      try {
+        if (!ffmpeg.stdin.destroyed) {
+          ffmpeg.stdin.end()
+        }
+      } catch {
+        // FFmpeg reads the local file directly; stdin is intentionally unused.
+      }
+    })().catch((error) => {
+      settleLocalPcmDecodeSession(session, {
+        type: 'failed',
+        error: error instanceof Error ? error : new Error('Local FFmpeg decode failed.')
+      })
+    })
+  })
+}
+
+function cancelLocalAudioDecode(sender: Electron.WebContents, requestIdValue: unknown): void {
+  const requestId = Number(requestIdValue)
+  if (!Number.isSafeInteger(requestId) || requestId < 0) return
+  const session = localPcmDecodeSessions.get(localPcmDecodeSessionKey(sender, requestId))
+  if (!session) return
+  settleLocalPcmDecodeSession(session, { type: 'cancelled' })
+}
+
+function promoteLocalAudioDecode(sender: Electron.WebContents, requestIdValue: unknown): void {
+  const requestId = Number(requestIdValue)
+  if (!Number.isSafeInteger(requestId) || requestId < 0) return
+  const session = localPcmDecodeSessions.get(localPcmDecodeSessionKey(sender, requestId))
+  if (!session || session.settled || session.priority === 'interactive') return
+  session.priority = 'interactive'
+  const pid = session.ffmpeg?.pid
+  if (typeof pid !== 'number') return
+  try {
+    setPriority(pid, osConstants.priority.PRIORITY_NORMAL)
+  } catch (error) {
+    if (isDev) {
+      console.debug('[audio-decode] could not promote background ffmpeg priority', {
+        pid,
+        message: error instanceof Error ? error.message : String(error)
+      })
+    }
   }
 }
 

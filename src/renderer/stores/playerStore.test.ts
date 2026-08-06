@@ -21,7 +21,7 @@ import type { Track } from '../types/audio.ts'
 import { resolveCollectionTrackPaths } from '../utils/collectionQueue.ts'
 import { FAVORITES_PLAYLIST_ID } from '../utils/playlistSystem.ts'
 import type { PlayerSessionSnapshot } from '../utils/sessionState.ts'
-import { audioEngine } from '../audio/AudioEngine.ts'
+import { audioEngine, type StandardPcmLoadOutcome } from '../audio/AudioEngine.ts'
 import { useAudioSettingsStore } from './audioSettingsStore.ts'
 import { useParallaxStore } from './parallaxStore.ts'
 
@@ -375,6 +375,164 @@ function resetStores(): void {
     restoredTrackNeedsLoad: false,
     restoredPlaybackTime: null
   })
+}
+
+interface StandardPcmRouteMetrics {
+  pcmCalls: Array<{ path: string; priority: string | undefined }>
+  fileReadCalls: number
+  chromiumDecodeCalls: number
+  compatibilityFallbackCalls: number
+  backendPlayCalls: number
+}
+
+async function exerciseStandardPcmRoute(
+  pcmOutcome: StandardPcmLoadOutcome
+): Promise<{ loadOutcome: 'loaded' | 'failed' | 'superseded'; metrics: StandardPcmRouteMetrics }> {
+  resetStores()
+  usePlayerStore.getState()._schedulePreBufferNextTrack({ invalidatePending: true })
+  const track = makeTrack(`/pcm-route/${pcmOutcome}.flac`, {
+    sourceType: 'local',
+    duration: 180,
+    sampleRate: 44_100,
+    channels: 2
+  })
+  const metrics: StandardPcmRouteMetrics = {
+    pcmCalls: [],
+    fileReadCalls: 0,
+    chromiumDecodeCalls: 0,
+    compatibilityFallbackCalls: 0,
+    backendPlayCalls: 0
+  }
+
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      location: { search: '?window=test' },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      electronAPI: {
+        onProgressiveLoadProgress: () => () => undefined,
+        supersedeTrackLoudness: async () => undefined,
+        getAudioFileStat: async () => null,
+        // Presence of the bridge opts an eligible local track into the native
+        // PCM route. The AudioEngine method itself is stubbed below.
+        decodeLocalAudioToPcm: async () => null,
+        cancelLocalAudioDecode: async () => undefined,
+        loadAudioFile: async () => {
+          metrics.fileReadCalls += 1
+          return { data: new ArrayBuffer(16) }
+        },
+        decodeAudioWithFfmpeg: async () => {
+          metrics.compatibilityFallbackCalls += 1
+          return null
+        },
+        library: {
+          getListeningHistoryStatus: async () => ({
+            generation: `pcm-route-${pcmOutcome}`,
+            startedAt: null
+          }),
+          checkpointListeningSession: async () => ({
+            accepted: true,
+            qualifiedNow: false,
+            status: { generation: `pcm-route-${pcmOutcome}`, startedAt: null }
+          }),
+          markTrackLatestSyncSeen: async () => undefined
+        }
+      }
+    }
+  })
+
+  const originalSettings = useAudioSettingsStore.getState()
+  useAudioSettingsStore.setState({
+    playbackOutputMode: 'standard',
+    normalizationEnabled: false,
+    disableGaplessPrebufferDev: false
+  })
+  const originalOn = audioEngine.on
+  const originalLoadStandardTrackFromPath = audioEngine.loadStandardTrackFromPath
+  const originalLoadAudioData = audioEngine.loadAudioData
+  const originalPlay = audioEngine.play
+  const originalNeedsLoudness = audioEngine.needsLoudnessAnalysisForLoad
+  const originalGetCurrentTrackChannelCount = audioEngine.getCurrentTrackChannelCount
+  const originalGetLastLoadTimings = audioEngine.getLastLoadTimings
+  const originalGetPlaybackOutputMode = audioEngine.getPlaybackOutputMode
+  const ownCurrentTime = Object.getOwnPropertyDescriptor(audioEngine, 'currentTime')
+  const ownDuration = Object.getOwnPropertyDescriptor(audioEngine, 'duration')
+  const originalParallax = useParallaxStore.getState()
+  const stateChangeListeners: Array<(state: string) => void> = []
+
+  audioEngine.on = (event, callback) => {
+    if (event === 'stateChange') stateChangeListeners.push(callback)
+    return () => undefined
+  }
+  audioEngine.loadStandardTrackFromPath = async (candidate, options) => {
+    metrics.pcmCalls.push({ path: candidate.path, priority: options?.priority })
+    if (pcmOutcome === 'loaded') {
+      stateChangeListeners.forEach((listener) => listener('stopped'))
+    }
+    return pcmOutcome
+  }
+  audioEngine.loadAudioData = async () => {
+    metrics.chromiumDecodeCalls += 1
+    stateChangeListeners.forEach((listener) => listener('stopped'))
+  }
+  audioEngine.play = async () => {
+    metrics.backendPlayCalls += 1
+    stateChangeListeners.forEach((listener) => listener('playing'))
+  }
+  audioEngine.needsLoudnessAnalysisForLoad = () => false
+  audioEngine.getCurrentTrackChannelCount = () => 2
+  audioEngine.getLastLoadTimings = () => ({
+    decodeMs: pcmOutcome === 'loaded' ? 24 : 12,
+    analysisMs: 0,
+    ...(pcmOutcome === 'loaded' ? { nativeDecodeMs: 18 } : {})
+  })
+  audioEngine.getPlaybackOutputMode = () => 'standard'
+  Object.defineProperty(audioEngine, 'currentTime', { configurable: true, get: () => 0 })
+  Object.defineProperty(audioEngine, 'duration', { configurable: true, get: () => 180 })
+  useParallaxStore.setState({
+    status: null,
+    resumeHostPlayback: async () => null,
+    prepareHostPlayback: async () => null
+  })
+
+  try {
+    usePlayerStore.getState()._cleanupListeners()
+    const loadOutcome = await usePlayerStore.getState()._loadAndPlayTrack(track)
+    await flushAsyncWork()
+    return { loadOutcome, metrics }
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    usePlayerStore.setState({ currentTrack: null, playbackState: 'stopped' })
+    usePlayerStore.getState()._schedulePreBufferNextTrack({ invalidatePending: true })
+    await flushAsyncWork()
+    audioEngine.on = originalOn
+    audioEngine.loadStandardTrackFromPath = originalLoadStandardTrackFromPath
+    audioEngine.loadAudioData = originalLoadAudioData
+    audioEngine.play = originalPlay
+    audioEngine.needsLoudnessAnalysisForLoad = originalNeedsLoudness
+    audioEngine.getCurrentTrackChannelCount = originalGetCurrentTrackChannelCount
+    audioEngine.getLastLoadTimings = originalGetLastLoadTimings
+    audioEngine.getPlaybackOutputMode = originalGetPlaybackOutputMode
+    if (ownCurrentTime) Object.defineProperty(audioEngine, 'currentTime', ownCurrentTime)
+    else delete (audioEngine as unknown as Record<string, unknown>).currentTime
+    if (ownDuration) Object.defineProperty(audioEngine, 'duration', ownDuration)
+    else delete (audioEngine as unknown as Record<string, unknown>).duration
+    useParallaxStore.setState({
+      status: originalParallax.status,
+      resumeHostPlayback: originalParallax.resumeHostPlayback,
+      prepareHostPlayback: originalParallax.prepareHostPlayback
+    })
+    useAudioSettingsStore.setState({
+      playbackOutputMode: originalSettings.playbackOutputMode,
+      normalizationEnabled: originalSettings.normalizationEnabled,
+      disableGaplessPrebufferDev: originalSettings.disableGaplessPrebufferDev
+    })
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+    resetStores()
+  }
 }
 
 function installLoadedTrackStub(): () => void {
@@ -1983,7 +2141,7 @@ test('standard local playback schedules eager prebuffering after one second of s
   }
 })
 
-test('Next waits for and promotes a matching in-flight prebuffer instead of cold-loading it again', async () => {
+test('Next waits for and promotes a matching in-flight native PCM prebuffer without decoding twice', async () => {
   resetStores()
   usePlayerStore.getState()._schedulePreBufferNextTrack({ invalidatePending: true })
 
@@ -2013,6 +2171,15 @@ test('Next waits for and promotes a matching in-flight prebuffer instead of cold
     playbackHistory: []
   })
 
+  let fileReadCalls = 0
+  let interactiveLoudnessCalls = 0
+  const warmupLoudnessPaths: string[] = []
+  const supersededLoudnessPaths: Array<string | null> = []
+  const loudnessGate = createDeferred<{
+    loudnessLufs: number
+    peakLinear: number | null
+    method: string
+  } | null>()
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
@@ -2020,7 +2187,29 @@ test('Next waits for and promotes a matching in-flight prebuffer instead of cold
       location: { search: '?window=test' },
       electronAPI: {
         getAudioFileStat: async () => null,
-        loadAudioFile: async () => ({ data: new ArrayBuffer(16) })
+        decodeLocalAudioToPcm: async () => null,
+        warmupTrackLoudness: async (trackPath: string) => {
+          warmupLoudnessPaths.push(trackPath)
+          return loudnessGate.promise
+        },
+        analyzeTrackLoudness: async () => {
+          interactiveLoudnessCalls += 1
+          return null
+        },
+        supersedeTrackLoudness: async (trackPath: string | null) => {
+          supersededLoudnessPaths.push(trackPath)
+          if (trackPath === nextTrack.path) {
+            loudnessGate.resolve({
+              loudnessLufs: -16.5,
+              peakLinear: 0.8,
+              method: 'ffmpeg-ebur128'
+            })
+          }
+        },
+        loadAudioFile: async () => {
+          fileReadCalls += 1
+          return { data: new ArrayBuffer(16) }
+        }
       }
     }
   })
@@ -2029,15 +2218,16 @@ test('Next waits for and promotes a matching in-flight prebuffer instead of cold
   useAudioSettingsStore.setState({
     playbackOutputMode: 'standard',
     disableGaplessPrebufferDev: false,
-    normalizationEnabled: false
+    normalizationEnabled: true
   })
 
   const originalLoad = usePlayerStore.getState()._loadAndPlayTrack
   const originalGetBufferMemoryStats = audioEngine.getBufferMemoryStats
-  const originalPreBufferNext = audioEngine.preBufferNext
+  const originalPreBufferNextStandardTrackFromPath = audioEngine.preBufferNextStandardTrackFromPath
   const originalClearNextBuffer = audioEngine.clearNextBuffer
   const originalSkipToPreBuffered = audioEngine.skipToPreBuffered
   const originalNeedsLoudness = audioEngine.needsLoudnessAnalysisForLoad
+  const originalPromoteMatchingPrebufferDecode = audioEngine.promoteMatchingPrebufferDecode
   const originalSupersedeCurrentLoadPreservingPrebuffer = audioEngine.supersedeCurrentLoadPreservingPrebuffer
   const ownNextBufferedTrackPath = Object.getOwnPropertyDescriptor(audioEngine, 'nextBufferedTrackPath')
   const ownCurrentTime = Object.getOwnPropertyDescriptor(audioEngine, 'currentTime')
@@ -2050,6 +2240,7 @@ test('Next waits for and promotes a matching in-flight prebuffer instead of cold
   let coldLoadCalls = 0
   let promotedSkipCalls = 0
   let currentLoadSupersessionCalls = 0
+  const promotedDecodePaths: string[] = []
 
   usePlayerStore.setState({
     _loadAndPlayTrack: async () => {
@@ -2058,12 +2249,24 @@ test('Next waits for and promotes a matching in-flight prebuffer instead of cold
     }
   })
   audioEngine.getBufferMemoryStats = async () => ({ currentBytes: 0, nextBytes: 0, totalBytes: 0 })
-  audioEngine.needsLoudnessAnalysisForLoad = () => false
-  audioEngine.preBufferNext = async () => {
+  audioEngine.needsLoudnessAnalysisForLoad = () => true
+  audioEngine.preBufferNextStandardTrackFromPath = async (track, options) => {
+    assert.equal(track.path, nextTrack.path)
+    assert.equal(options?.priority, 'background')
+    assert.ok(options?.loudnessAnalysis, 'native prebuffer should receive background loudness work')
     prebufferStarted = true
-    await prebufferGate.promise
+    const [, loudness] = await Promise.all([
+      prebufferGate.promise,
+      options.loudnessAnalysis
+    ])
+    assert.deepEqual(loudness, {
+      loudnessLufs: -16.5,
+      peakLinear: 0.8,
+      method: 'ffmpeg-ebur128'
+    })
     prebufferReady = true
     prebufferCompleted = true
+    return 'loaded'
   }
   audioEngine.clearNextBuffer = () => {
     clearNextBufferCalls += 1
@@ -2079,6 +2282,10 @@ test('Next waits for and promotes a matching in-flight prebuffer instead of cold
     currentLoadSupersessionCalls += 1
     originalSupersedeCurrentLoadPreservingPrebuffer.call(audioEngine)
   }
+  audioEngine.promoteMatchingPrebufferDecode = (trackPath) => {
+    promotedDecodePaths.push(trackPath)
+    return true
+  }
   Object.defineProperty(audioEngine, 'nextBufferedTrackPath', {
     configurable: true,
     get: () => prebufferReady ? nextTrack.path : null
@@ -2090,6 +2297,8 @@ test('Next waits for and promotes a matching in-flight prebuffer instead of cold
     usePlayerStore.getState()._schedulePreBufferNextTrack({ invalidatePending: true })
     await flushAsyncWork()
     assert.equal(prebufferStarted, true)
+    assert.deepEqual(warmupLoudnessPaths, [nextTrack.path])
+    assert.equal(interactiveLoudnessCalls, 0, 'prebuffering must not start interactive loudness work')
 
     let nextFinished = false
     const next = usePlayerStore.getState().playNext().then(() => {
@@ -2098,6 +2307,9 @@ test('Next waits for and promotes a matching in-flight prebuffer instead of cold
     await flushAsyncWork()
     assert.equal(nextFinished, false, 'Next should wait for the matching decode')
     assert.equal(currentLoadSupersessionCalls, 1, 'the newer intent must supersede only current-load work')
+    assert.deepEqual(supersededLoudnessPaths, [nextTrack.path])
+    assert.deepEqual(promotedDecodePaths, [nextTrack.path])
+    assert.equal(interactiveLoudnessCalls, 0, 'matching Next should promote, not duplicate, loudness work')
     assert.equal(coldLoadCalls, 0)
 
     prebufferGate.resolve()
@@ -2107,9 +2319,11 @@ test('Next waits for and promotes a matching in-flight prebuffer instead of cold
     assert.equal(clearNextBufferCalls, 0, 'the matching in-flight result must survive queue pre-application')
     assert.equal(promotedSkipCalls, 1)
     assert.equal(coldLoadCalls, 0, 'the matching file must not be decoded twice')
+    assert.equal(fileReadCalls, 0, 'the successful native PCM prebuffer must not read for Chromium fallback')
     assert.equal(usePlayerStore.getState().currentQueueItemId, nextItem.queueId)
   } finally {
     prebufferGate.resolve()
+    loudnessGate.resolve(null)
     await flushAsyncWork()
     usePlayerStore.setState({
       currentTrack: null,
@@ -2118,10 +2332,11 @@ test('Next waits for and promotes a matching in-flight prebuffer instead of cold
     })
     usePlayerStore.getState()._schedulePreBufferNextTrack({ invalidatePending: true })
     audioEngine.getBufferMemoryStats = originalGetBufferMemoryStats
-    audioEngine.preBufferNext = originalPreBufferNext
+    audioEngine.preBufferNextStandardTrackFromPath = originalPreBufferNextStandardTrackFromPath
     audioEngine.clearNextBuffer = originalClearNextBuffer
     audioEngine.skipToPreBuffered = originalSkipToPreBuffered
     audioEngine.needsLoudnessAnalysisForLoad = originalNeedsLoudness
+    audioEngine.promoteMatchingPrebufferDecode = originalPromoteMatchingPrebufferDecode
     audioEngine.supersedeCurrentLoadPreservingPrebuffer = originalSupersedeCurrentLoadPreservingPrebuffer
     if (ownNextBufferedTrackPath) Object.defineProperty(audioEngine, 'nextBufferedTrackPath', ownNextBufferedTrackPath)
     else delete (audioEngine as unknown as Record<string, unknown>).nextBufferedTrackPath
@@ -3880,6 +4095,48 @@ test('a Next supersedes paused resume while Parallax preparation is stalled', as
     else delete (globalThis as Record<string, unknown>).window
     resetStores()
   }
+})
+
+test('Standard local playback uses native PCM without reading or Chromium-decoding the file', async () => {
+  const { loadOutcome, metrics } = await exerciseStandardPcmRoute('loaded')
+
+  assert.equal(loadOutcome, 'loaded')
+  assert.deepEqual(metrics.pcmCalls, [{
+    path: '/pcm-route/loaded.flac',
+    priority: 'interactive'
+  }])
+  assert.equal(metrics.fileReadCalls, 0)
+  assert.equal(metrics.chromiumDecodeCalls, 0)
+  assert.equal(metrics.compatibilityFallbackCalls, 0)
+  assert.equal(metrics.backendPlayCalls, 1)
+})
+
+test('a failed native PCM decode falls back through Chromium exactly once', async () => {
+  const { loadOutcome, metrics } = await exerciseStandardPcmRoute('failed')
+
+  assert.equal(loadOutcome, 'loaded')
+  assert.deepEqual(metrics.pcmCalls, [{
+    path: '/pcm-route/failed.flac',
+    priority: 'interactive'
+  }])
+  assert.equal(metrics.fileReadCalls, 1)
+  assert.equal(metrics.chromiumDecodeCalls, 1)
+  assert.equal(metrics.compatibilityFallbackCalls, 0)
+  assert.equal(metrics.backendPlayCalls, 1)
+})
+
+test('a cancelled native PCM decode is superseded without Chromium fallback', async () => {
+  const { loadOutcome, metrics } = await exerciseStandardPcmRoute('cancelled')
+
+  assert.equal(loadOutcome, 'superseded')
+  assert.deepEqual(metrics.pcmCalls, [{
+    path: '/pcm-route/cancelled.flac',
+    priority: 'interactive'
+  }])
+  assert.equal(metrics.fileReadCalls, 0)
+  assert.equal(metrics.chromiumDecodeCalls, 0)
+  assert.equal(metrics.compatibilityFallbackCalls, 0)
+  assert.equal(metrics.backendPlayCalls, 0)
 })
 
 test('successful Standard playback emits one complete playback-attempt timing event', async () => {
