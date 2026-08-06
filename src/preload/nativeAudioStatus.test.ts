@@ -12,6 +12,7 @@ import {
   parseNativeOutputFailureError,
   stripNativeOutputFailureTag
 } from '../shared/audio/bitPerfectFormatError.ts'
+import { normalizePlaybackOutputMode } from '../types/nativeAudio.ts'
 
 const verifiedBase = {
   streamRunning: true,
@@ -24,6 +25,8 @@ const verifiedBase = {
 const availableCapabilities = {
   bitPerfectAvailable: true,
   reasonUnavailable: null,
+  processedExclusiveAvailable: true,
+  reasonProcessedExclusiveUnavailable: null,
   activeBackend: 'coreaudio' as const,
   selectedDeviceId: 'test-device',
   selectedDeviceMaxChannels: 2,
@@ -48,6 +51,9 @@ function createPlaybackStub(overrides: Partial<NativeAudioAddonPlayback> = {}): 
   return {
     getCapabilities: () => availableCapabilities,
     setOutputDevice: () => availableCapabilities,
+    configureOutput: () => availableCapabilities,
+    setDspConfig: () => createPlaybackSnapshot(),
+    setCurrentTrackGain: () => createPlaybackSnapshot(),
     loadTrack: () => createPlaybackSnapshot(),
     preloadNextTrack: () => undefined,
     promoteNextTrack: () => createPlaybackSnapshot(),
@@ -394,4 +400,40 @@ test('decode cancellation never interrupts an active native device-start handsha
   assert.equal(playSettled, false)
   resolvePlay(createPlaybackSnapshot('playing'))
   assert.equal((await play).playbackState, 'playing')
+})
+
+test('normalizes processed-exclusive activation independently from bit-perfect integrity', () => {
+  const status = normalizeNativeAudioOutputStatus({
+    ...verifiedBase,
+    sourceSamplesModified: true,
+    processingFormat: {
+      sampleRate: 96000,
+      channels: 2,
+      sampleFormat: 'f64',
+      containerBits: 64,
+      validBits: 53,
+      representation: 'planar/native-dsp'
+    },
+    processing: {
+      outputPolicy: 'processed',
+      processingActive: true,
+      resamplingActive: true,
+      sourceSampleRate: 44100,
+      targetSampleRate: 96000,
+      resamplerName: 'r8brain-free-src 7.1'
+    }
+  })
+  assert.equal(status.outputPolicy, 'processed')
+  assert.equal(status.exclusiveActive, true)
+  assert.equal(status.processingActive, true)
+  assert.equal(status.resamplingActive, true)
+  assert.equal(status.processingFormat.sampleFormat, 'f64')
+  assert.equal(status.bitPerfectActive, false)
+})
+
+test('keeps saved output modes and safely migrates unknown values', () => {
+  assert.equal(normalizePlaybackOutputMode('standard'), 'standard')
+  assert.equal(normalizePlaybackOutputMode('exclusive'), 'exclusive')
+  assert.equal(normalizePlaybackOutputMode('bitperfect'), 'bitperfect')
+  assert.equal(normalizePlaybackOutputMode('legacy-shared'), 'standard')
 })

@@ -1,9 +1,11 @@
 #include "playback_engine.h"
+#include "audio_processing.h"
 
 #include <algorithm>
 #include <cassert>
 #include <cstring>
 #include <iostream>
+#include <cmath>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -20,6 +22,17 @@ public:
         return {{"fake", "Fake Exclusive Device", 2, true}};
     }
     uint32_t deviceMaxChannels(const std::string&) const override { return 2; }
+    DeviceFormatProbe probeDeviceFormats(const std::string&, uint32_t channels) const override {
+        DeviceFormatProbe probe;
+        probe.supported = true;
+        probe.formats = {
+            {44100, channels, "s16"},
+            {48000, channels, "f32"},
+            {48000, channels, "s32"},
+            {96000, channels, "f32"}
+        };
+        return probe;
+    }
 
     bool open(const std::string&, const TrackFormat& format, PlaybackEngine* engine, std::string*) override {
         engine_ = engine;
@@ -109,6 +122,52 @@ TrackBuffer makeTrack() {
     return track;
 }
 
+TrackBuffer makeFloatSine(uint32_t sampleRate, double frequency, size_t frames, double amplitude) {
+    TrackBuffer track;
+    track.format = BuildTrackFormat(sampleRate, 1, "f32");
+    track.data.resize(frames * sizeof(float));
+    for (size_t frame = 0; frame < frames; frame++) {
+        const float sample = static_cast<float>(amplitude * std::sin(
+            2.0 * 3.14159265358979323846 * frequency * static_cast<double>(frame) / sampleRate));
+        std::memcpy(track.data.data() + frame * sizeof(float), &sample, sizeof(sample));
+    }
+    track.duration = static_cast<double>(frames) / sampleRate;
+    return track;
+}
+
+std::vector<uint8_t> renderProcessed(
+    const TrackBuffer& track,
+    const TrackFormat& outputFormat,
+    const NativeDspConfig& config
+) {
+    ProcessedAudioPipeline pipeline;
+    pipeline.configure(track.format, outputFormat, config, {}, 0);
+    uint64_t sourceFrame = 0;
+    bool ended = false;
+    std::vector<uint8_t> result;
+    std::vector<uint8_t> block(257 * outputFormat.bytesPerFrame());
+    for (int iteration = 0; !ended && iteration < 10000; iteration++) {
+        const size_t rendered = pipeline.render(track, sourceFrame, block.data(), 257, ended);
+        result.insert(result.end(), block.begin(), block.begin() + static_cast<std::ptrdiff_t>(rendered * outputFormat.bytesPerFrame()));
+        if (rendered == 0 && !ended) throw std::runtime_error("Processed pipeline stalled.");
+    }
+    assert(ended);
+    return result;
+}
+
+double floatRms(const std::vector<uint8_t>& bytes, size_t skipFrames = 0) {
+    const size_t frames = bytes.size() / sizeof(float);
+    double sum = 0.0;
+    size_t count = 0;
+    for (size_t frame = std::min(skipFrames, frames); frame < frames; frame++) {
+        float sample = 0.0f;
+        std::memcpy(&sample, bytes.data() + frame * sizeof(float), sizeof(sample));
+        sum += static_cast<double>(sample) * sample;
+        count++;
+    }
+    return count == 0 ? 0.0 : std::sqrt(sum / count);
+}
+
 } // namespace
 
 std::unique_ptr<AudioOutputSink> CreatePlatformAudioSink() {
@@ -125,6 +184,39 @@ int main() {
     PlaybackEngine engine;
     TrackBuffer track = makeTrack();
     const std::vector<uint8_t> original = track.data;
+
+    const TrackBuffer sine = makeFloatSine(48000, 1000.0, 48000, 0.1);
+    const TrackFormat floatOutput = BuildTrackFormat(48000, 1, "f32");
+    NativeDspConfig flatConfig;
+    flatConfig.limiterEnabled = false;
+    const auto flatOutput = renderProcessed(sine, floatOutput, flatConfig);
+    NativeDspConfig boostedConfig = flatConfig;
+    boostedConfig.eqEnabled = true;
+    boostedConfig.eqBands.push_back({"peaking", 1000.0, 6.0, 1.0});
+    const auto boostedOutput = renderProcessed(sine, floatOutput, boostedConfig);
+    assert(floatRms(boostedOutput, 2000) > floatRms(flatOutput, 2000) * 1.7);
+
+    NativeDspConfig limiterConfig;
+    limiterConfig.eqEnabled = true;
+    limiterConfig.preampDb = 12.0;
+    limiterConfig.limiterEnabled = true;
+    const auto limitedOutput = renderProcessed(makeFloatSine(48000, 997.0, 24000, 0.9), floatOutput, limiterConfig);
+    float limitedPeak = 0.0f;
+    for (size_t offset = 0; offset < limitedOutput.size(); offset += sizeof(float)) {
+        float sample = 0.0f;
+        std::memcpy(&sample, limitedOutput.data() + offset, sizeof(sample));
+        limitedPeak = std::max(limitedPeak, std::abs(sample));
+    }
+    assert(limitedPeak <= 0.892f);
+
+    const TrackBuffer resampleSource = makeFloatSine(44100, 1000.0, 4410, 0.1);
+    const auto resampledOutput = renderProcessed(resampleSource, floatOutput, flatConfig);
+    assert(resampledOutput.size() / floatOutput.bytesPerFrame() == 4800);
+
+    const TrackBuffer silence = makeFloatSine(48000, 1000.0, 4096, 0.0);
+    const TrackFormat int16Output = BuildTrackFormat(48000, 1, "s16");
+    const auto ditheredOutput = renderProcessed(silence, int16Output, flatConfig);
+    assert(std::any_of(ditheredOutput.begin(), ditheredOutput.end(), [](uint8_t value) { return value != 0; }));
 
     const uint8_t packed16[] = {0x34, 0x12, 0xCC, 0xED};
     uint8_t widened32[8] {};
@@ -225,6 +317,55 @@ int main() {
     assert(snapshot.playbackState == "stopped");
     assert(!snapshot.outputStatus.streamRunning);
     assert(!snapshot.outputStatus.bitPerfectActive);
+
+    NativeOutputRequest processedRequest;
+    processedRequest.policy = OutputPolicy::Processed;
+    processedRequest.requestedSampleRate = 96000;
+    engine.configureOutput(processedRequest);
+    gFakeSink->primes.clear();
+    NativeDspConfig dspConfig;
+    dspConfig.volume = 0.5;
+    dspConfig.limiterEnabled = false;
+    dspConfig.eqEnabled = true;
+    dspConfig.eqBands.push_back({"peaking", 1000.0, 3.0, 1.0});
+    engine.setDspConfig(dspConfig);
+    engine.loadTrack(makeTrack());
+    assert(gFakeSink != nullptr);
+    gFakeSink->failNextStart = true;
+    failed = false;
+    try {
+        engine.play();
+    } catch (const std::runtime_error&) {
+        failed = true;
+    }
+    assert(failed);
+    assert(gFakeSink->primes.size() == 1);
+    const auto failedProcessedPrime = gFakeSink->primes.front();
+    snapshot = engine.play();
+    assert(snapshot.outputStatus.processing.exclusiveActive);
+    assert(snapshot.outputStatus.processing.processingActive);
+    assert(snapshot.outputStatus.processing.resamplingActive);
+    assert(snapshot.outputStatus.processing.outputPolicy == "processed");
+    assert(snapshot.outputStatus.sourceSamplesModified);
+    assert(!snapshot.outputStatus.bitPerfectActive);
+    assert(gFakeSink->primes.size() == 2);
+    assert(gFakeSink->primes.back() == failedProcessedPrime);
+
+    // DSP settings must never leak into the direct renderer.
+    engine.stop();
+    NativeOutputRequest directRequest;
+    directRequest.policy = OutputPolicy::Direct;
+    engine.configureOutput(directRequest);
+    gFakeSink->primes.clear();
+    dspConfig.volume = 0.1;
+    dspConfig.preampDb = 12.0;
+    dspConfig.limiterEnabled = true;
+    engine.setDspConfig(dspConfig);
+    engine.loadTrack(makeTrack());
+    snapshot = engine.play();
+    assert(snapshot.outputStatus.bitPerfectActive);
+    assert(gFakeSink->primes.size() == 1);
+    assert(std::equal(gFakeSink->primes[0].begin(), gFakeSink->primes[0].end(), original.begin()));
 
     std::cout << "native playback state tests passed\n";
     return 0;

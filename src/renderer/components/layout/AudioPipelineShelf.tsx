@@ -169,7 +169,7 @@ export default function AudioPipelineShelf() {
       id: 'decoder',
       icon: DecoderIcon,
       label: 'Decoder',
-      detail: playbackOutputMode === 'bitperfect' ? 'FFmpeg PCM' : 'Web Audio API'
+      detail: playbackOutputMode === 'standard' ? 'Web Audio API' : 'FFmpeg PCM'
     })
 
     // Resampler (only if sample rates differ)
@@ -182,7 +182,7 @@ export default function AudioPipelineShelf() {
     }
 
     // Channel Routing
-    if (playbackOutputMode !== 'bitperfect' && multichannelEnabled && channelRoutingMap && channelRoutingMap.length > 0) {
+    if (playbackOutputMode === 'standard' && multichannelEnabled && channelRoutingMap && channelRoutingMap.length > 0) {
       const srcCh = currentTrack.channels ?? 2
       const outCh = channelRoutingMap.length
       result.push({ id: 'routing', icon: RoutingIcon, label: 'Routing', detail: `${srcCh}ch \u2192 ${outCh}ch` })
@@ -235,7 +235,7 @@ export default function AudioPipelineShelf() {
     }
 
     // Delay Compensation
-    if (playbackOutputMode !== 'bitperfect' && effectiveDelayMs > 0) {
+    if (playbackOutputMode === 'standard' && effectiveDelayMs > 0) {
       result.push({ id: 'delay', icon: DelayIcon, label: 'Delay Comp.', detail: `${effectiveDelayMs} ms` })
     }
 
@@ -244,7 +244,7 @@ export default function AudioPipelineShelf() {
       defaultRouteFallbackLabel: 'System Default Output',
       selectedFallbackLabel: 'Selected Output'
     }).label
-    const outputSampleRate = playbackOutputMode === 'bitperfect'
+    const outputSampleRate = playbackOutputMode !== 'standard'
       ? (nativeAudioOutputStatus?.wireFormat.sampleRate ?? currentTrack.sampleRate ?? audioEngine.getSampleRate())
       : contextSR
     const outSR = outputSampleRate > 0 ? (outputSampleRate / 1000).toFixed(1) : null

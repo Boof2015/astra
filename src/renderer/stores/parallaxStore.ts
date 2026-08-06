@@ -1356,7 +1356,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         // precondition as the manual `connectSink` / `reconnectFromPersisted` actions —
         // otherwise a user who left Parallax sink mode active and then switched to bitperfect
         // would get a silent reconnect attempt that fails downstream.
-        if (useAudioSettingsStore.getState().playbackOutputMode !== 'bitperfect') {
+        if (useAudioSettingsStore.getState().playbackOutputMode === 'standard') {
           await window.electronAPI.parallax.startAutoReconnect()
         }
       } catch (error) {
@@ -1435,7 +1435,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     // auto-reconnect bootstrap. Bitperfect rejection mirrors connectSink so the user gets the
     // same error message either way.
     reconnectFromPersisted: async () => {
-      if (useAudioSettingsStore.getState().playbackOutputMode === 'bitperfect') {
+      if (useAudioSettingsStore.getState().playbackOutputMode !== 'standard') {
         set({ errorMessage: 'Parallax sink mode is only available in Standard output mode.' })
         return null
       }
@@ -1583,7 +1583,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       const status = get().status
       if (!track) return false
       if (track.sourceType && track.sourceType !== 'local') return false
-      if (useAudioSettingsStore.getState().playbackOutputMode === 'bitperfect') return false
+      if (useAudioSettingsStore.getState().playbackOutputMode !== 'standard') return false
       return Boolean(status?.host.active && status.host.activePlaybackSinkCount > 0)
     },
 
@@ -1695,6 +1695,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     },
 
     resumeHostPlayback: async (track) => {
+      if (useAudioSettingsStore.getState().playbackOutputMode !== 'standard') return null
       if (get().isTestToneActive) {
         cancelTestToneWarmRestart()
         audioEngine.stopParallaxTestTone()

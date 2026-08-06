@@ -1,10 +1,33 @@
 {
   "targets": [
     {
+      "target_name": "native_audio_processing",
+      "type": "static_library",
+      "cflags_cc": ["-std=c++17", "-O3", "-fno-fast-math"],
+      "sources": [
+        "src/audio_processing.cpp"
+      ],
+      "include_dirs": [
+        "src",
+        "../third_party/r8brain-free-src"
+      ],
+      "conditions": [
+        ["OS=='win'", {
+          "msvs_settings": {
+            "VCCLCompilerTool": {
+              "ExceptionHandling": 1,
+              "AdditionalOptions": ["/O2", "/fp:strict"]
+            }
+          }
+        }]
+      ]
+    },
+    {
       "target_name": "native_playback_state_tests",
       "type": "executable",
       "cflags!": ["-fno-exceptions"],
       "cflags_cc!": ["-fno-exceptions"],
+      "dependencies": ["native_audio_processing"],
       "cflags_cc": ["-std=c++17"],
       "sources": [
         "src/playback_engine.cpp",
@@ -26,6 +49,7 @@
     },
     {
       "target_name": "visualizer_dsp",
+      "dependencies": ["native_audio_processing"],
       "cflags!": ["-fno-exceptions"],
       "cflags_cc!": ["-fno-exceptions"],
       "cflags_cc": ["-std=c++17", "-O3", "-ffast-math"],

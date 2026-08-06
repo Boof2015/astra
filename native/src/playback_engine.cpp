@@ -1,4 +1,5 @@
 #include "playback_engine.h"
+#include "audio_processing.h"
 
 #include <algorithm>
 #include <array>
@@ -211,6 +212,27 @@ std::string BuildNativeAudioDiagnosticReport(const NativeOutputStatus& status) {
            << ", sourceModified=" << status.sourceSamplesModified
            << ", exactCarry=" << status.wireFormatCanCarrySourceExactly
            << ", bitPerfectActive=" << status.bitPerfectActive << "\n"
+           << "Processing: policy=" << status.processing.outputPolicy
+           << ", exclusiveActive=" << status.processing.exclusiveActive
+           << ", active=" << status.processing.processingActive
+           << ", resampling=" << status.processing.resamplingActive
+           << ", rate=" << status.processing.sourceSampleRate << "->" << status.processing.targetSampleRate
+           << ", requestedRate=" << status.processing.requestedSampleRate
+           << ", selection=" << status.processing.rateSelectionReason
+           << ", resampler=" << status.processing.resamplerName
+           << " [" << status.processing.resamplerQuality << "]\n"
+           << "DSP: gainMode=" << status.processing.gainMode
+           << ", trackGainDb=" << status.processing.trackGainDb
+           << ", preampDb=" << status.processing.preampDb
+           << ", volume=" << status.processing.volume
+           << ", muted=" << status.processing.muted
+           << ", eq=" << status.processing.eqEnabled
+           << " (" << status.processing.eqBandCount << " bands)"
+           << ", limiter=" << status.processing.limiterEnabled
+           << ", limiterReductionDb=" << status.processing.limiterGainReductionDb
+           << ", latencyFrames=" << status.processing.processingLatencyFrames
+           << ", dither=" << status.processing.dither
+           << ", clippedSamples=" << status.processing.clippedSamples << "\n"
            << "Period: requested=" << status.requestedPeriodMs << " ms ("
            << status.requestedPeriodFrames << " frames), actual=" << status.actualPeriodMs
            << " ms (" << status.actualPeriodFrames << " frames), buffer="
@@ -226,6 +248,9 @@ std::string BuildNativeAudioDiagnosticReport(const NativeOutputStatus& status) {
         report << "  #" << attempt.index
                << " transport=" << attempt.transport
                << " probe=" << attempt.probeResult
+               << " policy=" << attempt.outputPolicy
+               << " rate=" << attempt.requestedSampleRate << "->" << attempt.targetSampleRate
+               << " resampling=" << attempt.resamplingActive
                << " wire={" << describePcm(attempt.wireFormat) << "}"
                << " requested=" << attempt.requestedPeriodMs << "ms"
                << " aligned=" << attempt.alignedPeriodMs << "ms"
@@ -329,6 +354,7 @@ int64_t ComputeAlignedExclusivePeriod(
 
 PlaybackEngine::PlaybackEngine()
     : sink_(CreatePlatformAudioSink())
+    , processedPipeline_(std::make_unique<ProcessedAudioPipeline>())
     , oscilloscopeTap_(kMaxTapSamples)
     , spectrumTap_(kMaxTapSamples)
     , vectorscopeLeftTap_(kMaxTapSamples)
@@ -452,17 +478,35 @@ NativeOutputStatus PlaybackEngine::getOutputStatus() const {
     bool hasTrack = false;
     State state = State::Stopped;
     TrackFormat trackFormat {};
+    TrackFormat renderFormat {};
+    NativeOutputRequest outputRequest {};
+    NativeDspConfig dspConfig {};
+    NativeTrackGain trackGain {};
+    std::string rateSelectionReason;
     std::string unavailableReason;
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
         hasTrack = hasCurrentTrack_;
         state = state_;
         if (hasTrack) trackFormat = currentTrack_.format;
+        if (hasTrack) trackGain = currentTrack_.gain;
+        renderFormat = renderFormat_;
+        outputRequest = outputRequest_;
+        dspConfig = dspConfig_;
+        rateSelectionReason = rateSelectionReason_;
         unavailableReason = lastUnavailableReason_;
     }
     if (hasTrack) {
         status.sourceFormat = DescribeTrackFormat(trackFormat);
-        status.processingFormat = status.sourceFormat;
+        if (outputRequest.policy == OutputPolicy::Processed) {
+            status.processingFormat = DescribeTrackFormat(renderFormat.sampleRate == 0 ? trackFormat : renderFormat);
+            status.processingFormat.sampleFormat = "f64";
+            status.processingFormat.containerBits = 64;
+            status.processingFormat.validBits = 53;
+            status.processingFormat.representation = "planar/native-dsp";
+        } else {
+            status.processingFormat = status.sourceFormat;
+        }
     }
     if (!status.outputOpen && status.failureSummary.empty() && !unavailableReason.empty()) {
         status.failureStage = "device-resolution";
@@ -472,8 +516,78 @@ NativeOutputStatus PlaybackEngine::getOutputStatus() const {
     if (state != State::Playing) {
         status.streamRunning = false;
     }
+    status.processing = outputRequest.policy == OutputPolicy::Processed
+        ? processedPipeline_->status()
+        : NativeProcessingStatus {};
+    status.processing.outputPolicy = outputRequest.policy == OutputPolicy::Processed ? "processed" : "direct";
+    status.processing.requestedSampleRate = static_cast<int>(outputRequest.requestedSampleRate);
+    status.processing.rateSelectionMode = outputRequest.requestedSampleRate == 0 ? "auto" : "fixed";
+    status.processing.rateSelectionReason = rateSelectionReason;
+    status.processing.exclusiveActive = status.streamRunning && status.exclusiveAcquired && status.systemMixerBypassed;
+    if (outputRequest.policy == OutputPolicy::Processed) {
+        status.sourceSamplesModified = true;
+        status.wireFormatCanCarrySourceExactly = false;
+        for (auto& attempt : status.attempts) {
+            attempt.outputPolicy = "processed";
+            attempt.resamplingActive = status.processing.resamplingActive;
+            attempt.requestedSampleRate = static_cast<int>(outputRequest.requestedSampleRate);
+            attempt.targetSampleRate = status.processing.targetSampleRate;
+            attempt.rateSelectionReason = rateSelectionReason;
+            attempt.sourceFormat = status.sourceFormat;
+            attempt.processingFormat = status.processingFormat;
+        }
+    }
     RecomputeBitPerfectActive(status);
     return status;
+}
+
+bool PlaybackEngine::isProcessedExclusiveAvailable(std::string* reason) const {
+    if (sink_->isAvailable()) {
+        if (reason) reason->clear();
+        return true;
+    }
+    if (reason) {
+        *reason = lastUnavailableReason_.empty()
+            ? "Native processed exclusive playback is unavailable on this platform."
+            : lastUnavailableReason_;
+    }
+    return false;
+}
+
+void PlaybackEngine::configureOutput(const NativeOutputRequest& request) {
+    std::lock_guard<std::mutex> controlLock(controlMutex_);
+    const uint32_t requestedRate = request.requestedSampleRate == 0
+        ? 0
+        : std::clamp<uint32_t>(request.requestedSampleRate, 8000, 768000);
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        outputRequest_ = {request.policy, requestedRate};
+        renderFormat_ = {};
+        rateSelectionReason_.clear();
+        nextRenderFrame_ = playedFrame_;
+        consumedSourceFrameExact_ = static_cast<double>(playedFrame_);
+        if (hasCurrentTrack_ && request.policy == OutputPolicy::Processed) {
+            processedPipeline_->configure(currentTrack_.format, currentTrack_.format, dspConfig_, currentTrack_.gain, playedFrame_);
+        }
+    }
+    sink_->close();
+    clearTapBuffers();
+    pushEvent({"outputStatusChanged", "", 0.0, 0.0, 0, "", "", "Native output policy changed."});
+}
+
+void PlaybackEngine::setDspConfig(const NativeDspConfig& config) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    dspConfig_ = config;
+    dspConfig_.volume = std::clamp(dspConfig_.volume, 0.0, 1.0);
+    dspConfig_.preampDb = std::clamp(dspConfig_.preampDb, -12.0, 12.0);
+    if (dspConfig_.eqBands.size() > 20) dspConfig_.eqBands.resize(20);
+    if (outputRequest_.policy == OutputPolicy::Processed) processedPipeline_->updateDspConfig(dspConfig_);
+}
+
+void PlaybackEngine::setCurrentTrackGain(const NativeTrackGain& gain) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    if (hasCurrentTrack_) currentTrack_.gain = gain;
+    if (outputRequest_.policy == OutputPolicy::Processed) processedPipeline_->updateTrackGain(gain);
 }
 
 std::string PlaybackEngine::getNativeAudioDiagnosticReport() const {
@@ -498,8 +612,13 @@ void PlaybackEngine::loadTrack(TrackBuffer track) {
         nextRenderFrame_ = 0;
         playedFrame_ = 0;
         lastTimeUpdateFrame_ = 0;
+        consumedSourceFrameExact_ = 0.0;
+        renderFormat_ = {};
         nativeEndPending_ = false;
         state_ = State::Stopped;
+        if (outputRequest_.policy == OutputPolicy::Processed) {
+            processedPipeline_->configure(currentTrack_.format, currentTrack_.format, dspConfig_, currentTrack_.gain, 0);
+        }
     }
     clearTapBuffers();
     clearPendingEvents();
@@ -518,6 +637,9 @@ void PlaybackEngine::preloadNextTrack(TrackBuffer track) {
     std::lock_guard<std::mutex> lock(stateMutex_);
     nextTrack_ = std::move(track);
     hasNextTrack_ = true;
+    if (outputRequest_.policy == OutputPolicy::Processed && hasCurrentTrack_) {
+        processedPipeline_->prepareGaplessTrack(nextTrack_.format);
+    }
 }
 
 bool PlaybackEngine::promoteNextTrack() {
@@ -543,8 +665,13 @@ bool PlaybackEngine::promoteNextTrack() {
         nextRenderFrame_ = 0;
         playedFrame_ = 0;
         lastTimeUpdateFrame_ = 0;
+        consumedSourceFrameExact_ = 0.0;
+        renderFormat_ = {};
         nativeEndPending_ = false;
         state_ = State::Stopped;
+        if (outputRequest_.policy == OutputPolicy::Processed) {
+            processedPipeline_->configure(currentTrack_.format, currentTrack_.format, dspConfig_, currentTrack_.gain, 0);
+        }
     }
     clearTapBuffers();
     clearPendingEvents();
@@ -609,6 +736,7 @@ PlaybackSnapshot PlaybackEngine::play() {
             std::lock_guard<std::mutex> lock(stateMutex_);
             state_ = previousState;
             nextRenderFrame_ = playedFrame_;
+            resetProcessedPipelineLocked(playedFrame_);
             nativeEndPending_ = false;
         }
         clearTapBuffers();
@@ -681,8 +809,10 @@ PlaybackSnapshot PlaybackEngine::stop() {
         state_ = State::Stopped;
         nextRenderFrame_ = 0;
         playedFrame_ = 0;
+        consumedSourceFrameExact_ = 0.0;
         lastTimeUpdateFrame_ = 0;
         nativeEndPending_ = false;
+        resetProcessedPipelineLocked(0);
         hadTrack = hasCurrentTrack_;
         if (hadTrack) {
             duration = currentTrack_.duration;
@@ -757,8 +887,10 @@ PlaybackSnapshot PlaybackEngine::seek(double seconds) {
             const uint64_t targetFrame = clampTargetFrameLocked(seconds);
             nextRenderFrame_ = targetFrame;
             playedFrame_ = targetFrame;
+            consumedSourceFrameExact_ = static_cast<double>(targetFrame);
             lastTimeUpdateFrame_ = targetFrame;
             nativeEndPending_ = false;
+            resetProcessedPipelineLocked(targetFrame);
             currentTime = static_cast<double>(targetFrame) / static_cast<double>(std::max<uint32_t>(1, currentTrack_.format.sampleRate));
         }
     }
@@ -953,7 +1085,43 @@ size_t PlaybackEngine::renderInto(void* outputBuffer, size_t requestedFrames, bo
         uint8_t* output = static_cast<uint8_t*>(outputBuffer);
         size_t framesWritten = 0;
 
-        while (framesWritten < requestedFrames) {
+        if (outputRequest_.policy == OutputPolicy::Processed) {
+            const TrackFormat outputFormat = activeRenderFormatLocked();
+            while (framesWritten < requestedFrames) {
+                bool trackEnded = false;
+                const size_t rendered = processedPipeline_->render(
+                    currentTrack_,
+                    nextRenderFrame_,
+                    output + framesWritten * outputFormat.bytesPerFrame(),
+                    requestedFrames - framesWritten,
+                    trackEnded
+                );
+                framesWritten += rendered;
+                if (!trackEnded) break;
+                if (!hasNextTrack_ || nextTrack_.format.channels != currentTrack_.format.channels) {
+                    streamEnded = true;
+                    break;
+                }
+                currentTrack_ = std::move(nextTrack_);
+                hasNextTrack_ = false;
+                nextTrack_ = TrackBuffer {};
+                nextRenderFrame_ = 0;
+                playedFrame_ = 0;
+                consumedSourceFrameExact_ = 0.0;
+                lastTimeUpdateFrame_ = 0;
+                processedPipeline_->beginGaplessTrack(currentTrack_.format, currentTrack_.gain);
+                pushEvent({"durationChange", "", 0.0, currentTrack_.duration, 0, "", "", ""});
+                pushEvent({
+                    "gaplessTransition", "", 0.0, currentTrack_.duration,
+                    static_cast<int>(currentTrack_.format.sampleRate),
+                    currentTrack_.format.sampleFormatId(), sink_->activeDeviceId(), ""
+                });
+            }
+            if (shouldCaptureTaps && framesWritten > 0) {
+                tapChunks[tapChunkCount++] = {output, framesWritten, outputFormat};
+            }
+            totalFramesWritten = framesWritten;
+        } else while (framesWritten < requestedFrames) {
             const uint32_t bytesPerFrame = currentTrack_.format.bytesPerFrame();
             const uint64_t totalFrames = currentTrack_.totalFrames();
             if (nextRenderFrame_ >= totalFrames) {
@@ -1010,7 +1178,7 @@ size_t PlaybackEngine::renderInto(void* outputBuffer, size_t requestedFrames, bo
             framesWritten += framesToCopy;
         }
 
-        totalFramesWritten = framesWritten;
+        if (outputRequest_.policy == OutputPolicy::Direct) totalFramesWritten = framesWritten;
     }
 
     for (size_t i = 0; i < tapChunkCount; i++) {
@@ -1033,7 +1201,18 @@ void PlaybackEngine::onFramesConsumed(size_t frames) {
         }
         if (state_ == State::Starting && !platformStartVerified_) return;
 
-        playedFrame_ = std::min<uint64_t>(nextRenderFrame_, playedFrame_ + frames);
+        if (outputRequest_.policy == OutputPolicy::Processed) {
+            const TrackFormat outputFormat = activeRenderFormatLocked();
+            consumedSourceFrameExact_ += static_cast<double>(frames)
+                * static_cast<double>(currentTrack_.format.sampleRate)
+                / static_cast<double>(std::max<uint32_t>(1, outputFormat.sampleRate));
+            playedFrame_ = std::min<uint64_t>(
+                nextRenderFrame_,
+                static_cast<uint64_t>(std::floor(consumedSourceFrameExact_))
+            );
+        } else {
+            playedFrame_ = std::min<uint64_t>(nextRenderFrame_, playedFrame_ + frames);
+        }
         const uint64_t minFramesBetweenUpdates = std::max<uint64_t>(
             1,
             static_cast<uint64_t>(currentTrack_.format.sampleRate / kTimeUpdateRateHz)
@@ -1084,6 +1263,7 @@ void PlaybackEngine::onNativeStreamEnded() {
         state_ = State::Stopped;
         playedFrame_ = currentTrack_.totalFrames();
         nextRenderFrame_ = playedFrame_;
+        resetProcessedPipelineLocked(playedFrame_);
         lastTimeUpdateFrame_ = playedFrame_;
         duration = currentTrack_.duration;
         sampleRate = static_cast<int>(currentTrack_.format.sampleRate);
@@ -1101,6 +1281,7 @@ void PlaybackEngine::rollbackSpeculativeRender() {
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
         nextRenderFrame_ = playedFrame_;
+        resetProcessedPipelineLocked(playedFrame_);
     }
     clearTapBuffers();
 }
@@ -1119,6 +1300,7 @@ void PlaybackEngine::onNativeOutputRuntimeFailure(const std::string& message) {
         if (state_ != State::Playing && state_ != State::Starting) return;
         state_ = State::Paused;
         nextRenderFrame_ = playedFrame_;
+        resetProcessedPipelineLocked(playedFrame_);
         nativeEndPending_ = false;
         if (hasCurrentTrack_) {
             sampleRate = static_cast<int>(currentTrack_.format.sampleRate);
@@ -1156,6 +1338,7 @@ bool PlaybackEngine::ensureSinkOpen(std::string* error) {
     std::string previousDeviceId;
     int previousSampleRate = 0;
     std::string previousSampleFormat;
+    OutputPolicy outputPolicy = OutputPolicy::Direct;
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
         if (!hasCurrentTrack_) {
@@ -1165,7 +1348,23 @@ bool PlaybackEngine::ensureSinkOpen(std::string* error) {
 
         selectedDeviceId = selectedDeviceId_;
         currentFormat = currentTrack_.format;
+        outputPolicy = outputRequest_.policy;
         previousDeviceId = sink_->activeDeviceId();
+        previousSampleRate = static_cast<int>(currentFormat.sampleRate);
+        previousSampleFormat = currentFormat.sampleFormatId();
+    }
+
+    if (outputPolicy == OutputPolicy::Processed) {
+        std::string selectionReason;
+        const TrackFormat selectedFormat = selectProcessedOutputFormat(currentFormat, &selectionReason);
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            renderFormat_ = selectedFormat;
+            rateSelectionReason_ = selectionReason;
+            resetProcessedPipelineLocked(playedFrame_);
+            if (hasNextTrack_) processedPipeline_->prepareGaplessTrack(nextTrack_.format);
+            currentFormat = renderFormat_;
+        }
         previousSampleRate = static_cast<int>(currentFormat.sampleRate);
         previousSampleFormat = currentFormat.sampleFormatId();
     }
@@ -1312,6 +1511,79 @@ bool PlaybackEngine::formatsMatch(const TrackFormat& a, const TrackFormat& b) co
     return a.sampleRate == b.sampleRate
         && a.channels == b.channels
         && a.sampleFormat == b.sampleFormat;
+}
+
+TrackFormat PlaybackEngine::selectProcessedOutputFormat(const TrackFormat& source, std::string* reason) const {
+    NativeOutputRequest request;
+    std::string deviceId;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        request = outputRequest_;
+        deviceId = selectedDeviceId_;
+    }
+    const DeviceFormatProbe probe = sink_->probeDeviceFormats(deviceId, source.channels);
+    const bool preferFloat = sink_->backendKind() == "coreaudio";
+    struct Candidate {
+        DeviceFormatSupport format;
+        double rateDistance = 0.0;
+        int formatRank = 0;
+    };
+    std::vector<Candidate> candidates;
+    auto formatRank = [preferFloat](const std::string& id) {
+        if (id == "f32") return preferFloat ? 0 : 1;
+        if (id == "s32") return preferFloat ? 1 : 0;
+        if (id == "s24in32") return 2;
+        if (id == "s24") return 3;
+        if (id == "s16") return 4;
+        return 10;
+    };
+    for (const auto& format : probe.formats) {
+        if (format.channels != source.channels || format.sampleRate == 0) continue;
+        if (request.requestedSampleRate != 0 && format.sampleRate != request.requestedSampleRate) continue;
+        const double distance = std::abs(std::log2(
+            static_cast<double>(format.sampleRate) / static_cast<double>(source.sampleRate)));
+        candidates.push_back({format, distance, formatRank(format.sampleFormat)});
+    }
+    std::stable_sort(candidates.begin(), candidates.end(), [&source, &request](const Candidate& a, const Candidate& b) {
+        const bool aSourceRate = request.requestedSampleRate == 0 && a.format.sampleRate == source.sampleRate;
+        const bool bSourceRate = request.requestedSampleRate == 0 && b.format.sampleRate == source.sampleRate;
+        if (aSourceRate != bSourceRate) return aSourceRate;
+        if (a.rateDistance != b.rateDistance) return a.rateDistance < b.rateDistance;
+        return a.formatRank < b.formatRank;
+    });
+    if (!candidates.empty()) {
+        const auto& chosen = candidates.front().format;
+        // Quantize at 24 valid bits, then let the backend perform its verified
+        // left-justified 24-in-32 container widening without changing values.
+        std::string id = chosen.sampleFormat == "s24in32" ? "s24" : chosen.sampleFormat;
+        if (reason) {
+            *reason = chosen.sampleRate == source.sampleRate
+                ? "The source rate is directly supported by the selected device."
+                : (request.requestedSampleRate != 0
+                    ? "Using the fixed sample-rate override."
+                    : "The source rate was unavailable; selected the closest directly supported device rate.");
+        }
+        return BuildTrackFormat(chosen.sampleRate, source.channels, id);
+    }
+    const uint32_t fallbackRate = request.requestedSampleRate == 0 ? source.sampleRate : request.requestedSampleRate;
+    if (reason) {
+        *reason = request.requestedSampleRate == 0
+            ? "Device format probing was unavailable; the native backend will verify the source rate directly."
+            : "Device format probing did not confirm the override; the native backend will verify it directly.";
+    }
+    return BuildTrackFormat(fallbackRate, source.channels, "f32");
+}
+
+TrackFormat PlaybackEngine::activeRenderFormatLocked() const {
+    if (outputRequest_.policy == OutputPolicy::Processed && renderFormat_.sampleRate != 0) return renderFormat_;
+    return hasCurrentTrack_ ? currentTrack_.format : TrackFormat {};
+}
+
+void PlaybackEngine::resetProcessedPipelineLocked(uint64_t sourceFrame) {
+    if (outputRequest_.policy != OutputPolicy::Processed || !hasCurrentTrack_) return;
+    const TrackFormat output = renderFormat_.sampleRate == 0 ? currentTrack_.format : renderFormat_;
+    processedPipeline_->configure(currentTrack_.format, output, dspConfig_, currentTrack_.gain, sourceFrame);
+    consumedSourceFrameExact_ = static_cast<double>(sourceFrame);
 }
 
 uint64_t PlaybackEngine::clampTargetFrameLocked(double seconds) const {

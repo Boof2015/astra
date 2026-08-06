@@ -89,10 +89,13 @@ import type {
 import type {
   AudioBufferMemoryStats,
   NativeAudioCapabilities,
+  NativeAudioDspConfig,
   NativeAudioDeviceFormatProbe,
   NativeAudioDiagnosticReport,
   NativeAudioEvent,
   NativeAudioPlaybackSnapshot,
+  NativeAudioOutputRequest,
+  NativeAudioTrackGain,
   NativeAudioTrackLoadResult,
   NativeAudioTrackMetadata,
   NativeAudioVisualizerTapDemand,
@@ -1616,9 +1619,12 @@ declare global {
       initialize: () => Promise<NativeAudioCapabilities>
       getCapabilities: () => Promise<NativeAudioCapabilities>
       setOutputDevice: (deviceId: string) => Promise<NativeAudioCapabilities>
+      configureNativeOutput: (request: NativeAudioOutputRequest) => Promise<NativeAudioCapabilities>
+      setNativeDspConfig: (config: NativeAudioDspConfig) => Promise<NativeAudioPlaybackSnapshot>
+      setNativeTrackGain: (gain: NativeAudioTrackGain) => Promise<NativeAudioPlaybackSnapshot>
       probeDeviceFormats: (deviceId?: string, channels?: number) => Promise<NativeAudioDeviceFormatProbe>
-      loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
-      preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+      loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata, gain?: NativeAudioTrackGain) => Promise<NativeAudioTrackLoadResult>
+      preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata, gain?: NativeAudioTrackGain) => Promise<NativeAudioTrackLoadResult>
       promoteNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
       cancelPendingDecode: () => Promise<void>
       play: () => Promise<NativeAudioPlaybackSnapshot>

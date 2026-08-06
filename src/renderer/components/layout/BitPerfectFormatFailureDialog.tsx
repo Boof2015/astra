@@ -12,6 +12,7 @@ export default function BitPerfectFormatFailureDialog() {
   const notice = usePlayerStore((state) => state.bitPerfectFormatNotice)
   const clearNotice = usePlayerStore((state) => state.clearBitPerfectFormatNotice)
   const setPlaybackOutputMode = useAudioSettingsStore((state) => state.setPlaybackOutputMode)
+  const playbackOutputMode = useAudioSettingsStore((state) => state.playbackOutputMode)
   const [switching, setSwitching] = useState(false)
 
   const handleSwitchToStandard = async () => {
@@ -32,6 +33,7 @@ export default function BitPerfectFormatFailureDialog() {
       notice={notice}
       onDismiss={clearNotice}
       onSwitchToStandard={handleSwitchToStandard}
+      outputMode={playbackOutputMode}
     />
   )
 }

@@ -403,6 +403,10 @@ export default function SettingsView() {
   const nativeAudioCapabilities = useAudioSettingsStore((state) => state.nativeAudioCapabilities)
   const nativeAudioOutputStatus = useAudioSettingsStore((state) => state.nativeAudioOutputStatus)
   const playbackModeStatusMessage = useAudioSettingsStore((state) => state.playbackModeStatusMessage)
+  const exclusiveSampleRate = useAudioSettingsStore((state) => state.exclusiveSampleRate)
+  const setExclusiveSampleRate = useAudioSettingsStore((state) => state.setExclusiveSampleRate)
+  const exclusiveLimiterEnabled = useAudioSettingsStore((state) => state.exclusiveLimiterEnabled)
+  const setExclusiveLimiterEnabled = useAudioSettingsStore((state) => state.setExclusiveLimiterEnabled)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const setShowTracklistBpmKey = useLibraryStore((state) => state.setShowTracklistBpmKey)
   const showTracklistGenre = useLibraryStore((state) => state.showTracklistGenre)
@@ -605,6 +609,8 @@ export default function SettingsView() {
     (playbackState === 'playing' || playbackState === 'paused')
   )
   const bitPerfectModeActive = playbackOutputMode === 'bitperfect'
+  const exclusiveDspModeActive = playbackOutputMode === 'exclusive'
+  const nativeModeRequested = playbackOutputMode !== 'standard'
   const nativeBackendLabel = useMemo(() => {
     switch (nativeAudioCapabilities.activeBackend) {
       case 'coreaudio':
@@ -1055,10 +1061,15 @@ export default function SettingsView() {
   const libraryDiagnosticsCurrentLogPath = libraryDiagnosticsStatus?.currentLogPath ?? 'Loading diagnostics paths...'
   const libraryDiagnosticsPreviousLogPath = libraryDiagnosticsStatus?.previousLogPath ?? 'Loading diagnostics paths...'
 
-  const handlePlaybackPathChange = (mode: 'standard' | 'bitperfect') => {
+  const handlePlaybackPathChange = (mode: 'standard' | 'exclusive' | 'bitperfect') => {
     if (mode === playbackOutputMode) return
     if (mode === 'standard') {
       void setPlaybackOutputMode('standard')
+      return
+    }
+
+    if (mode === 'exclusive') {
+      void setPlaybackOutputMode('exclusive')
       return
     }
 
@@ -2072,6 +2083,13 @@ export default function SettingsView() {
                       >
                         Standard
                       </button>
+                      <button
+                        className={`settings-toggle ${exclusiveDspModeActive ? 'active' : ''}`}
+                        onClick={() => handlePlaybackPathChange('exclusive')}
+                        title="Exclusive hardware ownership with native gain, normalization, EQ, resampling, and limiting"
+                      >
+                        Exclusive • DSP
+                      </button>
                       <div className="settings-inline-row">
                         <button
                           className={`settings-toggle ${playbackOutputMode === 'bitperfect' ? 'active' : ''}`}
@@ -2084,6 +2102,9 @@ export default function SettingsView() {
                         </span>
                       </div>
                     </div>
+                    <p className="settings-note">
+                      Standard uses Web Audio and the full routing toolset. Exclusive DSP keeps hardware ownership while applying native DSP. Bit-Perfect sends decoded PCM unchanged.
+                    </p>
                   </div>
                   <div className="settings-field">
                     <span className="settings-field-label">Native Status</span>
@@ -2103,7 +2124,7 @@ export default function SettingsView() {
                         </span>
                       )}
                       <span className="settings-chip settings-chip-mono">
-                        Exclusive requested: {bitPerfectModeActive ? 'Yes' : 'No'}
+                        Exclusive requested: {nativeModeRequested ? 'Yes' : 'No'}
                       </span>
                       <span className="settings-chip settings-chip-mono">
                         Exclusive reserved: {nativeAudioOutputStatus?.exclusiveAcquired ? 'Yes' : 'No'}
@@ -2114,6 +2135,34 @@ export default function SettingsView() {
                       <span className="settings-chip settings-chip-mono">
                         Bit-perfect active: {nativeAudioOutputStatus?.bitPerfectActive ? 'Yes' : 'No'}
                       </span>
+                      {exclusiveDspModeActive && (
+                        <span className="settings-chip settings-chip-mono">
+                          Exclusive DSP active: {nativeAudioOutputStatus?.processing.exclusiveActive ? 'Yes' : 'No'}
+                        </span>
+                      )}
+                      {nativeAudioOutputStatus?.processing.sourceSampleRate && nativeAudioOutputStatus.processing.targetSampleRate && (
+                        <span className="settings-chip settings-chip-mono">
+                          {(nativeAudioOutputStatus.processing.sourceSampleRate / 1000).toFixed(1)} → {(nativeAudioOutputStatus.processing.targetSampleRate / 1000).toFixed(1)} kHz
+                        </span>
+                      )}
+                      {nativeAudioOutputStatus?.processing.resamplingActive && (
+                        <span className="settings-chip settings-chip-mono">
+                          {nativeAudioOutputStatus.processing.resamplerName ?? 'Resampler'} • {nativeAudioOutputStatus.processing.resamplerQuality ?? 'high quality'}
+                        </span>
+                      )}
+                      {nativeAudioOutputStatus?.processing.processingActive && (
+                        <span className="settings-chip settings-chip-mono">f64 planar processing</span>
+                      )}
+                      {nativeAudioOutputStatus?.processing.limiterEnabled && (
+                        <span className="settings-chip settings-chip-mono">
+                          Limiter −{nativeAudioOutputStatus.processing.limiterGainReductionDb.toFixed(1)} dB
+                        </span>
+                      )}
+                      {nativeAudioOutputStatus?.processing.targetSampleRate && nativeAudioOutputStatus.processing.processingLatencyFrames > 0 && (
+                        <span className="settings-chip settings-chip-mono">
+                          {(nativeAudioOutputStatus.processing.processingLatencyFrames * 1000 / nativeAudioOutputStatus.processing.targetSampleRate).toFixed(1)} ms DSP latency
+                        </span>
+                      )}
                       {nativeAudioOutputStatus?.transport && (
                         <span className="settings-chip settings-chip-mono">{nativeAudioOutputStatus.transport}</span>
                       )}
@@ -2132,6 +2181,38 @@ export default function SettingsView() {
                   </div>
                 </div>
               </div>
+              {exclusiveDspModeActive && (
+                <div className="settings-card">
+                  <div className="settings-card-label">Exclusive DSP Advanced</div>
+                  <div className="settings-grid">
+                    <label className="settings-field">
+                      <span className="settings-field-label">Output Sample Rate</span>
+                      <select
+                        className="settings-select"
+                        value={exclusiveSampleRate ?? ''}
+                        onChange={(event) => void setExclusiveSampleRate(event.target.value ? Number(event.target.value) : null)}
+                      >
+                        <option value="">Auto (source first)</option>
+                        {[44100, 48000, 88200, 96000, 176400, 192000].map((rate) => (
+                          <option key={rate} value={rate}>{(rate / 1000).toFixed(1)} kHz</option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="settings-field settings-field-inline">
+                      <span className="settings-field-label">Safety Limiter</span>
+                      <button
+                        className={`settings-toggle ${exclusiveLimiterEnabled ? 'active' : ''}`}
+                        onClick={() => void setExclusiveLimiterEnabled(!exclusiveLimiterEnabled)}
+                      >
+                        {exclusiveLimiterEnabled ? 'Enabled' : 'Disabled'}
+                      </button>
+                    </div>
+                    <p className="settings-note">
+                      Auto tries the source rate first. A fixed rate fails closed if the hardware cannot open it. Wire depth is automatic.
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
             <div className="settings-audio-control">
               <AudioOutputSelect />

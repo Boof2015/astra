@@ -15,7 +15,12 @@ import {
   type VirtualSpeaker,
 } from '../utils/virtualSpeakerLayout'
 import type { SpatialStatus } from '../audio/AudioEngine'
-import type { NativeAudioCapabilities, NativeAudioOutputStatus, PlaybackOutputMode } from '../../types/nativeAudio'
+import {
+  normalizePlaybackOutputMode,
+  type NativeAudioCapabilities,
+  type NativeAudioOutputStatus,
+  type PlaybackOutputMode
+} from '../../types/nativeAudio'
 
 export interface AudioDevice {
   deviceId: string
@@ -82,6 +87,8 @@ interface AudioSettingsStore {
   normalizationTargetLufs: number
   replayGainScanEnabled: boolean
   replayGainMode: ReplayGainMode
+  exclusiveSampleRate: number | null
+  exclusiveLimiterEnabled: boolean
 
   delayProfilesByDeviceKey: Record<string, DelayCompensationProfile>
   inputBaselinesByKey: Record<string, InputDelayBaseline>
@@ -112,6 +119,8 @@ interface AudioSettingsStore {
   setNormalizationTargetLufs: (targetLufs: number) => void
   setReplayGainScanEnabled: (enabled: boolean) => Promise<void>
   setReplayGainMode: (mode: ReplayGainMode) => void
+  setExclusiveSampleRate: (sampleRate: number | null) => Promise<void>
+  setExclusiveLimiterEnabled: (enabled: boolean) => Promise<void>
 
   setDelayCompensationEnabled: (enabled: boolean) => Promise<void>
   setDelayCompensationMode: (mode: DelayCompensationMode) => Promise<void>
@@ -128,6 +137,8 @@ interface AudioSettingsStore {
 const STORAGE_KEY = 'astra-audio-output-device'
 const NATIVE_OUTPUT_STORAGE_KEY = 'astra-native-audio-output-device'
 const PLAYBACK_OUTPUT_MODE_STORAGE_KEY = 'astra-playback-output-mode-v1'
+const EXCLUSIVE_SAMPLE_RATE_STORAGE_KEY = 'astra-exclusive-sample-rate-v1'
+const EXCLUSIVE_LIMITER_STORAGE_KEY = 'astra-exclusive-limiter-enabled-v1'
 const CALIBRATION_INPUT_STORAGE_KEY = 'astra-audio-calibration-input-device'
 const MULTICHANNEL_STORAGE_KEY = 'astra-audio-multichannel-enabled'
 const INCLUDE_LFE_DOWNMIX_STORAGE_KEY = 'astra-audio-include-lfe-downmix-v1'
@@ -164,7 +175,9 @@ const DEFAULT_DELAY_PROFILE: DelayCompensationProfile = {
 
 const DEFAULT_NATIVE_AUDIO_CAPABILITIES: NativeAudioCapabilities = {
   bitPerfectAvailable: false,
+  processedExclusiveAvailable: false,
   reasonUnavailable: 'Native bit-perfect playback is unavailable in this build.',
+  reasonProcessedExclusiveUnavailable: 'Native exclusive DSP playback is unavailable in this build.',
   activeBackend: 'unavailable',
   selectedDeviceId: null,
   selectedDeviceMaxChannels: null,
@@ -212,8 +225,9 @@ function clampRoundTripMs(value: number): number {
 }
 
 function normalizeSampleRate(value: unknown): number | null {
-  if (!Number.isFinite(value)) return null
-  const rounded = Math.round(Number(value))
+  const numeric = typeof value === 'string' && value.trim().length > 0 ? Number(value) : value
+  if (!Number.isFinite(numeric)) return null
+  const rounded = Math.round(Number(numeric))
   if (rounded <= 0) return null
   return rounded
 }
@@ -421,16 +435,16 @@ function computeAppliedDelayMs(
   profile: DelayCompensationProfile,
   playbackOutputMode: PlaybackOutputMode
 ): number {
-  if (playbackOutputMode === 'bitperfect') return 0
+  if (playbackOutputMode !== 'standard') return 0
   return computeEffectiveDelayMs(profile)
 }
 
 function getOutputStorageKeyForMode(mode: PlaybackOutputMode): string {
-  return mode === 'bitperfect' ? NATIVE_OUTPUT_STORAGE_KEY : STORAGE_KEY
+  return mode !== 'standard' ? NATIVE_OUTPUT_STORAGE_KEY : STORAGE_KEY
 }
 
-function normalizePlaybackOutputMode(value: unknown): PlaybackOutputMode {
-  return value === 'bitperfect' ? 'bitperfect' : 'standard'
+function isNativeOutputMode(mode: PlaybackOutputMode): boolean {
+  return mode === 'exclusive' || mode === 'bitperfect'
 }
 
 function resolvePhysicalDefaultDeviceId(devices: AudioDevice[]): string | null {
@@ -1051,6 +1065,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
     replayGainScanEnabled: false,
     replayGainMode: 'auto',
+    exclusiveSampleRate: null,
+    exclusiveLimiterEnabled: true,
 
     delayProfilesByDeviceKey: {},
     inputBaselinesByKey: {},
@@ -1073,7 +1089,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         let nativeAudioCapabilities = get().nativeAudioCapabilities
         let playbackModeStatusMessage = get().playbackModeStatusMessage
 
-        if (playbackOutputMode === 'bitperfect') {
+        if (isNativeOutputMode(playbackOutputMode)) {
           nativeAudioCapabilities = await audioEngine.refreshNativeAudioCapabilities()
           audioOutputs = buildNativeOutputDevices(nativeAudioCapabilities)
           playbackModeStatusMessage = audioEngine.getPlaybackModeStatusMessage()
@@ -1119,7 +1135,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       const fallbackMode = result.activeMode
       const selectedStorageKey = getOutputStorageKeyForMode(fallbackMode)
       const savedSelectedDeviceId = localStorage.getItem(selectedStorageKey) ?? ''
-      const capabilities = fallbackMode === 'bitperfect'
+      const capabilities = isNativeOutputMode(fallbackMode)
         ? await audioEngine.refreshNativeAudioCapabilities()
         : result.capabilities
 
@@ -1222,16 +1238,16 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     selectDevice: async (deviceId: string) => {
       try {
         const playbackOutputMode = get().playbackOutputMode
-        const requestedDeviceId = playbackOutputMode === 'bitperfect'
+        const requestedDeviceId = isNativeOutputMode(playbackOutputMode)
           && (deviceId.trim().length === 0 || deviceId.trim() === 'default')
           ? (resolvePhysicalDefaultDeviceId(get().availableDevices) ?? deviceId)
           : deviceId
 
         await audioEngine.setOutputDevice(requestedDeviceId)
-        const nativeAudioCapabilities = playbackOutputMode === 'bitperfect'
+        const nativeAudioCapabilities = isNativeOutputMode(playbackOutputMode)
           ? audioEngine.getNativeAudioCapabilities()
           : get().nativeAudioCapabilities
-        const selectedDeviceId = playbackOutputMode === 'bitperfect'
+        const selectedDeviceId = isNativeOutputMode(playbackOutputMode)
           ? (nativeAudioCapabilities.selectedDeviceId?.trim() || requestedDeviceId)
           : requestedDeviceId
 
@@ -1418,6 +1434,31 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       localStorage.setItem(REPLAYGAIN_MODE_STORAGE_KEY, normalized)
     },
 
+    setExclusiveSampleRate: async (sampleRate: number | null) => {
+      const normalized = normalizeSampleRate(sampleRate)
+      await audioEngine.setExclusiveSampleRate(normalized)
+      set({
+        exclusiveSampleRate: normalized,
+        nativeAudioOutputStatus: audioEngine.getNativeAudioOutputStatus(),
+        playbackModeStatusMessage: audioEngine.getPlaybackModeStatusMessage()
+      })
+      if (normalized === null) {
+        localStorage.removeItem(EXCLUSIVE_SAMPLE_RATE_STORAGE_KEY)
+      } else {
+        localStorage.setItem(EXCLUSIVE_SAMPLE_RATE_STORAGE_KEY, String(normalized))
+      }
+    },
+
+    setExclusiveLimiterEnabled: async (enabled: boolean) => {
+      const normalized = Boolean(enabled)
+      await audioEngine.setExclusiveLimiterEnabled(normalized)
+      set({
+        exclusiveLimiterEnabled: normalized,
+        nativeAudioOutputStatus: audioEngine.getNativeAudioOutputStatus()
+      })
+      localStorage.setItem(EXCLUSIVE_LIMITER_STORAGE_KEY, normalized ? '1' : '0')
+    },
+
     setDelayCompensationEnabled: async (enabled: boolean) => {
       await updateActiveDelayProfile((profile) => ({
         ...profile,
@@ -1454,7 +1495,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     },
 
     runDelayAutoCalibration: async () => {
-      if (get().playbackOutputMode === 'bitperfect') {
+      if (isNativeOutputMode(get().playbackOutputMode)) {
         set({
           delayCalibrationState: 'error',
           delayCalibrationMessage: audioEngine.getBitPerfectUnavailableMessage()
@@ -1822,6 +1863,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       localStorage.removeItem(STORAGE_KEY)
       localStorage.removeItem(NATIVE_OUTPUT_STORAGE_KEY)
       localStorage.removeItem(PLAYBACK_OUTPUT_MODE_STORAGE_KEY)
+      localStorage.removeItem(EXCLUSIVE_SAMPLE_RATE_STORAGE_KEY)
+      localStorage.removeItem(EXCLUSIVE_LIMITER_STORAGE_KEY)
       localStorage.removeItem(CALIBRATION_INPUT_STORAGE_KEY)
       localStorage.removeItem(MULTICHANNEL_STORAGE_KEY)
       localStorage.removeItem(INCLUDE_LFE_DOWNMIX_STORAGE_KEY)
@@ -1895,6 +1938,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       audioEngine.normalizationEnabled = true
       audioEngine.targetLufs = DEFAULT_NORMALIZATION_TARGET_LUFS
       audioEngine.setDisableStandardAnalysisGraphDev(false)
+      await audioEngine.setExclusiveSampleRate(null)
+      await audioEngine.setExclusiveLimiterEnabled(true)
       await audioEngine.setPlaybackOutputMode('standard')
 
       let availableDevices = get().availableDevices
@@ -1943,6 +1988,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
         replayGainScanEnabled: false,
         replayGainMode: 'auto',
+        exclusiveSampleRate: null,
+        exclusiveLimiterEnabled: true,
         delayProfilesByDeviceKey: {},
         inputBaselinesByKey: {},
         activeDelayProfileKey: 'default',
@@ -1960,9 +2007,13 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       const savedPlaybackOutputMode = normalizePlaybackOutputMode(
         localStorage.getItem(PLAYBACK_OUTPUT_MODE_STORAGE_KEY)
       )
+      const savedExclusiveSampleRate = normalizeSampleRate(localStorage.getItem(EXCLUSIVE_SAMPLE_RATE_STORAGE_KEY))
+      const savedExclusiveLimiterEnabled = localStorage.getItem(EXCLUSIVE_LIMITER_STORAGE_KEY) !== '0'
+      await audioEngine.setExclusiveSampleRate(savedExclusiveSampleRate)
+      await audioEngine.setExclusiveLimiterEnabled(savedExclusiveLimiterEnabled)
       const playbackModeResult = await audioEngine.setPlaybackOutputMode(savedPlaybackOutputMode)
       const playbackOutputMode = playbackModeResult.activeMode
-      const nativeAudioCapabilities = playbackOutputMode === 'bitperfect'
+      const nativeAudioCapabilities = isNativeOutputMode(playbackOutputMode)
         ? await audioEngine.refreshNativeAudioCapabilities()
         : playbackModeResult.capabilities
 
@@ -2016,7 +2067,9 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         normalizationEnabled,
         normalizationTargetLufs,
         replayGainScanEnabled: replayGainEnabled,
-        replayGainMode
+        replayGainMode,
+        exclusiveSampleRate: savedExclusiveSampleRate,
+        exclusiveLimiterEnabled: savedExclusiveLimiterEnabled
       })
 
       await get().refreshDevices()

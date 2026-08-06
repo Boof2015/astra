@@ -16,12 +16,14 @@ import {
 import type {
   AudioBufferMemoryStats,
   NativeAudioCapabilities,
+  NativeAudioDspConfig,
   NativeAudioDiagnosticReport,
   NativeAudioEvent,
   NativeAudioPlaybackSnapshot,
   NativeAudioOutputStatus,
   NativeAudioTrackMetadata,
   NativeAudioTrackLoadResult,
+  NativeAudioTrackGain,
   NativeAudioVisualizerTapDemand,
   PlaybackOutputMode
 } from '../../types/nativeAudio'
@@ -472,6 +474,8 @@ export class AudioEngine {
   }> = new WeakMap()
   private playbackOutputMode: PlaybackOutputMode = 'standard'
   private nativeCapabilities: NativeAudioCapabilities = {
+    processedExclusiveAvailable: false,
+    reasonProcessedExclusiveUnavailable: 'Native processed exclusive playback is unavailable in this build.',
     bitPerfectAvailable: false,
     reasonUnavailable: 'Native bit-perfect playback is unavailable in this build.',
     activeBackend: 'unavailable',
@@ -480,6 +484,8 @@ export class AudioEngine {
     devices: []
   }
   private nativeSnapshot: NativeAudioPlaybackSnapshot | null = null
+  private nativeRequestedSampleRate: number | null = null
+  private nativeLimiterEnabled: boolean = true
   private nativeScopePollFrameId: number | null = null
   private nativeEventUnsubscribe: (() => void) | null = null
   private nextNativeLifecycleSuppressionToken: number = 1
@@ -491,6 +497,7 @@ export class AudioEngine {
   private nativeNextTrackBuffered: boolean = false
   private nativeCurrentPlaybackSequence: number | null = null
   private nativeNextPlaybackSequence: number | null = null
+  private lastNativeProcessingStatusRefreshAt = 0
   private lastNativeVisualizerTapDemand: NativeAudioVisualizerTapDemand | null = null
   private nativeSeekPromise: Promise<void> | null = null
   private pendingNativeSeekTime: number | null = null
@@ -565,6 +572,14 @@ export class AudioEngine {
     return this.playbackOutputMode === 'bitperfect' && Boolean(this.nativeSnapshot?.outputStatus.bitPerfectActive)
   }
 
+  private isNativeExclusiveMode(mode: PlaybackOutputMode = this.playbackOutputMode): boolean {
+    return mode === 'exclusive' || mode === 'bitperfect'
+  }
+
+  private isProcessedExclusiveMode(mode: PlaybackOutputMode = this.playbackOutputMode): boolean {
+    return mode === 'exclusive'
+  }
+
   getNativeAudioOutputStatus(): NativeAudioOutputStatus | null {
     return this.nativeSnapshot?.outputStatus ?? null
   }
@@ -578,7 +593,14 @@ export class AudioEngine {
   }
 
   getPlaybackModeStatusMessage(): string | null {
-    if (this.playbackOutputMode !== 'bitperfect') return null
+    if (this.playbackOutputMode === 'standard') return null
+    if (this.playbackOutputMode === 'exclusive') {
+      if (this.nativeSnapshot?.outputStatus.processing.exclusiveActive) return null
+      return this.nativeSnapshot?.outputStatus.failureSummary
+        ?? (this.nativeCapabilities.processedExclusiveAvailable
+          ? 'Exclusive DSP output is verified only while the native stream is running.'
+          : this.nativeCapabilities.reasonProcessedExclusiveUnavailable)
+    }
     if (this.nativeCapabilities.bitPerfectAvailable && this.nativeSnapshot?.outputStatus.bitPerfectActive) {
       return null
     }
@@ -590,7 +612,7 @@ export class AudioEngine {
 
   async setPlaybackOutputMode(mode: PlaybackOutputMode): Promise<PlaybackModeSwitchResult> {
     if (mode === 'standard') {
-      if (this.playbackOutputMode === 'bitperfect') {
+      if (this.isNativeExclusiveMode()) {
         void window.nativeAudioAPI.stop()
       }
       this.playbackOutputMode = 'standard'
@@ -621,9 +643,15 @@ export class AudioEngine {
     }
 
     const capabilities = await this.initNativeAudio()
-    if (!capabilities.bitPerfectAvailable) {
-      this.playbackOutputMode = 'standard'
-      this.nativeModeMessage = capabilities.reasonUnavailable
+    const available = mode === 'exclusive'
+      ? capabilities.processedExclusiveAvailable
+      : capabilities.bitPerfectAvailable
+    const unavailableMessage = mode === 'exclusive'
+      ? capabilities.reasonProcessedExclusiveUnavailable
+      : capabilities.reasonUnavailable
+    if (!available) {
+      this.playbackOutputMode = mode
+      this.nativeModeMessage = unavailableMessage
       this.nativeCurrentPlaybackSequence = null
       this.nativeNextPlaybackSequence = null
       this.nativeLifecycleSuppressionTokens.clear()
@@ -633,7 +661,7 @@ export class AudioEngine {
       return {
         activeMode: this.playbackOutputMode,
         capabilities,
-        message: capabilities.reasonUnavailable
+        message: unavailableMessage
       }
     }
 
@@ -643,18 +671,99 @@ export class AudioEngine {
     await this.clearNextBuffer()
     this.audioBuffer = null
     this.currentNormalizationAnalysis = null
-    this.playbackOutputMode = 'bitperfect'
+    this.playbackOutputMode = mode
     this.nativeCurrentPlaybackSequence = null
     this.nativeNextPlaybackSequence = null
-    this.nativeModeMessage = BIT_PERFECT_UNSUPPORTED_MESSAGE
+    this.nativeLifecycleSuppressionTokens.clear()
+    this.retainedNativeLoadSuppressionToken = null
+    this.nativeCapabilities = await window.nativeAudioAPI.configureNativeOutput({
+      policy: mode === 'exclusive' ? 'processed' : 'direct',
+      requestedSampleRate: mode === 'exclusive' ? this.nativeRequestedSampleRate : null
+    })
+    if (mode === 'exclusive') await this.syncNativeDspConfig()
+    this.nativeModeMessage = mode === 'exclusive'
+      ? 'Exclusive DSP output is verified only while the native stream is running.'
+      : BIT_PERFECT_UNSUPPORTED_MESSAGE
     this.syncSpatialNodeConnection()
     this.notifyTrackChange()
     this.syncVisualizerTransportState()
     return {
       activeMode: this.playbackOutputMode,
-      capabilities,
+      capabilities: this.nativeCapabilities,
       message: null
     }
+  }
+
+  private buildNativeDspConfig(): NativeAudioDspConfig {
+    return {
+      volume: this._volume,
+      muted: this._isMuted,
+      eqEnabled: this.requestedEQEnabled,
+      preampDb: this.requestedEQPreampDb,
+      eqBands: this.requestedEQBands.map(({ type, frequency, gain, Q }) => ({ type, frequency, gain, Q })),
+      limiterEnabled: this.nativeLimiterEnabled
+    }
+  }
+
+  private getNativeTrackGain(): NativeAudioTrackGain {
+    const gain = this.resolveGainStateForAnalysis(this.currentNormalizationAnalysis, this.currentReplayGainDb)
+    return { mode: gain.mode, gainDb: gain.gainDb }
+  }
+
+  private async syncNativeDspConfig(): Promise<void> {
+    if (!this.isProcessedExclusiveMode()) return
+    this.nativeSnapshot = await window.nativeAudioAPI.setNativeDspConfig(this.buildNativeDspConfig())
+    this.nativeSnapshot = await window.nativeAudioAPI.setNativeTrackGain(this.getNativeTrackGain())
+  }
+
+  private syncNativeTrackGain(): void {
+    if (!this.isProcessedExclusiveMode()) return
+    const gain = this.getNativeTrackGain()
+    this.applyGainState({
+      mode: gain.mode,
+      gainDb: gain.gainDb,
+      linearGain: this.toLinearGain(gain.gainDb)
+    })
+    void window.nativeAudioAPI.setNativeTrackGain(gain).then((snapshot) => {
+      this.nativeSnapshot = snapshot
+      this.emit('nativeOutputStatusChange', snapshot.outputStatus)
+    }).catch((error) => {
+      this.emit('error', error instanceof Error ? error : new Error('Failed to update native track gain'))
+    })
+  }
+
+  private pushNativeDspConfig(): void {
+    if (!this.isProcessedExclusiveMode()) return
+    void this.syncNativeDspConfig().then(() => {
+      if (this.nativeSnapshot) this.emit('nativeOutputStatusChange', this.nativeSnapshot.outputStatus)
+    }).catch((error) => {
+      this.emit('error', error instanceof Error ? error : new Error('Failed to update native DSP'))
+    })
+  }
+
+  async setExclusiveSampleRate(sampleRate: number | null): Promise<void> {
+    this.nativeRequestedSampleRate = Number.isFinite(sampleRate) && Number(sampleRate) > 0
+      ? Math.round(Number(sampleRate))
+      : null
+    if (!this.isProcessedExclusiveMode()) return
+    this.nativeCapabilities = await window.nativeAudioAPI.configureNativeOutput({
+      policy: 'processed',
+      requestedSampleRate: this.nativeRequestedSampleRate
+    })
+    await this.refreshNativeSnapshot()
+  }
+
+  getExclusiveSampleRate(): number | null {
+    return this.nativeRequestedSampleRate
+  }
+
+  async setExclusiveLimiterEnabled(enabled: boolean): Promise<void> {
+    this.nativeLimiterEnabled = Boolean(enabled)
+    await this.syncNativeDspConfig()
+  }
+
+  isExclusiveLimiterEnabled(): boolean {
+    return this.nativeLimiterEnabled
   }
 
   // Register callback for track changes (for visualizer reset)
@@ -788,11 +897,11 @@ export class AudioEngine {
   }
 
   private syncNativeVisualizerTapDemand(): void {
-    if (this.playbackOutputMode !== 'bitperfect' && this.lastNativeVisualizerTapDemand === null) {
+    if (!this.isNativeExclusiveMode() && this.lastNativeVisualizerTapDemand === null) {
       return
     }
 
-    const demand = this.playbackOutputMode === 'bitperfect'
+    const demand = this.isNativeExclusiveMode()
       ? this.getNativeVisualizerTapDemand()
       : {
           oscilloscope: false,
@@ -818,7 +927,7 @@ export class AudioEngine {
   }
 
   private shouldPollNativeScopeData(): boolean {
-    return this.playbackOutputMode === 'bitperfect'
+    return this.isNativeExclusiveMode()
       && this._playbackState === 'playing'
       && this.hasAnyVisualizerDemand()
   }
@@ -838,7 +947,7 @@ export class AudioEngine {
   }
 
   private discardNativeScopeChunks(): void {
-    if (this.playbackOutputMode !== 'bitperfect') return
+    if (!this.isNativeExclusiveMode()) return
     try {
       window.nativeAudioAPI.flushOscilloscopeChunks()
       window.nativeAudioAPI.flushSpectrumChunks()
@@ -1045,7 +1154,7 @@ export class AudioEngine {
   }
 
   private enqueueOscilloscopeSamples(chunk: Float32Array): void {
-    if (this.playbackOutputMode !== 'bitperfect') {
+    if (!this.isNativeExclusiveMode()) {
       if (this.pendingOscilloscopeSamples.length >= AudioEngine.MAX_PENDING_CHUNKS) {
         this.pendingOscilloscopeSamples = this.pendingOscilloscopeSamples.slice(
           -AudioEngine.MAX_PENDING_CHUNKS / 2
@@ -1227,7 +1336,7 @@ export class AudioEngine {
   }
 
   private shouldSuppressNativeLifecycleEvents(): boolean {
-    return this.playbackOutputMode === 'bitperfect'
+    return this.isNativeExclusiveMode()
       && (this.nativeLifecycleSuppressionTokens.size > 0 || this._playbackState === 'loading')
   }
 
@@ -1239,7 +1348,7 @@ export class AudioEngine {
   }
 
   private async refreshNativeSnapshot(): Promise<NativeAudioPlaybackSnapshot | null> {
-    if (this.playbackOutputMode !== 'bitperfect' && this.nativeSnapshot === null) {
+    if (!this.isNativeExclusiveMode() && this.nativeSnapshot === null) {
       return null
     }
     try {
@@ -1261,7 +1370,7 @@ export class AudioEngine {
     if (
       lifecycleEvent
       && (
-        this.playbackOutputMode !== 'bitperfect'
+        !this.isNativeExclusiveMode()
         || this.shouldSuppressNativeLifecycleEvents()
       )
     ) {
@@ -1283,7 +1392,7 @@ export class AudioEngine {
         }
         this._playbackState = event.playbackState as PlaybackState
         this.emit('stateChange', this._playbackState)
-        if (this._playbackState !== 'playing' || this.playbackOutputMode === 'bitperfect') {
+        if (this._playbackState !== 'playing' || this.isNativeExclusiveMode()) {
           this.stopTimeUpdate()
         }
         this.syncNativeScopePolling()
@@ -1296,6 +1405,13 @@ export class AudioEngine {
           }
         }
         this.emit('timeUpdate', event.currentTime)
+        if (this.isProcessedExclusiveMode()) {
+          const now = performance.now()
+          if (now - this.lastNativeProcessingStatusRefreshAt >= 250) {
+            this.lastNativeProcessingStatusRefreshAt = now
+            void this.refreshNativeSnapshot()
+          }
+        }
         break
       case 'durationChange':
         if (this.nativeSnapshot) {
@@ -1537,7 +1653,7 @@ export class AudioEngine {
     const ctx = this.context
     const buffer = this.audioBuffer
     if (
-      this.playbackOutputMode === 'bitperfect'
+      this.isNativeExclusiveMode()
       || !ctx
       || !buffer
       || !this.sourceNode
@@ -1588,7 +1704,7 @@ export class AudioEngine {
   } | null {
     const ctx = this.context
     const buffer = this.audioBuffer
-    if (!ctx || !buffer || this.playbackOutputMode === 'bitperfect') return null
+    if (!ctx || !buffer || this.isNativeExclusiveMode()) return null
     if (this._playbackState !== 'playing') return null
     if (!Number.isFinite(this.startTime) || this.startTime <= 0) return null
 
@@ -1664,16 +1780,75 @@ export class AudioEngine {
     })
   }
 
-  async loadTrackFromPath(track: Track): Promise<NativeAudioTrackLoadResult> {
+  private async resolveNativeTrackGainForLoad(
+    track: Track,
+    options: AudioLoadDataOptions
+  ): Promise<{ analysis: LoudnessAnalysis | null; gain: NativeAudioTrackGain }> {
+    const replayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
+    let analysis: LoudnessAnalysis | null = null
+    if (this.shouldAnalyzeLoudnessForLoad(replayGainDb) && options.loudnessAnalysis) {
+      try {
+        const result = await options.loudnessAnalysis
+        if (result && Number.isFinite(result.loudnessLufs)) {
+          const sampleRate = Math.max(1, track.sampleRate ?? 48_000)
+          analysis = {
+            loudnessLufs: result.loudnessLufs,
+            peakLinear: result.peakLinear ?? 0,
+            sampleRate,
+            frameCount: Math.max(0, Math.round((track.duration ?? 0) * sampleRate))
+          }
+        }
+      } catch {
+        // A missing loudness result is safe: native processing uses unity track gain.
+      }
+    }
+    const gainState = this.resolveGainStateForAnalysis(analysis, replayGainDb)
+    return {
+      analysis,
+      gain: { mode: gainState.mode, gainDb: gainState.gainDb }
+    }
+  }
+
+  async loadTrackFromPath(track: Track, options: AudioLoadDataOptions = {}): Promise<NativeAudioTrackLoadResult> {
     const loadOperation = this.beginLoadOperation()
     this.nativeCurrentPlaybackSequence = null
     this.replaceRetainedNativeLoadSuppression()
     this.lastLoadTimings = null
+    const nativeInit = this.initNativeAudio()
+    const replayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
+    const initialGainState = this.resolveGainStateForAnalysis(null, replayGainDb)
+    const initialGain: NativeAudioTrackGain = {
+      mode: initialGainState.mode,
+      gainDb: initialGainState.gainDb
+    }
+    const resolvedGainPromise = this.resolveNativeTrackGainForLoad(track, options)
+    await nativeInit
+    this.assertCurrentLoadOperation(loadOperation)
+    this.currentReplayGainDb = replayGainDb
+    this.currentNormalizationAnalysis = null
+    this.applyGainState({
+      mode: initialGain.mode,
+      gainDb: initialGain.gainDb,
+      linearGain: this.toLinearGain(initialGain.gainDb)
+    })
+    const commitResolvedGain = async (): Promise<void> => {
+      const resolvedGain = await resolvedGainPromise
+      this.assertCurrentLoadOperation(loadOperation)
+      this.currentNormalizationAnalysis = resolvedGain.analysis
+      this.applyGainState({
+        mode: resolvedGain.gain.mode,
+        gainDb: resolvedGain.gain.gainDb,
+        linearGain: this.toLinearGain(resolvedGain.gain.gainDb)
+      })
+      if (this.isProcessedExclusiveMode()) {
+        this.nativeSnapshot = await window.nativeAudioAPI.setNativeTrackGain(resolvedGain.gain)
+        this.assertCurrentLoadOperation(loadOperation)
+        this.emit('nativeOutputStatusChange', this.nativeSnapshot.outputStatus)
+      }
+    }
     this._playbackState = 'loading'
     this.emit('stateChange', this._playbackState)
     this.stopTimeUpdate()
-    await this.initNativeAudio()
-    this.assertCurrentLoadOperation(loadOperation)
     if (this.nativeSnapshot?.playbackState === 'playing' || this.nativeSnapshot?.playbackState === 'paused') {
       try {
         await window.nativeAudioAPI.stop()
@@ -1685,7 +1860,6 @@ export class AudioEngine {
     await this.clearRemoteStreamState(true)
     this.assertCurrentLoadOperation(loadOperation)
     this.audioBuffer = null
-    this.currentNormalizationAnalysis = null
     this.currentBufferTrackPath = null
 
     const canPromoteNativeNext = this.nativeNextTrackBuffered && this.nextBufferTrackPath === track.path
@@ -1703,6 +1877,7 @@ export class AudioEngine {
       }
       if (result) {
         this.assertCurrentLoadOperation(loadOperation)
+        await commitResolvedGain()
         this.recordNativeLoadTimings(result)
         this.nativeCurrentPlaybackSequence = result.playbackSequence
         this.nativeNextPlaybackSequence = null
@@ -1726,7 +1901,11 @@ export class AudioEngine {
     this.nativeNextTrackBuffered = false
     let result: NativeAudioTrackLoadResult
     try {
-      result = await window.nativeAudioAPI.loadTrack(track.path, this.buildNativeTrackMetadata(track))
+      result = await window.nativeAudioAPI.loadTrack(
+        track.path,
+        this.buildNativeTrackMetadata(track),
+        initialGain
+      )
     } catch (error) {
       if (isSupersededAudioLoadError(error) || loadOperation !== this.loadGeneration) {
         throw new SupersededAudioLoadError()
@@ -1734,6 +1913,7 @@ export class AudioEngine {
       throw error
     }
     this.assertCurrentLoadOperation(loadOperation)
+    await commitResolvedGain()
     this.recordNativeLoadTimings(result)
     this.nativeCurrentPlaybackSequence = result.playbackSequence
     this.nativeNextPlaybackSequence = null
@@ -1749,13 +1929,19 @@ export class AudioEngine {
     return result
   }
 
-  async preBufferNextTrackFromPath(track: Track): Promise<NativeAudioTrackLoadResult> {
+  async preBufferNextTrackFromPath(track: Track, options: AudioLoadDataOptions = {}): Promise<NativeAudioTrackLoadResult> {
     const prebufferOperation = this.beginPrebufferOperation()
     await this.initNativeAudio()
     this.assertCurrentPrebufferOperation(prebufferOperation)
+    const resolvedGain = await this.resolveNativeTrackGainForLoad(track, options)
+    this.assertCurrentPrebufferOperation(prebufferOperation)
     let result: NativeAudioTrackLoadResult
     try {
-      result = await window.nativeAudioAPI.preloadNextTrack(track.path, this.buildNativeTrackMetadata(track))
+      result = await window.nativeAudioAPI.preloadNextTrack(
+        track.path,
+        this.buildNativeTrackMetadata(track),
+        resolvedGain.gain
+      )
     } catch (error) {
       if (isSupersededAudioLoadError(error) || prebufferOperation !== this.prebufferGeneration) {
         throw new SupersededAudioLoadError('Audio prebuffer was superseded by a newer request.')
@@ -2215,7 +2401,7 @@ export class AudioEngine {
   }
 
   private getPostEQOutputNode(): AudioNode | null {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       return null
     }
     return this.shouldBypassStandardAnalysisGraph()
@@ -2224,7 +2410,7 @@ export class AudioEngine {
   }
 
   private rebuildStandardAnalysisGraphRouting(): void {
-    if (this.playbackOutputMode === 'bitperfect') return
+    if (this.isNativeExclusiveMode()) return
     if (!this.context || !this.normalizationGainNode || !this.preampNode || !this.gainNode) return
 
     try { this.normalizationGainNode.disconnect() } catch { /* ignore */ }
@@ -2365,7 +2551,7 @@ export class AudioEngine {
   }
 
   private rebuildRemoteStreamRoutingIfActive(): boolean {
-    if (!this.remoteStreamNode || !this.remoteStreamState || this.playbackOutputMode === 'bitperfect') {
+    if (!this.remoteStreamNode || !this.remoteStreamState || this.isNativeExclusiveMode()) {
       return false
     }
 
@@ -2375,7 +2561,7 @@ export class AudioEngine {
   }
 
   private rebuildParallaxSinkRoutingIfActive(): boolean {
-    if (!this.parallaxSinkNode || !this.parallaxSinkState || this.playbackOutputMode === 'bitperfect') {
+    if (!this.parallaxSinkNode || !this.parallaxSinkState || this.isNativeExclusiveMode()) {
       return false
     }
 
@@ -2555,7 +2741,7 @@ export class AudioEngine {
     remoteState: RemoteStreamRuntimeState,
     options: { force?: boolean; markComplete?: boolean } = {}
   ): void {
-    if (this.playbackOutputMode === 'bitperfect') return
+    if (this.isNativeExclusiveMode()) return
     if (!this._normalizationEnabled) {
       this.normalizationApproximate = false
       this.applyGainState({
@@ -2816,8 +3002,8 @@ export class AudioEngine {
   }
 
   async loadProgressiveStream(track: Track, options: RemoteStreamLoadOptions = {}): Promise<RemoteStreamInfo> {
-    if (this.playbackOutputMode === 'bitperfect') {
-      throw new Error('Bit-perfect mode requires path-based native loading.')
+    if (this.isNativeExclusiveMode()) {
+      throw new Error('Native exclusive modes require local, path-based loading.')
     }
 
     const loadOperation = this.beginLoadOperation()
@@ -2964,7 +3150,7 @@ export class AudioEngine {
   }
 
   async loadParallaxSinkStream(stream: ParallaxStreamInfo): Promise<void> {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       throw new Error('Parallax sink playback is only available in standard mode.')
     }
 
@@ -3206,7 +3392,7 @@ export class AudioEngine {
   // Pre-load the next stream WITHOUT disturbing the currently-playing sink node. Created via the
   // normal factory (auto-connects to routing + analysis tap; its onmessage stays inert until promote).
   loadParallaxNextSinkStream(stream: ParallaxStreamInfo): void {
-    if (this.playbackOutputMode === 'bitperfect') return
+    if (this.isNativeExclusiveMode()) return
     if (!this.context || !this.workletLoaded) return
     if (!this.parallaxSinkState) return // nothing playing to hand off from
     if (this.parallaxNextSinkState?.streamId === stream.streamId) return // already staged
@@ -3375,7 +3561,7 @@ export class AudioEngine {
   }
 
   async playCurrentBufferOnParallaxTimeline(timeline: ParallaxTimelineState): Promise<void> {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       throw new Error('Parallax host playback is only available in standard mode.')
     }
     const playLoadGeneration = this.loadGeneration
@@ -3564,7 +3750,7 @@ export class AudioEngine {
 
   /** Build the metronome buffer at the context sample rate and stash it. Returns stream specs. */
   async prepareParallaxTestTone(): Promise<{ sampleRate: number; channels: number; totalFrames: number; durationSeconds: number }> {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       throw new Error('Parallax test tone is only available in standard mode.')
     }
     await this.initContext()
@@ -3730,7 +3916,7 @@ export class AudioEngine {
 
     this.manualChannelRoutingMap = normalized
 
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       return
     }
 
@@ -3751,7 +3937,7 @@ export class AudioEngine {
 
   async setMultichannelEnabled(enabled: boolean): Promise<void> {
     this.multichannelEnabled = enabled
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       return
     }
 
@@ -3772,7 +3958,7 @@ export class AudioEngine {
 
   async setIncludeLfeInDownmix(enabled: boolean): Promise<void> {
     this.includeLfeInDownmix = Boolean(enabled)
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       return
     }
 
@@ -3793,7 +3979,7 @@ export class AudioEngine {
 
   async setStereoUpmixMode(mode: StereoUpmixMode): Promise<void> {
     this.stereoUpmixMode = normalizeStereoUpmixMode(mode)
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       return
     }
 
@@ -3950,7 +4136,7 @@ export class AudioEngine {
 
   async setSpatialMode(mode: SpatialMode): Promise<void> {
     this.spatialMode = mode === 'binaural' ? 'binaural' : 'off'
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       return
     }
 
@@ -3989,7 +4175,7 @@ export class AudioEngine {
       })
     }
 
-    if (this.playbackOutputMode === 'bitperfect') return
+    if (this.isNativeExclusiveMode()) return
     if (this.spatialMode !== 'binaural') return
     if (this.virtualSpeakers.length === previousCount) return
 
@@ -4178,7 +4364,7 @@ export class AudioEngine {
     if (!this._normalizationEnabled || this.currentNormalizationAnalysis) return
     if (this._replayGainEnabled && this.currentReplayGainDb != null) return
     const trackPath = this.currentBufferTrackPath
-    if (!trackPath || !this.audioBuffer) return
+    if (!trackPath || (!this.audioBuffer && !this.isProcessedExclusiveMode())) return
     if (this.pendingCurrentLoudnessTrackPath === trackPath) return
 
     this.pendingCurrentLoudnessTrackPath = trackPath
@@ -4189,15 +4375,21 @@ export class AudioEngine {
           this.pendingCurrentLoudnessTrackPath = null
         }
         if (!result || !Number.isFinite(result.loudnessLufs)) return
-        if (this.currentBufferTrackPath !== trackPath || !this.audioBuffer) return
+        if (this.currentBufferTrackPath !== trackPath) return
         if (this.currentNormalizationAnalysis) return
+        const sampleRate = this.audioBuffer?.sampleRate
+          ?? this.nativeSnapshot?.sampleRate
+          ?? 48_000
+        const frameCount = this.audioBuffer?.length
+          ?? Math.max(0, Math.round((this.nativeSnapshot?.duration ?? 0) * sampleRate))
         this.currentNormalizationAnalysis = {
           loudnessLufs: result.loudnessLufs,
           peakLinear: result.peakLinear ?? 0,
-          sampleRate: this.audioBuffer.sampleRate,
-          frameCount: this.audioBuffer.length
+          sampleRate,
+          frameCount
         }
         this.applyNormalization()
+        this.syncNativeTrackGain()
       })
   }
 
@@ -4378,6 +4570,12 @@ export class AudioEngine {
     if (this.playbackOutputMode === 'bitperfect') {
       return
     }
+    if (this.isProcessedExclusiveMode()) {
+      this.applyNormalization()
+      this.ensureCurrentLoudnessAnalysis()
+      this.syncNativeTrackGain()
+      return
+    }
     if (this.remoteStreamState) {
       this.applyRemoteNormalizationIfNeeded(this.remoteStreamState, {
         force: true,
@@ -4419,6 +4617,12 @@ export class AudioEngine {
   set targetLufs(lufs: number) {
     this._targetLufs = lufs
     if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
+    if (this.isProcessedExclusiveMode()) {
+      this.applyNormalization()
+      this.ensureCurrentLoudnessAnalysis()
+      this.syncNativeTrackGain()
       return
     }
     if (this.remoteStreamState) {
@@ -4472,6 +4676,12 @@ export class AudioEngine {
     if (this.playbackOutputMode === 'bitperfect') {
       return
     }
+    if (this.isProcessedExclusiveMode()) {
+      this.applyNormalization()
+      this.ensureCurrentLoudnessAnalysis()
+      this.syncNativeTrackGain()
+      return
+    }
 
     if (this.remoteStreamState) {
       this.applyRemoteNormalizationIfNeeded(this.remoteStreamState, {
@@ -4508,6 +4718,12 @@ export class AudioEngine {
 
     this._replayGainEnabled = normalized
     if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
+    if (this.isProcessedExclusiveMode()) {
+      this.applyNormalization()
+      this.ensureCurrentLoudnessAnalysis()
+      this.syncNativeTrackGain()
       return
     }
 
@@ -4578,7 +4794,7 @@ export class AudioEngine {
   }
 
   get currentTime(): number {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       return this.nativeSnapshot?.currentTime ?? 0
     }
     if (this.remoteStreamState) {
@@ -4597,7 +4813,7 @@ export class AudioEngine {
   }
 
   get duration(): number {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       return this.nativeSnapshot?.duration ?? 0
     }
     if (this.remoteStreamState) {
@@ -4614,7 +4830,7 @@ export class AudioEngine {
   }
 
   async getBufferMemoryStats(): Promise<AudioBufferMemoryStats> {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       try {
         return await window.nativeAudioAPI.getBufferMemoryStats()
       } catch {
@@ -4632,7 +4848,7 @@ export class AudioEngine {
   }
 
   getCurrentTrackChannelCount(): number | null {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       return this.nativeSnapshot?.channels ?? null
     }
     if (this.remoteStreamState) {
@@ -4759,12 +4975,12 @@ export class AudioEngine {
    * performs the same resampling decodeAudioData would have performed.
    */
   async getStandardDecodeSampleRate(): Promise<number> {
-    if (this.playbackOutputMode === 'bitperfect') {
-      throw new Error('Standard decoding is unavailable while bit-perfect mode is active.')
+    if (this.isNativeExclusiveMode()) {
+      throw new Error('Standard decoding is unavailable while native-exclusive output is active.')
     }
     await this.initContext()
-    if (this.getPlaybackOutputMode() === 'bitperfect') {
-      throw new Error('Standard decoding is unavailable while bit-perfect mode is active.')
+    if (this.isNativeExclusiveMode()) {
+      throw new Error('Standard decoding is unavailable while native-exclusive output is active.')
     }
     if (!this.context) throw new Error('AudioContext not initialized')
     return this.context.sampleRate
@@ -4772,8 +4988,9 @@ export class AudioEngine {
 
   // Get actual sample rate from AudioContext (for native DSP sync)
   getSampleRate(): number {
-    if (this.playbackOutputMode === 'bitperfect') {
-      return this.nativeSnapshot?.sampleRate
+    if (this.isNativeExclusiveMode()) {
+      return this.nativeSnapshot?.outputStatus.processing.targetSampleRate
+        ?? this.nativeSnapshot?.sampleRate
         ?? 48000
     }
     return this.context?.sampleRate ?? 48000
@@ -4781,21 +4998,21 @@ export class AudioEngine {
 
   // Get post-EQ analyser node for spectrum overlay
   getEQAnalyserNode(): AnalyserNode | null {
-    if (this.playbackOutputMode === 'bitperfect' || this.shouldBypassStandardAnalysisGraph()) {
+    if (this.isNativeExclusiveMode() || this.shouldBypassStandardAnalysisGraph()) {
       return null
     }
     return this.eqDisplayAnalyserNode ?? this.eqAnalyserNode
   }
 
   getOutputMaxChannelCount(): number | null {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       return this.nativeCapabilities.selectedDeviceMaxChannels ?? null
     }
     return this.context?.destination.maxChannelCount ?? null
   }
 
   async setAnalysisDelayMs(ms: number): Promise<void> {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       this.analysisDelayMs = 0
       return
     }
@@ -4815,7 +5032,7 @@ export class AudioEngine {
   }
 
   async runOutputDelayCalibration(inputDeviceId: string = ''): Promise<OutputDelayCalibrationResult> {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       return {
         ok: false,
         code: 'not-supported',
@@ -4990,7 +5207,7 @@ export class AudioEngine {
     referenceDeviceId: string = '',
     inputDeviceId: string = ''
   ): Promise<DifferentialCalibrationResult> {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       return {
         ok: false,
         code: 'not-supported',
@@ -6298,7 +6515,7 @@ export class AudioEngine {
 
   // Audio output device selection
   async setOutputDevice(deviceId: string): Promise<void> {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       await this.initNativeAudio()
       this.nativeCapabilities = await window.nativeAudioAPI.setOutputDevice(deviceId)
       await this.refreshNativeSnapshot()
@@ -6317,7 +6534,7 @@ export class AudioEngine {
   }
 
   async ensureContextReady(): Promise<void> {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       await this.initNativeAudio()
       return
     }
@@ -6326,14 +6543,16 @@ export class AudioEngine {
 
   // Check if audio context is initialized and ready
   isContextReady(): boolean {
-    if (this.playbackOutputMode === 'bitperfect') {
-      return this.nativeCapabilities.bitPerfectAvailable
+    if (this.isNativeExclusiveMode()) {
+      return this.isProcessedExclusiveMode()
+        ? this.nativeCapabilities.processedExclusiveAvailable
+        : this.nativeCapabilities.bitPerfectAvailable
     }
     return this.context !== null && this.workletLoaded
   }
 
   get worklet(): AudioWorkletNode | null {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       return null
     }
     return this.workletNode
@@ -6423,7 +6642,7 @@ export class AudioEngine {
   }
 
   get hasNextBuffered(): boolean {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       return this.nativeNextTrackBuffered
     }
     return this.nextBuffer !== null
@@ -6497,8 +6716,8 @@ export class AudioEngine {
   }
 
   async loadAudioData(arrayBuffer: ArrayBuffer, options: AudioLoadDataOptions = {}): Promise<void> {
-    if (this.playbackOutputMode === 'bitperfect') {
-      throw new Error('Bit-perfect mode requires path-based native loading.')
+    if (this.isNativeExclusiveMode()) {
+      throw new Error('Native exclusive modes require local, path-based loading.')
     }
     const loadOperation = this.beginLoadOperation()
     await this.initContext()
@@ -6665,8 +6884,8 @@ export class AudioEngine {
   }
 
   async loadPcmData(pcm: CompleteFloat32Pcm, options: AudioLoadDataOptions = {}): Promise<void> {
-    if (this.playbackOutputMode === 'bitperfect') {
-      throw new Error('Bit-perfect mode requires path-based native loading.')
+    if (this.isNativeExclusiveMode()) {
+      throw new Error('Native-exclusive output requires path-based native loading.')
     }
     const loadOperation = this.beginLoadOperation()
     await this.initContext()
@@ -6683,7 +6902,7 @@ export class AudioEngine {
     track: Track,
     options: StandardTrackDecodeOptions = {},
   ): Promise<StandardPcmLoadOutcome> {
-    if (this.playbackOutputMode === 'bitperfect') return 'failed'
+    if (this.isNativeExclusiveMode()) return 'failed'
     if (track.sourceType && track.sourceType !== 'local') return 'failed'
     if (!Number.isInteger(track.channels) || Number(track.channels) < 1 || Number(track.channels) > 8) {
       // Never guess a channel count: FFmpeg's raw output has no layout header,
@@ -6758,8 +6977,8 @@ export class AudioEngine {
 
   // Pre-buffer the next track for gapless playback
   async preBufferNext(arrayBuffer: ArrayBuffer, options: AudioLoadDataOptions = {}): Promise<void> {
-    if (this.playbackOutputMode === 'bitperfect') {
-      throw new Error('Bit-perfect mode requires path-based native prebuffering.')
+    if (this.isNativeExclusiveMode()) {
+      throw new Error('Native exclusive modes require local, path-based prebuffering.')
     }
     const prebufferOperation = this.beginPrebufferOperation()
     await this.initContext()
@@ -6839,8 +7058,8 @@ export class AudioEngine {
 
   /** Prebuffers a native float32 decode without changing gapless semantics. */
   async preBufferNextPcm(pcm: CompleteFloat32Pcm, options: AudioLoadDataOptions = {}): Promise<void> {
-    if (this.playbackOutputMode === 'bitperfect') {
-      throw new Error('Bit-perfect mode requires path-based native prebuffering.')
+    if (this.isNativeExclusiveMode()) {
+      throw new Error('Native-exclusive output requires path-based native prebuffering.')
     }
     const prebufferOperation = this.beginPrebufferOperation()
     await this.initContext()
@@ -6867,7 +7086,7 @@ export class AudioEngine {
     track: Track,
     options: StandardTrackDecodeOptions = {},
   ): Promise<StandardPcmLoadOutcome> {
-    if (this.playbackOutputMode === 'bitperfect') return 'failed'
+    if (this.isNativeExclusiveMode()) return 'failed'
     if (track.sourceType && track.sourceType !== 'local') return 'failed'
     if (!Number.isInteger(track.channels) || Number(track.channels) < 1 || Number(track.channels) > 8) {
       return 'failed'
@@ -7138,7 +7357,7 @@ export class AudioEngine {
   clearNextBuffer(): void | Promise<void> {
     this.invalidatePrebufferOperations()
     this.nextNormalizationAnalysis = null
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       this.nativeNextTrackBuffered = false
       this.nativeNextPlaybackSequence = null
       this.nextBufferTrackPath = null
@@ -7175,7 +7394,7 @@ export class AudioEngine {
   // Play
   async play(): Promise<void> {
     const playLoadGeneration = this.loadGeneration
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       const previousPlaybackState = this._playbackState
       const lifecycleSuppression = this.beginNativeLifecycleSuppression()
       this.consumeRetainedNativeLoadSuppression()
@@ -7334,7 +7553,7 @@ export class AudioEngine {
 
   // Pause
   pause(): void | Promise<void> {
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       const pauseLoadGeneration = this.loadGeneration
       const lifecycleSuppression = this.beginNativeLifecycleSuppression()
       this.consumeRetainedNativeLoadSuppression()
@@ -7406,7 +7625,7 @@ export class AudioEngine {
     this.invalidateLoadOperations()
     this.clearPauseFadeTimer()
     const stopLoadGeneration = this.loadGeneration
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       const lifecycleSuppression = this.beginNativeLifecycleSuppression()
       this.consumeRetainedNativeLoadSuppression()
       this.nativeNextTrackBuffered = false
@@ -7471,7 +7690,7 @@ export class AudioEngine {
   // Seek to time in seconds
   async seek(time: number): Promise<void> {
     this.clearPauseFadeTimer()
-    if (this.playbackOutputMode === 'bitperfect') {
+    if (this.isNativeExclusiveMode()) {
       await this.seekNativeBitPerfect(time)
       return
     }
@@ -7594,6 +7813,10 @@ export class AudioEngine {
       return
     }
     this._volume = Math.max(0, Math.min(1, value))
+    if (this.isProcessedExclusiveMode()) {
+      this.pushNativeDspConfig()
+      return
+    }
     if (this.gainNode && !this._isMuted) {
       this.gainNode.gain.value = this._volume
     }
@@ -7605,6 +7828,10 @@ export class AudioEngine {
       return
     }
     this._isMuted = !this._isMuted
+    if (this.isProcessedExclusiveMode()) {
+      this.pushNativeDspConfig()
+      return
+    }
     if (this.gainNode) {
       this.gainNode.gain.value = this._isMuted ? 0 : this._volume
     }
@@ -7616,6 +7843,10 @@ export class AudioEngine {
       return
     }
     this._isMuted = muted
+    if (this.isProcessedExclusiveMode()) {
+      this.pushNativeDspConfig()
+      return
+    }
     if (this.gainNode) {
       this.gainNode.gain.value = this._isMuted ? 0 : this._volume
     }
@@ -7634,6 +7865,10 @@ export class AudioEngine {
     this.requestedEQEnabled = enabled
 
     if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
+    if (this.isProcessedExclusiveMode()) {
+      this.pushNativeDspConfig()
       return
     }
 
@@ -7687,6 +7922,10 @@ export class AudioEngine {
     if (this.playbackOutputMode === 'bitperfect') {
       return
     }
+    if (this.isProcessedExclusiveMode()) {
+      this.pushNativeDspConfig()
+      return
+    }
     if (index < 0 || index >= this.eqFilters.length || !this.context) return
     const filter = this.eqFilters[index]
     filter.type = this._mapBandType(band.type)
@@ -7701,6 +7940,10 @@ export class AudioEngine {
   updatePreamp(dB: number): void {
     this.requestedEQPreampDb = dB
     if (this.playbackOutputMode === 'bitperfect') {
+      return
+    }
+    if (this.isProcessedExclusiveMode()) {
+      this.pushNativeDspConfig()
       return
     }
     if (!this.preampNode) return

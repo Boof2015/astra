@@ -16,6 +16,35 @@ enum class SampleFormat {
     Float32
 };
 
+enum class OutputPolicy { Direct, Processed };
+enum class TrackGainMode { Off, Normalization, ReplayGain };
+
+struct NativeOutputRequest {
+    OutputPolicy policy = OutputPolicy::Direct;
+    uint32_t requestedSampleRate = 0;
+};
+
+struct DspEqBand {
+    std::string type;
+    double frequency = 1000.0;
+    double gain = 0.0;
+    double q = 1.0;
+};
+
+struct NativeDspConfig {
+    double volume = 1.0;
+    bool muted = false;
+    bool eqEnabled = false;
+    double preampDb = 0.0;
+    std::vector<DspEqBand> eqBands;
+    bool limiterEnabled = true;
+};
+
+struct NativeTrackGain {
+    TrackGainMode mode = TrackGainMode::Off;
+    double gainDb = 0.0;
+};
+
 struct TrackFormat {
     uint32_t sampleRate = 0;
     uint32_t channels = 0;
@@ -30,6 +59,7 @@ struct TrackBuffer {
     TrackFormat format;
     double duration = 0.0;
     std::vector<uint8_t> data;
+    NativeTrackGain gain;
 
     uint64_t totalFrames() const;
 };
@@ -89,10 +119,41 @@ struct NativeOutputAttempt {
     bool bufferPrimed = false;
     bool streamStarted = false;
     bool finalVerified = false;
+    std::string outputPolicy = "direct";
+    bool resamplingActive = false;
+    int requestedSampleRate = 0;
+    int targetSampleRate = 0;
+    std::string rateSelectionReason;
     std::string failureStage;
     std::string osErrorSymbol;
     int64_t osErrorCode = 0;
     std::string message;
+};
+
+struct NativeProcessingStatus {
+    std::string outputPolicy = "direct";
+    bool exclusiveActive = false;
+    bool processingActive = false;
+    bool resamplingActive = false;
+    std::string resamplerName;
+    std::string resamplerQuality;
+    int sourceSampleRate = 0;
+    int targetSampleRate = 0;
+    int requestedSampleRate = 0;
+    std::string rateSelectionMode = "auto";
+    std::string rateSelectionReason;
+    int processingLatencyFrames = 0;
+    std::string gainMode = "off";
+    double trackGainDb = 0.0;
+    double preampDb = 0.0;
+    double volume = 1.0;
+    bool muted = false;
+    bool eqEnabled = false;
+    int eqBandCount = 0;
+    bool limiterEnabled = false;
+    double limiterGainReductionDb = 0.0;
+    std::string dither;
+    uint64_t clippedSamples = 0;
 };
 
 struct NativeOutputStatus {
@@ -110,6 +171,7 @@ struct NativeOutputStatus {
     bool sourceSamplesModified = false;
     bool wireFormatCanCarrySourceExactly = false;
     bool bitPerfectActive = false;
+    NativeProcessingStatus processing;
 
     NativePcmFormat sourceFormat;
     NativePcmFormat processingFormat;
@@ -201,6 +263,7 @@ private:
 };
 
 class PlaybackEngine;
+class ProcessedAudioPipeline;
 
 class AudioOutputSink {
 public:
@@ -251,9 +314,14 @@ public:
     void setSelectedDeviceId(const std::string& deviceId);
 
     bool isBitPerfectAvailable(std::string* reason) const;
+    bool isProcessedExclusiveAvailable(std::string* reason) const;
     std::string backendKind() const;
     NativeOutputStatus getOutputStatus() const;
     std::string getNativeAudioDiagnosticReport() const;
+
+    void configureOutput(const NativeOutputRequest& request);
+    void setDspConfig(const NativeDspConfig& config);
+    void setCurrentTrackGain(const NativeTrackGain& gain);
 
     void loadTrack(TrackBuffer track);
     void preloadNextTrack(TrackBuffer track);
@@ -307,6 +375,9 @@ private:
         const VisualizerTapDemand& demand
     );
     bool formatsMatch(const TrackFormat& a, const TrackFormat& b) const;
+    TrackFormat selectProcessedOutputFormat(const TrackFormat& source, std::string* reason) const;
+    TrackFormat activeRenderFormatLocked() const;
+    void resetProcessedPipelineLocked(uint64_t sourceFrame);
     uint64_t clampTargetFrameLocked(double seconds) const;
 
     mutable std::mutex controlMutex_;
@@ -314,6 +385,7 @@ private:
     mutable std::mutex eventMutex_;
     mutable std::mutex tapMutex_;
     std::unique_ptr<AudioOutputSink> sink_;
+    std::unique_ptr<ProcessedAudioPipeline> processedPipeline_;
     std::string selectedDeviceId_;
     std::string lastUnavailableReason_;
     mutable std::mutex lastPlayErrorMutex_;
@@ -329,6 +401,11 @@ private:
     uint64_t lastTimeUpdateFrame_ = 0;
     bool platformStartVerified_ = false;
     bool nativeEndPending_ = false;
+    NativeOutputRequest outputRequest_ {};
+    NativeDspConfig dspConfig_ {};
+    TrackFormat renderFormat_ {};
+    std::string rateSelectionReason_;
+    double consumedSourceFrameExact_ = 0.0;
 
     static constexpr size_t kMaxTapSamples = 32768;
     static constexpr uint32_t kTimeUpdateRateHz = 30;

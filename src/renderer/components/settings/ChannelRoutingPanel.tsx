@@ -81,8 +81,11 @@ export default function ChannelRoutingPanel() {
     setVirtualSpeakerAzimuth,
     setVirtualSpeakerElevation,
   } = useAudioSettingsStore()
-  const bitPerfectModeActive = playbackOutputMode === 'bitperfect'
-  const bitPerfectVerifiedActive = bitPerfectModeActive && Boolean(nativeAudioOutputStatus?.bitPerfectActive)
+  const bitPerfectModeActive = playbackOutputMode !== 'standard'
+  const bitPerfectVerifiedActive = playbackOutputMode === 'bitperfect' && Boolean(nativeAudioOutputStatus?.bitPerfectActive)
+  const nativeRoutingDisabledMessage = playbackOutputMode === 'bitperfect'
+    ? BIT_PERFECT_DSP_DISABLED_MESSAGE
+    : 'Channel routing, upmix/downmix, and spatial rendering are Standard-only. Exclusive DSP preserves the source channel layout.'
   const binauralSelected = spatialMode === 'binaural'
   const binauralActive = binauralSelected && !bitPerfectModeActive && spatialStatus.state === 'ready'
 
@@ -424,7 +427,7 @@ export default function ChannelRoutingPanel() {
 
   // ---- Render helpers ----
 
-  const disabledTitle = bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined
+  const disabledTitle = bitPerfectModeActive ? nativeRoutingDisabledMessage : undefined
 
   const spatialNotice = binauralSelected && (spatialStatus.state === 'error' || spatialStatus.state === 'unsupported-samplerate')
     ? (spatialStatus.message ?? 'The binaural renderer is unavailable; playback falls back to Direct rendering.')
@@ -714,7 +717,7 @@ export default function ChannelRoutingPanel() {
           </p>
         )}
         {bitPerfectModeActive && (
-          <p className="pipeline-note">{BIT_PERFECT_DSP_DISABLED_MESSAGE}</p>
+          <p className="pipeline-note">{nativeRoutingDisabledMessage}</p>
         )}
       </div>
 

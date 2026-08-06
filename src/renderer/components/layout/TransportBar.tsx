@@ -216,6 +216,7 @@ export default function TransportBar() {
   }, [playbackOutputMode, showEQPopover])
 
   const bitPerfectModeActive = playbackOutputMode === 'bitperfect'
+  const exclusiveDspModeActive = playbackOutputMode === 'exclusive'
   const disabledControlMessage = playbackModeStatusMessage ?? BIT_PERFECT_DSP_DISABLED_MESSAGE
   const eqControlDisabled = bitPerfectModeActive
   const transportControlsLocked = parallaxSinkConnected
@@ -297,6 +298,14 @@ export default function TransportBar() {
     const sampleRateLabel = sampleRate > 0 ? `${(sampleRate / 1000).toFixed(1)} kHz` : 'native rate'
     const exclusivityLabel = nativeAudioOutputStatus.transport ?? 'Native transport'
     return `${backendLabel} • ${sampleRateLabel} • ${exclusivityLabel}`
+  })()
+  const exclusiveDspStatusLabel = (() => {
+    if (!exclusiveDspModeActive || !nativeAudioOutputStatus?.processing.exclusiveActive) return null
+    const sampleRate = nativeAudioOutputStatus.processing.targetSampleRate
+      ?? nativeAudioOutputStatus.wireFormat.sampleRate
+    const rateLabel = sampleRate ? `${(sampleRate / 1000).toFixed(1)} kHz` : 'native rate'
+    const resamplerLabel = nativeAudioOutputStatus.processing.resamplingActive ? 'Resampling' : 'Source rate'
+    return `${rateLabel} • ${resamplerLabel} • ${nativeAudioOutputStatus.transport ?? 'Native transport'}`
   })()
   const normalizationReadout = (() => {
     if (bitPerfectModeActive) {
@@ -481,6 +490,12 @@ export default function TransportBar() {
             <div className="transport-output-line" title={disabledControlMessage}>
               <span className="transport-output-line-prefix">BP</span>
               <span className="transport-output-line-value">{bitPerfectStatusLabel}</span>
+            </div>
+          )}
+          {exclusiveDspStatusLabel && (
+            <div className="transport-output-line" title="Verified native exclusive ownership with DSP processing active">
+              <span className="transport-output-line-prefix">EX</span>
+              <span className="transport-output-line-value">{exclusiveDspStatusLabel}</span>
             </div>
           )}
         </div>

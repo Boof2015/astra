@@ -1,6 +1,40 @@
 import type { MultichannelAudioChunk } from './audioAnalysis'
 
-export type PlaybackOutputMode = 'standard' | 'bitperfect'
+export type PlaybackOutputMode = 'standard' | 'exclusive' | 'bitperfect'
+
+export function normalizePlaybackOutputMode(value: unknown): PlaybackOutputMode {
+  return value === 'exclusive' || value === 'bitperfect' ? value : 'standard'
+}
+
+export type NativeAudioOutputPolicy = 'direct' | 'processed'
+export type NativeAudioGainMode = 'off' | 'normalization' | 'replaygain'
+export type NativeAudioRateSelectionMode = 'auto' | 'fixed'
+
+export interface NativeAudioOutputRequest {
+  policy: NativeAudioOutputPolicy
+  requestedSampleRate: number | null
+}
+
+export interface NativeAudioDspEqBand {
+  type: 'lowshelf' | 'peaking' | 'highshelf' | 'highpass' | 'lowpass'
+  frequency: number
+  gain: number
+  Q: number
+}
+
+export interface NativeAudioDspConfig {
+  volume: number
+  muted: boolean
+  eqEnabled: boolean
+  preampDb: number
+  eqBands: NativeAudioDspEqBand[]
+  limiterEnabled: boolean
+}
+
+export interface NativeAudioTrackGain {
+  mode: NativeAudioGainMode
+  gainDb: number
+}
 
 export type NativeAudioPlaybackState = 'stopped' | 'starting' | 'playing' | 'paused' | 'loading'
 
@@ -10,6 +44,7 @@ export type NativeAudioPlaybackState = 'stopped' | 'starting' | 'playing' | 'pau
 export type NativeAudioSampleFormat = 's16' | 's24' | 's32' | 'f32'
 
 export type NativeAudioProbedSampleFormat = NativeAudioSampleFormat | 's24in32'
+export type NativeAudioStatusSampleFormat = NativeAudioProbedSampleFormat | 'f64'
 
 export interface NativeAudioDeviceFormat {
   sampleRate: number
@@ -35,6 +70,8 @@ export interface NativeAudioOutputDevice {
 }
 
 export interface NativeAudioCapabilities {
+  processedExclusiveAvailable: boolean
+  reasonProcessedExclusiveUnavailable: string | null
   bitPerfectAvailable: boolean
   reasonUnavailable: string | null
   activeBackend: NativeAudioBackendKind
@@ -46,12 +83,38 @@ export interface NativeAudioCapabilities {
 export interface NativePcmFormat {
   sampleRate: number | null
   channels: number | null
-  sampleFormat: NativeAudioProbedSampleFormat | null
+  sampleFormat: NativeAudioStatusSampleFormat | null
   containerBits: number | null
   validBits: number | null
   channelMask: number
   channelLayout: string | null
   representation: string | null
+}
+
+export interface NativeAudioProcessingStatus {
+  outputPolicy: NativeAudioOutputPolicy
+  exclusiveActive: boolean
+  processingActive: boolean
+  resamplingActive: boolean
+  resamplerName: string | null
+  resamplerQuality: string | null
+  sourceSampleRate: number | null
+  targetSampleRate: number | null
+  requestedSampleRate: number | null
+  rateSelectionMode: NativeAudioRateSelectionMode
+  rateSelectionReason: string | null
+  processingLatencyFrames: number
+  gainMode: NativeAudioGainMode
+  trackGainDb: number
+  preampDb: number
+  volume: number
+  muted: boolean
+  eqEnabled: boolean
+  eqBandCount: number
+  limiterEnabled: boolean
+  limiterGainReductionDb: number
+  dither: string | null
+  clippedSamples: number
 }
 
 export interface NativeAudioOutputAttempt {
@@ -74,6 +137,13 @@ export interface NativeAudioOutputAttempt {
   bufferPrimed: boolean
   streamStarted: boolean
   finalVerified: boolean
+  outputPolicy: NativeAudioOutputPolicy
+  exclusiveActive: boolean
+  processingActive: boolean
+  resamplingActive: boolean
+  requestedSampleRate: number
+  targetSampleRate: number
+  rateSelectionReason: string | null
   failureStage: string | null
   osErrorSymbol: string | null
   osErrorCode: number
@@ -93,6 +163,11 @@ export interface NativeAudioOutputStatus {
   sourceSamplesModified: boolean
   wireFormatCanCarrySourceExactly: boolean
   bitPerfectActive: boolean
+  outputPolicy: NativeAudioOutputPolicy
+  exclusiveActive: boolean
+  processingActive: boolean
+  resamplingActive: boolean
+  processing: NativeAudioProcessingStatus
   sourceFormat: NativePcmFormat
   processingFormat: NativePcmFormat
   wireFormat: NativePcmFormat

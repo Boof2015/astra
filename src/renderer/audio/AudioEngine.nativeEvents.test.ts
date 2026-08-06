@@ -5,7 +5,7 @@ import type { NativeAudioEvent, NativeAudioPlaybackSnapshot } from '../../types/
 import type { Track } from '../types/audio.ts'
 
 type AudioEngineInternals = {
-  playbackOutputMode: 'standard' | 'bitperfect'
+  playbackOutputMode: 'standard' | 'exclusive' | 'bitperfect'
   _playbackState: 'stopped' | 'loading' | 'playing' | 'paused'
   nativeLifecycleSuppressionTokens: Set<number>
   nativeCurrentPlaybackSequence: number | null
@@ -25,6 +25,7 @@ type AudioEngineInternals = {
   initNativeAudio: () => Promise<void>
   initContext: () => Promise<void>
   refreshNativeCapabilities: () => Promise<void>
+  refreshNativeSnapshot: () => Promise<NativeAudioPlaybackSnapshot | null>
   syncNativeScopePolling: () => void
   _normalizationEnabled: boolean
   _replayGainEnabled: boolean
@@ -121,6 +122,102 @@ test('polled native lifecycle events cannot override an authoritative load or de
   internals.handleNativeAudioEvent({ type: 'stateChange', playbackSequence: 1, playbackState: 'playing' })
   assert.deepEqual(observed, ['state'])
   assert.equal(engine.playbackState, 'playing')
+})
+
+test('processed-exclusive lifecycle events use the same suppression and playback sequence guards', () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  internals.playbackOutputMode = 'exclusive'
+  internals._playbackState = 'loading'
+  internals.nativeLifecycleSuppressionTokens.add(1)
+  internals.nativeCurrentPlaybackSequence = 11
+
+  const observed: string[] = []
+  engine.on('stateChange', () => observed.push('state'))
+  engine.on('timeUpdate', () => observed.push('time'))
+
+  internals.handleNativeAudioEvent({ type: 'stateChange', playbackSequence: 11, playbackState: 'playing' })
+  internals.handleNativeAudioEvent({ type: 'timeUpdate', playbackSequence: 11, currentTime: 12 })
+  assert.deepEqual(observed, [])
+
+  internals.nativeLifecycleSuppressionTokens.clear()
+  internals._playbackState = 'stopped'
+  internals.handleNativeAudioEvent({ type: 'stateChange', playbackSequence: 10, playbackState: 'playing' })
+  assert.deepEqual(observed, [], 'stale processed-exclusive sequences must be ignored')
+  internals.handleNativeAudioEvent({ type: 'stateChange', playbackSequence: 11, playbackState: 'playing' })
+  assert.deepEqual(observed, ['state'])
+})
+
+test('processed-exclusive native decode starts without waiting for loudness analysis', async () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  let resolveLoudness!: (value: { loudnessLufs: number; peakLinear: number }) => void
+  const loudnessAnalysis = new Promise<{ loudnessLufs: number; peakLinear: number }>((resolve) => {
+    resolveLoudness = resolve
+  })
+  let nativeLoadStarted = false
+  let nativeGainUpdates = 0
+  const snapshot = {
+    playbackSequence: 31,
+    playbackState: 'stopped',
+    currentTime: 0,
+    duration: 180,
+    sampleRate: 48_000,
+    channels: 2,
+    sampleFormat: 'f32',
+    deviceId: 'exclusive-test',
+    deviceLabel: 'Exclusive Test Device',
+    outputStatus: {}
+  } as NativeAudioPlaybackSnapshot
+
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      nativeAudioAPI: {
+        loadTrack: async () => {
+          nativeLoadStarted = true
+          return {
+            playbackSequence: 31,
+            sampleRate: 48_000,
+            channels: 2,
+            sampleFormat: 'f32',
+            duration: 180
+          }
+        },
+        setNativeTrackGain: async () => {
+          nativeGainUpdates += 1
+          return snapshot
+        }
+      }
+    }
+  })
+
+  internals.playbackOutputMode = 'exclusive'
+  internals._normalizationEnabled = true
+  internals._replayGainEnabled = false
+  internals.initNativeAudio = async () => undefined
+  internals.refreshNativeCapabilities = async () => undefined
+  internals.refreshNativeSnapshot = async () => snapshot
+  engine.clearNextBuffer = async () => undefined
+
+  try {
+    const load = engine.loadTrackFromPath(makeLocalPcmTrack('exclusive-parallel-gain'), {
+      trackPath: '/pcm/exclusive-parallel-gain.flac',
+      loudnessAnalysis
+    })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(nativeLoadStarted, true, 'native decode/load must overlap optional loudness analysis')
+    assert.equal(nativeGainUpdates, 0)
+
+    resolveLoudness({ loudnessLufs: -20, peakLinear: 0.5 })
+    await load
+    assert.equal(nativeGainUpdates, 1)
+  } finally {
+    resolveLoudness?.({ loudnessLufs: -20, peakLinear: 0.5 })
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
 })
 
 test('superseded external loudness cancellation cannot enter renderer fallback analysis', async () => {

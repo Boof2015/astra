@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { usePresence } from '../../hooks/usePresence'
+import type { PlaybackOutputMode } from '../../../types/nativeAudio'
 
 export interface BitPerfectFormatFailureNotice {
   id: number
@@ -18,6 +19,7 @@ interface BitPerfectFormatFailureModalProps {
   notice: BitPerfectFormatFailureNotice | null
   onDismiss: () => void
   onSwitchToStandard: () => void
+  outputMode: PlaybackOutputMode
 }
 
 const SAMPLE_FORMAT_LABELS: Record<string, string> = {
@@ -69,6 +71,8 @@ function resolveStageGuidance(stage: string | null): string {
       return 'The verified native stream terminated while running. Reconnect the device or resolve the driver error, then retry.'
     case 'verification':
       return 'The device, rate, ownership, or complete wire format changed during start, so verification failed closed.'
+    case 'source':
+      return 'This source cannot use Astra’s local native decode path. Remote, progressive, IAMF, and Parallax playback remain Standard-only.'
     default:
       return 'Exclusive playback could not be verified. Copy the diagnostics for the complete native attempt history.'
   }
@@ -77,7 +81,8 @@ function resolveStageGuidance(stage: string | null): string {
 export default function BitPerfectFormatFailureModal({
   notice,
   onDismiss,
-  onSwitchToStandard
+  onSwitchToStandard,
+  outputMode
 }: BitPerfectFormatFailureModalProps) {
   const presence = usePresence(notice !== null)
   const [copyStatus, setCopyStatus] = useState<string | null>(null)
@@ -89,6 +94,7 @@ export default function BitPerfectFormatFailureModal({
     ? SAMPLE_FORMAT_LABELS[notice.sampleFormat] ?? notice.sampleFormat
     : null
   const requested = [requestedRate, requestedDepth].filter(Boolean).join(' ')
+  const processedMode = outputMode === 'exclusive'
 
   return (
     <div
@@ -102,7 +108,7 @@ export default function BitPerfectFormatFailureModal({
         onClick={(event) => event.stopPropagation()}
       >
         <div className="modal-header">
-          <h2>Bit-Perfect Playback Couldn&apos;t Start</h2>
+          <h2>{processedMode ? 'Exclusive DSP Playback' : 'Bit-Perfect Playback'} Couldn&apos;t Start</h2>
           <button className="modal-close" onClick={onDismiss} aria-label="Close">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
               <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
@@ -113,7 +119,7 @@ export default function BitPerfectFormatFailureModal({
         <div className="modal-body confirm-action-body">
           <p className="confirm-action-message">
             Astra could not verify exclusive playback of {requested ? <strong>{requested}</strong> : 'this track'} on{' '}
-            {deviceName}, so <em>{notice.trackTitle}</em> was not reported bit-perfect.
+            {deviceName}, so <em>{notice.trackTitle}</em> was not started in {processedMode ? 'Exclusive DSP' : 'Bit-Perfect'} mode.
           </p>
           <p className="bit-perfect-format-detail">{notice.message}</p>
           <p className="bit-perfect-format-hint">
@@ -122,7 +128,9 @@ export default function BitPerfectFormatFailureModal({
           </p>
           <p className="bit-perfect-format-hint">{resolveDeviceHint(notice.deviceLabel)}</p>
           <p className="bit-perfect-format-hint">
-            Astra does not automatically resample, re-quantize, or switch paths in Exclusive mode.
+            {processedMode
+              ? 'Exclusive DSP may resample only within the verified native path, but never switches output paths automatically.'
+              : 'Bit-Perfect never resamples, re-quantizes, or switches output paths automatically.'}{' '}
             Switch to Standard output explicitly to play this track through Web Audio.
           </p>
         </div>
@@ -142,7 +150,7 @@ export default function BitPerfectFormatFailureModal({
             {copyStatus ?? 'Copy Diagnostics'}
           </button>
           <button className="settings-btn" onClick={onDismiss}>
-            Keep Bit-Perfect
+            Keep {processedMode ? 'Exclusive DSP' : 'Bit-Perfect'}
           </button>
           <button className="settings-btn settings-btn-primary" onClick={onSwitchToStandard}>
             Switch to Standard Output

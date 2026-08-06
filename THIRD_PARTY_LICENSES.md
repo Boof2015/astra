@@ -143,3 +143,10 @@ Licensed under the MIT License:
 Astra bundles `ffmpeg` and `ffprobe` binaries via the `ffmpeg-static` and
 `ffprobe-static` npm packages. FFmpeg is a trademark of Fabrice Bellard;
 the binaries are licensed under the GPL (see https://ffmpeg.org/legal.html).
+
+## r8brain-free-src
+
+Astra's Exclusive DSP output uses r8brain-free-src 7.1, pinned as the
+`third_party/r8brain-free-src` submodule. r8brain-free-src is Copyright
+(c) Aleksey Vaneev and licensed under the MIT License; see
+`third_party/r8brain-free-src/LICENSE` for the complete license text.

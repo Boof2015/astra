@@ -3,7 +3,11 @@ import { audioEngine, isSupersededAudioLoadError } from '../audio/AudioEngine'
 import type { Track, PlaybackState } from '../types/audio'
 import type { NativeAudioCapabilities, NativeAudioTrackLoadResult } from '../../types/nativeAudio'
 import type { ListeningHistoryStatus } from '../../types/listeningStats'
-import { parseBitPerfectFormatError, stripBitPerfectFormatTag } from '../../shared/audio/bitPerfectFormatError'
+import {
+  createNativeOutputFailureError,
+  parseBitPerfectFormatError,
+  stripBitPerfectFormatTag
+} from '../../shared/audio/bitPerfectFormatError'
 import { extractWaveformPeaks } from '../audio/waveformExtractor'
 import { useLibraryStore, type DbTrack } from './libraryStore'
 import { usePlaylistStore } from './playlistStore'
@@ -72,7 +76,7 @@ interface PlaybackLoadOptions {
 }
 
 interface PlaybackAttemptTimings {
-  backend: 'standard' | 'bitperfect' | 'remote' | 'local_progressive' | 'prebuffer'
+  backend: 'standard' | 'exclusive' | 'bitperfect' | 'remote' | 'local_progressive' | 'prebuffer'
   fileReadMs?: number | null
   decodeMs?: number | null
   loudnessMs?: number | null
@@ -312,8 +316,8 @@ export const CONTEXT_HYDRATION_BATCH_SIZE = 200
 const STANDARD_TRANSITION_COALESCE_MS = 75
 export const MAX_PLAYBACK_HISTORY = 500
 export const PLAYER_VOLUME_STORAGE_KEY = 'astra-player-volume-v1'
-const BIT_PERFECT_REMOTE_FALLBACK_MESSAGE = 'Bit-perfect mode is only available for local files. Playback fell back to Standard.'
-const IAMF_BIT_PERFECT_FALLBACK_MESSAGE = 'Eclipsa (IAMF) tracks decode through the standard pipeline. Playback fell back to Standard.'
+const NATIVE_REMOTE_FAILURE_MESSAGE = 'Native exclusive playback is local-file-only. Switch to Standard to play remote or progressive sources.'
+const IAMF_NATIVE_FAILURE_MESSAGE = 'Eclipsa (IAMF) and Parallax sources are Standard-only. Switch to Standard to play this track.'
 let nextQueueItemId = 1
 let nextPlaybackAttemptId = 1
 
@@ -958,6 +962,7 @@ function requestTrackLoudnessAnalysis(
   priority: 'interactive' | 'background' = 'interactive'
 ): Promise<{ loudnessLufs: number; peakLinear: number | null } | null> | null {
   if (track.sourceType && track.sourceType !== 'local') return null
+  if (useAudioSettingsStore.getState().playbackOutputMode === 'bitperfect') return null
   if (!audioEngine.needsLoudnessAnalysisForLoad(replayGainDb)) return null
   const request = priority === 'background'
     ? window.electronAPI.warmupTrackLoudness(track.path)
@@ -1034,12 +1039,12 @@ function getReplayGainCandidateDb(
   return trackGainDb ?? albumGainDb
 }
 
-function shouldUseBitPerfectPath(track: Track | null | undefined): boolean {
+function shouldUseNativeExclusivePath(track: Track | null | undefined): boolean {
   if (!track) return false
   const sourceType = track.sourceType ?? 'local'
   if (sourceType !== 'local') return false
   if (isIamfTrack(track)) return false
-  return useAudioSettingsStore.getState().playbackOutputMode === 'bitperfect'
+  return useAudioSettingsStore.getState().playbackOutputMode !== 'standard'
 }
 
 async function ensureCompatiblePlaybackMode(track: Track): Promise<void> {
@@ -1050,15 +1055,22 @@ async function ensureCompatiblePlaybackMode(track: Track): Promise<void> {
   }
 
   const audioSettings = useAudioSettingsStore.getState()
-  if (audioSettings.playbackOutputMode !== 'bitperfect') {
+  if (audioSettings.playbackOutputMode === 'standard') {
     return
   }
 
-  await audioSettings.setPlaybackOutputMode('standard')
-  useAudioSettingsStore.setState({
-    playbackModeStatusMessage: sourceType !== 'local'
-      ? BIT_PERFECT_REMOTE_FALLBACK_MESSAGE
-      : IAMF_BIT_PERFECT_FALLBACK_MESSAGE
+  const message = sourceType !== 'local'
+    ? NATIVE_REMOTE_FAILURE_MESSAGE
+    : IAMF_NATIVE_FAILURE_MESSAGE
+  throw createNativeOutputFailureError({
+    deviceLabel: audioSettings.nativeAudioOutputStatus?.deviceLabel ?? null,
+    sampleRate: track.sampleRate ?? null,
+    channels: track.channels ?? null,
+    sampleFormat: null,
+    message,
+    failureStage: 'source',
+    osCode: null,
+    report: `Native output failure\nStage: source\nMode: ${audioSettings.playbackOutputMode}\nTrack: ${track.path}\n${message}`
   })
 }
 
@@ -1308,11 +1320,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   }
 
   const clearBufferedNextTrack = (): void => {
-    const hadNativePrebufferInFlight = audioEngine.getPlaybackOutputMode() === 'bitperfect'
+    const hadNativePrebufferInFlight = audioEngine.getPlaybackOutputMode() !== 'standard'
       && prebufferInFlightPromise !== null
     clearScheduledPrebufferTimer()
     invalidatePrebufferRequest()
-    if (audioEngine.getPlaybackOutputMode() === 'bitperfect') {
+    if (audioEngine.getPlaybackOutputMode() !== 'standard') {
       if (hadNativePrebufferInFlight) audioEngine.cancelPendingNativeDecode()
       const clearIntentId = playbackIntentGeneration
       void runNativeControlAfterActiveTransition(clearIntentId, () => audioEngine.clearNextBuffer())
@@ -1383,7 +1395,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   }
 
   const getAttemptBackend = (track: Track): PlaybackAttemptTimings['backend'] => {
-    if (shouldUseBitPerfectPath(track)) return 'bitperfect'
+    if (shouldUseNativeExclusivePath(track)) {
+      return useAudioSettingsStore.getState().playbackOutputMode === 'exclusive'
+        ? 'exclusive'
+        : 'bitperfect'
+    }
     if (track.sourceType && track.sourceType !== 'local') return 'remote'
     return 'standard'
   }
@@ -1513,11 +1529,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     )
     if (!hasNonmatchingWork) return
 
-    const cancelNativePrebufferDecode = audioEngine.getPlaybackOutputMode() === 'bitperfect'
+    const cancelNativePrebufferDecode = audioEngine.getPlaybackOutputMode() !== 'standard'
       && hasInFlightWork
     invalidatePrebufferRequest()
     void useParallaxStore.getState().cancelHostNextStream()
-    if (audioEngine.getPlaybackOutputMode() === 'bitperfect') {
+    if (audioEngine.getPlaybackOutputMode() !== 'standard') {
       if (cancelNativePrebufferDecode) audioEngine.cancelPendingNativeDecode()
       void runNativeControlAfterActiveTransition(intentId, () => audioEngine.clearNextBuffer())
       return
@@ -1551,7 +1567,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   }
 
   const startStandardTransition = (request: PendingTransitionLoad): void => {
-    if (shouldUseBitPerfectPath(request.track)) {
+    if (shouldUseNativeExclusivePath(request.track)) {
       supersedePendingTransition(pendingNativeTransition)
       pendingNativeTransition = request
       drainNativeTransitions()
@@ -1585,7 +1601,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     if (activeNativeTransitionLoad || activeNativeControl || !pendingNativeTransition) return
     const request = pendingNativeTransition
     pendingNativeTransition = null
-    if (!shouldUseBitPerfectPath(request.track)) {
+    if (!shouldUseNativeExclusivePath(request.track)) {
       startStandardTransition(request)
       return
     }
@@ -1654,7 +1670,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         void audioEngine.cancelPendingNativeDecode?.()
       }
 
-      if (shouldUseBitPerfectPath(track)) {
+      if (shouldUseNativeExclusivePath(track)) {
         supersedePendingTransition(pendingStandardTransition)
         pendingStandardTransition = null
         if (standardTransitionTimerId !== null) {
@@ -2309,8 +2325,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     const expectedTrack = resolveExpectedPrebufferTrack(state)
     const expectedTrackPath = expectedTrack?.path ?? null
     const activeOutputMode = audioEngine.getPlaybackOutputMode()
-    const usesNativePrebuffer = activeOutputMode === 'bitperfect'
-      && shouldUseBitPerfectPath(expectedTrack)
+    const usesNativePrebuffer = activeOutputMode !== 'standard'
+      && shouldUseNativeExclusivePath(expectedTrack)
 
     if (
       useAudioSettingsStore.getState().disableGaplessPrebufferDev
@@ -2319,9 +2335,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       || !expectedTrackPath
       || (state.currentTrack.sourceType && state.currentTrack.sourceType !== 'local')
       // IAMF and other Standard-only targets must not start eager file/loudness
-      // work while the active backend is bit-perfect. Their eventual play action
+      // work while a native-exclusive backend is active. Their eventual play action
       // performs the existing safe fallback to Standard first.
-      || (activeOutputMode === 'bitperfect' && !usesNativePrebuffer)
+      || (activeOutputMode !== 'standard' && !usesNativePrebuffer)
     ) {
       clearScheduledPrebufferTimer()
       if (audioEngine.hasNextBuffered) {
@@ -2766,7 +2782,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     let stalePrebufferWaitMs = 0
     const stalePrebufferWaitStartedAtMs = performance.now()
     const hadNativePrebufferInFlight = prebufferInFlightPromise !== null
-    const stalePrebufferClear = audioEngine.getPlaybackOutputMode() === 'bitperfect'
+    const stalePrebufferClear = audioEngine.getPlaybackOutputMode() !== 'standard'
       ? (() => {
           clearScheduledPrebufferTimer()
           invalidatePrebufferRequest()
@@ -3020,14 +3036,19 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         throwIfSupersededLoad(loadRequestId)
         let usedFfmpegFallback = false
         const decodeStart = performance.now()
-        if (shouldUseBitPerfectPath(track)) {
+        if (shouldUseNativeExclusivePath(track)) {
           const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
           audioEngine.setCurrentReplayGainDb(replayGainDb)
           const nativeLoad: { result: NativeAudioTrackLoadResult | null } = { result: null }
+          const loudnessAnalysis = requestTrackLoudnessAnalysis(track, replayGainDb)
           await runNativeControlAfterActiveTransition(loadIntentId, async () => {
             activeStandaloneNativeLoad = true
             try {
-              nativeLoad.result = await audioEngine.loadTrackFromPath(track)
+              nativeLoad.result = await audioEngine.loadTrackFromPath(track, {
+                replayGainDb,
+                trackPath: track.path,
+                loudnessAnalysis
+              })
             } finally {
               activeStandaloneNativeLoad = false
             }
@@ -3062,7 +3083,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           warmupUpcomingLoudness()
           logSlowPath('loadTrack', loadStart, {
             trackPath: track.path,
-            usedNativeBitPerfect: true,
+            usedNativeExclusive: true,
+            nativeOutputMode: useAudioSettingsStore.getState().playbackOutputMode,
             decodeMs
           })
           return true
@@ -3140,7 +3162,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         if (recentPlaySession === loadListeningSession) finalizeRecentPlaySession()
         const isFormatFailure = showBitPerfectFormatNotice(track, error)
         if (isFormatFailure) {
-          console.warn('Bit-perfect playback rejected by the output device:', stripBitPerfectFormatTag(
+          console.warn('Native exclusive playback failed closed:', stripBitPerfectFormatTag(
             error instanceof Error ? error.message : String(error)
           ))
         } else {
@@ -3442,7 +3464,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           resumedTrack,
           () => isCurrentPlaybackIntent(resumeIntentId)
         )
-        if (audioEngine.getPlaybackOutputMode() === 'bitperfect') {
+        if (audioEngine.getPlaybackOutputMode() !== 'standard') {
           // Native play includes the device-start handshake. Publish it through
           // the same control barrier as pause/stop/clear so a following target
           // can supersede its state without overlapping native addon calls.
@@ -3494,7 +3516,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           standaloneTrackPath
         }
         pendingPlaybackInterruptionReconciliation = reconciliation
-        const waitsForNativeState = audioEngine.getPlaybackOutputMode() === 'bitperfect'
+        const waitsForNativeState = audioEngine.getPlaybackOutputMode() !== 'standard'
         if (waitsForNativeState) {
           clearScheduledPrebufferTimer()
           invalidatePrebufferRequest()
@@ -3520,7 +3542,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         void useParallaxStore.getState().pauseHostPlayback()
         return
       }
-      if (audioEngine.getPlaybackOutputMode() === 'bitperfect') {
+      if (audioEngine.getPlaybackOutputMode() !== 'standard') {
         clearScheduledPrebufferTimer()
         invalidatePrebufferRequest()
         audioEngine.cancelPendingNativeDecode()
@@ -3588,7 +3610,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           standaloneTrackPath
         }
       }
-      const waitsForNativeState = audioEngine.getPlaybackOutputMode() === 'bitperfect'
+      const waitsForNativeState = audioEngine.getPlaybackOutputMode() !== 'standard'
       if (waitsForNativeState) {
         const stopControl = runNativeControlAfterActiveTransition(
           playbackIntentGeneration,
@@ -3692,7 +3714,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         schedulePreBufferNextTrack()
         return
       }
-      if (audioEngine.getPlaybackOutputMode() === 'bitperfect') {
+      if (audioEngine.getPlaybackOutputMode() !== 'standard') {
         await runSerializedNativeSeek(seekIntentId, seekTime)
       } else {
         await audioEngine.seek(seekTime)
@@ -4417,7 +4439,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       let nativeLoadMs: number | null = null
       let nativeDeviceStartMs: number | null = null
       const finishAttempt = (outcome: PlaybackLoadOutcome): void => {
-        if (attemptBackend === 'bitperfect') {
+        if (attemptBackend === 'bitperfect' || attemptBackend === 'exclusive') {
           const timings = audioEngine.getLastLoadTimings()
           attemptDecodeMs ??= timings?.decodeMs ?? null
           nativeBinaryResolutionMs ??= timings?.nativeBinaryResolutionMs ?? null
@@ -4479,10 +4501,15 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         await ensureCompatiblePlaybackMode(track)
         throwIfSupersededLoad(loadRequestId)
         const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
-        if (shouldUseBitPerfectPath(track)) {
-          attemptBackend = 'bitperfect'
+        if (shouldUseNativeExclusivePath(track)) {
+          attemptBackend = getAttemptBackend(track)
           audioEngine.setCurrentReplayGainDb(replayGainDb)
-          const loadResult = await audioEngine.loadTrackFromPath(track)
+          const loudnessAnalysis = requestTrackLoudnessAnalysis(track, replayGainDb)
+          const loadResult = await audioEngine.loadTrackFromPath(track, {
+            replayGainDb,
+            trackPath: track.path,
+            loudnessAnalysis
+          })
           throwIfSupersededLoad(loadRequestId)
           const resolvedTrack: Track = {
             ...track,
@@ -4532,7 +4559,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           logMemoryDiagnosticsEvent('track_load_success', {
             trackPath: track.path,
             sourceType: track.sourceType ?? 'local',
-            loadPath: 'bitperfect',
+            loadPath: useAudioSettingsStore.getState().playbackOutputMode,
             durationSeconds: loadResult.duration,
             channels: loadResult.channels,
             nativeBinaryResolutionMs,
@@ -4543,7 +4570,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           })
           logSlowPath('queueLoadAndPlayTrack', loadStart, {
             trackPath: track.path,
-            usedNativeBitPerfect: true
+            usedNativeExclusive: true,
+            nativeOutputMode: useAudioSettingsStore.getState().playbackOutputMode
           })
           finishAttempt('loaded')
           return 'loaded'
@@ -4996,7 +5024,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           }
           if (isUnavailableRemoteTrack(nextTrack)) continue
           const activeOutputMode = audioEngine.getPlaybackOutputMode()
-          if (activeOutputMode === 'bitperfect' && !shouldUseBitPerfectPath(nextTrack)) {
+          if (activeOutputMode !== 'standard' && !shouldUseNativeExclusivePath(nextTrack)) {
             return
           }
           if (await shouldUseLocalProgressivePath(nextTrack)) {
@@ -5012,11 +5040,17 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
           try {
             if (!canApplyPrebufferResult(nextTrack)) return
-            if (activeOutputMode === 'bitperfect') {
+            if (shouldUseNativeExclusivePath(nextTrack)) {
               const nativePrebufferIntentId = playbackIntentGeneration
+              const nextReplayGainDb = getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
+              const nextLoudnessAnalysis = requestTrackLoudnessAnalysis(nextTrack, nextReplayGainDb)
               await runNativeControlAfterActiveTransition(nativePrebufferIntentId, async () => {
                 if (!canApplyPrebufferResult(nextTrack)) return
-                await audioEngine.preBufferNextTrackFromPath(nextTrack)
+                await audioEngine.preBufferNextTrackFromPath(nextTrack, {
+                  replayGainDb: nextReplayGainDb,
+                  trackPath: nextTrack.path,
+                  loudnessAnalysis: nextLoudnessAnalysis
+                })
               })
               if (!canApplyPrebufferResult(nextTrack)) {
                 // Leave a just-completed native prebuffer in place. Clearing it
@@ -5028,7 +5062,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               logSlowPath('preBufferNextTrack', bufferStart, {
                 trackPath: nextTrack.path,
                 loaded: true,
-                usedNativeBitPerfect: true
+                usedNativeExclusive: true,
+                nativeOutputMode: useAudioSettingsStore.getState().playbackOutputMode
               })
               prebufferRetryAtLateTrackPath = null
               return
@@ -5138,7 +5173,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             prebufferRetryAtLateTrackPath = null
             // §21 Gapless sink handoff — the next track is decoded; pre-announce it to connected
             // sinks so they pre-buffer and cross the boundary gaplessly. No-op unless hosting with
-            // sinks on a non-bitperfect local track.
+            // sinks on a Standard-mode local track.
             void useParallaxStore.getState().publishHostNextStream(nextTrack)
             return
           } catch (error) {
@@ -5239,7 +5274,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       })
 
       audioEngine.on('nativeCapabilitiesChange', (capabilities) => {
-        if (useAudioSettingsStore.getState().playbackOutputMode !== 'bitperfect') {
+        if (useAudioSettingsStore.getState().playbackOutputMode === 'standard') {
           return
         }
         useAudioSettingsStore.setState({
