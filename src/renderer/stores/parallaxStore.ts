@@ -1785,6 +1785,10 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     // §21. Boundary crossed — promote the pre-announced next stream to active. Falls back to the
     // Phase-1 boundary start when nothing was pre-announced (e.g. handoff couldn't pre-buffer in time).
     promoteHostNextStream: async (currentTrack) => {
+      // A manual early Next can promote a local eager buffer before the deferred
+      // Parallax announce window. That old timer now describes the former
+      // boundary and must never publish after the track has become current.
+      clearNextStreamPublishTimer()
       audioEngine.promoteParallaxHostNextPublish()
       let promotedTimeline: ParallaxTimelineState | null = null
       try {
@@ -1843,6 +1847,11 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     },
 
     pauseHostPlayback: async () => {
+      // An eagerly decoded next track may have a long-lived announce timer.
+      // Its projected boundary is invalid as soon as playback pauses; resume
+      // re-enters publishHostNextStream with a freshly computed boundary.
+      clearNextStreamPublishTimer()
+      audioEngine.cancelParallaxHostNextPublishing()
       // §17 control-side: pause is void-returning, so the playerStore regression that hit
       // resume/seek doesn't apply here — pauseHostPlayback never made playerStore use
       // Parallax scheduling. Publishing the paused timeline regardless of sink count is the
@@ -1850,6 +1859,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       // extrapolating `playing` timeline.
       const stream = getActiveHostStreamForControl()
       if (!stream) return
+      void window.electronAPI.parallax.publishHostNextStreamCancel().catch(() => undefined)
       const timeline = buildHostTimeline(
         stream,
         'paused',
@@ -1872,6 +1882,8 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     },
 
     stopHostPlayback: async () => {
+      clearNextStreamPublishTimer()
+      audioEngine.cancelParallaxHostNextPublishing()
       audioEngine.cancelParallaxHostPublishing()
       stopHostEmitAnchorPublish()
       // §17 round 2. Stream lifecycle reset — there's no activeStream to rejoin into, so the

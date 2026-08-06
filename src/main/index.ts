@@ -6868,6 +6868,10 @@ ipcMain.handle('audio:warmupTrackLoudness', async (_event, filePath: string) => 
   return analyzeTrackLoudness(filePath, 'background')
 })
 
+ipcMain.handle('audio:supersedeTrackLoudness', async (_event, filePath: string | null) => {
+  supersedeInteractiveLoudness(filePath)
+})
+
 ipcMain.handle('audio:storeTrackLoudness', async (_event, filePath: string, payload: RendererTrackLoudnessPayload) => {
   return storeRendererTrackLoudness(filePath, payload)
 })
@@ -10476,27 +10480,51 @@ async function runLoudnessAnalysisJob(
   }
 
   let backgroundPriorityApplied = false
+  let processHasBackgroundPriority = false
+  let activePid: number | null = null
+  const stopWatchingPriority = context.onPriorityChanged((priority) => {
+    if (priority !== 'interactive' || activePid === null || !processHasBackgroundPriority) return
+    try {
+      setPriority(activePid, osConstants.priority.PRIORITY_NORMAL)
+      processHasBackgroundPriority = false
+    } catch (error) {
+      if (isDev) {
+        console.debug('[loudness] could not restore promoted ffmpeg priority', {
+          pid: activePid,
+          message: error instanceof Error ? error.message : String(error)
+        })
+      }
+    }
+  })
   try {
-    const stderr = await execFileCaptureStderr(
-      ffmpegPath,
-      buildEbur128Args(job.filePath),
-      { timeout: LOUDNESS_FFMPEG_TIMEOUT_MS, maxBuffer: LOUDNESS_FFMPEG_MAX_STDERR_BYTES },
-      context.signal,
-      (pid) => {
-        if (context.priority !== 'background' || pid === null) return
-        try {
-          setPriority(pid, osConstants.priority.PRIORITY_BELOW_NORMAL)
-          backgroundPriorityApplied = true
-        } catch (error) {
-          if (isDev) {
-            console.debug('[loudness] could not lower background ffmpeg priority', {
-              pid,
-              message: error instanceof Error ? error.message : String(error)
-            })
+    let stderr: string
+    try {
+      stderr = await execFileCaptureStderr(
+        ffmpegPath,
+        buildEbur128Args(job.filePath),
+        { timeout: LOUDNESS_FFMPEG_TIMEOUT_MS, maxBuffer: LOUDNESS_FFMPEG_MAX_STDERR_BYTES },
+        context.signal,
+        (pid) => {
+          activePid = pid
+          if (context.priority !== 'background' || pid === null) return
+          try {
+            setPriority(pid, osConstants.priority.PRIORITY_BELOW_NORMAL)
+            backgroundPriorityApplied = true
+            processHasBackgroundPriority = true
+          } catch (error) {
+            if (isDev) {
+              console.debug('[loudness] could not lower background ffmpeg priority', {
+                pid,
+                message: error instanceof Error ? error.message : String(error)
+              })
+            }
           }
         }
-      }
-    )
+      )
+    } finally {
+      activePid = null
+      stopWatchingPriority()
+    }
     const capturedStderrBytes = Buffer.byteLength(stderr, 'utf8')
     const parsed = parseEbur128Summary(stderr)
     if (!parsed) {
@@ -10509,6 +10537,9 @@ async function runLoudnessAnalysisJob(
       }
     }
 
+    if (context.signal.aborted) {
+      throw new Error('Loudness analysis was superseded before persistence.')
+    }
     await library.setTrackLoudness({
       trackPath: job.filePath,
       loudnessLufs: parsed.loudnessLufs,
@@ -10564,6 +10595,13 @@ const loudnessAnalysisJobQueue = new LoudnessAnalysisJobQueue<
   }
 })
 
+let latestInteractiveLoudnessRequestId = 0
+
+function supersedeInteractiveLoudness(filePath: string | null): void {
+  latestInteractiveLoudnessRequestId += 1
+  loudnessAnalysisJobQueue.supersedeInteractiveExcept(filePath ?? '')
+}
+
 function enqueueLoudnessAnalysisJob(
   filePath: string,
   fileStat: { size: number; mtimeMs: number },
@@ -10580,7 +10618,18 @@ async function analyzeTrackLoudness(
 ): Promise<TrackLoudnessAnalysisResult | null> {
   if (!filePath || isSubsonicPath(filePath) || isJellyfinPath(filePath)) return null
 
+  const interactiveRequestId = priority === 'interactive'
+    ? ++latestInteractiveLoudnessRequestId
+    : null
+  if (priority === 'interactive') {
+    loudnessAnalysisJobQueue.supersedeInteractiveExcept(filePath)
+  }
+  const isLatestInteractiveRequest = (): boolean => (
+    interactiveRequestId === null || interactiveRequestId === latestInteractiveLoudnessRequestId
+  )
+
   const fileStat = await statForLoudness(filePath)
+  if (!isLatestInteractiveRequest()) return null
   if (!fileStat) return null
 
   const stored = library.getTrackLoudness(filePath)
@@ -10595,6 +10644,7 @@ async function analyzeTrackLoudness(
       }
     }
     await library.deleteTrackLoudness(filePath)
+    if (!isLatestInteractiveRequest()) return null
   }
 
   // The bundled ffmpeg (6.0) cannot read IAMF, so skip the doomed ebur128

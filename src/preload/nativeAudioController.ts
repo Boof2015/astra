@@ -70,6 +70,7 @@ interface NativeAudioControllerApi {
   loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
   preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
   promoteNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+  cancelPendingDecode: () => Promise<void>
   play: () => Promise<NativeAudioPlaybackSnapshot>
   pause: () => Promise<NativeAudioPlaybackSnapshot>
   stop: () => Promise<NativeAudioPlaybackSnapshot>
@@ -86,8 +87,14 @@ interface NativeAudioControllerApi {
   onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
 }
 
-interface NativeAudioControllerOptions {
+export type NativeAudioBinaryResolver = (binary: 'ffmpeg' | 'ffprobe') => Promise<string | null>
+
+export interface NativeAudioControllerOptions {
   unavailableReason?: string | null
+  eventPolling?: boolean
+  resolveBinary?: NativeAudioBinaryResolver
+  runProbe?: (file: string, args: string[], signal: AbortSignal) => Promise<string>
+  runDecode?: (file: string, args: string[], signal: AbortSignal) => Promise<Buffer>
 }
 
 class SupersededNativeAudioLoadError extends Error {
@@ -105,10 +112,16 @@ interface DecodedPcmTrack {
   duration: number
   pcmData: Buffer
   sourceMetadata: NativeAudioTrackMetadata
+  timings: {
+    binaryResolutionMs: number
+    probeMs: number
+    decodeMs: number
+  }
 }
 
 interface DecodeFileOptions {
   backendKind?: NativeAudioBackendKind
+  signal: AbortSignal
 }
 
 interface LoadedTrackRequest {
@@ -118,6 +131,7 @@ interface LoadedTrackRequest {
   channels: number
   sampleFormat: NativeAudioSampleFormat
   duration: number
+  timings?: DecodedPcmTrack['timings']
 }
 
 interface FfprobeStreamInfo {
@@ -426,6 +440,7 @@ function normalizeEvent(value: unknown): NativeAudioEvent | null {
     case 'stateChange':
       return {
         type: 'stateChange',
+        playbackSequence: 0,
         playbackState: raw.playbackState === 'starting' || raw.playbackState === 'playing' || raw.playbackState === 'paused' || raw.playbackState === 'loading'
           ? raw.playbackState
           : 'stopped'
@@ -433,17 +448,19 @@ function normalizeEvent(value: unknown): NativeAudioEvent | null {
     case 'timeUpdate':
       return {
         type: 'timeUpdate',
+        playbackSequence: 0,
         currentTime: Number.isFinite(raw.currentTime) ? Math.max(0, Number(raw.currentTime)) : 0
       }
     case 'durationChange':
       return {
         type: 'durationChange',
+        playbackSequence: 0,
         duration: Number.isFinite(raw.duration) ? Math.max(0, Number(raw.duration)) : 0
       }
     case 'ended':
-      return { type: 'ended' }
+      return { type: 'ended', playbackSequence: 0 }
     case 'gaplessTransition':
-      return { type: 'gaplessTransition' }
+      return { type: 'gaplessTransition', playbackSequence: 0 }
     case 'deviceReopened':
       return {
         type: 'deviceReopened',
@@ -475,38 +492,129 @@ function normalizeEvent(value: unknown): NativeAudioEvent | null {
 
 function normalizeTrackLoadResult(
   snapshot: NativeAudioPlaybackSnapshot,
-  decoded: DecodedPcmTrack
+  decoded: DecodedPcmTrack,
+  nativeLoadMs: number,
+  playbackSequence: number
 ): NativeAudioTrackLoadResult {
   return {
+    playbackSequence,
     sampleRate: snapshot.sampleRate ?? decoded.sampleRate,
     channels: snapshot.channels ?? decoded.channels,
     sampleFormat: snapshot.sampleFormat ?? decoded.sampleFormat,
-    duration: snapshot.duration > 0 ? snapshot.duration : decoded.duration
+    duration: snapshot.duration > 0 ? snapshot.duration : decoded.duration,
+    timings: {
+      ...decoded.timings,
+      nativeLoadMs
+    }
   }
 }
 
 function normalizePromotedTrackLoadResult(
   snapshot: NativeAudioPlaybackSnapshot,
-  fallback: LoadedTrackRequest | null
+  fallback: LoadedTrackRequest | null,
+  nativeLoadMs: number,
+  playbackSequence: number
 ): NativeAudioTrackLoadResult {
   return {
+    playbackSequence,
     sampleRate: snapshot.sampleRate ?? fallback?.sampleRate ?? fallback?.metadata?.sampleRate ?? 0,
     channels: snapshot.channels ?? fallback?.channels ?? fallback?.metadata?.channels ?? 2,
     sampleFormat: snapshot.sampleFormat ?? fallback?.sampleFormat ?? 'f32',
-    duration: snapshot.duration > 0 ? snapshot.duration : fallback?.duration ?? 0
+    duration: snapshot.duration > 0 ? snapshot.duration : fallback?.duration ?? 0,
+    timings: {
+      binaryResolutionMs: fallback?.timings?.binaryResolutionMs ?? 0,
+      probeMs: fallback?.timings?.probeMs ?? 0,
+      decodeMs: fallback?.timings?.decodeMs ?? 0,
+      nativeLoadMs
+    }
   }
 }
 
-function createExecFilePromise(file: string, args: string[]): Promise<string> {
+function throwIfDecodeAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw new SupersededNativeAudioLoadError()
+  }
+}
+
+function createExecFilePromise(file: string, args: string[], signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(file, args, { encoding: 'utf8' }, (error, stdout, stderr) => {
+    if (signal?.aborted) {
+      reject(new SupersededNativeAudioLoadError())
+      return
+    }
+
+    let settled = false
+    const finish = (callback: () => void) => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener('abort', onAbort)
+      callback()
+    }
+    const child = execFile(file, args, { encoding: 'utf8' }, (error, stdout, stderr) => {
       if (error) {
         const message = stderr?.trim() || error.message
-        reject(new Error(message))
+        finish(() => reject(signal?.aborted
+          ? new SupersededNativeAudioLoadError()
+          : new Error(message)))
         return
       }
-      resolve(stdout)
+      finish(() => resolve(stdout))
     })
+    const onAbort = () => {
+      child.kill()
+      finish(() => reject(new SupersededNativeAudioLoadError()))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted) onAbort()
+  })
+}
+
+function spawnDecodePromise(file: string, args: string[], signal: AbortSignal): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new SupersededNativeAudioLoadError())
+      return
+    }
+
+    const child = spawn(file, args, {
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    const chunks: Buffer[] = []
+    const stderrChunks: Buffer[] = []
+    let settled = false
+    const finish = (callback: () => void) => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener('abort', onAbort)
+      callback()
+    }
+    const onAbort = () => {
+      child.kill('SIGKILL')
+      finish(() => reject(new SupersededNativeAudioLoadError()))
+    }
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      chunks.push(Buffer.from(chunk))
+    })
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderrChunks.push(Buffer.from(chunk))
+    })
+    child.on('error', (error) => finish(() => reject(
+      signal.aborted ? new SupersededNativeAudioLoadError() : error
+    )))
+    child.on('close', (code) => finish(() => {
+      if (signal.aborted) {
+        reject(new SupersededNativeAudioLoadError())
+        return
+      }
+      if (code !== 0) {
+        reject(new Error(Buffer.concat(stderrChunks).toString('utf8').trim() || `ffmpeg exited with code ${code}`))
+        return
+      }
+      resolve(Buffer.concat(chunks))
+    }))
+    signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) onAbort()
   })
 }
 
@@ -524,7 +632,7 @@ async function resolveStaticBinary(binary: 'ffmpeg' | 'ffprobe'): Promise<string
   }
 }
 
-async function resolveBinary(binary: 'ffmpeg' | 'ffprobe'): Promise<string | null> {
+async function resolveBinaryUncached(binary: 'ffmpeg' | 'ffprobe'): Promise<string | null> {
   const isWindows = process.platform === 'win32'
   const executable = `${binary}${isWindows ? '.exe' : ''}`
   const staticModulePath = await resolveStaticBinary(binary)
@@ -566,6 +674,24 @@ async function resolveBinary(binary: 'ffmpeg' | 'ffprobe'): Promise<string | nul
 
   return null
 }
+
+export function createCachedNativeAudioBinaryResolver(
+  resolveUncached: NativeAudioBinaryResolver
+): NativeAudioBinaryResolver {
+  const resolutions = new Map<'ffmpeg' | 'ffprobe', Promise<string | null>>()
+  return (binary) => {
+    let resolution = resolutions.get(binary)
+    if (!resolution) {
+      resolution = resolveUncached(binary)
+      resolutions.set(binary, resolution)
+    }
+    return resolution
+  }
+}
+
+// Binary discovery can involve several filesystem probes and process launches. Cache both
+// successful and unavailable results for the preload process lifetime.
+const resolveBinary = createCachedNativeAudioBinaryResolver(resolveBinaryUncached)
 
 function parseSampleRate(value: string | number | undefined): number | null {
   const numeric = typeof value === 'number' ? value : Number(value)
@@ -692,6 +818,11 @@ export function createNativeAudioController(
   const deviceFormatProbeCache = new Map<string, NativeAudioDeviceFormatProbe>()
   let loadGeneration = 0
   let prebufferGeneration = 0
+  let nextPlaybackSequence = 1
+  let currentPlaybackSequence: number | null = null
+  let bufferedPlaybackSequence: number | null = null
+  let activeLoadDecode: { generation: number; controller: AbortController } | null = null
+  let activePrebufferDecode: { generation: number; controller: AbortController } | null = null
   let currentBufferBytes = 0
   let nextBufferBytes = 0
   let lastDiagnosticReport: NativeAudioDiagnosticReport | null = null
@@ -700,6 +831,9 @@ export function createNativeAudioController(
     ...DEFAULT_UNAVAILABLE_CAPABILITIES,
     reasonUnavailable: fallbackUnavailableReason
   }
+  const binaryResolver = options.resolveBinary ?? resolveBinary
+  const runProbe = options.runProbe ?? ((file, args, signal) => createExecFilePromise(file, args, signal))
+  const runDecode = options.runDecode ?? spawnDecodePromise
 
   const buildBufferMemoryStats = (): AudioBufferMemoryStats => ({
     currentBytes: currentBufferBytes,
@@ -738,22 +872,28 @@ export function createNativeAudioController(
   }
 
   const beginLoadOperation = (): number => {
+    activeLoadDecode?.controller.abort()
+    activePrebufferDecode?.controller.abort()
     loadGeneration += 1
     prebufferGeneration += 1
     return loadGeneration
   }
 
   const invalidateLoadOperations = (): void => {
+    activeLoadDecode?.controller.abort()
+    activePrebufferDecode?.controller.abort()
     loadGeneration += 1
     prebufferGeneration += 1
   }
 
   const beginPrebufferOperation = (): number => {
+    activePrebufferDecode?.controller.abort()
     prebufferGeneration += 1
     return prebufferGeneration
   }
 
   const invalidatePrebufferOperations = (): void => {
+    activePrebufferDecode?.controller.abort()
     prebufferGeneration += 1
   }
 
@@ -769,13 +909,15 @@ export function createNativeAudioController(
     }
   }
 
+  const applyGaplessTransitionBookkeeping = (): void => {
+    currentBufferBytes = nextBufferBytes
+    nextBufferBytes = 0
+    currentTrackRequest = nextTrackRequest
+    nextTrackRequest = null
+  }
+
   const notify = (event: NativeAudioEvent) => {
-    if (event.type === 'gaplessTransition') {
-      currentBufferBytes = nextBufferBytes
-      nextBufferBytes = 0
-      currentTrackRequest = nextTrackRequest
-      nextTrackRequest = null
-    }
+    if (event.type === 'gaplessTransition') applyGaplessTransitionBookkeeping()
 
     if (event.type === 'outputStatusChanged' && playback) {
       lastDiagnosticReport = buildDiagnosticReport(playback)
@@ -783,6 +925,32 @@ export function createNativeAudioController(
 
     for (const listener of listeners) {
       listener(event)
+    }
+  }
+
+  const allocatePlaybackSequence = (): number => {
+    const sequence = nextPlaybackSequence
+    nextPlaybackSequence += 1
+    return sequence
+  }
+
+  const stampPlaybackSequence = (event: NativeAudioEvent): NativeAudioEvent | null => {
+    switch (event.type) {
+      case 'gaplessTransition': {
+        if (bufferedPlaybackSequence === null) return null
+        currentPlaybackSequence = bufferedPlaybackSequence
+        bufferedPlaybackSequence = null
+        return { ...event, playbackSequence: currentPlaybackSequence }
+      }
+      case 'stateChange':
+      case 'timeUpdate':
+      case 'durationChange':
+      case 'ended':
+        return currentPlaybackSequence === null
+          ? null
+          : { ...event, playbackSequence: currentPlaybackSequence }
+      default:
+        return event
     }
   }
 
@@ -832,6 +1000,14 @@ export function createNativeAudioController(
     deviceFormatProbeCache.clear()
   }
 
+  const isPlaybackLifecycleEvent = (event: NativeAudioEvent): boolean => (
+    event.type === 'stateChange'
+    || event.type === 'timeUpdate'
+    || event.type === 'durationChange'
+    || event.type === 'gaplessTransition'
+    || event.type === 'ended'
+  )
+
   const asNativeOutputFailure = (
     engine: NativeAudioAddonPlayback,
     error: unknown,
@@ -854,21 +1030,35 @@ export function createNativeAudioController(
     })
   }
 
+  const dispatchNativeEvents = (
+    engine: NativeAudioAddonPlayback,
+    rawEvents: readonly unknown[],
+    suppressLifecycle = false
+  ): void => {
+    for (const rawEvent of rawEvents) {
+      const normalizedEvent = normalizeEvent(rawEvent)
+      if (!normalizedEvent) continue
+      const event = stampPlaybackSequence(normalizedEvent)
+      if (!event) continue
+      if (suppressLifecycle && isPlaybackLifecycleEvent(event)) {
+        if (event.type === 'gaplessTransition') applyGaplessTransitionBookkeeping()
+        continue
+      }
+      if (event.type === 'error') {
+        const failure = asNativeOutputFailure(engine, new Error(event.message), currentTrackRequest)
+        notify({ type: 'error', message: failure.message })
+      } else {
+        notify(event)
+      }
+    }
+  }
+
   const ensureEventPoller = (): void => {
-    if (!playback || eventPollTimer !== null) return
+    if (!playback || eventPollTimer !== null || options.eventPolling === false) return
     eventPollTimer = setInterval(() => {
       try {
         const drained = playback.drainEvents()
-        for (const rawEvent of drained) {
-          const event = normalizeEvent(rawEvent)
-          if (!event) continue
-          if (event.type === 'error') {
-            const failure = asNativeOutputFailure(playback, new Error(event.message), currentTrackRequest)
-            notify({ type: 'error', message: failure.message })
-          } else {
-            notify(event)
-          }
-        }
+        dispatchNativeEvents(playback, drained)
       } catch (error) {
         notify({
           type: 'error',
@@ -889,21 +1079,29 @@ export function createNativeAudioController(
 
   const decodeFileToPcm = async (
     filePath: string,
-    metadata?: NativeAudioTrackMetadata,
-    options: DecodeFileOptions = {}
+    metadata: NativeAudioTrackMetadata | undefined,
+    options: DecodeFileOptions
   ): Promise<DecodedPcmTrack> => {
-    const ffprobePath = await resolveBinary('ffprobe')
-    const ffmpegPath = await resolveBinary('ffmpeg')
+    const binaryResolutionStartedAt = performance.now()
+    const [ffprobePath, ffmpegPath] = await Promise.all([
+      binaryResolver('ffprobe'),
+      binaryResolver('ffmpeg')
+    ])
+    const binaryResolutionMs = Math.round(performance.now() - binaryResolutionStartedAt)
+    throwIfDecodeAborted(options.signal)
     if (!ffprobePath || !ffmpegPath) {
       throw new Error('FFmpeg/ffprobe could not be resolved for native playback.')
     }
 
-    const ffprobeStdout = await createExecFilePromise(ffprobePath, [
+    const probeStartedAt = performance.now()
+    const ffprobeStdout = await runProbe(ffprobePath, [
       '-v', 'error',
       '-show_streams',
       '-of', 'json',
       filePath
-    ])
+    ], options.signal)
+    const probeMs = Math.round(performance.now() - probeStartedAt)
+    throwIfDecodeAborted(options.signal)
     const ffprobePayload = JSON.parse(ffprobeStdout) as {
       streams?: FfprobeStreamInfo[]
     }
@@ -940,28 +1138,10 @@ export function createNativeAudioController(
       'pipe:1'
     ]
 
-    const pcmData = await new Promise<Buffer>((resolve, reject) => {
-      const child = spawn(ffmpegPath, ffmpegArgs, {
-        stdio: ['ignore', 'pipe', 'pipe']
-      })
-      const chunks: Buffer[] = []
-      const stderrChunks: Buffer[] = []
-
-      child.stdout.on('data', (chunk: Buffer) => {
-        chunks.push(Buffer.from(chunk))
-      })
-      child.stderr.on('data', (chunk: Buffer) => {
-        stderrChunks.push(Buffer.from(chunk))
-      })
-      child.on('error', (error) => reject(error))
-      child.on('close', (code) => {
-        if (code !== 0) {
-          reject(new Error(Buffer.concat(stderrChunks).toString('utf8').trim() || `ffmpeg exited with code ${code}`))
-          return
-        }
-        resolve(Buffer.concat(chunks))
-      })
-    })
+    const decodeStartedAt = performance.now()
+    const pcmData = await runDecode(ffmpegPath, ffmpegArgs, options.signal)
+    const decodeMs = Math.round(performance.now() - decodeStartedAt)
+    throwIfDecodeAborted(options.signal)
 
     return {
       filePath,
@@ -980,14 +1160,21 @@ export function createNativeAudioController(
           ? Number(stream.bits_per_raw_sample)
           : metadata?.bitDepth,
         format: stream.sample_fmt ?? metadata?.format
+      },
+      timings: {
+        binaryResolutionMs,
+        probeMs,
+        decodeMs
       }
     }
   }
 
   const loadDecodedTrack = (
     engine: NativeAudioAddonPlayback,
-    decoded: DecodedPcmTrack
+    decoded: DecodedPcmTrack,
+    playbackSequence: number
   ): NativeAudioTrackLoadResult => {
+    const nativeLoadStartedAt = performance.now()
     const snapshot = normalizePlaybackSnapshot(engine.loadTrack(
       new Uint8Array(decoded.pcmData.buffer, decoded.pcmData.byteOffset, decoded.pcmData.byteLength),
       decoded.sampleRate,
@@ -995,7 +1182,12 @@ export function createNativeAudioController(
       decoded.sampleFormat,
       decoded.duration
     ))
-    return normalizeTrackLoadResult(snapshot, decoded)
+    return normalizeTrackLoadResult(
+      snapshot,
+      decoded,
+      Math.round(performance.now() - nativeLoadStartedAt),
+      playbackSequence
+    )
   }
 
   return {
@@ -1032,10 +1224,24 @@ export function createNativeAudioController(
 
     loadTrack: async (filePath: string, metadata?: NativeAudioTrackMetadata) => {
       const loadOperation = beginLoadOperation()
+      currentPlaybackSequence = null
+      bufferedPlaybackSequence = null
       const engine = await ensureAvailable()
       assertCurrentLoadOperation(loadOperation)
       const backendKind = capabilitiesCache.activeBackend
-      const decoded = await decodeFileToPcm(filePath, metadata, { backendKind })
+      const decodeController = new AbortController()
+      activeLoadDecode = { generation: loadOperation, controller: decodeController }
+      let decoded: DecodedPcmTrack
+      try {
+        decoded = await decodeFileToPcm(filePath, metadata, {
+          backendKind,
+          signal: decodeController.signal
+        })
+      } finally {
+        if (activeLoadDecode?.generation === loadOperation) {
+          activeLoadDecode = null
+        }
+      }
       const decodedByteLength = decoded.pcmData.byteLength
       try {
         assertCurrentLoadOperation(loadOperation)
@@ -1045,9 +1251,12 @@ export function createNativeAudioController(
           sampleRate: decoded.sampleRate,
           channels: decoded.channels,
           sampleFormat: decoded.sampleFormat,
-          duration: decoded.duration
+          duration: decoded.duration,
+          timings: decoded.timings
         }
-        const result = loadDecodedTrack(engine, decoded)
+        const playbackSequence = allocatePlaybackSequence()
+        const result = loadDecodedTrack(engine, decoded, playbackSequence)
+        currentPlaybackSequence = playbackSequence
         currentBufferBytes = decodedByteLength
         nextBufferBytes = 0
         nextTrackRequest = null
@@ -1059,14 +1268,27 @@ export function createNativeAudioController(
 
     preloadNextTrack: async (filePath: string, metadata?: NativeAudioTrackMetadata) => {
       const prebufferOperation = beginPrebufferOperation()
+      bufferedPlaybackSequence = null
       const engine = await ensureAvailable()
       assertCurrentPrebufferOperation(prebufferOperation)
-      const decoded = await decodeFileToPcm(filePath, metadata, {
-        backendKind: capabilitiesCache.activeBackend
-      })
+      const decodeController = new AbortController()
+      activePrebufferDecode = { generation: prebufferOperation, controller: decodeController }
+      let decoded: DecodedPcmTrack
+      try {
+        decoded = await decodeFileToPcm(filePath, metadata, {
+          backendKind: capabilitiesCache.activeBackend,
+          signal: decodeController.signal
+        })
+      } finally {
+        if (activePrebufferDecode?.generation === prebufferOperation) {
+          activePrebufferDecode = null
+        }
+      }
       const decodedByteLength = decoded.pcmData.byteLength
       try {
         assertCurrentPrebufferOperation(prebufferOperation)
+        const nativeLoadStartedAt = performance.now()
+        const playbackSequence = allocatePlaybackSequence()
         engine.preloadNextTrack(
           new Uint8Array(decoded.pcmData.buffer, decoded.pcmData.byteOffset, decoded.pcmData.byteLength),
           decoded.sampleRate,
@@ -1074,6 +1296,7 @@ export function createNativeAudioController(
           decoded.sampleFormat,
           decoded.duration
         )
+        bufferedPlaybackSequence = playbackSequence
         nextBufferBytes = decodedByteLength
         nextTrackRequest = {
           filePath,
@@ -1081,10 +1304,16 @@ export function createNativeAudioController(
           sampleRate: decoded.sampleRate,
           channels: decoded.channels,
           sampleFormat: decoded.sampleFormat,
-          duration: decoded.duration
+          duration: decoded.duration,
+          timings: decoded.timings
         }
         const snapshot = normalizePlaybackSnapshot(engine.getPlaybackSnapshot())
-        return normalizeTrackLoadResult(snapshot, decoded)
+        return normalizeTrackLoadResult(
+          snapshot,
+          decoded,
+          Math.round(performance.now() - nativeLoadStartedAt),
+          playbackSequence
+        )
       } finally {
         releaseDecodedPcmBuffer(decoded)
       }
@@ -1097,6 +1326,8 @@ export function createNativeAudioController(
       const promotedRequest = nextTrackRequest?.filePath === filePath
         ? nextTrackRequest
         : null
+      const promotedPlaybackSequence = bufferedPlaybackSequence ?? allocatePlaybackSequence()
+      const nativeLoadStartedAt = performance.now()
       const snapshot = normalizePlaybackSnapshot(engine.promoteNextTrack())
       currentTrackRequest = promotedRequest ?? (
         snapshot.sampleRate && snapshot.channels && snapshot.sampleFormat
@@ -1113,15 +1344,40 @@ export function createNativeAudioController(
       currentBufferBytes = nextBufferBytes
       nextBufferBytes = 0
       nextTrackRequest = null
-      return normalizePromotedTrackLoadResult(snapshot, currentTrackRequest)
+      currentPlaybackSequence = promotedPlaybackSequence
+      bufferedPlaybackSequence = null
+      return normalizePromotedTrackLoadResult(
+        snapshot,
+        currentTrackRequest,
+        Math.round(performance.now() - nativeLoadStartedAt),
+        promotedPlaybackSequence
+      )
+    },
+
+    cancelPendingDecode: async () => {
+      // Cancellation is deliberately scoped to ffprobe/FFmpeg. Once decoded PCM has been
+      // handed to the addon, native load/play (including an active device-start handshake)
+      // is allowed to finish under the existing serialization policy.
+      // Always advance both generations so a request still awaiting controller setup
+      // cannot slip through and begin an obsolete decode after this call returns.
+      loadGeneration += 1
+      prebufferGeneration += 1
+      activeLoadDecode?.controller.abort()
+      activePrebufferDecode?.controller.abort()
     },
 
     play: async () => {
       const engine = await ensureAvailable()
+      // Anything queued before this command belongs to the prior playback
+      // epoch. Preserve diagnostics, but discard its lifecycle notifications
+      // before assigning a fresh identity to the device-start handshake.
+      dispatchNativeEvents(engine, engine.drainEvents(), true)
+      const playbackSequence = allocatePlaybackSequence()
+      currentPlaybackSequence = playbackSequence
       try {
         const snapshot = normalizePlaybackSnapshot(await engine.play())
         lastDiagnosticReport = buildDiagnosticReport(engine)
-        return snapshot
+        return { ...snapshot, playbackSequence }
       } catch (error) {
         // Exclusive mode is fail-closed. The user explicitly chooses Standard mode from
         // the failure dialog; preload never re-decodes or falls back automatically.
@@ -1131,22 +1387,32 @@ export function createNativeAudioController(
 
     pause: async () => {
       const engine = await ensureAvailable()
-      return normalizePlaybackSnapshot(engine.pause())
+      return {
+        ...normalizePlaybackSnapshot(engine.pause()),
+        ...(currentPlaybackSequence === null ? {} : { playbackSequence: currentPlaybackSequence })
+      }
     },
 
     stop: async () => {
       invalidateLoadOperations()
       const engine = await ensureAvailable()
-      return normalizePlaybackSnapshot(engine.stop())
+      return {
+        ...normalizePlaybackSnapshot(engine.stop()),
+        ...(currentPlaybackSequence === null ? {} : { playbackSequence: currentPlaybackSequence })
+      }
     },
 
     seek: async (seconds: number) => {
       const engine = await ensureAvailable()
-      return normalizePlaybackSnapshot(engine.seek(seconds))
+      return {
+        ...normalizePlaybackSnapshot(engine.seek(seconds)),
+        ...(currentPlaybackSequence === null ? {} : { playbackSequence: currentPlaybackSequence })
+      }
     },
 
     clearNextTrack: async () => {
       invalidatePrebufferOperations()
+      bufferedPlaybackSequence = null
       const engine = await ensureAvailable()
       nextBufferBytes = 0
       nextTrackRequest = null
@@ -1155,7 +1421,10 @@ export function createNativeAudioController(
 
     getPlaybackSnapshot: async () => {
       const engine = await ensureAvailable()
-      return normalizePlaybackSnapshot(engine.getPlaybackSnapshot())
+      return {
+        ...normalizePlaybackSnapshot(engine.getPlaybackSnapshot()),
+        ...(currentPlaybackSequence === null ? {} : { playbackSequence: currentPlaybackSequence })
+      }
     },
 
     getNativeAudioDiagnosticReport: async () => {

@@ -204,6 +204,11 @@ export interface ExternalLoudnessResult {
 export interface AudioLoadTimings {
   decodeMs: number
   analysisMs: number
+  nativeBinaryResolutionMs?: number
+  nativeProbeMs?: number
+  nativeDecodeMs?: number
+  nativeLoadMs?: number
+  nativeDeviceStartMs?: number
 }
 
 interface AudioLoadDataOptions {
@@ -466,10 +471,15 @@ export class AudioEngine {
   private nativeSnapshot: NativeAudioPlaybackSnapshot | null = null
   private nativeScopePollFrameId: number | null = null
   private nativeEventUnsubscribe: (() => void) | null = null
+  private nextNativeLifecycleSuppressionToken: number = 1
+  private nativeLifecycleSuppressionTokens: Set<number> = new Set()
+  private retainedNativeLoadSuppressionToken: number | null = null
   private remoteStreamChunkUnsubscribe: (() => void) | null = null
   private remoteStreamEventUnsubscribe: (() => void) | null = null
   private nativeModeMessage: string | null = null
   private nativeNextTrackBuffered: boolean = false
+  private nativeCurrentPlaybackSequence: number | null = null
+  private nativeNextPlaybackSequence: number | null = null
   private lastNativeVisualizerTapDemand: NativeAudioVisualizerTapDemand | null = null
   private nativeSeekPromise: Promise<void> | null = null
   private pendingNativeSeekTime: number | null = null
@@ -571,6 +581,10 @@ export class AudioEngine {
       this.nativeModeMessage = null
       this.nativeSnapshot = null
       this.nativeNextTrackBuffered = false
+      this.nativeCurrentPlaybackSequence = null
+      this.nativeNextPlaybackSequence = null
+      this.nativeLifecycleSuppressionTokens.clear()
+      this.retainedNativeLoadSuppressionToken = null
       this.stopNativeScopePolling()
       this.notifyTrackChange()
       if (this.context) {
@@ -594,6 +608,10 @@ export class AudioEngine {
     if (!capabilities.bitPerfectAvailable) {
       this.playbackOutputMode = 'standard'
       this.nativeModeMessage = capabilities.reasonUnavailable
+      this.nativeCurrentPlaybackSequence = null
+      this.nativeNextPlaybackSequence = null
+      this.nativeLifecycleSuppressionTokens.clear()
+      this.retainedNativeLoadSuppressionToken = null
       this.stopNativeScopePolling()
       this.syncVisualizerTransportState()
       return {
@@ -604,12 +622,14 @@ export class AudioEngine {
     }
 
     if (this._playbackState === 'playing' || this._playbackState === 'paused') {
-      this.stop()
+      await Promise.resolve(this.stop())
     }
-    this.clearNextBuffer()
+    await this.clearNextBuffer()
     this.audioBuffer = null
     this.currentNormalizationAnalysis = null
     this.playbackOutputMode = 'bitperfect'
+    this.nativeCurrentPlaybackSequence = null
+    this.nativeNextPlaybackSequence = null
     this.nativeModeMessage = BIT_PERFECT_UNSUPPORTED_MESSAGE
     this.syncSpatialNodeConnection()
     this.notifyTrackChange()
@@ -1167,12 +1187,48 @@ export class AudioEngine {
     return this.nativeCapabilities
   }
 
+  private beginNativeLifecycleSuppression(): number {
+    const token = this.nextNativeLifecycleSuppressionToken++
+    this.nativeLifecycleSuppressionTokens.add(token)
+    return token
+  }
+
+  private finishNativeLifecycleSuppression(token: number): void {
+    this.nativeLifecycleSuppressionTokens.delete(token)
+  }
+
+  private replaceRetainedNativeLoadSuppression(): void {
+    if (this.retainedNativeLoadSuppressionToken !== null) {
+      this.finishNativeLifecycleSuppression(this.retainedNativeLoadSuppressionToken)
+    }
+    this.retainedNativeLoadSuppressionToken = this.beginNativeLifecycleSuppression()
+  }
+
+  private consumeRetainedNativeLoadSuppression(): void {
+    if (this.retainedNativeLoadSuppressionToken === null) return
+    this.finishNativeLifecycleSuppression(this.retainedNativeLoadSuppressionToken)
+    this.retainedNativeLoadSuppressionToken = null
+  }
+
+  private shouldSuppressNativeLifecycleEvents(): boolean {
+    return this.playbackOutputMode === 'bitperfect'
+      && (this.nativeLifecycleSuppressionTokens.size > 0 || this._playbackState === 'loading')
+  }
+
+  private adoptNativePlaybackSequence(snapshot: NativeAudioPlaybackSnapshot | null): void {
+    const sequence = snapshot?.playbackSequence
+    if (Number.isSafeInteger(sequence) && Number(sequence) > 0) {
+      this.nativeCurrentPlaybackSequence = Number(sequence)
+    }
+  }
+
   private async refreshNativeSnapshot(): Promise<NativeAudioPlaybackSnapshot | null> {
     if (this.playbackOutputMode !== 'bitperfect' && this.nativeSnapshot === null) {
       return null
     }
     try {
       this.nativeSnapshot = await window.nativeAudioAPI.getPlaybackSnapshot()
+      this.adoptNativePlaybackSequence(this.nativeSnapshot)
       this.emit('nativeOutputStatusChange', this.nativeSnapshot.outputStatus)
       return this.nativeSnapshot
     } catch {
@@ -1181,6 +1237,26 @@ export class AudioEngine {
   }
 
   private handleNativeAudioEvent(event: NativeAudioEvent): void {
+    const lifecycleEvent = event.type === 'stateChange'
+      || event.type === 'timeUpdate'
+      || event.type === 'durationChange'
+      || event.type === 'gaplessTransition'
+      || event.type === 'ended'
+    if (
+      lifecycleEvent
+      && (
+        this.playbackOutputMode !== 'bitperfect'
+        || this.shouldSuppressNativeLifecycleEvents()
+      )
+    ) {
+      return
+    }
+    if (lifecycleEvent) {
+      const expectedSequence = event.type === 'gaplessTransition'
+        ? this.nativeNextPlaybackSequence
+        : this.nativeCurrentPlaybackSequence
+      if (expectedSequence === null || event.playbackSequence !== expectedSequence) return
+    }
     switch (event.type) {
       case 'stateChange':
         if (this.nativeSnapshot) {
@@ -1215,6 +1291,8 @@ export class AudioEngine {
         this.emit('durationChange', event.duration)
         break
       case 'gaplessTransition':
+        this.nativeCurrentPlaybackSequence = event.playbackSequence
+        this.nativeNextPlaybackSequence = null
         this.nativeNextTrackBuffered = false
         this.currentBufferTrackPath = this.nextBufferTrackPath
         this.nextBufferTrackPath = null
@@ -1353,6 +1431,18 @@ export class AudioEngine {
     this.cancelParallaxHostPublishing()
   }
 
+  /**
+   * Prevent an obsolete current-track load from installing or starting its
+   * result while leaving an independently decoded next-track buffer reusable.
+   */
+  supersedeCurrentLoadPreservingPrebuffer(): void {
+    this.loadGeneration += 1
+    if (this._playbackState === 'loading' && this.remoteStreamState) {
+      this.remoteStreamState.playRequested = false
+      this.resetRemotePlayPromise(new SupersededAudioLoadError())
+    }
+  }
+
   cancelParallaxHostPublishing(): void {
     this.parallaxHostPublishGeneration += 1
   }
@@ -1461,13 +1551,43 @@ export class AudioEngine {
     }
   }
 
+  private recordNativeLoadTimings(result: NativeAudioTrackLoadResult): void {
+    const timings = result.timings
+    this.lastLoadTimings = {
+      decodeMs: timings?.decodeMs ?? 0,
+      analysisMs: 0,
+      nativeBinaryResolutionMs: timings?.binaryResolutionMs ?? 0,
+      nativeProbeMs: timings?.probeMs ?? 0,
+      nativeDecodeMs: timings?.decodeMs ?? 0,
+      nativeLoadMs: timings?.nativeLoadMs ?? 0,
+      nativeDeviceStartMs: 0
+    }
+  }
+
+  /** Abort only obsolete ffprobe/FFmpeg work; native addon/device-start calls keep running. */
+  cancelPendingNativeDecode(): void {
+    // Invalidate renderer-side work even when cancellation lands before preload has
+    // created its ffprobe/FFmpeg controller. An active device-start call is allowed
+    // to return; its following generation check suppresses the obsolete result.
+    this.loadGeneration += 1
+    this.invalidatePrebufferOperations()
+    const cancelPendingDecode = window.nativeAudioAPI?.cancelPendingDecode
+    if (!cancelPendingDecode) return
+    void cancelPendingDecode().catch(() => {
+      // A newer load will still be protected by generation checks if preload teardown races.
+    })
+  }
+
   async loadTrackFromPath(track: Track): Promise<NativeAudioTrackLoadResult> {
     const loadOperation = this.beginLoadOperation()
-    await this.initNativeAudio()
-    this.assertCurrentLoadOperation(loadOperation)
+    this.nativeCurrentPlaybackSequence = null
+    this.replaceRetainedNativeLoadSuppression()
+    this.lastLoadTimings = null
     this._playbackState = 'loading'
     this.emit('stateChange', this._playbackState)
     this.stopTimeUpdate()
+    await this.initNativeAudio()
+    this.assertCurrentLoadOperation(loadOperation)
     if (this.nativeSnapshot?.playbackState === 'playing' || this.nativeSnapshot?.playbackState === 'paused') {
       try {
         await window.nativeAudioAPI.stop()
@@ -1492,10 +1612,14 @@ export class AudioEngine {
           throw new SupersededAudioLoadError()
         }
         this.nativeNextTrackBuffered = false
+        this.nativeNextPlaybackSequence = null
         this.nextBufferTrackPath = null
       }
       if (result) {
         this.assertCurrentLoadOperation(loadOperation)
+        this.recordNativeLoadTimings(result)
+        this.nativeCurrentPlaybackSequence = result.playbackSequence
+        this.nativeNextPlaybackSequence = null
         this.nativeNextTrackBuffered = false
         this.nextBufferTrackPath = null
         this.currentBufferTrackPath = track.path
@@ -1511,7 +1635,8 @@ export class AudioEngine {
       }
     }
 
-    this.clearNextBuffer()
+    await this.clearNextBuffer()
+    this.assertCurrentLoadOperation(loadOperation)
     this.nativeNextTrackBuffered = false
     let result: NativeAudioTrackLoadResult
     try {
@@ -1523,6 +1648,9 @@ export class AudioEngine {
       throw error
     }
     this.assertCurrentLoadOperation(loadOperation)
+    this.recordNativeLoadTimings(result)
+    this.nativeCurrentPlaybackSequence = result.playbackSequence
+    this.nativeNextPlaybackSequence = null
     this.currentBufferTrackPath = track.path
     await this.refreshNativeCapabilities()
     this.assertCurrentLoadOperation(loadOperation)
@@ -1550,6 +1678,7 @@ export class AudioEngine {
     }
     this.assertCurrentPrebufferOperation(prebufferOperation)
     this.nativeNextTrackBuffered = true
+    this.nativeNextPlaybackSequence = result.playbackSequence
     this.nextBufferTrackPath = track.path
     return result
   }
@@ -3163,12 +3292,16 @@ export class AudioEngine {
     if (this.playbackOutputMode === 'bitperfect') {
       throw new Error('Parallax host playback is only available in standard mode.')
     }
+    const playLoadGeneration = this.loadGeneration
     await this.initContext()
+    this.assertCurrentLoadOperation(playLoadGeneration)
     if (!this.audioBuffer || !this.context) return
     if (this.context.state === 'suspended') {
       await this.context.resume()
+      this.assertCurrentLoadOperation(playLoadGeneration)
     }
 
+    this.assertCurrentLoadOperation(playLoadGeneration)
     this.stopSource()
     this.clearPauseFadeTimer()
     this.cancelScheduledNext()
@@ -3913,27 +4046,34 @@ export class AudioEngine {
   private async resolveLoudnessAnalysisForLoad(
     buffer: AudioBuffer,
     options: AudioLoadDataOptions,
-    replayGainDb: number | null
+    replayGainDb: number | null,
+    assertCurrent: () => void = () => undefined
   ): Promise<LoudnessAnalysis | null> {
     if (!this.shouldAnalyzeLoudnessForLoad(replayGainDb)) return null
 
     if (options.loudnessAnalysis) {
+      let external: ExternalLoudnessResult | null = null
       try {
-        const external = await options.loudnessAnalysis
-        if (external && Number.isFinite(external.loudnessLufs)) {
-          return {
-            loudnessLufs: external.loudnessLufs,
-            peakLinear: external.peakLinear ?? 0,
-            sampleRate: buffer.sampleRate,
-            frameCount: buffer.length
-          }
-        }
+        external = await options.loudnessAnalysis
       } catch {
         // Fall back to the in-renderer analyzer below.
       }
+      // Cancellation of an obsolete external job must not turn into a full
+      // renderer analysis for a load/prebuffer that can no longer commit.
+      assertCurrent()
+      if (external && Number.isFinite(external.loudnessLufs)) {
+        return {
+          loudnessLufs: external.loudnessLufs,
+          peakLinear: external.peakLinear ?? 0,
+          sampleRate: buffer.sampleRate,
+          frameCount: buffer.length
+        }
+      }
     }
 
+    assertCurrent()
     const analysis = await analyzeAudioBufferLoudness(buffer)
+    assertCurrent()
     if (options.trackPath && Number.isFinite(analysis.loudnessLufs)) {
       void window.electronAPI.storeTrackLoudness(options.trackPath, {
         loudnessLufs: analysis.loudnessLufs,
@@ -6269,7 +6409,12 @@ export class AudioEngine {
       const decodeMs = Math.round(performance.now() - decodeStart)
       this.assertCurrentLoadOperation(loadOperation)
       const analysisStart = performance.now()
-      const normalizationAnalysis = await this.resolveLoudnessAnalysisForLoad(decodedBuffer, options, this.currentReplayGainDb)
+      const normalizationAnalysis = await this.resolveLoudnessAnalysisForLoad(
+        decodedBuffer,
+        options,
+        this.currentReplayGainDb,
+        () => this.assertCurrentLoadOperation(loadOperation)
+      )
       this.lastLoadTimings = { decodeMs, analysisMs: Math.round(performance.now() - analysisStart) }
       this.assertCurrentLoadOperation(loadOperation)
       this.audioBuffer = decodedBuffer
@@ -6324,7 +6469,12 @@ export class AudioEngine {
         : await this.context.decodeAudioData(clonedBuffer)
       this.assertCurrentPrebufferOperation(prebufferOperation)
       const nextReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
-      const normalizationAnalysis = await this.resolveLoudnessAnalysisForLoad(decodedBuffer, options, nextReplayGainDb)
+      const normalizationAnalysis = await this.resolveLoudnessAnalysisForLoad(
+        decodedBuffer,
+        options,
+        nextReplayGainDb,
+        () => this.assertCurrentPrebufferOperation(prebufferOperation)
+      )
       this.assertCurrentPrebufferOperation(prebufferOperation)
       this.nextReplayGainDb = nextReplayGainDb
       this.nextBuffer = decodedBuffer
@@ -6567,14 +6717,19 @@ export class AudioEngine {
     return this.audioBuffer !== null
   }
 
-  clearNextBuffer(): void {
+  clearNextBuffer(): void | Promise<void> {
     this.invalidatePrebufferOperations()
     this.nextNormalizationAnalysis = null
     if (this.playbackOutputMode === 'bitperfect') {
       this.nativeNextTrackBuffered = false
+      this.nativeNextPlaybackSequence = null
       this.nextBufferTrackPath = null
-      void window.nativeAudioAPI.clearNextTrack()
-      return
+      const lifecycleSuppression = this.beginNativeLifecycleSuppression()
+      return window.nativeAudioAPI.clearNextTrack().catch((error) => {
+        this.emit('error', error instanceof Error ? error : new Error('Failed to clear native next track'))
+      }).finally(() => {
+        this.finishNativeLifecycleSuppression(lifecycleSuppression)
+      })
     }
     this.cancelScheduledNext()
     this.nextBuffer = null
@@ -6603,17 +6758,42 @@ export class AudioEngine {
   async play(): Promise<void> {
     const playLoadGeneration = this.loadGeneration
     if (this.playbackOutputMode === 'bitperfect') {
-      await this.initNativeAudio()
-      this.assertCurrentLoadOperation(playLoadGeneration)
-      this.nativeSnapshot = await window.nativeAudioAPI.play()
-      this.emit('nativeOutputStatusChange', this.nativeSnapshot.outputStatus)
-      this.assertCurrentLoadOperation(playLoadGeneration)
-      await this.refreshNativeCapabilities()
-      this.assertCurrentLoadOperation(playLoadGeneration)
-      this._playbackState = this.nativeSnapshot.playbackState as PlaybackState
+      const previousPlaybackState = this._playbackState
+      const lifecycleSuppression = this.beginNativeLifecycleSuppression()
+      this.consumeRetainedNativeLoadSuppression()
+      this._playbackState = 'loading'
       this.emit('stateChange', this._playbackState)
-      this.syncNativeScopePolling()
-      return
+      this.stopTimeUpdate()
+      try {
+        await this.initNativeAudio()
+        this.assertCurrentLoadOperation(playLoadGeneration)
+        const deviceStartStartedAt = performance.now()
+        try {
+          this.nativeSnapshot = await window.nativeAudioAPI.play()
+          this.adoptNativePlaybackSequence(this.nativeSnapshot)
+        } finally {
+          this.lastLoadTimings = {
+            ...(this.lastLoadTimings ?? { decodeMs: 0, analysisMs: 0 }),
+            nativeDeviceStartMs: Math.round(performance.now() - deviceStartStartedAt)
+          }
+        }
+        this.emit('nativeOutputStatusChange', this.nativeSnapshot.outputStatus)
+        this.assertCurrentLoadOperation(playLoadGeneration)
+        await this.refreshNativeCapabilities()
+        this.assertCurrentLoadOperation(playLoadGeneration)
+        this._playbackState = this.nativeSnapshot.playbackState as PlaybackState
+        this.emit('stateChange', this._playbackState)
+        this.syncNativeScopePolling()
+        return
+      } catch (error) {
+        if (playLoadGeneration === this.loadGeneration) {
+          this._playbackState = previousPlaybackState
+          this.emit('stateChange', this._playbackState)
+        }
+        throw error
+      } finally {
+        this.finishNativeLifecycleSuppression(lifecycleSuppression)
+      }
     }
 
     if (this.remoteStreamState) {
@@ -6735,19 +6915,25 @@ export class AudioEngine {
   }
 
   // Pause
-  pause(): void {
+  pause(): void | Promise<void> {
     if (this.playbackOutputMode === 'bitperfect') {
-      void window.nativeAudioAPI.pause().then((snapshot) => {
+      const pauseLoadGeneration = this.loadGeneration
+      const lifecycleSuppression = this.beginNativeLifecycleSuppression()
+      this.consumeRetainedNativeLoadSuppression()
+      this.stopNativeScopePolling()
+      return window.nativeAudioAPI.pause().then((snapshot) => {
+        if (pauseLoadGeneration !== this.loadGeneration) return
         this.nativeSnapshot = snapshot
+        this.adoptNativePlaybackSequence(snapshot)
         this.emit('nativeOutputStatusChange', snapshot.outputStatus)
         this._playbackState = snapshot.playbackState as PlaybackState
         this.emit('stateChange', this._playbackState)
         this.syncNativeScopePolling()
       }).catch((error) => {
         this.emit('error', error instanceof Error ? error : new Error('Failed to pause native playback'))
+      }).finally(() => {
+        this.finishNativeLifecycleSuppression(lifecycleSuppression)
       })
-      this.stopNativeScopePolling()
-      return
     }
 
     if (this.remoteStreamState) {
@@ -6798,17 +6984,22 @@ export class AudioEngine {
   }
 
   // Stop
-  stop(): void {
+  stop(): void | Promise<void> {
     this.invalidateLoadOperations()
     this.clearPauseFadeTimer()
     const stopLoadGeneration = this.loadGeneration
     if (this.playbackOutputMode === 'bitperfect') {
+      const lifecycleSuppression = this.beginNativeLifecycleSuppression()
+      this.consumeRetainedNativeLoadSuppression()
       this.nativeNextTrackBuffered = false
       this.currentBufferTrackPath = null
       this.nextBufferTrackPath = null
-      void window.nativeAudioAPI.stop().then((snapshot) => {
+      this.stopTimeUpdate()
+      this.stopNativeScopePolling()
+      return window.nativeAudioAPI.stop().then((snapshot) => {
         if (stopLoadGeneration !== this.loadGeneration) return
         this.nativeSnapshot = snapshot
+        this.adoptNativePlaybackSequence(snapshot)
         this.emit('nativeOutputStatusChange', snapshot.outputStatus)
         this._playbackState = snapshot.playbackState as PlaybackState
         this.emit('stateChange', this._playbackState)
@@ -6817,10 +7008,9 @@ export class AudioEngine {
         this.syncNativeScopePolling()
       }).catch((error) => {
         this.emit('error', error instanceof Error ? error : new Error('Failed to stop native playback'))
+      }).finally(() => {
+        this.finishNativeLifecycleSuppression(lifecycleSuppression)
       })
-      this.stopTimeUpdate()
-      this.stopNativeScopePolling()
-      return
     }
 
     if (this.remoteStreamState) {
@@ -6967,6 +7157,7 @@ export class AudioEngine {
           const nextSeekTime = this.pendingNativeSeekTime
           this.pendingNativeSeekTime = null
           this.nativeSnapshot = await window.nativeAudioAPI.seek(nextSeekTime)
+          this.adoptNativePlaybackSequence(this.nativeSnapshot)
           this._playbackState = this.nativeSnapshot.playbackState as PlaybackState
           this.emit('timeUpdate', this.nativeSnapshot.currentTime)
           this.notifyTrackChange()
@@ -7158,8 +7349,16 @@ export class AudioEngine {
 
   // Cleanup
   dispose(): void {
-    this.stop()
-    this.clearNextBuffer()
+    const nativeStop = this.stop()
+    if (nativeStop) {
+      void nativeStop
+        .then(() => this.clearNextBuffer())
+        .catch(() => {
+          // Teardown is best effort; stop/clear already report their own errors.
+        })
+    } else {
+      this.clearNextBuffer()
+    }
     void this.clearRemoteStreamState(true)
     this.stopTimeUpdate()
     this.stopNativeScopePolling()
@@ -7188,6 +7387,8 @@ export class AudioEngine {
     }
     this.nativeSnapshot = null
     this.nativeNextTrackBuffered = false
+    this.nativeCurrentPlaybackSequence = null
+    this.nativeNextPlaybackSequence = null
 
     // Clean up EQ chain
     this._disconnectEQChain()

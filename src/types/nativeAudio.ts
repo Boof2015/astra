@@ -139,6 +139,7 @@ export interface AudioBufferMemoryStats {
 }
 
 export interface NativeAudioPlaybackSnapshot {
+  playbackSequence?: number
   playbackState: NativeAudioPlaybackState
   currentTime: number
   duration: number
@@ -151,10 +152,19 @@ export interface NativeAudioPlaybackSnapshot {
 }
 
 export interface NativeAudioTrackLoadResult {
+  playbackSequence: number
   sampleRate: number
   channels: number
   sampleFormat: NativeAudioSampleFormat
   duration: number
+  timings?: NativeAudioTrackLoadTimings
+}
+
+export interface NativeAudioTrackLoadTimings {
+  binaryResolutionMs: number
+  probeMs: number
+  decodeMs: number
+  nativeLoadMs: number
 }
 
 export interface NativeAudioVectorscopeChunk {
@@ -174,21 +184,26 @@ export interface NativeAudioVisualizerTapDemand {
 export type NativeAudioEvent =
   | {
       type: 'stateChange'
+      playbackSequence: number
       playbackState: NativeAudioPlaybackState
     }
   | {
       type: 'timeUpdate'
+      playbackSequence: number
       currentTime: number
     }
   | {
       type: 'durationChange'
+      playbackSequence: number
       duration: number
     }
   | {
       type: 'ended'
+      playbackSequence: number
     }
   | {
       type: 'gaplessTransition'
+      playbackSequence: number
     }
   | {
       type: 'deviceReopened'

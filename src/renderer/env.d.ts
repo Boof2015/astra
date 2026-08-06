@@ -227,6 +227,7 @@ declare global {
             loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
             preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
             promoteNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+            cancelPendingDecode: () => Promise<void>
             play: () => Promise<NativeAudioPlaybackSnapshot>
             pause: () => Promise<NativeAudioPlaybackSnapshot>
             stop: () => Promise<NativeAudioPlaybackSnapshot>
@@ -608,6 +609,7 @@ declare global {
                 peakLinear: number | null
                 method: string
             } | null>
+            supersedeTrackLoudness: (filePath: string | null) => Promise<void>
             storeTrackLoudness: (
                 filePath: string,
                 payload: { loudnessLufs: number; peakLinear?: number | null; method?: string }

@@ -1232,6 +1232,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('audio:analyzeTrackLoudness', filePath) as Promise<TrackLoudnessResult | null>,
   warmupTrackLoudness: (filePath: string) =>
     ipcRenderer.invoke('audio:warmupTrackLoudness', filePath) as Promise<TrackLoudnessResult | null>,
+  supersedeTrackLoudness: (filePath: string | null) =>
+    ipcRenderer.invoke('audio:supersedeTrackLoudness', filePath) as Promise<void>,
   storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) =>
     ipcRenderer.invoke('audio:storeTrackLoudness', filePath, payload) as Promise<boolean>,
   startProgressiveStream: (
@@ -1588,6 +1590,7 @@ declare global {
       loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
       preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
       promoteNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+      cancelPendingDecode: () => Promise<void>
       play: () => Promise<NativeAudioPlaybackSnapshot>
       pause: () => Promise<NativeAudioPlaybackSnapshot>
       stop: () => Promise<NativeAudioPlaybackSnapshot>
@@ -1861,6 +1864,7 @@ declare global {
       decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
       analyzeTrackLoudness: (filePath: string) => Promise<TrackLoudnessResult | null>
       warmupTrackLoudness: (filePath: string) => Promise<TrackLoudnessResult | null>
+      supersedeTrackLoudness: (filePath: string | null) => Promise<void>
       storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) => Promise<boolean>
       startProgressiveStream: (
         filePath: string,

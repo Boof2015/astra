@@ -79,17 +79,23 @@ test('loudness queue accepts fresh work for a key after its prior job settles', 
   assert.equal(await queue.enqueue('/music/a.flac', 'a', 'background'), 'run-2')
 })
 
-test('interactive request restarts an active background job at interactive priority', async () => {
-  const attempts: string[] = []
+test('interactive request reuses and reprioritizes an active matching background job', async () => {
+  const gate = deferred<{ loudnessLufs: number; peakLinear: number }>()
+  const startedPriorities: string[] = []
+  const priorityChanges: string[] = []
   const settledDiagnostics: LoudnessJobDiagnostics[] = []
-  const queue = new LoudnessAnalysisJobQueue<string, string | null>({
+  const exactResult = { loudnessLufs: -14.23456789, peakLinear: 0.87654321 }
+  let runs = 0
+  const queue = new LoudnessAnalysisJobQueue<string, typeof exactResult | null>({
     run: async (_payload, context) => {
-      attempts.push(context.priority)
-      if (context.priority === 'interactive') return 'interactive-result'
-      await new Promise<void>((_resolve, reject) => {
-        context.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
-      })
-      return null
+      runs += 1
+      startedPriorities.push(context.priority)
+      const unsubscribe = context.onPriorityChanged((priority) => priorityChanges.push(priority))
+      try {
+        return await gate.promise
+      } finally {
+        unsubscribe()
+      }
     },
     createAbortedResult: () => null,
     onSettled: (result) => { settledDiagnostics.push(result) }
@@ -98,12 +104,15 @@ test('interactive request restarts an active background job at interactive prior
   const background = queue.enqueue('/music/a.flac', 'a', 'background')
   const promoted = queue.enqueue('/music/a.flac', 'a', 'interactive')
   assert.equal(background, promoted)
-  assert.equal(await promoted, 'interactive-result')
-  assert.deepEqual(attempts, ['background', 'interactive'])
+  gate.resolve(exactResult)
+  assert.equal(await promoted, exactResult)
+  assert.equal(runs, 1)
+  assert.deepEqual(startedPriorities, ['background'])
+  assert.deepEqual(priorityChanges, ['interactive'])
   const diagnostics = settledDiagnostics[0]
   assert.equal(diagnostics?.wasPromoted, true)
-  assert.equal(diagnostics?.wasAborted, true)
-  assert.equal(diagnostics?.attempts, 2)
+  assert.equal(diagnostics?.wasAborted, false)
+  assert.equal(diagnostics?.attempts, 1)
   assert.equal(diagnostics?.finalPriority, 'interactive')
 })
 
@@ -150,4 +159,134 @@ test('interactive request promotes queued matching work ahead of other backgroun
   assert.equal(await activeBackground, null)
   assert.equal(await promoted, 'b')
   assert.deepEqual(started, ['a:background', 'b:interactive'])
+})
+
+test('new interactive work cancels an obsolete active interactive analysis', async () => {
+  const started: string[] = []
+  const queue = new LoudnessAnalysisJobQueue<string, string | null>({
+    run: async (payload, context) => {
+      started.push(payload)
+      if (payload === 'b') return 'b-result'
+      await new Promise<void>((_resolve, reject) => {
+        context.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+      })
+      return 'stale-result'
+    },
+    createAbortedResult: () => null
+  })
+
+  const obsolete = queue.enqueue('/music/a.flac', 'a', 'interactive')
+  const newest = queue.enqueue('/music/b.flac', 'b', 'interactive')
+  assert.equal(await obsolete, null)
+  assert.equal(await newest, 'b-result')
+  assert.deepEqual(started, ['a', 'b'])
+})
+
+test('a newest cached-or-skipped request can cancel obsolete interactive work without enqueueing', async () => {
+  const queue = new LoudnessAnalysisJobQueue<string, string | null>({
+    run: async (_payload, context) => {
+      await new Promise<void>((_resolve, reject) => {
+        context.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+      })
+      return 'stale-result'
+    },
+    createAbortedResult: () => null
+  })
+
+  const obsolete = queue.enqueue('/music/a.flac', 'a', 'interactive')
+  queue.supersedeInteractiveExcept('/music/cached-b.flac')
+  assert.equal(await obsolete, null)
+})
+
+test('a supersede-only hint does not discard unrelated background warmup work', async () => {
+  const gate = deferred<string>()
+  const queue = new LoudnessAnalysisJobQueue<string, string | null>({
+    run: async () => gate.promise,
+    createAbortedResult: () => null
+  })
+
+  const background = queue.enqueue('/music/a.flac', 'a', 'background')
+  queue.supersedeInteractiveExcept('/music/cached-b.flac')
+  gate.resolve('background-result')
+
+  assert.equal(await background, 'background-result')
+})
+
+test('the newest matching request restarts an active interactive job canceled by an intermediate track', async () => {
+  const started: string[] = []
+  const staleAttempt = deferred<string>()
+  let aAttempts = 0
+  const queue = new LoudnessAnalysisJobQueue<string, string | null>({
+    run: async (payload, context) => {
+      started.push(payload)
+      if (payload === 'a') {
+        aAttempts += 1
+        if (aAttempts > 1) return 'a-newest-result'
+        // Deliberately ignore cancellation on the first attempt. The queue must
+        // suppress this stale value and restart the matching newest request.
+        return staleAttempt.promise
+      }
+      await new Promise<void>((_resolve, reject) => {
+        context.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+      })
+      return null
+    },
+    createAbortedResult: () => null
+  })
+
+  const firstA = queue.enqueue('/music/a.flac', 'a', 'interactive')
+  const intermediateB = queue.enqueue('/music/b.flac', 'b', 'interactive')
+  const newestA = queue.enqueue('/music/a.flac', 'a', 'interactive')
+  staleAttempt.resolve('a-stale-result')
+
+  assert.equal(firstA, newestA)
+  assert.equal(await intermediateB, null)
+  assert.equal(await newestA, 'a-newest-result')
+  assert.deepEqual(started, ['a', 'a'])
+})
+
+test('newest interactive work cancels queued intermediate analyses before they run', async () => {
+  const started: string[] = []
+  const diagnostics: LoudnessJobDiagnostics[] = []
+  const queue = new LoudnessAnalysisJobQueue<string, string | null>({
+    run: async (payload, context) => {
+      started.push(payload)
+      if (payload === 'c') return 'c-result'
+      await new Promise<void>((_resolve, reject) => {
+        context.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+      })
+      return 'stale-result'
+    },
+    createAbortedResult: () => null,
+    onSettled: (result) => diagnostics.push(result)
+  })
+
+  const active = queue.enqueue('/music/a.flac', 'a', 'interactive')
+  const intermediate = queue.enqueue('/music/b.flac', 'b', 'interactive')
+  const newest = queue.enqueue('/music/c.flac', 'c', 'interactive')
+
+  assert.equal(await active, null)
+  assert.equal(await intermediate, null)
+  assert.equal(await newest, 'c-result')
+  assert.deepEqual(started, ['a', 'c'])
+  const queuedCancellation = diagnostics.find((entry) => entry.key === '/music/b.flac')
+  assert.equal(queuedCancellation?.wasAborted, true)
+  assert.equal(queuedCancellation?.attempts, 0)
+})
+
+test('an aborted runner cannot commit a stale interactive result', async () => {
+  const staleGate = deferred<string>()
+  const queue = new LoudnessAnalysisJobQueue<string, string | null>({
+    // Deliberately ignore the signal to prove the queue still suppresses a
+    // stale result from a non-cooperative analysis implementation.
+    run: async (payload) => payload === 'a' ? staleGate.promise : 'newest-result',
+    createAbortedResult: () => null
+  })
+
+  const stale = queue.enqueue('/music/a.flac', 'a', 'interactive')
+  const newest = queue.enqueue('/music/b.flac', 'b', 'interactive')
+  staleGate.resolve('stale-result')
+
+  assert.equal(await stale, null)
+  assert.equal(await newest, 'newest-result')
 })
