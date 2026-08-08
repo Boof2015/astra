@@ -623,6 +623,78 @@ export default function SettingsView() {
         return 'Unavailable'
     }
   }, [nativeAudioCapabilities.activeBackend])
+  const nativeProcessingStatus = nativeAudioOutputStatus?.processing
+  const nativeSourceSampleRate = nativeProcessingStatus?.sourceSampleRate
+    ?? nativeAudioOutputStatus?.sourceFormat.sampleRate
+  const nativeTargetSampleRate = nativeProcessingStatus?.targetSampleRate
+    ?? nativeAudioOutputStatus?.wireFormat.sampleRate
+  const nativeStatusActive = exclusiveDspModeActive
+    ? Boolean(nativeAudioOutputStatus?.exclusiveActive)
+    : bitPerfectModeActive
+      ? Boolean(nativeAudioOutputStatus?.bitPerfectActive)
+      : false
+  const nativeStatusHasFailure = Boolean(nativeAudioOutputStatus?.failureStage)
+  const nativeStatusModeLabel = exclusiveDspModeActive
+    ? 'Exclusive DSP'
+    : bitPerfectModeActive
+      ? 'Bit-Perfect'
+      : 'Native output'
+  const nativeStatusStateLabel = !nativeModeRequested
+    ? 'Not requested'
+    : nativeStatusActive
+      ? 'Active'
+      : nativeStatusHasFailure
+        ? `Stopped at ${nativeAudioOutputStatus?.failureStage}`
+        : nativeAudioOutputStatus?.streamInitialized
+          ? 'Initialized'
+          : nativeAudioOutputStatus?.exclusiveAcquired
+            ? 'Reserved'
+            : 'Waiting for playback'
+  const nativeRateSummary = nativeSourceSampleRate && nativeTargetSampleRate
+    ? `${(nativeSourceSampleRate / 1000).toFixed(1)} → ${(nativeTargetSampleRate / 1000).toFixed(1)} kHz`
+    : nativeTargetSampleRate
+      ? `${(nativeTargetSampleRate / 1000).toFixed(1)} kHz`
+      : 'Awaiting negotiation'
+  const nativeWireFormatSummary = [
+    nativeAudioOutputStatus?.wireFormat.sampleFormat
+      ? (NATIVE_SAMPLE_FORMAT_LABELS[nativeAudioOutputStatus.wireFormat.sampleFormat]
+        ?? nativeAudioOutputStatus.wireFormat.sampleFormat)
+      : null,
+    nativeAudioOutputStatus?.wireFormat.channels
+      ? `${nativeAudioOutputStatus.wireFormat.channels} ch`
+      : null,
+  ].filter(Boolean).join(' • ') || 'No wire format yet'
+  const nativeTransportSummary = [
+    nativeAudioOutputStatus?.transport,
+    nativeAudioOutputStatus && nativeAudioOutputStatus.actualPeriodMs > 0
+      ? `${nativeAudioOutputStatus.actualPeriodMs.toFixed(2)} ms period`
+      : null,
+  ].filter(Boolean).join(' • ') || 'No active transport'
+  const nativeProcessingSummary = exclusiveDspModeActive
+    ? nativeProcessingStatus?.resamplingActive
+      ? (nativeProcessingStatus.resamplerName ?? 'Resampler')
+      : nativeProcessingStatus?.processingActive
+        ? 'Native DSP'
+        : 'Awaiting stream'
+    : bitPerfectModeActive
+      ? 'Direct copy'
+      : 'Bypassed'
+  const nativeProcessingDetails = exclusiveDspModeActive
+    ? [
+      nativeProcessingStatus?.resamplingActive
+        ? (nativeProcessingStatus.resamplerQuality ?? 'High quality resampling')
+        : 'Native rate',
+      nativeProcessingStatus?.processingActive ? 'f64 planar' : null,
+      nativeProcessingStatus?.limiterEnabled
+        ? `Limiter −${nativeProcessingStatus.limiterGainReductionDb.toFixed(1)} dB`
+        : null,
+      nativeTargetSampleRate && nativeProcessingStatus && nativeProcessingStatus.processingLatencyFrames > 0
+        ? `${(nativeProcessingStatus.processingLatencyFrames * 1000 / nativeTargetSampleRate).toFixed(1)} ms latency`
+        : null,
+    ].filter(Boolean).join(' • ')
+    : bitPerfectModeActive
+      ? 'No DSP or sample arithmetic'
+      : 'Native path not requested'
   const sleepTimerRemainingLabel = useMemo(
     () => formatSleepTimerRemaining(sleepTimerRemainingMs),
     [sleepTimerRemainingMs]
@@ -2097,7 +2169,7 @@ export default function SettingsView() {
                         >
                           Bit-Perfect (Exclusive)
                         </button>
-                        <span className="settings-chip settings-chip-mono settings-chip-danger">
+                        <span className="settings-experimental-label">
                           Experimental
                         </span>
                       </div>
@@ -2108,75 +2180,73 @@ export default function SettingsView() {
                   </div>
                   <div className="settings-field">
                     <span className="settings-field-label">Native Status</span>
-                    <div className="settings-inline-row">
-                      <span className="settings-chip settings-chip-mono">
-                        {nativeBackendLabel}
-                      </span>
-                      {nativeAudioOutputStatus?.wireFormat.sampleRate && (
-                        <span className="settings-chip settings-chip-mono">
-                          {(nativeAudioOutputStatus.wireFormat.sampleRate / 1000).toFixed(1)} kHz wire
-                        </span>
-                      )}
-                      {nativeAudioOutputStatus?.wireFormat.sampleFormat && (
-                        <span className="settings-chip settings-chip-mono">
-                          {NATIVE_SAMPLE_FORMAT_LABELS[nativeAudioOutputStatus.wireFormat.sampleFormat as keyof typeof NATIVE_SAMPLE_FORMAT_LABELS]
-                            ?? nativeAudioOutputStatus.wireFormat.sampleFormat}
-                        </span>
-                      )}
-                      <span className="settings-chip settings-chip-mono">
-                        Exclusive requested: {nativeModeRequested ? 'Yes' : 'No'}
-                      </span>
-                      <span className="settings-chip settings-chip-mono">
-                        Exclusive reserved: {nativeAudioOutputStatus?.exclusiveAcquired ? 'Yes' : 'No'}
-                      </span>
-                      <span className="settings-chip settings-chip-mono">
-                        Stream initialized: {nativeAudioOutputStatus?.streamInitialized ? 'Yes' : 'No'}
-                      </span>
-                      <span className="settings-chip settings-chip-mono">
-                        Bit-perfect active: {nativeAudioOutputStatus?.bitPerfectActive ? 'Yes' : 'No'}
-                      </span>
-                      {exclusiveDspModeActive && (
-                        <span className="settings-chip settings-chip-mono">
-                          Exclusive DSP active: {nativeAudioOutputStatus?.processing.exclusiveActive ? 'Yes' : 'No'}
-                        </span>
-                      )}
-                      {nativeAudioOutputStatus?.processing.sourceSampleRate && nativeAudioOutputStatus.processing.targetSampleRate && (
-                        <span className="settings-chip settings-chip-mono">
-                          {(nativeAudioOutputStatus.processing.sourceSampleRate / 1000).toFixed(1)} → {(nativeAudioOutputStatus.processing.targetSampleRate / 1000).toFixed(1)} kHz
-                        </span>
-                      )}
-                      {nativeAudioOutputStatus?.processing.resamplingActive && (
-                        <span className="settings-chip settings-chip-mono">
-                          {nativeAudioOutputStatus.processing.resamplerName ?? 'Resampler'} • {nativeAudioOutputStatus.processing.resamplerQuality ?? 'high quality'}
-                        </span>
-                      )}
-                      {nativeAudioOutputStatus?.processing.processingActive && (
-                        <span className="settings-chip settings-chip-mono">f64 planar processing</span>
-                      )}
-                      {nativeAudioOutputStatus?.processing.limiterEnabled && (
-                        <span className="settings-chip settings-chip-mono">
-                          Limiter −{nativeAudioOutputStatus.processing.limiterGainReductionDb.toFixed(1)} dB
-                        </span>
-                      )}
-                      {nativeAudioOutputStatus?.processing.targetSampleRate && nativeAudioOutputStatus.processing.processingLatencyFrames > 0 && (
-                        <span className="settings-chip settings-chip-mono">
-                          {(nativeAudioOutputStatus.processing.processingLatencyFrames * 1000 / nativeAudioOutputStatus.processing.targetSampleRate).toFixed(1)} ms DSP latency
-                        </span>
-                      )}
-                      {nativeAudioOutputStatus?.transport && (
-                        <span className="settings-chip settings-chip-mono">{nativeAudioOutputStatus.transport}</span>
-                      )}
-                      {nativeAudioOutputStatus && nativeAudioOutputStatus.actualPeriodMs > 0 && (
-                        <span className="settings-chip settings-chip-mono">
-                          {nativeAudioOutputStatus.actualPeriodMs.toFixed(2)} ms period
-                        </span>
-                      )}
-                      <button
-                        className="settings-toggle"
-                        onClick={() => void handleCopyNativeAudioReport()}
-                      >
-                        Copy Native Audio Report
-                      </button>
+                    <div className="native-output-status">
+                      <div className="native-output-status-header">
+                        <div className="native-output-status-heading">
+                          <span
+                            className={`native-output-status-indicator${nativeStatusActive ? ' is-active' : ''}${nativeStatusHasFailure ? ' is-error' : ''}`}
+                            aria-hidden="true"
+                          />
+                          <div>
+                            <div className="native-output-status-title">{nativeStatusModeLabel}</div>
+                            <div className="native-output-status-subtitle">{nativeStatusStateLabel}</div>
+                          </div>
+                        </div>
+                        <button
+                          className="settings-btn native-output-status-copy"
+                          onClick={() => void handleCopyNativeAudioReport()}
+                          title="Copy Native Audio Report"
+                        >
+                          Copy Report
+                        </button>
+                      </div>
+
+                      <div className="native-output-status-stages" aria-label="Native output activation stages">
+                        <div className="native-output-status-stage">
+                          <span className={`native-output-status-stage-dot${nativeModeRequested ? ' is-complete' : ''}`} aria-hidden="true" />
+                          <span className="native-output-status-stage-label">Requested</span>
+                          <span className="native-output-status-stage-value">{nativeModeRequested ? 'On' : 'Off'}</span>
+                        </div>
+                        <div className="native-output-status-stage">
+                          <span className={`native-output-status-stage-dot${nativeAudioOutputStatus?.exclusiveAcquired ? ' is-complete' : ''}`} aria-hidden="true" />
+                          <span className="native-output-status-stage-label">Reserved</span>
+                          <span className="native-output-status-stage-value">
+                            {nativeAudioOutputStatus?.exclusiveAcquired ? 'Acquired' : 'Waiting'}
+                          </span>
+                        </div>
+                        <div className="native-output-status-stage">
+                          <span className={`native-output-status-stage-dot${nativeAudioOutputStatus?.streamInitialized ? ' is-complete' : ''}`} aria-hidden="true" />
+                          <span className="native-output-status-stage-label">Initialized</span>
+                          <span className="native-output-status-stage-value">
+                            {nativeAudioOutputStatus?.streamInitialized ? 'Ready' : 'Waiting'}
+                          </span>
+                        </div>
+                        <div className="native-output-status-stage">
+                          <span className={`native-output-status-stage-dot${nativeStatusActive ? ' is-complete' : ''}`} aria-hidden="true" />
+                          <span className="native-output-status-stage-label">
+                            {bitPerfectModeActive ? 'Bit-perfect' : exclusiveDspModeActive ? 'DSP active' : 'Active'}
+                          </span>
+                          <span className="native-output-status-stage-value">{nativeStatusActive ? 'Running' : 'Idle'}</span>
+                        </div>
+                      </div>
+
+                      <div className="native-output-status-details">
+                        <div className="native-output-status-detail">
+                          <span className="native-output-status-detail-label">Output</span>
+                          <strong>{nativeBackendLabel}</strong>
+                          <span>{nativeTransportSummary}</span>
+                        </div>
+                        <div className="native-output-status-detail">
+                          <span className="native-output-status-detail-label">Signal</span>
+                          <strong>{nativeRateSummary}</strong>
+                          <span>{nativeWireFormatSummary}</span>
+                        </div>
+                        <div className="native-output-status-detail">
+                          <span className="native-output-status-detail-label">Processing</span>
+                          <strong>{nativeProcessingSummary}</strong>
+                          <span>{nativeProcessingDetails}</span>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>

@@ -18736,6 +18736,208 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   gap: 8px;
 }
 
+.settings-shell .settings-experimental-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #f87171;
+}
+
+.settings-shell .native-output-status {
+  overflow: hidden;
+  border: 1px solid rgba(var(--tint), 0.1);
+  border-radius: 9px;
+  background: rgba(var(--tint), 0.018);
+}
+
+.settings-shell .native-output-status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 54px;
+  padding: 9px 11px 9px 13px;
+  border-bottom: 1px solid rgba(var(--tint), 0.07);
+}
+
+.settings-shell .native-output-status-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.settings-shell .native-output-status-indicator {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: rgba(var(--tint), 0.25);
+}
+
+.settings-shell .native-output-status-indicator.is-active {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(var(--accent-rgb), 0.1), 0 0 10px rgba(var(--accent-rgb), 0.45);
+}
+
+.settings-shell .native-output-status-indicator.is-error {
+  background: #f87171;
+  box-shadow: 0 0 0 4px rgba(248, 113, 113, 0.1);
+}
+
+.settings-shell .native-output-status-title {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  color: rgba(var(--tint), 0.92);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-shell .native-output-status-subtitle {
+  margin-top: 2px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: rgba(var(--tint), 0.48);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-shell .native-output-status-copy {
+  min-height: 30px;
+  padding: 5px 10px;
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.settings-shell .native-output-status-stages {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-bottom: 1px solid rgba(var(--tint), 0.07);
+}
+
+.settings-shell .native-output-status-stage {
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr);
+  column-gap: 7px;
+  row-gap: 2px;
+  align-items: center;
+  min-width: 0;
+  padding: 9px 11px;
+  border-right: 1px solid rgba(var(--tint), 0.07);
+}
+
+.settings-shell .native-output-status-stage:last-child {
+  border-right: 0;
+}
+
+.settings-shell .native-output-status-stage-dot {
+  width: 5px;
+  height: 5px;
+  grid-row: 1 / span 2;
+  border-radius: 50%;
+  background: rgba(var(--tint), 0.2);
+}
+
+.settings-shell .native-output-status-stage-dot.is-complete {
+  background: var(--accent);
+}
+
+.settings-shell .native-output-status-stage-label {
+  overflow: hidden;
+  font-size: 10px;
+  color: rgba(var(--tint), 0.5);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-shell .native-output-status-stage-value {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: rgba(var(--tint), 0.82);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-shell .native-output-status-details {
+  display: grid;
+  grid-template-columns: 0.85fr 1fr 1.35fr;
+}
+
+.settings-shell .native-output-status-detail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 10px 12px 11px;
+  border-right: 1px solid rgba(var(--tint), 0.07);
+}
+
+.settings-shell .native-output-status-detail:last-child {
+  border-right: 0;
+}
+
+.settings-shell .native-output-status-detail-label {
+  margin-bottom: 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: rgba(var(--tint), 0.34);
+}
+
+.settings-shell .native-output-status-detail strong {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(var(--tint), 0.86);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-shell .native-output-status-detail > span:last-child {
+  margin-top: 3px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.4;
+  color: rgba(var(--tint), 0.44);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .settings-shell .native-output-status-stages {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-shell .native-output-status-stage:nth-child(2) {
+    border-right: 0;
+  }
+
+  .settings-shell .native-output-status-stage:nth-child(-n + 2) {
+    border-bottom: 1px solid rgba(var(--tint), 0.07);
+  }
+
+  .settings-shell .native-output-status-details {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-shell .native-output-status-detail {
+    border-right: 0;
+    border-bottom: 1px solid rgba(var(--tint), 0.07);
+  }
+
+  .settings-shell .native-output-status-detail:last-child {
+    border-bottom: 0;
+  }
+}
+
 .settings-lastfm-profiles-field {
   gap: 10px;
 }

@@ -7,6 +7,7 @@ import {
 } from '../../stores/audioSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
 import { audioEngine } from '../../audio/AudioEngine'
+import { resolvePipelineResampler } from '../../audio/audioPipelineModel'
 import { canUseStereoAmbientUpmix } from '../../utils/sourceChannelLayout'
 
 interface PipelineNode {
@@ -144,6 +145,11 @@ export default function AudioPipelineShelf() {
   const nativeAudioOutputStatus = useAudioSettingsStore((s) => s.nativeAudioOutputStatus)
   const spatialMode = useAudioSettingsStore((s) => s.spatialMode)
   const spatialStatus = useAudioSettingsStore((s) => s.spatialStatus)
+  const nativeSourceSampleRate = nativeAudioOutputStatus?.processing.sourceSampleRate
+    ?? nativeAudioOutputStatus?.sourceFormat.sampleRate
+  const nativeTargetSampleRate = nativeAudioOutputStatus?.processing.targetSampleRate
+    ?? nativeAudioOutputStatus?.wireFormat.sampleRate
+  const nativeResamplingActive = nativeAudioOutputStatus?.processing.resamplingActive ?? false
 
   const nodes = useMemo((): PipelineNode[] => {
     if (!currentTrack) return []
@@ -172,13 +178,21 @@ export default function AudioPipelineShelf() {
       detail: playbackOutputMode === 'standard' ? 'Web Audio API' : 'FFmpeg PCM'
     })
 
-    // Resampler (only if sample rates differ)
-    const trackSR = currentTrack.sampleRate
+    // Native negotiation can change independently of the Web Audio context.
     const contextSR = audioEngine.getSampleRate()
-    if (playbackOutputMode !== 'bitperfect' && trackSR && contextSR && trackSR !== contextSR) {
-      const from = (trackSR / 1000).toFixed(1)
-      const to = (contextSR / 1000).toFixed(1)
-      result.push({ id: 'resampler', icon: ResamplerIcon, label: 'Resampler', detail: `${from} \u2192 ${to} kHz` })
+    const resampler = resolvePipelineResampler({
+      playbackOutputMode,
+      trackSampleRate: currentTrack.sampleRate,
+      standardOutputSampleRate: contextSR,
+      nativeSourceSampleRate,
+      nativeTargetSampleRate,
+      nativeResamplingActive,
+    })
+    if (resampler) {
+      const detail = resampler.sourceSampleRate && resampler.targetSampleRate
+        ? `${(resampler.sourceSampleRate / 1000).toFixed(1)} \u2192 ${(resampler.targetSampleRate / 1000).toFixed(1)} kHz`
+        : (nativeAudioOutputStatus?.processing.resamplerName ?? 'Active')
+      result.push({ id: 'resampler', icon: ResamplerIcon, label: 'Resampler', detail })
     }
 
     // Channel Routing
@@ -245,7 +259,7 @@ export default function AudioPipelineShelf() {
       selectedFallbackLabel: 'Selected Output'
     }).label
     const outputSampleRate = playbackOutputMode !== 'standard'
-      ? (nativeAudioOutputStatus?.wireFormat.sampleRate ?? currentTrack.sampleRate ?? audioEngine.getSampleRate())
+      ? (nativeTargetSampleRate ?? currentTrack.sampleRate ?? audioEngine.getSampleRate())
       : contextSR
     const outSR = outputSampleRate > 0 ? (outputSampleRate / 1000).toFixed(1) : null
     const outputDetail = outSR ? `${deviceLabel} @ ${outSR} kHz` : deviceLabel
@@ -267,7 +281,10 @@ export default function AudioPipelineShelf() {
     replayGainScanEnabled,
     playbackOutputMode,
     selectedOutputChannelCount,
-    nativeAudioOutputStatus?.wireFormat.sampleRate,
+    nativeSourceSampleRate,
+    nativeTargetSampleRate,
+    nativeResamplingActive,
+    nativeAudioOutputStatus?.processing.resamplerName,
     spatialMode,
     spatialStatus.state,
   ])
