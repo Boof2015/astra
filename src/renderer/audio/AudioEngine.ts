@@ -40,6 +40,17 @@ import {
   validateCompleteFloat32Pcm,
   type CompleteFloat32Pcm,
 } from './completePcm'
+import {
+  clampDiagnosticDurationMs,
+  summarizePcmTransportTimings,
+  sumDiagnosticDurations,
+  type PcmTransportTimingSummary,
+} from './pcmTransportTimings'
+import {
+  cancelLocalPcmStreamRequest,
+  preferLocalPcmStreamWithLegacyFallback,
+  type LocalPcmStreamClient,
+} from './localPcmStreamClient'
 import { detectIamfContainer, type IamfContainerKind } from '../../shared/iamf/detect'
 import {
   IamfDecodeCancelledError,
@@ -209,8 +220,47 @@ export interface ExternalLoudnessResult {
 }
 
 export interface AudioLoadTimings {
+  /** Decoder work only. Kept as the compatibility alias for decodeWorkMs. */
   decodeMs: number
+  /** Loudness work only. Kept as the compatibility alias for loudnessMs. */
   analysisMs: number
+  decodeWorkMs?: number
+  loudnessMs?: number
+  standardLoadPipelineMs?: number
+  decodeRequestId?: number
+  validPcmBytes?: number
+  backingBufferBytes?: number
+  allocationGrowthCount?: number
+  transportRoute?: 'invoke' | 'message_port_stream'
+  mainHandlerMs?: number
+  binaryResolutionMs?: number
+  probeMs?: number
+  ffmpegMs?: number
+  pcmAllocationMs?: number
+  initialPcmAllocationMs?: number
+  growthPcmAllocationMs?: number
+  payloadFinalizationMs?: number
+  preloadInvokeMs?: number
+  rendererBridgeCallMs?: number
+  /** Approximate IPC/scheduling residual; this does not prove a memcpy count. */
+  electronIpcResidualMs?: number
+  /** Approximate contextBridge/scheduling residual; this does not prove a memcpy count. */
+  contextBridgeResidualMs?: number
+  streamChunkCount?: number
+  streamDispatchCopyMs?: number
+  streamDispatchPostMs?: number
+  streamTailMs?: number
+  rendererPcmAssemblyAllocationMs?: number
+  rendererPcmAssemblyCopyMs?: number
+  rendererPortRequestMs?: number
+  /** Non-overlapped stream tail estimate; transport and FFmpeg run concurrently. */
+  streamTransportResidualMs?: number
+  webAudioBufferAllocationMs?: number
+  pcmDeinterleaveMs?: number
+  /** Final synchronous AudioEngine state commit, excluding allocation, copy, and loudness. */
+  pcmCommitMs?: number
+  /** Aggregate renderer work after the bridge result became available. */
+  postDeliveryCommitMs?: number
   nativeBinaryResolutionMs?: number
   nativeProbeMs?: number
   nativeDecodeMs?: number
@@ -230,6 +280,21 @@ interface AudioLoadDataOptions {
 
 interface StandardTrackDecodeOptions extends AudioLoadDataOptions {
   priority?: 'interactive' | 'background'
+}
+
+interface PcmRendererDeliveryTiming {
+  decodeRequestId: number
+  rendererBridgeCallMs: number
+  deliveredAt: number
+  pipelineStartedAt: number
+}
+
+interface InstalledPcmAudioBuffer {
+  buffer: AudioBuffer
+  validPcmBytes: number
+  backingBufferBytes: number
+  webAudioBufferAllocationMs: number
+  pcmDeinterleaveMs: number
 }
 
 interface RemoteStreamLoadOptions {
@@ -424,6 +489,7 @@ export class AudioEngine {
   private nextNormalizationAnalysis: LoudnessAnalysis | null = null
   private pendingCurrentLoudnessTrackPath: string | null = null
   private lastLoadTimings: AudioLoadTimings | null = null
+  private lastPrebufferLoadTimings: AudioLoadTimings | null = null
   private startTime: number = 0
   private pauseTime: number = 0
   private _playbackState: PlaybackState = 'stopped'
@@ -517,6 +583,8 @@ export class AudioEngine {
   private prebufferGeneration = 0
   private currentPcmDecodeGeneration = 0
   private nextLocalPcmDecodeRequestId = 1
+  /** Optional injected transport used by deterministic renderer tests. */
+  private localPcmStreamClient: LocalPcmStreamClient | undefined
   private activeCurrentPcmDecodeRequestId: number | null = null
   private activePrebufferPcmDecodeRequestId: number | null = null
   private activePrebufferPcmDecodeTrackPath: string | null = null
@@ -1563,6 +1631,8 @@ export class AudioEngine {
     const requestId = this.activeCurrentPcmDecodeRequestId
     if (requestId == null) return
     this.activeCurrentPcmDecodeRequestId = null
+    this.localPcmStreamClient?.cancel(requestId)
+    cancelLocalPcmStreamRequest(requestId)
     const cancel = window.electronAPI?.cancelLocalAudioDecode
     if (!cancel) return
     void cancel(requestId).catch(() => {
@@ -1603,6 +1673,8 @@ export class AudioEngine {
     this.activePrebufferPcmDecodeRequestId = null
     this.activePrebufferPcmDecodeTrackPath = null
     if (requestId == null) return
+    this.localPcmStreamClient?.cancel(requestId)
+    cancelLocalPcmStreamRequest(requestId)
     const cancel = window.electronAPI?.cancelLocalAudioDecode
     if (!cancel) return
     void cancel(requestId).catch(() => {
@@ -1952,6 +2024,7 @@ export class AudioEngine {
     this.nativeNextTrackBuffered = true
     this.nativeNextPlaybackSequence = result.playbackSequence
     this.nextBufferTrackPath = track.path
+    this.lastPrebufferLoadTimings = null
     return result
   }
 
@@ -4397,6 +4470,11 @@ export class AudioEngine {
     return this.lastLoadTimings ? { ...this.lastLoadTimings } : null
   }
 
+  /** Timings for the PCM currently staged as the Standard next-track buffer. */
+  getLastPrebufferLoadTimings(): AudioLoadTimings | null {
+    return this.lastPrebufferLoadTimings ? { ...this.lastPrebufferLoadTimings } : null
+  }
+
   // Whether loading a track with this ReplayGain candidate would need a
   // loudness analysis; lets callers pre-resolve one in parallel with decode.
   needsLoudnessAnalysisForLoad(replayGainDb: number | null | undefined): boolean {
@@ -6688,11 +6766,18 @@ export class AudioEngine {
    * The rest of Standard playback deliberately cannot distinguish this from
    * an AudioBuffer produced by decodeAudioData().
    */
-  private createAudioBufferFromPcm(pcm: CompleteFloat32Pcm): AudioBuffer {
+  private createAudioBufferFromPcm(pcm: CompleteFloat32Pcm): InstalledPcmAudioBuffer {
     if (!this.context) throw new Error('AudioContext not initialized')
     // Validate before asking Web Audio for a potentially large allocation.
     validateCompleteFloat32Pcm(pcm)
+    const validPcmBytes = pcm.pcmByteLength
+    const backingBufferBytes = pcm.interleavedPcm.byteLength
+
+    const allocationStartedAt = performance.now()
     const buffer = this.context.createBuffer(pcm.channels, pcm.frames, pcm.sampleRate)
+    const webAudioBufferAllocationMs = performance.now() - allocationStartedAt
+
+    const deinterleaveStartedAt = performance.now()
     const destinationChannels = Array.from(
       { length: pcm.channels },
       (_, channelIndex) => buffer.getChannelData(channelIndex),
@@ -6704,7 +6789,126 @@ export class AudioEngine {
     if (!Object.isFrozen(pcm)) {
       pcm.interleavedPcm = new ArrayBuffer(0)
     }
-    return buffer
+    const pcmDeinterleaveMs = performance.now() - deinterleaveStartedAt
+    return {
+      buffer,
+      validPcmBytes,
+      backingBufferBytes,
+      webAudioBufferAllocationMs,
+      pcmDeinterleaveMs,
+    }
+  }
+
+  private buildPcmLoadTimings(
+    pcm: CompleteFloat32Pcm,
+    installed: Omit<InstalledPcmAudioBuffer, 'buffer'>,
+    loudnessMsValue: number,
+    delivery?: PcmRendererDeliveryTiming,
+  ): AudioLoadTimings {
+    const transportSummary: PcmTransportTimingSummary | null = delivery
+      ? summarizePcmTransportTimings(pcm.transportTimings, delivery.rendererBridgeCallMs)
+      : null
+    const nativeProbeMs = transportSummary?.probeMs
+      ?? clampDiagnosticDurationMs(pcm.probeMs)
+    const nativeDecodeMs = transportSummary?.ffmpegMs
+      ?? clampDiagnosticDurationMs(pcm.decodeMs)
+    const loudnessMs = clampDiagnosticDurationMs(loudnessMsValue) ?? 0
+
+    // Initial PCM allocation happens before FFmpeg and is decoder work. Growth
+    // allocations happen while FFmpeg is running, so they remain exposed but
+    // are not double-counted. Older timing envelopes did not split the two;
+    // their allocation is safe to add only when no growth occurred.
+    const initialPcmAllocationMs = transportSummary?.initialPcmAllocationMs
+      ?? (transportSummary?.allocationGrowthCount === 0
+        ? transportSummary?.pcmAllocationMs
+        : undefined)
+    const decodeWorkMs = sumDiagnosticDurations(
+      transportSummary?.binaryResolutionMs,
+      nativeProbeMs,
+      initialPcmAllocationMs,
+      nativeDecodeMs,
+      transportSummary?.payloadFinalizationMs,
+      installed.webAudioBufferAllocationMs,
+      installed.pcmDeinterleaveMs,
+    )
+    const decodeRequestId = transportSummary?.decodeRequestId ?? delivery?.decodeRequestId
+    const validPcmBytes = transportSummary?.validPcmBytes ?? installed.validPcmBytes
+    const backingBufferBytes = transportSummary?.backingBufferBytes ?? installed.backingBufferBytes
+
+    return {
+      decodeMs: decodeWorkMs,
+      analysisMs: loudnessMs,
+      decodeWorkMs,
+      loudnessMs,
+      webAudioBufferAllocationMs: installed.webAudioBufferAllocationMs,
+      pcmDeinterleaveMs: installed.pcmDeinterleaveMs,
+      ...(decodeRequestId === undefined ? {} : { decodeRequestId }),
+      validPcmBytes,
+      backingBufferBytes,
+      ...(transportSummary?.allocationGrowthCount === undefined
+        ? {}
+        : { allocationGrowthCount: transportSummary.allocationGrowthCount }),
+      ...(transportSummary?.transportRoute === undefined
+        ? {}
+        : { transportRoute: transportSummary.transportRoute }),
+      ...(transportSummary?.mainHandlerMs === undefined
+        ? {}
+        : { mainHandlerMs: transportSummary.mainHandlerMs }),
+      ...(transportSummary?.binaryResolutionMs === undefined
+        ? {}
+        : {
+            binaryResolutionMs: transportSummary.binaryResolutionMs,
+            nativeBinaryResolutionMs: transportSummary.binaryResolutionMs,
+          }),
+      ...(nativeProbeMs === undefined ? {} : { probeMs: nativeProbeMs, nativeProbeMs }),
+      ...(nativeDecodeMs === undefined ? {} : { ffmpegMs: nativeDecodeMs, nativeDecodeMs }),
+      ...(transportSummary?.pcmAllocationMs === undefined
+        ? {}
+        : { pcmAllocationMs: transportSummary.pcmAllocationMs }),
+      ...(transportSummary?.initialPcmAllocationMs === undefined
+        ? {}
+        : { initialPcmAllocationMs: transportSummary.initialPcmAllocationMs }),
+      ...(transportSummary?.growthPcmAllocationMs === undefined
+        ? {}
+        : { growthPcmAllocationMs: transportSummary.growthPcmAllocationMs }),
+      ...(transportSummary?.payloadFinalizationMs === undefined
+        ? {}
+        : { payloadFinalizationMs: transportSummary.payloadFinalizationMs }),
+      ...(transportSummary?.preloadInvokeMs === undefined
+        ? {}
+        : { preloadInvokeMs: transportSummary.preloadInvokeMs }),
+      ...(delivery ? { rendererBridgeCallMs: transportSummary?.rendererBridgeCallMs ?? 0 } : {}),
+      ...(transportSummary?.electronIpcResidualMs === undefined
+        ? {}
+        : { electronIpcResidualMs: transportSummary.electronIpcResidualMs }),
+      ...(transportSummary?.contextBridgeResidualMs === undefined
+        ? {}
+        : { contextBridgeResidualMs: transportSummary.contextBridgeResidualMs }),
+      ...(transportSummary?.streamChunkCount === undefined
+        ? {}
+        : { streamChunkCount: transportSummary.streamChunkCount }),
+      ...(transportSummary?.streamDispatchCopyMs === undefined
+        ? {}
+        : { streamDispatchCopyMs: transportSummary.streamDispatchCopyMs }),
+      ...(transportSummary?.streamDispatchPostMs === undefined
+        ? {}
+        : { streamDispatchPostMs: transportSummary.streamDispatchPostMs }),
+      ...(transportSummary?.streamTailMs === undefined
+        ? {}
+        : { streamTailMs: transportSummary.streamTailMs }),
+      ...(transportSummary?.rendererPcmAssemblyAllocationMs === undefined
+        ? {}
+        : { rendererPcmAssemblyAllocationMs: transportSummary.rendererPcmAssemblyAllocationMs }),
+      ...(transportSummary?.rendererPcmAssemblyCopyMs === undefined
+        ? {}
+        : { rendererPcmAssemblyCopyMs: transportSummary.rendererPcmAssemblyCopyMs }),
+      ...(transportSummary?.rendererPortRequestMs === undefined
+        ? {}
+        : { rendererPortRequestMs: transportSummary.rendererPortRequestMs }),
+      ...(transportSummary?.streamTransportResidualMs === undefined
+        ? {}
+        : { streamTransportResidualMs: transportSummary.streamTransportResidualMs }),
+    }
   }
 
   /** Cancels in-flight IAMF decodes (current load and/or prebuffer). */
@@ -6803,6 +7007,7 @@ export class AudioEngine {
     pcm: CompleteFloat32Pcm,
     options: AudioLoadDataOptions,
     loadOperation: number,
+    delivery?: PcmRendererDeliveryTiming,
   ): Promise<void> {
     this.assertCurrentLoadOperation(loadOperation)
     if (!this.context) throw new Error('AudioContext not initialized')
@@ -6824,20 +7029,8 @@ export class AudioEngine {
       this.pauseTime = 0
       this.currentReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
 
-      const bufferCopyStart = performance.now()
-      const decodedBuffer = this.createAudioBufferFromPcm(pcm)
-      const bufferCopyMs = performance.now() - bufferCopyStart
-      const nativeProbeMs = typeof pcm.probeMs === 'number'
-        && Number.isFinite(pcm.probeMs)
-        && pcm.probeMs >= 0
-        ? pcm.probeMs
-        : null
-      const nativeDecodeMs = typeof pcm.decodeMs === 'number'
-        && Number.isFinite(pcm.decodeMs)
-        && pcm.decodeMs >= 0
-        ? pcm.decodeMs
-        : null
-      const decodeMs = Math.round(bufferCopyMs + (nativeProbeMs ?? 0) + (nativeDecodeMs ?? 0))
+      const installed = this.createAudioBufferFromPcm(pcm)
+      const decodedBuffer = installed.buffer
       this.assertCurrentLoadOperation(loadOperation)
       const analysisStart = performance.now()
       const normalizationAnalysis = await this.resolveLoudnessAnalysisForLoad(
@@ -6846,13 +7039,14 @@ export class AudioEngine {
         this.currentReplayGainDb,
         () => this.assertCurrentLoadOperation(loadOperation)
       )
-      this.lastLoadTimings = {
-        decodeMs,
-        analysisMs: Math.round(performance.now() - analysisStart),
-        ...(nativeProbeMs == null ? {} : { nativeProbeMs: Math.round(nativeProbeMs) }),
-        ...(nativeDecodeMs == null ? {} : { nativeDecodeMs: Math.round(nativeDecodeMs) }),
-      }
+      const analysisMs = performance.now() - analysisStart
+      const baseTimings = this.buildPcmLoadTimings(pcm, installed, analysisMs, delivery)
+      // Preserve the existing visibility point for listeners while the final
+      // synchronous commit duration is still being measured.
+      this.lastLoadTimings = baseTimings
       this.assertCurrentLoadOperation(loadOperation)
+
+      const commitStartedAt = performance.now()
       this.audioBuffer = decodedBuffer
       this.currentNormalizationAnalysis = normalizationAnalysis
       this.currentBufferTrackPath = options.trackPath ?? null
@@ -6866,6 +7060,18 @@ export class AudioEngine {
       this.emit('stateChange', this._playbackState)
       this.emit('durationChange', this.audioBuffer.duration)
       this.emit('bufferReady', this.audioBuffer)
+
+      const committedAt = performance.now()
+      this.lastLoadTimings = {
+        ...baseTimings,
+        pcmCommitMs: Math.max(0, committedAt - commitStartedAt),
+        ...(delivery
+          ? {
+              postDeliveryCommitMs: Math.max(0, committedAt - delivery.deliveredAt),
+              standardLoadPipelineMs: Math.max(0, committedAt - delivery.pipelineStartedAt),
+            }
+          : {}),
+      }
     } catch (err) {
       if (isSupersededAudioLoadError(err) || loadOperation !== this.loadGeneration) {
         throw new SupersededAudioLoadError()
@@ -6913,25 +7119,43 @@ export class AudioEngine {
     // Decoding is intentionally separate from a playback load operation. The
     // currently playing source and Parallax publisher stay untouched until a
     // complete, still-current PCM result is ready to commit.
+    const pipelineStartedAt = performance.now()
     const decodeOperation = this.beginCurrentPcmDecodeOperation()
     let pcm: CompleteFloat32Pcm & { requestId: number }
+    let delivery: PcmRendererDeliveryTiming
     try {
       const sampleRate = await this.getStandardDecodeSampleRate()
       this.assertCurrentPcmDecodeOperation(decodeOperation)
-      const decode = window.electronAPI?.decodeLocalAudioToPcm
-      if (!decode) return 'failed'
+      const legacyDecode = window.electronAPI?.decodeLocalAudioToPcm
+      const openStream = window.electronAPI?.openLocalAudioPcmStream
+      if (!openStream && !legacyDecode) return 'failed'
 
       const requestId = this.allocateLocalPcmDecodeRequestId()
       this.activeCurrentPcmDecodeRequestId = requestId
-      let result: Awaited<ReturnType<typeof decode>>
+      const priority = options.priority ?? 'interactive'
+      let result: Awaited<ReturnType<typeof preferLocalPcmStreamWithLegacyFallback>>
       try {
-        result = await decode(
-          requestId,
-          track.path,
-          sampleRate,
-          track.channels,
-          options.priority ?? 'interactive',
+        const rendererBridgeStartedAt = performance.now()
+        result = await preferLocalPcmStreamWithLegacyFallback(
+          {
+            requestId,
+            filePath: track.path,
+            outputSampleRate: sampleRate,
+            expectedChannels: track.channels,
+            priority,
+          },
+          legacyDecode
+            ? () => legacyDecode(requestId, track.path, sampleRate, track.channels, priority)
+            : null,
+          this.localPcmStreamClient ? { client: this.localPcmStreamClient } : undefined,
         )
+        const deliveredAt = performance.now()
+        delivery = {
+          decodeRequestId: requestId,
+          rendererBridgeCallMs: Math.max(0, deliveredAt - rendererBridgeStartedAt),
+          deliveredAt,
+          pipelineStartedAt,
+        }
       } catch {
         if (
           this.activeCurrentPcmDecodeRequestId !== requestId
@@ -6946,6 +7170,10 @@ export class AudioEngine {
 
       if (decodeOperation !== this.currentPcmDecodeGeneration || !result) return 'cancelled'
       if (result.requestId !== requestId) return 'failed'
+      if (
+        result.transportTimings
+        && result.transportTimings.decodeRequestId !== requestId
+      ) return 'failed'
       // contextBridge may freeze returned objects. Own a shallow wrapper so
       // the large backing-buffer reference can be dropped after AudioBuffer copy.
       pcm = { ...result }
@@ -6966,7 +7194,7 @@ export class AudioEngine {
       await this.loadPcmDataForOperation(pcm, {
         ...options,
         trackPath: options.trackPath ?? track.path,
-      }, loadOperation)
+      }, loadOperation, delivery)
       return 'loaded'
     } catch (error) {
       return isSupersededAudioLoadError(error) || loadOperation !== this.loadGeneration
@@ -7006,6 +7234,7 @@ export class AudioEngine {
       this.nextBuffer = decodedBuffer
       this.nextNormalizationAnalysis = normalizationAnalysis
       this.nextBufferTrackPath = options.trackPath ?? null
+      this.lastPrebufferLoadTimings = null
       this.updateNextNormalizationCache()
 
       // If currently playing, schedule the gapless transition
@@ -7026,6 +7255,7 @@ export class AudioEngine {
       this.nextNormalizationAnalysis = null
       this.nextBufferTrackPath = null
       this.nextReplayGainDb = null
+      this.lastPrebufferLoadTimings = null
       this.clearNextNormalizationCache()
     }
   }
@@ -7034,17 +7264,24 @@ export class AudioEngine {
     pcm: CompleteFloat32Pcm,
     options: AudioLoadDataOptions,
     prebufferOperation: number,
+    delivery?: PcmRendererDeliveryTiming,
   ): Promise<void> {
-    const decodedBuffer = this.createAudioBufferFromPcm(pcm)
+    const installed = this.createAudioBufferFromPcm(pcm)
+    const decodedBuffer = installed.buffer
     this.assertCurrentPrebufferOperation(prebufferOperation)
     const nextReplayGainDb = this.normalizeReplayGainCandidate(options.replayGainDb)
+    const analysisStartedAt = performance.now()
     const normalizationAnalysis = await this.resolveLoudnessAnalysisForLoad(
       decodedBuffer,
       options,
       nextReplayGainDb,
       () => this.assertCurrentPrebufferOperation(prebufferOperation)
     )
+    const analysisMs = performance.now() - analysisStartedAt
+    const baseTimings = this.buildPcmLoadTimings(pcm, installed, analysisMs, delivery)
     this.assertCurrentPrebufferOperation(prebufferOperation)
+
+    const commitStartedAt = performance.now()
     this.nextReplayGainDb = nextReplayGainDb
     this.nextBuffer = decodedBuffer
     this.nextNormalizationAnalysis = normalizationAnalysis
@@ -7053,6 +7290,17 @@ export class AudioEngine {
 
     if (this._playbackState === 'playing' && this.audioBuffer) {
       this.scheduleGaplessTransition()
+    }
+    const committedAt = performance.now()
+    this.lastPrebufferLoadTimings = {
+      ...baseTimings,
+      pcmCommitMs: Math.max(0, committedAt - commitStartedAt),
+      ...(delivery
+        ? {
+            postDeliveryCommitMs: Math.max(0, committedAt - delivery.deliveredAt),
+            standardLoadPipelineMs: Math.max(0, committedAt - delivery.pipelineStartedAt),
+          }
+        : {}),
     }
   }
 
@@ -7077,6 +7325,7 @@ export class AudioEngine {
       this.nextNormalizationAnalysis = null
       this.nextBufferTrackPath = null
       this.nextReplayGainDb = null
+      this.lastPrebufferLoadTimings = null
       this.clearNextNormalizationCache()
     }
   }
@@ -7092,25 +7341,43 @@ export class AudioEngine {
       return 'failed'
     }
 
+    const pipelineStartedAt = performance.now()
     const prebufferOperation = this.beginPrebufferOperation()
+    let delivery: PcmRendererDeliveryTiming
     try {
       const sampleRate = await this.getStandardDecodeSampleRate()
       this.assertCurrentPrebufferOperation(prebufferOperation)
-      const decode = window.electronAPI?.decodeLocalAudioToPcm
-      if (!decode) return 'failed'
+      const legacyDecode = window.electronAPI?.decodeLocalAudioToPcm
+      const openStream = window.electronAPI?.openLocalAudioPcmStream
+      if (!openStream && !legacyDecode) return 'failed'
 
       const requestId = this.allocateLocalPcmDecodeRequestId()
       this.activePrebufferPcmDecodeRequestId = requestId
       this.activePrebufferPcmDecodeTrackPath = track.path
-      let result: Awaited<ReturnType<typeof decode>>
+      const priority = options.priority ?? 'background'
+      let result: Awaited<ReturnType<typeof preferLocalPcmStreamWithLegacyFallback>>
       try {
-        result = await decode(
-          requestId,
-          track.path,
-          sampleRate,
-          track.channels,
-          options.priority ?? 'background',
+        const rendererBridgeStartedAt = performance.now()
+        result = await preferLocalPcmStreamWithLegacyFallback(
+          {
+            requestId,
+            filePath: track.path,
+            outputSampleRate: sampleRate,
+            expectedChannels: track.channels,
+            priority,
+          },
+          legacyDecode
+            ? () => legacyDecode(requestId, track.path, sampleRate, track.channels, priority)
+            : null,
+          this.localPcmStreamClient ? { client: this.localPcmStreamClient } : undefined,
         )
+        const deliveredAt = performance.now()
+        delivery = {
+          decodeRequestId: requestId,
+          rendererBridgeCallMs: Math.max(0, deliveredAt - rendererBridgeStartedAt),
+          deliveredAt,
+          pipelineStartedAt,
+        }
       } catch {
         if (
           this.activePrebufferPcmDecodeRequestId !== requestId
@@ -7126,12 +7393,16 @@ export class AudioEngine {
 
       if (prebufferOperation !== this.prebufferGeneration || !result) return 'cancelled'
       if (result.requestId !== requestId) return 'failed'
+      if (
+        result.transportTimings
+        && result.transportTimings.decodeRequestId !== requestId
+      ) return 'failed'
       const ownedPcm = { ...result }
       result = null
       await this.commitNextPcmBuffer(ownedPcm, {
         ...options,
         trackPath: options.trackPath ?? track.path,
-      }, prebufferOperation)
+      }, prebufferOperation, delivery)
       return 'loaded'
     } catch (error) {
       if (isSupersededAudioLoadError(error) || prebufferOperation !== this.prebufferGeneration) {
@@ -7209,6 +7480,7 @@ export class AudioEngine {
     const nextNormalization = this.getPendingNextNormalization()
     const nextNormalizationAnalysis = this.nextNormalizationAnalysis
     const nextReplayGainDb = this.nextReplayGainDb
+    const nextLoadTimings = this.lastPrebufferLoadTimings
 
     // Swap buffers
     this.audioBuffer = nextBuffer
@@ -7219,6 +7491,8 @@ export class AudioEngine {
     this.nextBufferTrackPath = null
     this.currentReplayGainDb = nextReplayGainDb
     this.nextReplayGainDb = null
+    this.lastLoadTimings = nextLoadTimings
+    this.lastPrebufferLoadTimings = null
 
     // Swap source nodes
     if (this.sourceNode) {
@@ -7278,6 +7552,7 @@ export class AudioEngine {
     const nextReplayGainDb = this.nextReplayGainDb
     const nextNormalizationAnalysis = this.nextNormalizationAnalysis
     const pendingNextNormalization = this.getPendingNextNormalization()
+    const nextLoadTimings = this.lastPrebufferLoadTimings
     const oldSource = this.sourceNode
 
     // Discard the future-scheduled gapless source (if any) and reset its normalization ramp.
@@ -7327,6 +7602,8 @@ export class AudioEngine {
     this.nextBufferTrackPath = null
     this.currentReplayGainDb = nextReplayGainDb
     this.nextReplayGainDb = null
+    this.lastLoadTimings = nextLoadTimings
+    this.lastPrebufferLoadTimings = null
 
     this.sourceNode = newSource
     this.nextSourceNode = null
@@ -7357,6 +7634,7 @@ export class AudioEngine {
   clearNextBuffer(): void | Promise<void> {
     this.invalidatePrebufferOperations()
     this.nextNormalizationAnalysis = null
+    this.lastPrebufferLoadTimings = null
     if (this.isNativeExclusiveMode()) {
       this.nativeNextTrackBuffered = false
       this.nativeNextPlaybackSequence = null
@@ -8113,6 +8391,7 @@ export class AudioEngine {
     this.clearNextNormalizationCache()
     this.audioBuffer = null
     this.nextBuffer = null
+    this.lastPrebufferLoadTimings = null
     this.currentNormalizationAnalysis = null
     this.nextNormalizationAnalysis = null
     this.currentBufferTrackPath = null

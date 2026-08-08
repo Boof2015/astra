@@ -1,3 +1,5 @@
+import type { PcmTransportTimings } from './pcmTransportTimings'
+
 const FLOAT32_BYTES_PER_SAMPLE = 4
 const MAX_AUDIO_CHANNELS = 32
 
@@ -20,6 +22,8 @@ export interface CompleteFloat32Pcm {
   probeMs?: number
   /** Native decoder wall time, when supplied by the decode bridge. */
   decodeMs?: number
+  /** Process-local transport measurements supplied by main and preload. */
+  transportTimings?: PcmTransportTimings
 }
 
 export function validateCompleteFloat32Pcm(pcm: CompleteFloat32Pcm): void {

@@ -311,6 +311,10 @@ function formatNormalizationTargetLufs(value: number): string {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
 }
 
+function formatPcmTransferBenchmarkMs(value: number): string {
+  return `${value < 10 ? value.toFixed(2) : value.toFixed(1)} ms`
+}
+
 function parseNormalizationTargetLufsInput(input: string): number | null {
   const trimmed = input.trim()
   if (!trimmed) return null
@@ -505,11 +509,15 @@ export default function SettingsView() {
     status: diagnosticsStatus,
     isLoading: diagnosticsIsLoading,
     isCapturingBundle: diagnosticsIsCapturingBundle,
+    isRunningPcmTransferBenchmark: diagnosticsIsRunningPcmTransferBenchmark,
+    pcmTransferBenchmarkProgress: diagnosticsPcmTransferBenchmarkProgress,
     lastCaptureResult: diagnosticsLastCaptureResult,
+    lastPcmTransferBenchmark: diagnosticsLastPcmTransferBenchmark,
     errorMessage: diagnosticsErrorMessage,
     init: initDiagnostics,
     setEnabled: setDiagnosticsEnabled,
     captureBundle: captureDiagnosticsBundle,
+    runPcmTransferBenchmark: runDiagnosticsPcmTransferBenchmark,
     revealCurrentLog,
     revealPreviousLog,
   } = useDiagnosticsStore()
@@ -1129,6 +1137,26 @@ export default function SettingsView() {
   const diagnosticsLastBundleLabel = diagnosticsLastCaptureResult
     ? `Last bundle captured ${new Date(diagnosticsLastCaptureResult.capturedAt).toLocaleString()}.`
     : 'No memory bundle captured in this session.'
+  const diagnosticsPcmTransfer72MiB = diagnosticsLastPcmTransferBenchmark?.sizes.find(
+    (result) => result.sizeBytes === 72 * 1024 * 1024
+  ) ?? null
+  const diagnosticsPcmTransferProgressLabel = diagnosticsPcmTransferBenchmarkProgress
+    ? diagnosticsPcmTransferBenchmarkProgress.phase === 'logging'
+      ? 'Saving benchmark samples and summary to the diagnostics log...'
+      : diagnosticsPcmTransferBenchmarkProgress.phase === 'warmup'
+        ? `Warming the ${diagnosticsPcmTransferBenchmarkProgress.route === 'main-ipc-bridge'
+            ? 'main IPC + bridge'
+            : diagnosticsPcmTransferBenchmarkProgress.route === 'main-port-stream'
+              ? 'main port stream'
+              : 'preload-only bridge'} route...`
+        : `Measuring ${Math.round((diagnosticsPcmTransferBenchmarkProgress.sizeBytes ?? 0) / (1024 * 1024))} MiB ` +
+          `${diagnosticsPcmTransferBenchmarkProgress.route === 'main-ipc-bridge'
+            ? 'main IPC + bridge'
+            : diagnosticsPcmTransferBenchmarkProgress.route === 'main-port-stream'
+              ? 'main port stream'
+              : 'preload-only bridge'}, ` +
+          `repetition ${diagnosticsPcmTransferBenchmarkProgress.repetition ?? 1} of 3...`
+    : ''
   const libraryDiagnosticsEnabled = libraryDiagnosticsStatus?.enabled ?? false
   const libraryDiagnosticsCurrentLogPath = libraryDiagnosticsStatus?.currentLogPath ?? 'Loading diagnostics paths...'
   const libraryDiagnosticsPreviousLogPath = libraryDiagnosticsStatus?.previousLogPath ?? 'Loading diagnostics paths...'
@@ -3348,7 +3376,7 @@ export default function SettingsView() {
                     type="button"
                     className={`settings-toggle ${diagnosticsEnabled ? 'active' : ''}`}
                     onClick={() => void setDiagnosticsEnabled(!diagnosticsEnabled)}
-                    disabled={diagnosticsIsLoading && diagnosticsStatus === null}
+                    disabled={diagnosticsIsRunningPcmTransferBenchmark || (diagnosticsIsLoading && diagnosticsStatus === null)}
                   >
                     {diagnosticsEnabled ? 'Enabled' : 'Disabled'}
                   </button>
@@ -3361,9 +3389,51 @@ export default function SettingsView() {
                 <div className="settings-info-links">
                   <button
                     type="button"
+                    className="settings-btn settings-btn-primary"
+                    onClick={() => void runDiagnosticsPcmTransferBenchmark()}
+                    disabled={
+                      !diagnosticsEnabled ||
+                      diagnosticsIsRunningPcmTransferBenchmark ||
+                      diagnosticsIsCapturingBundle
+                    }
+                    title={!diagnosticsEnabled ? 'Enable diagnostics logging to run this benchmark.' : undefined}
+                  >
+                    {diagnosticsIsRunningPcmTransferBenchmark
+                      ? 'Running PCM Transfer Benchmark...'
+                      : 'Run PCM Transfer Benchmark'}
+                  </button>
+                </div>
+                <p className="settings-note">
+                  Runs one warm-up pass over all three routes, followed by three passes at 1, 16, and 72 MiB.
+                  It can temporarily increase memory pressure and interrupt smooth playback, so run it while idle.
+                </p>
+                {diagnosticsPcmTransferProgressLabel && (
+                  <p className="settings-info-meta">{diagnosticsPcmTransferProgressLabel}</p>
+                )}
+                {diagnosticsPcmTransfer72MiB ? (
+                  <p className="settings-info-meta">
+                    Latest 72 MiB medians: Electron IPC residual{' '}
+                    {formatPcmTransferBenchmarkMs(diagnosticsPcmTransfer72MiB.main.electronIpcResidualMs)}; main-route
+                    contextBridge residual{' '}
+                    {formatPcmTransferBenchmarkMs(diagnosticsPcmTransfer72MiB.main.contextBridgeResidualMs)}; preload-only
+                    contextBridge residual{' '}
+                    {formatPcmTransferBenchmarkMs(diagnosticsPcmTransfer72MiB.preload.contextBridgeResidualMs)}; port-stream
+                    total {formatPcmTransferBenchmarkMs(diagnosticsPcmTransfer72MiB.port.rendererPortRequestMs)}; port
+                    assembly {formatPcmTransferBenchmarkMs(diagnosticsPcmTransfer72MiB.port.rendererPcmAssemblyMs)}.
+                  </p>
+                ) : (
+                  <p className="settings-info-meta">No PCM transfer benchmark has completed in this session.</p>
+                )}
+                <p className="settings-note">
+                  Residuals are reconciliation estimates that include scheduling and dispatch overhead; they do not
+                  establish how many memory copies occurred.
+                </p>
+                <div className="settings-info-links">
+                  <button
+                    type="button"
                     className="settings-btn settings-link-btn"
                     onClick={() => void captureDiagnosticsBundle()}
-                    disabled={diagnosticsIsCapturingBundle}
+                    disabled={diagnosticsIsCapturingBundle || diagnosticsIsRunningPcmTransferBenchmark}
                   >
                     {diagnosticsIsCapturingBundle ? 'Capturing Bundle...' : 'Capture Memory Bundle'}
                   </button>

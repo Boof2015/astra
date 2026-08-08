@@ -8,14 +8,15 @@ function isPrimaryWindow(): boolean {
 export function logMemoryDiagnosticsEvent(
   name: string,
   details?: Record<string, unknown>,
-  source: MemoryDiagnosticsEventPayload['source'] = 'renderer'
+  source: MemoryDiagnosticsEventPayload['source'] = 'renderer',
+  options?: { captureSample?: boolean }
 ): void {
   if (!isPrimaryWindow()) return
   void window.electronAPI.diagnostics.logEvent({
     name,
     source,
     details: details ?? null
-  }).catch(() => {
+  }, options).catch(() => {
     // Ignore diagnostics logging failures so playback/UI paths stay unaffected.
   })
 }

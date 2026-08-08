@@ -101,14 +101,17 @@ import type {
     RemoteStreamInfo
 } from '../types/remoteStream'
 import type {
+    LocalAudioPcmTransportTimings,
     MemoryDiagnosticsBlinkResourceUsageSnapshot,
     MemoryDiagnosticsCaptureBundleResult,
     MemoryDiagnosticsEventPayload,
+    MemoryDiagnosticsLogEventOptions,
     MemoryDiagnosticsProcessMemoryStats,
     MemoryDiagnosticsRendererSnapshot,
     MemoryDiagnosticsRendererMemoryStats,
     MemoryDiagnosticsSnapshotRequest,
-    MemoryDiagnosticsStatus
+    MemoryDiagnosticsStatus,
+    PcmTransferBenchmarkProbeResult
 } from '../types/diagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
 import type {
@@ -198,6 +201,7 @@ interface LocalAudioPcmDecodeResult {
     probeMs: number
     decodeMs: number
     backgroundPriorityApplied: boolean
+    transportTimings?: LocalAudioPcmTransportTimings
 }
 
 declare global {
@@ -318,7 +322,17 @@ declare global {
                 getBlinkResourceUsage: () => MemoryDiagnosticsBlinkResourceUsageSnapshot
                 clearRendererCache: () => void
                 publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) => void
-                logEvent: (payload: MemoryDiagnosticsEventPayload) => Promise<boolean>
+                logEvent: (
+                    payload: MemoryDiagnosticsEventPayload,
+                    options?: MemoryDiagnosticsLogEventOptions
+                ) => Promise<boolean>
+                benchmarkMainPcmTransfer: (sizeBytes: number) => Promise<PcmTransferBenchmarkProbeResult>
+                benchmarkPreloadPcmTransfer: (sizeBytes: number) => PcmTransferBenchmarkProbeResult
+                openMainPcmStreamBenchmark: (
+                    requestId: number,
+                    sizeBytes: number,
+                    nonce: string
+                ) => boolean
                 onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => () => void
                 onSnapshotRequest: (callback: (request: MemoryDiagnosticsSnapshotRequest) => void) => () => void
             }
@@ -611,6 +625,14 @@ declare global {
                 mtimeMs: number
             } | null>
             decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
+            openLocalAudioPcmStream: (
+                requestId: number,
+                filePath: string,
+                outputSampleRate: number,
+                expectedChannels: number | null,
+                priority: 'interactive' | 'background',
+                nonce: string
+            ) => boolean
             decodeLocalAudioToPcm: (
                 requestId: number,
                 filePath: string,

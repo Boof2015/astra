@@ -1,8 +1,40 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { AudioEngine, SupersededAudioLoadError } from './AudioEngine.ts'
+import { AudioEngine, SupersededAudioLoadError, type AudioLoadTimings } from './AudioEngine.ts'
 import type { NativeAudioEvent, NativeAudioPlaybackSnapshot } from '../../types/nativeAudio.ts'
 import type { Track } from '../types/audio.ts'
+import type { PcmTransportTimings } from './pcmTransportTimings.ts'
+import {
+  LocalPcmStreamCancelledError,
+  LocalPcmStreamDecodeError,
+  LocalPcmStreamTransportError,
+  type LocalPcmStreamClient,
+  type LocalPcmStreamDecodeRequest,
+  type LocalPcmStreamDecodeResult,
+} from './localPcmStreamClient.ts'
+
+interface Deferred<T> {
+  promise: Promise<T>
+  resolve: (value: T | PromiseLike<T>) => void
+  reject: (reason?: unknown) => void
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: Deferred<T>['resolve']
+  let reject!: Deferred<T>['reject']
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+type PcmRendererDeliveryTiming = {
+  decodeRequestId: number
+  rendererBridgeCallMs: number
+  deliveredAt: number
+  pipelineStartedAt: number
+}
 
 type AudioEngineInternals = {
   playbackOutputMode: 'standard' | 'exclusive' | 'bitperfect'
@@ -19,6 +51,7 @@ type AudioEngineInternals = {
   prebufferGeneration: number
   parallaxHostPublishGeneration: number
   nextBuffer: AudioBuffer | null
+  localPcmStreamClient?: LocalPcmStreamClient
   activePrebufferPcmDecodeRequestId: number | null
   activePrebufferPcmDecodeTrackPath: string | null
   handleNativeAudioEvent: (event: NativeAudioEvent) => void
@@ -42,12 +75,25 @@ type AudioEngineInternals = {
     pcm: { interleavedPcm: ArrayBuffer },
     options: { trackPath?: string | null },
     generation: number,
+    delivery?: PcmRendererDeliveryTiming,
   ) => Promise<void>
   commitNextPcmBuffer: (
     pcm: { interleavedPcm: ArrayBuffer },
     options: { trackPath?: string | null },
     generation: number,
+    delivery?: PcmRendererDeliveryTiming,
   ) => Promise<void>
+  buildPcmLoadTimings: (
+    pcm: ReturnType<typeof makeLocalPcmResult>,
+    installed: {
+      validPcmBytes: number
+      backingBufferBytes: number
+      webAudioBufferAllocationMs: number
+      pcmDeinterleaveMs: number
+    },
+    loudnessMs: number,
+    delivery?: PcmRendererDeliveryTiming,
+  ) => AudioLoadTimings
 }
 
 function makeLocalPcmTrack(id: string): Track {
@@ -64,7 +110,31 @@ function makeLocalPcmTrack(id: string): Track {
   }
 }
 
-function makeLocalPcmResult(requestId: number, left = 0.25): {
+function makeTransportTimings(
+  decodeRequestId: number,
+  overrides: Partial<PcmTransportTimings> = {},
+): PcmTransportTimings {
+  return {
+    decodeRequestId,
+    validPcmBytes: 2 * Float32Array.BYTES_PER_ELEMENT,
+    backingBufferBytes: 2 * Float32Array.BYTES_PER_ELEMENT,
+    allocationGrowthCount: 2,
+    mainHandlerMs: 120,
+    binaryResolutionMs: 3,
+    probeMs: 12,
+    ffmpegMs: 90,
+    allocationMs: 4,
+    payloadFinalizationMs: 6,
+    preloadInvokeMs: 155,
+    ...overrides,
+  }
+}
+
+function makeLocalPcmResult(
+  requestId: number,
+  left = 0.25,
+  transportTimings?: PcmTransportTimings,
+): {
   requestId: number
   sampleRate: number
   channels: number
@@ -74,6 +144,7 @@ function makeLocalPcmResult(requestId: number, left = 0.25): {
   probeMs: number
   decodeMs: number
   backgroundPriorityApplied: boolean
+  transportTimings?: PcmTransportTimings
 } {
   return {
     requestId,
@@ -85,8 +156,96 @@ function makeLocalPcmResult(requestId: number, left = 0.25): {
     probeMs: 2,
     decodeMs: 10,
     backgroundPriorityApplied: false,
+    ...(transportTimings ? { transportTimings } : {}),
   }
 }
+
+function makeStreamPcmResult(requestId: number, left = 0.25): LocalPcmStreamDecodeResult {
+  return {
+    ...makeLocalPcmResult(requestId, left),
+    transportTimings: {
+      decodeRequestId: requestId,
+      validPcmBytes: 2 * Float32Array.BYTES_PER_ELEMENT,
+      backingBufferBytes: 2 * Float32Array.BYTES_PER_ELEMENT,
+      allocationGrowthCount: 0,
+      transportRoute: 'message_port_stream',
+      mainHandlerMs: 30,
+      binaryResolutionMs: 1,
+      probeMs: 4,
+      ffmpegMs: 20,
+      allocationMs: 2,
+      initialAllocationMs: 2,
+      growthAllocationMs: 0,
+      payloadFinalizationMs: 0,
+      preloadInvokeMs: 0,
+      streamChunkCount: 1,
+      streamDispatchCopyMs: 1,
+      streamDispatchPostMs: 1,
+      streamTailMs: 2,
+      rendererPcmAssemblyAllocationMs: 1,
+      rendererPcmAssemblyCopyMs: 1,
+      rendererPortRequestMs: 35,
+    },
+  }
+}
+
+function makePcmStreamClient(
+  decode: (request: LocalPcmStreamDecodeRequest) => Promise<LocalPcmStreamDecodeResult>,
+  cancel: (requestId: number) => boolean = () => false,
+): LocalPcmStreamClient {
+  return {
+    decode,
+    cancel,
+    dispose: () => undefined,
+    hasPending: () => false,
+    get pendingCount() {
+      return 0
+    },
+  }
+}
+
+test('Standard PCM timings keep allocation, deinterleave, loudness, and transport phases distinct', () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  const requestId = 23
+  const pcm = Object.freeze(makeLocalPcmResult(
+    requestId,
+    0.25,
+    Object.freeze(makeTransportTimings(requestId, {
+      validPcmBytes: 8,
+      backingBufferBytes: 16,
+      initialAllocationMs: 3,
+      growthAllocationMs: 1,
+    })),
+  ))
+
+  const timings = internals.buildPcmLoadTimings(pcm, {
+    validPcmBytes: 8,
+    backingBufferBytes: 16,
+    webAudioBufferAllocationMs: 7,
+    pcmDeinterleaveMs: 11,
+  }, 13, {
+    decodeRequestId: requestId,
+    rendererBridgeCallMs: 181,
+    deliveredAt: 500,
+    pipelineStartedAt: 300,
+  })
+
+  assert.equal(timings.decodeRequestId, requestId)
+  assert.equal(timings.validPcmBytes, 8)
+  assert.equal(timings.backingBufferBytes, 16)
+  assert.equal(timings.webAudioBufferAllocationMs, 7)
+  assert.equal(timings.pcmDeinterleaveMs, 11)
+  assert.equal(timings.pcmAllocationMs, 4)
+  assert.equal(timings.initialPcmAllocationMs, 3)
+  assert.equal(timings.growthPcmAllocationMs, 1)
+  assert.equal(timings.loudnessMs, 13)
+  assert.equal(timings.analysisMs, 13)
+  assert.equal(timings.decodeWorkMs, 132)
+  assert.equal(timings.decodeMs, timings.decodeWorkMs)
+  assert.equal(timings.electronIpcResidualMs, 35)
+  assert.equal(timings.contextBridgeResidualMs, 26)
+})
 
 test('polled native lifecycle events cannot override an authoritative load or device command', () => {
   const engine = new AudioEngine()
@@ -426,6 +585,329 @@ test('pending or failed Standard PCM decode leaves live playback, Parallax, and 
   }
 })
 
+test('Standard PCM keeps the legacy invoke route unchanged when stream setup is unavailable', async () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const calls: unknown[][] = []
+  const committedPaths: string[] = []
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      electronAPI: {
+        decodeLocalAudioToPcm: async (...args: unknown[]) => {
+          calls.push(args)
+          return makeLocalPcmResult(args[0] as number)
+        },
+        cancelLocalAudioDecode: async () => undefined,
+      },
+    },
+  })
+  internals.context = { sampleRate: 48_000 } as AudioContext
+  internals.initContext = async () => undefined
+  internals.loadPcmDataForOperation = async (_pcm, options) => {
+    committedPaths.push(options.trackPath ?? '')
+  }
+  const track = makeLocalPcmTrack('legacy-only')
+
+  try {
+    assert.equal(await engine.loadStandardTrackFromPath(track), 'loaded')
+    assert.deepEqual(calls, [[1, track.path, 48_000, 2, 'interactive']])
+    assert.deepEqual(committedPaths, [track.path])
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
+})
+
+test('Standard PCM falls back to legacy invoke exactly once when the stream handshake fails', async () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const streamRequests: LocalPcmStreamDecodeRequest[] = []
+  const legacyCalls: unknown[][] = []
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      electronAPI: {
+        openLocalAudioPcmStream: () => true,
+        decodeLocalAudioToPcm: async (...args: unknown[]) => {
+          legacyCalls.push(args)
+          return makeLocalPcmResult(args[0] as number)
+        },
+        cancelLocalAudioDecode: async () => undefined,
+      },
+    },
+  })
+  internals.context = { sampleRate: 48_000 } as AudioContext
+  internals.initContext = async () => undefined
+  internals.localPcmStreamClient = makePcmStreamClient(async (request) => {
+    streamRequests.push(request)
+    throw new LocalPcmStreamTransportError('open_rejected', 'test handshake failure')
+  })
+  internals.loadPcmDataForOperation = async () => undefined
+  const track = makeLocalPcmTrack('stream-handshake-fallback')
+
+  try {
+    assert.equal(await engine.loadStandardTrackFromPath(track), 'loaded')
+    assert.deepEqual(streamRequests, [{
+      requestId: 1,
+      filePath: track.path,
+      outputSampleRate: 48_000,
+      expectedChannels: 2,
+      priority: 'interactive',
+    }])
+    assert.deepEqual(legacyCalls, [[1, track.path, 48_000, 2, 'interactive']])
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
+})
+
+test('Standard PCM stream success preserves request correlation and skips legacy invoke', async () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const requests: LocalPcmStreamDecodeRequest[] = []
+  const committed: Array<{
+    pcm: { interleavedPcm: ArrayBuffer; transportTimings?: PcmTransportTimings }
+    path: string
+    delivery?: PcmRendererDeliveryTiming
+  }> = []
+  let legacyCalls = 0
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      electronAPI: {
+        openLocalAudioPcmStream: () => true,
+        decodeLocalAudioToPcm: async () => {
+          legacyCalls += 1
+          return null
+        },
+        cancelLocalAudioDecode: async () => undefined,
+      },
+    },
+  })
+  internals.context = { sampleRate: 48_000 } as AudioContext
+  internals.initContext = async () => undefined
+  internals.localPcmStreamClient = makePcmStreamClient(async (request) => {
+    requests.push(request)
+    return makeStreamPcmResult(request.requestId, 0.4)
+  })
+  internals.loadPcmDataForOperation = async (pcm, options, _generation, delivery) => {
+    committed.push({
+      pcm: pcm as { interleavedPcm: ArrayBuffer; transportTimings?: PcmTransportTimings },
+      path: options.trackPath ?? '',
+      delivery,
+    })
+  }
+  const track = makeLocalPcmTrack('stream-success')
+
+  try {
+    assert.equal(await engine.loadStandardTrackFromPath(track), 'loaded')
+    assert.equal(legacyCalls, 0)
+    assert.deepEqual(requests, [{
+      requestId: 1,
+      filePath: track.path,
+      outputSampleRate: 48_000,
+      expectedChannels: 2,
+      priority: 'interactive',
+    }])
+    assert.equal(committed.length, 1)
+    assert.equal(committed[0]?.path, track.path)
+    assert.equal(committed[0]?.delivery?.decodeRequestId, 1)
+    assert.equal(committed[0]?.pcm.transportTimings?.decodeRequestId, 1)
+    assert.equal(committed[0]?.pcm.transportTimings?.transportRoute, 'message_port_stream')
+    assert.deepEqual(
+      Array.from(new Float32Array(committed[0]?.pcm.interleavedPcm)),
+      Array.from(Float32Array.from([0.4, -0.4])),
+    )
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
+})
+
+test('a genuine streamed PCM decode error does not retry native decode through invoke', async () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  let legacyCalls = 0
+  let commitCalls = 0
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      electronAPI: {
+        openLocalAudioPcmStream: () => true,
+        decodeLocalAudioToPcm: async () => {
+          legacyCalls += 1
+          return null
+        },
+        cancelLocalAudioDecode: async () => undefined,
+      },
+    },
+  })
+  internals.context = { sampleRate: 48_000 } as AudioContext
+  internals.initContext = async () => undefined
+  internals.localPcmStreamClient = makePcmStreamClient(async () => {
+    throw new LocalPcmStreamDecodeError('PCM_DECODE_FAILED', 'test decode failure')
+  })
+  internals.loadPcmDataForOperation = async () => {
+    commitCalls += 1
+  }
+
+  try {
+    assert.equal(await engine.loadStandardTrackFromPath(makeLocalPcmTrack('stream-decode-error')), 'failed')
+    assert.equal(legacyCalls, 0)
+    assert.equal(commitCalls, 0)
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
+})
+
+test('superseding a streamed PCM request cleans it up immediately and ignores late delivery', async () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const pending = createDeferred<LocalPcmStreamDecodeResult>()
+  const decodeStarted = createDeferred<number>()
+  const clientCancelled: number[] = []
+  const mainCancelled: number[] = []
+  let commitCalls = 0
+  let pendingRequestId: number | null = null
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      electronAPI: {
+        openLocalAudioPcmStream: () => true,
+        decodeLocalAudioToPcm: async () => {
+          throw new Error('legacy invoke must not run for user cancellation')
+        },
+        cancelLocalAudioDecode: async (requestId: number) => {
+          mainCancelled.push(requestId)
+        },
+      },
+    },
+  })
+  internals.context = { sampleRate: 48_000 } as AudioContext
+  internals.initContext = async () => undefined
+  internals.localPcmStreamClient = makePcmStreamClient(
+    async (request) => {
+      pendingRequestId = request.requestId
+      decodeStarted.resolve(request.requestId)
+      return pending.promise
+    },
+    (requestId) => {
+      clientCancelled.push(requestId)
+      pending.reject(new LocalPcmStreamCancelledError())
+      return true
+    },
+  )
+  internals.loadPcmDataForOperation = async () => {
+    commitCalls += 1
+  }
+
+  try {
+    const load = engine.loadStandardTrackFromPath(makeLocalPcmTrack('stream-cancelled'))
+    const requestId = await decodeStarted.promise
+    engine.supersedeCurrentLoadPreservingPrebuffer()
+    pending.resolve(makeStreamPcmResult(requestId, 0.9))
+
+    assert.equal(await load, 'cancelled')
+    await Promise.resolve()
+    assert.equal(pendingRequestId, requestId)
+    assert.deepEqual(clientCancelled, [requestId])
+    assert.deepEqual(mainCancelled, [requestId])
+    assert.equal(commitCalls, 0)
+  } finally {
+    pending.reject(new LocalPcmStreamCancelledError('test cleanup'))
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
+})
+
+test('concurrent current and prebuffer PCM streams keep request results isolated', async () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const pending = new Map<number, Deferred<LocalPcmStreamDecodeResult>>()
+  const requests: LocalPcmStreamDecodeRequest[] = []
+  const currentCommits: Array<{ path: string; requestId: number | undefined }> = []
+  const prebufferCommits: Array<{ path: string; requestId: number | undefined }> = []
+  const mainCancelled: number[] = []
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      electronAPI: {
+        openLocalAudioPcmStream: () => true,
+        decodeLocalAudioToPcm: async () => {
+          throw new Error('legacy invoke must not run for active streams')
+        },
+        cancelLocalAudioDecode: async (requestId: number) => {
+          mainCancelled.push(requestId)
+        },
+      },
+    },
+  })
+  internals.context = { sampleRate: 48_000 } as AudioContext
+  internals.initContext = async () => undefined
+  internals.localPcmStreamClient = makePcmStreamClient(async (request) => {
+    requests.push(request)
+    const deferred = createDeferred<LocalPcmStreamDecodeResult>()
+    pending.set(request.requestId, deferred)
+    return deferred.promise
+  })
+  internals.loadPcmDataForOperation = async (pcm, options, _generation, delivery) => {
+    currentCommits.push({
+      path: options.trackPath ?? '',
+      requestId: delivery?.decodeRequestId ?? (pcm as { requestId?: number }).requestId,
+    })
+  }
+  internals.commitNextPcmBuffer = async (pcm, options, _generation, delivery) => {
+    prebufferCommits.push({
+      path: options.trackPath ?? '',
+      requestId: delivery?.decodeRequestId ?? (pcm as { requestId?: number }).requestId,
+    })
+  }
+  const currentTrack = makeLocalPcmTrack('stream-current')
+  const nextTrack = makeLocalPcmTrack('stream-prebuffer')
+
+  try {
+    const currentLoad = engine.loadStandardTrackFromPath(currentTrack)
+    const nextLoad = engine.preBufferNextStandardTrackFromPath(nextTrack)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    assert.equal(requests.length, 2)
+    const currentRequest = requests.find((request) => request.filePath === currentTrack.path)
+    const prebufferRequest = requests.find((request) => request.filePath === nextTrack.path)
+    assert.ok(currentRequest)
+    assert.ok(prebufferRequest)
+    assert.notEqual(currentRequest.requestId, prebufferRequest.requestId)
+    assert.equal(currentRequest.priority, 'interactive')
+    assert.equal(prebufferRequest.priority, 'background')
+
+    pending.get(prebufferRequest.requestId)?.resolve(
+      makeStreamPcmResult(prebufferRequest.requestId, 0.2),
+    )
+    assert.equal(await nextLoad, 'loaded')
+    pending.get(currentRequest.requestId)?.resolve(
+      makeStreamPcmResult(currentRequest.requestId, 0.7),
+    )
+    assert.equal(await currentLoad, 'loaded')
+
+    assert.deepEqual(prebufferCommits, [{ path: nextTrack.path, requestId: prebufferRequest.requestId }])
+    assert.deepEqual(currentCommits, [{ path: currentTrack.path, requestId: currentRequest.requestId }])
+    assert.deepEqual(mainCancelled, [])
+  } finally {
+    for (const [requestId, deferred] of pending) {
+      deferred.resolve(makeStreamPcmResult(requestId))
+    }
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
+})
+
 test('Standard PCM latest-wins cancels stale decode without committing until the winner is ready', async () => {
   const engine = new AudioEngine()
   const internals = engine as unknown as AudioEngineInternals
@@ -435,6 +917,7 @@ test('Standard PCM latest-wins cancels stale decode without committing until the
   }>()
   const cancelled: number[] = []
   const committedPaths: string[] = []
+  const committedDeliveries: PcmRendererDeliveryTiming[] = []
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
@@ -454,12 +937,14 @@ test('Standard PCM latest-wins cancels stale decode without committing until the
   internals.loadGeneration = 41
   internals.prebufferGeneration = 53
   internals.parallaxHostPublishGeneration = 67
-  internals.loadPcmDataForOperation = async (pcm, options, generation) => {
+  internals.loadPcmDataForOperation = async (pcm, options, generation, delivery) => {
     assert.equal(generation, internals.loadGeneration)
     // Real contextBridge return values may be frozen. The engine must pass an
     // owned wrapper into the commit path so releasing the IPC buffer is safe.
     pcm.interleavedPcm = new ArrayBuffer(0)
     committedPaths.push(options.trackPath ?? '')
+    assert.ok(delivery)
+    committedDeliveries.push(delivery)
   }
 
   const firstTrack = makeLocalPcmTrack('first')
@@ -485,9 +970,15 @@ test('Standard PCM latest-wins cancels stale decode without committing until the
     assert.equal(await firstLoad, 'cancelled')
     assert.deepEqual(committedPaths, [])
 
-    pending.get(secondRequestId)?.resolve(Object.freeze(makeLocalPcmResult(secondRequestId, 0.2)))
+    const frozenTransport = Object.freeze(makeTransportTimings(secondRequestId))
+    pending.get(secondRequestId)?.resolve(Object.freeze(
+      makeLocalPcmResult(secondRequestId, 0.2, frozenTransport),
+    ))
     assert.equal(await secondLoad, 'loaded')
     assert.deepEqual(committedPaths, [secondTrack.path])
+    assert.equal(committedDeliveries[0]?.decodeRequestId, secondRequestId)
+    assert.ok(committedDeliveries[0]?.rendererBridgeCallMs >= 0)
+    assert.ok(committedDeliveries[0]?.deliveredAt >= committedDeliveries[0]?.pipelineStartedAt)
     assert.equal(internals.loadGeneration, 42)
     assert.equal(internals.prebufferGeneration, 54)
     assert.equal(internals.parallaxHostPublishGeneration, 68)

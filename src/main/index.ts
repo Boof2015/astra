@@ -150,6 +150,14 @@ import {
   normalizeArtistNames
 } from '../shared/library/artistCredits'
 import {
+  LOCAL_PCM_STREAM_CHUNK_BYTES,
+  LOCAL_PCM_STREAM_MAX_CREDITS,
+  LOCAL_PCM_STREAM_MAX_BYTES,
+  LOCAL_PCM_STREAM_VERSION,
+  isLocalPcmStreamRendererMessage,
+  validateLocalPcmStreamOpenRequest
+} from '../shared/localPcmStream'
+import {
   LYRICS_POPOUT_WINDOW_MIN_HEIGHT,
   LYRICS_POPOUT_WINDOW_MIN_WIDTH,
   type LyricsPopoutCommand,
@@ -242,10 +250,23 @@ import type {
   SubsonicStatusSnapshot
 } from '../types/subsonic'
 import type {
+  LocalAudioPcmTransportTimings,
   MemoryDiagnosticsEventPayload,
   MemoryDiagnosticsRendererSnapshot,
-  MemoryDiagnosticsSnapshotRequest
+  MemoryDiagnosticsSnapshotRequest,
+  PcmTransferBenchmarkProbeResult
 } from '../types/diagnostics'
+import {
+  PCM_TRANSFER_BENCHMARK_STREAM_IPC_CHANNEL,
+  PCM_TRANSFER_BENCHMARK_STREAM_VERSION,
+  createPcmTransferBenchmarkProbe,
+  validatePcmTransferBenchmarkStreamOpenRequest
+} from '../shared/pcmTransferBenchmark'
+import { normalizeMemoryDiagnosticsLogEventOptions } from './diagnosticsIpc'
+import {
+  PcmTransferBenchmarkStreamCoordinator,
+  type PcmTransferBenchmarkStreamPort
+} from './pcmTransferBenchmarkStream'
 import type { AppBuildInfo } from '../types/appBuildInfo'
 import type {
   IntegrityDuplicateGroup,
@@ -5558,13 +5579,102 @@ ipcMain.handle('diagnostics:captureMemoryBundle', async (_event, rawTag: unknown
   return memoryDiagnosticsService.captureMemoryBundle(tag)
 })
 
-ipcMain.handle('diagnostics:logEvent', async (_event, rawPayload: unknown) => {
+ipcMain.handle('diagnostics:logEvent', async (
+  _event,
+  rawPayload: unknown,
+  rawOptions?: unknown
+) => {
   const payload = normalizeMemoryDiagnosticsEventPayload(rawPayload)
-  if (!payload || !memoryDiagnosticsService) {
+  const options = normalizeMemoryDiagnosticsLogEventOptions(rawOptions)
+  if (!payload || !options || !memoryDiagnosticsService) {
     return false
   }
-  await memoryDiagnosticsService.logEvent(payload)
+  await memoryDiagnosticsService.logEvent(payload, options)
   return true
+})
+
+ipcMain.handle('diagnostics:benchmarkMainPcmTransfer', (
+  _event,
+  rawSizeBytes: unknown
+): PcmTransferBenchmarkProbeResult => {
+  if (!memoryDiagnosticsService?.getStatus().enabled) {
+    throw new Error('Memory diagnostics logging must be enabled before running the PCM transfer benchmark.')
+  }
+  const handlerStartedAtMs = mainDiagnosticNow()
+  const result = createPcmTransferBenchmarkProbe(rawSizeBytes, mainDiagnosticNow)
+  return {
+    ...result,
+    mainHandlerMs: roundMainDiagnosticMs(mainDiagnosticNow() - handlerStartedAtMs)
+  }
+})
+
+const pcmTransferBenchmarkStreamCoordinator = new PcmTransferBenchmarkStreamCoordinator()
+
+ipcMain.on(PCM_TRANSFER_BENCHMARK_STREAM_IPC_CHANNEL, (event, rawRequest: unknown) => {
+  const handlerStartedAtMs = mainDiagnosticNow()
+  const ports = event.ports
+  const port = ports.length === 1 ? ports[0] : null
+  for (let index = port ? 1 : 0; index < ports.length; index += 1) {
+    try { ports[index].close() } catch { /* renderer teardown race */ }
+  }
+  if (!port) return
+
+  if (!validatePcmTransferBenchmarkStreamOpenRequest(rawRequest)) {
+    try { port.close() } catch { /* renderer teardown race */ }
+    return
+  }
+
+  const senderIsMainFrame = Boolean(
+    mainWindow
+    && !mainWindow.isDestroyed()
+    && event.sender === mainWindow.webContents
+    && event.senderFrame === mainWindow.webContents.mainFrame
+  )
+  const diagnosticsEnabled = Boolean(memoryDiagnosticsService?.getStatus().enabled)
+  if (!senderIsMainFrame || !diagnosticsEnabled) {
+    try {
+      port.postMessage({
+        type: 'error',
+        version: PCM_TRANSFER_BENCHMARK_STREAM_VERSION,
+        requestId: rawRequest.requestId,
+        nonce: rawRequest.nonce,
+        kind: 'transport',
+        code: senderIsMainFrame
+          ? 'PCM_BENCHMARK_DIAGNOSTICS_DISABLED'
+          : 'PCM_BENCHMARK_STREAM_REQUEST_REJECTED',
+        message: senderIsMainFrame
+          ? 'Memory diagnostics logging must be enabled before running the PCM transfer benchmark.'
+          : 'PCM transfer benchmark stream request was rejected.'
+      })
+    } catch {
+      // The requester may already have torn down its half of the port.
+    }
+    try { port.close() } catch { /* renderer teardown race */ }
+    return
+  }
+
+  const streamPort: PcmTransferBenchmarkStreamPort = {
+    postMessage: (message) => port.postMessage(message),
+    start: () => port.start(),
+    close: () => port.close(),
+    subscribe: (onMessage, onClose) => {
+      const handleMessage = (messageEvent: Electron.MessageEvent): void => {
+        onMessage(messageEvent.data)
+      }
+      port.on('message', handleMessage)
+      port.on('close', onClose)
+      return () => {
+        try {
+          port.off('message', handleMessage)
+          port.off('close', onClose)
+        } catch {
+          // Listener teardown can race with renderer navigation.
+        }
+      }
+    }
+  }
+
+  pcmTransferBenchmarkStreamCoordinator.start(streamPort, rawRequest, handlerStartedAtMs)
 })
 
 ipcMain.on('diagnostics:publishRendererSnapshot', (_event, requestId: unknown, rawSnapshot: unknown) => {
@@ -6877,7 +6987,107 @@ ipcMain.handle('audio:decodeLocalAudioToPcm', async (
   expectedChannels?: number | null,
   priority?: 'interactive' | 'background'
 ) => {
-  return decodeLocalAudioToPcm(event.sender, requestId, filePath, outputSampleRate, expectedChannels, priority)
+  const handlerStartedAtMs = mainDiagnosticNow()
+  return decodeLocalAudioToPcm(
+    event.sender,
+    requestId,
+    filePath,
+    outputSampleRate,
+    expectedChannels,
+    priority,
+    handlerStartedAtMs
+  )
+})
+
+// Large Standard PCM results can be delivered as a bounded response stream.
+// The renderer still waits for the complete buffer before touching playback;
+// only the transport overlaps with FFmpeg. The invoke handler above remains
+// the compatibility fallback for setup/protocol failures.
+ipcMain.on('audio:decodeLocalAudioToPcmStream', (event, requestValue: unknown) => {
+  const ports = event.ports
+  const port = ports.length === 1 ? ports[0] : null
+  for (let index = port ? 1 : 0; index < ports.length; index += 1) {
+    try { ports[index].close() } catch { /* renderer teardown race */ }
+  }
+  if (!port) return
+
+  const request = requestValue && typeof requestValue === 'object'
+    ? requestValue as Record<string, unknown>
+    : null
+  const requestId = Number(request?.requestId)
+  const nonce = request?.nonce
+  const senderIsMainFrame = Boolean(
+    mainWindow
+    && !mainWindow.isDestroyed()
+    && event.sender === mainWindow.webContents
+    && event.senderFrame === mainWindow.webContents.mainFrame
+  )
+  const requestIsValid = validateLocalPcmStreamOpenRequest(request)
+
+  if (
+    !senderIsMainFrame
+    || request?.version !== LOCAL_PCM_STREAM_PROTOCOL_VERSION
+    || !requestIsValid
+  ) {
+    try {
+      port.postMessage({
+        type: 'error',
+        version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+        requestId: Number.isSafeInteger(requestId) ? requestId : -1,
+        nonce: typeof nonce === 'string' ? nonce : '',
+        kind: 'transport',
+        code: 'PCM_STREAM_REQUEST_REJECTED',
+        message: 'PCM stream request was rejected.'
+      })
+    } catch {
+      // The requester may already have torn down its half of the port.
+    }
+    try { port.close() } catch { /* renderer teardown race */ }
+    return
+  }
+
+  // Narrowed by the shared request validator above.
+  const validNonce = nonce as string
+
+  try {
+    normalizeLocalPcmDecodeRequest(
+      requestId,
+      request?.filePath,
+      request?.outputSampleRate,
+      request?.expectedChannels,
+      request?.priority
+    )
+  } catch (error) {
+    try {
+      port.postMessage({
+        type: 'error',
+        version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+        requestId,
+        nonce: validNonce,
+        kind: 'decode',
+        code: 'PCM_STREAM_REQUEST_INVALID',
+        message: error instanceof Error ? error.message : 'PCM stream request was invalid.'
+      })
+    } catch {
+      // The requester may already have torn down its half of the port.
+    }
+    try { port.close() } catch { /* renderer teardown race */ }
+    return
+  }
+
+  const handlerStartedAtMs = mainDiagnosticNow()
+  void decodeLocalAudioToPcm(
+    event.sender,
+    requestId,
+    request?.filePath,
+    request?.outputSampleRate,
+    request?.expectedChannels,
+    request?.priority,
+    handlerStartedAtMs,
+    { port, nonce: validNonce }
+  ).catch(() => {
+    // The stream protocol reports decode/transport failure before settlement.
+  })
 })
 
 ipcMain.handle('audio:cancelLocalAudioDecode', async (event, requestId: number) => {
@@ -9126,8 +9336,9 @@ const binaryPathCache: Record<'ffmpeg' | 'ffprobe', string | null | undefined> =
   ffprobe: undefined
 }
 
-const LOCAL_PCM_DECODE_MAX_BYTES = 192 * 1024 * 1024
+const LOCAL_PCM_DECODE_MAX_BYTES = LOCAL_PCM_STREAM_MAX_BYTES
 const LOCAL_PCM_DECODE_TIMEOUT_MS = 180_000
+const LOCAL_PCM_STREAM_PROTOCOL_VERSION = LOCAL_PCM_STREAM_VERSION
 
 interface LocalPcmDecodeResult {
   requestId: number
@@ -9139,6 +9350,7 @@ interface LocalPcmDecodeResult {
   probeMs: number
   decodeMs: number
   backgroundPriorityApplied: boolean
+  transportTimings: LocalAudioPcmTransportTimings
 }
 
 interface LocalPcmDecodeSession {
@@ -9152,10 +9364,18 @@ interface LocalPcmDecodeSession {
   initialPriority: 'interactive' | 'background'
   priority: 'interactive' | 'background'
   backgroundPriorityApplied: boolean
+  handlerStartedAtMs: number
+  binaryResolutionMs: number
   probeAbortController: AbortController | null
   probeMs: number
   ffmpeg: ChildProcessWithoutNullStreams | null
   ffmpegStartedAtMs: number | null
+  ffmpegCompletedAtMs: number | null
+  decodeCompletedAtMs: number | null
+  allocationMs: number
+  initialAllocationMs: number
+  growthAllocationMs: number
+  allocationGrowthCount: number
   outputBuffer: Buffer | null
   totalBytes: number
   stderrChunks: string[]
@@ -9163,8 +9383,30 @@ interface LocalPcmDecodeSession {
   cancelled: boolean
   decodeTimeout: NodeJS.Timeout | null
   releaseSenderHooks: (() => void) | null
+  stream: LocalPcmStreamState | null
   resolve: (result: LocalPcmDecodeResult | null) => void
   reject: (error: Error) => void
+}
+
+interface LocalPcmStreamPendingSuccess {
+  pcm: Buffer
+  pcmByteLength: number
+}
+
+interface LocalPcmStreamState {
+  port: Electron.MessagePortMain
+  nonce: string
+  ready: boolean
+  credits: number
+  nextChunkOffset: number
+  nextChunkSequence: number
+  nextCreditSequence: number
+  startSent: boolean
+  chunkCount: number
+  dispatchCopyMs: number
+  dispatchPostMs: number
+  pendingSuccess: LocalPcmStreamPendingSuccess | null
+  releasePortHooks: (() => void) | null
 }
 
 const localPcmDecodeSessions = new Map<string, LocalPcmDecodeSession>()
@@ -10630,20 +10872,255 @@ function ensureLocalPcmOutputCapacity(session: LocalPcmDecodeSession, requiredBy
 
   const previousCapacity = current?.byteLength ?? 0
   const grownCapacity = Math.max(requiredBytes, Math.ceil(previousCapacity * 1.5), 64 * 1024)
-  const next = Buffer.allocUnsafe(Math.min(LOCAL_PCM_DECODE_MAX_BYTES, grownCapacity))
-  if (current && session.totalBytes > 0) {
-    current.copy(next, 0, 0, session.totalBytes)
+  const allocationStartedAtMs = mainDiagnosticNow()
+  let next: Buffer | null = null
+  try {
+    next = Buffer.allocUnsafe(Math.min(LOCAL_PCM_DECODE_MAX_BYTES, grownCapacity))
+    if (current && session.totalBytes > 0) {
+      current.copy(next, 0, 0, session.totalBytes)
+    }
+    session.outputBuffer = next
+    session.allocationGrowthCount += 1
+  } finally {
+    const growthAllocationMs = mainDiagnosticNow() - allocationStartedAtMs
+    session.growthAllocationMs += growthAllocationMs
+    session.allocationMs += growthAllocationMs
   }
-  session.outputBuffer = next
+  if (!next) throw new Error('Failed to allocate decoded PCM output capacity.')
+  sendLocalPcmStreamResize(session, next.byteLength)
   return next
+}
+
+type LocalPcmDecodeOutcome =
+  | { type: 'success'; pcm: Buffer; pcmByteLength: number }
+  | { type: 'cancelled' }
+  | { type: 'failed'; error: Error; failureKind?: 'decode' | 'transport' }
+
+function postLocalPcmStreamMessage(
+  session: LocalPcmDecodeSession,
+  message: Record<string, unknown>
+): boolean {
+  const stream = session.stream
+  if (!stream) return false
+  try {
+    stream.port.postMessage(message)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function failLocalPcmStreamProtocol(session: LocalPcmDecodeSession, message: string): void {
+  if (session.settled) return
+  settleLocalPcmDecodeSession(session, {
+    type: 'failed',
+    error: new Error(message),
+    failureKind: 'transport'
+  })
+}
+
+function sendLocalPcmStreamStart(session: LocalPcmDecodeSession): void {
+  const stream = session.stream
+  const output = session.outputBuffer
+  if (!stream || stream.startSent || !output || session.channels < 1) return
+  if (!postLocalPcmStreamMessage(session, {
+    type: 'start',
+    version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+    requestId: session.requestId,
+    nonce: stream.nonce,
+    sampleRate: session.sampleRate,
+    channels: session.channels,
+    backingBufferBytes: output.byteLength
+  })) {
+    failLocalPcmStreamProtocol(session, 'PCM stream closed before decode metadata could be delivered.')
+    return
+  }
+  stream.startSent = true
+}
+
+function sendLocalPcmStreamResize(
+  session: LocalPcmDecodeSession,
+  backingBufferBytes: number
+): void {
+  const stream = session.stream
+  if (!stream || !stream.startSent || session.settled) return
+  if (!postLocalPcmStreamMessage(session, {
+    type: 'resize',
+    version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+    requestId: session.requestId,
+    nonce: stream.nonce,
+    backingBufferBytes
+  })) {
+    failLocalPcmStreamProtocol(session, 'PCM stream closed while its assembly buffer was being resized.')
+  }
+}
+
+function flushLocalPcmStreamChunks(session: LocalPcmDecodeSession): void {
+  const stream = session.stream
+  const output = session.outputBuffer
+  if (
+    session.settled
+    || !stream
+    || !stream.ready
+    || !stream.startSent
+    || !output
+  ) return
+
+  const completedBytes = stream.pendingSuccess?.pcmByteLength ?? null
+  const availableBytes = completedBytes ?? (
+    Math.floor(session.totalBytes / LOCAL_PCM_STREAM_CHUNK_BYTES) * LOCAL_PCM_STREAM_CHUNK_BYTES
+  )
+
+  while (stream.credits > 0 && stream.nextChunkOffset < availableBytes) {
+    const byteOffset = stream.nextChunkOffset
+    const byteEnd = Math.min(byteOffset + LOCAL_PCM_STREAM_CHUNK_BYTES, availableBytes)
+    const copyStartedAtMs = mainDiagnosticNow()
+    const payload = output.buffer.slice(
+      output.byteOffset + byteOffset,
+      output.byteOffset + byteEnd
+    ) as ArrayBuffer
+    stream.dispatchCopyMs += mainDiagnosticNow() - copyStartedAtMs
+
+    const sequence = stream.nextChunkSequence
+    const postStartedAtMs = mainDiagnosticNow()
+    const posted = postLocalPcmStreamMessage(session, {
+      type: 'chunk',
+      version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+      requestId: session.requestId,
+      nonce: stream.nonce,
+      sequence,
+      byteOffset,
+      byteLength: payload.byteLength,
+      payload
+    })
+    stream.dispatchPostMs += mainDiagnosticNow() - postStartedAtMs
+    if (!posted) {
+      failLocalPcmStreamProtocol(session, 'PCM stream closed while decoded audio was being delivered.')
+      return
+    }
+
+    stream.credits -= 1
+    stream.nextChunkOffset = byteEnd
+    stream.nextChunkSequence += 1
+    stream.chunkCount += 1
+  }
+
+  if (
+    stream.pendingSuccess
+    && stream.nextChunkOffset === stream.pendingSuccess.pcmByteLength
+  ) {
+    const outcome = stream.pendingSuccess
+    stream.pendingSuccess = null
+    settleLocalPcmDecodeSession(session, {
+      type: 'success',
+      pcm: outcome.pcm,
+      pcmByteLength: outcome.pcmByteLength
+    })
+  }
+}
+
+function beginLocalPcmStreamDelivery(
+  session: LocalPcmDecodeSession,
+  port: Electron.MessagePortMain,
+  nonce: string
+): void {
+  const stream: LocalPcmStreamState = {
+    port,
+    nonce,
+    ready: false,
+    credits: 0,
+    nextChunkOffset: 0,
+    nextChunkSequence: 0,
+    nextCreditSequence: 0,
+    startSent: false,
+    chunkCount: 0,
+    dispatchCopyMs: 0,
+    dispatchPostMs: 0,
+    pendingSuccess: null,
+    releasePortHooks: null
+  }
+  session.stream = stream
+
+  const handleMessage = (event: Electron.MessageEvent): void => {
+    if (session.settled) return
+    const message = event.data
+    if (
+      !isLocalPcmStreamRendererMessage(message)
+      || message.requestId !== session.requestId
+      || message.nonce !== stream.nonce
+    ) {
+      failLocalPcmStreamProtocol(session, 'PCM stream received an invalid or stale control message.')
+      return
+    }
+
+    if (message.type === 'ready') {
+      if (
+        stream.ready
+        || message.credits !== LOCAL_PCM_STREAM_MAX_CREDITS
+      ) {
+        failLocalPcmStreamProtocol(session, 'PCM stream received invalid initial delivery credits.')
+        return
+      }
+      stream.ready = true
+      stream.credits = LOCAL_PCM_STREAM_MAX_CREDITS
+      flushLocalPcmStreamChunks(session)
+      return
+    }
+
+    if (message.type === 'credit') {
+      if (
+        !stream.ready
+        || message.credits !== 1
+        || message.sequence !== stream.nextCreditSequence
+        || stream.nextCreditSequence >= stream.nextChunkSequence
+        || stream.credits >= LOCAL_PCM_STREAM_MAX_CREDITS
+      ) {
+        failLocalPcmStreamProtocol(session, 'PCM stream received an invalid or duplicate delivery credit.')
+        return
+      }
+      stream.nextCreditSequence += 1
+      stream.credits += 1
+      flushLocalPcmStreamChunks(session)
+      return
+    }
+
+    if (message.type === 'cancel') {
+      settleLocalPcmDecodeSession(session, { type: 'cancelled' })
+      return
+    }
+
+    failLocalPcmStreamProtocol(session, 'PCM stream received an unsupported control message.')
+  }
+  const handleClose = (): void => {
+    if (!session.settled) {
+      settleLocalPcmDecodeSession(session, { type: 'cancelled' })
+    }
+  }
+  port.on('message', handleMessage)
+  port.on('close', handleClose)
+  stream.releasePortHooks = () => {
+    try {
+      port.off('message', handleMessage)
+      port.off('close', handleClose)
+    } catch {
+      // Port cleanup can race with renderer teardown.
+    }
+  }
+  if (!postLocalPcmStreamMessage(session, {
+    type: 'accepted',
+    version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+    requestId: session.requestId,
+    nonce
+  })) {
+    failLocalPcmStreamProtocol(session, 'PCM stream closed before the decode request was accepted.')
+    return
+  }
+  port.start()
 }
 
 function settleLocalPcmDecodeSession(
   session: LocalPcmDecodeSession,
-  outcome:
-    | { type: 'success'; pcm: Buffer; pcmByteLength: number }
-    | { type: 'cancelled' }
-    | { type: 'failed'; error: Error }
+  outcome: LocalPcmDecodeOutcome
 ): void {
   if (session.settled) return
   session.settled = true
@@ -10652,6 +11129,9 @@ function settleLocalPcmDecodeSession(
 
   session.releaseSenderHooks?.()
   session.releaseSenderHooks = null
+  const stream = session.stream
+  stream?.releasePortHooks?.()
+  if (stream) stream.releasePortHooks = null
   if (session.decodeTimeout) {
     clearTimeout(session.decodeTimeout)
     session.decodeTimeout = null
@@ -10678,10 +11158,149 @@ function settleLocalPcmDecodeSession(
   )
     ? new Error('FFmpeg produced invalid or frame-misaligned PCM audio.')
     : null
-  const diagnosticOutcome = successValidationError ? 'failed' : outcome.type
+  let diagnosticOutcome = successValidationError ? 'failed' : outcome.type
+  let streamDeliveryError: Error | null = null
+  const settledAtMs = mainDiagnosticNow()
+  const ffmpegMs = session.ffmpegStartedAtMs === null
+    ? 0
+    : (session.ffmpegCompletedAtMs ?? settledAtMs) - session.ffmpegStartedAtMs
+  let payloadFinalizationMs = 0
+  let mainHandlerMs = (session.decodeCompletedAtMs ?? settledAtMs) - session.handlerStartedAtMs
+  let transportTimings: LocalAudioPcmTransportTimings | null = null
 
-  logMemoryDiagnosticsMainEvent('local_pcm_decode_completed', {
+  if (outcome.type === 'cancelled') {
+    if (stream) {
+      postLocalPcmStreamMessage(session, {
+        type: 'cancelled',
+        version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+        requestId: session.requestId,
+        nonce: stream.nonce
+      })
+    }
+    session.resolve(null)
+  } else if (outcome.type === 'failed') {
+    if (stream) {
+      postLocalPcmStreamMessage(session, {
+        type: 'error',
+        version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+        requestId: session.requestId,
+        nonce: stream.nonce,
+        kind: outcome.failureKind ?? 'decode',
+        code: outcome.failureKind === 'transport'
+          ? 'PCM_STREAM_TRANSPORT_ERROR'
+          : 'PCM_DECODE_FAILED',
+        message: outcome.error.message
+      })
+    }
+    session.reject(outcome.error)
+  } else if (successValidationError) {
+    if (stream) {
+      postLocalPcmStreamMessage(session, {
+        type: 'error',
+        version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+        requestId: session.requestId,
+        nonce: stream.nonce,
+        kind: 'decode',
+        code: 'PCM_DECODE_INVALID',
+        message: successValidationError.message
+      })
+    }
+    session.reject(successValidationError)
+  } else {
+    const payloadFinalizationStartedAtMs = mainDiagnosticNow()
+    let interleavedPcm: ArrayBuffer | null = null
+    if (!stream) {
+      // Preallocation avoids a second full-track Buffer.concat copy. Zero the
+      // unused tail before handing the complete backing buffer to Electron IPC.
+      if (outcome.pcmByteLength < outcome.pcm.byteLength) {
+        outcome.pcm.fill(0, outcome.pcmByteLength)
+      }
+      interleavedPcm = toStandaloneArrayBuffer(outcome.pcm)
+    }
+    payloadFinalizationMs = mainDiagnosticNow() - payloadFinalizationStartedAtMs
+    mainHandlerMs = stream
+      ? (session.decodeCompletedAtMs ?? mainDiagnosticNow()) - session.handlerStartedAtMs
+      : mainDiagnosticNow() - session.handlerStartedAtMs
+
+    transportTimings = {
+      decodeRequestId: session.requestId,
+      validPcmBytes: outcome.pcmByteLength,
+      backingBufferBytes: outcome.pcm.byteLength,
+      allocationGrowthCount: session.allocationGrowthCount,
+      transportRoute: stream ? 'message_port_stream' : 'invoke',
+      mainHandlerMs: roundMainDiagnosticMs(mainHandlerMs),
+      binaryResolutionMs: roundMainDiagnosticMs(session.binaryResolutionMs),
+      probeMs: roundMainDiagnosticMs(session.probeMs),
+      ffmpegMs: roundMainDiagnosticMs(ffmpegMs),
+      allocationMs: roundMainDiagnosticMs(session.allocationMs),
+      initialAllocationMs: roundMainDiagnosticMs(session.initialAllocationMs),
+      growthAllocationMs: roundMainDiagnosticMs(session.growthAllocationMs),
+      payloadFinalizationMs: roundMainDiagnosticMs(payloadFinalizationMs),
+      // Replaced in preload after ipcRenderer.invoke resolves. Keeping the
+      // field present gives renderer consumers one stable timing shape.
+      preloadInvokeMs: 0,
+      ...(stream
+        ? {
+            streamChunkCount: stream.chunkCount,
+            streamDispatchCopyMs: roundMainDiagnosticMs(stream.dispatchCopyMs),
+            streamDispatchPostMs: roundMainDiagnosticMs(stream.dispatchPostMs),
+            streamTailMs: roundMainDiagnosticMs(
+              Math.max(0, mainDiagnosticNow() - (session.decodeCompletedAtMs ?? mainDiagnosticNow()))
+            )
+          }
+        : {})
+    }
+
+    if (stream) {
+      const posted = postLocalPcmStreamMessage(session, {
+        type: 'complete',
+        version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+        requestId: session.requestId,
+        nonce: stream.nonce,
+        frames: outcome.pcmByteLength / frameSizeBytes,
+        pcmByteLength: outcome.pcmByteLength,
+        probeMs: transportTimings.probeMs,
+        decodeMs: transportTimings.ffmpegMs,
+        backgroundPriorityApplied: session.backgroundPriorityApplied,
+        chunkCount: stream.chunkCount,
+        transportTimings
+      })
+      if (posted) session.resolve(null)
+      else {
+        streamDeliveryError = new Error('PCM stream closed before completion metadata was delivered.')
+        diagnosticOutcome = 'failed'
+        session.reject(streamDeliveryError)
+      }
+    } else {
+      session.resolve({
+        requestId: session.requestId,
+        sampleRate: session.sampleRate,
+        channels: session.channels,
+        frames: outcome.pcmByteLength / frameSizeBytes,
+        pcmByteLength: outcome.pcmByteLength,
+        interleavedPcm: interleavedPcm as ArrayBuffer,
+        probeMs: transportTimings.probeMs,
+        decodeMs: transportTimings.ffmpegMs,
+        backgroundPriorityApplied: session.backgroundPriorityApplied,
+        transportTimings
+      })
+    }
+  }
+
+  if (stream) {
+    try {
+      stream.port.close()
+    } catch {
+      // Port teardown can race with renderer teardown.
+    }
+  }
+
+  // Keep diagnostics I/O off the measured decode/return path. A success event
+  // is enqueued only after the payload has been finalized and the handler's
+  // result promise has been resolved.
+  const diagnosticsDetails: Record<string, unknown> = {
     requestId: session.requestId,
+    decodeRequestId: session.requestId,
     trackPath: session.filePath,
     outcome: diagnosticOutcome,
     initialPriority: session.initialPriority,
@@ -10690,39 +11309,35 @@ function settleLocalPcmDecodeSession(
     expectedChannels: session.expectedChannels,
     probedChannels: session.channels > 0 ? session.channels : null,
     pcmByteLength: outcome.type === 'success' && !successValidationError ? outcome.pcmByteLength : null,
+    validPcmBytes: outcome.type === 'success' && !successValidationError ? outcome.pcmByteLength : null,
+    backingBufferBytes: outcome.type === 'success' ? outcome.pcm.byteLength : null,
+    allocationGrowthCount: session.allocationGrowthCount,
+    transportRoute: stream ? 'message_port_stream' : 'invoke',
+    mainHandlerMs: roundMainDiagnosticMs(mainHandlerMs),
+    binaryResolutionMs: roundMainDiagnosticMs(session.binaryResolutionMs),
     probeMs: roundMainDiagnosticMs(session.probeMs),
-    decodeMs: session.ffmpegStartedAtMs === null
-      ? null
-      : roundMainDiagnosticMs(mainDiagnosticNow() - session.ffmpegStartedAtMs),
-    error: successValidationError?.message ?? (outcome.type === 'failed' ? outcome.error.message : null)
+    decodeMs: session.ffmpegStartedAtMs === null ? null : roundMainDiagnosticMs(ffmpegMs),
+    ffmpegMs: session.ffmpegStartedAtMs === null ? null : roundMainDiagnosticMs(ffmpegMs),
+    allocationMs: roundMainDiagnosticMs(session.allocationMs),
+    initialAllocationMs: roundMainDiagnosticMs(session.initialAllocationMs),
+    growthAllocationMs: roundMainDiagnosticMs(session.growthAllocationMs),
+    payloadFinalizationMs: roundMainDiagnosticMs(payloadFinalizationMs),
+    streamChunkCount: stream?.chunkCount ?? null,
+    streamDispatchCopyMs: stream ? roundMainDiagnosticMs(stream.dispatchCopyMs) : null,
+    streamDispatchPostMs: stream ? roundMainDiagnosticMs(stream.dispatchPostMs) : null,
+    streamTailMs: transportTimings?.streamTailMs ?? null,
+    error: streamDeliveryError?.message
+      ?? successValidationError?.message
+      ?? (outcome.type === 'failed' ? outcome.error.message : null)
+  }
+  const diagnosticsImmediate = setImmediate(() => {
+    logMemoryDiagnosticsMainEvent(
+      'local_pcm_decode_completed',
+      diagnosticsDetails,
+      { captureSample: false }
+    )
   })
-
-  if (outcome.type === 'cancelled') {
-    session.resolve(null)
-    return
-  }
-  if (outcome.type === 'failed') {
-    session.reject(outcome.error)
-    return
-  }
-  if (successValidationError) {
-    session.reject(successValidationError)
-    return
-  }
-
-  session.resolve({
-    requestId: session.requestId,
-    sampleRate: session.sampleRate,
-    channels: session.channels,
-    frames: outcome.pcmByteLength / frameSizeBytes,
-    pcmByteLength: outcome.pcmByteLength,
-    interleavedPcm: toStandaloneArrayBuffer(outcome.pcm),
-    probeMs: roundMainDiagnosticMs(session.probeMs),
-    decodeMs: roundMainDiagnosticMs(
-      session.ffmpegStartedAtMs === null ? 0 : mainDiagnosticNow() - session.ffmpegStartedAtMs
-    ),
-    backgroundPriorityApplied: session.backgroundPriorityApplied
-  })
+  diagnosticsImmediate.unref()
 }
 
 async function decodeLocalAudioToPcm(
@@ -10731,7 +11346,9 @@ async function decodeLocalAudioToPcm(
   filePathValue: unknown,
   outputSampleRateValue: unknown,
   expectedChannelsValue?: unknown,
-  priorityValue?: unknown
+  priorityValue?: unknown,
+  handlerStartedAtMs: number = mainDiagnosticNow(),
+  streamDelivery?: { port: Electron.MessagePortMain; nonce: string }
 ): Promise<LocalPcmDecodeResult | null> {
   const request = normalizeLocalPcmDecodeRequest(
     requestIdValue,
@@ -10761,10 +11378,18 @@ async function decodeLocalAudioToPcm(
       initialPriority: request.priority,
       priority: request.priority,
       backgroundPriorityApplied: false,
+      handlerStartedAtMs,
+      binaryResolutionMs: 0,
       probeAbortController: null,
       probeMs: 0,
       ffmpeg: null,
       ffmpegStartedAtMs: null,
+      ffmpegCompletedAtMs: null,
+      decodeCompletedAtMs: null,
+      allocationMs: 0,
+      initialAllocationMs: 0,
+      growthAllocationMs: 0,
+      allocationGrowthCount: 0,
       outputBuffer: null,
       totalBytes: 0,
       stderrChunks: [],
@@ -10772,6 +11397,7 @@ async function decodeLocalAudioToPcm(
       cancelled: false,
       decodeTimeout: null,
       releaseSenderHooks: null,
+      stream: null,
       resolve,
       reject
     }
@@ -10800,19 +11426,42 @@ async function decodeLocalAudioToPcm(
       }
     }
 
+    if (streamDelivery) {
+      try {
+        beginLocalPcmStreamDelivery(session, streamDelivery.port, streamDelivery.nonce)
+      } catch (error) {
+        settleLocalPcmDecodeSession(session, {
+          type: 'failed',
+          error: error instanceof Error
+            ? error
+            : new Error('PCM stream transport could not be initialized.'),
+          failureKind: 'transport'
+        })
+      }
+      if (session.settled) return
+    }
+
     session.decodeTimeout = setTimeout(() => {
+      const deliveryTimedOut = Boolean(session.stream && session.decodeCompletedAtMs !== null)
       settleLocalPcmDecodeSession(session, {
         type: 'failed',
-        error: new Error('Local FFmpeg decode timed out after 180 seconds; falling back to Chromium decoding.')
+        error: new Error(
+          deliveryTimedOut
+            ? 'Local PCM stream delivery timed out after decoding completed.'
+            : 'Local FFmpeg decode timed out after 180 seconds; falling back to Chromium decoding.'
+        ),
+        ...(deliveryTimedOut ? { failureKind: 'transport' as const } : {})
       })
     }, LOCAL_PCM_DECODE_TIMEOUT_MS)
     session.decodeTimeout.unref()
 
     void (async () => {
+      const binaryResolutionStartedAtMs = mainDiagnosticNow()
       const [ffmpegPath, ffprobePath] = await Promise.all([
         resolveBinary('ffmpeg'),
         resolveBinary('ffprobe')
       ])
+      session.binaryResolutionMs = mainDiagnosticNow() - binaryResolutionStartedAtMs
       if (session.settled) return
       if (!ffmpegPath || !ffprobePath) {
         settleLocalPcmDecodeSession(session, {
@@ -10827,11 +11476,20 @@ async function decodeLocalAudioToPcm(
       session.probeMs = mainDiagnosticNow() - probeStartedAtMs
       if (session.settled) return
       session.channels = probe.channels
-      session.outputBuffer = allocateInitialLocalPcmOutput(
-        probe.durationSeconds,
-        session.sampleRate,
-        session.channels
-      )
+      const allocationStartedAtMs = mainDiagnosticNow()
+      try {
+        session.outputBuffer = allocateInitialLocalPcmOutput(
+          probe.durationSeconds,
+          session.sampleRate,
+          session.channels
+        )
+      } finally {
+        const initialAllocationMs = mainDiagnosticNow() - allocationStartedAtMs
+        session.initialAllocationMs += initialAllocationMs
+        session.allocationMs += initialAllocationMs
+      }
+      sendLocalPcmStreamStart(session)
+      if (session.settled) return
       if (
         isDev
         && session.expectedChannels !== null
@@ -10900,8 +11558,10 @@ async function decodeLocalAudioToPcm(
         const nextTotalBytes = session.totalBytes + chunk.byteLength
         try {
           const output = ensureLocalPcmOutputCapacity(session, nextTotalBytes)
+          if (session.settled) return
           chunk.copy(output, session.totalBytes)
           session.totalBytes = nextTotalBytes
+          flushLocalPcmStreamChunks(session)
         } catch (error) {
           settleLocalPcmDecodeSession(session, {
             type: 'failed',
@@ -10929,6 +11589,9 @@ async function decodeLocalAudioToPcm(
 
       ffmpeg.on('close', (code) => {
         if (session.settled) return
+        const ffmpegCompletedAtMs = mainDiagnosticNow()
+        session.ffmpegCompletedAtMs = ffmpegCompletedAtMs
+        session.decodeCompletedAtMs = ffmpegCompletedAtMs
         if (session.cancelled) {
           settleLocalPcmDecodeSession(session, { type: 'cancelled' })
           return
@@ -10951,16 +11614,23 @@ async function decodeLocalAudioToPcm(
           if (!pcm || session.totalBytes === 0) {
             throw new Error('Local FFmpeg decode produced no PCM audio.')
           }
-          // Preallocation avoids a second full-track Buffer.concat copy. Any
-          // small unused tail must be zeroed before its ArrayBuffer crosses IPC.
-          if (session.totalBytes < pcm.byteLength) {
-            pcm.fill(0, session.totalBytes)
+          const frameSizeBytes = session.channels * Float32Array.BYTES_PER_ELEMENT
+          if (session.totalBytes > pcm.byteLength || session.totalBytes % frameSizeBytes !== 0) {
+            throw new Error('FFmpeg produced invalid or frame-misaligned PCM audio.')
           }
-          settleLocalPcmDecodeSession(session, {
-            type: 'success',
-            pcm,
-            pcmByteLength: session.totalBytes
-          })
+          if (session.stream) {
+            session.stream.pendingSuccess = {
+              pcm,
+              pcmByteLength: session.totalBytes
+            }
+            flushLocalPcmStreamChunks(session)
+          } else {
+            settleLocalPcmDecodeSession(session, {
+              type: 'success',
+              pcm,
+              pcmByteLength: session.totalBytes
+            })
+          }
         } catch (error) {
           settleLocalPcmDecodeSession(session, {
             type: 'failed',

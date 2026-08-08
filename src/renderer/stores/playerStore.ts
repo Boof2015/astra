@@ -1,5 +1,9 @@
 import { create } from 'zustand'
-import { audioEngine, isSupersededAudioLoadError } from '../audio/AudioEngine'
+import {
+  audioEngine,
+  isSupersededAudioLoadError,
+  type AudioLoadTimings
+} from '../audio/AudioEngine'
 import type { Track, PlaybackState } from '../types/audio'
 import type { NativeAudioCapabilities, NativeAudioTrackLoadResult } from '../../types/nativeAudio'
 import type { ListeningHistoryStatus } from '../../types/listeningStats'
@@ -77,15 +81,85 @@ interface PlaybackLoadOptions {
 
 interface PlaybackAttemptTimings {
   backend: 'standard' | 'exclusive' | 'bitperfect' | 'remote' | 'local_progressive' | 'prebuffer'
+  loadRequestId?: number | null
+  prebufferRequestId?: number | null
+  decodeRequestId?: number | null
   fileReadMs?: number | null
   decodeMs?: number | null
+  decodeOnlyMs?: number | null
+  standardLoadPipelineMs?: number | null
+  decodeWorkMs?: number | null
   loudnessMs?: number | null
   backendStartMs?: number | null
+  validPcmBytes?: number | null
+  backingBufferBytes?: number | null
+  allocationGrowthCount?: number | null
+  transportRoute?: 'invoke' | 'message_port_stream' | null
+  mainHandlerMs?: number | null
+  binaryResolutionMs?: number | null
+  probeMs?: number | null
+  ffmpegMs?: number | null
+  pcmAllocationMs?: number | null
+  initialPcmAllocationMs?: number | null
+  growthPcmAllocationMs?: number | null
+  payloadFinalizationMs?: number | null
+  preloadInvokeMs?: number | null
+  rendererBridgeCallMs?: number | null
+  electronIpcResidualMs?: number | null
+  contextBridgeResidualMs?: number | null
+  streamChunkCount?: number | null
+  streamDispatchCopyMs?: number | null
+  streamDispatchPostMs?: number | null
+  streamTailMs?: number | null
+  rendererPcmAssemblyAllocationMs?: number | null
+  rendererPcmAssemblyCopyMs?: number | null
+  rendererPortRequestMs?: number | null
+  streamTransportResidualMs?: number | null
+  webAudioBufferAllocationMs?: number | null
+  pcmDeinterleaveMs?: number | null
+  pcmCommitMs?: number | null
+  postDeliveryCommitMs?: number | null
   nativeBinaryResolutionMs?: number | null
   nativeProbeMs?: number | null
   nativeDecodeMs?: number | null
   nativeLoadMs?: number | null
   nativeDeviceStartMs?: number | null
+}
+
+function getStandardPcmTimingDetails(timings: AudioLoadTimings | null | undefined) {
+  const decodeWorkMs = timings?.decodeWorkMs ?? timings?.decodeMs ?? null
+  return {
+    decodeRequestId: timings?.decodeRequestId ?? null,
+    validPcmBytes: timings?.validPcmBytes ?? null,
+    backingBufferBytes: timings?.backingBufferBytes ?? null,
+    allocationGrowthCount: timings?.allocationGrowthCount ?? null,
+    transportRoute: timings?.transportRoute ?? null,
+    mainHandlerMs: timings?.mainHandlerMs ?? null,
+    binaryResolutionMs: timings?.binaryResolutionMs ?? null,
+    probeMs: timings?.probeMs ?? timings?.nativeProbeMs ?? null,
+    ffmpegMs: timings?.ffmpegMs ?? timings?.nativeDecodeMs ?? null,
+    pcmAllocationMs: timings?.pcmAllocationMs ?? null,
+    initialPcmAllocationMs: timings?.initialPcmAllocationMs ?? null,
+    growthPcmAllocationMs: timings?.growthPcmAllocationMs ?? null,
+    payloadFinalizationMs: timings?.payloadFinalizationMs ?? null,
+    preloadInvokeMs: timings?.preloadInvokeMs ?? null,
+    rendererBridgeCallMs: timings?.rendererBridgeCallMs ?? null,
+    electronIpcResidualMs: timings?.electronIpcResidualMs ?? null,
+    contextBridgeResidualMs: timings?.contextBridgeResidualMs ?? null,
+    streamChunkCount: timings?.streamChunkCount ?? null,
+    streamDispatchCopyMs: timings?.streamDispatchCopyMs ?? null,
+    streamDispatchPostMs: timings?.streamDispatchPostMs ?? null,
+    streamTailMs: timings?.streamTailMs ?? null,
+    rendererPcmAssemblyAllocationMs: timings?.rendererPcmAssemblyAllocationMs ?? null,
+    rendererPcmAssemblyCopyMs: timings?.rendererPcmAssemblyCopyMs ?? null,
+    rendererPortRequestMs: timings?.rendererPortRequestMs ?? null,
+    streamTransportResidualMs: timings?.streamTransportResidualMs ?? null,
+    webAudioBufferAllocationMs: timings?.webAudioBufferAllocationMs ?? null,
+    pcmDeinterleaveMs: timings?.pcmDeinterleaveMs ?? null,
+    pcmCommitMs: timings?.pcmCommitMs ?? null,
+    postDeliveryCommitMs: timings?.postDeliveryCommitMs ?? null,
+    decodeWorkMs
+  }
 }
 
 interface PendingTransitionLoad {
@@ -1128,6 +1202,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   let prebufferInFlightRequestId: number | null = null
   let prebufferInFlightTrackPath: string | null = null
   let prebufferInFlightPromise: Promise<void> | null = null
+  let completedPrebufferRequestId: number | null = null
+  let completedPrebufferTrackPath: string | null = null
   let prebufferAttemptedTrackPath: string | null = null
   let prebufferRetryAtLateTrackPath: string | null = null
   let prebufferLateRetryAttemptedTrackPath: string | null = null
@@ -1225,11 +1301,17 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     clearCommittedPlaybackTransition(attempt.transitionIdentity)
     const audioSettings = useAudioSettingsStore.getState()
     const completedAtMs = performance.now()
-    const totalCommandToPlayingMs = outcome === 'loaded' && attempt.playingAtMs !== null
+    const commandToScheduledPlayMs = outcome === 'loaded' && attempt.playingAtMs !== null
       ? Math.max(0, Math.round(attempt.playingAtMs - attempt.commandStartedAtMs))
       : null
+    // Compatibility alias: this endpoint has always meant source scheduled/state
+    // changed, not hardware-audible output.
+    const totalCommandToPlayingMs = commandToScheduledPlayMs
     logMemoryDiagnosticsEvent('playback_attempt_completed', {
       attemptId: attempt.id,
+      loadRequestId: timings.loadRequestId ?? null,
+      prebufferRequestId: timings.prebufferRequestId ?? null,
+      decodeRequestId: timings.decodeRequestId ?? null,
       intent: attempt.intent,
       outcome,
       trackPath: track.path,
@@ -1241,13 +1323,45 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       prebufferStatus: attempt.prebufferStatus,
       fileReadMs: timings.fileReadMs ?? null,
       decodeMs: timings.decodeMs ?? null,
+      decodeOnlyMs: timings.decodeOnlyMs ?? null,
+      standardLoadPipelineMs: timings.standardLoadPipelineMs ?? null,
+      decodeWorkMs: timings.decodeWorkMs ?? null,
       loudnessMs: timings.loudnessMs ?? null,
       backendStartMs: timings.backendStartMs ?? null,
+      validPcmBytes: timings.validPcmBytes ?? null,
+      backingBufferBytes: timings.backingBufferBytes ?? null,
+      allocationGrowthCount: timings.allocationGrowthCount ?? null,
+      transportRoute: timings.transportRoute ?? null,
+      mainHandlerMs: timings.mainHandlerMs ?? null,
+      binaryResolutionMs: timings.binaryResolutionMs ?? null,
+      probeMs: timings.probeMs ?? null,
+      ffmpegMs: timings.ffmpegMs ?? null,
+      pcmAllocationMs: timings.pcmAllocationMs ?? null,
+      initialPcmAllocationMs: timings.initialPcmAllocationMs ?? null,
+      growthPcmAllocationMs: timings.growthPcmAllocationMs ?? null,
+      payloadFinalizationMs: timings.payloadFinalizationMs ?? null,
+      preloadInvokeMs: timings.preloadInvokeMs ?? null,
+      rendererBridgeCallMs: timings.rendererBridgeCallMs ?? null,
+      electronIpcResidualMs: timings.electronIpcResidualMs ?? null,
+      contextBridgeResidualMs: timings.contextBridgeResidualMs ?? null,
+      streamChunkCount: timings.streamChunkCount ?? null,
+      streamDispatchCopyMs: timings.streamDispatchCopyMs ?? null,
+      streamDispatchPostMs: timings.streamDispatchPostMs ?? null,
+      streamTailMs: timings.streamTailMs ?? null,
+      rendererPcmAssemblyAllocationMs: timings.rendererPcmAssemblyAllocationMs ?? null,
+      rendererPcmAssemblyCopyMs: timings.rendererPcmAssemblyCopyMs ?? null,
+      rendererPortRequestMs: timings.rendererPortRequestMs ?? null,
+      streamTransportResidualMs: timings.streamTransportResidualMs ?? null,
+      webAudioBufferAllocationMs: timings.webAudioBufferAllocationMs ?? null,
+      pcmDeinterleaveMs: timings.pcmDeinterleaveMs ?? null,
+      pcmCommitMs: timings.pcmCommitMs ?? null,
+      postDeliveryCommitMs: timings.postDeliveryCommitMs ?? null,
       nativeBinaryResolutionMs: timings.nativeBinaryResolutionMs ?? null,
       nativeProbeMs: timings.nativeProbeMs ?? null,
       nativeDecodeMs: timings.nativeDecodeMs ?? null,
       nativeLoadMs: timings.nativeLoadMs ?? null,
       nativeDeviceStartMs: timings.nativeDeviceStartMs ?? null,
+      commandToScheduledPlayMs,
       totalCommandToPlayingMs,
       totalAttemptMs: Math.max(0, Math.round(completedAtMs - attempt.commandStartedAtMs)),
       configuredOutputDelayMs: audioSettings.effectiveDelayMs
@@ -1258,12 +1372,34 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       outcome,
       trackPath: track.path,
       backend: timings.backend,
+      commandToScheduledPlayMs,
       totalCommandToPlayingMs
     })
   }
 
   const markPlaybackAttemptPlaying = (attempt: PlaybackAttempt): void => {
     if (attempt.playingAtMs === null) attempt.playingAtMs = performance.now()
+  }
+
+  const getPromotedPrebufferAttemptTimings = (
+    prebufferRequestId: number | null,
+    backendStartMs?: number | null
+  ): PlaybackAttemptTimings => {
+    const engineTimings = audioEngine.getLastLoadTimings()
+    const pcmTimingDetails = getStandardPcmTimingDetails(engineTimings)
+    const standardLoadPipelineMs = engineTimings?.standardLoadPipelineMs ?? null
+    const decodeWorkMs = engineTimings?.decodeWorkMs ?? engineTimings?.decodeMs ?? null
+    return {
+      backend: 'prebuffer',
+      prebufferRequestId,
+      ...pcmTimingDetails,
+      decodeMs: standardLoadPipelineMs,
+      decodeOnlyMs: decodeWorkMs,
+      standardLoadPipelineMs,
+      decodeWorkMs,
+      loudnessMs: engineTimings?.analysisMs ?? null,
+      backendStartMs: backendStartMs ?? null
+    }
   }
 
   const isParallaxSinkModeActive = (): boolean => {
@@ -1324,6 +1460,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       && prebufferInFlightPromise !== null
     clearScheduledPrebufferTimer()
     invalidatePrebufferRequest()
+    completedPrebufferRequestId = null
+    completedPrebufferTrackPath = null
     if (audioEngine.getPlaybackOutputMode() !== 'standard') {
       if (hadNativePrebufferInFlight) audioEngine.cancelPendingNativeDecode()
       const clearIntentId = playbackIntentGeneration
@@ -4140,6 +4278,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         candidate.track?.path != null &&
         audioEngine.nextBufferedTrackPath === candidate.track.path
       ) {
+        const promotedPrebufferRequestId = completedPrebufferTrackPath === candidate.track.path
+          ? completedPrebufferRequestId
+          : null
         attempt.prebufferStatus = 'ready'
         invalidateLoadRequest()
         manualGaplessTransitionInProgress = true
@@ -4147,17 +4288,27 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         try {
           if (audioEngine.skipToPreBuffered()) {
             markPlaybackAttemptPlaying(attempt)
-            completePlaybackAttempt(attempt, candidate.track, 'loaded', {
-              backend: 'prebuffer',
-              backendStartMs: performance.now() - backendStart
-            })
+            completePlaybackAttempt(
+              attempt,
+              candidate.track,
+              'loaded',
+              getPromotedPrebufferAttemptTimings(
+                promotedPrebufferRequestId,
+                performance.now() - backendStart
+              )
+            )
             return
           }
         } catch (error) {
-          completePlaybackAttempt(attempt, candidate.track, 'failed', {
-            backend: 'prebuffer',
-            backendStartMs: performance.now() - backendStart
-          })
+          completePlaybackAttempt(
+            attempt,
+            candidate.track,
+            'failed',
+            getPromotedPrebufferAttemptTimings(
+              promotedPrebufferRequestId,
+              performance.now() - backendStart
+            )
+          )
           throw error
         } finally {
           manualGaplessTransitionInProgress = false
@@ -4173,6 +4324,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         && prebufferInFlightPromise
       ) {
         attempt.prebufferStatus = 'in_flight'
+        const promotedPrebufferRequestId = prebufferInFlightRequestId
         audioEngine.promoteMatchingPrebufferDecode(candidate.track.path)
         // Preserve the transition immediately (so rapid Next presses still advance
         // every queue/history step), while allowing the prebuffer request to finish
@@ -4190,7 +4342,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           if (preAppliedGaplessQueueItemId === candidate.item.queueId) {
             preAppliedGaplessQueueItemId = null
           }
-          completePlaybackAttempt(attempt, candidate.track, 'superseded', { backend: 'prebuffer' })
+          completePlaybackAttempt(
+            attempt,
+            candidate.track,
+            'superseded',
+            getPromotedPrebufferAttemptTimings(promotedPrebufferRequestId)
+          )
           return
         }
 
@@ -4198,7 +4355,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           completedPreAppliedGaplessQueueItemId = null
           attempt.prebufferStatus = 'in_flight_promoted'
           markPlaybackAttemptPlaying(attempt)
-          completePlaybackAttempt(attempt, candidate.track, 'loaded', { backend: 'prebuffer' })
+          completePlaybackAttempt(
+            attempt,
+            candidate.track,
+            'loaded',
+            getPromotedPrebufferAttemptTimings(promotedPrebufferRequestId)
+          )
           return
         }
 
@@ -4210,18 +4372,28 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             if (audioEngine.skipToPreBuffered()) {
               attempt.prebufferStatus = 'in_flight_promoted'
               markPlaybackAttemptPlaying(attempt)
-              completePlaybackAttempt(attempt, candidate.track, 'loaded', {
-                backend: 'prebuffer',
-                backendStartMs: performance.now() - backendStart
-              })
+              completePlaybackAttempt(
+                attempt,
+                candidate.track,
+                'loaded',
+                getPromotedPrebufferAttemptTimings(
+                  promotedPrebufferRequestId,
+                  performance.now() - backendStart
+                )
+              )
               return
             }
           } catch (error) {
             preAppliedGaplessQueueItemId = null
-            completePlaybackAttempt(attempt, candidate.track, 'failed', {
-              backend: 'prebuffer',
-              backendStartMs: performance.now() - backendStart
-            })
+            completePlaybackAttempt(
+              attempt,
+              candidate.track,
+              'failed',
+              getPromotedPrebufferAttemptTimings(
+                promotedPrebufferRequestId,
+                performance.now() - backendStart
+              )
+            )
             throw error
           } finally {
             manualGaplessTransitionInProgress = false
@@ -4429,10 +4601,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         prebufferStatus: 'miss'
       })
       let attemptBackend = getAttemptBackend(track)
+      let attemptLoadRequestId: number | null = null
       let attemptFileReadMs: number | null = null
       let attemptDecodeMs: number | null = null
+      let attemptDecodeOnlyMs: number | null = null
+      let attemptStandardLoadPipelineMs: number | null = null
       let attemptLoudnessMs: number | null = null
       let attemptBackendStartMs: number | null = null
+      let attemptStandardPcmTimings: AudioLoadTimings | null = null
       let nativeBinaryResolutionMs: number | null = null
       let nativeProbeMs: number | null = null
       let nativeDecodeMs: number | null = null
@@ -4448,10 +4624,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           nativeLoadMs ??= timings?.nativeLoadMs ?? null
           nativeDeviceStartMs ??= timings?.nativeDeviceStartMs ?? null
         }
+        const pcmTimingDetails = getStandardPcmTimingDetails(attemptStandardPcmTimings)
         completePlaybackAttempt(attempt, track, outcome, {
           backend: attemptBackend,
+          loadRequestId: attemptLoadRequestId,
+          ...pcmTimingDetails,
           fileReadMs: attemptFileReadMs,
           decodeMs: attemptDecodeMs,
+          decodeOnlyMs: attemptDecodeOnlyMs,
+          standardLoadPipelineMs: attemptStandardLoadPipelineMs,
+          decodeWorkMs: attemptDecodeOnlyMs ?? pcmTimingDetails.decodeWorkMs,
           loudnessMs: attemptLoudnessMs,
           backendStartMs: attemptBackendStartMs,
           nativeBinaryResolutionMs,
@@ -4468,6 +4650,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       }
 
       const loadRequestId = beginLoadRequest()
+      attemptLoadRequestId = loadRequestId
       const manualStart = Boolean(options.manualStart)
       const startTime = Number.isFinite(options.startTime) ? Math.max(0, Number(options.startTime)) : 0
       pendingManualLoadCueTrack = null
@@ -4557,6 +4740,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           nativeLoadMs = engineTimings?.nativeLoadMs ?? null
           nativeDeviceStartMs = engineTimings?.nativeDeviceStartMs ?? null
           logMemoryDiagnosticsEvent('track_load_success', {
+            attemptId: attempt.id,
+            loadRequestId,
+            prebufferRequestId: null,
+            decodeRequestId: null,
             trackPath: track.path,
             sourceType: track.sourceType ?? 'local',
             loadPath: useAudioSettingsStore.getState().playbackOutputMode,
@@ -4567,7 +4754,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             nativeDecodeMs,
             nativeLoadMs,
             nativeDeviceStartMs
-          })
+          }, 'renderer', { captureSample: false })
           logSlowPath('queueLoadAndPlayTrack', loadStart, {
             trackPath: track.path,
             usedNativeExclusive: true,
@@ -4625,13 +4812,17 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               channels: streamInfo.channels
             })
             logMemoryDiagnosticsEvent('track_load_success', {
+              attemptId: attempt.id,
+              loadRequestId,
+              prebufferRequestId: null,
+              decodeRequestId: null,
               trackPath: track.path,
               sourceType: resolvedTrack.sourceType ?? 'local',
               loadPath: 'remote_stream',
               sessionId: streamInfo.sessionId,
               durationSeconds: resolvedTrack.duration,
               channels: streamInfo.channels
-            })
+            }, 'renderer', { captureSample: false })
             logSlowPath('queueLoadAndPlayTrack', loadStart, {
               trackPath: track.path,
               usedRemoteStream: true
@@ -4715,6 +4906,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               schedulePreBufferNextTrack()
               warmupUpcomingLoudness()
               logMemoryDiagnosticsEvent('track_load_success', {
+                attemptId: attempt.id,
+                loadRequestId,
+                prebufferRequestId: null,
+                decodeRequestId: null,
                 trackPath: track.path,
                 sourceType: 'local',
                 loadPath: 'local_progressive_stream',
@@ -4723,7 +4918,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
                 channels: streamInfo.channels,
                 usedReplayGain: replayGainDb != null,
                 usedStoredLoudness: Boolean(fixedLoudness)
-              })
+              }, 'renderer', { captureSample: false })
               logSlowPath('queueLoadAndPlayTrack', loadStart, {
                 trackPath: track.path,
                 usedLocalProgressiveStream: true
@@ -4786,6 +4981,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               throw new SupersededPlaybackLoadError()
             }
             usedFfmpegPcm = pcmOutcome === 'loaded'
+            if (usedFfmpegPcm) {
+              attemptStandardPcmTimings = audioEngine.getLastLoadTimings()
+            }
           }
 
           if (!usedFfmpegPcm) {
@@ -4842,9 +5040,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             }
           }
         } finally {
-          attemptDecodeMs = performance.now() - decodeStart
+          attemptStandardLoadPipelineMs = performance.now() - decodeStart
+          attemptDecodeMs = attemptStandardLoadPipelineMs
         }
-        const decodeMs = Math.round(performance.now() - decodeStart)
+        const decodeMs = Math.round(attemptStandardLoadPipelineMs)
         const detectedChannels = audioEngine.getCurrentTrackChannelCount()
         const metadataResolvedTrack: Track = {
           ...track,
@@ -4899,11 +5098,18 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
         startRecentPlaySession(resolvedTrack.path)
         const engineTimings = audioEngine.getLastLoadTimings()
-        attemptDecodeMs = engineTimings?.decodeMs ?? attemptDecodeMs
+        if (usedFfmpegPcm) {
+          attemptStandardPcmTimings = engineTimings ?? attemptStandardPcmTimings
+        }
+        attemptDecodeOnlyMs = engineTimings?.decodeWorkMs ?? engineTimings?.decodeMs ?? null
         attemptLoudnessMs = engineTimings?.analysisMs ?? null
         nativeProbeMs = usedFfmpegPcm ? engineTimings?.nativeProbeMs ?? null : null
         nativeDecodeMs = usedFfmpegPcm ? engineTimings?.nativeDecodeMs ?? null : null
+        const pcmTimingDetails = getStandardPcmTimingDetails(attemptStandardPcmTimings)
         logMemoryDiagnosticsEvent('track_load_success', {
+          attemptId: attempt.id,
+          loadRequestId,
+          prebufferRequestId: null,
           trackPath: track.path,
           sourceType: resolvedTrack.sourceType ?? 'local',
           loadPath: usedFfmpegPcm
@@ -4912,14 +5118,18 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               ? 'file_ffmpeg_fallback'
               : 'file_decode',
           fileLoadMs,
+          ...pcmTimingDetails,
           decodeMs,
-          decodeOnlyMs: engineTimings?.decodeMs ?? null,
+          decodeOnlyMs: attemptDecodeOnlyMs,
+          standardLoadPipelineMs: decodeMs,
+          decodeWorkMs: attemptDecodeOnlyMs,
+          loudnessMs: engineTimings?.analysisMs ?? null,
           loudnessAnalysisMs: engineTimings?.analysisMs ?? null,
           nativePcmProbeMs: usedFfmpegPcm ? engineTimings?.nativeProbeMs ?? null : null,
           nativePcmDecodeMs: usedFfmpegPcm ? engineTimings?.nativeDecodeMs ?? null : null,
           usedFfmpegPcm,
           usedFfmpegFallback
-        })
+        }, 'renderer', { captureSample: false })
 
         // Schedule next-track prebuffering for the gapless handoff window.
         schedulePreBufferNextTrack()
@@ -4953,10 +5163,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           console.error('Failed to load track:', error)
         }
         logMemoryDiagnosticsEvent('track_load_failed', {
+          attemptId: attempt.id,
+          loadRequestId,
+          prebufferRequestId: null,
+          decodeRequestId: attemptStandardPcmTimings?.decodeRequestId ?? null,
           trackPath: track.path,
           sourceType: track.sourceType ?? 'local',
           message: failureMessage
-        })
+        }, 'renderer', { captureSample: false })
         logSlowPath('queueLoadAndPlayTrack', loadStart, {
           trackPath: track.path,
           failed: true,
@@ -5113,14 +5327,21 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               && Number(nextTrack.channels) <= 8
               && typeof window.electronAPI.decodeLocalAudioToPcm === 'function'
             let usedFfmpegPcm = false
+            let standardLoadPipelineMs: number | null = null
 
             if (canUseFfmpegPcm) {
-              const pcmOutcome = await audioEngine.preBufferNextStandardTrackFromPath(nextTrack, {
-                replayGainDb: nextReplayGainDb,
-                trackPath: nextTrack.path,
-                loudnessAnalysis: nextLoudnessAnalysis,
-                priority: 'background'
-              })
+              const standardLoadStartedAt = performance.now()
+              let pcmOutcome: Awaited<ReturnType<typeof audioEngine.preBufferNextStandardTrackFromPath>>
+              try {
+                pcmOutcome = await audioEngine.preBufferNextStandardTrackFromPath(nextTrack, {
+                  replayGainDb: nextReplayGainDb,
+                  trackPath: nextTrack.path,
+                  loudnessAnalysis: nextLoudnessAnalysis,
+                  priority: 'background'
+                })
+              } finally {
+                standardLoadPipelineMs = performance.now() - standardLoadStartedAt
+              }
               if (!canApplyPrebufferResult(nextTrack)) {
                 if (pcmOutcome === 'loaded') audioEngine.clearNextBuffer()
                 return
@@ -5166,9 +5387,26 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               loaded: true,
               usedFfmpegPcm
             })
+            completedPrebufferRequestId = prebufferRequestId
+            completedPrebufferTrackPath = nextTrack.path
+            const engineTimings = audioEngine.getLastPrebufferLoadTimings()
+            const pcmTimingDetails = getStandardPcmTimingDetails(usedFfmpegPcm ? engineTimings : null)
+            const roundedStandardLoadPipelineMs = standardLoadPipelineMs === null
+              ? engineTimings?.standardLoadPipelineMs ?? null
+              : Math.round(standardLoadPipelineMs)
+            const decodeWorkMs = engineTimings?.decodeWorkMs ?? engineTimings?.decodeMs ?? null
             logMemoryDiagnosticsEvent('prebuffer_complete', {
+              attemptId: null,
+              loadRequestId: null,
+              prebufferRequestId,
               trackPath: nextTrack.path,
-              decoder: usedFfmpegPcm ? 'ffmpeg_pcm' : 'webaudio'
+              decoder: usedFfmpegPcm ? 'ffmpeg_pcm' : 'webaudio',
+              ...pcmTimingDetails,
+              decodeMs: roundedStandardLoadPipelineMs,
+              decodeOnlyMs: decodeWorkMs,
+              standardLoadPipelineMs: roundedStandardLoadPipelineMs,
+              decodeWorkMs,
+              loudnessMs: engineTimings?.analysisMs ?? null
             })
             prebufferRetryAtLateTrackPath = null
             // §21 Gapless sink handoff — the next track is decoded; pre-announce it to connected

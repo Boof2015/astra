@@ -113,15 +113,32 @@ import type {
   RemoteStreamInfo
 } from '../types/remoteStream'
 import type {
+  LocalAudioPcmTransportTimings,
   MemoryDiagnosticsBlinkResourceUsageSnapshot,
   MemoryDiagnosticsCaptureBundleResult,
   MemoryDiagnosticsEventPayload,
+  MemoryDiagnosticsLogEventOptions,
   MemoryDiagnosticsProcessMemoryStats,
   MemoryDiagnosticsRendererSnapshot,
   MemoryDiagnosticsRendererMemoryStats,
   MemoryDiagnosticsSnapshotRequest,
-  MemoryDiagnosticsStatus
+  MemoryDiagnosticsStatus,
+  PcmTransferBenchmarkProbeResult
 } from '../types/diagnostics'
+import {
+  PCM_TRANSFER_BENCHMARK_STREAM_IPC_CHANNEL,
+  PCM_TRANSFER_BENCHMARK_STREAM_VERSION,
+  createPcmTransferBenchmarkProbe,
+  validatePcmTransferBenchmarkStreamOpenRequest,
+  validatePcmTransferBenchmarkProbe
+} from '../shared/pcmTransferBenchmark'
+import {
+  LOCAL_PCM_STREAM_MARKER,
+  LOCAL_PCM_STREAM_VERSION,
+  validateLocalPcmStreamOpenRequest,
+  type LocalPcmStreamOpenRequest,
+  type LocalPcmStreamPortEnvelope
+} from '../shared/localPcmStream'
 import type {
   LibraryDiagnosticsRendererTimingEvent,
   LibraryDiagnosticsStatus
@@ -228,6 +245,7 @@ export interface LocalAudioPcmDecodeResult {
   probeMs: number
   decodeMs: number
   backgroundPriorityApplied: boolean
+  transportTimings?: LocalAudioPcmTransportTimings
 }
 
 export interface ProgressiveStreamStartOptions {
@@ -711,6 +729,151 @@ async function getAllLibraryTracksPaged(): Promise<DbTrack[]> {
   return tracks
 }
 
+function preloadDiagnosticNow(): number {
+  return performance.now()
+}
+
+function roundPreloadDiagnosticMs(value: number): number {
+  return Math.round(Math.max(0, value) * 100) / 100
+}
+
+async function benchmarkMainPcmTransfer(sizeBytes: number): Promise<PcmTransferBenchmarkProbeResult> {
+  const invokeStartedAtMs = preloadDiagnosticNow()
+  const result = await ipcRenderer.invoke(
+    'diagnostics:benchmarkMainPcmTransfer',
+    sizeBytes
+  ) as PcmTransferBenchmarkProbeResult
+  const preloadInvokeMs = roundPreloadDiagnosticMs(preloadDiagnosticNow() - invokeStartedAtMs)
+  if (!validatePcmTransferBenchmarkProbe(result, sizeBytes)) {
+    throw new Error('Main-process PCM transfer benchmark payload failed validation in preload.')
+  }
+  return {
+    ...result,
+    preloadInvokeMs
+  }
+}
+
+function benchmarkPreloadPcmTransfer(sizeBytes: number): PcmTransferBenchmarkProbeResult {
+  const serviceStartedAtMs = preloadDiagnosticNow()
+  const result = createPcmTransferBenchmarkProbe(sizeBytes, preloadDiagnosticNow)
+  return {
+    ...result,
+    preloadServiceMs: roundPreloadDiagnosticMs(preloadDiagnosticNow() - serviceStartedAtMs)
+  }
+}
+
+function openMainPcmStreamBenchmark(
+  requestId: number,
+  sizeBytes: number,
+  nonce: string
+): boolean {
+  const request = {
+    version: PCM_TRANSFER_BENCHMARK_STREAM_VERSION,
+    requestId,
+    sizeBytes,
+    nonce
+  }
+  if (!validatePcmTransferBenchmarkStreamOpenRequest(request)) return false
+
+  let mainPort: MessagePort | null = null
+  let rendererPort: MessagePort | null = null
+  try {
+    const channel = new MessageChannel()
+    mainPort = channel.port1
+    rendererPort = channel.port2
+
+    ipcRenderer.postMessage(
+      PCM_TRANSFER_BENCHMARK_STREAM_IPC_CHANNEL,
+      request,
+      [mainPort]
+    )
+    mainPort = null
+
+    const envelope: LocalPcmStreamPortEnvelope = {
+      marker: LOCAL_PCM_STREAM_MARKER,
+      version: LOCAL_PCM_STREAM_VERSION,
+      nonce: request.nonce,
+      requestId: request.requestId
+    }
+    window.postMessage(envelope, '*', [rendererPort])
+    rendererPort = null
+    return true
+  } catch {
+    try {
+      mainPort?.close()
+    } catch {
+      // Best-effort cleanup only.
+    }
+    try {
+      rendererPort?.close()
+    } catch {
+      // Best-effort cleanup only.
+    }
+    return false
+  }
+}
+
+function openLocalAudioPcmStream(
+  requestId: number,
+  filePath: string,
+  outputSampleRate: number,
+  expectedChannels: number | null,
+  priority: 'interactive' | 'background',
+  nonce: string
+): boolean {
+  // Emergency compatibility switch for field diagnostics. The legacy invoke
+  // path remains available and behaviorally identical when this is disabled.
+  if (process.env.ASTRA_DISABLE_PCM_STREAM === '1') return false
+  const request: LocalPcmStreamOpenRequest = {
+    requestId,
+    filePath,
+    outputSampleRate,
+    expectedChannels,
+    priority,
+    nonce
+  }
+  if (!validateLocalPcmStreamOpenRequest(request)) return false
+
+  let mainPort: MessagePort | null = null
+  let rendererPort: MessagePort | null = null
+  try {
+    const channel = new MessageChannel()
+    mainPort = channel.port1
+    rendererPort = channel.port2
+
+    ipcRenderer.postMessage('audio:decodeLocalAudioToPcmStream', {
+      ...request,
+      version: LOCAL_PCM_STREAM_VERSION
+    }, [mainPort])
+    mainPort = null
+
+    const envelope: LocalPcmStreamPortEnvelope = {
+      marker: LOCAL_PCM_STREAM_MARKER,
+      version: LOCAL_PCM_STREAM_VERSION,
+      nonce: request.nonce,
+      requestId: request.requestId
+    }
+    window.postMessage(envelope, '*', [rendererPort])
+    rendererPort = null
+    return true
+  } catch {
+    // A transferred port is no longer owned by this world. Close only the
+    // endpoints whose transfer did not complete, then preserve the invoke path
+    // as the caller's fallback.
+    try {
+      mainPort?.close()
+    } catch {
+      // Best-effort cleanup only.
+    }
+    try {
+      rendererPort?.close()
+    } catch {
+      // Best-effort cleanup only.
+    }
+    return false
+  }
+}
+
 // Expose APIs to renderer
 contextBridge.exposeInMainWorld('electronAPI', {
   // Window controls
@@ -853,8 +1016,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     clearRendererCache: (): void => webFrame.clearCache(),
     publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) =>
       ipcRenderer.send('diagnostics:publishRendererSnapshot', requestId, snapshot),
-    logEvent: (payload: MemoryDiagnosticsEventPayload): Promise<boolean> =>
-      ipcRenderer.invoke('diagnostics:logEvent', payload),
+    logEvent: (
+      payload: MemoryDiagnosticsEventPayload,
+      options?: MemoryDiagnosticsLogEventOptions
+    ): Promise<boolean> => ipcRenderer.invoke('diagnostics:logEvent', payload, options),
+    benchmarkMainPcmTransfer,
+    benchmarkPreloadPcmTransfer,
+    openMainPcmStreamBenchmark,
     onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: MemoryDiagnosticsStatus) => callback(status)
       ipcRenderer.on('diagnostics:status', handler)
@@ -1243,20 +1411,36 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAudioMetadata: (filePath: string) => ipcRenderer.invoke('audio:getMetadata', filePath) as Promise<AudioFileMetadata | null>,
   getAudioFileStat: (filePath: string) => ipcRenderer.invoke('audio:getFileStat', filePath) as Promise<AudioFileStatResult | null>,
   decodeAudioWithFfmpeg: (filePath: string) => ipcRenderer.invoke('audio:decodeWithFfmpeg', filePath),
-  decodeLocalAudioToPcm: (
+  openLocalAudioPcmStream,
+  decodeLocalAudioToPcm: async (
     requestId: number,
     filePath: string,
     outputSampleRate: number,
     expectedChannels?: number | null,
     priority?: 'interactive' | 'background'
-  ) => ipcRenderer.invoke(
-    'audio:decodeLocalAudioToPcm',
-    requestId,
-    filePath,
-    outputSampleRate,
-    expectedChannels,
-    priority
-  ) as Promise<LocalAudioPcmDecodeResult | null>,
+  ): Promise<LocalAudioPcmDecodeResult | null> => {
+    const invokeStartedAtMs = preloadDiagnosticNow()
+    const result = await ipcRenderer.invoke(
+      'audio:decodeLocalAudioToPcm',
+      requestId,
+      filePath,
+      outputSampleRate,
+      expectedChannels,
+      priority
+    ) as LocalAudioPcmDecodeResult | null
+    const preloadInvokeMs = roundPreloadDiagnosticMs(preloadDiagnosticNow() - invokeStartedAtMs)
+    if (!result?.transportTimings) return result
+
+    // Only the small result envelope is copied here. The PCM ArrayBuffer is
+    // retained by reference until contextBridge performs its documented copy.
+    return {
+      ...result,
+      transportTimings: {
+        ...result.transportTimings,
+        preloadInvokeMs
+      }
+    }
+  },
   cancelLocalAudioDecode: (requestId: number) =>
     ipcRenderer.invoke('audio:cancelLocalAudioDecode', requestId) as Promise<void>,
   promoteLocalAudioDecode: (requestId: number) =>
@@ -1708,7 +1892,17 @@ declare global {
         getBlinkResourceUsage: () => MemoryDiagnosticsBlinkResourceUsageSnapshot
         clearRendererCache: () => void
         publishRendererSnapshot: (requestId: string, snapshot: MemoryDiagnosticsRendererSnapshot) => void
-        logEvent: (payload: MemoryDiagnosticsEventPayload) => Promise<boolean>
+        logEvent: (
+          payload: MemoryDiagnosticsEventPayload,
+          options?: MemoryDiagnosticsLogEventOptions
+        ) => Promise<boolean>
+        benchmarkMainPcmTransfer: (sizeBytes: number) => Promise<PcmTransferBenchmarkProbeResult>
+        benchmarkPreloadPcmTransfer: (sizeBytes: number) => PcmTransferBenchmarkProbeResult
+        openMainPcmStreamBenchmark: (
+          requestId: number,
+          sizeBytes: number,
+          nonce: string
+        ) => boolean
         onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => () => void
         onSnapshotRequest: (callback: (request: MemoryDiagnosticsSnapshotRequest) => void) => () => void
       }
@@ -1898,6 +2092,14 @@ declare global {
       getAudioMetadata: (filePath: string) => Promise<AudioFileMetadata | null>
       getAudioFileStat: (filePath: string) => Promise<AudioFileStatResult | null>
       decodeAudioWithFfmpeg: (filePath: string) => Promise<ArrayBuffer | null>
+      openLocalAudioPcmStream: (
+        requestId: number,
+        filePath: string,
+        outputSampleRate: number,
+        expectedChannels: number | null,
+        priority: 'interactive' | 'background',
+        nonce: string
+      ) => boolean
       decodeLocalAudioToPcm: (
         requestId: number,
         filePath: string,

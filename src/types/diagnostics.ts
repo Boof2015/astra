@@ -298,3 +298,48 @@ export interface MemoryDiagnosticsEventPayload {
   source: 'main' | 'renderer'
   details?: Record<string, unknown> | null
 }
+
+export interface MemoryDiagnosticsLogEventOptions {
+  captureSample?: boolean
+}
+
+export interface LocalAudioPcmTransportTimings {
+  decodeRequestId: number
+  validPcmBytes: number
+  backingBufferBytes: number
+  allocationGrowthCount: number
+  /** Bulk delivery route. Omitted by older builds and treated as invoke. */
+  transportRoute?: 'invoke' | 'message_port_stream'
+  mainHandlerMs: number
+  binaryResolutionMs: number
+  probeMs: number
+  ffmpegMs: number
+  allocationMs: number
+  /** Initial full-buffer allocation before FFmpeg starts. */
+  initialAllocationMs?: number
+  /** Capacity-growth allocations which occur inside the FFmpeg wall span. */
+  growthAllocationMs?: number
+  payloadFinalizationMs: number
+  preloadInvokeMs: number
+  /** MessagePort stream diagnostics. These are absent on the invoke route. */
+  streamChunkCount?: number
+  streamDispatchCopyMs?: number
+  streamDispatchPostMs?: number
+  streamTailMs?: number
+  benchmarkMainGenerationMs?: number
+  benchmarkMainFillMs?: number
+  rendererPcmAssemblyAllocationMs?: number
+  rendererPcmAssemblyCopyMs?: number
+  rendererPortRequestMs?: number
+}
+
+export interface PcmTransferBenchmarkProbeResult {
+  sizeBytes: number
+  byteLength: number
+  payload: ArrayBuffer
+  allocationMs: number
+  fillMs: number
+  mainHandlerMs?: number
+  preloadInvokeMs?: number
+  preloadServiceMs?: number
+}

@@ -4148,7 +4148,11 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     sampleRate: 44_100,
     channels: 2
   })
-  const diagnostics: Array<{ name: string; details?: Record<string, unknown> | null }> = []
+  const diagnostics: Array<{
+    name: string
+    details?: Record<string, unknown> | null
+    options?: { captureSample?: boolean }
+  }> = []
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
@@ -4158,13 +4162,17 @@ test('successful Standard playback emits one complete playback-attempt timing ev
       removeEventListener: () => undefined,
       electronAPI: {
         diagnostics: {
-          logEvent: async (event: { name: string; details?: Record<string, unknown> | null }) => {
-            diagnostics.push(event)
+          logEvent: async (
+            event: { name: string; details?: Record<string, unknown> | null },
+            options?: { captureSample?: boolean }
+          ) => {
+            diagnostics.push({ ...event, options })
           }
         },
         onProgressiveLoadProgress: () => () => undefined,
         supersedeTrackLoudness: async () => undefined,
         getAudioFileStat: async () => null,
+        decodeLocalAudioToPcm: async () => null,
         loadAudioFile: async () => ({ data: new ArrayBuffer(16) }),
         decodeAudioWithFfmpeg: async () => null,
         library: {
@@ -4185,6 +4193,7 @@ test('successful Standard playback emits one complete playback-attempt timing ev
   const originalSettings = useAudioSettingsStore.getState()
   useAudioSettingsStore.setState({ playbackOutputMode: 'standard', normalizationEnabled: false })
   const originalOn = audioEngine.on
+  const originalLoadStandardTrackFromPath = audioEngine.loadStandardTrackFromPath
   const originalLoadAudioData = audioEngine.loadAudioData
   const originalPlay = audioEngine.play
   const originalNeedsLoudness = audioEngine.needsLoudnessAnalysisForLoad
@@ -4199,13 +4208,48 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     if (event === 'stateChange') stateChangeListeners.push(callback)
     return () => undefined
   }
+  audioEngine.loadStandardTrackFromPath = async () => 'loaded'
   audioEngine.loadAudioData = async () => undefined
   audioEngine.play = async () => {
     stateChangeListeners.forEach((listener) => listener('playing'))
   }
   audioEngine.needsLoudnessAnalysisForLoad = () => false
   audioEngine.getCurrentTrackChannelCount = () => 2
-  audioEngine.getLastLoadTimings = () => ({ decodeMs: 12, analysisMs: 34 })
+  audioEngine.getLastLoadTimings = () => ({
+    decodeMs: 12,
+    decodeWorkMs: 12,
+    analysisMs: 34,
+    decodeRequestId: 77,
+    validPcmBytes: 72_300_000,
+    backingBufferBytes: 72_400_000,
+    allocationGrowthCount: 1,
+    transportRoute: 'message_port_stream',
+    mainHandlerMs: 160,
+    binaryResolutionMs: 2,
+    probeMs: 18,
+    ffmpegMs: 130,
+    pcmAllocationMs: 4,
+    initialPcmAllocationMs: 3,
+    growthPcmAllocationMs: 1,
+    payloadFinalizationMs: 1,
+    preloadInvokeMs: 340,
+    rendererBridgeCallMs: 370,
+    electronIpcResidualMs: 180,
+    contextBridgeResidualMs: 30,
+    streamChunkCount: 9,
+    streamDispatchCopyMs: 8,
+    streamDispatchPostMs: 4,
+    streamTailMs: 11,
+    rendererPcmAssemblyAllocationMs: 2,
+    rendererPcmAssemblyCopyMs: 7,
+    rendererPortRequestMs: 215,
+    streamTransportResidualMs: 55,
+    webAudioBufferAllocationMs: 3,
+    pcmDeinterleaveMs: 9,
+    pcmCommitMs: 2,
+    postDeliveryCommitMs: 48,
+    standardLoadPipelineMs: 372
+  })
   Object.defineProperty(audioEngine, 'currentTime', { configurable: true, get: () => 0 })
   Object.defineProperty(audioEngine, 'duration', { configurable: true, get: () => 180 })
   useParallaxStore.setState({
@@ -4230,13 +4274,23 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     assert.equal(details.outcome, 'loaded')
     assert.equal(details.sourceType, 'local')
     assert.equal(details.backend, 'standard')
-    assert.equal(details.decodeMs, 12)
+    assert.equal(typeof details.decodeMs, 'number')
+    assert.equal(details.decodeMs, details.standardLoadPipelineMs)
+    assert.equal(details.decodeOnlyMs, 12)
+    assert.equal(details.decodeWorkMs, 12)
     assert.equal(details.loudnessMs, 34)
+    assert.equal(details.decodeRequestId, 77)
+    assert.equal(typeof details.loadRequestId, 'number')
+    assert.equal(details.prebufferRequestId, null)
+    assert.equal(details.commandToScheduledPlayMs, details.totalCommandToPlayingMs)
     assert.equal(typeof details.totalCommandToPlayingMs, 'number')
     assert.equal(details.configuredOutputDelayMs, useAudioSettingsStore.getState().effectiveDelayMs)
 
     for (const field of [
       'attemptId',
+      'loadRequestId',
+      'prebufferRequestId',
+      'decodeRequestId',
       'intent',
       'outcome',
       'trackPath',
@@ -4248,23 +4302,69 @@ test('successful Standard playback emits one complete playback-attempt timing ev
       'prebufferStatus',
       'fileReadMs',
       'decodeMs',
+      'decodeOnlyMs',
+      'standardLoadPipelineMs',
+      'decodeWorkMs',
       'loudnessMs',
       'backendStartMs',
+      'validPcmBytes',
+      'backingBufferBytes',
+      'allocationGrowthCount',
+      'transportRoute',
+      'mainHandlerMs',
+      'binaryResolutionMs',
+      'probeMs',
+      'ffmpegMs',
+      'pcmAllocationMs',
+      'initialPcmAllocationMs',
+      'growthPcmAllocationMs',
+      'payloadFinalizationMs',
+      'preloadInvokeMs',
+      'rendererBridgeCallMs',
+      'electronIpcResidualMs',
+      'contextBridgeResidualMs',
+      'streamChunkCount',
+      'streamDispatchCopyMs',
+      'streamDispatchPostMs',
+      'streamTailMs',
+      'rendererPcmAssemblyAllocationMs',
+      'rendererPcmAssemblyCopyMs',
+      'rendererPortRequestMs',
+      'streamTransportResidualMs',
+      'webAudioBufferAllocationMs',
+      'pcmDeinterleaveMs',
+      'pcmCommitMs',
+      'postDeliveryCommitMs',
       'nativeBinaryResolutionMs',
       'nativeProbeMs',
       'nativeDecodeMs',
       'nativeLoadMs',
       'nativeDeviceStartMs',
+      'commandToScheduledPlayMs',
       'totalCommandToPlayingMs',
       'totalAttemptMs',
       'configuredOutputDelayMs'
     ]) {
       assert.equal(Object.hasOwn(details, field), true, `missing playback diagnostic field: ${field}`)
     }
+
+    const trackLoad = diagnostics.find((event) => (
+      event.name === 'track_load_success'
+      && event.details?.trackPath === track.path
+    ))
+    assert.ok(trackLoad)
+    assert.equal(trackLoad.options?.captureSample, false)
+    assert.equal(trackLoad.details?.attemptId, details.attemptId)
+    assert.equal(trackLoad.details?.loadRequestId, details.loadRequestId)
+    assert.equal(trackLoad.details?.decodeRequestId, details.decodeRequestId)
+    assert.equal(trackLoad.details?.decodeMs, trackLoad.details?.standardLoadPipelineMs)
+    assert.equal(trackLoad.details?.decodeOnlyMs, trackLoad.details?.decodeWorkMs)
+    assert.notEqual(completions[0]?.options?.captureSample, false)
   } finally {
     usePlayerStore.getState()._cleanupListeners()
     await flushAsyncWork()
     audioEngine.on = originalOn
+    audioEngine.loadStandardTrackFromPath = originalLoadStandardTrackFromPath
     audioEngine.loadAudioData = originalLoadAudioData
     audioEngine.play = originalPlay
     audioEngine.needsLoudnessAnalysisForLoad = originalNeedsLoudness
