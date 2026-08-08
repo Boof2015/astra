@@ -109,6 +109,126 @@ test('getFixedRowRange handles empty or invalid geometry and list shrink', () =>
   })
 })
 
+test('getFixedRowRange offsets the window by leading content', () => {
+  const common = {
+    rowCount: 100,
+    rowHeight: 40,
+    viewportHeight: 400,
+    overscanCount: 0,
+    leadingHeight: 240
+  }
+
+  // Leading block still fully on screen: only the 160px below it holds rows.
+  assert.deepEqual(getFixedRowRange({ ...common, scrollTop: 0 }), {
+    visibleStartIndex: 0,
+    visibleStopIndex: 3,
+    overscanStartIndex: 0,
+    overscanStopIndex: 3
+  })
+
+  // Scrolled exactly past the leading block: a full viewport of rows.
+  assert.deepEqual(getFixedRowRange({ ...common, scrollTop: 240 }), {
+    visibleStartIndex: 0,
+    visibleStopIndex: 9,
+    overscanStartIndex: 0,
+    overscanStopIndex: 9
+  })
+
+  assert.deepEqual(getFixedRowRange({ ...common, scrollTop: 1_000 }), {
+    visibleStartIndex: 19,
+    visibleStopIndex: 28,
+    overscanStartIndex: 19,
+    overscanStopIndex: 28
+  })
+})
+
+test('getFixedRowRange clamps against the page maximum with leading content', () => {
+  const common = {
+    rowCount: 100,
+    rowHeight: 40,
+    viewportHeight: 400,
+    overscanCount: 0,
+    leadingHeight: 240
+  }
+  const bottomRange = {
+    visibleStartIndex: 90,
+    visibleStopIndex: 99,
+    overscanStartIndex: 90,
+    overscanStopIndex: 99
+  }
+
+  // 240 leading + 4000 rows - 400 viewport is the page's maximum scrollTop.
+  assert.deepEqual(getFixedRowRange({ ...common, scrollTop: 3_840 }), bottomRange)
+  assert.deepEqual(getFixedRowRange({ ...common, scrollTop: Number.MAX_SAFE_INTEGER }), bottomRange)
+})
+
+test('getFixedRowRange treats overscroll as zero before subtracting leading content', () => {
+  const common = {
+    rowCount: 100,
+    rowHeight: 40,
+    viewportHeight: 400,
+    overscanCount: 0,
+    leadingHeight: 240
+  }
+
+  // Rubber-band overscroll must not subtract the leading height twice.
+  assert.deepEqual(
+    getFixedRowRange({ ...common, scrollTop: -200 }),
+    getFixedRowRange({ ...common, scrollTop: 0 })
+  )
+})
+
+test('getFixedRowRange keeps the first row mounted when the list starts below the fold', () => {
+  assert.deepEqual(getFixedRowRange({
+    rowCount: 100,
+    rowHeight: 40,
+    viewportHeight: 400,
+    scrollTop: 0,
+    overscanCount: 0,
+    leadingHeight: 1_000
+  }), {
+    visibleStartIndex: 0,
+    visibleStopIndex: 0,
+    overscanStartIndex: 0,
+    overscanStopIndex: 0
+  })
+})
+
+test('getFixedRowScrollOffset accounts for leading content', () => {
+  const common = {
+    rowCount: 100,
+    rowHeight: 40,
+    viewportHeight: 400,
+    leadingHeight: 240,
+    index: 20
+  }
+
+  assert.equal(getFixedRowScrollOffset({ ...common, align: 'start', currentScrollTop: 0 }), 1_040)
+  assert.equal(getFixedRowScrollOffset({ ...common, align: 'end', currentScrollTop: 0 }), 680)
+  assert.equal(getFixedRowScrollOffset({ ...common, align: 'center', currentScrollTop: 0 }), 860)
+  assert.equal(getFixedRowScrollOffset({ ...common, align: 'auto', currentScrollTop: 0 }), 680)
+  assert.equal(getFixedRowScrollOffset({ ...common, align: 'auto', currentScrollTop: 2_000 }), 1_040)
+
+  // The last row clamps to the page maximum, not the rows-only maximum.
+  assert.equal(getFixedRowScrollOffset({
+    ...common,
+    align: 'start',
+    currentScrollTop: 0,
+    index: 99
+  }), 3_840)
+})
+
+test('getFixedRowScrollOffset defaults leadingHeight to zero', () => {
+  assert.equal(getFixedRowScrollOffset({
+    rowCount: 100,
+    rowHeight: 40,
+    viewportHeight: 400,
+    index: 20,
+    align: 'center',
+    currentScrollTop: 0
+  }), 620)
+})
+
 test('getFixedRowScrollOffset preserves react-window alignment behavior', () => {
   const common = {
     rowCount: 100,

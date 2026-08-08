@@ -13,6 +13,10 @@ interface FixedRowRangeOptions {
   viewportHeight: number
   scrollTop: number
   overscanCount: number
+  // Height of content rendered above row zero inside the same scrollport. Zero
+  // when the list owns its scroller; non-zero when a detail view scrolls the
+  // list together with a header block above it.
+  leadingHeight?: number
 }
 
 interface FixedRowScrollOffsetOptions {
@@ -22,6 +26,7 @@ interface FixedRowScrollOffsetOptions {
   rowCount: number
   rowHeight: number
   viewportHeight: number
+  leadingHeight?: number
 }
 
 const EMPTY_FIXED_ROW_RANGE: FixedRowRange = {
@@ -53,7 +58,8 @@ export function getFixedRowRange({
   rowHeight,
   viewportHeight,
   scrollTop,
-  overscanCount
+  overscanCount,
+  leadingHeight
 }: FixedRowRangeOptions): FixedRowRange {
   const normalizedRowCount = normalizeNonNegativeInteger(rowCount)
   const normalizedRowHeight = normalizePositiveFinite(rowHeight)
@@ -62,21 +68,27 @@ export function getFixedRowRange({
     return EMPTY_FIXED_ROW_RANGE
   }
 
+  const normalizedLeadingHeight = normalizePositiveFinite(leadingHeight ?? 0)
   const totalHeight = normalizedRowCount * normalizedRowHeight
   const maximumScrollTop = Math.max(0, totalHeight - normalizedViewportHeight)
-  const normalizedScrollTop = Number.isFinite(scrollTop)
-    ? clamp(scrollTop, 0, maximumScrollTop)
-    : 0
+  // Rubber-band overscroll is clamped away before the leading offset is
+  // removed, so a negative scrollTop still resolves to the first window.
+  const rawScrollTop = Number.isFinite(scrollTop) ? Math.max(0, scrollTop) : 0
+  // Deliberately allowed to go negative: while the leading block is still on
+  // screen the effective window shrinks from the top instead of over-mounting.
+  const localScrollTop = Math.min(rawScrollTop - normalizedLeadingHeight, maximumScrollTop)
+  const visibleTop = clamp(localScrollTop, 0, maximumScrollTop)
+  const visibleBottom = clamp(localScrollTop + normalizedViewportHeight, 0, totalHeight)
   const normalizedOverscanCount = normalizeNonNegativeInteger(overscanCount)
   const visibleStartIndex = Math.min(
     normalizedRowCount - 1,
-    Math.floor(normalizedScrollTop / normalizedRowHeight)
+    Math.floor(visibleTop / normalizedRowHeight)
   )
   const visibleStopIndex = Math.min(
     normalizedRowCount - 1,
     Math.max(
       visibleStartIndex,
-      Math.ceil((normalizedScrollTop + normalizedViewportHeight) / normalizedRowHeight) - 1
+      Math.ceil(visibleBottom / normalizedRowHeight) - 1
     )
   )
 
@@ -94,7 +106,8 @@ export function getFixedRowScrollOffset({
   index,
   rowCount,
   rowHeight,
-  viewportHeight
+  viewportHeight,
+  leadingHeight
 }: FixedRowScrollOffsetOptions): number {
   const normalizedRowCount = normalizeNonNegativeInteger(rowCount)
   if (!Number.isInteger(index) || index < 0 || index >= normalizedRowCount) {
@@ -105,12 +118,15 @@ export function getFixedRowScrollOffset({
   const normalizedViewportHeight = normalizePositiveFinite(viewportHeight)
   if (normalizedRowHeight === 0 || normalizedViewportHeight === 0) return 0
 
+  // Offsets are returned in scroll-container coordinates, so the leading block
+  // above row zero shifts every row and the maximum alike.
+  const normalizedLeadingHeight = normalizePositiveFinite(leadingHeight ?? 0)
   const totalHeight = normalizedRowCount * normalizedRowHeight
-  const maximumScrollTop = Math.max(0, totalHeight - normalizedViewportHeight)
+  const maximumScrollTop = Math.max(0, normalizedLeadingHeight + totalHeight - normalizedViewportHeight)
   const normalizedCurrentScrollTop = Number.isFinite(currentScrollTop)
     ? clamp(currentScrollTop, 0, maximumScrollTop)
     : 0
-  const rowStart = index * normalizedRowHeight
+  const rowStart = normalizedLeadingHeight + (index * normalizedRowHeight)
   const startOffset = clamp(rowStart, 0, maximumScrollTop)
   const endOffset = clamp(rowStart + normalizedRowHeight - normalizedViewportHeight, 0, maximumScrollTop)
   const centerOffset = clamp(

@@ -5205,6 +5205,38 @@ body:has(.fullscreen-overlay) .controller-hints {
   overflow: hidden;
 }
 
+/* Page-scroll mode: the surrounding detail view owns the scrollport, the rows
+   canvas renders at full height, and FixedRowList windows against the page.
+   Every declaration here is load-bearing:
+   - flex:0 0 auto overrides .track-list's flex-basis:0, which would otherwise
+     collapse the list to zero height inside an auto-height flex column.
+   - overflow:visible is required for the sticky header; with the inherited
+     overflow:hidden, .track-list becomes the sticky scrollport and the header
+     scrolls away with the content.
+   - the !important beats .track-list-virtualized's overflow-x:hidden, which
+     would compute overflow-y to auto and reintroduce a nested scrollbar. */
+.track-list-page-scroll {
+  display: block;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.track-list-page-scroll > .track-list-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-primary);
+}
+
+.track-list-page-scroll > .track-list-body {
+  flex: none;
+  overflow: visible;
+}
+
+.track-list-page-scroll .track-list-virtualized {
+  overflow: visible !important;
+}
+
 .track-list-header {
   display: flex;
   align-items: center;
@@ -6436,13 +6468,16 @@ body:has(.fullscreen-overlay) .controller-hints {
 /* ============================================
    Year Detail Albums + Tracks
    ============================================ */
+/* Sole scrollport for the year page — see .library-artist-detail. */
 .library-year-detail {
+  position: relative;
   flex: 1;
   min-height: 0;
   min-width: 0;
   width: 100%;
   overflow-y: auto;
   overflow-x: hidden;
+  scroll-padding-top: 34px;
 }
 
 .year-detail-section {
@@ -6639,8 +6674,6 @@ body:has(.fullscreen-overlay) .controller-hints {
 
 .year-detail-tracks {
   box-sizing: border-box;
-  height: 100%;
-  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -6701,11 +6734,20 @@ body:has(.fullscreen-overlay) .controller-hints {
 /* ============================================
    Artist Detail Albums Rail
    ============================================ */
+/* Sole scrollport for the artist page: the rail and the track list scroll
+   together. position:relative makes this the offsetParent FixedRowList
+   measures against; scroll-padding-top keeps scrolled-to rows clear of the
+   sticky column header. */
 .library-artist-detail {
+  position: relative;
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
   overflow-x: hidden;
+  scroll-padding-top: 34px;
 }
 
 .library-artist-rail {
@@ -6714,12 +6756,7 @@ body:has(.fullscreen-overlay) .controller-hints {
   gap: 10px;
   padding: 12px 16px 10px;
   border-bottom: 1px solid var(--glass-border);
-}
-
-.library-artist-detail > .track-list {
-  box-sizing: border-box;
-  height: 100%;
-  min-height: 0;
+  flex: 0 0 auto;
 }
 
 .library-artist-rail-header {

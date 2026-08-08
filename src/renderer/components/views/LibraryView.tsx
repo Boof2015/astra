@@ -30,7 +30,7 @@ import {
   formatLibraryYearKey,
   type LibraryYearGroup
 } from '../../utils/libraryYears'
-import TrackList, { type TrackListSortKey, type TrackListViewportAPI } from '../library/TrackList'
+import TrackList, { type TrackListSortKey } from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
 import QueueSplitButton from '../queue/QueueSplitButton'
 import AlbumGrid, { type AlbumGridViewportAPI } from '../library/AlbumGrid'
@@ -271,9 +271,7 @@ export default function LibraryView() {
   const albumViewportRef = useRef<AlbumGridViewportAPI | null>(null)
   const albumGridScrollRef = useRef(0)
   const yearDetailViewportRef = useRef<HTMLDivElement | null>(null)
-  const yearDetailTrackViewportRef = useRef<TrackListViewportAPI | null>(null)
   const yearDetailScrollRef = useRef(0)
-  const yearDetailTrackScrollRef = useRef(0)
   const artistViewportRef = useRef<ArtistListViewportAPI | null>(null)
   const artistScrollRef = useRef(0)
   const genreViewportRef = useRef<GenreGridViewportAPI | null>(null)
@@ -511,9 +509,6 @@ export default function LibraryView() {
       pendingScrollRef.current = null
     } else if (pending === 'year-detail' && yearDetailViewportRef.current) {
       yearDetailViewportRef.current.scrollTop = yearDetailScrollRef.current
-      if (yearDetailTrackViewportRef.current?.element) {
-        yearDetailTrackViewportRef.current.element.scrollTop = yearDetailTrackScrollRef.current
-      }
       pendingScrollRef.current = null
     }
   })
@@ -612,7 +607,6 @@ export default function LibraryView() {
   const handleSelectAlbumFromGrid = useCallback((album: { album: string; artist: string; identity_key: string }) => {
     if (selectedYear !== null) {
       yearDetailScrollRef.current = yearDetailViewportRef.current?.scrollTop ?? 0
-      yearDetailTrackScrollRef.current = yearDetailTrackViewportRef.current?.element?.scrollTop ?? 0
       setSearchQuery('')
     } else {
       albumGridScrollRef.current = albumViewportRef.current?.element?.scrollTop ?? 0
@@ -1437,6 +1431,7 @@ export default function LibraryView() {
           className="library-year-detail"
           ref={yearDetailViewportRef}
           data-controller-scroll
+          data-track-list-scroll-container
         >
           <YearAlbumPreview
             key={`year-albums:${selectedYear}`}
@@ -1465,7 +1460,7 @@ export default function LibraryView() {
                 showAddedDate={showTracklistAddedDate}
                 showNewTrackIndicator
                 trackNumberMode="none"
-                viewportRef={yearDetailTrackViewportRef}
+                pageScroll
                 enableColumnSorting
                 sortState={sortState}
                 onSortColumnToggle={handleSortColumnToggle}
@@ -1494,7 +1489,11 @@ export default function LibraryView() {
           : 'No primary albums found in indexed albums.'
 
       return (
-        <div className="library-artist-detail">
+        <div
+          className="library-artist-detail"
+          data-controller-scroll
+          data-track-list-scroll-container
+        >
           <section
             className="library-artist-rail"
             data-controller-group="artist-albums"
@@ -1613,6 +1612,7 @@ export default function LibraryView() {
             showNewTrackIndicator
             showDiscHeaders={showSelectedAlbumDiscHeaders}
             trackNumberMode={selectedAlbum ? 'album' : 'none'}
+            pageScroll
             enableColumnSorting
             sortState={sortState}
             onSortColumnToggle={handleSortColumnToggle}

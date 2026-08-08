@@ -103,6 +103,10 @@ interface TrackListProps {
   trackInstanceKeys?: readonly string[]
   playlistEntryIds?: readonly (number | null)[]
   queueSeedIndexes?: readonly (number | null)[]
+  // Hands the scrollport to the surrounding detail view: rows render as a
+  // full-height canvas and window against the page scroller instead of the
+  // list owning its own nested scrollbar.
+  pageScroll?: boolean
   viewportRef?: Ref<TrackListViewportAPI>
   playlistSourceId?: number | null
   onChangeMissingPlaylistAssociation?: (trackPath: string, entryId?: number | null) => void | Promise<void>
@@ -185,6 +189,15 @@ const TRACK_ROW_HEIGHT_FALLBACK_PX = 48
 const TRACK_DISC_HEADER_HEIGHT_FALLBACK_PX = 30
 const TRACK_LIST_OVERSCAN_COUNT = 4
 const TRACK_SELECTION_DRAG_THRESHOLD_PX = 6
+// Deliberately its own attribute rather than reusing data-controller-scroll,
+// so moving controller-navigation markers around can never silently break
+// virtualization. Module scope keeps the identity stable for dependency arrays.
+const TRACK_LIST_PAGE_SCROLL_SELECTOR = '[data-track-list-scroll-container]'
+
+function resolveTrackListPageScrollElement(listElement: HTMLElement): HTMLDivElement | null {
+  return listElement.closest<HTMLDivElement>(TRACK_LIST_PAGE_SCROLL_SELECTOR)
+}
+
 const trackAddedDateFormatter = new Intl.DateTimeFormat(undefined, {
   month: 'numeric',
   day: 'numeric',
@@ -857,6 +870,7 @@ export default function TrackList({
   trackInstanceKeys,
   playlistEntryIds,
   queueSeedIndexes,
+  pageScroll = false,
   viewportRef,
   playlistSourceId = null,
   onChangeMissingPlaylistAssociation,
@@ -949,9 +963,12 @@ export default function TrackList({
   }), [])
 
   const virtualRows = useMemo(() => {
-    if (!showDiscHeaders) return null
+    // Page-scroll mode is served by FixedRowList, which assumes a uniform row
+    // height. Callers that use it never request disc headers today; coercing
+    // here keeps that invariant explicit rather than latent.
+    if (!showDiscHeaders || pageScroll) return null
     return buildTrackListRows(tracks, true)
-  }, [showDiscHeaders, tracks])
+  }, [pageScroll, showDiscHeaders, tracks])
   const virtualRowIndexByTrackPath = useMemo(() => {
     if (!virtualRows) return null
     const indexByPath = new Map<string, number>()
@@ -1104,11 +1121,15 @@ export default function TrackList({
     if (!element) return
 
     const updateMeasurements = () => {
-      const nextHeight = Math.max(0, Math.round(element.clientHeight))
       const nextRowHeight = resolveTrackRowHeightPx(element)
       const nextDiscHeaderHeight = resolveTrackDiscHeaderHeightPx(element)
 
-      setListViewportHeight((previous) => (previous === nextHeight ? previous : nextHeight))
+      // In page-scroll mode the body's clientHeight is the full rows canvas,
+      // not a viewport, so FixedRowList measures the page scroller instead.
+      if (!pageScroll) {
+        const nextHeight = Math.max(0, Math.round(element.clientHeight))
+        setListViewportHeight((previous) => (previous === nextHeight ? previous : nextHeight))
+      }
       setTrackRowHeight((previous) => (previous === nextRowHeight ? previous : nextRowHeight))
       setDiscHeaderHeight((previous) => (previous === nextDiscHeaderHeight ? previous : nextDiscHeaderHeight))
     }
@@ -1130,7 +1151,7 @@ export default function TrackList({
     return () => {
       resizeObserver.disconnect()
     }
-  }, [])
+  }, [pageScroll])
 
   const manualQueueItemsById = useMemo(() => {
     const itemsById = new Map<string, QueueItem>()
@@ -2227,7 +2248,7 @@ export default function TrackList({
 
   return (
     <div
-      className={`track-list ${queueInsertPreview ? 'track-list-queue-insert-dragging' : ''}`}
+      className={`track-list ${pageScroll ? 'track-list-page-scroll' : ''} ${queueInsertPreview ? 'track-list-queue-insert-dragging' : ''}`}
       ref={controllerGroupRef}
       data-controller-group="tracks"
       data-controller-axis="vertical"
@@ -2264,7 +2285,9 @@ export default function TrackList({
       <div
         className="track-list-body"
         ref={listBodyRef}
-        data-controller-scroll
+        // In page-scroll mode this element no longer scrolls; leaving the
+        // marker on would make controller page-scroll resolve to it and no-op.
+        data-controller-scroll={pageScroll ? undefined : true}
       >
         {virtualRows ? (
           <List
@@ -2286,11 +2309,12 @@ export default function TrackList({
             listRef={listRef}
             onScroll={handleListScroll}
             overscanCount={TRACK_LIST_OVERSCAN_COUNT}
+            resolveScrollElement={pageScroll ? resolveTrackListPageScrollElement : undefined}
             rowComponent={TrackListRow}
             rowCount={tracks.length}
             rowHeight={trackRowHeight}
             rowProps={rowProps}
-            style={{ height: listHeight, width: '100%' }}
+            style={pageScroll ? { width: '100%' } : { height: listHeight, width: '100%' }}
           />
         )}
       </div>
