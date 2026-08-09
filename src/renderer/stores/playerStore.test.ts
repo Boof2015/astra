@@ -4171,7 +4171,10 @@ test('successful Standard playback emits one complete playback-attempt timing ev
         },
         onProgressiveLoadProgress: () => () => undefined,
         supersedeTrackLoudness: async () => undefined,
-        getAudioFileStat: async () => null,
+        getAudioFileStat: async () => {
+          await new Promise<void>((resolve) => setTimeout(resolve, 5))
+          return null
+        },
         decodeLocalAudioToPcm: async () => null,
         loadAudioFile: async () => ({ data: new ArrayBuffer(16) }),
         decodeAudioWithFfmpeg: async () => null,
@@ -4250,10 +4253,22 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     rendererPcmAssemblyCopyMs: 7,
     rendererPortRequestMs: 215,
     streamTransportResidualMs: 55,
+    audioEngineStandardPipelineMs: 442,
+    standardTransportSetupMs: 22,
+    standardContextReadyMs: 18,
+    standardDecodeRequestSetupMs: 4,
     webAudioBufferAllocationMs: 3,
     pcmDeinterleaveMs: 9,
+    pcmDestinationViewMs: 1,
+    pcmCopySetupMs: 0.5,
+    pcmChannelCopyTotalMs: 6,
+    pcmChannelCopyMaxMs: 3.5,
+    pcmChannelCopyByChannelMs: [2.5, 3.5],
+    pcmPayloadReleaseMs: 0.25,
+    pcmDeinterleaveResidualMs: 1.25,
     pcmCommitMs: 2,
     postDeliveryCommitMs: 48,
+    standardPipelineResidualMs: 2,
     standardLoadPipelineMs: 372
   })
   Object.defineProperty(audioEngine, 'currentTime', { configurable: true, get: () => 0 })
@@ -4299,6 +4314,30 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     assert.equal(details.configuredOutputDelayMs, useAudioSettingsStore.getState().effectiveDelayMs)
 
     for (const field of [
+      'commandToLoadEnqueueMs',
+      'transitionQueueWaitMs',
+      'playbackModeCheckMs',
+      'routeDecisionMs',
+      'standardPreDecodeSetupMs',
+      'standardPostDecodeSetupMs',
+      'seekBeforePlayMs',
+      'commandPhaseAccountedMs',
+      'commandPhaseResidualMs'
+    ]) {
+      assert.equal(typeof details[field], 'number', `expected numeric command phase: ${field}`)
+      assert.ok(Number(details[field]) >= 0, `expected non-negative command phase: ${field}`)
+    }
+    assert.ok(Number(details.routeDecisionMs) >= 3, 'the gated file-stat route decision should be measured')
+    assert.ok(Number(details.playbackModeCheckMs) <= Number(details.standardPreDecodeSetupMs))
+    assert.ok(Number(details.routeDecisionMs) <= Number(details.standardPreDecodeSetupMs))
+    assert.ok(Number(details.seekBeforePlayMs) <= Number(details.standardPostDecodeSetupMs))
+    assert.ok(Math.abs(
+      Number(details.commandPhaseAccountedMs)
+      + Number(details.commandPhaseResidualMs)
+      - Number(details.commandToScheduledPlayMs)
+    ) <= 1, 'disjoint command phases should reconcile to the rounded scheduled-play endpoint')
+
+    for (const field of [
       'attemptId',
       'loadRequestId',
       'prebufferRequestId',
@@ -4311,6 +4350,15 @@ test('successful Standard playback emits one complete playback-attempt timing ev
       'queuePreparationMs',
       'selectedTrackHydrationMs',
       'supersededLoadWaitMs',
+      'commandToLoadEnqueueMs',
+      'transitionQueueWaitMs',
+      'playbackModeCheckMs',
+      'routeDecisionMs',
+      'standardPreDecodeSetupMs',
+      'standardPostDecodeSetupMs',
+      'seekBeforePlayMs',
+      'commandPhaseAccountedMs',
+      'commandPhaseResidualMs',
       'prebufferStatus',
       'fileReadMs',
       'decodeMs',
@@ -4349,10 +4397,22 @@ test('successful Standard playback emits one complete playback-attempt timing ev
       'rendererPcmAssemblyCopyMs',
       'rendererPortRequestMs',
       'streamTransportResidualMs',
+      'audioEngineStandardPipelineMs',
+      'standardTransportSetupMs',
+      'standardContextReadyMs',
+      'standardDecodeRequestSetupMs',
       'webAudioBufferAllocationMs',
       'pcmDeinterleaveMs',
+      'pcmDestinationViewMs',
+      'pcmCopySetupMs',
+      'pcmChannelCopyTotalMs',
+      'pcmChannelCopyMaxMs',
+      'pcmChannelCopyByChannelMs',
+      'pcmPayloadReleaseMs',
+      'pcmDeinterleaveResidualMs',
       'pcmCommitMs',
       'postDeliveryCommitMs',
+      'standardPipelineResidualMs',
       'nativeBinaryResolutionMs',
       'nativeProbeMs',
       'nativeDecodeMs',
@@ -4387,8 +4447,35 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     )
     assert.equal(trackLoad.details?.ffmpegPcmOutputSpanMs, details.ffmpegPcmOutputSpanMs)
     assert.equal(trackLoad.details?.ffmpegCloseTailMs, details.ffmpegCloseTailMs)
+    assert.equal(trackLoad.details?.audioEngineStandardPipelineMs, 442)
+    assert.equal(trackLoad.details?.standardTransportSetupMs, 22)
+    assert.equal(trackLoad.details?.standardContextReadyMs, 18)
+    assert.equal(trackLoad.details?.standardDecodeRequestSetupMs, 4)
+    assert.deepEqual(trackLoad.details?.pcmChannelCopyByChannelMs, [2.5, 3.5])
+    assert.equal(trackLoad.details?.pcmDeinterleaveResidualMs, 1.25)
+    assert.equal(trackLoad.details?.standardPipelineResidualMs, 2)
+    assert.equal(
+      Number(trackLoad.details?.standardTransportSetupMs)
+        + Number(trackLoad.details?.rendererBridgeCallMs)
+        + Number(trackLoad.details?.postDeliveryCommitMs)
+        + Number(trackLoad.details?.standardPipelineResidualMs),
+      trackLoad.details?.audioEngineStandardPipelineMs,
+    )
     assert.equal(trackLoad.details?.decodeMs, trackLoad.details?.standardLoadPipelineMs)
     assert.equal(trackLoad.details?.decodeOnlyMs, trackLoad.details?.decodeWorkMs)
+    for (const field of [
+      'commandToLoadEnqueueMs',
+      'transitionQueueWaitMs',
+      'playbackModeCheckMs',
+      'routeDecisionMs',
+      'standardPreDecodeSetupMs',
+      'standardPostDecodeSetupMs',
+      'seekBeforePlayMs',
+      'commandPhaseAccountedMs',
+      'commandPhaseResidualMs'
+    ]) {
+      assert.equal(trackLoad.details?.[field], details[field], `mismatched command phase: ${field}`)
+    }
     assert.notEqual(completions[0]?.options?.captureSample, false)
   } finally {
     usePlayerStore.getState()._cleanupListeners()
@@ -4748,12 +4835,30 @@ test('rapid Standard skips coalesce queued loads while preserving every queue tr
   const firstLoad = createDeferred<'loaded' | 'superseded'>()
   const finalLoad = createDeferred<'loaded' | 'superseded'>()
   const loadCalls: string[] = []
+  const dispatchedPhaseSnapshots: Array<{
+    commandToLoadEnqueueMs: number | null
+    transitionQueueWaitMs: number | null
+    supersededLoadWaitMs: number
+  }> = []
   const scheduledTimers = new Map<number, { callback: TimerHandler; delay: number }>()
   let nextTimerId = 0
 
   usePlayerStore.setState({
-    _loadAndPlayTrack: async (track) => {
+    _loadAndPlayTrack: async (track, options) => {
       loadCalls.push(track.path)
+      const attempt = (options as unknown as {
+        attempt?: {
+          commandToLoadEnqueueMs: number | null
+          transitionQueueWaitMs: number | null
+          supersededLoadWaitMs: number
+        }
+      } | undefined)?.attempt
+      assert.ok(attempt)
+      dispatchedPhaseSnapshots.push({
+        commandToLoadEnqueueMs: attempt.commandToLoadEnqueueMs,
+        transitionQueueWaitMs: attempt.transitionQueueWaitMs,
+        supersededLoadWaitMs: attempt.supersededLoadWaitMs
+      })
       if (track.path === tracks[1]!.path) return firstLoad.promise
       if (track.path === tracks[3]!.path) return finalLoad.promise
       return 'loaded'
@@ -4786,6 +4891,16 @@ test('rapid Standard skips coalesce queued loads while preserving every queue tr
     await flushAsyncWork(1)
 
     assert.deepEqual(loadCalls, [tracks[1]!.path, tracks[3]!.path])
+    assert.equal(dispatchedPhaseSnapshots.length, 2)
+    for (const snapshot of dispatchedPhaseSnapshots) {
+      assert.equal(typeof snapshot.commandToLoadEnqueueMs, 'number')
+      assert.equal(typeof snapshot.transitionQueueWaitMs, 'number')
+      assert.ok(Number(snapshot.commandToLoadEnqueueMs) >= 0)
+      assert.ok(Number(snapshot.transitionQueueWaitMs) >= 0)
+      // playNext has no stale-prebuffer wait, so the compatibility aggregate
+      // must retain its old value and exactly match the newly isolated queue wait.
+      assert.equal(snapshot.supersededLoadWaitMs, snapshot.transitionQueueWaitMs)
+    }
     assert.equal(loadCalls.includes(tracks[2]!.path), false, 'the replaced intermediate target must never load')
     assert.equal(usePlayerStore.getState().currentQueueItemId, items[3]!.queueId)
     assert.deepEqual(

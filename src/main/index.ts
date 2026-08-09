@@ -105,6 +105,7 @@ import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
 import { LibraryDiagnosticsService } from './services/libraryDiagnostics'
 import { collectAppMemoryFootprint } from './services/appMemoryFootprint'
+import { createCachedAudioBinaryResolver } from './audioBinaryResolver'
 import { normalizeStatsShareFileName, validateStatsSharePng } from './services/statsShareImage'
 import { normalizeSignalShareFileName, validateSignalSharePng } from './services/signalShareImage'
 import { getMusicMetadataParseOptions } from './utils/musicMetadata'
@@ -4441,8 +4442,18 @@ function createWindow(): void {
     mainWindow.maximize()
   }
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow?.show()
+  const createdMainWindow = mainWindow
+  createdMainWindow.on('ready-to-show', () => {
+    if (createdMainWindow.isDestroyed()) return
+    createdMainWindow.show()
+    // Let the first visible frame win. Binary discovery then runs in the
+    // background and shares its in-flight work with an immediate playback
+    // request instead of making that request launch duplicate probes.
+    const warmupImmediate = setImmediate(() => {
+      if (isAppQuitting || createdMainWindow.isDestroyed()) return
+      void warmLocalAudioBinaries()
+    })
+    warmupImmediate.unref()
   })
 
   mainWindow.on('app-command', (event, command) => {
@@ -9343,9 +9354,42 @@ interface FfprobeAudioMetadata {
   hints: string[]
 }
 
-const binaryPathCache: Record<'ffmpeg' | 'ffprobe', string | null | undefined> = {
-  ffmpeg: undefined,
-  ffprobe: undefined
+const resolveBinary = createCachedAudioBinaryResolver(resolveBinaryUncached)
+let localAudioBinaryWarmupPromise: Promise<void> | null = null
+
+function warmLocalAudioBinaries(): Promise<void> {
+  if (localAudioBinaryWarmupPromise) return localAudioBinaryWarmupPromise
+
+  const startedAtMs = mainDiagnosticNow()
+  localAudioBinaryWarmupPromise = Promise.all([
+    resolveBinary('ffmpeg'),
+    resolveBinary('ffprobe')
+  ]).then(([ffmpegPath, ffprobePath]) => {
+    deferLocalAudioBinaryWarmupEvent('local_audio_binary_warmup_completed', {
+      durationMs: roundMainDiagnosticMs(mainDiagnosticNow() - startedAtMs),
+      ffmpegResolved: Boolean(ffmpegPath),
+      ffprobeResolved: Boolean(ffprobePath)
+    })
+  }).catch((error) => {
+    deferLocalAudioBinaryWarmupEvent('local_audio_binary_warmup_failed', {
+      durationMs: roundMainDiagnosticMs(mainDiagnosticNow() - startedAtMs),
+      message: error instanceof Error ? error.message : String(error)
+    })
+  })
+
+  return localAudioBinaryWarmupPromise
+}
+
+function deferLocalAudioBinaryWarmupEvent(
+  name: 'local_audio_binary_warmup_completed' | 'local_audio_binary_warmup_failed',
+  details: Record<string, unknown>
+): void {
+  // If playback joined the same in-flight resolver, allow its Promise chain to
+  // resume before diagnostics performs even the lightweight CSV append.
+  const diagnosticsImmediate = setImmediate(() => {
+    logMemoryDiagnosticsMainEvent(name, details, { captureSample: false })
+  })
+  diagnosticsImmediate.unref()
 }
 
 const LOCAL_PCM_DECODE_MAX_BYTES = LOCAL_PCM_STREAM_MAX_BYTES
@@ -10166,12 +10210,7 @@ function execFileAsync(command: string, args: string[], options: ExecFileOptions
   })
 }
 
-async function resolveBinary(binary: 'ffmpeg' | 'ffprobe'): Promise<string | null> {
-  const cached = binaryPathCache[binary]
-  if (cached !== undefined) {
-    return cached
-  }
-
+async function resolveBinaryUncached(binary: 'ffmpeg' | 'ffprobe'): Promise<string | null> {
   const isWindows = process.platform === 'win32'
   const executable = `${binary}${isWindows ? '.exe' : ''}`
   const packagedStaticCandidates = isDev
@@ -10210,14 +10249,11 @@ async function resolveBinary(binary: 'ffmpeg' | 'ffprobe'): Promise<string | nul
     }
     try {
       await execFileAsync(candidate, ['-version'], { timeout: 4000, maxBuffer: 64 * 1024 })
-      binaryPathCache[binary] = candidate
       return candidate
     } catch {
       // Try next candidate.
     }
   }
-
-  binaryPathCache[binary] = null
   return null
 }
 

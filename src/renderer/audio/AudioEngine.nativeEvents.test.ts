@@ -34,6 +34,9 @@ type PcmRendererDeliveryTiming = {
   rendererBridgeCallMs: number
   deliveredAt: number
   pipelineStartedAt: number
+  standardTransportSetupMs: number
+  standardContextReadyMs: number
+  standardDecodeRequestSetupMs: number
 }
 
 type AudioEngineInternals = {
@@ -42,6 +45,7 @@ type AudioEngineInternals = {
   nativeLifecycleSuppressionTokens: Set<number>
   nativeCurrentPlaybackSequence: number | null
   nativeNextPlaybackSequence: number | null
+  audioBuffer: AudioBuffer | null
   currentBufferTrackPath: string | null
   nextBufferTrackPath: string | null
   nativeNextTrackBuffered: boolean
@@ -60,6 +64,7 @@ type AudioEngineInternals = {
   refreshNativeCapabilities: () => Promise<void>
   refreshNativeSnapshot: () => Promise<NativeAudioPlaybackSnapshot | null>
   syncNativeScopePolling: () => void
+  scheduleGaplessTransition: () => void
   _normalizationEnabled: boolean
   _replayGainEnabled: boolean
   resolveLoudnessAnalysisForLoad: (
@@ -90,6 +95,13 @@ type AudioEngineInternals = {
       backingBufferBytes: number
       webAudioBufferAllocationMs: number
       pcmDeinterleaveMs: number
+      pcmDestinationViewMs: number
+      pcmCopySetupMs: number
+      pcmChannelCopyTotalMs: number
+      pcmChannelCopyMaxMs: number
+      pcmChannelCopyByChannelMs: number[]
+      pcmPayloadReleaseMs: number
+      pcmDeinterleaveResidualMs: number
     },
     loudnessMs: number,
     delivery?: PcmRendererDeliveryTiming,
@@ -178,7 +190,13 @@ function makeStreamPcmResult(requestId: number, left = 0.25): LocalPcmStreamDeco
       mainHandlerMs: 30,
       binaryResolutionMs: 1,
       probeMs: 4,
+      probeCacheStatus: 'hit',
+      probeDecodeOverlapEnabled: true,
+      probeFfmpegOverlapMs: 3,
       ffmpegMs: 20,
+      ffmpegSpawnToFirstPcmMs: 4,
+      ffmpegPcmOutputSpanMs: 14,
+      ffmpegCloseTailMs: 2,
       allocationMs: 2,
       initialAllocationMs: 2,
       growthAllocationMs: 0,
@@ -230,11 +248,21 @@ test('Standard PCM timings keep allocation, deinterleave, loudness, and transpor
     backingBufferBytes: 16,
     webAudioBufferAllocationMs: 7,
     pcmDeinterleaveMs: 11,
+    pcmDestinationViewMs: 0.5,
+    pcmCopySetupMs: 0.25,
+    pcmChannelCopyTotalMs: 9,
+    pcmChannelCopyMaxMs: 5,
+    pcmChannelCopyByChannelMs: [4, 5],
+    pcmPayloadReleaseMs: 0.25,
+    pcmDeinterleaveResidualMs: 1,
   }, 13, {
     decodeRequestId: requestId,
     rendererBridgeCallMs: 181,
     deliveredAt: 500,
     pipelineStartedAt: 300,
+    standardTransportSetupMs: 18,
+    standardContextReadyMs: 16,
+    standardDecodeRequestSetupMs: 2,
   })
 
   assert.equal(timings.decodeRequestId, requestId)
@@ -242,6 +270,16 @@ test('Standard PCM timings keep allocation, deinterleave, loudness, and transpor
   assert.equal(timings.backingBufferBytes, 16)
   assert.equal(timings.webAudioBufferAllocationMs, 7)
   assert.equal(timings.pcmDeinterleaveMs, 11)
+  assert.equal(timings.pcmDestinationViewMs, 0.5)
+  assert.equal(timings.pcmCopySetupMs, 0.25)
+  assert.equal(timings.pcmChannelCopyTotalMs, 9)
+  assert.equal(timings.pcmChannelCopyMaxMs, 5)
+  assert.deepEqual(timings.pcmChannelCopyByChannelMs, [4, 5])
+  assert.equal(timings.pcmPayloadReleaseMs, 0.25)
+  assert.equal(timings.pcmDeinterleaveResidualMs, 1)
+  assert.equal(timings.standardTransportSetupMs, 18)
+  assert.equal(timings.standardContextReadyMs, 16)
+  assert.equal(timings.standardDecodeRequestSetupMs, 2)
   assert.equal(timings.pcmAllocationMs, 4)
   assert.equal(timings.initialPcmAllocationMs, 3)
   assert.equal(timings.growthPcmAllocationMs, 1)
@@ -730,6 +768,9 @@ test('Standard PCM stream success preserves request correlation and skips legacy
     assert.equal(committed[0]?.delivery?.decodeRequestId, 1)
     assert.equal(committed[0]?.pcm.transportTimings?.decodeRequestId, 1)
     assert.equal(committed[0]?.pcm.transportTimings?.transportRoute, 'message_port_stream')
+    assert.equal(committed[0]?.pcm.transportTimings?.probeCacheStatus, 'hit')
+    assert.equal(committed[0]?.pcm.transportTimings?.probeDecodeOverlapEnabled, true)
+    assert.equal(committed[0]?.pcm.transportTimings?.probeFfmpegOverlapMs, 3)
     assert.deepEqual(
       Array.from(new Float32Array(committed[0]?.pcm.interleavedPcm)),
       Array.from(Float32Array.from([0.4, -0.4])),
@@ -845,8 +886,8 @@ test('concurrent current and prebuffer PCM streams keep request results isolated
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
   const pending = new Map<number, Deferred<LocalPcmStreamDecodeResult>>()
   const requests: LocalPcmStreamDecodeRequest[] = []
-  const currentCommits: Array<{ path: string; requestId: number | undefined }> = []
-  const prebufferCommits: Array<{ path: string; requestId: number | undefined }> = []
+  const currentCommits: Array<{ path: string; delivery: PcmRendererDeliveryTiming | undefined }> = []
+  const prebufferCommits: Array<{ path: string; delivery: PcmRendererDeliveryTiming | undefined }> = []
   const mainCancelled: number[] = []
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
@@ -870,16 +911,16 @@ test('concurrent current and prebuffer PCM streams keep request results isolated
     pending.set(request.requestId, deferred)
     return deferred.promise
   })
-  internals.loadPcmDataForOperation = async (pcm, options, _generation, delivery) => {
+  internals.loadPcmDataForOperation = async (_pcm, options, _generation, delivery) => {
     currentCommits.push({
       path: options.trackPath ?? '',
-      requestId: delivery?.decodeRequestId ?? (pcm as { requestId?: number }).requestId,
+      delivery,
     })
   }
-  internals.commitNextPcmBuffer = async (pcm, options, _generation, delivery) => {
+  internals.commitNextPcmBuffer = async (_pcm, options, _generation, delivery) => {
     prebufferCommits.push({
       path: options.trackPath ?? '',
-      requestId: delivery?.decodeRequestId ?? (pcm as { requestId?: number }).requestId,
+      delivery,
     })
   }
   const currentTrack = makeLocalPcmTrack('stream-current')
@@ -908,13 +949,138 @@ test('concurrent current and prebuffer PCM streams keep request results isolated
     )
     assert.equal(await currentLoad, 'loaded')
 
-    assert.deepEqual(prebufferCommits, [{ path: nextTrack.path, requestId: prebufferRequest.requestId }])
-    assert.deepEqual(currentCommits, [{ path: currentTrack.path, requestId: currentRequest.requestId }])
+    assert.equal(prebufferCommits[0]?.path, nextTrack.path)
+    assert.equal(prebufferCommits[0]?.delivery?.decodeRequestId, prebufferRequest.requestId)
+    assert.equal(currentCommits[0]?.path, currentTrack.path)
+    assert.equal(currentCommits[0]?.delivery?.decodeRequestId, currentRequest.requestId)
+    for (const commit of [...prebufferCommits, ...currentCommits]) {
+      const delivery = commit.delivery
+      assert.ok(delivery)
+      assert.ok(delivery.standardTransportSetupMs >= 0)
+      assert.ok(delivery.standardContextReadyMs >= 0)
+      assert.ok(delivery.standardDecodeRequestSetupMs >= 0)
+      assert.ok(delivery.standardContextReadyMs <= delivery.standardTransportSetupMs)
+      assert.ok(delivery.standardDecodeRequestSetupMs <= delivery.standardTransportSetupMs)
+      assert.ok(
+        Math.abs(
+          delivery.standardTransportSetupMs
+            - delivery.standardContextReadyMs
+            - delivery.standardDecodeRequestSetupMs,
+        ) < 0.001,
+      )
+    }
     assert.deepEqual(mainCancelled, [])
   } finally {
     for (const [requestId, deferred] of pending) {
       deferred.resolve(makeStreamPcmResult(requestId))
     }
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
+})
+
+test('timing-rich Standard PCM prebuffer preserves current playback and Parallax while scheduling gapless', async () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const requests: unknown[][] = []
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      electronAPI: {
+        decodeLocalAudioToPcm: async (...args: unknown[]) => {
+          requests.push(args)
+          const requestId = args[0] as number
+          return Object.freeze(makeLocalPcmResult(
+            requestId,
+            0.6,
+            Object.freeze(makeTransportTimings(requestId, { transportRoute: 'invoke' })),
+          ))
+        },
+        cancelLocalAudioDecode: async () => undefined,
+      },
+    },
+  })
+
+  const destinationChannels = [new Float32Array(1), new Float32Array(1)]
+  const currentBuffer = { duration: 180, numberOfChannels: 2 } as AudioBuffer
+  internals.context = {
+    sampleRate: 48_000,
+    createBuffer: () => ({
+      duration: 1 / 48_000,
+      length: 1,
+      numberOfChannels: 2,
+      sampleRate: 48_000,
+      getChannelData: (channel: number) => destinationChannels[channel],
+    }),
+  } as unknown as AudioContext
+  internals.initContext = async () => undefined
+  internals.resolveLoudnessAnalysisForLoad = async () => null
+  internals._playbackState = 'playing'
+  internals.audioBuffer = currentBuffer
+  internals.currentBufferTrackPath = '/pcm/current-playing.flac'
+  internals.loadGeneration = 101
+  internals.prebufferGeneration = 202
+  internals.parallaxHostPublishGeneration = 303
+  let gaplessSchedules = 0
+  internals.scheduleGaplessTransition = () => {
+    gaplessSchedules += 1
+  }
+  const nextTrack = makeLocalPcmTrack('diagnostic-rich-next')
+
+  try {
+    assert.equal(
+      await engine.preBufferNextStandardTrackFromPath(nextTrack, { priority: 'background' }),
+      'loaded',
+    )
+
+    assert.deepEqual(requests, [[1, nextTrack.path, 48_000, 2, 'background']])
+    assert.equal(internals.loadGeneration, 101)
+    assert.equal(internals.prebufferGeneration, 203)
+    assert.equal(internals.parallaxHostPublishGeneration, 303)
+    assert.equal(internals.audioBuffer, currentBuffer)
+    assert.equal(internals.currentBufferTrackPath, '/pcm/current-playing.flac')
+    assert.equal(engine.nextBufferedTrackPath, nextTrack.path)
+    assert.equal(gaplessSchedules, 1)
+    assert.deepEqual(
+      destinationChannels.map((channel) => Array.from(channel)),
+      [[Math.fround(0.6)], [Math.fround(-0.6)]],
+    )
+
+    const timings = engine.getLastPrebufferLoadTimings()
+    assert.ok(timings)
+    assert.equal(timings.decodeRequestId, 1)
+    assert.equal(timings.probeCacheStatus, 'hit')
+    assert.equal(timings.probeDecodeOverlapEnabled, true)
+    assert.equal(timings.probeFfmpegOverlapMs, 9)
+    assert.equal(timings.ffmpegSpawnToFirstPcmMs, 21)
+    assert.equal(timings.ffmpegPcmOutputSpanMs, 64)
+    assert.equal(timings.ffmpegCloseTailMs, 5)
+    assert.ok((timings.standardTransportSetupMs ?? -1) >= 0)
+    assert.ok((timings.postDeliveryCommitMs ?? -1) >= 0)
+    assert.ok((timings.standardLoadPipelineMs ?? -1) >= 0)
+    assert.equal(timings.audioEngineStandardPipelineMs, timings.standardLoadPipelineMs)
+    assert.ok(Math.abs(
+      (timings.standardTransportSetupMs ?? 0)
+        + (timings.rendererBridgeCallMs ?? 0)
+        + (timings.postDeliveryCommitMs ?? 0)
+        + (timings.standardPipelineResidualMs ?? 0)
+        - (timings.audioEngineStandardPipelineMs ?? 0),
+    ) < 0.001)
+    assert.ok(Math.abs(
+      (timings.pcmDestinationViewMs ?? 0)
+        + (timings.pcmCopySetupMs ?? 0)
+        + (timings.pcmChannelCopyTotalMs ?? 0)
+        + (timings.pcmPayloadReleaseMs ?? 0)
+        + (timings.pcmDeinterleaveResidualMs ?? 0)
+        - (timings.pcmDeinterleaveMs ?? 0),
+    ) < 0.001)
+
+    const returnedChannelTimings = timings.pcmChannelCopyByChannelMs
+    assert.ok(returnedChannelTimings)
+    returnedChannelTimings[0] = 999
+    assert.notEqual(engine.getLastPrebufferLoadTimings()?.pcmChannelCopyByChannelMs?.[0], 999)
+  } finally {
     if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
     else delete (globalThis as Record<string, unknown>).window
   }
@@ -991,6 +1157,11 @@ test('Standard PCM latest-wins cancels stale decode without committing until the
     assert.equal(committedDeliveries[0]?.decodeRequestId, secondRequestId)
     assert.ok(committedDeliveries[0]?.rendererBridgeCallMs >= 0)
     assert.ok(committedDeliveries[0]?.deliveredAt >= committedDeliveries[0]?.pipelineStartedAt)
+    assert.ok((committedDeliveries[0]?.standardTransportSetupMs ?? -1) >= 0)
+    assert.ok(
+      (committedDeliveries[0]?.standardContextReadyMs ?? Number.POSITIVE_INFINITY)
+        <= (committedDeliveries[0]?.standardTransportSetupMs ?? -1),
+    )
     assert.equal(internals.loadGeneration, 42)
     assert.equal(internals.prebufferGeneration, 54)
     assert.equal(internals.parallaxHostPublishGeneration, 68)

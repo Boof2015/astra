@@ -56,6 +56,20 @@ interface PlaybackAttempt {
   queuePreparationMs: number
   selectedTrackHydrationMs: number
   supersededLoadWaitMs: number
+  /** Continuous command-start to transition-enqueue span. */
+  commandToLoadEnqueueMs: number | null
+  /** Disjoint transition enqueue-to-dispatch span. */
+  transitionQueueWaitMs: number | null
+  /** Nested inside standardPreDecodeSetupMs. */
+  playbackModeCheckMs: number | null
+  /** Nested inside standardPreDecodeSetupMs. */
+  routeDecisionMs: number | null
+  /** Player work from load dispatch until the Standard decoder is entered. */
+  standardPreDecodeSetupMs: number | null
+  /** Player work after the Standard decoder returns until backend start. */
+  standardPostDecodeSetupMs: number | null
+  /** Nested inside standardPostDecodeSetupMs. */
+  seekBeforePlayMs: number | null
   prebufferStatus: PrebufferStatus
   completed: boolean
   playingAtMs: number | null
@@ -121,10 +135,22 @@ interface PlaybackAttemptTimings {
   rendererPcmAssemblyCopyMs?: number | null
   rendererPortRequestMs?: number | null
   streamTransportResidualMs?: number | null
+  audioEngineStandardPipelineMs?: number | null
+  standardTransportSetupMs?: number | null
+  standardContextReadyMs?: number | null
+  standardDecodeRequestSetupMs?: number | null
   webAudioBufferAllocationMs?: number | null
   pcmDeinterleaveMs?: number | null
+  pcmDestinationViewMs?: number | null
+  pcmCopySetupMs?: number | null
+  pcmChannelCopyTotalMs?: number | null
+  pcmChannelCopyMaxMs?: number | null
+  pcmChannelCopyByChannelMs?: number[] | null
+  pcmPayloadReleaseMs?: number | null
+  pcmDeinterleaveResidualMs?: number | null
   pcmCommitMs?: number | null
   postDeliveryCommitMs?: number | null
+  standardPipelineResidualMs?: number | null
   nativeBinaryResolutionMs?: number | null
   nativeProbeMs?: number | null
   nativeDecodeMs?: number | null
@@ -166,11 +192,78 @@ function getStandardPcmTimingDetails(timings: AudioLoadTimings | null | undefine
     rendererPcmAssemblyCopyMs: timings?.rendererPcmAssemblyCopyMs ?? null,
     rendererPortRequestMs: timings?.rendererPortRequestMs ?? null,
     streamTransportResidualMs: timings?.streamTransportResidualMs ?? null,
+    audioEngineStandardPipelineMs: timings?.audioEngineStandardPipelineMs ?? null,
+    standardTransportSetupMs: timings?.standardTransportSetupMs ?? null,
+    standardContextReadyMs: timings?.standardContextReadyMs ?? null,
+    standardDecodeRequestSetupMs: timings?.standardDecodeRequestSetupMs ?? null,
     webAudioBufferAllocationMs: timings?.webAudioBufferAllocationMs ?? null,
     pcmDeinterleaveMs: timings?.pcmDeinterleaveMs ?? null,
+    pcmDestinationViewMs: timings?.pcmDestinationViewMs ?? null,
+    pcmCopySetupMs: timings?.pcmCopySetupMs ?? null,
+    pcmChannelCopyTotalMs: timings?.pcmChannelCopyTotalMs ?? null,
+    pcmChannelCopyMaxMs: timings?.pcmChannelCopyMaxMs ?? null,
+    pcmChannelCopyByChannelMs: timings?.pcmChannelCopyByChannelMs
+      ? [...timings.pcmChannelCopyByChannelMs]
+      : null,
+    pcmPayloadReleaseMs: timings?.pcmPayloadReleaseMs ?? null,
+    pcmDeinterleaveResidualMs: timings?.pcmDeinterleaveResidualMs ?? null,
     pcmCommitMs: timings?.pcmCommitMs ?? null,
     postDeliveryCommitMs: timings?.postDeliveryCommitMs ?? null,
+    standardPipelineResidualMs: timings?.standardPipelineResidualMs ?? null,
     decodeWorkMs
+  }
+}
+
+interface PlaybackCommandPhaseDetails {
+  commandToLoadEnqueueMs: number | null
+  transitionQueueWaitMs: number | null
+  playbackModeCheckMs: number | null
+  routeDecisionMs: number | null
+  standardPreDecodeSetupMs: number | null
+  standardPostDecodeSetupMs: number | null
+  seekBeforePlayMs: number | null
+  commandPhaseAccountedMs: number | null
+  commandPhaseResidualMs: number | null
+}
+
+function getPlaybackCommandPhaseDetails(
+  attempt: PlaybackAttempt,
+  standardLoadPipelineMs: number | null | undefined,
+  backendStartMs: number | null | undefined
+): PlaybackCommandPhaseDetails {
+  const rawCommandToScheduledPlayMs = attempt.playingAtMs === null
+    ? null
+    : Math.max(0, attempt.playingAtMs - attempt.commandStartedAtMs)
+  // These are the only disjoint top-level phases. Queue preparation,
+  // hydration, playback-mode checks, route selection, seek, and the legacy
+  // supersededLoadWaitMs aggregate are nested or overlapping diagnostics.
+  const topLevelPhases = [
+    attempt.commandToLoadEnqueueMs,
+    attempt.transitionQueueWaitMs,
+    attempt.standardPreDecodeSetupMs,
+    standardLoadPipelineMs,
+    attempt.standardPostDecodeSetupMs,
+    backendStartMs
+  ]
+  const commandPhaseAccountedMs = topLevelPhases.every(
+    (value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0
+  )
+    ? topLevelPhases.reduce<number>((total, value) => total + (value ?? 0), 0)
+    : null
+  const commandPhaseResidualMs = rawCommandToScheduledPlayMs === null || commandPhaseAccountedMs === null
+    ? null
+    : Math.max(0, rawCommandToScheduledPlayMs - commandPhaseAccountedMs)
+
+  return {
+    commandToLoadEnqueueMs: attempt.commandToLoadEnqueueMs,
+    transitionQueueWaitMs: attempt.transitionQueueWaitMs,
+    playbackModeCheckMs: attempt.playbackModeCheckMs,
+    routeDecisionMs: attempt.routeDecisionMs,
+    standardPreDecodeSetupMs: attempt.standardPreDecodeSetupMs,
+    standardPostDecodeSetupMs: attempt.standardPostDecodeSetupMs,
+    seekBeforePlayMs: attempt.seekBeforePlayMs,
+    commandPhaseAccountedMs,
+    commandPhaseResidualMs
   }
 }
 
@@ -1244,6 +1337,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     queuePreparationMs: details.queuePreparationMs ?? 0,
     selectedTrackHydrationMs: 0,
     supersededLoadWaitMs: details.supersededLoadWaitMs ?? 0,
+    commandToLoadEnqueueMs: null,
+    transitionQueueWaitMs: null,
+    playbackModeCheckMs: null,
+    routeDecisionMs: null,
+    standardPreDecodeSetupMs: null,
+    standardPostDecodeSetupMs: null,
+    seekBeforePlayMs: null,
     prebufferStatus: details.prebufferStatus ?? 'not_applicable',
     completed: false,
     playingAtMs: null,
@@ -1313,9 +1413,17 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     clearCommittedPlaybackTransition(attempt.transitionIdentity)
     const audioSettings = useAudioSettingsStore.getState()
     const completedAtMs = performance.now()
-    const commandToScheduledPlayMs = outcome === 'loaded' && attempt.playingAtMs !== null
-      ? Math.max(0, Math.round(attempt.playingAtMs - attempt.commandStartedAtMs))
+    const rawCommandToScheduledPlayMs = outcome === 'loaded' && attempt.playingAtMs !== null
+      ? Math.max(0, attempt.playingAtMs - attempt.commandStartedAtMs)
       : null
+    const commandToScheduledPlayMs = rawCommandToScheduledPlayMs === null
+      ? null
+      : Math.round(rawCommandToScheduledPlayMs)
+    const commandPhaseDetails = getPlaybackCommandPhaseDetails(
+      attempt,
+      timings.standardLoadPipelineMs,
+      timings.backendStartMs
+    )
     // Compatibility alias: this endpoint has always meant source scheduled/state
     // changed, not hardware-audible output.
     const totalCommandToPlayingMs = commandToScheduledPlayMs
@@ -1332,6 +1440,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       queuePreparationMs: Math.round(attempt.queuePreparationMs),
       selectedTrackHydrationMs: Math.round(attempt.selectedTrackHydrationMs),
       supersededLoadWaitMs: Math.round(attempt.supersededLoadWaitMs),
+      ...commandPhaseDetails,
       prebufferStatus: attempt.prebufferStatus,
       fileReadMs: timings.fileReadMs ?? null,
       decodeMs: timings.decodeMs ?? null,
@@ -1370,10 +1479,22 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       rendererPcmAssemblyCopyMs: timings.rendererPcmAssemblyCopyMs ?? null,
       rendererPortRequestMs: timings.rendererPortRequestMs ?? null,
       streamTransportResidualMs: timings.streamTransportResidualMs ?? null,
+      audioEngineStandardPipelineMs: timings.audioEngineStandardPipelineMs ?? null,
+      standardTransportSetupMs: timings.standardTransportSetupMs ?? null,
+      standardContextReadyMs: timings.standardContextReadyMs ?? null,
+      standardDecodeRequestSetupMs: timings.standardDecodeRequestSetupMs ?? null,
       webAudioBufferAllocationMs: timings.webAudioBufferAllocationMs ?? null,
       pcmDeinterleaveMs: timings.pcmDeinterleaveMs ?? null,
+      pcmDestinationViewMs: timings.pcmDestinationViewMs ?? null,
+      pcmCopySetupMs: timings.pcmCopySetupMs ?? null,
+      pcmChannelCopyTotalMs: timings.pcmChannelCopyTotalMs ?? null,
+      pcmChannelCopyMaxMs: timings.pcmChannelCopyMaxMs ?? null,
+      pcmChannelCopyByChannelMs: timings.pcmChannelCopyByChannelMs ?? null,
+      pcmPayloadReleaseMs: timings.pcmPayloadReleaseMs ?? null,
+      pcmDeinterleaveResidualMs: timings.pcmDeinterleaveResidualMs ?? null,
       pcmCommitMs: timings.pcmCommitMs ?? null,
       postDeliveryCommitMs: timings.postDeliveryCommitMs ?? null,
+      standardPipelineResidualMs: timings.standardPipelineResidualMs ?? null,
       nativeBinaryResolutionMs: timings.nativeBinaryResolutionMs ?? null,
       nativeProbeMs: timings.nativeProbeMs ?? null,
       nativeDecodeMs: timings.nativeDecodeMs ?? null,
@@ -1698,7 +1819,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   }
 
   const executeTransitionLoad = async (request: PendingTransitionLoad): Promise<void> => {
-    request.options.attempt!.supersededLoadWaitMs += Math.max(0, performance.now() - request.queuedAtMs)
+    const transitionQueueWaitMs = Math.max(0, performance.now() - request.queuedAtMs)
+    const attempt = request.options.attempt!
+    attempt.transitionQueueWaitMs = (attempt.transitionQueueWaitMs ?? 0) + transitionQueueWaitMs
+    // Compatibility aggregate: retain its existing value and semantics. It may
+    // also contain a stale-prebuffer wait which overlaps commandToLoadEnqueueMs.
+    attempt.supersededLoadWaitMs += transitionQueueWaitMs
     if (request.intentId === playbackIntentGeneration) {
       activeExecutingTransition = request
     }
@@ -1809,6 +1935,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     const requestIdentity = attempt.transitionIdentity
 
     return new Promise<PlaybackLoadOutcome>((resolve, reject) => {
+      let queuedAtMs = 0
       const request: PendingTransitionLoad = {
         id: nextTransitionLoadId++,
         intentId: requestIdentity?.intentId ?? playbackIntentGeneration,
@@ -1816,10 +1943,15 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         targetQueueItemId: requestIdentity?.queueItemId ?? requestQueueItemId,
         standaloneTrackPath: requestIdentity?.standaloneTrackPath ?? requestStandaloneTrackPath,
         options: normalizedOptions,
-        queuedAtMs: performance.now(),
+        // Keep the compatibility queue-wait clock at its original lifecycle
+        // point while reusing that exact timestamp for the new command span.
+        queuedAtMs: (queuedAtMs = performance.now()),
         backend: getAttemptBackend(track),
         resolve,
         reject
+      }
+      if (attempt.commandToLoadEnqueueMs === null) {
+        attempt.commandToLoadEnqueueMs = Math.max(0, queuedAtMs - attempt.commandStartedAtMs)
       }
 
       if (activeNativeTransitionLoad) {
@@ -4618,6 +4750,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       const attempt = options.attempt ?? createPlaybackAttempt('direct', loadStart, {
         prebufferStatus: 'miss'
       })
+      // Direct/internal callers do not pass through the transition queue. Give
+      // them a zero-width enqueue/queue pair so the Standard command phases can
+      // still reconcile without pretending the nested legacy fields are additive.
+      if (attempt.commandToLoadEnqueueMs === null) {
+        attempt.commandToLoadEnqueueMs = Math.max(0, loadStart - attempt.commandStartedAtMs)
+      }
+      if (attempt.transitionQueueWaitMs === null) attempt.transitionQueueWaitMs = 0
       let attemptBackend = getAttemptBackend(track)
       let attemptLoadRequestId: number | null = null
       let attemptFileReadMs: number | null = null
@@ -4632,6 +4771,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       let nativeDecodeMs: number | null = null
       let nativeLoadMs: number | null = null
       let nativeDeviceStartMs: number | null = null
+      let standardDecodeCompletedAtMs: number | null = null
       const finishAttempt = (outcome: PlaybackLoadOutcome): void => {
         if (attemptBackend === 'bitperfect' || attemptBackend === 'exclusive') {
           const timings = audioEngine.getLastLoadTimings()
@@ -4699,7 +4839,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       const loadListeningSession = recentPlaySession
 
       try {
-        await ensureCompatiblePlaybackMode(track)
+        const playbackModeCheckStartedAtMs = performance.now()
+        try {
+          await ensureCompatiblePlaybackMode(track)
+        } finally {
+          attempt.playbackModeCheckMs = Math.max(0, performance.now() - playbackModeCheckStartedAtMs)
+        }
         throwIfSupersededLoad(loadRequestId)
         const replayGainDb = getReplayGainCandidateDb(track, useAudioSettingsStore.getState().replayGainMode)
         if (shouldUseNativeExclusivePath(track)) {
@@ -4868,7 +5013,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           }
         }
 
-        const useLocalProgressive = await shouldUseLocalProgressivePath(track)
+        const routeDecisionStartedAtMs = performance.now()
+        let useLocalProgressive = false
+        try {
+          useLocalProgressive = await shouldUseLocalProgressivePath(track)
+        } finally {
+          attempt.routeDecisionMs = Math.max(0, performance.now() - routeDecisionStartedAtMs)
+        }
         throwIfSupersededLoad(loadRequestId)
         if (useLocalProgressive) {
           attemptBackend = 'local_progressive'
@@ -4980,6 +5131,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         let usedFfmpegPcm = false
         let usedFfmpegFallback = false
         const decodeStart = performance.now()
+        attempt.standardPreDecodeSetupMs = Math.max(0, decodeStart - loadStart)
         try {
           const canUseFfmpegPcm = !isIamfTrack(track)
             && Number.isInteger(track.channels)
@@ -5058,7 +5210,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             }
           }
         } finally {
-          attemptStandardLoadPipelineMs = performance.now() - decodeStart
+          standardDecodeCompletedAtMs = performance.now()
+          attemptStandardLoadPipelineMs = standardDecodeCompletedAtMs - decodeStart
           attemptDecodeMs = attemptStandardLoadPipelineMs
         }
         const decodeMs = Math.round(attemptStandardLoadPipelineMs)
@@ -5097,7 +5250,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           restoredPlaybackTime: null
         })
         hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
-        await seekLoadedTrackBeforePlay(resolvedTrack, startTime)
+        const seekBeforePlayStartedAtMs = performance.now()
+        try {
+          await seekLoadedTrackBeforePlay(resolvedTrack, startTime)
+        } finally {
+          attempt.seekBeforePlayMs = Math.max(0, performance.now() - seekBeforePlayStartedAtMs)
+        }
         if (usedFfmpegFallback) {
           showFfmpegFallbackNotice(resolvedTrack)
         }
@@ -5106,6 +5264,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }
         throwIfSupersededLoad(loadRequestId)
         const backendStart = performance.now()
+        if (standardDecodeCompletedAtMs !== null) {
+          attempt.standardPostDecodeSetupMs = Math.max(0, backendStart - standardDecodeCompletedAtMs)
+        }
         try {
           await playWithParallaxIfNeeded(resolvedTrack, () => isActiveLoadRequest(loadRequestId))
         } finally {
@@ -5124,6 +5285,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         nativeProbeMs = usedFfmpegPcm ? engineTimings?.nativeProbeMs ?? null : null
         nativeDecodeMs = usedFfmpegPcm ? engineTimings?.nativeDecodeMs ?? null : null
         const pcmTimingDetails = getStandardPcmTimingDetails(attemptStandardPcmTimings)
+        const commandPhaseDetails = getPlaybackCommandPhaseDetails(
+          attempt,
+          attemptStandardLoadPipelineMs,
+          attemptBackendStartMs
+        )
         logMemoryDiagnosticsEvent('track_load_success', {
           attemptId: attempt.id,
           loadRequestId,
@@ -5135,6 +5301,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             : usedFfmpegFallback
               ? 'file_ffmpeg_fallback'
               : 'file_decode',
+          ...commandPhaseDetails,
           fileLoadMs,
           ...pcmTimingDetails,
           decodeMs,

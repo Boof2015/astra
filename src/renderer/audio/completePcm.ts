@@ -26,6 +26,31 @@ export interface CompleteFloat32Pcm {
   transportTimings?: PcmTransportTimings
 }
 
+export interface CompletePcmCopyTimingOptions {
+  /** Process-local monotonic wall clock, injected so diagnostics remain testable. */
+  now: () => number
+}
+
+export interface CompletePcmCopyTimings {
+  /**
+   * Validation of PCM/destination dimensions plus construction of the source
+   * Float32Array view. Destination AudioBuffer views are acquired by the
+   * caller and are therefore intentionally outside this phase.
+   */
+  pcmCopySetupMs: number
+  /** Continuous wall span covering every channel copy and timing probe. */
+  pcmChannelCopyTotalMs: number
+  /** Slowest individual channel-copy wall span. */
+  pcmChannelCopyMaxMs: number
+  /** Channel-copy wall spans in channel-index order. */
+  pcmChannelCopyByChannelMs: number[]
+}
+
+function elapsedDiagnosticMs(startedAt: number, endedAt: number): number {
+  if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt)) return 0
+  return Math.max(0, endedAt - startedAt)
+}
+
 export function validateCompleteFloat32Pcm(pcm: CompleteFloat32Pcm): void {
   if (!Number.isInteger(pcm.sampleRate) || pcm.sampleRate <= 0) {
     throw new Error('Decoded PCM sample rate must be a positive integer.')
@@ -62,7 +87,18 @@ export function validateCompleteFloat32Pcm(pcm: CompleteFloat32Pcm): void {
 export function copyCompleteFloat32PcmToChannels(
   pcm: CompleteFloat32Pcm,
   destinationChannels: readonly Float32Array[],
-): void {
+): void
+export function copyCompleteFloat32PcmToChannels(
+  pcm: CompleteFloat32Pcm,
+  destinationChannels: readonly Float32Array[],
+  timingOptions: CompletePcmCopyTimingOptions,
+): CompletePcmCopyTimings
+export function copyCompleteFloat32PcmToChannels(
+  pcm: CompleteFloat32Pcm,
+  destinationChannels: readonly Float32Array[],
+  timingOptions?: CompletePcmCopyTimingOptions,
+): CompletePcmCopyTimings | void {
+  const setupStartedAt = timingOptions?.now()
   validateCompleteFloat32Pcm(pcm)
   if (destinationChannels.length !== pcm.channels) {
     throw new Error(
@@ -79,17 +115,52 @@ export function copyCompleteFloat32PcmToChannels(
 
   const sampleCount = pcm.frames * pcm.channels
   const interleaved = new Float32Array(pcm.interleavedPcm, 0, sampleCount)
-  if (pcm.channels === 1) {
-    destinationChannels[0].set(interleaved)
+  if (!timingOptions || setupStartedAt === undefined) {
+    // Preserve the original uninstrumented hot path exactly when detailed
+    // diagnostics are not requested.
+    if (pcm.channels === 1) {
+      destinationChannels[0].set(interleaved)
+      return
+    }
+
+    for (let channelIndex = 0; channelIndex < pcm.channels; channelIndex += 1) {
+      const destination = destinationChannels[channelIndex]
+      let sourceIndex = channelIndex
+      for (let frameIndex = 0; frameIndex < pcm.frames; frameIndex += 1) {
+        destination[frameIndex] = interleaved[sourceIndex]
+        sourceIndex += pcm.channels
+      }
+    }
     return
   }
 
-  for (let channelIndex = 0; channelIndex < pcm.channels; channelIndex += 1) {
-    const destination = destinationChannels[channelIndex]
-    let sourceIndex = channelIndex
-    for (let frameIndex = 0; frameIndex < pcm.frames; frameIndex += 1) {
-      destination[frameIndex] = interleaved[sourceIndex]
-      sourceIndex += pcm.channels
+  const setupEndedAt = timingOptions.now()
+  const pcmChannelCopyByChannelMs: number[] = []
+  const copyStartedAt = timingOptions.now()
+  if (pcm.channels === 1) {
+    const channelStartedAt = timingOptions.now()
+    destinationChannels[0].set(interleaved)
+    const channelEndedAt = timingOptions.now()
+    pcmChannelCopyByChannelMs.push(elapsedDiagnosticMs(channelStartedAt, channelEndedAt))
+  } else {
+    for (let channelIndex = 0; channelIndex < pcm.channels; channelIndex += 1) {
+      const channelStartedAt = timingOptions.now()
+      const destination = destinationChannels[channelIndex]
+      let sourceIndex = channelIndex
+      for (let frameIndex = 0; frameIndex < pcm.frames; frameIndex += 1) {
+        destination[frameIndex] = interleaved[sourceIndex]
+        sourceIndex += pcm.channels
+      }
+      const channelEndedAt = timingOptions.now()
+      pcmChannelCopyByChannelMs.push(elapsedDiagnosticMs(channelStartedAt, channelEndedAt))
     }
+  }
+  const copyEndedAt = timingOptions.now()
+
+  return {
+    pcmCopySetupMs: elapsedDiagnosticMs(setupStartedAt, setupEndedAt),
+    pcmChannelCopyTotalMs: elapsedDiagnosticMs(copyStartedAt, copyEndedAt),
+    pcmChannelCopyMaxMs: Math.max(0, ...pcmChannelCopyByChannelMs),
+    pcmChannelCopyByChannelMs,
   }
 }

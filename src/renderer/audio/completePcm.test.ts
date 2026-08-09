@@ -42,6 +42,78 @@ test('complete PCM copy handles mono without changing samples', () => {
   assert.deepEqual(Array.from(destination), [0.25, -0.5, 0.75])
 })
 
+test('complete PCM detailed copy timings preserve samples and report channel phases', () => {
+  const pcm = makePcm([
+    1, 10,
+    2, 20,
+    3, 30,
+  ], 2, 3)
+  const destinations = [new Float32Array(3), new Float32Array(3)]
+  const clockValues = [
+    100, // setup start
+    103, // setup end
+    104, // all-channel copy start
+    105, // channel 0 start
+    109, // channel 0 end
+    110, // channel 1 start
+    117, // channel 1 end
+    119, // all-channel copy end
+  ]
+
+  const timings = copyCompleteFloat32PcmToChannels(pcm, destinations, {
+    now: () => clockValues.shift() ?? Number.NaN,
+  })
+
+  assert.deepEqual(destinations.map((channel) => Array.from(channel)), [
+    [1, 2, 3],
+    [10, 20, 30],
+  ])
+  assert.deepEqual(timings, {
+    pcmCopySetupMs: 3,
+    pcmChannelCopyTotalMs: 15,
+    pcmChannelCopyMaxMs: 7,
+    pcmChannelCopyByChannelMs: [4, 7],
+  })
+  assert.equal(clockValues.length, 0)
+})
+
+test('complete PCM detailed copy timings retain the mono bulk-copy path', () => {
+  const pcm = makePcm([0.25, -0.5, 0.75], 1, 3)
+  const destination = new Float32Array(3)
+  const clockValues = [10, 11, 12, 13, 15, 16]
+
+  const timings = copyCompleteFloat32PcmToChannels(pcm, [destination], {
+    now: () => clockValues.shift() ?? Number.NaN,
+  })
+
+  assert.deepEqual(Array.from(destination), [0.25, -0.5, 0.75])
+  assert.deepEqual(timings, {
+    pcmCopySetupMs: 1,
+    pcmChannelCopyTotalMs: 4,
+    pcmChannelCopyMaxMs: 2,
+    pcmChannelCopyByChannelMs: [2],
+  })
+  assert.equal(clockValues.length, 0)
+})
+
+test('complete PCM detailed copy timings clamp invalid or backwards clock deltas', () => {
+  const pcm = makePcm([1, 10], 2, 1)
+  const clockValues = [10, 9, 8, Number.NaN, 7, 12, 11, 10]
+
+  const timings = copyCompleteFloat32PcmToChannels(
+    pcm,
+    [new Float32Array(1), new Float32Array(1)],
+    { now: () => clockValues.shift() ?? Number.NaN },
+  )
+
+  assert.deepEqual(timings, {
+    pcmCopySetupMs: 0,
+    pcmChannelCopyTotalMs: 2,
+    pcmChannelCopyMaxMs: 0,
+    pcmChannelCopyByChannelMs: [0, 0],
+  })
+})
+
 test('complete PCM validation rejects partial frames and stale frame metadata', () => {
   const partialFrame = makePcm([1, 2, 3], 2, 2)
   assert.throws(

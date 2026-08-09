@@ -229,6 +229,11 @@ export interface AudioLoadTimings {
   loudnessMs?: number
   /** End-to-end Standard load wall span; do not sum decoder phases to derive this. */
   standardLoadPipelineMs?: number
+  /**
+   * AudioEngine-local Standard pipeline wall span. Player diagnostics retain
+   * their slightly wider standardLoadPipelineMs compatibility span separately.
+   */
+  audioEngineStandardPipelineMs?: number
   decodeRequestId?: number
   validPcmBytes?: number
   backingBufferBytes?: number
@@ -264,12 +269,27 @@ export interface AudioLoadTimings {
   rendererPortRequestMs?: number
   /** Non-overlapped stream tail estimate; transport and FFmpeg run concurrently. */
   streamTransportResidualMs?: number
+  /** Pipeline entry through AudioContext/sample-rate readiness and request setup. */
+  standardTransportSetupMs?: number
+  /** Nested portion of standardTransportSetupMs spent resolving the Standard context rate. */
+  standardContextReadyMs?: number
+  /** Nested portion of standardTransportSetupMs after context readiness and before transport. */
+  standardDecodeRequestSetupMs?: number
   webAudioBufferAllocationMs?: number
   pcmDeinterleaveMs?: number
+  pcmDestinationViewMs?: number
+  pcmCopySetupMs?: number
+  pcmChannelCopyTotalMs?: number
+  pcmChannelCopyMaxMs?: number
+  pcmChannelCopyByChannelMs?: number[]
+  pcmPayloadReleaseMs?: number
+  pcmDeinterleaveResidualMs?: number
   /** Final synchronous AudioEngine state commit, excluding allocation, copy, and loudness. */
   pcmCommitMs?: number
   /** Aggregate renderer work after the bridge result became available. */
   postDeliveryCommitMs?: number
+  /** Reconciliation remainder inside audioEngineStandardPipelineMs. */
+  standardPipelineResidualMs?: number
   nativeBinaryResolutionMs?: number
   nativeProbeMs?: number
   nativeDecodeMs?: number
@@ -296,6 +316,9 @@ interface PcmRendererDeliveryTiming {
   rendererBridgeCallMs: number
   deliveredAt: number
   pipelineStartedAt: number
+  standardTransportSetupMs: number
+  standardContextReadyMs: number
+  standardDecodeRequestSetupMs: number
 }
 
 interface InstalledPcmAudioBuffer {
@@ -304,6 +327,13 @@ interface InstalledPcmAudioBuffer {
   backingBufferBytes: number
   webAudioBufferAllocationMs: number
   pcmDeinterleaveMs: number
+  pcmDestinationViewMs: number
+  pcmCopySetupMs: number
+  pcmChannelCopyTotalMs: number
+  pcmChannelCopyMaxMs: number
+  pcmChannelCopyByChannelMs: number[]
+  pcmPayloadReleaseMs: number
+  pcmDeinterleaveResidualMs: number
 }
 
 interface RemoteStreamLoadOptions {
@@ -4476,12 +4506,26 @@ export class AudioEngine {
   }
 
   getLastLoadTimings(): AudioLoadTimings | null {
-    return this.lastLoadTimings ? { ...this.lastLoadTimings } : null
+    return this.lastLoadTimings
+      ? {
+          ...this.lastLoadTimings,
+          ...(this.lastLoadTimings.pcmChannelCopyByChannelMs
+            ? { pcmChannelCopyByChannelMs: [...this.lastLoadTimings.pcmChannelCopyByChannelMs] }
+            : {}),
+        }
+      : null
   }
 
   /** Timings for the PCM currently staged as the Standard next-track buffer. */
   getLastPrebufferLoadTimings(): AudioLoadTimings | null {
-    return this.lastPrebufferLoadTimings ? { ...this.lastPrebufferLoadTimings } : null
+    return this.lastPrebufferLoadTimings
+      ? {
+          ...this.lastPrebufferLoadTimings,
+          ...(this.lastPrebufferLoadTimings.pcmChannelCopyByChannelMs
+            ? { pcmChannelCopyByChannelMs: [...this.lastPrebufferLoadTimings.pcmChannelCopyByChannelMs] }
+            : {}),
+        }
+      : null
   }
 
   // Whether loading a track with this ReplayGain candidate would need a
@@ -6787,24 +6831,46 @@ export class AudioEngine {
     const webAudioBufferAllocationMs = performance.now() - allocationStartedAt
 
     const deinterleaveStartedAt = performance.now()
+    const destinationViewStartedAt = performance.now()
     const destinationChannels = Array.from(
       { length: pcm.channels },
       (_, channelIndex) => buffer.getChannelData(channelIndex),
     )
-    copyCompleteFloat32PcmToChannels(pcm, destinationChannels)
+    const pcmDestinationViewMs = Math.max(0, performance.now() - destinationViewStartedAt)
+    const copyTimings = copyCompleteFloat32PcmToChannels(pcm, destinationChannels, {
+      now: () => performance.now(),
+    })
     // The AudioBuffer now owns the only samples playback needs. Drop the
     // interleaved IPC payload before loudness resolution can keep this async
     // load alive, avoiding a full-track duplicate throughout that wait.
+    let pcmPayloadReleaseMs = 0
     if (!Object.isFrozen(pcm)) {
+      const payloadReleaseStartedAt = performance.now()
       pcm.interleavedPcm = new ArrayBuffer(0)
+      pcmPayloadReleaseMs = Math.max(0, performance.now() - payloadReleaseStartedAt)
     }
-    const pcmDeinterleaveMs = performance.now() - deinterleaveStartedAt
+    const pcmDeinterleaveMs = Math.max(0, performance.now() - deinterleaveStartedAt)
+    const pcmDeinterleaveResidualMs = Math.max(
+      0,
+      pcmDeinterleaveMs
+        - pcmDestinationViewMs
+        - copyTimings.pcmCopySetupMs
+        - copyTimings.pcmChannelCopyTotalMs
+        - pcmPayloadReleaseMs,
+    )
     return {
       buffer,
       validPcmBytes,
       backingBufferBytes,
       webAudioBufferAllocationMs,
       pcmDeinterleaveMs,
+      pcmDestinationViewMs,
+      pcmCopySetupMs: copyTimings.pcmCopySetupMs,
+      pcmChannelCopyTotalMs: copyTimings.pcmChannelCopyTotalMs,
+      pcmChannelCopyMaxMs: copyTimings.pcmChannelCopyMaxMs,
+      pcmChannelCopyByChannelMs: copyTimings.pcmChannelCopyByChannelMs,
+      pcmPayloadReleaseMs,
+      pcmDeinterleaveResidualMs,
     }
   }
 
@@ -6861,6 +6927,20 @@ export class AudioEngine {
       loudnessMs,
       webAudioBufferAllocationMs: installed.webAudioBufferAllocationMs,
       pcmDeinterleaveMs: installed.pcmDeinterleaveMs,
+      pcmDestinationViewMs: installed.pcmDestinationViewMs,
+      pcmCopySetupMs: installed.pcmCopySetupMs,
+      pcmChannelCopyTotalMs: installed.pcmChannelCopyTotalMs,
+      pcmChannelCopyMaxMs: installed.pcmChannelCopyMaxMs,
+      pcmChannelCopyByChannelMs: [...installed.pcmChannelCopyByChannelMs],
+      pcmPayloadReleaseMs: installed.pcmPayloadReleaseMs,
+      pcmDeinterleaveResidualMs: installed.pcmDeinterleaveResidualMs,
+      ...(delivery
+        ? {
+            standardTransportSetupMs: delivery.standardTransportSetupMs,
+            standardContextReadyMs: delivery.standardContextReadyMs,
+            standardDecodeRequestSetupMs: delivery.standardDecodeRequestSetupMs,
+          }
+        : {}),
       ...(decodeRequestId === undefined ? {} : { decodeRequestId }),
       validPcmBytes,
       backingBufferBytes,
@@ -7099,13 +7179,27 @@ export class AudioEngine {
       this.emit('bufferReady', this.audioBuffer)
 
       const committedAt = performance.now()
+      const postDeliveryCommitMs = delivery
+        ? Math.max(0, committedAt - delivery.deliveredAt)
+        : null
+      const standardLoadPipelineMs = delivery
+        ? Math.max(0, committedAt - delivery.pipelineStartedAt)
+        : null
       this.lastLoadTimings = {
         ...baseTimings,
         pcmCommitMs: Math.max(0, committedAt - commitStartedAt),
-        ...(delivery
+        ...(delivery && postDeliveryCommitMs !== null && standardLoadPipelineMs !== null
           ? {
-              postDeliveryCommitMs: Math.max(0, committedAt - delivery.deliveredAt),
-              standardLoadPipelineMs: Math.max(0, committedAt - delivery.pipelineStartedAt),
+              postDeliveryCommitMs,
+              standardLoadPipelineMs,
+              audioEngineStandardPipelineMs: standardLoadPipelineMs,
+              standardPipelineResidualMs: Math.max(
+                0,
+                standardLoadPipelineMs
+                  - delivery.standardTransportSetupMs
+                  - delivery.rendererBridgeCallMs
+                  - postDeliveryCommitMs,
+              ),
             }
           : {}),
       }
@@ -7162,6 +7256,7 @@ export class AudioEngine {
     let delivery: PcmRendererDeliveryTiming
     try {
       const sampleRate = await this.getStandardDecodeSampleRate()
+      const contextReadyAt = performance.now()
       this.assertCurrentPcmDecodeOperation(decodeOperation)
       const legacyDecode = window.electronAPI?.decodeLocalAudioToPcm
       const openStream = window.electronAPI?.openLocalAudioPcmStream
@@ -7192,6 +7287,9 @@ export class AudioEngine {
           rendererBridgeCallMs: Math.max(0, deliveredAt - rendererBridgeStartedAt),
           deliveredAt,
           pipelineStartedAt,
+          standardTransportSetupMs: Math.max(0, rendererBridgeStartedAt - pipelineStartedAt),
+          standardContextReadyMs: Math.max(0, contextReadyAt - pipelineStartedAt),
+          standardDecodeRequestSetupMs: Math.max(0, rendererBridgeStartedAt - contextReadyAt),
         }
       } catch {
         if (
@@ -7329,13 +7427,27 @@ export class AudioEngine {
       this.scheduleGaplessTransition()
     }
     const committedAt = performance.now()
+    const postDeliveryCommitMs = delivery
+      ? Math.max(0, committedAt - delivery.deliveredAt)
+      : null
+    const standardLoadPipelineMs = delivery
+      ? Math.max(0, committedAt - delivery.pipelineStartedAt)
+      : null
     this.lastPrebufferLoadTimings = {
       ...baseTimings,
       pcmCommitMs: Math.max(0, committedAt - commitStartedAt),
-      ...(delivery
+      ...(delivery && postDeliveryCommitMs !== null && standardLoadPipelineMs !== null
         ? {
-            postDeliveryCommitMs: Math.max(0, committedAt - delivery.deliveredAt),
-            standardLoadPipelineMs: Math.max(0, committedAt - delivery.pipelineStartedAt),
+            postDeliveryCommitMs,
+            standardLoadPipelineMs,
+            audioEngineStandardPipelineMs: standardLoadPipelineMs,
+            standardPipelineResidualMs: Math.max(
+              0,
+              standardLoadPipelineMs
+                - delivery.standardTransportSetupMs
+                - delivery.rendererBridgeCallMs
+                - postDeliveryCommitMs,
+            ),
           }
         : {}),
     }
@@ -7383,6 +7495,7 @@ export class AudioEngine {
     let delivery: PcmRendererDeliveryTiming
     try {
       const sampleRate = await this.getStandardDecodeSampleRate()
+      const contextReadyAt = performance.now()
       this.assertCurrentPrebufferOperation(prebufferOperation)
       const legacyDecode = window.electronAPI?.decodeLocalAudioToPcm
       const openStream = window.electronAPI?.openLocalAudioPcmStream
@@ -7414,6 +7527,9 @@ export class AudioEngine {
           rendererBridgeCallMs: Math.max(0, deliveredAt - rendererBridgeStartedAt),
           deliveredAt,
           pipelineStartedAt,
+          standardTransportSetupMs: Math.max(0, rendererBridgeStartedAt - pipelineStartedAt),
+          standardContextReadyMs: Math.max(0, contextReadyAt - pipelineStartedAt),
+          standardDecodeRequestSetupMs: Math.max(0, rendererBridgeStartedAt - contextReadyAt),
         }
       } catch {
         if (
