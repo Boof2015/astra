@@ -21,10 +21,13 @@ class ManualFrameScheduler {
 type RoundedRect = { x: number; y: number; width: number; height: number; radius: number }
 const roundedRects: RoundedRect[] = []
 const fillStyles: string[] = []
+const filledTexts: Array<{ text: string; style: string }> = []
+const strokeStyles: string[] = []
 let linearGradientCreations = 0
 
 function createContext(): CanvasRenderingContext2D {
   let fillStyle = ''
+  let strokeStyle = ''
   return {
     beginPath: () => undefined,
     clearRect: () => undefined,
@@ -36,20 +39,21 @@ function createContext(): CanvasRenderingContext2D {
     drawImage: () => undefined,
     fill: () => fillStyles.push(fillStyle),
     fillRect: () => undefined,
-    fillText: () => undefined,
+    fillText: (text: string) => filledTexts.push({ text, style: fillStyle }),
     lineTo: () => undefined,
     moveTo: () => undefined,
     roundRect: (x: number, y: number, width: number, height: number, radii?: number | DOMPointInit | Iterable<number | DOMPointInit>) => {
       roundedRects.push({ x, y, width, height, radius: typeof radii === 'number' ? radii : 0 })
     },
-    stroke: () => undefined,
+    stroke: () => strokeStyles.push(strokeStyle),
     get fillStyle() { return fillStyle },
     set fillStyle(value: string | CanvasGradient | CanvasPattern) { fillStyle = String(value) },
     set font(_value: string) {},
     set lineCap(_value: CanvasLineCap) {},
     set lineJoin(_value: CanvasLineJoin) {},
     set lineWidth(_value: number) {},
-    set strokeStyle(_value: string | CanvasGradient | CanvasPattern) {},
+    get strokeStyle() { return strokeStyle },
+    set strokeStyle(value: string | CanvasGradient | CanvasPattern) { strokeStyle = String(value) },
     set textAlign(_value: CanvasTextAlign) {},
   } as unknown as CanvasRenderingContext2D
 }
@@ -280,6 +284,37 @@ test('Classic heat colors remain exact and Accent derives from effective theme c
     'rgb(100, 150, 200)',
     'rgb(30, 45, 60)',
   ])
+})
+
+test('spectrum labels use their dedicated color without brightening grid lines', () => {
+  filledTexts.length = 0
+  strokeStyles.length = 0
+  const scheduler = new ManualFrameScheduler()
+  const native = makeNative()
+  const gridColor = 'rgba(255, 255, 255, 0.12)'
+  const labelColor = '#9a9a9a'
+  const visualizer = new SpectrumAnalyzer(new FakeCanvas() as unknown as HTMLCanvasElement, {
+    frameScheduler: scheduler as unknown as FrameScheduler,
+    nativeAnalyzer: native.analyzer,
+    gridColor,
+    labelColor,
+    dataSource: {
+      getPendingSpectrumSamples: () => [new Float32Array(128)],
+      getPendingSpectrumStereoSamples: () => [],
+      getSampleRate: () => 48000,
+      isPlaying: () => true,
+      subscribeToSessionChanges: () => () => {},
+    },
+  })
+
+  visualizer.start()
+  scheduler.tick()
+
+  assert.ok(filledTexts.some(({ text, style }) => text.endsWith('dB') && style === labelColor))
+  assert.ok(filledTexts.some(({ text, style }) => /Hz|k$/.test(text) && style === labelColor))
+  assert.ok(strokeStyles.includes(gridColor))
+  assert.ok(!strokeStyles.includes(labelColor))
+  visualizer.dispose()
 })
 
 test('a stale native addon does not fall back to JavaScript bar DSP', () => {

@@ -26,6 +26,7 @@
   --control-bg-soft: rgba(0, 0, 0, 0.18);
   --control-bg: rgba(0, 0, 0, 0.3);
   --control-bg-strong: rgba(0, 0, 0, 0.45);
+  --control-border: rgba(var(--tint), 0.1);
   --eyebrow: rgba(255, 255, 255, 0.4);
   --text-strong: #ffffff;
   --stage-bg: #0a0e14;
@@ -88,6 +89,17 @@
   --motion-view-fade-exit: 110ms;
   --motion-popover-distance: 9px;
   --motion-structural-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+:root[data-theme-preset='editor'] {
+  /* Useful small text should never fall below the Editor preset's muted-text floor. */
+  --text-readable-muted: var(--text-tertiary);
+  /* Keep the docked transport in the same restrained XLRCDB surface stack. */
+  --transport-bar-bg: var(--bg-secondary);
+  --transport-info-bg: var(--bg-tertiary);
+  --transport-center-bg: var(--bg-secondary);
+  --transport-right-bg: var(--bg-tertiary);
+  --transport-divider: var(--glass-border);
 }
 
 /* Reset & Base */
@@ -1077,7 +1089,7 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   min-width: 0;
   font-family: var(--font-mono);
   font-size: 9px;
-  color: rgba(var(--tint), 0.46);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.46));
   letter-spacing: 0.05em;
 }
 
@@ -1104,7 +1116,7 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 
 .transport-output-line-prefix {
   flex-shrink: 0;
-  color: rgba(var(--tint), 0.34);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.34));
 }
 
 .transport-output-line-value {
@@ -1947,6 +1959,7 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   --control-bg-soft: rgba(0, 0, 0, 0.18);
   --control-bg: rgba(0, 0, 0, 0.3);
   --control-bg-strong: rgba(0, 0, 0, 0.45);
+  --control-border: rgba(var(--tint), 0.1);
   --eyebrow: rgba(255, 255, 255, 0.4);
   --text-strong: #ffffff;
   --stage-bg: #0a0e14;
@@ -3802,7 +3815,7 @@ body:has(.fullscreen-overlay) .controller-hints {
 .pipeline-node-label {
   font-family: var(--font-mono);
   font-size: 9px;
-  color: rgba(var(--tint), 0.35);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.35));
   letter-spacing: 0.05em;
   text-transform: uppercase;
   line-height: 1;
@@ -6524,7 +6537,7 @@ body:has(.fullscreen-overlay) .controller-hints {
 
 .year-album-preview-toggle {
   appearance: none;
-  border: 1px solid rgba(var(--tint), 0.1);
+  border: 1px solid var(--control-border);
   border-radius: 7px;
   min-height: 26px;
   padding: 0 9px;
@@ -7022,7 +7035,7 @@ body:has(.fullscreen-overlay) .controller-hints {
 .graph-search-input {
   min-width: 220px;
   height: 36px;
-  border: 1px solid rgba(var(--tint), 0.1);
+  border: 1px solid var(--control-border);
   border-radius: 9px;
   background: var(--control-bg);
   color: var(--text-primary);
@@ -9522,7 +9535,7 @@ body.folder-settings-open .app {
 
 .quick-launch-group-label {
   padding: 4px 8px 6px;
-  color: rgba(var(--tint), 0.42);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.42));
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.08em;
@@ -9687,7 +9700,7 @@ body.folder-settings-open .app {
 .ql-idle-hint {
   padding: 24px 16px;
   text-align: center;
-  color: rgba(var(--tint), 0.35);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.35));
   font-size: 12px;
 }
 
@@ -11662,7 +11675,7 @@ body::after {
 .titlebar-version {
   gap: 4px;
   font-size: 9px;
-  color: rgba(var(--tint), 0.38);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.38));
   letter-spacing: 0.08em;
   text-transform: none;
 }
@@ -11687,7 +11700,7 @@ body::after {
 .titlebar-stats {
   gap: 4px;
   font-size: 8px;
-  color: rgba(var(--tint), 0.42);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.42));
 }
 
 .titlebar-stats-breakdown {
@@ -11771,7 +11784,7 @@ body::after {
   width: 36px;
   height: 36px;
   border-radius: 8px;
-  color: rgba(var(--tint), 0.34);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.34));
   position: relative;
 }
 
@@ -11808,7 +11821,7 @@ body::after {
 }
 
 .sidebar-playlist-btn {
-  color: rgba(var(--tint), 0.36);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.36));
 }
 
 .sidebar-playlist-btn svg {
@@ -11816,7 +11829,7 @@ body::after {
 }
 
 .sidebar-playlist-overflow-btn {
-  color: rgba(var(--tint), 0.32);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.32));
 }
 
 .sidebar-drop-target {
@@ -11917,7 +11930,7 @@ body::after {
   border-radius: 999px;
   border: 1px dashed rgba(var(--tint), 0.14);
   background: rgba(var(--tint), 0.02);
-  color: rgba(var(--tint), 0.34);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.34));
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -12347,7 +12360,7 @@ body::after {
   font-family: var(--font-mono);
   font-size: 8px;
   letter-spacing: 0.24em;
-  color: rgba(var(--tint), 0.34);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.34));
   transform: rotate(-90deg);
   white-space: nowrap;
 }
@@ -13781,21 +13794,21 @@ body::after {
 }
 
 .transport-bar {
-  border-top: 1px solid rgba(var(--tint), 0.06);
-  background: var(--surface-overlay);
+  border-top: 1px solid var(--transport-divider, rgba(var(--tint), 0.06));
+  background: var(--transport-bar-bg, var(--surface-overlay));
 }
 
 .transport-info {
-  background: var(--control-bg-strong);
-  border-right: 1px solid rgba(var(--tint), 0.06);
+  background: var(--transport-info-bg, var(--control-bg-strong));
+  border-right: 1px solid var(--transport-divider, rgba(var(--tint), 0.06));
 }
 
 .transport-center {
   gap: 12px;
   padding: 0 10px 0 12px;
-  background: #0a0a0a;
-  border-left: 1px solid rgba(var(--tint), 0.06);
-  border-right: 1px solid rgba(var(--tint), 0.06);
+  background: var(--transport-center-bg, #0a0a0a);
+  border-left: 1px solid var(--transport-divider, rgba(var(--tint), 0.06));
+  border-right: 1px solid var(--transport-divider, rgba(var(--tint), 0.06));
 }
 
 html[data-theme-tone="light"] .transport-center {
@@ -13803,7 +13816,7 @@ html[data-theme-tone="light"] .transport-center {
 }
 
 .transport-right {
-  background: var(--control-bg);
+  background: var(--transport-right-bg, var(--control-bg));
 }
 
 .transport-controls {
@@ -13983,7 +13996,7 @@ html[data-theme-tone="light"] .transport-center {
 .transport-mini-btn-split-top,
 .transport-lyrics-btn,
 .transport-lyrics-shelf-content {
-  border-color: rgba(var(--tint), 0.06);
+  border-color: var(--transport-divider, rgba(var(--tint), 0.06));
 }
 
 .transport-eq-label,
@@ -14420,7 +14433,7 @@ html[data-theme-tone="light"] .home-greeting-message {
 
 .home-track-artist {
   font-size: 11px;
-  color: rgba(var(--tint), 0.45);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.45));
   white-space: nowrap;
   text-overflow: ellipsis;
   overflow: hidden;
@@ -14468,7 +14481,7 @@ html[data-theme-tone="light"] .home-greeting-message {
 
 .home-favorite-artist {
   font-size: 11px;
-  color: rgba(var(--tint), 0.45);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.45));
 }
 
 .home-favorite-meta {
@@ -14476,7 +14489,7 @@ html[data-theme-tone="light"] .home-greeting-message {
   gap: 10px;
   font-family: var(--font-mono);
   font-size: 10px;
-  color: rgba(var(--tint), 0.42);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.42));
   flex-shrink: 0;
 }
 
@@ -14536,7 +14549,7 @@ html[data-theme-tone="light"] .home-greeting-message {
 .home-artist-count {
   font-family: var(--font-mono);
   font-size: 10px;
-  color: rgba(var(--tint), 0.42);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.42));
 }
 
 .home-album-grid {
@@ -14601,7 +14614,7 @@ html[data-theme-tone="light"] .home-greeting-message {
 .home-album-meta {
   font-family: var(--font-mono);
   font-size: 10px;
-  color: rgba(var(--tint), 0.38);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.38));
   margin-top: 3px;
 }
 
@@ -14736,7 +14749,7 @@ html[data-theme-tone="light"] .home-greeting-message {
   font-size: 9px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(var(--tint), 0.42);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.42));
 }
 
 .library-detail-breadcrumb-separator {
@@ -14935,7 +14948,7 @@ html[data-theme-tone="light"] .library-detail-hero-backdrop::after {
   font-size: 12px;
   line-height: 1.4;
   letter-spacing: 0.025em;
-  color: rgba(var(--tint), 0.48);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.48));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -15340,7 +15353,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   text-transform: uppercase;
   border: 1px solid transparent;
   padding: 5px 10px;
-  color: rgba(var(--tint), 0.46);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.46));
 }
 
 .view-tab:hover {
@@ -15356,7 +15369,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 .track-count {
   font-family: var(--font-mono);
   font-size: 10px;
-  color: rgba(var(--tint), 0.42);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.42));
   letter-spacing: 0.05em;
 }
 
@@ -15372,7 +15385,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.1em;
-  color: rgba(var(--tint), 0.36);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.36));
 }
 
 .track-list-body {
@@ -15575,7 +15588,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.08em;
-  color: rgba(var(--tint), 0.42);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.42));
   padding: 10px 4px 6px;
 }
 
@@ -17166,7 +17179,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.1em;
-  color: rgba(var(--tint), 0.44);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.44));
   text-transform: uppercase;
   margin-bottom: 2px;
 }
@@ -17322,7 +17335,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   display: block;
   margin: 4px 0 0;
   font-size: 11px;
-  color: rgba(var(--tint), 0.48);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.48));
 }
 
 .keybind-settings-note {
@@ -17350,13 +17363,13 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(var(--tint), 0.38);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.38));
 }
 
 .keybind-group-head p {
   margin: 4px 0 0;
   font-size: 10px;
-  color: rgba(var(--tint), 0.42);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.42));
 }
 
 .keybind-list {
@@ -17586,7 +17599,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 }
 
 .remote-source-card {
-  border: 1px solid rgba(var(--tint), 0.1);
+  border: 1px solid var(--control-border);
   border-radius: 10px;
   background: var(--control-bg-soft);
   padding: 12px;
@@ -17630,7 +17643,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-size: 10px;
   font-family: var(--font-mono);
   letter-spacing: 0.03em;
-  color: rgba(var(--tint), 0.45);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.45));
 }
 
 .remote-source-card-status-error {
@@ -17695,7 +17708,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 
 .remote-overflow-btn {
   background: none;
-  border: 1px solid rgba(var(--tint), 0.1);
+  border: 1px solid var(--control-border);
   border-radius: 6px;
   color: rgba(var(--tint), 0.6);
   cursor: pointer;
@@ -17801,7 +17814,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 
 .remote-empty-state-desc {
   font-size: 11px;
-  color: rgba(var(--tint), 0.45);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.45));
   max-width: 300px;
   line-height: 1.45;
 }
@@ -17867,7 +17880,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   align-items: center;
   gap: 6px;
   font-size: 11px;
-  color: rgba(var(--tint), 0.35);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.35));
   cursor: default;
   padding: 4px 0;
   white-space: nowrap;
@@ -17950,7 +17963,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 }
 
 .remote-type-option {
-  border: 1px solid rgba(var(--tint), 0.1);
+  border: 1px solid var(--control-border);
   border-radius: 8px;
   background: var(--control-bg-soft);
   padding: 10px 12px;
@@ -17989,7 +18002,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 
 .remote-type-option-desc {
   font-size: 10px;
-  color: rgba(var(--tint), 0.45);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.45));
 }
 
 /* Type fallback (shown when auto-detect fails) */
@@ -18053,7 +18066,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 }
 
 .remote-summary-label {
-  color: rgba(var(--tint), 0.45);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.45));
   min-width: 60px;
   flex-shrink: 0;
 }
@@ -18080,7 +18093,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(var(--tint), 0.38);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.38));
 }
 
 .settings-integration-card-head p {
@@ -18096,7 +18109,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   padding: 8px 12px;
   font-size: 12px;
   border-radius: 8px;
-  border: 1px solid rgba(var(--tint), 0.1);
+  border: 1px solid var(--control-border);
   background: var(--control-bg);
   color: rgba(var(--tint), 0.9);
   cursor: pointer;
@@ -18156,7 +18169,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(var(--tint), 0.38);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.38));
   padding: 9px 14px;
   border-bottom: 1px solid rgba(var(--tint), 0.07);
 }
@@ -18200,7 +18213,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 .settings-select {
   width: 100%;
   height: 32px;
-  border: 1px solid rgba(var(--tint), 0.1);
+  border: 1px solid var(--control-border);
   border-radius: 7px;
   background: var(--control-bg-strong);
   color: rgba(var(--tint), 0.9);
@@ -18316,7 +18329,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 .settings-toggle {
   min-width: 110px;
   height: 32px;
-  border: 1px solid rgba(var(--tint), 0.1);
+  border: 1px solid var(--control-border);
   border-radius: 7px;
   background: var(--control-bg-strong);
   color: rgba(var(--tint), 0.72);
@@ -18341,7 +18354,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   width: 42px;
   height: 32px;
   padding: 0;
-  border: 1px solid rgba(var(--tint), 0.1);
+  border: 1px solid var(--control-border);
   border-radius: 7px;
   background: transparent;
   cursor: pointer;
@@ -18352,7 +18365,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.02em;
-  color: rgba(var(--tint), 0.32);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.32));
   line-height: 1.5;
 }
 
@@ -18515,7 +18528,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-size: 10px;
   letter-spacing: 0.06em;
   line-height: 1;
-  color: rgba(var(--tint), 0.38);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.38));
   cursor: pointer;
   transition: color var(--transition-fast);
 }
@@ -18627,7 +18640,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 
 .settings-shell .settings-theme-card {
   min-height: 76px;
-  border: 1px solid rgba(var(--tint), 0.1);
+  border: 1px solid var(--control-border);
   border-radius: 10px;
   background: var(--control-bg);
   color: var(--text-primary);
@@ -18801,7 +18814,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   overflow: hidden;
   font-family: var(--font-mono);
   font-size: 10px;
-  color: rgba(var(--tint), 0.48);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.48));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -18887,7 +18900,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  color: rgba(var(--tint), 0.34);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.34));
 }
 
 .settings-shell .native-output-status-detail strong {
@@ -18906,7 +18919,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   font-family: var(--font-mono);
   font-size: 9px;
   line-height: 1.4;
-  color: rgba(var(--tint), 0.44);
+  color: var(--text-readable-muted, rgba(var(--tint), 0.44));
   text-overflow: ellipsis;
   white-space: nowrap;
 }

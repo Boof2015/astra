@@ -49,6 +49,7 @@ interface VisualizerDisplayColors {
   backgroundColor: string
   gridColor: string
   gridMutedColor: string
+  labelColor: string
   meterTickColor: string
   meterTextColor: string
 }
@@ -231,6 +232,7 @@ function DockedSpectrumTile({
         lineColor,
         backgroundColor: displayColors.backgroundColor,
         gridColor: displayColors.gridColor,
+        labelColor: displayColors.labelColor,
         lineWidth: 2,
         fillGradient: !heatmapFill,
         heatmapFill,
@@ -273,6 +275,7 @@ function DockedSpectrumTile({
       lineColor,
       backgroundColor: displayColors.backgroundColor,
       gridColor: displayColors.gridColor,
+      labelColor: displayColors.labelColor,
       fftSize,
       displayMode,
       showSideLine,
@@ -418,6 +421,7 @@ function DockedVectorscopeTile({
         backgroundColor: displayColors.backgroundColor,
         gridMajorColor: displayColors.gridColor,
         gridMinorColor: displayColors.gridMutedColor,
+        labelColor: displayColors.labelColor,
         lineWidth: 1,
         showGrid: true,
         mode: vectorscopeMode,
@@ -442,6 +446,7 @@ function DockedVectorscopeTile({
       backgroundColor: displayColors.backgroundColor,
       gridMajorColor: displayColors.gridColor,
       gridMinorColor: displayColors.gridMutedColor,
+      labelColor: displayColors.labelColor,
       mode: vectorscopeMode,
       multiband: vectorscopeMultiband,
     })
@@ -938,6 +943,7 @@ export default function VisualizerPanel({
     backgroundColor: visualizerTheme.stageBg,
     gridColor: visualizerTheme.stageGrid,
     gridMutedColor: visualizerTheme.isLight ? 'rgba(15, 23, 42, 0.07)' : 'rgba(255, 255, 255, 0.04)',
+    labelColor: visualizerTheme.stageTextMuted,
     meterTickColor: visualizerTheme.stageGrid,
     meterTextColor: visualizerTheme.stageText,
   }), [visualizerTheme])

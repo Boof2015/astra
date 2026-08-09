@@ -52,6 +52,7 @@ export interface SpectrumAnalyzerOptions {
   backgroundColor?: string
   showGrid?: boolean
   gridColor?: string
+  labelColor?: string
   scaleType?: 'linear' | 'log'
   displayMode?: SpectrumDisplayMode
   smoothing?: number
@@ -199,6 +200,7 @@ const defaultOptions: ResolvedSpectrumAnalyzerOptions = {
   backgroundColor: 'transparent',
   showGrid: true,
   gridColor: 'rgba(255, 255, 255, 0.1)',
+  labelColor: 'rgba(255, 255, 255, 0.1)',
   scaleType: 'log',
   displayMode: DEFAULT_SPECTRUM_DISPLAY_MODE,
   smoothing: 0.9,
@@ -1330,7 +1332,7 @@ export class SpectrumAnalyzer {
 
   private renderBarNativeUnavailable(minFrequency: number, maxFrequency: number, dpr: number): void {
     this.renderStaticLayer(minFrequency, maxFrequency)
-    this.ctx.fillStyle = this.options.gridColor
+    this.ctx.fillStyle = this.options.labelColor
     this.ctx.font = `${12 * dpr}px monospace`
     this.ctx.textAlign = 'center'
     this.ctx.fillText(
@@ -1348,6 +1350,7 @@ export class SpectrumAnalyzer {
       options.backgroundColor,
       options.showGrid,
       options.gridColor,
+      options.labelColor,
       options.scaleType,
       options.minDecibels,
       options.maxDecibels,
@@ -1385,7 +1388,7 @@ export class SpectrumAnalyzer {
     ctx.lineWidth = dpr
 
     const dbSteps = [-80, -60, -40, -20, 0]
-    ctx.fillStyle = options.gridColor
+    ctx.fillStyle = options.labelColor
     ctx.font = `${10 * dpr}px monospace`
     ctx.textAlign = 'left'
 
