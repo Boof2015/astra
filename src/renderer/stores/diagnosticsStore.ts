@@ -1,5 +1,9 @@
 import { create } from 'zustand'
-import type { MemoryDiagnosticsCaptureBundleResult, MemoryDiagnosticsStatus } from '../../types/diagnostics'
+import type {
+  LocalPcmOutputSink,
+  MemoryDiagnosticsCaptureBundleResult,
+  MemoryDiagnosticsStatus
+} from '../../types/diagnostics'
 import {
   createMainPortPcmTransferBenchmarkProbe,
   runPcmTransferBenchmark,
@@ -21,6 +25,8 @@ interface DiagnosticsStore {
   init: () => Promise<void>
   refresh: () => Promise<void>
   setEnabled: (enabled: boolean) => Promise<MemoryDiagnosticsStatus | null>
+  setLocalPcmOutputSink: (sink: LocalPcmOutputSink) => Promise<MemoryDiagnosticsStatus | null>
+  setLocalPcmTempFileSinkEnabled: (enabled: boolean) => Promise<MemoryDiagnosticsStatus | null>
   captureBundle: (tag?: string) => Promise<MemoryDiagnosticsCaptureBundleResult | null>
   runPcmTransferBenchmark: () => Promise<PcmTransferBenchmarkSummary | null>
   revealCurrentLog: () => Promise<boolean>
@@ -32,6 +38,21 @@ let statusUnsubscribe: (() => void) | null = null
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message
   return 'Failed to update memory diagnostics.'
+}
+
+export function resolveLocalPcmOutputSink(
+  status: MemoryDiagnosticsStatus | null | undefined
+): LocalPcmOutputSink {
+  if (
+    status?.localPcmOutputSink === 'stdout_pipe'
+    || status?.localPcmOutputSink === 'rechunked_pipe'
+    || status?.localPcmOutputSink === 'native_pipe'
+    || status?.localPcmOutputSink === 'worker_thread'
+    || status?.localPcmOutputSink === 'temporary_file'
+  ) {
+    return status.localPcmOutputSink
+  }
+  return status?.localPcmTempFileSinkEnabled ? 'temporary_file' : 'stdout_pipe'
 }
 
 export const useDiagnosticsStore = create<DiagnosticsStore>((set, get) => {
@@ -97,6 +118,42 @@ export const useDiagnosticsStore = create<DiagnosticsStore>((set, get) => {
       }
       try {
         const status = await window.electronAPI.diagnostics.setEnabled(enabled)
+        return applyStatus(status)
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      }
+    },
+
+    setLocalPcmOutputSink: async (sink: LocalPcmOutputSink) => {
+      if (get().isRunningPcmTransferBenchmark) {
+        set({ errorMessage: 'Wait for the PCM transfer benchmark to finish before changing the PCM route.' })
+        return null
+      }
+      if (sink !== 'stdout_pipe' && get().status?.enabled !== true) {
+        set({ errorMessage: 'Enable diagnostics logging before using an experimental PCM route.' })
+        return null
+      }
+      try {
+        const status = await window.electronAPI.diagnostics.setLocalPcmOutputSink(sink)
+        return applyStatus(status)
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      }
+    },
+
+    setLocalPcmTempFileSinkEnabled: async (enabled: boolean) => {
+      if (get().isRunningPcmTransferBenchmark) {
+        set({ errorMessage: 'Wait for the PCM transfer benchmark to finish before changing the PCM sink.' })
+        return null
+      }
+      if (enabled && get().status?.enabled !== true) {
+        set({ errorMessage: 'Enable diagnostics logging before using the temporary PCM sink.' })
+        return null
+      }
+      try {
+        const status = await window.electronAPI.diagnostics.setLocalPcmTempFileSinkEnabled(enabled)
         return applyStatus(status)
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })

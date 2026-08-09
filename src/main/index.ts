@@ -251,6 +251,7 @@ import type {
   SubsonicStatusSnapshot
 } from '../types/subsonic'
 import type {
+  LocalPcmOutputSink,
   LocalAudioPcmTransportTimings,
   MemoryDiagnosticsEventPayload,
   MemoryDiagnosticsRendererSnapshot,
@@ -263,7 +264,11 @@ import {
   createPcmTransferBenchmarkProbe,
   validatePcmTransferBenchmarkStreamOpenRequest
 } from '../shared/pcmTransferBenchmark'
-import { normalizeMemoryDiagnosticsLogEventOptions } from './diagnosticsIpc'
+import {
+  normalizeLocalPcmOutputSink,
+  normalizeMemoryDiagnosticsLogEventOptions,
+  resolveLegacyLocalPcmTempFileSinkChange
+} from './diagnosticsIpc'
 import {
   PcmTransferBenchmarkStreamCoordinator,
   type PcmTransferBenchmarkStreamPort
@@ -275,6 +280,29 @@ import {
 } from './localPcmProbeCache'
 import { LocalPcmProbeChunkGate } from './localPcmProbeChunkGate'
 import { coordinateLocalPcmProbeAndDecode } from './localPcmProbeDecodeCoordinator'
+import {
+  FfmpegStdoutIngestionTimingAccumulator,
+  type FfmpegStdoutIngestionTimingSummary
+} from './ffmpegStdoutIngestionTimings'
+import {
+  buildLocalPcmFfmpegOutputArgs,
+  cleanupLocalPcmTempFileSink,
+  createLocalPcmTempFileSink,
+  readLocalPcmTempFileIntoBuffer,
+  statBoundedLocalPcmTempFile,
+  type LocalPcmTempFileSink
+} from './localPcmTempFileSink'
+import {
+  localPcmWorkerClient,
+  type LocalPcmWorkerDecodeResult,
+  type LocalPcmWorkerJobHandle
+} from './localPcmWorkerClient'
+import {
+  createBundledLocalPcmNativeCaptureClient,
+  isLocalPcmNativeCaptureSetupFailure,
+  type LocalPcmNativeCaptureResult
+} from './localPcmNativeCaptureClient'
+import { buildLocalPcmPipeOutputArgs } from './localPcmRechunkedPipe'
 import type { AppBuildInfo } from '../types/appBuildInfo'
 import type {
   IntegrityDuplicateGroup,
@@ -658,6 +686,11 @@ function getActiveMemoryFootprintChildProcessPids(): number[] {
     seen.add(pid)
     pids.push(pid)
   }
+  for (const pid of localPcmNativeCaptureClient.getActiveProcessIds()) {
+    if (pid === process.pid || seen.has(pid)) continue
+    seen.add(pid)
+    pids.push(pid)
+  }
   return pids
 }
 
@@ -792,6 +825,12 @@ let lastFmConfig: LastFmServiceConfig = {
 let lyricsOnlineEnabled = false
 let lyricsLrclibBaseUrl = LRCLIB_OFFICIAL_BASE_URL
 let memoryDiagnosticsService: MemoryDiagnosticsService | null = null
+// Diagnostics-only and deliberately nonpersistent. Decode sessions snapshot
+// this route when they start so changing it never mutates in-flight playback.
+let localPcmOutputSink: LocalPcmOutputSink = 'stdout_pipe'
+const localPcmNativeCaptureClient = createBundledLocalPcmNativeCaptureClient(app.isPackaged)
+let memoryDiagnosticsStatusTransitionCount = 0
+let localPcmOutputSinkSelectionGeneration = 0
 let libraryDiagnosticsService: LibraryDiagnosticsService | null = null
 let isAppQuitting = false
 
@@ -927,7 +966,7 @@ function broadcastMemoryDiagnosticsStatus(): void {
   if (!memoryDiagnosticsService || !mainWindow || mainWindow.isDestroyed()) {
     return
   }
-  mainWindow.webContents.send('diagnostics:status', memoryDiagnosticsService.getStatus())
+  mainWindow.webContents.send('diagnostics:status', getMemoryDiagnosticsStatusSnapshot())
 }
 
 function sendRendererSnapshotRequest(request: MemoryDiagnosticsSnapshotRequest): boolean {
@@ -952,18 +991,24 @@ function logMemoryDiagnosticsMainEvent(
 }
 
 function getMemoryDiagnosticsStatusSnapshot() {
-  if (memoryDiagnosticsService) {
-    return memoryDiagnosticsService.getStatus()
-  }
-  const logsDir = join(app.getPath('userData'), 'logs')
+  const status = memoryDiagnosticsService
+    ? memoryDiagnosticsService.getStatus()
+    : (() => {
+        const logsDir = join(app.getPath('userData'), 'logs')
+        return {
+          enabled: false,
+          sampleIntervalMs: MEMORY_DIAGNOSTICS_SAMPLE_INTERVAL_MS,
+          currentLogPath: join(logsDir, 'memory-diagnostics-current.csv'),
+          previousLogPath: join(logsDir, 'memory-diagnostics-prev.csv'),
+          hasCurrentLog: false,
+          hasPreviousLog: false,
+          sessionStartedAt: null
+        }
+      })()
   return {
-    enabled: false,
-    sampleIntervalMs: MEMORY_DIAGNOSTICS_SAMPLE_INTERVAL_MS,
-    currentLogPath: join(logsDir, 'memory-diagnostics-current.csv'),
-    previousLogPath: join(logsDir, 'memory-diagnostics-prev.csv'),
-    hasCurrentLog: false,
-    hasPreviousLog: false,
-    sessionStartedAt: null
+    ...status,
+    localPcmOutputSink,
+    localPcmTempFileSinkEnabled: localPcmOutputSink === 'temporary_file'
   }
 }
 
@@ -5206,6 +5251,8 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isAppQuitting = true
+  localPcmWorkerClient.shutdown()
+  localPcmNativeCaptureClient.cancelAll()
   globalInputShortcutService.clear()
   if (mainWindowPersistTimer !== null) {
     clearTimeout(mainWindowPersistTimer)
@@ -5572,13 +5619,141 @@ ipcMain.handle('diagnostics:getStatus', () => {
   return getMemoryDiagnosticsStatusSnapshot()
 })
 
+function isDiagnosticsMainFrame(event: Electron.IpcMainInvokeEvent): boolean {
+  return Boolean(
+    mainWindow
+    && !mainWindow.isDestroyed()
+    && event.sender === mainWindow.webContents
+    && event.senderFrame === mainWindow.webContents.mainFrame
+  )
+}
+
+function updateLocalPcmOutputSink(
+  sink: LocalPcmOutputSink,
+  reason: 'user' | 'diagnostics_disabled' = 'user'
+): boolean {
+  if (localPcmOutputSink === sink) return false
+  const previousSink = localPcmOutputSink
+  localPcmOutputSink = sink
+  logMemoryDiagnosticsMainEvent('local_pcm_output_sink_changed', {
+    previousSink,
+    sink,
+    scope: 'foreground_local_standard',
+    reason
+  }, { captureSample: false })
+  broadcastMemoryDiagnosticsStatus()
+  return true
+}
+
 ipcMain.handle('diagnostics:setEnabled', async (_event, enabledValue: unknown) => {
   const enabled = Boolean(enabledValue)
-  await library.setAppMeta(MEMORY_DIAGNOSTICS_ENABLED_META_KEY, enabled ? '1' : '0')
-  if (!memoryDiagnosticsService) {
+  memoryDiagnosticsStatusTransitionCount += 1
+  try {
+    // Reset synchronously, before the first await, so a new decode cannot
+    // snapshot the A/B route while diagnostics is being disabled.
+    if (!enabled) {
+      localPcmOutputSinkSelectionGeneration += 1
+      updateLocalPcmOutputSink('stdout_pipe', 'diagnostics_disabled')
+    }
+    await library.setAppMeta(MEMORY_DIAGNOSTICS_ENABLED_META_KEY, enabled ? '1' : '0')
+    if (!memoryDiagnosticsService) {
+      return getMemoryDiagnosticsStatusSnapshot()
+    }
+    await memoryDiagnosticsService.setEnabled(enabled)
+    // Defense in depth against any future asynchronous setter added during
+    // the disable transition.
+    if (!enabled) localPcmOutputSink = 'stdout_pipe'
     return getMemoryDiagnosticsStatusSnapshot()
+  } finally {
+    memoryDiagnosticsStatusTransitionCount = Math.max(
+      0,
+      memoryDiagnosticsStatusTransitionCount - 1
+    )
   }
-  return memoryDiagnosticsService.setEnabled(enabled)
+})
+
+ipcMain.handle('diagnostics:setLocalPcmOutputSink', async (event, sinkValue: unknown) => {
+  if (!isDiagnosticsMainFrame(event)) {
+    throw new Error('PCM output route changes are only accepted from the main window.')
+  }
+  const sink = normalizeLocalPcmOutputSink(sinkValue)
+  if (sink === null) {
+    throw new TypeError(
+      'PCM output route must be stdout_pipe, rechunked_pipe, native_pipe, worker_thread, or temporary_file.'
+    )
+  }
+  if (
+    sink !== 'stdout_pipe'
+    && (
+      memoryDiagnosticsStatusTransitionCount > 0
+      || !memoryDiagnosticsService?.getStatus().enabled
+    )
+  ) {
+    throw new Error('Memory diagnostics logging must be enabled before using an experimental PCM route.')
+  }
+
+  const selectionGeneration = ++localPcmOutputSinkSelectionGeneration
+  if (sink === 'worker_thread') {
+    // Pay the worker creation/ready handshake when the diagnostics route is
+    // selected, not on the first playback command being measured.
+    await localPcmWorkerClient.ensureReady()
+    if (selectionGeneration !== localPcmOutputSinkSelectionGeneration) {
+      return getMemoryDiagnosticsStatusSnapshot()
+    }
+    if (
+      memoryDiagnosticsStatusTransitionCount > 0
+      || !memoryDiagnosticsService?.getStatus().enabled
+    ) {
+      throw new Error('Memory diagnostics logging was disabled while the PCM worker was starting.')
+    }
+  }
+  if (sink === 'native_pipe') {
+    // Resolve the main-only addon while the route is selected so module load
+    // is not charged to the first measured playback. Unavailable/mismatched
+    // builds keep the selection and safely fall back before spawning FFmpeg,
+    // with the reason recorded on the decode event.
+    try {
+      const capabilities = localPcmNativeCaptureClient.getCapabilities()
+      if (!capabilities.supported || capabilities.maxPcmBytes !== LOCAL_PCM_DECODE_MAX_BYTES) {
+        logMemoryDiagnosticsMainEvent('native_pcm_capture_unavailable', {
+          supported: capabilities.supported,
+          reason: capabilities.reason,
+          maxPcmBytes: capabilities.maxPcmBytes,
+          expectedMaxPcmBytes: LOCAL_PCM_DECODE_MAX_BYTES
+        }, { captureSample: false })
+      }
+    } catch (error) {
+      logMemoryDiagnosticsMainEvent('native_pcm_capture_unavailable', {
+        reason: error instanceof Error ? error.message : String(error)
+      }, { captureSample: false })
+    }
+  }
+  updateLocalPcmOutputSink(sink)
+  return getMemoryDiagnosticsStatusSnapshot()
+})
+
+ipcMain.handle('diagnostics:setLocalPcmTempFileSinkEnabled', (event, enabledValue: unknown) => {
+  if (!isDiagnosticsMainFrame(event)) {
+    throw new Error('Temporary PCM sink changes are only accepted from the main window.')
+  }
+  if (typeof enabledValue !== 'boolean') {
+    throw new TypeError('Temporary PCM sink state must be a boolean.')
+  }
+  if (
+    enabledValue
+    && (
+      memoryDiagnosticsStatusTransitionCount > 0
+      || !memoryDiagnosticsService?.getStatus().enabled
+    )
+  ) {
+    throw new Error('Memory diagnostics logging must be enabled before using the temporary PCM sink.')
+  }
+  // Compatibility wrapper: disabling the legacy temporary-file switch must
+  // not unexpectedly turn off a worker route selected by a newer renderer.
+  localPcmOutputSinkSelectionGeneration += 1
+  const sink = resolveLegacyLocalPcmTempFileSinkChange(localPcmOutputSink, enabledValue)
+  updateLocalPcmOutputSink(sink)
+  return getMemoryDiagnosticsStatusSnapshot()
 })
 
 ipcMain.handle('diagnostics:revealCurrentLog', async () => {
@@ -9405,6 +9580,46 @@ const LOCAL_PCM_PRE_PROBE_MAX_PENDING_BYTES = Math.min(
 // the same FFmpeg arguments and authoritative FFprobe result.
 const LOCAL_PCM_OVERLAP_PROBE_AND_DECODE = process.env.ASTRA_SERIAL_LOCAL_PCM_DECODE !== '1'
 
+function roundFfmpegStdoutIngestionTimingSummary(
+  summary: FfmpegStdoutIngestionTimingSummary
+): FfmpegStdoutIngestionTimingSummary {
+  return {
+    ffmpegStdoutChunkCount: summary.ffmpegStdoutChunkCount,
+    ffmpegStdoutBytes: summary.ffmpegStdoutBytes,
+    ffmpegStdoutChunkMinBytes: summary.ffmpegStdoutChunkMinBytes,
+    ffmpegStdoutChunkMaxBytes: summary.ffmpegStdoutChunkMaxBytes,
+    ffmpegStdoutDrainSpanMs: roundMainDiagnosticMs(summary.ffmpegStdoutDrainSpanMs),
+    ffmpegStdoutDrainToCloseMs: roundMainDiagnosticMs(summary.ffmpegStdoutDrainToCloseMs),
+    ffmpegStdoutCallbackWorkMs: roundMainDiagnosticMs(summary.ffmpegStdoutCallbackWorkMs),
+    ffmpegStdoutCallbackMaxMs: roundMainDiagnosticMs(summary.ffmpegStdoutCallbackMaxMs),
+    ffmpegStdoutInterCallbackGapMs: roundMainDiagnosticMs(
+      summary.ffmpegStdoutInterCallbackGapMs
+    ),
+    ffmpegStdoutInterCallbackGapMaxMs: roundMainDiagnosticMs(
+      summary.ffmpegStdoutInterCallbackGapMaxMs
+    ),
+    ffmpegStdoutPostDispatchGapCount: summary.ffmpegStdoutPostDispatchGapCount,
+    ffmpegStdoutPostDispatchGapMs: roundMainDiagnosticMs(
+      summary.ffmpegStdoutPostDispatchGapMs
+    ),
+    ffmpegStdoutPostDispatchGapMaxMs: roundMainDiagnosticMs(
+      summary.ffmpegStdoutPostDispatchGapMaxMs
+    ),
+    streamCreditAckCount: summary.streamCreditAckCount,
+    streamCreditRoundTripMs: roundMainDiagnosticMs(summary.streamCreditRoundTripMs),
+    streamCreditRoundTripMaxMs: roundMainDiagnosticMs(
+      summary.streamCreditRoundTripMaxMs
+    ),
+    ffmpegStdoutCopyMs: roundMainDiagnosticMs(summary.ffmpegStdoutCopyMs),
+    ffmpegStdoutCopyMaxMs: roundMainDiagnosticMs(summary.ffmpegStdoutCopyMaxMs),
+    ffmpegStdoutFlushMs: roundMainDiagnosticMs(summary.ffmpegStdoutFlushMs),
+    ffmpegStdoutFlushMaxMs: roundMainDiagnosticMs(summary.ffmpegStdoutFlushMaxMs),
+    ffmpegStdoutPauseCount: summary.ffmpegStdoutPauseCount,
+    ffmpegStdoutPausedMs: roundMainDiagnosticMs(summary.ffmpegStdoutPausedMs),
+    ffmpegStdoutPauseMaxMs: roundMainDiagnosticMs(summary.ffmpegStdoutPauseMaxMs)
+  }
+}
+
 interface LocalPcmDecodeResult {
   requestId: number
   sampleRate: number
@@ -9437,10 +9652,48 @@ interface LocalPcmDecodeSession {
   probeStartedAtMs: number | null
   probeCompletedAtMs: number | null
   ffmpeg: ChildProcessWithoutNullStreams | null
+  ffmpegClosePromise: Promise<void> | null
   ffmpegStartedAtMs: number | null
   ffmpegFirstPcmAtMs: number | null
   ffmpegLastPcmAtMs: number | null
   ffmpegCompletedAtMs: number | null
+  ffmpegOutputSink: LocalPcmOutputSink
+  ffmpegStdoutTimings: FfmpegStdoutIngestionTimingAccumulator | null
+  ffmpegWorkerJob: LocalPcmWorkerJobHandle | null
+  ffmpegWorkerResult: LocalPcmWorkerDecodeResult | null
+  ffmpegWorkerStartupMs: number | null
+  ffmpegWorkerRequestStartedAtMs: number | null
+  ffmpegWorkerFirstBatchAtMs: number | null
+  ffmpegWorkerCompletedAtMs: number | null
+  ffmpegWorkerMainCopyMs: number
+  ffmpegWorkerMainCopyMaxMs: number
+  ffmpegWorkerPendingAcknowledgements: Array<() => void>
+  ffmpegWorkerFallbackReason: string | null
+  nativePcmCaptureJobId: string | null
+  nativePcmCaptureResult: LocalPcmNativeCaptureResult | null
+  nativePcmCaptureFallbackReason: string | null
+  nativePcmCaptureProcessId: number | null
+  nativePcmCaptureUsesBatches: boolean
+  nativePcmCaptureBatchCount: number
+  nativePcmCaptureBatchBytes: number
+  nativePcmCaptureBatchMinBytes: number | null
+  nativePcmCaptureBatchMaxBytes: number | null
+  nativePcmCaptureFirstBatchAtMs: number | null
+  nativePcmCaptureLastBatchAtMs: number | null
+  nativePcmCaptureMainCopyMs: number
+  nativePcmCaptureMainCopyMaxMs: number
+  nativePcmCapturePendingAcknowledgements: Array<() => void>
+  probedDurationSeconds: number | null
+  tempPcmSink: LocalPcmTempFileSink | null
+  tempPcmCreateMs: number | null
+  tempPcmStatMs: number | null
+  tempPcmReadMs: number | null
+  tempPcmReadChunkCount: number | null
+  tempPcmBytes: number | null
+  tempPcmCleanupMs: number | null
+  tempPcmCleanupSucceeded: boolean | null
+  tempPcmCleanupPromise: Promise<void> | null
+  tempPcmFallbackReason: string | null
   decodeCompletedAtMs: number | null
   allocationMs: number
   initialAllocationMs: number
@@ -9482,6 +9735,213 @@ interface LocalPcmStreamState {
 
 const localPcmDecodeSessions = new Map<string, LocalPcmDecodeSession>()
 const localPcmProbeCache = new LocalPcmProbeCache()
+
+function cleanupLocalPcmDecodeTempSink(session: LocalPcmDecodeSession): Promise<void> {
+  if (!session.tempPcmSink) return Promise.resolve()
+  if (session.tempPcmCleanupPromise) return session.tempPcmCleanupPromise
+
+  const sink = session.tempPcmSink
+  const cleanupPromise = (async () => {
+    // On Windows an output file cannot be removed while FFmpeg still owns its
+    // handle. A failed/cancelled probe can leave the coordinated decode
+    // promise unawaited, so use the child-close promise as the cleanup barrier.
+    await session.ffmpegClosePromise?.catch(() => undefined)
+    const cleanupStartedAtMs = mainDiagnosticNow()
+    const result = await cleanupLocalPcmTempFileSink(sink)
+    session.tempPcmCleanupMs = mainDiagnosticNow() - cleanupStartedAtMs
+    session.tempPcmCleanupSucceeded = result.succeeded
+    if (!result.succeeded) {
+      logMemoryDiagnosticsMainEvent('local_pcm_temp_file_cleanup_failed', {
+        requestId: session.requestId,
+        decodeRequestId: session.requestId,
+        message: result.error?.message ?? 'Temporary PCM cleanup failed.'
+      }, { captureSample: false })
+    }
+  })()
+  session.tempPcmCleanupPromise = cleanupPromise
+  return cleanupPromise
+}
+
+function getLocalPcmOutputSinkTimingDetails(
+  session: LocalPcmDecodeSession
+): Partial<LocalAudioPcmTransportTimings>
+  & Pick<LocalAudioPcmTransportTimings, 'ffmpegOutputSink'> {
+  const workerTimings = session.ffmpegWorkerResult?.workerTimings
+  const workerRequestMs = session.ffmpegWorkerRequestStartedAtMs === null
+    || session.ffmpegWorkerCompletedAtMs === null
+    ? null
+    : Math.max(
+        0,
+        session.ffmpegWorkerCompletedAtMs - session.ffmpegWorkerRequestStartedAtMs
+      )
+  const workerMainDeliverySpanMs = session.ffmpegWorkerFirstBatchAtMs === null
+    || session.ffmpegWorkerCompletedAtMs === null
+    ? null
+    : Math.max(
+        0,
+        session.ffmpegWorkerCompletedAtMs - session.ffmpegWorkerFirstBatchAtMs
+      )
+  const nativeResult = session.ffmpegOutputSink === 'native_pipe'
+    ? session.nativePcmCaptureResult
+    : null
+  return {
+    ffmpegOutputSink: session.ffmpegOutputSink,
+    ...(session.tempPcmCreateMs === null
+      ? {}
+      : { tempPcmCreateMs: roundMainDiagnosticMs(session.tempPcmCreateMs) }),
+    ...(session.tempPcmStatMs === null
+      ? {}
+      : { tempPcmStatMs: roundMainDiagnosticMs(session.tempPcmStatMs) }),
+    ...(session.tempPcmReadMs === null
+      ? {}
+      : { tempPcmReadMs: roundMainDiagnosticMs(session.tempPcmReadMs) }),
+    ...(session.tempPcmReadChunkCount === null
+      ? {}
+      : { tempPcmReadChunkCount: session.tempPcmReadChunkCount }),
+    ...(session.tempPcmBytes === null ? {} : { tempPcmBytes: session.tempPcmBytes }),
+    ...(session.tempPcmCleanupMs === null
+      ? {}
+      : { tempPcmCleanupMs: roundMainDiagnosticMs(session.tempPcmCleanupMs) }),
+    ...(session.tempPcmCleanupSucceeded === null
+      ? {}
+      : { tempPcmCleanupSucceeded: session.tempPcmCleanupSucceeded }),
+    ...(session.ffmpegWorkerStartupMs === null
+      ? {}
+      : { ffmpegWorkerStartupMs: roundMainDiagnosticMs(session.ffmpegWorkerStartupMs) }),
+    ...(workerTimings
+      ? {
+          ffmpegWorkerTotalMs: roundMainDiagnosticMs(workerTimings.ffmpegWorkerTotalMs),
+          ffmpegWorkerSpawnMs: roundMainDiagnosticMs(workerTimings.ffmpegWorkerSpawnMs),
+          ffmpegWorkerFfmpegMs: roundMainDiagnosticMs(workerTimings.ffmpegWorkerFfmpegMs),
+          ffmpegWorkerSpawnToFirstPcmMs: roundMainDiagnosticMs(
+            workerTimings.ffmpegWorkerSpawnToFirstPcmMs
+          ),
+          ffmpegWorkerPcmOutputSpanMs: roundMainDiagnosticMs(
+            workerTimings.ffmpegWorkerPcmOutputSpanMs
+          ),
+          ffmpegWorkerCloseTailMs: roundMainDiagnosticMs(
+            workerTimings.ffmpegWorkerCloseTailMs
+          ),
+          ffmpegWorkerBatchCount: workerTimings.ffmpegWorkerBatchCount,
+          ffmpegWorkerBatchBytes: workerTimings.ffmpegWorkerBatchBytes,
+          ffmpegWorkerBatchMinBytes: workerTimings.ffmpegWorkerBatchMinBytes,
+          ffmpegWorkerBatchMaxBytes: workerTimings.ffmpegWorkerBatchMaxBytes,
+          ffmpegWorkerAggregationCopyMs: roundMainDiagnosticMs(
+            workerTimings.ffmpegWorkerAggregationCopyMs
+          ),
+          ffmpegWorkerAggregationCopyMaxMs: roundMainDiagnosticMs(
+            workerTimings.ffmpegWorkerAggregationCopyMaxMs
+          ),
+          ffmpegWorkerBatchCopyMs: roundMainDiagnosticMs(
+            workerTimings.ffmpegWorkerBatchCopyMs
+          ),
+          ffmpegWorkerBatchPostMs: roundMainDiagnosticMs(
+            workerTimings.ffmpegWorkerBatchPostMs
+          ),
+          ffmpegWorkerCreditWaitCount: workerTimings.ffmpegWorkerCreditWaitCount,
+          ffmpegWorkerCreditWaitMs: roundMainDiagnosticMs(
+            workerTimings.ffmpegWorkerCreditWaitMs
+          ),
+          ffmpegWorkerCreditWaitMaxMs: roundMainDiagnosticMs(
+            workerTimings.ffmpegWorkerCreditWaitMaxMs
+          )
+        }
+      : {}),
+    ...(workerRequestMs === null
+      ? {}
+      : { ffmpegWorkerRequestMs: roundMainDiagnosticMs(workerRequestMs) }),
+    ...(workerMainDeliverySpanMs === null
+      ? {}
+      : { ffmpegWorkerMainDeliverySpanMs: roundMainDiagnosticMs(workerMainDeliverySpanMs) }),
+    ...(session.ffmpegWorkerResult === null
+      ? {}
+      : {
+          ffmpegWorkerMainCopyMs: roundMainDiagnosticMs(session.ffmpegWorkerMainCopyMs),
+          ffmpegWorkerMainCopyMaxMs: roundMainDiagnosticMs(session.ffmpegWorkerMainCopyMaxMs)
+        }),
+    ...(nativeResult === null
+      ? {}
+      : {
+          nativePcmCaptureSpawnMs: roundMainDiagnosticMs(nativeResult.spawnMs),
+          nativePcmCaptureProcessMs: roundMainDiagnosticMs(nativeResult.processMs),
+          ...(nativeResult.firstByteMs === null
+            ? {}
+            : { nativePcmCaptureFirstByteMs: roundMainDiagnosticMs(nativeResult.firstByteMs) }),
+          ...(nativeResult.stdoutReadSpanMs === null
+            ? {}
+            : {
+                nativePcmCaptureStdoutReadSpanMs:
+                  roundMainDiagnosticMs(nativeResult.stdoutReadSpanMs)
+              }),
+          nativePcmCaptureStdoutReadCount: nativeResult.stdoutReadCount,
+          ...(nativeResult.stdoutReadMinBytes === null
+            ? {}
+            : { nativePcmCaptureStdoutReadMinBytes: nativeResult.stdoutReadMinBytes }),
+          ...(nativeResult.stdoutReadMaxBytes === null
+            ? {}
+            : { nativePcmCaptureStdoutReadMaxBytes: nativeResult.stdoutReadMaxBytes }),
+          nativePcmCaptureOutputBytes: nativeResult.outputBytes,
+          nativePcmCaptureRequestedPipeBufferBytes: nativeResult.requestedPipeBufferBytes,
+          ...(nativeResult.effectivePipeBufferBytes === null
+            ? {}
+            : {
+                nativePcmCaptureEffectivePipeBufferBytes:
+                  nativeResult.effectivePipeBufferBytes
+              }),
+          nativePcmCaptureBufferCopyMs: roundMainDiagnosticMs(nativeResult.bufferCopyMs),
+          nativePcmCaptureUsedExternalBuffer: nativeResult.usedExternalBuffer,
+          nativePcmCaptureDeliveryMode: nativeResult.deliveryMode,
+          nativePcmCaptureBatchTargetBytes: nativeResult.batchTargetBytes,
+          nativePcmCaptureBatchCount: nativeResult.batchCount,
+          nativePcmCaptureBatchBytes: nativeResult.batchBytes,
+          ...(nativeResult.batchMinBytes === null
+            ? {}
+            : { nativePcmCaptureBatchMinBytes: nativeResult.batchMinBytes }),
+          ...(nativeResult.batchMaxBytes === null
+            ? {}
+            : { nativePcmCaptureBatchMaxBytes: nativeResult.batchMaxBytes }),
+          nativePcmCaptureBatchCreditWaitCount: nativeResult.batchCreditWaitCount,
+          nativePcmCaptureBatchCreditWaitMs:
+            roundMainDiagnosticMs(nativeResult.batchCreditWaitMs),
+          nativePcmCaptureBatchCreditWaitMaxMs:
+            roundMainDiagnosticMs(nativeResult.batchCreditWaitMaxMs),
+          nativePcmCaptureBatchCopyMs: roundMainDiagnosticMs(nativeResult.batchCopyMs),
+          nativePcmCaptureBatchCopyMaxMs:
+            roundMainDiagnosticMs(nativeResult.batchCopyMaxMs),
+          nativePcmCaptureBatchCallbackMs:
+            roundMainDiagnosticMs(nativeResult.batchCallbackMs),
+          nativePcmCaptureBatchCallbackMaxMs:
+            roundMainDiagnosticMs(nativeResult.batchCallbackMaxMs),
+          nativePcmCaptureMainCopyMs:
+            roundMainDiagnosticMs(session.nativePcmCaptureMainCopyMs),
+          nativePcmCaptureMainCopyMaxMs:
+            roundMainDiagnosticMs(session.nativePcmCaptureMainCopyMaxMs),
+          ...(session.nativePcmCaptureFirstBatchAtMs === null
+            || session.ffmpegStartedAtMs === null
+            ? {}
+            : {
+                nativePcmCaptureFirstBatchMs: roundMainDiagnosticMs(
+                  Math.max(
+                    0,
+                    session.nativePcmCaptureFirstBatchAtMs - session.ffmpegStartedAtMs
+                  )
+                )
+              }),
+          ...(session.nativePcmCaptureFirstBatchAtMs === null
+            || session.nativePcmCaptureLastBatchAtMs === null
+            ? {}
+            : {
+                nativePcmCaptureMainBatchSpanMs: roundMainDiagnosticMs(
+                  Math.max(
+                    0,
+                    session.nativePcmCaptureLastBatchAtMs
+                      - session.nativePcmCaptureFirstBatchAtMs
+                  )
+                )
+              })
+        })
+  }
+}
 
 interface RemoteStreamSession {
   id: number
@@ -10978,9 +11438,53 @@ function appendLocalPcmOutputChunk(
   const nextTotalBytes = session.totalBytes + chunk.byteLength
   const output = ensureLocalPcmOutputCapacity(session, nextTotalBytes)
   if (session.settled) return
-  chunk.copy(output, session.totalBytes)
+  if (session.ffmpegOutputSink === 'native_pipe' && session.nativePcmCaptureUsesBatches) {
+    const copyStartedAtMs = mainDiagnosticNow()
+    chunk.copy(output, session.totalBytes)
+    const copyMs = Math.max(0, mainDiagnosticNow() - copyStartedAtMs)
+    session.nativePcmCaptureMainCopyMs += copyMs
+    session.nativePcmCaptureMainCopyMaxMs = Math.max(
+      session.nativePcmCaptureMainCopyMaxMs,
+      copyMs
+    )
+    session.totalBytes = nextTotalBytes
+    flushLocalPcmStreamChunks(session)
+    return
+  }
+  if (session.ffmpegOutputSink === 'worker_thread') {
+    const copyStartedAtMs = mainDiagnosticNow()
+    chunk.copy(output, session.totalBytes)
+    const copyMs = Math.max(0, mainDiagnosticNow() - copyStartedAtMs)
+    session.ffmpegWorkerMainCopyMs += copyMs
+    session.ffmpegWorkerMainCopyMaxMs = Math.max(
+      session.ffmpegWorkerMainCopyMaxMs,
+      copyMs
+    )
+    session.totalBytes = nextTotalBytes
+    flushLocalPcmStreamChunks(session)
+    return
+  }
+  const stdoutTimings = session.ffmpegStdoutTimings
+  if (!stdoutTimings) {
+    chunk.copy(output, session.totalBytes)
+    session.totalBytes = nextTotalBytes
+    flushLocalPcmStreamChunks(session)
+    return
+  }
+
+  const copyStartedAtMs = mainDiagnosticNow()
+  try {
+    chunk.copy(output, session.totalBytes)
+  } finally {
+    stdoutTimings.recordCopy(copyStartedAtMs, mainDiagnosticNow())
+  }
   session.totalBytes = nextTotalBytes
-  flushLocalPcmStreamChunks(session)
+  const flushStartedAtMs = mainDiagnosticNow()
+  try {
+    flushLocalPcmStreamChunks(session)
+  } finally {
+    stdoutTimings.recordFlush(flushStartedAtMs, mainDiagnosticNow())
+  }
 }
 
 type LocalPcmDecodeOutcome =
@@ -11085,11 +11589,13 @@ function flushLocalPcmStreamChunks(session: LocalPcmDecodeSession): void {
       byteLength: payload.byteLength,
       payload
     })
-    stream.dispatchPostMs += mainDiagnosticNow() - postStartedAtMs
+    const postCompletedAtMs = mainDiagnosticNow()
+    stream.dispatchPostMs += postCompletedAtMs - postStartedAtMs
     if (!posted) {
       failLocalPcmStreamProtocol(session, 'PCM stream closed while decoded audio was being delivered.')
       return
     }
+    session.ffmpegStdoutTimings?.recordStreamDispatch(sequence, postCompletedAtMs)
 
     stream.credits -= 1
     stream.nextChunkOffset = byteEnd
@@ -11160,6 +11666,9 @@ function beginLocalPcmStreamDelivery(
     }
 
     if (message.type === 'credit') {
+      const creditReceivedAtMs = session.ffmpegStdoutTimings
+        ? mainDiagnosticNow()
+        : null
       if (
         !stream.ready
         || message.credits !== 1
@@ -11169,6 +11678,12 @@ function beginLocalPcmStreamDelivery(
       ) {
         failLocalPcmStreamProtocol(session, 'PCM stream received an invalid or duplicate delivery credit.')
         return
+      }
+      if (creditReceivedAtMs !== null) {
+        session.ffmpegStdoutTimings?.recordStreamCredit(
+          message.sequence,
+          creditReceivedAtMs
+        )
       }
       stream.nextCreditSequence += 1
       stream.credits += 1
@@ -11230,6 +11745,16 @@ function settleLocalPcmDecodeSession(
   }
   session.probeAbortController?.abort()
   session.probeAbortController = null
+  if (outcome.type !== 'success') {
+    session.ffmpegWorkerJob?.cancel()
+    if (session.nativePcmCaptureJobId) {
+      localPcmNativeCaptureClient.cancel(session.nativePcmCaptureJobId)
+    }
+  }
+  const pendingNativeAcknowledgements = session.nativePcmCapturePendingAcknowledgements.splice(0)
+  for (const acknowledge of pendingNativeAcknowledgements) acknowledge()
+  session.nativePcmCaptureJobId = null
+  session.ffmpegWorkerPendingAcknowledgements = []
 
   const ffmpeg = session.ffmpeg
   if (outcome.type !== 'success' && ffmpeg && !ffmpeg.killed) {
@@ -11255,22 +11780,72 @@ function settleLocalPcmDecodeSession(
   let diagnosticOutcome = successValidationError ? 'failed' : outcome.type
   let streamDeliveryError: Error | null = null
   const settledAtMs = mainDiagnosticNow()
-  const ffmpegMs = session.ffmpegStartedAtMs === null
-    ? 0
-    : (session.ffmpegCompletedAtMs ?? settledAtMs) - session.ffmpegStartedAtMs
-  const ffmpegSpawnToFirstPcmMs = session.ffmpegStartedAtMs === null
-    || session.ffmpegFirstPcmAtMs === null
+  if (ffmpeg?.stdout.isPaused()) {
+    session.ffmpegStdoutTimings?.endPause(settledAtMs)
+    // Drain any internally buffered stdout immediately after settlement. The
+    // data handler is gated by session.settled, so obsolete PCM is ignored.
+    ffmpeg.stdout.resume()
+  }
+  const workerResult = session.ffmpegWorkerResult
+  const nativeResult = session.ffmpegOutputSink === 'native_pipe'
+    && session.nativePcmCaptureResult?.ok
+    ? session.nativePcmCaptureResult
+    : null
+  const ffmpegStdoutTimingSummary = workerResult
+    ? (() => {
+        const {
+          // In the worker accumulator these describe worker-to-main batch
+          // credits, not the renderer MessagePort credits represented by the
+          // generic streamCredit fields. Keep only the explicit worker credit
+          // metrics to avoid mixing two different transport boundaries.
+          streamCreditAckCount: _workerBatchCreditAckCount,
+          streamCreditRoundTripMs: _workerBatchCreditRoundTripMs,
+          streamCreditRoundTripMaxMs: _workerBatchCreditRoundTripMaxMs,
+          ...stdoutTimings
+        } = roundFfmpegStdoutIngestionTimingSummary(workerResult.stdoutTimings)
+        return stdoutTimings
+      })()
+    : session.ffmpegStdoutTimings
+      ? roundFfmpegStdoutIngestionTimingSummary(
+          session.ffmpegStdoutTimings.snapshot(session.ffmpegCompletedAtMs ?? settledAtMs)
+        )
+      : null
+  const ffmpegMs = workerResult
+    ? workerResult.workerTimings.ffmpegWorkerFfmpegMs
+    : session.ffmpegStartedAtMs === null
+      ? 0
+      : (session.ffmpegCompletedAtMs ?? settledAtMs) - session.ffmpegStartedAtMs
+  const ffmpegSpawnToFirstPcmMs = workerResult
+    ? workerResult.workerTimings.ffmpegWorkerSpawnToFirstPcmMs
+    : nativeResult
+      ? nativeResult.firstByteMs
+    : session.ffmpegStartedAtMs === null || session.ffmpegFirstPcmAtMs === null
+      ? null
+      : Math.max(0, session.ffmpegFirstPcmAtMs - session.ffmpegStartedAtMs)
+  const ffmpegPcmOutputSpanMs = workerResult
+    ? workerResult.workerTimings.ffmpegWorkerPcmOutputSpanMs
+    : nativeResult
+      ? nativeResult.stdoutReadSpanMs
+    : session.ffmpegFirstPcmAtMs === null || session.ffmpegLastPcmAtMs === null
+      ? null
+      : Math.max(0, session.ffmpegLastPcmAtMs - session.ffmpegFirstPcmAtMs)
+  const ffmpegCloseTailMs = workerResult
+    ? workerResult.workerTimings.ffmpegWorkerCloseTailMs
+    : nativeResult
+      ? nativeResult.firstByteMs === null || nativeResult.stdoutReadSpanMs === null
+        ? null
+        : Math.max(
+            0,
+            nativeResult.processMs
+              - nativeResult.firstByteMs
+              - nativeResult.stdoutReadSpanMs
+          )
+    : session.ffmpegLastPcmAtMs === null || session.ffmpegCompletedAtMs === null
+      ? null
+      : Math.max(0, session.ffmpegCompletedAtMs - session.ffmpegLastPcmAtMs)
+  const probeFfmpegOverlapMs = workerResult
     ? null
-    : Math.max(0, session.ffmpegFirstPcmAtMs - session.ffmpegStartedAtMs)
-  const ffmpegPcmOutputSpanMs = session.ffmpegFirstPcmAtMs === null
-    || session.ffmpegLastPcmAtMs === null
-    ? null
-    : Math.max(0, session.ffmpegLastPcmAtMs - session.ffmpegFirstPcmAtMs)
-  const ffmpegCloseTailMs = session.ffmpegLastPcmAtMs === null
-    || session.ffmpegCompletedAtMs === null
-    ? null
-    : Math.max(0, session.ffmpegCompletedAtMs - session.ffmpegLastPcmAtMs)
-  const probeFfmpegOverlapMs = session.probeStartedAtMs === null
+    : session.probeStartedAtMs === null
     || session.probeCompletedAtMs === null
     || session.ffmpegStartedAtMs === null
     || session.ffmpegCompletedAtMs === null
@@ -11355,6 +11930,7 @@ function settleLocalPcmDecodeSession(
         ? {}
         : { probeFfmpegOverlapMs: roundMainDiagnosticMs(probeFfmpegOverlapMs) }),
       ffmpegMs: roundMainDiagnosticMs(ffmpegMs),
+      ...getLocalPcmOutputSinkTimingDetails(session),
       ...(ffmpegSpawnToFirstPcmMs === null
         ? {}
         : { ffmpegSpawnToFirstPcmMs: roundMainDiagnosticMs(ffmpegSpawnToFirstPcmMs) }),
@@ -11364,6 +11940,7 @@ function settleLocalPcmDecodeSession(
       ...(ffmpegCloseTailMs === null
         ? {}
         : { ffmpegCloseTailMs: roundMainDiagnosticMs(ffmpegCloseTailMs) }),
+      ...(ffmpegStdoutTimingSummary ?? {}),
       allocationMs: roundMainDiagnosticMs(session.allocationMs),
       initialAllocationMs: roundMainDiagnosticMs(session.initialAllocationMs),
       growthAllocationMs: roundMainDiagnosticMs(session.growthAllocationMs),
@@ -11418,12 +11995,6 @@ function settleLocalPcmDecodeSession(
       })
     }
   }
-  if (ffmpeg?.stdout.isPaused()) {
-    // Release any internally buffered stdout after settlement. The data
-    // handler is gated by session.settled, so no obsolete PCM is retained.
-    ffmpeg.stdout.resume()
-  }
-
   if (stream) {
     try {
       stream.port.close()
@@ -11458,8 +12029,21 @@ function settleLocalPcmDecodeSession(
     probeFfmpegOverlapMs: probeFfmpegOverlapMs === null
       ? null
       : roundMainDiagnosticMs(probeFfmpegOverlapMs),
-    decodeMs: session.ffmpegStartedAtMs === null ? null : roundMainDiagnosticMs(ffmpegMs),
-    ffmpegMs: session.ffmpegStartedAtMs === null ? null : roundMainDiagnosticMs(ffmpegMs),
+    decodeMs: session.ffmpegStartedAtMs === null && workerResult === null
+      ? null
+      : roundMainDiagnosticMs(ffmpegMs),
+    ffmpegMs: session.ffmpegStartedAtMs === null && workerResult === null
+      ? null
+      : roundMainDiagnosticMs(ffmpegMs),
+    ...getLocalPcmOutputSinkTimingDetails(session),
+    tempPcmFallbackReason: session.tempPcmFallbackReason,
+    ffmpegWorkerFallbackReason: session.ffmpegWorkerFallbackReason,
+    nativePcmCaptureFallbackReason: session.nativePcmCaptureFallbackReason,
+    nativePcmCaptureProcessId: session.nativePcmCaptureProcessId,
+    nativePcmCaptureErrorCode: session.nativePcmCaptureResult?.errorCode ?? null,
+    nativePcmCaptureErrorMessage: session.nativePcmCaptureResult?.errorMessage ?? null,
+    nativePcmCaptureWindowsErrorCode: session.nativePcmCaptureResult?.windowsErrorCode ?? null,
+    nativePcmCaptureStderrTruncated: session.nativePcmCaptureResult?.stderrTruncated ?? null,
     ffmpegSpawnToFirstPcmMs: ffmpegSpawnToFirstPcmMs === null
       ? null
       : roundMainDiagnosticMs(ffmpegSpawnToFirstPcmMs),
@@ -11469,6 +12053,20 @@ function settleLocalPcmDecodeSession(
     ffmpegCloseTailMs: ffmpegCloseTailMs === null
       ? null
       : roundMainDiagnosticMs(ffmpegCloseTailMs),
+    ...(ffmpegStdoutTimingSummary ?? {}),
+    ...(ffmpegStdoutTimingSummary
+      ? {
+          ffmpegStdoutDrainToCloseMs: session.ffmpegCompletedAtMs === null
+            ? null
+            : ffmpegStdoutTimingSummary.ffmpegStdoutDrainToCloseMs,
+          ffmpegStdoutChunkMinBytes: ffmpegStdoutTimingSummary.ffmpegStdoutChunkCount === 0
+            ? null
+            : ffmpegStdoutTimingSummary.ffmpegStdoutChunkMinBytes,
+          ffmpegStdoutChunkMaxBytes: ffmpegStdoutTimingSummary.ffmpegStdoutChunkCount === 0
+            ? null
+            : ffmpegStdoutTimingSummary.ffmpegStdoutChunkMaxBytes
+        }
+      : {}),
     allocationMs: roundMainDiagnosticMs(session.allocationMs),
     initialAllocationMs: roundMainDiagnosticMs(session.initialAllocationMs),
     growthAllocationMs: roundMainDiagnosticMs(session.growthAllocationMs),
@@ -11516,6 +12114,15 @@ async function decodeLocalAudioToPcm(
   if (existing) {
     settleLocalPcmDecodeSession(existing, { type: 'cancelled' })
   }
+  // The diagnostics-only A/B applies only to a new foreground request. A
+  // background gapless prebuffer and every request made with the toggle off
+  // continue through the unchanged stdout-pipe path.
+  const initialFfmpegOutputSink: LocalPcmOutputSink = localPcmOutputSink !== 'stdout_pipe'
+    && memoryDiagnosticsStatusTransitionCount === 0
+    && memoryDiagnosticsService?.getStatus().enabled === true
+    && request.priority === 'interactive'
+    ? localPcmOutputSink
+    : 'stdout_pipe'
 
   return new Promise<LocalPcmDecodeResult | null>((resolve, reject) => {
     const session: LocalPcmDecodeSession = {
@@ -11537,10 +12144,56 @@ async function decodeLocalAudioToPcm(
       probeStartedAtMs: null,
       probeCompletedAtMs: null,
       ffmpeg: null,
+      ffmpegClosePromise: null,
       ffmpegStartedAtMs: null,
       ffmpegFirstPcmAtMs: null,
       ffmpegLastPcmAtMs: null,
       ffmpegCompletedAtMs: null,
+      ffmpegOutputSink: initialFfmpegOutputSink,
+      // Detailed callback probes add clock reads to the hot stdout path, so
+      // keep them completely absent during ordinary production playback.
+      ffmpegStdoutTimings: (
+        initialFfmpegOutputSink === 'stdout_pipe'
+        || initialFfmpegOutputSink === 'rechunked_pipe'
+      )
+        && memoryDiagnosticsService?.getStatus().enabled
+        ? new FfmpegStdoutIngestionTimingAccumulator()
+        : null,
+      ffmpegWorkerJob: null,
+      ffmpegWorkerResult: null,
+      ffmpegWorkerStartupMs: null,
+      ffmpegWorkerRequestStartedAtMs: null,
+      ffmpegWorkerFirstBatchAtMs: null,
+      ffmpegWorkerCompletedAtMs: null,
+      ffmpegWorkerMainCopyMs: 0,
+      ffmpegWorkerMainCopyMaxMs: 0,
+      ffmpegWorkerPendingAcknowledgements: [],
+      ffmpegWorkerFallbackReason: null,
+      nativePcmCaptureJobId: null,
+      nativePcmCaptureResult: null,
+      nativePcmCaptureFallbackReason: null,
+      nativePcmCaptureProcessId: null,
+      nativePcmCaptureUsesBatches: false,
+      nativePcmCaptureBatchCount: 0,
+      nativePcmCaptureBatchBytes: 0,
+      nativePcmCaptureBatchMinBytes: null,
+      nativePcmCaptureBatchMaxBytes: null,
+      nativePcmCaptureFirstBatchAtMs: null,
+      nativePcmCaptureLastBatchAtMs: null,
+      nativePcmCaptureMainCopyMs: 0,
+      nativePcmCaptureMainCopyMaxMs: 0,
+      nativePcmCapturePendingAcknowledgements: [],
+      probedDurationSeconds: null,
+      tempPcmSink: null,
+      tempPcmCreateMs: null,
+      tempPcmStatMs: null,
+      tempPcmReadMs: null,
+      tempPcmReadChunkCount: null,
+      tempPcmBytes: null,
+      tempPcmCleanupMs: null,
+      tempPcmCleanupSucceeded: null,
+      tempPcmCleanupPromise: null,
+      tempPcmFallbackReason: null,
       decodeCompletedAtMs: null,
       allocationMs: 0,
       initialAllocationMs: 0,
@@ -11613,6 +12266,7 @@ async function decodeLocalAudioToPcm(
     session.decodeTimeout.unref()
 
     void (async () => {
+      try {
       const binaryResolutionStartedAtMs = mainDiagnosticNow()
       const [ffmpegPath, ffprobePath] = await Promise.all([
         resolveBinary('ffmpeg'),
@@ -11626,6 +12280,27 @@ async function decodeLocalAudioToPcm(
           error: new Error('FFmpeg and FFprobe are required for safe local audio decoding.')
         })
         return
+      }
+
+      if (session.ffmpegOutputSink === 'temporary_file') {
+        const createStartedAtMs = mainDiagnosticNow()
+        try {
+          session.tempPcmSink = await createLocalPcmTempFileSink(tmpdir())
+        } catch (error) {
+          // Setup has not spawned FFmpeg or exposed PCM, so this is the one
+          // safe place to fall back within the same request. Later temp-file
+          // failures remain authoritative to avoid a hidden double decode.
+          session.ffmpegOutputSink = 'stdout_pipe'
+          session.tempPcmFallbackReason = error instanceof Error
+            ? error.message
+            : 'Temporary PCM sink setup failed.'
+          if (memoryDiagnosticsService?.getStatus().enabled) {
+            session.ffmpegStdoutTimings = new FfmpegStdoutIngestionTimingAccumulator()
+          }
+        } finally {
+          session.tempPcmCreateMs = mainDiagnosticNow() - createStartedAtMs
+        }
+        if (session.settled) return
       }
 
       const chunkGate = new LocalPcmProbeChunkGate(LOCAL_PCM_PRE_PROBE_MAX_PENDING_BYTES)
@@ -11654,8 +12329,47 @@ async function decodeLocalAudioToPcm(
           session.probeMs = probeCompletedAtMs - probeStartedAtMs
         }
       })()
-      type FfmpegCloseResult = { code: number | null; completedAtMs: number }
-      const startFfmpegDecode = (): Promise<FfmpegCloseResult> => {
+      type FfmpegCloseResult = {
+        code: number | null
+        completedAtMs: number
+        nativeCaptureResult?: LocalPcmNativeCaptureResult
+      }
+      const initializeLocalPcmAssemblyAfterProbe = (): void => {
+        if (session.outputBuffer) return
+        if (session.channels < 1) {
+          throw new Error('Local PCM assembly was initialized before probing completed.')
+        }
+        const allocationStartedAtMs = mainDiagnosticNow()
+        try {
+          session.outputBuffer = allocateInitialLocalPcmOutput(
+            session.probedDurationSeconds,
+            session.sampleRate,
+            session.channels,
+            chunkGate.pendingByteLength
+          )
+        } finally {
+          const initialAllocationMs = mainDiagnosticNow() - allocationStartedAtMs
+          session.initialAllocationMs += initialAllocationMs
+          session.allocationMs += initialAllocationMs
+        }
+        sendLocalPcmStreamStart(session)
+        if (session.settled) {
+          throw new Error('Local PCM decode was cancelled before metadata delivery.')
+        }
+      }
+      const startMainProcessFfmpegDecode = (): Promise<FfmpegCloseResult> => {
+        const tempSink = session.ffmpegOutputSink === 'temporary_file'
+          ? session.tempPcmSink
+          : null
+        if (session.ffmpegOutputSink === 'temporary_file' && !tempSink) {
+          throw new Error('Local PCM temporary sink was unavailable before FFmpeg started.')
+        }
+        const outputArgs = session.ffmpegOutputSink === 'temporary_file'
+          ? buildLocalPcmFfmpegOutputArgs(
+              tempSink,
+              LOCAL_PCM_DECODE_MAX_BYTES
+            )
+          : buildLocalPcmPipeOutputArgs(session.ffmpegOutputSink === 'rechunked_pipe')
         session.ffmpegStartedAtMs = mainDiagnosticNow()
         const ffmpeg = spawn(
           ffmpegPath,
@@ -11668,7 +12382,7 @@ async function decodeLocalAudioToPcm(
             '-acodec', 'pcm_f32le',
             '-f', 'f32le',
             '-ar', String(session.sampleRate),
-            'pipe:1'
+            ...outputArgs
           ],
           {
             stdio: ['pipe', 'pipe', 'pipe'],
@@ -11707,11 +12421,12 @@ async function decodeLocalAudioToPcm(
           })
         })
 
-        ffmpeg.stdout.on('data', (chunk: Buffer) => {
+        const handleStdoutData = (chunk: Buffer): void => {
           if (session.settled || chunk.byteLength === 0) return
           const observedAtMs = mainDiagnosticNow()
           session.ffmpegFirstPcmAtMs ??= observedAtMs
           session.ffmpegLastPcmAtMs = observedAtMs
+          let callbackFailure: Error | null = null
           try {
             chunkGate.accept(chunk, consumePcmChunk)
             if (
@@ -11719,25 +12434,49 @@ async function decodeLocalAudioToPcm(
               && chunkGate.pendingByteLength >= LOCAL_PCM_PRE_PROBE_PAUSE_BYTES
               && !ffmpeg.stdout.isPaused()
             ) {
+              const pauseRequestedAtMs = session.ffmpegStdoutTimings
+                ? mainDiagnosticNow()
+                : null
               ffmpeg.stdout.pause()
+              if (pauseRequestedAtMs !== null) {
+                session.ffmpegStdoutTimings?.beginPause(pauseRequestedAtMs)
+              }
             }
           } catch (error) {
+            callbackFailure = error instanceof Error
+              ? error
+              : new Error('Decoded audio exceeds the Standard playback limit.')
+          } finally {
+            const stdoutTimings = session.ffmpegStdoutTimings
+            if (stdoutTimings) {
+              stdoutTimings.recordChunk({
+                byteLength: chunk.byteLength,
+                callbackStartedAtMs: observedAtMs,
+                callbackCompletedAtMs: mainDiagnosticNow()
+              })
+            }
+          }
+          if (callbackFailure) {
             settleLocalPcmDecodeSession(session, {
               type: 'failed',
-              error: error instanceof Error
-                ? error
-                : new Error('Decoded audio exceeds the Standard playback limit.')
+              error: callbackFailure
             })
           }
-        })
+        }
 
-        ffmpeg.stdout.on('error', (error) => {
-          if (session.settled) return
-          settleLocalPcmDecodeSession(session, {
-            type: 'failed',
-            error: error instanceof Error ? error : new Error('Local FFmpeg output pipe failed.')
+        if (
+          session.ffmpegOutputSink === 'stdout_pipe'
+          || session.ffmpegOutputSink === 'rechunked_pipe'
+        ) {
+          ffmpeg.stdout.on('data', handleStdoutData)
+          ffmpeg.stdout.on('error', (error) => {
+            if (session.settled) return
+            settleLocalPcmDecodeSession(session, {
+              type: 'failed',
+              error: error instanceof Error ? error : new Error('Local FFmpeg output pipe failed.')
+            })
           })
-        })
+        }
 
         ffmpeg.on('error', (error) => {
           if (session.settled) return
@@ -11766,6 +12505,10 @@ async function decodeLocalAudioToPcm(
             resolveClose({ code, completedAtMs })
           })
         })
+        session.ffmpegClosePromise = closePromise.then(
+          () => undefined,
+          () => undefined
+        )
 
         try {
           if (!ffmpeg.stdin.destroyed) {
@@ -11775,6 +12518,247 @@ async function decodeLocalAudioToPcm(
           // FFmpeg reads the local file directly; stdin is intentionally unused.
         }
         return closePromise
+      }
+
+      const startStdoutPipeFallback = (
+        reason: string
+      ): Promise<FfmpegCloseResult> => {
+        session.nativePcmCaptureFallbackReason = reason
+        session.nativePcmCaptureJobId = null
+        session.nativePcmCaptureUsesBatches = false
+        session.ffmpegOutputSink = 'stdout_pipe'
+        session.ffmpegStartedAtMs = null
+        session.ffmpegFirstPcmAtMs = null
+        session.ffmpegLastPcmAtMs = null
+        session.ffmpegCompletedAtMs = null
+        if (memoryDiagnosticsService?.getStatus().enabled) {
+          session.ffmpegStdoutTimings = new FfmpegStdoutIngestionTimingAccumulator()
+        }
+        if (session.channels > 0) {
+          initializeLocalPcmAssemblyAfterProbe()
+        }
+        return startMainProcessFfmpegDecode()
+      }
+
+      const startNativePcmCapture = async (): Promise<FfmpegCloseResult> => {
+        // Progress delivery successfully shortened the terminal stream tail,
+        // but copying batches while FFmpeg was still decoding made the native
+        // capture substantially slower on CPU-constrained machines. Keep the
+        // native C++ drain and restore its one-shot terminal Buffer handoff for
+        // every session, including foreground MessagePort streams.
+        session.nativePcmCaptureUsesBatches = false
+        try {
+          const capabilities = localPcmNativeCaptureClient.getCapabilities()
+          if (!capabilities.supported) {
+            return startStdoutPipeFallback(
+              capabilities.reason ?? 'Native FFmpeg PCM capture is unavailable.'
+            )
+          }
+          if (capabilities.maxPcmBytes !== LOCAL_PCM_DECODE_MAX_BYTES) {
+            return startStdoutPipeFallback(
+              'Native FFmpeg PCM capture limit does not match Standard playback.'
+            )
+          }
+        } catch (error) {
+          return startStdoutPipeFallback(
+            error instanceof Error
+              ? error.message
+              : 'Native FFmpeg PCM capture addon could not load.'
+          )
+        }
+
+        if (session.settled) {
+          throw new Error('Native FFmpeg PCM capture was cancelled before dispatch.')
+        }
+        const jobId = `${session.key}:${randomUUID()}`
+        const captureStartedAtMs = mainDiagnosticNow()
+        session.nativePcmCaptureJobId = jobId
+        session.ffmpegStartedAtMs = captureStartedAtMs
+
+        let result: LocalPcmNativeCaptureResult
+        try {
+          result = await localPcmNativeCaptureClient.capture({
+            jobId,
+            slotId: session.key,
+            ffmpegPath,
+            deliveryMode: 'complete_buffer',
+            args: [
+              '-v', 'error',
+              '-nostdin',
+              '-i', session.filePath,
+              '-map', '0:a:0',
+              '-vn',
+              '-acodec', 'pcm_f32le',
+              '-f', 'f32le',
+              '-ar', String(session.sampleRate),
+              'pipe:1'
+            ]
+          })
+        } catch (error) {
+          if (session.settled) {
+            throw error
+          }
+          // Capabilities were already confirmed and the addon accepted a
+          // unique request. A rejected/malformed completion cannot prove that
+          // no child ran, so fail authoritatively instead of double-decoding.
+          const failure = error instanceof Error
+            ? error
+            : new Error('Native FFmpeg PCM capture failed.')
+          settleLocalPcmDecodeSession(session, { type: 'failed', error: failure })
+          throw failure
+        }
+
+        session.nativePcmCaptureJobId = null
+        const completedAtMs = mainDiagnosticNow()
+        if (session.settled) {
+          return { code: null, completedAtMs }
+        }
+        session.nativePcmCaptureResult = result
+        session.nativePcmCaptureProcessId = result.processId
+        session.ffmpegCompletedAtMs = completedAtMs
+        if (result.firstByteMs !== null) {
+          session.ffmpegFirstPcmAtMs = captureStartedAtMs + result.firstByteMs
+          session.ffmpegLastPcmAtMs = result.stdoutReadSpanMs === null
+            ? session.ffmpegFirstPcmAtMs
+            : session.ffmpegFirstPcmAtMs + result.stdoutReadSpanMs
+        }
+        if (result.cancelled) {
+          settleLocalPcmDecodeSession(session, { type: 'cancelled' })
+          return { code: null, completedAtMs }
+        }
+        if (!result.ok) {
+          if (isLocalPcmNativeCaptureSetupFailure(result)) {
+            return startStdoutPipeFallback(
+              result.errorMessage
+                ?? result.errorCode
+                ?? 'Native FFmpeg PCM capture setup failed.'
+            )
+          }
+          session.decodeCompletedAtMs = completedAtMs
+          const stderr = result.stderr.trim()
+          const stderrSummary = stderr.length > 3_500
+            ? stderr.slice(-3_500)
+            : stderr
+          const message = stderrSummary.length > 0
+            ? `Native FFmpeg PCM capture failed: ${stderrSummary}`
+            : result.errorMessage
+              ?? `Native FFmpeg PCM capture failed (exit ${result.exitCode ?? 'unknown'}).`
+          settleLocalPcmDecodeSession(session, {
+            type: 'failed',
+            error: new Error(message)
+          })
+          return { code: result.exitCode, completedAtMs }
+        }
+        return { code: 0, completedAtMs, nativeCaptureResult: result }
+      }
+
+      const startWorkerFfmpegDecode = async (): Promise<FfmpegCloseResult> => {
+        const workerStartupStartedAtMs = mainDiagnosticNow()
+        try {
+          await localPcmWorkerClient.ensureReady()
+        } catch (error) {
+          session.ffmpegWorkerStartupMs = mainDiagnosticNow() - workerStartupStartedAtMs
+          if (session.settled) throw error
+          // No worker request or FFmpeg child exists yet, so this setup-only
+          // failure can safely preserve playback by using the original route.
+          session.ffmpegWorkerFallbackReason = error instanceof Error
+            ? error.message
+            : 'Local PCM worker could not start.'
+          session.ffmpegOutputSink = 'stdout_pipe'
+          if (memoryDiagnosticsService?.getStatus().enabled) {
+            session.ffmpegStdoutTimings = new FfmpegStdoutIngestionTimingAccumulator()
+          }
+          return startMainProcessFfmpegDecode()
+        }
+        session.ffmpegWorkerStartupMs = mainDiagnosticNow() - workerStartupStartedAtMs
+        if (session.settled) {
+          throw new Error('Local PCM worker decode was cancelled before dispatch.')
+        }
+
+        const requestStartedAtMs = mainDiagnosticNow()
+        session.ffmpegStartedAtMs = requestStartedAtMs
+        session.ffmpegWorkerRequestStartedAtMs = requestStartedAtMs
+        const job = localPcmWorkerClient.start({
+          // The renderer may immediately reuse its decode request ID after
+          // superseding a load. Worker cancellation is asynchronous, so each
+          // session needs a distinct worker key even when session.key repeats.
+          jobId: `${session.key}:${randomUUID()}`,
+          ffmpegPath,
+          args: [
+            '-v', 'error',
+            '-nostdin',
+            '-i', session.filePath,
+            '-map', '0:a:0',
+            '-vn',
+            '-acodec', 'pcm_f32le',
+            '-f', 'f32le',
+            '-ar', String(session.sampleRate),
+            'pipe:1'
+          ]
+        }, {
+          onStarted: (pid) => {
+            if (session.settled) {
+              throw new Error('Local PCM worker started after its decode was cancelled.')
+            }
+            if (session.priority === 'background') {
+              try {
+                setPriority(pid, osConstants.priority.PRIORITY_BELOW_NORMAL)
+                session.backgroundPriorityApplied = true
+              } catch (error) {
+                if (isDev) {
+                  console.debug('[audio-decode] could not lower background worker ffmpeg priority', {
+                    pid,
+                    message: error instanceof Error ? error.message : String(error)
+                  })
+                }
+              }
+            }
+          },
+          onChunk: (batch) => {
+            if (session.settled) {
+              throw new Error('Local PCM worker delivered a stale batch.')
+            }
+            session.ffmpegWorkerFirstBatchAtMs ??= mainDiagnosticNow()
+            const chunk = Buffer.from(batch.payload)
+            const gateWasReleased = chunkGate.isReleased
+            chunkGate.accept(chunk, consumePcmChunk)
+            if (session.settled) return
+            if (gateWasReleased) batch.acknowledge()
+            else session.ffmpegWorkerPendingAcknowledgements.push(batch.acknowledge)
+          }
+        })
+        session.ffmpegWorkerJob = job
+        try {
+          const result = await job.promise
+          const completedAtMs = mainDiagnosticNow()
+          session.ffmpegWorkerResult = result
+          session.ffmpegWorkerCompletedAtMs = completedAtMs
+          session.ffmpegCompletedAtMs = completedAtMs
+          return { code: 0, completedAtMs }
+        } catch (error) {
+          const completedAtMs = mainDiagnosticNow()
+          session.ffmpegWorkerCompletedAtMs = completedAtMs
+          session.ffmpegCompletedAtMs = completedAtMs
+          if (!session.settled) {
+            settleLocalPcmDecodeSession(session, {
+              type: 'failed',
+              error: error instanceof Error
+                ? error
+                : new Error('Local PCM worker decode failed.')
+            })
+          }
+          throw error
+        }
+      }
+
+      const startFfmpegDecode = (): Promise<FfmpegCloseResult> => {
+        if (session.ffmpegOutputSink === 'worker_thread') {
+          return startWorkerFfmpegDecode()
+        }
+        if (session.ffmpegOutputSink === 'native_pipe') {
+          return startNativePcmCapture()
+        }
+        return startMainProcessFfmpegDecode()
       }
 
       const coordinated = await coordinateLocalPcmProbeAndDecode({
@@ -11787,22 +12771,15 @@ async function decodeLocalAudioToPcm(
             throw new Error('Local PCM decode was cancelled before probing completed.')
           }
           session.channels = probeResolution.result.channels
-          const allocationStartedAtMs = mainDiagnosticNow()
-          try {
-            session.outputBuffer = allocateInitialLocalPcmOutput(
-              probeResolution.result.durationSeconds,
-              session.sampleRate,
-              session.channels,
-              chunkGate.pendingByteLength
-            )
-          } finally {
-            const initialAllocationMs = mainDiagnosticNow() - allocationStartedAtMs
-            session.initialAllocationMs += initialAllocationMs
-            session.allocationMs += initialAllocationMs
-          }
-          sendLocalPcmStreamStart(session)
-          if (session.settled) {
-            throw new Error('Local PCM decode was cancelled before metadata delivery.')
+          session.probedDurationSeconds = probeResolution.result.durationSeconds
+          // One-shot native capture owns an exact full-track Buffer. The
+          // progress route instead assembles its bounded native batches here
+          // so complete MessagePort chunks can overlap the remaining decode.
+          if (
+            session.ffmpegOutputSink !== 'native_pipe'
+            || session.nativePcmCaptureUsesBatches
+          ) {
+            initializeLocalPcmAssemblyAfterProbe()
           }
           if (
             isDev
@@ -11820,14 +12797,122 @@ async function decodeLocalAudioToPcm(
           if (session.settled) {
             throw new Error('Local PCM decode was cancelled while releasing early output.')
           }
+          const pendingWorkerAcknowledgements = session.ffmpegWorkerPendingAcknowledgements.splice(0)
+          for (const acknowledge of pendingWorkerAcknowledgements) {
+            if (session.settled) break
+            acknowledge()
+          }
+          const pendingNativeAcknowledgements =
+            session.nativePcmCapturePendingAcknowledgements.splice(0)
+          for (const acknowledge of pendingNativeAcknowledgements) {
+            if (session.settled) break
+            acknowledge()
+          }
           session.probeChunkGate = null
           if (session.ffmpeg?.stdout.isPaused()) {
+            session.ffmpegStdoutTimings?.endPause(mainDiagnosticNow())
             session.ffmpeg.stdout.resume()
           }
         }
       })
       const ffmpegClose = coordinated.decode
       if (session.settled || ffmpegClose.code !== 0) return
+
+      if (session.ffmpegOutputSink === 'native_pipe') {
+        const result = ffmpegClose.nativeCaptureResult
+        const usesProgressBatches = session.nativePcmCaptureUsesBatches
+        if (
+          !result
+          || !result.ok
+          || result !== session.nativePcmCaptureResult
+          || result.outputBytes === 0
+          || result.outputBytes > LOCAL_PCM_DECODE_MAX_BYTES
+          || result.deliveryMode !== (
+            usesProgressBatches ? 'progress_batches' : 'complete_buffer'
+          )
+          || (usesProgressBatches
+            ? (
+                result.pcm.byteLength !== 0
+                || !session.outputBuffer
+                || result.outputBytes !== session.totalBytes
+                || result.batchCount !== session.nativePcmCaptureBatchCount
+                || result.batchBytes !== session.nativePcmCaptureBatchBytes
+                || result.batchMinBytes !== session.nativePcmCaptureBatchMinBytes
+                || result.batchMaxBytes !== session.nativePcmCaptureBatchMaxBytes
+                || session.nativePcmCapturePendingAcknowledgements.length !== 0
+              )
+            : result.outputBytes !== result.pcm.byteLength)
+        ) {
+          throw new Error('Native FFmpeg PCM capture result did not reconcile.')
+        }
+        const nativeFrameSizeBytes = session.channels * Float32Array.BYTES_PER_ELEMENT
+        if (result.outputBytes % nativeFrameSizeBytes !== 0) {
+          throw new Error('Native FFmpeg PCM capture produced frame-misaligned audio.')
+        }
+        if (!usesProgressBatches) {
+          session.outputBuffer = result.pcm
+          session.totalBytes = result.outputBytes
+          sendLocalPcmStreamStart(session)
+          if (session.settled) return
+        }
+      }
+
+      if (session.ffmpegOutputSink === 'worker_thread') {
+        const workerResult = session.ffmpegWorkerResult
+        if (
+          !workerResult
+          || workerResult.pcmByteLength !== session.totalBytes
+          || workerResult.workerTimings.ffmpegWorkerBatchBytes !== session.totalBytes
+          || workerResult.chunkCount !== workerResult.workerTimings.ffmpegWorkerBatchCount
+        ) {
+          throw new Error('Local PCM worker output did not reconcile with main-process assembly.')
+        }
+      }
+
+      if (session.ffmpegOutputSink === 'temporary_file') {
+        const tempSink = session.tempPcmSink
+        if (!tempSink) {
+          throw new Error('Local PCM temporary sink disappeared before its output was read.')
+        }
+
+        const statStartedAtMs = mainDiagnosticNow()
+        let tempPcmBytes: number
+        try {
+          tempPcmBytes = await statBoundedLocalPcmTempFile(
+            tempSink,
+            LOCAL_PCM_DECODE_MAX_BYTES
+          )
+        } finally {
+          session.tempPcmStatMs = mainDiagnosticNow() - statStartedAtMs
+        }
+        if (session.settled) return
+
+        const tempFrameSizeBytes = session.channels * Float32Array.BYTES_PER_ELEMENT
+        if (tempPcmBytes % tempFrameSizeBytes !== 0) {
+          throw new Error('FFmpeg produced frame-misaligned temporary PCM audio.')
+        }
+
+        const output = ensureLocalPcmOutputCapacity(session, tempPcmBytes)
+        if (session.settled) return
+        const readStartedAtMs = mainDiagnosticNow()
+        try {
+          const readResult = await readLocalPcmTempFileIntoBuffer(
+            tempSink,
+            output,
+            tempPcmBytes,
+            { isCancelled: () => session.settled }
+          )
+          session.tempPcmReadChunkCount = readResult.chunkCount
+          session.tempPcmBytes = readResult.byteLength
+          // Commit the prefix only after the complete file was read and its
+          // exact length revalidated. Until here stream delivery sees zero.
+          session.totalBytes = readResult.byteLength
+        } finally {
+          session.tempPcmReadMs = mainDiagnosticNow() - readStartedAtMs
+        }
+        await cleanupLocalPcmDecodeTempSink(session)
+        if (session.settled) return
+      }
 
       try {
         const pcm = session.outputBuffer
@@ -11862,7 +12947,19 @@ async function decodeLocalAudioToPcm(
           error: error instanceof Error ? error : new Error('Local FFmpeg PCM assembly failed.')
         })
       }
+      } catch (error) {
+        // Settle first so a probe/read/validation failure terminates FFmpeg
+        // before Windows cleanup waits for the child to release its file.
+        settleLocalPcmDecodeSession(session, {
+          type: 'failed',
+          error: error instanceof Error ? error : new Error('Local FFmpeg decode failed.')
+        })
+      } finally {
+        await cleanupLocalPcmDecodeTempSink(session)
+      }
     })().catch((error) => {
+      // Cleanup is best-effort internally, but retain a final guard so an
+      // unexpected teardown rejection cannot become unhandled.
       settleLocalPcmDecodeSession(session, {
         type: 'failed',
         error: error instanceof Error ? error : new Error('Local FFmpeg decode failed.')

@@ -35,9 +35,30 @@ function makeMainTimings(
     probeDecodeOverlapEnabled: true,
     probeFfmpegOverlapMs: 8,
     ffmpegMs: 20,
+    ffmpegOutputSink: 'stdout_pipe',
     ffmpegSpawnToFirstPcmMs: 4,
-    ffmpegPcmOutputSpanMs: 14,
-    ffmpegCloseTailMs: 2,
+    ffmpegPcmOutputSpanMs: 12,
+    ffmpegCloseTailMs: 4,
+    ffmpegStdoutChunkCount: 3,
+    ffmpegStdoutBytes: 16,
+    ffmpegStdoutChunkMinBytes: 4,
+    ffmpegStdoutChunkMaxBytes: 8,
+    ffmpegStdoutDrainSpanMs: 14,
+    ffmpegStdoutDrainToCloseMs: 2,
+    ffmpegStdoutCallbackWorkMs: 6,
+    ffmpegStdoutCallbackMaxMs: 3,
+    ffmpegStdoutInterCallbackGapMs: 8,
+    ffmpegStdoutInterCallbackGapMaxMs: 5,
+    ffmpegStdoutPostDispatchGapCount: 1,
+    ffmpegStdoutPostDispatchGapMs: 5,
+    ffmpegStdoutPostDispatchGapMaxMs: 5,
+    ffmpegStdoutCopyMs: 4,
+    ffmpegStdoutCopyMaxMs: 2,
+    ffmpegStdoutFlushMs: 2,
+    ffmpegStdoutFlushMaxMs: 1,
+    ffmpegStdoutPauseCount: 1,
+    ffmpegStdoutPausedMs: 8,
+    ffmpegStdoutPauseMaxMs: 8,
     allocationMs: 0,
     initialAllocationMs: 0,
     growthAllocationMs: 0,
@@ -47,6 +68,9 @@ function makeMainTimings(
     streamDispatchCopyMs: 3,
     streamDispatchPostMs: 4,
     streamTailMs: 5,
+    streamCreditAckCount: 1,
+    streamCreditRoundTripMs: 5,
+    streamCreditRoundTripMaxMs: 5,
     ...overrides,
   }
 }
@@ -75,9 +99,33 @@ test('validates bounded PCM stream open requests and transferred-port envelopes'
       probeCacheStatus: undefined,
       probeDecodeOverlapEnabled: undefined,
       probeFfmpegOverlapMs: undefined,
+      ffmpegOutputSink: undefined,
       ffmpegSpawnToFirstPcmMs: undefined,
       ffmpegPcmOutputSpanMs: undefined,
       ffmpegCloseTailMs: undefined,
+      ffmpegStdoutChunkCount: undefined,
+      ffmpegStdoutBytes: undefined,
+      ffmpegStdoutChunkMinBytes: undefined,
+      ffmpegStdoutChunkMaxBytes: undefined,
+      ffmpegStdoutDrainSpanMs: undefined,
+      ffmpegStdoutDrainToCloseMs: undefined,
+      ffmpegStdoutCallbackWorkMs: undefined,
+      ffmpegStdoutCallbackMaxMs: undefined,
+      ffmpegStdoutInterCallbackGapMs: undefined,
+      ffmpegStdoutInterCallbackGapMaxMs: undefined,
+      ffmpegStdoutPostDispatchGapCount: undefined,
+      ffmpegStdoutPostDispatchGapMs: undefined,
+      ffmpegStdoutPostDispatchGapMaxMs: undefined,
+      ffmpegStdoutCopyMs: undefined,
+      ffmpegStdoutCopyMaxMs: undefined,
+      ffmpegStdoutFlushMs: undefined,
+      ffmpegStdoutFlushMaxMs: undefined,
+      ffmpegStdoutPauseCount: undefined,
+      ffmpegStdoutPausedMs: undefined,
+      ffmpegStdoutPauseMaxMs: undefined,
+      streamCreditAckCount: undefined,
+      streamCreditRoundTripMs: undefined,
+      streamCreditRoundTripMaxMs: undefined,
     }),
   }), true)
   assert.equal(isLocalPcmStreamPortEnvelope({
@@ -154,6 +202,104 @@ test('validates bounded chunks, resize messages, and complete metadata', () => {
     transportTimings: makeMainTimings({
       benchmarkMainGenerationMs: 6,
       benchmarkMainFillMs: 4,
+      ffmpegOutputSink: 'temporary_file',
+      tempPcmCreateMs: 1,
+      tempPcmStatMs: 2,
+      tempPcmReadMs: 3,
+      tempPcmReadChunkCount: 1,
+      tempPcmBytes: 16,
+      tempPcmCleanupMs: 4,
+      tempPcmCleanupSucceeded: true,
+    }),
+  }), true)
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: makeMainTimings({
+      ffmpegOutputSink: 'worker_thread',
+      ffmpegWorkerStartupMs: 1,
+      ffmpegWorkerTotalMs: 23,
+      ffmpegWorkerSpawnMs: 1,
+      ffmpegWorkerFfmpegMs: 20,
+      ffmpegWorkerSpawnToFirstPcmMs: 4,
+      ffmpegWorkerPcmOutputSpanMs: 14,
+      ffmpegWorkerCloseTailMs: 2,
+      ffmpegWorkerRequestMs: 24,
+      ffmpegWorkerMainDeliverySpanMs: 18,
+      ffmpegWorkerBatchCount: 2,
+      ffmpegWorkerBatchBytes: 16,
+      ffmpegWorkerBatchMinBytes: 8,
+      ffmpegWorkerBatchMaxBytes: 8,
+      ffmpegWorkerAggregationCopyMs: 2,
+      ffmpegWorkerAggregationCopyMaxMs: 1.25,
+      ffmpegWorkerBatchCopyMs: 2,
+      ffmpegWorkerBatchPostMs: 0.5,
+      ffmpegWorkerMainCopyMs: 1,
+      ffmpegWorkerMainCopyMaxMs: 0.75,
+      ffmpegWorkerCreditWaitCount: 1,
+      ffmpegWorkerCreditWaitMs: 3,
+      ffmpegWorkerCreditWaitMaxMs: 3,
+    }),
+  }), true)
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: makeMainTimings({
+      ffmpegOutputSink: 'rechunked_pipe',
+    }),
+  }), true)
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: makeMainTimings({
+      ffmpegOutputSink: 'native_pipe',
+      nativePcmCaptureSpawnMs: 3,
+      nativePcmCaptureProcessMs: 20,
+      nativePcmCaptureFirstByteMs: 5,
+      nativePcmCaptureStdoutReadSpanMs: 13,
+      nativePcmCaptureStdoutReadCount: 2,
+      nativePcmCaptureStdoutReadMinBytes: 8,
+      nativePcmCaptureStdoutReadMaxBytes: 8,
+      nativePcmCaptureOutputBytes: 16,
+      nativePcmCaptureRequestedPipeBufferBytes: 1024 * 1024,
+      nativePcmCaptureEffectivePipeBufferBytes: 1024 * 1024,
+      nativePcmCaptureBufferCopyMs: 0,
+      nativePcmCaptureUsedExternalBuffer: false,
+      nativePcmCaptureDeliveryMode: 'progress_batches',
+      nativePcmCaptureBatchTargetBytes: LOCAL_PCM_STREAM_CHUNK_BYTES,
+      nativePcmCaptureBatchCount: 1,
+      nativePcmCaptureBatchBytes: 16,
+      nativePcmCaptureBatchMinBytes: 16,
+      nativePcmCaptureBatchMaxBytes: 16,
+      nativePcmCaptureBatchCreditWaitCount: 1,
+      nativePcmCaptureBatchCreditWaitMs: 2,
+      nativePcmCaptureBatchCreditWaitMaxMs: 2,
+      nativePcmCaptureBatchCopyMs: 1,
+      nativePcmCaptureBatchCopyMaxMs: 1,
+      nativePcmCaptureBatchCallbackMs: 0.5,
+      nativePcmCaptureBatchCallbackMaxMs: 0.5,
+      nativePcmCaptureMainCopyMs: 0.25,
+      nativePcmCaptureMainCopyMaxMs: 0.25,
+      nativePcmCaptureFirstBatchMs: 5,
+      nativePcmCaptureMainBatchSpanMs: 0,
     }),
   }), true)
 
@@ -173,6 +319,97 @@ test('validates bounded chunks, resize messages, and complete metadata', () => {
 })
 
 test('rejects malformed terminal messages and timing metadata', () => {
+  const completeWithTimings = (transportTimings: unknown) => ({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings,
+  })
+
+  assert.equal(isLocalPcmStreamMainMessage(completeWithTimings({
+    ...makeMainTimings(),
+    ffmpegOutputSink: 'memory_map',
+  })), false)
+  assert.equal(isLocalPcmStreamMainMessage(completeWithTimings(
+    makeMainTimings({ tempPcmReadMs: -1 }),
+  )), false)
+  assert.equal(isLocalPcmStreamMainMessage(completeWithTimings(
+    makeMainTimings({
+      ffmpegOutputSink: 'native_pipe',
+      nativePcmCaptureBufferCopyMs: 1,
+      nativePcmCaptureUsedExternalBuffer: true,
+    }),
+  )), false)
+  assert.equal(isLocalPcmStreamMainMessage(completeWithTimings(
+    makeMainTimings({ tempPcmReadChunkCount: 1.5 }),
+  )), false)
+  assert.equal(isLocalPcmStreamMainMessage(completeWithTimings(
+    makeMainTimings({ tempPcmBytes: Number.MAX_SAFE_INTEGER + 1 }),
+  )), false)
+  assert.equal(isLocalPcmStreamMainMessage(completeWithTimings({
+    ...makeMainTimings(),
+    tempPcmCleanupSucceeded: 'yes',
+  })), false)
+  assert.equal(isLocalPcmStreamMainMessage(completeWithTimings(
+    makeMainTimings({
+      ffmpegOutputSink: 'worker_thread',
+      ffmpegWorkerTotalMs: 10,
+      ffmpegWorkerFfmpegMs: 11,
+    }),
+  )), false)
+  assert.equal(isLocalPcmStreamMainMessage(completeWithTimings(
+    makeMainTimings({
+      ffmpegOutputSink: 'native_pipe',
+      nativePcmCaptureProcessMs: 10,
+      nativePcmCaptureFirstByteMs: 11,
+    }),
+  )), false)
+  assert.equal(isLocalPcmStreamMainMessage(completeWithTimings(
+    makeMainTimings({
+      ffmpegOutputSink: 'native_pipe',
+      nativePcmCaptureStdoutReadMinBytes: 17,
+      nativePcmCaptureStdoutReadMaxBytes: 16,
+      nativePcmCaptureOutputBytes: 16,
+    }),
+  )), false)
+  assert.equal(isLocalPcmStreamMainMessage(completeWithTimings(
+    makeMainTimings({
+      ffmpegOutputSink: 'native_pipe',
+      nativePcmCaptureOutputBytes: 15,
+    }),
+  )), false)
+  assert.equal(isLocalPcmStreamMainMessage(completeWithTimings(
+    makeMainTimings({
+      ffmpegOutputSink: 'worker_thread',
+      ffmpegWorkerRequestMs: 10,
+      ffmpegWorkerMainDeliverySpanMs: 11,
+    }),
+  )), false)
+  assert.equal(isLocalPcmStreamMainMessage(completeWithTimings(
+    makeMainTimings({
+      ffmpegOutputSink: 'worker_thread',
+      ffmpegWorkerBatchBytes: 15,
+    }),
+  )), false)
+  assert.equal(isLocalPcmStreamMainMessage(completeWithTimings(
+    makeMainTimings({
+      ffmpegOutputSink: 'worker_thread',
+      ffmpegWorkerAggregationCopyMs: 1,
+      ffmpegWorkerAggregationCopyMaxMs: 2,
+    }),
+  )), false)
+  assert.equal(isLocalPcmStreamMainMessage(completeWithTimings(
+    makeMainTimings({
+      ffmpegOutputSink: 'worker_thread',
+      ffmpegWorkerCreditWaitMs: -1,
+    }),
+  )), false)
+
   assert.equal(isLocalPcmStreamMainMessage({
     ...base,
     type: 'complete',
@@ -230,6 +467,114 @@ test('rejects malformed terminal messages and timing metadata', () => {
     backgroundPriorityApplied: false,
     chunkCount: 1,
     transportTimings: makeMainTimings({ probeFfmpegOverlapMs: -1 }),
+  }), false)
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: makeMainTimings({ ffmpegStdoutChunkCount: -1 }),
+  }), false)
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: makeMainTimings({ ffmpegStdoutDrainSpanMs: -1 }),
+  }), false)
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: makeMainTimings({ ffmpegStdoutPostDispatchGapCount: -1 }),
+  }), false)
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: makeMainTimings({ ffmpegStdoutPostDispatchGapMs: -1 }),
+  }), false)
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: makeMainTimings({ streamCreditAckCount: -1 }),
+  }), false)
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: makeMainTimings({ streamCreditRoundTripMs: -1 }),
+  }), false)
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: makeMainTimings({
+      streamCreditRoundTripMs: 4,
+      streamCreditRoundTripMaxMs: 5,
+    }),
+  }), false)
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: makeMainTimings({
+      ffmpegStdoutPostDispatchGapMs: 4,
+      ffmpegStdoutPostDispatchGapMaxMs: 5,
+    }),
+  }), false)
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: makeMainTimings({
+      ffmpegStdoutChunkMinBytes: 9,
+      ffmpegStdoutChunkMaxBytes: 8,
+    }),
   }), false)
   assert.equal(isLocalPcmStreamMainMessage({
     ...base,

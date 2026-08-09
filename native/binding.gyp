@@ -1,6 +1,35 @@
 {
   "targets": [
     {
+      "target_name": "ffmpeg_pcm_capture",
+      "cflags!": ["-fno-exceptions"],
+      "cflags_cc!": ["-fno-exceptions"],
+      "cflags_cc": ["-std=c++17", "-O3"],
+      "sources": [
+        "src/ffmpeg_pcm_capture.cpp"
+      ],
+      "include_dirs": [
+        "<!@(node -p \"require('node-addon-api').include\")",
+        "src"
+      ],
+      "conditions": [
+        ["OS=='mac'", {
+          "xcode_settings": {
+            "GCC_ENABLE_CPP_EXCEPTIONS": "YES",
+            "CLANG_CXX_LIBRARY": "libc++"
+          }
+        }],
+        ["OS=='win'", {
+          "msvs_settings": {
+            "VCCLCompilerTool": {
+              "ExceptionHandling": 1,
+              "AdditionalOptions": ["/O2"]
+            }
+          }
+        }]
+      ]
+    },
+    {
       "target_name": "native_audio_processing",
       "type": "static_library",
       "cflags_cc": ["-std=c++17", "-O3", "-fno-fast-math"],

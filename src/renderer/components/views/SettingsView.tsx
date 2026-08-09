@@ -47,7 +47,8 @@ import { useLastFmSettingsStore } from '../../stores/lastFmSettingsStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { useLyricsDisplaySettingsStore } from '../../stores/lyricsDisplaySettingsStore'
 import { useUpdateStore } from '../../stores/updateStore'
-import { useDiagnosticsStore } from '../../stores/diagnosticsStore'
+import { resolveLocalPcmOutputSink, useDiagnosticsStore } from '../../stores/diagnosticsStore'
+import type { LocalPcmOutputSink } from '../../../types/diagnostics'
 import { useLibraryDiagnosticsStore } from '../../stores/libraryDiagnosticsStore'
 import { useGraphStore } from '../../stores/graphStore'
 import { useListeningStatsStore } from '../../stores/listeningStatsStore'
@@ -197,6 +198,14 @@ const DISCORD_PAUSE_CLEAR_OPTIONS: readonly SettingsSegmentedOption<number>[] = 
 const CUSTOM_SCROBBLE_PROTOCOL_OPTIONS: readonly SettingsSegmentedOption<LastFmScrobbleProtocol>[] = CUSTOM_SCROBBLE_PROTOCOLS.map(
   (protocol) => ({ value: protocol, label: getScrobbleProtocolLabel(protocol) })
 )
+
+const LOCAL_PCM_OUTPUT_SINK_OPTIONS: readonly SettingsSegmentedOption<LocalPcmOutputSink>[] = [
+  { value: 'stdout_pipe', label: 'Pipe' },
+  { value: 'rechunked_pipe', label: 'Rechunk' },
+  { value: 'native_pipe', label: 'C++ Pipe' },
+  { value: 'worker_thread', label: 'Worker' },
+  { value: 'temporary_file', label: 'Temp File' },
+]
 
 function getDefaultScrobbleProfileName(protocol: LastFmScrobbleProtocol): string {
   if (protocol === 'audioscrobbler') return 'AudioScrobbler endpoint'
@@ -516,6 +525,7 @@ export default function SettingsView() {
     errorMessage: diagnosticsErrorMessage,
     init: initDiagnostics,
     setEnabled: setDiagnosticsEnabled,
+    setLocalPcmOutputSink,
     captureBundle: captureDiagnosticsBundle,
     runPcmTransferBenchmark: runDiagnosticsPcmTransferBenchmark,
     revealCurrentLog,
@@ -1126,6 +1136,7 @@ export default function SettingsView() {
   const lyricsStatusLabel = lyricsStatus?.statusMessage ?? 'Loading lyrics status...'
   const lyricsResolvedError = lyricsErrorMessage || (lyricsStatus?.lastError ?? '')
   const diagnosticsEnabled = diagnosticsStatus?.enabled ?? false
+  const localPcmOutputSink = resolveLocalPcmOutputSink(diagnosticsStatus)
   const diagnosticsSampleIntervalLabel = `${Math.round((diagnosticsStatus?.sampleIntervalMs ?? 15000) / 1000)} seconds`
   const diagnosticsCurrentLogPath = diagnosticsStatus?.currentLogPath ?? 'Loading diagnostics paths...'
   const diagnosticsPreviousLogPath = diagnosticsStatus?.previousLogPath ?? 'Loading diagnostics paths...'
@@ -3381,6 +3392,27 @@ export default function SettingsView() {
                     {diagnosticsEnabled ? 'Enabled' : 'Disabled'}
                   </button>
                 </div>
+                <div className="settings-field settings-field-inline">
+                  <span className="settings-field-label">Foreground PCM Decode Route</span>
+                  <SettingsSegmentedControl
+                    ariaLabel="Foreground PCM decode route"
+                    className="settings-segmented-control-pcm-route"
+                    disabled={
+                      !diagnosticsEnabled ||
+                      diagnosticsIsRunningPcmTransferBenchmark ||
+                      (diagnosticsIsLoading && diagnosticsStatus === null)
+                    }
+                    options={LOCAL_PCM_OUTPUT_SINK_OPTIONS}
+                    value={localPcmOutputSink}
+                    onChange={(sink) => void setLocalPcmOutputSink(sink)}
+                  />
+                </div>
+                <p className="settings-note">
+                  Applies only to new foreground local Standard decodes. Pipe and Rechunk use Electron&apos;s FFmpeg pipe;
+                  Rechunk asks FFmpeg to emit larger PCM packets. C++ Pipe drains a dedicated Win32 pipe; Worker
+                  drains FFmpeg away from Electron&apos;s main thread; Temp File may use about 200 MiB. Next-track and
+                  gapless prebuffering stay on Pipe. The route resets to Pipe when diagnostics are disabled or Astra restarts.
+                </p>
                 <p className="settings-info-meta">Current log</p>
                 <p className="settings-info-path">{diagnosticsCurrentLogPath}</p>
                 <p className="settings-info-meta">Previous log</p>

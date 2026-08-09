@@ -113,6 +113,26 @@ function mainTimings(
     ffmpegSpawnToFirstPcmMs: 4,
     ffmpegPcmOutputSpanMs: 14,
     ffmpegCloseTailMs: 2,
+    ffmpegStdoutChunkCount: 3,
+    ffmpegStdoutBytes: byteLength,
+    ffmpegStdoutChunkMinBytes: 4,
+    ffmpegStdoutChunkMaxBytes: 8,
+    ffmpegStdoutDrainSpanMs: 18,
+    ffmpegStdoutDrainToCloseMs: 2,
+    ffmpegStdoutCallbackWorkMs: 6,
+    ffmpegStdoutCallbackMaxMs: 3,
+    ffmpegStdoutInterCallbackGapMs: 12,
+    ffmpegStdoutInterCallbackGapMaxMs: 7,
+    ffmpegStdoutPostDispatchGapCount: 1,
+    ffmpegStdoutPostDispatchGapMs: 5,
+    ffmpegStdoutPostDispatchGapMaxMs: 5,
+    ffmpegStdoutCopyMs: 4,
+    ffmpegStdoutCopyMaxMs: 2,
+    ffmpegStdoutFlushMs: 2,
+    ffmpegStdoutFlushMaxMs: 1,
+    ffmpegStdoutPauseCount: 1,
+    ffmpegStdoutPausedMs: 8,
+    ffmpegStdoutPauseMaxMs: 8,
     allocationMs: 0,
     initialAllocationMs: 0,
     growthAllocationMs: 0,
@@ -122,6 +142,9 @@ function mainTimings(
     streamDispatchCopyMs: 3,
     streamDispatchPostMs: 4,
     streamTailMs: 5,
+    streamCreditAckCount: 1,
+    streamCreditRoundTripMs: 5,
+    streamCreditRoundTripMaxMs: 5,
     ...overrides,
   }
 }
@@ -222,7 +245,16 @@ test('assembles a correlated stream and returns renderer-local timing fields', a
     decodeMs: 20,
     backgroundPriorityApplied: false,
     chunkCount: 1,
-    transportTimings: mainTimings(16, 1),
+    transportTimings: mainTimings(16, 1, 0, {
+      ffmpegOutputSink: 'temporary_file',
+      tempPcmCreateMs: 1,
+      tempPcmStatMs: 0.25,
+      tempPcmReadMs: 3,
+      tempPcmReadChunkCount: 1,
+      tempPcmBytes: 16,
+      tempPcmCleanupMs: 0.5,
+      tempPcmCleanupSucceeded: true,
+    }),
   })
 
   const result = await promise
@@ -234,14 +266,109 @@ test('assembles a correlated stream and returns renderer-local timing fields', a
   assert.equal(result.transportTimings.probeCacheStatus, 'hit')
   assert.equal(result.transportTimings.probeDecodeOverlapEnabled, true)
   assert.equal(result.transportTimings.probeFfmpegOverlapMs, 8)
+  assert.equal(result.transportTimings.ffmpegOutputSink, 'temporary_file')
+  assert.equal(result.transportTimings.tempPcmCreateMs, 1)
+  assert.equal(result.transportTimings.tempPcmStatMs, 0.25)
+  assert.equal(result.transportTimings.tempPcmReadMs, 3)
+  assert.equal(result.transportTimings.tempPcmReadChunkCount, 1)
+  assert.equal(result.transportTimings.tempPcmBytes, 16)
+  assert.equal(result.transportTimings.tempPcmCleanupMs, 0.5)
+  assert.equal(result.transportTimings.tempPcmCleanupSucceeded, true)
   assert.equal(result.transportTimings.ffmpegSpawnToFirstPcmMs, 4)
   assert.equal(result.transportTimings.ffmpegPcmOutputSpanMs, 14)
   assert.equal(result.transportTimings.ffmpegCloseTailMs, 2)
+  assert.equal(result.transportTimings.ffmpegStdoutChunkCount, 3)
+  assert.equal(result.transportTimings.ffmpegStdoutBytes, 16)
+  assert.equal(result.transportTimings.ffmpegStdoutChunkMinBytes, 4)
+  assert.equal(result.transportTimings.ffmpegStdoutChunkMaxBytes, 8)
+  assert.equal(result.transportTimings.ffmpegStdoutDrainSpanMs, 18)
+  assert.equal(result.transportTimings.ffmpegStdoutDrainToCloseMs, 2)
+  assert.equal(result.transportTimings.ffmpegStdoutCallbackWorkMs, 6)
+  assert.equal(result.transportTimings.ffmpegStdoutCallbackMaxMs, 3)
+  assert.equal(result.transportTimings.ffmpegStdoutInterCallbackGapMs, 12)
+  assert.equal(result.transportTimings.ffmpegStdoutInterCallbackGapMaxMs, 7)
+  assert.equal(result.transportTimings.ffmpegStdoutPostDispatchGapCount, 1)
+  assert.equal(result.transportTimings.ffmpegStdoutPostDispatchGapMs, 5)
+  assert.equal(result.transportTimings.ffmpegStdoutPostDispatchGapMaxMs, 5)
+  assert.equal(result.transportTimings.ffmpegStdoutCopyMs, 4)
+  assert.equal(result.transportTimings.ffmpegStdoutCopyMaxMs, 2)
+  assert.equal(result.transportTimings.ffmpegStdoutFlushMs, 2)
+  assert.equal(result.transportTimings.ffmpegStdoutFlushMaxMs, 1)
+  assert.equal(result.transportTimings.ffmpegStdoutPauseCount, 1)
+  assert.equal(result.transportTimings.ffmpegStdoutPausedMs, 8)
+  assert.equal(result.transportTimings.ffmpegStdoutPauseMaxMs, 8)
+  assert.equal(result.transportTimings.streamCreditAckCount, 1)
+  assert.equal(result.transportTimings.streamCreditRoundTripMs, 5)
+  assert.equal(result.transportTimings.streamCreditRoundTripMaxMs, 5)
   assert.equal(result.transportTimings.rendererPcmAssemblyAllocationMs, 1)
   assert.equal(result.transportTimings.rendererPcmAssemblyCopyMs, 1)
   assert.equal(result.transportTimings.rendererPortRequestMs, 5)
   assert.equal(client.pendingCount, 0)
   assert.equal(port.closed, true)
+})
+
+test('preserves worker-thread route and ingestion timings on a streamed result', async () => {
+  const testRuntime = makeRuntime()
+  const client = createLocalPcmStreamClient(testRuntime.runtime)
+  const { port, promise } = attachAcceptedStream(testRuntime, client, 16)
+  const payload = new ArrayBuffer(16)
+  port.emit({
+    ...wireBase,
+    type: 'chunk',
+    sequence: 0,
+    byteOffset: 0,
+    byteLength: payload.byteLength,
+    payload,
+  })
+  port.emit({
+    ...wireBase,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: mainTimings(16, 1, 0, {
+      ffmpegOutputSink: 'worker_thread',
+      ffmpegWorkerStartupMs: 1,
+      ffmpegWorkerTotalMs: 23,
+      ffmpegWorkerSpawnMs: 1,
+      ffmpegWorkerFfmpegMs: 20,
+      ffmpegWorkerSpawnToFirstPcmMs: 4,
+      ffmpegWorkerPcmOutputSpanMs: 14,
+      ffmpegWorkerCloseTailMs: 2,
+      ffmpegWorkerRequestMs: 24,
+      ffmpegWorkerMainDeliverySpanMs: 18,
+      ffmpegWorkerBatchCount: 1,
+      ffmpegWorkerBatchBytes: 16,
+      ffmpegWorkerBatchMinBytes: 16,
+      ffmpegWorkerBatchMaxBytes: 16,
+      ffmpegWorkerAggregationCopyMs: 2,
+      ffmpegWorkerAggregationCopyMaxMs: 2,
+      ffmpegWorkerBatchCopyMs: 2,
+      ffmpegWorkerBatchPostMs: 0.5,
+      ffmpegWorkerMainCopyMs: 1,
+      ffmpegWorkerMainCopyMaxMs: 1,
+      ffmpegWorkerCreditWaitCount: 1,
+      ffmpegWorkerCreditWaitMs: 3,
+      ffmpegWorkerCreditWaitMaxMs: 3,
+    }),
+  })
+
+  const timings = (await promise).transportTimings
+  assert.equal(timings.ffmpegOutputSink, 'worker_thread')
+  assert.equal(timings.ffmpegWorkerStartupMs, 1)
+  assert.equal(timings.ffmpegWorkerTotalMs, 23)
+  assert.equal(timings.ffmpegWorkerFfmpegMs, 20)
+  assert.equal(timings.ffmpegWorkerRequestMs, 24)
+  assert.equal(timings.ffmpegWorkerMainDeliverySpanMs, 18)
+  assert.equal(timings.ffmpegWorkerBatchCount, 1)
+  assert.equal(timings.ffmpegWorkerBatchBytes, 16)
+  assert.equal(timings.ffmpegWorkerAggregationCopyMs, 2)
+  assert.equal(timings.ffmpegWorkerBatchPostMs, 0.5)
+  assert.equal(timings.ffmpegWorkerMainCopyMs, 1)
+  assert.equal(timings.ffmpegWorkerCreditWaitMs, 3)
 })
 
 test('strictly grows the zeroed assembly and preserves the received prefix', async () => {

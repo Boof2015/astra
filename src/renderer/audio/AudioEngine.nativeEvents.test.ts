@@ -122,6 +122,63 @@ function makeLocalPcmTrack(id: string): Track {
   }
 }
 
+const FFMPEG_STDOUT_TIMINGS = Object.freeze({
+  ffmpegStdoutChunkCount: 2,
+  ffmpegStdoutBytes: 2 * Float32Array.BYTES_PER_ELEMENT,
+  ffmpegStdoutChunkMinBytes: 4,
+  ffmpegStdoutChunkMaxBytes: 4,
+  ffmpegStdoutDrainSpanMs: 66,
+  ffmpegStdoutDrainToCloseMs: 3,
+  ffmpegStdoutCallbackWorkMs: 5,
+  ffmpegStdoutCallbackMaxMs: 3,
+  ffmpegStdoutInterCallbackGapMs: 61,
+  ffmpegStdoutInterCallbackGapMaxMs: 50,
+  ffmpegStdoutPostDispatchGapCount: 1,
+  ffmpegStdoutPostDispatchGapMs: 5,
+  ffmpegStdoutPostDispatchGapMaxMs: 5,
+  ffmpegStdoutCopyMs: 3,
+  ffmpegStdoutCopyMaxMs: 2,
+  ffmpegStdoutFlushMs: 1,
+  ffmpegStdoutFlushMaxMs: 1,
+  ffmpegStdoutPauseCount: 1,
+  ffmpegStdoutPausedMs: 6,
+  ffmpegStdoutPauseMaxMs: 6,
+}) satisfies Readonly<Partial<PcmTransportTimings>>
+
+const STREAM_FFMPEG_STDOUT_TIMINGS = Object.freeze({
+  ...FFMPEG_STDOUT_TIMINGS,
+  ffmpegStdoutDrainSpanMs: 15,
+  ffmpegStdoutDrainToCloseMs: 1,
+  ffmpegStdoutCallbackWorkMs: 5,
+  ffmpegStdoutInterCallbackGapMs: 10,
+  ffmpegStdoutInterCallbackGapMaxMs: 10,
+}) satisfies Readonly<Partial<PcmTransportTimings>>
+
+const STREAM_CREDIT_TIMINGS = Object.freeze({
+  streamCreditAckCount: 1,
+  streamCreditRoundTripMs: 5,
+  streamCreditRoundTripMaxMs: 5,
+}) satisfies Readonly<Partial<PcmTransportTimings>>
+
+function assertFfmpegStdoutTimings(
+  actual: object | null | undefined,
+  expectedTimings: Readonly<Partial<PcmTransportTimings>> = FFMPEG_STDOUT_TIMINGS,
+): void {
+  assert.ok(actual)
+  const record = actual as Record<string, unknown>
+  for (const [field, expected] of Object.entries(expectedTimings)) {
+    assert.equal(record[field], expected, `unexpected FFmpeg stdout timing: ${field}`)
+  }
+}
+
+function assertStreamCreditTimings(actual: object | null | undefined): void {
+  assert.ok(actual)
+  const record = actual as Record<string, unknown>
+  for (const [field, expected] of Object.entries(STREAM_CREDIT_TIMINGS)) {
+    assert.equal(record[field], expected, `unexpected stream-credit timing: ${field}`)
+  }
+}
+
 function makeTransportTimings(
   decodeRequestId: number,
   overrides: Partial<PcmTransportTimings> = {},
@@ -138,9 +195,12 @@ function makeTransportTimings(
     probeDecodeOverlapEnabled: true,
     probeFfmpegOverlapMs: 9,
     ffmpegMs: 90,
+    ffmpegOutputSink: 'stdout_pipe',
     ffmpegSpawnToFirstPcmMs: 21,
     ffmpegPcmOutputSpanMs: 64,
     ffmpegCloseTailMs: 5,
+    ...FFMPEG_STDOUT_TIMINGS,
+    ...STREAM_CREDIT_TIMINGS,
     allocationMs: 4,
     payloadFinalizationMs: 6,
     preloadInvokeMs: 155,
@@ -197,6 +257,8 @@ function makeStreamPcmResult(requestId: number, left = 0.25): LocalPcmStreamDeco
       ffmpegSpawnToFirstPcmMs: 4,
       ffmpegPcmOutputSpanMs: 14,
       ffmpegCloseTailMs: 2,
+      ...STREAM_FFMPEG_STDOUT_TIMINGS,
+      ...STREAM_CREDIT_TIMINGS,
       allocationMs: 2,
       initialAllocationMs: 2,
       growthAllocationMs: 0,
@@ -240,6 +302,14 @@ test('Standard PCM timings keep allocation, deinterleave, loudness, and transpor
       backingBufferBytes: 16,
       initialAllocationMs: 3,
       growthAllocationMs: 1,
+      ffmpegOutputSink: 'temporary_file',
+      tempPcmCreateMs: 1.5,
+      tempPcmStatMs: 0.5,
+      tempPcmReadMs: 14,
+      tempPcmReadChunkCount: 2,
+      tempPcmBytes: 8,
+      tempPcmCleanupMs: 2,
+      tempPcmCleanupSucceeded: true,
     })),
   ))
 
@@ -287,6 +357,14 @@ test('Standard PCM timings keep allocation, deinterleave, loudness, and transpor
   assert.equal(timings.analysisMs, 13)
   assert.equal(timings.decodeWorkMs, 120)
   assert.equal(timings.decodeMs, timings.decodeWorkMs)
+  assert.equal(timings.ffmpegOutputSink, 'temporary_file')
+  assert.equal(timings.tempPcmCreateMs, 1.5)
+  assert.equal(timings.tempPcmStatMs, 0.5)
+  assert.equal(timings.tempPcmReadMs, 14)
+  assert.equal(timings.tempPcmReadChunkCount, 2)
+  assert.equal(timings.tempPcmBytes, 8)
+  assert.equal(timings.tempPcmCleanupMs, 2)
+  assert.equal(timings.tempPcmCleanupSucceeded, true)
   assert.equal(timings.electronIpcResidualMs, 35)
   assert.equal(timings.contextBridgeResidualMs, 26)
   assert.equal(timings.probeCacheStatus, 'hit')
@@ -295,6 +373,71 @@ test('Standard PCM timings keep allocation, deinterleave, loudness, and transpor
   assert.equal(timings.ffmpegSpawnToFirstPcmMs, 21)
   assert.equal(timings.ffmpegPcmOutputSpanMs, 64)
   assert.equal(timings.ffmpegCloseTailMs, 5)
+  assertFfmpegStdoutTimings(timings)
+  assertStreamCreditTimings(timings)
+})
+
+test('Standard PCM timings propagate worker-thread ingestion without inflating decode work', () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  const requestId = 24
+  const workerTimings = {
+    ffmpegOutputSink: 'worker_thread' as const,
+    ffmpegWorkerStartupMs: 2,
+    ffmpegWorkerTotalMs: 101,
+    ffmpegWorkerSpawnMs: 3,
+    ffmpegWorkerFfmpegMs: 90,
+    ffmpegWorkerSpawnToFirstPcmMs: 20,
+    ffmpegWorkerPcmOutputSpanMs: 65,
+    ffmpegWorkerCloseTailMs: 5,
+    ffmpegWorkerRequestMs: 105,
+    ffmpegWorkerMainDeliverySpanMs: 83,
+    ffmpegWorkerBatchCount: 1,
+    ffmpegWorkerBatchBytes: 8,
+    ffmpegWorkerBatchMinBytes: 8,
+    ffmpegWorkerBatchMaxBytes: 8,
+    ffmpegWorkerAggregationCopyMs: 7,
+    ffmpegWorkerAggregationCopyMaxMs: 7,
+    ffmpegWorkerBatchCopyMs: 7,
+    ffmpegWorkerBatchPostMs: 0.75,
+    ffmpegWorkerMainCopyMs: 5,
+    ffmpegWorkerMainCopyMaxMs: 5,
+    ffmpegWorkerCreditWaitCount: 1,
+    ffmpegWorkerCreditWaitMs: 11,
+    ffmpegWorkerCreditWaitMaxMs: 11,
+  }
+  const pcm = makeLocalPcmResult(
+    requestId,
+    0.25,
+    makeTransportTimings(requestId, workerTimings),
+  )
+  const timings = internals.buildPcmLoadTimings(pcm, {
+    validPcmBytes: 8,
+    backingBufferBytes: 16,
+    webAudioBufferAllocationMs: 1,
+    pcmDeinterleaveMs: 2,
+    pcmDestinationViewMs: 0.25,
+    pcmCopySetupMs: 0.25,
+    pcmChannelCopyTotalMs: 1,
+    pcmChannelCopyMaxMs: 0.5,
+    pcmChannelCopyByChannelMs: [0.5, 0.5],
+    pcmPayloadReleaseMs: 0.25,
+    pcmDeinterleaveResidualMs: 0.25,
+  }, 3, {
+    decodeRequestId: requestId,
+    rendererBridgeCallMs: 181,
+    deliveredAt: 500,
+    pipelineStartedAt: 300,
+    standardTransportSetupMs: 1,
+    standardContextReadyMs: 1,
+    standardDecodeRequestSetupMs: 1,
+  })
+
+  for (const [field, expected] of Object.entries(workerTimings)) {
+    assert.equal(timings[field as keyof typeof timings], expected, `unexpected worker timing: ${field}`)
+  }
+  assert.equal(timings.decodeWorkMs, 105)
+  assert.equal(timings.decodeMs, timings.decodeWorkMs)
 })
 
 test('polled native lifecycle events cannot override an authoritative load or device command', () => {
@@ -771,6 +914,11 @@ test('Standard PCM stream success preserves request correlation and skips legacy
     assert.equal(committed[0]?.pcm.transportTimings?.probeCacheStatus, 'hit')
     assert.equal(committed[0]?.pcm.transportTimings?.probeDecodeOverlapEnabled, true)
     assert.equal(committed[0]?.pcm.transportTimings?.probeFfmpegOverlapMs, 3)
+    assertFfmpegStdoutTimings(
+      committed[0]?.pcm.transportTimings,
+      STREAM_FFMPEG_STDOUT_TIMINGS,
+    )
+    assertStreamCreditTimings(committed[0]?.pcm.transportTimings)
     assert.deepEqual(
       Array.from(new Float32Array(committed[0]?.pcm.interleavedPcm)),
       Array.from(Float32Array.from([0.4, -0.4])),
@@ -994,7 +1142,17 @@ test('timing-rich Standard PCM prebuffer preserves current playback and Parallax
           return Object.freeze(makeLocalPcmResult(
             requestId,
             0.6,
-            Object.freeze(makeTransportTimings(requestId, { transportRoute: 'invoke' })),
+            Object.freeze(makeTransportTimings(requestId, {
+              transportRoute: 'invoke',
+              ffmpegOutputSink: 'temporary_file',
+              tempPcmCreateMs: 1,
+              tempPcmStatMs: 0.25,
+              tempPcmReadMs: 8,
+              tempPcmReadChunkCount: 1,
+              tempPcmBytes: 8,
+              tempPcmCleanupMs: 2,
+              tempPcmCleanupSucceeded: false,
+            })),
           ))
         },
         cancelLocalAudioDecode: async () => undefined,
@@ -1056,6 +1214,16 @@ test('timing-rich Standard PCM prebuffer preserves current playback and Parallax
     assert.equal(timings.ffmpegSpawnToFirstPcmMs, 21)
     assert.equal(timings.ffmpegPcmOutputSpanMs, 64)
     assert.equal(timings.ffmpegCloseTailMs, 5)
+    assert.equal(timings.ffmpegOutputSink, 'temporary_file')
+    assert.equal(timings.tempPcmCreateMs, 1)
+    assert.equal(timings.tempPcmStatMs, 0.25)
+    assert.equal(timings.tempPcmReadMs, 8)
+    assert.equal(timings.tempPcmReadChunkCount, 1)
+    assert.equal(timings.tempPcmBytes, 8)
+    assert.equal(timings.tempPcmCleanupMs, 2)
+    assert.equal(timings.tempPcmCleanupSucceeded, false)
+    assertFfmpegStdoutTimings(timings)
+    assertStreamCreditTimings(timings)
     assert.ok((timings.standardTransportSetupMs ?? -1) >= 0)
     assert.ok((timings.postDeliveryCommitMs ?? -1) >= 0)
     assert.ok((timings.standardLoadPipelineMs ?? -1) >= 0)

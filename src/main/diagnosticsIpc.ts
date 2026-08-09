@@ -1,4 +1,25 @@
-import type { MemoryDiagnosticsLogEventOptions } from '../types/diagnostics'
+import type { LocalPcmOutputSink, MemoryDiagnosticsLogEventOptions } from '../types/diagnostics'
+
+export function normalizeLocalPcmOutputSink(value: unknown): LocalPcmOutputSink | null {
+  if (
+    value === 'stdout_pipe'
+    || value === 'rechunked_pipe'
+    || value === 'native_pipe'
+    || value === 'worker_thread'
+    || value === 'temporary_file'
+  ) {
+    return value
+  }
+  return null
+}
+
+export function resolveLegacyLocalPcmTempFileSinkChange(
+  currentSink: LocalPcmOutputSink,
+  enabled: boolean
+): LocalPcmOutputSink {
+  if (enabled) return 'temporary_file'
+  return currentSink === 'temporary_file' ? 'stdout_pipe' : currentSink
+}
 
 export function normalizeMemoryDiagnosticsLogEventOptions(
   rawOptions: unknown

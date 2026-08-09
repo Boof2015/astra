@@ -113,6 +113,7 @@ import type {
   RemoteStreamInfo
 } from '../types/remoteStream'
 import type {
+  LocalPcmOutputSink,
   LocalAudioPcmTransportTimings,
   MemoryDiagnosticsBlinkResourceUsageSnapshot,
   MemoryDiagnosticsCaptureBundleResult,
@@ -1008,6 +1009,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   diagnostics: {
     getStatus: (): Promise<MemoryDiagnosticsStatus> => ipcRenderer.invoke('diagnostics:getStatus'),
     setEnabled: (enabled: boolean): Promise<MemoryDiagnosticsStatus> => ipcRenderer.invoke('diagnostics:setEnabled', enabled),
+    setLocalPcmOutputSink: (sink: LocalPcmOutputSink): Promise<MemoryDiagnosticsStatus> =>
+      ipcRenderer.invoke('diagnostics:setLocalPcmOutputSink', sink),
+    setLocalPcmTempFileSinkEnabled: (enabled: boolean): Promise<MemoryDiagnosticsStatus> =>
+      ipcRenderer.invoke('diagnostics:setLocalPcmTempFileSinkEnabled', enabled),
     revealCurrentLog: (): Promise<boolean> => ipcRenderer.invoke('diagnostics:revealCurrentLog'),
     revealPreviousLog: (): Promise<boolean> => ipcRenderer.invoke('diagnostics:revealPreviousLog'),
     captureMemoryBundle: (tag?: string): Promise<MemoryDiagnosticsCaptureBundleResult> =>
@@ -1886,6 +1891,8 @@ declare global {
       diagnostics: {
         getStatus: () => Promise<MemoryDiagnosticsStatus>
         setEnabled: (enabled: boolean) => Promise<MemoryDiagnosticsStatus>
+        setLocalPcmOutputSink: (sink: LocalPcmOutputSink) => Promise<MemoryDiagnosticsStatus>
+        setLocalPcmTempFileSinkEnabled: (enabled: boolean) => Promise<MemoryDiagnosticsStatus>
         revealCurrentLog: () => Promise<boolean>
         revealPreviousLog: () => Promise<boolean>
         captureMemoryBundle: (tag?: string) => Promise<MemoryDiagnosticsCaptureBundleResult>

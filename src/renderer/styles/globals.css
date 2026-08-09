@@ -18240,6 +18240,11 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   width: 240px;
 }
 
+.settings-segmented-control.settings-segmented-control-pcm-route {
+  width: 400px;
+  max-width: 100%;
+}
+
 .settings-segmented-highlight {
   position: absolute;
   top: 2px;

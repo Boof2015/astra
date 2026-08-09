@@ -4,8 +4,19 @@ import type { AppMemoryFootprintSource } from '../shared/processMemoryFootprint'
 
 export type MemoryDiagnosticsSnapshotReason = 'timer' | 'event' | 'startup'
 
+export type LocalPcmOutputSink =
+  | 'stdout_pipe'
+  | 'rechunked_pipe'
+  | 'native_pipe'
+  | 'worker_thread'
+  | 'temporary_file'
+
 export interface MemoryDiagnosticsStatus {
   enabled: boolean
+  /** Runtime-only foreground Standard decode route. Omitted by older builds. */
+  localPcmOutputSink?: LocalPcmOutputSink
+  /** Compatibility alias derived from localPcmOutputSink. */
+  localPcmTempFileSinkEnabled?: boolean
   sampleIntervalMs: number
   currentLogPath: string
   previousLogPath: string
@@ -319,13 +330,114 @@ export interface LocalAudioPcmTransportTimings {
   probeDecodeOverlapEnabled?: boolean
   /** Wall time during which probing and FFmpeg decoding overlapped. */
   probeFfmpegOverlapMs?: number
+  /** FFmpeg child spawn-to-close wall time, including stdout blocking and process scheduling. */
   ffmpegMs: number
+  /** FFmpeg's decoded-PCM output destination. Omitted by older builds. */
+  ffmpegOutputSink?: LocalPcmOutputSink
+  tempPcmCreateMs?: number
+  tempPcmStatMs?: number
+  tempPcmReadMs?: number
+  tempPcmReadChunkCount?: number
+  tempPcmBytes?: number
+  tempPcmCleanupMs?: number
+  tempPcmCleanupSucceeded?: boolean
+  /** Worker creation/request handshake before FFmpeg begins producing PCM. */
+  ffmpegWorkerStartupMs?: number
+  /** Worker-owned decode request wall span. */
+  ffmpegWorkerTotalMs?: number
+  ffmpegWorkerSpawnMs?: number
+  ffmpegWorkerFfmpegMs?: number
+  ffmpegWorkerSpawnToFirstPcmMs?: number
+  ffmpegWorkerPcmOutputSpanMs?: number
+  ffmpegWorkerCloseTailMs?: number
+  /** Main-thread request dispatch until the worker's terminal message is observed. */
+  ffmpegWorkerRequestMs?: number
+  /** First worker PCM batch observed by main until the terminal message is observed. */
+  ffmpegWorkerMainDeliverySpanMs?: number
+  ffmpegWorkerBatchCount?: number
+  ffmpegWorkerBatchBytes?: number
+  ffmpegWorkerBatchMinBytes?: number
+  ffmpegWorkerBatchMaxBytes?: number
+  /** Copying FFmpeg stdout into transferable worker batches. */
+  ffmpegWorkerAggregationCopyMs?: number
+  ffmpegWorkerAggregationCopyMaxMs?: number
+  ffmpegWorkerBatchCopyMs?: number
+  ffmpegWorkerBatchPostMs?: number
+  /** Copying transferred worker batches into the authoritative main PCM buffer. */
+  ffmpegWorkerMainCopyMs?: number
+  ffmpegWorkerMainCopyMaxMs?: number
+  /** Worker time spent waiting for bounded main-ingestion credits. */
+  ffmpegWorkerCreditWaitCount?: number
+  ffmpegWorkerCreditWaitMs?: number
+  ffmpegWorkerCreditWaitMaxMs?: number
+  /** Main-only native capture setup and Win32 pipe-drain telemetry. */
+  nativePcmCaptureSpawnMs?: number
+  nativePcmCaptureProcessMs?: number
+  nativePcmCaptureFirstByteMs?: number
+  nativePcmCaptureStdoutReadSpanMs?: number
+  nativePcmCaptureStdoutReadCount?: number
+  nativePcmCaptureStdoutReadMinBytes?: number
+  nativePcmCaptureStdoutReadMaxBytes?: number
+  nativePcmCaptureOutputBytes?: number
+  nativePcmCaptureRequestedPipeBufferBytes?: number
+  nativePcmCaptureEffectivePipeBufferBytes?: number
+  nativePcmCaptureBufferCopyMs?: number
+  nativePcmCaptureUsedExternalBuffer?: boolean
+  nativePcmCaptureDeliveryMode?: 'complete_buffer' | 'progress_batches'
+  nativePcmCaptureBatchTargetBytes?: number
+  nativePcmCaptureBatchCount?: number
+  nativePcmCaptureBatchBytes?: number
+  nativePcmCaptureBatchMinBytes?: number
+  nativePcmCaptureBatchMaxBytes?: number
+  nativePcmCaptureBatchCreditWaitCount?: number
+  nativePcmCaptureBatchCreditWaitMs?: number
+  nativePcmCaptureBatchCreditWaitMaxMs?: number
+  nativePcmCaptureBatchCopyMs?: number
+  nativePcmCaptureBatchCopyMaxMs?: number
+  nativePcmCaptureBatchCallbackMs?: number
+  nativePcmCaptureBatchCallbackMaxMs?: number
+  nativePcmCaptureMainCopyMs?: number
+  nativePcmCaptureMainCopyMaxMs?: number
+  nativePcmCaptureFirstBatchMs?: number
+  nativePcmCaptureMainBatchSpanMs?: number
   /** FFmpeg spawn until the first decoded PCM bytes were observed. */
   ffmpegSpawnToFirstPcmMs?: number
   /** First decoded PCM bytes until the last decoded PCM bytes were observed. */
   ffmpegPcmOutputSpanMs?: number
-  /** Last decoded PCM bytes until FFmpeg closed. */
+  /** Last stdout callback entry until FFmpeg closed; overlaps the final callback's work. */
   ffmpegCloseTailMs?: number
+  /** Raw FFmpeg stdout delivery observed by the process that owns the decode route. */
+  ffmpegStdoutChunkCount?: number
+  ffmpegStdoutBytes?: number
+  ffmpegStdoutChunkMinBytes?: number
+  ffmpegStdoutChunkMaxBytes?: number
+  /** First stdout callback entry through the final stdout callback exit. */
+  ffmpegStdoutDrainSpanMs?: number
+  /** Final stdout callback exit until FFmpeg close was observed. */
+  ffmpegStdoutDrainToCloseMs?: number
+  /** Synchronous work performed inside stdout data callbacks. */
+  ffmpegStdoutCallbackWorkMs?: number
+  ffmpegStdoutCallbackMaxMs?: number
+  /** Time between stdout callback exit and the next callback entry. */
+  ffmpegStdoutInterCallbackGapMs?: number
+  ffmpegStdoutInterCallbackGapMaxMs?: number
+  /**
+   * Successful PCM chunk post completion until the next stdout callback entry.
+   * This is a correlation window and does not by itself attribute the delay to IPC.
+   */
+  ffmpegStdoutPostDispatchGapCount?: number
+  ffmpegStdoutPostDispatchGapMs?: number
+  ffmpegStdoutPostDispatchGapMaxMs?: number
+  /** Copying raw stdout chunks into the authoritative main PCM buffer. */
+  ffmpegStdoutCopyMs?: number
+  ffmpegStdoutCopyMaxMs?: number
+  /** Checking and dispatching completed MessagePort chunks after each append. */
+  ffmpegStdoutFlushMs?: number
+  ffmpegStdoutFlushMaxMs?: number
+  /** Explicit pre-probe stdout backpressure; absent from ordinary warm hits. */
+  ffmpegStdoutPauseCount?: number
+  ffmpegStdoutPausedMs?: number
+  ffmpegStdoutPauseMaxMs?: number
   allocationMs: number
   /** Initial full-buffer allocation after authoritative probe metadata is ready. */
   initialAllocationMs?: number
@@ -337,6 +449,14 @@ export interface LocalAudioPcmTransportTimings {
   streamChunkCount?: number
   streamDispatchCopyMs?: number
   streamDispatchPostMs?: number
+  /** Matching renderer credit acknowledgements observed before stream completion. */
+  streamCreditAckCount?: number
+  /**
+   * Sum of main post-return to matching renderer-credit arrival durations.
+   * Includes delivery, cloning, renderer copy/scheduling, and return dispatch.
+   */
+  streamCreditRoundTripMs?: number
+  streamCreditRoundTripMaxMs?: number
   streamTailMs?: number
   benchmarkMainGenerationMs?: number
   benchmarkMainFillMs?: number

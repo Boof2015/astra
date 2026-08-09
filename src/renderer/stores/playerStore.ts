@@ -116,9 +116,71 @@ interface PlaybackAttemptTimings {
   probeDecodeOverlapEnabled?: boolean | null
   probeFfmpegOverlapMs?: number | null
   ffmpegMs?: number | null
+  ffmpegOutputSink?: 'stdout_pipe' | 'rechunked_pipe' | 'native_pipe' | 'worker_thread' | 'temporary_file' | null
+  tempPcmCreateMs?: number | null
+  tempPcmStatMs?: number | null
+  tempPcmReadMs?: number | null
+  tempPcmReadChunkCount?: number | null
+  tempPcmBytes?: number | null
+  tempPcmCleanupMs?: number | null
+  tempPcmCleanupSucceeded?: boolean | null
+  ffmpegWorkerStartupMs?: number | null
+  ffmpegWorkerTotalMs?: number | null
+  ffmpegWorkerSpawnMs?: number | null
+  ffmpegWorkerFfmpegMs?: number | null
+  ffmpegWorkerSpawnToFirstPcmMs?: number | null
+  ffmpegWorkerPcmOutputSpanMs?: number | null
+  ffmpegWorkerCloseTailMs?: number | null
+  ffmpegWorkerRequestMs?: number | null
+  ffmpegWorkerMainDeliverySpanMs?: number | null
+  ffmpegWorkerBatchCount?: number | null
+  ffmpegWorkerBatchBytes?: number | null
+  ffmpegWorkerBatchMinBytes?: number | null
+  ffmpegWorkerBatchMaxBytes?: number | null
+  ffmpegWorkerAggregationCopyMs?: number | null
+  ffmpegWorkerAggregationCopyMaxMs?: number | null
+  ffmpegWorkerBatchCopyMs?: number | null
+  ffmpegWorkerBatchPostMs?: number | null
+  ffmpegWorkerMainCopyMs?: number | null
+  ffmpegWorkerMainCopyMaxMs?: number | null
+  ffmpegWorkerCreditWaitCount?: number | null
+  ffmpegWorkerCreditWaitMs?: number | null
+  ffmpegWorkerCreditWaitMaxMs?: number | null
+  nativePcmCaptureSpawnMs?: number | null
+  nativePcmCaptureProcessMs?: number | null
+  nativePcmCaptureFirstByteMs?: number | null
+  nativePcmCaptureStdoutReadSpanMs?: number | null
+  nativePcmCaptureStdoutReadCount?: number | null
+  nativePcmCaptureStdoutReadMinBytes?: number | null
+  nativePcmCaptureStdoutReadMaxBytes?: number | null
+  nativePcmCaptureOutputBytes?: number | null
+  nativePcmCaptureRequestedPipeBufferBytes?: number | null
+  nativePcmCaptureEffectivePipeBufferBytes?: number | null
+  nativePcmCaptureBufferCopyMs?: number | null
+  nativePcmCaptureUsedExternalBuffer?: boolean | null
   ffmpegSpawnToFirstPcmMs?: number | null
   ffmpegPcmOutputSpanMs?: number | null
   ffmpegCloseTailMs?: number | null
+  ffmpegStdoutChunkCount?: number | null
+  ffmpegStdoutBytes?: number | null
+  ffmpegStdoutChunkMinBytes?: number | null
+  ffmpegStdoutChunkMaxBytes?: number | null
+  ffmpegStdoutDrainSpanMs?: number | null
+  ffmpegStdoutDrainToCloseMs?: number | null
+  ffmpegStdoutCallbackWorkMs?: number | null
+  ffmpegStdoutCallbackMaxMs?: number | null
+  ffmpegStdoutInterCallbackGapMs?: number | null
+  ffmpegStdoutInterCallbackGapMaxMs?: number | null
+  ffmpegStdoutPostDispatchGapCount?: number | null
+  ffmpegStdoutPostDispatchGapMs?: number | null
+  ffmpegStdoutPostDispatchGapMaxMs?: number | null
+  ffmpegStdoutCopyMs?: number | null
+  ffmpegStdoutCopyMaxMs?: number | null
+  ffmpegStdoutFlushMs?: number | null
+  ffmpegStdoutFlushMaxMs?: number | null
+  ffmpegStdoutPauseCount?: number | null
+  ffmpegStdoutPausedMs?: number | null
+  ffmpegStdoutPauseMaxMs?: number | null
   pcmAllocationMs?: number | null
   initialPcmAllocationMs?: number | null
   growthPcmAllocationMs?: number | null
@@ -130,6 +192,9 @@ interface PlaybackAttemptTimings {
   streamChunkCount?: number | null
   streamDispatchCopyMs?: number | null
   streamDispatchPostMs?: number | null
+  streamCreditAckCount?: number | null
+  streamCreditRoundTripMs?: number | null
+  streamCreditRoundTripMaxMs?: number | null
   streamTailMs?: number | null
   rendererPcmAssemblyAllocationMs?: number | null
   rendererPcmAssemblyCopyMs?: number | null
@@ -173,9 +238,74 @@ function getStandardPcmTimingDetails(timings: AudioLoadTimings | null | undefine
     probeDecodeOverlapEnabled: timings?.probeDecodeOverlapEnabled ?? null,
     probeFfmpegOverlapMs: timings?.probeFfmpegOverlapMs ?? null,
     ffmpegMs: timings?.ffmpegMs ?? timings?.nativeDecodeMs ?? null,
+    ffmpegOutputSink: timings?.ffmpegOutputSink ?? null,
+    tempPcmCreateMs: timings?.tempPcmCreateMs ?? null,
+    tempPcmStatMs: timings?.tempPcmStatMs ?? null,
+    tempPcmReadMs: timings?.tempPcmReadMs ?? null,
+    tempPcmReadChunkCount: timings?.tempPcmReadChunkCount ?? null,
+    tempPcmBytes: timings?.tempPcmBytes ?? null,
+    tempPcmCleanupMs: timings?.tempPcmCleanupMs ?? null,
+    tempPcmCleanupSucceeded: timings?.tempPcmCleanupSucceeded ?? null,
+    ffmpegWorkerStartupMs: timings?.ffmpegWorkerStartupMs ?? null,
+    ffmpegWorkerTotalMs: timings?.ffmpegWorkerTotalMs ?? null,
+    ffmpegWorkerSpawnMs: timings?.ffmpegWorkerSpawnMs ?? null,
+    ffmpegWorkerFfmpegMs: timings?.ffmpegWorkerFfmpegMs ?? null,
+    ffmpegWorkerSpawnToFirstPcmMs: timings?.ffmpegWorkerSpawnToFirstPcmMs ?? null,
+    ffmpegWorkerPcmOutputSpanMs: timings?.ffmpegWorkerPcmOutputSpanMs ?? null,
+    ffmpegWorkerCloseTailMs: timings?.ffmpegWorkerCloseTailMs ?? null,
+    ffmpegWorkerRequestMs: timings?.ffmpegWorkerRequestMs ?? null,
+    ffmpegWorkerMainDeliverySpanMs: timings?.ffmpegWorkerMainDeliverySpanMs ?? null,
+    ffmpegWorkerBatchCount: timings?.ffmpegWorkerBatchCount ?? null,
+    ffmpegWorkerBatchBytes: timings?.ffmpegWorkerBatchBytes ?? null,
+    ffmpegWorkerBatchMinBytes: timings?.ffmpegWorkerBatchMinBytes ?? null,
+    ffmpegWorkerBatchMaxBytes: timings?.ffmpegWorkerBatchMaxBytes ?? null,
+    ffmpegWorkerAggregationCopyMs: timings?.ffmpegWorkerAggregationCopyMs ?? null,
+    ffmpegWorkerAggregationCopyMaxMs: timings?.ffmpegWorkerAggregationCopyMaxMs ?? null,
+    ffmpegWorkerBatchCopyMs: timings?.ffmpegWorkerBatchCopyMs ?? null,
+    ffmpegWorkerBatchPostMs: timings?.ffmpegWorkerBatchPostMs ?? null,
+    ffmpegWorkerMainCopyMs: timings?.ffmpegWorkerMainCopyMs ?? null,
+    ffmpegWorkerMainCopyMaxMs: timings?.ffmpegWorkerMainCopyMaxMs ?? null,
+    ffmpegWorkerCreditWaitCount: timings?.ffmpegWorkerCreditWaitCount ?? null,
+    ffmpegWorkerCreditWaitMs: timings?.ffmpegWorkerCreditWaitMs ?? null,
+    ffmpegWorkerCreditWaitMaxMs: timings?.ffmpegWorkerCreditWaitMaxMs ?? null,
+    nativePcmCaptureSpawnMs: timings?.nativePcmCaptureSpawnMs ?? null,
+    nativePcmCaptureProcessMs: timings?.nativePcmCaptureProcessMs ?? null,
+    nativePcmCaptureFirstByteMs: timings?.nativePcmCaptureFirstByteMs ?? null,
+    nativePcmCaptureStdoutReadSpanMs: timings?.nativePcmCaptureStdoutReadSpanMs ?? null,
+    nativePcmCaptureStdoutReadCount: timings?.nativePcmCaptureStdoutReadCount ?? null,
+    nativePcmCaptureStdoutReadMinBytes: timings?.nativePcmCaptureStdoutReadMinBytes ?? null,
+    nativePcmCaptureStdoutReadMaxBytes: timings?.nativePcmCaptureStdoutReadMaxBytes ?? null,
+    nativePcmCaptureOutputBytes: timings?.nativePcmCaptureOutputBytes ?? null,
+    nativePcmCaptureRequestedPipeBufferBytes:
+      timings?.nativePcmCaptureRequestedPipeBufferBytes ?? null,
+    nativePcmCaptureEffectivePipeBufferBytes:
+      timings?.nativePcmCaptureEffectivePipeBufferBytes ?? null,
+    nativePcmCaptureBufferCopyMs: timings?.nativePcmCaptureBufferCopyMs ?? null,
+    nativePcmCaptureUsedExternalBuffer:
+      timings?.nativePcmCaptureUsedExternalBuffer ?? null,
     ffmpegSpawnToFirstPcmMs: timings?.ffmpegSpawnToFirstPcmMs ?? null,
     ffmpegPcmOutputSpanMs: timings?.ffmpegPcmOutputSpanMs ?? null,
     ffmpegCloseTailMs: timings?.ffmpegCloseTailMs ?? null,
+    ffmpegStdoutChunkCount: timings?.ffmpegStdoutChunkCount ?? null,
+    ffmpegStdoutBytes: timings?.ffmpegStdoutBytes ?? null,
+    ffmpegStdoutChunkMinBytes: timings?.ffmpegStdoutChunkMinBytes ?? null,
+    ffmpegStdoutChunkMaxBytes: timings?.ffmpegStdoutChunkMaxBytes ?? null,
+    ffmpegStdoutDrainSpanMs: timings?.ffmpegStdoutDrainSpanMs ?? null,
+    ffmpegStdoutDrainToCloseMs: timings?.ffmpegStdoutDrainToCloseMs ?? null,
+    ffmpegStdoutCallbackWorkMs: timings?.ffmpegStdoutCallbackWorkMs ?? null,
+    ffmpegStdoutCallbackMaxMs: timings?.ffmpegStdoutCallbackMaxMs ?? null,
+    ffmpegStdoutInterCallbackGapMs: timings?.ffmpegStdoutInterCallbackGapMs ?? null,
+    ffmpegStdoutInterCallbackGapMaxMs: timings?.ffmpegStdoutInterCallbackGapMaxMs ?? null,
+    ffmpegStdoutPostDispatchGapCount: timings?.ffmpegStdoutPostDispatchGapCount ?? null,
+    ffmpegStdoutPostDispatchGapMs: timings?.ffmpegStdoutPostDispatchGapMs ?? null,
+    ffmpegStdoutPostDispatchGapMaxMs: timings?.ffmpegStdoutPostDispatchGapMaxMs ?? null,
+    ffmpegStdoutCopyMs: timings?.ffmpegStdoutCopyMs ?? null,
+    ffmpegStdoutCopyMaxMs: timings?.ffmpegStdoutCopyMaxMs ?? null,
+    ffmpegStdoutFlushMs: timings?.ffmpegStdoutFlushMs ?? null,
+    ffmpegStdoutFlushMaxMs: timings?.ffmpegStdoutFlushMaxMs ?? null,
+    ffmpegStdoutPauseCount: timings?.ffmpegStdoutPauseCount ?? null,
+    ffmpegStdoutPausedMs: timings?.ffmpegStdoutPausedMs ?? null,
+    ffmpegStdoutPauseMaxMs: timings?.ffmpegStdoutPauseMaxMs ?? null,
     pcmAllocationMs: timings?.pcmAllocationMs ?? null,
     initialPcmAllocationMs: timings?.initialPcmAllocationMs ?? null,
     growthPcmAllocationMs: timings?.growthPcmAllocationMs ?? null,
@@ -187,6 +317,9 @@ function getStandardPcmTimingDetails(timings: AudioLoadTimings | null | undefine
     streamChunkCount: timings?.streamChunkCount ?? null,
     streamDispatchCopyMs: timings?.streamDispatchCopyMs ?? null,
     streamDispatchPostMs: timings?.streamDispatchPostMs ?? null,
+    streamCreditAckCount: timings?.streamCreditAckCount ?? null,
+    streamCreditRoundTripMs: timings?.streamCreditRoundTripMs ?? null,
+    streamCreditRoundTripMaxMs: timings?.streamCreditRoundTripMaxMs ?? null,
     streamTailMs: timings?.streamTailMs ?? null,
     rendererPcmAssemblyAllocationMs: timings?.rendererPcmAssemblyAllocationMs ?? null,
     rendererPcmAssemblyCopyMs: timings?.rendererPcmAssemblyCopyMs ?? null,
@@ -1460,9 +1593,74 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       probeDecodeOverlapEnabled: timings.probeDecodeOverlapEnabled ?? null,
       probeFfmpegOverlapMs: timings.probeFfmpegOverlapMs ?? null,
       ffmpegMs: timings.ffmpegMs ?? null,
+      ffmpegOutputSink: timings.ffmpegOutputSink ?? null,
+      tempPcmCreateMs: timings.tempPcmCreateMs ?? null,
+      tempPcmStatMs: timings.tempPcmStatMs ?? null,
+      tempPcmReadMs: timings.tempPcmReadMs ?? null,
+      tempPcmReadChunkCount: timings.tempPcmReadChunkCount ?? null,
+      tempPcmBytes: timings.tempPcmBytes ?? null,
+      tempPcmCleanupMs: timings.tempPcmCleanupMs ?? null,
+      tempPcmCleanupSucceeded: timings.tempPcmCleanupSucceeded ?? null,
+      ffmpegWorkerStartupMs: timings.ffmpegWorkerStartupMs ?? null,
+      ffmpegWorkerTotalMs: timings.ffmpegWorkerTotalMs ?? null,
+      ffmpegWorkerSpawnMs: timings.ffmpegWorkerSpawnMs ?? null,
+      ffmpegWorkerFfmpegMs: timings.ffmpegWorkerFfmpegMs ?? null,
+      ffmpegWorkerSpawnToFirstPcmMs: timings.ffmpegWorkerSpawnToFirstPcmMs ?? null,
+      ffmpegWorkerPcmOutputSpanMs: timings.ffmpegWorkerPcmOutputSpanMs ?? null,
+      ffmpegWorkerCloseTailMs: timings.ffmpegWorkerCloseTailMs ?? null,
+      ffmpegWorkerRequestMs: timings.ffmpegWorkerRequestMs ?? null,
+      ffmpegWorkerMainDeliverySpanMs: timings.ffmpegWorkerMainDeliverySpanMs ?? null,
+      ffmpegWorkerBatchCount: timings.ffmpegWorkerBatchCount ?? null,
+      ffmpegWorkerBatchBytes: timings.ffmpegWorkerBatchBytes ?? null,
+      ffmpegWorkerBatchMinBytes: timings.ffmpegWorkerBatchMinBytes ?? null,
+      ffmpegWorkerBatchMaxBytes: timings.ffmpegWorkerBatchMaxBytes ?? null,
+      ffmpegWorkerAggregationCopyMs: timings.ffmpegWorkerAggregationCopyMs ?? null,
+      ffmpegWorkerAggregationCopyMaxMs: timings.ffmpegWorkerAggregationCopyMaxMs ?? null,
+      ffmpegWorkerBatchCopyMs: timings.ffmpegWorkerBatchCopyMs ?? null,
+      ffmpegWorkerBatchPostMs: timings.ffmpegWorkerBatchPostMs ?? null,
+      ffmpegWorkerMainCopyMs: timings.ffmpegWorkerMainCopyMs ?? null,
+      ffmpegWorkerMainCopyMaxMs: timings.ffmpegWorkerMainCopyMaxMs ?? null,
+      ffmpegWorkerCreditWaitCount: timings.ffmpegWorkerCreditWaitCount ?? null,
+      ffmpegWorkerCreditWaitMs: timings.ffmpegWorkerCreditWaitMs ?? null,
+      ffmpegWorkerCreditWaitMaxMs: timings.ffmpegWorkerCreditWaitMaxMs ?? null,
+      nativePcmCaptureSpawnMs: timings.nativePcmCaptureSpawnMs ?? null,
+      nativePcmCaptureProcessMs: timings.nativePcmCaptureProcessMs ?? null,
+      nativePcmCaptureFirstByteMs: timings.nativePcmCaptureFirstByteMs ?? null,
+      nativePcmCaptureStdoutReadSpanMs: timings.nativePcmCaptureStdoutReadSpanMs ?? null,
+      nativePcmCaptureStdoutReadCount: timings.nativePcmCaptureStdoutReadCount ?? null,
+      nativePcmCaptureStdoutReadMinBytes: timings.nativePcmCaptureStdoutReadMinBytes ?? null,
+      nativePcmCaptureStdoutReadMaxBytes: timings.nativePcmCaptureStdoutReadMaxBytes ?? null,
+      nativePcmCaptureOutputBytes: timings.nativePcmCaptureOutputBytes ?? null,
+      nativePcmCaptureRequestedPipeBufferBytes:
+        timings.nativePcmCaptureRequestedPipeBufferBytes ?? null,
+      nativePcmCaptureEffectivePipeBufferBytes:
+        timings.nativePcmCaptureEffectivePipeBufferBytes ?? null,
+      nativePcmCaptureBufferCopyMs: timings.nativePcmCaptureBufferCopyMs ?? null,
+      nativePcmCaptureUsedExternalBuffer:
+        timings.nativePcmCaptureUsedExternalBuffer ?? null,
       ffmpegSpawnToFirstPcmMs: timings.ffmpegSpawnToFirstPcmMs ?? null,
       ffmpegPcmOutputSpanMs: timings.ffmpegPcmOutputSpanMs ?? null,
       ffmpegCloseTailMs: timings.ffmpegCloseTailMs ?? null,
+      ffmpegStdoutChunkCount: timings.ffmpegStdoutChunkCount ?? null,
+      ffmpegStdoutBytes: timings.ffmpegStdoutBytes ?? null,
+      ffmpegStdoutChunkMinBytes: timings.ffmpegStdoutChunkMinBytes ?? null,
+      ffmpegStdoutChunkMaxBytes: timings.ffmpegStdoutChunkMaxBytes ?? null,
+      ffmpegStdoutDrainSpanMs: timings.ffmpegStdoutDrainSpanMs ?? null,
+      ffmpegStdoutDrainToCloseMs: timings.ffmpegStdoutDrainToCloseMs ?? null,
+      ffmpegStdoutCallbackWorkMs: timings.ffmpegStdoutCallbackWorkMs ?? null,
+      ffmpegStdoutCallbackMaxMs: timings.ffmpegStdoutCallbackMaxMs ?? null,
+      ffmpegStdoutInterCallbackGapMs: timings.ffmpegStdoutInterCallbackGapMs ?? null,
+      ffmpegStdoutInterCallbackGapMaxMs: timings.ffmpegStdoutInterCallbackGapMaxMs ?? null,
+      ffmpegStdoutPostDispatchGapCount: timings.ffmpegStdoutPostDispatchGapCount ?? null,
+      ffmpegStdoutPostDispatchGapMs: timings.ffmpegStdoutPostDispatchGapMs ?? null,
+      ffmpegStdoutPostDispatchGapMaxMs: timings.ffmpegStdoutPostDispatchGapMaxMs ?? null,
+      ffmpegStdoutCopyMs: timings.ffmpegStdoutCopyMs ?? null,
+      ffmpegStdoutCopyMaxMs: timings.ffmpegStdoutCopyMaxMs ?? null,
+      ffmpegStdoutFlushMs: timings.ffmpegStdoutFlushMs ?? null,
+      ffmpegStdoutFlushMaxMs: timings.ffmpegStdoutFlushMaxMs ?? null,
+      ffmpegStdoutPauseCount: timings.ffmpegStdoutPauseCount ?? null,
+      ffmpegStdoutPausedMs: timings.ffmpegStdoutPausedMs ?? null,
+      ffmpegStdoutPauseMaxMs: timings.ffmpegStdoutPauseMaxMs ?? null,
       pcmAllocationMs: timings.pcmAllocationMs ?? null,
       initialPcmAllocationMs: timings.initialPcmAllocationMs ?? null,
       growthPcmAllocationMs: timings.growthPcmAllocationMs ?? null,
@@ -1474,6 +1672,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       streamChunkCount: timings.streamChunkCount ?? null,
       streamDispatchCopyMs: timings.streamDispatchCopyMs ?? null,
       streamDispatchPostMs: timings.streamDispatchPostMs ?? null,
+      streamCreditAckCount: timings.streamCreditAckCount ?? null,
+      streamCreditRoundTripMs: timings.streamCreditRoundTripMs ?? null,
+      streamCreditRoundTripMaxMs: timings.streamCreditRoundTripMaxMs ?? null,
       streamTailMs: timings.streamTailMs ?? null,
       rendererPcmAssemblyAllocationMs: timings.rendererPcmAssemblyAllocationMs ?? null,
       rendererPcmAssemblyCopyMs: timings.rendererPcmAssemblyCopyMs ?? null,

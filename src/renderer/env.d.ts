@@ -101,6 +101,7 @@ import type {
     RemoteStreamInfo
 } from '../types/remoteStream'
 import type {
+    LocalPcmOutputSink,
     LocalAudioPcmTransportTimings,
     MemoryDiagnosticsBlinkResourceUsageSnapshot,
     MemoryDiagnosticsCaptureBundleResult,
@@ -316,6 +317,8 @@ declare global {
             diagnostics: {
                 getStatus: () => Promise<MemoryDiagnosticsStatus>
                 setEnabled: (enabled: boolean) => Promise<MemoryDiagnosticsStatus>
+                setLocalPcmOutputSink: (sink: LocalPcmOutputSink) => Promise<MemoryDiagnosticsStatus>
+                setLocalPcmTempFileSinkEnabled: (enabled: boolean) => Promise<MemoryDiagnosticsStatus>
                 revealCurrentLog: () => Promise<boolean>
                 revealPreviousLog: () => Promise<boolean>
                 captureMemoryBundle: (tag?: string) => Promise<MemoryDiagnosticsCaptureBundleResult>

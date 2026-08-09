@@ -461,7 +461,6 @@ async function exerciseStandardPcmRoute(
   const ownDuration = Object.getOwnPropertyDescriptor(audioEngine, 'duration')
   const originalParallax = useParallaxStore.getState()
   const stateChangeListeners: Array<(state: string) => void> = []
-
   audioEngine.on = (event, callback) => {
     if (event === 'stateChange') stateChangeListeners.push(callback)
     return () => undefined
@@ -4206,6 +4205,79 @@ test('successful Standard playback emits one complete playback-attempt timing ev
   const ownDuration = Object.getOwnPropertyDescriptor(audioEngine, 'duration')
   const originalParallax = useParallaxStore.getState()
   const stateChangeListeners: Array<(state: string) => void> = []
+  const ffmpegStdoutTimings = Object.freeze({
+    ffmpegStdoutChunkCount: 1_103,
+    ffmpegStdoutBytes: 72_300_000,
+    ffmpegStdoutChunkMinBytes: 4_096,
+    ffmpegStdoutChunkMaxBytes: 65_536,
+    ffmpegStdoutDrainSpanMs: 94,
+    ffmpegStdoutDrainToCloseMs: 5,
+    ffmpegStdoutCallbackWorkMs: 16,
+    ffmpegStdoutCallbackMaxMs: 2,
+    ffmpegStdoutInterCallbackGapMs: 78,
+    ffmpegStdoutInterCallbackGapMaxMs: 10,
+    ffmpegStdoutPostDispatchGapCount: 8,
+    ffmpegStdoutPostDispatchGapMs: 25,
+    ffmpegStdoutPostDispatchGapMaxMs: 5,
+    ffmpegStdoutCopyMs: 11,
+    ffmpegStdoutCopyMaxMs: 1.5,
+    ffmpegStdoutFlushMs: 4,
+    ffmpegStdoutFlushMaxMs: 0.8,
+    ffmpegStdoutPauseCount: 1,
+    ffmpegStdoutPausedMs: 14,
+    ffmpegStdoutPauseMaxMs: 14,
+    streamCreditAckCount: 8,
+    streamCreditRoundTripMs: 24,
+    streamCreditRoundTripMaxMs: 5
+  })
+  const tempPcmTimings = Object.freeze({
+    tempPcmCreateMs: 1.5,
+    tempPcmStatMs: 0.5,
+    tempPcmReadMs: 18,
+    tempPcmReadChunkCount: 18,
+    tempPcmBytes: 72_300_000,
+    tempPcmCleanupMs: 2.5,
+    tempPcmCleanupSucceeded: false
+  })
+  const workerTimings = Object.freeze({
+    ffmpegOutputSink: 'worker_thread' as const,
+    ffmpegWorkerStartupMs: 2,
+    ffmpegWorkerTotalMs: 140,
+    ffmpegWorkerSpawnMs: 3,
+    ffmpegWorkerFfmpegMs: 130,
+    ffmpegWorkerSpawnToFirstPcmMs: 31,
+    ffmpegWorkerPcmOutputSpanMs: 92,
+    ffmpegWorkerCloseTailMs: 7,
+    ffmpegWorkerRequestMs: 145,
+    ffmpegWorkerMainDeliverySpanMs: 112,
+    ffmpegWorkerBatchCount: 9,
+    ffmpegWorkerBatchBytes: 72_300_000,
+    ffmpegWorkerBatchMinBytes: 8_000_000,
+    ffmpegWorkerBatchMaxBytes: 8_388_608,
+    ffmpegWorkerAggregationCopyMs: 12,
+    ffmpegWorkerAggregationCopyMaxMs: 2,
+    ffmpegWorkerBatchCopyMs: 12,
+    ffmpegWorkerBatchPostMs: 0.9,
+    ffmpegWorkerMainCopyMs: 9,
+    ffmpegWorkerMainCopyMaxMs: 1.5,
+    ffmpegWorkerCreditWaitCount: 3,
+    ffmpegWorkerCreditWaitMs: 18,
+    ffmpegWorkerCreditWaitMaxMs: 8
+  })
+  const nativeCaptureTimings = Object.freeze({
+    nativePcmCaptureSpawnMs: 4,
+    nativePcmCaptureProcessMs: 120,
+    nativePcmCaptureFirstByteMs: 24,
+    nativePcmCaptureStdoutReadSpanMs: 88,
+    nativePcmCaptureStdoutReadCount: 72,
+    nativePcmCaptureStdoutReadMinBytes: 65_536,
+    nativePcmCaptureStdoutReadMaxBytes: 1_048_576,
+    nativePcmCaptureOutputBytes: 72_300_000,
+    nativePcmCaptureRequestedPipeBufferBytes: 1_048_576,
+    nativePcmCaptureEffectivePipeBufferBytes: 1_048_576,
+    nativePcmCaptureBufferCopyMs: 9,
+    nativePcmCaptureUsedExternalBuffer: false
+  })
 
   audioEngine.on = (event, callback) => {
     if (event === 'stateChange') stateChangeListeners.push(callback)
@@ -4237,6 +4309,10 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     ffmpegSpawnToFirstPcmMs: 31,
     ffmpegPcmOutputSpanMs: 92,
     ffmpegCloseTailMs: 7,
+    ...tempPcmTimings,
+    ...workerTimings,
+    ...nativeCaptureTimings,
+    ...ffmpegStdoutTimings,
     pcmAllocationMs: 4,
     initialPcmAllocationMs: 3,
     growthPcmAllocationMs: 1,
@@ -4307,6 +4383,15 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     assert.equal(details.ffmpegSpawnToFirstPcmMs, 31)
     assert.equal(details.ffmpegPcmOutputSpanMs, 92)
     assert.equal(details.ffmpegCloseTailMs, 7)
+    for (const [field, expected] of Object.entries(tempPcmTimings)) {
+      assert.equal(details[field], expected, `unexpected temporary-PCM diagnostic field: ${field}`)
+    }
+    for (const [field, expected] of Object.entries(workerTimings)) {
+      assert.equal(details[field], expected, `unexpected worker diagnostic field: ${field}`)
+    }
+    for (const [field, expected] of Object.entries(ffmpegStdoutTimings)) {
+      assert.equal(details[field], expected, `unexpected playback diagnostic field: ${field}`)
+    }
     assert.equal(typeof details.loadRequestId, 'number')
     assert.equal(details.prebufferRequestId, null)
     assert.equal(details.commandToScheduledPlayMs, details.totalCommandToPlayingMs)
@@ -4378,9 +4463,74 @@ test('successful Standard playback emits one complete playback-attempt timing ev
       'probeDecodeOverlapEnabled',
       'probeFfmpegOverlapMs',
       'ffmpegMs',
+      'ffmpegOutputSink',
+      'tempPcmCreateMs',
+      'tempPcmStatMs',
+      'tempPcmReadMs',
+      'tempPcmReadChunkCount',
+      'tempPcmBytes',
+      'tempPcmCleanupMs',
+      'tempPcmCleanupSucceeded',
+      'ffmpegWorkerStartupMs',
+      'ffmpegWorkerTotalMs',
+      'ffmpegWorkerSpawnMs',
+      'ffmpegWorkerFfmpegMs',
+      'ffmpegWorkerSpawnToFirstPcmMs',
+      'ffmpegWorkerPcmOutputSpanMs',
+      'ffmpegWorkerCloseTailMs',
+      'ffmpegWorkerRequestMs',
+      'ffmpegWorkerMainDeliverySpanMs',
+      'ffmpegWorkerBatchCount',
+      'ffmpegWorkerBatchBytes',
+      'ffmpegWorkerBatchMinBytes',
+      'ffmpegWorkerBatchMaxBytes',
+      'ffmpegWorkerAggregationCopyMs',
+      'ffmpegWorkerAggregationCopyMaxMs',
+      'ffmpegWorkerBatchCopyMs',
+      'ffmpegWorkerBatchPostMs',
+      'ffmpegWorkerMainCopyMs',
+      'ffmpegWorkerMainCopyMaxMs',
+      'ffmpegWorkerCreditWaitCount',
+      'ffmpegWorkerCreditWaitMs',
+      'ffmpegWorkerCreditWaitMaxMs',
+      'nativePcmCaptureSpawnMs',
+      'nativePcmCaptureProcessMs',
+      'nativePcmCaptureFirstByteMs',
+      'nativePcmCaptureStdoutReadSpanMs',
+      'nativePcmCaptureStdoutReadCount',
+      'nativePcmCaptureStdoutReadMinBytes',
+      'nativePcmCaptureStdoutReadMaxBytes',
+      'nativePcmCaptureOutputBytes',
+      'nativePcmCaptureRequestedPipeBufferBytes',
+      'nativePcmCaptureEffectivePipeBufferBytes',
+      'nativePcmCaptureBufferCopyMs',
+      'nativePcmCaptureUsedExternalBuffer',
       'ffmpegSpawnToFirstPcmMs',
       'ffmpegPcmOutputSpanMs',
       'ffmpegCloseTailMs',
+      'ffmpegStdoutChunkCount',
+      'ffmpegStdoutBytes',
+      'ffmpegStdoutChunkMinBytes',
+      'ffmpegStdoutChunkMaxBytes',
+      'ffmpegStdoutDrainSpanMs',
+      'ffmpegStdoutDrainToCloseMs',
+      'ffmpegStdoutCallbackWorkMs',
+      'ffmpegStdoutCallbackMaxMs',
+      'ffmpegStdoutInterCallbackGapMs',
+      'ffmpegStdoutInterCallbackGapMaxMs',
+      'ffmpegStdoutPostDispatchGapCount',
+      'ffmpegStdoutPostDispatchGapMs',
+      'ffmpegStdoutPostDispatchGapMaxMs',
+      'ffmpegStdoutCopyMs',
+      'ffmpegStdoutCopyMaxMs',
+      'ffmpegStdoutFlushMs',
+      'ffmpegStdoutFlushMaxMs',
+      'ffmpegStdoutPauseCount',
+      'ffmpegStdoutPausedMs',
+      'ffmpegStdoutPauseMaxMs',
+      'streamCreditAckCount',
+      'streamCreditRoundTripMs',
+      'streamCreditRoundTripMaxMs',
       'pcmAllocationMs',
       'initialPcmAllocationMs',
       'growthPcmAllocationMs',
@@ -4447,6 +4597,18 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     )
     assert.equal(trackLoad.details?.ffmpegPcmOutputSpanMs, details.ffmpegPcmOutputSpanMs)
     assert.equal(trackLoad.details?.ffmpegCloseTailMs, details.ffmpegCloseTailMs)
+    for (const [field, expected] of Object.entries(tempPcmTimings)) {
+      assert.equal(trackLoad.details?.[field], expected, `unexpected track-load field: ${field}`)
+      assert.equal(trackLoad.details?.[field], details[field], `mismatched diagnostic field: ${field}`)
+    }
+    for (const [field, expected] of Object.entries(workerTimings)) {
+      assert.equal(trackLoad.details?.[field], expected, `unexpected worker track-load field: ${field}`)
+      assert.equal(trackLoad.details?.[field], details[field], `mismatched worker field: ${field}`)
+    }
+    for (const [field, expected] of Object.entries(ffmpegStdoutTimings)) {
+      assert.equal(trackLoad.details?.[field], expected, `unexpected track-load field: ${field}`)
+      assert.equal(trackLoad.details?.[field], details[field], `mismatched diagnostics field: ${field}`)
+    }
     assert.equal(trackLoad.details?.audioEngineStandardPipelineMs, 442)
     assert.equal(trackLoad.details?.standardTransportSetupMs, 22)
     assert.equal(trackLoad.details?.standardContextReadyMs, 18)

@@ -54,17 +54,19 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y build-essential python3 libasound2-dev
 
-      - name: Build native DSP module
+      - name: Build native modules
         run: npm run rebuild:native
 
-      - name: Verify native module exists
+      - name: Verify native modules exist
         shell: bash
         run: |
-          if [ ! -f native/build/Release/visualizer_dsp.node ]; then
-            echo "ERROR: native DSP module was not built!"
-            exit 1
-          fi
-          echo "Native module built successfully: $(ls -lh native/build/Release/visualizer_dsp.node)"
+          for native_module in visualizer_dsp.node ffmpeg_pcm_capture.node; do
+            if [ ! -f "native/build/Release/$native_module" ]; then
+              echo "ERROR: native module was not built: $native_module"
+              exit 1
+            fi
+            echo "Native module built successfully: $(ls -lh "native/build/Release/$native_module")"
+          done
 
       - name: Write Last.fm credentials file
         shell: bash

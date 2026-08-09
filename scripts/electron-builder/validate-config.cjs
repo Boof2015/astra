@@ -27,6 +27,35 @@ const packageJsonPath = path.resolve(__dirname, '../../package.json')
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'))
 const buildConfig = packageJson.build ?? {}
 
+const nativeFilesPattern = 'native/build/Release/*.node'
+const nativeResourceFrom = 'native/build/Release/'
+const nativeResourceTo = 'native/'
+const nativeResourceFilter = '*.node'
+
+if (!Array.isArray(buildConfig.files) || !buildConfig.files.includes(nativeFilesPattern)) {
+  fail(`build.files must include ${nativeFilesPattern}.`)
+}
+
+const nativeResourceEntry = Array.isArray(buildConfig.extraResources)
+  ? buildConfig.extraResources.find((entry) => (
+      entry
+      && typeof entry === 'object'
+      && !Array.isArray(entry)
+      && entry.from === nativeResourceFrom
+      && entry.to === nativeResourceTo
+    ))
+  : undefined
+
+if (
+  !nativeResourceEntry
+  || !Array.isArray(nativeResourceEntry.filter)
+  || !nativeResourceEntry.filter.includes(nativeResourceFilter)
+) {
+  fail(
+    `build.extraResources must copy ${nativeResourceFrom}${nativeResourceFilter} to ${nativeResourceTo}.`
+  )
+}
+
 if (buildConfig.fileAssociations !== undefined) {
   fail('build.fileAssociations must not exist; use platform-specific fileAssociations blocks.')
 }

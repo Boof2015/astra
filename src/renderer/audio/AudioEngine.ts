@@ -246,10 +246,73 @@ export interface AudioLoadTimings {
   probeCacheStatus?: 'hit' | 'miss' | 'bypass'
   probeDecodeOverlapEnabled?: boolean
   probeFfmpegOverlapMs?: number
+  /** FFmpeg child spawn-to-close wall time, including stdout blocking and scheduling. */
   ffmpegMs?: number
+  ffmpegOutputSink?: 'stdout_pipe' | 'rechunked_pipe' | 'native_pipe' | 'worker_thread' | 'temporary_file'
+  tempPcmCreateMs?: number
+  tempPcmStatMs?: number
+  tempPcmReadMs?: number
+  tempPcmReadChunkCount?: number
+  tempPcmBytes?: number
+  tempPcmCleanupMs?: number
+  tempPcmCleanupSucceeded?: boolean
+  ffmpegWorkerStartupMs?: number
+  ffmpegWorkerTotalMs?: number
+  ffmpegWorkerSpawnMs?: number
+  ffmpegWorkerFfmpegMs?: number
+  ffmpegWorkerSpawnToFirstPcmMs?: number
+  ffmpegWorkerPcmOutputSpanMs?: number
+  ffmpegWorkerCloseTailMs?: number
+  ffmpegWorkerRequestMs?: number
+  ffmpegWorkerMainDeliverySpanMs?: number
+  ffmpegWorkerBatchCount?: number
+  ffmpegWorkerBatchBytes?: number
+  ffmpegWorkerBatchMinBytes?: number
+  ffmpegWorkerBatchMaxBytes?: number
+  ffmpegWorkerAggregationCopyMs?: number
+  ffmpegWorkerAggregationCopyMaxMs?: number
+  ffmpegWorkerBatchCopyMs?: number
+  ffmpegWorkerBatchPostMs?: number
+  ffmpegWorkerMainCopyMs?: number
+  ffmpegWorkerMainCopyMaxMs?: number
+  ffmpegWorkerCreditWaitCount?: number
+  ffmpegWorkerCreditWaitMs?: number
+  ffmpegWorkerCreditWaitMaxMs?: number
+  nativePcmCaptureSpawnMs?: number
+  nativePcmCaptureProcessMs?: number
+  nativePcmCaptureFirstByteMs?: number
+  nativePcmCaptureStdoutReadSpanMs?: number
+  nativePcmCaptureStdoutReadCount?: number
+  nativePcmCaptureStdoutReadMinBytes?: number
+  nativePcmCaptureStdoutReadMaxBytes?: number
+  nativePcmCaptureOutputBytes?: number
+  nativePcmCaptureRequestedPipeBufferBytes?: number
+  nativePcmCaptureEffectivePipeBufferBytes?: number
+  nativePcmCaptureBufferCopyMs?: number
+  nativePcmCaptureUsedExternalBuffer?: boolean
   ffmpegSpawnToFirstPcmMs?: number
   ffmpegPcmOutputSpanMs?: number
   ffmpegCloseTailMs?: number
+  ffmpegStdoutChunkCount?: number
+  ffmpegStdoutBytes?: number
+  ffmpegStdoutChunkMinBytes?: number
+  ffmpegStdoutChunkMaxBytes?: number
+  ffmpegStdoutDrainSpanMs?: number
+  ffmpegStdoutDrainToCloseMs?: number
+  ffmpegStdoutCallbackWorkMs?: number
+  ffmpegStdoutCallbackMaxMs?: number
+  ffmpegStdoutInterCallbackGapMs?: number
+  ffmpegStdoutInterCallbackGapMaxMs?: number
+  ffmpegStdoutPostDispatchGapCount?: number
+  ffmpegStdoutPostDispatchGapMs?: number
+  ffmpegStdoutPostDispatchGapMaxMs?: number
+  ffmpegStdoutCopyMs?: number
+  ffmpegStdoutCopyMaxMs?: number
+  ffmpegStdoutFlushMs?: number
+  ffmpegStdoutFlushMaxMs?: number
+  ffmpegStdoutPauseCount?: number
+  ffmpegStdoutPausedMs?: number
+  ffmpegStdoutPauseMaxMs?: number
   pcmAllocationMs?: number
   initialPcmAllocationMs?: number
   growthPcmAllocationMs?: number
@@ -263,6 +326,9 @@ export interface AudioLoadTimings {
   streamChunkCount?: number
   streamDispatchCopyMs?: number
   streamDispatchPostMs?: number
+  streamCreditAckCount?: number
+  streamCreditRoundTripMs?: number
+  streamCreditRoundTripMaxMs?: number
   streamTailMs?: number
   rendererPcmAssemblyAllocationMs?: number
   rendererPcmAssemblyCopyMs?: number
@@ -6970,6 +7036,159 @@ export class AudioEngine {
         ? {}
         : { probeFfmpegOverlapMs: transportSummary.probeFfmpegOverlapMs }),
       ...(nativeDecodeMs === undefined ? {} : { ffmpegMs: nativeDecodeMs, nativeDecodeMs }),
+      ...(transportSummary?.ffmpegOutputSink === undefined
+        ? {}
+        : { ffmpegOutputSink: transportSummary.ffmpegOutputSink }),
+      ...(transportSummary?.tempPcmCreateMs === undefined
+        ? {}
+        : { tempPcmCreateMs: transportSummary.tempPcmCreateMs }),
+      ...(transportSummary?.tempPcmStatMs === undefined
+        ? {}
+        : { tempPcmStatMs: transportSummary.tempPcmStatMs }),
+      ...(transportSummary?.tempPcmReadMs === undefined
+        ? {}
+        : { tempPcmReadMs: transportSummary.tempPcmReadMs }),
+      ...(transportSummary?.tempPcmReadChunkCount === undefined
+        ? {}
+        : { tempPcmReadChunkCount: transportSummary.tempPcmReadChunkCount }),
+      ...(transportSummary?.tempPcmBytes === undefined
+        ? {}
+        : { tempPcmBytes: transportSummary.tempPcmBytes }),
+      ...(transportSummary?.tempPcmCleanupMs === undefined
+        ? {}
+        : { tempPcmCleanupMs: transportSummary.tempPcmCleanupMs }),
+      ...(transportSummary?.tempPcmCleanupSucceeded === undefined
+        ? {}
+        : { tempPcmCleanupSucceeded: transportSummary.tempPcmCleanupSucceeded }),
+      ...(transportSummary?.ffmpegWorkerStartupMs === undefined
+        ? {}
+        : { ffmpegWorkerStartupMs: transportSummary.ffmpegWorkerStartupMs }),
+      ...(transportSummary?.ffmpegWorkerTotalMs === undefined
+        ? {}
+        : { ffmpegWorkerTotalMs: transportSummary.ffmpegWorkerTotalMs }),
+      ...(transportSummary?.ffmpegWorkerSpawnMs === undefined
+        ? {}
+        : { ffmpegWorkerSpawnMs: transportSummary.ffmpegWorkerSpawnMs }),
+      ...(transportSummary?.ffmpegWorkerFfmpegMs === undefined
+        ? {}
+        : { ffmpegWorkerFfmpegMs: transportSummary.ffmpegWorkerFfmpegMs }),
+      ...(transportSummary?.ffmpegWorkerSpawnToFirstPcmMs === undefined
+        ? {}
+        : {
+            ffmpegWorkerSpawnToFirstPcmMs: transportSummary.ffmpegWorkerSpawnToFirstPcmMs
+          }),
+      ...(transportSummary?.ffmpegWorkerPcmOutputSpanMs === undefined
+        ? {}
+        : { ffmpegWorkerPcmOutputSpanMs: transportSummary.ffmpegWorkerPcmOutputSpanMs }),
+      ...(transportSummary?.ffmpegWorkerCloseTailMs === undefined
+        ? {}
+        : { ffmpegWorkerCloseTailMs: transportSummary.ffmpegWorkerCloseTailMs }),
+      ...(transportSummary?.ffmpegWorkerRequestMs === undefined
+        ? {}
+        : { ffmpegWorkerRequestMs: transportSummary.ffmpegWorkerRequestMs }),
+      ...(transportSummary?.ffmpegWorkerMainDeliverySpanMs === undefined
+        ? {}
+        : {
+            ffmpegWorkerMainDeliverySpanMs: transportSummary.ffmpegWorkerMainDeliverySpanMs
+          }),
+      ...(transportSummary?.ffmpegWorkerBatchCount === undefined
+        ? {}
+        : { ffmpegWorkerBatchCount: transportSummary.ffmpegWorkerBatchCount }),
+      ...(transportSummary?.ffmpegWorkerBatchBytes === undefined
+        ? {}
+        : { ffmpegWorkerBatchBytes: transportSummary.ffmpegWorkerBatchBytes }),
+      ...(transportSummary?.ffmpegWorkerBatchMinBytes === undefined
+        ? {}
+        : { ffmpegWorkerBatchMinBytes: transportSummary.ffmpegWorkerBatchMinBytes }),
+      ...(transportSummary?.ffmpegWorkerBatchMaxBytes === undefined
+        ? {}
+        : { ffmpegWorkerBatchMaxBytes: transportSummary.ffmpegWorkerBatchMaxBytes }),
+      ...(transportSummary?.ffmpegWorkerAggregationCopyMs === undefined
+        ? {}
+        : {
+            ffmpegWorkerAggregationCopyMs: transportSummary.ffmpegWorkerAggregationCopyMs
+          }),
+      ...(transportSummary?.ffmpegWorkerAggregationCopyMaxMs === undefined
+        ? {}
+        : {
+            ffmpegWorkerAggregationCopyMaxMs:
+              transportSummary.ffmpegWorkerAggregationCopyMaxMs
+          }),
+      ...(transportSummary?.ffmpegWorkerBatchCopyMs === undefined
+        ? {}
+        : { ffmpegWorkerBatchCopyMs: transportSummary.ffmpegWorkerBatchCopyMs }),
+      ...(transportSummary?.ffmpegWorkerBatchPostMs === undefined
+        ? {}
+        : { ffmpegWorkerBatchPostMs: transportSummary.ffmpegWorkerBatchPostMs }),
+      ...(transportSummary?.ffmpegWorkerMainCopyMs === undefined
+        ? {}
+        : { ffmpegWorkerMainCopyMs: transportSummary.ffmpegWorkerMainCopyMs }),
+      ...(transportSummary?.ffmpegWorkerMainCopyMaxMs === undefined
+        ? {}
+        : { ffmpegWorkerMainCopyMaxMs: transportSummary.ffmpegWorkerMainCopyMaxMs }),
+      ...(transportSummary?.ffmpegWorkerCreditWaitCount === undefined
+        ? {}
+        : { ffmpegWorkerCreditWaitCount: transportSummary.ffmpegWorkerCreditWaitCount }),
+      ...(transportSummary?.ffmpegWorkerCreditWaitMs === undefined
+        ? {}
+        : { ffmpegWorkerCreditWaitMs: transportSummary.ffmpegWorkerCreditWaitMs }),
+      ...(transportSummary?.ffmpegWorkerCreditWaitMaxMs === undefined
+        ? {}
+        : { ffmpegWorkerCreditWaitMaxMs: transportSummary.ffmpegWorkerCreditWaitMaxMs }),
+      ...(transportSummary?.nativePcmCaptureSpawnMs === undefined
+        ? {}
+        : { nativePcmCaptureSpawnMs: transportSummary.nativePcmCaptureSpawnMs }),
+      ...(transportSummary?.nativePcmCaptureProcessMs === undefined
+        ? {}
+        : { nativePcmCaptureProcessMs: transportSummary.nativePcmCaptureProcessMs }),
+      ...(transportSummary?.nativePcmCaptureFirstByteMs === undefined
+        ? {}
+        : { nativePcmCaptureFirstByteMs: transportSummary.nativePcmCaptureFirstByteMs }),
+      ...(transportSummary?.nativePcmCaptureStdoutReadSpanMs === undefined
+        ? {}
+        : {
+            nativePcmCaptureStdoutReadSpanMs:
+              transportSummary.nativePcmCaptureStdoutReadSpanMs
+          }),
+      ...(transportSummary?.nativePcmCaptureStdoutReadCount === undefined
+        ? {}
+        : { nativePcmCaptureStdoutReadCount: transportSummary.nativePcmCaptureStdoutReadCount }),
+      ...(transportSummary?.nativePcmCaptureStdoutReadMinBytes === undefined
+        ? {}
+        : {
+            nativePcmCaptureStdoutReadMinBytes:
+              transportSummary.nativePcmCaptureStdoutReadMinBytes
+          }),
+      ...(transportSummary?.nativePcmCaptureStdoutReadMaxBytes === undefined
+        ? {}
+        : {
+            nativePcmCaptureStdoutReadMaxBytes:
+              transportSummary.nativePcmCaptureStdoutReadMaxBytes
+          }),
+      ...(transportSummary?.nativePcmCaptureOutputBytes === undefined
+        ? {}
+        : { nativePcmCaptureOutputBytes: transportSummary.nativePcmCaptureOutputBytes }),
+      ...(transportSummary?.nativePcmCaptureRequestedPipeBufferBytes === undefined
+        ? {}
+        : {
+            nativePcmCaptureRequestedPipeBufferBytes:
+              transportSummary.nativePcmCaptureRequestedPipeBufferBytes
+          }),
+      ...(transportSummary?.nativePcmCaptureEffectivePipeBufferBytes === undefined
+        ? {}
+        : {
+            nativePcmCaptureEffectivePipeBufferBytes:
+              transportSummary.nativePcmCaptureEffectivePipeBufferBytes
+          }),
+      ...(transportSummary?.nativePcmCaptureBufferCopyMs === undefined
+        ? {}
+        : { nativePcmCaptureBufferCopyMs: transportSummary.nativePcmCaptureBufferCopyMs }),
+      ...(transportSummary?.nativePcmCaptureUsedExternalBuffer === undefined
+        ? {}
+        : {
+            nativePcmCaptureUsedExternalBuffer:
+              transportSummary.nativePcmCaptureUsedExternalBuffer
+          }),
       ...(transportSummary?.ffmpegSpawnToFirstPcmMs === undefined
         ? {}
         : { ffmpegSpawnToFirstPcmMs: transportSummary.ffmpegSpawnToFirstPcmMs }),
@@ -6979,6 +7198,77 @@ export class AudioEngine {
       ...(transportSummary?.ffmpegCloseTailMs === undefined
         ? {}
         : { ffmpegCloseTailMs: transportSummary.ffmpegCloseTailMs }),
+      ...(transportSummary?.ffmpegStdoutChunkCount === undefined
+        ? {}
+        : { ffmpegStdoutChunkCount: transportSummary.ffmpegStdoutChunkCount }),
+      ...(transportSummary?.ffmpegStdoutBytes === undefined
+        ? {}
+        : { ffmpegStdoutBytes: transportSummary.ffmpegStdoutBytes }),
+      ...(transportSummary?.ffmpegStdoutChunkMinBytes === undefined
+        ? {}
+        : { ffmpegStdoutChunkMinBytes: transportSummary.ffmpegStdoutChunkMinBytes }),
+      ...(transportSummary?.ffmpegStdoutChunkMaxBytes === undefined
+        ? {}
+        : { ffmpegStdoutChunkMaxBytes: transportSummary.ffmpegStdoutChunkMaxBytes }),
+      ...(transportSummary?.ffmpegStdoutDrainSpanMs === undefined
+        ? {}
+        : { ffmpegStdoutDrainSpanMs: transportSummary.ffmpegStdoutDrainSpanMs }),
+      ...(transportSummary?.ffmpegStdoutDrainToCloseMs === undefined
+        ? {}
+        : { ffmpegStdoutDrainToCloseMs: transportSummary.ffmpegStdoutDrainToCloseMs }),
+      ...(transportSummary?.ffmpegStdoutCallbackWorkMs === undefined
+        ? {}
+        : { ffmpegStdoutCallbackWorkMs: transportSummary.ffmpegStdoutCallbackWorkMs }),
+      ...(transportSummary?.ffmpegStdoutCallbackMaxMs === undefined
+        ? {}
+        : { ffmpegStdoutCallbackMaxMs: transportSummary.ffmpegStdoutCallbackMaxMs }),
+      ...(transportSummary?.ffmpegStdoutInterCallbackGapMs === undefined
+        ? {}
+        : {
+            ffmpegStdoutInterCallbackGapMs: transportSummary.ffmpegStdoutInterCallbackGapMs
+          }),
+      ...(transportSummary?.ffmpegStdoutInterCallbackGapMaxMs === undefined
+        ? {}
+        : {
+            ffmpegStdoutInterCallbackGapMaxMs:
+              transportSummary.ffmpegStdoutInterCallbackGapMaxMs
+          }),
+      ...(transportSummary?.ffmpegStdoutPostDispatchGapCount === undefined
+        ? {}
+        : {
+            ffmpegStdoutPostDispatchGapCount:
+              transportSummary.ffmpegStdoutPostDispatchGapCount
+          }),
+      ...(transportSummary?.ffmpegStdoutPostDispatchGapMs === undefined
+        ? {}
+        : { ffmpegStdoutPostDispatchGapMs: transportSummary.ffmpegStdoutPostDispatchGapMs }),
+      ...(transportSummary?.ffmpegStdoutPostDispatchGapMaxMs === undefined
+        ? {}
+        : {
+            ffmpegStdoutPostDispatchGapMaxMs:
+              transportSummary.ffmpegStdoutPostDispatchGapMaxMs
+          }),
+      ...(transportSummary?.ffmpegStdoutCopyMs === undefined
+        ? {}
+        : { ffmpegStdoutCopyMs: transportSummary.ffmpegStdoutCopyMs }),
+      ...(transportSummary?.ffmpegStdoutCopyMaxMs === undefined
+        ? {}
+        : { ffmpegStdoutCopyMaxMs: transportSummary.ffmpegStdoutCopyMaxMs }),
+      ...(transportSummary?.ffmpegStdoutFlushMs === undefined
+        ? {}
+        : { ffmpegStdoutFlushMs: transportSummary.ffmpegStdoutFlushMs }),
+      ...(transportSummary?.ffmpegStdoutFlushMaxMs === undefined
+        ? {}
+        : { ffmpegStdoutFlushMaxMs: transportSummary.ffmpegStdoutFlushMaxMs }),
+      ...(transportSummary?.ffmpegStdoutPauseCount === undefined
+        ? {}
+        : { ffmpegStdoutPauseCount: transportSummary.ffmpegStdoutPauseCount }),
+      ...(transportSummary?.ffmpegStdoutPausedMs === undefined
+        ? {}
+        : { ffmpegStdoutPausedMs: transportSummary.ffmpegStdoutPausedMs }),
+      ...(transportSummary?.ffmpegStdoutPauseMaxMs === undefined
+        ? {}
+        : { ffmpegStdoutPauseMaxMs: transportSummary.ffmpegStdoutPauseMaxMs }),
       ...(transportSummary?.pcmAllocationMs === undefined
         ? {}
         : { pcmAllocationMs: transportSummary.pcmAllocationMs }),
@@ -7010,6 +7300,15 @@ export class AudioEngine {
       ...(transportSummary?.streamDispatchPostMs === undefined
         ? {}
         : { streamDispatchPostMs: transportSummary.streamDispatchPostMs }),
+      ...(transportSummary?.streamCreditAckCount === undefined
+        ? {}
+        : { streamCreditAckCount: transportSummary.streamCreditAckCount }),
+      ...(transportSummary?.streamCreditRoundTripMs === undefined
+        ? {}
+        : { streamCreditRoundTripMs: transportSummary.streamCreditRoundTripMs }),
+      ...(transportSummary?.streamCreditRoundTripMaxMs === undefined
+        ? {}
+        : { streamCreditRoundTripMaxMs: transportSummary.streamCreditRoundTripMaxMs }),
       ...(transportSummary?.streamTailMs === undefined
         ? {}
         : { streamTailMs: transportSummary.streamTailMs }),
