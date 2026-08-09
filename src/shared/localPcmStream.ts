@@ -85,7 +85,13 @@ export interface LocalPcmStreamMainTransportTimings {
   mainHandlerMs: number
   binaryResolutionMs: number
   probeMs: number
+  probeCacheStatus?: 'hit' | 'miss' | 'bypass'
+  probeDecodeOverlapEnabled?: boolean
+  probeFfmpegOverlapMs?: number
   ffmpegMs: number
+  ffmpegSpawnToFirstPcmMs?: number
+  ffmpegPcmOutputSpanMs?: number
+  ffmpegCloseTailMs?: number
   allocationMs: number
   initialAllocationMs: number
   growthAllocationMs: number
@@ -235,7 +241,21 @@ function isLocalPcmStreamMainTransportTimings(
     && isNonNegativeDuration(value.mainHandlerMs)
     && isNonNegativeDuration(value.binaryResolutionMs)
     && isNonNegativeDuration(value.probeMs)
+    && (value.probeCacheStatus === undefined
+      || value.probeCacheStatus === 'hit'
+      || value.probeCacheStatus === 'miss'
+      || value.probeCacheStatus === 'bypass')
+    && (value.probeDecodeOverlapEnabled === undefined
+      || typeof value.probeDecodeOverlapEnabled === 'boolean')
+    && (value.probeFfmpegOverlapMs === undefined
+      || isNonNegativeDuration(value.probeFfmpegOverlapMs))
     && isNonNegativeDuration(value.ffmpegMs)
+    && (value.ffmpegSpawnToFirstPcmMs === undefined
+      || isNonNegativeDuration(value.ffmpegSpawnToFirstPcmMs))
+    && (value.ffmpegPcmOutputSpanMs === undefined
+      || isNonNegativeDuration(value.ffmpegPcmOutputSpanMs))
+    && (value.ffmpegCloseTailMs === undefined
+      || isNonNegativeDuration(value.ffmpegCloseTailMs))
     && isNonNegativeDuration(value.allocationMs)
     && isNonNegativeDuration(value.initialAllocationMs)
     && isNonNegativeDuration(value.growthAllocationMs)

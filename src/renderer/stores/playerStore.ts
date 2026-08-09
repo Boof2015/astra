@@ -98,7 +98,13 @@ interface PlaybackAttemptTimings {
   mainHandlerMs?: number | null
   binaryResolutionMs?: number | null
   probeMs?: number | null
+  probeCacheStatus?: 'hit' | 'miss' | 'bypass' | null
+  probeDecodeOverlapEnabled?: boolean | null
+  probeFfmpegOverlapMs?: number | null
   ffmpegMs?: number | null
+  ffmpegSpawnToFirstPcmMs?: number | null
+  ffmpegPcmOutputSpanMs?: number | null
+  ffmpegCloseTailMs?: number | null
   pcmAllocationMs?: number | null
   initialPcmAllocationMs?: number | null
   growthPcmAllocationMs?: number | null
@@ -137,7 +143,13 @@ function getStandardPcmTimingDetails(timings: AudioLoadTimings | null | undefine
     mainHandlerMs: timings?.mainHandlerMs ?? null,
     binaryResolutionMs: timings?.binaryResolutionMs ?? null,
     probeMs: timings?.probeMs ?? timings?.nativeProbeMs ?? null,
+    probeCacheStatus: timings?.probeCacheStatus ?? null,
+    probeDecodeOverlapEnabled: timings?.probeDecodeOverlapEnabled ?? null,
+    probeFfmpegOverlapMs: timings?.probeFfmpegOverlapMs ?? null,
     ffmpegMs: timings?.ffmpegMs ?? timings?.nativeDecodeMs ?? null,
+    ffmpegSpawnToFirstPcmMs: timings?.ffmpegSpawnToFirstPcmMs ?? null,
+    ffmpegPcmOutputSpanMs: timings?.ffmpegPcmOutputSpanMs ?? null,
+    ffmpegCloseTailMs: timings?.ffmpegCloseTailMs ?? null,
     pcmAllocationMs: timings?.pcmAllocationMs ?? null,
     initialPcmAllocationMs: timings?.initialPcmAllocationMs ?? null,
     growthPcmAllocationMs: timings?.growthPcmAllocationMs ?? null,
@@ -1335,7 +1347,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       mainHandlerMs: timings.mainHandlerMs ?? null,
       binaryResolutionMs: timings.binaryResolutionMs ?? null,
       probeMs: timings.probeMs ?? null,
+      probeCacheStatus: timings.probeCacheStatus ?? null,
+      probeDecodeOverlapEnabled: timings.probeDecodeOverlapEnabled ?? null,
+      probeFfmpegOverlapMs: timings.probeFfmpegOverlapMs ?? null,
       ffmpegMs: timings.ffmpegMs ?? null,
+      ffmpegSpawnToFirstPcmMs: timings.ffmpegSpawnToFirstPcmMs ?? null,
+      ffmpegPcmOutputSpanMs: timings.ffmpegPcmOutputSpanMs ?? null,
+      ffmpegCloseTailMs: timings.ffmpegCloseTailMs ?? null,
       pcmAllocationMs: timings.pcmAllocationMs ?? null,
       initialPcmAllocationMs: timings.initialPcmAllocationMs ?? null,
       growthPcmAllocationMs: timings.growthPcmAllocationMs ?? null,

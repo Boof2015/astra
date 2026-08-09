@@ -4,10 +4,18 @@ export interface PcmTransportTimings {
   backingBufferBytes: number
   allocationGrowthCount: number
   transportRoute?: 'invoke' | 'message_port_stream'
+  /** Main-process handler wall span; decoder subphases may overlap within it. */
   mainHandlerMs: number
   binaryResolutionMs: number
   probeMs: number
+  probeCacheStatus?: 'hit' | 'miss' | 'bypass'
+  probeDecodeOverlapEnabled?: boolean
+  /** Wall time during which probing and FFmpeg decoding overlapped. */
+  probeFfmpegOverlapMs?: number
   ffmpegMs: number
+  ffmpegSpawnToFirstPcmMs?: number
+  ffmpegPcmOutputSpanMs?: number
+  ffmpegCloseTailMs?: number
   allocationMs: number
   initialAllocationMs?: number
   growthAllocationMs?: number
@@ -31,7 +39,13 @@ export interface PcmTransportTimingSummary {
   mainHandlerMs?: number
   binaryResolutionMs?: number
   probeMs?: number
+  probeCacheStatus?: 'hit' | 'miss' | 'bypass'
+  probeDecodeOverlapEnabled?: boolean
+  probeFfmpegOverlapMs?: number
   ffmpegMs?: number
+  ffmpegSpawnToFirstPcmMs?: number
+  ffmpegPcmOutputSpanMs?: number
+  ffmpegCloseTailMs?: number
   pcmAllocationMs?: number
   initialPcmAllocationMs?: number
   growthPcmAllocationMs?: number
@@ -84,7 +98,21 @@ export function summarizePcmTransportTimings(
     : 'invoke'
   const binaryResolutionMs = clampDiagnosticDurationMs(transportTimings.binaryResolutionMs)
   const probeMs = clampDiagnosticDurationMs(transportTimings.probeMs)
+  const probeCacheStatus = transportTimings.probeCacheStatus === 'hit'
+    || transportTimings.probeCacheStatus === 'miss'
+    || transportTimings.probeCacheStatus === 'bypass'
+    ? transportTimings.probeCacheStatus
+    : undefined
+  const probeDecodeOverlapEnabled = typeof transportTimings.probeDecodeOverlapEnabled === 'boolean'
+    ? transportTimings.probeDecodeOverlapEnabled
+    : undefined
+  const probeFfmpegOverlapMs = clampDiagnosticDurationMs(transportTimings.probeFfmpegOverlapMs)
   const ffmpegMs = clampDiagnosticDurationMs(transportTimings.ffmpegMs)
+  const ffmpegSpawnToFirstPcmMs = clampDiagnosticDurationMs(
+    transportTimings.ffmpegSpawnToFirstPcmMs
+  )
+  const ffmpegPcmOutputSpanMs = clampDiagnosticDurationMs(transportTimings.ffmpegPcmOutputSpanMs)
+  const ffmpegCloseTailMs = clampDiagnosticDurationMs(transportTimings.ffmpegCloseTailMs)
   const pcmAllocationMs = clampDiagnosticDurationMs(transportTimings.allocationMs)
   const initialPcmAllocationMs = clampDiagnosticDurationMs(transportTimings.initialAllocationMs)
   const growthPcmAllocationMs = clampDiagnosticDurationMs(transportTimings.growthAllocationMs)
@@ -111,7 +139,13 @@ export function summarizePcmTransportTimings(
     ...(mainHandlerMs === undefined ? {} : { mainHandlerMs }),
     ...(binaryResolutionMs === undefined ? {} : { binaryResolutionMs }),
     ...(probeMs === undefined ? {} : { probeMs }),
+    ...(probeCacheStatus === undefined ? {} : { probeCacheStatus }),
+    ...(probeDecodeOverlapEnabled === undefined ? {} : { probeDecodeOverlapEnabled }),
+    ...(probeFfmpegOverlapMs === undefined ? {} : { probeFfmpegOverlapMs }),
     ...(ffmpegMs === undefined ? {} : { ffmpegMs }),
+    ...(ffmpegSpawnToFirstPcmMs === undefined ? {} : { ffmpegSpawnToFirstPcmMs }),
+    ...(ffmpegPcmOutputSpanMs === undefined ? {} : { ffmpegPcmOutputSpanMs }),
+    ...(ffmpegCloseTailMs === undefined ? {} : { ffmpegCloseTailMs }),
     ...(pcmAllocationMs === undefined ? {} : { pcmAllocationMs }),
     ...(initialPcmAllocationMs === undefined ? {} : { initialPcmAllocationMs }),
     ...(growthPcmAllocationMs === undefined ? {} : { growthPcmAllocationMs }),

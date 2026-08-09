@@ -18,7 +18,13 @@ function makeTransportTimings(
     mainHandlerMs: 120,
     binaryResolutionMs: 3,
     probeMs: 12,
+    probeCacheStatus: 'miss',
+    probeDecodeOverlapEnabled: true,
+    probeFfmpegOverlapMs: 8,
     ffmpegMs: 90,
+    ffmpegSpawnToFirstPcmMs: 20,
+    ffmpegPcmOutputSpanMs: 65,
+    ffmpegCloseTailMs: 5,
     allocationMs: 4,
     payloadFinalizationMs: 6,
     preloadInvokeMs: 155,
@@ -35,6 +41,12 @@ test('PCM transport residuals reconcile process-local elapsed durations', () => 
   assert.equal(summary.decodeRequestId, 17)
   assert.equal(summary.validPcmBytes, 1_024)
   assert.equal(summary.backingBufferBytes, 2_048)
+  assert.equal(summary.probeCacheStatus, 'miss')
+  assert.equal(summary.probeDecodeOverlapEnabled, true)
+  assert.equal(summary.probeFfmpegOverlapMs, 8)
+  assert.equal(summary.ffmpegSpawnToFirstPcmMs, 20)
+  assert.equal(summary.ffmpegPcmOutputSpanMs, 65)
+  assert.equal(summary.ffmpegCloseTailMs, 5)
 })
 
 test('PCM transport residuals and invalid negative durations clamp to zero', () => {
@@ -42,11 +54,15 @@ test('PCM transport residuals and invalid negative durations clamp to zero', () 
     mainHandlerMs: 190,
     preloadInvokeMs: 150,
     allocationMs: -4,
+    probeFfmpegOverlapMs: -3,
+    ffmpegCloseTailMs: -2,
   }), 140)
 
   assert.equal(summary.electronIpcResidualMs, 0)
   assert.equal(summary.contextBridgeResidualMs, 0)
   assert.equal(summary.pcmAllocationMs, 0)
+  assert.equal(summary.probeFfmpegOverlapMs, 0)
+  assert.equal(summary.ffmpegCloseTailMs, 0)
   assert.equal(clampDiagnosticDurationMs(-10), 0)
   assert.equal(clampDiagnosticDurationMs(Number.NaN), undefined)
 })
@@ -83,5 +99,18 @@ test('PCM transport summary remains useful when older bridge results omit metada
   assert.deepEqual(summarizePcmTransportTimings(undefined, 22.5), {
     rendererBridgeCallMs: 22.5,
   })
+  const legacy = makeTransportTimings({
+    probeCacheStatus: undefined,
+    probeDecodeOverlapEnabled: undefined,
+    probeFfmpegOverlapMs: undefined,
+    ffmpegSpawnToFirstPcmMs: undefined,
+    ffmpegPcmOutputSpanMs: undefined,
+    ffmpegCloseTailMs: undefined,
+  })
+  const summary = summarizePcmTransportTimings(legacy, 181)
+  assert.equal(summary.probeCacheStatus, undefined)
+  assert.equal(summary.probeDecodeOverlapEnabled, undefined)
+  assert.equal(summary.probeFfmpegOverlapMs, undefined)
+  assert.equal(summary.ffmpegSpawnToFirstPcmMs, undefined)
   assert.equal(sumDiagnosticDurations(2, -4, Number.NaN, 3.5), 5.5)
 })

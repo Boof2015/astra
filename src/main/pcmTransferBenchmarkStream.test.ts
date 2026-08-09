@@ -152,6 +152,12 @@ test('streams bounded sentinel payloads with two-credit backpressure and complet
   assert.equal(complete.transportTimings.streamDispatchCopyMs >= 0, true)
   assert.equal(complete.transportTimings.streamDispatchPostMs >= 0, true)
   assert.equal(complete.transportTimings.streamTailMs > 0, true)
+  assert.equal(complete.transportTimings.mainHandlerMs > 0, true)
+  assert.equal(
+    complete.transportTimings.mainHandlerMs >= complete.transportTimings.streamTailMs,
+    true,
+    'the encompassing main handler duration must reconcile with its stream tail'
+  )
   assert.equal(port.closed, true)
   assert.equal(coordinator.busy, false)
 
@@ -168,6 +174,7 @@ test('streams bounded sentinel payloads with two-credit backpressure and complet
 
 test('publishes accepted before start flushes an already queued ready control', () => {
   const coordinator = new PcmTransferBenchmarkStreamCoordinator({
+    now: () => performance.now(),
     setTimer: () => ({}) as NodeJS.Timeout,
     clearTimer: () => undefined
   })
@@ -189,6 +196,7 @@ test('publishes accepted before start flushes an already queued ready control', 
 
 test('rejects a concurrent stream and keeps the active one intact', () => {
   const coordinator = new PcmTransferBenchmarkStreamCoordinator({
+    now: () => performance.now(),
     setTimer: () => ({}) as NodeJS.Timeout,
     clearTimer: () => undefined
   })
@@ -217,6 +225,7 @@ test('rejects a concurrent stream and keeps the active one intact', () => {
 
 test('closes a stream on invalid or duplicate credits', () => {
   const coordinator = new PcmTransferBenchmarkStreamCoordinator({
+    now: () => performance.now(),
     setTimer: () => ({}) as NodeJS.Timeout,
     clearTimer: () => undefined
   })
@@ -231,4 +240,32 @@ test('closes a stream on invalid or duplicate credits', () => {
   assert.equal(error.code, 'PCM_BENCHMARK_STREAM_PROTOCOL_ERROR')
   assert.equal(port.closed, true)
   assert.equal(coordinator.busy, false)
+})
+
+test('reconciles main handler duration on the injected handler clock origin', () => {
+  let now = 8_000_000
+  const coordinator = new PcmTransferBenchmarkStreamCoordinator({
+    now: () => now,
+    setTimer: () => ({}) as NodeJS.Timeout,
+    clearTimer: () => undefined
+  })
+  const port = new FakePort()
+  const openRequest = request(16)
+  const handlerStartedAtMs = now
+
+  assert.equal(coordinator.start(port, openRequest, handlerStartedAtMs), true)
+  now += 4
+  port.receive(ready(openRequest))
+  now += 6
+  port.receive(credit(openRequest, 0))
+
+  const complete = port.messages.at(-1)
+  assert.ok(complete && complete.type === 'complete')
+  assert.equal(complete.transportTimings.mainHandlerMs, 10)
+  assert.equal(complete.transportTimings.streamTailMs, 6)
+  assert.equal(
+    complete.transportTimings.mainHandlerMs - complete.transportTimings.streamTailMs,
+    4,
+    'the handler span should retain time before the final chunk was posted'
+  )
 })

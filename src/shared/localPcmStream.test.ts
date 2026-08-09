@@ -31,7 +31,13 @@ function makeMainTimings(
     mainHandlerMs: 30,
     binaryResolutionMs: 1,
     probeMs: 2,
+    probeCacheStatus: 'miss',
+    probeDecodeOverlapEnabled: true,
+    probeFfmpegOverlapMs: 8,
     ffmpegMs: 20,
+    ffmpegSpawnToFirstPcmMs: 4,
+    ffmpegPcmOutputSpanMs: 14,
+    ffmpegCloseTailMs: 2,
     allocationMs: 0,
     initialAllocationMs: 0,
     growthAllocationMs: 0,
@@ -53,6 +59,26 @@ test('validates bounded PCM stream open requests and transferred-port envelopes'
     expectedChannels: 2,
     priority: 'interactive',
     nonce: base.nonce,
+  }), true)
+
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    // New timing fields are additive; older stream envelopes remain valid.
+    transportTimings: makeMainTimings({
+      probeCacheStatus: undefined,
+      probeDecodeOverlapEnabled: undefined,
+      probeFfmpegOverlapMs: undefined,
+      ffmpegSpawnToFirstPcmMs: undefined,
+      ffmpegPcmOutputSpanMs: undefined,
+      ffmpegCloseTailMs: undefined,
+    }),
   }), true)
   assert.equal(isLocalPcmStreamPortEnvelope({
     ...base,
@@ -168,6 +194,56 @@ test('rejects malformed terminal messages and timing metadata', () => {
     backgroundPriorityApplied: false,
     chunkCount: 1,
     transportTimings: makeMainTimings({ benchmarkMainFillMs: -1 }),
+  }), false)
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: {
+      ...makeMainTimings(),
+      probeCacheStatus: 'stale',
+    },
+  }), false)
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: makeMainTimings({ ffmpegSpawnToFirstPcmMs: -1 }),
+  }), false)
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: makeMainTimings({ probeFfmpegOverlapMs: -1 }),
+  }), false)
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: {
+      ...makeMainTimings(),
+      probeDecodeOverlapEnabled: 'yes',
+    },
   }), false)
   assert.equal(isLocalPcmStreamMainMessage({
     ...base,

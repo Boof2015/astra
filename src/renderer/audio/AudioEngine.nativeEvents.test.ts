@@ -122,7 +122,13 @@ function makeTransportTimings(
     mainHandlerMs: 120,
     binaryResolutionMs: 3,
     probeMs: 12,
+    probeCacheStatus: 'hit',
+    probeDecodeOverlapEnabled: true,
+    probeFfmpegOverlapMs: 9,
     ffmpegMs: 90,
+    ffmpegSpawnToFirstPcmMs: 21,
+    ffmpegPcmOutputSpanMs: 64,
+    ffmpegCloseTailMs: 5,
     allocationMs: 4,
     payloadFinalizationMs: 6,
     preloadInvokeMs: 155,
@@ -241,10 +247,16 @@ test('Standard PCM timings keep allocation, deinterleave, loudness, and transpor
   assert.equal(timings.growthPcmAllocationMs, 1)
   assert.equal(timings.loudnessMs, 13)
   assert.equal(timings.analysisMs, 13)
-  assert.equal(timings.decodeWorkMs, 132)
+  assert.equal(timings.decodeWorkMs, 120)
   assert.equal(timings.decodeMs, timings.decodeWorkMs)
   assert.equal(timings.electronIpcResidualMs, 35)
   assert.equal(timings.contextBridgeResidualMs, 26)
+  assert.equal(timings.probeCacheStatus, 'hit')
+  assert.equal(timings.probeDecodeOverlapEnabled, true)
+  assert.equal(timings.probeFfmpegOverlapMs, 9)
+  assert.equal(timings.ffmpegSpawnToFirstPcmMs, 21)
+  assert.equal(timings.ffmpegPcmOutputSpanMs, 64)
+  assert.equal(timings.ffmpegCloseTailMs, 5)
 })
 
 test('polled native lifecycle events cannot override an authoritative load or device command', () => {

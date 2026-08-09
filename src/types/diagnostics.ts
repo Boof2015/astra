@@ -313,9 +313,21 @@ export interface LocalAudioPcmTransportTimings {
   mainHandlerMs: number
   binaryResolutionMs: number
   probeMs: number
+  /** Whether probe metadata came from cache, a fresh probe, or a non-cacheable path. */
+  probeCacheStatus?: 'hit' | 'miss' | 'bypass'
+  /** Whether probing and FFmpeg decode startup were intentionally overlapped. */
+  probeDecodeOverlapEnabled?: boolean
+  /** Wall time during which probing and FFmpeg decoding overlapped. */
+  probeFfmpegOverlapMs?: number
   ffmpegMs: number
+  /** FFmpeg spawn until the first decoded PCM bytes were observed. */
+  ffmpegSpawnToFirstPcmMs?: number
+  /** First decoded PCM bytes until the last decoded PCM bytes were observed. */
+  ffmpegPcmOutputSpanMs?: number
+  /** Last decoded PCM bytes until FFmpeg closed. */
+  ffmpegCloseTailMs?: number
   allocationMs: number
-  /** Initial full-buffer allocation before FFmpeg starts. */
+  /** Initial full-buffer allocation after authoritative probe metadata is ready. */
   initialAllocationMs?: number
   /** Capacity-growth allocations which occur inside the FFmpeg wall span. */
   growthAllocationMs?: number

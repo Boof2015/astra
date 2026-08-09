@@ -267,6 +267,13 @@ import {
   PcmTransferBenchmarkStreamCoordinator,
   type PcmTransferBenchmarkStreamPort
 } from './pcmTransferBenchmarkStream'
+import {
+  LocalPcmProbeCache,
+  type LocalPcmProbeCacheResolution,
+  type LocalPcmProbeCacheStatus
+} from './localPcmProbeCache'
+import { LocalPcmProbeChunkGate } from './localPcmProbeChunkGate'
+import { coordinateLocalPcmProbeAndDecode } from './localPcmProbeDecodeCoordinator'
 import type { AppBuildInfo } from '../types/appBuildInfo'
 import type {
   IntegrityDuplicateGroup,
@@ -5608,7 +5615,12 @@ ipcMain.handle('diagnostics:benchmarkMainPcmTransfer', (
   }
 })
 
-const pcmTransferBenchmarkStreamCoordinator = new PcmTransferBenchmarkStreamCoordinator()
+// The handler start and coordinator durations must share one monotonic clock
+// origin. Mixing process.hrtime with performance.now makes the handler span
+// negative, which the diagnostics rounding would otherwise clamp to zero.
+const pcmTransferBenchmarkStreamCoordinator = new PcmTransferBenchmarkStreamCoordinator({
+  now: mainDiagnosticNow
+})
 
 ipcMain.on(PCM_TRANSFER_BENCHMARK_STREAM_IPC_CHANNEL, (event, rawRequest: unknown) => {
   const handlerStartedAtMs = mainDiagnosticNow()
@@ -9339,6 +9351,15 @@ const binaryPathCache: Record<'ffmpeg' | 'ffprobe', string | null | undefined> =
 const LOCAL_PCM_DECODE_MAX_BYTES = LOCAL_PCM_STREAM_MAX_BYTES
 const LOCAL_PCM_DECODE_TIMEOUT_MS = 180_000
 const LOCAL_PCM_STREAM_PROTOCOL_VERSION = LOCAL_PCM_STREAM_VERSION
+const LOCAL_PCM_PRE_PROBE_PAUSE_BYTES = LOCAL_PCM_STREAM_CHUNK_BYTES
+const LOCAL_PCM_PRE_PROBE_MAX_PENDING_BYTES = Math.min(
+  LOCAL_PCM_DECODE_MAX_BYTES,
+  LOCAL_PCM_PRE_PROBE_PAUSE_BYTES * 2
+)
+// Emergency rollback for storage or platform-specific regressions. The
+// default overlaps the independent probe and decode processes while retaining
+// the same FFmpeg arguments and authoritative FFprobe result.
+const LOCAL_PCM_OVERLAP_PROBE_AND_DECODE = process.env.ASTRA_SERIAL_LOCAL_PCM_DECODE !== '1'
 
 interface LocalPcmDecodeResult {
   requestId: number
@@ -9368,8 +9389,13 @@ interface LocalPcmDecodeSession {
   binaryResolutionMs: number
   probeAbortController: AbortController | null
   probeMs: number
+  probeCacheStatus: LocalPcmProbeCacheStatus | null
+  probeStartedAtMs: number | null
+  probeCompletedAtMs: number | null
   ffmpeg: ChildProcessWithoutNullStreams | null
   ffmpegStartedAtMs: number | null
+  ffmpegFirstPcmAtMs: number | null
+  ffmpegLastPcmAtMs: number | null
   ffmpegCompletedAtMs: number | null
   decodeCompletedAtMs: number | null
   allocationMs: number
@@ -9377,6 +9403,7 @@ interface LocalPcmDecodeSession {
   growthAllocationMs: number
   allocationGrowthCount: number
   outputBuffer: Buffer | null
+  probeChunkGate: LocalPcmProbeChunkGate | null
   totalBytes: number
   stderrChunks: string[]
   settled: boolean
@@ -9410,6 +9437,7 @@ interface LocalPcmStreamState {
 }
 
 const localPcmDecodeSessions = new Map<string, LocalPcmDecodeSession>()
+const localPcmProbeCache = new LocalPcmProbeCache()
 
 interface RemoteStreamSession {
   id: number
@@ -10779,6 +10807,9 @@ async function probeLocalPcmStream(
   session: LocalPcmDecodeSession,
   ffprobePath: string
 ): Promise<LocalPcmStreamProbe> {
+  if (session.settled) {
+    throw new Error('Local PCM decode was cancelled before FFprobe started.')
+  }
   const controller = new AbortController()
   session.probeAbortController = controller
   try {
@@ -10838,7 +10869,8 @@ async function probeLocalPcmStream(
 function allocateInitialLocalPcmOutput(
   durationSeconds: number | null,
   sampleRate: number,
-  channels: number
+  channels: number,
+  pendingPcmBytes: number = 0
 ): Buffer {
   const frameSizeBytes = channels * Float32Array.BYTES_PER_ELEMENT
   const fallbackBytes = 8 * 1024 * 1024
@@ -10859,7 +10891,18 @@ function allocateInitialLocalPcmOutput(
       capacity = allocationBytes
     }
   }
-  capacity = Math.max(minimumBytes, Math.min(LOCAL_PCM_DECODE_MAX_BYTES, Math.ceil(capacity)))
+  if (
+    !Number.isSafeInteger(pendingPcmBytes)
+    || pendingPcmBytes < 0
+    || pendingPcmBytes > LOCAL_PCM_DECODE_MAX_BYTES
+  ) {
+    throw new Error('Decoded audio exceeds the 192 MiB Standard playback limit.')
+  }
+  capacity = Math.max(
+    minimumBytes,
+    pendingPcmBytes,
+    Math.min(LOCAL_PCM_DECODE_MAX_BYTES, Math.ceil(capacity))
+  )
   return Buffer.allocUnsafe(capacity)
 }
 
@@ -10889,6 +10932,19 @@ function ensureLocalPcmOutputCapacity(session: LocalPcmDecodeSession, requiredBy
   if (!next) throw new Error('Failed to allocate decoded PCM output capacity.')
   sendLocalPcmStreamResize(session, next.byteLength)
   return next
+}
+
+function appendLocalPcmOutputChunk(
+  session: LocalPcmDecodeSession,
+  chunk: Buffer
+): void {
+  if (session.settled || chunk.byteLength === 0) return
+  const nextTotalBytes = session.totalBytes + chunk.byteLength
+  const output = ensureLocalPcmOutputCapacity(session, nextTotalBytes)
+  if (session.settled) return
+  chunk.copy(output, session.totalBytes)
+  session.totalBytes = nextTotalBytes
+  flushLocalPcmStreamChunks(session)
 }
 
 type LocalPcmDecodeOutcome =
@@ -11148,6 +11204,8 @@ function settleLocalPcmDecodeSession(
     }
   }
 
+  session.probeChunkGate?.clear()
+  session.probeChunkGate = null
   session.outputBuffer = null
 
   const frameSizeBytes = session.channels * Float32Array.BYTES_PER_ELEMENT
@@ -11164,6 +11222,28 @@ function settleLocalPcmDecodeSession(
   const ffmpegMs = session.ffmpegStartedAtMs === null
     ? 0
     : (session.ffmpegCompletedAtMs ?? settledAtMs) - session.ffmpegStartedAtMs
+  const ffmpegSpawnToFirstPcmMs = session.ffmpegStartedAtMs === null
+    || session.ffmpegFirstPcmAtMs === null
+    ? null
+    : Math.max(0, session.ffmpegFirstPcmAtMs - session.ffmpegStartedAtMs)
+  const ffmpegPcmOutputSpanMs = session.ffmpegFirstPcmAtMs === null
+    || session.ffmpegLastPcmAtMs === null
+    ? null
+    : Math.max(0, session.ffmpegLastPcmAtMs - session.ffmpegFirstPcmAtMs)
+  const ffmpegCloseTailMs = session.ffmpegLastPcmAtMs === null
+    || session.ffmpegCompletedAtMs === null
+    ? null
+    : Math.max(0, session.ffmpegCompletedAtMs - session.ffmpegLastPcmAtMs)
+  const probeFfmpegOverlapMs = session.probeStartedAtMs === null
+    || session.probeCompletedAtMs === null
+    || session.ffmpegStartedAtMs === null
+    || session.ffmpegCompletedAtMs === null
+    ? null
+    : Math.max(
+        0,
+        Math.min(session.probeCompletedAtMs, session.ffmpegCompletedAtMs)
+          - Math.max(session.probeStartedAtMs, session.ffmpegStartedAtMs)
+      )
   let payloadFinalizationMs = 0
   let mainHandlerMs = (session.decodeCompletedAtMs ?? settledAtMs) - session.handlerStartedAtMs
   let transportTimings: LocalAudioPcmTransportTimings | null = null
@@ -11231,7 +11311,23 @@ function settleLocalPcmDecodeSession(
       mainHandlerMs: roundMainDiagnosticMs(mainHandlerMs),
       binaryResolutionMs: roundMainDiagnosticMs(session.binaryResolutionMs),
       probeMs: roundMainDiagnosticMs(session.probeMs),
+      ...(session.probeCacheStatus === null
+        ? {}
+        : { probeCacheStatus: session.probeCacheStatus }),
+      probeDecodeOverlapEnabled: LOCAL_PCM_OVERLAP_PROBE_AND_DECODE,
+      ...(probeFfmpegOverlapMs === null
+        ? {}
+        : { probeFfmpegOverlapMs: roundMainDiagnosticMs(probeFfmpegOverlapMs) }),
       ffmpegMs: roundMainDiagnosticMs(ffmpegMs),
+      ...(ffmpegSpawnToFirstPcmMs === null
+        ? {}
+        : { ffmpegSpawnToFirstPcmMs: roundMainDiagnosticMs(ffmpegSpawnToFirstPcmMs) }),
+      ...(ffmpegPcmOutputSpanMs === null
+        ? {}
+        : { ffmpegPcmOutputSpanMs: roundMainDiagnosticMs(ffmpegPcmOutputSpanMs) }),
+      ...(ffmpegCloseTailMs === null
+        ? {}
+        : { ffmpegCloseTailMs: roundMainDiagnosticMs(ffmpegCloseTailMs) }),
       allocationMs: roundMainDiagnosticMs(session.allocationMs),
       initialAllocationMs: roundMainDiagnosticMs(session.initialAllocationMs),
       growthAllocationMs: roundMainDiagnosticMs(session.growthAllocationMs),
@@ -11286,6 +11382,11 @@ function settleLocalPcmDecodeSession(
       })
     }
   }
+  if (ffmpeg?.stdout.isPaused()) {
+    // Release any internally buffered stdout after settlement. The data
+    // handler is gated by session.settled, so no obsolete PCM is retained.
+    ffmpeg.stdout.resume()
+  }
 
   if (stream) {
     try {
@@ -11316,8 +11417,22 @@ function settleLocalPcmDecodeSession(
     mainHandlerMs: roundMainDiagnosticMs(mainHandlerMs),
     binaryResolutionMs: roundMainDiagnosticMs(session.binaryResolutionMs),
     probeMs: roundMainDiagnosticMs(session.probeMs),
+    probeCacheStatus: session.probeCacheStatus,
+    probeDecodeOverlapEnabled: LOCAL_PCM_OVERLAP_PROBE_AND_DECODE,
+    probeFfmpegOverlapMs: probeFfmpegOverlapMs === null
+      ? null
+      : roundMainDiagnosticMs(probeFfmpegOverlapMs),
     decodeMs: session.ffmpegStartedAtMs === null ? null : roundMainDiagnosticMs(ffmpegMs),
     ffmpegMs: session.ffmpegStartedAtMs === null ? null : roundMainDiagnosticMs(ffmpegMs),
+    ffmpegSpawnToFirstPcmMs: ffmpegSpawnToFirstPcmMs === null
+      ? null
+      : roundMainDiagnosticMs(ffmpegSpawnToFirstPcmMs),
+    ffmpegPcmOutputSpanMs: ffmpegPcmOutputSpanMs === null
+      ? null
+      : roundMainDiagnosticMs(ffmpegPcmOutputSpanMs),
+    ffmpegCloseTailMs: ffmpegCloseTailMs === null
+      ? null
+      : roundMainDiagnosticMs(ffmpegCloseTailMs),
     allocationMs: roundMainDiagnosticMs(session.allocationMs),
     initialAllocationMs: roundMainDiagnosticMs(session.initialAllocationMs),
     growthAllocationMs: roundMainDiagnosticMs(session.growthAllocationMs),
@@ -11382,8 +11497,13 @@ async function decodeLocalAudioToPcm(
       binaryResolutionMs: 0,
       probeAbortController: null,
       probeMs: 0,
+      probeCacheStatus: null,
+      probeStartedAtMs: null,
+      probeCompletedAtMs: null,
       ffmpeg: null,
       ffmpegStartedAtMs: null,
+      ffmpegFirstPcmAtMs: null,
+      ffmpegLastPcmAtMs: null,
       ffmpegCompletedAtMs: null,
       decodeCompletedAtMs: null,
       allocationMs: 0,
@@ -11391,6 +11511,7 @@ async function decodeLocalAudioToPcm(
       growthAllocationMs: 0,
       allocationGrowthCount: 0,
       outputBuffer: null,
+      probeChunkGate: null,
       totalBytes: 0,
       stderrChunks: [],
       settled: false,
@@ -11471,180 +11592,239 @@ async function decodeLocalAudioToPcm(
         return
       }
 
+      const chunkGate = new LocalPcmProbeChunkGate(LOCAL_PCM_PRE_PROBE_MAX_PENDING_BYTES)
+      session.probeChunkGate = chunkGate
+      const consumePcmChunk = (chunk: Buffer): void => {
+        appendLocalPcmOutputChunk(session, chunk)
+      }
+
       const probeStartedAtMs = mainDiagnosticNow()
-      const probe = await probeLocalPcmStream(session, ffprobePath)
-      session.probeMs = mainDiagnosticNow() - probeStartedAtMs
-      if (session.settled) return
-      session.channels = probe.channels
-      const allocationStartedAtMs = mainDiagnosticNow()
-      try {
-        session.outputBuffer = allocateInitialLocalPcmOutput(
-          probe.durationSeconds,
-          session.sampleRate,
-          session.channels
-        )
-      } finally {
-        const initialAllocationMs = mainDiagnosticNow() - allocationStartedAtMs
-        session.initialAllocationMs += initialAllocationMs
-        session.allocationMs += initialAllocationMs
-      }
-      sendLocalPcmStreamStart(session)
-      if (session.settled) return
-      if (
-        isDev
-        && session.expectedChannels !== null
-        && session.expectedChannels !== session.channels
-      ) {
-        console.debug('[audio-decode] using probed channel count instead of stale metadata', {
-          filePath: session.filePath,
-          expectedChannels: session.expectedChannels,
-          probedChannels: session.channels
-        })
-      }
-
-      session.ffmpegStartedAtMs = mainDiagnosticNow()
-      const ffmpeg = spawn(
-        ffmpegPath,
-        [
-          '-v', 'error',
-          '-nostdin',
-          '-i', session.filePath,
-          '-map', '0:a:0',
-          '-vn',
-          '-acodec', 'pcm_f32le',
-          '-f', 'f32le',
-          '-ar', String(session.sampleRate),
-          'pipe:1'
-        ],
-        {
-          stdio: ['pipe', 'pipe', 'pipe'],
-          windowsHide: true
-        }
-      )
-      session.ffmpeg = ffmpeg
-
-      if (session.priority === 'background' && typeof ffmpeg.pid === 'number') {
+      session.probeStartedAtMs = probeStartedAtMs
+      const probePromise = (async (): Promise<LocalPcmProbeCacheResolution> => {
         try {
-          setPriority(ffmpeg.pid, osConstants.priority.PRIORITY_BELOW_NORMAL)
-          session.backgroundPriorityApplied = true
-        } catch (error) {
-          if (isDev) {
-            console.debug('[audio-decode] could not lower background ffmpeg priority', {
-              pid: ffmpeg.pid,
-              message: error instanceof Error ? error.message : String(error)
-            })
-          }
-        }
-      }
-
-      ffmpeg.stderr.setEncoding('utf8')
-      ffmpeg.stderr.on('data', (data: string | Buffer) => {
-        session.stderrChunks.push(String(data))
-        if (session.stderrChunks.length > 8) {
-          session.stderrChunks.shift()
-        }
-      })
-
-      ffmpeg.stdin.on('error', (error) => {
-        if (session.settled || isRemoteStreamPipeTeardownError(error)) return
-        settleLocalPcmDecodeSession(session, {
-          type: 'failed',
-          error: error instanceof Error ? error : new Error('Local FFmpeg input pipe failed.')
-        })
-      })
-
-      ffmpeg.stdout.on('data', (chunk: Buffer) => {
-        if (session.settled || chunk.byteLength === 0) return
-        const nextTotalBytes = session.totalBytes + chunk.byteLength
-        try {
-          const output = ensureLocalPcmOutputCapacity(session, nextTotalBytes)
-          if (session.settled) return
-          chunk.copy(output, session.totalBytes)
-          session.totalBytes = nextTotalBytes
-          flushLocalPcmStreamChunks(session)
-        } catch (error) {
-          settleLocalPcmDecodeSession(session, {
-            type: 'failed',
-            error: error instanceof Error
-              ? error
-              : new Error('Decoded audio exceeds the Standard playback limit.')
-          })
-        }
-      })
-
-      ffmpeg.stdout.on('error', (error) => {
-        if (session.settled) return
-        settleLocalPcmDecodeSession(session, {
-          type: 'failed',
-          error: error instanceof Error ? error : new Error('Local FFmpeg output pipe failed.')
-        })
-      })
-
-      ffmpeg.on('error', (error) => {
-        settleLocalPcmDecodeSession(session, {
-          type: 'failed',
-          error: error instanceof Error ? error : new Error('Local FFmpeg decode failed to start.')
-        })
-      })
-
-      ffmpeg.on('close', (code) => {
-        if (session.settled) return
-        const ffmpegCompletedAtMs = mainDiagnosticNow()
-        session.ffmpegCompletedAtMs = ffmpegCompletedAtMs
-        session.decodeCompletedAtMs = ffmpegCompletedAtMs
-        if (session.cancelled) {
-          settleLocalPcmDecodeSession(session, { type: 'cancelled' })
-          return
-        }
-        if (code !== 0) {
-          const stderr = session.stderrChunks.join(' ').trim()
-          settleLocalPcmDecodeSession(session, {
-            type: 'failed',
-            error: new Error(
-              stderr.length > 0
-                ? `Local FFmpeg decode failed: ${stderr}`
-                : `Local FFmpeg decode failed (exit ${code ?? 'unknown'}).`
-            )
-          })
-          return
-        }
-
-        try {
-          const pcm = session.outputBuffer
-          if (!pcm || session.totalBytes === 0) {
-            throw new Error('Local FFmpeg decode produced no PCM audio.')
-          }
-          const frameSizeBytes = session.channels * Float32Array.BYTES_PER_ELEMENT
-          if (session.totalBytes > pcm.byteLength || session.totalBytes % frameSizeBytes !== 0) {
-            throw new Error('FFmpeg produced invalid or frame-misaligned PCM audio.')
-          }
-          if (session.stream) {
-            session.stream.pendingSuccess = {
-              pcm,
-              pcmByteLength: session.totalBytes
+          if (!LOCAL_PCM_OVERLAP_PROBE_AND_DECODE) {
+            return {
+              result: await probeLocalPcmStream(session, ffprobePath),
+              cacheStatus: 'bypass'
             }
-            flushLocalPcmStreamChunks(session)
-          } else {
-            settleLocalPcmDecodeSession(session, {
-              type: 'success',
-              pcm,
-              pcmByteLength: session.totalBytes
-            })
           }
-        } catch (error) {
+          return await localPcmProbeCache.getOrProbe(
+            session.filePath,
+            () => probeLocalPcmStream(session, ffprobePath)
+          )
+        } finally {
+          const probeCompletedAtMs = mainDiagnosticNow()
+          session.probeCompletedAtMs = probeCompletedAtMs
+          session.probeMs = probeCompletedAtMs - probeStartedAtMs
+        }
+      })()
+      type FfmpegCloseResult = { code: number | null; completedAtMs: number }
+      const startFfmpegDecode = (): Promise<FfmpegCloseResult> => {
+        session.ffmpegStartedAtMs = mainDiagnosticNow()
+        const ffmpeg = spawn(
+          ffmpegPath,
+          [
+            '-v', 'error',
+            '-nostdin',
+            '-i', session.filePath,
+            '-map', '0:a:0',
+            '-vn',
+            '-acodec', 'pcm_f32le',
+            '-f', 'f32le',
+            '-ar', String(session.sampleRate),
+            'pipe:1'
+          ],
+          {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            windowsHide: true
+          }
+        )
+        session.ffmpeg = ffmpeg
+
+        if (session.priority === 'background' && typeof ffmpeg.pid === 'number') {
+          try {
+            setPriority(ffmpeg.pid, osConstants.priority.PRIORITY_BELOW_NORMAL)
+            session.backgroundPriorityApplied = true
+          } catch (error) {
+            if (isDev) {
+              console.debug('[audio-decode] could not lower background ffmpeg priority', {
+                pid: ffmpeg.pid,
+                message: error instanceof Error ? error.message : String(error)
+              })
+            }
+          }
+        }
+
+        ffmpeg.stderr.setEncoding('utf8')
+        ffmpeg.stderr.on('data', (data: string | Buffer) => {
+          session.stderrChunks.push(String(data))
+          if (session.stderrChunks.length > 8) {
+            session.stderrChunks.shift()
+          }
+        })
+
+        ffmpeg.stdin.on('error', (error) => {
+          if (session.settled || isRemoteStreamPipeTeardownError(error)) return
           settleLocalPcmDecodeSession(session, {
             type: 'failed',
-            error: error instanceof Error ? error : new Error('Local FFmpeg PCM assembly failed.')
+            error: error instanceof Error ? error : new Error('Local FFmpeg input pipe failed.')
           })
+        })
+
+        ffmpeg.stdout.on('data', (chunk: Buffer) => {
+          if (session.settled || chunk.byteLength === 0) return
+          const observedAtMs = mainDiagnosticNow()
+          session.ffmpegFirstPcmAtMs ??= observedAtMs
+          session.ffmpegLastPcmAtMs = observedAtMs
+          try {
+            chunkGate.accept(chunk, consumePcmChunk)
+            if (
+              !chunkGate.isReleased
+              && chunkGate.pendingByteLength >= LOCAL_PCM_PRE_PROBE_PAUSE_BYTES
+              && !ffmpeg.stdout.isPaused()
+            ) {
+              ffmpeg.stdout.pause()
+            }
+          } catch (error) {
+            settleLocalPcmDecodeSession(session, {
+              type: 'failed',
+              error: error instanceof Error
+                ? error
+                : new Error('Decoded audio exceeds the Standard playback limit.')
+            })
+          }
+        })
+
+        ffmpeg.stdout.on('error', (error) => {
+          if (session.settled) return
+          settleLocalPcmDecodeSession(session, {
+            type: 'failed',
+            error: error instanceof Error ? error : new Error('Local FFmpeg output pipe failed.')
+          })
+        })
+
+        ffmpeg.on('error', (error) => {
+          if (session.settled) return
+          settleLocalPcmDecodeSession(session, {
+            type: 'failed',
+            error: error instanceof Error ? error : new Error('Local FFmpeg decode failed to start.')
+          })
+        })
+
+        const closePromise = new Promise<FfmpegCloseResult>((resolveClose) => {
+          ffmpeg.on('close', (code) => {
+            const completedAtMs = mainDiagnosticNow()
+            session.ffmpegCompletedAtMs = completedAtMs
+            if (!session.settled && code !== 0) {
+              session.decodeCompletedAtMs = completedAtMs
+              const stderr = session.stderrChunks.join(' ').trim()
+              settleLocalPcmDecodeSession(session, {
+                type: 'failed',
+                error: new Error(
+                  stderr.length > 0
+                    ? `Local FFmpeg decode failed: ${stderr}`
+                    : `Local FFmpeg decode failed (exit ${code ?? 'unknown'}).`
+                )
+              })
+            }
+            resolveClose({ code, completedAtMs })
+          })
+        })
+
+        try {
+          if (!ffmpeg.stdin.destroyed) {
+            ffmpeg.stdin.end()
+          }
+        } catch {
+          // FFmpeg reads the local file directly; stdin is intentionally unused.
+        }
+        return closePromise
+      }
+
+      const coordinated = await coordinateLocalPcmProbeAndDecode({
+        probePromise,
+        overlap: LOCAL_PCM_OVERLAP_PROBE_AND_DECODE,
+        startDecode: startFfmpegDecode,
+        acceptProbe: (probeResolution) => {
+          session.probeCacheStatus = probeResolution.cacheStatus
+          if (session.settled) {
+            throw new Error('Local PCM decode was cancelled before probing completed.')
+          }
+          session.channels = probeResolution.result.channels
+          const allocationStartedAtMs = mainDiagnosticNow()
+          try {
+            session.outputBuffer = allocateInitialLocalPcmOutput(
+              probeResolution.result.durationSeconds,
+              session.sampleRate,
+              session.channels,
+              chunkGate.pendingByteLength
+            )
+          } finally {
+            const initialAllocationMs = mainDiagnosticNow() - allocationStartedAtMs
+            session.initialAllocationMs += initialAllocationMs
+            session.allocationMs += initialAllocationMs
+          }
+          sendLocalPcmStreamStart(session)
+          if (session.settled) {
+            throw new Error('Local PCM decode was cancelled before metadata delivery.')
+          }
+          if (
+            isDev
+            && session.expectedChannels !== null
+            && session.expectedChannels !== session.channels
+          ) {
+            console.debug('[audio-decode] using probed channel count instead of stale metadata', {
+              filePath: session.filePath,
+              expectedChannels: session.expectedChannels,
+              probedChannels: session.channels
+            })
+          }
+
+          chunkGate.release(consumePcmChunk)
+          if (session.settled) {
+            throw new Error('Local PCM decode was cancelled while releasing early output.')
+          }
+          session.probeChunkGate = null
+          if (session.ffmpeg?.stdout.isPaused()) {
+            session.ffmpeg.stdout.resume()
+          }
         }
       })
+      const ffmpegClose = coordinated.decode
+      if (session.settled || ffmpegClose.code !== 0) return
 
       try {
-        if (!ffmpeg.stdin.destroyed) {
-          ffmpeg.stdin.end()
+        const pcm = session.outputBuffer
+        if (!pcm || session.totalBytes === 0) {
+          throw new Error('Local FFmpeg decode produced no PCM audio.')
         }
-      } catch {
-        // FFmpeg reads the local file directly; stdin is intentionally unused.
+        const frameSizeBytes = session.channels * Float32Array.BYTES_PER_ELEMENT
+        if (session.totalBytes > pcm.byteLength || session.totalBytes % frameSizeBytes !== 0) {
+          throw new Error('FFmpeg produced invalid or frame-misaligned PCM audio.')
+        }
+        // This is the actual end of decoder-side work. When FFmpeg closes
+        // before a slow probe, it includes releasing the bounded early-PCM
+        // queue and validating the assembled output rather than attributing
+        // that work to the post-decode stream tail.
+        session.decodeCompletedAtMs = mainDiagnosticNow()
+        if (session.stream) {
+          session.stream.pendingSuccess = {
+            pcm,
+            pcmByteLength: session.totalBytes
+          }
+          flushLocalPcmStreamChunks(session)
+        } else {
+          settleLocalPcmDecodeSession(session, {
+            type: 'success',
+            pcm,
+            pcmByteLength: session.totalBytes
+          })
+        }
+      } catch (error) {
+        settleLocalPcmDecodeSession(session, {
+          type: 'failed',
+          error: error instanceof Error ? error : new Error('Local FFmpeg PCM assembly failed.')
+        })
       }
     })().catch((error) => {
       settleLocalPcmDecodeSession(session, {

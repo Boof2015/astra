@@ -4227,7 +4227,13 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     mainHandlerMs: 160,
     binaryResolutionMs: 2,
     probeMs: 18,
+    probeCacheStatus: 'hit',
+    probeDecodeOverlapEnabled: true,
+    probeFfmpegOverlapMs: 14,
     ffmpegMs: 130,
+    ffmpegSpawnToFirstPcmMs: 31,
+    ffmpegPcmOutputSpanMs: 92,
+    ffmpegCloseTailMs: 7,
     pcmAllocationMs: 4,
     initialPcmAllocationMs: 3,
     growthPcmAllocationMs: 1,
@@ -4280,6 +4286,12 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     assert.equal(details.decodeWorkMs, 12)
     assert.equal(details.loudnessMs, 34)
     assert.equal(details.decodeRequestId, 77)
+    assert.equal(details.probeCacheStatus, 'hit')
+    assert.equal(details.probeDecodeOverlapEnabled, true)
+    assert.equal(details.probeFfmpegOverlapMs, 14)
+    assert.equal(details.ffmpegSpawnToFirstPcmMs, 31)
+    assert.equal(details.ffmpegPcmOutputSpanMs, 92)
+    assert.equal(details.ffmpegCloseTailMs, 7)
     assert.equal(typeof details.loadRequestId, 'number')
     assert.equal(details.prebufferRequestId, null)
     assert.equal(details.commandToScheduledPlayMs, details.totalCommandToPlayingMs)
@@ -4314,7 +4326,13 @@ test('successful Standard playback emits one complete playback-attempt timing ev
       'mainHandlerMs',
       'binaryResolutionMs',
       'probeMs',
+      'probeCacheStatus',
+      'probeDecodeOverlapEnabled',
+      'probeFfmpegOverlapMs',
       'ffmpegMs',
+      'ffmpegSpawnToFirstPcmMs',
+      'ffmpegPcmOutputSpanMs',
+      'ffmpegCloseTailMs',
       'pcmAllocationMs',
       'initialPcmAllocationMs',
       'growthPcmAllocationMs',
@@ -4357,6 +4375,18 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     assert.equal(trackLoad.details?.attemptId, details.attemptId)
     assert.equal(trackLoad.details?.loadRequestId, details.loadRequestId)
     assert.equal(trackLoad.details?.decodeRequestId, details.decodeRequestId)
+    assert.equal(trackLoad.details?.probeCacheStatus, details.probeCacheStatus)
+    assert.equal(
+      trackLoad.details?.probeDecodeOverlapEnabled,
+      details.probeDecodeOverlapEnabled
+    )
+    assert.equal(trackLoad.details?.probeFfmpegOverlapMs, details.probeFfmpegOverlapMs)
+    assert.equal(
+      trackLoad.details?.ffmpegSpawnToFirstPcmMs,
+      details.ffmpegSpawnToFirstPcmMs
+    )
+    assert.equal(trackLoad.details?.ffmpegPcmOutputSpanMs, details.ffmpegPcmOutputSpanMs)
+    assert.equal(trackLoad.details?.ffmpegCloseTailMs, details.ffmpegCloseTailMs)
     assert.equal(trackLoad.details?.decodeMs, trackLoad.details?.standardLoadPipelineMs)
     assert.equal(trackLoad.details?.decodeOnlyMs, trackLoad.details?.decodeWorkMs)
     assert.notEqual(completions[0]?.options?.captureSample, false)

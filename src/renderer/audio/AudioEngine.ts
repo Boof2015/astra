@@ -224,18 +224,27 @@ export interface AudioLoadTimings {
   decodeMs: number
   /** Loudness work only. Kept as the compatibility alias for loudnessMs. */
   analysisMs: number
+  /** Overlap-reconciled decoder work; use standardLoadPipelineMs for elapsed wall time. */
   decodeWorkMs?: number
   loudnessMs?: number
+  /** End-to-end Standard load wall span; do not sum decoder phases to derive this. */
   standardLoadPipelineMs?: number
   decodeRequestId?: number
   validPcmBytes?: number
   backingBufferBytes?: number
   allocationGrowthCount?: number
   transportRoute?: 'invoke' | 'message_port_stream'
+  /** Main-process handler wall span; decoder subphases may overlap within it. */
   mainHandlerMs?: number
   binaryResolutionMs?: number
   probeMs?: number
+  probeCacheStatus?: 'hit' | 'miss' | 'bypass'
+  probeDecodeOverlapEnabled?: boolean
+  probeFfmpegOverlapMs?: number
   ffmpegMs?: number
+  ffmpegSpawnToFirstPcmMs?: number
+  ffmpegPcmOutputSpanMs?: number
+  ffmpegCloseTailMs?: number
   pcmAllocationMs?: number
   initialPcmAllocationMs?: number
   growthPcmAllocationMs?: number
@@ -6814,22 +6823,32 @@ export class AudioEngine {
       ?? clampDiagnosticDurationMs(pcm.decodeMs)
     const loudnessMs = clampDiagnosticDurationMs(loudnessMsValue) ?? 0
 
-    // Initial PCM allocation happens before FFmpeg and is decoder work. Growth
-    // allocations happen while FFmpeg is running, so they remain exposed but
-    // are not double-counted. Older timing envelopes did not split the two;
-    // their allocation is safe to add only when no growth occurred.
+    // Initial PCM allocation is disjoint in serial compatibility mode, but in
+    // the overlapped route it happens inside the FFmpeg wall span. Growth
+    // allocations also happen inside that span. Keep both exposed, and add an
+    // inferred legacy allocation only when no growth occurred.
     const initialPcmAllocationMs = transportSummary?.initialPcmAllocationMs
       ?? (transportSummary?.allocationGrowthCount === 0
         ? transportSummary?.pcmAllocationMs
         : undefined)
-    const decodeWorkMs = sumDiagnosticDurations(
+    const initialAllocationOutsideFfmpeg = transportSummary?.probeDecodeOverlapEnabled === true
+      ? undefined
+      : initialPcmAllocationMs
+    const decoderWorkBeforeOverlap = sumDiagnosticDurations(
       transportSummary?.binaryResolutionMs,
       nativeProbeMs,
-      initialPcmAllocationMs,
+      initialAllocationOutsideFfmpeg,
       nativeDecodeMs,
       transportSummary?.payloadFinalizationMs,
       installed.webAudioBufferAllocationMs,
       installed.pcmDeinterleaveMs,
+    )
+    // Reconcile the compatibility decoder-work tally for the intentional
+    // probe/FFmpeg overlap. mainHandlerMs and standardLoadPipelineMs remain the
+    // authoritative continuous wall spans.
+    const decodeWorkMs = Math.max(
+      0,
+      decoderWorkBeforeOverlap - (transportSummary?.probeFfmpegOverlapMs ?? 0),
     )
     const decodeRequestId = transportSummary?.decodeRequestId ?? delivery?.decodeRequestId
     const validPcmBytes = transportSummary?.validPcmBytes ?? installed.validPcmBytes
@@ -6861,7 +6880,25 @@ export class AudioEngine {
             nativeBinaryResolutionMs: transportSummary.binaryResolutionMs,
           }),
       ...(nativeProbeMs === undefined ? {} : { probeMs: nativeProbeMs, nativeProbeMs }),
+      ...(transportSummary?.probeCacheStatus === undefined
+        ? {}
+        : { probeCacheStatus: transportSummary.probeCacheStatus }),
+      ...(transportSummary?.probeDecodeOverlapEnabled === undefined
+        ? {}
+        : { probeDecodeOverlapEnabled: transportSummary.probeDecodeOverlapEnabled }),
+      ...(transportSummary?.probeFfmpegOverlapMs === undefined
+        ? {}
+        : { probeFfmpegOverlapMs: transportSummary.probeFfmpegOverlapMs }),
       ...(nativeDecodeMs === undefined ? {} : { ffmpegMs: nativeDecodeMs, nativeDecodeMs }),
+      ...(transportSummary?.ffmpegSpawnToFirstPcmMs === undefined
+        ? {}
+        : { ffmpegSpawnToFirstPcmMs: transportSummary.ffmpegSpawnToFirstPcmMs }),
+      ...(transportSummary?.ffmpegPcmOutputSpanMs === undefined
+        ? {}
+        : { ffmpegPcmOutputSpanMs: transportSummary.ffmpegPcmOutputSpanMs }),
+      ...(transportSummary?.ffmpegCloseTailMs === undefined
+        ? {}
+        : { ffmpegCloseTailMs: transportSummary.ffmpegCloseTailMs }),
       ...(transportSummary?.pcmAllocationMs === undefined
         ? {}
         : { pcmAllocationMs: transportSummary.pcmAllocationMs }),

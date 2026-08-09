@@ -106,7 +106,13 @@ function mainTimings(
     mainHandlerMs: 30,
     binaryResolutionMs: 1,
     probeMs: 2,
+    probeCacheStatus: 'hit',
+    probeDecodeOverlapEnabled: true,
+    probeFfmpegOverlapMs: 8,
     ffmpegMs: 20,
+    ffmpegSpawnToFirstPcmMs: 4,
+    ffmpegPcmOutputSpanMs: 14,
+    ffmpegCloseTailMs: 2,
     allocationMs: 0,
     initialAllocationMs: 0,
     growthAllocationMs: 0,
@@ -225,6 +231,12 @@ test('assembles a correlated stream and returns renderer-local timing fields', a
   assert.deepEqual([...new Uint8Array(result.interleavedPcm)], [...new Uint8Array(payload)])
   assert.equal(result.transportTimings.transportRoute, 'message_port_stream')
   assert.equal(result.transportTimings.preloadInvokeMs, 0)
+  assert.equal(result.transportTimings.probeCacheStatus, 'hit')
+  assert.equal(result.transportTimings.probeDecodeOverlapEnabled, true)
+  assert.equal(result.transportTimings.probeFfmpegOverlapMs, 8)
+  assert.equal(result.transportTimings.ffmpegSpawnToFirstPcmMs, 4)
+  assert.equal(result.transportTimings.ffmpegPcmOutputSpanMs, 14)
+  assert.equal(result.transportTimings.ffmpegCloseTailMs, 2)
   assert.equal(result.transportTimings.rendererPcmAssemblyAllocationMs, 1)
   assert.equal(result.transportTimings.rendererPcmAssemblyCopyMs, 1)
   assert.equal(result.transportTimings.rendererPortRequestMs, 5)

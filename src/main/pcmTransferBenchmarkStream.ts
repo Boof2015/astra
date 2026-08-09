@@ -30,7 +30,7 @@ export interface PcmTransferBenchmarkStreamPort {
 }
 
 export interface PcmTransferBenchmarkStreamRuntime {
-  now?: () => number
+  now: () => number
   setTimer?: (callback: () => void, delayMs: number) => TimerHandle
   clearTimer?: (handle: TimerHandle) => void
   timeoutMs?: number
@@ -86,8 +86,8 @@ export class PcmTransferBenchmarkStreamCoordinator {
   private readonly timeoutMs: number
   private active: ActiveBenchmarkStream | null = null
 
-  constructor(runtime: PcmTransferBenchmarkStreamRuntime = {}) {
-    this.now = runtime.now ?? (() => performance.now())
+  constructor(runtime: PcmTransferBenchmarkStreamRuntime) {
+    this.now = runtime.now
     this.setTimer = runtime.setTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs))
     this.clearTimer = runtime.clearTimer ?? ((handle) => clearTimeout(handle))
     this.timeoutMs = runtime.timeoutMs ?? PCM_TRANSFER_BENCHMARK_STREAM_TIMEOUT_MS
