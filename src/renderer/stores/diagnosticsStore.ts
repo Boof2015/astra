@@ -47,6 +47,7 @@ export function resolveLocalPcmOutputSink(
     status?.localPcmOutputSink === 'stdout_pipe'
     || status?.localPcmOutputSink === 'rechunked_pipe'
     || status?.localPcmOutputSink === 'native_pipe'
+    || status?.localPcmOutputSink === 'preload_native'
     || status?.localPcmOutputSink === 'worker_thread'
     || status?.localPcmOutputSink === 'temporary_file'
   ) {

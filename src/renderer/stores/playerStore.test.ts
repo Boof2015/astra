@@ -4299,6 +4299,8 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     backingBufferBytes: 72_400_000,
     allocationGrowthCount: 1,
     transportRoute: 'message_port_stream',
+    preloadNativeServiceMs: 325,
+    preloadNativeContextBridgeResidualMs: 45,
     mainHandlerMs: 160,
     binaryResolutionMs: 2,
     probeMs: 18,
@@ -4377,6 +4379,8 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     assert.equal(details.decodeWorkMs, 12)
     assert.equal(details.loudnessMs, 34)
     assert.equal(details.decodeRequestId, 77)
+    assert.equal(details.preloadNativeServiceMs, 325)
+    assert.equal(details.preloadNativeContextBridgeResidualMs, 45)
     assert.equal(details.probeCacheStatus, 'hit')
     assert.equal(details.probeDecodeOverlapEnabled, true)
     assert.equal(details.probeFfmpegOverlapMs, 14)
@@ -4456,6 +4460,8 @@ test('successful Standard playback emits one complete playback-attempt timing ev
       'backingBufferBytes',
       'allocationGrowthCount',
       'transportRoute',
+      'preloadNativeServiceMs',
+      'preloadNativeContextBridgeResidualMs',
       'mainHandlerMs',
       'binaryResolutionMs',
       'probeMs',
@@ -4585,6 +4591,8 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     assert.equal(trackLoad.details?.attemptId, details.attemptId)
     assert.equal(trackLoad.details?.loadRequestId, details.loadRequestId)
     assert.equal(trackLoad.details?.decodeRequestId, details.decodeRequestId)
+    assert.equal(trackLoad.details?.preloadNativeServiceMs, 325)
+    assert.equal(trackLoad.details?.preloadNativeContextBridgeResidualMs, 45)
     assert.equal(trackLoad.details?.probeCacheStatus, details.probeCacheStatus)
     assert.equal(
       trackLoad.details?.probeDecodeOverlapEnabled,

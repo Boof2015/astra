@@ -108,7 +108,9 @@ interface PlaybackAttemptTimings {
   validPcmBytes?: number | null
   backingBufferBytes?: number | null
   allocationGrowthCount?: number | null
-  transportRoute?: 'invoke' | 'message_port_stream' | null
+  transportRoute?: 'invoke' | 'message_port_stream' | 'preload_native' | null
+  preloadNativeServiceMs?: number | null
+  preloadNativeContextBridgeResidualMs?: number | null
   mainHandlerMs?: number | null
   binaryResolutionMs?: number | null
   probeMs?: number | null
@@ -116,7 +118,7 @@ interface PlaybackAttemptTimings {
   probeDecodeOverlapEnabled?: boolean | null
   probeFfmpegOverlapMs?: number | null
   ffmpegMs?: number | null
-  ffmpegOutputSink?: 'stdout_pipe' | 'rechunked_pipe' | 'native_pipe' | 'worker_thread' | 'temporary_file' | null
+  ffmpegOutputSink?: 'stdout_pipe' | 'rechunked_pipe' | 'native_pipe' | 'preload_native' | 'worker_thread' | 'temporary_file' | null
   tempPcmCreateMs?: number | null
   tempPcmStatMs?: number | null
   tempPcmReadMs?: number | null
@@ -231,6 +233,9 @@ function getStandardPcmTimingDetails(timings: AudioLoadTimings | null | undefine
     backingBufferBytes: timings?.backingBufferBytes ?? null,
     allocationGrowthCount: timings?.allocationGrowthCount ?? null,
     transportRoute: timings?.transportRoute ?? null,
+    preloadNativeServiceMs: timings?.preloadNativeServiceMs ?? null,
+    preloadNativeContextBridgeResidualMs:
+      timings?.preloadNativeContextBridgeResidualMs ?? null,
     mainHandlerMs: timings?.mainHandlerMs ?? null,
     binaryResolutionMs: timings?.binaryResolutionMs ?? null,
     probeMs: timings?.probeMs ?? timings?.nativeProbeMs ?? null,
@@ -1586,6 +1591,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       backingBufferBytes: timings.backingBufferBytes ?? null,
       allocationGrowthCount: timings.allocationGrowthCount ?? null,
       transportRoute: timings.transportRoute ?? null,
+      preloadNativeServiceMs: timings.preloadNativeServiceMs ?? null,
+      preloadNativeContextBridgeResidualMs:
+        timings.preloadNativeContextBridgeResidualMs ?? null,
       mainHandlerMs: timings.mainHandlerMs ?? null,
       binaryResolutionMs: timings.binaryResolutionMs ?? null,
       probeMs: timings.probeMs ?? null,

@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, clipboard, screen, safeStorage, powerMonitor, protocol, session, globalShortcut } from 'electron'
-import { join, basename, extname } from 'path'
+import { join, basename, extname, isAbsolute } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir, stat } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
 import { cpus, tmpdir, hostname, networkInterfaces, setPriority, constants as osConstants } from 'os'
@@ -668,6 +668,40 @@ const jellyfinSyncProgressBySourceId = new Map<number, JellyfinSourceSyncProgres
 const jellyfinAuthCacheBySourceId = new Map<number, { authContext: { accessToken: string; userId: string }; expiresAt: number }>()
 const remoteStreamSessions = new Map<number, RemoteStreamSession>()
 let nextRemoteStreamSessionId = 1
+const preloadNativePcmActiveProcessIds = new Set<number>()
+let preloadNativePcmPidOwnerWebContentsId: number | null = null
+
+function terminatePreloadNativePcmProcessesForOwner(webContentsId: number): void {
+  if (preloadNativePcmPidOwnerWebContentsId !== webContentsId) return
+
+  const processIds = [...preloadNativePcmActiveProcessIds]
+  preloadNativePcmActiveProcessIds.clear()
+  preloadNativePcmPidOwnerWebContentsId = null
+
+  // A stale or malformed snapshot must never terminate Astra itself. External
+  // FFmpeg/FFprobe children are not Electron app metrics, so excluding every
+  // current Electron-owned PID preserves the native Job Object cleanup while
+  // making this crash fallback safe to run more than once.
+  const protectedProcessIds = new Set<number>([process.pid])
+  try {
+    for (const metric of app.getAppMetrics()) {
+      if (Number.isSafeInteger(metric.pid) && metric.pid > 0) {
+        protectedProcessIds.add(metric.pid)
+      }
+    }
+  } catch {
+    // App metrics can be unavailable during late shutdown.
+  }
+
+  for (const processId of processIds) {
+    if (protectedProcessIds.has(processId)) continue
+    try {
+      process.kill(processId, 'SIGTERM')
+    } catch {
+      // The native Job Object or ordinary child exit may have won the race.
+    }
+  }
+}
 
 function getActiveMemoryFootprintChildProcessPids(): number[] {
   const pids: number[] = []
@@ -690,6 +724,17 @@ function getActiveMemoryFootprintChildProcessPids(): number[] {
     if (pid === process.pid || seen.has(pid)) continue
     seen.add(pid)
     pids.push(pid)
+  }
+  if (
+    mainWindow
+    && !mainWindow.isDestroyed()
+    && preloadNativePcmPidOwnerWebContentsId === mainWindow.webContents.id
+  ) {
+    for (const pid of preloadNativePcmActiveProcessIds) {
+      if (pid === process.pid || seen.has(pid)) continue
+      seen.add(pid)
+      pids.push(pid)
+    }
   }
   return pids
 }
@@ -4488,6 +4533,10 @@ function createWindow(): void {
   }
 
   const createdMainWindow = mainWindow
+  const createdMainWindowWebContentsId = createdMainWindow.webContents.id
+  createdMainWindow.webContents.on('render-process-gone', () => {
+    terminatePreloadNativePcmProcessesForOwner(createdMainWindowWebContentsId)
+  })
   createdMainWindow.on('ready-to-show', () => {
     if (createdMainWindow.isDestroyed()) return
     createdMainWindow.show()
@@ -4520,6 +4569,7 @@ function createWindow(): void {
     void persistMainWindowPrefs()
   })
   mainWindow.on('closed', () => {
+    terminatePreloadNativePcmProcessesForOwner(createdMainWindowWebContentsId)
     globalInputShortcutService.clear()
     mainWindow = null
     associatedOpenRendererReady = false
@@ -5619,7 +5669,9 @@ ipcMain.handle('diagnostics:getStatus', () => {
   return getMemoryDiagnosticsStatusSnapshot()
 })
 
-function isDiagnosticsMainFrame(event: Electron.IpcMainInvokeEvent): boolean {
+function isDiagnosticsMainFrame(
+  event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent
+): boolean {
   return Boolean(
     mainWindow
     && !mainWindow.isDestroyed()
@@ -5679,7 +5731,7 @@ ipcMain.handle('diagnostics:setLocalPcmOutputSink', async (event, sinkValue: unk
   const sink = normalizeLocalPcmOutputSink(sinkValue)
   if (sink === null) {
     throw new TypeError(
-      'PCM output route must be stdout_pipe, rechunked_pipe, native_pipe, worker_thread, or temporary_file.'
+      'PCM output route must be stdout_pipe, rechunked_pipe, native_pipe, preload_native, worker_thread, or temporary_file.'
     )
   }
   if (
@@ -7195,6 +7247,71 @@ ipcMain.handle('audio:decodeLocalAudioToPcm', async (
     priority,
     handlerStartedAtMs
   )
+})
+
+// Preload owns the experimental native capture only after the main process
+// has authorized the exact logical request. This keeps the native addon and
+// its executable/argv surface private while preventing auxiliary-window
+// preloads from starting decoders.
+ipcMain.handle('audio:authorizePreloadNativePcmDecode', (event, rawRequest: unknown) => {
+  if (
+    !isDiagnosticsMainFrame(event)
+    || localPcmOutputSink !== 'preload_native'
+    || memoryDiagnosticsStatusTransitionCount > 0
+    || memoryDiagnosticsService?.getStatus().enabled !== true
+    || !rawRequest
+    || typeof rawRequest !== 'object'
+  ) {
+    return false
+  }
+
+  const value = rawRequest as Record<string, unknown>
+  const requestKeys = Object.keys(value)
+  if (
+    requestKeys.length !== 5
+    || !['requestId', 'filePath', 'outputSampleRate', 'expectedChannels', 'priority']
+      .every((key) => Object.hasOwn(value, key))
+  ) {
+    return false
+  }
+  try {
+    const request = normalizeLocalPcmDecodeRequest(
+      value.requestId,
+      value.filePath,
+      value.outputSampleRate,
+      value.expectedChannels,
+      value.priority
+    )
+    return request.priority === 'interactive'
+      && value.priority === 'interactive'
+      && request.requestId === value.requestId
+      && request.filePath === value.filePath
+      && isAbsolute(request.filePath)
+      && request.sampleRate === value.outputSampleRate
+      && request.expectedChannels === (value.expectedChannels ?? null)
+  } catch {
+    return false
+  }
+})
+
+// The preload-owned native child is otherwise invisible to the main-process
+// footprint sampler. Accept only a tiny, validated PID snapshot from the main
+// window's private preload implementation; no corresponding renderer API is
+// exposed.
+ipcMain.on('audio:preloadNativePcmActiveProcessIds', (event, rawProcessIds: unknown) => {
+  if (!isDiagnosticsMainFrame(event) || !Array.isArray(rawProcessIds) || rawProcessIds.length > 4) {
+    return
+  }
+  const processIds: number[] = []
+  for (const value of rawProcessIds) {
+    if (!Number.isSafeInteger(value) || Number(value) <= 0 || Number(value) === process.pid) {
+      return
+    }
+    processIds.push(Number(value))
+  }
+  preloadNativePcmActiveProcessIds.clear()
+  for (const pid of processIds) preloadNativePcmActiveProcessIds.add(pid)
+  preloadNativePcmPidOwnerWebContentsId = processIds.length > 0 ? event.sender.id : null
 })
 
 // Large Standard PCM results can be delivered as a bounded response stream.
@@ -12117,11 +12234,14 @@ async function decodeLocalAudioToPcm(
   // The diagnostics-only A/B applies only to a new foreground request. A
   // background gapless prebuffer and every request made with the toggle off
   // continue through the unchanged stdout-pipe path.
-  const initialFfmpegOutputSink: LocalPcmOutputSink = localPcmOutputSink !== 'stdout_pipe'
+  const selectedMainProcessSink: LocalPcmOutputSink = localPcmOutputSink === 'preload_native'
+    ? 'native_pipe'
+    : localPcmOutputSink
+  const initialFfmpegOutputSink: LocalPcmOutputSink = selectedMainProcessSink !== 'stdout_pipe'
     && memoryDiagnosticsStatusTransitionCount === 0
     && memoryDiagnosticsService?.getStatus().enabled === true
     && request.priority === 'interactive'
-    ? localPcmOutputSink
+    ? selectedMainProcessSink
     : 'stdout_pipe'
 
   return new Promise<LocalPcmDecodeResult | null>((resolve, reject) => {

@@ -3,7 +3,9 @@ export interface PcmTransportTimings {
   validPcmBytes: number
   backingBufferBytes: number
   allocationGrowthCount: number
-  transportRoute?: 'invoke' | 'message_port_stream'
+  transportRoute?: 'invoke' | 'message_port_stream' | 'preload_native'
+  /** Preload-owned native decode service wall span. */
+  preloadNativeServiceMs?: number
   /** Main-process handler wall span; decoder subphases may overlap within it. */
   mainHandlerMs: number
   binaryResolutionMs: number
@@ -14,7 +16,7 @@ export interface PcmTransportTimings {
   probeFfmpegOverlapMs?: number
   /** FFmpeg child spawn-to-close wall time, not decoder CPU time. */
   ffmpegMs: number
-  ffmpegOutputSink?: 'stdout_pipe' | 'rechunked_pipe' | 'native_pipe' | 'worker_thread' | 'temporary_file'
+  ffmpegOutputSink?: 'stdout_pipe' | 'rechunked_pipe' | 'native_pipe' | 'preload_native' | 'worker_thread' | 'temporary_file'
   tempPcmCreateMs?: number
   tempPcmStatMs?: number
   tempPcmReadMs?: number
@@ -118,7 +120,9 @@ export interface PcmTransportTimingSummary {
   validPcmBytes?: number
   backingBufferBytes?: number
   allocationGrowthCount?: number
-  transportRoute?: 'invoke' | 'message_port_stream'
+  transportRoute?: 'invoke' | 'message_port_stream' | 'preload_native'
+  preloadNativeServiceMs?: number
+  preloadNativeContextBridgeResidualMs?: number
   mainHandlerMs?: number
   binaryResolutionMs?: number
   probeMs?: number
@@ -126,7 +130,7 @@ export interface PcmTransportTimingSummary {
   probeDecodeOverlapEnabled?: boolean
   probeFfmpegOverlapMs?: number
   ffmpegMs?: number
-  ffmpegOutputSink?: 'stdout_pipe' | 'rechunked_pipe' | 'native_pipe' | 'worker_thread' | 'temporary_file'
+  ffmpegOutputSink?: 'stdout_pipe' | 'rechunked_pipe' | 'native_pipe' | 'preload_native' | 'worker_thread' | 'temporary_file'
   tempPcmCreateMs?: number
   tempPcmStatMs?: number
   tempPcmReadMs?: number
@@ -252,6 +256,9 @@ export function summarizePcmTransportTimings(
   const rendererBridgeCallMs = clampDiagnosticDurationMs(rendererBridgeCallMsValue) ?? 0
   if (!transportTimings) return { rendererBridgeCallMs }
 
+  const preloadNativeServiceMs = clampDiagnosticDurationMs(
+    transportTimings.preloadNativeServiceMs
+  )
   const mainHandlerMs = clampDiagnosticDurationMs(transportTimings.mainHandlerMs)
   const preloadInvokeMs = clampDiagnosticDurationMs(transportTimings.preloadInvokeMs)
   const decodeRequestId = nonNegativeSafeInteger(transportTimings.decodeRequestId)
@@ -260,7 +267,9 @@ export function summarizePcmTransportTimings(
   const allocationGrowthCount = nonNegativeSafeInteger(transportTimings.allocationGrowthCount)
   const transportRoute = transportTimings.transportRoute === 'message_port_stream'
     ? 'message_port_stream'
-    : 'invoke'
+    : transportTimings.transportRoute === 'preload_native'
+      ? 'preload_native'
+      : 'invoke'
   const binaryResolutionMs = clampDiagnosticDurationMs(transportTimings.binaryResolutionMs)
   const probeMs = clampDiagnosticDurationMs(transportTimings.probeMs)
   const probeCacheStatus = transportTimings.probeCacheStatus === 'hit'
@@ -276,6 +285,7 @@ export function summarizePcmTransportTimings(
   const ffmpegOutputSink = transportTimings.ffmpegOutputSink === 'stdout_pipe'
     || transportTimings.ffmpegOutputSink === 'rechunked_pipe'
     || transportTimings.ffmpegOutputSink === 'native_pipe'
+    || transportTimings.ffmpegOutputSink === 'preload_native'
     || transportTimings.ffmpegOutputSink === 'worker_thread'
     || transportTimings.ffmpegOutputSink === 'temporary_file'
     ? transportTimings.ffmpegOutputSink
@@ -518,6 +528,17 @@ export function summarizePcmTransportTimings(
   return {
     rendererBridgeCallMs,
     transportRoute,
+    ...(transportRoute !== 'preload_native' || preloadNativeServiceMs === undefined
+      ? {}
+      : { preloadNativeServiceMs }),
+    ...(transportRoute !== 'preload_native' || preloadNativeServiceMs === undefined
+      ? {}
+      : {
+          preloadNativeContextBridgeResidualMs: Math.max(
+            0,
+            rendererBridgeCallMs - preloadNativeServiceMs,
+          ),
+        }),
     ...(decodeRequestId === undefined ? {} : { decodeRequestId }),
     ...(validPcmBytes === undefined ? {} : { validPcmBytes }),
     ...(backingBufferBytes === undefined ? {} : { backingBufferBytes }),

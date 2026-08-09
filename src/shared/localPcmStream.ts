@@ -90,7 +90,7 @@ export interface LocalPcmStreamMainTransportTimings {
   probeFfmpegOverlapMs?: number
   /** FFmpeg child spawn-to-close wall time, not decoder CPU time. */
   ffmpegMs: number
-  ffmpegOutputSink?: 'stdout_pipe' | 'rechunked_pipe' | 'native_pipe' | 'worker_thread' | 'temporary_file'
+  ffmpegOutputSink?: 'stdout_pipe' | 'rechunked_pipe' | 'native_pipe' | 'preload_native' | 'worker_thread' | 'temporary_file'
   tempPcmCreateMs?: number
   tempPcmStatMs?: number
   tempPcmReadMs?: number
@@ -343,6 +343,7 @@ function isLocalPcmStreamMainTransportTimings(
       || value.ffmpegOutputSink === 'stdout_pipe'
       || value.ffmpegOutputSink === 'rechunked_pipe'
       || value.ffmpegOutputSink === 'native_pipe'
+      || value.ffmpegOutputSink === 'preload_native'
       || value.ffmpegOutputSink === 'worker_thread'
       || value.ffmpegOutputSink === 'temporary_file')
     && (value.tempPcmCreateMs === undefined

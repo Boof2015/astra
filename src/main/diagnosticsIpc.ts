@@ -5,6 +5,7 @@ export function normalizeLocalPcmOutputSink(value: unknown): LocalPcmOutputSink 
     value === 'stdout_pipe'
     || value === 'rechunked_pipe'
     || value === 'native_pipe'
+    || value === 'preload_native'
     || value === 'worker_thread'
     || value === 'temporary_file'
   ) {

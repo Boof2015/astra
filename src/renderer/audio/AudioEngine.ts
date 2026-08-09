@@ -238,7 +238,11 @@ export interface AudioLoadTimings {
   validPcmBytes?: number
   backingBufferBytes?: number
   allocationGrowthCount?: number
-  transportRoute?: 'invoke' | 'message_port_stream'
+  transportRoute?: 'invoke' | 'message_port_stream' | 'preload_native'
+  /** Preload-owned native decode service wall span. */
+  preloadNativeServiceMs?: number
+  /** Renderer-to-preload bridge residual outside the preload native service span. */
+  preloadNativeContextBridgeResidualMs?: number
   /** Main-process handler wall span; decoder subphases may overlap within it. */
   mainHandlerMs?: number
   binaryResolutionMs?: number
@@ -248,7 +252,7 @@ export interface AudioLoadTimings {
   probeFfmpegOverlapMs?: number
   /** FFmpeg child spawn-to-close wall time, including stdout blocking and scheduling. */
   ffmpegMs?: number
-  ffmpegOutputSink?: 'stdout_pipe' | 'rechunked_pipe' | 'native_pipe' | 'worker_thread' | 'temporary_file'
+  ffmpegOutputSink?: 'stdout_pipe' | 'rechunked_pipe' | 'native_pipe' | 'preload_native' | 'worker_thread' | 'temporary_file'
   tempPcmCreateMs?: number
   tempPcmStatMs?: number
   tempPcmReadMs?: number
@@ -7016,6 +7020,15 @@ export class AudioEngine {
       ...(transportSummary?.transportRoute === undefined
         ? {}
         : { transportRoute: transportSummary.transportRoute }),
+      ...(transportSummary?.preloadNativeServiceMs === undefined
+        ? {}
+        : { preloadNativeServiceMs: transportSummary.preloadNativeServiceMs }),
+      ...(transportSummary?.preloadNativeContextBridgeResidualMs === undefined
+        ? {}
+        : {
+            preloadNativeContextBridgeResidualMs:
+              transportSummary.preloadNativeContextBridgeResidualMs,
+          }),
       ...(transportSummary?.mainHandlerMs === undefined
         ? {}
         : { mainHandlerMs: transportSummary.mainHandlerMs }),

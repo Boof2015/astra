@@ -148,11 +148,11 @@ test('PCM output route applies the authoritative diagnostics status returned by 
   })
   resetDiagnosticsStore(makeStatus(true))
 
-  const result = await useDiagnosticsStore.getState().setLocalPcmOutputSink('worker_thread')
+  const result = await useDiagnosticsStore.getState().setLocalPcmOutputSink('preload_native')
 
-  assert.deepEqual(calls, ['worker_thread'])
-  assert.equal(result?.localPcmOutputSink, 'worker_thread')
-  assert.equal(useDiagnosticsStore.getState().status?.localPcmOutputSink, 'worker_thread')
+  assert.deepEqual(calls, ['preload_native'])
+  assert.equal(result?.localPcmOutputSink, 'preload_native')
+  assert.equal(useDiagnosticsStore.getState().status?.localPcmOutputSink, 'preload_native')
   assert.equal(useDiagnosticsStore.getState().errorMessage, '')
 })
 
@@ -221,6 +221,7 @@ test('PCM output route resolves statuses from older temporary-file builds', () =
 
   assert.equal(resolveLocalPcmOutputSink(makeStatus(true, false, 'rechunked_pipe')), 'rechunked_pipe')
   assert.equal(resolveLocalPcmOutputSink(makeStatus(true, false, 'native_pipe')), 'native_pipe')
+  assert.equal(resolveLocalPcmOutputSink(makeStatus(true, false, 'preload_native')), 'preload_native')
   assert.equal(resolveLocalPcmOutputSink(legacyStatus), 'temporary_file')
   assert.equal(resolveLocalPcmOutputSink(null), 'stdout_pipe')
 })

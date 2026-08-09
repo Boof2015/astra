@@ -18241,7 +18241,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 }
 
 .settings-segmented-control.settings-segmented-control-pcm-route {
-  width: 400px;
+  width: 480px;
   max-width: 100%;
 }
 

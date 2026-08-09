@@ -203,6 +203,7 @@ const LOCAL_PCM_OUTPUT_SINK_OPTIONS: readonly SettingsSegmentedOption<LocalPcmOu
   { value: 'stdout_pipe', label: 'Pipe' },
   { value: 'rechunked_pipe', label: 'Rechunk' },
   { value: 'native_pipe', label: 'C++ Pipe' },
+  { value: 'preload_native', label: 'Preload C++' },
   { value: 'worker_thread', label: 'Worker' },
   { value: 'temporary_file', label: 'Temp File' },
 ]
@@ -3409,9 +3410,10 @@ export default function SettingsView() {
                 </div>
                 <p className="settings-note">
                   Applies only to new foreground local Standard decodes. Pipe and Rechunk use Electron&apos;s FFmpeg pipe;
-                  Rechunk asks FFmpeg to emit larger PCM packets. C++ Pipe drains a dedicated Win32 pipe; Worker
-                  drains FFmpeg away from Electron&apos;s main thread; Temp File may use about 200 MiB. Next-track and
-                  gapless prebuffering stay on Pipe. The route resets to Pipe when diagnostics are disabled or Astra restarts.
+                  Rechunk asks FFmpeg to emit larger PCM packets. C++ Pipe drains a dedicated Win32 pipe in main;
+                  Preload C++ runs the same capture inside preload and crosses only the context bridge. Worker drains
+                  FFmpeg away from Electron&apos;s main thread; Temp File may use about 200 MiB. Next-track and gapless
+                  prebuffering stay on Pipe. The route resets to Pipe when diagnostics are disabled or Astra restarts.
                 </p>
                 <p className="settings-info-meta">Current log</p>
                 <p className="settings-info-path">{diagnosticsCurrentLogPath}</p>

@@ -8,8 +8,11 @@ export type LocalPcmOutputSink =
   | 'stdout_pipe'
   | 'rechunked_pipe'
   | 'native_pipe'
+  | 'preload_native'
   | 'worker_thread'
   | 'temporary_file'
+
+export type LocalPcmTransportRoute = 'invoke' | 'message_port_stream' | 'preload_native'
 
 export interface MemoryDiagnosticsStatus {
   enabled: boolean
@@ -320,7 +323,9 @@ export interface LocalAudioPcmTransportTimings {
   backingBufferBytes: number
   allocationGrowthCount: number
   /** Bulk delivery route. Omitted by older builds and treated as invoke. */
-  transportRoute?: 'invoke' | 'message_port_stream'
+  transportRoute?: LocalPcmTransportRoute
+  /** Preload-owned native decode service wall span. */
+  preloadNativeServiceMs?: number
   mainHandlerMs: number
   binaryResolutionMs: number
   probeMs: number
@@ -370,7 +375,7 @@ export interface LocalAudioPcmTransportTimings {
   ffmpegWorkerCreditWaitCount?: number
   ffmpegWorkerCreditWaitMs?: number
   ffmpegWorkerCreditWaitMaxMs?: number
-  /** Main-only native capture setup and Win32 pipe-drain telemetry. */
+  /** Native-addon capture setup and Win32 pipe-drain telemetry. */
   nativePcmCaptureSpawnMs?: number
   nativePcmCaptureProcessMs?: number
   nativePcmCaptureFirstByteMs?: number

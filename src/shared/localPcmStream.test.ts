@@ -302,6 +302,19 @@ test('validates bounded chunks, resize messages, and complete metadata', () => {
       nativePcmCaptureMainBatchSpanMs: 0,
     }),
   }), true)
+  assert.equal(isLocalPcmStreamMainMessage({
+    ...base,
+    type: 'complete',
+    frames: 2,
+    pcmByteLength: 16,
+    probeMs: 2,
+    decodeMs: 20,
+    backgroundPriorityApplied: false,
+    chunkCount: 1,
+    transportTimings: makeMainTimings({
+      ffmpegOutputSink: 'preload_native',
+    }),
+  }), true)
 
   assert.equal(isLocalPcmStreamMainMessage({
     ...base,

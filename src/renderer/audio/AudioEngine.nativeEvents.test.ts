@@ -440,6 +440,52 @@ test('Standard PCM timings propagate worker-thread ingestion without inflating d
   assert.equal(timings.decodeMs, timings.decodeWorkMs)
 })
 
+test('Standard PCM timings propagate preload-native service time without inflating decode work', () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  const requestId = 25
+  const pcm = makeLocalPcmResult(
+    requestId,
+    0.25,
+    makeTransportTimings(requestId, {
+      transportRoute: 'preload_native',
+      ffmpegOutputSink: 'preload_native',
+      preloadNativeServiceMs: 650,
+    }),
+  )
+  const timings = internals.buildPcmLoadTimings(pcm, {
+    validPcmBytes: 8,
+    backingBufferBytes: 16,
+    webAudioBufferAllocationMs: 1,
+    pcmDeinterleaveMs: 2,
+    pcmDestinationViewMs: 0.25,
+    pcmCopySetupMs: 0.25,
+    pcmChannelCopyTotalMs: 1,
+    pcmChannelCopyMaxMs: 0.5,
+    pcmChannelCopyByChannelMs: [0.5, 0.5],
+    pcmPayloadReleaseMs: 0.25,
+    pcmDeinterleaveResidualMs: 0.25,
+  }, 3, {
+    decodeRequestId: requestId,
+    rendererBridgeCallMs: 700,
+    deliveredAt: 800,
+    pipelineStartedAt: 50,
+    standardTransportSetupMs: 1,
+    standardContextReadyMs: 1,
+    standardDecodeRequestSetupMs: 1,
+  })
+
+  assert.equal(timings.transportRoute, 'preload_native')
+  assert.equal(timings.ffmpegOutputSink, 'preload_native')
+  assert.equal(timings.preloadNativeServiceMs, 650)
+  assert.equal(timings.preloadNativeContextBridgeResidualMs, 50)
+  assert.equal(timings.decodeWorkMs, 105)
+  assert.equal(timings.decodeMs, timings.decodeWorkMs)
+  assert.equal(timings.preloadInvokeMs, undefined)
+  assert.equal(timings.electronIpcResidualMs, undefined)
+  assert.equal(timings.contextBridgeResidualMs, undefined)
+})
+
 test('polled native lifecycle events cannot override an authoritative load or device command', () => {
   const engine = new AudioEngine()
   const internals = engine as unknown as AudioEngineInternals

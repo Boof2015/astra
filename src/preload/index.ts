@@ -145,6 +145,11 @@ import type {
   LibraryDiagnosticsStatus
 } from '../types/libraryDiagnostics'
 import type { AppBuildInfo } from '../types/appBuildInfo'
+import {
+  PreloadLocalPcmNativeDecodeCancelledError,
+  PreloadLocalPcmNativeDecodeUnavailableError,
+  createBundledPreloadLocalPcmNativeDecodeCoordinator
+} from './localPcmNativeDecodeCoordinator'
 import type {
   ImportedListeningSource,
   ImportedListeningSourceRemoval,
@@ -738,6 +743,146 @@ function roundPreloadDiagnosticMs(value: number): number {
   return Math.round(Math.max(0, value) * 100) / 100
 }
 
+function resolvePreloadLocalPcmOutputSink(status: MemoryDiagnosticsStatus): LocalPcmOutputSink {
+  if (status.enabled !== true) return 'stdout_pipe'
+  const sink = status.localPcmOutputSink
+  if (
+    sink === 'stdout_pipe'
+    || sink === 'rechunked_pipe'
+    || sink === 'native_pipe'
+    || sink === 'preload_native'
+    || sink === 'worker_thread'
+    || sink === 'temporary_file'
+  ) {
+    return sink
+  }
+  return status.localPcmTempFileSinkEnabled ? 'temporary_file' : 'stdout_pipe'
+}
+
+let preloadLocalPcmOutputSink: LocalPcmOutputSink = 'stdout_pipe'
+let preloadPcmSinkSelectionGeneration = 0
+const preloadLocalPcmNativeDecodeCoordinator =
+  createBundledPreloadLocalPcmNativeDecodeCoordinator({
+    isPackaged: process.env.NODE_ENV !== 'development',
+    authorize: (input) => ipcRenderer.invoke(
+      'audio:authorizePreloadNativePcmDecode',
+      input
+    ) as Promise<boolean>
+  })
+const activePreloadNativeDecodeTokens = new Set<symbol>()
+let preloadNativePidPublishTimer: ReturnType<typeof setInterval> | null = null
+let lastPublishedPreloadNativePidKey = ''
+
+function applyPreloadMemoryDiagnosticsStatus(
+  status: MemoryDiagnosticsStatus
+): MemoryDiagnosticsStatus {
+  preloadLocalPcmOutputSink = resolvePreloadLocalPcmOutputSink(status)
+  return status
+}
+
+function publishPreloadNativePcmProcessIds(): void {
+  let processIds: number[] = []
+  try {
+    processIds = preloadLocalPcmNativeDecodeCoordinator
+      .getActiveProcessIds()
+      .filter((pid) => Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid)
+      .slice(0, 4)
+  } catch {
+    processIds = []
+  }
+  const key = processIds.join(',')
+  if (key === lastPublishedPreloadNativePidKey) return
+  lastPublishedPreloadNativePidKey = key
+  ipcRenderer.send('audio:preloadNativePcmActiveProcessIds', processIds)
+}
+
+function beginPreloadNativePidPublishing(): () => void {
+  const token = Symbol('preload-native-decode')
+  activePreloadNativeDecodeTokens.add(token)
+  if (preloadNativePidPublishTimer === null) {
+    preloadNativePidPublishTimer = setInterval(publishPreloadNativePcmProcessIds, 25)
+    publishPreloadNativePcmProcessIds()
+  }
+  return () => {
+    activePreloadNativeDecodeTokens.delete(token)
+    if (activePreloadNativeDecodeTokens.size > 0) {
+      publishPreloadNativePcmProcessIds()
+      return
+    }
+    if (preloadNativePidPublishTimer !== null) {
+      clearInterval(preloadNativePidPublishTimer)
+      preloadNativePidPublishTimer = null
+    }
+    lastPublishedPreloadNativePidKey = ''
+    ipcRenderer.send('audio:preloadNativePcmActiveProcessIds', [])
+  }
+}
+
+async function setPreloadLocalPcmOutputSink(
+  sink: LocalPcmOutputSink
+): Promise<MemoryDiagnosticsStatus> {
+  const selectionGeneration = ++preloadPcmSinkSelectionGeneration
+  const status = applyPreloadMemoryDiagnosticsStatus(
+    await ipcRenderer.invoke('diagnostics:setLocalPcmOutputSink', sink) as MemoryDiagnosticsStatus
+  )
+  if (resolvePreloadLocalPcmOutputSink(status) !== 'preload_native') return status
+  try {
+    await preloadLocalPcmNativeDecodeCoordinator.ensureReady()
+    // Read back the authoritative state after the asynchronous warmup so a
+    // concurrent diagnostics disable/route change cannot return stale UI state.
+    return applyPreloadMemoryDiagnosticsStatus(
+      await ipcRenderer.invoke('diagnostics:getStatus') as MemoryDiagnosticsStatus
+    )
+  } catch (error) {
+    let currentStatus: MemoryDiagnosticsStatus | null = null
+    try {
+      currentStatus = applyPreloadMemoryDiagnosticsStatus(
+        await ipcRenderer.invoke('diagnostics:getStatus') as MemoryDiagnosticsStatus
+      )
+    } catch {
+      // The guarded reset below is still safe when the status read itself fails.
+    }
+    if (
+      selectionGeneration !== preloadPcmSinkSelectionGeneration
+      || (currentStatus !== null
+        && resolvePreloadLocalPcmOutputSink(currentStatus) !== 'preload_native')
+      || (currentStatus === null && preloadLocalPcmOutputSink !== 'preload_native')
+    ) {
+      if (currentStatus !== null) return currentStatus
+      throw new Error('Preload C++ route preparation was superseded.')
+    }
+    // Never leave a route selected when its private addon/binaries cannot be
+    // loaded. The ordinary pipe route is immediately restored and the Settings
+    // caller receives the actionable readiness error.
+    try {
+      applyPreloadMemoryDiagnosticsStatus(
+        await ipcRenderer.invoke(
+          'diagnostics:setLocalPcmOutputSink',
+          'stdout_pipe'
+        ) as MemoryDiagnosticsStatus
+      )
+    } catch {
+      preloadLocalPcmOutputSink = 'stdout_pipe'
+    }
+    console.warn('Preload C++ route preparation failed:', error)
+    throw new Error('Preload C++ is unavailable in this build.')
+  }
+}
+
+void (ipcRenderer.invoke('diagnostics:getStatus') as Promise<MemoryDiagnosticsStatus>)
+  .then(applyPreloadMemoryDiagnosticsStatus)
+  .catch(() => undefined)
+
+window.addEventListener('unload', () => {
+  preloadLocalPcmNativeDecodeCoordinator.cancelAll()
+  if (preloadNativePidPublishTimer !== null) {
+    clearInterval(preloadNativePidPublishTimer)
+    preloadNativePidPublishTimer = null
+  }
+  activePreloadNativeDecodeTokens.clear()
+  ipcRenderer.send('audio:preloadNativePcmActiveProcessIds', [])
+}, { once: true })
+
 async function benchmarkMainPcmTransfer(sizeBytes: number): Promise<PcmTransferBenchmarkProbeResult> {
   const invokeStartedAtMs = preloadDiagnosticNow()
   const result = await ipcRenderer.invoke(
@@ -834,6 +979,9 @@ function openLocalAudioPcmStream(
     nonce
   }
   if (!validateLocalPcmStreamOpenRequest(request)) return false
+  if (preloadLocalPcmOutputSink === 'preload_native' && request.priority === 'interactive') {
+    return false
+  }
 
   let mainPort: MessagePort | null = null
   let rendererPort: MessagePort | null = null
@@ -1007,12 +1155,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
   diagnostics: {
-    getStatus: (): Promise<MemoryDiagnosticsStatus> => ipcRenderer.invoke('diagnostics:getStatus'),
-    setEnabled: (enabled: boolean): Promise<MemoryDiagnosticsStatus> => ipcRenderer.invoke('diagnostics:setEnabled', enabled),
-    setLocalPcmOutputSink: (sink: LocalPcmOutputSink): Promise<MemoryDiagnosticsStatus> =>
-      ipcRenderer.invoke('diagnostics:setLocalPcmOutputSink', sink),
-    setLocalPcmTempFileSinkEnabled: (enabled: boolean): Promise<MemoryDiagnosticsStatus> =>
-      ipcRenderer.invoke('diagnostics:setLocalPcmTempFileSinkEnabled', enabled),
+    getStatus: async (): Promise<MemoryDiagnosticsStatus> => applyPreloadMemoryDiagnosticsStatus(
+      await ipcRenderer.invoke('diagnostics:getStatus') as MemoryDiagnosticsStatus
+    ),
+    setEnabled: async (enabled: boolean): Promise<MemoryDiagnosticsStatus> => {
+      preloadPcmSinkSelectionGeneration += 1
+      return applyPreloadMemoryDiagnosticsStatus(
+        await ipcRenderer.invoke('diagnostics:setEnabled', enabled) as MemoryDiagnosticsStatus
+      )
+    },
+    setLocalPcmOutputSink: setPreloadLocalPcmOutputSink,
+    setLocalPcmTempFileSinkEnabled: async (enabled: boolean): Promise<MemoryDiagnosticsStatus> => {
+      preloadPcmSinkSelectionGeneration += 1
+      return applyPreloadMemoryDiagnosticsStatus(
+        await ipcRenderer.invoke(
+          'diagnostics:setLocalPcmTempFileSinkEnabled',
+          enabled
+        ) as MemoryDiagnosticsStatus
+      )
+    },
     revealCurrentLog: (): Promise<boolean> => ipcRenderer.invoke('diagnostics:revealCurrentLog'),
     revealPreviousLog: (): Promise<boolean> => ipcRenderer.invoke('diagnostics:revealPreviousLog'),
     captureMemoryBundle: (tag?: string): Promise<MemoryDiagnosticsCaptureBundleResult> =>
@@ -1029,7 +1190,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     benchmarkPreloadPcmTransfer,
     openMainPcmStreamBenchmark,
     onStatus: (callback: (status: MemoryDiagnosticsStatus) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, status: MemoryDiagnosticsStatus) => callback(status)
+      const handler = (_event: Electron.IpcRendererEvent, status: MemoryDiagnosticsStatus) => {
+        callback(applyPreloadMemoryDiagnosticsStatus(status))
+      }
       ipcRenderer.on('diagnostics:status', handler)
       return () => ipcRenderer.removeListener('diagnostics:status', handler)
     },
@@ -1424,6 +1587,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
     expectedChannels?: number | null,
     priority?: 'interactive' | 'background'
   ): Promise<LocalAudioPcmDecodeResult | null> => {
+    const effectivePriority = priority === 'background' ? 'background' : 'interactive'
+    if (preloadLocalPcmOutputSink === 'preload_native' && effectivePriority === 'interactive') {
+      const stopPublishingPids = beginPreloadNativePidPublishing()
+      try {
+        return await preloadLocalPcmNativeDecodeCoordinator.decode({
+          requestId,
+          filePath,
+          outputSampleRate,
+          expectedChannels: expectedChannels ?? null,
+          priority: 'interactive'
+        })
+      } catch (error) {
+        if (error instanceof PreloadLocalPcmNativeDecodeCancelledError) return null
+        if (!(error instanceof PreloadLocalPcmNativeDecodeUnavailableError)) throw error
+        // Setup was proven unavailable before a preload-owned FFmpeg child was
+        // exposed. The unchanged main C++ route remains the only safe retry.
+      } finally {
+        stopPublishingPids()
+      }
+    }
     const invokeStartedAtMs = preloadDiagnosticNow()
     const result = await ipcRenderer.invoke(
       'audio:decodeLocalAudioToPcm',
@@ -1446,8 +1629,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       }
     }
   },
-  cancelLocalAudioDecode: (requestId: number) =>
-    ipcRenderer.invoke('audio:cancelLocalAudioDecode', requestId) as Promise<void>,
+  cancelLocalAudioDecode: async (requestId: number): Promise<void> => {
+    preloadLocalPcmNativeDecodeCoordinator.cancel(requestId)
+    await ipcRenderer.invoke('audio:cancelLocalAudioDecode', requestId)
+  },
   promoteLocalAudioDecode: (requestId: number) =>
     ipcRenderer.invoke('audio:promoteLocalAudioDecode', requestId) as Promise<void>,
   analyzeTrackLoudness: (filePath: string) =>

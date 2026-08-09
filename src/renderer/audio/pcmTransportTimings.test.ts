@@ -204,6 +204,34 @@ test('native-pipe capture timings propagate as bounded diagnostics', () => {
   assert.equal(summary.nativePcmCaptureMainBatchSpanMs, 0)
 })
 
+test('preload-native timings expose their dedicated service and context-bridge spans', () => {
+  const summary = summarizePcmTransportTimings(makeTransportTimings({
+    transportRoute: 'preload_native',
+    ffmpegOutputSink: 'preload_native',
+    nativePcmCaptureProcessMs: 80,
+    preloadNativeServiceMs: 80,
+  }), 105)
+
+  assert.equal(summary.transportRoute, 'preload_native')
+  assert.equal(summary.ffmpegOutputSink, 'preload_native')
+  assert.equal(summary.nativePcmCaptureProcessMs, 80)
+  assert.equal(summary.preloadNativeServiceMs, 80)
+  assert.equal(summary.preloadNativeContextBridgeResidualMs, 25)
+  assert.equal(summary.preloadInvokeMs, undefined)
+  assert.equal(summary.electronIpcResidualMs, undefined)
+  assert.equal(summary.contextBridgeResidualMs, undefined)
+  assert.equal(summary.streamTransportResidualMs, undefined)
+})
+
+test('preload-native context-bridge residual is bounded at zero', () => {
+  const summary = summarizePcmTransportTimings(makeTransportTimings({
+    transportRoute: 'preload_native',
+    preloadNativeServiceMs: 120,
+  }), 105)
+
+  assert.equal(summary.preloadNativeContextBridgeResidualMs, 0)
+})
+
 test('worker-thread PCM sink timings propagate as bounded diagnostics', () => {
   const summary = summarizePcmTransportTimings(makeTransportTimings({
     ffmpegOutputSink: 'worker_thread',
