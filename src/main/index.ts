@@ -1467,7 +1467,7 @@ const SCOPE_POPOUT_DEFAULTS: Record<ScopeKind, {
     title: 'Astra LUFS Meter',
     width: 480,
     height: 320,
-    minWidth: 320,
+    minWidth: 112,
     minHeight: 220,
   },
   waveform: {
