@@ -2783,7 +2783,7 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 }
 
 .fullscreen-waveform-wrap .waveform-hover-time {
-  top: -21px;
+  top: 5px;
 }
 
 .fullscreen-time {
@@ -4978,8 +4978,10 @@ body:has(.fullscreen-overlay) .controller-hints {
 
 .waveform-hover-time {
   position: absolute;
-  top: -22px;
-  transform: translateX(-50%);
+  top: 4px;
+  transform: translate(-50%, 3px);
+  opacity: 0;
+  visibility: hidden;
   font-size: 10px;
   color: var(--text-primary);
   background: var(--bg-tertiary);
@@ -4988,6 +4990,25 @@ body:has(.fullscreen-overlay) .controller-hints {
   pointer-events: none;
   white-space: nowrap;
   z-index: 10;
+  transition:
+    opacity 90ms ease-out,
+    transform 90ms ease-out,
+    visibility 0s linear 90ms;
+}
+
+.waveform-hover-time.is-visible {
+  transform: translate(-50%, 0);
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .waveform-hover-time,
+  .waveform-hover-time.is-visible {
+    transform: translate(-50%, 0);
+    transition: none;
+  }
 }
 
 /* Volume Control */
@@ -13834,7 +13855,7 @@ html[data-theme-tone="light"] .transport-center {
 }
 
 .waveform-hover-time {
-  top: -20px;
+  top: 4px;
 }
 
 .now-playing-title {
