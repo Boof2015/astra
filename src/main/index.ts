@@ -7,6 +7,7 @@ import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, typ
 import { createHash, randomBytes, randomUUID } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
+import { isAllowedArtworkProtocolHash } from './services/artworkProtocol'
 import type { DynamicPlaylistRulesV1 } from '../shared/playlists/dynamicPlaylist'
 import type {
   ListeningSessionCheckpoint,
@@ -5344,9 +5345,6 @@ async function getArtworkThumbnailDataUrlByHash(
 }
 
 // URL shape: astra-artwork://art/<thumb|card|full>/<encodeURIComponent(hash)>
-// Hashes are md5 hex with an optional extension, optionally prefixed with
-// "plc:" (playlist covers) or "ari:" (artist images).
-const ARTWORK_PROTOCOL_HASH_PATTERN = /^(?:plc:|ari:)?[A-Za-z0-9][A-Za-z0-9._ -]*$/
 
 function artworkProtocolNotFound(): Response {
   return new Response(null, { status: 404 })
@@ -5367,9 +5365,9 @@ function registerArtworkProtocolHandler(): void {
       return artworkProtocolNotFound()
     }
 
-    // library.getArtworkPath joins the hash into a path, so reject anything
-    // that could traverse outside the artwork directories.
-    if (!ARTWORK_PROTOCOL_HASH_PATTERN.test(hash) || hash.includes('..')) {
+    // Local references are restricted before they can reach getArtworkPath;
+    // valid Subsonic references resolve to a local content hash first.
+    if (!isAllowedArtworkProtocolHash(hash)) {
       return artworkProtocolNotFound()
     }
 
