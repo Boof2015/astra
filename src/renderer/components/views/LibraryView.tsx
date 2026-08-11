@@ -35,7 +35,11 @@ import {
   formatLibraryYearKey,
   type LibraryYearGroup
 } from '../../utils/libraryYears'
-import TrackList, { type TrackListSortKey } from '../library/TrackList'
+import {
+  bindLibraryScrollRestoration,
+  resolveLibraryScrollContextKey
+} from '../../utils/libraryScrollRestoration'
+import TrackList, { type TrackListSortKey, type TrackListViewportAPI } from '../library/TrackList'
 import AlbumArtwork from '../library/AlbumArtwork'
 import QueueSplitButton from '../queue/QueueSplitButton'
 import AlbumGrid, { type AlbumGridViewportAPI } from '../library/AlbumGrid'
@@ -287,18 +291,19 @@ export default function LibraryView() {
   const detailHeaderRef = useRef<HTMLDivElement | null>(null)
   const collectionPlayPendingRef = useRef(false)
   const albumViewportRef = useRef<AlbumGridViewportAPI | null>(null)
-  const albumGridScrollRef = useRef(0)
   const yearDetailViewportRef = useRef<HTMLDivElement | null>(null)
-  const yearDetailScrollRef = useRef(0)
+  const artistDetailViewportRef = useRef<HTMLDivElement | null>(null)
   const artistViewportRef = useRef<ArtistListViewportAPI | null>(null)
-  const artistScrollRef = useRef(0)
   const genreViewportRef = useRef<GenreGridViewportAPI | null>(null)
-  const genreGridScrollRef = useRef(0)
   const yearViewportRef = useRef<YearGridViewportAPI | null>(null)
-  const yearGridScrollRef = useRef(0)
+  const trackViewportRef = useRef<TrackListViewportAPI | null>(null)
   const artistImageControlRef = useRef<HTMLDivElement | null>(null)
   const artistAlbumRailRef = useRef<HTMLDivElement | null>(null)
-  const pendingScrollRef = useRef<'albums' | 'artists' | 'genres' | 'years' | 'year-detail' | null>(null)
+  const activeScrollBindingRef = useRef<{
+    element: HTMLElement
+    key: ReturnType<typeof resolveLibraryScrollContextKey>
+    unbind: () => void
+  } | null>(null)
 
   useHorizontalWheelScroll(artistAlbumRailRef)
 
@@ -314,6 +319,13 @@ export default function LibraryView() {
   const isReleaseBrowseView = isAlbumRootView || isYearRootView || isYearDetailView
   const isTracklistContext = Boolean(selectedAlbum || selectedArtist || selectedGenre || viewMode === 'tracks')
   const isCollectionActionContext = isTracklistContext || selectedYear !== null
+  const libraryScrollContextKey = resolveLibraryScrollContextKey({
+    viewMode,
+    selectedAlbum,
+    selectedArtist,
+    selectedGenre,
+    selectedYear
+  })
 
   useEffect(() => {
     if (!isTrackRootView) return
@@ -523,25 +535,46 @@ export default function LibraryView() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [cancelScan, isScanning])
 
+  // Resolve the active scrollport after every render because virtualized views
+  // publish their imperative element after mounting and can replace it without
+  // changing the navigation context (for example Artist list/grid mode).
   useLayoutEffect(() => {
-    const pending = pendingScrollRef.current
-    if (pending === 'albums' && albumViewportRef.current?.element) {
-      albumViewportRef.current.element.scrollTop = albumGridScrollRef.current
-      pendingScrollRef.current = null
-    } else if (pending === 'artists' && artistViewportRef.current?.element) {
-      artistViewportRef.current.element.scrollTop = artistScrollRef.current
-      pendingScrollRef.current = null
-    } else if (pending === 'genres' && genreViewportRef.current?.element) {
-      genreViewportRef.current.element.scrollTop = genreGridScrollRef.current
-      pendingScrollRef.current = null
-    } else if (pending === 'years' && yearViewportRef.current?.element) {
-      yearViewportRef.current.element.scrollTop = yearGridScrollRef.current
-      pendingScrollRef.current = null
-    } else if (pending === 'year-detail' && yearDetailViewportRef.current) {
-      yearDetailViewportRef.current.scrollTop = yearDetailScrollRef.current
-      pendingScrollRef.current = null
+    let element: HTMLElement | null = null
+    if (selectedAlbum || selectedGenre || isTrackRootView) {
+      element = trackViewportRef.current?.element ?? null
+    } else if (selectedArtist) {
+      element = artistDetailViewportRef.current
+    } else if (selectedYear !== null) {
+      element = yearDetailViewportRef.current
+    } else if (viewMode === 'albums') {
+      element = albumViewportRef.current?.element ?? null
+    } else if (viewMode === 'artists') {
+      element = artistViewportRef.current?.element ?? null
+    } else if (viewMode === 'genres') {
+      element = genreViewportRef.current?.element ?? null
+    } else if (viewMode === 'years') {
+      element = yearViewportRef.current?.element ?? null
+    }
+
+    const activeBinding = activeScrollBindingRef.current
+    if (activeBinding?.key === libraryScrollContextKey && activeBinding.element === element) return
+
+    activeBinding?.unbind()
+    activeScrollBindingRef.current = null
+
+    if (element) {
+      activeScrollBindingRef.current = {
+        element,
+        key: libraryScrollContextKey,
+        unbind: bindLibraryScrollRestoration(libraryScrollContextKey, element)
+      }
     }
   })
+
+  useLayoutEffect(() => () => {
+    activeScrollBindingRef.current?.unbind()
+    activeScrollBindingRef.current = null
+  }, [])
 
   useEffect(() => {
     if (isTrackRootView) return
@@ -649,7 +682,6 @@ export default function LibraryView() {
   }, [commitPreparedSelection, prepareSelection])
 
   const handleSelectArtistFromList = useCallback(async (artistName: string) => {
-    artistScrollRef.current = artistViewportRef.current?.element?.scrollTop ?? 0
     await runPreparedSelectionTransition(
       { kind: 'artist', artist: artistName, origin: 'library' },
       'library-context-forward'
@@ -658,10 +690,7 @@ export default function LibraryView() {
 
   const handleSelectAlbumFromGrid = useCallback((album: { album: string; artist: string; identity_key: string }) => {
     if (selectedYear !== null) {
-      yearDetailScrollRef.current = yearDetailViewportRef.current?.scrollTop ?? 0
       setSearchQuery('')
-    } else {
-      albumGridScrollRef.current = albumViewportRef.current?.element?.scrollTop ?? 0
     }
     void runPreparedSelectionTransition(
       {
@@ -689,7 +718,6 @@ export default function LibraryView() {
   }, [openCollectionQueueMenu])
 
   const handleSelectGenreFromGrid = useCallback((genre: { genre: string }) => {
-    genreGridScrollRef.current = genreViewportRef.current?.element?.scrollTop ?? 0
     void runPreparedSelectionTransition(
       { kind: 'genre', genre: genre.genre, origin: 'library' },
       'library-context-forward'
@@ -697,7 +725,6 @@ export default function LibraryView() {
   }, [runPreparedSelectionTransition])
 
   const handleSelectYearFromGrid = useCallback((year: LibraryYearGroup) => {
-    yearGridScrollRef.current = yearViewportRef.current?.element?.scrollTop ?? 0
     void runPreparedSelectionTransition(
       { kind: 'year', year: year.key, origin: 'library' },
       'library-context-forward'
@@ -1164,7 +1191,6 @@ export default function LibraryView() {
       const prepared = await prepareSelection({ kind: 'history', direction: 'back' })
       if (!prepared) return
       if (contextualAlbumParent.selectedYear !== null) {
-        pendingScrollRef.current = 'year-detail'
         setSearchQuery('')
       }
       await runViewTransition(() => {
@@ -1173,11 +1199,7 @@ export default function LibraryView() {
       return
     }
 
-    if (viewMode === 'albums') pendingScrollRef.current = 'albums'
-    else if (viewMode === 'artists') pendingScrollRef.current = 'artists'
-    else if (viewMode === 'genres') pendingScrollRef.current = 'genres'
-    else if (viewMode === 'years') {
-      pendingScrollRef.current = 'years'
+    if (viewMode === 'years') {
       setSearchQuery('')
     }
     await runViewTransition(() => clearSelection(), 'library-context-backward')
@@ -1540,6 +1562,7 @@ export default function LibraryView() {
       return (
         <div
           className="library-artist-detail"
+          ref={artistDetailViewportRef}
           data-controller-scroll
           data-track-list-scroll-container
         >
@@ -1679,6 +1702,7 @@ export default function LibraryView() {
       return (
         <TrackList
           tracks={displayTracks}
+          viewportRef={trackViewportRef}
           queueSeedTracks={queueSeedSortedTracks}
           queueContextLabel={selectedGenre}
           sourceContext={playbackSourceContext}
@@ -1701,6 +1725,7 @@ export default function LibraryView() {
     return (
       <TrackList
         tracks={displayTracks}
+        viewportRef={trackViewportRef}
         queueSeedTracks={queueSeedSortedTracks}
         queueContextLabel={selectedAlbum?.album ?? selectedArtist ?? 'Library'}
         sourceContext={playbackSourceContext}
