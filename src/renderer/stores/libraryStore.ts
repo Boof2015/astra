@@ -8,24 +8,41 @@ import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
 import { useUIStore } from './uiStore'
 import {
   ALBUM_SORT_MODE_STORAGE_KEY,
+  ALBUM_SORT_STATE_STORAGE_KEY,
   ARTIST_BROWSE_MODE_STORAGE_KEY,
   ARTIST_ROOT_VIEW_MODE_STORAGE_KEY,
   INCLUDE_COLLAB_ARTISTS_STORAGE_KEY,
   INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY,
+  ROOT_TRACK_TABLE_LAYOUT_STORAGE_KEY,
   TRACKLIST_ADDED_DATE_VISIBILITY_STORAGE_KEY,
   TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY,
   TRACKLIST_GENRE_VISIBILITY_STORAGE_KEY,
-  TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY
+  TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY,
+  TRACK_RATINGS_ENABLED_STORAGE_KEY
 } from '../constants/settingsStorageKeys'
 import {
+  normalizeSessionAlbumSortState,
+  normalizeSessionTrackSortRules,
   normalizeTrackSortState,
   type LibrarySessionSnapshot,
-  type SessionAlbumSortMode,
   type SessionArtistRootViewMode,
   type SessionTrackSortState
 } from '../utils/sessionState'
 import { normalizeKey } from '../utils/albumIdentity'
 import { albumMatchesLibraryYear, type LibraryYearKey } from '../utils/libraryYears'
+import {
+  DEFAULT_ALBUM_SORT_STATE,
+  normalizeAlbumSortState,
+  type AlbumSortState
+} from '../utils/albumSort'
+import {
+  DEFAULT_TRACK_SORT_RULES,
+  createDefaultRootTrackTableLayout,
+  normalizeRootTrackTableLayout,
+  normalizeTrackSortRules,
+  type RootTrackTableLayout,
+  type TrackSortRule
+} from '../utils/rootTrackTable'
 
 interface LibraryReloadDiagnosticsContext {
   runId: string
@@ -150,7 +167,7 @@ export type LibraryArtistBrowseMode = 'strict' | 'canonical'
 export type LibraryFullTrackConsumer = 'library' | 'graph' | 'integrity'
 export type ArtworkVariant = 'full' | 'thumbnail' | 'card'
 type ArtworkResponseFormat = 'object-url' | 'data-url'
-export type LibraryAlbumSortMode = SessionAlbumSortMode
+export type LibraryAlbumSortState = AlbumSortState
 export type LibraryArtistRootViewMode = SessionArtistRootViewMode
 export type LibraryTrackListSortState = SessionTrackSortState
 
@@ -322,8 +339,10 @@ interface LibraryStore {
   showTracklistPlayCount: boolean
   trackListSortState: LibraryTrackListSortState | null
   tracksViewSortState: LibraryTrackListSortState | null
+  tracksViewSortRules: TrackSortRule[]
+  rootTrackTableLayout: RootTrackTableLayout
   selectedSourceFilters: Set<string>
-  albumSortMode: LibraryAlbumSortMode
+  albumSortState: LibraryAlbumSortState
   includeSinglesInAlbums: boolean
   includeCollabArtists: boolean
   artistRootViewMode: LibraryArtistRootViewMode
@@ -399,10 +418,12 @@ interface LibraryStore {
   setShowTracklistPlayCount: (enabled: boolean) => void
   setTrackListSortState: (sortState: LibraryTrackListSortState | null) => void
   resetTrackListSortState: () => void
+  setTracksViewSortRules: (rules: readonly TrackSortRule[]) => void
+  setRootTrackTableLayout: (layout: RootTrackTableLayout) => void
   setSelectedSourceFilters: (filters: Iterable<string>) => void
   clearSelectedSourceFilters: () => void
   toggleSourceFilter: (filterKey: string) => void
-  setAlbumSortMode: (mode: LibraryAlbumSortMode) => void
+  setAlbumSortState: (state: LibraryAlbumSortState) => void
   setIncludeSinglesInAlbums: (enabled: boolean) => void
   setIncludeCollabArtists: (enabled: boolean) => void
   setArtistRootViewMode: (mode: LibraryArtistRootViewMode) => void
@@ -623,8 +644,9 @@ type TrackCachePatch = Partial<Pick<
   | 'selectionForwardHistory'
   | 'trackListSortState'
   | 'tracksViewSortState'
+  | 'tracksViewSortRules'
   | 'selectedSourceFilters'
-  | 'albumSortMode'
+  | 'albumSortState'
   | 'includeSinglesInAlbums'
   | 'includeCollabArtists'
   | 'artistRootViewMode'
@@ -826,15 +848,58 @@ function loadArtistBrowseModeSetting(): LibraryArtistBrowseMode {
   }
 }
 
-function normalizeAlbumSortMode(mode: LibraryAlbumSortMode | string | null | undefined): LibraryAlbumSortMode {
-  return mode === 'artist' ? 'artist' : 'title'
+function loadAlbumSortStateSetting(): LibraryAlbumSortState {
+  try {
+    const storedState = localStorage.getItem(ALBUM_SORT_STATE_STORAGE_KEY)
+    if (storedState) {
+      try {
+        return normalizeAlbumSortState(JSON.parse(storedState))
+      } catch {
+        // Fall through to the legacy string preference.
+      }
+    }
+    const migrated = normalizeAlbumSortState(localStorage.getItem(ALBUM_SORT_MODE_STORAGE_KEY))
+    try {
+      localStorage.setItem(ALBUM_SORT_STATE_STORAGE_KEY, JSON.stringify(migrated))
+    } catch {
+      // The in-memory migration is still valid when storage is unavailable.
+    }
+    return migrated
+  } catch {
+    return { ...DEFAULT_ALBUM_SORT_STATE }
+  }
 }
 
-function loadAlbumSortModeSetting(): LibraryAlbumSortMode {
+function loadRootTrackTableLayoutSetting(): RootTrackTableLayout {
+  const seed = {
+    showBpmKey: loadTracklistBpmKeyVisibilitySetting(),
+    showGenre: loadTracklistGenreVisibilitySetting(),
+    showAdded: loadTracklistAddedDateVisibilitySetting(),
+    showPlayCount: loadTracklistPlayCountVisibilitySetting(),
+    showRating: (() => {
+      try {
+        return localStorage.getItem(TRACK_RATINGS_ENABLED_STORAGE_KEY) === '1'
+      } catch {
+        return false
+      }
+    })()
+  }
   try {
-    return normalizeAlbumSortMode(localStorage.getItem(ALBUM_SORT_MODE_STORAGE_KEY))
+    const stored = localStorage.getItem(ROOT_TRACK_TABLE_LAYOUT_STORAGE_KEY)
+    if (!stored) {
+      const initialLayout = createDefaultRootTrackTableLayout(seed)
+      localStorage.setItem(ROOT_TRACK_TABLE_LAYOUT_STORAGE_KEY, JSON.stringify(initialLayout))
+      return initialLayout
+    }
+    const normalized = normalizeRootTrackTableLayout(JSON.parse(stored), seed)
+    try {
+      localStorage.setItem(ROOT_TRACK_TABLE_LAYOUT_STORAGE_KEY, JSON.stringify(normalized))
+    } catch {
+      // The normalized in-memory layout is still valid when storage is unavailable.
+    }
+    return normalized
   } catch {
-    return 'title'
+    return createDefaultRootTrackTableLayout(seed)
   }
 }
 
@@ -1095,8 +1160,10 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   showTracklistPlayCount: loadTracklistPlayCountVisibilitySetting(),
   trackListSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE },
   tracksViewSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE },
+  tracksViewSortRules: DEFAULT_TRACK_SORT_RULES.map((rule) => ({ ...rule })),
+  rootTrackTableLayout: loadRootTrackTableLayoutSetting(),
   selectedSourceFilters: new Set<string>(),
-  albumSortMode: loadAlbumSortModeSetting(),
+  albumSortState: loadAlbumSortStateSetting(),
   includeSinglesInAlbums: loadIncludeSinglesInAlbumsSetting(),
   includeCollabArtists: loadIncludeCollabArtistsSetting(),
   artistRootViewMode: loadArtistRootViewModeSetting(),
@@ -2483,7 +2550,10 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       return {
         trackListSortState: normalized,
         ...(isRootTracks
-          ? { tracksViewSortState: normalized ? { ...normalized } : null }
+          ? {
+              tracksViewSortState: normalized ? { ...normalized } : null,
+              tracksViewSortRules: normalizeTrackSortRules(normalized)
+            }
           : {})
       }
     })
@@ -2499,9 +2569,41 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         && state.selectedYear === null
       return {
         trackListSortState,
-        ...(isRootTracks ? { tracksViewSortState: trackListSortState } : {})
+        ...(isRootTracks
+          ? {
+              tracksViewSortState: trackListSortState,
+              tracksViewSortRules: DEFAULT_TRACK_SORT_RULES.map((rule) => ({ ...rule }))
+            }
+          : {})
       }
     })
+  },
+
+  setTracksViewSortRules: (rules: readonly TrackSortRule[]) => {
+    const normalized = normalizeTrackSortRules(rules)
+    set((state) => {
+      const primary = normalized[0] ?? DEFAULT_TRACK_LIST_SORT_STATE
+      const isRootTracks = state.viewMode === 'tracks'
+        && !state.selectedAlbum
+        && !state.selectedArtist
+        && !state.selectedGenre
+        && state.selectedYear === null
+      return {
+        tracksViewSortRules: normalized,
+        tracksViewSortState: { ...primary },
+        ...(isRootTracks ? { trackListSortState: { ...primary } } : {})
+      }
+    })
+  },
+
+  setRootTrackTableLayout: (layout: RootTrackTableLayout) => {
+    const normalized = normalizeRootTrackTableLayout(layout)
+    try {
+      localStorage.setItem(ROOT_TRACK_TABLE_LAYOUT_STORAGE_KEY, JSON.stringify(normalized))
+    } catch {
+      // Ignore localStorage write failures in restricted environments.
+    }
+    set({ rootTrackTableLayout: normalized })
   },
 
   setSelectedSourceFilters: (filters: Iterable<string>) => {
@@ -2534,10 +2636,14 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     })
   },
 
-  setAlbumSortMode: (mode: LibraryAlbumSortMode) => {
-    const normalized = normalizeAlbumSortMode(mode)
-    persistStringPreference(ALBUM_SORT_MODE_STORAGE_KEY, normalized)
-    set({ albumSortMode: normalized })
+  setAlbumSortState: (sortState: LibraryAlbumSortState) => {
+    const normalized = normalizeAlbumSortState(sortState)
+    try {
+      localStorage.setItem(ALBUM_SORT_STATE_STORAGE_KEY, JSON.stringify(normalized))
+    } catch {
+      // Ignore localStorage write failures in restricted environments.
+    }
+    set({ albumSortState: normalized })
   },
 
   setIncludeSinglesInAlbums: (enabled: boolean) => {
@@ -2594,8 +2700,9 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       selectedYear: state.selectedYear,
       trackListSortState: state.trackListSortState ? { ...state.trackListSortState } : null,
       tracksViewSortState: state.tracksViewSortState ? { ...state.tracksViewSortState } : null,
+      tracksViewSortRules: state.tracksViewSortRules.map((rule) => ({ ...rule })),
       selectedSourceFilters: [...state.selectedSourceFilters],
-      albumSortMode: state.albumSortMode,
+      albumSortState: { ...state.albumSortState },
       includeSinglesInAlbums: state.includeSinglesInAlbums,
       includeCollabArtists: state.includeCollabArtists,
       artistRootViewMode: state.artistRootViewMode
@@ -2613,8 +2720,14 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     const tracksViewSortState = normalizeTrackSortState(snapshot.tracksViewSortState)
       ?? (isRootTracksSnapshot ? normalizedSortState : null)
       ?? { ...DEFAULT_TRACK_LIST_SORT_STATE }
+    const tracksViewSortRules = normalizeTrackSortRules(
+      normalizeSessionTrackSortRules(snapshot.tracksViewSortRules, tracksViewSortState)
+    )
+    const tracksViewPrimarySort = tracksViewSortRules[0] ?? DEFAULT_TRACK_LIST_SORT_STATE
     const selectedSourceFilters = normalizeSourceFilters(snapshot.selectedSourceFilters)
-    const albumSortMode = normalizeAlbumSortMode(snapshot.albumSortMode)
+    const albumSortState = normalizeAlbumSortState(
+      normalizeSessionAlbumSortState(snapshot.albumSortState, snapshot.albumSortMode)
+    )
     const artistRootViewMode = normalizeArtistRootViewMode(snapshot.artistRootViewMode)
     const basePatch = {
       viewMode: snapshot.viewMode,
@@ -2626,17 +2739,22 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       selectionHistory: [],
       selectionForwardHistory: [],
       trackListSortState: isRootTracksSnapshot
-        ? { ...tracksViewSortState }
+        ? { ...tracksViewPrimarySort }
         : normalizedSortState,
-      tracksViewSortState: { ...tracksViewSortState },
+      tracksViewSortState: { ...tracksViewPrimarySort },
+      tracksViewSortRules,
       selectedSourceFilters,
-      albumSortMode,
+      albumSortState,
       includeSinglesInAlbums: Boolean(snapshot.includeSinglesInAlbums),
       includeCollabArtists: Boolean(snapshot.includeCollabArtists),
       artistRootViewMode
     }
 
-    persistStringPreference(ALBUM_SORT_MODE_STORAGE_KEY, albumSortMode)
+    try {
+      localStorage.setItem(ALBUM_SORT_STATE_STORAGE_KEY, JSON.stringify(albumSortState))
+    } catch {
+      // Ignore localStorage write failures in restricted environments.
+    }
     persistBooleanPreference(INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY, Boolean(snapshot.includeSinglesInAlbums))
     persistBooleanPreference(INCLUDE_COLLAB_ARTISTS_STORAGE_KEY, Boolean(snapshot.includeCollabArtists))
     persistStringPreference(ARTIST_ROOT_VIEW_MODE_STORAGE_KEY, artistRootViewMode)

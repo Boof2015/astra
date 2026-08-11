@@ -2159,8 +2159,12 @@ export default function SettingsView() {
                 </div>
               </div>
               <div className="settings-card">
-                <div className="settings-card-label">Tracklist Columns</div>
+                <div className="settings-card-label">Detail &amp; Playlist Columns</div>
                 <div className="settings-grid">
+                  <p className="settings-note">
+                    These controls apply to album, artist, genre, year, and playlist tracklists.
+                    Library → Tracks has its own Columns menu.
+                  </p>
                   <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">BPM / Key</span>
                     <button

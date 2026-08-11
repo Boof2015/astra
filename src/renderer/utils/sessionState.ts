@@ -11,10 +11,11 @@ export const SESSION_POSITION_CHECKPOINT_KIND = 'astra-session-position-checkpoi
 export const SESSION_POSITION_CHECKPOINT_SCHEMA_VERSION = 1
 
 export type SessionAppView = 'home' | 'library' | 'stats' | 'graph' | 'eq' | 'settings' | 'playlist'
-export type SessionTrackSortKey = 'title' | 'artist' | 'album' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added' | 'rating' | 'play_count'
+export type SessionTrackSortKey = 'title' | 'artist' | 'album' | 'year' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added' | 'rating' | 'codec' | 'play_count'
 export type SessionSortDirection = 'asc' | 'desc'
 export type SessionViewMode = 'tracks' | 'albums' | 'artists' | 'genres' | 'years' | 'folders'
 export type SessionAlbumSortMode = 'title' | 'artist'
+export type SessionAlbumSortKey = SessionAlbumSortMode | 'year'
 export type SessionArtistRootViewMode = 'list' | 'grid'
 export type SessionQueueItemOrigin = 'context' | 'manual'
 export type SessionQueueTrackSource = SessionQueueItemOrigin | 'standalone'
@@ -22,6 +23,11 @@ export type SessionRepeatMode = 'none' | 'one' | 'all'
 
 export interface SessionTrackSortState {
   key: SessionTrackSortKey
+  direction: SessionSortDirection
+}
+
+export interface SessionAlbumSortState {
+  key: SessionAlbumSortKey
   direction: SessionSortDirection
 }
 
@@ -130,8 +136,10 @@ export interface LibrarySessionSnapshot {
   selectedYear: LibraryYearKey | null
   trackListSortState: SessionTrackSortState | null
   tracksViewSortState?: SessionTrackSortState | null
+  tracksViewSortRules?: SessionTrackSortState[]
   selectedSourceFilters: string[]
-  albumSortMode: SessionAlbumSortMode
+  albumSortState?: SessionAlbumSortState
+  albumSortMode?: SessionAlbumSortMode
   includeSinglesInAlbums: boolean
   includeCollabArtists: boolean
   artistRootViewMode: SessionArtistRootViewMode
@@ -221,12 +229,14 @@ export function normalizeTrackSortState(value: unknown): SessionTrackSortState |
     key !== 'title'
     && key !== 'artist'
     && key !== 'album'
+    && key !== 'year'
     && key !== 'genre'
     && key !== 'duration'
     && key !== 'bpm'
     && key !== 'musical_key'
     && key !== 'added'
     && key !== 'rating'
+    && key !== 'codec'
     && key !== 'play_count'
   ) {
     return null
@@ -262,6 +272,32 @@ function normalizeLibraryYearKey(value: unknown): LibraryYearKey | null {
 
 function normalizeAlbumSortMode(value: unknown): SessionAlbumSortMode {
   return value === 'artist' ? 'artist' : 'title'
+}
+
+export function normalizeSessionAlbumSortState(value: unknown, legacyMode?: unknown): SessionAlbumSortState {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>
+    const key: SessionAlbumSortKey = record.key === 'artist' || record.key === 'year'
+      ? record.key
+      : 'title'
+    return { key, direction: record.direction === 'desc' ? 'desc' : 'asc' }
+  }
+  return { key: normalizeAlbumSortMode(legacyMode), direction: 'asc' }
+}
+
+export function normalizeSessionTrackSortRules(value: unknown, legacyState?: unknown): SessionTrackSortState[] {
+  const candidates = Array.isArray(value) ? value : []
+  const seen = new Set<SessionTrackSortKey>()
+  const rules: SessionTrackSortState[] = []
+  for (const candidate of candidates) {
+    const normalized = normalizeTrackSortState(candidate)
+    if (!normalized || seen.has(normalized.key)) continue
+    seen.add(normalized.key)
+    rules.push(normalized)
+  }
+  if (rules.length > 0) return rules
+  const legacy = normalizeTrackSortState(legacyState)
+  return legacy ? [legacy] : [{ key: 'title', direction: 'asc' }]
 }
 
 function normalizeArtistRootViewMode(value: unknown): SessionArtistRootViewMode {
@@ -511,8 +547,11 @@ function normalizeLibrarySession(value: unknown): LibrarySessionSnapshot | null 
     ...(Object.hasOwn(value, 'tracksViewSortState')
       ? { tracksViewSortState: normalizeTrackSortState(value.tracksViewSortState) }
       : {}),
+    ...(Object.hasOwn(value, 'tracksViewSortRules')
+      ? { tracksViewSortRules: normalizeSessionTrackSortRules(value.tracksViewSortRules, value.tracksViewSortState) }
+      : {}),
     selectedSourceFilters: requiredStringArray(value.selectedSourceFilters),
-    albumSortMode: normalizeAlbumSortMode(value.albumSortMode),
+    albumSortState: normalizeSessionAlbumSortState(value.albumSortState, value.albumSortMode),
     includeSinglesInAlbums: value.includeSinglesInAlbums === true,
     includeCollabArtists: value.includeCollabArtists === true,
     artistRootViewMode: normalizeArtistRootViewMode(value.artistRootViewMode)

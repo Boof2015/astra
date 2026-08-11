@@ -5333,9 +5333,9 @@ body:has(.fullscreen-overlay) .controller-hints {
   height: 0;
   border-left: 4px solid transparent;
   border-right: 4px solid transparent;
-  border-bottom: 6px solid currentColor;
+  border-top: 6px solid currentColor;
   opacity: 0.18;
-  transform: translateY(-1px);
+  transform: translateY(1px);
   transition:
     opacity var(--transition-fast),
     transform var(--transition-fast),
@@ -5351,10 +5351,10 @@ body:has(.fullscreen-overlay) .controller-hints {
   color: var(--text-secondary);
 }
 
-.track-col-sort-btn.active .track-col-sort-indicator.desc {
-  border-bottom: 0;
-  border-top: 6px solid currentColor;
-  transform: translateY(1px);
+.track-col-sort-indicator.desc {
+  border-top: 0;
+  border-bottom: 6px solid currentColor;
+  transform: translateY(-1px);
 }
 
 .track-col-default-sort-btn {
@@ -5618,6 +5618,16 @@ body:has(.fullscreen-overlay) .controller-hints {
   color: var(--text-secondary);
 }
 
+.track-col-year {
+  width: 72px;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  text-align: right;
+  padding-right: 12px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
 .track-col-genre {
   width: 132px;
   flex-shrink: 0;
@@ -5685,6 +5695,51 @@ body:has(.fullscreen-overlay) .controller-hints {
   text-align: right;
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
+}
+
+.track-col-sort-priority {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.track-col-sort-priority-number {
+  color: var(--text-secondary);
+}
+
+.track-col-sort-priority-arrow {
+  color: var(--accent);
+  font-size: 12px;
+  line-height: 0.8;
+}
+
+.track-list-root-custom .track-col-sort-btn {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.track-list-root-custom .track-col-sort-btn.active .track-col-sort-label {
+  color: var(--text-primary);
+}
+
+/* The root Tracks page owns its responsive visibility in JavaScript so that
+   configured order determines which optional columns leave first. Preserve
+   the original flex-table display mode instead of the global viewport rules. */
+.track-list-root-custom .track-col-artist,
+.track-list-root-custom .track-col-album,
+.track-list-root-custom .track-col-genre,
+.track-list-root-custom .track-col-bpm,
+.track-list-root-custom .track-col-key,
+.track-list-root-custom .track-col-codec,
+.track-list-root-custom .track-col-plays {
+  display: block;
 }
 
 .track-title {
@@ -6136,6 +6191,226 @@ body:has(.fullscreen-overlay) .controller-hints {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.root-track-table-controls {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.root-track-table-control-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.root-track-table-control-btn:hover,
+.root-track-table-control-btn.active {
+  border-color: rgba(var(--accent-rgb), 0.48);
+  color: var(--text-primary);
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
+.root-track-table-control-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(var(--accent-rgb), 0.16);
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.root-track-table-hidden-count {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.root-track-table-panel {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(390px, calc(100vw - 40px));
+  padding: 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  box-shadow: 0 18px 48px var(--shadow-soft);
+  color: var(--text-primary);
+}
+
+.root-track-table-panel-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.root-track-table-panel-heading > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.root-track-table-panel-heading strong {
+  font-size: 13px;
+}
+
+.root-track-table-panel-heading span {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.root-track-sort-rules,
+.root-track-column-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: min(430px, calc(100vh - 210px));
+  overflow-y: auto;
+}
+
+.root-track-sort-rule,
+.root-track-column-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+}
+
+.root-track-sort-rule:hover,
+.root-track-column-option:hover {
+  border-color: var(--glass-border);
+}
+
+.root-track-drag-handle {
+  width: 14px;
+  color: var(--text-tertiary);
+  text-align: center;
+  cursor: grab;
+  user-select: none;
+}
+
+.root-track-rule-priority {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(var(--accent-rgb), 0.14);
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.root-track-sort-rule select {
+  min-width: 0;
+  flex: 1;
+  height: 26px;
+  border: 1px solid var(--glass-border);
+  border-radius: 5px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 11px;
+}
+
+.root-track-rule-direction,
+.root-track-row-actions button,
+.root-track-table-panel-footer button {
+  border: 1px solid var(--glass-border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.root-track-rule-direction {
+  width: 28px;
+  height: 26px;
+  color: var(--accent-text);
+}
+
+.root-track-row-actions {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.root-track-row-actions button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 11px;
+}
+
+.root-track-rule-direction:hover,
+.root-track-row-actions button:hover:not(:disabled),
+.root-track-table-panel-footer button:hover:not(:disabled) {
+  border-color: rgba(var(--accent-rgb), 0.48);
+  color: var(--text-primary);
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
+.root-track-row-actions button:disabled,
+.root-track-table-panel-footer button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.root-track-column-option label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.root-track-column-option label small {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 9px;
+}
+
+.root-track-table-panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--glass-border);
+}
+
+.root-track-table-panel-footer button {
+  min-height: 27px;
+  padding: 0 9px;
+  font-size: 10px;
 }
 
 .library-header-artist-edit-btn:focus-visible,
@@ -8120,6 +8395,10 @@ body:has(.fullscreen-overlay) .controller-hints {
   flex-shrink: 0;
 }
 
+.library-album-sort-toggle {
+  width: 220px;
+}
+
 .library-segmented-highlight {
   position: absolute;
   top: 2px;
@@ -8149,6 +8428,15 @@ body:has(.fullscreen-overlay) .controller-hints {
   color: var(--text-secondary);
   cursor: pointer;
   transition: color var(--transition-fast);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.library-sort-direction {
+  font-size: 12px;
+  line-height: 1;
 }
 
 .library-segmented-btn:hover {

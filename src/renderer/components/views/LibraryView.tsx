@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type UIEvent as ReactUIEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent as ReactUIEvent } from 'react'
 import {
   useLibraryStore,
-  type LibraryAlbumSortMode,
   type LibraryArtistBrowseMode,
   type LibrarySelectionRequest
 } from '../../stores/libraryStore'
@@ -22,6 +21,11 @@ import { isSameOrDescendantFsPath } from '../../utils/folderTree'
 import { compareBaseLocaleText } from '../../utils/localeSort'
 import { runViewTransition } from '../../utils/viewTransitions'
 import { compareTrackPlayCounts } from '../../utils/trackPlayCountSort'
+import {
+  compareAlbumsBySortState,
+  getDefaultAlbumSortDirection,
+  type AlbumSortKey
+} from '../../utils/albumSort'
 import { getLibraryTabTransitionScopeClasses } from '../../utils/libraryTabMotion'
 import { getDetailHeaderCollapseDistance, resolveDetailHeaderCollapsed } from '../../utils/detailHeaderScroll'
 import {
@@ -40,6 +44,14 @@ import FolderTreeView from '../library/FolderTreeView'
 import GenreGrid, { type GenreGridViewportAPI } from '../library/GenreGrid'
 import YearAlbumPreview from '../library/YearAlbumPreview'
 import YearGrid, { type YearGridViewportAPI } from '../library/YearGrid'
+import RootTrackTableControls from '../library/RootTrackTableControls'
+import {
+  getVisibleRootTrackColumnIds,
+  normalizeTrackSortRules,
+  replaceTrackSortRulesFromHeader,
+  type RootTrackColumnId
+} from '../../utils/rootTrackTable'
+import { compareTracksBySortRules } from '../../utils/trackSort'
 
 type SortDirection = 'asc' | 'desc'
 type ArtistAlbumRailMode = 'albums' | 'singles' | 'featured'
@@ -230,12 +242,16 @@ export default function LibraryView() {
   const ratings = useRatingsStore((state) => state.ratings)
   const sortState = useLibraryStore((state) => state.trackListSortState)
   const setSortState = useLibraryStore((state) => state.setTrackListSortState)
+  const tracksViewSortRules = useLibraryStore((state) => state.tracksViewSortRules)
+  const setTracksViewSortRules = useLibraryStore((state) => state.setTracksViewSortRules)
+  const rootTrackTableLayout = useLibraryStore((state) => state.rootTrackTableLayout)
+  const setRootTrackTableLayout = useLibraryStore((state) => state.setRootTrackTableLayout)
   const selectedSourceFilters = useLibraryStore((state) => state.selectedSourceFilters)
   const setSelectedSourceFilters = useLibraryStore((state) => state.setSelectedSourceFilters)
   const clearSelectedSourceFilters = useLibraryStore((state) => state.clearSelectedSourceFilters)
   const toggleSourceFilter = useLibraryStore((state) => state.toggleSourceFilter)
-  const albumSortMode = useLibraryStore((state) => state.albumSortMode)
-  const setAlbumSortMode = useLibraryStore((state) => state.setAlbumSortMode)
+  const albumSortState = useLibraryStore((state) => state.albumSortState)
+  const setAlbumSortState = useLibraryStore((state) => state.setAlbumSortState)
   const includeSinglesInAlbums = useLibraryStore((state) => state.includeSinglesInAlbums)
   const setIncludeSinglesInAlbums = useLibraryStore((state) => state.setIncludeSinglesInAlbums)
   const includeCollabArtists = useLibraryStore((state) => state.includeCollabArtists)
@@ -257,6 +273,7 @@ export default function LibraryView() {
   const pendingLibrarySearchQuery = useUIStore((s) => s.pendingLibrarySearchQuery)
   const consumePendingLibrarySearchQuery = useUIStore((s) => s.consumePendingLibrarySearchQuery)
   const [searchQuery, setSearchQuery] = useState('')
+  const [responsiveHiddenTrackColumns, setResponsiveHiddenTrackColumns] = useState<readonly RootTrackColumnId[]>([])
   const [artistAlbumRailMode, setArtistAlbumRailMode] = useState<ArtistAlbumRailMode>('albums')
   const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
   const setArtistImageFromFile = useLibraryStore((state) => state.setArtistImageFromFile)
@@ -289,6 +306,7 @@ export default function LibraryView() {
   const hasSearchQuery = trimmedSearchQuery.length > 0
   const inDetailView = Boolean(selectedAlbum || selectedArtist || selectedGenre || selectedYear !== null)
   const isAlbumRootView = viewMode === 'albums' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null
+  const isTrackRootView = viewMode === 'tracks' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null
   const isArtistRootView = viewMode === 'artists' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null
   const isGenreRootView = viewMode === 'genres' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null
   const isYearRootView = viewMode === 'years' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null
@@ -296,6 +314,17 @@ export default function LibraryView() {
   const isReleaseBrowseView = isAlbumRootView || isYearRootView || isYearDetailView
   const isTracklistContext = Boolean(selectedAlbum || selectedArtist || selectedGenre || viewMode === 'tracks')
   const isCollectionActionContext = isTracklistContext || selectedYear !== null
+
+  useEffect(() => {
+    if (!isTrackRootView) return
+    const visibleColumns = getVisibleRootTrackColumnIds(rootTrackTableLayout, ratingsEnabled)
+    const normalizedRules = normalizeTrackSortRules(tracksViewSortRules, { visibleColumns, ratingsEnabled })
+    const unchanged = normalizedRules.length === tracksViewSortRules.length
+      && normalizedRules.every((rule, index) => (
+        rule.key === tracksViewSortRules[index]?.key && rule.direction === tracksViewSortRules[index]?.direction
+      ))
+    if (!unchanged) setTracksViewSortRules(normalizedRules)
+  }, [isTrackRootView, ratingsEnabled, rootTrackTableLayout, setTracksViewSortRules, tracksViewSortRules])
 
   // Folders the user has hidden stay indexed but are filtered out of every library browse surface.
   const hiddenFolderPrefixes = useMemo(
@@ -515,6 +544,7 @@ export default function LibraryView() {
   })
 
   useEffect(() => {
+    if (isTrackRootView) return
     if (!sortState) return
     const hideBpmKeySort = !showTracklistBpmKey && (sortState.key === 'bpm' || sortState.key === 'musical_key')
     const hideGenreSort = !showTracklistGenre && sortState.key === 'genre'
@@ -523,9 +553,19 @@ export default function LibraryView() {
     const hidePlayCountSort = !showTracklistPlayCount && sortState.key === 'play_count'
     if (!hideBpmKeySort && !hideGenreSort && !hideAddedSort && !hideRatingSort && !hidePlayCountSort) return
     setSortState(selectedAlbum ? null : { key: 'title', direction: 'asc' })
-  }, [ratingsEnabled, selectedAlbum, setSortState, showTracklistAddedDate, showTracklistBpmKey, showTracklistGenre, showTracklistPlayCount, sortState])
+  }, [isTrackRootView, ratingsEnabled, selectedAlbum, setSortState, showTracklistAddedDate, showTracklistBpmKey, showTracklistGenre, showTracklistPlayCount, sortState])
 
   const handleSortColumnToggle = useCallback((key: TrackListSortKey) => {
+    const state = useLibraryStore.getState()
+    const isRootTracks = state.viewMode === 'tracks'
+      && !state.selectedAlbum
+      && !state.selectedArtist
+      && !state.selectedGenre
+      && state.selectedYear === null
+    if (isRootTracks) {
+      setTracksViewSortRules(replaceTrackSortRulesFromHeader(state.tracksViewSortRules, key))
+      return
+    }
     const current = useLibraryStore.getState().trackListSortState
     if (current?.key === key) {
       setSortState({
@@ -538,15 +578,26 @@ export default function LibraryView() {
       key,
       direction: key === 'added' || key === 'play_count' ? 'desc' : 'asc'
     })
-  }, [setSortState])
+  }, [setSortState, setTracksViewSortRules])
 
   const handleResetToDefaultOrder = useCallback(() => {
     setSortState(null)
   }, [setSortState])
 
-  const handleSetAlbumSortMode = useCallback((mode: LibraryAlbumSortMode) => {
-    setAlbumSortMode(mode)
-  }, [setAlbumSortMode])
+  const effectiveAlbumSortState = useMemo(() => (
+    isYearDetailView && albumSortState.key === 'year'
+      ? { key: 'title' as const, direction: 'asc' as const }
+      : albumSortState
+  ), [albumSortState, isYearDetailView])
+
+  const handleAlbumSortKeyClick = useCallback((key: AlbumSortKey) => {
+    const current = isYearDetailView && albumSortState.key === 'year'
+      ? { key: 'title' as const, direction: 'asc' as const }
+      : albumSortState
+    setAlbumSortState(current.key === key
+      ? { key, direction: current.direction === 'asc' ? 'desc' : 'asc' }
+      : { key, direction: getDefaultAlbumSortDirection(key) })
+  }, [albumSortState, isYearDetailView, setAlbumSortState])
 
   const handleToggleIncludeSinglesInAlbums = useCallback(() => {
     setIncludeSinglesInAlbums(!includeSinglesInAlbums)
@@ -689,6 +740,16 @@ export default function LibraryView() {
   const queueSeedSortedTracks = useMemo(() => {
     const sorted = [...collectionSeedTracks]
 
+    if (isTrackRootView) {
+      sorted.sort((left, right) => compareTracksBySortRules(
+        left,
+        right,
+        tracksViewSortRules,
+        (trackPath) => ratings.get(trackPath)?.rating ?? null
+      ))
+      return sorted
+    }
+
     sorted.sort((a, b) => {
       if (!sortState) {
         return compareAlbumSequence(a, b)
@@ -729,7 +790,7 @@ export default function LibraryView() {
     })
 
     return sorted
-  }, [collectionSeedTracks, ratings, sortState])
+  }, [collectionSeedTracks, isTrackRootView, ratings, sortState, tracksViewSortRules])
   const isCollectionPlayDisabled = isCollectionPlayPending || queueSeedSortedTracks.length === 0
   const queueTrackPaths = useMemo(() => queueSeedSortedTracks.map((track) => track.path), [queueSeedSortedTracks])
 
@@ -798,23 +859,10 @@ export default function LibraryView() {
       ]))
 
     const sortedAlbums = [...visibleAlbums]
-    sortedAlbums.sort((a, b) => {
-      if (albumSortMode === 'artist') {
-        const artistCompare = compareTextValue(a.artist, b.artist)
-        if (artistCompare !== 0) return artistCompare
-        const albumCompare = compareTextValue(a.album, b.album)
-        if (albumCompare !== 0) return albumCompare
-      } else {
-        const albumCompare = compareTextValue(a.album, b.album)
-        if (albumCompare !== 0) return albumCompare
-        const artistCompare = compareTextValue(a.artist, b.artist)
-        if (artistCompare !== 0) return artistCompare
-      }
-      return a.identity_key.localeCompare(b.identity_key)
-    })
+    sortedAlbums.sort((a, b) => compareAlbumsBySortState(a, b, effectiveAlbumSortState))
 
     return sortedAlbums
-  }, [albumSortMode, hasSearchQuery, isAlbumRootView, isYearDetailView, trimmedSearchQuery, sourceFilteredAlbums])
+  }, [effectiveAlbumSortState, hasSearchQuery, isAlbumRootView, isYearDetailView, trimmedSearchQuery, sourceFilteredAlbums])
 
   const yearGroups = useMemo(() => {
     if (!isYearRootView && !isYearDetailView) return []
@@ -1664,11 +1712,14 @@ export default function LibraryView() {
         trackNumberMode={selectedAlbum ? 'album' : 'none'}
         enableColumnSorting
         sortState={sortState}
+        sortRules={isTrackRootView ? tracksViewSortRules : undefined}
         onSortColumnToggle={handleSortColumnToggle}
         enableDefaultOrderReset={Boolean(selectedAlbum)}
         onDefaultOrderReset={selectedAlbum ? handleResetToDefaultOrder : undefined}
         jumpToTrackRequest={libraryTrackRevealRequest}
         onJumpToTrackRequestConsumed={clearLibraryTrackRevealRequest}
+        rootTableLayout={isTrackRootView ? rootTrackTableLayout : undefined}
+        onResponsiveHiddenColumnsChange={isTrackRootView ? setResponsiveHiddenTrackColumns : undefined}
         searchQuery={trimmedSearchQuery}
       />
     )
@@ -2021,30 +2072,46 @@ export default function LibraryView() {
                 Singles
               </button>
               {(isAlbumRootView || isYearDetailView) && (
-                <div className="library-segmented-toggle" role="group" aria-label="Album sort mode">
+                <div
+                  className="library-segmented-toggle library-album-sort-toggle"
+                  role="group"
+                  aria-label="Album sort mode"
+                  style={{ '--segment-count': isAlbumRootView ? 3 : 2 } as CSSProperties}
+                >
                   <span
                     className="library-segmented-highlight"
                     aria-hidden="true"
-                    style={{ transform: albumSortMode === 'artist' ? 'translateX(100%)' : 'translateX(0%)' }}
+                    style={{
+                      transform: `translateX(${(
+                        effectiveAlbumSortState.key === 'artist'
+                          ? 1
+                          : effectiveAlbumSortState.key === 'year'
+                            ? 2
+                            : 0
+                      ) * 100}%)`
+                    }}
                   />
-                  <button
-                    type="button"
-                    className={`library-segmented-btn ${albumSortMode === 'title' ? 'active' : ''}`}
-                    onClick={() => handleSetAlbumSortMode('title')}
-                    aria-pressed={albumSortMode === 'title'}
-                    title="Sort albums by title"
-                  >
-                    Title
-                  </button>
-                  <button
-                    type="button"
-                    className={`library-segmented-btn ${albumSortMode === 'artist' ? 'active' : ''}`}
-                    onClick={() => handleSetAlbumSortMode('artist')}
-                    aria-pressed={albumSortMode === 'artist'}
-                    title="Sort albums by artist"
-                  >
-                    Artist
-                  </button>
+                  {(['title', 'artist', ...(isAlbumRootView ? ['year'] as const : [])] as AlbumSortKey[]).map((key) => {
+                    const active = effectiveAlbumSortState.key === key
+                    const label = key === 'title' ? 'Title' : key === 'artist' ? 'Artist' : 'Year'
+                    const directionLabel = effectiveAlbumSortState.direction === 'asc'
+                      ? (key === 'year' ? 'oldest first' : 'A to Z')
+                      : (key === 'year' ? 'newest first' : 'Z to A')
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        className={`library-segmented-btn ${active ? 'active' : ''}`}
+                        onClick={() => handleAlbumSortKeyClick(key)}
+                        aria-pressed={active}
+                        aria-label={`Sort albums by ${label}${active ? `, ${directionLabel}. Activate to reverse.` : ''}`}
+                        title={`Sort albums by ${label}${active ? ` (${directionLabel})` : ''}`}
+                      >
+                        <span>{label}</span>
+                        {active && <span className="library-sort-direction" aria-hidden="true">{effectiveAlbumSortState.direction === 'desc' ? '↑' : '↓'}</span>}
+                      </button>
+                    )
+                  })}
                 </div>
               )}
             </div>
@@ -2104,6 +2171,16 @@ export default function LibraryView() {
                 </button>
               </div>
             </div>
+          )}
+          {isTrackRootView && (
+            <RootTrackTableControls
+              layout={rootTrackTableLayout}
+              sortRules={tracksViewSortRules}
+              ratingsEnabled={ratingsEnabled}
+              responsiveHiddenColumns={responsiveHiddenTrackColumns}
+              onLayoutChange={setRootTrackTableLayout}
+              onSortRulesChange={setTracksViewSortRules}
+            />
           )}
           {isCollectionActionContext && (
             <button

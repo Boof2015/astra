@@ -34,6 +34,14 @@ import {
   viewportRectToAppLayout,
   viewportSizeToAppLayout
 } from '../../utils/overlayPositioning'
+import {
+  ROOT_TRACK_COLUMN_LABELS,
+  normalizeRootTrackTableLayout,
+  resolveRootTrackColumns,
+  type RootTrackColumnId,
+  type RootTrackTableLayout,
+  type TrackSortRule
+} from '../../utils/rootTrackTable'
 
 interface DbTrack {
   id: number
@@ -46,6 +54,7 @@ interface DbTrack {
   album: string
   album_artist: string | null
   album_artist_names: string[]
+  year: number | null
   duration: number
   track_number: number | null
   disc_number: number | null
@@ -77,7 +86,7 @@ interface DbTrack {
   is_iamf?: number | null
 }
 
-export type TrackListSortKey = 'title' | 'artist' | 'album' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added' | 'rating' | 'play_count'
+export type TrackListSortKey = 'title' | 'artist' | 'album' | 'year' | 'genre' | 'duration' | 'bpm' | 'musical_key' | 'added' | 'rating' | 'codec' | 'play_count'
 export type TrackNumberMode = 'album' | 'context' | 'none'
 
 export interface TrackListSortState {
@@ -115,9 +124,12 @@ interface TrackListProps {
   onJumpToTrackRequestConsumed?: (requestId: number) => void
   enableColumnSorting?: boolean
   sortState?: TrackListSortState | null
+  sortRules?: readonly TrackSortRule[]
   onSortColumnToggle?: (key: TrackListSortKey) => void
   enableDefaultOrderReset?: boolean
   onDefaultOrderReset?: () => void
+  rootTableLayout?: RootTrackTableLayout
+  onResponsiveHiddenColumnsChange?: (columns: readonly RootTrackColumnId[]) => void
   searchQuery?: string
 }
 
@@ -177,6 +189,8 @@ interface TrackListRowSharedProps {
   showQueueInsertAffordance: boolean
   queueInsertArmedTrackPath: string | null
   selectedTrackPaths: Set<string>
+  rootColumnStyles: Partial<Record<RootTrackColumnId, CSSProperties>> | null
+  rootTableActive: boolean
 }
 
 interface TrackListRatingProps {
@@ -193,6 +207,20 @@ const TRACK_SELECTION_DRAG_THRESHOLD_PX = 6
 // so moving controller-navigation markers around can never silently break
 // virtualization. Module scope keeps the identity stable for dependency arrays.
 const TRACK_LIST_PAGE_SCROLL_SELECTOR = '[data-track-list-scroll-container]'
+const ROOT_TRACK_COLUMN_CLASSES: Readonly<Record<RootTrackColumnId, string>> = {
+  title: 'track-col-title',
+  artist: 'track-col-artist',
+  album: 'track-col-album',
+  year: 'track-col-year',
+  genre: 'track-col-genre',
+  bpm: 'track-col-bpm',
+  musical_key: 'track-col-key',
+  rating: 'track-col-rating',
+  codec: 'track-col-codec',
+  added: 'track-col-added',
+  play_count: 'track-col-plays',
+  duration: 'track-col-duration'
+}
 
 function resolveTrackListPageScrollElement(listElement: HTMLElement): HTMLDivElement | null {
   return listElement.closest<HTMLDivElement>(TRACK_LIST_PAGE_SCROLL_SELECTOR)
@@ -502,7 +530,9 @@ function TrackListRowRenderer({
   isRemovingFromPlaylist,
   showQueueInsertAffordance,
   queueInsertArmedTrackPath,
-  selectedTrackPaths
+  selectedTrackPaths,
+  rootColumnStyles,
+  rootTableActive
 }: RowComponentProps<TrackListRowSharedProps>): ReactElement | null {
   const row = rows?.[index]
 
@@ -603,7 +633,7 @@ function TrackListRowRenderer({
           void onTrackClick(event, track, trackIndex)
         }}
       >
-        <div className="track-col track-col-num">
+        <div className="track-col track-col-num" style={rootTableActive ? { order: 0 } : undefined}>
           {showNewTrackIndicator && track.is_new && (
             <span className="track-new-indicator" title="Added in latest library sync" aria-hidden="true" />
           )}
@@ -619,7 +649,7 @@ function TrackListRowRenderer({
             <span className="track-number">{displayedTrackNumber}</span>
           )}
         </div>
-        <div className="track-col track-col-title">
+        <div className="track-col track-col-title" data-track-column="title" style={rootColumnStyles?.title}>
           <div className="track-title-cell">
             <div className="track-artwork-thumb">
               {isMissingPlaylistEntry ? (
@@ -684,7 +714,7 @@ function TrackListRowRenderer({
           </div>
         </div>
         {showArtist && (
-          <div className="track-col track-col-artist">
+          <div className="track-col track-col-artist" data-track-column="artist" style={rootColumnStyles?.artist}>
             {isMissingPlaylistEntry ? (
               <span className="track-artist">{track.artist}</span>
             ) : (
@@ -703,7 +733,7 @@ function TrackListRowRenderer({
           </div>
         )}
         {showAlbum && (
-          <div className="track-col track-col-album">
+          <div className="track-col track-col-album" data-track-column="album" style={rootColumnStyles?.album}>
             {isMissingPlaylistEntry && track.album.trim().length > 0 ? (
               <span className="track-album">{track.album}</span>
             ) : track.album.trim().length > 0 ? (
@@ -723,25 +753,30 @@ function TrackListRowRenderer({
             )}
           </div>
         )}
+        {rootTableActive && (
+          <div className="track-col track-col-year" data-track-column="year" style={rootColumnStyles?.year}>
+            <span className="track-year">{typeof track.year === 'number' && Number.isFinite(track.year) ? track.year : '--'}</span>
+          </div>
+        )}
         {showTracklistGenre && (
-          <div className="track-col track-col-genre">
+          <div className="track-col track-col-genre" data-track-column="genre" style={rootColumnStyles?.genre}>
             <span className="track-genre" title={track.genre?.trim() || 'Genre unavailable'}>
               {track.genre?.trim() || '--'}
             </span>
           </div>
         )}
         {showTracklistBpmKey && (
-          <div className="track-col track-col-bpm">
+          <div className="track-col track-col-bpm" data-track-column="bpm" style={rootColumnStyles?.bpm}>
             <span className="track-bpm">{formatBpm(track.bpm)}</span>
           </div>
         )}
         {showTracklistBpmKey && (
-          <div className="track-col track-col-key">
+          <div className="track-col track-col-key" data-track-column="musical_key" style={rootColumnStyles?.musical_key}>
             <span className="track-key">{track.musical_key?.trim() || '--'}</span>
           </div>
         )}
         {ratingsEnabled && (
-          <div className="track-col track-col-rating">
+          <div className="track-col track-col-rating" data-track-column="rating" style={rootColumnStyles?.rating}>
             {!isMissingPlaylistEntry && (
               <TrackListRating
                 trackPath={track.path}
@@ -751,25 +786,25 @@ function TrackListRowRenderer({
             )}
           </div>
         )}
-        <div className="track-col track-col-codec">
+        <div className="track-col track-col-codec" data-track-column="codec" style={rootColumnStyles?.codec}>
           <span className="track-codec">{isMissingPlaylistEntry ? 'MISSING' : track.format ? track.format.toUpperCase() : '\u2014'}</span>
         </div>
         {showAddedDate && (
-          <div className="track-col track-col-added">
+          <div className="track-col track-col-added" data-track-column="added" style={rootColumnStyles?.added}>
             <span className="track-added" title={formatAddedDateTitle(track)}>
               {formatAddedDate(track)}
             </span>
           </div>
         )}
         {showTracklistPlayCount && (
-          <div className="track-col track-col-plays">
+          <div className="track-col track-col-plays" data-track-column="play_count" style={rootColumnStyles?.play_count}>
             <span className="track-plays">{isMissingPlaylistEntry ? '--' : track.play_count}</span>
           </div>
         )}
-        <div className="track-col track-col-duration">
+        <div className="track-col track-col-duration" data-track-column="duration" style={rootColumnStyles?.duration}>
           <span className="track-duration">{isMissingPlaylistEntry ? '--:--' : formatDuration(track.duration)}</span>
         </div>
-        <div className="track-col track-col-actions">
+        <div className="track-col track-col-actions" style={rootTableActive ? { order: 999 } : undefined}>
           {(!isMissingPlaylistEntry || canRemoveFromPlaylist) && <div className="track-actions">
             {!isMissingPlaylistEntry && (
               <>
@@ -879,9 +914,12 @@ export default function TrackList({
   onJumpToTrackRequestConsumed,
   enableColumnSorting = false,
   sortState = null,
+  sortRules,
   onSortColumnToggle,
   enableDefaultOrderReset = false,
   onDefaultOrderReset,
+  rootTableLayout,
+  onResponsiveHiddenColumnsChange,
   searchQuery = ''
 }: TrackListProps) {
   const currentTrack = usePlayerStore((state) => state.currentTrack)
@@ -941,6 +979,7 @@ export default function TrackList({
   const [listViewportHeight, setListViewportHeight] = useState(0)
   const [trackRowHeight, setTrackRowHeight] = useState(TRACK_ROW_HEIGHT_FALLBACK_PX)
   const [discHeaderHeight, setDiscHeaderHeight] = useState(TRACK_DISC_HEADER_HEIGHT_FALLBACK_PX)
+  const [rootTableWidth, setRootTableWidth] = useState(0)
 
   const queueFeedbackTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const isQueueInsertDragOwnerRef = useRef(false)
@@ -961,6 +1000,51 @@ export default function TrackList({
       return listRef.current?.element ?? null
     }
   }), [])
+
+  const rootTableActive = Boolean(rootTableLayout)
+
+  useLayoutEffect(() => {
+    if (!rootTableActive) return
+    const element = controllerGroupRef.current
+    if (!element) return
+    const updateWidth = () => {
+      const width = Math.max(0, Math.round(element.clientWidth))
+      setRootTableWidth((previous) => (previous === width ? previous : width))
+    }
+    updateWidth()
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateWidth)
+      return () => window.removeEventListener('resize', updateWidth)
+    }
+    const observer = new ResizeObserver(updateWidth)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [rootTableActive])
+
+  const normalizedRootTableLayout = useMemo(() => (
+    rootTableLayout ? normalizeRootTrackTableLayout(rootTableLayout) : null
+  ), [rootTableLayout])
+  const resolvedRootColumns = useMemo(() => (
+    normalizedRootTableLayout
+      ? resolveRootTrackColumns(normalizedRootTableLayout, rootTableWidth, 200, ratingsEnabled)
+      : null
+  ), [normalizedRootTableLayout, ratingsEnabled, rootTableWidth])
+  const rootColumnStyles = useMemo<Partial<Record<RootTrackColumnId, CSSProperties>> | null>(() => {
+    if (!resolvedRootColumns) return null
+    const styles: Partial<Record<RootTrackColumnId, CSSProperties>> = {}
+    const visibleIds = new Set(resolvedRootColumns.visibleColumns.map((entry) => entry.id))
+    normalizedRootTableLayout?.columns.forEach((entry, index) => {
+      styles[entry.id] = visibleIds.has(entry.id)
+        ? { order: index + 1 }
+        : { order: index + 1, display: 'none' }
+    })
+    return styles
+  }, [normalizedRootTableLayout, resolvedRootColumns])
+
+  useEffect(() => {
+    if (!rootTableActive || !onResponsiveHiddenColumnsChange) return
+    onResponsiveHiddenColumnsChange(resolvedRootColumns?.responsiveHiddenColumns ?? [])
+  }, [onResponsiveHiddenColumnsChange, resolvedRootColumns?.responsiveHiddenColumns, rootTableActive])
 
   const virtualRows = useMemo(() => {
     // Page-scroll mode is served by FixedRowList, which assumes a uniform row
@@ -2073,17 +2157,31 @@ export default function TrackList({
   const isColumnSortingEnabled = enableColumnSorting && typeof onSortColumnToggle === 'function'
   const canResetDefaultOrder = enableDefaultOrderReset && typeof onDefaultOrderReset === 'function'
   const getDefaultSortDirection = (key: TrackListSortKey): 'asc' | 'desc' => (
-    key === 'added' || key === 'rating' || key === 'play_count' ? 'desc' : 'asc'
+    key === 'added' || key === 'rating' || key === 'play_count' || key === 'year' ? 'desc' : 'asc'
   )
 
+  const effectiveSortRules = useMemo<readonly TrackSortRule[]>(() => {
+    if (rootTableActive && sortRules && sortRules.length > 0) return sortRules
+    return sortState ? [sortState] : []
+  }, [rootTableActive, sortRules, sortState])
+
   const getAriaSort = (key: TrackListSortKey): 'none' | 'ascending' | 'descending' => {
-    if (!isColumnSortingEnabled || !sortState || sortState.key !== key) return 'none'
-    return sortState.direction === 'asc' ? 'ascending' : 'descending'
+    const primary = effectiveSortRules[0]
+    if (!isColumnSortingEnabled || !primary || primary.key !== key) return 'none'
+    return primary.direction === 'asc' ? 'ascending' : 'descending'
   }
 
-  const renderSortableHeader = (key: TrackListSortKey, label: string, className: string): ReactElement => {
-    const isActive = Boolean(sortState && sortState.key === key)
-    const direction = isActive ? sortState!.direction : getDefaultSortDirection(key)
+  const renderSortableHeader = (
+    key: TrackListSortKey,
+    label: string,
+    className: string,
+    rootColumnId?: RootTrackColumnId
+  ): ReactElement => {
+    const priority = effectiveSortRules.findIndex((rule) => rule.key === key)
+    const activeRule = priority >= 0 ? effectiveSortRules[priority] : null
+    const isActive = Boolean(activeRule)
+    const isMultiKeySort = rootTableActive && effectiveSortRules.length > 1
+    const direction = activeRule?.direction ?? getDefaultSortDirection(key)
     const currentDirectionLabel = isActive ? (direction === 'asc' ? 'ascending' : 'descending') : 'not sorted'
     const nextDirectionLabel = isActive
       ? (direction === 'asc' ? 'descending' : 'ascending')
@@ -2094,18 +2192,32 @@ export default function TrackList({
     }
 
     return (
-      <div className={`track-col ${className}`} role="columnheader" aria-sort={getAriaSort(key)}>
+      <div
+        key={rootColumnId ?? key}
+        className={`track-col ${className}`}
+        role="columnheader"
+        aria-sort={getAriaSort(key)}
+        data-track-column={rootColumnId}
+        style={rootColumnId ? rootColumnStyles?.[rootColumnId] : undefined}
+      >
         <button
           type="button"
           className={`track-col-sort-btn ${isActive ? 'active' : ''}`}
           onClick={() => onSortColumnToggle(key)}
-          aria-label={`${label}: ${currentDirectionLabel}. Activate to sort ${nextDirectionLabel}.`}
+          aria-label={`${label}: ${currentDirectionLabel}${isMultiKeySort && priority >= 0 ? `, priority ${priority + 1}` : ''}. Activate to sort ${nextDirectionLabel}.`}
         >
           <span className="track-col-sort-label">{label}</span>
-          <span
-            aria-hidden="true"
-            className={`track-col-sort-indicator ${isActive ? 'active' : ''} ${direction === 'desc' ? 'desc' : ''}`}
-          />
+          {rootTableActive ? (isActive ? (
+            <span className="track-col-sort-priority" aria-hidden="true">
+              {isMultiKeySort && <span className="track-col-sort-priority-number">{priority + 1}</span>}
+              <span className="track-col-sort-priority-arrow">{direction === 'desc' ? '↑' : '↓'}</span>
+            </span>
+          ) : null) : (
+            <span
+              aria-hidden="true"
+              className={`track-col-sort-indicator ${isActive ? 'active' : ''} ${direction === 'desc' ? 'desc' : ''}`}
+            />
+          )}
         </button>
       </div>
     )
@@ -2138,12 +2250,12 @@ export default function TrackList({
   const rowProps = useMemo<TrackListRowSharedProps>(() => ({
     rows: virtualRows,
     tracks,
-    showArtist,
-    showAlbum,
-    showTracklistBpmKey,
-    showTracklistGenre,
-    showAddedDate,
-    showTracklistPlayCount,
+    showArtist: rootTableActive || showArtist,
+    showAlbum: rootTableActive || showAlbum,
+    showTracklistBpmKey: rootTableActive || showTracklistBpmKey,
+    showTracklistGenre: rootTableActive || showTracklistGenre,
+    showAddedDate: rootTableActive || showAddedDate,
+    showTracklistPlayCount: rootTableActive || showTracklistPlayCount,
     showNewTrackIndicator,
     ratingsEnabled,
     ratings,
@@ -2185,7 +2297,9 @@ export default function TrackList({
     isRemovingFromPlaylist,
     showQueueInsertAffordance: true,
     queueInsertArmedTrackPath,
-    selectedTrackPaths
+    selectedTrackPaths,
+    rootColumnStyles,
+    rootTableActive
   }), [
     virtualRows,
     tracks,
@@ -2235,7 +2349,9 @@ export default function TrackList({
     canRemoveFromPlaylist,
     isRemovingFromPlaylist,
     queueInsertArmedTrackPath,
-    selectedTrackPaths
+    selectedTrackPaths,
+    rootColumnStyles,
+    rootTableActive
   ])
 
   if (tracks.length === 0) {
@@ -2248,7 +2364,7 @@ export default function TrackList({
 
   return (
     <div
-      className={`track-list ${pageScroll ? 'track-list-page-scroll' : ''} ${queueInsertPreview ? 'track-list-queue-insert-dragging' : ''}`}
+      className={`track-list ${pageScroll ? 'track-list-page-scroll' : ''} ${queueInsertPreview ? 'track-list-queue-insert-dragging' : ''} ${rootTableActive ? 'track-list-root-custom' : ''}`}
       ref={controllerGroupRef}
       data-controller-group="tracks"
       data-controller-axis="vertical"
@@ -2256,7 +2372,7 @@ export default function TrackList({
     >
       <div className="track-list-header">
         {canResetDefaultOrder ? (
-          <div className="track-col track-col-num">
+          <div className="track-col track-col-num" style={rootTableActive ? { order: 0 } : undefined}>
             <button
               type="button"
               className={`track-col-sort-btn track-col-default-sort-btn ${sortState === null ? 'active' : ''}`}
@@ -2267,20 +2383,31 @@ export default function TrackList({
             </button>
           </div>
         ) : (
-          <div className="track-col track-col-num">{trackNumberMode === 'none' ? null : '#'}</div>
+          <div className="track-col track-col-num" style={rootTableActive ? { order: 0 } : undefined}>{trackNumberMode === 'none' ? null : '#'}</div>
         )}
-        {renderSortableHeader('title', 'Title', 'track-col-title')}
-        {showArtist && renderSortableHeader('artist', 'Artist', 'track-col-artist')}
-        {showAlbum && renderSortableHeader('album', 'Album', 'track-col-album')}
-        {showTracklistGenre && renderSortableHeader('genre', 'Genre', 'track-col-genre')}
-        {showTracklistBpmKey && renderSortableHeader('bpm', 'BPM', 'track-col-bpm')}
-        {showTracklistBpmKey && renderSortableHeader('musical_key', 'Key', 'track-col-key')}
-        {ratingsEnabled && renderSortableHeader('rating', 'Rating', 'track-col-rating')}
-        <div className="track-col track-col-codec">Codec</div>
-        {showAddedDate && renderSortableHeader('added', 'Added', 'track-col-added')}
-        {showTracklistPlayCount && renderSortableHeader('play_count', 'Plays', 'track-col-plays')}
-        {renderSortableHeader('duration', 'Length', 'track-col-duration')}
-        <div className="track-col track-col-actions" />
+        {rootTableActive ? (
+          resolvedRootColumns?.visibleColumns.map((entry) => renderSortableHeader(
+            entry.id,
+            ROOT_TRACK_COLUMN_LABELS[entry.id],
+            ROOT_TRACK_COLUMN_CLASSES[entry.id],
+            entry.id
+          ))
+        ) : (
+          <>
+            {renderSortableHeader('title', 'Title', 'track-col-title')}
+            {showArtist && renderSortableHeader('artist', 'Artist', 'track-col-artist')}
+            {showAlbum && renderSortableHeader('album', 'Album', 'track-col-album')}
+            {showTracklistGenre && renderSortableHeader('genre', 'Genre', 'track-col-genre')}
+            {showTracklistBpmKey && renderSortableHeader('bpm', 'BPM', 'track-col-bpm')}
+            {showTracklistBpmKey && renderSortableHeader('musical_key', 'Key', 'track-col-key')}
+            {ratingsEnabled && renderSortableHeader('rating', 'Rating', 'track-col-rating')}
+            <div className="track-col track-col-codec">Codec</div>
+            {showAddedDate && renderSortableHeader('added', 'Added', 'track-col-added')}
+            {showTracklistPlayCount && renderSortableHeader('play_count', 'Plays', 'track-col-plays')}
+            {renderSortableHeader('duration', 'Length', 'track-col-duration')}
+          </>
+        )}
+        <div className="track-col track-col-actions" style={rootTableActive ? { order: 999 } : undefined} />
       </div>
       <div
         className="track-list-body"

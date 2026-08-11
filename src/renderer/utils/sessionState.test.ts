@@ -210,6 +210,7 @@ test('session snapshot normalization tolerates corrupt fields and strips artwork
   assert.equal(snapshot.library?.selectedGenre, 'Electronic')
   assert.equal(snapshot.library?.selectedYear, 2025)
   assert.equal(snapshot.library?.trackListSortState, null)
+  assert.deepEqual(snapshot.library?.albumSortState, { key: 'artist', direction: 'asc' })
   assert.deepEqual(snapshot.playlist?.sortState, { key: 'added', direction: 'desc' })
   assert.equal(snapshot.player?.queueItems.length, 1)
   assert.deepEqual(snapshot.player?.baseUpcomingQueueIds, ['queue-1'])
@@ -344,6 +345,46 @@ test('session snapshot normalization preserves genre track sort state', () => {
   assert.ok(snapshot)
   assert.deepEqual(snapshot.library?.trackListSortState, { key: 'genre', direction: 'asc' })
   assert.deepEqual(snapshot.library?.tracksViewSortState, { key: 'duration', direction: 'desc' })
+  assert.equal(snapshot.library?.tracksViewSortRules, undefined)
+  assert.deepEqual(snapshot.library?.albumSortState, { key: 'title', direction: 'asc' })
+})
+
+test('session snapshot normalization preserves multikey Tracks sorting and Year album sorting', () => {
+  const snapshot = normalizeSessionSnapshot({
+    kind: SESSION_STATE_KIND,
+    schemaVersion: SESSION_STATE_SCHEMA_VERSION,
+    savedAt: 1,
+    ui: null,
+    player: null,
+    playlist: null,
+    library: {
+      viewMode: 'tracks',
+      selectedAlbum: null,
+      selectedArtist: null,
+      selectedGenre: null,
+      selectedYear: null,
+      trackListSortState: { key: 'artist', direction: 'asc' },
+      tracksViewSortState: { key: 'artist', direction: 'asc' },
+      tracksViewSortRules: [
+        { key: 'artist', direction: 'asc' },
+        { key: 'year', direction: 'desc' },
+        { key: 'artist', direction: 'desc' },
+        { key: 'codec', direction: 'asc' }
+      ],
+      selectedSourceFilters: [],
+      albumSortState: { key: 'year', direction: 'desc' },
+      includeSinglesInAlbums: false,
+      includeCollabArtists: false,
+      artistRootViewMode: 'list'
+    }
+  })
+
+  assert.deepEqual(snapshot?.library?.tracksViewSortRules, [
+    { key: 'artist', direction: 'asc' },
+    { key: 'year', direction: 'desc' },
+    { key: 'codec', direction: 'asc' }
+  ])
+  assert.deepEqual(snapshot?.library?.albumSortState, { key: 'year', direction: 'desc' })
 })
 
 test('session snapshot normalization preserves Stats routing and play count sorting', () => {

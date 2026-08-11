@@ -159,6 +159,17 @@ function didStringSetChange(state: ReadonlySet<string>, previous: ReadonlySet<st
   return false
 }
 
+function didSortRulesChange(
+  state: readonly { key: string; direction: string }[],
+  previous: readonly { key: string; direction: string }[]
+): boolean {
+  if (state === previous) return false
+  if (state.length !== previous.length) return true
+  return state.some((rule, index) => (
+    rule.key !== previous[index]?.key || rule.direction !== previous[index]?.direction
+  ))
+}
+
 function didLibrarySessionStateChange(
   state: ReturnType<typeof useLibraryStore.getState>,
   previous: ReturnType<typeof useLibraryStore.getState>
@@ -173,8 +184,10 @@ function didLibrarySessionStateChange(
     || state.selectedYear !== previous.selectedYear
     || didSortStateChange(state.trackListSortState, previous.trackListSortState)
     || didSortStateChange(state.tracksViewSortState, previous.tracksViewSortState)
+    || didSortRulesChange(state.tracksViewSortRules, previous.tracksViewSortRules)
     || didStringSetChange(state.selectedSourceFilters, previous.selectedSourceFilters)
-    || state.albumSortMode !== previous.albumSortMode
+    || state.albumSortState.key !== previous.albumSortState.key
+    || state.albumSortState.direction !== previous.albumSortState.direction
     || state.includeSinglesInAlbums !== previous.includeSinglesInAlbums
     || state.includeCollabArtists !== previous.includeCollabArtists
     || state.artistRootViewMode !== previous.artistRootViewMode

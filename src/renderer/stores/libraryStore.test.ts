@@ -9,6 +9,11 @@ import {
   useLibraryStore,
   type DbTrack
 } from './libraryStore.ts'
+import {
+  ALBUM_SORT_STATE_STORAGE_KEY,
+  ROOT_TRACK_TABLE_LAYOUT_STORAGE_KEY
+} from '../constants/settingsStorageKeys.ts'
+import { createDefaultRootTrackTableLayout } from '../utils/rootTrackTable.ts'
 
 function makeTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
   return {
@@ -143,6 +148,36 @@ test('play count column visibility is hidden by default and persists explicit ch
     assert.equal(values.get(TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY), '1')
     useLibraryStore.getState().setShowTracklistPlayCount(false)
     assert.equal(values.get(TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY), '0')
+  } finally {
+    if (originalDescriptor) Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
+  }
+})
+
+test('root Tracks layout and Album sort preferences normalize and persist independently', () => {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const values = new Map<string, string>()
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key)
+    }
+  })
+
+  try {
+    const layout = createDefaultRootTrackTableLayout()
+    layout.columns.find((entry) => entry.id === 'year')!.visible = true
+    layout.columns.find((entry) => entry.id === 'title')!.visible = false
+    useLibraryStore.getState().setRootTrackTableLayout(layout)
+    useLibraryStore.getState().setAlbumSortState({ key: 'year', direction: 'desc' })
+
+    assert.equal(useLibraryStore.getState().rootTrackTableLayout.columns[0]?.id, 'title')
+    assert.equal(useLibraryStore.getState().rootTrackTableLayout.columns[0]?.visible, true)
+    assert.equal(useLibraryStore.getState().rootTrackTableLayout.columns.find((entry) => entry.id === 'year')?.visible, true)
+    assert.deepEqual(JSON.parse(values.get(ALBUM_SORT_STATE_STORAGE_KEY) ?? 'null'), { key: 'year', direction: 'desc' })
+    assert.equal(typeof values.get(ROOT_TRACK_TABLE_LAYOUT_STORAGE_KEY), 'string')
   } finally {
     if (originalDescriptor) Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
     else Reflect.deleteProperty(globalThis, 'localStorage')

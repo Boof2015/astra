@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  ALBUM_SORT_STATE_STORAGE_KEY,
   EQ_DEVICE_PROFILE_STORAGE_KEY,
   EQ_STORAGE_KEY,
   GLOBAL_INPUT_BINDINGS_STORAGE_KEY,
@@ -9,6 +10,7 @@ import {
   LYRICS_DISPLAY_SETTINGS_STORAGE_KEY,
   LISTENING_STATS_ENABLED_STORAGE_KEY,
   NORMALIZATION_ENABLED_STORAGE_KEY,
+  ROOT_TRACK_TABLE_LAYOUT_STORAGE_KEY,
   THEME_STORAGE_KEY,
   TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY,
   TRANSPORT_INFO_LINE_MODE_STORAGE_KEY,
@@ -107,10 +109,14 @@ test('known machine-specific, sensitive, and cache keys are excluded from full e
   }
 })
 
-test('library view and experiment transfers include play count and Listening Stats preferences', () => {
+test('library view and experiment transfers include table layout, album sort, play count, and Listening Stats preferences', () => {
+  const rootLayout = '{"columns":[{"id":"title","visible":true,"width":300}]}'
+  const albumSort = '{"key":"year","direction":"desc"}'
   const file = createSettingsTransferFile(['library_view', 'experiments'], {
     storage: new MemoryStorage({
       [TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY]: '1',
+      [ROOT_TRACK_TABLE_LAYOUT_STORAGE_KEY]: rootLayout,
+      [ALBUM_SORT_STATE_STORAGE_KEY]: albumSort,
       [LISTENING_STATS_ENABLED_STORAGE_KEY]: '1'
     })
   })
@@ -119,6 +125,8 @@ test('library view and experiment transfers include play count and Listening Sta
     file.categories.library_view?.localStorage[TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY],
     '1'
   )
+  assert.equal(file.categories.library_view?.localStorage[ROOT_TRACK_TABLE_LAYOUT_STORAGE_KEY], rootLayout)
+  assert.equal(file.categories.library_view?.localStorage[ALBUM_SORT_STATE_STORAGE_KEY], albumSort)
   assert.equal(
     file.categories.experiments?.localStorage[LISTENING_STATS_ENABLED_STORAGE_KEY],
     '1'

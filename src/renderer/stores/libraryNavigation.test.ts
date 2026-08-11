@@ -104,7 +104,8 @@ function resetLibraryNavigation(): void {
     trackPaths: [],
     fullTrackPaths: [],
     trackByPath: new Map(),
-    tracksViewSortState: { key: 'title', direction: 'asc' }
+    tracksViewSortState: { key: 'title', direction: 'asc' },
+    tracksViewSortRules: [{ key: 'title', direction: 'asc' }]
   })
   useLibraryStore.getState().setTrackListSortState({ key: 'title', direction: 'asc' })
   useLibraryStore.getState().clearSelectedSourceFilters()
@@ -471,7 +472,7 @@ test('Library session restore applies valid detail, sort, and source filters', a
   assert.deepEqual(state.trackPaths, [track.path])
   assert.deepEqual(state.trackListSortState, { key: 'added', direction: 'desc' })
   assert.deepEqual([...state.selectedSourceFilters], ['local'])
-  assert.equal(state.albumSortMode, 'artist')
+  assert.deepEqual(state.albumSortState, { key: 'artist', direction: 'asc' })
   assert.equal(state.includeSinglesInAlbums, true)
   assert.equal(state.includeCollabArtists, true)
   assert.equal(state.artistRootViewMode, 'grid')
@@ -479,6 +480,7 @@ test('Library session restore applies valid detail, sort, and source filters', a
   await useLibraryStore.getState().clearSelection()
   useLibraryStore.getState().setViewMode('tracks')
   assert.deepEqual(useLibraryStore.getState().trackListSortState, { key: 'duration', direction: 'desc' })
+  assert.deepEqual(useLibraryStore.getState().tracksViewSortRules, [{ key: 'duration', direction: 'desc' }])
   assert.deepEqual([...useLibraryStore.getState().selectedSourceFilters], ['local'])
 })
 
@@ -538,6 +540,43 @@ test('legacy root Tracks snapshots derive the dedicated Tracks sort from the act
   useLibraryStore.getState().setViewMode('tracks')
   assert.deepEqual(useLibraryStore.getState().trackListSortState, { key: 'added', direction: 'desc' })
   assert.deepEqual([...useLibraryStore.getState().selectedSourceFilters], ['local'])
+})
+
+test('Library session restore preserves root Tracks multikey sorting', async () => {
+  installLibraryMock()
+  resetLibraryNavigation()
+
+  await useLibraryStore.getState().restoreSession({
+    viewMode: 'tracks',
+    selectedAlbum: null,
+    selectedArtist: null,
+    selectedGenre: null,
+    selectedYear: null,
+    trackListSortState: { key: 'artist', direction: 'asc' },
+    tracksViewSortState: { key: 'artist', direction: 'asc' },
+    tracksViewSortRules: [
+      { key: 'artist', direction: 'asc' },
+      { key: 'year', direction: 'desc' },
+      { key: 'album', direction: 'asc' }
+    ],
+    selectedSourceFilters: [],
+    albumSortState: { key: 'year', direction: 'desc' },
+    includeSinglesInAlbums: false,
+    includeCollabArtists: false,
+    artistRootViewMode: 'list'
+  })
+
+  assert.deepEqual(useLibraryStore.getState().tracksViewSortRules, [
+    { key: 'artist', direction: 'asc' },
+    { key: 'year', direction: 'desc' },
+    { key: 'album', direction: 'asc' }
+  ])
+  assert.deepEqual(useLibraryStore.getState().albumSortState, { key: 'year', direction: 'desc' })
+  assert.deepEqual(useLibraryStore.getState().getSessionSnapshot().tracksViewSortRules, [
+    { key: 'artist', direction: 'asc' },
+    { key: 'year', direction: 'desc' },
+    { key: 'album', direction: 'asc' }
+  ])
 })
 
 test('Library session restore drops a stale album detail and keeps root state', async () => {

@@ -222,6 +222,14 @@ function comparePlaylistTracksBySort(
   if (sortState.key === 'album') {
     return compareWithDirection(compareTextValue(a.album, b.album), sortState.direction)
   }
+  if (sortState.key === 'year') {
+    const aYear = typeof a.year === 'number' && Number.isFinite(a.year) ? a.year : null
+    const bYear = typeof b.year === 'number' && Number.isFinite(b.year) ? b.year : null
+    if (aYear === null && bYear === null) return 0
+    if (aYear === null) return 1
+    if (bYear === null) return -1
+    return compareWithDirection(aYear - bYear, sortState.direction)
+  }
   if (sortState.key === 'duration') {
     return compareNullableDuration(a.duration, b.duration, sortState.direction)
   }
@@ -249,6 +257,9 @@ function comparePlaylistTracksBySort(
       isMissingPlaylistDisplayTrack(a),
       isMissingPlaylistDisplayTrack(b)
     )
+  }
+  if (sortState.key === 'codec') {
+    return compareNullableKey(a.format, b.format, sortState.direction)
   }
   return compareNullableKey(a.musical_key, b.musical_key, sortState.direction)
 }
