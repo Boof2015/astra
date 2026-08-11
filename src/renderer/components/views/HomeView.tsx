@@ -8,7 +8,7 @@ import { useHorizontalWheelScroll } from '../../hooks/useHorizontalWheelScroll'
 import { buildAlbumIdentityKeyFromTrack, buildAlbumKey, getAlbumIdentityArtist, normalizeKey, splitCollaborators } from '../../utils/albumIdentity'
 import { formatExactDuration } from '../../utils/collectionDuration'
 import { formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
-import { buildPlaylistDisplaySections } from '../../utils/playlistSystem'
+import { buildHomePlaylists } from '../../utils/playlistSystem'
 import AlbumArtwork from '../library/AlbumArtwork'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
@@ -1090,10 +1090,10 @@ export default function HomeView() {
   }, [recentlyPlayed, albumByIdentityKey, albumByKey, recentLimits])
 
   const homePlaylists = useMemo(
-    () => buildPlaylistDisplaySections(playlists, {
+    () => buildHomePlaylists(playlists, {
       trackCount: favoriteTracks.length,
       topArtworkHash: favoriteTracks[0]?.artwork_hash ?? null
-    }, 3).homePlaylists,
+    }),
     [playlists, favoriteTracks]
   )
 

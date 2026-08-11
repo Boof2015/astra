@@ -36,6 +36,8 @@ import {
   TRACKLIST_GENRE_VISIBILITY_STORAGE_KEY,
   TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY,
   LISTENING_STATS_ENABLED_STORAGE_KEY,
+  PLAYLIST_BROWSER_SORT_STORAGE_KEY,
+  PLAYLIST_SIDEBAR_PINS_STORAGE_KEY,
   TRANSPORT_INFO_LINE_MODE_STORAGE_KEY,
 } from '../../constants/settingsStorageKeys'
 import {
@@ -108,6 +110,8 @@ export const RENDERER_SETTINGS_KEYS = [
   INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY,
   INCLUDE_COLLAB_ARTISTS_STORAGE_KEY,
   ARTIST_ROOT_VIEW_MODE_STORAGE_KEY,
+  PLAYLIST_BROWSER_SORT_STORAGE_KEY,
+  PLAYLIST_SIDEBAR_PINS_STORAGE_KEY,
   EQ_STORAGE_KEY,
   EQ_DEVICE_PROFILE_STORAGE_KEY,
 ] as const
@@ -177,6 +181,8 @@ export async function resetAllSettings(): Promise<string> {
   useUIStore.getState().resetJumpToPlayingDestination()
   useUIStore.getState().resetTransportInfoLineMode()
   useLibraryStore.getState().setShowTracklistPlayCount(false)
+  usePlaylistStore.getState().resetSidebarPins()
+  usePlaylistStore.getState().setBrowserSortMode('recently-played')
   useListeningStatsStore.getState().setEnabled(false)
   useInputBindingStore.getState().resetAll()
   clearPersistedSessionStateForReset()

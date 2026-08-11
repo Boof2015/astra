@@ -5,10 +5,12 @@ import { usePlaylistStore } from '../../stores/playlistStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
 import {
-  buildPlaylistDisplaySections,
+  buildAllDisplayPlaylists,
+  buildSidebarPlaylistSections,
   FAVORITES_PLAYLIST_ID,
   FAVORITES_PLAYLIST_NAME,
-  isSystemFavoritesPlaylistId
+  isSystemFavoritesPlaylistId,
+  sortPlaylistBrowserEntries
 } from '../../utils/playlistSystem'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { formatPlaylistExportStatus, formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
@@ -16,6 +18,7 @@ import { buildPlayableOccurrenceIndexes } from '../../utils/playlistOccurrences'
 import { compareTrackPlayCounts } from '../../utils/trackPlayCountSort'
 import { compareBaseLocaleText } from '../../utils/localeSort'
 import { getDetailHeaderCollapseDistance, resolveDetailHeaderCollapsed } from '../../utils/detailHeaderScroll'
+import { runViewTransition } from '../../utils/viewTransitions'
 import AlbumArtwork from '../library/AlbumArtwork'
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
@@ -286,6 +289,13 @@ export default function PlaylistView() {
     reassociatePlaylistEntry,
     importPlaylistFromFile,
     exportPlaylistToM3u,
+    sidebarPinnedPlaylistIds,
+    browserSortMode,
+    pinPlaylistToSidebar,
+    unpinPlaylistFromSidebar,
+    moveSidebarPinnedPlaylist,
+    resetSidebarPins,
+    setBrowserSortMode,
     sortState,
     setSortState
   } = usePlaylistStore()
@@ -314,13 +324,36 @@ export default function PlaylistView() {
   const playlist = playlists.find((p) => p.id === selectedPlaylistId)
   const isDynamicPlaylist = playlist?.kind === 'dynamic'
   const playlistName = isFavoritesPlaylist ? FAVORITES_PLAYLIST_NAME : playlist?.name
+  const isSelectedPlaylistPinned = selectedPlaylistId !== null
+    && sidebarPinnedPlaylistIds.includes(selectedPlaylistId)
   const allPlaylists = useMemo(
-    () => buildPlaylistDisplaySections(playlists, {
+    () => buildAllDisplayPlaylists(playlists, {
       trackCount: favoriteTracks.length,
       topArtworkHash: favoriteTracks[0]?.artwork_hash ?? null
-    }, 3).homePlaylists,
+    }),
     [favoriteTracks, playlists]
   )
+  const { sidebarPinnedPlaylists } = useMemo(
+    () => buildSidebarPlaylistSections(playlists, {
+      trackCount: favoriteTracks.length,
+      topArtworkHash: favoriteTracks[0]?.artwork_hash ?? null
+    }, sidebarPinnedPlaylistIds),
+    [favoriteTracks, playlists, sidebarPinnedPlaylistIds]
+  )
+  const sidebarPinnedPlaylistIdSet = useMemo(
+    () => new Set(sidebarPinnedPlaylistIds),
+    [sidebarPinnedPlaylistIds]
+  )
+  const playlistHeaderArtwork = useMemo(() => {
+    const seenPlaylistIds = new Set<number>()
+    return [...sidebarPinnedPlaylists, ...allPlaylists]
+      .filter((entry) => {
+        if (!entry.cover_hash || seenPlaylistIds.has(entry.id)) return false
+        seenPlaylistIds.add(entry.id)
+        return true
+      })
+      .slice(0, 3)
+  }, [allPlaylists, sidebarPinnedPlaylists])
 
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState('')
@@ -347,6 +380,9 @@ export default function PlaylistView() {
   const [dynamicRulesError, setDynamicRulesError] = useState<string | null>(null)
   const [isDynamicRulesLoading, setIsDynamicRulesLoading] = useState(false)
   const [isSavingDynamicRules, setIsSavingDynamicRules] = useState(false)
+  const [playlistSearchQuery, setPlaylistSearchQuery] = useState('')
+  const [draggedPinnedPlaylistId, setDraggedPinnedPlaylistId] = useState<number | null>(null)
+  const [pinnedDropTargetId, setPinnedDropTargetId] = useState<number | null>(null)
   const playPendingRef = useRef(false)
   const detailHeaderRef = useRef<HTMLDivElement | null>(null)
   const coverControlRef = useRef<HTMLDivElement | null>(null)
@@ -551,8 +587,10 @@ export default function PlaylistView() {
   }, [dynamicRulesDraft])
 
   const handleBack = () => {
-    clearSelection()
-    setActiveView('playlist')
+    void runViewTransition(() => {
+      clearSelection()
+      setActiveView('playlist')
+    }, 'playlist-context-backward')
   }
 
   const handleStartRename = () => {
@@ -923,26 +961,92 @@ export default function PlaylistView() {
   }, [isDynamicPlaylist, reassociatePlaylistEntry, selectedPlaylistEntries, selectedPlaylistId])
 
   const handleOpenPlaylist = useCallback(async (playlistId: number) => {
-    await selectPlaylist(playlistId)
-    setActiveView('playlist')
+    await runViewTransition(async () => {
+      await selectPlaylist(playlistId)
+      setActiveView('playlist')
+    }, 'playlist-context-forward')
   }, [selectPlaylist, setActiveView])
+
+  const visibleBrowserPlaylists = useMemo(() => {
+    const normalizedQuery = playlistSearchQuery.trim().toLocaleLowerCase()
+    const sorted = sortPlaylistBrowserEntries(allPlaylists, browserSortMode)
+    if (!normalizedQuery) return sorted
+    return sorted.filter((entry) => entry.name.toLocaleLowerCase().includes(normalizedQuery))
+  }, [allPlaylists, browserSortMode, playlistSearchQuery])
+
+  const playlistBrowserTrackCount = useMemo(
+    () => allPlaylists.reduce((total, entry) => total + entry.track_count, 0),
+    [allPlaylists]
+  )
+
+  const handleToggleSidebarPin = useCallback((playlistId: number) => {
+    if (sidebarPinnedPlaylistIdSet.has(playlistId)) {
+      unpinPlaylistFromSidebar(playlistId)
+    } else {
+      pinPlaylistToSidebar(playlistId)
+    }
+  }, [pinPlaylistToSidebar, sidebarPinnedPlaylistIdSet, unpinPlaylistFromSidebar])
+
+  const handlePinnedDragStart = useCallback((event: DragEvent<HTMLElement>, playlistId: number) => {
+    setDraggedPinnedPlaylistId(playlistId)
+    setPinnedDropTargetId(playlistId)
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('application/x-astra-sidebar-playlist', String(playlistId))
+  }, [])
+
+  const handlePinnedDragEnd = useCallback(() => {
+    setDraggedPinnedPlaylistId(null)
+    setPinnedDropTargetId(null)
+  }, [])
+
+  const handlePinnedDrop = useCallback((event: DragEvent<HTMLElement>, targetPlaylistId: number) => {
+    event.preventDefault()
+    const transferredPlaylistId = Number.parseInt(
+      event.dataTransfer.getData('application/x-astra-sidebar-playlist'),
+      10
+    )
+    const sourcePlaylistId = Number.isInteger(transferredPlaylistId)
+      ? transferredPlaylistId
+      : draggedPinnedPlaylistId
+    setDraggedPinnedPlaylistId(null)
+    setPinnedDropTargetId(null)
+    if (sourcePlaylistId === null || sourcePlaylistId === targetPlaylistId) return
+    const targetIndex = sidebarPinnedPlaylistIds.indexOf(targetPlaylistId)
+    if (targetIndex < 0) return
+    moveSidebarPinnedPlaylist(sourcePlaylistId, targetIndex)
+  }, [draggedPinnedPlaylistId, moveSidebarPinnedPlaylist, sidebarPinnedPlaylistIds])
 
   if (isPlaylistBrowser) {
     return (
       <div className="playlist-view">
-        <div className="playlist-browser">
-          <div className="playlist-browser-header">
+        <div className="playlist-browser playlist-dashboard">
+          <header className="playlist-dashboard-hero">
+            {playlistHeaderArtwork.length > 0 && (
+              <div className="playlist-dashboard-hero-artwork" aria-hidden="true">
+                {playlistHeaderArtwork.map((entry, index) => (
+                  <PlaylistCover
+                    key={entry.id}
+                    hash={entry.cover_hash}
+                    name={entry.name}
+                    className={`playlist-dashboard-hero-cover playlist-dashboard-hero-cover-${index + 1}`}
+                  />
+                ))}
+              </div>
+            )}
             <div className="playlist-browser-copy">
-              <h2>Playlists</h2>
-              <p>{allPlaylists.length > 0 ? `${allPlaylists.length} collections ready to play` : 'Create a playlist to start organizing your library.'}</p>
+              <span className="playlist-dashboard-eyebrow">Your collections</span>
+              <h1>Playlists</h1>
+              <p>
+                {allPlaylists.length > 0
+                  ? `${allPlaylists.length} ${allPlaylists.length === 1 ? 'collection' : 'collections'} · ${playlistBrowserTrackCount} ${playlistBrowserTrackCount === 1 ? 'track' : 'tracks'}`
+                  : 'Create a playlist to start shaping your library.'}
+              </p>
             </div>
             <div className="playlist-browser-actions">
               <button
                 type="button"
                 className="settings-btn playlist-action-btn"
-                onClick={() => {
-                  void handleImportPlaylist()
-                }}
+                onClick={() => void handleImportPlaylist()}
                 disabled={isImportingPlaylist}
               >
                 {isImportingPlaylist ? 'Importing...' : 'Import Playlist'}
@@ -956,27 +1060,161 @@ export default function PlaylistView() {
                 New Playlist
               </button>
             </div>
-          </div>
+          </header>
 
           {playlistImportStatus && <PlaylistImportStatusBanner status={playlistImportStatus} />}
 
-          {allPlaylists.length > 0 ? (
+          <section className="playlist-dashboard-section playlist-dashboard-pinned-section">
+            <div className="playlist-dashboard-section-header">
+              <div className="playlist-dashboard-section-title">
+                <h2>Pinned</h2>
+                <span>{sidebarPinnedPlaylists.length} {sidebarPinnedPlaylists.length === 1 ? 'shortcut' : 'shortcuts'}</span>
+              </div>
+              <button
+                type="button"
+                className="playlist-dashboard-reset-btn"
+                onClick={resetSidebarPins}
+                disabled={allPlaylists.length === 0}
+              >
+                Reset pins
+              </button>
+            </div>
+            {sidebarPinnedPlaylists.length > 0 ? (
+              <div
+                className="playlist-dashboard-pinned-rail"
+                data-controller-group="playlist-pinned"
+                data-controller-axis="horizontal"
+              >
+                {sidebarPinnedPlaylists.map((entry, index) => {
+                  const isDragging = draggedPinnedPlaylistId === entry.id
+                  const isDropTarget = pinnedDropTargetId === entry.id && !isDragging
+                  return (
+                    <article
+                      key={entry.id}
+                      className={`playlist-dashboard-pinned-card ${isDragging ? 'is-dragging' : ''} ${isDropTarget ? 'is-drop-target' : ''}`.trim()}
+                      draggable
+                      onDragStart={(event) => handlePinnedDragStart(event, entry.id)}
+                      onDragEnd={handlePinnedDragEnd}
+                      onDragOver={(event) => {
+                        event.preventDefault()
+                        event.dataTransfer.dropEffect = 'move'
+                        setPinnedDropTargetId(entry.id)
+                      }}
+                      onDrop={(event) => handlePinnedDrop(event, entry.id)}
+                      onContextMenu={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        openCollectionQueueMenu({
+                          target: { kind: 'playlist', playlistId: entry.id, name: entry.name },
+                          x: event.clientX,
+                          y: event.clientY
+                        })
+                      }}
+                    >
+                      <span className="playlist-dashboard-pin-slot" aria-hidden="true">
+                        <svg className="playlist-dashboard-pin-slot-grip" width="10" height="14" viewBox="0 0 10 14" fill="currentColor">
+                          <circle cx="2" cy="2" r="1" />
+                          <circle cx="8" cy="2" r="1" />
+                          <circle cx="2" cy="7" r="1" />
+                          <circle cx="8" cy="7" r="1" />
+                          <circle cx="2" cy="12" r="1" />
+                          <circle cx="8" cy="12" r="1" />
+                        </svg>
+                        <span>{String(index + 1).padStart(2, '0')}</span>
+                      </span>
+                      <button
+                        type="button"
+                        className="playlist-dashboard-pinned-open"
+                        onClick={() => void handleOpenPlaylist(entry.id)}
+                        data-controller-focusable="true"
+                        data-controller-context="true"
+                        data-controller-key={`pinned-playlist:${entry.id}`}
+                        aria-label={`Open ${entry.name}`}
+                      >
+                        <PlaylistCover
+                          hash={entry.cover_hash}
+                          name={entry.name}
+                          isFavorites={entry.isSystemFavorites}
+                          className="playlist-dashboard-pinned-cover"
+                        />
+                        <span className="playlist-dashboard-pinned-meta">
+                          <span className="playlist-dashboard-pinned-name">{entry.name}</span>
+                          <span className="playlist-dashboard-pinned-count">
+                            {entry.track_count} {entry.track_count === 1 ? 'track' : 'tracks'}
+                          </span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="playlist-dashboard-unpin-btn"
+                        onClick={() => unpinPlaylistFromSidebar(entry.id)}
+                        aria-label={`Unpin ${entry.name} from sidebar`}
+                        title="Unpin from sidebar"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="m15 4 5 5-3 1-4 4 1 5-1 1-4-6-5-4 1-1 5 1 4-4 1-2Z" />
+                          <path d="m9 15-5 5" />
+                        </svg>
+                      </button>
+                    </article>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="playlist-dashboard-pinned-empty">
+                <span>No sidebar pins yet.</span>
+                <span>Use the pin button on any playlist below.</span>
+              </div>
+            )}
+          </section>
+
+          <section className="playlist-dashboard-section playlist-dashboard-all-section">
+            <div className="playlist-dashboard-section-header playlist-dashboard-all-header">
+              <div className="playlist-dashboard-section-title">
+                <h2>All Playlists</h2>
+                <span>{allPlaylists.length} {allPlaylists.length === 1 ? 'collection' : 'collections'}</span>
+              </div>
+              <div className="playlist-dashboard-tools">
+                <label className="playlist-dashboard-search">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="m20 20-4-4" />
+                  </svg>
+                  <span className="sr-only">Search playlists</span>
+                  <input
+                    type="search"
+                    value={playlistSearchQuery}
+                    onChange={(event) => setPlaylistSearchQuery(event.target.value)}
+                    placeholder="Search playlists"
+                  />
+                </label>
+                <label className="playlist-dashboard-sort">
+                  <span className="sr-only">Sort playlists</span>
+                  <select
+                    value={browserSortMode}
+                    onChange={(event) => setBrowserSortMode(event.target.value as typeof browserSortMode)}
+                  >
+                    <option value="recently-played">Recently played</option>
+                    <option value="recently-updated">Recently updated</option>
+                    <option value="name">Name</option>
+                    <option value="created">Date created</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            {allPlaylists.length > 0 && visibleBrowserPlaylists.length > 0 ? (
             <div
-              className="playlist-browser-grid"
+              className="playlist-dashboard-grid"
               data-controller-group="playlist-browser"
               data-controller-axis="grid"
             >
-              {allPlaylists.map((entry) => (
-                <button
+              {visibleBrowserPlaylists.map((entry) => {
+                const isPinned = sidebarPinnedPlaylistIdSet.has(entry.id)
+                return (
+                <article
                   key={entry.id}
-                  type="button"
-                  className="playlist-browser-card"
-                  data-controller-focusable="true"
-                  data-controller-context="true"
-                  data-controller-key={`playlist:${entry.id}`}
-                  onClick={() => {
-                    void handleOpenPlaylist(entry.id)
-                  }}
+                  className={`playlist-dashboard-card ${isPinned ? 'is-pinned' : ''}`}
                   onContextMenu={(event) => {
                     event.preventDefault()
                     event.stopPropagation()
@@ -987,29 +1225,64 @@ export default function PlaylistView() {
                     })
                   }}
                 >
-                  <PlaylistCover
-                    hash={entry.cover_hash}
-                    name={entry.name}
-                    isFavorites={entry.isSystemFavorites}
-                    className="playlist-browser-card-cover"
-                  />
-                  <span className="playlist-browser-card-meta">
-                    <span className="playlist-browser-card-name">{entry.name}</span>
-                    <span className="playlist-browser-card-count">
-                      {entry.kind === 'dynamic' ? 'Dynamic - ' : ''}
-                      {entry.track_count} {entry.track_count === 1 ? 'track' : 'tracks'}
-                      {entry.missing_track_count ? `, ${entry.missing_track_count} missing` : ''}
+                  <button
+                    type="button"
+                    className="playlist-dashboard-card-open"
+                    onClick={() => void handleOpenPlaylist(entry.id)}
+                    data-controller-focusable="true"
+                    data-controller-context="true"
+                    data-controller-key={`playlist:${entry.id}`}
+                    aria-label={`Open ${entry.name}`}
+                  >
+                    <PlaylistCover
+                      hash={entry.cover_hash}
+                      name={entry.name}
+                      isFavorites={entry.isSystemFavorites}
+                      className="playlist-dashboard-card-cover"
+                    />
+                    <span className="playlist-dashboard-card-meta">
+                      <span className="playlist-dashboard-card-name">{entry.name}</span>
+                      <span className="playlist-dashboard-card-details">
+                        <span>{entry.kind === 'dynamic' ? 'Dynamic playlist' : entry.isSystemFavorites ? 'Favorites' : 'Playlist'}</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{entry.track_count} {entry.track_count === 1 ? 'track' : 'tracks'}</span>
+                      </span>
+                      {Boolean(entry.missing_track_count) && (
+                        <span className="playlist-dashboard-card-warning">
+                          {entry.missing_track_count} missing {entry.missing_track_count === 1 ? 'track' : 'tracks'}
+                        </span>
+                      )}
                     </span>
-                  </span>
-                </button>
-              ))}
+                  </button>
+                  <button
+                    type="button"
+                    className={`playlist-dashboard-pin-btn ${isPinned ? 'is-pinned' : ''}`}
+                    onClick={() => handleToggleSidebarPin(entry.id)}
+                    aria-pressed={isPinned}
+                    aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${entry.name} ${isPinned ? 'from' : 'to'} sidebar`}
+                    title={isPinned ? 'Unpin from sidebar' : 'Pin to sidebar'}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill={isPinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="m15 4 5 5-3 1-4 4 1 5-1 1-4-6-5-4 1-1 5 1 4-4 1-2Z" />
+                      <path d="m9 15-5 5" />
+                    </svg>
+                  </button>
+                </article>
+                )
+              })}
             </div>
+            ) : allPlaylists.length > 0 ? (
+              <div className="playlist-dashboard-search-empty">
+                <p>No playlists match “{playlistSearchQuery.trim()}”.</p>
+                <button type="button" onClick={() => setPlaylistSearchQuery('')}>Clear search</button>
+              </div>
           ) : (
             <div className="library-empty playlist-browser-empty">
               <p>No playlists yet</p>
-              <p className="empty-hint">Use the create button to make one from anywhere in the app.</p>
+              <p className="empty-hint">Create one here, import an existing file, or add favorites from your library.</p>
             </div>
           )}
+          </section>
         </div>
         <CreatePlaylistModal
           isOpen={isCreatePlaylistModalOpen}
@@ -1268,6 +1541,20 @@ export default function PlaylistView() {
                 >
                   New playlist
                 </button>
+                {selectedPlaylistId !== null && (
+                  <button
+                    type="button"
+                    className="playlist-header-menu-item"
+                    role="menuitem"
+                    onClick={() => {
+                      handleToggleSidebarPin(selectedPlaylistId)
+                      setIsMoreMenuOpen(false)
+                    }}
+                    disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
+                  >
+                    {isSelectedPlaylistPinned ? 'Unpin from sidebar' : 'Pin to sidebar'}
+                  </button>
+                )}
                 {isDynamicPlaylist && (
                   <button
                     type="button"
