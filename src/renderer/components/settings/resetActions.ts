@@ -36,6 +36,9 @@ import {
   TRACKLIST_GENRE_VISIBILITY_STORAGE_KEY,
   TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY,
   LISTENING_STATS_ENABLED_STORAGE_KEY,
+  HOME_LAYOUT_STORAGE_KEY,
+  HOME_REDISCOVERY_ROTATION_STORAGE_KEY,
+  HOME_SKY_TIME_STORAGE_KEY,
   PLAYLIST_BROWSER_SORT_STORAGE_KEY,
   PLAYLIST_SIDEBAR_PINS_STORAGE_KEY,
   TRANSPORT_INFO_LINE_MODE_STORAGE_KEY,
@@ -94,6 +97,9 @@ export const RENDERER_SETTINGS_KEYS = [
   ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY,
   UI_SCALE_STORAGE_KEY,
   HOME_GREETING_TEXT_MODE_STORAGE_KEY,
+  HOME_SKY_TIME_STORAGE_KEY,
+  HOME_LAYOUT_STORAGE_KEY,
+  HOME_REDISCOVERY_ROTATION_STORAGE_KEY,
   JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY,
   TRANSPORT_INFO_LINE_MODE_STORAGE_KEY,
   INPUT_BINDINGS_STORAGE_KEY,
@@ -177,6 +183,8 @@ export async function resetAllSettings(): Promise<string> {
   useUIStore.getState().resetAnalyzerRackPreferences()
   useUIStore.getState().resetUIScalePercent()
   useUIStore.getState().resetHomeGreetingTextMode()
+  useUIStore.getState().resetHomeSkyTimePreference()
+  useUIStore.getState().resetHomeLayoutPreference()
   useUIStore.getState().setActivityIndicatorExperimentEnabled(false)
   useUIStore.getState().resetJumpToPlayingDestination()
   useUIStore.getState().resetTransportInfoLineMode()

@@ -9,9 +9,23 @@ import {
 } from '../../types/miniPlayer.ts'
 import type { UIScaleShortcutAction } from '../../types/uiScale'
 import { TRANSPORT_INFO_LINE_MODE_STORAGE_KEY } from '../constants/settingsStorageKeys'
+import { HOME_LAYOUT_STORAGE_KEY, HOME_SKY_TIME_STORAGE_KEY } from '../constants/settingsStorageKeys'
 import { runAppViewTransition, type AppViewTransitionDirection } from '../utils/viewTransitions.ts'
 import { normalizeAppView, type UISessionSnapshot } from '../utils/sessionState'
 import type { SignalShareTarget } from '../utils/signalShare'
+import {
+  DEFAULT_HOME_LAYOUT_PREFERENCE,
+  DEFAULT_HOME_SKY_TIME_PREFERENCE,
+  moveHomeModule,
+  normalizeHomeLayoutPreference,
+  normalizeHomeSkyTimePreference,
+  setHomeSkyTimeModePreference,
+  setHomeModuleVisible,
+  type HomeLayoutPreference,
+  type HomeModuleId,
+  type HomeSkyTimeMode,
+  type HomeSkyTimePreference
+} from '../utils/homePreferences'
 
 export type AppView = 'home' | 'library' | 'stats' | 'graph' | 'eq' | 'settings' | 'playlist'
 export type WaveformTimeDisplayMode = MiniPlayerTimeDisplayMode
@@ -293,6 +307,31 @@ function persistHomeGreetingTextModePreference(mode: HomeGreetingTextMode): void
   }
 }
 
+function readJsonPreference(key: string): unknown {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+function persistJsonPreference(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // Ignore storage failures and retain the in-memory preference.
+  }
+}
+
+function readHomeSkyTimePreference(): HomeSkyTimePreference {
+  return normalizeHomeSkyTimePreference(readJsonPreference(HOME_SKY_TIME_STORAGE_KEY))
+}
+
+function readHomeLayoutPreference(): HomeLayoutPreference {
+  return normalizeHomeLayoutPreference(readJsonPreference(HOME_LAYOUT_STORAGE_KEY))
+}
+
 function readActivityIndicatorExperimentPreference(): boolean {
   try {
     return localStorage.getItem(ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY) === '1'
@@ -437,6 +476,8 @@ const initialAnalyzerHeightPx = readAnalyzerHeightPreference()
 const initialAnalyzerRackVisible = readAnalyzerRackVisibilityPreference()
 const initialUIScalePercent = readUIScalePreference()
 const initialHomeGreetingTextMode = readHomeGreetingTextModePreference()
+const initialHomeSkyTimePreference = readHomeSkyTimePreference()
+const initialHomeLayoutPreference = readHomeLayoutPreference()
 const initialActivityIndicatorExperimentEnabled = readActivityIndicatorExperimentPreference()
 const initialControllerSupportEnabled = readControllerSupportExperimentPreference()
 const initialJumpToPlayingDestination = readJumpToPlayingDestinationPreference()
@@ -476,6 +517,8 @@ interface UIStore {
   analyzerHeightPx: number
   uiScalePercent: number
   homeGreetingTextMode: HomeGreetingTextMode
+  homeSkyTimePreference: HomeSkyTimePreference
+  homeLayoutPreference: HomeLayoutPreference
   activityIndicatorExperimentEnabled: boolean
   controllerSupportEnabled: boolean
   jumpToPlayingDestination: JumpToPlayingDestination
@@ -523,6 +566,12 @@ interface UIStore {
   resetUIScalePercent: () => void
   setHomeGreetingTextMode: (mode: HomeGreetingTextMode) => void
   resetHomeGreetingTextMode: () => void
+  setHomeSkyTimeMode: (mode: HomeSkyTimeMode, now?: Date) => void
+  setHomeSkyFixedMinutes: (minutes: number) => void
+  resetHomeSkyTimePreference: () => void
+  setHomeModuleVisible: (moduleId: HomeModuleId, visible: boolean) => void
+  moveHomeModule: (moduleId: HomeModuleId, targetIndex: number) => void
+  resetHomeLayoutPreference: () => void
   setActivityIndicatorExperimentEnabled: (enabled: boolean) => void
   setControllerSupportEnabled: (enabled: boolean) => void
   setJumpToPlayingDestination: (destination: JumpToPlayingDestination) => void
@@ -579,6 +628,8 @@ export const useUIStore = create<UIStore>((set, get) => ({
   analyzerHeightPx: initialAnalyzerHeightPx,
   uiScalePercent: initialUIScalePercent,
   homeGreetingTextMode: initialHomeGreetingTextMode,
+  homeSkyTimePreference: initialHomeSkyTimePreference,
+  homeLayoutPreference: initialHomeLayoutPreference,
   activityIndicatorExperimentEnabled: initialActivityIndicatorExperimentEnabled,
   controllerSupportEnabled: initialControllerSupportEnabled,
   jumpToPlayingDestination: initialJumpToPlayingDestination,
@@ -763,6 +814,39 @@ export const useUIStore = create<UIStore>((set, get) => ({
   resetHomeGreetingTextMode: () => {
     persistHomeGreetingTextModePreference(DEFAULT_HOME_GREETING_TEXT_MODE)
     set({ homeGreetingTextMode: DEFAULT_HOME_GREETING_TEXT_MODE })
+  },
+  setHomeSkyTimeMode: (mode, now = new Date()) => set((state) => {
+    const nextPreference = setHomeSkyTimeModePreference(state.homeSkyTimePreference, mode, now)
+    persistJsonPreference(HOME_SKY_TIME_STORAGE_KEY, nextPreference)
+    return { homeSkyTimePreference: nextPreference }
+  }),
+  setHomeSkyFixedMinutes: (minutes) => set((state) => {
+    const nextPreference = normalizeHomeSkyTimePreference({
+      mode: state.homeSkyTimePreference.mode,
+      fixedMinutes: minutes
+    })
+    persistJsonPreference(HOME_SKY_TIME_STORAGE_KEY, nextPreference)
+    return { homeSkyTimePreference: nextPreference }
+  }),
+  resetHomeSkyTimePreference: () => {
+    const nextPreference = { ...DEFAULT_HOME_SKY_TIME_PREFERENCE }
+    persistJsonPreference(HOME_SKY_TIME_STORAGE_KEY, nextPreference)
+    set({ homeSkyTimePreference: nextPreference })
+  },
+  setHomeModuleVisible: (moduleId, visible) => set((state) => {
+    const nextPreference = setHomeModuleVisible(state.homeLayoutPreference, moduleId, visible)
+    persistJsonPreference(HOME_LAYOUT_STORAGE_KEY, nextPreference)
+    return { homeLayoutPreference: nextPreference }
+  }),
+  moveHomeModule: (moduleId, targetIndex) => set((state) => {
+    const nextPreference = moveHomeModule(state.homeLayoutPreference, moduleId, targetIndex)
+    persistJsonPreference(HOME_LAYOUT_STORAGE_KEY, nextPreference)
+    return { homeLayoutPreference: nextPreference }
+  }),
+  resetHomeLayoutPreference: () => {
+    const nextPreference = normalizeHomeLayoutPreference(DEFAULT_HOME_LAYOUT_PREFERENCE)
+    persistJsonPreference(HOME_LAYOUT_STORAGE_KEY, nextPreference)
+    set({ homeLayoutPreference: nextPreference })
   },
   setActivityIndicatorExperimentEnabled: (enabled) => {
     const normalized = Boolean(enabled)

@@ -93,6 +93,8 @@ import {
   type LatestLibrarySyncSummary
 } from './libraryLatestSync'
 import { sanitizeLyricsLines } from './lyricsParsing'
+import type { HomeDashboard, HomeDashboardQuery, HomeReleaseSummary } from '../../types/home'
+import { getLocalDayKey, selectHomeRediscovery } from '../../shared/home/homeDashboard'
 import type { LyricsFormat, LyricsLine, LyricsProvider } from '../../types/lyrics'
 import type {
   JellyfinSourceLastStatus,
@@ -1885,6 +1887,11 @@ interface AlbumSummaryAccumulator {
   firstArtworkHash: string | null
   year: number | null
   trackCount: number
+  availableTrackCount: number
+  playCount: number
+  favoriteTrackCount: number
+  lastPlayedAt: number | null
+  latestAddedAt: number
   hasUnplayedLatestSyncTrack: boolean
 }
 
@@ -1972,6 +1979,11 @@ function createAlbumSummaryAccumulator(identity: ResolvedAlbumIdentity): AlbumSu
     firstArtworkHash: null,
     year: null,
     trackCount: 0,
+    availableTrackCount: 0,
+    playCount: 0,
+    favoriteTrackCount: 0,
+    lastPlayedAt: null,
+    latestAddedAt: 0,
     hasUnplayedLatestSyncTrack: false
   }
 }
@@ -1979,11 +1991,19 @@ function createAlbumSummaryAccumulator(identity: ResolvedAlbumIdentity): AlbumSu
 function addTrackToAlbumSummary(
   group: AlbumSummaryAccumulator,
   track: DbTrackRow,
-  latestSyncSummary: LatestLibrarySyncSummary | null
+  latestSyncSummary: LatestLibrarySyncSummary | null,
+  favoritePaths?: ReadonlySet<string>
 ): void {
   incrementDisplayVariant(group.albumVariants, normalizeAlbumName(track.album))
   incrementDisplayVariant(group.artistVariants, group.displayArtist)
   group.trackCount += 1
+  if (track.is_available !== 0) group.availableTrackCount += 1
+  group.playCount += Math.max(0, Math.trunc(track.play_count || 0))
+  if (favoritePaths?.has(track.path)) group.favoriteTrackCount += 1
+  if (track.last_played_at !== null && (group.lastPlayedAt === null || track.last_played_at > group.lastPlayedAt)) {
+    group.lastPlayedAt = track.last_played_at
+  }
+  group.latestAddedAt = Math.max(group.latestAddedAt, track.added_at || 0)
 
   if (track.year !== null && (group.year === null || track.year > group.year)) {
     group.year = track.year
@@ -2007,7 +2027,8 @@ function addTrackToAlbumSummary(
 
 function collectAlbumSummaryGroups(
   missingAlbumArtistBucketProbes: ReadonlyMap<string, MissingAlbumArtistBucketProbe>,
-  latestSyncSummary: LatestLibrarySyncSummary | null
+  latestSyncSummary: LatestLibrarySyncSummary | null,
+  favoritePaths?: ReadonlySet<string>
 ): Map<string, AlbumSummaryAccumulator> {
   const groups = new Map<string, AlbumSummaryAccumulator>()
 
@@ -2021,7 +2042,7 @@ function collectAlbumSummaryGroups(
       group = createAlbumSummaryAccumulator(identity)
       groups.set(identity.identityKey, group)
     }
-    addTrackToAlbumSummary(group, track, latestSyncSummary)
+    addTrackToAlbumSummary(group, track, latestSyncSummary, favoritePaths)
   }
 
   return groups
@@ -5574,6 +5595,79 @@ export function getAlbums(options: AlbumListOptions = {}): Album[] {
       return a.identity_key.localeCompare(b.identity_key)
     })
   })
+}
+
+function buildHomeReleaseSummary(group: AlbumSummaryAccumulator): HomeReleaseSummary {
+  return {
+    identity_key: group.identityKey,
+    album: pickMostFrequentDisplayVariant(group.albumVariants, UNKNOWN_ALBUM_NAME),
+    artist: pickMostFrequentDisplayVariant(group.artistVariants, UNKNOWN_ARTIST_NAME),
+    year: group.year,
+    artwork_hash: pickMostFrequentArtworkHash(group.artworkCounts, group.firstArtworkHash),
+    track_count: group.trackCount,
+    available_track_count: group.availableTrackCount,
+    play_count: group.playCount,
+    favorite_track_count: group.favoriteTrackCount,
+    last_played_at: group.lastPlayedAt,
+    latest_added_at: group.latestAddedAt
+  }
+}
+
+export function getHomeDashboard(query: HomeDashboardQuery = {}): HomeDashboard {
+  return measureLibraryQuery('getHomeDashboard', () => {
+    const now = new Date()
+    const dayKey = getLocalDayKey(now)
+    if (!db) {
+      return { day_key: dayKey, recent_releases: [], rediscover_releases: [], newly_added_releases: [] }
+    }
+
+    const favoritePaths = new Set(db.all<{ track_path: string }>(
+      'SELECT track_path FROM favorites'
+    ).map((row) => row.track_path))
+    const groups = collectAlbumSummaryGroups(readMissingAlbumArtistBucketProbes(), null, favoritePaths)
+    const releases = Array.from(groups.values())
+      .filter((group) => isAlbumGroupEligible(group, { includeSingles: true }))
+      .map(buildHomeReleaseSummary)
+      .filter((release) => release.available_track_count > 0)
+
+    const recentReleases = releases
+      .filter((release) => release.last_played_at !== null)
+      .sort((a, b) => (b.last_played_at ?? 0) - (a.last_played_at ?? 0) || a.identity_key.localeCompare(b.identity_key))
+      .slice(0, 12)
+    const excluded = new Set<string>([
+      ...recentReleases.slice(0, 6).map((release) => release.identity_key),
+      ...(Array.isArray(query.excludedReleaseIdentityKeys)
+        ? query.excludedReleaseIdentityKeys.filter((key): key is string => typeof key === 'string' && key.length <= 1024)
+        : [])
+    ])
+    const rediscoverReleases = selectHomeRediscovery(releases, {
+      now: now.getTime(),
+      dayKey,
+      rotation: Number.isFinite(query.rotation) ? Math.max(0, Math.trunc(query.rotation!)) : 0,
+      limit: 8,
+      excludedIdentityKeys: excluded
+    })
+    const newlyAddedReleases = [...releases]
+      .sort((a, b) => b.latest_added_at - a.latest_added_at || a.identity_key.localeCompare(b.identity_key))
+      .slice(0, 8)
+
+    return {
+      day_key: dayKey,
+      recent_releases: recentReleases,
+      rediscover_releases: rediscoverReleases,
+      newly_added_releases: newlyAddedReleases
+    }
+  })
+}
+
+export function getAvailableLibraryTrackPaths(): string[] {
+  if (!db) return []
+  return db.all<{ path: string }>(`
+    SELECT path
+    FROM tracks
+    WHERE is_available != 0
+    ORDER BY path COLLATE NOCASE
+  `).map((row) => row.path)
 }
 
 // Search tracks

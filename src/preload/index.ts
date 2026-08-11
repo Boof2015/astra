@@ -159,6 +159,7 @@ import type {
   ListeningStatsTransferAvailability
 } from '../types/listeningStats'
 import type { ListeningStatsImportResult } from '../shared/stats/statsTransfer'
+import type { HomeDashboard, HomeDashboardQuery } from '../types/home'
 import type {
   GlobalShortcutRegistrationRequest,
   GlobalShortcutRegistrationResult,
@@ -1553,6 +1554,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('library:getTracksPage', request) as Promise<LibraryTrackPage>,
     getTracksByPaths: (trackPaths: string[]) =>
       ipcRenderer.invoke('library:getTracksByPaths', trackPaths) as Promise<DbTrack[]>,
+    getAvailableTrackPaths: () =>
+      ipcRenderer.invoke('library:getAvailableTrackPaths') as Promise<string[]>,
+    getHomeDashboard: (query?: HomeDashboardQuery) =>
+      ipcRenderer.invoke('library:getHomeDashboard', query) as Promise<HomeDashboard>,
     getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) =>
       ipcRenderer.invoke('library:getTracksByArtist', artist, mode),
     getTracksByGenre: (genre: string) =>
@@ -2190,6 +2195,8 @@ declare global {
         getTracks: () => Promise<DbTrack[]>
         getTracksPage: (request?: LibraryTrackPageRequest) => Promise<LibraryTrackPage>
         getTracksByPaths: (trackPaths: string[]) => Promise<DbTrack[]>
+        getAvailableTrackPaths: () => Promise<string[]>
+        getHomeDashboard: (query?: HomeDashboardQuery) => Promise<HomeDashboard>
         getTracksByArtist: (artist: string, mode?: LibraryArtistBrowseMode) => Promise<DbTrack[]>
         getTracksByGenre: (genre: string) => Promise<DbTrack[]>
         getTracksByYear: (year: number | null) => Promise<DbTrack[]>

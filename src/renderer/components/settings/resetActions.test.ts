@@ -2,6 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   ASTRA_SESSION_POSITION_CHECKPOINT_STORAGE_KEY,
+  HOME_LAYOUT_STORAGE_KEY,
+  HOME_REDISCOVERY_ROTATION_STORAGE_KEY,
+  HOME_SKY_TIME_STORAGE_KEY,
   PLAYLIST_BROWSER_SORT_STORAGE_KEY,
   PLAYLIST_SIDEBAR_PINS_STORAGE_KEY,
   TRANSPORT_INFO_LINE_MODE_STORAGE_KEY
@@ -19,4 +22,10 @@ test('Reset All includes the session position checkpoint', () => {
 test('Reset All includes playlist browser and sidebar preferences', () => {
   assert.equal(RENDERER_SETTINGS_KEYS.includes(PLAYLIST_BROWSER_SORT_STORAGE_KEY), true)
   assert.equal(RENDERER_SETTINGS_KEYS.includes(PLAYLIST_SIDEBAR_PINS_STORAGE_KEY), true)
+})
+
+test('Reset All includes Home sky and layout preferences', () => {
+  assert.equal(RENDERER_SETTINGS_KEYS.includes(HOME_SKY_TIME_STORAGE_KEY), true)
+  assert.equal(RENDERER_SETTINGS_KEYS.includes(HOME_LAYOUT_STORAGE_KEY), true)
+  assert.equal(RENDERER_SETTINGS_KEYS.includes(HOME_REDISCOVERY_ROTATION_STORAGE_KEY), true)
 })

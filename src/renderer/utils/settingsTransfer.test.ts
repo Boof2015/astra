@@ -6,6 +6,8 @@ import {
   EQ_STORAGE_KEY,
   GLOBAL_INPUT_BINDINGS_STORAGE_KEY,
   HOME_GREETING_TEXT_MODE_STORAGE_KEY,
+  HOME_LAYOUT_STORAGE_KEY,
+  HOME_SKY_TIME_STORAGE_KEY,
   INPUT_BINDINGS_STORAGE_KEY,
   LYRICS_DISPLAY_SETTINGS_STORAGE_KEY,
   LISTENING_STATS_ENABLED_STORAGE_KEY,
@@ -157,6 +159,20 @@ test('interface transfers include the transport info line preference', () => {
     file.categories.interface?.localStorage[TRANSPORT_INFO_LINE_MODE_STORAGE_KEY],
     'album'
   )
+})
+
+test('interface transfers include Home sky and module preferences', () => {
+  const sky = '{"mode":"fixed","fixedMinutes":1080}'
+  const layout = '{"version":1,"modules":[{"id":"rediscover","visible":true}]}'
+  const file = createSettingsTransferFile(['interface'], {
+    storage: new MemoryStorage({
+      [HOME_SKY_TIME_STORAGE_KEY]: sky,
+      [HOME_LAYOUT_STORAGE_KEY]: layout
+    })
+  })
+
+  assert.equal(file.categories.interface?.localStorage[HOME_SKY_TIME_STORAGE_KEY], sky)
+  assert.equal(file.categories.interface?.localStorage[HOME_LAYOUT_STORAGE_KEY], layout)
 })
 
 test('import replaces selected categories and leaves unselected categories untouched', async () => {

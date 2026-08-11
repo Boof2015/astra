@@ -35,6 +35,8 @@ import {
   EQ_STORAGE_KEY,
   GLOBAL_INPUT_BINDINGS_STORAGE_KEY,
   HOME_GREETING_TEXT_MODE_STORAGE_KEY,
+  HOME_LAYOUT_STORAGE_KEY,
+  HOME_SKY_TIME_STORAGE_KEY,
   INCLUDE_COLLAB_ARTISTS_STORAGE_KEY,
   INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY,
   INCLUDE_LFE_DOWNMIX_STORAGE_KEY,
@@ -163,7 +165,7 @@ const SETTINGS_TRANSFER_CATEGORY_DEFINITIONS_INTERNAL: SettingsTransferCategoryD
   {
     id: 'interface',
     label: 'Interface',
-    description: 'UI scale, home greeting, transport display, analyzer rack layout, and navigation preferences.',
+    description: 'UI scale, Home header and layout, transport display, analyzer rack layout, and navigation preferences.',
   },
   {
     id: 'library_view',
@@ -221,6 +223,8 @@ export const SETTINGS_TRANSFER_CATEGORY_STORAGE_KEYS: Record<SettingsTransferCat
   interface: [
     UI_SCALE_STORAGE_KEY,
     HOME_GREETING_TEXT_MODE_STORAGE_KEY,
+    HOME_SKY_TIME_STORAGE_KEY,
+    HOME_LAYOUT_STORAGE_KEY,
     ANALYZER_HEIGHT_STORAGE_KEY,
     ANALYZER_RACK_VISIBILITY_STORAGE_KEY,
     JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY,

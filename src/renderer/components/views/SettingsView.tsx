@@ -11,6 +11,7 @@ import KeybindSettings from '../settings/KeybindSettings'
 import SettingsTransferWizard from '../settings/SettingsTransferWizard'
 import ImportedListeningDataCard from '../settings/ImportedListeningDataCard'
 import SettingsSegmentedControl, { type SettingsSegmentedOption } from '../settings/SettingsSegmentedControl'
+import HomeSkyControls from '../home/HomeSkyControls'
 import { renderPairingQrSvg } from '../../utils/pairingQr'
 import { usePresence } from '../../hooks/usePresence'
 import { useLibraryStore } from '../../stores/libraryStore'
@@ -1895,7 +1896,7 @@ export default function SettingsView() {
                 </div>
               </div>
               <div className="settings-card">
-                <div className="settings-card-label">Home Greeting</div>
+                <div className="settings-card-label">Home Header</div>
                 <div className="settings-grid">
                   <div className="settings-field">
                     <span className="settings-field-label">Text</span>
@@ -1907,6 +1908,7 @@ export default function SettingsView() {
                       onChange={setHomeGreetingTextMode}
                     />
                   </div>
+                  <HomeSkyControls />
                 </div>
               </div>
               <div className="settings-card">
