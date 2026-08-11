@@ -18,6 +18,7 @@ import { compareAlbumsByYearDescending } from '../../utils/albumYearSort'
 import { partitionArtistDiscography } from '../../utils/artistDiscography'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { matchesFuzzyFields } from '../../utils/fuzzySearch'
+import { isSameOrDescendantFsPath } from '../../utils/folderTree'
 import { compareBaseLocaleText } from '../../utils/localeSort'
 import { runViewTransition } from '../../utils/viewTransitions'
 import { compareTrackPlayCounts } from '../../utils/trackPlayCountSort'
@@ -317,12 +318,12 @@ export default function LibraryView() {
     () => resolveTrackPaths(activeTrackPaths),
     [activeTrackPaths, resolveTrackPaths, trackCacheVersion]
   )
-  // Drop tracks that live under a hidden folder. Mirrors the path-prefix matching used by
-  // FolderTreeView's buildFolderTree so a track counts as "under" a root only via a separator.
+  // Drop tracks that live under a hidden folder using the same platform-aware path matching
+  // as the folder tree, including filesystem roots and case-insensitive default filesystems.
   const visibleTracks = useMemo(() => {
     if (!hasHiddenFolders) return tracks
     return tracks.filter((track) => !hiddenFolderPrefixes.some((prefix) => (
-      track.path.startsWith(prefix + '/') || track.path.startsWith(prefix + '\\')
+      isSameOrDescendantFsPath(track.path, prefix, window.electronAPI.platform)
     )))
   }, [tracks, hiddenFolderPrefixes, hasHiddenFolders])
   const sortContextKey = useMemo(() => {
