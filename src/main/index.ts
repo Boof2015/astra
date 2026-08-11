@@ -7789,6 +7789,14 @@ ipcMain.handle('library:getTracksByPaths', (_event, trackPaths: string[]) => {
   return library.getTracksByPaths(trackPaths)
 })
 
+ipcMain.handle('library:getAvailableTrackPaths', () => {
+  return library.getAvailableLibraryTrackPaths()
+})
+
+ipcMain.handle('library:getHomeDashboard', (_event, query?: import('../types/home').HomeDashboardQuery) => {
+  return library.getHomeDashboard(query)
+})
+
 // Get tracks by artist
 ipcMain.handle('library:getTracksByArtist', (_event, artist: string, mode?: library.ArtistBrowseMode) => {
   return library.getTracksByArtist(artist, mode)
