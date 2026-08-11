@@ -130,6 +130,13 @@
       {
         "from": "THIRD_PARTY_LICENSES.md",
         "to": "THIRD_PARTY_LICENSES.md"
+      },
+      {
+        "from": "resources/tray/",
+        "to": "tray/",
+        "filter": [
+          "*"
+        ]
       }
     ],
     "win": {

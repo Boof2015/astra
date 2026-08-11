@@ -32,6 +32,7 @@ import type {
   PhoneRemotePendingPairingRequest,
   PhoneRemoteStatus
 } from '../types/phoneRemote'
+import type { PhoneSyncConflictResolution } from '../types/phoneSync'
 import type {
   ParallaxAudioChunk,
   ParallaxDiscoveryEvent,
@@ -124,6 +125,11 @@ import type {
   InputActionId,
   RawBindingInput
 } from '../types/inputBindings'
+import type {
+  DesktopIntegrationPrefs,
+  TrayRendererCommand,
+  TrayRendererState,
+} from '../types/desktopIntegration'
 
 type RuntimeIconImageSetPayload = {
     images: Array<{
@@ -267,6 +273,17 @@ declare global {
             associatedOpenFiles: {
                 markReady: () => void
                 onOpenFiles: (callback: (paths: string[]) => void) => () => void
+            }
+            desktopIntegration: {
+                getPrefs: () => Promise<DesktopIntegrationPrefs>
+                setTrayEnabled: (enabled: boolean) => Promise<DesktopIntegrationPrefs>
+                setCloseToTray: (enabled: boolean) => Promise<DesktopIntegrationPrefs>
+            }
+            trayControls: {
+                markReady: () => void
+                markNotReady: () => void
+                publishRendererState: (state: TrayRendererState) => void
+                onCommand: (callback: (command: TrayRendererCommand) => void) => () => void
             }
             miniPlayer: {
                 open: () => Promise<void>
@@ -418,6 +435,9 @@ declare global {
                 revokeAllPairedDevices: () => Promise<number>
                 setEnabled: (enabled: boolean) => Promise<PhoneRemoteStatus>
                 setPort: (port: number) => Promise<PhoneRemoteStatus>
+                setSyncEnabled: (enabled: boolean) => Promise<PhoneRemoteStatus>
+                requestSync: () => Promise<PhoneRemoteStatus>
+                resolveSyncConflict: (syncUid: string, resolution: PhoneSyncConflictResolution) => Promise<PhoneRemoteStatus>
                 resetToDefaults: () => Promise<PhoneRemoteStatus>
                 onStatus: (callback: (status: PhoneRemoteStatus) => void) => () => void
             }

@@ -57,6 +57,7 @@ import { useScopePopoutBridge } from './hooks/useScopePopoutBridge'
 import { useMemoryDiagnosticsBridge } from './hooks/useMemoryDiagnosticsBridge'
 import { useCoverArtAccent } from './hooks/useCoverArtAccent'
 import { useRuntimeAppIconSync } from './hooks/useRuntimeAppIconSync'
+import { useTrayControlsBridge } from './hooks/useTrayControlsBridge'
 import { usePointerFocusCleanup } from './hooks/usePointerFocusCleanup'
 import { useControllerInput } from './hooks/useControllerInput'
 import { usePresence } from './hooks/usePresence'
@@ -149,6 +150,11 @@ function RuntimeAppIconSync(): null {
   return null
 }
 
+function TrayControlsBridgeRuntime(): null {
+  useTrayControlsBridge()
+  return null
+}
+
 function RuntimeBridges() {
   return (
     <>
@@ -163,6 +169,7 @@ function RuntimeBridges() {
       <MemoryDiagnosticsBridgeRuntime />
       <CoverArtAccentRuntime />
       <RuntimeAppIconSync />
+      <TrayControlsBridgeRuntime />
     </>
   )
 }

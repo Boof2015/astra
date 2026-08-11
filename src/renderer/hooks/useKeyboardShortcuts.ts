@@ -7,6 +7,7 @@ import { dispatchInputCapture } from '../input/inputCapture'
 import {
   getEffectiveBindingSlots,
   getGlobalInputBindingSlotKey,
+  isGlobalInputRegistrationSuspended,
   isGlobalInputBindingEnabled,
   useInputBindingStore
 } from '../stores/inputBindingStore'
@@ -40,11 +41,15 @@ export function useKeyboardShortcuts(): void {
   const overrides = useInputBindingStore((state) => state.overrides)
   const globalEnabled = useInputBindingStore((state) => state.globalEnabled)
   const globalRegistrationSuspended = useInputBindingStore((state) => state.globalRegistrationSuspended)
+  const globalUserSuspended = useInputBindingStore((state) => state.globalUserSuspended)
   const setGlobalStatuses = useInputBindingStore((state) => state.setGlobalStatuses)
 
   useEffect(() => {
     let canceled = false
-    const requests = globalRegistrationSuspended ? [] : INPUT_ACTION_DEFINITIONS.flatMap((definition) => {
+    const requests = isGlobalInputRegistrationSuspended(
+      globalRegistrationSuspended,
+      globalUserSuspended
+    ) ? [] : INPUT_ACTION_DEFINITIONS.flatMap((definition) => {
       return getEffectiveBindingSlots(definition.id, overrides).flatMap((binding, slotIndex) => {
         if (
           binding?.device !== 'keyboard' ||
@@ -72,7 +77,7 @@ export function useKeyboardShortcuts(): void {
     return () => {
       canceled = true
     }
-  }, [globalEnabled, globalRegistrationSuspended, overrides, setGlobalStatuses])
+  }, [globalEnabled, globalRegistrationSuspended, globalUserSuspended, overrides, setGlobalStatuses])
 
   useEffect(() => {
     let lastMouseInput: { button: 'back' | 'forward'; source: 'dom' | 'ipc'; at: number } | null = null

@@ -166,6 +166,11 @@ import type {
   RawBindingInput
 } from '../types/inputBindings'
 import type {
+  DesktopIntegrationPrefs,
+  TrayRendererCommand,
+  TrayRendererState,
+} from '../types/desktopIntegration'
+import type {
   IntegrityDuplicateTrashRequest,
   IntegrityDuplicateTrashResult,
   IntegrityFinding,
@@ -888,6 +893,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('associated-open-files', handler)
       return () => ipcRenderer.removeListener('associated-open-files', handler)
     }
+  },
+
+  desktopIntegration: {
+    getPrefs: (): Promise<DesktopIntegrationPrefs> => ipcRenderer.invoke('desktop-integration:getPrefs'),
+    setTrayEnabled: (enabled: boolean): Promise<DesktopIntegrationPrefs> =>
+      ipcRenderer.invoke('desktop-integration:setTrayEnabled', enabled),
+    setCloseToTray: (enabled: boolean): Promise<DesktopIntegrationPrefs> =>
+      ipcRenderer.invoke('desktop-integration:setCloseToTray', enabled),
+  },
+
+  trayControls: {
+    markReady: () => ipcRenderer.send('tray-controls:rendererReady'),
+    markNotReady: () => ipcRenderer.send('tray-controls:rendererNotReady'),
+    publishRendererState: (state: TrayRendererState) =>
+      ipcRenderer.send('tray-controls:publishRendererState', state),
+    onCommand: (callback: (command: TrayRendererCommand) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, command: TrayRendererCommand) => callback(command)
+      ipcRenderer.on('tray-controls:command', handler)
+      return () => ipcRenderer.removeListener('tray-controls:command', handler)
+    },
   },
 
   miniPlayer: {
@@ -1835,6 +1860,17 @@ declare global {
       associatedOpenFiles: {
         markReady: () => void
         onOpenFiles: (callback: (paths: string[]) => void) => () => void
+      }
+      desktopIntegration: {
+        getPrefs: () => Promise<DesktopIntegrationPrefs>
+        setTrayEnabled: (enabled: boolean) => Promise<DesktopIntegrationPrefs>
+        setCloseToTray: (enabled: boolean) => Promise<DesktopIntegrationPrefs>
+      }
+      trayControls: {
+        markReady: () => void
+        markNotReady: () => void
+        publishRendererState: (state: TrayRendererState) => void
+        onCommand: (callback: (command: TrayRendererCommand) => void) => () => void
       }
       miniPlayer: {
         open: () => Promise<void>

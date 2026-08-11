@@ -17347,6 +17347,34 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   color: var(--accent-text);
 }
 
+.keybind-inline-action {
+  appearance: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-text-strong, var(--accent-text));
+  font: inherit;
+  font-weight: 700;
+  letter-spacing: inherit;
+  text-decoration: underline;
+  text-decoration-color: rgba(var(--accent-rgb), 0.42);
+  text-underline-offset: 3px;
+  cursor: pointer;
+  transition: color var(--transition-fast), text-decoration-color var(--transition-fast);
+}
+
+.keybind-inline-action:hover {
+  color: var(--accent);
+  text-decoration-color: currentColor;
+}
+
+.keybind-inline-action:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
 .keybind-groups {
   display: flex;
   flex-direction: column;
@@ -18348,6 +18376,11 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   color: var(--accent);
   border-color: rgba(var(--accent-rgb), 0.38);
   background: rgba(var(--accent-rgb), 0.08);
+}
+
+.settings-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .settings-color {

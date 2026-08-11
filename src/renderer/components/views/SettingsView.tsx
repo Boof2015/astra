@@ -95,6 +95,7 @@ import type { LastFmProfileStatus, LastFmScrobbleProtocol } from '../../../types
 import { LRCLIB_OFFICIAL_BASE_URL } from '../../../types/lyrics'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
 import type { CompanionApiScope } from '../../../types/companionApi'
+import type { DesktopIntegrationPrefs } from '../../../types/desktopIntegration'
 import ParallaxSettingsPanel from '../parallax/ParallaxSettingsPanel'
 
 type ResetActionId =
@@ -367,6 +368,9 @@ export default function SettingsView() {
   const [localApiSelectedPairingBaseUrl, setLocalApiSelectedPairingBaseUrl] = useState('')
   const [localApiPairingModalOpen, setLocalApiPairingModalOpen] = useState(false)
   const [settingsTransferWizardOpen, setSettingsTransferWizardOpen] = useState(false)
+  const [desktopIntegrationPrefs, setDesktopIntegrationPrefs] = useState<DesktopIntegrationPrefs | null>(null)
+  const [desktopIntegrationBusy, setDesktopIntegrationBusy] = useState(false)
+  const [desktopIntegrationError, setDesktopIntegrationError] = useState('')
   const [showInlinePhoneQr, setShowInlinePhoneQr] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
@@ -756,6 +760,20 @@ export default function SettingsView() {
     void initLocalApi()
     void initPhoneRemote()
   }, [initLocalApi, initPhoneRemote])
+
+  useEffect(() => {
+    let active = true
+    void window.electronAPI.desktopIntegration.getPrefs()
+      .then((prefs) => {
+        if (active) setDesktopIntegrationPrefs(prefs)
+      })
+      .catch(() => {
+        if (active) setDesktopIntegrationError('Failed to load desktop integration settings.')
+      })
+    return () => {
+      active = false
+    }
+  }, [])
 
   useEffect(() => {
     void initDiagnostics()
@@ -1587,6 +1605,24 @@ export default function SettingsView() {
     setSleepTimerFeedback('Sleep timer canceled.')
   }
 
+  const updateDesktopIntegration = async (
+    update: 'tray' | 'close',
+    enabled: boolean
+  ): Promise<void> => {
+    setDesktopIntegrationBusy(true)
+    setDesktopIntegrationError('')
+    try {
+      const prefs = update === 'tray'
+        ? await window.electronAPI.desktopIntegration.setTrayEnabled(enabled)
+        : await window.electronAPI.desktopIntegration.setCloseToTray(enabled)
+      setDesktopIntegrationPrefs(prefs)
+    } catch {
+      setDesktopIntegrationError('Failed to update desktop integration settings.')
+    } finally {
+      setDesktopIntegrationBusy(false)
+    }
+  }
+
   const handleNormalizationToggle = () => {
     if (bitPerfectModeActive) return
     if (normalizationEnabled) {
@@ -1886,6 +1922,56 @@ export default function SettingsView() {
                       onChange={setTransportInfoLineMode}
                     />
                   </div>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Desktop Integration</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">
+                      {window.electronAPI.platform === 'darwin' ? 'Menu Bar Icon' : 'System Tray Icon'}
+                    </span>
+                    <button
+                      type="button"
+                      className={`settings-toggle ${desktopIntegrationPrefs?.trayEnabled ? 'active' : ''}`}
+                      disabled={desktopIntegrationPrefs === null || desktopIntegrationBusy}
+                      onClick={() => void updateDesktopIntegration(
+                        'tray',
+                        !(desktopIntegrationPrefs?.trayEnabled ?? true)
+                      )}
+                    >
+                      {desktopIntegrationPrefs?.trayEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">
+                      {window.electronAPI.platform === 'darwin' ? 'Keep Running in Menu Bar' : 'Close to Tray'}
+                    </span>
+                    <button
+                      type="button"
+                      className={`settings-toggle ${desktopIntegrationPrefs?.closeToTray ? 'active' : ''}`}
+                      disabled={
+                        desktopIntegrationPrefs === null
+                        || desktopIntegrationBusy
+                        || !desktopIntegrationPrefs.trayEnabled
+                      }
+                      onClick={() => void updateDesktopIntegration(
+                        'close',
+                        !(desktopIntegrationPrefs?.closeToTray ?? false)
+                      )}
+                    >
+                      {desktopIntegrationPrefs?.closeToTray ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <p className="settings-note">
+                    When enabled, closing Astra hides the main window while playback, the Mini Player,
+                    global hotkeys, Phone Remote, and library sync continue running.
+                  </p>
+                  {desktopIntegrationError && (
+                    <p className="settings-note settings-note-error" role="status">
+                      {desktopIntegrationError}
+                    </p>
+                  )}
                 </div>
               </div>
             </div>

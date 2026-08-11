@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, clipboard, screen, safeStorage, powerMonitor, protocol, session, globalShortcut } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, clipboard, screen, safeStorage, powerMonitor, protocol, session, globalShortcut, Menu, Tray, type MenuItemConstructorOptions } from 'electron'
 import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir, stat } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
@@ -131,6 +131,17 @@ import {
   saveMainWindowPrefs,
   type MainWindowPrefs
 } from './services/mainWindowPrefs'
+import {
+  loadDesktopIntegrationPrefs,
+  normalizeDesktopIntegrationPrefs,
+  resolveMainWindowCloseDisposition,
+  saveDesktopIntegrationPrefs,
+} from './services/desktopIntegrationPrefs'
+import {
+  buildTrayMenuModel,
+  createTrayMenuStateKey,
+} from './services/trayMenu'
+import { TrayRendererCommandQueue } from './services/trayRendererCommandQueue'
 import {
   mergeMiniPlayerSnapshots,
   type MiniPlayerCommand,
@@ -293,6 +304,13 @@ import type {
   LibraryDiagnosticsRendererTimingEvent,
   LibraryReloadStep
 } from '../types/libraryDiagnostics'
+import {
+  DEFAULT_DESKTOP_INTEGRATION_PREFS,
+  DEFAULT_TRAY_RENDERER_STATE,
+  type DesktopIntegrationPrefs,
+  type TrayRendererCommand,
+  type TrayRendererState,
+} from '../types/desktopIntegration'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -322,6 +340,7 @@ let cachedBuildMetadata: ResolvedBuildMetadata | null = null
 let mainWindow: BrowserWindow | null = null
 let miniWindow: BrowserWindow | null = null
 let lyricsPopoutWindow: BrowserWindow | null = null
+let appTray: Tray | null = null
 const scopePopoutWindows: Record<ScopeKind, BrowserWindow | null> = {
   spectrum: null,
   oscilloscope: null,
@@ -335,6 +354,12 @@ let scopePopoutState: ScopePopoutState = { ...DEFAULT_SCOPE_POPOUT_STATE }
 let mainWindowPrefs: MainWindowPrefs | null = null
 let miniWindowPrefs: MiniPlayerWindowPrefs | null = null
 let lyricsPopoutWindowPrefs: LyricsPopoutWindowPrefs | null = null
+let desktopIntegrationPrefs: DesktopIntegrationPrefs = { ...DEFAULT_DESKTOP_INTEGRATION_PREFS }
+let latestTrayRendererState: TrayRendererState = { ...DEFAULT_TRAY_RENDERER_STATE }
+let trayRendererReady = false
+let latestTrayMenuStateKey: string | null = null
+let trayMinuteRefreshTimer: ReturnType<typeof setTimeout> | null = null
+const pendingTrayRendererCommands = new TrayRendererCommandQueue()
 let latestMiniPlayerSnapshot: MiniPlayerSnapshot | null = null
 let latestMiniPlayerQueueSnapshot: MiniPlayerQueueSnapshot | null = null
 let latestMiniVisualizerChunk: MiniPlayerVisualizerStreamChunk | null = null
@@ -1580,6 +1605,380 @@ function getMiniWindowState(): MiniPlayerWindowState {
   const visualizerMode = normalizeMiniPlayerVisualizerMode(miniWindowPrefs?.visualizerMode)
 
   return { isOpen, alwaysOnTop, visualizerMode }
+}
+
+function isTrayAvailable(): boolean {
+  return Boolean(appTray && !appTray.isDestroyed())
+}
+
+function isMainWindowPresented(): boolean {
+  return Boolean(
+    mainWindow
+    && !mainWindow.isDestroyed()
+    && mainWindow.isVisible()
+    && !mainWindow.isMinimized()
+  )
+}
+
+function closeTransientPopoutWindows(): void {
+  if (lyricsPopoutWindow && !lyricsPopoutWindow.isDestroyed()) {
+    lyricsPopoutWindow.close()
+  }
+  closeAllScopePopoutWindows()
+}
+
+function hideMainWindowToTray(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindowPersistTimer !== null) {
+    clearTimeout(mainWindowPersistTimer)
+    mainWindowPersistTimer = null
+  }
+  void persistMainWindowPrefs()
+  closeTransientPopoutWindows()
+  mainWindow.hide()
+  refreshTrayMenu()
+}
+
+function toggleMainWindowFromTray(): void {
+  if (isMainWindowPresented()) {
+    hideMainWindowToTray()
+    return
+  }
+  focusOrCreateMainWindow()
+  refreshTrayMenu()
+}
+
+function sendTrayRendererCommand(command: TrayRendererCommand, showMainWindow = false): void {
+  if (showMainWindow) {
+    focusOrCreateMainWindow()
+  }
+
+  if (
+    trayRendererReady
+    && mainWindow
+    && !mainWindow.isDestroyed()
+    && !mainWindow.webContents.isDestroyed()
+  ) {
+    mainWindow.webContents.send('tray-controls:command', command)
+    return
+  }
+
+  pendingTrayRendererCommands.enqueue(command)
+}
+
+function flushPendingTrayRendererCommands(): void {
+  const targetWindow = mainWindow
+  if (
+    !trayRendererReady
+    || !targetWindow
+    || targetWindow.isDestroyed()
+    || targetWindow.webContents.isDestroyed()
+  ) {
+    return
+  }
+
+  pendingTrayRendererCommands.flush((command) => {
+    targetWindow.webContents.send('tray-controls:command', command)
+  })
+}
+
+function requestTraySleepTimerRefresh(): void {
+  if (trayMinuteRefreshTimer !== null) {
+    clearTimeout(trayMinuteRefreshTimer)
+    trayMinuteRefreshTimer = null
+  }
+
+  const expiresAtMs = latestTrayRendererState.sleepTimerExpiresAtMs
+  const nowMs = Date.now()
+  if (!isTrayAvailable() || expiresAtMs === null || expiresAtMs <= nowMs) return
+
+  const displayedMinutes = Math.max(1, Math.ceil((expiresAtMs - nowMs) / 60_000))
+  const nextBoundaryMs = expiresAtMs - ((displayedMinutes - 1) * 60_000)
+  const delayMs = Math.max(250, nextBoundaryMs - nowMs + 50)
+  trayMinuteRefreshTimer = setTimeout(() => {
+    trayMinuteRefreshTimer = null
+    refreshTrayMenu()
+  }, delayMs)
+}
+
+function updatePhoneRemoteFromTray(config: PhoneRemoteServiceConfig): void {
+  void applyPhoneRemoteConfig(config)
+    .catch((error) => {
+      console.warn('Failed to update Phone Remote from tray:', error)
+    })
+    .finally(refreshTrayMenu)
+}
+
+function createNativeTrayMenu(model: ReturnType<typeof buildTrayMenuModel>): Electron.Menu {
+  const playbackItems: MenuItemConstructorOptions[] = [
+    {
+      label: 'Previous',
+      enabled: model.playbackEnabled,
+      click: () => sendMiniPlayerCommand({ type: 'playPrevious' }),
+    },
+    {
+      label: model.playbackToggleLabel,
+      enabled: model.playbackEnabled,
+      click: () => sendMiniPlayerCommand({ type: 'togglePlay' }),
+    },
+    {
+      label: 'Next',
+      enabled: model.playbackEnabled,
+      click: () => sendMiniPlayerCommand({ type: 'playNext' }),
+    },
+    { type: 'separator' },
+    {
+      label: 'Favorite Current Track',
+      type: 'checkbox',
+      checked: model.favoriteChecked,
+      enabled: model.playbackEnabled,
+      click: () => sendMiniPlayerCommand({ type: 'toggleFavoriteCurrent' }),
+    },
+    {
+      label: 'Shuffle',
+      type: 'checkbox',
+      checked: model.shuffleChecked,
+      enabled: model.rendererReady,
+      click: () => sendMiniPlayerCommand({ type: 'toggleShuffle' }),
+    },
+    {
+      label: model.repeatLabel,
+      enabled: model.rendererReady,
+      click: () => sendMiniPlayerCommand({ type: 'toggleRepeat' }),
+    },
+  ]
+
+  const phoneRemoteItems: MenuItemConstructorOptions[] = [
+    {
+      label: 'Phone Remote',
+      type: 'checkbox',
+      checked: model.phoneRemoteEnabled,
+      click: () => {
+        updatePhoneRemoteFromTray({
+          ...phoneRemoteConfig,
+          enabled: !model.phoneRemoteEnabled,
+        })
+      },
+    },
+    {
+      label: model.phoneRemoteStatusLabel,
+      enabled: false,
+    },
+    { type: 'separator' },
+    {
+      label: 'Library Sync',
+      type: 'checkbox',
+      checked: model.phoneRemoteSyncEnabled,
+      enabled: model.phoneRemoteEnabled,
+      click: () => {
+        updatePhoneRemoteFromTray({
+          ...phoneRemoteConfig,
+          syncEnabled: !model.phoneRemoteSyncEnabled,
+        })
+      },
+    },
+    {
+      label: phoneRemoteService.getStatus().sync.requestedAt === null ? 'Sync Now' : 'Sync Requested',
+      enabled: model.phoneRemoteCanSyncNow,
+      click: () => {
+        phoneRemoteService.requestSync()
+        refreshTrayMenu()
+      },
+    },
+  ]
+
+  if (model.phoneRemoteConflictCount > 0) {
+    phoneRemoteItems.push({
+      label: `Resolve ${model.phoneRemoteConflictCount} Sync Conflict${model.phoneRemoteConflictCount === 1 ? '' : 's'}…`,
+      click: () => sendTrayRendererCommand({ type: 'open-phone-sync-conflicts' }, true),
+    })
+  }
+
+  phoneRemoteItems.push(
+    { type: 'separator' },
+    {
+      label: 'Open Phone Remote Settings…',
+      click: () => sendTrayRendererCommand({
+        type: 'open-settings',
+        section: 'integrations',
+      }, true),
+    }
+  )
+
+  const template: MenuItemConstructorOptions[] = [
+    {
+      label: model.nowPlayingLabel,
+      click: () => {
+        if (model.hasCurrentTrack) {
+          sendTrayRendererCommand({ type: 'reveal-current-track' }, true)
+        } else {
+          focusOrCreateMainWindow()
+        }
+      },
+    },
+    {
+      label: model.mainWindowActionLabel,
+      click: toggleMainWindowFromTray,
+    },
+    { type: 'separator' },
+    {
+      label: 'Playback',
+      submenu: playbackItems,
+    },
+    {
+      label: model.sleepTimerLabel,
+      submenu: [
+        ...([15, 30, 45, 60] as const).map((minutes): MenuItemConstructorOptions => ({
+          label: `${minutes} minutes`,
+          enabled: model.sleepTimerCanStart,
+          click: () => sendTrayRendererCommand({ type: 'start-sleep-timer', minutes }),
+        })),
+        { type: 'separator' },
+        {
+          label: 'Cancel Timer',
+          enabled: model.sleepTimerActive && model.rendererReady,
+          click: () => sendTrayRendererCommand({ type: 'cancel-sleep-timer' }),
+        },
+      ],
+    },
+    { type: 'separator' },
+    {
+      label: 'Show Mini Player',
+      type: 'checkbox',
+      checked: model.miniPlayerOpen,
+      enabled: model.miniPlayerEnabled,
+      click: () => {
+        if (model.miniPlayerOpen) {
+          if (miniWindow && !miniWindow.isDestroyed()) miniWindow.close()
+        } else {
+          void createMiniPlayerWindow()
+        }
+      },
+    },
+    { type: 'separator' },
+    {
+      label: model.phoneRemoteLabel,
+      submenu: phoneRemoteItems,
+    },
+    {
+      label: 'Pause Global Hotkeys',
+      type: 'checkbox',
+      checked: model.hotkeysPaused,
+      enabled: model.hotkeysCanPause,
+      click: () => sendTrayRendererCommand({
+        type: 'set-global-hotkeys-suspended',
+        suspended: !model.hotkeysPaused,
+      }),
+    },
+    { type: 'separator' },
+    {
+      label: 'Settings…',
+      click: () => sendTrayRendererCommand({
+        type: 'open-settings',
+        section: 'appearance',
+      }, true),
+    },
+    {
+      label: 'Quit Astra',
+      click: () => {
+        isAppQuitting = true
+        app.quit()
+      },
+    },
+  ]
+
+  return Menu.buildFromTemplate(template)
+}
+
+function refreshTrayMenu(): void {
+  if (!isTrayAvailable()) {
+    requestTraySleepTimerRefresh()
+    return
+  }
+
+  const model = buildTrayMenuModel({
+    mainWindowVisible: isMainWindowPresented(),
+    miniPlayerOpen: getMiniWindowState().isOpen,
+    rendererReady: trayRendererReady,
+    snapshot: latestMiniPlayerSnapshot,
+    phoneRemoteStatus: phoneRemoteService.getStatus(),
+    rendererState: latestTrayRendererState,
+    nowMs: Date.now(),
+  })
+  const stateKey = createTrayMenuStateKey(model)
+
+  appTray!.setToolTip(model.tooltip)
+  if (stateKey !== latestTrayMenuStateKey) {
+    appTray!.setContextMenu(createNativeTrayMenu(model))
+    latestTrayMenuStateKey = stateKey
+  }
+  requestTraySleepTimerRefresh()
+}
+
+function resolveTrayAssetPath(): string {
+  const fileName = process.platform === 'darwin'
+    ? 'astraTrayTemplate.png'
+    : process.platform === 'win32'
+      ? 'astra-tray.ico'
+      : 'astra-tray.png'
+  const directory = app.isPackaged
+    ? join(process.resourcesPath, 'tray')
+    : join(app.getAppPath(), 'resources', 'tray')
+  return join(directory, fileName)
+}
+
+function destroyAppTray(): void {
+  if (trayMinuteRefreshTimer !== null) {
+    clearTimeout(trayMinuteRefreshTimer)
+    trayMinuteRefreshTimer = null
+  }
+  if (appTray && !appTray.isDestroyed()) {
+    appTray.destroy()
+  }
+  appTray = null
+  latestTrayMenuStateKey = null
+}
+
+function createAppTray(): void {
+  if (isTrayAvailable()) {
+    refreshTrayMenu()
+    return
+  }
+
+  const image = nativeImage.createFromPath(resolveTrayAssetPath())
+  if (image.isEmpty()) {
+    console.warn('Astra tray icon asset is unavailable.')
+    return
+  }
+  if (process.platform === 'darwin') {
+    image.setTemplateImage(true)
+  }
+
+  appTray = new Tray(image)
+  if (process.platform !== 'darwin') {
+    appTray.on('click', toggleMainWindowFromTray)
+  }
+  refreshTrayMenu()
+}
+
+function syncAppTrayLifecycle(): void {
+  if (desktopIntegrationPrefs.trayEnabled) {
+    createAppTray()
+  } else {
+    destroyAppTray()
+  }
+}
+
+async function updateDesktopIntegrationPrefs(
+  patch: Partial<DesktopIntegrationPrefs>
+): Promise<DesktopIntegrationPrefs> {
+  desktopIntegrationPrefs = normalizeDesktopIntegrationPrefs({
+    ...desktopIntegrationPrefs,
+    ...patch,
+  })
+  desktopIntegrationPrefs = await saveDesktopIntegrationPrefs(desktopIntegrationPrefs)
+  syncAppTrayLifecycle()
+  return { ...desktopIntegrationPrefs }
 }
 
 function getLyricsPopoutWindowState(): LyricsPopoutWindowState {
@@ -3146,6 +3545,7 @@ function broadcastMiniWindowState(): void {
   if (miniWindow && !miniWindow.isDestroyed()) {
     miniWindow.webContents.send('mini-player:windowState', payload)
   }
+  refreshTrayMenu()
 }
 
 function broadcastLyricsPopoutWindowState(): void {
@@ -3168,6 +3568,7 @@ function broadcastPhoneRemoteStatus(): void {
   if (isAppQuitting) return
   const payload = phoneRemoteService.getStatus()
   sendToWindow(mainWindow, 'phone-remote:status', payload)
+  refreshTrayMenu()
 }
 
 function broadcastParallaxStatus(): void {
@@ -4449,7 +4850,19 @@ function createWindow(): void {
   mainWindow.on('resize', schedulePersistMainWindowPrefs)
   mainWindow.on('maximize', schedulePersistMainWindowPrefs)
   mainWindow.on('unmaximize', schedulePersistMainWindowPrefs)
-  mainWindow.on('close', () => {
+  mainWindow.on('show', refreshTrayMenu)
+  mainWindow.on('hide', refreshTrayMenu)
+  mainWindow.on('close', (event) => {
+    const disposition = resolveMainWindowCloseDisposition({
+      closeToTray: desktopIntegrationPrefs.closeToTray,
+      isAppQuitting,
+      trayAvailable: isTrayAvailable(),
+    })
+    if (disposition === 'hide-to-tray') {
+      event.preventDefault()
+      hideMainWindowToTray()
+      return
+    }
     if (mainWindowPersistTimer !== null) {
       clearTimeout(mainWindowPersistTimer)
       mainWindowPersistTimer = null
@@ -4459,6 +4872,8 @@ function createWindow(): void {
   mainWindow.on('closed', () => {
     globalInputShortcutService.clear()
     mainWindow = null
+    trayRendererReady = false
+    latestTrayRendererState = { ...DEFAULT_TRAY_RENDERER_STATE }
     associatedOpenRendererReady = false
     if (miniWindow && !miniWindow.isDestroyed()) {
       miniWindow.close()
@@ -4470,6 +4885,7 @@ function createWindow(): void {
     logMemoryDiagnosticsMainEvent('window_closed', {
       windowType: 'main'
     }, { captureSample: false })
+    refreshTrayMenu()
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -5084,6 +5500,7 @@ app.whenReady().then(async () => {
   mainWindowPrefs = await loadMainWindowPrefs()
   miniWindowPrefs = await loadMiniWindowPrefs()
   lyricsPopoutWindowPrefs = await loadLyricsPopoutWindowPrefs()
+  desktopIntegrationPrefs = await loadDesktopIntegrationPrefs()
   localApiConfig = await loadLocalApiConfigFromMeta()
   phoneRemoteConfig = await loadPhoneRemoteConfigFromMeta(localApiConfig.controlsEnabled)
   parallaxHostConfig = await loadParallaxHostConfigFromMeta()
@@ -5141,6 +5558,7 @@ app.whenReady().then(async () => {
   refreshJellyfinStatusCache(false)
 
   createWindow()
+  syncAppTrayLifecycle()
   broadcastSubsonicStatus()
   broadcastJellyfinStatus()
   startSubsonicSyncScheduler()
@@ -5176,6 +5594,8 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow()
+    } else {
+      focusMainWindow()
     }
   })
 })
@@ -5188,6 +5608,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isAppQuitting = true
+  destroyAppTray()
   globalInputShortcutService.clear()
   if (mainWindowPersistTimer !== null) {
     clearTimeout(mainWindowPersistTimer)
@@ -5271,6 +5692,56 @@ ipcMain.handle('window:isMaximized', () => {
   return mainWindow?.isMaximized() ?? false
 })
 
+ipcMain.handle('desktop-integration:getPrefs', () => {
+  return { ...desktopIntegrationPrefs }
+})
+
+ipcMain.handle('desktop-integration:setTrayEnabled', async (_event, enabled: unknown) => {
+  return updateDesktopIntegrationPrefs({ trayEnabled: Boolean(enabled) })
+})
+
+ipcMain.handle('desktop-integration:setCloseToTray', async (_event, enabled: unknown) => {
+  return updateDesktopIntegrationPrefs({ closeToTray: Boolean(enabled) })
+})
+
+ipcMain.on('tray-controls:rendererReady', (event) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return
+  trayRendererReady = true
+  flushPendingTrayRendererCommands()
+  refreshTrayMenu()
+})
+
+ipcMain.on('tray-controls:rendererNotReady', (event) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return
+  trayRendererReady = false
+  latestTrayRendererState = { ...DEFAULT_TRAY_RENDERER_STATE }
+  refreshTrayMenu()
+})
+
+ipcMain.on('tray-controls:publishRendererState', (event, rawState: unknown) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return
+  if (!rawState || typeof rawState !== 'object') return
+  const candidate = rawState as Record<string, unknown>
+  const rawExpiresAtMs = candidate.sleepTimerExpiresAtMs
+  const sleepTimerExpiresAtMs = rawExpiresAtMs === null
+    ? null
+    : typeof rawExpiresAtMs === 'number' && Number.isFinite(rawExpiresAtMs) && rawExpiresAtMs > 0
+      ? rawExpiresAtMs
+      : null
+  const configuredGlobalHotkeyCount = typeof candidate.configuredGlobalHotkeyCount === 'number'
+    && Number.isFinite(candidate.configuredGlobalHotkeyCount)
+    ? Math.max(0, Math.min(100, Math.floor(candidate.configuredGlobalHotkeyCount)))
+    : 0
+
+  trayRendererReady = true
+  latestTrayRendererState = {
+    sleepTimerExpiresAtMs,
+    globalHotkeysSuspended: candidate.globalHotkeysSuspended === true,
+    configuredGlobalHotkeyCount,
+  }
+  refreshTrayMenu()
+})
+
 ipcMain.on('associated-open-files:rendererReady', () => {
   associatedOpenRendererReady = true
   flushAssociatedOpenFiles()
@@ -5349,6 +5820,7 @@ ipcMain.on('mini-player:publishSnapshot', (_event, snapshot: MiniPlayerSnapshot)
   if (miniWindow && !miniWindow.isDestroyed()) {
     miniWindow.webContents.send('mini-player:snapshot', mergedSnapshot)
   }
+  refreshTrayMenu()
 })
 
 ipcMain.on('mini-player:publishQueueSnapshot', (_event, snapshot: MiniPlayerQueueSnapshot) => {
