@@ -13,7 +13,9 @@
  * Message protocol:
  *   in : { type: 'init', wasmBytes: ArrayBuffer,
  *          speakers: [{ azimuthRad, elevationRad, gain, isLfe }] }
+ *   in : { type: 'init-prebaked', wasmBytes, config, filters }
  *   in : { type: 'set-speakers', speakers: [...] }
+ *   in : { type: 'set-speaker-filters', filters: [...] }
  *   in : { type: 'reset' }                     // clear convolution tails (seek)
  *   out: { type: 'ready', taps, maxSpeakers }  // maxSpeakers = wasm capacity
  *   out: { type: 'unsupported-samplerate', sampleRate }
@@ -39,11 +41,19 @@ class SpatialRendererProcessor extends AudioWorkletProcessor {
         void this.initialize(data)
         return
       }
+      if (data.type === 'init-prebaked') {
+        void this.initialize(data)
+        return
+      }
       if (data.type === 'set-speakers') {
         this.speakers = Array.isArray(data.speakers) ? data.speakers : []
         if (this.state === 'ready') {
           this.applySpeakers()
         }
+        return
+      }
+      if (data.type === 'set-speaker-filters') {
+        if (this.state === 'ready') this.applyPreparedFilters(data.filters)
         return
       }
       if (data.type === 'reset') {
@@ -61,7 +71,10 @@ class SpatialRendererProcessor extends AudioWorkletProcessor {
   async initialize(data) {
     if (this.state === 'loading' || this.state === 'ready') return
     this.state = 'loading'
-    this.speakers = Array.isArray(data.speakers) ? data.speakers : this.speakers
+    const prebaked = data.type === 'init-prebaked'
+    this.speakers = prebaked
+      ? (Array.isArray(data.filters) ? data.filters : [])
+      : (Array.isArray(data.speakers) ? data.speakers : this.speakers)
     try {
       const stub = () => 0
       const { instance } = await WebAssembly.instantiate(data.wasmBytes, {
@@ -74,7 +87,16 @@ class SpatialRendererProcessor extends AudioWorkletProcessor {
       })
       const exports = instance.exports
       exports._initialize()
-      const taps = exports.spatial_init(sampleRate, RENDER_QUANTUM)
+      const config = data.config ?? {}
+      const taps = prebaked
+        ? exports.spatial_init_prebaked(
+            sampleRate,
+            RENDER_QUANTUM,
+            Number(config.taps) || 0,
+            Number(config.fftSize) || 0,
+            Number(config.filterLen) || 0
+          )
+        : exports.spatial_init(sampleRate, RENDER_QUANTUM)
       if (!taps) {
         this.state = 'unsupported-samplerate'
         this.port.postMessage({ type: 'unsupported-samplerate', sampleRate })
@@ -96,7 +118,9 @@ class SpatialRendererProcessor extends AudioWorkletProcessor {
       this.outputPtrs.push(exports.spatial_output_ptr(0) / 4)
       this.outputPtrs.push(exports.spatial_output_ptr(1) / 4)
       this.state = 'ready'
-      this.applySpeakers()
+      if (prebaked) this.applyPreparedFilters(data.filters)
+      else this.applySpeakers()
+      if (this.state !== 'ready') return
       this.port.postMessage({ type: 'ready', taps, maxSpeakers: this.maxSpeakers })
     } catch (err) {
       this.state = 'error'
@@ -128,6 +152,37 @@ class SpatialRendererProcessor extends AudioWorkletProcessor {
       for (let i = count; i < this.maxSpeakers; i++) {
         this.wasm.spatial_clear_speaker(i)
       }
+    } catch (err) {
+      this.state = 'error'
+      this.port.postMessage({ type: 'error', message: String(err && err.message ? err.message : err) })
+    }
+  }
+
+  applyPreparedFilters(filters) {
+    try {
+      const prepared = Array.isArray(filters) ? filters : []
+      this.speakers = prepared
+      const count = Math.min(prepared.length, this.maxSpeakers)
+      for (let index = 0; index < count; index++) {
+        const filter = prepared[index] ?? {}
+        const isLfe = Boolean(filter.isLfe)
+        if (!isLfe) {
+          for (let ear = 0; ear < 2; ear++) {
+            const values = ear === 0 ? filter.left : filter.right
+            if (!(values instanceof Float32Array)) throw new Error(`Missing prepared HRTF filter for speaker ${index + 1}`)
+            const pointer = this.wasm.spatial_speaker_filter_ptr(index, ear)
+            if (!pointer) throw new Error(`Failed to allocate HRTF filter for speaker ${index + 1}`)
+            this.heapF32.set(values, pointer / 4)
+          }
+        }
+        const ok = this.wasm.spatial_commit_speaker_filter(
+          index,
+          Number.isFinite(filter.gain) ? filter.gain : 1,
+          isLfe ? 1 : 0
+        )
+        if (!ok) throw new Error(`Failed to commit HRTF filter for speaker ${index + 1}`)
+      }
+      for (let index = count; index < this.maxSpeakers; index++) this.wasm.spatial_clear_speaker(index)
     } catch (err) {
       this.state = 'error'
       this.port.postMessage({ type: 'error', message: String(err && err.message ? err.message : err) })

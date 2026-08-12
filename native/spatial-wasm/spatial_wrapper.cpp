@@ -38,9 +38,11 @@
  * range (-40°..+90°) — spatial_set_speaker returns 0 and keeps the previous
  * filter when the bake fails outside it.
  *
- * Deferred hooks (v2+): distance/per-speaker gain are accepted but gain is
- * currently always 1.0; SOFA HRTFs can replace MIT_HRTF behind the same
- * spaudio::HRTF interface.
+ * The legacy spatial_init/spatial_set_speaker ABI retains embedded MIT KEMAR
+ * for artifact regression tests. Production profile switching uses
+ * spatial_init_prebaked/spatial_commit_speaker_filter: libmysofa lookup,
+ * resampling and tonal preparation happen in spatial-hrtf-prep.wasm off the
+ * audio thread, while this module only convolves and fades prepared spectra.
  *
  * Supported sample rates (embedded MIT KEMAR HRTF): 44100, 48000, 88200,
  * 96000. spatial_init() returns 0 for anything else and the caller must
@@ -456,6 +458,104 @@ int spatial_init(int sampleRate, int blockSize) {
 
   g.ready = true;
   return g.taps;
+}
+
+// Initializes only the real-time convolution state. HRTF lookup and tonal
+// correction were already completed by spatial-hrtf-prep.wasm in a normal
+// Worker, so this path is safe to run on the audio rendering thread.
+int spatial_init_prebaked(int sampleRate, int blockSize, int taps, int fftSize, int filterLen) {
+  freeAll();
+  if (sampleRate <= 0 || blockSize <= 0 || blockSize > 1024 || taps <= 0 || taps > 8192) return 0;
+  if (fftSize <= blockSize || (fftSize & (fftSize - 1)) != 0 || filterLen != fftSize - blockSize) return 0;
+
+  g.sampleRate = sampleRate;
+  g.blockSize = blockSize;
+  g.taps = taps;
+  g.fftSize = fftSize;
+  g.filterLen = filterLen;
+  g.tailLen = filterLen - 1;
+  g.fftBins = fftSize / 2 + 1;
+  g.fftScaler = 1.0f / static_cast<float>(fftSize);
+  g.globalScale = 1.0f;
+  g.limiterGain = 1.0f;
+  g.limiterReleasePerBlock =
+    1.0f - std::exp(-(static_cast<float>(blockSize) / static_cast<float>(sampleRate)) / LIMIT_RELEASE_SECONDS);
+  g.pendingRequired = 1.0f;
+  g.pendingValid = false;
+
+  g.fftFwd = kiss_fftr_alloc(g.fftSize, 0, nullptr, nullptr);
+  g.fftInv = kiss_fftr_alloc(g.fftSize, 1, nullptr, nullptr);
+  for (int i = 0; i < MAX_SPEAKERS; i++) {
+    g.input[i] = static_cast<float*>(std::calloc(g.blockSize, sizeof(float)));
+    for (int ear = 0; ear < 2; ear++) {
+      // Allocate both filter banks while the staging renderer initializes;
+      // live position updates then only copy spectra and begin a four-block
+      // fade, with no allocation in the update path.
+      g.speakers[i].current[ear] = static_cast<kiss_fft_cpx*>(std::calloc(g.fftBins, sizeof(kiss_fft_cpx)));
+      g.speakers[i].target[ear] = static_cast<kiss_fft_cpx*>(std::calloc(g.fftBins, sizeof(kiss_fft_cpx)));
+    }
+  }
+  for (int ear = 0; ear < 2; ear++) {
+    g.output[ear] = static_cast<float*>(std::calloc(g.blockSize, sizeof(float)));
+    g.tail[ear] = static_cast<float*>(std::calloc(g.tailLen, sizeof(float)));
+    g.freqAcc[ear] = static_cast<kiss_fft_cpx*>(std::calloc(g.fftBins, sizeof(kiss_fft_cpx)));
+    g.pendingOut[ear] = static_cast<float*>(std::calloc(g.blockSize, sizeof(float)));
+  }
+  g.lfeMix = static_cast<float*>(std::calloc(g.blockSize, sizeof(float)));
+  g.timeScratch = static_cast<float*>(std::calloc(g.fftSize, sizeof(float)));
+  g.freqScratch = static_cast<kiss_fft_cpx*>(std::calloc(g.fftBins, sizeof(kiss_fft_cpx)));
+  g.lfeDelay = static_cast<float*>(std::calloc(FILTER_PRE_DELAY, sizeof(float)));
+
+  if (!g.fftFwd || !g.fftInv || !g.lfeMix || !g.timeScratch || !g.freqScratch || !g.lfeDelay) {
+    freeAll();
+    return 0;
+  }
+  for (int i = 0; i < MAX_SPEAKERS; i++) {
+    if (!g.input[i] || !g.speakers[i].current[0] || !g.speakers[i].current[1] ||
+        !g.speakers[i].target[0] || !g.speakers[i].target[1]) {
+      freeAll();
+      return 0;
+    }
+  }
+  for (int ear = 0; ear < 2; ear++) {
+    if (!g.output[ear] || !g.tail[ear] || !g.freqAcc[ear] || !g.pendingOut[ear]) {
+      freeAll();
+      return 0;
+    }
+  }
+  g.ready = true;
+  return g.taps;
+}
+
+// Returns writable interleaved complex bins [real, imag, ...] for a prepared
+// speaker filter. The caller writes both ears, then commits atomically.
+float* spatial_speaker_filter_ptr(int index, int ear) {
+  if (!g.ready || index < 0 || index >= MAX_SPEAKERS || ear < 0 || ear > 1) return nullptr;
+  SpeakerState& speaker = g.speakers[index];
+  return reinterpret_cast<float*>(speaker.target[ear]);
+}
+
+int spatial_commit_speaker_filter(int index, float gain, int isLfe) {
+  if (!g.ready || index < 0 || index >= MAX_SPEAKERS) return 0;
+  SpeakerState& speaker = g.speakers[index];
+  speaker.gain = gain;
+  speaker.isLfe = isLfe != 0;
+  if (speaker.isLfe) {
+    speaker.active = true;
+    speaker.fadeRemaining = 0;
+    return 1;
+  }
+  if (!speaker.target[0] || !speaker.target[1]) return 0;
+  if (!speaker.active) {
+    for (int ear = 0; ear < 2; ear++) {
+      std::memcpy(speaker.current[ear], speaker.target[ear], g.fftBins * sizeof(kiss_fft_cpx));
+    }
+    speaker.fadeRemaining = 0;
+    speaker.active = true;
+  } else {
+    speaker.fadeRemaining = FADE_BLOCKS;
+  }
+  return 1;
 }
 
 // Position/update one speaker. Returns 1 on success, 0 on failure. The first

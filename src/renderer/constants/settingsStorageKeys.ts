@@ -71,6 +71,7 @@ export const INCLUDE_LFE_DOWNMIX_STORAGE_KEY = 'astra-audio-include-lfe-downmix-
 export const STEREO_UPMIX_MODE_STORAGE_KEY = 'astra-audio-stereo-upmix-mode-v1'
 export const SPATIAL_MODE_STORAGE_KEY = 'astra-audio-spatial-mode-v1'
 export const SPATIAL_LAYOUT_STORAGE_KEY = 'astra-audio-spatial-layout-v1'
+export const SPATIAL_HRTF_PROFILE_STORAGE_KEY = 'astra-audio-spatial-hrtf-profile-v1'
 export const CHANNEL_ROUTING_STORAGE_KEY = 'astra-audio-channel-routing-map'
 export const DELAY_PROFILE_STORAGE_KEY_V1 = 'astra-audio-delay-profiles-v1'
 export const DELAY_PROFILE_STORAGE_KEY_V2 = 'astra-audio-delay-profiles-v2'

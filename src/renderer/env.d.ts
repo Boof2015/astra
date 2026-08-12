@@ -54,6 +54,13 @@ import type {
     LastFmStatus
 } from '../types/lastFm'
 import type {
+    HrtfProfileBytesResult,
+    HrtfProfileCandidateResult,
+    HrtfProfileCommitResult,
+    HrtfProfileRemoveResult,
+    HrtfProfileSummary,
+} from '../types/hrtfProfiles'
+import type {
     LyricsFormat,
     LyricsManualClearResult,
     LyricsManualImportResult,
@@ -589,6 +596,14 @@ declare global {
             } | null>
             openAudioFolder: () => Promise<string | null>
             getSpatialWasmBytes: () => Promise<ArrayBuffer>
+            getSpatialHrtfPrepWasmBytes: () => Promise<ArrayBuffer>
+            hrtfProfiles: {
+                list: () => Promise<HrtfProfileSummary[]>
+                chooseCandidate: () => Promise<HrtfProfileCandidateResult>
+                commit: (fileName: string, bytes: ArrayBuffer) => Promise<HrtfProfileCommitResult>
+                read: (profileId: string) => Promise<HrtfProfileBytesResult>
+                remove: (profileId: string) => Promise<HrtfProfileRemoveResult>
+            }
             getIamfWasmBytes: () => Promise<ArrayBuffer>
             loadAudioFile: (
                 filePath: string,

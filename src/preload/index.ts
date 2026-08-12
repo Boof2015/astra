@@ -72,6 +72,13 @@ import type {
   LyricsTrackQuery
 } from '../types/lyrics'
 import type {
+  HrtfProfileBytesResult,
+  HrtfProfileCandidateResult,
+  HrtfProfileCommitResult,
+  HrtfProfileRemoveResult,
+  HrtfProfileSummary,
+} from '../types/hrtfProfiles'
+import type {
   JellyfinSource,
   JellyfinSourceCreateInput,
   JellyfinSourceTestInput,
@@ -1425,6 +1432,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const bytes = await readFile(wasmPath)
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
   },
+  getSpatialHrtfPrepWasmBytes: async (): Promise<ArrayBuffer> => {
+    const isDev = process.env.NODE_ENV === 'development'
+    const wasmPath = isDev
+      ? join(__dirname, '../../src/renderer/public/spatial-hrtf-prep.wasm')
+      : join(__dirname, '../renderer/spatial-hrtf-prep.wasm')
+    const bytes = await readFile(wasmPath)
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+  },
+  hrtfProfiles: {
+    list: (): Promise<HrtfProfileSummary[]> => ipcRenderer.invoke('hrtf-profiles:list'),
+    chooseCandidate: (): Promise<HrtfProfileCandidateResult> => ipcRenderer.invoke('hrtf-profiles:chooseCandidate'),
+    commit: (fileName: string, bytes: ArrayBuffer): Promise<HrtfProfileCommitResult> =>
+      ipcRenderer.invoke('hrtf-profiles:commit', { fileName, bytes }),
+    read: (profileId: string): Promise<HrtfProfileBytesResult> => ipcRenderer.invoke('hrtf-profiles:read', profileId),
+    remove: (profileId: string): Promise<HrtfProfileRemoveResult> => ipcRenderer.invoke('hrtf-profiles:remove', profileId),
+  },
   // IAMF (Eclipsa Audio) decoder WASM for the renderer decode worker.
   getIamfWasmBytes: async (): Promise<ArrayBuffer> => {
     const isDev = process.env.NODE_ENV === 'development'
@@ -2129,6 +2152,14 @@ declare global {
       openAudioFolder: () => Promise<string | null>
       loadAudioFile: (filePath: string, options?: AudioLoadOptions) => Promise<AudioFileResult | null>
       getSpatialWasmBytes: () => Promise<ArrayBuffer>
+      getSpatialHrtfPrepWasmBytes: () => Promise<ArrayBuffer>
+      hrtfProfiles: {
+        list: () => Promise<HrtfProfileSummary[]>
+        chooseCandidate: () => Promise<HrtfProfileCandidateResult>
+        commit: (fileName: string, bytes: ArrayBuffer) => Promise<HrtfProfileCommitResult>
+        read: (profileId: string) => Promise<HrtfProfileBytesResult>
+        remove: (profileId: string) => Promise<HrtfProfileRemoveResult>
+      }
       getIamfWasmBytes: () => Promise<ArrayBuffer>
       getAudioMetadata: (filePath: string) => Promise<AudioFileMetadata | null>
       getAudioFileStat: (filePath: string) => Promise<AudioFileStatResult | null>

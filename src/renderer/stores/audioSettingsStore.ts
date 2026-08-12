@@ -21,6 +21,14 @@ import {
   type NativeAudioOutputStatus,
   type PlaybackOutputMode
 } from '../../types/nativeAudio'
+import {
+  BUILTIN_HRTF_PROFILE_ID,
+  builtinHrtfProfile,
+  type HrtfProfileError,
+  type HrtfProfileSummary,
+} from '../../types/hrtfProfiles'
+import { SPATIAL_HRTF_PROFILE_STORAGE_KEY } from '../constants/settingsStorageKeys'
+import { resolveAvailableHrtfProfileId } from '../utils/hrtfProfileSelection'
 
 export interface AudioDevice {
   deviceId: string
@@ -83,6 +91,10 @@ interface AudioSettingsStore {
   spatialLayoutPresetId: SpatialLayoutPresetId
   customVirtualSpeakers: VirtualSpeaker[] | null
   spatialStatus: SpatialStatus
+  hrtfProfiles: HrtfProfileSummary[]
+  selectedHrtfProfileId: string
+  hrtfProfileError: HrtfProfileError | null
+  hrtfImporting: boolean
   normalizationEnabled: boolean
   normalizationTargetLufs: number
   replayGainScanEnabled: boolean
@@ -111,6 +123,10 @@ interface AudioSettingsStore {
   setChannelRoutingMap: (map: number[] | null) => Promise<void>
   resetChannelRoutingMap: () => Promise<void>
   setSpatialMode: (mode: SpatialMode) => Promise<void>
+  refreshHrtfProfiles: () => Promise<void>
+  setHrtfProfile: (profileId: string) => Promise<boolean>
+  importHrtfProfile: () => Promise<void>
+  removeHrtfProfile: (profileId: string) => Promise<boolean>
   setSpatialLayoutPreset: (presetId: SpatialLayoutPresetId) => Promise<void>
   setVirtualSpeakerAzimuth: (speakerId: string, azimuthDeg: number) => Promise<void>
   setVirtualSpeakerElevation: (speakerId: string, elevationDeg: number) => Promise<void>
@@ -1060,7 +1076,19 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     spatialMode: 'off',
     spatialLayoutPresetId: '5.1',
     customVirtualSpeakers: null,
-    spatialStatus: { state: 'idle', sampleRate: null, taps: 0, message: null },
+    spatialStatus: {
+      state: 'idle',
+      sampleRate: null,
+      taps: 0,
+      message: null,
+      profileId: 'builtin:mit-kemar',
+      profileName: 'MIT KEMAR',
+      switchingProfileId: null,
+    },
+    hrtfProfiles: [builtinHrtfProfile()],
+    selectedHrtfProfileId: BUILTIN_HRTF_PROFILE_ID,
+    hrtfProfileError: null,
+    hrtfImporting: false,
     normalizationEnabled: true,
     normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
     replayGainScanEnabled: false,
@@ -1325,6 +1353,110 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       await get().setChannelRoutingMap(null)
     },
 
+    refreshHrtfProfiles: async () => {
+      try {
+        const profiles = await window.electronAPI.hrtfProfiles.list()
+        const normalized = profiles.length > 0 ? profiles : [builtinHrtfProfile()]
+        // On startup the store still holds the built-in default, so prefer
+        // the versioned persisted ID before deciding whether a profile went
+        // missing. Otherwise refresh would overwrite every custom selection
+        // with MIT KEMAR before restoration gets a chance to read it.
+        const persisted = localStorage.getItem(SPATIAL_HRTF_PROFILE_STORAGE_KEY)
+        const selected = resolveAvailableHrtfProfileId(normalized, persisted, get().selectedHrtfProfileId)
+        set({ hrtfProfiles: normalized, selectedHrtfProfileId: selected })
+        if (selected !== persisted) {
+          localStorage.setItem(SPATIAL_HRTF_PROFILE_STORAGE_KEY, selected)
+        }
+      } catch (error) {
+        set({
+          hrtfProfiles: [builtinHrtfProfile()],
+          selectedHrtfProfileId: BUILTIN_HRTF_PROFILE_ID,
+          hrtfProfileError: {
+            code: 'storage-error',
+            message: error instanceof Error ? error.message : 'Failed to load the HRTF profile library.',
+          },
+        })
+      }
+    },
+
+    setHrtfProfile: async (profileId: string) => {
+      const profile = get().hrtfProfiles.find((candidate) => candidate.id === profileId)
+      if (!profile) {
+        set({ hrtfProfileError: { code: 'not-found', message: 'That HRTF profile is no longer available.' } })
+        return false
+      }
+      set({ hrtfProfileError: null })
+      const activated = await audioEngine.setHrtfProfile(profile)
+      if (!activated) {
+        const status = audioEngine.getSpatialStatus()
+        set({
+          spatialStatus: status,
+          hrtfProfileError: {
+            code: status.state === 'unsupported-samplerate' ? 'unsupported-samplerate' : 'renderer-error',
+            message: status.message ?? 'Failed to activate the HRTF profile.',
+          },
+        })
+        return false
+      }
+      set({ selectedHrtfProfileId: profile.id, spatialStatus: audioEngine.getSpatialStatus() })
+      localStorage.setItem(SPATIAL_HRTF_PROFILE_STORAGE_KEY, profile.id)
+      return true
+    },
+
+    importHrtfProfile: async () => {
+      set({ hrtfProfileError: null, hrtfImporting: true })
+      try {
+        const selected = await window.electronAPI.hrtfProfiles.chooseCandidate()
+        if (!selected.ok) {
+          if (selected.error.code !== 'cancelled') set({ hrtfProfileError: selected.error })
+          return
+        }
+        const validationError = await audioEngine.validateHrtfCandidate(selected.candidate.bytes)
+        if (validationError) {
+          set({ hrtfProfileError: validationError })
+          return
+        }
+        const committed = await window.electronAPI.hrtfProfiles.commit(
+          selected.candidate.fileName,
+          selected.candidate.bytes
+        )
+        if (!committed.ok) {
+          set({ hrtfProfileError: committed.error })
+          return
+        }
+        await get().refreshHrtfProfiles()
+        await get().setHrtfProfile(committed.profile.id)
+      } catch (error) {
+        set({
+          hrtfProfileError: {
+            code: 'storage-error',
+            message: error instanceof Error ? error.message : 'Failed to import the SOFA profile.',
+          },
+        })
+      } finally {
+        set({ hrtfImporting: false })
+      }
+    },
+
+    removeHrtfProfile: async (profileId: string) => {
+      if (profileId === BUILTIN_HRTF_PROFILE_ID) return false
+      if (get().selectedHrtfProfileId === profileId) {
+        const switched = await get().setHrtfProfile(BUILTIN_HRTF_PROFILE_ID)
+        if (!switched) {
+          await get().setSpatialMode('off')
+          await get().setHrtfProfile(BUILTIN_HRTF_PROFILE_ID)
+        }
+      }
+      const removed = await window.electronAPI.hrtfProfiles.remove(profileId)
+      if (!removed.ok) {
+        set({ hrtfProfileError: removed.error })
+        return false
+      }
+      await get().refreshHrtfProfiles()
+      set({ hrtfProfileError: null })
+      return true
+    },
+
     setSpatialMode: async (mode: SpatialMode) => {
       const normalized = normalizeSpatialMode(mode)
       set({ spatialMode: normalized })
@@ -1383,10 +1515,19 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     resetSpatialSettings: async () => {
       localStorage.removeItem(SPATIAL_MODE_STORAGE_KEY)
       localStorage.removeItem(SPATIAL_LAYOUT_STORAGE_KEY)
-      set({ spatialMode: 'off', spatialLayoutPresetId: '5.1', customVirtualSpeakers: null })
+      localStorage.removeItem(SPATIAL_HRTF_PROFILE_STORAGE_KEY)
+      set({
+        spatialMode: 'off',
+        spatialLayoutPresetId: '5.1',
+        customVirtualSpeakers: null,
+        selectedHrtfProfileId: BUILTIN_HRTF_PROFILE_ID,
+        hrtfProfileError: null,
+        hrtfImporting: false,
+      })
       try {
         await audioEngine.setVirtualSpeakers(buildVirtualSpeakerLayout('5.1', null))
         await audioEngine.setSpatialMode('off')
+        await audioEngine.setHrtfProfile(builtinHrtfProfile())
       } catch (error) {
         console.warn('Failed to reset spatial mode:', error)
       }
@@ -1907,6 +2048,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       try {
         await audioEngine.setSpatialMode('off')
         await audioEngine.setVirtualSpeakers(buildVirtualSpeakerLayout('5.1', null))
+        await audioEngine.setHrtfProfile(builtinHrtfProfile())
       } catch (error) {
         console.warn('Failed to reset spatial mode:', error)
       }
@@ -1983,6 +2125,9 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         spatialMode: 'off',
         spatialLayoutPresetId: '5.1',
         customVirtualSpeakers: null,
+        selectedHrtfProfileId: BUILTIN_HRTF_PROFILE_ID,
+        hrtfProfileError: null,
+        hrtfImporting: false,
         spatialStatus: audioEngine.getSpatialStatus(),
         normalizationEnabled: true,
         normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
@@ -2132,6 +2277,15 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
           localStorage.removeItem(SPATIAL_LAYOUT_STORAGE_KEY)
         }
       }
+      await get().refreshHrtfProfiles()
+      const savedHrtfProfileId = localStorage.getItem(SPATIAL_HRTF_PROFILE_STORAGE_KEY)
+      const selectedHrtfProfile = get().hrtfProfiles.find((profile) => profile.id === savedHrtfProfileId)
+        ?? get().hrtfProfiles.find((profile) => profile.id === BUILTIN_HRTF_PROFILE_ID)
+        ?? builtinHrtfProfile()
+      set({ selectedHrtfProfileId: selectedHrtfProfile.id })
+      localStorage.setItem(SPATIAL_HRTF_PROFILE_STORAGE_KEY, selectedHrtfProfile.id)
+      await audioEngine.setHrtfProfile(selectedHrtfProfile)
+
       const savedSpatialMode = normalizeSpatialMode(localStorage.getItem(SPATIAL_MODE_STORAGE_KEY))
       if (savedSpatialMode === 'binaural') {
         await get().setSpatialMode('binaural')

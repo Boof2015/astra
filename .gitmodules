@@ -10,3 +10,6 @@
 [submodule "third_party/flac"]
 	path = third_party/flac
 	url = https://github.com/xiph/flac
+[submodule "third_party/libmysofa"]
+	path = third_party/libmysofa
+	url = https://github.com/hoene/libmysofa.git

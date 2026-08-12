@@ -29,6 +29,13 @@ import type {
 } from '../../types/nativeAudio'
 import type { MultichannelAudioChunk } from '../../types/audioAnalysis'
 import type { ScopeKind } from '../../types/scopePopout'
+import {
+  builtinHrtfProfile,
+  type HrtfProfileError,
+  type HrtfProfileSelection,
+  type HrtfProfileSummary,
+  type HrtfProfileValidationError,
+} from '../../types/hrtfProfiles'
 import { SCOPE_KINDS } from '../../types/scopePopout'
 import { ProgressiveWaveformAccumulator } from './waveformExtractor'
 import {
@@ -91,6 +98,40 @@ export interface SpatialStatus {
   sampleRate: number | null
   taps: number
   message: string | null
+  profileId: string
+  profileName: string
+  switchingProfileId: string | null
+}
+
+interface PreparedSpeakerFilter {
+  index: number
+  gain: number
+  isLfe: boolean
+  left?: Float32Array
+  right?: Float32Array
+}
+
+interface PreparedHrtfConfig {
+  sampleRate: number
+  blockSize: number
+  taps: number
+  fftSize: number
+  fftBins: number
+  filterLen: number
+}
+
+interface PreparedHrtfProfile {
+  worker: Worker
+  config: PreparedHrtfConfig
+  filters: PreparedSpeakerFilter[]
+}
+
+interface SpatialRendererInstance {
+  node: AudioWorkletNode
+  outputGain: GainNode
+  prepWorker: Worker
+  profile: HrtfProfileSummary
+  taps: number
 }
 
 const ANALYSIS_DELAY_MAX_MS = 2500
@@ -113,6 +154,8 @@ const FADE_STOP_EPSILON_MS = 20
 // track immediately: the outgoing source is stopped at the bottom of the dip so its mid-sample
 // cutoff lands in silence (no click), while the incoming source's onset rides the dip back up.
 const SKIP_DECLICK_MS = 12
+const SPATIAL_PROFILE_CROSSFADE_MS = 50
+const SPATIAL_PREP_TIMEOUT_MS = 20_000
 
 const NORMALIZATION_MIN_GAIN_DB = -18
 const NORMALIZATION_MAX_GAIN_DB = 6
@@ -525,13 +568,19 @@ export class AudioEngine {
   // created on first enable, then kept for the AudioContext's lifetime.
   private spatialMode: SpatialMode = 'off'
   private virtualSpeakers: VirtualSpeaker[] = []
+  private spatialInputNode: GainNode | null = null
   private spatialWorkletNode: AudioWorkletNode | null = null
+  private spatialOutputGainNode: GainNode | null = null
+  private spatialPrepWorker: Worker | null = null
   private spatialWorkletState: SpatialWorkletState = 'idle'
   private spatialWorkletModuleLoaded: boolean = false
-  private spatialWorkletConnected: boolean = false
   private spatialTailTaps: number = 0
   private spatialStatusMessage: string | null = null
-  private spatialReadyResolver: (() => void) | null = null
+  private spatialProfile: HrtfProfileSummary = builtinHrtfProfile()
+  private spatialSwitchingProfileId: string | null = null
+  private spatialProfileSwitchGeneration: number = 0
+  private spatialSpeakerGeneration: number = 0
+  private spatialActivationQueue: Promise<void> = Promise.resolve()
   private iamfDecoder: IamfDecoderClient | null = null
   private activeIamfDecodes: Set<IamfDecodeHandle> = new Set()
   private sourceRoutingNodes: WeakMap<AudioNode, {
@@ -2048,6 +2097,7 @@ export class AudioEngine {
       this.playbackOutputMode === 'standard' &&
       this.spatialWorkletState === 'ready' &&
       this.spatialWorkletNode !== null &&
+      this.spatialInputNode !== null &&
       this.virtualSpeakers.length > 0
     )
   }
@@ -2062,7 +2112,7 @@ export class AudioEngine {
    * binaural is active, otherwise the normalization gain (legacy behavior).
    */
   private getRoutingSinkNode(): AudioNode | null {
-    if (this.isBinauralActive()) return this.spatialWorkletNode
+    if (this.isBinauralActive()) return this.spatialInputNode
     return this.normalizationGainNode
   }
 
@@ -2148,6 +2198,7 @@ export class AudioEngine {
         Math.min(SPATIAL_MAX_SPEAKERS, binauralActive ? routingChannels : this.virtualSpeakers.length || 2)
       )
       this.applyNodeRoutingMode(this.spatialWorkletNode, spatialInputChannels, 'explicit', 'discrete')
+      this.applyNodeRoutingMode(this.spatialInputNode, spatialInputChannels, 'explicit', 'discrete')
     }
   }
 
@@ -2571,8 +2622,8 @@ export class AudioEngine {
       try { sourceNode.disconnect(this.normalizationGainNode) } catch { /* ignore */ }
     }
 
-    if (this.spatialWorkletNode) {
-      try { sourceNode.disconnect(this.spatialWorkletNode) } catch { /* ignore */ }
+    if (this.spatialInputNode) {
+      try { sourceNode.disconnect(this.spatialInputNode) } catch { /* ignore */ }
     }
 
     if (routingNodes.inputNode) {
@@ -4077,6 +4128,9 @@ export class AudioEngine {
       sampleRate: this.context ? Math.round(this.context.sampleRate) : null,
       taps: this.spatialTailTaps,
       message: this.spatialStatusMessage,
+      profileId: this.spatialProfile.id,
+      profileName: this.spatialProfile.name,
+      switchingProfileId: this.spatialSwitchingProfileId,
     }
   }
 
@@ -4086,39 +4140,325 @@ export class AudioEngine {
 
   private handleSpatialWorkletMessage(event: MessageEvent): void {
     const data = event.data ?? {}
-    if (data.type === 'ready') {
-      this.spatialWorkletState = 'ready'
-      this.spatialTailTaps = Number(data.taps) || 0
-      const wasmMaxSpeakers = Number(data.maxSpeakers) || 0
-      if (wasmMaxSpeakers > 0 && wasmMaxSpeakers < SPATIAL_MAX_SPEAKERS) {
-        console.warn(
-          `Spatial renderer wasm supports ${wasmMaxSpeakers} speakers but the app expects ` +
-            `${SPATIAL_MAX_SPEAKERS}; layouts wider than ${wasmMaxSpeakers} will be truncated. ` +
-            'Rebuild via scripts/build/build-spatial-wasm.sh.'
-        )
-      }
-      this.spatialStatusMessage = null
-      this.spatialReadyResolver?.()
-      this.spatialReadyResolver = null
-      this.emitSpatialStatus()
-      return
-    }
-    if (data.type === 'unsupported-samplerate') {
-      this.spatialWorkletState = 'unsupported-samplerate'
-      this.spatialStatusMessage = `The binaural renderer supports 44.1/48/88.2/96 kHz output; the audio device is running at ${Math.round(Number(data.sampleRate) || 0)} Hz.`
-      this.spatialReadyResolver?.()
-      this.spatialReadyResolver = null
-      this.emitSpatialStatus()
-      return
-    }
     if (data.type === 'error') {
       this.spatialWorkletState = 'error'
       this.spatialStatusMessage = typeof data.message === 'string' && data.message.length > 0
         ? data.message
         : 'The binaural renderer failed to initialize.'
-      this.spatialReadyResolver?.()
-      this.spatialReadyResolver = null
       this.emitSpatialStatus()
+    }
+  }
+
+  private async prepareHrtfProfile(
+    profile: HrtfProfileSummary,
+    requestId: number,
+    profileBytesOverride?: ArrayBuffer
+  ): Promise<PreparedHrtfProfile> {
+    const worker = new Worker('./spatial-hrtf-worker.js', { name: `astra-hrtf-${requestId}` })
+    try {
+      const prepWasmBytes = await window.electronAPI.getSpatialHrtfPrepWasmBytes()
+      let profileBytes: ArrayBuffer | undefined
+      if (profile.kind === 'sofa') {
+        if (profileBytesOverride) {
+          profileBytes = profileBytesOverride.slice(0)
+        } else {
+          const result = await window.electronAPI.hrtfProfiles.read(profile.id)
+          if (!result.ok) throw result.error
+          profileBytes = result.bytes
+        }
+      }
+
+      return await new Promise<PreparedHrtfProfile>((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+          reject({ code: 'renderer-error', message: 'Timed out preparing the HRTF profile.' } satisfies HrtfProfileError)
+        }, SPATIAL_PREP_TIMEOUT_MS)
+        worker.onmessage = (event: MessageEvent) => {
+          const data = event.data ?? {}
+          if (Number(data.requestId) !== requestId) return
+          if (data.type === 'error') {
+            window.clearTimeout(timeout)
+            reject(data.error as HrtfProfileError)
+            return
+          }
+          if (data.type !== 'prepared') return
+          window.clearTimeout(timeout)
+          worker.onmessage = null
+          resolve({
+            worker,
+            config: data.config as PreparedHrtfConfig,
+            filters: data.filters as PreparedSpeakerFilter[],
+          })
+        }
+        worker.onerror = (event) => {
+          window.clearTimeout(timeout)
+          reject({ code: 'renderer-error', message: event.message || 'The HRTF preparation worker failed.' } satisfies HrtfProfileError)
+        }
+        const message: Record<string, unknown> = {
+          type: 'load',
+          requestId,
+          wasmBytes: prepWasmBytes,
+          profileKind: profile.kind,
+          sampleRate: this.context ? Math.round(this.context.sampleRate) : 48_000,
+          speakers: buildSpatialSpeakerMessage(this.virtualSpeakers),
+        }
+        const transfer: Transferable[] = [prepWasmBytes]
+        if (profileBytes) {
+          message.profileBytes = profileBytes
+          transfer.push(profileBytes)
+        }
+        worker.postMessage(message, transfer)
+      })
+    } catch (error) {
+      worker.terminate()
+      throw error
+    }
+  }
+
+  async validateHrtfCandidate(bytes: ArrayBuffer): Promise<HrtfProfileValidationError | null> {
+    const requestId = ++this.spatialProfileSwitchGeneration
+    const candidate: HrtfProfileSummary = {
+      id: `candidate:${requestId}`,
+      name: 'Imported HRTF',
+      kind: 'sofa',
+      importedAt: null,
+      sizeBytes: bytes.byteLength,
+    }
+    try {
+      const prepared = await this.prepareHrtfProfile(candidate, requestId, bytes)
+      prepared.worker.terminate()
+      return null
+    } catch (error) {
+      const candidateError = error as Partial<HrtfProfileError>
+      return {
+        code: (candidateError.code ?? 'invalid-sofa') as HrtfProfileValidationError['code'],
+        message: candidateError.message ?? 'The selected file is not a compatible SOFA HRTF profile.',
+      }
+    }
+  }
+
+  private async createPreparedSpatialRenderer(
+    profile: HrtfProfileSummary,
+    prepared: PreparedHrtfProfile
+  ): Promise<SpatialRendererInstance> {
+    if (!this.context || !this.normalizationGainNode || !this.spatialInputNode) {
+      prepared.worker.terminate()
+      throw new Error('The audio context is not ready.')
+    }
+    if (!this.spatialWorkletModuleLoaded) {
+      await this.context.audioWorklet.addModule('./spatial-worklet.js')
+      this.spatialWorkletModuleLoaded = true
+    }
+
+    const node = new AudioWorkletNode(this.context, 'spatial-renderer-processor', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+    })
+    const outputGain = this.context.createGain()
+    outputGain.gain.value = 0
+    const inputChannels = Math.max(1, Math.min(SPATIAL_MAX_SPEAKERS, this.virtualSpeakers.length || 2))
+    this.applyNodeRoutingMode(node, inputChannels, 'explicit', 'discrete')
+    this.applyNodeRoutingMode(this.spatialInputNode, inputChannels, 'explicit', 'discrete')
+    this.spatialInputNode.connect(node)
+    node.connect(outputGain)
+    outputGain.connect(this.normalizationGainNode)
+
+    try {
+      const wasmBytes = await window.electronAPI.getSpatialWasmBytes()
+      await new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => reject(new Error('Timed out initializing the binaural renderer.')), 10_000)
+        node.port.onmessage = (event: MessageEvent) => {
+          const data = event.data ?? {}
+          if (data.type === 'ready') {
+            window.clearTimeout(timeout)
+            resolve()
+          } else if (data.type === 'error' || data.type === 'unsupported-samplerate') {
+            window.clearTimeout(timeout)
+            reject(new Error(typeof data.message === 'string' ? data.message : 'The binaural renderer failed to initialize.'))
+          }
+        }
+        const transfer: Transferable[] = [wasmBytes]
+        for (const filter of prepared.filters) {
+          if (filter.left) transfer.push(filter.left.buffer as ArrayBuffer)
+          if (filter.right) transfer.push(filter.right.buffer as ArrayBuffer)
+        }
+        node.port.postMessage({
+          type: 'init-prebaked',
+          wasmBytes,
+          config: prepared.config,
+          filters: prepared.filters,
+        }, transfer)
+      })
+      return { node, outputGain, prepWorker: prepared.worker, profile, taps: prepared.config.taps }
+    } catch (error) {
+      try { this.spatialInputNode.disconnect(node) } catch { /* ignore */ }
+      try { node.disconnect() } catch { /* ignore */ }
+      try { outputGain.disconnect() } catch { /* ignore */ }
+      prepared.worker.terminate()
+      throw error
+    }
+  }
+
+  private attachActivePrepWorker(worker: Worker): void {
+    worker.onmessage = (event: MessageEvent) => {
+      if (worker !== this.spatialPrepWorker || !this.spatialWorkletNode) return
+      const data = event.data ?? {}
+      if (data.type !== 'speaker-filters' || Number(data.generation) !== this.spatialSpeakerGeneration) return
+      const filters = data.filters as PreparedSpeakerFilter[]
+      const transfer: Transferable[] = []
+      for (const filter of filters) {
+        if (filter.left) transfer.push(filter.left.buffer as ArrayBuffer)
+        if (filter.right) transfer.push(filter.right.buffer as ArrayBuffer)
+      }
+      this.spatialWorkletNode.port.postMessage({ type: 'set-speaker-filters', filters }, transfer)
+    }
+  }
+
+  private requestPreparedSpeakerUpdate(): void {
+    if (!this.spatialPrepWorker || this.spatialWorkletState !== 'ready') return
+    const generation = ++this.spatialSpeakerGeneration
+    this.spatialPrepWorker.postMessage({
+      type: 'set-speakers',
+      generation,
+      speakers: buildSpatialSpeakerMessage(this.virtualSpeakers),
+    })
+  }
+
+  private disposeCurrentSpatialRenderer(): void {
+    if (this.spatialInputNode && this.spatialWorkletNode) {
+      try { this.spatialInputNode.disconnect(this.spatialWorkletNode) } catch { /* ignore */ }
+    }
+    try { this.spatialWorkletNode?.disconnect() } catch { /* ignore */ }
+    try { this.spatialOutputGainNode?.disconnect() } catch { /* ignore */ }
+    this.spatialPrepWorker?.terminate()
+    this.spatialWorkletNode = null
+    this.spatialOutputGainNode = null
+    this.spatialPrepWorker = null
+    this.spatialTailTaps = 0
+    this.spatialWorkletState = 'idle'
+  }
+
+  private disposeSpatialRendererInstance(instance: SpatialRendererInstance): void {
+    try { this.spatialInputNode?.disconnect(instance.node) } catch { /* ignore */ }
+    try { instance.node.disconnect() } catch { /* ignore */ }
+    try { instance.outputGain.disconnect() } catch { /* ignore */ }
+    instance.prepWorker.terminate()
+  }
+
+  private async activateSpatialRenderer(
+    instance: SpatialRendererInstance,
+    generation = this.spatialProfileSwitchGeneration
+  ): Promise<boolean> {
+    // Serialize the short graph transitions. This keeps rapid profile picks
+    // from scheduling overlapping gain curves while still allowing the next
+    // profile to prepare in parallel with the current crossfade.
+    const previousActivation = this.spatialActivationQueue
+    let releaseActivation!: () => void
+    this.spatialActivationQueue = new Promise<void>((resolve) => { releaseActivation = resolve })
+    await previousActivation
+    try {
+      if (generation !== this.spatialProfileSwitchGeneration || !this.context || !this.spatialInputNode) {
+        this.disposeSpatialRendererInstance(instance)
+        return false
+      }
+      const previousNode = this.spatialWorkletNode
+      const previousGain = this.spatialOutputGainNode
+      const previousWorker = this.spatialPrepWorker
+
+      this.spatialWorkletNode = instance.node
+      this.spatialOutputGainNode = instance.outputGain
+      this.spatialPrepWorker = instance.prepWorker
+      this.spatialProfile = instance.profile
+      this.spatialTailTaps = instance.taps
+      this.spatialWorkletState = 'ready'
+      this.spatialStatusMessage = null
+      this.spatialSwitchingProfileId = null
+      instance.node.port.onmessage = (event: MessageEvent) => this.handleSpatialWorkletMessage(event)
+      this.attachActivePrepWorker(instance.prepWorker)
+      this.requestPreparedSpeakerUpdate()
+      this.emitSpatialStatus()
+
+      if (!previousNode || !previousGain) {
+        instance.outputGain.gain.value = 1
+        return true
+      }
+
+      const primeSeconds = (2 * 128) / this.context.sampleRate
+      const durationSeconds = SPATIAL_PROFILE_CROSSFADE_MS / 1000
+      const startTime = this.context.currentTime + primeSeconds
+      const curveLength = 32
+      const fadeIn = new Float32Array(curveLength)
+      const fadeOut = new Float32Array(curveLength)
+      for (let index = 0; index < curveLength; index++) {
+        const phase = (index / (curveLength - 1)) * Math.PI * 0.5
+        fadeIn[index] = Math.sin(phase)
+        fadeOut[index] = Math.cos(phase)
+      }
+      instance.outputGain.gain.setValueAtTime(0, this.context.currentTime)
+      instance.outputGain.gain.setValueCurveAtTime(fadeIn, startTime, durationSeconds)
+      previousGain.gain.setValueCurveAtTime(fadeOut, startTime, durationSeconds)
+
+      await new Promise<void>((resolve) => window.setTimeout(
+        resolve,
+        Math.ceil((primeSeconds + durationSeconds) * 1000) + 20
+      ))
+      try { this.spatialInputNode?.disconnect(previousNode) } catch { /* ignore */ }
+      try { previousNode.disconnect() } catch { /* ignore */ }
+      try { previousGain.disconnect() } catch { /* ignore */ }
+      previousWorker?.terminate()
+      return true
+    } finally {
+      releaseActivation()
+    }
+  }
+
+  async setHrtfProfile(profile: HrtfProfileSelection): Promise<boolean> {
+    if (
+      profile.id === this.spatialProfile.id &&
+      !this.spatialSwitchingProfileId &&
+      (this.spatialMode !== 'binaural' || (this.spatialWorkletState === 'ready' && this.spatialWorkletNode))
+    ) return true
+    const generation = ++this.spatialProfileSwitchGeneration
+    this.spatialSwitchingProfileId = profile.id
+    this.spatialStatusMessage = null
+
+    if (this.spatialMode !== 'binaural' || this.isNativeExclusiveMode()) {
+      if (profile.id !== this.spatialProfile.id && this.spatialWorkletNode) {
+        this.disposeCurrentSpatialRenderer()
+      }
+      this.spatialProfile = profile
+      this.spatialSwitchingProfileId = null
+      if (!this.spatialWorkletNode) this.spatialWorkletState = 'idle'
+      this.emitSpatialStatus()
+      return true
+    }
+
+    if (!this.spatialWorkletNode) this.spatialWorkletState = 'loading'
+    this.emitSpatialStatus()
+
+    try {
+      await this.initContext()
+      const prepared = await this.prepareHrtfProfile(profile, generation)
+      if (generation !== this.spatialProfileSwitchGeneration) {
+        prepared.worker.terminate()
+        return false
+      }
+      const instance = await this.createPreparedSpatialRenderer(profile, prepared)
+      if (generation !== this.spatialProfileSwitchGeneration) {
+        this.disposeSpatialRendererInstance(instance)
+        return false
+      }
+      return await this.activateSpatialRenderer(instance, generation)
+    } catch (error) {
+      if (generation !== this.spatialProfileSwitchGeneration) return false
+      const profileError = error as Partial<HrtfProfileError>
+      this.spatialSwitchingProfileId = null
+      this.spatialStatusMessage = profileError.message ?? 'Failed to load the HRTF profile.'
+      if (!this.spatialWorkletNode) {
+        this.spatialWorkletState = profileError.code === 'unsupported-samplerate' ? 'unsupported-samplerate' : 'error'
+      }
+      this.emitSpatialStatus()
+      return false
     }
   }
 
@@ -4131,80 +4471,15 @@ export class AudioEngine {
    */
   private async ensureSpatialWorklet(): Promise<void> {
     if (!this.context) return
-    // 'unsupported-samplerate' is terminal for this context (its rate never
-    // changes); 'error' allows a retry on the next enable attempt.
-    if (
-      this.spatialWorkletState === 'ready' ||
-      this.spatialWorkletState === 'loading' ||
-      this.spatialWorkletState === 'unsupported-samplerate'
-    ) {
-      return
-    }
-
-    this.spatialWorkletState = 'loading'
-    this.spatialStatusMessage = null
-    this.emitSpatialStatus()
-
-    try {
-      if (!this.spatialWorkletModuleLoaded) {
-        await this.context.audioWorklet.addModule('./spatial-worklet.js')
-        this.spatialWorkletModuleLoaded = true
-      }
-
-      if (!this.spatialWorkletNode) {
-        const node = new AudioWorkletNode(this.context, 'spatial-renderer-processor', {
-          numberOfInputs: 1,
-          numberOfOutputs: 1,
-          outputChannelCount: [2],
-        })
-        node.port.onmessage = (event: MessageEvent) => this.handleSpatialWorkletMessage(event)
-        this.spatialWorkletNode = node
-      }
-      this.syncSpatialNodeConnection()
-
-      const wasmBytes = await window.electronAPI.getSpatialWasmBytes()
-      const ready = new Promise<void>((resolve) => {
-        this.spatialReadyResolver = resolve
-      })
-      this.spatialWorkletNode.port.postMessage(
-        {
-          type: 'init',
-          wasmBytes,
-          speakers: buildSpatialSpeakerMessage(this.virtualSpeakers),
-        },
-        [wasmBytes]
-      )
-      // The worklet always answers init with ready/error/unsupported; the
-      // timeout only guards against a wedged audio thread.
-      await Promise.race([
-        ready,
-        new Promise<void>((resolve) => setTimeout(resolve, 10_000)),
-      ])
-      if (this.spatialWorkletState === 'loading') {
-        this.spatialWorkletState = 'error'
-        this.spatialStatusMessage = 'Timed out initializing the binaural renderer.'
-        this.spatialReadyResolver = null
-        this.emitSpatialStatus()
-      }
-    } catch (error) {
-      this.spatialWorkletState = 'error'
-      this.spatialStatusMessage = error instanceof Error ? error.message : 'Failed to load the binaural renderer.'
-      this.spatialReadyResolver = null
-      this.emitSpatialStatus()
-    }
+    if (this.spatialWorkletState === 'ready' && this.spatialWorkletNode) return
+    await this.setHrtfProfile({ ...this.spatialProfile, id: `${this.spatialProfile.id}` })
   }
 
   /** Keeps the persistent spatial node attached only while binaural is on. */
   private syncSpatialNodeConnection(): void {
-    if (!this.spatialWorkletNode || !this.normalizationGainNode) return
-    const shouldConnect = this.spatialMode === 'binaural' && this.playbackOutputMode === 'standard'
-    if (shouldConnect && !this.spatialWorkletConnected) {
-      this.spatialWorkletNode.connect(this.normalizationGainNode)
-      this.spatialWorkletConnected = true
-    } else if (!shouldConnect && this.spatialWorkletConnected) {
-      try { this.spatialWorkletNode.disconnect() } catch { /* ignore */ }
-      this.spatialWorkletConnected = false
-    }
+    // The stable input hub remains attached to the active renderer. Switching
+    // modes reroutes sources into or around that hub, so no worklet teardown
+    // is needed here.
   }
 
   async setSpatialMode(mode: SpatialMode): Promise<void> {
@@ -4241,12 +4516,7 @@ export class AudioEngine {
     const previousCount = this.virtualSpeakers.length
     this.virtualSpeakers = speakers.slice(0, SPATIAL_MAX_SPEAKERS)
 
-    if (this.spatialWorkletNode && this.spatialWorkletState === 'ready') {
-      this.spatialWorkletNode.port.postMessage({
-        type: 'set-speakers',
-        speakers: buildSpatialSpeakerMessage(this.virtualSpeakers),
-      })
-    }
+    this.requestPreparedSpeakerUpdate()
 
     if (this.isNativeExclusiveMode()) return
     if (this.spatialMode !== 'binaural') return
@@ -4290,6 +4560,8 @@ export class AudioEngine {
       // Normalization gain node (applied before volume)
       this.normalizationGainNode = this.context.createGain()
       this.normalizationGainNode.gain.value = 1.0
+      this.spatialInputNode = this.context.createGain()
+      this.spatialInputNode.gain.value = 1.0
       this.analysisNormalizationGainNode = this.context.createGain()
       this.analysisNormalizationGainNode.gain.value = 1.0
       this.analysisDelayNode = this.context.createDelay(ANALYSIS_DELAY_MAX_SEC)
@@ -8372,6 +8644,21 @@ export class AudioEngine {
       try { this.fadeGainNode.disconnect() } catch { /* ignore */ }
       this.fadeGainNode = null
     }
+
+    if (this.spatialInputNode) {
+      try { this.spatialInputNode.disconnect() } catch { /* ignore */ }
+      this.spatialInputNode = null
+    }
+    if (this.spatialWorkletNode) {
+      try { this.spatialWorkletNode.disconnect() } catch { /* ignore */ }
+      this.spatialWorkletNode = null
+    }
+    if (this.spatialOutputGainNode) {
+      try { this.spatialOutputGainNode.disconnect() } catch { /* ignore */ }
+      this.spatialOutputGainNode = null
+    }
+    this.spatialPrepWorker?.terminate()
+    this.spatialPrepWorker = null
 
     if (this.context) {
       this.context.close()

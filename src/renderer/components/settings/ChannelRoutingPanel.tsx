@@ -76,7 +76,14 @@ export default function ChannelRoutingPanel() {
     spatialLayoutPresetId,
     customVirtualSpeakers,
     spatialStatus,
+    hrtfProfiles,
+    selectedHrtfProfileId,
+    hrtfProfileError,
+    hrtfImporting,
     setSpatialMode,
+    setHrtfProfile,
+    importHrtfProfile,
+    removeHrtfProfile,
     setSpatialLayoutPreset,
     setVirtualSpeakerAzimuth,
     setVirtualSpeakerElevation,
@@ -88,6 +95,9 @@ export default function ChannelRoutingPanel() {
     : 'Channel routing, upmix/downmix, and spatial rendering are Standard-only. Exclusive DSP preserves the source channel layout.'
   const binauralSelected = spatialMode === 'binaural'
   const binauralActive = binauralSelected && !bitPerfectModeActive && spatialStatus.state === 'ready'
+  const hrtfSwitching = spatialStatus.switchingProfileId !== null
+  const hrtfBusy = hrtfSwitching || hrtfImporting
+  const selectedHrtfProfile = hrtfProfiles.find((profile) => profile.id === selectedHrtfProfileId) ?? hrtfProfiles[0]
 
   const [selectedSpeakerId, setSelectedSpeakerId] = useState<string | null>(null)
 
@@ -429,6 +439,12 @@ export default function ChannelRoutingPanel() {
 
   const disabledTitle = bitPerfectModeActive ? nativeRoutingDisabledMessage : undefined
 
+  const handleRemoveHrtfProfile = useCallback(() => {
+    if (!selectedHrtfProfile || selectedHrtfProfile.kind === 'builtin') return
+    if (!window.confirm(`Remove “${selectedHrtfProfile.name}” from Astra’s HRTF library? The managed copy will be moved to Trash.`)) return
+    void removeHrtfProfile(selectedHrtfProfile.id)
+  }, [removeHrtfProfile, selectedHrtfProfile])
+
   const spatialNotice = binauralSelected && (spatialStatus.state === 'error' || spatialStatus.state === 'unsupported-samplerate')
     ? (spatialStatus.message ?? 'The binaural renderer is unavailable; playback falls back to Direct rendering.')
     : null
@@ -560,6 +576,42 @@ export default function ChannelRoutingPanel() {
                 ))}
               </select>
             </label>
+            <label className="pipeline-select-label">
+              HRTF
+              <select
+                className="pipeline-select"
+                value={selectedHrtfProfileId}
+                onChange={(event) => void setHrtfProfile(event.target.value)}
+                disabled={bitPerfectModeActive || hrtfBusy}
+                title={disabledTitle ?? 'Head-related transfer function profile'}
+              >
+                {hrtfProfiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name}{profile.kind === 'builtin' ? ' — Built-in' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="pipeline-toggle"
+              onClick={bitPerfectModeActive || hrtfBusy ? undefined : (() => void importHrtfProfile())}
+              disabled={bitPerfectModeActive || hrtfBusy}
+              title={disabledTitle ?? 'Import an AES69 SOFA HRTF profile'}
+            >
+              {hrtfImporting ? 'Validating…' : 'Import SOFA'}
+            </button>
+            {selectedHrtfProfile?.kind === 'sofa' && (
+              <button
+                type="button"
+                className="pipeline-reset-btn"
+                onClick={bitPerfectModeActive || hrtfBusy ? undefined : handleRemoveHrtfProfile}
+                disabled={bitPerfectModeActive || hrtfBusy}
+                title={disabledTitle ?? 'Remove this imported HRTF profile'}
+              >
+                Remove
+              </button>
+            )}
             <button
               type="button"
               className={`pipeline-toggle ${stereoUpmixMode === 'ambient' ? 'active' : ''}`}
@@ -590,12 +642,14 @@ export default function ChannelRoutingPanel() {
             <span className="pipeline-chip">Remap Saved</span>
           )}
           {binauralSelected && spatialStatus.state === 'ready' && (
-            <span className="pipeline-chip" title="Head-related transfer function (MIT KEMAR)">
-              HRTF {formatHrtfRate(spatialStatus.sampleRate)}
+            <span className="pipeline-chip" title={`Head-related transfer function (${spatialStatus.profileName})`}>
+              HRTF {spatialStatus.profileName} · {formatHrtfRate(spatialStatus.sampleRate)}
             </span>
           )}
-          {binauralSelected && spatialStatus.state === 'loading' && (
-            <span className="pipeline-chip">Loading renderer…</span>
+          {binauralSelected && (spatialStatus.state === 'loading' || hrtfBusy) && (
+            <span className="pipeline-chip">
+              {hrtfImporting ? 'Validating SOFA…' : hrtfSwitching ? 'Switching HRTF…' : 'Loading renderer…'}
+            </span>
           )}
           {spatialNotice && (
             <span className="pipeline-chip pipeline-chip-warning" title={spatialNotice}>
@@ -617,6 +671,9 @@ export default function ChannelRoutingPanel() {
 
         {spatialNotice && (
           <p className="pipeline-note pipeline-note-warning">{spatialNotice}</p>
+        )}
+        {binauralSelected && hrtfProfileError && (
+          <p className="pipeline-note pipeline-note-warning">{hrtfProfileError.message}</p>
         )}
 
         {/* The stage */}

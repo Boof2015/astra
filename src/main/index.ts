@@ -106,8 +106,14 @@ import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
 import { LibraryDiagnosticsService } from './services/libraryDiagnostics'
 import { collectAppMemoryFootprint } from './services/appMemoryFootprint'
+import { HrtfProfileService } from './services/hrtfProfiles'
 import { normalizeStatsShareFileName, validateStatsSharePng } from './services/statsShareImage'
 import { normalizeSignalShareFileName, validateSignalSharePng } from './services/signalShareImage'
+import {
+  HRTF_PROFILE_MAX_BYTES,
+  type HrtfProfileCandidateResult,
+  type HrtfProfileCommitResult,
+} from '../types/hrtfProfiles'
 import { getMusicMetadataParseOptions } from './utils/musicMetadata'
 import { extractReplayGainDb } from './utils/replayGain'
 import {
@@ -339,6 +345,7 @@ const DIRTY_ENV_FALSE_VALUES = new Set(['0', 'false', 'no', 'clean'])
 let cachedBuildMetadata: ResolvedBuildMetadata | null = null
 
 let mainWindow: BrowserWindow | null = null
+let hrtfProfileService: HrtfProfileService | null = null
 let miniWindow: BrowserWindow | null = null
 let lyricsPopoutWindow: BrowserWindow | null = null
 let appTray: Tray | null = null
@@ -385,6 +392,11 @@ const latestLibrarySyncCoordinator = new LibraryLatestSyncCoordinator({
   getCurrentAlbumIdentityKeys: () => library.listAlbumIdentityKeys(),
   publishSummary: (summary) => library.setLatestLibrarySyncSummary(summary)
 })
+
+function getHrtfProfileService(): HrtfProfileService {
+  if (!hrtfProfileService) hrtfProfileService = new HrtfProfileService(app.getPath('userData'))
+  return hrtfProfileService
+}
 
 function normalizeBuildCommitHash(value: unknown): string | null {
   if (typeof value !== 'string') return null
@@ -7641,6 +7653,92 @@ ipcMain.handle('audio:setReplayGainScanEnabled', async (_event, enabledValue: un
 // ============================================
 // Generic file dialog & I/O handlers
 // ============================================
+
+ipcMain.handle('hrtf-profiles:list', async () => getHrtfProfileService().list())
+
+ipcMain.handle('hrtf-profiles:chooseCandidate', async (): Promise<HrtfProfileCandidateResult> => {
+  if (!mainWindow) {
+    return { ok: false, error: { code: 'storage-error', message: 'The Astra window is not available.' } }
+  }
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Import HRTF Profile',
+    filters: [{ name: 'AES69 SOFA HRTF', extensions: ['sofa'] }],
+    properties: ['openFile'],
+  })
+  if (result.canceled || result.filePaths.length === 0) {
+    return { ok: false, error: { code: 'cancelled', message: 'No HRTF profile was selected.' } }
+  }
+  const filePath = result.filePaths[0]
+  if (extname(filePath).toLowerCase() !== '.sofa') {
+    return { ok: false, error: { code: 'invalid-extension', message: 'Choose an AES69 .sofa HRTF profile.' } }
+  }
+  try {
+    const info = await stat(filePath)
+    if (!info.isFile() || info.size <= 0 || info.size > HRTF_PROFILE_MAX_BYTES) {
+      return {
+        ok: false,
+        error: {
+          code: 'file-too-large',
+          message: `SOFA profiles must be no larger than ${HRTF_PROFILE_MAX_BYTES / (1024 * 1024)} MiB.`,
+        },
+      }
+    }
+    const bytes = await readFile(filePath)
+    if (bytes.byteLength === 0 || bytes.byteLength > HRTF_PROFILE_MAX_BYTES) {
+      return {
+        ok: false,
+        error: {
+          code: 'file-too-large',
+          message: `SOFA profiles must be no larger than ${HRTF_PROFILE_MAX_BYTES / (1024 * 1024)} MiB.`,
+        },
+      }
+    }
+    return {
+      ok: true,
+      candidate: {
+        fileName: basename(filePath),
+        sizeBytes: bytes.byteLength,
+        bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+      },
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      error: { code: 'storage-error', message: error instanceof Error ? error.message : 'Failed to read the SOFA profile.' },
+    }
+  }
+})
+
+ipcMain.handle('hrtf-profiles:commit', async (
+  _event,
+  input: { fileName?: unknown; bytes?: unknown }
+): Promise<HrtfProfileCommitResult> => {
+  if (!input || typeof input.fileName !== 'string') {
+    return { ok: false, error: { code: 'storage-error', message: 'Invalid HRTF import request.' } }
+  }
+  const raw = input.bytes
+  const bytes = raw instanceof ArrayBuffer
+    ? new Uint8Array(raw)
+    : ArrayBuffer.isView(raw)
+      ? new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength)
+      : null
+  if (!bytes) return { ok: false, error: { code: 'storage-error', message: 'The HRTF profile data is missing.' } }
+  return getHrtfProfileService().commit(input.fileName, bytes)
+})
+
+ipcMain.handle('hrtf-profiles:read', async (_event, profileId: unknown) => {
+  if (typeof profileId !== 'string') {
+    return { ok: false, error: { code: 'not-found', message: 'Invalid HRTF profile identifier.' } }
+  }
+  return getHrtfProfileService().read(profileId)
+})
+
+ipcMain.handle('hrtf-profiles:remove', async (_event, profileId: unknown) => {
+  if (typeof profileId !== 'string') {
+    return { ok: false, error: { code: 'not-found', message: 'Invalid HRTF profile identifier.' } }
+  }
+  return getHrtfProfileService().remove(profileId, (filePath) => shell.trashItem(filePath))
+})
 
 ipcMain.handle('dialog:showSaveDialog', async (_event, options: {
   title?: string
