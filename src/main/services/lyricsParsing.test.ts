@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   parseLyricsText,
   parseLrcSyncedLines,
+  sanitizeLyricsLines,
   toPlainLyricsFromLines
 } from './lyricsParsing.ts'
 
@@ -71,6 +72,55 @@ test('parseLrcSyncedLines preserves Enhanced LRC word timing', () => {
       }
     ]
   )
+})
+
+test('parseLrcSyncedLines normalizes only Enhanced LRC word boundary whitespace', () => {
+  assert.deepEqual(
+    parseLrcSyncedLines(
+      '[00:02.25] <00:02.25> I  <00:02.49> know  <00:02.76> that  '
+    ),
+    [
+      {
+        timestampMs: 2_250,
+        text: 'I   know   that',
+        words: [
+          { timestampMs: 2_250, text: 'I  ' },
+          { timestampMs: 2_490, text: ' know  ' },
+          { timestampMs: 2_760, text: ' that' }
+        ]
+      }
+    ]
+  )
+})
+
+test('sanitizeLyricsLines shifts first-word furigana after trimming boundary whitespace', () => {
+  assert.deepEqual(sanitizeLyricsLines([
+    {
+      timestampMs: 1_000,
+      text: ' 私 next ',
+      words: [
+        {
+          timestampMs: 1_000,
+          text: ' 私 ',
+          furigana: [{ start: 1, end: 2, base: '私', reading: 'わたし' }]
+        },
+        { timestampMs: 1_500, text: 'next ' }
+      ]
+    }
+  ]), [
+    {
+      timestampMs: 1_000,
+      text: '私 next',
+      words: [
+        {
+          timestampMs: 1_000,
+          text: '私 ',
+          furigana: [{ start: 0, end: 1, base: '私', reading: 'わたし' }]
+        },
+        { timestampMs: 1_500, text: 'next' }
+      ]
+    }
+  ])
 })
 
 test('parseLyricsText keeps Enhanced LRC word timing in an LRC payload', () => {

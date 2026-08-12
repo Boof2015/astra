@@ -1,5 +1,6 @@
 import { createHash } from 'crypto'
 import * as mm from 'music-metadata'
+import type { IAudioMetadata } from 'music-metadata'
 import * as library from './library'
 import { lookupSidecarLyrics } from './lyricsSidecar'
 import {
@@ -38,6 +39,8 @@ import {
 } from '../../types/lyrics'
 
 const MAX_TRACK_OFFSET_MS = 3_600_000
+const ENHANCED_LRC_WORD_TIMESTAMP_PATTERN = /<\d{2,}:\d{2}\.\d{2,3}>/
+const RAW_NATIVE_LYRICS_TAG_IDS = new Set(['LYRICS', 'USLT', 'WM/LYRICS', '©LYR'])
 
 export interface LyricsServiceLibraryApi {
   getLyricsTrackOverride: typeof library.getLyricsTrackOverride
@@ -161,27 +164,135 @@ function createMetadataSignature(query: LyricsTrackQuery): string {
   return hash.digest('hex')
 }
 
-async function resolveEmbeddedLyrics(trackPath: string): Promise<LyricsPayload | null> {
+function hasLeakedEnhancedLrcMarkers(entry: {
+  plainLyrics: string | null
+  syncedLines: LyricsLine[]
+}): boolean {
+  if (entry.syncedLines.some((line) => ENHANCED_LRC_WORD_TIMESTAMP_PATTERN.test(line.text))) {
+    return true
+  }
+  return entry.syncedLines.length === 0
+    && Boolean(entry.plainLyrics && ENHANCED_LRC_WORD_TIMESTAMP_PATTERN.test(entry.plainLyrics))
+}
+
+function normalizeNativeLyricsTagId(value: string): string {
+  return value.trim().toLocaleUpperCase()
+}
+
+function extractNativeLyricsText(value: unknown): string | null {
+  if (typeof value === 'string') return normalizeLyricsText(value)
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return normalizeLyricsText((value as { text?: unknown }).text)
+}
+
+function collectNativeLyricsTexts(metadata: Pick<IAudioMetadata, 'native'>): string[] {
+  const lyricsTexts: string[] = []
+  const seen = new Set<string>()
+
+  for (const nativeTags of Object.values(metadata.native)) {
+    if (!Array.isArray(nativeTags)) continue
+    for (const nativeTag of nativeTags) {
+      if (!nativeTag || typeof nativeTag.id !== 'string') continue
+      if (!RAW_NATIVE_LYRICS_TAG_IDS.has(normalizeNativeLyricsTagId(nativeTag.id))) continue
+      const lyricsText = extractNativeLyricsText(nativeTag.value)
+      if (!lyricsText || seen.has(lyricsText)) continue
+      seen.add(lyricsText)
+      lyricsTexts.push(lyricsText)
+    }
+  }
+
+  return lyricsTexts
+}
+
+function formatLrcTimestamp(timestampMs: number): string {
+  const normalizedTimestampMs = Math.max(0, Math.floor(timestampMs))
+  const minutes = Math.floor(normalizedTimestampMs / 60_000)
+  const seconds = Math.floor((normalizedTimestampMs % 60_000) / 1_000)
+  const milliseconds = normalizedTimestampMs % 1_000
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(milliseconds).padStart(3, '0')}`
+}
+
+function reconstructEnhancedLrcFromSyncText(raw: unknown): string | null {
+  if (!Array.isArray(raw)) return null
+
+  const rows: string[] = []
+  let hasWordTimestamps = false
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
+    const record = entry as { timestamp?: unknown; text?: unknown }
+    if (typeof record.timestamp !== 'number' || !Number.isFinite(record.timestamp)) continue
+    if (typeof record.text !== 'string') continue
+    if (ENHANCED_LRC_WORD_TIMESTAMP_PATTERN.test(record.text)) {
+      hasWordTimestamps = true
+    }
+    rows.push(`[${formatLrcTimestamp(record.timestamp)}]${record.text}`)
+  }
+
+  return hasWordTimestamps && rows.length > 0 ? rows.join('\n') : null
+}
+
+function selectEmbeddedLyricsCandidate(
+  current: LyricsPayload | null,
+  candidate: LyricsPayload | null
+): LyricsPayload | null {
+  if (!candidate) return current
+  if (!current || candidate.syncedLines.length > current.syncedLines.length) return candidate
+  return current
+}
+
+function parseCommonEmbeddedLyrics(raw: unknown): LyricsPayload | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const lyricTag = raw as { text?: unknown; syncText?: unknown }
+
+  const reconstructedLrc = reconstructEnhancedLrcFromSyncText(lyricTag.syncText)
+  if (reconstructedLrc) {
+    const parsed = parseLyricsText(reconstructedLrc, 'embedded', 'lrc')
+    if (parsed?.syncedLines.length) return parsed
+  }
+
+  const plainLyrics = normalizeLyricsText(lyricTag.text)
+  const syncedLines = sanitizeSyncLines(lyricTag.syncText)
+  if (syncedLines.length > 0) {
+    return createLyricsPayload(
+      'embedded',
+      null,
+      'lrc',
+      plainLyrics,
+      toPlainLyricsFromLines(syncedLines),
+      syncedLines
+    )
+  }
+
+  return plainLyrics ? parseLyricsText(plainLyrics, 'embedded', 'lrc') : null
+}
+
+export function resolveEmbeddedLyricsMetadata(
+  metadata: Pick<IAudioMetadata, 'native' | 'common'>
+): LyricsPayload | null {
+  let bestCandidate: LyricsPayload | null = null
+
+  for (const lyricsText of collectNativeLyricsTexts(metadata)) {
+    bestCandidate = selectEmbeddedLyricsCandidate(
+      bestCandidate,
+      parseLyricsText(lyricsText, 'embedded', 'lrc')
+    )
+  }
+
+  const lyricTags = Array.isArray(metadata.common.lyrics) ? metadata.common.lyrics : []
+  for (const lyricTag of lyricTags) {
+    bestCandidate = selectEmbeddedLyricsCandidate(
+      bestCandidate,
+      parseCommonEmbeddedLyrics(lyricTag)
+    )
+  }
+
+  return bestCandidate
+}
+
+export async function resolveEmbeddedLyrics(trackPath: string): Promise<LyricsPayload | null> {
   try {
     const metadata = await mm.parseFile(trackPath, { skipCovers: true })
-    const lyricTags = Array.isArray(metadata.common.lyrics) ? metadata.common.lyrics : []
-    if (lyricTags.length === 0) return null
-
-    let plainLyrics: string | null = null
-    let bestSyncedLines: LyricsLine[] = []
-    for (const lyricTag of lyricTags) {
-      if (!plainLyrics) {
-        plainLyrics = normalizeLyricsText(lyricTag.text)
-      }
-
-      const syncedLines = sanitizeSyncLines(lyricTag.syncText)
-      if (syncedLines.length > bestSyncedLines.length) {
-        bestSyncedLines = syncedLines
-      }
-    }
-
-    const syncedLyrics = toPlainLyricsFromLines(bestSyncedLines)
-    return createLyricsPayload('embedded', null, bestSyncedLines.length > 0 ? 'lrc' : 'plain', plainLyrics, syncedLyrics, bestSyncedLines)
+    return resolveEmbeddedLyricsMetadata(metadata)
   } catch {
     return null
   }
@@ -435,11 +546,15 @@ export class LyricsService {
     if (!options.forceRefresh) {
       const cached = this.libraryApi.getLyricsCache(path, metadataSignature)
       if (cached) {
-        if (cached.source === 'lrclib' && this.enabled) {
-          lrclibCached = cached
-        } else {
-          const cachedResult = this.createLookupResultFromCache(cached, trackOffsetMs)
-          if (cachedResult) return cachedResult
+        const shouldRefreshEmbedded = cached.source === 'embedded'
+          && hasLeakedEnhancedLrcMarkers(cached)
+        if (!shouldRefreshEmbedded) {
+          if (cached.source === 'lrclib' && this.enabled) {
+            lrclibCached = cached
+          } else {
+            const cachedResult = this.createLookupResultFromCache(cached, trackOffsetMs)
+            if (cachedResult) return cachedResult
+          }
         }
       }
     }
