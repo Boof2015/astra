@@ -4,7 +4,7 @@ import test from 'node:test'
 
 const PREP_WASM_URL = new URL('../public/spatial-hrtf-prep.wasm', import.meta.url)
 const RENDER_WASM_URL = new URL('../public/spatial-renderer.wasm', import.meta.url)
-const SOFA_FIXTURE_URL = new URL('../../../third_party/libmysofa/share/MIT_KEMAR_normal_pinna.sofa', import.meta.url)
+const SOFA_FIXTURE_URL = new URL('../../../test/fixtures/sofa/MIT_KEMAR_normal_pinna.sofa', import.meta.url)
 const BLOCK = 128
 
 interface PrepExports {

@@ -111,10 +111,10 @@ port to read compressed HDF5 data in SOFA files.
 
 ### SOFA test fixture
 
-`third_party/libmysofa/share/MIT_KEMAR_normal_pinna.sofa` is used by the
-artifact tests. The measurements are Copyright © 1994 MIT Media Laboratory,
-Bill Gardner and Keith Martin, and are provided free without use restrictions
-provided the authors are cited (`third_party/libmysofa/tests/LICENSE.MIT_KEMAR_pinnae`).
+`test/fixtures/sofa/MIT_KEMAR_normal_pinna.sofa` is used by the artifact tests.
+The measurements are Copyright © 1994 MIT Media Laboratory, Bill Gardner and
+Keith Martin, and are provided free without use restrictions provided the
+authors are cited (`test/fixtures/sofa/LICENSE.MIT_KEMAR_pinnae`).
 
 ### Kiss FFT
 
