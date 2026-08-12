@@ -20,6 +20,9 @@ export interface HomeRediscoveryRelease extends HomeReleaseSummary {
 export interface HomeDashboardQuery {
   rotation?: number
   excludedReleaseIdentityKeys?: string[]
+  jumpBackInReleaseLimit?: number
+  rediscoverLimit?: number
+  newlyAddedLimit?: number
 }
 
 export interface HomeDashboard {

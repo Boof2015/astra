@@ -10,6 +10,7 @@ import { useUIStore } from '../../stores/uiStore'
 import { HOME_REDISCOVERY_ROTATION_STORAGE_KEY } from '../../constants/settingsStorageKeys'
 import { formatCompactDuration } from '../../utils/collectionDuration'
 import { resolveHomeSkyDate, type HomeModuleId } from '../../utils/homePreferences'
+import { resolveHomeShelfLimits } from '../../utils/homeShelfLimits'
 import {
   buildAllDisplayPlaylists,
   buildSidebarPlaylistSections,
@@ -274,6 +275,7 @@ export default function HomeDashboardView() {
   const [pendingPlaybackKey, setPendingPlaybackKey] = useState<string | null>(null)
   const [isShuffleStarting, setIsShuffleStarting] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [homeContentWidth, setHomeContentWidth] = useState(() => window.innerWidth)
 
   const heroRef = useRef<HTMLElement | null>(null)
   const skyCanvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -298,6 +300,18 @@ export default function HomeDashboardView() {
   useEffect(() => {
     void loadPlaylists()
   }, [loadPlaylists])
+
+  useEffect(() => {
+    const element = heroRef.current
+    if (!element) return
+    const update = () => setHomeContentWidth(element.clientWidth)
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    update()
+    return () => observer.disconnect()
+  }, [])
+
+  const shelfLimits = useMemo(() => resolveHomeShelfLimits(homeContentWidth), [homeContentWidth])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -405,7 +419,10 @@ export default function HomeDashboardView() {
     try {
       const result = await window.electronAPI.library.getHomeDashboard({
         rotation: rediscoveryRotation.index,
-        excludedReleaseIdentityKeys: activeAlbumIdentityKey ? [activeAlbumIdentityKey] : []
+        excludedReleaseIdentityKeys: activeAlbumIdentityKey ? [activeAlbumIdentityKey] : [],
+        jumpBackInReleaseLimit: shelfLimits.jumpBackIn,
+        rediscoverLimit: shelfLimits.rediscover,
+        newlyAddedLimit: shelfLimits.newlyAdded
       })
       setDashboard(result)
       if (result.day_key !== rediscoveryRotation.dayKey) {
@@ -418,7 +435,7 @@ export default function HomeDashboardView() {
     } finally {
       setDashboardLoading(false)
     }
-  }, [activeAlbumIdentityKey, rediscoveryRotation])
+  }, [activeAlbumIdentityKey, rediscoveryRotation, shelfLimits])
 
   useEffect(() => {
     void loadHomeDashboard()
@@ -429,8 +446,8 @@ export default function HomeDashboardView() {
     [favoriteTrackPaths, resolveTrackPaths, trackCacheVersion]
   )
   const recentTracks = useMemo(
-    () => uniqueRecentTracks(resolveTrackPaths(recentlyPlayedPaths) as HomeTrack[]),
-    [recentlyPlayedPaths, resolveTrackPaths, trackCacheVersion]
+    () => uniqueRecentTracks(resolveTrackPaths(recentlyPlayedPaths) as HomeTrack[], shelfLimits.recentTracks),
+    [recentlyPlayedPaths, resolveTrackPaths, shelfLimits.recentTracks, trackCacheVersion]
   )
   const allDisplayPlaylists = useMemo(() => buildAllDisplayPlaylists(playlists, {
     trackCount: favoriteTracks.length,
@@ -495,10 +512,10 @@ export default function HomeDashboardView() {
       if (seen.has(card.key)) continue
       activeCards.push(card)
       seen.add(card.key)
-      if (activeCards.length >= 6) break
+      if (activeCards.length >= shelfLimits.jumpBackIn) break
     }
     return activeCards
-  }, [allDisplayPlaylists, currentTrack, dashboard?.recent_releases, queueSourceContext])
+  }, [allDisplayPlaylists, currentTrack, dashboard?.recent_releases, queueSourceContext, shelfLimits.jumpBackIn])
 
   const visibleModules = homeLayoutPreference.modules.filter((module) => (
     module.visible && (module.id !== 'listening-snapshot' || listeningStatsEnabled)

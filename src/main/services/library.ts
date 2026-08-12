@@ -5630,12 +5630,22 @@ export function getHomeDashboard(query: HomeDashboardQuery = {}): HomeDashboard 
       .map(buildHomeReleaseSummary)
       .filter((release) => release.available_track_count > 0)
 
+    const jumpBackInReleaseLimit = Number.isFinite(query.jumpBackInReleaseLimit)
+      ? Math.max(6, Math.min(24, Math.trunc(query.jumpBackInReleaseLimit!)))
+      : 6
+    const rediscoverLimit = Number.isFinite(query.rediscoverLimit)
+      ? Math.max(8, Math.min(24, Math.trunc(query.rediscoverLimit!)))
+      : 8
+    const newlyAddedLimit = Number.isFinite(query.newlyAddedLimit)
+      ? Math.max(8, Math.min(24, Math.trunc(query.newlyAddedLimit!)))
+      : 8
+
     const recentReleases = releases
       .filter((release) => release.last_played_at !== null)
       .sort((a, b) => (b.last_played_at ?? 0) - (a.last_played_at ?? 0) || a.identity_key.localeCompare(b.identity_key))
-      .slice(0, 12)
+      .slice(0, 24)
     const excluded = new Set<string>([
-      ...recentReleases.slice(0, 6).map((release) => release.identity_key),
+      ...recentReleases.slice(0, jumpBackInReleaseLimit).map((release) => release.identity_key),
       ...(Array.isArray(query.excludedReleaseIdentityKeys)
         ? query.excludedReleaseIdentityKeys.filter((key): key is string => typeof key === 'string' && key.length <= 1024)
         : [])
@@ -5644,12 +5654,12 @@ export function getHomeDashboard(query: HomeDashboardQuery = {}): HomeDashboard 
       now: now.getTime(),
       dayKey,
       rotation: Number.isFinite(query.rotation) ? Math.max(0, Math.trunc(query.rotation!)) : 0,
-      limit: 8,
+      limit: rediscoverLimit,
       excludedIdentityKeys: excluded
     })
     const newlyAddedReleases = [...releases]
       .sort((a, b) => b.latest_added_at - a.latest_added_at || a.identity_key.localeCompare(b.identity_key))
-      .slice(0, 8)
+      .slice(0, newlyAddedLimit)
 
     return {
       day_key: dayKey,
