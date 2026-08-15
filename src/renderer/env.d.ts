@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 import { VisualizerDSP } from './audio/native/visualizer-dsp'
+import type { LocalPcmDecodeLimitRefusal } from '../shared/localPcmStream'
 import type {
     MiniPlayerCommand,
     MiniPlayerSnapshot,
@@ -216,6 +217,8 @@ interface LocalAudioPcmDecodeResult {
     backgroundPriorityApplied: boolean
     transportTimings?: LocalAudioPcmTransportTimings
 }
+
+type LocalAudioPcmDecodeResponse = LocalAudioPcmDecodeResult | LocalPcmDecodeLimitRefusal | null
 
 declare global {
     interface Window {
@@ -674,7 +677,7 @@ declare global {
                 outputSampleRate: number,
                 expectedChannels?: number | null,
                 priority?: 'interactive' | 'background'
-            ) => Promise<LocalAudioPcmDecodeResult | null>
+            ) => Promise<LocalAudioPcmDecodeResponse>
             cancelLocalAudioDecode: (requestId: number) => Promise<void>
             promoteLocalAudioDecode: (requestId: number) => Promise<void>
             analyzeTrackLoudness: (filePath: string) => Promise<{
@@ -698,6 +701,7 @@ declare global {
                 expectedChannels?: number | null,
                 options?: { startTimeSeconds?: number | null }
             ) => Promise<ProgressiveStreamInfo>
+            updateProgressiveStreamPosition: (sessionId: number, currentFrame: number) => void
             cancelProgressiveStream: (sessionId: number) => Promise<void>
             startRemoteStream: (
                 filePath: string,

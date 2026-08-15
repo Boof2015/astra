@@ -379,6 +379,7 @@ function resetStores(): void {
 
 interface StandardPcmRouteMetrics {
   pcmCalls: Array<{ path: string; priority: string | undefined }>
+  progressiveCalls: Array<{ path: string; loudnessAnalysis: unknown }>
   fileReadCalls: number
   chromiumDecodeCalls: number
   compatibilityFallbackCalls: number
@@ -398,6 +399,7 @@ async function exerciseStandardPcmRoute(
   })
   const metrics: StandardPcmRouteMetrics = {
     pcmCalls: [],
+    progressiveCalls: [],
     fileReadCalls: 0,
     chromiumDecodeCalls: 0,
     compatibilityFallbackCalls: 0,
@@ -451,6 +453,7 @@ async function exerciseStandardPcmRoute(
   })
   const originalOn = audioEngine.on
   const originalLoadStandardTrackFromPath = audioEngine.loadStandardTrackFromPath
+  const originalLoadProgressiveStream = audioEngine.loadProgressiveStream
   const originalLoadAudioData = audioEngine.loadAudioData
   const originalPlay = audioEngine.play
   const originalNeedsLoudness = audioEngine.needsLoudnessAnalysisForLoad
@@ -472,6 +475,21 @@ async function exerciseStandardPcmRoute(
       stateChangeListeners.forEach((listener) => listener('stopped'))
     }
     return pcmOutcome
+  }
+  audioEngine.loadProgressiveStream = async (candidate, options) => {
+    metrics.progressiveCalls.push({
+      path: candidate.path,
+      loudnessAnalysis: options?.loudnessAnalysis ?? null
+    })
+    return {
+      sessionId: 91,
+      path: candidate.path,
+      sourceType: 'local',
+      sampleRate: 48_000,
+      channels: candidate.channels ?? 2,
+      durationSeconds: candidate.duration,
+      startTimeSeconds: 0
+    }
   }
   audioEngine.loadAudioData = async () => {
     metrics.chromiumDecodeCalls += 1
@@ -509,6 +527,7 @@ async function exerciseStandardPcmRoute(
     await flushAsyncWork()
     audioEngine.on = originalOn
     audioEngine.loadStandardTrackFromPath = originalLoadStandardTrackFromPath
+    audioEngine.loadProgressiveStream = originalLoadProgressiveStream
     audioEngine.loadAudioData = originalLoadAudioData
     audioEngine.play = originalPlay
     audioEngine.needsLoudnessAnalysisForLoad = originalNeedsLoudness
@@ -527,6 +546,175 @@ async function exerciseStandardPcmRoute(
     useAudioSettingsStore.setState({
       playbackOutputMode: originalSettings.playbackOutputMode,
       normalizationEnabled: originalSettings.normalizationEnabled,
+      disableGaplessPrebufferDev: originalSettings.disableGaplessPrebufferDev
+    })
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+    resetStores()
+  }
+}
+
+interface MandatoryProgressiveMetrics {
+  progressiveCalls: Array<{
+    path: string
+    replayGainDb: number | null | undefined
+    loudnessAnalysis: unknown
+  }>
+  standardPcmCalls: number
+  fileReadCalls: number
+  chromiumDecodeCalls: number
+  compatibilityFallbackCalls: number
+  backendPlayCalls: number
+  diagnostics: Array<{ name: string; details?: Record<string, unknown> | null }>
+}
+
+async function exerciseMandatoryProgressiveRoute(
+  streamError: Error | null
+): Promise<{
+  loadOutcome: 'loaded' | 'failed' | 'superseded'
+  metrics: MandatoryProgressiveMetrics
+  playbackState: ReturnType<typeof usePlayerStore.getState>['playbackState']
+}> {
+  resetStores()
+  usePlayerStore.getState()._schedulePreBufferNextTrack({ invalidatePending: true })
+  const track = makeTrack('/progressive-required/twelve-hours.mp3', {
+    sourceType: 'local',
+    duration: 12 * 60 * 60,
+    sampleRate: 48_000,
+    channels: 2
+  })
+  const metrics: MandatoryProgressiveMetrics = {
+    progressiveCalls: [],
+    standardPcmCalls: 0,
+    fileReadCalls: 0,
+    chromiumDecodeCalls: 0,
+    compatibilityFallbackCalls: 0,
+    backendPlayCalls: 0,
+    diagnostics: []
+  }
+
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      location: { search: '' },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      electronAPI: {
+        diagnostics: {
+          logEvent: async (event: { name: string; details?: Record<string, unknown> | null }) => {
+            metrics.diagnostics.push(event)
+          }
+        },
+        onProgressiveLoadProgress: () => () => undefined,
+        supersedeTrackLoudness: async () => undefined,
+        analyzeTrackLoudness: async () => null,
+        getAudioFileStat: async () => {
+          throw new Error('decoded-size classification should not need a file stat')
+        },
+        decodeLocalAudioToPcm: async () => null,
+        loadAudioFile: async () => {
+          metrics.fileReadCalls += 1
+          return { data: new ArrayBuffer(16) }
+        },
+        decodeAudioWithFfmpeg: async () => {
+          metrics.compatibilityFallbackCalls += 1
+          return null
+        },
+        library: {
+          getListeningHistoryStatus: async () => ({
+            generation: 'mandatory-progressive',
+            startedAt: null
+          }),
+          checkpointListeningSession: async () => ({
+            accepted: true,
+            qualifiedNow: false,
+            status: { generation: 'mandatory-progressive', startedAt: null }
+          }),
+          markTrackLatestSyncSeen: async () => undefined
+        }
+      }
+    }
+  })
+
+  const originalSettings = useAudioSettingsStore.getState()
+  useAudioSettingsStore.setState({
+    playbackOutputMode: 'standard',
+    normalizationEnabled: true,
+    replayGainMode: 'auto',
+    disableGaplessPrebufferDev: false
+  })
+  const originalOn = audioEngine.on
+  const originalLoadProgressiveStream = audioEngine.loadProgressiveStream
+  const originalLoadStandardTrackFromPath = audioEngine.loadStandardTrackFromPath
+  const originalLoadAudioData = audioEngine.loadAudioData
+  const originalPlay = audioEngine.play
+  const originalNeedsLoudness = audioEngine.needsLoudnessAnalysisForLoad
+  const originalGetRemoteBufferedSeconds = audioEngine.getRemoteBufferedSeconds
+  const originalGetPlaybackOutputMode = audioEngine.getPlaybackOutputMode
+  const stateChangeListeners: Array<(state: string) => void> = []
+
+  audioEngine.on = (event, callback) => {
+    if (event === 'stateChange') stateChangeListeners.push(callback)
+    return () => undefined
+  }
+  audioEngine.loadProgressiveStream = async (candidate, options) => {
+    metrics.progressiveCalls.push({
+      path: candidate.path,
+      replayGainDb: options?.replayGainDb,
+      loudnessAnalysis: options?.loudnessAnalysis ?? null
+    })
+    if (streamError) throw streamError
+    return {
+      sessionId: 209,
+      path: candidate.path,
+      sourceType: 'local',
+      sampleRate: 48_000,
+      channels: 2,
+      durationSeconds: candidate.duration,
+      startTimeSeconds: 0
+    }
+  }
+  audioEngine.loadStandardTrackFromPath = async () => {
+    metrics.standardPcmCalls += 1
+    return 'loaded'
+  }
+  audioEngine.loadAudioData = async () => {
+    metrics.chromiumDecodeCalls += 1
+  }
+  audioEngine.play = async () => {
+    metrics.backendPlayCalls += 1
+    stateChangeListeners.forEach((listener) => listener('playing'))
+  }
+  audioEngine.needsLoudnessAnalysisForLoad = () => true
+  audioEngine.getRemoteBufferedSeconds = () => 1
+  audioEngine.getPlaybackOutputMode = () => 'standard'
+
+  try {
+    usePlayerStore.getState()._cleanupListeners()
+    const loadOutcome = await usePlayerStore.getState()._loadAndPlayTrack(track)
+    await flushAsyncWork()
+    return {
+      loadOutcome,
+      metrics,
+      playbackState: usePlayerStore.getState().playbackState
+    }
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    usePlayerStore.setState({ currentTrack: null, playbackState: 'stopped' })
+    usePlayerStore.getState()._schedulePreBufferNextTrack({ invalidatePending: true })
+    audioEngine.on = originalOn
+    audioEngine.loadProgressiveStream = originalLoadProgressiveStream
+    audioEngine.loadStandardTrackFromPath = originalLoadStandardTrackFromPath
+    audioEngine.loadAudioData = originalLoadAudioData
+    audioEngine.play = originalPlay
+    audioEngine.needsLoudnessAnalysisForLoad = originalNeedsLoudness
+    audioEngine.getRemoteBufferedSeconds = originalGetRemoteBufferedSeconds
+    audioEngine.getPlaybackOutputMode = originalGetPlaybackOutputMode
+    useAudioSettingsStore.setState({
+      playbackOutputMode: originalSettings.playbackOutputMode,
+      normalizationEnabled: originalSettings.normalizationEnabled,
+      replayGainMode: originalSettings.replayGainMode,
       disableGaplessPrebufferDev: originalSettings.disableGaplessPrebufferDev
     })
     if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
@@ -3224,6 +3412,96 @@ test('Standard prebuffering excludes the 192 MiB decoded boundary and oversized 
   }
 })
 
+test('a native PCM size-limit refusal skips prebuffering without reading the file', async () => {
+  resetStores()
+  usePlayerStore.getState()._schedulePreBufferNextTrack({ invalidatePending: true })
+  const currentTrack = makeTrack('/prebuffer-native-limit/current.flac', {
+    duration: 180,
+    sourceType: 'local',
+    sampleRate: 44_100,
+    channels: 2
+  })
+  const nextTrack = makeTrack('/prebuffer-native-limit/unknown-long.flac', {
+    duration: 180,
+    sourceType: 'local',
+    sampleRate: 44_100,
+    channels: 2
+  })
+  const currentItem = makeQueueItem(createQueueEntryFromTrack(currentTrack), 'prebuffer-native-limit-current', 'context')
+  const nextItem = makeQueueItem(createQueueEntryFromTrack(nextTrack), 'prebuffer-native-limit-next', 'context')
+  usePlayerStore.setState({
+    currentTrack,
+    playbackState: 'playing',
+    currentTime: 0,
+    duration: currentTrack.duration,
+    queueItems: [currentItem, nextItem],
+    baseUpcomingQueueIds: [nextItem.queueId],
+    upcomingQueueIds: [nextItem.queueId],
+    currentQueueItemId: currentItem.queueId
+  })
+
+  let fileReadCalls = 0
+  let nativePcmCalls = 0
+  let chromiumPrebufferCalls = 0
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      location: { search: '?window=test' },
+      electronAPI: {
+        getAudioFileStat: async () => null,
+        decodeLocalAudioToPcm: async () => null,
+        warmupTrackLoudness: async () => null,
+        loadAudioFile: async () => {
+          fileReadCalls += 1
+          return { data: new ArrayBuffer(16) }
+        }
+      }
+    }
+  })
+  const originalSettings = useAudioSettingsStore.getState()
+  useAudioSettingsStore.setState({
+    playbackOutputMode: 'standard',
+    normalizationEnabled: false,
+    disableGaplessPrebufferDev: false
+  })
+  const originalGetPlaybackOutputMode = audioEngine.getPlaybackOutputMode
+  const originalGetBufferMemoryStats = audioEngine.getBufferMemoryStats
+  const originalPreBufferNextStandardTrackFromPath = audioEngine.preBufferNextStandardTrackFromPath
+  const originalPreBufferNext = audioEngine.preBufferNext
+  audioEngine.getPlaybackOutputMode = () => 'standard'
+  audioEngine.getBufferMemoryStats = async () => ({ currentBytes: 0, nextBytes: 0, totalBytes: 0 })
+  audioEngine.preBufferNextStandardTrackFromPath = async () => {
+    nativePcmCalls += 1
+    return 'progressive_required'
+  }
+  audioEngine.preBufferNext = async () => {
+    chromiumPrebufferCalls += 1
+  }
+
+  try {
+    await usePlayerStore.getState()._preBufferNextTrack()
+    assert.equal(nativePcmCalls, 1)
+    assert.equal(fileReadCalls, 0)
+    assert.equal(chromiumPrebufferCalls, 0)
+  } finally {
+    usePlayerStore.setState({ currentTrack: null, playbackState: 'stopped' })
+    usePlayerStore.getState()._schedulePreBufferNextTrack({ invalidatePending: true })
+    audioEngine.getPlaybackOutputMode = originalGetPlaybackOutputMode
+    audioEngine.getBufferMemoryStats = originalGetBufferMemoryStats
+    audioEngine.preBufferNextStandardTrackFromPath = originalPreBufferNextStandardTrackFromPath
+    audioEngine.preBufferNext = originalPreBufferNext
+    useAudioSettingsStore.setState({
+      playbackOutputMode: originalSettings.playbackOutputMode,
+      normalizationEnabled: originalSettings.normalizationEnabled,
+      disableGaplessPrebufferDev: originalSettings.disableGaplessPrebufferDev
+    })
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+    resetStores()
+  }
+})
+
 test('Standard prebuffering retains the 384 MiB decoded-buffer budget', async () => {
   resetStores()
   usePlayerStore.getState()._schedulePreBufferNextTrack({ invalidatePending: true })
@@ -4137,6 +4415,64 @@ test('a cancelled native PCM decode is superseded without Chromium fallback', as
   assert.equal(metrics.chromiumDecodeCalls, 0)
   assert.equal(metrics.compatibilityFallbackCalls, 0)
   assert.equal(metrics.backendPlayCalls, 0)
+})
+
+test('a native PCM size-limit refusal escalates to progressive without any full-buffer fallback', async () => {
+  const { loadOutcome, metrics } = await exerciseStandardPcmRoute('progressive_required')
+
+  assert.equal(loadOutcome, 'loaded')
+  assert.deepEqual(metrics.pcmCalls, [{
+    path: '/pcm-route/progressive_required.flac',
+    priority: 'interactive'
+  }])
+  assert.deepEqual(metrics.progressiveCalls, [{
+    path: '/pcm-route/progressive_required.flac',
+    loudnessAnalysis: null
+  }])
+  assert.equal(metrics.fileReadCalls, 0)
+  assert.equal(metrics.chromiumDecodeCalls, 0)
+  assert.equal(metrics.compatibilityFallbackCalls, 0)
+  assert.equal(metrics.backendPlayCalls, 1)
+})
+
+test('a huge normalized track stays progressive when fixed loudness is unavailable', async () => {
+  const { loadOutcome, metrics } = await exerciseMandatoryProgressiveRoute(null)
+
+  assert.equal(loadOutcome, 'loaded')
+  assert.deepEqual(metrics.progressiveCalls, [{
+    path: '/progressive-required/twelve-hours.mp3',
+    replayGainDb: null,
+    loudnessAnalysis: null
+  }])
+  assert.equal(metrics.standardPcmCalls, 0)
+  assert.equal(metrics.fileReadCalls, 0)
+  assert.equal(metrics.chromiumDecodeCalls, 0)
+  assert.equal(metrics.compatibilityFallbackCalls, 0)
+  assert.equal(metrics.backendPlayCalls, 1)
+  const bypass = metrics.diagnostics.find((event) => event.name === 'local_progressive_loudness_bypassed')
+  assert.ok(bypass)
+  assert.equal(bypass.details?.requirementReason, 'preflight')
+  assert.equal(bypass.details?.gainDb, 0)
+})
+
+test('a mandatory progressive startup failure stops cleanly without full-buffer fallback', async () => {
+  const streamError = new Error('progressive decoder unavailable')
+  const { loadOutcome, metrics, playbackState } = await exerciseMandatoryProgressiveRoute(streamError)
+
+  assert.equal(loadOutcome, 'failed')
+  assert.equal(playbackState, 'stopped')
+  assert.equal(metrics.progressiveCalls.length, 1)
+  assert.equal(metrics.standardPcmCalls, 0)
+  assert.equal(metrics.fileReadCalls, 0)
+  assert.equal(metrics.chromiumDecodeCalls, 0)
+  assert.equal(metrics.compatibilityFallbackCalls, 0)
+  assert.equal(metrics.backendPlayCalls, 0)
+  const progressiveFailure = metrics.diagnostics.find((event) => event.name === 'local_progressive_stream_failed')
+  assert.ok(progressiveFailure)
+  assert.equal(progressiveFailure.details?.message, streamError.message)
+  const trackFailure = metrics.diagnostics.find((event) => event.name === 'track_load_failed')
+  assert.ok(trackFailure)
+  assert.equal(trackFailure.details?.message, streamError.message)
 })
 
 test('successful Standard playback emits one complete playback-attempt timing event', async () => {

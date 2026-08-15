@@ -49,6 +49,9 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
       ? Number(options.outputChannelCount[0] || 2)
       : 2
     this.channelCount = Math.max(1, outputChannels)
+    this.discardConsumedChunks = Boolean(
+      options && options.processorOptions && options.processorOptions.discardConsumedChunks
+    )
     this.reportIntervalFrames = 2048
     this.reset()
     this.port.onmessage = (event) => {
@@ -125,14 +128,36 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
   }
 
   seekToFrame(frame) {
+    const retainedStartFrame = this.chunks.length > 0
+      ? this.chunks[0].startFrame
+      : this.totalFrames
     const clamped = Number.isFinite(frame)
-      ? Math.max(0, Math.min(Math.floor(frame), this.totalFrames))
-      : 0
+      ? Math.max(retainedStartFrame, Math.min(Math.floor(frame), this.totalFrames))
+      : retainedStartFrame
     this.currentFrame = clamped
     this.endedEmitted = false
     this.framesSinceReport = 0
     this.locateCurrentChunk()
     this.postPosition(true)
+  }
+
+  releaseConsumedChunks() {
+    if (!this.discardConsumedChunks || this.chunks.length === 0) return
+
+    let discardCount = 0
+    while (
+      discardCount < this.chunks.length
+      && this.currentFrame >= (
+        this.chunks[discardCount].startFrame
+        + this.chunks[discardCount].frameCount
+      )
+    ) {
+      discardCount += 1
+    }
+    if (discardCount === 0) return
+
+    this.chunks.splice(0, discardCount)
+    this.currentChunkIndex = Math.max(0, this.currentChunkIndex - discardCount)
   }
 
   locateCurrentChunk() {
@@ -244,6 +269,8 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
         this.currentChunkIndex += 1
       }
     }
+
+    this.releaseConsumedChunks()
 
     if (this.framesSinceReport >= this.reportIntervalFrames) {
       this.framesSinceReport = 0

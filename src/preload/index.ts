@@ -142,7 +142,9 @@ import {
 import {
   LOCAL_PCM_STREAM_MARKER,
   LOCAL_PCM_STREAM_VERSION,
+  isLocalPcmDecodeLimitRefusal,
   validateLocalPcmStreamOpenRequest,
+  type LocalPcmDecodeLimitRefusal,
   type LocalPcmStreamOpenRequest,
   type LocalPcmStreamPortEnvelope
 } from '../shared/localPcmStream'
@@ -260,6 +262,8 @@ export interface LocalAudioPcmDecodeResult {
   backgroundPriorityApplied: boolean
   transportTimings?: LocalAudioPcmTransportTimings
 }
+
+export type LocalAudioPcmDecodeResponse = LocalAudioPcmDecodeResult | LocalPcmDecodeLimitRefusal | null
 
 export interface ProgressiveStreamStartOptions {
   startTimeSeconds?: number | null
@@ -1479,7 +1483,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     outputSampleRate: number,
     expectedChannels?: number | null,
     priority?: 'interactive' | 'background'
-  ): Promise<LocalAudioPcmDecodeResult | null> => {
+  ): Promise<LocalAudioPcmDecodeResponse> => {
     const invokeStartedAtMs = preloadDiagnosticNow()
     const result = await ipcRenderer.invoke(
       'audio:decodeLocalAudioToPcm',
@@ -1488,8 +1492,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       outputSampleRate,
       expectedChannels,
       priority
-    ) as LocalAudioPcmDecodeResult | null
+    ) as LocalAudioPcmDecodeResponse
     const preloadInvokeMs = roundPreloadDiagnosticMs(preloadDiagnosticNow() - invokeStartedAtMs)
+    if (isLocalPcmDecodeLimitRefusal(result)) return result
     if (!result?.transportTimings) return result
 
     // Only the small result envelope is copied here. The PCM ArrayBuffer is
@@ -1521,6 +1526,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     options?: ProgressiveStreamStartOptions
   ) =>
     ipcRenderer.invoke('audio:startProgressiveStream', filePath, outputSampleRate, expectedChannels, options) as Promise<ProgressiveStreamInfo>,
+  updateProgressiveStreamPosition: (sessionId: number, currentFrame: number) =>
+    ipcRenderer.send('audio:updateProgressiveStreamPosition', sessionId, currentFrame),
   cancelProgressiveStream: (sessionId: number) => ipcRenderer.invoke('audio:cancelProgressiveStream', sessionId) as Promise<void>,
   startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) =>
     ipcRenderer.invoke('audio:startRemoteStream', filePath, outputSampleRate, expectedChannels) as Promise<RemoteStreamInfo>,
@@ -2194,7 +2201,7 @@ declare global {
         outputSampleRate: number,
         expectedChannels?: number | null,
         priority?: 'interactive' | 'background'
-      ) => Promise<LocalAudioPcmDecodeResult | null>
+      ) => Promise<LocalAudioPcmDecodeResponse>
       cancelLocalAudioDecode: (requestId: number) => Promise<void>
       promoteLocalAudioDecode: (requestId: number) => Promise<void>
       analyzeTrackLoudness: (filePath: string) => Promise<TrackLoudnessResult | null>
@@ -2207,6 +2214,7 @@ declare global {
         expectedChannels?: number | null,
         options?: ProgressiveStreamStartOptions
       ) => Promise<ProgressiveStreamInfo>
+      updateProgressiveStreamPosition: (sessionId: number, currentFrame: number) => void
       cancelProgressiveStream: (sessionId: number) => Promise<void>
       startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) => Promise<RemoteStreamInfo>
       cancelRemoteStream: (sessionId: number) => Promise<void>

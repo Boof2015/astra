@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE,
   LOCAL_PCM_STREAM_INITIAL_CREDITS,
   LOCAL_PCM_STREAM_MARKER,
   LOCAL_PCM_STREAM_VERSION,
@@ -12,6 +13,7 @@ import {
   LocalPcmStreamTransportError,
   createLocalPcmStreamClient,
   isLocalPcmStreamDecodeError,
+  isLocalPcmDecodeLimitExceededError,
   isLocalPcmStreamTransportError,
   preferLocalPcmStreamWithLegacyFallback,
   type LocalPcmCompatibleDecodeResult,
@@ -381,6 +383,36 @@ test('main decoder errors remain distinct and never invoke fallback', async () =
   await assert.rejects(resultPromise, (error) => {
     assert.equal(isLocalPcmStreamDecodeError(error), true)
     assert.equal((error as LocalPcmStreamDecodeError).code, 'ffmpeg_failed')
+    return true
+  })
+  assert.equal(legacyCalls, 0)
+})
+
+test('the complete-PCM size-limit code remains a typed decoder refusal', async () => {
+  const testRuntime = makeRuntime()
+  const client = createLocalPcmStreamClient(testRuntime.runtime)
+  let legacyCalls = 0
+  const resultPromise = preferLocalPcmStreamWithLegacyFallback(
+    request,
+    async () => {
+      legacyCalls += 1
+      return null
+    },
+    { client },
+  )
+  const port = new FakePort()
+  testRuntime.windowTarget.dispatch({ ...wireBase, marker: LOCAL_PCM_STREAM_MARKER }, [port])
+  port.emit({ ...wireBase, type: 'accepted' })
+  port.emit({
+    ...wireBase,
+    type: 'error',
+    kind: 'decode',
+    code: LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE,
+    message: 'Decoded audio exceeds the 192 MiB Standard playback limit.',
+  })
+
+  await assert.rejects(resultPromise, (error) => {
+    assert.equal(isLocalPcmDecodeLimitExceededError(error), true)
     return true
   })
   assert.equal(legacyCalls, 0)

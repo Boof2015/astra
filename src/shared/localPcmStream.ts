@@ -1,5 +1,6 @@
 export const LOCAL_PCM_STREAM_VERSION = 1 as const
 export const LOCAL_PCM_STREAM_MARKER = 'astra:local-audio-pcm-stream-port' as const
+export const LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE = 'PCM_DECODE_LIMIT_EXCEEDED' as const
 
 const MEBIBYTE = 1024 * 1024
 
@@ -9,6 +10,21 @@ export const LOCAL_PCM_STREAM_MAX_CREDITS = 2
 export const LOCAL_PCM_STREAM_MAX_BYTES = 192 * MEBIBYTE
 
 export type LocalPcmStreamPriority = 'interactive' | 'background'
+
+export interface LocalPcmDecodeLimitRefusal {
+  refused: true
+  code: typeof LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE
+  message: string
+}
+
+export function isLocalPcmDecodeLimitRefusal(value: unknown): value is LocalPcmDecodeLimitRefusal {
+  return isRecord(value)
+    && value.refused === true
+    && value.code === LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE
+    && typeof value.message === 'string'
+    && value.message.length > 0
+    && value.message.length <= 4_096
+}
 
 export interface LocalPcmStreamOpenRequest {
   requestId: number

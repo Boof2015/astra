@@ -1515,9 +1515,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   const resolveInteractiveLoudnessForProgressiveLoad = async (
     track: Track,
     replayGainDb: number | null,
-    loadRequestId: number
+    loadRequestId: number,
+    existingRequest?: ReturnType<typeof requestTrackLoudnessAnalysis>
   ): Promise<{ loudnessLufs: number; peakLinear: number | null } | null> => {
-    const request = requestTrackLoudnessAnalysis(track, replayGainDb, 'interactive')
+    const request = existingRequest === undefined
+      ? requestTrackLoudnessAnalysis(track, replayGainDb, 'interactive')
+      : existingRequest
     if (!request) return null
 
     set({ loadingStatus: 'Analyzing loudness' })
@@ -4850,106 +4853,126 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           }
         }
 
-        const useLocalProgressive = await shouldUseLocalProgressivePath(track)
-        throwIfSupersededLoad(loadRequestId)
-        if (useLocalProgressive) {
+        const loadMandatoryLocalProgressive = async (
+          requirementReason: 'preflight' | 'native_pcm_limit',
+          existingLoudnessRequest?: ReturnType<typeof requestTrackLoudnessAnalysis>
+        ): Promise<PlaybackLoadOutcome> => {
           attemptBackend = 'local_progressive'
           const needsFixedLoudness = audioEngine.needsLoudnessAnalysisForLoad(replayGainDb)
           const progressiveLoudnessStartedAt = needsFixedLoudness ? performance.now() : null
           const fixedLoudness = needsFixedLoudness
-            ? await resolveInteractiveLoudnessForProgressiveLoad(track, replayGainDb, loadRequestId)
+            ? await resolveInteractiveLoudnessForProgressiveLoad(
+                track,
+                replayGainDb,
+                loadRequestId,
+                existingLoudnessRequest
+              )
             : null
           if (progressiveLoudnessStartedAt !== null) {
             attemptLoudnessMs = performance.now() - progressiveLoudnessStartedAt
           }
           throwIfSupersededLoad(loadRequestId)
+          const normalizationBypassed = needsFixedLoudness && !fixedLoudness
 
-          if (!needsFixedLoudness || fixedLoudness) {
-            try {
-              const streamInfo = await audioEngine.loadProgressiveStream(track, {
-                replayGainDb,
-                loudnessAnalysis: fixedLoudness
-              })
-              throwIfSupersededLoad(loadRequestId)
-              const resolvedTrack: Track = {
-                ...track,
-                duration: streamInfo.durationSeconds && streamInfo.durationSeconds > 0 ? streamInfo.durationSeconds : track.duration,
-                channels: streamInfo.channels ?? track.channels
-              }
-              set({
-                duration: resolvedTrack.duration,
-                currentTrack: resolvedTrack,
-                waveformData: null,
-                waveformBufferedRatio: 0,
-                waveformAnalyzedRatio: 0,
-                remoteLoadProgress: createInitialRemoteLoadProgress(resolvedTrack),
-                loadingStatus: null,
-                remoteBufferedSeconds: audioEngine.getRemoteBufferedSeconds(),
-                remoteStreamSessionId: streamInfo.sessionId,
-                currentTime: 0
-              })
-              hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
-              if (manualStart) {
-                showOutputDelayNotice(resolvedTrack)
-              }
-              throwIfSupersededLoad(loadRequestId)
-              const backendStart = performance.now()
-              try {
-                await audioEngine.play()
-              } finally {
-                attemptBackendStartMs = performance.now() - backendStart
-              }
-              throwIfSupersededLoad(loadRequestId)
-              markPlaybackAttemptPlaying(attempt)
-              void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
-              startRecentPlaySession(resolvedTrack.path)
-              schedulePreBufferNextTrack()
-              warmupUpcomingLoudness()
-              logMemoryDiagnosticsEvent('track_load_success', {
-                attemptId: attempt.id,
-                loadRequestId,
-                prebufferRequestId: null,
-                decodeRequestId: null,
-                trackPath: track.path,
-                sourceType: 'local',
-                loadPath: 'local_progressive_stream',
-                sessionId: streamInfo.sessionId,
-                durationSeconds: resolvedTrack.duration,
-                channels: streamInfo.channels,
-                usedReplayGain: replayGainDb != null,
-                usedStoredLoudness: Boolean(fixedLoudness)
-              }, 'renderer', { captureSample: false })
-              logSlowPath('queueLoadAndPlayTrack', loadStart, {
-                trackPath: track.path,
-                usedLocalProgressiveStream: true
-              })
-              finishAttempt('loaded')
-              return 'loaded'
-            } catch (streamError) {
-              if (isSupersededPlaybackLoad(streamError, loadRequestId)) {
-                throw streamError
-              }
-              console.warn(`Local progressive stream setup failed for ${track.path}; falling back to full decode.`, streamError)
-              logMemoryDiagnosticsEvent('local_progressive_stream_fallback', {
-                trackPath: track.path,
-                message: streamError instanceof Error ? streamError.message : 'Local progressive stream setup failed.'
-              })
-              set({
-                loadingStatus: null,
-                remoteLoadProgress: null,
-                remoteBufferedSeconds: 0,
-                remoteStreamSessionId: null,
-                waveformData: null,
-                waveformBufferedRatio: 1,
-                waveformAnalyzedRatio: 1
-              })
-            }
-          } else {
-            logMemoryDiagnosticsEvent('local_progressive_loudness_fallback', {
-              trackPath: track.path
+          if (normalizationBypassed) {
+            logMemoryDiagnosticsEvent('local_progressive_loudness_bypassed', {
+              trackPath: track.path,
+              requirementReason,
+              gainDb: 0
             })
-            set({ loadingStatus: null })
           }
+
+          try {
+            const streamInfo = await audioEngine.loadProgressiveStream(track, {
+              replayGainDb,
+              loudnessAnalysis: fixedLoudness
+            })
+            throwIfSupersededLoad(loadRequestId)
+            const resolvedTrack: Track = {
+              ...track,
+              duration: streamInfo.durationSeconds && streamInfo.durationSeconds > 0 ? streamInfo.durationSeconds : track.duration,
+              channels: streamInfo.channels ?? track.channels
+            }
+            set({
+              duration: resolvedTrack.duration,
+              currentTrack: resolvedTrack,
+              waveformData: null,
+              waveformBufferedRatio: 0,
+              waveformAnalyzedRatio: 0,
+              remoteLoadProgress: createInitialRemoteLoadProgress(resolvedTrack),
+              loadingStatus: null,
+              remoteBufferedSeconds: audioEngine.getRemoteBufferedSeconds(),
+              remoteStreamSessionId: streamInfo.sessionId,
+              currentTime: 0
+            })
+            hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
+            if (manualStart) {
+              showOutputDelayNotice(resolvedTrack)
+            }
+            throwIfSupersededLoad(loadRequestId)
+            const backendStart = performance.now()
+            try {
+              await audioEngine.play()
+            } finally {
+              attemptBackendStartMs = performance.now() - backendStart
+            }
+            throwIfSupersededLoad(loadRequestId)
+            markPlaybackAttemptPlaying(attempt)
+            void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
+            startRecentPlaySession(resolvedTrack.path)
+            schedulePreBufferNextTrack()
+            warmupUpcomingLoudness()
+            logMemoryDiagnosticsEvent('track_load_success', {
+              attemptId: attempt.id,
+              loadRequestId,
+              prebufferRequestId: null,
+              decodeRequestId: null,
+              trackPath: track.path,
+              sourceType: 'local',
+              loadPath: 'local_progressive_stream',
+              progressiveRequirementReason: requirementReason,
+              sessionId: streamInfo.sessionId,
+              durationSeconds: resolvedTrack.duration,
+              channels: streamInfo.channels,
+              usedReplayGain: replayGainDb != null,
+              usedFixedLoudness: Boolean(fixedLoudness),
+              normalizationBypassed
+            }, 'renderer', { captureSample: false })
+            logSlowPath('queueLoadAndPlayTrack', loadStart, {
+              trackPath: track.path,
+              usedLocalProgressiveStream: true,
+              progressiveRequirementReason: requirementReason
+            })
+            finishAttempt('loaded')
+            return 'loaded'
+          } catch (streamError) {
+            if (isSupersededPlaybackLoad(streamError, loadRequestId)) {
+              throw streamError
+            }
+            console.warn(`Required local progressive stream setup failed for ${track.path}.`, streamError)
+            logMemoryDiagnosticsEvent('local_progressive_stream_failed', {
+              trackPath: track.path,
+              requirementReason,
+              normalizationBypassed,
+              message: streamError instanceof Error ? streamError.message : 'Local progressive stream setup failed.'
+            })
+            set({
+              loadingStatus: null,
+              remoteLoadProgress: null,
+              remoteBufferedSeconds: 0,
+              remoteStreamSessionId: null,
+              waveformData: null,
+              waveformBufferedRatio: 1,
+              waveformAnalyzedRatio: 1
+            })
+            throw streamError
+          }
+        }
+
+        const useLocalProgressive = await shouldUseLocalProgressivePath(track)
+        throwIfSupersededLoad(loadRequestId)
+        if (useLocalProgressive) {
+          return await loadMandatoryLocalProgressive('preflight')
         }
 
         attemptBackend = 'standard'
@@ -4961,6 +4984,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         let fileLoadMs: number | null = null
         let usedFfmpegPcm = false
         let usedFfmpegFallback = false
+        let nativePcmRequiresProgressive = false
         const decodeStart = performance.now()
         try {
           const canUseFfmpegPcm = !isIamfTrack(track)
@@ -4980,13 +5004,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             if (pcmOutcome === 'cancelled') {
               throw new SupersededPlaybackLoadError()
             }
+            nativePcmRequiresProgressive = pcmOutcome === 'progressive_required'
             usedFfmpegPcm = pcmOutcome === 'loaded'
             if (usedFfmpegPcm) {
               attemptStandardPcmTimings = audioEngine.getLastLoadTimings()
             }
           }
 
-          if (!usedFfmpegPcm) {
+          if (!usedFfmpegPcm && !nativePcmRequiresProgressive) {
             const fileLoadStart = performance.now()
             result = await window.electronAPI.loadAudioFile(track.path, { metadataMode: 'none' })
               .finally(() => {
@@ -5042,6 +5067,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         } finally {
           attemptStandardLoadPipelineMs = performance.now() - decodeStart
           attemptDecodeMs = attemptStandardLoadPipelineMs
+        }
+        if (nativePcmRequiresProgressive) {
+          logMemoryDiagnosticsEvent('native_pcm_limit_progressive_escalation', {
+            trackPath: track.path,
+            sourceType: track.sourceType ?? 'local'
+          })
+          return await loadMandatoryLocalProgressive('native_pcm_limit', loudnessAnalysis)
         }
         const decodeMs = Math.round(attemptStandardLoadPipelineMs)
         const detectedChannels = audioEngine.getCurrentTrackChannelCount()
@@ -5347,6 +5379,17 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
                 return
               }
               if (pcmOutcome === 'cancelled') return
+              if (pcmOutcome === 'progressive_required') {
+                logMemoryDiagnosticsEvent('prebuffer_skipped_native_pcm_limit', {
+                  prebufferRequestId,
+                  trackPath: nextTrack.path
+                })
+                logSlowPath('preBufferNextTrack', bufferStart, {
+                  trackPath: nextTrack.path,
+                  skippedNativePcmLimit: true
+                })
+                return
+              }
               usedFfmpegPcm = pcmOutcome === 'loaded'
             }
 

@@ -12,6 +12,7 @@ import {
   type LocalPcmStreamDecodeRequest,
   type LocalPcmStreamDecodeResult,
 } from './localPcmStreamClient.ts'
+import { LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE } from '../../shared/localPcmStream.ts'
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -47,6 +48,7 @@ type AudioEngineInternals = {
   nativeNextTrackBuffered: boolean
   nativeSnapshot: NativeAudioPlaybackSnapshot | null
   context: AudioContext | null
+  workletLoaded: boolean
   loadGeneration: number
   prebufferGeneration: number
   parallaxHostPublishGeneration: number
@@ -57,6 +59,14 @@ type AudioEngineInternals = {
   handleNativeAudioEvent: (event: NativeAudioEvent) => void
   initNativeAudio: () => Promise<void>
   initContext: () => Promise<void>
+  stopSource: () => void
+  clearNextBuffer: () => void
+  clearRemoteStreamState: (cancelSession: boolean) => Promise<void>
+  clearParallaxSinkState: () => void
+  notifyTrackChange: () => void
+  createRemoteStreamNode: (channels: number, discardConsumedChunks?: boolean) => AudioWorkletNode
+  applyChannelRoutingPreferences: (channels?: number) => void
+  applyAnalysisRoutingPreferences: (channels?: number) => void
   refreshNativeCapabilities: () => Promise<void>
   refreshNativeSnapshot: () => Promise<NativeAudioPlaybackSnapshot | null>
   syncNativeScopePolling: () => void
@@ -535,6 +545,89 @@ test('superseding a native load during deferred clear-next prevents the subseque
   }
 })
 
+test('local progressive playback uses stable unity gain and can seek without fixed loudness', async () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const starts: Array<{ path: string; startTimeSeconds: number | null | undefined }> = []
+  const producerPositions: Array<{ sessionId: number; currentFrame: number }> = []
+  const discardPolicies: boolean[] = []
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      electronAPI: {
+        startProgressiveStream: async (
+          path: string,
+          _sampleRate: number,
+          _channels: number | null,
+          options?: { startTimeSeconds?: number | null }
+        ) => {
+          starts.push({ path, startTimeSeconds: options?.startTimeSeconds })
+          return {
+            sessionId: starts.length,
+            path,
+            sourceType: 'local' as const,
+            sampleRate: 48_000,
+            channels: 2,
+            durationSeconds: 12 * 60 * 60,
+            startTimeSeconds: options?.startTimeSeconds ?? 0
+          }
+        },
+        updateProgressiveStreamPosition: (sessionId: number, currentFrame: number) => {
+          producerPositions.push({ sessionId, currentFrame })
+        },
+        cancelProgressiveStream: async () => undefined,
+      },
+    },
+  })
+  internals.context = { sampleRate: 48_000 } as AudioContext
+  internals.workletLoaded = true
+  internals.initContext = async () => undefined
+  internals.stopSource = () => undefined
+  internals.clearNextBuffer = () => undefined
+  internals.clearRemoteStreamState = async () => undefined
+  internals.clearParallaxSinkState = () => undefined
+  internals.notifyTrackChange = () => undefined
+  internals.createRemoteStreamNode = (_channels, discardConsumedChunks = false) => {
+    discardPolicies.push(discardConsumedChunks)
+    return {
+      port: { postMessage: () => undefined },
+      disconnect: () => undefined
+    } as unknown as AudioWorkletNode
+  }
+  internals.applyChannelRoutingPreferences = () => undefined
+  internals.applyAnalysisRoutingPreferences = () => undefined
+  internals._normalizationEnabled = true
+  internals._replayGainEnabled = false
+  const track = {
+    ...makeLocalPcmTrack('progressive-unity'),
+    duration: 12 * 60 * 60
+  }
+
+  try {
+    await engine.loadProgressiveStream(track, { loudnessAnalysis: null })
+    assert.equal(engine.getNormalizationMode(), 'normalization')
+    assert.equal(engine.getNormalizationGainDb(), 0)
+    assert.equal(engine.isNormalizationApproximate(), false)
+
+    await engine.seek(120)
+    assert.deepEqual(starts, [
+      { path: track.path, startTimeSeconds: 0 },
+      { path: track.path, startTimeSeconds: 120 }
+    ])
+    assert.deepEqual(discardPolicies, [true, true])
+    assert.deepEqual(producerPositions, [
+      { sessionId: 1, currentFrame: 0 },
+      { sessionId: 2, currentFrame: 0 }
+    ])
+    assert.equal(engine.getNormalizationMode(), 'normalization')
+    assert.equal(engine.getNormalizationGainDb(), 0)
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
+})
+
 test('pending or failed Standard PCM decode leaves live playback, Parallax, and matching prebuffer untouched', async () => {
   const engine = new AudioEngine()
   const internals = engine as unknown as AudioEngineInternals
@@ -664,6 +757,42 @@ test('Standard PCM falls back to legacy invoke exactly once when the stream hand
   }
 })
 
+test('a legacy complete-PCM size-limit refusal remains progressive-required', async () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  let legacyCalls = 0
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      electronAPI: {
+        decodeLocalAudioToPcm: async () => {
+          legacyCalls += 1
+          return {
+            refused: true as const,
+            code: LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE,
+            message: 'Decoded audio exceeds the 192 MiB Standard playback limit.'
+          }
+        },
+        cancelLocalAudioDecode: async () => undefined,
+      },
+    },
+  })
+  internals.context = { sampleRate: 48_000 } as AudioContext
+  internals.initContext = async () => undefined
+
+  try {
+    assert.equal(
+      await engine.loadStandardTrackFromPath(makeLocalPcmTrack('legacy-size-limit')),
+      'progressive_required'
+    )
+    assert.equal(legacyCalls, 1)
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
+})
+
 test('Standard PCM stream success preserves request correlation and skips legacy invoke', async () => {
   const engine = new AudioEngine()
   const internals = engine as unknown as AudioEngineInternals
@@ -760,6 +889,45 @@ test('a genuine streamed PCM decode error does not retry native decode through i
     assert.equal(await engine.loadStandardTrackFromPath(makeLocalPcmTrack('stream-decode-error')), 'failed')
     assert.equal(legacyCalls, 0)
     assert.equal(commitCalls, 0)
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
+})
+
+test('a streamed complete-PCM size-limit refusal remains progressive-required', async () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  let legacyCalls = 0
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      electronAPI: {
+        openLocalAudioPcmStream: () => true,
+        decodeLocalAudioToPcm: async () => {
+          legacyCalls += 1
+          return null
+        },
+        cancelLocalAudioDecode: async () => undefined,
+      },
+    },
+  })
+  internals.context = { sampleRate: 48_000 } as AudioContext
+  internals.initContext = async () => undefined
+  internals.localPcmStreamClient = makePcmStreamClient(async () => {
+    throw new LocalPcmStreamDecodeError(
+      LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE,
+      'Decoded audio exceeds the 192 MiB Standard playback limit.'
+    )
+  })
+
+  try {
+    assert.equal(
+      await engine.loadStandardTrackFromPath(makeLocalPcmTrack('stream-size-limit')),
+      'progressive_required'
+    )
+    assert.equal(legacyCalls, 0)
   } finally {
     if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
     else delete (globalThis as Record<string, unknown>).window

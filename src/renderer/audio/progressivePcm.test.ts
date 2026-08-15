@@ -29,9 +29,15 @@ type WorkletPort = {
 type WorkletProcessorInstance = {
   port: WorkletPort
   process: (inputs: Float32Array[][], outputs: Float32Array[][]) => boolean
+  chunks?: unknown[]
+  currentFrame?: number
+  totalFrames?: number
 }
 
-type WorkletProcessorConstructor = new (options: { outputChannelCount: number[] }) => WorkletProcessorInstance
+type WorkletProcessorConstructor = new (options: {
+  outputChannelCount: number[]
+  processorOptions?: { discardConsumedChunks?: boolean }
+}) => WorkletProcessorInstance
 
 function loadRemoteStreamProcessor(): WorkletProcessorConstructor {
   const processors = new Map<string, WorkletProcessorConstructor>()
@@ -97,4 +103,55 @@ test('remote stream worklet renders planar and legacy interleaved chunks identic
     [10, 20, 30, 40],
     [1, 2, 3, 4],
   ])
+})
+
+test('local progressive worklet releases PCM chunks after rendering them', () => {
+  const RemoteStreamProcessor = loadRemoteStreamProcessor()
+  const processor = new RemoteStreamProcessor({
+    outputChannelCount: [2],
+    processorOptions: { discardConsumedChunks: true },
+  })
+  assert.ok(processor.port.onmessage)
+
+  processor.port.onmessage({
+    data: {
+      type: 'append-chunk',
+      frameCount: 4,
+      channelData: [
+        Float32Array.from([1, 2, 3, 4]),
+        Float32Array.from([10, 20, 30, 40]),
+      ],
+    },
+  })
+  processor.port.onmessage({ data: { type: 'set-playing', playing: true } })
+
+  const firstOutput = [new Float32Array(4), new Float32Array(4)]
+  assert.equal(processor.process([], [firstOutput]), true)
+  assert.deepEqual(firstOutput.map((channel) => Array.from(channel)), [
+    [1, 2, 3, 4],
+    [10, 20, 30, 40],
+  ])
+  assert.equal(processor.currentFrame, 4)
+  assert.equal(processor.totalFrames, 4)
+  assert.equal(processor.chunks?.length, 0)
+
+  processor.port.onmessage({
+    data: {
+      type: 'append-chunk',
+      frameCount: 4,
+      channelData: [
+        Float32Array.from([5, 6, 7, 8]),
+        Float32Array.from([50, 60, 70, 80]),
+      ],
+    },
+  })
+  const secondOutput = [new Float32Array(4), new Float32Array(4)]
+  assert.equal(processor.process([], [secondOutput]), true)
+  assert.deepEqual(secondOutput.map((channel) => Array.from(channel)), [
+    [5, 6, 7, 8],
+    [50, 60, 70, 80],
+  ])
+  assert.equal(processor.currentFrame, 8)
+  assert.equal(processor.totalFrames, 8)
+  assert.equal(processor.chunks?.length, 0)
 })

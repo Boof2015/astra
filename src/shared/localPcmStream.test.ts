@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE,
   LOCAL_PCM_STREAM_CHUNK_BYTES,
   LOCAL_PCM_STREAM_INITIAL_CREDITS,
   LOCAL_PCM_STREAM_MARKER,
   LOCAL_PCM_STREAM_MAX_BYTES,
   LOCAL_PCM_STREAM_VERSION,
+  isLocalPcmDecodeLimitRefusal,
   isLocalPcmStreamMainMessage,
   isLocalPcmStreamPortEnvelope,
   isLocalPcmStreamRendererMessage,
@@ -18,6 +20,19 @@ const base = {
   requestId: 17,
   nonce: 'stream_nonce_17',
 } as const
+
+test('validates the structured complete-PCM size-limit refusal', () => {
+  assert.equal(isLocalPcmDecodeLimitRefusal({
+    refused: true,
+    code: LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE,
+    message: 'Decoded audio exceeds the 192 MiB Standard playback limit.'
+  }), true)
+  assert.equal(isLocalPcmDecodeLimitRefusal({
+    refused: true,
+    code: 'PCM_DECODE_FAILED',
+    message: 'generic failure'
+  }), false)
+})
 
 function makeMainTimings(
   overrides: Partial<LocalPcmStreamMainTransportTimings> = {},

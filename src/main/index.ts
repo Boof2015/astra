@@ -168,6 +168,7 @@ import {
   normalizeArtistNames
 } from '../shared/library/artistCredits'
 import {
+  LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE,
   LOCAL_PCM_STREAM_CHUNK_BYTES,
   LOCAL_PCM_STREAM_MAX_CREDITS,
   LOCAL_PCM_STREAM_MAX_BYTES,
@@ -318,6 +319,7 @@ import {
   type TrayRendererCommand,
   type TrayRendererState,
 } from '../types/desktopIntegration'
+import { resolveLocalProgressiveBackpressureAction } from './progressiveStreamBackpressure'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -7460,7 +7462,7 @@ ipcMain.handle('audio:decodeWithFfmpeg', async (_event, filePath: string) => {
 
 // Decode a local Standard-mode source directly to the float32 PCM consumed by
 // WebAudio. Keeping this separate from the compatibility WAV decoder above
-// lets callers opt in while retaining decodeAudioData as a safe fallback.
+// lets callers opt in while retaining decodeAudioData only when full-buffer decoding is safe.
 ipcMain.handle('audio:decodeLocalAudioToPcm', async (
   event,
   requestId: number,
@@ -7470,15 +7472,26 @@ ipcMain.handle('audio:decodeLocalAudioToPcm', async (
   priority?: 'interactive' | 'background'
 ) => {
   const handlerStartedAtMs = mainDiagnosticNow()
-  return decodeLocalAudioToPcm(
-    event.sender,
-    requestId,
-    filePath,
-    outputSampleRate,
-    expectedChannels,
-    priority,
-    handlerStartedAtMs
-  )
+  try {
+    return await decodeLocalAudioToPcm(
+      event.sender,
+      requestId,
+      filePath,
+      outputSampleRate,
+      expectedChannels,
+      priority,
+      handlerStartedAtMs
+    )
+  } catch (error) {
+    if (error instanceof LocalPcmDecodeLimitError) {
+      return {
+        refused: true,
+        code: LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE,
+        message: error.message
+      }
+    }
+    throw error
+  }
 })
 
 // Large Standard PCM results can be delivered as a bounded response stream.
@@ -7613,6 +7626,18 @@ ipcMain.handle('audio:startProgressiveStream', async (
   options?: ProgressiveStreamStartOptions
 ) => {
   return startProgressiveStreamSession(event.sender, filePath, outputSampleRate, expectedChannels, options)
+})
+
+ipcMain.on('audio:updateProgressiveStreamPosition', (event, sessionId: number, currentFrame: number) => {
+  const session = remoteStreamSessions.get(sessionId)
+  if (!session || session.sender !== event.sender || session.sourceType !== 'local') return
+
+  const normalizedFrame = Number.isFinite(currentFrame)
+    ? Math.max(0, Math.min(session.decodedFrames, Math.floor(currentFrame)))
+    : 0
+  session.rendererReady = true
+  session.consumedFrames = Math.max(session.consumedFrames, normalizedFrame)
+  updateLocalProgressiveStreamBackpressure(session)
 })
 
 ipcMain.handle('audio:cancelProgressiveStream', async (_event, sessionId: number) => {
@@ -9942,6 +9967,15 @@ const LOCAL_PCM_DECODE_MAX_BYTES = LOCAL_PCM_STREAM_MAX_BYTES
 const LOCAL_PCM_DECODE_TIMEOUT_MS = 180_000
 const LOCAL_PCM_STREAM_PROTOCOL_VERSION = LOCAL_PCM_STREAM_VERSION
 
+class LocalPcmDecodeLimitError extends Error {
+  readonly code = LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE
+
+  constructor(message = 'Decoded audio exceeds the 192 MiB Standard playback limit.') {
+    super(message)
+    this.name = 'LocalPcmDecodeLimitError'
+  }
+}
+
 interface LocalPcmDecodeResult {
   requestId: number
   sampleRate: number
@@ -10035,6 +10069,9 @@ interface RemoteStreamSession {
   totalBytes: number | null
   chunkCount: number
   decodedFrames: number
+  consumedFrames: number
+  rendererReady: boolean
+  stdoutPausedForBackpressure: boolean
   lastProgressEmitAt: number
   done: boolean
   failed: boolean
@@ -10143,6 +10180,29 @@ function settleRemoteStreamStartup(session: RemoteStreamSession, outcome: { ok: 
   session.startupReject = null
 }
 
+function updateLocalProgressiveStreamBackpressure(session: RemoteStreamSession): void {
+  if (session.sourceType !== 'local' || session.done || session.cancelled) return
+
+  const action = resolveLocalProgressiveBackpressureAction({
+    sampleRate: session.sampleRate,
+    decodedFrames: session.decodedFrames,
+    consumedFrames: session.consumedFrames,
+    rendererReady: session.rendererReady,
+    stdoutPaused: session.stdoutPausedForBackpressure,
+    startupFrames: LOCAL_STREAM_STARTUP_CHUNK_FRAMES
+  })
+  if (action === 'pause') {
+    session.ffmpeg.stdout.pause()
+    session.stdoutPausedForBackpressure = true
+    return
+  }
+
+  if (action === 'resume') {
+    session.stdoutPausedForBackpressure = false
+    session.ffmpeg.stdout.resume()
+  }
+}
+
 function emitRemoteStreamChunk(session: RemoteStreamSession, data: Buffer): void {
   if (session.sender.isDestroyed()) return
 
@@ -10186,6 +10246,7 @@ function emitRemoteStreamChunk(session: RemoteStreamSession, data: Buffer): void
   }
 
   safeSendRemoteLoadProgress(session, 'streaming')
+  updateLocalProgressiveStreamBackpressure(session)
 }
 
 function finalizeRemoteStreamSession(
@@ -10577,6 +10638,9 @@ async function startProgressiveStreamSession(
       totalBytes,
       chunkCount: 0,
       decodedFrames: 0,
+      consumedFrames: 0,
+      rendererReady: false,
+      stdoutPausedForBackpressure: false,
       lastProgressEmitAt: 0,
       done: false,
       failed: false,
@@ -11454,7 +11518,7 @@ function allocateInitialLocalPcmOutput(
       !Number.isSafeInteger(estimatedPcmBytes)
       || estimatedPcmBytes > LOCAL_PCM_DECODE_MAX_BYTES
     ) {
-      throw new Error('Decoded audio exceeds the 192 MiB Standard playback limit.')
+      throw new LocalPcmDecodeLimitError()
     }
     const allocationBytes = (estimatedFrames + resamplerSlackFrames) * frameSizeBytes
     if (Number.isSafeInteger(allocationBytes) && allocationBytes > 0) {
@@ -11467,7 +11531,7 @@ function allocateInitialLocalPcmOutput(
 
 function ensureLocalPcmOutputCapacity(session: LocalPcmDecodeSession, requiredBytes: number): Buffer {
   if (requiredBytes > LOCAL_PCM_DECODE_MAX_BYTES) {
-    throw new Error('Decoded audio exceeds the 192 MiB Standard playback limit.')
+    throw new LocalPcmDecodeLimitError()
   }
   const current = session.outputBuffer
   if (current && requiredBytes <= current.byteLength) return current
@@ -11781,6 +11845,9 @@ function settleLocalPcmDecodeSession(
     }
     session.resolve(null)
   } else if (outcome.type === 'failed') {
+    const decodeErrorCode = outcome.error instanceof LocalPcmDecodeLimitError
+      ? LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE
+      : 'PCM_DECODE_FAILED'
     if (stream) {
       postLocalPcmStreamMessage(session, {
         type: 'error',
@@ -11790,7 +11857,7 @@ function settleLocalPcmDecodeSession(
         kind: outcome.failureKind ?? 'decode',
         code: outcome.failureKind === 'transport'
           ? 'PCM_STREAM_TRANSPORT_ERROR'
-          : 'PCM_DECODE_FAILED',
+          : decodeErrorCode,
         message: outcome.error.message
       })
     }

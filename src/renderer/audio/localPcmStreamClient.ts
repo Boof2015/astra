@@ -1,4 +1,5 @@
 import {
+  LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE,
   LOCAL_PCM_STREAM_INITIAL_CREDITS,
   LOCAL_PCM_STREAM_MAX_BYTES,
   LOCAL_PCM_STREAM_VERSION,
@@ -96,6 +97,11 @@ export function isLocalPcmStreamTransportError(error: unknown): error is LocalPc
 
 export function isLocalPcmStreamDecodeError(error: unknown): error is LocalPcmStreamDecodeError {
   return error instanceof LocalPcmStreamDecodeError
+}
+
+export function isLocalPcmDecodeLimitExceededError(error: unknown): error is LocalPcmStreamDecodeError {
+  return error instanceof LocalPcmStreamDecodeError
+    && error.code === LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE
 }
 
 export function isLocalPcmStreamCancelledError(error: unknown): error is LocalPcmStreamCancelledError {

@@ -55,9 +55,14 @@ import {
 } from './pcmTransportTimings'
 import {
   cancelLocalPcmStreamRequest,
+  isLocalPcmDecodeLimitExceededError,
+  LocalPcmStreamDecodeError,
   preferLocalPcmStreamWithLegacyFallback,
   type LocalPcmStreamClient,
 } from './localPcmStreamClient'
+import {
+  isLocalPcmDecodeLimitRefusal,
+} from '../../shared/localPcmStream'
 import { detectIamfContainer, type IamfContainerKind } from '../../shared/iamf/detect'
 import {
   IamfDecodeCancelledError,
@@ -311,7 +316,7 @@ export interface AudioLoadTimings {
   nativeDeviceStartMs?: number
 }
 
-export type StandardPcmLoadOutcome = 'loaded' | 'failed' | 'cancelled'
+export type StandardPcmLoadOutcome = 'loaded' | 'failed' | 'cancelled' | 'progressive_required'
 
 interface AudioLoadDataOptions {
   replayGainDb?: number | null
@@ -370,6 +375,7 @@ interface RemoteStreamRuntimeState {
   bufferedFrames: number
   analyzedFrames: number
   currentFrame: number
+  lastReportedConsumedFrame: number
   playRequested: boolean
   started: boolean
   paused: boolean
@@ -2733,7 +2739,7 @@ export class AudioEngine {
     }
   }
 
-  private createRemoteStreamNode(channelCount: number): AudioWorkletNode {
+  private createRemoteStreamNode(channelCount: number, discardConsumedChunks: boolean = false): AudioWorkletNode {
     if (!this.context) {
       throw new Error('AudioContext not initialized')
     }
@@ -2741,7 +2747,10 @@ export class AudioEngine {
     const node = new AudioWorkletNode(this.context, 'remote-stream-player', {
       numberOfInputs: 0,
       numberOfOutputs: 1,
-      outputChannelCount: [Math.max(1, channelCount)]
+      outputChannelCount: [Math.max(1, channelCount)],
+      processorOptions: {
+        discardConsumedChunks
+      }
     })
 
     node.port.onmessage = (event: MessageEvent) => {
@@ -2756,6 +2765,7 @@ export class AudioEngine {
         this.remoteStreamState.currentFrame = Number.isFinite(payload.frame)
           ? Math.max(0, Math.floor(payload.frame))
           : this.remoteStreamState.currentFrame
+        this.reportLocalProgressiveStreamPosition(this.remoteStreamState)
         this.emit('timeUpdate', this.currentTime)
       }
 
@@ -2763,6 +2773,7 @@ export class AudioEngine {
         this.remoteStreamState.currentFrame = Number.isFinite(payload.frame)
           ? Math.max(0, Math.floor(payload.frame))
           : this.remoteStreamState.currentFrame
+        this.reportLocalProgressiveStreamPosition(this.remoteStreamState, true)
         this.remoteStreamState.started = false
         this.remoteStreamState.paused = false
         this.remoteStreamState.playRequested = false
@@ -2779,6 +2790,25 @@ export class AudioEngine {
     this.connectSourceWithRouting(node, channelCount)
     this.connectSourceToAnalysisTap(node, channelCount)
     return node
+  }
+
+  private reportLocalProgressiveStreamPosition(
+    remoteState: RemoteStreamRuntimeState,
+    force: boolean = false
+  ): void {
+    if (remoteState.sourceType !== 'local') return
+
+    const reportIntervalFrames = Math.max(1, Math.floor(remoteState.sampleRate * 0.5))
+    if (
+      !force
+      && remoteState.currentFrame - remoteState.lastReportedConsumedFrame < reportIntervalFrames
+    ) return
+
+    remoteState.lastReportedConsumedFrame = remoteState.currentFrame
+    window.electronAPI.updateProgressiveStreamPosition?.(
+      remoteState.sessionId,
+      remoteState.currentFrame
+    )
   }
 
   private createParallaxSinkNode(channelCount: number, sourceSampleRate?: number): AudioWorkletNode {
@@ -2877,9 +2907,9 @@ export class AudioEngine {
     }
 
     if (remoteState.sourceType === 'local') {
-      if (this.shouldAnalyzeLoudnessForLoad(this.currentReplayGainDb) && !this.currentNormalizationAnalysis) {
-        return
-      }
+      // Mandatory local progressive playback may intentionally have no fixed
+      // loudness result. Keep its gain stable at unity instead of rejecting or
+      // introducing live, mid-track normalization changes.
       this.normalizationApproximate = false
       this.applyNormalization()
       return
@@ -3154,11 +3184,6 @@ export class AudioEngine {
     this.notifyTrackChange()
 
     const sourceType = track.sourceType ?? 'local'
-    const requiresFixedLocalLoudness = sourceType === 'local'
-      && this.shouldAnalyzeLoudnessForLoad(this.currentReplayGainDb)
-    if (requiresFixedLocalLoudness && !options.loudnessAnalysis) {
-      throw new Error('Normalized local progressive playback requires precomputed loudness.')
-    }
 
     let info: RemoteStreamInfo
     try {
@@ -3184,7 +3209,7 @@ export class AudioEngine {
       throw new SupersededAudioLoadError()
     }
 
-    this.remoteStreamNode = this.createRemoteStreamNode(info.channels)
+    this.remoteStreamNode = this.createRemoteStreamNode(info.channels, info.sourceType === 'local')
     const resolvedStartTimeSeconds = Number.isFinite(info.startTimeSeconds)
       ? Math.max(0, Number(info.startTimeSeconds))
       : Math.max(0, Number(options.startTimeSeconds ?? 0))
@@ -3213,6 +3238,7 @@ export class AudioEngine {
       bufferedFrames: 0,
       analyzedFrames: 0,
       currentFrame: 0,
+      lastReportedConsumedFrame: 0,
       playRequested: false,
       started: false,
       paused: false,
@@ -3264,6 +3290,7 @@ export class AudioEngine {
     if (info.initialChunk) {
       this.handleRemoteStreamChunk(info.initialChunk)
     }
+    this.reportLocalProgressiveStreamPosition(this.remoteStreamState, true)
 
     this.assertCurrentLoadOperation(loadOperation)
     return info
@@ -7417,7 +7444,13 @@ export class AudioEngine {
             priority,
           },
           legacyDecode
-            ? () => legacyDecode(requestId, track.path, sampleRate, track.channels, priority)
+            ? async () => {
+                const response = await legacyDecode(requestId, track.path, sampleRate, track.channels, priority)
+                if (isLocalPcmDecodeLimitRefusal(response)) {
+                  throw new LocalPcmStreamDecodeError(response.code, response.message)
+                }
+                return response
+              }
             : null,
           this.localPcmStreamClient ? { client: this.localPcmStreamClient } : undefined,
         )
@@ -7428,11 +7461,12 @@ export class AudioEngine {
           deliveredAt,
           pipelineStartedAt,
         }
-      } catch {
+      } catch (error) {
         if (
           this.activeCurrentPcmDecodeRequestId !== requestId
           || decodeOperation !== this.currentPcmDecodeGeneration
         ) return 'cancelled'
+        if (isLocalPcmDecodeLimitExceededError(error)) return 'progressive_required'
         return 'failed'
       } finally {
         if (this.activeCurrentPcmDecodeRequestId === requestId) {
@@ -7454,6 +7488,7 @@ export class AudioEngine {
       if (isSupersededAudioLoadError(error) || decodeOperation !== this.currentPcmDecodeGeneration) {
         return 'cancelled'
       }
+      if (isLocalPcmDecodeLimitExceededError(error)) return 'progressive_required'
       return 'failed'
     }
 
@@ -7639,7 +7674,13 @@ export class AudioEngine {
             priority,
           },
           legacyDecode
-            ? () => legacyDecode(requestId, track.path, sampleRate, track.channels, priority)
+            ? async () => {
+                const response = await legacyDecode(requestId, track.path, sampleRate, track.channels, priority)
+                if (isLocalPcmDecodeLimitRefusal(response)) {
+                  throw new LocalPcmStreamDecodeError(response.code, response.message)
+                }
+                return response
+              }
             : null,
           this.localPcmStreamClient ? { client: this.localPcmStreamClient } : undefined,
         )
@@ -7650,11 +7691,12 @@ export class AudioEngine {
           deliveredAt,
           pipelineStartedAt,
         }
-      } catch {
+      } catch (error) {
         if (
           this.activePrebufferPcmDecodeRequestId !== requestId
           || prebufferOperation !== this.prebufferGeneration
         ) return 'cancelled'
+        if (isLocalPcmDecodeLimitExceededError(error)) return 'progressive_required'
         return 'failed'
       } finally {
         if (this.activePrebufferPcmDecodeRequestId === requestId) {
@@ -7680,6 +7722,7 @@ export class AudioEngine {
       if (isSupersededAudioLoadError(error) || prebufferOperation !== this.prebufferGeneration) {
         return 'cancelled'
       }
+      if (isLocalPcmDecodeLimitExceededError(error)) return 'progressive_required'
       return 'failed'
     }
   }
@@ -7989,6 +8032,7 @@ export class AudioEngine {
         return
       }
       remoteState.playRequested = true
+      this.reportLocalProgressiveStreamPosition(remoteState, true)
 
       if (remoteState.started && remoteState.paused) {
         remoteState.paused = false
@@ -8126,6 +8170,7 @@ export class AudioEngine {
     if (this.remoteStreamState) {
       this.remoteStreamState.playRequested = false
       this.remoteStreamState.paused = this.remoteStreamState.started
+      this.reportLocalProgressiveStreamPosition(this.remoteStreamState, true)
       if (!this.remoteStreamState.started) {
         this.resetRemotePlayPromise(new Error('Remote playback was paused before start.'))
       }
@@ -8249,11 +8294,8 @@ export class AudioEngine {
       const remoteState = this.remoteStreamState
       const durationSeconds = Math.max(0, remoteState.durationSeconds)
       const clampedAbsoluteTime = Math.max(0, Math.min(time, durationSeconds > 0 ? durationSeconds : time))
-      const bufferedStartTime = remoteState.sampleRate > 0 ? remoteState.startFrame / remoteState.sampleRate : 0
-      const bufferedEndTime = this.getRemoteBufferedSeconds()
-      const canSeekBuffered = clampedAbsoluteTime >= bufferedStartTime && clampedAbsoluteTime <= bufferedEndTime
 
-      if (remoteState.sourceType === 'local' && !canSeekBuffered) {
+      if (remoteState.sourceType === 'local') {
         const wasPlaying = this._playbackState === 'playing'
         const track = remoteState.track
         const replayGainDb = this.currentReplayGainDb
@@ -8280,15 +8322,14 @@ export class AudioEngine {
         return
       }
 
-      const seekTime = remoteState.sourceType === 'local'
-        ? clampedAbsoluteTime - bufferedStartTime
-        : Math.max(0, Math.min(time, bufferedEndTime))
+      const bufferedEndTime = this.getRemoteBufferedSeconds()
+      const seekTime = Math.max(0, Math.min(time, bufferedEndTime))
       remoteState.currentFrame = Math.max(0, Math.floor(seekTime * remoteState.sampleRate))
       this.remoteStreamNode?.port.postMessage({
         type: 'seek',
         frame: remoteState.currentFrame
       })
-      this.emit('timeUpdate', remoteState.sourceType === 'local' ? clampedAbsoluteTime : seekTime)
+      this.emit('timeUpdate', seekTime)
       return
     }
 
