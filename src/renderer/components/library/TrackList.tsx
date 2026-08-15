@@ -4,7 +4,7 @@ import { usePlayerStore, type PlaybackSourceContext, type QueueItem } from '../.
 import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
 import { getNormalPlaylists, usePlaylistStore } from '../../stores/playlistStore'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
-import { useUIStore, type LibraryTrackRevealRequest, type PlaylistTrackRevealRequest } from '../../stores/uiStore'
+import { useUIStore, type LibraryTrackRevealRequest, type PlaylistTrackRevealRequest, type TrackDragItem } from '../../stores/uiStore'
 import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
 import { useRatingsStore, type TrackRatingState } from '../../stores/ratingsStore'
 import TrackRatingControl, { TrackRatingControlValue } from '../ratings/TrackRatingControl'
@@ -16,6 +16,11 @@ import { Track } from '../../types/audio'
 import type { TrackSourceType } from '../../../types/subsonic'
 import { buildTrackListRows, type TrackListVirtualRow } from './trackListRows'
 import { shouldSuppressTrackRowDrag } from './trackDragTarget'
+import {
+  addTrackDragRangeToSelection,
+  hasTrackDragActivated,
+  resolveTrackDragSelectionIndexes
+} from '../drag/trackDragModel'
 import AlbumArtwork from './AlbumArtwork'
 import { ArtistNameLinksContent } from './ArtistNameLinks'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
@@ -188,7 +193,10 @@ interface TrackListRowSharedProps {
   isRemovingFromPlaylist: boolean
   showQueueInsertAffordance: boolean
   queueInsertArmedTrackPath: string | null
-  selectedTrackPaths: Set<string>
+  selectedTrackKeys: Set<string>
+  playlistDropIndex: number | null
+  playlistTrackCount: number
+  playlistSourceId: number | null
   rootColumnStyles: Partial<Record<RootTrackColumnId, CSSProperties>> | null
   rootTableActive: boolean
 }
@@ -202,7 +210,6 @@ interface TrackListRatingProps {
 const TRACK_ROW_HEIGHT_FALLBACK_PX = 48
 const TRACK_DISC_HEADER_HEIGHT_FALLBACK_PX = 30
 const TRACK_LIST_OVERSCAN_COUNT = 4
-const TRACK_SELECTION_DRAG_THRESHOLD_PX = 6
 // Deliberately its own attribute rather than reusing data-controller-scroll,
 // so moving controller-navigation markers around can never silently break
 // virtualization. Module scope keeps the identity stable for dependency arrays.
@@ -266,9 +273,11 @@ interface TrackSelectionPointerState {
   pointerId: number
   startX: number
   startY: number
-  mode: 'modifier-selection' | 'selected-drag'
-  baseSelectedPaths: Set<string>
-  activeSelectedPaths: Set<string> | null
+  mode: 'modifier-selection' | 'direct-drag'
+  baseSelectedKeys: Set<string>
+  activeSelectedKeys: Set<string> | null
+  activeHoverIndex: number | null
+  dragStarted: boolean
 }
 
 interface ManualUpcomingQueueCache {
@@ -432,31 +441,6 @@ function areTrackPathSetsEqual(left: Set<string>, right: Set<string>): boolean {
   return true
 }
 
-function addTrackRangeToSelection(
-  baseSelectedPaths: Set<string>,
-  tracks: Track[],
-  anchorIndex: number,
-  hoverIndex: number
-): Set<string> {
-  const nextSelectedPaths = new Set(baseSelectedPaths)
-  const startIndex = Math.max(0, Math.min(anchorIndex, hoverIndex))
-  const endIndex = Math.min(tracks.length - 1, Math.max(anchorIndex, hoverIndex))
-
-  for (let index = startIndex; index <= endIndex; index += 1) {
-    const track = tracks[index]
-    if (track) {
-      nextSelectedPaths.add(track.path)
-    }
-  }
-
-  return nextSelectedPaths
-}
-
-function resolveSelectedTracksInOrder(selectedTrackPaths: Set<string>, tracks: Track[]): Track[] {
-  if (selectedTrackPaths.size === 0) return []
-  return tracks.filter((track) => selectedTrackPaths.has(track.path))
-}
-
 const TrackListRating = memo(function TrackListRating({
   trackPath,
   rating,
@@ -530,7 +514,10 @@ function TrackListRowRenderer({
   isRemovingFromPlaylist,
   showQueueInsertAffordance,
   queueInsertArmedTrackPath,
-  selectedTrackPaths,
+  selectedTrackKeys,
+  playlistDropIndex,
+  playlistTrackCount,
+  playlistSourceId,
   rootColumnStyles,
   rootTableActive
 }: RowComponentProps<TrackListRowSharedProps>): ReactElement | null {
@@ -599,7 +586,9 @@ function TrackListRowRenderer({
     ? `${Math.round(Math.max(0, Math.min(1, loadingTrackPercent)) * 100)}%`
     : null
   const isQueueInsertArmed = queueInsertArmedTrackPath === track.path
-  const isQueueInsertSelected = selectedTrackPaths.has(track.path)
+  const isQueueInsertSelected = selectedTrackKeys.has(trackInstanceKeys?.[trackIndex] ?? track.path)
+  const isPlaylistDropBefore = playlistDropIndex === trackIndex
+  const isPlaylistDropAfter = playlistDropIndex === playlistTrackCount && trackIndex === playlistTrackCount - 1
   const displayedTrackNumber = trackNumberMode === 'none'
     ? null
     : trackNumberMode === 'context'
@@ -616,8 +605,9 @@ function TrackListRowRenderer({
           canRemoveFromPlaylist ? 'track-row-playlist-removable' : ''} ${
           showQueueInsertAffordance && !isMissingPlaylistEntry ? 'track-row-queue-droppable' : ''} ${
           isQueueInsertSelected ? 'track-row-queue-selected' : ''
-        } ${isQueueInsertArmed ? 'track-row-queue-armed' : ''}`}
+        } ${isQueueInsertArmed ? 'track-row-queue-armed' : ''} ${isPlaylistDropBefore ? 'track-row-playlist-insert-before' : ''} ${isPlaylistDropAfter ? 'track-row-playlist-insert-after' : ''}`}
         data-track-index={trackIndex}
+        data-track-drop-playlist-index={playlistSourceId !== null ? trackIndex : undefined}
         data-controller-focusable="true"
         data-controller-context={isMissingPlaylistEntry && !canRemoveFromPlaylist ? undefined : 'true'}
         data-controller-key={`track:${trackInstanceKey}`}
@@ -626,7 +616,7 @@ function TrackListRowRenderer({
         role="button"
         aria-label={`${track.title} by ${track.artist}`}
         onDragStart={showQueueInsertAffordance ? (event) => event.preventDefault() : undefined}
-        onPointerDown={isMissingPlaylistEntry ? undefined : (event) => onQueueInsertPointerDown(event, track, trackIndex)}
+        onPointerDown={isMissingPlaylistEntry && playlistSourceId === null ? undefined : (event) => onQueueInsertPointerDown(event, track, trackIndex)}
         onContextMenu={isMissingPlaylistEntry && !canRemoveFromPlaylist ? undefined : (event) => onTrackContextMenu(event, track, trackIndex)}
         onClick={(event) => {
           if (isMissingPlaylistEntry) return
@@ -931,12 +921,12 @@ export default function TrackList({
   const enqueueTrackPaths = usePlayerStore((state) => state.enqueueTrackPaths)
   const selectedOutputChannelCount = useAudioSettingsStore((state) => state.selectedOutputChannelCount)
   const uiScalePercent = useUIStore((state) => state.uiScalePercent)
-  const trackDrag = useUIStore((state) => state.trackDrag)
+  const trackDragActive = useUIStore((state) => Boolean(state.trackDrag))
+  const playlistDropTarget = useUIStore((state) => state.trackDrag?.dropTarget?.surface === 'playlist'
+    ? state.trackDrag.dropTarget
+    : null)
   const startTrackDrag = useUIStore((state) => state.startTrackDrag)
-  const setTrackDragTracks = useUIStore((state) => state.setTrackDragTracks)
-  const updateTrackDragPointer = useUIStore((state) => state.updateTrackDragPointer)
-  const clearTrackDrag = useUIStore((state) => state.clearTrackDrag)
-  const openSidebarPlaylistCreateRequest = useUIStore((state) => state.openSidebarPlaylistCreateRequest)
+  const setTrackDragItems = useUIStore((state) => state.setTrackDragItems)
   const openSignalShare = useUIStore((state) => state.openSignalShare)
   const favorites = useLibraryStore((state) => state.favorites)
   const toggleFavorite = useLibraryStore((state) => state.toggleFavorite)
@@ -973,8 +963,7 @@ export default function TrackList({
   const [createPlaylistTarget, setCreatePlaylistTarget] = useState<TrackPlaylistCreateState | null>(null)
   const [queueFeedback, setQueueFeedback] = useState<Record<string, true>>({})
   const [queueInsertArmedTrackPath, setQueueInsertArmedTrackPath] = useState<string | null>(null)
-  const [selectedTrackPaths, setSelectedTrackPaths] = useState<Set<string>>(new Set())
-  const [isQueueInsertDragOwner, setIsQueueInsertDragOwner] = useState(false)
+  const [selectedTrackKeys, setSelectedTrackKeys] = useState<Set<string>>(new Set())
   const [isRemovingFromPlaylist, setIsRemovingFromPlaylist] = useState(false)
   const [listViewportHeight, setListViewportHeight] = useState(0)
   const [trackRowHeight, setTrackRowHeight] = useState(TRACK_ROW_HEIGHT_FALLBACK_PX)
@@ -982,10 +971,10 @@ export default function TrackList({
   const [rootTableWidth, setRootTableWidth] = useState(0)
 
   const queueFeedbackTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
-  const isQueueInsertDragOwnerRef = useRef(false)
   const queueInsertPointerCleanupRef = useRef<(() => void) | null>(null)
   const queueInsertPointerStateRef = useRef<TrackSelectionPointerState | null>(null)
   const suppressQueueInsertClickRef = useRef(false)
+  const suppressQueueInsertClickTimerRef = useRef<number | null>(null)
   const listBodyRef = useRef<HTMLDivElement | null>(null)
   const controllerGroupRef = useRef<HTMLDivElement | null>(null)
   const listRef = useRef<ListImperativeAPI>(null)
@@ -1122,17 +1111,17 @@ export default function TrackList({
         clearTimeout(timer)
       }
       queueFeedbackTimersRef.current.clear()
+      if (suppressQueueInsertClickTimerRef.current !== null) {
+        window.clearTimeout(suppressQueueInsertClickTimerRef.current)
+      }
       clearQueueInsertPointerListeners()
-      useUIStore.getState().clearTrackDrag()
     }
   }, [clearQueueInsertPointerListeners])
 
   useEffect(() => {
-    if (trackDrag) return
+    if (trackDragActive) return
     setQueueInsertArmedTrackPath(null)
-    setIsQueueInsertDragOwner(false)
-    isQueueInsertDragOwnerRef.current = false
-  }, [trackDrag])
+  }, [trackDragActive])
 
   useEffect(() => {
     setPlaylistPopup((current) => {
@@ -1288,15 +1277,10 @@ export default function TrackList({
     }
     return paths
   }, [manualQueueItemsById, manualUpcomingQueueIds])
-  const renderedQueueTracks = useMemo(() => tracks.map(dbTrackToTrack), [tracks])
   const renderedQueueTrackPaths = useMemo(() => tracks.map((track) => track.path), [tracks])
-  const selectedQueueTracks = useMemo(
-    () => resolveSelectedTracksInOrder(selectedTrackPaths, renderedQueueTracks),
-    [renderedQueueTracks, selectedTrackPaths]
-  )
   const selectedDbTracks = useMemo(
-    () => tracks.filter((track) => selectedTrackPaths.has(track.path)),
-    [selectedTrackPaths, tracks]
+    () => tracks.filter((track, index) => selectedTrackKeys.has(trackInstanceKeys?.[index] ?? track.path)),
+    [selectedTrackKeys, trackInstanceKeys, tracks]
   )
   const queueSeedTrackPaths = useMemo(() => queueSeedTracks.map((track) => track.path), [queueSeedTracks])
   const queueSeedTrackPathToIndex = useMemo(() => {
@@ -1330,51 +1314,46 @@ export default function TrackList({
   )
 
   const resolveActionTracks = useCallback((dbTrack: DbTrack): DbTrack[] => {
-    if (selectedTrackPaths.has(dbTrack.path) && selectedDbTracks.length > 0) {
+    if (selectedDbTracks.some((track) => track === dbTrack) && selectedDbTracks.length > 0) {
       return selectedDbTracks
     }
     return [dbTrack]
-  }, [selectedDbTracks, selectedTrackPaths])
+  }, [selectedDbTracks])
 
   const resolveActionTrackPaths = useCallback((dbTrack: DbTrack): string[] => (
     resolveActionTracks(dbTrack).map((track) => track.path)
   ), [resolveActionTracks])
 
   useEffect(() => {
-    const validTrackPaths = new Set(renderedQueueTrackPaths)
-    setSelectedTrackPaths((current) => {
+    const validTrackKeys = new Set(tracks.map((track, index) => trackInstanceKeys?.[index] ?? track.path))
+    setSelectedTrackKeys((current) => {
       if (current.size === 0) return current
 
       const next = new Set<string>()
-      for (const path of current) {
-        if (validTrackPaths.has(path)) {
-          next.add(path)
+      for (const key of current) {
+        if (validTrackKeys.has(key)) {
+          next.add(key)
         }
       }
 
       return areTrackPathSetsEqual(current, next) ? current : next
     })
-  }, [renderedQueueTrackPaths])
+  }, [trackInstanceKeys, tracks])
 
   useEffect(() => {
-    if (selectedTrackPaths.size === 0) return
+    if (selectedTrackKeys.size === 0) return
 
     const handlePointerDown = (event: PointerEvent) => {
       if (isTrackSelectionPreservingTarget(event.target)) return
-      setSelectedTrackPaths(new Set())
+      setSelectedTrackKeys(new Set())
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
-      setSelectedTrackPaths(new Set())
-      if (isQueueInsertDragOwnerRef.current) {
-        clearQueueInsertPointerListeners()
-        clearTrackDrag()
-        setQueueInsertArmedTrackPath(null)
-        setIsQueueInsertDragOwner(false)
-        isQueueInsertDragOwnerRef.current = false
-        queueInsertPointerStateRef.current = null
-      }
+      setSelectedTrackKeys(new Set())
+      clearQueueInsertPointerListeners()
+      setQueueInsertArmedTrackPath(null)
+      queueInsertPointerStateRef.current = null
     }
 
     document.addEventListener('pointerdown', handlePointerDown, true)
@@ -1383,7 +1362,7 @@ export default function TrackList({
       document.removeEventListener('pointerdown', handlePointerDown, true)
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [clearQueueInsertPointerListeners, clearTrackDrag, selectedTrackPaths.size])
+  }, [clearQueueInsertPointerListeners, selectedTrackKeys.size])
 
   const setQueueActionFeedback = useCallback((action: 'queue' | 'next', trackPath: string) => {
     const feedbackKey = `${action}:${trackPath}`
@@ -1424,25 +1403,30 @@ export default function TrackList({
   const handleTrackClick = useCallback(async (event: React.MouseEvent<HTMLDivElement>, dbTrack: DbTrack, index: number) => {
     if (suppressQueueInsertClickRef.current) {
       suppressQueueInsertClickRef.current = false
+      if (suppressQueueInsertClickTimerRef.current !== null) {
+        window.clearTimeout(suppressQueueInsertClickTimerRef.current)
+        suppressQueueInsertClickTimerRef.current = null
+      }
       return
     }
 
     if (isTrackSelectionModifierActive(event)) {
       event.preventDefault()
-      setSelectedTrackPaths((current) => {
+      const trackKey = trackInstanceKeys?.[index] ?? dbTrack.path
+      setSelectedTrackKeys((current) => {
         const next = new Set(current)
-        if (next.has(dbTrack.path)) {
-          next.delete(dbTrack.path)
+        if (next.has(trackKey)) {
+          next.delete(trackKey)
         } else {
-          next.add(dbTrack.path)
+          next.add(trackKey)
         }
         return areTrackPathSetsEqual(current, next) ? current : next
       })
       return
     }
 
-    if (selectedTrackPaths.size > 0) {
-      setSelectedTrackPaths(new Set())
+    if (selectedTrackKeys.size > 0) {
+      setSelectedTrackKeys(new Set())
     }
 
     const occurrenceQueueSeedIndex = queueSeedIndexes?.[index]
@@ -1471,8 +1455,9 @@ export default function TrackList({
     queueSeedIndexes,
     queueContextLabel,
     renderedQueueTrackPaths,
-    selectedTrackPaths.size,
-    startPlaybackContextByPaths
+    selectedTrackKeys.size,
+    startPlaybackContextByPaths,
+    trackInstanceKeys
   ])
 
   const handlePlayNext = useCallback((event: React.MouseEvent, dbTrack: DbTrack) => {
@@ -1489,28 +1474,22 @@ export default function TrackList({
     setQueueActionFeedbackForPaths('queue', trackPaths)
   }, [enqueueTrackPaths, resolveActionTrackPaths, setQueueActionFeedbackForPaths])
 
-  const resolveQueueInsertHoverIndex = useCallback((clientX: number, clientY: number): number | null => {
-    const target = document.elementFromPoint(clientX, clientY)
-    if (!(target instanceof Element)) return null
-
-    const rowElement = target.closest('.track-row[data-track-index]')
-    if (!(rowElement instanceof HTMLElement)) return null
-    if (listBodyRef.current && !listBodyRef.current.contains(rowElement)) return null
-
-    const rawIndex = rowElement.dataset.trackIndex
-    if (rawIndex == null) return null
-
-    const parsedIndex = Number.parseInt(rawIndex, 10)
-    if (!Number.isFinite(parsedIndex) || parsedIndex < 0 || parsedIndex >= renderedQueueTracks.length) {
-      return null
-    }
-    return parsedIndex
-  }, [renderedQueueTracks.length])
-
   const cleanupQueueInsertPointerState = useCallback(() => {
     queueInsertPointerStateRef.current = null
     setQueueInsertArmedTrackPath(null)
   }, [])
+
+  const resolveQueueInsertHoverIndex = useCallback((clientX: number, clientY: number): number | null => {
+    const target = document.elementFromPoint(clientX, clientY)
+    if (!(target instanceof Element)) return null
+
+    const rowElement = target.closest<HTMLElement>('.track-row[data-track-index]')
+    if (!rowElement || (listBodyRef.current && !listBodyRef.current.contains(rowElement))) return null
+    const parsedIndex = Number.parseInt(rowElement.dataset.trackIndex ?? '', 10)
+    return Number.isInteger(parsedIndex) && parsedIndex >= 0 && parsedIndex < tracks.length
+      ? parsedIndex
+      : null
+  }, [tracks.length])
 
   const handleQueueInsertPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>, dbTrack: DbTrack, index: number) => {
     if (event.button !== 0) return
@@ -1520,147 +1499,149 @@ export default function TrackList({
       return
     }
 
-    const hasSelectionModifier = isTrackSelectionModifierActive(event)
-    const isTrackSelected = selectedTrackPaths.has(dbTrack.path)
-    if (!hasSelectionModifier && !isTrackSelected) {
+    const isMissingPlaylistEntry = isMissingPlaylistEntryTrack(dbTrack)
+    if (isMissingPlaylistEntry && (playlistSourceId === null || playlistEntryIds?.[index] == null)) {
       return
     }
 
-    const track = dbTrackToTrack(dbTrack)
     clearQueueInsertPointerListeners()
     cleanupQueueInsertPointerState()
+
+    const visibleKeys = tracks.map((candidate, candidateIndex) => (
+      trackInstanceKeys?.[candidateIndex] ?? candidate.path
+    ))
+    const hasSelectionModifier = isTrackSelectionModifierActive(event)
 
     queueInsertPointerStateRef.current = {
       anchorIndex: index,
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
-      mode: hasSelectionModifier ? 'modifier-selection' : 'selected-drag',
-      baseSelectedPaths: new Set(selectedTrackPaths),
-      activeSelectedPaths: null
+      mode: hasSelectionModifier ? 'modifier-selection' : 'direct-drag',
+      baseSelectedKeys: new Set(selectedTrackKeys),
+      activeSelectedKeys: null,
+      activeHoverIndex: null,
+      dragStarted: false
     }
 
-    const beginQueueInsertDrag = (tracksForDrag: Track[], pointerX: number, pointerY: number) => {
-      if (tracksForDrag.length === 0) return false
-      setQueueInsertArmedTrackPath(track.path)
-      setIsQueueInsertDragOwner(true)
-      isQueueInsertDragOwnerRef.current = true
-      startTrackDrag(tracksForDrag, pointerX, pointerY)
-      return true
+    const buildDragItems = (selectedKeys: ReadonlySet<string>, anchorIndex: number): TrackDragItem[] => {
+      const dragIndexes = resolveTrackDragSelectionIndexes(visibleKeys, selectedKeys, anchorIndex)
+      return dragIndexes.flatMap<TrackDragItem>((trackIndex) => {
+        const candidate = tracks[trackIndex]
+        if (!candidate) return []
+        const missing = isMissingPlaylistEntryTrack(candidate)
+        const entryId = playlistEntryIds?.[trackIndex] ?? null
+        if (missing && entryId === null) return []
+        return [{
+          key: visibleKeys[trackIndex] ?? candidate.path,
+          path: candidate.path,
+          title: candidate.title,
+          artist: candidate.artist,
+          track: missing ? null : dbTrackToTrack(candidate),
+          playlistEntryId: entryId,
+          missing
+        }]
+      })
     }
 
-    const updateModifierSelectionDrag = (pressState: TrackSelectionPointerState, hoverIndex: number) => {
-      const nextSelectedPaths = addTrackRangeToSelection(
-        pressState.baseSelectedPaths,
-        renderedQueueTracks,
-        pressState.anchorIndex,
-        hoverIndex
+    const beginDrag = (items: TrackDragItem[], moveEvent: PointerEvent): boolean => {
+      if (items.length === 0) return false
+      const ui = useUIStore.getState()
+      const playlist = usePlaylistStore.getState()
+      setQueueInsertArmedTrackPath(dbTrack.path)
+      suppressQueueInsertClickRef.current = true
+      startTrackDrag(
+        items,
+        { kind: 'track-list', playlistId: playlistSourceId },
+        {
+          activeView: ui.activeView,
+          showQueue: ui.showQueue,
+          selectedPlaylistId: playlist.selectedPlaylistId,
+          playlistSortState: playlist.sortState
+        },
+        moveEvent.pointerId,
+        moveEvent.clientX,
+        moveEvent.clientY
       )
-      if (pressState.activeSelectedPaths && areTrackPathSetsEqual(pressState.activeSelectedPaths, nextSelectedPaths)) {
-        return
-      }
-
-      const tracksForDrag = resolveSelectedTracksInOrder(nextSelectedPaths, renderedQueueTracks)
-      if (tracksForDrag.length === 0) return
-
-      queueInsertPointerStateRef.current = {
-        ...pressState,
-        activeSelectedPaths: nextSelectedPaths
-      }
-      setSelectedTrackPaths((current) => (
-        areTrackPathSetsEqual(current, nextSelectedPaths) ? current : nextSelectedPaths
-      ))
-      setTrackDragTracks(tracksForDrag)
+      return true
     }
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
       const pressState = queueInsertPointerStateRef.current
       if (!pressState || moveEvent.pointerId !== pressState.pointerId) return
 
-      const distance = Math.hypot(moveEvent.clientX - pressState.startX, moveEvent.clientY - pressState.startY)
-      if (!isQueueInsertDragOwnerRef.current && distance > TRACK_SELECTION_DRAG_THRESHOLD_PX) {
-        if (pressState.mode === 'modifier-selection') {
-          const hoveredIndex = resolveQueueInsertHoverIndex(moveEvent.clientX, moveEvent.clientY) ?? pressState.anchorIndex
-          const nextSelectedPaths = addTrackRangeToSelection(
-            pressState.baseSelectedPaths,
-            renderedQueueTracks,
-            pressState.anchorIndex,
-            hoveredIndex
-          )
-          const tracksForDrag = resolveSelectedTracksInOrder(nextSelectedPaths, renderedQueueTracks)
-          if (!beginQueueInsertDrag(tracksForDrag, moveEvent.clientX, moveEvent.clientY)) return
+      if (!pressState.dragStarted && !hasTrackDragActivated(
+        pressState.startX,
+        pressState.startY,
+        moveEvent.clientX,
+        moveEvent.clientY
+      )) return
 
-          queueInsertPointerStateRef.current = {
-            ...pressState,
-            activeSelectedPaths: nextSelectedPaths
-          }
-          setSelectedTrackPaths((current) => (
-            areTrackPathSetsEqual(current, nextSelectedPaths) ? current : nextSelectedPaths
-          ))
-        } else {
-          if (!beginQueueInsertDrag(selectedQueueTracks, moveEvent.clientX, moveEvent.clientY)) return
+      if (
+        pressState.mode === 'modifier-selection'
+        && (!pressState.dragStarted || isTrackSelectionModifierActive(moveEvent))
+      ) {
+        const resolvedHoverIndex = resolveQueueInsertHoverIndex(moveEvent.clientX, moveEvent.clientY)
+        if (pressState.dragStarted && resolvedHoverIndex === null) return
+        const hoverIndex = resolvedHoverIndex ?? pressState.anchorIndex
+        if (pressState.dragStarted && pressState.activeHoverIndex === hoverIndex) return
+
+        const nextSelectedKeys = addTrackDragRangeToSelection(
+          visibleKeys,
+          pressState.baseSelectedKeys,
+          pressState.anchorIndex,
+          hoverIndex
+        )
+        const items = buildDragItems(nextSelectedKeys, pressState.anchorIndex)
+        if (items.length === 0) return
+
+        if (pressState.dragStarted) {
+          setTrackDragItems(items)
+        } else if (!beginDrag(items, moveEvent)) {
+          return
         }
-      }
-
-      if (isQueueInsertDragOwnerRef.current) {
-        updateTrackDragPointer(moveEvent.clientX, moveEvent.clientY)
-
-        const latestPressState = queueInsertPointerStateRef.current
-        if (latestPressState?.mode === 'modifier-selection' && isTrackSelectionModifierActive(moveEvent)) {
-          const hoveredIndex = resolveQueueInsertHoverIndex(moveEvent.clientX, moveEvent.clientY)
-          if (hoveredIndex !== null) {
-            updateModifierSelectionDrag(latestPressState, hoveredIndex)
-          }
+        queueInsertPointerStateRef.current = {
+          ...pressState,
+          activeSelectedKeys: nextSelectedKeys,
+          activeHoverIndex: hoverIndex,
+          dragStarted: true
         }
-      }
-    }
-
-    const finalizeQueueInsert = () => {
-      clearQueueInsertPointerListeners()
-
-      const dragState = useUIStore.getState().trackDrag
-      if (isQueueInsertDragOwnerRef.current) {
-        suppressQueueInsertClickRef.current = true
-      }
-      if (dragState?.dropTarget && dragState.tracks.length > 0) {
-        if (dragState.dropTarget.surface === 'queue') {
-          void enqueueTrackPaths(
-            dragState.tracks.map((track) => track.path),
-            dragState.dropTarget.kind === 'empty' ? 0 : dragState.dropTarget.index
-          )
-          if (dragState.tracks.length === 1) {
-            setQueueActionFeedback('queue', dragState.tracks[0].path)
-          }
-        } else if (dragState.dropTarget.kind === 'playlist') {
-          void addToPlaylist(
-            dragState.dropTarget.playlistId,
-            dragState.tracks.map((track) => track.path)
-          ).catch((error) => {
-            console.error('Failed to add dropped tracks to playlist.', error)
-          })
-        } else {
-          openSidebarPlaylistCreateRequest(dragState.tracks.map((track) => track.path))
-        }
+        setSelectedTrackKeys((current) => (
+          areTrackPathSetsEqual(current, nextSelectedKeys) ? current : nextSelectedKeys
+        ))
+        return
       }
 
-      clearTrackDrag()
-      cleanupQueueInsertPointerState()
-      setIsQueueInsertDragOwner(false)
-      isQueueInsertDragOwnerRef.current = false
+      if (pressState.dragStarted) return
+      const items = buildDragItems(selectedTrackKeys, pressState.anchorIndex)
+      if (!beginDrag(items, moveEvent)) return
+      queueInsertPointerStateRef.current = { ...pressState, dragStarted: true }
     }
 
     const handlePointerUp = (upEvent: PointerEvent) => {
       const pressState = queueInsertPointerStateRef.current
       if (!pressState || upEvent.pointerId !== pressState.pointerId) return
-      finalizeQueueInsert()
+      clearQueueInsertPointerListeners()
+      cleanupQueueInsertPointerState()
+      if (pressState.dragStarted) {
+        if (suppressQueueInsertClickTimerRef.current !== null) {
+          window.clearTimeout(suppressQueueInsertClickTimerRef.current)
+        }
+        suppressQueueInsertClickTimerRef.current = window.setTimeout(() => {
+          suppressQueueInsertClickRef.current = false
+          suppressQueueInsertClickTimerRef.current = null
+        }, 0)
+      }
     }
 
     const handlePointerCancel = () => {
       clearQueueInsertPointerListeners()
-      clearTrackDrag()
       cleanupQueueInsertPointerState()
-      setIsQueueInsertDragOwner(false)
-      isQueueInsertDragOwnerRef.current = false
+      suppressQueueInsertClickRef.current = false
+      if (suppressQueueInsertClickTimerRef.current !== null) {
+        window.clearTimeout(suppressQueueInsertClickTimerRef.current)
+        suppressQueueInsertClickTimerRef.current = null
+      }
     }
 
     document.addEventListener('pointermove', handlePointerMove)
@@ -1674,18 +1655,14 @@ export default function TrackList({
   }, [
     clearQueueInsertPointerListeners,
     cleanupQueueInsertPointerState,
-    clearTrackDrag,
-    addToPlaylist,
-    enqueueTrackPaths,
-    openSidebarPlaylistCreateRequest,
-    renderedQueueTracks,
+    playlistEntryIds,
+    playlistSourceId,
     resolveQueueInsertHoverIndex,
-    selectedQueueTracks,
-    selectedTrackPaths,
-    setQueueActionFeedback,
-    setTrackDragTracks,
+    selectedTrackKeys,
+    setTrackDragItems,
     startTrackDrag,
-    updateTrackDragPointer
+    trackInstanceKeys,
+    tracks
   ])
 
   const handleToggleFavorite = useCallback((event: React.MouseEvent, trackPath: string) => {
@@ -1777,13 +1754,12 @@ export default function TrackList({
     event.stopPropagation()
     closePlaylistPopup()
 
-    const hasRepeatedRenderedPath = playlistEntryIds !== undefined
-      && tracks.some((candidate, index) => index !== trackIndex && candidate.path === track.path)
-    const contextTracks = !hasRepeatedRenderedPath && selectedTrackPaths.has(track.path) && selectedDbTracks.length > 0
+    const trackKey = trackInstanceKeys?.[trackIndex] ?? track.path
+    const contextTracks = selectedTrackKeys.has(trackKey) && selectedDbTracks.length > 0
       ? selectedDbTracks
       : [track]
     if (contextTracks.length === 1 && contextTracks[0]?.path === track.path) {
-      setSelectedTrackPaths(new Set([track.path]))
+      setSelectedTrackKeys(new Set([trackKey]))
     }
 
     setTrackContextMenu({
@@ -1793,7 +1769,7 @@ export default function TrackList({
       x: event.clientX,
       y: event.clientY
     })
-  }, [closePlaylistPopup, playlistEntryIds, selectedDbTracks, selectedTrackPaths, tracks])
+  }, [closePlaylistPopup, playlistEntryIds, selectedDbTracks, selectedTrackKeys, trackInstanceKeys])
 
   const handleCheckTrackIntegrity = useCallback(() => {
     if (!trackContextMenu) return
@@ -1906,7 +1882,7 @@ export default function TrackList({
       }
       closePlaylistPopup()
       setTrackContextMenu(null)
-      setSelectedTrackPaths(new Set())
+      setSelectedTrackKeys(new Set())
     } finally {
       setIsRemovingFromPlaylist(false)
     }
@@ -1925,7 +1901,7 @@ export default function TrackList({
       }
       closePlaylistPopup()
       setTrackContextMenu(null)
-      setSelectedTrackPaths(new Set())
+      setSelectedTrackKeys(new Set())
     } finally {
       setIsRemovingFromPlaylist(false)
     }
@@ -2153,7 +2129,9 @@ export default function TrackList({
     getTrackListVirtualRowHeightPx(virtualRows?.[rowIndex], trackRowHeight, discHeaderHeight)
   ), [discHeaderHeight, trackRowHeight, virtualRows])
   const playlistPopupTrackPath = playlistPopup?.primaryTrackPath ?? null
-  const queueInsertPreview = isQueueInsertDragOwner ? trackDrag : null
+  const activePlaylistDropIndex = playlistSourceId !== null && playlistDropTarget?.playlistId === playlistSourceId
+    ? playlistDropTarget.index
+    : null
   const isColumnSortingEnabled = enableColumnSorting && typeof onSortColumnToggle === 'function'
   const canResetDefaultOrder = enableDefaultOrderReset && typeof onDefaultOrderReset === 'function'
   const getDefaultSortDirection = (key: TrackListSortKey): 'asc' | 'desc' => (
@@ -2297,7 +2275,10 @@ export default function TrackList({
     isRemovingFromPlaylist,
     showQueueInsertAffordance: true,
     queueInsertArmedTrackPath,
-    selectedTrackPaths,
+    selectedTrackKeys,
+    playlistDropIndex: activePlaylistDropIndex,
+    playlistTrackCount: tracks.length,
+    playlistSourceId,
     rootColumnStyles,
     rootTableActive
   }), [
@@ -2349,14 +2330,20 @@ export default function TrackList({
     canRemoveFromPlaylist,
     isRemovingFromPlaylist,
     queueInsertArmedTrackPath,
-    selectedTrackPaths,
+    selectedTrackKeys,
+    activePlaylistDropIndex,
+    playlistSourceId,
     rootColumnStyles,
     rootTableActive
   ])
 
   if (tracks.length === 0) {
     return (
-      <div className="track-list-empty">
+      <div
+        className="track-list-empty"
+        data-track-drop-playlist-id={playlistSourceId ?? undefined}
+        data-track-drop-playlist-count={playlistSourceId !== null ? 0 : undefined}
+      >
         <p>No tracks found</p>
       </div>
     )
@@ -2364,7 +2351,7 @@ export default function TrackList({
 
   return (
     <div
-      className={`track-list ${pageScroll ? 'track-list-page-scroll' : ''} ${queueInsertPreview ? 'track-list-queue-insert-dragging' : ''} ${rootTableActive ? 'track-list-root-custom' : ''}`}
+      className={`track-list ${pageScroll ? 'track-list-page-scroll' : ''} ${rootTableActive ? 'track-list-root-custom' : ''}`}
       ref={controllerGroupRef}
       data-controller-group="tracks"
       data-controller-axis="vertical"
@@ -2412,6 +2399,8 @@ export default function TrackList({
       <div
         className="track-list-body"
         ref={listBodyRef}
+        data-track-drop-playlist-id={playlistSourceId ?? undefined}
+        data-track-drop-playlist-count={playlistSourceId !== null ? tracks.length : undefined}
         // In page-scroll mode this element no longer scrolls; leaving the
         // marker on would make controller page-scroll resolve to it and no-op.
         data-controller-scroll={pageScroll ? undefined : true}
@@ -2445,37 +2434,6 @@ export default function TrackList({
           />
         )}
       </div>
-      {queueInsertPreview && (
-        <div
-          className={`track-queue-insert-preview ${queueInsertPreview.tracks.length > 1 ? 'track-queue-insert-preview-batch' : ''}`}
-          style={{
-            transform: `translate(${queueInsertPreview.pointerX + 14}px, ${queueInsertPreview.pointerY + 14}px)`
-          }}
-        >
-          {queueInsertPreview.tracks.length > 1 && (
-            <>
-              <span className="track-queue-insert-preview-stack-layer track-queue-insert-preview-stack-layer-back" aria-hidden="true" />
-              <span className="track-queue-insert-preview-stack-layer track-queue-insert-preview-stack-layer-mid" aria-hidden="true" />
-            </>
-          )}
-          {queueInsertPreview.tracks.length > 1 && (
-            <span className="track-queue-insert-preview-count">{queueInsertPreview.tracks.length}</span>
-          )}
-          <div className="track-queue-insert-preview-content">
-            <span className="track-queue-insert-preview-kicker">Tracks</span>
-            <span className="track-queue-insert-preview-title">
-              {queueInsertPreview.tracks.length > 1
-                ? `${queueInsertPreview.tracks.length} tracks`
-                : queueInsertPreview.tracks[0]?.title ?? 'Track'}
-            </span>
-            <span className="track-queue-insert-preview-artist">
-              {queueInsertPreview.tracks.length > 1
-                ? 'In tracklist order'
-                : queueInsertPreview.tracks[0]?.artist ?? 'Unknown Artist'}
-            </span>
-          </div>
-        </div>
-      )}
       {playlistPopup && (
         <div
           className="track-playlist-popup"

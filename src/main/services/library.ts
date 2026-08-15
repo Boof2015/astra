@@ -486,6 +486,18 @@ export interface PlaylistTrackEntry {
   track: DbTrack | null
 }
 
+export type PlaylistInsertPosition = number | 'end'
+
+export interface PlaylistInsertResult {
+  insertedEntryIds: number[]
+  insertedTrackPaths: string[]
+  skippedTrackPaths: string[]
+}
+
+export interface PlaylistMoveResult {
+  changed: boolean
+}
+
 export interface DynamicPlaylistPreview {
   track_count: number
   tracks: DbTrack[]
@@ -11560,8 +11572,169 @@ async function addPlaylistEntries(
 }
 
 export async function addToPlaylist(playlistId: number, trackPaths: string[]): Promise<void> {
+  await insertTracksIntoPlaylist(playlistId, trackPaths, 'end')
+}
+
+export async function insertTracksIntoPlaylist(
+  playlistId: number,
+  trackPaths: string[],
+  requestedPosition: PlaylistInsertPosition
+): Promise<PlaylistInsertResult> {
+  const emptyResult = (): PlaylistInsertResult => ({
+    insertedEntryIds: [],
+    insertedTrackPaths: [],
+    skippedTrackPaths: []
+  })
+  if (!db) return emptyResult()
+  if (!Number.isInteger(playlistId) || playlistId <= 0 || getPlaylistKindById(playlistId) === null) {
+    throw new Error('Playlist not found.')
+  }
   assertNormalPlaylist(playlistId, 'accept manual tracks')
-  await addPlaylistEntries(playlistId, trackPaths.map((trackPath) => ({ trackPath })))
+  if (!Array.isArray(trackPaths) || trackPaths.length === 0) return emptyResult()
+
+  const existingRows = db.all<{ id?: unknown; track_path?: unknown }>(`
+    SELECT id, track_path
+    FROM playlist_tracks
+    WHERE playlist_id = ?
+    ORDER BY position ASC, id ASC
+  `, [playlistId])
+  const existingTrackPaths = new Set(
+    existingRows
+      .map((row) => typeof row.track_path === 'string' ? row.track_path : '')
+      .filter(Boolean)
+  )
+  const pendingTrackPaths: string[] = []
+  const skippedTrackPaths: string[] = []
+  const seenTrackPaths = new Set(existingTrackPaths)
+  for (const rawTrackPath of trackPaths) {
+    const trackPath = typeof rawTrackPath === 'string' ? rawTrackPath.trim() : ''
+    if (!trackPath) continue
+    if (seenTrackPaths.has(trackPath)) {
+      skippedTrackPaths.push(trackPath)
+      continue
+    }
+    seenTrackPaths.add(trackPath)
+    pendingTrackPaths.push(trackPath)
+  }
+  if (pendingTrackPaths.length === 0) {
+    return { ...emptyResult(), skippedTrackPaths }
+  }
+
+  const position = requestedPosition === 'end'
+    ? existingRows.length
+    : Math.min(existingRows.length, Math.max(0, Math.trunc(Number(requestedPosition))))
+  if (!Number.isFinite(position)) {
+    throw new Error('Playlist insertion position is invalid.')
+  }
+
+  const insertedEntryIds: number[] = []
+  const now = Date.now()
+  beginLibraryWriteTransaction()
+  try {
+    for (let index = 0; index < pendingTrackPaths.length; index += 1) {
+      const insert = db.run(
+        'INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album) VALUES (?, ?, ?, ?, NULL, NULL, NULL)',
+        [playlistId, pendingTrackPaths[index], existingRows.length + index, now]
+      )
+      const entryId = Number(insert.lastInsertRowid)
+      if (!Number.isInteger(entryId) || entryId <= 0) {
+        throw new Error('Failed to create playlist entry.')
+      }
+      insertedEntryIds.push(entryId)
+    }
+
+    const existingEntryIds = existingRows.map((row) => Number(row.id))
+    if (existingEntryIds.some((entryId) => !Number.isInteger(entryId) || entryId <= 0)) {
+      throw new Error('Invalid playlist track rows for insertion operation.')
+    }
+    const orderedEntryIds = [
+      ...existingEntryIds.slice(0, position),
+      ...insertedEntryIds,
+      ...existingEntryIds.slice(position)
+    ]
+    orderedEntryIds.forEach((entryId, index) => {
+      db!.run('UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND id = ?', [index, playlistId, entryId])
+    })
+    db.run('UPDATE playlists SET updated_at = ? WHERE id = ?', [now, playlistId])
+    commitLibraryWriteTransaction()
+  } catch (error) {
+    rollbackLibraryWriteTransaction()
+    throw error
+  }
+  await saveDatabase()
+  return {
+    insertedEntryIds,
+    insertedTrackPaths: pendingTrackPaths,
+    skippedTrackPaths
+  }
+}
+
+export async function movePlaylistEntries(
+  playlistId: number,
+  entryIds: number[],
+  requestedPosition: number
+): Promise<PlaylistMoveResult> {
+  if (!db) return { changed: false }
+  if (!Number.isInteger(playlistId) || playlistId <= 0 || getPlaylistKindById(playlistId) === null) {
+    throw new Error('Playlist not found.')
+  }
+  assertNormalPlaylist(playlistId, 'reorder tracks manually')
+  if (!Array.isArray(entryIds) || entryIds.length === 0) return { changed: false }
+  if (!Number.isFinite(requestedPosition)) {
+    throw new Error('Playlist move position is invalid.')
+  }
+
+  const orderedRows = db.all<{ id?: unknown }>(`
+    SELECT id
+    FROM playlist_tracks
+    WHERE playlist_id = ?
+    ORDER BY position ASC, id ASC
+  `, [playlistId])
+  const currentEntryIds = orderedRows.map((row) => Number(row.id))
+  if (currentEntryIds.some((entryId) => !Number.isInteger(entryId) || entryId <= 0)) {
+    throw new Error('Invalid playlist track rows for move operation.')
+  }
+
+  const currentEntryIdSet = new Set(currentEntryIds)
+  const movedEntryIdSet = new Set<number>()
+  for (const entryId of entryIds) {
+    if (!Number.isInteger(entryId) || entryId <= 0 || !currentEntryIdSet.has(entryId) || movedEntryIdSet.has(entryId)) {
+      throw new Error('Playlist move payload does not match current playlist content.')
+    }
+    movedEntryIdSet.add(entryId)
+  }
+
+  const clampedPosition = Math.min(currentEntryIds.length, Math.max(0, Math.trunc(requestedPosition)))
+  const removedBeforeTarget = currentEntryIds
+    .slice(0, clampedPosition)
+    .reduce((count, entryId) => count + (movedEntryIdSet.has(entryId) ? 1 : 0), 0)
+  const remainingEntryIds = currentEntryIds.filter((entryId) => !movedEntryIdSet.has(entryId))
+  const adjustedPosition = Math.min(
+    remainingEntryIds.length,
+    Math.max(0, clampedPosition - removedBeforeTarget)
+  )
+  const orderedEntryIds = [
+    ...remainingEntryIds.slice(0, adjustedPosition),
+    ...entryIds,
+    ...remainingEntryIds.slice(adjustedPosition)
+  ]
+  const changed = orderedEntryIds.some((entryId, index) => entryId !== currentEntryIds[index])
+  if (!changed) return { changed: false }
+
+  const now = Date.now()
+  beginLibraryWriteTransaction()
+  try {
+    orderedEntryIds.forEach((entryId, index) => {
+      db!.run('UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND id = ?', [index, playlistId, entryId])
+    })
+    db.run('UPDATE playlists SET updated_at = ? WHERE id = ?', [now, playlistId])
+    commitLibraryWriteTransaction()
+  } catch (error) {
+    rollbackLibraryWriteTransaction()
+    throw error
+  }
+  await saveDatabase()
+  return { changed: true }
 }
 
 export async function removeFromPlaylist(playlistId: number, trackPath: string): Promise<void> {

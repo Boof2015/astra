@@ -106,10 +106,16 @@ interface SidebarTooltip {
   top: number
 }
 
+interface SidebarDropOverlayLabel {
+  key: string
+  label: string
+  left: number
+  top: number
+}
+
 export default function Sidebar() {
   const { activeView, setActiveView } = useUIStore()
   const trackDrag = useUIStore((s) => s.trackDrag)
-  const setTrackDragDropTarget = useUIStore((s) => s.setTrackDragDropTarget)
   const sidebarPlaylistCreateRequest = useUIStore((s) => s.sidebarPlaylistCreateRequest)
   const clearSidebarPlaylistCreateRequest = useUIStore((s) => s.clearSidebarPlaylistCreateRequest)
   const openCollectionQueueMenu = useUIStore((s) => s.openCollectionQueueMenu)
@@ -139,16 +145,16 @@ export default function Sidebar() {
   const [isCreatePlaylistModalOpen, setIsCreatePlaylistModalOpen] = useState(false)
   const [createPlaylistTrackPaths, setCreatePlaylistTrackPaths] = useState<string[] | null>(null)
   const [isImportingPlaylist, setIsImportingPlaylist] = useState(false)
-  const [isOverflowDragHover, setIsOverflowDragHover] = useState(false)
   const [sidebarDropSettledKey, setSidebarDropSettledKey] = useState<string | null>(null)
   const [sidebarTooltip, setSidebarTooltip] = useState<SidebarTooltip | null>(null)
+  const [sidebarDropOverlayLabels, setSidebarDropOverlayLabels] = useState<SidebarDropOverlayLabel[]>([])
   const [draggedSidebarPlaylistId, setDraggedSidebarPlaylistId] = useState<number | null>(null)
   const [sidebarPinDropTargetId, setSidebarPinDropTargetId] = useState<number | null>(null)
   const overflowButtonRef = useRef<HTMLButtonElement | null>(null)
+  const sidebarRef = useRef<HTMLElement | null>(null)
   const popoutRef = useRef<HTMLDivElement | null>(null)
   const playlistScrollRef = useRef<HTMLDivElement | null>(null)
   const sidebarTooltipAnchorRef = useRef<HTMLElement | null>(null)
-  const overflowAutoOpenTimerRef = useRef<number | null>(null)
   const sidebarDropSettleTimerRef = useRef<number | null>(null)
   const overflowOpenedByDragRef = useRef(false)
   const previousTrackDragRef = useRef<typeof trackDrag>(null)
@@ -213,7 +219,7 @@ export default function Sidebar() {
   const updateSidebarTooltip = useCallback((anchor: HTMLElement) => {
     const label = anchor.dataset.sidebarTooltip?.trim()
 
-    if (!label || (Boolean(trackDrag) && anchor.matches('.sidebar-drop-target'))) {
+    if (!label || Boolean(trackDrag)) {
       clearSidebarTooltip()
       return
     }
@@ -326,9 +332,6 @@ export default function Sidebar() {
 
   useEffect(() => {
     return () => {
-      if (overflowAutoOpenTimerRef.current !== null) {
-        window.clearTimeout(overflowAutoOpenTimerRef.current)
-      }
       if (sidebarDropSettleTimerRef.current !== null) {
         window.clearTimeout(sidebarDropSettleTimerRef.current)
       }
@@ -352,54 +355,6 @@ export default function Sidebar() {
     }
   }, [isOverflowOpen, updateOverflowPopoutPosition])
 
-  useEffect(() => {
-    if (!trackDrag) {
-      setTrackDragDropTarget('sidebar', null)
-      return
-    }
-
-    if (sidebarTooltipAnchorRef.current?.matches('.sidebar-drop-target')) {
-      clearSidebarTooltip()
-    }
-
-    const target = document.elementFromPoint(trackDrag.pointerX, trackDrag.pointerY)
-    if (!(target instanceof Element)) {
-      setTrackDragDropTarget('sidebar', null)
-      return
-    }
-
-    const dropElement = target.closest('[data-sidebar-drop-target]')
-    if (!dropElement) {
-      setTrackDragDropTarget('sidebar', null)
-      return
-    }
-
-    const targetKind = dropElement.getAttribute('data-sidebar-drop-target')
-    if (targetKind === 'playlist') {
-      const playlistId = Number.parseInt(dropElement.getAttribute('data-sidebar-drop-playlist-id') ?? '', 10)
-      if (!Number.isFinite(playlistId) || playlistId <= 0) {
-        setTrackDragDropTarget('sidebar', null)
-        return
-      }
-      setTrackDragDropTarget('sidebar', {
-        surface: 'sidebar',
-        kind: 'playlist',
-        playlistId
-      })
-      return
-    }
-
-    if (targetKind === 'create-playlist') {
-      setTrackDragDropTarget('sidebar', {
-        surface: 'sidebar',
-        kind: 'create-playlist'
-      })
-      return
-    }
-
-    setTrackDragDropTarget('sidebar', null)
-  }, [clearSidebarTooltip, setTrackDragDropTarget, trackDrag])
-
   useLayoutEffect(() => {
     if (!sidebarTooltip) return
 
@@ -422,61 +377,62 @@ export default function Sidebar() {
     }
   }, [clearSidebarTooltip, sidebarTooltip, updateSidebarTooltip])
 
-  useEffect(() => {
-    if (!trackDrag || sidebarOverflowPlaylists.length === 0) {
-      setIsOverflowDragHover(false)
-      if (overflowAutoOpenTimerRef.current !== null) {
-        window.clearTimeout(overflowAutoOpenTimerRef.current)
-        overflowAutoOpenTimerRef.current = null
-      }
-      if (!trackDrag && overflowOpenedByDragRef.current) {
-        overflowOpenedByDragRef.current = false
-        setIsOverflowOpen(false)
-      }
+  useLayoutEffect(() => {
+    if (!trackDrag) {
+      setSidebarDropOverlayLabels([])
       return
     }
 
-    const overflowButton = overflowButtonRef.current
-    if (!overflowButton) {
-      setIsOverflowDragHover(false)
-      return
+    const sidebar = sidebarRef.current
+    if (!sidebar) return
+    const updateLabels = () => {
+      const labels = Array.from(sidebar.querySelectorAll<HTMLElement>('[data-sidebar-drop-overlay-label]'))
+        .flatMap<SidebarDropOverlayLabel>((anchor) => {
+          const label = anchor.dataset.sidebarDropOverlayLabel?.trim()
+          const key = anchor.dataset.sidebarDropOverlayKey?.trim()
+          if (!label || !key || !anchor.isConnected) return []
+          const rect = anchor.getBoundingClientRect()
+          const clipRect = anchor.closest<HTMLElement>('.sidebar-playlist-scroll')?.getBoundingClientRect()
+            ?? sidebar.getBoundingClientRect()
+          if (rect.bottom <= clipRect.top || rect.top >= clipRect.bottom) return []
+          return [{ key, label, left: rect.right + 8, top: rect.top + rect.height / 2 }]
+        })
+      setSidebarDropOverlayLabels((current) => (
+        current.length === labels.length
+        && current.every((entry, index) => {
+          const next = labels[index]
+          return next
+            && entry.key === next.key
+            && entry.label === next.label
+            && entry.left === next.left
+            && entry.top === next.top
+        })
+          ? current
+          : labels
+      ))
     }
 
-    const rect = overflowButton.getBoundingClientRect()
-    const isHoveringOverflowButton = trackDrag.pointerX >= rect.left
-      && trackDrag.pointerX <= rect.right
-      && trackDrag.pointerY >= rect.top
-      && trackDrag.pointerY <= rect.bottom
-
-    setIsOverflowDragHover(isHoveringOverflowButton)
-
-    if (!isHoveringOverflowButton || isOverflowOpen) {
-      if (overflowAutoOpenTimerRef.current !== null) {
-        window.clearTimeout(overflowAutoOpenTimerRef.current)
-        overflowAutoOpenTimerRef.current = null
-      }
-      return
+    updateLabels()
+    window.addEventListener('resize', updateLabels)
+    document.addEventListener('scroll', updateLabels, true)
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateLabels)
+    observer?.observe(sidebar)
+    return () => {
+      window.removeEventListener('resize', updateLabels)
+      document.removeEventListener('scroll', updateLabels, true)
+      observer?.disconnect()
     }
-
-    if (overflowAutoOpenTimerRef.current !== null) {
-      return
-    }
-
-    overflowAutoOpenTimerRef.current = window.setTimeout(() => {
-      overflowAutoOpenTimerRef.current = null
-      overflowOpenedByDragRef.current = true
-      setIsOverflowOpen(true)
-      requestAnimationFrame(() => {
-        updateOverflowPopoutPosition()
-      })
-    }, 200)
-  }, [isOverflowOpen, sidebarOverflowPlaylists.length, trackDrag, updateOverflowPopoutPosition])
+  }, [trackDrag])
 
   useEffect(() => {
     const previousTrackDrag = previousTrackDragRef.current
     previousTrackDragRef.current = trackDrag
 
     if (trackDrag) return
+    if (overflowOpenedByDragRef.current) {
+      overflowOpenedByDragRef.current = false
+      setIsOverflowOpen(false)
+    }
     if (previousTrackDrag?.dropTarget?.surface !== 'sidebar') return
 
     const settledKey = previousTrackDrag.dropTarget.kind === 'playlist'
@@ -647,6 +603,7 @@ export default function Sidebar() {
 
   return (
     <aside
+      ref={sidebarRef}
       className="sidebar"
       data-controller-region="true"
       data-controller-region-id="sidebar"
@@ -662,11 +619,12 @@ export default function Sidebar() {
         {navItems.map((item) => (
           <button
             key={item.id}
-            className={`sidebar-icon-btn nav-btn ${activeView === item.id ? 'active' : ''}`}
+            className={`sidebar-icon-btn nav-btn ${activeView === item.id ? 'active' : ''} ${trackDrag && item.id === 'playlist' ? 'is-track-drag-nav-target' : ''} ${trackDrag?.springTarget?.kind === 'playlist-browser' && item.id === 'playlist' ? 'is-track-drag-nav-hover' : ''}`.trim()}
             onClick={() => handleNavClick(item.id)}
             aria-label={item.label}
             data-controller-tab={item.id}
             data-sidebar-tooltip={item.label}
+            data-track-drag-playlist-browser={item.id === 'playlist' ? '' : undefined}
           >
             {item.icon}
           </button>
@@ -687,7 +645,7 @@ export default function Sidebar() {
                 <button
                   key={playlist.id}
                   draggable={!trackDrag}
-                  className={`sidebar-icon-btn nav-btn sidebar-playlist-btn ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''} ${!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? getSidebarDropClassName(`playlist:${playlist.id}`) : ''} ${isDragging ? 'is-pin-dragging' : ''} ${isPinDropTarget ? 'is-pin-drop-target' : ''}`.trim()}
+                  className={`sidebar-icon-btn nav-btn sidebar-playlist-btn ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''} ${!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? getSidebarDropClassName(`playlist:${playlist.id}`) : trackDrag ? 'is-drop-unavailable' : ''} ${isDragging ? 'is-pin-dragging' : ''} ${isPinDropTarget ? 'is-pin-drop-target' : ''}`.trim()}
                   onClick={() => void handleOpenPlaylist(playlist.id)}
                   onDragStart={(event) => handleSidebarPlaylistDragStart(event, playlist.id)}
                   onDragOver={(event) => handleSidebarPlaylistDragOver(event, playlist.id)}
@@ -708,6 +666,8 @@ export default function Sidebar() {
                   data-sidebar-tooltip={playlist.name}
                   data-sidebar-drop-target={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? 'playlist' : undefined}
                   data-sidebar-drop-playlist-id={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? playlist.id : undefined}
+                  data-sidebar-drop-overlay-key={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? `playlist:${playlist.id}` : undefined}
+                  data-sidebar-drop-overlay-label={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? `Add to ${playlist.name}` : undefined}
                 >
                   {playlist.isSystemFavorites ? (
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -720,9 +680,6 @@ export default function Sidebar() {
                       className="sidebar-playlist-btn-cover"
                     />
                   )}
-                  {!playlist.isSystemFavorites && playlist.kind !== 'dynamic' && (
-                    <span className="sidebar-drop-label">Add to Playlist</span>
-                  )}
                 </button>
               )
             })}
@@ -733,14 +690,16 @@ export default function Sidebar() {
           {sidebarOverflowPlaylists.length > 0 && (
             <button
               ref={overflowButtonRef}
-              className={`sidebar-icon-btn nav-btn sidebar-playlist-overflow-btn ${isOverflowOpen || (activeView === 'playlist' && selectedPlaylistIsOverflow) ? 'active' : ''} ${Boolean(trackDrag) ? 'is-drop-active' : ''} ${isOverflowDragHover ? 'is-drop-hover' : ''}`.trim()}
-              onClick={() => {
-                overflowOpenedByDragRef.current = false
+              className={`sidebar-icon-btn nav-btn sidebar-playlist-overflow-btn ${isOverflowOpen || (activeView === 'playlist' && selectedPlaylistIsOverflow) ? 'active' : ''} ${Boolean(trackDrag) ? 'is-drop-active' : ''} ${trackDrag?.springTarget?.kind === 'sidebar-overflow' ? 'is-drop-hover' : ''}`.trim()}
+              onClick={(event) => {
+                overflowOpenedByDragRef.current = Boolean(trackDrag) && !event.nativeEvent.isTrusted
                 setIsOverflowOpen((value) => !value)
                 requestAnimationFrame(() => updateOverflowPopoutPosition())
               }}
               aria-label={isOverflowOpen ? 'Hide playlists' : `Show more playlists (${sidebarOverflowPlaylists.length})`}
+              aria-expanded={isOverflowOpen}
               data-sidebar-tooltip={isOverflowOpen ? 'Hide playlists' : `More playlists (${sidebarOverflowPlaylists.length})`}
+              data-track-drag-sidebar-overflow={trackDrag && !isOverflowOpen ? '' : undefined}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                 <circle cx="5" cy="12" r="1.8" />
@@ -759,12 +718,13 @@ export default function Sidebar() {
             aria-label="Create playlist"
             data-sidebar-tooltip="Create playlist"
             data-sidebar-drop-target="create-playlist"
+            data-sidebar-drop-overlay-key="create-playlist"
+            data-sidebar-drop-overlay-label="Create Playlist"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
-            <span className="sidebar-drop-label">Create Playlist</span>
           </button>
         </div>
       </div>
@@ -802,7 +762,7 @@ export default function Sidebar() {
               {sidebarOverflowPlaylists.map((playlist) => (
                 <button
                   key={playlist.id}
-                  className={`sidebar-playlist-popout-item ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''} ${!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? getSidebarDropClassName(`playlist:${playlist.id}`) : ''}`.trim()}
+                  className={`sidebar-playlist-popout-item ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''} ${!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? getSidebarDropClassName(`playlist:${playlist.id}`) : trackDrag ? 'is-drop-unavailable' : ''}`.trim()}
                   onClick={() => void handleOpenPlaylist(playlist.id)}
                   onContextMenu={(event) => {
                     event.preventDefault()
@@ -844,6 +804,20 @@ export default function Sidebar() {
           style={{ left: sidebarTooltip.left, top: sidebarTooltip.top }}
         >
           {sidebarTooltip.label}
+        </div>,
+        document.body
+      )}
+      {trackDrag && sidebarDropOverlayLabels.length > 0 && createPortal(
+        <div className="sidebar-drop-overlay-labels" aria-hidden="true">
+          {sidebarDropOverlayLabels.map((entry) => (
+            <div
+              key={entry.key}
+              className={`sidebar-drop-overlay-label ${getSidebarDropKey(activeSidebarDropTarget) === entry.key ? 'is-drop-hover' : ''}`.trim()}
+              style={{ left: entry.left, top: entry.top }}
+            >
+              {entry.label}
+            </div>
+          ))}
         </div>,
         document.body
       )}

@@ -663,6 +663,7 @@ export default function TransportBar() {
             className={`transport-qi-btn ${showQueue ? 'active' : ''}`}
             onClick={toggleQueue}
             title="Toggle queue"
+            data-track-drop-queue-toggle
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/>

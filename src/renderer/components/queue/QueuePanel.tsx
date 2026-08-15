@@ -1,6 +1,5 @@
 import {
   CSSProperties,
-  DragEvent,
   memo,
   MouseEvent,
   ReactElement,
@@ -19,7 +18,10 @@ import {
   type QueueTrackEntry
 } from '../../stores/playerStore'
 import { useLibraryStore, type DbTrack } from '../../stores/libraryStore'
-import { useUIStore } from '../../stores/uiStore'
+import { useUIStore, type TrackDragItem } from '../../stores/uiStore'
+import { usePlaylistStore } from '../../stores/playlistStore'
+import { shouldSuppressTrackRowDrag } from '../library/trackDragTarget'
+import { hasTrackDragActivated } from '../drag/trackDragModel'
 import { Track } from '../../types/audio'
 import {
   CONTROLLER_VIRTUAL_MOVE_EVENT,
@@ -28,7 +30,6 @@ import {
 } from '../../utils/controllerFocus'
 import {
   createQueueVirtualLayout,
-  resolveQueueDropIndex,
   resolveQueueVirtualRowLocation,
   type QueueVirtualLayout
 } from './queueVirtualModel'
@@ -36,6 +37,7 @@ import {
 interface QueueSectionRow {
   kind: 'section'
   label: string
+  dropIndex: number
   showShuffled?: boolean
   faded?: boolean
 }
@@ -47,7 +49,7 @@ interface QueueTrackRow {
   queueId: string | null
   manual: boolean
   dragIndex: number | null
-  draggable: boolean
+  sourceIndex: number | null
   removable: boolean
 }
 
@@ -65,16 +67,12 @@ interface QueueVirtualModel {
 
 interface QueueRowSharedProps {
   model: QueueVirtualModel
-  reorderDragOverIndex: number | null
   insertDropIndex: number | null
   isCurrentLoading: boolean
   currentLoadingPercent: number | null
   currentLoadingChunkCount: number
   formatDuration: (seconds: number) => string
-  onDragStart: (event: DragEvent<HTMLDivElement>, queueId: string, index: number) => void
-  onDragOver: (event: DragEvent<HTMLDivElement>, index: number) => void
-  onDragEnd: () => void
-  onDragLeave: () => void
+  onTrackPointerDown: (event: React.PointerEvent<HTMLDivElement>, row: QueueTrackRow) => void
   onPlayQueuedTrack: (queueId: string) => void
   onRemoveTrack: (event: MouseEvent<HTMLButtonElement>, queueId: string) => void
 }
@@ -82,7 +80,6 @@ interface QueueRowSharedProps {
 const QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX = 56
 const QUEUE_SECTION_ROW_HEIGHT_FALLBACK_PX = 32
 const QUEUE_LIST_OVERSCAN_COUNT = 8
-const QUEUE_DRAG_SCROLL_EDGE_PX = 40
 
 function dbTrackToQueueTrack(dbTrack: DbTrack): Track {
   return {
@@ -149,18 +146,20 @@ function resolveQueueVirtualRow(model: QueueVirtualModel, index: number): QueueV
 
   if (location.kind === 'section') {
     if (location.section === 'current') {
-      return { kind: 'section', label: 'Now Playing' }
+      return { kind: 'section', label: 'Now Playing', dropIndex: 0 }
     }
     if (location.section === 'upcoming') {
       return {
         kind: 'section',
         label: `Up Next (${model.layout.upcomingCount})`,
+        dropIndex: 0,
         showShuffled: model.shuffle
       }
     }
     return {
       kind: 'section',
       label: 'Previously Played',
+      dropIndex: model.layout.upcomingCount,
       faded: true
     }
   }
@@ -174,7 +173,7 @@ function resolveQueueVirtualRow(model: QueueVirtualModel, index: number): QueueV
       queueId: null,
       manual: false,
       dragIndex: null,
-      draggable: false,
+      sourceIndex: null,
       removable: false
     }
   }
@@ -192,7 +191,7 @@ function resolveQueueVirtualRow(model: QueueVirtualModel, index: number): QueueV
       queueId,
       manual: item.origin === 'manual',
       dragIndex: location.itemIndex,
-      draggable: true,
+      sourceIndex: location.itemIndex,
       removable: true
     }
   }
@@ -208,7 +207,7 @@ function resolveQueueVirtualRow(model: QueueVirtualModel, index: number): QueueV
     queueId: null,
     manual: false,
     dragIndex: null,
-    draggable: false,
+    sourceIndex: location.itemIndex,
     removable: false
   }
 }
@@ -251,16 +250,12 @@ function QueueRowRenderer({
   index,
   style,
   model,
-  reorderDragOverIndex,
   insertDropIndex,
   isCurrentLoading,
   currentLoadingPercent,
   currentLoadingChunkCount,
   formatDuration,
-  onDragStart,
-  onDragOver,
-  onDragEnd,
-  onDragLeave,
+  onTrackPointerDown,
   onPlayQueuedTrack,
   onRemoveTrack
 }: RowComponentProps<QueueRowSharedProps>): ReactElement | null {
@@ -269,7 +264,12 @@ function QueueRowRenderer({
 
   if (row.kind === 'section') {
     return (
-      <div className="queue-list-item" style={style as CSSProperties} {...ariaAttributes}>
+      <div
+        className="queue-list-item"
+        style={style as CSSProperties}
+        data-track-drop-queue-fixed-index={row.dropIndex}
+        {...ariaAttributes}
+      >
         <div className={`queue-section-title ${row.faded ? 'queue-section-title-faded' : ''}`}>
           {row.label}
           {row.showShuffled && <span className="queue-section-shuffled">Shuffled</span>}
@@ -278,8 +278,11 @@ function QueueRowRenderer({
     )
   }
 
-  const isReorderDragOver = row.dragIndex !== null && reorderDragOverIndex === row.dragIndex
   const isExternalDropBefore = row.variant === 'upcoming' && row.dragIndex !== null && insertDropIndex === row.dragIndex
+  const isExternalDropAfter = row.variant === 'upcoming'
+    && row.dragIndex !== null
+    && row.dragIndex === model.layout.upcomingCount - 1
+    && insertDropIndex === model.layout.upcomingCount
   const isUnavailable = isUnavailableQueueTrack(row.track)
   const canPlay = row.queueId !== null && row.variant === 'upcoming' && !isUnavailable
   const isLoadingRow = row.variant === 'current'
@@ -300,29 +303,27 @@ function QueueRowRenderer({
       <div
         className={`queue-item ${row.variant === 'current' ? 'queue-item-current' : ''} ${
           row.variant === 'previous' ? 'queue-item-previous' : ''
-        } ${isReorderDragOver ? 'queue-item-drag-over' : ''} ${
+        } ${
           isExternalDropBefore ? 'queue-item-insert-before' : ''
-        } ${isUnavailable ? 'queue-item-unavailable' : ''} ${isLoadingRow ? 'queue-item-loading' : ''}`}
+        } ${isExternalDropAfter ? 'queue-item-insert-after' : ''} ${isUnavailable ? 'queue-item-unavailable' : ''} ${isLoadingRow ? 'queue-item-loading' : ''}`}
+        data-track-drop-queue-fixed-index={row.variant === 'current' || row.variant === 'previous'
+          ? row.variant === 'current' ? 0 : model.layout.upcomingCount
+          : undefined}
+        data-track-drop-queue-index={row.variant === 'upcoming' ? row.dragIndex ?? undefined : undefined}
         data-controller-focusable={canPlay ? 'true' : undefined}
         data-controller-key={row.queueId ? `queue:${row.queueId}` : undefined}
         data-controller-index={index}
         tabIndex={canPlay ? -1 : undefined}
         role={canPlay ? 'button' : undefined}
         aria-label={canPlay ? `Play ${row.track.title} by ${row.track.artist}` : undefined}
-        draggable={row.draggable}
-        onDragStart={row.draggable && row.dragIndex !== null && row.queueId ? (event) => onDragStart(event, row.queueId!, row.dragIndex!) : undefined}
-        onDragOver={row.draggable && row.dragIndex !== null ? (event) => onDragOver(event, row.dragIndex!) : undefined}
-        onDragEnd={row.draggable ? onDragEnd : undefined}
-        onDragLeave={row.draggable ? onDragLeave : undefined}
+        onPointerDown={(event) => onTrackPointerDown(event, row)}
         onClick={canPlay && row.queueId ? () => onPlayQueuedTrack(row.queueId!) : undefined}
       >
-        {row.draggable && (
-          <div className="queue-item-drag-handle">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M3 15h18v-2H3v2zm0 4h18v-2H3v2zm0-8h18V9H3v2zm0-6v2h18V5H3z" />
-            </svg>
-          </div>
-        )}
+        <div className="queue-item-drag-handle" aria-hidden="true">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M3 15h18v-2H3v2zm0 4h18v-2H3v2zm0-8h18V9H3v2zm0-6v2h18V5H3z" />
+          </svg>
+        </div>
         <div className="queue-item-info">
           <div className="queue-item-title">
             {isLoadingRow && (
@@ -399,24 +400,24 @@ export default function QueuePanel() {
   const playbackHistory = usePlayerStore((state) => state.playbackHistory)
   const playQueuedItem = usePlayerStore((state) => state.playQueuedItem)
   const removeUpcomingItem = usePlayerStore((state) => state.removeUpcomingItem)
-  const moveUpcomingItem = usePlayerStore((state) => state.moveUpcomingItem)
   const clearAllQueues = usePlayerStore((state) => state.clearAllQueues)
   const trackByPath = useLibraryStore((state) => state.trackByPath)
   const trackCacheVersion = useLibraryStore((state) => state.trackCacheVersion)
-  const trackDrag = useUIStore((state) => state.trackDrag)
-  const setTrackDragDropTarget = useUIStore((state) => state.setTrackDragDropTarget)
+  const trackDragActive = useUIStore((state) => Boolean(state.trackDrag))
+  const queueDropTarget = useUIStore((state) => state.trackDrag?.dropTarget?.surface === 'queue'
+    ? state.trackDrag.dropTarget
+    : null)
+  const queueDragItemCount = useUIStore((state) => state.trackDrag?.items.length ?? 0)
+  const startTrackDrag = useUIStore((state) => state.startTrackDrag)
   const queueNowPlayingRevealRequest = useUIStore((state) => state.queueNowPlayingRevealRequest)
   const clearQueueNowPlayingRevealRequest = useUIStore((state) => state.clearQueueNowPlayingRevealRequest)
 
-  const [dragIndex, setDragIndex] = useState<number | null>(null)
-  const [dragQueueId, setDragQueueId] = useState<string | null>(null)
-  const [reorderDragOverIndex, setReorderDragOverIndex] = useState<number | null>(null)
   const [listViewportHeight, setListViewportHeight] = useState(0)
   const [queueItemRowHeight, setQueueItemRowHeight] = useState(QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX)
   const [queueSectionRowHeight, setQueueSectionRowHeight] = useState(QUEUE_SECTION_ROW_HEIGHT_FALLBACK_PX)
-  const [queueScrollGlowEdge, setQueueScrollGlowEdge] = useState<'top' | 'bottom' | null>(null)
   const [isDropSettling, setIsDropSettling] = useState(false)
-  const dragNodeRef = useRef<HTMLDivElement | null>(null)
+  const queuePointerCleanupRef = useRef<(() => void) | null>(null)
+  const suppressQueueClickRef = useRef(false)
   const listRef = useRef<ListImperativeAPI>(null)
   const queueContentRef = useRef<HTMLDivElement | null>(null)
   const controllerGroupRef = useRef<HTMLDivElement | null>(null)
@@ -460,7 +461,7 @@ export default function QueuePanel() {
 
   useEffect(() => {
     return () => {
-      dragNodeRef.current?.classList.remove('dragging')
+      queuePointerCleanupRef.current?.()
       if (settleTimerRef.current !== null) {
         window.clearTimeout(settleTimerRef.current)
       }
@@ -500,84 +501,7 @@ export default function QueuePanel() {
   }, [])
 
   useEffect(() => {
-    const drag = trackDrag
-    const element = queueContentRef.current
-    if (!drag || !element) {
-      setQueueScrollGlowEdge(null)
-      setTrackDragDropTarget('queue', null)
-      return
-    }
-
-    const scrollElement = (element.querySelector('.queue-list-virtualized') as HTMLElement | null) ?? element
-    const rect = scrollElement.getBoundingClientRect()
-
-    if (
-      drag.pointerX < rect.left
-      || drag.pointerX > rect.right
-      || drag.pointerY < rect.top
-      || drag.pointerY > rect.bottom
-    ) {
-      setQueueScrollGlowEdge(null)
-      setTrackDragDropTarget('queue', null)
-      return
-    }
-
-    const distanceFromTop = drag.pointerY - rect.top
-    const distanceFromBottom = rect.bottom - drag.pointerY
-    if (distanceFromTop < QUEUE_DRAG_SCROLL_EDGE_PX && scrollElement.scrollTop > 0) {
-      setQueueScrollGlowEdge('top')
-      scrollElement.scrollTop = Math.max(0, scrollElement.scrollTop - Math.ceil((QUEUE_DRAG_SCROLL_EDGE_PX - distanceFromTop) / 4))
-    } else if (
-      distanceFromBottom < QUEUE_DRAG_SCROLL_EDGE_PX
-      && scrollElement.scrollTop + scrollElement.clientHeight < scrollElement.scrollHeight
-    ) {
-      setQueueScrollGlowEdge('bottom')
-      scrollElement.scrollTop += Math.ceil((QUEUE_DRAG_SCROLL_EDGE_PX - distanceFromBottom) / 4)
-    } else {
-      setQueueScrollGlowEdge(null)
-    }
-
-    const relativeY = drag.pointerY - rect.top + scrollElement.scrollTop
-    const hasVisibleQueue = Boolean(currentTrack) || layout.upcomingCount > 0
-    if (!hasVisibleQueue) {
-      setTrackDragDropTarget('queue', {
-        surface: 'queue',
-        kind: 'empty',
-        index: 0
-      })
-      return
-    }
-
-    let upcomingStartOffset = 0
-    if (currentTrack) {
-      upcomingStartOffset += queueSectionRowHeight + queueItemRowHeight
-    }
-    if (layout.upcomingCount > 0) {
-      upcomingStartOffset += queueSectionRowHeight
-    }
-
-    let targetIndex = 0
-    if (layout.upcomingCount > 0) {
-      const localY = relativeY - upcomingStartOffset
-      targetIndex = resolveQueueDropIndex(localY, queueItemRowHeight, layout.upcomingCount)
-    }
-
-    setTrackDragDropTarget('queue', {
-      surface: 'queue',
-      kind: 'upcoming',
-      index: targetIndex
-    })
-  }, [
-    currentTrack,
-    layout.upcomingCount,
-    trackDrag,
-    queueItemRowHeight,
-    queueSectionRowHeight,
-    setTrackDragDropTarget
-  ])
-
-  useEffect(() => {
-    const dragActive = Boolean(trackDrag)
+    const dragActive = trackDragActive
     const hadDrag = previousDragActiveRef.current
     const previousUpcomingLength = previousUpcomingLengthRef.current
 
@@ -594,7 +518,7 @@ export default function QueuePanel() {
 
     previousDragActiveRef.current = dragActive
     previousUpcomingLengthRef.current = upcomingQueueIds.length
-  }, [trackDrag, upcomingQueueIds.length])
+  }, [trackDragActive, upcomingQueueIds.length])
 
   const formatDuration = useCallback((seconds: number): string => {
     if (!seconds || !isFinite(seconds)) return '--:--'
@@ -603,16 +527,11 @@ export default function QueuePanel() {
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }, [])
 
-  const insertDropIndex = trackDrag?.dropTarget?.surface === 'queue' && trackDrag.dropTarget.kind === 'empty'
-    ? 0
-    : trackDrag?.dropTarget?.surface === 'queue' && trackDrag.dropTarget.kind === 'upcoming'
-      ? trackDrag.dropTarget.index
-      : null
-  const queueInsertTrackCount = trackDrag?.tracks.length ?? 0
-  const isQueueDropActive = Boolean(trackDrag)
-  const isQueueDropHover = trackDrag?.dropTarget?.surface === 'queue'
-  const queueDropLabel = queueInsertTrackCount > 1
-    ? `${isQueueDropHover ? 'Drop' : 'Drag'} ${queueInsertTrackCount} tracks to Queue`
+  const insertDropIndex = queueDropTarget?.index ?? null
+  const isQueueDropActive = trackDragActive
+  const isQueueDropHover = queueDropTarget !== null
+  const queueDropLabel = queueDragItemCount > 1
+    ? `${isQueueDropHover ? 'Drop' : 'Drag'} ${queueDragItemCount} tracks to Queue`
     : `${isQueueDropHover ? 'Drop' : 'Drag'} track to Queue`
 
   useEffect(() => {
@@ -643,37 +562,73 @@ export default function QueuePanel() {
     }
   }, [clearQueueNowPlayingRevealRequest, layout.currentTrackIndex, queueNowPlayingRevealRequest, queueItemRowHeight, queueSectionRowHeight])
 
-  const handleDragStart = useCallback((event: DragEvent<HTMLDivElement>, queueId: string, index: number) => {
-    setDragQueueId(queueId)
-    setDragIndex(index)
-    dragNodeRef.current = event.currentTarget
-    event.dataTransfer.effectAllowed = 'move'
-    setTimeout(() => {
-      dragNodeRef.current?.classList.add('dragging')
-    }, 0)
-  }, [])
+  const handleTrackPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>, row: QueueTrackRow) => {
+    if (event.button !== 0 || useUIStore.getState().trackDrag) return
+    const target = event.target instanceof Element ? event.target : null
+    if (shouldSuppressTrackRowDrag(target, event.currentTarget)) return
 
-  const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>, index: number) => {
-    event.preventDefault()
-    if (dragIndex === null || dragIndex === index) return
-    setReorderDragOverIndex(index)
-  }, [dragIndex])
+    const start = { pointerId: event.pointerId, x: event.clientX, y: event.clientY }
+    queuePointerCleanupRef.current?.()
 
-  const handleDragEnd = useCallback(() => {
-    if (dragQueueId && dragIndex !== null && reorderDragOverIndex !== null && dragIndex !== reorderDragOverIndex) {
-      moveUpcomingItem(dragQueueId, reorderDragOverIndex)
+    const cleanup = () => {
+      document.removeEventListener('pointermove', handlePointerMove)
+      document.removeEventListener('pointerup', handlePointerUp)
+      document.removeEventListener('pointercancel', handlePointerCancel)
+      queuePointerCleanupRef.current = null
     }
-    dragNodeRef.current?.classList.remove('dragging')
-    setDragIndex(null)
-    setDragQueueId(null)
-    setReorderDragOverIndex(null)
-  }, [dragIndex, dragQueueId, moveUpcomingItem, reorderDragOverIndex])
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== start.pointerId) return
+      if (!hasTrackDragActivated(start.x, start.y, moveEvent.clientX, moveEvent.clientY)) return
 
-  const handleDragLeave = useCallback(() => {
-    setReorderDragOverIndex(null)
-  }, [])
+      const item: TrackDragItem = {
+        key: row.queueId ? `queue:${row.queueId}` : `queue:${row.variant}:${row.sourceIndex ?? 0}:${row.track.path}`,
+        path: row.track.path,
+        title: row.track.title,
+        artist: row.track.artist,
+        track: row.track,
+        playlistEntryId: null,
+        missing: false
+      }
+      const ui = useUIStore.getState()
+      const playlist = usePlaylistStore.getState()
+      suppressQueueClickRef.current = true
+      startTrackDrag(
+        [item],
+        {
+          kind: 'queue',
+          section: row.variant === 'previous' ? 'history' : row.variant,
+          queueId: row.queueId,
+          index: row.sourceIndex
+        },
+        {
+          activeView: ui.activeView,
+          showQueue: ui.showQueue,
+          selectedPlaylistId: playlist.selectedPlaylistId,
+          playlistSortState: playlist.sortState
+        },
+        moveEvent.pointerId,
+        moveEvent.clientX,
+        moveEvent.clientY
+      )
+      cleanup()
+    }
+    const handlePointerUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId === start.pointerId) cleanup()
+    }
+    const handlePointerCancel = (cancelEvent: PointerEvent) => {
+      if (cancelEvent.pointerId === start.pointerId) cleanup()
+    }
+    document.addEventListener('pointermove', handlePointerMove)
+    document.addEventListener('pointerup', handlePointerUp)
+    document.addEventListener('pointercancel', handlePointerCancel)
+    queuePointerCleanupRef.current = cleanup
+  }, [startTrackDrag])
 
   const handlePlayQueuedTrack = useCallback((queueId: string) => {
+    if (suppressQueueClickRef.current) {
+      suppressQueueClickRef.current = false
+      return
+    }
     void playQueuedItem(queueId, { manualStart: true })
   }, [playQueuedItem])
 
@@ -699,29 +654,21 @@ export default function QueuePanel() {
 
   const rowProps = useMemo<QueueRowSharedProps>(() => ({
     model,
-    reorderDragOverIndex,
     insertDropIndex,
     isCurrentLoading,
     currentLoadingPercent: currentLoadingProgress?.percent ?? null,
     currentLoadingChunkCount: currentLoadingProgress?.chunkCount ?? 0,
     formatDuration,
-    onDragStart: handleDragStart,
-    onDragOver: handleDragOver,
-    onDragEnd: handleDragEnd,
-    onDragLeave: handleDragLeave,
+    onTrackPointerDown: handleTrackPointerDown,
     onPlayQueuedTrack: handlePlayQueuedTrack,
     onRemoveTrack: handleRemoveTrack
   }), [
     model,
-    reorderDragOverIndex,
     insertDropIndex,
     isCurrentLoading,
     currentLoadingProgress,
     formatDuration,
-    handleDragStart,
-    handleDragOver,
-    handleDragEnd,
-    handleDragLeave,
+    handleTrackPointerDown,
     handlePlayQueuedTrack,
     handleRemoveTrack
   ])
@@ -782,11 +729,11 @@ export default function QueuePanel() {
             {queueDropLabel}
           </div>
         )}
-        <div className="queue-empty-drop-zone-wrap" ref={queueContentRef}>
-          <div className={`queue-empty-drop-zone ${trackDrag?.dropTarget?.surface === 'queue' && trackDrag.dropTarget.kind === 'empty' ? 'queue-empty-drop-zone-active' : ''}`}>
+        <div className="queue-empty-drop-zone-wrap" ref={queueContentRef} data-track-drop-queue-count="0">
+          <div className={`queue-empty-drop-zone ${queueDropTarget?.kind === 'empty' ? 'queue-empty-drop-zone-active' : ''}`}>
             <p>No tracks in queue</p>
             <p className="queue-empty-hint">
-              {trackDrag ? 'Drop here to build a user queue' : 'Cmd/Ctrl-select tracks to drop them here'}
+              {trackDragActive ? 'Drop here to build a user queue' : 'Drag tracks here to build a user queue'}
             </p>
           </div>
         </div>
@@ -810,9 +757,9 @@ export default function QueuePanel() {
         </div>
       )}
 
-      <div className="queue-content" ref={queueContentRef} data-controller-scroll>
-        <div className={`queue-scroll-glow queue-scroll-glow-top ${queueScrollGlowEdge === 'top' ? 'active' : ''}`} />
-        <div className={`queue-scroll-glow queue-scroll-glow-bottom ${queueScrollGlowEdge === 'bottom' ? 'active' : ''}`} />
+      <div className="queue-content" ref={queueContentRef} data-controller-scroll data-track-drop-queue-count={layout.upcomingCount}>
+        <div className="queue-scroll-glow queue-scroll-glow-top" />
+        <div className="queue-scroll-glow queue-scroll-glow-bottom" />
         <List
           className="queue-list-virtualized"
           defaultHeight={QUEUE_ITEM_ROW_HEIGHT_FALLBACK_PX * 8}

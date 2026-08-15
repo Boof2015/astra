@@ -2131,6 +2131,78 @@ test('playlist reorder preserves missing track entries after cleanup', async (t)
   assert.deepEqual(reorderedEntries.map((entry) => entry.missing), [false, true])
 })
 
+test('playlist drag insertion is atomic, ordered, clamped, and reports duplicate skips', async (t) => {
+  await setupEmptyLibrary(t)
+  const playlist = await library.createPlaylist('Precise insertion')
+
+  await library.addToPlaylist(playlist.id, ['/music/a.flac', '/music/d.flac'])
+  const middle = await library.insertTracksIntoPlaylist(
+    playlist.id,
+    ['/music/b.flac', '/music/b.flac', '/music/c.flac', '/music/a.flac'],
+    1
+  )
+  assert.deepEqual(middle.insertedTrackPaths, ['/music/b.flac', '/music/c.flac'])
+  assert.equal(middle.insertedEntryIds.length, 2)
+  assert.deepEqual(middle.skippedTrackPaths, ['/music/b.flac', '/music/a.flac'])
+  assert.deepEqual(
+    library.getPlaylistTrackEntries(playlist.id).map((entry) => entry.track_path),
+    ['/music/a.flac', '/music/b.flac', '/music/c.flac', '/music/d.flac']
+  )
+
+  await library.insertTracksIntoPlaylist(playlist.id, ['/music/start.flac'], -50)
+  await library.insertTracksIntoPlaylist(playlist.id, ['/music/end.flac'], 50_000)
+  assert.deepEqual(
+    library.getPlaylistTrackEntries(playlist.id).map((entry) => entry.track_path),
+    ['/music/start.flac', '/music/a.flac', '/music/b.flac', '/music/c.flac', '/music/d.flac', '/music/end.flac']
+  )
+  assert.deepEqual(await library.insertTracksIntoPlaylist(playlist.id, ['/music/a.flac'], 'end'), {
+    insertedEntryIds: [],
+    insertedTrackPaths: [],
+    skippedTrackPaths: ['/music/a.flac']
+  })
+  await assert.rejects(
+    () => library.insertTracksIntoPlaylist(999_999, ['/music/nope.flac'], 0),
+    /Playlist not found/
+  )
+})
+
+test('playlist drag move preserves batch order and adjusts positions after removal', async (t) => {
+  await setupEmptyLibrary(t)
+  const playlist = await library.createPlaylist('Direct moves')
+  await library.addToPlaylist(playlist.id, [
+    '/music/a.flac',
+    '/music/b.flac',
+    '/music/c.flac',
+    '/music/d.flac',
+    '/music/e.flac'
+  ])
+  const entries = library.getPlaylistTrackEntries(playlist.id)
+
+  assert.deepEqual(await library.movePlaylistEntries(playlist.id, [entries[1].id, entries[2].id], 5), { changed: true })
+  assert.deepEqual(
+    library.getPlaylistTrackEntries(playlist.id).map((entry) => entry.track_path),
+    ['/music/a.flac', '/music/d.flac', '/music/e.flac', '/music/b.flac', '/music/c.flac']
+  )
+
+  const movedEntries = library.getPlaylistTrackEntries(playlist.id)
+  assert.deepEqual(await library.movePlaylistEntries(playlist.id, [movedEntries[3].id, movedEntries[4].id], 5), { changed: false })
+  await assert.rejects(
+    () => library.movePlaylistEntries(playlist.id, [movedEntries[0].id, movedEntries[0].id], 2),
+    /does not match current playlist content/
+  )
+  const otherPlaylist = await library.createPlaylist('Other playlist')
+  await library.addToPlaylist(otherPlaylist.id, ['/music/other.flac'])
+  const foreignEntry = library.getPlaylistTrackEntries(otherPlaylist.id)[0]
+  await assert.rejects(
+    () => library.movePlaylistEntries(playlist.id, [foreignEntry.id], 0),
+    /does not match current playlist content/
+  )
+  await assert.rejects(
+    () => library.movePlaylistEntries(999_999, [movedEntries[0].id], 0),
+    /Playlist not found/
+  )
+})
+
 test('playlist cleanup reassociates a renamed track by captured metadata', async (t) => {
   const dir = await setupEmptyLibrary(t)
   library.setReplayGainScanEnabled(false)
@@ -2962,6 +3034,14 @@ test('dynamic playlists reject manual membership edits while normal playlists st
   )
   await assert.rejects(
     () => library.reorderPlaylistEntries(dynamicPlaylist.id, [1]),
+    /Dynamic playlists cannot reorder tracks manually/
+  )
+  await assert.rejects(
+    () => library.insertTracksIntoPlaylist(dynamicPlaylist.id, [trackPath], 0),
+    /Dynamic playlists cannot accept manual tracks/
+  )
+  await assert.rejects(
+    () => library.movePlaylistEntries(dynamicPlaylist.id, [1], 0),
     /Dynamic playlists cannot reorder tracks manually/
   )
 

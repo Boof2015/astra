@@ -6,6 +6,7 @@ import ViewRouter from './components/layout/ViewRouter'
 import TransportBar from './components/layout/TransportBar'
 import QueuePanel from './components/queue/QueuePanel'
 import QueuePanelBoundary from './components/queue/QueuePanelBoundary'
+import TrackDragRuntime from './components/drag/TrackDragRuntime'
 import CollectionQueueContextMenu from './components/queue/CollectionQueueContextMenu'
 import InfoSidebar from './components/layout/InfoSidebar'
 import FullscreenMode from './components/layout/FullscreenMode'
@@ -632,6 +633,7 @@ function App() {
         <LyricsEditorPanel />
         <SignalShareModal />
         <CollectionQueueContextMenu />
+        <TrackDragRuntime />
         {isFullscreen && <FullscreenMode />}
         <ControllerRuntime showOverlays />
       </div>

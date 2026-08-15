@@ -82,6 +82,18 @@ export interface PlaylistTrackMembershipSummary {
   matchedTrackCount: number
 }
 
+export type PlaylistInsertPosition = number | 'end'
+
+export interface PlaylistInsertResult {
+  insertedEntryIds: number[]
+  insertedTrackPaths: string[]
+  skippedTrackPaths: string[]
+}
+
+export interface PlaylistMoveResult {
+  changed: boolean
+}
+
 export type PlaylistTrackListSortState = SessionTrackSortState
 
 interface DbTrack {
@@ -156,10 +168,12 @@ interface PlaylistStore {
   previewDynamicPlaylist: (rules: DynamicPlaylistRulesV1) => Promise<DynamicPlaylistPreview>
   renamePlaylist: (id: number, name: string) => Promise<void>
   deletePlaylist: (id: number) => Promise<void>
-  selectPlaylist: (id: number) => Promise<void>
+  selectPlaylist: (id: number, shouldCommit?: () => boolean) => Promise<void>
   refreshSelectedPlaylist: () => Promise<void>
   clearSelection: () => void
   addToPlaylist: (playlistId: number, trackPaths: string[]) => Promise<void>
+  insertTracksIntoPlaylist: (playlistId: number, trackPaths: string[], position: PlaylistInsertPosition) => Promise<PlaylistInsertResult>
+  movePlaylistEntries: (playlistId: number, entryIds: number[], position: number) => Promise<PlaylistMoveResult>
   removeFromPlaylist: (playlistId: number, trackPath: string) => Promise<void>
   removePlaylistEntry: (playlistId: number, entryId: number) => Promise<void>
   reassociatePlaylistEntry: (playlistId: number, entryId: number, targetTrackPath: string) => Promise<void>
@@ -408,8 +422,10 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       await get().loadPlaylists()
     },
 
-    selectPlaylist: async (id: number) => {
-      set({ selectedPlaylistId: id, ...(await loadPlaylistSelection(id)) })
+    selectPlaylist: async (id: number, shouldCommit?: () => boolean) => {
+      const selection = await loadPlaylistSelection(id)
+      if (shouldCommit && !shouldCommit()) return
+      set({ selectedPlaylistId: id, ...selection })
     },
 
     refreshSelectedPlaylist: async () => {
@@ -426,6 +442,24 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       await window.electronAPI.library.addToPlaylist(playlistId, trackPaths)
       await get().loadPlaylists()
       await refreshSelectedPlaylist(playlistId)
+    },
+
+    insertTracksIntoPlaylist: async (playlistId, trackPaths, position) => {
+      const result = await window.electronAPI.library.insertTracksIntoPlaylist(playlistId, trackPaths, position)
+      if (result.insertedEntryIds.length > 0) {
+        await get().loadPlaylists()
+        await refreshSelectedPlaylist(playlistId)
+      }
+      return result
+    },
+
+    movePlaylistEntries: async (playlistId, entryIds, position) => {
+      const result = await window.electronAPI.library.movePlaylistEntries(playlistId, entryIds, position)
+      if (result.changed) {
+        await get().loadPlaylists()
+        await refreshSelectedPlaylist(playlistId)
+      }
+      return result
     },
 
     removeFromPlaylist: async (playlistId: number, trackPath: string) => {

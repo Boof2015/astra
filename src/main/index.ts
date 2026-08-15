@@ -9818,6 +9818,32 @@ ipcMain.handle('library:addToPlaylist', async (_event, playlistId: number, track
   publishCompanionPlaylistEvent(playlistId, 'items-changed')
 })
 
+ipcMain.handle('library:insertTracksIntoPlaylist', async (
+  _event,
+  playlistId: number,
+  trackPaths: string[],
+  position: library.PlaylistInsertPosition
+) => {
+  const result = await library.insertTracksIntoPlaylist(playlistId, trackPaths, position)
+  if (result.insertedEntryIds.length > 0) {
+    publishCompanionPlaylistEvent(playlistId, 'items-changed')
+  }
+  return result
+})
+
+ipcMain.handle('library:movePlaylistEntries', async (
+  _event,
+  playlistId: number,
+  entryIds: number[],
+  position: number
+) => {
+  const result = await library.movePlaylistEntries(playlistId, entryIds, position)
+  if (result.changed) {
+    publishCompanionPlaylistEvent(playlistId, 'items-changed')
+  }
+  return result
+})
+
 ipcMain.handle('library:removeFromPlaylist', async (_event, playlistId: number, trackPath: string) => {
   await library.removeFromPlaylist(playlistId, trackPath)
   publishCompanionPlaylistEvent(playlistId, 'items-changed')

@@ -94,6 +94,92 @@ test('view navigation tracks back and forward history and clears forward on fres
   assert.equal(useUIStore.getState().navigateViewForward(), false)
 })
 
+test('track drag sessions keep stable occurrence payloads and semantic drop state', () => {
+  const ui = useUIStore.getState()
+  ui.startTrackDrag(
+    [{
+      key: 'playlist-entry:42',
+      path: '/music/repeated.flac',
+      title: 'Repeated',
+      artist: 'Artist',
+      track: null,
+      playlistEntryId: 42,
+      missing: true
+    }],
+    { kind: 'track-list', playlistId: 7 },
+    {
+      activeView: 'playlist',
+      showQueue: false,
+      selectedPlaylistId: 7,
+      playlistSortState: { key: 'title', direction: 'asc' }
+    },
+    3,
+    100,
+    200
+  )
+
+  useUIStore.getState().setTrackDragDropTarget('playlist', {
+    surface: 'playlist',
+    kind: 'insert',
+    playlistId: 7,
+    index: 5
+  })
+  useUIStore.getState().setTrackDragItems([
+    {
+      key: 'playlist-entry:42',
+      path: '/music/repeated.flac',
+      title: 'Repeated',
+      artist: 'Artist',
+      track: null,
+      playlistEntryId: 42,
+      missing: true
+    },
+    {
+      key: 'playlist-entry:43',
+      path: '/music/next.flac',
+      title: 'Next',
+      artist: 'Artist',
+      track: null,
+      playlistEntryId: 43,
+      missing: true
+    }
+  ])
+  useUIStore.getState().setTrackDragPhase('dropping')
+
+  const drag = useUIStore.getState().trackDrag
+  assert.equal(drag?.items[0]?.key, 'playlist-entry:42')
+  assert.equal(drag?.items[0]?.playlistEntryId, 42)
+  assert.equal(drag?.items[1]?.key, 'playlist-entry:43')
+  assert.deepEqual(drag?.dropTarget, { surface: 'playlist', kind: 'insert', playlistId: 7, index: 5 })
+  assert.equal(drag?.phase, 'dropping')
+  ui.clearTrackDrag()
+})
+
+test('committed spring navigation restores the complete drag origin on Back', () => {
+  useUIStore.setState({
+    activeView: 'playlist',
+    viewBackHistory: [],
+    viewForwardHistory: [],
+    showQueue: true,
+    playlistNavigationRestoreRequest: null,
+    trackDragCommittedNavigation: null
+  })
+  useUIStore.getState().commitTransientView({
+    activeView: 'playlist',
+    showQueue: false,
+    selectedPlaylistId: 17,
+    playlistSortState: { key: 'artist', direction: 'desc' }
+  })
+
+  assert.deepEqual(useUIStore.getState().viewBackHistory, ['playlist'])
+  assert.equal(useUIStore.getState().navigateViewBack(), true)
+  assert.equal(useUIStore.getState().activeView, 'playlist')
+  assert.equal(useUIStore.getState().showQueue, false)
+  const request = useUIStore.getState().playlistNavigationRestoreRequest
+  assert.equal(request?.playlistId, 17)
+  assert.deepEqual(request?.sortState, { key: 'artist', direction: 'desc' })
+})
+
 test('jump to playing destination updates state and persists to localStorage', () => {
   const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
   const values = new Map<string, string>()

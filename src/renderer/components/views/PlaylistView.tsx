@@ -112,15 +112,6 @@ function PlaylistImportStatusBanner({ status }: { status: PlaylistImportStatus }
   )
 }
 
-function FileCircleExclamationIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} width="16" height="16" viewBox="0 0 576 512" fill="currentColor" aria-hidden="true">
-      {/* Font Awesome Free file-circle-exclamation: https://fontawesome.com/icons/classic/solid/file-circle-exclamation */}
-      <path d="M0 64C0 28.7 28.7 0 64 0h160v128c0 17.7 14.3 32 32 32h128v38.6C310.1 219.5 256 287.4 256 368c0 59.1 29.1 111.3 73.7 143.3-3.2.5-6.4.7-9.7.7H64c-35.3 0-64-28.7-64-64V64zm384 64H256V0l128 128zm48 96a144 144 0 1 1 0 288 144 144 0 1 1 0-288zm0 240a24 24 0 1 0 0-48 24 24 0 1 0 0 48zm0-192c-8.8 0-16 7.2-16 16v80c0 8.8 7.2 16 16 16s16-7.2 16-16v-80c0-8.8-7.2-16-16-16z" />
-    </svg>
-  )
-}
-
 function normalizeSortText(value: string | null | undefined): string {
   return (value ?? '').trim()
 }
@@ -285,7 +276,6 @@ export default function PlaylistView() {
     deletePlaylist,
     setPlaylistCustomCoverFromFile,
     clearPlaylistCustomCover,
-    reorderPlaylistEntries,
     reassociatePlaylistEntry,
     importPlaylistFromFile,
     exportPlaylistToM3u,
@@ -300,6 +290,7 @@ export default function PlaylistView() {
     setSortState
   } = usePlaylistStore()
   const setActiveView = useUIStore((s) => s.setActiveView)
+  const trackDrag = useUIStore((s) => s.trackDrag)
   const playlistTrackRevealRequest = useUIStore((s) => s.playlistTrackRevealRequest)
   const clearPlaylistTrackRevealRequest = useUIStore((s) => s.clearPlaylistTrackRevealRequest)
   const openCollectionQueueMenu = useUIStore((s) => s.openCollectionQueueMenu)
@@ -358,19 +349,12 @@ export default function PlaylistView() {
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState('')
   const [isUpdatingCover, setIsUpdatingCover] = useState(false)
-  const [isReorderMode, setIsReorderMode] = useState(false)
-  const [reorderedEntries, setReorderedEntries] = useState<PlaylistEntry[] | null>(null)
-  const [dragIndex, setDragIndex] = useState<number | null>(null)
-  const [dropIndex, setDropIndex] = useState<number | null>(null)
   const [isDeletingPlaylist, setIsDeletingPlaylist] = useState(false)
-  const [isSavingReorder, setIsSavingReorder] = useState(false)
-  const [reorderError, setReorderError] = useState<string | null>(null)
   const [isCreatePlaylistModalOpen, setIsCreatePlaylistModalOpen] = useState(false)
   const [isImportingPlaylist, setIsImportingPlaylist] = useState(false)
   const [isExportingPlaylist, setIsExportingPlaylist] = useState(false)
   const [playlistImportStatus, setPlaylistImportStatus] = useState<PlaylistImportStatus | null>(null)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
-  const [isDiscardReorderConfirmOpen, setIsDiscardReorderConfirmOpen] = useState(false)
   const [isPlayPending, setIsPlayPending] = useState(false)
   const [isDetailHeaderCollapsed, setIsDetailHeaderCollapsed] = useState(false)
   const [isCoverMenuOpen, setIsCoverMenuOpen] = useState(false)
@@ -392,17 +376,10 @@ export default function PlaylistView() {
     setIsRenaming(false)
     setRenameValue('')
     setIsUpdatingCover(false)
-    setIsReorderMode(false)
-    setReorderedEntries(null)
-    setDragIndex(null)
-    setDropIndex(null)
     setIsDeletingPlaylist(false)
-    setReorderError(null)
     setIsCreatePlaylistModalOpen(false)
     setIsExportingPlaylist(false)
     setIsDeleteConfirmOpen(false)
-    setIsSavingReorder(false)
-    setIsDiscardReorderConfirmOpen(false)
     setIsCoverMenuOpen(false)
     setIsMoreMenuOpen(false)
     setIsDynamicRulesModalOpen(false)
@@ -442,19 +419,6 @@ export default function PlaylistView() {
   }, [isCoverMenuOpen, isMoreMenuOpen])
 
   useEffect(() => {
-    if (!playlistTrackRevealRequest) return
-    if (selectedPlaylistId !== playlistTrackRevealRequest.playlistId) return
-    if (!isReorderMode) return
-
-    setIsReorderMode(false)
-    setReorderedEntries(null)
-    setDragIndex(null)
-    setDropIndex(null)
-    setReorderError(null)
-    setIsDiscardReorderConfirmOpen(false)
-  }, [isReorderMode, playlistTrackRevealRequest, selectedPlaylistId])
-
-  useEffect(() => {
     if (!sortState) return
     const hideBpmKeySort = !showTracklistBpmKey && (sortState.key === 'bpm' || sortState.key === 'musical_key')
     const hideGenreSort = !showTracklistGenre && sortState.key === 'genre'
@@ -475,16 +439,6 @@ export default function PlaylistView() {
       window.clearTimeout(timeoutId)
     }
   }, [playlistImportStatus])
-
-  useEffect(() => {
-    if (!isFavoritesPlaylist || !isReorderMode) return
-    setIsReorderMode(false)
-    setReorderedEntries(null)
-    setDragIndex(null)
-    setDropIndex(null)
-    setReorderError(null)
-    setIsDiscardReorderConfirmOpen(false)
-  }, [isFavoritesPlaylist, isReorderMode])
 
   const playlistCoverHash = useMemo(() => {
     if (isFavoritesPlaylist) {
@@ -551,31 +505,15 @@ export default function PlaylistView() {
     (count, entry) => count + (entry.missing || entry.track === null ? 1 : 0),
     0
   )
-  const playlistEntryCount = isFavoritesPlaylist ? selectedPlaylistTracks.length : selectedPlaylistEntries.length
   const playlistDurationLabel = formatCompactTotalTrackDuration(selectedPlaylistTracks)
 
   useEffect(() => {
-    if (selectedPlaylistId === null || isFavoritesPlaylist || isReorderMode || isSavingReorder) return
+    if (selectedPlaylistId === null || isFavoritesPlaylist) return
     void loadPlaylists()
     void selectPlaylist(selectedPlaylistId)
-  }, [isFavoritesPlaylist, isReorderMode, isSavingReorder, loadPlaylists, selectPlaylist, selectedPlaylistId, trackCacheVersion])
+  }, [isFavoritesPlaylist, loadPlaylists, selectPlaylist, selectedPlaylistId, trackCacheVersion])
 
-  const canReorderTracks = !isFavoritesPlaylist && !isDynamicPlaylist && selectedPlaylistId !== null && selectedPlaylistId > 0
-  const isPlayDisabled = isPlayPending || isReorderMode || isSavingReorder || isDeletingPlaylist || displayPlayableTrackPaths.length === 0
-  const hasUnsavedReorderChanges = useMemo(() => {
-    if (!isReorderMode || !reorderedEntries) return false
-    if (reorderedEntries.length !== selectedPlaylistEntries.length) return true
-
-    for (let index = 0; index < reorderedEntries.length; index += 1) {
-      const reorderedEntry = reorderedEntries[index]
-      const currentEntry = selectedPlaylistEntries[index]
-      if (!reorderedEntry || !currentEntry || reorderedEntry.id !== currentEntry.id) {
-        return true
-      }
-    }
-
-    return false
-  }, [isReorderMode, reorderedEntries, selectedPlaylistEntries])
+  const isPlayDisabled = isPlayPending || isDeletingPlaylist || displayPlayableTrackPaths.length === 0
 
   const isDynamicRulesDraftInvalid = useMemo(() => {
     try {
@@ -594,7 +532,7 @@ export default function PlaylistView() {
   }
 
   const handleStartRename = () => {
-    if (isFavoritesPlaylist || isReorderMode || isSavingReorder) return
+    if (isFavoritesPlaylist) return
     setIsMoreMenuOpen(false)
     setRenameValue(playlist?.name ?? '')
     setIsRenaming(true)
@@ -613,14 +551,12 @@ export default function PlaylistView() {
   }
 
   const handleCreatePlaylist = async (name: string, coverImagePath: string | null) => {
-    if (isReorderMode || isSavingReorder) return
     const playlist = await createPlaylistWithOptions({ name, coverImagePath })
     await selectPlaylist(playlist.id)
     setActiveView('playlist')
   }
 
   const handleCreateDynamicPlaylist = async (name: string, coverImagePath: string | null, rules: DynamicPlaylistRulesV1) => {
-    if (isReorderMode || isSavingReorder) return
     const playlist = await createDynamicPlaylistWithOptions({ name, coverImagePath, rules })
     await selectPlaylist(playlist.id)
     setActiveView('playlist')
@@ -653,7 +589,7 @@ export default function PlaylistView() {
   }, [importPlaylistFromFile, isImportingPlaylist, selectPlaylist, setActiveView])
 
   const handleRequestDelete = () => {
-    if (isFavoritesPlaylist || isReorderMode || isSavingReorder || isDeletingPlaylist) return
+    if (isFavoritesPlaylist || isDeletingPlaylist) return
     setIsMoreMenuOpen(false)
     setIsDeleteConfirmOpen(true)
   }
@@ -691,7 +627,7 @@ export default function PlaylistView() {
   const handleExportPlaylist = useCallback(async () => {
     if (isExportingPlaylist) return
     if (selectedPlaylistId === null) return
-    if (isReorderMode || isSavingReorder || isDeletingPlaylist) return
+    if (isDeletingPlaylist) return
 
     setIsMoreMenuOpen(false)
     setIsExportingPlaylist(true)
@@ -706,10 +642,10 @@ export default function PlaylistView() {
     } finally {
       setIsExportingPlaylist(false)
     }
-  }, [exportPlaylistToM3u, isDeletingPlaylist, isExportingPlaylist, isReorderMode, isSavingReorder, playlistName, selectedPlaylistId])
+  }, [exportPlaylistToM3u, isDeletingPlaylist, isExportingPlaylist, playlistName, selectedPlaylistId])
 
   const handleConfirmDelete = async () => {
-    if (isFavoritesPlaylist || isReorderMode || isSavingReorder || isDeletingPlaylist) return
+    if (isFavoritesPlaylist || isDeletingPlaylist) return
     if (selectedPlaylistId === null) return
     setIsDeletingPlaylist(true)
     try {
@@ -723,7 +659,7 @@ export default function PlaylistView() {
 
   const handleChangeCover = async () => {
     setIsCoverMenuOpen(false)
-    if (isFavoritesPlaylist || selectedPlaylistId === null || selectedPlaylistId <= 0 || isUpdatingCover || isReorderMode || isSavingReorder) return
+    if (isFavoritesPlaylist || selectedPlaylistId === null || selectedPlaylistId <= 0 || isUpdatingCover) return
     const imagePath = await window.electronAPI.openFileDialog({
       title: 'Choose playlist cover',
       filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }]
@@ -740,7 +676,7 @@ export default function PlaylistView() {
 
   const handleClearCover = async () => {
     setIsCoverMenuOpen(false)
-    if (isFavoritesPlaylist || selectedPlaylistId === null || selectedPlaylistId <= 0 || isUpdatingCover || isReorderMode || isSavingReorder) return
+    if (isFavoritesPlaylist || selectedPlaylistId === null || selectedPlaylistId <= 0 || isUpdatingCover) return
     if (!playlist?.custom_cover_hash) return
 
     setIsUpdatingCover(true)
@@ -772,7 +708,7 @@ export default function PlaylistView() {
 
   const handlePlayPlaylist = useCallback(async () => {
     if (playPendingRef.current) return
-    if (selectedPlaylistId === null || displayPlayableTrackPaths.length === 0 || isReorderMode || isSavingReorder) return
+    if (selectedPlaylistId === null || displayPlayableTrackPaths.length === 0) return
 
     playPendingRef.current = true
     setIsPlayPending(true)
@@ -791,7 +727,7 @@ export default function PlaylistView() {
       playPendingRef.current = false
       setIsPlayPending(false)
     }
-  }, [displayPlayableTrackPaths, isReorderMode, isSavingReorder, playlistName, selectedPlaylistId, startPlaybackContextByPaths])
+  }, [displayPlayableTrackPaths, playlistName, selectedPlaylistId, startPlaybackContextByPaths])
 
   const handlePlaylistContentScrollCapture = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     const target = event.target
@@ -811,116 +747,6 @@ export default function PlaylistView() {
   useEffect(() => {
     setIsDetailHeaderCollapsed(false)
   }, [selectedPlaylistId])
-
-  const handleToggleReorderMode = useCallback(() => {
-    if (!canReorderTracks || isSavingReorder) return
-    setIsCoverMenuOpen(false)
-    setIsMoreMenuOpen(false)
-
-    if (isReorderMode) {
-      if (hasUnsavedReorderChanges) {
-        setIsDiscardReorderConfirmOpen(true)
-        return
-      }
-      setIsDiscardReorderConfirmOpen(false)
-      setIsReorderMode(false)
-      setReorderedEntries(null)
-      setDragIndex(null)
-      setDropIndex(null)
-      setReorderError(null)
-      return
-    }
-
-    setIsDiscardReorderConfirmOpen(false)
-    setSortState(null)
-    setReorderError(null)
-    setDragIndex(null)
-    setDropIndex(null)
-    setReorderedEntries([...selectedPlaylistEntries])
-    setIsReorderMode(true)
-  }, [canReorderTracks, hasUnsavedReorderChanges, isReorderMode, isSavingReorder, selectedPlaylistEntries, setSortState])
-
-  const handleCancelReorder = useCallback(() => {
-    if (isSavingReorder) return
-    if (hasUnsavedReorderChanges) {
-      setIsDiscardReorderConfirmOpen(true)
-      return
-    }
-    setIsDiscardReorderConfirmOpen(false)
-    setIsReorderMode(false)
-    setReorderedEntries(null)
-    setDragIndex(null)
-    setDropIndex(null)
-    setReorderError(null)
-  }, [hasUnsavedReorderChanges, isSavingReorder])
-
-  const handleReorderDragStart = useCallback((index: number) => {
-    if (isSavingReorder) return
-    setDragIndex(index)
-  }, [isSavingReorder])
-
-  const handleReorderDragOver = useCallback((index: number) => {
-    if (isSavingReorder) return
-    setDropIndex(index)
-  }, [isSavingReorder])
-
-  const handleReorderDragEnd = useCallback(() => {
-    if (dragIndex === null || dropIndex === null || dragIndex === dropIndex || !reorderedEntries) {
-      setDragIndex(null)
-      setDropIndex(null)
-      return
-    }
-
-    const updated = [...reorderedEntries]
-    const [moved] = updated.splice(dragIndex, 1)
-    if (!moved) {
-      setDragIndex(null)
-      setDropIndex(null)
-      return
-    }
-    updated.splice(dropIndex, 0, moved)
-    setReorderedEntries(updated)
-    setDragIndex(null)
-    setDropIndex(null)
-  }, [dragIndex, dropIndex, reorderedEntries])
-
-  const handleSaveReorder = useCallback(async () => {
-    if (isSavingReorder) return
-    if (!canReorderTracks || selectedPlaylistId === null) return
-    if (!reorderedEntries || reorderedEntries.length === 0) return
-
-    setIsSavingReorder(true)
-    setReorderError(null)
-    try {
-      await reorderPlaylistEntries(selectedPlaylistId, reorderedEntries.map((entry) => entry.id))
-      setIsDiscardReorderConfirmOpen(false)
-      setIsReorderMode(false)
-      setReorderedEntries(null)
-      setDragIndex(null)
-      setDropIndex(null)
-      setSortState(null)
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Failed to reorder playlist tracks.'
-      if (message.includes('Playlist reorder payload')) {
-        setReorderError('Playlist changed while reordering. The playlist has been refreshed; try saving the order again.')
-        await selectPlaylist(selectedPlaylistId)
-      } else {
-        setReorderError(message)
-      }
-    } finally {
-      setIsSavingReorder(false)
-    }
-  }, [canReorderTracks, isSavingReorder, reorderedEntries, reorderPlaylistEntries, selectPlaylist, selectedPlaylistId, setSortState])
-
-  const handleConfirmDiscardReorder = useCallback(() => {
-    if (isSavingReorder) return
-    setIsDiscardReorderConfirmOpen(false)
-    setIsReorderMode(false)
-    setReorderedEntries(null)
-    setDragIndex(null)
-    setDropIndex(null)
-    setReorderError(null)
-  }, [isSavingReorder])
 
   const handleOpenLibrary = useCallback(() => {
     setActiveView('library')
@@ -1088,11 +914,15 @@ export default function PlaylistView() {
                 {sidebarPinnedPlaylists.map((entry, index) => {
                   const isDragging = draggedPinnedPlaylistId === entry.id
                   const isDropTarget = pinnedDropTargetId === entry.id && !isDragging
+                  const isTrackDropAvailable = !entry.isSystemFavorites && entry.kind !== 'dynamic'
+                  const isTrackDropHover = trackDrag?.dropTarget?.surface === 'sidebar'
+                    && trackDrag.dropTarget.kind === 'playlist'
+                    && trackDrag.dropTarget.playlistId === entry.id
                   return (
                     <article
                       key={entry.id}
-                      className={`playlist-dashboard-pinned-card ${isDragging ? 'is-dragging' : ''} ${isDropTarget ? 'is-drop-target' : ''}`.trim()}
-                      draggable
+                      className={`playlist-dashboard-pinned-card ${isDragging ? 'is-dragging' : ''} ${isDropTarget ? 'is-drop-target' : ''} ${trackDrag ? isTrackDropAvailable ? 'is-track-drop-active' : 'is-track-drop-unavailable' : ''} ${isTrackDropHover ? 'is-track-drop-hover' : ''}`.trim()}
+                      draggable={!trackDrag}
                       onDragStart={(event) => handlePinnedDragStart(event, entry.id)}
                       onDragEnd={handlePinnedDragEnd}
                       onDragOver={(event) => {
@@ -1110,6 +940,8 @@ export default function PlaylistView() {
                           y: event.clientY
                         })
                       }}
+                      data-sidebar-drop-target={isTrackDropAvailable ? 'playlist' : undefined}
+                      data-sidebar-drop-playlist-id={isTrackDropAvailable ? entry.id : undefined}
                     >
                       <span className="playlist-dashboard-pin-slot" aria-hidden="true">
                         <svg className="playlist-dashboard-pin-slot-grip" width="10" height="14" viewBox="0 0 10 14" fill="currentColor">
@@ -1130,6 +962,8 @@ export default function PlaylistView() {
                         data-controller-context="true"
                         data-controller-key={`pinned-playlist:${entry.id}`}
                         aria-label={`Open ${entry.name}`}
+                        data-sidebar-drop-target={isTrackDropAvailable ? 'playlist' : undefined}
+                        data-sidebar-drop-playlist-id={isTrackDropAvailable ? entry.id : undefined}
                       >
                         <PlaylistCover
                           hash={entry.cover_hash}
@@ -1211,10 +1045,14 @@ export default function PlaylistView() {
             >
               {visibleBrowserPlaylists.map((entry) => {
                 const isPinned = sidebarPinnedPlaylistIdSet.has(entry.id)
+                const isTrackDropAvailable = !entry.isSystemFavorites && entry.kind !== 'dynamic'
+                const isTrackDropHover = trackDrag?.dropTarget?.surface === 'sidebar'
+                  && trackDrag.dropTarget.kind === 'playlist'
+                  && trackDrag.dropTarget.playlistId === entry.id
                 return (
                 <article
                   key={entry.id}
-                  className={`playlist-dashboard-card ${isPinned ? 'is-pinned' : ''}`}
+                  className={`playlist-dashboard-card ${isPinned ? 'is-pinned' : ''} ${trackDrag ? isTrackDropAvailable ? 'is-track-drop-active' : 'is-track-drop-unavailable' : ''} ${isTrackDropHover ? 'is-track-drop-hover' : ''}`.trim()}
                   onContextMenu={(event) => {
                     event.preventDefault()
                     event.stopPropagation()
@@ -1224,6 +1062,8 @@ export default function PlaylistView() {
                       y: event.clientY
                     })
                   }}
+                  data-sidebar-drop-target={isTrackDropAvailable ? 'playlist' : undefined}
+                  data-sidebar-drop-playlist-id={isTrackDropAvailable ? entry.id : undefined}
                 >
                   <button
                     type="button"
@@ -1233,6 +1073,8 @@ export default function PlaylistView() {
                     data-controller-context="true"
                     data-controller-key={`playlist:${entry.id}`}
                     aria-label={`Open ${entry.name}`}
+                    data-sidebar-drop-target={isTrackDropAvailable ? 'playlist' : undefined}
+                    data-sidebar-drop-playlist-id={isTrackDropAvailable ? entry.id : undefined}
                   >
                     <PlaylistCover
                       hash={entry.cover_hash}
@@ -1302,7 +1144,12 @@ export default function PlaylistView() {
     return (
       <div className="playlist-view">
         <div className="playlist-header">
-          <button className="back-btn" onClick={handleBack} title="Back">
+          <button
+            className={`back-btn ${trackDrag ? 'is-track-drag-target' : ''} ${trackDrag?.springTarget?.kind === 'playlist-back' ? 'is-track-drag-hover' : ''}`.trim()}
+            onClick={handleBack}
+            title="Back"
+            data-track-drag-playlist-back=""
+          >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
             </svg>
@@ -1325,7 +1172,12 @@ export default function PlaylistView() {
           </div>
         )}
         <div className="library-header-left library-detail-header-left">
-          <button className="back-btn" onClick={handleBack} title="Back">
+          <button
+            className={`back-btn ${trackDrag ? 'is-track-drag-target' : ''} ${trackDrag?.springTarget?.kind === 'playlist-back' ? 'is-track-drag-hover' : ''}`.trim()}
+            onClick={handleBack}
+            title="Back"
+            data-track-drag-playlist-back=""
+          >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
             </svg>
@@ -1365,7 +1217,7 @@ export default function PlaylistView() {
                     setIsCoverMenuOpen((isOpen) => !isOpen)
                     setIsMoreMenuOpen(false)
                   }}
-                  disabled={isUpdatingCover || isReorderMode || isSavingReorder || isDeletingPlaylist}
+                  disabled={isUpdatingCover || isDeletingPlaylist}
                   aria-haspopup="menu"
                   aria-expanded={isCoverMenuOpen}
                   aria-label="Edit playlist cover"
@@ -1383,7 +1235,7 @@ export default function PlaylistView() {
                       className="playlist-header-menu-item"
                       role="menuitem"
                       onClick={() => void handleChangeCover()}
-                      disabled={isUpdatingCover || isReorderMode || isSavingReorder || isDeletingPlaylist}
+                      disabled={isUpdatingCover || isDeletingPlaylist}
                     >
                       Change cover
                     </button>
@@ -1392,7 +1244,7 @@ export default function PlaylistView() {
                       className="playlist-header-menu-item"
                       role="menuitem"
                       onClick={() => void handleClearCover()}
-                      disabled={isUpdatingCover || !playlist?.custom_cover_hash || isReorderMode || isSavingReorder || isDeletingPlaylist}
+                      disabled={isUpdatingCover || !playlist?.custom_cover_hash || isDeletingPlaylist}
                     >
                       Remove cover
                     </button>
@@ -1491,23 +1343,8 @@ export default function PlaylistView() {
           </button>
           <QueueSplitButton
             trackPaths={displayPlayableTrackPaths}
-            disabled={displayPlayableTrackPaths.length === 0 || isReorderMode || isSavingReorder}
+            disabled={displayPlayableTrackPaths.length === 0}
           />
-          {!isFavoritesPlaylist && (
-            <button
-              type="button"
-              className={`icon-btn library-collection-action-btn playlist-detail-icon-btn ${isReorderMode ? 'active' : ''}`}
-              onClick={handleToggleReorderMode}
-              disabled={isSavingReorder || isDeletingPlaylist || (!isReorderMode && playlistEntryCount < 2)}
-              title={isReorderMode ? 'Exit reorder mode' : 'Reorder tracks'}
-              aria-label={isReorderMode ? 'Exit reorder mode' : 'Reorder tracks'}
-              aria-pressed={isReorderMode}
-            >
-              <svg width="15" height="17" viewBox="0 0 320 512" fill="currentColor" aria-hidden="true">
-                <path d="M137.4 41.4c12.5-12.5 32.8-12.5 45.3 0l128 128c9.2 9.2 11.9 22.9 6.9 34.9S301 224 288 224H32c-12.9 0-24.6-7.8-29.6-19.8s-2.2-25.7 6.9-34.9l128-128zm0 429.3-128-128c-9.2-9.2-11.9-22.9-6.9-34.9S19.1 288 32 288h256c12.9 0 24.6 7.8 29.6 19.8s2.2 25.7-6.9 34.9l-128 128c-12.5 12.5-32.8 12.5-45.3 0z" />
-              </svg>
-            </button>
-          )}
           <div className="playlist-header-menu-wrap" ref={moreMenuRef}>
             <button
               type="button"
@@ -1537,7 +1374,7 @@ export default function PlaylistView() {
                     setIsMoreMenuOpen(false)
                     setIsCreatePlaylistModalOpen(true)
                   }}
-                  disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
+                  disabled={isDeletingPlaylist}
                 >
                   New playlist
                 </button>
@@ -1550,7 +1387,7 @@ export default function PlaylistView() {
                       handleToggleSidebarPin(selectedPlaylistId)
                       setIsMoreMenuOpen(false)
                     }}
-                    disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
+                    disabled={isDeletingPlaylist}
                   >
                     {isSelectedPlaylistPinned ? 'Unpin from sidebar' : 'Pin to sidebar'}
                   </button>
@@ -1563,7 +1400,7 @@ export default function PlaylistView() {
                     onClick={() => {
                       void handleOpenDynamicRules()
                     }}
-                    disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
+                    disabled={isDeletingPlaylist}
                   >
                     Edit Rules
                   </button>
@@ -1575,7 +1412,7 @@ export default function PlaylistView() {
                   onClick={() => {
                     void handleExportPlaylist()
                   }}
-                  disabled={isReorderMode || isSavingReorder || isDeletingPlaylist || isExportingPlaylist}
+                  disabled={isDeletingPlaylist || isExportingPlaylist}
                 >
                   {isExportingPlaylist ? 'Exporting...' : 'Export M3U'}
                 </button>
@@ -1586,7 +1423,7 @@ export default function PlaylistView() {
                       className="playlist-header-menu-item"
                       role="menuitem"
                       onClick={handleStartRename}
-                      disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
+                      disabled={isDeletingPlaylist}
                     >
                       Rename
                     </button>
@@ -1595,7 +1432,7 @@ export default function PlaylistView() {
                       className="playlist-header-menu-item danger"
                       role="menuitem"
                       onClick={handleRequestDelete}
-                      disabled={isReorderMode || isSavingReorder || isDeletingPlaylist}
+                      disabled={isDeletingPlaylist}
                     >
                       Delete
                     </button>
@@ -1608,89 +1445,7 @@ export default function PlaylistView() {
       </div>
       <div className="playlist-content" onScrollCapture={handlePlaylistContentScrollCapture}>
         {playlistImportStatus && <PlaylistImportStatusBanner status={playlistImportStatus} />}
-        {isReorderMode && reorderedEntries ? (
-          <>
-            <div className="playlist-reorder-list">
-              {reorderedEntries.map((entry, index) => {
-                const track = entry.track
-                const isMissing = entry.missing || track === null
-                const title = track?.title ?? getMissingPlaylistEntryLabel(entry)
-                const artist = track?.artist ?? entry.track_path
-
-                return (
-                  <div
-                    key={`${entry.id}:${entry.track_path}`}
-                    className={`playlist-reorder-row ${isMissing ? 'missing' : ''} ${dragIndex === index ? 'dragging' : ''} ${dropIndex === index && dragIndex !== index ? 'drop-target' : ''}`}
-                    draggable={!isSavingReorder}
-                    onDragStart={(event: DragEvent<HTMLDivElement>) => {
-                      event.dataTransfer.effectAllowed = 'move'
-                      handleReorderDragStart(index)
-                    }}
-                    onDragOver={(event: DragEvent<HTMLDivElement>) => {
-                      event.preventDefault()
-                      event.dataTransfer.dropEffect = 'move'
-                      handleReorderDragOver(index)
-                    }}
-                    onDrop={(event: DragEvent<HTMLDivElement>) => {
-                      event.preventDefault()
-                    }}
-                    onDragEnd={handleReorderDragEnd}
-                  >
-                    <div className="playlist-reorder-handle" aria-hidden="true">
-                      <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor">
-                        <circle cx="3" cy="2" r="1.2" />
-                        <circle cx="7" cy="2" r="1.2" />
-                        <circle cx="3" cy="6" r="1.2" />
-                        <circle cx="7" cy="6" r="1.2" />
-                        <circle cx="3" cy="10" r="1.2" />
-                        <circle cx="7" cy="10" r="1.2" />
-                        <circle cx="3" cy="14" r="1.2" />
-                        <circle cx="7" cy="14" r="1.2" />
-                      </svg>
-                    </div>
-                    <div className="playlist-reorder-cover">
-                      {track ? (
-                        <AlbumArtwork
-                          hash={track.artwork_hash}
-                          alt={track.album || track.title}
-                          variant="thumbnail"
-                          className="playlist-reorder-cover-image"
-                        />
-                      ) : (
-                        <FileCircleExclamationIcon className="playlist-reorder-missing-icon" />
-                      )}
-                    </div>
-                    <div className="playlist-reorder-index">{index + 1}</div>
-                    <div className="playlist-reorder-title">{title}</div>
-                    <div className="playlist-reorder-artist">{artist}</div>
-                    {isMissing && <div className="playlist-reorder-missing-label">Missing</div>}
-                  </div>
-                )
-              })}
-            </div>
-            <div className="playlist-reorder-actions">
-              {reorderError && <span className="playlist-reorder-error">{reorderError}</span>}
-              <button
-                type="button"
-                className="settings-btn settings-btn-primary"
-                onClick={() => {
-                  void handleSaveReorder()
-                }}
-                disabled={isSavingReorder || reorderedEntries.length === 0}
-              >
-                {isSavingReorder ? 'Saving...' : 'Save Order'}
-              </button>
-              <button
-                type="button"
-                className="settings-btn"
-                onClick={handleCancelReorder}
-                disabled={isSavingReorder}
-              >
-                Cancel
-              </button>
-            </div>
-          </>
-        ) : displayTracks.length > 0 || playlistMissingCount > 0 ? (
+        {displayTracks.length > 0 || playlistMissingCount > 0 ? (
           <>
             {displayTracks.length > 0 && (
               <TrackList
@@ -1702,7 +1457,7 @@ export default function PlaylistView() {
                 contextTrackNumbers={displayTrackNumbers}
                 trackInstanceKeys={displayTrackInstanceKeys}
                 playlistEntryIds={displayPlaylistEntryIds}
-                playlistSourceId={isDynamicPlaylist ? null : selectedPlaylistId}
+                playlistSourceId={!isFavoritesPlaylist && !isDynamicPlaylist ? selectedPlaylistId : null}
                 onChangeMissingPlaylistAssociation={handleChangeMissingPlaylistAssociation}
                 enableColumnSorting
                 sortState={sortState}
@@ -1719,7 +1474,11 @@ export default function PlaylistView() {
             )}
           </>
         ) : (
-          <div className="library-empty">
+          <div
+            className="library-empty"
+            data-track-drop-playlist-id={!isDynamicPlaylist && selectedPlaylistId !== FAVORITES_PLAYLIST_ID ? selectedPlaylistId ?? undefined : undefined}
+            data-track-drop-playlist-count={!isDynamicPlaylist && selectedPlaylistId !== FAVORITES_PLAYLIST_ID ? 0 : undefined}
+          >
             <p>{selectedPlaylistId === FAVORITES_PLAYLIST_ID ? 'No favorites yet' : isDynamicPlaylist ? 'No matching tracks' : 'This playlist is empty'}</p>
             <p className="empty-hint">
               {selectedPlaylistId === FAVORITES_PLAYLIST_ID
@@ -1824,17 +1583,6 @@ export default function PlaylistView() {
         onConfirm={() => {
           void handleConfirmDelete()
         }}
-      />
-      <ConfirmActionModal
-        isOpen={isDiscardReorderConfirmOpen}
-        title="Discard Unsaved Reorder?"
-        message="You have unsaved playlist reorder changes. Leaving reorder mode will discard them."
-        confirmLabel="Discard Changes"
-        cancelLabel="Keep Editing"
-        isDestructive
-        isBusy={isSavingReorder}
-        onCancel={() => setIsDiscardReorderConfirmOpen(false)}
-        onConfirm={handleConfirmDiscardReorder}
       />
     </div>
   )

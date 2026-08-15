@@ -434,6 +434,18 @@ export interface PlaylistTrackEntry {
   track: DbTrack | null
 }
 
+export type PlaylistInsertPosition = number | 'end'
+
+export interface PlaylistInsertResult {
+  insertedEntryIds: number[]
+  insertedTrackPaths: string[]
+  skippedTrackPaths: string[]
+}
+
+export interface PlaylistMoveResult {
+  changed: boolean
+}
+
 export type PlaylistImportDetectedFormat = 'csv' | 'm3u' | 'm3u8' | 'xspf' | 'wpl' | 'asx'
 
 export interface PlaylistImportResult {
@@ -1794,6 +1806,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getPlaylistTracks: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTracks', playlistId),
     getPlaylistTrackEntries: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTrackEntries', playlistId),
     addToPlaylist: (playlistId: number, trackPaths: string[]) => ipcRenderer.invoke('library:addToPlaylist', playlistId, trackPaths),
+    insertTracksIntoPlaylist: (playlistId: number, trackPaths: string[], position: PlaylistInsertPosition) =>
+      ipcRenderer.invoke('library:insertTracksIntoPlaylist', playlistId, trackPaths, position),
+    movePlaylistEntries: (playlistId: number, entryIds: number[], position: number) =>
+      ipcRenderer.invoke('library:movePlaylistEntries', playlistId, entryIds, position),
     removeFromPlaylist: (playlistId: number, trackPath: string) => ipcRenderer.invoke('library:removeFromPlaylist', playlistId, trackPath),
     removePlaylistEntry: (playlistId: number, entryId: number) => ipcRenderer.invoke('library:removePlaylistEntry', playlistId, entryId),
     reassociatePlaylistEntry: (playlistId: number, entryId: number, targetTrackPath: string) =>
@@ -2379,6 +2395,8 @@ declare global {
         getPlaylistTracks: (playlistId: number) => Promise<DbTrack[]>
         getPlaylistTrackEntries: (playlistId: number) => Promise<PlaylistTrackEntry[]>
         addToPlaylist: (playlistId: number, trackPaths: string[]) => Promise<void>
+        insertTracksIntoPlaylist: (playlistId: number, trackPaths: string[], position: PlaylistInsertPosition) => Promise<PlaylistInsertResult>
+        movePlaylistEntries: (playlistId: number, entryIds: number[], position: number) => Promise<PlaylistMoveResult>
         removeFromPlaylist: (playlistId: number, trackPath: string) => Promise<void>
         removePlaylistEntry: (playlistId: number, entryId: number) => Promise<void>
         reassociatePlaylistEntry: (playlistId: number, entryId: number, targetTrackPath: string) => Promise<void>
