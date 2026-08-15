@@ -2,19 +2,31 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { TRANSPORT_INFO_LINE_MODE_STORAGE_KEY } from '../constants/settingsStorageKeys.ts'
 import {
+  DEFAULT_HOME_GREETING_TEXT_MODE,
   DEFAULT_JUMP_TO_PLAYING_DESTINATION,
   DEFAULT_TRANSPORT_INFO_LINE_MODE,
   DEFAULT_UI_SCALE_PERCENT,
+  HOME_GREETING_TEXT_MODE_STORAGE_KEY,
   JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY,
   MAX_UI_SCALE_PERCENT,
   MIN_UI_SCALE_PERCENT,
   UI_SCALE_STEP_PERCENT,
   getNextUIScalePercent,
+  normalizeHomeGreetingTextMode,
   normalizeJumpToPlayingDestination,
   normalizeTransportInfoLineMode,
   resolveAppViewTransitionDirection,
   useUIStore
 } from './uiStore.ts'
+
+test('normalizeHomeGreetingTextMode accepts binary clock and defaults unknown values', () => {
+  assert.equal(normalizeHomeGreetingTextMode('messages'), 'messages')
+  assert.equal(normalizeHomeGreetingTextMode('clock'), 'clock')
+  assert.equal(normalizeHomeGreetingTextMode('binary-clock'), 'binary-clock')
+  assert.equal(normalizeHomeGreetingTextMode('off'), 'off')
+  assert.equal(normalizeHomeGreetingTextMode('unknown'), DEFAULT_HOME_GREETING_TEXT_MODE)
+  assert.equal(normalizeHomeGreetingTextMode(null), DEFAULT_HOME_GREETING_TEXT_MODE)
+})
 
 test('getNextUIScalePercent increases and decreases by the configured UI scale step', () => {
   assert.equal(
@@ -244,6 +256,42 @@ test('transport info line mode updates state, persists, and resets to output', (
     assert.equal(values.get(TRANSPORT_INFO_LINE_MODE_STORAGE_KEY), DEFAULT_TRANSPORT_INFO_LINE_MODE)
   } finally {
     useUIStore.setState({ transportInfoLineMode: DEFAULT_TRANSPORT_INFO_LINE_MODE })
+    if (originalDescriptor) {
+      Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
+    } else {
+      delete (globalThis as { localStorage?: unknown }).localStorage
+    }
+  }
+})
+
+test('Home greeting text mode persists binary clock and resets to messages', () => {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const values = new Map<string, string>()
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value)
+    },
+    removeItem: (key: string) => {
+      values.delete(key)
+    }
+  }
+
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: storage
+  })
+
+  try {
+    useUIStore.getState().setHomeGreetingTextMode('binary-clock')
+    assert.equal(useUIStore.getState().homeGreetingTextMode, 'binary-clock')
+    assert.equal(values.get(HOME_GREETING_TEXT_MODE_STORAGE_KEY), 'binary-clock')
+
+    useUIStore.getState().resetHomeGreetingTextMode()
+    assert.equal(useUIStore.getState().homeGreetingTextMode, DEFAULT_HOME_GREETING_TEXT_MODE)
+    assert.equal(values.get(HOME_GREETING_TEXT_MODE_STORAGE_KEY), DEFAULT_HOME_GREETING_TEXT_MODE)
+  } finally {
+    useUIStore.setState({ homeGreetingTextMode: DEFAULT_HOME_GREETING_TEXT_MODE })
     if (originalDescriptor) {
       Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
     } else {

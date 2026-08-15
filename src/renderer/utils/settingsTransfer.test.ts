@@ -161,6 +161,19 @@ test('interface transfers include the transport info line preference', () => {
   )
 })
 
+test('interface transfers include the binary Home header preference', () => {
+  const file = createSettingsTransferFile(['interface'], {
+    storage: new MemoryStorage({
+      [HOME_GREETING_TEXT_MODE_STORAGE_KEY]: 'binary-clock'
+    })
+  })
+
+  assert.equal(
+    file.categories.interface?.localStorage[HOME_GREETING_TEXT_MODE_STORAGE_KEY],
+    'binary-clock'
+  )
+})
+
 test('interface transfers include Home sky and module preferences', () => {
   const sky = '{"mode":"fixed","fixedMinutes":1080}'
   const layout = '{"version":1,"modules":[{"id":"rediscover","visible":true}]}'

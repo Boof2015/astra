@@ -146,6 +146,7 @@ const COVER_ART_ACCENT_METHOD_OPTIONS: readonly SettingsSegmentedOption<CoverArt
 const HOME_GREETING_TEXT_OPTIONS: readonly SettingsSegmentedOption<HomeGreetingTextMode>[] = [
   { value: 'messages', label: 'Messages' },
   { value: 'clock', label: 'Clock' },
+  { value: 'binary-clock', label: 'Binary' },
   { value: 'off', label: 'Off' },
 ]
 

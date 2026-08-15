@@ -10,6 +10,7 @@ import { formatExactDuration } from '../../utils/collectionDuration'
 import { formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
 import { buildHomePlaylists } from '../../utils/playlistSystem'
 import AlbumArtwork from '../library/AlbumArtwork'
+import HomeBinaryClock from '../home/HomeBinaryClock'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 import type { DynamicPlaylistRulesV1 } from '../../../shared/playlists/dynamicPlaylist'
@@ -858,18 +859,21 @@ export default function HomeView() {
   }, [])
 
   useEffect(() => {
-    if (homeGreetingTextMode !== 'clock') return
+    if (homeGreetingTextMode !== 'clock' && homeGreetingTextMode !== 'binary-clock') return
 
     let intervalId: number | null = null
     const updateClock = () => setClockNow(new Date())
     updateClock()
 
     const now = new Date()
-    const msUntilNextMinute = 60000 - (now.getSeconds() * 1000 + now.getMilliseconds())
+    const intervalMs = homeGreetingTextMode === 'binary-clock' ? 1000 : 60000
+    const elapsedInInterval = homeGreetingTextMode === 'binary-clock'
+      ? now.getMilliseconds()
+      : now.getSeconds() * 1000 + now.getMilliseconds()
     const timeoutId = window.setTimeout(() => {
       updateClock()
-      intervalId = window.setInterval(updateClock, 60000)
-    }, Math.max(100, msUntilNextMinute))
+      intervalId = window.setInterval(updateClock, intervalMs)
+    }, Math.max(100, intervalMs - elapsedInInterval))
 
     return () => {
       window.clearTimeout(timeoutId)
@@ -1210,13 +1214,19 @@ export default function HomeView() {
             <div className="home-greeting-content" aria-hidden="true" />
           ) : (
             <div className="home-greeting-content">
-              <h1 className="home-greeting-message">
-                {homeGreetingTextMode === 'clock' ? clockGreeting.primary : greeting.primary}
-              </h1>
-              {(homeGreetingTextMode === 'clock' ? clockGreeting.subline : greeting.subline).trim().length > 0 && (
-                <p className="home-greeting-subline">
-                  {homeGreetingTextMode === 'clock' ? clockGreeting.subline : greeting.subline}
-                </p>
+              {homeGreetingTextMode === 'binary-clock' ? (
+                <HomeBinaryClock date={clockNow} dateLabel={formatHomeClockDate(clockNow)} />
+              ) : (
+                <>
+                  <h1 className="home-greeting-message">
+                    {homeGreetingTextMode === 'clock' ? clockGreeting.primary : greeting.primary}
+                  </h1>
+                  {(homeGreetingTextMode === 'clock' ? clockGreeting.subline : greeting.subline).trim().length > 0 && (
+                    <p className="home-greeting-subline">
+                      {homeGreetingTextMode === 'clock' ? clockGreeting.subline : greeting.subline}
+                    </p>
+                  )}
+                </>
               )}
             </div>
           )}

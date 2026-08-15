@@ -29,7 +29,7 @@ import {
 
 export type AppView = 'home' | 'library' | 'stats' | 'graph' | 'eq' | 'settings' | 'playlist'
 export type WaveformTimeDisplayMode = MiniPlayerTimeDisplayMode
-export type HomeGreetingTextMode = 'messages' | 'clock' | 'off'
+export type HomeGreetingTextMode = 'messages' | 'clock' | 'binary-clock' | 'off'
 export type JumpToPlayingDestination = 'smart-source' | 'library-tracks' | 'album' | 'artist' | 'queue'
 export type TransportInfoLineMode = 'output' | 'album' | 'hidden'
 export const DEFAULT_ANALYZER_HEIGHT_PX = 196
@@ -263,7 +263,7 @@ export function getNextUIScalePercent(currentPercent: number, action: UIScaleSho
 }
 
 export function normalizeHomeGreetingTextMode(value: unknown): HomeGreetingTextMode {
-  return value === 'clock' || value === 'off' || value === 'messages'
+  return value === 'clock' || value === 'binary-clock' || value === 'off' || value === 'messages'
     ? value
     : DEFAULT_HOME_GREETING_TEXT_MODE
 }

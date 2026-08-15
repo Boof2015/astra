@@ -18,6 +18,7 @@ import {
   type DisplayPlaylist
 } from '../../utils/playlistSystem'
 import AlbumArtwork from '../library/AlbumArtwork'
+import HomeBinaryClock from '../home/HomeBinaryClock'
 import HomeCustomizeModal from '../home/HomeCustomizeModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 import {
@@ -322,15 +323,19 @@ export default function HomeDashboardView() {
   }, [])
 
   useEffect(() => {
-    if (homeGreetingTextMode !== 'clock') return
+    if (homeGreetingTextMode !== 'clock' && homeGreetingTextMode !== 'binary-clock') return
     const updateClock = () => setClockNow(new Date())
     updateClock()
     let intervalId: number | null = null
     const now = new Date()
+    const intervalMs = homeGreetingTextMode === 'binary-clock' ? 1000 : 60000
+    const elapsedInInterval = homeGreetingTextMode === 'binary-clock'
+      ? now.getMilliseconds()
+      : now.getSeconds() * 1000 + now.getMilliseconds()
     const timeoutId = window.setTimeout(() => {
       updateClock()
-      intervalId = window.setInterval(updateClock, 60000)
-    }, Math.max(100, 60000 - (now.getSeconds() * 1000 + now.getMilliseconds())))
+      intervalId = window.setInterval(updateClock, intervalMs)
+    }, Math.max(100, intervalMs - elapsedInInterval))
     return () => {
       window.clearTimeout(timeoutId)
       if (intervalId !== null) window.clearInterval(intervalId)
@@ -834,8 +839,14 @@ export default function HomeDashboardView() {
           <div className="home-dashboard-hero-main">
             {homeGreetingTextMode !== 'off' && (
               <div className="home-greeting-content">
-                <h1 className="home-greeting-message">{greetingCopy.primary}</h1>
-                {greetingCopy.subline.trim() && <p className="home-greeting-subline">{greetingCopy.subline}</p>}
+                {homeGreetingTextMode === 'binary-clock' ? (
+                  <HomeBinaryClock date={clockNow} dateLabel={formatHomeClockDate(clockNow)} />
+                ) : (
+                  <>
+                    <h1 className="home-greeting-message">{greetingCopy.primary}</h1>
+                    {greetingCopy.subline.trim() && <p className="home-greeting-subline">{greetingCopy.subline}</p>}
+                  </>
+                )}
               </div>
             )}
             {hasLibraryContent && (

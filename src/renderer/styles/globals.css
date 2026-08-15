@@ -29271,3 +29271,85 @@ html[data-theme-tone="light"] .home-greeting-card.home-dashboard-hero::before {
     padding-inline: 12px;
   }
 }
+
+/* BCD clock: two digit rows inside horizontal hour/minute/second groups. */
+.home-binary-clock {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.home-binary-clock-time {
+  display: block;
+}
+
+.home-binary-clock-heading {
+  margin: 0;
+}
+
+.home-binary-clock-grid {
+  --home-binary-cell-size: clamp(16px, 1.75vw, 22px);
+  --home-binary-cell-gap: clamp(4px, 0.4vw, 5px);
+  --home-binary-part-gap: clamp(15px, 1.7vw, 22px);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--home-binary-part-gap);
+}
+
+.home-binary-clock-part {
+  display: block;
+}
+
+.home-binary-clock-pair {
+  display: grid;
+  gap: var(--home-binary-cell-gap);
+}
+
+.home-binary-clock-digit {
+  display: flex;
+  gap: var(--home-binary-cell-gap);
+}
+
+.home-binary-clock-cell {
+  width: var(--home-binary-cell-size);
+  height: var(--home-binary-cell-size);
+  border: 1px solid rgba(var(--tint), 0.24);
+  border-radius: 2px;
+  background: rgba(var(--tint), 0.025);
+  box-shadow: inset 0 1px 0 rgba(var(--tint), 0.035);
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.home-binary-clock-cell.is-on {
+  border-color: rgba(var(--accent-rgb), 0.78);
+  background: rgba(var(--accent-rgb), 0.82);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 0 7px rgba(var(--accent-rgb), 0.2);
+}
+
+.home-binary-clock-date {
+  margin-top: 7px;
+}
+
+@media (max-width: 680px) {
+  .home-binary-clock-grid {
+    --home-binary-cell-size: 13px;
+    --home-binary-cell-gap: 3px;
+    --home-binary-part-gap: 10px;
+  }
+
+  .home-binary-clock-date {
+    margin-top: 6px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-binary-clock-cell {
+    transition: none;
+  }
+}
