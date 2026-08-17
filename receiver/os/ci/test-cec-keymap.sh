@@ -43,7 +43,10 @@ EOF
 run_fixture stock
 grep -q '^# Stock mappings$' "${TEST_DIR}/stock.once.cfg"
 grep -q '^\* rc-other other.toml$' "${TEST_DIR}/stock.once.cfg"
-! grep -q '^\* rc-cec cec.toml$' "${TEST_DIR}/stock.once.cfg"
+if grep -q '^\* rc-cec cec.toml$' "${TEST_DIR}/stock.once.cfg"; then
+  echo "stock rc-cec mapping survived the rewrite" >&2
+  exit 1
+fi
 
 cat > "${TEST_DIR}/duplicated.cfg" <<'EOF'
 * rc-cec cec.toml
@@ -75,6 +78,9 @@ grep -q '^# Keep this unrelated comment\.$' "${TEST_DIR}/correct.once.cfg"
 for cec_power_code in 0x40 0x6b 0x6c 0x6d; do
   grep -Eq "^${cec_power_code}[[:space:]]*=[[:space:]]*\"KEY_RESERVED\"" "${CEC_KEYMAP}"
 done
-! grep -Eq '"KEY_(POWER|SLEEP|WAKEUP)"' "${CEC_KEYMAP}"
+if grep -Eq '"KEY_(POWER|SLEEP|WAKEUP)"' "${CEC_KEYMAP}"; then
+  echo "CEC keymap exposes a power-family Linux input key" >&2
+  exit 1
+fi
 
 echo "CEC keymap rewrite fixtures passed"
