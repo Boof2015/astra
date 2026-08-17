@@ -32,6 +32,7 @@ import {
   PARALLAX_SNAP_CONFIRM_TICKS
 } from '../../types/parallax'
 import { useAudioSettingsStore } from './audioSettingsStore'
+import { createParallaxStreamId } from './parallaxStreamId'
 
 interface ParallaxSettingsStore {
   status: ParallaxStatus | null
@@ -201,10 +202,6 @@ const PARALLAX_USE_HOST_PREDICTOR: boolean =
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message
   return 'Failed to update Parallax settings.'
-}
-
-function createStreamId(track: Track): string {
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}-${track.id}`
 }
 
 function buildParallaxStreamInfo(
@@ -614,7 +611,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     if (!buffer || !currentBuffer) return
     const remainingSec = Math.max(0, currentBuffer.duration - getHostAcousticCurrentTimeSeconds())
     const boundaryHostTimeMs = localNowMs() + remainingSec * 1000 - PARALLAX_NEXT_STREAM_SEAM_TRIM_MS
-    const streamId = createStreamId(nextTrack)
+    const streamId = createParallaxStreamId()
     ensureTelemetry()
     try {
       const timeline = await window.electronAPI.parallax.publishHostNextStreamStart(
@@ -1608,7 +1605,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       startHostEmitAnchorPublish()
       const buffer = audioEngine.getAudioBuffer()
       if (!buffer) return null
-      const streamId = createStreamId(track)
+      const streamId = createParallaxStreamId()
       try {
         const timeline = await window.electronAPI.parallax.publishHostStreamStart(
           buildParallaxStreamInfo(track, streamId, buffer),
@@ -1657,9 +1654,9 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       )
       // Rejoin-same-track path: reuse the existing streamId so the sink doesn't see a spurious
       // "new stream" event — publish a fresh mid-join timeline aligned to current acoustic
-      // position + group lead. Fresh-start path: createStreamId for a brand-new identity.
+      // position + group lead. Fresh-start path: allocate a brand-new short wire identity.
       const isRejoinRestart = existing !== null && existing.trackId === track.id
-      const streamId = isRejoinRestart ? existing.streamId : createStreamId(track)
+      const streamId = isRejoinRestart ? existing.streamId : createParallaxStreamId()
       ensureTelemetry()
       startHostEmitAnchorPublish()
       try {
