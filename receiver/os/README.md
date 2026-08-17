@@ -137,6 +137,15 @@ Keep every image release as a draft until fresh cards pass on both Pi 3B and Pi 
 6. Confirm healthy HDMI startup transitions straight from the retained splash into Cage without a
    tty1 flash. Also test headless boot, serial access, getty fallback, the first-boot reboot, normal
    shutdown, and reboot; shutdown/reboot must show only the static logo without the Esc hint.
+7. With key-only SSH enabled on the test flash, inspect `ir-keytable -r` before exercising CEC:
+   `0x40`, `0x6b`, `0x6c`, and `0x6d` must be absent or reserved, never mapped to `KEY_POWER`,
+   `KEY_SLEEP`, or `KEY_WAKEUP`; the effective `rc_maps.cfg` must contain exactly one active
+   `rc-cec` row pointing at `parallax_cec.toml`. Keep remote journal and RC-event captures running
+   while testing ten wake cycles for both wake-on-play and wake-on-connect, with input switching
+   on and off. The Pi must remain SSH-reachable, the TV must still wake/select its input,
+   navigation/media keys must still work, and standby followed by wake must remain reliable.
+   Exercise both Pi 5 HDMI ports and confirm the Pi 5 physical power button still shuts down
+   normally.
 
 Iteration cost warning: every change to the stage means a full image build + flash + boot on
 real hardware. Put anything checkable at build time into `stage-parallax/99-verify/00-run.sh`

@@ -232,8 +232,24 @@ if [ -f "$MOUNT_DIR/var/lib/NetworkManager/NetworkManager.state" ]; then
     && fail "Wi-Fi is administratively disabled — WPA_COUNTRY missing from the pi-gen config"
 fi
 [ -f "$MOUNT_DIR/usr/share/icons/parallax-blank/cursors/left_ptr" ] || fail "blank cursor theme missing"
-[ -f "$MOUNT_DIR/etc/rc_keymaps/parallax_cec.toml" ] || fail "CEC remote keymap missing"
-grep -q 'rc-cec parallax_cec.toml' "$MOUNT_DIR/etc/rc_maps.cfg" || fail "rc_maps.cfg lacks the CEC keymap entry"
+CEC_KEYMAP="$MOUNT_DIR/etc/rc_keymaps/parallax_cec.toml"
+CEC_MAPS_CONFIG="$MOUNT_DIR/etc/rc_maps.cfg"
+[ -f "$CEC_KEYMAP" ] || fail "CEC remote keymap missing"
+awk '
+  /^[[:space:]]*#/ { next }
+  NF >= 2 && $2 == "rc-cec" {
+    count++
+    if ($1 != "*" || $3 != "parallax_cec.toml" || NF != 3)
+      invalid = 1
+  }
+  END { exit !(count == 1 && !invalid) }
+' "$CEC_MAPS_CONFIG" || fail "rc_maps.cfg must contain exactly one active rc-cec row for parallax_cec.toml"
+for cec_power_code in 0x40 0x6b 0x6c 0x6d; do
+  grep -Eq "^${cec_power_code}[[:space:]]*=[[:space:]]*\"KEY_RESERVED\"" "$CEC_KEYMAP" \
+    || fail "CEC remote keymap does not reserve power scancode ${cec_power_code}"
+done
+grep -Eq '"KEY_(POWER|SLEEP|WAKEUP)"' "$CEC_KEYMAP" \
+  && fail "CEC remote keymap exposes a power-family Linux input key"
 
 check "TV mode: kiosk detect enabled, kiosk unit present but not enabled"
 [ -L "$MOUNT_DIR/etc/systemd/system/multi-user.target.wants/parallax-kiosk-detect.service" ] \
