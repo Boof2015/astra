@@ -13,6 +13,7 @@ import { compareAlbumsByYearDescending } from '../../utils/albumYearSort'
 import { partitionArtistDiscography } from '../../utils/artistDiscography'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { matchesFuzzyFields } from '../../utils/fuzzySearch'
+import { matchesTrackSearchQuery } from '../../../shared/library/trackSearch'
 import { runViewTransition } from '../../utils/viewTransitions'
 import { compareTrackPlayCounts } from '../../utils/trackPlayCountSort'
 import { getLibraryTabTransitionScopeClasses } from '../../utils/libraryTabMotion'
@@ -25,6 +26,7 @@ import {
   type LibraryYearGroup
 } from '../../utils/libraryYears'
 import TrackList, { type TrackListSortKey, type TrackListViewportAPI } from '../library/TrackList'
+import SearchControl from '../library/SearchControl'
 import AlbumArtwork from '../library/AlbumArtwork'
 import QueueSplitButton from '../queue/QueueSplitButton'
 import AlbumGrid, { type AlbumGridViewportAPI } from '../library/AlbumGrid'
@@ -156,12 +158,13 @@ function compareAlbumSequence(
 
 function resolveBrowseArtistForTrack(
   track: { artist: string; artist_names?: string[] | null; album_artist: string | null; album_artist_names?: string[] | null },
-  mode: LibraryArtistBrowseMode
+  mode: LibraryArtistBrowseMode,
+  exceptions: string[] = []
 ): string {
   const normalizedAlbumArtist = track.album_artist?.trim() ?? ''
   if (normalizedAlbumArtist) {
     if (mode === 'strict') return normalizedAlbumArtist
-    const albumArtistContributors = splitCollaborators(normalizedAlbumArtist)
+    const albumArtistContributors = splitCollaborators(normalizedAlbumArtist, exceptions)
     return albumArtistContributors[0] ?? normalizedAlbumArtist
   }
 
@@ -169,17 +172,8 @@ function resolveBrowseArtistForTrack(
   if (mode === 'strict') return normalizedArtist || 'Unknown Artist'
   if (track.artist_names && track.artist_names.length > 0) return track.artist_names[0]
   if (track.album_artist_names && track.album_artist_names.length > 0) return track.album_artist_names[0]
-  const artistContributors = splitCollaborators(normalizedArtist)
+  const artistContributors = splitCollaborators(normalizedArtist, exceptions)
   return artistContributors[0] ?? (normalizedArtist || 'Unknown Artist')
-}
-
-function trackMatchesLibraryQuery(
-  track: { title: string },
-  query: string
-): boolean {
-  return matchesFuzzyFields(query, [
-    { value: track.title, weight: 1.5 }
-  ])
 }
 
 export default function LibraryView() {
@@ -194,6 +188,7 @@ export default function LibraryView() {
   const artists = useLibraryStore((state) => state.artists)
   const genres = useLibraryStore((state) => state.genres)
   const folders = useLibraryStore((state) => state.folders)
+  const artistSplitExceptions = useLibraryStore((state) => state.artistSplitExceptions)
   const viewMode = useLibraryStore((state) => state.viewMode)
   const selectedAlbum = useLibraryStore((state) => state.selectedAlbum)
   const selectedArtist = useLibraryStore((state) => state.selectedArtist)
@@ -751,7 +746,7 @@ export default function LibraryView() {
 
   const displayTracks = useMemo(() => {
     if (!hasSearchQuery) return queueSeedSortedTracks
-    return queueSeedSortedTracks.filter((track) => trackMatchesLibraryQuery(track, trimmedSearchQuery))
+    return queueSeedSortedTracks.filter((track) => matchesTrackSearchQuery(track, trimmedSearchQuery))
   }, [hasSearchQuery, trimmedSearchQuery, queueSeedSortedTracks])
 
   const sourceFilteredAlbumIdentityKeys = useMemo(() => {
@@ -820,14 +815,14 @@ export default function LibraryView() {
     for (const track of sourceFilteredTracks) {
       const parsedArtistNames = track.artist_names.length > 0 ? track.artist_names : track.album_artist_names
       if (artistBrowseMode === 'canonical' && parsedArtistNames.length > 0) {
-        const browseArtistKey = normalizeKey(resolveBrowseArtistForTrack(track, artistBrowseMode))
+        const browseArtistKey = normalizeKey(resolveBrowseArtistForTrack(track, artistBrowseMode, artistSplitExceptions))
         if (browseArtistKey) keys.add(browseArtistKey)
         for (const artistName of parsedArtistNames) {
           const normalizedArtistKey = normalizeKey(artistName)
           if (normalizedArtistKey) keys.add(normalizedArtistKey)
         }
       } else {
-        const browseArtist = resolveBrowseArtistForTrack(track, artistBrowseMode)
+        const browseArtist = resolveBrowseArtistForTrack(track, artistBrowseMode, artistSplitExceptions)
         const normalizedArtistKey = normalizeKey(browseArtist)
         if (normalizedArtistKey) {
           keys.add(normalizedArtistKey)
@@ -835,7 +830,7 @@ export default function LibraryView() {
       }
     }
     return keys
-  }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, hasHiddenFolders, sourceFilteredTracks])
+  }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, hasHiddenFolders, sourceFilteredTracks, artistSplitExceptions])
 
   const sourceFilteredPrimaryArtistKeys = useMemo(() => {
     if (artistBrowseMode !== 'canonical') return null
@@ -843,11 +838,11 @@ export default function LibraryView() {
 
     const keys = new Set<string>()
     for (const track of sourceFilteredTracks) {
-      const browseArtistKey = normalizeKey(resolveBrowseArtistForTrack(track, artistBrowseMode))
+      const browseArtistKey = normalizeKey(resolveBrowseArtistForTrack(track, artistBrowseMode, artistSplitExceptions))
       if (browseArtistKey) keys.add(browseArtistKey)
     }
     return keys
-  }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, hasHiddenFolders, sourceFilteredTracks])
+  }, [artistBrowseMode, selectedSourceFilters.size, shouldShowSourceFilters, hasHiddenFolders, sourceFilteredTracks, artistSplitExceptions])
 
   const visibleArtists = useMemo(() => {
     if (!sourceFilteredArtistKeys) return artists
@@ -935,7 +930,7 @@ export default function LibraryView() {
     for (const track of sourceFilteredTracks) {
       const identityKey = track.album_identity_key || buildAlbumIdentityKeyFromTrack(track)
       const identityArtist = getAlbumIdentityArtist(track)
-      const browseArtist = resolveBrowseArtistForTrack(track, artistBrowseMode)
+      const browseArtist = resolveBrowseArtistForTrack(track, artistBrowseMode, artistSplitExceptions)
       const fallbackKey = buildAlbumKey(track.album, identityArtist)
       const match = albumByIdentityKey.get(identityKey) ?? albumByKey.get(fallbackKey)
 
@@ -965,7 +960,7 @@ export default function LibraryView() {
           identity_key: identityKey,
           album: normalizedAlbumName,
           artist: identityArtist || UNKNOWN_ARTIST_NAME,
-          primary_artist: resolveBrowseArtistForTrack(track, 'canonical'),
+          primary_artist: resolveBrowseArtistForTrack(track, 'canonical', artistSplitExceptions),
           year: track.year,
           artwork_hash: track.artwork_hash,
           track_count: 1,
@@ -1006,7 +1001,7 @@ export default function LibraryView() {
       primaryArtistSingles: sections.singles,
       featuredArtistAlbums: sections.featured
     }
-  }, [albumByIdentityKey, albumByKey, albums, artistBrowseMode, selectedArtist, sourceFilteredTracks])
+  }, [albumByIdentityKey, albumByKey, albums, artistBrowseMode, selectedArtist, sourceFilteredTracks, artistSplitExceptions])
 
   const selectedAlbumRecord = useMemo(() => {
     if (!selectedAlbum) return null
@@ -1657,34 +1652,7 @@ export default function LibraryView() {
   }
 
   const renderSearchControl = () => (
-    <div className="search-container">
-      <span className="search-icon" aria-hidden="true">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <circle cx="11" cy="11" r="7" />
-          <path d="m20 20-3.5-3.5" />
-        </svg>
-      </span>
-      <input
-        type="text"
-        className="search-input"
-        data-shortcut-search="true"
-        placeholder={searchPlaceholder}
-        aria-label={searchPlaceholder}
-        value={searchQuery}
-        onChange={(event) => setSearchQuery(event.target.value)}
-      />
-      {searchQuery.length > 0 && (
-        <button
-          type="button"
-          className="search-clear-btn"
-          aria-label="Clear search"
-          title="Clear search"
-          onClick={() => setSearchQuery('')}
-        >
-          ×
-        </button>
-      )}
-    </div>
+    <SearchControl value={searchQuery} onChange={setSearchQuery} placeholder={searchPlaceholder} />
   )
 
   const renderScanForChangesControl = () => (

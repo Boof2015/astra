@@ -1,3 +1,5 @@
+import { normalizeKey } from '../../shared/library/albumGrouping.ts'
+
 export interface ArtistToken {
   artist: string
   separator: string | null
@@ -9,9 +11,13 @@ function normalizeArtistText(value: string): string {
   return value.replace(/\s+/g, ' ').trim()
 }
 
-export function parseArtistMetadata(artistText: string): ArtistToken[] {
+export function parseArtistMetadata(artistText: string, exceptions: string[] = []): ArtistToken[] {
   const normalized = normalizeArtistText(artistText)
   if (!normalized) return []
+
+  if (exceptions.some((exception) => normalizeKey(exception) === normalizeKey(normalized))) {
+    return [{ artist: normalized, separator: null }]
+  }
 
   const parts = normalized.split(SEPARATOR_SPLIT_PATTERN)
   const tokens: ArtistToken[] = []

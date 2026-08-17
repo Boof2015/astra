@@ -78,6 +78,7 @@ function makeDbTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
     track_number: overrides.track_number ?? 1,
     disc_number: overrides.disc_number ?? 1,
     year: overrides.year ?? 2026,
+    date: overrides.date ?? null,
     genre: overrides.genre ?? null,
     genres: overrides.genres ?? (overrides.genre ? [overrides.genre] : []),
     artwork_hash: overrides.artwork_hash ?? null,

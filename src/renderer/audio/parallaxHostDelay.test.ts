@@ -2,17 +2,25 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { AudioEngine } from './AudioEngine.ts'
 
+interface FakeGainNode {
+  gain: { value: number }
+  connect: (destination: unknown) => void
+  disconnect: () => void
+}
+
 interface FakeSource {
   buffer: AudioBuffer | null
   onended: (() => void) | null
   starts: Array<{ when: number; offset: number }>
   start: (when: number, offset: number) => void
+  connect: (destination: unknown) => void
 }
 
 interface DelayTestEngine {
-  context: Pick<AudioContext, 'currentTime' | 'createBufferSource'>
+  context: Pick<AudioContext, 'currentTime' | 'createBufferSource' | 'createGain'>
   audioBuffer: Pick<AudioBuffer, 'duration' | 'numberOfChannels'>
   sourceNode: FakeSource | null
+  sourceGainNode: FakeGainNode | null
   playbackOutputMode: 'standard'
   _playbackState: 'playing'
   pauseTime: number
@@ -35,21 +43,25 @@ function createPendingStartEngine(): {
     starts: [],
     start(when, offset) {
       this.starts.push({ when, offset })
-    }
+    },
+    connect: () => undefined
   }
   let oldSourceStopped = false
   const internals = engine as unknown as DelayTestEngine
   internals.context = {
     currentTime: 10,
-    createBufferSource: () => replacementSource as unknown as AudioBufferSourceNode
+    createBufferSource: () => replacementSource as unknown as AudioBufferSourceNode,
+    createGain: () => ({ gain: { value: 1 }, connect: () => undefined, disconnect: () => undefined } as unknown as GainNode)
   }
   internals.audioBuffer = { duration: 180, numberOfChannels: 2 }
   internals.sourceNode = {
     buffer: internals.audioBuffer as AudioBuffer,
     onended: null,
     starts: [],
-    start: () => undefined
+    start: () => undefined,
+    connect: () => undefined
   }
+  internals.sourceGainNode = { gain: { value: 1 }, connect: () => undefined, disconnect: () => undefined }
   internals.playbackOutputMode = 'standard'
   internals._playbackState = 'playing'
   internals.pauseTime = 12

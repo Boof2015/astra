@@ -10,6 +10,7 @@ import {
   normalizeLastFmApiBaseUrl,
   parseListenBrainzApiBaseUrl,
   parseLastFmApiBaseUrl,
+  type LastFmArtistInfoResult,
   type LastFmAuthFinishResult,
   type LastFmAuthStartResult,
   type LastFmCustomProfileInput,
@@ -42,6 +43,9 @@ const AUDIOSCROBBLER_PROTOCOL_VERSION = '1.2.1'
 const AUDIOSCROBBLER_CLIENT_ID = 'ast'
 const AUDIOSCROBBLER_CLIENT_VERSION = '0.6.0'
 const LISTENBRAINZ_SUBMIT_PATH = '/1/submit-listens'
+// Filename hash Last.fm serves for artists with no real photo (a gray star
+// placeholder) — treated as "no image" rather than a usable URL.
+const LASTFM_PLACEHOLDER_IMAGE_HASH = '2a96cbd8b46e442fc41c2b86b821562f'
 
 interface LastFmServiceOptions {
   config: LastFmServiceConfig
@@ -431,6 +435,128 @@ export function sanitizePendingScrobbles(raw: unknown): LastFmPendingScrobble[] 
 
   if (deduped.length <= LASTFM_MAX_PENDING_SCROBBLES) return deduped
   return deduped.slice(-LASTFM_MAX_PENDING_SCROBBLES)
+}
+
+function cleanArtistBioSummary(value: unknown): string | null {
+  const summary = normalizeText(value)
+  if (!summary) return null
+  // Last.fm appends a "Read more on Last.fm" link to the end of every summary.
+  const withoutReadMoreLink = summary.replace(/<a\s+href="[^"]*"[^>]*>\s*Read more on Last\.fm\s*<\/a>\.?\s*$/i, '')
+  const withoutTags = withoutReadMoreLink.replace(/<[^>]+>/g, '')
+  const cleaned = normalizeDisplay(withoutTags)
+  return cleaned.length > 0 ? cleaned : null
+}
+
+function extractArtistTags(value: unknown): string[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+  const rawTag = (value as Record<string, unknown>).tag
+  const tagList = Array.isArray(rawTag) ? rawTag : rawTag ? [rawTag] : []
+
+  const names: string[] = []
+  for (const item of tagList) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const name = normalizeText((item as Record<string, unknown>).name)
+    if (name) names.push(name)
+  }
+  return names
+}
+
+function extractArtistImageUrl(value: unknown): string | null {
+  if (!Array.isArray(value)) return null
+
+  const bySize = new Map<string, string>()
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const record = item as Record<string, unknown>
+    const src = normalizeText(record['#text'])
+    if (!src || src.includes(LASTFM_PLACEHOLDER_IMAGE_HASH)) continue
+    const size = normalizeText(record.size) ?? ''
+    bySize.set(size, src)
+  }
+
+  return bySize.get('mega') ?? bySize.get('extralarge') ?? bySize.get('large') ?? null
+}
+
+// Public, unsigned lookup (no session/api_sig needed) — always targets the
+// official Last.fm API regardless of which scrobble profile is active.
+export async function getArtistInfo(artistName: string, apiKey: string): Promise<LastFmArtistInfoResult> {
+  const normalizedArtistName = normalizeText(artistName)
+  if (!normalizedArtistName) {
+    return { ok: false, message: 'Artist name is required.' }
+  }
+
+  const trimmedApiKey = apiKey.trim()
+  if (!trimmedApiKey) {
+    return { ok: false, message: 'Last.fm credentials are not configured for this build.' }
+  }
+
+  const url = new URL(LASTFM_OFFICIAL_API_BASE_URL)
+  url.searchParams.set('method', 'artist.getInfo')
+  url.searchParams.set('api_key', trimmedApiKey)
+  url.searchParams.set('artist', normalizedArtistName)
+  url.searchParams.set('format', 'json')
+
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), LASTFM_REQUEST_TIMEOUT_MS)
+
+  try {
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': LASTFM_USER_AGENT
+      },
+      signal: controller.signal
+    })
+
+    let payload: unknown
+    try {
+      payload = await response.json()
+    } catch {
+      payload = null
+    }
+
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return { ok: false, message: `Last.fm request failed with HTTP ${response.status}.` }
+    }
+
+    const record = payload as Record<string, unknown>
+    const errorCode = toApiErrorCode(record.error)
+    if (errorCode != null) {
+      const errorMessage = normalizeText(record.message)
+      return { ok: false, message: formatApiErrorMessage(errorCode, errorMessage ?? 'Artist not found.') }
+    }
+
+    const artistValue = record.artist
+    if (!artistValue || typeof artistValue !== 'object' || Array.isArray(artistValue)) {
+      return { ok: false, message: 'Last.fm returned an invalid artist payload.' }
+    }
+    const artistRecord = artistValue as Record<string, unknown>
+
+    return {
+      ok: true,
+      artist: {
+        name: normalizeText(artistRecord.name) ?? normalizedArtistName,
+        bio: cleanArtistBioSummary(
+          artistRecord.bio && typeof artistRecord.bio === 'object' && !Array.isArray(artistRecord.bio)
+            ? (artistRecord.bio as Record<string, unknown>).summary
+            : null
+        ),
+        tags: extractArtistTags(artistRecord.tags ?? artistRecord.toptags),
+        imageUrl: extractArtistImageUrl(artistRecord.image)
+      }
+    }
+  } catch (error) {
+    const isAbort = error instanceof Error && error.name === 'AbortError'
+    return {
+      ok: false,
+      message: isAbort
+        ? 'Last.fm artist lookup timed out.'
+        : 'Last.fm artist lookup failed due to a network error.'
+    }
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 export class LastFmService {

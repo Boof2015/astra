@@ -86,6 +86,17 @@ export interface LastFmAuthFinishResult {
   message: string
 }
 
+export interface LastFmArtistInfo {
+  name: string
+  bio: string | null
+  tags: string[]
+  imageUrl: string | null
+}
+
+export type LastFmArtistInfoResult =
+  | { ok: true; artist: LastFmArtistInfo }
+  | { ok: false; message: string }
+
 export interface LastFmCustomProfileInput {
   protocol?: LastFmScrobbleProtocol
   name: string

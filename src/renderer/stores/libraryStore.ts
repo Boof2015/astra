@@ -3,6 +3,7 @@ import type { TrackSourceType } from '../../types/subsonic'
 import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
 import { useUIStore } from './uiStore'
 import {
+  ALBUM_GRID_YEAR_VISIBILITY_STORAGE_KEY,
   ALBUM_SORT_MODE_STORAGE_KEY,
   ARTIST_BROWSE_MODE_STORAGE_KEY,
   ARTIST_ROOT_VIEW_MODE_STORAGE_KEY,
@@ -23,6 +24,8 @@ import {
 import { normalizeKey } from '../utils/albumIdentity'
 import { albumMatchesLibraryYear, type LibraryYearKey } from '../utils/libraryYears'
 
+export const ARTIST_SPLIT_EXCEPTIONS_PENDING_RESTART_STORAGE_KEY = 'astra-artist-split-exceptions-pending-restart'
+
 // Types matching preload
 export interface DbTrack {
   id: number
@@ -39,6 +42,7 @@ export interface DbTrack {
   track_number: number | null
   disc_number: number | null
   year: number | null
+  date: string | null
   genre: string | null
   genres: string[]
   artwork_hash: string | null
@@ -86,7 +90,7 @@ interface Artist {
   primary_track_count: number
   album_count: number
   artwork_hash: string | null
-  artwork_source: 'manual' | 'detected' | 'track' | null
+  artwork_source: 'manual' | 'remote' | 'detected' | 'track' | null
 }
 
 interface Genre {
@@ -224,6 +228,8 @@ interface LibraryStore {
   folderWarnings: Record<string, string[]>
   lastScanIssueLog: ScanIssueLog | null
   folderSubfolderSummaries: Record<string, FolderSubfolderSummary>
+  artistSplitExceptions: string[]
+  artistSplitExceptionsRestartConfirmation: string
   favorites: Set<string>
   favoriteTrackPaths: string[]
   recentlyPlayedPaths: string[]
@@ -232,6 +238,7 @@ interface LibraryStore {
   showTracklistGenre: boolean
   showTracklistAddedDate: boolean
   showTracklistPlayCount: boolean
+  showAlbumGridYear: boolean
   trackListSortState: LibraryTrackListSortState | null
   tracksViewSortState: LibraryTrackListSortState | null
   selectedSourceFilters: Set<string>
@@ -262,6 +269,10 @@ interface LibraryStore {
     relativePath: string,
     excluded: boolean
   ) => Promise<FolderSubfolderSummary | null>
+  loadArtistSplitExceptions: () => Promise<void>
+  addArtistSplitException: (name: string) => Promise<void>
+  removeArtistSplitException: (name: string) => Promise<void>
+  setArtistSplitExceptionsRestartConfirmation: (message: string) => void
   rescanFolder: (folderPath: string) => Promise<FolderSubfolderSummary | null>
   scanFolders: (folderPaths: string[]) => Promise<{ scannedFolders: number; canceled: boolean }>
   cancelScan: () => Promise<boolean>
@@ -302,6 +313,7 @@ interface LibraryStore {
   setShowTracklistGenre: (enabled: boolean) => void
   setShowTracklistAddedDate: (enabled: boolean) => void
   setShowTracklistPlayCount: (enabled: boolean) => void
+  setShowAlbumGridYear: (enabled: boolean) => void
   setTrackListSortState: (sortState: LibraryTrackListSortState | null) => void
   resetTrackListSortState: () => void
   setSelectedSourceFilters: (filters: Iterable<string>) => void
@@ -676,6 +688,16 @@ function loadTracklistPlayCountVisibilitySetting(): boolean {
   }
 }
 
+// Year was always shown on album cards before this became toggleable, so — unlike the tracklist
+// column flags above, which are new and default off — an absent/missing key here means "on".
+function loadAlbumGridYearVisibilitySetting(): boolean {
+  try {
+    return localStorage.getItem(ALBUM_GRID_YEAR_VISIBILITY_STORAGE_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
+
 function normalizeArtistBrowseMode(mode: LibraryArtistBrowseMode | string | null | undefined): LibraryArtistBrowseMode {
   return mode === 'strict' ? 'strict' : 'canonical'
 }
@@ -947,6 +969,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   folderWarnings: {},
   lastScanIssueLog: null,
   folderSubfolderSummaries: {},
+  artistSplitExceptions: [],
+  artistSplitExceptionsRestartConfirmation: '',
   favorites: new Set<string>(),
   favoriteTrackPaths: [],
   recentlyPlayedPaths: [],
@@ -955,6 +979,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   showTracklistGenre: loadTracklistGenreVisibilitySetting(),
   showTracklistAddedDate: loadTracklistAddedDateVisibilitySetting(),
   showTracklistPlayCount: loadTracklistPlayCountVisibilitySetting(),
+  showAlbumGridYear: loadAlbumGridYearVisibilitySetting(),
   trackListSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE },
   tracksViewSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE },
   selectedSourceFilters: new Set<string>(),
@@ -984,6 +1009,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       get().loadArtists(),
       get().loadGenres(),
       get().loadFolders(),
+      get().loadArtistSplitExceptions(),
       get().loadFavorites(),
       get().loadRecentlyPlayed(),
       currentSelection.hasFullTrackConsumers ? get().loadFullTracks() : Promise.resolve()
@@ -1258,6 +1284,31 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     }
 
     return result.summary ?? null
+  },
+
+  loadArtistSplitExceptions: async () => {
+    const artistSplitExceptions = await window.electronAPI.library.getArtistSplitExceptions()
+    set({ artistSplitExceptions })
+  },
+
+  addArtistSplitException: async (name: string) => {
+    const success = await window.electronAPI.library.addArtistSplitException(name)
+    if (success) {
+      persistBooleanPreference(ARTIST_SPLIT_EXCEPTIONS_PENDING_RESTART_STORAGE_KEY, true)
+    }
+    await get().loadArtistSplitExceptions()
+  },
+
+  removeArtistSplitException: async (name: string) => {
+    const success = await window.electronAPI.library.removeArtistSplitException(name)
+    if (success) {
+      persistBooleanPreference(ARTIST_SPLIT_EXCEPTIONS_PENDING_RESTART_STORAGE_KEY, true)
+    }
+    await get().loadArtistSplitExceptions()
+  },
+
+  setArtistSplitExceptionsRestartConfirmation: (message: string) => {
+    set({ artistSplitExceptionsRestartConfirmation: message })
   },
 
   // Rescan one folder after a batch of subfolder inclusion/exclusion changes.
@@ -2158,6 +2209,17 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
     try {
       localStorage.setItem(TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY, normalized ? '1' : '0')
+    } catch {
+      // Ignore localStorage write failures in restricted environments.
+    }
+  },
+
+  setShowAlbumGridYear: (enabled: boolean) => {
+    const normalized = Boolean(enabled)
+    set({ showAlbumGridYear: normalized })
+
+    try {
+      localStorage.setItem(ALBUM_GRID_YEAR_VISIBILITY_STORAGE_KEY, normalized ? '1' : '0')
     } catch {
       // Ignore localStorage write failures in restricted environments.
     }

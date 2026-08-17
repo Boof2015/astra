@@ -216,6 +216,7 @@ export default function GraphView() {
   const loadFullTracks = useLibraryStore((state) => state.loadFullTracks)
   const releaseFullTracks = useLibraryStore((state) => state.releaseFullTracks)
   const selectArtist = useLibraryStore((state) => state.selectArtist)
+  const artistSplitExceptions = useLibraryStore((state) => state.artistSplitExceptions)
 
   const mode = useGraphStore((state) => state.mode)
   const focusedArtistKey = useGraphStore((state) => state.focusedArtistKey)
@@ -318,8 +319,8 @@ export default function GraphView() {
   }, [])
 
   const graph = useMemo(
-    () => buildArtistGraph(graphTracks),
-    [graphTracks]
+    () => buildArtistGraph(graphTracks, artistSplitExceptions),
+    [graphTracks, artistSplitExceptions]
   )
   const graphIndex = useMemo(
     () => indexArtistGraph(graph),

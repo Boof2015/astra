@@ -47,6 +47,7 @@ import type {
   ParallaxTimelineState
 } from '../types/parallax'
 import type {
+    LastFmArtistInfoResult,
     LastFmAuthFinishResult,
     LastFmAuthStartResult,
     LastFmCustomProfileInput,
@@ -139,6 +140,7 @@ interface DbTrack {
     track_number: number | null
 	    disc_number: number | null
 	    year: number | null
+	    date: string | null
 	    genre: string | null
 	    genres: string[]
 	    artwork_hash: string | null
@@ -452,6 +454,7 @@ declare global {
             }
             lastFm: {
                 getStatus: () => Promise<LastFmStatus>
+                getArtistInfo: (artistName: string) => Promise<LastFmArtistInfoResult>
                 setEnabled: (enabled: boolean) => Promise<LastFmStatus>
                 createCustomProfile: (input: LastFmCustomProfileInput) => Promise<LastFmStatus>
                 updateCustomProfile: (profileId: string, input: LastFmCustomProfileInput) => Promise<LastFmStatus>
@@ -638,6 +641,9 @@ declare global {
                 getTracks: () => Promise<DbTrack[]>
                 getTracksPage: (request?: LibraryTrackPageRequest) => Promise<LibraryTrackPage>
                 getTracksByPaths: (trackPaths: string[]) => Promise<DbTrack[]>
+                getArtistSplitExceptions: () => Promise<string[]>
+                addArtistSplitException: (name: string) => Promise<boolean>
+                removeArtistSplitException: (name: string) => Promise<boolean>
                 [key: string]: any
             }
         }

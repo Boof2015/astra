@@ -10,8 +10,9 @@ import {
   type ControllerVirtualMoveDetail
 } from '../../utils/controllerFocus'
 import { resolveVirtualGridContentWidth } from '../../utils/virtualGridSizing'
+import { DEFAULT_ARTIST_GRID_SCALE_PERCENT, useUIStore } from '../../stores/uiStore'
 
-interface ArtistRecord {
+export interface ArtistRecord {
   artist: string
   track_count: number
   album_count: number
@@ -47,8 +48,9 @@ interface ArtistGridCellSharedProps {
 
 const ARTIST_ROW_HEIGHT_FALLBACK_PX = 64
 const ARTIST_LIST_OVERSCAN_COUNT = 8
-const ARTIST_GRID_ROW_HEIGHT_FALLBACK_PX = 168
-const ARTIST_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX = 124
+export const ARTIST_GRID_ROW_HEIGHT_FALLBACK_PX = 168
+export const ARTIST_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX = 124
+export const ARTIST_GRID_AVATAR_HEIGHT_FALLBACK_PX = 96
 const ARTIST_GRID_GAP_FALLBACK_PX = 12
 const ARTIST_GRID_OVERSCAN_COUNT = 3
 
@@ -78,7 +80,7 @@ function getArtistInitial(artist: string): string {
   return artist.trim().charAt(0).toUpperCase()
 }
 
-function ArtistAvatar({
+export function ArtistAvatar({
   artist,
   className,
   artworkClassName,
@@ -212,6 +214,7 @@ export default function ArtistList({
   const listBodyRef = useRef<HTMLDivElement | null>(null)
   const listApiRef = useRef<ListImperativeAPI | null>(null)
   const gridApiRef = useRef<GridImperativeAPI | null>(null)
+  const artistGridScalePercent = useUIStore((state) => state.artistGridScalePercent)
 
   useImperativeHandle(viewportRef, () => ({
     get element() {
@@ -221,47 +224,77 @@ export default function ArtistList({
     }
   }), [viewMode])
 
+  const measureListMetrics = useCallback(() => {
+    const element = listBodyRef.current
+    if (!element) return
+
+    const nextHeight = Math.max(0, Math.round(element.clientHeight))
+    const nextWidth = Math.max(0, Math.round(element.clientWidth))
+    const nextRowHeight = resolveCssPx(element, '--artist-row-height', ARTIST_ROW_HEIGHT_FALLBACK_PX)
+    const nextGridRowHeight = resolveCssPx(element, '--artist-grid-row-height', ARTIST_GRID_ROW_HEIGHT_FALLBACK_PX)
+    const nextGridMinColumnWidth = resolveCssPx(element, '--artist-grid-min-column-width', ARTIST_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX)
+    const nextGridGap = resolveCssPx(element, '--artist-grid-gap', ARTIST_GRID_GAP_FALLBACK_PX)
+
+    setViewportSize((previous) => (
+      previous.height === nextHeight && previous.width === nextWidth
+        ? previous
+        : { height: nextHeight, width: nextWidth }
+    ))
+    setArtistRowHeight((previous) => (previous === nextRowHeight ? previous : nextRowHeight))
+    setArtistGridRowHeight((previous) => (previous === nextGridRowHeight ? previous : nextGridRowHeight))
+    setArtistGridMinColumnWidth((previous) => (previous === nextGridMinColumnWidth ? previous : nextGridMinColumnWidth))
+    setArtistGridGap((previous) => (previous === nextGridGap ? previous : nextGridGap))
+  }, [])
+
+  // Same reasoning as AlbumGrid: override directly on this element (always wins over the
+  // .artist-list rule) so a custom scale doesn't require touching resolveCssPx or
+  // resolveArtistGridLayout. At 100% the overrides are removed, leaving the stylesheet — and its
+  // narrow-window breakpoint for these three variables — in control. Row height and avatar height
+  // scale by the same percentage as column width so cards grow/shrink proportionally in both
+  // dimensions, matching how the album grid's auto-measured card height already tracks its width.
   useLayoutEffect(() => {
     const element = listBodyRef.current
     if (!element) return
 
-    const updateMeasurements = () => {
-      const nextHeight = Math.max(0, Math.round(element.clientHeight))
-      const nextWidth = Math.max(0, Math.round(element.clientWidth))
-      const nextRowHeight = resolveCssPx(element, '--artist-row-height', ARTIST_ROW_HEIGHT_FALLBACK_PX)
-      const nextGridRowHeight = resolveCssPx(element, '--artist-grid-row-height', ARTIST_GRID_ROW_HEIGHT_FALLBACK_PX)
-      const nextGridMinColumnWidth = resolveCssPx(element, '--artist-grid-min-column-width', ARTIST_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX)
-      const nextGridGap = resolveCssPx(element, '--artist-grid-gap', ARTIST_GRID_GAP_FALLBACK_PX)
-
-      setViewportSize((previous) => (
-        previous.height === nextHeight && previous.width === nextWidth
-          ? previous
-          : { height: nextHeight, width: nextWidth }
-      ))
-      setArtistRowHeight((previous) => (previous === nextRowHeight ? previous : nextRowHeight))
-      setArtistGridRowHeight((previous) => (previous === nextGridRowHeight ? previous : nextGridRowHeight))
-      setArtistGridMinColumnWidth((previous) => (previous === nextGridMinColumnWidth ? previous : nextGridMinColumnWidth))
-      setArtistGridGap((previous) => (previous === nextGridGap ? previous : nextGridGap))
+    if (artistGridScalePercent === DEFAULT_ARTIST_GRID_SCALE_PERCENT) {
+      element.style.removeProperty('--artist-grid-min-column-width')
+      element.style.removeProperty('--artist-grid-row-height')
+      element.style.removeProperty('--artist-grid-avatar-height')
+    } else {
+      const scale = artistGridScalePercent / 100
+      const scaledWidth = Math.round(ARTIST_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX * scale)
+      const scaledRowHeight = Math.round(ARTIST_GRID_ROW_HEIGHT_FALLBACK_PX * scale)
+      const scaledAvatarHeight = Math.round(ARTIST_GRID_AVATAR_HEIGHT_FALLBACK_PX * scale)
+      element.style.setProperty('--artist-grid-min-column-width', `${scaledWidth}px`)
+      element.style.setProperty('--artist-grid-row-height', `${scaledRowHeight}px`)
+      element.style.setProperty('--artist-grid-avatar-height', `${scaledAvatarHeight}px`)
     }
 
-    updateMeasurements()
+    measureListMetrics()
+  }, [artistGridScalePercent, measureListMetrics])
+
+  useLayoutEffect(() => {
+    const element = listBodyRef.current
+    if (!element) return
+
+    measureListMetrics()
 
     if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', updateMeasurements)
+      window.addEventListener('resize', measureListMetrics)
       return () => {
-        window.removeEventListener('resize', updateMeasurements)
+        window.removeEventListener('resize', measureListMetrics)
       }
     }
 
     const resizeObserver = new ResizeObserver(() => {
-      updateMeasurements()
+      measureListMetrics()
     })
     resizeObserver.observe(element)
 
     return () => {
       resizeObserver.disconnect()
     }
-  }, [])
+  }, [measureListMetrics])
 
   const rowProps = useMemo<ArtistListRowSharedProps>(() => ({
     artists,

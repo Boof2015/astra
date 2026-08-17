@@ -130,6 +130,7 @@ interface TrackListRowSharedProps {
   ratings: ReadonlyMap<string, TrackRatingState>
   setTrackRating: (trackPaths: string[], rating: number | null) => Promise<void>
   artistBrowseMode: LibraryArtistBrowseMode
+  artistSplitExceptions: string[]
   searchQuery: string
   trackNumberMode: TrackNumberMode
   contextTrackNumbers?: readonly number[]
@@ -446,6 +447,7 @@ function TrackListRowRenderer({
   ratings,
   setTrackRating,
   artistBrowseMode,
+  artistSplitExceptions,
   searchQuery,
   trackNumberMode,
   contextTrackNumbers,
@@ -679,6 +681,7 @@ function TrackListRowRenderer({
                 linkClassName="artist-name-link-inline"
                 stopPropagation
                 artistBrowseMode={artistBrowseMode}
+                artistSplitExceptions={artistSplitExceptions}
               />
             )}
           </div>
@@ -887,6 +890,7 @@ export default function TrackList({
   const showTracklistPlayCount = useLibraryStore((state) => state.showTracklistPlayCount)
   const ratingsEnabled = useRatingsStore((state) => state.enabled)
   const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
+  const artistSplitExceptions = useLibraryStore((state) => state.artistSplitExceptions)
   const ratings = useRatingsStore((state) => state.ratings)
   const setTrackRating = useRatingsStore((state) => state.setTrackRating)
   const playlists = usePlaylistStore((state) => state.playlists)
@@ -2071,6 +2075,7 @@ export default function TrackList({
     ratings,
     setTrackRating,
     artistBrowseMode,
+    artistSplitExceptions,
     searchQuery,
     trackNumberMode,
     contextTrackNumbers,
@@ -2122,6 +2127,7 @@ export default function TrackList({
     ratings,
     setTrackRating,
     artistBrowseMode,
+    artistSplitExceptions,
     searchQuery,
     trackNumberMode,
     contextTrackNumbers,

@@ -638,7 +638,9 @@ export default function TransportBar() {
           disabled={eqControlDisabled}
         >
           <span className="transport-eq-label">EQ</span>
-          <EQResponsePreview className="transport-eq-curve" width={80} height={30} showFill={false} />
+          <div className="transport-eq-graphic-slot">
+            <EQResponsePreview className="transport-eq-curve" width={80} height={30} showFill={false} />
+          </div>
         </button>
 
         {/* Queue + Info stacked vertically */}
@@ -695,6 +697,7 @@ export default function TransportBar() {
           onClose={() => setShowEQPopover(false)}
         />
       )}
+
     </div>
   )
 }

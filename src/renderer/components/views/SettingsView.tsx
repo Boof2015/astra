@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import FolderSettings from '../settings/FolderSettings'
+import ArtistSplitExceptionsSettings from '../settings/ArtistSplitExceptionsSettings'
 import AudioOutputSelect from '../settings/AudioOutputSelect'
 import ChannelRoutingPanel from '../settings/ChannelRoutingPanel'
 import DelayCompensationPanel from '../settings/DelayCompensationPanel'
@@ -11,14 +12,23 @@ import KeybindSettings from '../settings/KeybindSettings'
 import SettingsTransferWizard from '../settings/SettingsTransferWizard'
 import ImportedListeningDataCard from '../settings/ImportedListeningDataCard'
 import SettingsSegmentedControl, { type SettingsSegmentedOption } from '../settings/SettingsSegmentedControl'
+import { AlbumGridScalePreview, ArtistGridScalePreview } from '../library/GridScalePreview'
 import { renderPairingQrSvg } from '../../utils/pairingQr'
 import { usePresence } from '../../hooks/usePresence'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import {
+  DEFAULT_ALBUM_GRID_SCALE_PERCENT,
+  DEFAULT_ARTIST_GRID_SCALE_PERCENT,
   DEFAULT_UI_SCALE_PERCENT,
   DEFAULT_JUMP_TO_PLAYING_DESTINATION,
+  ALBUM_GRID_SCALE_STEP_PERCENT,
+  ARTIST_GRID_SCALE_STEP_PERCENT,
+  MAX_ALBUM_GRID_SCALE_PERCENT,
+  MAX_ARTIST_GRID_SCALE_PERCENT,
   MAX_UI_SCALE_PERCENT,
+  MIN_ALBUM_GRID_SCALE_PERCENT,
+  MIN_ARTIST_GRID_SCALE_PERCENT,
   MIN_UI_SCALE_PERCENT,
   UI_SCALE_STEP_PERCENT,
   useUIStore,
@@ -120,6 +130,9 @@ const NATIVE_SAMPLE_FORMAT_LABELS: Record<string, string> = {
 
 const NORMALIZATION_TARGET_MIN_LUFS = -30
 const NORMALIZATION_TARGET_MAX_LUFS = 0
+
+const FADE_DURATION_MIN_MS = 200
+const FADE_DURATION_MAX_MS = 15000
 
 const CUSTOM_SCROBBLE_PROTOCOLS: LastFmScrobbleProtocol[] = ['lastfm2', 'audioscrobbler', 'listenbrainz']
 
@@ -319,6 +332,19 @@ function parseNormalizationTargetLufsInput(input: string): number | null {
   return Math.round(parsed * 10) / 10
 }
 
+function formatFadeDurationMs(value: number): string {
+  return String(Math.round(value))
+}
+
+function parseFadeDurationMsInput(input: string): number | null {
+  const trimmed = input.trim()
+  if (!/^\d+$/.test(trimmed)) return null
+  const parsed = Number(trimmed)
+  if (!Number.isInteger(parsed)) return null
+  if (parsed < FADE_DURATION_MIN_MS || parsed > FADE_DURATION_MAX_MS) return null
+  return parsed
+}
+
 function readDeveloperSectionVisibilityPreference(): boolean {
   try {
     return localStorage.getItem(DEVELOPER_SETTINGS_VISIBILITY_STORAGE_KEY) === '1'
@@ -393,6 +419,16 @@ export default function SettingsView() {
   const setNormalizationEnabled = useAudioSettingsStore((state) => state.setNormalizationEnabled)
   const normalizationTargetLufs = useAudioSettingsStore((state) => state.normalizationTargetLufs)
   const setNormalizationTargetLufs = useAudioSettingsStore((state) => state.setNormalizationTargetLufs)
+  const fadeEnabled = useAudioSettingsStore((state) => state.fadeEnabled)
+  const setFadeEnabled = useAudioSettingsStore((state) => state.setFadeEnabled)
+  const fadeInDurationMs = useAudioSettingsStore((state) => state.fadeInDurationMs)
+  const setFadeInDurationMs = useAudioSettingsStore((state) => state.setFadeInDurationMs)
+  const fadeOutDurationMs = useAudioSettingsStore((state) => state.fadeOutDurationMs)
+  const setFadeOutDurationMs = useAudioSettingsStore((state) => state.setFadeOutDurationMs)
+  const crossfadeEnabled = useAudioSettingsStore((state) => state.crossfadeEnabled)
+  const setCrossfadeEnabled = useAudioSettingsStore((state) => state.setCrossfadeEnabled)
+  const crossfadeDurationMs = useAudioSettingsStore((state) => state.crossfadeDurationMs)
+  const setCrossfadeDurationMs = useAudioSettingsStore((state) => state.setCrossfadeDurationMs)
   const playbackOutputMode = useAudioSettingsStore((state) => state.playbackOutputMode)
   const setPlaybackOutputMode = useAudioSettingsStore((state) => state.setPlaybackOutputMode)
   const disableGaplessPrebufferDev = useAudioSettingsStore((state) => state.disableGaplessPrebufferDev)
@@ -531,6 +567,9 @@ export default function SettingsView() {
   const [normalizationDisableStep, setNormalizationDisableStep] = useState<NormalizationDisableStep>(null)
   const [normalizationTargetInput, setNormalizationTargetInput] = useState(() => formatNormalizationTargetLufs(normalizationTargetLufs))
   const [normalizationTargetError, setNormalizationTargetError] = useState('')
+  const [fadeInDurationInput, setFadeInDurationInput] = useState(() => formatFadeDurationMs(fadeInDurationMs))
+  const [fadeOutDurationInput, setFadeOutDurationInput] = useState(() => formatFadeDurationMs(fadeOutDurationMs))
+  const [crossfadeDurationInput, setCrossfadeDurationInput] = useState(() => formatFadeDurationMs(crossfadeDurationMs))
   const [lyricsTranslationPriorityInput, setLyricsTranslationPriorityInput] = useState(() => (
     lyricsDisplaySettings.translationLanguagePriority.join(', ')
   ))
@@ -545,6 +584,14 @@ export default function SettingsView() {
   const uiScalePercent = useUIStore((state) => state.uiScalePercent)
   const setUIScalePercent = useUIStore((state) => state.setUIScalePercent)
   const resetUIScalePercent = useUIStore((state) => state.resetUIScalePercent)
+  const albumGridScalePercent = useUIStore((state) => state.albumGridScalePercent)
+  const setAlbumGridScalePercent = useUIStore((state) => state.setAlbumGridScalePercent)
+  const resetAlbumGridScalePercent = useUIStore((state) => state.resetAlbumGridScalePercent)
+  const artistGridScalePercent = useUIStore((state) => state.artistGridScalePercent)
+  const setArtistGridScalePercent = useUIStore((state) => state.setArtistGridScalePercent)
+  const resetArtistGridScalePercent = useUIStore((state) => state.resetArtistGridScalePercent)
+  const showAlbumGridYear = useLibraryStore((state) => state.showAlbumGridYear)
+  const setShowAlbumGridYear = useLibraryStore((state) => state.setShowAlbumGridYear)
   const homeGreetingTextMode = useUIStore((state) => state.homeGreetingTextMode)
   const setHomeGreetingTextMode = useUIStore((state) => state.setHomeGreetingTextMode)
   const transportInfoLineMode = useUIStore((state) => state.transportInfoLineMode)
@@ -1490,6 +1537,39 @@ export default function SettingsView() {
     setNormalizationTargetInput(formatNormalizationTargetLufs(DEFAULT_NORMALIZATION_TARGET_LUFS))
   }
 
+  const commitFadeInDuration = () => {
+    if (bitPerfectModeActive) return
+    const parsed = parseFadeDurationMsInput(fadeInDurationInput)
+    if (parsed == null) {
+      setFadeInDurationInput(formatFadeDurationMs(fadeInDurationMs))
+      return
+    }
+    setFadeInDurationMs(parsed)
+    setFadeInDurationInput(formatFadeDurationMs(parsed))
+  }
+
+  const commitFadeOutDuration = () => {
+    if (bitPerfectModeActive) return
+    const parsed = parseFadeDurationMsInput(fadeOutDurationInput)
+    if (parsed == null) {
+      setFadeOutDurationInput(formatFadeDurationMs(fadeOutDurationMs))
+      return
+    }
+    setFadeOutDurationMs(parsed)
+    setFadeOutDurationInput(formatFadeDurationMs(parsed))
+  }
+
+  const commitCrossfadeDuration = () => {
+    if (bitPerfectModeActive) return
+    const parsed = parseFadeDurationMsInput(crossfadeDurationInput)
+    if (parsed == null) {
+      setCrossfadeDurationInput(formatFadeDurationMs(crossfadeDurationMs))
+      return
+    }
+    setCrossfadeDurationMs(parsed)
+    setCrossfadeDurationInput(formatFadeDurationMs(parsed))
+  }
+
   const replayGainSelectorValue: ReplayGainSelectorValue = replayGainScanEnabled
     ? replayGainMode
     : 'disabled'
@@ -1867,6 +1947,7 @@ export default function SettingsView() {
                   </div>
                 </div>
               </div>
+              <ArtistSplitExceptionsSettings />
               <div className="settings-card">
                 <div className="settings-card-label">Track Ratings</div>
                 <div className="settings-grid">
@@ -1926,6 +2007,79 @@ export default function SettingsView() {
                       {showTracklistPlayCount ? 'Enabled' : 'Disabled'}
                     </button>
                   </div>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Album Grid</div>
+                <AlbumGridScalePreview />
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span className="settings-field-label">Card Size</span>
+                    <div className="settings-scale-row">
+                      <input
+                        className="settings-scale-slider"
+                        type="range"
+                        min={MIN_ALBUM_GRID_SCALE_PERCENT}
+                        max={MAX_ALBUM_GRID_SCALE_PERCENT}
+                        step={ALBUM_GRID_SCALE_STEP_PERCENT}
+                        value={albumGridScalePercent}
+                        onChange={(event) => setAlbumGridScalePercent(Number(event.target.value))}
+                        aria-label="Album grid card size"
+                      />
+                      <span className="settings-chip settings-chip-mono settings-scale-value">
+                        {albumGridScalePercent}%
+                      </span>
+                      <button
+                        type="button"
+                        className="settings-chip settings-chip-mono settings-chip-danger"
+                        onClick={resetAlbumGridScalePercent}
+                        disabled={albumGridScalePercent === DEFAULT_ALBUM_GRID_SCALE_PERCENT}
+                      >
+                        RESET
+                      </button>
+                    </div>
+                  </label>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Year</span>
+                    <button
+                      className={`settings-toggle ${showAlbumGridYear ? 'active' : ''}`}
+                      onClick={() => setShowAlbumGridYear(!showAlbumGridYear)}
+                    >
+                      {showAlbumGridYear ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Artist Grid</div>
+                <ArtistGridScalePreview />
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span className="settings-field-label">Card Size</span>
+                    <div className="settings-scale-row">
+                      <input
+                        className="settings-scale-slider"
+                        type="range"
+                        min={MIN_ARTIST_GRID_SCALE_PERCENT}
+                        max={MAX_ARTIST_GRID_SCALE_PERCENT}
+                        step={ARTIST_GRID_SCALE_STEP_PERCENT}
+                        value={artistGridScalePercent}
+                        onChange={(event) => setArtistGridScalePercent(Number(event.target.value))}
+                        aria-label="Artist grid card size"
+                      />
+                      <span className="settings-chip settings-chip-mono settings-scale-value">
+                        {artistGridScalePercent}%
+                      </span>
+                      <button
+                        type="button"
+                        className="settings-chip settings-chip-mono settings-chip-danger"
+                        onClick={resetArtistGridScalePercent}
+                        disabled={artistGridScalePercent === DEFAULT_ARTIST_GRID_SCALE_PERCENT}
+                      >
+                        RESET
+                      </button>
+                    </div>
+                  </label>
                 </div>
               </div>
             </div>
@@ -2143,7 +2297,110 @@ export default function SettingsView() {
                   </p>
                 )}
               </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Fade</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Fade In/Out</span>
+                    <button
+                      type="button"
+                      className={`settings-toggle ${fadeEnabled ? 'active' : ''}`}
+                      onClick={() => setFadeEnabled(!fadeEnabled)}
+                      disabled={bitPerfectModeActive}
+                      title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
+                    >
+                      {fadeEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <label className="settings-field">
+                    <span className="settings-field-label">Fade In Duration</span>
+                    <div className="settings-inline-row">
+                      <input
+                        className="settings-select settings-inline-input settings-inline-input-compact"
+                        type="number"
+                        min={FADE_DURATION_MIN_MS}
+                        max={FADE_DURATION_MAX_MS}
+                        step={100}
+                        value={fadeInDurationInput}
+                        disabled={!fadeEnabled || bitPerfectModeActive}
+                        title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
+                        onChange={(event) => setFadeInDurationInput(event.target.value)}
+                        onBlur={commitFadeInDuration}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter') return
+                          event.preventDefault()
+                          commitFadeInDuration()
+                        }}
+                      />
+                      <span className="settings-chip settings-chip-mono">ms</span>
+                    </div>
+                  </label>
+                  <label className="settings-field">
+                    <span className="settings-field-label">Fade Out Duration</span>
+                    <div className="settings-inline-row">
+                      <input
+                        className="settings-select settings-inline-input settings-inline-input-compact"
+                        type="number"
+                        min={FADE_DURATION_MIN_MS}
+                        max={FADE_DURATION_MAX_MS}
+                        step={100}
+                        value={fadeOutDurationInput}
+                        disabled={!fadeEnabled || bitPerfectModeActive}
+                        title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
+                        onChange={(event) => setFadeOutDurationInput(event.target.value)}
+                        onBlur={commitFadeOutDuration}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter') return
+                          event.preventDefault()
+                          commitFadeOutDuration()
+                        }}
+                      />
+                      <span className="settings-chip settings-chip-mono">ms</span>
+                    </div>
+                  </label>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Crossfade</span>
+                    <button
+                      type="button"
+                      className={`settings-toggle ${crossfadeEnabled ? 'active' : ''}`}
+                      onClick={() => setCrossfadeEnabled(!crossfadeEnabled)}
+                      disabled={bitPerfectModeActive}
+                      title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
+                    >
+                      {crossfadeEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <label className="settings-field">
+                    <span className="settings-field-label">Crossfade Duration</span>
+                    <div className="settings-inline-row">
+                      <input
+                        className="settings-select settings-inline-input settings-inline-input-compact"
+                        type="number"
+                        min={FADE_DURATION_MIN_MS}
+                        max={FADE_DURATION_MAX_MS}
+                        step={100}
+                        value={crossfadeDurationInput}
+                        disabled={!crossfadeEnabled || bitPerfectModeActive}
+                        title={bitPerfectModeActive ? BIT_PERFECT_DSP_DISABLED_MESSAGE : undefined}
+                        onChange={(event) => setCrossfadeDurationInput(event.target.value)}
+                        onBlur={commitCrossfadeDuration}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter') return
+                          event.preventDefault()
+                          commitCrossfadeDuration()
+                        }}
+                      />
+                      <span className="settings-chip settings-chip-mono">ms</span>
+                    </div>
+                  </label>
+                </div>
+              </div>
             </div>
+            {bitPerfectModeActive && (
+              <p className="settings-note">
+                {BIT_PERFECT_DSP_DISABLED_MESSAGE}
+              </p>
+            )}
           </section>
             )}
 

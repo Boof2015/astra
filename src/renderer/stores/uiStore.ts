@@ -28,6 +28,16 @@ export const DEFAULT_UI_SCALE_PERCENT = 100
 export const MAX_UI_SCALE_PERCENT = 125
 export const UI_SCALE_STEP_PERCENT = 5
 export const UI_SCALE_STORAGE_KEY = 'astra-ui-scale-percent-v1'
+export const MIN_ALBUM_GRID_SCALE_PERCENT = 50
+export const DEFAULT_ALBUM_GRID_SCALE_PERCENT = 100
+export const MAX_ALBUM_GRID_SCALE_PERCENT = 200
+export const ALBUM_GRID_SCALE_STEP_PERCENT = 10
+export const ALBUM_GRID_SCALE_STORAGE_KEY = 'astra-album-grid-scale-percent-v1'
+export const MIN_ARTIST_GRID_SCALE_PERCENT = 50
+export const DEFAULT_ARTIST_GRID_SCALE_PERCENT = 100
+export const MAX_ARTIST_GRID_SCALE_PERCENT = 200
+export const ARTIST_GRID_SCALE_STEP_PERCENT = 10
+export const ARTIST_GRID_SCALE_STORAGE_KEY = 'astra-artist-grid-scale-percent-v1'
 export const HOME_GREETING_TEXT_MODE_STORAGE_KEY = 'astra-home-greeting-text-mode-v1'
 export const DEFAULT_HOME_GREETING_TEXT_MODE: HomeGreetingTextMode = 'messages'
 export const ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY = 'astra-experimental-activity-indicator-enabled-v1'
@@ -194,6 +204,28 @@ export function getNextUIScalePercent(currentPercent: number, action: UIScaleSho
   return normalizeUIScalePercent(currentPercent + delta)
 }
 
+export function normalizeAlbumGridScalePercent(value: unknown): number {
+  if (value == null) return DEFAULT_ALBUM_GRID_SCALE_PERCENT
+  if (typeof value === 'string' && value.trim().length === 0) return DEFAULT_ALBUM_GRID_SCALE_PERCENT
+
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return DEFAULT_ALBUM_GRID_SCALE_PERCENT
+
+  const snapped = Math.round(numeric / ALBUM_GRID_SCALE_STEP_PERCENT) * ALBUM_GRID_SCALE_STEP_PERCENT
+  return Math.min(MAX_ALBUM_GRID_SCALE_PERCENT, Math.max(MIN_ALBUM_GRID_SCALE_PERCENT, snapped))
+}
+
+export function normalizeArtistGridScalePercent(value: unknown): number {
+  if (value == null) return DEFAULT_ARTIST_GRID_SCALE_PERCENT
+  if (typeof value === 'string' && value.trim().length === 0) return DEFAULT_ARTIST_GRID_SCALE_PERCENT
+
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return DEFAULT_ARTIST_GRID_SCALE_PERCENT
+
+  const snapped = Math.round(numeric / ARTIST_GRID_SCALE_STEP_PERCENT) * ARTIST_GRID_SCALE_STEP_PERCENT
+  return Math.min(MAX_ARTIST_GRID_SCALE_PERCENT, Math.max(MIN_ARTIST_GRID_SCALE_PERCENT, snapped))
+}
+
 export function normalizeHomeGreetingTextMode(value: unknown): HomeGreetingTextMode {
   return value === 'clock' || value === 'off' || value === 'messages'
     ? value
@@ -272,6 +304,38 @@ function readUIScalePreference(): number {
 function persistUIScalePreference(percent: number): void {
   try {
     localStorage.setItem(UI_SCALE_STORAGE_KEY, String(normalizeUIScalePercent(percent)))
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
+function readAlbumGridScalePreference(): number {
+  try {
+    return normalizeAlbumGridScalePercent(localStorage.getItem(ALBUM_GRID_SCALE_STORAGE_KEY))
+  } catch {
+    return DEFAULT_ALBUM_GRID_SCALE_PERCENT
+  }
+}
+
+function persistAlbumGridScalePreference(percent: number): void {
+  try {
+    localStorage.setItem(ALBUM_GRID_SCALE_STORAGE_KEY, String(normalizeAlbumGridScalePercent(percent)))
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
+function readArtistGridScalePreference(): number {
+  try {
+    return normalizeArtistGridScalePercent(localStorage.getItem(ARTIST_GRID_SCALE_STORAGE_KEY))
+  } catch {
+    return DEFAULT_ARTIST_GRID_SCALE_PERCENT
+  }
+}
+
+function persistArtistGridScalePreference(percent: number): void {
+  try {
+    localStorage.setItem(ARTIST_GRID_SCALE_STORAGE_KEY, String(normalizeArtistGridScalePercent(percent)))
   } catch {
     // Ignore storage failures and continue with in-memory preference.
   }
@@ -436,6 +500,8 @@ const initialWaveformTimeDisplayMode = readWaveformTimeDisplayModePreference()
 const initialAnalyzerHeightPx = readAnalyzerHeightPreference()
 const initialAnalyzerRackVisible = readAnalyzerRackVisibilityPreference()
 const initialUIScalePercent = readUIScalePreference()
+const initialAlbumGridScalePercent = readAlbumGridScalePreference()
+const initialArtistGridScalePercent = readArtistGridScalePreference()
 const initialHomeGreetingTextMode = readHomeGreetingTextModePreference()
 const initialActivityIndicatorExperimentEnabled = readActivityIndicatorExperimentPreference()
 const initialControllerSupportEnabled = readControllerSupportExperimentPreference()
@@ -475,6 +541,8 @@ interface UIStore {
   isZoneDisplayActive: boolean
   analyzerHeightPx: number
   uiScalePercent: number
+  albumGridScalePercent: number
+  artistGridScalePercent: number
   homeGreetingTextMode: HomeGreetingTextMode
   activityIndicatorExperimentEnabled: boolean
   controllerSupportEnabled: boolean
@@ -521,6 +589,10 @@ interface UIStore {
   resetAnalyzerRackPreferences: () => void
   setUIScalePercent: (percent: number) => void
   resetUIScalePercent: () => void
+  setAlbumGridScalePercent: (percent: number) => void
+  resetAlbumGridScalePercent: () => void
+  setArtistGridScalePercent: (percent: number) => void
+  resetArtistGridScalePercent: () => void
   setHomeGreetingTextMode: (mode: HomeGreetingTextMode) => void
   resetHomeGreetingTextMode: () => void
   setActivityIndicatorExperimentEnabled: (enabled: boolean) => void
@@ -578,6 +650,8 @@ export const useUIStore = create<UIStore>((set, get) => ({
   isZoneDisplayActive: initialIsZoneDisplayActive,
   analyzerHeightPx: initialAnalyzerHeightPx,
   uiScalePercent: initialUIScalePercent,
+  albumGridScalePercent: initialAlbumGridScalePercent,
+  artistGridScalePercent: initialArtistGridScalePercent,
   homeGreetingTextMode: initialHomeGreetingTextMode,
   activityIndicatorExperimentEnabled: initialActivityIndicatorExperimentEnabled,
   controllerSupportEnabled: initialControllerSupportEnabled,
@@ -754,6 +828,24 @@ export const useUIStore = create<UIStore>((set, get) => ({
   resetUIScalePercent: () => {
     persistUIScalePreference(DEFAULT_UI_SCALE_PERCENT)
     set({ uiScalePercent: DEFAULT_UI_SCALE_PERCENT })
+  },
+  setAlbumGridScalePercent: (percent) => {
+    const nextScalePercent = normalizeAlbumGridScalePercent(percent)
+    persistAlbumGridScalePreference(nextScalePercent)
+    set({ albumGridScalePercent: nextScalePercent })
+  },
+  resetAlbumGridScalePercent: () => {
+    persistAlbumGridScalePreference(DEFAULT_ALBUM_GRID_SCALE_PERCENT)
+    set({ albumGridScalePercent: DEFAULT_ALBUM_GRID_SCALE_PERCENT })
+  },
+  setArtistGridScalePercent: (percent) => {
+    const nextScalePercent = normalizeArtistGridScalePercent(percent)
+    persistArtistGridScalePreference(nextScalePercent)
+    set({ artistGridScalePercent: nextScalePercent })
+  },
+  resetArtistGridScalePercent: () => {
+    persistArtistGridScalePreference(DEFAULT_ARTIST_GRID_SCALE_PERCENT)
+    set({ artistGridScalePercent: DEFAULT_ARTIST_GRID_SCALE_PERCENT })
   },
   setHomeGreetingTextMode: (mode) => {
     const nextMode = normalizeHomeGreetingTextMode(mode)

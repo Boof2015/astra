@@ -56,6 +56,7 @@ import type {
 import type { TrackRatingEntry } from '../shared/ratings/trackRating'
 import type { AppMemoryFootprintSource } from '../shared/processMemoryFootprint'
 import type {
+  LastFmArtistInfoResult,
   LastFmAuthFinishResult,
   LastFmAuthStartResult,
   LastFmCustomProfileInput,
@@ -230,6 +231,7 @@ export interface DbTrack {
   track_number: number | null
   disc_number: number | null
   year: number | null
+  date: string | null
   genre: string | null
   genres: string[]
   artwork_hash: string | null
@@ -1088,6 +1090,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   lastFm: {
     getStatus: (): Promise<LastFmStatus> => ipcRenderer.invoke('lastfm:getStatus'),
+    getArtistInfo: (artistName: string): Promise<LastFmArtistInfoResult> =>
+      ipcRenderer.invoke('lastfm:getArtistInfo', artistName),
     setEnabled: (enabled: boolean): Promise<LastFmStatus> => ipcRenderer.invoke('lastfm:setEnabled', enabled),
     createCustomProfile: (input: LastFmCustomProfileInput): Promise<LastFmStatus> =>
       ipcRenderer.invoke('lastfm:createCustomProfile', input),
@@ -1320,6 +1324,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
         summary?: FolderSubfolderSummary
         error?: string
       }>,
+    getArtistSplitExceptions: () => ipcRenderer.invoke('library:getArtistSplitExceptions') as Promise<string[]>,
+    addArtistSplitException: (name: string) => ipcRenderer.invoke('library:addArtistSplitException', name) as Promise<boolean>,
+    removeArtistSplitException: (name: string) => ipcRenderer.invoke('library:removeArtistSplitException', name) as Promise<boolean>,
     rescanFolder: (folderPath: string) => ipcRenderer.invoke('library:rescanFolder', folderPath) as Promise<{
       success: boolean
       canceled?: boolean
@@ -1758,6 +1765,7 @@ declare global {
       }
       lastFm: {
         getStatus: () => Promise<LastFmStatus>
+        getArtistInfo: (artistName: string) => Promise<LastFmArtistInfoResult>
         setEnabled: (enabled: boolean) => Promise<LastFmStatus>
         createCustomProfile: (input: LastFmCustomProfileInput) => Promise<LastFmStatus>
         updateCustomProfile: (profileId: string, input: LastFmCustomProfileInput) => Promise<LastFmStatus>
@@ -1894,6 +1902,9 @@ declare global {
           summary?: FolderSubfolderSummary
           error?: string
         }>
+        getArtistSplitExceptions: () => Promise<string[]>
+        addArtistSplitException: (name: string) => Promise<boolean>
+        removeArtistSplitException: (name: string) => Promise<boolean>
         rescanFolder: (folderPath: string) => Promise<{
           success: boolean
           canceled?: boolean

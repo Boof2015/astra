@@ -485,6 +485,7 @@ function dbTrackToTrack(dbTrack: DbTrack): Track {
     trackNumber: dbTrack.track_number ?? undefined,
     discNumber: dbTrack.disc_number ?? undefined,
     year: dbTrack.year ?? undefined,
+    date: dbTrack.date ?? undefined,
     genre: dbTrack.genre ?? undefined,
     genres: dbTrack.genres,
     artworkHash: dbTrack.artwork_hash ?? undefined,
@@ -542,6 +543,11 @@ export async function createQueueEntriesFromPathsWithFetch(trackPaths: readonly 
   return createQueueEntriesFromResolvedTracks(paths, resolvedTracks)
 }
 
+// Paths for which resolveQueueEntryTrack has already kicked off a background cache refresh —
+// avoids firing a duplicate getTracksByPaths IPC call every time the same still-missing entry is
+// resolved again (several call sites iterate the queue in a loop).
+const pendingQueueTrackRefreshPaths = new Set<string>()
+
 function resolveQueueEntryTrack(entry: QueueTrackEntry | null | undefined): Track | null {
   if (!entry) return null
 
@@ -550,7 +556,35 @@ function resolveQueueEntryTrack(entry: QueueTrackEntry | null | undefined): Trac
   }
 
   const [dbTrack] = useLibraryStore.getState().resolveTrackPaths([entry.path])
-  const track = dbTrack ? dbTrackToTrack(dbTrack) : { ...entry.snapshot }
+  let track: Track
+  if (dbTrack) {
+    track = dbTrackToTrack(dbTrack)
+  } else {
+    // Cache miss: trackByPath is a synchronous in-memory lookup, not a live DB read, so this can
+    // happen before the library finishes loading (or if this path was never indexed yet). Falling
+    // back to the queued snapshot silently risks a stale/minimal Track — e.g.
+    // createFallbackQueueTrackSnapshot's duration: 0 and missing sampleRate, which can send this
+    // track down a different code path (see shouldUseLocalProgressivePath) than a fresh DB read
+    // would. Surface it loudly, and warm the cache in the background so the next resolution of
+    // this path is accurate even though this call still has to return the fallback now.
+    track = { ...entry.snapshot }
+    console.warn(
+      `resolveQueueEntryTrack: "${entry.path}" is not in the in-memory library cache yet — ` +
+      `falling back to the queued snapshot (duration=${entry.snapshot.duration}, ` +
+      `sampleRate=${entry.snapshot.sampleRate ?? 'unset'}) instead of a fresh DB read.`
+    )
+    if (!pendingQueueTrackRefreshPaths.has(entry.path)) {
+      pendingQueueTrackRefreshPaths.add(entry.path)
+      const refreshPath = entry.path
+      void useLibraryStore.getState().resolveTrackPathsWithFetch([refreshPath])
+        .catch((error) => {
+          console.error(`resolveQueueEntryTrack: background cache refresh failed for "${refreshPath}":`, error)
+        })
+        .finally(() => {
+          pendingQueueTrackRefreshPaths.delete(refreshPath)
+        })
+    }
+  }
 
   if (entry.snapshot.isAvailable === false) {
     return {
@@ -896,12 +930,30 @@ async function shouldUseLocalProgressivePath(track: Track): Promise<boolean> {
   if (useAudioSettingsStore.getState().playbackOutputMode !== 'standard') return false
 
   const estimatedDecodedBytes = estimateDecodedTrackBytes(track)
+  console.log('[DEBUG] shouldUseLocalProgressivePath', {
+    trackPath: track.path,
+    duration: track.duration,
+    sampleRate: track.sampleRate,
+    estimatedDecodedBytes
+  })
   if (estimatedDecodedBytes !== null && estimatedDecodedBytes >= LOCAL_PROGRESSIVE_DECODED_BYTES) {
+    console.log('[DEBUG] shouldUseLocalProgressivePath result', {
+      trackPath: track.path,
+      result: true,
+      decidedVia: 'decoded-bytes-estimate'
+    })
     return true
   }
 
   const fileStat = await window.electronAPI.getAudioFileStat(track.path).catch(() => null)
-  return Boolean(fileStat && fileStat.size >= LARGE_LOCAL_FILE_BYTES)
+  const result = Boolean(fileStat && fileStat.size >= LARGE_LOCAL_FILE_BYTES)
+  console.log('[DEBUG] shouldUseLocalProgressivePath result', {
+    trackPath: track.path,
+    result,
+    decidedVia: 'file-size-fallback',
+    fileSize: fileStat?.size ?? null
+  })
+  return result
 }
 
 function scheduleDeferredWaveformExtraction(callback: () => void): void {

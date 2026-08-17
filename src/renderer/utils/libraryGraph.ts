@@ -156,7 +156,7 @@ interface RelaxLayoutOptions {
   fixedNodeKeys?: Set<string>
 }
 
-const artistGraphBuildCache = new WeakMap<readonly ArtistGraphTrackLike[], ArtistGraphBuildResult>()
+const artistGraphBuildCache = new WeakMap<readonly ArtistGraphTrackLike[], Map<string, ArtistGraphBuildResult>>()
 const artistGraphIndexCache = new WeakMap<ArtistGraphBuildResult, ArtistGraphIndex>()
 const artistGraphVisibleCache = new WeakMap<ArtistGraphBuildResult, Map<string, ArtistGraphVisibleResult>>()
 const artistGraphLayoutCache = new WeakMap<ArtistGraphVisibleResult, Map<string, ArtistGraphLayoutResult>>()
@@ -179,7 +179,7 @@ function isIgnorableArtist(displayArtist: string): boolean {
   return artistKey != null && GENERIC_ARTIST_KEYS.has(artistKey)
 }
 
-function toTrackParticipants(track: ArtistGraphTrackLike): Map<string, string> {
+function toTrackParticipants(track: ArtistGraphTrackLike, exceptions: string[] = []): Map<string, string> {
   const participants = new Map<string, string>()
   let sawIgnorableArtist = false
 
@@ -187,7 +187,7 @@ function toTrackParticipants(track: ArtistGraphTrackLike): Map<string, string> {
     const normalized = normalizeDisplay(rawValue ?? '')
     if (!normalized) return
 
-    const split = splitCollaborators(normalized)
+    const split = splitCollaborators(normalized, exceptions)
     const values = split.length > 0 ? split : [normalized]
     for (const value of values) {
       const display = normalizeDisplay(value)
@@ -357,8 +357,10 @@ export function indexArtistGraph(graph: ArtistGraphBuildResult): ArtistGraphInde
   return index
 }
 
-export function buildArtistGraph(tracks: readonly ArtistGraphTrackLike[]): ArtistGraphBuildResult {
-  const cached = artistGraphBuildCache.get(tracks)
+export function buildArtistGraph(tracks: readonly ArtistGraphTrackLike[], exceptions: string[] = []): ArtistGraphBuildResult {
+  const exceptionsKey = JSON.stringify(exceptions)
+  const cachedByExceptions = artistGraphBuildCache.get(tracks)
+  const cached = cachedByExceptions?.get(exceptionsKey)
   if (cached) {
     return cached
   }
@@ -367,7 +369,7 @@ export function buildArtistGraph(tracks: readonly ArtistGraphTrackLike[]): Artis
   const edgeAccumulators = new Map<string, ArtistGraphEdgeAccumulator>()
 
   for (const track of tracks) {
-    const participants = toTrackParticipants(track)
+    const participants = toTrackParticipants(track, exceptions)
     const participantEntries = Array.from(participants.entries())
     const releaseIdentityKey = getReleaseIdentityKey(track)
     const albumName = getTrackAlbumName(track)
@@ -505,7 +507,11 @@ export function buildArtistGraph(tracks: readonly ArtistGraphTrackLike[]): Artis
     maxEdgeWeight: edges.reduce((maxEdgeWeight, edge) => Math.max(maxEdgeWeight, edge.sharedTrackCount), 0)
   }
 
-  artistGraphBuildCache.set(tracks, result)
+  if (cachedByExceptions) {
+    cachedByExceptions.set(exceptionsKey, result)
+  } else {
+    artistGraphBuildCache.set(tracks, new Map([[exceptionsKey, result]]))
+  }
   return result
 }
 

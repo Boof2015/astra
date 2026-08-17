@@ -17,6 +17,8 @@ import { compareTrackPlayCounts } from '../../utils/trackPlayCountSort'
 import { getDetailHeaderCollapseDistance, resolveDetailHeaderCollapsed } from '../../utils/detailHeaderScroll'
 import AlbumArtwork from '../library/AlbumArtwork'
 import TrackList, { type TrackListSortKey, type TrackListSortState } from '../library/TrackList'
+import SearchControl from '../library/SearchControl'
+import { matchesTrackSearchQuery } from '../../../shared/library/trackSearch'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import DynamicPlaylistRuleEditor from '../playlists/DynamicPlaylistRuleEditor'
 import PlaylistCover from '../playlists/PlaylistCover'
@@ -310,6 +312,7 @@ export default function PlaylistView() {
     [favoriteTracks, playlists]
   )
 
+  const [searchQuery, setSearchQuery] = useState('')
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState('')
   const [isUpdatingCover, setIsUpdatingCover] = useState(false)
@@ -481,14 +484,26 @@ export default function PlaylistView() {
     return indexedRows.map(({ row }) => row)
   }, [playlistDisplayRows, sortState, trackRatings])
 
-  const displayTracks = useMemo(() => displayRows.map((row) => row.track), [displayRows])
-  const displayPlaylistEntryIds = useMemo(() => displayRows.map((row) => row.entryId), [displayRows])
-  const displayTrackNumbers = useMemo(() => displayRows.map((row) => row.defaultNumber), [displayRows])
-  const displayTrackInstanceKeys = useMemo(() => displayRows.map((row) => row.instanceKey), [displayRows])
+  const trimmedSearchQuery = searchQuery.trim()
+
+  // Full, sorted (not search-filtered) tracks — the queue-seed derivations below stay
+  // based on this so playing/shuffling while a search is active still uses the whole
+  // playlist, matching LibraryView's search-only-filters-display convention.
+  const allDisplayTracks = useMemo(() => displayRows.map((row) => row.track), [displayRows])
+
+  const searchFilteredRows = useMemo(() => {
+    if (!trimmedSearchQuery) return displayRows
+    return displayRows.filter((row) => matchesTrackSearchQuery(row.track, trimmedSearchQuery))
+  }, [displayRows, trimmedSearchQuery])
+
+  const displayTracks = useMemo(() => searchFilteredRows.map((row) => row.track), [searchFilteredRows])
+  const displayPlaylistEntryIds = useMemo(() => searchFilteredRows.map((row) => row.entryId), [searchFilteredRows])
+  const displayTrackNumbers = useMemo(() => searchFilteredRows.map((row) => row.defaultNumber), [searchFilteredRows])
+  const displayTrackInstanceKeys = useMemo(() => searchFilteredRows.map((row) => row.instanceKey), [searchFilteredRows])
 
   const displayPlayableTracks = useMemo(
-    () => displayTracks.filter((track) => !isMissingPlaylistDisplayTrack(track)),
-    [displayTracks]
+    () => allDisplayTracks.filter((track) => !isMissingPlaylistDisplayTrack(track)),
+    [allDisplayTracks]
   )
   const displayQueueSeedIndexes = useMemo(
     () => buildPlayableOccurrenceIndexes(displayRows, (row) => !isMissingPlaylistDisplayTrack(row.track)),
@@ -1223,6 +1238,7 @@ export default function PlaylistView() {
               </svg>
             </button>
           )}
+          <SearchControl value={searchQuery} onChange={setSearchQuery} placeholder="Search playlist..." />
           <div className="playlist-header-menu-wrap" ref={moreMenuRef}>
             <button
               type="button"
@@ -1391,8 +1407,14 @@ export default function PlaylistView() {
               </button>
             </div>
           </>
-        ) : displayTracks.length > 0 || playlistMissingCount > 0 ? (
+        ) : allDisplayTracks.length > 0 || playlistMissingCount > 0 ? (
           <>
+            {trimmedSearchQuery && displayTracks.length === 0 && (
+              <div className="library-empty">
+                <p>No matching tracks</p>
+                <p className="empty-hint">No tracks in this playlist match your search.</p>
+              </div>
+            )}
             {displayTracks.length > 0 && (
               <TrackList
                 tracks={displayTracks}
@@ -1416,6 +1438,7 @@ export default function PlaylistView() {
                     : null
                 }
                 onJumpToTrackRequestConsumed={clearPlaylistTrackRevealRequest}
+                searchQuery={trimmedSearchQuery}
               />
             )}
           </>

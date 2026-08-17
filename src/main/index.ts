@@ -99,7 +99,7 @@ import {
   validateParallaxTlsIdentity,
   type ParallaxTlsIdentity
 } from './services/parallaxSecurity'
-import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
+import { LastFmService, getArtistInfo as getLastFmArtistInfo, sanitizePendingScrobbles } from './services/lastFm'
 import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
 import { collectAppMemoryFootprint } from './services/appMemoryFootprint'
@@ -5512,6 +5512,10 @@ ipcMain.handle('lastfm:getStatus', () => {
   return lastFmService.getStatus()
 })
 
+ipcMain.handle('lastfm:getArtistInfo', async (_event, artistName: unknown) => {
+  return getLastFmArtistInfo(typeof artistName === 'string' ? artistName : '', LASTFM_API_KEY)
+})
+
 ipcMain.handle('lastfm:setEnabled', async (_event, enabled: unknown) => {
   const nextConfig: LastFmServiceConfig = {
     ...lastFmConfig,
@@ -7884,6 +7888,18 @@ ipcMain.handle(
     return { success: true, summary }
   }
 )
+
+ipcMain.handle('library:getArtistSplitExceptions', async () => {
+  return library.getArtistSplitExceptions()
+})
+
+ipcMain.handle('library:addArtistSplitException', async (_event, name: string) => {
+  return library.addArtistSplitException(name)
+})
+
+ipcMain.handle('library:removeArtistSplitException', async (_event, name: string) => {
+  return library.removeArtistSplitException(name)
+})
 
 ipcMain.handle(
   'library:rescanFolder',

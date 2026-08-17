@@ -23,6 +23,7 @@ function makeDbTrack(path: string, artist = 'Artist A'): DbTrack {
     track_number: 1,
     disc_number: 1,
     year: 2026,
+    date: null,
     genre: null,
     genres: [],
     artwork_hash: null,

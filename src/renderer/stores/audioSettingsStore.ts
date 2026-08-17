@@ -14,7 +14,7 @@ import {
   type SpatialMode,
   type VirtualSpeaker,
 } from '../utils/virtualSpeakerLayout'
-import type { SpatialStatus } from '../audio/AudioEngine'
+import type { FadeSettings, SpatialStatus } from '../audio/AudioEngine'
 import type { NativeAudioCapabilities, PlaybackOutputMode } from '../../types/nativeAudio'
 
 export interface AudioDevice {
@@ -81,6 +81,11 @@ interface AudioSettingsStore {
   normalizationTargetLufs: number
   replayGainScanEnabled: boolean
   replayGainMode: ReplayGainMode
+  fadeEnabled: boolean
+  fadeInDurationMs: number
+  fadeOutDurationMs: number
+  crossfadeEnabled: boolean
+  crossfadeDurationMs: number
 
   delayProfilesByDeviceKey: Record<string, DelayCompensationProfile>
   inputBaselinesByKey: Record<string, InputDelayBaseline>
@@ -111,6 +116,11 @@ interface AudioSettingsStore {
   setNormalizationTargetLufs: (targetLufs: number) => void
   setReplayGainScanEnabled: (enabled: boolean) => Promise<void>
   setReplayGainMode: (mode: ReplayGainMode) => void
+  setFadeEnabled: (enabled: boolean) => void
+  setFadeInDurationMs: (durationMs: number) => void
+  setFadeOutDurationMs: (durationMs: number) => void
+  setCrossfadeEnabled: (enabled: boolean) => void
+  setCrossfadeDurationMs: (durationMs: number) => void
 
   setDelayCompensationEnabled: (enabled: boolean) => Promise<void>
   setDelayCompensationMode: (mode: DelayCompensationMode) => Promise<void>
@@ -137,6 +147,14 @@ const ROUTING_STORAGE_KEY = 'astra-audio-channel-routing-map'
 export const NORMALIZATION_ENABLED_STORAGE_KEY = 'astra-audio-normalization-enabled-v1'
 export const NORMALIZATION_TARGET_STORAGE_KEY = 'astra-audio-normalization-target-lufs-v1'
 export const REPLAYGAIN_MODE_STORAGE_KEY = 'astra-audio-replaygain-mode-v1'
+const FADE_ENABLED_STORAGE_KEY = 'astra-audio-fade-enabled-v1'
+const FADE_IN_DURATION_STORAGE_KEY = 'astra-audio-fade-in-duration-ms-v1'
+const FADE_OUT_DURATION_STORAGE_KEY = 'astra-audio-fade-out-duration-ms-v1'
+const CROSSFADE_ENABLED_STORAGE_KEY = 'astra-audio-crossfade-enabled-v1'
+const CROSSFADE_DURATION_STORAGE_KEY = 'astra-audio-crossfade-duration-ms-v1'
+const DEFAULT_FADE_IN_DURATION_MS = 2000
+const DEFAULT_FADE_OUT_DURATION_MS = 2000
+const DEFAULT_CROSSFADE_DURATION_MS = 3000
 const DEV_DISABLE_GAPLESS_PREBUFFER_STORAGE_KEY = 'astra-dev-disable-gapless-prebuffer-v1'
 const DEV_DISABLE_STANDARD_ANALYSIS_GRAPH_STORAGE_KEY = 'astra-dev-disable-standard-analysis-graph-v1'
 const DELAY_PROFILE_STORAGE_KEY_V1 = 'astra-audio-delay-profiles-v1'
@@ -145,6 +163,16 @@ const OUTPUT_GROUP_PROFILE_KEY_PREFIX = 'group:'
 export const DEFAULT_NORMALIZATION_TARGET_LUFS = audioEngine.targetLufs
 export const BIT_PERFECT_DSP_DISABLED_MESSAGE = 'Bit-perfect mode bypasses all app DSP and uses exclusive/direct device output.'
 const BIT_PERFECT_LINUX_DEVICE_SELECTION_MESSAGE = 'Bit-perfect mode on Linux requires selecting a direct ALSA hardware output device.'
+
+function applyFadeSettingsToEngine(state: FadeSettings): void {
+  audioEngine.setFadeSettings({
+    fadeEnabled: state.fadeEnabled,
+    fadeInDurationMs: state.fadeInDurationMs,
+    fadeOutDurationMs: state.fadeOutDurationMs,
+    crossfadeEnabled: state.crossfadeEnabled,
+    crossfadeDurationMs: state.crossfadeDurationMs,
+  })
+}
 
 const DEFAULT_DELAY_PROFILE: DelayCompensationProfile = {
   enabled: false,
@@ -1049,6 +1077,11 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
     replayGainScanEnabled: false,
     replayGainMode: 'auto',
+    fadeEnabled: false,
+    fadeInDurationMs: DEFAULT_FADE_IN_DURATION_MS,
+    fadeOutDurationMs: DEFAULT_FADE_OUT_DURATION_MS,
+    crossfadeEnabled: false,
+    crossfadeDurationMs: DEFAULT_CROSSFADE_DURATION_MS,
 
     delayProfilesByDeviceKey: {},
     inputBaselinesByKey: {},
@@ -1413,6 +1446,44 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       const normalized = normalizeReplayGainMode(mode)
       set({ replayGainMode: normalized })
       localStorage.setItem(REPLAYGAIN_MODE_STORAGE_KEY, normalized)
+    },
+
+    setFadeEnabled: (enabled: boolean) => {
+      const normalized = Boolean(enabled)
+      set({ fadeEnabled: normalized })
+      localStorage.setItem(FADE_ENABLED_STORAGE_KEY, normalized ? '1' : '0')
+      applyFadeSettingsToEngine(get())
+    },
+
+    setFadeInDurationMs: (durationMs: number) => {
+      if (!Number.isFinite(durationMs)) return
+      const rounded = Math.round(durationMs)
+      set({ fadeInDurationMs: rounded })
+      localStorage.setItem(FADE_IN_DURATION_STORAGE_KEY, String(rounded))
+      applyFadeSettingsToEngine(get())
+    },
+
+    setFadeOutDurationMs: (durationMs: number) => {
+      if (!Number.isFinite(durationMs)) return
+      const rounded = Math.round(durationMs)
+      set({ fadeOutDurationMs: rounded })
+      localStorage.setItem(FADE_OUT_DURATION_STORAGE_KEY, String(rounded))
+      applyFadeSettingsToEngine(get())
+    },
+
+    setCrossfadeEnabled: (enabled: boolean) => {
+      const normalized = Boolean(enabled)
+      set({ crossfadeEnabled: normalized })
+      localStorage.setItem(CROSSFADE_ENABLED_STORAGE_KEY, normalized ? '1' : '0')
+      applyFadeSettingsToEngine(get())
+    },
+
+    setCrossfadeDurationMs: (durationMs: number) => {
+      if (!Number.isFinite(durationMs)) return
+      const rounded = Math.round(durationMs)
+      set({ crossfadeDurationMs: rounded })
+      localStorage.setItem(CROSSFADE_DURATION_STORAGE_KEY, String(rounded))
+      applyFadeSettingsToEngine(get())
     },
 
     setDelayCompensationEnabled: async (enabled: boolean) => {
@@ -1829,6 +1900,11 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       localStorage.removeItem(NORMALIZATION_ENABLED_STORAGE_KEY)
       localStorage.removeItem(NORMALIZATION_TARGET_STORAGE_KEY)
       localStorage.removeItem(REPLAYGAIN_MODE_STORAGE_KEY)
+      localStorage.removeItem(FADE_ENABLED_STORAGE_KEY)
+      localStorage.removeItem(FADE_IN_DURATION_STORAGE_KEY)
+      localStorage.removeItem(FADE_OUT_DURATION_STORAGE_KEY)
+      localStorage.removeItem(CROSSFADE_ENABLED_STORAGE_KEY)
+      localStorage.removeItem(CROSSFADE_DURATION_STORAGE_KEY)
       localStorage.removeItem(DEV_DISABLE_GAPLESS_PREBUFFER_STORAGE_KEY)
       localStorage.removeItem(DEV_DISABLE_STANDARD_ANALYSIS_GRAPH_STORAGE_KEY)
       localStorage.removeItem(DELAY_PROFILE_STORAGE_KEY_V1)
@@ -1891,6 +1967,13 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       audioEngine.setReplayGainEnabled(false)
       audioEngine.normalizationEnabled = true
       audioEngine.targetLufs = DEFAULT_NORMALIZATION_TARGET_LUFS
+      audioEngine.setFadeSettings({
+        fadeEnabled: false,
+        fadeInDurationMs: DEFAULT_FADE_IN_DURATION_MS,
+        fadeOutDurationMs: DEFAULT_FADE_OUT_DURATION_MS,
+        crossfadeEnabled: false,
+        crossfadeDurationMs: DEFAULT_CROSSFADE_DURATION_MS,
+      })
       audioEngine.setDisableStandardAnalysisGraphDev(false)
       await audioEngine.setPlaybackOutputMode('standard')
 
@@ -1940,6 +2023,11 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
         replayGainScanEnabled: false,
         replayGainMode: 'auto',
+        fadeEnabled: false,
+        fadeInDurationMs: DEFAULT_FADE_IN_DURATION_MS,
+        fadeOutDurationMs: DEFAULT_FADE_OUT_DURATION_MS,
+        crossfadeEnabled: false,
+        crossfadeDurationMs: DEFAULT_CROSSFADE_DURATION_MS,
         delayProfilesByDeviceKey: {},
         inputBaselinesByKey: {},
         activeDelayProfileKey: 'default',
@@ -1986,6 +2074,33 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       audioEngine.setReplayGainEnabled(replayGainEnabled)
       const replayGainMode = normalizeReplayGainMode(localStorage.getItem(REPLAYGAIN_MODE_STORAGE_KEY))
 
+      const savedFadeEnabled = localStorage.getItem(FADE_ENABLED_STORAGE_KEY)
+      const fadeEnabled = savedFadeEnabled == null ? false : savedFadeEnabled === '1'
+      const savedFadeInDurationRaw = localStorage.getItem(FADE_IN_DURATION_STORAGE_KEY)
+      const parsedFadeInDuration = savedFadeInDurationRaw == null ? Number.NaN : Number(savedFadeInDurationRaw)
+      const fadeInDurationMs = Number.isFinite(parsedFadeInDuration)
+        ? Math.round(parsedFadeInDuration)
+        : DEFAULT_FADE_IN_DURATION_MS
+      const savedFadeOutDurationRaw = localStorage.getItem(FADE_OUT_DURATION_STORAGE_KEY)
+      const parsedFadeOutDuration = savedFadeOutDurationRaw == null ? Number.NaN : Number(savedFadeOutDurationRaw)
+      const fadeOutDurationMs = Number.isFinite(parsedFadeOutDuration)
+        ? Math.round(parsedFadeOutDuration)
+        : DEFAULT_FADE_OUT_DURATION_MS
+      const savedCrossfadeEnabled = localStorage.getItem(CROSSFADE_ENABLED_STORAGE_KEY)
+      const crossfadeEnabled = savedCrossfadeEnabled == null ? false : savedCrossfadeEnabled === '1'
+      const savedCrossfadeDurationRaw = localStorage.getItem(CROSSFADE_DURATION_STORAGE_KEY)
+      const parsedCrossfadeDuration = savedCrossfadeDurationRaw == null ? Number.NaN : Number(savedCrossfadeDurationRaw)
+      const crossfadeDurationMs = Number.isFinite(parsedCrossfadeDuration)
+        ? Math.round(parsedCrossfadeDuration)
+        : DEFAULT_CROSSFADE_DURATION_MS
+      audioEngine.setFadeSettings({
+        fadeEnabled,
+        fadeInDurationMs,
+        fadeOutDurationMs,
+        crossfadeEnabled,
+        crossfadeDurationMs,
+      })
+
       const rawDelaySettingsV2 = localStorage.getItem(DELAY_PROFILE_STORAGE_KEY_V2)
       let savedProfiles: Record<string, DelayCompensationProfile> = {}
       let savedInputBaselines: Record<string, InputDelayBaseline> = {}
@@ -2013,7 +2128,12 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         normalizationEnabled,
         normalizationTargetLufs,
         replayGainScanEnabled: replayGainEnabled,
-        replayGainMode
+        replayGainMode,
+        fadeEnabled,
+        fadeInDurationMs,
+        fadeOutDurationMs,
+        crossfadeEnabled,
+        crossfadeDurationMs
       })
 
       await get().refreshDevices()

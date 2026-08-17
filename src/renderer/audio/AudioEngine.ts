@@ -89,6 +89,15 @@ const FADE_STOP_EPSILON_MS = 20
 // track immediately: the outgoing source is stopped at the bottom of the dip so its mid-sample
 // cutoff lands in silence (no click), while the incoming source's onset rides the dip back up.
 const SKIP_DECLICK_MS = 12
+// Below this much remaining playback, scheduleFadeOutForQueueEnd skips arming a ramp entirely —
+// too little runway left for a fade to be worth anything, and scheduling one anyway risks a
+// same-instant setValueAtTime(1)/linearRampToValueAtTime(0) pair that cuts straight to silence.
+const FADE_OUT_MIN_REMAINING_SEC = 0.1
+// Short resync ramp used to bring fadeGainNode back to full volume before a remote/progressive
+// stream starts producing audio — that path doesn't go through play()'s standard cold-start block,
+// which already re-arms this shared node, so it can otherwise still be sitting near 0 from a
+// previous track's pause fade.
+const REMOTE_STREAM_FADE_RESYNC_MS = 40
 
 const NORMALIZATION_MIN_GAIN_DB = -18
 const NORMALIZATION_MAX_GAIN_DB = 6
@@ -198,6 +207,14 @@ export interface ExternalLoudnessResult {
 export interface AudioLoadTimings {
   decodeMs: number
   analysisMs: number
+}
+
+export interface FadeSettings {
+  fadeEnabled: boolean
+  fadeInDurationMs: number
+  fadeOutDurationMs: number
+  crossfadeEnabled: boolean
+  crossfadeDurationMs: number
 }
 
 interface AudioLoadDataOptions {
@@ -340,6 +357,9 @@ interface CalibrationToneSignal {
 export class AudioEngine {
   private context: AudioContext | null = null
   private sourceNode: AudioBufferSourceNode | null = null
+  // Per-source gain, dedicated to this particular AudioBufferSourceNode instance (recreated
+  // alongside it). Carries the fade-in/queue-end-fade-out envelope; crossfade reuses it too.
+  private sourceGainNode: GainNode | null = null
   private gainNode: GainNode | null = null
   // Final-stage gain used only for play/pause/skip fades, independent of volume/mute and normalization.
   private fadeGainNode: GainNode | null = null
@@ -422,8 +442,30 @@ export class AudioEngine {
   // Gapless playback support
   private nextBuffer: AudioBuffer | null = null
   private nextSourceNode: AudioBufferSourceNode | null = null
+  // Mirrors sourceGainNode for the pre-scheduled next source.
+  private nextSourceGainNode: GainNode | null = null
   private scheduledEndTime: number = 0
   private isGaplessTransition: boolean = false
+
+  // Fade-in/out and crossfade preferences (audioSettingsStore is the source of truth).
+  private fadeSettings: FadeSettings = {
+    fadeEnabled: false,
+    fadeInDurationMs: 2000,
+    fadeOutDurationMs: 2000,
+    crossfadeEnabled: false,
+    crossfadeDurationMs: 3000,
+  }
+  // AudioContext time the current queue-end fade-out's plateau-anchor was scheduled at, so a
+  // later-arriving next track can surgically cancel just that automation (see
+  // cancelQueueEndFadeOut). Null when no queue-end fade-out is currently armed.
+  private queueEndFadeOutRampStartTime: number | null = null
+  // Deferred teardown for stop()'s fade-out, mirroring pauseFadeTimer's pattern.
+  private fadeOutStopTimer: ReturnType<typeof setTimeout> | null = null
+  // AudioContext time the current crossfade's plateau-anchor was scheduled at on sourceGainNode.
+  // scheduleGaplessTransition can re-run against the same still-playing source (e.g. a rapid
+  // pause/resume with a next track already queued) — this lets it surgically cancel a stale
+  // crossfade ramp before arming a fresh one, instead of stacking automation events.
+  private crossfadeRampStartTime: number | null = null
 
   private animationFrame: number | null = null
   private eventListeners: Map<string, Set<EventCallback>> = new Map()
@@ -538,6 +580,19 @@ export class AudioEngine {
 
   isBitPerfectRouteActive(): boolean {
     return this.isBitPerfectActive()
+  }
+
+  // Fade-in/out and crossfade mix samples on a per-source GainNode, which bit-perfect (exclusive/
+  // direct device output, no app DSP) structurally cannot support. Checked at the point of use, in
+  // addition to the UI already disabling those controls while bit-perfect is active.
+  private isFadeCrossfadeAllowed(): boolean {
+    return this.playbackOutputMode !== 'bitperfect'
+  }
+
+  // Crossfade (two simultaneous sources) lands in a later step; fadeEnabled/fadeIn/fadeOut are
+  // already live via the per-source GainNode.
+  setFadeSettings(settings: FadeSettings): void {
+    this.fadeSettings = { ...settings }
   }
 
   getPlaybackModeStatusMessage(): string | null {
@@ -1357,9 +1412,9 @@ export class AudioEngine {
 
     this.stopSource()
     this.cancelScheduledNext()
-    this.sourceNode = ctx.createBufferSource()
-    this.sourceNode.buffer = buffer
-    this.connectSourceWithRouting(this.sourceNode, buffer.numberOfChannels)
+    this.sourceNode = this.createTrackSourceNode(buffer)
+    this.sourceGainNode = this.createTrackSourceGainNode(this.sourceNode)
+    this.connectSourceWithRouting(this.sourceGainNode, buffer.numberOfChannels)
     this.connectSourceToAnalysisTap(this.sourceNode, buffer.numberOfChannels)
     this.sourceNode.onended = () => {
       if (this._playbackState === 'playing') this.performGaplessTransition()
@@ -1673,6 +1728,21 @@ export class AudioEngine {
     for (const node of nodes) {
       this.applyNodeRoutingMode(node, analysisChannels, mode, interpretation)
     }
+  }
+
+  private createTrackSourceNode(buffer: AudioBuffer): AudioBufferSourceNode {
+    const newSource = this.context!.createBufferSource()
+    newSource.buffer = buffer
+    return newSource
+  }
+
+  // Dedicated per-source gain, connected between the source and the shared routing chain.
+  // Always unity today; this is the insertion point for future fade-in/out and crossfade ramps.
+  private createTrackSourceGainNode(source: AudioBufferSourceNode): GainNode {
+    const gain = this.context!.createGain()
+    gain.gain.value = 1
+    source.connect(gain)
+    return gain
   }
 
   private connectSourceWithRouting(sourceNode: AudioNode, sourceChannels: number): void {
@@ -2428,15 +2498,41 @@ export class AudioEngine {
   private maybeStartRemotePlayback(): void {
     const remoteState = this.remoteStreamState
     if (!remoteState || !this.remoteStreamNode) return
-    if (!remoteState.playRequested || remoteState.started) return
 
     const playableFrames = Math.floor(remoteState.sampleRate * REMOTE_STREAM_PLAYABLE_SECONDS)
     const hasEnoughBuffered = remoteState.bufferedFrames >= playableFrames
       || (remoteState.sourceEnded && remoteState.bufferedFrames > 0)
+    console.log('[DEBUG] maybeStartRemotePlayback', {
+      bufferedFrames: remoteState.bufferedFrames,
+      playableFrames,
+      hasEnoughBuffered,
+      started: remoteState.started,
+      playRequested: remoteState.playRequested
+    })
+
+    if (!remoteState.playRequested || remoteState.started) return
     if (!hasEnoughBuffered) return
 
     remoteState.started = true
     remoteState.paused = false
+    const routingSink = this.getRoutingSinkNode()
+    const routingSinkLabel = routingSink === null
+      ? 'null'
+      : routingSink === this.spatialWorkletNode
+        ? 'spatialWorkletNode'
+        : routingSink === this.normalizationGainNode
+          ? 'normalizationGainNode'
+          : 'other'
+    console.log('[DEBUG] maybeStartRemotePlayback: gain chain before set-playing', {
+      fadeGainNodeValue: this.fadeGainNode?.gain.value ?? null,
+      gainNodeValue: this.gainNode?.gain.value ?? null,
+      normalizationGainNodeValue: this.normalizationGainNode?.gain.value ?? null,
+      preampNodeValue: this.preampNode?.gain.value ?? null,
+      isMuted: this._isMuted,
+      isBinauralActive: this.isBinauralActive(),
+      routingSink: routingSinkLabel
+    })
+    this.resyncFadeGainNodeToFull()
     this.remoteStreamNode.port.postMessage({
       type: 'set-playing',
       playing: true
@@ -2488,6 +2584,13 @@ export class AudioEngine {
 
   private handleRemoteStreamChunk(chunk: RemoteStreamChunk): void {
     const remoteState = this.remoteStreamState
+    console.log('[DEBUG] handleRemoteStreamChunk', {
+      chunkSessionId: chunk.sessionId,
+      currentRemoteStateSessionId: remoteState?.sessionId ?? null,
+      remoteStateExists: Boolean(remoteState),
+      remoteStreamNodeExists: Boolean(this.remoteStreamNode),
+      willBeDropped: !remoteState || chunk.sessionId !== remoteState.sessionId || !this.remoteStreamNode
+    })
     if (!remoteState || chunk.sessionId !== remoteState.sessionId || !this.remoteStreamNode) {
       return
     }
@@ -2671,6 +2774,11 @@ export class AudioEngine {
         ? null
         : this.createProgressiveNormalizationAccumulator(info.sampleRate)
     }
+    console.log('[DEBUG] loadProgressiveStream: this.remoteStreamState assigned', {
+      sessionId: this.remoteStreamState.sessionId,
+      trackPath: this.remoteStreamState.path,
+      atTime: performance.now()
+    })
 
     this.applyChannelRoutingPreferences(info.channels)
     this.applyAnalysisRoutingPreferences(info.channels)
@@ -2708,6 +2816,11 @@ export class AudioEngine {
     }
 
     this.assertCurrentLoadOperation(loadOperation)
+    console.log('[DEBUG] loadProgressiveStream: returning', {
+      sessionId: info.sessionId,
+      trackPath: track.path,
+      atTime: performance.now()
+    })
     return info
   }
 
@@ -3161,9 +3274,9 @@ export class AudioEngine {
     })
     const startAtContextTime = Math.max(this.context.currentTime, mappedStartContextTime)
 
-    this.sourceNode = this.context.createBufferSource()
-    this.sourceNode.buffer = this.audioBuffer
-    this.connectSourceWithRouting(this.sourceNode, this.audioBuffer.numberOfChannels)
+    this.sourceNode = this.createTrackSourceNode(this.audioBuffer)
+    this.sourceGainNode = this.createTrackSourceGainNode(this.sourceNode)
+    this.connectSourceWithRouting(this.sourceGainNode, this.audioBuffer.numberOfChannels)
     this.connectSourceToAnalysisTap(this.sourceNode, this.audioBuffer.numberOfChannels)
     this.sourceNode.onended = () => {
       if (this._playbackState === 'playing') {
@@ -6327,11 +6440,17 @@ export class AudioEngine {
     if (!this.context || !this.nextBuffer || !this.audioBuffer) return
     if (this._playbackState !== 'playing') return
 
+    // A next track showed up after all — undo any queue-end fade-out armed for this source.
+    this.cancelQueueEndFadeOut()
+
     if (this.nextNormalizationLinearGain == null) {
       this.updateNextNormalizationCache()
     }
 
-    // Cancel any existing scheduled next source
+    // Cancel any existing scheduled next source. This also surgically undoes a crossfade ramp
+    // that a previous call may have armed on this still-playing source (e.g. a rapid
+    // pause/resume with a next track already queued), so a fresh one can be computed below
+    // without stacking automation events.
     this.cancelScheduledNext()
 
     // Calculate when current track will end
@@ -6339,16 +6458,39 @@ export class AudioEngine {
     const remaining = this.audioBuffer.duration - currentPosition
     this.scheduledEndTime = this.context.currentTime + remaining
 
+    const crossfadeActive = (
+      this.isFadeCrossfadeAllowed() &&
+      this.fadeSettings.crossfadeEnabled &&
+      this.fadeSettings.crossfadeDurationMs > 0
+    )
+    // Cap the overlap to what's actually left, so nextStartTime never lands in the past.
+    const crossfadeSec = crossfadeActive
+      ? Math.min(this.fadeSettings.crossfadeDurationMs / 1000, Math.max(0, remaining))
+      : 0
+    const nextStartTime = this.scheduledEndTime - crossfadeSec
+
     // Create and schedule the next source
-    this.nextSourceNode = this.context.createBufferSource()
-    this.nextSourceNode.buffer = this.nextBuffer
-    this.connectSourceWithRouting(this.nextSourceNode, this.nextBuffer.numberOfChannels)
+    this.nextSourceNode = this.createTrackSourceNode(this.nextBuffer)
+    this.nextSourceGainNode = this.createTrackSourceGainNode(this.nextSourceNode)
+    this.connectSourceWithRouting(this.nextSourceGainNode, this.nextBuffer.numberOfChannels)
     this.connectSourceToAnalysisTap(this.nextSourceNode, this.nextBuffer.numberOfChannels)
 
-    // Schedule to start exactly when current track ends
-    this.nextSourceNode.start(this.scheduledEndTime)
+    // Schedule to start exactly when current track ends — or crossfadeSec earlier, so the two
+    // sources overlap instead of cutting.
+    this.nextSourceNode.start(nextStartTime)
     if (this.nextNormalizationLinearGain != null) {
       this.scheduleNormalizationTransition(this.nextNormalizationLinearGain, this.scheduledEndTime)
+    }
+
+    if (crossfadeSec > 0 && this.sourceGainNode && this.nextSourceGainNode) {
+      // Overlap window: ramp the outgoing source down and the incoming source up together, both
+      // ending exactly at scheduledEndTime — the instant the current source's buffer runs out and
+      // its onended fires performGaplessTransition, by which point the outgoing gain is already 0.
+      this.sourceGainNode.gain.setValueAtTime(1, nextStartTime)
+      this.sourceGainNode.gain.linearRampToValueAtTime(0, this.scheduledEndTime)
+      this.nextSourceGainNode.gain.setValueAtTime(0, nextStartTime)
+      this.nextSourceGainNode.gain.linearRampToValueAtTime(1, this.scheduledEndTime)
+      this.crossfadeRampStartTime = nextStartTime
     }
 
     // Set up ended handler for the NEXT track (not current)
@@ -6387,6 +6529,7 @@ export class AudioEngine {
 
     const nextBuffer = this.nextBuffer
     const nextSourceNode = this.nextSourceNode
+    const nextSourceGainNode = this.nextSourceGainNode
     const nextNormalization = this.getPendingNextNormalization()
     const nextNormalizationAnalysis = this.nextNormalizationAnalysis
     const nextReplayGainDb = this.nextReplayGainDb
@@ -6404,14 +6547,20 @@ export class AudioEngine {
     // Swap source nodes
     if (this.sourceNode) {
       this.sourceNode.onended = null
-      this.disconnectSourceRouting(this.sourceNode)
+      this.disconnectSourceRouting(this.sourceGainNode)
       try {
         this.sourceNode.buffer = null
         this.sourceNode.disconnect()
+        this.sourceGainNode?.disconnect()
       } catch { /* ignore */ }
     }
     this.sourceNode = nextSourceNode
+    this.sourceGainNode = nextSourceGainNode
     this.nextSourceNode = null
+    this.nextSourceGainNode = null
+    // Any crossfade ramp just armed belonged to the outgoing source's automation timeline; the
+    // newly promoted source hasn't had one scheduled on it yet.
+    this.crossfadeRampStartTime = null
 
     // Update timing
     this.startTime = this.scheduledEndTime
@@ -6460,14 +6609,15 @@ export class AudioEngine {
     const nextNormalizationAnalysis = this.nextNormalizationAnalysis
     const pendingNextNormalization = this.getPendingNextNormalization()
     const oldSource = this.sourceNode
+    const oldSourceGainNode = this.sourceGainNode
 
     // Discard the future-scheduled gapless source (if any) and reset its normalization ramp.
     this.cancelScheduledNext()
 
     // Build and immediately start the new current source from the prebuffered buffer.
-    const newSource = this.context.createBufferSource()
-    newSource.buffer = nextBuffer
-    this.connectSourceWithRouting(newSource, nextBuffer.numberOfChannels)
+    const newSource = this.createTrackSourceNode(nextBuffer)
+    const newSourceGainNode = this.createTrackSourceGainNode(newSource)
+    this.connectSourceWithRouting(newSourceGainNode, nextBuffer.numberOfChannels)
     this.connectSourceToAnalysisTap(newSource, nextBuffer.numberOfChannels)
     newSource.onended = () => {
       if (this._playbackState === 'playing') {
@@ -6489,10 +6639,11 @@ export class AudioEngine {
       fade.linearRampToValueAtTime(1, now + declickSec * 2)
     }
     oldSource.onended = () => {
-      this.disconnectSourceRouting(oldSource)
+      this.disconnectSourceRouting(oldSourceGainNode)
       try {
         oldSource.buffer = null
         oldSource.disconnect()
+        oldSourceGainNode?.disconnect()
       } catch { /* ignore */ }
     }
     try {
@@ -6510,6 +6661,7 @@ export class AudioEngine {
     this.nextReplayGainDb = null
 
     this.sourceNode = newSource
+    this.sourceGainNode = newSourceGainNode
     this.nextSourceNode = null
 
     // The new track starts at "now" from offset 0.
@@ -6556,12 +6708,23 @@ export class AudioEngine {
     if (this.nextSourceNode) {
       try {
         this.nextSourceNode.onended = null
-        this.disconnectSourceRouting(this.nextSourceNode)
+        this.disconnectSourceRouting(this.nextSourceGainNode)
         this.nextSourceNode.stop()
         this.nextSourceNode.buffer = null
         this.nextSourceNode.disconnect()
+        this.nextSourceGainNode?.disconnect()
       } catch { /* ignore */ }
       this.nextSourceNode = null
+      this.nextSourceGainNode = null
+    }
+    // A crossfade may have been armed on the (still-playing) current source for the transition
+    // just discarded — undo it surgically so the track doesn't fade to silence with no next track
+    // to hand off to.
+    if (this.crossfadeRampStartTime != null) {
+      if (this.sourceGainNode && this.context && this.context.currentTime < this.crossfadeRampStartTime) {
+        this.sourceGainNode.gain.cancelScheduledValues(this.crossfadeRampStartTime)
+      }
+      this.crossfadeRampStartTime = null
     }
     this.restoreCurrentNormalizationGainNow()
     this.scheduledEndTime = 0
@@ -6592,6 +6755,7 @@ export class AudioEngine {
 
       if (remoteState.started && remoteState.paused) {
         remoteState.paused = false
+        this.resyncFadeGainNodeToFull()
         this.remoteStreamNode?.port.postMessage({
           type: 'set-playing',
           playing: true
@@ -6630,6 +6794,12 @@ export class AudioEngine {
       this.emit('stateChange', this._playbackState)
       this.startTimeUpdate()
       this.rampFadeGain(1, PLAYBACK_FADE_MS)
+      // pause() may have frozen sourceGainNode mid-ramp (cancelAndHoldAtTime) below 1 — e.g. a
+      // crossfade-out or queue-end fade-out in flight. Bring it back to 1 too, or the track stays
+      // silent (or partially attenuated) even though fadeGainNode is back at full volume.
+      if (this.sourceGainNode) {
+        this.rampGainNode(this.sourceGainNode, 1, PLAYBACK_FADE_MS)
+      }
       if (this.nextBuffer) {
         this.scheduleGaplessTransition()
       }
@@ -6646,9 +6816,9 @@ export class AudioEngine {
     this.stopSource()
 
     // Create new source
-    this.sourceNode = this.context.createBufferSource()
-    this.sourceNode.buffer = this.audioBuffer
-    this.connectSourceWithRouting(this.sourceNode, this.audioBuffer.numberOfChannels)
+    this.sourceNode = this.createTrackSourceNode(this.audioBuffer)
+    this.sourceGainNode = this.createTrackSourceGainNode(this.sourceNode)
+    this.connectSourceWithRouting(this.sourceGainNode, this.audioBuffer.numberOfChannels)
     this.connectSourceToAnalysisTap(this.sourceNode, this.audioBuffer.numberOfChannels)
 
     // Handle track end
@@ -6661,8 +6831,25 @@ export class AudioEngine {
     // Start from pause position, fading in from silence so the start is not abrupt.
     const offset = this.pauseTime
     this.startTime = this.context.currentTime - offset
-    if (this.fadeGainNode) {
-      const fadeStart = this.context.currentTime
+    const fadeStart = this.context.currentTime
+    const useConfiguredFadeIn = (
+      this.isFadeCrossfadeAllowed() &&
+      this.fadeSettings.fadeEnabled &&
+      this.fadeSettings.fadeInDurationMs > 0
+    )
+    if (useConfiguredFadeIn) {
+      // The configured fade-in takes over the declick node's job for this start; pin it flat so
+      // it doesn't stack a second, shorter ramp on top of sourceGainNode's longer one.
+      if (this.fadeGainNode) {
+        this.fadeGainNode.gain.cancelScheduledValues(fadeStart)
+        this.fadeGainNode.gain.setValueAtTime(1, fadeStart)
+      }
+      if (this.sourceGainNode) {
+        this.sourceGainNode.gain.cancelScheduledValues(fadeStart)
+        this.sourceGainNode.gain.setValueAtTime(0, fadeStart)
+        this.sourceGainNode.gain.linearRampToValueAtTime(1, fadeStart + this.fadeSettings.fadeInDurationMs / 1000)
+      }
+    } else if (this.fadeGainNode) {
       this.fadeGainNode.gain.cancelScheduledValues(fadeStart)
       this.fadeGainNode.gain.setValueAtTime(0, fadeStart)
       this.fadeGainNode.gain.linearRampToValueAtTime(1, fadeStart + PLAYBACK_FADE_MS / 1000)
@@ -6673,9 +6860,16 @@ export class AudioEngine {
     this.emit('stateChange', this._playbackState)
     this.startTimeUpdate()
 
-    // If we have a next buffer, schedule the gapless transition
+    // If we have a next buffer, schedule the gapless transition; otherwise, if fade-out is
+    // configured, arm it now so the track fades to silence right as it naturally ends.
     if (this.nextBuffer) {
       this.scheduleGaplessTransition()
+    } else if (
+      this.isFadeCrossfadeAllowed() &&
+      this.fadeSettings.fadeEnabled &&
+      this.fadeSettings.fadeOutDurationMs > 0
+    ) {
+      this.scheduleFadeOutForQueueEnd()
     }
   }
 
@@ -6692,6 +6886,76 @@ export class AudioEngine {
     gain.cancelScheduledValues(now)
     gain.setValueAtTime(current, now)
     gain.linearRampToValueAtTime(target, now + durationMs / 1000)
+  }
+
+  // Same ramp shape as rampFadeGain, for a caller-supplied node (the per-source gain).
+  private rampGainNode(node: GainNode, target: number, durationMs: number): void {
+    if (!this.context) return
+    const now = this.context.currentTime
+    const gain = node.gain
+    const current = gain.value
+    gain.cancelScheduledValues(now)
+    gain.setValueAtTime(current, now)
+    gain.linearRampToValueAtTime(target, now + durationMs / 1000)
+  }
+
+  // Freezes fadeGainNode at its true interpolated value (cancelAndHoldAtTime — same technique as
+  // pause()'s sourceGainNode freeze) then ramps it back to full volume. Call this before a
+  // remote/progressive stream starts producing audio: unlike the standard cold-start path, this
+  // one never otherwise re-arms the shared declick node, so a track can start fully "playing"
+  // while fadeGainNode is still sitting wherever a previous track's pause fade left it.
+  private resyncFadeGainNodeToFull(): void {
+    if (!this.context || !this.fadeGainNode) return
+    const now = this.context.currentTime
+    this.fadeGainNode.gain.cancelAndHoldAtTime(now)
+    this.fadeGainNode.gain.linearRampToValueAtTime(1, now + REMOTE_STREAM_FADE_RESYNC_MS / 1000)
+  }
+
+  // Arms a ramp on sourceGainNode so the current track fades to silence exactly as its buffer
+  // runs out. Scheduled up front, sample-accurately, like scheduledEndTime for gapless — by the
+  // time the source's onended fires the buffer has already finished producing samples, so ramping
+  // at that point would be inaudible. Only called when play() finds no next track queued; if one
+  // arrives later, scheduleGaplessTransition cancels this via cancelQueueEndFadeOut.
+  private scheduleFadeOutForQueueEnd(): void {
+    if (!this.context || !this.sourceGainNode || !this.audioBuffer) return
+    const fadeOutSec = this.fadeSettings.fadeOutDurationMs / 1000
+    if (fadeOutSec <= 0) return
+
+    const now = this.context.currentTime
+    const remaining = Math.max(0, this.audioBuffer.duration - this.currentTime)
+    // Too little of the track left for a fade to mean anything — and without this guard, a
+    // near-zero remaining collapses rampStartTime and rampEndTime onto the same instant, which
+    // cuts straight to silence instead of fading. Leave the source at whatever gain it already has.
+    if (remaining < FADE_OUT_MIN_REMAINING_SEC) return
+
+    // When remaining is shorter than the configured fadeOutDurationMs, this clamps rampStartTime
+    // to `now` so the fade spans exactly `remaining` instead of overshooting into the past.
+    const rampStartTime = now + Math.max(0, remaining - fadeOutSec)
+    const rampEndTime = now + remaining
+
+    this.sourceGainNode.gain.setValueAtTime(1, rampStartTime)
+    this.sourceGainNode.gain.linearRampToValueAtTime(0, rampEndTime)
+    this.queueEndFadeOutRampStartTime = rampStartTime
+  }
+
+  // Undoes a still-pending scheduleFadeOutForQueueEnd ramp (a next track showed up after all).
+  // Cancels from the ramp's own anchor time, not `now`, so an earlier, unrelated fade-in ramp on
+  // the same node is left untouched. No-op once the fade-out window has already started — too
+  // late to walk back cleanly, and the window is narrow enough in practice to accept as-is.
+  private cancelQueueEndFadeOut(): void {
+    const rampStartTime = this.queueEndFadeOutRampStartTime
+    if (rampStartTime == null) return
+    this.queueEndFadeOutRampStartTime = null
+    if (!this.context || !this.sourceGainNode) return
+    if (this.context.currentTime >= rampStartTime) return
+    this.sourceGainNode.gain.cancelScheduledValues(rampStartTime)
+  }
+
+  private clearFadeOutStopTimer(): void {
+    if (this.fadeOutStopTimer != null) {
+      clearTimeout(this.fadeOutStopTimer)
+      this.fadeOutStopTimer = null
+    }
   }
 
   private clearPauseFadeTimer(): void {
@@ -6736,6 +7000,24 @@ export class AudioEngine {
 
     // Record the pause position now so the seek bar/time stay correct while the audio fades out.
     this.pauseTime = this.context.currentTime - this.startTime
+
+    // Freeze any in-progress ramp on the per-source gain (crossfade-out or queue-end fade-out)
+    // unconditionally — cancelScheduledNext's crossfade cleanup only fires when we're still
+    // before crossfadeRampStartTime, so it misses a ramp that's already mid-flight, and it never
+    // knew about queueEndFadeOutRampStartTime at all. Without this, a still-running ramp keeps
+    // heading to 0 in the background regardless of pause/resume, leaving the track silent even
+    // after "Rapid resume" restores fadeGainNode. cancelAndHoldAtTime freezes the param at its
+    // true interpolated value instead of a timestamp comparison, so it works regardless of which
+    // ramp (if any) was active or how far into it we are.
+    // Note: Chromium has historically jumped cancelAndHoldAtTime to the ramp's *target* value
+    // instead of the true interpolated one (see rampFadeGain's comment below) — worth rechecking
+    // if resume ever produces an audible jump instead of a smooth continuation.
+    if (this.sourceGainNode) {
+      this.sourceGainNode.gain.cancelAndHoldAtTime(this.context.currentTime)
+    }
+    this.crossfadeRampStartTime = null
+    this.queueEndFadeOutRampStartTime = null
+
     this.cancelScheduledNext() // Cancel scheduled next track
 
     this._playbackState = 'paused'
@@ -6767,6 +7049,7 @@ export class AudioEngine {
   stop(): void {
     this.invalidateLoadOperations()
     this.clearPauseFadeTimer()
+    this.clearFadeOutStopTimer()
     const stopLoadGeneration = this.loadGeneration
     if (this.playbackOutputMode === 'bitperfect') {
       this.nativeNextTrackBuffered = false
@@ -6802,6 +7085,33 @@ export class AudioEngine {
 
     if (this.parallaxSinkState) {
       this.stopParallaxSinkPlayback()
+      return
+    }
+
+    if (
+      this.isFadeCrossfadeAllowed() &&
+      this.fadeSettings.fadeEnabled &&
+      this.fadeSettings.fadeOutDurationMs > 0 &&
+      this.context &&
+      this.sourceGainNode &&
+      this._playbackState === 'playing'
+    ) {
+      // Fade the currently audible source out, then tear it down once it's silent — same
+      // deferred-teardown shape as pause()'s rampFadeGain/pauseFadeTimer pair, but on the
+      // per-source gain so it doesn't fight a queue-end fade-out already in flight.
+      this.queueEndFadeOutRampStartTime = null
+      this.rampGainNode(this.sourceGainNode, 0, this.fadeSettings.fadeOutDurationMs)
+      this.cancelScheduledNext()
+      this.pauseTime = 0
+      this._playbackState = 'stopped'
+      this.emit('stateChange', this._playbackState)
+      this.emit('timeUpdate', 0)
+      this.stopTimeUpdate()
+      this.fadeOutStopTimer = setTimeout(() => {
+        this.fadeOutStopTimer = null
+        this.stopSource()
+        this.releaseDecodedBuffers()
+      }, this.fadeSettings.fadeOutDurationMs + FADE_STOP_EPSILON_MS)
       return
     }
 
@@ -6892,9 +7202,9 @@ export class AudioEngine {
 
     if (wasPlaying) {
       // Directly create new source and start (bypass play() state check)
-      this.sourceNode = this.context.createBufferSource()
-      this.sourceNode.buffer = this.audioBuffer
-      this.connectSourceWithRouting(this.sourceNode, this.audioBuffer.numberOfChannels)
+      this.sourceNode = this.createTrackSourceNode(this.audioBuffer)
+      this.sourceGainNode = this.createTrackSourceGainNode(this.sourceNode)
+      this.connectSourceWithRouting(this.sourceGainNode, this.audioBuffer.numberOfChannels)
       this.connectSourceToAnalysisTap(this.sourceNode, this.audioBuffer.numberOfChannels)
 
       this.sourceNode.onended = () => {
@@ -7094,12 +7404,18 @@ export class AudioEngine {
         this.sourceNode.onended = null
         this.sourceNode.stop()
         this.sourceNode.buffer = null
-        this.disconnectSourceRouting(this.sourceNode)
+        this.disconnectSourceRouting(this.sourceGainNode)
         this.sourceNode.disconnect()
+        this.sourceGainNode?.disconnect()
       } catch {
         // Ignore errors from already stopped source
       }
       this.sourceNode = null
+      this.sourceGainNode = null
+      // Any armed queue-end fade-out or crossfade belonged to the node just torn down; a stale
+      // timestamp here could wrongly cancel a legitimate ramp on whatever source comes next.
+      this.queueEndFadeOutRampStartTime = null
+      this.crossfadeRampStartTime = null
     }
   }
 
@@ -7204,6 +7520,8 @@ export class AudioEngine {
     }
 
     this.gainNode = null
+    this.sourceGainNode = null
+    this.nextSourceGainNode = null
     this.normalizationGainNode = null
     this.analysisNormalizationGainNode = null
     this.analysisDelayMs = 0

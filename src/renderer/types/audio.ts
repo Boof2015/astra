@@ -14,6 +14,7 @@ export interface Track {
   trackNumber?: number
   discNumber?: number
   year?: number
+  date?: string
   genre?: string
   genres?: string[]
   artworkData?: string  // Base64 data URL fallback for uncached direct artwork

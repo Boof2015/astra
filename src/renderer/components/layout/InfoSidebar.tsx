@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { LastFmArtistInfo } from '../../../types/lastFm'
 import { usePlayerStore } from '../../stores/playerStore'
+import { useLibraryStore } from '../../stores/libraryStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useOpenArtistInLibrary } from '../../hooks/useOpenArtistInLibrary'
 import { useOpenAlbumInLibrary } from '../../hooks/useOpenAlbumInLibrary'
@@ -7,6 +9,7 @@ import { usePlaybackClock } from '../../hooks/usePlaybackClock'
 import { useLyricsSyncedView } from '../../hooks/useLyricsSyncedView'
 import AlbumArtwork from '../library/AlbumArtwork'
 import ArtistNameLinks from '../library/ArtistNameLinks'
+import { normalizeKey } from '../../utils/albumIdentity'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { useAudioSettingsStore } from '../../stores/audioSettingsStore'
 import { useLyricsDisplaySettingsStore } from '../../stores/lyricsDisplaySettingsStore'
@@ -22,10 +25,17 @@ import {
   resolveLyricsBodyState
 } from '../../utils/lyricsPresentation'
 
-type InfoSidebarTab = 'info' | 'lyrics'
+type InfoSidebarTab = 'info' | 'lyrics' | 'bio'
+
+type ArtistBioState =
+  | { status: 'no-artist' }
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'success'; artist: LastFmArtistInfo }
 
 export default function InfoSidebar() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
+  const libraryArtists = useLibraryStore((s) => s.artists)
   const currentTime = usePlaybackClock(0.1)
   const duration = usePlayerStore((s) => s.duration)
   const seek = usePlayerStore((s) => s.seek)
@@ -35,6 +45,10 @@ export default function InfoSidebar() {
   const openArtistInLibrary = useOpenArtistInLibrary()
   const openAlbumInLibrary = useOpenAlbumInLibrary()
   const [activeTab, setActiveTab] = useState<InfoSidebarTab>('info')
+  const [isGenreExpanded, setIsGenreExpanded] = useState(false)
+  const [bioState, setBioState] = useState<ArtistBioState>({ status: 'no-artist' })
+  const [isBioTagsExpanded, setIsBioTagsExpanded] = useState(false)
+  const artistBioCacheRef = useRef<Map<string, LastFmArtistInfo>>(new Map())
   const lyricsTrackPath = useLyricsStore((s) => s.currentTrackPath)
   const lyricsResult = useLyricsStore((s) => s.currentResult)
   const lyricsIsLoading = useLyricsStore((s) => s.isLoading)
@@ -91,6 +105,46 @@ export default function InfoSidebar() {
     if (activeTab !== 'lyrics') return
     void loadLyricsForTrack(lyricsQuery)
   }, [activeTab, lyricsQuery, loadLyricsForTrack])
+
+  useEffect(() => {
+    if (activeTab !== 'bio') return
+
+    setIsBioTagsExpanded(false)
+    const artistName = currentTrack?.artist.trim()
+    if (!artistName) {
+      setBioState({ status: 'no-artist' })
+      return
+    }
+
+    const cached = artistBioCacheRef.current.get(artistName)
+    if (cached) {
+      setBioState({ status: 'success', artist: cached })
+      return
+    }
+
+    let cancelled = false
+    setBioState({ status: 'loading' })
+
+    window.electronAPI.lastFm.getArtistInfo(artistName)
+      .then((result) => {
+        if (cancelled) return
+        if (!result.ok) {
+          setBioState({ status: 'error', message: result.message })
+          return
+        }
+
+        artistBioCacheRef.current.set(artistName, result.artist)
+        setBioState({ status: 'success', artist: result.artist })
+      })
+      .catch(() => {
+        if (cancelled) return
+        setBioState({ status: 'error', message: 'Failed to load artist biography.' })
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeTab, currentTrack?.artist])
 
   const revealTrackInFolder = () => {
     if (!currentTrack) return
@@ -187,8 +241,53 @@ export default function InfoSidebar() {
     )
   }
 
+  const renderBioContent = () => {
+    if (bioState.status === 'no-artist') {
+      return <div className="info-lyrics-state">No artist selected.</div>
+    }
+
+    if (bioState.status === 'loading') {
+      return <div className="info-lyrics-state">Chargement...</div>
+    }
+
+    if (bioState.status === 'error') {
+      return <div className="info-lyrics-state info-lyrics-state-error">{bioState.message}</div>
+    }
+
+    const { artist } = bioState
+    const libraryArtistKey = normalizeKey(artist.name)
+    const libraryArtistRecord = libraryArtists.find((libraryArtist) => normalizeKey(libraryArtist.artist) === libraryArtistKey) ?? null
+    const libraryArtworkHash = libraryArtistRecord?.artwork_hash ?? null
+
+    return (
+      <>
+        <div className="info-bio-artwork">
+          {libraryArtworkHash && <AlbumArtwork hash={libraryArtworkHash} alt={artist.name} />}
+        </div>
+        <h2 className="info-bio-name">{artist.name}</h2>
+        {artist.tags.length > 0 && (
+          <div className="info-meta-row">
+            <span className="info-meta-label">Genre</span>
+            <span
+              className={`info-meta-value info-meta-value--clickable ${isBioTagsExpanded ? 'info-meta-value--wrap' : ''}`}
+              onClick={() => setIsBioTagsExpanded(!isBioTagsExpanded)}
+              title="Cliquer pour tout voir"
+            >
+              {artist.tags.join(', ')}
+            </span>
+          </div>
+        )}
+        {artist.bio ? (
+          <p className="info-bio-text">{artist.bio}</p>
+        ) : (
+          <div className="info-lyrics-state">No biography available.</div>
+        )}
+      </>
+    )
+  }
+
   return (
-    <aside className={`info-sidebar${activeTab === 'lyrics' ? ' info-sidebar-lyrics-active' : ''}`}>
+    <aside className={`info-sidebar${activeTab === 'lyrics' || activeTab === 'bio' ? ' info-sidebar-lyrics-active' : ''}`}>
       <div className="info-sidebar-header">
         <span className="info-sidebar-label">NOW PLAYING</span>
         <div className="info-sidebar-header-actions">
@@ -232,6 +331,13 @@ export default function InfoSidebar() {
         >
           Lyrics
         </button>
+        <button
+          type="button"
+          className={`info-sidebar-tab ${activeTab === 'bio' ? 'active' : ''}`}
+          onClick={() => setActiveTab('bio')}
+        >
+          Bio
+        </button>
       </div>
 
       {activeTab === 'lyrics' ? (
@@ -256,6 +362,10 @@ export default function InfoSidebar() {
             </button>
           </div>
           {renderLyricsContent()}
+        </div>
+      ) : activeTab === 'bio' ? (
+        <div className="info-bio-panel">
+          {renderBioContent()}
         </div>
       ) : currentTrack ? (
         <>
@@ -309,14 +419,20 @@ export default function InfoSidebar() {
             </div>
             {currentTrack.year && (
               <div className="info-meta-row">
-                <span className="info-meta-label">Year</span>
-                <span className="info-meta-value">{currentTrack.year}</span>
+                <span className="info-meta-label">Release Date</span>
+                <span className="info-meta-value">{currentTrack.date || currentTrack.year}</span>
               </div>
             )}
             {currentTrack.genre && (
               <div className="info-meta-row">
                 <span className="info-meta-label">Genre</span>
-                <span className="info-meta-value">{currentTrack.genre}</span>
+                <span
+                  className={`info-meta-value info-meta-value--clickable ${isGenreExpanded ? 'info-meta-value--wrap' : ''}`}
+                  onClick={() => setIsGenreExpanded(!isGenreExpanded)}
+                  title="Cliquer pour tout voir"
+                >
+                  {currentTrack.genre}
+                </span>
               </div>
             )}
             {currentTrack.trackNumber && (

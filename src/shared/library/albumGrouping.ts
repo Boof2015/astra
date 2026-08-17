@@ -57,9 +57,13 @@ export function normalizeArtworkHash(hash: string | null | undefined): string | 
   return normalized ? normalized.toLocaleLowerCase() : null
 }
 
-export function splitCollaborators(rawArtist: string): string[] {
+export function splitCollaborators(rawArtist: string, exceptions: string[] = []): string[] {
   const normalized = normalizeDisplay(rawArtist)
   if (!normalized) return []
+
+  if (exceptions.some((exception) => normalizeKey(exception) === normalizeKey(normalized))) {
+    return [normalized]
+  }
 
   const unified = normalized
     .replace(/\s*;\s*/g, ',')
@@ -79,8 +83,8 @@ export function splitCollaborators(rawArtist: string): string[] {
   return Array.from(unique.values())
 }
 
-export function getPrimaryArtistFromTrackArtist(trackArtist: string): string {
-  const contributors = splitCollaborators(trackArtist)
+export function getPrimaryArtistFromTrackArtist(trackArtist: string, exceptions: string[] = []): string {
+  const contributors = splitCollaborators(trackArtist, exceptions)
   return contributors[0] ?? UNKNOWN_ARTIST_NAME
 }
 

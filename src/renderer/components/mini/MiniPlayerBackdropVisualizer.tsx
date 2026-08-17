@@ -199,9 +199,7 @@ export default function MiniPlayerBackdropVisualizer({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const animationRef = useRef<number | null>(null)
   const drawRef = useRef<(() => void) | null>(null)
-  const [isReducedMotion, setIsReducedMotion] = useState(false)
-  const renderMode: MiniPlayerVisualizerMode = isReducedMotion ? 'off' : mode
-  const modeRef = useRef(renderMode)
+  const modeRef = useRef(mode)
   const layoutModeRef = useRef(layoutMode)
   const idleRef = useRef(isIdle)
 
@@ -224,14 +222,6 @@ export default function MiniPlayerBackdropVisualizer({
     scaleContextToDpr: true,
     deferBackingStoreResizeMs: 96,
   })
-
-  useEffect(() => {
-    const media = window.matchMedia('(prefers-reduced-motion: reduce)')
-    const sync = () => setIsReducedMotion(media.matches)
-    sync()
-    media.addEventListener('change', sync)
-    return () => media.removeEventListener('change', sync)
-  }, [])
 
   useEffect(() => {
     layoutModeRef.current = layoutMode
@@ -278,12 +268,12 @@ export default function MiniPlayerBackdropVisualizer({
   }, [renderProfile])
 
   const visualizerStyle = useMemo(() => {
-    const opacity = resolveOpacity(renderMode, layoutMode, isIdle, renderProfile)
+    const opacity = resolveOpacity(mode, layoutMode, isIdle, renderProfile)
     return {
       '--mini-visualizer-opacity': opacity.toFixed(3),
       '--mini-visualizer-blend': renderProfile.blendMode,
     } as CSSProperties
-  }, [isIdle, layoutMode, renderMode, renderProfile])
+  }, [isIdle, layoutMode, mode, renderProfile])
 
   const stopAnimationLoop = useCallback(() => {
     if (animationRef.current !== null) {
@@ -304,8 +294,8 @@ export default function MiniPlayerBackdropVisualizer({
   }, [])
 
   useEffect(() => {
-    modeRef.current = renderMode
-    if (renderMode === 'off') {
+    modeRef.current = mode
+    if (mode === 'off') {
       pendingLeftChunksRef.current = []
       pendingMonoChunksRef.current = []
       spectrumDataRef.current = null
@@ -325,12 +315,13 @@ export default function MiniPlayerBackdropVisualizer({
     }
 
     scheduleNextFrame()
-  }, [renderMode, scheduleNextFrame, stopAnimationLoop])
+  }, [mode, scheduleNextFrame, stopAnimationLoop])
 
   useEffect(() => {
     if (!isNativeAvailable()) return
 
     const unsubscribe = window.electronAPI.miniPlayer.onVisualizerChunk((chunk) => {
+      console.log('[DEBUG] chunk received', modeRef.current)
       sampleRateRef.current = Math.max(1, chunk.sampleRate)
       pitchLockRef.current = chunk.pitchLock
       const rawUnderfillEnabled = (chunk as { oscilloscopeUnderfillEnabled?: unknown }).oscilloscopeUnderfillEnabled
@@ -339,6 +330,9 @@ export default function MiniPlayerBackdropVisualizer({
       const activeMode = modeRef.current
 
       if (chunk.reset) {
+        if (activeMode === 'oscilloscope') {
+          console.log('[DEBUG] chunk.reset === true (oscilloscope)', Date.now())
+        }
         pendingLeftChunksRef.current = []
         pendingMonoChunksRef.current = []
         spectrumDataRef.current = null
@@ -558,6 +552,8 @@ export default function MiniPlayerBackdropVisualizer({
         samplesReceivedRef.current += chunk.length
       }
 
+      console.log('[DEBUG] drawOscilloscope samplesReceivedRef.current =', samplesReceivedRef.current)
+
       const pitchLock = pitchLockRef.current
       if (pitchLock && samplesReceivedRef.current < OSCILLOSCOPE_WARMUP_SAMPLES) return
 
@@ -731,7 +727,7 @@ export default function MiniPlayerBackdropVisualizer({
     <div
       ref={containerRef}
       className={`mini-player-backdrop-visualizer ${isIdle ? 'is-idle' : ''}`.trim()}
-      data-mode={renderMode}
+      data-mode={mode}
       style={visualizerStyle}
       aria-hidden="true"
     >

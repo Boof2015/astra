@@ -30,7 +30,7 @@ import MetadataEditorPanel from './components/metadata/MetadataEditorPanel'
 import LyricsEditorPanel from './components/lyrics/LyricsEditorPanel'
 import SignalShareModal from './components/signal/SignalShareModal'
 import { useUIStore } from './stores/uiStore'
-import { useLibraryStore } from './stores/libraryStore'
+import { ARTIST_SPLIT_EXCEPTIONS_PENDING_RESTART_STORAGE_KEY, useLibraryStore } from './stores/libraryStore'
 import { useRatingsStore } from './stores/ratingsStore'
 import { useAudioSettingsStore } from './stores/audioSettingsStore'
 import { useDiscordSettingsStore } from './stores/discordSettingsStore'
@@ -370,6 +370,10 @@ function App() {
         const libraryStore = useLibraryStore.getState()
         void useRatingsStore.getState().loadRatings()
         await libraryStore.loadLibrary()
+        if (localStorage.getItem(ARTIST_SPLIT_EXCEPTIONS_PENDING_RESTART_STORAGE_KEY) === '1') {
+          libraryStore.setArtistSplitExceptionsRestartConfirmation('✓ Artist exceptions have been applied')
+          localStorage.setItem(ARTIST_SPLIT_EXCEPTIONS_PENDING_RESTART_STORAGE_KEY, '0')
+        }
         if (sessionSnapshot?.library) {
           await libraryStore.restoreSession(sessionSnapshot.library)
         }

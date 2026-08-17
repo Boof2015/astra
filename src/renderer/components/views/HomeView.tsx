@@ -728,14 +728,15 @@ function getHomeRecentLimits(viewportWidth: number): HomeRecentLimits {
   return HOME_RECENT_LIMITS_SMALL
 }
 
-function getPrimaryContributor(rawArtist: string): string {
-  const contributors = splitCollaborators(rawArtist)
+function getPrimaryContributor(rawArtist: string, exceptions: string[] = []): string {
+  const contributors = splitCollaborators(rawArtist, exceptions)
   return contributors[0] ?? 'Unknown Artist'
 }
 
 function getRecentArtistCandidate(
   track: Pick<HomeTrack, 'artist' | 'artist_names' | 'album_artist' | 'album_artist_names'>,
-  mode: LibraryArtistBrowseMode
+  mode: LibraryArtistBrowseMode,
+  exceptions: string[] = []
 ): string {
   const albumArtist = (track.album_artist ?? '').replace(/\s+/g, ' ').trim()
   if (mode === 'strict') {
@@ -745,7 +746,7 @@ function getRecentArtistCandidate(
   const albumArtistKey = normalizeKey(albumArtist)
 
   if (albumArtist && !GENERIC_ARTIST_KEYS.has(albumArtistKey)) {
-    return getPrimaryContributor(albumArtist)
+    return getPrimaryContributor(albumArtist, exceptions)
   }
 
   if (track.artist_names.length > 0) {
@@ -755,7 +756,7 @@ function getRecentArtistCandidate(
     return track.album_artist_names[0]
   }
 
-  return getPrimaryContributor(track.artist)
+  return getPrimaryContributor(track.artist, exceptions)
 }
 
 function formatHomeClockTime(date: Date): string {
@@ -779,6 +780,7 @@ export default function HomeView() {
   const albums = useLibraryStore((s) => s.albums as HomeAlbum[])
   const artists = useLibraryStore((s) => s.artists as HomeArtist[])
   const artistBrowseMode = useLibraryStore((s) => s.artistBrowseMode)
+  const artistSplitExceptions = useLibraryStore((s) => s.artistSplitExceptions)
   const recentlyPlayedPaths = useLibraryStore((s) => s.recentlyPlayedPaths)
   const favoriteTrackPaths = useLibraryStore((s) => s.favoriteTrackPaths)
   const trackCacheVersion = useLibraryStore((s) => s.trackCacheVersion)
@@ -1041,7 +1043,7 @@ export default function HomeView() {
     const uniqueArtists: HomeArtist[] = []
 
     for (const track of recentlyPlayed) {
-      const candidateArtist = getRecentArtistCandidate(track, artistBrowseMode) || 'Unknown Artist'
+      const candidateArtist = getRecentArtistCandidate(track, artistBrowseMode, artistSplitExceptions) || 'Unknown Artist'
       const key = normalizeKey(candidateArtist)
       if (!key || seenArtistKeys.has(key)) continue
       seenArtistKeys.add(key)
@@ -1059,7 +1061,7 @@ export default function HomeView() {
     }
 
     return uniqueArtists
-  }, [artistBrowseMode, recentlyPlayed, artistByKey, recentLimits])
+  }, [artistBrowseMode, recentlyPlayed, artistByKey, recentLimits, artistSplitExceptions])
 
   const recentAlbums = useMemo(() => {
     const seenAlbumIdentityKeys = new Set<string>()

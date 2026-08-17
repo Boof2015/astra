@@ -1690,6 +1690,20 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   white-space: nowrap;
 }
 
+.info-meta-value--wrap {
+  overflow: visible;
+  text-overflow: unset;
+  white-space: normal;
+}
+
+.info-meta-value--clickable {
+  cursor: pointer;
+}
+
+.info-meta-value--clickable:hover {
+  color: var(--text-primary);
+}
+
 .info-meta-album-link {
   appearance: none;
   border: 0;
@@ -1913,6 +1927,51 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   color: var(--text-secondary);
   padding-right: 4px;
   font-family: inherit;
+}
+
+.info-bio-panel {
+  min-height: 0;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.info-bio-artwork {
+  width: 100%;
+  aspect-ratio: 1;
+  min-height: 200px;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--glass-border);
+}
+
+.info-bio-artwork img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.info-bio-name {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.info-bio-text {
+  margin: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  padding-right: 4px;
 }
 
 /* ============================================
@@ -7551,6 +7610,7 @@ body:has(.fullscreen-overlay) .controller-hints {
   --artist-row-height: 64px;
   --artist-grid-min-column-width: 124px;
   --artist-grid-row-height: 168px;
+  --artist-grid-avatar-height: 96px;
   --artist-grid-gap: 12px;
   flex: 1;
   min-width: 0;
@@ -7686,7 +7746,7 @@ body:has(.fullscreen-overlay) .controller-hints {
 
 .artist-grid-avatar {
   width: 100%;
-  height: 96px;
+  height: var(--artist-grid-avatar-height);
   border-radius: 7px;
   border: 1px solid rgba(var(--tint), 0.08);
   background: var(--bg-tertiary);
@@ -13912,6 +13972,14 @@ html[data-theme-tone="light"] .transport-center {
   stroke: rgba(var(--tint), 0.66);
 }
 
+.transport-eq-graphic-slot {
+  width: 56px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .transport-eq-curve {
   width: 56px;
   height: 28px;
@@ -13929,6 +13997,10 @@ html[data-theme-tone="light"] .transport-center {
 
 .transport-eq-curve .eq-response-preview-fill {
   fill: transparent;
+}
+
+.transport-eq-btn:disabled {
+  cursor: not-allowed;
 }
 
 .transport-eq-btn,
@@ -16635,6 +16707,7 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   .artist-list {
     --artist-grid-min-column-width: 112px;
     --artist-grid-row-height: 154px;
+    --artist-grid-avatar-height: 88px;
     --artist-grid-gap: 10px;
   }
 
@@ -16644,7 +16717,6 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   }
 
   .artist-grid-avatar {
-    height: 88px;
     font-size: 26px;
   }
 
@@ -18685,6 +18757,12 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   gap: 8px;
 }
 
+.settings-shell .settings-artist-split-exception-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .settings-lastfm-profiles-field {
   gap: 10px;
 }
@@ -18896,6 +18974,21 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
 .settings-shell .settings-scale-value {
   min-width: 56px;
   justify-content: center;
+}
+
+.settings-shell .settings-grid-scale-preview {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding-top: 4px;
+  overflow-x: auto;
+  overflow-y: auto;
+}
+
+.settings-shell .settings-grid-scale-preview > .album-card,
+.settings-shell .settings-grid-scale-preview > .artist-grid-card {
+  flex-shrink: 0;
 }
 
 .settings-shell .settings-remote-url-list {

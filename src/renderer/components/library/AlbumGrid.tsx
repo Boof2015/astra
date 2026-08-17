@@ -12,6 +12,8 @@ import {
   resolveGridHorizontalInset,
   resolveVirtualGridContentWidth
 } from '../../utils/virtualGridSizing'
+import { useLibraryStore } from '../../stores/libraryStore'
+import { DEFAULT_ALBUM_GRID_SCALE_PERCENT, useUIStore } from '../../stores/uiStore'
 
 interface AlbumRecord {
   identity_key: string
@@ -41,16 +43,17 @@ interface AlbumGridCellSharedProps {
   onSelectAlbum: (album: AlbumRecord) => void
   onAlbumContextMenu: (album: AlbumRecord, x: number, y: number) => void
   searchQuery: string
+  showYear: boolean
 }
 
-const ALBUM_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX = 160
+export const ALBUM_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX = 160
 const ALBUM_GRID_GAP_FALLBACK_PX = 14
 const ALBUM_GRID_PADDING_FALLBACK_PX = 14
 const ALBUM_GRID_OVERSCAN_COUNT = 3
 // Card chrome that stacks on top of the square artwork: card padding + borders
 // + artwork margin + three single-line info rows. Only used until the first
 // mounted card is measured.
-const ALBUM_CARD_NON_ARTWORK_HEIGHT_ESTIMATE_PX = 91
+export const ALBUM_CARD_NON_ARTWORK_HEIGHT_ESTIMATE_PX = 91
 
 function resolveCssPx(element: HTMLElement | null, propertyName: string, fallback: number): number {
   if (!element) return fallback
@@ -77,7 +80,8 @@ function AlbumGridCellRenderer({
   columnCount,
   onSelectAlbum,
   onAlbumContextMenu,
-  searchQuery
+  searchQuery,
+  showYear
 }: CellComponentProps<AlbumGridCellSharedProps>): ReactElement | null {
   const albumIndex = (rowIndex * columnCount) + columnIndex
   const album = albums[albumIndex]
@@ -117,7 +121,7 @@ function AlbumGridCellRenderer({
         <div className="album-info">
           <div className="album-title">{highlightSearchMatch(album.album, searchQuery)}</div>
           <div className="album-artist">{highlightSearchMatch(album.artist, searchQuery)}</div>
-          <div className="album-meta">{formatTrackCount(album.track_count)}{album.year ? ` • ${album.year}` : ''}</div>
+          <div className="album-meta">{formatTrackCount(album.track_count)}{showYear && album.year ? ` • ${album.year}` : ''}</div>
         </div>
       </div>
     </div>
@@ -143,6 +147,8 @@ export default function AlbumGrid({
   const [measuredCardHeight, setMeasuredCardHeight] = useState<number | null>(null)
   const bodyRef = useRef<HTMLDivElement | null>(null)
   const gridApiRef = useRef<GridImperativeAPI | null>(null)
+  const albumGridScalePercent = useUIStore((state) => state.albumGridScalePercent)
+  const showAlbumGridYear = useLibraryStore((state) => state.showAlbumGridYear)
 
   useImperativeHandle(viewportRef, () => ({
     get element() {
@@ -150,45 +156,68 @@ export default function AlbumGrid({
     }
   }), [])
 
+  const measureGridMetrics = useCallback(() => {
+    const element = bodyRef.current
+    if (!element) return
+
+    const nextHeight = Math.max(0, Math.round(element.clientHeight))
+    const nextWidth = Math.max(0, Math.round(element.clientWidth))
+    const nextMinColumnWidth = resolveCssPx(element, '--album-grid-min-column-width', ALBUM_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX)
+    const nextGap = resolveCssPx(element, '--album-grid-gap', ALBUM_GRID_GAP_FALLBACK_PX)
+    const nextPadding = resolveCssPx(element, '--album-grid-padding', ALBUM_GRID_PADDING_FALLBACK_PX)
+
+    setViewportSize((previous) => (
+      previous.height === nextHeight && previous.width === nextWidth
+        ? previous
+        : { height: nextHeight, width: nextWidth }
+    ))
+    setMinColumnWidth((previous) => (previous === nextMinColumnWidth ? previous : nextMinColumnWidth))
+    setGap((previous) => (previous === nextGap ? previous : nextGap))
+    setPadding((previous) => (previous === nextPadding ? previous : nextPadding))
+  }, [])
+
+  // Overrides the CSS default directly on the grid's own element (an inline style here always
+  // wins over the .album-grid-shell rule, regardless of any responsive breakpoint) so a custom
+  // scale doesn't require touching resolveCssPx or resolveArtistGridLayout. At the default 100%
+  // the override is removed entirely, leaving the stylesheet (and its breakpoints) in control.
   useLayoutEffect(() => {
     const element = bodyRef.current
     if (!element) return
 
-    const updateMeasurements = () => {
-      const nextHeight = Math.max(0, Math.round(element.clientHeight))
-      const nextWidth = Math.max(0, Math.round(element.clientWidth))
-      const nextMinColumnWidth = resolveCssPx(element, '--album-grid-min-column-width', ALBUM_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX)
-      const nextGap = resolveCssPx(element, '--album-grid-gap', ALBUM_GRID_GAP_FALLBACK_PX)
-      const nextPadding = resolveCssPx(element, '--album-grid-padding', ALBUM_GRID_PADDING_FALLBACK_PX)
-
-      setViewportSize((previous) => (
-        previous.height === nextHeight && previous.width === nextWidth
-          ? previous
-          : { height: nextHeight, width: nextWidth }
-      ))
-      setMinColumnWidth((previous) => (previous === nextMinColumnWidth ? previous : nextMinColumnWidth))
-      setGap((previous) => (previous === nextGap ? previous : nextGap))
-      setPadding((previous) => (previous === nextPadding ? previous : nextPadding))
+    if (albumGridScalePercent === DEFAULT_ALBUM_GRID_SCALE_PERCENT) {
+      element.style.removeProperty('--album-grid-min-column-width')
+    } else {
+      const scaledWidth = Math.round(
+        ALBUM_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX * (albumGridScalePercent / 100)
+      )
+      element.style.setProperty('--album-grid-min-column-width', `${scaledWidth}px`)
     }
 
-    updateMeasurements()
+    measureGridMetrics()
+  }, [albumGridScalePercent, measureGridMetrics])
+
+  useLayoutEffect(() => {
+    const element = bodyRef.current
+    if (!element) return
+
+    measureGridMetrics()
 
     if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', updateMeasurements)
+      window.addEventListener('resize', measureGridMetrics)
       return () => {
-        window.removeEventListener('resize', updateMeasurements)
+        window.removeEventListener('resize', measureGridMetrics)
       }
     }
 
     const resizeObserver = new ResizeObserver(() => {
-      updateMeasurements()
+      measureGridMetrics()
     })
     resizeObserver.observe(element)
 
     return () => {
       resizeObserver.disconnect()
     }
-  }, [])
+  }, [measureGridMetrics])
 
   // Cells carry gap/2 padding on every side; the scroller adds
   // (padding - gap/2) so outer edges land at the CSS-grid padding. Prefer the
@@ -257,8 +286,9 @@ export default function AlbumGrid({
     columnCount: gridLayout.columnCount,
     onSelectAlbum,
     onAlbumContextMenu,
-    searchQuery
-  }), [albums, gridLayout.columnCount, onAlbumContextMenu, onSelectAlbum, searchQuery])
+    searchQuery,
+    showYear: showAlbumGridYear
+  }), [albums, gridLayout.columnCount, onAlbumContextMenu, onSelectAlbum, searchQuery, showAlbumGridYear])
 
   useEffect(() => {
     const group = bodyRef.current

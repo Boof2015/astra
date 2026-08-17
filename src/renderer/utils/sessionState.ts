@@ -45,6 +45,7 @@ export interface SessionQueueTrackSnapshot {
   trackNumber?: number
   discNumber?: number
   year?: number
+  date?: string
   genre?: string
   genres?: string[]
   artworkHash?: string
@@ -56,6 +57,7 @@ export interface SessionQueueTrackSnapshot {
   codec?: string
   codecProfile?: string
   isAtmosJoc?: boolean
+  isIamf?: boolean
   replayGainTrackDb?: number
   replayGainAlbumDb?: number
   sourceType?: TrackSourceType
@@ -336,6 +338,7 @@ function normalizeQueueTrackSnapshot(value: unknown): SessionQueueTrackSnapshot 
     ...(trackNumber !== undefined ? { trackNumber } : {}),
     ...(discNumber !== undefined ? { discNumber } : {}),
     ...(year !== undefined ? { year } : {}),
+    ...(optionalString(value.date) ? { date: optionalString(value.date) } : {}),
     ...(optionalString(value.genre) ? { genre: optionalString(value.genre) } : {}),
     ...(stringArray(value.genres) ? { genres: stringArray(value.genres) } : {}),
     ...(optionalString(value.artworkHash) ? { artworkHash: optionalString(value.artworkHash) } : {}),
@@ -347,6 +350,7 @@ function normalizeQueueTrackSnapshot(value: unknown): SessionQueueTrackSnapshot 
     ...(optionalString(value.codec) ? { codec: optionalString(value.codec) } : {}),
     ...(optionalString(value.codecProfile) ? { codecProfile: optionalString(value.codecProfile) } : {}),
     ...(typeof value.isAtmosJoc === 'boolean' ? { isAtmosJoc: value.isAtmosJoc } : {}),
+    ...(typeof value.isIamf === 'boolean' ? { isIamf: value.isIamf } : {}),
     ...(replayGainTrackDb !== undefined ? { replayGainTrackDb } : {}),
     ...(replayGainAlbumDb !== undefined ? { replayGainAlbumDb } : {}),
     ...(sourceType ? { sourceType } : {}),

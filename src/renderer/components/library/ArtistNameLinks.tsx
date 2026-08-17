@@ -16,6 +16,7 @@ interface ArtistNameLinksProps {
 
 interface ArtistNameLinksContentProps extends ArtistNameLinksProps {
   artistBrowseMode: LibraryArtistBrowseMode
+  artistSplitExceptions?: string[]
 }
 
 function joinClasses(...classNames: Array<string | undefined>): string {
@@ -26,7 +27,8 @@ export default function ArtistNameLinks({
   ...props
 }: ArtistNameLinksProps) {
   const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
-  return <ArtistNameLinksContent {...props} artistBrowseMode={artistBrowseMode} />
+  const artistSplitExceptions = useLibraryStore((state) => state.artistSplitExceptions)
+  return <ArtistNameLinksContent {...props} artistBrowseMode={artistBrowseMode} artistSplitExceptions={artistSplitExceptions} />
 }
 
 // Virtualized lists can select the browse mode once at the list level instead
@@ -40,13 +42,14 @@ function ArtistNameLinksContentRenderer({
   className,
   linkClassName,
   stopPropagation = false,
-  artistBrowseMode
+  artistBrowseMode,
+  artistSplitExceptions = []
 }: ArtistNameLinksContentProps) {
   const normalizedArtistText = artistText.replace(/\s+/g, ' ').trim()
   const normalizedBrowseArtistText = (browseArtistText ?? '').replace(/\s+/g, ' ').trim()
   const parsedArtistTokens = artistNames && artistNames.length > 0
     ? buildArtistNameTokens(artistNames)
-    : parseArtistMetadata(artistText)
+    : parseArtistMetadata(artistText, artistSplitExceptions)
   const tokens = artistBrowseMode === 'canonical' ? parsedArtistTokens : []
   const containerClassName = joinClasses('artist-name-links', className)
   const buttonClassName = joinClasses('artist-name-link', linkClassName)

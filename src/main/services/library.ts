@@ -202,6 +202,7 @@ export interface DbTrack {
   track_number: number | null
   disc_number: number | null
   year: number | null
+  date: string | null
   genre: string | null
   genres: string[]
   artwork_hash: string | null
@@ -695,6 +696,7 @@ class LibrarySqliteDatabase {
 
 let db: LibrarySqliteDatabase | null = null
 let dbPath: string = ''
+let artistSplitExceptionKeys: Set<string> = new Set()
 let artworkDir: string = ''
 let playlistCoverDir: string = ''
 let artistImageDir: string = ''
@@ -731,6 +733,7 @@ const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   COALESCE(o.track_number, t.track_number) AS track_number,
   COALESCE(o.disc_number, t.disc_number) AS disc_number,
   COALESCE(o.year, t.year) AS year,
+  t.date AS date,
   COALESCE(o.genre, t.genre) AS genre,
   CASE
     WHEN o.genre IS NULL THEN t.genre_names_json
@@ -1206,7 +1209,7 @@ function deserializeGenreNames(value: unknown): string[] {
 }
 
 function formatGenreNames(names: readonly unknown[] | null | undefined): string {
-  return normalizeGenreNames(names).join('; ')
+  return normalizeGenreNames(names).join(', ')
 }
 
 function getGenreNamesForTrack(track: Pick<DbTrackRow, 'genre' | 'genre_names_json'>): string[] {
@@ -1374,6 +1377,10 @@ function splitCollaborators(rawArtist: string): string[] {
   const normalized = normalizeDisplay(rawArtist)
   if (!normalized) return []
 
+  if (artistSplitExceptionKeys.has(normalizeKey(normalized))) {
+    return [normalized]
+  }
+
   const unified = normalized
     .replace(/\s*;\s*/g, ',')
     .replace(/\s+&\s+/g, ',')
@@ -1395,6 +1402,10 @@ function splitCollaborators(rawArtist: string): string[] {
 function splitAlbumArtistCollaborators(rawAlbumArtist: string): string[] {
   const normalized = normalizeDisplay(rawAlbumArtist)
   if (!normalized) return []
+
+  if (artistSplitExceptionKeys.has(normalizeKey(normalized))) {
+    return [normalized]
+  }
 
   const unified = normalized
     .replace(/\s*;\s*/g, ',')
@@ -2229,6 +2240,11 @@ export async function initDatabase(): Promise<void> {
     // Column already exists.
   }
   try {
+    db.run('ALTER TABLE tracks ADD COLUMN date TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
     db.run('ALTER TABLE track_metadata_overrides ADD COLUMN artwork_hash TEXT')
   } catch {
     // Column already exists.
@@ -2274,6 +2290,16 @@ export async function initDatabase(): Promise<void> {
   `)
   db.run('CREATE INDEX IF NOT EXISTS idx_folder_exclusions_folder ON folder_exclusions(folder_id)')
   db.run('CREATE INDEX IF NOT EXISTS idx_folder_exclusions_absolute ON folder_exclusions(absolute_path)')
+
+  // Artist split exceptions: full artist-credit strings that splitCollaborators
+  // must never break apart (e.g. "Tyler, The Creator", "Earth, Wind & Fire").
+  db.run(`
+    CREATE TABLE IF NOT EXISTS artist_split_exceptions (
+      artist_key TEXT PRIMARY KEY NOT NULL,
+      artist_name TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `)
 
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist)')
   db.run('CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album)')
@@ -2461,6 +2487,7 @@ export async function initDatabase(): Promise<void> {
       artist_name TEXT NOT NULL,
       manual_image_hash TEXT,
       detected_image_hash TEXT,
+      remote_image_hash TEXT,
       detected_source_path TEXT,
       detected_source_mtime INTEGER,
       updated_at INTEGER NOT NULL,
@@ -2468,6 +2495,14 @@ export async function initDatabase(): Promise<void> {
     )
   `)
   db.run('CREATE INDEX IF NOT EXISTS idx_artist_images_browse_mode ON artist_images(browse_mode)')
+
+  // Schema migration: existing artist_images rows may not have remote_image_hash yet.
+  // Checked via table_info rather than the usual try/catch ALTER pattern so this
+  // stays a plain no-op (no thrown-and-caught exception) on repeat startups.
+  const artistImagesColumns = db.pragma('table_info(artist_images)') as Array<{ name: string }>
+  if (!artistImagesColumns.some((column) => column.name === 'remote_image_hash')) {
+    db.run('ALTER TABLE artist_images ADD COLUMN remote_image_hash TEXT')
+  }
 
   // Playlist tracks table
   db.run(`
@@ -2553,6 +2588,8 @@ export async function initDatabase(): Promise<void> {
   // Upgrade-time repair for histories and path-keyed user data orphaned by a
   // folder reorganization in an older Astra version.
   reconcileMissingTrackReferencesByMetadata()
+
+  refreshArtistSplitExceptionCache()
 
   await saveDatabase()
 }
@@ -4910,19 +4947,12 @@ function normalizeCachedImageExtension(imagePath: string): string {
   return '.jpg'
 }
 
-async function cacheArtistImageFile(imagePath: string): Promise<string> {
-  const normalizedPath = imagePath.trim()
-  if (!normalizedPath) {
-    throw new Error('Artist image path is required.')
-  }
-
-  const imageData = await readFile(normalizedPath)
+async function writeCachedArtistImageBuffer(imageData: Buffer, extension: string): Promise<string> {
   if (imageData.length === 0) {
-    throw new Error('Artist image file is empty.')
+    throw new Error('Artist image data is empty.')
   }
 
   await mkdir(artistImageDir, { recursive: true })
-  const extension = normalizeCachedImageExtension(normalizedPath)
   const contentHash = createHash('sha256').update(imageData).digest('hex')
   const fileName = `${contentHash}${extension}`
   const targetPath = join(artistImageDir, fileName)
@@ -4936,6 +4966,17 @@ async function cacheArtistImageFile(imagePath: string): Promise<string> {
   }
 
   return `${ARTIST_IMAGE_HASH_PREFIX}${fileName}`
+}
+
+async function cacheArtistImageFile(imagePath: string): Promise<string> {
+  const normalizedPath = imagePath.trim()
+  if (!normalizedPath) {
+    throw new Error('Artist image path is required.')
+  }
+
+  const imageData = await readFile(normalizedPath)
+  const extension = normalizeCachedImageExtension(normalizedPath)
+  return writeCachedArtistImageBuffer(imageData, extension)
 }
 
 export async function setArtistImageFromFile(
@@ -5219,6 +5260,10 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
         })
       }
 
+      // Only an artist's own releases should set their page artwork — a track
+      // where this artist is merely featured (not primary) must not be able
+      // to override the primary artist's cover with someone else's album art.
+      if (!isPrimaryArtist) return
       if (!track.artwork_hash) return
       const aggregate = artistCounts.get(key)
       if (!aggregate) return
@@ -5977,6 +6022,51 @@ export async function setFolderSubfolderExcluded(
   return true
 }
 
+interface ArtistSplitExceptionRow {
+  artist_name: string
+}
+
+export function getArtistSplitExceptions(): string[] {
+  if (!db) return []
+  const rows = db.all<ArtistSplitExceptionRow>('SELECT artist_name FROM artist_split_exceptions ORDER BY artist_name')
+  return rows.map((row) => row.artist_name)
+}
+
+function refreshArtistSplitExceptionCache(): void {
+  artistSplitExceptionKeys = new Set(getArtistSplitExceptions().map((name) => normalizeKey(name)))
+}
+
+export async function addArtistSplitException(name: string): Promise<boolean> {
+  if (!db) return false
+  const displayName = normalizeDisplay(name)
+  const key = normalizeKey(displayName)
+  if (!key) return false
+
+  db.run(
+    `INSERT INTO artist_split_exceptions (artist_key, artist_name, created_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(artist_key)
+     DO UPDATE SET artist_name = excluded.artist_name`,
+    [key, displayName, Date.now()]
+  )
+
+  await saveDatabase()
+  refreshArtistSplitExceptionCache()
+  return true
+}
+
+export async function removeArtistSplitException(name: string): Promise<boolean> {
+  if (!db) return false
+  const key = normalizeKey(name)
+  if (!key) return false
+
+  db.run('DELETE FROM artist_split_exceptions WHERE artist_key = ?', [key])
+
+  await saveDatabase()
+  refreshArtistSplitExceptionCache()
+  return true
+}
+
 // Remove library folder
 export async function removeLibraryFolder(folderPath: string): Promise<void> {
   if (!db) return
@@ -6338,11 +6428,11 @@ export async function scanFolder(
 
       if (existing) {
         db.run(`
-          UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, is_iamf=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
+          UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, date=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, is_iamf=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
           WHERE path=?
         `, [
           metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
-          metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
+          metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year, metadata.date,
           metadata.genre, metadata.genreNamesJson, metadata.artworkHash, metadata.format, metadata.sampleRate,
           metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, metadata.isIamf,
           metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, now, filePath
@@ -6350,11 +6440,11 @@ export async function scanFolder(
         updated++
       } else {
         db.run(`
-          INSERT INTO tracks (path, title, artist, artist_names_json, album, album_artist, album_artist_names_json, duration, track_number, disc_number, year, genre, genre_names_json, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, is_iamf, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, file_created_at, sync_session_key, added_at, modified_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, ?, ?, ?)
+          INSERT INTO tracks (path, title, artist, artist_names_json, album, album_artist, album_artist_names_json, duration, track_number, disc_number, year, date, genre, genre_names_json, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, is_iamf, replaygain_track_gain_db, replaygain_album_gain_db, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, file_created_at, sync_session_key, added_at, modified_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, ?, ?, ?)
         `, [
           filePath, metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
-          metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
+          metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year, metadata.date,
           metadata.genre, metadata.genreNamesJson, metadata.artworkHash, metadata.format, metadata.sampleRate,
           metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, metadata.isIamf,
           metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, syncSessionKey, now, now
@@ -6971,6 +7061,7 @@ interface ExtractedTrackMetadata {
   trackNumber: number | null
   discNumber: number | null
   year: number | null
+  date: string | null
   genre: string | null
   genreNamesJson: string | null
   artworkHash: string | null
@@ -7062,6 +7153,7 @@ async function buildIamfTrackMetadata(
     trackNumber: null,
     discNumber: null,
     year: null,
+    date: null,
     genre: null,
     genreNamesJson: null,
     artworkHash,
@@ -7193,6 +7285,7 @@ async function extractMetadata(filePath: string, options: {
       trackNumber: common.track?.no || null,
       discNumber: common.disk?.no || null,
       year: common.year || null,
+      date: common.date || null,
       genre: genreFields.genre,
       genreNamesJson: genreFields.genreNamesJson,
       artworkHash,
@@ -7925,11 +8018,11 @@ async function updateTrackRowFromFileMetadata(trackPath: string): Promise<void> 
   const now = Date.now()
 
   db.run(`
-    UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, is_iamf=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
+    UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, date=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, is_iamf=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, modified_at=?
     WHERE path=?
   `, [
     metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
-    metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
+    metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year, metadata.date,
     metadata.genre, metadata.genreNamesJson, metadata.artworkHash, metadata.format, metadata.sampleRate,
     metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, metadata.isIamf,
     metadata.replayGainTrackDb, metadata.replayGainAlbumDb, metadata.bpm, metadata.musicalKey, fileCreatedAt, now, trackPath

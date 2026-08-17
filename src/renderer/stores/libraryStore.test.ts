@@ -26,6 +26,7 @@ function makeTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
     track_number: overrides.track_number ?? 1,
     disc_number: overrides.disc_number ?? 1,
     year: overrides.year ?? 2026,
+    date: overrides.date ?? null,
     genre: overrides.genre ?? null,
     genres: overrides.genres ?? (overrides.genre ? [overrides.genre] : []),
     artwork_hash: overrides.artwork_hash ?? null,
@@ -68,6 +69,7 @@ interface MockLibraryApi {
   getFavoritePaths: () => Promise<string[]> | string[]
   getFavorites: () => Promise<DbTrack[]> | DbTrack[]
   getRecentlyPlayed: (limit: number) => Promise<DbTrack[]> | DbTrack[]
+  getArtistSplitExceptions: () => Promise<string[]> | string[]
 }
 
 function installMockLibraryApi(overrides: Partial<MockLibraryApi> = {}): void {
@@ -82,6 +84,7 @@ function installMockLibraryApi(overrides: Partial<MockLibraryApi> = {}): void {
     getFavoritePaths: async () => [],
     getFavorites: async () => [],
     getRecentlyPlayed: async () => [],
+    getArtistSplitExceptions: async () => [],
     ...overrides
   }
 
