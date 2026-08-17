@@ -473,6 +473,9 @@ export interface ParallaxConnectedSinkState {
   outputDeviceId: string | null
   outputDeviceLabel: string | null
   appliedAdvanceMs: number
+  // Host delivery state for the trim keyed to `outputDeviceId`. Optional so status snapshots from
+  // older hosts remain readable by newer renderers.
+  trimSyncState?: 'synced' | 'applying' | 'failed'
   lastSeenAt: number | null
   // Host-visible network health mirrored from sink telemetry. Null until the sink has reported
   // at least one clock sample.

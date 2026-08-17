@@ -7277,8 +7277,8 @@ ipcMain.handle('parallax:publishHostEmitAnchor', (_event, anchor: Parameters<typ
   parallaxService.publishHostEmitAnchor(anchor)
 })
 
-ipcMain.handle('parallax:stopHostStream', () => {
-  parallaxService.stopHostStream()
+ipcMain.handle('parallax:stopHostStream', (_event, streamId?: string) => {
+  parallaxService.stopHostStream(streamId?.trim() || undefined)
 })
 
 ipcMain.handle('parallax:publishSinkTelemetry', async (_event, telemetry: ParallaxSinkTelemetry) => {

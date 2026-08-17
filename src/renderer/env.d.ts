@@ -497,7 +497,7 @@ declare global {
                 publishHostAudioChunk: (chunk: ParallaxAudioChunk) => Promise<void>
                 publishHostTimeline: (timeline: ParallaxTimelineState, options?: ParallaxHostTimelinePublishOptions) => Promise<void>
                 publishHostEmitAnchor: (anchor: Omit<Extract<ParallaxTimelineEvent, { type: 'host-emit-anchor' }>, 'emittedAtHostTimeMs'>) => Promise<void>
-                stopHostStream: () => Promise<void>
+                stopHostStream: (streamId?: string) => Promise<void>
                 publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry) => Promise<void>
                 reportHostLatency: (metrics: ParallaxOutputLatencyMetrics) => Promise<void>
                 revokePairedSink: (id: string) => Promise<ParallaxPairedSink | null>

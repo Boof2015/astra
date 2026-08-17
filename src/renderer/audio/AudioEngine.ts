@@ -657,6 +657,8 @@ export class AudioEngine {
   private testToneBuffer: AudioBuffer | null = null
   private testToneSourceNode: AudioBufferSourceNode | null = null
   private testToneNormalizationBypassNode: GainNode | null = null
+  private testToneStartContextTime: number | null = null
+  private testToneStartSourceFrame = 0
   private testTonePublishGeneration = 0
   // Phase 0 diagnostics: rolling window of (currentTime - getOutputTimestamp().contextTime) in ms,
   // median-filtered to a stable un-quantized output-latency estimate.
@@ -1852,6 +1854,39 @@ export class AudioEngine {
       hostBaseLatencyMs: baseMs ?? 0,
       // Per share doc §3 this is diagnostic only; the sink's fit is authoritative. Leaving null
       // until/unless we have a reason to spend cycles on a host-side estimate.
+      observedRatePpm: null
+    }
+  }
+
+  // The trim tone deliberately does not mutate normal playback state or `audioBuffer`, so it
+  // needs its own output-clock anchor. The source buffer loops, but the wire stream uses an
+  // ever-increasing virtual frame axis; elapsed output-context time maps directly onto that axis.
+  getTestToneEmitAnchor(): {
+    sourceFrameAtHostOutput: number
+    hostWallTimeMs: number
+    hostOutputLatencyMs: number
+    hostBaseLatencyMs: number
+    observedRatePpm: number | null
+  } | null {
+    const ctx = this.context
+    const buffer = this.testToneBuffer
+    const startContextTime = this.testToneStartContextTime
+    if (!ctx || !buffer || !this.testToneSourceNode || startContextTime === null || this.isNativeExclusiveMode()) return null
+
+    const snapshot = this.getContextClockSnapshot(ctx)
+    if (!Number.isFinite(snapshot.contextTime) || !Number.isFinite(snapshot.performanceTime)) return null
+    if (snapshot.contextTime <= startContextTime) return null
+
+    const sourceFrameAtHostOutput = this.testToneStartSourceFrame
+      + (snapshot.contextTime - startContextTime) * buffer.sampleRate
+    const hostWallTimeMs = performance.timeOrigin + snapshot.performanceTime
+    const outMs = this.normalizeReportedLatencyMs((ctx as AudioContext & { outputLatency?: number }).outputLatency)
+    const baseMs = this.normalizeReportedLatencyMs((ctx as AudioContext & { baseLatency?: number }).baseLatency)
+    return {
+      sourceFrameAtHostOutput,
+      hostWallTimeMs,
+      hostOutputLatencyMs: outMs ?? 0,
+      hostBaseLatencyMs: baseMs ?? 0,
       observedRatePpm: null
     }
   }
@@ -3970,9 +4005,13 @@ export class AudioEngine {
       fade.setValueAtTime(current, startAtContextTime)
       fade.linearRampToValueAtTime(1, startAtContextTime + PLAYBACK_FADE_MS / 1000)
     }
-    source.start(startAtContextTime, 0)
+    const sourceOffsetSeconds = ((timeline.startFrame % this.testToneBuffer.length) + this.testToneBuffer.length)
+      % this.testToneBuffer.length / this.testToneBuffer.sampleRate
+    source.start(startAtContextTime, sourceOffsetSeconds)
     this.testToneSourceNode = source
     this.testToneNormalizationBypassNode = normalizationBypass
+    this.testToneStartContextTime = startAtContextTime
+    this.testToneStartSourceFrame = timeline.startFrame
   }
 
   /** Stream the metronome to sinks indefinitely (looping the bar) until stopped. */
@@ -4025,6 +4064,8 @@ export class AudioEngine {
       }
       this.testToneSourceNode = null
     }
+    this.testToneStartContextTime = null
+    this.testToneStartSourceFrame = 0
     if (this.testToneNormalizationBypassNode) {
       this.disconnectSourceRouting(this.testToneNormalizationBypassNode)
       try {

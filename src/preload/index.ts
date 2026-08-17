@@ -1288,7 +1288,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('parallax:publishHostTimeline', timeline, options),
     publishHostEmitAnchor: (anchor: Omit<Extract<ParallaxTimelineEvent, { type: 'host-emit-anchor' }>, 'emittedAtHostTimeMs'>): Promise<void> =>
       ipcRenderer.invoke('parallax:publishHostEmitAnchor', anchor),
-    stopHostStream: (): Promise<void> => ipcRenderer.invoke('parallax:stopHostStream'),
+    stopHostStream: (streamId?: string): Promise<void> => ipcRenderer.invoke('parallax:stopHostStream', streamId),
     publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry): Promise<void> =>
       ipcRenderer.invoke('parallax:publishSinkTelemetry', telemetry),
     reportHostLatency: (metrics: ParallaxOutputLatencyMetrics): Promise<void> =>
@@ -2095,7 +2095,7 @@ declare global {
         publishHostAudioChunk: (chunk: ParallaxAudioChunk) => Promise<void>
         publishHostTimeline: (timeline: ParallaxTimelineState, options?: ParallaxHostTimelinePublishOptions) => Promise<void>
         publishHostEmitAnchor: (anchor: Omit<Extract<ParallaxTimelineEvent, { type: 'host-emit-anchor' }>, 'emittedAtHostTimeMs'>) => Promise<void>
-        stopHostStream: () => Promise<void>
+        stopHostStream: (streamId?: string) => Promise<void>
         publishSinkTelemetry: (telemetry: ParallaxSinkTelemetry) => Promise<void>
         reportHostLatency: (metrics: ParallaxOutputLatencyMetrics) => Promise<void>
         revokePairedSink: (id: string) => Promise<ParallaxPairedSink | null>

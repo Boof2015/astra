@@ -65,6 +65,8 @@ interface ParallaxSettingsStore {
   // the reference; only `testToneSinkId` hears it among the sinks.
   isTestToneActive: boolean
   testToneSinkId: string | null
+  testToneStreamId: string | null
+  testToneStartedAtMs: number | null
   init: () => Promise<void>
   refresh: () => Promise<void>
   setHostEnabled: (enabled: boolean) => Promise<ParallaxStatus | null>
@@ -81,7 +83,7 @@ interface ParallaxSettingsStore {
   setSinkPlaybackEnabled: (id: string, enabled: boolean) => Promise<void>
   setAllSinksPlaybackEnabled: (enabled: boolean) => Promise<void>
   // §14.1.1. Host-side action: persists trim per (sinkId, outputDeviceId) and pushes to the sink.
-  setSinkTrim: (sinkId: string, outputDeviceId: string, outputDeviceLabel: string | null, advanceMs: number) => Promise<void>
+  setSinkTrim: (sinkId: string, outputDeviceId: string, outputDeviceLabel: string | null, advanceMs: number) => Promise<boolean>
   revokeAllPairedSinks: () => Promise<number>
   clearHostPresenceCache: (sinkId?: string) => Promise<ParallaxStatus | null>
   resetToDefaults: () => Promise<ParallaxStatus | null>
@@ -100,7 +102,7 @@ interface ParallaxSettingsStore {
   prepareHostSeek: (timeSeconds: number, playing: boolean) => Promise<ParallaxTimelineState | null>
   pauseHostPlayback: () => Promise<void>
   stopHostPlayback: () => Promise<void>
-  startTestTone: (targetSinkId?: string) => Promise<void>
+  startTestTone: (targetSinkId: string) => Promise<void>
   stopTestTone: () => Promise<void>
 }
 
@@ -124,11 +126,6 @@ const PARALLAX_NEXT_STREAM_LEAD_MS = 4000
 // handled separately by PARALLAX_NEXT_STREAM_LEAD_MS.
 const PARALLAX_NEXT_STREAM_SEAM_TRIM_MS = 0
 let nextStreamPublishTimer: ReturnType<typeof setTimeout> | null = null
-// Trim test tone: after a cold start both ends report ~0 output latency until audio has flowed, so
-// the first anchor lands at a wrong offset. We let it play for this long, then restart once so the
-// host reference and the sink re-join both anchor with real (warm) latency.
-let testToneWarmRestartTimer: ReturnType<typeof setTimeout> | null = null
-const TEST_TONE_WARM_RESTART_MS = 2500
 // §14.1.4 — sink Zone Display artwork cache. Keyed by trackId so cross-stream re-resolves of
 // the same track don't re-hit the host. Module-level so it survives ZoneDisplay remounts (the
 // Library escape unmounts and remounts the surface). Cap loosely to avoid unbounded growth.
@@ -192,6 +189,9 @@ let sinkEventChain: Promise<void> = Promise.resolve()
 // stream timeline discontinuity) so each warm-up has to re-earn snap eligibility.
 let predictorSnapTrusted = false
 let predictorTrustTickCount = 0
+// A trim edit changes the acoustic latency contract immediately. Coalesce any burst of edits and
+// perform one predictor-target realignment on the next valid 1 Hz correction tick.
+let trimRealignPending = false
 // Read once at module load via preload. Default ON since 2B validation (share §13.5 retired the
 // original opt-in flag); the kill switch is PARALLAX_DISABLE_HOST_PREDICTOR=1 on the sink, which
 // falls back to the Phase-1 nominal-timeline loop. Preload owns the env read + resolution; this
@@ -247,6 +247,25 @@ function resolveHostNowMs(status: ParallaxStatus | null): number {
 
 function localNowMs(): number {
   return performance.timeOrigin + performance.now()
+}
+
+function resolveCurrentParallaxOutputDeviceIdentity(): {
+  outputDeviceId: string | null
+  outputDeviceLabel: string | null
+} {
+  const audioSettings = useAudioSettingsStore.getState()
+  const selectedDeviceId = audioSettings.selectedDeviceId.trim()
+  if (selectedDeviceId) {
+    return {
+      outputDeviceId: selectedDeviceId,
+      outputDeviceLabel: audioSettings.availableDevices.find((device) => device.deviceId === selectedDeviceId)?.label ?? null
+    }
+  }
+  const fallback = audioEngine.getOutputDeviceId().trim()
+  return {
+    outputDeviceId: fallback || null,
+    outputDeviceLabel: null
+  }
 }
 
 function buildHostTimeline(
@@ -369,23 +388,28 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
   // `activePlaybackSinkCount > 0`, which would strand the timer if every zone became inactive
   // — a new sink joining later would then never receive anchors until host playback restarted.
   const publishOneHostEmitAnchor = (): void => {
+    const state = get()
     const hostStatus = get().status?.host
-    const hostStream = hostStatus?.active ? hostStatus.activeStream ?? null : null
-    if (!hostStream) {
+    const toneStreamId = state.isTestToneActive ? state.testToneStreamId : null
+    const hostStream = toneStreamId ? null : (hostStatus?.active ? hostStatus.activeStream ?? null : null)
+    const streamId = toneStreamId ?? hostStream?.streamId ?? null
+    if (!streamId) {
       stopHostEmitAnchorPublish()
       return
     }
-    if ((hostStatus?.activePlaybackSinkCount ?? 0) <= 0) return
-    if (hostEmitOutgoingStreamId !== hostStream.streamId) {
-      hostEmitOutgoingStreamId = hostStream.streamId
+    if (!toneStreamId && (hostStatus?.activePlaybackSinkCount ?? 0) <= 0) return
+    if (hostEmitOutgoingStreamId !== streamId) {
+      hostEmitOutgoingStreamId = streamId
       hostEmitOutgoingSequence = 0
     }
-    const anchor = audioEngine.getHostEmitAnchor()
+    const anchor = toneStreamId
+      ? audioEngine.getTestToneEmitAnchor()
+      : audioEngine.getHostEmitAnchor()
     if (!anchor) return // no audio at the output yet — wait for next tick
     hostEmitOutgoingSequence += 1
     void window.electronAPI.parallax.publishHostEmitAnchor({
       type: 'host-emit-anchor',
-      streamId: hostStream.streamId,
+      streamId,
       hostWallTimeMs: anchor.hostWallTimeMs,
       sourceFrameAtHostOutput: anchor.sourceFrameAtHostOutput,
       hostOutputLatencyMs: anchor.hostOutputLatencyMs,
@@ -641,18 +665,12 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     return timeline
   }
 
-  const cancelTestToneWarmRestart = (): void => {
-    if (testToneWarmRestartTimer) {
-      clearTimeout(testToneWarmRestartTimer)
-      testToneWarmRestartTimer = null
-    }
-  }
-
-  // Start (or restart) the metronome stream + host-local reference for the trim test tone.
-  const startTestToneStream = async (targetSinkId?: string): Promise<boolean> => {
+  // Start the metronome stream + host-local reference for the trim test tone.
+  const startTestToneStream = async (targetSinkId: string): Promise<string | null> => {
+    let streamId: string | null = null
     try {
       const specs = await audioEngine.prepareParallaxTestTone()
-      const streamId = `parallax-test-${Date.now()}`
+      streamId = `parallax-test-${Date.now()}`
       const info: ParallaxHostStreamStartInfo = {
         streamId,
         trackId: 'parallax-test-tone',
@@ -675,19 +693,24 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       void audioEngine.publishTestToneToParallax(streamId, timeline).catch((error) => {
         set({ errorMessage: toErrorMessage(error) })
       })
-      return true
+      return streamId
     } catch (error) {
+      audioEngine.stopParallaxTestTone()
+      if (streamId) {
+        await window.electronAPI.parallax.stopHostStream(streamId).catch(() => undefined)
+      }
       set({ errorMessage: toErrorMessage(error) })
-      return false
+      return null
     }
   }
 
-  const teardownTestToneStream = async (): Promise<void> => {
+  const teardownTestToneStream = async (streamId: string | null = get().testToneStreamId): Promise<void> => {
     audioEngine.stopParallaxTestTone()
+    if (!streamId) return
     try {
-      await window.electronAPI.parallax.stopHostStream()
+      await window.electronAPI.parallax.stopHostStream(streamId)
     } catch {
-      // best-effort; a subsequent stream-start replaces the slot anyway
+      // best-effort; a subsequent targeted stream-start replaces the calibration slot anyway
     }
   }
 
@@ -820,6 +843,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
           snapshot.bufferedEndFrame >= snap.targetFrame + marginFrames
         ) {
           audioEngine.resyncParallaxSinkToHostFrame(snap.targetFrame, snap.leadSeconds)
+          trimRealignPending = false
           lastHardSyncAtMs = now
           hostEmitHardSyncCount += 1
           syncEvent = 'rebuffer_snap'
@@ -855,41 +879,64 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
           }
         }
 
-        // Snap eligibility: env-off uses classic Phase-1 gates so the rig A/B baseline is
-        // preserved (§13.5). Env-on requires the predictor to actually be driving the loop
-        // (§13.1(b)) — Phase-1 fallback may slew but never snaps in env-on. snap !== null covers
-        // both modes (env-off returns a nominal target; env-on returns null whenever the predictor
-        // can't produce a target). §17 adds the trust latch: env-on snaps require the fit to
-        // have proven itself per §17.2(c).
-        const canSnap = isSnapSizedDrift
+        const anchorsMature = hostEmitAnchors.length >= PARALLAX_HOST_EMIT_ANCHOR_TRUSTED_SAMPLES
+        const matureTonePredictor = stream.trackId === 'parallax-test-tone' && anchorsMature
+        const explicitSnap = trimRealignPending ? liveSnapTarget() : null
+        const explicitTrimReady = trimRealignPending
           && timeline.playbackState === 'playing'
           && hasOffset
-          && snap !== null
+          && explicitSnap !== null
           && (
             !PARALLAX_USE_HOST_PREDICTOR
-            || (correction.loopSource === 'predictor' && predictorSnapTrusted)
+            || (
+              correction.loopSource === 'predictor'
+              && (predictorSnapTrusted || matureTonePredictor)
+            )
           )
-        snapPendingTicks = canSnap ? snapPendingTicks + 1 : 0
-        // For snap-sized drift, always slew at max — covers confirm window, cooldown, handoff
-        // settle, and env-on-but-fallback. Otherwise the decision's slew/hold value is the right
-        // thing.
-        appliedPpm = isSnapSizedDrift
-          ? clampParallaxPlaybackRatePpm(-correction.driftFrames * 2)
-          : decision.playbackRatePpm
-        if (
-          canSnap &&
-          snap !== null &&
-          snapPendingTicks >= PARALLAX_SNAP_CONFIRM_TICKS &&
-          now - lastHardSyncAtMs > PARALLAX_RESYNC_MIN_INTERVAL_MS
-        ) {
-          audioEngine.resyncParallaxSinkToHostFrame(snap.targetFrame, snap.leadSeconds)
+
+        if (explicitTrimReady && explicitSnap) {
+          // A calibration edit is an explicit request to hear the new acoustic offset now. Bursts
+          // coalesce through `trimRealignPending`; this path deliberately bypasses ordinary drift
+          // threshold, confirmation, and cooldown gates without weakening normal music snaps.
+          audioEngine.resyncParallaxSinkToHostFrame(explicitSnap.targetFrame, explicitSnap.leadSeconds)
+          trimRealignPending = false
           lastHardSyncAtMs = now
           snapPendingTicks = 0
           appliedPpm = 0
           hostEmitHardSyncCount += 1
           syncEvent = 'snap'
         } else {
-          audioEngine.setParallaxSinkPlaybackRate(appliedPpm)
+          // Snap eligibility: env-off uses classic Phase-1 gates so the rig A/B baseline is
+          // preserved. Env-on music retains the fail-closed predictor trust latch; only the
+          // calibration tone may bootstrap from a mature predictor during its five-second window.
+          const canSnap = isSnapSizedDrift
+            && timeline.playbackState === 'playing'
+            && hasOffset
+            && snap !== null
+            && (
+              !PARALLAX_USE_HOST_PREDICTOR
+              || (correction.loopSource === 'predictor' && (predictorSnapTrusted || matureTonePredictor))
+            )
+          snapPendingTicks = canSnap ? snapPendingTicks + 1 : 0
+          appliedPpm = isSnapSizedDrift
+            ? clampParallaxPlaybackRatePpm(-correction.driftFrames * 2)
+            : decision.playbackRatePpm
+          if (
+            canSnap &&
+            snap !== null &&
+            snapPendingTicks >= PARALLAX_SNAP_CONFIRM_TICKS &&
+            now - lastHardSyncAtMs > PARALLAX_RESYNC_MIN_INTERVAL_MS
+          ) {
+            audioEngine.resyncParallaxSinkToHostFrame(snap.targetFrame, snap.leadSeconds)
+            trimRealignPending = false
+            lastHardSyncAtMs = now
+            snapPendingTicks = 0
+            appliedPpm = 0
+            hostEmitHardSyncCount += 1
+            syncEvent = 'snap'
+          } else {
+            audioEngine.setParallaxSinkPlaybackRate(appliedPpm)
+          }
         }
       }
       const sinkLatency = audioEngine.getOutputLatencyMetrics()
@@ -897,18 +944,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       // AudioContext.sinkId fallback. Settings reflect user intent and survive context restarts;
       // sinkId is brittle for the default route ('') and pre-context initialization. We report
       // both id and label so the host UI can render "Trim for <label>" without re-resolving.
-      const audioSettings = useAudioSettingsStore.getState()
-      const selectedDeviceId = audioSettings.selectedDeviceId.trim()
-      let outputDeviceId: string | null
-      let outputDeviceLabel: string | null
-      if (selectedDeviceId) {
-        outputDeviceId = selectedDeviceId
-        outputDeviceLabel = audioSettings.availableDevices.find((d) => d.deviceId === selectedDeviceId)?.label ?? null
-      } else {
-        const fallback = audioEngine.getOutputDeviceId()
-        outputDeviceId = fallback || null
-        outputDeviceLabel = null
-      }
+      const { outputDeviceId, outputDeviceLabel } = resolveCurrentParallaxOutputDeviceIdentity()
       void window.electronAPI.parallax.publishSinkTelemetry({
         streamId: snapshot.streamId,
         bufferedMs: stream.sampleRate > 0 ? (snapshot.bufferedFrames / stream.sampleRate) * 1000 : 0,
@@ -1123,11 +1159,10 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     if (event.type === 'sink-trim-update') {
       const ownSinkId = get().status?.sink.sinkId
       if (!ownSinkId || ownSinkId !== event.sinkId) return
-      const audioSettings = useAudioSettingsStore.getState()
-      const selectedDeviceId = audioSettings.selectedDeviceId.trim()
-      const currentOutputDeviceId = selectedDeviceId || audioEngine.getOutputDeviceId() || 'default'
-      if (event.outputDeviceId !== currentOutputDeviceId) return
+      const { outputDeviceId } = resolveCurrentParallaxOutputDeviceIdentity()
+      if (!outputDeviceId || event.outputDeviceId !== outputDeviceId) return
       audioEngine.setParallaxSinkAdvanceMs(event.advanceMs)
+      trimRealignPending = true
       return
     }
     // §14.1.4. Host-assigned name push — targeted by sinkId, no timeline payload (early-return like
@@ -1146,6 +1181,7 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     }
     const status = get().status
     if (event.type === 'stop') {
+      trimRealignPending = false
       pendingAudioChunks = []
       audioEngine.stopParallaxSinkPlayback()
       clearStagedSinkStream()
@@ -1203,6 +1239,9 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       return
     }
 
+    // Fresh scheduling already incorporates the current trim, so an edit that arrived while the
+    // sink was paused/loading no longer needs a second hard realignment afterward.
+    trimRealignPending = false
     const timeline = event.type === 'stream-start' ? event.timeline : event.timeline
     if (event.type === 'stream-start') {
       // Phase 2B carry-forward from 2A review (share §13.3.a). The 2A code only reset the anchor
@@ -1337,6 +1376,8 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     assignedSinkName: null,
     isTestToneActive: false,
     testToneSinkId: null,
+    testToneStreamId: null,
+    testToneStartedAtMs: null,
 
     init: async () => {
       if (get().isInitialized) return
@@ -1507,8 +1548,10 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
         // (lastSeenAt + trims array). The status update handles connectedSinks; this catches
         // the persisted side.
         await refreshPairedSinks()
+        return true
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
+        return false
       }
     },
 
@@ -1588,7 +1631,12 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       clearNextStreamPublishTimer()
       audioEngine.cancelParallaxHostPublishing()
       audioEngine.cancelParallaxHostNextPublishing()
-      stopHostEmitAnchorPublish()
+      // A calibration overlay is independent of the normal playback audience. In particular,
+      // its target may be a disabled zone, so keep publishing the tone's anchors even when the
+      // last music listener disconnects or is deselected.
+      if (!get().isTestToneActive) {
+        stopHostEmitAnchorPublish()
+      }
       hostPublishingCanceledForActiveStream = Boolean(get().status?.host.activeStream)
       void window.electronAPI.parallax.publishHostNextStreamCancel().catch(() => undefined)
       audioEngine.releasePendingParallaxHostStartDelay()
@@ -1596,9 +1644,14 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
 
     prepareHostPlayback: async (track) => {
       if (get().isTestToneActive) {
-        cancelTestToneWarmRestart()
-        audioEngine.stopParallaxTestTone()
-        set({ isTestToneActive: false, testToneSinkId: null })
+        const toneStreamId = get().testToneStreamId
+        await teardownTestToneStream(toneStreamId)
+        set({
+          isTestToneActive: false,
+          testToneSinkId: null,
+          testToneStreamId: null,
+          testToneStartedAtMs: null
+        })
       }
       if (!get().shouldDelayHostPlayback(track)) return null
       ensureTelemetry()
@@ -1694,9 +1747,14 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
     resumeHostPlayback: async (track) => {
       if (useAudioSettingsStore.getState().playbackOutputMode !== 'standard') return null
       if (get().isTestToneActive) {
-        cancelTestToneWarmRestart()
-        audioEngine.stopParallaxTestTone()
-        set({ isTestToneActive: false, testToneSinkId: null })
+        const toneStreamId = get().testToneStreamId
+        await teardownTestToneStream(toneStreamId)
+        set({
+          isTestToneActive: false,
+          testToneSinkId: null,
+          testToneStreamId: null,
+          testToneStartedAtMs: null
+        })
       }
       // §17 control-side: timeline tracking must run even with zero connected sinks, so a sink
       // reconnecting later doesn't get a stale-extrapolated timeline. But Codex round 1 review
@@ -1896,37 +1954,32 @@ export const useParallaxStore = create<ParallaxSettingsStore>((set, get) => {
       }
     },
 
-    // Trim test tone: a synced metronome streamed to all sinks so the user can tune a speaker by
-    // ear. Reuses the proven host-stream path (sinks play + trim it with zero changes). Mutually
-    // exclusive with track playback — the UI gates it on "not playing", and the music stream
-    // entry points stop it if it's somehow still running.
+    // Trim test tone: one targeted calibration overlay. Paused music stays cached underneath and
+    // is replayed to the target when the tone stops; non-target sinks receive no lifecycle churn.
     startTestTone: async (targetSinkId) => {
       if (!(get().status?.host.enabled ?? false)) return
-      cancelTestToneWarmRestart()
-      // Switching target: tear the current test down first (stops the host stream so the previous
-      // target goes idle rather than stalling on a stream that no longer flows).
       if (get().isTestToneActive) await teardownTestToneStream()
-      const ok = await startTestToneStream(targetSinkId)
-      if (!ok) return
-      set({ isTestToneActive: true, testToneSinkId: targetSinkId ?? null })
-      // Warm-up restart: both ends are playing now, which fills `outputLatency`. After a short
-      // beat, restart so the host reference + the sink's re-join hard-anchor with the real latency
-      // instead of the cold ~0. One-shot; cancelled if the test is stopped or switched first.
-      testToneWarmRestartTimer = setTimeout(() => {
-        testToneWarmRestartTimer = null
-        if (!get().isTestToneActive || get().testToneSinkId !== (targetSinkId ?? null)) return
-        void (async () => {
-          await teardownTestToneStream()
-          const restarted = await startTestToneStream(targetSinkId)
-          if (!restarted) set({ isTestToneActive: false, testToneSinkId: null })
-        })()
-      }, TEST_TONE_WARM_RESTART_MS)
+      const streamId = await startTestToneStream(targetSinkId)
+      if (!streamId) return
+      set({
+        isTestToneActive: true,
+        testToneSinkId: targetSinkId,
+        testToneStreamId: streamId,
+        testToneStartedAtMs: Date.now()
+      })
+      ensureTelemetry()
+      startHostEmitAnchorPublish()
     },
 
     stopTestTone: async () => {
-      cancelTestToneWarmRestart()
-      await teardownTestToneStream()
-      set({ isTestToneActive: false, testToneSinkId: null })
+      const streamId = get().testToneStreamId
+      await teardownTestToneStream(streamId)
+      set({
+        isTestToneActive: false,
+        testToneSinkId: null,
+        testToneStreamId: null,
+        testToneStartedAtMs: null
+      })
     }
   }
 })

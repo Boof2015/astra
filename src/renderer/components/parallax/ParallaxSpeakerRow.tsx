@@ -1,13 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParallaxStore } from '../../stores/parallaxStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import type { ParallaxConnectedSinkState, ParallaxPairedSink } from '../../../types/parallax'
-import { formatParallaxLastSeen, formatParallaxTrimMs } from './parallaxHelpers'
+import {
+  clampParallaxTrimMs,
+  formatParallaxLastSeen,
+  formatParallaxTrimMs,
+  stepParallaxTrimMs
+} from './parallaxHelpers'
 
-// A cold-started speaker (its first stream this session) can drift for a few seconds before the
-// sync loop locks, so we hold the trim nudges while it settles. Skipped when a stream was already
-// flowing.
-const NORMALIZE_MS = 5000
+// One uninterrupted tone-start window covers the group lead and a mature predictor anchor set.
+// It applies to every calibration run so a previously-known device cannot expose phase-1 trim.
+const TONE_SYNC_WINDOW_MS = 5000
 
 function formatSecondsCentis(ms: number): string {
   const total = Math.max(0, ms)
@@ -38,6 +42,7 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
     setSinkPlaybackEnabled,
     isTestToneActive,
     testToneSinkId,
+    testToneStartedAtMs,
     startTestTone,
     stopTestTone
   } = useParallaxStore()
@@ -48,19 +53,20 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
   const [tuneOpen, setTuneOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [renameInput, setRenameInput] = useState(sink.name)
-  // Wall-clock instant the cold-start normalization window ends (null = not normalizing).
-  const [normalizeUntil, setNormalizeUntil] = useState<number | null>(null)
   const [, forceTick] = useState(0)
+  const syncUntil = testingThis && testToneStartedAtMs !== null
+    ? testToneStartedAtMs + TONE_SYNC_WINDOW_MS
+    : null
   useEffect(() => {
-    if (normalizeUntil === null) return
+    if (syncUntil === null) return
     const id = window.setInterval(() => {
-      if (Date.now() >= normalizeUntil) setNormalizeUntil(null)
-      else forceTick((n) => n + 1)
+      if (Date.now() >= syncUntil) window.clearInterval(id)
+      forceTick((n) => n + 1)
     }, 50)
     return () => window.clearInterval(id)
-  }, [normalizeUntil])
-  const normalizeRemainingMs = normalizeUntil !== null ? normalizeUntil - Date.now() : 0
-  const normalizing = testingThis && normalizeRemainingMs > 0
+  }, [syncUntil])
+  const syncRemainingMs = syncUntil !== null ? syncUntil - Date.now() : 0
+  const synchronizing = testingThis && syncRemainingMs > 0
 
   const online = Boolean(connected?.online)
   const playbackEnabled = sink.playbackEnabled !== false
@@ -70,11 +76,24 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
     ? (sink.trims ?? []).find((t) => t.outputDeviceId === outputDeviceId)
     : undefined
   const persistedAdvanceMs = persistedTrim?.advanceMs ?? 0
+  const persistedAdvanceRef = useRef(persistedAdvanceMs)
+  persistedAdvanceRef.current = persistedAdvanceMs
+  const desiredAdvanceRef = useRef(persistedAdvanceMs)
+  const lastSubmittedAdvanceRef = useRef(persistedAdvanceMs)
+  const trimWriteInFlightRef = useRef(false)
+  const [optimisticAdvanceMs, setOptimisticAdvanceMs] = useState<number | null>(null)
+  useEffect(() => {
+    if (trimWriteInFlightRef.current) return
+    desiredAdvanceRef.current = persistedAdvanceMs
+    lastSubmittedAdvanceRef.current = persistedAdvanceMs
+    setOptimisticAdvanceMs(null)
+  }, [outputDeviceId, persistedAdvanceMs])
+  const effectiveAdvanceMs = optimisticAdvanceMs ?? persistedAdvanceMs
   const sinkAppliedAdvanceMs = connected?.appliedAdvanceMs
   const canEditTrim = Boolean(outputDeviceId)
   const echoMismatch = canEditTrim
     && typeof sinkAppliedAdvanceMs === 'number'
-    && Math.abs(sinkAppliedAdvanceMs - persistedAdvanceMs) > 0.5
+    && Math.abs(sinkAppliedAdvanceMs - effectiveAdvanceMs) > 0.5
   const lastSeen = connected?.lastSeenAt ?? sink.lastSeenAt
   const rttLabel = typeof connected?.rttMs === 'number' ? `${Math.round(connected.rttMs)} ms RTT` : 'RTT unknown'
 
@@ -88,20 +107,51 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
 
   // Plain-language readout of the applied compensation. advanceMs > 0 pulls this speaker's audio
   // forward (it plays earlier, fixing a speaker that sounded late); < 0 holds it back.
-  const trimReadout = persistedAdvanceMs === 0
+  const trimReadout = effectiveAdvanceMs === 0
     ? 'On time'
-    : `${persistedAdvanceMs > 0 ? '+' : '-'}${Math.abs(persistedAdvanceMs)} ms ${persistedAdvanceMs > 0 ? 'earlier' : 'later'}`
+    : `${effectiveAdvanceMs > 0 ? '+' : '-'}${Math.abs(effectiveAdvanceMs)} ms ${effectiveAdvanceMs > 0 ? 'earlier' : 'later'}`
+
+  const flushTrimWrites = async () => {
+    if (!outputDeviceId || trimWriteInFlightRef.current) return
+    trimWriteInFlightRef.current = true
+    let failed = false
+    try {
+      while (lastSubmittedAdvanceRef.current !== desiredAdvanceRef.current) {
+        const next = desiredAdvanceRef.current
+        const ok = await setSinkTrim(sink.id, outputDeviceId, outputDeviceLabel, next)
+        if (!ok) {
+          failed = true
+          desiredAdvanceRef.current = persistedAdvanceRef.current
+          lastSubmittedAdvanceRef.current = persistedAdvanceRef.current
+          setOptimisticAdvanceMs(null)
+          notify('Could not update speaker timing.')
+          break
+        }
+        lastSubmittedAdvanceRef.current = next
+      }
+    } finally {
+      trimWriteInFlightRef.current = false
+      if (!failed && persistedAdvanceRef.current === desiredAdvanceRef.current) {
+        setOptimisticAdvanceMs(null)
+      }
+    }
+  }
+
+  const queueTrimValue = (next: number) => {
+    if (!outputDeviceId) return
+    const clamped = clampParallaxTrimMs(next)
+    if (clamped === desiredAdvanceRef.current) return
+    desiredAdvanceRef.current = clamped
+    setOptimisticAdvanceMs(clamped)
+    void flushTrimWrites()
+  }
 
   const handleTrimAdjust = (deltaMs: number) => {
-    if (!outputDeviceId) return
-    const next = Math.max(-500, Math.min(500, persistedAdvanceMs + deltaMs))
-    if (next === persistedAdvanceMs) return
-    void setSinkTrim(sink.id, outputDeviceId, outputDeviceLabel, next)
+    queueTrimValue(stepParallaxTrimMs(desiredAdvanceRef.current, deltaMs))
   }
 
   const handleTrimReset = () => {
-    if (!outputDeviceId) return
-    void setSinkTrim(sink.id, outputDeviceId, outputDeviceLabel, 0)
+    queueTrimValue(0)
   }
 
   const startRename = () => {
@@ -165,9 +215,11 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
           <span className="parallax-speaker-row-status">{statusLine}</span>
           {canEditTrim && (
             <span className="parallax-speaker-row-substatus">
-              {`Output ${outputDeviceLabel ?? outputDeviceId} · Trim ${formatParallaxTrimMs(persistedAdvanceMs)}`}
+              {`Output ${outputDeviceLabel ?? outputDeviceId} · Trim ${formatParallaxTrimMs(effectiveAdvanceMs)}`}
               {echoMismatch && typeof sinkAppliedAdvanceMs === 'number'
-                ? ` (applying ${formatParallaxTrimMs(sinkAppliedAdvanceMs)}…)`
+                ? connected?.trimSyncState === 'failed'
+                  ? ` (not applied; speaker reports ${formatParallaxTrimMs(sinkAppliedAdvanceMs)})`
+                  : ` (applying ${formatParallaxTrimMs(sinkAppliedAdvanceMs)}…)`
                 : ''}
             </span>
           )}
@@ -242,11 +294,8 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
             disabled={isPlaying}
             onClick={() => {
               if (testingThis) {
-                setNormalizeUntil(null)
                 void stopTestTone()
               } else {
-                // Cold start (speaker hasn't streamed yet) → hold the nudges briefly to settle.
-                if (!canEditTrim) setNormalizeUntil(Date.now() + NORMALIZE_MS)
                 void startTestTone(sink.id)
               }
             }}
@@ -256,9 +305,9 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
           >
             {testingThis ? 'Stop test' : 'Test sound'}
           </button>
-          {normalizing ? (
+          {synchronizing ? (
             <div className="parallax-tune-pending">
-              Letting this speaker settle… <span className="parallax-tune-countdown">{formatSecondsCentis(normalizeRemainingMs)}</span>
+              Synchronizing this speaker… <span className="parallax-tune-countdown">{formatSecondsCentis(syncRemainingMs)}</span>
             </div>
           ) : canEditTrim ? (
             <>
@@ -281,7 +330,7 @@ export default function ParallaxSpeakerRow({ sink, connected, activeStreamLabel,
                     ? 'Metronome playing on this speaker and the host. Nudge until they line up.'
                     : 'Play audio or Test sound, then nudge until this speaker lines up with the others.'}
                 </span>
-                {persistedAdvanceMs !== 0 && (
+                {effectiveAdvanceMs !== 0 && (
                   <button className="settings-btn parallax-tune-reset" onClick={handleTrimReset}>Reset</button>
                 )}
               </div>

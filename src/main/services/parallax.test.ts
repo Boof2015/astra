@@ -210,6 +210,122 @@ test('Parallax playback selection persists per pairing and bulk actions include 
   assert.throws(() => service.setSinkPlaybackEnabled('missing', true), /no longer paired/i)
 })
 
+test('targeted calibration stream preserves paused music and non-target transports', () => {
+  const livingToken = createOpaqueSecret(32)
+  const kitchenToken = createOpaqueSecret(32)
+  const service = new ParallaxService({
+    config: { enabled: true, port: 38403 },
+    pairedSinks: [
+      makePersistedSink('living-room', livingToken, 'Living Room'),
+      makePersistedSink('kitchen', kitchenToken, 'Kitchen')
+    ]
+  })
+  type FakeResponse = {
+    writes: unknown[]
+    ended: boolean
+    write: (value: unknown) => boolean
+    end: () => void
+  }
+  const response = (): FakeResponse => {
+    const fake: FakeResponse = {
+      writes: [],
+      ended: false,
+      write: (value) => {
+        fake.writes.push(value)
+        return true
+      },
+      end: () => { fake.ended = true }
+    }
+    return fake
+  }
+  const livingEvents = response()
+  const kitchenEvents = response()
+  const kitchenAudio = response()
+  const internals = service as unknown as {
+    active: boolean
+    activeStream: { info: { streamId: string } } | null
+    calibrationStream: { info: { streamId: string }; targetSinkId?: string } | null
+    sseClients: Set<{ sinkId: string; response: FakeResponse }>
+    audioClients: Set<{ sinkId: string; streamId: string; fromFrame: number; response: FakeResponse }>
+  }
+  internals.active = true
+  internals.sseClients.add({ sinkId: 'living-room', response: livingEvents })
+  internals.sseClients.add({ sinkId: 'kitchen', response: kitchenEvents })
+
+  service.publishHostStreamStart({
+    streamId: 'paused-music',
+    trackId: 'paused-track',
+    title: 'Paused Music',
+    artist: 'Astra',
+    album: 'Parallax',
+    sampleRate: 48_000,
+    channels: 2,
+    durationSeconds: 120,
+    totalFrames: 5_760_000
+  }, { playbackState: 'paused' })
+  assert.equal(internals.activeStream?.info.streamId, 'paused-music')
+  livingEvents.writes = []
+  kitchenEvents.writes = []
+  internals.audioClients.add({
+    sinkId: 'kitchen',
+    streamId: 'paused-music',
+    fromFrame: 0,
+    response: kitchenAudio
+  })
+
+  service.publishHostStreamStart({
+    streamId: 'targeted-tone',
+    trackId: 'parallax-test-tone',
+    title: 'Trim tone',
+    artist: 'Astra',
+    album: 'Setup',
+    sampleRate: 48_000,
+    channels: 1,
+    durationSeconds: 3600,
+    totalFrames: 172_800_000
+  }, { targetSinkId: 'living-room' })
+  assert.equal(internals.activeStream?.info.streamId, 'paused-music')
+  assert.equal(internals.calibrationStream?.info.streamId, 'targeted-tone')
+  assert.equal(kitchenEvents.writes.length, 0, 'non-target control stream receives no tone event')
+  assert.equal(kitchenAudio.ended, false, 'non-target music audio client remains open')
+  assert.match(String(livingEvents.writes.at(-1)), /targeted-tone/)
+
+  service.publishHostAudioChunk({
+    streamId: 'paused-music',
+    sampleRate: 48_000,
+    channels: 2,
+    startFrame: 0,
+    frameCount: 2,
+    hostTimeMs: Date.now(),
+    pcmData: new Float32Array([0.1, 0.1, 0.2, 0.2]).buffer
+  })
+  assert.equal(kitchenAudio.writes.length, 1, 'paused music remains routable beneath the tone')
+
+  livingEvents.writes = []
+  service.publishHostEmitAnchor({
+    streamId: 'targeted-tone',
+    hostWallTimeMs: Date.now(),
+    sourceFrameAtHostOutput: 4_800,
+    hostOutputLatencyMs: 10,
+    hostBaseLatencyMs: 5,
+    observedRatePpm: null,
+    sequence: 1
+  })
+  assert.match(String(livingEvents.writes.at(-1)), /host-emit-anchor/)
+  assert.equal(kitchenEvents.writes.length, 0, 'tone anchors remain targeted')
+
+  service.stopHostStream('stale-tone-id')
+  assert.equal(internals.calibrationStream?.info.streamId, 'targeted-tone')
+
+  livingEvents.writes = []
+  service.stopHostStream('targeted-tone')
+  assert.equal(internals.calibrationStream, null)
+  assert.equal(kitchenEvents.writes.length, 0)
+  assert.equal(kitchenAudio.ended, false)
+  assert.match(String(livingEvents.writes[0]), /"type":"stop"/)
+  assert.match(String(livingEvents.writes[1]), /paused-music/)
+})
+
 test('Parallax keeps inactive sinks connected while filtering playback delivery', async (t) => {
   const started = await tryCreateStartedParallaxService()
   if (!started) {
@@ -642,6 +758,96 @@ test('Parallax host telemetry exposes connected sink RTT and preserves output tr
   } finally {
     await service.stop()
   }
+})
+
+test('trim self-healing is bounded and matching telemetry acknowledges delivery', () => {
+  const sinkId = 'trim-retry-sink'
+  const token = createOpaqueSecret(32)
+  const service = new ParallaxService({
+    config: { enabled: false, port: 38403 },
+    pairedSinks: [makePersistedSink(sinkId, token, 'Trim Retry')]
+  })
+  const originalDateNow = Date.now
+  let now = 10_000
+  Date.now = () => now
+  try {
+    service.setSinkTrim(sinkId, 'speaker-default', 'Desk DAC', 15)
+    const internals = service as unknown as {
+      ingestSinkTelemetry: (id: string, telemetry: { outputDeviceId: string; appliedAdvanceMs: number }) => void
+    }
+
+    internals.ingestSinkTelemetry(sinkId, { outputDeviceId: 'speaker-default', appliedAdvanceMs: 0 })
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      now += 3_000
+      internals.ingestSinkTelemetry(sinkId, { outputDeviceId: 'speaker-default', appliedAdvanceMs: 0 })
+      assert.equal(
+        service.getStatus().host.connectedSinks.find((sink) => sink.sinkId === sinkId)?.trimSyncState,
+        'applying'
+      )
+    }
+
+    now += 3_000
+    internals.ingestSinkTelemetry(sinkId, { outputDeviceId: 'speaker-default', appliedAdvanceMs: 0 })
+    assert.equal(
+      service.getStatus().host.connectedSinks.find((sink) => sink.sinkId === sinkId)?.trimSyncState,
+      'failed'
+    )
+
+    internals.ingestSinkTelemetry(sinkId, { outputDeviceId: 'speaker-default', appliedAdvanceMs: 15 })
+    assert.equal(
+      service.getStatus().host.connectedSinks.find((sink) => sink.sinkId === sinkId)?.trimSyncState,
+      'synced'
+    )
+  } finally {
+    Date.now = originalDateNow
+  }
+})
+
+test('failed SSE writes remove the last client and mark its speaker offline', () => {
+  const sinkId = 'broken-sse-sink'
+  const token = createOpaqueSecret(32)
+  const service = new ParallaxService({
+    config: { enabled: true, port: 38403 },
+    pairedSinks: [makePersistedSink(sinkId, token, 'Broken SSE')]
+  })
+  const internals = service as unknown as {
+    active: boolean
+    ensureConnectedSinkState: (id: string) => { online: boolean }
+    sseClients: Set<{ sinkId: string; response: { write: () => never } }>
+  }
+  internals.active = true
+  service.publishHostStreamStart({
+    streamId: 'sse-write-stream',
+    trackId: 'sse-write-track',
+    title: 'SSE Write',
+    artist: 'Astra',
+    album: 'Parallax',
+    sampleRate: 48_000,
+    channels: 2,
+    durationSeconds: 1,
+    totalFrames: 48_000
+  })
+
+  internals.ensureConnectedSinkState(sinkId).online = true
+  internals.sseClients.add({
+    sinkId,
+    response: { write: () => { throw new Error('socket closed') } }
+  })
+
+  service.publishHostEmitAnchor({
+    streamId: 'sse-write-stream',
+    hostWallTimeMs: Date.now(),
+    sourceFrameAtHostOutput: 1_000,
+    hostOutputLatencyMs: 0,
+    hostBaseLatencyMs: 0,
+    observedRatePpm: null,
+    sequence: 1
+  })
+  assert.equal(internals.sseClients.size, 0)
+  assert.equal(
+    service.getStatus().host.connectedSinks.find((sink) => sink.sinkId === sinkId)?.online,
+    false
+  )
 })
 
 test('Parallax host accepts the complete startup clock-priming burst before rate limiting', async (t) => {

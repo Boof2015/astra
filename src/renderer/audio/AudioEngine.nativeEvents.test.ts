@@ -53,6 +53,10 @@ type AudioEngineInternals = {
   prebufferGeneration: number
   parallaxHostPublishGeneration: number
   nextBuffer: AudioBuffer | null
+  testToneBuffer: AudioBuffer | null
+  testToneSourceNode: AudioBufferSourceNode | null
+  testToneStartContextTime: number | null
+  testToneStartSourceFrame: number
   localPcmStreamClient?: LocalPcmStreamClient
   activePrebufferPcmDecodeRequestId: number | null
   activePrebufferPcmDecodeTrackPath: string | null
@@ -105,6 +109,37 @@ type AudioEngineInternals = {
     delivery?: PcmRendererDeliveryTiming,
   ) => AudioLoadTimings
 }
+
+test('Parallax test tone emit anchors use the output clock and virtual frame axis', () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  let contextTime = 9.9
+  internals.context = {
+    currentTime: 10,
+    outputLatency: 0.02,
+    baseLatency: 0.01,
+    getOutputTimestamp: () => ({ contextTime, performanceTime: 1_234 })
+  } as unknown as AudioContext
+  internals.testToneBuffer = { sampleRate: 48_000, length: 115_200 } as AudioBuffer
+  internals.testToneSourceNode = {
+    stop: () => undefined,
+    disconnect: () => undefined
+  } as unknown as AudioBufferSourceNode
+  internals.testToneStartContextTime = 10
+  internals.testToneStartSourceFrame = 100
+
+  assert.equal(engine.getTestToneEmitAnchor(), null, 'nothing has reached output before the scheduled start')
+  contextTime = 10.25
+  const anchor = engine.getTestToneEmitAnchor()
+  assert.ok(anchor)
+  assert.equal(anchor.sourceFrameAtHostOutput, 12_100)
+  assert.equal(anchor.hostWallTimeMs, performance.timeOrigin + 1_234)
+  assert.equal(anchor.hostOutputLatencyMs, 20)
+  assert.equal(anchor.hostBaseLatencyMs, 10)
+
+  engine.stopParallaxTestTone()
+  assert.equal(engine.getTestToneEmitAnchor(), null, 'stopped tones cannot publish stale anchors')
+})
 
 function makeLocalPcmTrack(id: string): Track {
   return {
