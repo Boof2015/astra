@@ -160,10 +160,10 @@ This project is licensed under the [GNU General Public License v3.0](https://www
 
 ## Star History
 
-<a href="https://www.star-history.com/?type=date&legend=top-left&repos=Boof2015%2Fastra">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Boof2015/astra&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Boof2015/astra&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Boof2015/astra&type=date&legend=top-left" />
- </picture>
+<a href="https://star-history.dera.page/#Boof2015/astra&type=date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=Boof2015/astra&type=date&theme=dark&legend=top-left" />
+    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=Boof2015/astra&type=date&legend=top-left" />
+    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=Boof2015/astra&type=date&legend=top-left" />
+  </picture>
 </a>
