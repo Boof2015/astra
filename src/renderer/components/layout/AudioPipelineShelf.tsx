@@ -9,6 +9,11 @@ import { useUIStore } from '../../stores/uiStore'
 import { audioEngine } from '../../audio/AudioEngine'
 import { resolvePipelineResampler } from '../../audio/audioPipelineModel'
 import { canUseStereoAmbientUpmix } from '../../utils/sourceChannelLayout'
+import {
+  buildSpeakerHardwareRoutingPlan,
+  resolveDirectSpeakerIds,
+} from '../../utils/speakerLayout'
+import { buildVirtualSpeakerLayout } from '../../utils/virtualSpeakerLayout'
 
 interface PipelineNode {
   id: string
@@ -136,15 +141,18 @@ export default function AudioPipelineShelf() {
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const multichannelEnabled = useAudioSettingsStore((s) => s.multichannelEnabled)
   const stereoUpmixMode = useAudioSettingsStore((s) => s.stereoUpmixMode)
-  const channelRoutingMap = useAudioSettingsStore((s) => s.channelRoutingMap)
+  const sourceSpeakerRoutingMap = useAudioSettingsStore((s) => s.sourceSpeakerRoutingMap)
+  const activeSpeakerProfile = useAudioSettingsStore((s) => s.activeSpeakerProfile)
   const normalizationEnabled = useAudioSettingsStore((s) => s.normalizationEnabled)
   const normalizationTargetLufs = useAudioSettingsStore((s) => s.normalizationTargetLufs)
   const replayGainScanEnabled = useAudioSettingsStore((s) => s.replayGainScanEnabled)
   const playbackOutputMode = useAudioSettingsStore((s) => s.playbackOutputMode)
-  const selectedOutputChannelCount = useAudioSettingsStore((s) => s.selectedOutputChannelCount)
+  const logicalOutputChannelCount = useAudioSettingsStore((s) => s.logicalOutputChannelCount)
   const nativeAudioOutputStatus = useAudioSettingsStore((s) => s.nativeAudioOutputStatus)
   const spatialMode = useAudioSettingsStore((s) => s.spatialMode)
   const spatialStatus = useAudioSettingsStore((s) => s.spatialStatus)
+  const spatialLayoutPresetId = useAudioSettingsStore((s) => s.spatialLayoutPresetId)
+  const customVirtualSpeakers = useAudioSettingsStore((s) => s.customVirtualSpeakers)
   const nativeSourceSampleRate = nativeAudioOutputStatus?.processing.sourceSampleRate
     ?? nativeAudioOutputStatus?.sourceFormat.sampleRate
   const nativeTargetSampleRate = nativeAudioOutputStatus?.processing.targetSampleRate
@@ -195,20 +203,30 @@ export default function AudioPipelineShelf() {
       result.push({ id: 'resampler', icon: ResamplerIcon, label: 'Resampler', detail })
     }
 
+    const binauralActive = spatialMode === 'binaural' && spatialStatus.state === 'ready'
+
     // Channel Routing
-    if (playbackOutputMode === 'standard' && multichannelEnabled && channelRoutingMap && channelRoutingMap.length > 0) {
+    if (
+      playbackOutputMode === 'standard'
+      && multichannelEnabled
+      && !binauralActive
+      && Object.keys(sourceSpeakerRoutingMap).length > 0
+    ) {
       const srcCh = currentTrack.channels ?? 2
-      const outCh = channelRoutingMap.length
-      result.push({ id: 'routing', icon: RoutingIcon, label: 'Routing', detail: `${srcCh}ch \u2192 ${outCh}ch` })
+      result.push({ id: 'routing', icon: RoutingIcon, label: 'Source Routing', detail: `${srcCh}ch \u2192 ${logicalOutputChannelCount} speakers` })
     }
 
-    const upmixOutputChannels = selectedOutputChannelCount ?? audioEngine.getOutputMaxChannelCount() ?? 2
+    const activeOutputIds = binauralActive
+      ? buildVirtualSpeakerLayout(spatialLayoutPresetId, customVirtualSpeakers).map((speaker) => speaker.sourceChannel)
+      : resolveDirectSpeakerIds(activeSpeakerProfile, multichannelEnabled)
+    const upmixOutputChannels = activeOutputIds.length
     if (canUseStereoAmbientUpmix({
       sourceChannels: currentTrack.channels ?? 2,
       outputChannels: upmixOutputChannels,
-      multichannelEnabled,
+      multichannelEnabled: multichannelEnabled || binauralActive,
       standardMode: playbackOutputMode === 'standard',
       stereoUpmixMode,
+      outputChannelIds: activeOutputIds,
     })) {
       result.push({ id: 'upmix', icon: RoutingIcon, label: 'Upmix', detail: `2ch \u2192 ${upmixOutputChannels}ch` })
     }
@@ -224,6 +242,16 @@ export default function AudioPipelineShelf() {
         icon: SpatialIcon,
         label: 'Spatial',
         detail: 'Astra Spatial Engine'
+      })
+    }
+
+    if (playbackOutputMode === 'standard' && !binauralActive) {
+      const hardwarePlan = buildSpeakerHardwareRoutingPlan(activeSpeakerProfile)
+      result.push({
+        id: 'hardware-map',
+        icon: RoutingIcon,
+        label: 'Hardware Map',
+        detail: `${logicalOutputChannelCount} speakers → ${hardwarePlan.hardwareBusWidth}ch bus`,
       })
     }
 
@@ -275,18 +303,21 @@ export default function AudioPipelineShelf() {
     effectiveDelayMs,
     multichannelEnabled,
     stereoUpmixMode,
-    channelRoutingMap,
+    sourceSpeakerRoutingMap,
+    activeSpeakerProfile,
     normalizationEnabled,
     normalizationTargetLufs,
     replayGainScanEnabled,
     playbackOutputMode,
-    selectedOutputChannelCount,
+    logicalOutputChannelCount,
     nativeSourceSampleRate,
     nativeTargetSampleRate,
     nativeResamplingActive,
     nativeAudioOutputStatus?.processing.resamplerName,
     spatialMode,
     spatialStatus.state,
+    spatialLayoutPresetId,
+    customVirtualSpeakers,
   ])
 
   return (

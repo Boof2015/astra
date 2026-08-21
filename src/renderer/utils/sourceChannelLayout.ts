@@ -1,3 +1,8 @@
+import {
+  isSpeakerRoleId,
+  type SourceSpeakerRoutingMap,
+} from './speakerLayout'
+
 export type SourceChannelRole =
   | 'mono'
   | 'front-left'
@@ -57,6 +62,7 @@ export interface ResolveChannelMixMatrixOptions {
   outputChannels: number
   multichannelEnabled: boolean
   manualRoutingMap?: readonly number[] | null
+  sourceSpeakerRoutingMap?: SourceSpeakerRoutingMap | null
   includeLfeInDownmix?: boolean
   /**
    * Explicit output layout (one id per output channel). Overrides the
@@ -146,7 +152,7 @@ function buildFallbackChannel(index: number): SourceChannel {
  * Builds an output layout from explicit channel ids. Unknown ids keep their
  * name (rather than becoming CHn) so exact-id routing still matches them.
  */
-function buildLayoutFromChannelIds(ids: readonly string[]): SourceChannel[] {
+export function buildSpeakerLayoutFromIds(ids: readonly string[]): SourceChannel[] {
   return ids.map((id, index) => {
     const definition = CHANNEL_DEFINITIONS[id]
     return definition ? { ...definition, index } : { ...buildFallbackChannel(index), id, label: id }
@@ -447,7 +453,7 @@ function buildAutomaticMatrix(
 ): ChannelMixMatrix {
   const sourceLayout = buildSourceLayout(sourceChannels)
   const outputLayout = outputChannelIds
-    ? buildLayoutFromChannelIds(outputChannelIds)
+    ? buildSpeakerLayoutFromIds(outputChannelIds)
     : buildSpeakerLayout(outputChannels)
 
   // With explicit ids, matching counts no longer imply matching layouts
@@ -464,6 +470,32 @@ function buildAutomaticMatrix(
 
   for (const source of sourceLayout) {
     routeAutomaticSource(matrix, source, outputLayout, includeLfeInDownmix)
+  }
+
+  return matrix
+}
+
+function applySourceSpeakerRoutingOverrides(
+  matrix: ChannelMixMatrix,
+  sourceChannels: number,
+  outputChannelIds: readonly string[] | null,
+  overrides: SourceSpeakerRoutingMap | null | undefined
+): ChannelMixMatrix {
+  if (!overrides || !outputChannelIds) return matrix
+
+  const sourceLayout = buildSourceLayout(sourceChannels)
+  for (let outputIndex = 0; outputIndex < outputChannelIds.length; outputIndex++) {
+    const outputId = outputChannelIds[outputIndex]
+    if (!isSpeakerRoleId(outputId)) continue
+    const override = overrides[outputId]
+    if (!override) continue
+    if (override.kind === 'mute') {
+      matrix[outputIndex] = []
+      continue
+    }
+
+    const sourceIndex = sourceLayout.findIndex((source) => source.id === override.sourceChannelId)
+    matrix[outputIndex] = sourceIndex >= 0 ? [{ sourceIndex, gain: 1 }] : []
   }
 
   return matrix
@@ -489,7 +521,12 @@ export function resolveChannelMixMatrix(options: ResolveChannelMixMatrixOptions)
     ? options.outputChannelIds
     : null
 
-  return buildAutomaticMatrix(sourceChannels, outputChannels, includeLfeInDownmix, outputChannelIds)
+  return applySourceSpeakerRoutingOverrides(
+    buildAutomaticMatrix(sourceChannels, outputChannels, includeLfeInDownmix, outputChannelIds),
+    sourceChannels,
+    outputChannelIds,
+    options.sourceSpeakerRoutingMap
+  )
 }
 
 interface StereoAmbientRouteSpec {
@@ -531,7 +568,7 @@ export function resolveStereoAmbientUpmixPlan(
   // speakers the layout doesn't have are simply skipped (5.1.2 gets side
   // ambience only) and heights stay silent.
   const outputLayout = outputChannelIds && outputChannelIds.length === normalizedOutputChannels
-    ? buildLayoutFromChannelIds(outputChannelIds)
+    ? buildSpeakerLayoutFromIds(outputChannelIds)
     : buildSpeakerLayout(normalizedOutputChannels)
   const routes: StereoAmbientUpmixRoute[] = []
 
@@ -600,6 +637,57 @@ export function resolveStereoAmbientUpmixPlan(
     outputChannels: normalizedOutputChannels,
     routes,
   }
+}
+
+/**
+ * Applies semantic per-speaker overrides without disturbing the ambient
+ * routes for speakers that remain in Auto mode.
+ */
+export function applySourceSpeakerOverridesToStereoAmbientUpmixPlan(
+  plan: StereoAmbientUpmixPlan,
+  overrides: SourceSpeakerRoutingMap | null | undefined,
+  outputChannelIds?: readonly string[] | null
+): StereoAmbientUpmixPlan {
+  if (!overrides || Object.keys(overrides).length === 0) return plan
+
+  const stereoSourceLayout = buildSourceLayout(2)
+  const outputLayout = outputChannelIds && outputChannelIds.length === plan.outputChannels
+    ? buildSpeakerLayoutFromIds(outputChannelIds)
+    : buildSpeakerLayout(plan.outputChannels)
+  const automaticRoutes = new Map(plan.routes.map((route) => [route.outputIndex, route]))
+  const routes: StereoAmbientUpmixRoute[] = []
+
+  for (const output of outputLayout) {
+    const automaticRoute = automaticRoutes.get(output.index)
+    if (!isSpeakerRoleId(output.id)) {
+      if (automaticRoute) routes.push(automaticRoute)
+      continue
+    }
+    const override = overrides[output.id]
+    if (!override) {
+      if (automaticRoute) routes.push(automaticRoute)
+      continue
+    }
+    if (override.kind === 'mute') continue
+
+    const sourceIndex = stereoSourceLayout.findIndex(
+      (source) => source.id === override.sourceChannelId
+    )
+    if (sourceIndex !== 0 && sourceIndex !== 1) continue
+
+    routes.push({
+      outputIndex: output.index,
+      outputId: output.id,
+      kind: 'direct',
+      inputs: [{ sourceIndex, gain: 1 }],
+      delaySeconds: 0,
+      highpassHz: null,
+      lowpassHz: null,
+      allpassFrequenciesHz: [],
+    })
+  }
+
+  return { ...plan, routes }
 }
 
 export function canUseStereoAmbientUpmix(options: CanUseStereoAmbientUpmixOptions): boolean {

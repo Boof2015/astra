@@ -33,6 +33,7 @@ import {
 } from '../../utils/controllerFocus'
 import { rankFuzzyMatches } from '../../utils/fuzzySearch'
 import { highlightSearchMatch } from '../../utils/searchHighlight'
+import { buildVirtualSpeakerLayout } from '../../utils/virtualSpeakerLayout'
 import {
   clampFixedOverlayPosition,
   viewportPointToAppLayout,
@@ -164,7 +165,7 @@ interface TrackListRowSharedProps {
   currentTrackIsAtmosJoc: boolean
   isPlaying: boolean
   isLoadingTrack: boolean
-  selectedOutputChannelCount: number | null
+  logicalOutputChannelCount: number
   favorites: Set<string>
   playlistPopupTrackPath: string | null
   queuedTrackPaths: Set<string>
@@ -490,7 +491,7 @@ function TrackListRowRenderer({
   currentTrackIsAtmosJoc,
   isPlaying,
   isLoadingTrack,
-  selectedOutputChannelCount,
+  logicalOutputChannelCount,
   favorites,
   playlistPopupTrackPath,
   queuedTrackPaths,
@@ -561,16 +562,16 @@ function TrackListRowRenderer({
   const isDownmixingCurrentAtmos = Boolean(
     isCurrent
     && currentTrackIsAtmosJoc
-    && selectedOutputChannelCount
+    && logicalOutputChannelCount
     && currentTrackChannels
-    && selectedOutputChannelCount > 0
-    && selectedOutputChannelCount < currentTrackChannels
+    && logicalOutputChannelCount > 0
+    && logicalOutputChannelCount < currentTrackChannels
   )
   const atmosphereBadgeTitle = isDownmixingCurrentAtmos
-    ? `Atmos (EC-3/JOC) source is being downmixed to ${selectedOutputChannelCount} channels. Output quality can vary.`
+    ? `Atmos (EC-3/JOC) source is being downmixed to ${logicalOutputChannelCount} channels. Output quality can vary.`
     : 'Atmos (EC-3/JOC) metadata detected. Playback uses compatibility decoding and cannot guarantee native Atmos object rendering.'
   const channelBadgeTitle = isDownmixingCurrentAtmos
-    ? `Atmos (EC-3/JOC) source is being downmixed to ${selectedOutputChannelCount} channels. Output quality can vary.`
+    ? `Atmos (EC-3/JOC) source is being downmixed to ${logicalOutputChannelCount} channels. Output quality can vary.`
     : showAtmosBadge
       ? 'Atmos (EC-3/JOC) metadata detected. Playback uses compatibility decoding and cannot guarantee native Atmos object rendering.'
       : `${resolvedChannelCount ?? 0} channels`
@@ -919,7 +920,13 @@ export default function TrackList({
   const upcomingQueueIds = usePlayerStore((state) => state.upcomingQueueIds)
   const startPlaybackContextByPaths = usePlayerStore((state) => state.startPlaybackContextByPaths)
   const enqueueTrackPaths = usePlayerStore((state) => state.enqueueTrackPaths)
-  const selectedOutputChannelCount = useAudioSettingsStore((state) => state.selectedOutputChannelCount)
+  const logicalOutputChannelCount = useAudioSettingsStore((state) => (
+    state.playbackOutputMode === 'standard'
+      && state.spatialMode === 'binaural'
+      && state.spatialStatus.state === 'ready'
+      ? buildVirtualSpeakerLayout(state.spatialLayoutPresetId, state.customVirtualSpeakers).length
+      : state.logicalOutputChannelCount
+  ))
   const uiScalePercent = useUIStore((state) => state.uiScalePercent)
   const trackDragActive = useUIStore((state) => Boolean(state.trackDrag))
   const playlistDropTarget = useUIStore((state) => state.trackDrag?.dropTarget?.surface === 'playlist'
@@ -2251,7 +2258,7 @@ export default function TrackList({
     currentTrackIsAtmosJoc,
     isPlaying,
     isLoadingTrack,
-    selectedOutputChannelCount,
+    logicalOutputChannelCount,
     favorites,
     playlistPopupTrackPath,
     queuedTrackPaths,
@@ -2307,7 +2314,7 @@ export default function TrackList({
     currentTrackIsAtmosJoc,
     isPlaying,
     isLoadingTrack,
-    selectedOutputChannelCount,
+    logicalOutputChannelCount,
     favorites,
     playlistPopupTrackPath,
     queuedTrackPaths,

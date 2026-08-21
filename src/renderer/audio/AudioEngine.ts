@@ -77,6 +77,7 @@ import {
   type LoudnessAnalysis
 } from './loudness'
 import {
+  applySourceSpeakerOverridesToStereoAmbientUpmixPlan,
   canUseStereoAmbientUpmix,
   isIdentityChannelMixMatrix,
   normalizeStereoUpmixMode,
@@ -88,11 +89,22 @@ import {
 } from '../utils/sourceChannelLayout'
 import {
   buildSpatialSpeakerMessage,
-  resolveRoutingTargetChannelCount,
   SPATIAL_MAX_SPEAKERS,
   type SpatialMode,
   type VirtualSpeaker
 } from '../utils/virtualSpeakerLayout'
+import {
+  buildSpeakerHardwareRoutingPlan,
+  createDefaultDeviceSpeakerProfile,
+  getSpeakerLayoutDefinition,
+  normalizeDeviceMaxChannels,
+  normalizeDeviceSpeakerProfile,
+  normalizeSourceSpeakerRoutingMap,
+  resolveDirectSpeakerIds,
+  type DeviceSpeakerProfile,
+  type SourceSpeakerRoutingMap,
+  type SpeakerRoleId,
+} from '../utils/speakerLayout'
 
 type EventCallback = (...args: unknown[]) => void
 
@@ -161,6 +173,12 @@ const FADE_STOP_EPSILON_MS = 20
 const SKIP_DECLICK_MS = 12
 const SPATIAL_PROFILE_CROSSFADE_MS = 50
 const SPATIAL_PREP_TIMEOUT_MS = 20_000
+const SPEAKER_TEST_DURATION_SECONDS = 0.75
+const SPEAKER_TEST_FADE_SECONDS = 0.05
+const SPEAKER_TEST_DUCK_ATTACK_SECONDS = 0.04
+const SPEAKER_TEST_DUCK_RELEASE_SECONDS = 0.12
+const SPEAKER_TEST_DUCK_GAIN = Math.pow(10, -18 / 20)
+const SPEAKER_TEST_LEVEL_GAIN = Math.pow(10, -18 / 20)
 
 const NORMALIZATION_MIN_GAIN_DB = -18
 const NORMALIZATION_MAX_GAIN_DB = 6
@@ -471,7 +489,7 @@ interface CalibrationToneSignal {
  * Supports gapless playback through pre-buffering and sample-accurate scheduling.
  *
  * Audio Graph:
- * Playback: Source -> [optional remap matrix] -> NormalizationGain -> Preamp/EQ -> GainNode (volume) -> Destination
+ * Playback: Source -> logical speaker matrix -> Normalization/EQ/Volume -> hardware output mapper -> Destination
  * Analysis tap: Source -> AnalysisNormalizationGain -> AnalysisDelay -> AudioWorklet -> Silent sink (for pull)
  * EQ visual tap: Post-EQ -> EQAnalysisDelay -> EQAnalyser -> Silent sink (for delayed EQ/fullscreen visuals)
  */
@@ -481,6 +499,13 @@ export class AudioEngine {
   private gainNode: GainNode | null = null
   // Final-stage gain used only for play/pause/skip fades, independent of volume/mute and normalization.
   private fadeGainNode: GainNode | null = null
+  // Main-program ducking lives after fades and before the final hardware mapper.
+  private programDuckGainNode: GainNode | null = null
+  private hardwareMapperNodes: AudioNode[] = []
+  private activeSpeakerTestSource: AudioBufferSourceNode | null = null
+  private activeSpeakerTestNodes: AudioNode[] = []
+  private activeSpeakerTestRole: SpeakerRoleId | null = null
+  private speakerTestLevelGainNode: GainNode | null = null
   // Pending teardown of a faded-out source after pause(); cleared if play/stop/seek/load takes over.
   private pauseFadeTimer: ReturnType<typeof setTimeout> | null = null
   private normalizationGainNode: GainNode | null = null
@@ -569,7 +594,9 @@ export class AudioEngine {
   private multichannelEnabled: boolean = false
   private includeLfeInDownmix: boolean = false
   private stereoUpmixMode: StereoUpmixMode = 'off'
-  private manualChannelRoutingMap: number[] | null = null
+  private sourceSpeakerRoutingMap: SourceSpeakerRoutingMap = {}
+  private deviceMaxOutputChannels: number = 2
+  private speakerProfile: DeviceSpeakerProfile = createDefaultDeviceSpeakerProfile(2)
   // Astra Spatial Engine (binaural render stage). The worklet node is lazy:
   // created on first enable, then kept for the AudioContext's lifetime.
   private spatialMode: SpatialMode = 'off'
@@ -736,6 +763,7 @@ export class AudioEngine {
   }
 
   async setPlaybackOutputMode(mode: PlaybackOutputMode): Promise<PlaybackModeSwitchResult> {
+    this.stopSpeakerTestTone()
     if (mode === 'standard') {
       if (this.isNativeExclusiveMode()) {
         void window.nativeAudioAPI.stop()
@@ -2122,6 +2150,10 @@ export class AudioEngine {
     return Math.max(1, Math.min(32, this.context?.destination.maxChannelCount ?? 2))
   }
 
+  private getDirectSpeakerChannelIds(): SpeakerRoleId[] {
+    return resolveDirectSpeakerIds(this.speakerProfile, this.multichannelEnabled)
+  }
+
   private getDecodedAudioBufferBytes(buffer: AudioBuffer | null): number {
     if (!buffer) return 0
     return buffer.length * buffer.numberOfChannels * 4
@@ -2158,16 +2190,11 @@ export class AudioEngine {
   }
 
   private getRoutingOutputChannelCount(sourceChannels?: number): number {
-    return resolveRoutingTargetChannelCount({
-      multichannelEnabled: this.multichannelEnabled,
-      binauralActive: this.isBinauralActive(),
-      virtualSpeakerCount: this.virtualSpeakers.length,
-      maxDestinationChannels: this.getMaxDestinationChannelCount(),
-      manualMapLength: this.manualChannelRoutingMap?.length ?? 0,
-      hasSourceChannels: Boolean(
-        (sourceChannels && sourceChannels > 0) || (this.audioBuffer?.numberOfChannels ?? 0) > 0
-      ),
-    })
+    void sourceChannels
+    if (this.isBinauralActive()) {
+      return Math.max(1, Math.min(SPATIAL_MAX_SPEAKERS, this.virtualSpeakers.length || 2))
+    }
+    return Math.max(1, this.getDirectSpeakerChannelIds().length)
   }
 
   private applyNodeRoutingMode(
@@ -2203,6 +2230,65 @@ export class AudioEngine {
     }
   }
 
+  private disconnectHardwareOutputRouting(): void {
+    try { this.programDuckGainNode?.disconnect() } catch { /* ignore */ }
+    for (const node of this.hardwareMapperNodes) {
+      try {
+        if ('stop' in node && typeof node.stop === 'function') {
+          node.stop()
+        }
+      } catch {
+        // A source may already have stopped.
+      }
+      try { node.disconnect() } catch { /* ignore */ }
+    }
+    this.hardwareMapperNodes = []
+  }
+
+  private rebuildHardwareOutputRouting(): void {
+    if (!this.context || !this.programDuckGainNode) return
+
+    this.disconnectHardwareOutputRouting()
+
+    if (this.isBinauralActive()) {
+      this.applyNodeRoutingMode(this.context.destination, 2, 'max', 'speakers')
+      this.programDuckGainNode.connect(this.context.destination)
+      return
+    }
+
+    const profile = normalizeDeviceSpeakerProfile(
+      this.speakerProfile,
+      Math.min(this.deviceMaxOutputChannels, this.getMaxDestinationChannelCount())
+    )
+    const layout = getSpeakerLayoutDefinition(profile.layoutId)
+    const plan = buildSpeakerHardwareRoutingPlan(profile)
+    const splitter = this.context.createChannelSplitter(Math.max(1, layout.speakers.length))
+    const merger = this.context.createChannelMerger(plan.hardwareBusWidth)
+    this.applyNodeRoutingMode(splitter, layout.speakers.length, 'explicit', 'discrete')
+    this.applyNodeRoutingMode(merger, plan.hardwareBusWidth, 'explicit', 'discrete')
+    this.applyNodeRoutingMode(
+      this.context.destination,
+      plan.hardwareBusWidth,
+      plan.hardwareBusWidth > 2 ? 'explicit' : 'max',
+      plan.hardwareBusWidth > 2 ? 'discrete' : 'speakers'
+    )
+
+    this.programDuckGainNode.connect(splitter)
+    const connectedOutputs = new Set<number>()
+    plan.hardwareToLogical.forEach((logicalIndex, hardwareOutput) => {
+      if (logicalIndex == null) return
+      splitter.connect(merger, logicalIndex, hardwareOutput)
+      connectedOutputs.add(hardwareOutput)
+    })
+    const silenceNodes = this.connectSilentMergerInputs(
+      merger,
+      plan.hardwareBusWidth,
+      connectedOutputs
+    )
+    merger.connect(this.context.destination)
+    this.hardwareMapperNodes = [splitter, ...silenceNodes, merger]
+  }
+
   private applyChannelRoutingPreferences(preferredChannels?: number): void {
     if (!this.context) return
 
@@ -2216,15 +2302,16 @@ export class AudioEngine {
     const mode: ChannelCountMode = useDiscreteRouting ? 'explicit' : 'max'
     const interpretation: ChannelInterpretation = useDiscreteRouting ? 'discrete' : 'speakers'
 
-    const nodes: Array<AudioNode | AudioDestinationNode | null> = [
-      this.context.destination,
+    const nodes: Array<AudioNode | null> = [
       this.normalizationGainNode,
       this.preampNode,
       this.eqAnalyserNode,
       this.eqAnalysisDelayNode,
       this.eqDisplayAnalyserNode,
       this.eqAnalysisTapSinkNode,
-      this.gainNode
+      this.gainNode,
+      this.fadeGainNode,
+      this.programDuckGainNode,
     ]
 
     for (const node of nodes) {
@@ -2241,6 +2328,8 @@ export class AudioEngine {
       this.applyNodeRoutingMode(this.spatialWorkletNode, spatialInputChannels, 'explicit', 'discrete')
       this.applyNodeRoutingMode(this.spatialInputNode, spatialInputChannels, 'explicit', 'discrete')
     }
+
+    this.rebuildHardwareOutputRouting()
   }
 
   private applyAnalysisRoutingPreferences(sourceChannels?: number): void {
@@ -2266,17 +2355,19 @@ export class AudioEngine {
 
     this.applyChannelRoutingPreferences(sourceChannels)
 
-    // Binaural rendering consumes the same multichannel render bus the
-    // Direct path produces — it just must not depend on the physical
-    // multichannel toggle (headphones are 2ch; that's the point). The manual
-    // routing map keeps physical-device semantics and is ignored here.
+    // Binaural rendering consumes its own virtual-speaker bus and keeps its
+    // source routing independent of the Direct physical speaker profile.
     const binauralActive = this.isBinauralActive()
     const effectiveMultichannel = this.multichannelEnabled || binauralActive
-    const manualRoutingMap = binauralActive ? null : this.manualChannelRoutingMap
+    const sourceSpeakerRoutingMap = binauralActive || !this.multichannelEnabled
+      ? null
+      : this.sourceSpeakerRoutingMap
     // The binaural render bus is ordered by the virtual speaker list, which
     // for height layouts (5.1.2) is not the standard layout for its channel
     // count — routing must see the explicit ids.
-    const outputChannelIds = binauralActive ? this.getVirtualSpeakerChannelIds() : null
+    const outputChannelIds = binauralActive
+      ? this.getVirtualSpeakerChannelIds()
+      : this.getDirectSpeakerChannelIds()
 
     const outputChannels = this.getRoutingOutputChannelCount(sourceChannels)
     const shouldUseStereoAmbientUpmix = canUseStereoAmbientUpmix({
@@ -2289,7 +2380,12 @@ export class AudioEngine {
     })
 
     if (shouldUseStereoAmbientUpmix) {
-      this.connectStereoAmbientUpmix(sourceNode, outputChannels, outputChannelIds)
+      this.connectStereoAmbientUpmix(
+        sourceNode,
+        outputChannels,
+        outputChannelIds,
+        sourceSpeakerRoutingMap
+      )
       return
     }
 
@@ -2297,12 +2393,12 @@ export class AudioEngine {
       sourceChannels,
       outputChannels,
       multichannelEnabled: effectiveMultichannel,
-      manualRoutingMap,
+      sourceSpeakerRoutingMap,
       includeLfeInDownmix: this.includeLfeInDownmix,
       outputChannelIds,
     })
     const hasManualRouting = Boolean(
-      effectiveMultichannel && manualRoutingMap && manualRoutingMap.length > 0
+      effectiveMultichannel && sourceSpeakerRoutingMap && Object.keys(sourceSpeakerRoutingMap).length > 0
     )
     const shouldUseRoutingMatrix = (
       hasManualRouting ||
@@ -2351,13 +2447,18 @@ export class AudioEngine {
   private connectStereoAmbientUpmix(
     sourceNode: AudioNode,
     outputChannels: number,
-    outputChannelIds: readonly string[] | null = null
+    outputChannelIds: readonly string[] | null = null,
+    sourceSpeakerRoutingMap: SourceSpeakerRoutingMap | null = null
   ): void {
     if (!this.context || !this.normalizationGainNode) return
     const routingSink = this.getRoutingSinkNode()
     if (!routingSink) return
 
-    const plan = resolveStereoAmbientUpmixPlan(outputChannels, outputChannelIds)
+    const plan = applySourceSpeakerOverridesToStereoAmbientUpmixPlan(
+      resolveStereoAmbientUpmixPlan(outputChannels, outputChannelIds),
+      sourceSpeakerRoutingMap,
+      outputChannelIds
+    )
     const splitter = this.context.createChannelSplitter(2)
     const merger = this.context.createChannelMerger(Math.max(1, plan.outputChannels))
     const nodes: AudioNode[] = [splitter, merger]
@@ -2593,12 +2694,15 @@ export class AudioEngine {
     try { this.gainNode.disconnect() } catch { /* ignore */ }
     try { this.fadeGainNode?.disconnect() } catch { /* ignore */ }
 
-    if (this.fadeGainNode) {
+    if (this.fadeGainNode && this.programDuckGainNode) {
       this.gainNode.connect(this.fadeGainNode)
-      this.fadeGainNode.connect(this.context.destination)
+      this.fadeGainNode.connect(this.programDuckGainNode)
+    } else if (this.programDuckGainNode) {
+      this.gainNode.connect(this.programDuckGainNode)
     } else {
       this.gainNode.connect(this.context.destination)
     }
+    this.rebuildHardwareOutputRouting()
 
     if (!this.shouldBypassStandardAnalysisGraph()) {
       if (this.eqAnalyserNode) {
@@ -4095,18 +4199,8 @@ export class AudioEngine {
     return channelData
   }
 
-  async setChannelRoutingMap(map: number[] | null): Promise<void> {
-    const normalized = map && map.length > 0
-      ? map
-        .map((value) => {
-          if (!Number.isFinite(value)) return -1
-          const rounded = Math.trunc(value)
-          return rounded >= -1 ? rounded : -1
-        })
-        .slice(0, this.getMaxDestinationChannelCount())
-      : null
-
-    this.manualChannelRoutingMap = normalized
+  async setSourceSpeakerRoutingMap(map: SourceSpeakerRoutingMap | null): Promise<void> {
+    this.sourceSpeakerRoutingMap = normalizeSourceSpeakerRoutingMap(map)
 
     if (this.isNativeExclusiveMode()) {
       return
@@ -4127,7 +4221,184 @@ export class AudioEngine {
     }
   }
 
+  async setSpeakerOutputConfiguration(
+    profile: DeviceSpeakerProfile,
+    deviceMaxChannels: number
+  ): Promise<void> {
+    const previousDirectSpeakerIds = this.getDirectSpeakerChannelIds().join('|')
+    this.deviceMaxOutputChannels = normalizeDeviceMaxChannels(deviceMaxChannels)
+    this.speakerProfile = normalizeDeviceSpeakerProfile(profile, this.deviceMaxOutputChannels)
+    const logicalLayoutChanged = previousDirectSpeakerIds !== this.getDirectSpeakerChannelIds().join('|')
+    this.stopSpeakerTestTone()
+
+    if (this.isNativeExclusiveMode()) return
+
+    await this.initContext()
+    this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+    if (!logicalLayoutChanged) return
+
+    if (this.rebuildRemoteStreamRoutingIfActive()) return
+    if (this.rebuildParallaxSinkRoutingIfActive()) return
+    if (this._playbackState === 'playing' && this.audioBuffer) {
+      await this.seek(this.currentTime)
+    }
+  }
+
+  getLogicalOutputChannelCount(): number {
+    return this.getRoutingOutputChannelCount(this.audioBuffer?.numberOfChannels)
+  }
+
+  getSpeakerHardwareBusWidth(): number {
+    return buildSpeakerHardwareRoutingPlan(this.speakerProfile).hardwareBusWidth
+  }
+
+  private createSpeakerTestNoiseBuffer(): AudioBuffer | null {
+    if (!this.context) return null
+    const frameCount = Math.max(1, Math.round(this.context.sampleRate * SPEAKER_TEST_DURATION_SECONDS))
+    const buffer = this.context.createBuffer(1, frameCount, this.context.sampleRate)
+    const samples = buffer.getChannelData(0)
+    let b0 = 0
+    let b1 = 0
+    let b2 = 0
+    let b3 = 0
+    let b4 = 0
+    let b5 = 0
+    let b6 = 0
+    for (let index = 0; index < samples.length; index++) {
+      const white = (Math.random() * 2) - 1
+      b0 = 0.99886 * b0 + white * 0.0555179
+      b1 = 0.99332 * b1 + white * 0.0750759
+      b2 = 0.969 * b2 + white * 0.153852
+      b3 = 0.8665 * b3 + white * 0.3104856
+      b4 = 0.55 * b4 + white * 0.5329522
+      b5 = -0.7616 * b5 - white * 0.016898
+      samples[index] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.11
+      b6 = white * 0.115926
+    }
+    return buffer
+  }
+
+  private restoreProgramDuckGain(): void {
+    if (!this.context || !this.programDuckGainNode) return
+    const now = this.context.currentTime
+    const gain = this.programDuckGainNode.gain
+    gain.cancelScheduledValues(now)
+    gain.setValueAtTime(gain.value, now)
+    gain.linearRampToValueAtTime(1, now + SPEAKER_TEST_DUCK_RELEASE_SECONDS)
+  }
+
+  private clearSpeakerTestTone(stopSource: boolean): void {
+    const source = this.activeSpeakerTestSource
+    this.activeSpeakerTestSource = null
+    if (source) {
+      source.onended = null
+      if (stopSource) {
+        try { source.stop() } catch { /* already stopped */ }
+      }
+      try { source.disconnect() } catch { /* ignore */ }
+    }
+    for (const node of this.activeSpeakerTestNodes) {
+      try {
+        if ('stop' in node && typeof node.stop === 'function') node.stop()
+      } catch {
+        // A silence source may already have stopped.
+      }
+      try { node.disconnect() } catch { /* ignore */ }
+    }
+    this.activeSpeakerTestNodes = []
+    this.speakerTestLevelGainNode = null
+    const previousRole = this.activeSpeakerTestRole
+    this.activeSpeakerTestRole = null
+    this.restoreProgramDuckGain()
+    this.rebuildHardwareOutputRouting()
+    if (previousRole) this.emit('speakerTestChange', null)
+  }
+
+  stopSpeakerTestTone(): void {
+    if (!this.activeSpeakerTestSource && this.activeSpeakerTestNodes.length === 0) return
+    this.clearSpeakerTestTone(true)
+  }
+
+  async playSpeakerTestTone(speakerRole: SpeakerRoleId): Promise<boolean> {
+    if (this.isNativeExclusiveMode()) return false
+    this.stopSpeakerTestTone()
+    await this.initContext()
+    if (!this.context || !this.programDuckGainNode) return false
+    if (this.context.state === 'suspended') await this.context.resume()
+
+    const layout = getSpeakerLayoutDefinition(this.speakerProfile.layoutId)
+    if (!layout.speakers.includes(speakerRole)) return false
+    const hardwareOutput = this.speakerProfile.outputMap[speakerRole]
+    if (hardwareOutput == null || hardwareOutput < 0 || hardwareOutput >= this.deviceMaxOutputChannels) {
+      return false
+    }
+
+    const noiseBuffer = this.createSpeakerTestNoiseBuffer()
+    if (!noiseBuffer) return false
+    const plan = buildSpeakerHardwareRoutingPlan(this.speakerProfile)
+    const source = this.context.createBufferSource()
+    const highpass = this.context.createBiquadFilter()
+    const lowpass = this.context.createBiquadFilter()
+    const envelope = this.context.createGain()
+    const level = this.context.createGain()
+    const merger = this.context.createChannelMerger(plan.hardwareBusWidth)
+    highpass.type = 'highpass'
+    highpass.frequency.value = 250
+    highpass.Q.value = 0.707
+    lowpass.type = 'lowpass'
+    lowpass.frequency.value = 6000
+    lowpass.Q.value = 0.707
+    level.gain.value = (this._isMuted ? 0 : this._volume) * SPEAKER_TEST_LEVEL_GAIN
+    source.buffer = noiseBuffer
+
+    for (const node of [source, highpass, lowpass, envelope, level]) {
+      this.applyNodeRoutingMode(node, 1, 'explicit', 'discrete')
+    }
+    this.applyNodeRoutingMode(merger, plan.hardwareBusWidth, 'explicit', 'discrete')
+    this.applyNodeRoutingMode(
+      this.context.destination,
+      plan.hardwareBusWidth,
+      plan.hardwareBusWidth > 2 ? 'explicit' : 'max',
+      plan.hardwareBusWidth > 2 ? 'discrete' : 'speakers'
+    )
+
+    source.connect(highpass)
+    highpass.connect(lowpass)
+    lowpass.connect(envelope)
+    envelope.connect(level)
+    level.connect(merger, 0, hardwareOutput)
+    const silenceNodes = this.connectSilentMergerInputs(
+      merger,
+      plan.hardwareBusWidth,
+      new Set([hardwareOutput])
+    )
+    merger.connect(this.context.destination)
+
+    const now = this.context.currentTime
+    const startTime = now + SPEAKER_TEST_DUCK_ATTACK_SECONDS + 0.01
+    const endTime = startTime + SPEAKER_TEST_DURATION_SECONDS
+    const programGain = this.programDuckGainNode.gain
+    programGain.cancelScheduledValues(now)
+    programGain.setValueAtTime(programGain.value, now)
+    programGain.linearRampToValueAtTime(SPEAKER_TEST_DUCK_GAIN, now + SPEAKER_TEST_DUCK_ATTACK_SECONDS)
+    envelope.gain.setValueAtTime(0, startTime)
+    envelope.gain.linearRampToValueAtTime(1, startTime + SPEAKER_TEST_FADE_SECONDS)
+    envelope.gain.setValueAtTime(1, endTime - SPEAKER_TEST_FADE_SECONDS)
+    envelope.gain.linearRampToValueAtTime(0, endTime)
+
+    this.activeSpeakerTestSource = source
+    this.activeSpeakerTestNodes = [highpass, lowpass, envelope, level, ...silenceNodes, merger]
+    this.activeSpeakerTestRole = speakerRole
+    this.speakerTestLevelGainNode = level
+    source.onended = () => this.clearSpeakerTestTone(false)
+    source.start(startTime)
+    source.stop(endTime)
+    this.emit('speakerTestChange', speakerRole)
+    return true
+  }
+
   async setMultichannelEnabled(enabled: boolean): Promise<void> {
+    this.stopSpeakerTestTone()
     this.multichannelEnabled = enabled
     if (this.isNativeExclusiveMode()) {
       return
@@ -4551,6 +4822,7 @@ export class AudioEngine {
   }
 
   async setSpatialMode(mode: SpatialMode): Promise<void> {
+    this.stopSpeakerTestTone()
     this.spatialMode = mode === 'binaural' ? 'binaural' : 'off'
     if (this.isNativeExclusiveMode()) {
       return
@@ -4624,6 +4896,8 @@ export class AudioEngine {
       // Fade node (after volume, last stage before destination) for play/pause/skip fades
       this.fadeGainNode = this.context.createGain()
       this.fadeGainNode.gain.value = 1.0
+      this.programDuckGainNode = this.context.createGain()
+      this.programDuckGainNode.gain.value = 1.0
 
       // Normalization gain node (applied before volume)
       this.normalizationGainNode = this.context.createGain()
@@ -6933,6 +7207,7 @@ export class AudioEngine {
 
   // Audio output device selection
   async setOutputDevice(deviceId: string): Promise<void> {
+    this.stopSpeakerTestTone()
     if (this.isNativeExclusiveMode()) {
       await this.initNativeAudio()
       this.nativeCapabilities = await window.nativeAudioAPI.setOutputDevice(deviceId)
@@ -8452,6 +8727,9 @@ export class AudioEngine {
     if (this.gainNode && !this._isMuted) {
       this.gainNode.gain.value = this._volume
     }
+    if (this.speakerTestLevelGainNode) {
+      this.speakerTestLevelGainNode.gain.value = (this._isMuted ? 0 : this._volume) * SPEAKER_TEST_LEVEL_GAIN
+    }
   }
 
   // Toggle mute
@@ -8467,6 +8745,9 @@ export class AudioEngine {
     if (this.gainNode) {
       this.gainNode.gain.value = this._isMuted ? 0 : this._volume
     }
+    if (this.speakerTestLevelGainNode) {
+      this.speakerTestLevelGainNode.gain.value = (this._isMuted ? 0 : this._volume) * SPEAKER_TEST_LEVEL_GAIN
+    }
   }
 
   // Set mute state
@@ -8481,6 +8762,9 @@ export class AudioEngine {
     }
     if (this.gainNode) {
       this.gainNode.gain.value = this._isMuted ? 0 : this._volume
+    }
+    if (this.speakerTestLevelGainNode) {
+      this.speakerTestLevelGainNode.gain.value = (this._isMuted ? 0 : this._volume) * SPEAKER_TEST_LEVEL_GAIN
     }
   }
 
@@ -8720,6 +9004,13 @@ export class AudioEngine {
     if (this.analysisDelayNode) {
       try { this.analysisDelayNode.disconnect() } catch { /* ignore */ }
       this.analysisDelayNode = null
+    }
+
+    this.stopSpeakerTestTone()
+    this.disconnectHardwareOutputRouting()
+    if (this.programDuckGainNode) {
+      try { this.programDuckGainNode.disconnect() } catch { /* ignore */ }
+      this.programDuckGainNode = null
     }
 
     if (this.fadeGainNode) {

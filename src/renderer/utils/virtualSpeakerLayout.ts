@@ -306,35 +306,23 @@ export interface RoutingTargetOptions {
   multichannelEnabled: boolean
   binauralActive: boolean
   virtualSpeakerCount: number
-  maxDestinationChannels: number
-  manualMapLength: number
-  hasSourceChannels: boolean
+  logicalSpeakerCount: number
 }
 
 /**
  * Target channel count for the per-source routing stage. Pure mirror of
- * AudioEngine.getRoutingOutputChannelCount plus the binaural branch: when
- * binaural is active the render bus width is the virtual layout, independent
- * of the physical destination (headphones are 2ch — that's the point), and
- * the manual routing map is ignored (it has physical-device semantics).
+ * Binaural uses the independent virtual layout. Direct mode uses only the
+ * configured logical speaker count; hardware capability never defines this
+ * render width.
  */
 export function resolveRoutingTargetChannelCount(options: RoutingTargetOptions): number {
   if (options.binauralActive) {
     return Math.max(1, Math.min(SPATIAL_MAX_SPEAKERS, options.virtualSpeakerCount))
   }
 
-  const maxChannels = Math.max(1, Math.min(32, options.maxDestinationChannels))
+  const logicalChannels = Math.max(1, Math.min(SPATIAL_MAX_SPEAKERS, options.logicalSpeakerCount))
   if (!options.multichannelEnabled) {
-    return Math.max(1, Math.min(maxChannels, 2))
+    return Math.max(1, Math.min(logicalChannels, 2))
   }
-
-  if (options.manualMapLength > 0) {
-    return Math.max(1, Math.min(maxChannels, options.manualMapLength))
-  }
-
-  if (options.hasSourceChannels) {
-    return maxChannels
-  }
-
-  return Math.max(1, Math.min(maxChannels, 2))
+  return logicalChannels
 }

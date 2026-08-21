@@ -22961,11 +22961,51 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
   gap: 6px;
 }
 
+.pipeline-setting-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pipeline-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 10px;
+  border: 1px solid rgba(var(--tint), 0.1);
+  border-radius: 8px;
+  background: rgba(var(--tint), 0.025);
+}
+
+.pipeline-setting-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.pipeline-setting-title {
+  font-size: 12px;
+  font-weight: 650;
+  color: rgba(var(--tint), 0.88);
+}
+
+.pipeline-setting-description {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: rgba(var(--tint), 0.5);
+}
+
+.pipeline-setting-row .settings-segmented-control {
+  width: 126px;
+}
+
 .pipeline-toggle {
   font-size: 11px;
   line-height: 1;
   padding: 6px 10px;
-  border-radius: 999px;
+  border-radius: 7px;
   border: 1px solid rgba(var(--tint), 0.12);
   background: rgba(var(--tint), 0.04);
   color: rgba(var(--tint), 0.7);
@@ -23054,7 +23094,7 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
   font-size: 10.5px;
   line-height: 1;
   padding: 5px 9px;
-  border-radius: 999px;
+  border-radius: 7px;
   border: 1px solid rgba(var(--tint), 0.14);
   background: transparent;
   color: rgba(var(--tint), 0.6);
@@ -23112,6 +23152,86 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
 .pipeline-elevation-control input[type="range"] {
   width: 130px;
   accent-color: var(--accent);
+}
+
+.pipeline-physical-config-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.pipeline-physical-config-head .pipeline-select-label {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.pipeline-physical-output-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pipeline-physical-output-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) minmax(150px, 190px) 76px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(var(--tint), 0.09);
+  border-radius: 8px;
+  background: rgba(var(--tint), 0.025);
+}
+
+.pipeline-physical-output-speaker {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.pipeline-physical-output-speaker strong {
+  min-width: 28px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent-text-strong);
+}
+
+.pipeline-physical-output-speaker span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: rgba(var(--tint), 0.7);
+}
+
+.pipeline-test-btn {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgba(var(--accent-rgb), 0.38);
+  border-radius: 7px;
+  background: rgba(var(--accent-rgb), 0.08);
+  color: var(--accent-text-strong);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.pipeline-test-btn:hover:not(:disabled),
+.pipeline-test-btn:focus-visible:not(:disabled),
+.pipeline-test-btn.active {
+  border-color: rgba(var(--accent-rgb), 0.72);
+  background: rgba(var(--accent-rgb), 0.18);
+}
+
+.pipeline-test-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
 }
 
 /* ============================================
@@ -23304,6 +23424,25 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
 @media (max-width: 860px) {
   .pipeline-chip-device {
     max-width: 160px;
+  }
+
+  .pipeline-setting-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .pipeline-physical-output-row {
+    grid-template-columns: 1fr minmax(130px, 1fr) 70px;
+  }
+}
+
+@media (max-width: 560px) {
+  .pipeline-physical-output-row {
+    grid-template-columns: 1fr 76px;
+  }
+
+  .pipeline-physical-output-speaker {
+    grid-column: 1 / -1;
   }
 }
 

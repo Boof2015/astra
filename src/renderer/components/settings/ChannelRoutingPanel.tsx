@@ -6,8 +6,9 @@ import {
 } from '../../stores/audioSettingsStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import {
+  applySourceSpeakerOverridesToStereoAmbientUpmixPlan,
   buildSourceLayout,
-  buildSpeakerLayout,
+  buildSpeakerLayoutFromIds,
   canUseStereoAmbientUpmix,
   type ChannelMixInput,
   getSourceChannelId,
@@ -19,14 +20,22 @@ import {
   buildVirtualSpeakerLayout,
   getDisplayAzimuthsForLayout,
   isVirtualSpeakerLfe,
-  resolveRoutingTargetChannelCount,
   SPATIAL_LAYOUT_PRESETS,
   SPATIAL_MAX_ELEVATION_DEG,
   SPATIAL_MIN_ELEVATION_DEG,
   type SpatialLayoutPresetId,
 } from '../../utils/virtualSpeakerLayout'
+import {
+  SPEAKER_LAYOUT_PRESETS,
+  buildSpeakerHardwareRoutingPlan,
+  getSpeakerLayoutDefinition,
+  resolveDirectSpeakerIds,
+  type SpeakerLayoutPresetId,
+  type SpeakerRoleId,
+} from '../../utils/speakerLayout'
 import { resolveSpeakerStageUsage } from '../../utils/speakerStageUsage'
 import SpeakerStage, { type SpeakerStageSpeaker } from './SpeakerStage'
+import SettingsSegmentedControl from './SettingsSegmentedControl'
 
 /*
  * The audio pipeline panel: Input → Render → Output.
@@ -55,12 +64,18 @@ function isUnitySingleSource(row: readonly ChannelMixInput[]): boolean {
   return row.length === 1 && Math.abs(row[0].gain - 1) <= 1e-6
 }
 
+const OFF_ON_OPTIONS = [
+  { value: 'off', label: 'Off' },
+  { value: 'on', label: 'On' },
+] as const
+
 export default function ChannelRoutingPanel() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
   const {
     selectedDeviceId,
     availableDevices,
-    selectedOutputChannelCount,
+    selectedDeviceMaxChannelCount,
+    logicalOutputChannelCount,
     multichannelEnabled,
     includeLfeInDownmix,
     stereoUpmixMode,
@@ -69,9 +84,15 @@ export default function ChannelRoutingPanel() {
     setMultichannelEnabled,
     setIncludeLfeInDownmix,
     setStereoUpmixMode,
-    channelRoutingMap,
-    setChannelRoutingMap,
-    resetChannelRoutingMap,
+    sourceSpeakerRoutingMap,
+    setSourceSpeakerRoute,
+    resetSourceSpeakerRouting,
+    activeSpeakerProfile,
+    setSpeakerLayout,
+    setSpeakerHardwareOutput,
+    resetSpeakerProfile,
+    testingSpeakerRole,
+    playSpeakerTestTone,
     spatialMode,
     spatialLayoutPresetId,
     customVirtualSpeakers,
@@ -102,21 +123,22 @@ export default function ChannelRoutingPanel() {
   const [selectedSpeakerId, setSelectedSpeakerId] = useState<string | null>(null)
 
   const trackChannels = currentTrack?.channels ?? null
-  const outputChannels = selectedOutputChannelCount && selectedOutputChannelCount > 0
-    ? selectedOutputChannelCount
+  const deviceMaxChannels = selectedDeviceMaxChannelCount && selectedDeviceMaxChannelCount > 0
+    ? selectedDeviceMaxChannelCount
     : null
 
   const hasTrackChannels = Boolean(trackChannels && trackChannels > 0)
-  const hasOutputChannels = Boolean(outputChannels && outputChannels > 0)
+  const hasOutputChannels = Boolean(deviceMaxChannels && deviceMaxChannels > 0)
   const resolvedTrackChannels = hasTrackChannels ? (trackChannels as number) : 0
-  const resolvedOutputChannels = hasOutputChannels ? (outputChannels as number) : 0
-  const effectiveOutputChannels = hasOutputChannels
-    ? (multichannelEnabled ? resolvedOutputChannels : Math.min(2, resolvedOutputChannels))
-    : 0
+  const resolvedDeviceMaxChannels = hasOutputChannels ? (deviceMaxChannels as number) : 0
+  const physicalSpeakerIds = getSpeakerLayoutDefinition(activeSpeakerProfile.layoutId).speakers
+  const directOutputIds = resolveDirectSpeakerIds(activeSpeakerProfile, multichannelEnabled)
+  const effectiveOutputChannels = logicalOutputChannelCount
+  const hardwareRoutingPlan = buildSpeakerHardwareRoutingPlan(activeSpeakerProfile)
 
   const outputLayout = useMemo(
-    () => (hasOutputChannels ? buildSpeakerLayout(resolvedOutputChannels) : []),
-    [hasOutputChannels, resolvedOutputChannels]
+    () => buildSpeakerLayoutFromIds(physicalSpeakerIds),
+    [physicalSpeakerIds]
   )
 
   const sourceLayout = useMemo(
@@ -129,43 +151,39 @@ export default function ChannelRoutingPanel() {
     [customVirtualSpeakers, spatialLayoutPresetId]
   )
 
-  const renderTargetChannels = resolveRoutingTargetChannelCount({
-    multichannelEnabled,
-    binauralActive,
-    virtualSpeakerCount: virtualSpeakers.length,
-    maxDestinationChannels: hasOutputChannels ? resolvedOutputChannels : 2,
-    manualMapLength: channelRoutingMap?.length ?? 0,
-    hasSourceChannels: hasTrackChannels,
-  })
+  const renderTargetChannels = binauralActive
+    ? Math.max(1, virtualSpeakers.length)
+    : Math.max(1, directOutputIds.length)
 
-  // ---- Direct-mode routing math (unchanged behavior) ----
+  // ---- Direct-mode logical speaker routing ----
 
   const effectiveMixMatrix = useMemo(() => {
-    if (!hasOutputChannels || !hasTrackChannels) return []
+    if (!hasTrackChannels) return []
 
     return resolveChannelMixMatrix({
       sourceChannels: resolvedTrackChannels,
-      outputChannels: resolvedOutputChannels,
+      outputChannels: directOutputIds.length,
       multichannelEnabled,
-      manualRoutingMap: channelRoutingMap,
+      sourceSpeakerRoutingMap: multichannelEnabled ? sourceSpeakerRoutingMap : null,
       includeLfeInDownmix,
+      outputChannelIds: directOutputIds,
     })
   }, [
-    channelRoutingMap,
-    hasOutputChannels,
+    directOutputIds,
     hasTrackChannels,
     includeLfeInDownmix,
     multichannelEnabled,
-    resolvedOutputChannels,
     resolvedTrackChannels,
+    sourceSpeakerRoutingMap,
   ])
 
-  const stereoAmbientUpmixActive = !binauralActive && hasOutputChannels && hasTrackChannels && canUseStereoAmbientUpmix({
+  const stereoAmbientUpmixActive = !binauralActive && hasTrackChannels && canUseStereoAmbientUpmix({
     sourceChannels: resolvedTrackChannels,
-    outputChannels: resolvedOutputChannels,
+    outputChannels: directOutputIds.length,
     multichannelEnabled,
     standardMode: playbackOutputMode === 'standard',
     stereoUpmixMode,
+    outputChannelIds: directOutputIds,
   })
 
   const binauralUpmixActive = binauralActive && hasTrackChannels && canUseStereoAmbientUpmix({
@@ -197,9 +215,14 @@ export default function ChannelRoutingPanel() {
   const stereoAmbientUpmixRoutes = useMemo(() => {
     if (!stereoAmbientUpmixActive) return new Map<number, StereoAmbientUpmixRoute>()
     return new Map(
-      resolveStereoAmbientUpmixPlan(resolvedOutputChannels).routes.map((route) => [route.outputIndex, route])
+      applySourceSpeakerOverridesToStereoAmbientUpmixPlan(
+        resolveStereoAmbientUpmixPlan(directOutputIds.length, directOutputIds),
+        sourceSpeakerRoutingMap,
+        directOutputIds
+      )
+        .routes.map((route) => [route.outputIndex, route])
     )
-  }, [resolvedOutputChannels, stereoAmbientUpmixActive])
+  }, [directOutputIds, sourceSpeakerRoutingMap, stereoAmbientUpmixActive])
 
   const mappedChannels = stereoAmbientUpmixActive
     ? stereoAmbientUpmixRoutes.size
@@ -207,8 +230,8 @@ export default function ChannelRoutingPanel() {
       row.length > 0 ? total + 1 : total
     ), 0)
 
-  const downmixActive = !binauralActive && hasTrackChannels && hasOutputChannels && resolvedTrackChannels > effectiveMixMatrix.length
-  const hasManualRouting = Boolean(channelRoutingMap && channelRoutingMap.length > 0)
+  const downmixActive = !binauralActive && hasTrackChannels && resolvedTrackChannels > effectiveMixMatrix.length
+  const hasManualRouting = Object.keys(sourceSpeakerRoutingMap).length > 0
 
   const selectedDeviceLabel = resolveOutputDeviceLabel(selectedDeviceId, availableDevices, {
     defaultRouteFallbackLabel: 'System Default Device',
@@ -218,7 +241,7 @@ export default function ChannelRoutingPanel() {
   const sourceOptions = useMemo(() => {
     if (!hasTrackChannels) return []
     return sourceLayout.map((channel) => ({
-      value: channel.index,
+      value: channel.id,
       label: `${channel.id} - ${channel.label}`
     }))
   }, [hasTrackChannels, sourceLayout])
@@ -246,36 +269,18 @@ export default function ChannelRoutingPanel() {
     return route.outputId.endsWith('R') ? 'Side ambience R' : 'Side ambience L'
   }, [sourceLayout])
 
-  const handleMappingChange = (outputIndex: number, rawValue: string) => {
-    if (!hasOutputChannels || !hasTrackChannels || !multichannelEnabled || stereoAmbientUpmixActive) return
-
-    const parsed = Number(rawValue)
-    const sourceIndex = Number.isFinite(parsed) ? Math.trunc(parsed) : -1
-    const normalizedSourceIndex = sourceIndex >= -1 && sourceIndex < resolvedTrackChannels
-      ? sourceIndex
-      : -1
-
-    const currentManualMap = channelRoutingMap && channelRoutingMap.length > 0
-      ? channelRoutingMap
-      : null
-
-    const nextMap = Array.from({ length: resolvedOutputChannels }, (_, index) => (
-      index === outputIndex
-        ? normalizedSourceIndex
-        : (currentManualMap?.[index] ?? (index < resolvedTrackChannels ? index : -1))
-    ))
-
-    const isDefaultMap = nextMap.every((mappedSourceIndex, index) => {
-      const defaultSource = index < resolvedTrackChannels ? index : -1
-      return mappedSourceIndex === defaultSource
-    })
-
-    if (isDefaultMap) {
-      void resetChannelRoutingMap()
-      return
+  const handleSourceRouteChange = (speaker: SpeakerRoleId, rawValue: string) => {
+    if (!hasTrackChannels || !multichannelEnabled) return
+    if (rawValue === 'auto') {
+      void setSourceSpeakerRoute(speaker, null)
+    } else if (rawValue === 'mute') {
+      void setSourceSpeakerRoute(speaker, { kind: 'mute' })
+    } else if (rawValue.startsWith('source:')) {
+      void setSourceSpeakerRoute(speaker, {
+        kind: 'source',
+        sourceChannelId: rawValue.slice('source:'.length),
+      })
     }
-
-    void setChannelRoutingMap(nextMap)
   }
 
   // ---- Direct-mode per-channel route facts (drives stage + detail card) ----
@@ -288,45 +293,35 @@ export default function ChannelRoutingPanel() {
     detail: string
     selectValue: string
     selectDisabled: boolean
-    outputIndex: number
+    speakerRole: SpeakerRoleId
   }
 
   const directRoutes = useMemo<DirectRoute[]>(() => {
-    if (!hasOutputChannels) return []
-    return outputLayout.map((speaker, index) => {
-      const upmixRoute = stereoAmbientUpmixRoutes.get(index) ?? null
-      const row = effectiveMixMatrix[index] ?? []
-      const active = upmixRoute ? true : row.length > 0
-      const sourceIndex = upmixRoute?.kind === 'direct'
-        ? (upmixRoute.inputs[0]?.sourceIndex ?? -1)
-        : (isUnitySingleSource(row) ? row[0].sourceIndex : -1)
-      const manualSourceIndex = channelRoutingMap?.[index]
-      const normalizedManualSourceIndex = (
-        !stereoAmbientUpmixActive &&
-        hasManualRouting &&
-        typeof manualSourceIndex === 'number' &&
-        Number.isInteger(manualSourceIndex) &&
-        manualSourceIndex >= -1 &&
-        manualSourceIndex < resolvedTrackChannels
-      )
-        ? manualSourceIndex
+    return outputLayout.map((speaker) => {
+      const speakerRole = speaker.id as SpeakerRoleId
+      const effectiveIndex = directOutputIds.indexOf(speakerRole)
+      const upmixRoute = effectiveIndex >= 0
+        ? (stereoAmbientUpmixRoutes.get(effectiveIndex) ?? null)
         : null
-      const isAutoMix = upmixRoute?.kind === 'ambience' || (active && !upmixRoute && !isUnitySingleSource(row))
-      const detail = active
-        ? (upmixRoute ? formatUpmixDetail(upmixRoute) : formatMixDetail(row))
-        : (multichannelEnabled ? 'Muted' : 'Inactive in stereo mode')
-      const selectValue = stereoAmbientUpmixActive
-        ? (upmixRoute ? 'upmix' : '-1')
-        : multichannelEnabled
-        ? (normalizedManualSourceIndex != null
-            ? String(normalizedManualSourceIndex)
-            : (isAutoMix ? 'auto' : String(sourceIndex)))
-        : 'auto'
+      const row = effectiveIndex >= 0 ? (effectiveMixMatrix[effectiveIndex] ?? []) : []
+      const active = upmixRoute ? true : row.length > 0
+      const sourceOverride = sourceSpeakerRoutingMap[speakerRole]
+      const detail = effectiveIndex < 0
+        ? 'Inactive while Multichannel is Off'
+        : sourceOverride?.kind === 'source' && row.length === 0
+          ? `Source ${sourceOverride.sourceChannelId} unavailable`
+          : active
+            ? (upmixRoute ? formatUpmixDetail(upmixRoute) : formatMixDetail(row))
+            : 'Muted'
+      const selectValue = sourceOverride?.kind === 'mute'
+          ? 'mute'
+          : sourceOverride?.kind === 'source'
+            ? `source:${sourceOverride.sourceChannelId}`
+            : 'auto'
       const selectDisabled = (
         !hasTrackChannels ||
         !multichannelEnabled ||
-        bitPerfectModeActive ||
-        stereoAmbientUpmixActive
+        bitPerfectModeActive
       )
       return {
         speakerId: speaker.id,
@@ -336,21 +331,19 @@ export default function ChannelRoutingPanel() {
         detail,
         selectValue,
         selectDisabled,
-        outputIndex: index,
+        speakerRole,
       }
     })
   }, [
     bitPerfectModeActive,
-    channelRoutingMap,
+    directOutputIds,
     effectiveMixMatrix,
     formatMixDetail,
     formatUpmixDetail,
-    hasManualRouting,
-    hasOutputChannels,
     hasTrackChannels,
     multichannelEnabled,
     outputLayout,
-    resolvedTrackChannels,
+    sourceSpeakerRoutingMap,
     stereoAmbientUpmixActive,
     stereoAmbientUpmixRoutes,
   ])
@@ -387,7 +380,7 @@ export default function ChannelRoutingPanel() {
   // Selection carries no meaning across mode/layout switches.
   useEffect(() => {
     setSelectedSpeakerId(null)
-  }, [binauralSelected, spatialLayoutPresetId, resolvedOutputChannels])
+  }, [activeSpeakerProfile.layoutId, binauralSelected, spatialLayoutPresetId])
 
   const selectedDirectRoute = !binauralSelected
     ? directRoutes.find((route) => route.speakerId === selectedSpeakerId) ?? null
@@ -455,7 +448,7 @@ export default function ChannelRoutingPanel() {
 
   const renderSummary = binauralSelected
     ? `${renderTargetChannels}ch → 2ch binaural`
-    : (multichannelEnabled ? `${Math.max(renderTargetChannels, 0)}ch direct` : 'Stereo safe')
+    : `${Math.max(renderTargetChannels, 1)}ch logical direct`
 
   return (
     <div className="pipeline-panel">
@@ -525,34 +518,46 @@ export default function ChannelRoutingPanel() {
 
         {/* Mode controls */}
         {!binauralSelected ? (
-          <div className="pipeline-control-row">
-            <button
-              type="button"
-              className={`pipeline-toggle ${multichannelEnabled ? 'active' : ''}`}
-              onClick={bitPerfectModeActive ? undefined : (() => void setMultichannelEnabled(!multichannelEnabled))}
-              disabled={bitPerfectModeActive}
-              title={disabledTitle}
-            >
-              {multichannelEnabled ? 'Multichannel On' : 'Stereo Safe'}
-            </button>
-            <button
-              type="button"
-              className={`pipeline-toggle ${includeLfeInDownmix ? 'active' : ''}`}
-              onClick={bitPerfectModeActive ? undefined : (() => void setIncludeLfeInDownmix(!includeLfeInDownmix))}
-              disabled={bitPerfectModeActive}
-              title={disabledTitle}
-            >
-              {includeLfeInDownmix ? 'LFE Fold On' : 'LFE Fold Off'}
-            </button>
-            <button
-              type="button"
-              className={`pipeline-toggle ${stereoUpmixMode === 'ambient' ? 'active' : ''}`}
-              onClick={bitPerfectModeActive ? undefined : (() => void setStereoUpmixMode(stereoUpmixMode === 'ambient' ? 'off' : 'ambient'))}
-              disabled={bitPerfectModeActive}
-              title={disabledTitle}
-            >
-              {stereoUpmixMode === 'ambient' ? 'Ambient Upmix On' : 'Ambient Upmix Off'}
-            </button>
+          <div className="pipeline-setting-list">
+            <div className="pipeline-setting-row">
+              <div className="pipeline-setting-copy">
+                <span className="pipeline-setting-title">Multichannel</span>
+                <span className="pipeline-setting-description">Use the complete configured speaker layout.</span>
+              </div>
+              <SettingsSegmentedControl
+                ariaLabel="Multichannel output"
+                disabled={bitPerfectModeActive}
+                options={OFF_ON_OPTIONS}
+                value={multichannelEnabled ? 'on' : 'off'}
+                onChange={(value) => void setMultichannelEnabled(value === 'on')}
+              />
+            </div>
+            <div className="pipeline-setting-row">
+              <div className="pipeline-setting-copy">
+                <span className="pipeline-setting-title">LFE Fold-down</span>
+                <span className="pipeline-setting-description">Include LFE content when the logical layout has no subwoofer.</span>
+              </div>
+              <SettingsSegmentedControl
+                ariaLabel="LFE fold-down"
+                disabled={bitPerfectModeActive}
+                options={OFF_ON_OPTIONS}
+                value={includeLfeInDownmix ? 'on' : 'off'}
+                onChange={(value) => void setIncludeLfeInDownmix(value === 'on')}
+              />
+            </div>
+            <div className="pipeline-setting-row">
+              <div className="pipeline-setting-copy">
+                <span className="pipeline-setting-title">Ambient Upmix</span>
+                <span className="pipeline-setting-description">Generate decorrelated surround ambience from stereo tracks.</span>
+              </div>
+              <SettingsSegmentedControl
+                ariaLabel="Ambient stereo upmix"
+                disabled={bitPerfectModeActive}
+                options={OFF_ON_OPTIONS}
+                value={stereoUpmixMode === 'ambient' ? 'on' : 'off'}
+                onChange={(value) => void setStereoUpmixMode(value === 'on' ? 'ambient' : 'off')}
+              />
+            </div>
           </div>
         ) : (
           <div className="pipeline-control-row">
@@ -612,22 +617,29 @@ export default function ChannelRoutingPanel() {
                 Remove
               </button>
             )}
-            <button
-              type="button"
-              className={`pipeline-toggle ${stereoUpmixMode === 'ambient' ? 'active' : ''}`}
-              onClick={bitPerfectModeActive ? undefined : (() => void setStereoUpmixMode(stereoUpmixMode === 'ambient' ? 'off' : 'ambient'))}
+          </div>
+        )}
+
+        {binauralSelected && (
+          <div className="pipeline-setting-row">
+            <div className="pipeline-setting-copy">
+              <span className="pipeline-setting-title">Ambient Upmix</span>
+              <span className="pipeline-setting-description">Fill the virtual surround room from stereo tracks.</span>
+            </div>
+            <SettingsSegmentedControl
+              ariaLabel="Binaural ambient stereo upmix"
               disabled={bitPerfectModeActive}
-              title={disabledTitle ?? 'Upmix stereo tracks into the virtual speaker layout'}
-            >
-              {stereoUpmixMode === 'ambient' ? 'Ambient Upmix On' : 'Ambient Upmix Off'}
-            </button>
+              options={OFF_ON_OPTIONS}
+              value={stereoUpmixMode === 'ambient' ? 'on' : 'off'}
+              onChange={(value) => void setStereoUpmixMode(value === 'on' ? 'ambient' : 'off')}
+            />
           </div>
         )}
 
         {/* Status chips */}
         <div className="pipeline-chip-row">
-          {!binauralSelected && hasOutputChannels && (
-            <span className="pipeline-chip">Mapped {mappedChannels}/{formatChannels(outputChannels)}</span>
+          {!binauralSelected && (
+            <span className="pipeline-chip">Routed {mappedChannels}/{directOutputIds.length} speakers</span>
           )}
           {stereoAmbientUpmixActive && (
             <span className="pipeline-chip pipeline-chip-accent">Upmix Active</span>
@@ -635,7 +647,7 @@ export default function ChannelRoutingPanel() {
           {binauralUpmixActive && (
             <span className="pipeline-chip pipeline-chip-accent">Upmix Active</span>
           )}
-          {!binauralSelected && hasManualRouting && multichannelEnabled && !stereoAmbientUpmixActive && (
+          {!binauralSelected && hasManualRouting && multichannelEnabled && (
             <span className="pipeline-chip pipeline-chip-accent">Remap Active</span>
           )}
           {!binauralSelected && hasManualRouting && !multichannelEnabled && (
@@ -656,15 +668,15 @@ export default function ChannelRoutingPanel() {
               Renderer unavailable
             </span>
           )}
-          {!binauralSelected && hasManualRouting && !stereoAmbientUpmixActive && (
+          {!binauralSelected && hasManualRouting && (
             <button
               type="button"
               className="pipeline-reset-btn"
-              onClick={bitPerfectModeActive ? undefined : (() => void resetChannelRoutingMap())}
+              onClick={bitPerfectModeActive ? undefined : (() => void resetSourceSpeakerRouting())}
               disabled={bitPerfectModeActive}
               title={disabledTitle}
             >
-              Reset Routing
+              Reset Source Routing
             </button>
           )}
         </div>
@@ -677,7 +689,7 @@ export default function ChannelRoutingPanel() {
         )}
 
         {/* The stage */}
-        {(binauralSelected || hasOutputChannels) && (
+        {(binauralSelected || outputLayout.length > 0) && (
           <SpeakerStage
             speakers={stageSpeakers}
             selectedId={selectedSpeakerId}
@@ -686,9 +698,6 @@ export default function ChannelRoutingPanel() {
             disabled={bitPerfectModeActive}
             disabledTitle={disabledTitle}
           />
-        )}
-        {!binauralSelected && !hasOutputChannels && (
-          <p className="pipeline-note">Select an output device to detect available hardware channels.</p>
         )}
 
         {/* Detail card for the selected speaker */}
@@ -703,20 +712,19 @@ export default function ChannelRoutingPanel() {
             <select
               className="pipeline-select"
               value={selectedDirectRoute.selectValue}
-              onChange={(event) => handleMappingChange(selectedDirectRoute.outputIndex, event.target.value)}
+              onChange={(event) => handleSourceRouteChange(selectedDirectRoute.speakerRole, event.target.value)}
               disabled={selectedDirectRoute.selectDisabled}
               title={disabledTitle}
-              aria-label={`Route output channel ${selectedDirectRoute.channelId}`}
+              aria-label={`Route source into ${selectedDirectRoute.channelId}`}
             >
-              {selectedDirectRoute.selectValue === 'upmix' && (
-                <option value="upmix">Generated upmix</option>
+              {selectedDirectRoute.selectValue.startsWith('source:')
+                && !sourceOptions.some((option) => `source:${option.value}` === selectedDirectRoute.selectValue) && (
+                <option value={selectedDirectRoute.selectValue}>Unavailable source</option>
               )}
-              {selectedDirectRoute.selectValue === 'auto' && (
-                <option value="auto">Auto mix</option>
-              )}
-              <option value={-1}>Mute</option>
+              <option value="auto">Auto mix</option>
+              <option value="mute">Mute speaker</option>
               {sourceOptions.map((option) => (
-                <option key={option.value} value={option.value}>
+                <option key={option.value} value={`source:${option.value}`}>
                   {option.label}
                 </option>
               ))}
@@ -787,7 +795,9 @@ export default function ChannelRoutingPanel() {
         <div className="pipeline-card-head">
           <span className="pipeline-card-step">Output</span>
           <span className="pipeline-card-summary">
-            {binauralActive ? '2ch stereo (binaural)' : formatChannels(hasOutputChannels ? effectiveOutputChannels : null)}
+            {binauralActive
+              ? '2ch stereo (binaural)'
+              : `${physicalSpeakerIds.length} speakers → ${hardwareRoutingPlan.hardwareBusWidth}ch hardware bus`}
           </span>
         </div>
         <div className="pipeline-chip-row">
@@ -795,8 +805,9 @@ export default function ChannelRoutingPanel() {
             {selectedDeviceLabel}
           </span>
           {hasOutputChannels && (
-            <span className="pipeline-chip">Device {formatChannels(outputChannels)}</span>
+            <span className="pipeline-chip">Device capacity {formatChannels(deviceMaxChannels)}</span>
           )}
+          <span className="pipeline-chip">Layout {getSpeakerLayoutDefinition(activeSpeakerProfile.layoutId).label}</span>
           {downmixActive && (
             <span className="pipeline-chip pipeline-chip-warning">
               Downmix {resolvedTrackChannels}{'->'}{effectiveOutputChannels}
@@ -811,6 +822,103 @@ export default function ChannelRoutingPanel() {
             Binaural rendering outputs stereo for headphones; the physical channel layout is not used.
           </p>
         )}
+
+        <div className="pipeline-physical-config-head">
+          <label className="pipeline-select-label">
+            Physical speaker layout
+            <select
+              className="pipeline-select"
+              value={activeSpeakerProfile.layoutId}
+              onChange={(event) => void setSpeakerLayout(event.target.value as SpeakerLayoutPresetId)}
+              disabled={bitPerfectModeActive || !hasOutputChannels}
+              title={disabledTitle}
+            >
+              {SPEAKER_LAYOUT_PRESETS.map((preset) => (
+                <option
+                  key={preset.id}
+                  value={preset.id}
+                  disabled={hasOutputChannels && preset.speakers.length > resolvedDeviceMaxChannels}
+                >
+                  {preset.label} · {preset.speakers.length} speakers
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="pipeline-reset-btn"
+            onClick={bitPerfectModeActive ? undefined : (() => void resetSpeakerProfile())}
+            disabled={bitPerfectModeActive || !hasOutputChannels}
+            title={disabledTitle ?? 'Reset this device to the safe Stereo configuration'}
+          >
+            Reset Configuration
+          </button>
+        </div>
+
+        {hasOutputChannels ? (
+          <div className="pipeline-physical-output-list" aria-label="Physical hardware output assignments">
+            {outputLayout.map((speaker) => {
+              const role = speaker.id as SpeakerRoleId
+              const assignedOutput = activeSpeakerProfile.outputMap[role]
+              return (
+                <div className="pipeline-physical-output-row" key={role}>
+                  <div className="pipeline-physical-output-speaker">
+                    <strong>{role}</strong>
+                    <span>{speaker.label}</span>
+                  </div>
+                  <select
+                    className="pipeline-select"
+                    value={assignedOutput ?? -1}
+                    onChange={(event) => {
+                      const value = Number(event.target.value)
+                      void setSpeakerHardwareOutput(role, value >= 0 ? value : null)
+                    }}
+                    disabled={bitPerfectModeActive}
+                    title={disabledTitle}
+                    aria-label={`${speaker.label} hardware output`}
+                  >
+                    <option value={-1}>Unassigned</option>
+                    {Array.from({ length: resolvedDeviceMaxChannels }, (_, outputIndex) => {
+                      const occupiedByOtherSpeaker = physicalSpeakerIds.some((otherRole) => (
+                        otherRole !== role && activeSpeakerProfile.outputMap[otherRole] === outputIndex
+                      ))
+                      return (
+                        <option key={outputIndex} value={outputIndex} disabled={occupiedByOtherSpeaker}>
+                          Output {outputIndex + 1}{occupiedByOtherSpeaker ? ' · In use' : ''}
+                        </option>
+                      )
+                    })}
+                  </select>
+                  <button
+                    type="button"
+                    className={`pipeline-test-btn ${testingSpeakerRole === role ? 'active' : ''}`}
+                    onClick={bitPerfectModeActive || assignedOutput == null
+                      ? undefined
+                      : (() => void playSpeakerTestTone(role))}
+                    disabled={bitPerfectModeActive || assignedOutput == null}
+                    title={disabledTitle ?? (assignedOutput == null
+                      ? 'Assign a hardware output before testing this speaker'
+                      : `Play a short test signal through Output ${assignedOutput + 1}`)}
+                    aria-label={`Test ${speaker.label}`}
+                  >
+                    {testingSpeakerRole === role ? 'Testing…' : 'Test'}
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <p className="pipeline-note">Select an output device to detect its hardware output capacity.</p>
+        )}
+
+        {physicalSpeakerIds.some((role) => activeSpeakerProfile.outputMap[role] == null) && (
+          <p className="pipeline-note pipeline-note-warning">
+            Unassigned speakers remain silent until each one has a unique hardware output.
+          </p>
+        )}
+        <p className="pipeline-note">
+          Hardware outputs are device-specific. Source routing above may duplicate a source across speakers; hardware assignments remain one-to-one.
+        </p>
       </div>
     </div>
   )

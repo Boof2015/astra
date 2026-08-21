@@ -164,9 +164,7 @@ test('resolveRoutingTargetChannelCount truth table', () => {
     multichannelEnabled: false,
     binauralActive: false,
     virtualSpeakerCount: 6,
-    maxDestinationChannels: 2,
-    manualMapLength: 0,
-    hasSourceChannels: true,
+    logicalSpeakerCount: 2,
   }
 
   // Binaural wins regardless of physical channels / manual map / multichannel.
@@ -176,8 +174,7 @@ test('resolveRoutingTargetChannelCount truth table', () => {
       ...base,
       binauralActive: true,
       multichannelEnabled: true,
-      manualMapLength: 4,
-      maxDestinationChannels: 8,
+      logicalSpeakerCount: 8,
     }),
     6
   )
@@ -190,13 +187,13 @@ test('resolveRoutingTargetChannelCount truth table', () => {
     12
   )
 
-  // Direct mode mirrors the existing engine behavior exactly.
-  assert.equal(resolveRoutingTargetChannelCount({ ...base, maxDestinationChannels: 8 }), 2)
+  // Direct mode follows configured logical speakers, never hardware maximum.
+  assert.equal(resolveRoutingTargetChannelCount({ ...base, logicalSpeakerCount: 8 }), 2)
   assert.equal(
     resolveRoutingTargetChannelCount({
       ...base,
       multichannelEnabled: true,
-      maxDestinationChannels: 8,
+      logicalSpeakerCount: 8,
     }),
     8
   )
@@ -204,29 +201,9 @@ test('resolveRoutingTargetChannelCount truth table', () => {
     resolveRoutingTargetChannelCount({
       ...base,
       multichannelEnabled: true,
-      maxDestinationChannels: 8,
-      manualMapLength: 6,
+      logicalSpeakerCount: 99,
     }),
-    6
-  )
-  assert.equal(
-    resolveRoutingTargetChannelCount({
-      ...base,
-      multichannelEnabled: true,
-      maxDestinationChannels: 8,
-      hasSourceChannels: false,
-    }),
-    2
-  )
-  // Manual map larger than the device clamps to the device.
-  assert.equal(
-    resolveRoutingTargetChannelCount({
-      ...base,
-      multichannelEnabled: true,
-      maxDestinationChannels: 6,
-      manualMapLength: 8,
-    }),
-    6
+    12
   )
 })
 
