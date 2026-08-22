@@ -9,11 +9,15 @@ import {
   applySourceSpeakerOverridesToStereoAmbientUpmixPlan,
   buildSourceLayout,
   buildSpeakerLayoutFromIds,
+  canUseStereoAdaptiveUpmix,
   canUseStereoAmbientUpmix,
   type ChannelMixInput,
   getSourceChannelId,
   resolveChannelMixMatrix,
   resolveStereoAmbientUpmixPlan,
+  resolveStereoAdaptiveUpmixPlan,
+  type StereoAdaptiveUpmixRoute,
+  type StereoUpmixMode,
   type StereoAmbientUpmixRoute,
 } from '../../utils/sourceChannelLayout'
 import {
@@ -34,7 +38,7 @@ import {
   type SpeakerRoleId,
 } from '../../utils/speakerLayout'
 import { resolveSpeakerStageUsage } from '../../utils/speakerStageUsage'
-import SpeakerStage, { type SpeakerStageSpeaker } from './SpeakerStage'
+import SpeakerStage, { type SpeakerStagePuckState, type SpeakerStageSpeaker } from './SpeakerStage'
 import SettingsSegmentedControl from './SettingsSegmentedControl'
 
 /*
@@ -68,6 +72,12 @@ const OFF_ON_OPTIONS = [
   { value: 'off', label: 'Off' },
   { value: 'on', label: 'On' },
 ] as const
+
+const STEREO_UPMIX_OPTIONS: readonly { value: StereoUpmixMode; label: string }[] = [
+  { value: 'off', label: 'Off' },
+  { value: 'ambient', label: 'Ambient' },
+  { value: 'adaptive', label: 'Adaptive' },
+]
 
 export default function ChannelRoutingPanel() {
   const currentTrack = usePlayerStore((s) => s.currentTrack)
@@ -186,7 +196,16 @@ export default function ChannelRoutingPanel() {
     outputChannelIds: directOutputIds,
   })
 
-  const binauralUpmixActive = binauralActive && hasTrackChannels && canUseStereoAmbientUpmix({
+  const stereoAdaptiveUpmixActive = !binauralActive && hasTrackChannels && canUseStereoAdaptiveUpmix({
+    sourceChannels: resolvedTrackChannels,
+    outputChannels: directOutputIds.length,
+    multichannelEnabled,
+    standardMode: playbackOutputMode === 'standard',
+    stereoUpmixMode,
+    outputChannelIds: directOutputIds,
+  })
+
+  const binauralAmbientUpmixActive = binauralActive && hasTrackChannels && canUseStereoAmbientUpmix({
     sourceChannels: resolvedTrackChannels,
     outputChannels: renderTargetChannels,
     multichannelEnabled: true,
@@ -194,6 +213,16 @@ export default function ChannelRoutingPanel() {
     stereoUpmixMode,
     outputChannelIds: virtualSpeakers.map((sp) => sp.sourceChannel),
   })
+  const binauralAdaptiveUpmixActive = binauralActive && hasTrackChannels && canUseStereoAdaptiveUpmix({
+    sourceChannels: resolvedTrackChannels,
+    outputChannels: renderTargetChannels,
+    multichannelEnabled: true,
+    standardMode: playbackOutputMode === 'standard',
+    stereoUpmixMode,
+    outputChannelIds: virtualSpeakers.map((sp) => sp.sourceChannel),
+  })
+  const directUpmixActive = stereoAmbientUpmixActive || stereoAdaptiveUpmixActive
+  const binauralUpmixActive = binauralAmbientUpmixActive || binauralAdaptiveUpmixActive
 
   const virtualSpeakerUsage = useMemo(() => resolveSpeakerStageUsage({
     sourceChannels: hasTrackChannels ? resolvedTrackChannels : null,
@@ -224,7 +253,17 @@ export default function ChannelRoutingPanel() {
     )
   }, [directOutputIds, sourceSpeakerRoutingMap, stereoAmbientUpmixActive])
 
-  const mappedChannels = stereoAmbientUpmixActive
+  const stereoAdaptiveUpmixRoutes = useMemo(() => {
+    if (!stereoAdaptiveUpmixActive) return new Map<number, StereoAdaptiveUpmixRoute>()
+    return new Map(
+      resolveStereoAdaptiveUpmixPlan(directOutputIds.length, directOutputIds)
+        .routes.map((route) => [route.outputIndex, route])
+    )
+  }, [directOutputIds, stereoAdaptiveUpmixActive])
+
+  const mappedChannels = stereoAdaptiveUpmixActive
+    ? Array.from(stereoAdaptiveUpmixRoutes.values()).filter((route) => route.kind !== 'unused').length
+    : stereoAmbientUpmixActive
     ? stereoAmbientUpmixRoutes.size
     : effectiveMixMatrix.reduce((total, row) => (
       row.length > 0 ? total + 1 : total
@@ -294,6 +333,7 @@ export default function ChannelRoutingPanel() {
     selectValue: string
     selectDisabled: boolean
     speakerRole: SpeakerRoleId
+    stageState: SpeakerStagePuckState
   }
 
   const directRoutes = useMemo<DirectRoute[]>(() => {
@@ -303,11 +343,32 @@ export default function ChannelRoutingPanel() {
       const upmixRoute = effectiveIndex >= 0
         ? (stereoAmbientUpmixRoutes.get(effectiveIndex) ?? null)
         : null
+      const adaptiveRoute = effectiveIndex >= 0
+        ? (stereoAdaptiveUpmixRoutes.get(effectiveIndex) ?? null)
+        : null
       const row = effectiveIndex >= 0 ? (effectiveMixMatrix[effectiveIndex] ?? []) : []
-      const active = upmixRoute ? true : row.length > 0
       const sourceOverride = sourceSpeakerRoutingMap[speakerRole]
+      const adaptiveAutomaticActive = adaptiveRoute?.kind === 'front' || adaptiveRoute?.kind === 'surround'
+      const adaptiveOverrideActive = sourceOverride?.kind === 'source' && sourceLayout.some(
+        (source) => source.id === sourceOverride.sourceChannelId
+      )
+      const active = stereoAdaptiveUpmixActive
+        ? (sourceOverride?.kind === 'mute' ? false : Boolean(adaptiveOverrideActive || adaptiveAutomaticActive))
+        : upmixRoute ? true : row.length > 0
       const detail = effectiveIndex < 0
         ? 'Inactive while Multichannel is Off'
+        : stereoAdaptiveUpmixActive && sourceOverride?.kind === 'mute'
+          ? 'Muted · manual remap saved'
+          : stereoAdaptiveUpmixActive && sourceOverride?.kind === 'source'
+            ? (adaptiveOverrideActive
+              ? `From ${sourceOverride.sourceChannelId} · latency aligned`
+              : `Source ${sourceOverride.sourceChannelId} unavailable`)
+          : adaptiveRoute?.kind === 'front'
+            ? (adaptiveRoute.outputId === 'FC' ? 'Adaptive center extraction' : 'Adaptive front image')
+          : adaptiveRoute?.kind === 'surround'
+            ? 'Adaptive decorrelated ambience'
+          : stereoAdaptiveUpmixActive
+            ? 'Unused by Adaptive (LFE/heights stay silent)'
         : sourceOverride?.kind === 'source' && row.length === 0
           ? `Source ${sourceOverride.sourceChannelId} unavailable`
           : active
@@ -323,6 +384,15 @@ export default function ChannelRoutingPanel() {
         !multichannelEnabled ||
         bitPerfectModeActive
       )
+      const stageState: SpeakerStagePuckState = !hasTrackChannels
+        ? 'inactive'
+        : stereoAdaptiveUpmixActive && !sourceOverride && adaptiveRoute?.kind === 'front'
+          ? 'adaptive-front'
+          : stereoAdaptiveUpmixActive && !sourceOverride && adaptiveRoute?.kind === 'surround'
+            ? 'adaptive-surround'
+            : active
+              ? 'routed'
+              : 'unused'
       return {
         speakerId: speaker.id,
         channelId: speaker.id,
@@ -332,6 +402,7 @@ export default function ChannelRoutingPanel() {
         selectValue,
         selectDisabled,
         speakerRole,
+        stageState,
       }
     })
   }, [
@@ -344,6 +415,9 @@ export default function ChannelRoutingPanel() {
     multichannelEnabled,
     outputLayout,
     sourceSpeakerRoutingMap,
+    sourceLayout,
+    stereoAdaptiveUpmixActive,
+    stereoAdaptiveUpmixRoutes,
     stereoAmbientUpmixActive,
     stereoAmbientUpmixRoutes,
   ])
@@ -372,7 +446,7 @@ export default function ChannelRoutingPanel() {
       channelId: route.channelId,
       label: route.label,
       azimuth: directDisplayAzimuths[index] ?? null,
-      state: route.active ? 'routed' as const : (hasTrackChannels ? 'unused' as const : 'inactive' as const),
+      state: route.stageState,
       draggable: false,
     }))
   }, [binauralSelected, directDisplayAzimuths, directRoutes, hasTrackChannels, virtualSpeakers, virtualSpeakerUsage])
@@ -547,15 +621,15 @@ export default function ChannelRoutingPanel() {
             </div>
             <div className="pipeline-setting-row">
               <div className="pipeline-setting-copy">
-                <span className="pipeline-setting-title">Ambient Upmix</span>
-                <span className="pipeline-setting-description">Generate decorrelated surround ambience from stereo tracks.</span>
+                <span className="pipeline-setting-title">Stereo Upmix</span>
+                <span className="pipeline-setting-description">Choose simple ambience or an adaptive authored-style multichannel render.</span>
               </div>
               <SettingsSegmentedControl
-                ariaLabel="Ambient stereo upmix"
+                ariaLabel="Stereo upmix mode"
                 disabled={bitPerfectModeActive}
-                options={OFF_ON_OPTIONS}
-                value={stereoUpmixMode === 'ambient' ? 'on' : 'off'}
-                onChange={(value) => void setStereoUpmixMode(value === 'on' ? 'ambient' : 'off')}
+                options={STEREO_UPMIX_OPTIONS}
+                value={stereoUpmixMode}
+                onChange={(value) => void setStereoUpmixMode(value)}
               />
             </div>
           </div>
@@ -623,15 +697,15 @@ export default function ChannelRoutingPanel() {
         {binauralSelected && (
           <div className="pipeline-setting-row">
             <div className="pipeline-setting-copy">
-              <span className="pipeline-setting-title">Ambient Upmix</span>
-              <span className="pipeline-setting-description">Fill the virtual surround room from stereo tracks.</span>
+              <span className="pipeline-setting-title">Stereo Upmix</span>
+              <span className="pipeline-setting-description">Fill the virtual room with Ambient or the cue-aware Adaptive renderer.</span>
             </div>
             <SettingsSegmentedControl
-              ariaLabel="Binaural ambient stereo upmix"
+              ariaLabel="Binaural stereo upmix mode"
               disabled={bitPerfectModeActive}
-              options={OFF_ON_OPTIONS}
-              value={stereoUpmixMode === 'ambient' ? 'on' : 'off'}
-              onChange={(value) => void setStereoUpmixMode(value === 'on' ? 'ambient' : 'off')}
+              options={STEREO_UPMIX_OPTIONS}
+              value={stereoUpmixMode}
+              onChange={(value) => void setStereoUpmixMode(value)}
             />
           </div>
         )}
@@ -641,11 +715,15 @@ export default function ChannelRoutingPanel() {
           {!binauralSelected && (
             <span className="pipeline-chip">Routed {mappedChannels}/{directOutputIds.length} speakers</span>
           )}
-          {stereoAmbientUpmixActive && (
-            <span className="pipeline-chip pipeline-chip-accent">Upmix Active</span>
+          {directUpmixActive && (
+            <span className="pipeline-chip pipeline-chip-accent">
+              {stereoAdaptiveUpmixActive ? 'Adaptive Upmix Active' : 'Ambient Upmix Active'}
+            </span>
           )}
           {binauralUpmixActive && (
-            <span className="pipeline-chip pipeline-chip-accent">Upmix Active</span>
+            <span className="pipeline-chip pipeline-chip-accent">
+              {binauralAdaptiveUpmixActive ? 'Adaptive Upmix Active' : 'Ambient Upmix Active'}
+            </span>
           )}
           {!binauralSelected && hasManualRouting && multichannelEnabled && (
             <span className="pipeline-chip pipeline-chip-accent">Remap Active</span>
@@ -776,8 +854,8 @@ export default function ChannelRoutingPanel() {
         {binauralSelected && !bitPerfectModeActive && (
           <p className="pipeline-note">
             Virtual Speaker Room — drag speakers around the listener to shape the headphone render.
-            {stereoUpmixMode !== 'ambient' && hasTrackChannels && resolvedTrackChannels === 2 && virtualSpeakers.length > 2
-              ? ' Enable Ambient Upmix to fill the surround speakers from stereo tracks.'
+            {stereoUpmixMode === 'off' && hasTrackChannels && resolvedTrackChannels === 2 && virtualSpeakers.length > 2
+              ? ' Enable Stereo Upmix to fill the surround speakers from stereo tracks.'
               : ''}
           </p>
         )}

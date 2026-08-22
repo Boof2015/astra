@@ -40,6 +40,26 @@ test('stereo ambient upmix marks only generated front and surround routes', () =
   assert.equal(states[3], 'unused') // LFE
 })
 
+test('stereo adaptive upmix distinguishes reconstructed fronts and diffuse surrounds', () => {
+  const outputIds = ids('5.1')
+  const states = resolveSpeakerStageUsage({
+    sourceChannels: 2,
+    outputChannelIds: outputIds,
+    rendererActive: true,
+    standardMode: true,
+    stereoUpmixMode: 'adaptive',
+  })
+
+  assert.deepEqual(states, [
+    'adaptive-front',
+    'adaptive-front',
+    'adaptive-front',
+    'unused',
+    'adaptive-surround',
+    'adaptive-surround',
+  ])
+})
+
 test('matching multichannel sources route every virtual speaker', () => {
   for (const preset of ['5.1', '7.1.4'] as const) {
     const outputIds = ids(preset)

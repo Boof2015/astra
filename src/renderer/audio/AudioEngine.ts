@@ -78,6 +78,7 @@ import {
 } from './loudness'
 import {
   applySourceSpeakerOverridesToStereoAmbientUpmixPlan,
+  canUseStereoAdaptiveUpmix,
   canUseStereoAmbientUpmix,
   isIdentityChannelMixMatrix,
   normalizeStereoUpmixMode,
@@ -97,6 +98,7 @@ import {
   buildSpeakerHardwareRoutingPlan,
   createDefaultDeviceSpeakerProfile,
   getSpeakerLayoutDefinition,
+  isSpeakerRoleId,
   normalizeDeviceMaxChannels,
   normalizeDeviceSpeakerProfile,
   normalizeSourceSpeakerRoutingMap,
@@ -594,6 +596,14 @@ export class AudioEngine {
   private multichannelEnabled: boolean = false
   private includeLfeInDownmix: boolean = false
   private stereoUpmixMode: StereoUpmixMode = 'off'
+  private adaptiveInputNode: GainNode | null = null
+  private adaptiveWorkletNode: AudioWorkletNode | null = null
+  private adaptiveWorkletModuleLoaded: boolean = false
+  private adaptiveWorkletState: 'idle' | 'loading' | 'ready' | 'error' = 'idle'
+  private adaptiveRendererKey: string | null = null
+  private adaptiveRendererGeneration: number = 0
+  private adaptiveRoutingSink: AudioNode | null = null
+  private adaptiveLatencyFrames: number = 0
   private sourceSpeakerRoutingMap: SourceSpeakerRoutingMap = {}
   private deviceMaxOutputChannels: number = 2
   private speakerProfile: DeviceSpeakerProfile = createDefaultDeviceSpeakerProfile(2)
@@ -780,6 +790,7 @@ export class AudioEngine {
       this.notifyTrackChange()
       if (this.context) {
         this.rebuildStandardAnalysisGraphRouting()
+        await this.ensureAdaptiveUpmixer()
       }
       if (this.spatialMode === 'binaural') {
         // Re-arm the binaural renderer (it was inert while bit-perfect
@@ -825,6 +836,7 @@ export class AudioEngine {
     this.audioBuffer = null
     this.currentNormalizationAnalysis = null
     this.playbackOutputMode = mode
+    this.disposeAdaptiveUpmixer()
     this.nativeCurrentPlaybackSequence = null
     this.nativeNextPlaybackSequence = null
     this.nativeLifecycleSuppressionTokens.clear()
@@ -1827,9 +1839,8 @@ export class AudioEngine {
     this.sourceNode.buffer = buffer
     this.connectSourceWithRouting(this.sourceNode, buffer.numberOfChannels)
     this.connectSourceToAnalysisTap(this.sourceNode, buffer.numberOfChannels)
-    this.sourceNode.onended = () => {
-      if (this._playbackState === 'playing') this.performGaplessTransition()
-    }
+    const releasedSource = this.sourceNode
+    releasedSource.onended = () => this.handleStandardSourceEnded(releasedSource)
     const startAt = ctx.currentTime
     this.startTime = startAt - offset
     this.pauseTime = offset
@@ -2379,6 +2390,28 @@ export class AudioEngine {
       outputChannelIds,
     })
 
+    const shouldUseStereoAdaptiveUpmix = canUseStereoAdaptiveUpmix({
+      sourceChannels,
+      outputChannels,
+      multichannelEnabled: effectiveMultichannel,
+      standardMode: this.playbackOutputMode === 'standard',
+      stereoUpmixMode: this.stereoUpmixMode,
+      outputChannelIds,
+    })
+
+    if (
+      shouldUseStereoAdaptiveUpmix &&
+      this.adaptiveWorkletState === 'ready' &&
+      this.adaptiveInputNode
+    ) {
+      sourceNode.connect(this.adaptiveInputNode)
+      this.sourceRoutingNodes.set(sourceNode, {
+        inputNode: this.adaptiveInputNode,
+        nodes: [],
+      })
+      return
+    }
+
     if (shouldUseStereoAmbientUpmix) {
       this.connectStereoAmbientUpmix(
         sourceNode,
@@ -2410,9 +2443,29 @@ export class AudioEngine {
     const routingSink = this.getRoutingSinkNode()
     if (!routingSink) return
 
+    const shouldDelayAdaptiveBypass = (
+      this.stereoUpmixMode === 'adaptive' &&
+      this.playbackOutputMode === 'standard' &&
+      sourceChannels !== 2 &&
+      this.adaptiveLatencyFrames > 0
+    )
+    const bypassDelay = shouldDelayAdaptiveBypass
+      ? this.context.createDelay(Math.max(0.1, this.adaptiveLatencyFrames / this.context.sampleRate + 0.01))
+      : null
+    if (bypassDelay) {
+      bypassDelay.delayTime.value = this.adaptiveLatencyFrames / this.context.sampleRate
+      this.applyNodeRoutingMode(bypassDelay, sourceChannels, sourceChannels > 2 ? 'explicit' : 'max',
+        sourceChannels > 2 ? 'discrete' : 'speakers')
+      sourceNode.connect(bypassDelay)
+    }
+    const routedSource: AudioNode = bypassDelay ?? sourceNode
+
     if (!shouldUseRoutingMatrix) {
-      sourceNode.connect(routingSink)
-      this.sourceRoutingNodes.set(sourceNode, { inputNode: null, nodes: [] })
+      routedSource.connect(routingSink)
+      this.sourceRoutingNodes.set(sourceNode, {
+        inputNode: bypassDelay,
+        nodes: bypassDelay ? [bypassDelay] : [],
+      })
       return
     }
 
@@ -2426,7 +2479,7 @@ export class AudioEngine {
       'discrete'
     )
 
-    sourceNode.connect(splitter)
+    routedSource.connect(splitter)
 
     const gainNodes = this.connectChannelMixMatrix(splitter, merger, channelMixMatrix)
     const connectedOutputs = new Set<number>()
@@ -2439,9 +2492,172 @@ export class AudioEngine {
 
     merger.connect(routingSink)
     this.sourceRoutingNodes.set(sourceNode, {
-      inputNode: splitter,
-      nodes: [splitter, ...gainNodes, ...silenceNodes, merger],
+      inputNode: bypassDelay ?? splitter,
+      nodes: [
+        ...(bypassDelay ? [bypassDelay] : []),
+        splitter,
+        ...gainNodes,
+        ...silenceNodes,
+        merger,
+      ],
     })
+  }
+
+  private adaptiveOverrideCodes(outputChannelIds: readonly string[]): number[] {
+    return outputChannelIds.map((outputId) => {
+      if (!this.multichannelEnabled || this.isBinauralActive()) return -1
+      const override = isSpeakerRoleId(outputId) ? this.sourceSpeakerRoutingMap[outputId] : null
+      if (!override) return -1
+      if (override.kind === 'mute') return -2
+      if (override.sourceChannelId === 'FL') return 0
+      if (override.sourceChannelId === 'FR') return 1
+      return -2
+    })
+  }
+
+  private disposeAdaptiveUpmixer(): void {
+    this.adaptiveRendererGeneration += 1
+    try { this.adaptiveInputNode?.disconnect() } catch { /* ignore */ }
+    try { this.adaptiveWorkletNode?.disconnect() } catch { /* ignore */ }
+    if (this.adaptiveWorkletNode) this.adaptiveWorkletNode.port.onmessage = null
+    this.adaptiveInputNode = null
+    this.adaptiveWorkletNode = null
+    this.adaptiveWorkletState = 'idle'
+    this.adaptiveRendererKey = null
+    this.adaptiveRoutingSink = null
+    this.adaptiveLatencyFrames = 0
+    this.syncAnalysisDelayNodes()
+  }
+
+  private async ensureAdaptiveUpmixer(): Promise<boolean> {
+    if (!this.context || this.stereoUpmixMode !== 'adaptive' || this.playbackOutputMode !== 'standard') {
+      this.disposeAdaptiveUpmixer()
+      return false
+    }
+
+    const outputChannelIds = this.isBinauralActive()
+      ? this.getVirtualSpeakerChannelIds()
+      : this.getDirectSpeakerChannelIds()
+    const outputChannels = outputChannelIds.length
+    const eligible = canUseStereoAdaptiveUpmix({
+      sourceChannels: 2,
+      outputChannels,
+      multichannelEnabled: this.multichannelEnabled || this.isBinauralActive(),
+      standardMode: true,
+      stereoUpmixMode: 'adaptive',
+      outputChannelIds,
+    })
+    const routingSink = this.getRoutingSinkNode()
+    if (!eligible || !routingSink) {
+      this.disposeAdaptiveUpmixer()
+      return false
+    }
+
+    const overrides = this.adaptiveOverrideCodes(outputChannelIds)
+    const key = `${this.isBinauralActive() ? 'ase' : 'direct'}:${outputChannelIds.join(',')}:${overrides.join(',')}`
+    if (
+      this.adaptiveWorkletState === 'ready' &&
+      this.adaptiveRendererKey === key &&
+      this.adaptiveRoutingSink === routingSink &&
+      this.adaptiveInputNode &&
+      this.adaptiveWorkletNode
+    ) return true
+
+    this.disposeAdaptiveUpmixer()
+    const generation = this.adaptiveRendererGeneration
+    this.adaptiveWorkletState = 'loading'
+    try {
+      if (!this.adaptiveWorkletModuleLoaded) {
+        await this.context.audioWorklet.addModule('./adaptive-upmix-worklet.js')
+        this.adaptiveWorkletModuleLoaded = true
+      }
+    } catch (error) {
+      if (generation !== this.adaptiveRendererGeneration) return false
+      console.error('Failed to load Adaptive upmix worklet:', error)
+      this.disposeAdaptiveUpmixer()
+      this.adaptiveWorkletState = 'error'
+      return false
+    }
+    if (generation !== this.adaptiveRendererGeneration) return false
+
+    const inputNode = this.context.createGain()
+    inputNode.gain.value = 1
+    const workletNode = new AudioWorkletNode(this.context, 'adaptive-upmix-processor', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [outputChannels],
+      processorOptions: { roles: outputChannelIds, overrides },
+    })
+    this.applyNodeRoutingMode(inputNode, 2, 'explicit', 'discrete')
+    this.applyNodeRoutingMode(workletNode, 2, 'explicit', 'discrete')
+    inputNode.connect(workletNode)
+    workletNode.connect(routingSink)
+    this.adaptiveInputNode = inputNode
+    this.adaptiveWorkletNode = workletNode
+    this.adaptiveRendererKey = key
+    this.adaptiveRoutingSink = routingSink
+
+    try {
+      const wasmBytes = await window.electronAPI.getAdaptiveUpmixerWasmBytes()
+      let initializedLatencyFrames = 0
+      await new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => reject(new Error('Timed out initializing Adaptive upmix.')), 10_000)
+        workletNode.port.onmessage = (event: MessageEvent) => {
+          const data = event.data ?? {}
+          if (data.type === 'ready') {
+            window.clearTimeout(timeout)
+            initializedLatencyFrames = Math.max(0, Math.trunc(Number(data.latencyFrames) || 0))
+            resolve()
+          } else if (data.type === 'error') {
+            window.clearTimeout(timeout)
+            reject(new Error(typeof data.message === 'string' ? data.message : 'Adaptive upmix failed to initialize.'))
+          }
+        }
+        workletNode.port.postMessage({ type: 'init', wasmBytes }, [wasmBytes])
+      })
+      if (generation !== this.adaptiveRendererGeneration || this.adaptiveWorkletNode !== workletNode) {
+        try { inputNode.disconnect() } catch { /* ignore */ }
+        try { workletNode.disconnect() } catch { /* ignore */ }
+        return false
+      }
+      this.adaptiveLatencyFrames = initializedLatencyFrames
+      this.adaptiveWorkletState = 'ready'
+      this.syncAnalysisDelayNodes()
+      return true
+    } catch (error) {
+      if (generation !== this.adaptiveRendererGeneration) return false
+      console.error('Failed to initialize Adaptive upmix:', error)
+      this.disposeAdaptiveUpmixer()
+      this.adaptiveWorkletState = 'error'
+      return false
+    }
+  }
+
+  getAdaptiveUpmixLatencySeconds(): number {
+    return this.context && this.adaptiveWorkletState === 'ready' && this.adaptiveLatencyFrames > 0
+      ? this.adaptiveLatencyFrames / this.context.sampleRate
+      : 0
+  }
+
+  private syncAnalysisDelayNodes(): void {
+    if (!this.context) return
+    const effectiveDelaySeconds = Math.min(
+      ANALYSIS_DELAY_MAX_SEC,
+      this.analysisDelayMs / 1000 + this.getAdaptiveUpmixLatencySeconds()
+    )
+    this.analysisDelayNode?.delayTime.setValueAtTime(effectiveDelaySeconds, this.context.currentTime)
+    this.eqAnalysisDelayNode?.delayTime.setValueAtTime(effectiveDelaySeconds, this.context.currentTime)
+  }
+
+  private handleStandardSourceEnded(source: AudioBufferSourceNode): void {
+    const finish = () => {
+      if (this._playbackState === 'playing' && this.sourceNode === source) {
+        this.performGaplessTransition()
+      }
+    }
+    const latencyMs = this.getAdaptiveUpmixLatencySeconds() * 1000
+    if (latencyMs > 0) window.setTimeout(finish, Math.ceil(latencyMs))
+    else finish()
   }
 
   private connectStereoAmbientUpmix(
@@ -2757,7 +2973,7 @@ export class AudioEngine {
     this.syncStandardVisualizerStreaming()
   }
 
-  private disconnectSourceRouting(sourceNode: AudioNode | null): void {
+  private disconnectSourceRouting(sourceNode: AudioNode | null, preserveAdaptiveTail = false): void {
     if (!sourceNode) return
 
     const routingNodes = this.sourceRoutingNodes.get(sourceNode)
@@ -2775,13 +2991,23 @@ export class AudioEngine {
       try { sourceNode.disconnect(routingNodes.inputNode) } catch { /* ignore */ }
     }
 
-    for (const node of routingNodes.nodes) {
-      try { node.disconnect() } catch { /* ignore */ }
-      if ('stop' in node && typeof node.stop === 'function') {
-        try { node.stop() } catch { /* ignore */ }
+    const disposeNodes = () => {
+      for (const node of routingNodes.nodes) {
+        try { node.disconnect() } catch { /* ignore */ }
+        if ('stop' in node && typeof node.stop === 'function') {
+          try { node.stop() } catch { /* ignore */ }
+        }
       }
     }
     this.sourceRoutingNodes.delete(sourceNode)
+    if (preserveAdaptiveTail && this.adaptiveLatencyFrames > 0 && routingNodes.nodes.length > 0) {
+      window.setTimeout(
+        disposeNodes,
+        Math.ceil((this.adaptiveLatencyFrames / (this.context?.sampleRate ?? 48000)) * 1000) + 25
+      )
+    } else {
+      disposeNodes()
+    }
   }
 
   private resetRemotePlayPromise(error?: Error): void {
@@ -3893,11 +4119,8 @@ export class AudioEngine {
     this.sourceNode.buffer = this.audioBuffer
     this.connectSourceWithRouting(this.sourceNode, this.audioBuffer.numberOfChannels)
     this.connectSourceToAnalysisTap(this.sourceNode, this.audioBuffer.numberOfChannels)
-    this.sourceNode.onended = () => {
-      if (this._playbackState === 'playing') {
-        this.performGaplessTransition()
-      }
-    }
+    const parallaxSource = this.sourceNode
+    parallaxSource.onended = () => this.handleStandardSourceEnded(parallaxSource)
     this.startTime = startAtContextTime - offset
     this.pauseTime = offset
     // A pause fade leaves fadeGainNode at 0 and only play() restores it, which this parallax
@@ -4208,6 +4431,7 @@ export class AudioEngine {
 
     await this.initContext()
     this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+    await this.ensureAdaptiveUpmixer()
 
     if (this.rebuildRemoteStreamRoutingIfActive()) {
       return
@@ -4235,6 +4459,7 @@ export class AudioEngine {
 
     await this.initContext()
     this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+    await this.ensureAdaptiveUpmixer()
     if (!logicalLayoutChanged) return
 
     if (this.rebuildRemoteStreamRoutingIfActive()) return
@@ -4406,6 +4631,7 @@ export class AudioEngine {
 
     await this.initContext()
     this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+    await this.ensureAdaptiveUpmixer()
 
     if (this.rebuildRemoteStreamRoutingIfActive()) {
       return
@@ -4448,6 +4674,7 @@ export class AudioEngine {
 
     await this.initContext()
     this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+    await this.ensureAdaptiveUpmixer()
 
     if (this.rebuildRemoteStreamRoutingIfActive()) {
       return
@@ -4834,6 +5061,7 @@ export class AudioEngine {
     }
     this.syncSpatialNodeConnection()
     this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+    await this.ensureAdaptiveUpmixer()
 
     if (this.rebuildRemoteStreamRoutingIfActive()) {
       return
@@ -4867,6 +5095,7 @@ export class AudioEngine {
       await this.ensureSpatialWorklet()
     }
     this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+    await this.ensureAdaptiveUpmixer()
 
     if (this.rebuildRemoteStreamRoutingIfActive()) {
       return
@@ -5490,18 +5719,24 @@ export class AudioEngine {
       return this.nativeSnapshot?.currentTime ?? 0
     }
     if (this.remoteStreamState) {
-      return this.remoteStreamState.sampleRate > 0
-        ? (this.remoteStreamState.startFrame + this.remoteStreamState.currentFrame) / this.remoteStreamState.sampleRate
-        : 0
+      if (this.remoteStreamState.sampleRate <= 0) return 0
+      return Math.max(
+        0,
+        (this.remoteStreamState.startFrame + this.remoteStreamState.currentFrame) /
+          this.remoteStreamState.sampleRate - this.getAdaptiveUpmixLatencySeconds()
+      )
     }
     if (this.parallaxSinkState) {
-      return this.parallaxSinkState.sampleRate > 0
-        ? this.parallaxSinkState.currentFrame / this.parallaxSinkState.sampleRate
-        : 0
+      if (this.parallaxSinkState.sampleRate <= 0) return 0
+      return Math.max(
+        0,
+        this.parallaxSinkState.currentFrame / this.parallaxSinkState.sampleRate -
+          this.getAdaptiveUpmixLatencySeconds()
+      )
     }
     if (!this.context || this._playbackState === 'stopped' || this._playbackState === 'loading') return 0
     if (this._playbackState === 'paused') return this.pauseTime
-    return this.context.currentTime - this.startTime
+    return Math.max(0, this.context.currentTime - this.startTime - this.getAdaptiveUpmixLatencySeconds())
   }
 
   get duration(): number {
@@ -5713,14 +5948,7 @@ export class AudioEngine {
     const clampedMs = Math.max(0, Math.min(ANALYSIS_DELAY_MAX_MS, safeMs))
     this.analysisDelayMs = clampedMs
 
-    if (this.context) {
-      if (this.analysisDelayNode) {
-        this.analysisDelayNode.delayTime.setValueAtTime(clampedMs / 1000, this.context.currentTime)
-      }
-      if (this.eqAnalysisDelayNode) {
-        this.eqAnalysisDelayNode.delayTime.setValueAtTime(clampedMs / 1000, this.context.currentTime)
-      }
-    }
+    this.syncAnalysisDelayNodes()
   }
 
   async runOutputDelayCalibration(inputDeviceId: string = ''): Promise<OutputDelayCalibrationResult> {
@@ -8056,7 +8284,7 @@ export class AudioEngine {
     this.cancelScheduledNext()
 
     // Calculate when current track will end
-    const currentPosition = this.currentTime
+    const currentPosition = this.currentTime + this.getAdaptiveUpmixLatencySeconds()
     const remaining = this.audioBuffer.duration - currentPosition
     this.scheduledEndTime = this.context.currentTime + remaining
 
@@ -8069,7 +8297,10 @@ export class AudioEngine {
     // Schedule to start exactly when current track ends
     this.nextSourceNode.start(this.scheduledEndTime)
     if (this.nextNormalizationLinearGain != null) {
-      this.scheduleNormalizationTransition(this.nextNormalizationLinearGain, this.scheduledEndTime)
+      this.scheduleNormalizationTransition(
+        this.nextNormalizationLinearGain,
+        this.scheduledEndTime + this.getAdaptiveUpmixLatencySeconds()
+      )
     }
 
     // Set up ended handler for the NEXT track (not current)
@@ -8128,7 +8359,7 @@ export class AudioEngine {
     // Swap source nodes
     if (this.sourceNode) {
       this.sourceNode.onended = null
-      this.disconnectSourceRouting(this.sourceNode)
+      this.disconnectSourceRouting(this.sourceNode, true)
       try {
         this.sourceNode.buffer = null
         this.sourceNode.disconnect()
@@ -8145,11 +8376,8 @@ export class AudioEngine {
     this.applyChannelRoutingPreferences(this.audioBuffer.numberOfChannels)
 
     // Set up ended handler for the new current track
-    this.sourceNode.onended = () => {
-      if (this._playbackState === 'playing') {
-        this.performGaplessTransition()
-      }
-    }
+    const promotedSource = this.sourceNode
+    promotedSource.onended = () => this.handleStandardSourceEnded(promotedSource)
 
     this.isGaplessTransition = false
 
@@ -8194,11 +8422,7 @@ export class AudioEngine {
     newSource.buffer = nextBuffer
     this.connectSourceWithRouting(newSource, nextBuffer.numberOfChannels)
     this.connectSourceToAnalysisTap(newSource, nextBuffer.numberOfChannels)
-    newSource.onended = () => {
-      if (this._playbackState === 'playing') {
-        this.performGaplessTransition()
-      }
-    }
+    newSource.onended = () => this.handleStandardSourceEnded(newSource)
 
     const now = this.context.currentTime
     newSource.start(now, 0)
@@ -8214,7 +8438,7 @@ export class AudioEngine {
       fade.linearRampToValueAtTime(1, now + declickSec * 2)
     }
     oldSource.onended = () => {
-      this.disconnectSourceRouting(oldSource)
+      this.disconnectSourceRouting(oldSource, true)
       try {
         oldSource.buffer = null
         oldSource.disconnect()
@@ -8248,11 +8472,19 @@ export class AudioEngine {
 
     this.isGaplessTransition = false
 
-    // Reset visualizers and notify consumers exactly like the natural transition.
-    this.notifyTrackChange()
-    this.emit('durationChange', this.audioBuffer.duration)
-    this.emit('gaplessTransition')
-    this.emit('bufferReady', this.audioBuffer)
+    // Adaptive audio reaches the output after its fixed STFT latency. Keep
+    // visual resets and track-change events on that same acoustic boundary.
+    const transitionedBuffer = this.audioBuffer
+    const emitTransition = () => {
+      if (this.sourceNode !== newSource || this.audioBuffer !== transitionedBuffer) return
+      this.notifyTrackChange()
+      this.emit('durationChange', transitionedBuffer.duration)
+      this.emit('gaplessTransition')
+      this.emit('bufferReady', transitionedBuffer)
+    }
+    const adaptiveLatencyMs = this.getAdaptiveUpmixLatencySeconds() * 1000
+    if (adaptiveLatencyMs > 0) window.setTimeout(emitTransition, Math.ceil(adaptiveLatencyMs))
+    else emitTransition()
 
     return true
   }
@@ -8412,11 +8644,8 @@ export class AudioEngine {
     this.connectSourceToAnalysisTap(this.sourceNode, this.audioBuffer.numberOfChannels)
 
     // Handle track end
-    this.sourceNode.onended = () => {
-      if (this._playbackState === 'playing') {
-        this.performGaplessTransition()
-      }
-    }
+    const playingSource = this.sourceNode
+    playingSource.onended = () => this.handleStandardSourceEnded(playingSource)
 
     // Start from pause position, fading in from silence so the start is not abrupt.
     const offset = this.pauseTime
@@ -8656,6 +8885,7 @@ export class AudioEngine {
 
     // Stop current playback
     this.stopSource()
+    this.adaptiveWorkletNode?.port.postMessage({ type: 'reset' })
     this.cancelScheduledNext() // Cancel and reschedule after seek
     this.pauseTime = clampedTime
 
@@ -8666,11 +8896,8 @@ export class AudioEngine {
       this.connectSourceWithRouting(this.sourceNode, this.audioBuffer.numberOfChannels)
       this.connectSourceToAnalysisTap(this.sourceNode, this.audioBuffer.numberOfChannels)
 
-      this.sourceNode.onended = () => {
-        if (this._playbackState === 'playing') {
-          this.performGaplessTransition()
-        }
-      }
+      const seekSource = this.sourceNode
+      seekSource.onended = () => this.handleStandardSourceEnded(seekSource)
 
       this.startTime = this.context.currentTime - clampedTime
       this.sourceNode.start(0, clampedTime)
@@ -8926,6 +9153,7 @@ export class AudioEngine {
 
   // Cleanup
   dispose(): void {
+    this.disposeAdaptiveUpmixer()
     const nativeStop = this.stop()
     if (nativeStop) {
       void nativeStop

@@ -20,7 +20,12 @@ import {
  * hit-testing, focus and theming (CSS variables) for free.
  */
 
-export type SpeakerStagePuckState = 'routed' | 'unused' | 'inactive'
+export type SpeakerStagePuckState =
+  | 'routed'
+  | 'adaptive-front'
+  | 'adaptive-surround'
+  | 'unused'
+  | 'inactive'
 
 export interface SpeakerStageSpeaker {
   id: string
@@ -67,6 +72,10 @@ function usageStatusText(state: SpeakerStagePuckState): string {
   switch (state) {
     case 'routed':
       return 'Routed from current track'
+    case 'adaptive-front':
+      return 'Adaptive front image'
+    case 'adaptive-surround':
+      return 'Adaptive diffuse surround'
     case 'unused':
       return 'Not used by current track'
     case 'inactive':

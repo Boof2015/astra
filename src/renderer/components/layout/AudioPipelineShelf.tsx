@@ -8,7 +8,7 @@ import {
 import { useUIStore } from '../../stores/uiStore'
 import { audioEngine } from '../../audio/AudioEngine'
 import { resolvePipelineResampler } from '../../audio/audioPipelineModel'
-import { canUseStereoAmbientUpmix } from '../../utils/sourceChannelLayout'
+import { canUseStereoUpmix } from '../../utils/sourceChannelLayout'
 import {
   buildSpeakerHardwareRoutingPlan,
   resolveDirectSpeakerIds,
@@ -220,7 +220,7 @@ export default function AudioPipelineShelf() {
       ? buildVirtualSpeakerLayout(spatialLayoutPresetId, customVirtualSpeakers).map((speaker) => speaker.sourceChannel)
       : resolveDirectSpeakerIds(activeSpeakerProfile, multichannelEnabled)
     const upmixOutputChannels = activeOutputIds.length
-    if (canUseStereoAmbientUpmix({
+    if (canUseStereoUpmix({
       sourceChannels: currentTrack.channels ?? 2,
       outputChannels: upmixOutputChannels,
       multichannelEnabled: multichannelEnabled || binauralActive,
@@ -228,7 +228,12 @@ export default function AudioPipelineShelf() {
       stereoUpmixMode,
       outputChannelIds: activeOutputIds,
     })) {
-      result.push({ id: 'upmix', icon: RoutingIcon, label: 'Upmix', detail: `2ch \u2192 ${upmixOutputChannels}ch` })
+      result.push({
+        id: 'upmix',
+        icon: RoutingIcon,
+        label: 'Upmix',
+        detail: `${stereoUpmixMode === 'adaptive' ? 'Adaptive · ' : 'Ambient · '}2ch \u2192 ${upmixOutputChannels}ch`,
+      })
     }
 
     // Astra Spatial Engine

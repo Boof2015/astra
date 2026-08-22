@@ -1,11 +1,18 @@
 import {
+  canUseStereoAdaptiveUpmix,
   canUseStereoAmbientUpmix,
   resolveChannelMixMatrix,
   resolveStereoAmbientUpmixPlan,
+  resolveStereoAdaptiveUpmixPlan,
   type StereoUpmixMode,
 } from './sourceChannelLayout'
 
-export type SpeakerStageUsageState = 'routed' | 'unused' | 'inactive'
+export type SpeakerStageUsageState =
+  | 'routed'
+  | 'adaptive-front'
+  | 'adaptive-surround'
+  | 'unused'
+  | 'inactive'
 
 export interface ResolveSpeakerStageUsageOptions {
   sourceChannels: number | null
@@ -42,6 +49,23 @@ export function resolveSpeakerStageUsage(
     stereoUpmixMode: options.stereoUpmixMode,
     outputChannelIds: options.outputChannelIds,
   })
+  const adaptiveUpmixActive = canUseStereoAdaptiveUpmix({
+    sourceChannels: normalizedSourceChannels,
+    outputChannels,
+    multichannelEnabled: true,
+    standardMode: options.standardMode,
+    stereoUpmixMode: options.stereoUpmixMode,
+    outputChannelIds: options.outputChannelIds,
+  })
+
+  if (adaptiveUpmixActive) {
+    const routes = resolveStereoAdaptiveUpmixPlan(outputChannels, options.outputChannelIds).routes
+    return routes.map((route) => route.kind === 'front'
+      ? 'adaptive-front'
+      : route.kind === 'surround'
+        ? 'adaptive-surround'
+        : 'unused')
+  }
 
   const routedIndexes = new Set<number>()
   if (ambientUpmixActive) {

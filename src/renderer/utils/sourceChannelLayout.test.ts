@@ -3,12 +3,15 @@ import test from 'node:test'
 import {
   applySourceSpeakerOverridesToStereoAmbientUpmixPlan,
   buildSourceLayout,
+  canUseStereoAdaptiveUpmix,
   canUseStereoAmbientUpmix,
   getSourceChannelId,
   getSourceChannelLabel,
   isIdentityChannelMixMatrix,
+  normalizeStereoUpmixMode,
   resolveChannelMixMatrix,
   resolveStereoAmbientUpmixPlan,
+  resolveStereoAdaptiveUpmixPlan,
   type ChannelMixMatrix,
 } from './sourceChannelLayout.ts'
 
@@ -496,6 +499,89 @@ test('stereo ambient upmix activation is standard-mode opt-in only', () => {
   assert.equal(canUseStereoAmbientUpmix({ ...base, sourceChannels: 6 }), false)
   assert.equal(canUseStereoAmbientUpmix({ ...base, outputChannels: 2 }), false)
   assert.equal(canUseStereoAmbientUpmix({ ...base, outputChannels: 3 }), false)
+})
+
+test('adaptive mode persists while unknown saved values normalize to off', () => {
+  assert.equal(normalizeStereoUpmixMode('adaptive'), 'adaptive')
+  assert.equal(normalizeStereoUpmixMode('ambient'), 'ambient')
+  assert.equal(normalizeStereoUpmixMode('future-mode'), 'off')
+  assert.equal(normalizeStereoUpmixMode(null), 'off')
+})
+
+test('adaptive activation requires stereo, Standard, and a usable surround bed', () => {
+  const base = {
+    sourceChannels: 2,
+    outputChannels: 6,
+    multichannelEnabled: true,
+    standardMode: true,
+    stereoUpmixMode: 'adaptive' as const,
+    outputChannelIds: ['FL', 'FR', 'FC', 'LFE', 'SL', 'SR'],
+  }
+  assert.equal(canUseStereoAdaptiveUpmix(base), true)
+  assert.equal(canUseStereoAdaptiveUpmix({ ...base, standardMode: false }), false)
+  assert.equal(canUseStereoAdaptiveUpmix({ ...base, sourceChannels: 6 }), false)
+  assert.equal(canUseStereoAdaptiveUpmix({ ...base, stereoUpmixMode: 'ambient' }), false)
+  assert.equal(canUseStereoAdaptiveUpmix({
+    ...base,
+    outputChannels: 2,
+    outputChannelIds: ['FL', 'FR'],
+  }), false)
+  assert.equal(canUseStereoAdaptiveUpmix({
+    ...base,
+    outputChannels: 4,
+    outputChannelIds: ['FL', 'FR', 'TFL', 'TFR'],
+  }), false)
+})
+
+test('adaptive plans classify semantic fronts, surrounds, and silent roles', () => {
+  assert.deepEqual(
+    resolveStereoAdaptiveUpmixPlan(8, ['FL', 'FR', 'FC', 'LFE', 'BL', 'BR', 'SL', 'SR'])
+      .routes.map((route) => [route.outputId, route.kind]),
+    [
+      ['FL', 'front'],
+      ['FR', 'front'],
+      ['FC', 'front'],
+      ['LFE', 'unused'],
+      ['BL', 'surround'],
+      ['BR', 'surround'],
+      ['SL', 'surround'],
+      ['SR', 'surround'],
+    ]
+  )
+  assert.deepEqual(
+    resolveStereoAdaptiveUpmixPlan(8, ['FL', 'FR', 'FC', 'LFE', 'SL', 'SR', 'TFL', 'TFR'])
+      .routes.map((route) => [route.outputId, route.kind]),
+    [
+      ['FL', 'front'], ['FR', 'front'], ['FC', 'front'], ['LFE', 'unused'],
+      ['SL', 'surround'], ['SR', 'surround'], ['TFL', 'unused'], ['TFR', 'unused'],
+    ]
+  )
+})
+
+test('adaptive routing supports quad, 5.0, 5.1, and 7.1 beds', () => {
+  const layouts = [
+    ['FL', 'FR', 'SL', 'SR'],
+    ['FL', 'FR', 'FC', 'SL', 'SR'],
+    ['FL', 'FR', 'FC', 'LFE', 'SL', 'SR'],
+    ['FL', 'FR', 'FC', 'LFE', 'BL', 'BR', 'SL', 'SR'],
+  ]
+  for (const outputChannelIds of layouts) {
+    const plan = resolveStereoAdaptiveUpmixPlan(outputChannelIds.length, outputChannelIds)
+    assert.equal(plan.routes.length, outputChannelIds.length)
+    assert.deepEqual(plan.routes.map((route) => route.outputId), outputChannelIds)
+    assert.equal(
+      plan.routes.find((route) => route.outputId === 'LFE')?.kind,
+      outputChannelIds.includes('LFE') ? 'unused' : undefined
+    )
+    assert.equal(canUseStereoAdaptiveUpmix({
+      sourceChannels: 2,
+      outputChannels: outputChannelIds.length,
+      multichannelEnabled: true,
+      standardMode: true,
+      stereoUpmixMode: 'adaptive',
+      outputChannelIds,
+    }), true)
+  }
 })
 
 test('stereo ambient upmix keeps fronts direct and generates only rear ambience', () => {

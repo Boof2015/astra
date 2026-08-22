@@ -1448,6 +1448,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const bytes = await readFile(wasmPath)
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
   },
+  getAdaptiveUpmixerWasmBytes: async (): Promise<ArrayBuffer> => {
+    const isDev = process.env.NODE_ENV === 'development'
+    const wasmPath = isDev
+      ? join(__dirname, '../../src/renderer/public/adaptive-upmixer.wasm')
+      : join(__dirname, '../renderer/adaptive-upmixer.wasm')
+    const bytes = await readFile(wasmPath)
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+  },
   getSpatialHrtfPrepWasmBytes: async (): Promise<ArrayBuffer> => {
     const isDev = process.env.NODE_ENV === 'development'
     const wasmPath = isDev
@@ -2175,6 +2183,7 @@ declare global {
       openAudioFolder: () => Promise<string | null>
       loadAudioFile: (filePath: string, options?: AudioLoadOptions) => Promise<AudioFileResult | null>
       getSpatialWasmBytes: () => Promise<ArrayBuffer>
+      getAdaptiveUpmixerWasmBytes: () => Promise<ArrayBuffer>
       getSpatialHrtfPrepWasmBytes: () => Promise<ArrayBuffer>
       hrtfProfiles: {
         list: () => Promise<HrtfProfileSummary[]>

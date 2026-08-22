@@ -22998,7 +22998,13 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
 }
 
 .pipeline-setting-row .settings-segmented-control {
-  width: 126px;
+  /* Two-way controls remain compact; three-way controls such as Stereo
+     Upmix need enough room for their full labels instead of ellipsizing. */
+  width: calc(var(--segment-count) * 64px);
+}
+
+.pipeline-setting-row .settings-segmented-button {
+  padding-inline: 4px;
 }
 
 .pipeline-toggle {
@@ -23334,6 +23340,25 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
 
 .speaker-stage-puck.state-routed .speaker-stage-puck-id {
   fill: rgba(var(--accent-rgb), 0.9);
+}
+
+.speaker-stage-puck.state-adaptive-front .speaker-stage-puck-body {
+  fill: rgba(var(--accent-rgb), 0.2);
+  stroke: rgba(var(--accent-rgb), 0.82);
+}
+
+.speaker-stage-puck.state-adaptive-front .speaker-stage-puck-id {
+  fill: rgba(var(--accent-rgb), 0.96);
+}
+
+.speaker-stage-puck.state-adaptive-surround .speaker-stage-puck-body {
+  fill: color-mix(in srgb, #a78bfa 20%, var(--bg-secondary));
+  stroke: #a78bfa;
+  stroke-dasharray: 3 2;
+}
+
+.speaker-stage-puck.state-adaptive-surround .speaker-stage-puck-id {
+  fill: #c4b5fd;
 }
 
 .speaker-stage-puck.state-unused .speaker-stage-puck-body {

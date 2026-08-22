@@ -599,6 +599,7 @@ declare global {
             } | null>
             openAudioFolder: () => Promise<string | null>
             getSpatialWasmBytes: () => Promise<ArrayBuffer>
+            getAdaptiveUpmixerWasmBytes: () => Promise<ArrayBuffer>
             getSpatialHrtfPrepWasmBytes: () => Promise<ArrayBuffer>
             hrtfProfiles: {
                 list: () => Promise<HrtfProfileSummary[]>

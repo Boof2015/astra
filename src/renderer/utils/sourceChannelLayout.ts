@@ -32,7 +32,20 @@ export interface ChannelMixInput {
 }
 
 export type ChannelMixMatrix = ChannelMixInput[][]
-export type StereoUpmixMode = 'off' | 'ambient'
+export type StereoUpmixMode = 'off' | 'ambient' | 'adaptive'
+
+export type StereoAdaptiveUpmixRouteKind = 'front' | 'surround' | 'unused'
+
+export interface StereoAdaptiveUpmixRoute {
+  outputIndex: number
+  outputId: string
+  kind: StereoAdaptiveUpmixRouteKind
+}
+
+export interface StereoAdaptiveUpmixPlan {
+  outputChannels: number
+  routes: StereoAdaptiveUpmixRoute[]
+}
 
 export type StereoAmbientUpmixRouteKind = 'direct' | 'ambience'
 
@@ -136,7 +149,7 @@ function normalizeChannelCount(value: number): number {
 }
 
 export function normalizeStereoUpmixMode(value: unknown): StereoUpmixMode {
-  return value === 'ambient' ? 'ambient' : 'off'
+  return value === 'ambient' || value === 'adaptive' ? value : 'off'
 }
 
 function buildFallbackChannel(index: number): SourceChannel {
@@ -701,6 +714,52 @@ export function canUseStereoAmbientUpmix(options: CanUseStereoAmbientUpmixOption
 
   return resolveStereoAmbientUpmixPlan(outputChannels, options.outputChannelIds)
     .routes.some((route) => route.kind === 'ambience')
+}
+
+const ADAPTIVE_FRONT_IDS = new Set(['FL', 'FR', 'FC'])
+const ADAPTIVE_SURROUND_IDS = new Set(['SL', 'SR', 'BL', 'BR'])
+
+/** Semantic render contract shared by the C++ core, worklet, and UI. */
+export function resolveStereoAdaptiveUpmixPlan(
+  outputChannels: number,
+  outputChannelIds?: readonly string[] | null
+): StereoAdaptiveUpmixPlan {
+  const normalizedOutputChannels = normalizeChannelCount(outputChannels)
+  const outputLayout = outputChannelIds && outputChannelIds.length === normalizedOutputChannels
+    ? buildSpeakerLayoutFromIds(outputChannelIds)
+    : buildSpeakerLayout(normalizedOutputChannels)
+
+  return {
+    outputChannels: normalizedOutputChannels,
+    routes: outputLayout.map((output) => ({
+      outputIndex: output.index,
+      outputId: output.id,
+      kind: ADAPTIVE_FRONT_IDS.has(output.id)
+        ? 'front'
+        : ADAPTIVE_SURROUND_IDS.has(output.id)
+          ? 'surround'
+          : 'unused',
+    })),
+  }
+}
+
+export function canUseStereoAdaptiveUpmix(options: CanUseStereoAmbientUpmixOptions): boolean {
+  if (!options.standardMode || options.stereoUpmixMode !== 'adaptive') return false
+  if (!options.multichannelEnabled) return false
+
+  const sourceChannels = normalizeChannelCount(options.sourceChannels)
+  const outputChannels = normalizeChannelCount(options.outputChannels)
+  if (sourceChannels !== 2 || outputChannels <= 2) return false
+
+  const usableRoutes = resolveStereoAdaptiveUpmixPlan(outputChannels, options.outputChannelIds)
+    .routes.filter((route) => route.kind !== 'unused')
+  return usableRoutes.length > 2 && usableRoutes.some((route) => route.kind === 'surround')
+}
+
+export function canUseStereoUpmix(options: CanUseStereoAmbientUpmixOptions): boolean {
+  return options.stereoUpmixMode === 'adaptive'
+    ? canUseStereoAdaptiveUpmix(options)
+    : canUseStereoAmbientUpmix(options)
 }
 
 export function isIdentityChannelMixMatrix(
