@@ -1594,7 +1594,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     },
 
     removeHrtfProfile: async (profileId: string) => {
-      if (profileId === BUILTIN_HRTF_PROFILE_ID) return false
+      const profile = get().hrtfProfiles.find((candidate) => candidate.id === profileId)
+      if (!profile || profile.builtIn) return false
       if (get().selectedHrtfProfileId === profileId) {
         const switched = await get().setHrtfProfile(BUILTIN_HRTF_PROFILE_ID)
         if (!switched) {

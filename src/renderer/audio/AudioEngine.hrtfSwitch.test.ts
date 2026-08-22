@@ -20,7 +20,7 @@ function deferred<T>(): Deferred<T> {
 }
 
 function imported(id: string): HrtfProfileSummary {
-  return { id: `sofa:${id}`, name: id, kind: 'sofa', importedAt: new Date(0).toISOString(), sizeBytes: 100 }
+  return { id: `sofa:${id}`, name: id, kind: 'sofa', builtIn: false, importedAt: new Date(0).toISOString(), sizeBytes: 100 }
 }
 
 class FakeWorker {

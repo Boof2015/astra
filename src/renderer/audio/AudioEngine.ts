@@ -4786,6 +4786,7 @@ export class AudioEngine {
       id: `candidate:${requestId}`,
       name: 'Imported HRTF',
       kind: 'sofa',
+      builtIn: false,
       importedAt: null,
       sizeBytes: bytes.byteLength,
     }

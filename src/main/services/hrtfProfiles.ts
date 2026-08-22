@@ -3,8 +3,10 @@ import { basename, extname, join } from 'path'
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'fs/promises'
 import {
   BUILTIN_HRTF_PROFILE_ID,
+  BUILTIN_SOFA_HRTF_PROFILES,
   HRTF_PROFILE_MAX_BYTES,
-  builtinHrtfProfile,
+  builtinHrtfProfiles,
+  type BuiltinSofaHrtfProfileDefinition,
   type HrtfProfileCommitResult,
   type HrtfProfileBytesResult,
   type HrtfProfileRemoveResult,
@@ -17,6 +19,7 @@ const MANIFEST_BACKUP_FILE_NAME = 'profiles.json.bak'
 
 interface StoredHrtfProfile extends HrtfProfileSummary {
   kind: 'sofa'
+  builtIn: false
   fileName: string
   sha256: string
 }
@@ -60,6 +63,7 @@ function normalizeStoredProfile(value: unknown): StoredHrtfProfile | null {
     id: candidate.id,
     name: candidate.name.trim().slice(0, 120),
     kind: 'sofa',
+    builtIn: false,
     importedAt: candidate.importedAt,
     sizeBytes: Math.round(Number(candidate.sizeBytes)),
     fileName: candidate.fileName,
@@ -69,13 +73,15 @@ function normalizeStoredProfile(value: unknown): StoredHrtfProfile | null {
 
 export class HrtfProfileService {
   private readonly profileDir: string
+  private readonly builtinProfileDir: string | null
   private readonly manifestPath: string
   private readonly backupPath: string
   private manifest: HrtfProfileManifest | null = null
   private mutationQueue: Promise<void> = Promise.resolve()
 
-  constructor(userDataPath: string) {
+  constructor(userDataPath: string, builtinProfileDir: string | null = null) {
     this.profileDir = join(userDataPath, 'hrtf-profiles')
+    this.builtinProfileDir = builtinProfileDir
     this.manifestPath = join(this.profileDir, MANIFEST_FILE_NAME)
     this.backupPath = join(this.profileDir, MANIFEST_BACKUP_FILE_NAME)
   }
@@ -142,7 +148,10 @@ export class HrtfProfileService {
 
   async list(): Promise<HrtfProfileSummary[]> {
     const manifest = await this.ensureLoaded()
-    return [builtinHrtfProfile(), ...manifest.profiles.map(({ fileName: _fileName, sha256: _sha256, ...profile }) => profile)]
+    return [
+      ...builtinHrtfProfiles(),
+      ...manifest.profiles.map(({ fileName: _fileName, sha256: _sha256, ...profile }) => profile),
+    ]
   }
 
   async commit(fileName: string, input: ArrayBuffer | Uint8Array): Promise<HrtfProfileCommitResult> {
@@ -170,8 +179,13 @@ export class HrtfProfileService {
       }
     }
 
-    const manifest = await this.ensureLoaded()
     const sha256 = createHash('sha256').update(bytes).digest('hex')
+    const builtinDuplicate = BUILTIN_SOFA_HRTF_PROFILES.find((profile) => profile.sha256 === sha256)
+    if (builtinDuplicate) {
+      return { ok: true, profile: toBuiltinSofaSummary(builtinDuplicate), duplicate: true }
+    }
+
+    const manifest = await this.ensureLoaded()
     const id = `sofa:${sha256}`
     const duplicate = manifest.profiles.find((profile) => profile.id === id)
     if (duplicate) {
@@ -191,6 +205,7 @@ export class HrtfProfileService {
       id,
       name,
       kind: 'sofa',
+      builtIn: false,
       importedAt: new Date().toISOString(),
       sizeBytes: bytes.byteLength,
       fileName: storedFileName,
@@ -219,6 +234,9 @@ export class HrtfProfileService {
     if (profileId === BUILTIN_HRTF_PROFILE_ID) {
       return { ok: false, error: { code: 'not-found', message: 'The built-in HRTF does not have a profile file.' } }
     }
+    const builtinProfile = BUILTIN_SOFA_HRTF_PROFILES.find((profile) => profile.id === profileId)
+    if (builtinProfile) return this.readBuiltinSofa(builtinProfile)
+
     const manifest = await this.ensureLoaded()
     const profile = manifest.profiles.find((candidate) => candidate.id === profileId)
     if (!profile) return { ok: false, error: { code: 'not-found', message: 'That HRTF profile is no longer available.' } }
@@ -227,7 +245,7 @@ export class HrtfProfileService {
       if (bytes.byteLength !== profile.sizeBytes || bytes.byteLength > HRTF_PROFILE_MAX_BYTES) throw new Error('The managed profile file is incomplete.')
       const actualSha256 = createHash('sha256').update(bytes).digest('hex')
       if (actualSha256 !== profile.sha256) throw new Error('The managed profile file failed its integrity check.')
-      return { ok: true, bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer }
+      return { ok: true, bytes: toArrayBuffer(bytes) }
     } catch (error) {
       return {
         ok: false,
@@ -244,8 +262,8 @@ export class HrtfProfileService {
     profileId: string,
     trashFile: (filePath: string) => Promise<void>
   ): Promise<HrtfProfileRemoveResult> {
-    if (profileId === BUILTIN_HRTF_PROFILE_ID) {
-      return { ok: false, error: { code: 'storage-error', message: 'The built-in MIT KEMAR profile cannot be removed.' } }
+    if (builtinHrtfProfiles().some((profile) => profile.id === profileId)) {
+      return { ok: false, error: { code: 'storage-error', message: 'Built-in HRTF profiles cannot be removed.' } }
     }
     const manifest = await this.ensureLoaded()
     const index = manifest.profiles.findIndex((profile) => profile.id === profileId)
@@ -263,4 +281,35 @@ export class HrtfProfileService {
       }
     }
   }
+
+  private async readBuiltinSofa(profile: BuiltinSofaHrtfProfileDefinition): Promise<HrtfProfileBytesResult> {
+    if (!this.builtinProfileDir) {
+      return { ok: false, error: { code: 'storage-error', message: 'The bundled HRTF resource directory is unavailable.' } }
+    }
+    try {
+      const bytes = await readFile(join(this.builtinProfileDir, profile.assetFileName))
+      if (bytes.byteLength !== profile.sizeBytes || bytes.byteLength > HRTF_PROFILE_MAX_BYTES) {
+        throw new Error(`The bundled ${profile.name} profile has an unexpected size.`)
+      }
+      const actualSha256 = createHash('sha256').update(bytes).digest('hex')
+      if (actualSha256 !== profile.sha256) {
+        throw new Error(`The bundled ${profile.name} profile failed its integrity check.`)
+      }
+      return { ok: true, bytes: toArrayBuffer(bytes) }
+    } catch (error) {
+      return {
+        ok: false,
+        error: { code: 'storage-error', message: error instanceof Error ? error.message : 'Failed to read the bundled HRTF profile.' },
+      }
+    }
+  }
+}
+
+function toBuiltinSofaSummary(profile: BuiltinSofaHrtfProfileDefinition): HrtfProfileSummary {
+  const { assetFileName: _assetFileName, sha256: _sha256, ...summary } = profile
+  return { ...summary }
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 }

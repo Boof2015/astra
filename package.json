@@ -141,6 +141,13 @@
         "filter": [
           "*"
         ]
+      },
+      {
+        "from": "resources/hrtf/",
+        "to": "hrtf/",
+        "filter": [
+          "*"
+        ]
       }
     ],
     "win": {

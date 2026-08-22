@@ -396,7 +396,10 @@ const latestLibrarySyncCoordinator = new LibraryLatestSyncCoordinator({
 })
 
 function getHrtfProfileService(): HrtfProfileService {
-  if (!hrtfProfileService) hrtfProfileService = new HrtfProfileService(app.getPath('userData'))
+  if (!hrtfProfileService) {
+    const resourceRoot = app.isPackaged ? process.resourcesPath : join(app.getAppPath(), 'resources')
+    hrtfProfileService = new HrtfProfileService(app.getPath('userData'), join(resourceRoot, 'hrtf'))
+  }
   return hrtfProfileService
 }
 

@@ -507,7 +507,7 @@ export default function ChannelRoutingPanel() {
   const disabledTitle = bitPerfectModeActive ? nativeRoutingDisabledMessage : undefined
 
   const handleRemoveHrtfProfile = useCallback(() => {
-    if (!selectedHrtfProfile || selectedHrtfProfile.kind === 'builtin') return
+    if (!selectedHrtfProfile || selectedHrtfProfile.builtIn) return
     if (!window.confirm(`Remove “${selectedHrtfProfile.name}” from Astra’s HRTF library? The managed copy will be moved to Trash.`)) return
     void removeHrtfProfile(selectedHrtfProfile.id)
   }, [removeHrtfProfile, selectedHrtfProfile])
@@ -666,7 +666,7 @@ export default function ChannelRoutingPanel() {
               >
                 {hrtfProfiles.map((profile) => (
                   <option key={profile.id} value={profile.id}>
-                    {profile.name}{profile.kind === 'builtin' ? ' — Built-in' : ''}
+                    {profile.name}{profile.builtIn ? ' — Built-in' : ''}
                   </option>
                 ))}
               </select>
@@ -680,7 +680,7 @@ export default function ChannelRoutingPanel() {
             >
               {hrtfImporting ? 'Validating…' : 'Import SOFA'}
             </button>
-            {selectedHrtfProfile?.kind === 'sofa' && (
+            {selectedHrtfProfile && !selectedHrtfProfile.builtIn && (
               <button
                 type="button"
                 className="pipeline-reset-btn"

@@ -5,6 +5,16 @@ import test from 'node:test'
 const PREP_WASM_URL = new URL('../public/spatial-hrtf-prep.wasm', import.meta.url)
 const RENDER_WASM_URL = new URL('../public/spatial-renderer.wasm', import.meta.url)
 const SOFA_FIXTURE_URL = new URL('../../../test/fixtures/sofa/MIT_KEMAR_normal_pinna.sofa', import.meta.url)
+const BUILTIN_SOFA_FIXTURES = [
+  {
+    name: 'SADIE II D1 (KU100)',
+    url: new URL('../../../resources/hrtf/sadie-ii-d1-ku100.sofa', import.meta.url),
+  },
+  {
+    name: 'Sound Sphere 2 (AKO)',
+    url: new URL('../../../resources/hrtf/sound-sphere-2-ako.sofa', import.meta.url),
+  },
+] as const
 const BLOCK = 128
 
 interface PrepExports {
@@ -159,6 +169,48 @@ test('licensed SOFA fixture loads and resamples to device rates', () => {
     assert.ok(left.every(Number.isFinite) && right.every(Number.isFinite))
   }
   assert.ok(tapCounts.size > 1, 'resampling should change effective HRIR length')
+})
+
+test('bundled SOFA profiles load at supported device rates and cover Astra speaker positions', () => {
+  const sampleRates = [44100, 48000, 88200, 96000, 192000]
+  const speakerPositionsDeg = [
+    [0, 0],
+    [-30, 0], [30, 0],
+    [-45, 0], [45, 0],
+    [-90, 0], [90, 0],
+    [-110, 0], [110, 0],
+    [-120, 0], [120, 0],
+    [-135, 0], [135, 0],
+    [-150, 0], [150, 0],
+    [-45, 45], [45, 45],
+    [-135, 45], [135, 45],
+  ]
+
+  for (const fixture of BUILTIN_SOFA_FIXTURES) {
+    const bytes = readFileSync(fixture.url)
+    const prep = instantiatePrep()
+    const tapCounts = new Set<number>()
+    for (const sampleRate of sampleRates) {
+      const taps = initializeSofa(prep, sampleRate, bytes)
+      assert.ok(
+        taps > 0 && taps <= 8192,
+        `${fixture.name} should load at ${sampleRate} Hz (error ${prep.hrtf_prep_last_error()})`
+      )
+      tapCounts.add(taps)
+      for (const [azimuthDeg, elevationDeg] of speakerPositionsDeg) {
+        const [left, right] = bakePair(
+          prep,
+          (azimuthDeg * Math.PI) / 180,
+          (elevationDeg * Math.PI) / 180
+        )
+        assert.ok(
+          left.every(Number.isFinite) && right.every(Number.isFinite),
+          `${fixture.name} should bake ${azimuthDeg}°/${elevationDeg}° at ${sampleRate} Hz`
+        )
+      }
+    }
+    assert.ok(tapCounts.size > 1, `${fixture.name} should resample to distinct tap lengths`)
+  }
 })
 
 test('SOFA direction and elevation produce distinct filter lookups', () => {

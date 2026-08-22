@@ -116,6 +116,27 @@ The measurements are Copyright © 1994 MIT Media Laboratory, Bill Gardner and
 Keith Martin, and are provided free without use restrictions provided the
 authors are cited (`test/fixtures/sofa/LICENSE.MIT_KEMAR_pinnae`).
 
+### Bundled SOFA HRTF profiles
+
+The optional built-in profiles and their complete license texts are distributed
+under `resources/hrtf/`. The SOFA files are redistributed unchanged.
+
+#### SADIE II D1 (KU100)
+
+Copyright © 2018 University of York. Recorded and developed by Cal Armstrong,
+Lewis Thresh, and Gavin Kearney at AudioLab, Department of Electronic
+Engineering, University of York, United Kingdom. Licensed under the Apache
+License 2.0 (`resources/hrtf/LICENSE.SADIE-II.txt`). Dataset record and citation:
+https://doi.org/10.5281/zenodo.10886409.
+
+#### Sound Sphere 2 (AKO)
+
+Copyright © 2024 Meta Reality Labs. Created by Moritz Warnecke, Samuel Clapp,
+Zamir Ben-Hur, David L. Alon, Sebastian V. Amengual Garí, and Paul Calamia.
+Licensed under the Creative Commons Attribution 4.0 International license
+(`resources/hrtf/LICENSE.SOUND-SPHERE-2.txt`). Source:
+https://facebookresearch.github.io/SS2_HRTF/.
+
 ### Kiss FFT
 
 Copyright © 2003–2010 Mark Borgerding. All rights reserved.
