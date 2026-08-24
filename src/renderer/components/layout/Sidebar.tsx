@@ -7,6 +7,7 @@ import { useGraphStore } from '../../stores/graphStore'
 import { useListeningStatsStore } from '../../stores/listeningStatsStore'
 import { buildSidebarPlaylistSections } from '../../utils/playlistSystem'
 import { formatPlaylistImportStatus } from '../../utils/playlistImportStatus'
+import { runViewTransition } from '../../utils/viewTransitions'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 import { usePresence } from '../../hooks/usePresence'
@@ -133,6 +134,7 @@ export default function Sidebar() {
   const importPlaylistFromFile = usePlaylistStore((s) => s.importPlaylistFromFile)
   const clearPlaylistSelection = usePlaylistStore((s) => s.clearSelection)
   const selectPlaylist = usePlaylistStore((s) => s.selectPlaylist)
+  const clearLibrarySelection = useLibraryStore((s) => s.clearSelection)
   const favoriteTrackPaths = useLibraryStore((s) => s.favoriteTrackPaths)
   const trackCacheVersion = useLibraryStore((s) => s.trackCacheVersion)
   const resolveTrackPaths = useLibraryStore((s) => s.resolveTrackPaths)
@@ -514,6 +516,20 @@ export default function Sidebar() {
   }, [importPlaylistFromFile, isImportingPlaylist, selectPlaylist, setActiveView])
 
   const handleNavClick = useCallback((view: AppView) => {
+    if (view === 'library' && activeView === 'library') {
+      const library = useLibraryStore.getState()
+      const isDetailActive = Boolean(
+        library.selectedAlbum
+        || library.selectedArtist
+        || library.selectedGenre
+        || library.selectedYear !== null
+      )
+      if (isDetailActive) {
+        void runViewTransition(() => clearLibrarySelection(), 'library-context-backward')
+      }
+      return
+    }
+
     if (view === 'playlist') {
       clearPlaylistSelection()
       setActiveView('playlist')
@@ -526,7 +542,7 @@ export default function Sidebar() {
     }
 
     setActiveView(view)
-  }, [clearPlaylistSelection, openFullMap, setActiveView])
+  }, [activeView, clearLibrarySelection, clearPlaylistSelection, openFullMap, setActiveView])
 
   const activeSidebarDropTarget = trackDrag?.dropTarget?.surface === 'sidebar'
     ? trackDrag.dropTarget

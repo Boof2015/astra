@@ -128,27 +128,71 @@ test('Library detail navigation traverses backward and forward', async () => {
   assert.equal(useLibraryStore.getState().selectionHistory.length, 1)
 })
 
-test('explicit Library root exit bypasses detail history and retains the active mode', async () => {
+test('explicit Library root exit handles every detail type and retains root browsing state', async () => {
+  installLibraryMock()
+
+  const scenarios = [
+    {
+      mode: 'albums' as const,
+      open: () => useLibraryStore.getState().selectAlbum('Album A', 'Artist A')
+    },
+    {
+      mode: 'artists' as const,
+      open: () => useLibraryStore.getState().selectArtist('Artist A')
+    },
+    {
+      mode: 'genres' as const,
+      open: () => useLibraryStore.getState().selectGenre('Electronic')
+    },
+    {
+      mode: 'years' as const,
+      open: () => useLibraryStore.getState().selectYear(2026)
+    }
+  ]
+
+  for (const scenario of scenarios) {
+    resetLibraryNavigation()
+    useLibraryStore.getState().setViewMode(scenario.mode)
+    useLibraryStore.getState().setSelectedSourceFilters(['local'])
+    useLibraryStore.setState({ searchQuery: 'remember this search' })
+
+    await scenario.open()
+    await useLibraryStore.getState().clearSelection()
+
+    const state = useLibraryStore.getState()
+    assert.equal(state.viewMode, scenario.mode)
+    assert.equal(state.selectedAlbum, null)
+    assert.equal(state.selectedArtist, null)
+    assert.equal(state.selectedGenre, null)
+    assert.equal(state.selectedYear, null)
+    assert.equal(state.selectionOrigin, null)
+    assert.deepEqual(state.selectionHistory, [])
+    assert.deepEqual(state.selectionForwardHistory, [])
+    assert.deepEqual([...state.selectedSourceFilters], ['local'])
+    assert.equal(state.searchQuery, 'remember this search')
+  }
+})
+
+test('explicit Library root exit bypasses a nested album parent and forward history', async () => {
   installLibraryMock()
   resetLibraryNavigation()
   useLibraryStore.getState().setViewMode('artists')
 
   await useLibraryStore.getState().selectArtist('Artist A')
-  await useLibraryStore.getState().selectArtist('Artist B')
-
+  await useLibraryStore.getState().selectAlbum('Album A', 'Artist A', 'library-detail')
   assert.equal(useLibraryStore.getState().selectionHistory.length, 1)
+
+  const forwardSnapshot = useLibraryStore.getState().selectionHistory[0]
+  assert.ok(forwardSnapshot)
+  useLibraryStore.setState({ selectionForwardHistory: [forwardSnapshot] })
   await useLibraryStore.getState().clearSelection()
 
   const state = useLibraryStore.getState()
   assert.equal(state.viewMode, 'artists')
   assert.equal(state.selectedAlbum, null)
   assert.equal(state.selectedArtist, null)
-  assert.equal(state.selectedGenre, null)
-  assert.equal(state.selectedYear, null)
-  assert.equal(state.selectionOrigin, null)
   assert.deepEqual(state.selectionHistory, [])
   assert.deepEqual(state.selectionForwardHistory, [])
-  assert.deepEqual(state.trackPaths, [])
 })
 
 test('album opened from an artist detail restores the artist context', async () => {
