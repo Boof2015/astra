@@ -7,6 +7,8 @@ assignees: ''
 
 ---
 
+- [ ] This request is for one specific feature. Broader proposals or requests containing multiple features should be posted as a Discussion instead.
+
 **Is your feature request related to a problem? Please describe.**
 A clear and concise description of what the problem is. Ex. I'm always frustrated when [...]
 
