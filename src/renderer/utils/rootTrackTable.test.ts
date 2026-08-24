@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   createDefaultRootTrackTableLayout,
+  getTrackSortDirectionLabel,
   getVisibleRootTrackColumnIds,
   normalizeRootTrackTableLayout,
   normalizeTrackSortRules,
@@ -51,6 +52,24 @@ test('track sort rule normalization migrates a single rule, removes duplicates a
   assert.deepEqual(normalizeTrackSortRules([], { visibleColumns: new Set(['title']) }), [
     { key: 'title', direction: 'asc' }
   ])
+})
+
+test('root track sorting can retain rules for columns hidden from the table', () => {
+  assert.deepEqual(normalizeTrackSortRules([
+    { key: 'added', direction: 'desc' },
+    { key: 'artist', direction: 'asc' }
+  ], { ratingsEnabled: true }), [
+    { key: 'added', direction: 'desc' },
+    { key: 'artist', direction: 'asc' }
+  ])
+})
+
+test('track sort directions have field-specific semantic labels', () => {
+  assert.equal(getTrackSortDirectionLabel('title', 'asc'), 'A–Z')
+  assert.equal(getTrackSortDirectionLabel('added', 'desc'), 'Newest first')
+  assert.equal(getTrackSortDirectionLabel('bpm', 'asc'), 'Lowest first')
+  assert.equal(getTrackSortDirectionLabel('play_count', 'desc'), 'Most played')
+  assert.equal(getTrackSortDirectionLabel('duration', 'asc'), 'Shortest first')
 })
 
 test('header sorting replaces a multikey stack and only repeated single-key clicks reverse it', () => {

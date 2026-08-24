@@ -72,6 +72,21 @@ export const ROOT_TRACK_COLUMN_LABELS: Readonly<Record<RootTrackColumnId, string
   duration: 'Length'
 }
 
+const ROOT_TRACK_SORT_DIRECTION_LABELS: Readonly<Record<RootTrackColumnId, Readonly<Record<TrackSortDirection, string>>>> = {
+  title: { asc: 'A–Z', desc: 'Z–A' },
+  artist: { asc: 'A–Z', desc: 'Z–A' },
+  album: { asc: 'A–Z', desc: 'Z–A' },
+  year: { asc: 'Oldest first', desc: 'Newest first' },
+  genre: { asc: 'A–Z', desc: 'Z–A' },
+  bpm: { asc: 'Lowest first', desc: 'Highest first' },
+  musical_key: { asc: 'A–Z', desc: 'Z–A' },
+  rating: { asc: 'Lowest first', desc: 'Highest first' },
+  codec: { asc: 'A–Z', desc: 'Z–A' },
+  added: { asc: 'Oldest first', desc: 'Newest first' },
+  play_count: { asc: 'Least played', desc: 'Most played' },
+  duration: { asc: 'Shortest first', desc: 'Longest first' }
+}
+
 const ROOT_TRACK_COLUMN_REQUIRED_WIDTHS: Readonly<Record<RootTrackColumnId, number>> = {
   title: 160,
   artist: 92,
@@ -99,6 +114,10 @@ export function isRootTrackColumnId(value: unknown): value is RootTrackColumnId 
 
 export function getDefaultTrackSortDirection(key: TrackSortKey): TrackSortDirection {
   return key === 'added' || key === 'play_count' || key === 'rating' || key === 'year' ? 'desc' : 'asc'
+}
+
+export function getTrackSortDirectionLabel(key: TrackSortKey, direction: TrackSortDirection): string {
+  return ROOT_TRACK_SORT_DIRECTION_LABELS[key][direction]
 }
 
 export function replaceTrackSortRulesFromHeader(

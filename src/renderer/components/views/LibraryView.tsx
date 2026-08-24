@@ -50,7 +50,6 @@ import YearAlbumPreview from '../library/YearAlbumPreview'
 import YearGrid, { type YearGridViewportAPI } from '../library/YearGrid'
 import RootTrackTableControls from '../library/RootTrackTableControls'
 import {
-  getVisibleRootTrackColumnIds,
   normalizeTrackSortRules,
   replaceTrackSortRulesFromHeader,
   type RootTrackColumnId
@@ -329,8 +328,7 @@ export default function LibraryView() {
 
   useEffect(() => {
     if (!isTrackRootView) return
-    const visibleColumns = getVisibleRootTrackColumnIds(rootTrackTableLayout, ratingsEnabled)
-    const normalizedRules = normalizeTrackSortRules(tracksViewSortRules, { visibleColumns, ratingsEnabled })
+    const normalizedRules = normalizeTrackSortRules(tracksViewSortRules, { ratingsEnabled })
     const unchanged = normalizedRules.length === tracksViewSortRules.length
       && normalizedRules.every((rule, index) => (
         rule.key === tracksViewSortRules[index]?.key && rule.direction === tracksViewSortRules[index]?.direction
