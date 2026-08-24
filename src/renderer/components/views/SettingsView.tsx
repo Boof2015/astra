@@ -2008,52 +2008,6 @@ export default function SettingsView() {
             </div>
             <div className="settings-cards">
               <div className="settings-card">
-                <div className="settings-card-label">Library Diagnostics</div>
-                <div className="settings-grid">
-                  <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Performance Logging</span>
-                    <button
-                      type="button"
-                      className={`settings-toggle ${libraryDiagnosticsEnabled ? 'active' : ''}`}
-                      onClick={() => void setLibraryDiagnosticsEnabled(!libraryDiagnosticsEnabled)}
-                      disabled={libraryDiagnosticsIsLoading}
-                    >
-                      {libraryDiagnosticsEnabled ? 'Enabled' : 'Disabled'}
-                    </button>
-                  </div>
-                  <p className="settings-note">
-                    To reproduce: run Scan for Changes twice, then Force Rescan All. To test folder removal,
-                    remove a mapped test folder; Astra removes only its library index entry, not files on disk.
-                    Logs contain aggregate timings and never include folder names or file paths.
-                  </p>
-                  <p className="settings-info-meta">Current log</p>
-                  <p className="settings-info-path">{libraryDiagnosticsCurrentLogPath}</p>
-                  <p className="settings-info-meta">Previous session log</p>
-                  <p className="settings-info-path">{libraryDiagnosticsPreviousLogPath}</p>
-                  <div className="settings-info-links">
-                    <button
-                      type="button"
-                      className="settings-btn settings-link-btn"
-                      onClick={() => void revealCurrentLibraryDiagnosticsLog()}
-                      disabled={!libraryDiagnosticsStatus?.hasCurrentLog}
-                    >
-                      Reveal Current Log
-                    </button>
-                    <button
-                      type="button"
-                      className="settings-btn settings-link-btn"
-                      onClick={() => void revealPreviousLibraryDiagnosticsLog()}
-                      disabled={!libraryDiagnosticsStatus?.hasPreviousLog}
-                    >
-                      Reveal Previous Log
-                    </button>
-                  </div>
-                  {libraryDiagnosticsErrorMessage && (
-                    <p className="settings-note settings-note-error">{libraryDiagnosticsErrorMessage}</p>
-                  )}
-                </div>
-              </div>
-              <div className="settings-card">
                 <div className="settings-card-label">Normalization</div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
@@ -3555,6 +3509,52 @@ export default function SettingsView() {
                   >
                     Reveal Previous Log
                   </button>
+                </div>
+              </div>
+              <div className="settings-info-panel">
+                <h4>Library Diagnostics</h4>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Performance Logging</span>
+                    <button
+                      type="button"
+                      className={`settings-toggle ${libraryDiagnosticsEnabled ? 'active' : ''}`}
+                      onClick={() => void setLibraryDiagnosticsEnabled(!libraryDiagnosticsEnabled)}
+                      disabled={libraryDiagnosticsIsLoading}
+                    >
+                      {libraryDiagnosticsEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <p className="settings-note">
+                    To reproduce: run Scan for Changes twice, then Force Rescan All. To test folder removal,
+                    remove a mapped test folder; Astra removes only its library index entry, not files on disk.
+                    Logs contain aggregate timings and never include folder names or file paths.
+                  </p>
+                  <p className="settings-info-meta">Current log</p>
+                  <p className="settings-info-path">{libraryDiagnosticsCurrentLogPath}</p>
+                  <p className="settings-info-meta">Previous session log</p>
+                  <p className="settings-info-path">{libraryDiagnosticsPreviousLogPath}</p>
+                  <div className="settings-info-links">
+                    <button
+                      type="button"
+                      className="settings-btn settings-link-btn"
+                      onClick={() => void revealCurrentLibraryDiagnosticsLog()}
+                      disabled={!libraryDiagnosticsStatus?.hasCurrentLog}
+                    >
+                      Reveal Current Log
+                    </button>
+                    <button
+                      type="button"
+                      className="settings-btn settings-link-btn"
+                      onClick={() => void revealPreviousLibraryDiagnosticsLog()}
+                      disabled={!libraryDiagnosticsStatus?.hasPreviousLog}
+                    >
+                      Reveal Previous Log
+                    </button>
+                  </div>
+                  {libraryDiagnosticsErrorMessage && (
+                    <p className="settings-note settings-note-error">{libraryDiagnosticsErrorMessage}</p>
+                  )}
                 </div>
               </div>
               <div className="settings-info-panel">
