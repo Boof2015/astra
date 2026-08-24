@@ -9,9 +9,12 @@ export async function navigateInputBack(): Promise<boolean> {
     if (library.selectedAlbum || library.selectedArtist || library.selectedGenre || library.selectedYear !== null) {
       const shouldAlsoReturnToPreviousView =
         library.selectionHistory.length === 0 && library.selectionOrigin === 'home'
+      const prepared = await library.prepareSelection({ kind: 'history', direction: 'back' })
+      if (!prepared) return false
+
       let handled = false
-      await runViewTransition(async () => {
-        handled = await useLibraryStore.getState().goBackSelection()
+      await runViewTransition(() => {
+        handled = useLibraryStore.getState().commitPreparedSelection(prepared)
       }, 'library-context-backward')
       if (handled && shouldAlsoReturnToPreviousView) {
         useUIStore.getState().navigateViewBack()
@@ -28,9 +31,12 @@ export async function navigateInputForward(): Promise<boolean> {
   const library = useLibraryStore.getState()
 
   if (ui.activeView === 'library' && library.selectionForwardHistory.length > 0) {
+    const prepared = await library.prepareSelection({ kind: 'history', direction: 'forward' })
+    if (!prepared) return false
+
     let handled = false
-    await runViewTransition(async () => {
-      handled = await useLibraryStore.getState().goForwardSelection()
+    await runViewTransition(() => {
+      handled = useLibraryStore.getState().commitPreparedSelection(prepared)
     }, 'library-context-forward')
     return handled
   }

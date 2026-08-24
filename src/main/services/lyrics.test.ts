@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import {
   LyricsService,
+  resolveEmbeddedLyrics,
+  resolveEmbeddedLyricsMetadata,
   type LyricsOnlineLookupProvider,
   type LyricsServiceLibraryApi
 } from './lyrics.ts'
@@ -98,6 +103,7 @@ function createProvider(
 
 function createService(options: {
   libraryApi?: LyricsServiceLibraryApi
+  embeddedResolver?: (trackPath: string) => Promise<LyricsPayload | null>
   xlrcdbProvider: LyricsOnlineLookupProvider
   lrclibProvider: LyricsOnlineLookupProvider
 }): LyricsService {
@@ -106,11 +112,145 @@ function createService(options: {
     appVersion: '0.6.1-beta',
     libraryApi: options.libraryApi ?? createLibraryApi(),
     sidecarLookup: async () => null,
-    embeddedResolver: async () => null,
+    embeddedResolver: options.embeddedResolver ?? (async () => null),
     xlrcdbProvider: options.xlrcdbProvider,
     lrclibProvider: options.lrclibProvider
   })
 }
+
+function asEmbeddedMetadata(
+  metadata: unknown
+): Parameters<typeof resolveEmbeddedLyricsMetadata>[0] {
+  return metadata as Parameters<typeof resolveEmbeddedLyricsMetadata>[0]
+}
+
+const embeddedEnhancedLrc = [
+  '[00:02.25] <00:02.25> I  <00:02.49> know  ',
+  '[00:04.00] <00:04.00> Next'
+].join('\n')
+
+function assertEnhancedEmbeddedPayload(payload: LyricsPayload | null): void {
+  assert.ok(payload)
+  assert.equal(payload.source, 'embedded')
+  assert.equal(payload.format, 'lrc')
+  assert.equal(payload.plainLyrics, 'I   know\nNext')
+  assert.deepEqual(payload.syncedLines, [
+    {
+      timestampMs: 2_250,
+      text: 'I   know',
+      words: [
+        { timestampMs: 2_250, text: 'I  ' },
+        { timestampMs: 2_490, text: ' know' }
+      ]
+    },
+    {
+      timestampMs: 4_000,
+      text: 'Next',
+      words: [{ timestampMs: 4_000, text: 'Next' }]
+    }
+  ])
+}
+
+test('resolveEmbeddedLyricsMetadata parses recognized native textual lyric tags', () => {
+  const cases = [
+    { tagType: 'vorbis', id: 'LYRICS', value: embeddedEnhancedLrc },
+    { tagType: 'APEv2', id: 'Lyrics', value: embeddedEnhancedLrc },
+    { tagType: 'iTunes', id: '©lyr', value: embeddedEnhancedLrc },
+    { tagType: 'asf', id: 'WM/Lyrics', value: embeddedEnhancedLrc },
+    {
+      tagType: 'ID3v2.4',
+      id: 'USLT',
+      value: { language: 'eng', descriptor: '', text: embeddedEnhancedLrc }
+    }
+  ]
+
+  for (const fixture of cases) {
+    const payload = resolveEmbeddedLyricsMetadata(asEmbeddedMetadata({
+      native: {
+        [fixture.tagType]: [{ id: fixture.id, value: fixture.value }]
+      },
+      common: { lyrics: [] }
+    }))
+    assertEnhancedEmbeddedPayload(payload)
+  }
+})
+
+test('resolveEmbeddedLyricsMetadata reconstructs leaked common Enhanced LRC sync text', () => {
+  const payload = resolveEmbeddedLyricsMetadata(asEmbeddedMetadata({
+    native: {},
+    common: {
+      lyrics: [{
+        text: '<00:02.25> I  <00:02.49> know\n<00:04.00> Next',
+        syncText: [
+          { timestamp: 2_250, text: '<00:02.25> I  <00:02.49> know' },
+          { timestamp: 4_000, text: '<00:04.00> Next' }
+        ]
+      }]
+    }
+  }))
+
+  assertEnhancedEmbeddedPayload(payload)
+})
+
+test('resolveEmbeddedLyricsMetadata retains structured and plain common lyric fallbacks', () => {
+  const structured = resolveEmbeddedLyricsMetadata(asEmbeddedMetadata({
+    native: {},
+    common: {
+      lyrics: [{
+        text: 'First line\nSecond line',
+        syncText: [
+          { timestamp: 1_000, text: 'First line' },
+          { timestamp: 2_000, text: 'Second line' }
+        ]
+      }]
+    }
+  }))
+  assert.deepEqual(structured?.syncedLines, [
+    { timestampMs: 1_000, text: 'First line' },
+    { timestampMs: 2_000, text: 'Second line' }
+  ])
+
+  const plain = resolveEmbeddedLyricsMetadata(asEmbeddedMetadata({
+    native: {},
+    common: { lyrics: [{ text: 'Plain embedded lyrics', syncText: [] }] }
+  }))
+  assert.equal(plain?.format, 'plain')
+  assert.equal(plain?.plainLyrics, 'Plain embedded lyrics')
+})
+
+test('resolveEmbeddedLyricsMetadata prefers native parsing when synced line counts tie', () => {
+  const payload = resolveEmbeddedLyricsMetadata(asEmbeddedMetadata({
+    native: {
+      vorbis: [{ id: 'LYRICS', value: '[00:01.00]<00:01.00>Native' }]
+    },
+    common: {
+      lyrics: [{
+        text: 'Common',
+        syncText: [{ timestamp: 1_000, text: 'Common' }]
+      }]
+    }
+  }))
+
+  assert.equal(payload?.plainLyrics, 'Native')
+  assert.deepEqual(payload?.syncedLines[0]?.words, [
+    { timestampMs: 1_000, text: 'Native' }
+  ])
+})
+
+test('resolveEmbeddedLyrics parses a synthetic FLAC Enhanced LRC tag end to end', async (t) => {
+  const fixtureBase64 = await readFile(
+    new URL('./test-fixtures/embedded-enhanced-lrc.flac.base64', import.meta.url),
+    'utf8'
+  )
+  const fixtureDir = await mkdtemp(join(tmpdir(), 'astra-embedded-elrc-'))
+  t.after(async () => {
+    await rm(fixtureDir, { recursive: true, force: true })
+  })
+  const fixturePath = join(fixtureDir, 'embedded-enhanced-lrc.flac')
+  await writeFile(fixturePath, Buffer.from(fixtureBase64.trim(), 'base64'))
+
+  assertEnhancedEmbeddedPayload(await resolveEmbeddedLyrics(fixturePath))
+})
 
 test('LyricsService tries XLRCDB before LRCLIB and caches XLRCDB hits', async () => {
   const upserts: LyricsCacheUpsertInput[] = []
@@ -262,4 +402,88 @@ test('LyricsService rewrites legacy LRCLIB miss cache after a definitive XLRCDB 
   assert.equal(upserts[0]?.status, 'not_found')
   assert.equal(upserts[0]?.source, 'xlrcdb')
   assert.equal(upserts[0]?.provider, 'xlrcdb')
+})
+
+test('LyricsService refreshes legacy embedded caches with leaked word timestamps', async () => {
+  const refreshedPayload = resolveEmbeddedLyricsMetadata(asEmbeddedMetadata({
+    native: { vorbis: [{ id: 'LYRICS', value: embeddedEnhancedLrc }] },
+    common: { lyrics: [] }
+  }))
+  assert.ok(refreshedPayload)
+
+  const upserts: LyricsCacheUpsertInput[] = []
+  let embeddedCalls = 0
+  const service = createService({
+    libraryApi: createLibraryApi({
+      cache: {
+        trackPath: '/music/track.flac',
+        metadataSignature: 'legacy-signature',
+        status: 'hit',
+        source: 'embedded',
+        provider: null,
+        format: 'lrc',
+        plainLyrics: '<00:02.25> I  <00:02.49> know',
+        syncedLyrics: '<00:02.25> I  <00:02.49> know',
+        syncedLines: [
+          { timestampMs: 2_250, text: '<00:02.25> I  <00:02.49> know' }
+        ],
+        updatedAt: 1_000
+      },
+      upserts
+    }),
+    embeddedResolver: async () => {
+      embeddedCalls += 1
+      return refreshedPayload
+    },
+    xlrcdbProvider: createProvider([]),
+    lrclibProvider: createProvider([])
+  })
+
+  const result = await service.getForTrack(makeQuery())
+
+  assert.equal(result.status, 'hit')
+  assert.equal(result.status === 'hit' ? result.cached : true, false)
+  assert.equal(embeddedCalls, 1)
+  assert.equal(upserts.length, 1)
+  assert.equal(upserts[0]?.source, 'embedded')
+  assertEnhancedEmbeddedPayload(result.status === 'hit' ? result.lyrics : null)
+})
+
+test('LyricsService keeps valid Enhanced LRC embedded caches cache-first', async () => {
+  const cachedPayload = resolveEmbeddedLyricsMetadata(asEmbeddedMetadata({
+    native: { vorbis: [{ id: 'LYRICS', value: embeddedEnhancedLrc }] },
+    common: { lyrics: [] }
+  }))
+  assert.ok(cachedPayload)
+
+  let embeddedCalls = 0
+  const service = createService({
+    libraryApi: createLibraryApi({
+      cache: {
+        trackPath: '/music/track.flac',
+        metadataSignature: 'current-signature',
+        status: 'hit',
+        source: 'embedded',
+        provider: null,
+        format: 'lrc',
+        plainLyrics: cachedPayload.plainLyrics,
+        syncedLyrics: cachedPayload.syncedLyrics,
+        syncedLines: cachedPayload.syncedLines,
+        updatedAt: 1_000
+      }
+    }),
+    embeddedResolver: async () => {
+      embeddedCalls += 1
+      return null
+    },
+    xlrcdbProvider: createProvider([]),
+    lrclibProvider: createProvider([])
+  })
+
+  const result = await service.getForTrack(makeQuery())
+
+  assert.equal(result.status, 'hit')
+  assert.equal(result.status === 'hit' ? result.cached : false, true)
+  assert.equal(embeddedCalls, 0)
+  assertEnhancedEmbeddedPayload(result.status === 'hit' ? result.lyrics : null)
 })

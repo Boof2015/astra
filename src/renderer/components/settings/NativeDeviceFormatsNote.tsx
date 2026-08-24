@@ -46,7 +46,7 @@ export default function NativeDeviceFormatsNote() {
   const [reason, setReason] = useState<string | null>(null)
 
   useEffect(() => {
-    if (playbackOutputMode !== 'bitperfect' || !window.nativeAudioAPI?.probeDeviceFormats) {
+    if (playbackOutputMode === 'standard' || !window.nativeAudioAPI?.probeDeviceFormats) {
       setSummary(null)
       setReason(null)
       return
@@ -74,12 +74,17 @@ export default function NativeDeviceFormatsNote() {
     // changed its rate since the last probe.
   }, [playbackOutputMode, selectedDeviceId, formatNotice?.id])
 
-  if (playbackOutputMode !== 'bitperfect') return null
+  if (playbackOutputMode === 'standard') return null
   if (!summary && !reason) return null
 
   return (
     <>
-      {summary && (
+      {summary && playbackOutputMode === 'exclusive' && (
+        <p className="settings-note">
+          Device accepts in exclusive mode (stereo): {summary}. Exclusive DSP keeps the source layout and can resample to another accepted hardware rate.
+        </p>
+      )}
+      {summary && playbackOutputMode === 'bitperfect' && (
         <p className="settings-note">
           Device accepts in exclusive mode (stereo): {summary}. Tracks in any other format won&apos;t play
           bit-perfect — most interfaces set their sample rate in their own control panel, not in Windows.

@@ -1,13 +1,17 @@
 import { strict as assert } from 'node:assert'
 import test from 'node:test'
 import {
+  applySourceSpeakerOverridesToStereoAmbientUpmixPlan,
   buildSourceLayout,
+  canUseStereoAdaptiveUpmix,
   canUseStereoAmbientUpmix,
   getSourceChannelId,
   getSourceChannelLabel,
   isIdentityChannelMixMatrix,
+  normalizeStereoUpmixMode,
   resolveChannelMixMatrix,
   resolveStereoAmbientUpmixPlan,
+  resolveStereoAdaptiveUpmixPlan,
   type ChannelMixMatrix,
 } from './sourceChannelLayout.ts'
 
@@ -113,6 +117,45 @@ test('automatic matrix handles multichannel reductions beyond stereo', () => {
       [[5, G], [7, 1]],
     ]
   )
+})
+
+test('explicit Mono and 5.0 layouts preserve their semantic behavior', () => {
+  assert.deepEqual(
+    compact(resolveChannelMixMatrix({
+      sourceChannels: 2,
+      outputChannels: 1,
+      multichannelEnabled: true,
+      outputChannelIds: ['M'],
+    })),
+    [[[0, 0.5], [1, 0.5]]]
+  )
+
+  assert.deepEqual(
+    compact(resolveChannelMixMatrix({
+      sourceChannels: 6,
+      outputChannels: 5,
+      multichannelEnabled: true,
+      outputChannelIds: ['FL', 'FR', 'FC', 'SL', 'SR'],
+    })),
+    [
+      [[0, 1]],
+      [[1, 1]],
+      [[2, 1]],
+      [[4, 1]],
+      [[5, 1]],
+    ]
+  )
+
+  assert.ok(isIdentityChannelMixMatrix(
+    resolveChannelMixMatrix({
+      sourceChannels: 2,
+      outputChannels: 2,
+      multichannelEnabled: true,
+      outputChannelIds: ['FL', 'FR'],
+    }),
+    2,
+    2
+  ))
 })
 
 test('7.1.4 source layout is named and folds heights down to flat layouts', () => {
@@ -366,6 +409,28 @@ test('manual matrix preserves exact remaps, mute, and invalid values', () => {
   )
 })
 
+test('semantic source-to-speaker overrides replace only selected logical rows', () => {
+  assert.deepEqual(
+    compact(resolveChannelMixMatrix({
+      sourceChannels: 6,
+      outputChannels: 4,
+      outputChannelIds: ['FL', 'FR', 'SL', 'SR'],
+      multichannelEnabled: true,
+      sourceSpeakerRoutingMap: {
+        FL: { kind: 'source', sourceChannelId: 'FC' },
+        FR: { kind: 'source', sourceChannelId: 'FC' },
+        SL: { kind: 'mute' },
+      },
+    })),
+    [
+      [[2, 1]],
+      [[2, 1]],
+      [],
+      [[5, 1]],
+    ]
+  )
+})
+
 test('manual 6 to 4 front layout folds unmapped center into front left and right', () => {
   assert.deepEqual(
     compact(resolveChannelMixMatrix({
@@ -436,6 +501,89 @@ test('stereo ambient upmix activation is standard-mode opt-in only', () => {
   assert.equal(canUseStereoAmbientUpmix({ ...base, outputChannels: 3 }), false)
 })
 
+test('adaptive mode persists while unknown saved values normalize to off', () => {
+  assert.equal(normalizeStereoUpmixMode('adaptive'), 'adaptive')
+  assert.equal(normalizeStereoUpmixMode('ambient'), 'ambient')
+  assert.equal(normalizeStereoUpmixMode('future-mode'), 'off')
+  assert.equal(normalizeStereoUpmixMode(null), 'off')
+})
+
+test('adaptive activation requires stereo, Standard, and a usable surround bed', () => {
+  const base = {
+    sourceChannels: 2,
+    outputChannels: 6,
+    multichannelEnabled: true,
+    standardMode: true,
+    stereoUpmixMode: 'adaptive' as const,
+    outputChannelIds: ['FL', 'FR', 'FC', 'LFE', 'SL', 'SR'],
+  }
+  assert.equal(canUseStereoAdaptiveUpmix(base), true)
+  assert.equal(canUseStereoAdaptiveUpmix({ ...base, standardMode: false }), false)
+  assert.equal(canUseStereoAdaptiveUpmix({ ...base, sourceChannels: 6 }), false)
+  assert.equal(canUseStereoAdaptiveUpmix({ ...base, stereoUpmixMode: 'ambient' }), false)
+  assert.equal(canUseStereoAdaptiveUpmix({
+    ...base,
+    outputChannels: 2,
+    outputChannelIds: ['FL', 'FR'],
+  }), false)
+  assert.equal(canUseStereoAdaptiveUpmix({
+    ...base,
+    outputChannels: 4,
+    outputChannelIds: ['FL', 'FR', 'TFL', 'TFR'],
+  }), false)
+})
+
+test('adaptive plans classify semantic fronts, surrounds, and silent roles', () => {
+  assert.deepEqual(
+    resolveStereoAdaptiveUpmixPlan(8, ['FL', 'FR', 'FC', 'LFE', 'BL', 'BR', 'SL', 'SR'])
+      .routes.map((route) => [route.outputId, route.kind]),
+    [
+      ['FL', 'front'],
+      ['FR', 'front'],
+      ['FC', 'front'],
+      ['LFE', 'unused'],
+      ['BL', 'surround'],
+      ['BR', 'surround'],
+      ['SL', 'surround'],
+      ['SR', 'surround'],
+    ]
+  )
+  assert.deepEqual(
+    resolveStereoAdaptiveUpmixPlan(8, ['FL', 'FR', 'FC', 'LFE', 'SL', 'SR', 'TFL', 'TFR'])
+      .routes.map((route) => [route.outputId, route.kind]),
+    [
+      ['FL', 'front'], ['FR', 'front'], ['FC', 'front'], ['LFE', 'unused'],
+      ['SL', 'surround'], ['SR', 'surround'], ['TFL', 'unused'], ['TFR', 'unused'],
+    ]
+  )
+})
+
+test('adaptive routing supports quad, 5.0, 5.1, and 7.1 beds', () => {
+  const layouts = [
+    ['FL', 'FR', 'SL', 'SR'],
+    ['FL', 'FR', 'FC', 'SL', 'SR'],
+    ['FL', 'FR', 'FC', 'LFE', 'SL', 'SR'],
+    ['FL', 'FR', 'FC', 'LFE', 'BL', 'BR', 'SL', 'SR'],
+  ]
+  for (const outputChannelIds of layouts) {
+    const plan = resolveStereoAdaptiveUpmixPlan(outputChannelIds.length, outputChannelIds)
+    assert.equal(plan.routes.length, outputChannelIds.length)
+    assert.deepEqual(plan.routes.map((route) => route.outputId), outputChannelIds)
+    assert.equal(
+      plan.routes.find((route) => route.outputId === 'LFE')?.kind,
+      outputChannelIds.includes('LFE') ? 'unused' : undefined
+    )
+    assert.equal(canUseStereoAdaptiveUpmix({
+      sourceChannels: 2,
+      outputChannels: outputChannelIds.length,
+      multichannelEnabled: true,
+      standardMode: true,
+      stereoUpmixMode: 'adaptive',
+      outputChannelIds,
+    }), true)
+  }
+})
+
 test('stereo ambient upmix keeps fronts direct and generates only rear ambience', () => {
   assert.deepEqual(
     resolveStereoAmbientUpmixPlan(4).routes.map((route) => [route.outputId, route.kind]),
@@ -495,6 +643,30 @@ test('stereo ambient upmix keeps fronts direct and generates only rear ambience'
   assert.deepEqual(
     backLeftRoute?.inputs.map((input) => [input.sourceIndex, Number(input.gain.toFixed(6))]),
     [[0, BACK_AMBIENCE_GAIN], [1, -BACK_AMBIENCE_CROSSFEED_GAIN]]
+  )
+})
+
+test('speaker overrides replace only their ambient-upmix rows', () => {
+  const plan = applySourceSpeakerOverridesToStereoAmbientUpmixPlan(
+    resolveStereoAmbientUpmixPlan(6),
+    {
+      FL: { kind: 'source', sourceChannelId: 'FR' },
+      FC: { kind: 'source', sourceChannelId: 'FL' },
+      SL: { kind: 'mute' },
+    },
+    ['FL', 'FR', 'FC', 'LFE', 'SL', 'SR']
+  )
+
+  assert.deepEqual(
+    plan.routes.map((route) => [route.outputId, route.kind]),
+    [['FL', 'direct'], ['FR', 'direct'], ['FC', 'direct'], ['SR', 'ambience']]
+  )
+  assert.deepEqual(plan.routes[0]?.inputs, [{ sourceIndex: 1, gain: 1 }])
+  assert.deepEqual(plan.routes[2]?.inputs, [{ sourceIndex: 0, gain: 1 }])
+  assert.equal(plan.routes.some((route) => route.outputId === 'SL'), false)
+  assert.deepEqual(
+    plan.routes[3]?.inputs.map((input) => [input.sourceIndex, Number(input.gain.toFixed(6))]),
+    [[0, -SIDE_AMBIENCE_CROSSFEED_GAIN], [1, SIDE_AMBIENCE_GAIN]]
   )
 })
 

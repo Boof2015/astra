@@ -5,14 +5,22 @@ import type {
   AudioBufferMemoryStats,
   NativeAudioBackendKind,
   NativeAudioCapabilities,
+  NativeAudioDspConfig,
   NativeAudioDeviceFormat,
   NativeAudioDeviceFormatProbe,
+  NativeAudioDiagnosticReport,
   NativeAudioProbedSampleFormat,
   NativeAudioEvent,
   NativeAudioOutputDevice,
+  NativeAudioOutputAttempt,
+  NativeAudioOutputStatus,
+  NativeAudioOutputRequest,
+  NativeAudioProcessingStatus,
+  NativePcmFormat,
   NativeAudioPlaybackSnapshot,
   NativeAudioSampleFormat,
   NativeAudioTrackLoadResult,
+  NativeAudioTrackGain,
   NativeAudioTrackMetadata,
   NativeAudioVisualizerTapDemand,
   NativeAudioVUMeterChunk,
@@ -22,21 +30,27 @@ import { createBitPerfectFormatError } from '../shared/audio/bitPerfectFormatErr
 
 export interface NativeAudioAddonPlayback {
   getCapabilities(): NativeAudioCapabilities
+  getNativeAudioDiagnosticReport?(): string
   setOutputDevice(deviceId: string): NativeAudioCapabilities
+  configureOutput(request: NativeAudioOutputRequest): NativeAudioCapabilities
+  setDspConfig(config: NativeAudioDspConfig): NativeAudioPlaybackSnapshot
+  setCurrentTrackGain(gain: NativeAudioTrackGain): NativeAudioPlaybackSnapshot
   probeDeviceFormats?(deviceId: string, channels: number): NativeAudioDeviceFormatProbe
   loadTrack(
     pcmData: Uint8Array,
     sampleRate: number,
     channels: number,
     sampleFormat: NativeAudioSampleFormat,
-    duration: number
+    duration: number,
+    gain?: NativeAudioTrackGain
   ): NativeAudioPlaybackSnapshot
   preloadNextTrack(
     pcmData: Uint8Array,
     sampleRate: number,
     channels: number,
     sampleFormat: NativeAudioSampleFormat,
-    duration: number
+    duration: number,
+    gain?: NativeAudioTrackGain
   ): void
   promoteNextTrack(): NativeAudioPlaybackSnapshot
   play(): Promise<NativeAudioPlaybackSnapshot>
@@ -61,16 +75,21 @@ interface NativeAudioControllerApi {
   initialize: () => Promise<NativeAudioCapabilities>
   getCapabilities: () => Promise<NativeAudioCapabilities>
   setOutputDevice: (deviceId: string) => Promise<NativeAudioCapabilities>
+  configureNativeOutput: (request: NativeAudioOutputRequest) => Promise<NativeAudioCapabilities>
+  setNativeDspConfig: (config: NativeAudioDspConfig) => Promise<NativeAudioPlaybackSnapshot>
+  setNativeTrackGain: (gain: NativeAudioTrackGain) => Promise<NativeAudioPlaybackSnapshot>
   probeDeviceFormats: (deviceId?: string, channels?: number) => Promise<NativeAudioDeviceFormatProbe>
-  loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
-  preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+  loadTrack: (filePath: string, metadata?: NativeAudioTrackMetadata, gain?: NativeAudioTrackGain) => Promise<NativeAudioTrackLoadResult>
+  preloadNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata, gain?: NativeAudioTrackGain) => Promise<NativeAudioTrackLoadResult>
   promoteNextTrack: (filePath: string, metadata?: NativeAudioTrackMetadata) => Promise<NativeAudioTrackLoadResult>
+  cancelPendingDecode: () => Promise<void>
   play: () => Promise<NativeAudioPlaybackSnapshot>
   pause: () => Promise<NativeAudioPlaybackSnapshot>
   stop: () => Promise<NativeAudioPlaybackSnapshot>
   seek: (seconds: number) => Promise<NativeAudioPlaybackSnapshot>
   clearNextTrack: () => Promise<void>
   getPlaybackSnapshot: () => Promise<NativeAudioPlaybackSnapshot>
+  getNativeAudioDiagnosticReport: () => Promise<NativeAudioDiagnosticReport>
   getBufferMemoryStats: () => Promise<AudioBufferMemoryStats>
   setVisualizerTapDemand: (demand: NativeAudioVisualizerTapDemand) => Promise<void>
   flushOscilloscopeChunks: () => Float32Array[]
@@ -80,8 +99,14 @@ interface NativeAudioControllerApi {
   onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
 }
 
-interface NativeAudioControllerOptions {
+export type NativeAudioBinaryResolver = (binary: 'ffmpeg' | 'ffprobe') => Promise<string | null>
+
+export interface NativeAudioControllerOptions {
   unavailableReason?: string | null
+  eventPolling?: boolean
+  resolveBinary?: NativeAudioBinaryResolver
+  runProbe?: (file: string, args: string[], signal: AbortSignal) => Promise<string>
+  runDecode?: (file: string, args: string[], signal: AbortSignal) => Promise<Buffer>
 }
 
 class SupersededNativeAudioLoadError extends Error {
@@ -98,11 +123,17 @@ interface DecodedPcmTrack {
   sampleFormat: NativeAudioSampleFormat
   duration: number
   pcmData: Buffer
+  sourceMetadata: NativeAudioTrackMetadata
+  timings: {
+    binaryResolutionMs: number
+    probeMs: number
+    decodeMs: number
+  }
 }
 
 interface DecodeFileOptions {
   backendKind?: NativeAudioBackendKind
-  forcedSampleFormat?: NativeAudioSampleFormat
+  signal: AbortSignal
 }
 
 interface LoadedTrackRequest {
@@ -112,6 +143,8 @@ interface LoadedTrackRequest {
   channels: number
   sampleFormat: NativeAudioSampleFormat
   duration: number
+  timings?: DecodedPcmTrack['timings']
+  gain: NativeAudioTrackGain
 }
 
 interface FfprobeStreamInfo {
@@ -141,15 +174,88 @@ const LOSSY_CODECS = new Set([
 ])
 
 const DEFAULT_UNAVAILABLE_CAPABILITIES: NativeAudioCapabilities = {
+  processedExclusiveAvailable: false,
+  reasonProcessedExclusiveUnavailable: 'Native processed exclusive playback is unavailable in this build.',
   bitPerfectAvailable: false,
   reasonUnavailable: 'Native bit-perfect playback is unavailable in this build.',
   activeBackend: 'unavailable',
-  activeDeviceExclusive: false,
-  activeSampleRate: null,
-  activeSampleFormat: null,
   selectedDeviceId: null,
   selectedDeviceMaxChannels: null,
   devices: []
+}
+
+const EMPTY_PROCESSING_STATUS: NativeAudioProcessingStatus = {
+  outputPolicy: 'direct',
+  exclusiveActive: false,
+  processingActive: false,
+  resamplingActive: false,
+  resamplerName: null,
+  resamplerQuality: null,
+  sourceSampleRate: null,
+  targetSampleRate: null,
+  requestedSampleRate: null,
+  rateSelectionMode: 'auto',
+  rateSelectionReason: null,
+  processingLatencyFrames: 0,
+  gainMode: 'off',
+  trackGainDb: 0,
+  preampDb: 0,
+  volume: 1,
+  muted: false,
+  eqEnabled: false,
+  eqBandCount: 0,
+  limiterEnabled: false,
+  limiterGainReductionDb: 0,
+  dither: null,
+  clippedSamples: 0
+}
+
+const EMPTY_PCM_FORMAT: NativePcmFormat = {
+  sampleRate: null,
+  channels: null,
+  sampleFormat: null,
+  containerBits: null,
+  validBits: null,
+  channelMask: 0,
+  channelLayout: null,
+  representation: null
+}
+
+const EMPTY_OUTPUT_STATUS: NativeAudioOutputStatus = {
+  outputOpen: false,
+  deviceResolved: false,
+  formatNegotiated: false,
+  streamInitialized: false,
+  streamStarted: false,
+  streamRunning: false,
+  exclusiveRequested: true,
+  exclusiveAcquired: false,
+  systemMixerBypassed: false,
+  sourceSamplesModified: false,
+  wireFormatCanCarrySourceExactly: false,
+  bitPerfectActive: false,
+  outputPolicy: 'direct',
+  exclusiveActive: false,
+  processingActive: false,
+  resamplingActive: false,
+  processing: EMPTY_PROCESSING_STATUS,
+  sourceFormat: EMPTY_PCM_FORMAT,
+  processingFormat: EMPTY_PCM_FORMAT,
+  wireFormat: EMPTY_PCM_FORMAT,
+  backend: 'unavailable',
+  deviceId: null,
+  deviceLabel: null,
+  transport: null,
+  requestedPeriodMs: 0,
+  actualPeriodMs: 0,
+  requestedPeriodFrames: 0,
+  actualPeriodFrames: 0,
+  bufferFrames: 0,
+  failureStage: null,
+  osErrorSymbol: null,
+  osErrorCode: 0,
+  failureSummary: null,
+  attempts: []
 }
 
 const EMPTY_AUDIO_BUFFER_MEMORY_STATS: AudioBufferMemoryStats = {
@@ -180,8 +286,172 @@ function normalizeBackendKind(value: unknown): NativeAudioBackendKind {
 }
 
 function normalizeSampleFormat(value: unknown): NativeAudioSampleFormat | null {
-  if (value === 's16' || value === 's32' || value === 'f32') return value
+  if (value === 's16' || value === 's24' || value === 's32' || value === 'f32') return value
   return null
+}
+
+function normalizeProbedSampleFormat(value: unknown): NativeAudioProbedSampleFormat | null {
+  if (value === 's24in32') return value
+  return normalizeSampleFormat(value)
+}
+
+function normalizeNullableText(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null
+}
+
+function normalizeNonNegativeNumber(value: unknown): number {
+  return Number.isFinite(value) ? Math.max(0, Number(value)) : 0
+}
+
+function normalizePcmFormat(value: unknown): NativePcmFormat {
+  if (!value || typeof value !== 'object') return { ...EMPTY_PCM_FORMAT }
+  const raw = value as Partial<NativePcmFormat>
+  return {
+    sampleRate: Number.isFinite(raw.sampleRate) && Number(raw.sampleRate) > 0 ? Math.round(Number(raw.sampleRate)) : null,
+    channels: Number.isFinite(raw.channels) && Number(raw.channels) > 0 ? Math.round(Number(raw.channels)) : null,
+    sampleFormat: raw.sampleFormat === 'f64' ? 'f64' : normalizeProbedSampleFormat(raw.sampleFormat),
+    containerBits: Number.isFinite(raw.containerBits) && Number(raw.containerBits) > 0 ? Math.round(Number(raw.containerBits)) : null,
+    validBits: Number.isFinite(raw.validBits) && Number(raw.validBits) > 0 ? Math.round(Number(raw.validBits)) : null,
+    channelMask: normalizeNonNegativeNumber(raw.channelMask),
+    channelLayout: normalizeNullableText(raw.channelLayout),
+    representation: normalizeNullableText(raw.representation)
+  }
+}
+
+function normalizeOutputAttempt(value: unknown): NativeAudioOutputAttempt | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as Partial<NativeAudioOutputAttempt>
+  return {
+    index: Math.max(0, Math.round(normalizeNonNegativeNumber(raw.index))),
+    backend: normalizeBackendKind(raw.backend),
+    deviceId: normalizeNullableText(raw.deviceId),
+    deviceLabel: normalizeNullableText(raw.deviceLabel),
+    sourceFormat: normalizePcmFormat(raw.sourceFormat),
+    processingFormat: normalizePcmFormat(raw.processingFormat),
+    wireFormat: normalizePcmFormat(raw.wireFormat),
+    transport: normalizeNullableText(raw.transport),
+    probeResult: normalizeNullableText(raw.probeResult),
+    requestedPeriodMs: normalizeNonNegativeNumber(raw.requestedPeriodMs),
+    alignedPeriodMs: normalizeNonNegativeNumber(raw.alignedPeriodMs),
+    actualPeriodMs: normalizeNonNegativeNumber(raw.actualPeriodMs),
+    bufferFrames: Math.round(normalizeNonNegativeNumber(raw.bufferFrames)),
+    deviceResolved: Boolean(raw.deviceResolved),
+    formatNegotiated: Boolean(raw.formatNegotiated),
+    streamInitialized: Boolean(raw.streamInitialized),
+    bufferPrimed: Boolean(raw.bufferPrimed),
+    streamStarted: Boolean(raw.streamStarted),
+    finalVerified: Boolean(raw.finalVerified),
+    outputPolicy: raw.outputPolicy === 'processed' ? 'processed' : 'direct',
+    exclusiveActive: Boolean(raw.exclusiveActive),
+    processingActive: Boolean(raw.processingActive),
+    resamplingActive: Boolean(raw.resamplingActive),
+    requestedSampleRate: Math.round(normalizeNonNegativeNumber(raw.requestedSampleRate)),
+    targetSampleRate: Math.round(normalizeNonNegativeNumber(raw.targetSampleRate)),
+    rateSelectionReason: normalizeNullableText(raw.rateSelectionReason),
+    failureStage: normalizeNullableText(raw.failureStage),
+    osErrorSymbol: normalizeNullableText(raw.osErrorSymbol),
+    osErrorCode: Number.isFinite(raw.osErrorCode) ? Number(raw.osErrorCode) : 0,
+    message: normalizeNullableText(raw.message)
+  }
+}
+
+function normalizeProcessingStatus(value: unknown): NativeAudioProcessingStatus {
+  if (!value || typeof value !== 'object') return { ...EMPTY_PROCESSING_STATUS }
+  const raw = value as Partial<NativeAudioProcessingStatus>
+  return {
+    outputPolicy: raw.outputPolicy === 'processed' ? 'processed' : 'direct',
+    exclusiveActive: Boolean(raw.exclusiveActive),
+    processingActive: Boolean(raw.processingActive),
+    resamplingActive: Boolean(raw.resamplingActive),
+    resamplerName: normalizeNullableText(raw.resamplerName),
+    resamplerQuality: normalizeNullableText(raw.resamplerQuality),
+    sourceSampleRate: Number.isFinite(raw.sourceSampleRate) && Number(raw.sourceSampleRate) > 0 ? Math.round(Number(raw.sourceSampleRate)) : null,
+    targetSampleRate: Number.isFinite(raw.targetSampleRate) && Number(raw.targetSampleRate) > 0 ? Math.round(Number(raw.targetSampleRate)) : null,
+    requestedSampleRate: Number.isFinite(raw.requestedSampleRate) && Number(raw.requestedSampleRate) > 0 ? Math.round(Number(raw.requestedSampleRate)) : null,
+    rateSelectionMode: raw.rateSelectionMode === 'fixed' ? 'fixed' : 'auto',
+    rateSelectionReason: normalizeNullableText(raw.rateSelectionReason),
+    processingLatencyFrames: Math.round(normalizeNonNegativeNumber(raw.processingLatencyFrames)),
+    gainMode: raw.gainMode === 'normalization' || raw.gainMode === 'replaygain' ? raw.gainMode : 'off',
+    trackGainDb: Number.isFinite(raw.trackGainDb) ? Number(raw.trackGainDb) : 0,
+    preampDb: Number.isFinite(raw.preampDb) ? Number(raw.preampDb) : 0,
+    volume: Number.isFinite(raw.volume) ? Math.max(0, Math.min(1, Number(raw.volume))) : 1,
+    muted: Boolean(raw.muted),
+    eqEnabled: Boolean(raw.eqEnabled),
+    eqBandCount: Math.round(normalizeNonNegativeNumber(raw.eqBandCount)),
+    limiterEnabled: Boolean(raw.limiterEnabled),
+    limiterGainReductionDb: normalizeNonNegativeNumber(raw.limiterGainReductionDb),
+    dither: normalizeNullableText(raw.dither),
+    clippedSamples: Math.round(normalizeNonNegativeNumber(raw.clippedSamples))
+  }
+}
+
+export function normalizeNativeAudioOutputStatus(value: unknown): NativeAudioOutputStatus {
+  if (!value || typeof value !== 'object') {
+    return {
+      ...EMPTY_OUTPUT_STATUS,
+      sourceFormat: { ...EMPTY_PCM_FORMAT },
+      processingFormat: { ...EMPTY_PCM_FORMAT },
+      wireFormat: { ...EMPTY_PCM_FORMAT },
+      processing: { ...EMPTY_PROCESSING_STATUS },
+      attempts: []
+    }
+  }
+  const raw = value as Partial<NativeAudioOutputStatus>
+  const streamRunning = Boolean(raw.streamRunning)
+  const exclusiveAcquired = Boolean(raw.exclusiveAcquired)
+  const systemMixerBypassed = Boolean(raw.systemMixerBypassed)
+  const sourceSamplesModified = Boolean(raw.sourceSamplesModified)
+  const wireFormatCanCarrySourceExactly = Boolean(raw.wireFormatCanCarrySourceExactly)
+  const processing = normalizeProcessingStatus(raw.processing)
+  const exclusiveActive = streamRunning && exclusiveAcquired && systemMixerBypassed
+  return {
+    outputOpen: Boolean(raw.outputOpen),
+    deviceResolved: Boolean(raw.deviceResolved),
+    formatNegotiated: Boolean(raw.formatNegotiated),
+    streamInitialized: Boolean(raw.streamInitialized),
+    streamStarted: Boolean(raw.streamStarted),
+    streamRunning,
+    exclusiveRequested: raw.exclusiveRequested !== false,
+    exclusiveAcquired,
+    systemMixerBypassed,
+    sourceSamplesModified,
+    wireFormatCanCarrySourceExactly,
+    bitPerfectActive: streamRunning
+      && exclusiveAcquired
+      && systemMixerBypassed
+      && !sourceSamplesModified
+      && wireFormatCanCarrySourceExactly,
+    outputPolicy: processing.outputPolicy,
+    exclusiveActive,
+    processingActive: processing.processingActive,
+    resamplingActive: processing.resamplingActive,
+    processing: {
+      ...processing,
+      exclusiveActive
+    },
+    sourceFormat: normalizePcmFormat(raw.sourceFormat),
+    processingFormat: normalizePcmFormat(raw.processingFormat),
+    wireFormat: normalizePcmFormat(raw.wireFormat),
+    backend: normalizeBackendKind(raw.backend),
+    deviceId: normalizeNullableText(raw.deviceId),
+    deviceLabel: normalizeNullableText(raw.deviceLabel),
+    transport: normalizeNullableText(raw.transport),
+    requestedPeriodMs: normalizeNonNegativeNumber(raw.requestedPeriodMs),
+    actualPeriodMs: normalizeNonNegativeNumber(raw.actualPeriodMs),
+    requestedPeriodFrames: Math.round(normalizeNonNegativeNumber(raw.requestedPeriodFrames)),
+    actualPeriodFrames: Math.round(normalizeNonNegativeNumber(raw.actualPeriodFrames)),
+    bufferFrames: Math.round(normalizeNonNegativeNumber(raw.bufferFrames)),
+    failureStage: normalizeNullableText(raw.failureStage),
+    osErrorSymbol: normalizeNullableText(raw.osErrorSymbol),
+    osErrorCode: Number.isFinite(raw.osErrorCode) ? Number(raw.osErrorCode) : 0,
+    failureSummary: normalizeNullableText(raw.failureSummary),
+    attempts: Array.isArray(raw.attempts)
+      ? raw.attempts.flatMap((attempt) => {
+          const normalized = normalizeOutputAttempt(attempt)
+          return normalized ? [normalized] : []
+        })
+      : []
+  }
 }
 
 function normalizeOutputDevices(value: unknown): NativeAudioOutputDevice[] {
@@ -209,14 +479,15 @@ function normalizeCapabilities(value: unknown): NativeAudioCapabilities {
 
   const raw = value as Partial<NativeAudioCapabilities>
   return {
+    processedExclusiveAvailable: Boolean(raw.processedExclusiveAvailable),
+    reasonProcessedExclusiveUnavailable: typeof raw.reasonProcessedExclusiveUnavailable === 'string' && raw.reasonProcessedExclusiveUnavailable.trim().length > 0
+      ? raw.reasonProcessedExclusiveUnavailable.trim()
+      : null,
     bitPerfectAvailable: Boolean(raw.bitPerfectAvailable),
     reasonUnavailable: typeof raw.reasonUnavailable === 'string' && raw.reasonUnavailable.trim().length > 0
       ? raw.reasonUnavailable.trim()
       : null,
     activeBackend: normalizeBackendKind(raw.activeBackend),
-    activeDeviceExclusive: Boolean(raw.activeDeviceExclusive),
-    activeSampleRate: Number.isFinite(raw.activeSampleRate) ? Math.max(1, Math.round(Number(raw.activeSampleRate))) : null,
-    activeSampleFormat: normalizeSampleFormat(raw.activeSampleFormat),
     selectedDeviceId: typeof raw.selectedDeviceId === 'string' && raw.selectedDeviceId.trim().length > 0
       ? raw.selectedDeviceId.trim()
       : null,
@@ -238,14 +509,12 @@ function normalizePlaybackSnapshot(value: unknown): NativeAudioPlaybackSnapshot 
       sampleFormat: null,
       deviceId: null,
       deviceLabel: null,
-      activeBackend: 'unavailable',
-      activeDeviceExclusive: false,
-      bitPerfectActive: false
+      outputStatus: normalizeNativeAudioOutputStatus(null)
     }
   }
 
   const raw = value as Partial<NativeAudioPlaybackSnapshot>
-  const playbackState = raw.playbackState === 'playing' || raw.playbackState === 'paused' || raw.playbackState === 'loading'
+  const playbackState = raw.playbackState === 'starting' || raw.playbackState === 'playing' || raw.playbackState === 'paused' || raw.playbackState === 'loading'
     ? raw.playbackState
     : 'stopped'
 
@@ -258,9 +527,7 @@ function normalizePlaybackSnapshot(value: unknown): NativeAudioPlaybackSnapshot 
     sampleFormat: normalizeSampleFormat(raw.sampleFormat),
     deviceId: typeof raw.deviceId === 'string' && raw.deviceId.trim().length > 0 ? raw.deviceId.trim() : null,
     deviceLabel: typeof raw.deviceLabel === 'string' && raw.deviceLabel.trim().length > 0 ? raw.deviceLabel.trim() : null,
-    activeBackend: normalizeBackendKind(raw.activeBackend),
-    activeDeviceExclusive: Boolean(raw.activeDeviceExclusive),
-    bitPerfectActive: Boolean(raw.bitPerfectActive)
+    outputStatus: normalizeNativeAudioOutputStatus(raw.outputStatus)
   }
 }
 
@@ -271,24 +538,27 @@ function normalizeEvent(value: unknown): NativeAudioEvent | null {
     case 'stateChange':
       return {
         type: 'stateChange',
-        playbackState: raw.playbackState === 'playing' || raw.playbackState === 'paused' || raw.playbackState === 'loading'
+        playbackSequence: 0,
+        playbackState: raw.playbackState === 'starting' || raw.playbackState === 'playing' || raw.playbackState === 'paused' || raw.playbackState === 'loading'
           ? raw.playbackState
           : 'stopped'
       }
     case 'timeUpdate':
       return {
         type: 'timeUpdate',
+        playbackSequence: 0,
         currentTime: Number.isFinite(raw.currentTime) ? Math.max(0, Number(raw.currentTime)) : 0
       }
     case 'durationChange':
       return {
         type: 'durationChange',
+        playbackSequence: 0,
         duration: Number.isFinite(raw.duration) ? Math.max(0, Number(raw.duration)) : 0
       }
     case 'ended':
-      return { type: 'ended' }
+      return { type: 'ended', playbackSequence: 0 }
     case 'gaplessTransition':
-      return { type: 'gaplessTransition' }
+      return { type: 'gaplessTransition', playbackSequence: 0 }
     case 'deviceReopened':
       return {
         type: 'deviceReopened',
@@ -308,6 +578,11 @@ function normalizeEvent(value: unknown): NativeAudioEvent | null {
           ? raw.message.trim()
           : 'Unknown native audio error.'
       }
+    case 'outputStatusChanged':
+      return {
+        type: 'outputStatusChanged',
+        ...(typeof raw.message === 'string' && raw.message.trim().length > 0 ? { message: raw.message.trim() } : {})
+      }
     default:
       return null
   }
@@ -315,40 +590,129 @@ function normalizeEvent(value: unknown): NativeAudioEvent | null {
 
 function normalizeTrackLoadResult(
   snapshot: NativeAudioPlaybackSnapshot,
-  decoded: DecodedPcmTrack
+  decoded: DecodedPcmTrack,
+  nativeLoadMs: number,
+  playbackSequence: number
 ): NativeAudioTrackLoadResult {
   return {
+    playbackSequence,
     sampleRate: snapshot.sampleRate ?? decoded.sampleRate,
     channels: snapshot.channels ?? decoded.channels,
     sampleFormat: snapshot.sampleFormat ?? decoded.sampleFormat,
     duration: snapshot.duration > 0 ? snapshot.duration : decoded.duration,
-    bitPerfectActive: snapshot.bitPerfectActive
+    timings: {
+      ...decoded.timings,
+      nativeLoadMs
+    }
   }
 }
 
 function normalizePromotedTrackLoadResult(
   snapshot: NativeAudioPlaybackSnapshot,
-  fallback: LoadedTrackRequest | null
+  fallback: LoadedTrackRequest | null,
+  nativeLoadMs: number,
+  playbackSequence: number
 ): NativeAudioTrackLoadResult {
   return {
+    playbackSequence,
     sampleRate: snapshot.sampleRate ?? fallback?.sampleRate ?? fallback?.metadata?.sampleRate ?? 0,
     channels: snapshot.channels ?? fallback?.channels ?? fallback?.metadata?.channels ?? 2,
     sampleFormat: snapshot.sampleFormat ?? fallback?.sampleFormat ?? 'f32',
     duration: snapshot.duration > 0 ? snapshot.duration : fallback?.duration ?? 0,
-    bitPerfectActive: snapshot.bitPerfectActive
+    timings: {
+      binaryResolutionMs: fallback?.timings?.binaryResolutionMs ?? 0,
+      probeMs: fallback?.timings?.probeMs ?? 0,
+      decodeMs: fallback?.timings?.decodeMs ?? 0,
+      nativeLoadMs
+    }
   }
 }
 
-function createExecFilePromise(file: string, args: string[]): Promise<string> {
+function throwIfDecodeAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw new SupersededNativeAudioLoadError()
+  }
+}
+
+function createExecFilePromise(file: string, args: string[], signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(file, args, { encoding: 'utf8' }, (error, stdout, stderr) => {
+    if (signal?.aborted) {
+      reject(new SupersededNativeAudioLoadError())
+      return
+    }
+
+    let settled = false
+    const finish = (callback: () => void) => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener('abort', onAbort)
+      callback()
+    }
+    const child = execFile(file, args, { encoding: 'utf8' }, (error, stdout, stderr) => {
       if (error) {
         const message = stderr?.trim() || error.message
-        reject(new Error(message))
+        finish(() => reject(signal?.aborted
+          ? new SupersededNativeAudioLoadError()
+          : new Error(message)))
         return
       }
-      resolve(stdout)
+      finish(() => resolve(stdout))
     })
+    const onAbort = () => {
+      child.kill()
+      finish(() => reject(new SupersededNativeAudioLoadError()))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted) onAbort()
+  })
+}
+
+function spawnDecodePromise(file: string, args: string[], signal: AbortSignal): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new SupersededNativeAudioLoadError())
+      return
+    }
+
+    const child = spawn(file, args, {
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    const chunks: Buffer[] = []
+    const stderrChunks: Buffer[] = []
+    let settled = false
+    const finish = (callback: () => void) => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener('abort', onAbort)
+      callback()
+    }
+    const onAbort = () => {
+      child.kill('SIGKILL')
+      finish(() => reject(new SupersededNativeAudioLoadError()))
+    }
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      chunks.push(Buffer.from(chunk))
+    })
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderrChunks.push(Buffer.from(chunk))
+    })
+    child.on('error', (error) => finish(() => reject(
+      signal.aborted ? new SupersededNativeAudioLoadError() : error
+    )))
+    child.on('close', (code) => finish(() => {
+      if (signal.aborted) {
+        reject(new SupersededNativeAudioLoadError())
+        return
+      }
+      if (code !== 0) {
+        reject(new Error(Buffer.concat(stderrChunks).toString('utf8').trim() || `ffmpeg exited with code ${code}`))
+        return
+      }
+      resolve(Buffer.concat(chunks))
+    }))
+    signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) onAbort()
   })
 }
 
@@ -366,7 +730,7 @@ async function resolveStaticBinary(binary: 'ffmpeg' | 'ffprobe'): Promise<string
   }
 }
 
-async function resolveBinary(binary: 'ffmpeg' | 'ffprobe'): Promise<string | null> {
+async function resolveBinaryUncached(binary: 'ffmpeg' | 'ffprobe'): Promise<string | null> {
   const isWindows = process.platform === 'win32'
   const executable = `${binary}${isWindows ? '.exe' : ''}`
   const staticModulePath = await resolveStaticBinary(binary)
@@ -409,6 +773,24 @@ async function resolveBinary(binary: 'ffmpeg' | 'ffprobe'): Promise<string | nul
   return null
 }
 
+export function createCachedNativeAudioBinaryResolver(
+  resolveUncached: NativeAudioBinaryResolver
+): NativeAudioBinaryResolver {
+  const resolutions = new Map<'ffmpeg' | 'ffprobe', Promise<string | null>>()
+  return (binary) => {
+    let resolution = resolutions.get(binary)
+    if (!resolution) {
+      resolution = resolveUncached(binary)
+      resolutions.set(binary, resolution)
+    }
+    return resolution
+  }
+}
+
+// Binary discovery can involve several filesystem probes and process launches. Cache both
+// successful and unavailable results for the preload process lifetime.
+const resolveBinary = createCachedNativeAudioBinaryResolver(resolveBinaryUncached)
+
 function parseSampleRate(value: string | number | undefined): number | null {
   const numeric = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(numeric) || numeric <= 0) return null
@@ -418,13 +800,8 @@ function parseSampleRate(value: string | number | undefined): number | null {
 function resolveSampleFormat(
   stream: FfprobeStreamInfo,
   metadata?: NativeAudioTrackMetadata,
-  backendKind: NativeAudioBackendKind = 'unavailable',
-  forcedSampleFormat?: NativeAudioSampleFormat
+  backendKind: NativeAudioBackendKind = 'unavailable'
 ): NativeAudioSampleFormat {
-  if (forcedSampleFormat) {
-    return forcedSampleFormat
-  }
-
   const codec = (stream.codec_name ?? metadata?.codec ?? '').trim().toLowerCase()
   const sampleFormat = (stream.sample_fmt ?? '').trim().toLowerCase()
   const bitDepth = Number(stream.bits_per_raw_sample ?? metadata?.bitDepth ?? 0)
@@ -434,23 +811,28 @@ function resolveSampleFormat(
   // for Linux hardware output when the source does not provide integer samples.
   if (backendKind === 'alsa-hw') {
     if (sampleFormat.startsWith('u8') || sampleFormat.startsWith('s8') || sampleFormat.startsWith('s16')) {
-      return 's32'
-    }
-
-    if (sampleFormat.startsWith('s24') || sampleFormat.startsWith('s32') || sampleFormat.startsWith('s64')) {
-      return 's32'
-    }
-
-    if (Number.isFinite(bitDepth) && bitDepth > 0) {
-      return bitDepth > 16 ? 's32' : 's32'
-    }
-
-    if (LOSSY_CODECS.has(codec)) {
       return 's16'
     }
 
+    if (sampleFormat.startsWith('s24')) {
+      return 's24'
+    }
+
+    if (sampleFormat.startsWith('s32') || sampleFormat.startsWith('s64')) {
+      return Number.isFinite(bitDepth) && bitDepth > 0 && bitDepth <= 24 ? 's24' : 's32'
+    }
+
+    if (Number.isFinite(bitDepth) && bitDepth > 0) {
+      if (bitDepth <= 16) return 's16'
+      return bitDepth <= 24 ? 's24' : 's32'
+    }
+
+    if (LOSSY_CODECS.has(codec)) {
+      return 'f32'
+    }
+
     if (sampleFormat.startsWith('flt') || sampleFormat.startsWith('dbl')) {
-      return Number.isFinite(bitDepth) && bitDepth > 16 ? 's32' : 's16'
+      return 'f32'
     }
   }
 
@@ -508,86 +890,6 @@ function resolveSampleFormat(
   return 'f32'
 }
 
-/**
- * True when the source has a real integer bit depth worth preserving. Lossy and float
- * sources decode to whatever we ask for, so there is no "original" depth to be faithful to
- * and we are free to pick whichever container the device likes best.
- */
-function hasKnownIntegerDepth(stream: FfprobeStreamInfo, metadata?: NativeAudioTrackMetadata): boolean {
-  const codec = (stream.codec_name ?? metadata?.codec ?? '').trim().toLowerCase()
-  if (LOSSY_CODECS.has(codec)) return false
-
-  const sampleFormat = (stream.sample_fmt ?? '').trim().toLowerCase()
-  if (sampleFormat.startsWith('flt') || sampleFormat.startsWith('dbl')) return false
-
-  return sampleFormat.length > 0 || Number(stream.bits_per_raw_sample ?? metadata?.bitDepth ?? 0) > 0
-}
-
-/**
- * Device wire formats that can carry each decode format without altering a sample.
- * Widening a container is bit-exact zero padding, so these ladders only ever grow. Mirrors
- * `buildFormatLadder` in native/src/wasapi_exclusive_sink.cpp.
- */
-const DEVICE_FORMAT_LADDER: Record<NativeAudioSampleFormat, NativeAudioProbedSampleFormat[]> = {
-  s16: ['s16', 's24', 's24in32', 's32'],
-  s24: ['s24', 's24in32', 's32'],
-  s32: ['s32'],
-  f32: ['f32']
-}
-
-/** The PCM layout ffmpeg must produce for a given device wire format. */
-const DECODE_FORMAT_FOR_WIRE_FORMAT: Record<NativeAudioProbedSampleFormat, NativeAudioSampleFormat> = {
-  s16: 's16',
-  s24: 's24',
-  s24in32: 's24',
-  s32: 's32',
-  f32: 'f32'
-}
-
-/** Widest first — used only when the source has no bit depth of its own to preserve. */
-const PREFERRED_WIRE_FORMATS: NativeAudioProbedSampleFormat[] = ['s32', 's24in32', 's24', 's16']
-
-const WIRE_FORMAT_LABELS: Record<NativeAudioProbedSampleFormat, string> = {
-  s16: '16-bit',
-  s24: '24-bit',
-  s24in32: '24-bit (32-bit container)',
-  s32: '32-bit',
-  f32: '32-bit float'
-}
-
-function formatRateLabel(sampleRate: number): string {
-  const khz = sampleRate / 1000
-  return `${Number.isInteger(khz) ? khz : khz.toFixed(1)} kHz`
-}
-
-function buildUnsupportedFormatMessage(
-  probe: NativeAudioDeviceFormatProbe,
-  sampleRate: number,
-  channels: number,
-  sampleFormat: NativeAudioSampleFormat
-): string {
-  const deviceName = probe.deviceLabel ?? 'The selected output device'
-  const requested = `${formatRateLabel(sampleRate)} ${WIRE_FORMAT_LABELS[sampleFormat]} ${channels}-channel`
-
-  if (probe.formats.length === 0) {
-    return `${deviceName} rejected ${requested} in exclusive mode, and reports no exclusive-mode formats at all at ${channels} channels.`
-  }
-
-  const byRate = new Map<number, NativeAudioProbedSampleFormat[]>()
-  for (const entry of probe.formats) {
-    const existing = byRate.get(entry.sampleRate)
-    if (existing) existing.push(entry.sampleFormat)
-    else byRate.set(entry.sampleRate, [entry.sampleFormat])
-  }
-
-  const supported = [...byRate.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([rate, formats]) => `${formatRateLabel(rate)} (${formats.map((id) => WIRE_FORMAT_LABELS[id]).join(', ')})`)
-    .join('; ')
-
-  return `${deviceName} rejected ${requested} in exclusive mode. It currently accepts: ${supported}.`
-}
-
 function getFfmpegFormatArgs(sampleFormat: NativeAudioSampleFormat): string[] {
   switch (sampleFormat) {
     case 's16':
@@ -614,13 +916,32 @@ export function createNativeAudioController(
   const deviceFormatProbeCache = new Map<string, NativeAudioDeviceFormatProbe>()
   let loadGeneration = 0
   let prebufferGeneration = 0
+  let nextPlaybackSequence = 1
+  let currentPlaybackSequence: number | null = null
+  let bufferedPlaybackSequence: number | null = null
+  let activeLoadDecode: { generation: number; controller: AbortController } | null = null
+  let activePrebufferDecode: { generation: number; controller: AbortController } | null = null
   let currentBufferBytes = 0
   let nextBufferBytes = 0
+  let lastDiagnosticReport: NativeAudioDiagnosticReport | null = null
+  let outputRequestCache: NativeAudioOutputRequest = { policy: 'direct', requestedSampleRate: null }
+  let dspConfigCache: NativeAudioDspConfig = {
+    volume: 1,
+    muted: false,
+    eqEnabled: false,
+    preampDb: 0,
+    eqBands: [],
+    limiterEnabled: true
+  }
+  let trackGainCache: NativeAudioTrackGain = { mode: 'off', gainDb: 0 }
   const fallbackUnavailableReason = options.unavailableReason?.trim() || DEFAULT_UNAVAILABLE_CAPABILITIES.reasonUnavailable
   let capabilitiesCache: NativeAudioCapabilities = {
     ...DEFAULT_UNAVAILABLE_CAPABILITIES,
     reasonUnavailable: fallbackUnavailableReason
   }
+  const binaryResolver = options.resolveBinary ?? resolveBinary
+  const runProbe = options.runProbe ?? ((file, args, signal) => createExecFilePromise(file, args, signal))
+  const runDecode = options.runDecode ?? spawnDecodePromise
 
   const buildBufferMemoryStats = (): AudioBufferMemoryStats => ({
     currentBytes: currentBufferBytes,
@@ -628,23 +949,66 @@ export function createNativeAudioController(
     totalBytes: currentBufferBytes + nextBufferBytes
   })
 
+  const buildDiagnosticReport = (engine: NativeAudioAddonPlayback): NativeAudioDiagnosticReport => {
+    const snapshot = normalizePlaybackSnapshot(engine.getPlaybackSnapshot())
+    const track: NativeAudioTrackMetadata | null = currentTrackRequest
+      ? {
+          ...currentTrackRequest.metadata,
+          path: currentTrackRequest.filePath,
+          sampleRate: currentTrackRequest.sampleRate,
+          channels: currentTrackRequest.channels
+        }
+      : null
+    const sourceLines = track
+      ? [
+          '',
+          'Track / FFprobe Metadata',
+          `Path: ${track.path}`,
+          `Codec: ${track.codec ?? 'unknown'}`,
+          `Original bit depth: ${track.bitDepth ?? 'unknown'}`,
+          `Decoded PCM: ${currentTrackRequest?.sampleRate ?? 'unknown'} Hz, ${currentTrackRequest?.channels ?? 'unknown'} ch, ${currentTrackRequest?.sampleFormat ?? 'unknown'}`
+        ]
+      : []
+    const nativeText = engine.getNativeAudioDiagnosticReport?.().trim()
+      || 'Astra Native Audio Diagnostic Report\nNative diagnostic text is unavailable in this addon build.'
+    const processingLines = [
+      '',
+      'Processing Configuration',
+      `Output request: ${JSON.stringify(outputRequestCache)}`,
+      `DSP: ${JSON.stringify(dspConfigCache)}`,
+      `Track gain: ${JSON.stringify(trackGainCache)}`
+    ]
+    return {
+      generatedAt: new Date().toISOString(),
+      text: [nativeText, ...processingLines, ...sourceLines].join('\n'),
+      outputStatus: snapshot.outputStatus,
+      track
+    }
+  }
+
   const beginLoadOperation = (): number => {
+    activeLoadDecode?.controller.abort()
+    activePrebufferDecode?.controller.abort()
     loadGeneration += 1
     prebufferGeneration += 1
     return loadGeneration
   }
 
   const invalidateLoadOperations = (): void => {
+    activeLoadDecode?.controller.abort()
+    activePrebufferDecode?.controller.abort()
     loadGeneration += 1
     prebufferGeneration += 1
   }
 
   const beginPrebufferOperation = (): number => {
+    activePrebufferDecode?.controller.abort()
     prebufferGeneration += 1
     return prebufferGeneration
   }
 
   const invalidatePrebufferOperations = (): void => {
+    activePrebufferDecode?.controller.abort()
     prebufferGeneration += 1
   }
 
@@ -660,16 +1024,48 @@ export function createNativeAudioController(
     }
   }
 
+  const applyGaplessTransitionBookkeeping = (): void => {
+    currentBufferBytes = nextBufferBytes
+    nextBufferBytes = 0
+    currentTrackRequest = nextTrackRequest
+    nextTrackRequest = null
+  }
+
   const notify = (event: NativeAudioEvent) => {
-    if (event.type === 'gaplessTransition') {
-      currentBufferBytes = nextBufferBytes
-      nextBufferBytes = 0
-      currentTrackRequest = nextTrackRequest
-      nextTrackRequest = null
+    if (event.type === 'gaplessTransition') applyGaplessTransitionBookkeeping()
+
+    if (event.type === 'outputStatusChanged' && playback) {
+      lastDiagnosticReport = buildDiagnosticReport(playback)
     }
 
     for (const listener of listeners) {
       listener(event)
+    }
+  }
+
+  const allocatePlaybackSequence = (): number => {
+    const sequence = nextPlaybackSequence
+    nextPlaybackSequence += 1
+    return sequence
+  }
+
+  const stampPlaybackSequence = (event: NativeAudioEvent): NativeAudioEvent | null => {
+    switch (event.type) {
+      case 'gaplessTransition': {
+        if (bufferedPlaybackSequence === null) return null
+        currentPlaybackSequence = bufferedPlaybackSequence
+        bufferedPlaybackSequence = null
+        return { ...event, playbackSequence: currentPlaybackSequence }
+      }
+      case 'stateChange':
+      case 'timeUpdate':
+      case 'durationChange':
+      case 'ended':
+        return currentPlaybackSequence === null
+          ? null
+          : { ...event, playbackSequence: currentPlaybackSequence }
+      default:
+        return event
     }
   }
 
@@ -719,42 +1115,65 @@ export function createNativeAudioController(
     deviceFormatProbeCache.clear()
   }
 
-  /**
-   * The probe normally catches format rejections before decoding, but it can be stale (the
-   * user changed the device's rate in its control panel mid-session). When the sink rejects
-   * a format anyway, re-tag the raw native error so the renderer still gets a real dialog.
-   */
-  const asBitPerfectFormatError = (error: unknown, request: LoadedTrackRequest | null): unknown => {
-    if (capabilitiesCache.activeBackend !== 'wasapi-exclusive') return error
+  const isPlaybackLifecycleEvent = (event: NativeAudioEvent): boolean => (
+    event.type === 'stateChange'
+    || event.type === 'timeUpdate'
+    || event.type === 'durationChange'
+    || event.type === 'gaplessTransition'
+    || event.type === 'ended'
+  )
 
-    const message = error instanceof Error ? error.message : null
-    if (!message || !message.includes('in exclusive mode')) return error
-
+  const asNativeOutputFailure = (
+    engine: NativeAudioAddonPlayback,
+    error: unknown,
+    request: LoadedTrackRequest | null
+  ): Error => {
+    const message = error instanceof Error ? error.message : 'Native exclusive output failed.'
     invalidateDeviceFormatProbes()
-    const channels = request?.channels ?? 2
-    const probe = getDeviceFormatProbe(capabilitiesCache.selectedDeviceId ?? '', channels)
-
+    lastDiagnosticReport = buildDiagnosticReport(engine)
+    const status = lastDiagnosticReport.outputStatus
+    const osCode = status.osErrorSymbol ?? (status.osErrorCode !== 0 ? status.osErrorCode : null)
     return createBitPerfectFormatError({
-      deviceLabel: probe?.deviceLabel ?? null,
-      sampleRate: request?.sampleRate ?? null,
-      channels: request?.channels ?? null,
-      sampleFormat: request?.sampleFormat ?? null,
-      message:
-        probe?.supported && request
-          ? buildUnsupportedFormatMessage(probe, request.sampleRate, request.channels, request.sampleFormat)
-          : message
+      deviceLabel: status.deviceLabel,
+      sampleRate: request?.sampleRate ?? status.sourceFormat.sampleRate,
+      channels: request?.channels ?? status.sourceFormat.channels,
+      sampleFormat: request?.sampleFormat ?? status.sourceFormat.sampleFormat,
+      message: status.failureSummary ?? message,
+      failureStage: status.failureStage ?? 'start',
+      osCode,
+      report: lastDiagnosticReport.text
     })
   }
 
+  const dispatchNativeEvents = (
+    engine: NativeAudioAddonPlayback,
+    rawEvents: readonly unknown[],
+    suppressLifecycle = false
+  ): void => {
+    for (const rawEvent of rawEvents) {
+      const normalizedEvent = normalizeEvent(rawEvent)
+      if (!normalizedEvent) continue
+      const event = stampPlaybackSequence(normalizedEvent)
+      if (!event) continue
+      if (suppressLifecycle && isPlaybackLifecycleEvent(event)) {
+        if (event.type === 'gaplessTransition') applyGaplessTransitionBookkeeping()
+        continue
+      }
+      if (event.type === 'error') {
+        const failure = asNativeOutputFailure(engine, new Error(event.message), currentTrackRequest)
+        notify({ type: 'error', message: failure.message })
+      } else {
+        notify(event)
+      }
+    }
+  }
+
   const ensureEventPoller = (): void => {
-    if (!playback || eventPollTimer !== null) return
+    if (!playback || eventPollTimer !== null || options.eventPolling === false) return
     eventPollTimer = setInterval(() => {
       try {
         const drained = playback.drainEvents()
-        for (const rawEvent of drained) {
-          const event = normalizeEvent(rawEvent)
-          if (event) notify(event)
-        }
+        dispatchNativeEvents(playback, drained)
       } catch (error) {
         notify({
           type: 'error',
@@ -766,8 +1185,8 @@ export function createNativeAudioController(
 
   const ensureAvailable = async (): Promise<NativeAudioAddonPlayback> => {
     const caps = refreshCapabilities()
-    if (!playback || !caps.bitPerfectAvailable) {
-      throw new Error(caps.reasonUnavailable ?? 'Native bit-perfect playback is unavailable.')
+    if (!playback || (!caps.bitPerfectAvailable && !caps.processedExclusiveAvailable)) {
+      throw new Error(caps.reasonUnavailable ?? caps.reasonProcessedExclusiveUnavailable ?? 'Native exclusive playback is unavailable.')
     }
     ensureEventPoller()
     return playback
@@ -775,21 +1194,29 @@ export function createNativeAudioController(
 
   const decodeFileToPcm = async (
     filePath: string,
-    metadata?: NativeAudioTrackMetadata,
-    options: DecodeFileOptions = {}
+    metadata: NativeAudioTrackMetadata | undefined,
+    options: DecodeFileOptions
   ): Promise<DecodedPcmTrack> => {
-    const ffprobePath = await resolveBinary('ffprobe')
-    const ffmpegPath = await resolveBinary('ffmpeg')
+    const binaryResolutionStartedAt = performance.now()
+    const [ffprobePath, ffmpegPath] = await Promise.all([
+      binaryResolver('ffprobe'),
+      binaryResolver('ffmpeg')
+    ])
+    const binaryResolutionMs = Math.round(performance.now() - binaryResolutionStartedAt)
+    throwIfDecodeAborted(options.signal)
     if (!ffprobePath || !ffmpegPath) {
       throw new Error('FFmpeg/ffprobe could not be resolved for native playback.')
     }
 
-    const ffprobeStdout = await createExecFilePromise(ffprobePath, [
+    const probeStartedAt = performance.now()
+    const ffprobeStdout = await runProbe(ffprobePath, [
       '-v', 'error',
       '-show_streams',
       '-of', 'json',
       filePath
-    ])
+    ], options.signal)
+    const probeMs = Math.round(performance.now() - probeStartedAt)
+    throwIfDecodeAborted(options.signal)
     const ffprobePayload = JSON.parse(ffprobeStdout) as {
       streams?: FfprobeStreamInfo[]
     }
@@ -807,47 +1234,18 @@ export function createNativeAudioController(
       ? Math.max(0, Number(stream.duration))
       : 0
     const backendKind = options.backendKind ?? capabilitiesCache.activeBackend
-    let sampleFormat = resolveSampleFormat(stream, metadata, backendKind, options.forcedSampleFormat)
+    // Processed output decodes the source into its natural PCM representation;
+    // hardware wire constraints are handled only after planar-f64 processing.
+    const sampleFormat = resolveSampleFormat(
+      stream,
+      metadata,
+      outputRequestCache.policy === 'processed' ? 'unavailable' : backendKind
+    )
 
-    // Ask the endpoint what it actually accepts before spending time decoding. This turns a
-    // mid-playback HRESULT into an immediate, explainable failure.
-    if (backendKind === 'wasapi-exclusive' && !options.forcedSampleFormat) {
-      const probe = getDeviceFormatProbe(capabilitiesCache.selectedDeviceId ?? '', channels)
-      if (probe?.supported) {
-        const supportedAtRate = new Set(
-          probe.formats.filter((entry) => entry.sampleRate === sampleRate).map((entry) => entry.sampleFormat)
-        )
-
-        if (supportedAtRate.size === 0) {
-          throw createBitPerfectFormatError({
-            deviceLabel: probe.deviceLabel,
-            sampleRate,
-            channels,
-            sampleFormat,
-            message: buildUnsupportedFormatMessage(probe, sampleRate, channels, sampleFormat)
-          })
-        }
-
-        if (hasKnownIntegerDepth(stream, metadata)) {
-          // Preserve the source depth; the sink widens the container if the device needs it.
-          const canCarrySource = DEVICE_FORMAT_LADDER[sampleFormat].some((wire) => supportedAtRate.has(wire))
-          if (!canCarrySource) {
-            throw createBitPerfectFormatError({
-              deviceLabel: probe.deviceLabel,
-              sampleRate,
-              channels,
-              sampleFormat,
-              message: buildUnsupportedFormatMessage(probe, sampleRate, channels, sampleFormat)
-            })
-          }
-        } else {
-          // No original depth to protect, so take the widest container on offer.
-          const preferred = PREFERRED_WIRE_FORMATS.find((wire) => supportedAtRate.has(wire))
-          if (preferred) {
-            sampleFormat = DECODE_FORMAT_FOR_WIRE_FORMAT[preferred]
-          }
-        }
-      }
+    // Probes are advisory only. Native start attempts still run for probe-negative formats
+    // because real drivers sometimes accept Initialize even after IsFormatSupported refused.
+    if (backendKind === 'wasapi-exclusive') {
+      getDeviceFormatProbe(capabilitiesCache.selectedDeviceId ?? '', channels)
     }
 
     const ffmpegArgs = [
@@ -861,28 +1259,10 @@ export function createNativeAudioController(
       'pipe:1'
     ]
 
-    const pcmData = await new Promise<Buffer>((resolve, reject) => {
-      const child = spawn(ffmpegPath, ffmpegArgs, {
-        stdio: ['ignore', 'pipe', 'pipe']
-      })
-      const chunks: Buffer[] = []
-      const stderrChunks: Buffer[] = []
-
-      child.stdout.on('data', (chunk: Buffer) => {
-        chunks.push(Buffer.from(chunk))
-      })
-      child.stderr.on('data', (chunk: Buffer) => {
-        stderrChunks.push(Buffer.from(chunk))
-      })
-      child.on('error', (error) => reject(error))
-      child.on('close', (code) => {
-        if (code !== 0) {
-          reject(new Error(Buffer.concat(stderrChunks).toString('utf8').trim() || `ffmpeg exited with code ${code}`))
-          return
-        }
-        resolve(Buffer.concat(chunks))
-      })
-    })
+    const decodeStartedAt = performance.now()
+    const pcmData = await runDecode(ffmpegPath, ffmpegArgs, options.signal)
+    const decodeMs = Math.round(performance.now() - decodeStartedAt)
+    throwIfDecodeAborted(options.signal)
 
     return {
       filePath,
@@ -890,28 +1270,53 @@ export function createNativeAudioController(
       channels,
       sampleFormat,
       duration,
-      pcmData
+      pcmData,
+      sourceMetadata: {
+        ...metadata,
+        path: filePath,
+        codec: stream.codec_name ?? metadata?.codec,
+        sampleRate,
+        channels,
+        bitDepth: Number.isFinite(Number(stream.bits_per_raw_sample)) && Number(stream.bits_per_raw_sample) > 0
+          ? Number(stream.bits_per_raw_sample)
+          : metadata?.bitDepth,
+        format: stream.sample_fmt ?? metadata?.format
+      },
+      timings: {
+        binaryResolutionMs,
+        probeMs,
+        decodeMs
+      }
     }
   }
 
   const loadDecodedTrack = (
     engine: NativeAudioAddonPlayback,
-    decoded: DecodedPcmTrack
+    decoded: DecodedPcmTrack,
+    playbackSequence: number,
+    gain: NativeAudioTrackGain = { mode: 'off', gainDb: 0 }
   ): NativeAudioTrackLoadResult => {
+    const nativeLoadStartedAt = performance.now()
     const snapshot = normalizePlaybackSnapshot(engine.loadTrack(
       new Uint8Array(decoded.pcmData.buffer, decoded.pcmData.byteOffset, decoded.pcmData.byteLength),
       decoded.sampleRate,
       decoded.channels,
       decoded.sampleFormat,
-      decoded.duration
+      decoded.duration,
+      gain
     ))
-    return normalizeTrackLoadResult(snapshot, decoded)
+    return normalizeTrackLoadResult(
+      snapshot,
+      decoded,
+      Math.round(performance.now() - nativeLoadStartedAt),
+      playbackSequence
+    )
   }
 
   return {
     initialize: async () => {
       const caps = refreshCapabilities()
-      if (caps.bitPerfectAvailable) {
+      if (caps.bitPerfectAvailable || caps.processedExclusiveAvailable) {
         ensureEventPoller()
       }
       return caps
@@ -924,6 +1329,33 @@ export function createNativeAudioController(
       invalidateDeviceFormatProbes()
       capabilitiesCache = normalizeCapabilities(engine.setOutputDevice(deviceId))
       return capabilitiesCache
+    },
+
+    configureNativeOutput: async (request: NativeAudioOutputRequest) => {
+      const engine = await ensureAvailable()
+      outputRequestCache = {
+        policy: request.policy === 'processed' ? 'processed' : 'direct',
+        requestedSampleRate: Number.isFinite(request.requestedSampleRate) && Number(request.requestedSampleRate) > 0
+          ? Math.round(Number(request.requestedSampleRate))
+          : null
+      }
+      capabilitiesCache = normalizeCapabilities(engine.configureOutput(outputRequestCache))
+      return capabilitiesCache
+    },
+
+    setNativeDspConfig: async (config: NativeAudioDspConfig) => {
+      const engine = await ensureAvailable()
+      dspConfigCache = {
+        ...config,
+        eqBands: config.eqBands.map((band) => ({ ...band }))
+      }
+      return normalizePlaybackSnapshot(engine.setDspConfig(dspConfigCache))
+    },
+
+    setNativeTrackGain: async (gain: NativeAudioTrackGain) => {
+      const engine = await ensureAvailable()
+      trackGainCache = { ...gain }
+      return normalizePlaybackSnapshot(engine.setCurrentTrackGain(trackGainCache))
     },
 
     probeDeviceFormats: async (deviceId?: string, channels = 2) => {
@@ -940,24 +1372,43 @@ export function createNativeAudioController(
       )
     },
 
-    loadTrack: async (filePath: string, metadata?: NativeAudioTrackMetadata) => {
+    loadTrack: async (filePath: string, metadata?: NativeAudioTrackMetadata, gain: NativeAudioTrackGain = { mode: 'off', gainDb: 0 }) => {
       const loadOperation = beginLoadOperation()
+      currentPlaybackSequence = null
+      bufferedPlaybackSequence = null
       const engine = await ensureAvailable()
       assertCurrentLoadOperation(loadOperation)
       const backendKind = capabilitiesCache.activeBackend
-      const decoded = await decodeFileToPcm(filePath, metadata, { backendKind })
+      const decodeController = new AbortController()
+      activeLoadDecode = { generation: loadOperation, controller: decodeController }
+      let decoded: DecodedPcmTrack
+      try {
+        decoded = await decodeFileToPcm(filePath, metadata, {
+          backendKind,
+          signal: decodeController.signal
+        })
+      } finally {
+        if (activeLoadDecode?.generation === loadOperation) {
+          activeLoadDecode = null
+        }
+      }
       const decodedByteLength = decoded.pcmData.byteLength
       try {
         assertCurrentLoadOperation(loadOperation)
         currentTrackRequest = {
           filePath,
-          metadata,
+          metadata: decoded.sourceMetadata,
           sampleRate: decoded.sampleRate,
           channels: decoded.channels,
           sampleFormat: decoded.sampleFormat,
-          duration: decoded.duration
+          duration: decoded.duration,
+          timings: decoded.timings,
+          gain
         }
-        const result = loadDecodedTrack(engine, decoded)
+        const playbackSequence = allocatePlaybackSequence()
+        trackGainCache = { ...gain }
+        const result = loadDecodedTrack(engine, decoded, playbackSequence, gain)
+        currentPlaybackSequence = playbackSequence
         currentBufferBytes = decodedByteLength
         nextBufferBytes = 0
         nextTrackRequest = null
@@ -967,34 +1418,56 @@ export function createNativeAudioController(
       }
     },
 
-    preloadNextTrack: async (filePath: string, metadata?: NativeAudioTrackMetadata) => {
+    preloadNextTrack: async (filePath: string, metadata?: NativeAudioTrackMetadata, gain: NativeAudioTrackGain = { mode: 'off', gainDb: 0 }) => {
       const prebufferOperation = beginPrebufferOperation()
+      bufferedPlaybackSequence = null
       const engine = await ensureAvailable()
       assertCurrentPrebufferOperation(prebufferOperation)
-      const decoded = await decodeFileToPcm(filePath, metadata, {
-        backendKind: capabilitiesCache.activeBackend
-      })
+      const decodeController = new AbortController()
+      activePrebufferDecode = { generation: prebufferOperation, controller: decodeController }
+      let decoded: DecodedPcmTrack
+      try {
+        decoded = await decodeFileToPcm(filePath, metadata, {
+          backendKind: capabilitiesCache.activeBackend,
+          signal: decodeController.signal
+        })
+      } finally {
+        if (activePrebufferDecode?.generation === prebufferOperation) {
+          activePrebufferDecode = null
+        }
+      }
       const decodedByteLength = decoded.pcmData.byteLength
       try {
         assertCurrentPrebufferOperation(prebufferOperation)
+        const nativeLoadStartedAt = performance.now()
+        const playbackSequence = allocatePlaybackSequence()
         engine.preloadNextTrack(
           new Uint8Array(decoded.pcmData.buffer, decoded.pcmData.byteOffset, decoded.pcmData.byteLength),
           decoded.sampleRate,
           decoded.channels,
           decoded.sampleFormat,
-          decoded.duration
+          decoded.duration,
+          gain
         )
+        bufferedPlaybackSequence = playbackSequence
         nextBufferBytes = decodedByteLength
         nextTrackRequest = {
           filePath,
-          metadata,
+          metadata: decoded.sourceMetadata,
           sampleRate: decoded.sampleRate,
           channels: decoded.channels,
           sampleFormat: decoded.sampleFormat,
-          duration: decoded.duration
+          duration: decoded.duration,
+          timings: decoded.timings,
+          gain
         }
         const snapshot = normalizePlaybackSnapshot(engine.getPlaybackSnapshot())
-        return normalizeTrackLoadResult(snapshot, decoded)
+        return normalizeTrackLoadResult(
+          snapshot,
+          decoded,
+          Math.round(performance.now() - nativeLoadStartedAt),
+          playbackSequence
+        )
       } finally {
         releaseDecodedPcmBuffer(decoded)
       }
@@ -1007,6 +1480,8 @@ export function createNativeAudioController(
       const promotedRequest = nextTrackRequest?.filePath === filePath
         ? nextTrackRequest
         : null
+      const promotedPlaybackSequence = bufferedPlaybackSequence ?? allocatePlaybackSequence()
+      const nativeLoadStartedAt = performance.now()
       const snapshot = normalizePlaybackSnapshot(engine.promoteNextTrack())
       currentTrackRequest = promotedRequest ?? (
         snapshot.sampleRate && snapshot.channels && snapshot.sampleFormat
@@ -1016,83 +1491,84 @@ export function createNativeAudioController(
               sampleRate: snapshot.sampleRate,
               channels: snapshot.channels,
               sampleFormat: snapshot.sampleFormat,
-              duration: snapshot.duration
+              duration: snapshot.duration,
+              gain: { mode: 'off', gainDb: 0 }
             }
           : null
       )
+      trackGainCache = { ...(currentTrackRequest?.gain ?? { mode: 'off', gainDb: 0 }) }
       currentBufferBytes = nextBufferBytes
       nextBufferBytes = 0
       nextTrackRequest = null
-      return normalizePromotedTrackLoadResult(snapshot, currentTrackRequest)
+      currentPlaybackSequence = promotedPlaybackSequence
+      bufferedPlaybackSequence = null
+      return normalizePromotedTrackLoadResult(
+        snapshot,
+        currentTrackRequest,
+        Math.round(performance.now() - nativeLoadStartedAt),
+        promotedPlaybackSequence
+      )
+    },
+
+    cancelPendingDecode: async () => {
+      // Cancellation is deliberately scoped to ffprobe/FFmpeg. Once decoded PCM has been
+      // handed to the addon, native load/play (including an active device-start handshake)
+      // is allowed to finish under the existing serialization policy.
+      // Always advance both generations so a request still awaiting controller setup
+      // cannot slip through and begin an obsolete decode after this call returns.
+      loadGeneration += 1
+      prebufferGeneration += 1
+      activeLoadDecode?.controller.abort()
+      activePrebufferDecode?.controller.abort()
     },
 
     play: async () => {
       const engine = await ensureAvailable()
+      // Anything queued before this command belongs to the prior playback
+      // epoch. Preserve diagnostics, but discard its lifecycle notifications
+      // before assigning a fresh identity to the device-start handshake.
+      dispatchNativeEvents(engine, engine.drainEvents(), true)
+      const playbackSequence = allocatePlaybackSequence()
+      currentPlaybackSequence = playbackSequence
       try {
-        return normalizePlaybackSnapshot(await engine.play())
+        const snapshot = normalizePlaybackSnapshot(await engine.play())
+        lastDiagnosticReport = buildDiagnosticReport(engine)
+        return { ...snapshot, playbackSequence }
       } catch (error) {
-        if (capabilitiesCache.activeBackend === 'wasapi-exclusive') {
-          // Negotiation already happened natively; there is nothing useful to retry, so
-          // surface a message the renderer can turn into an actionable dialog.
-          throw asBitPerfectFormatError(error, currentTrackRequest)
-        }
-
-        if (capabilitiesCache.activeBackend !== 'alsa-hw' || !currentTrackRequest) {
-          throw error
-        }
-
-        const retrySampleFormat = currentTrackRequest.sampleFormat === 'f32'
-          ? 's16'
-          : currentTrackRequest.sampleFormat === 's16'
-            ? 's32'
-            : null
-
-        if (!retrySampleFormat) {
-          throw error
-        }
-
-        const decoded = await decodeFileToPcm(currentTrackRequest.filePath, currentTrackRequest.metadata, {
-          backendKind: capabilitiesCache.activeBackend,
-          forcedSampleFormat: retrySampleFormat
-        })
-        const decodedByteLength = decoded.pcmData.byteLength
-        currentTrackRequest = {
-          ...currentTrackRequest,
-          sampleRate: decoded.sampleRate,
-          channels: decoded.channels,
-          sampleFormat: decoded.sampleFormat,
-          duration: decoded.duration
-        }
-        try {
-          loadDecodedTrack(engine, decoded)
-          currentBufferBytes = decodedByteLength
-          nextBufferBytes = 0
-          nextTrackRequest = null
-          return normalizePlaybackSnapshot(await engine.play())
-        } finally {
-          releaseDecodedPcmBuffer(decoded)
-        }
+        // Exclusive mode is fail-closed. The user explicitly chooses Standard mode from
+        // the failure dialog; preload never re-decodes or falls back automatically.
+        throw asNativeOutputFailure(engine, error, currentTrackRequest)
       }
     },
 
     pause: async () => {
       const engine = await ensureAvailable()
-      return normalizePlaybackSnapshot(engine.pause())
+      return {
+        ...normalizePlaybackSnapshot(engine.pause()),
+        ...(currentPlaybackSequence === null ? {} : { playbackSequence: currentPlaybackSequence })
+      }
     },
 
     stop: async () => {
       invalidateLoadOperations()
       const engine = await ensureAvailable()
-      return normalizePlaybackSnapshot(engine.stop())
+      return {
+        ...normalizePlaybackSnapshot(engine.stop()),
+        ...(currentPlaybackSequence === null ? {} : { playbackSequence: currentPlaybackSequence })
+      }
     },
 
     seek: async (seconds: number) => {
       const engine = await ensureAvailable()
-      return normalizePlaybackSnapshot(engine.seek(seconds))
+      return {
+        ...normalizePlaybackSnapshot(engine.seek(seconds)),
+        ...(currentPlaybackSequence === null ? {} : { playbackSequence: currentPlaybackSequence })
+      }
     },
 
     clearNextTrack: async () => {
       invalidatePrebufferOperations()
+      bufferedPlaybackSequence = null
       const engine = await ensureAvailable()
       nextBufferBytes = 0
       nextTrackRequest = null
@@ -1101,7 +1577,22 @@ export function createNativeAudioController(
 
     getPlaybackSnapshot: async () => {
       const engine = await ensureAvailable()
-      return normalizePlaybackSnapshot(engine.getPlaybackSnapshot())
+      return {
+        ...normalizePlaybackSnapshot(engine.getPlaybackSnapshot()),
+        ...(currentPlaybackSequence === null ? {} : { playbackSequence: currentPlaybackSequence })
+      }
+    },
+
+    getNativeAudioDiagnosticReport: async () => {
+      if (playback) {
+        lastDiagnosticReport = buildDiagnosticReport(playback)
+      }
+      return lastDiagnosticReport ?? {
+        generatedAt: new Date().toISOString(),
+        text: `Astra Native Audio Diagnostic Report\n${fallbackUnavailableReason}`,
+        outputStatus: normalizeNativeAudioOutputStatus(null),
+        track: null
+      }
     },
 
     getBufferMemoryStats: async () => {

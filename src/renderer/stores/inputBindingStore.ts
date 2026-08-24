@@ -31,6 +31,7 @@ interface InputBindingStore {
   globalEnabled: GlobalInputBindingPreferences
   globalStatuses: GlobalInputBindingStatuses
   globalRegistrationSuspended: boolean
+  globalUserSuspended: boolean
   assignBinding: (actionId: InputActionId, slotIndex: number, binding: InputBinding) => void
   clearBinding: (actionId: InputActionId, slotIndex: number) => void
   resetAction: (actionId: InputActionId) => void
@@ -38,6 +39,7 @@ interface InputBindingStore {
   setGlobalEnabled: (actionId: InputActionId, slotIndex: number, enabled: boolean) => void
   setGlobalStatuses: (statuses: GlobalShortcutRegistrationResult[]) => void
   setGlobalRegistrationSuspended: (suspended: boolean) => void
+  setGlobalUserSuspended: (suspended: boolean) => void
 }
 
 interface PersistedGlobalInputBindings {
@@ -192,6 +194,32 @@ export function isGlobalInputBindingEnabled(
   return preferences[actionId]?.[slotIndex] === true
 }
 
+export function countConfiguredGlobalInputBindings(
+  overrides: InputBindingOverrides,
+  preferences: GlobalInputBindingPreferences
+): number {
+  let count = 0
+  for (const definition of INPUT_ACTION_DEFINITIONS) {
+    const slots = getEffectiveBindingSlots(definition.id, overrides)
+    slots.forEach((binding, slotIndex) => {
+      if (
+        binding?.device === 'keyboard'
+        && isGlobalInputBindingEnabled(definition.id, slotIndex, preferences)
+      ) {
+        count += 1
+      }
+    })
+  }
+  return count
+}
+
+export function isGlobalInputRegistrationSuspended(
+  captureSuspended: boolean,
+  userSuspended: boolean
+): boolean {
+  return captureSuspended || userSuspended
+}
+
 function updateGlobalPreference(
   preferences: GlobalInputBindingPreferences,
   actionId: InputActionId,
@@ -219,6 +247,7 @@ export const useInputBindingStore = create<InputBindingStore>((set) => ({
   globalEnabled: readGlobalEnabled(),
   globalStatuses: {},
   globalRegistrationSuspended: false,
+  globalUserSuspended: false,
   assignBinding: (actionId, slotIndex, binding) => set((state) => {
     if (slotIndex < 0 || slotIndex >= MAX_BINDINGS_PER_ACTION) return state
     let nextOverrides = { ...state.overrides }
@@ -292,5 +321,6 @@ export const useInputBindingStore = create<InputBindingStore>((set) => ({
       status
     ]))
   })),
-  setGlobalRegistrationSuspended: (globalRegistrationSuspended) => set({ globalRegistrationSuspended })
+  setGlobalRegistrationSuspended: (globalRegistrationSuspended) => set({ globalRegistrationSuspended }),
+  setGlobalUserSuspended: (globalUserSuspended) => set({ globalUserSuspended })
 }))

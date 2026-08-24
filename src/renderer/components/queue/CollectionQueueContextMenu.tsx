@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { usePlayerStore } from '../../stores/playerStore'
+import { usePlaylistStore } from '../../stores/playlistStore'
 import { useUIStore } from '../../stores/uiStore'
 import { resolveCollectionTrackPaths } from '../../utils/collectionQueue'
 
@@ -16,10 +17,17 @@ export default function CollectionQueueContextMenu() {
   const activeView = useUIStore((state) => state.activeView)
   const closeMenu = useUIStore((state) => state.closeCollectionQueueMenu)
   const enqueueTrackPaths = usePlayerStore((state) => state.enqueueTrackPaths)
+  const sidebarPinnedPlaylistIds = usePlaylistStore((state) => state.sidebarPinnedPlaylistIds)
+  const pinPlaylistToSidebar = usePlaylistStore((state) => state.pinPlaylistToSidebar)
+  const unpinPlaylistFromSidebar = usePlaylistStore((state) => state.unpinPlaylistFromSidebar)
+  const moveSidebarPinnedPlaylist = usePlaylistStore((state) => state.moveSidebarPinnedPlaylist)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const [position, setPosition] = useState<MenuPosition | null>(null)
   const [busyAction, setBusyAction] = useState<'next' | 'end' | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const targetPlaylistId = request?.target.kind === 'playlist' ? request.target.playlistId : null
+  const pinnedIndex = targetPlaylistId === null ? -1 : sidebarPinnedPlaylistIds.indexOf(targetPlaylistId)
+  const isPinned = pinnedIndex >= 0
 
   useEffect(() => {
     setBusyAction(null)
@@ -39,7 +47,7 @@ export default function CollectionQueueContextMenu() {
         Math.max(MENU_EDGE_PADDING_PX, window.innerHeight - rect.height - MENU_EDGE_PADDING_PX)
       )
     })
-  }, [request, errorMessage])
+  }, [request, errorMessage, isPinned, pinnedIndex])
 
   useEffect(() => {
     if (!request) return
@@ -107,6 +115,52 @@ export default function CollectionQueueContextMenu() {
       onClick={(event) => event.stopPropagation()}
     >
       <div className="collection-queue-context-menu-title" title={label}>{label}</div>
+      {targetPlaylistId !== null && (
+        <>
+          <button
+            type="button"
+            className="track-context-menu-item"
+            role="menuitem"
+            onClick={() => {
+              if (isPinned) unpinPlaylistFromSidebar(targetPlaylistId)
+              else pinPlaylistToSidebar(targetPlaylistId)
+              closeMenu()
+            }}
+          >
+            <span className="track-context-menu-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill={isPinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m15 4 5 5-3 1-4 4 1 5-1 1-4-6-5-4 1-1 5 1 4-4 1-2Z" />
+                <path d="m9 15-5 5" />
+              </svg>
+            </span>
+            {isPinned ? 'Unpin from Sidebar' : 'Pin to Sidebar'}
+          </button>
+          {isPinned && (
+            <>
+              <button
+                type="button"
+                className="track-context-menu-item"
+                role="menuitem"
+                disabled={pinnedIndex <= 0}
+                onClick={() => moveSidebarPinnedPlaylist(targetPlaylistId, pinnedIndex - 1)}
+              >
+                <span className="track-context-menu-icon" aria-hidden="true">↑</span>
+                Move Earlier
+              </button>
+              <button
+                type="button"
+                className="track-context-menu-item"
+                role="menuitem"
+                disabled={pinnedIndex >= sidebarPinnedPlaylistIds.length - 1}
+                onClick={() => moveSidebarPinnedPlaylist(targetPlaylistId, pinnedIndex + 1)}
+              >
+                <span className="track-context-menu-icon" aria-hidden="true">↓</span>
+                Move Later
+              </button>
+            </>
+          )}
+        </>
+      )}
       <button
         type="button"
         className="track-context-menu-item"

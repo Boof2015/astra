@@ -17,6 +17,7 @@ public:
     explicit FFT(size_t size);
     void forward(const float* input, float* magnitudes);
     void forward(const float* input, std::complex<float>* output);
+    void inverse(const std::complex<float>* input, float* output);
     size_t getSize() const { return size_; }
 
 private:
@@ -25,6 +26,7 @@ private:
     std::vector<std::complex<float>> buffer_; // Reuse buffer to avoid allocations
     std::vector<std::complex<float>> scratch_; // Scratch buffer if needed
     void bitReverse(std::complex<float>* data);
+    void transform(std::complex<float>* data, bool inverse);
 };
 
 // Biquad filter for lowpass/bandpass

@@ -25,6 +25,21 @@ export interface PlaylistDisplaySections {
   sidebarOverflowPlaylists: DisplayPlaylist[]
 }
 
+export interface SidebarPlaylistSections {
+  sidebarPinnedPlaylists: DisplayPlaylist[]
+  sidebarOverflowPlaylists: DisplayPlaylist[]
+}
+
+export type PlaylistBrowserSortMode = 'recently-played' | 'recently-updated' | 'name' | 'created'
+
+export interface PlaylistSidebarPinsV1 {
+  version: 1
+  pinnedPlaylistIds: number[]
+}
+
+export const PLAYLIST_SIDEBAR_PINS_VERSION = 1
+export const DEFAULT_SIDEBAR_USER_PLAYLIST_LIMIT = 3
+
 export function isSystemFavoritesPlaylistId(playlistId: number | null | undefined): boolean {
   return playlistId === FAVORITES_PLAYLIST_ID
 }
@@ -77,6 +92,129 @@ function toDisplayPlaylist(playlist: PlaylistLike): DisplayPlaylist {
     isSystemFavorites: false,
     cover_hash: playlist.custom_cover_hash ?? playlist.auto_cover_hash
   }
+}
+
+export function buildAllDisplayPlaylists(
+  userPlaylists: PlaylistLike[],
+  favoriteOptions: FavoritesDisplayOptions
+): DisplayPlaylist[] {
+  const favoritesPlaylist = createFavoritesPlaylist(favoriteOptions)
+  return [
+    ...(favoritesPlaylist ? [favoritesPlaylist] : []),
+    ...sortUserPlaylists(userPlaylists).map(toDisplayPlaylist)
+  ]
+}
+
+export function buildHomePlaylists(
+  userPlaylists: PlaylistLike[],
+  favoriteOptions: FavoritesDisplayOptions
+): DisplayPlaylist[] {
+  return buildAllDisplayPlaylists(userPlaylists, favoriteOptions)
+}
+
+export function getDefaultSidebarPinnedPlaylistIds(
+  userPlaylists: PlaylistLike[],
+  quickPlayedLimit: number = DEFAULT_SIDEBAR_USER_PLAYLIST_LIMIT
+): number[] {
+  return [
+    FAVORITES_PLAYLIST_ID,
+    ...sortUserPlaylists(userPlaylists)
+      .slice(0, Math.max(0, quickPlayedLimit))
+      .map((playlist) => playlist.id)
+  ]
+}
+
+export function normalizeSidebarPinnedPlaylistIds(
+  pinnedPlaylistIds: readonly number[],
+  userPlaylists: PlaylistLike[]
+): number[] {
+  const validPlaylistIds = new Set(userPlaylists.map((playlist) => playlist.id))
+  validPlaylistIds.add(FAVORITES_PLAYLIST_ID)
+
+  const normalized: number[] = []
+  const seen = new Set<number>()
+  for (const value of pinnedPlaylistIds) {
+    if (!Number.isInteger(value) || !validPlaylistIds.has(value) || seen.has(value)) continue
+    normalized.push(value)
+    seen.add(value)
+  }
+  return normalized
+}
+
+export function parsePlaylistSidebarPins(raw: unknown): number[] | null {
+  if (typeof raw !== 'string' || raw.trim().length === 0) return null
+  try {
+    const parsed = JSON.parse(raw) as Partial<PlaylistSidebarPinsV1>
+    if (parsed.version !== PLAYLIST_SIDEBAR_PINS_VERSION || !Array.isArray(parsed.pinnedPlaylistIds)) {
+      return null
+    }
+    if (!parsed.pinnedPlaylistIds.every((value) => Number.isInteger(value))) return null
+    return [...parsed.pinnedPlaylistIds]
+  } catch {
+    return null
+  }
+}
+
+export function serializePlaylistSidebarPins(pinnedPlaylistIds: readonly number[]): string {
+  const payload: PlaylistSidebarPinsV1 = {
+    version: PLAYLIST_SIDEBAR_PINS_VERSION,
+    pinnedPlaylistIds: [...pinnedPlaylistIds]
+  }
+  return JSON.stringify(payload)
+}
+
+export function buildSidebarPlaylistSections(
+  userPlaylists: PlaylistLike[],
+  favoriteOptions: FavoritesDisplayOptions,
+  pinnedPlaylistIds: readonly number[]
+): SidebarPlaylistSections {
+  const allPlaylists = buildAllDisplayPlaylists(userPlaylists, favoriteOptions)
+  const playlistById = new Map(allPlaylists.map((playlist) => [playlist.id, playlist]))
+  const normalizedPinnedIds = normalizeSidebarPinnedPlaylistIds(pinnedPlaylistIds, userPlaylists)
+  const pinnedIdSet = new Set(normalizedPinnedIds)
+
+  return {
+    sidebarPinnedPlaylists: normalizedPinnedIds
+      .map((playlistId) => playlistById.get(playlistId))
+      .filter((playlist): playlist is DisplayPlaylist => Boolean(playlist)),
+    sidebarOverflowPlaylists: allPlaylists.filter((playlist) => !pinnedIdSet.has(playlist.id))
+  }
+}
+
+export function normalizePlaylistBrowserSortMode(value: unknown): PlaylistBrowserSortMode {
+  return value === 'recently-updated' || value === 'name' || value === 'created'
+    ? value
+    : 'recently-played'
+}
+
+export function sortPlaylistBrowserEntries(
+  playlists: readonly DisplayPlaylist[],
+  sortMode: PlaylistBrowserSortMode
+): DisplayPlaylist[] {
+  const favorites = playlists.filter((playlist) => playlist.isSystemFavorites)
+  const userPlaylists = playlists.filter((playlist) => !playlist.isSystemFavorites)
+  const sorted = [...userPlaylists].sort((a, b) => {
+    if (sortMode === 'name') {
+      const nameOrder = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+      return nameOrder || b.id - a.id
+    }
+    if (sortMode === 'created') {
+      return b.created_at - a.created_at || b.id - a.id
+    }
+    if (sortMode === 'recently-updated') {
+      return b.updated_at - a.updated_at || b.id - a.id
+    }
+
+    const aPlayed = a.last_played_at
+    const bPlayed = b.last_played_at
+    if (aPlayed !== null && bPlayed !== null) {
+      return bPlayed - aPlayed || b.updated_at - a.updated_at || b.id - a.id
+    }
+    if (aPlayed !== null) return -1
+    if (bPlayed !== null) return 1
+    return b.updated_at - a.updated_at || b.id - a.id
+  })
+  return [...favorites, ...sorted]
 }
 
 export function buildPlaylistDisplaySections(

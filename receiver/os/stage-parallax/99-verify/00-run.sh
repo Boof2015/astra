@@ -246,9 +246,26 @@ if [ "${splash_disabled}" = true ]; then
   exit 1
 fi
 
-check "TV-remote passthrough: keymap installed and registered"
-[ -f "${ROOTFS_DIR}/etc/rc_keymaps/parallax_cec.toml" ]
-grep -q 'rc-cec parallax_cec.toml' "${ROOTFS_DIR}/etc/rc_maps.cfg"
+check "TV-remote passthrough: one safe keymap registered with power commands suppressed"
+CEC_KEYMAP="${ROOTFS_DIR}/etc/rc_keymaps/parallax_cec.toml"
+CEC_MAPS_CONFIG="${ROOTFS_DIR}/etc/rc_maps.cfg"
+[ -f "${CEC_KEYMAP}" ]
+awk '
+  /^[[:space:]]*#/ { next }
+  NF >= 2 && $2 == "rc-cec" {
+    count++
+    if ($1 != "*" || $3 != "parallax_cec.toml" || NF != 3)
+      invalid = 1
+  }
+  END { exit !(count == 1 && !invalid) }
+' "${CEC_MAPS_CONFIG}"
+for cec_power_code in 0x40 0x6b 0x6c 0x6d; do
+  grep -Eq "^${cec_power_code}[[:space:]]*=[[:space:]]*\"KEY_RESERVED\"" "${CEC_KEYMAP}"
+done
+if grep -Eq '"KEY_(POWER|SLEEP|WAKEUP)"' "${CEC_KEYMAP}"; then
+  echo "Parallax CEC keymap exposes a power-family Linux input key" >&2
+  exit 1
+fi
 
 check "TV mode: kiosk packages, units, detect enabled, CEC group"
 on_chroot << 'CHROOT'

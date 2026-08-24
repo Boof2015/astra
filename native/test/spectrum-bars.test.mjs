@@ -151,3 +151,31 @@ test('bar peaks hold for 750 ms then fall at 18 dB per second deterministically'
   assert.ok(Math.abs(decayedAt1250 - (initialPeak - 0.09)) < 0.01,
     `expected 9 dB decay after 500 ms, got ${initialPeak - decayedAt1250}`)
 })
+
+test('curve frame returns only requested planes and Side re-enables from silence', () => {
+  const fftSize = 2048
+  configure(fftSize)
+  spectrum.setSideEnabled(false)
+
+  const left = tone(1000, fftSize)
+  const right = Float32Array.from(left, (sample) => -sample)
+  spectrum.setSmoothing(0.9)
+  spectrum.pushSamples(left)
+  spectrum.setSideEnabled(true)
+  spectrum.pushStereoSamples(left, right)
+  const fullFrame = spectrum.getFrame({ includeRaw: true, includeSide: true })
+  assert.equal(fullFrame.primary.length, fftSize / 2)
+  assert.equal(fullFrame.raw.length, fftSize / 2)
+  assert.equal(fullFrame.side.length, fftSize / 2)
+  assert.ok(Math.max(...fullFrame.side) > Math.max(...fullFrame.primary) + 40)
+  assert.ok(Math.max(...fullFrame.side) > -20, 'first enabled Side frame should bypass stale smoothing history')
+
+  spectrum.setSideEnabled(false)
+  const primaryOnly = spectrum.getFrame()
+  assert.equal(Object.hasOwn(primaryOnly, 'raw'), false)
+  assert.equal(Object.hasOwn(primaryOnly, 'side'), false)
+
+  spectrum.setSideEnabled(true)
+  const clearedSide = spectrum.getFrame({ includeSide: true }).side
+  assert.ok(clearedSide.every((value) => value === -100))
+})

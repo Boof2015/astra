@@ -1,7 +1,20 @@
 import { create } from 'zustand'
-import { FAVORITES_PLAYLIST_ID, isSystemFavoritesPlaylistId } from '../utils/playlistSystem'
+import {
+  FAVORITES_PLAYLIST_ID,
+  getDefaultSidebarPinnedPlaylistIds,
+  isSystemFavoritesPlaylistId,
+  normalizePlaylistBrowserSortMode,
+  normalizeSidebarPinnedPlaylistIds,
+  parsePlaylistSidebarPins,
+  serializePlaylistSidebarPins,
+  type PlaylistBrowserSortMode
+} from '../utils/playlistSystem'
 import type { TrackSourceType } from '../../types/subsonic'
 import { normalizeTrackSortState, type PlaylistSessionSnapshot, type SessionTrackSortState } from '../utils/sessionState'
+import {
+  PLAYLIST_BROWSER_SORT_STORAGE_KEY,
+  PLAYLIST_SIDEBAR_PINS_STORAGE_KEY
+} from '../constants/settingsStorageKeys'
 import {
   normalizeDynamicPlaylistRules,
   type DynamicPlaylistRulesV1,
@@ -69,6 +82,18 @@ export interface PlaylistTrackMembershipSummary {
   matchedTrackCount: number
 }
 
+export type PlaylistInsertPosition = number | 'end'
+
+export interface PlaylistInsertResult {
+  insertedEntryIds: number[]
+  insertedTrackPaths: string[]
+  skippedTrackPaths: string[]
+}
+
+export interface PlaylistMoveResult {
+  changed: boolean
+}
+
 export type PlaylistTrackListSortState = SessionTrackSortState
 
 interface DbTrack {
@@ -129,6 +154,9 @@ interface PlaylistStore {
   selectedPlaylistEntries: PlaylistTrackEntry[]
   selectedPlaylistTracks: DbTrack[]
   sortState: PlaylistTrackListSortState | null
+  sidebarPinnedPlaylistIds: number[]
+  sidebarPinsInitialized: boolean
+  browserSortMode: PlaylistBrowserSortMode
 
   loadPlaylists: () => Promise<void>
   createPlaylist: (name: string) => Promise<Playlist>
@@ -140,10 +168,12 @@ interface PlaylistStore {
   previewDynamicPlaylist: (rules: DynamicPlaylistRulesV1) => Promise<DynamicPlaylistPreview>
   renamePlaylist: (id: number, name: string) => Promise<void>
   deletePlaylist: (id: number) => Promise<void>
-  selectPlaylist: (id: number) => Promise<void>
+  selectPlaylist: (id: number, shouldCommit?: () => boolean) => Promise<void>
   refreshSelectedPlaylist: () => Promise<void>
   clearSelection: () => void
   addToPlaylist: (playlistId: number, trackPaths: string[]) => Promise<void>
+  insertTracksIntoPlaylist: (playlistId: number, trackPaths: string[], position: PlaylistInsertPosition) => Promise<PlaylistInsertResult>
+  movePlaylistEntries: (playlistId: number, entryIds: number[], position: number) => Promise<PlaylistMoveResult>
   removeFromPlaylist: (playlistId: number, trackPath: string) => Promise<void>
   removePlaylistEntry: (playlistId: number, entryId: number) => Promise<void>
   reassociatePlaylistEntry: (playlistId: number, entryId: number, targetTrackPath: string) => Promise<void>
@@ -155,6 +185,11 @@ interface PlaylistStore {
   getPlaylistTrackPaths: (playlistId: number) => Promise<string[]>
   importPlaylistFromFile: () => Promise<PlaylistImportResult | null>
   exportPlaylistToM3u: (playlistId: number, playlistName: string) => Promise<PlaylistExportResult | null>
+  pinPlaylistToSidebar: (playlistId: number) => void
+  unpinPlaylistFromSidebar: (playlistId: number) => void
+  moveSidebarPinnedPlaylist: (playlistId: number, targetIndex: number) => void
+  resetSidebarPins: () => void
+  setBrowserSortMode: (sortMode: PlaylistBrowserSortMode) => void
   setSortState: (sortState: PlaylistTrackListSortState | null) => void
   getSessionSnapshot: () => PlaylistSessionSnapshot
   restoreSession: (snapshot: PlaylistSessionSnapshot) => Promise<void>
@@ -186,6 +221,47 @@ export function getNormalPlaylists(playlists: Playlist[]): Playlist[] {
   return playlists.filter((playlist) => playlist.kind !== 'dynamic')
 }
 
+function arraysEqual(a: readonly number[], b: readonly number[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
+function readPersistedSidebarPins(): number[] | null {
+  try {
+    return parsePlaylistSidebarPins(localStorage.getItem(PLAYLIST_SIDEBAR_PINS_STORAGE_KEY))
+  } catch {
+    return null
+  }
+}
+
+function persistSidebarPins(pinnedPlaylistIds: readonly number[]): void {
+  try {
+    localStorage.setItem(
+      PLAYLIST_SIDEBAR_PINS_STORAGE_KEY,
+      serializePlaylistSidebarPins(pinnedPlaylistIds)
+    )
+  } catch {
+    // Retain the in-memory order if storage is unavailable.
+  }
+}
+
+function readBrowserSortMode(): PlaylistBrowserSortMode {
+  try {
+    return normalizePlaylistBrowserSortMode(localStorage.getItem(PLAYLIST_BROWSER_SORT_STORAGE_KEY))
+  } catch {
+    return 'recently-played'
+  }
+}
+
+function persistBrowserSortMode(sortMode: PlaylistBrowserSortMode): void {
+  try {
+    localStorage.setItem(PLAYLIST_BROWSER_SORT_STORAGE_KEY, sortMode)
+  } catch {
+    // Retain the in-memory preference if storage is unavailable.
+  }
+}
+
+const initialSidebarPins = readPersistedSidebarPins()
+
 export const usePlaylistStore = create<PlaylistStore>((set, get) => {
   const loadPlaylistSelection = async (playlistId: number): Promise<Pick<PlaylistStore, 'selectedPlaylistEntries' | 'selectedPlaylistTracks'>> => {
     if (playlistId === FAVORITES_PLAYLIST_ID) {
@@ -211,13 +287,36 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
     selectedPlaylistEntries: [],
     selectedPlaylistTracks: [],
     sortState: null,
+    sidebarPinnedPlaylistIds: initialSidebarPins ?? [FAVORITES_PLAYLIST_ID],
+    sidebarPinsInitialized: initialSidebarPins !== null,
+    browserSortMode: readBrowserSortMode(),
 
     loadPlaylists: async () => {
       const playlists = (await window.electronAPI.library.getPlaylists()).map((playlist) => ({
         ...playlist,
         kind: playlist.kind === 'dynamic' ? 'dynamic' as const : 'normal' as const
       }))
-      set({ playlists })
+      const state = get()
+      let sidebarPinnedPlaylistIds: number[]
+      let sidebarPinsInitialized = state.sidebarPinsInitialized
+
+      if (!sidebarPinsInitialized && playlists.length > 0) {
+        sidebarPinnedPlaylistIds = getDefaultSidebarPinnedPlaylistIds(playlists)
+        sidebarPinsInitialized = true
+        persistSidebarPins(sidebarPinnedPlaylistIds)
+      } else if (sidebarPinsInitialized) {
+        sidebarPinnedPlaylistIds = normalizeSidebarPinnedPlaylistIds(
+          state.sidebarPinnedPlaylistIds,
+          playlists
+        )
+        if (!arraysEqual(sidebarPinnedPlaylistIds, state.sidebarPinnedPlaylistIds)) {
+          persistSidebarPins(sidebarPinnedPlaylistIds)
+        }
+      } else {
+        sidebarPinnedPlaylistIds = getDefaultSidebarPinnedPlaylistIds(playlists)
+      }
+
+      set({ playlists, sidebarPinnedPlaylistIds, sidebarPinsInitialized })
     },
 
     createPlaylist: async (name: string) => {
@@ -323,8 +422,10 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       await get().loadPlaylists()
     },
 
-    selectPlaylist: async (id: number) => {
-      set({ selectedPlaylistId: id, ...(await loadPlaylistSelection(id)) })
+    selectPlaylist: async (id: number, shouldCommit?: () => boolean) => {
+      const selection = await loadPlaylistSelection(id)
+      if (shouldCommit && !shouldCommit()) return
+      set({ selectedPlaylistId: id, ...selection })
     },
 
     refreshSelectedPlaylist: async () => {
@@ -341,6 +442,24 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       await window.electronAPI.library.addToPlaylist(playlistId, trackPaths)
       await get().loadPlaylists()
       await refreshSelectedPlaylist(playlistId)
+    },
+
+    insertTracksIntoPlaylist: async (playlistId, trackPaths, position) => {
+      const result = await window.electronAPI.library.insertTracksIntoPlaylist(playlistId, trackPaths, position)
+      if (result.insertedEntryIds.length > 0) {
+        await get().loadPlaylists()
+        await refreshSelectedPlaylist(playlistId)
+      }
+      return result
+    },
+
+    movePlaylistEntries: async (playlistId, entryIds, position) => {
+      const result = await window.electronAPI.library.movePlaylistEntries(playlistId, entryIds, position)
+      if (result.changed) {
+        await get().loadPlaylists()
+        await refreshSelectedPlaylist(playlistId)
+      }
+      return result
     },
 
     removeFromPlaylist: async (playlistId: number, trackPath: string) => {
@@ -431,6 +550,64 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       if (!filePath) return null
 
       return window.electronAPI.library.exportPlaylistToM3u(playlistId, ensurePlaylistExportExtension(filePath))
+    },
+
+    pinPlaylistToSidebar: (playlistId) => {
+      const state = get()
+      const isValid = isSystemFavoritesPlaylistId(playlistId)
+        || state.playlists.some((playlist) => playlist.id === playlistId)
+      if (!isValid) return
+
+      const current = normalizeSidebarPinnedPlaylistIds(
+        state.sidebarPinnedPlaylistIds,
+        state.playlists
+      )
+      if (current.includes(playlistId)) return
+      const next = [...current, playlistId]
+      persistSidebarPins(next)
+      set({ sidebarPinnedPlaylistIds: next, sidebarPinsInitialized: true })
+    },
+
+    unpinPlaylistFromSidebar: (playlistId) => {
+      const state = get()
+      const current = normalizeSidebarPinnedPlaylistIds(
+        state.sidebarPinnedPlaylistIds,
+        state.playlists
+      )
+      const next = current.filter((id) => id !== playlistId)
+      if (arraysEqual(current, next) && state.sidebarPinsInitialized) return
+      persistSidebarPins(next)
+      set({ sidebarPinnedPlaylistIds: next, sidebarPinsInitialized: true })
+    },
+
+    moveSidebarPinnedPlaylist: (playlistId, targetIndex) => {
+      const state = get()
+      const current = normalizeSidebarPinnedPlaylistIds(
+        state.sidebarPinnedPlaylistIds,
+        state.playlists
+      )
+      const sourceIndex = current.indexOf(playlistId)
+      if (sourceIndex < 0 || current.length < 2) return
+      const clampedTargetIndex = Math.max(0, Math.min(current.length - 1, Math.trunc(targetIndex)))
+      if (sourceIndex === clampedTargetIndex) return
+
+      const next = [...current]
+      next.splice(sourceIndex, 1)
+      next.splice(clampedTargetIndex, 0, playlistId)
+      persistSidebarPins(next)
+      set({ sidebarPinnedPlaylistIds: next, sidebarPinsInitialized: true })
+    },
+
+    resetSidebarPins: () => {
+      const next = getDefaultSidebarPinnedPlaylistIds(get().playlists)
+      persistSidebarPins(next)
+      set({ sidebarPinnedPlaylistIds: next, sidebarPinsInitialized: true })
+    },
+
+    setBrowserSortMode: (sortMode) => {
+      const normalized = normalizePlaylistBrowserSortMode(sortMode)
+      persistBrowserSortMode(normalized)
+      set({ browserSortMode: normalized })
     },
 
     setSortState: (sortState) => {

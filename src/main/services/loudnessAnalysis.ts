@@ -43,11 +43,12 @@ export function parseEbur128Summary(stderr: string): { loudnessLufs: number; pea
 
 export interface LoudnessJobRunContext {
   signal: AbortSignal
-  priority: LoudnessAnalysisPriority
+  readonly priority: LoudnessAnalysisPriority
   initialPriority: LoudnessAnalysisPriority
   attempt: number
   queueDepthAtStart: number
   wasPromoted: boolean
+  onPriorityChanged: (listener: (priority: LoudnessAnalysisPriority) => void) => () => void
 }
 
 export interface LoudnessJobDiagnostics {
@@ -68,6 +69,7 @@ interface LoudnessJob<TPayload, TResult> {
   priority: LoudnessAnalysisPriority
   abortController: AbortController
   restartAfterPromotion: boolean
+  priorityListeners: Set<(priority: LoudnessAnalysisPriority) => void>
   wasPromoted: boolean
   wasAborted: boolean
   attempts: number
@@ -85,9 +87,11 @@ export interface LoudnessJobQueueOptions<TPayload, TResult> {
 }
 
 // A single-worker, path-deduplicated priority queue for loudness scans. An
-// interactive request promotes a queued background job. If that job is already
-// running, its low-priority process is aborted and the same promise is retried
-// interactively, avoiding both duplicate work and priority-inversion stalls.
+// interactive request promotes matching background work in place. Running jobs
+// expose a priority-change hook so callers can best-effort reprioritize their
+// worker without throwing away completed analysis. Unrelated interactive work
+// is latest-wins: queued jobs are settled as aborted and an active job receives
+// an abort signal before the newest request runs.
 export class LoudnessAnalysisJobQueue<TPayload, TResult> {
   private readonly jobsByKey = new Map<string, LoudnessJob<TPayload, TResult>>()
   private readonly queue: LoudnessJob<TPayload, TResult>[] = []
@@ -101,7 +105,11 @@ export class LoudnessAnalysisJobQueue<TPayload, TResult> {
   enqueue(key: string, payload: TPayload, priority: LoudnessAnalysisPriority): Promise<TResult> {
     const existing = this.jobsByKey.get(key)
     if (existing) {
-      if (priority === 'interactive') this.promote(existing)
+      if (priority === 'interactive') {
+        this.promote(existing)
+        this.cancelQueuedInteractiveJobs(existing)
+        this.abortUnrelatedActiveJob(existing)
+      }
       return existing.promise
     }
 
@@ -118,6 +126,7 @@ export class LoudnessAnalysisJobQueue<TPayload, TResult> {
       priority,
       abortController: new AbortController(),
       restartAfterPromotion: false,
+      priorityListeners: new Set(),
       wasPromoted: false,
       wasAborted: false,
       attempts: 0,
@@ -130,8 +139,9 @@ export class LoudnessAnalysisJobQueue<TPayload, TResult> {
 
     this.jobsByKey.set(key, job)
     if (priority === 'interactive') {
+      this.cancelQueuedInteractiveJobs(job)
       this.queue.unshift(job)
-      this.abortUnrelatedBackgroundJob(job)
+      this.abortUnrelatedActiveJob(job)
     } else {
       this.queue.push(job)
     }
@@ -139,15 +149,48 @@ export class LoudnessAnalysisJobQueue<TPayload, TResult> {
     return promise
   }
 
+  supersedeInteractiveExcept(key: string): void {
+    const matching = this.jobsByKey.get(key) ?? null
+    if (matching) this.promote(matching)
+
+    for (let index = this.queue.length - 1; index >= 0; index -= 1) {
+      const queued = this.queue[index]
+      if (queued === matching || queued.priority !== 'interactive') continue
+      this.queue.splice(index, 1)
+      this.settleQueuedJobAsAborted(queued)
+    }
+
+    const active = this.activeJob
+    if (
+      active
+      && active !== matching
+      && active.priority === 'interactive'
+      && !active.abortController.signal.aborted
+    ) {
+      active.wasAborted = true
+      active.abortController.abort()
+    }
+  }
+
   private promote(job: LoudnessJob<TPayload, TResult>): void {
-    if (job.priority === 'interactive') return
+    if (job.priority === 'interactive') {
+      // A -> B -> A can revisit the still-active A job after B has canceled it.
+      // Treat that matching request as the newest intent and restart A with a fresh
+      // controller instead of resolving the shared promise as aborted.
+      if (this.activeJob === job && job.abortController.signal.aborted) {
+        job.restartAfterPromotion = true
+      }
+      return
+    }
 
     job.priority = 'interactive'
     job.wasPromoted = true
     if (this.activeJob === job) {
-      job.restartAfterPromotion = true
-      job.wasAborted = true
-      job.abortController.abort()
+      // A prior, unrelated interactive request may already have cancelled this
+      // background run. Only that edge case needs a retry; ordinary promotion
+      // keeps the exact in-progress analysis and its promise intact.
+      if (job.abortController.signal.aborted) job.restartAfterPromotion = true
+      this.notifyPriorityChanged(job)
       return
     }
 
@@ -156,14 +199,52 @@ export class LoudnessAnalysisJobQueue<TPayload, TResult> {
       this.queue.splice(queuedIndex, 1)
       this.queue.unshift(job)
     }
-    this.abortUnrelatedBackgroundJob(job)
+    this.notifyPriorityChanged(job)
   }
 
-  private abortUnrelatedBackgroundJob(incomingJob: LoudnessJob<TPayload, TResult>): void {
+  private notifyPriorityChanged(job: LoudnessJob<TPayload, TResult>): void {
+    for (const listener of job.priorityListeners) {
+      try {
+        listener(job.priority)
+      } catch {
+        // Reprioritization is explicitly best effort. A platform priority API
+        // failure must never discard or alter the loudness result.
+      }
+    }
+  }
+
+  private abortUnrelatedActiveJob(incomingJob: LoudnessJob<TPayload, TResult>): void {
     const active = this.activeJob
-    if (!active || active === incomingJob || active.priority !== 'background') return
+    if (!active || active === incomingJob || active.abortController.signal.aborted) return
     active.wasAborted = true
     active.abortController.abort()
+  }
+
+  private cancelQueuedInteractiveJobs(incomingJob: LoudnessJob<TPayload, TResult>): void {
+    for (let index = this.queue.length - 1; index >= 0; index -= 1) {
+      const queued = this.queue[index]
+      if (queued === incomingJob || queued.priority !== 'interactive') continue
+      this.queue.splice(index, 1)
+      this.settleQueuedJobAsAborted(queued)
+    }
+  }
+
+  private settleQueuedJobAsAborted(job: LoudnessJob<TPayload, TResult>): void {
+    job.wasAborted = true
+    job.abortController.abort()
+    if (this.jobsByKey.get(job.key) === job) this.jobsByKey.delete(job.key)
+    const result = this.options.createAbortedResult()
+    this.options.onSettled?.({
+      key: job.key,
+      initialPriority: job.initialPriority,
+      finalPriority: job.priority,
+      wasPromoted: job.wasPromoted,
+      wasAborted: true,
+      attempts: 0,
+      queueDepthAtStart: 0,
+      durationMs: 0
+    }, result, undefined)
+    job.resolve(result)
   }
 
   private pump(): void {
@@ -190,6 +271,7 @@ export class LoudnessAnalysisJobQueue<TPayload, TResult> {
   private finishJob(job: LoudnessJob<TPayload, TResult>): void {
     if (this.jobsByKey.get(job.key) === job) this.jobsByKey.delete(job.key)
     if (this.activeJob === job) this.activeJob = null
+    job.priorityListeners.clear()
     this.pump()
   }
 
@@ -202,14 +284,27 @@ export class LoudnessAnalysisJobQueue<TPayload, TResult> {
         job.attempts += 1
         const currentController = job.abortController
         try {
-          result = await this.options.run(job.payload, {
+          const context: LoudnessJobRunContext = {
             signal: currentController.signal,
-            priority: job.priority,
+            get priority() { return job.priority },
             initialPriority: job.initialPriority,
             attempt: job.attempts,
             queueDepthAtStart: job.queueDepthAtStart,
-            wasPromoted: job.wasPromoted
-          })
+            wasPromoted: job.wasPromoted,
+            onPriorityChanged: (listener) => {
+              job.priorityListeners.add(listener)
+              return () => job.priorityListeners.delete(listener)
+            }
+          }
+          result = await this.options.run(job.payload, context)
+          if (currentController.signal.aborted) {
+            if (job.restartAfterPromotion) {
+              job.restartAfterPromotion = false
+              job.abortController = new AbortController()
+              continue
+            }
+            result = this.options.createAbortedResult()
+          }
           return result
         } catch (error) {
           if (!currentController.signal.aborted) throw error

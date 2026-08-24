@@ -1,0 +1,20 @@
+# Files: MIT_KEMAR_normal_pinna.sofa
+
+README for ftp://sound.media.mit.edu/pub/Data/KEMAR
+
+This ftp archive is maintained by Bill Gardner <billg@media.mit.edu>
+and Keith Martin <kdm@media.mit.edu>. It contains a set of
+head-related transfer function (HRTF) measurements of a KEMAR
+dummy-head microphone and related software.
+
+This data is Copyright 1994 by the MIT Media Laboratory. It is
+provided free with no restrictions on use, provided the authors
+are cited when the data is used in any research or commercial
+application.
+
+Bill Gardner <billg@media.mit.edu>
+Keith Martin <kdm@media.mit.edu>
+MIT Media Lab Machine Listening Group
+May 18, 1994
+
+Last revision: June 20, 1996

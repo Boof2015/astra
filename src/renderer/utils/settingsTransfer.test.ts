@@ -1,14 +1,20 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  ALBUM_SORT_STATE_STORAGE_KEY,
   EQ_DEVICE_PROFILE_STORAGE_KEY,
   EQ_STORAGE_KEY,
   GLOBAL_INPUT_BINDINGS_STORAGE_KEY,
   HOME_GREETING_TEXT_MODE_STORAGE_KEY,
+  HOME_LAYOUT_STORAGE_KEY,
+  HOME_SKY_TIME_STORAGE_KEY,
   INPUT_BINDINGS_STORAGE_KEY,
   LYRICS_DISPLAY_SETTINGS_STORAGE_KEY,
   LISTENING_STATS_ENABLED_STORAGE_KEY,
   NORMALIZATION_ENABLED_STORAGE_KEY,
+  PLAYLIST_BROWSER_SORT_STORAGE_KEY,
+  PLAYLIST_SIDEBAR_PINS_STORAGE_KEY,
+  ROOT_TRACK_TABLE_LAYOUT_STORAGE_KEY,
   THEME_STORAGE_KEY,
   TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY,
   TRANSPORT_INFO_LINE_MODE_STORAGE_KEY,
@@ -107,10 +113,15 @@ test('known machine-specific, sensitive, and cache keys are excluded from full e
   }
 })
 
-test('library view and experiment transfers include play count and Listening Stats preferences', () => {
+test('library view and experiment transfers include table layout, playlist sort, album sort, play count, and Listening Stats preferences', () => {
+  const rootLayout = '{"columns":[{"id":"title","visible":true,"width":300}]}'
+  const albumSort = '{"key":"year","direction":"desc"}'
   const file = createSettingsTransferFile(['library_view', 'experiments'], {
     storage: new MemoryStorage({
       [TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY]: '1',
+      [ROOT_TRACK_TABLE_LAYOUT_STORAGE_KEY]: rootLayout,
+      [ALBUM_SORT_STATE_STORAGE_KEY]: albumSort,
+      [PLAYLIST_BROWSER_SORT_STORAGE_KEY]: 'name',
       [LISTENING_STATS_ENABLED_STORAGE_KEY]: '1'
     })
   })
@@ -119,10 +130,22 @@ test('library view and experiment transfers include play count and Listening Sta
     file.categories.library_view?.localStorage[TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY],
     '1'
   )
+  assert.equal(file.categories.library_view?.localStorage[ROOT_TRACK_TABLE_LAYOUT_STORAGE_KEY], rootLayout)
+  assert.equal(file.categories.library_view?.localStorage[ALBUM_SORT_STATE_STORAGE_KEY], albumSort)
+  assert.equal(file.categories.library_view?.localStorage[PLAYLIST_BROWSER_SORT_STORAGE_KEY], 'name')
   assert.equal(
     file.categories.experiments?.localStorage[LISTENING_STATS_ENABLED_STORAGE_KEY],
     '1'
   )
+})
+
+test('playlist sidebar ids are installation-specific and excluded from settings transfer', () => {
+  const file = createSettingsTransferFile(['library_view'], {
+    storage: new MemoryStorage({
+      [PLAYLIST_SIDEBAR_PINS_STORAGE_KEY]: '{"version":1,"pinnedPlaylistIds":[-1,42]}'
+    })
+  })
+  assert.equal(collectExportedStorageKeys(file).includes(PLAYLIST_SIDEBAR_PINS_STORAGE_KEY), false)
 })
 
 test('interface transfers include the transport info line preference', () => {
@@ -136,6 +159,33 @@ test('interface transfers include the transport info line preference', () => {
     file.categories.interface?.localStorage[TRANSPORT_INFO_LINE_MODE_STORAGE_KEY],
     'album'
   )
+})
+
+test('interface transfers include the binary Home header preference', () => {
+  const file = createSettingsTransferFile(['interface'], {
+    storage: new MemoryStorage({
+      [HOME_GREETING_TEXT_MODE_STORAGE_KEY]: 'binary-clock'
+    })
+  })
+
+  assert.equal(
+    file.categories.interface?.localStorage[HOME_GREETING_TEXT_MODE_STORAGE_KEY],
+    'binary-clock'
+  )
+})
+
+test('interface transfers include Home sky and module preferences', () => {
+  const sky = '{"mode":"fixed","fixedMinutes":1080}'
+  const layout = '{"version":1,"modules":[{"id":"rediscover","visible":true}]}'
+  const file = createSettingsTransferFile(['interface'], {
+    storage: new MemoryStorage({
+      [HOME_SKY_TIME_STORAGE_KEY]: sky,
+      [HOME_LAYOUT_STORAGE_KEY]: layout
+    })
+  })
+
+  assert.equal(file.categories.interface?.localStorage[HOME_SKY_TIME_STORAGE_KEY], sky)
+  assert.equal(file.categories.interface?.localStorage[HOME_LAYOUT_STORAGE_KEY], layout)
 })
 
 test('import replaces selected categories and leaves unselected categories untouched', async () => {

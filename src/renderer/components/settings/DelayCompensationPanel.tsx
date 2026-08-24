@@ -76,7 +76,10 @@ export default function DelayCompensationPanel() {
     runDelayAutoCalibration,
     resetDelayToAutoGuess,
   } = useAudioSettingsStore()
-  const bitPerfectModeActive = playbackOutputMode === 'bitperfect'
+  const bitPerfectModeActive = playbackOutputMode !== 'standard'
+  const nativeDelayDisabledMessage = playbackOutputMode === 'bitperfect'
+    ? BIT_PERFECT_DSP_DISABLED_MESSAGE
+    : 'Delay compensation and calibration are Standard-only; Exclusive DSP preserves the direct hardware clock.'
 
   const selectedOutputLabel = useMemo(() => {
     return resolveOutputDeviceLabel(selectedDeviceId, availableDevices, {
@@ -327,7 +330,7 @@ export default function DelayCompensationPanel() {
 
       {bitPerfectModeActive && (
         <p className="settings-note delay-comp-note">
-          {BIT_PERFECT_DSP_DISABLED_MESSAGE}
+          {nativeDelayDisabledMessage}
         </p>
       )}
       <p className={`settings-note delay-comp-note delay-comp-note-${delayCalibrationState}`}>

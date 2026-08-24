@@ -122,6 +122,7 @@ export class SinkSession {
   private snapPendingTicks = 0
   private lastHardSyncAtMs = 0
   private hardSyncCount = 0
+  private trimRealignPending = false
 
   private tickTimer: ReturnType<typeof setInterval> | null = null
   private lastDiagnostics: SinkSessionDiagnostics = {
@@ -190,6 +191,7 @@ export class SinkSession {
     this.activeStream = null
     this.resetHostEmitAnchors()
     this.hardSyncCount = 0
+    this.trimRealignPending = false
   }
 
   getInfo(): SinkSessionInfo {
@@ -280,6 +282,7 @@ export class SinkSession {
       }
       const previousAdvanceMs = this.advanceMs
       this.advanceMs = Math.max(-500, Math.min(500, event.advanceMs))
+      this.trimRealignPending = true
       console.log(`[astra-receiver] trim update applied: ${previousAdvanceMs} -> ${this.advanceMs} ms`)
       return
     }
@@ -294,6 +297,7 @@ export class SinkSession {
       return
     }
     if (event.type === 'stop') {
+      this.trimRealignPending = false
       this.pendingAudioChunks = []
       this.engine.clearStream()
       this.discardStagedEngine('stop')
@@ -328,6 +332,9 @@ export class SinkSession {
       return
     }
 
+    // A stream/timeline schedule incorporates the current trim directly; no follow-up snap is
+    // needed for an edit that arrived while paused or loading.
+    this.trimRealignPending = false
     const timeline = event.timeline
     if (event.type === 'stream-start') {
       this.resetHostEmitAnchors()
@@ -772,12 +779,9 @@ export class SinkSession {
         return nominalTarget()
       }
       if (correction.loopSource !== 'predictor') {
-        // Streams with NO anchors at all — the host publishes emit-anchors only from its normal
-        // playback engine, so the trim TEST TONE never grows a predictor — still need snap-based
-        // correction: without this, env-on mode leaves them slew-only (1 ms/s) and a live trim
-        // change on the tone audibly does nothing (found on first Pi trim calibration). Gated on
-        // an empty anchor window so a transient gate blink on an anchored music stream keeps the
-        // app's no-phase1-snap rule (a nominal snap there could fight the predictor's truth).
+        // Preserve the receiver's legacy fallback for genuinely anchorless streams. Calibration
+        // tones now publish output-clock anchors, and the explicit trim path below refuses this
+        // nominal target while their predictor is still warming up.
         if (this.hostEmitAnchors.length >= PARALLAX_HOST_EMIT_ANCHOR_MIN_SAMPLES) return null
         return nominalTarget()
       }
@@ -805,6 +809,7 @@ export class SinkSession {
         && snapshot.bufferedEndFrame >= snap.targetFrame + marginFrames
       ) {
         this.resyncToHostFrame(snap.targetFrame, snap.leadSeconds)
+        this.trimRealignPending = false
         this.lastHardSyncAtMs = now
         this.hardSyncCount += 1
         syncEvent = 'rebuffer_snap'
@@ -840,42 +845,66 @@ export class SinkSession {
       // even before the latch sets; the snap lands the cursor on the host's real output clock,
       // drift collapses, and the latch then sets through the normal stability path.
       const anchorsMature = this.hostEmitAnchors.length >= PARALLAX_HOST_EMIT_ANCHOR_TRUSTED_SAMPLES
-      // Anchorless streams (trim test tone) snap against the nominal timeline — mirrored in
-      // liveSnapTarget, which only yields a phase-1 target when the anchor window is empty.
+      // Keep the legacy nominal fallback for ordinary correction below, but an explicit trim
+      // realignment waits for the output-clock predictor. Calibration tones now publish the same
+      // anchors as music, so using phase 1 here would make the audible reference change regimes.
       const anchorless = this.hostEmitAnchors.length < PARALLAX_HOST_EMIT_ANCHOR_MIN_SAMPLES
-      const canSnap = isSnapSizedDrift
+      const explicitSnap = this.trimRealignPending ? liveSnapTarget() : null
+      const explicitTrimReady = this.trimRealignPending
         && timeline.playbackState === 'playing'
         && hasOffset
-        && snap !== null
+        && explicitSnap !== null
         && (
           !PARALLAX_USE_HOST_PREDICTOR
           || (correction.loopSource === 'predictor' && (this.predictorSnapTrusted || anchorsMature))
-          || anchorless
         )
-      this.snapPendingTicks = canSnap ? this.snapPendingTicks + 1 : 0
-      // For snap-sized drift always slew at max while the snap is suppressed, so the known-large
-      // drift discharges instead of sitting at hold.
-      appliedPpm = isSnapSizedDrift
-        ? clampParallaxPlaybackRatePpm(-correction.driftFrames * 2)
-        : decision.playbackRatePpm
-      if (
-        canSnap
-        && snap !== null
-        && this.snapPendingTicks >= PARALLAX_SNAP_CONFIRM_TICKS
-        && now - this.lastHardSyncAtMs > PARALLAX_RESYNC_MIN_INTERVAL_MS
-      ) {
-        this.resyncToHostFrame(snap.targetFrame, snap.leadSeconds)
+
+      if (explicitTrimReady && explicitSnap) {
+        this.resyncToHostFrame(explicitSnap.targetFrame, explicitSnap.leadSeconds)
+        this.trimRealignPending = false
         this.lastHardSyncAtMs = now
         this.snapPendingTicks = 0
         appliedPpm = 0
         this.hardSyncCount += 1
         syncEvent = 'snap'
         console.log(
-          `[astra-receiver] snap: drift was ${(correction.driftFrames / stream.sampleRate * 1000).toFixed(1)} ms `
-          + `(${correction.loopSource}) -> frame ${snap.targetFrame} (advance ${this.advanceMs} ms)`
+          `[astra-receiver] trim realign -> frame ${explicitSnap.targetFrame} (advance ${this.advanceMs} ms)`
         )
       } else {
-        this.engine.setRatePpm(appliedPpm)
+        const canSnap = isSnapSizedDrift
+          && timeline.playbackState === 'playing'
+          && hasOffset
+          && snap !== null
+          && (
+            !PARALLAX_USE_HOST_PREDICTOR
+            || (correction.loopSource === 'predictor' && (this.predictorSnapTrusted || anchorsMature))
+            || anchorless
+          )
+        this.snapPendingTicks = canSnap ? this.snapPendingTicks + 1 : 0
+        // For snap-sized drift always slew at max while the snap is suppressed.
+        appliedPpm = isSnapSizedDrift
+          ? clampParallaxPlaybackRatePpm(-correction.driftFrames * 2)
+          : decision.playbackRatePpm
+        if (
+          canSnap
+          && snap !== null
+          && this.snapPendingTicks >= PARALLAX_SNAP_CONFIRM_TICKS
+          && now - this.lastHardSyncAtMs > PARALLAX_RESYNC_MIN_INTERVAL_MS
+        ) {
+          this.resyncToHostFrame(snap.targetFrame, snap.leadSeconds)
+          this.trimRealignPending = false
+          this.lastHardSyncAtMs = now
+          this.snapPendingTicks = 0
+          appliedPpm = 0
+          this.hardSyncCount += 1
+          syncEvent = 'snap'
+          console.log(
+            `[astra-receiver] snap: drift was ${(correction.driftFrames / stream.sampleRate * 1000).toFixed(1)} ms `
+            + `(${correction.loopSource}) -> frame ${snap.targetFrame} (advance ${this.advanceMs} ms)`
+          )
+        } else {
+          this.engine.setRatePpm(appliedPpm)
+        }
       }
     }
 

@@ -8,10 +8,17 @@ import {
   type NativeProcessMemoryFootprintsResult
 } from '../../shared/processMemoryFootprint'
 
-interface NativeProcessMemoryAddon {
+export interface NativeProcessMemoryAddon {
   processMemory?: {
-    getProcessFootprints: (pids: number[]) => NativeProcessMemoryFootprintsResult
+    getProcessFootprints?: (pids: number[]) => NativeProcessMemoryFootprintsResult
+    getProcessFootprintsAsync?: (pids: number[]) => Promise<NativeProcessMemoryFootprintsResult>
   }
+}
+
+export interface AppMemoryFootprintOptions {
+  metrics: readonly ProcessMetric[]
+  extraPids?: readonly number[]
+  rawWorkingSetMb: number | null
 }
 
 const require = createRequire(import.meta.url)
@@ -71,8 +78,8 @@ function loadNativeProcessMemoryAddon(): NativeProcessMemoryAddon | null {
   try {
     const modulePath = resolveNativeAddonPath()
     nativeAddon = require(modulePath) as NativeProcessMemoryAddon
-    if (typeof nativeAddon.processMemory?.getProcessFootprints !== 'function') {
-      logNativeAddonWarning('Native addon loaded, but process memory exports are missing. Falling back to Electron memory metrics.')
+    if (typeof nativeAddon.processMemory?.getProcessFootprintsAsync !== 'function') {
+      logNativeAddonWarning('Native addon loaded, but its async process memory export is missing. Falling back to Electron memory metrics.')
       nativeAddon = null
     }
   } catch (error) {
@@ -83,24 +90,49 @@ function loadNativeProcessMemoryAddon(): NativeProcessMemoryAddon | null {
   return nativeAddon
 }
 
-export function collectAppMemoryFootprint(options: {
-  metrics: readonly ProcessMetric[]
-  extraPids?: readonly number[]
-  rawWorkingSetMb: number | null
-}): AppMemoryFootprintSummary {
-  const appPids = collectMetricProcessIds(options.metrics)
-  const childPids = options.extraPids ?? []
-  const pids = collectUniqueProcessIds(options.metrics, childPids)
-  const addon = loadNativeProcessMemoryAddon()
-  if (!addon?.processMemory) {
-    return createUnavailableAppMemoryFootprintSummary(pids, options.rawWorkingSetMb, { appPids, childPids })
+export function createAppMemoryFootprintCollector(
+  loadAddon: () => NativeProcessMemoryAddon | null = loadNativeProcessMemoryAddon
+): (options: AppMemoryFootprintOptions) => Promise<AppMemoryFootprintSummary> {
+  const inFlightMeasurements = new Map<string, Promise<NativeProcessMemoryFootprintsResult>>()
+
+  const measure = (
+    getProcessFootprintsAsync: (pids: number[]) => Promise<NativeProcessMemoryFootprintsResult>,
+    pids: number[]
+  ): Promise<NativeProcessMemoryFootprintsResult> => {
+    const key = [...pids].sort((left, right) => left - right).join(',')
+    const existing = inFlightMeasurements.get(key)
+    if (existing) return existing
+
+    let tracked: Promise<NativeProcessMemoryFootprintsResult>
+    tracked = Promise.resolve()
+      .then(() => getProcessFootprintsAsync(pids))
+      .finally(() => {
+        if (inFlightMeasurements.get(key) === tracked) {
+          inFlightMeasurements.delete(key)
+        }
+      })
+    inFlightMeasurements.set(key, tracked)
+    return tracked
   }
 
-  try {
-    const result = addon.processMemory.getProcessFootprints(pids)
-    return summarizeNativeProcessMemoryFootprints(result, pids, options.rawWorkingSetMb, { appPids, childPids })
-  } catch (error) {
-    logNativeAddonWarning('Native process memory helper failed. Falling back to Electron memory metrics.', error)
-    return createUnavailableAppMemoryFootprintSummary(pids, options.rawWorkingSetMb, { appPids, childPids })
+  return async (options: AppMemoryFootprintOptions): Promise<AppMemoryFootprintSummary> => {
+    const appPids = collectMetricProcessIds(options.metrics)
+    const childPids = options.extraPids ?? []
+    const pids = collectUniqueProcessIds(options.metrics, childPids)
+    const addon = loadAddon()
+    const getProcessFootprintsAsync = addon?.processMemory?.getProcessFootprintsAsync
+    if (typeof getProcessFootprintsAsync !== 'function') {
+      return createUnavailableAppMemoryFootprintSummary(pids, options.rawWorkingSetMb, { appPids, childPids })
+    }
+
+    try {
+      const result = await measure(getProcessFootprintsAsync, pids)
+      return summarizeNativeProcessMemoryFootprints(result, pids, options.rawWorkingSetMb, { appPids, childPids })
+    } catch (error) {
+      logNativeAddonWarning('Native process memory helper failed. Falling back to Electron memory metrics.', error)
+      return createUnavailableAppMemoryFootprintSummary(pids, options.rawWorkingSetMb, { appPids, childPids })
+    }
   }
 }
+
+export const collectAppMemoryFootprint = createAppMemoryFootprintCollector()

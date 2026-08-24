@@ -58,6 +58,7 @@ jobs:
           bash -n receiver/deploy/*.sh receiver/os/ci/*.sh \
             receiver/os/stage-parallax/prerun.sh receiver/os/stage-parallax/*/*-run.sh \
             receiver/os/stage-parallax/*/files/*.sh
+          bash receiver/os/ci/test-cec-keymap.sh
           if git grep -n -i 'custom[.]toml'; then
             echo "::error::Legacy TOML provisioning references are not allowed"
             exit 1

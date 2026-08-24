@@ -16,7 +16,7 @@ import type {
   QuickLaunchTrackAction,
   QuickLaunchTrackRecord
 } from '../../types/quickLaunch'
-import { multiFieldScore, MIN_SCORE_THRESHOLD } from '../../utils/fuzzySearch'
+import { multiFieldScore } from '../../utils/fuzzySearch'
 import { highlightSearchMatch } from '../../utils/searchHighlight'
 
 const SETTINGS_RESULT_LIMIT = 3
@@ -216,7 +216,7 @@ export default function QuickLaunchPalette() {
           { value: entry.label, weight: 1.5 },
           { value: entry.keywords.join(' '), weight: 1.0 }
         ])
-        if (!result || result < MIN_SCORE_THRESHOLD) return null
+        if (result === null) return null
         return {
           kind: 'nav' as const,
           id: entry.id,
@@ -237,7 +237,7 @@ export default function QuickLaunchPalette() {
         { value: section.label, weight: 1.4 },
         { value: section.keywords.join(' '), weight: 1.0 }
       ])
-      if (!result || result < MIN_SCORE_THRESHOLD) return null
+      if (result === null) return null
 
       return {
         kind: 'setting' as const,
@@ -263,7 +263,7 @@ export default function QuickLaunchPalette() {
         { value: track.album_artist_names.join(' '), weight: 1.0 },
         { value: track.album, weight: 1.0 }
       ])
-      if (!result || result < MIN_SCORE_THRESHOLD) return null
+      if (result === null) return null
       return {
         kind: 'track' as const,
         id: `track:${track.path}`,
@@ -283,7 +283,7 @@ export default function QuickLaunchPalette() {
         { value: album.album, weight: 1.4 },
         { value: album.artist, weight: 1.1 }
       ])
-      if (!result || result < MIN_SCORE_THRESHOLD) return null
+      if (result === null) return null
 
       return {
         kind: 'album' as const,
@@ -303,7 +303,7 @@ export default function QuickLaunchPalette() {
       const result = multiFieldScore(trimmedQuery, [
         { value: artist.artist, weight: 1.5 }
       ])
-      if (!result || result < MIN_SCORE_THRESHOLD) return null
+      if (result === null) return null
 
       return {
         kind: 'artist' as const,
@@ -323,7 +323,7 @@ export default function QuickLaunchPalette() {
       const result = multiFieldScore(trimmedQuery, [
         { value: playlist.name, weight: 1.5 }
       ])
-      if (!result || result < MIN_SCORE_THRESHOLD) return null
+      if (result === null) return null
 
       return {
         kind: 'playlist' as const,

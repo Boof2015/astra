@@ -62,6 +62,12 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Test native playback state machine
+        run: npm run test:native-playback
+
+      - name: Test native DSP contracts
+        run: npm run test:native-dsp
+
       - name: Test
         run: npm test
 
@@ -120,6 +126,12 @@ jobs:
             exit 1
           fi
           echo "Native module built successfully: $(ls -lh native/build/Release/visualizer_dsp.node)"
+
+      - name: Test native playback state machine
+        run: npm run test:native-playback
+
+      - name: Test native DSP contracts
+        run: npm run test:native-dsp
 
       - name: Validate packaging config
         run: npm run check:packaging-config

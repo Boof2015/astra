@@ -27,6 +27,7 @@ import { PLAYER_VOLUME_STORAGE_KEY, usePlayerStore } from '../../stores/playerSt
 import {
   ALBUM_SORT_MODE_STORAGE_KEY,
   ARTIST_ROOT_VIEW_MODE_STORAGE_KEY,
+  ASTRA_SESSION_POSITION_CHECKPOINT_STORAGE_KEY,
   ASTRA_SESSION_STATE_STORAGE_KEY,
   INCLUDE_COLLAB_ARTISTS_STORAGE_KEY,
   INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY,
@@ -35,6 +36,11 @@ import {
   TRACKLIST_GENRE_VISIBILITY_STORAGE_KEY,
   TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY,
   LISTENING_STATS_ENABLED_STORAGE_KEY,
+  HOME_LAYOUT_STORAGE_KEY,
+  HOME_REDISCOVERY_ROTATION_STORAGE_KEY,
+  HOME_SKY_TIME_STORAGE_KEY,
+  PLAYLIST_BROWSER_SORT_STORAGE_KEY,
+  PLAYLIST_SIDEBAR_PINS_STORAGE_KEY,
   TRANSPORT_INFO_LINE_MODE_STORAGE_KEY,
 } from '../../constants/settingsStorageKeys'
 import {
@@ -61,14 +67,18 @@ export const RENDERER_SETTINGS_KEYS = [
   'astra-audio-calibration-input-device',
   'astra-audio-multichannel-enabled',
   'astra-audio-channel-routing-map',
+  'astra-audio-source-speaker-routing-v1',
+  'astra-audio-speaker-profiles-v1',
   'astra-audio-spatial-mode-v1',
   'astra-audio-spatial-layout-v1',
+  'astra-audio-spatial-hrtf-profile-v1',
   'astra-audio-normalization-enabled-v1',
   'astra-audio-normalization-target-lufs-v1',
   'astra-audio-delay-profiles-v1',
   'astra-audio-delay-profiles-v2',
   PLAYER_VOLUME_STORAGE_KEY,
   ASTRA_SESSION_STATE_STORAGE_KEY,
+  ASTRA_SESSION_POSITION_CHECKPOINT_STORAGE_KEY,
   'astra-discord-rpc-enabled',
   'astra-discord-rpc-cover-art-enabled',
   'astra-discord-rpc-small-icon-enabled',
@@ -90,6 +100,9 @@ export const RENDERER_SETTINGS_KEYS = [
   ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY,
   UI_SCALE_STORAGE_KEY,
   HOME_GREETING_TEXT_MODE_STORAGE_KEY,
+  HOME_SKY_TIME_STORAGE_KEY,
+  HOME_LAYOUT_STORAGE_KEY,
+  HOME_REDISCOVERY_ROTATION_STORAGE_KEY,
   JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY,
   TRANSPORT_INFO_LINE_MODE_STORAGE_KEY,
   INPUT_BINDINGS_STORAGE_KEY,
@@ -106,6 +119,8 @@ export const RENDERER_SETTINGS_KEYS = [
   INCLUDE_SINGLES_IN_ALBUMS_STORAGE_KEY,
   INCLUDE_COLLAB_ARTISTS_STORAGE_KEY,
   ARTIST_ROOT_VIEW_MODE_STORAGE_KEY,
+  PLAYLIST_BROWSER_SORT_STORAGE_KEY,
+  PLAYLIST_SIDEBAR_PINS_STORAGE_KEY,
   EQ_STORAGE_KEY,
   EQ_DEVICE_PROFILE_STORAGE_KEY,
 ] as const
@@ -171,10 +186,14 @@ export async function resetAllSettings(): Promise<string> {
   useUIStore.getState().resetAnalyzerRackPreferences()
   useUIStore.getState().resetUIScalePercent()
   useUIStore.getState().resetHomeGreetingTextMode()
+  useUIStore.getState().resetHomeSkyTimePreference()
+  useUIStore.getState().resetHomeLayoutPreference()
   useUIStore.getState().setActivityIndicatorExperimentEnabled(false)
   useUIStore.getState().resetJumpToPlayingDestination()
   useUIStore.getState().resetTransportInfoLineMode()
   useLibraryStore.getState().setShowTracklistPlayCount(false)
+  usePlaylistStore.getState().resetSidebarPins()
+  usePlaylistStore.getState().setBrowserSortMode('recently-played')
   useListeningStatsStore.getState().setEnabled(false)
   useInputBindingStore.getState().resetAll()
   clearPersistedSessionStateForReset()

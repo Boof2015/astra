@@ -92,6 +92,38 @@ function sanitizeWords(raw: unknown): LyricsWord[] {
   return words
 }
 
+function normalizeWordBoundaryWhitespace(words: LyricsWord[]): LyricsWord[] {
+  if (words.length === 0) return []
+
+  const lastIndex = words.length - 1
+  return words.map((word, index) => {
+    let text = word.text
+    let removedLeadingCharacters = 0
+
+    if (index === 0) {
+      const trimmedStart = text.trimStart()
+      removedLeadingCharacters = text.length - trimmedStart.length
+      text = trimmedStart
+    }
+    if (index === lastIndex) {
+      text = text.trimEnd()
+    }
+
+    const shiftedFurigana = word.furigana?.map((entry) => ({
+      ...entry,
+      start: entry.start - removedLeadingCharacters,
+      end: entry.end - removedLeadingCharacters
+    }))
+    const furigana = sanitizeFurigana(shiftedFurigana, text)
+
+    return {
+      timestampMs: word.timestampMs,
+      text,
+      ...(furigana.length > 0 ? { furigana } : {})
+    }
+  })
+}
+
 function hasCompleteWordCoverage(text: string, words: LyricsWord[]): boolean {
   return words.length > 0 && words.map((word) => word.text).join('') === text
 }
@@ -141,8 +173,8 @@ export function sanitizeLyricsLines(rawValue: unknown): LyricsLine[] {
     const text = record.text.trim()
     if (!text) continue
 
-    const sanitizedWords = sanitizeWords(record.words)
-    const words = hasCompleteWordCoverage(text, sanitizedWords) ? sanitizedWords : []
+    const normalizedWords = normalizeWordBoundaryWhitespace(sanitizeWords(record.words))
+    const words = hasCompleteWordCoverage(text, normalizedWords) ? normalizedWords : []
     const furigana = sanitizeFurigana(record.furigana, text)
     const translations = sanitizeTranslations(record.translations)
     const voice = typeof record.voice === 'string' && record.voice.trim()
@@ -209,7 +241,6 @@ function mapParsedLine(
       })
       .filter((word) => word.text.trim().length > 0)
     : []
-  const words = hasCompleteWordCoverage(text, parsedWords) ? parsedWords : []
   const furigana = options.preserveXlrcFields ? sanitizeFurigana(line.furigana, text) : []
   const translations = options.preserveXlrcFields ? sanitizeTranslations(line.translations) : []
   const voice = options.preserveXlrcFields ? line.voice?.trim() || null : null
@@ -217,7 +248,7 @@ function mapParsedLine(
   return {
     timestampMs,
     text,
-    ...(words.length > 0 ? { words } : {}),
+    ...(parsedWords.length > 0 ? { words: parsedWords } : {}),
     ...(furigana.length > 0 ? { furigana } : {}),
     ...(translations.length > 0 ? { translations } : {}),
     ...(voice ? { voice } : {})

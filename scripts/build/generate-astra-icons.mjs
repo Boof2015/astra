@@ -16,6 +16,7 @@ import { deflateSync, inflateSync } from 'node:zlib'
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(scriptDir, '../..')
 const resourcesDir = join(repoRoot, 'resources')
+const trayResourcesDir = join(resourcesDir, 'tray')
 const tempDir = mkdtempSync(join(tmpdir(), 'astra-icons-'))
 const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
 
@@ -25,6 +26,7 @@ const iconBackgroundFill = '#05070a'
 const iconBackgroundInsetRatio = 64 / 1024
 const iconCornerRadiusRatio = 0.22
 const iconSymbolScale = 0.9
+const traySymbolScale = 1.08
 const iconMainFill = '#0097ff'
 const iconShadowFill = '#152632'
 
@@ -247,6 +249,51 @@ function restoreIconBackgroundAlpha(filePath) {
   writePngRgba(filePath, width, height, pixels)
 }
 
+function extractFlatForegroundAlpha(filePath, color) {
+  const { width, height, pixels } = readPngRgba(filePath)
+
+  for (let offset = 0; offset < pixels.length; offset += 4) {
+    // Quick Look composites SVG previews onto an opaque white canvas. Both Astra
+    // tray colors have a zero red channel, so red cleanly represents inverse
+    // glyph coverage, including antialiased edges. Preserve any outer alpha that
+    // Quick Look supplied and rebuild a truly transparent flat-color image.
+    const sourceAlpha = pixels[offset + 3] / 255
+    const coverage = sourceAlpha * (1 - (pixels[offset] / 255))
+    pixels[offset] = color.r
+    pixels[offset + 1] = color.g
+    pixels[offset + 2] = color.b
+    pixels[offset + 3] = Math.round(Math.max(0, Math.min(1, coverage)) * 255)
+  }
+
+  writePngRgba(filePath, width, height, pixels)
+}
+
+function verifyTransparentTrayAsset(filePath) {
+  const { width, height, pixels } = readPngRgba(filePath)
+  const alphaAt = (x, y) => pixels[(((y * width) + x) * 4) + 3]
+  const cornerAlpha = [
+    alphaAt(0, 0),
+    alphaAt(width - 1, 0),
+    alphaAt(0, height - 1),
+    alphaAt(width - 1, height - 1),
+  ]
+  let visiblePixels = 0
+  let transparentPixels = 0
+
+  for (let offset = 3; offset < pixels.length; offset += 4) {
+    if (pixels[offset] > 16) visiblePixels += 1
+    if (pixels[offset] < 16) transparentPixels += 1
+  }
+
+  if (
+    cornerAlpha.some((alpha) => alpha > 16)
+    || visiblePixels === 0
+    || transparentPixels < (width * height * 0.4)
+  ) {
+    throw new Error(`Tray asset is not a transparent silhouette: ${filePath}`)
+  }
+}
+
 function writeIcoFile(outputPath, images) {
   const headerLength = 6
   const entryLength = 16
@@ -280,6 +327,7 @@ try {
   ensureCommand('iconutil')
 
   mkdirSync(resourcesDir, { recursive: true })
+  mkdirSync(trayResourcesDir, { recursive: true })
 
   const sourceSvgPath = join(tempDir, 'astra-icon-source.svg')
   const backgroundInset = iconCanvasSize * iconBackgroundInsetRatio
@@ -349,6 +397,50 @@ try {
     icoImages.push({ size, buffer: readFileSync(outputPath) })
   }
   writeIcoFile(join(resourcesDir, 'icon.ico'), icoImages)
+
+  const renderTrayMaster = (name, fill) => {
+    const sourcePath = join(tempDir, `${name}.svg`)
+    const symbolTransform = `translate(${iconCanvasSize / 2} ${iconCanvasSize / 2}) scale(${traySymbolScale}) translate(${-iconCanvasSize / 2} ${-iconCanvasSize / 2})`
+    writeFileSync(sourcePath, `<svg xmlns="http://www.w3.org/2000/svg" width="${iconCanvasSize}" height="${iconCanvasSize}" viewBox="0 0 ${iconCanvasSize} ${iconCanvasSize}" fill="none">
+  <g transform="${symbolTransform}">
+    <g transform="${astraLogoMainTransform}">
+      <path d="${astraLogoLeftPath}" fill="${fill}" />
+      <path d="${astraLogoRightPath}" fill="${fill}" />
+    </g>
+  </g>
+</svg>
+`)
+    execFileSync('qlmanage', ['-t', '-s', String(iconCanvasSize), '-o', tempDir, sourcePath], {
+      stdio: 'ignore',
+    })
+    const outputPath = `${sourcePath}.png`
+    if (!existsSync(outputPath)) {
+      throw new Error(`Quick Look did not create ${name}.png.`)
+    }
+    return outputPath
+  }
+
+  const blueTrayMaster = renderTrayMaster('astra-tray-blue-source', iconMainFill)
+  const templateTrayMaster = renderTrayMaster('astra-tray-template-source', '#000000')
+
+  extractFlatForegroundAlpha(blueTrayMaster, { r: 0, g: 151, b: 255 })
+  extractFlatForegroundAlpha(templateTrayMaster, { r: 0, g: 0, b: 0 })
+
+  resizePng(templateTrayMaster, join(trayResourcesDir, 'astraTrayTemplate.png'), 16)
+  resizePng(templateTrayMaster, join(trayResourcesDir, 'astraTrayTemplate@2x.png'), 32)
+  resizePng(blueTrayMaster, join(trayResourcesDir, 'astra-tray.png'), 24)
+
+  verifyTransparentTrayAsset(join(trayResourcesDir, 'astraTrayTemplate.png'))
+  verifyTransparentTrayAsset(join(trayResourcesDir, 'astraTrayTemplate@2x.png'))
+  verifyTransparentTrayAsset(join(trayResourcesDir, 'astra-tray.png'))
+
+  const trayIcoImages = []
+  for (const size of [16, 20, 24, 32, 48]) {
+    const outputPath = join(tempDir, `astra-tray-${size}.png`)
+    resizePng(blueTrayMaster, outputPath, size)
+    trayIcoImages.push({ size, buffer: readFileSync(outputPath) })
+  }
+  writeIcoFile(join(trayResourcesDir, 'astra-tray.ico'), trayIcoImages)
 } finally {
   rmSync(tempDir, { recursive: true, force: true })
 }

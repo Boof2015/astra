@@ -1,7 +1,97 @@
 {
   "targets": [
     {
+      "target_name": "native_audio_processing",
+      "type": "static_library",
+      "cflags_cc": ["-std=c++17", "-O3", "-fno-fast-math"],
+      "sources": [
+        "src/audio_processing.cpp"
+      ],
+      "include_dirs": [
+        "src",
+        "../third_party/r8brain-free-src"
+      ],
+      "conditions": [
+        ["OS=='win'", {
+          "msvs_settings": {
+            "VCCLCompilerTool": {
+              "ExceptionHandling": 1,
+              "AdditionalOptions": ["/O2", "/fp:strict"]
+            }
+          }
+        }]
+      ]
+    },
+    {
+      "target_name": "native_playback_state_tests",
+      "type": "executable",
+      "cflags!": ["-fno-exceptions"],
+      "cflags_cc!": ["-fno-exceptions"],
+      "dependencies": ["native_audio_processing"],
+      "cflags_cc": ["-std=c++17"],
+      "sources": [
+        "src/playback_engine.cpp",
+        "test/playback_engine_state_test.cpp"
+      ],
+      "include_dirs": ["src"],
+      "conditions": [
+        ["OS=='mac'", {
+          "xcode_settings": {
+            "GCC_ENABLE_CPP_EXCEPTIONS": "YES"
+          }
+        }],
+        ["OS=='win'", {
+          "msvs_settings": {
+            "VCCLCompilerTool": { "ExceptionHandling": 1 }
+          }
+        }]
+      ]
+    },
+    {
+      "target_name": "adaptive_upmixer_tests",
+      "type": "executable",
+      "cflags!": ["-fno-exceptions"],
+      "cflags_cc!": ["-fno-exceptions"],
+      "cflags_cc": ["-std=c++17", "-O3", "-fno-fast-math"],
+      "sources": [
+        "src/dsp_utils.cpp",
+        "src/adaptive_upmixer.cpp",
+        "test/adaptive_upmixer_test.cpp"
+      ],
+      "include_dirs": ["src"],
+      "conditions": [["OS=='mac'", { "xcode_settings": { "GCC_ENABLE_CPP_EXCEPTIONS": "YES" } }]]
+    },
+    {
+      "target_name": "adaptive_upmix_cli",
+      "type": "executable",
+      "cflags!": ["-fno-exceptions"],
+      "cflags_cc!": ["-fno-exceptions"],
+      "cflags_cc": ["-std=c++17", "-O3", "-fno-fast-math"],
+      "sources": [
+        "src/dsp_utils.cpp",
+        "src/adaptive_upmixer.cpp",
+        "src/adaptive_upmix_cli.cpp"
+      ],
+      "include_dirs": ["src"],
+      "conditions": [["OS=='mac'", { "xcode_settings": { "GCC_ENABLE_CPP_EXCEPTIONS": "YES" } }]]
+    },
+    {
+      "target_name": "adaptive_upmixer_benchmark",
+      "type": "executable",
+      "cflags!": ["-fno-exceptions"],
+      "cflags_cc!": ["-fno-exceptions"],
+      "cflags_cc": ["-std=c++17", "-O3", "-fno-fast-math"],
+      "sources": [
+        "src/dsp_utils.cpp",
+        "src/adaptive_upmixer.cpp",
+        "test/adaptive_upmixer_benchmark.cpp"
+      ],
+      "include_dirs": ["src"],
+      "conditions": [["OS=='mac'", { "xcode_settings": { "GCC_ENABLE_CPP_EXCEPTIONS": "YES" } }]]
+    },
+    {
       "target_name": "visualizer_dsp",
+      "dependencies": ["native_audio_processing"],
       "cflags!": ["-fno-exceptions"],
       "cflags_cc!": ["-fno-exceptions"],
       "cflags_cc": ["-std=c++17", "-O3", "-ffast-math"],
@@ -32,8 +122,7 @@
         ["OS=='mac'", {
           "xcode_settings": {
             "GCC_ENABLE_CPP_EXCEPTIONS": "YES",
-            "CLANG_CXX_LIBRARY": "libc++",
-            "MACOSX_DEPLOYMENT_TARGET": "10.15"
+            "CLANG_CXX_LIBRARY": "libc++"
           },
           "link_settings": {
             "libraries": [

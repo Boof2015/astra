@@ -39,22 +39,39 @@ void FFT::forward(const float* input, std::complex<float>* output) {
         buffer_[i] = std::complex<float>(input[i], 0.0f);
     }
 
-    bitReverse(buffer_.data());
+    transform(buffer_.data(), false);
 
-    // Cooley-Tukey FFT
+    memcpy(output, buffer_.data(), size_ * sizeof(std::complex<float>));
+}
+
+void FFT::transform(std::complex<float>* data, bool inverse) {
+    bitReverse(data);
+
     for (size_t len = 2; len <= size_; len *= 2) {
-        size_t halfLen = len / 2;
-        size_t step = size_ / len;
+        const size_t halfLen = len / 2;
+        const size_t step = size_ / len;
         for (size_t i = 0; i < size_; i += len) {
             for (size_t j = 0; j < halfLen; j++) {
-                std::complex<float> t = twiddles_[j * step] * buffer_[i + j + halfLen];
-                buffer_[i + j + halfLen] = buffer_[i + j] - t;
-                buffer_[i + j] = buffer_[i + j] + t;
+                const std::complex<float> twiddle = inverse
+                    ? std::conj(twiddles_[j * step])
+                    : twiddles_[j * step];
+                const std::complex<float> t = twiddle * data[i + j + halfLen];
+                data[i + j + halfLen] = data[i + j] - t;
+                data[i + j] += t;
             }
         }
     }
 
-    memcpy(output, buffer_.data(), size_ * sizeof(std::complex<float>));
+    if (inverse) {
+        const float scale = 1.0f / static_cast<float>(size_);
+        for (size_t i = 0; i < size_; ++i) data[i] *= scale;
+    }
+}
+
+void FFT::inverse(const std::complex<float>* input, float* output) {
+    memcpy(buffer_.data(), input, size_ * sizeof(std::complex<float>));
+    transform(buffer_.data(), true);
+    for (size_t i = 0; i < size_; ++i) output[i] = buffer_[i].real();
 }
 
 void FFT::forward(const float* input, float* magnitudes) {

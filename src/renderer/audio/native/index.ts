@@ -12,6 +12,8 @@ import type {
   VectorscopePointsResult,
   VUMeterNativeSnapshot,
   SpectrumBarNativeConfig,
+  SpectrumFrameOptions,
+  SpectrumNativeFrame,
 } from './visualizer-dsp'
 
 let nativeModule: VisualizerDSP | null = null
@@ -61,14 +63,10 @@ export interface SpectrumNativeAnalyzer {
   getFFTSize(): number
   setSampleRate(sampleRate: number): void
   setSmoothing(smoothing: number): void
+  setSideEnabled(enabled: boolean): void
   pushSamples(audioData: Float32Array): void
   pushStereoSamples(leftChannel: Float32Array, rightChannel: Float32Array): void
-  fillRawMagnitudes(output: Float32Array): number
-  fillMagnitudes(output: Float32Array): number
-  fillSideMagnitudes(output: Float32Array): number
-  getRawMagnitudes(): Float32Array | null
-  getMagnitudes(): Float32Array | null
-  getSideMagnitudes(): Float32Array | null
+  getFrame(options?: SpectrumFrameOptions): SpectrumNativeFrame | null
   process(audioData: Float32Array): Float32Array | null
   binToFrequency(bin: number): number
   configureBars?: (options: SpectrumBarNativeConfig) => void
@@ -175,6 +173,10 @@ export const spectrum: SpectrumNativeAnalyzer = {
     nativeModule?.spectrum.setSmoothing(smoothing)
   },
 
+  setSideEnabled: (enabled: boolean): void => {
+    nativeModule?.spectrum.setSideEnabled(enabled)
+  },
+
   pushSamples: (audioData: Float32Array): void => {
     nativeModule?.spectrum.pushSamples(audioData)
   },
@@ -183,49 +185,9 @@ export const spectrum: SpectrumNativeAnalyzer = {
     nativeModule?.spectrum.pushStereoSamples(leftChannel, rightChannel)
   },
 
-  fillRawMagnitudes: (output: Float32Array): number => {
-    if (!nativeModule) return 0
-    const magnitudes = nativeModule.spectrum.getRawMagnitudes()
-    const count = Math.min(output.length, magnitudes.length)
-    if (count > 0) {
-      output.set(magnitudes.subarray(0, count), 0)
-    }
-    return count
-  },
-
-  fillMagnitudes: (output: Float32Array): number => {
-    if (!nativeModule) return 0
-    const magnitudes = nativeModule.spectrum.getMagnitudes()
-    const count = Math.min(output.length, magnitudes.length)
-    if (count > 0) {
-      output.set(magnitudes.subarray(0, count), 0)
-    }
-    return count
-  },
-
-  fillSideMagnitudes: (output: Float32Array): number => {
-    if (!nativeModule) return 0
-    const magnitudes = nativeModule.spectrum.getSideMagnitudes()
-    const count = Math.min(output.length, magnitudes.length)
-    if (count > 0) {
-      output.set(magnitudes.subarray(0, count), 0)
-    }
-    return count
-  },
-
-  getMagnitudes: (): Float32Array | null => {
+  getFrame: (options: SpectrumFrameOptions = {}): SpectrumNativeFrame | null => {
     if (!nativeModule) return null
-    return nativeModule.spectrum.getMagnitudes()
-  },
-
-  getRawMagnitudes: (): Float32Array | null => {
-    if (!nativeModule) return null
-    return nativeModule.spectrum.getRawMagnitudes()
-  },
-
-  getSideMagnitudes: (): Float32Array | null => {
-    if (!nativeModule) return null
-    return nativeModule.spectrum.getSideMagnitudes()
+    return nativeModule.spectrum.getFrame(options)
   },
 
   process: (audioData: Float32Array): Float32Array | null => {

@@ -29,7 +29,16 @@ export function anyParallaxConfigPresent(status: ParallaxStatus | null, activeSi
 }
 
 export function formatParallaxTrimMs(value: number): string {
+  if (Math.abs(value) < 0.5) return 'On time'
   return `${value >= 0 ? '+' : ''}${value.toFixed(0)} ms`
+}
+
+export function clampParallaxTrimMs(value: number): number {
+  return Math.max(-500, Math.min(500, value))
+}
+
+export function stepParallaxTrimMs(desiredValue: number, deltaMs: number): number {
+  return clampParallaxTrimMs(desiredValue + deltaMs)
 }
 
 export function formatParallaxLastSeen(value: number | null | undefined): string {

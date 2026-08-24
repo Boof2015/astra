@@ -5,6 +5,10 @@
 # keys the /display page uses onto ordinary keyboard codes: d-pad → arrows/Enter/Esc, deck and
 # skip keys → the media keys the page's transport handler already listens for. Loaded at rc
 # device add by ir-keytable's stock udev rule via the rc_maps.cfg entry (00-run.sh).
+#
+# Power-family commands must never reach logind. Some TVs send Power or Power Toggle while
+# responding to Image View On; Debian's stock rc-cec map turns those into KEY_POWER, whose
+# default logind action is to power off the Pi. Keep all four commands explicitly reserved.
 [[protocols]]
 name = "parallax_cec"
 protocol = "cec"
@@ -15,6 +19,7 @@ protocol = "cec"
 0x03 = "KEY_LEFT"
 0x04 = "KEY_RIGHT"
 0x0d = "KEY_ESC"            # Exit / Back
+0x40 = "KEY_RESERVED"       # Power
 0x44 = "KEY_PLAYPAUSE"      # Play
 0x46 = "KEY_PLAYPAUSE"      # Pause
 0x45 = "KEY_PLAYPAUSE"      # Stop (treated as pause — the host owns real stop semantics)
@@ -22,3 +27,6 @@ protocol = "cec"
 0x49 = "KEY_NEXTSONG"       # Fast forward
 0x4b = "KEY_NEXTSONG"       # Forward (skip)
 0x4c = "KEY_PREVIOUSSONG"   # Backward (skip)
+0x6b = "KEY_RESERVED"       # Power Toggle Function
+0x6c = "KEY_RESERVED"       # Power Off Function
+0x6d = "KEY_RESERVED"       # Power On Function

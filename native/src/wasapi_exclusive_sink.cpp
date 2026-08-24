@@ -25,6 +25,9 @@
 #include <ksmedia.h>
 #include <propidl.h>
 #include <wrl/client.h>
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
 #endif
 
 namespace NativePlayback {
@@ -325,84 +328,29 @@ struct NegotiatedExclusiveFormat {
     ExclusiveFormatOption option = kOptionF32;
     uint32_t bytesPerFrame = 0;
     bool needsConversion = false;
+    bool probeAccepted = false;
 
     WAVEFORMATEX* waveFormat() {
         return reinterpret_cast<WAVEFORMATEX*>(useExtensible ? &extensible : &plain);
     }
 };
 
-bool negotiateExclusiveFormat(
-    IAudioClient* audioClient,
-    const TrackFormat& track,
-    NegotiatedExclusiveFormat* out
-) {
-    if (audioClient == nullptr || out == nullptr || track.sampleRate == 0 || track.channels == 0) {
-        return false;
+std::vector<NegotiatedExclusiveFormat> buildNegotiatedFormatCandidates(
+    IAudioClient* probeClient,
+    const TrackFormat& track
+);
+
+std::string symbolicHRESULT(HRESULT hr) {
+    switch (hr) {
+        case S_OK: return "S_OK";
+        case AUDCLNT_E_DEVICE_IN_USE: return "AUDCLNT_E_DEVICE_IN_USE";
+        case AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED: return "AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED";
+        case AUDCLNT_E_UNSUPPORTED_FORMAT: return "AUDCLNT_E_UNSUPPORTED_FORMAT";
+        case AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED: return "AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED";
+        case AUDCLNT_E_DEVICE_INVALIDATED: return "AUDCLNT_E_DEVICE_INVALIDATED";
+        case AUDCLNT_E_SERVICE_NOT_RUNNING: return "AUDCLNT_E_SERVICE_NOT_RUNNING";
+        default: return formatHRESULT(hr);
     }
-
-    for (const ExclusiveFormatOption& option : buildFormatLadder(track.sampleFormat)) {
-        // Some drivers only accept WAVEFORMATEXTENSIBLE, others only the plain struct. The
-        // plain form cannot express validBits != containerBits, so 24-in-32 is extensible-only.
-        fillWaveFormatExtensible(&out->extensible, track.sampleRate, track.channels, option);
-        if (isExclusiveFormatAccepted(audioClient, reinterpret_cast<WAVEFORMATEX*>(&out->extensible))) {
-            out->useExtensible = true;
-        } else if (option.containerBits == option.validBits) {
-            fillWaveFormatPlain(&out->plain, track.sampleRate, track.channels, option);
-            if (!isExclusiveFormatAccepted(audioClient, reinterpret_cast<WAVEFORMATEX*>(&out->plain))) {
-                continue;
-            }
-            out->useExtensible = false;
-        } else {
-            continue;
-        }
-
-        out->option = option;
-        out->bytesPerFrame = (option.containerBits / 8) * track.channels;
-        out->needsConversion = option.sampleFormat != track.sampleFormat
-            || option.containerBits != track.bytesPerSample() * 8;
-        return true;
-    }
-
-    return false;
-}
-
-// Human-readable summary of what the endpoint will actually accept, for error messages.
-std::string describeExclusiveSupport(IAudioClient* audioClient, uint32_t channels) {
-    if (audioClient == nullptr || channels == 0) {
-        return {};
-    }
-
-    std::string summary;
-    for (const uint32_t sampleRate : kProbeSampleRates) {
-        std::string formats;
-        for (const ExclusiveFormatOption& option : kProbeOptions) {
-            WAVEFORMATEXTENSIBLE candidate {};
-            fillWaveFormatExtensible(&candidate, sampleRate, channels, option);
-            bool accepted = isExclusiveFormatAccepted(
-                audioClient, reinterpret_cast<WAVEFORMATEX*>(&candidate));
-            if (!accepted && option.containerBits == option.validBits) {
-                WAVEFORMATEXTENSIBLE plainCandidate {};
-                fillWaveFormatPlain(&plainCandidate, sampleRate, channels, option);
-                accepted = isExclusiveFormatAccepted(
-                    audioClient, reinterpret_cast<WAVEFORMATEX*>(&plainCandidate));
-            }
-            if (accepted) {
-                if (!formats.empty()) {
-                    formats += ", ";
-                }
-                formats += option.id;
-            }
-        }
-
-        if (!formats.empty()) {
-            if (!summary.empty()) {
-                summary += "; ";
-            }
-            summary += std::to_string(sampleRate) + " Hz (" + formats + ")";
-        }
-    }
-
-    return summary;
 }
 
 // Left-justify each sample into a wider container, zero-filling the new low bits. This is
@@ -414,34 +362,11 @@ void widenSampleBlock(
     uint16_t destinationContainerBits,
     size_t sampleCount
 ) {
-    if (sourceFormat == SampleFormat::Int16 && destinationContainerBits == 24) {
-        for (size_t i = 0; i < sampleCount; i++) {
-            destination[i * 3 + 0] = 0;
-            destination[i * 3 + 1] = source[i * 2 + 0];
-            destination[i * 3 + 2] = source[i * 2 + 1];
-        }
-        return;
-    }
-
-    if (sourceFormat == SampleFormat::Int16 && destinationContainerBits == 32) {
-        for (size_t i = 0; i < sampleCount; i++) {
-            destination[i * 4 + 0] = 0;
-            destination[i * 4 + 1] = 0;
-            destination[i * 4 + 2] = source[i * 2 + 0];
-            destination[i * 4 + 3] = source[i * 2 + 1];
-        }
-        return;
-    }
-
-    if (sourceFormat == SampleFormat::Int24Packed && destinationContainerBits == 32) {
-        for (size_t i = 0; i < sampleCount; i++) {
-            destination[i * 4 + 0] = 0;
-            destination[i * 4 + 1] = source[i * 3 + 0];
-            destination[i * 4 + 2] = source[i * 3 + 1];
-            destination[i * 4 + 3] = source[i * 3 + 2];
-        }
-        return;
-    }
+    const int sourceBits = sourceFormat == SampleFormat::Int16
+        ? 16
+        : (sourceFormat == SampleFormat::Int24Packed ? 24 : 32);
+    if (WidenIntegerSamplesLeftJustified(
+            source, sourceBits, destination, destinationContainerBits, sampleCount)) return;
 
     // Same width: straight copy.
     const size_t bytesPerSample = destinationContainerBits / 8;
@@ -606,7 +531,7 @@ bool resolveOutputDevice(
 
 class WasapiExclusiveSink final : public AudioOutputSink {
 public:
-    bool supportsBitPerfect() const override {
+    bool isAvailable() const override {
         return true;
     }
 
@@ -702,14 +627,53 @@ public:
         PlaybackEngine* engine,
         std::string* error
     ) override {
+        auto recordOpenFailure = [&format, this](
+            const std::string& failedDeviceId,
+            const std::string& failedDeviceLabel,
+            const std::string& stage,
+            HRESULT osCode,
+            const std::string& summary,
+            bool deviceResolved
+        ) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            status_ = NativeOutputStatus {};
+            status_.backend = backendKind();
+            status_.deviceId = failedDeviceId;
+            status_.deviceLabel = failedDeviceLabel;
+            status_.exclusiveRequested = true;
+            status_.deviceResolved = deviceResolved;
+            status_.sourceFormat = DescribeTrackFormat(format);
+            status_.processingFormat = status_.sourceFormat;
+            status_.failureStage = stage;
+            status_.osErrorCode = static_cast<int64_t>(osCode);
+            status_.osErrorSymbol = symbolicHRESULT(osCode);
+            status_.failureSummary = summary;
+            NativeOutputAttempt attempt;
+            attempt.index = 1;
+            attempt.backend = status_.backend;
+            attempt.deviceId = failedDeviceId;
+            attempt.deviceLabel = failedDeviceLabel;
+            attempt.sourceFormat = status_.sourceFormat;
+            attempt.processingFormat = status_.processingFormat;
+            attempt.transport = "not started";
+            attempt.probeResult = "not reached";
+            attempt.deviceResolved = deviceResolved;
+            attempt.failureStage = stage;
+            attempt.osErrorCode = static_cast<int64_t>(osCode);
+            attempt.osErrorSymbol = status_.osErrorSymbol;
+            attempt.message = summary;
+            status_.attempts = {std::move(attempt)};
+            RecomputeBitPerfectActive(status_);
+        };
+
         // Keep a COM apartment alive for the whole call so the device and client pointers
         // below stay valid past resolveOutputDevice's own scoped init.
         ScopedCoInit coInit;
         if (!coInit.ok()) {
-            if (error != nullptr) {
-                *error = "Failed to initialize COM for WASAPI device access ("
-                    + formatHRESULT(coInit.hr()) + ").";
-            }
+            const std::string summary = "Failed to initialize COM for WASAPI device access ("
+                + formatHRESULT(coInit.hr()) + ").";
+            if (error != nullptr) *error = summary;
+            recordOpenFailure(deviceId, deviceId, "device-resolution", coInit.hr(), summary, false);
             return false;
         }
 
@@ -718,6 +682,10 @@ public:
         uint32_t maxChannels = 2;
         ComPtr<IMMDevice> resolvedDevice;
         if (!resolveOutputDevice(deviceId, &resolvedDevice, &resolvedDeviceId, &resolvedLabel, &maxChannels, error)) {
+            const std::string summary = error != nullptr && !error->empty()
+                ? *error
+                : "WASAPI could not resolve the selected output device.";
+            recordOpenFailure(deviceId, deviceId, "device-resolution", E_FAIL, summary, false);
             return false;
         }
 
@@ -734,13 +702,15 @@ public:
             }
         }
 
-        // Negotiate here rather than on the render thread so an unplayable track fails at
-        // load time with a message that names what the device will actually accept.
-        if (!validateExclusiveFormat(resolvedDevice.Get(), resolvedLabel, format, error)) {
+        close();
+        HANDLE newStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (newStopEvent == nullptr) {
+            const HRESULT eventError = HRESULT_FROM_WIN32(GetLastError());
+            const std::string summary = "WASAPI exclusive output could not create its stop event.";
+            if (error != nullptr) *error = summary;
+            recordOpenFailure(resolvedDeviceId, resolvedLabel, "initialization", eventError, summary, true);
             return false;
         }
-
-        close();
         std::lock_guard<std::mutex> lock(mutex_);
         engine_ = engine;
         openFormat_ = format;
@@ -748,69 +718,22 @@ public:
         activeDeviceId_ = resolvedDeviceId;
         activeDeviceLabel_ = resolvedLabel;
         activeDeviceMaxChannels_ = maxChannels;
-        if (stopEvent_ == nullptr) {
-            stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-            if (stopEvent_ == nullptr) {
-                hasOpenFormat_ = false;
-                if (error != nullptr) {
-                    *error = "WASAPI exclusive output could not create its stop event.";
-                }
-                return false;
-            }
-        }
+        status_.outputOpen = true;
+        status_.deviceResolved = true;
+        status_.exclusiveRequested = true;
+        status_.backend = backendKind();
+        status_.deviceId = resolvedDeviceId;
+        status_.deviceLabel = resolvedLabel;
+        status_.sourceFormat = DescribeTrackFormat(format);
+        status_.processingFormat = status_.sourceFormat;
+        status_.sourceSamplesModified = false;
+        status_.failureStage.clear();
+        status_.osErrorSymbol.clear();
+        status_.osErrorCode = 0;
+        status_.failureSummary.clear();
+        stopEvent_ = newStopEvent;
+        RecomputeBitPerfectActive(status_);
         return true;
-    }
-
-    // Confirms the device will take this track, and if not, explains what it will take.
-    // The message is parsed by the renderer to build the bit-perfect failure dialog, so the
-    // "Supported in exclusive mode: ..." / "no exclusive-mode formats" phrasing is load-bearing.
-    static bool validateExclusiveFormat(
-        IMMDevice* device,
-        const std::string& deviceLabel,
-        const TrackFormat& format,
-        std::string* error
-    ) {
-        if (device == nullptr) {
-            return true;
-        }
-
-        ComPtr<IAudioClient> audioClient;
-        const HRESULT hr = device->Activate(
-            __uuidof(IAudioClient),
-            CLSCTX_ALL,
-            nullptr,
-            reinterpret_cast<void**>(audioClient.GetAddressOf())
-        );
-        if (FAILED(hr) || audioClient == nullptr) {
-            if (error != nullptr) {
-                *error = "Failed to activate the selected WASAPI output device ("
-                    + formatHRESULT(hr) + ").";
-            }
-            return false;
-        }
-
-        NegotiatedExclusiveFormat negotiated;
-        if (negotiateExclusiveFormat(audioClient.Get(), format, &negotiated)) {
-            return true;
-        }
-
-        if (error != nullptr) {
-            const std::string supported = describeExclusiveSupport(audioClient.Get(), format.channels);
-            *error = (deviceLabel.empty() ? std::string("The selected WASAPI device") : deviceLabel)
-                + " cannot play "
-                + std::to_string(format.sampleRate)
-                + " Hz "
-                + std::to_string(format.channels)
-                + "-channel "
-                + format.sampleFormatId()
-                + " in exclusive mode. ";
-            if (supported.empty()) {
-                *error += "It reports no exclusive-mode formats at this channel count.";
-            } else {
-                *error += "Supported in exclusive mode: " + supported + ".";
-            }
-        }
-        return false;
     }
 
     bool start(std::string* error) override {
@@ -876,6 +799,15 @@ public:
             hasOpenFormat_ = false;
             openFormat_ = TrackFormat{};
             engine_ = nullptr;
+            status_.outputOpen = false;
+            status_.deviceResolved = false;
+            status_.formatNegotiated = false;
+            status_.streamInitialized = false;
+            status_.streamStarted = false;
+            status_.streamRunning = false;
+            status_.exclusiveAcquired = false;
+            status_.systemMixerBypassed = false;
+            RecomputeBitPerfectActive(status_);
         }
         if (stopEvent != nullptr) {
             CloseHandle(stopEvent);
@@ -884,24 +816,35 @@ public:
 
     void pause() override {
         stopRenderThread(true);
+        std::lock_guard<std::mutex> lock(mutex_);
+        status_.streamStarted = false;
+        status_.streamRunning = false;
+        status_.streamInitialized = false;
+        status_.exclusiveAcquired = false;
+        status_.systemMixerBypassed = false;
+        RecomputeBitPerfectActive(status_);
     }
 
     void stop() override {
         stopRenderThread(false);
+        std::lock_guard<std::mutex> lock(mutex_);
+        status_.streamStarted = false;
+        status_.streamRunning = false;
+        status_.streamInitialized = false;
+        status_.exclusiveAcquired = false;
+        status_.systemMixerBypassed = false;
+        RecomputeBitPerfectActive(status_);
     }
 
     void reset() override {
         stop();
     }
 
-    bool isExclusive() const override {
+    NativeOutputStatus outputStatus() const override {
         std::lock_guard<std::mutex> lock(mutex_);
-        return renderThread_.joinable() || hasOpenFormat_;
-    }
-
-    int activeDeviceSampleRate() const override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return hasOpenFormat_ ? static_cast<int>(openFormat_.sampleRate) : 0;
+        NativeOutputStatus copy = status_;
+        RecomputeBitPerfectActive(copy);
+        return copy;
     }
 
     std::string activeDeviceId() const override {
@@ -941,6 +884,20 @@ private:
         startFinished_ = true;
         startSucceeded_ = success;
         startError_ = std::move(error);
+        if (!success) {
+            status_.streamRunning = false;
+            status_.streamStarted = false;
+            status_.exclusiveAcquired = false;
+            status_.systemMixerBypassed = false;
+            if (status_.failureStage.empty()) status_.failureStage = "initialization";
+            status_.failureSummary = startError_;
+            if (!status_.attempts.empty()) {
+                auto& attempt = status_.attempts.back();
+                if (attempt.failureStage.empty()) attempt.failureStage = status_.failureStage;
+                attempt.message = startError_;
+            }
+        }
+        RecomputeBitPerfectActive(status_);
         startCv_.notify_one();
     }
 
@@ -976,8 +933,19 @@ private:
         std::string resolvedDeviceId;
         std::string resolvedLabel;
         if (!resolveOutputDevice(deviceId, &resolvedDevice, &resolvedDeviceId, &resolvedLabel, nullptr, nullptr)) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                status_.failureStage = "device-resolution";
+                status_.osErrorSymbol = "DEVICE_NOT_FOUND";
+            }
             finishStart(false, "WASAPI could not resolve the selected output device on the render thread.");
             return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            status_.deviceResolved = true;
+            status_.attempts.clear();
         }
 
         if (format.sampleRate == 0 || format.channels == 0) {
@@ -993,19 +961,36 @@ private:
             reinterpret_cast<void**>(audioClient.GetAddressOf())
         );
         if (FAILED(hr) || audioClient == nullptr) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                status_.failureStage = "initialization";
+                status_.osErrorCode = static_cast<int64_t>(hr);
+                status_.osErrorSymbol = symbolicHRESULT(hr);
+                NativeOutputAttempt attempt;
+                attempt.index = 1;
+                attempt.backend = backendKind();
+                attempt.deviceId = resolvedDeviceId;
+                attempt.deviceLabel = resolvedLabel;
+                attempt.sourceFormat = DescribeTrackFormat(format);
+                attempt.processingFormat = attempt.sourceFormat;
+                attempt.deviceResolved = true;
+                attempt.failureStage = status_.failureStage;
+                attempt.osErrorCode = status_.osErrorCode;
+                attempt.osErrorSymbol = status_.osErrorSymbol;
+                attempt.message = "IAudioClient activation failed.";
+                status_.attempts.push_back(std::move(attempt));
+            }
             finishStart(false, "Failed to activate the selected WASAPI output device (" + formatHRESULT(hr) + ").");
             return;
         }
 
-        NegotiatedExclusiveFormat negotiated;
-        if (!negotiateExclusiveFormat(audioClient.Get(), format, &negotiated)) {
-            std::string negotiateError;
-            validateExclusiveFormat(resolvedDevice.Get(), resolvedLabel, format, &negotiateError);
-            finishStart(false, negotiateError);
+        const std::vector<NegotiatedExclusiveFormat> negotiatedCandidates =
+            buildNegotiatedFormatCandidates(audioClient.Get(), format);
+        if (negotiatedCandidates.empty()) {
+            finishStart(false, "WASAPI has no exact-carry format candidates for this decoded PCM stream.");
             return;
         }
-
-        WAVEFORMATEX* waveFormat = negotiated.waveFormat();
+        NegotiatedExclusiveFormat negotiated;
         // Set when the device took a wider container than the decoded PCM; the render path
         // then stages track-format frames here and left-justifies them on copy-out.
         std::vector<uint8_t> conversionBuffer;
@@ -1014,19 +999,40 @@ private:
         REFERENCE_TIME minimumPeriod = 0;
         hr = audioClient->GetDevicePeriod(&defaultPeriod, &minimumPeriod);
         if (FAILED(hr)) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                status_.failureStage = "period";
+                status_.osErrorCode = static_cast<int64_t>(hr);
+                status_.osErrorSymbol = symbolicHRESULT(hr);
+            }
             finishStart(false, "WASAPI could not query the device period (" + formatHRESULT(hr) + ").");
             return;
         }
 
-        REFERENCE_TIME targetPeriod = defaultPeriod > 0 ? defaultPeriod : minimumPeriod;
-        if (targetPeriod <= 0) {
+        if (defaultPeriod <= 0 && minimumPeriod <= 0) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                status_.failureStage = "period";
+                status_.osErrorSymbol = "INVALID_DEVICE_PERIOD";
+            }
             finishStart(false, "WASAPI reported an invalid exclusive buffer period.");
             return;
         }
-        if (minimumPeriod > 0) {
-            targetPeriod = std::max(targetPeriod, minimumPeriod);
-        }
-        targetPeriod = std::max(targetPeriod, kMinimumStableExclusivePeriod);
+
+        std::vector<REFERENCE_TIME> preferredPeriods;
+        auto appendPeriod = [&](REFERENCE_TIME period) {
+            if (period > 0 && std::find(preferredPeriods.begin(), preferredPeriods.end(), period) == preferredPeriods.end()) {
+                preferredPeriods.push_back(period);
+            }
+        };
+        appendPeriod(defaultPeriod);
+        appendPeriod(minimumPeriod);
+        const REFERENCE_TIME conservativePeriod = std::max(
+            kMinimumStableExclusivePeriod,
+            std::max(defaultPeriod, minimumPeriod));
+
+        REFERENCE_TIME targetPeriod = 0;
+        bool eventDriven = true;
 
         HANDLE sampleReadyEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (sampleReadyEvent == nullptr) {
@@ -1034,60 +1040,145 @@ private:
             return;
         }
 
-        auto initializeExclusiveClient = [&](REFERENCE_TIME period) -> HRESULT {
-            return audioClient->Initialize(
-                AUDCLNT_SHAREMODE_EXCLUSIVE,
-                AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST,
-                period,
-                period,
-                waveFormat,
-                nullptr
-            );
-        };
+        bool initialized = false;
+        int attemptIndex = 0;
+        const std::vector<int64_t> plannedPeriods(preferredPeriods.begin(), preferredPeriods.end());
+        const auto attemptPlan = BuildExclusiveAttemptPlan(
+            negotiatedCandidates.size(), plannedPeriods, conservativePeriod);
+        for (const auto& plannedAttempt : attemptPlan) {
+                eventDriven = plannedAttempt.transport == "event-driven";
+                NegotiatedExclusiveFormat formatCandidate = negotiatedCandidates[plannedAttempt.formatCandidateIndex];
+                const REFERENCE_TIME requestedPeriod = static_cast<REFERENCE_TIME>(plannedAttempt.requestedPeriod);
+                NativeOutputAttempt attempt;
+                attempt.index = ++attemptIndex;
+                attempt.backend = backendKind();
+                attempt.deviceId = resolvedDeviceId;
+                attempt.deviceLabel = resolvedLabel;
+                attempt.sourceFormat = DescribeTrackFormat(format);
+                attempt.processingFormat = attempt.sourceFormat;
+                attempt.wireFormat = DescribeTrackFormat(format);
+                attempt.wireFormat.sampleFormat = formatCandidate.option.id;
+                attempt.wireFormat.containerBits = formatCandidate.option.containerBits;
+                attempt.wireFormat.validBits = formatCandidate.option.validBits;
+                attempt.wireFormat.channelMask = buildChannelMask(format.channels);
+                attempt.wireFormat.representation = formatCandidate.useExtensible
+                    ? "WAVEFORMATEXTENSIBLE/interleaved"
+                    : "WAVEFORMATEX/interleaved";
+                attempt.transport = eventDriven ? "event-driven" : "timer-driven";
+                attempt.probeResult = formatCandidate.probeAccepted ? "accepted" : "rejected (advisory)";
+                attempt.requestedPeriodMs = static_cast<double>(requestedPeriod) / kReferenceTimesPerMillisecond;
+                attempt.deviceResolved = true;
+                attempt.formatNegotiated = true;
 
-        hr = initializeExclusiveClient(targetPeriod);
-        if (hr == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED) {
-            UINT32 alignedBufferFrames = 0;
-            const HRESULT alignedBufferHr = audioClient->GetBufferSize(&alignedBufferFrames);
-            if (FAILED(alignedBufferHr) || alignedBufferFrames == 0) {
-                CloseHandle(sampleReadyEvent);
-                finishStart(false, "WASAPI exclusive output reported an unaligned buffer size but did not return a valid aligned size.");
-                return;
-            }
+                audioClient.Reset();
+                hr = resolvedDevice->Activate(
+                    __uuidof(IAudioClient), CLSCTX_ALL, nullptr,
+                    reinterpret_cast<void**>(audioClient.GetAddressOf()));
+                if (SUCCEEDED(hr) && audioClient != nullptr) {
+                    const DWORD flags = AUDCLNT_STREAMFLAGS_NOPERSIST
+                        | (eventDriven ? AUDCLNT_STREAMFLAGS_EVENTCALLBACK : 0);
+                    hr = audioClient->Initialize(
+                        AUDCLNT_SHAREMODE_EXCLUSIVE, flags,
+                        requestedPeriod, requestedPeriod, formatCandidate.waveFormat(), nullptr);
+                }
 
-            const REFERENCE_TIME alignedPeriod = static_cast<REFERENCE_TIME>(
-                (static_cast<uint64_t>(alignedBufferFrames) * kReferenceTimesPerSecond + format.sampleRate - 1)
-                / format.sampleRate
-            );
+                if (hr == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED && audioClient != nullptr) {
+                    UINT32 alignedBufferFrames = 0;
+                    if (SUCCEEDED(audioClient->GetBufferSize(&alignedBufferFrames)) && alignedBufferFrames > 0) {
+                        const REFERENCE_TIME alignedPeriod = static_cast<REFERENCE_TIME>(
+                            ComputeAlignedExclusivePeriod(
+                                alignedBufferFrames, format.sampleRate, kReferenceTimesPerSecond));
+                        attempt.alignedPeriodMs = static_cast<double>(alignedPeriod) / kReferenceTimesPerMillisecond;
+                        audioClient.Reset();
+                        hr = resolvedDevice->Activate(
+                            __uuidof(IAudioClient), CLSCTX_ALL, nullptr,
+                            reinterpret_cast<void**>(audioClient.GetAddressOf()));
+                        if (SUCCEEDED(hr) && audioClient != nullptr) {
+                            const DWORD flags = AUDCLNT_STREAMFLAGS_NOPERSIST
+                                | (eventDriven ? AUDCLNT_STREAMFLAGS_EVENTCALLBACK : 0);
+                            hr = audioClient->Initialize(
+                                AUDCLNT_SHAREMODE_EXCLUSIVE, flags,
+                                alignedPeriod, alignedPeriod, formatCandidate.waveFormat(), nullptr);
+                            if (SUCCEEDED(hr)) targetPeriod = alignedPeriod;
+                        }
+                    }
+                }
 
-            audioClient.Reset();
-            hr = resolvedDevice->Activate(
-                __uuidof(IAudioClient),
-                CLSCTX_ALL,
-                nullptr,
-                reinterpret_cast<void**>(audioClient.GetAddressOf())
-            );
-            if (FAILED(hr) || audioClient == nullptr) {
-                CloseHandle(sampleReadyEvent);
-                finishStart(false, "Failed to reactivate the selected WASAPI output device after buffer alignment (" + formatHRESULT(hr) + ").");
-                return;
-            }
-
-            hr = initializeExclusiveClient(alignedPeriod);
-            targetPeriod = alignedPeriod;
+                if (SUCCEEDED(hr) && audioClient != nullptr) {
+                    targetPeriod = targetPeriod > 0 ? targetPeriod : requestedPeriod;
+                    attempt.streamInitialized = true;
+                    initialized = true;
+                    negotiated = formatCandidate;
+                } else {
+                    attempt.failureStage = "initialization";
+                    attempt.osErrorCode = static_cast<int64_t>(hr);
+                    attempt.osErrorSymbol = symbolicHRESULT(hr);
+                    attempt.message = "IAudioClient::Initialize rejected this exact exclusive attempt.";
+                }
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    status_.attempts.push_back(std::move(attempt));
+                }
+                if (initialized) break;
+                targetPeriod = 0;
         }
 
-        if (FAILED(hr)) {
+        if (!initialized) {
             CloseHandle(sampleReadyEvent);
             finishStart(false, "WASAPI exclusive initialization failed (" + formatHRESULT(hr) + ").");
             return;
         }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            NativePcmFormat wire = DescribeTrackFormat(format);
+            wire.sampleFormat = negotiated.option.id;
+            wire.containerBits = negotiated.option.containerBits;
+            wire.validBits = negotiated.option.validBits;
+            wire.channelMask = buildChannelMask(format.channels);
+            wire.representation = negotiated.useExtensible
+                ? "WAVEFORMATEXTENSIBLE/interleaved"
+                : "WAVEFORMATEX/interleaved";
+            status_.formatNegotiated = true;
+            status_.wireFormatCanCarrySourceExactly = true;
+            status_.wireFormat = wire;
+        }
 
-        hr = audioClient->SetEventHandle(sampleReadyEvent);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            status_.streamInitialized = true;
+            status_.exclusiveAcquired = true;
+            status_.systemMixerBypassed = true;
+            status_.transport = eventDriven ? "event-driven" : "timer-driven";
+            status_.requestedPeriodMs = static_cast<double>(targetPeriod) / kReferenceTimesPerMillisecond;
+            status_.requestedPeriodFrames = static_cast<int>((static_cast<uint64_t>(targetPeriod) * format.sampleRate) / kReferenceTimesPerSecond);
+            status_.attempts.back().transport = status_.transport;
+            status_.attempts.back().requestedPeriodMs = status_.requestedPeriodMs;
+            status_.attempts.back().streamInitialized = true;
+        }
+
+        hr = eventDriven ? audioClient->SetEventHandle(sampleReadyEvent) : S_OK;
         if (FAILED(hr)) {
             CloseHandle(sampleReadyEvent);
             finishStart(false, "WASAPI exclusive output could not register its render event (" + formatHRESULT(hr) + ").");
             return;
+        }
+        if (!eventDriven) {
+            CloseHandle(sampleReadyEvent);
+            sampleReadyEvent = CreateWaitableTimerExW(
+                nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+            if (sampleReadyEvent == nullptr) {
+                sampleReadyEvent = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+            }
+            const LONG intervalMs = static_cast<LONG>(std::max<REFERENCE_TIME>(
+                1, targetPeriod / (2 * kReferenceTimesPerMillisecond)));
+            LARGE_INTEGER firstDueTime {};
+            firstDueTime.QuadPart = -static_cast<LONGLONG>(intervalMs) * kReferenceTimesPerMillisecond;
+            if (sampleReadyEvent == nullptr
+                || !SetWaitableTimer(sampleReadyEvent, &firstDueTime, intervalMs, nullptr, nullptr, FALSE)) {
+                if (sampleReadyEvent != nullptr) CloseHandle(sampleReadyEvent);
+                finishStart(false, "WASAPI timer-driven output could not create its high-resolution wait timer.");
+                return;
+            }
         }
 
         UINT32 bufferFrameCount = 0;
@@ -1096,6 +1187,14 @@ private:
             CloseHandle(sampleReadyEvent);
             finishStart(false, "WASAPI exclusive output reported an invalid endpoint buffer size.");
             return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            status_.bufferFrames = static_cast<int>(bufferFrameCount);
+            status_.actualPeriodFrames = static_cast<int>(bufferFrameCount);
+            status_.actualPeriodMs = static_cast<double>(bufferFrameCount) * 1000.0 / format.sampleRate;
+            status_.attempts.back().bufferFrames = static_cast<int>(bufferFrameCount);
+            status_.attempts.back().actualPeriodMs = status_.actualPeriodMs;
         }
 
         ComPtr<IAudioRenderClient> renderClient;
@@ -1109,6 +1208,7 @@ private:
             return;
         }
 
+        std::string fillError;
         // An exclusive event-driven stream completes exactly one buffer period per event, and
         // GetCurrentPadding always reports the buffer as full on this path, so it cannot be
         // used to measure consumption -- doing so yields zero consumed frames forever and the
@@ -1126,6 +1226,24 @@ private:
             engine->onFramesConsumed(consumedAudioFrames);
         };
 
+        auto queryTimerAvailability = [&](UINT32& queuedEndpointFrames, UINT32& queuedAudioFrames, UINT32* availableFrames) -> bool {
+            UINT32 padding = 0;
+            const HRESULT paddingHr = audioClient->GetCurrentPadding(&padding);
+            if (FAILED(paddingHr) || padding > bufferFrameCount) {
+                fillError = "WASAPI timer-driven output could not query current padding (" + formatHRESULT(paddingHr) + ").";
+                return false;
+            }
+            const UINT32 consumedEndpointFrames = queuedEndpointFrames > padding
+                ? queuedEndpointFrames - padding
+                : 0;
+            const UINT32 consumedAudioFrames = std::min(queuedAudioFrames, consumedEndpointFrames);
+            queuedEndpointFrames = padding;
+            queuedAudioFrames -= consumedAudioFrames;
+            if (consumedAudioFrames > 0) engine->onFramesConsumed(consumedAudioFrames);
+            if (availableFrames != nullptr) *availableFrames = bufferFrameCount - padding;
+            return true;
+        };
+
         auto fillBuffer = [&](UINT32 requestedFrames, UINT32* writtenAudioFrames, bool* reachedEndOfStream, std::string* fillError) -> bool {
             BYTE* renderBuffer = nullptr;
             HRESULT bufferHr = renderClient->GetBuffer(requestedFrames, &renderBuffer);
@@ -1140,7 +1258,7 @@ private:
             size_t framesWritten = 0;
             if (negotiated.needsConversion) {
                 // Render in the track's own format, then left-justify into the device's
-                // wider container. The engine's taps and fade still see native samples.
+                // wider container. The engine's read-only taps still see native samples.
                 const size_t trackBytesPerFrame = format.bytesPerFrame();
                 const size_t requiredBytes = static_cast<size_t>(requestedFrames) * trackBytesPerFrame;
                 if (conversionBuffer.size() < requiredBytes) {
@@ -1187,15 +1305,23 @@ private:
         UINT32 queuedEndpointFrames = 0;
         UINT32 queuedAudioFrames = 0;
         bool endOfStreamReached = false;
-        std::string fillError;
+        bool naturallyDrained = false;
         UINT32 primedFrames = 0;
         if (!fillBuffer(bufferFrameCount, &primedFrames, &endOfStreamReached, &fillError)) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                status_.failureStage = "priming";
+            }
             CloseHandle(sampleReadyEvent);
             finishStart(false, fillError);
             return;
         }
 
         if (primedFrames == 0) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                status_.failureStage = "priming";
+            }
             CloseHandle(sampleReadyEvent);
             finishStart(false, "WASAPI exclusive output started without any audio frames to enqueue.");
             return;
@@ -1203,6 +1329,10 @@ private:
 
         queuedEndpointFrames = bufferFrameCount;
         queuedAudioFrames = primedFrames;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            status_.attempts.back().bufferPrimed = true;
+        }
 
         mmcssHandle = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
         if (mmcssHandle != nullptr) {
@@ -1211,6 +1341,12 @@ private:
 
         hr = audioClient->Start();
         if (FAILED(hr)) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                status_.failureStage = "start";
+                status_.osErrorCode = static_cast<int64_t>(hr);
+                status_.osErrorSymbol = symbolicHRESULT(hr);
+            }
             CloseHandle(sampleReadyEvent);
             if (mmcssHandle != nullptr) {
                 AvRevertMmThreadCharacteristics(mmcssHandle);
@@ -1219,6 +1355,18 @@ private:
             return;
         }
 
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            status_.streamStarted = true;
+            status_.streamRunning = true;
+            status_.failureStage.clear();
+            status_.failureSummary.clear();
+            status_.attempts.back().streamStarted = true;
+            status_.attempts.back().finalVerified = true;
+            RecomputeBitPerfectActive(status_);
+        }
+
+        engine->onPlatformStartVerified();
         finishStart(true);
 
         HANDLE waitHandles[2] = { stopEvent, sampleReadyEvent };
@@ -1232,7 +1380,11 @@ private:
                     accountProgressOnStop_ = false;
                 }
                 if (accountProgress) {
-                    accountConsumedPeriod(queuedEndpointFrames, queuedAudioFrames);
+                    if (eventDriven) {
+                        accountConsumedPeriod(queuedEndpointFrames, queuedAudioFrames);
+                    } else {
+                        queryTimerAvailability(queuedEndpointFrames, queuedAudioFrames, nullptr);
+                    }
                 }
                 break;
             }
@@ -1243,29 +1395,38 @@ private:
             }
 
             if (waitResult != WAIT_OBJECT_0 + 1) {
+                fillError = waitResult == WAIT_TIMEOUT
+                    ? "WASAPI exclusive output timed out waiting for the next render period."
+                    : "WASAPI exclusive output wait failed (code " + std::to_string(waitResult) + ").";
                 break;
             }
 
-            accountConsumedPeriod(queuedEndpointFrames, queuedAudioFrames);
+            UINT32 availableFrames = bufferFrameCount;
+            if (eventDriven) {
+                accountConsumedPeriod(queuedEndpointFrames, queuedAudioFrames);
+            } else if (!queryTimerAvailability(queuedEndpointFrames, queuedAudioFrames, &availableFrames)) {
+                break;
+            }
 
             if (endOfStreamReached) {
                 if (queuedAudioFrames == 0 && queuedEndpointFrames == 0) {
+                    naturallyDrained = true;
                     break;
                 }
                 continue;
             }
 
-            // Exclusive event-driven mode releases the entire endpoint buffer every period,
-            // so each wakeup must refill all of it. Sizing the write from GetCurrentPadding
-            // is the shared-mode/timer-driven pattern: it under-fills, the endpoint starves,
-            // and the device repeats stale buffer content as short audible glitches.
+            // Event-driven exclusive mode is whole-buffer ping-pong. Timer-driven exclusive
+            // mode is deliberately separate and sizes each write from GetCurrentPadding.
+            const UINT32 requestedFrames = eventDriven ? bufferFrameCount : availableFrames;
+            if (requestedFrames == 0) continue;
             UINT32 writtenFrames = 0;
             fillError.clear();
             bool streamEnded = false;
-            if (!fillBuffer(bufferFrameCount, &writtenFrames, &streamEnded, &fillError)) {
+            if (!fillBuffer(requestedFrames, &writtenFrames, &streamEnded, &fillError)) {
                 break;
             }
-            queuedEndpointFrames = bufferFrameCount;
+            queuedEndpointFrames = std::min<UINT32>(bufferFrameCount, queuedEndpointFrames + requestedFrames);
             queuedAudioFrames = std::min<UINT32>(bufferFrameCount, queuedAudioFrames + writtenFrames);
             endOfStreamReached = streamEnded;
         }
@@ -1276,6 +1437,26 @@ private:
 
         if (mmcssHandle != nullptr) {
             AvRevertMmThreadCharacteristics(mmcssHandle);
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            status_.streamRunning = false;
+            status_.streamStarted = false;
+            status_.streamInitialized = false;
+            status_.exclusiveAcquired = false;
+            status_.systemMixerBypassed = false;
+            if (!fillError.empty()) {
+                status_.failureStage = "runtime";
+                status_.failureSummary = fillError;
+            }
+            RecomputeBitPerfectActive(status_);
+        }
+        if (naturallyDrained && fillError.empty()) {
+            engine->onNativeStreamEnded();
+        } else if (!fillError.empty()) {
+            engine->onNativeOutputRuntimeFailure(fillError);
+        } else {
+            engine->onNativeOutputStatusChanged(fillError);
         }
     }
 
@@ -1294,7 +1475,41 @@ private:
     bool startFinished_ = false;
     bool startSucceeded_ = false;
     std::string startError_;
+    NativeOutputStatus status_ {};
 };
+
+std::vector<NegotiatedExclusiveFormat> buildNegotiatedFormatCandidates(
+    IAudioClient* probeClient,
+    const TrackFormat& track
+) {
+    std::vector<NegotiatedExclusiveFormat> candidates;
+    std::vector<ExactFormatOrderKey> orderKeys;
+    const auto ladder = buildFormatLadder(track.sampleFormat);
+    for (int representation = 0; representation < 2; representation++) {
+        for (size_t ladderRank = 0; ladderRank < ladder.size(); ladderRank++) {
+            const ExclusiveFormatOption& option = ladder[ladderRank];
+            if (representation == 1 && option.containerBits != option.validBits) continue;
+            NegotiatedExclusiveFormat candidate;
+            candidate.useExtensible = representation == 0;
+            candidate.option = option;
+            candidate.bytesPerFrame = (option.containerBits / 8) * track.channels;
+            candidate.needsConversion = option.sampleFormat != track.sampleFormat
+                || option.containerBits != track.bytesPerSample() * 8;
+            if (candidate.useExtensible) {
+                fillWaveFormatExtensible(&candidate.extensible, track.sampleRate, track.channels, option);
+            } else {
+                fillWaveFormatPlain(&candidate.plain, track.sampleRate, track.channels, option);
+            }
+            candidate.probeAccepted = isExclusiveFormatAccepted(probeClient, candidate.waveFormat());
+            candidates.push_back(candidate);
+            orderKeys.push_back({static_cast<int>(ladderRank), candidate.useExtensible, candidate.probeAccepted});
+        }
+    }
+    std::vector<NegotiatedExclusiveFormat> ordered;
+    ordered.reserve(candidates.size());
+    for (const size_t index : OrderExactFormatCandidates(orderKeys)) ordered.push_back(candidates[index]);
+    return ordered;
+}
 
 } // namespace
 

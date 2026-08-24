@@ -38,6 +38,7 @@ constexpr size_t kHogModeAcquireMaxAttempts = 40;
 constexpr size_t kHogModeSettleMaxAttempts = 150;
 constexpr std::chrono::milliseconds kSampleRateWaiterTimeout { 750 };
 constexpr std::chrono::milliseconds kRenderDrainWaitTimeout { 500 };
+constexpr std::chrono::milliseconds kInitialPrimeWaitTimeout { 750 };
 constexpr uint32_t kFallbackMaximumFramesPerSlice = 1024;
 constexpr uint32_t kMaximumRequestedDeviceBufferFrames = 1024;
 
@@ -666,7 +667,7 @@ public:
         releaseHogModeLocked();
     }
 
-    bool supportsBitPerfect() const override {
+    bool isAvailable() const override {
         return true;
     }
 
@@ -703,9 +704,11 @@ public:
 
         const AudioDeviceID resolvedDeviceId = resolveDeviceIdFromUid(deviceId);
         if (resolvedDeviceId == kAudioObjectUnknown) {
-            if (error != nullptr) {
-                *error = "Could not resolve the selected CoreAudio output device.";
-            }
+            const std::string summary = "Could not resolve the selected CoreAudio output device.";
+            if (error != nullptr) *error = summary;
+            std::lock_guard<std::mutex> lock(lifecycleMutex_);
+            recordOpenFailureLocked(format, deviceId, deviceId, "device-resolution", 0,
+                "AUDIO_DEVICE_NOT_FOUND", summary, false, false);
             return false;
         }
 
@@ -758,10 +761,11 @@ public:
             hogElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - hogStart);
             if (!hogAcquired) {
-                if (error != nullptr) {
-                    *error = "Could not acquire exclusive (hog) mode for the CoreAudio device. "
-                        "It may be held by another process - close other audio apps or disable bit-perfect mode.";
-                }
+                const std::string summary = "Could not acquire exclusive (hog) mode for the CoreAudio device. "
+                    "It may be held by another process - close other audio apps or disable bit-perfect mode.";
+                if (error != nullptr) *error = summary;
+                recordOpenFailureLocked(format, resolvedUid, resolvedLabel, "ownership", 0,
+                    "HOG_MODE_NOT_ACQUIRED", summary, true, false);
                 return false;
             }
 
@@ -771,20 +775,22 @@ public:
             desc.componentManufacturer = kAudioUnitManufacturer_Apple;
             AudioComponent component = AudioComponentFindNext(nullptr, &desc);
             if (component == nullptr) {
-                if (error != nullptr) {
-                    *error = "AUHAL output component is unavailable on this system.";
-                }
+                const std::string summary = "AUHAL output component is unavailable on this system.";
+                if (error != nullptr) *error = summary;
                 releaseHogModeLocked();
+                recordOpenFailureLocked(format, resolvedUid, resolvedLabel, "initialization", 0,
+                    "AUHAL_COMPONENT_UNAVAILABLE", summary, true, false);
                 return false;
             }
 
             status = AudioComponentInstanceNew(component, &unit_);
             if (status != noErr || unit_ == nullptr) {
-                if (error != nullptr) {
-                    *error = "Failed to instantiate the AUHAL output unit.";
-                }
+                const std::string summary = "Failed to instantiate the AUHAL output unit.";
+                if (error != nullptr) *error = summary;
                 unit_ = nullptr;
                 releaseHogModeLocked();
+                recordOpenFailureLocked(format, resolvedUid, resolvedLabel, "initialization", status,
+                    "AudioComponentInstanceNew", summary, true, false);
                 return false;
             }
 
@@ -794,11 +800,12 @@ public:
                 kAudioUnitScope_Output, 0,
                 &outputEnabled, sizeof(outputEnabled));
             if (status != noErr) {
-                if (error != nullptr) {
-                    *error = "Failed to enable AUHAL output I/O.";
-                }
+                const std::string summary = "Failed to enable AUHAL output I/O.";
+                if (error != nullptr) *error = summary;
                 disposeUnitLocked();
                 releaseHogModeLocked();
+                recordOpenFailureLocked(format, resolvedUid, resolvedLabel, "initialization", status,
+                    "EnableAUHALOutput", summary, true, false);
                 return false;
             }
 
@@ -813,11 +820,12 @@ public:
                 kAudioUnitScope_Global, 0,
                 &resolvedDeviceId, sizeof(resolvedDeviceId));
             if (status != noErr) {
-                if (error != nullptr) {
-                    *error = "Failed to bind AUHAL output unit to the selected CoreAudio device.";
-                }
+                const std::string summary = "Failed to bind AUHAL output unit to the selected CoreAudio device.";
+                if (error != nullptr) *error = summary;
                 disposeUnitLocked();
                 releaseHogModeLocked();
+                recordOpenFailureLocked(format, resolvedUid, resolvedLabel, "device-resolution", status,
+                    "BindAUHALDevice", summary, true, false);
                 return false;
             }
         } else {
@@ -834,8 +842,13 @@ public:
         rateElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - rateStart);
         if (!rateOk) {
+            const std::string summary = error != nullptr && !error->empty()
+                ? *error
+                : "CoreAudio did not settle at the requested nominal sample rate.";
             disposeUnitLocked();
             releaseHogModeLocked();
+            recordOpenFailureLocked(format, resolvedUid, resolvedLabel, "format-negotiation", 0,
+                "NOMINAL_RATE_MISMATCH", summary, true, false);
             return false;
         }
         const auto bufferStart = std::chrono::steady_clock::now();
@@ -863,11 +876,12 @@ public:
             kAudioUnitScope_Input, 0,
             &asbd, sizeof(asbd));
         if (status != noErr) {
-            if (error != nullptr) {
-                *error = "Failed to set the requested stream format on the AUHAL input scope.";
-            }
+            const std::string summary = "Failed to set the requested stream format on the AUHAL input scope.";
+            if (error != nullptr) *error = summary;
             disposeUnitLocked();
             releaseHogModeLocked();
+            recordOpenFailureLocked(format, resolvedUid, resolvedLabel, "format-negotiation", status,
+                "SetAUHALStreamFormat", summary, true, false);
             return false;
         }
 
@@ -878,27 +892,50 @@ public:
             kAudioUnitScope_Input, 0,
             &verifyFormat, &verifyFormatSize);
         if (status != noErr
-            || std::abs(verifyFormat.mSampleRate - asbd.mSampleRate) > 1.0
+            || std::abs(verifyFormat.mSampleRate - asbd.mSampleRate) > 0.01
+            || verifyFormat.mFormatID != asbd.mFormatID
+            || verifyFormat.mFormatFlags != asbd.mFormatFlags
             || verifyFormat.mChannelsPerFrame != asbd.mChannelsPerFrame
-            || verifyFormat.mBytesPerFrame != asbd.mBytesPerFrame) {
-            if (error != nullptr) {
-                *error = "AUHAL did not accept the requested stream format ("
-                    + std::to_string(static_cast<int>(asbd.mSampleRate)) + " Hz, "
-                    + std::to_string(asbd.mChannelsPerFrame) + " ch, "
-                    + std::to_string(asbd.mBytesPerFrame) + " B/frame).";
-            }
+            || verifyFormat.mBitsPerChannel != asbd.mBitsPerChannel
+            || verifyFormat.mBytesPerFrame != asbd.mBytesPerFrame
+            || verifyFormat.mBytesPerPacket != asbd.mBytesPerPacket
+            || verifyFormat.mFramesPerPacket != asbd.mFramesPerPacket) {
+            const std::string summary = "AUHAL did not accept the requested stream format ("
+                + std::to_string(static_cast<int>(asbd.mSampleRate)) + " Hz, "
+                + std::to_string(asbd.mChannelsPerFrame) + " ch, "
+                + std::to_string(asbd.mBytesPerFrame) + " B/frame).";
+            if (error != nullptr) *error = summary;
             disposeUnitLocked();
             releaseHogModeLocked();
+            recordOpenFailureLocked(format, resolvedUid, resolvedLabel, "format-negotiation", status,
+                "ASBD_READBACK_MISMATCH", summary, true, false);
             return false;
         }
 
         if (format.channels == 2) {
             AudioChannelLayout layout {};
             layout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo;
-            AudioUnitSetProperty(unit_,
+            const OSStatus layoutStatus = AudioUnitSetProperty(unit_,
                 kAudioUnitProperty_AudioChannelLayout,
                 kAudioUnitScope_Input, 0,
                 &layout, sizeof(layout));
+            if (layoutStatus == noErr) {
+                AudioChannelLayout verifiedLayout {};
+                UInt32 verifiedLayoutSize = sizeof(verifiedLayout);
+                const OSStatus layoutReadStatus = AudioUnitGetProperty(unit_,
+                    kAudioUnitProperty_AudioChannelLayout,
+                    kAudioUnitScope_Input, 0,
+                    &verifiedLayout, &verifiedLayoutSize);
+                if (layoutReadStatus != noErr || verifiedLayout.mChannelLayoutTag != kAudioChannelLayoutTag_Stereo) {
+                    const std::string summary = "AUHAL did not preserve the requested stereo channel layout.";
+                    if (error != nullptr) *error = summary;
+                    disposeUnitLocked();
+                    releaseHogModeLocked();
+                    recordOpenFailureLocked(format, resolvedUid, resolvedLabel, "format-negotiation", layoutReadStatus,
+                        "CHANNEL_LAYOUT_MISMATCH", summary, true, false);
+                    return false;
+                }
+            }
         }
 
         UInt32 auMaximumFramesPerSlice = maximumFramesPerSlice;
@@ -919,11 +956,12 @@ public:
             kAudioUnitScope_Input, 0,
             &callback, sizeof(callback));
         if (status != noErr) {
-            if (error != nullptr) {
-                *error = "Failed to attach the render callback to the AUHAL output unit.";
-            }
+            const std::string summary = "Failed to attach the render callback to the AUHAL output unit.";
+            if (error != nullptr) *error = summary;
             disposeUnitLocked();
             releaseHogModeLocked();
+            recordOpenFailureLocked(format, resolvedUid, resolvedLabel, "initialization", status,
+                "SetAUHALRenderCallback", summary, true, true);
             return false;
         }
 
@@ -932,11 +970,12 @@ public:
         initElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - initStart);
         if (status != noErr) {
-            if (error != nullptr) {
-                *error = "Failed to initialize the AUHAL output unit.";
-            }
+            const std::string summary = "Failed to initialize the AUHAL output unit.";
+            if (error != nullptr) *error = summary;
             disposeUnitLocked();
             releaseHogModeLocked();
+            recordOpenFailureLocked(format, resolvedUid, resolvedLabel, "initialization", status,
+                "AudioUnitInitialize", summary, true, true);
             return false;
         }
         unitInitialized_ = true;
@@ -949,6 +988,53 @@ public:
             resolvedUid,
             resolvedLabel.empty() ? resolvedUid : resolvedLabel
         );
+        status_.outputOpen = true;
+        status_.deviceResolved = true;
+        status_.formatNegotiated = true;
+        status_.streamInitialized = true;
+        status_.streamStarted = false;
+        status_.streamRunning = false;
+        status_.exclusiveRequested = true;
+        status_.exclusiveAcquired = hogModeAcquired_.load(std::memory_order_acquire);
+        status_.systemMixerBypassed = status_.exclusiveAcquired;
+        status_.sourceSamplesModified = false;
+        status_.wireFormatCanCarrySourceExactly = true;
+        status_.backend = backendKind();
+        status_.deviceId = resolvedUid;
+        status_.deviceLabel = resolvedLabel.empty() ? resolvedUid : resolvedLabel;
+        status_.transport = "AUHAL callback";
+        status_.sourceFormat = DescribeTrackFormat(format);
+        status_.processingFormat = status_.sourceFormat;
+        status_.wireFormat = status_.sourceFormat;
+        status_.wireFormat.representation = "CoreAudio ASBD/interleaved";
+        status_.requestedPeriodFrames = static_cast<int>(maximumFramesPerSlice);
+        status_.requestedPeriodMs = static_cast<double>(maximumFramesPerSlice) * 1000.0 / format.sampleRate;
+        status_.bufferFrames = static_cast<int>(maximumFramesPerSlice);
+        status_.actualPeriodFrames = static_cast<int>(maximumFramesPerSlice);
+        status_.actualPeriodMs = static_cast<double>(maximumFramesPerSlice) * 1000.0 / format.sampleRate;
+        status_.failureStage.clear();
+        status_.osErrorCode = 0;
+        status_.osErrorSymbol.clear();
+        status_.failureSummary.clear();
+        status_.attempts.clear();
+        NativeOutputAttempt attempt;
+        attempt.index = 1;
+        attempt.backend = backendKind();
+        attempt.deviceId = status_.deviceId;
+        attempt.deviceLabel = status_.deviceLabel;
+        attempt.sourceFormat = status_.sourceFormat;
+        attempt.processingFormat = status_.processingFormat;
+        attempt.wireFormat = status_.wireFormat;
+        attempt.transport = status_.transport;
+        attempt.probeResult = "read-back verified";
+        attempt.deviceResolved = true;
+        attempt.formatNegotiated = true;
+        attempt.streamInitialized = true;
+        attempt.requestedPeriodMs = status_.requestedPeriodMs;
+        attempt.actualPeriodMs = status_.actualPeriodMs;
+        attempt.bufferFrames = status_.bufferFrames;
+        status_.attempts.push_back(std::move(attempt));
+        RecomputeBitPerfectActive(status_);
 
         if (logEnabled) {
             const auto totalElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -977,15 +1063,50 @@ public:
         ScopedSlowOpTimer timer("sink.start()", 50);
         std::lock_guard<std::mutex> lock(lifecycleMutex_);
         if (unit_ == nullptr || engine_ == nullptr) {
-            if (error != nullptr) {
-                *error = "CoreAudio output unit is unavailable.";
-            }
+            const std::string summary = "CoreAudio output unit is unavailable.";
+            if (error != nullptr) *error = summary;
+            status_.failureStage = "initialization";
+            status_.failureSummary = summary;
+            RecomputeBitPerfectActive(status_);
             return false;
         }
         if (unitRunning_) {
+            if (!verifyConfigurationLocked()) {
+                renderEnabled_.store(false, std::memory_order_release);
+                verifiedRunning_.store(false, std::memory_order_release);
+                started_ = false;
+                status_.failureStage = "verification";
+                status_.failureSummary = "CoreAudio ownership, device binding, rate, or ASBD changed while paused.";
+                if (error != nullptr) *error = status_.failureSummary;
+                RecomputeBitPerfectActive(status_);
+                return false;
+            }
             needsReinit_ = false;
+            initialBufferPrimed_.store(false, std::memory_order_release);
             renderEnabled_.store(true, std::memory_order_release);
+            if (!waitForInitialPrimeLocked()) {
+                renderEnabled_.store(false, std::memory_order_release);
+                waitForRenderCallbacksDrainedLocked();
+                verifiedRunning_.store(false, std::memory_order_release);
+                started_ = false;
+                status_.failureStage = "priming";
+                status_.failureSummary = "AUHAL did not request an initial PCM buffer while resuming.";
+                if (engine_ != nullptr) engine_->rollbackSpeculativeRender();
+                if (error != nullptr) *error = status_.failureSummary;
+                RecomputeBitPerfectActive(status_);
+                return false;
+            }
             started_ = true;
+            verifiedRunning_.store(true, std::memory_order_release);
+            status_.streamStarted = true;
+            status_.streamRunning = true;
+            if (!status_.attempts.empty()) {
+                status_.attempts.back().bufferPrimed = true;
+                status_.attempts.back().streamStarted = true;
+                status_.attempts.back().finalVerified = true;
+            }
+            engine_->onPlatformStartVerified();
+            RecomputeBitPerfectActive(status_);
             return true;
         }
 
@@ -998,9 +1119,19 @@ public:
 
             OSStatus initStatus = AudioUnitInitialize(unit_);
             if (initStatus != noErr) {
-                if (error != nullptr) {
-                    *error = "Failed to re-initialize the AUHAL output unit before start.";
+                const std::string summary = "Failed to re-initialize the AUHAL output unit before start.";
+                if (error != nullptr) *error = summary;
+                status_.failureStage = "initialization";
+                status_.osErrorCode = initStatus;
+                status_.osErrorSymbol = "AudioUnitInitialize";
+                status_.failureSummary = summary;
+                if (!status_.attempts.empty()) {
+                    status_.attempts.back().failureStage = status_.failureStage;
+                    status_.attempts.back().osErrorCode = initStatus;
+                    status_.attempts.back().osErrorSymbol = status_.osErrorSymbol;
+                    status_.attempts.back().message = summary;
                 }
+                RecomputeBitPerfectActive(status_);
                 return false;
             }
             unitInitialized_ = true;
@@ -1008,12 +1139,15 @@ public:
         }
 
         if (!unitInitialized_) {
-            if (error != nullptr) {
-                *error = "AUHAL output unit is not initialized.";
-            }
+            const std::string summary = "AUHAL output unit is not initialized.";
+            if (error != nullptr) *error = summary;
+            status_.failureStage = "initialization";
+            status_.failureSummary = summary;
+            RecomputeBitPerfectActive(status_);
             return false;
         }
 
+        initialBufferPrimed_.store(false, std::memory_order_release);
         renderEnabled_.store(true, std::memory_order_release);
         const OSStatus status = AudioOutputUnitStart(unit_);
         if (status != noErr) {
@@ -1023,10 +1157,99 @@ public:
                 *error = "AudioOutputUnitStart failed for CoreAudio playback.";
             }
             started_ = false;
+            verifiedRunning_.store(false, std::memory_order_release);
+            status_.failureStage = "start";
+            status_.osErrorCode = status;
+            status_.osErrorSymbol = "AudioOutputUnitStart";
+            status_.failureSummary = "AudioOutputUnitStart failed for CoreAudio playback.";
+            if (!status_.attempts.empty()) {
+                status_.attempts.back().failureStage = status_.failureStage;
+                status_.attempts.back().osErrorCode = status;
+                status_.attempts.back().osErrorSymbol = status_.osErrorSymbol;
+                status_.attempts.back().message = status_.failureSummary;
+            }
+            RecomputeBitPerfectActive(status_);
+            return false;
+        }
+        AudioDeviceID boundDevice = kAudioObjectUnknown;
+        UInt32 boundDeviceSize = sizeof(boundDevice);
+        AudioStreamBasicDescription finalFormat {};
+        UInt32 finalFormatSize = sizeof(finalFormat);
+        double finalRate = 0.0;
+        AudioFormatFlags expectedFlags = kAudioFormatFlagIsPacked
+            | static_cast<AudioFormatFlags>(kAudioFormatFlagsNativeEndian);
+        expectedFlags |= openFormat_.sampleFormat == SampleFormat::Float32
+            ? kLinearPCMFormatFlagIsFloat
+            : kLinearPCMFormatFlagIsSignedInteger;
+        const bool finalVerified = AudioUnitGetProperty(unit_,
+                kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+                &boundDevice, &boundDeviceSize) == noErr
+            && boundDevice == activeDeviceId_
+            && AudioUnitGetProperty(unit_, kAudioUnitProperty_StreamFormat,
+                kAudioUnitScope_Input, 0, &finalFormat, &finalFormatSize) == noErr
+            && std::abs(finalFormat.mSampleRate - static_cast<double>(openFormat_.sampleRate)) <= 0.01
+            && finalFormat.mFormatID == kAudioFormatLinearPCM
+            && finalFormat.mFormatFlags == expectedFlags
+            && finalFormat.mChannelsPerFrame == openFormat_.channels
+            && finalFormat.mBitsPerChannel == openFormat_.bytesPerSample() * 8
+            && finalFormat.mBytesPerFrame == openFormat_.bytesPerFrame()
+            && finalFormat.mBytesPerPacket == openFormat_.bytesPerFrame()
+            && finalFormat.mFramesPerPacket == 1
+            && getDeviceNominalSampleRate(activeDeviceId_, &finalRate)
+            && std::abs(finalRate - static_cast<double>(openFormat_.sampleRate)) <= 0.01
+            && hogModeAcquired_.load(std::memory_order_acquire)
+            && hogDeviceId_ == activeDeviceId_
+            && hogPid_ == getpid();
+        if (!finalVerified) {
+            AudioOutputUnitStop(unit_);
+            renderEnabled_.store(false, std::memory_order_release);
+            waitForRenderCallbacksDrainedLocked();
+            unitRunning_ = false;
+            started_ = false;
+            verifiedRunning_.store(false, std::memory_order_release);
+            status_.failureStage = "verification";
+            status_.failureSummary = "CoreAudio changed the device, nominal rate, ownership, or complete ASBD during start.";
+            if (!status_.attempts.empty()) {
+                status_.attempts.back().failureStage = status_.failureStage;
+                status_.attempts.back().message = status_.failureSummary;
+            }
+            if (engine_ != nullptr) engine_->rollbackSpeculativeRender();
+            if (error != nullptr) *error = status_.failureSummary;
+            RecomputeBitPerfectActive(status_);
+            return false;
+        }
+        if (!waitForInitialPrimeLocked()) {
+            AudioOutputUnitStop(unit_);
+            renderEnabled_.store(false, std::memory_order_release);
+            waitForRenderCallbacksDrainedLocked();
+            unitRunning_ = false;
+            started_ = false;
+            verifiedRunning_.store(false, std::memory_order_release);
+            status_.failureStage = "priming";
+            status_.failureSummary = "AUHAL started but did not request an initial PCM buffer before verification timed out.";
+            if (!status_.attempts.empty()) {
+                status_.attempts.back().failureStage = status_.failureStage;
+                status_.attempts.back().message = status_.failureSummary;
+            }
+            if (engine_ != nullptr) engine_->rollbackSpeculativeRender();
+            if (error != nullptr) *error = status_.failureSummary;
+            RecomputeBitPerfectActive(status_);
             return false;
         }
         unitRunning_ = true;
         started_ = true;
+        verifiedRunning_.store(true, std::memory_order_release);
+        status_.streamStarted = true;
+        status_.streamRunning = true;
+        status_.failureStage.clear();
+        status_.failureSummary.clear();
+        if (!status_.attempts.empty()) {
+            status_.attempts.back().bufferPrimed = true;
+            status_.attempts.back().streamStarted = true;
+            status_.attempts.back().finalVerified = true;
+        }
+        engine_->onPlatformStartVerified();
+        RecomputeBitPerfectActive(status_);
         return true;
     }
 
@@ -1037,18 +1260,41 @@ public:
         releaseHogModeLocked();
         clearRenderStateLocked();
         clearActiveDeviceMetadataLocked();
+        verifiedRunning_.store(false, std::memory_order_release);
+        status_.outputOpen = false;
+        status_.deviceResolved = false;
+        status_.formatNegotiated = false;
+        status_.streamInitialized = false;
+        status_.streamStarted = false;
+        status_.streamRunning = false;
+        status_.exclusiveAcquired = false;
+        status_.systemMixerBypassed = false;
+        RecomputeBitPerfectActive(status_);
     }
 
     void pause() override {
         ScopedSlowOpTimer timer("sink.pause()", 50);
         std::lock_guard<std::mutex> lock(lifecycleMutex_);
         suspendRenderingLocked();
+        verifiedRunning_.store(false, std::memory_order_release);
+        status_.streamRunning = false;
+        status_.streamStarted = false;
+        // AUHAL and hog mode remain reserved while paused.
+        status_.exclusiveAcquired = hogModeAcquired_.load(std::memory_order_acquire);
+        status_.systemMixerBypassed = status_.exclusiveAcquired;
+        RecomputeBitPerfectActive(status_);
     }
 
     void stop() override {
         ScopedSlowOpTimer timer("sink.stop()", 50);
         std::lock_guard<std::mutex> lock(lifecycleMutex_);
         suspendRenderingLocked();
+        verifiedRunning_.store(false, std::memory_order_release);
+        status_.streamRunning = false;
+        status_.streamStarted = false;
+        status_.exclusiveAcquired = hogModeAcquired_.load(std::memory_order_acquire);
+        status_.systemMixerBypassed = status_.exclusiveAcquired;
+        RecomputeBitPerfectActive(status_);
     }
 
     void reset() override {
@@ -1071,25 +1317,14 @@ public:
         return false;
     }
 
-    bool isExclusive() const override {
-        return hogModeAcquired_.load(std::memory_order_acquire);
-    }
-
-    int activeDeviceSampleRate() const override {
-        AudioDeviceID deviceId = kAudioObjectUnknown;
-        int fallbackSampleRate = 0;
-        {
-            std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
-            std::lock_guard<std::mutex> metadataLock(metadataMutex_);
-            deviceId = activeDeviceId_;
-            fallbackSampleRate = hasOpenFormat_ ? static_cast<int>(openFormat_.sampleRate) : 0;
-        }
-
-        double sampleRate = 0.0;
-        if (getDeviceNominalSampleRate(deviceId, &sampleRate)) {
-            return static_cast<int>(std::llround(sampleRate));
-        }
-        return fallbackSampleRate;
+    NativeOutputStatus outputStatus() const override {
+        std::lock_guard<std::mutex> lock(lifecycleMutex_);
+        NativeOutputStatus copy = status_;
+        copy.streamRunning = verifiedRunning_.load(std::memory_order_acquire);
+        copy.exclusiveAcquired = hogModeAcquired_.load(std::memory_order_acquire);
+        copy.systemMixerBypassed = copy.exclusiveAcquired;
+        RecomputeBitPerfectActive(copy);
+        return copy;
     }
 
     std::string activeDeviceId() const override {
@@ -1103,6 +1338,91 @@ public:
     }
 
 private:
+    void recordOpenFailureLocked(
+        const TrackFormat& format,
+        const std::string& deviceId,
+        const std::string& deviceLabel,
+        const std::string& stage,
+        OSStatus osCode,
+        const std::string& osSymbol,
+        const std::string& summary,
+        bool deviceResolved,
+        bool formatNegotiated
+    ) {
+        status_ = NativeOutputStatus {};
+        status_.backend = backendKind();
+        status_.deviceId = deviceId;
+        status_.deviceLabel = deviceLabel;
+        status_.exclusiveRequested = true;
+        status_.deviceResolved = deviceResolved;
+        status_.formatNegotiated = formatNegotiated;
+        status_.exclusiveAcquired = hogModeAcquired_.load(std::memory_order_acquire);
+        status_.systemMixerBypassed = status_.exclusiveAcquired;
+        status_.sourceSamplesModified = false;
+        status_.wireFormatCanCarrySourceExactly = formatNegotiated;
+        status_.sourceFormat = DescribeTrackFormat(format);
+        status_.processingFormat = status_.sourceFormat;
+        if (formatNegotiated) {
+            status_.wireFormat = status_.sourceFormat;
+            status_.wireFormat.representation = "CoreAudio ASBD/interleaved";
+        }
+        status_.failureStage = stage;
+        status_.osErrorCode = static_cast<int64_t>(osCode);
+        status_.osErrorSymbol = osSymbol;
+        status_.failureSummary = summary;
+
+        NativeOutputAttempt attempt;
+        attempt.index = 1;
+        attempt.backend = status_.backend;
+        attempt.deviceId = deviceId;
+        attempt.deviceLabel = deviceLabel;
+        attempt.sourceFormat = status_.sourceFormat;
+        attempt.processingFormat = status_.processingFormat;
+        attempt.wireFormat = status_.wireFormat;
+        attempt.transport = "AUHAL callback";
+        attempt.probeResult = "attempted directly";
+        attempt.deviceResolved = deviceResolved;
+        attempt.formatNegotiated = formatNegotiated;
+        attempt.failureStage = stage;
+        attempt.osErrorCode = static_cast<int64_t>(osCode);
+        attempt.osErrorSymbol = osSymbol;
+        attempt.message = summary;
+        status_.attempts.push_back(std::move(attempt));
+        RecomputeBitPerfectActive(status_);
+    }
+
+    bool verifyConfigurationLocked() const {
+        if (unit_ == nullptr || !hasOpenFormat_ || activeDeviceId_ == kAudioObjectUnknown) return false;
+        AudioDeviceID boundDevice = kAudioObjectUnknown;
+        UInt32 boundDeviceSize = sizeof(boundDevice);
+        AudioStreamBasicDescription currentFormat {};
+        UInt32 currentFormatSize = sizeof(currentFormat);
+        double currentRate = 0.0;
+        AudioFormatFlags expectedFlags = kAudioFormatFlagIsPacked
+            | static_cast<AudioFormatFlags>(kAudioFormatFlagsNativeEndian);
+        expectedFlags |= openFormat_.sampleFormat == SampleFormat::Float32
+            ? kLinearPCMFormatFlagIsFloat
+            : kLinearPCMFormatFlagIsSignedInteger;
+        return AudioUnitGetProperty(unit_, kAudioOutputUnitProperty_CurrentDevice,
+                kAudioUnitScope_Global, 0, &boundDevice, &boundDeviceSize) == noErr
+            && boundDevice == activeDeviceId_
+            && AudioUnitGetProperty(unit_, kAudioUnitProperty_StreamFormat,
+                kAudioUnitScope_Input, 0, &currentFormat, &currentFormatSize) == noErr
+            && std::abs(currentFormat.mSampleRate - static_cast<double>(openFormat_.sampleRate)) <= 0.01
+            && currentFormat.mFormatID == kAudioFormatLinearPCM
+            && currentFormat.mFormatFlags == expectedFlags
+            && currentFormat.mChannelsPerFrame == openFormat_.channels
+            && currentFormat.mBitsPerChannel == openFormat_.bytesPerSample() * 8
+            && currentFormat.mBytesPerFrame == openFormat_.bytesPerFrame()
+            && currentFormat.mBytesPerPacket == openFormat_.bytesPerFrame()
+            && currentFormat.mFramesPerPacket == 1
+            && getDeviceNominalSampleRate(activeDeviceId_, &currentRate)
+            && std::abs(currentRate - static_cast<double>(openFormat_.sampleRate)) <= 0.01
+            && hogModeAcquired_.load(std::memory_order_acquire)
+            && hogDeviceId_ == activeDeviceId_
+            && hogPid_ == getpid();
+    }
+
     void clearActiveDeviceMetadataLocked() {
         std::lock_guard<std::mutex> lock(metadataMutex_);
         activeDeviceId_ = kAudioObjectUnknown;
@@ -1280,16 +1600,20 @@ private:
         }
 
         if (framesWritten > 0) {
+            sink->initialBufferPrimed_.store(true, std::memory_order_release);
+            sink->initialPrimeCv_.notify_all();
             engine->onFramesConsumed(framesWritten);
         }
 
         if (streamEnded) {
             sink->renderEnabled_.store(false, std::memory_order_release);
+            sink->verifiedRunning_.store(false, std::memory_order_release);
             if (framesWritten == 0 && ioActionFlags != nullptr) {
                 *ioActionFlags |= kAudioUnitRenderAction_OutputIsSilence;
             }
         }
         sink->endRenderCallback();
+        if (streamEnded) engine->onNativeStreamEnded();
         return noErr;
     }
 
@@ -1333,6 +1657,14 @@ private:
             }
             activeRenderCallbacks_.store(0, std::memory_order_release);
         }
+    }
+
+    bool waitForInitialPrimeLocked() {
+        if (initialBufferPrimed_.load(std::memory_order_acquire)) return true;
+        std::unique_lock<std::mutex> lock(initialPrimeMutex_);
+        return initialPrimeCv_.wait_for(lock, kInitialPrimeWaitTimeout, [this]() {
+            return initialBufferPrimed_.load(std::memory_order_acquire);
+        });
     }
 
     void disableRenderAndWaitLocked() {
@@ -1462,7 +1794,11 @@ private:
     std::mutex renderDrainMutex_;
     std::condition_variable renderDrainCv_;
     std::atomic<bool> renderEnabled_ { false };
+    std::atomic<bool> verifiedRunning_ { false };
     std::atomic<uint32_t> activeRenderCallbacks_ { 0 };
+    std::atomic<bool> initialBufferPrimed_ { false };
+    std::mutex initialPrimeMutex_;
+    std::condition_variable initialPrimeCv_;
     std::vector<uint8_t> renderScratch_;
     uint32_t renderScratchCapacityFrames_ = 0;
     PlaybackEngine* engine_ = nullptr;
@@ -1479,6 +1815,7 @@ private:
     std::atomic<bool> hogModeAcquired_ { false };
     pid_t hogPid_ = -1;
     AudioDeviceID hogDeviceId_ = kAudioObjectUnknown;
+    NativeOutputStatus status_ {};
 };
 
 } // namespace
@@ -1493,7 +1830,7 @@ namespace {
 
 class UnsupportedSink final : public AudioOutputSink {
 public:
-    bool supportsBitPerfect() const override {
+    bool isAvailable() const override {
         return false;
     }
 
@@ -1529,8 +1866,12 @@ public:
     void pause() override {}
     void stop() override {}
     void reset() override {}
-    bool isExclusive() const override { return false; }
-    int activeDeviceSampleRate() const override { return 0; }
+    NativeOutputStatus outputStatus() const override {
+        NativeOutputStatus status;
+        status.backend = backendKind();
+        status.exclusiveRequested = true;
+        return status;
+    }
     std::string activeDeviceId() const override { return {}; }
     std::string activeDeviceLabel() const override { return {}; }
 };

@@ -2,19 +2,31 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { TRANSPORT_INFO_LINE_MODE_STORAGE_KEY } from '../constants/settingsStorageKeys.ts'
 import {
+  DEFAULT_HOME_GREETING_TEXT_MODE,
   DEFAULT_JUMP_TO_PLAYING_DESTINATION,
   DEFAULT_TRANSPORT_INFO_LINE_MODE,
   DEFAULT_UI_SCALE_PERCENT,
+  HOME_GREETING_TEXT_MODE_STORAGE_KEY,
   JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY,
   MAX_UI_SCALE_PERCENT,
   MIN_UI_SCALE_PERCENT,
   UI_SCALE_STEP_PERCENT,
   getNextUIScalePercent,
+  normalizeHomeGreetingTextMode,
   normalizeJumpToPlayingDestination,
   normalizeTransportInfoLineMode,
   resolveAppViewTransitionDirection,
   useUIStore
 } from './uiStore.ts'
+
+test('normalizeHomeGreetingTextMode accepts binary clock and defaults unknown values', () => {
+  assert.equal(normalizeHomeGreetingTextMode('messages'), 'messages')
+  assert.equal(normalizeHomeGreetingTextMode('clock'), 'clock')
+  assert.equal(normalizeHomeGreetingTextMode('binary-clock'), 'binary-clock')
+  assert.equal(normalizeHomeGreetingTextMode('off'), 'off')
+  assert.equal(normalizeHomeGreetingTextMode('unknown'), DEFAULT_HOME_GREETING_TEXT_MODE)
+  assert.equal(normalizeHomeGreetingTextMode(null), DEFAULT_HOME_GREETING_TEXT_MODE)
+})
 
 test('getNextUIScalePercent increases and decreases by the configured UI scale step', () => {
   assert.equal(
@@ -94,6 +106,92 @@ test('view navigation tracks back and forward history and clears forward on fres
   assert.equal(useUIStore.getState().navigateViewForward(), false)
 })
 
+test('track drag sessions keep stable occurrence payloads and semantic drop state', () => {
+  const ui = useUIStore.getState()
+  ui.startTrackDrag(
+    [{
+      key: 'playlist-entry:42',
+      path: '/music/repeated.flac',
+      title: 'Repeated',
+      artist: 'Artist',
+      track: null,
+      playlistEntryId: 42,
+      missing: true
+    }],
+    { kind: 'track-list', playlistId: 7 },
+    {
+      activeView: 'playlist',
+      showQueue: false,
+      selectedPlaylistId: 7,
+      playlistSortState: { key: 'title', direction: 'asc' }
+    },
+    3,
+    100,
+    200
+  )
+
+  useUIStore.getState().setTrackDragDropTarget('playlist', {
+    surface: 'playlist',
+    kind: 'insert',
+    playlistId: 7,
+    index: 5
+  })
+  useUIStore.getState().setTrackDragItems([
+    {
+      key: 'playlist-entry:42',
+      path: '/music/repeated.flac',
+      title: 'Repeated',
+      artist: 'Artist',
+      track: null,
+      playlistEntryId: 42,
+      missing: true
+    },
+    {
+      key: 'playlist-entry:43',
+      path: '/music/next.flac',
+      title: 'Next',
+      artist: 'Artist',
+      track: null,
+      playlistEntryId: 43,
+      missing: true
+    }
+  ])
+  useUIStore.getState().setTrackDragPhase('dropping')
+
+  const drag = useUIStore.getState().trackDrag
+  assert.equal(drag?.items[0]?.key, 'playlist-entry:42')
+  assert.equal(drag?.items[0]?.playlistEntryId, 42)
+  assert.equal(drag?.items[1]?.key, 'playlist-entry:43')
+  assert.deepEqual(drag?.dropTarget, { surface: 'playlist', kind: 'insert', playlistId: 7, index: 5 })
+  assert.equal(drag?.phase, 'dropping')
+  ui.clearTrackDrag()
+})
+
+test('committed spring navigation restores the complete drag origin on Back', () => {
+  useUIStore.setState({
+    activeView: 'playlist',
+    viewBackHistory: [],
+    viewForwardHistory: [],
+    showQueue: true,
+    playlistNavigationRestoreRequest: null,
+    trackDragCommittedNavigation: null
+  })
+  useUIStore.getState().commitTransientView({
+    activeView: 'playlist',
+    showQueue: false,
+    selectedPlaylistId: 17,
+    playlistSortState: { key: 'artist', direction: 'desc' }
+  })
+
+  assert.deepEqual(useUIStore.getState().viewBackHistory, ['playlist'])
+  assert.equal(useUIStore.getState().navigateViewBack(), true)
+  assert.equal(useUIStore.getState().activeView, 'playlist')
+  assert.equal(useUIStore.getState().showQueue, false)
+  const request = useUIStore.getState().playlistNavigationRestoreRequest
+  assert.equal(request?.playlistId, 17)
+  assert.deepEqual(request?.sortState, { key: 'artist', direction: 'desc' })
+})
+
 test('jump to playing destination updates state and persists to localStorage', () => {
   const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
   const values = new Map<string, string>()
@@ -158,6 +256,42 @@ test('transport info line mode updates state, persists, and resets to output', (
     assert.equal(values.get(TRANSPORT_INFO_LINE_MODE_STORAGE_KEY), DEFAULT_TRANSPORT_INFO_LINE_MODE)
   } finally {
     useUIStore.setState({ transportInfoLineMode: DEFAULT_TRANSPORT_INFO_LINE_MODE })
+    if (originalDescriptor) {
+      Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
+    } else {
+      delete (globalThis as { localStorage?: unknown }).localStorage
+    }
+  }
+})
+
+test('Home greeting text mode persists binary clock and resets to messages', () => {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const values = new Map<string, string>()
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value)
+    },
+    removeItem: (key: string) => {
+      values.delete(key)
+    }
+  }
+
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: storage
+  })
+
+  try {
+    useUIStore.getState().setHomeGreetingTextMode('binary-clock')
+    assert.equal(useUIStore.getState().homeGreetingTextMode, 'binary-clock')
+    assert.equal(values.get(HOME_GREETING_TEXT_MODE_STORAGE_KEY), 'binary-clock')
+
+    useUIStore.getState().resetHomeGreetingTextMode()
+    assert.equal(useUIStore.getState().homeGreetingTextMode, DEFAULT_HOME_GREETING_TEXT_MODE)
+    assert.equal(values.get(HOME_GREETING_TEXT_MODE_STORAGE_KEY), DEFAULT_HOME_GREETING_TEXT_MODE)
+  } finally {
+    useUIStore.setState({ homeGreetingTextMode: DEFAULT_HOME_GREETING_TEXT_MODE })
     if (originalDescriptor) {
       Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
     } else {

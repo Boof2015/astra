@@ -49,6 +49,131 @@ Napi::Value ToNullableString(Napi::Env env, const std::string& value) {
     return Napi::String::New(env, value);
 }
 
+double GetObjectDouble(const Napi::Object& obj, const char* key, double fallback) {
+    Napi::Value value = obj.Get(key);
+    return value.IsNumber() ? value.As<Napi::Number>().DoubleValue() : fallback;
+}
+
+bool GetObjectBool(const Napi::Object& obj, const char* key, bool fallback) {
+    Napi::Value value = obj.Get(key);
+    return value.IsBoolean() ? value.As<Napi::Boolean>().Value() : fallback;
+}
+
+Napi::Object CreatePcmFormatObject(Napi::Env env, const NativePlayback::NativePcmFormat& format) {
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("sampleRate", format.sampleRate > 0 ? Napi::Number::New(env, format.sampleRate) : env.Null());
+    obj.Set("channels", format.channels > 0 ? Napi::Number::New(env, format.channels) : env.Null());
+    obj.Set("sampleFormat", ToNullableString(env, format.sampleFormat));
+    obj.Set("containerBits", format.containerBits > 0 ? Napi::Number::New(env, format.containerBits) : env.Null());
+    obj.Set("validBits", format.validBits > 0 ? Napi::Number::New(env, format.validBits) : env.Null());
+    obj.Set("channelMask", Napi::Number::New(env, static_cast<double>(format.channelMask)));
+    obj.Set("channelLayout", ToNullableString(env, format.channelLayout));
+    obj.Set("representation", ToNullableString(env, format.representation));
+    return obj;
+}
+
+Napi::Object CreateOutputAttemptObject(Napi::Env env, const NativePlayback::NativeOutputAttempt& attempt) {
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("index", Napi::Number::New(env, attempt.index));
+    obj.Set("backend", Napi::String::New(env, attempt.backend));
+    obj.Set("deviceId", ToNullableString(env, attempt.deviceId));
+    obj.Set("deviceLabel", ToNullableString(env, attempt.deviceLabel));
+    obj.Set("sourceFormat", CreatePcmFormatObject(env, attempt.sourceFormat));
+    obj.Set("processingFormat", CreatePcmFormatObject(env, attempt.processingFormat));
+    obj.Set("wireFormat", CreatePcmFormatObject(env, attempt.wireFormat));
+    obj.Set("transport", ToNullableString(env, attempt.transport));
+    obj.Set("probeResult", ToNullableString(env, attempt.probeResult));
+    obj.Set("requestedPeriodMs", Napi::Number::New(env, attempt.requestedPeriodMs));
+    obj.Set("alignedPeriodMs", Napi::Number::New(env, attempt.alignedPeriodMs));
+    obj.Set("actualPeriodMs", Napi::Number::New(env, attempt.actualPeriodMs));
+    obj.Set("bufferFrames", Napi::Number::New(env, attempt.bufferFrames));
+    obj.Set("deviceResolved", Napi::Boolean::New(env, attempt.deviceResolved));
+    obj.Set("formatNegotiated", Napi::Boolean::New(env, attempt.formatNegotiated));
+    obj.Set("streamInitialized", Napi::Boolean::New(env, attempt.streamInitialized));
+    obj.Set("bufferPrimed", Napi::Boolean::New(env, attempt.bufferPrimed));
+    obj.Set("streamStarted", Napi::Boolean::New(env, attempt.streamStarted));
+    obj.Set("finalVerified", Napi::Boolean::New(env, attempt.finalVerified));
+    obj.Set("outputPolicy", Napi::String::New(env, attempt.outputPolicy));
+    obj.Set("exclusiveActive", Napi::Boolean::New(env, attempt.streamStarted && attempt.finalVerified));
+    obj.Set("processingActive", Napi::Boolean::New(env, attempt.outputPolicy == "processed" && attempt.streamStarted));
+    obj.Set("resamplingActive", Napi::Boolean::New(env, attempt.resamplingActive));
+    obj.Set("requestedSampleRate", Napi::Number::New(env, attempt.requestedSampleRate));
+    obj.Set("targetSampleRate", Napi::Number::New(env, attempt.targetSampleRate));
+    obj.Set("rateSelectionReason", ToNullableString(env, attempt.rateSelectionReason));
+    obj.Set("failureStage", ToNullableString(env, attempt.failureStage));
+    obj.Set("osErrorSymbol", ToNullableString(env, attempt.osErrorSymbol));
+    obj.Set("osErrorCode", Napi::Number::New(env, static_cast<double>(attempt.osErrorCode)));
+    obj.Set("message", ToNullableString(env, attempt.message));
+    return obj;
+}
+
+Napi::Object CreateOutputStatusObject(Napi::Env env, const NativePlayback::NativeOutputStatus& status) {
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("outputOpen", Napi::Boolean::New(env, status.outputOpen));
+    obj.Set("deviceResolved", Napi::Boolean::New(env, status.deviceResolved));
+    obj.Set("formatNegotiated", Napi::Boolean::New(env, status.formatNegotiated));
+    obj.Set("streamInitialized", Napi::Boolean::New(env, status.streamInitialized));
+    obj.Set("streamStarted", Napi::Boolean::New(env, status.streamStarted));
+    obj.Set("streamRunning", Napi::Boolean::New(env, status.streamRunning));
+    obj.Set("exclusiveRequested", Napi::Boolean::New(env, status.exclusiveRequested));
+    obj.Set("exclusiveAcquired", Napi::Boolean::New(env, status.exclusiveAcquired));
+    obj.Set("systemMixerBypassed", Napi::Boolean::New(env, status.systemMixerBypassed));
+    obj.Set("sourceSamplesModified", Napi::Boolean::New(env, status.sourceSamplesModified));
+    obj.Set("wireFormatCanCarrySourceExactly", Napi::Boolean::New(env, status.wireFormatCanCarrySourceExactly));
+    obj.Set("bitPerfectActive", Napi::Boolean::New(env, status.bitPerfectActive));
+    obj.Set("outputPolicy", Napi::String::New(env, status.processing.outputPolicy));
+    obj.Set("exclusiveActive", Napi::Boolean::New(env, status.processing.exclusiveActive));
+    obj.Set("processingActive", Napi::Boolean::New(env, status.processing.processingActive));
+    obj.Set("resamplingActive", Napi::Boolean::New(env, status.processing.resamplingActive));
+    Napi::Object processing = Napi::Object::New(env);
+    processing.Set("outputPolicy", Napi::String::New(env, status.processing.outputPolicy));
+    processing.Set("exclusiveActive", Napi::Boolean::New(env, status.processing.exclusiveActive));
+    processing.Set("processingActive", Napi::Boolean::New(env, status.processing.processingActive));
+    processing.Set("resamplingActive", Napi::Boolean::New(env, status.processing.resamplingActive));
+    processing.Set("resamplerName", ToNullableString(env, status.processing.resamplerName));
+    processing.Set("resamplerQuality", ToNullableString(env, status.processing.resamplerQuality));
+    processing.Set("sourceSampleRate", status.processing.sourceSampleRate > 0 ? Napi::Number::New(env, status.processing.sourceSampleRate) : env.Null());
+    processing.Set("targetSampleRate", status.processing.targetSampleRate > 0 ? Napi::Number::New(env, status.processing.targetSampleRate) : env.Null());
+    processing.Set("requestedSampleRate", status.processing.requestedSampleRate > 0 ? Napi::Number::New(env, status.processing.requestedSampleRate) : env.Null());
+    processing.Set("rateSelectionMode", Napi::String::New(env, status.processing.rateSelectionMode));
+    processing.Set("rateSelectionReason", ToNullableString(env, status.processing.rateSelectionReason));
+    processing.Set("processingLatencyFrames", Napi::Number::New(env, status.processing.processingLatencyFrames));
+    processing.Set("gainMode", Napi::String::New(env, status.processing.gainMode));
+    processing.Set("trackGainDb", Napi::Number::New(env, status.processing.trackGainDb));
+    processing.Set("preampDb", Napi::Number::New(env, status.processing.preampDb));
+    processing.Set("volume", Napi::Number::New(env, status.processing.volume));
+    processing.Set("muted", Napi::Boolean::New(env, status.processing.muted));
+    processing.Set("eqEnabled", Napi::Boolean::New(env, status.processing.eqEnabled));
+    processing.Set("eqBandCount", Napi::Number::New(env, status.processing.eqBandCount));
+    processing.Set("limiterEnabled", Napi::Boolean::New(env, status.processing.limiterEnabled));
+    processing.Set("limiterGainReductionDb", Napi::Number::New(env, status.processing.limiterGainReductionDb));
+    processing.Set("dither", ToNullableString(env, status.processing.dither));
+    processing.Set("clippedSamples", Napi::Number::New(env, static_cast<double>(status.processing.clippedSamples)));
+    obj.Set("processing", processing);
+    obj.Set("sourceFormat", CreatePcmFormatObject(env, status.sourceFormat));
+    obj.Set("processingFormat", CreatePcmFormatObject(env, status.processingFormat));
+    obj.Set("wireFormat", CreatePcmFormatObject(env, status.wireFormat));
+    obj.Set("backend", Napi::String::New(env, status.backend));
+    obj.Set("deviceId", ToNullableString(env, status.deviceId));
+    obj.Set("deviceLabel", ToNullableString(env, status.deviceLabel));
+    obj.Set("transport", ToNullableString(env, status.transport));
+    obj.Set("requestedPeriodMs", Napi::Number::New(env, status.requestedPeriodMs));
+    obj.Set("actualPeriodMs", Napi::Number::New(env, status.actualPeriodMs));
+    obj.Set("requestedPeriodFrames", Napi::Number::New(env, status.requestedPeriodFrames));
+    obj.Set("actualPeriodFrames", Napi::Number::New(env, status.actualPeriodFrames));
+    obj.Set("bufferFrames", Napi::Number::New(env, status.bufferFrames));
+    obj.Set("failureStage", ToNullableString(env, status.failureStage));
+    obj.Set("osErrorSymbol", ToNullableString(env, status.osErrorSymbol));
+    obj.Set("osErrorCode", Napi::Number::New(env, static_cast<double>(status.osErrorCode)));
+    obj.Set("failureSummary", ToNullableString(env, status.failureSummary));
+    Napi::Array attempts = Napi::Array::New(env, status.attempts.size());
+    for (size_t i = 0; i < status.attempts.size(); i++) {
+        attempts.Set(i, CreateOutputAttemptObject(env, status.attempts[i]));
+    }
+    obj.Set("attempts", attempts);
+    return obj;
+}
+
 Napi::Object CreatePlaybackSnapshotObject(Napi::Env env, const NativePlayback::PlaybackSnapshot& snapshot) {
     Napi::Object obj = Napi::Object::New(env);
     obj.Set("playbackState", Napi::String::New(env, snapshot.playbackState));
@@ -59,9 +184,7 @@ Napi::Object CreatePlaybackSnapshotObject(Napi::Env env, const NativePlayback::P
     obj.Set("sampleFormat", ToNullableString(env, snapshot.sampleFormat));
     obj.Set("deviceId", ToNullableString(env, snapshot.deviceId));
     obj.Set("deviceLabel", ToNullableString(env, snapshot.deviceLabel));
-    obj.Set("activeBackend", Napi::String::New(env, snapshot.activeBackend));
-    obj.Set("activeDeviceExclusive", Napi::Boolean::New(env, snapshot.activeDeviceExclusive));
-    obj.Set("bitPerfectActive", Napi::Boolean::New(env, snapshot.bitPerfectActive));
+    obj.Set("outputStatus", CreateOutputStatusObject(env, snapshot.outputStatus));
     return obj;
 }
 
@@ -95,17 +218,16 @@ Napi::Object CreatePlaybackEventObject(Napi::Env env, const NativePlayback::Play
 Napi::Object CreateCapabilitiesObject(Napi::Env env) {
     std::string reason;
     const bool bitPerfectAvailable = playbackEngine.isBitPerfectAvailable(&reason);
+    std::string processedReason;
+    const bool processedExclusiveAvailable = playbackEngine.isProcessedExclusiveAvailable(&processedReason);
     const auto devices = playbackEngine.getOutputDevices(&reason);
-    const auto snapshot = playbackEngine.getSnapshot();
-    const int activeDeviceSampleRate = playbackEngine.getActiveDeviceSampleRate();
 
     Napi::Object obj = Napi::Object::New(env);
+    obj.Set("processedExclusiveAvailable", Napi::Boolean::New(env, processedExclusiveAvailable));
+    obj.Set("reasonProcessedExclusiveUnavailable", processedExclusiveAvailable ? env.Null() : ToNullableString(env, processedReason));
     obj.Set("bitPerfectAvailable", Napi::Boolean::New(env, bitPerfectAvailable));
     obj.Set("reasonUnavailable", bitPerfectAvailable ? env.Null() : ToNullableString(env, reason));
     obj.Set("activeBackend", Napi::String::New(env, playbackEngine.backendKind()));
-    obj.Set("activeDeviceExclusive", Napi::Boolean::New(env, snapshot.activeDeviceExclusive));
-    obj.Set("activeSampleRate", activeDeviceSampleRate > 0 ? Napi::Number::New(env, activeDeviceSampleRate) : env.Null());
-    obj.Set("activeSampleFormat", ToNullableString(env, snapshot.sampleFormat));
     obj.Set("selectedDeviceId", ToNullableString(env, playbackEngine.getSelectedDeviceId()));
 
     Napi::Array deviceArray = Napi::Array::New(env, devices.size());
@@ -148,6 +270,14 @@ NativePlayback::TrackBuffer ParseTrackBuffer(const Napi::CallbackInfo& info) {
     NativePlayback::TrackBuffer track;
     track.format = NativePlayback::BuildTrackFormat(sampleRate, channels, sampleFormat);
     track.duration = duration;
+    if (info.Length() > 5 && info[5].IsObject()) {
+        const Napi::Object gain = info[5].As<Napi::Object>();
+        const std::string mode = GetObjectString(gain, "mode", "off");
+        track.gain.mode = mode == "normalization"
+            ? NativePlayback::TrackGainMode::Normalization
+            : (mode == "replaygain" ? NativePlayback::TrackGainMode::ReplayGain : NativePlayback::TrackGainMode::Off);
+        track.gain.gainDb = std::clamp(GetObjectDouble(gain, "gainDb", 0.0), -24.0, 12.0);
+    }
     track.data.assign(pcmData.Data(), pcmData.Data() + pcmData.ByteLength());
     if (track.duration <= 0.0 && track.format.sampleRate > 0) {
         track.duration = static_cast<double>(track.totalFrames()) / static_cast<double>(track.format.sampleRate);
@@ -325,6 +455,16 @@ Napi::Value SpectrumSetSmoothing(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
+Napi::Value SpectrumSetSideEnabled(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsBoolean()) {
+        Napi::TypeError::New(env, "Expected Side enabled boolean").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    spectrum.setSideEnabled(info[0].As<Napi::Boolean>().Value());
+    return env.Undefined();
+}
+
 Napi::Value SpectrumPushSamples(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     if (info.Length() < 1 || !info[0].IsTypedArray()) {
@@ -371,6 +511,37 @@ Napi::Value SpectrumGetSideMagnitudes(const Napi::CallbackInfo& info) {
     Napi::Float32Array result = Napi::Float32Array::New(env, magnitudes.size());
     memcpy(result.Data(), magnitudes.data(), magnitudes.size() * sizeof(float));
     return result;
+}
+
+Napi::Value SpectrumGetFrame(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    bool includeRaw = false;
+    bool includeSide = false;
+    if (info.Length() > 0 && info[0].IsObject()) {
+        const Napi::Object options = info[0].As<Napi::Object>();
+        const Napi::Value rawValue = options.Get("includeRaw");
+        const Napi::Value sideValue = options.Get("includeSide");
+        includeRaw = rawValue.IsBoolean() && rawValue.As<Napi::Boolean>().Value();
+        includeSide = sideValue.IsBoolean() && sideValue.As<Napi::Boolean>().Value();
+    }
+
+    auto copyPlane = [&](const std::vector<float>& source) {
+        Napi::Float32Array output = Napi::Float32Array::New(env, source.size());
+        if (!source.empty()) {
+            memcpy(output.Data(), source.data(), source.size() * sizeof(float));
+        }
+        return output;
+    };
+
+    Napi::Object frame = Napi::Object::New(env);
+    frame.Set("primary", copyPlane(spectrum.getMagnitudes()));
+    if (includeRaw) {
+        frame.Set("raw", copyPlane(spectrum.getRawMagnitudes()));
+    }
+    if (includeSide) {
+        frame.Set("side", copyPlane(spectrum.getSideMagnitudes()));
+    }
+    return frame;
 }
 
 Napi::Value SpectrumFillRawMagnitudes(const Napi::CallbackInfo& info) {
@@ -872,6 +1043,10 @@ Napi::Value PlaybackGetCapabilities(const Napi::CallbackInfo& info) {
     return CreateCapabilitiesObject(info.Env());
 }
 
+Napi::Value PlaybackGetNativeAudioDiagnosticReport(const Napi::CallbackInfo& info) {
+    return Napi::String::New(info.Env(), playbackEngine.getNativeAudioDiagnosticReport());
+}
+
 Napi::Value PlaybackProbeDeviceFormats(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     const std::string deviceId = info.Length() > 0 && info[0].IsString()
@@ -918,6 +1093,76 @@ Napi::Value PlaybackSetOutputDevice(const Napi::CallbackInfo& info) {
     }
 
     return CreateCapabilitiesObject(env);
+}
+
+Napi::Value PlaybackConfigureOutput(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        Napi::TypeError::New(env, "Expected native output request").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    const Napi::Object raw = info[0].As<Napi::Object>();
+    NativePlayback::NativeOutputRequest request;
+    request.policy = GetObjectString(raw, "policy", "direct") == "processed"
+        ? NativePlayback::OutputPolicy::Processed
+        : NativePlayback::OutputPolicy::Direct;
+    const Napi::Value requestedRate = raw.Get("requestedSampleRate");
+    request.requestedSampleRate = requestedRate.IsNumber()
+        ? requestedRate.As<Napi::Number>().Uint32Value()
+        : 0;
+    playbackEngine.configureOutput(request);
+    return CreateCapabilitiesObject(env);
+}
+
+Napi::Value PlaybackSetDspConfig(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        Napi::TypeError::New(env, "Expected native DSP configuration").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    const Napi::Object raw = info[0].As<Napi::Object>();
+    NativePlayback::NativeDspConfig config;
+    config.volume = std::clamp(GetObjectDouble(raw, "volume", 1.0), 0.0, 1.0);
+    config.muted = GetObjectBool(raw, "muted", false);
+    config.eqEnabled = GetObjectBool(raw, "eqEnabled", false);
+    config.preampDb = std::clamp(GetObjectDouble(raw, "preampDb", 0.0), -12.0, 12.0);
+    config.limiterEnabled = GetObjectBool(raw, "limiterEnabled", true);
+    const Napi::Value bandsValue = raw.Get("eqBands");
+    if (bandsValue.IsArray()) {
+        const Napi::Array bands = bandsValue.As<Napi::Array>();
+        const uint32_t length = std::min<uint32_t>(20, bands.Length());
+        config.eqBands.reserve(length);
+        for (uint32_t index = 0; index < length; index++) {
+            const Napi::Value bandValue = bands.Get(index);
+            if (!bandValue.IsObject()) continue;
+            const Napi::Object band = bandValue.As<Napi::Object>();
+            config.eqBands.push_back({
+                GetObjectString(band, "type", "peaking"),
+                std::clamp(GetObjectDouble(band, "frequency", 1000.0), 20.0, 20000.0),
+                std::clamp(GetObjectDouble(band, "gain", 0.0), -12.0, 12.0),
+                std::clamp(GetObjectDouble(band, "Q", 1.0), 0.1, 18.0)
+            });
+        }
+    }
+    playbackEngine.setDspConfig(config);
+    return CreatePlaybackSnapshotObject(env, playbackEngine.getSnapshot());
+}
+
+Napi::Value PlaybackSetCurrentTrackGain(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        Napi::TypeError::New(env, "Expected native track gain").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    const Napi::Object raw = info[0].As<Napi::Object>();
+    const std::string mode = GetObjectString(raw, "mode", "off");
+    NativePlayback::NativeTrackGain gain;
+    gain.mode = mode == "normalization"
+        ? NativePlayback::TrackGainMode::Normalization
+        : (mode == "replaygain" ? NativePlayback::TrackGainMode::ReplayGain : NativePlayback::TrackGainMode::Off);
+    gain.gainDb = std::clamp(GetObjectDouble(raw, "gainDb", 0.0), -24.0, 12.0);
+    playbackEngine.setCurrentTrackGain(gain);
+    return CreatePlaybackSnapshotObject(env, playbackEngine.getSnapshot());
 }
 
 Napi::Value PlaybackLoadTrack(const Napi::CallbackInfo& info) {
@@ -1158,6 +1403,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     specExports.Set("getFFTSize", Napi::Function::New(env, SpectrumGetFFTSize));
     specExports.Set("setSampleRate", Napi::Function::New(env, SpectrumSetSampleRate));
     specExports.Set("setSmoothing", Napi::Function::New(env, SpectrumSetSmoothing));
+    specExports.Set("setSideEnabled", Napi::Function::New(env, SpectrumSetSideEnabled));
     specExports.Set("pushSamples", Napi::Function::New(env, SpectrumPushSamples));
     specExports.Set("pushStereoSamples", Napi::Function::New(env, SpectrumPushStereoSamples));
     specExports.Set("fillRawMagnitudes", Napi::Function::New(env, SpectrumFillRawMagnitudes));
@@ -1166,6 +1412,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     specExports.Set("getRawMagnitudes", Napi::Function::New(env, SpectrumGetRawMagnitudes));
     specExports.Set("getMagnitudes", Napi::Function::New(env, SpectrumGetMagnitudes));
     specExports.Set("getSideMagnitudes", Napi::Function::New(env, SpectrumGetSideMagnitudes));
+    specExports.Set("getFrame", Napi::Function::New(env, SpectrumGetFrame));
     specExports.Set("process", Napi::Function::New(env, SpectrumProcess));
     specExports.Set("binToFrequency", Napi::Function::New(env, SpectrumBinToFrequency));
     specExports.Set("configureBars", Napi::Function::New(env, SpectrumConfigureBars));
@@ -1221,7 +1468,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     // Native playback
     Napi::Object playbackExports = Napi::Object::New(env);
     playbackExports.Set("getCapabilities", Napi::Function::New(env, PlaybackGetCapabilities));
+    playbackExports.Set("getNativeAudioDiagnosticReport", Napi::Function::New(env, PlaybackGetNativeAudioDiagnosticReport));
     playbackExports.Set("setOutputDevice", Napi::Function::New(env, PlaybackSetOutputDevice));
+    playbackExports.Set("configureOutput", Napi::Function::New(env, PlaybackConfigureOutput));
+    playbackExports.Set("setDspConfig", Napi::Function::New(env, PlaybackSetDspConfig));
+    playbackExports.Set("setCurrentTrackGain", Napi::Function::New(env, PlaybackSetCurrentTrackGain));
     playbackExports.Set("probeDeviceFormats", Napi::Function::New(env, PlaybackProbeDeviceFormats));
     playbackExports.Set("loadTrack", Napi::Function::New(env, PlaybackLoadTrack));
     playbackExports.Set("preloadNextTrack", Napi::Function::New(env, PlaybackPreloadNextTrack));

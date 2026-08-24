@@ -6,6 +6,7 @@ import ViewRouter from './components/layout/ViewRouter'
 import TransportBar from './components/layout/TransportBar'
 import QueuePanel from './components/queue/QueuePanel'
 import QueuePanelBoundary from './components/queue/QueuePanelBoundary'
+import TrackDragRuntime from './components/drag/TrackDragRuntime'
 import CollectionQueueContextMenu from './components/queue/CollectionQueueContextMenu'
 import InfoSidebar from './components/layout/InfoSidebar'
 import FullscreenMode from './components/layout/FullscreenMode'
@@ -57,6 +58,7 @@ import { useScopePopoutBridge } from './hooks/useScopePopoutBridge'
 import { useMemoryDiagnosticsBridge } from './hooks/useMemoryDiagnosticsBridge'
 import { useCoverArtAccent } from './hooks/useCoverArtAccent'
 import { useRuntimeAppIconSync } from './hooks/useRuntimeAppIconSync'
+import { useTrayControlsBridge } from './hooks/useTrayControlsBridge'
 import { usePointerFocusCleanup } from './hooks/usePointerFocusCleanup'
 import { useControllerInput } from './hooks/useControllerInput'
 import { usePresence } from './hooks/usePresence'
@@ -89,26 +91,132 @@ function getAssociatedOpenSourceLabel(platform: NodeJS.Platform): string {
   return 'File Manager'
 }
 
+/**
+ * Runtime integrations intentionally live below App. Their playback-clock and
+ * settings subscriptions can update frequently, but none of those updates
+ * should reconcile the application shell or analyzer rack.
+ */
+function PointerFocusRuntime(): null {
+  usePointerFocusCleanup()
+  return null
+}
+
+function KeyboardShortcutsRuntime(): null {
+  useKeyboardShortcuts()
+  return null
+}
+
+function MediaSessionRuntime(): null {
+  useMediaSession()
+  return null
+}
+
+function DiscordPresenceRuntime(): null {
+  useDiscordPresence()
+  return null
+}
+
+function MiniPlayerBridgeRuntime(): null {
+  useMiniPlayerBridge()
+  return null
+}
+
+function CompanionApiBridgeRuntime(): null {
+  useCompanionApiBridge()
+  return null
+}
+
+function LyricsPopoutBridgeRuntime(): null {
+  useLyricsPopoutBridge()
+  return null
+}
+
+function ScopePopoutBridgeRuntime(): null {
+  useScopePopoutBridge()
+  return null
+}
+
+function MemoryDiagnosticsBridgeRuntime(): null {
+  useMemoryDiagnosticsBridge()
+  return null
+}
+
+function CoverArtAccentRuntime(): null {
+  useCoverArtAccent()
+  return null
+}
+
+function RuntimeAppIconSync(): null {
+  useRuntimeAppIconSync()
+  return null
+}
+
+function TrayControlsBridgeRuntime(): null {
+  useTrayControlsBridge()
+  return null
+}
+
+function RuntimeBridges() {
+  return (
+    <>
+      <PointerFocusRuntime />
+      <KeyboardShortcutsRuntime />
+      <MediaSessionRuntime />
+      <DiscordPresenceRuntime />
+      <MiniPlayerBridgeRuntime />
+      <CompanionApiBridgeRuntime />
+      <LyricsPopoutBridgeRuntime />
+      <ScopePopoutBridgeRuntime />
+      <MemoryDiagnosticsBridgeRuntime />
+      <CoverArtAccentRuntime />
+      <RuntimeAppIconSync />
+      <TrayControlsBridgeRuntime />
+    </>
+  )
+}
+
+function ActiveViewEligibilityGuard(): null {
+  const activeView = useUIStore((state) => state.activeView)
+  const replaceActiveView = useUIStore((state) => state.replaceActiveView)
+  const graphEnabled = useGraphStore((state) => state.enabled)
+  const listeningStatsEnabled = useListeningStatsStore((state) => state.enabled)
+
+  useEffect(() => {
+    if (activeView === 'graph' && !graphEnabled) {
+      replaceActiveView('home')
+    }
+    if (activeView === 'stats' && !listeningStatsEnabled) {
+      replaceActiveView('home')
+    }
+  }, [activeView, graphEnabled, listeningStatsEnabled, replaceActiveView])
+
+  return null
+}
+
+function ControllerRuntime({ showOverlays }: { showOverlays: boolean }) {
+  const controllerInput = useControllerInput()
+
+  if (!showOverlays) return null
+
+  return (
+    <>
+      <ControllerFocusRing active={controllerInput.active} />
+      <ControllerRadialMenu
+        active={controllerInput.active}
+        family={controllerInput.family}
+        canOpenContext={controllerInput.canOpenContext}
+        radialMenu={controllerInput.radialMenu}
+      />
+      <ControllerHints active={controllerInput.active} family={controllerInput.family} />
+    </>
+  )
+}
+
 function App() {
   const rackShellRef = useRef<HTMLDivElement | null>(null)
   const collapseToggleRef = useRef<HTMLButtonElement | null>(null)
 
-  usePointerFocusCleanup()
-  useKeyboardShortcuts()
-  const controllerInput = useControllerInput()
-  useMediaSession()
-  useDiscordPresence()
-  useMiniPlayerBridge()
-  useCompanionApiBridge()
-  useLyricsPopoutBridge()
-  useScopePopoutBridge()
-  useMemoryDiagnosticsBridge()
-  useCoverArtAccent()
-  useRuntimeAppIconSync()
-
   const showQueue = useUIStore((s) => s.showQueue)
-  const activeView = useUIStore((s) => s.activeView)
-  const replaceActiveView = useUIStore((s) => s.replaceActiveView)
   const showInfoSidebar = useUIStore((s) => s.showInfoSidebar)
   const isAnalyzerEditMode = useUIStore((s) => s.isAnalyzerEditMode)
   const isAnalyzerRackVisible = useUIStore((s) => s.isAnalyzerRackVisible)
@@ -120,8 +228,6 @@ function App() {
   const uiScalePercent = useUIStore((s) => s.uiScalePercent)
   const [analyzerHeightPreviewPx, setAnalyzerHeightPreviewPx] = useState<number | null>(null)
   const [isCollapseToggleNearby, setIsCollapseToggleNearby] = useState(false)
-  const graphEnabled = useGraphStore((s) => s.enabled)
-  const listeningStatsEnabled = useListeningStatsStore((s) => s.enabled)
   const queuePresence = usePresence(showQueue)
   const infoSidebarPresence = usePresence(showInfoSidebar)
 
@@ -139,15 +245,6 @@ function App() {
       setAnalyzerHeightPreviewPx(null)
     }
   }, [isAnalyzerRackVisible])
-
-  useEffect(() => {
-    if (activeView === 'graph' && !graphEnabled) {
-      replaceActiveView('home')
-    }
-    if (activeView === 'stats' && !listeningStatsEnabled) {
-      replaceActiveView('home')
-    }
-  }, [activeView, graphEnabled, listeningStatsEnabled, replaceActiveView])
 
   useEffect(() => {
     if (!isAnalyzerRackVisible || isAnalyzerEditMode) {
@@ -387,7 +484,9 @@ function App() {
         console.error('Failed to restore Astra session:', error)
       } finally {
         if (!didUnmount) {
-          sessionPersistenceCleanup = installSessionPersistence()
+          sessionPersistenceCleanup = installSessionPersistence({
+            persistedSessionSavedAt: sessionSnapshot?.savedAt ?? null
+          })
           window.electronAPI.associatedOpenFiles.markReady()
           associatedOpenReady = true
         }
@@ -428,6 +527,9 @@ function App() {
   if (isZoneDisplayActive) {
     return (
       <div className="app-scale-host" style={appStyle}>
+        <RuntimeBridges />
+        <ActiveViewEligibilityGuard />
+        <ControllerRuntime showOverlays={false} />
         <ZoneDisplay />
       </div>
     )
@@ -435,6 +537,8 @@ function App() {
 
   return (
     <div className="app-scale-host" style={appStyle}>
+      <RuntimeBridges />
+      <ActiveViewEligibilityGuard />
       <div
         className={`app ${isAnalyzerEditMode ? 'is-analyzer-editing' : ''}`.trim()}
       >
@@ -529,15 +633,9 @@ function App() {
         <LyricsEditorPanel />
         <SignalShareModal />
         <CollectionQueueContextMenu />
+        <TrackDragRuntime />
         {isFullscreen && <FullscreenMode />}
-        <ControllerFocusRing active={controllerInput.active} />
-        <ControllerRadialMenu
-          active={controllerInput.active}
-          family={controllerInput.family}
-          canOpenContext={controllerInput.canOpenContext}
-          radialMenu={controllerInput.radialMenu}
-        />
-        <ControllerHints active={controllerInput.active} family={controllerInput.family} />
+        <ControllerRuntime showOverlays />
       </div>
     </div>
   )

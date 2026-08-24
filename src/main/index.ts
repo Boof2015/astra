@@ -1,12 +1,13 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, clipboard, screen, safeStorage, powerMonitor, protocol, session, globalShortcut } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, clipboard, screen, safeStorage, powerMonitor, protocol, session, globalShortcut, Menu, Tray, type MenuItemConstructorOptions } from 'electron'
 import { join, basename, extname } from 'path'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir, stat } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
-import { tmpdir, hostname, networkInterfaces, setPriority, constants as osConstants } from 'os'
+import { cpus, tmpdir, hostname, networkInterfaces, setPriority, constants as osConstants } from 'os'
 import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, type ExecFileOptions } from 'child_process'
 import { createHash, randomBytes, randomUUID } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
+import { isAllowedArtworkProtocolHash } from './services/artworkProtocol'
 import type { DynamicPlaylistRulesV1 } from '../shared/playlists/dynamicPlaylist'
 import type {
   ListeningSessionCheckpoint,
@@ -29,6 +30,7 @@ import {
   type IntegrityScanTrackTarget
 } from './services/libraryIntegrity'
 import { LibraryLatestSyncCoordinator } from './services/libraryLatestSync'
+import { createThrottledLibraryScanProgressReporter } from './libraryScanProgress'
 import {
   buildEbur128Args,
   LoudnessAnalysisJobQueue,
@@ -102,9 +104,16 @@ import {
 import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
 import { LyricsService } from './services/lyrics'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
+import { LibraryDiagnosticsService } from './services/libraryDiagnostics'
 import { collectAppMemoryFootprint } from './services/appMemoryFootprint'
+import { HrtfProfileService } from './services/hrtfProfiles'
 import { normalizeStatsShareFileName, validateStatsSharePng } from './services/statsShareImage'
 import { normalizeSignalShareFileName, validateSignalSharePng } from './services/signalShareImage'
+import {
+  HRTF_PROFILE_MAX_BYTES,
+  type HrtfProfileCandidateResult,
+  type HrtfProfileCommitResult,
+} from '../types/hrtfProfiles'
 import { getMusicMetadataParseOptions } from './utils/musicMetadata'
 import { extractReplayGainDb } from './utils/replayGain'
 import {
@@ -130,6 +139,17 @@ import {
   type MainWindowPrefs
 } from './services/mainWindowPrefs'
 import {
+  loadDesktopIntegrationPrefs,
+  normalizeDesktopIntegrationPrefs,
+  resolveMainWindowCloseDisposition,
+  saveDesktopIntegrationPrefs,
+} from './services/desktopIntegrationPrefs'
+import {
+  buildTrayMenuModel,
+  createTrayMenuStateKey,
+} from './services/trayMenu'
+import { TrayRendererCommandQueue } from './services/trayRendererCommandQueue'
+import {
   mergeMiniPlayerSnapshots,
   type MiniPlayerCommand,
   type MiniPlayerQueueSnapshot,
@@ -147,6 +167,15 @@ import {
   formatArtistNames,
   normalizeArtistNames
 } from '../shared/library/artistCredits'
+import {
+  LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE,
+  LOCAL_PCM_STREAM_CHUNK_BYTES,
+  LOCAL_PCM_STREAM_MAX_CREDITS,
+  LOCAL_PCM_STREAM_MAX_BYTES,
+  LOCAL_PCM_STREAM_VERSION,
+  isLocalPcmStreamRendererMessage,
+  validateLocalPcmStreamOpenRequest
+} from '../shared/localPcmStream'
 import {
   LYRICS_POPOUT_WINDOW_MIN_HEIGHT,
   LYRICS_POPOUT_WINDOW_MIN_WIDTH,
@@ -240,10 +269,23 @@ import type {
   SubsonicStatusSnapshot
 } from '../types/subsonic'
 import type {
+  LocalAudioPcmTransportTimings,
   MemoryDiagnosticsEventPayload,
   MemoryDiagnosticsRendererSnapshot,
-  MemoryDiagnosticsSnapshotRequest
+  MemoryDiagnosticsSnapshotRequest,
+  PcmTransferBenchmarkProbeResult
 } from '../types/diagnostics'
+import {
+  PCM_TRANSFER_BENCHMARK_STREAM_IPC_CHANNEL,
+  PCM_TRANSFER_BENCHMARK_STREAM_VERSION,
+  createPcmTransferBenchmarkProbe,
+  validatePcmTransferBenchmarkStreamOpenRequest
+} from '../shared/pcmTransferBenchmark'
+import { normalizeMemoryDiagnosticsLogEventOptions } from './diagnosticsIpc'
+import {
+  PcmTransferBenchmarkStreamCoordinator,
+  type PcmTransferBenchmarkStreamPort
+} from './pcmTransferBenchmarkStream'
 import type { AppBuildInfo } from '../types/appBuildInfo'
 import type {
   IntegrityDuplicateGroup,
@@ -265,6 +307,19 @@ import { GlobalInputShortcutService } from './services/globalInputShortcuts'
 import type { InputActionId } from '../types/inputBindings'
 import { checkSettingsTransferWrite } from './utils/settingsTransferWrite'
 import { parseListeningImportFile } from '../shared/stats/listeningImportFile'
+import type {
+  LibraryDiagnosticsOperationKind,
+  LibraryDiagnosticsRendererTimingEvent,
+  LibraryReloadStep
+} from '../types/libraryDiagnostics'
+import {
+  DEFAULT_DESKTOP_INTEGRATION_PREFS,
+  DEFAULT_TRAY_RENDERER_STATE,
+  type DesktopIntegrationPrefs,
+  type TrayRendererCommand,
+  type TrayRendererState,
+} from '../types/desktopIntegration'
+import { resolveLocalProgressiveBackpressureAction } from './progressiveStreamBackpressure'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -292,8 +347,10 @@ const DIRTY_ENV_FALSE_VALUES = new Set(['0', 'false', 'no', 'clean'])
 let cachedBuildMetadata: ResolvedBuildMetadata | null = null
 
 let mainWindow: BrowserWindow | null = null
+let hrtfProfileService: HrtfProfileService | null = null
 let miniWindow: BrowserWindow | null = null
 let lyricsPopoutWindow: BrowserWindow | null = null
+let appTray: Tray | null = null
 const scopePopoutWindows: Record<ScopeKind, BrowserWindow | null> = {
   spectrum: null,
   oscilloscope: null,
@@ -307,6 +364,12 @@ let scopePopoutState: ScopePopoutState = { ...DEFAULT_SCOPE_POPOUT_STATE }
 let mainWindowPrefs: MainWindowPrefs | null = null
 let miniWindowPrefs: MiniPlayerWindowPrefs | null = null
 let lyricsPopoutWindowPrefs: LyricsPopoutWindowPrefs | null = null
+let desktopIntegrationPrefs: DesktopIntegrationPrefs = { ...DEFAULT_DESKTOP_INTEGRATION_PREFS }
+let latestTrayRendererState: TrayRendererState = { ...DEFAULT_TRAY_RENDERER_STATE }
+let trayRendererReady = false
+let latestTrayMenuStateKey: string | null = null
+let trayMinuteRefreshTimer: ReturnType<typeof setTimeout> | null = null
+const pendingTrayRendererCommands = new TrayRendererCommandQueue()
 let latestMiniPlayerSnapshot: MiniPlayerSnapshot | null = null
 let latestMiniPlayerQueueSnapshot: MiniPlayerQueueSnapshot | null = null
 let latestMiniVisualizerChunk: MiniPlayerVisualizerStreamChunk | null = null
@@ -331,6 +394,14 @@ const latestLibrarySyncCoordinator = new LibraryLatestSyncCoordinator({
   getCurrentAlbumIdentityKeys: () => library.listAlbumIdentityKeys(),
   publishSummary: (summary) => library.setLatestLibrarySyncSummary(summary)
 })
+
+function getHrtfProfileService(): HrtfProfileService {
+  if (!hrtfProfileService) {
+    const resourceRoot = app.isPackaged ? process.resourcesPath : join(app.getAppPath(), 'resources')
+    hrtfProfileService = new HrtfProfileService(app.getPath('userData'), join(resourceRoot, 'hrtf'))
+  }
+  return hrtfProfileService
+}
 
 function normalizeBuildCommitHash(value: unknown): string | null {
   if (typeof value !== 'string') return null
@@ -554,6 +625,7 @@ const RELEASES_URL_HOSTNAME = 'github.com'
 const RELEASES_URL_PATH_PREFIX = '/boof2015/astra/releases'
 const MEMORY_DIAGNOSTICS_ENABLED_META_KEY = 'memory_diagnostics_enabled_v1'
 const MEMORY_DIAGNOSTICS_SAMPLE_INTERVAL_MS = 15_000
+const LIBRARY_DIAGNOSTICS_ENABLED_META_KEY = 'library_diagnostics_enabled_v1'
 const SUBSONIC_SYNC_INTERVAL_MS = 20 * 60 * 1000
 const SUBSONIC_STREAM_MAX_BITRATE_KBPS = 256
 const JELLYFIN_STREAM_MAX_BITRATE_KBPS = 256
@@ -610,6 +682,13 @@ function getActiveMemoryFootprintChildProcessPids(): number[] {
   for (const session of remoteStreamSessions.values()) {
     if (session.done || session.cancelled) continue
     const pid = session.ffmpeg.pid
+    if (typeof pid !== 'number' || !Number.isFinite(pid) || pid <= 0 || seen.has(pid)) continue
+    seen.add(pid)
+    pids.push(pid)
+  }
+  for (const session of localPcmDecodeSessions.values()) {
+    if (session.settled || session.cancelled) continue
+    const pid = session.ffmpeg?.pid
     if (typeof pid !== 'number' || !Number.isFinite(pid) || pid <= 0 || seen.has(pid)) continue
     seen.add(pid)
     pids.push(pid)
@@ -748,7 +827,79 @@ let lastFmConfig: LastFmServiceConfig = {
 let lyricsOnlineEnabled = false
 let lyricsLrclibBaseUrl = LRCLIB_OFFICIAL_BASE_URL
 let memoryDiagnosticsService: MemoryDiagnosticsService | null = null
+let libraryDiagnosticsService: LibraryDiagnosticsService | null = null
 let isAppQuitting = false
+
+function getLibraryRootKindCounts(): Record<string, number> {
+  const counts: Record<string, number> = {
+    drive_letter: 0,
+    unc: 0,
+    posix: 0,
+    relative_or_other: 0
+  }
+  for (const folder of library.getLibraryFolders()) {
+    if (/^\\\\/.test(folder.path)) counts.unc += 1
+    else if (/^[a-zA-Z]:[\\/]/.test(folder.path)) counts.drive_letter += 1
+    else if (folder.path.startsWith('/')) counts.posix += 1
+    else counts.relative_or_other += 1
+  }
+  return counts
+}
+
+function getLibraryDiagnosticsSessionDetails(): Record<string, unknown> {
+  const buildInfo = getAppBuildInfo()
+  const sourceCounts = library.getTrackSourceCounts()
+  let onBattery = false
+  try {
+    onBattery = powerMonitor.isOnBatteryPower()
+  } catch {
+    // powerMonitor can be unavailable during very early startup.
+  }
+  return {
+    appVersion: buildInfo.version,
+    commitHash: buildInfo.commitHash,
+    buildDirty: buildInfo.isDirty,
+    platform: process.platform,
+    arch: process.arch,
+    cpuCount: cpus().length,
+    onBattery,
+    replayGainScanEnabled,
+    totalTrackCount: sourceCounts.total,
+    localTrackCount: sourceCounts.local,
+    remoteTrackCount: sourceCounts.remote,
+    folderCount: library.getLibraryFolders().length,
+    rootKindCounts: getLibraryRootKindCounts()
+  }
+}
+
+function broadcastLibraryDiagnosticsStatus(): void {
+  if (!libraryDiagnosticsService || !mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.webContents.send('library-diagnostics:status', libraryDiagnosticsService.getStatus())
+}
+
+function syncLibraryQueryDiagnosticsReporter(): void {
+  if (!libraryDiagnosticsService?.getStatus().enabled) {
+    library.setLibraryQueryDiagnosticsReporter(null)
+    return
+  }
+  library.setLibraryQueryDiagnosticsReporter((diagnostics) => {
+    void libraryDiagnosticsService?.logEvent('library_query_finished', { ...diagnostics })
+  })
+}
+
+function getLibraryDiagnosticsStatusSnapshot() {
+  if (libraryDiagnosticsService) return libraryDiagnosticsService.getStatus()
+  const logsDir = join(app.getPath('userData'), 'logs')
+  return {
+    enabled: false,
+    schemaVersion: 1,
+    currentLogPath: join(logsDir, 'library-diagnostics-current.jsonl'),
+    previousLogPath: join(logsDir, 'library-diagnostics-prev.jsonl'),
+    hasCurrentLog: false,
+    hasPreviousLog: false,
+    sessionStartedAt: null
+  }
+}
 
 function getMemoryDiagnosticsProcessLabels(): Record<number, string> {
   const labels: Record<number, string> = {
@@ -1334,7 +1485,7 @@ const SCOPE_POPOUT_DEFAULTS: Record<ScopeKind, {
     title: 'Astra LUFS Meter',
     width: 480,
     height: 320,
-    minWidth: 320,
+    minWidth: 112,
     minHeight: 220,
   },
   waveform: {
@@ -1474,6 +1625,380 @@ function getMiniWindowState(): MiniPlayerWindowState {
   return { isOpen, alwaysOnTop, visualizerMode }
 }
 
+function isTrayAvailable(): boolean {
+  return Boolean(appTray && !appTray.isDestroyed())
+}
+
+function isMainWindowPresented(): boolean {
+  return Boolean(
+    mainWindow
+    && !mainWindow.isDestroyed()
+    && mainWindow.isVisible()
+    && !mainWindow.isMinimized()
+  )
+}
+
+function closeTransientPopoutWindows(): void {
+  if (lyricsPopoutWindow && !lyricsPopoutWindow.isDestroyed()) {
+    lyricsPopoutWindow.close()
+  }
+  closeAllScopePopoutWindows()
+}
+
+function hideMainWindowToTray(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindowPersistTimer !== null) {
+    clearTimeout(mainWindowPersistTimer)
+    mainWindowPersistTimer = null
+  }
+  void persistMainWindowPrefs()
+  closeTransientPopoutWindows()
+  mainWindow.hide()
+  refreshTrayMenu()
+}
+
+function toggleMainWindowFromTray(): void {
+  if (isMainWindowPresented()) {
+    hideMainWindowToTray()
+    return
+  }
+  focusOrCreateMainWindow()
+  refreshTrayMenu()
+}
+
+function sendTrayRendererCommand(command: TrayRendererCommand, showMainWindow = false): void {
+  if (showMainWindow) {
+    focusOrCreateMainWindow()
+  }
+
+  if (
+    trayRendererReady
+    && mainWindow
+    && !mainWindow.isDestroyed()
+    && !mainWindow.webContents.isDestroyed()
+  ) {
+    mainWindow.webContents.send('tray-controls:command', command)
+    return
+  }
+
+  pendingTrayRendererCommands.enqueue(command)
+}
+
+function flushPendingTrayRendererCommands(): void {
+  const targetWindow = mainWindow
+  if (
+    !trayRendererReady
+    || !targetWindow
+    || targetWindow.isDestroyed()
+    || targetWindow.webContents.isDestroyed()
+  ) {
+    return
+  }
+
+  pendingTrayRendererCommands.flush((command) => {
+    targetWindow.webContents.send('tray-controls:command', command)
+  })
+}
+
+function requestTraySleepTimerRefresh(): void {
+  if (trayMinuteRefreshTimer !== null) {
+    clearTimeout(trayMinuteRefreshTimer)
+    trayMinuteRefreshTimer = null
+  }
+
+  const expiresAtMs = latestTrayRendererState.sleepTimerExpiresAtMs
+  const nowMs = Date.now()
+  if (!isTrayAvailable() || expiresAtMs === null || expiresAtMs <= nowMs) return
+
+  const displayedMinutes = Math.max(1, Math.ceil((expiresAtMs - nowMs) / 60_000))
+  const nextBoundaryMs = expiresAtMs - ((displayedMinutes - 1) * 60_000)
+  const delayMs = Math.max(250, nextBoundaryMs - nowMs + 50)
+  trayMinuteRefreshTimer = setTimeout(() => {
+    trayMinuteRefreshTimer = null
+    refreshTrayMenu()
+  }, delayMs)
+}
+
+function updatePhoneRemoteFromTray(config: PhoneRemoteServiceConfig): void {
+  void applyPhoneRemoteConfig(config)
+    .catch((error) => {
+      console.warn('Failed to update Phone Remote from tray:', error)
+    })
+    .finally(refreshTrayMenu)
+}
+
+function createNativeTrayMenu(model: ReturnType<typeof buildTrayMenuModel>): Electron.Menu {
+  const playbackItems: MenuItemConstructorOptions[] = [
+    {
+      label: 'Previous',
+      enabled: model.playbackEnabled,
+      click: () => sendMiniPlayerCommand({ type: 'playPrevious' }),
+    },
+    {
+      label: model.playbackToggleLabel,
+      enabled: model.playbackEnabled,
+      click: () => sendMiniPlayerCommand({ type: 'togglePlay' }),
+    },
+    {
+      label: 'Next',
+      enabled: model.playbackEnabled,
+      click: () => sendMiniPlayerCommand({ type: 'playNext' }),
+    },
+    { type: 'separator' },
+    {
+      label: 'Favorite Current Track',
+      type: 'checkbox',
+      checked: model.favoriteChecked,
+      enabled: model.playbackEnabled,
+      click: () => sendMiniPlayerCommand({ type: 'toggleFavoriteCurrent' }),
+    },
+    {
+      label: 'Shuffle',
+      type: 'checkbox',
+      checked: model.shuffleChecked,
+      enabled: model.rendererReady,
+      click: () => sendMiniPlayerCommand({ type: 'toggleShuffle' }),
+    },
+    {
+      label: model.repeatLabel,
+      enabled: model.rendererReady,
+      click: () => sendMiniPlayerCommand({ type: 'toggleRepeat' }),
+    },
+  ]
+
+  const phoneRemoteItems: MenuItemConstructorOptions[] = [
+    {
+      label: 'Phone Remote',
+      type: 'checkbox',
+      checked: model.phoneRemoteEnabled,
+      click: () => {
+        updatePhoneRemoteFromTray({
+          ...phoneRemoteConfig,
+          enabled: !model.phoneRemoteEnabled,
+        })
+      },
+    },
+    {
+      label: model.phoneRemoteStatusLabel,
+      enabled: false,
+    },
+    { type: 'separator' },
+    {
+      label: 'Library Sync',
+      type: 'checkbox',
+      checked: model.phoneRemoteSyncEnabled,
+      enabled: model.phoneRemoteEnabled,
+      click: () => {
+        updatePhoneRemoteFromTray({
+          ...phoneRemoteConfig,
+          syncEnabled: !model.phoneRemoteSyncEnabled,
+        })
+      },
+    },
+    {
+      label: phoneRemoteService.getStatus().sync.requestedAt === null ? 'Sync Now' : 'Sync Requested',
+      enabled: model.phoneRemoteCanSyncNow,
+      click: () => {
+        phoneRemoteService.requestSync()
+        refreshTrayMenu()
+      },
+    },
+  ]
+
+  if (model.phoneRemoteConflictCount > 0) {
+    phoneRemoteItems.push({
+      label: `Resolve ${model.phoneRemoteConflictCount} Sync Conflict${model.phoneRemoteConflictCount === 1 ? '' : 's'}…`,
+      click: () => sendTrayRendererCommand({ type: 'open-phone-sync-conflicts' }, true),
+    })
+  }
+
+  phoneRemoteItems.push(
+    { type: 'separator' },
+    {
+      label: 'Open Phone Remote Settings…',
+      click: () => sendTrayRendererCommand({
+        type: 'open-settings',
+        section: 'integrations',
+      }, true),
+    }
+  )
+
+  const template: MenuItemConstructorOptions[] = [
+    {
+      label: model.nowPlayingLabel,
+      click: () => {
+        if (model.hasCurrentTrack) {
+          sendTrayRendererCommand({ type: 'reveal-current-track' }, true)
+        } else {
+          focusOrCreateMainWindow()
+        }
+      },
+    },
+    {
+      label: model.mainWindowActionLabel,
+      click: toggleMainWindowFromTray,
+    },
+    { type: 'separator' },
+    {
+      label: 'Playback',
+      submenu: playbackItems,
+    },
+    {
+      label: model.sleepTimerLabel,
+      submenu: [
+        ...([15, 30, 45, 60] as const).map((minutes): MenuItemConstructorOptions => ({
+          label: `${minutes} minutes`,
+          enabled: model.sleepTimerCanStart,
+          click: () => sendTrayRendererCommand({ type: 'start-sleep-timer', minutes }),
+        })),
+        { type: 'separator' },
+        {
+          label: 'Cancel Timer',
+          enabled: model.sleepTimerActive && model.rendererReady,
+          click: () => sendTrayRendererCommand({ type: 'cancel-sleep-timer' }),
+        },
+      ],
+    },
+    { type: 'separator' },
+    {
+      label: 'Show Mini Player',
+      type: 'checkbox',
+      checked: model.miniPlayerOpen,
+      enabled: model.miniPlayerEnabled,
+      click: () => {
+        if (model.miniPlayerOpen) {
+          if (miniWindow && !miniWindow.isDestroyed()) miniWindow.close()
+        } else {
+          void createMiniPlayerWindow()
+        }
+      },
+    },
+    { type: 'separator' },
+    {
+      label: model.phoneRemoteLabel,
+      submenu: phoneRemoteItems,
+    },
+    {
+      label: 'Pause Global Hotkeys',
+      type: 'checkbox',
+      checked: model.hotkeysPaused,
+      enabled: model.hotkeysCanPause,
+      click: () => sendTrayRendererCommand({
+        type: 'set-global-hotkeys-suspended',
+        suspended: !model.hotkeysPaused,
+      }),
+    },
+    { type: 'separator' },
+    {
+      label: 'Settings…',
+      click: () => sendTrayRendererCommand({
+        type: 'open-settings',
+        section: 'appearance',
+      }, true),
+    },
+    {
+      label: 'Quit Astra',
+      click: () => {
+        isAppQuitting = true
+        app.quit()
+      },
+    },
+  ]
+
+  return Menu.buildFromTemplate(template)
+}
+
+function refreshTrayMenu(): void {
+  if (!isTrayAvailable()) {
+    requestTraySleepTimerRefresh()
+    return
+  }
+
+  const model = buildTrayMenuModel({
+    mainWindowVisible: isMainWindowPresented(),
+    miniPlayerOpen: getMiniWindowState().isOpen,
+    rendererReady: trayRendererReady,
+    snapshot: latestMiniPlayerSnapshot,
+    phoneRemoteStatus: phoneRemoteService.getStatus(),
+    rendererState: latestTrayRendererState,
+    nowMs: Date.now(),
+  })
+  const stateKey = createTrayMenuStateKey(model)
+
+  appTray!.setToolTip(model.tooltip)
+  if (stateKey !== latestTrayMenuStateKey) {
+    appTray!.setContextMenu(createNativeTrayMenu(model))
+    latestTrayMenuStateKey = stateKey
+  }
+  requestTraySleepTimerRefresh()
+}
+
+function resolveTrayAssetPath(): string {
+  const fileName = process.platform === 'darwin'
+    ? 'astraTrayTemplate.png'
+    : process.platform === 'win32'
+      ? 'astra-tray.ico'
+      : 'astra-tray.png'
+  const directory = app.isPackaged
+    ? join(process.resourcesPath, 'tray')
+    : join(app.getAppPath(), 'resources', 'tray')
+  return join(directory, fileName)
+}
+
+function destroyAppTray(): void {
+  if (trayMinuteRefreshTimer !== null) {
+    clearTimeout(trayMinuteRefreshTimer)
+    trayMinuteRefreshTimer = null
+  }
+  if (appTray && !appTray.isDestroyed()) {
+    appTray.destroy()
+  }
+  appTray = null
+  latestTrayMenuStateKey = null
+}
+
+function createAppTray(): void {
+  if (isTrayAvailable()) {
+    refreshTrayMenu()
+    return
+  }
+
+  const image = nativeImage.createFromPath(resolveTrayAssetPath())
+  if (image.isEmpty()) {
+    console.warn('Astra tray icon asset is unavailable.')
+    return
+  }
+  if (process.platform === 'darwin') {
+    image.setTemplateImage(true)
+  }
+
+  appTray = new Tray(image)
+  if (process.platform !== 'darwin') {
+    appTray.on('click', toggleMainWindowFromTray)
+  }
+  refreshTrayMenu()
+}
+
+function syncAppTrayLifecycle(): void {
+  if (desktopIntegrationPrefs.trayEnabled) {
+    createAppTray()
+  } else {
+    destroyAppTray()
+  }
+}
+
+async function updateDesktopIntegrationPrefs(
+  patch: Partial<DesktopIntegrationPrefs>
+): Promise<DesktopIntegrationPrefs> {
+  desktopIntegrationPrefs = normalizeDesktopIntegrationPrefs({
+    ...desktopIntegrationPrefs,
+    ...patch,
+  })
+  desktopIntegrationPrefs = await saveDesktopIntegrationPrefs(desktopIntegrationPrefs)
+  syncAppTrayLifecycle()
+  return { ...desktopIntegrationPrefs }
+}
+
 function getLyricsPopoutWindowState(): LyricsPopoutWindowState {
   return {
     isOpen: Boolean(lyricsPopoutWindow && !lyricsPopoutWindow.isDestroyed())
@@ -1579,6 +2104,19 @@ async function loadMemoryDiagnosticsEnabledFromMeta(): Promise<boolean> {
       await library.setAppMeta(MEMORY_DIAGNOSTICS_ENABLED_META_KEY, normalizedStoredValue)
     } catch (error) {
       console.warn('Failed to persist normalized memory diagnostics setting:', error)
+    }
+  }
+  return enabled
+}
+
+async function loadLibraryDiagnosticsEnabledFromMeta(): Promise<boolean> {
+  const enabled = parseMetaBoolean(library.getAppMeta(LIBRARY_DIAGNOSTICS_ENABLED_META_KEY), false)
+  const normalizedStoredValue = enabled ? '1' : '0'
+  if (library.getAppMeta(LIBRARY_DIAGNOSTICS_ENABLED_META_KEY) !== normalizedStoredValue) {
+    try {
+      await library.setAppMeta(LIBRARY_DIAGNOSTICS_ENABLED_META_KEY, normalizedStoredValue)
+    } catch (error) {
+      console.warn('Failed to persist normalized library diagnostics setting:', error)
     }
   }
   return enabled
@@ -3025,6 +3563,7 @@ function broadcastMiniWindowState(): void {
   if (miniWindow && !miniWindow.isDestroyed()) {
     miniWindow.webContents.send('mini-player:windowState', payload)
   }
+  refreshTrayMenu()
 }
 
 function broadcastLyricsPopoutWindowState(): void {
@@ -3047,6 +3586,7 @@ function broadcastPhoneRemoteStatus(): void {
   if (isAppQuitting) return
   const payload = phoneRemoteService.getStatus()
   sendToWindow(mainWindow, 'phone-remote:status', payload)
+  refreshTrayMenu()
 }
 
 function broadcastParallaxStatus(): void {
@@ -4328,7 +4868,19 @@ function createWindow(): void {
   mainWindow.on('resize', schedulePersistMainWindowPrefs)
   mainWindow.on('maximize', schedulePersistMainWindowPrefs)
   mainWindow.on('unmaximize', schedulePersistMainWindowPrefs)
-  mainWindow.on('close', () => {
+  mainWindow.on('show', refreshTrayMenu)
+  mainWindow.on('hide', refreshTrayMenu)
+  mainWindow.on('close', (event) => {
+    const disposition = resolveMainWindowCloseDisposition({
+      closeToTray: desktopIntegrationPrefs.closeToTray,
+      isAppQuitting,
+      trayAvailable: isTrayAvailable(),
+    })
+    if (disposition === 'hide-to-tray') {
+      event.preventDefault()
+      hideMainWindowToTray()
+      return
+    }
     if (mainWindowPersistTimer !== null) {
       clearTimeout(mainWindowPersistTimer)
       mainWindowPersistTimer = null
@@ -4338,6 +4890,8 @@ function createWindow(): void {
   mainWindow.on('closed', () => {
     globalInputShortcutService.clear()
     mainWindow = null
+    trayRendererReady = false
+    latestTrayRendererState = { ...DEFAULT_TRAY_RENDERER_STATE }
     associatedOpenRendererReady = false
     if (miniWindow && !miniWindow.isDestroyed()) {
       miniWindow.close()
@@ -4349,6 +4903,7 @@ function createWindow(): void {
     logMemoryDiagnosticsMainEvent('window_closed', {
       windowType: 'main'
     }, { captureSample: false })
+    refreshTrayMenu()
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -4807,9 +5362,6 @@ async function getArtworkThumbnailDataUrlByHash(
 }
 
 // URL shape: astra-artwork://art/<thumb|card|full>/<encodeURIComponent(hash)>
-// Hashes are md5 hex with an optional extension, optionally prefixed with
-// "plc:" (playlist covers) or "ari:" (artist images).
-const ARTWORK_PROTOCOL_HASH_PATTERN = /^(?:plc:|ari:)?[A-Za-z0-9][A-Za-z0-9._ -]*$/
 
 function artworkProtocolNotFound(): Response {
   return new Response(null, { status: 404 })
@@ -4830,9 +5382,9 @@ function registerArtworkProtocolHandler(): void {
       return artworkProtocolNotFound()
     }
 
-    // library.getArtworkPath joins the hash into a path, so reject anything
-    // that could traverse outside the artwork directories.
-    if (!ARTWORK_PROTOCOL_HASH_PATTERN.test(hash) || hash.includes('..')) {
+    // Local references are restricted before they can reach getArtworkPath;
+    // valid Subsonic references resolve to a local content hash first.
+    if (!isAllowedArtworkProtocolHash(hash)) {
       return artworkProtocolNotFound()
     }
 
@@ -4948,9 +5500,22 @@ app.whenReady().then(async () => {
     }
   })
   await memoryDiagnosticsService.initialize(memoryDiagnosticsEnabled)
+  const libraryDiagnosticsEnabled = await loadLibraryDiagnosticsEnabledFromMeta()
+  libraryDiagnosticsService = new LibraryDiagnosticsService({
+    userDataPath: app.getPath('userData'),
+    getSessionDetails: getLibraryDiagnosticsSessionDetails,
+    showItemInFolder: (filePath) => shell.showItemInFolder(filePath),
+    onStatusChange: () => {
+      syncLibraryQueryDiagnosticsReporter()
+      broadcastLibraryDiagnosticsStatus()
+    }
+  })
+  await libraryDiagnosticsService.initialize(libraryDiagnosticsEnabled)
+  syncLibraryQueryDiagnosticsReporter()
   mainWindowPrefs = await loadMainWindowPrefs()
   miniWindowPrefs = await loadMiniWindowPrefs()
   lyricsPopoutWindowPrefs = await loadLyricsPopoutWindowPrefs()
+  desktopIntegrationPrefs = await loadDesktopIntegrationPrefs()
   localApiConfig = await loadLocalApiConfigFromMeta()
   phoneRemoteConfig = await loadPhoneRemoteConfigFromMeta(localApiConfig.controlsEnabled)
   parallaxHostConfig = await loadParallaxHostConfigFromMeta()
@@ -5008,6 +5573,7 @@ app.whenReady().then(async () => {
   refreshJellyfinStatusCache(false)
 
   createWindow()
+  syncAppTrayLifecycle()
   broadcastSubsonicStatus()
   broadcastJellyfinStatus()
   startSubsonicSyncScheduler()
@@ -5043,6 +5609,8 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow()
+    } else {
+      focusMainWindow()
     }
   })
 })
@@ -5055,6 +5623,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isAppQuitting = true
+  destroyAppTray()
   globalInputShortcutService.clear()
   if (mainWindowPersistTimer !== null) {
     clearTimeout(mainWindowPersistTimer)
@@ -5097,6 +5666,7 @@ app.on('before-quit', () => {
   void persistLyricsPopoutWindowPrefs()
   closeAllScopePopoutWindows()
   void memoryDiagnosticsService?.shutdown()
+  void libraryDiagnosticsService?.shutdown()
   void localApiService.stop()
   void phoneRemoteService.stop()
   phoneRemoteDiscoveryService.destroy()
@@ -5135,6 +5705,56 @@ ipcMain.on('window:close', () => {
 
 ipcMain.handle('window:isMaximized', () => {
   return mainWindow?.isMaximized() ?? false
+})
+
+ipcMain.handle('desktop-integration:getPrefs', () => {
+  return { ...desktopIntegrationPrefs }
+})
+
+ipcMain.handle('desktop-integration:setTrayEnabled', async (_event, enabled: unknown) => {
+  return updateDesktopIntegrationPrefs({ trayEnabled: Boolean(enabled) })
+})
+
+ipcMain.handle('desktop-integration:setCloseToTray', async (_event, enabled: unknown) => {
+  return updateDesktopIntegrationPrefs({ closeToTray: Boolean(enabled) })
+})
+
+ipcMain.on('tray-controls:rendererReady', (event) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return
+  trayRendererReady = true
+  flushPendingTrayRendererCommands()
+  refreshTrayMenu()
+})
+
+ipcMain.on('tray-controls:rendererNotReady', (event) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return
+  trayRendererReady = false
+  latestTrayRendererState = { ...DEFAULT_TRAY_RENDERER_STATE }
+  refreshTrayMenu()
+})
+
+ipcMain.on('tray-controls:publishRendererState', (event, rawState: unknown) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return
+  if (!rawState || typeof rawState !== 'object') return
+  const candidate = rawState as Record<string, unknown>
+  const rawExpiresAtMs = candidate.sleepTimerExpiresAtMs
+  const sleepTimerExpiresAtMs = rawExpiresAtMs === null
+    ? null
+    : typeof rawExpiresAtMs === 'number' && Number.isFinite(rawExpiresAtMs) && rawExpiresAtMs > 0
+      ? rawExpiresAtMs
+      : null
+  const configuredGlobalHotkeyCount = typeof candidate.configuredGlobalHotkeyCount === 'number'
+    && Number.isFinite(candidate.configuredGlobalHotkeyCount)
+    ? Math.max(0, Math.min(100, Math.floor(candidate.configuredGlobalHotkeyCount)))
+    : 0
+
+  trayRendererReady = true
+  latestTrayRendererState = {
+    sleepTimerExpiresAtMs,
+    globalHotkeysSuspended: candidate.globalHotkeysSuspended === true,
+    configuredGlobalHotkeyCount,
+  }
+  refreshTrayMenu()
 })
 
 ipcMain.on('associated-open-files:rendererReady', () => {
@@ -5215,6 +5835,7 @@ ipcMain.on('mini-player:publishSnapshot', (_event, snapshot: MiniPlayerSnapshot)
   if (miniWindow && !miniWindow.isDestroyed()) {
     miniWindow.webContents.send('mini-player:snapshot', mergedSnapshot)
   }
+  refreshTrayMenu()
 })
 
 ipcMain.on('mini-player:publishQueueSnapshot', (_event, snapshot: MiniPlayerQueueSnapshot) => {
@@ -5320,7 +5941,7 @@ ipcMain.handle('app:getPerformanceStats', async (event) => {
   const metrics = app.getAppMetrics()
   const totalCpuPercent = metrics.reduce((sum, metric) => sum + metric.cpu.percentCPUUsage, 0)
   const totalWorkingSetKb = metrics.reduce((sum, metric) => sum + metric.memory.workingSetSize, 0)
-  const memoryFootprint = collectAppMemoryFootprint({
+  const memoryFootprint = await collectAppMemoryFootprint({
     metrics,
     extraPids: getActiveMemoryFootprintChildProcessPids(),
     rawWorkingSetMb: totalWorkingSetKb / 1024
@@ -5445,13 +6066,102 @@ ipcMain.handle('diagnostics:captureMemoryBundle', async (_event, rawTag: unknown
   return memoryDiagnosticsService.captureMemoryBundle(tag)
 })
 
-ipcMain.handle('diagnostics:logEvent', async (_event, rawPayload: unknown) => {
+ipcMain.handle('diagnostics:logEvent', async (
+  _event,
+  rawPayload: unknown,
+  rawOptions?: unknown
+) => {
   const payload = normalizeMemoryDiagnosticsEventPayload(rawPayload)
-  if (!payload || !memoryDiagnosticsService) {
+  const options = normalizeMemoryDiagnosticsLogEventOptions(rawOptions)
+  if (!payload || !options || !memoryDiagnosticsService) {
     return false
   }
-  await memoryDiagnosticsService.logEvent(payload)
+  await memoryDiagnosticsService.logEvent(payload, options)
   return true
+})
+
+ipcMain.handle('diagnostics:benchmarkMainPcmTransfer', (
+  _event,
+  rawSizeBytes: unknown
+): PcmTransferBenchmarkProbeResult => {
+  if (!memoryDiagnosticsService?.getStatus().enabled) {
+    throw new Error('Memory diagnostics logging must be enabled before running the PCM transfer benchmark.')
+  }
+  const handlerStartedAtMs = mainDiagnosticNow()
+  const result = createPcmTransferBenchmarkProbe(rawSizeBytes, mainDiagnosticNow)
+  return {
+    ...result,
+    mainHandlerMs: roundMainDiagnosticMs(mainDiagnosticNow() - handlerStartedAtMs)
+  }
+})
+
+const pcmTransferBenchmarkStreamCoordinator = new PcmTransferBenchmarkStreamCoordinator()
+
+ipcMain.on(PCM_TRANSFER_BENCHMARK_STREAM_IPC_CHANNEL, (event, rawRequest: unknown) => {
+  const handlerStartedAtMs = mainDiagnosticNow()
+  const ports = event.ports
+  const port = ports.length === 1 ? ports[0] : null
+  for (let index = port ? 1 : 0; index < ports.length; index += 1) {
+    try { ports[index].close() } catch { /* renderer teardown race */ }
+  }
+  if (!port) return
+
+  if (!validatePcmTransferBenchmarkStreamOpenRequest(rawRequest)) {
+    try { port.close() } catch { /* renderer teardown race */ }
+    return
+  }
+
+  const senderIsMainFrame = Boolean(
+    mainWindow
+    && !mainWindow.isDestroyed()
+    && event.sender === mainWindow.webContents
+    && event.senderFrame === mainWindow.webContents.mainFrame
+  )
+  const diagnosticsEnabled = Boolean(memoryDiagnosticsService?.getStatus().enabled)
+  if (!senderIsMainFrame || !diagnosticsEnabled) {
+    try {
+      port.postMessage({
+        type: 'error',
+        version: PCM_TRANSFER_BENCHMARK_STREAM_VERSION,
+        requestId: rawRequest.requestId,
+        nonce: rawRequest.nonce,
+        kind: 'transport',
+        code: senderIsMainFrame
+          ? 'PCM_BENCHMARK_DIAGNOSTICS_DISABLED'
+          : 'PCM_BENCHMARK_STREAM_REQUEST_REJECTED',
+        message: senderIsMainFrame
+          ? 'Memory diagnostics logging must be enabled before running the PCM transfer benchmark.'
+          : 'PCM transfer benchmark stream request was rejected.'
+      })
+    } catch {
+      // The requester may already have torn down its half of the port.
+    }
+    try { port.close() } catch { /* renderer teardown race */ }
+    return
+  }
+
+  const streamPort: PcmTransferBenchmarkStreamPort = {
+    postMessage: (message) => port.postMessage(message),
+    start: () => port.start(),
+    close: () => port.close(),
+    subscribe: (onMessage, onClose) => {
+      const handleMessage = (messageEvent: Electron.MessageEvent): void => {
+        onMessage(messageEvent.data)
+      }
+      port.on('message', handleMessage)
+      port.on('close', onClose)
+      return () => {
+        try {
+          port.off('message', handleMessage)
+          port.off('close', onClose)
+        } catch {
+          // Listener teardown can race with renderer navigation.
+        }
+      }
+    }
+  }
+
+  pcmTransferBenchmarkStreamCoordinator.start(streamPort, rawRequest, handlerStartedAtMs)
 })
 
 ipcMain.on('diagnostics:publishRendererSnapshot', (_event, requestId: unknown, rawSnapshot: unknown) => {
@@ -5459,6 +6169,115 @@ ipcMain.on('diagnostics:publishRendererSnapshot', (_event, requestId: unknown, r
     return
   }
   memoryDiagnosticsService?.publishRendererSnapshot(requestId, rawSnapshot as MemoryDiagnosticsRendererSnapshot)
+})
+
+const LIBRARY_DIAGNOSTICS_OPERATION_KINDS = new Set<LibraryDiagnosticsOperationKind>([
+  'add_folder',
+  'rescan_folder',
+  'rescan_all',
+  'force_rescan_all',
+  'remove_folder'
+])
+const LIBRARY_RELOAD_STEPS = new Set<LibraryReloadStep>([
+  'track_count',
+  'track_duration',
+  'albums',
+  'albums_including_singles',
+  'artists',
+  'genres',
+  'folders',
+  'favorites',
+  'recently_played',
+  'full_tracks',
+  'active_selection'
+])
+
+function normalizeDiagnosticDuration(value: unknown): number | null {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric < 0 || numeric > 24 * 60 * 60 * 1000) return null
+  return Math.round(numeric * 100) / 100
+}
+
+function normalizeLibraryRendererTimingEvent(rawValue: unknown): LibraryDiagnosticsRendererTimingEvent | null {
+  if (!rawValue || typeof rawValue !== 'object') return null
+  const value = rawValue as Partial<LibraryDiagnosticsRendererTimingEvent>
+  if (typeof value.runId !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(value.runId)) return null
+  if (!value.operationKind || !LIBRARY_DIAGNOSTICS_OPERATION_KINDS.has(value.operationKind)) return null
+  const backendDurationMs = normalizeDiagnosticDuration(value.backendDurationMs)
+  const reloadDurationMs = normalizeDiagnosticDuration(value.reloadDurationMs)
+  const totalDurationMs = normalizeDiagnosticDuration(value.totalDurationMs)
+  if (backendDurationMs === null || reloadDurationMs === null || totalDurationMs === null) return null
+
+  const stepDurationMs: Partial<Record<LibraryReloadStep, number>> = {}
+  const stepRequestCount: Partial<Record<LibraryReloadStep, number>> = {}
+  const stepResultCount: Partial<Record<LibraryReloadStep, number>> = {}
+  if (value.stepDurationMs && typeof value.stepDurationMs === 'object') {
+    for (const [rawStep, rawDuration] of Object.entries(value.stepDurationMs)) {
+      if (!LIBRARY_RELOAD_STEPS.has(rawStep as LibraryReloadStep)) continue
+      const duration = normalizeDiagnosticDuration(rawDuration)
+      if (duration !== null) stepDurationMs[rawStep as LibraryReloadStep] = duration
+    }
+  }
+  if (value.stepRequestCount && typeof value.stepRequestCount === 'object') {
+    for (const [rawStep, rawCount] of Object.entries(value.stepRequestCount)) {
+      if (!LIBRARY_RELOAD_STEPS.has(rawStep as LibraryReloadStep)) continue
+      const count = Number(rawCount)
+      if (Number.isSafeInteger(count) && count >= 0 && count <= 10_000_000) {
+        stepRequestCount[rawStep as LibraryReloadStep] = count
+      }
+    }
+  }
+  if (value.stepResultCount && typeof value.stepResultCount === 'object') {
+    for (const [rawStep, rawCount] of Object.entries(value.stepResultCount)) {
+      if (!LIBRARY_RELOAD_STEPS.has(rawStep as LibraryReloadStep)) continue
+      const count = Number(rawCount)
+      if (Number.isSafeInteger(count) && count >= 0 && count <= 100_000_000) {
+        stepResultCount[rawStep as LibraryReloadStep] = count
+      }
+    }
+  }
+
+  return {
+    runId: value.runId,
+    operationKind: value.operationKind,
+    backendDurationMs,
+    reloadDurationMs,
+    totalDurationMs,
+    stepDurationMs,
+    stepRequestCount,
+    stepResultCount
+  }
+}
+
+ipcMain.handle('library-diagnostics:getStatus', () => getLibraryDiagnosticsStatusSnapshot())
+
+ipcMain.handle('library-diagnostics:setEnabled', async (_event, rawEnabled: unknown) => {
+  const enabled = Boolean(rawEnabled)
+  await library.setAppMeta(LIBRARY_DIAGNOSTICS_ENABLED_META_KEY, enabled ? '1' : '0')
+  if (!libraryDiagnosticsService) return getLibraryDiagnosticsStatusSnapshot()
+  return libraryDiagnosticsService.setEnabled(enabled)
+})
+
+ipcMain.handle('library-diagnostics:revealCurrentLog', () => (
+  libraryDiagnosticsService?.revealCurrentLog() ?? false
+))
+
+ipcMain.handle('library-diagnostics:revealPreviousLog', () => (
+  libraryDiagnosticsService?.revealPreviousLog() ?? false
+))
+
+ipcMain.handle('library-diagnostics:logRendererTiming', async (_event, rawValue: unknown) => {
+  const timing = normalizeLibraryRendererTimingEvent(rawValue)
+  if (!timing || !libraryDiagnosticsService) return false
+  return libraryDiagnosticsService.logEvent('renderer_reload_finished', {
+    operationKind: timing.operationKind,
+    backendDurationMs: timing.backendDurationMs,
+    reloadDurationMs: timing.reloadDurationMs,
+    totalDurationMs: timing.totalDurationMs,
+    stepDurationMs: timing.stepDurationMs,
+    stepRequestCount: timing.stepRequestCount,
+    stepResultCount: timing.stepResultCount
+  }, timing.runId)
 })
 
 ipcMain.handle('updates:check', async () => {
@@ -6461,8 +7280,8 @@ ipcMain.handle('parallax:publishHostEmitAnchor', (_event, anchor: Parameters<typ
   parallaxService.publishHostEmitAnchor(anchor)
 })
 
-ipcMain.handle('parallax:stopHostStream', () => {
-  parallaxService.stopHostStream()
+ipcMain.handle('parallax:stopHostStream', (_event, streamId?: string) => {
+  parallaxService.stopHostStream(streamId?.trim() || undefined)
 })
 
 ipcMain.handle('parallax:publishSinkTelemetry', async (_event, telemetry: ParallaxSinkTelemetry) => {
@@ -6644,6 +7463,139 @@ ipcMain.handle('audio:decodeWithFfmpeg', async (_event, filePath: string) => {
   return decodeAudioWithFfmpeg(filePath)
 })
 
+// Decode a local Standard-mode source directly to the float32 PCM consumed by
+// WebAudio. Keeping this separate from the compatibility WAV decoder above
+// lets callers opt in while retaining decodeAudioData only when full-buffer decoding is safe.
+ipcMain.handle('audio:decodeLocalAudioToPcm', async (
+  event,
+  requestId: number,
+  filePath: string,
+  outputSampleRate: number,
+  expectedChannels?: number | null,
+  priority?: 'interactive' | 'background'
+) => {
+  const handlerStartedAtMs = mainDiagnosticNow()
+  try {
+    return await decodeLocalAudioToPcm(
+      event.sender,
+      requestId,
+      filePath,
+      outputSampleRate,
+      expectedChannels,
+      priority,
+      handlerStartedAtMs
+    )
+  } catch (error) {
+    if (error instanceof LocalPcmDecodeLimitError) {
+      return {
+        refused: true,
+        code: LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE,
+        message: error.message
+      }
+    }
+    throw error
+  }
+})
+
+// Large Standard PCM results can be delivered as a bounded response stream.
+// The renderer still waits for the complete buffer before touching playback;
+// only the transport overlaps with FFmpeg. The invoke handler above remains
+// the compatibility fallback for setup/protocol failures.
+ipcMain.on('audio:decodeLocalAudioToPcmStream', (event, requestValue: unknown) => {
+  const ports = event.ports
+  const port = ports.length === 1 ? ports[0] : null
+  for (let index = port ? 1 : 0; index < ports.length; index += 1) {
+    try { ports[index].close() } catch { /* renderer teardown race */ }
+  }
+  if (!port) return
+
+  const request = requestValue && typeof requestValue === 'object'
+    ? requestValue as Record<string, unknown>
+    : null
+  const requestId = Number(request?.requestId)
+  const nonce = request?.nonce
+  const senderIsMainFrame = Boolean(
+    mainWindow
+    && !mainWindow.isDestroyed()
+    && event.sender === mainWindow.webContents
+    && event.senderFrame === mainWindow.webContents.mainFrame
+  )
+  const requestIsValid = validateLocalPcmStreamOpenRequest(request)
+
+  if (
+    !senderIsMainFrame
+    || request?.version !== LOCAL_PCM_STREAM_PROTOCOL_VERSION
+    || !requestIsValid
+  ) {
+    try {
+      port.postMessage({
+        type: 'error',
+        version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+        requestId: Number.isSafeInteger(requestId) ? requestId : -1,
+        nonce: typeof nonce === 'string' ? nonce : '',
+        kind: 'transport',
+        code: 'PCM_STREAM_REQUEST_REJECTED',
+        message: 'PCM stream request was rejected.'
+      })
+    } catch {
+      // The requester may already have torn down its half of the port.
+    }
+    try { port.close() } catch { /* renderer teardown race */ }
+    return
+  }
+
+  // Narrowed by the shared request validator above.
+  const validNonce = nonce as string
+
+  try {
+    normalizeLocalPcmDecodeRequest(
+      requestId,
+      request?.filePath,
+      request?.outputSampleRate,
+      request?.expectedChannels,
+      request?.priority
+    )
+  } catch (error) {
+    try {
+      port.postMessage({
+        type: 'error',
+        version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+        requestId,
+        nonce: validNonce,
+        kind: 'decode',
+        code: 'PCM_STREAM_REQUEST_INVALID',
+        message: error instanceof Error ? error.message : 'PCM stream request was invalid.'
+      })
+    } catch {
+      // The requester may already have torn down its half of the port.
+    }
+    try { port.close() } catch { /* renderer teardown race */ }
+    return
+  }
+
+  const handlerStartedAtMs = mainDiagnosticNow()
+  void decodeLocalAudioToPcm(
+    event.sender,
+    requestId,
+    request?.filePath,
+    request?.outputSampleRate,
+    request?.expectedChannels,
+    request?.priority,
+    handlerStartedAtMs,
+    { port, nonce: validNonce }
+  ).catch(() => {
+    // The stream protocol reports decode/transport failure before settlement.
+  })
+})
+
+ipcMain.handle('audio:cancelLocalAudioDecode', async (event, requestId: number) => {
+  cancelLocalAudioDecode(event.sender, requestId)
+})
+
+ipcMain.handle('audio:promoteLocalAudioDecode', async (event, requestId: number) => {
+  promoteLocalAudioDecode(event.sender, requestId)
+})
+
 // Loudness for playback normalization: stored value or a fresh ffmpeg ebur128 pass.
 ipcMain.handle('audio:analyzeTrackLoudness', async (_event, filePath: string) => {
   return analyzeTrackLoudness(filePath, 'interactive')
@@ -6651,6 +7603,10 @@ ipcMain.handle('audio:analyzeTrackLoudness', async (_event, filePath: string) =>
 
 ipcMain.handle('audio:warmupTrackLoudness', async (_event, filePath: string) => {
   return analyzeTrackLoudness(filePath, 'background')
+})
+
+ipcMain.handle('audio:supersedeTrackLoudness', async (_event, filePath: string | null) => {
+  supersedeInteractiveLoudness(filePath)
 })
 
 ipcMain.handle('audio:storeTrackLoudness', async (_event, filePath: string, payload: RendererTrackLoudnessPayload) => {
@@ -6673,6 +7629,18 @@ ipcMain.handle('audio:startProgressiveStream', async (
   options?: ProgressiveStreamStartOptions
 ) => {
   return startProgressiveStreamSession(event.sender, filePath, outputSampleRate, expectedChannels, options)
+})
+
+ipcMain.on('audio:updateProgressiveStreamPosition', (event, sessionId: number, currentFrame: number) => {
+  const session = remoteStreamSessions.get(sessionId)
+  if (!session || session.sender !== event.sender || session.sourceType !== 'local') return
+
+  const normalizedFrame = Number.isFinite(currentFrame)
+    ? Math.max(0, Math.min(session.decodedFrames, Math.floor(currentFrame)))
+    : 0
+  session.rendererReady = true
+  session.consumedFrames = Math.max(session.consumedFrames, normalizedFrame)
+  updateLocalProgressiveStreamBackpressure(session)
 })
 
 ipcMain.handle('audio:cancelProgressiveStream', async (_event, sessionId: number) => {
@@ -6713,6 +7681,92 @@ ipcMain.handle('audio:setReplayGainScanEnabled', async (_event, enabledValue: un
 // ============================================
 // Generic file dialog & I/O handlers
 // ============================================
+
+ipcMain.handle('hrtf-profiles:list', async () => getHrtfProfileService().list())
+
+ipcMain.handle('hrtf-profiles:chooseCandidate', async (): Promise<HrtfProfileCandidateResult> => {
+  if (!mainWindow) {
+    return { ok: false, error: { code: 'storage-error', message: 'The Astra window is not available.' } }
+  }
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Import HRTF Profile',
+    filters: [{ name: 'AES69 SOFA HRTF', extensions: ['sofa'] }],
+    properties: ['openFile'],
+  })
+  if (result.canceled || result.filePaths.length === 0) {
+    return { ok: false, error: { code: 'cancelled', message: 'No HRTF profile was selected.' } }
+  }
+  const filePath = result.filePaths[0]
+  if (extname(filePath).toLowerCase() !== '.sofa') {
+    return { ok: false, error: { code: 'invalid-extension', message: 'Choose an AES69 .sofa HRTF profile.' } }
+  }
+  try {
+    const info = await stat(filePath)
+    if (!info.isFile() || info.size <= 0 || info.size > HRTF_PROFILE_MAX_BYTES) {
+      return {
+        ok: false,
+        error: {
+          code: 'file-too-large',
+          message: `SOFA profiles must be no larger than ${HRTF_PROFILE_MAX_BYTES / (1024 * 1024)} MiB.`,
+        },
+      }
+    }
+    const bytes = await readFile(filePath)
+    if (bytes.byteLength === 0 || bytes.byteLength > HRTF_PROFILE_MAX_BYTES) {
+      return {
+        ok: false,
+        error: {
+          code: 'file-too-large',
+          message: `SOFA profiles must be no larger than ${HRTF_PROFILE_MAX_BYTES / (1024 * 1024)} MiB.`,
+        },
+      }
+    }
+    return {
+      ok: true,
+      candidate: {
+        fileName: basename(filePath),
+        sizeBytes: bytes.byteLength,
+        bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+      },
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      error: { code: 'storage-error', message: error instanceof Error ? error.message : 'Failed to read the SOFA profile.' },
+    }
+  }
+})
+
+ipcMain.handle('hrtf-profiles:commit', async (
+  _event,
+  input: { fileName?: unknown; bytes?: unknown }
+): Promise<HrtfProfileCommitResult> => {
+  if (!input || typeof input.fileName !== 'string') {
+    return { ok: false, error: { code: 'storage-error', message: 'Invalid HRTF import request.' } }
+  }
+  const raw = input.bytes
+  const bytes = raw instanceof ArrayBuffer
+    ? new Uint8Array(raw)
+    : ArrayBuffer.isView(raw)
+      ? new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength)
+      : null
+  if (!bytes) return { ok: false, error: { code: 'storage-error', message: 'The HRTF profile data is missing.' } }
+  return getHrtfProfileService().commit(input.fileName, bytes)
+})
+
+ipcMain.handle('hrtf-profiles:read', async (_event, profileId: unknown) => {
+  if (typeof profileId !== 'string') {
+    return { ok: false, error: { code: 'not-found', message: 'Invalid HRTF profile identifier.' } }
+  }
+  return getHrtfProfileService().read(profileId)
+})
+
+ipcMain.handle('hrtf-profiles:remove', async (_event, profileId: unknown) => {
+  if (typeof profileId !== 'string') {
+    return { ok: false, error: { code: 'not-found', message: 'Invalid HRTF profile identifier.' } }
+  }
+  return getHrtfProfileService().remove(profileId, (filePath) => shell.trashItem(filePath))
+})
 
 ipcMain.handle('dialog:showSaveDialog', async (_event, options: {
   title?: string
@@ -6861,6 +7915,14 @@ ipcMain.handle('library:getTracksByPaths', (_event, trackPaths: string[]) => {
   return library.getTracksByPaths(trackPaths)
 })
 
+ipcMain.handle('library:getAvailableTrackPaths', () => {
+  return library.getAvailableLibraryTrackPaths()
+})
+
+ipcMain.handle('library:getHomeDashboard', (_event, query?: import('../types/home').HomeDashboardQuery) => {
+  return library.getHomeDashboard(query)
+})
+
 // Get tracks by artist
 ipcMain.handle('library:getTracksByArtist', (_event, artist: string, mode?: library.ArtistBrowseMode) => {
   return library.getTracksByArtist(artist, mode)
@@ -6968,9 +8030,132 @@ let activeLibraryScanAbortController: AbortController | null = null
 let activeLibraryScanStage: LibraryScanStage | null = null
 const LIBRARY_SCAN_ISSUE_LOG_LIMIT = 200
 
+interface LibraryWriteTransactionDiagnostics {
+  beginMs: number
+  commitMs: number
+  persistMs: number
+  rollbackMs: number
+}
+
+function mainDiagnosticNow(): number {
+  return Number(process.hrtime.bigint()) / 1_000_000
+}
+
+function roundMainDiagnosticMs(value: number): number {
+  return Math.round(Math.max(0, value) * 100) / 100
+}
+
+function createLibraryDiagnosticsRunId(): string {
+  return `${Date.now().toString(36)}-${randomUUID()}`
+}
+
+function getLibraryRootKind(folderPath: string): 'drive_letter' | 'unc' | 'posix' | 'relative_or_other' {
+  if (/^\\\\/.test(folderPath)) return 'unc'
+  if (/^[a-zA-Z]:[\\/]/.test(folderPath)) return 'drive_letter'
+  if (folderPath.startsWith('/')) return 'posix'
+  return 'relative_or_other'
+}
+
+function getLibraryOperationStartDetails(
+  operationKind: LibraryDiagnosticsOperationKind,
+  folderPath?: string
+): Record<string, unknown> {
+  const sourceCounts = library.getTrackSourceCounts()
+  return {
+    operationKind,
+    replayGainScanEnabled,
+    totalTrackCount: sourceCounts.total,
+    localTrackCount: sourceCounts.local,
+    remoteTrackCount: sourceCounts.remote,
+    folderCount: library.getLibraryFolders().length,
+    rootKind: folderPath ? getLibraryRootKind(folderPath) : null,
+    rootKindCounts: folderPath ? null : getLibraryRootKindCounts()
+  }
+}
+
+function logLibraryDiagnosticsEvent(
+  event: string,
+  details: Record<string, unknown>,
+  runId?: string,
+  options: { flush?: boolean } = {}
+): Promise<boolean> {
+  return libraryDiagnosticsService?.logEvent(event, details, runId, options) ?? Promise.resolve(false)
+}
+
+function isLibraryDiagnosticsEnabled(): boolean {
+  return libraryDiagnosticsService?.getStatus().enabled === true
+}
+
+async function logLibraryDiagnosticsOperationStart(
+  operationKind: LibraryDiagnosticsOperationKind,
+  runId: string,
+  folderPath?: string
+): Promise<void> {
+  if (!isLibraryDiagnosticsEnabled()) return
+  try {
+    await logLibraryDiagnosticsEvent(
+      'library_operation_started',
+      getLibraryOperationStartDetails(operationKind, folderPath),
+      runId,
+      { flush: true }
+    )
+  } catch (error) {
+    console.warn('Failed to prepare library operation diagnostics:', error)
+  }
+}
+
+function logLibraryFolderCheckpoint(
+  checkpoint: library.LibraryFolderRemovalCheckpoint,
+  runId: string
+): void {
+  libraryDiagnosticsService?.logCheckpointSync('folder_removal_checkpoint', { ...checkpoint }, runId)
+}
+
+function logFolderScanDiagnostics(
+  operationKind: LibraryDiagnosticsOperationKind,
+  runId: string,
+  folderIndex: number,
+  folderCount: number,
+  scanResult: library.LibraryFolderScanResult
+): void {
+  void logLibraryDiagnosticsEvent('scan_folder_finished', {
+    operationKind,
+    folderIndex,
+    folderCount,
+    added: scanResult.added,
+    updated: scanResult.updated,
+    errors: scanResult.errors,
+    skippedDirectoryCount: scanResult.skippedDirs.length,
+    ...scanResult.diagnostics
+  }, runId)
+}
+
+async function finishLibraryDiagnosticsOperation(
+  operationKind: LibraryDiagnosticsOperationKind,
+  runId: string,
+  startedAt: number,
+  outcome: 'succeeded' | 'canceled' | 'failed',
+  transaction: LibraryWriteTransactionDiagnostics | null,
+  details: Record<string, unknown> = {}
+): Promise<void> {
+  await logLibraryDiagnosticsEvent('library_operation_finished', {
+    operationKind,
+    outcome,
+    backendDurationMs: roundMainDiagnosticMs(mainDiagnosticNow() - startedAt),
+    transaction,
+    ...details
+  }, runId)
+}
+
 function sendLibraryScanStage(stage: LibraryScanStage, message: string): void {
   activeLibraryScanStage = stage
   mainWindow?.webContents.send('library:scanStage', { stage, message })
+}
+
+function createLibraryScanProgressReporter(): (current: number, total: number, file: string) => void {
+  return createThrottledLibraryScanProgressReporter(({ current, total, file }) => {
+    mainWindow?.webContents.send('library:scanProgress', { current, total, file })
+  })
 }
 
 function getScanErrorCode(error: unknown): string | undefined {
@@ -7044,25 +8229,40 @@ function createLibraryScanAbortController(): AbortController {
   return controller
 }
 
-async function runLibraryScanOperation<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+async function runLibraryScanOperation<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  onTransactionDiagnostics?: (diagnostics: LibraryWriteTransactionDiagnostics) => void
+): Promise<T> {
   const controller = createLibraryScanAbortController()
   let transactionStarted = false
+  let beginMs = 0
+  let commitMs = 0
+  let persistMs = 0
+  let rollbackMs = 0
 
   try {
+    const beginStartedAt = mainDiagnosticNow()
     library.beginLibraryWriteTransaction()
+    beginMs = mainDiagnosticNow() - beginStartedAt
     transactionStarted = true
 
     const result = await operation(controller.signal)
 
+    const commitStartedAt = mainDiagnosticNow()
     library.commitLibraryWriteTransaction()
+    commitMs = mainDiagnosticNow() - commitStartedAt
     transactionStarted = false
+    const persistStartedAt = mainDiagnosticNow()
     await library.persistLibraryDatabase()
+    persistMs = mainDiagnosticNow() - persistStartedAt
 
     return result
   } catch (error) {
     if (transactionStarted) {
       try {
+        const rollbackStartedAt = mainDiagnosticNow()
         library.rollbackLibraryWriteTransaction()
+        rollbackMs = mainDiagnosticNow() - rollbackStartedAt
       } catch (rollbackError) {
         console.warn('Failed to roll back canceled library scan transaction:', rollbackError)
       }
@@ -7073,6 +8273,18 @@ async function runLibraryScanOperation<T>(operation: (signal: AbortSignal) => Pr
       activeLibraryScanAbortController = null
     }
     activeLibraryScanStage = null
+    if (onTransactionDiagnostics) {
+      try {
+        onTransactionDiagnostics({
+          beginMs: roundMainDiagnosticMs(beginMs),
+          commitMs: roundMainDiagnosticMs(commitMs),
+          persistMs: roundMainDiagnosticMs(persistMs),
+          rollbackMs: roundMainDiagnosticMs(rollbackMs)
+        })
+      } catch (error) {
+        console.warn('Library transaction diagnostics callback failed:', error)
+      }
+    }
   }
 }
 
@@ -7738,9 +8950,7 @@ ipcMain.handle('library:backfillReplayGainMetadata', async () => {
   try {
     const result = await runLibraryScanOperation(async (signal) => {
       sendLibraryScanStage('backfill', 'Processing ReplayGain metadata...')
-      return library.backfillMissingReplayGainMetadata((current, total, file) => {
-        mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-      }, {
+      return library.backfillMissingReplayGainMetadata(createLibraryScanProgressReporter(), {
         signal,
         persist: false,
         onIssue: (issue) => issueCollector.record(issue)
@@ -7790,9 +9000,29 @@ ipcMain.handle('library:backfillReplayGainMetadata', async () => {
 
 // Add library folder and scan
 ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
-  const folder = await library.addLibraryFolder(folderPath)
+  const operationKind: LibraryDiagnosticsOperationKind = 'add_folder'
+  const diagnosticRunId = createLibraryDiagnosticsRunId()
+  const diagnosticResultRunId = isLibraryDiagnosticsEnabled() ? diagnosticRunId : undefined
+  const diagnosticStartedAt = mainDiagnosticNow()
+  let diagnosticOutcome: 'succeeded' | 'canceled' | 'failed' = 'failed'
+  let transactionDiagnostics: LibraryWriteTransactionDiagnostics | null = null
+  if (diagnosticResultRunId) {
+    await logLibraryDiagnosticsOperationStart(operationKind, diagnosticRunId, folderPath)
+  }
+  let folder: Awaited<ReturnType<typeof library.addLibraryFolder>>
+  try {
+    folder = await library.addLibraryFolder(folderPath)
+  } catch (error) {
+    await finishLibraryDiagnosticsOperation(operationKind, diagnosticRunId, diagnosticStartedAt, 'failed', null, {
+      errorCode: getScanErrorCode(error) ?? null
+    })
+    throw error
+  }
   if (!folder) {
-    return { success: false, error: 'Folder already in library' }
+    await finishLibraryDiagnosticsOperation(operationKind, diagnosticRunId, diagnosticStartedAt, 'failed', null, {
+      failureReason: 'folder_already_mapped'
+    })
+    return { success: false, error: 'Folder already in library', diagnosticRunId: diagnosticResultRunId }
   }
 
   const folderLabel = basename(folderPath) || folderPath
@@ -7811,7 +9041,7 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
         issueCollector.record(issue, folderPath)
       }
 
-      let scanResult: { added: number; updated: number; errors: number; skippedDirs: string[] } = {
+      let scanResult: Pick<library.LibraryFolderScanResult, 'added' | 'updated' | 'errors' | 'skippedDirs'> = {
         added: 0,
         updated: 0,
         errors: 0,
@@ -7819,9 +9049,13 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
       }
       sendLibraryScanStage('scanning', `Scanning files in ${folderLabel}...`)
       try {
-        scanResult = await library.scanFolder(folderPath, (current, total, file) => {
-          mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-        }, { signal, persist: false, onIssue, syncSessionKey })
+        const completedScan = await library.scanFolder(
+          folderPath,
+          createLibraryScanProgressReporter(),
+          { signal, persist: false, onIssue, syncSessionKey, diagnostics: Boolean(diagnosticResultRunId) }
+        )
+        scanResult = completedScan
+        logFolderScanDiagnostics(operationKind, diagnosticRunId, 0, 1, completedScan)
       } catch (error) {
         if (library.isLibraryScanCancelledError(error)) {
           throw error
@@ -7832,20 +9066,32 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
       }
 
       sendLibraryScanStage('cleanup', 'Updating artist images...')
-      await library.refreshDetectedArtistImages()
+      const artistImageDiagnostics = await library.refreshDetectedArtistImages()
+      void logLibraryDiagnosticsEvent('artist_image_refresh_finished', {
+        operationKind,
+        ...artistImageDiagnostics
+      }, diagnosticRunId)
 
       return { ...scanResult, scanIssueLog: issueCollector.build() }
-    })
+    }, (diagnostics) => { transactionDiagnostics = diagnostics })
 
     syncSessionSucceeded = true
-    return { success: true, canceled: false, folder, ...result }
+    diagnosticOutcome = 'succeeded'
+    return { success: true, canceled: false, folder, ...result, diagnosticRunId: diagnosticResultRunId }
   } catch (error) {
     if (library.isLibraryScanCancelledError(error)) {
       logMemoryDiagnosticsMainEvent('library_scan_canceled', {
         kind: 'add_folder',
         folderPath
       })
-      return { success: false, canceled: true, folder, scanIssueLog: issueCollector.build() }
+      diagnosticOutcome = 'canceled'
+      return {
+        success: false,
+        canceled: true,
+        folder,
+        scanIssueLog: issueCollector.build(),
+        diagnosticRunId: diagnosticResultRunId
+      }
     }
     throw error
   } finally {
@@ -7854,13 +9100,51 @@ ipcMain.handle('library:addFolder', async (_event, folderPath: string) => {
       kind: 'add_folder',
       folderPath
     })
+    await finishLibraryDiagnosticsOperation(
+      operationKind,
+      diagnosticRunId,
+      diagnosticStartedAt,
+      diagnosticOutcome,
+      transactionDiagnostics
+    )
   }
 })
 
 // Remove library folder
 ipcMain.handle('library:removeFolder', async (_event, folderPath: string) => {
-  await library.removeLibraryFolder(folderPath)
-  return { success: true }
+  const operationKind: LibraryDiagnosticsOperationKind = 'remove_folder'
+  const diagnosticRunId = createLibraryDiagnosticsRunId()
+  const diagnosticResultRunId = isLibraryDiagnosticsEnabled() ? diagnosticRunId : undefined
+  const diagnosticStartedAt = mainDiagnosticNow()
+  if (diagnosticResultRunId) {
+    await logLibraryDiagnosticsOperationStart(operationKind, diagnosticRunId, folderPath)
+  }
+  try {
+    const removalDiagnostics = await library.removeLibraryFolder(
+      folderPath,
+      diagnosticResultRunId
+        ? { onCheckpoint: (checkpoint) => logLibraryFolderCheckpoint(checkpoint, diagnosticRunId) }
+        : {}
+    )
+    await logLibraryDiagnosticsEvent('folder_removal_finished', {
+      operationKind,
+      ...removalDiagnostics
+    }, diagnosticRunId)
+    await finishLibraryDiagnosticsOperation(
+      operationKind,
+      diagnosticRunId,
+      diagnosticStartedAt,
+      'succeeded',
+      null,
+      { rowsMatched: removalDiagnostics.rowsMatched }
+    )
+    return { success: true, diagnosticRunId: diagnosticResultRunId }
+  } catch (error) {
+    await finishLibraryDiagnosticsOperation(operationKind, diagnosticRunId, diagnosticStartedAt, 'failed', null, {
+      errorCode: getScanErrorCode(error) ?? null
+    })
+    throw error
+  }
 })
 
 ipcMain.handle('library:setFolderHidden', async (_event, folderPath: string, hidden: boolean) => {
@@ -7888,6 +9172,15 @@ ipcMain.handle(
 ipcMain.handle(
   'library:rescanFolder',
   async (_event, folderPath: string) => {
+    const operationKind: LibraryDiagnosticsOperationKind = 'rescan_folder'
+    const diagnosticRunId = createLibraryDiagnosticsRunId()
+    const diagnosticResultRunId = isLibraryDiagnosticsEnabled() ? diagnosticRunId : undefined
+    const diagnosticStartedAt = mainDiagnosticNow()
+    let diagnosticOutcome: 'succeeded' | 'canceled' | 'failed' = 'failed'
+    let transactionDiagnostics: LibraryWriteTransactionDiagnostics | null = null
+    if (diagnosticResultRunId) {
+      await logLibraryDiagnosticsOperationStart(operationKind, diagnosticRunId, folderPath)
+    }
     const folderLabel = basename(folderPath) || folderPath
     const issueCollector = createLibraryScanIssueCollector()
     logMemoryDiagnosticsMainEvent('library_scan_started', {
@@ -7903,7 +9196,7 @@ ipcMain.handle(
           issueCollector.record(issue, folderPath)
         }
 
-        let scanResult: { added: number; updated: number; errors: number; skippedDirs: string[] } = {
+        let scanResult: Pick<library.LibraryFolderScanResult, 'added' | 'updated' | 'errors' | 'skippedDirs'> = {
           added: 0,
           updated: 0,
           errors: 0,
@@ -7911,9 +9204,13 @@ ipcMain.handle(
         }
         sendLibraryScanStage('scanning', `Scanning files in ${folderLabel}...`)
         try {
-          scanResult = await library.scanFolder(folderPath, (current, total, file) => {
-            mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-          }, { signal, persist: false, onIssue, syncSessionKey })
+          const completedScan = await library.scanFolder(
+            folderPath,
+            createLibraryScanProgressReporter(),
+            { signal, persist: false, onIssue, syncSessionKey, diagnostics: Boolean(diagnosticResultRunId) }
+          )
+          scanResult = completedScan
+          logFolderScanDiagnostics(operationKind, diagnosticRunId, 0, 1, completedScan)
         } catch (error) {
           if (library.isLibraryScanCancelledError(error)) {
             throw error
@@ -7926,7 +9223,17 @@ ipcMain.handle(
         sendLibraryScanStage('cleanup', `Finalizing ${folderLabel}...`)
         let removed = 0
         try {
-          removed = await library.cleanupMissingTracks({ signal, persist: false, onIssue })
+          removed = await library.cleanupMissingTracks({
+            signal,
+            persist: false,
+            onIssue,
+            onCleanupDiagnostics: (diagnostics) => {
+              void logLibraryDiagnosticsEvent('missing_track_cleanup_finished', {
+                operationKind,
+                ...diagnostics
+              }, diagnosticRunId)
+            }
+          })
         } catch (error) {
           if (library.isLibraryScanCancelledError(error)) {
             throw error
@@ -7944,20 +9251,31 @@ ipcMain.handle(
         }
 
         sendLibraryScanStage('cleanup', 'Updating artist images...')
-        await library.refreshDetectedArtistImages()
+        const artistImageDiagnostics = await library.refreshDetectedArtistImages()
+        void logLibraryDiagnosticsEvent('artist_image_refresh_finished', {
+          operationKind,
+          ...artistImageDiagnostics
+        }, diagnosticRunId)
 
         return { ...scanResult, removed, summary, scanIssueLog: issueCollector.build() }
-      })
+      }, (diagnostics) => { transactionDiagnostics = diagnostics })
 
       syncSessionSucceeded = true
-      return { success: true, canceled: false, ...result }
+      diagnosticOutcome = 'succeeded'
+      return { success: true, canceled: false, ...result, diagnosticRunId: diagnosticResultRunId }
     } catch (error) {
       if (library.isLibraryScanCancelledError(error)) {
         logMemoryDiagnosticsMainEvent('library_scan_canceled', {
           kind: 'rescan_folder',
           folderPath
         })
-        return { success: false, canceled: true, scanIssueLog: issueCollector.build() }
+        diagnosticOutcome = 'canceled'
+        return {
+          success: false,
+          canceled: true,
+          scanIssueLog: issueCollector.build(),
+          diagnosticRunId: diagnosticResultRunId
+        }
       }
       throw error
     } finally {
@@ -7966,6 +9284,13 @@ ipcMain.handle(
         kind: 'rescan_folder',
         folderPath
       })
+      await finishLibraryDiagnosticsOperation(
+        operationKind,
+        diagnosticRunId,
+        diagnosticStartedAt,
+        diagnosticOutcome,
+        transactionDiagnostics
+      )
     }
   }
 )
@@ -7986,6 +9311,15 @@ ipcMain.handle('library:factoryReset', async () => {
 
 // Rescan all folders
 ipcMain.handle('library:rescan', async () => {
+  const operationKind: LibraryDiagnosticsOperationKind = 'rescan_all'
+  const diagnosticRunId = createLibraryDiagnosticsRunId()
+  const diagnosticResultRunId = isLibraryDiagnosticsEnabled() ? diagnosticRunId : undefined
+  const diagnosticStartedAt = mainDiagnosticNow()
+  let diagnosticOutcome: 'succeeded' | 'canceled' | 'failed' = 'failed'
+  let transactionDiagnostics: LibraryWriteTransactionDiagnostics | null = null
+  if (diagnosticResultRunId) {
+    await logLibraryDiagnosticsOperationStart(operationKind, diagnosticRunId)
+  }
   const issueCollector = createLibraryScanIssueCollector()
   logMemoryDiagnosticsMainEvent('library_scan_started', {
     kind: 'rescan_all',
@@ -8011,12 +9345,17 @@ ipcMain.handle('library:rescan', async () => {
         sendLibraryScanStage('scanning', `Scanning ${folderLabel} (${folderIndex + 1}/${totalFolders})...`)
 
         try {
-          const scanResult = await library.scanFolder(folder.path, (current, total, file) => {
-            mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-          }, { signal, persist: false, onIssue: onFolderIssue, syncSessionKey })
+          const scanResult = await library.scanFolder(folder.path, createLibraryScanProgressReporter(), {
+            signal,
+            persist: false,
+            onIssue: onFolderIssue,
+            syncSessionKey,
+            diagnostics: Boolean(diagnosticResultRunId)
+          })
           totalAdded += scanResult.added
           totalUpdated += scanResult.updated
           totalErrors += scanResult.errors
+          logFolderScanDiagnostics(operationKind, diagnosticRunId, folderIndex, totalFolders, scanResult)
           if (scanResult.skippedDirs.length > 0) {
             folderWarnings[folder.path] = scanResult.skippedDirs
           }
@@ -8039,7 +9378,13 @@ ipcMain.handle('library:rescan', async () => {
         removed = await library.cleanupMissingTracks({
           signal,
           persist: false,
-          onIssue: (issue) => issueCollector.record(issue)
+          onIssue: (issue) => issueCollector.record(issue),
+          onCleanupDiagnostics: (diagnostics) => {
+            void logLibraryDiagnosticsEvent('missing_track_cleanup_finished', {
+              operationKind,
+              ...diagnostics
+            }, diagnosticRunId)
+          }
         })
       } catch (error) {
         if (library.isLibraryScanCancelledError(error)) {
@@ -8051,7 +9396,11 @@ ipcMain.handle('library:rescan', async () => {
       }
 
       sendLibraryScanStage('cleanup', 'Updating artist images...')
-      await library.refreshDetectedArtistImages()
+      const artistImageDiagnostics = await library.refreshDetectedArtistImages()
+      void logLibraryDiagnosticsEvent('artist_image_refresh_finished', {
+        operationKind,
+        ...artistImageDiagnostics
+      }, diagnosticRunId)
 
       return {
         added: totalAdded,
@@ -8061,15 +9410,17 @@ ipcMain.handle('library:rescan', async () => {
         folderWarnings,
         scanIssueLog: issueCollector.build()
       }
-    })
+    }, (diagnostics) => { transactionDiagnostics = diagnostics })
 
     syncSessionSucceeded = true
-    return { ...result, canceled: false }
+    diagnosticOutcome = 'succeeded'
+    return { ...result, canceled: false, diagnosticRunId: diagnosticResultRunId }
   } catch (error) {
     if (library.isLibraryScanCancelledError(error)) {
       logMemoryDiagnosticsMainEvent('library_scan_canceled', {
         kind: 'rescan_all'
       })
+      diagnosticOutcome = 'canceled'
       return {
         added: 0,
         updated: 0,
@@ -8077,7 +9428,8 @@ ipcMain.handle('library:rescan', async () => {
         removed: 0,
         folderWarnings: {},
         scanIssueLog: issueCollector.build(),
-        canceled: true
+        canceled: true,
+        diagnosticRunId: diagnosticResultRunId
       }
     }
     throw error
@@ -8086,10 +9438,26 @@ ipcMain.handle('library:rescan', async () => {
     logMemoryDiagnosticsMainEvent('library_scan_finished', {
       kind: 'rescan_all'
     })
+    await finishLibraryDiagnosticsOperation(
+      operationKind,
+      diagnosticRunId,
+      diagnosticStartedAt,
+      diagnosticOutcome,
+      transactionDiagnostics
+    )
   }
 })
 
 ipcMain.handle('library:forceRescanAll', async () => {
+  const operationKind: LibraryDiagnosticsOperationKind = 'force_rescan_all'
+  const diagnosticRunId = createLibraryDiagnosticsRunId()
+  const diagnosticResultRunId = isLibraryDiagnosticsEnabled() ? diagnosticRunId : undefined
+  const diagnosticStartedAt = mainDiagnosticNow()
+  let diagnosticOutcome: 'succeeded' | 'canceled' | 'failed' = 'failed'
+  let transactionDiagnostics: LibraryWriteTransactionDiagnostics | null = null
+  if (diagnosticResultRunId) {
+    await logLibraryDiagnosticsOperationStart(operationKind, diagnosticRunId)
+  }
   const issueCollector = createLibraryScanIssueCollector()
   logMemoryDiagnosticsMainEvent('library_scan_started', {
     kind: 'force_rescan_all',
@@ -8115,12 +9483,18 @@ ipcMain.handle('library:forceRescanAll', async () => {
         sendLibraryScanStage('scanning', `Rewriting metadata in ${folderLabel} (${folderIndex + 1}/${totalFolders})...`)
 
         try {
-          const scanResult = await library.scanFolder(folder.path, (current, total, file) => {
-            mainWindow?.webContents.send('library:scanProgress', { current, total, file })
-          }, { signal, persist: false, onIssue: onFolderIssue, syncSessionKey, mode: 'force' })
+          const scanResult = await library.scanFolder(folder.path, createLibraryScanProgressReporter(), {
+            signal,
+            persist: false,
+            onIssue: onFolderIssue,
+            syncSessionKey,
+            mode: 'force',
+            diagnostics: Boolean(diagnosticResultRunId)
+          })
           totalAdded += scanResult.added
           totalUpdated += scanResult.updated
           totalErrors += scanResult.errors
+          logFolderScanDiagnostics(operationKind, diagnosticRunId, folderIndex, totalFolders, scanResult)
           if (scanResult.skippedDirs.length > 0) {
             folderWarnings[folder.path] = scanResult.skippedDirs
           }
@@ -8141,7 +9515,13 @@ ipcMain.handle('library:forceRescanAll', async () => {
         removed = await library.cleanupMissingTracks({
           signal,
           persist: false,
-          onIssue: (issue) => issueCollector.record(issue)
+          onIssue: (issue) => issueCollector.record(issue),
+          onCleanupDiagnostics: (diagnostics) => {
+            void logLibraryDiagnosticsEvent('missing_track_cleanup_finished', {
+              operationKind,
+              ...diagnostics
+            }, diagnosticRunId)
+          }
         })
       } catch (error) {
         if (library.isLibraryScanCancelledError(error)) {
@@ -8153,7 +9533,11 @@ ipcMain.handle('library:forceRescanAll', async () => {
       }
 
       sendLibraryScanStage('cleanup', 'Updating artist images...')
-      await library.refreshDetectedArtistImages()
+      const artistImageDiagnostics = await library.refreshDetectedArtistImages()
+      void logLibraryDiagnosticsEvent('artist_image_refresh_finished', {
+        operationKind,
+        ...artistImageDiagnostics
+      }, diagnosticRunId)
 
       return {
         added: totalAdded,
@@ -8163,15 +9547,17 @@ ipcMain.handle('library:forceRescanAll', async () => {
         folderWarnings,
         scanIssueLog: issueCollector.build()
       }
-    })
+    }, (diagnostics) => { transactionDiagnostics = diagnostics })
 
     syncSessionSucceeded = true
-    return { ...result, canceled: false }
+    diagnosticOutcome = 'succeeded'
+    return { ...result, canceled: false, diagnosticRunId: diagnosticResultRunId }
   } catch (error) {
     if (library.isLibraryScanCancelledError(error)) {
       logMemoryDiagnosticsMainEvent('library_scan_canceled', {
         kind: 'force_rescan_all'
       })
+      diagnosticOutcome = 'canceled'
       return {
         added: 0,
         updated: 0,
@@ -8179,7 +9565,8 @@ ipcMain.handle('library:forceRescanAll', async () => {
         removed: 0,
         folderWarnings: {},
         scanIssueLog: issueCollector.build(),
-        canceled: true
+        canceled: true,
+        diagnosticRunId: diagnosticResultRunId
       }
     }
     throw error
@@ -8188,6 +9575,13 @@ ipcMain.handle('library:forceRescanAll', async () => {
     logMemoryDiagnosticsMainEvent('library_scan_finished', {
       kind: 'force_rescan_all'
     })
+    await finishLibraryDiagnosticsOperation(
+      operationKind,
+      diagnosticRunId,
+      diagnosticStartedAt,
+      diagnosticOutcome,
+      transactionDiagnostics
+    )
   }
 })
 
@@ -8452,6 +9846,32 @@ ipcMain.handle('library:addToPlaylist', async (_event, playlistId: number, track
   publishCompanionPlaylistEvent(playlistId, 'items-changed')
 })
 
+ipcMain.handle('library:insertTracksIntoPlaylist', async (
+  _event,
+  playlistId: number,
+  trackPaths: string[],
+  position: library.PlaylistInsertPosition
+) => {
+  const result = await library.insertTracksIntoPlaylist(playlistId, trackPaths, position)
+  if (result.insertedEntryIds.length > 0) {
+    publishCompanionPlaylistEvent(playlistId, 'items-changed')
+  }
+  return result
+})
+
+ipcMain.handle('library:movePlaylistEntries', async (
+  _event,
+  playlistId: number,
+  entryIds: number[],
+  position: number
+) => {
+  const result = await library.movePlaylistEntries(playlistId, entryIds, position)
+  if (result.changed) {
+    publishCompanionPlaylistEvent(playlistId, 'items-changed')
+  }
+  return result
+})
+
 ipcMain.handle('library:removeFromPlaylist', async (_event, playlistId: number, trackPath: string) => {
   await library.removeFromPlaylist(playlistId, trackPath)
   publishCompanionPlaylistEvent(playlistId, 'items-changed')
@@ -8546,6 +9966,90 @@ const binaryPathCache: Record<'ffmpeg' | 'ffprobe', string | null | undefined> =
   ffprobe: undefined
 }
 
+const LOCAL_PCM_DECODE_MAX_BYTES = LOCAL_PCM_STREAM_MAX_BYTES
+const LOCAL_PCM_DECODE_TIMEOUT_MS = 180_000
+const LOCAL_PCM_STREAM_PROTOCOL_VERSION = LOCAL_PCM_STREAM_VERSION
+
+class LocalPcmDecodeLimitError extends Error {
+  readonly code = LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE
+
+  constructor(message = 'Decoded audio exceeds the 192 MiB Standard playback limit.') {
+    super(message)
+    this.name = 'LocalPcmDecodeLimitError'
+  }
+}
+
+interface LocalPcmDecodeResult {
+  requestId: number
+  sampleRate: number
+  channels: number
+  frames: number
+  pcmByteLength: number
+  interleavedPcm: ArrayBuffer
+  probeMs: number
+  decodeMs: number
+  backgroundPriorityApplied: boolean
+  transportTimings: LocalAudioPcmTransportTimings
+}
+
+interface LocalPcmDecodeSession {
+  key: string
+  requestId: number
+  sender: Electron.WebContents
+  filePath: string
+  sampleRate: number
+  expectedChannels: number | null
+  channels: number
+  initialPriority: 'interactive' | 'background'
+  priority: 'interactive' | 'background'
+  backgroundPriorityApplied: boolean
+  handlerStartedAtMs: number
+  binaryResolutionMs: number
+  probeAbortController: AbortController | null
+  probeMs: number
+  ffmpeg: ChildProcessWithoutNullStreams | null
+  ffmpegStartedAtMs: number | null
+  ffmpegCompletedAtMs: number | null
+  decodeCompletedAtMs: number | null
+  allocationMs: number
+  initialAllocationMs: number
+  growthAllocationMs: number
+  allocationGrowthCount: number
+  outputBuffer: Buffer | null
+  totalBytes: number
+  stderrChunks: string[]
+  settled: boolean
+  cancelled: boolean
+  decodeTimeout: NodeJS.Timeout | null
+  releaseSenderHooks: (() => void) | null
+  stream: LocalPcmStreamState | null
+  resolve: (result: LocalPcmDecodeResult | null) => void
+  reject: (error: Error) => void
+}
+
+interface LocalPcmStreamPendingSuccess {
+  pcm: Buffer
+  pcmByteLength: number
+}
+
+interface LocalPcmStreamState {
+  port: Electron.MessagePortMain
+  nonce: string
+  ready: boolean
+  credits: number
+  nextChunkOffset: number
+  nextChunkSequence: number
+  nextCreditSequence: number
+  startSent: boolean
+  chunkCount: number
+  dispatchCopyMs: number
+  dispatchPostMs: number
+  pendingSuccess: LocalPcmStreamPendingSuccess | null
+  releasePortHooks: (() => void) | null
+}
+
+const localPcmDecodeSessions = new Map<string, LocalPcmDecodeSession>()
+
 interface RemoteStreamSession {
   id: number
   sender: Electron.WebContents
@@ -8568,6 +10072,9 @@ interface RemoteStreamSession {
   totalBytes: number | null
   chunkCount: number
   decodedFrames: number
+  consumedFrames: number
+  rendererReady: boolean
+  stdoutPausedForBackpressure: boolean
   lastProgressEmitAt: number
   done: boolean
   failed: boolean
@@ -8676,6 +10183,29 @@ function settleRemoteStreamStartup(session: RemoteStreamSession, outcome: { ok: 
   session.startupReject = null
 }
 
+function updateLocalProgressiveStreamBackpressure(session: RemoteStreamSession): void {
+  if (session.sourceType !== 'local' || session.done || session.cancelled) return
+
+  const action = resolveLocalProgressiveBackpressureAction({
+    sampleRate: session.sampleRate,
+    decodedFrames: session.decodedFrames,
+    consumedFrames: session.consumedFrames,
+    rendererReady: session.rendererReady,
+    stdoutPaused: session.stdoutPausedForBackpressure,
+    startupFrames: LOCAL_STREAM_STARTUP_CHUNK_FRAMES
+  })
+  if (action === 'pause') {
+    session.ffmpeg.stdout.pause()
+    session.stdoutPausedForBackpressure = true
+    return
+  }
+
+  if (action === 'resume') {
+    session.stdoutPausedForBackpressure = false
+    session.ffmpeg.stdout.resume()
+  }
+}
+
 function emitRemoteStreamChunk(session: RemoteStreamSession, data: Buffer): void {
   if (session.sender.isDestroyed()) return
 
@@ -8719,6 +10249,7 @@ function emitRemoteStreamChunk(session: RemoteStreamSession, data: Buffer): void
   }
 
   safeSendRemoteLoadProgress(session, 'streaming')
+  updateLocalProgressiveStreamBackpressure(session)
 }
 
 function finalizeRemoteStreamSession(
@@ -9110,6 +10641,9 @@ async function startProgressiveStreamSession(
       totalBytes,
       chunkCount: 0,
       decodedFrames: 0,
+      consumedFrames: 0,
+      rendererReady: false,
+      stdoutPausedForBackpressure: false,
       lastProgressEmitAt: 0,
       done: false,
       failed: false,
@@ -9847,6 +11381,980 @@ async function decodeAudioWithFfmpeg(filePath: string): Promise<ArrayBuffer | nu
   }
 }
 
+function localPcmDecodeSessionKey(sender: Electron.WebContents, requestId: number): string {
+  return `${sender.id}:${requestId}`
+}
+
+function normalizeLocalPcmDecodeRequest(
+  requestIdValue: unknown,
+  filePathValue: unknown,
+  outputSampleRateValue: unknown,
+  expectedChannelsValue?: unknown,
+  priorityValue?: unknown
+): {
+  requestId: number
+  filePath: string
+  sampleRate: number
+  expectedChannels: number | null
+  priority: 'interactive' | 'background'
+} {
+  const requestId = Number(requestIdValue)
+  if (!Number.isSafeInteger(requestId) || requestId < 0) {
+    throw new Error('Local audio decode requires a non-negative integer request ID.')
+  }
+
+  if (typeof filePathValue !== 'string' || filePathValue.trim().length === 0) {
+    throw new Error('Local audio decode requires a file path.')
+  }
+  const filePath = filePathValue
+  if (isSubsonicPath(filePath) || isJellyfinPath(filePath)) {
+    throw new Error('Local audio decode does not accept remote track paths.')
+  }
+
+  const outputSampleRate = Number(outputSampleRateValue)
+  if (!Number.isFinite(outputSampleRate) || outputSampleRate <= 0) {
+    throw new Error('Local audio decode requires a valid output sample rate.')
+  }
+  const sampleRate = Math.min(384_000, Math.max(8_000, Math.round(outputSampleRate)))
+
+  const requestedChannels = Number(expectedChannelsValue)
+  const expectedChannels = Number.isFinite(requestedChannels) && requestedChannels > 0
+    ? Math.round(requestedChannels)
+    : null
+  if (expectedChannels !== null && expectedChannels > 8) {
+    throw new Error('Local FFmpeg decode supports at most 8 channels; falling back to Chromium decoding.')
+  }
+  const priority = priorityValue === 'background' ? 'background' : 'interactive'
+
+  return { requestId, filePath, sampleRate, expectedChannels, priority }
+}
+
+interface LocalPcmStreamProbe {
+  channels: number
+  durationSeconds: number | null
+}
+
+function parseFfprobeTimeBase(value: unknown): number | null {
+  if (typeof value !== 'string') return null
+  const [numeratorValue, denominatorValue] = value.split('/', 2)
+  const numerator = Number(numeratorValue)
+  const denominator = Number(denominatorValue)
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) return null
+  const seconds = numerator / denominator
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null
+}
+
+async function probeLocalPcmStream(
+  session: LocalPcmDecodeSession,
+  ffprobePath: string
+): Promise<LocalPcmStreamProbe> {
+  const controller = new AbortController()
+  session.probeAbortController = controller
+  try {
+    const stdout = await execFileAsync(
+      ffprobePath,
+      [
+        '-v', 'error',
+        '-print_format', 'json',
+        '-show_entries', 'stream=channels,duration,duration_ts,time_base:format=duration',
+        '-select_streams', 'a:0',
+        session.filePath
+      ],
+      {
+        timeout: 10_000,
+        maxBuffer: 256 * 1024,
+        signal: controller.signal
+      }
+    )
+    const parsed = JSON.parse(stdout) as {
+      streams?: Array<Record<string, unknown>>
+      format?: Record<string, unknown>
+    }
+    const stream = parsed.streams?.[0]
+    const channels = Math.round(toNumberOrUndefined(stream?.channels) ?? 0)
+    if (channels < 1 || channels > 8) {
+      throw new Error(
+        channels > 8
+          ? 'Local FFmpeg decode supports at most 8 channels; falling back to Chromium decoding.'
+          : 'FFprobe could not determine the local audio stream channel count.'
+      )
+    }
+
+    const durationTs = toNumberOrUndefined(stream?.duration_ts)
+    const timeBaseSeconds = parseFfprobeTimeBase(stream?.time_base)
+    const durationFromTimeBase = durationTs !== undefined && timeBaseSeconds !== null
+      ? durationTs * timeBaseSeconds
+      : null
+    const durationCandidates = [
+      durationFromTimeBase,
+      toNumberOrUndefined(stream?.duration),
+      toNumberOrUndefined(parsed.format?.duration)
+    ]
+    const durationSeconds = durationCandidates.find(
+      (candidate): candidate is number => typeof candidate === 'number'
+        && Number.isFinite(candidate)
+        && candidate > 0
+    ) ?? null
+
+    return { channels, durationSeconds }
+  } finally {
+    if (session.probeAbortController === controller) {
+      session.probeAbortController = null
+    }
+  }
+}
+
+function allocateInitialLocalPcmOutput(
+  durationSeconds: number | null,
+  sampleRate: number,
+  channels: number
+): Buffer {
+  const frameSizeBytes = channels * Float32Array.BYTES_PER_ELEMENT
+  const fallbackBytes = 8 * 1024 * 1024
+  const minimumBytes = 64 * 1024
+  let capacity = fallbackBytes
+  if (durationSeconds !== null) {
+    const estimatedFrames = Math.ceil(durationSeconds * sampleRate)
+    const resamplerSlackFrames = 4096
+    const estimatedPcmBytes = estimatedFrames * frameSizeBytes
+    if (
+      !Number.isSafeInteger(estimatedPcmBytes)
+      || estimatedPcmBytes > LOCAL_PCM_DECODE_MAX_BYTES
+    ) {
+      throw new LocalPcmDecodeLimitError()
+    }
+    const allocationBytes = (estimatedFrames + resamplerSlackFrames) * frameSizeBytes
+    if (Number.isSafeInteger(allocationBytes) && allocationBytes > 0) {
+      capacity = allocationBytes
+    }
+  }
+  capacity = Math.max(minimumBytes, Math.min(LOCAL_PCM_DECODE_MAX_BYTES, Math.ceil(capacity)))
+  return Buffer.allocUnsafe(capacity)
+}
+
+function ensureLocalPcmOutputCapacity(session: LocalPcmDecodeSession, requiredBytes: number): Buffer {
+  if (requiredBytes > LOCAL_PCM_DECODE_MAX_BYTES) {
+    throw new LocalPcmDecodeLimitError()
+  }
+  const current = session.outputBuffer
+  if (current && requiredBytes <= current.byteLength) return current
+
+  const previousCapacity = current?.byteLength ?? 0
+  const grownCapacity = Math.max(requiredBytes, Math.ceil(previousCapacity * 1.5), 64 * 1024)
+  const allocationStartedAtMs = mainDiagnosticNow()
+  let next: Buffer | null = null
+  try {
+    next = Buffer.allocUnsafe(Math.min(LOCAL_PCM_DECODE_MAX_BYTES, grownCapacity))
+    if (current && session.totalBytes > 0) {
+      current.copy(next, 0, 0, session.totalBytes)
+    }
+    session.outputBuffer = next
+    session.allocationGrowthCount += 1
+  } finally {
+    const growthAllocationMs = mainDiagnosticNow() - allocationStartedAtMs
+    session.growthAllocationMs += growthAllocationMs
+    session.allocationMs += growthAllocationMs
+  }
+  if (!next) throw new Error('Failed to allocate decoded PCM output capacity.')
+  sendLocalPcmStreamResize(session, next.byteLength)
+  return next
+}
+
+type LocalPcmDecodeOutcome =
+  | { type: 'success'; pcm: Buffer; pcmByteLength: number }
+  | { type: 'cancelled' }
+  | { type: 'failed'; error: Error; failureKind?: 'decode' | 'transport' }
+
+function postLocalPcmStreamMessage(
+  session: LocalPcmDecodeSession,
+  message: Record<string, unknown>
+): boolean {
+  const stream = session.stream
+  if (!stream) return false
+  try {
+    stream.port.postMessage(message)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function failLocalPcmStreamProtocol(session: LocalPcmDecodeSession, message: string): void {
+  if (session.settled) return
+  settleLocalPcmDecodeSession(session, {
+    type: 'failed',
+    error: new Error(message),
+    failureKind: 'transport'
+  })
+}
+
+function sendLocalPcmStreamStart(session: LocalPcmDecodeSession): void {
+  const stream = session.stream
+  const output = session.outputBuffer
+  if (!stream || stream.startSent || !output || session.channels < 1) return
+  if (!postLocalPcmStreamMessage(session, {
+    type: 'start',
+    version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+    requestId: session.requestId,
+    nonce: stream.nonce,
+    sampleRate: session.sampleRate,
+    channels: session.channels,
+    backingBufferBytes: output.byteLength
+  })) {
+    failLocalPcmStreamProtocol(session, 'PCM stream closed before decode metadata could be delivered.')
+    return
+  }
+  stream.startSent = true
+}
+
+function sendLocalPcmStreamResize(
+  session: LocalPcmDecodeSession,
+  backingBufferBytes: number
+): void {
+  const stream = session.stream
+  if (!stream || !stream.startSent || session.settled) return
+  if (!postLocalPcmStreamMessage(session, {
+    type: 'resize',
+    version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+    requestId: session.requestId,
+    nonce: stream.nonce,
+    backingBufferBytes
+  })) {
+    failLocalPcmStreamProtocol(session, 'PCM stream closed while its assembly buffer was being resized.')
+  }
+}
+
+function flushLocalPcmStreamChunks(session: LocalPcmDecodeSession): void {
+  const stream = session.stream
+  const output = session.outputBuffer
+  if (
+    session.settled
+    || !stream
+    || !stream.ready
+    || !stream.startSent
+    || !output
+  ) return
+
+  const completedBytes = stream.pendingSuccess?.pcmByteLength ?? null
+  const availableBytes = completedBytes ?? (
+    Math.floor(session.totalBytes / LOCAL_PCM_STREAM_CHUNK_BYTES) * LOCAL_PCM_STREAM_CHUNK_BYTES
+  )
+
+  while (stream.credits > 0 && stream.nextChunkOffset < availableBytes) {
+    const byteOffset = stream.nextChunkOffset
+    const byteEnd = Math.min(byteOffset + LOCAL_PCM_STREAM_CHUNK_BYTES, availableBytes)
+    const copyStartedAtMs = mainDiagnosticNow()
+    const payload = output.buffer.slice(
+      output.byteOffset + byteOffset,
+      output.byteOffset + byteEnd
+    ) as ArrayBuffer
+    stream.dispatchCopyMs += mainDiagnosticNow() - copyStartedAtMs
+
+    const sequence = stream.nextChunkSequence
+    const postStartedAtMs = mainDiagnosticNow()
+    const posted = postLocalPcmStreamMessage(session, {
+      type: 'chunk',
+      version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+      requestId: session.requestId,
+      nonce: stream.nonce,
+      sequence,
+      byteOffset,
+      byteLength: payload.byteLength,
+      payload
+    })
+    stream.dispatchPostMs += mainDiagnosticNow() - postStartedAtMs
+    if (!posted) {
+      failLocalPcmStreamProtocol(session, 'PCM stream closed while decoded audio was being delivered.')
+      return
+    }
+
+    stream.credits -= 1
+    stream.nextChunkOffset = byteEnd
+    stream.nextChunkSequence += 1
+    stream.chunkCount += 1
+  }
+
+  if (
+    stream.pendingSuccess
+    && stream.nextChunkOffset === stream.pendingSuccess.pcmByteLength
+  ) {
+    const outcome = stream.pendingSuccess
+    stream.pendingSuccess = null
+    settleLocalPcmDecodeSession(session, {
+      type: 'success',
+      pcm: outcome.pcm,
+      pcmByteLength: outcome.pcmByteLength
+    })
+  }
+}
+
+function beginLocalPcmStreamDelivery(
+  session: LocalPcmDecodeSession,
+  port: Electron.MessagePortMain,
+  nonce: string
+): void {
+  const stream: LocalPcmStreamState = {
+    port,
+    nonce,
+    ready: false,
+    credits: 0,
+    nextChunkOffset: 0,
+    nextChunkSequence: 0,
+    nextCreditSequence: 0,
+    startSent: false,
+    chunkCount: 0,
+    dispatchCopyMs: 0,
+    dispatchPostMs: 0,
+    pendingSuccess: null,
+    releasePortHooks: null
+  }
+  session.stream = stream
+
+  const handleMessage = (event: Electron.MessageEvent): void => {
+    if (session.settled) return
+    const message = event.data
+    if (
+      !isLocalPcmStreamRendererMessage(message)
+      || message.requestId !== session.requestId
+      || message.nonce !== stream.nonce
+    ) {
+      failLocalPcmStreamProtocol(session, 'PCM stream received an invalid or stale control message.')
+      return
+    }
+
+    if (message.type === 'ready') {
+      if (
+        stream.ready
+        || message.credits !== LOCAL_PCM_STREAM_MAX_CREDITS
+      ) {
+        failLocalPcmStreamProtocol(session, 'PCM stream received invalid initial delivery credits.')
+        return
+      }
+      stream.ready = true
+      stream.credits = LOCAL_PCM_STREAM_MAX_CREDITS
+      flushLocalPcmStreamChunks(session)
+      return
+    }
+
+    if (message.type === 'credit') {
+      if (
+        !stream.ready
+        || message.credits !== 1
+        || message.sequence !== stream.nextCreditSequence
+        || stream.nextCreditSequence >= stream.nextChunkSequence
+        || stream.credits >= LOCAL_PCM_STREAM_MAX_CREDITS
+      ) {
+        failLocalPcmStreamProtocol(session, 'PCM stream received an invalid or duplicate delivery credit.')
+        return
+      }
+      stream.nextCreditSequence += 1
+      stream.credits += 1
+      flushLocalPcmStreamChunks(session)
+      return
+    }
+
+    if (message.type === 'cancel') {
+      settleLocalPcmDecodeSession(session, { type: 'cancelled' })
+      return
+    }
+
+    failLocalPcmStreamProtocol(session, 'PCM stream received an unsupported control message.')
+  }
+  const handleClose = (): void => {
+    if (!session.settled) {
+      settleLocalPcmDecodeSession(session, { type: 'cancelled' })
+    }
+  }
+  port.on('message', handleMessage)
+  port.on('close', handleClose)
+  stream.releasePortHooks = () => {
+    try {
+      port.off('message', handleMessage)
+      port.off('close', handleClose)
+    } catch {
+      // Port cleanup can race with renderer teardown.
+    }
+  }
+  if (!postLocalPcmStreamMessage(session, {
+    type: 'accepted',
+    version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+    requestId: session.requestId,
+    nonce
+  })) {
+    failLocalPcmStreamProtocol(session, 'PCM stream closed before the decode request was accepted.')
+    return
+  }
+  port.start()
+}
+
+function settleLocalPcmDecodeSession(
+  session: LocalPcmDecodeSession,
+  outcome: LocalPcmDecodeOutcome
+): void {
+  if (session.settled) return
+  session.settled = true
+  session.cancelled = outcome.type === 'cancelled'
+  localPcmDecodeSessions.delete(session.key)
+
+  session.releaseSenderHooks?.()
+  session.releaseSenderHooks = null
+  const stream = session.stream
+  stream?.releasePortHooks?.()
+  if (stream) stream.releasePortHooks = null
+  if (session.decodeTimeout) {
+    clearTimeout(session.decodeTimeout)
+    session.decodeTimeout = null
+  }
+  session.probeAbortController?.abort()
+  session.probeAbortController = null
+
+  const ffmpeg = session.ffmpeg
+  if (outcome.type !== 'success' && ffmpeg && !ffmpeg.killed) {
+    try {
+      ffmpeg.kill('SIGKILL')
+    } catch {
+      // Process teardown can race with a natural FFmpeg exit.
+    }
+  }
+
+  session.outputBuffer = null
+
+  const frameSizeBytes = session.channels * Float32Array.BYTES_PER_ELEMENT
+  const successValidationError = outcome.type === 'success' && (
+    outcome.pcmByteLength === 0
+    || outcome.pcmByteLength > outcome.pcm.byteLength
+    || outcome.pcmByteLength % frameSizeBytes !== 0
+  )
+    ? new Error('FFmpeg produced invalid or frame-misaligned PCM audio.')
+    : null
+  let diagnosticOutcome = successValidationError ? 'failed' : outcome.type
+  let streamDeliveryError: Error | null = null
+  const settledAtMs = mainDiagnosticNow()
+  const ffmpegMs = session.ffmpegStartedAtMs === null
+    ? 0
+    : (session.ffmpegCompletedAtMs ?? settledAtMs) - session.ffmpegStartedAtMs
+  let payloadFinalizationMs = 0
+  let mainHandlerMs = (session.decodeCompletedAtMs ?? settledAtMs) - session.handlerStartedAtMs
+  let transportTimings: LocalAudioPcmTransportTimings | null = null
+
+  if (outcome.type === 'cancelled') {
+    if (stream) {
+      postLocalPcmStreamMessage(session, {
+        type: 'cancelled',
+        version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+        requestId: session.requestId,
+        nonce: stream.nonce
+      })
+    }
+    session.resolve(null)
+  } else if (outcome.type === 'failed') {
+    const decodeErrorCode = outcome.error instanceof LocalPcmDecodeLimitError
+      ? LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE
+      : 'PCM_DECODE_FAILED'
+    if (stream) {
+      postLocalPcmStreamMessage(session, {
+        type: 'error',
+        version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+        requestId: session.requestId,
+        nonce: stream.nonce,
+        kind: outcome.failureKind ?? 'decode',
+        code: outcome.failureKind === 'transport'
+          ? 'PCM_STREAM_TRANSPORT_ERROR'
+          : decodeErrorCode,
+        message: outcome.error.message
+      })
+    }
+    session.reject(outcome.error)
+  } else if (successValidationError) {
+    if (stream) {
+      postLocalPcmStreamMessage(session, {
+        type: 'error',
+        version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+        requestId: session.requestId,
+        nonce: stream.nonce,
+        kind: 'decode',
+        code: 'PCM_DECODE_INVALID',
+        message: successValidationError.message
+      })
+    }
+    session.reject(successValidationError)
+  } else {
+    const payloadFinalizationStartedAtMs = mainDiagnosticNow()
+    let interleavedPcm: ArrayBuffer | null = null
+    if (!stream) {
+      // Preallocation avoids a second full-track Buffer.concat copy. Zero the
+      // unused tail before handing the complete backing buffer to Electron IPC.
+      if (outcome.pcmByteLength < outcome.pcm.byteLength) {
+        outcome.pcm.fill(0, outcome.pcmByteLength)
+      }
+      interleavedPcm = toStandaloneArrayBuffer(outcome.pcm)
+    }
+    payloadFinalizationMs = mainDiagnosticNow() - payloadFinalizationStartedAtMs
+    mainHandlerMs = stream
+      ? (session.decodeCompletedAtMs ?? mainDiagnosticNow()) - session.handlerStartedAtMs
+      : mainDiagnosticNow() - session.handlerStartedAtMs
+
+    transportTimings = {
+      decodeRequestId: session.requestId,
+      validPcmBytes: outcome.pcmByteLength,
+      backingBufferBytes: outcome.pcm.byteLength,
+      allocationGrowthCount: session.allocationGrowthCount,
+      transportRoute: stream ? 'message_port_stream' : 'invoke',
+      mainHandlerMs: roundMainDiagnosticMs(mainHandlerMs),
+      binaryResolutionMs: roundMainDiagnosticMs(session.binaryResolutionMs),
+      probeMs: roundMainDiagnosticMs(session.probeMs),
+      ffmpegMs: roundMainDiagnosticMs(ffmpegMs),
+      allocationMs: roundMainDiagnosticMs(session.allocationMs),
+      initialAllocationMs: roundMainDiagnosticMs(session.initialAllocationMs),
+      growthAllocationMs: roundMainDiagnosticMs(session.growthAllocationMs),
+      payloadFinalizationMs: roundMainDiagnosticMs(payloadFinalizationMs),
+      // Replaced in preload after ipcRenderer.invoke resolves. Keeping the
+      // field present gives renderer consumers one stable timing shape.
+      preloadInvokeMs: 0,
+      ...(stream
+        ? {
+            streamChunkCount: stream.chunkCount,
+            streamDispatchCopyMs: roundMainDiagnosticMs(stream.dispatchCopyMs),
+            streamDispatchPostMs: roundMainDiagnosticMs(stream.dispatchPostMs),
+            streamTailMs: roundMainDiagnosticMs(
+              Math.max(0, mainDiagnosticNow() - (session.decodeCompletedAtMs ?? mainDiagnosticNow()))
+            )
+          }
+        : {})
+    }
+
+    if (stream) {
+      const posted = postLocalPcmStreamMessage(session, {
+        type: 'complete',
+        version: LOCAL_PCM_STREAM_PROTOCOL_VERSION,
+        requestId: session.requestId,
+        nonce: stream.nonce,
+        frames: outcome.pcmByteLength / frameSizeBytes,
+        pcmByteLength: outcome.pcmByteLength,
+        probeMs: transportTimings.probeMs,
+        decodeMs: transportTimings.ffmpegMs,
+        backgroundPriorityApplied: session.backgroundPriorityApplied,
+        chunkCount: stream.chunkCount,
+        transportTimings
+      })
+      if (posted) session.resolve(null)
+      else {
+        streamDeliveryError = new Error('PCM stream closed before completion metadata was delivered.')
+        diagnosticOutcome = 'failed'
+        session.reject(streamDeliveryError)
+      }
+    } else {
+      session.resolve({
+        requestId: session.requestId,
+        sampleRate: session.sampleRate,
+        channels: session.channels,
+        frames: outcome.pcmByteLength / frameSizeBytes,
+        pcmByteLength: outcome.pcmByteLength,
+        interleavedPcm: interleavedPcm as ArrayBuffer,
+        probeMs: transportTimings.probeMs,
+        decodeMs: transportTimings.ffmpegMs,
+        backgroundPriorityApplied: session.backgroundPriorityApplied,
+        transportTimings
+      })
+    }
+  }
+
+  if (stream) {
+    try {
+      stream.port.close()
+    } catch {
+      // Port teardown can race with renderer teardown.
+    }
+  }
+
+  // Keep diagnostics I/O off the measured decode/return path. A success event
+  // is enqueued only after the payload has been finalized and the handler's
+  // result promise has been resolved.
+  const diagnosticsDetails: Record<string, unknown> = {
+    requestId: session.requestId,
+    decodeRequestId: session.requestId,
+    trackPath: session.filePath,
+    outcome: diagnosticOutcome,
+    initialPriority: session.initialPriority,
+    finalPriority: session.priority,
+    backgroundPriorityApplied: session.backgroundPriorityApplied,
+    expectedChannels: session.expectedChannels,
+    probedChannels: session.channels > 0 ? session.channels : null,
+    pcmByteLength: outcome.type === 'success' && !successValidationError ? outcome.pcmByteLength : null,
+    validPcmBytes: outcome.type === 'success' && !successValidationError ? outcome.pcmByteLength : null,
+    backingBufferBytes: outcome.type === 'success' ? outcome.pcm.byteLength : null,
+    allocationGrowthCount: session.allocationGrowthCount,
+    transportRoute: stream ? 'message_port_stream' : 'invoke',
+    mainHandlerMs: roundMainDiagnosticMs(mainHandlerMs),
+    binaryResolutionMs: roundMainDiagnosticMs(session.binaryResolutionMs),
+    probeMs: roundMainDiagnosticMs(session.probeMs),
+    decodeMs: session.ffmpegStartedAtMs === null ? null : roundMainDiagnosticMs(ffmpegMs),
+    ffmpegMs: session.ffmpegStartedAtMs === null ? null : roundMainDiagnosticMs(ffmpegMs),
+    allocationMs: roundMainDiagnosticMs(session.allocationMs),
+    initialAllocationMs: roundMainDiagnosticMs(session.initialAllocationMs),
+    growthAllocationMs: roundMainDiagnosticMs(session.growthAllocationMs),
+    payloadFinalizationMs: roundMainDiagnosticMs(payloadFinalizationMs),
+    streamChunkCount: stream?.chunkCount ?? null,
+    streamDispatchCopyMs: stream ? roundMainDiagnosticMs(stream.dispatchCopyMs) : null,
+    streamDispatchPostMs: stream ? roundMainDiagnosticMs(stream.dispatchPostMs) : null,
+    streamTailMs: transportTimings?.streamTailMs ?? null,
+    error: streamDeliveryError?.message
+      ?? successValidationError?.message
+      ?? (outcome.type === 'failed' ? outcome.error.message : null)
+  }
+  const diagnosticsImmediate = setImmediate(() => {
+    logMemoryDiagnosticsMainEvent(
+      'local_pcm_decode_completed',
+      diagnosticsDetails,
+      { captureSample: false }
+    )
+  })
+  diagnosticsImmediate.unref()
+}
+
+async function decodeLocalAudioToPcm(
+  sender: Electron.WebContents,
+  requestIdValue: unknown,
+  filePathValue: unknown,
+  outputSampleRateValue: unknown,
+  expectedChannelsValue?: unknown,
+  priorityValue?: unknown,
+  handlerStartedAtMs: number = mainDiagnosticNow(),
+  streamDelivery?: { port: Electron.MessagePortMain; nonce: string }
+): Promise<LocalPcmDecodeResult | null> {
+  const request = normalizeLocalPcmDecodeRequest(
+    requestIdValue,
+    filePathValue,
+    outputSampleRateValue,
+    expectedChannelsValue,
+    priorityValue
+  )
+  const key = localPcmDecodeSessionKey(sender, request.requestId)
+
+  // Reusing an active request ID supersedes that exact request without
+  // affecting unrelated foreground/prebuffer work owned by the renderer.
+  const existing = localPcmDecodeSessions.get(key)
+  if (existing) {
+    settleLocalPcmDecodeSession(existing, { type: 'cancelled' })
+  }
+
+  return new Promise<LocalPcmDecodeResult | null>((resolve, reject) => {
+    const session: LocalPcmDecodeSession = {
+      key,
+      requestId: request.requestId,
+      sender,
+      filePath: request.filePath,
+      sampleRate: request.sampleRate,
+      expectedChannels: request.expectedChannels,
+      channels: 0,
+      initialPriority: request.priority,
+      priority: request.priority,
+      backgroundPriorityApplied: false,
+      handlerStartedAtMs,
+      binaryResolutionMs: 0,
+      probeAbortController: null,
+      probeMs: 0,
+      ffmpeg: null,
+      ffmpegStartedAtMs: null,
+      ffmpegCompletedAtMs: null,
+      decodeCompletedAtMs: null,
+      allocationMs: 0,
+      initialAllocationMs: 0,
+      growthAllocationMs: 0,
+      allocationGrowthCount: 0,
+      outputBuffer: null,
+      totalBytes: 0,
+      stderrChunks: [],
+      settled: false,
+      cancelled: false,
+      decodeTimeout: null,
+      releaseSenderHooks: null,
+      stream: null,
+      resolve,
+      reject
+    }
+    localPcmDecodeSessions.set(key, session)
+
+    const handleSenderDestroyed = (): void => {
+      settleLocalPcmDecodeSession(session, { type: 'cancelled' })
+    }
+    const handleSenderNavigation = (
+      _event: Electron.Event,
+      _url: string,
+      isInPlace: boolean,
+      isMainFrame: boolean
+    ): void => {
+      if (!isMainFrame || isInPlace) return
+      settleLocalPcmDecodeSession(session, { type: 'cancelled' })
+    }
+    sender.once('destroyed', handleSenderDestroyed)
+    sender.on('did-start-navigation', handleSenderNavigation)
+    session.releaseSenderHooks = () => {
+      try {
+        sender.removeListener('destroyed', handleSenderDestroyed)
+        sender.removeListener('did-start-navigation', handleSenderNavigation)
+      } catch {
+        // Listener removal can race with renderer teardown.
+      }
+    }
+
+    if (streamDelivery) {
+      try {
+        beginLocalPcmStreamDelivery(session, streamDelivery.port, streamDelivery.nonce)
+      } catch (error) {
+        settleLocalPcmDecodeSession(session, {
+          type: 'failed',
+          error: error instanceof Error
+            ? error
+            : new Error('PCM stream transport could not be initialized.'),
+          failureKind: 'transport'
+        })
+      }
+      if (session.settled) return
+    }
+
+    session.decodeTimeout = setTimeout(() => {
+      const deliveryTimedOut = Boolean(session.stream && session.decodeCompletedAtMs !== null)
+      settleLocalPcmDecodeSession(session, {
+        type: 'failed',
+        error: new Error(
+          deliveryTimedOut
+            ? 'Local PCM stream delivery timed out after decoding completed.'
+            : 'Local FFmpeg decode timed out after 180 seconds; falling back to Chromium decoding.'
+        ),
+        ...(deliveryTimedOut ? { failureKind: 'transport' as const } : {})
+      })
+    }, LOCAL_PCM_DECODE_TIMEOUT_MS)
+    session.decodeTimeout.unref()
+
+    void (async () => {
+      const binaryResolutionStartedAtMs = mainDiagnosticNow()
+      const [ffmpegPath, ffprobePath] = await Promise.all([
+        resolveBinary('ffmpeg'),
+        resolveBinary('ffprobe')
+      ])
+      session.binaryResolutionMs = mainDiagnosticNow() - binaryResolutionStartedAtMs
+      if (session.settled) return
+      if (!ffmpegPath || !ffprobePath) {
+        settleLocalPcmDecodeSession(session, {
+          type: 'failed',
+          error: new Error('FFmpeg and FFprobe are required for safe local audio decoding.')
+        })
+        return
+      }
+
+      const probeStartedAtMs = mainDiagnosticNow()
+      const probe = await probeLocalPcmStream(session, ffprobePath)
+      session.probeMs = mainDiagnosticNow() - probeStartedAtMs
+      if (session.settled) return
+      session.channels = probe.channels
+      const allocationStartedAtMs = mainDiagnosticNow()
+      try {
+        session.outputBuffer = allocateInitialLocalPcmOutput(
+          probe.durationSeconds,
+          session.sampleRate,
+          session.channels
+        )
+      } finally {
+        const initialAllocationMs = mainDiagnosticNow() - allocationStartedAtMs
+        session.initialAllocationMs += initialAllocationMs
+        session.allocationMs += initialAllocationMs
+      }
+      sendLocalPcmStreamStart(session)
+      if (session.settled) return
+      if (
+        isDev
+        && session.expectedChannels !== null
+        && session.expectedChannels !== session.channels
+      ) {
+        console.debug('[audio-decode] using probed channel count instead of stale metadata', {
+          filePath: session.filePath,
+          expectedChannels: session.expectedChannels,
+          probedChannels: session.channels
+        })
+      }
+
+      session.ffmpegStartedAtMs = mainDiagnosticNow()
+      const ffmpeg = spawn(
+        ffmpegPath,
+        [
+          '-v', 'error',
+          '-nostdin',
+          '-i', session.filePath,
+          '-map', '0:a:0',
+          '-vn',
+          '-acodec', 'pcm_f32le',
+          '-f', 'f32le',
+          '-ar', String(session.sampleRate),
+          'pipe:1'
+        ],
+        {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true
+        }
+      )
+      session.ffmpeg = ffmpeg
+
+      if (session.priority === 'background' && typeof ffmpeg.pid === 'number') {
+        try {
+          setPriority(ffmpeg.pid, osConstants.priority.PRIORITY_BELOW_NORMAL)
+          session.backgroundPriorityApplied = true
+        } catch (error) {
+          if (isDev) {
+            console.debug('[audio-decode] could not lower background ffmpeg priority', {
+              pid: ffmpeg.pid,
+              message: error instanceof Error ? error.message : String(error)
+            })
+          }
+        }
+      }
+
+      ffmpeg.stderr.setEncoding('utf8')
+      ffmpeg.stderr.on('data', (data: string | Buffer) => {
+        session.stderrChunks.push(String(data))
+        if (session.stderrChunks.length > 8) {
+          session.stderrChunks.shift()
+        }
+      })
+
+      ffmpeg.stdin.on('error', (error) => {
+        if (session.settled || isRemoteStreamPipeTeardownError(error)) return
+        settleLocalPcmDecodeSession(session, {
+          type: 'failed',
+          error: error instanceof Error ? error : new Error('Local FFmpeg input pipe failed.')
+        })
+      })
+
+      ffmpeg.stdout.on('data', (chunk: Buffer) => {
+        if (session.settled || chunk.byteLength === 0) return
+        const nextTotalBytes = session.totalBytes + chunk.byteLength
+        try {
+          const output = ensureLocalPcmOutputCapacity(session, nextTotalBytes)
+          if (session.settled) return
+          chunk.copy(output, session.totalBytes)
+          session.totalBytes = nextTotalBytes
+          flushLocalPcmStreamChunks(session)
+        } catch (error) {
+          settleLocalPcmDecodeSession(session, {
+            type: 'failed',
+            error: error instanceof Error
+              ? error
+              : new Error('Decoded audio exceeds the Standard playback limit.')
+          })
+        }
+      })
+
+      ffmpeg.stdout.on('error', (error) => {
+        if (session.settled) return
+        settleLocalPcmDecodeSession(session, {
+          type: 'failed',
+          error: error instanceof Error ? error : new Error('Local FFmpeg output pipe failed.')
+        })
+      })
+
+      ffmpeg.on('error', (error) => {
+        settleLocalPcmDecodeSession(session, {
+          type: 'failed',
+          error: error instanceof Error ? error : new Error('Local FFmpeg decode failed to start.')
+        })
+      })
+
+      ffmpeg.on('close', (code) => {
+        if (session.settled) return
+        const ffmpegCompletedAtMs = mainDiagnosticNow()
+        session.ffmpegCompletedAtMs = ffmpegCompletedAtMs
+        session.decodeCompletedAtMs = ffmpegCompletedAtMs
+        if (session.cancelled) {
+          settleLocalPcmDecodeSession(session, { type: 'cancelled' })
+          return
+        }
+        if (code !== 0) {
+          const stderr = session.stderrChunks.join(' ').trim()
+          settleLocalPcmDecodeSession(session, {
+            type: 'failed',
+            error: new Error(
+              stderr.length > 0
+                ? `Local FFmpeg decode failed: ${stderr}`
+                : `Local FFmpeg decode failed (exit ${code ?? 'unknown'}).`
+            )
+          })
+          return
+        }
+
+        try {
+          const pcm = session.outputBuffer
+          if (!pcm || session.totalBytes === 0) {
+            throw new Error('Local FFmpeg decode produced no PCM audio.')
+          }
+          const frameSizeBytes = session.channels * Float32Array.BYTES_PER_ELEMENT
+          if (session.totalBytes > pcm.byteLength || session.totalBytes % frameSizeBytes !== 0) {
+            throw new Error('FFmpeg produced invalid or frame-misaligned PCM audio.')
+          }
+          if (session.stream) {
+            session.stream.pendingSuccess = {
+              pcm,
+              pcmByteLength: session.totalBytes
+            }
+            flushLocalPcmStreamChunks(session)
+          } else {
+            settleLocalPcmDecodeSession(session, {
+              type: 'success',
+              pcm,
+              pcmByteLength: session.totalBytes
+            })
+          }
+        } catch (error) {
+          settleLocalPcmDecodeSession(session, {
+            type: 'failed',
+            error: error instanceof Error ? error : new Error('Local FFmpeg PCM assembly failed.')
+          })
+        }
+      })
+
+      try {
+        if (!ffmpeg.stdin.destroyed) {
+          ffmpeg.stdin.end()
+        }
+      } catch {
+        // FFmpeg reads the local file directly; stdin is intentionally unused.
+      }
+    })().catch((error) => {
+      settleLocalPcmDecodeSession(session, {
+        type: 'failed',
+        error: error instanceof Error ? error : new Error('Local FFmpeg decode failed.')
+      })
+    })
+  })
+}
+
+function cancelLocalAudioDecode(sender: Electron.WebContents, requestIdValue: unknown): void {
+  const requestId = Number(requestIdValue)
+  if (!Number.isSafeInteger(requestId) || requestId < 0) return
+  const session = localPcmDecodeSessions.get(localPcmDecodeSessionKey(sender, requestId))
+  if (!session) return
+  settleLocalPcmDecodeSession(session, { type: 'cancelled' })
+}
+
+function promoteLocalAudioDecode(sender: Electron.WebContents, requestIdValue: unknown): void {
+  const requestId = Number(requestIdValue)
+  if (!Number.isSafeInteger(requestId) || requestId < 0) return
+  const session = localPcmDecodeSessions.get(localPcmDecodeSessionKey(sender, requestId))
+  if (!session || session.settled || session.priority === 'interactive') return
+  session.priority = 'interactive'
+  const pid = session.ffmpeg?.pid
+  if (typeof pid !== 'number') return
+  try {
+    setPriority(pid, osConstants.priority.PRIORITY_NORMAL)
+  } catch (error) {
+    if (isDev) {
+      console.debug('[audio-decode] could not promote background ffmpeg priority', {
+        pid,
+        message: error instanceof Error ? error.message : String(error)
+      })
+    }
+  }
+}
+
 interface TrackLoudnessAnalysisResult {
   loudnessLufs: number
   peakLinear: number | null
@@ -9929,27 +12437,51 @@ async function runLoudnessAnalysisJob(
   }
 
   let backgroundPriorityApplied = false
+  let processHasBackgroundPriority = false
+  let activePid: number | null = null
+  const stopWatchingPriority = context.onPriorityChanged((priority) => {
+    if (priority !== 'interactive' || activePid === null || !processHasBackgroundPriority) return
+    try {
+      setPriority(activePid, osConstants.priority.PRIORITY_NORMAL)
+      processHasBackgroundPriority = false
+    } catch (error) {
+      if (isDev) {
+        console.debug('[loudness] could not restore promoted ffmpeg priority', {
+          pid: activePid,
+          message: error instanceof Error ? error.message : String(error)
+        })
+      }
+    }
+  })
   try {
-    const stderr = await execFileCaptureStderr(
-      ffmpegPath,
-      buildEbur128Args(job.filePath),
-      { timeout: LOUDNESS_FFMPEG_TIMEOUT_MS, maxBuffer: LOUDNESS_FFMPEG_MAX_STDERR_BYTES },
-      context.signal,
-      (pid) => {
-        if (context.priority !== 'background' || pid === null) return
-        try {
-          setPriority(pid, osConstants.priority.PRIORITY_BELOW_NORMAL)
-          backgroundPriorityApplied = true
-        } catch (error) {
-          if (isDev) {
-            console.debug('[loudness] could not lower background ffmpeg priority', {
-              pid,
-              message: error instanceof Error ? error.message : String(error)
-            })
+    let stderr: string
+    try {
+      stderr = await execFileCaptureStderr(
+        ffmpegPath,
+        buildEbur128Args(job.filePath),
+        { timeout: LOUDNESS_FFMPEG_TIMEOUT_MS, maxBuffer: LOUDNESS_FFMPEG_MAX_STDERR_BYTES },
+        context.signal,
+        (pid) => {
+          activePid = pid
+          if (context.priority !== 'background' || pid === null) return
+          try {
+            setPriority(pid, osConstants.priority.PRIORITY_BELOW_NORMAL)
+            backgroundPriorityApplied = true
+            processHasBackgroundPriority = true
+          } catch (error) {
+            if (isDev) {
+              console.debug('[loudness] could not lower background ffmpeg priority', {
+                pid,
+                message: error instanceof Error ? error.message : String(error)
+              })
+            }
           }
         }
-      }
-    )
+      )
+    } finally {
+      activePid = null
+      stopWatchingPriority()
+    }
     const capturedStderrBytes = Buffer.byteLength(stderr, 'utf8')
     const parsed = parseEbur128Summary(stderr)
     if (!parsed) {
@@ -9962,6 +12494,9 @@ async function runLoudnessAnalysisJob(
       }
     }
 
+    if (context.signal.aborted) {
+      throw new Error('Loudness analysis was superseded before persistence.')
+    }
     await library.setTrackLoudness({
       trackPath: job.filePath,
       loudnessLufs: parsed.loudnessLufs,
@@ -10017,6 +12552,13 @@ const loudnessAnalysisJobQueue = new LoudnessAnalysisJobQueue<
   }
 })
 
+let latestInteractiveLoudnessRequestId = 0
+
+function supersedeInteractiveLoudness(filePath: string | null): void {
+  latestInteractiveLoudnessRequestId += 1
+  loudnessAnalysisJobQueue.supersedeInteractiveExcept(filePath ?? '')
+}
+
 function enqueueLoudnessAnalysisJob(
   filePath: string,
   fileStat: { size: number; mtimeMs: number },
@@ -10033,7 +12575,18 @@ async function analyzeTrackLoudness(
 ): Promise<TrackLoudnessAnalysisResult | null> {
   if (!filePath || isSubsonicPath(filePath) || isJellyfinPath(filePath)) return null
 
+  const interactiveRequestId = priority === 'interactive'
+    ? ++latestInteractiveLoudnessRequestId
+    : null
+  if (priority === 'interactive') {
+    loudnessAnalysisJobQueue.supersedeInteractiveExcept(filePath)
+  }
+  const isLatestInteractiveRequest = (): boolean => (
+    interactiveRequestId === null || interactiveRequestId === latestInteractiveLoudnessRequestId
+  )
+
   const fileStat = await statForLoudness(filePath)
+  if (!isLatestInteractiveRequest()) return null
   if (!fileStat) return null
 
   const stored = library.getTrackLoudness(filePath)
@@ -10048,6 +12601,7 @@ async function analyzeTrackLoudness(
       }
     }
     await library.deleteTrackLoudness(filePath)
+    if (!isLatestInteractiveRequest()) return null
   }
 
   // The bundled ffmpeg (6.0) cannot read IAMF, so skip the doomed ebur128

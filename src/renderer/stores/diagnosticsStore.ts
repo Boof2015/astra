@@ -1,17 +1,28 @@
 import { create } from 'zustand'
 import type { MemoryDiagnosticsCaptureBundleResult, MemoryDiagnosticsStatus } from '../../types/diagnostics'
+import {
+  createMainPortPcmTransferBenchmarkProbe,
+  runPcmTransferBenchmark,
+  type PcmTransferBenchmarkProgress,
+  type PcmTransferBenchmarkSummary
+} from '../utils/pcmTransferBenchmark'
+import { createLocalPcmStreamClient, type LocalPcmStreamClient } from '../audio/localPcmStreamClient'
 
 interface DiagnosticsStore {
   status: MemoryDiagnosticsStatus | null
   isLoading: boolean
   isInitialized: boolean
   isCapturingBundle: boolean
+  isRunningPcmTransferBenchmark: boolean
+  pcmTransferBenchmarkProgress: PcmTransferBenchmarkProgress | null
   lastCaptureResult: MemoryDiagnosticsCaptureBundleResult | null
+  lastPcmTransferBenchmark: PcmTransferBenchmarkSummary | null
   errorMessage: string
   init: () => Promise<void>
   refresh: () => Promise<void>
   setEnabled: (enabled: boolean) => Promise<MemoryDiagnosticsStatus | null>
   captureBundle: (tag?: string) => Promise<MemoryDiagnosticsCaptureBundleResult | null>
+  runPcmTransferBenchmark: () => Promise<PcmTransferBenchmarkSummary | null>
   revealCurrentLog: () => Promise<boolean>
   revealPreviousLog: () => Promise<boolean>
 }
@@ -50,7 +61,10 @@ export const useDiagnosticsStore = create<DiagnosticsStore>((set, get) => {
     isLoading: false,
     isInitialized: false,
     isCapturingBundle: false,
+    isRunningPcmTransferBenchmark: false,
+    pcmTransferBenchmarkProgress: null,
     lastCaptureResult: null,
+    lastPcmTransferBenchmark: null,
     errorMessage: '',
 
     init: async () => {
@@ -77,6 +91,10 @@ export const useDiagnosticsStore = create<DiagnosticsStore>((set, get) => {
     },
 
     setEnabled: async (enabled: boolean) => {
+      if (get().isRunningPcmTransferBenchmark) {
+        set({ errorMessage: 'Wait for the PCM transfer benchmark to finish before changing diagnostics logging.' })
+        return null
+      }
       try {
         const status = await window.electronAPI.diagnostics.setEnabled(enabled)
         return applyStatus(status)
@@ -87,6 +105,11 @@ export const useDiagnosticsStore = create<DiagnosticsStore>((set, get) => {
     },
 
     captureBundle: async (tag?: string) => {
+      if (get().isCapturingBundle) return null
+      if (get().isRunningPcmTransferBenchmark) {
+        set({ errorMessage: 'Wait for the PCM transfer benchmark to finish before capturing a memory bundle.' })
+        return null
+      }
       set({ isCapturingBundle: true, errorMessage: '' })
       try {
         const result = await window.electronAPI.diagnostics.captureMemoryBundle(tag)
@@ -101,6 +124,78 @@ export const useDiagnosticsStore = create<DiagnosticsStore>((set, get) => {
           errorMessage: toErrorMessage(error)
         })
         return null
+      }
+    },
+
+    runPcmTransferBenchmark: async () => {
+      if (get().isRunningPcmTransferBenchmark) return null
+      if (get().isCapturingBundle) {
+        set({ errorMessage: 'Wait for the memory bundle capture to finish before running the PCM transfer benchmark.' })
+        return null
+      }
+      if (get().status?.enabled !== true) {
+        set({ errorMessage: 'Enable diagnostics logging before running the PCM transfer benchmark.' })
+        return null
+      }
+
+      set({
+        isRunningPcmTransferBenchmark: true,
+        pcmTransferBenchmarkProgress: null,
+        errorMessage: ''
+      })
+      let portBenchmarkClient: LocalPcmStreamClient | null = null
+      try {
+        const diagnostics = window.electronAPI.diagnostics
+        portBenchmarkClient = createLocalPcmStreamClient({
+          windowTarget: {
+            sourceIdentity: window,
+            addMessageListener: (listener) => window.addEventListener('message', listener),
+            removeMessageListener: (listener) => window.removeEventListener('message', listener)
+          },
+          openLocalAudioPcmStream: (
+            requestId,
+            filePath,
+            outputSampleRate,
+            expectedChannels,
+            priority,
+            nonce
+          ) => {
+            const prefix = 'pcm-transfer-benchmark:'
+            if (
+              !filePath.startsWith(prefix)
+              || outputSampleRate !== 48_000
+              || expectedChannels !== 1
+              || priority !== 'interactive'
+            ) {
+              return false
+            }
+            const sizeBytes = Number(filePath.slice(prefix.length))
+            return diagnostics.openMainPcmStreamBenchmark(requestId, sizeBytes, nonce)
+          }
+        })
+        const benchmarkMainPortPcmTransfer = createMainPortPcmTransferBenchmarkProbe(portBenchmarkClient)
+        const summary = await runPcmTransferBenchmark({
+          benchmarkMainPcmTransfer: (sizeBytes) => diagnostics.benchmarkMainPcmTransfer(sizeBytes),
+          benchmarkPreloadPcmTransfer: (sizeBytes) => diagnostics.benchmarkPreloadPcmTransfer(sizeBytes),
+          benchmarkMainPortPcmTransfer,
+          logEvent: (payload, options) => diagnostics.logEvent(payload, options)
+        }, {
+          onProgress: (progress) => set({ pcmTransferBenchmarkProgress: progress })
+        })
+        set({
+          lastPcmTransferBenchmark: summary,
+          errorMessage: ''
+        })
+        return summary
+      } catch (error) {
+        set({ errorMessage: toErrorMessage(error) })
+        return null
+      } finally {
+        portBenchmarkClient?.dispose()
+        set({
+          isRunningPcmTransferBenchmark: false,
+          pcmTransferBenchmarkProgress: null
+        })
       }
     },
 

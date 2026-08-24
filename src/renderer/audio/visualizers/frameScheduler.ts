@@ -16,6 +16,8 @@ export class FrameScheduler {
   private frameId: number | null = null
   private actualFps = 0
   private frameTarget: VisualizerFrameTarget
+  private lastDispatchTimestamp: number | null = null
+  private trackFpsForGetter = false
 
   constructor(options: FrameSchedulerOptions = {}) {
     this.frameTarget = options.frameTarget ?? 'display-sync'
@@ -36,6 +38,7 @@ export class FrameScheduler {
   setFrameTarget(target: VisualizerFrameTarget): void {
     if (this.frameTarget === target) return
     this.frameTarget = target
+    this.lastDispatchTimestamp = null
     this.dispatchTimestamps = []
     this.updateActualFps(0)
   }
@@ -45,15 +48,26 @@ export class FrameScheduler {
   }
 
   getActualFps(): number {
+    // FPS sampling is diagnostics-only. Calling the getter opts this scheduler
+    // into tracking; the default render path keeps only one timestamp.
+    this.trackFpsForGetter = true
     return this.actualFps
   }
 
   subscribeToActualFps(listener: (fps: number) => void): () => void {
+    if (this.fpsListeners.size === 0 && !this.trackFpsForGetter) {
+      this.dispatchTimestamps = []
+      this.updateActualFps(0)
+    }
     this.fpsListeners.add(listener)
     listener(this.actualFps)
 
     return () => {
       this.fpsListeners.delete(listener)
+      if (this.fpsListeners.size === 0 && !this.trackFpsForGetter) {
+        this.dispatchTimestamps = []
+        this.updateActualFps(0)
+      }
     }
   }
 
@@ -72,6 +86,7 @@ export class FrameScheduler {
     }
 
     this.dispatchTimestamps = []
+    this.lastDispatchTimestamp = null
     this.updateActualFps(0)
   }
 
@@ -88,7 +103,10 @@ export class FrameScheduler {
         : Date.now()
 
     if (this.shouldDispatchFrame(now)) {
-      this.recordDispatch(now)
+      this.lastDispatchTimestamp = now
+      if (this.trackFpsForGetter || this.fpsListeners.size > 0) {
+        this.recordDispatch(now)
+      }
       for (const callback of [...this.callbacks]) {
         callback()
       }
@@ -102,12 +120,11 @@ export class FrameScheduler {
       return true
     }
 
-    const lastDispatchTimestamp = this.dispatchTimestamps[this.dispatchTimestamps.length - 1]
-    if (lastDispatchTimestamp === undefined) {
+    if (this.lastDispatchTimestamp === null) {
       return true
     }
 
-    return timestamp - lastDispatchTimestamp >= (1000 / this.frameTarget) - TARGET_EPSILON_MS
+    return timestamp - this.lastDispatchTimestamp >= (1000 / this.frameTarget) - TARGET_EPSILON_MS
   }
 
   private recordDispatch(timestamp: number): void {

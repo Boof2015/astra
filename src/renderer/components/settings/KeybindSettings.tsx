@@ -35,11 +35,13 @@ export default function KeybindSettings() {
   const overrides = useInputBindingStore((state) => state.overrides)
   const globalEnabled = useInputBindingStore((state) => state.globalEnabled)
   const globalStatuses = useInputBindingStore((state) => state.globalStatuses)
+  const globalUserSuspended = useInputBindingStore((state) => state.globalUserSuspended)
   const assignBinding = useInputBindingStore((state) => state.assignBinding)
   const clearBinding = useInputBindingStore((state) => state.clearBinding)
   const resetAction = useInputBindingStore((state) => state.resetAction)
   const resetAll = useInputBindingStore((state) => state.resetAll)
   const setGlobalRegistrationSuspended = useInputBindingStore((state) => state.setGlobalRegistrationSuspended)
+  const setGlobalUserSuspended = useInputBindingStore((state) => state.setGlobalUserSuspended)
   const setGlobalEnabled = useInputBindingStore((state) => state.setGlobalEnabled)
   const platform = window.electronAPI?.platform ?? 'linux'
   const [captureTarget, setCaptureTarget] = useState<CaptureTarget | null>(null)
@@ -137,6 +139,18 @@ export default function KeybindSettings() {
         <p className="settings-note keybind-settings-note">
           Click a binding slot, then press a key combination or Mouse 4/5. Esc cancels capture; Esc and Tab are reserved.
         </p>
+        {globalUserSuspended && (
+          <p className="settings-note keybind-feedback" role="status">
+            Global hotkeys are paused for this session.{' '}
+            <button
+              type="button"
+              className="keybind-inline-action"
+              onClick={() => setGlobalUserSuspended(false)}
+            >
+              Resume global hotkeys
+            </button>
+          </p>
+        )}
         {feedback && <p className="settings-note keybind-feedback" role="status">{feedback}</p>}
 
         <div className="keybind-groups">

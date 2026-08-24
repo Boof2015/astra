@@ -39,6 +39,9 @@
   font-size: 10px;
   letter-spacing: 0.1em;
   color: rgba(255, 255, 255, 0.86);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .scope-popout-controls {
@@ -74,6 +77,30 @@
   border-color: rgba(var(--accent-rgb), 0.62);
   background: rgba(var(--accent-rgb), 0.18);
   color: #fff;
+}
+
+@media (max-width: 180px) {
+  .scope-popout-header {
+    padding: 0 6px;
+  }
+
+  .scope-popout-drag {
+    gap: 0;
+  }
+
+  .scope-popout-badge {
+    display: none;
+  }
+
+  .scope-popout-title {
+    font-size: 9px;
+    letter-spacing: 0.05em;
+  }
+
+  .scope-popout-btn {
+    height: 22px;
+    padding: 0 6px;
+  }
 }
 
 .scope-popout-body {

@@ -11,6 +11,7 @@ import KeybindSettings from '../settings/KeybindSettings'
 import SettingsTransferWizard from '../settings/SettingsTransferWizard'
 import ImportedListeningDataCard from '../settings/ImportedListeningDataCard'
 import SettingsSegmentedControl, { type SettingsSegmentedOption } from '../settings/SettingsSegmentedControl'
+import HomeSkyControls from '../home/HomeSkyControls'
 import { renderPairingQrSvg } from '../../utils/pairingQr'
 import { usePresence } from '../../hooks/usePresence'
 import { useLibraryStore } from '../../stores/libraryStore'
@@ -48,6 +49,7 @@ import { useLyricsStore } from '../../stores/lyricsStore'
 import { useLyricsDisplaySettingsStore } from '../../stores/lyricsDisplaySettingsStore'
 import { useUpdateStore } from '../../stores/updateStore'
 import { useDiagnosticsStore } from '../../stores/diagnosticsStore'
+import { useLibraryDiagnosticsStore } from '../../stores/libraryDiagnosticsStore'
 import { useGraphStore } from '../../stores/graphStore'
 import { useListeningStatsStore } from '../../stores/listeningStatsStore'
 import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
@@ -94,6 +96,7 @@ import type { LastFmProfileStatus, LastFmScrobbleProtocol } from '../../../types
 import { LRCLIB_OFFICIAL_BASE_URL } from '../../../types/lyrics'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
 import type { CompanionApiScope } from '../../../types/companionApi'
+import type { DesktopIntegrationPrefs } from '../../../types/desktopIntegration'
 import ParallaxSettingsPanel from '../parallax/ParallaxSettingsPanel'
 
 type ResetActionId =
@@ -143,6 +146,7 @@ const COVER_ART_ACCENT_METHOD_OPTIONS: readonly SettingsSegmentedOption<CoverArt
 const HOME_GREETING_TEXT_OPTIONS: readonly SettingsSegmentedOption<HomeGreetingTextMode>[] = [
   { value: 'messages', label: 'Messages' },
   { value: 'clock', label: 'Clock' },
+  { value: 'binary-clock', label: 'Binary' },
   { value: 'off', label: 'Off' },
 ]
 
@@ -310,6 +314,10 @@ function formatNormalizationTargetLufs(value: number): string {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
 }
 
+function formatPcmTransferBenchmarkMs(value: number): string {
+  return `${value < 10 ? value.toFixed(2) : value.toFixed(1)} ms`
+}
+
 function parseNormalizationTargetLufsInput(input: string): number | null {
   const trimmed = input.trim()
   if (!trimmed) return null
@@ -362,6 +370,9 @@ export default function SettingsView() {
   const [localApiSelectedPairingBaseUrl, setLocalApiSelectedPairingBaseUrl] = useState('')
   const [localApiPairingModalOpen, setLocalApiPairingModalOpen] = useState(false)
   const [settingsTransferWizardOpen, setSettingsTransferWizardOpen] = useState(false)
+  const [desktopIntegrationPrefs, setDesktopIntegrationPrefs] = useState<DesktopIntegrationPrefs | null>(null)
+  const [desktopIntegrationBusy, setDesktopIntegrationBusy] = useState(false)
+  const [desktopIntegrationError, setDesktopIntegrationError] = useState('')
   const [showInlinePhoneQr, setShowInlinePhoneQr] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
   const [resetStatuses, setResetStatuses] = useState<Record<ResetActionId, ResetActionStatus>>(
@@ -400,7 +411,12 @@ export default function SettingsView() {
   const disableStandardAnalysisGraphDev = useAudioSettingsStore((state) => state.disableStandardAnalysisGraphDev)
   const setDisableStandardAnalysisGraphDev = useAudioSettingsStore((state) => state.setDisableStandardAnalysisGraphDev)
   const nativeAudioCapabilities = useAudioSettingsStore((state) => state.nativeAudioCapabilities)
+  const nativeAudioOutputStatus = useAudioSettingsStore((state) => state.nativeAudioOutputStatus)
   const playbackModeStatusMessage = useAudioSettingsStore((state) => state.playbackModeStatusMessage)
+  const exclusiveSampleRate = useAudioSettingsStore((state) => state.exclusiveSampleRate)
+  const setExclusiveSampleRate = useAudioSettingsStore((state) => state.setExclusiveSampleRate)
+  const exclusiveLimiterEnabled = useAudioSettingsStore((state) => state.exclusiveLimiterEnabled)
+  const setExclusiveLimiterEnabled = useAudioSettingsStore((state) => state.setExclusiveLimiterEnabled)
   const showTracklistBpmKey = useLibraryStore((state) => state.showTracklistBpmKey)
   const setShowTracklistBpmKey = useLibraryStore((state) => state.setShowTracklistBpmKey)
   const showTracklistGenre = useLibraryStore((state) => state.showTracklistGenre)
@@ -499,14 +515,27 @@ export default function SettingsView() {
     status: diagnosticsStatus,
     isLoading: diagnosticsIsLoading,
     isCapturingBundle: diagnosticsIsCapturingBundle,
+    isRunningPcmTransferBenchmark: diagnosticsIsRunningPcmTransferBenchmark,
+    pcmTransferBenchmarkProgress: diagnosticsPcmTransferBenchmarkProgress,
     lastCaptureResult: diagnosticsLastCaptureResult,
+    lastPcmTransferBenchmark: diagnosticsLastPcmTransferBenchmark,
     errorMessage: diagnosticsErrorMessage,
     init: initDiagnostics,
     setEnabled: setDiagnosticsEnabled,
     captureBundle: captureDiagnosticsBundle,
+    runPcmTransferBenchmark: runDiagnosticsPcmTransferBenchmark,
     revealCurrentLog,
     revealPreviousLog,
   } = useDiagnosticsStore()
+  const {
+    status: libraryDiagnosticsStatus,
+    isLoading: libraryDiagnosticsIsLoading,
+    errorMessage: libraryDiagnosticsErrorMessage,
+    init: initLibraryDiagnostics,
+    setEnabled: setLibraryDiagnosticsEnabled,
+    revealCurrentLog: revealCurrentLibraryDiagnosticsLog,
+    revealPreviousLog: revealPreviousLibraryDiagnosticsLog,
+  } = useLibraryDiagnosticsStore()
   const [accentInputValue, setAccentInputValue] = useState(resolvedTokens.accent)
   const [miniPlayerVisualizerMode, setMiniPlayerVisualizerMode] = useState<MiniPlayerVisualizerMode>('off')
   const [localApiPortInput, setLocalApiPortInput] = useState(String(LOCAL_API_DEFAULT_PORT))
@@ -594,6 +623,8 @@ export default function SettingsView() {
     (playbackState === 'playing' || playbackState === 'paused')
   )
   const bitPerfectModeActive = playbackOutputMode === 'bitperfect'
+  const exclusiveDspModeActive = playbackOutputMode === 'exclusive'
+  const nativeModeRequested = playbackOutputMode !== 'standard'
   const nativeBackendLabel = useMemo(() => {
     switch (nativeAudioCapabilities.activeBackend) {
       case 'coreaudio':
@@ -606,6 +637,78 @@ export default function SettingsView() {
         return 'Unavailable'
     }
   }, [nativeAudioCapabilities.activeBackend])
+  const nativeProcessingStatus = nativeAudioOutputStatus?.processing
+  const nativeSourceSampleRate = nativeProcessingStatus?.sourceSampleRate
+    ?? nativeAudioOutputStatus?.sourceFormat.sampleRate
+  const nativeTargetSampleRate = nativeProcessingStatus?.targetSampleRate
+    ?? nativeAudioOutputStatus?.wireFormat.sampleRate
+  const nativeStatusActive = exclusiveDspModeActive
+    ? Boolean(nativeAudioOutputStatus?.exclusiveActive)
+    : bitPerfectModeActive
+      ? Boolean(nativeAudioOutputStatus?.bitPerfectActive)
+      : false
+  const nativeStatusHasFailure = Boolean(nativeAudioOutputStatus?.failureStage)
+  const nativeStatusModeLabel = exclusiveDspModeActive
+    ? 'Exclusive DSP'
+    : bitPerfectModeActive
+      ? 'Bit-Perfect'
+      : 'Native output'
+  const nativeStatusStateLabel = !nativeModeRequested
+    ? 'Not requested'
+    : nativeStatusActive
+      ? 'Active'
+      : nativeStatusHasFailure
+        ? `Stopped at ${nativeAudioOutputStatus?.failureStage}`
+        : nativeAudioOutputStatus?.streamInitialized
+          ? 'Initialized'
+          : nativeAudioOutputStatus?.exclusiveAcquired
+            ? 'Reserved'
+            : 'Waiting for playback'
+  const nativeRateSummary = nativeSourceSampleRate && nativeTargetSampleRate
+    ? `${(nativeSourceSampleRate / 1000).toFixed(1)} → ${(nativeTargetSampleRate / 1000).toFixed(1)} kHz`
+    : nativeTargetSampleRate
+      ? `${(nativeTargetSampleRate / 1000).toFixed(1)} kHz`
+      : 'Awaiting negotiation'
+  const nativeWireFormatSummary = [
+    nativeAudioOutputStatus?.wireFormat.sampleFormat
+      ? (NATIVE_SAMPLE_FORMAT_LABELS[nativeAudioOutputStatus.wireFormat.sampleFormat]
+        ?? nativeAudioOutputStatus.wireFormat.sampleFormat)
+      : null,
+    nativeAudioOutputStatus?.wireFormat.channels
+      ? `${nativeAudioOutputStatus.wireFormat.channels} ch`
+      : null,
+  ].filter(Boolean).join(' • ') || 'No wire format yet'
+  const nativeTransportSummary = [
+    nativeAudioOutputStatus?.transport,
+    nativeAudioOutputStatus && nativeAudioOutputStatus.actualPeriodMs > 0
+      ? `${nativeAudioOutputStatus.actualPeriodMs.toFixed(2)} ms period`
+      : null,
+  ].filter(Boolean).join(' • ') || 'No active transport'
+  const nativeProcessingSummary = exclusiveDspModeActive
+    ? nativeProcessingStatus?.resamplingActive
+      ? (nativeProcessingStatus.resamplerName ?? 'Resampler')
+      : nativeProcessingStatus?.processingActive
+        ? 'Native DSP'
+        : 'Awaiting stream'
+    : bitPerfectModeActive
+      ? 'Direct copy'
+      : 'Bypassed'
+  const nativeProcessingDetails = exclusiveDspModeActive
+    ? [
+      nativeProcessingStatus?.resamplingActive
+        ? (nativeProcessingStatus.resamplerQuality ?? 'High quality resampling')
+        : 'Native rate',
+      nativeProcessingStatus?.processingActive ? 'f64 planar' : null,
+      nativeProcessingStatus?.limiterEnabled
+        ? `Limiter −${nativeProcessingStatus.limiterGainReductionDb.toFixed(1)} dB`
+        : null,
+      nativeTargetSampleRate && nativeProcessingStatus && nativeProcessingStatus.processingLatencyFrames > 0
+        ? `${(nativeProcessingStatus.processingLatencyFrames * 1000 / nativeTargetSampleRate).toFixed(1)} ms latency`
+        : null,
+    ].filter(Boolean).join(' • ')
+    : bitPerfectModeActive
+      ? 'No DSP or sample arithmetic'
+      : 'Native path not requested'
   const sleepTimerRemainingLabel = useMemo(
     () => formatSleepTimerRemaining(sleepTimerRemainingMs),
     [sleepTimerRemainingMs]
@@ -661,8 +764,26 @@ export default function SettingsView() {
   }, [initLocalApi, initPhoneRemote])
 
   useEffect(() => {
+    let active = true
+    void window.electronAPI.desktopIntegration.getPrefs()
+      .then((prefs) => {
+        if (active) setDesktopIntegrationPrefs(prefs)
+      })
+      .catch(() => {
+        if (active) setDesktopIntegrationError('Failed to load desktop integration settings.')
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  useEffect(() => {
     void initDiagnostics()
   }, [initDiagnostics])
+
+  useEffect(() => {
+    void initLibraryDiagnostics()
+  }, [initLibraryDiagnostics])
 
   useEffect(() => {
     if (!localApiStatus) return
@@ -1036,11 +1157,39 @@ export default function SettingsView() {
   const diagnosticsLastBundleLabel = diagnosticsLastCaptureResult
     ? `Last bundle captured ${new Date(diagnosticsLastCaptureResult.capturedAt).toLocaleString()}.`
     : 'No memory bundle captured in this session.'
+  const diagnosticsPcmTransfer72MiB = diagnosticsLastPcmTransferBenchmark?.sizes.find(
+    (result) => result.sizeBytes === 72 * 1024 * 1024
+  ) ?? null
+  const diagnosticsPcmTransferProgressLabel = diagnosticsPcmTransferBenchmarkProgress
+    ? diagnosticsPcmTransferBenchmarkProgress.phase === 'logging'
+      ? 'Saving benchmark samples and summary to the diagnostics log...'
+      : diagnosticsPcmTransferBenchmarkProgress.phase === 'warmup'
+        ? `Warming the ${diagnosticsPcmTransferBenchmarkProgress.route === 'main-ipc-bridge'
+            ? 'main IPC + bridge'
+            : diagnosticsPcmTransferBenchmarkProgress.route === 'main-port-stream'
+              ? 'main port stream'
+              : 'preload-only bridge'} route...`
+        : `Measuring ${Math.round((diagnosticsPcmTransferBenchmarkProgress.sizeBytes ?? 0) / (1024 * 1024))} MiB ` +
+          `${diagnosticsPcmTransferBenchmarkProgress.route === 'main-ipc-bridge'
+            ? 'main IPC + bridge'
+            : diagnosticsPcmTransferBenchmarkProgress.route === 'main-port-stream'
+              ? 'main port stream'
+              : 'preload-only bridge'}, ` +
+          `repetition ${diagnosticsPcmTransferBenchmarkProgress.repetition ?? 1} of 3...`
+    : ''
+  const libraryDiagnosticsEnabled = libraryDiagnosticsStatus?.enabled ?? false
+  const libraryDiagnosticsCurrentLogPath = libraryDiagnosticsStatus?.currentLogPath ?? 'Loading diagnostics paths...'
+  const libraryDiagnosticsPreviousLogPath = libraryDiagnosticsStatus?.previousLogPath ?? 'Loading diagnostics paths...'
 
-  const handlePlaybackPathChange = (mode: 'standard' | 'bitperfect') => {
+  const handlePlaybackPathChange = (mode: 'standard' | 'exclusive' | 'bitperfect') => {
     if (mode === playbackOutputMode) return
     if (mode === 'standard') {
       void setPlaybackOutputMode('standard')
+      return
+    }
+
+    if (mode === 'exclusive') {
+      void setPlaybackOutputMode('exclusive')
       return
     }
 
@@ -1050,6 +1199,16 @@ export default function SettingsView() {
     }
 
     setShowBitPerfectWarning(true)
+  }
+
+  const handleCopyNativeAudioReport = async () => {
+    try {
+      const report = await window.nativeAudioAPI.getNativeAudioDiagnosticReport()
+      await copyInfoToClipboard(report.text, 'Native audio report')
+    } catch {
+      setInfoFeedbackTone('error')
+      setInfoFeedback('Failed to copy native audio report.')
+    }
   }
 
   const handleConfirmBitPerfectWarning = () => {
@@ -1448,6 +1607,24 @@ export default function SettingsView() {
     setSleepTimerFeedback('Sleep timer canceled.')
   }
 
+  const updateDesktopIntegration = async (
+    update: 'tray' | 'close',
+    enabled: boolean
+  ): Promise<void> => {
+    setDesktopIntegrationBusy(true)
+    setDesktopIntegrationError('')
+    try {
+      const prefs = update === 'tray'
+        ? await window.electronAPI.desktopIntegration.setTrayEnabled(enabled)
+        : await window.electronAPI.desktopIntegration.setCloseToTray(enabled)
+      setDesktopIntegrationPrefs(prefs)
+    } catch {
+      setDesktopIntegrationError('Failed to update desktop integration settings.')
+    } finally {
+      setDesktopIntegrationBusy(false)
+    }
+  }
+
   const handleNormalizationToggle = () => {
     if (bitPerfectModeActive) return
     if (normalizationEnabled) {
@@ -1720,7 +1897,7 @@ export default function SettingsView() {
                 </div>
               </div>
               <div className="settings-card">
-                <div className="settings-card-label">Home Greeting</div>
+                <div className="settings-card-label">Home Header</div>
                 <div className="settings-grid">
                   <div className="settings-field">
                     <span className="settings-field-label">Text</span>
@@ -1732,6 +1909,7 @@ export default function SettingsView() {
                       onChange={setHomeGreetingTextMode}
                     />
                   </div>
+                  <HomeSkyControls />
                 </div>
               </div>
               <div className="settings-card">
@@ -1747,6 +1925,56 @@ export default function SettingsView() {
                       onChange={setTransportInfoLineMode}
                     />
                   </div>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Desktop Integration</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">
+                      {window.electronAPI.platform === 'darwin' ? 'Menu Bar Icon' : 'System Tray Icon'}
+                    </span>
+                    <button
+                      type="button"
+                      className={`settings-toggle ${desktopIntegrationPrefs?.trayEnabled ? 'active' : ''}`}
+                      disabled={desktopIntegrationPrefs === null || desktopIntegrationBusy}
+                      onClick={() => void updateDesktopIntegration(
+                        'tray',
+                        !(desktopIntegrationPrefs?.trayEnabled ?? true)
+                      )}
+                    >
+                      {desktopIntegrationPrefs?.trayEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">
+                      {window.electronAPI.platform === 'darwin' ? 'Keep Running in Menu Bar' : 'Close to Tray'}
+                    </span>
+                    <button
+                      type="button"
+                      className={`settings-toggle ${desktopIntegrationPrefs?.closeToTray ? 'active' : ''}`}
+                      disabled={
+                        desktopIntegrationPrefs === null
+                        || desktopIntegrationBusy
+                        || !desktopIntegrationPrefs.trayEnabled
+                      }
+                      onClick={() => void updateDesktopIntegration(
+                        'close',
+                        !(desktopIntegrationPrefs?.closeToTray ?? false)
+                      )}
+                    >
+                      {desktopIntegrationPrefs?.closeToTray ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <p className="settings-note">
+                    When enabled, closing Astra hides the main window while playback, the Mini Player,
+                    global hotkeys, Phone Remote, and library sync continue running.
+                  </p>
+                  {desktopIntegrationError && (
+                    <p className="settings-note settings-note-error" role="status">
+                      {desktopIntegrationError}
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -1779,6 +2007,52 @@ export default function SettingsView() {
               </button>
             </div>
             <div className="settings-cards">
+              <div className="settings-card">
+                <div className="settings-card-label">Library Diagnostics</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label">Performance Logging</span>
+                    <button
+                      type="button"
+                      className={`settings-toggle ${libraryDiagnosticsEnabled ? 'active' : ''}`}
+                      onClick={() => void setLibraryDiagnosticsEnabled(!libraryDiagnosticsEnabled)}
+                      disabled={libraryDiagnosticsIsLoading}
+                    >
+                      {libraryDiagnosticsEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <p className="settings-note">
+                    To reproduce: run Scan for Changes twice, then Force Rescan All. To test folder removal,
+                    remove a mapped test folder; Astra removes only its library index entry, not files on disk.
+                    Logs contain aggregate timings and never include folder names or file paths.
+                  </p>
+                  <p className="settings-info-meta">Current log</p>
+                  <p className="settings-info-path">{libraryDiagnosticsCurrentLogPath}</p>
+                  <p className="settings-info-meta">Previous session log</p>
+                  <p className="settings-info-path">{libraryDiagnosticsPreviousLogPath}</p>
+                  <div className="settings-info-links">
+                    <button
+                      type="button"
+                      className="settings-btn settings-link-btn"
+                      onClick={() => void revealCurrentLibraryDiagnosticsLog()}
+                      disabled={!libraryDiagnosticsStatus?.hasCurrentLog}
+                    >
+                      Reveal Current Log
+                    </button>
+                    <button
+                      type="button"
+                      className="settings-btn settings-link-btn"
+                      onClick={() => void revealPreviousLibraryDiagnosticsLog()}
+                      disabled={!libraryDiagnosticsStatus?.hasPreviousLog}
+                    >
+                      Reveal Previous Log
+                    </button>
+                  </div>
+                  {libraryDiagnosticsErrorMessage && (
+                    <p className="settings-note settings-note-error">{libraryDiagnosticsErrorMessage}</p>
+                  )}
+                </div>
+              </div>
               <div className="settings-card">
                 <div className="settings-card-label">Normalization</div>
                 <div className="settings-grid">
@@ -1888,8 +2162,12 @@ export default function SettingsView() {
                 </div>
               </div>
               <div className="settings-card">
-                <div className="settings-card-label">Tracklist Columns</div>
+                <div className="settings-card-label">Detail &amp; Playlist Columns</div>
                 <div className="settings-grid">
+                  <p className="settings-note">
+                    These controls apply to album, artist, genre, year, and playlist tracklists.
+                    Library → Tracks has its own Columns menu.
+                  </p>
                   <div className="settings-field settings-field-inline">
                     <span className="settings-field-label">BPM / Key</span>
                     <button
@@ -1998,6 +2276,13 @@ export default function SettingsView() {
                       >
                         Standard
                       </button>
+                      <button
+                        className={`settings-toggle ${exclusiveDspModeActive ? 'active' : ''}`}
+                        onClick={() => handlePlaybackPathChange('exclusive')}
+                        title="Exclusive hardware ownership with native gain, normalization, EQ, resampling, and limiting"
+                      >
+                        Exclusive • DSP
+                      </button>
                       <div className="settings-inline-row">
                         <button
                           className={`settings-toggle ${playbackOutputMode === 'bitperfect' ? 'active' : ''}`}
@@ -2005,36 +2290,120 @@ export default function SettingsView() {
                         >
                           Bit-Perfect (Exclusive)
                         </button>
-                        <span className="settings-chip settings-chip-mono settings-chip-danger">
+                        <span className="settings-experimental-label">
                           Experimental
                         </span>
                       </div>
                     </div>
+                    <p className="settings-note">
+                      Standard uses Web Audio and the full routing toolset. Exclusive DSP keeps hardware ownership while applying native DSP. Bit-Perfect sends decoded PCM unchanged.
+                    </p>
                   </div>
                   <div className="settings-field">
                     <span className="settings-field-label">Native Status</span>
-                    <div className="settings-inline-row">
-                      <span className="settings-chip settings-chip-mono">
-                        {nativeBackendLabel}
-                      </span>
-                      {nativeAudioCapabilities.activeSampleRate && (
-                        <span className="settings-chip settings-chip-mono">
-                          {(nativeAudioCapabilities.activeSampleRate / 1000).toFixed(1)} kHz
-                        </span>
-                      )}
-                      {nativeAudioCapabilities.activeSampleFormat && (
-                        <span className="settings-chip settings-chip-mono">
-                          {NATIVE_SAMPLE_FORMAT_LABELS[nativeAudioCapabilities.activeSampleFormat]
-                            ?? nativeAudioCapabilities.activeSampleFormat}
-                        </span>
-                      )}
-                      <span className="settings-chip settings-chip-mono">
-                        {nativeAudioCapabilities.activeDeviceExclusive ? 'Exclusive' : 'Shared/Off'}
-                      </span>
+                    <div className="native-output-status">
+                      <div className="native-output-status-header">
+                        <div className="native-output-status-heading">
+                          <span
+                            className={`native-output-status-indicator${nativeStatusActive ? ' is-active' : ''}${nativeStatusHasFailure ? ' is-error' : ''}`}
+                            aria-hidden="true"
+                          />
+                          <div>
+                            <div className="native-output-status-title">{nativeStatusModeLabel}</div>
+                            <div className="native-output-status-subtitle">{nativeStatusStateLabel}</div>
+                          </div>
+                        </div>
+                        <button
+                          className="settings-btn native-output-status-copy"
+                          onClick={() => void handleCopyNativeAudioReport()}
+                          title="Copy Native Audio Report"
+                        >
+                          Copy Report
+                        </button>
+                      </div>
+
+                      <div className="native-output-status-stages" aria-label="Native output activation stages">
+                        <div className="native-output-status-stage">
+                          <span className={`native-output-status-stage-dot${nativeModeRequested ? ' is-complete' : ''}`} aria-hidden="true" />
+                          <span className="native-output-status-stage-label">Requested</span>
+                          <span className="native-output-status-stage-value">{nativeModeRequested ? 'On' : 'Off'}</span>
+                        </div>
+                        <div className="native-output-status-stage">
+                          <span className={`native-output-status-stage-dot${nativeAudioOutputStatus?.exclusiveAcquired ? ' is-complete' : ''}`} aria-hidden="true" />
+                          <span className="native-output-status-stage-label">Reserved</span>
+                          <span className="native-output-status-stage-value">
+                            {nativeAudioOutputStatus?.exclusiveAcquired ? 'Acquired' : 'Waiting'}
+                          </span>
+                        </div>
+                        <div className="native-output-status-stage">
+                          <span className={`native-output-status-stage-dot${nativeAudioOutputStatus?.streamInitialized ? ' is-complete' : ''}`} aria-hidden="true" />
+                          <span className="native-output-status-stage-label">Initialized</span>
+                          <span className="native-output-status-stage-value">
+                            {nativeAudioOutputStatus?.streamInitialized ? 'Ready' : 'Waiting'}
+                          </span>
+                        </div>
+                        <div className="native-output-status-stage">
+                          <span className={`native-output-status-stage-dot${nativeStatusActive ? ' is-complete' : ''}`} aria-hidden="true" />
+                          <span className="native-output-status-stage-label">
+                            {bitPerfectModeActive ? 'Bit-perfect' : exclusiveDspModeActive ? 'DSP active' : 'Active'}
+                          </span>
+                          <span className="native-output-status-stage-value">{nativeStatusActive ? 'Running' : 'Idle'}</span>
+                        </div>
+                      </div>
+
+                      <div className="native-output-status-details">
+                        <div className="native-output-status-detail">
+                          <span className="native-output-status-detail-label">Output</span>
+                          <strong>{nativeBackendLabel}</strong>
+                          <span>{nativeTransportSummary}</span>
+                        </div>
+                        <div className="native-output-status-detail">
+                          <span className="native-output-status-detail-label">Signal</span>
+                          <strong>{nativeRateSummary}</strong>
+                          <span>{nativeWireFormatSummary}</span>
+                        </div>
+                        <div className="native-output-status-detail">
+                          <span className="native-output-status-detail-label">Processing</span>
+                          <strong>{nativeProcessingSummary}</strong>
+                          <span>{nativeProcessingDetails}</span>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
+              {exclusiveDspModeActive && (
+                <div className="settings-card">
+                  <div className="settings-card-label">Exclusive DSP Advanced</div>
+                  <div className="settings-grid">
+                    <label className="settings-field">
+                      <span className="settings-field-label">Output Sample Rate</span>
+                      <select
+                        className="settings-select"
+                        value={exclusiveSampleRate ?? ''}
+                        onChange={(event) => void setExclusiveSampleRate(event.target.value ? Number(event.target.value) : null)}
+                      >
+                        <option value="">Auto (source first)</option>
+                        {[44100, 48000, 88200, 96000, 176400, 192000].map((rate) => (
+                          <option key={rate} value={rate}>{(rate / 1000).toFixed(1)} kHz</option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="settings-field settings-field-inline">
+                      <span className="settings-field-label">Safety Limiter</span>
+                      <button
+                        className={`settings-toggle ${exclusiveLimiterEnabled ? 'active' : ''}`}
+                        onClick={() => void setExclusiveLimiterEnabled(!exclusiveLimiterEnabled)}
+                      >
+                        {exclusiveLimiterEnabled ? 'Enabled' : 'Disabled'}
+                      </button>
+                    </div>
+                    <p className="settings-note">
+                      Auto tries the source rate first. A fixed rate fails closed if the hardware cannot open it. Wire depth is automatic.
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
             <div className="settings-audio-control">
               <AudioOutputSelect />
@@ -3100,7 +3469,7 @@ export default function SettingsView() {
                     type="button"
                     className={`settings-toggle ${diagnosticsEnabled ? 'active' : ''}`}
                     onClick={() => void setDiagnosticsEnabled(!diagnosticsEnabled)}
-                    disabled={diagnosticsIsLoading && diagnosticsStatus === null}
+                    disabled={diagnosticsIsRunningPcmTransferBenchmark || (diagnosticsIsLoading && diagnosticsStatus === null)}
                   >
                     {diagnosticsEnabled ? 'Enabled' : 'Disabled'}
                   </button>
@@ -3113,9 +3482,51 @@ export default function SettingsView() {
                 <div className="settings-info-links">
                   <button
                     type="button"
+                    className="settings-btn settings-btn-primary"
+                    onClick={() => void runDiagnosticsPcmTransferBenchmark()}
+                    disabled={
+                      !diagnosticsEnabled ||
+                      diagnosticsIsRunningPcmTransferBenchmark ||
+                      diagnosticsIsCapturingBundle
+                    }
+                    title={!diagnosticsEnabled ? 'Enable diagnostics logging to run this benchmark.' : undefined}
+                  >
+                    {diagnosticsIsRunningPcmTransferBenchmark
+                      ? 'Running PCM Transfer Benchmark...'
+                      : 'Run PCM Transfer Benchmark'}
+                  </button>
+                </div>
+                <p className="settings-note">
+                  Runs one warm-up pass over all three routes, followed by three passes at 1, 16, and 72 MiB.
+                  It can temporarily increase memory pressure and interrupt smooth playback, so run it while idle.
+                </p>
+                {diagnosticsPcmTransferProgressLabel && (
+                  <p className="settings-info-meta">{diagnosticsPcmTransferProgressLabel}</p>
+                )}
+                {diagnosticsPcmTransfer72MiB ? (
+                  <p className="settings-info-meta">
+                    Latest 72 MiB medians: Electron IPC residual{' '}
+                    {formatPcmTransferBenchmarkMs(diagnosticsPcmTransfer72MiB.main.electronIpcResidualMs)}; main-route
+                    contextBridge residual{' '}
+                    {formatPcmTransferBenchmarkMs(diagnosticsPcmTransfer72MiB.main.contextBridgeResidualMs)}; preload-only
+                    contextBridge residual{' '}
+                    {formatPcmTransferBenchmarkMs(diagnosticsPcmTransfer72MiB.preload.contextBridgeResidualMs)}; port-stream
+                    total {formatPcmTransferBenchmarkMs(diagnosticsPcmTransfer72MiB.port.rendererPortRequestMs)}; port
+                    assembly {formatPcmTransferBenchmarkMs(diagnosticsPcmTransfer72MiB.port.rendererPcmAssemblyMs)}.
+                  </p>
+                ) : (
+                  <p className="settings-info-meta">No PCM transfer benchmark has completed in this session.</p>
+                )}
+                <p className="settings-note">
+                  Residuals are reconciliation estimates that include scheduling and dispatch overhead; they do not
+                  establish how many memory copies occurred.
+                </p>
+                <div className="settings-info-links">
+                  <button
+                    type="button"
                     className="settings-btn settings-link-btn"
                     onClick={() => void captureDiagnosticsBundle()}
-                    disabled={diagnosticsIsCapturingBundle}
+                    disabled={diagnosticsIsCapturingBundle || diagnosticsIsRunningPcmTransferBenchmark}
                   >
                     {diagnosticsIsCapturingBundle ? 'Capturing Bundle...' : 'Capture Memory Bundle'}
                   </button>

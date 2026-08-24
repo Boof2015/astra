@@ -15,7 +15,35 @@ import {
   type VirtualSpeaker,
 } from '../utils/virtualSpeakerLayout'
 import type { SpatialStatus } from '../audio/AudioEngine'
-import type { NativeAudioCapabilities, PlaybackOutputMode } from '../../types/nativeAudio'
+import {
+  normalizePlaybackOutputMode,
+  type NativeAudioCapabilities,
+  type NativeAudioOutputStatus,
+  type PlaybackOutputMode
+} from '../../types/nativeAudio'
+import {
+  BUILTIN_HRTF_PROFILE_ID,
+  builtinHrtfProfile,
+  type HrtfProfileError,
+  type HrtfProfileSummary,
+} from '../../types/hrtfProfiles'
+import { SPATIAL_HRTF_PROFILE_STORAGE_KEY } from '../constants/settingsStorageKeys'
+import { resolveAvailableHrtfProfileId } from '../utils/hrtfProfileSelection'
+import {
+  createDefaultDeviceSpeakerProfile,
+  isSpeakerLayoutPresetId,
+  normalizeDeviceSpeakerProfile,
+  normalizeSourceSpeakerRoutingMap,
+  resolveDeviceSpeakerProfile,
+  resolveDirectSpeakerIds,
+  setSpeakerHardwareOutput as updateSpeakerHardwareOutput,
+  transitionDeviceSpeakerLayout,
+  type DeviceSpeakerProfile,
+  type SourceSpeakerRouteOverride,
+  type SourceSpeakerRoutingMap,
+  type SpeakerLayoutPresetId,
+  type SpeakerRoleId,
+} from '../utils/speakerLayout'
 
 export interface AudioDevice {
   deviceId: string
@@ -63,24 +91,36 @@ interface AudioSettingsStore {
   disableGaplessPrebufferDev: boolean
   disableStandardAnalysisGraphDev: boolean
   nativeAudioCapabilities: NativeAudioCapabilities
+  nativeAudioOutputStatus: NativeAudioOutputStatus | null
   playbackModeStatusMessage: string | null
   selectedDeviceId: string
   availableDevices: AudioDevice[]
   availableInputDevices: CalibrationInputDevice[]
   selectedCalibrationInputDeviceId: string
-  selectedOutputChannelCount: number | null
+  selectedDeviceMaxChannelCount: number | null
+  logicalOutputChannelCount: number
   multichannelEnabled: boolean
   includeLfeInDownmix: boolean
   stereoUpmixMode: StereoUpmixMode
-  channelRoutingMap: number[] | null
+  sourceSpeakerRoutingMap: SourceSpeakerRoutingMap
+  speakerProfilesByDeviceKey: Record<string, DeviceSpeakerProfile>
+  activeSpeakerProfileKey: string
+  activeSpeakerProfile: DeviceSpeakerProfile
+  testingSpeakerRole: SpeakerRoleId | null
   spatialMode: SpatialMode
   spatialLayoutPresetId: SpatialLayoutPresetId
   customVirtualSpeakers: VirtualSpeaker[] | null
   spatialStatus: SpatialStatus
+  hrtfProfiles: HrtfProfileSummary[]
+  selectedHrtfProfileId: string
+  hrtfProfileError: HrtfProfileError | null
+  hrtfImporting: boolean
   normalizationEnabled: boolean
   normalizationTargetLufs: number
   replayGainScanEnabled: boolean
   replayGainMode: ReplayGainMode
+  exclusiveSampleRate: number | null
+  exclusiveLimiterEnabled: boolean
 
   delayProfilesByDeviceKey: Record<string, DelayCompensationProfile>
   inputBaselinesByKey: Record<string, InputDelayBaseline>
@@ -100,9 +140,18 @@ interface AudioSettingsStore {
   setMultichannelEnabled: (enabled: boolean) => Promise<void>
   setIncludeLfeInDownmix: (enabled: boolean) => Promise<void>
   setStereoUpmixMode: (mode: StereoUpmixMode) => Promise<void>
-  setChannelRoutingMap: (map: number[] | null) => Promise<void>
-  resetChannelRoutingMap: () => Promise<void>
+  setSourceSpeakerRoute: (speaker: SpeakerRoleId, route: SourceSpeakerRouteOverride | null) => Promise<void>
+  resetSourceSpeakerRouting: () => Promise<void>
+  setSpeakerLayout: (layoutId: SpeakerLayoutPresetId) => Promise<void>
+  setSpeakerHardwareOutput: (speaker: SpeakerRoleId, outputIndex: number | null) => Promise<void>
+  resetSpeakerProfile: () => Promise<void>
+  playSpeakerTestTone: (speaker: SpeakerRoleId) => Promise<boolean>
+  stopSpeakerTestTone: () => void
   setSpatialMode: (mode: SpatialMode) => Promise<void>
+  refreshHrtfProfiles: () => Promise<void>
+  setHrtfProfile: (profileId: string) => Promise<boolean>
+  importHrtfProfile: () => Promise<void>
+  removeHrtfProfile: (profileId: string) => Promise<boolean>
   setSpatialLayoutPreset: (presetId: SpatialLayoutPresetId) => Promise<void>
   setVirtualSpeakerAzimuth: (speakerId: string, azimuthDeg: number) => Promise<void>
   setVirtualSpeakerElevation: (speakerId: string, elevationDeg: number) => Promise<void>
@@ -111,6 +160,8 @@ interface AudioSettingsStore {
   setNormalizationTargetLufs: (targetLufs: number) => void
   setReplayGainScanEnabled: (enabled: boolean) => Promise<void>
   setReplayGainMode: (mode: ReplayGainMode) => void
+  setExclusiveSampleRate: (sampleRate: number | null) => Promise<void>
+  setExclusiveLimiterEnabled: (enabled: boolean) => Promise<void>
 
   setDelayCompensationEnabled: (enabled: boolean) => Promise<void>
   setDelayCompensationMode: (mode: DelayCompensationMode) => Promise<void>
@@ -127,13 +178,17 @@ interface AudioSettingsStore {
 const STORAGE_KEY = 'astra-audio-output-device'
 const NATIVE_OUTPUT_STORAGE_KEY = 'astra-native-audio-output-device'
 const PLAYBACK_OUTPUT_MODE_STORAGE_KEY = 'astra-playback-output-mode-v1'
+const EXCLUSIVE_SAMPLE_RATE_STORAGE_KEY = 'astra-exclusive-sample-rate-v1'
+const EXCLUSIVE_LIMITER_STORAGE_KEY = 'astra-exclusive-limiter-enabled-v1'
 const CALIBRATION_INPUT_STORAGE_KEY = 'astra-audio-calibration-input-device'
 const MULTICHANNEL_STORAGE_KEY = 'astra-audio-multichannel-enabled'
 const INCLUDE_LFE_DOWNMIX_STORAGE_KEY = 'astra-audio-include-lfe-downmix-v1'
 const STEREO_UPMIX_MODE_STORAGE_KEY = 'astra-audio-stereo-upmix-mode-v1'
 const SPATIAL_MODE_STORAGE_KEY = 'astra-audio-spatial-mode-v1'
 const SPATIAL_LAYOUT_STORAGE_KEY = 'astra-audio-spatial-layout-v1'
-const ROUTING_STORAGE_KEY = 'astra-audio-channel-routing-map'
+const LEGACY_ROUTING_STORAGE_KEY = 'astra-audio-channel-routing-map'
+const SOURCE_SPEAKER_ROUTING_STORAGE_KEY = 'astra-audio-source-speaker-routing-v1'
+const SPEAKER_PROFILES_STORAGE_KEY = 'astra-audio-speaker-profiles-v1'
 export const NORMALIZATION_ENABLED_STORAGE_KEY = 'astra-audio-normalization-enabled-v1'
 export const NORMALIZATION_TARGET_STORAGE_KEY = 'astra-audio-normalization-target-lufs-v1'
 export const REPLAYGAIN_MODE_STORAGE_KEY = 'astra-audio-replaygain-mode-v1'
@@ -163,11 +218,10 @@ const DEFAULT_DELAY_PROFILE: DelayCompensationProfile = {
 
 const DEFAULT_NATIVE_AUDIO_CAPABILITIES: NativeAudioCapabilities = {
   bitPerfectAvailable: false,
+  processedExclusiveAvailable: false,
   reasonUnavailable: 'Native bit-perfect playback is unavailable in this build.',
+  reasonProcessedExclusiveUnavailable: 'Native exclusive DSP playback is unavailable in this build.',
   activeBackend: 'unavailable',
-  activeDeviceExclusive: false,
-  activeSampleRate: null,
-  activeSampleFormat: null,
   selectedDeviceId: null,
   selectedDeviceMaxChannels: null,
   devices: []
@@ -214,8 +268,9 @@ function clampRoundTripMs(value: number): number {
 }
 
 function normalizeSampleRate(value: unknown): number | null {
-  if (!Number.isFinite(value)) return null
-  const rounded = Math.round(Number(value))
+  const numeric = typeof value === 'string' && value.trim().length > 0 ? Number(value) : value
+  if (!Number.isFinite(numeric)) return null
+  const rounded = Math.round(Number(numeric))
   if (rounded <= 0) return null
   return rounded
 }
@@ -423,16 +478,16 @@ function computeAppliedDelayMs(
   profile: DelayCompensationProfile,
   playbackOutputMode: PlaybackOutputMode
 ): number {
-  if (playbackOutputMode === 'bitperfect') return 0
+  if (playbackOutputMode !== 'standard') return 0
   return computeEffectiveDelayMs(profile)
 }
 
 function getOutputStorageKeyForMode(mode: PlaybackOutputMode): string {
-  return mode === 'bitperfect' ? NATIVE_OUTPUT_STORAGE_KEY : STORAGE_KEY
+  return mode !== 'standard' ? NATIVE_OUTPUT_STORAGE_KEY : STORAGE_KEY
 }
 
-function normalizePlaybackOutputMode(value: unknown): PlaybackOutputMode {
-  return value === 'bitperfect' ? 'bitperfect' : 'standard'
+function isNativeOutputMode(mode: PlaybackOutputMode): boolean {
+  return mode === 'exclusive' || mode === 'bitperfect'
 }
 
 function resolvePhysicalDefaultDeviceId(devices: AudioDevice[]): string | null {
@@ -881,6 +936,27 @@ function formatDifferentialCalibrationFailureMessage(message: string, code: stri
   return `${message} Retry New (Differential) calibration.`
 }
 
+function parseSpeakerProfiles(raw: string | null): Record<string, DeviceSpeakerProfile> {
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw) as { version?: unknown; profiles?: unknown }
+    if (parsed?.version !== 1 || !parsed.profiles || typeof parsed.profiles !== 'object' || Array.isArray(parsed.profiles)) {
+      return {}
+    }
+
+    const profiles: Record<string, DeviceSpeakerProfile> = {}
+    for (const [key, value] of Object.entries(parsed.profiles as Record<string, unknown>)) {
+      if (!key || !value || typeof value !== 'object' || Array.isArray(value)) continue
+      const layoutId = (value as { layoutId?: unknown }).layoutId
+      if (!isSpeakerLayoutPresetId(layoutId)) continue
+      profiles[key] = normalizeDeviceSpeakerProfile(value, 32)
+    }
+    return profiles
+  } catch {
+    return {}
+  }
+}
+
 export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
   const persistDelaySettings = (
     profiles: Record<string, DelayCompensationProfile>,
@@ -892,6 +968,75 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       inputBaselinesByKey
     }))
     localStorage.removeItem(DELAY_PROFILE_STORAGE_KEY_V1)
+  }
+
+  const persistSpeakerProfiles = (profiles: Record<string, DeviceSpeakerProfile>): void => {
+    localStorage.setItem(SPEAKER_PROFILES_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      profiles,
+    }))
+  }
+
+  const syncSpeakerProfileForActiveDevice = async (): Promise<void> => {
+    const state = get()
+    const profileTarget = resolveActiveDelayProfileTarget(state.selectedDeviceId, state.availableDevices)
+    const profileKey = profileTarget.key
+    const deviceMaxChannels = state.selectedDeviceMaxChannelCount ?? 2
+    const activeSpeakerProfile = resolveDeviceSpeakerProfile(
+      state.speakerProfilesByDeviceKey,
+      profileKey,
+      deviceMaxChannels
+    )
+    const nextProfiles = {
+      ...state.speakerProfilesByDeviceKey,
+      [profileKey]: activeSpeakerProfile,
+    }
+    if (JSON.stringify(nextProfiles) !== JSON.stringify(state.speakerProfilesByDeviceKey)) {
+      persistSpeakerProfiles(nextProfiles)
+    }
+
+    set({
+      speakerProfilesByDeviceKey: nextProfiles,
+      activeSpeakerProfileKey: profileKey,
+      activeSpeakerProfile,
+      logicalOutputChannelCount: resolveDirectSpeakerIds(
+        activeSpeakerProfile,
+        state.multichannelEnabled
+      ).length,
+    })
+    await audioEngine.setSpeakerOutputConfiguration(activeSpeakerProfile, deviceMaxChannels)
+  }
+
+  const updateActiveSpeakerProfile = async (
+    updater: (profile: DeviceSpeakerProfile, deviceMaxChannels: number) => DeviceSpeakerProfile
+  ): Promise<void> => {
+    const state = get()
+    const deviceMaxChannels = state.selectedDeviceMaxChannelCount ?? 2
+    const profileTarget = resolveActiveDelayProfileTarget(state.selectedDeviceId, state.availableDevices)
+    const profileKey = profileTarget.key
+    const current = normalizeDeviceSpeakerProfile(
+      state.speakerProfilesByDeviceKey[profileKey] ?? state.activeSpeakerProfile,
+      deviceMaxChannels
+    )
+    const activeSpeakerProfile = normalizeDeviceSpeakerProfile(
+      updater(current, deviceMaxChannels),
+      deviceMaxChannels
+    )
+    const nextProfiles = {
+      ...state.speakerProfilesByDeviceKey,
+      [profileKey]: activeSpeakerProfile,
+    }
+    persistSpeakerProfiles(nextProfiles)
+    set({
+      speakerProfilesByDeviceKey: nextProfiles,
+      activeSpeakerProfileKey: profileKey,
+      activeSpeakerProfile,
+      logicalOutputChannelCount: resolveDirectSpeakerIds(
+        activeSpeakerProfile,
+        state.multichannelEnabled
+      ).length,
+    })
+    await audioEngine.setSpeakerOutputConfiguration(activeSpeakerProfile, deviceMaxChannels)
   }
 
   const syncDelayCompensationForActiveDevice = async (
@@ -995,6 +1140,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         }
         set({ selectedDeviceId: '' })
         localStorage.removeItem(getOutputStorageKeyForMode(state.playbackOutputMode))
+        await syncSpeakerProfileForActiveDevice()
         await syncDelayCompensationForActiveDevice()
       }
     }
@@ -1021,6 +1167,12 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
   audioEngine.on('spatialStatusChange', (status) => {
     set({ spatialStatus: status as SpatialStatus })
   })
+  audioEngine.on('nativeOutputStatusChange', (status) => {
+    set({ nativeAudioOutputStatus: status as NativeAudioOutputStatus })
+  })
+  audioEngine.on('speakerTestChange', (speaker) => {
+    set({ testingSpeakerRole: typeof speaker === 'string' ? speaker as SpeakerRoleId : null })
+  })
 
   const initialDisableGaplessPrebufferDev = readDevDisableGaplessPrebuffer()
   const initialDisableStandardAnalysisGraphDev = readDevDisableStandardAnalysisGraph()
@@ -1031,24 +1183,44 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     disableGaplessPrebufferDev: initialDisableGaplessPrebufferDev,
     disableStandardAnalysisGraphDev: initialDisableStandardAnalysisGraphDev,
     nativeAudioCapabilities: { ...DEFAULT_NATIVE_AUDIO_CAPABILITIES },
+    nativeAudioOutputStatus: null,
     playbackModeStatusMessage: null,
     selectedDeviceId: '',
     availableDevices: [],
     availableInputDevices: [],
     selectedCalibrationInputDeviceId: '',
-    selectedOutputChannelCount: null,
+    selectedDeviceMaxChannelCount: null,
+    logicalOutputChannelCount: 2,
     multichannelEnabled: false,
     includeLfeInDownmix: false,
     stereoUpmixMode: 'off',
-    channelRoutingMap: null,
+    sourceSpeakerRoutingMap: {},
+    speakerProfilesByDeviceKey: {},
+    activeSpeakerProfileKey: 'default',
+    activeSpeakerProfile: createDefaultDeviceSpeakerProfile(2),
+    testingSpeakerRole: null,
     spatialMode: 'off',
     spatialLayoutPresetId: '5.1',
     customVirtualSpeakers: null,
-    spatialStatus: { state: 'idle', sampleRate: null, taps: 0, message: null },
+    spatialStatus: {
+      state: 'idle',
+      sampleRate: null,
+      taps: 0,
+      message: null,
+      profileId: 'builtin:mit-kemar',
+      profileName: 'MIT KEMAR',
+      switchingProfileId: null,
+    },
+    hrtfProfiles: [builtinHrtfProfile()],
+    selectedHrtfProfileId: BUILTIN_HRTF_PROFILE_ID,
+    hrtfProfileError: null,
+    hrtfImporting: false,
     normalizationEnabled: true,
     normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
     replayGainScanEnabled: false,
     replayGainMode: 'auto',
+    exclusiveSampleRate: null,
+    exclusiveLimiterEnabled: true,
 
     delayProfilesByDeviceKey: {},
     inputBaselinesByKey: {},
@@ -1071,7 +1243,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         let nativeAudioCapabilities = get().nativeAudioCapabilities
         let playbackModeStatusMessage = get().playbackModeStatusMessage
 
-        if (playbackOutputMode === 'bitperfect') {
+        if (isNativeOutputMode(playbackOutputMode)) {
           nativeAudioCapabilities = await audioEngine.refreshNativeAudioCapabilities()
           audioOutputs = buildNativeOutputDevices(nativeAudioCapabilities)
           playbackModeStatusMessage = audioEngine.getPlaybackModeStatusMessage()
@@ -1094,6 +1266,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         }
 
         await get().refreshOutputChannelCount()
+        await syncSpeakerProfileForActiveDevice()
         await syncDelayCompensationForActiveDevice()
       } catch {
         console.warn('Could not enumerate audio devices')
@@ -1104,9 +1277,9 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       try {
         await audioEngine.ensureContextReady()
         const maxChannels = audioEngine.getOutputMaxChannelCount()
-        set({ selectedOutputChannelCount: maxChannels })
+        set({ selectedDeviceMaxChannelCount: maxChannels })
       } catch {
-        set({ selectedOutputChannelCount: null })
+        set({ selectedDeviceMaxChannelCount: null })
       }
     },
 
@@ -1117,13 +1290,14 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       const fallbackMode = result.activeMode
       const selectedStorageKey = getOutputStorageKeyForMode(fallbackMode)
       const savedSelectedDeviceId = localStorage.getItem(selectedStorageKey) ?? ''
-      const capabilities = fallbackMode === 'bitperfect'
+      const capabilities = isNativeOutputMode(fallbackMode)
         ? await audioEngine.refreshNativeAudioCapabilities()
         : result.capabilities
 
       set({
         playbackOutputMode: fallbackMode,
         nativeAudioCapabilities: capabilities,
+        nativeAudioOutputStatus: audioEngine.getNativeAudioOutputStatus(),
         playbackModeStatusMessage: result.message ?? audioEngine.getPlaybackModeStatusMessage()
       })
 
@@ -1219,16 +1393,16 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     selectDevice: async (deviceId: string) => {
       try {
         const playbackOutputMode = get().playbackOutputMode
-        const requestedDeviceId = playbackOutputMode === 'bitperfect'
+        const requestedDeviceId = isNativeOutputMode(playbackOutputMode)
           && (deviceId.trim().length === 0 || deviceId.trim() === 'default')
           ? (resolvePhysicalDefaultDeviceId(get().availableDevices) ?? deviceId)
           : deviceId
 
         await audioEngine.setOutputDevice(requestedDeviceId)
-        const nativeAudioCapabilities = playbackOutputMode === 'bitperfect'
+        const nativeAudioCapabilities = isNativeOutputMode(playbackOutputMode)
           ? audioEngine.getNativeAudioCapabilities()
           : get().nativeAudioCapabilities
-        const selectedDeviceId = playbackOutputMode === 'bitperfect'
+        const selectedDeviceId = isNativeOutputMode(playbackOutputMode)
           ? (nativeAudioCapabilities.selectedDeviceId?.trim() || requestedDeviceId)
           : requestedDeviceId
 
@@ -1246,6 +1420,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         }
 
         await get().refreshOutputChannelCount()
+        await syncSpeakerProfileForActiveDevice()
         await syncDelayCompensationForActiveDevice({ resetCalibrationStatus: true })
       } catch (err) {
         console.error('Failed to set audio output device:', err)
@@ -1263,7 +1438,10 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     },
 
     setMultichannelEnabled: async (enabled: boolean) => {
-      set({ multichannelEnabled: enabled })
+      set({
+        multichannelEnabled: enabled,
+        logicalOutputChannelCount: resolveDirectSpeakerIds(get().activeSpeakerProfile, enabled).length,
+      })
       localStorage.setItem(MULTICHANNEL_STORAGE_KEY, enabled ? '1' : '0')
       await audioEngine.setMultichannelEnabled(enabled)
     },
@@ -1282,28 +1460,157 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       await audioEngine.setStereoUpmixMode(normalized)
     },
 
-    setChannelRoutingMap: async (map: number[] | null) => {
-      const normalized = map && map.length > 0
-        ? map.map((value) => {
-          if (!Number.isFinite(value)) return -1
-          const rounded = Math.trunc(value)
-          return rounded >= -1 ? rounded : -1
-        })
-        : null
-
-      set({ channelRoutingMap: normalized })
-
-      if (normalized) {
-        localStorage.setItem(ROUTING_STORAGE_KEY, JSON.stringify(normalized))
+    setSourceSpeakerRoute: async (speaker, route) => {
+      const nextMap: SourceSpeakerRoutingMap = { ...get().sourceSpeakerRoutingMap }
+      if (route) {
+        nextMap[speaker] = route
       } else {
-        localStorage.removeItem(ROUTING_STORAGE_KEY)
+        delete nextMap[speaker]
       }
+      const normalized = normalizeSourceSpeakerRoutingMap(nextMap)
+      set({ sourceSpeakerRoutingMap: normalized })
 
-      await audioEngine.setChannelRoutingMap(normalized)
+      if (Object.keys(normalized).length > 0) {
+        localStorage.setItem(SOURCE_SPEAKER_ROUTING_STORAGE_KEY, JSON.stringify(normalized))
+      } else {
+        localStorage.removeItem(SOURCE_SPEAKER_ROUTING_STORAGE_KEY)
+      }
+      await audioEngine.setSourceSpeakerRoutingMap(normalized)
     },
 
-    resetChannelRoutingMap: async () => {
-      await get().setChannelRoutingMap(null)
+    resetSourceSpeakerRouting: async () => {
+      set({ sourceSpeakerRoutingMap: {} })
+      localStorage.removeItem(SOURCE_SPEAKER_ROUTING_STORAGE_KEY)
+      await audioEngine.setSourceSpeakerRoutingMap(null)
+    },
+
+    setSpeakerLayout: async (layoutId) => {
+      await updateActiveSpeakerProfile((profile, deviceMaxChannels) => (
+        transitionDeviceSpeakerLayout(profile, layoutId, deviceMaxChannels)
+      ))
+    },
+
+    setSpeakerHardwareOutput: async (speaker, outputIndex) => {
+      await updateActiveSpeakerProfile((profile, deviceMaxChannels) => (
+        updateSpeakerHardwareOutput(profile, speaker, outputIndex, deviceMaxChannels)
+      ))
+    },
+
+    resetSpeakerProfile: async () => {
+      await updateActiveSpeakerProfile((_profile, deviceMaxChannels) => (
+        createDefaultDeviceSpeakerProfile(deviceMaxChannels)
+      ))
+    },
+
+    playSpeakerTestTone: async (speaker) => audioEngine.playSpeakerTestTone(speaker),
+
+    stopSpeakerTestTone: () => {
+      audioEngine.stopSpeakerTestTone()
+    },
+
+    refreshHrtfProfiles: async () => {
+      try {
+        const profiles = await window.electronAPI.hrtfProfiles.list()
+        const normalized = profiles.length > 0 ? profiles : [builtinHrtfProfile()]
+        // On startup the store still holds the built-in default, so prefer
+        // the versioned persisted ID before deciding whether a profile went
+        // missing. Otherwise refresh would overwrite every custom selection
+        // with MIT KEMAR before restoration gets a chance to read it.
+        const persisted = localStorage.getItem(SPATIAL_HRTF_PROFILE_STORAGE_KEY)
+        const selected = resolveAvailableHrtfProfileId(normalized, persisted, get().selectedHrtfProfileId)
+        set({ hrtfProfiles: normalized, selectedHrtfProfileId: selected })
+        if (selected !== persisted) {
+          localStorage.setItem(SPATIAL_HRTF_PROFILE_STORAGE_KEY, selected)
+        }
+      } catch (error) {
+        set({
+          hrtfProfiles: [builtinHrtfProfile()],
+          selectedHrtfProfileId: BUILTIN_HRTF_PROFILE_ID,
+          hrtfProfileError: {
+            code: 'storage-error',
+            message: error instanceof Error ? error.message : 'Failed to load the HRTF profile library.',
+          },
+        })
+      }
+    },
+
+    setHrtfProfile: async (profileId: string) => {
+      const profile = get().hrtfProfiles.find((candidate) => candidate.id === profileId)
+      if (!profile) {
+        set({ hrtfProfileError: { code: 'not-found', message: 'That HRTF profile is no longer available.' } })
+        return false
+      }
+      set({ hrtfProfileError: null })
+      const activated = await audioEngine.setHrtfProfile(profile)
+      if (!activated) {
+        const status = audioEngine.getSpatialStatus()
+        set({
+          spatialStatus: status,
+          hrtfProfileError: {
+            code: status.state === 'unsupported-samplerate' ? 'unsupported-samplerate' : 'renderer-error',
+            message: status.message ?? 'Failed to activate the HRTF profile.',
+          },
+        })
+        return false
+      }
+      set({ selectedHrtfProfileId: profile.id, spatialStatus: audioEngine.getSpatialStatus() })
+      localStorage.setItem(SPATIAL_HRTF_PROFILE_STORAGE_KEY, profile.id)
+      return true
+    },
+
+    importHrtfProfile: async () => {
+      set({ hrtfProfileError: null, hrtfImporting: true })
+      try {
+        const selected = await window.electronAPI.hrtfProfiles.chooseCandidate()
+        if (!selected.ok) {
+          if (selected.error.code !== 'cancelled') set({ hrtfProfileError: selected.error })
+          return
+        }
+        const validationError = await audioEngine.validateHrtfCandidate(selected.candidate.bytes)
+        if (validationError) {
+          set({ hrtfProfileError: validationError })
+          return
+        }
+        const committed = await window.electronAPI.hrtfProfiles.commit(
+          selected.candidate.fileName,
+          selected.candidate.bytes
+        )
+        if (!committed.ok) {
+          set({ hrtfProfileError: committed.error })
+          return
+        }
+        await get().refreshHrtfProfiles()
+        await get().setHrtfProfile(committed.profile.id)
+      } catch (error) {
+        set({
+          hrtfProfileError: {
+            code: 'storage-error',
+            message: error instanceof Error ? error.message : 'Failed to import the SOFA profile.',
+          },
+        })
+      } finally {
+        set({ hrtfImporting: false })
+      }
+    },
+
+    removeHrtfProfile: async (profileId: string) => {
+      const profile = get().hrtfProfiles.find((candidate) => candidate.id === profileId)
+      if (!profile || profile.builtIn) return false
+      if (get().selectedHrtfProfileId === profileId) {
+        const switched = await get().setHrtfProfile(BUILTIN_HRTF_PROFILE_ID)
+        if (!switched) {
+          await get().setSpatialMode('off')
+          await get().setHrtfProfile(BUILTIN_HRTF_PROFILE_ID)
+        }
+      }
+      const removed = await window.electronAPI.hrtfProfiles.remove(profileId)
+      if (!removed.ok) {
+        set({ hrtfProfileError: removed.error })
+        return false
+      }
+      await get().refreshHrtfProfiles()
+      set({ hrtfProfileError: null })
+      return true
     },
 
     setSpatialMode: async (mode: SpatialMode) => {
@@ -1364,10 +1671,19 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     resetSpatialSettings: async () => {
       localStorage.removeItem(SPATIAL_MODE_STORAGE_KEY)
       localStorage.removeItem(SPATIAL_LAYOUT_STORAGE_KEY)
-      set({ spatialMode: 'off', spatialLayoutPresetId: '5.1', customVirtualSpeakers: null })
+      localStorage.removeItem(SPATIAL_HRTF_PROFILE_STORAGE_KEY)
+      set({
+        spatialMode: 'off',
+        spatialLayoutPresetId: '5.1',
+        customVirtualSpeakers: null,
+        selectedHrtfProfileId: BUILTIN_HRTF_PROFILE_ID,
+        hrtfProfileError: null,
+        hrtfImporting: false,
+      })
       try {
         await audioEngine.setVirtualSpeakers(buildVirtualSpeakerLayout('5.1', null))
         await audioEngine.setSpatialMode('off')
+        await audioEngine.setHrtfProfile(builtinHrtfProfile())
       } catch (error) {
         console.warn('Failed to reset spatial mode:', error)
       }
@@ -1415,6 +1731,31 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       localStorage.setItem(REPLAYGAIN_MODE_STORAGE_KEY, normalized)
     },
 
+    setExclusiveSampleRate: async (sampleRate: number | null) => {
+      const normalized = normalizeSampleRate(sampleRate)
+      await audioEngine.setExclusiveSampleRate(normalized)
+      set({
+        exclusiveSampleRate: normalized,
+        nativeAudioOutputStatus: audioEngine.getNativeAudioOutputStatus(),
+        playbackModeStatusMessage: audioEngine.getPlaybackModeStatusMessage()
+      })
+      if (normalized === null) {
+        localStorage.removeItem(EXCLUSIVE_SAMPLE_RATE_STORAGE_KEY)
+      } else {
+        localStorage.setItem(EXCLUSIVE_SAMPLE_RATE_STORAGE_KEY, String(normalized))
+      }
+    },
+
+    setExclusiveLimiterEnabled: async (enabled: boolean) => {
+      const normalized = Boolean(enabled)
+      await audioEngine.setExclusiveLimiterEnabled(normalized)
+      set({
+        exclusiveLimiterEnabled: normalized,
+        nativeAudioOutputStatus: audioEngine.getNativeAudioOutputStatus()
+      })
+      localStorage.setItem(EXCLUSIVE_LIMITER_STORAGE_KEY, normalized ? '1' : '0')
+    },
+
     setDelayCompensationEnabled: async (enabled: boolean) => {
       await updateActiveDelayProfile((profile) => ({
         ...profile,
@@ -1451,7 +1792,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     },
 
     runDelayAutoCalibration: async () => {
-      if (get().playbackOutputMode === 'bitperfect') {
+      if (isNativeOutputMode(get().playbackOutputMode)) {
         set({
           delayCalibrationState: 'error',
           delayCalibrationMessage: audioEngine.getBitPerfectUnavailableMessage()
@@ -1819,13 +2160,17 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       localStorage.removeItem(STORAGE_KEY)
       localStorage.removeItem(NATIVE_OUTPUT_STORAGE_KEY)
       localStorage.removeItem(PLAYBACK_OUTPUT_MODE_STORAGE_KEY)
+      localStorage.removeItem(EXCLUSIVE_SAMPLE_RATE_STORAGE_KEY)
+      localStorage.removeItem(EXCLUSIVE_LIMITER_STORAGE_KEY)
       localStorage.removeItem(CALIBRATION_INPUT_STORAGE_KEY)
       localStorage.removeItem(MULTICHANNEL_STORAGE_KEY)
       localStorage.removeItem(INCLUDE_LFE_DOWNMIX_STORAGE_KEY)
       localStorage.removeItem(STEREO_UPMIX_MODE_STORAGE_KEY)
       localStorage.removeItem(SPATIAL_MODE_STORAGE_KEY)
       localStorage.removeItem(SPATIAL_LAYOUT_STORAGE_KEY)
-      localStorage.removeItem(ROUTING_STORAGE_KEY)
+      localStorage.removeItem(LEGACY_ROUTING_STORAGE_KEY)
+      localStorage.removeItem(SOURCE_SPEAKER_ROUTING_STORAGE_KEY)
+      localStorage.removeItem(SPEAKER_PROFILES_STORAGE_KEY)
       localStorage.removeItem(NORMALIZATION_ENABLED_STORAGE_KEY)
       localStorage.removeItem(NORMALIZATION_TARGET_STORAGE_KEY)
       localStorage.removeItem(REPLAYGAIN_MODE_STORAGE_KEY)
@@ -1861,14 +2206,15 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       try {
         await audioEngine.setSpatialMode('off')
         await audioEngine.setVirtualSpeakers(buildVirtualSpeakerLayout('5.1', null))
+        await audioEngine.setHrtfProfile(builtinHrtfProfile())
       } catch (error) {
         console.warn('Failed to reset spatial mode:', error)
       }
 
       try {
-        await audioEngine.setChannelRoutingMap(null)
+        await audioEngine.setSourceSpeakerRoutingMap(null)
       } catch (error) {
-        console.warn('Failed to reset channel routing map:', error)
+        console.warn('Failed to reset source-to-speaker routing:', error)
       }
 
       try {
@@ -1892,6 +2238,8 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       audioEngine.normalizationEnabled = true
       audioEngine.targetLufs = DEFAULT_NORMALIZATION_TARGET_LUFS
       audioEngine.setDisableStandardAnalysisGraphDev(false)
+      await audioEngine.setExclusiveSampleRate(null)
+      await audioEngine.setExclusiveLimiterEnabled(true)
       await audioEngine.setPlaybackOutputMode('standard')
 
       let availableDevices = get().availableDevices
@@ -1909,13 +2257,19 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         console.warn('Could not enumerate audio devices during reset')
       }
 
-      let selectedOutputChannelCount: number | null = null
+      let selectedDeviceMaxChannelCount: number | null = null
       try {
         await audioEngine.ensureContextReady()
-        selectedOutputChannelCount = audioEngine.getOutputMaxChannelCount()
+        selectedDeviceMaxChannelCount = audioEngine.getOutputMaxChannelCount()
       } catch {
-        selectedOutputChannelCount = null
+        selectedDeviceMaxChannelCount = null
       }
+      const activeSpeakerProfile = createDefaultDeviceSpeakerProfile(selectedDeviceMaxChannelCount)
+      const activeSpeakerProfileKey = resolveActiveDelayProfileTarget('', availableDevices).key
+      await audioEngine.setSpeakerOutputConfiguration(
+        activeSpeakerProfile,
+        selectedDeviceMaxChannelCount ?? 2
+      )
 
       set({
         playbackOutputMode: 'standard',
@@ -1927,19 +2281,29 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         availableDevices,
         availableInputDevices,
         selectedCalibrationInputDeviceId: '',
-        selectedOutputChannelCount,
+        selectedDeviceMaxChannelCount,
+        logicalOutputChannelCount: resolveDirectSpeakerIds(activeSpeakerProfile, false).length,
         multichannelEnabled: false,
         includeLfeInDownmix: false,
         stereoUpmixMode: 'off',
-        channelRoutingMap: null,
+        sourceSpeakerRoutingMap: {},
+        speakerProfilesByDeviceKey: { [activeSpeakerProfileKey]: activeSpeakerProfile },
+        activeSpeakerProfileKey,
+        activeSpeakerProfile,
+        testingSpeakerRole: null,
         spatialMode: 'off',
         spatialLayoutPresetId: '5.1',
         customVirtualSpeakers: null,
+        selectedHrtfProfileId: BUILTIN_HRTF_PROFILE_ID,
+        hrtfProfileError: null,
+        hrtfImporting: false,
         spatialStatus: audioEngine.getSpatialStatus(),
         normalizationEnabled: true,
         normalizationTargetLufs: DEFAULT_NORMALIZATION_TARGET_LUFS,
         replayGainScanEnabled: false,
         replayGainMode: 'auto',
+        exclusiveSampleRate: null,
+        exclusiveLimiterEnabled: true,
         delayProfilesByDeviceKey: {},
         inputBaselinesByKey: {},
         activeDelayProfileKey: 'default',
@@ -1953,13 +2317,33 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     initFromSaved: async () => {
       const disableStandardAnalysisGraphDev = readDevDisableStandardAnalysisGraph()
       audioEngine.setDisableStandardAnalysisGraphDev(disableStandardAnalysisGraphDev)
+      localStorage.removeItem(LEGACY_ROUTING_STORAGE_KEY)
+
+      const savedSpeakerProfiles = parseSpeakerProfiles(
+        localStorage.getItem(SPEAKER_PROFILES_STORAGE_KEY)
+      )
+      let savedSourceSpeakerRoutingMap: SourceSpeakerRoutingMap = {}
+      const savedSourceRoutingRaw = localStorage.getItem(SOURCE_SPEAKER_ROUTING_STORAGE_KEY)
+      if (savedSourceRoutingRaw) {
+        try {
+          savedSourceSpeakerRoutingMap = normalizeSourceSpeakerRoutingMap(
+            JSON.parse(savedSourceRoutingRaw)
+          )
+        } catch {
+          localStorage.removeItem(SOURCE_SPEAKER_ROUTING_STORAGE_KEY)
+        }
+      }
 
       const savedPlaybackOutputMode = normalizePlaybackOutputMode(
         localStorage.getItem(PLAYBACK_OUTPUT_MODE_STORAGE_KEY)
       )
+      const savedExclusiveSampleRate = normalizeSampleRate(localStorage.getItem(EXCLUSIVE_SAMPLE_RATE_STORAGE_KEY))
+      const savedExclusiveLimiterEnabled = localStorage.getItem(EXCLUSIVE_LIMITER_STORAGE_KEY) !== '0'
+      await audioEngine.setExclusiveSampleRate(savedExclusiveSampleRate)
+      await audioEngine.setExclusiveLimiterEnabled(savedExclusiveLimiterEnabled)
       const playbackModeResult = await audioEngine.setPlaybackOutputMode(savedPlaybackOutputMode)
       const playbackOutputMode = playbackModeResult.activeMode
-      const nativeAudioCapabilities = playbackOutputMode === 'bitperfect'
+      const nativeAudioCapabilities = isNativeOutputMode(playbackOutputMode)
         ? await audioEngine.refreshNativeAudioCapabilities()
         : playbackModeResult.capabilities
 
@@ -2008,12 +2392,16 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         disableStandardAnalysisGraphDev,
         nativeAudioCapabilities,
         playbackModeStatusMessage: playbackModeResult.message ?? audioEngine.getPlaybackModeStatusMessage(),
+        speakerProfilesByDeviceKey: savedSpeakerProfiles,
+        sourceSpeakerRoutingMap: savedSourceSpeakerRoutingMap,
         delayProfilesByDeviceKey: savedProfiles,
         inputBaselinesByKey: savedInputBaselines,
         normalizationEnabled,
         normalizationTargetLufs,
         replayGainScanEnabled: replayGainEnabled,
-        replayGainMode
+        replayGainMode,
+        exclusiveSampleRate: savedExclusiveSampleRate,
+        exclusiveLimiterEnabled: savedExclusiveLimiterEnabled
       })
 
       await get().refreshDevices()
@@ -2076,6 +2464,15 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
           localStorage.removeItem(SPATIAL_LAYOUT_STORAGE_KEY)
         }
       }
+      await get().refreshHrtfProfiles()
+      const savedHrtfProfileId = localStorage.getItem(SPATIAL_HRTF_PROFILE_STORAGE_KEY)
+      const selectedHrtfProfile = get().hrtfProfiles.find((profile) => profile.id === savedHrtfProfileId)
+        ?? get().hrtfProfiles.find((profile) => profile.id === BUILTIN_HRTF_PROFILE_ID)
+        ?? builtinHrtfProfile()
+      set({ selectedHrtfProfileId: selectedHrtfProfile.id })
+      localStorage.setItem(SPATIAL_HRTF_PROFILE_STORAGE_KEY, selectedHrtfProfile.id)
+      await audioEngine.setHrtfProfile(selectedHrtfProfile)
+
       const savedSpatialMode = normalizeSpatialMode(localStorage.getItem(SPATIAL_MODE_STORAGE_KEY))
       if (savedSpatialMode === 'binaural') {
         await get().setSpatialMode('binaural')
@@ -2086,24 +2483,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         )
       }
 
-      const savedRoutingMap = localStorage.getItem(ROUTING_STORAGE_KEY)
-      if (savedRoutingMap) {
-        try {
-          const parsed = JSON.parse(savedRoutingMap)
-          if (Array.isArray(parsed)) {
-            const map = parsed.map((value) => {
-              if (!Number.isFinite(value)) return -1
-              const rounded = Math.trunc(value)
-              return rounded >= -1 ? rounded : -1
-            })
-            await get().setChannelRoutingMap(map)
-          } else {
-            localStorage.removeItem(ROUTING_STORAGE_KEY)
-          }
-        } catch {
-          localStorage.removeItem(ROUTING_STORAGE_KEY)
-        }
-      }
+      await audioEngine.setSourceSpeakerRoutingMap(savedSourceSpeakerRoutingMap)
 
       ensureMediaDeviceChangeListener()
       await syncDelayCompensationForActiveDevice({ resetCalibrationStatus: true })

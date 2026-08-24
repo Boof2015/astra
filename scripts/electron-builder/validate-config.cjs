@@ -27,6 +27,14 @@ const packageJsonPath = path.resolve(__dirname, '../../package.json')
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'))
 const buildConfig = packageJson.build ?? {}
 
+const hrtfResource = Array.isArray(buildConfig.extraResources)
+  ? buildConfig.extraResources.find((entry) => entry?.from === 'resources/hrtf/' && entry?.to === 'hrtf/')
+  : undefined
+
+if (!hrtfResource || !Array.isArray(hrtfResource.filter) || !hrtfResource.filter.includes('*')) {
+  fail('build.extraResources must package the complete resources/hrtf/ directory as hrtf/.')
+}
+
 if (buildConfig.fileAssociations !== undefined) {
   fail('build.fileAssociations must not exist; use platform-specific fileAssociations blocks.')
 }

@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <string>
+#include <utility>
 #include <vector>
 
 #if defined(__linux__)
@@ -216,23 +218,29 @@ std::vector<int> ReadPidArray(const Napi::Env& env, const Napi::Value& value) {
     return pids;
 }
 
-Napi::Value GetProcessFootprints(const Napi::CallbackInfo& info) {
-    const Napi::Env env = info.Env();
-    const std::vector<int> pids = ReadPidArray(env, info.Length() > 0 ? info[0] : env.Undefined());
-    if (env.IsExceptionPending()) {
-        return env.Null();
+std::vector<ProcessFootprint> MeasureProcessFootprints(const std::vector<int>& pids) {
+    std::vector<ProcessFootprint> footprints;
+    footprints.reserve(pids.size());
+    for (const int pid : pids) {
+        footprints.push_back(MeasureProcessFootprint(pid));
     }
+    return footprints;
+}
 
+Napi::Object CreateProcessFootprintsResult(
+    const Napi::Env& env,
+    const std::vector<ProcessFootprint>& footprints
+) {
     const char* source = PlatformSource();
     uint64_t totalBytes = 0;
     bool complete = true;
 
-    Napi::Array processArray = Napi::Array::New(env, pids.size());
+    Napi::Array processArray = Napi::Array::New(env, footprints.size());
     Napi::Array failedPidArray = Napi::Array::New(env);
     uint32_t failedPidIndex = 0;
 
-    for (size_t index = 0; index < pids.size(); index++) {
-        const ProcessFootprint footprint = MeasureProcessFootprint(pids[index]);
+    for (size_t index = 0; index < footprints.size(); index++) {
+        const ProcessFootprint& footprint = footprints[index];
 
         Napi::Object process = Napi::Object::New(env);
         process.Set("pid", Napi::Number::New(env, footprint.pid));
@@ -261,11 +269,73 @@ Napi::Value GetProcessFootprints(const Napi::CallbackInfo& info) {
     return result;
 }
 
+Napi::Value GetProcessFootprints(const Napi::CallbackInfo& info) {
+    const Napi::Env env = info.Env();
+    const std::vector<int> pids = ReadPidArray(env, info.Length() > 0 ? info[0] : env.Undefined());
+    if (env.IsExceptionPending()) {
+        return env.Null();
+    }
+
+    return CreateProcessFootprintsResult(env, MeasureProcessFootprints(pids));
+}
+
+class ProcessFootprintsAsyncWorker : public Napi::AsyncWorker {
+public:
+    ProcessFootprintsAsyncWorker(
+        Napi::Promise::Deferred deferred,
+        std::vector<int> pids
+    )
+        : Napi::AsyncWorker(deferred.Env(), "astra:process-memory"),
+          deferred_(std::move(deferred)),
+          pids_(std::move(pids)) {}
+
+    void Execute() override {
+        // Process-region enumeration can take several milliseconds per process,
+        // especially on macOS. Keep that work off the main/V8 thread.
+        try {
+            footprints_ = MeasureProcessFootprints(pids_);
+        } catch (const std::exception& error) {
+            SetError(error.what());
+        } catch (...) {
+            SetError("Native process memory measurement failed.");
+        }
+    }
+
+    void OnOK() override {
+        Napi::HandleScope scope(Env());
+        deferred_.Resolve(CreateProcessFootprintsResult(Env(), footprints_));
+    }
+
+    void OnError(const Napi::Error& error) override {
+        Napi::HandleScope scope(Env());
+        deferred_.Reject(error.Value());
+    }
+
+private:
+    Napi::Promise::Deferred deferred_;
+    std::vector<int> pids_;
+    std::vector<ProcessFootprint> footprints_;
+};
+
+Napi::Value GetProcessFootprintsAsync(const Napi::CallbackInfo& info) {
+    const Napi::Env env = info.Env();
+    std::vector<int> pids = ReadPidArray(env, info.Length() > 0 ? info[0] : env.Undefined());
+    if (env.IsExceptionPending()) {
+        return env.Null();
+    }
+
+    auto deferred = Napi::Promise::Deferred::New(env);
+    auto* worker = new ProcessFootprintsAsyncWorker(deferred, std::move(pids));
+    worker->Queue();
+    return deferred.Promise();
+}
+
 } // namespace
 
 Napi::Object Register(Napi::Env env) {
     Napi::Object exports = Napi::Object::New(env);
     exports.Set("getProcessFootprints", Napi::Function::New(env, GetProcessFootprints));
+    exports.Set("getProcessFootprintsAsync", Napi::Function::New(env, GetProcessFootprintsAsync));
     return exports;
 }
 

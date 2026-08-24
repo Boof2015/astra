@@ -9,6 +9,11 @@ import {
   useLibraryStore,
   type DbTrack
 } from './libraryStore.ts'
+import {
+  ALBUM_SORT_STATE_STORAGE_KEY,
+  ROOT_TRACK_TABLE_LAYOUT_STORAGE_KEY
+} from '../constants/settingsStorageKeys.ts'
+import { createDefaultRootTrackTableLayout } from '../utils/rootTrackTable.ts'
 
 function makeTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
   return {
@@ -59,6 +64,12 @@ function makeTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
 
 interface MockLibraryApi {
   getTracksByPaths: (trackPaths: string[]) => Promise<DbTrack[]> | DbTrack[]
+  getTracksPage: (request: { offset?: number; limit?: number }) => Promise<{
+    tracks: DbTrack[]
+    total: number
+    hasMore: boolean
+    nextOffset: number | null
+  }>
   getTrackCount: () => Promise<number> | number
   getTotalTrackDuration: () => Promise<number> | number
   getAlbums: () => Promise<unknown[]> | unknown[]
@@ -73,6 +84,7 @@ interface MockLibraryApi {
 function installMockLibraryApi(overrides: Partial<MockLibraryApi> = {}): void {
   const libraryApi: MockLibraryApi = {
     getTracksByPaths: async () => [],
+    getTracksPage: async () => ({ tracks: [], total: 0, hasMore: false, nextOffset: null }),
     getTrackCount: async () => 0,
     getTotalTrackDuration: async () => 0,
     getAlbums: async () => [],
@@ -89,7 +101,10 @@ function installMockLibraryApi(overrides: Partial<MockLibraryApi> = {}): void {
     configurable: true,
     value: {
       electronAPI: {
-        library: libraryApi
+        library: libraryApi,
+        libraryDiagnostics: {
+          logRendererTiming: async () => true
+        }
       }
     }
   })
@@ -133,6 +148,36 @@ test('play count column visibility is hidden by default and persists explicit ch
     assert.equal(values.get(TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY), '1')
     useLibraryStore.getState().setShowTracklistPlayCount(false)
     assert.equal(values.get(TRACKLIST_PLAY_COUNT_VISIBILITY_STORAGE_KEY), '0')
+  } finally {
+    if (originalDescriptor) Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
+  }
+})
+
+test('root Tracks layout and Album sort preferences normalize and persist independently', () => {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const values = new Map<string, string>()
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key)
+    }
+  })
+
+  try {
+    const layout = createDefaultRootTrackTableLayout()
+    layout.columns.find((entry) => entry.id === 'year')!.visible = true
+    layout.columns.find((entry) => entry.id === 'title')!.visible = false
+    useLibraryStore.getState().setRootTrackTableLayout(layout)
+    useLibraryStore.getState().setAlbumSortState({ key: 'year', direction: 'desc' })
+
+    assert.equal(useLibraryStore.getState().rootTrackTableLayout.columns[0]?.id, 'title')
+    assert.equal(useLibraryStore.getState().rootTrackTableLayout.columns[0]?.visible, true)
+    assert.equal(useLibraryStore.getState().rootTrackTableLayout.columns.find((entry) => entry.id === 'year')?.visible, true)
+    assert.deepEqual(JSON.parse(values.get(ALBUM_SORT_STATE_STORAGE_KEY) ?? 'null'), { key: 'year', direction: 'desc' })
+    assert.equal(typeof values.get(ROOT_TRACK_TABLE_LAYOUT_STORAGE_KEY), 'string')
   } finally {
     if (originalDescriptor) Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
     else Reflect.deleteProperty(globalThis, 'localStorage')
@@ -210,6 +255,148 @@ test('loadLibrary refreshes total track duration from the library API', async ()
   const state = useLibraryStore.getState()
   assert.equal(state.totalTrackCount, 3)
   assert.equal(state.totalTrackDuration, 90061)
+})
+
+test('loadLibrary submits a correlated aggregate reload summary', async () => {
+  const timings: Record<string, unknown>[] = []
+  let pageRequests = 0
+  const firstPageTrack = makeTrack('/music/first.flac')
+  const secondPageTrack = makeTrack('/music/second.flac')
+  installMockLibraryApi({
+    getTrackCount: async () => 3,
+    getTotalTrackDuration: async () => 540,
+    getAlbums: async () => [{ album: 'Album' }],
+    getArtists: async () => [{ artist: 'Artist' }],
+    getGenres: async () => ['Rock'],
+    getFolders: async () => [{ path: '/music' }],
+    getFavoritePaths: async () => ['/music/favorite.flac'],
+    getRecentlyPlayed: async () => [makeTrack('/music/recent.flac')],
+    getTracksPage: async () => {
+      pageRequests += 1
+      return pageRequests === 1
+        ? { tracks: [firstPageTrack], total: 2, hasMore: true, nextOffset: 1 }
+        : { tracks: [secondPageTrack], total: 2, hasMore: false, nextOffset: null }
+    }
+  })
+  ;(window.electronAPI.libraryDiagnostics as unknown as {
+    logRendererTiming: (event: Record<string, unknown>) => Promise<boolean>
+  }).logRendererTiming = async (event) => {
+    timings.push(event)
+    return true
+  }
+  useLibraryStore.setState({
+    trackByPath: new Map(),
+    trackCacheVersion: 0,
+    trackPaths: [],
+    fullTrackPaths: [],
+    fullTrackConsumers: new Set(['library']),
+    totalTrackCount: 0,
+    totalTrackDuration: 0,
+    albums: [],
+    albumsIncludingSingles: [],
+    albumsIncludingSinglesLoaded: false,
+    artists: [],
+    genres: [],
+    folders: [],
+    favorites: new Set(),
+    favoriteTrackPaths: [],
+    recentlyPlayedPaths: [],
+    selectedAlbum: null,
+    selectedArtist: null,
+    selectedGenre: null,
+    selectedYear: null
+  })
+
+  const operationStartedAt = performance.now()
+  await useLibraryStore.getState().loadLibrary({
+    runId: 'diagnostic-run-1',
+    operationKind: 'rescan_all',
+    operationStartedAt,
+    backendDurationMs: 12.5
+  })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  const timing = timings[0]
+  assert.ok(timing)
+  assert.equal(timing.runId, 'diagnostic-run-1')
+  assert.equal(timing.operationKind, 'rescan_all')
+  assert.equal((timing.stepRequestCount as Record<string, number>).albums, 1)
+  assert.equal((timing.stepRequestCount as Record<string, number>).favorites, 2)
+  assert.equal((timing.stepRequestCount as Record<string, number>).full_tracks, 2)
+  assert.equal((timing.stepRequestCount as Record<string, number>).active_selection, 0)
+  assert.equal((timing.stepResultCount as Record<string, number>).track_count, 3)
+  assert.equal((timing.stepResultCount as Record<string, number>).folders, 1)
+  assert.equal((timing.stepResultCount as Record<string, number>).full_tracks, 2)
+  assert.equal(typeof (timing.stepDurationMs as Record<string, number>).artists, 'number')
+})
+
+test('loadFullTracks publishes only revealed pages and the final staged page', async () => {
+  const tracks = [
+    makeTrack('/music/one.flac'),
+    makeTrack('/music/two.flac'),
+    makeTrack('/music/three.flac'),
+    makeTrack('/music/four.flac')
+  ]
+  const revealTimes = [1000, 1100, 1300, 1350]
+  const requestSnapshots: Array<{ version: number; paths: string[] }> = []
+  let requestIndex = 0
+  let now = revealTimes[0]
+
+  installMockLibraryApi({
+    getTracksPage: async () => {
+      const index = requestIndex++
+      const state = useLibraryStore.getState()
+      requestSnapshots.push({
+        version: state.trackCacheVersion,
+        paths: [...state.fullTrackPaths]
+      })
+      now = revealTimes[index]
+      return {
+        tracks: [tracks[index]],
+        total: tracks.length,
+        hasMore: index < tracks.length - 1,
+        nextOffset: index < tracks.length - 1 ? index + 1 : null
+      }
+    }
+  })
+  useLibraryStore.setState({
+    trackByPath: new Map(),
+    trackCacheVersion: 0,
+    trackPaths: [],
+    fullTrackPaths: [],
+    fullTracksStatus: 'idle',
+    fullTrackConsumers: new Set(['library']),
+    selectedAlbum: null,
+    selectedArtist: null,
+    selectedGenre: null,
+    selectedYear: null,
+    viewMode: 'tracks'
+  })
+
+  const originalDateNow = Date.now
+  Date.now = () => now
+  try {
+    await useLibraryStore.getState().loadFullTracks()
+  } finally {
+    Date.now = originalDateNow
+  }
+
+  assert.deepEqual(requestSnapshots, [
+    { version: 0, paths: [] },
+    { version: 1, paths: [tracks[0].path] },
+    { version: 1, paths: [tracks[0].path] },
+    { version: 2, paths: tracks.slice(0, 3).map((track) => track.path) }
+  ])
+
+  const state = useLibraryStore.getState()
+  assert.equal(state.trackCacheVersion, 3)
+  assert.equal(state.fullTracksStatus, 'complete')
+  assert.deepEqual(state.fullTrackPaths, tracks.map((track) => track.path))
+  assert.deepEqual(state.trackPaths, tracks.map((track) => track.path))
+  assert.deepEqual(
+    state.resolveTrackPaths(state.fullTrackPaths).map((track) => track.path),
+    tracks.map((track) => track.path)
+  )
 })
 
 test('resolveTrackPathsWithFetch hydrates missing cached tracks without pruning retained cache', async () => {
