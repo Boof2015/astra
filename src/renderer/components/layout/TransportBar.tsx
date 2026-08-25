@@ -79,6 +79,7 @@ function TransportWaveformSection({
       </button>
       <WaveformSeekBar
         waveformData={waveformData}
+        waveformKey={currentTrack?.path ?? null}
         progress={progress}
         duration={duration}
         currentTime={compensatedTime}

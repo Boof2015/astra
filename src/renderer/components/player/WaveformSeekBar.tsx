@@ -2,9 +2,17 @@ import { useRef, useEffect, useCallback, useState, useMemo } from 'react'
 import { downsampleWaveform } from '../../audio/waveformExtractor'
 import { useMediaQuery } from '../../hooks/useMediaQuery'
 import { useThemeStore } from '../../stores/themeStore'
+import {
+  getWaveformBarScale,
+  getWaveformBaselineStrength,
+  getWaveformTransitionDurationMs,
+  interpolateWaveformBarHeight,
+  type WaveformTransitionPhase,
+} from './waveformTransition'
 
 interface WaveformSeekBarProps {
   waveformData: Float32Array | null
+  waveformKey?: string | null
   progress: number // 0-100
   duration: number
   currentTime: number
@@ -32,6 +40,24 @@ interface PlayheadPulse {
   strength: number
 }
 
+interface WaveformDisplayTransition {
+  phase: 'steady' | WaveformTransitionPhase
+  startedAtMs: number
+  elapsedMs: number
+  exitStartScales: Float32Array | null
+  handoffTargetData: Float32Array | null
+}
+
+function createSteadyWaveformTransition(): WaveformDisplayTransition {
+  return {
+    phase: 'steady',
+    startedAtMs: 0,
+    elapsedMs: 0,
+    exitStartScales: null,
+    handoffTargetData: null,
+  }
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
@@ -48,6 +74,7 @@ function formatTime(seconds: number): string {
 
 export default function WaveformSeekBar({
   waveformData,
+  waveformKey = null,
   progress,
   duration,
   currentTime,
@@ -62,6 +89,10 @@ export default function WaveformSeekBar({
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 })
   const [visualProgress, setVisualProgress] = useState<number | null>(null)
   const [playheadPulse, setPlayheadPulse] = useState<PlayheadPulse | null>(null)
+  const [displayedWaveformData, setDisplayedWaveformData] = useState(waveformData)
+  const [waveformTransition, setWaveformTransition] = useState<WaveformDisplayTransition>(
+    createSteadyWaveformTransition,
+  )
   const pointerActiveRef = useRef(false)
   const hasDraggedRef = useRef(false)
   const pointerStartXRef = useRef(0)
@@ -70,10 +101,16 @@ export default function WaveformSeekBar({
   const pulseAnimationFrameRef = useRef<number | null>(null)
   const seekAckTimerRef = useRef<number | null>(null)
   const settledSeekTargetRef = useRef<number | null>(null)
+  const targetWaveformKeyRef = useRef(waveformKey)
+  const pendingWaveformDataRef = useRef(waveformData)
   const authoritativeProgressRef = useRef(clamp(progress, 0, 100))
   const displayedProgressRef = useRef(clamp(progress, 0, 100))
   const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const waveformTheme = useThemeStore((s) => s.resolvedTokens)
+
+  // Keep animation completion callbacks on the newest result even when a
+  // native waveform arrives between two animation frames.
+  pendingWaveformDataRef.current = waveformData
 
   const authoritativeProgress = clamp(progress, 0, 100)
   authoritativeProgressRef.current = authoritativeProgress
@@ -111,10 +148,190 @@ export default function WaveformSeekBar({
 
   // Adaptive bar count: downsample source data to fit the current width
   const displayData = useMemo(() => {
-    if (!waveformData || canvasSize.width === 0) return null
+    if (!displayedWaveformData || canvasSize.width === 0) return null
     const barCount = Math.max(8, Math.floor(canvasSize.width / TARGET_BAR_SLOT_PX))
-    return downsampleWaveform(waveformData, barCount)
-  }, [waveformData, canvasSize.width])
+    return downsampleWaveform(displayedWaveformData, barCount)
+  }, [displayedWaveformData, canvasSize.width])
+  const handoffDisplayData = useMemo(() => {
+    if (!waveformTransition.handoffTargetData || canvasSize.width === 0) return null
+    const barCount = Math.max(8, Math.floor(canvasSize.width / TARGET_BAR_SLOT_PX))
+    return downsampleWaveform(waveformTransition.handoffTargetData, barCount)
+  }, [canvasSize.width, waveformTransition.handoffTargetData])
+
+  // Ready incoming tracks hand off directly from the outgoing bar heights.
+  // Only genuinely late waveform data collapses to the baseline and waits.
+  // Progressive updates for one track replace data without replaying motion.
+  useEffect(() => {
+    const keyChanged = waveformKey !== targetWaveformKeyRef.current
+
+    if (prefersReducedMotion) {
+      targetWaveformKeyRef.current = waveformKey
+      if (displayedWaveformData !== waveformData) setDisplayedWaveformData(waveformData)
+      if (waveformTransition.phase !== 'steady') {
+        setWaveformTransition(createSteadyWaveformTransition())
+      }
+      return
+    }
+
+    const beginEnter = (nextWaveform: Float32Array): void => {
+      setDisplayedWaveformData(nextWaveform)
+      setWaveformTransition({
+        phase: 'enter',
+        startedAtMs: performance.now(),
+        elapsedMs: 0,
+        exitStartScales: null,
+        handoffTargetData: null,
+      })
+    }
+
+    const beginHandoff = (
+      nextWaveform: Float32Array,
+      outgoingScales: Float32Array | null = null,
+    ): void => {
+      setWaveformTransition({
+        phase: 'handoff',
+        startedAtMs: performance.now(),
+        elapsedMs: 0,
+        exitStartScales: outgoingScales,
+        handoffTargetData: nextWaveform,
+      })
+    }
+
+    const captureCurrentBarScales = (): Float32Array => {
+      const barCount = displayData?.length ?? 0
+      const capturedScales = new Float32Array(barCount)
+      for (let index = 0; index < barCount; index += 1) {
+        const scale = waveformTransition.phase === 'enter' || waveformTransition.phase === 'exit'
+          ? getWaveformBarScale(
+              waveformTransition.phase,
+              waveformTransition.elapsedMs,
+              index,
+              barCount,
+              waveformTransition.exitStartScales?.[index] ?? 1,
+            )
+          : 1
+        capturedScales[index] = scale
+      }
+      return capturedScales
+    }
+
+    const beginExit = (): void => {
+      const exitStartScales = captureCurrentBarScales()
+      let maximumStartScale = 0
+      for (const scale of exitStartScales) {
+        maximumStartScale = Math.max(maximumStartScale, scale)
+      }
+
+      // A rapid skip can supersede a waveform before its first visible frame.
+      // In that case there is nothing meaningful to collapse.
+      if (exitStartScales.length === 0 || maximumStartScale < 0.02) {
+        const pending = pendingWaveformDataRef.current
+        if (pending) beginEnter(pending)
+        else {
+          setDisplayedWaveformData(null)
+          setWaveformTransition(createSteadyWaveformTransition())
+        }
+        return
+      }
+
+      setWaveformTransition({
+        phase: 'exit',
+        startedAtMs: performance.now(),
+        elapsedMs: 0,
+        exitStartScales,
+        handoffTargetData: null,
+      })
+    }
+
+    if (keyChanged) {
+      targetWaveformKeyRef.current = waveformKey
+      if (waveformTransition.phase === 'exit') return
+      if (displayedWaveformData && waveformData) beginHandoff(waveformData)
+      else if (displayedWaveformData) beginExit()
+      else if (waveformData) beginEnter(waveformData)
+      return
+    }
+
+    if (waveformTransition.phase === 'exit') {
+      if (waveformData && displayedWaveformData) {
+        beginHandoff(waveformData, captureCurrentBarScales())
+      }
+      return
+    }
+    if (waveformTransition.phase === 'handoff') {
+      if (!waveformData) {
+        beginExit()
+      } else if (waveformTransition.handoffTargetData !== waveformData) {
+        setWaveformTransition((current) => ({
+          ...current,
+          handoffTargetData: waveformData,
+        }))
+      }
+      return
+    }
+    if (!waveformData) {
+      if (displayedWaveformData) beginExit()
+      return
+    }
+    if (!displayedWaveformData) {
+      beginEnter(waveformData)
+      return
+    }
+    if (displayedWaveformData !== waveformData) {
+      setDisplayedWaveformData(waveformData)
+    }
+  }, [
+    displayData,
+    displayedWaveformData,
+    prefersReducedMotion,
+    waveformData,
+    waveformKey,
+    waveformTransition,
+  ])
+
+  useEffect(() => {
+    if (prefersReducedMotion || waveformTransition.phase === 'steady') return
+
+    const phase = waveformTransition.phase
+    const startedAtMs = waveformTransition.startedAtMs
+    const durationMs = getWaveformTransitionDurationMs(phase)
+    let animationFrame = 0
+
+    const tick = (now: number): void => {
+      const elapsedMs = Math.max(0, now - startedAtMs)
+      if (elapsedMs >= durationMs) {
+        if (phase === 'exit') {
+          const pending = pendingWaveformDataRef.current
+          setDisplayedWaveformData(pending)
+          setWaveformTransition(pending
+            ? {
+                phase: 'enter',
+                startedAtMs: now,
+                elapsedMs: 0,
+                exitStartScales: null,
+                handoffTargetData: null,
+              }
+            : createSteadyWaveformTransition())
+        } else if (phase === 'handoff') {
+          setDisplayedWaveformData(pendingWaveformDataRef.current)
+          setWaveformTransition(createSteadyWaveformTransition())
+        } else {
+          setWaveformTransition(createSteadyWaveformTransition())
+        }
+        return
+      }
+
+      setWaveformTransition((current) => (
+        current.phase === phase && current.startedAtMs === startedAtMs
+          ? { ...current, elapsedMs }
+          : current
+      ))
+      animationFrame = window.requestAnimationFrame(tick)
+    }
+
+    animationFrame = window.requestAnimationFrame(tick)
+    return () => window.cancelAnimationFrame(animationFrame)
+  }, [prefersReducedMotion, waveformTransition.phase, waveformTransition.startedAtMs])
 
   // Draw waveform
   const draw = useCallback(() => {
@@ -144,15 +361,23 @@ export default function WaveformSeekBar({
     const markerColor = waveformTheme.stageText
     const limitColor = waveformTheme.stageGrid
 
-    if (!displayData || displayData.length === 0) {
-      // Fallback: simple thin progress line
+    const drawBaseline = (strength = 1): void => {
+      if (strength <= 0) return
       const barHeight = 4 * dpr
+      ctx.save()
+      ctx.globalAlpha = clamp(strength, 0, 1)
       ctx.fillStyle = unloadedColor
       ctx.fillRect(0, centerY - barHeight / 2, width, barHeight)
       ctx.fillStyle = loadedColor
       ctx.fillRect(0, centerY - barHeight / 2, analyzedX, barHeight)
       ctx.fillStyle = playedColor
       ctx.fillRect(0, centerY - barHeight / 2, Math.min(playedX, analyzedX), barHeight)
+      ctx.restore()
+    }
+
+    if (!displayData || displayData.length === 0) {
+      // Fallback: simple thin progress line
+      drawBaseline()
     } else {
       const barCount = displayData.length
       const totalBarSpace = width / barCount
@@ -162,10 +387,56 @@ export default function WaveformSeekBar({
       const minBarHalfHeight = 1.5 * dpr
       const radius = Math.min(barWidth / 2, 2.5 * dpr)
 
+      if (waveformTransition.phase !== 'steady') {
+        drawBaseline(getWaveformBaselineStrength(
+          waveformTransition.phase,
+          waveformTransition.elapsedMs,
+        ))
+      }
+
       for (let i = 0; i < barCount; i++) {
         const x = i * totalBarSpace + gap / 2
         const peakValue = displayData[i]
-        const barHalfHeight = Math.max(minBarHalfHeight, peakValue * maxBarHalfHeight)
+        const settledBarHalfHeight = Math.max(minBarHalfHeight, peakValue * maxBarHalfHeight)
+        let barHalfHeight = settledBarHalfHeight
+        if (waveformTransition.phase === 'handoff' && handoffDisplayData) {
+          const incomingPeakValue = handoffDisplayData[i] ?? 0
+          const incomingBarHalfHeight = Math.max(
+            minBarHalfHeight,
+            incomingPeakValue * maxBarHalfHeight,
+          )
+          const handoffProgress = getWaveformBarScale(
+            'handoff',
+            waveformTransition.elapsedMs,
+            i,
+            barCount,
+          )
+          const capturedScales = waveformTransition.exitStartScales
+          const capturedIndex = capturedScales && capturedScales.length > 0
+            ? Math.round((i / Math.max(1, barCount - 1)) * (capturedScales.length - 1))
+            : -1
+          const outgoingBarHalfHeight = settledBarHalfHeight
+            * (capturedIndex >= 0 ? capturedScales![capturedIndex] : 1)
+          barHalfHeight = interpolateWaveformBarHeight(
+            outgoingBarHalfHeight,
+            incomingBarHalfHeight,
+            handoffProgress,
+          )
+        } else if (waveformTransition.phase !== 'steady') {
+          const capturedScales = waveformTransition.exitStartScales
+          const capturedIndex = capturedScales && capturedScales.length > 0
+            ? Math.round((i / Math.max(1, barCount - 1)) * (capturedScales.length - 1))
+            : -1
+          const barScale = getWaveformBarScale(
+            waveformTransition.phase,
+            waveformTransition.elapsedMs,
+            i,
+            barCount,
+            capturedIndex >= 0 ? capturedScales![capturedIndex] : 1,
+          )
+          barHalfHeight = settledBarHalfHeight * barScale
+        }
+        if (barHalfHeight <= 0.01) continue
         const barCenterX = x + barWidth / 2
 
         if (barCenterX <= playedX && barCenterX <= analyzedX) {
@@ -178,9 +449,10 @@ export default function WaveformSeekBar({
 
         const barTop = centerY - barHalfHeight
         const barHeight = barHalfHeight * 2
+        const animatedRadius = Math.min(radius, barHalfHeight)
 
         ctx.beginPath()
-        ctx.roundRect(x, barTop, barWidth, barHeight, radius)
+        ctx.roundRect(x, barTop, barWidth, barHeight, animatedRadius)
         ctx.fill()
       }
     }
@@ -227,7 +499,7 @@ export default function WaveformSeekBar({
       ctx.lineTo(hoverX, height)
       ctx.stroke()
     }
-  }, [displayData, displayedProgress, playheadPulse, hoverPreview, canvasSize, waveformTheme, analyzedRatio, bufferedRatio, duration, seekableDuration])
+  }, [displayData, displayedProgress, playheadPulse, hoverPreview, canvasSize, waveformTheme, analyzedRatio, bufferedRatio, duration, seekableDuration, handoffDisplayData, waveformTransition])
 
   // Redraw on any dependency change
   useEffect(() => {
