@@ -35,6 +35,20 @@ if (!hrtfResource || !Array.isArray(hrtfResource.filter) || !hrtfResource.filter
   fail('build.extraResources must package the complete resources/hrtf/ directory as hrtf/.')
 }
 
+const nativeResource = Array.isArray(buildConfig.extraResources)
+  ? buildConfig.extraResources.find((entry) => (
+      entry?.from === 'native/build/Release/' && entry?.to === 'native/'
+    ))
+  : undefined
+
+if (!nativeResource || !Array.isArray(nativeResource.filter) || !nativeResource.filter.includes('*.node')) {
+  fail('build.extraResources must package every native/build/Release/*.node addon as native/.')
+}
+
+if (!Array.isArray(buildConfig.files) || !buildConfig.files.includes('native/build/Release/*.node')) {
+  fail('build.files must include native/build/Release/*.node so track_waveform.node is packaged.')
+}
+
 if (buildConfig.fileAssociations !== undefined) {
   fail('build.fileAssociations must not exist; use platform-specific fileAssociations blocks.')
 }

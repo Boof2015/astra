@@ -142,11 +142,14 @@ import {
 import {
   LOCAL_PCM_STREAM_MARKER,
   LOCAL_PCM_STREAM_VERSION,
+  STATIC_TRACK_WAVEFORM_RESULT_IPC_CHANNEL,
   isLocalPcmDecodeLimitRefusal,
+  isStaticTrackWaveformResult,
   validateLocalPcmStreamOpenRequest,
   type LocalPcmDecodeLimitRefusal,
   type LocalPcmStreamOpenRequest,
-  type LocalPcmStreamPortEnvelope
+  type LocalPcmStreamPortEnvelope,
+  type StaticTrackWaveformResult,
 } from '../shared/localPcmStream'
 import type {
   LibraryDiagnosticsRendererTimingEvent,
@@ -1519,6 +1522,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('audio:cancelLocalAudioDecode', requestId) as Promise<void>,
   promoteLocalAudioDecode: (requestId: number) =>
     ipcRenderer.invoke('audio:promoteLocalAudioDecode', requestId) as Promise<void>,
+  onStaticTrackWaveformResult: (callback: (result: StaticTrackWaveformResult) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, value: unknown): void => {
+      if (!isStaticTrackWaveformResult(value)) {
+        console.warn('[audio-waveform] ignored malformed static waveform result')
+        return
+      }
+      callback(value)
+    }
+    ipcRenderer.on(STATIC_TRACK_WAVEFORM_RESULT_IPC_CHANNEL, handler)
+    return () => ipcRenderer.removeListener(STATIC_TRACK_WAVEFORM_RESULT_IPC_CHANNEL, handler)
+  },
   analyzeTrackLoudness: (filePath: string) =>
     ipcRenderer.invoke('audio:analyzeTrackLoudness', filePath) as Promise<TrackLoudnessResult | null>,
   warmupTrackLoudness: (filePath: string) =>
@@ -2213,6 +2227,9 @@ declare global {
       ) => Promise<LocalAudioPcmDecodeResponse>
       cancelLocalAudioDecode: (requestId: number) => Promise<void>
       promoteLocalAudioDecode: (requestId: number) => Promise<void>
+      onStaticTrackWaveformResult: (
+        callback: (result: StaticTrackWaveformResult) => void
+      ) => () => void
       analyzeTrackLoudness: (filePath: string) => Promise<TrackLoudnessResult | null>
       warmupTrackLoudness: (filePath: string) => Promise<TrackLoudnessResult | null>
       supersedeTrackLoudness: (filePath: string | null) => Promise<void>

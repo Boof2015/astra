@@ -24,6 +24,11 @@ import type { PlayerSessionSnapshot } from '../utils/sessionState.ts'
 import { audioEngine, type StandardPcmLoadOutcome } from '../audio/AudioEngine.ts'
 import { useAudioSettingsStore } from './audioSettingsStore.ts'
 import { useParallaxStore } from './parallaxStore.ts'
+import {
+  LOCAL_PCM_WAVEFORM_RESOLUTION,
+  STATIC_TRACK_WAVEFORM_RESULT_VERSION,
+  type StaticTrackWaveformResult,
+} from '../../shared/localPcmStream.ts'
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -6997,5 +7002,205 @@ test('gapless prebuffer scheduling is event-driven instead of running on time up
     else delete (audioEngine as unknown as Record<string, unknown>).currentTime
     if (ownDuration) Object.defineProperty(audioEngine, 'duration', ownDuration)
     else delete (audioEngine as unknown as Record<string, unknown>).duration
+  }
+})
+
+test('late native waveforms never gate buffers and failures alone trigger renderer fallback', () => {
+  resetStores()
+  const track = makeTrack('/waveform/late-native.flac', {
+    duration: 180,
+    sourceType: 'local',
+    channels: 2,
+    sampleRate: 48_000,
+  })
+  usePlayerStore.setState({
+    currentTrack: track,
+    waveformData: null,
+    waveformBufferedRatio: 0,
+    waveformAnalyzedRatio: 0,
+  })
+
+  const originalOn = audioEngine.on
+  const originalRequestIdleCallback = Object.getOwnPropertyDescriptor(globalThis, 'requestIdleCallback')
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const listeners = new Map<string, (...args: unknown[]) => void>()
+  let waveformResultListener: (result: StaticTrackWaveformResult) => void = () => {
+    throw new Error('Static waveform listener was not registered.')
+  }
+  let waveformResultListenerRegistered = false
+  let deferredExtractions = 0
+  audioEngine.on = (event, callback) => {
+    listeners.set(event, callback)
+    return () => undefined
+  }
+  Object.defineProperty(globalThis, 'requestIdleCallback', {
+    configurable: true,
+    value: () => {
+      deferredExtractions += 1
+      return 1
+    },
+  })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      electronAPI: {
+        onProgressiveLoadProgress: () => () => undefined,
+        onStaticTrackWaveformResult: (callback: (result: StaticTrackWaveformResult) => void) => {
+          waveformResultListener = callback
+          waveformResultListenerRegistered = true
+          return () => {
+            waveformResultListenerRegistered = false
+          }
+        },
+      },
+    },
+  })
+
+  const fakeBuffer = { length: 1024, numberOfChannels: 2 } as AudioBuffer
+
+  try {
+    usePlayerStore.getState()._cleanupListeners()
+    usePlayerStore.getState()._initListeners()
+    const bufferReady = listeners.get('bufferReady')
+    assert.ok(bufferReady)
+    assert.equal(waveformResultListenerRegistered, true)
+
+    bufferReady(fakeBuffer, {
+      trackPath: track.path,
+      waveformRequestId: 91,
+    })
+    assert.equal(deferredExtractions, 0, 'pending native work must not delay or duplicate into JS work')
+
+    const waveform = new Float32Array(LOCAL_PCM_WAVEFORM_RESOLUTION).fill(0.625)
+    waveformResultListener({
+      version: STATIC_TRACK_WAVEFORM_RESULT_VERSION,
+      status: 'ready',
+      requestId: 91,
+      trackPath: track.path,
+      waveformData: waveform.buffer,
+      waveformAnalysisMs: 2.5,
+    })
+    assert.deepEqual(Array.from(usePlayerStore.getState().waveformData ?? []), Array.from(waveform))
+    assert.equal(deferredExtractions, 0)
+
+    usePlayerStore.setState({ waveformData: null })
+    bufferReady(fakeBuffer, {
+      trackPath: track.path,
+      waveformRequestId: null,
+    })
+    assert.deepEqual(Array.from(usePlayerStore.getState().waveformData ?? []), Array.from(waveform))
+    assert.equal(deferredExtractions, 0, 'cache hits must not schedule renderer extraction')
+
+    const failedTrack = makeTrack('/waveform/late-native-failed.flac', {
+      sourceType: 'local',
+      channels: 2,
+      sampleRate: 48_000,
+    })
+    usePlayerStore.setState({ currentTrack: failedTrack, waveformData: null })
+    bufferReady(fakeBuffer, {
+      trackPath: failedTrack.path,
+      waveformRequestId: 92,
+    })
+    assert.equal(deferredExtractions, 0)
+    waveformResultListener({
+      version: STATIC_TRACK_WAVEFORM_RESULT_VERSION,
+      status: 'failed',
+      requestId: 92,
+      trackPath: failedTrack.path,
+      waveformAnalysisMs: 0.1,
+      failureKind: 'unavailable',
+    })
+    assert.equal(deferredExtractions, 1, 'native failure must retain the deferred renderer fallback')
+
+    const earlyFailureTrack = makeTrack('/waveform/late-native-early-failure.flac', {
+      sourceType: 'local',
+      channels: 2,
+      sampleRate: 48_000,
+    })
+    usePlayerStore.setState({ currentTrack: earlyFailureTrack, waveformData: null })
+    waveformResultListener({
+      version: STATIC_TRACK_WAVEFORM_RESULT_VERSION,
+      status: 'failed',
+      requestId: 93,
+      trackPath: earlyFailureTrack.path,
+      waveformAnalysisMs: 0.1,
+      failureKind: 'analysis_failed',
+    })
+    bufferReady(fakeBuffer, {
+      trackPath: earlyFailureTrack.path,
+      waveformRequestId: 93,
+    })
+    assert.equal(deferredExtractions, 2, 'result-before-buffer ordering must also fall back safely')
+
+    const visibleBeforeStaleResult = usePlayerStore.getState().waveformData
+    waveformResultListener({
+      version: STATIC_TRACK_WAVEFORM_RESULT_VERSION,
+      status: 'ready',
+      requestId: 94,
+      trackPath: '/waveform/superseded-but-cacheable.flac',
+      waveformData: new Float32Array(LOCAL_PCM_WAVEFORM_RESOLUTION).fill(0.25).buffer,
+      waveformAnalysisMs: 1,
+    })
+    assert.equal(usePlayerStore.getState().waveformData, visibleBeforeStaleResult)
+
+    const cachedSupersededTrack = makeTrack('/waveform/superseded-but-cacheable.flac', {
+      sourceType: 'local',
+      channels: 2,
+      sampleRate: 48_000,
+    })
+    usePlayerStore.setState({ currentTrack: cachedSupersededTrack, waveformData: null })
+    bufferReady(fakeBuffer, {
+      trackPath: cachedSupersededTrack.path,
+      waveformRequestId: 94,
+    })
+    assert.equal(usePlayerStore.getState().waveformData?.[0], 0.25)
+    assert.equal(deferredExtractions, 2, 'superseded native results should populate the cache only')
+
+    const compatibilityTrack = makeTrack('/waveform/compatibility-fallback.flac', {
+      sourceType: 'local',
+      channels: 2,
+      sampleRate: 48_000,
+    })
+    usePlayerStore.setState({ currentTrack: compatibilityTrack, waveformData: null })
+    bufferReady(fakeBuffer, {
+      trackPath: compatibilityTrack.path,
+      waveformRequestId: null,
+    })
+    assert.equal(deferredExtractions, 3, 'unsupported decode paths must retain deferred JS extraction')
+
+    usePlayerStore.getState()._cleanupListeners()
+    delete (window.electronAPI as {
+      onStaticTrackWaveformResult?: typeof window.electronAPI.onStaticTrackWaveformResult
+    }).onStaticTrackWaveformResult
+    usePlayerStore.getState()._initListeners()
+    const bufferReadyWithoutLateChannel = listeners.get('bufferReady')
+    assert.ok(bufferReadyWithoutLateChannel)
+    const olderPreloadTrack = makeTrack('/waveform/older-preload-fallback.flac', {
+      sourceType: 'local',
+      channels: 2,
+      sampleRate: 48_000,
+    })
+    usePlayerStore.setState({ currentTrack: olderPreloadTrack, waveformData: null })
+    bufferReadyWithoutLateChannel(fakeBuffer, {
+      trackPath: olderPreloadTrack.path,
+      waveformRequestId: 95,
+    })
+    assert.equal(
+      deferredExtractions,
+      4,
+      'a renderer without the independent result channel must not wait forever',
+    )
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    audioEngine.on = originalOn
+    if (originalRequestIdleCallback) {
+      Object.defineProperty(globalThis, 'requestIdleCallback', originalRequestIdleCallback)
+    } else {
+      delete (globalThis as Record<string, unknown>).requestIdleCallback
+    }
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
   }
 })

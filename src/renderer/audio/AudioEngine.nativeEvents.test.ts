@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { AudioEngine, SupersededAudioLoadError, type AudioLoadTimings } from './AudioEngine.ts'
+import {
+  AudioEngine,
+  SupersededAudioLoadError,
+  type AudioBufferReadyMetadata,
+  type AudioLoadTimings,
+} from './AudioEngine.ts'
 import type { NativeAudioEvent, NativeAudioPlaybackSnapshot } from '../../types/nativeAudio.ts'
 import type { Track } from '../types/audio.ts'
 import type { PcmTransportTimings } from './pcmTransportTimings.ts'
@@ -12,7 +17,9 @@ import {
   type LocalPcmStreamDecodeRequest,
   type LocalPcmStreamDecodeResult,
 } from './localPcmStreamClient.ts'
-import { LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE } from '../../shared/localPcmStream.ts'
+import {
+  LOCAL_PCM_DECODE_LIMIT_EXCEEDED_CODE,
+} from '../../shared/localPcmStream.ts'
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -53,6 +60,9 @@ type AudioEngineInternals = {
   prebufferGeneration: number
   parallaxHostPublishGeneration: number
   nextBuffer: AudioBuffer | null
+  currentWaveformRequestId: number | null
+  nextWaveformRequestId: number | null
+  nextSourceNode: AudioBufferSourceNode | null
   testToneBuffer: AudioBuffer | null
   testToneSourceNode: AudioBufferSourceNode | null
   testToneStartContextTime: number | null
@@ -205,7 +215,10 @@ function makeLocalPcmResult(
   }
 }
 
-function makeStreamPcmResult(requestId: number, left = 0.25): LocalPcmStreamDecodeResult {
+function makeStreamPcmResult(
+  requestId: number,
+  left = 0.25,
+): LocalPcmStreamDecodeResult {
   return {
     ...makeLocalPcmResult(requestId, left),
     transportTimings: {
@@ -290,6 +303,29 @@ test('Standard PCM timings keep allocation, deinterleave, loudness, and transpor
   assert.equal(timings.decodeMs, timings.decodeWorkMs)
   assert.equal(timings.electronIpcResidualMs, 35)
   assert.equal(timings.contextBridgeResidualMs, 26)
+})
+
+test('gapless promotion preserves a pending late-waveform request without waiting for it', () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals & Record<string, unknown>
+  const nextBuffer = { duration: 42, numberOfChannels: 2 } as AudioBuffer
+  internals.nextBuffer = nextBuffer
+  internals.nextSourceNode = { onended: null } as unknown as AudioBufferSourceNode
+  internals.nextBufferTrackPath = '/pcm/gapless-late-waveform.flac'
+  internals.nextWaveformRequestId = 73
+  internals.currentBufferTrackPath = '/pcm/current.flac'
+  internals.notifyTrackChange = () => undefined
+  internals.applyChannelRoutingPreferences = () => undefined
+
+  const events: AudioBufferReadyMetadata[] = []
+  engine.on('bufferReady', (_buffer, metadata) => events.push(metadata as AudioBufferReadyMetadata))
+  ;(internals.performGaplessTransition as () => void)()
+
+  assert.equal(internals.currentBufferTrackPath, '/pcm/gapless-late-waveform.flac')
+  assert.equal(internals.currentWaveformRequestId, 73)
+  assert.equal(internals.nextWaveformRequestId, null)
+  assert.equal(events.length, 1)
+  assert.equal(events[0]?.waveformRequestId, 73)
 })
 
 test('polled native lifecycle events cannot override an authoritative load or device command', () => {

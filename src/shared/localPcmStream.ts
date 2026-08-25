@@ -8,8 +8,33 @@ export const LOCAL_PCM_STREAM_CHUNK_BYTES = 8 * MEBIBYTE
 export const LOCAL_PCM_STREAM_INITIAL_CREDITS = 2
 export const LOCAL_PCM_STREAM_MAX_CREDITS = 2
 export const LOCAL_PCM_STREAM_MAX_BYTES = 192 * MEBIBYTE
+export const LOCAL_PCM_WAVEFORM_RESOLUTION = 512
+export const LOCAL_PCM_WAVEFORM_BYTES = LOCAL_PCM_WAVEFORM_RESOLUTION * Float32Array.BYTES_PER_ELEMENT
+export const STATIC_TRACK_WAVEFORM_RESULT_VERSION = 1 as const
+export const STATIC_TRACK_WAVEFORM_RESULT_IPC_CHANNEL = 'audio:staticTrackWaveformResult' as const
 
 export type LocalPcmStreamPriority = 'interactive' | 'background'
+
+interface StaticTrackWaveformResultBase {
+  version: typeof STATIC_TRACK_WAVEFORM_RESULT_VERSION
+  requestId: number
+  trackPath: string
+  waveformAnalysisMs: number
+}
+
+export interface StaticTrackWaveformReadyResult extends StaticTrackWaveformResultBase {
+  status: 'ready'
+  waveformData: ArrayBuffer
+}
+
+export interface StaticTrackWaveformFailedResult extends StaticTrackWaveformResultBase {
+  status: 'failed'
+  failureKind: 'unavailable' | 'analysis_failed'
+}
+
+export type StaticTrackWaveformResult =
+  | StaticTrackWaveformReadyResult
+  | StaticTrackWaveformFailedResult
 
 export interface LocalPcmDecodeLimitRefusal {
   refused: true
@@ -198,16 +223,44 @@ function isValidBackingBufferBytes(value: unknown): value is number {
   return isPositiveSafeInteger(value) && value <= LOCAL_PCM_STREAM_MAX_BYTES
 }
 
+function isValidWaveformData(value: unknown): value is ArrayBuffer {
+  if (!(value instanceof ArrayBuffer) || value.byteLength !== LOCAL_PCM_WAVEFORM_BYTES) return false
+  for (const sample of new Float32Array(value)) {
+    if (!Number.isFinite(sample) || sample < 0 || sample > 1) return false
+  }
+  return true
+}
+
+function isValidTrackPath(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.trim().length > 0
+    && value.length <= 32_768
+    && !value.includes('\0')
+}
+
+export function isStaticTrackWaveformResult(
+  value: unknown,
+): value is StaticTrackWaveformResult {
+  if (
+    !isRecord(value)
+    || value.version !== STATIC_TRACK_WAVEFORM_RESULT_VERSION
+    || !isNonNegativeSafeInteger(value.requestId)
+    || !isValidTrackPath(value.trackPath)
+    || !isNonNegativeDuration(value.waveformAnalysisMs)
+  ) return false
+
+  if (value.status === 'ready') return isValidWaveformData(value.waveformData)
+  return value.status === 'failed'
+    && (value.failureKind === 'unavailable' || value.failureKind === 'analysis_failed')
+}
+
 export function validateLocalPcmStreamOpenRequest(
   value: unknown,
 ): value is LocalPcmStreamOpenRequest {
   if (!isRecord(value)) return false
   if (!isNonNegativeSafeInteger(value.requestId)) return false
   if (
-    typeof value.filePath !== 'string'
-    || value.filePath.trim().length === 0
-    || value.filePath.length > 32_768
-    || value.filePath.includes('\0')
+    !isValidTrackPath(value.filePath)
   ) return false
   if (!isValidSampleRate(value.outputSampleRate)) return false
   if (value.expectedChannels !== null && !isValidChannelCount(value.expectedChannels)) return false

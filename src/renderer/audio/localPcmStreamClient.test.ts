@@ -218,7 +218,7 @@ test('assembles a correlated stream and returns renderer-local timing fields', a
     decodeMs: 20,
     backgroundPriorityApplied: false,
     chunkCount: 1,
-    transportTimings: mainTimings(16, 1),
+    transportTimings: mainTimings(16, 1, 0),
   })
 
   const result = await promise

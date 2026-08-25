@@ -1,7 +1,10 @@
 /// <reference types="vite/client" />
 
 import { VisualizerDSP } from './audio/native/visualizer-dsp'
-import type { LocalPcmDecodeLimitRefusal } from '../shared/localPcmStream'
+import type {
+    LocalPcmDecodeLimitRefusal,
+    StaticTrackWaveformResult,
+} from '../shared/localPcmStream'
 import type {
     MiniPlayerCommand,
     MiniPlayerSnapshot,
@@ -681,6 +684,9 @@ declare global {
             ) => Promise<LocalAudioPcmDecodeResponse>
             cancelLocalAudioDecode: (requestId: number) => Promise<void>
             promoteLocalAudioDecode: (requestId: number) => Promise<void>
+            onStaticTrackWaveformResult: (
+                callback: (result: StaticTrackWaveformResult) => void
+            ) => () => void
             analyzeTrackLoudness: (filePath: string) => Promise<{
                 loudnessLufs: number
                 peakLinear: number | null

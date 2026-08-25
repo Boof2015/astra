@@ -2,11 +2,13 @@ import { create } from 'zustand'
 import {
   audioEngine,
   isSupersededAudioLoadError,
+  type AudioBufferReadyMetadata,
   type AudioLoadTimings
 } from '../audio/AudioEngine'
 import type { Track, PlaybackState } from '../types/audio'
 import type { NativeAudioCapabilities, NativeAudioTrackLoadResult } from '../../types/nativeAudio'
 import type { ListeningHistoryStatus } from '../../types/listeningStats'
+import type { StaticTrackWaveformResult } from '../../shared/localPcmStream'
 import {
   createNativeOutputFailureError,
   parseBitPerfectFormatError,
@@ -1152,6 +1154,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   // Track if listeners are initialized
   let listenersInitialized = false
   let remoteLoadProgressUnsubscribe: (() => void) | null = null
+  let staticWaveformResultUnsubscribe: (() => void) | null = null
+  let staticWaveformResultListenerAvailable = false
+  const pendingStaticWaveformBuffers = new Map<number, { trackPath: string; buffer: AudioBuffer }>()
+  const failedStaticWaveformRequests = new Map<number, string>()
   let listeningBeforeUnloadHandler: (() => void) | null = null
   let lastCommittedCurrentTimeMs = 0
   let ffmpegFallbackNoticeId = 0
@@ -5510,6 +5516,63 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         })
       })
 
+      const scheduleRendererWaveformFallback = (trackPath: string, buffer: AudioBuffer): void => {
+        scheduleDeferredWaveformExtraction(() => {
+          const track = get().currentTrack
+          if (!track || track.path !== trackPath) return
+          const extractStart = performance.now()
+          const peaks = extractWaveformPeaks(buffer)
+          logSlowPath('extractWaveformPeaks', extractStart, { trackPath })
+          if (shouldUseWaveformCache(track)) {
+            setWaveformCacheEntry(trackPath, peaks)
+          }
+          set({
+            waveformData: peaks,
+            waveformBufferedRatio: 1,
+            waveformAnalyzedRatio: 1
+          })
+        })
+      }
+
+      staticWaveformResultUnsubscribe?.()
+      staticWaveformResultListenerAvailable =
+        typeof window.electronAPI.onStaticTrackWaveformResult === 'function'
+      staticWaveformResultUnsubscribe = staticWaveformResultListenerAvailable
+        ? window.electronAPI.onStaticTrackWaveformResult(
+          (result: StaticTrackWaveformResult) => {
+            const pending = pendingStaticWaveformBuffers.get(result.requestId)
+            pendingStaticWaveformBuffers.delete(result.requestId)
+
+            if (result.status === 'ready') {
+              const waveform = new Float32Array(result.waveformData)
+              setWaveformCacheEntry(result.trackPath, waveform)
+              if (get().currentTrack?.path === result.trackPath) {
+                set({
+                  waveformData: waveform,
+                  waveformBufferedRatio: 1,
+                  waveformAnalyzedRatio: 1
+                })
+              }
+              return
+            }
+
+            if (pending?.trackPath === result.trackPath) {
+              if (get().currentTrack?.path === result.trackPath) {
+                scheduleRendererWaveformFallback(result.trackPath, pending.buffer)
+              }
+              return
+            }
+
+            failedStaticWaveformRequests.set(result.requestId, result.trackPath)
+            while (failedStaticWaveformRequests.size > MAX_WAVEFORM_CACHE_ENTRIES) {
+              const oldestRequestId = failedStaticWaveformRequests.keys().next().value
+              if (oldestRequestId === undefined) break
+              failedStaticWaveformRequests.delete(oldestRequestId)
+            }
+          }
+        )
+        : null
+
       audioEngine.on('stateChange', (state) => {
         const nextPlaybackState = state as PlaybackState
         const previousPlaybackState = get().playbackState
@@ -5643,9 +5706,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         }))
       })
 
-      audioEngine.on('bufferReady', (buffer) => {
+      audioEngine.on('bufferReady', (buffer, metadataValue) => {
         const track = get().currentTrack
         if (!track || !buffer) return
+        const metadata = metadataValue as AudioBufferReadyMetadata | undefined
+        if (metadata && metadata.trackPath !== track.path) return
+
+        pendingStaticWaveformBuffers.clear()
 
         if (shouldUseWaveformCache(track)) {
           const cached = getWaveformCacheEntry(track.path)
@@ -5659,24 +5726,28 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           }
         }
 
+        if (
+          staticWaveformResultListenerAvailable
+          && metadata?.waveformRequestId !== null
+          && metadata?.waveformRequestId !== undefined
+        ) {
+          const failedTrackPath = failedStaticWaveformRequests.get(metadata.waveformRequestId)
+          if (failedTrackPath === track.path) {
+            failedStaticWaveformRequests.delete(metadata.waveformRequestId)
+            scheduleRendererWaveformFallback(track.path, buffer as AudioBuffer)
+            return
+          }
+          pendingStaticWaveformBuffers.set(metadata.waveformRequestId, {
+            trackPath: track.path,
+            buffer: buffer as AudioBuffer,
+          })
+          return
+        }
+
         // bufferReady fires synchronously inside loadAudioData (before play())
         // and at gapless transitions; extraction is a full pass over the
         // decoded samples, so keep it off the playback-start critical path.
-        const trackPath = track.path
-        scheduleDeferredWaveformExtraction(() => {
-          if (get().currentTrack?.path !== trackPath) return
-          const extractStart = performance.now()
-          const peaks = extractWaveformPeaks(buffer as AudioBuffer)
-          logSlowPath('extractWaveformPeaks', extractStart, { trackPath })
-          if (shouldUseWaveformCache(track)) {
-            setWaveformCacheEntry(trackPath, peaks)
-          }
-          set({
-            waveformData: peaks,
-            waveformBufferedRatio: 1,
-            waveformAnalyzedRatio: 1
-          })
-        })
+        scheduleRendererWaveformFallback(track.path, buffer as AudioBuffer)
       })
 
       // Handle gapless transition - advance queue without reloading
@@ -5810,6 +5881,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         remoteLoadProgressUnsubscribe()
         remoteLoadProgressUnsubscribe = null
       }
+      if (staticWaveformResultUnsubscribe) {
+        staticWaveformResultUnsubscribe()
+        staticWaveformResultUnsubscribe = null
+      }
+      staticWaveformResultListenerAvailable = false
+      pendingStaticWaveformBuffers.clear()
+      failedStaticWaveformRequests.clear()
       if (listeningBeforeUnloadHandler) {
         window.removeEventListener('beforeunload', listeningBeforeUnloadHandler)
         listeningBeforeUnloadHandler = null

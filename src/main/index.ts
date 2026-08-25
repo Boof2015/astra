@@ -110,6 +110,12 @@ import { HrtfProfileService } from './services/hrtfProfiles'
 import { normalizeStatsShareFileName, validateStatsSharePng } from './services/statsShareImage'
 import { normalizeSignalShareFileName, validateSignalSharePng } from './services/signalShareImage'
 import {
+  analyzeNativeStaticTrackWaveformAsync,
+  getNativeStaticTrackWaveformError,
+  getNativeStaticTrackWaveformFailureKind,
+  warmNativeStaticTrackWaveformAddon,
+} from './nativeTrackWaveform'
+import {
   HRTF_PROFILE_MAX_BYTES,
   type HrtfProfileCandidateResult,
   type HrtfProfileCommitResult,
@@ -173,8 +179,11 @@ import {
   LOCAL_PCM_STREAM_MAX_CREDITS,
   LOCAL_PCM_STREAM_MAX_BYTES,
   LOCAL_PCM_STREAM_VERSION,
+  STATIC_TRACK_WAVEFORM_RESULT_IPC_CHANNEL,
+  STATIC_TRACK_WAVEFORM_RESULT_VERSION,
   isLocalPcmStreamRendererMessage,
-  validateLocalPcmStreamOpenRequest
+  validateLocalPcmStreamOpenRequest,
+  type StaticTrackWaveformResult,
 } from '../shared/localPcmStream'
 import {
   LYRICS_POPOUT_WINDOW_MIN_HEIGHT,
@@ -5459,6 +5468,10 @@ app.whenReady().then(async () => {
     callback(true)
   })
   session.defaultSession.setPermissionCheckHandler(() => true)
+
+  // Load the tiny waveform addon during app startup so a cold click never
+  // pays synchronous module-loading work after its PCM completion is posted.
+  warmNativeStaticTrackWaveformAddon()
 
   // Initialize library database
   await library.initDatabase()
@@ -11787,6 +11800,86 @@ function beginLocalPcmStreamDelivery(
   port.start()
 }
 
+function queueLocalPcmStaticWaveformAnalysis(
+  session: LocalPcmDecodeSession,
+  pcm: Buffer,
+  pcmByteLength: number,
+): void {
+  const sender = session.sender
+  let senderProcessId: number | null = null
+  let senderRoutingId: number | null = null
+  try {
+    senderProcessId = sender.mainFrame.processId
+    senderRoutingId = sender.mainFrame.routingId
+  } catch {
+    // A renderer teardown between PCM completion and scheduling makes the
+    // eventual presentation-only result unnecessary.
+  }
+
+  const queued = setImmediate(() => {
+    const waveformStartedAtMs = mainDiagnosticNow()
+    void analyzeNativeStaticTrackWaveformAsync(
+      pcm,
+      pcmByteLength,
+      session.channels,
+    ).then((waveformData) => {
+      const waveformAnalysisMs = roundMainDiagnosticMs(mainDiagnosticNow() - waveformStartedAtMs)
+      const result: StaticTrackWaveformResult = waveformData
+        ? {
+            version: STATIC_TRACK_WAVEFORM_RESULT_VERSION,
+            status: 'ready',
+            requestId: session.requestId,
+            trackPath: session.filePath,
+            waveformData,
+            waveformAnalysisMs,
+          }
+        : {
+            version: STATIC_TRACK_WAVEFORM_RESULT_VERSION,
+            status: 'failed',
+            requestId: session.requestId,
+            trackPath: session.filePath,
+            waveformAnalysisMs,
+            failureKind: getNativeStaticTrackWaveformFailureKind(),
+          }
+
+      let delivered = false
+      try {
+        const currentFrame = sender.mainFrame
+        if (
+          !sender.isDestroyed()
+          && senderProcessId !== null
+          && senderRoutingId !== null
+          && currentFrame.processId === senderProcessId
+          && currentFrame.routingId === senderRoutingId
+        ) {
+          sender.send(STATIC_TRACK_WAVEFORM_RESULT_IPC_CHANNEL, result)
+          delivered = true
+        }
+      } catch {
+        // The decode remains successful when its renderer disappears before
+        // presentation metadata is ready.
+      }
+
+      logMemoryDiagnosticsMainEvent(
+        'local_static_waveform_completed',
+        {
+          requestId: session.requestId,
+          decodeRequestId: session.requestId,
+          trackPath: session.filePath,
+          outcome: result.status,
+          waveformAnalysisMs,
+          delivered,
+          error: result.status === 'failed' ? getNativeStaticTrackWaveformError() : null,
+        },
+        { captureSample: false },
+      )
+    }).catch((error) => {
+      console.warn('[audio-waveform] asynchronous static waveform dispatch failed:', error)
+    })
+  })
+  queued.unref()
+}
+
 function settleLocalPcmDecodeSession(
   session: LocalPcmDecodeSession,
   outcome: LocalPcmDecodeOutcome
@@ -11836,6 +11929,7 @@ function settleLocalPcmDecodeSession(
   let payloadFinalizationMs = 0
   let mainHandlerMs = (session.decodeCompletedAtMs ?? settledAtMs) - session.handlerStartedAtMs
   let transportTimings: LocalAudioPcmTransportTimings | null = null
+  let waveformAnalysisInput: { pcm: Buffer; pcmByteLength: number } | null = null
 
   if (outcome.type === 'cancelled') {
     if (stream) {
@@ -11937,7 +12031,10 @@ function settleLocalPcmDecodeSession(
         chunkCount: stream.chunkCount,
         transportTimings
       })
-      if (posted) session.resolve(null)
+      if (posted) {
+        waveformAnalysisInput = { pcm: outcome.pcm, pcmByteLength: outcome.pcmByteLength }
+        session.resolve(null)
+      }
       else {
         streamDeliveryError = new Error('PCM stream closed before completion metadata was delivered.')
         diagnosticOutcome = 'failed'
@@ -11956,6 +12053,7 @@ function settleLocalPcmDecodeSession(
         backgroundPriorityApplied: session.backgroundPriorityApplied,
         transportTimings
       })
+      waveformAnalysisInput = { pcm: outcome.pcm, pcmByteLength: outcome.pcmByteLength }
     }
   }
 
@@ -11965,6 +12063,14 @@ function settleLocalPcmDecodeSession(
     } catch {
       // Port teardown can race with renderer teardown.
     }
+  }
+
+  if (waveformAnalysisInput) {
+    queueLocalPcmStaticWaveformAnalysis(
+      session,
+      waveformAnalysisInput.pcm,
+      waveformAnalysisInput.pcmByteLength,
+    )
   }
 
   // Keep diagnostics I/O off the measured decode/return path. A success event
@@ -11994,6 +12100,7 @@ function settleLocalPcmDecodeSession(
     initialAllocationMs: roundMainDiagnosticMs(session.initialAllocationMs),
     growthAllocationMs: roundMainDiagnosticMs(session.growthAllocationMs),
     payloadFinalizationMs: roundMainDiagnosticMs(payloadFinalizationMs),
+    staticWaveformAnalysisScheduled: waveformAnalysisInput !== null,
     streamChunkCount: stream?.chunkCount ?? null,
     streamDispatchCopyMs: stream ? roundMainDiagnosticMs(stream.dispatchCopyMs) : null,
     streamDispatchPostMs: stream ? roundMainDiagnosticMs(stream.dispatchPostMs) : null,
@@ -12290,6 +12397,7 @@ async function decodeLocalAudioToPcm(
           if (session.totalBytes > pcm.byteLength || session.totalBytes % frameSizeBytes !== 0) {
             throw new Error('FFmpeg produced invalid or frame-misaligned PCM audio.')
           }
+
           if (session.stream) {
             session.stream.pendingSuccess = {
               pcm,

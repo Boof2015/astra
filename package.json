@@ -33,6 +33,7 @@
     "test:audio-loudness": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/renderer/audio/loudness.test.ts",
     "test:spectrum-native": "node --test native/test/spectrum-bars.test.mjs",
     "test:native-dsp": "node --test native/test/spectrum-bars.test.mjs native/test/process-memory.test.mjs",
+    "test:track-waveform": "node ./scripts/node/run-track-waveform-tests.cjs",
     "test:native-playback": "node ./scripts/node/run-native-playback-state-tests.cjs",
     "test:adaptive-upmixer": "c++ -std=c++17 -O3 -fno-fast-math native/src/dsp_utils.cpp native/src/adaptive_upmixer.cpp native/test/adaptive_upmixer_test.cpp -I native/src -o /tmp/astra-adaptive-upmixer-tests && /tmp/astra-adaptive-upmixer-tests",
     "benchmark:adaptive-upmixer": "c++ -std=c++17 -O3 -fno-fast-math native/src/dsp_utils.cpp native/src/adaptive_upmixer.cpp native/test/adaptive_upmixer_benchmark.cpp -I native/src -o /tmp/astra-adaptive-upmixer-benchmark && /tmp/astra-adaptive-upmixer-benchmark",

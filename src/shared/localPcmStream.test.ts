@@ -7,10 +7,13 @@ import {
   LOCAL_PCM_STREAM_MARKER,
   LOCAL_PCM_STREAM_MAX_BYTES,
   LOCAL_PCM_STREAM_VERSION,
+  LOCAL_PCM_WAVEFORM_RESOLUTION,
+  STATIC_TRACK_WAVEFORM_RESULT_VERSION,
   isLocalPcmDecodeLimitRefusal,
   isLocalPcmStreamMainMessage,
   isLocalPcmStreamPortEnvelope,
   isLocalPcmStreamRendererMessage,
+  isStaticTrackWaveformResult,
   validateLocalPcmStreamOpenRequest,
   type LocalPcmStreamMainTransportTimings,
 } from './localPcmStream.ts'
@@ -31,6 +34,42 @@ test('validates the structured complete-PCM size-limit refusal', () => {
     refused: true,
     code: 'PCM_DECODE_FAILED',
     message: 'generic failure'
+  }), false)
+})
+
+test('validates independent late static-waveform results', () => {
+  const waveformData = new Float32Array(LOCAL_PCM_WAVEFORM_RESOLUTION).fill(0.5).buffer
+  assert.equal(isStaticTrackWaveformResult({
+    version: STATIC_TRACK_WAVEFORM_RESULT_VERSION,
+    status: 'ready',
+    requestId: 17,
+    trackPath: '/music/track.flac',
+    waveformData,
+    waveformAnalysisMs: 2.5,
+  }), true)
+  assert.equal(isStaticTrackWaveformResult({
+    version: STATIC_TRACK_WAVEFORM_RESULT_VERSION,
+    status: 'failed',
+    requestId: 17,
+    trackPath: '/music/track.flac',
+    waveformAnalysisMs: 0.1,
+    failureKind: 'unavailable',
+  }), true)
+  assert.equal(isStaticTrackWaveformResult({
+    version: STATIC_TRACK_WAVEFORM_RESULT_VERSION,
+    status: 'ready',
+    requestId: 17,
+    trackPath: '/music/track.flac',
+    waveformData: new ArrayBuffer(16),
+    waveformAnalysisMs: 2.5,
+  }), false)
+  assert.equal(isStaticTrackWaveformResult({
+    version: STATIC_TRACK_WAVEFORM_RESULT_VERSION,
+    status: 'failed',
+    requestId: 17,
+    trackPath: '/music/track.flac',
+    waveformAnalysisMs: -1,
+    failureKind: 'analysis_failed',
   }), false)
 })
 

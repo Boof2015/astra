@@ -1,6 +1,65 @@
 {
   "targets": [
     {
+      "target_name": "track_waveform",
+      "cflags!": ["-fno-exceptions"],
+      "cflags_cc!": ["-fno-exceptions"],
+      "cflags_cc": ["-std=c++17", "-O3", "-fno-fast-math"],
+      "sources": [
+        "src/track_waveform.cpp",
+        "src/track_waveform_binding.cpp"
+      ],
+      "include_dirs": [
+        "<!@(node -p \"require('node-addon-api').include\")",
+        "src"
+      ],
+      "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS"],
+      "conditions": [
+        ["OS=='mac'", {
+          "xcode_settings": {
+            "GCC_ENABLE_CPP_EXCEPTIONS": "YES",
+            "CLANG_CXX_LIBRARY": "libc++"
+          }
+        }],
+        ["OS=='win'", {
+          "msvs_settings": {
+            "VCCLCompilerTool": {
+              "ExceptionHandling": 1,
+              "AdditionalOptions": ["/O2", "/fp:strict"]
+            }
+          }
+        }],
+        ["OS=='linux'", {
+          "cflags_cc": ["-std=c++17", "-O3", "-fno-fast-math", "-fPIC"]
+        }]
+      ]
+    },
+    {
+      "target_name": "track_waveform_tests",
+      "type": "executable",
+      "cflags!": ["-fno-exceptions"],
+      "cflags_cc!": ["-fno-exceptions"],
+      "cflags_cc": ["-std=c++17", "-O3", "-fno-fast-math"],
+      "sources": [
+        "src/track_waveform.cpp",
+        "test/track_waveform_test.cpp"
+      ],
+      "include_dirs": ["src"],
+      "conditions": [
+        ["OS=='mac'", {
+          "xcode_settings": { "GCC_ENABLE_CPP_EXCEPTIONS": "YES" }
+        }],
+        ["OS=='win'", {
+          "msvs_settings": {
+            "VCCLCompilerTool": {
+              "ExceptionHandling": 1,
+              "AdditionalOptions": ["/O2", "/fp:strict"]
+            }
+          }
+        }]
+      ]
+    },
+    {
       "target_name": "native_audio_processing",
       "type": "static_library",
       "cflags_cc": ["-std=c++17", "-O3", "-fno-fast-math"],

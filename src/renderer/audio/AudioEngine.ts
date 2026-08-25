@@ -365,6 +365,12 @@ interface InstalledPcmAudioBuffer {
   pcmDeinterleaveMs: number
 }
 
+export interface AudioBufferReadyMetadata {
+  trackPath: string | null
+  /** Correlates a separately delivered native waveform that must not gate audio readiness. */
+  waveformRequestId?: number | null
+}
+
 interface RemoteStreamLoadOptions {
   replayGainDb?: number | null
   loudnessAnalysis?: ExternalLoudnessResult | null
@@ -559,8 +565,10 @@ export class AudioEngine {
   private static readonly MAX_PENDING_MINI_VISUALIZER_CHUNKS = 160 // ~0.42s at 48k/128
 
   private audioBuffer: AudioBuffer | null = null
+  private currentWaveformRequestId: number | null = null
   private currentBufferTrackPath: string | null = null
   private nextBufferTrackPath: string | null = null
+  private nextWaveformRequestId: number | null = null
   private currentNormalizationAnalysis: LoudnessAnalysis | null = null
   private nextNormalizationAnalysis: LoudnessAnalysis | null = null
   private pendingCurrentLoudnessTrackPath: string | null = null
@@ -834,6 +842,7 @@ export class AudioEngine {
     }
     await this.clearNextBuffer()
     this.audioBuffer = null
+    this.currentWaveformRequestId = null
     this.currentNormalizationAnalysis = null
     this.playbackOutputMode = mode
     this.disposeAdaptiveUpmixer()
@@ -2061,6 +2070,7 @@ export class AudioEngine {
     await this.clearRemoteStreamState(true)
     this.assertCurrentLoadOperation(loadOperation)
     this.audioBuffer = null
+    this.currentWaveformRequestId = null
     this.currentBufferTrackPath = null
 
     const canPromoteNativeNext = this.nativeNextTrackBuffered && this.nextBufferTrackPath === track.path
@@ -3542,6 +3552,7 @@ export class AudioEngine {
     this.clearParallaxSinkState()
     this.assertCurrentLoadOperation(loadOperation)
     this.audioBuffer = null
+    this.currentWaveformRequestId = null
     this.currentNormalizationAnalysis = null
     this.currentBufferTrackPath = null
     this.pauseTime = 0
@@ -3691,6 +3702,7 @@ export class AudioEngine {
     this.assertCurrentLoadOperation(loadOperation)
 
     this.audioBuffer = null
+    this.currentWaveformRequestId = null
     this.currentNormalizationAnalysis = null
     this.currentBufferTrackPath = `parallax:${stream.streamId}`
     this.pauseTime = 0
@@ -7786,6 +7798,7 @@ export class AudioEngine {
       this.assertCurrentLoadOperation(loadOperation)
       // Clear current decoded buffer so failed decode cannot replay stale audio.
       this.audioBuffer = null
+      this.currentWaveformRequestId = null
       this.currentNormalizationAnalysis = null
       this.currentBufferTrackPath = null
       this.pauseTime = 0
@@ -7811,6 +7824,7 @@ export class AudioEngine {
       this.lastLoadTimings = { decodeMs, analysisMs: Math.round(performance.now() - analysisStart) }
       this.assertCurrentLoadOperation(loadOperation)
       this.audioBuffer = decodedBuffer
+      this.currentWaveformRequestId = null
       this.currentNormalizationAnalysis = normalizationAnalysis
       this.currentBufferTrackPath = options.trackPath ?? null
       this.applyChannelRoutingPreferences(this.audioBuffer.numberOfChannels)
@@ -7824,12 +7838,16 @@ export class AudioEngine {
       this.pauseTime = 0
       this.emit('stateChange', this._playbackState)
       this.emit('durationChange', this.audioBuffer.duration)
-      this.emit('bufferReady', this.audioBuffer)
+      this.emit('bufferReady', this.audioBuffer, {
+        trackPath: this.currentBufferTrackPath,
+        waveformRequestId: null,
+      } satisfies AudioBufferReadyMetadata)
     } catch (err) {
       if (isSupersededAudioLoadError(err) || loadOperation !== this.loadGeneration) {
         throw new SupersededAudioLoadError()
       }
       this.audioBuffer = null
+      this.currentWaveformRequestId = null
       this.currentNormalizationAnalysis = null
       this.currentBufferTrackPath = null
       this.pauseTime = 0
@@ -7868,6 +7886,7 @@ export class AudioEngine {
       this.clearParallaxSinkState()
       this.assertCurrentLoadOperation(loadOperation)
       this.audioBuffer = null
+      this.currentWaveformRequestId = null
       this.currentNormalizationAnalysis = null
       this.currentBufferTrackPath = null
       this.pauseTime = 0
@@ -7892,6 +7911,7 @@ export class AudioEngine {
 
       const commitStartedAt = performance.now()
       this.audioBuffer = decodedBuffer
+      this.currentWaveformRequestId = delivery?.decodeRequestId ?? null
       this.currentNormalizationAnalysis = normalizationAnalysis
       this.currentBufferTrackPath = options.trackPath ?? null
       this.applyChannelRoutingPreferences(this.audioBuffer.numberOfChannels)
@@ -7903,7 +7923,10 @@ export class AudioEngine {
       this.pauseTime = 0
       this.emit('stateChange', this._playbackState)
       this.emit('durationChange', this.audioBuffer.duration)
-      this.emit('bufferReady', this.audioBuffer)
+      this.emit('bufferReady', this.audioBuffer, {
+        trackPath: this.currentBufferTrackPath,
+        waveformRequestId: this.currentWaveformRequestId,
+      } satisfies AudioBufferReadyMetadata)
 
       const committedAt = performance.now()
       this.lastLoadTimings = {
@@ -7921,6 +7944,7 @@ export class AudioEngine {
         throw new SupersededAudioLoadError()
       }
       this.audioBuffer = null
+      this.currentWaveformRequestId = null
       this.currentNormalizationAnalysis = null
       this.currentBufferTrackPath = null
       this.pauseTime = 0
@@ -8084,6 +8108,7 @@ export class AudioEngine {
       this.assertCurrentPrebufferOperation(prebufferOperation)
       this.nextReplayGainDb = nextReplayGainDb
       this.nextBuffer = decodedBuffer
+      this.nextWaveformRequestId = null
       this.nextNormalizationAnalysis = normalizationAnalysis
       this.nextBufferTrackPath = options.trackPath ?? null
       this.lastPrebufferLoadTimings = null
@@ -8104,6 +8129,7 @@ export class AudioEngine {
       }
       console.error('Failed to pre-buffer next track:', err)
       this.nextBuffer = null
+      this.nextWaveformRequestId = null
       this.nextNormalizationAnalysis = null
       this.nextBufferTrackPath = null
       this.nextReplayGainDb = null
@@ -8136,6 +8162,7 @@ export class AudioEngine {
     const commitStartedAt = performance.now()
     this.nextReplayGainDb = nextReplayGainDb
     this.nextBuffer = decodedBuffer
+    this.nextWaveformRequestId = delivery?.decodeRequestId ?? null
     this.nextNormalizationAnalysis = normalizationAnalysis
     this.nextBufferTrackPath = options.trackPath ?? null
     this.updateNextNormalizationCache()
@@ -8174,6 +8201,7 @@ export class AudioEngine {
       }
       console.error('Failed to pre-buffer decoded PCM:', err)
       this.nextBuffer = null
+      this.nextWaveformRequestId = null
       this.nextNormalizationAnalysis = null
       this.nextBufferTrackPath = null
       this.nextReplayGainDb = null
@@ -8342,12 +8370,15 @@ export class AudioEngine {
     const nextSourceNode = this.nextSourceNode
     const nextNormalization = this.getPendingNextNormalization()
     const nextNormalizationAnalysis = this.nextNormalizationAnalysis
+    const nextWaveformRequestId = this.nextWaveformRequestId
     const nextReplayGainDb = this.nextReplayGainDb
     const nextLoadTimings = this.lastPrebufferLoadTimings
 
     // Swap buffers
     this.audioBuffer = nextBuffer
     this.nextBuffer = null
+    this.currentWaveformRequestId = nextWaveformRequestId
+    this.nextWaveformRequestId = null
     this.currentNormalizationAnalysis = nextNormalizationAnalysis
     this.nextNormalizationAnalysis = null
     this.currentBufferTrackPath = this.nextBufferTrackPath
@@ -8388,7 +8419,10 @@ export class AudioEngine {
     // Emit events for the track change
     this.emit('durationChange', this.audioBuffer.duration)
     this.emit('gaplessTransition')
-    this.emit('bufferReady', this.audioBuffer)
+    this.emit('bufferReady', this.audioBuffer, {
+      trackPath: this.currentBufferTrackPath,
+      waveformRequestId: this.currentWaveformRequestId,
+    } satisfies AudioBufferReadyMetadata)
   }
 
   // Promote the already-decoded prebuffered next track to "current" immediately, so a manual
@@ -8411,6 +8445,7 @@ export class AudioEngine {
     const nextBufferTrackPath = this.nextBufferTrackPath
     const nextReplayGainDb = this.nextReplayGainDb
     const nextNormalizationAnalysis = this.nextNormalizationAnalysis
+    const nextWaveformRequestId = this.nextWaveformRequestId
     const pendingNextNormalization = this.getPendingNextNormalization()
     const nextLoadTimings = this.lastPrebufferLoadTimings
     const oldSource = this.sourceNode
@@ -8452,6 +8487,8 @@ export class AudioEngine {
     // Swap buffers/bookkeeping (mirrors performGaplessTransition).
     this.audioBuffer = nextBuffer
     this.nextBuffer = null
+    this.currentWaveformRequestId = nextWaveformRequestId
+    this.nextWaveformRequestId = null
     this.currentNormalizationAnalysis = nextNormalizationAnalysis
     this.nextNormalizationAnalysis = null
     this.currentBufferTrackPath = nextBufferTrackPath
@@ -8481,7 +8518,10 @@ export class AudioEngine {
       this.notifyTrackChange()
       this.emit('durationChange', transitionedBuffer.duration)
       this.emit('gaplessTransition')
-      this.emit('bufferReady', transitionedBuffer)
+      this.emit('bufferReady', transitionedBuffer, {
+        trackPath: this.currentBufferTrackPath,
+        waveformRequestId: this.currentWaveformRequestId,
+      } satisfies AudioBufferReadyMetadata)
     }
     const adaptiveLatencyMs = this.getAdaptiveUpmixLatencySeconds() * 1000
     if (adaptiveLatencyMs > 0) window.setTimeout(emitTransition, Math.ceil(adaptiveLatencyMs))
@@ -8503,6 +8543,7 @@ export class AudioEngine {
       this.nativeNextTrackBuffered = false
       this.nativeNextPlaybackSequence = null
       this.nextBufferTrackPath = null
+      this.nextWaveformRequestId = null
       const lifecycleSuppression = this.beginNativeLifecycleSuppression()
       return window.nativeAudioAPI.clearNextTrack().catch((error) => {
         this.emit('error', error instanceof Error ? error : new Error('Failed to clear native next track'))
@@ -8512,6 +8553,7 @@ export class AudioEngine {
     }
     this.cancelScheduledNext()
     this.nextBuffer = null
+    this.nextWaveformRequestId = null
     this.nextBufferTrackPath = null
     this.nextReplayGainDb = null
     this.clearNextNormalizationCache()
@@ -8824,6 +8866,7 @@ export class AudioEngine {
   // resume; restart-after-stop goes through the store's full reload path.
   private releaseDecodedBuffers(): void {
     this.audioBuffer = null
+    this.currentWaveformRequestId = null
     this.currentBufferTrackPath = null
     this.clearNextBuffer()
   }
@@ -9280,6 +9323,8 @@ export class AudioEngine {
     this.clearNextNormalizationCache()
     this.audioBuffer = null
     this.nextBuffer = null
+    this.currentWaveformRequestId = null
+    this.nextWaveformRequestId = null
     this.lastPrebufferLoadTimings = null
     this.currentNormalizationAnalysis = null
     this.nextNormalizationAnalysis = null
