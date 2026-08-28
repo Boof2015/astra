@@ -14,7 +14,7 @@ import {
 } from '../../utils/playlistSystem'
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { formatPlaylistExportStatus, formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
-import { buildPlayableOccurrenceIndexes } from '../../utils/playlistOccurrences'
+import { buildVisiblePlaylistSearchRows } from '../../utils/playlistSearch'
 import { compareTrackPlayCounts } from '../../utils/trackPlayCountSort'
 import { compareBaseLocaleText } from '../../utils/localeSort'
 import { getDetailHeaderCollapseDistance, resolveDetailHeaderCollapsed } from '../../utils/detailHeaderScroll'
@@ -364,7 +364,8 @@ export default function PlaylistView() {
   const [dynamicRulesError, setDynamicRulesError] = useState<string | null>(null)
   const [isDynamicRulesLoading, setIsDynamicRulesLoading] = useState(false)
   const [isSavingDynamicRules, setIsSavingDynamicRules] = useState(false)
-  const [playlistSearchQuery, setPlaylistSearchQuery] = useState('')
+  const [playlistBrowserSearchQuery, setPlaylistBrowserSearchQuery] = useState('')
+  const [playlistTrackSearchQuery, setPlaylistTrackSearchQuery] = useState('')
   const [draggedPinnedPlaylistId, setDraggedPinnedPlaylistId] = useState<number | null>(null)
   const [pinnedDropTargetId, setPinnedDropTargetId] = useState<number | null>(null)
   const playPendingRef = useRef(false)
@@ -387,6 +388,7 @@ export default function PlaylistView() {
     setDynamicRulesError(null)
     setIsDynamicRulesLoading(false)
     setIsSavingDynamicRules(false)
+    setPlaylistTrackSearchQuery('')
   }, [selectedPlaylistId])
 
   useEffect(() => {
@@ -483,23 +485,67 @@ export default function PlaylistView() {
     return indexedRows.map(({ row }) => row)
   }, [playlistDisplayRows, sortState, trackRatings])
 
-  const displayTracks = useMemo(() => displayRows.map((row) => row.track), [displayRows])
-  const displayPlaylistEntryIds = useMemo(() => displayRows.map((row) => row.entryId), [displayRows])
-  const displayTrackNumbers = useMemo(() => displayRows.map((row) => row.defaultNumber), [displayRows])
-  const displayTrackInstanceKeys = useMemo(() => displayRows.map((row) => row.instanceKey), [displayRows])
-
   const displayPlayableTracks = useMemo(
-    () => displayTracks.filter((track) => !isMissingPlaylistDisplayTrack(track)),
-    [displayTracks]
-  )
-  const displayQueueSeedIndexes = useMemo(
-    () => buildPlayableOccurrenceIndexes(displayRows, (row) => !isMissingPlaylistDisplayTrack(row.track)),
+    () => displayRows
+      .map((row) => row.track)
+      .filter((track) => !isMissingPlaylistDisplayTrack(track)),
     [displayRows]
   )
   const displayPlayableTrackPaths = useMemo(
     () => displayPlayableTracks.map((track) => track.path),
     [displayPlayableTracks]
   )
+  const trimmedPlaylistTrackSearchQuery = playlistTrackSearchQuery.trim()
+  const hasPlaylistTrackSearchQuery = trimmedPlaylistTrackSearchQuery.length > 0
+  const visiblePlaylistSearchRows = useMemo(
+    () => buildVisiblePlaylistSearchRows(
+      displayRows,
+      trimmedPlaylistTrackSearchQuery,
+      (row) => !isMissingPlaylistDisplayTrack(row.track)
+    ),
+    [displayRows, trimmedPlaylistTrackSearchQuery]
+  )
+  const visibleDisplayRows = useMemo(
+    () => visiblePlaylistSearchRows.map(({ row }) => row),
+    [visiblePlaylistSearchRows]
+  )
+  const visibleDisplayTracks = useMemo(
+    () => visibleDisplayRows.map((row) => row.track),
+    [visibleDisplayRows]
+  )
+  const visiblePlaylistEntryIds = useMemo(
+    () => visibleDisplayRows.map((row) => row.entryId),
+    [visibleDisplayRows]
+  )
+  const visibleTrackNumbers = useMemo(
+    () => visibleDisplayRows.map((row) => row.defaultNumber),
+    [visibleDisplayRows]
+  )
+  const visibleTrackInstanceKeys = useMemo(
+    () => visibleDisplayRows.map((row) => row.instanceKey),
+    [visibleDisplayRows]
+  )
+  const visibleQueueSeedIndexes = useMemo(
+    () => visiblePlaylistSearchRows.map(({ queueSeedIndex }) => queueSeedIndex),
+    [visiblePlaylistSearchRows]
+  )
+
+  useEffect(() => {
+    const request = playlistTrackRevealRequest
+    if (!hasPlaylistTrackSearchQuery || !request || request.playlistId !== selectedPlaylistId) return
+
+    const targetExists = displayRows.some((row) => row.track.path === request.trackPath)
+    const targetIsVisible = visibleDisplayRows.some((row) => row.track.path === request.trackPath)
+    if (targetExists && !targetIsVisible) {
+      setPlaylistTrackSearchQuery('')
+    }
+  }, [
+    displayRows,
+    hasPlaylistTrackSearchQuery,
+    playlistTrackRevealRequest,
+    selectedPlaylistId,
+    visibleDisplayRows
+  ])
 
   const playlistMissingCount = selectedPlaylistEntries.reduce(
     (count, entry) => count + (entry.missing || entry.track === null ? 1 : 0),
@@ -794,11 +840,11 @@ export default function PlaylistView() {
   }, [selectPlaylist, setActiveView])
 
   const visibleBrowserPlaylists = useMemo(() => {
-    const normalizedQuery = playlistSearchQuery.trim().toLocaleLowerCase()
+    const normalizedQuery = playlistBrowserSearchQuery.trim().toLocaleLowerCase()
     const sorted = sortPlaylistBrowserEntries(allPlaylists, browserSortMode)
     if (!normalizedQuery) return sorted
     return sorted.filter((entry) => entry.name.toLocaleLowerCase().includes(normalizedQuery))
-  }, [allPlaylists, browserSortMode, playlistSearchQuery])
+  }, [allPlaylists, browserSortMode, playlistBrowserSearchQuery])
 
   const playlistBrowserTrackCount = useMemo(
     () => allPlaylists.reduce((total, entry) => total + entry.track_count, 0),
@@ -1017,8 +1063,9 @@ export default function PlaylistView() {
                   <span className="sr-only">Search playlists</span>
                   <input
                     type="search"
-                    value={playlistSearchQuery}
-                    onChange={(event) => setPlaylistSearchQuery(event.target.value)}
+                    data-shortcut-search="true"
+                    value={playlistBrowserSearchQuery}
+                    onChange={(event) => setPlaylistBrowserSearchQuery(event.target.value)}
                     placeholder="Search playlists"
                   />
                 </label>
@@ -1115,8 +1162,8 @@ export default function PlaylistView() {
             </div>
             ) : allPlaylists.length > 0 ? (
               <div className="playlist-dashboard-search-empty">
-                <p>No playlists match “{playlistSearchQuery.trim()}”.</p>
-                <button type="button" onClick={() => setPlaylistSearchQuery('')}>Clear search</button>
+                <p>No playlists match “{playlistBrowserSearchQuery.trim()}”.</p>
+                <button type="button" onClick={() => setPlaylistBrowserSearchQuery('')}>Clear search</button>
               </div>
           ) : (
             <div className="library-empty playlist-browser-empty">
@@ -1443,36 +1490,82 @@ export default function PlaylistView() {
           </div>
         </div>
       </div>
+      <div className="playlist-track-search-toolbar" role="search" aria-label="Search this playlist">
+        <span className="playlist-track-search-status" role="status" aria-live="polite">
+          {hasPlaylistTrackSearchQuery
+            ? `${visibleDisplayRows.length} of ${displayRows.length} shown`
+            : ''}
+        </span>
+        <div className="search-container">
+          <span className="search-icon" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" />
+            </svg>
+          </span>
+          <input
+            type="text"
+            className="search-input"
+            data-shortcut-search="true"
+            placeholder="Search tracks..."
+            aria-label={`Search tracks in ${playlistName ?? 'playlist'}`}
+            value={playlistTrackSearchQuery}
+            onChange={(event) => setPlaylistTrackSearchQuery(event.target.value)}
+          />
+          {playlistTrackSearchQuery.length > 0 && (
+            <button
+              type="button"
+              className="search-clear-btn"
+              aria-label="Clear playlist search"
+              title="Clear playlist search"
+              onClick={() => setPlaylistTrackSearchQuery('')}
+            >
+              ×
+            </button>
+          )}
+        </div>
+      </div>
       <div className="playlist-content" onScrollCapture={handlePlaylistContentScrollCapture}>
         {playlistImportStatus && <PlaylistImportStatusBanner status={playlistImportStatus} />}
-        {displayTracks.length > 0 || playlistMissingCount > 0 ? (
-          <>
-            {displayTracks.length > 0 && (
-              <TrackList
-                tracks={displayTracks}
-                queueSeedTracks={displayPlayableTracks}
-                queueSeedIndexes={displayQueueSeedIndexes}
-                queueContextLabel={playlistName ?? 'Playlist'}
-                trackNumberMode="context"
-                contextTrackNumbers={displayTrackNumbers}
-                trackInstanceKeys={displayTrackInstanceKeys}
-                playlistEntryIds={displayPlaylistEntryIds}
-                playlistSourceId={!isFavoritesPlaylist && !isDynamicPlaylist ? selectedPlaylistId : null}
-                onChangeMissingPlaylistAssociation={handleChangeMissingPlaylistAssociation}
-                enableColumnSorting
-                sortState={sortState}
-                onSortColumnToggle={handleSortColumnToggle}
-                enableDefaultOrderReset
-                onDefaultOrderReset={handleResetToDefaultOrder}
-                jumpToTrackRequest={
-                  selectedPlaylistId === playlistTrackRevealRequest?.playlistId
-                    ? playlistTrackRevealRequest
-                    : null
-                }
-                onJumpToTrackRequestConsumed={clearPlaylistTrackRevealRequest}
-              />
-            )}
-          </>
+        {displayRows.length > 0 ? (
+          visibleDisplayTracks.length > 0 ? (
+            <TrackList
+              tracks={visibleDisplayTracks}
+              queueSeedTracks={displayPlayableTracks}
+              queueSeedIndexes={visibleQueueSeedIndexes}
+              queueContextLabel={playlistName ?? 'Playlist'}
+              trackNumberMode="context"
+              contextTrackNumbers={visibleTrackNumbers}
+              trackInstanceKeys={visibleTrackInstanceKeys}
+              playlistEntryIds={visiblePlaylistEntryIds}
+              playlistSourceId={!isFavoritesPlaylist && !isDynamicPlaylist ? selectedPlaylistId : null}
+              playlistDropEnabled={!hasPlaylistTrackSearchQuery}
+              onChangeMissingPlaylistAssociation={handleChangeMissingPlaylistAssociation}
+              enableColumnSorting
+              sortState={sortState}
+              onSortColumnToggle={handleSortColumnToggle}
+              enableDefaultOrderReset
+              onDefaultOrderReset={handleResetToDefaultOrder}
+              jumpToTrackRequest={
+                selectedPlaylistId === playlistTrackRevealRequest?.playlistId
+                  ? playlistTrackRevealRequest
+                  : null
+              }
+              onJumpToTrackRequestConsumed={clearPlaylistTrackRevealRequest}
+              searchQuery={trimmedPlaylistTrackSearchQuery}
+            />
+          ) : (
+            <div className="library-empty playlist-track-search-empty">
+              <p>No tracks found for “{trimmedPlaylistTrackSearchQuery}”.</p>
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={() => setPlaylistTrackSearchQuery('')}
+              >
+                Clear search
+              </button>
+            </div>
+          )
         ) : (
           <div
             className="library-empty"

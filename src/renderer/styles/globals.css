@@ -17912,6 +17912,42 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   margin: 8px 12px 10px;
 }
 
+.playlist-track-search-toolbar {
+  min-height: 44px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 14px;
+  border-bottom: 1px solid rgba(var(--tint), 0.06);
+  background: var(--bg-primary);
+}
+
+.playlist-track-search-toolbar .search-container {
+  margin-left: auto;
+}
+
+.playlist-track-search-toolbar .search-input {
+  width: clamp(150px, 22vw, 240px);
+}
+
+.playlist-track-search-status {
+  min-width: 0;
+  min-height: 1em;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.playlist-track-search-empty .settings-btn {
+  margin-top: 4px;
+}
+
 .playlist-browser {
   flex: 1;
   min-width: 0;

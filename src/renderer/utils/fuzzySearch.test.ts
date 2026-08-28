@@ -50,6 +50,7 @@ test('rejects scattered subsequences, typos, and incomplete matches', () => {
 
 test('normalizes case and repeated whitespace without broadening eligibility', () => {
   requireMatch('  RADIO   DEPT  ', 'Radio Dept', 'exact')
+  requireMatch('bjork', 'Björk', 'exact')
   assert.equal(findFuzzyMatch('r d', 'Radiohead'), null)
 })
 

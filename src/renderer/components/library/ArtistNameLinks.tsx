@@ -1,6 +1,7 @@
 import { Fragment, memo } from 'react'
 import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
 import { parseArtistMetadata } from '../../utils/artistMetadata'
+import { highlightSearchMatch } from '../../utils/searchHighlight'
 import { buildArtistNameTokens } from '../../../shared/library/artistCredits.ts'
 
 interface ArtistNameLinksProps {
@@ -12,6 +13,7 @@ interface ArtistNameLinksProps {
   className?: string
   linkClassName?: string
   stopPropagation?: boolean
+  searchQuery?: string
 }
 
 interface ArtistNameLinksContentProps extends ArtistNameLinksProps {
@@ -40,6 +42,7 @@ function ArtistNameLinksContentRenderer({
   className,
   linkClassName,
   stopPropagation = false,
+  searchQuery = '',
   artistBrowseMode
 }: ArtistNameLinksContentProps) {
   const normalizedArtistText = artistText.replace(/\s+/g, ' ').trim()
@@ -63,7 +66,7 @@ function ArtistNameLinksContentRenderer({
       || normalizedBrowseArtistText
       || normalizedArtistText
     if (!strictTargetArtist) {
-      return <span className={containerClassName}>{artistText}</span>
+      return <span className={containerClassName}>{highlightSearchMatch(artistText, searchQuery)}</span>
     }
 
     return (
@@ -74,14 +77,14 @@ function ArtistNameLinksContentRenderer({
           onClick={(event) => handleArtistClick(event, strictTargetArtist)}
           title={`Show tracks by ${strictTargetArtist}`}
         >
-          {artistText}
+          {highlightSearchMatch(artistText, searchQuery)}
         </button>
       </span>
     )
   }
 
   if (tokens.length === 0) {
-    return <span className={containerClassName}>{artistText}</span>
+    return <span className={containerClassName}>{highlightSearchMatch(artistText, searchQuery)}</span>
   }
 
   return (
@@ -94,7 +97,7 @@ function ArtistNameLinksContentRenderer({
             onClick={(event) => handleArtistClick(event, token.artist)}
             title={`Show tracks by ${token.artist}`}
           >
-            {token.artist}
+            {highlightSearchMatch(token.artist, searchQuery)}
           </button>
           {token.separator && (
             <span className="artist-name-separator" aria-hidden="true">

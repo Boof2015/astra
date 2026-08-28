@@ -1,5 +1,6 @@
 const WORD_BOUNDARY_SEPARATORS = new Set([' ', '\t', '-', '_', '/', '.', ',', ':', ';', '(', ')', '[', ']', '{', '}', '"', '\''])
 const WHITESPACE_PATTERN = /\s/u
+const COMBINING_MARK_PATTERN = /\p{M}/gu
 
 const MATCH_KIND_RANK = {
   compact: 1,
@@ -60,7 +61,10 @@ function normalizeSearchValueWithIndices(value: string): NormalizedSearchValue {
       pendingWhitespaceIndex = -1
     }
 
-    const lowerCharacter = character.toLocaleLowerCase()
+    const lowerCharacter = character
+      .normalize('NFD')
+      .replace(COMBINING_MARK_PATTERN, '')
+      .toLocaleLowerCase()
     normalized += lowerCharacter
     for (let lowerIndex = 0; lowerIndex < lowerCharacter.length; lowerIndex += 1) {
       originalIndices.push(index)
@@ -71,7 +75,12 @@ function normalizeSearchValueWithIndices(value: string): NormalizedSearchValue {
 }
 
 function normalizeSearchValue(value: string): string {
-  return value.toLocaleLowerCase().trim().replace(/\s+/g, ' ')
+  return value
+    .normalize('NFD')
+    .replace(COMBINING_MARK_PATTERN, '')
+    .toLocaleLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ')
 }
 
 function isWordBoundary(value: string, index: number): boolean {

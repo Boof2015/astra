@@ -139,7 +139,7 @@ export const INPUT_ACTION_DEFINITIONS: readonly InputActionDefinition[] = [
     id: 'focus-search-field',
     group: 'navigation',
     action: 'Focus Search Field',
-    description: 'Focus the visible Library search input.',
+    description: 'Focus the visible search input.',
     defaultBindings: [keyboard('/')]
   },
   {

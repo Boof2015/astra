@@ -124,6 +124,7 @@ interface TrackListProps {
   pageScroll?: boolean
   viewportRef?: Ref<TrackListViewportAPI>
   playlistSourceId?: number | null
+  playlistDropEnabled?: boolean
   onChangeMissingPlaylistAssociation?: (trackPath: string, entryId?: number | null) => void | Promise<void>
   sourceContext?: PlaybackSourceContext | null
   jumpToTrackRequest?: LibraryTrackRevealRequest | PlaylistTrackRevealRequest | null
@@ -198,6 +199,7 @@ interface TrackListRowSharedProps {
   playlistDropIndex: number | null
   playlistTrackCount: number
   playlistSourceId: number | null
+  playlistDropEnabled: boolean
   rootColumnStyles: Partial<Record<RootTrackColumnId, CSSProperties>> | null
   rootTableActive: boolean
 }
@@ -519,6 +521,7 @@ function TrackListRowRenderer({
   playlistDropIndex,
   playlistTrackCount,
   playlistSourceId,
+  playlistDropEnabled,
   rootColumnStyles,
   rootTableActive
 }: RowComponentProps<TrackListRowSharedProps>): ReactElement | null {
@@ -608,7 +611,7 @@ function TrackListRowRenderer({
           isQueueInsertSelected ? 'track-row-queue-selected' : ''
         } ${isQueueInsertArmed ? 'track-row-queue-armed' : ''} ${isPlaylistDropBefore ? 'track-row-playlist-insert-before' : ''} ${isPlaylistDropAfter ? 'track-row-playlist-insert-after' : ''}`}
         data-track-index={trackIndex}
-        data-track-drop-playlist-index={playlistSourceId !== null ? trackIndex : undefined}
+        data-track-drop-playlist-index={playlistDropEnabled && playlistSourceId !== null ? trackIndex : undefined}
         data-controller-focusable="true"
         data-controller-context={isMissingPlaylistEntry && !canRemoveFromPlaylist ? undefined : 'true'}
         data-controller-key={`track:${trackInstanceKey}`}
@@ -707,7 +710,7 @@ function TrackListRowRenderer({
         {showArtist && (
           <div className="track-col track-col-artist" data-track-column="artist" style={rootColumnStyles?.artist}>
             {isMissingPlaylistEntry ? (
-              <span className="track-artist">{track.artist}</span>
+              <span className="track-artist">{highlightSearchMatch(track.artist, searchQuery)}</span>
             ) : (
               <ArtistNameLinksContent
                 artistText={track.artist}
@@ -719,6 +722,7 @@ function TrackListRowRenderer({
                 linkClassName="artist-name-link-inline"
                 stopPropagation
                 artistBrowseMode={artistBrowseMode}
+                searchQuery={searchQuery}
               />
             )}
           </div>
@@ -726,7 +730,7 @@ function TrackListRowRenderer({
         {showAlbum && (
           <div className="track-col track-col-album" data-track-column="album" style={rootColumnStyles?.album}>
             {isMissingPlaylistEntry && track.album.trim().length > 0 ? (
-              <span className="track-album">{track.album}</span>
+              <span className="track-album">{highlightSearchMatch(track.album, searchQuery)}</span>
             ) : track.album.trim().length > 0 ? (
               <button
                 type="button"
@@ -737,7 +741,7 @@ function TrackListRowRenderer({
                 }}
                 title={`Show album ${track.album}`}
               >
-                {track.album}
+                {highlightSearchMatch(track.album, searchQuery)}
               </button>
             ) : (
               <span className="track-album">{'\u2014'}</span>
@@ -899,6 +903,7 @@ export default function TrackList({
   pageScroll = false,
   viewportRef,
   playlistSourceId = null,
+  playlistDropEnabled = true,
   onChangeMissingPlaylistAssociation,
   sourceContext = null,
   jumpToTrackRequest = null,
@@ -2136,7 +2141,9 @@ export default function TrackList({
     getTrackListVirtualRowHeightPx(virtualRows?.[rowIndex], trackRowHeight, discHeaderHeight)
   ), [discHeaderHeight, trackRowHeight, virtualRows])
   const playlistPopupTrackPath = playlistPopup?.primaryTrackPath ?? null
-  const activePlaylistDropIndex = playlistSourceId !== null && playlistDropTarget?.playlistId === playlistSourceId
+  const activePlaylistDropIndex = playlistDropEnabled
+    && playlistSourceId !== null
+    && playlistDropTarget?.playlistId === playlistSourceId
     ? playlistDropTarget.index
     : null
   const isColumnSortingEnabled = enableColumnSorting && typeof onSortColumnToggle === 'function'
@@ -2286,6 +2293,7 @@ export default function TrackList({
     playlistDropIndex: activePlaylistDropIndex,
     playlistTrackCount: tracks.length,
     playlistSourceId,
+    playlistDropEnabled,
     rootColumnStyles,
     rootTableActive
   }), [
@@ -2340,6 +2348,7 @@ export default function TrackList({
     selectedTrackKeys,
     activePlaylistDropIndex,
     playlistSourceId,
+    playlistDropEnabled,
     rootColumnStyles,
     rootTableActive
   ])
@@ -2348,8 +2357,8 @@ export default function TrackList({
     return (
       <div
         className="track-list-empty"
-        data-track-drop-playlist-id={playlistSourceId ?? undefined}
-        data-track-drop-playlist-count={playlistSourceId !== null ? 0 : undefined}
+        data-track-drop-playlist-id={playlistDropEnabled ? playlistSourceId ?? undefined : undefined}
+        data-track-drop-playlist-count={playlistDropEnabled && playlistSourceId !== null ? 0 : undefined}
       >
         <p>No tracks found</p>
       </div>
@@ -2406,8 +2415,8 @@ export default function TrackList({
       <div
         className="track-list-body"
         ref={listBodyRef}
-        data-track-drop-playlist-id={playlistSourceId ?? undefined}
-        data-track-drop-playlist-count={playlistSourceId !== null ? tracks.length : undefined}
+        data-track-drop-playlist-id={playlistDropEnabled ? playlistSourceId ?? undefined : undefined}
+        data-track-drop-playlist-count={playlistDropEnabled && playlistSourceId !== null ? tracks.length : undefined}
         // In page-scroll mode this element no longer scrolls; leaving the
         // marker on would make controller page-scroll resolve to it and no-op.
         data-controller-scroll={pageScroll ? undefined : true}
