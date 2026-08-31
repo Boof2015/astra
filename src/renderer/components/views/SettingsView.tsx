@@ -2087,9 +2087,9 @@ export default function SettingsView() {
                         className={`settings-toggle ${artistBrowseMode === 'canonical' ? 'active' : ''}`}
                         onClick={() => setArtistBrowseMode('canonical')}
                         aria-pressed={artistBrowseMode === 'canonical'}
-                        title="Use Astra's primary artist and collaboration grouping"
+                        title="Use Astra Resolve to identify primary artists and collaborations"
                       >
-                        Astra grouping
+                        Astra Resolve
                       </button>
                     </div>
                   </div>

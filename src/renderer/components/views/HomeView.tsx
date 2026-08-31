@@ -14,6 +14,7 @@ import HomeBinaryClock from '../home/HomeBinaryClock'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 import type { DynamicPlaylistRulesV1 } from '../../../shared/playlists/dynamicPlaylist'
+import { isGenericArtistName } from '../../../shared/library/artistCredits'
 
 interface HomeTrack {
   path: string
@@ -138,7 +139,6 @@ const STAR_OPACITY_SCALE = 0.52
 const GREETING_WEIGHT_TIME_AWARE = 0.4
 const GREETING_WEIGHT_DAY_AWARE = 0.28
 const GREETING_WEIGHT_PLAYFUL = 0.32
-const GENERIC_ARTIST_KEYS = new Set(['various artists', 'various artist', 'va', 'v a'])
 
 const SKY_COLOR_KEYFRAMES: SkyColorKeyframe[] = [
   { hour: 0, top: [10, 13, 28], mid: [7, 8, 15], bottom: [4, 4, 10], stars: 1.0 },
@@ -759,9 +759,7 @@ function getRecentArtistCandidate(
     return albumArtist || track.artist.replace(/\s+/g, ' ').trim() || 'Unknown Artist'
   }
 
-  const albumArtistKey = normalizeKey(albumArtist)
-
-  if (albumArtist && !GENERIC_ARTIST_KEYS.has(albumArtistKey)) {
+  if (albumArtist && !isGenericArtistName(albumArtist)) {
     return getPrimaryContributor(albumArtist)
   }
 
