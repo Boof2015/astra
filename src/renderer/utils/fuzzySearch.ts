@@ -17,6 +17,7 @@ const MAX_FIELD_WEIGHT_RANK = 999
 const MAX_PROXIMITY_COMPONENT = 99
 
 export type FuzzyMatchKind = keyof typeof MATCH_KIND_RANK
+export type SearchProfile = 'context' | 'global'
 
 export interface FuzzyMatch {
   kind: FuzzyMatchKind
@@ -74,7 +75,7 @@ function normalizeSearchValueWithIndices(value: string): NormalizedSearchValue {
   return { value: normalized, originalIndices }
 }
 
-function normalizeSearchValue(value: string): string {
+export function normalizeSearchValue(value: string): string {
   return value
     .normalize('NFD')
     .replace(COMBINING_MARK_PATTERN, '')
@@ -202,7 +203,11 @@ function findCompactSubsequence(query: string, candidate: string): number[] | nu
   return bestIndices
 }
 
-function findNormalizedFuzzyMatch(query: string, candidate: string): DetailedFuzzyMatch | null {
+function findNormalizedFuzzyMatch(
+  query: string,
+  candidate: string,
+  profile: SearchProfile
+): DetailedFuzzyMatch | null {
   if (!query || !candidate) return null
 
   if (candidate === query) {
@@ -234,7 +239,7 @@ function findNormalizedFuzzyMatch(query: string, candidate: string): DetailedFuz
     }
   }
 
-  if (query.length >= 3) {
+  if (profile === 'global' && query.length >= 3) {
     const compactIndices = findCompactSubsequence(query, candidate)
     if (compactIndices) {
       return createMatch('compact', compactIndices, candidate, query.length)
@@ -244,17 +249,31 @@ function findNormalizedFuzzyMatch(query: string, candidate: string): DetailedFuz
   return null
 }
 
-function findDetailedFuzzyMatch(queryInput: string, candidateInput: string): DetailedFuzzyMatch | null {
+function findDetailedFuzzyMatch(
+  queryInput: string,
+  candidateInput: string,
+  profile: SearchProfile
+): DetailedFuzzyMatch | null {
   return findNormalizedFuzzyMatch(
     normalizeSearchValue(queryInput),
-    normalizeSearchValue(candidateInput)
+    normalizeSearchValue(candidateInput),
+    profile
   )
 }
 
-export function findFuzzyMatch(queryInput: string, candidateInput: string): FuzzyMatch | null {
+export function splitSearchTerms(queryInput: string): string[] {
+  const normalized = normalizeSearchValue(queryInput)
+  return normalized ? normalized.split(' ') : []
+}
+
+export function findFuzzyMatch(
+  queryInput: string,
+  candidateInput: string,
+  profile: SearchProfile = 'global'
+): FuzzyMatch | null {
   const query = normalizeSearchValue(queryInput)
   const candidate = normalizeSearchValueWithIndices(candidateInput)
-  const match = findNormalizedFuzzyMatch(query, candidate.value)
+  const match = findNormalizedFuzzyMatch(query, candidate.value, profile)
   if (!match) return null
   const indices = match.normalizedIndices
     .map((index) => candidate.originalIndices[index])
@@ -268,13 +287,28 @@ export function findFuzzyMatch(queryInput: string, candidateInput: string): Fuzz
   }
 }
 
-export function fuzzyScore(queryInput: string, candidateInput: string): number | null {
-  return findDetailedFuzzyMatch(queryInput, candidateInput)?.score ?? null
+export function fuzzyScore(
+  queryInput: string,
+  candidateInput: string,
+  profile: SearchProfile = 'global'
+): number | null {
+  return findDetailedFuzzyMatch(queryInput, candidateInput, profile)?.score ?? null
 }
 
 export interface FieldDef {
   value: string
   weight: number
+}
+
+export interface SearchFieldMatch {
+  fieldIndex: number
+  indices: number[]
+}
+
+export interface SearchEvaluation {
+  eligible: boolean
+  aggregateScore: number | null
+  fieldMatches: SearchFieldMatch[]
 }
 
 function weightedMatchScore(match: DetailedFuzzyMatch, weight: number): number {
@@ -293,50 +327,103 @@ function weightedMatchScore(match: DetailedFuzzyMatch, weight: number): number {
 
 export function multiFieldScore(
   queryInput: string,
-  fields: FieldDef[]
+  fields: FieldDef[],
+  profile: SearchProfile = 'global'
 ): number | null {
-  const normalizedQuery = normalizeSearchValue(queryInput)
-  if (!normalizedQuery) return null
+  return evaluateSearchFieldsInternal(queryInput, fields, profile, false).aggregateScore
+}
 
-  let bestScore: number | null = null
+export function evaluateSearchFields(
+  queryInput: string,
+  fields: FieldDef[],
+  profile: SearchProfile
+): SearchEvaluation {
+  return evaluateSearchFieldsInternal(queryInput, fields, profile, true)
+}
 
-  for (const field of fields) {
-    const match = findNormalizedFuzzyMatch(normalizedQuery, normalizeSearchValue(field.value))
-    if (!match) continue
-    const fieldScore = weightedMatchScore(match, field.weight)
-    if (bestScore === null || fieldScore > bestScore) {
-      bestScore = fieldScore
+function evaluateSearchFieldsInternal(
+  queryInput: string,
+  fields: FieldDef[],
+  profile: SearchProfile,
+  collectMatchIndices: boolean
+): SearchEvaluation {
+  const terms = splitSearchTerms(queryInput)
+  if (terms.length === 0) return { eligible: false, aggregateScore: null, fieldMatches: [] }
+
+  let aggregateScore = 0
+  let eligible = true
+  const normalizedFields = fields.map((field) => ({
+    ...field,
+    normalized: collectMatchIndices
+      ? normalizeSearchValueWithIndices(field.value)
+      : { value: normalizeSearchValue(field.value), originalIndices: [] }
+  }))
+  const matchedIndicesByField = new Map<number, Set<number>>()
+
+  for (const term of terms) {
+    let bestTermScore: number | null = null
+    normalizedFields.forEach((field, fieldIndex) => {
+      const match = findNormalizedFuzzyMatch(term, field.normalized.value, profile)
+      if (!match) return
+      const fieldScore = weightedMatchScore(match, field.weight)
+      if (bestTermScore === null || fieldScore > bestTermScore) {
+        bestTermScore = fieldScore
+      }
+      if (collectMatchIndices) {
+        const indices = matchedIndicesByField.get(fieldIndex) ?? new Set<number>()
+        for (const normalizedIndex of match.normalizedIndices) {
+          const originalIndex = field.normalized.originalIndices[normalizedIndex]
+          if (originalIndex !== undefined) indices.add(originalIndex)
+        }
+        matchedIndicesByField.set(fieldIndex, indices)
+      }
+    })
+
+    if (bestTermScore === null) {
+      eligible = false
+    } else {
+      aggregateScore += bestTermScore
     }
   }
 
-  return bestScore
+  return {
+    eligible,
+    aggregateScore: eligible ? aggregateScore : null,
+    fieldMatches: [...matchedIndicesByField.entries()].map(([fieldIndex, indices]) => ({
+      fieldIndex,
+      indices: [...indices].sort((left, right) => left - right)
+    }))
+  }
 }
 
 export function getFuzzyFieldScore(
   queryInput: string,
-  fields: FieldDef[]
+  fields: FieldDef[],
+  profile: SearchProfile = 'global'
 ): number | null {
-  return multiFieldScore(queryInput, fields)
+  return multiFieldScore(queryInput, fields, profile)
 }
 
 export function matchesFuzzyFields(
   queryInput: string,
-  fields: FieldDef[]
+  fields: FieldDef[],
+  profile: SearchProfile = 'global'
 ): boolean {
-  return getFuzzyFieldScore(queryInput, fields) !== null
+  return getFuzzyFieldScore(queryInput, fields, profile) !== null
 }
 
 export function rankFuzzyMatches<T>(
   items: readonly T[],
   queryInput: string,
-  getFields: (item: T) => FieldDef[]
+  getFields: (item: T) => FieldDef[],
+  profile: SearchProfile = 'global'
 ): T[] {
   if (!normalizeSearchValue(queryInput)) return [...items]
 
   const scored: Array<{ item: T; score: number; index: number }> = []
 
   items.forEach((item, index) => {
-    const score = getFuzzyFieldScore(queryInput, getFields(item))
+    const score = getFuzzyFieldScore(queryInput, getFields(item), profile)
     if (score === null) return
     scored.push({ item, score, index })
   })

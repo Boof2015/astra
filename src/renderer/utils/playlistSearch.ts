@@ -1,11 +1,7 @@
-import { matchesFuzzyFields } from './fuzzySearch'
 import { buildPlayableOccurrenceIndexes } from './playlistOccurrences'
+import { matchesTrackIdentityQuery, type TrackIdentitySearchRecord } from './trackSearch'
 
-export interface PlaylistSearchTrack {
-  title: string
-  artist: string
-  album: string
-}
+export interface PlaylistSearchTrack extends TrackIdentitySearchRecord {}
 
 export interface PlaylistSearchRow<TTrack extends PlaylistSearchTrack = PlaylistSearchTrack> {
   track: TTrack
@@ -23,11 +19,7 @@ export function matchesPlaylistTrackQuery(
   const normalizedQuery = query.trim()
   if (!normalizedQuery) return true
 
-  return matchesFuzzyFields(normalizedQuery, [
-    { value: track.title, weight: 1.5 },
-    { value: track.artist, weight: 1.2 },
-    { value: track.album, weight: 1 }
-  ])
+  return matchesTrackIdentityQuery(track, normalizedQuery, 'context')
 }
 
 export function buildVisiblePlaylistSearchRows<TRow extends PlaylistSearchRow>(

@@ -1,15 +1,16 @@
 import { createElement, Fragment, type ReactNode } from 'react'
-import { findFuzzyMatch } from './fuzzySearch'
+import { evaluateSearchFields, type SearchProfile } from './fuzzySearch'
 
 export function highlightSearchMatch(
   text: string,
   query: string,
-  className = 'search-highlight'
+  className = 'search-highlight',
+  profile: SearchProfile = 'context'
 ): ReactNode {
-  const match = findFuzzyMatch(query, text)
-  if (!match || match.indices.length === 0) return text
+  const evaluation = evaluateSearchFields(query, [{ value: text, weight: 1 }], profile)
+  const matchedIndices = evaluation.fieldMatches[0]?.indices ?? []
+  if (matchedIndices.length === 0) return text
 
-  const matchedIndices = [...new Set(match.indices)].sort((left, right) => left - right)
   const parts: ReactNode[] = []
   let cursor = 0
   let groupStart = matchedIndices[0]

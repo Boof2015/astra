@@ -1,7 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  evaluateSearchFields,
   findFuzzyMatch,
+  fuzzyScore,
   getFuzzyFieldScore,
   matchesFuzzyFields,
   multiFieldScore,
@@ -80,6 +82,36 @@ test('matches across metadata fields using the strongest eligible field', () => 
 
   assert.equal(matchesFuzzyFields('rhc', fields), true)
   assert.equal(matchesFuzzyFields('zzzz', fields), false)
+})
+
+test('requires every query term while allowing terms to match different fields', () => {
+  const fields = [
+    { value: 'Jóga', weight: 1.5 },
+    { value: 'Björk', weight: 1.2 },
+    { value: 'Homogenic', weight: 1 }
+  ]
+
+  assert.notEqual(multiFieldScore('bjork joga', fields, 'context'), null)
+  assert.equal(multiFieldScore('bjork unrelated', fields, 'context'), null)
+})
+
+test('term-aware evaluation returns aggregate eligibility and per-field indices', () => {
+  const evaluation = evaluateSearchFields('hidden bjork', [
+    { value: 'Hidden Place', weight: 1.5 },
+    { value: 'Björk', weight: 1.2 }
+  ], 'context')
+
+  assert.equal(evaluation.eligible, true)
+  assert.notEqual(evaluation.aggregateScore, null)
+  assert.deepEqual(evaluation.fieldMatches.map((match) => match.fieldIndex), [0, 1])
+  assert.deepEqual(evaluation.fieldMatches[0].indices, [0, 1, 2, 3, 4, 5])
+})
+
+test('context search keeps initials but rejects compact single-word subsequences', () => {
+  assert.notEqual(fuzzyScore('rhc', 'Red Hot Chili Peppers', 'context'), null)
+  assert.equal(fuzzyScore('hmg', 'Homogenic', 'context'), null)
+  assert.notEqual(fuzzyScore('hmg', 'Homogenic', 'global'), null)
+  assert.notEqual(fuzzyScore('moge', 'Homogenic', 'context'), null)
 })
 
 test('rankFuzzyMatches orders by match class, field weight, and stable input order', () => {

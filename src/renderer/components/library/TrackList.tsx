@@ -2065,7 +2065,7 @@ export default function TrackList({
   const filteredPlaylists = useMemo(() => {
     return rankFuzzyMatches(getNormalPlaylists(playlists), playlistPopupSearch, (playlist) => [
       { value: playlist.name, weight: 1.5 }
-    ])
+    ], 'context')
   }, [playlistPopupSearch, playlists])
 
   const playlistPopupTrack = useMemo(() => {

@@ -11212,21 +11212,42 @@ body.folder-settings-open .app {
   border-bottom: 1px solid rgba(var(--tint), 0.09);
 }
 
-.quick-launch-input {
-  width: 100%;
-  height: 40px;
-  border-radius: 10px;
+.quick-launch-composer {
+  min-height: 42px;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 5px 7px;
   border: 1px solid rgba(var(--tint), 0.15);
+  border-radius: 10px;
   background: rgba(var(--tint), 0.04);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.quick-launch-composer:focus-within {
+  border-color: rgba(var(--accent-rgb), 0.62);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.2);
+}
+
+.quick-launch-input {
+  flex: 1 1 180px;
+  width: auto;
+  min-width: 120px;
+  height: 30px;
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
   color: var(--text-primary);
-  padding: 0 12px;
+  padding: 0 5px;
   font-size: 14px;
   outline: none;
 }
 
 .quick-launch-input:focus {
-  border-color: rgba(var(--accent-rgb), 0.62);
-  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.2);
+  box-shadow: none;
 }
 
 .quick-launch-input::placeholder {
@@ -11253,9 +11274,95 @@ body.folder-settings-open .app {
   font-size: 11px;
 }
 
+.quick-launch-error {
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(239, 92, 92, 0.3);
+  border-radius: 7px;
+  background: rgba(239, 92, 92, 0.08);
+  color: var(--text-primary);
+  font-size: 11px;
+}
+
+.ql-token-chip,
+.ql-editor-prefix {
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(var(--accent-rgb), 0.32);
+  border-radius: 6px;
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--accent-text-strong);
+  padding: 3px 7px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+button.ql-token-chip {
+  cursor: pointer;
+}
+
+.ql-token-chip strong {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+  font-weight: 550;
+}
+
+.ql-token-chip.armed {
+  border-color: rgba(239, 92, 92, 0.65);
+  box-shadow: 0 0 0 2px rgba(239, 92, 92, 0.12);
+}
+
+.ql-action-chip {
+  border-color: rgba(var(--tint), 0.25);
+  background: rgba(var(--tint), 0.08);
+  color: var(--text-primary);
+}
+
+.ql-editor-prefix {
+  border-style: dashed;
+}
+
+.ql-preserved-query {
+  color: rgba(var(--tint), 0.7);
+  font-size: 13px;
+  padding-left: 4px;
+}
+
 .quick-launch-results {
   padding: 8px 10px 12px;
   overflow-y: auto;
+}
+
+.ql-structured-track-list {
+  width: 100%;
+  max-height: min(52vh, 480px);
+}
+
+.ql-virtual-row-shell {
+  padding-bottom: 4px;
+}
+
+.ql-virtual-row-shell .quick-launch-result-row {
+  height: 50px;
+}
+
+.ql-token-suggestion-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--accent-text-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-weight: 700;
 }
 
 .quick-launch-group {
@@ -11297,7 +11404,7 @@ body.folder-settings-open .app {
   transition: background var(--transition-fast), color var(--transition-fast);
 }
 
-.quick-launch-result-row:hover,
+.quick-launch-panel[data-hover-selection="enabled"] .quick-launch-result-row:hover,
 .quick-launch-result-row.selected {
   background: rgba(var(--accent-rgb), 0.14);
 }
@@ -11369,6 +11476,13 @@ body.folder-settings-open .app {
   gap: 6px;
   margin-left: auto;
   flex-shrink: 0;
+}
+
+.ql-key-action {
+  color: rgba(var(--tint), 0.54);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
 }
 
 .ql-action-badge {

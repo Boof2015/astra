@@ -25,8 +25,19 @@ test('highlights the accepted initialism and compact match indices', () => {
     '<mark class="hit">R</mark>ed <mark class="hit">H</mark>ot <mark class="hit">C</mark>hili Peppers'
   )
   assert.equal(
-    renderHighlight('Radiohead', 'rdio', 'hit'),
+    renderToStaticMarkup(createElement(
+      Fragment,
+      null,
+      highlightSearchMatch('Radiohead', 'rdio', 'hit', 'global')
+    )),
     '<mark class="hit">R</mark>a<mark class="hit">dio</mark>head'
+  )
+})
+
+test('highlights every matching term independently', () => {
+  assert.equal(
+    renderHighlight('Red Hot Chili Peppers', 'red chili'),
+    '<mark class="search-highlight">Red</mark> Hot <mark class="search-highlight">Chili</mark> Peppers'
   )
 })
 

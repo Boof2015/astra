@@ -10,14 +10,17 @@ import {
 } from '../../utils/folderTree'
 import { matchesFuzzyFields, rankFuzzyMatches } from '../../utils/fuzzySearch'
 import { highlightSearchMatch } from '../../utils/searchHighlight'
+import { getTrackIdentitySearchFields } from '../../utils/trackSearch'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
+import SearchEmptyState from '../search/SearchEmptyState'
 
 interface FolderTreeViewProps {
   tracks: DbTrack[]
   allTracks: DbTrack[]
   folders: LibraryFolder[]
   searchQuery: string
+  onClearSearch: () => void
 }
 
 type FolderTreeNode = LibraryFolderTreeNode<DbTrack>
@@ -208,7 +211,7 @@ function FolderTreeRowRenderer({
 
 const MemoizedRow = memo(FolderTreeRowRenderer) as typeof FolderTreeRowRenderer
 
-export default function FolderTreeView({ tracks, allTracks, folders, searchQuery }: FolderTreeViewProps) {
+export default function FolderTreeView({ tracks, allTracks, folders, searchQuery, onClearSearch }: FolderTreeViewProps) {
   const [folderPlaylistPopup, setFolderPlaylistPopup] = useState<FolderPlaylistPopupState | null>(null)
   const [folderPlaylistSearch, setFolderPlaylistSearch] = useState('')
   const [folderPlaylistFeedback, setFolderPlaylistFeedback] = useState<FolderPlaylistFeedback | null>(null)
@@ -238,11 +241,9 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
   const filteredTracks = useMemo(() => {
     if (!trimmedSearchQuery) return tracks
     return tracks.filter((track) => matchesFuzzyFields(trimmedSearchQuery, [
-      { value: track.title, weight: 1.5 },
-      { value: track.artist, weight: 0.9 },
-      { value: track.artist_names.join(' '), weight: 0.9 },
+      ...getTrackIdentitySearchFields(track),
       { value: track.path, weight: 0.8 }
-    ]))
+    ], 'context'))
   }, [tracks, trimmedSearchQuery])
 
   const tree = useMemo(() => (
@@ -609,7 +610,7 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
   const filteredPlaylists = useMemo(() => {
     return rankFuzzyMatches(getNormalPlaylists(playlists), folderPlaylistSearch, (playlist) => [
       { value: playlist.name, weight: 1.5 }
-    ])
+    ], 'context')
   }, [folderPlaylistSearch, playlists])
 
   const folderPlaylistPopupStyle = useMemo(() => {
@@ -659,12 +660,16 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
     visibleRows
   ])
 
-  const content = tree.length === 0 ? (
+  const content = tree.length === 0 && trimmedSearchQuery ? (
+    <SearchEmptyState
+      subject="tracks"
+      query={searchQuery.trim()}
+      fields="folder name or path, title, artist, and album"
+      onClear={onClearSearch}
+    />
+  ) : tree.length === 0 ? (
     <div className="library-empty">
-      {trimmedSearchQuery
-        ? <p>No tracks found for &ldquo;{searchQuery.trim()}&rdquo;</p>
-        : <p>No folders with tracks</p>
-      }
+      <p>No folders with tracks</p>
     </div>
   ) : (
     <div className="folder-browse-tree">

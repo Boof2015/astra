@@ -1,7 +1,17 @@
 import type { SettingsSectionId } from '../constants/settingsSections'
 import type { TrackSourceType } from '../../types/subsonic'
 
-export type QuickLaunchTrackAction = 'play-now' | 'queue-next'
+export type QuickLaunchTrackAction = 'play' | 'next' | 'queue'
+
+export type QuickLaunchFilterKind = 'artist' | 'album' | 'playlist' | 'genre' | 'year'
+
+export interface QuickLaunchLockedFilter {
+  kind: QuickLaunchFilterKind
+  id: string
+  label: string
+  subtitle?: string
+  value: string | number | null
+}
 
 export interface QuickLaunchTrackRecord {
   id: number

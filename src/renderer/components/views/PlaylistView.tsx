@@ -15,6 +15,7 @@ import {
 import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { formatPlaylistExportStatus, formatPlaylistImportStatus, type PlaylistImportStatus } from '../../utils/playlistImportStatus'
 import { buildVisiblePlaylistSearchRows } from '../../utils/playlistSearch'
+import { matchesFuzzyFields } from '../../utils/fuzzySearch'
 import { compareTrackPlayCounts } from '../../utils/trackPlayCountSort'
 import { compareBaseLocaleText } from '../../utils/localeSort'
 import { getDetailHeaderCollapseDistance, resolveDetailHeaderCollapsed } from '../../utils/detailHeaderScroll'
@@ -26,6 +27,7 @@ import DynamicPlaylistRuleEditor from '../playlists/DynamicPlaylistRuleEditor'
 import PlaylistCover from '../playlists/PlaylistCover'
 import QueueSplitButton from '../queue/QueueSplitButton'
 import ConfirmActionModal from '../settings/ConfirmActionModal'
+import SearchEmptyState from '../search/SearchEmptyState'
 import {
   createDefaultDynamicPlaylistRules,
   normalizeDynamicPlaylistRules,
@@ -840,10 +842,12 @@ export default function PlaylistView() {
   }, [selectPlaylist, setActiveView])
 
   const visibleBrowserPlaylists = useMemo(() => {
-    const normalizedQuery = playlistBrowserSearchQuery.trim().toLocaleLowerCase()
     const sorted = sortPlaylistBrowserEntries(allPlaylists, browserSortMode)
-    if (!normalizedQuery) return sorted
-    return sorted.filter((entry) => entry.name.toLocaleLowerCase().includes(normalizedQuery))
+    const query = playlistBrowserSearchQuery.trim()
+    if (!query) return sorted
+    return sorted.filter((entry) => matchesFuzzyFields(query, [
+      { value: entry.name, weight: 1.5 }
+    ], 'context'))
   }, [allPlaylists, browserSortMode, playlistBrowserSearchQuery])
 
   const playlistBrowserTrackCount = useMemo(
@@ -1161,10 +1165,13 @@ export default function PlaylistView() {
               })}
             </div>
             ) : allPlaylists.length > 0 ? (
-              <div className="playlist-dashboard-search-empty">
-                <p>No playlists match “{playlistBrowserSearchQuery.trim()}”.</p>
-                <button type="button" onClick={() => setPlaylistBrowserSearchQuery('')}>Clear search</button>
-              </div>
+              <SearchEmptyState
+                subject="playlists"
+                query={playlistBrowserSearchQuery.trim()}
+                fields="playlist name"
+                onClear={() => setPlaylistBrowserSearchQuery('')}
+                className="playlist-dashboard-search-empty"
+              />
           ) : (
             <div className="library-empty playlist-browser-empty">
               <p>No playlists yet</p>
@@ -1555,16 +1562,13 @@ export default function PlaylistView() {
               searchQuery={trimmedPlaylistTrackSearchQuery}
             />
           ) : (
-            <div className="library-empty playlist-track-search-empty">
-              <p>No tracks found for “{trimmedPlaylistTrackSearchQuery}”.</p>
-              <button
-                type="button"
-                className="settings-btn"
-                onClick={() => setPlaylistTrackSearchQuery('')}
-              >
-                Clear search
-              </button>
-            </div>
+            <SearchEmptyState
+              subject="tracks"
+              query={trimmedPlaylistTrackSearchQuery}
+              fields="title, artist, and album"
+              onClear={() => setPlaylistTrackSearchQuery('')}
+              className="playlist-track-search-empty"
+            />
           )
         ) : (
           <div

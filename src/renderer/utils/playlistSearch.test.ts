@@ -11,10 +11,11 @@ const track = {
   album: 'Homogenic'
 }
 
-test('playlist track search fuzzy-matches title, artist, and album metadata', () => {
+test('playlist track search uses conservative title, artist, and album matching', () => {
   assert.equal(matchesPlaylistTrackQuery(track, 'joga'), true)
   assert.equal(matchesPlaylistTrackQuery(track, 'bjork'), true)
-  assert.equal(matchesPlaylistTrackQuery(track, 'hmg'), true)
+  assert.equal(matchesPlaylistTrackQuery(track, 'hmg'), false)
+  assert.equal(matchesPlaylistTrackQuery(track, 'moge'), true)
   assert.equal(matchesPlaylistTrackQuery(track, 'unrelated'), false)
 })
 

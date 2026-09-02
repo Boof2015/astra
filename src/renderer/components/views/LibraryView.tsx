@@ -19,6 +19,7 @@ import { formatCompactTotalTrackDuration } from '../../utils/collectionDuration'
 import { matchesFuzzyFields } from '../../utils/fuzzySearch'
 import { isSameOrDescendantFsPath } from '../../utils/folderTree'
 import { compareBaseLocaleText } from '../../utils/localeSort'
+import { matchesTrackIdentityQuery } from '../../utils/trackSearch'
 import { runViewTransition } from '../../utils/viewTransitions'
 import { compareTrackPlayCounts } from '../../utils/trackPlayCountSort'
 import {
@@ -49,6 +50,7 @@ import GenreGrid, { type GenreGridViewportAPI } from '../library/GenreGrid'
 import YearAlbumPreview from '../library/YearAlbumPreview'
 import YearGrid, { type YearGridViewportAPI } from '../library/YearGrid'
 import RootTrackTableControls from '../library/RootTrackTableControls'
+import SearchEmptyState from '../search/SearchEmptyState'
 import {
   normalizeTrackSortRules,
   replaceTrackSortRulesFromHeader,
@@ -195,15 +197,6 @@ function resolveBrowseArtistForTrack(
   return artistContributors[0] ?? (normalizedArtist || 'Unknown Artist')
 }
 
-function trackMatchesLibraryQuery(
-  track: { title: string },
-  query: string
-): boolean {
-  return matchesFuzzyFields(query, [
-    { value: track.title, weight: 1.5 }
-  ])
-}
-
 export default function LibraryView() {
   const trackPaths = useLibraryStore((state) => state.trackPaths)
   const fullTrackPaths = useLibraryStore((state) => state.fullTrackPaths)
@@ -286,7 +279,7 @@ export default function LibraryView() {
   const [isArtistImageMenuOpen, setIsArtistImageMenuOpen] = useState(false)
   const artistImageMenuPresence = usePresence(isArtistImageMenuOpen)
   const [isDetailHeaderCollapsed, setIsDetailHeaderCollapsed] = useState(false)
-  const previousInDetailViewRef = useRef(false)
+  const previousSearchContextKeyRef = useRef<string | null>(null)
   const detailHeaderRef = useRef<HTMLDivElement | null>(null)
   const collectionPlayPendingRef = useRef(false)
   const albumViewportRef = useRef<AlbumGridViewportAPI | null>(null)
@@ -429,6 +422,14 @@ export default function LibraryView() {
   const selectedGenreArtworkHash = selectedGenreRecord?.artwork_hash ?? null
 
   useEffect(() => {
+    const previousKey = previousSearchContextKeyRef.current
+    previousSearchContextKeyRef.current = libraryScrollContextKey
+    if (previousKey !== null && previousKey !== libraryScrollContextKey) {
+      setSearchQuery('')
+    }
+  }, [libraryScrollContextKey])
+
+  useEffect(() => {
     if (pendingLibrarySearchQuery === null) return
 
     const pendingQuery = consumePendingLibrarySearchQuery()
@@ -442,13 +443,6 @@ export default function LibraryView() {
     setSearchQuery('')
     clearSelectedSourceFilters()
   }, [clearSelectedSourceFilters, libraryTrackRevealRequest])
-
-  useEffect(() => {
-    if (!previousInDetailViewRef.current && inDetailView) {
-      setSearchQuery('')
-    }
-    previousInDetailViewRef.current = inDetailView
-  }, [inDetailView])
 
   useEffect(() => {
     setIsArtistImageMenuOpen(false)
@@ -855,7 +849,7 @@ export default function LibraryView() {
 
   const displayTracks = useMemo(() => {
     if (!hasSearchQuery) return queueSeedSortedTracks
-    return queueSeedSortedTracks.filter((track) => trackMatchesLibraryQuery(track, trimmedSearchQuery))
+    return queueSeedSortedTracks.filter((track) => matchesTrackIdentityQuery(track, trimmedSearchQuery, 'context'))
   }, [hasSearchQuery, trimmedSearchQuery, queueSeedSortedTracks])
 
   const sourceFilteredAlbumIdentityKeys = useMemo(() => {
@@ -879,9 +873,9 @@ export default function LibraryView() {
     const visibleAlbums = !shouldFilterByQuery
       ? sourceFilteredAlbums
       : sourceFilteredAlbums.filter((album) => matchesFuzzyFields(trimmedSearchQuery, [
-        { value: album.album, weight: 1.4 },
-        { value: album.artist, weight: 1.1 }
-      ]))
+          { value: album.album, weight: 1.4 },
+          { value: album.artist, weight: 1.1 }
+        ], 'context'))
 
     const sortedAlbums = [...visibleAlbums]
     sortedAlbums.sort((a, b) => compareAlbumsBySortState(a, b, effectiveAlbumSortState))
@@ -898,7 +892,7 @@ export default function LibraryView() {
     if (!hasSearchQuery) return yearGroups
     return yearGroups.filter((year) => matchesFuzzyFields(trimmedSearchQuery, [
       { value: year.label, weight: 1.5 }
-    ]))
+    ], 'context'))
   }, [hasSearchQuery, isYearRootView, trimmedSearchQuery, yearGroups])
   const selectedYearGroup = useMemo(() => {
     if (selectedYear === null) return null
@@ -968,7 +962,7 @@ export default function LibraryView() {
     if (!hasSearchQuery) return rootVisibleArtists
     return rootVisibleArtists.filter((artist) => matchesFuzzyFields(trimmedSearchQuery, [
       { value: artist.artist, weight: 1.5 }
-    ]))
+    ], 'context'))
   }, [hasSearchQuery, isArtistRootView, trimmedSearchQuery, rootVisibleArtists])
 
   const sourceFilteredGenreKeys = useMemo(() => {
@@ -995,7 +989,7 @@ export default function LibraryView() {
     if (!hasSearchQuery) return visibleGenres
     return visibleGenres.filter((genre) => matchesFuzzyFields(trimmedSearchQuery, [
       { value: genre.genre, weight: 1.5 }
-    ]))
+    ], 'context'))
   }, [hasSearchQuery, isGenreRootView, trimmedSearchQuery, visibleGenres])
 
   const albumByKey = useMemo(() => {
@@ -1407,22 +1401,33 @@ export default function LibraryView() {
 
     if (hasSearchQuery && displayTracks.length === 0 && (selectedAlbum || selectedGenre || viewMode === 'tracks') && !selectedArtist) {
       return (
-        <div className="library-empty">
-          <p>No tracks found for "{trimmedQueryForMessage}"</p>
-        </div>
+        <SearchEmptyState
+          subject="tracks"
+          query={trimmedQueryForMessage}
+          fields="title, artist, and album"
+          onClear={() => setSearchQuery('')}
+        />
       )
     }
 
     // Folder tree
     if (viewMode === 'folders' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null) {
-      return <FolderTreeView tracks={sourceFilteredTracks} allTracks={visibleTracks} folders={visibleFolders} searchQuery={searchQuery} />
+      return (
+        <FolderTreeView
+          tracks={sourceFilteredTracks}
+          allTracks={visibleTracks}
+          folders={visibleFolders}
+          searchQuery={searchQuery}
+          onClearSearch={() => setSearchQuery('')}
+        />
+      )
     }
 
     // Albums grid
     if (viewMode === 'albums' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null) {
       if (filteredAlbums.length === 0) {
         return hasSearchQuery
-          ? <div className="library-empty"><p>No albums found for "{trimmedQueryForMessage}"</p></div>
+          ? <SearchEmptyState subject="albums" query={trimmedQueryForMessage} fields="album title and artist" onClear={() => setSearchQuery('')} />
           : <div className="library-empty"><p>No albums found</p></div>
       }
       return (
@@ -1440,7 +1445,7 @@ export default function LibraryView() {
     if (viewMode === 'artists' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null) {
       if (filteredArtists.length === 0) {
         return hasSearchQuery
-          ? <div className="library-empty"><p>No artists found for "{trimmedQueryForMessage}"</p></div>
+          ? <SearchEmptyState subject="artists" query={trimmedQueryForMessage} fields="artist name" onClear={() => setSearchQuery('')} />
           : <div className="library-empty"><p>No artists found</p></div>
       }
       return (
@@ -1457,7 +1462,7 @@ export default function LibraryView() {
     if (viewMode === 'genres' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null) {
       if (filteredGenres.length === 0) {
         return hasSearchQuery
-          ? <div className="library-empty"><p>No genres found for "{trimmedQueryForMessage}"</p></div>
+          ? <SearchEmptyState subject="genres" query={trimmedQueryForMessage} fields="genre name" onClear={() => setSearchQuery('')} />
           : <div className="library-empty"><p>No genres found</p></div>
       }
       return (
@@ -1473,7 +1478,7 @@ export default function LibraryView() {
     if (isYearRootView) {
       if (filteredYears.length === 0) {
         return hasSearchQuery
-          ? <div className="library-empty"><p>No years found for "{trimmedQueryForMessage}"</p></div>
+          ? <SearchEmptyState subject="years" query={trimmedQueryForMessage} fields="release year" onClear={() => setSearchQuery('')} />
           : <div className="library-empty"><p>No years found</p></div>
       }
       return (
@@ -1536,6 +1541,14 @@ export default function LibraryView() {
                 jumpToTrackRequest={libraryTrackRevealRequest}
                 onJumpToTrackRequestConsumed={clearLibraryTrackRevealRequest}
                 searchQuery={trimmedSearchQuery}
+              />
+            ) : hasSearchQuery ? (
+              <SearchEmptyState
+                subject="tracks"
+                query={trimmedQueryForMessage}
+                fields="title, artist, and album"
+                onClear={() => setSearchQuery('')}
+                className="year-detail-section-empty year-detail-track-empty"
               />
             ) : (
               <div className="year-detail-section-empty year-detail-track-empty">{trackEmptyMessage}</div>
@@ -1671,27 +1684,36 @@ export default function LibraryView() {
             )}
           </section>
 
-          <TrackList
-            tracks={displayTracks}
-            queueSeedTracks={queueSeedSortedTracks}
-            queueContextLabel={selectedAlbum?.album ?? selectedArtist ?? 'Library'}
-            sourceContext={playbackSourceContext}
-            showArtist={false}
-            showAlbum={!selectedAlbum}
-            showAddedDate={showTracklistAddedDate}
-            showNewTrackIndicator
-            showDiscHeaders={showSelectedAlbumDiscHeaders}
-            trackNumberMode={selectedAlbum ? 'album' : 'none'}
-            pageScroll
-            enableColumnSorting
-            sortState={sortState}
-            onSortColumnToggle={handleSortColumnToggle}
-            enableDefaultOrderReset={Boolean(selectedAlbum)}
-            onDefaultOrderReset={selectedAlbum ? handleResetToDefaultOrder : undefined}
-            jumpToTrackRequest={libraryTrackRevealRequest}
-            onJumpToTrackRequestConsumed={clearLibraryTrackRevealRequest}
-            searchQuery={trimmedSearchQuery}
-          />
+          {hasSearchQuery && displayTracks.length === 0 ? (
+            <SearchEmptyState
+              subject="tracks"
+              query={trimmedQueryForMessage}
+              fields="title, artist, and album"
+              onClear={() => setSearchQuery('')}
+            />
+          ) : (
+            <TrackList
+              tracks={displayTracks}
+              queueSeedTracks={queueSeedSortedTracks}
+              queueContextLabel={selectedAlbum?.album ?? selectedArtist ?? 'Library'}
+              sourceContext={playbackSourceContext}
+              showArtist={false}
+              showAlbum={!selectedAlbum}
+              showAddedDate={showTracklistAddedDate}
+              showNewTrackIndicator
+              showDiscHeaders={showSelectedAlbumDiscHeaders}
+              trackNumberMode={selectedAlbum ? 'album' : 'none'}
+              pageScroll
+              enableColumnSorting
+              sortState={sortState}
+              onSortColumnToggle={handleSortColumnToggle}
+              enableDefaultOrderReset={Boolean(selectedAlbum)}
+              onDefaultOrderReset={selectedAlbum ? handleResetToDefaultOrder : undefined}
+              jumpToTrackRequest={libraryTrackRevealRequest}
+              onJumpToTrackRequestConsumed={clearLibraryTrackRevealRequest}
+              searchQuery={trimmedSearchQuery}
+            />
+          )}
         </div>
       )
     }
