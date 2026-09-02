@@ -18,7 +18,6 @@ import { collectIamfStreamStats } from '../../shared/iamf/obuWalker'
 import { mp4HasIamfTrack, readMp4DurationSeconds } from '../../shared/iamf/mp4'
 import {
   buildAlbumIdentityKeyByTrackId,
-  buildCanonicalAlbumIdentityKey,
   buildAlbumIdentityKeyFromTrack as buildFallbackAlbumIdentityKeyFromTrack,
   groupTracksByAlbumIdentity,
   type AlbumGroupingMode
@@ -36,9 +35,15 @@ import {
   type ArtistImageCandidate
 } from '../../shared/library/artistImages'
 import {
+  buildArtistIdentityIndex,
   deserializeArtistNames,
   formatArtistNames,
+  normalizeArtistDisplay,
+  normalizeIdentityKey,
   normalizeArtistNames,
+  resolveArtistCredit,
+  resolveTrackArtistNames,
+  type ArtistIdentityIndex,
   serializeArtistNames
 } from '../../shared/library/artistCredits'
 import { buildTrackSyncKey, normalizeSyncKeyPart } from '../../shared/sync/identity'
@@ -202,7 +207,9 @@ export interface DbTrack {
   album_artist_names: string[]
   duration: number
   track_number: number | null
+  track_total: number | null
   disc_number: number | null
+  disc_total: number | null
   year: number | null
   genre: string | null
   genres: string[]
@@ -320,11 +327,15 @@ export interface SubsonicTrackUpsertInput {
   path: string
   title: string
   artist: string
+  artist_names?: readonly string[] | null
   album: string
   album_artist: string | null
+  album_artist_names?: readonly string[] | null
   duration: number
   track_number: number | null
+  track_total?: number | null
   disc_number: number | null
+  disc_total?: number | null
   year: number | null
   genre: string | null
   genres?: readonly string[] | null
@@ -361,11 +372,15 @@ export interface JellyfinTrackUpsertInput {
   path: string
   title: string
   artist: string
+  artist_names?: readonly string[] | null
   album: string
   album_artist: string | null
+  album_artist_names?: readonly string[] | null
   duration: number
   track_number: number | null
+  track_total?: number | null
   disc_number: number | null
+  disc_total?: number | null
   year: number | null
   genre: string | null
   genres?: readonly string[] | null
@@ -819,6 +834,8 @@ const MAX_LIBRARY_TRACK_PAGE_LIMIT = 2000
 const PLAYLIST_COVER_HASH_PREFIX = 'plc:'
 const ARTIST_IMAGE_HASH_PREFIX = 'ari:'
 const LATEST_LIBRARY_SYNC_SUMMARY_META_KEY = 'library_latest_sync_summary_v1'
+const LIBRARY_IDENTITY_ALGORITHM_META_KEY = 'library_identity_algorithm_version'
+const LIBRARY_IDENTITY_ALGORITHM_VERSION = '6'
 const LIBRARY_QUERY_METRICS_ENV = 'ASTRA_LIBRARY_QUERY_METRICS'
 
 function libraryDiagnosticNow(): number {
@@ -845,7 +862,9 @@ const EFFECTIVE_TRACK_SELECT_COLUMNS = `
   END AS album_artist_names_json,
   t.duration AS duration,
   COALESCE(o.track_number, t.track_number) AS track_number,
+  t.track_total AS track_total,
   COALESCE(o.disc_number, t.disc_number) AS disc_number,
+  t.disc_total AS disc_total,
   COALESCE(o.year, t.year) AS year,
   COALESCE(o.genre, t.genre) AS genre,
   CASE
@@ -912,7 +931,9 @@ interface EditableTrackSnapshot {
     genre: string | null
     year: number | null
     trackNumber: number | null
+    trackTotal: number | null
     discNumber: number | null
+    discTotal: number | null
     artworkHash: string | null
   }
   effective: {
@@ -923,7 +944,9 @@ interface EditableTrackSnapshot {
     genre: string | null
     year: number | null
     trackNumber: number | null
+    trackTotal: number | null
     discNumber: number | null
+    discTotal: number | null
     artworkHash: string | null
   }
 }
@@ -1167,8 +1190,11 @@ function iterateEffectiveTrackRows(sql: string, params: unknown[] = []): Iterabl
   return db.iterate<DbTrackRow>(sql, params)
 }
 
-function buildAlbumIdentityKeysByPath(tracks: readonly DbTrackRow[]): Map<string, string> {
-  return buildAlbumIdentityKeyByTrackId(tracks, (track) => track.path)
+function buildAlbumIdentityKeysByPath(
+  tracks: readonly DbTrackRow[],
+  artistIndex?: ArtistIdentityIndex
+): Map<string, string> {
+  return buildAlbumIdentityKeyByTrackId(tracks, (track) => track.path, artistIndex)
 }
 
 function readAllTrackRowsUnordered(): DbTrackRow[] {
@@ -1176,6 +1202,139 @@ function readAllTrackRowsUnordered(): DbTrackRow[] {
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
     ${EFFECTIVE_TRACK_FROM_CLAUSE}
   `)
+}
+
+function hasSqliteTable(name: string): boolean {
+  if (!db) return false
+  return Boolean(db.get(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+    [name]
+  ))
+}
+
+function ensureDerivedIdentityPathUpdatesCascade(): void {
+  if (!db || !hasSqliteTable('track_album_identities')) return
+  const foreignKeys = db.all<Record<string, unknown>>('PRAGMA foreign_key_list(track_album_identities)')
+  const trackPathForeignKey = foreignKeys.find((row) => row.from === 'track_path' && row.table === 'tracks')
+  if (String(trackPathForeignKey?.on_update ?? '').toUpperCase() === 'CASCADE') return
+
+  const ownsTransaction = !db.inTransaction
+  if (ownsTransaction) beginLibraryWriteTransaction()
+  try {
+    db.run('DROP TABLE IF EXISTS track_album_identities_path_migration')
+    db.run(`
+      CREATE TABLE track_album_identities_path_migration (
+        track_path TEXT PRIMARY KEY NOT NULL,
+        album_identity_key TEXT NOT NULL,
+        album_key TEXT NOT NULL,
+        grouping_mode TEXT NOT NULL,
+        display_artist TEXT NOT NULL,
+        FOREIGN KEY (track_path) REFERENCES tracks(path) ON UPDATE CASCADE ON DELETE CASCADE
+      )
+    `)
+    db.run(`
+      INSERT INTO track_album_identities_path_migration (
+        track_path, album_identity_key, album_key, grouping_mode, display_artist
+      )
+      SELECT identities.track_path, identities.album_identity_key, identities.album_key,
+             identities.grouping_mode, identities.display_artist
+      FROM track_album_identities identities
+      INNER JOIN tracks ON tracks.path = identities.track_path
+    `)
+    db.run('DROP TABLE track_album_identities')
+    db.run('ALTER TABLE track_album_identities_path_migration RENAME TO track_album_identities')
+    if (ownsTransaction) commitLibraryWriteTransaction()
+  } catch (error) {
+    if (ownsTransaction && db.inTransaction) rollbackLibraryWriteTransaction()
+    throw error
+  }
+}
+
+function persistDerivedAlbumIdentities(
+  tracks: readonly DbTrackRow[],
+  identities: readonly DerivedAlbumIdentityRow[]
+): void {
+  if (!db || !hasSqliteTable('track_album_identities')) return
+  const ownsTransaction = !db.inTransaction
+  if (ownsTransaction) beginLibraryWriteTransaction()
+
+  try {
+    for (const identity of identities) {
+      db.run(`
+        INSERT INTO track_album_identities (
+          track_path, album_identity_key, album_key, grouping_mode, display_artist
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(track_path) DO UPDATE SET
+          album_identity_key = excluded.album_identity_key,
+          album_key = excluded.album_key,
+          grouping_mode = excluded.grouping_mode,
+          display_artist = excluded.display_artist
+      `, [
+        identity.trackPath,
+        identity.albumIdentityKey,
+        identity.albumKey,
+        identity.groupingMode,
+        identity.displayArtist
+      ])
+    }
+    db.run(`
+      DELETE FROM track_album_identities
+      WHERE NOT EXISTS (
+        SELECT 1 FROM tracks WHERE tracks.path = track_album_identities.track_path
+      )
+    `)
+
+    if (hasSqliteTable('listening_sessions')) {
+      db.run(`
+        UPDATE listening_sessions
+        SET album_identity_key = (
+          SELECT identities.album_identity_key
+          FROM tracks
+          JOIN track_album_identities identities ON identities.track_path = tracks.path
+          WHERE tracks.id = listening_sessions.track_id
+        )
+        WHERE listening_sessions.track_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM tracks
+            JOIN track_album_identities identities ON identities.track_path = tracks.path
+            WHERE tracks.id = listening_sessions.track_id
+              AND identities.album_identity_key IS NOT listening_sessions.album_identity_key
+          )
+      `)
+    }
+
+    if (hasSqliteTable('app_meta')) {
+      const latestSummary = getLatestLibrarySyncSummary()
+      if (latestSummary) {
+        const keys = new Set<string>()
+        const keysByPath = new Map(identities.map((identity) => [identity.trackPath, identity.albumIdentityKey]))
+        for (const track of tracks) {
+          if (track.sync_session_key !== latestSummary.sessionKey) continue
+          const key = keysByPath.get(track.path)
+          if (key) keys.add(key)
+        }
+        const reconciledSummary: LatestLibrarySyncSummary = {
+          ...latestSummary,
+          newAlbumIdentityKeys: Array.from(keys).sort((a, b) => a.localeCompare(b))
+        }
+        db.run(
+          `UPDATE app_meta SET value = ?, updated_at = ? WHERE key = ?`,
+          [JSON.stringify(reconciledSummary), Date.now(), LATEST_LIBRARY_SYNC_SUMMARY_META_KEY]
+        )
+      }
+      db.run(`
+        INSERT INTO app_meta (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      `, [LIBRARY_IDENTITY_ALGORITHM_META_KEY, LIBRARY_IDENTITY_ALGORITHM_VERSION, Date.now()])
+    }
+
+    if (ownsTransaction) commitLibraryWriteTransaction()
+  } catch (error) {
+    if (ownsTransaction && db.inTransaction) rollbackLibraryWriteTransaction()
+    throw error
+  }
 }
 
 function normalizeSqliteAlbumKey(value: unknown): string {
@@ -1219,6 +1378,16 @@ interface LibraryTrackSnapshot {
   sortedPaths: string[]
   identityKeysByPath: Map<string, string>
   albumKeysByPath: Map<string, string>
+  artistNamesByPath: Map<string, string[]>
+  albumArtistNamesByPath: Map<string, string[]>
+}
+
+interface DerivedAlbumIdentityRow {
+  trackPath: string
+  albumIdentityKey: string
+  albumKey: string
+  groupingMode: AlbumGroupingMode
+  displayArtist: string
 }
 
 let libraryWriteGeneration = 0
@@ -1252,23 +1421,55 @@ function getLibraryTrackSnapshot(): LibraryTrackSnapshot | null {
   }
 
   return measureLibraryQuery('rebuildTrackSnapshot', () => {
-    const generation = libraryWriteGeneration
     const rows = readEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
       ${EFFECTIVE_TRACK_FROM_CLAUSE}
       ${ALL_TRACKS_ORDER_BY_CLAUSE}
     `)
-    const identityKeysByPath = buildAlbumIdentityKeysByPath(rows)
+    const artistIndex = buildArtistIdentityIndex(rows)
+    const identityGroups = groupTracksByAlbumIdentity(rows, (track) => track.path, artistIndex)
+    const identityKeysByPath = new Map<string, string>()
+    const derivedIdentityRows: DerivedAlbumIdentityRow[] = []
+    for (const group of identityGroups.values()) {
+      for (const track of group.tracks) {
+        identityKeysByPath.set(track.path, group.identityKey)
+        derivedIdentityRows.push({
+          trackPath: track.path,
+          albumIdentityKey: group.identityKey,
+          albumKey: group.albumKey,
+          groupingMode: group.groupingMode,
+          displayArtist: group.displayArtist
+        })
+      }
+    }
     const sortedPaths: string[] = new Array(rows.length)
     const albumKeysByPath = new Map<string, string>()
+    const artistNamesByPath = new Map<string, string[]>()
+    const albumArtistNamesByPath = new Map<string, string[]>()
     for (let index = 0; index < rows.length; index += 1) {
       const row = rows[index]
       sortedPaths[index] = row.path
       albumKeysByPath.set(row.path, normalizeSqliteAlbumKey(row.album))
+      artistNamesByPath.set(row.path, resolveTrackArtistNames(row, artistIndex))
+      albumArtistNamesByPath.set(row.path, resolveTrackArtistNames(row, artistIndex, true))
     }
-    trackSnapshot = { generation, sortedPaths, identityKeysByPath, albumKeysByPath }
+    persistDerivedAlbumIdentities(rows, derivedIdentityRows)
+    trackSnapshot = {
+      generation: libraryWriteGeneration,
+      sortedPaths,
+      identityKeysByPath,
+      albumKeysByPath,
+      artistNamesByPath,
+      albumArtistNamesByPath
+    }
     return trackSnapshot
   })
+}
+
+function rebuildDerivedLibraryState(): void {
+  if (!db) return
+  invalidateLibraryTrackSnapshot()
+  getLibraryTrackSnapshot()
 }
 
 function readEffectiveTrackRowsByPaths(paths: readonly string[]): DbTrackRow[] {
@@ -1392,19 +1593,42 @@ function attachAlbumIdentityKeys(
   if (!libraryTracks) {
     const snapshot = getLibraryTrackSnapshot()
     if (snapshot) {
-      return attachAlbumIdentityKeysWithMap(tracks, snapshot.identityKeysByPath, latestSyncSummary)
+      return attachAlbumIdentityKeysWithMap(
+        tracks,
+        snapshot.identityKeysByPath,
+        latestSyncSummary,
+        snapshot.artistNamesByPath,
+        snapshot.albumArtistNamesByPath
+      )
     }
   }
 
   const effectiveLibraryTracks = libraryTracks ?? readAlbumIdentityRowsForTracks(tracks)
-  const albumIdentityKeysByPath = buildAlbumIdentityKeysByPath(effectiveLibraryTracks)
-  return attachAlbumIdentityKeysWithMap(tracks, albumIdentityKeysByPath, latestSyncSummary)
+  const artistIndex = buildArtistIdentityIndex(effectiveLibraryTracks)
+  const albumIdentityKeysByPath = buildAlbumIdentityKeysByPath(effectiveLibraryTracks, artistIndex)
+  const artistNamesByPath = new Map(effectiveLibraryTracks.map((track) => [
+    track.path,
+    resolveTrackArtistNames(track, artistIndex)
+  ]))
+  const albumArtistNamesByPath = new Map(effectiveLibraryTracks.map((track) => [
+    track.path,
+    resolveTrackArtistNames(track, artistIndex, true)
+  ]))
+  return attachAlbumIdentityKeysWithMap(
+    tracks,
+    albumIdentityKeysByPath,
+    latestSyncSummary,
+    artistNamesByPath,
+    albumArtistNamesByPath
+  )
 }
 
 function attachAlbumIdentityKeysWithMap(
   tracks: readonly DbTrackRow[],
   albumIdentityKeysByPath: ReadonlyMap<string, string>,
-  latestSyncSummary: LatestLibrarySyncSummary | null = getLatestLibrarySyncSummary()
+  latestSyncSummary: LatestLibrarySyncSummary | null = getLatestLibrarySyncSummary(),
+  artistNamesByPath?: ReadonlyMap<string, string[]>,
+  albumArtistNamesByPath?: ReadonlyMap<string, string[]>
 ): DbTrack[] {
   if (tracks.length === 0) return []
 
@@ -1417,16 +1641,14 @@ function attachAlbumIdentityKeysWithMap(
       genre_names_json,
       ...rest
     } = track
-    const artistNames = deserializeArtistNames(artist_names_json)
-    const albumArtistNames = deserializeArtistNames(album_artist_names_json)
+    const artistNames = artistNamesByPath?.get(track.path) ?? deserializeArtistNames(artist_names_json)
+    const albumArtistNames = albumArtistNamesByPath?.get(track.path) ?? deserializeArtistNames(album_artist_names_json)
     const genres = getGenreNamesForTrack({ genre: rest.genre, genre_names_json })
     return {
       ...rest,
-      artist: artistNames.length > 1 ? formatArtistNames(artistNames) : rest.artist,
+      artist: rest.artist,
       artist_names: artistNames,
-      album_artist: albumArtistNames.length > 1
-        ? formatArtistNames(albumArtistNames)
-        : rest.album_artist ?? (albumArtistNames[0] ?? null),
+      album_artist: rest.album_artist ?? (albumArtistNames.length > 0 ? formatArtistNames(albumArtistNames) : null),
       album_artist_names: albumArtistNames,
       genre: genres.length > 0 ? formatGenreNames(genres) : rest.genre,
       genres,
@@ -1506,11 +1728,11 @@ const VARIOUS_ARTISTS_NAME = 'Various Artists'
 export type ArtistBrowseMode = 'strict' | 'canonical'
 
 function normalizeDisplay(value: string): string {
-  return value.replace(/\s+/g, ' ').trim()
+  return normalizeArtistDisplay(value)
 }
 
 function normalizeKey(value: string): string {
-  return normalizeDisplay(value).toLocaleLowerCase()
+  return normalizeIdentityKey(value)
 }
 
 function normalizeAlbumName(album: string): string {
@@ -1519,25 +1741,7 @@ function normalizeAlbumName(album: string): string {
 }
 
 function splitCollaborators(rawArtist: string): string[] {
-  const normalized = normalizeDisplay(rawArtist)
-  if (!normalized) return []
-
-  const unified = normalized
-    .replace(/\s*;\s*/g, ',')
-    .replace(/\s+&\s+/g, ',')
-    .replace(/\s+[x×]\s+/gi, ',')
-    .replace(/\s+(?:feat\.?|ft\.?|featuring|with)\s+/gi, ',')
-
-  const unique = new Map<string, string>()
-  for (const part of unified.split(',')) {
-    const display = normalizeDisplay(part)
-    if (!display) continue
-    const key = normalizeKey(display)
-    if (!key || unique.has(key)) continue
-    unique.set(key, display)
-  }
-
-  return Array.from(unique.values())
+  return resolveArtistCredit(rawArtist, buildArtistIdentityIndex([{ artist: rawArtist }]))
 }
 
 function splitAlbumArtistCollaborators(rawAlbumArtist: string): string[] {
@@ -1569,7 +1773,27 @@ function getParsedAlbumArtistNames(track: Pick<DbTrackRow, 'album_artist_names_j
   return deserializeArtistNames(track.album_artist_names_json)
 }
 
-function getCanonicalArtistIndexNames(track: Pick<DbTrackRow, 'artist' | 'album_artist' | 'artist_names_json' | 'album_artist_names_json'>): string[] {
+function getResolvedTrackArtistNames(track: Pick<DbTrackRow, 'path' | 'artist' | 'artist_names_json'>): string[] {
+  const resolved = trackSnapshot?.generation === libraryWriteGeneration
+    ? trackSnapshot.artistNamesByPath.get(track.path)
+    : undefined
+  if (resolved) return resolved
+  const index = buildArtistIdentityIndex([track])
+  return resolveTrackArtistNames(track, index)
+}
+
+function getResolvedAlbumArtistNames(
+  track: Pick<DbTrackRow, 'path' | 'artist' | 'artist_names_json' | 'album_artist' | 'album_artist_names_json'>
+): string[] {
+  const resolved = trackSnapshot?.generation === libraryWriteGeneration
+    ? trackSnapshot.albumArtistNamesByPath.get(track.path)
+    : undefined
+  if (resolved) return resolved
+  const index = buildArtistIdentityIndex([track])
+  return resolveTrackArtistNames(track, index, true)
+}
+
+function getCanonicalArtistIndexNames(track: Pick<DbTrackRow, 'path' | 'artist' | 'album_artist' | 'artist_names_json' | 'album_artist_names_json'>): string[] {
   const unique = new Map<string, string>()
   const addArtistName = (artistName: string) => {
     const display = normalizeDisplay(artistName)
@@ -1580,10 +1804,10 @@ function getCanonicalArtistIndexNames(track: Pick<DbTrackRow, 'artist' | 'album_
 
   addArtistName(resolveCanonicalBrowseArtist(track))
 
-  const parsedTrackArtists = getParsedTrackArtistNames(track)
+  const parsedTrackArtists = getResolvedTrackArtistNames(track)
   for (const artistName of parsedTrackArtists) addArtistName(artistName)
 
-  const parsedAlbumArtists = getParsedAlbumArtistNames(track)
+  const parsedAlbumArtists = getResolvedAlbumArtistNames(track)
   if (parsedTrackArtists.length === 0) {
     for (const artistName of parsedAlbumArtists) addArtistName(artistName)
   }
@@ -1596,8 +1820,8 @@ function getPrimaryArtistFromTrackArtist(trackArtist: string): string {
   return contributors[0] ?? UNKNOWN_ARTIST_NAME
 }
 
-function getPrimaryArtistFromTrack(track: Pick<DbTrackRow, 'artist' | 'artist_names_json'>): string {
-  const parsedTrackArtists = getParsedTrackArtistNames(track)
+function getPrimaryArtistFromTrack(track: Pick<DbTrackRow, 'path' | 'artist' | 'artist_names_json'>): string {
+  const parsedTrackArtists = getResolvedTrackArtistNames(track)
   if (parsedTrackArtists.length > 0) return parsedTrackArtists[0]
   return getPrimaryArtistFromTrackArtist(track.artist)
 }
@@ -1606,22 +1830,6 @@ function getPrimaryArtistFromAlbumArtist(albumArtist: string): string {
   const contributors = splitAlbumArtistCollaborators(albumArtist)
   if (contributors.length > 0) return contributors[0]
   return normalizeDisplay(albumArtist) || UNKNOWN_ARTIST_NAME
-}
-
-function getNormalizedAlbumArtistForAlbumIdentity(
-  track: Pick<DbTrackRow, 'album_artist' | 'album_artist_names_json'>
-): string {
-  const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
-  if (normalizedAlbumArtist) return normalizedAlbumArtist
-
-  const parsedAlbumArtists = getParsedAlbumArtistNames(track)
-  if (parsedAlbumArtists.length > 0) return formatArtistNames(parsedAlbumArtists)
-  return ''
-}
-
-function normalizeArtworkIdentityHash(hash: string | null | undefined): string | null {
-  const normalized = normalizeDisplay(hash ?? '')
-  return normalized ? normalized.toLocaleLowerCase() : null
 }
 
 function resolveStrictBrowseArtist(track: Pick<DbTrack, 'artist' | 'album_artist'>): string {
@@ -1633,11 +1841,11 @@ function resolveStrictBrowseArtist(track: Pick<DbTrack, 'artist' | 'album_artist
 }
 
 function resolveCanonicalBrowseArtist(
-  track: Pick<DbTrackRow, 'artist' | 'album_artist' | 'artist_names_json' | 'album_artist_names_json'>
+  track: Pick<DbTrackRow, 'path' | 'artist' | 'album_artist' | 'artist_names_json' | 'album_artist_names_json'>
 ): string {
   const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
   if (normalizedAlbumArtist) {
-    const parsedAlbumArtists = getParsedAlbumArtistNames(track)
+    const parsedAlbumArtists = getResolvedAlbumArtistNames(track)
     if (parsedAlbumArtists.length > 0) return parsedAlbumArtists[0]
     return getPrimaryArtistFromAlbumArtist(normalizedAlbumArtist)
   }
@@ -1656,8 +1864,8 @@ function trackMatchesBrowseArtist(track: DbTrackRow, targetArtistKey: string, mo
     return false
   }
 
-  if (getParsedTrackArtistNames(track).some((name) => normalizeKey(name) === targetArtistKey)) return true
-  if (getParsedAlbumArtistNames(track).some((name) => normalizeKey(name) === targetArtistKey)) return true
+  if (getResolvedTrackArtistNames(track).some((name) => normalizeKey(name) === targetArtistKey)) return true
+  if (getResolvedAlbumArtistNames(track).some((name) => normalizeKey(name) === targetArtistKey)) return true
 
   const albumArtistKey = normalizeKey(track.album_artist ?? '')
   if (albumArtistKey && albumArtistKey === targetArtistKey) return true
@@ -1665,7 +1873,7 @@ function trackMatchesBrowseArtist(track: DbTrackRow, targetArtistKey: string, mo
   const trackArtistKey = normalizeKey(track.artist)
   if (trackArtistKey && trackArtistKey === targetArtistKey) return true
 
-  return splitCollaborators(track.artist).some((name) => normalizeKey(name) === targetArtistKey)
+  return false
 }
 
 function incrementDisplayVariant(map: Map<string, CountedDisplayVariant>, display: string): void {
@@ -1757,18 +1965,14 @@ function addTrackArtistAliases(group: AlbumGroupAccumulator, track: DbTrackRow, 
   addAliasArtistKey(group.aliasArtistKeys, primaryArtist)
   addAliasArtistKey(group.aliasArtistKeys, track.artist)
 
-  for (const collaborator of splitCollaborators(track.artist)) {
+  for (const collaborator of getResolvedTrackArtistNames(track)) {
     addAliasArtistKey(group.aliasArtistKeys, collaborator)
   }
-  for (const artistName of getParsedTrackArtistNames(track)) {
-    addAliasArtistKey(group.aliasArtistKeys, artistName)
-  }
-
   const normalizedAlbumArtist = normalizeDisplay(track.album_artist ?? '')
   if (normalizedAlbumArtist) {
     addAliasArtistKey(group.aliasArtistKeys, normalizedAlbumArtist)
   }
-  for (const artistName of getParsedAlbumArtistNames(track)) {
+  for (const artistName of getResolvedAlbumArtistNames(track)) {
     addAliasArtistKey(group.aliasArtistKeys, artistName)
   }
 }
@@ -1834,7 +2038,10 @@ function addTrackToAlbumGroup(
 }
 
 function finalizeAlbumGroup(group: AlbumGroupAccumulator): void {
-  if (group.groupingMode === 'shared-artwork-compilation') {
+  if (
+    group.groupingMode === 'shared-artwork-compilation'
+    || group.groupingMode === 'metadata-compilation'
+  ) {
     group.artistVariants = new Map()
     incrementDisplayVariant(group.artistVariants, VARIOUS_ARTISTS_NAME)
     group.artistKey = normalizeKey(VARIOUS_ARTISTS_NAME)
@@ -1875,12 +2082,6 @@ function buildAlbumGroups(tracks: DbTrackRow[]): Map<string, AlbumGroupAccumulat
   return groups
 }
 
-interface MissingAlbumArtistBucketProbe {
-  primaryArtistKeys: Set<string>
-  firstArtworkHash: string | null
-  hasArtworkMismatch: boolean
-}
-
 interface ResolvedAlbumIdentity {
   identityKey: string
   groupingMode: AlbumGroupingMode
@@ -1905,78 +2106,6 @@ interface AlbumSummaryAccumulator {
   lastPlayedAt: number | null
   latestAddedAt: number
   hasUnplayedLatestSyncTrack: boolean
-}
-
-function readMissingAlbumArtistBucketProbes(): Map<string, MissingAlbumArtistBucketProbe> {
-  const probes = new Map<string, MissingAlbumArtistBucketProbe>()
-
-  for (const track of iterateEffectiveTrackRows(`
-    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-    ${EFFECTIVE_TRACK_FROM_CLAUSE}
-  `)) {
-    if (getNormalizedAlbumArtistForAlbumIdentity(track)) continue
-
-    const albumKey = normalizeKey(normalizeAlbumName(track.album))
-    const primaryArtist = normalizeDisplay(getPrimaryArtistFromTrack(track)) || UNKNOWN_ARTIST_NAME
-    const primaryArtistKey = normalizeKey(primaryArtist) || normalizeKey(UNKNOWN_ARTIST_NAME)
-    const artworkHash = normalizeArtworkIdentityHash(track.base_artwork_hash)
-    let probe = probes.get(albumKey)
-    if (!probe) {
-      probe = {
-        primaryArtistKeys: new Set<string>(),
-        firstArtworkHash: artworkHash,
-        hasArtworkMismatch: false
-      }
-      probes.set(albumKey, probe)
-    } else if (probe.firstArtworkHash !== artworkHash) {
-      probe.hasArtworkMismatch = true
-    }
-    probe.primaryArtistKeys.add(primaryArtistKey)
-  }
-
-  return probes
-}
-
-function getSharedArtworkHashForProbe(probe: MissingAlbumArtistBucketProbe | undefined): string | null {
-  if (!probe || probe.primaryArtistKeys.size <= 1) return null
-  if (probe.hasArtworkMismatch) return null
-  return probe.firstArtworkHash
-}
-
-function resolveAlbumIdentityForTrack(
-  track: DbTrackRow,
-  missingAlbumArtistBucketProbes: ReadonlyMap<string, MissingAlbumArtistBucketProbe>
-): ResolvedAlbumIdentity {
-  const albumKey = normalizeKey(normalizeAlbumName(track.album))
-  const normalizedAlbumArtist = getNormalizedAlbumArtistForAlbumIdentity(track)
-  if (normalizedAlbumArtist) {
-    const albumArtistKey = normalizeKey(normalizedAlbumArtist) || normalizeKey(UNKNOWN_ARTIST_NAME)
-    return {
-      identityKey: buildCanonicalAlbumIdentityKey(albumKey, `aa:${albumArtistKey}`),
-      groupingMode: 'explicit-album-artist',
-      albumKey,
-      displayArtist: normalizedAlbumArtist
-    }
-  }
-
-  const sharedArtworkHash = getSharedArtworkHashForProbe(missingAlbumArtistBucketProbes.get(albumKey))
-  if (sharedArtworkHash) {
-    return {
-      identityKey: buildCanonicalAlbumIdentityKey(albumKey, `ah:${sharedArtworkHash}`),
-      groupingMode: 'shared-artwork-compilation',
-      albumKey,
-      displayArtist: VARIOUS_ARTISTS_NAME
-    }
-  }
-
-  const primaryArtist = normalizeDisplay(getPrimaryArtistFromTrack(track)) || UNKNOWN_ARTIST_NAME
-  const primaryArtistKey = normalizeKey(primaryArtist) || normalizeKey(UNKNOWN_ARTIST_NAME)
-  return {
-    identityKey: buildCanonicalAlbumIdentityKey(albumKey, `ta:${primaryArtistKey}`),
-    groupingMode: 'track-artist',
-    albumKey,
-    displayArtist: primaryArtist
-  }
 }
 
 function createAlbumSummaryAccumulator(identity: ResolvedAlbumIdentity): AlbumSummaryAccumulator {
@@ -2038,36 +2167,39 @@ function addTrackToAlbumSummary(
 }
 
 function collectAlbumSummaryGroups(
-  missingAlbumArtistBucketProbes: ReadonlyMap<string, MissingAlbumArtistBucketProbe>,
   latestSyncSummary: LatestLibrarySyncSummary | null,
   favoritePaths?: ReadonlySet<string>
 ): Map<string, AlbumSummaryAccumulator> {
   const groups = new Map<string, AlbumSummaryAccumulator>()
-
-  for (const track of iterateEffectiveTrackRows(`
+  const tracks = readEffectiveTrackRows(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
     ${EFFECTIVE_TRACK_FROM_CLAUSE}
-  `)) {
-    const identity = resolveAlbumIdentityForTrack(track, missingAlbumArtistBucketProbes)
-    let group = groups.get(identity.identityKey)
-    if (!group) {
-      group = createAlbumSummaryAccumulator(identity)
-      groups.set(identity.identityKey, group)
+  `)
+
+  for (const identityGroup of groupTracksByAlbumIdentity(tracks, (track) => track.path).values()) {
+    const identity: ResolvedAlbumIdentity = {
+      identityKey: identityGroup.identityKey,
+      groupingMode: identityGroup.groupingMode,
+      albumKey: identityGroup.albumKey,
+      displayArtist: identityGroup.displayArtist
     }
-    addTrackToAlbumSummary(group, track, latestSyncSummary, favoritePaths)
+    const group = createAlbumSummaryAccumulator(identity)
+    for (const track of identityGroup.tracks) {
+      addTrackToAlbumSummary(group, track, latestSyncSummary, favoritePaths)
+    }
+    groups.set(identity.identityKey, group)
   }
 
   return groups
 }
 
 function collectEligibleAlbumIdentityKeys(
-  missingAlbumArtistBucketProbes: ReadonlyMap<string, MissingAlbumArtistBucketProbe>,
   options: AlbumListOptions = {}
 ): Set<string> {
   const albumEligibilityOptions: AlbumEligibilityOptions = {
     includeSingles: options.includeSingles === true
   }
-  const groups = collectAlbumSummaryGroups(missingAlbumArtistBucketProbes, null)
+  const groups = collectAlbumSummaryGroups(null)
   const identityKeys = new Set<string>()
 
   for (const group of groups.values()) {
@@ -2117,7 +2249,9 @@ export async function initDatabase(): Promise<void> {
       album_artist_names_json TEXT,
       duration REAL NOT NULL,
       track_number INTEGER,
+      track_total INTEGER,
       disc_number INTEGER,
+      disc_total INTEGER,
       year INTEGER,
       genre TEXT,
       genre_names_json TEXT,
@@ -2171,6 +2305,18 @@ export async function initDatabase(): Promise<void> {
       FOREIGN KEY (track_path) REFERENCES tracks(path) ON DELETE CASCADE
     )
   `)
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS track_album_identities (
+      track_path TEXT PRIMARY KEY NOT NULL,
+      album_identity_key TEXT NOT NULL,
+      album_key TEXT NOT NULL,
+      grouping_mode TEXT NOT NULL,
+      display_artist TEXT NOT NULL,
+      FOREIGN KEY (track_path) REFERENCES tracks(path) ON UPDATE CASCADE ON DELETE CASCADE
+    )
+  `)
+  ensureDerivedIdentityPathUpdatesCascade()
 
   db.run(`
     CREATE TRIGGER IF NOT EXISTS trg_track_metadata_overrides_cleanup
@@ -2298,6 +2444,16 @@ export async function initDatabase(): Promise<void> {
   }
   try {
     db.run('ALTER TABLE tracks ADD COLUMN genre_names_json TEXT')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN track_total INTEGER')
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run('ALTER TABLE tracks ADD COLUMN disc_total INTEGER')
   } catch {
     // Column already exists.
   }
@@ -2791,6 +2947,7 @@ export async function initDatabase(): Promise<void> {
   // folder reorganization in an older Astra version.
   reconcileMissingTrackReferencesByMetadata()
 
+  rebuildDerivedLibraryState()
   await saveDatabase()
 }
 
@@ -3377,6 +3534,8 @@ function renameTrackPath(oldPath: string, newPath: string): void {
     // tracks(path); with immediate enforcement neither parent-first nor
     // child-first rewrites can succeed, so defer checks until COMMIT.
     db.pragma('defer_foreign_keys = ON')
+    // Derived identities are rebuilt from source metadata after the rename.
+    db.run('DELETE FROM track_album_identities WHERE track_path IN (?, ?)', [oldPath, newPath])
     db.run('UPDATE tracks SET path = ? WHERE path = ?', [newPath, oldPath])
     moveTrackChildRows(oldPath, newPath)
     if (ownsTransaction) commitLibraryWriteTransaction()
@@ -3627,6 +3786,10 @@ export async function upsertSubsonicTracks(
 
   for (const track of tracks) {
     const genreFields = resolveTrackGenreStorageFields(track)
+    const artistNames = normalizeArtistNames(track.artist_names)
+    const albumArtistNames = normalizeArtistNames(track.album_artist_names)
+    const artistNamesJson = artistNames.length > 1 ? serializeArtistNames(artistNames) : null
+    const albumArtistNamesJson = albumArtistNames.length > 1 ? serializeArtistNames(albumArtistNames) : null
     const existing = db.get<{ id?: unknown; artwork_hash?: unknown }>(
       'SELECT id, artwork_hash FROM tracks WHERE path = ? LIMIT 1',
       [track.path]
@@ -3644,13 +3807,15 @@ export async function upsertSubsonicTracks(
         `UPDATE tracks
          SET title = ?,
              artist = ?,
-             artist_names_json = NULL,
+             artist_names_json = ?,
              album = ?,
              album_artist = ?,
-             album_artist_names_json = NULL,
+             album_artist_names_json = ?,
              duration = ?,
              track_number = ?,
+             track_total = ?,
              disc_number = ?,
+             disc_total = ?,
              year = ?,
              genre = ?,
              genre_names_json = ?,
@@ -3679,11 +3844,15 @@ export async function upsertSubsonicTracks(
         [
           track.title,
           track.artist,
+          artistNamesJson,
           track.album,
           track.album_artist,
+          albumArtistNamesJson,
           track.duration,
           track.track_number,
+          track.track_total ?? null,
           track.disc_number,
+          track.disc_total ?? null,
           track.year,
           genreFields.genre,
           genreFields.genreNamesJson,
@@ -3716,11 +3885,15 @@ export async function upsertSubsonicTracks(
         path,
         title,
         artist,
+        artist_names_json,
         album,
         album_artist,
+        album_artist_names_json,
         duration,
         track_number,
+        track_total,
         disc_number,
+        disc_total,
         year,
         genre,
         genre_names_json,
@@ -3746,16 +3919,20 @@ export async function upsertSubsonicTracks(
         sync_session_key,
         added_at,
         modified_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'subsonic', ?, ?, ?, 1, NULL, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'subsonic', ?, ?, ?, 1, NULL, ?, ?, ?)`,
       [
         track.path,
         track.title,
         track.artist,
+        artistNamesJson,
         track.album,
         track.album_artist,
+        albumArtistNamesJson,
         track.duration,
         track.track_number,
+        track.track_total ?? null,
         track.disc_number,
+        track.disc_total ?? null,
         track.year,
         genreFields.genre,
         genreFields.genreNamesJson,
@@ -3783,6 +3960,9 @@ export async function upsertSubsonicTracks(
     inserted += 1
   }
 
+  if (inserted > 0 || updated > 0) {
+    rebuildDerivedLibraryState()
+  }
   if (options.persist !== false && (inserted > 0 || updated > 0)) {
     await saveDatabase()
   }
@@ -4048,6 +4228,10 @@ export async function upsertJellyfinTracks(
 
   for (const track of tracks) {
     const genreFields = resolveTrackGenreStorageFields(track)
+    const artistNames = normalizeArtistNames(track.artist_names)
+    const albumArtistNames = normalizeArtistNames(track.album_artist_names)
+    const artistNamesJson = artistNames.length > 1 ? serializeArtistNames(artistNames) : null
+    const albumArtistNamesJson = albumArtistNames.length > 1 ? serializeArtistNames(albumArtistNames) : null
     const exists = Boolean(db.get('SELECT id FROM tracks WHERE path = ? LIMIT 1', [track.path]))
 
     if (exists) {
@@ -4055,13 +4239,15 @@ export async function upsertJellyfinTracks(
         `UPDATE tracks
          SET title = ?,
              artist = ?,
-             artist_names_json = NULL,
+             artist_names_json = ?,
              album = ?,
              album_artist = ?,
-             album_artist_names_json = NULL,
+             album_artist_names_json = ?,
              duration = ?,
              track_number = ?,
+             track_total = ?,
              disc_number = ?,
+             disc_total = ?,
              year = ?,
              genre = ?,
              genre_names_json = ?,
@@ -4090,11 +4276,15 @@ export async function upsertJellyfinTracks(
         [
           track.title,
           track.artist,
+          artistNamesJson,
           track.album,
           track.album_artist,
+          albumArtistNamesJson,
           track.duration,
           track.track_number,
+          track.track_total ?? null,
           track.disc_number,
+          track.disc_total ?? null,
           track.year,
           genreFields.genre,
           genreFields.genreNamesJson,
@@ -4127,11 +4317,15 @@ export async function upsertJellyfinTracks(
         path,
         title,
         artist,
+        artist_names_json,
         album,
         album_artist,
+        album_artist_names_json,
         duration,
         track_number,
+        track_total,
         disc_number,
+        disc_total,
         year,
         genre,
         genre_names_json,
@@ -4157,16 +4351,20 @@ export async function upsertJellyfinTracks(
         sync_session_key,
         added_at,
         modified_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'jellyfin', ?, ?, ?, 1, NULL, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'jellyfin', ?, ?, ?, 1, NULL, ?, ?, ?)`,
       [
         track.path,
         track.title,
         track.artist,
+        artistNamesJson,
         track.album,
         track.album_artist,
+        albumArtistNamesJson,
         track.duration,
         track.track_number,
+        track.track_total ?? null,
         track.disc_number,
+        track.disc_total ?? null,
         track.year,
         genreFields.genre,
         genreFields.genreNamesJson,
@@ -4194,6 +4392,9 @@ export async function upsertJellyfinTracks(
     inserted += 1
   }
 
+  if (inserted > 0 || updated > 0) {
+    rebuildDerivedLibraryState()
+  }
   if (options.persist !== false && (inserted > 0 || updated > 0)) {
     await saveDatabase()
   }
@@ -4770,7 +4971,13 @@ export function getAllTracks(): DbTrack[] {
     `)
     const snapshot = getLibraryTrackSnapshot()
     if (snapshot) {
-      return attachAlbumIdentityKeysWithMap(tracks, snapshot.identityKeysByPath)
+      return attachAlbumIdentityKeysWithMap(
+        tracks,
+        snapshot.identityKeysByPath,
+        undefined,
+        snapshot.artistNamesByPath,
+        snapshot.albumArtistNamesByPath
+      )
     }
     return attachAlbumIdentityKeys(tracks, tracks)
   })
@@ -4794,7 +5001,13 @@ export function getTrackPage(request?: LibraryTrackPageRequest | null): LibraryT
 
     const pagePaths = snapshot.sortedPaths.slice(offset, offset + limit)
     const rows = readEffectiveTrackRowsByPaths(pagePaths)
-    const tracks = attachAlbumIdentityKeysWithMap(rows, snapshot.identityKeysByPath)
+    const tracks = attachAlbumIdentityKeysWithMap(
+      rows,
+      snapshot.identityKeysByPath,
+      undefined,
+      snapshot.artistNamesByPath,
+      snapshot.albumArtistNamesByPath
+    )
     const nextOffset = offset + pagePaths.length
 
     return {
@@ -4921,9 +5134,9 @@ export function getTracksByAlbum(album: string, artist?: string, identityKey?: s
       if (normalizeKey(normalizeAlbumName(track.album)) !== albumKey) return false
       if (normalizeKey(track.album_artist ?? '') === artistKey) return true
       if (normalizeKey(track.artist) === artistKey) return true
-      if (getParsedTrackArtistNames(track).some((name) => normalizeKey(name) === artistKey)) return true
-      if (getParsedAlbumArtistNames(track).some((name) => normalizeKey(name) === artistKey)) return true
-      return splitCollaborators(track.artist).some((name) => normalizeKey(name) === artistKey)
+      if (getResolvedTrackArtistNames(track).some((name) => normalizeKey(name) === artistKey)) return true
+      if (getResolvedAlbumArtistNames(track).some((name) => normalizeKey(name) === artistKey)) return true
+      return false
     })
     return attachAlbumIdentityKeys(fallback.sort(compareTracksByDiscTrackTitle), tracks)
   })
@@ -4991,7 +5204,7 @@ export function getGenres(): GenreRecord[] {
       newestArtworkModifiedAt: number
     }
 
-    const missingAlbumArtistBucketProbes = readMissingAlbumArtistBucketProbes()
+    const albumIdentityKeysByPath = getLibraryTrackSnapshot()?.identityKeysByPath ?? new Map<string, string>()
     const genreCounts = new Map<string, GenreAggregate>()
 
     for (const track of iterateEffectiveTrackRows(`
@@ -5001,7 +5214,8 @@ export function getGenres(): GenreRecord[] {
       const genreNames = getGenreNamesForTrack(track)
       if (genreNames.length === 0) continue
 
-      const albumIdentityKey = resolveAlbumIdentityForTrack(track, missingAlbumArtistBucketProbes).identityKey
+      const albumIdentityKey = albumIdentityKeysByPath.get(track.path)
+        ?? buildFallbackAlbumIdentityKeyFromTrack(track)
       const seenTrackGenreKeys = new Set<string>()
 
       for (const genreName of genreNames) {
@@ -5424,8 +5638,8 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
     if (!db) return []
     const resolvedMode = normalizeArtistBrowseMode(mode)
     const artistImageRows = readArtistImageRowsForMode(resolvedMode)
-    const missingAlbumArtistBucketProbes = readMissingAlbumArtistBucketProbes()
-    const eligibleAlbumIdentityKeys = collectEligibleAlbumIdentityKeys(missingAlbumArtistBucketProbes)
+    const albumIdentityKeysByPath = getLibraryTrackSnapshot()?.identityKeysByPath ?? new Map<string, string>()
+    const eligibleAlbumIdentityKeys = collectEligibleAlbumIdentityKeys()
 
     interface ArtistAggregate {
       artist: string
@@ -5502,7 +5716,8 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
       ${EFFECTIVE_TRACK_FROM_CLAUSE}
     `)) {
-      const trackAlbumIdentityKey = resolveAlbumIdentityForTrack(track, missingAlbumArtistBucketProbes).identityKey
+      const trackAlbumIdentityKey = albumIdentityKeysByPath.get(track.path)
+        ?? buildFallbackAlbumIdentityKeyFromTrack(track)
       const countedAlbumIdentityKey = eligibleAlbumIdentityKeys.has(trackAlbumIdentityKey)
         ? trackAlbumIdentityKey
         : null
@@ -5546,14 +5761,7 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
 
 // Get unique albums
 export function listAlbumIdentityKeys(): string[] {
-  const missingAlbumArtistBucketProbes = readMissingAlbumArtistBucketProbes()
-  const identityKeys = new Set<string>()
-  for (const track of iterateEffectiveTrackRows(`
-    SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-    ${EFFECTIVE_TRACK_FROM_CLAUSE}
-  `)) {
-    identityKeys.add(resolveAlbumIdentityForTrack(track, missingAlbumArtistBucketProbes).identityKey)
-  }
+  const identityKeys = new Set(getLibraryTrackSnapshot()?.identityKeysByPath.values() ?? [])
   return Array.from(identityKeys).sort((a, b) => a.localeCompare(b))
 }
 
@@ -5561,9 +5769,8 @@ export function getAlbums(options: AlbumListOptions = {}): Album[] {
   return measureLibraryQuery('getAlbums', () => {
     if (!db) return []
 
-    const missingAlbumArtistBucketProbes = readMissingAlbumArtistBucketProbes()
     const latestSyncSummary = getLatestLibrarySyncSummary()
-    const groups = collectAlbumSummaryGroups(missingAlbumArtistBucketProbes, latestSyncSummary)
+    const groups = collectAlbumSummaryGroups(latestSyncSummary)
 
     const albumEligibilityOptions: AlbumEligibilityOptions = {
       includeSingles: options.includeSingles === true
@@ -5577,7 +5784,10 @@ export function getAlbums(options: AlbumListOptions = {}): Album[] {
         let primaryArtist: string | null
         if (group.groupingMode === 'explicit-album-artist') {
           primaryArtist = getPrimaryArtistFromAlbumArtist(artist)
-        } else if (group.groupingMode === 'shared-artwork-compilation') {
+        } else if (
+          group.groupingMode === 'shared-artwork-compilation'
+          || group.groupingMode === 'metadata-compilation'
+        ) {
           primaryArtist = null
         } else {
           primaryArtist = artist
@@ -5636,7 +5846,7 @@ export function getHomeDashboard(query: HomeDashboardQuery = {}): HomeDashboard 
     const favoritePaths = new Set(db.all<{ track_path: string }>(
       'SELECT track_path FROM favorites'
     ).map((row) => row.track_path))
-    const groups = collectAlbumSummaryGroups(readMissingAlbumArtistBucketProbes(), null, favoritePaths)
+    const groups = collectAlbumSummaryGroups(null, favoritePaths)
     const releases = Array.from(groups.values())
       .filter((group) => isAlbumGroupEligible(group, { includeSingles: true }))
       .map(buildHomeReleaseSummary)
@@ -5730,7 +5940,9 @@ function getEditableTrackSnapshot(trackPath: string): EditableTrackSnapshot | nu
       t.genre AS base_genre,
       t.year AS base_year,
       t.track_number AS base_track_number,
+      t.track_total AS base_track_total,
       t.disc_number AS base_disc_number,
+      t.disc_total AS base_disc_total,
       t.artwork_hash AS base_artwork_hash,
       COALESCE(o.title, t.title) AS effective_title,
       COALESCE(o.artist, t.artist) AS effective_artist,
@@ -5739,7 +5951,9 @@ function getEditableTrackSnapshot(trackPath: string): EditableTrackSnapshot | nu
       COALESCE(o.genre, t.genre) AS effective_genre,
       COALESCE(o.year, t.year) AS effective_year,
       COALESCE(o.track_number, t.track_number) AS effective_track_number,
+      t.track_total AS effective_track_total,
       COALESCE(o.disc_number, t.disc_number) AS effective_disc_number,
+      t.disc_total AS effective_disc_total,
       CASE
         WHEN COALESCE(o.artwork_cleared, 0) = 1 THEN NULL
         ELSE COALESCE(o.artwork_hash, t.artwork_hash)
@@ -5773,7 +5987,9 @@ function getEditableTrackSnapshot(trackPath: string): EditableTrackSnapshot | nu
       genre: toText(row.base_genre),
       year: toNumber(row.base_year),
       trackNumber: toNumber(row.base_track_number),
+      trackTotal: toNumber(row.base_track_total),
       discNumber: toNumber(row.base_disc_number),
+      discTotal: toNumber(row.base_disc_total),
       artworkHash: toText(row.base_artwork_hash)
     },
     effective: {
@@ -5784,7 +6000,9 @@ function getEditableTrackSnapshot(trackPath: string): EditableTrackSnapshot | nu
       genre: toText(row.effective_genre),
       year: toNumber(row.effective_year),
       trackNumber: toNumber(row.effective_track_number),
+      trackTotal: toNumber(row.effective_track_total),
       discNumber: toNumber(row.effective_disc_number),
+      discTotal: toNumber(row.effective_disc_total),
       artworkHash: toText(row.effective_artwork_hash)
     }
   }
@@ -6975,11 +7193,11 @@ export async function scanFolder(
 
       if (existing) {
         db.run(`
-          UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, is_iamf=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, replaygain_track_gain_scanned=?, replaygain_album_gain_scanned=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, file_created_at_scanned=1, modified_at=?
+          UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, track_total=?, disc_number=?, disc_total=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, is_iamf=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, replaygain_track_gain_scanned=?, replaygain_album_gain_scanned=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, file_created_at_scanned=1, modified_at=?
           WHERE path=?
         `, [
           metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
-          metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
+          metadata.duration, metadata.trackNumber, metadata.trackTotal, metadata.discNumber, metadata.discTotal, metadata.year,
           metadata.genre, metadata.genreNamesJson, metadata.artworkHash, metadata.format, metadata.sampleRate,
           metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, metadata.isIamf,
           metadata.replayGainTrackDb, metadata.replayGainAlbumDb, replayGainScanned, replayGainScanned,
@@ -6988,11 +7206,11 @@ export async function scanFolder(
         updated++
       } else {
         db.run(`
-          INSERT INTO tracks (path, title, artist, artist_names_json, album, album_artist, album_artist_names_json, duration, track_number, disc_number, year, genre, genre_names_json, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, is_iamf, replaygain_track_gain_db, replaygain_album_gain_db, replaygain_track_gain_scanned, replaygain_album_gain_scanned, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, file_created_at, file_created_at_scanned, sync_session_key, added_at, modified_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, 1, ?, ?, ?)
+          INSERT INTO tracks (path, title, artist, artist_names_json, album, album_artist, album_artist_names_json, duration, track_number, track_total, disc_number, disc_total, year, genre, genre_names_json, artwork_hash, format, sample_rate, bit_depth, bitrate, channels, codec, codec_profile, is_atmos_joc, is_iamf, replaygain_track_gain_db, replaygain_album_gain_db, replaygain_track_gain_scanned, replaygain_album_gain_scanned, bpm, musical_key, source_type, source_id, source_track_id, source_path, is_available, availability_reason, file_created_at, file_created_at_scanned, sync_session_key, added_at, modified_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, NULL, 1, NULL, ?, 1, ?, ?, ?)
         `, [
           filePath, metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
-          metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
+          metadata.duration, metadata.trackNumber, metadata.trackTotal, metadata.discNumber, metadata.discTotal, metadata.year,
           metadata.genre, metadata.genreNamesJson, metadata.artworkHash, metadata.format, metadata.sampleRate,
           metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, metadata.isIamf,
           metadata.replayGainTrackDb, metadata.replayGainAlbumDb, replayGainScanned, replayGainScanned,
@@ -7020,6 +7238,9 @@ export async function scanFolder(
   throwIfScanCancelled(signal)
   if (added > 0) {
     reconcileMissingTrackReferencesByMetadata()
+  }
+  if (added > 0 || updated > 0 || excludedTrackCount > 0) {
+    rebuildDerivedLibraryState()
   }
   if (persist) {
     await saveDatabase()
@@ -7653,7 +7874,9 @@ interface ExtractedTrackMetadata {
   albumArtistNamesJson: string | null
   duration: number
   trackNumber: number | null
+  trackTotal: number | null
   discNumber: number | null
+  discTotal: number | null
   year: number | null
   genre: string | null
   genreNamesJson: string | null
@@ -7769,7 +7992,9 @@ async function buildIamfTrackMetadata(
     albumArtistNamesJson: null,
     duration: info.duration,
     trackNumber: null,
+    trackTotal: null,
     discNumber: null,
+    discTotal: null,
     year: null,
     genre: null,
     genreNamesJson: null,
@@ -7885,12 +8110,8 @@ async function extractMetadata(
     const parsedArtistNames = normalizeArtistNames(common.artists ?? [])
     const parsedAlbumArtistNames = normalizeArtistNames(common.albumartists ?? [])
     const genreFields = resolveGenreStorageFields(common.genre ?? [])
-    const artistDisplay = parsedArtistNames.length > 1
-      ? formatArtistNames(parsedArtistNames)
-    : toText(common.artist) ?? (formatArtistNames(parsedArtistNames) || 'Unknown Artist')
-  const albumArtistDisplay = parsedAlbumArtistNames.length > 1
-    ? formatArtistNames(parsedAlbumArtistNames)
-    : toText(common.albumartist) ?? (formatArtistNames(parsedAlbumArtistNames) || null)
+    const artistDisplay = toText(common.artist) ?? (formatArtistNames(parsedArtistNames) || 'Unknown Artist')
+  const albumArtistDisplay = toText(common.albumartist) ?? (formatArtistNames(parsedAlbumArtistNames) || null)
 
   return {
     title: common.title || fileName,
@@ -7901,7 +8122,9 @@ async function extractMetadata(
     albumArtistNamesJson: parsedAlbumArtistNames.length > 1 ? serializeArtistNames(parsedAlbumArtistNames) : null,
     duration: format.duration || 0,
       trackNumber: common.track?.no || null,
+      trackTotal: common.track?.of || null,
       discNumber: common.disk?.no || null,
+      discTotal: common.disk?.of || null,
       year: common.year || null,
       genre: genreFields.genre,
       genreNamesJson: genreFields.genreNamesJson,
@@ -8257,6 +8480,7 @@ export async function backfillMissingArtistCreditMetadata(
   }, { signal })
 
   throwIfScanCancelled(signal)
+  if (updated > 0) rebuildDerivedLibraryState()
   if (persist && updated > 0) {
     await saveDatabase()
   }
@@ -8510,7 +8734,9 @@ function resolveEditableValuesForSave(
   genre: string | null
   year: number | null
   trackNumber: number | null
+  trackTotal: number | null
   discNumber: number | null
+  discTotal: number | null
 } {
   const title = changes.title === undefined
     ? snapshot.effective.title
@@ -8537,7 +8763,18 @@ function resolveEditableValuesForSave(
     ? snapshot.effective.discNumber
     : normalizeOptionalIntegerField(changes.discNumber, 'discNumber')
 
-  return { title, artist, album, albumArtist, genre, year, trackNumber, discNumber }
+  return {
+    title,
+    artist,
+    album,
+    albumArtist,
+    genre,
+    year,
+    trackNumber,
+    trackTotal: snapshot.effective.trackTotal,
+    discNumber,
+    discTotal: snapshot.effective.discTotal
+  }
 }
 
 export interface ResolvedMetadataValues {
@@ -8548,7 +8785,14 @@ export interface ResolvedMetadataValues {
   genre: string | null
   year: number | null
   trackNumber: number | null
+  trackTotal?: number | null
   discNumber: number | null
+  discTotal?: number | null
+}
+
+function formatNumberWithTotal(number: number | null, total: number | null | undefined): string {
+  if (number === null) return ''
+  return total !== null && total !== undefined && total > 0 ? `${number}/${total}` : String(number)
 }
 
 export function buildFfmpegMetadataRewriteArgs(values: ResolvedMetadataValues): string[] {
@@ -8562,8 +8806,8 @@ export function buildFfmpegMetadataRewriteArgs(values: ResolvedMetadataValues): 
     '-metadata', `genre=${values.genre ?? ''}`,
     '-metadata', `date=${yearValue}`,
     '-metadata', `year=${yearValue}`,
-    '-metadata', `track=${values.trackNumber !== null ? String(values.trackNumber) : ''}`,
-    '-metadata', `disc=${values.discNumber !== null ? String(values.discNumber) : ''}`
+    '-metadata', `track=${formatNumberWithTotal(values.trackNumber, values.trackTotal)}`,
+    '-metadata', `disc=${formatNumberWithTotal(values.discNumber, values.discTotal)}`
   ]
 }
 
@@ -8643,11 +8887,11 @@ async function updateTrackRowFromFileMetadata(trackPath: string): Promise<void> 
   const replayGainScanned = replayGainScanEnabled ? 1 : 0
 
   db.run(`
-    UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, disc_number=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, is_iamf=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, replaygain_track_gain_scanned=?, replaygain_album_gain_scanned=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, file_created_at_scanned=1, modified_at=?
+    UPDATE tracks SET title=?, artist=?, artist_names_json=?, album=?, album_artist=?, album_artist_names_json=?, duration=?, track_number=?, track_total=?, disc_number=?, disc_total=?, year=?, genre=?, genre_names_json=?, artwork_hash=?, format=?, sample_rate=?, bit_depth=?, bitrate=?, channels=?, codec=?, codec_profile=?, is_atmos_joc=?, is_iamf=?, replaygain_track_gain_db=?, replaygain_album_gain_db=?, replaygain_track_gain_scanned=?, replaygain_album_gain_scanned=?, bpm=?, musical_key=?, source_type='local', source_id=NULL, source_track_id=NULL, source_path=NULL, is_available=1, availability_reason=NULL, file_created_at=?, file_created_at_scanned=1, modified_at=?
     WHERE path=?
   `, [
     metadata.title, metadata.artist, metadata.artistNamesJson, metadata.album, metadata.albumArtist, metadata.albumArtistNamesJson,
-    metadata.duration, metadata.trackNumber, metadata.discNumber, metadata.year,
+    metadata.duration, metadata.trackNumber, metadata.trackTotal, metadata.discNumber, metadata.discTotal, metadata.year,
     metadata.genre, metadata.genreNamesJson, metadata.artworkHash, metadata.format, metadata.sampleRate,
     metadata.bitDepth, metadata.bitrate, metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc, metadata.isIamf,
     metadata.replayGainTrackDb, metadata.replayGainAlbumDb, replayGainScanned, replayGainScanned,
@@ -8694,6 +8938,7 @@ export async function clearMetadataOverrides(trackPaths: string[]): Promise<{ cl
 
   const placeholders = normalizedPaths.map(() => '?').join(', ')
   const cleared = db.run(`DELETE FROM track_metadata_overrides WHERE track_path IN (${placeholders})`, normalizedPaths).changes
+  if (cleared > 0) rebuildDerivedLibraryState()
   await saveDatabase()
   return { cleared: Number.isFinite(cleared) ? cleared : 0 }
 }
@@ -8751,6 +8996,7 @@ export async function saveMetadataEdits(
   }
 
   if (updatedTrackPaths.length > 0) {
+    rebuildDerivedLibraryState()
     await saveDatabase()
   }
 
@@ -8818,6 +9064,7 @@ export async function restoreTrackOverrides(overrides: Record<string, TrackOverr
     }
   }
 
+  if (Object.keys(overrides).length > 0) rebuildDerivedLibraryState()
   await saveDatabase()
 }
 
@@ -9457,6 +9704,7 @@ function resolveListeningIdentity(
   const currentAlbumArtist = session.current_album_artist?.trim() || session.album_artist?.trim() || null
   const albumArtist = currentAlbumArtist || artist
   const artistTrack = {
+    path: session.current_path ?? '',
     artist,
     album_artist: currentAlbumArtist,
     artist_names_json: session.current_artist_names_json,
@@ -12818,9 +13066,8 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
     throw error
   }
 
-  if (persist && (removed > 0 || reconciled > 0)) {
-    await saveDatabase()
-  }
+  if (removed > 0 || reconciled > 0) rebuildDerivedLibraryState()
+  if (persist && (removed > 0 || reconciled > 0)) await saveDatabase()
 
   return removed
 }

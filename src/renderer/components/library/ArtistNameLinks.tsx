@@ -2,7 +2,7 @@ import { Fragment, memo } from 'react'
 import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
 import { parseArtistMetadata } from '../../utils/artistMetadata'
 import { highlightSearchMatch } from '../../utils/searchHighlight'
-import { buildArtistNameTokens } from '../../../shared/library/artistCredits.ts'
+import { buildArtistCreditTokens } from '../../../shared/library/artistCredits.ts'
 
 interface ArtistNameLinksProps {
   artistText: string
@@ -48,7 +48,7 @@ function ArtistNameLinksContentRenderer({
   const normalizedArtistText = artistText.replace(/\s+/g, ' ').trim()
   const normalizedBrowseArtistText = (browseArtistText ?? '').replace(/\s+/g, ' ').trim()
   const parsedArtistTokens = artistNames && artistNames.length > 0
-    ? buildArtistNameTokens(artistNames)
+    ? buildArtistCreditTokens(artistText, artistNames)
     : parseArtistMetadata(artistText)
   const tokens = artistBrowseMode === 'canonical' ? parsedArtistTokens : []
   const containerClassName = joinClasses('artist-name-links', className)

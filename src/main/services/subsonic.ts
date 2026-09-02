@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'crypto'
+import { formatArtistNames, normalizeArtistNames } from '../../shared/library/artistCredits'
 
 const SUBSONIC_API_VERSION = '1.16.1'
 const SUBSONIC_CLIENT_ID = 'astra'
@@ -20,8 +21,10 @@ export interface SubsonicCatalogTrack {
   artwork_source_id: string | null
   title: string
   artist: string
+  artist_names: string[]
   album: string
   album_artist: string | null
+  album_artist_names: string[]
   duration: number
   track_number: number | null
   disc_number: number | null
@@ -133,8 +136,10 @@ interface SubsonicSong {
   id?: unknown
   title?: unknown
   artist?: unknown
+  artists?: unknown
   album?: unknown
   albumArtist?: unknown
+  albumArtists?: unknown
   coverArt?: unknown
   duration?: unknown
   track?: unknown
@@ -159,6 +164,14 @@ function toTrimmedText(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : null
+}
+
+function openSubsonicArtistNames(value: unknown): string[] {
+  return normalizeArtistNames(asArray<unknown>(value).map((entry) => {
+    if (typeof entry === 'string') return entry
+    if (entry && typeof entry === 'object') return toTrimmedText((entry as Record<string, unknown>).name)
+    return null
+  }))
 }
 
 function toFiniteNumber(value: unknown): number | null {
@@ -559,7 +572,7 @@ function toPlaylistTracks(sourceId: number, playlistResponse: Record<string, unk
   return tracks
 }
 
-function mapSongToCatalogTrack(
+export function mapSongToCatalogTrack(
   sourceId: number,
   song: SubsonicSong,
   fallbackCoverArtId: string | null
@@ -568,9 +581,11 @@ function mapSongToCatalogTrack(
   if (!sourceTrackId) return null
 
   const title = toTrimmedText(song.title) ?? `Track ${sourceTrackId}`
-  const artist = toTrimmedText(song.artist) ?? 'Unknown Artist'
+  const artistNames = openSubsonicArtistNames(song.artists)
+  const artist = formatArtistNames(artistNames) || toTrimmedText(song.artist) || 'Unknown Artist'
   const album = toTrimmedText(song.album) ?? 'Unknown Album'
-  const albumArtist = toTrimmedText(song.albumArtist)
+  const albumArtistNames = openSubsonicArtistNames(song.albumArtists)
+  const albumArtist = formatArtistNames(albumArtistNames) || toTrimmedText(song.albumArtist)
   const duration = toFiniteNumber(song.duration)
   const bitrate = toFiniteInteger(song.bitRate)
   const sampleRate = toFiniteInteger(song.sampleRate)
@@ -592,8 +607,10 @@ function mapSongToCatalogTrack(
     artwork_source_id: artworkSourceId,
     title,
     artist,
+    artist_names: artistNames,
     album,
     album_artist: albumArtist,
+    album_artist_names: albumArtistNames,
     duration: duration && duration > 0 ? duration : 0,
     track_number: trackNumber,
     disc_number: discNumber,

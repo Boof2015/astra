@@ -162,7 +162,9 @@ interface DbTrack {
     album_artist_names: string[]
     duration: number
     track_number: number | null
+	    track_total: number | null
 	    disc_number: number | null
+	    disc_total: number | null
 	    year: number | null
 	    genre: string | null
 	    genres: string[]

@@ -1,4 +1,5 @@
 import { createHash } from 'crypto'
+import { formatArtistNames, normalizeArtistNames } from '../../shared/library/artistCredits'
 
 const DEFAULT_TIMEOUT_MS = 12_000
 const DEFAULT_RETRIES = 1
@@ -27,8 +28,10 @@ export interface JellyfinCatalogTrack {
   artwork_source_id: string | null
   title: string
   artist: string
+  artist_names: string[]
   album: string
   album_artist: string | null
+  album_artist_names: string[]
   duration: number
   track_number: number | null
   disc_number: number | null
@@ -488,31 +491,29 @@ export async function testJellyfinConnection(
   await authenticateJellyfin(config, options)
 }
 
-function resolveJellyfinArtist(item: JellyfinAudioItem): string {
+function resolveJellyfinArtists(item: JellyfinAudioItem): string[] {
   const artists = asArray<string>(item.Artists)
     .map((value) => toTrimmedText(value))
     .filter((value): value is string => Boolean(value))
-  if (artists.length > 0) return artists[0]
+  if (artists.length > 0) return normalizeArtistNames(artists)
 
   const artistItems = asArray<Record<string, unknown>>(item.ArtistItems)
+  const names: string[] = []
   for (const artistItem of artistItems) {
     const candidate = toTrimmedText(artistItem.Name)
-    if (candidate) return candidate
+    if (candidate) names.push(candidate)
   }
-
-  return 'Unknown Artist'
+  return normalizeArtistNames(names)
 }
 
-function resolveJellyfinAlbumArtist(item: JellyfinAudioItem): string | null {
-  const direct = toTrimmedText(item.AlbumArtist)
-  if (direct) return direct
-
+function resolveJellyfinAlbumArtists(item: JellyfinAudioItem): string[] {
   const albumArtists = asArray<string>(item.AlbumArtists)
     .map((value) => toTrimmedText(value))
     .filter((value): value is string => Boolean(value))
+  if (albumArtists.length > 0) return normalizeArtistNames(albumArtists)
 
-  if (albumArtists.length > 0) return albumArtists[0]
-  return null
+  const direct = toTrimmedText(item.AlbumArtist)
+  return direct ? [direct] : []
 }
 
 function resolveJellyfinArtworkSourceId(item: JellyfinAudioItem, sourceTrackId: string): string | null {
@@ -553,14 +554,16 @@ function isAtmosJoc(codec: string | null, profile: string | null): boolean {
   return combined.includes('atmos') || combined.includes('joc')
 }
 
-function mapJellyfinItemToCatalogTrack(sourceId: number, item: JellyfinAudioItem): JellyfinCatalogTrack | null {
+export function mapJellyfinItemToCatalogTrack(sourceId: number, item: JellyfinAudioItem): JellyfinCatalogTrack | null {
   const sourceTrackId = toTrimmedText(item.Id)
   if (!sourceTrackId) return null
 
   const title = toTrimmedText(item.Name) ?? `Track ${sourceTrackId}`
-  const artist = resolveJellyfinArtist(item)
+  const artistNames = resolveJellyfinArtists(item)
+  const artist = formatArtistNames(artistNames) || 'Unknown Artist'
   const album = toTrimmedText(item.Album) ?? 'Unknown Album'
-  const albumArtist = resolveJellyfinAlbumArtist(item)
+  const albumArtistNames = resolveJellyfinAlbumArtists(item)
+  const albumArtist = formatArtistNames(albumArtistNames) || null
   const durationTicks = toFiniteNumber(item.RunTimeTicks)
   const duration = durationTicks && durationTicks > 0
     ? durationTicks / 10_000_000
@@ -592,8 +595,10 @@ function mapJellyfinItemToCatalogTrack(sourceId: number, item: JellyfinAudioItem
     artwork_source_id: artworkSourceId,
     title,
     artist,
+    artist_names: artistNames,
     album,
     album_artist: albumArtist,
+    album_artist_names: albumArtistNames,
     duration,
     track_number: trackNumber,
     disc_number: discNumber,

@@ -54,6 +54,14 @@ Up to 20 fully parametric bands, a live frequency response graph with spectrum o
 
 Point Astra at your music folders and it handles metadata extraction, album artwork, and a searchable library you can browse by artist, album, or track. Reads ID3v2.4 and Vorbis Comments, parses multiartist tags properly, supports custom artist images, and scans `.lrc` files by filename. Favorites and recently played are tracked automatically, and the built-in metadata editor lets you fix tags without leaving the player. A Quick Launch palette and full keyboard shortcuts get you anywhere without touching the mouse.
 
+### Astra Resolve
+
+Many music files store every performer in one plain-text Artist field. Splitting that field on commas or ampersands makes collaborations clickable, but it also breaks names like `Tyler, the Creator` and `Earth, Wind & Fire`. Treating the whole field as one name avoids that problem, but turns every collaboration into a single fake artist.
+
+Astra Resolve uses the rest of the library to tell the difference. Clear single-artist credits, such as `Ado` or `Sheeno Mirin`, structured multi-artist tags, and repeated naming patterns help it decide where one artist ends and another begins. Collaborators get separate artist links while established names stay intact.
+
+Resolve also uses artwork, dates, and track numbering to keep albums together when their Album Artist tags are incomplete. Everything happens locally: Astra doesn't rewrite music files or query external metadata, and uncertain album matches stay separate.
+
 ## Audio Settings
 
 Output device selection, loudness normalization with ReplayGain support, per-channel remapping for multichannel setups, and delay calibration for wireless or Bluetooth speakers.

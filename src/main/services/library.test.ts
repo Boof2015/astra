@@ -96,11 +96,15 @@ function createRemoteTrack(
     path: overrides.path,
     title: overrides.title,
     artist: overrides.artist,
+    artist_names: overrides.artist_names ?? null,
     album: overrides.album,
     album_artist: overrides.album_artist ?? null,
+    album_artist_names: overrides.album_artist_names ?? null,
     duration: overrides.duration ?? 180,
     track_number: overrides.track_number ?? null,
+    track_total: overrides.track_total ?? null,
     disc_number: overrides.disc_number ?? null,
+    disc_total: overrides.disc_total ?? null,
     year: overrides.year ?? null,
     genre: overrides.genre ?? null,
     genres: overrides.genres ?? (overrides.genre ? [overrides.genre] : []),
@@ -861,6 +865,24 @@ test('metadata file writes rebuild core tags instead of layering changed fields'
   ])
 })
 
+test('metadata number edits preserve known track and disc totals', () => {
+  const args = library.buildFfmpegMetadataRewriteArgs({
+    title: 'Numbered Song',
+    artist: 'Numbered Artist',
+    album: 'Numbered Album',
+    albumArtist: null,
+    genre: null,
+    year: null,
+    trackNumber: 7,
+    trackTotal: 12,
+    discNumber: 1,
+    discTotal: 2
+  })
+
+  assert.ok(args.includes('track=7/12'))
+  assert.ok(args.includes('disc=1/2'))
+})
+
 test('library diagnostics opt-in metadata persists across database sessions', async (t) => {
   await setupEmptyLibrary(t)
   assert.equal(library.getAppMeta('library_diagnostics_enabled_v1'), null)
@@ -933,8 +955,116 @@ test('library grouping queries preserve shared-cover compilation identities', as
   const byArtist = library.getTracksByArtist('Artist A')
   assert.deepEqual(byArtist.map((track) => track.title), ['Split A'])
   assert.equal(byArtist[0].album_identity_key, splitAlbum.identity_key)
-  assert.deepEqual(byArtist[0].artist_names, [])
+  assert.deepEqual(byArtist[0].artist_names, ['Artist A'])
   assert.deepEqual(byArtist[0].album_artist_names, [])
+
+  const allTrack = library.getAllTracks().find((track) => track.path === 'subsonic://1/split-a')
+  const pagedTrack = library.getTrackPage({ offset: 0, limit: 10 }).tracks.find(
+    (track) => track.path === 'subsonic://1/split-a'
+  )
+  assert.deepEqual(allTrack?.artist_names, ['Artist A'])
+  assert.deepEqual(pagedTrack?.artist_names, ['Artist A'])
+})
+
+test('derived identity rebuild reconciles live history and latest-sync keys atomically', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({
+    name: 'Identity Source',
+    base_url: 'https://identity.example.test',
+    username: 'tester',
+    secret_encrypted: 'secret',
+    enabled: 1,
+    last_status: 'ok'
+  })
+  const firstPath = `subsonic://${source.id}/identity-a`
+  const secondPath = `subsonic://${source.id}/identity-b`
+  await library.upsertSubsonicTracks(source.id, [
+    createRemoteTrack({
+      path: firstPath,
+      title: 'Identity A',
+      artist: 'Artist A',
+      album: 'Shared Release',
+      artwork_hash: 'shared-cover'
+    }),
+    createRemoteTrack({
+      path: secondPath,
+      title: 'Identity B',
+      artist: 'Artist B',
+      album: 'Shared Release',
+      artwork_hash: 'shared-cover'
+    })
+  ], { syncSessionKey: 'identity-sync' })
+
+  const before = library.getTrackByPath(firstPath)
+  assert.ok(before)
+  const beforeIdentityKey = before.album_identity_key
+  assert.ok(beforeIdentityKey)
+  const historyStatus = library.getListeningHistoryStatus()
+  await library.checkpointListeningSession({
+    generation: historyStatus.generation,
+    sessionKey: 'identity-live-session',
+    segmentKey: 'identity-live-segment',
+    trackPath: firstPath,
+    sourcePlaylistId: null,
+    sessionStartedAt: 1_000,
+    segmentStartedAt: 1_000,
+    observedAt: 31_000,
+    sessionListenedSeconds: 30,
+    segmentListenedSeconds: 30,
+    trackDurationSeconds: 180,
+    qualificationEligible: true,
+    finalizeSegment: true,
+    finalizeSession: true
+  })
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare(`
+      INSERT INTO listening_sessions (
+        generation, session_key, track_id, track_path, title, artist, album,
+        album_identity_key, source_type, duration_seconds, started_at, listened_seconds
+      ) VALUES ('orphan-generation', 'identity-orphan-session', NULL, '/missing.flac',
+        'Missing', 'Missing Artist', 'Missing Album', 'orphan-key', 'local', 180, 1, 1)
+    `).run()
+  })
+  await library.setLatestLibrarySyncSummary({
+    sessionKey: 'identity-sync',
+    completedAt: 50_000,
+    newAlbumIdentityKeys: [beforeIdentityKey]
+  })
+
+  await library.upsertSubsonicTracks(source.id, [createRemoteTrack({
+    path: firstPath,
+    title: 'Identity A',
+    artist: 'Artist A',
+    album: 'Different Release',
+    artwork_hash: 'shared-cover'
+  })], { syncSessionKey: 'identity-sync' })
+
+  const afterFirst = library.getTrackByPath(firstPath)
+  const afterSecond = library.getTrackByPath(secondPath)
+  assert.ok(afterFirst)
+  assert.ok(afterSecond)
+  assert.notEqual(afterFirst.album_identity_key, beforeIdentityKey)
+  const afterFirstIdentityKey = afterFirst.album_identity_key
+  const afterSecondIdentityKey = afterSecond.album_identity_key
+  assert.ok(afterFirstIdentityKey)
+  assert.ok(afterSecondIdentityKey)
+  const stored = withDirectLibraryDb(userDataDir, (directDb) => ({
+    liveKey: (directDb.prepare(
+      "SELECT album_identity_key FROM listening_sessions WHERE session_key = 'identity-live-session'"
+    ).get() as { album_identity_key: string }).album_identity_key,
+    orphanKey: (directDb.prepare(
+      "SELECT album_identity_key FROM listening_sessions WHERE session_key = 'identity-orphan-session'"
+    ).get() as { album_identity_key: string }).album_identity_key,
+    cacheCount: (directDb.prepare('SELECT COUNT(*) AS count FROM track_album_identities').get() as { count: number }).count
+  }))
+  assert.equal(stored.liveKey, afterFirstIdentityKey)
+  assert.equal(stored.orphanKey, 'orphan-key')
+  assert.equal(stored.cacheCount, 2)
+  assert.equal(library.getAppMeta('library_identity_algorithm_version'), '6')
+  assert.deepEqual(
+    library.getLatestLibrarySyncSummary()?.newAlbumIdentityKeys,
+    [afterFirstIdentityKey, afterSecondIdentityKey].sort((a, b) => a.localeCompare(b))
+  )
 })
 
 test('library artist queries preserve primary-artist album grouping', async (t) => {
@@ -953,7 +1083,7 @@ test('library artist queries preserve primary-artist album grouping', async (t) 
 })
 
 test('library artist records distinguish primary and collaborator-only canonical artists', async (t) => {
-  const userDataDir = await setupEmptyLibrary(t)
+  await setupEmptyLibrary(t)
 
   const source = await library.createSubsonicSource({
     name: 'Test Source',
@@ -970,6 +1100,7 @@ test('library artist records distinguish primary and collaborator-only canonical
       source_track_id: 'collab-1',
       title: 'Shared Song',
       artist: 'Primary Artist & Guest Artist',
+      artist_names: ['Primary Artist', 'Guest Artist'],
       album: 'Collab Release',
       track_number: 1
     }),
@@ -989,8 +1120,6 @@ test('library artist records distinguish primary and collaborator-only canonical
       album: 'Loose Single'
     })
   ])
-  updateStoredArtistCredits(userDataDir, 'subsonic://1/collab-1', ['Primary Artist', 'Guest Artist'])
-
   const canonicalArtists = library.getArtists('canonical')
   const primaryArtist = canonicalArtists.find((artist) => artist.artist === 'Primary Artist')
   const guestArtist = canonicalArtists.find((artist) => artist.artist === 'Guest Artist')
@@ -1274,7 +1403,7 @@ test('getTracksByPaths preserves request order, duplicates, and public metadata 
 
   const splitTrack = tracks[1]
   assert.equal(splitTrack.artist, 'Artist A')
-  assert.deepEqual(splitTrack.artist_names, [])
+  assert.deepEqual(splitTrack.artist_names, ['Artist A'])
   assert.equal(splitTrack.codec, 'flac')
   assert.equal(splitTrack.channels, 2)
   assert.equal(splitTrack.source_type, 'subsonic')

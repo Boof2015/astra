@@ -4,11 +4,10 @@ import {
   normalizeKey,
   splitCollaborators
 } from './albumIdentity.ts'
-import { normalizeArtistNames } from '../../shared/library/artistCredits.ts'
+import { isGenericArtistName, normalizeArtistNames } from '../../shared/library/artistCredits.ts'
 
 const UNKNOWN_ARTIST_NAME = 'Unknown Artist'
 const UNKNOWN_ALBUM_NAME = 'Unknown Album'
-const GENERIC_ARTIST_KEYS = new Set(['various artists', 'various artist', 'va', 'v a'])
 const DEFAULT_FULL_GRAPH_MAX_NEIGHBORS = 8
 const DEFAULT_FOCUS_GRAPH_NEIGHBOR_LIMIT = 8
 const MAX_EDGE_SAMPLE_TRACKS = 6
@@ -175,8 +174,7 @@ function hashStringToUnit(value: string): number {
 }
 
 function isIgnorableArtist(displayArtist: string): boolean {
-  const artistKey = normalizeKey(displayArtist)
-  return artistKey != null && GENERIC_ARTIST_KEYS.has(artistKey)
+  return isGenericArtistName(displayArtist)
 }
 
 function toTrackParticipants(track: ArtistGraphTrackLike): Map<string, string> {
