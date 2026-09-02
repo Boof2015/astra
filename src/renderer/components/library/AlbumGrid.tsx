@@ -1,7 +1,8 @@
-import { CSSProperties, memo, ReactElement, Ref, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { CSSProperties, memo, ReactElement, Ref, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type UIEvent } from 'react'
 import { Grid, type CellComponentProps, type GridImperativeAPI } from 'react-window'
 import { resolveArtistGridLayout } from '../../utils/artistGridLayout'
 import { highlightSearchMatch } from '../../utils/searchHighlight'
+import { restoreLibraryScrollPosition } from '../../utils/libraryScrollRestoration'
 import AlbumArtwork from './AlbumArtwork'
 import {
   CONTROLLER_VIRTUAL_MOVE_EVENT,
@@ -31,6 +32,8 @@ interface AlbumGridProps {
   albums: AlbumRecord[]
   onSelectAlbum: (album: AlbumRecord) => void
   onAlbumContextMenu: (album: AlbumRecord, x: number, y: number) => void
+  onScrollTopChange?: (scrollTop: number) => void
+  restoreScrollTop?: number
   viewportRef?: Ref<AlbumGridViewportAPI>
   searchQuery?: string
 }
@@ -132,6 +135,8 @@ export default function AlbumGrid({
   albums,
   onSelectAlbum,
   onAlbumContextMenu,
+  onScrollTopChange,
+  restoreScrollTop,
   viewportRef,
   searchQuery = ''
 }: AlbumGridProps) {
@@ -143,6 +148,7 @@ export default function AlbumGrid({
   const [measuredCardHeight, setMeasuredCardHeight] = useState<number | null>(null)
   const bodyRef = useRef<HTMLDivElement | null>(null)
   const gridApiRef = useRef<GridImperativeAPI | null>(null)
+  const restoreSettledRef = useRef(restoreScrollTop === undefined)
 
   useImperativeHandle(viewportRef, () => ({
     get element() {
@@ -189,6 +195,30 @@ export default function AlbumGrid({
       resizeObserver.disconnect()
     }
   }, [])
+
+  // The virtual grid discovers its real column count and row height after it
+  // mounts. Restore from inside the grid and keep retrying across those sizing
+  // renders so react-window cannot replace the restored offset with its
+  // temporary initial layout.
+  useLayoutEffect(() => {
+    if (restoreSettledRef.current || restoreScrollTop === undefined) return
+
+    const element = gridApiRef.current?.element
+    if (!element) return
+
+    return restoreLibraryScrollPosition(element, restoreScrollTop, {
+      maxAttempts: 30,
+      onSettled: () => {
+        restoreSettledRef.current = true
+        onScrollTopChange?.(element.scrollTop)
+      }
+    })
+  })
+
+  const handleScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
+    if (!restoreSettledRef.current) return
+    onScrollTopChange?.(event.currentTarget.scrollTop)
+  }, [onScrollTopChange])
 
   // Cells carry gap/2 padding on every side; the scroller adds
   // (padding - gap/2) so outer edges land at the CSS-grid padding. Prefer the
@@ -324,6 +354,7 @@ export default function AlbumGrid({
         defaultHeight={ALBUM_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX * 3}
         defaultWidth={ALBUM_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX * 4}
         gridRef={gridApiRef}
+        onScroll={handleScroll}
         onResize={handleGridResize}
         overscanCount={ALBUM_GRID_OVERSCAN_COUNT}
         rowCount={gridLayout.rowCount}

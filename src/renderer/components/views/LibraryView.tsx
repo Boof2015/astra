@@ -38,6 +38,8 @@ import {
 } from '../../utils/libraryYears'
 import {
   bindLibraryScrollRestoration,
+  getRememberedLibraryScrollPosition,
+  rememberLibraryScrollPosition,
   resolveLibraryScrollContextKey
 } from '../../utils/libraryScrollRestoration'
 import TrackList, { type TrackListSortKey, type TrackListViewportAPI } from '../library/TrackList'
@@ -60,6 +62,7 @@ import { compareTracksBySortRules } from '../../utils/trackSort'
 
 type SortDirection = 'asc' | 'desc'
 type ArtistAlbumRailMode = 'albums' | 'singles' | 'featured'
+const ALBUM_ROOT_SCROLL_KEY = 'root:albums' as const
 
 function formatTrackCount(count: number): string {
   return `${count} ${count === 1 ? 'track' : 'tracks'}`
@@ -539,7 +542,9 @@ export default function LibraryView() {
     } else if (selectedYear !== null) {
       element = yearDetailViewportRef.current
     } else if (viewMode === 'albums') {
-      element = albumViewportRef.current?.element ?? null
+      // AlbumGrid owns its restoration so it can re-apply the offset after
+      // react-window completes the grid's post-mount sizing passes.
+      element = null
     } else if (viewMode === 'artists') {
       element = artistViewportRef.current?.element ?? null
     } else if (viewMode === 'genres') {
@@ -683,6 +688,11 @@ export default function LibraryView() {
   const handleSelectAlbumFromGrid = useCallback((album: { album: string; artist: string; identity_key: string }) => {
     if (selectedYear !== null) {
       setSearchQuery('')
+    } else {
+      const albumViewport = albumViewportRef.current?.element
+      if (albumViewport) {
+        rememberLibraryScrollPosition(ALBUM_ROOT_SCROLL_KEY, albumViewport.scrollTop)
+      }
     }
     void runPreparedSelectionTransition(
       {
@@ -695,6 +705,10 @@ export default function LibraryView() {
       'library-context-forward'
     )
   }, [runPreparedSelectionTransition, selectedYear])
+
+  const handleAlbumGridScrollTopChange = useCallback((scrollTop: number) => {
+    rememberLibraryScrollPosition(ALBUM_ROOT_SCROLL_KEY, scrollTop)
+  }, [])
 
   const handleAlbumGridContextMenu = useCallback((album: { album: string; artist: string; identity_key: string }, x: number, y: number) => {
     openCollectionQueueMenu({
@@ -1434,6 +1448,8 @@ export default function LibraryView() {
         <AlbumGrid
           albums={filteredAlbums}
           viewportRef={albumViewportRef}
+          restoreScrollTop={getRememberedLibraryScrollPosition(ALBUM_ROOT_SCROLL_KEY)}
+          onScrollTopChange={handleAlbumGridScrollTopChange}
           searchQuery={trimmedSearchQuery}
           onSelectAlbum={handleSelectAlbumFromGrid}
           onAlbumContextMenu={handleAlbumGridContextMenu}
