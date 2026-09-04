@@ -1577,6 +1577,93 @@ test('companion API writes accept only locally owned normal playlists', async (t
   assert.equal(await library.moveCompanionApiPlaylistTrack(dynamic.id, trackPaths[0], 0), false)
 })
 
+test('local scans and subfolder counts ignore AppleDouble audio sidecars', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(dir, 'appledouble-scan')
+  const albumDir = join(musicDir, 'Album')
+  const trackPath = join(albumDir, 'track.wav')
+  const hiddenTrackPath = join(albumDir, '.hidden.wav')
+  await mkdir(albumDir, { recursive: true })
+  await writeTaggedWavFixture(trackPath, 'Track', 'AppleDouble Artist')
+  await writeTaggedWavFixture(hiddenTrackPath, 'Hidden Track', 'AppleDouble Artist')
+  await writeFile(join(albumDir, '._track.flac'), 'AppleDouble metadata')
+  await writeFile(join(albumDir, '._track.m4a'), 'AppleDouble metadata')
+  await writeFile(join(albumDir, '._track.mp3'), 'AppleDouble metadata')
+
+  const folder = await library.addLibraryFolder(musicDir)
+  assert.ok(folder)
+
+  const scan = await library.scanFolder(musicDir, undefined, { diagnostics: true })
+  assert.equal(scan.added, 2)
+  assert.equal(scan.updated, 0)
+  assert.equal(scan.errors, 0)
+  assert.equal(scan.diagnostics.discoveredFileCount, 2)
+  assert.equal(scan.diagnostics.metadataParsedFileCount, 2)
+  assert.deepEqual(getStoredTrackPaths(dir).sort(), [trackPath, hiddenTrackPath].sort())
+
+  const subdirectories = await library.listFolderSubdirectories(musicDir)
+  assert.equal(subdirectories.length, 1)
+  assert.equal(subdirectories[0]?.relativePath, 'Album')
+  assert.equal(subdirectories[0]?.audioFileCount, 2)
+})
+
+test('cleanup removes previously indexed AppleDouble tracks without deleting their files', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => {
+    library.setReplayGainScanEnabled(true)
+  })
+
+  const musicDir = join(userDataDir, 'appledouble-cleanup')
+  const trackPath = join(musicDir, 'track.wav')
+  const sidecarPath = join(musicDir, '._track.mp3')
+  await mkdir(musicDir, { recursive: true })
+  await writeTaggedWavFixture(trackPath, 'Track', 'Cleanup Artist')
+  await writeFile(sidecarPath, 'AppleDouble metadata')
+
+  const scan = await library.scanFolder(musicDir)
+  assert.equal(scan.added, 1)
+  assert.equal(scan.errors, 0)
+
+  const playlist = await library.createPlaylist('Legacy AppleDouble Entry')
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    directDb.prepare(`
+      INSERT INTO tracks (path, title, artist, album, duration, format, added_at, modified_at)
+      VALUES (?, 'Legacy Sidecar', 'Unknown Artist', 'Unknown Album', 0, 'mp3', 1, 1)
+    `).run(sidecarPath)
+    directDb.prepare(`
+      INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at)
+      VALUES (?, ?, 0, 1)
+    `).run(playlist.id, sidecarPath)
+  })
+
+  const diagnostics: library.LibraryCleanupDiagnostics[] = []
+  const removed = await library.cleanupMissingTracks({
+    onCleanupDiagnostics: (value) => {
+      diagnostics.push(value)
+    }
+  })
+
+  assert.equal(removed, 1)
+  assert.equal(diagnostics.length, 1)
+  assert.equal(diagnostics[0]?.appleDoubleTrackDeleteCount, 1)
+  assert.equal(diagnostics[0]?.filesystemMissingCount, 0)
+  assert.equal(diagnostics[0]?.missingTrackDeleteCount, 0)
+  assert.deepEqual(getStoredTrackPaths(userDataDir), [trackPath])
+  assert.equal((await stat(sidecarPath)).isFile(), true)
+
+  const playlistEntries = library.getPlaylistTrackEntries(playlist.id)
+  assert.equal(playlistEntries.length, 1)
+  assert.equal(playlistEntries[0]?.track_path, sidecarPath)
+  assert.equal(playlistEntries[0]?.title, 'Legacy Sidecar')
+  assert.equal(playlistEntries[0]?.missing, true)
+})
+
 test('force scan rewrites unchanged local metadata that incremental scan skips', async (t) => {
   const dir = await setupEmptyLibrary(t)
   library.setReplayGainScanEnabled(false)

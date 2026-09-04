@@ -164,6 +164,15 @@ const AUDIO_EXTENSIONS = new Set([
   // files with an IAMF audio track are indexed — see extractMetadata).
   '.iamf', '.mp4'
 ])
+
+function isAppleDoubleFileName(fileName: string): boolean {
+  return fileName.startsWith('._')
+}
+
+function isSupportedAudioFileName(fileName: string): boolean {
+  return !isAppleDoubleFileName(fileName) && AUDIO_EXTENSIONS.has(extname(fileName).toLowerCase())
+}
+
 const FOLDER_ARTWORK_BASENAME_PRIORITY = [
   'cover',
   'folder',
@@ -692,6 +701,7 @@ export interface LibraryCleanupDiagnostics {
   filesystemValidationMs: number
   filesystemMissingCount: number
   filesystemErrorCount: number
+  appleDoubleTrackDeleteCount: number
   caseDuplicateMergeCount: number
   missingTrackMergeCount: number
   missingTrackDeleteCount: number
@@ -6501,10 +6511,7 @@ export async function listFolderSubdirectories(
         const childEntries = await readdir(childAbsolutePath, { withFileTypes: true })
         for (const ce of childEntries) {
           if (ce.isDirectory()) hasChildDirs = true
-          else if (ce.isFile()) {
-            const ext = extname(ce.name).toLowerCase()
-            if (AUDIO_EXTENSIONS.has(ext)) audioCount++
-          }
+          else if (ce.isFile() && isSupportedAudioFileName(ce.name)) audioCount++
         }
       } catch {
         // Permission denied or inaccessible
@@ -7349,8 +7356,7 @@ async function collectAudioFiles(
         }
         await walk(fullPath)
       } else if (entry.isFile()) {
-        const ext = extname(entry.name).toLowerCase()
-        if (AUDIO_EXTENSIONS.has(ext)) {
+        if (isSupportedAudioFileName(entry.name)) {
           files.push(fullPath)
         }
       }
@@ -12908,9 +12914,10 @@ interface MissingTrackCleanupRow {
   base_album: string
 }
 
-// Remove tracks that no longer exist on disk. The filesystem pass finishes before
-// any write so moved files can be matched against the complete set of verified
-// survivors and merged before delete triggers discard path-keyed user data.
+// Remove tracks that no longer exist on disk or that should never have been
+// indexed. The filesystem pass finishes before any write so moved files can be
+// matched against the complete set of verified survivors and merged before delete
+// triggers discard path-keyed user data.
 export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Promise<number> {
   const { persist = true, signal, onIssue, onCleanupDiagnostics } = options
   if (!db) return 0
@@ -12935,9 +12942,11 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
   let removed = 0
   let reconciled = 0
   let filesystemErrorCount = 0
+  let appleDoubleTrackDeleteCount = 0
   let caseDuplicateMergeCount = 0
   let missingTrackMergeCount = 0
   let missingTrackDeleteCount = 0
+  const appleDoubleTracks: MissingTrackCleanupRow[] = []
   const missingTracks: MissingTrackCleanupRow[] = []
   const survivingTrackIds = new Set<number>()
   const caseFoldedGroups = comparableFsPathFoldsCase()
@@ -12947,6 +12956,10 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
   const filesystemValidationStartedAt = libraryDiagnosticNow()
   for (const track of tracks) {
     throwIfScanCancelled(signal)
+    if (isAppleDoubleFileName(basename(track.path))) {
+      appleDoubleTracks.push(track)
+      continue
+    }
     try {
       const trackStat = await stat(track.path)
       survivingTrackIds.add(track.id)
@@ -12975,6 +12988,14 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
   if (ownsTransaction) beginLibraryWriteTransaction()
   try {
     const mergedTargetPaths = new Set<string>()
+    for (const track of appleDoubleTracks) {
+      throwIfScanCancelled(signal)
+      snapshotPlaylistFallbackMetadata(track)
+      db.run('DELETE FROM tracks WHERE id = ?', [track.id])
+      removed += 1
+      appleDoubleTrackDeleteCount += 1
+    }
+
     // Case-variant duplicate rows for one physical file (casing-only folder
     // rename, #180): stat resolves for every casing on a case-insensitive FS,
     // so the missing-file path above never prunes them. Collapse each group
@@ -13051,6 +13072,7 @@ export async function cleanupMissingTracks(options: ScanWriteOptions = {}): Prom
           filesystemValidationMs: roundDiagnosticMs(filesystemValidationMs),
           filesystemMissingCount: missingTracks.length,
           filesystemErrorCount,
+          appleDoubleTrackDeleteCount,
           caseDuplicateMergeCount,
           missingTrackMergeCount,
           missingTrackDeleteCount,
