@@ -14,6 +14,7 @@ import {
   stripPlaylistEntryOuterQuotes
 } from './playlistPathResolver'
 import { getMusicMetadataParseOptions } from '../utils/musicMetadata'
+import { compareBaseLocaleText } from '../../shared/localeSort'
 import { collectIamfStreamStats } from '../../shared/iamf/obuWalker'
 import { mp4HasIamfTrack, readMp4DurationSeconds } from '../../shared/iamf/mp4'
 import {
@@ -1909,7 +1910,7 @@ function pickMostFrequentDisplayVariant(
     }
     if (
       variant.count === best.count &&
-      variant.display.localeCompare(best.display, undefined, { sensitivity: 'base' }) < 0
+      compareBaseLocaleText(variant.display, best.display) < 0
     ) {
       best = variant
     }
@@ -1950,7 +1951,7 @@ function compareTracksByDiscTrackTitle(
   const trackB = b.track_number ?? 0
   if (trackA !== trackB) return trackA - trackB
 
-  const titleCompare = normalizeDisplay(a.title).localeCompare(normalizeDisplay(b.title), undefined, { sensitivity: 'base' })
+  const titleCompare = compareBaseLocaleText(normalizeDisplay(a.title), normalizeDisplay(b.title))
   if (titleCompare !== 0) return titleCompare
 
   return a.path.localeCompare(b.path)
@@ -1960,7 +1961,7 @@ function compareTracksByAlbumDiscTrackTitle(
   a: Pick<DbTrackRow, 'album' | 'disc_number' | 'track_number' | 'title' | 'path'>,
   b: Pick<DbTrackRow, 'album' | 'disc_number' | 'track_number' | 'title' | 'path'>
 ): number {
-  const albumCompare = normalizeAlbumName(a.album).localeCompare(normalizeAlbumName(b.album), undefined, { sensitivity: 'base' })
+  const albumCompare = compareBaseLocaleText(normalizeAlbumName(a.album), normalizeAlbumName(b.album))
   if (albumCompare !== 0) return albumCompare
   return compareTracksByDiscTrackTitle(a, b)
 }
@@ -5282,7 +5283,7 @@ export function getGenres(): GenreRecord[] {
         album_count: album_identity_keys.size,
         artwork_hash
       }))
-      .sort((a, b) => a.genre.localeCompare(b.genre, undefined, { sensitivity: 'base' }))
+      .sort((a, b) => compareBaseLocaleText(a.genre, b.genre))
   })
 }
 
@@ -5765,7 +5766,7 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
           artwork_source: resolvedArtwork.artwork_source
         }
       })
-      .sort((a, b) => a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' }))
+      .sort((a, b) => compareBaseLocaleText(a.artist, b.artist))
   })
 }
 
@@ -5820,9 +5821,9 @@ export function getAlbums(options: AlbumListOptions = {}): Album[] {
       })
 
     return albums.sort((a, b) => {
-      const albumCompare = a.album.localeCompare(b.album, undefined, { sensitivity: 'base' })
+      const albumCompare = compareBaseLocaleText(a.album, b.album)
       if (albumCompare !== 0) return albumCompare
-      const artistCompare = a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
+      const artistCompare = compareBaseLocaleText(a.artist, b.artist)
       if (artistCompare !== 0) return artistCompare
       return a.identity_key.localeCompare(b.identity_key)
     })
@@ -6556,9 +6557,9 @@ export async function listFolderSubdirectories(
   }
 
   return Array.from(directChildren.values()).sort((a, b) => {
-    const nameCompare = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+    const nameCompare = compareBaseLocaleText(a.name, b.name)
     if (nameCompare !== 0) return nameCompare
-    return a.relativePath.localeCompare(b.relativePath, undefined, { sensitivity: 'base' })
+    return compareBaseLocaleText(a.relativePath, b.relativePath)
   })
 }
 
@@ -9746,7 +9747,7 @@ function compareListeningAggregate(
     ? right.qualifiedPlays - left.qualifiedPlays
     : right.listenedSeconds - left.listenedSeconds
   if (secondary !== 0) return secondary
-  return left.label.localeCompare(right.label, undefined, { sensitivity: 'base' })
+  return compareBaseLocaleText(left.label, right.label)
 }
 
 export function getListeningStatsDashboard(query: ListeningStatsQuery): ListeningStatsDashboard {

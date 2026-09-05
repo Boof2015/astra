@@ -529,6 +529,16 @@ export class PlaybackHttpCore<TAuthContext> {
 
     const trackId = String(currentTrack.id)
     const inlineArtworkDataUrl = toSafeOptionalString(currentTrack.artworkData)
+    // Main merges the previous artwork into every playback-clock snapshot.
+    // Keep the validated bytes until that track's artwork actually changes.
+    if (
+      this.latestArtwork.currentTrackId === trackId
+      && this.latestArtwork.bytes
+      && this.latestArtwork.dataUrl === inlineArtworkDataUrl
+    ) {
+      this.latestSnapshot = this.buildSnapshot(false)
+      return
+    }
     const parsedArtwork = parseArtworkDataUrl(inlineArtworkDataUrl)
     if (parsedArtwork) {
       this.artworkResolveSequence += 1
