@@ -240,6 +240,8 @@ export interface TrackLoudnessResult {
   loudnessLufs: number
   peakLinear: number | null
   method: string
+  /** Diagnostic origin; omitted by older main-process implementations. */
+  source?: 'cache' | 'analysis'
 }
 
 export interface TrackLoudnessStorePayload {

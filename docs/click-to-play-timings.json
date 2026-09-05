@@ -1,0 +1,3378 @@
+{
+  "date": "2026-09-05",
+  "baseline": "7e9d3dd314cb08b97a16109609d22396898469d1",
+  "hardware": {
+    "cpu": "Apple M5 Pro",
+    "cpus": 15,
+    "memory": 51539607552,
+    "platform": "darwin",
+    "release": "25.5.0",
+    "arch": "arm64",
+    "versions": {
+      "node": "24.15.0",
+      "acorn": "8.16.0",
+      "ada": "3.4.4",
+      "amaro": "1.1.8",
+      "ares": "1.34.6",
+      "brotli": "1.0.9",
+      "cldr": "47.0",
+      "icu": "77.1",
+      "llhttp": "9.3.1",
+      "merve": "1.2.2",
+      "modules": "143",
+      "napi": "10",
+      "nbytes": "0.1.3",
+      "ncrypto": "0.0.1",
+      "nghttp2": "1.68.0",
+      "openssl": "0.0.0",
+      "simdjson": "4.5.0",
+      "simdutf": "7.7.0",
+      "sqlite": "3.51.3",
+      "tz": "2025b",
+      "undici": "7.24.4",
+      "unicode": "16.0",
+      "uv": "1.51.0",
+      "uvwasi": "0.0.23",
+      "v8": "14.4.258.32-electron.0",
+      "zlib": "1.3.1",
+      "zstd": "1.5.8",
+      "electron": "40.10.0",
+      "chrome": "144.0.7559.236"
+    }
+  },
+  "units": "milliseconds",
+  "coldDefinition": "First play in a fresh application process and temporary profile; OS file caches are not flushed.",
+  "samplesPerCasePerVersion": {
+    "cold": 5,
+    "warm": 20
+  },
+  "warmDefinition": "Twenty alternating-path clicks during active playback, in the first of five fresh processes.",
+  "percentileDefinition": "Nearest rank; even-length medians average the two middle observations.",
+  "rawResults": "/private/tmp/astra-playback-verified",
+  "summary": {
+    "after/controlled-50k": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        null
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "controlled": {
+          "cold": [
+            12,
+            12.8,
+            12.4,
+            12.5,
+            12.5
+          ],
+          "coldMedian": 12.5,
+          "warmMedian": 20.05,
+          "warmP95": 25
+        },
+        "loadingState": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "feedbackFrame": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "queuePreparation": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "contextInit": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "preflight": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "probe": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "decode": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loudnessWait": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loudnessRequest": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "bufferAllocation": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "deinterleave": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "pipeline": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "supersededWait": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        }
+      }
+    },
+    "after/controlled-album": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        null
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "controlled": {
+          "cold": [
+            1.1,
+            1,
+            0.9,
+            0.8,
+            1.3
+          ],
+          "coldMedian": 1,
+          "warmMedian": 0.8,
+          "warmP95": 1.4
+        },
+        "loadingState": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "feedbackFrame": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "queuePreparation": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "contextInit": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "preflight": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "probe": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "decode": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loudnessWait": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loudnessRequest": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "bufferAllocation": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "deinterleave": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "pipeline": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "supersededWait": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        }
+      }
+    },
+    "after/flac-50k-cached": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        "cache"
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [
+            242,
+            237,
+            263,
+            243,
+            263
+          ],
+          "coldMedian": 243,
+          "warmMedian": 204,
+          "warmP95": 213
+        },
+        "controlled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loadingState": {
+          "cold": [
+            13,
+            12.8,
+            13.3,
+            14.9,
+            19.4
+          ],
+          "coldMedian": 13.3,
+          "warmMedian": 16.05,
+          "warmP95": 17.5
+        },
+        "feedbackFrame": {
+          "cold": [
+            19.1,
+            19.1,
+            20,
+            21,
+            26.7
+          ],
+          "coldMedian": 20,
+          "warmMedian": 20.6,
+          "warmP95": 22.7
+        },
+        "queuePreparation": {
+          "cold": [
+            5,
+            5,
+            5,
+            7,
+            9
+          ],
+          "coldMedian": 5,
+          "warmMedian": 8,
+          "warmP95": 9
+        },
+        "contextInit": {
+          "cold": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "preflight": {
+          "cold": [
+            1.4,
+            1.4,
+            1.4,
+            1.4,
+            2.3
+          ],
+          "coldMedian": 1.4,
+          "warmMedian": 1.6,
+          "warmP95": 1.9
+        },
+        "probe": {
+          "cold": [
+            36.11,
+            36.74,
+            40.29,
+            36.18,
+            38.09
+          ],
+          "coldMedian": 36.74,
+          "warmMedian": 38.335,
+          "warmP95": 39.44
+        },
+        "decode": {
+          "cold": [
+            121.61,
+            118.06,
+            134.45,
+            121.59,
+            129.97
+          ],
+          "coldMedian": 121.61,
+          "warmMedian": 123.68,
+          "warmP95": 129.14
+        },
+        "loudnessWait": {
+          "cold": [
+            0.2,
+            0.1,
+            0,
+            0.1,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0,
+          "warmP95": 0.1
+        },
+        "loudnessRequest": {
+          "cold": [
+            0.193,
+            0.161,
+            0.233,
+            0.168,
+            0.356
+          ],
+          "coldMedian": 0.193,
+          "warmMedian": 1.535,
+          "warmP95": 2.223
+        },
+        "bufferAllocation": {
+          "cold": [
+            0.1,
+            0.1,
+            0.1,
+            0.1,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0,
+          "warmP95": 0.1
+        },
+        "deinterleave": {
+          "cold": [
+            17.9,
+            16.6,
+            17.5,
+            16.6,
+            17.9
+          ],
+          "coldMedian": 17.5,
+          "warmMedian": 12.6,
+          "warmP95": 19.4
+        },
+        "pipeline": {
+          "cold": [
+            219.5,
+            215.7,
+            240.5,
+            219.2,
+            233.7
+          ],
+          "coldMedian": 219.5,
+          "warmMedian": 182.35,
+          "warmP95": 190.1
+        },
+        "supersededWait": {
+          "cold": [
+            7,
+            7,
+            7,
+            6,
+            9
+          ],
+          "coldMedian": 7,
+          "warmMedian": 8,
+          "warmP95": 9
+        }
+      }
+    },
+    "after/flac-cached": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        "cache"
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [
+            232,
+            227,
+            229,
+            225,
+            241
+          ],
+          "coldMedian": 229,
+          "warmMedian": 194,
+          "warmP95": 346
+        },
+        "controlled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loadingState": {
+          "cold": [
+            1.4,
+            1.4,
+            1.3,
+            1.4,
+            1.3
+          ],
+          "coldMedian": 1.4,
+          "warmMedian": 0.7,
+          "warmP95": 1.2
+        },
+        "feedbackFrame": {
+          "cold": [
+            6.7,
+            6.8,
+            6.4,
+            6.7,
+            6.7
+          ],
+          "coldMedian": 6.7,
+          "warmMedian": 14,
+          "warmP95": 16.2
+        },
+        "queuePreparation": {
+          "cold": [
+            0,
+            0,
+            0,
+            1,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "contextInit": {
+          "cold": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "preflight": {
+          "cold": [
+            1.1,
+            1.2,
+            1.2,
+            1.1,
+            1.2
+          ],
+          "coldMedian": 1.2,
+          "warmMedian": 1.1,
+          "warmP95": 2.1
+        },
+        "probe": {
+          "cold": [
+            36.17,
+            37.76,
+            36.42,
+            35.88,
+            37.12
+          ],
+          "coldMedian": 36.42,
+          "warmMedian": 41.355,
+          "warmP95": 42.15
+        },
+        "decode": {
+          "cold": [
+            120.89,
+            119.94,
+            121.04,
+            118.42,
+            130.21
+          ],
+          "coldMedian": 120.89,
+          "warmMedian": 122.72,
+          "warmP95": 128.43
+        },
+        "loudnessWait": {
+          "cold": [
+            0.1,
+            0,
+            0,
+            0,
+            0.1
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0.2
+        },
+        "loudnessRequest": {
+          "cold": [
+            0.155,
+            0.215,
+            0.16,
+            0.2,
+            0.247
+          ],
+          "coldMedian": 0.2,
+          "warmMedian": 0.237,
+          "warmP95": 1.748
+        },
+        "bufferAllocation": {
+          "cold": [
+            0.1,
+            0,
+            0.2,
+            0.1,
+            0.2
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0.1,
+          "warmP95": 0.1
+        },
+        "deinterleave": {
+          "cold": [
+            18.5,
+            17.8,
+            18.4,
+            17.3,
+            19.1
+          ],
+          "coldMedian": 18.4,
+          "warmMedian": 12.6,
+          "warmP95": 170.5
+        },
+        "pipeline": {
+          "cold": [
+            222.5,
+            218.7,
+            220.5,
+            216.3,
+            231.8
+          ],
+          "coldMedian": 220.5,
+          "warmMedian": 187,
+          "warmP95": 340
+        },
+        "supersededWait": {
+          "cold": [
+            0,
+            0,
+            0,
+            1,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 1
+        }
+      }
+    },
+    "after/flac-disabled": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        "not_required"
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [
+            231,
+            233,
+            231,
+            230,
+            230
+          ],
+          "coldMedian": 231,
+          "warmMedian": 193,
+          "warmP95": 336
+        },
+        "controlled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loadingState": {
+          "cold": [
+            1.3,
+            1.6,
+            1.4,
+            1.7,
+            1.7
+          ],
+          "coldMedian": 1.6,
+          "warmMedian": 0.65,
+          "warmP95": 1.1
+        },
+        "feedbackFrame": {
+          "cold": [
+            6.9,
+            6.8,
+            6.8,
+            6.6,
+            6.9
+          ],
+          "coldMedian": 6.8,
+          "warmMedian": 13.3,
+          "warmP95": 15
+        },
+        "queuePreparation": {
+          "cold": [
+            0,
+            1,
+            1,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "contextInit": {
+          "cold": [
+            0,
+            0,
+            0,
+            0.1,
+            0.1
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "preflight": {
+          "cold": [
+            1.3,
+            1.1,
+            1.2,
+            1,
+            1.1
+          ],
+          "coldMedian": 1.1,
+          "warmMedian": 1.85,
+          "warmP95": 2.7
+        },
+        "probe": {
+          "cold": [
+            36.05,
+            35.88,
+            36.48,
+            35.75,
+            36.53
+          ],
+          "coldMedian": 36.05,
+          "warmMedian": 40.745,
+          "warmP95": 41.81
+        },
+        "decode": {
+          "cold": [
+            121.28,
+            121.31,
+            120.44,
+            119.46,
+            119.96
+          ],
+          "coldMedian": 120.44,
+          "warmMedian": 121.58,
+          "warmP95": 126.21
+        },
+        "loudnessWait": {
+          "cold": [
+            0.1,
+            0.1,
+            0.1,
+            0.1,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0,
+          "warmP95": 0.1
+        },
+        "loudnessRequest": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "bufferAllocation": {
+          "cold": [
+            0.1,
+            0,
+            0.1,
+            0.1,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0.05,
+          "warmP95": 0.1
+        },
+        "deinterleave": {
+          "cold": [
+            17.4,
+            19.9,
+            19.2,
+            19.3,
+            19.2
+          ],
+          "coldMedian": 19.2,
+          "warmMedian": 16,
+          "warmP95": 163
+        },
+        "pipeline": {
+          "cold": [
+            221.3,
+            224.8,
+            221.6,
+            221.4,
+            221.5
+          ],
+          "coldMedian": 221.5,
+          "warmMedian": 186.3,
+          "warmP95": 330
+        },
+        "supersededWait": {
+          "cold": [
+            0,
+            0,
+            1,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 1
+        }
+      }
+    },
+    "after/flac-replaygain": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        "not_required"
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [
+            292,
+            234,
+            227,
+            226,
+            228
+          ],
+          "coldMedian": 228,
+          "warmMedian": 199.5,
+          "warmP95": 362
+        },
+        "controlled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loadingState": {
+          "cold": [
+            1.4,
+            1.5,
+            1.4,
+            1.5,
+            1.5
+          ],
+          "coldMedian": 1.5,
+          "warmMedian": 0.6,
+          "warmP95": 1.1
+        },
+        "feedbackFrame": {
+          "cold": [
+            7,
+            6.7,
+            6.9,
+            6.9,
+            6.8
+          ],
+          "coldMedian": 6.9,
+          "warmMedian": 13.35,
+          "warmP95": 16.1
+        },
+        "queuePreparation": {
+          "cold": [
+            1,
+            0,
+            1,
+            0,
+            1
+          ],
+          "coldMedian": 1,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "contextInit": {
+          "cold": [
+            0.1,
+            0,
+            0,
+            0.1,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "preflight": {
+          "cold": [
+            1.3,
+            1.1,
+            1.5,
+            1.2,
+            1.1
+          ],
+          "coldMedian": 1.2,
+          "warmMedian": 1.65,
+          "warmP95": 3
+        },
+        "probe": {
+          "cold": [
+            38.24,
+            36.25,
+            35.44,
+            36.34,
+            37.01
+          ],
+          "coldMedian": 36.34,
+          "warmMedian": 40.96,
+          "warmP95": 42.55
+        },
+        "decode": {
+          "cold": [
+            146.21,
+            123.66,
+            118.45,
+            118.21,
+            119.19
+          ],
+          "coldMedian": 119.19,
+          "warmMedian": 124.815,
+          "warmP95": 138.92
+        },
+        "loudnessWait": {
+          "cold": [
+            0.2,
+            0.1,
+            0.1,
+            0,
+            0
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0,
+          "warmP95": 0.1
+        },
+        "loudnessRequest": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "bufferAllocation": {
+          "cold": [
+            0.3,
+            0.1,
+            0.1,
+            0.1,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0.1,
+          "warmP95": 0.2
+        },
+        "deinterleave": {
+          "cold": [
+            21.5,
+            18.5,
+            18.4,
+            18,
+            17.6
+          ],
+          "coldMedian": 18.4,
+          "warmMedian": 18.7,
+          "warmP95": 174.8
+        },
+        "pipeline": {
+          "cold": [
+            281,
+            225.5,
+            218,
+            217,
+            219.4
+          ],
+          "coldMedian": 219.4,
+          "warmMedian": 193.2,
+          "warmP95": 353.6
+        },
+        "supersededWait": {
+          "cold": [
+            0,
+            1,
+            1,
+            1,
+            0
+          ],
+          "coldMedian": 1,
+          "warmMedian": 0,
+          "warmP95": 1
+        }
+      }
+    },
+    "after/flac-uncached": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        "analysis"
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [
+            237,
+            241,
+            245,
+            241,
+            279
+          ],
+          "coldMedian": 241,
+          "warmMedian": 203,
+          "warmP95": 354
+        },
+        "controlled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loadingState": {
+          "cold": [
+            1.3,
+            1.2,
+            1.5,
+            1.4,
+            1.3
+          ],
+          "coldMedian": 1.3,
+          "warmMedian": 0.7,
+          "warmP95": 1.1
+        },
+        "feedbackFrame": {
+          "cold": [
+            10.3,
+            11.3,
+            10.5,
+            9.4,
+            9.8
+          ],
+          "coldMedian": 10.3,
+          "warmMedian": 12.9,
+          "warmP95": 14.7
+        },
+        "queuePreparation": {
+          "cold": [
+            0,
+            0,
+            1,
+            0,
+            1
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "contextInit": {
+          "cold": [
+            0,
+            0,
+            0,
+            0,
+            0.1
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "preflight": {
+          "cold": [
+            1.2,
+            1.1,
+            1.2,
+            1.2,
+            1.3
+          ],
+          "coldMedian": 1.2,
+          "warmMedian": 1.85,
+          "warmP95": 2.6
+        },
+        "probe": {
+          "cold": [
+            37.93,
+            37.13,
+            38.3,
+            37.51,
+            39.27
+          ],
+          "coldMedian": 37.93,
+          "warmMedian": 41.8,
+          "warmP95": 42.71
+        },
+        "decode": {
+          "cold": [
+            124.44,
+            126.76,
+            126.84,
+            127.6,
+            135.43
+          ],
+          "coldMedian": 126.84,
+          "warmMedian": 128.785,
+          "warmP95": 135.52
+        },
+        "loudnessWait": {
+          "cold": [
+            0.1,
+            0.1,
+            0.1,
+            0.1,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0,
+          "warmP95": 0.2
+        },
+        "loudnessRequest": {
+          "cold": [
+            140.011,
+            138.91,
+            141.43,
+            138.927,
+            169.948
+          ],
+          "coldMedian": 140.011,
+          "warmMedian": 139.161,
+          "warmP95": 144.04
+        },
+        "bufferAllocation": {
+          "cold": [
+            0.1,
+            0.2,
+            0.2,
+            0.1,
+            0.5
+          ],
+          "coldMedian": 0.2,
+          "warmMedian": 0,
+          "warmP95": 0.2
+        },
+        "deinterleave": {
+          "cold": [
+            17.3,
+            19.1,
+            19.2,
+            18.4,
+            20.8
+          ],
+          "coldMedian": 19.1,
+          "warmMedian": 16.2,
+          "warmP95": 168.3
+        },
+        "pipeline": {
+          "cold": [
+            228.1,
+            231.9,
+            235.3,
+            231.9,
+            267.4
+          ],
+          "coldMedian": 231.9,
+          "warmMedian": 196.75,
+          "warmP95": 346.8
+        },
+        "supersededWait": {
+          "cold": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0.5,
+          "warmP95": 1
+        }
+      }
+    },
+    "after/long-uncached": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        "analysis"
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [
+            465,
+            469,
+            472,
+            465,
+            464
+          ],
+          "coldMedian": 465,
+          "warmMedian": 437.5,
+          "warmP95": 721
+        },
+        "controlled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loadingState": {
+          "cold": [
+            1.6,
+            1.3,
+            1.5,
+            1.4,
+            1.4
+          ],
+          "coldMedian": 1.4,
+          "warmMedian": 1.1,
+          "warmP95": 1.3
+        },
+        "feedbackFrame": {
+          "cold": [
+            8.8,
+            13,
+            11.2,
+            10.3,
+            9.7
+          ],
+          "coldMedian": 10.3,
+          "warmMedian": 11.55,
+          "warmP95": 15.1
+        },
+        "queuePreparation": {
+          "cold": [
+            1,
+            1,
+            1,
+            1,
+            0
+          ],
+          "coldMedian": 1,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "contextInit": {
+          "cold": [
+            0,
+            0,
+            0,
+            0.1,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0.1
+        },
+        "preflight": {
+          "cold": [
+            1.1,
+            1.4,
+            1.2,
+            1.1,
+            1.1
+          ],
+          "coldMedian": 1.1,
+          "warmMedian": 1.8,
+          "warmP95": 2.8
+        },
+        "probe": {
+          "cold": [
+            38.21,
+            38.65,
+            38.34,
+            37.53,
+            37.41
+          ],
+          "coldMedian": 38.21,
+          "warmMedian": 42.355,
+          "warmP95": 43.27
+        },
+        "decode": {
+          "cold": [
+            322.27,
+            324.83,
+            327.9,
+            324.07,
+            323.71
+          ],
+          "coldMedian": 324.07,
+          "warmMedian": 337.38,
+          "warmP95": 342.22
+        },
+        "loudnessWait": {
+          "cold": [
+            0.1,
+            0.1,
+            0.1,
+            0.1,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0.05,
+          "warmP95": 0.1
+        },
+        "loudnessRequest": {
+          "cold": [
+            360.054,
+            358.315,
+            360.791,
+            356.129,
+            351.276
+          ],
+          "coldMedian": 358.315,
+          "warmMedian": 361.736,
+          "warmP95": 368.848
+        },
+        "bufferAllocation": {
+          "cold": [
+            0.1,
+            0.3,
+            0.2,
+            0.2,
+            0.1
+          ],
+          "coldMedian": 0.2,
+          "warmMedian": 0.1,
+          "warmP95": 0.2
+        },
+        "deinterleave": {
+          "cold": [
+            40.6,
+            41,
+            40.4,
+            40.2,
+            39.2
+          ],
+          "coldMedian": 40.4,
+          "warmMedian": 36.5,
+          "warmP95": 322.3
+        },
+        "pipeline": {
+          "cold": [
+            455.2,
+            459.4,
+            461.7,
+            455.9,
+            454.3
+          ],
+          "coldMedian": 455.9,
+          "warmMedian": 429.45,
+          "warmP95": 711.8
+        },
+        "supersededWait": {
+          "cold": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 1,
+          "warmP95": 1
+        }
+      }
+    },
+    "after/mp3-uncached": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        "analysis"
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [
+            356,
+            331,
+            333,
+            327,
+            340
+          ],
+          "coldMedian": 333,
+          "warmMedian": 317,
+          "warmP95": 459
+        },
+        "controlled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loadingState": {
+          "cold": [
+            1.7,
+            1.4,
+            1.5,
+            1.3,
+            1.4
+          ],
+          "coldMedian": 1.4,
+          "warmMedian": 0.7,
+          "warmP95": 0.9
+        },
+        "feedbackFrame": {
+          "cold": [
+            9,
+            10.6,
+            8.4,
+            11.3,
+            10.6
+          ],
+          "coldMedian": 10.6,
+          "warmMedian": 12.6,
+          "warmP95": 15.4
+        },
+        "queuePreparation": {
+          "cold": [
+            1,
+            0,
+            1,
+            0,
+            1
+          ],
+          "coldMedian": 1,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "contextInit": {
+          "cold": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "preflight": {
+          "cold": [
+            1.1,
+            1,
+            1,
+            1.2,
+            1.1
+          ],
+          "coldMedian": 1.1,
+          "warmMedian": 1.6,
+          "warmP95": 1.9
+        },
+        "probe": {
+          "cold": [
+            40.4,
+            39.26,
+            37.67,
+            38.16,
+            38.4
+          ],
+          "coldMedian": 38.4,
+          "warmMedian": 44.175,
+          "warmP95": 49.74
+        },
+        "decode": {
+          "cold": [
+            231,
+            215.78,
+            217.74,
+            213.99,
+            222.8
+          ],
+          "coldMedian": 217.74,
+          "warmMedian": 235.585,
+          "warmP95": 248.29
+        },
+        "loudnessWait": {
+          "cold": [
+            0.1,
+            0.1,
+            0.2,
+            0.2,
+            0
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0,
+          "warmP95": 0.1
+        },
+        "loudnessRequest": {
+          "cold": [
+            258.714,
+            233.221,
+            235.582,
+            235.407,
+            240.529
+          ],
+          "coldMedian": 235.582,
+          "warmMedian": 248.96,
+          "warmP95": 260.81
+        },
+        "bufferAllocation": {
+          "cold": [
+            0.1,
+            0,
+            0.1,
+            0,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0.1,
+          "warmP95": 0.2
+        },
+        "deinterleave": {
+          "cold": [
+            19.8,
+            18.3,
+            17,
+            16.8,
+            17.1
+          ],
+          "coldMedian": 17.1,
+          "warmMedian": 14.35,
+          "warmP95": 173
+        },
+        "pipeline": {
+          "cold": [
+            346.5,
+            321.7,
+            323.3,
+            318.3,
+            330.3
+          ],
+          "coldMedian": 323.3,
+          "warmMedian": 310.65,
+          "warmP95": 452.9
+        },
+        "supersededWait": {
+          "cold": [
+            0,
+            0,
+            1,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 1
+        }
+      }
+    },
+    "after/surround-uncached": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        "analysis"
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [
+            341,
+            349,
+            339,
+            341,
+            344
+          ],
+          "coldMedian": 341,
+          "warmMedian": 310,
+          "warmP95": 593
+        },
+        "controlled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loadingState": {
+          "cold": [
+            1.4,
+            1.3,
+            1.6,
+            1.5,
+            1.5
+          ],
+          "coldMedian": 1.5,
+          "warmMedian": 1.1,
+          "warmP95": 1.3
+        },
+        "feedbackFrame": {
+          "cold": [
+            12.8,
+            9.3,
+            8.8,
+            11.9,
+            8.9
+          ],
+          "coldMedian": 9.3,
+          "warmMedian": 12.55,
+          "warmP95": 16
+        },
+        "queuePreparation": {
+          "cold": [
+            1,
+            1,
+            0,
+            1,
+            0
+          ],
+          "coldMedian": 1,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "contextInit": {
+          "cold": [
+            0,
+            0.1,
+            0,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "preflight": {
+          "cold": [
+            1.3,
+            1.1,
+            1,
+            1.2,
+            1.1
+          ],
+          "coldMedian": 1.1,
+          "warmMedian": 1.5,
+          "warmP95": 2.1
+        },
+        "probe": {
+          "cold": [
+            38.39,
+            42.74,
+            38.87,
+            37.47,
+            38.73
+          ],
+          "coldMedian": 38.73,
+          "warmMedian": 41.59,
+          "warmP95": 44.53
+        },
+        "decode": {
+          "cold": [
+            200.32,
+            212.38,
+            207.11,
+            205.45,
+            209.67
+          ],
+          "coldMedian": 207.11,
+          "warmMedian": 216.19,
+          "warmP95": 222.96
+        },
+        "loudnessWait": {
+          "cold": [
+            0.1,
+            0.2,
+            0.2,
+            0,
+            0
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0.1,
+          "warmP95": 0.1
+        },
+        "loudnessRequest": {
+          "cold": [
+            206.42,
+            216.189,
+            209.425,
+            204.44,
+            205.477
+          ],
+          "coldMedian": 206.42,
+          "warmMedian": 204.679,
+          "warmP95": 213.513
+        },
+        "bufferAllocation": {
+          "cold": [
+            0.1,
+            0.1,
+            0.3,
+            0.1,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0.1,
+          "warmP95": 0.2
+        },
+        "deinterleave": {
+          "cold": [
+            32.1,
+            29.2,
+            30.7,
+            31.1,
+            33
+          ],
+          "coldMedian": 31.1,
+          "warmMedian": 31.2,
+          "warmP95": 314
+        },
+        "pipeline": {
+          "cold": [
+            330.5,
+            338.6,
+            330,
+            330.6,
+            334.1
+          ],
+          "coldMedian": 330.6,
+          "warmMedian": 302.9,
+          "warmP95": 585
+        },
+        "supersededWait": {
+          "cold": [
+            0,
+            0,
+            0,
+            0,
+            1
+          ],
+          "coldMedian": 0,
+          "warmMedian": 1,
+          "warmP95": 1
+        }
+      }
+    },
+    "before/controlled-50k": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        null
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "controlled": {
+          "cold": [
+            42.9,
+            41.1,
+            41.5,
+            41.5,
+            42.2
+          ],
+          "coldMedian": 41.5,
+          "warmMedian": 46.25,
+          "warmP95": 50
+        },
+        "loadingState": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "feedbackFrame": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "queuePreparation": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "contextInit": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "preflight": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "probe": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "decode": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loudnessWait": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loudnessRequest": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "bufferAllocation": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "deinterleave": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "pipeline": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "supersededWait": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        }
+      }
+    },
+    "before/controlled-album": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        null
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "controlled": {
+          "cold": [
+            1,
+            1,
+            1.2,
+            1.1,
+            1.2
+          ],
+          "coldMedian": 1.1,
+          "warmMedian": 1,
+          "warmP95": 1.4
+        },
+        "loadingState": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "feedbackFrame": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "queuePreparation": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "contextInit": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "preflight": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "probe": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "decode": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loudnessWait": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loudnessRequest": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "bufferAllocation": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "deinterleave": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "pipeline": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "supersededWait": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        }
+      }
+    },
+    "before/flac-50k-cached": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        "cache"
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [
+            281,
+            268,
+            271,
+            271,
+            334
+          ],
+          "coldMedian": 271,
+          "warmMedian": 234,
+          "warmP95": 241
+        },
+        "controlled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loadingState": {
+          "cold": [
+            41.6,
+            42,
+            43.9,
+            44.5,
+            49.3
+          ],
+          "coldMedian": 43.9,
+          "warmMedian": 44.3,
+          "warmP95": 45.6
+        },
+        "feedbackFrame": {
+          "cold": [
+            47.4,
+            47.5,
+            49.5,
+            50.7,
+            55.9
+          ],
+          "coldMedian": 49.5,
+          "warmMedian": 52.95,
+          "warmP95": 56.8
+        },
+        "queuePreparation": {
+          "cold": [
+            35,
+            35,
+            37,
+            37,
+            42
+          ],
+          "coldMedian": 37,
+          "warmMedian": 37,
+          "warmP95": 38
+        },
+        "contextInit": {
+          "cold": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "preflight": {
+          "cold": [
+            1.5,
+            1.3,
+            1.4,
+            1.7,
+            1.5
+          ],
+          "coldMedian": 1.5,
+          "warmMedian": 1.6,
+          "warmP95": 3.6
+        },
+        "probe": {
+          "cold": [
+            35.59,
+            36.62,
+            36.34,
+            35.33,
+            39.75
+          ],
+          "coldMedian": 36.34,
+          "warmMedian": 37.595,
+          "warmP95": 39.2
+        },
+        "decode": {
+          "cold": [
+            134.29,
+            122.02,
+            123.1,
+            122.5,
+            164.46
+          ],
+          "coldMedian": 123.1,
+          "warmMedian": 123.655,
+          "warmP95": 133.15
+        },
+        "loudnessWait": {
+          "cold": [
+            0.1,
+            0.1,
+            0.1,
+            0.1,
+            0.2
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0,
+          "warmP95": 0.1
+        },
+        "loudnessRequest": {
+          "cold": [
+            0.185,
+            0.157,
+            0.15,
+            0.246,
+            0.183
+          ],
+          "coldMedian": 0.183,
+          "warmMedian": 1.418,
+          "warmP95": 2.003
+        },
+        "bufferAllocation": {
+          "cold": [
+            0.1,
+            0.1,
+            0.1,
+            0.1,
+            0.3
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0,
+          "warmP95": 0.1
+        },
+        "deinterleave": {
+          "cold": [
+            17.6,
+            17.2,
+            16.8,
+            17.2,
+            20.1
+          ],
+          "coldMedian": 17.2,
+          "warmMedian": 12.6,
+          "warmP95": 19.3
+        },
+        "pipeline": {
+          "cold": [
+            230.8,
+            217.9,
+            218.8,
+            218.5,
+            275.3
+          ],
+          "coldMedian": 218.8,
+          "warmMedian": 180.05,
+          "warmP95": 191.3
+        },
+        "supersededWait": {
+          "cold": [
+            6,
+            6,
+            5,
+            6,
+            7
+          ],
+          "coldMedian": 6,
+          "warmMedian": 7,
+          "warmP95": 8
+        }
+      }
+    },
+    "before/flac-cached": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        "cache"
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [
+            225,
+            236,
+            228,
+            231,
+            237
+          ],
+          "coldMedian": 231,
+          "warmMedian": 191,
+          "warmP95": 359
+        },
+        "controlled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loadingState": {
+          "cold": [
+            1.4,
+            1.5,
+            1.5,
+            1.7,
+            1.7
+          ],
+          "coldMedian": 1.5,
+          "warmMedian": 0.6,
+          "warmP95": 1
+        },
+        "feedbackFrame": {
+          "cold": [
+            6.8,
+            7.2,
+            6.8,
+            7,
+            7.3
+          ],
+          "coldMedian": 7,
+          "warmMedian": 13.15,
+          "warmP95": 16.3
+        },
+        "queuePreparation": {
+          "cold": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "coldMedian": 1,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "contextInit": {
+          "cold": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "preflight": {
+          "cold": [
+            1.4,
+            1.1,
+            1.2,
+            1,
+            1
+          ],
+          "coldMedian": 1.1,
+          "warmMedian": 1.75,
+          "warmP95": 3.1
+        },
+        "probe": {
+          "cold": [
+            35.82,
+            36.71,
+            35.19,
+            36.19,
+            36.51
+          ],
+          "coldMedian": 36.19,
+          "warmMedian": 40.795,
+          "warmP95": 41.85
+        },
+        "decode": {
+          "cold": [
+            117.99,
+            123.41,
+            122.64,
+            119.73,
+            124.79
+          ],
+          "coldMedian": 122.64,
+          "warmMedian": 121.255,
+          "warmP95": 129.19
+        },
+        "loudnessWait": {
+          "cold": [
+            0.1,
+            0.1,
+            0,
+            0,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0,
+          "warmP95": 0.1
+        },
+        "loudnessRequest": {
+          "cold": [
+            0.267,
+            0.244,
+            0.191,
+            0.195,
+            0.27
+          ],
+          "coldMedian": 0.244,
+          "warmMedian": 1.501,
+          "warmP95": 2.272
+        },
+        "bufferAllocation": {
+          "cold": [
+            0,
+            0.1,
+            0.1,
+            0.2,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0.1,
+          "warmP95": 0.1
+        },
+        "deinterleave": {
+          "cold": [
+            17.3,
+            18.7,
+            18.5,
+            19.4,
+            18
+          ],
+          "coldMedian": 18.5,
+          "warmMedian": 15.4,
+          "warmP95": 179.6
+        },
+        "pipeline": {
+          "cold": [
+            216.3,
+            225.7,
+            219.8,
+            221.8,
+            227.7
+          ],
+          "coldMedian": 221.8,
+          "warmMedian": 186.05,
+          "warmP95": 351.5
+        },
+        "supersededWait": {
+          "cold": [
+            0,
+            0,
+            0,
+            1,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 1
+        }
+      }
+    },
+    "before/flac-disabled": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        "not_required"
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [
+            233,
+            229,
+            233,
+            232,
+            228
+          ],
+          "coldMedian": 232,
+          "warmMedian": 189.5,
+          "warmP95": 338
+        },
+        "controlled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loadingState": {
+          "cold": [
+            1.5,
+            1.5,
+            1.5,
+            1.7,
+            1.5
+          ],
+          "coldMedian": 1.5,
+          "warmMedian": 0.6,
+          "warmP95": 1.1
+        },
+        "feedbackFrame": {
+          "cold": [
+            6.9,
+            6.7,
+            7,
+            6.9,
+            6.8
+          ],
+          "coldMedian": 6.9,
+          "warmMedian": 14.15,
+          "warmP95": 16.2
+        },
+        "queuePreparation": {
+          "cold": [
+            1,
+            0,
+            1,
+            1,
+            1
+          ],
+          "coldMedian": 1,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "contextInit": {
+          "cold": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "preflight": {
+          "cold": [
+            1.1,
+            1.3,
+            1.2,
+            1.1,
+            1.4
+          ],
+          "coldMedian": 1.2,
+          "warmMedian": 1.2,
+          "warmP95": 2.8
+        },
+        "probe": {
+          "cold": [
+            35.19,
+            35.1,
+            35.02,
+            35.72,
+            34.96
+          ],
+          "coldMedian": 35.1,
+          "warmMedian": 40.465,
+          "warmP95": 42.07
+        },
+        "decode": {
+          "cold": [
+            122.36,
+            120.22,
+            121.82,
+            121.75,
+            119.91
+          ],
+          "coldMedian": 121.75,
+          "warmMedian": 119.48,
+          "warmP95": 126.51
+        },
+        "loudnessWait": {
+          "cold": [
+            0.1,
+            0,
+            0.1,
+            0,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0,
+          "warmP95": 0.1
+        },
+        "loudnessRequest": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "bufferAllocation": {
+          "cold": [
+            0.2,
+            0.1,
+            0.1,
+            0.1,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0.05,
+          "warmP95": 0.2
+        },
+        "deinterleave": {
+          "cold": [
+            18.6,
+            18.1,
+            18.9,
+            19.1,
+            18.7
+          ],
+          "coldMedian": 18.7,
+          "warmMedian": 14.75,
+          "warmP95": 169.3
+        },
+        "pipeline": {
+          "cold": [
+            224.1,
+            219.7,
+            223.7,
+            223.5,
+            218.8
+          ],
+          "coldMedian": 223.5,
+          "warmMedian": 182.75,
+          "warmP95": 332.6
+        },
+        "supersededWait": {
+          "cold": [
+            1,
+            1,
+            0,
+            1,
+            0
+          ],
+          "coldMedian": 1,
+          "warmMedian": 0,
+          "warmP95": 1
+        }
+      }
+    },
+    "before/flac-replaygain": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        "not_required"
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [
+            231,
+            272,
+            252,
+            239,
+            230
+          ],
+          "coldMedian": 239,
+          "warmMedian": 190,
+          "warmP95": 343
+        },
+        "controlled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loadingState": {
+          "cold": [
+            1.5,
+            1.6,
+            1.4,
+            1.5,
+            1.6
+          ],
+          "coldMedian": 1.5,
+          "warmMedian": 0.7,
+          "warmP95": 1.1
+        },
+        "feedbackFrame": {
+          "cold": [
+            6.7,
+            9.1,
+            6.7,
+            7.2,
+            7.1
+          ],
+          "coldMedian": 7.1,
+          "warmMedian": 14.4,
+          "warmP95": 16.1
+        },
+        "queuePreparation": {
+          "cold": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "coldMedian": 1,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "contextInit": {
+          "cold": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "preflight": {
+          "cold": [
+            1.1,
+            1.1,
+            1,
+            1.2,
+            1.1
+          ],
+          "coldMedian": 1.1,
+          "warmMedian": 1.3,
+          "warmP95": 3.5
+        },
+        "probe": {
+          "cold": [
+            35.15,
+            38.23,
+            37.73,
+            36.69,
+            35.21
+          ],
+          "coldMedian": 36.69,
+          "warmMedian": 40.595,
+          "warmP95": 41.33
+        },
+        "decode": {
+          "cold": [
+            121.51,
+            144.01,
+            135.83,
+            126.87,
+            120.33
+          ],
+          "coldMedian": 126.87,
+          "warmMedian": 119.395,
+          "warmP95": 122.76
+        },
+        "loudnessWait": {
+          "cold": [
+            0.1,
+            0.1,
+            0.2,
+            0.1,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0,
+          "warmP95": 0.1
+        },
+        "loudnessRequest": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "bufferAllocation": {
+          "cold": [
+            0.1,
+            2.3,
+            0.2,
+            0.1,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0,
+          "warmP95": 0.1
+        },
+        "deinterleave": {
+          "cold": [
+            18.5,
+            21.2,
+            20.1,
+            17,
+            19.2
+          ],
+          "coldMedian": 19.2,
+          "warmMedian": 17.95,
+          "warmP95": 172.6
+        },
+        "pipeline": {
+          "cold": [
+            222.3,
+            259.7,
+            242.9,
+            229.7,
+            220.1
+          ],
+          "coldMedian": 229.7,
+          "warmMedian": 184.25,
+          "warmP95": 337.8
+        },
+        "supersededWait": {
+          "cold": [
+            0,
+            0,
+            1,
+            0,
+            1
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 1
+        }
+      }
+    },
+    "before/flac-uncached": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        "analysis"
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [
+            266,
+            237,
+            246,
+            239,
+            239
+          ],
+          "coldMedian": 239,
+          "warmMedian": 205,
+          "warmP95": 361
+        },
+        "controlled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loadingState": {
+          "cold": [
+            1.3,
+            1.5,
+            1.7,
+            1.5,
+            1.5
+          ],
+          "coldMedian": 1.5,
+          "warmMedian": 0.7,
+          "warmP95": 1.1
+        },
+        "feedbackFrame": {
+          "cold": [
+            12.1,
+            8.7,
+            7.6,
+            13.9,
+            16.1
+          ],
+          "coldMedian": 12.1,
+          "warmMedian": 13.15,
+          "warmP95": 15.9
+        },
+        "queuePreparation": {
+          "cold": [
+            0,
+            0,
+            1,
+            1,
+            1
+          ],
+          "coldMedian": 1,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "contextInit": {
+          "cold": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "preflight": {
+          "cold": [
+            1.2,
+            1.1,
+            1.3,
+            1.6,
+            0.4
+          ],
+          "coldMedian": 1.2,
+          "warmMedian": 1.6,
+          "warmP95": 2.2
+        },
+        "probe": {
+          "cold": [
+            47.72,
+            37.48,
+            38.02,
+            38.62,
+            38.41
+          ],
+          "coldMedian": 38.41,
+          "warmMedian": 42.355,
+          "warmP95": 43.95
+        },
+        "decode": {
+          "cold": [
+            123.54,
+            124.27,
+            130.81,
+            127.08,
+            127.38
+          ],
+          "coldMedian": 127.08,
+          "warmMedian": 128.085,
+          "warmP95": 135.68
+        },
+        "loudnessWait": {
+          "cold": [
+            0.1,
+            0,
+            0.1,
+            0.2,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0,
+          "warmP95": 0.1
+        },
+        "loudnessRequest": {
+          "cold": [
+            158.236,
+            139.597,
+            141.51,
+            140.689,
+            142.316
+          ],
+          "coldMedian": 141.51,
+          "warmMedian": 139.441,
+          "warmP95": 143.597
+        },
+        "bufferAllocation": {
+          "cold": [
+            2.2,
+            0.2,
+            0.1,
+            0.2,
+            0.1
+          ],
+          "coldMedian": 0.2,
+          "warmMedian": 0.1,
+          "warmP95": 0.1
+        },
+        "deinterleave": {
+          "cold": [
+            17.9,
+            17.7,
+            18.3,
+            16.7,
+            16.5
+          ],
+          "coldMedian": 17.7,
+          "warmMedian": 18.5,
+          "warmP95": 174.5
+        },
+        "pipeline": {
+          "cold": [
+            254.4,
+            228.2,
+            236.1,
+            229.8,
+            231.4
+          ],
+          "coldMedian": 231.4,
+          "warmMedian": 198.55,
+          "warmP95": 353.9
+        },
+        "supersededWait": {
+          "cold": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 1
+        }
+      }
+    },
+    "before/long-uncached": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        "analysis"
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [
+            450,
+            453,
+            452,
+            454,
+            554
+          ],
+          "coldMedian": 453,
+          "warmMedian": 416,
+          "warmP95": 689
+        },
+        "controlled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loadingState": {
+          "cold": [
+            1.3,
+            1.4,
+            1.4,
+            1.4,
+            1.5
+          ],
+          "coldMedian": 1.4,
+          "warmMedian": 1.05,
+          "warmP95": 1.2
+        },
+        "feedbackFrame": {
+          "cold": [
+            11.7,
+            10.1,
+            8.3,
+            11.7,
+            15.4
+          ],
+          "coldMedian": 11.7,
+          "warmMedian": 13.6,
+          "warmP95": 15.3
+        },
+        "queuePreparation": {
+          "cold": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "coldMedian": 1,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "contextInit": {
+          "cold": [
+            0,
+            0,
+            0.1,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "preflight": {
+          "cold": [
+            1.1,
+            1,
+            1.1,
+            1.2,
+            0.4
+          ],
+          "coldMedian": 1.1,
+          "warmMedian": 1.8,
+          "warmP95": 2.7
+        },
+        "probe": {
+          "cold": [
+            36.74,
+            36.66,
+            38.29,
+            36.93,
+            40.55
+          ],
+          "coldMedian": 36.93,
+          "warmMedian": 41.12,
+          "warmP95": 42.54
+        },
+        "decode": {
+          "cold": [
+            315.11,
+            312.99,
+            311.06,
+            312.67,
+            406.62
+          ],
+          "coldMedian": 312.99,
+          "warmMedian": 322.895,
+          "warmP95": 343.24
+        },
+        "loudnessWait": {
+          "cold": [
+            0,
+            0.1,
+            0,
+            0.1,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0,
+          "warmP95": 0.1
+        },
+        "loudnessRequest": {
+          "cold": [
+            348.448,
+            341.573,
+            341.444,
+            337.425,
+            417.622
+          ],
+          "coldMedian": 341.573,
+          "warmMedian": 346.076,
+          "warmP95": 376.361
+        },
+        "bufferAllocation": {
+          "cold": [
+            0.1,
+            0,
+            0.1,
+            0.2,
+            0.2
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0.1,
+          "warmP95": 0.1
+        },
+        "deinterleave": {
+          "cold": [
+            37.3,
+            39.6,
+            38.9,
+            40.6,
+            41.7
+          ],
+          "coldMedian": 39.6,
+          "warmMedian": 32.25,
+          "warmP95": 306.6
+        },
+        "pipeline": {
+          "cold": [
+            440.1,
+            443.2,
+            442.2,
+            444.3,
+            545.7
+          ],
+          "coldMedian": 443.2,
+          "warmMedian": 408.65,
+          "warmP95": 681.6
+        },
+        "supersededWait": {
+          "cold": [
+            0,
+            0,
+            1,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 1,
+          "warmP95": 1
+        }
+      }
+    },
+    "before/mp3-uncached": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        "analysis"
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [
+            360,
+            326,
+            332,
+            327,
+            334
+          ],
+          "coldMedian": 332,
+          "warmMedian": 302.5,
+          "warmP95": 455
+        },
+        "controlled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loadingState": {
+          "cold": [
+            1.4,
+            1.3,
+            1.5,
+            1.4,
+            1.5
+          ],
+          "coldMedian": 1.4,
+          "warmMedian": 0.6,
+          "warmP95": 1.2
+        },
+        "feedbackFrame": {
+          "cold": [
+            7.9,
+            12.5,
+            11,
+            11.2,
+            15.4
+          ],
+          "coldMedian": 11.2,
+          "warmMedian": 12.25,
+          "warmP95": 16
+        },
+        "queuePreparation": {
+          "cold": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "coldMedian": 1,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "contextInit": {
+          "cold": [
+            0.1,
+            0.1,
+            0,
+            0,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "preflight": {
+          "cold": [
+            1.1,
+            1.1,
+            1.1,
+            1.2,
+            0.4
+          ],
+          "coldMedian": 1.1,
+          "warmMedian": 1.8,
+          "warmP95": 2.5
+        },
+        "probe": {
+          "cold": [
+            42.15,
+            37.52,
+            39.98,
+            37.58,
+            39
+          ],
+          "coldMedian": 39,
+          "warmMedian": 43.345,
+          "warmP95": 45.17
+        },
+        "decode": {
+          "cold": [
+            234.39,
+            212.68,
+            214.66,
+            215.1,
+            219.77
+          ],
+          "coldMedian": 215.1,
+          "warmMedian": 225.12,
+          "warmP95": 236.66
+        },
+        "loudnessWait": {
+          "cold": [
+            0.1,
+            0.1,
+            0,
+            0.1,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0,
+          "warmP95": 0.1
+        },
+        "loudnessRequest": {
+          "cold": [
+            254.882,
+            231.39,
+            231.355,
+            229.907,
+            233.009
+          ],
+          "coldMedian": 231.39,
+          "warmMedian": 237.654,
+          "warmP95": 250.894
+        },
+        "bufferAllocation": {
+          "cold": [
+            0.1,
+            0.1,
+            0.1,
+            0.1,
+            0
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0.1,
+          "warmP95": 0.1
+        },
+        "deinterleave": {
+          "cold": [
+            21.5,
+            18.8,
+            18.6,
+            16.6,
+            17
+          ],
+          "coldMedian": 18.6,
+          "warmMedian": 18.5,
+          "warmP95": 168.7
+        },
+        "pipeline": {
+          "cold": [
+            350.5,
+            317,
+            322.6,
+            317.8,
+            324.9
+          ],
+          "coldMedian": 322.6,
+          "warmMedian": 296,
+          "warmP95": 448.1
+        },
+        "supersededWait": {
+          "cold": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 1
+        }
+      }
+    },
+    "before/surround-uncached": {
+      "coldCount": 5,
+      "warmCount": 20,
+      "sources": [
+        "analysis"
+      ],
+      "metrics": {
+        "scheduled": {
+          "cold": [
+            348,
+            405,
+            392,
+            406,
+            359
+          ],
+          "coldMedian": 392,
+          "warmMedian": 342.5,
+          "warmP95": 635
+        },
+        "controlled": {
+          "cold": [],
+          "coldMedian": null,
+          "warmMedian": null,
+          "warmP95": null
+        },
+        "loadingState": {
+          "cold": [
+            1.7,
+            1.6,
+            1.8,
+            1.7,
+            1.5
+          ],
+          "coldMedian": 1.7,
+          "warmMedian": 1.1,
+          "warmP95": 1.2
+        },
+        "feedbackFrame": {
+          "cold": [
+            11,
+            8.1,
+            16.1,
+            16.3,
+            11.6
+          ],
+          "coldMedian": 11.6,
+          "warmMedian": 11.6,
+          "warmP95": 14.6
+        },
+        "queuePreparation": {
+          "cold": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "coldMedian": 1,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "contextInit": {
+          "cold": [
+            0.1,
+            0,
+            0,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 0,
+          "warmP95": 0
+        },
+        "preflight": {
+          "cold": [
+            1.1,
+            1.2,
+            0.5,
+            0.5,
+            1.2
+          ],
+          "coldMedian": 1.1,
+          "warmMedian": 1.85,
+          "warmP95": 2.6
+        },
+        "probe": {
+          "cold": [
+            39.67,
+            46.15,
+            45.04,
+            43.96,
+            38.21
+          ],
+          "coldMedian": 43.96,
+          "warmMedian": 44.07,
+          "warmP95": 47.54
+        },
+        "decode": {
+          "cold": [
+            212.09,
+            252.06,
+            240.55,
+            250.94,
+            220.64
+          ],
+          "coldMedian": 240.55,
+          "warmMedian": 241.075,
+          "warmP95": 258.12
+        },
+        "loudnessWait": {
+          "cold": [
+            0.1,
+            0.1,
+            0.2,
+            0.1,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0.05,
+          "warmP95": 0.2
+        },
+        "loudnessRequest": {
+          "cold": [
+            207.919,
+            242.204,
+            241.312,
+            237.615,
+            216.902
+          ],
+          "coldMedian": 237.615,
+          "warmMedian": 226.143,
+          "warmP95": 239.317
+        },
+        "bufferAllocation": {
+          "cold": [
+            0.1,
+            0.1,
+            0.1,
+            0.1,
+            0.1
+          ],
+          "coldMedian": 0.1,
+          "warmMedian": 0.1,
+          "warmP95": 0.7
+        },
+        "deinterleave": {
+          "cold": [
+            31.9,
+            32.7,
+            32.4,
+            36.9,
+            32.5
+          ],
+          "coldMedian": 32.5,
+          "warmMedian": 29.25,
+          "warmP95": 316.3
+        },
+        "pipeline": {
+          "cold": [
+            337.7,
+            394.5,
+            381.1,
+            396.2,
+            348.4
+          ],
+          "coldMedian": 381.1,
+          "warmMedian": 334.6,
+          "warmP95": 627.7
+        },
+        "supersededWait": {
+          "cold": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "coldMedian": 0,
+          "warmMedian": 1,
+          "warmP95": 1
+        }
+      }
+    }
+  }
+}

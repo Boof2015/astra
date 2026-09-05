@@ -12467,6 +12467,7 @@ interface TrackLoudnessAnalysisResult {
   loudnessLufs: number
   peakLinear: number | null
   method: string
+  source?: 'cache' | 'analysis'
 }
 
 interface RendererTrackLoudnessPayload {
@@ -12614,7 +12615,7 @@ async function runLoudnessAnalysisJob(
       fileMtimeMs: job.fileStat.mtimeMs
     })
     return {
-      result: { loudnessLufs: parsed.loudnessLufs, peakLinear: parsed.peakLinear, method: 'ebur128' },
+      result: { loudnessLufs: parsed.loudnessLufs, peakLinear: parsed.peakLinear, method: 'ebur128', source: 'analysis' },
       outcome: 'success',
       capturedStderrBytes,
       backgroundPriorityApplied
@@ -12705,7 +12706,8 @@ async function analyzeTrackLoudness(
       return {
         loudnessLufs: stored.loudnessLufs,
         peakLinear: stored.peakLinear,
-        method: stored.method
+        method: stored.method,
+        source: 'cache'
       }
     }
     await library.deleteTrackLoudness(filePath)

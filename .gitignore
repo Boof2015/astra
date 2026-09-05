@@ -3,6 +3,7 @@ node_modules/
 
 # Build outputs
 out/
+.astra-playback-benchmark/
 dist/
 native/build/
 native/iamf-wasm/build/

@@ -285,7 +285,10 @@ export interface VisualizerConsumerDemand {
 export interface ExternalLoudnessResult {
   loudnessLufs: number
   peakLinear: number | null
+  source?: 'cache' | 'analysis'
 }
+
+export type LoadLoudnessSource = 'not_required' | 'cache' | 'analysis' | 'external' | 'renderer'
 
 export interface AudioLoadTimings {
   /** Decoder work only. Kept as the compatibility alias for decodeWorkMs. */
@@ -295,6 +298,9 @@ export interface AudioLoadTimings {
   decodeWorkMs?: number
   loudnessMs?: number
   standardLoadPipelineMs?: number
+  /** Time ensuring the context is ready, including first-load worklet initialization. */
+  audioContextInitMs?: number
+  loudnessSource?: LoadLoudnessSource
   decodeRequestId?: number
   validPcmBytes?: number
   backingBufferBytes?: number
@@ -355,6 +361,7 @@ interface PcmRendererDeliveryTiming {
   rendererBridgeCallMs: number
   deliveredAt: number
   pipelineStartedAt: number
+  audioContextInitMs?: number
 }
 
 interface InstalledPcmAudioBuffer {
@@ -5248,9 +5255,13 @@ export class AudioEngine {
     buffer: AudioBuffer,
     options: AudioLoadDataOptions,
     replayGainDb: number | null,
-    assertCurrent: () => void = () => undefined
+    assertCurrent: () => void = () => undefined,
+    onSource?: (source: LoadLoudnessSource) => void
   ): Promise<LoudnessAnalysis | null> {
-    if (!this.shouldAnalyzeLoudnessForLoad(replayGainDb)) return null
+    if (!this.shouldAnalyzeLoudnessForLoad(replayGainDb)) {
+      onSource?.('not_required')
+      return null
+    }
 
     if (options.loudnessAnalysis) {
       let external: ExternalLoudnessResult | null = null
@@ -5263,6 +5274,7 @@ export class AudioEngine {
       // renderer analysis for a load/prebuffer that can no longer commit.
       assertCurrent()
       if (external && Number.isFinite(external.loudnessLufs)) {
+        onSource?.(external.source ?? 'external')
         return {
           loudnessLufs: external.loudnessLufs,
           peakLinear: external.peakLinear ?? 0,
@@ -5273,6 +5285,7 @@ export class AudioEngine {
     }
 
     assertCurrent()
+    onSource?.('renderer')
     const analysis = await analyzeAudioBufferLoudness(buffer)
     assertCurrent()
     if (options.trackPath && Number.isFinite(analysis.loudnessLufs)) {
@@ -7780,7 +7793,9 @@ export class AudioEngine {
       throw new Error('Native exclusive modes require local, path-based loading.')
     }
     const loadOperation = this.beginLoadOperation()
+    const contextInitStartedAt = performance.now()
     await this.initContext()
+    const audioContextInitMs = performance.now() - contextInitStartedAt
     this.assertCurrentLoadOperation(loadOperation)
     if (!this.context) throw new Error('AudioContext not initialized')
 
@@ -7815,13 +7830,18 @@ export class AudioEngine {
       const decodeMs = Math.round(performance.now() - decodeStart)
       this.assertCurrentLoadOperation(loadOperation)
       const analysisStart = performance.now()
+      let loudnessSource: LoadLoudnessSource = 'not_required'
       const normalizationAnalysis = await this.resolveLoudnessAnalysisForLoad(
         decodedBuffer,
         options,
         this.currentReplayGainDb,
-        () => this.assertCurrentLoadOperation(loadOperation)
+        () => this.assertCurrentLoadOperation(loadOperation),
+        (source) => { loudnessSource = source }
       )
-      this.lastLoadTimings = { decodeMs, analysisMs: Math.round(performance.now() - analysisStart) }
+      this.lastLoadTimings = {
+        decodeMs, analysisMs: Math.round(performance.now() - analysisStart),
+        audioContextInitMs, loudnessSource
+      }
       this.assertCurrentLoadOperation(loadOperation)
       this.audioBuffer = decodedBuffer
       this.currentWaveformRequestId = null
@@ -7896,14 +7916,20 @@ export class AudioEngine {
       const decodedBuffer = installed.buffer
       this.assertCurrentLoadOperation(loadOperation)
       const analysisStart = performance.now()
+      let loudnessSource: LoadLoudnessSource = 'not_required'
       const normalizationAnalysis = await this.resolveLoudnessAnalysisForLoad(
         decodedBuffer,
         options,
         this.currentReplayGainDb,
-        () => this.assertCurrentLoadOperation(loadOperation)
+        () => this.assertCurrentLoadOperation(loadOperation),
+        (source) => { loudnessSource = source }
       )
       const analysisMs = performance.now() - analysisStart
-      const baseTimings = this.buildPcmLoadTimings(pcm, installed, analysisMs, delivery)
+      const baseTimings = {
+        ...this.buildPcmLoadTimings(pcm, installed, analysisMs, delivery),
+        audioContextInitMs: delivery?.audioContextInitMs,
+        loudnessSource
+      }
       // Preserve the existing visibility point for listeners while the final
       // synchronous commit duration is still being measured.
       this.lastLoadTimings = baseTimings
@@ -7992,7 +8018,9 @@ export class AudioEngine {
     let pcm: CompleteFloat32Pcm & { requestId: number }
     let delivery: PcmRendererDeliveryTiming
     try {
+      const contextInitStartedAt = performance.now()
       const sampleRate = await this.getStandardDecodeSampleRate()
+      const audioContextInitMs = performance.now() - contextInitStartedAt
       this.assertCurrentPcmDecodeOperation(decodeOperation)
       const legacyDecode = window.electronAPI?.decodeLocalAudioToPcm
       const openStream = window.electronAPI?.openLocalAudioPcmStream
@@ -8026,6 +8054,7 @@ export class AudioEngine {
         const deliveredAt = performance.now()
         delivery = {
           decodeRequestId: requestId,
+          audioContextInitMs,
           rendererBridgeCallMs: Math.max(0, deliveredAt - rendererBridgeStartedAt),
           deliveredAt,
           pipelineStartedAt,
