@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, clipboard, screen, safeStorage, powerMonitor, protocol, session, globalShortcut, Menu, Tray, type MenuItemConstructorOptions } from 'electron'
 import { join, basename, extname } from 'path'
+import { NotchController } from './services/notchController'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir, stat } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
 import { cpus, tmpdir, hostname, networkInterfaces, setPriority, constants as osConstants } from 'os'
@@ -358,6 +359,7 @@ let cachedBuildMetadata: ResolvedBuildMetadata | null = null
 let mainWindow: BrowserWindow | null = null
 let hrtfProfileService: HrtfProfileService | null = null
 let miniWindow: BrowserWindow | null = null
+let notchController: NotchController | null = null
 let lyricsPopoutWindow: BrowserWindow | null = null
 let appTray: Tray | null = null
 const scopePopoutWindows: Record<ScopeKind, BrowserWindow | null> = {
@@ -4899,6 +4901,7 @@ function createWindow(): void {
   mainWindow.on('closed', () => {
     globalInputShortcutService.clear()
     mainWindow = null
+    notchController?.mainWindowClosed()
     trayRendererReady = false
     latestTrayRendererState = { ...DEFAULT_TRAY_RENDERER_STATE }
     associatedOpenRendererReady = false
@@ -4941,6 +4944,7 @@ function createWindow(): void {
   broadcastScopePopoutState()
   broadcastLocalApiStatus()
   broadcastLyricsStatus()
+  notchController?.reconcile()
 }
 
 async function maybeRunAudioMetadataBackfillOnce(): Promise<void> {
@@ -5529,6 +5533,15 @@ app.whenReady().then(async () => {
   miniWindowPrefs = await loadMiniWindowPrefs()
   lyricsPopoutWindowPrefs = await loadLyricsPopoutWindowPrefs()
   desktopIntegrationPrefs = await loadDesktopIntegrationPrefs()
+  notchController = new NotchController({
+    getMainWindow: () => mainWindow,
+    openAstra: focusOrCreateMainWindow,
+    sendCommand: sendMiniPlayerCommand,
+    preload: join(__dirname, '../preload/index.js'),
+    rendererFile: join(__dirname, '../renderer/index.html'),
+    rendererUrl: isDev ? process.env['ELECTRON_RENDERER_URL'] : undefined,
+  })
+  await notchController.initialize()
   localApiConfig = await loadLocalApiConfigFromMeta()
   phoneRemoteConfig = await loadPhoneRemoteConfigFromMeta(localApiConfig.controlsEnabled)
   parallaxHostConfig = await loadParallaxHostConfigFromMeta()
@@ -5636,6 +5649,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isAppQuitting = true
+  notchController?.dispose()
   destroyAppTray()
   globalInputShortcutService.clear()
   if (mainWindowPersistTimer !== null) {
@@ -5839,9 +5853,11 @@ ipcMain.handle('mini-player:getSnapshot', () => {
   return latestMiniPlayerSnapshot
 })
 
-ipcMain.on('mini-player:publishSnapshot', (_event, snapshot: MiniPlayerSnapshot) => {
+ipcMain.on('mini-player:publishSnapshot', (event, snapshot: MiniPlayerSnapshot) => {
+  if (event.sender !== mainWindow?.webContents) return
   const mergedSnapshot = mergeMiniPlayerSnapshots(latestMiniPlayerSnapshot, snapshot)
   latestMiniPlayerSnapshot = mergedSnapshot
+  notchController?.publishSnapshot(mergedSnapshot)
   localApiService.publishSnapshot(mergedSnapshot)
   phoneRemoteService.publishSnapshot(mergedSnapshot)
   lastFmService.publishSnapshot(mergedSnapshot)
@@ -5857,8 +5873,10 @@ ipcMain.on('mini-player:publishQueueSnapshot', (_event, snapshot: MiniPlayerQueu
   phoneRemoteService.publishQueueSnapshot(snapshot)
 })
 
-ipcMain.on('mini-player:publishVisualizerChunk', (_event, chunk: MiniPlayerVisualizerStreamChunk) => {
+ipcMain.on('mini-player:publishVisualizerChunk', (event, chunk: MiniPlayerVisualizerStreamChunk) => {
+  if (event.sender !== mainWindow?.webContents) return
   latestMiniVisualizerChunk = chunk
+  notchController?.publishVisualizerChunk(chunk)
   if (miniWindow && !miniWindow.isDestroyed()) {
     miniWindow.webContents.send('mini-player:visualizerChunk', chunk)
   }

@@ -97,6 +97,7 @@ import { LRCLIB_OFFICIAL_BASE_URL } from '../../../types/lyrics'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
 import type { CompanionApiScope } from '../../../types/companionApi'
 import type { DesktopIntegrationPrefs } from '../../../types/desktopIntegration'
+import NotchSettings from '../notch/NotchSettings'
 import ParallaxSettingsPanel from '../parallax/ParallaxSettingsPanel'
 
 type ResetActionId =
@@ -2930,6 +2931,7 @@ export default function SettingsView() {
               <h3>Experimental</h3>
             </div>
             <div className="settings-cards">
+              {window.electronAPI.platform === 'darwin' && <NotchSettings />}
               <div className="settings-card">
                 <div className="settings-card-label">Controller Support</div>
                 <div className="settings-grid">
