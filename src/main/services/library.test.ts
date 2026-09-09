@@ -9,7 +9,10 @@ import * as library from './library.ts'
 import type { StatsTransferTrackTuple } from '../../shared/stats/statsTransfer.ts'
 import {
   createDefaultDynamicPlaylistRules,
-  type DynamicPlaylistCondition
+  type DynamicPlaylistCondition,
+  type DynamicPlaylistRulesV1,
+  type DynamicPlaylistTextField,
+  type DynamicPlaylistTextOperator
 } from '../../shared/playlists/dynamicPlaylist.ts'
 
 interface TestSqliteStatement {
@@ -3048,6 +3051,167 @@ test('dynamic playlists evaluate metadata rules without stored membership', asyn
   assert.equal(summary.kind, 'dynamic')
   assert.equal(summary.track_count, 2)
   assert.equal(summary.missing_track_count, 0)
+})
+
+async function setupDynamicPlaylistTextLibrary(t: test.TestContext, tracks: library.SubsonicTrackUpsertInput[]) {
+  await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({
+    name: 'Unicode Source',
+    base_url: 'https://music.example.test',
+    username: 'tester',
+    secret_encrypted: 'secret',
+    enabled: 1,
+    last_status: 'ok'
+  })
+  await library.upsertSubsonicTracks(source.id, tracks)
+  return source.id
+}
+
+test('dynamic playlist text rules match Unicode while preserving accent distinctions', async (t) => {
+  const cases: Array<{ field: DynamicPlaylistTextField; stored: string; query: string; fragment: string; other: string }> = [
+    { field: 'title', stored: 'МОСКВА', query: 'москва', fragment: 'СКВ', other: 'МОСКОВСКИЙ' },
+    { field: 'title', stored: 'москва', query: 'МОСКВА', fragment: 'СКВ', other: 'МОСКОВСКИЙ' },
+    { field: 'artist', stored: 'ΑΘΗΝΑ', query: 'αθηνα', fragment: 'ΘΗΝ', other: 'ΟΛΥΜΠΙΑ' },
+    { field: 'album', stored: 'ΟΣ', query: 'οσ', fragment: 'Σ', other: 'Ο' },
+    { field: 'artist', stored: 'BJÖRK', query: 'Björk', fragment: 'JÖ', other: 'Bjork' },
+    { field: 'album_artist', stored: 'ガール', query: 'カ\u3099ール', fragment: 'カ\u3099', other: 'カール' },
+    { field: 'title', stored: 'Cafe\u0301', query: 'CAFÉ', fragment: 'FÉ', other: 'Cafe' },
+    { field: 'genre', stored: '서울', query: '\u1109\u1165\u110b\u116e\u11af', fragment: '\u1109\u1165', other: '부산' },
+    { field: 'album', stored: '東京', query: '東京', fragment: '京', other: '東亰' },
+    { field: 'artist', stored: 'مرحبا', query: 'مرحبا', fragment: 'رحب', other: 'سلام' },
+    { field: 'format', stored: 'FLAC', query: 'flac', fragment: 'LA', other: 'WAV' },
+    { field: 'musical_key', stored: 'C♯MINOR', query: 'c♯minor', fragment: '♯MIN', other: 'C♭MINOR' },
+    { field: 'title', stored: 'ＡＳＴＲＡ', query: 'ａｓｔｒａ', fragment: 'ＳＴ', other: 'ASTRA' }
+  ]
+
+  for (const sample of cases) {
+    await t.test(`${sample.field}: ${sample.stored} / ${sample.query}`, async (t) => {
+      const matchPath = 'subsonic://unicode/match'
+      const otherPath = 'subsonic://unicode/other'
+      await setupDynamicPlaylistTextLibrary(t, [
+        createRemoteTrack({ path: matchPath, title: 'Match', artist: 'Artist', album: 'Album', [sample.field]: sample.stored }),
+        createRemoteTrack({ path: otherPath, title: 'Other', artist: 'Artist', album: 'Album', [sample.field]: sample.other })
+      ])
+
+      const assertMatches = (operator: DynamicPlaylistTextOperator, value: string, expectedPaths: string[]) => {
+        const preview = library.previewDynamicPlaylist({
+          ...createDefaultDynamicPlaylistRules(),
+          conditions: [{ kind: 'text', field: sample.field, operator, value }]
+        })
+        assert.deepEqual(preview.tracks.map((track) => track.path).sort(), [...expectedPaths].sort(), `${operator}: ${value}`)
+        assert.equal(preview.track_count, expectedPaths.length)
+      }
+
+      for (const value of [sample.stored, sample.query]) {
+        assertMatches('is', value, [matchPath])
+        assertMatches('contains', value, [matchPath])
+        assertMatches('is_not', value, [otherPath])
+      }
+      assertMatches('contains', sample.fragment, [matchPath])
+      assertMatches('is', sample.fragment, [])
+      assertMatches('is_not', sample.fragment, [matchPath, otherPath])
+      assertMatches('is', sample.other, [otherPath])
+      assertMatches('contains', 'unrelated value', [])
+      assert.equal(library.getTrackByPath(matchPath)?.[sample.field], sample.stored)
+    })
+  }
+})
+
+test('dynamic playlist Unicode matching uses overrides and preserves null and wildcard behavior', async (t) => {
+  const matchPath = 'subsonic://unicode/match'
+  const otherPath = 'subsonic://unicode/other'
+  await setupDynamicPlaylistTextLibrary(t, [
+    createRemoteTrack({
+      path: matchPath, title: 'Base Title', artist: 'Base Artist', album: 'Base Album',
+      album_artist: 'Base Album Artist', genre: 'Base Genre', musical_key: 'C♯MINOR'
+    }),
+    createRemoteTrack({ path: otherPath, title: 'Other', artist: 'Other Artist', album: 'Other Album' })
+  ])
+  await library.restoreTrackOverrides({
+    [matchPath]: {
+      title: 'МОСКВА', artist: 'BJÖRK', album: 'Café', album_artist: 'ガ', genre: 'ΑΘΗΝΑ',
+      year: null, track_number: null, disc_number: null, artwork_hash: null, artwork_cleared: null
+    }
+  })
+
+  const previewPaths = (field: DynamicPlaylistTextField, operator: DynamicPlaylistTextOperator, value: string) => (
+    library.previewDynamicPlaylist({
+      ...createDefaultDynamicPlaylistRules(),
+      conditions: [{ kind: 'text', field, operator, value }]
+    }).tracks.map((track) => track.path).sort()
+  )
+  const overrides: Array<{ field: DynamicPlaylistTextField; query: string; base: string }> = [
+    { field: 'title', query: 'москва', base: 'Base Title' },
+    { field: 'artist', query: 'björk', base: 'Base Artist' },
+    { field: 'album', query: 'CAFE\u0301', base: 'Base Album' },
+    { field: 'album_artist', query: 'カ\u3099', base: 'Base Album Artist' },
+    { field: 'genre', query: 'αθηνα', base: 'Base Genre' }
+  ]
+  for (const { field, query, base } of overrides) {
+    assert.deepEqual(previewPaths(field, 'is', query), [matchPath], field)
+    assert.deepEqual(previewPaths(field, 'contains', query), [matchPath], field)
+    assert.deepEqual(previewPaths(field, 'is_not', query), [otherPath], field)
+    assert.deepEqual(previewPaths(field, 'is', base), [], field)
+  }
+  assert.deepEqual(previewPaths('musical_key', 'is', 'c♯minor'), [matchPath])
+  assert.deepEqual(previewPaths('musical_key', 'contains', '♯MIN'), [matchPath])
+  assert.deepEqual(previewPaths('musical_key', 'is_not', 'c♯minor'), [otherPath])
+  for (const field of ['album_artist', 'genre', 'musical_key'] as const) {
+    assert.equal(library.getTrackByPath(otherPath)?.[field], null)
+    assert.deepEqual(previewPaths(field, 'contains', '%'), [matchPath, otherPath], field)
+    assert.deepEqual(previewPaths(field, 'is', '%'), [], field)
+  }
+  assert.deepEqual(previewPaths('title', 'contains', 'МО_КВА'), [matchPath])
+  assert.deepEqual(previewPaths('title', 'contains', 'МО%ВА'), [matchPath])
+  assert.deepEqual(previewPaths('title', 'is', 'МО%ВА'), [])
+})
+
+test('dynamic playlist Unicode previews and saved results agree after filtering, limits, and reopening', async (t) => {
+  const otherPath = 'subsonic://unicode/other'
+  const firstPath = 'subsonic://unicode/first'
+  const secondPath = 'subsonic://unicode/second'
+  const unavailablePath = 'subsonic://unicode/unavailable'
+  const sourceId = await setupDynamicPlaylistTextLibrary(t, [
+    createRemoteTrack({ path: otherPath, title: 'A', artist: 'Bjork', album: 'Album' }),
+    createRemoteTrack({ path: firstPath, title: 'B', artist: 'BJÖRK', album: 'Album' }),
+    createRemoteTrack({ path: secondPath, title: 'C', artist: 'Björk', album: 'Album' }),
+    createRemoteTrack({ path: unavailablePath, title: '0', artist: 'BJÖRK', album: 'Album' })
+  ])
+  assert.equal(await library.markMissingSubsonicTracksUnavailable(sourceId, new Set([otherPath, firstPath, secondPath])), 1)
+
+  const rules: DynamicPlaylistRulesV1 = {
+    version: 1,
+    conditions: [{ kind: 'text', field: 'artist', operator: 'is', value: 'BJO\u0308RK' }],
+    sort: { field: 'title', direction: 'asc' },
+    limit: 1
+  }
+  const playlist = await library.createDynamicPlaylist('音楽', rules)
+  assert.equal(playlist.track_count, 1)
+
+  const assertResults = (expectedRules: DynamicPlaylistRulesV1, expectedPaths: string[]) => {
+    const preview = library.previewDynamicPlaylist(expectedRules)
+    assert.deepEqual(preview.tracks.map((track) => track.path), expectedPaths)
+    assert.equal(preview.track_count, expectedPaths.length)
+    assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), expectedPaths)
+    assert.deepEqual(library.getPlaylistTrackEntries(playlist.id).map((entry) => entry.track_path), expectedPaths)
+    const summary = library.getPlaylists().find((entry) => entry.id === playlist.id)
+    assert.equal(summary?.track_count, expectedPaths.length)
+    assert.equal(summary?.name, '音楽')
+    assert.deepEqual(library.getDynamicPlaylistRules(playlist.id), expectedRules)
+    assert.equal(library.getTrackByPath(firstPath)?.artist, 'BJÖRK')
+  }
+
+  assertResults(rules, [firstPath])
+  library.closeDatabase()
+  await library.initDatabase()
+  assertResults(rules, [firstPath])
+
+  const expandedRules = { ...rules, limit: 2 }
+  await library.updateDynamicPlaylistRules(playlist.id, expandedRules)
+  assertResults(expandedRules, [firstPath, secondPath])
+  library.closeDatabase()
+  await library.initDatabase()
+  assertResults(expandedRules, [firstPath, secondPath])
 })
 
 test('dynamic playlist filters favorites, play counts, last played, sorting, and limits', async (t) => {

@@ -2246,6 +2246,7 @@ export async function initDatabase(): Promise<void> {
   db.pragma('foreign_keys = ON')
   db.pragma('busy_timeout = 5000')
   db.registerFunction('astra_normalize_album_key', { deterministic: true }, normalizeSqliteAlbumKey)
+  db.registerFunction('astra_dynamic_text_key', { deterministic: true }, normalizeDynamicPlaylistText)
 
   // Create tables
   db.run(`
@@ -11151,20 +11152,28 @@ function requireDynamicPlaylistRulesForId(playlistId: number): DynamicPlaylistRu
   return parseDynamicPlaylistRules(row.dynamic_rules_json)
 }
 
+function normalizeDynamicPlaylistText(value: unknown): string {
+  const text = typeof value === 'string' ? value : String(value ?? '')
+  // Use the same Unicode casing and canonical spelling on both sides of SQL
+  // comparisons, preserving accents. Fold final sigma so Greek substrings match
+  // regardless of the letter's position in the complete metadata value.
+  return text.normalize('NFC').toLowerCase().replace(/\u03c2/g, '\u03c3').normalize('NFC')
+}
+
 function appendDynamicTextCondition(
   condition: Extract<DynamicPlaylistCondition, { kind: 'text' }>,
   whereClauses: string[],
   params: unknown[]
 ): void {
   const expression = DYNAMIC_TEXT_FIELD_SQL[condition.field]
-  const normalizedValue = condition.value.toLocaleLowerCase()
+  const normalizedValue = normalizeDynamicPlaylistText(condition.value)
   if (condition.operator === 'contains') {
-    whereClauses.push(`LOWER(COALESCE(${expression}, '')) LIKE ?`)
+    whereClauses.push(`astra_dynamic_text_key(COALESCE(${expression}, '')) LIKE ?`)
     params.push(`%${normalizedValue}%`)
     return
   }
 
-  whereClauses.push(`LOWER(COALESCE(${expression}, '')) ${condition.operator === 'is' ? '=' : '<>'} ?`)
+  whereClauses.push(`astra_dynamic_text_key(COALESCE(${expression}, '')) ${condition.operator === 'is' ? '=' : '<>'} ?`)
   params.push(normalizedValue)
 }
 
