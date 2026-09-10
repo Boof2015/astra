@@ -790,6 +790,26 @@ test('path queue entries hydrate snapshots from cached library metadata', () => 
   assert.equal(resolved?.track.artworkHash, 'art-hash')
 })
 
+test('cached path preparation preserves duplicate occurrences, snapshots and missing-path order', () => {
+  resetStores()
+  const track = makeDbTrack('/queue/duplicate.flac', { title: 'Original title' })
+  useLibraryStore.setState({ trackByPath: new Map([[track.path, track]]) })
+  const entries = createQueueEntriesFromPaths([
+    '', track.path, '/queue/missing.flac', track.path, '/queue/missing.flac'
+  ])
+  assert.deepEqual(entries.map((entry) => entry.path), [
+    track.path, '/queue/missing.flac', track.path, '/queue/missing.flac'
+  ])
+  assert.notEqual(entries[0], entries[2])
+  assert.notEqual(entries[0].snapshot, entries[2].snapshot)
+  assert.notEqual(entries[1].snapshot, entries[3].snapshot)
+  track.title = 'Library edit'
+  entries[0].snapshot.title = 'Occurrence edit'
+  assert.equal(entries[2].snapshot.title, 'Original title')
+  assert.ok(entries.every((entry) => !hasArtworkData(entry)))
+  resetStores()
+})
+
 test('queue length stays constant-time for a large queue without resolving tracks', () => {
   resetStores()
 
@@ -1294,6 +1314,39 @@ test('immediate Next, Previous, Pause, and Stop keep unresolved context idle hyd
     }
     if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
     else delete (globalThis as Record<string, unknown>).window
+    resetStores()
+  }
+})
+
+test('rapid A to B to C path clicks publish C immediately and ignore late selected metadata', async () => {
+  resetStores()
+  const originalLoad = usePlayerStore.getState()._loadAndPlayTrack
+  const selected = ['a', 'b', 'c'].map((name) => `/rapid-context/${name}.flac`)
+  const pending = selected.map(() => createDeferred<DbTrack[]>())
+  const loaded: string[] = []
+  usePlayerStore.setState({ _loadAndPlayTrack: async (track) => {
+    loaded.push(track.path)
+    usePlayerStore.setState({ currentTrack: track, playbackState: 'playing' })
+    return 'loaded'
+  } })
+  installMockTrackFetch((paths) => pending[selected.indexOf(paths[0])]!.promise)
+  const starts: Promise<void>[] = []
+  try {
+    for (const path of selected) starts.push(usePlayerStore.getState().startPlaybackContextByPaths([path]))
+    assert.deepEqual(usePlayerStore.getState().queueItems.map((item) => item.entry.path), [selected[2]])
+    assert.deepEqual(loaded, [])
+    pending[2].resolve([makeDbTrack(selected[2], { title: 'Current C' })])
+    await starts[2]
+    pending[1].resolve([makeDbTrack(selected[1], { title: 'Late B' })])
+    pending[0].resolve([makeDbTrack(selected[0], { title: 'Late A' })])
+    await Promise.all(starts)
+    assert.deepEqual(loaded, [selected[2]])
+    assert.equal(usePlayerStore.getState().currentTrack?.title, 'Current C')
+    assert.deepEqual(usePlayerStore.getState().queueItems.map((item) => item.entry.path), [selected[2]])
+  } finally {
+    pending.forEach((request) => request.resolve([]))
+    await Promise.allSettled(starts)
+    usePlayerStore.setState({ _loadAndPlayTrack: originalLoad })
     resetStores()
   }
 })
@@ -4562,6 +4615,8 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     decodeMs: 12,
     decodeWorkMs: 12,
     analysisMs: 34,
+    audioContextInitMs: 5,
+    loudnessSource: 'cache',
     decodeRequestId: 77,
     validPcmBytes: 72_300_000,
     backingBufferBytes: 72_400_000,
@@ -4622,6 +4677,11 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     assert.equal(details.decodeOnlyMs, 12)
     assert.equal(details.decodeWorkMs, 12)
     assert.equal(details.loudnessMs, 34)
+    assert.equal(details.audioContextInitMs, 5)
+    assert.equal(details.loudnessSource, 'cache')
+    assert.equal(typeof details.localFilePreflightMs, 'number')
+    assert.equal(typeof details.commandToLoadingStateMs, 'number')
+    assert.equal(details.queueSize, 0)
     assert.equal(details.decodeRequestId, 77)
     assert.equal(typeof details.loadRequestId, 'number')
     assert.equal(details.prebufferRequestId, null)
@@ -4702,7 +4762,7 @@ test('successful Standard playback emits one complete playback-attempt timing ev
     assert.equal(trackLoad.details?.decodeRequestId, details.decodeRequestId)
     assert.equal(trackLoad.details?.decodeMs, trackLoad.details?.standardLoadPipelineMs)
     assert.equal(trackLoad.details?.decodeOnlyMs, trackLoad.details?.decodeWorkMs)
-    assert.notEqual(completions[0]?.options?.captureSample, false)
+    assert.equal(completions[0]?.options?.captureSample, false)
   } finally {
     usePlayerStore.getState()._cleanupListeners()
     await flushAsyncWork()

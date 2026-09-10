@@ -97,6 +97,7 @@ import { LRCLIB_OFFICIAL_BASE_URL } from '../../../types/lyrics'
 import type { AppBuildInfo } from '../../../types/appBuildInfo'
 import type { CompanionApiScope } from '../../../types/companionApi'
 import type { DesktopIntegrationPrefs } from '../../../types/desktopIntegration'
+import NotchSettings from '../notch/NotchSettings'
 import ParallaxSettingsPanel from '../parallax/ParallaxSettingsPanel'
 
 type ResetActionId =
@@ -1136,7 +1137,7 @@ export default function SettingsView() {
   const lastFmQueueLabel = `Pending scrobbles: ${lastFmPendingScrobbles}.`
   const lastFmResolvedError = lastFmErrorMessage || (lastFmStatus?.lastError ?? '')
   const lastFmProfileModalOpen = lastFmProfileModalMode != null
-  const lastFmProfileModalTitle = lastFmProfileModalMode === 'edit' ? 'Edit Destination' : 'Add Destination'
+  const lastFmProfileModalTitle = lastFmProfileModalMode === 'edit' ? 'Edit Destination' : 'Add Custom Destination'
   const lastFmProfilePresence = usePresence(lastFmProfileModalOpen ? lastFmProfileModalTitle : null)
   const lastFmProfileSaveDisabled = !lastFmProfileNameInput.trim() ||
     !lastFmProfileUrlInput.trim() ||
@@ -2499,16 +2500,17 @@ export default function SettingsView() {
                       <span className="settings-field-label">Destinations</span>
                       <button
                         type="button"
-                        className="settings-btn settings-btn-primary"
+                        className="settings-btn"
                         onClick={openLastFmCreateProfileModal}
                       >
-                        Add Destination
+                        Add Custom Destination
                       </button>
                     </div>
                     <div className="settings-lastfm-profile-list">
                       {lastFmProfiles.map((profile) => {
                         const canToggleProfile = canToggleLastFmProfile(profile)
                         const profileAuthPending = lastFmAuthPending && lastFmAuthPendingProfileId === profile.id
+                        const profileAuthPolling = profileAuthPending && lastFmIsAuthorizing
                         const canConnectProfile = lastFmHasApiCredentials &&
                           profile.kind === 'official' &&
                           profile.protocol === 'lastfm2' &&
@@ -2516,6 +2518,7 @@ export default function SettingsView() {
                           !lastFmIsAuthorizing
                         const rowClassName = [
                           'settings-lastfm-profile-row',
+                          profile.kind === 'official' ? 'is-official' : '',
                           profile.enabled ? 'active' : 'inactive',
                           !canToggleProfile ? 'blocked' : ''
                         ].filter(Boolean).join(' ')
@@ -2535,10 +2538,17 @@ export default function SettingsView() {
                             <div className="settings-lastfm-profile-main">
                               <div className="settings-lastfm-profile-title-row">
                                 <span className="settings-lastfm-profile-name">{profile.name}</span>
-                                <span className="settings-chip settings-chip-mono">
-                                  {profile.protocolLabel}
-                                </span>
+                                {profile.kind === 'custom' && (
+                                  <span className="settings-chip settings-chip-mono">
+                                    {profile.protocolLabel}
+                                  </span>
+                                )}
                               </div>
+                              {profile.kind === 'official' && !profile.connected && (
+                                <p className="settings-lastfm-connect-hint" id={`lastfm-connect-hint-${profile.id}`}>
+                                  Connect your Last.fm account to save your listening history. Opens in your browser.
+                                </p>
+                              )}
                               <div className="settings-lastfm-profile-meta">
                                 <span>{profile.apiBaseUrl}</span>
                                 <span>
@@ -2558,17 +2568,12 @@ export default function SettingsView() {
                               {profile.kind === 'official' && profile.protocol === 'lastfm2' && (!profile.connected || profileAuthPending) && (
                                 <button
                                   type="button"
-                                  className="settings-lastfm-icon-btn"
+                                  className="settings-btn settings-btn-primary settings-lastfm-connect-btn"
                                   onClick={() => void beginLastFmAuth(profile.id)}
                                   disabled={!canConnectProfile && !profileAuthPending}
-                                  title={profileAuthPending ? 'Authorization pending' : 'Connect'}
-                                  aria-label={profileAuthPending ? 'Authorization pending' : `Connect ${profile.name}`}
+                                  aria-describedby={!profile.connected ? `lastfm-connect-hint-${profile.id}` : undefined}
                                 >
-                                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                                    <path d="M10.5 13.5L13.5 10.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                                    <path d="M8.2 15.8L6.8 17.2C5.6 18.4 3.8 18.4 2.6 17.2C1.5 16 1.5 14.2 2.6 13L6.1 9.5C7.3 8.3 9.1 8.3 10.3 9.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                                    <path d="M15.8 8.2L17.2 6.8C18.4 5.6 20.2 5.6 21.4 6.8C22.5 8 22.5 9.8 21.4 11L17.9 14.5C16.7 15.7 14.9 15.7 13.7 14.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                                  </svg>
+                                  {profileAuthPolling ? 'Waiting for Last.fm…' : 'Connect Last.fm'}
                                 </button>
                               )}
                               {profile.connected && (
@@ -2930,6 +2935,7 @@ export default function SettingsView() {
               <h3>Experimental</h3>
             </div>
             <div className="settings-cards">
+              {window.electronAPI.platform === 'darwin' && <NotchSettings />}
               <div className="settings-card">
                 <div className="settings-card-label">Controller Support</div>
                 <div className="settings-grid">
@@ -3757,7 +3763,7 @@ export default function SettingsView() {
                 onClick={handleSaveLastFmProfile}
                 disabled={lastFmProfileSaveDisabled}
               >
-                {lastFmProfileModalMode === 'edit' ? 'Save Destination' : 'Add Destination'}
+                {lastFmProfileModalMode === 'edit' ? 'Save Destination' : 'Add Custom Destination'}
               </button>
             </div>
           </div>

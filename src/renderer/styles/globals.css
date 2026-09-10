@@ -21474,6 +21474,7 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
 .settings-lastfm-profiles-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 10px;
 }
@@ -21501,11 +21502,11 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
   background: rgba(var(--accent-rgb), 0.07);
 }
 
-.settings-lastfm-profile-row.inactive {
+.settings-lastfm-profile-row.inactive:not(.is-official) {
   opacity: 0.68;
 }
 
-.settings-lastfm-profile-row.blocked {
+.settings-lastfm-profile-row.blocked:not(.is-official) {
   opacity: 0.52;
 }
 
@@ -21581,9 +21582,21 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
   color: rgba(var(--tint), 0.88);
 }
 
-.settings-lastfm-profile-row.inactive .settings-lastfm-profile-name,
-.settings-lastfm-profile-row.blocked .settings-lastfm-profile-name {
+.settings-lastfm-profile-row.inactive:not(.is-official) .settings-lastfm-profile-name,
+.settings-lastfm-profile-row.blocked:not(.is-official) .settings-lastfm-profile-name {
   color: rgba(var(--tint), 0.62);
+}
+
+.settings-lastfm-connect-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.settings-lastfm-connect-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .settings-lastfm-profile-meta {
@@ -21650,6 +21663,20 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
   border-color: rgba(var(--tint), 0.11);
   background: var(--control-bg-soft);
   color: rgba(var(--tint), 0.72);
+}
+
+@media (max-width: 760px) {
+  .settings-lastfm-profile-row {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
+
+  .settings-lastfm-profile-actions {
+    grid-column: 2;
+  }
+
+  .settings-lastfm-connect-btn {
+    max-width: 100%;
+  }
 }
 
 .settings-lastfm-profile-modal {

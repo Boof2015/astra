@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
+import type { NotchAPI } from '../types/notch'
 import { join } from 'path'
 import { readFile } from 'fs/promises'
 import { getHeapSpaceStatistics } from 'v8'
@@ -240,6 +241,8 @@ export interface TrackLoudnessResult {
   loudnessLufs: number
   peakLinear: number | null
   method: string
+  /** Diagnostic origin; omitted by older main-process implementations. */
+  source?: 'cache' | 'analysis'
 }
 
 export interface TrackLoudnessStorePayload {
@@ -944,6 +947,33 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
 
+  notch: {
+    getState: () => ipcRenderer.invoke('notch:getState'),
+    setPrefs: prefs => ipcRenderer.invoke('notch:setPrefs', prefs),
+    getSnapshot: () => ipcRenderer.invoke('notch:getSnapshot'),
+    onState: callback => {
+      const handler = (_: Electron.IpcRendererEvent, state: Parameters<typeof callback>[0]) => callback(state)
+      ipcRenderer.on('notch:state', handler)
+      return () => ipcRenderer.removeListener('notch:state', handler)
+    },
+    onSnapshot: callback => {
+      const handler = (_: Electron.IpcRendererEvent, snapshot: Parameters<typeof callback>[0]) => callback(snapshot)
+      ipcRenderer.on('notch:snapshot', handler)
+      return () => ipcRenderer.removeListener('notch:snapshot', handler)
+    },
+    onVisualizerChunk: callback => {
+      const handler = (_: Electron.IpcRendererEvent, chunk: Parameters<typeof callback>[0]) => callback(chunk)
+      ipcRenderer.on('notch:visualizerChunk', handler)
+      return () => ipcRenderer.removeListener('notch:visualizerChunk', handler)
+    },
+    sendCommand: command => ipcRenderer.send('notch:command', command),
+    expand: () => ipcRenderer.send('notch:expand'),
+    collapse: () => ipcRenderer.send('notch:collapse'),
+    openAstra: () => ipcRenderer.send('notch:openAstra'),
+    ready: () => ipcRenderer.send('notch:ready'),
+    setSurface: bounds => ipcRenderer.send('notch:surface', bounds),
+    setReducedMotion: reduced => ipcRenderer.send('notch:reducedMotion', reduced),
+  } satisfies NotchAPI,
   miniPlayer: {
     open: () => ipcRenderer.invoke('mini-player:open'),
     close: () => ipcRenderer.invoke('mini-player:close'),
@@ -1947,6 +1977,7 @@ declare global {
         publishRendererState: (state: TrayRendererState) => void
         onCommand: (callback: (command: TrayRendererCommand) => void) => () => void
       }
+      notch: NotchAPI
       miniPlayer: {
         open: () => Promise<void>
         close: () => Promise<void>

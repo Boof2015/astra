@@ -447,6 +447,7 @@ const DEFAULT_TRACK_LIST_SORT_STATE: LibraryTrackListSortState = { key: 'title',
 // artwork outside this renderer, e.g. media session and remote controllers).
 const artworkRequestCache = new Map<string, Promise<string | null>>()
 let fullTracksRequestId = 0
+let fullTracksRequest: { id: number; promise: Promise<void> } | null = null
 let selectionRequestGeneration = 0
 let committedSelectionGeneration = 0
 
@@ -1326,105 +1327,124 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       return
     }
 
+    // A named consumer is acquiring the retained list. Library reloads omit
+    // the consumer so writes still supersede old pages and refresh metadata.
+    if (consumer && !onDiagnostics) {
+      if (get().fullTracksStatus === 'complete') return
+      if (get().fullTracksStatus === 'loading' && fullTracksRequest?.id === fullTracksRequestId) {
+        return fullTracksRequest.promise
+      }
+    }
+
     const requestId = ++fullTracksRequestId
-    const paths: string[] = []
-    const seenPaths = new Set<string>()
-    let stagedTracks: DbTrack[] = []
-    let offset = 0
-    let lastRevealAt = 0
-    let completed = false
-    let pageCount = 0
+    // Register the shared request before publishing loading state: synchronous
+    // store subscribers may acquire another consumer during that publication.
+    const request = Promise.resolve().then(async () => {
+      if (requestId !== fullTracksRequestId || get().fullTrackConsumers.size === 0) return
+      const paths: string[] = []
+      const seenPaths = new Set<string>()
+      let stagedTracks: DbTrack[] = []
+      let offset = 0
+      let lastRevealAt = 0
+      let completed = false
+      let pageCount = 0
 
-    set((state) => (state.fullTracksStatus === 'loading' ? {} : { fullTracksStatus: 'loading' }))
-
-    try {
-      while (true) {
-        const page = await window.electronAPI.library.getTracksPage({
-          offset,
-          limit: FULL_TRACK_PAGE_LIMIT
-        })
-        pageCount += 1
-        if (requestId !== fullTracksRequestId) {
-          return
-        }
-        if (get().fullTrackConsumers.size === 0) {
-          return
-        }
-
-        for (const track of page.tracks) {
-          if (!track.path || seenPaths.has(track.path)) continue
-          seenPaths.add(track.path)
-          paths.push(track.path)
-        }
-        stagedTracks.push(...page.tracks)
-
-        const isLastPage = !page.hasMore || page.tracks.length === 0
-
-        // Reveal pages as they arrive so large libraries display immediately,
-        // throttled because each reveal re-runs view-side sorting over the
-        // cumulative list. The final (pruning) publish happens after the loop.
-        const now = Date.now()
-        const shouldReveal = !isLastPage && (
-          lastRevealAt === 0 || now - lastRevealAt >= FULL_TRACK_REVEAL_INTERVAL_MS
-        )
-        if (shouldReveal) {
-          lastRevealAt = now
-        }
-
-        if (shouldReveal) {
-          const tracksToPublish = stagedTracks
-          stagedTracks = []
-          set((state) => {
-            if (requestId !== fullTracksRequestId || state.fullTrackConsumers.size === 0) {
-              return {}
-            }
-            const revealedPaths = paths.slice()
-            const patch: Parameters<typeof ingestTracksForPatch>[2] = {
-              fullTrackPaths: revealedPaths
-            }
-            const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && !state.selectedGenre && (
-              state.viewMode === 'tracks' || state.viewMode === 'genres' || state.viewMode === 'folders'
-            )
-            if (shouldUseAsVisibleTracks) {
-              patch.trackPaths = revealedPaths
-            }
-            return ingestTracksForPatch(state, tracksToPublish, patch, { mutate: true, prune: false })
+      try {
+        while (true) {
+          const page = await window.electronAPI.library.getTracksPage({
+            offset,
+            limit: FULL_TRACK_PAGE_LIMIT
           })
+          pageCount += 1
+          if (requestId !== fullTracksRequestId) {
+            return
+          }
+          if (get().fullTrackConsumers.size === 0) {
+            return
+          }
+
+          for (const track of page.tracks) {
+            if (!track.path || seenPaths.has(track.path)) continue
+            seenPaths.add(track.path)
+            paths.push(track.path)
+          }
+          stagedTracks.push(...page.tracks)
+
+          const isLastPage = !page.hasMore || page.tracks.length === 0
+
+          // Reveal pages as they arrive so large libraries display immediately,
+          // throttled because each reveal re-runs view-side sorting over the
+          // cumulative list. The final (pruning) publish happens after the loop.
+          const now = Date.now()
+          const shouldReveal = !isLastPage && (
+            lastRevealAt === 0 || now - lastRevealAt >= FULL_TRACK_REVEAL_INTERVAL_MS
+          )
+          if (shouldReveal) {
+            lastRevealAt = now
+          }
+
+          if (shouldReveal) {
+            const tracksToPublish = stagedTracks
+            stagedTracks = []
+            set((state) => {
+              if (requestId !== fullTracksRequestId || state.fullTrackConsumers.size === 0) {
+                return {}
+              }
+              const revealedPaths = paths.slice()
+              const patch: Parameters<typeof ingestTracksForPatch>[2] = {
+                fullTrackPaths: revealedPaths
+              }
+              const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && !state.selectedGenre && (
+                state.viewMode === 'tracks' || state.viewMode === 'genres' || state.viewMode === 'folders'
+              )
+              if (shouldUseAsVisibleTracks) {
+                patch.trackPaths = revealedPaths
+              }
+              return ingestTracksForPatch(state, tracksToPublish, patch, { mutate: true, prune: false })
+            })
+          }
+
+          if (isLastPage) {
+            break
+          }
+
+          const nextOffset = Number(page.nextOffset)
+          offset = Number.isFinite(nextOffset) && nextOffset > offset
+            ? Math.trunc(nextOffset)
+            : offset + page.tracks.length
         }
 
-        if (isLastPage) {
-          break
-        }
+        completed = true
+        onDiagnostics?.({ pageCount, trackCount: paths.length })
+        const tracksToPublish = stagedTracks
+        stagedTracks = []
+        set((state) => {
+          if (requestId !== fullTracksRequestId || state.fullTrackConsumers.size === 0) {
+            return {}
+          }
 
-        const nextOffset = Number(page.nextOffset)
-        offset = Number.isFinite(nextOffset) && nextOffset > offset
-          ? Math.trunc(nextOffset)
-          : offset + page.tracks.length
+          const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && !state.selectedGenre && (
+            state.viewMode === 'tracks' || state.viewMode === 'genres' || state.viewMode === 'folders'
+          )
+          const ingested = ingestTracksIntoCache(state.trackByPath, tracksToPublish, { mutate: true })
+          return finalizeTrackCachePatch(state, {
+            fullTrackPaths: paths,
+            fullTracksStatus: 'complete',
+            ...(shouldUseAsVisibleTracks ? { trackPaths: paths } : {})
+          }, ingested.trackByPath, ingested.changed)
+        })
+      } finally {
+        if (!completed && requestId === fullTracksRequestId) {
+          set((state) => (state.fullTracksStatus === 'loading' ? { fullTracksStatus: 'idle' } : {}))
+        }
       }
-
-      completed = true
-      onDiagnostics?.({ pageCount, trackCount: paths.length })
-      const tracksToPublish = stagedTracks
-      stagedTracks = []
-      set((state) => {
-        if (requestId !== fullTracksRequestId || state.fullTrackConsumers.size === 0) {
-          return {}
-        }
-
-        const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && !state.selectedGenre && (
-          state.viewMode === 'tracks' || state.viewMode === 'genres' || state.viewMode === 'folders'
-        )
-        const ingested = ingestTracksIntoCache(state.trackByPath, tracksToPublish, { mutate: true })
-        return finalizeTrackCachePatch(state, {
-          fullTrackPaths: paths,
-          fullTracksStatus: 'complete',
-          ...(shouldUseAsVisibleTracks ? { trackPaths: paths } : {})
-        }, ingested.trackByPath, ingested.changed)
-      })
+    })
+    fullTracksRequest = { id: requestId, promise: request }
+    set((state) => (state.fullTracksStatus === 'loading' ? {} : { fullTracksStatus: 'loading' }))
+    try {
+      await request
     } finally {
-      if (!completed && requestId === fullTracksRequestId) {
-        set((state) => (state.fullTracksStatus === 'loading' ? { fullTracksStatus: 'idle' } : {}))
-      }
+      if (fullTracksRequest?.id === requestId) fullTracksRequest = null
     }
   },
 
@@ -2236,6 +2256,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       }
 
       fullTracksRequestId += 1
+      fullTracksRequest = null
       return finalizeTrackCachePatch(state, {
         fullTrackConsumers: nextConsumers.consumers,
         fullTrackPaths: [],

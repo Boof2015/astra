@@ -1,6 +1,22 @@
 {
   "targets": [
     {
+      "target_name": "macos_notch",
+      "type": "none",
+      "conditions": [["OS=='mac'", {
+        "type": "loadable_module",
+        "sources": ["src/macos_notch.mm"],
+        "include_dirs": ["<!@(node -p \"require('node-addon-api').include\")"],
+        "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS"],
+        "xcode_settings": {
+          "CLANG_CXX_LANGUAGE_STANDARD": "c++17",
+          "CLANG_ENABLE_OBJC_ARC": "YES",
+          "CLANG_CXX_LIBRARY": "libc++"
+        },
+        "link_settings": { "libraries": ["-framework AppKit", "-framework CoreGraphics"] }
+      }]]
+    },
+    {
       "target_name": "track_waveform",
       "cflags!": ["-fno-exceptions"],
       "cflags_cc!": ["-fno-exceptions"],

@@ -401,6 +401,132 @@ test('loadFullTracks publishes only revealed pages and the final staged page', a
   )
 })
 
+function prepareFullTrackLoadTest(t: test.TestContext) {
+  const initialState = useLibraryStore.getState()
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  useLibraryStore.setState({
+    trackByPath: new Map(), trackCacheVersion: 0, trackPaths: [], fullTrackPaths: [],
+    fullTracksStatus: 'idle', fullTrackConsumers: new Set(), viewMode: 'tracks',
+    selectedAlbum: null, selectedArtist: null, selectedGenre: null, selectedYear: null,
+    favorites: new Set(), favoriteTrackPaths: [], recentlyPlayedPaths: [], searchResultPaths: []
+  })
+  t.after(() => {
+    useLibraryStore.getState().releaseFullTracks()
+    useLibraryStore.setState(initialState, true)
+    if (windowDescriptor) Object.defineProperty(globalThis, 'window', windowDescriptor)
+    else Reflect.deleteProperty(globalThis, 'window')
+  })
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: Error) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+type TrackPage = Awaited<ReturnType<MockLibraryApi['getTracksPage']>>
+const finalTrackPage = (tracks: DbTrack[]): TrackPage => ({
+  tracks, total: tracks.length, hasMore: false, nextOffset: null
+})
+
+test('full-library consumers share in-flight pages and retain the completed list', async (t) => {
+  prepareFullTrackLoadTest(t)
+  const page = deferred<TrackPage>()
+  const first = makeTrack('/music/first.flac')
+  const second = makeTrack('/music/second.flac')
+  const offsets: number[] = []
+  installMockLibraryApi({
+    getTracksPage: async ({ offset = 0 }) => {
+      offsets.push(offset)
+      return offset === 0 ? page.promise : finalTrackPage([second])
+    }
+  })
+  const store = useLibraryStore.getState()
+  const library = store.loadFullTracks('library')
+  const integrity = store.loadFullTracks('integrity')
+  page.resolve({ tracks: [first], total: 2, hasMore: true, nextOffset: 1 })
+  await Promise.all([library, integrity])
+  assert.deepEqual(offsets, [0, 1])
+  assert.deepEqual(useLibraryStore.getState().fullTrackPaths, [first.path, second.path])
+  store.releaseFullTracks('integrity')
+  await store.loadFullTracks('integrity')
+  assert.deepEqual(offsets, [0, 1], 'reopening a consumer should reuse the retained complete list')
+  assert.deepEqual([...useLibraryStore.getState().fullTrackConsumers], ['library', 'integrity'])
+})
+
+test('explicit library reload supersedes shared pages and publishes fresh metadata', async (t) => {
+  prepareFullTrackLoadTest(t)
+  const oldPage = deferred<TrackPage>()
+  const freshPage = deferred<TrackPage>()
+  const oldTrack = makeTrack('/music/track.flac', { title: 'Before edit' })
+  const freshTrack = makeTrack(oldTrack.path, { title: 'After edit' })
+  let calls = 0
+  installMockLibraryApi({ getTracksPage: () => ++calls === 1 ? oldPage.promise : freshPage.promise })
+  const store = useLibraryStore.getState()
+  const initialLoad = store.loadFullTracks('library')
+  await Promise.resolve()
+  const refresh = store.loadLibrary()
+  await Promise.resolve()
+  const integrity = store.loadFullTracks('integrity')
+  oldPage.resolve(finalTrackPage([oldTrack]))
+  await initialLoad
+  assert.equal(useLibraryStore.getState().fullTracksStatus, 'loading')
+  freshPage.resolve(finalTrackPage([freshTrack]))
+  await Promise.all([refresh, integrity])
+  assert.equal(calls, 2)
+  assert.equal(useLibraryStore.getState().trackByPath.get(oldTrack.path)?.title, 'After edit')
+
+  await store.loadLibrary()
+  assert.equal(calls, 3, 'a reload must refresh even a completed retained list')
+})
+
+test('releasing all consumers cancels shared pages and permits a new request', async (t) => {
+  prepareFullTrackLoadTest(t)
+  const stalePage = deferred<TrackPage>()
+  const newPage = deferred<TrackPage>()
+  const track = makeTrack('/music/new.flac')
+  let calls = 0
+  installMockLibraryApi({ getTracksPage: () => ++calls === 1 ? stalePage.promise : newPage.promise })
+  const store = useLibraryStore.getState()
+  const stale = store.loadFullTracks('library')
+  await Promise.resolve()
+  store.releaseFullTracks('library')
+  const current = store.loadFullTracks('integrity')
+  await Promise.resolve()
+  stalePage.resolve(finalTrackPage([makeTrack('/music/stale.flac')]))
+  await stale
+  assert.equal(useLibraryStore.getState().fullTracksStatus, 'loading')
+  const joined = store.loadFullTracks('graph')
+  newPage.resolve(finalTrackPage([track]))
+  await Promise.all([current, joined])
+  assert.equal(calls, 2)
+  assert.deepEqual(useLibraryStore.getState().fullTrackPaths, [track.path])
+  store.releaseFullTracks()
+  assert.equal(useLibraryStore.getState().trackByPath.size, 0)
+})
+
+test('failed shared pages can be retried, including an empty library', async (t) => {
+  prepareFullTrackLoadTest(t)
+  const page = deferred<TrackPage>()
+  let calls = 0
+  installMockLibraryApi({ getTracksPage: () => ++calls === 1 ? page.promise : Promise.resolve(finalTrackPage([])) })
+  const store = useLibraryStore.getState()
+  const first = assert.rejects(store.loadFullTracks('library'), /page failed/)
+  const second = assert.rejects(store.loadFullTracks('integrity'), /page failed/)
+  page.reject(new Error('page failed'))
+  await Promise.all([first, second])
+  assert.equal(calls, 1)
+  assert.equal(useLibraryStore.getState().fullTracksStatus, 'idle')
+  await store.loadFullTracks('library')
+  await store.loadFullTracks('graph')
+  assert.equal(calls, 2)
+  assert.equal(useLibraryStore.getState().fullTracksStatus, 'complete')
+})
+
 test('resolveTrackPathsWithFetch hydrates missing cached tracks without pruning retained cache', async () => {
   const cachedTrack = makeTrack('/music/cached.flac', { title: 'Cached' })
   const fetchedTrack = makeTrack('/music/fetched.flac', { title: 'Fetched' })
