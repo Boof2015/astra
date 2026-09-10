@@ -48,6 +48,7 @@ export default function NotchApp() {
   const notchWidth = state.notchWidth ?? 0
   const notchHeight = state.notchHeight ?? 0
   const previewWidth = state.reason === 'resting' && view !== 'hidden' ? notchWidth : Math.min(NOTCH_SIZE.width, notchWidth + 64)
+  const previewHeight = state.reason === 'resting' ? NOTCH_SIZE.previewHeight : NOTCH_SIZE.revealedHeight
   const visible = view !== 'hidden' && notchWidth > 0
   const scope = view === 'oscilloscope' || view === 'spectrum' ? view : null
   const restingScope = state.prefs.restingView === 'oscilloscope' || state.prefs.restingView === 'spectrum' ? state.prefs.restingView : null
@@ -55,7 +56,7 @@ export default function NotchApp() {
   const artwork = track?.artworkData
   const color = snapshot?.visualizerLineColor || '#38bdf8'
   const playing = snapshot?.playbackState === 'playing'
-  const height = notchHeight + (expanded ? NOTCH_SIZE.height : NOTCH_SIZE.previewHeight)
+  const height = notchHeight + (expanded ? NOTCH_SIZE.height : previewHeight)
   const width = expanded ? NOTCH_SIZE.width : previewWidth
   const peekProximity = reduced ? 0.5 : state.proximity
 
@@ -93,9 +94,12 @@ export default function NotchApp() {
       const finished = progress === 1
       const opacity = reduced ? fromOpacity + ((visible ? 1 : 0) - fromOpacity) * progress : !visible && finished ? 0 : 1
       // Keep the full-size player painted as the contour retracts across it.
-      // Only hand off to the preview in the last strip-height of travel;
-      // deriving this from geometry also preserves it when motion reverses.
-      const handoff = Math.max(0, Math.min(1, (contour.height - notchHeight - NOTCH_SIZE.previewHeight) / NOTCH_SIZE.previewHeight))
+      // Preserve the existing start of the late handoff, but finish above the
+      // taller revealed strip. Fixed thresholds keep reversals continuous even
+      // when the destination changes between resting and revealed previews.
+      const handoffStart = notchHeight + 2 * NOTCH_SIZE.previewHeight
+      const handoffEnd = notchHeight + NOTCH_SIZE.revealedHeight
+      const handoff = Math.max(0, Math.min(1, (contour.height - handoffEnd) / (handoffStart - handoffEnd)))
       const playerOpacity = reduced
         ? fromPlayerOpacity + ((expanded ? 1 : 0) - fromPlayerOpacity) * progress
         : handoff * handoff * (3 - 2 * handoff)
@@ -140,7 +144,7 @@ export default function NotchApp() {
   const effectiveVolume = volume ?? (snapshot?.isMuted ? 0 : snapshot?.volume ?? 1)
   const muted = Boolean(snapshot?.isMuted)
 
-  return <div className="notch-root" style={{ '--notch-accent': color, '--notch-height': `${notchHeight}px`, '--notch-player-height': `${NOTCH_SIZE.height}px`, '--notch-backing-height': `${NOTCH_SIZE.backingHeight}px`, '--notch-preview-width': `${previewWidth}px`, '--notch-preview-height': `${NOTCH_SIZE.previewHeight}px` } as CSSProperties}>
+  return <div className="notch-root" style={{ '--notch-accent': color, '--notch-height': `${notchHeight}px`, '--notch-player-height': `${NOTCH_SIZE.height}px`, '--notch-backing-height': `${NOTCH_SIZE.backingHeight}px`, '--notch-preview-width': `${previewWidth}px`, '--notch-preview-height': `${previewHeight}px` } as CSSProperties}>
     <div ref={surfaceRef} className={`notch-surface ${expanded ? 'is-expanded' : ''} ${visible ? 'is-visible' : ''} ${reduced ? 'reduce-motion' : ''}`}>
       <button className={`notch-preview ${!expanded && visible ? peeking ? 'is-peeking' : 'is-shown' : ''}`} tabIndex={expanded || peeking || !visible ? -1 : 0}
         aria-hidden={expanded || peeking || !visible} aria-label={track ? `Expand player: ${track.title}, ${track.artist}` : 'Expand Astra player'} onClick={event => { keyboardExpansionRef.current = event.detail === 0; api.expand() }}>

@@ -5,11 +5,12 @@ import { DEFAULT_NOTCH_PREFS, type NotchPointer } from '../../types/notch.ts'
 import type { MiniPlayerSnapshot } from '../../types/miniPlayer'
 
 const prefs = { ...DEFAULT_NOTCH_PREFS, enabled: true }
-const outside: NotchPointer = { near: false, proximity: 0, x: 0, y: 100, edgeDistance: 100, motion: false, withinHover: false, inside: false, down: false, dragging: false, onActiveSpace: true }
+const outside: NotchPointer = { near: false, proximity: 0, x: 0, y: 100, edgeDistance: 100, overHardware: false, motion: false, withinHover: false, inside: false, down: false, dragging: false, onActiveSpace: true }
 function point(x: number, y: number): NotchPointer {
   const dx = Math.max(0, Math.abs(x) - 185 / 2)
-  const proximity = y >= 0 ? Math.max(0, 1 - Math.hypot(dx / 52, y / 64)) : 0
-  return { ...outside, x, y, edgeDistance: Math.hypot(dx, Math.max(0, y)), motion: true, near: proximity > 0, proximity }
+  const overHardware = Math.abs(x) < 185 / 2 && y < 0 && y >= -32
+  const proximity = overHardware ? 1 : y >= 0 ? Math.max(0, 1 - Math.hypot(dx / 52, y / 64)) : 0
+  return { ...outside, x, y, edgeDistance: Math.hypot(dx, Math.max(0, y)), overHardware, motion: true, near: proximity > 0, proximity }
 }
 const near = point(0, 6)
 function approach(state: NotchInteraction, arriveAt: number): void {
@@ -89,7 +90,7 @@ test('a directed approach opens promptly without restarting confirmation on cont
 })
 test('fast passes through the intent area still cancel before the short confirmation', () => {
   for (const path of [
-    [point(0, 28), point(0, 6), point(0, -4)],
+    [point(0, 28), point(0, 6), point(120, -4)],
     [point(130, 6), point(102, 6), point(80, 6)],
   ]) {
     const state = new NotchInteraction(prefs)
@@ -101,7 +102,7 @@ test('fast passes through the intent area still cancel before the short confirma
   }
 })
 test('turning toward a neighbouring tab or backing off cancels an earned reveal', () => {
-  for (const changedDestination of [point(18, 6), point(0, 10), point(0, 24), point(0, -2)]) {
+  for (const changedDestination of [point(18, 6), point(0, 12), point(0, 24), point(120, -2)]) {
     const state = new NotchInteraction(prefs)
     approach(state, 50)
     state.pointer(changedDestination, 85)
@@ -124,13 +125,13 @@ test('turning sideways just before reaching the edge discards earlier inward tra
 })
 test('slow and diagonal inward approaches work without a minimum cursor speed', () => {
   const state = new NotchInteraction(prefs)
-  for (let y = 24; y >= 12; y--) {
+  for (let y = 24; y >= 16; y--) {
     state.pointer(point(0, y), (24 - y) * 100)
     state.tick((24 - y) * 100)
     assert.equal(state.presentation.view, 'peek')
   }
-  state.pointer(point(0, 11), 1250)
-  state.tick(1250)
+  state.pointer(point(0, 15), 850)
+  state.tick(850)
   assert.equal(state.presentation.reason, 'hover')
   const diagonal = new NotchInteraction(prefs)
   diagonal.pointer(point(-45, 40), 0)
@@ -148,10 +149,80 @@ test('a stationary cursor, stale approach, or tiny jitter cannot manufacture int
   assert.equal(state.presentation.view, 'peek')
   assert.equal(state.deadline, null)
   const stale = new NotchInteraction(prefs)
-  stale.pointer(point(0, 40), 0); stale.pointer(point(0, 14), 50)
-  stale.pointer(point(0, 10), 5000); stale.tick(10_000)
+  stale.pointer(point(0, 40), 0); stale.pointer(point(0, 18), 50)
+  stale.pointer(point(0, 15), 5000); stale.tick(10_000)
   assert.equal(stale.presentation.view, 'peek')
   assert.equal(stale.deadline, null)
+})
+test('approaching from below may overshoot into the hardware without canceling or delaying reveal', () => {
+  for (const x of [-70, 0, 70]) {
+    const state = new NotchInteraction(prefs)
+    state.pointer(point(x, 30), 0)
+    state.pointer(point(x, 8), 30)
+    assert.equal(state.deadline, 80)
+    state.pointer(point(x, -2), 45)
+    state.pointer(point(x, -25), 60)
+    state.pointer({ ...point(x, -25), motion: false }, 70)
+    assert.equal(state.deadline, 80)
+    state.tick(80)
+    assert.equal(state.presentation.reason, 'hover')
+    state.pointer(point(x, -20), 100); state.tick(1000)
+    assert.equal(state.presentation.reason, 'hover', 'hardware retains an existing preview')
+    state.pointer(point(120, -20), 1100); state.tick(1300)
+    assert.equal(state.presentation.view, 'hidden', 'adjacent menu items do not retain it')
+  }
+})
+test('a jump straight into the hardware works after a short pause, but a menu-bar crossing does not', () => {
+  const direct = new NotchInteraction(prefs)
+  direct.pointer({ ...point(0, -12), motion: false }, 0)
+  direct.tick(1000)
+  assert.equal(direct.deadline, null, 'appearing beneath a stationary cursor cannot open it')
+  direct.pointer(point(0, -12), 1010)
+  direct.tick(1159)
+  assert.equal(direct.presentation.view, 'peek')
+  direct.tick(1160)
+  assert.equal(direct.presentation.reason, 'hover')
+
+  const crossing = new NotchInteraction(prefs)
+  for (let x = -120; x <= 120; x += 20) {
+    crossing.pointer(point(x, -12), (x + 120) * 2)
+    crossing.tick((x + 120) * 2)
+    assert.notEqual(crossing.presentation.reason, 'hover')
+  }
+  crossing.tick(5000)
+  assert.equal(crossing.presentation.view, 'hidden')
+  assert.equal(crossing.deadline, null)
+})
+test('nearby, shallow diagonal, and slightly curved approaches do not require precise aiming', () => {
+  const paths = [
+    [[0, 10], [0, 5]],
+    [[0, 30], [0, 15]],
+    [[-60, 36], [-40, 24], [-20, 12], [-10, 6]],
+    [[0, 30], [0, 19], [3, 18], [4, 15], [6, 14]],
+    [[0, 28], [0, 6], [3, 8], [5, 6]],
+  ]
+  for (const path of paths) {
+    const state = new NotchInteraction(prefs)
+    path.forEach(([x, y], i) => state.pointer(point(x, y), i * 10))
+    state.tick(150)
+    assert.equal(state.presentation.reason, 'hover', JSON.stringify(path))
+  }
+})
+test('small successive sideways steps still cancel intent, and dismissal also suppresses the hardware target', () => {
+  const state = new NotchInteraction(prefs)
+  approach(state, 50)
+  for (let x = 2; x <= 14; x += 2) state.pointer(point(x, 6), 50 + x * 2)
+  state.tick(1000)
+  assert.equal(state.deadline, null)
+  assert.equal(state.presentation.view, 'peek')
+  state.pointer(point(14, -10), 1010); state.tick(1200)
+  assert.equal(state.presentation.reason, 'hover')
+  state.expand(); state.collapse()
+  state.pointer(point(14, -12), 1250); state.tick(1500)
+  assert.equal(state.presentation.view, 'hidden')
+  state.pointer(outside, 1510)
+  state.pointer(point(14, -12), 1520); state.tick(1670)
+  assert.equal(state.presentation.reason, 'hover')
 })
 test('the visible persistent strip can be approached across its full height', () => {
   const state = new NotchInteraction({ ...prefs, restingView: 'oscilloscope' })

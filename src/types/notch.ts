@@ -12,7 +12,7 @@ export const DEFAULT_NOTCH_PREFS: NotchPrefs = {
   enabled: false, restingView: 'hidden', hoverEnabled: true,
   trackChangePopups: true, showOverFullscreen: true,
 }
-export const NOTCH_SIZE = { width: 440, height: 174, backingHeight: 224, previewHeight: 24 } as const
+export const NOTCH_SIZE = { width: 440, height: 174, backingHeight: 224, previewHeight: 24, revealedHeight: 32 } as const
 export interface NotchSurfaceBounds {
   x: number; y: number; width: number; height: number
   points: { x: number; y: number }[]
@@ -25,6 +25,8 @@ export interface NotchPointer {
   x: number
   y: number
   edgeDistance: number
+  // Inside the detected camera gap, not the adjacent menu-bar areas.
+  overHardware: boolean
   // Only actual mouse movement may supply hover-intent evidence.
   motion: boolean
   withinHover: boolean

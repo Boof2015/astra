@@ -31,15 +31,16 @@ static bool InsideSurface(NSPoint point) {
   return surfacePath && NSPointInRect(point, surfaceRect) && CGPathContainsPoint(surfacePath, nullptr, point, false);
 }
 // Distance to the camera's lower edge, with a generous downward approach zone.
-// The menu-bar lane above it never initiates a reveal.
+// The camera gap itself is a target too; adjacent menu items are excluded.
 static int Proximity(NSPoint point) {
+  if (NSPointInRect(point, notchRect)) return 16;
   if (point.y > NSMinY(notchRect) + 2) return 0;
   double dx = MAX(0, MAX(NSMinX(notchRect) - point.x, point.x - NSMaxX(notchRect)));
   double dy = MAX(0, NSMinY(notchRect) - point.y);
   return int(std::ceil(MAX(0, 1 - std::hypot(dx / 52, dy / 64)) * 16));
 }
 struct PointerFlags {
-  bool near, inside, down, dragging, onActiveSpace, motion, withinHover;
+  bool near, inside, down, dragging, onActiveSpace, motion, withinHover, overHardware;
   double proximity, x, y, edgeDistance;
 };
 static void UpdatePointer(bool down, NSEvent *event = nil) {
@@ -70,10 +71,11 @@ static void UpdatePointer(bool down, NSEvent *event = nil) {
   if ((!dragging || down) && window.ignoresMouseEvents != !inside) window.ignoresMouseEvents = !inside;
   int proximity = usable ? Proximity(point) : 0;
   bool near = proximity > 0;
+  bool overHardware = usable && NSPointInRect(point, notchRect);
   bool withinHover = usable && !NSIsEmptyRect(surfaceRect) && point.y <= NSMinY(notchRect) + 2 &&
     NSPointInRect(point, NSInsetRect(surfaceRect, -12, -12));
   int flags = int(near) | (int(inside) << 1) | (int(dragging) << 2) | (int(usable) << 3) |
-    (int(withinHover) << 4) | (proximity << 5);
+    (int(withinHover) << 4) | (proximity << 5) | (int(overHardware) << 10);
   // Slow motion and the final turn matter too. Do not throttle away the last
   // event before a stop. Only nearby movement is reported; far-away motion is
   // still deduplicated, and contour updates are never movement evidence.
@@ -82,7 +84,7 @@ static void UpdatePointer(bool down, NSEvent *event = nil) {
   lastPointerFlags = flags;
   double x = point.x - NSMidX(notchRect), y = NSMinY(notchRect) - point.y;
   double edgeDistance = std::hypot(MAX(0, std::abs(x) - NSWidth(notchRect) / 2), MAX(0, y));
-  auto *data = new PointerFlags{near, inside, down, dragging, usable, motionEvent, withinHover, proximity / 16.0, x, y, edgeDistance};
+  auto *data = new PointerFlags{near, inside, down, dragging, usable, motionEvent, withinHover, overHardware, proximity / 16.0, x, y, edgeDistance};
   auto status = pointerCallback.NonBlockingCall(data, [](Napi::Env env, Napi::Function callback, PointerFlags *p) {
     if (env && callback) {
       auto value = Napi::Object::New(env);
@@ -91,6 +93,7 @@ static void UpdatePointer(bool down, NSEvent *event = nil) {
       value.Set("onActiveSpace", p->onActiveSpace);
       value.Set("motion", p->motion); value.Set("withinHover", p->withinHover); value.Set("proximity", p->proximity);
       value.Set("x", p->x); value.Set("y", p->y); value.Set("edgeDistance", p->edgeDistance);
+      value.Set("overHardware", p->overHardware);
       callback.Call({value});
     }
     delete p;

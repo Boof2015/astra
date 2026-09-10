@@ -71,7 +71,7 @@ export class NotchInteraction {
       this.leaveAt = null
       if (!this.hovered) {
         const persistent = this.trackKey && !this.mainWindowForeground && this.prefs.restingView !== 'hidden'
-        this.intent.update(pointer, now, persistent ? NOTCH_SIZE.previewHeight : 12)
+        this.intent.update(pointer, now, persistent ? NOTCH_SIZE.previewHeight : undefined)
       }
     } else {
       this.intent.reset()
