@@ -3,6 +3,7 @@ export const BASE_RATE_MIN = 44100
 export const BASE_RATE_MAX = 48000
 export const MIN_DISPLAY_SAMPLES = 64
 export const MAX_DISPLAY_SAMPLES = 32767
+export const OSCILLOSCOPE_VISUAL_GAIN = 1.8
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))

@@ -5,7 +5,7 @@ import {
   warnNativeUnavailableOnce,
   type OscilloscopeNativeAnalyzer,
 } from '../native/index'
-import { getNormalizedOscilloscopeDisplaySamples } from '../native/oscilloscopeDisplaySamples'
+import { getNormalizedOscilloscopeDisplaySamples, OSCILLOSCOPE_VISUAL_GAIN } from '../native/oscilloscopeDisplaySamples'
 import { colorToRgbChannels, multiplyColorAlpha } from '../../utils/color'
 import { defaultVisualizerSessionSource, type VisualizerSessionSource } from './dataSource'
 import { FrameScheduler } from './frameScheduler'
@@ -48,9 +48,6 @@ const defaultOscilloscopeDataSource: OscilloscopeDataSource = {
   getPendingOscilloscopeSamples: () => audioEngine.flushPendingOscilloscopeSamples(),
   ...defaultVisualizerSessionSource,
 }
-
-// Amplitude the trace is drawn at (Astra rendered the scope 1.8x taller than raw samples).
-const OSCILLOSCOPE_VISUAL_GAIN = 1.8
 
 function highContrastUnderfillColor(accentColor: string, alpha: number): string {
   const safeAlpha = Math.max(0, Math.min(1, alpha))

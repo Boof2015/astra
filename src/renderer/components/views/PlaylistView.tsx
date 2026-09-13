@@ -31,7 +31,7 @@ import SearchEmptyState from '../search/SearchEmptyState'
 import {
   createDefaultDynamicPlaylistRules,
   normalizeDynamicPlaylistRules,
-  type DynamicPlaylistRulesV1
+  type DynamicPlaylistRulesV2
 } from '../../../shared/playlists/dynamicPlaylist'
 
 const PLAYLIST_IMPORT_STATUS_TIMEOUT_MS = 9000
@@ -265,6 +265,7 @@ export default function PlaylistView() {
     selectedPlaylistId,
     selectedPlaylistEntries,
     selectedPlaylistTracks,
+    selectedPlaylistError,
     playlists,
     clearSelection,
     createPlaylistWithOptions,
@@ -362,8 +363,9 @@ export default function PlaylistView() {
   const [isCoverMenuOpen, setIsCoverMenuOpen] = useState(false)
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
   const [isDynamicRulesModalOpen, setIsDynamicRulesModalOpen] = useState(false)
-  const [dynamicRulesDraft, setDynamicRulesDraft] = useState<DynamicPlaylistRulesV1>(() => createDefaultDynamicPlaylistRules())
+  const [dynamicRulesDraft, setDynamicRulesDraft] = useState<DynamicPlaylistRulesV2>(() => createDefaultDynamicPlaylistRules())
   const [dynamicRulesError, setDynamicRulesError] = useState<string | null>(null)
+  const [dynamicRulesLoadFailed, setDynamicRulesLoadFailed] = useState(false)
   const [isDynamicRulesLoading, setIsDynamicRulesLoading] = useState(false)
   const [isSavingDynamicRules, setIsSavingDynamicRules] = useState(false)
   const [playlistBrowserSearchQuery, setPlaylistBrowserSearchQuery] = useState('')
@@ -604,7 +606,7 @@ export default function PlaylistView() {
     setActiveView('playlist')
   }
 
-  const handleCreateDynamicPlaylist = async (name: string, coverImagePath: string | null, rules: DynamicPlaylistRulesV1) => {
+  const handleCreateDynamicPlaylist = async (name: string, coverImagePath: string | null, rules: DynamicPlaylistRulesV2) => {
     const playlist = await createDynamicPlaylistWithOptions({ name, coverImagePath, rules })
     await selectPlaylist(playlist.id)
     setActiveView('playlist')
@@ -647,10 +649,12 @@ export default function PlaylistView() {
     setIsMoreMenuOpen(false)
     setDynamicRulesError(null)
     setIsDynamicRulesLoading(true)
+    setDynamicRulesLoadFailed(false)
     setIsDynamicRulesModalOpen(true)
     try {
       setDynamicRulesDraft(await getDynamicPlaylistRules(selectedPlaylistId))
     } catch (error) {
+      setDynamicRulesLoadFailed(true)
       setDynamicRulesError(error instanceof Error ? error.message : 'Failed to load dynamic playlist rules.')
     } finally {
       setIsDynamicRulesLoading(false)
@@ -658,7 +662,7 @@ export default function PlaylistView() {
   }, [getDynamicPlaylistRules, isDynamicPlaylist, selectedPlaylistId])
 
   const handleSaveDynamicRules = useCallback(async () => {
-    if (!isDynamicPlaylist || selectedPlaylistId === null || isSavingDynamicRules) return
+    if (!isDynamicPlaylist || selectedPlaylistId === null || isSavingDynamicRules || dynamicRulesLoadFailed) return
 
     setIsSavingDynamicRules(true)
     setDynamicRulesError(null)
@@ -670,7 +674,7 @@ export default function PlaylistView() {
     } finally {
       setIsSavingDynamicRules(false)
     }
-  }, [dynamicRulesDraft, isDynamicPlaylist, isSavingDynamicRules, selectedPlaylistId, updateDynamicPlaylistRules])
+  }, [dynamicRulesDraft, dynamicRulesLoadFailed, isDynamicPlaylist, isSavingDynamicRules, selectedPlaylistId, updateDynamicPlaylistRules])
 
   const handleExportPlaylist = useCallback(async () => {
     if (isExportingPlaylist) return
@@ -1576,6 +1580,7 @@ export default function PlaylistView() {
             data-track-drop-playlist-id={!isDynamicPlaylist && selectedPlaylistId !== FAVORITES_PLAYLIST_ID ? selectedPlaylistId ?? undefined : undefined}
             data-track-drop-playlist-count={!isDynamicPlaylist && selectedPlaylistId !== FAVORITES_PLAYLIST_ID ? 0 : undefined}
           >
+            {selectedPlaylistError && <p role="alert">{selectedPlaylistError}</p>}
             <p>{selectedPlaylistId === FAVORITES_PLAYLIST_ID ? 'No favorites yet' : isDynamicPlaylist ? 'No matching tracks' : 'This playlist is empty'}</p>
             <p className="empty-hint">
               {selectedPlaylistId === FAVORITES_PLAYLIST_ID
@@ -1631,7 +1636,7 @@ export default function PlaylistView() {
             <div className="modal-body playlist-create-modal-body">
               {isDynamicRulesLoading ? (
                 <div className="playlist-dynamic-preview-empty">Loading rules...</div>
-              ) : (
+              ) : dynamicRulesLoadFailed ? null : (
                 <DynamicPlaylistRuleEditor
                   rules={dynamicRulesDraft}
                   onRulesChange={setDynamicRulesDraft}
@@ -1659,7 +1664,7 @@ export default function PlaylistView() {
                   onClick={() => {
                     void handleSaveDynamicRules()
                   }}
-                  disabled={isSavingDynamicRules || isDynamicRulesLoading || isDynamicRulesDraftInvalid}
+                  disabled={isSavingDynamicRules || isDynamicRulesLoading || dynamicRulesLoadFailed || isDynamicRulesDraftInvalid}
                 >
                   {isSavingDynamicRules ? 'Saving...' : 'Save Rules'}
                 </button>

@@ -65,6 +65,11 @@ export const SETTINGS_SECTIONS = [
     keywords: ['keyboard', 'shortcut', 'shortcuts', 'keybind', 'binding', 'mouse', 'back', 'forward', 'controls']
   },
   {
+    id: 'devices',
+    label: 'Devices',
+    keywords: ['hardware', 'astra thing', 'car thing', 'connect', 'pair', 'pairing', 'controller', 'usb', 'companion']
+  },
+  {
     id: 'integrations',
     label: 'Integrations',
     keywords: [

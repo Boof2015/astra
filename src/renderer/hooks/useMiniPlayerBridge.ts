@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { EMPTY_NOTCH_STATE, type NotchRuntimeState } from '../../types/notch'
+import { resolveMiniVisualizerDemand } from '../../shared/miniVisualizerDemand'
 import { usePlayerStore } from '../stores/playerStore'
 import { useLibraryStore } from '../stores/libraryStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore } from '../stores/audioSettingsStore'
@@ -66,7 +68,21 @@ export function useMiniPlayerBridge(): void {
 
   const [resolvedArtwork, setResolvedArtwork] = useState<MiniPlayerResolvedArtwork | null>(null)
   const [miniWindowState, setMiniWindowState] = useState<MiniPlayerWindowState>(DEFAULT_MINI_WINDOW_STATE)
+  const [notchState, setNotchState] = useState<NotchRuntimeState>(EMPTY_NOTCH_STATE)
   const nativeVisualizersAvailable = isNativeAvailable()
+  const demand = resolveMiniVisualizerDemand(
+    miniWindowState.isOpen ? miniWindowState.visualizerMode : 'off',
+    notchState.attached ? notchState.visualizerMode : 'off',
+    nativeVisualizersAvailable && isVisualizerRunning && playbackState === 'playing',
+  )
+  const { miniOscilloscope, miniSpectrum } = demand
+
+  useEffect(() => {
+    let active = true
+    void window.electronAPI.notch.getState().then(state => { if (active) setNotchState(state) })
+    const unsubscribe = window.electronAPI.notch.onState(setNotchState)
+    return () => { active = false; unsubscribe() }
+  }, [])
 
   const publishTimerRef = useRef<number | null>(null)
   const lastPublishRef = useRef(0)
@@ -150,6 +166,12 @@ export function useMiniPlayerBridge(): void {
       const library = useLibraryStore.getState()
 
       switch (command.type) {
+        case 'toggleMute':
+          player.toggleMute()
+          break
+        case 'setVolume':
+          if (Number.isFinite(command.volume)) player.setVolume(Math.max(0, Math.min(1, command.volume)))
+          break
         case 'play':
           void player.play()
           break
@@ -217,14 +239,14 @@ export function useMiniPlayerBridge(): void {
 
   useEffect(() => {
     audioEngine.setVisualizerConsumerDemand('mini-player-bridge', {
-      miniSpectrum: nativeVisualizersAvailable && isVisualizerRunning && miniWindowState.isOpen && miniWindowState.visualizerMode === 'spectrum',
-      miniOscilloscope: nativeVisualizersAvailable && isVisualizerRunning && miniWindowState.isOpen && miniWindowState.visualizerMode === 'oscilloscope',
+      miniSpectrum,
+      miniOscilloscope,
     })
 
     return () => {
       audioEngine.clearVisualizerConsumerDemand('mini-player-bridge')
     }
-  }, [isVisualizerRunning, miniWindowState.isOpen, miniWindowState.visualizerMode, nativeVisualizersAvailable])
+  }, [miniSpectrum, miniOscilloscope])
 
   useEffect(() => {
     if (visualizerStreamTimerRef.current !== null) {
@@ -232,7 +254,7 @@ export function useMiniPlayerBridge(): void {
       visualizerStreamTimerRef.current = null
     }
 
-    const isOscilloscopeMode = miniWindowState.visualizerMode === 'oscilloscope'
+    const isOscilloscopeMode = miniOscilloscope
     const streamIntervalMs = isOscilloscopeMode
       ? MINI_OSCILLOSCOPE_STREAM_INTERVAL_MS
       : MINI_SPECTRUM_STREAM_INTERVAL_MS
@@ -255,7 +277,7 @@ export function useMiniPlayerBridge(): void {
       visualizerResetSentRef.current = true
     }
 
-    const shouldBridgeToMini = nativeVisualizersAvailable && miniWindowState.isOpen && miniWindowState.visualizerMode !== 'off'
+    const shouldBridgeToMini = miniOscilloscope || miniSpectrum
     if (!shouldBridgeToMini) {
       audioEngine.flushPendingMiniVisualizerChunks()
       emitReset()
@@ -282,7 +304,7 @@ export function useMiniPlayerBridge(): void {
         capturedAt: Date.now(),
         sampleRate: audioEngine.getSampleRate(),
         leftChunks: isOscilloscopeMode ? chunksToPublish.map((chunk) => chunk.left) : [],
-        monoChunks: isOscilloscopeMode ? [] : chunksToPublish.map((chunk) => chunk.mono),
+        monoChunks: miniSpectrum ? chunksToPublish.map((chunk) => chunk.mono) : [],
         fftSize: Math.min(fftSize, MINI_MAX_FFT_SIZE),
         pitchLock,
         oscilloscopeUnderfillEnabled,
@@ -299,8 +321,8 @@ export function useMiniPlayerBridge(): void {
       }
     }
   }, [
-    miniWindowState.isOpen,
-    miniWindowState.visualizerMode,
+    miniOscilloscope,
+    miniSpectrum,
     nativeVisualizersAvailable,
     playbackState,
     isVisualizerRunning,

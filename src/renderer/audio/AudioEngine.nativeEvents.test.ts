@@ -90,10 +90,11 @@ type AudioEngineInternals = {
     buffer: AudioBuffer,
     options: {
       trackPath?: string
-      loudnessAnalysis?: Promise<{ loudnessLufs: number; peakLinear: number | null } | null> | null
+      loudnessAnalysis?: Promise<{ loudnessLufs: number; peakLinear: number | null; source?: 'cache' | 'analysis' } | null> | null
     },
     replayGainDb: number | null,
-    assertCurrent: () => void
+    assertCurrent: () => void,
+    onSource?: (source: string) => void
   ) => Promise<unknown>
   loadPcmDataForOperation: (
     pcm: { interleavedPcm: ArrayBuffer },
@@ -458,6 +459,34 @@ test('processed-exclusive native decode starts without waiting for loudness anal
     if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
     else delete (globalThis as Record<string, unknown>).window
   }
+})
+
+test('loudness diagnostics distinguish cache, fresh analysis and ReplayGain without changing results', async () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  internals._normalizationEnabled = true
+  internals._replayGainEnabled = false
+  const buffer = {} as AudioBuffer
+  for (const source of ['cache', 'analysis'] as const) {
+    let observedSource: string | null = null
+    const result = await internals.resolveLoudnessAnalysisForLoad(buffer, {
+      loudnessAnalysis: Promise.resolve({ loudnessLufs: -18, peakLinear: 0.5, source })
+    }, null, () => undefined, (value) => { observedSource = value })
+    assert.equal(observedSource, source)
+    assert.equal((result as { loudnessLufs: number }).loudnessLufs, -18)
+  }
+  internals._replayGainEnabled = true
+  let observedSource: string | null = null
+  assert.equal(await internals.resolveLoudnessAnalysisForLoad(
+    buffer, {}, -3, () => undefined, (value) => { observedSource = value }
+  ), null)
+  assert.equal(observedSource, 'not_required')
+  internals._normalizationEnabled = false
+  observedSource = null
+  assert.equal(await internals.resolveLoudnessAnalysisForLoad(
+    buffer, {}, null, () => undefined, (value) => { observedSource = value }
+  ), null)
+  assert.equal(observedSource, 'not_required')
 })
 
 test('superseded external loudness cancellation cannot enter renderer fallback analysis', async () => {

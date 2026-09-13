@@ -14,6 +14,7 @@ import {
   stripPlaylistEntryOuterQuotes
 } from './playlistPathResolver'
 import { getMusicMetadataParseOptions } from '../utils/musicMetadata'
+import { compareBaseLocaleText } from '../../shared/localeSort'
 import { collectIamfStreamStats } from '../../shared/iamf/obuWalker'
 import { mp4HasIamfTrack, readMp4DurationSeconds } from '../../shared/iamf/mp4'
 import {
@@ -55,12 +56,15 @@ import type {
   SyncUidTombstone
 } from '../../types/phoneSync'
 import {
-  createDefaultDynamicPlaylistRules,
   normalizeDynamicPlaylistRules,
+  serializeDynamicPlaylistRules,
+  dynamicPlaylistConditions,
+  type DynamicPlaylistRules,
+  type DynamicPlaylistNode,
   type DynamicPlaylistCondition,
   type DynamicPlaylistDateField,
   type DynamicPlaylistNumericField,
-  type DynamicPlaylistRulesV1,
+  type DynamicPlaylistRulesV2,
   type DynamicPlaylistSortField,
   type DynamicPlaylistTextField,
   type PlaylistKind
@@ -1909,7 +1913,7 @@ function pickMostFrequentDisplayVariant(
     }
     if (
       variant.count === best.count &&
-      variant.display.localeCompare(best.display, undefined, { sensitivity: 'base' }) < 0
+      compareBaseLocaleText(variant.display, best.display) < 0
     ) {
       best = variant
     }
@@ -1950,7 +1954,7 @@ function compareTracksByDiscTrackTitle(
   const trackB = b.track_number ?? 0
   if (trackA !== trackB) return trackA - trackB
 
-  const titleCompare = normalizeDisplay(a.title).localeCompare(normalizeDisplay(b.title), undefined, { sensitivity: 'base' })
+  const titleCompare = compareBaseLocaleText(normalizeDisplay(a.title), normalizeDisplay(b.title))
   if (titleCompare !== 0) return titleCompare
 
   return a.path.localeCompare(b.path)
@@ -1960,7 +1964,7 @@ function compareTracksByAlbumDiscTrackTitle(
   a: Pick<DbTrackRow, 'album' | 'disc_number' | 'track_number' | 'title' | 'path'>,
   b: Pick<DbTrackRow, 'album' | 'disc_number' | 'track_number' | 'title' | 'path'>
 ): number {
-  const albumCompare = normalizeAlbumName(a.album).localeCompare(normalizeAlbumName(b.album), undefined, { sensitivity: 'base' })
+  const albumCompare = compareBaseLocaleText(normalizeAlbumName(a.album), normalizeAlbumName(b.album))
   if (albumCompare !== 0) return albumCompare
   return compareTracksByDiscTrackTitle(a, b)
 }
@@ -2245,6 +2249,7 @@ export async function initDatabase(): Promise<void> {
   db.pragma('foreign_keys = ON')
   db.pragma('busy_timeout = 5000')
   db.registerFunction('astra_normalize_album_key', { deterministic: true }, normalizeSqliteAlbumKey)
+  db.registerFunction('astra_dynamic_text_key', { deterministic: true }, normalizeDynamicPlaylistText)
 
   // Create tables
   db.run(`
@@ -5282,7 +5287,7 @@ export function getGenres(): GenreRecord[] {
         album_count: album_identity_keys.size,
         artwork_hash
       }))
-      .sort((a, b) => a.genre.localeCompare(b.genre, undefined, { sensitivity: 'base' }))
+      .sort((a, b) => compareBaseLocaleText(a.genre, b.genre))
   })
 }
 
@@ -5765,7 +5770,7 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
           artwork_source: resolvedArtwork.artwork_source
         }
       })
-      .sort((a, b) => a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' }))
+      .sort((a, b) => compareBaseLocaleText(a.artist, b.artist))
   })
 }
 
@@ -5820,9 +5825,9 @@ export function getAlbums(options: AlbumListOptions = {}): Album[] {
       })
 
     return albums.sort((a, b) => {
-      const albumCompare = a.album.localeCompare(b.album, undefined, { sensitivity: 'base' })
+      const albumCompare = compareBaseLocaleText(a.album, b.album)
       if (albumCompare !== 0) return albumCompare
-      const artistCompare = a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
+      const artistCompare = compareBaseLocaleText(a.artist, b.artist)
       if (artistCompare !== 0) return artistCompare
       return a.identity_key.localeCompare(b.identity_key)
     })
@@ -6556,9 +6561,9 @@ export async function listFolderSubdirectories(
   }
 
   return Array.from(directChildren.values()).sort((a, b) => {
-    const nameCompare = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+    const nameCompare = compareBaseLocaleText(a.name, b.name)
     if (nameCompare !== 0) return nameCompare
-    return a.relativePath.localeCompare(b.relativePath, undefined, { sensitivity: 'base' })
+    return compareBaseLocaleText(a.relativePath, b.relativePath)
   })
 }
 
@@ -9746,7 +9751,7 @@ function compareListeningAggregate(
     ? right.qualifiedPlays - left.qualifiedPlays
     : right.listenedSeconds - left.listenedSeconds
   if (secondary !== 0) return secondary
-  return left.label.localeCompare(right.label, undefined, { sensitivity: 'base' })
+  return compareBaseLocaleText(left.label, right.label)
 }
 
 export function getListeningStatsDashboard(query: ListeningStatsQuery): ListeningStatsDashboard {
@@ -11105,20 +11110,11 @@ function normalizePlaylistKind(value: unknown): PlaylistKind {
   return value === 'dynamic' ? 'dynamic' : 'normal'
 }
 
-function serializeDynamicPlaylistRules(rules: DynamicPlaylistRulesV1): string {
-  return JSON.stringify(normalizeDynamicPlaylistRules(rules))
-}
-
-function parseDynamicPlaylistRules(rawRules: unknown): DynamicPlaylistRulesV1 {
-  if (typeof rawRules !== 'string' || rawRules.trim().length === 0) {
-    return createDefaultDynamicPlaylistRules()
+function parseDynamicPlaylistRules(rawRules: unknown): DynamicPlaylistRulesV2 {
+  if (typeof rawRules !== 'string' || !rawRules.trim()) {
+    throw new Error('Dynamic playlist rules are missing.')
   }
-
-  try {
-    return normalizeDynamicPlaylistRules(JSON.parse(rawRules))
-  } catch {
-    return createDefaultDynamicPlaylistRules()
-  }
+  return normalizeDynamicPlaylistRules(JSON.parse(rawRules))
 }
 
 function readPlaylistRuleRow(playlistId: number): PlaylistRuleRow | null {
@@ -11139,7 +11135,7 @@ function assertNormalPlaylist(playlistId: number, action: string): void {
   }
 }
 
-function requireDynamicPlaylistRulesForId(playlistId: number): DynamicPlaylistRulesV1 {
+function requireDynamicPlaylistRulesForId(playlistId: number): DynamicPlaylistRulesV2 {
   const row = readPlaylistRuleRow(playlistId)
   if (!row) {
     throw new Error('Playlist not found.')
@@ -11150,20 +11146,28 @@ function requireDynamicPlaylistRulesForId(playlistId: number): DynamicPlaylistRu
   return parseDynamicPlaylistRules(row.dynamic_rules_json)
 }
 
+function normalizeDynamicPlaylistText(value: unknown): string {
+  const text = typeof value === 'string' ? value : String(value ?? '')
+  // Use the same Unicode casing and canonical spelling on both sides of SQL
+  // comparisons, preserving accents. Fold final sigma so Greek substrings match
+  // regardless of the letter's position in the complete metadata value.
+  return text.normalize('NFC').toLowerCase().replace(/\u03c2/g, '\u03c3').normalize('NFC')
+}
+
 function appendDynamicTextCondition(
   condition: Extract<DynamicPlaylistCondition, { kind: 'text' }>,
   whereClauses: string[],
   params: unknown[]
 ): void {
   const expression = DYNAMIC_TEXT_FIELD_SQL[condition.field]
-  const normalizedValue = condition.value.toLocaleLowerCase()
+  const normalizedValue = normalizeDynamicPlaylistText(condition.value)
   if (condition.operator === 'contains') {
-    whereClauses.push(`LOWER(COALESCE(${expression}, '')) LIKE ?`)
+    whereClauses.push(`astra_dynamic_text_key(COALESCE(${expression}, '')) LIKE ?`)
     params.push(`%${normalizedValue}%`)
     return
   }
 
-  whereClauses.push(`LOWER(COALESCE(${expression}, '')) ${condition.operator === 'is' ? '=' : '<>'} ?`)
+  whereClauses.push(`astra_dynamic_text_key(COALESCE(${expression}, '')) ${condition.operator === 'is' ? '=' : '<>'} ?`)
   params.push(normalizedValue)
 }
 
@@ -11233,33 +11237,30 @@ function appendDynamicDateCondition(
 }
 
 function buildDynamicPlaylistWhereClause(
-  rules: DynamicPlaylistRulesV1,
+  rules: DynamicPlaylistRulesV2,
   now: number = Date.now()
 ): { joins: string; where: string; params: unknown[] } {
-  const whereClauses = ['COALESCE(t.is_available, 1) = 1']
   const params: unknown[] = []
-  const needsFavoriteJoin = rules.conditions.some((condition) => (
-    condition.kind === 'exact' && condition.field === 'favorite'
-  ))
-  // The sort field must be part of the join check: these joins also feed the
-  // ORDER BY query, and sorting by rating without a rating condition would
-  // otherwise reference r.rating with no track_ratings join.
-  const needsRatingJoin = rules.sort.field === 'rating' || rules.conditions.some((condition) => (
+  const conditions = dynamicPlaylistConditions(rules.filter)
+  const needsFavoriteJoin = conditions.some((condition) => condition.kind === 'exact' && condition.field === 'favorite')
+  const needsRatingJoin = rules.sort.field === 'rating' || conditions.some((condition) => (
     (condition.kind === 'exact' && condition.field === 'rated')
     || (condition.kind === 'numeric' && condition.field === 'rating')
   ))
-
-  for (const condition of rules.conditions) {
-    if (condition.kind === 'text') {
-      appendDynamicTextCondition(condition, whereClauses, params)
-    } else if (condition.kind === 'exact') {
-      appendDynamicExactCondition(condition, whereClauses, params)
-    } else if (condition.kind === 'numeric') {
-      appendDynamicNumericCondition(condition, whereClauses, params)
-    } else {
-      appendDynamicDateCondition(condition, whereClauses, params, now)
+  const compileNode = (node: DynamicPlaylistNode): string => {
+    if (node.kind === 'group') {
+      if (node.children.length === 0) return '1 = 1'
+      return `(${node.children.map(compileNode).join(node.match === 'all' ? ' AND ' : ' OR ')})`
     }
+    const clauses: string[] = []
+    if (node.kind === 'text') appendDynamicTextCondition(node, clauses, params)
+    else if (node.kind === 'exact') appendDynamicExactCondition(node, clauses, params)
+    else if (node.kind === 'numeric') appendDynamicNumericCondition(node, clauses, params)
+    else appendDynamicDateCondition(node, clauses, params, now)
+    return clauses[0]
   }
+  // Availability always constrains the entire expression, including root ORs.
+  const where = `COALESCE(t.is_available, 1) = 1 AND (${compileNode(rules.filter)})`
 
   const joins: string[] = []
   if (needsFavoriteJoin) joins.push('LEFT JOIN favorites f ON f.track_path = t.path')
@@ -11267,12 +11268,12 @@ function buildDynamicPlaylistWhereClause(
 
   return {
     joins: joins.join('\n      '),
-    where: whereClauses.join('\n      AND '),
+    where,
     params
   }
 }
 
-function buildDynamicPlaylistOrderByClause(rules: DynamicPlaylistRulesV1): string {
+function buildDynamicPlaylistOrderByClause(rules: DynamicPlaylistRulesV2): string {
   const sort = DYNAMIC_SORT_FIELD_SQL[rules.sort.field] ?? DYNAMIC_SORT_FIELD_SQL.title
   const direction = rules.sort.direction === 'desc' ? 'DESC' : 'ASC'
   const expression = sort.text ? `${sort.expression} COLLATE NOCASE` : sort.expression
@@ -11280,7 +11281,7 @@ function buildDynamicPlaylistOrderByClause(rules: DynamicPlaylistRulesV1): strin
   return `${nullablePrefix}${expression} ${direction}, t.path COLLATE NOCASE ASC`
 }
 
-function getDynamicPlaylistTracksForRules(rules: DynamicPlaylistRulesV1): DbTrack[] {
+function getDynamicPlaylistTracksForRules(rules: DynamicPlaylistRules): DbTrack[] {
   return measureLibraryQuery('getDynamicPlaylistTracks', () => {
     const normalizedRules = normalizeDynamicPlaylistRules(rules)
     const { joins, where, params } = buildDynamicPlaylistWhereClause(normalizedRules)
@@ -11303,7 +11304,10 @@ function getDynamicPlaylistTracksForId(playlistId: number): DbTrack[] {
 }
 
 function buildDynamicPlaylistSummary(row: PlaylistSummaryRow): Playlist {
-  const tracks = getDynamicPlaylistTracksForRules(parseDynamicPlaylistRules(row.dynamic_rules_json))
+  // A broken playlist must not hide the rest of the playlist library. Opening
+  // it still reports the original validation error through the normal API.
+  let tracks: DbTrack[] = []
+  try { tracks = getDynamicPlaylistTracksForRules(parseDynamicPlaylistRules(row.dynamic_rules_json)) } catch { /* invalid rules */ }
   return {
     id: row.id,
     name: row.name,
@@ -11376,6 +11380,26 @@ export function getPlaylists(): Playlist[] {
       ? buildDynamicPlaylistSummary(row)
       : buildNormalPlaylistSummary(row)
   ))
+}
+
+/** Stable creation order, bounded at the database; never evaluates dynamic rules. */
+export function getCompanionApiPlaylistPage(afterId: number, limit: number): {
+  items: Array<{ id: number; track_count: number | null }>
+  total: number
+} {
+  if (!db) return { items: [], total: 0 }
+  if (!Number.isSafeInteger(afterId) || afterId < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 51) {
+    throw new Error('Invalid companion playlist page.')
+  }
+  const items = db.all<{ id: number; track_count: number | null }>(`
+    SELECT p.id, CASE WHEN p.kind = 'dynamic' THEN NULL ELSE (
+      SELECT COUNT(*) FROM playlist_tracks pt
+      INNER JOIN tracks t ON t.path = pt.track_path WHERE pt.playlist_id = p.id
+    ) END AS track_count
+    FROM playlists p WHERE p.id > ? ORDER BY p.id ASC LIMIT ?
+  `, [afterId, limit])
+  const total = db.get<{ count: number }>('SELECT COUNT(*) AS count FROM playlists')?.count ?? 0
+  return { items, total }
 }
 
 export function getCompanionApiPlaylistTarget(playlistId: number): CompanionApiPlaylistTarget | null {
@@ -11456,7 +11480,7 @@ export async function createPlaylist(name: string): Promise<Playlist> {
   }
 }
 
-export async function createDynamicPlaylist(name: string, rules: DynamicPlaylistRulesV1): Promise<Playlist> {
+export async function createDynamicPlaylist(name: string, rules: DynamicPlaylistRules): Promise<Playlist> {
   if (!db) throw new Error('Database not initialized')
   const trimmedName = name.trim()
   if (!trimmedName) {
@@ -11494,11 +11518,11 @@ export async function createDynamicPlaylist(name: string, rules: DynamicPlaylist
   })
 }
 
-export function getDynamicPlaylistRules(playlistId: number): DynamicPlaylistRulesV1 {
+export function getDynamicPlaylistRules(playlistId: number): DynamicPlaylistRulesV2 {
   return requireDynamicPlaylistRulesForId(playlistId)
 }
 
-export async function updateDynamicPlaylistRules(playlistId: number, rules: DynamicPlaylistRulesV1): Promise<void> {
+export async function updateDynamicPlaylistRules(playlistId: number, rules: DynamicPlaylistRules): Promise<void> {
   if (!db) throw new Error('Database not initialized')
   if (!Number.isInteger(playlistId) || playlistId <= 0) {
     throw new Error('Playlist id is required.')
@@ -11514,7 +11538,7 @@ export async function updateDynamicPlaylistRules(playlistId: number, rules: Dyna
   await saveDatabase()
 }
 
-export function previewDynamicPlaylist(rules: DynamicPlaylistRulesV1): DynamicPlaylistPreview {
+export function previewDynamicPlaylist(rules: DynamicPlaylistRules): DynamicPlaylistPreview {
   const tracks = getDynamicPlaylistTracksForRules(normalizeDynamicPlaylistRules(rules))
   return {
     track_count: tracks.length,
@@ -13218,6 +13242,15 @@ export function getFavoriteTrackPathsBySyncKey(): Map<string, string[]> {
     }
   }
   return result
+}
+
+/** Read-only preflight includes playlists which have not received a sync UID yet. */
+export function getDynamicPlaylistSyncRules(): { kind: 'dynamic'; dynamicRules: string | null }[] {
+  if (!db) return []
+  return db.all<{ dynamic_rules_json: string | null }>(`
+    SELECT dynamic_rules_json FROM playlists
+    WHERE kind = 'dynamic' AND remote_source_type IS NULL AND remote_source_id IS NULL
+  `).map((row) => ({ kind: 'dynamic', dynamicRules: row.dynamic_rules_json }))
 }
 
 export function getSyncPlaylistsState(): { playlists: SyncPlaylist[]; tombstones: SyncUidTombstone[] } {

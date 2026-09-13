@@ -11,7 +11,7 @@ import { runViewTransition } from '../../utils/viewTransitions'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 import { usePresence } from '../../hooks/usePresence'
-import type { DynamicPlaylistRulesV1 } from '../../../shared/playlists/dynamicPlaylist'
+import type { DynamicPlaylistRulesV2 } from '../../../shared/playlists/dynamicPlaylist'
 
 const baseNavItems: { id: AppView; label: string; icon: ReactNode }[] = [
   {
@@ -469,7 +469,7 @@ export default function Sidebar() {
     setCreatePlaylistTrackPaths(null)
   }, [createPlaylistTrackPaths, createPlaylistWithOptions, selectPlaylist, setActiveView])
 
-  const handleCreateDynamicPlaylist = useCallback(async (name: string, coverImagePath: string | null, rules: DynamicPlaylistRulesV1) => {
+  const handleCreateDynamicPlaylist = useCallback(async (name: string, coverImagePath: string | null, rules: DynamicPlaylistRulesV2) => {
     const playlist = await createDynamicPlaylistWithOptions({
       name,
       coverImagePath,

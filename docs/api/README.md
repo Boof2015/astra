@@ -78,3 +78,7 @@ The served contract is available without authentication at `GET /v2/openapi.json
 ## Deliberate omissions
 
 v2 does not expose pageable library browsing, collection contents, filesystem paths, audio streaming, metadata editing, scans or folders, remote-source administration, settings, DSP/EQ, visualizer samples, lyrics, playlist deletion, or dynamic-playlist rules. Library writes are limited to favorites and locally owned normal playlists; mirrored and dynamic playlists reject edits.
+
+## Hardware companions and playlist browsing
+
+[Astra Thing pairing](hardware-pairing.md) documents discovery, matching-code approval, remembered hardware credentials, and the shared transport. `GET /v2/playlists` adds a bounded, cursor-based playlist shelf under `library-search`; use its returned references with the existing play/enqueue intents. Capability `playlistListing` and limits `playlistDefault`/`playlistMaximum` identify support.

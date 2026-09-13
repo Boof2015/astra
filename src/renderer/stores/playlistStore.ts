@@ -17,7 +17,7 @@ import {
 } from '../constants/settingsStorageKeys'
 import {
   normalizeDynamicPlaylistRules,
-  type DynamicPlaylistRulesV1,
+  type DynamicPlaylistRulesV2,
   type PlaylistKind
 } from '../../shared/playlists/dynamicPlaylist'
 
@@ -73,7 +73,7 @@ export interface CreatePlaylistOptions {
 
 export interface CreateDynamicPlaylistOptions {
   name: string
-  rules: DynamicPlaylistRulesV1
+  rules: DynamicPlaylistRulesV2
   coverImagePath?: string | null
 }
 
@@ -152,6 +152,7 @@ interface PlaylistStore {
   playlists: Playlist[]
   selectedPlaylistId: number | null
   selectedPlaylistEntries: PlaylistTrackEntry[]
+  selectedPlaylistError: string | null
   selectedPlaylistTracks: DbTrack[]
   sortState: PlaylistTrackListSortState | null
   sidebarPinnedPlaylistIds: number[]
@@ -161,11 +162,11 @@ interface PlaylistStore {
   loadPlaylists: () => Promise<void>
   createPlaylist: (name: string) => Promise<Playlist>
   createPlaylistWithOptions: (options: CreatePlaylistOptions) => Promise<Playlist>
-  createDynamicPlaylist: (name: string, rules: DynamicPlaylistRulesV1) => Promise<Playlist>
+  createDynamicPlaylist: (name: string, rules: DynamicPlaylistRulesV2) => Promise<Playlist>
   createDynamicPlaylistWithOptions: (options: CreateDynamicPlaylistOptions) => Promise<Playlist>
-  getDynamicPlaylistRules: (playlistId: number) => Promise<DynamicPlaylistRulesV1>
-  updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRulesV1) => Promise<void>
-  previewDynamicPlaylist: (rules: DynamicPlaylistRulesV1) => Promise<DynamicPlaylistPreview>
+  getDynamicPlaylistRules: (playlistId: number) => Promise<DynamicPlaylistRulesV2>
+  updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRulesV2) => Promise<void>
+  previewDynamicPlaylist: (rules: DynamicPlaylistRulesV2) => Promise<DynamicPlaylistPreview>
   renamePlaylist: (id: number, name: string) => Promise<void>
   deletePlaylist: (id: number) => Promise<void>
   selectPlaylist: (id: number, shouldCommit?: () => boolean) => Promise<void>
@@ -263,16 +264,17 @@ function persistBrowserSortMode(sortMode: PlaylistBrowserSortMode): void {
 const initialSidebarPins = readPersistedSidebarPins()
 
 export const usePlaylistStore = create<PlaylistStore>((set, get) => {
-  const loadPlaylistSelection = async (playlistId: number): Promise<Pick<PlaylistStore, 'selectedPlaylistEntries' | 'selectedPlaylistTracks'>> => {
+  const loadPlaylistSelection = async (playlistId: number): Promise<Pick<PlaylistStore, 'selectedPlaylistEntries' | 'selectedPlaylistTracks' | 'selectedPlaylistError'>> => {
     if (playlistId === FAVORITES_PLAYLIST_ID) {
       const tracks = await window.electronAPI.library.getFavorites()
-      return { selectedPlaylistEntries: [], selectedPlaylistTracks: tracks }
+      return { selectedPlaylistEntries: [], selectedPlaylistTracks: tracks, selectedPlaylistError: null }
     }
 
-    const entries = await window.electronAPI.library.getPlaylistTrackEntries(playlistId)
-    return {
-      selectedPlaylistEntries: entries,
-      selectedPlaylistTracks: getPlayableTracksFromEntries(entries)
+    try {
+      const entries = await window.electronAPI.library.getPlaylistTrackEntries(playlistId)
+      return { selectedPlaylistEntries: entries, selectedPlaylistTracks: getPlayableTracksFromEntries(entries), selectedPlaylistError: null }
+    } catch (error) {
+      return { selectedPlaylistEntries: [], selectedPlaylistTracks: [], selectedPlaylistError: error instanceof Error ? error.message : 'Playlist could not be loaded.' }
     }
   }
 
@@ -286,6 +288,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
     selectedPlaylistId: null,
     selectedPlaylistEntries: [],
     selectedPlaylistTracks: [],
+    selectedPlaylistError: null,
     sortState: null,
     sidebarPinnedPlaylistIds: initialSidebarPins ?? [FAVORITES_PLAYLIST_ID],
     sidebarPinsInitialized: initialSidebarPins !== null,
@@ -354,7 +357,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       return playlist
     },
 
-    createDynamicPlaylist: async (name: string, rules: DynamicPlaylistRulesV1) => {
+    createDynamicPlaylist: async (name: string, rules: DynamicPlaylistRulesV2) => {
       return get().createDynamicPlaylistWithOptions({ name, rules })
     },
 
@@ -394,7 +397,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       return window.electronAPI.library.getDynamicPlaylistRules(playlistId)
     },
 
-    updateDynamicPlaylistRules: async (playlistId: number, rules: DynamicPlaylistRulesV1) => {
+    updateDynamicPlaylistRules: async (playlistId: number, rules: DynamicPlaylistRulesV2) => {
       if (!Number.isInteger(playlistId) || playlistId <= 0) {
         throw new Error('Playlist id is required.')
       }
@@ -403,7 +406,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       await refreshSelectedPlaylist(playlistId)
     },
 
-    previewDynamicPlaylist: async (rules: DynamicPlaylistRulesV1) => {
+    previewDynamicPlaylist: async (rules: DynamicPlaylistRulesV2) => {
       return window.electronAPI.library.previewDynamicPlaylist(normalizeDynamicPlaylistRules(rules))
     },
 
@@ -417,7 +420,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       if (isSystemFavoritesPlaylistId(id)) return
       await window.electronAPI.library.deletePlaylist(id)
       if (get().selectedPlaylistId === id) {
-        set({ selectedPlaylistId: null, selectedPlaylistEntries: [], selectedPlaylistTracks: [] })
+        set({ selectedPlaylistId: null, selectedPlaylistEntries: [], selectedPlaylistTracks: [], selectedPlaylistError: null })
       }
       await get().loadPlaylists()
     },
@@ -435,7 +438,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
     },
 
     clearSelection: () => {
-      set({ selectedPlaylistId: null, selectedPlaylistEntries: [], selectedPlaylistTracks: [] })
+      set({ selectedPlaylistId: null, selectedPlaylistEntries: [], selectedPlaylistTracks: [], selectedPlaylistError: null })
     },
 
     addToPlaylist: async (playlistId: number, trackPaths: string[]) => {

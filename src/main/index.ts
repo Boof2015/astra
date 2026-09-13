@@ -1,5 +1,7 @@
+import { parseCompanionDeviceInfo, type CompanionDeviceInfo } from '../shared/companionDevices'
 import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, clipboard, screen, safeStorage, powerMonitor, protocol, session, globalShortcut, Menu, Tray, type MenuItemConstructorOptions } from 'electron'
 import { join, basename, extname } from 'path'
+import { NotchController } from './services/notchController'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir, stat } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
 import { cpus, tmpdir, hostname, networkInterfaces, setPriority, constants as osConstants } from 'os'
@@ -8,7 +10,7 @@ import { createHash, randomBytes, randomUUID } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
 import { isAllowedArtworkProtocolHash } from './services/artworkProtocol'
-import type { DynamicPlaylistRulesV1 } from '../shared/playlists/dynamicPlaylist'
+import type { DynamicPlaylistRules } from '../shared/playlists/dynamicPlaylist'
 import type {
   ListeningSessionCheckpoint,
   ListeningStatsApplyRequest,
@@ -358,6 +360,7 @@ let cachedBuildMetadata: ResolvedBuildMetadata | null = null
 let mainWindow: BrowserWindow | null = null
 let hrtfProfileService: HrtfProfileService | null = null
 let miniWindow: BrowserWindow | null = null
+let notchController: NotchController | null = null
 let lyricsPopoutWindow: BrowserWindow | null = null
 let appTray: Tray | null = null
 const scopePopoutWindows: Record<ScopeKind, BrowserWindow | null> = {
@@ -587,6 +590,7 @@ const LOCAL_API_LIBRARY_WRITE_ENABLED_META_KEY = 'local_api_library_write_enable
 const LOCAL_API_PORT_META_KEY = 'local_api_port_v1'
 const LOCAL_API_TOKEN_META_KEY = 'local_api_token_v1'
 const COMPANION_API_REFERENCE_SECRET_META_KEY = 'companion_api_reference_secret_v2'
+const HARDWARE_ENABLED_META_KEY = 'hardware_connections_enabled_v1'
 const PHONE_REMOTE_ENABLED_META_KEY = 'local_api_remote_web_enabled_v1'
 const PHONE_REMOTE_PORT_META_KEY = 'phone_remote_port_v1'
 const PHONE_REMOTE_SYNC_ENABLED_META_KEY = 'phone_remote_sync_enabled_v1'
@@ -728,6 +732,7 @@ let parallaxHostConfig: ParallaxHostConfig = {
   port: PARALLAX_DEFAULT_PORT
 }
 type PersistedPhoneRemotePairedDevice = {
+  deviceInfo?: CompanionDeviceInfo | null
   id: string
   name: string
   clientLabel: string
@@ -1197,6 +1202,7 @@ const companionApiLibrary = new CompanionApiLibrary({
 const companionApiOptions = {
   getPlayback: () => companionApiLibrary.getPlayback(latestMiniPlayerSnapshot),
   getQueue: () => companionApiLibrary.getQueue(latestMiniPlayerQueueSnapshot),
+  listPlaylists: (cursor: string | null, limit: number) => companionApiLibrary.listPlaylists(cursor, limit),
   search: (
     query: string,
     types: ReadonlySet<import('../types/companionApi').CompanionApiTargetType>,
@@ -1259,6 +1265,7 @@ const phoneRemoteService = new PhoneRemoteService({
       console.warn('Failed to persist phone remote paired devices:', error)
     })
   },
+  getSyncRulePlaylists: () => library.getDynamicPlaylistSyncRules(),
   getSyncState: () => buildPhoneSyncState(),
   applySyncChanges: (rawPayload) => {
     const payload = parsePhoneSyncApplyPayload(rawPayload)
@@ -2192,7 +2199,7 @@ function sanitizePhoneRemotePairedDevices(rawDevices: unknown): PersistedPhoneRe
     const clientLabel = typeof value.clientLabel === 'string' ? value.clientLabel.trim() : ''
     const tokenPrefix = typeof value.tokenPrefix === 'string' ? value.tokenPrefix.trim() : ''
     const syncTokenPrefix = typeof value.syncTokenPrefix === 'string' ? value.syncTokenPrefix.trim() : null
-    const clientKind = value.clientKind === 'native' || value.clientKind === 'web' ? value.clientKind : null
+    const clientKind = value.clientKind === 'native' || value.clientKind === 'web' || value.clientKind === 'hardware' ? value.clientKind : null
     const scopes = Array.isArray(value.scopes)
       ? value.scopes.filter((scope): scope is PhoneRemoteCredentialScope => (
           scope === 'control'
@@ -2254,7 +2261,8 @@ function sanitizePhoneRemotePairedDevices(rawDevices: unknown): PersistedPhoneRe
       credentialIssuedAt <= 0 || credentialRotatedAt <= 0 || expiresAt <= 0 ||
       expectedScopes.some((scope) => !scopes.includes(scope)) ||
       (clientKind === 'native' && (!syncTokenHash || !syncTokenPrefix)) ||
-      (clientKind === 'web' && (syncTokenHash || syncTokenPrefix || scopes.includes('sync')))
+      (clientKind !== 'native' && (syncTokenHash || syncTokenPrefix || scopes.includes('sync'))) ||
+      (clientKind === 'hardware' && scopes.includes('library-write'))
     ) {
       continue
     }
@@ -2263,6 +2271,7 @@ function sanitizePhoneRemotePairedDevices(rawDevices: unknown): PersistedPhoneRe
       id,
       name: name.slice(0, 80),
       clientLabel: clientLabel.slice(0, 80),
+      deviceInfo: parseCompanionDeviceInfo(value.deviceInfo),
       tokenPrefix: tokenPrefix.slice(0, 16),
       syncTokenPrefix: syncTokenPrefix?.slice(0, 16) ?? null,
       clientKind,
@@ -2383,6 +2392,7 @@ async function persistLocalApiConfig(config: LocalApiServiceConfig): Promise<voi
 }
 
 async function persistPhoneRemoteConfig(config: PhoneRemoteServiceConfig): Promise<void> {
+  if (config.hardwareEnabled !== undefined) await library.setAppMeta(HARDWARE_ENABLED_META_KEY, config.hardwareEnabled ? '1' : '0')
   await library.setAppMeta(PHONE_REMOTE_ENABLED_META_KEY, config.enabled ? '1' : '0')
   await library.setAppMeta(PHONE_REMOTE_SYNC_ENABLED_META_KEY, config.syncEnabled ? '1' : '0')
   await library.setAppMeta(PHONE_REMOTE_PORT_META_KEY, String(config.port))
@@ -2916,6 +2926,7 @@ async function loadPhoneRemoteConfigFromMeta(controlsEnabled: boolean): Promise<
   }
 
   const normalized: PhoneRemoteServiceConfig = {
+    hardwareEnabled: library.getAppMeta(HARDWARE_ENABLED_META_KEY) === null ? undefined : parseMetaBoolean(library.getAppMeta(HARDWARE_ENABLED_META_KEY), false),
     enabled,
     controlsEnabled,
     syncEnabled,
@@ -4899,6 +4910,7 @@ function createWindow(): void {
   mainWindow.on('closed', () => {
     globalInputShortcutService.clear()
     mainWindow = null
+    notchController?.mainWindowClosed()
     trayRendererReady = false
     latestTrayRendererState = { ...DEFAULT_TRAY_RENDERER_STATE }
     associatedOpenRendererReady = false
@@ -4941,6 +4953,7 @@ function createWindow(): void {
   broadcastScopePopoutState()
   broadcastLocalApiStatus()
   broadcastLyricsStatus()
+  notchController?.reconcile()
 }
 
 async function maybeRunAudioMetadataBackfillOnce(): Promise<void> {
@@ -5529,6 +5542,15 @@ app.whenReady().then(async () => {
   miniWindowPrefs = await loadMiniWindowPrefs()
   lyricsPopoutWindowPrefs = await loadLyricsPopoutWindowPrefs()
   desktopIntegrationPrefs = await loadDesktopIntegrationPrefs()
+  notchController = new NotchController({
+    getMainWindow: () => mainWindow,
+    openAstra: focusOrCreateMainWindow,
+    sendCommand: sendMiniPlayerCommand,
+    preload: join(__dirname, '../preload/index.js'),
+    rendererFile: join(__dirname, '../renderer/index.html'),
+    rendererUrl: isDev ? process.env['ELECTRON_RENDERER_URL'] : undefined,
+  })
+  await notchController.initialize()
   localApiConfig = await loadLocalApiConfigFromMeta()
   phoneRemoteConfig = await loadPhoneRemoteConfigFromMeta(localApiConfig.controlsEnabled)
   parallaxHostConfig = await loadParallaxHostConfigFromMeta()
@@ -5539,6 +5561,10 @@ app.whenReady().then(async () => {
   parallaxTlsIdentity = await loadOrCreateParallaxTlsIdentity()
   parallaxService.setTlsIdentity(parallaxTlsIdentity)
   phoneRemotePairedDevices = await loadPhoneRemotePairedDevicesFromMeta()
+  if (phoneRemoteConfig.hardwareEnabled === undefined) {
+    phoneRemoteConfig.hardwareEnabled = phoneRemoteConfig.enabled && phoneRemotePairedDevices.some(device => device.clientKind === 'hardware' && device.revokedAt === null)
+    await persistPhoneRemoteConfig(phoneRemoteConfig)
+  }
   parallaxPairedSinks = await loadParallaxPairedSinksFromMeta()
   parallaxSinkConnection = loadParallaxSinkConnectionFromMeta()
   // §20 Commit 1. Sink-enabled migration MUST read after `parallaxSinkConnection` is loaded —
@@ -5636,6 +5662,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isAppQuitting = true
+  notchController?.dispose()
   destroyAppTray()
   globalInputShortcutService.clear()
   if (mainWindowPersistTimer !== null) {
@@ -5839,9 +5866,11 @@ ipcMain.handle('mini-player:getSnapshot', () => {
   return latestMiniPlayerSnapshot
 })
 
-ipcMain.on('mini-player:publishSnapshot', (_event, snapshot: MiniPlayerSnapshot) => {
+ipcMain.on('mini-player:publishSnapshot', (event, snapshot: MiniPlayerSnapshot) => {
+  if (event.sender !== mainWindow?.webContents) return
   const mergedSnapshot = mergeMiniPlayerSnapshots(latestMiniPlayerSnapshot, snapshot)
   latestMiniPlayerSnapshot = mergedSnapshot
+  notchController?.publishSnapshot(mergedSnapshot)
   localApiService.publishSnapshot(mergedSnapshot)
   phoneRemoteService.publishSnapshot(mergedSnapshot)
   lastFmService.publishSnapshot(mergedSnapshot)
@@ -5857,8 +5886,10 @@ ipcMain.on('mini-player:publishQueueSnapshot', (_event, snapshot: MiniPlayerQueu
   phoneRemoteService.publishQueueSnapshot(snapshot)
 })
 
-ipcMain.on('mini-player:publishVisualizerChunk', (_event, chunk: MiniPlayerVisualizerStreamChunk) => {
+ipcMain.on('mini-player:publishVisualizerChunk', (event, chunk: MiniPlayerVisualizerStreamChunk) => {
+  if (event.sender !== mainWindow?.webContents) return
   latestMiniVisualizerChunk = chunk
+  notchController?.publishVisualizerChunk(chunk)
   if (miniWindow && !miniWindow.isDestroyed()) {
     miniWindow.webContents.send('mini-player:visualizerChunk', chunk)
   }
@@ -6832,23 +6863,36 @@ ipcMain.handle('local-api:resetToDefaults', async () => {
     token: generateLocalApiToken(),
   }
   const nextPhoneRemoteConfig: PhoneRemoteServiceConfig = {
-    enabled: false,
-    controlsEnabled: false,
-    syncEnabled: true,
-    port: PHONE_REMOTE_DEFAULT_PORT
+    ...phoneRemoteConfig,
+    controlsEnabled: false
   }
-  phoneRemoteService.replacePairedDevices([])
-  await persistPhoneRemotePairedDevices([])
   await applyPhoneRemoteConfig(nextPhoneRemoteConfig)
   return applyLocalApiConfig(nextConfig)
 })
 
 // Phone remote
+ipcMain.handle('devices:getStatus', () => phoneRemoteService.getStatus())
+ipcMain.handle('devices:list', () => phoneRemoteService.listPairedDevices().filter(device => device.clientKind === 'hardware' && device.revokedAt === null))
+ipcMain.handle('devices:setEnabled', async (_event, enabled: unknown) => {
+  if (typeof enabled !== 'boolean') throw new Error('Invalid device connection setting.')
+  return applyPhoneRemoteConfig({ ...phoneRemoteConfig, hardwareEnabled: enabled })
+})
+ipcMain.handle('devices:rename', (_event, id: unknown, name: unknown) => {
+  if (typeof id !== 'string' || typeof name !== 'string') throw new Error('Invalid device name.')
+  if (!phoneRemoteService.listPairedDevices().some(device => device.id === id && device.clientKind === 'hardware')) throw new Error('Device not found.')
+  return phoneRemoteService.renamePairedDevice(id, name)
+})
+ipcMain.handle('devices:forget', (_event, id: unknown) => {
+  if (typeof id !== 'string' || !phoneRemoteService.listPairedDevices().some(device => device.id === id && device.clientKind === 'hardware')) throw new Error('Device not found.')
+  return phoneRemoteService.revokePairedDevice(id)
+})
+
 ipcMain.handle('phone-remote:getStatus', () => {
   return phoneRemoteService.getStatus()
 })
 
 ipcMain.handle('phone-remote:createPairingTicket', (_event, baseUrl?: unknown, clientKind?: unknown) => {
+  if (clientKind === 'hardware') throw new Error('Hardware companions use matching-code pairing.')
   return phoneRemoteService.createPairingTicket(
     typeof baseUrl === 'string' ? baseUrl : undefined,
     clientKind === 'web' ? 'web' : 'native'
@@ -6893,7 +6937,7 @@ ipcMain.handle('phone-remote:revokePairedDevice', (_event, id: unknown) => {
 })
 
 ipcMain.handle('phone-remote:revokeAllPairedDevices', () => {
-  return phoneRemoteService.revokeAllPairedDevices()
+  return phoneRemoteService.revokeAllPairedDevices('phone')
 })
 
 ipcMain.handle('phone-remote:setEnabled', async (_event, enabled: unknown) => {
@@ -6944,13 +6988,13 @@ ipcMain.handle('phone-remote:resolveSyncConflict', (_event, syncUid: unknown, re
 
 ipcMain.handle('phone-remote:resetToDefaults', async () => {
   const nextConfig: PhoneRemoteServiceConfig = {
+    hardwareEnabled: phoneRemoteConfig.hardwareEnabled,
     enabled: false,
     controlsEnabled: localApiConfig.controlsEnabled,
     syncEnabled: true,
-    port: PHONE_REMOTE_DEFAULT_PORT
+    port: phoneRemoteConfig.hardwareEnabled ? phoneRemoteConfig.port : PHONE_REMOTE_DEFAULT_PORT
   }
-  phoneRemoteService.replacePairedDevices([])
-  await persistPhoneRemotePairedDevices([])
+  phoneRemoteService.revokeAllPairedDevices('phone')
   return applyPhoneRemoteConfig(nextConfig)
 })
 
@@ -7135,7 +7179,7 @@ function getPhoneRemoteIdentity(): PhoneRemoteIdentity {
 
 function refreshPhoneRemoteDiscoveryAdvertisement(status = phoneRemoteService.getStatus()): void {
   if (!parallaxEndpointUuid) return
-  if (!status.active) {
+  if (!status.active && !status.hardwareActive) {
     phoneRemoteDiscoveryService.stopAdvertising()
     return
   }
@@ -7147,7 +7191,9 @@ function refreshPhoneRemoteDiscoveryAdvertisement(status = phoneRemoteService.ge
       endpointUuid: identity.endpointUuid,
       protocolVersion: identity.protocolVersion,
       transport: 'https',
-      certificateFingerprint: phoneRemoteTlsIdentity?.fingerprint256 ?? ''
+      certificateFingerprint: phoneRemoteTlsIdentity?.fingerprint256 ?? '',
+      hardwareEnabled: Boolean(status.hardwareActive),
+      phoneEnabled: status.active
     })
   } catch (error) {
     console.warn('Failed to refresh phone remote discovery advertisement:', error)
@@ -9817,7 +9863,7 @@ ipcMain.handle('library:createPlaylist', async (_event, name: string) => {
   return playlist
 })
 
-ipcMain.handle('library:createDynamicPlaylist', async (_event, name: string, rules: DynamicPlaylistRulesV1) => {
+ipcMain.handle('library:createDynamicPlaylist', async (_event, name: string, rules: DynamicPlaylistRules) => {
   const playlist = await library.createDynamicPlaylist(name, rules)
   publishCompanionPlaylistEvent(playlist.id, 'created')
   return playlist
@@ -9827,12 +9873,12 @@ ipcMain.handle('library:getDynamicPlaylistRules', (_event, playlistId: number) =
   return library.getDynamicPlaylistRules(playlistId)
 })
 
-ipcMain.handle('library:updateDynamicPlaylistRules', async (_event, playlistId: number, rules: DynamicPlaylistRulesV1) => {
+ipcMain.handle('library:updateDynamicPlaylistRules', async (_event, playlistId: number, rules: DynamicPlaylistRules) => {
   await library.updateDynamicPlaylistRules(playlistId, rules)
   publishCompanionPlaylistEvent(playlistId, 'items-changed')
 })
 
-ipcMain.handle('library:previewDynamicPlaylist', (_event, rules: DynamicPlaylistRulesV1) => {
+ipcMain.handle('library:previewDynamicPlaylist', (_event, rules: DynamicPlaylistRules) => {
   return library.previewDynamicPlaylist(rules)
 })
 
@@ -12467,6 +12513,7 @@ interface TrackLoudnessAnalysisResult {
   loudnessLufs: number
   peakLinear: number | null
   method: string
+  source?: 'cache' | 'analysis'
 }
 
 interface RendererTrackLoudnessPayload {
@@ -12614,7 +12661,7 @@ async function runLoudnessAnalysisJob(
       fileMtimeMs: job.fileStat.mtimeMs
     })
     return {
-      result: { loudnessLufs: parsed.loudnessLufs, peakLinear: parsed.peakLinear, method: 'ebur128' },
+      result: { loudnessLufs: parsed.loudnessLufs, peakLinear: parsed.peakLinear, method: 'ebur128', source: 'analysis' },
       outcome: 'success',
       capturedStderrBytes,
       backgroundPriorityApplied
@@ -12705,7 +12752,8 @@ async function analyzeTrackLoudness(
       return {
         loudnessLufs: stored.loudnessLufs,
         peakLinear: stored.peakLinear,
-        method: stored.method
+        method: stored.method,
+        source: 'cache'
       }
     }
     await library.deleteTrackLoudness(filePath)

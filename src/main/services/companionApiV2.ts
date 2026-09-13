@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'http'
 import type {
   CompanionApiLibraryEvent,
+  CompanionApiPlaylistPage,
   CompanionApiPlaybackAction,
   CompanionApiPlaybackSnapshot,
   CompanionApiQueueSnapshot,
@@ -13,6 +14,8 @@ import type {
 import {
   COMPANION_API_DEFAULT_POSITION_INTERVAL_MS,
   COMPANION_API_DEFAULT_SEARCH_LIMIT,
+  COMPANION_API_DEFAULT_PLAYLIST_LIMIT,
+  COMPANION_API_MAX_PLAYLIST_LIMIT,
   COMPANION_API_MAX_MUTATION_REFS,
   COMPANION_API_MAX_POSITION_INTERVAL_MS,
   COMPANION_API_MAX_SEARCH_LIMIT,
@@ -49,6 +52,7 @@ export interface CompanionApiResolvedTarget {
 }
 
 interface CompanionApiSseClient {
+  sessionId: string
   response: ServerResponse<IncomingMessage>
   topics: ReadonlySet<CompanionApiEventTopic>
   positionIntervalMs: number
@@ -71,6 +75,7 @@ export interface CompanionApiV2Options {
     types: ReadonlySet<CompanionApiTargetType>,
     limit: number
   ) => Promise<CompanionApiSearchResponse> | CompanionApiSearchResponse
+  listPlaylists: (cursor: string | null, limit: number) => CompanionApiPlaylistPage | null
   resolveTarget: (ref: string, expectedType?: CompanionApiTargetType) => CompanionApiResolvedTarget | null
   dispatchRendererCommand: (command: CompanionApiRendererCommand) => boolean
   resolveArtworkDataUrl: (ref: string) => Promise<string | null>
@@ -165,8 +170,8 @@ export class CompanionApiV2 {
     this.options = options
   }
 
-  getConnectedClientCount(): number {
-    return this.sseClients.size
+  getConnectedClientCount(predicate: (sessionId: string) => boolean = () => true): number {
+    return Array.from(this.sseClients).filter(client => predicate(client.sessionId)).length
   }
 
   startHeartbeat(): void {
@@ -176,7 +181,7 @@ export class CompanionApiV2 {
         try {
           client.response.write(': heartbeat\n\n')
         } catch {
-          this.sseClients.delete(client)
+          if (this.sseClients.delete(client)) this.options.onConnectedClientsChange?.()
         }
       }
     }, SSE_HEARTBEAT_INTERVAL_MS)
@@ -189,9 +194,18 @@ export class CompanionApiV2 {
     }
   }
 
+  getConnectedSessionIds(): ReadonlySet<string> {
+    return new Set(Array.from(this.sseClients, client => client.sessionId))
+  }
+
   closeAllSseClients(): void {
+    this.closeSseClients(() => true)
+  }
+
+  closeSseClients(predicate: (sessionId: string) => boolean): void {
     let changed = false
     for (const client of this.sseClients) {
+      if (!predicate(client.sessionId)) continue
       try {
         client.response.end()
       } catch {
@@ -308,6 +322,23 @@ export class CompanionApiV2 {
     if (method === 'GET' && path === '/v2/search') {
       if (!this.requireScope(res, session, 'library-search')) return true
       await this.handleSearch(res, requestUrl)
+      return true
+    }
+
+    if (method === 'GET' && path === '/v2/playlists') {
+      if (!this.requireScope(res, session, 'library-search')) return true
+      const rawLimit = requestUrl.searchParams.get('limit')
+      const limit = rawLimit === null ? COMPANION_API_DEFAULT_PLAYLIST_LIMIT : Number(rawLimit)
+      const cursor = requestUrl.searchParams.get('cursor')
+      if ((rawLimit !== null && !/^[1-9]\d*$/.test(rawLimit))
+        || !Number.isSafeInteger(limit) || limit < 1 || limit > COMPANION_API_MAX_PLAYLIST_LIMIT
+        || (cursor !== null && (!cursor || cursor.length > 2_048))) {
+        this.respondError(res, 400, 'invalid_playlist_page', 'Invalid playlist limit or cursor.')
+        return true
+      }
+      const page = this.options.listPlaylists(cursor, limit)
+      if (!page) this.respondError(res, 400, 'invalid_playlist_cursor', 'The playlist cursor is invalid.')
+      else this.respondJson(res, 200, page)
       return true
     }
 
@@ -449,6 +480,7 @@ export class CompanionApiV2 {
         playback: true,
         events: true,
         boundedSearch: true,
+        playlistListing: true,
         intents: true,
         queueEditing: true,
         favorites: true,
@@ -458,6 +490,8 @@ export class CompanionApiV2 {
         audioStreaming: false
       },
       limits: {
+        playlistDefault: COMPANION_API_DEFAULT_PLAYLIST_LIMIT,
+        playlistMaximum: COMPANION_API_MAX_PLAYLIST_LIMIT,
         searchDefault: COMPANION_API_DEFAULT_SEARCH_LIMIT,
         searchMaximum: COMPANION_API_MAX_SEARCH_LIMIT,
         mutationReferencesMaximum: COMPANION_API_MAX_MUTATION_REFS,
@@ -513,6 +547,7 @@ export class CompanionApiV2 {
 
     const playback = this.options.getPlayback()
     const client: CompanionApiSseClient = {
+      sessionId: session.id,
       response: res,
       topics,
       positionIntervalMs,

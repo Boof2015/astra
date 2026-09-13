@@ -1,6 +1,11 @@
+import { dynamicPlaylistNodeId, editDynamicPlaylistNode, dynamicPlaylistNodeCount } from '../../../shared/playlists/dynamicPlaylistDraft'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   createDefaultDynamicPlaylistRules,
+  DYNAMIC_PLAYLIST_MAX_GROUP_DEPTH,
+  DYNAMIC_PLAYLIST_MAX_NODES,
+  type DynamicPlaylistGroup,
+  type DynamicPlaylistNode,
   normalizeDynamicPlaylistRules,
   type DynamicPlaylistAddedAtCondition,
   type DynamicPlaylistCondition,
@@ -11,6 +16,7 @@ import {
   type DynamicPlaylistNumericCondition,
   type DynamicPlaylistNumericField,
   type DynamicPlaylistRatedCondition,
+  type DynamicPlaylistRulesV2,
   type DynamicPlaylistRulesV1,
   type DynamicPlaylistSourceCondition,
   type DynamicPlaylistSortField,
@@ -33,9 +39,9 @@ export interface DynamicPlaylistPreview {
 }
 
 interface DynamicPlaylistRuleEditorProps {
-  rules: DynamicPlaylistRulesV1
-  onRulesChange: (rules: DynamicPlaylistRulesV1) => void
-  onPreview: (rules: DynamicPlaylistRulesV1) => Promise<DynamicPlaylistPreview>
+  rules: DynamicPlaylistRulesV2
+  onRulesChange: (rules: DynamicPlaylistRulesV2) => void
+  onPreview: (rules: DynamicPlaylistRulesV2) => Promise<DynamicPlaylistPreview>
   disabled?: boolean
 }
 
@@ -180,26 +186,6 @@ function createDefaultCondition(fieldKey: ConditionFieldKey = 'text:artist'): Dy
 
 function getConditionFieldKey(condition: DynamicPlaylistCondition): ConditionFieldKey {
   return `${condition.kind}:${condition.field}` as ConditionFieldKey
-}
-
-function updateRulesCondition(
-  rules: DynamicPlaylistRulesV1,
-  index: number,
-  condition: DynamicPlaylistCondition
-): DynamicPlaylistRulesV1 {
-  return {
-    ...rules,
-    conditions: rules.conditions.map((entry, entryIndex) => (
-      entryIndex === index ? condition : entry
-    ))
-  }
-}
-
-function removeRulesCondition(rules: DynamicPlaylistRulesV1, index: number): DynamicPlaylistRulesV1 {
-  return {
-    ...rules,
-    conditions: rules.conditions.filter((_, entryIndex) => entryIndex !== index)
-  }
 }
 
 function formatTrackPreviewSubtitle(track: DynamicPlaylistPreview['tracks'][number]): string {
@@ -506,15 +492,58 @@ export default function DynamicPlaylistRuleEditor({
     }
   }, [onPreview, rules])
 
-  const addCondition = () => {
-    onRulesChange({
-      ...rules,
-      conditions: [...rules.conditions, createDefaultCondition()]
-    })
+  const editNode = (node: DynamicPlaylistNode, edit: (node: DynamicPlaylistNode) => DynamicPlaylistNode | null) => {
+    onRulesChange({ ...rules, filter: editDynamicPlaylistNode(rules.filter, dynamicPlaylistNodeId(node), edit) })
   }
+  const canAdd = dynamicPlaylistNodeCount(rules.filter) < DYNAMIC_PLAYLIST_MAX_NODES
+  const renderGroup = (group: DynamicPlaylistGroup, depth: number) => (
+    <fieldset className="playlist-dynamic-group" key={dynamicPlaylistNodeId(group)}>
+      <legend>{depth === 1 ? 'Match tracks' : 'Filter group'}</legend>
+      <div className="playlist-dynamic-group-header">
+        <select
+          className="playlist-dynamic-select playlist-dynamic-match"
+          aria-label={depth === 1 ? 'Match tracks using' : 'Match group using'}
+          value={group.match}
+          onChange={(event) => editNode(group, () => ({ ...group, match: event.target.value === 'any' ? 'any' : 'all' }))}
+          disabled={disabled}
+        >
+          <option value="all">Match all (AND)</option>
+          <option value="any">Match any (OR)</option>
+        </select>
+        <div className="playlist-dynamic-section-actions">
+          <button type="button" className="playlist-create-cover-btn" disabled={disabled || !canAdd}
+            onClick={() => editNode(group, () => ({ ...group, children: [...group.children, createDefaultCondition()] }))}>Add filter</button>
+          <button type="button" className="playlist-create-cover-btn" disabled={disabled || !canAdd || depth >= DYNAMIC_PLAYLIST_MAX_GROUP_DEPTH}
+            onClick={() => editNode(group, () => ({ ...group, children: [...group.children, { kind: 'group', match: group.match === 'all' ? 'any' : 'all', children: [] }] }))}>Add group</button>
+          {depth > 1 && <button type="button" className="playlist-dynamic-remove-btn" aria-label="Remove group" disabled={disabled}
+            onClick={() => editNode(group, () => null)}>×</button>}
+        </div>
+      </div>
+      {group.children.length === 0 ? (
+        <div className="playlist-dynamic-empty-rule">{depth === 1 ? 'No filters. All available tracks will match.' : 'Add a filter to this group.'}</div>
+      ) : <div className="playlist-dynamic-rule-list">
+        {group.children.map((node, index) => (
+          <div key={dynamicPlaylistNodeId(node)}>
+            {index > 0 && <div className="playlist-dynamic-connector">{group.match === 'all' ? 'AND' : 'OR'}</div>}
+            {node.kind === 'group' ? renderGroup(node, depth + 1) : (
+              <div className="playlist-dynamic-rule-row">
+                <select className="playlist-dynamic-select" aria-label="Filter field" value={getConditionFieldKey(node)}
+                  onChange={(event) => editNode(node, () => createDefaultCondition(event.target.value as ConditionFieldKey))} disabled={disabled}>
+                  {fieldOptionsForCondition(node).map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+                </select>
+                {renderConditionOperator(node, (next) => editNode(node, () => next), disabled)}
+                {renderConditionValue(node, (next) => editNode(node, () => next), disabled)}
+                <button type="button" className="playlist-dynamic-remove-btn" onClick={() => editNode(node, () => null)} aria-label="Remove filter" disabled={disabled}>×</button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>}
+    </fieldset>
+  )
 
   const previewTracks = preview?.tracks.slice(0, PREVIEW_TRACK_LIMIT) ?? []
-  const hasConditions = rules.conditions.length > 0
+  const hasConditions = rules.filter.children.length > 0
 
   return (
     <div className="playlist-dynamic-builder">
@@ -527,7 +556,7 @@ export default function DynamicPlaylistRuleEditor({
                 key={preset.id}
                 type="button"
                 className="playlist-dynamic-preset-chip"
-                onClick={() => onRulesChange(preset.rules)}
+                onClick={() => onRulesChange(normalizeDynamicPlaylistRules(preset.rules))}
                 disabled={disabled}
               >
                 {preset.label}
@@ -543,50 +572,11 @@ export default function DynamicPlaylistRuleEditor({
               <button type="button" className="playlist-create-cover-btn subtle" onClick={() => onRulesChange(createDefaultDynamicPlaylistRules())} disabled={disabled}>
                 Reset
               </button>
-              <button type="button" className="playlist-create-cover-btn" onClick={addCondition} disabled={disabled}>
-                Add filter
-              </button>
+
             </div>
           </div>
 
-          {rules.conditions.length === 0 ? (
-            <div className="playlist-dynamic-empty-rule">No filters. All available tracks will match.</div>
-          ) : (
-            <div className="playlist-dynamic-rule-list">
-              {rules.conditions.map((condition, index) => (
-                <div className="playlist-dynamic-rule-row" key={index}>
-                  <span className="playlist-dynamic-rule-prefix">
-                    {index === 0 ? 'Match tracks where' : 'and'}
-                  </span>
-                  <select
-                    className="playlist-dynamic-select"
-                    value={getConditionFieldKey(condition)}
-                    onChange={(event) => onRulesChange(updateRulesCondition(
-                      rules,
-                      index,
-                      createDefaultCondition(event.target.value as ConditionFieldKey)
-                    ))}
-                    disabled={disabled}
-                  >
-                    {fieldOptionsForCondition(condition).map((option) => (
-                      <option key={option.key} value={option.key}>{option.label}</option>
-                    ))}
-                  </select>
-                  {renderConditionOperator(condition, (next) => onRulesChange(updateRulesCondition(rules, index, next)), disabled)}
-                  {renderConditionValue(condition, (next) => onRulesChange(updateRulesCondition(rules, index, next)), disabled)}
-                  <button
-                    type="button"
-                    className="playlist-dynamic-remove-btn"
-                    onClick={() => onRulesChange(removeRulesCondition(rules, index))}
-                    aria-label="Remove filter"
-                    disabled={disabled}
-                  >
-                    x
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+          {renderGroup(rules.filter, 1)}
         </div>
       </div>
 

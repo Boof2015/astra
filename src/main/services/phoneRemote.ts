@@ -1,3 +1,5 @@
+import { dynamicPlaylistSyncNeedsUpdate } from '../../shared/playlists/dynamicPlaylistSync'
+import { parseCompanionDeviceInfo, type CompanionDeviceInfo } from '../../shared/companionDevices'
 import { readFile } from 'fs/promises'
 import { createServer, type Server } from 'https'
 import type { IncomingMessage, ServerResponse } from 'http'
@@ -32,7 +34,7 @@ import type {
   PhoneRemoteServiceConfig,
   PhoneRemoteStatus
 } from '../../types/phoneRemote'
-import { PHONE_REMOTE_LAN_HOST, PHONE_REMOTE_PROTOCOL_VERSION } from '../../types/phoneRemote'
+import { HARDWARE_COMPANION_SCOPES, PHONE_REMOTE_LAN_HOST, PHONE_REMOTE_PROTOCOL_VERSION } from '../../types/phoneRemote'
 import {
   CONTROL_MAX_BODY_BYTES,
   PlaybackHttpCore,
@@ -115,11 +117,13 @@ interface PairingRequestState {
   deviceName: string
   clientLabel: string
   clientKind: PhoneRemoteClientKind
+  deviceInfo?: CompanionDeviceInfo | null
   requestedAt: number
   expiresAt: number
   baseUrl: string
   pairingMode: PhoneRemotePairingMode
   pin: string | null
+  desktopApprovedAt?: number
   failedPinAttempts: number
   state: PhoneRemotePairingState
   issuedDeviceId: string | null
@@ -143,6 +147,8 @@ interface PhoneRemoteServiceOptions {
   // Favorites/playlists LAN sync (phoneSync.ts), injected so this service stays
   // decoupled from the library module. applySyncChanges returns null when the
   // payload fails validation.
+  /** Read-only preflight; getSyncState may resolve favorites or assign UIDs. */
+  getSyncRulePlaylists?: () => readonly { kind: string; dynamicRules: string | null }[]
   getSyncState?: () => PhoneSyncState
   applySyncChanges?: (payload: unknown) => PhoneSyncApplyResult | null
   tlsIdentity?: PhoneRemoteTlsIdentity
@@ -313,6 +319,7 @@ export class PhoneRemoteService {
   private readonly core: PlaybackHttpCore<PhoneRemoteAuthorizationContext>
   private readonly companionApi: CompanionApiV2 | null
   private readonly getIdentitySnapshot: () => PhoneRemoteIdentity
+  private readonly getSyncRulePlaylists: () => readonly { kind: string; dynamicRules: string | null }[]
   private readonly getSyncState?: () => PhoneSyncState
   private readonly applySyncChanges?: (payload: unknown) => PhoneSyncApplyResult | null
   private syncApplyInFlight = false
@@ -332,6 +339,7 @@ export class PhoneRemoteService {
     this.onPairedDevicesChange = options.onPairedDevicesChange
     this.onStatusChange = options.onStatusChange
     this.getSyncState = options.getSyncState
+    this.getSyncRulePlaylists = options.getSyncRulePlaylists ?? (() => this.getSyncState?.().playlists ?? [])
     this.applySyncChanges = options.applySyncChanges
     this.tlsIdentity = options.tlsIdentity ? { ...options.tlsIdentity } : null
     this.pairedDevices = [...(options.pairedDevices ?? [])]
@@ -339,7 +347,13 @@ export class PhoneRemoteService {
       getSnapshot: options.getSnapshot,
       dispatchCommand: options.dispatchCommand,
       resolveArtworkDataUrl: options.resolveArtworkDataUrl,
-      authorizeRequest: (req) => this.authorizeRequest(req, 'control'),
+      authorizeRequest: (req) => {
+        const authorization = this.authorizeRequest(req, 'control')
+        // Hardware's legacy control credential is for session/rotation only.
+        // Music operations must pass through the explicitly scoped v2 API.
+        return this.pairedDevices.find((device) => device.id === authorization?.deviceId)?.clientKind === 'hardware'
+          ? null : authorization
+      },
       buildArtworkUrl: (trackId) => `/v1/artwork/current?trackId=${encodeURIComponent(trackId)}`,
       getControlsEnabled: () => this.config.controlsEnabled,
       onConnectedClientsChange: () => this.emitStatus()
@@ -389,10 +403,12 @@ export class PhoneRemoteService {
       port: this.config.port,
       lanUrls,
       controllerUrl: lanUrls[0] ? `${lanUrls[0]}/remote/` : null,
-      active: this.active,
-      connectedClients: this.core.getConnectedClientCount() + (this.companionApi?.getConnectedClientCount() ?? 0),
-      pairedDeviceCount: this.pairedDevices.filter((device) => device.revokedAt === null).length,
-      pendingPairingCount: this.getPendingPairingRequestsSnapshot().length,
+      active: this.active && this.config.enabled,
+      hardwareEnabled: Boolean(this.config.hardwareEnabled),
+      hardwareActive: this.active && Boolean(this.config.hardwareEnabled),
+      connectedClients: this.core.getConnectedClientCount() + (this.companionApi?.getConnectedClientCount(id => this.pairedDevices.find(device => `paired:${device.id}` === id)?.clientKind !== 'hardware') ?? 0),
+      pairedDeviceCount: this.pairedDevices.filter((device) => device.revokedAt === null && device.clientKind !== 'hardware').length,
+      pendingPairingCount: this.getPendingPairingRequestsSnapshot().filter(request => request.pairingMode !== 'code').length,
       lastError: this.lastError,
       identity: this.getIdentity(),
       sync: {
@@ -435,6 +451,8 @@ export class PhoneRemoteService {
         tokenPrefix: device.tokenPrefix,
         syncTokenPrefix: device.syncTokenPrefix,
         clientKind: device.clientKind,
+        deviceInfo: device.deviceInfo ?? null,
+        connected: this.isDeviceEnabled(device) && Boolean(this.companionApi?.getConnectedSessionIds().has(`paired:${device.id}`)),
         scopes: [...device.scopes],
         credentialIssuedAt: device.credentialIssuedAt,
         credentialRotatedAt: device.credentialRotatedAt,
@@ -456,6 +474,7 @@ export class PhoneRemoteService {
   }
 
   createPairingTicket(baseUrl?: string, clientKind: PhoneRemoteClientKind = 'native'): PhoneRemotePairingTicket {
+    if (clientKind === 'hardware') throw new Error('Hardware companions use matching-code pairing.')
     this.cleanupExpiredPairingState(true)
     if (!this.config.enabled || !this.active) {
       throw new Error('Phone remote pairing is only available while the phone remote is active.')
@@ -524,7 +543,12 @@ export class PhoneRemoteService {
         .filter((scope) => requested.has(scope))
       if (!request.requestedScopes.includes('observe')) request.requestedScopes.unshift('observe')
     }
-    this.issuePairingDeviceTokens(request)
+    if (request.pairingMode === 'code') {
+      request.desktopApprovedAt = Date.now()
+      this.emitStatus()
+    } else {
+      this.issuePairingDeviceTokens(request)
+    }
     return this.toPendingPairingRequest(request)
   }
 
@@ -537,12 +561,27 @@ export class PhoneRemoteService {
     return this.toPendingPairingRequest(request)
   }
 
+  renamePairedDevice(id: string, name: string): PhoneRemotePairedDevice | null {
+    const device = this.pairedDevices.find(item => item.id === id && item.revokedAt === null)
+    const normalized = name.trim()
+    if (!normalized || normalized.length > 80 || /[\u0000-\u001f\u007f]/.test(normalized)) throw new Error('Use a device name between 1 and 80 characters.')
+    if (!device) return null
+    device.name = normalized
+    this.emitPairedDevicesChange()
+    this.emitStatus()
+    return this.listPairedDevices().find(item => item.id === id) ?? null
+  }
+
+  private isDeviceEnabled(device: Pick<PhoneRemotePairedDevice, 'clientKind'>): boolean {
+    return device.clientKind === 'hardware' ? Boolean(this.config.hardwareEnabled) : this.config.enabled
+  }
+
   revokePairedDevice(id: string): PhoneRemotePairedDevice | null {
     const device = this.pairedDevices.find((candidate) => candidate.id === id)
     if (!device || device.revokedAt !== null) return null
     device.revokedAt = Date.now()
     this.core.closeSseClients((client) => client.authorization.deviceId === id)
-    this.companionApi?.closeAllSseClients()
+    this.companionApi?.closeSseClients(sessionId => sessionId === `paired:${id}`)
     this.emitPairedDevicesChange()
     this.emitStatus()
     return {
@@ -562,17 +601,18 @@ export class PhoneRemoteService {
     }
   }
 
-  revokeAllPairedDevices(): number {
+  revokeAllPairedDevices(kind?: 'phone' | 'hardware'): number {
     const now = Date.now()
     let revokedCount = 0
     for (const device of this.pairedDevices) {
-      if (device.revokedAt !== null) continue
+      if (device.revokedAt !== null || (kind && (device.clientKind === 'hardware') !== (kind === 'hardware'))) continue
       device.revokedAt = now
       revokedCount += 1
     }
     if (revokedCount === 0) return 0
-    this.core.closeAllSseClients()
-    this.companionApi?.closeAllSseClients()
+    const revoked = new Set(this.pairedDevices.filter(device => device.revokedAt !== null).map(device => device.id))
+    this.core.closeSseClients(client => revoked.has(client.authorization.deviceId))
+    this.companionApi?.closeSseClients(id => revoked.has(id.slice(7)))
     this.emitPairedDevicesChange()
     this.emitStatus()
     return revokedCount
@@ -580,11 +620,20 @@ export class PhoneRemoteService {
 
   async applyConfig(config: PhoneRemoteServiceConfig): Promise<PhoneRemoteStatus> {
     const previous = this.config
-    const restartNeeded = previous.port !== config.port || previous.enabled !== config.enabled
+    const restartNeeded = previous.port !== config.port
 
     this.config = { ...config }
 
-    if (!this.config.enabled) {
+    // Enable switches share a listener, but only disconnect the affected clients.
+    const disabledIds = new Set(this.pairedDevices.filter(device => !this.isDeviceEnabled(device)).map(device => device.id))
+    this.core.closeSseClients(client => disabledIds.has(client.authorization.deviceId))
+    this.companionApi?.closeSseClients(id => disabledIds.has(id.slice(7)))
+    for (const request of this.pairingRequestsById.values()) {
+      if (request.state === 'pending' && !this.isDeviceEnabled(request)) request.state = 'rejected'
+    }
+    if (!this.config.enabled) this.pairingTickets.clear()
+
+    if (!this.config.enabled && !this.config.hardwareEnabled) {
       await this.stopServer()
       this.lastError = null
       this.emitStatus()
@@ -636,7 +685,7 @@ export class PhoneRemoteService {
   } {
     const now = Date.now()
     const controlToken = createOpaqueSecret(32)
-    const syncToken = request.clientKind === 'web' ? null : createOpaqueSecret(32)
+    const syncToken = request.clientKind === 'native' ? createOpaqueSecret(32) : null
     const deviceId = createOpaqueSecret(16)
     const clientKind = request.clientKind
     const device: PersistedPairedDevice = {
@@ -646,6 +695,7 @@ export class PhoneRemoteService {
       tokenPrefix: controlToken.slice(0, TOKEN_PREFIX_LENGTH),
       syncTokenPrefix: syncToken?.slice(0, TOKEN_PREFIX_LENGTH) ?? null,
       clientKind,
+      deviceInfo: request.deviceInfo ?? null,
       scopes: Array.from(new Set<PhoneRemoteCredentialScope>([
         'control',
         ...request.requestedScopes,
@@ -679,7 +729,7 @@ export class PhoneRemoteService {
 
   private getPendingPairingRequestsSnapshot(): PhoneRemotePendingPairingRequest[] {
     return Array.from(this.pairingRequestsById.values())
-      .filter((request) => request.state === 'pending')
+      .filter((request) => request.state === 'pending' && request.desktopApprovedAt === undefined)
       .sort((left, right) => right.requestedAt - left.requestedAt)
       .map((request) => this.toPendingPairingRequest(request))
   }
@@ -693,7 +743,8 @@ export class PhoneRemoteService {
       expiresAt: request.expiresAt,
       baseUrl: request.baseUrl,
       pairingMode: request.pairingMode,
-      pin: request.pairingMode === 'pin' ? request.pin : null,
+      deviceInfo: request.deviceInfo ?? null,
+      pin: request.pairingMode !== 'approval' ? request.pin : null,
       requestedScopes: [...request.requestedScopes]
     }
   }
@@ -718,6 +769,16 @@ export class PhoneRemoteService {
 
     for (const request of this.pairingRequestsById.values()) {
       if (request.expiresAt > now) continue
+      if (request.pairingMode === 'code') {
+        request.pairingKey?.fill(0)
+        request.pairingKey = null
+        request.transcript = null
+        request.pin = null
+        if (request.expiresAt + PAIRING_REQUEST_TTL_MS <= now) {
+          this.pairingRequestsById.delete(request.id)
+          this.pairingRequestIdByPollToken.delete(request.pollToken)
+        }
+      }
       if (request.state === 'pending') {
         request.state = 'expired'
         changed = true
@@ -739,7 +800,7 @@ export class PhoneRemoteService {
     const suppliedHash = hashToken(suppliedToken)
     const now = Date.now()
     for (const device of this.pairedDevices) {
-      if (device.revokedAt !== null) continue
+      if (device.revokedAt !== null || !this.isDeviceEnabled(device)) continue
       if (this.deviceExpiresAt(device) <= now) {
         device.revokedAt = now
         this.emitPairedDevicesChange()
@@ -779,7 +840,7 @@ export class PhoneRemoteService {
     const suppliedHash = hashToken(suppliedToken)
     const now = Date.now()
     for (const device of this.pairedDevices) {
-      if (device.revokedAt !== null) continue
+      if (device.revokedAt !== null || !this.isDeviceEnabled(device)) continue
       if (this.deviceExpiresAt(device) <= now) {
         device.revokedAt = now
         this.emitPairedDevicesChange()
@@ -805,7 +866,7 @@ export class PhoneRemoteService {
       if (device.scopes.includes('observe') || (!hasExplicitCompanionScopes && device.scopes.includes('control'))) {
         scopes.add('observe')
       }
-      if (this.config.controlsEnabled && (
+      if ((device.clientKind === 'hardware' || this.config.controlsEnabled) && (
         device.scopes.includes('playback-control')
         || (!hasExplicitCompanionScopes && device.scopes.includes('control'))
       )) {
@@ -1055,7 +1116,7 @@ export class PhoneRemoteService {
   ): Promise<void> {
     this.cleanupExpiredPairingState(true)
     if (!this.config.enabled || !this.active) {
-      this.respondJson(res, 409, { error: 'Phone remote pairing is not available right now.' })
+      this.respondJson(res, 409, { error: 'Device pairing is not available right now.' })
       return
     }
 
@@ -1135,11 +1196,12 @@ export class PhoneRemoteService {
 
   private async handlePinPairingRequest(
     req: IncomingMessage,
-    res: ServerResponse<IncomingMessage>
+    res: ServerResponse<IncomingMessage>,
+    mode: 'pin' | 'code' = 'pin'
   ): Promise<void> {
     this.cleanupExpiredPairingState(true)
-    if (!this.config.enabled || !this.active) {
-      this.respondJson(res, 409, { error: 'Phone remote pairing is not available right now.' })
+    if (!(mode === 'code' ? this.config.hardwareEnabled : this.config.enabled) || !this.active) {
+      this.respondJson(res, 409, { error: 'Device pairing is not available right now.' })
       return
     }
 
@@ -1174,8 +1236,29 @@ export class PhoneRemoteService {
       return
     }
 
+    if (mode === 'code') {
+      const candidate = parsedBody as Record<string, unknown>
+      if (candidate.requestedScopes !== undefined && (
+        !Array.isArray(candidate.requestedScopes)
+        || candidate.requestedScopes.some((scope) => !HARDWARE_COMPANION_SCOPES.includes(scope))
+      )) {
+        this.respondJson(res, 400, { error: 'Unsupported hardware companion permissions.' })
+        return
+      }
+      requestBody.requestedScopes = candidate.requestedScopes === undefined
+        ? [...HARDWARE_COMPANION_SCOPES]
+        : normalizeRequestedCompanionScopes(candidate.requestedScopes)
+    }
+
+    const rawInfo = (parsedBody as Record<string, unknown>).deviceInfo
+    const deviceInfo = rawInfo === undefined ? null : parseCompanionDeviceInfo(rawInfo)
+    if (rawInfo !== undefined && !deviceInfo) {
+      this.respondJson(res, 400, { error: 'Invalid device information.' })
+      return
+    }
+
     const hasPendingPinRequest = Array.from(this.pairingRequestsById.values())
-      .some((request) => request.state === 'pending' && request.pairingMode === 'pin')
+      .some((request) => request.state === 'pending' && request.pairingMode !== 'approval')
     if (hasPendingPinRequest) {
       this.respondJson(res, 409, { error: 'A PIN pairing request is already pending.' })
       return
@@ -1191,7 +1274,14 @@ export class PhoneRemoteService {
       desktopEphemeralPublicKey: desktopEphemeral.publicKey,
       desktopCertificateFingerprint: this.requireTlsIdentity().fingerprint256,
       desktopEndpointUuid: identity.endpointUuid ?? '',
-      desktopPort: this.config.port
+      desktopPort: this.config.port,
+      ...(mode === 'code' ? { hardware: {
+        profile: 'hardware-v1' as const,
+        deviceName: requestBody.deviceName,
+        clientLabel: requestBody.clientLabel,
+        requestedScopes: requestBody.requestedScopes,
+        ...(deviceInfo ? { deviceInfo } : {})
+      } } : {})
     }
     let pairingKey: Buffer
     try {
@@ -1211,11 +1301,12 @@ export class PhoneRemoteService {
       pollToken: createOpaqueSecret(24),
       deviceName: requestBody.deviceName,
       clientLabel: requestBody.clientLabel,
-      clientKind: 'native',
+      clientKind: mode === 'code' ? 'hardware' : 'native',
+      deviceInfo,
       requestedAt: now,
       expiresAt: now + PAIRING_REQUEST_TTL_MS,
       baseUrl: this.getRequestBaseUrl(req),
-      pairingMode: 'pin',
+      pairingMode: mode,
       pin,
       failedPinAttempts: 0,
       state: 'pending',
@@ -1240,6 +1331,7 @@ export class PhoneRemoteService {
       clientLabel: request.clientLabel,
       identity,
       desktopEphemeralPublicKey: desktopEphemeral.publicKey,
+      ...(transcript.hardware ? { hardware: transcript.hardware } : {}),
       certificateFingerprint: this.requireTlsIdentity().fingerprint256,
       protocolVersion: PHONE_REMOTE_PROTOCOL_VERSION
     })
@@ -1247,10 +1339,11 @@ export class PhoneRemoteService {
 
   private async handlePinPairingConfirm(
     req: IncomingMessage,
-    res: ServerResponse<IncomingMessage>
+    res: ServerResponse<IncomingMessage>,
+    mode: 'pin' | 'code' = 'pin'
   ): Promise<void> {
     this.cleanupExpiredPairingState(true)
-    if (!this.config.enabled || !this.active) {
+    if (!(mode === 'code' ? this.config.hardwareEnabled : this.config.enabled) || !this.active) {
       this.respondJson(res, 409, { error: 'Phone remote pairing is not available right now.' })
       return
     }
@@ -1276,7 +1369,7 @@ export class PhoneRemoteService {
     }
 
     const request = this.pairingRequestsById.get(confirmBody.requestId)
-    if (!request || request.pairingMode !== 'pin') {
+    if (!request || request.pairingMode !== mode) {
       this.respondJson(res, 404, { error: 'Pairing request not found.' })
       return
     }
@@ -1292,6 +1385,10 @@ export class PhoneRemoteService {
     }
     if (request.state !== 'pending' || !request.pin || !request.pairingKey || !request.transcript) {
       this.respondJson(res, 410, { state: request.state })
+      return
+    }
+    if (mode === 'code' && request.desktopApprovedAt === undefined) {
+      this.respondJson(res, 409, { state: 'pending', error: 'Approve the matching code in Astra first.' })
       return
     }
     if (!verifyPhoneRemotePairingProof(confirmBody.proof, request.pairingKey, request.transcript)) {
@@ -1313,6 +1410,7 @@ export class PhoneRemoteService {
       syncToken: credentials.syncToken,
       deviceId: credentials.deviceId,
       issuedAt: credentials.issuedAt,
+      scopes: this.pairedDevices.find((device) => device.id === credentials.deviceId)?.scopes ?? [],
       identity: this.getIdentity(),
       certificateFingerprint: this.requireTlsIdentity().fingerprint256
     }, request.pairingKey, request.transcript)
@@ -1385,9 +1483,25 @@ export class PhoneRemoteService {
     }
 
     this.respondJson(res, 200, {
-      state: request.state,
+      state: request.state === 'pending' && request.desktopApprovedAt !== undefined ? 'approved' : request.state,
       expiresAt: request.expiresAt
     })
+  }
+
+  private async handleDeviceInfo(req: IncomingMessage, res: ServerResponse<IncomingMessage>): Promise<void> {
+    const authorization = this.authorizeRequest(req, 'control')
+    if (!authorization) { this.respondJson(res, 401, { error: 'Unauthorized' }); return }
+    const body = await this.readRequestBody(req, CONTROL_MAX_BODY_BYTES).catch(() => null)
+    let info: CompanionDeviceInfo | null = null
+    try { info = body === null ? null : parseCompanionDeviceInfo(JSON.parse(body)) } catch { /* Invalid payload. */ }
+    if (!info) { this.respondJson(res, 400, { error: 'Invalid device information.' }); return }
+    const device = this.pairedDevices.find(item => item.id === authorization.deviceId)!
+    if (device.deviceInfo?.modelId !== info.modelId || device.deviceInfo?.softwareVersion !== info.softwareVersion) {
+      device.deviceInfo = info
+      this.emitPairedDevicesChange()
+      this.emitStatus()
+    }
+    this.respondJson(res, 200, { deviceInfo: info })
   }
 
   private handleSession(req: IncomingMessage, res: ServerResponse<IncomingMessage>): void {
@@ -1496,6 +1610,21 @@ export class PhoneRemoteService {
       return
     }
     const path = requestUrl.pathname
+    // A paused device retains its credentials and should retry, not re-pair.
+    const token = hasBearerToken(req)
+    if (token) {
+      const digest = hashToken(token)
+      const paused = this.pairedDevices.find(device => device.revokedAt === null && !this.isDeviceEnabled(device) && (
+        secureTokenEquals(digest, device.controlTokenHash) ||
+        (device.previousControlTokenHash && (device.previousTokensValidUntil ?? 0) > Date.now() && secureTokenEquals(digest, device.previousControlTokenHash))
+      ))
+      if (paused) { this.respondJson(res, 503, { error: 'Device connections are paused.' }); return }
+    }
+
+    if (method === 'POST' && path === '/v1/session/device-info') {
+      await this.handleDeviceInfo(req, res)
+      return
+    }
 
     if (this.companionApi && await this.companionApi.handleRequest(req, res, requestUrl)) {
       return
@@ -1519,6 +1648,16 @@ export class PhoneRemoteService {
 
     if (method === 'POST' && path === '/v1/pairing/claim') {
       await this.handlePairingClaim(req, res)
+      return
+    }
+
+    if (method === 'POST' && path === '/v1/pairing/hardware-request') {
+      await this.handlePinPairingRequest(req, res, 'code')
+      return
+    }
+
+    if (method === 'POST' && path === '/v1/pairing/hardware-confirm') {
+      await this.handlePinPairingConfirm(req, res, 'code')
       return
     }
 
@@ -1590,6 +1729,20 @@ export class PhoneRemoteService {
     this.respondJson(res, 404, { error: 'Not found' })
   }
 
+  private rejectIncompatibleDynamicSync(
+    req: IncomingMessage,
+    res: ServerResponse<IncomingMessage>,
+    playlists: readonly { kind: string; dynamicRules: string | null }[]
+  ): boolean {
+    const version = Number(new URL(req.url ?? '/', 'https://localhost').searchParams.get('dynamicPlaylistRulesVersion') ?? 1)
+    if (!dynamicPlaylistSyncNeedsUpdate(version, playlists)) return false
+    this.respondJson(res, 409, {
+      code: 'dynamic-playlist-update-required',
+      error: 'Update the phone app before syncing playlists with AND/OR groups.'
+    })
+    return true
+  }
+
   private handleSyncState(req: IncomingMessage, res: ServerResponse<IncomingMessage>): void {
     if (!this.authorizeRequest(req, 'sync')) {
       this.respondJson(res, 401, { error: 'Unauthorized' })
@@ -1604,8 +1757,10 @@ export class PhoneRemoteService {
       return
     }
     try {
+      if (this.rejectIncompatibleDynamicSync(req, res, this.getSyncRulePlaylists())) return
       const state: PhoneSyncState = {
         ...this.getSyncState(),
+        dynamicPlaylistRulesVersion: 2,
         pendingResolutions: [...this.syncPendingResolutions.values()]
       }
       // Serving state means the phone is syncing — the request is being handled.
@@ -1651,6 +1806,7 @@ export class PhoneRemoteService {
     }
     const body = parsedBody as Record<string, unknown>
 
+    if (this.rejectIncompatibleDynamicSync(req, res, this.getSyncRulePlaylists())) return
     this.syncConflicts = sanitizeReportedConflicts(body.conflicts)
     const consumed = Array.isArray(body.consumedResolutions)
       ? body.consumedResolutions.filter((uid): uid is string => typeof uid === 'string')
@@ -1701,6 +1857,14 @@ export class PhoneRemoteService {
       return
     }
 
+    if (parsedBody && typeof parsedBody === 'object' && 'playlistUpserts' in parsedBody && Array.isArray(parsedBody.playlistUpserts)) {
+      const incoming = parsedBody.playlistUpserts.filter((entry): entry is { kind: string; dynamicRules: string | null } => (
+        !!entry && typeof entry.kind === 'string' && (typeof entry.dynamicRules === 'string' || entry.dynamicRules === null)
+      ))
+      if (this.rejectIncompatibleDynamicSync(req, res, incoming)) return
+    }
+
+    if (this.rejectIncompatibleDynamicSync(req, res, this.getSyncRulePlaylists())) return
     this.syncApplyInFlight = true
     try {
       const result = this.applySyncChanges(parsedBody)

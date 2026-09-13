@@ -1,4 +1,5 @@
 import Bonjour from 'bonjour-service'
+import { spawn, type ChildProcess } from 'node:child_process'
 import type { Service } from 'bonjour-service/dist/lib/service'
 
 export const PHONE_REMOTE_DISCOVERY_SERVICE_TYPE = 'astra-remote'
@@ -22,10 +23,30 @@ export interface PhoneRemoteDiscoveryAdvertiseOptions {
   protocolVersion: number
   transport: 'https'
   certificateFingerprint: string
+  hardwareEnabled?: boolean
+  phoneEnabled?: boolean
 }
 
 export interface PhoneRemoteDiscoveryServiceOptions {
   createBonjour?: () => BonjourLike
+}
+
+// macOS's DNS-SD daemon advertises on every eligible interface, including a
+// newly attached USB Thing. multicast-dns picks one outbound interface on macOS.
+export function createMacDiscoveryBonjour(register: (args: string[]) => ChildProcess =
+  args => spawn('/usr/bin/dns-sd', args, { stdio: 'ignore' })): BonjourLike {
+  const children = new Set<ChildProcess>()
+  return {
+    publish(options) {
+      const child = register(['-R', options.name, `_${options.type}._${options.protocol}`,
+        'local', String(options.port), ...Object.entries(options.txt).map(([key, value]) => `${key}=${value}`)])
+      children.add(child)
+      child.on('error', error => console.warn('Hardware discovery registration failed:', error.message))
+      child.once('exit', () => children.delete(child))
+      return { stop: () => { children.delete(child); child.kill() } }
+    },
+    destroy() { for (const child of children) child.kill(); children.clear() }
+  }
 }
 
 export class PhoneRemoteDiscoveryService {
@@ -35,7 +56,8 @@ export class PhoneRemoteDiscoveryService {
   private advertisedSignature: string | null = null
 
   constructor(options: PhoneRemoteDiscoveryServiceOptions = {}) {
-    this.createBonjour = options.createBonjour ?? (() => new Bonjour() as BonjourLike)
+    this.createBonjour = options.createBonjour ?? (() => process.platform === 'darwin'
+      ? createMacDiscoveryBonjour() : new Bonjour() as BonjourLike)
   }
 
   startAdvertising(options: PhoneRemoteDiscoveryAdvertiseOptions): void {
@@ -47,7 +69,9 @@ export class PhoneRemoteDiscoveryService {
         ? Math.max(1, Math.floor(options.protocolVersion))
         : 1,
       transport: options.transport,
-      certificateFingerprint: options.certificateFingerprint.trim()
+      certificateFingerprint: options.certificateFingerprint.trim(),
+      hardwareEnabled: options.hardwareEnabled ?? true,
+      phoneEnabled: options.phoneEnabled ?? true
     }
     const signature = JSON.stringify(normalized)
     if (this.advertisedSignature === signature && this.advertisedService) return
@@ -61,6 +85,9 @@ export class PhoneRemoteDiscoveryService {
       port: normalized.port,
       txt: {
         version: '1',
+        companion_api: '2',
+        ...(normalized.hardwareEnabled ? { hardware_pairing: 'hardware-v1' } : {}),
+        phone_remote: normalized.phoneEnabled ? '1' : '0',
         name: normalized.name,
         endpoint_uuid: normalized.endpointUuid,
         protocol_version: String(normalized.protocolVersion),

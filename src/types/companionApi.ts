@@ -1,6 +1,8 @@
 export const COMPANION_API_VERSION = '2.0'
 export const COMPANION_API_DEFAULT_SEARCH_LIMIT = 20
 export const COMPANION_API_MAX_SEARCH_LIMIT = 50
+export const COMPANION_API_DEFAULT_PLAYLIST_LIMIT = 12
+export const COMPANION_API_MAX_PLAYLIST_LIMIT = 50
 export const COMPANION_API_MAX_MUTATION_REFS = 100
 export const COMPANION_API_DEFAULT_POSITION_INTERVAL_MS = 1_000
 export const COMPANION_API_MIN_POSITION_INTERVAL_MS = 250
@@ -74,6 +76,20 @@ export interface CompanionApiSearchResult {
   subtitle: string | null
   artworkUrl: string | null
   writable?: boolean
+}
+
+export interface CompanionApiPlaylistPage {
+  items: Array<{
+    ref: string
+    title: string
+    artworkUrl: string | null
+    kind: 'normal' | 'dynamic'
+    /** Dynamic playlist counts are evaluated only when played. */
+    trackCount: number | null
+  }>
+  total: number
+  nextCursor: string | null
+  limit: number
 }
 
 export interface CompanionApiSearchResponse {

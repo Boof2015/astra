@@ -56,6 +56,8 @@ interface PlaybackAttempt {
   intent: PlaybackIntent
   commandStartedAtMs: number
   queuePreparationMs: number
+  queueSize: number
+  loadingStateAtMs: number | null
   selectedTrackHydrationMs: number
   supersededLoadWaitMs: number
   prebufferStatus: PrebufferStatus
@@ -92,6 +94,9 @@ interface PlaybackAttemptTimings {
   standardLoadPipelineMs?: number | null
   decodeWorkMs?: number | null
   loudnessMs?: number | null
+  localFilePreflightMs?: number | null
+  audioContextInitMs?: number | null
+  loudnessSource?: AudioLoadTimings['loudnessSource'] | null
   backendStartMs?: number | null
   validPcmBytes?: number | null
   backingBufferBytes?: number | null
@@ -131,6 +136,8 @@ interface PlaybackAttemptTimings {
 function getStandardPcmTimingDetails(timings: AudioLoadTimings | null | undefined) {
   const decodeWorkMs = timings?.decodeWorkMs ?? timings?.decodeMs ?? null
   return {
+    audioContextInitMs: timings?.audioContextInitMs ?? null,
+    loudnessSource: timings?.loudnessSource ?? null,
     decodeRequestId: timings?.decodeRequestId ?? null,
     validPcmBytes: timings?.validPcmBytes ?? null,
     backingBufferBytes: timings?.backingBufferBytes ?? null,
@@ -692,11 +699,29 @@ function createQueueEntriesFromResolvedTracks(
 }
 
 export function createQueueEntriesFromPaths(trackPaths: readonly string[]): QueueTrackEntry[] {
-  const paths = trackPaths.filter((trackPath) => typeof trackPath === 'string' && trackPath.length > 0)
-  if (paths.length === 0) return []
+  return preparePlaybackContextPaths(trackPaths).entries
+}
 
-  const resolvedTracks = useLibraryStore.getState().resolveTrackPaths(paths)
-  return createQueueEntriesFromResolvedTracks(paths, resolvedTracks)
+function preparePlaybackContextPaths(trackPaths: readonly string[]): {
+  entries: QueueTrackEntry[]
+  missingPaths: Set<string>
+} {
+  const { trackByPath } = useLibraryStore.getState()
+  const entries: QueueTrackEntry[] = []
+  const missingPaths = new Set<string>()
+  for (const path of trackPaths) {
+    if (typeof path !== 'string' || path.length === 0) continue
+    const track = trackByPath.get(path)
+    if (track) {
+      // Conversion already produces an artwork-free snapshot. Create one per
+      // occurrence so duplicate playlist paths remain independent queue entries.
+      entries.push({ path, snapshot: dbTrackToTrack(track) })
+    } else {
+      entries.push(createQueueEntryFromPath(path))
+      missingPaths.add(path)
+    }
+  }
+  return { entries, missingPaths }
 }
 
 export async function createQueueEntriesFromPathsWithFetch(trackPaths: readonly string[]): Promise<QueueTrackEntry[]> {
@@ -1236,6 +1261,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     intent,
     commandStartedAtMs,
     queuePreparationMs: details.queuePreparationMs ?? 0,
+    queueSize: get().queueItems.length,
+    loadingStateAtMs: null,
     selectedTrackHydrationMs: 0,
     supersededLoadWaitMs: details.supersededLoadWaitMs ?? 0,
     prebufferStatus: details.prebufferStatus ?? 'not_applicable',
@@ -1324,6 +1351,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       sourceType: track.sourceType ?? 'local',
       backend: timings.backend,
       queuePreparationMs: Math.round(attempt.queuePreparationMs),
+      queueSize: attempt.queueSize,
+      commandToLoadingStateMs: attempt.loadingStateAtMs === null
+        ? null
+        : Math.max(0, Math.round(attempt.loadingStateAtMs - attempt.commandStartedAtMs)),
       selectedTrackHydrationMs: Math.round(attempt.selectedTrackHydrationMs),
       supersededLoadWaitMs: Math.round(attempt.supersededLoadWaitMs),
       prebufferStatus: attempt.prebufferStatus,
@@ -1333,6 +1364,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       standardLoadPipelineMs: timings.standardLoadPipelineMs ?? null,
       decodeWorkMs: timings.decodeWorkMs ?? null,
       loudnessMs: timings.loudnessMs ?? null,
+      localFilePreflightMs: timings.localFilePreflightMs ?? null,
+      audioContextInitMs: timings.audioContextInitMs ?? null,
+      loudnessSource: timings.loudnessSource ?? null,
       backendStartMs: timings.backendStartMs ?? null,
       validPcmBytes: timings.validPcmBytes ?? null,
       backingBufferBytes: timings.backingBufferBytes ?? null,
@@ -1371,7 +1405,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       totalCommandToPlayingMs,
       totalAttemptMs: Math.max(0, Math.round(completedAtMs - attempt.commandStartedAtMs)),
       configuredOutputDelayMs: audioSettings.effectiveDelayMs
-    })
+    }, 'renderer', { captureSample: false })
     logSlowPath('playbackAttempt', attempt.commandStartedAtMs, {
       attemptId: attempt.id,
       intent: attempt.intent,
@@ -3907,15 +3941,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
       const commandStartedAtMs = performance.now()
       const playbackIntentId = beginPlaybackIntent()
-      const normalizedPaths = paths.filter((trackPath) => typeof trackPath === 'string' && trackPath.length > 0)
-      const cachedTracks = useLibraryStore.getState().resolveTrackPaths(normalizedPaths)
-      const cachedPaths = new Set(cachedTracks.map((track) => track.path))
+      const { entries, missingPaths } = preparePlaybackContextPaths(paths)
       await startPlaybackContextEntries(
-        createQueueEntriesFromResolvedTracks(normalizedPaths, cachedTracks),
+        entries,
         startIndex,
         options,
         {
-          missingPaths: new Set(normalizedPaths.filter((path) => !cachedPaths.has(path))),
+          missingPaths,
           commandStartedAtMs,
           playbackIntentId
         }
@@ -4612,6 +4644,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       let attemptBackend = getAttemptBackend(track)
       let attemptLoadRequestId: number | null = null
       let attemptFileReadMs: number | null = null
+      let localFilePreflightMs: number | null = null
       let attemptDecodeMs: number | null = null
       let attemptDecodeOnlyMs: number | null = null
       let attemptStandardLoadPipelineMs: number | null = null
@@ -4639,6 +4672,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           loadRequestId: attemptLoadRequestId,
           ...pcmTimingDetails,
           fileReadMs: attemptFileReadMs,
+          localFilePreflightMs,
           decodeMs: attemptDecodeMs,
           decodeOnlyMs: attemptDecodeOnlyMs,
           standardLoadPipelineMs: attemptStandardLoadPipelineMs,
@@ -4687,6 +4721,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         restoredPlaybackTime: null
       })
       startRecentPlaySession(track.path)
+      attempt.loadingStateAtMs = performance.now()
       const loadListeningSession = recentPlaySession
 
       try {
@@ -4975,7 +5010,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           }
         }
 
+        const localPreflightStartedAt = performance.now()
         const useLocalProgressive = await shouldUseLocalProgressivePath(track)
+        localFilePreflightMs = performance.now() - localPreflightStartedAt
         throwIfSupersededLoad(loadRequestId)
         if (useLocalProgressive) {
           return await loadMandatoryLocalProgressive('preflight')
@@ -5136,9 +5173,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         void useLibraryStore.getState().markTrackLatestSyncSeen(resolvedTrack.path)
         startRecentPlaySession(resolvedTrack.path)
         const engineTimings = audioEngine.getLastLoadTimings()
-        if (usedFfmpegPcm) {
-          attemptStandardPcmTimings = engineTimings ?? attemptStandardPcmTimings
-        }
+        // Chromium fallback also reports context initialization and loudness
+        // origin; its absent PCM-specific fields remain null in diagnostics.
+        attemptStandardPcmTimings = engineTimings ?? attemptStandardPcmTimings
         attemptDecodeOnlyMs = engineTimings?.decodeWorkMs ?? engineTimings?.decodeMs ?? null
         attemptLoudnessMs = engineTimings?.analysisMs ?? null
         nativeProbeMs = usedFfmpegPcm ? engineTimings?.nativeProbeMs ?? null : null

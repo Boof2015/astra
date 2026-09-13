@@ -31,6 +31,25 @@
         "type": "string",
         "description": "Opaque signed reference. Clients must not parse or construct it."
       },
+      "PlaylistPage": {
+        "type": "object",
+        "required": ["items", "total", "nextCursor", "limit"],
+        "properties": {
+          "items": { "type": "array", "maxItems": 50, "items": {
+            "type": "object", "required": ["ref", "title", "artworkUrl", "kind", "trackCount"],
+            "properties": {
+              "ref": { "$ref": "#/components/schemas/AstraRef" },
+              "title": { "type": "string" },
+              "artworkUrl": { "type": ["string", "null"] },
+              "kind": { "enum": ["normal", "dynamic"] },
+              "trackCount": { "type": ["integer", "null"], "description": "Null for dynamic playlists; listing does not evaluate their rules." }
+            }
+          } },
+          "total": { "type": "integer", "minimum": 0 },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+          "nextCursor": { "oneOf": [{ "$ref": "#/components/schemas/AstraRef" }, { "type": "null" }] }
+        }
+      },
       "TrackSummary": {
         "type": "object",
         "required": ["ref", "title", "artist", "artists", "album", "albumArtists", "durationSeconds", "year", "genres", "format", "sampleRateHz", "bitDepth", "channels", "favorite", "artworkUrl"],
@@ -204,6 +223,21 @@
       }
     },
     "/v2/playlists": {
+      "get": {
+        "operationId": "listPlaylists",
+        "summary": "Browse a bounded playlist shelf in stable creation order",
+        "x-astra-scope": "library-search",
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 12 } },
+          { "name": "cursor", "in": "query", "description": "The previous page's nextCursor; omit for the first page.", "schema": { "$ref": "#/components/schemas/AstraRef" } }
+        ],
+        "responses": {
+          "200": { "description": "Playlist page", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlaylistPage" } } } },
+          "400": { "description": "Invalid limit or cursor" },
+          "401": { "description": "Invalid bearer token" },
+          "403": { "description": "Library search permission required" }
+        }
+      },
       "post": { "operationId": "createPlaylist", "x-astra-scope": "library-write", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlaylistMutation" } } } }, "responses": { "201": { "description": "Normal playlist created" } } }
     },
     "/v2/playlists/{ref}": {

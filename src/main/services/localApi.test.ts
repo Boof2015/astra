@@ -110,6 +110,10 @@ async function createHarness(configOverrides: Partial<LocalApiServiceConfig> = {
         items: [],
         updatedAt: Date.now()
       }),
+      listPlaylists: (cursor, limit) => cursor === 'invalid' ? null : ({
+        items: [{ ref: 'playlist-ref', title: 'Evening', kind: 'normal', trackCount: 2, artworkUrl: null }],
+        total: 1, nextCursor: null, limit
+      }),
       search: (query, _types, limit) => ({
         query,
         limit,
@@ -607,4 +611,23 @@ test('v2 applies a per-credential request rate limit', async (t) => {
   assert.equal(statuses.filter((status) => status === 429).length, 1)
   const limited = responses.find((response) => response.status === 429)
   assert.equal((await limited?.json() as { error: { code: string } }).error.code, 'rate_limit_exceeded')
+})
+
+test('v2 playlist browsing is authenticated, scope gated, bounded, and cursor validated', async (t) => {
+  const harness = await createHarness({ librarySearchEnabled: true })
+  t.after(() => harness.service.stop())
+  const url = `http://127.0.0.1:${harness.port}/v2/playlists`
+  assert.equal((await fetch(url)).status, 401)
+  const headers = authHeaders(harness.config.token)
+  const response = await fetch(url, { headers })
+  assert.equal(response.status, 200)
+  const page = await response.json()
+  assert.equal(page.limit, 12)
+  assert.equal(page.items[0].title, 'Evening')
+  assert.equal(page.nextCursor, null)
+  for (const query of ['limit=0', 'limit=51', 'limit=1.5', 'limit=NaN', 'limit=', 'cursor=', 'cursor=invalid']) {
+    assert.equal((await fetch(`${url}?${query}`, { headers })).status, 400, query)
+  }
+  await harness.service.applyConfig({ ...harness.config, librarySearchEnabled: false })
+  assert.equal((await fetch(url, { headers })).status, 403)
 })

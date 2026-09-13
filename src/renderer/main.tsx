@@ -6,10 +6,6 @@ import '@fontsource/inter/600.css'
 import '@fontsource/inter/700.css'
 import '@fontsource/jetbrains-mono/400.css'
 import '@fontsource/jetbrains-mono/500.css'
-import App from './App'
-import MiniPlayerApp from './components/mini/MiniPlayerApp'
-import LyricsPopoutApp from './components/popout/LyricsPopoutApp'
-import ScopePopoutApp from './components/popout/ScopePopoutApp'
 import './styles/globals.css'
 
 const windowMode = new URLSearchParams(window.location.search).get('window')
@@ -17,15 +13,17 @@ document.documentElement.dataset.windowMode = windowMode ?? 'main'
 document.body.dataset.windowMode = windowMode ?? 'main'
 
 const RootComponent = windowMode === 'mini'
-  ? MiniPlayerApp
+  ? React.lazy(() => import('./components/mini/MiniPlayerApp'))
+  : windowMode === 'notch'
+    ? React.lazy(() => import('./components/notch/NotchApp'))
   : windowMode === 'lyrics-popout'
-    ? LyricsPopoutApp
+    ? React.lazy(() => import('./components/popout/LyricsPopoutApp'))
   : windowMode === 'scope-popout'
-    ? ScopePopoutApp
-    : App
+    ? React.lazy(() => import('./components/popout/ScopePopoutApp'))
+    : React.lazy(() => import('./App'))
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <RootComponent />
+    <React.Suspense fallback={null}><RootComponent /></React.Suspense>
   </React.StrictMode>
 )

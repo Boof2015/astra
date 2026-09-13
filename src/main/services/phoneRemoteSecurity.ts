@@ -1,3 +1,4 @@
+import type { CompanionDeviceInfo } from '../../shared/companionDevices'
 import {
   createCipheriv,
   createHash,
@@ -35,6 +36,14 @@ export interface PhoneRemotePairingTranscript {
   desktopCertificateFingerprint: string
   desktopEndpointUuid: string
   desktopPort: number
+  /** Present only for hardware code comparison; legacy phone transcripts stay byte-identical. */
+  hardware?: {
+    profile: 'hardware-v1'
+    deviceName: string
+    clientLabel: string
+    requestedScopes: readonly string[]
+    deviceInfo?: CompanionDeviceInfo
+  }
 }
 
 export interface PhoneRemoteEphemeralKeyPair {
@@ -76,7 +85,14 @@ function transcriptBytes(transcript: PhoneRemotePairingTranscript): Buffer {
     transcript.desktopEphemeralPublicKey,
     normalizePhoneRemoteFingerprint(transcript.desktopCertificateFingerprint),
     transcript.desktopEndpointUuid,
-    transcript.desktopPort
+    transcript.desktopPort,
+    ...(transcript.hardware ? [
+      transcript.hardware.profile,
+      transcript.hardware.deviceName,
+      transcript.hardware.clientLabel,
+      transcript.hardware.requestedScopes,
+      ...(transcript.hardware.deviceInfo ? [[transcript.hardware.deviceInfo.modelId, transcript.hardware.deviceInfo.softwareVersion]] : [])
+    ] : [])
   ]), 'utf8')
 }
 

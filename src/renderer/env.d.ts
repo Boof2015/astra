@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import type { NotchAPI } from '../types/notch'
 
 import { VisualizerDSP } from './audio/native/visualizer-dsp'
 import type {
@@ -300,6 +301,7 @@ declare global {
                 publishRendererState: (state: TrayRendererState) => void
                 onCommand: (callback: (command: TrayRendererCommand) => void) => () => void
             }
+            notch: NotchAPI
             miniPlayer: {
                 open: () => Promise<void>
                 close: () => Promise<void>

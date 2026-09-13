@@ -163,6 +163,8 @@ export interface MiniPlayerVisualizerStreamChunk {
 }
 
 export type MiniPlayerCommand =
+  | { type: 'setVolume'; volume: number }
+  | { type: 'toggleMute' }
   | { type: 'play' }
   | { type: 'pause' }
   | { type: 'togglePlay' }

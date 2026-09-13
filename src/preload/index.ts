@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
+import type { NotchAPI } from '../types/notch'
 import { join } from 'path'
 import { readFile } from 'fs/promises'
 import { getHeapSpaceStatistics } from 'v8'
@@ -50,7 +51,8 @@ import type {
   ParallaxTimelineState
 } from '../types/parallax'
 import type {
-  DynamicPlaylistRulesV1,
+  DynamicPlaylistRulesV2,
+  DynamicPlaylistRules,
   PlaylistKind
 } from '../shared/playlists/dynamicPlaylist'
 import type { TrackRatingEntry } from '../shared/ratings/trackRating'
@@ -240,6 +242,8 @@ export interface TrackLoudnessResult {
   loudnessLufs: number
   peakLinear: number | null
   method: string
+  /** Diagnostic origin; omitted by older main-process implementations. */
+  source?: 'cache' | 'analysis'
 }
 
 export interface TrackLoudnessStorePayload {
@@ -944,6 +948,33 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
 
+  notch: {
+    getState: () => ipcRenderer.invoke('notch:getState'),
+    setPrefs: prefs => ipcRenderer.invoke('notch:setPrefs', prefs),
+    getSnapshot: () => ipcRenderer.invoke('notch:getSnapshot'),
+    onState: callback => {
+      const handler = (_: Electron.IpcRendererEvent, state: Parameters<typeof callback>[0]) => callback(state)
+      ipcRenderer.on('notch:state', handler)
+      return () => ipcRenderer.removeListener('notch:state', handler)
+    },
+    onSnapshot: callback => {
+      const handler = (_: Electron.IpcRendererEvent, snapshot: Parameters<typeof callback>[0]) => callback(snapshot)
+      ipcRenderer.on('notch:snapshot', handler)
+      return () => ipcRenderer.removeListener('notch:snapshot', handler)
+    },
+    onVisualizerChunk: callback => {
+      const handler = (_: Electron.IpcRendererEvent, chunk: Parameters<typeof callback>[0]) => callback(chunk)
+      ipcRenderer.on('notch:visualizerChunk', handler)
+      return () => ipcRenderer.removeListener('notch:visualizerChunk', handler)
+    },
+    sendCommand: command => ipcRenderer.send('notch:command', command),
+    expand: () => ipcRenderer.send('notch:expand'),
+    collapse: () => ipcRenderer.send('notch:collapse'),
+    openAstra: () => ipcRenderer.send('notch:openAstra'),
+    ready: () => ipcRenderer.send('notch:ready'),
+    setSurface: bounds => ipcRenderer.send('notch:surface', bounds),
+    setReducedMotion: reduced => ipcRenderer.send('notch:reducedMotion', reduced),
+  } satisfies NotchAPI,
   miniPlayer: {
     open: () => ipcRenderer.invoke('mini-player:open'),
     close: () => ipcRenderer.invoke('mini-player:close'),
@@ -1154,6 +1185,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = (_event: Electron.IpcRendererEvent, status: LocalApiStatus) => callback(status)
       ipcRenderer.on('local-api:status', handler)
       return () => ipcRenderer.removeListener('local-api:status', handler)
+    }
+  },
+
+  devices: {
+    getStatus: (): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('devices:getStatus'),
+    list: (): Promise<PhoneRemotePairedDevice[]> => ipcRenderer.invoke('devices:list'),
+    setEnabled: (enabled: boolean): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('devices:setEnabled', enabled),
+    rename: (id: string, name: string): Promise<PhoneRemotePairedDevice | null> => ipcRenderer.invoke('devices:rename', id, name),
+    forget: (id: string): Promise<PhoneRemotePairedDevice | null> => ipcRenderer.invoke('devices:forget', id),
+    onStatus: (callback: (status: PhoneRemoteStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: PhoneRemoteStatus) => callback(status)
+      ipcRenderer.on('phone-remote:status', handler)
+      return () => ipcRenderer.removeListener('phone-remote:status', handler)
     }
   },
 
@@ -1828,10 +1872,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Playlists
     getPlaylists: () => ipcRenderer.invoke('library:getPlaylists'),
     createPlaylist: (name: string) => ipcRenderer.invoke('library:createPlaylist', name),
-    createDynamicPlaylist: (name: string, rules: DynamicPlaylistRulesV1) => ipcRenderer.invoke('library:createDynamicPlaylist', name, rules),
+    createDynamicPlaylist: (name: string, rules: DynamicPlaylistRules) => ipcRenderer.invoke('library:createDynamicPlaylist', name, rules),
     getDynamicPlaylistRules: (playlistId: number) => ipcRenderer.invoke('library:getDynamicPlaylistRules', playlistId),
-    updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRulesV1) => ipcRenderer.invoke('library:updateDynamicPlaylistRules', playlistId, rules),
-    previewDynamicPlaylist: (rules: DynamicPlaylistRulesV1) => ipcRenderer.invoke('library:previewDynamicPlaylist', rules),
+    updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRules) => ipcRenderer.invoke('library:updateDynamicPlaylistRules', playlistId, rules),
+    previewDynamicPlaylist: (rules: DynamicPlaylistRules) => ipcRenderer.invoke('library:previewDynamicPlaylist', rules),
     renamePlaylist: (id: number, name: string) => ipcRenderer.invoke('library:renamePlaylist', id, name),
     deletePlaylist: (id: number) => ipcRenderer.invoke('library:deletePlaylist', id),
     getPlaylistTracks: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTracks', playlistId),
@@ -1947,6 +1991,7 @@ declare global {
         publishRendererState: (state: TrayRendererState) => void
         onCommand: (callback: (command: TrayRendererCommand) => void) => () => void
       }
+      notch: NotchAPI
       miniPlayer: {
         open: () => Promise<void>
         close: () => Promise<void>
@@ -2055,6 +2100,14 @@ declare global {
         rotateToken: () => Promise<LocalApiStatus>
         resetToDefaults: () => Promise<LocalApiStatus>
         onStatus: (callback: (status: LocalApiStatus) => void) => () => void
+      }
+      devices: {
+        getStatus: () => Promise<PhoneRemoteStatus>
+        list: () => Promise<PhoneRemotePairedDevice[]>
+        setEnabled: (enabled: boolean) => Promise<PhoneRemoteStatus>
+        rename: (id: string, name: string) => Promise<PhoneRemotePairedDevice | null>
+        forget: (id: string) => Promise<PhoneRemotePairedDevice | null>
+        onStatus: (callback: (status: PhoneRemoteStatus) => void) => () => void
       }
       phoneRemote: {
         getStatus: () => Promise<PhoneRemoteStatus>
@@ -2422,10 +2475,10 @@ declare global {
         // Playlists
         getPlaylists: () => Promise<Playlist[]>
         createPlaylist: (name: string) => Promise<Playlist>
-        createDynamicPlaylist: (name: string, rules: DynamicPlaylistRulesV1) => Promise<Playlist>
-        getDynamicPlaylistRules: (playlistId: number) => Promise<DynamicPlaylistRulesV1>
-        updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRulesV1) => Promise<void>
-        previewDynamicPlaylist: (rules: DynamicPlaylistRulesV1) => Promise<DynamicPlaylistPreview>
+        createDynamicPlaylist: (name: string, rules: DynamicPlaylistRules) => Promise<Playlist>
+        getDynamicPlaylistRules: (playlistId: number) => Promise<DynamicPlaylistRulesV2>
+        updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRules) => Promise<void>
+        previewDynamicPlaylist: (rules: DynamicPlaylistRules) => Promise<DynamicPlaylistPreview>
         renamePlaylist: (id: number, name: string) => Promise<void>
         deletePlaylist: (id: number) => Promise<void>
         getPlaylistTracks: (playlistId: number) => Promise<DbTrack[]>

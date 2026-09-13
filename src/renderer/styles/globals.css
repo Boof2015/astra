@@ -21474,6 +21474,7 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
 .settings-lastfm-profiles-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 10px;
 }
@@ -21501,11 +21502,11 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
   background: rgba(var(--accent-rgb), 0.07);
 }
 
-.settings-lastfm-profile-row.inactive {
+.settings-lastfm-profile-row.inactive:not(.is-official) {
   opacity: 0.68;
 }
 
-.settings-lastfm-profile-row.blocked {
+.settings-lastfm-profile-row.blocked:not(.is-official) {
   opacity: 0.52;
 }
 
@@ -21581,9 +21582,21 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
   color: rgba(var(--tint), 0.88);
 }
 
-.settings-lastfm-profile-row.inactive .settings-lastfm-profile-name,
-.settings-lastfm-profile-row.blocked .settings-lastfm-profile-name {
+.settings-lastfm-profile-row.inactive:not(.is-official) .settings-lastfm-profile-name,
+.settings-lastfm-profile-row.blocked:not(.is-official) .settings-lastfm-profile-name {
   color: rgba(var(--tint), 0.62);
+}
+
+.settings-lastfm-connect-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.settings-lastfm-connect-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .settings-lastfm-profile-meta {
@@ -21650,6 +21663,20 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
   border-color: rgba(var(--tint), 0.11);
   background: var(--control-bg-soft);
   color: rgba(var(--tint), 0.72);
+}
+
+@media (max-width: 760px) {
+  .settings-lastfm-profile-row {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
+
+  .settings-lastfm-profile-actions {
+    grid-column: 2;
+  }
+
+  .settings-lastfm-connect-btn {
+    max-width: 100%;
+  }
 }
 
 .settings-lastfm-profile-modal {
@@ -24400,7 +24427,7 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
 
 .playlist-dynamic-rule-row {
   display: grid;
-  grid-template-columns: minmax(118px, 0.95fr) minmax(116px, 1fr) minmax(126px, 1fr) minmax(112px, 1fr) 30px;
+  grid-template-columns: minmax(90px, 1fr) minmax(110px, 1fr) minmax(90px, 1fr) 30px;
   gap: 8px;
   align-items: center;
 }
@@ -30047,4 +30074,18 @@ html[data-theme-tone="light"] .home-greeting-card.home-dashboard-hero::before {
   .home-binary-clock-cell {
     transition: none;
   }
+}
+
+/* Nested dynamic playlist groups make boolean precedence visible. */
+.playlist-dynamic-group { min-width: 0; margin: 0; padding: 10px; border: 1px solid rgba(var(--tint), 0.15); border-radius: 10px; }
+.playlist-dynamic-group legend { padding: 0 5px; color: var(--text-secondary); font-size: 12px; }
+.playlist-dynamic-group-header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.playlist-dynamic-match { width: auto; }
+.playlist-dynamic-connector { padding: 4px 2px 8px; font-size: 11px; font-weight: 600; color: var(--accent); }
+@media (max-width: 900px) {
+  .playlist-dynamic-group .playlist-dynamic-group { padding: 7px; }
+  .playlist-dynamic-group .playlist-dynamic-rule-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 30px; }
+  .playlist-dynamic-group .playlist-dynamic-rule-row .playlist-dynamic-input,
+  .playlist-dynamic-group .playlist-dynamic-rule-row > :nth-child(3) { grid-row: 2; grid-column: 1 / 3; }
+  .playlist-dynamic-group .playlist-dynamic-remove-btn { grid-column: 3; grid-row: 1; }
 }

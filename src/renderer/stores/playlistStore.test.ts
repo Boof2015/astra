@@ -173,3 +173,15 @@ test('loading playlists seeds defaults once and prunes deleted playlist ids', as
     storage.restore()
   }
 })
+
+test('failed playlist selection clears previous tracks and exposes the error', async () => {
+  installPlaylistMock()
+  resetPlaylistStore([makePlaylist(99, 'Broken', 'dynamic')])
+  window.electronAPI.library.getPlaylistTrackEntries = async () => { throw new Error('Group match is not supported.') }
+  await usePlaylistStore.getState().selectPlaylist(99)
+  assert.equal(usePlaylistStore.getState().selectedPlaylistId, 99)
+  assert.deepEqual(usePlaylistStore.getState().selectedPlaylistTracks, [])
+  assert.equal(usePlaylistStore.getState().selectedPlaylistError, 'Group match is not supported.')
+  usePlaylistStore.getState().clearSelection()
+  assert.equal(usePlaylistStore.getState().selectedPlaylistError, null)
+})

@@ -57,6 +57,7 @@ export interface SyncUidTombstone {
 }
 
 export interface PhoneSyncState {
+  dynamicPlaylistRulesVersion?: number
   syncFormat: number
   now: number
   favorites: SyncFavorite[]
