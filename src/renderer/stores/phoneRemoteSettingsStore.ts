@@ -179,11 +179,8 @@ export const usePhoneRemoteSettingsStore = create<PhoneRemoteSettingsStore>((set
     resetToDefaults: async () => {
       try {
         const status = await window.electronAPI.phoneRemote.resetToDefaults()
-        set({
-          pairedDevices: [],
-          pendingPairingRequests: [],
-          activePairingTicket: null
-        })
+        await refreshPairingState()
+        set({ activePairingTicket: null })
         return applyStatus(status)
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })

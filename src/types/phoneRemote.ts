@@ -1,3 +1,4 @@
+import type { CompanionDeviceInfo } from '../shared/companionDevices'
 import type { PhoneSyncPendingResolution, PhoneSyncReportedConflict } from './phoneSync'
 import type { CompanionApiScope } from './companionApi'
 
@@ -15,14 +16,18 @@ export interface PhoneRemoteIdentity {
   protocolVersion: number
 }
 
-export type PhoneRemotePairingMode = 'approval' | 'pin'
-export type PhoneRemoteClientKind = 'native' | 'web'
+export type PhoneRemotePairingMode = 'approval' | 'pin' | 'code'
+export type PhoneRemoteClientKind = 'native' | 'web' | 'hardware'
+export const HARDWARE_COMPANION_SCOPES: readonly CompanionApiScope[] = [
+  'observe', 'playback-control', 'library-search'
+]
 export type PhoneRemoteCredentialScope = 'control' | 'sync' | CompanionApiScope
 
 export type PhoneRemotePairingState = 'pending' | 'approved' | 'rejected' | 'expired' | 'consumed'
 
 export interface PhoneRemoteServiceConfig {
   enabled: boolean
+  hardwareEnabled?: boolean
   controlsEnabled: boolean
   /** Favorites/playlists library sync — independent of playback controls. */
   syncEnabled: boolean
@@ -36,6 +41,9 @@ export interface PhoneRemotePairedDevice {
   tokenPrefix: string
   syncTokenPrefix: string | null
   clientKind: PhoneRemoteClientKind
+  deviceInfo?: CompanionDeviceInfo | null
+  /** Live authenticated event connection; not persisted. */
+  connected?: boolean
   scopes: PhoneRemoteCredentialScope[]
   credentialIssuedAt: number
   credentialRotatedAt: number
@@ -53,6 +61,7 @@ export interface PhoneRemotePendingPairingRequest {
   expiresAt: number
   baseUrl: string
   pairingMode: PhoneRemotePairingMode
+  deviceInfo?: CompanionDeviceInfo | null
   pin: string | null
   requestedScopes: CompanionApiScope[]
 }
@@ -81,12 +90,14 @@ export interface PhoneRemoteSyncStatus {
 
 export interface PhoneRemoteStatus {
   enabled: boolean
+  hardwareEnabled?: boolean
   controlsEnabled: boolean
   bindHost: string
   port: number
   lanUrls: string[]
   controllerUrl: string | null
   active: boolean
+  hardwareActive?: boolean
   connectedClients: number
   pairedDeviceCount: number
   pendingPairingCount: number

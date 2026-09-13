@@ -14,7 +14,7 @@ const EXPECTED_OPERATIONS: Record<string, readonly string[]> = {
   '/v2/queue/items/{id}': ['patch', 'delete'],
   '/v2/artwork/{ref}': ['get'],
   '/v2/tracks/{ref}/favorite': ['put'],
-  '/v2/playlists': ['post'],
+  '/v2/playlists': ['get', 'post'],
   '/v2/playlists/{ref}': ['patch'],
   '/v2/playlists/{ref}/items': ['post'],
   '/v2/playlists/{ref}/items/{trackRef}': ['patch', 'delete']

@@ -11388,6 +11388,26 @@ export function getPlaylists(): Playlist[] {
   ))
 }
 
+/** Stable creation order, bounded at the database; never evaluates dynamic rules. */
+export function getCompanionApiPlaylistPage(afterId: number, limit: number): {
+  items: Array<{ id: number; track_count: number | null }>
+  total: number
+} {
+  if (!db) return { items: [], total: 0 }
+  if (!Number.isSafeInteger(afterId) || afterId < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 51) {
+    throw new Error('Invalid companion playlist page.')
+  }
+  const items = db.all<{ id: number; track_count: number | null }>(`
+    SELECT p.id, CASE WHEN p.kind = 'dynamic' THEN NULL ELSE (
+      SELECT COUNT(*) FROM playlist_tracks pt
+      INNER JOIN tracks t ON t.path = pt.track_path WHERE pt.playlist_id = p.id
+    ) END AS track_count
+    FROM playlists p WHERE p.id > ? ORDER BY p.id ASC LIMIT ?
+  `, [afterId, limit])
+  const total = db.get<{ count: number }>('SELECT COUNT(*) AS count FROM playlists')?.count ?? 0
+  return { items, total }
+}
+
 export function getCompanionApiPlaylistTarget(playlistId: number): CompanionApiPlaylistTarget | null {
   if (!db || !Number.isInteger(playlistId) || playlistId <= 0) return null
   const row = db.get<{

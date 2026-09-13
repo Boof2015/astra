@@ -6,6 +6,7 @@ import DelayCompensationPanel from '../settings/DelayCompensationPanel'
 import ConfirmActionModal from '../settings/ConfirmActionModal'
 import BitPerfectModeWarningModal from '../settings/BitPerfectModeWarningModal'
 import NativeDeviceFormatsNote from '../settings/NativeDeviceFormatsNote'
+import HardwareCompanionsPanel from '../settings/HardwareCompanionsPanel'
 import LocalApiPairingModal from '../settings/LocalApiPairingModal'
 import KeybindSettings from '../settings/KeybindSettings'
 import SettingsTransferWizard from '../settings/SettingsTransferWizard'
@@ -1117,7 +1118,7 @@ export default function SettingsView() {
         ? `Local integration API enabled but not active${localApiStatus.lastError ? `: ${localApiStatus.lastError}` : '.'}`
         : 'Local integration API is disabled.'
   const localApiActiveDevices = useMemo(
-    () => phoneRemotePairedDevices.filter((d) => d.revokedAt == null),
+    () => phoneRemotePairedDevices.filter((d) => d.revokedAt == null && d.clientKind !== 'hardware'),
     [phoneRemotePairedDevices]
   )
   const localApiControllerUrl = phoneRemoteControllerUrls[0] ?? ''
@@ -1763,6 +1764,7 @@ export default function SettingsView() {
           </nav>
 
           <div className="settings-content">
+            {activeSectionId === 'devices' && <HardwareCompanionsPanel />}
             {activeSectionId === 'appearance' && (
             <section className="settings-section settings-section-panel">
             <div className="settings-section-head">
@@ -3776,8 +3778,8 @@ export default function SettingsView() {
       <LocalApiPairingModal
           isOpen={localApiPairingModalOpen}
           ticket={phoneRemoteActivePairingTicket}
-          pairedDevices={phoneRemotePairedDevices}
-          pendingRequests={phoneRemotePendingPairingRequests}
+          pairedDevices={phoneRemotePairedDevices.filter(device => device.clientKind !== 'hardware')}
+          pendingRequests={phoneRemotePendingPairingRequests.filter((request) => request.pairingMode !== 'code')}
           apiEnabled={phoneRemoteEnabled}
           remoteWebEnabled={phoneRemoteEnabled}
           controlsEnabled={localApiControlsEnabled}

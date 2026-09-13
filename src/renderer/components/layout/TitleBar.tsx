@@ -383,6 +383,12 @@ export default function TitleBar() {
             <span>{pwaIndicatorLabel}</span>
           </span>
         )}
+        {phoneRemoteStatus?.hardwareActive && (
+          <span className="titlebar-api-pill" title="Astra hardware connections active">
+            <span className="titlebar-api-pill-dot" aria-hidden="true" />
+            <span>HDWR</span>
+          </span>
+        )}
 
         <div
           className="titlebar-stats-shell"

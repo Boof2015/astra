@@ -1187,6 +1187,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  devices: {
+    getStatus: (): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('devices:getStatus'),
+    list: (): Promise<PhoneRemotePairedDevice[]> => ipcRenderer.invoke('devices:list'),
+    setEnabled: (enabled: boolean): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('devices:setEnabled', enabled),
+    rename: (id: string, name: string): Promise<PhoneRemotePairedDevice | null> => ipcRenderer.invoke('devices:rename', id, name),
+    forget: (id: string): Promise<PhoneRemotePairedDevice | null> => ipcRenderer.invoke('devices:forget', id),
+    onStatus: (callback: (status: PhoneRemoteStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: PhoneRemoteStatus) => callback(status)
+      ipcRenderer.on('phone-remote:status', handler)
+      return () => ipcRenderer.removeListener('phone-remote:status', handler)
+    }
+  },
+
   phoneRemote: {
     getStatus: (): Promise<PhoneRemoteStatus> => ipcRenderer.invoke('phone-remote:getStatus'),
     createPairingTicket: (baseUrl?: string, clientKind?: PhoneRemoteClientKind): Promise<PhoneRemotePairingTicket> =>
@@ -2086,6 +2099,14 @@ declare global {
         rotateToken: () => Promise<LocalApiStatus>
         resetToDefaults: () => Promise<LocalApiStatus>
         onStatus: (callback: (status: LocalApiStatus) => void) => () => void
+      }
+      devices: {
+        getStatus: () => Promise<PhoneRemoteStatus>
+        list: () => Promise<PhoneRemotePairedDevice[]>
+        setEnabled: (enabled: boolean) => Promise<PhoneRemoteStatus>
+        rename: (id: string, name: string) => Promise<PhoneRemotePairedDevice | null>
+        forget: (id: string) => Promise<PhoneRemotePairedDevice | null>
+        onStatus: (callback: (status: PhoneRemoteStatus) => void) => () => void
       }
       phoneRemote: {
         getStatus: () => Promise<PhoneRemoteStatus>

@@ -1,6 +1,7 @@
 import type { MiniPlayerQueueSnapshot, MiniPlayerSnapshot } from '../../types/miniPlayer'
 import type {
   CompanionApiLibraryEvent,
+  CompanionApiPlaylistPage,
   CompanionApiPlaybackSnapshot,
   CompanionApiQueueSnapshot,
   CompanionApiSearchResponse,
@@ -267,6 +268,24 @@ export class CompanionApiLibrary {
       .slice(0, limit)
       .map((entry) => entry.result)
     return { query, results, limit }
+  }
+
+  listPlaylists(cursor: string | null, limit: number): CompanionApiPlaylistPage | null {
+    const signer = this.options.getSigner()
+    const parsed = cursor === null ? null : signer.parse(cursor, 'playlist')
+    const afterId = parsed ? parsePositiveIntegerKey(parsed) : cursor === null ? 0 : null
+    if (afterId === null) return null
+    const page = library.getCompanionApiPlaylistPage(afterId, limit + 1)
+    const items: CompanionApiPlaylistPage['items'] = []
+    for (const row of page.items.slice(0, limit)) {
+      const target = library.getCompanionApiPlaylistTarget(row.id)
+      if (!target) continue
+      const ref = signer.create('playlist', row.id)
+      items.push({ ref, title: publicText(target.name), kind: target.kind,
+        trackCount: row.track_count, artworkUrl: artworkUrl(ref, Boolean(target.artwork_hash)) })
+    }
+    return { items, total: page.total, limit,
+      nextCursor: page.items.length > limit ? items.at(-1)?.ref ?? null : null }
   }
 
   resolveTarget(ref: string, expectedType?: CompanionApiTargetType): CompanionApiResolvedTarget | null {

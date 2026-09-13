@@ -57,7 +57,7 @@ const STEP_LABELS: { key: WizardStep; label: string }[] = [
 const SCOPE_LABELS: Record<CompanionApiScope, string> = {
   observe: 'Observe playback',
   'playback-control': 'Control playback',
-  'library-search': 'Search the library',
+  'library-search': 'Find songs and browse playlists',
   'library-write': 'Change favorites and playlists'
 }
 

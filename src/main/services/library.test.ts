@@ -5082,3 +5082,34 @@ test('an external listen can be recorded without counting as a play', async (t) 
   assert.equal(dashboard.summary.listenedSeconds, 180, 'time still counts')
   assert.equal(dashboard.summary.qualifiedPlays, 0, 'but it is not a play')
 })
+
+test('companion playlist pages use signed cursors, stable order, and no library paths', async (t) => {
+  await setupSeededLibrary(t)
+  const { CompanionApiLibrary } = await import('./companionApiLibrary.ts')
+  const { CompanionApiReferenceSigner } = await import('./companionApiRefs.ts')
+  const signer = new CompanionApiReferenceSigner(Buffer.alloc(32, 7))
+  const api = new CompanionApiLibrary({ getSigner: () => signer,
+    resolveArtworkByHash: async () => null, onLibraryEvent: () => {}, onRendererLibraryMutation: () => {} })
+  // Start at a marker to keep this independent of seed fixture playlists.
+  const marker = await library.createPlaylist('Marker')
+  const normal = await library.createPlaylist('Night drive')
+  await library.addToPlaylist(normal.id, library.getAllTracks().slice(0, 2).map((track) => track.path))
+  const dynamic = await library.createDynamicPlaylist('Fresh finds', createDefaultDynamicPlaylistRules())
+  const last = await library.createPlaylist('Quiet mornings')
+  const first = api.listPlaylists(signer.create('playlist', marker.id), 2)!
+  assert.deepEqual(first.items.map((item) => item.title), ['Night drive', 'Fresh finds'])
+  assert.equal(first.items[0].trackCount, 2)
+  assert.equal(first.items[1].trackCount, null)
+  assert.equal(first.items[1].kind, 'dynamic')
+  assert.equal(first.nextCursor, signer.create('playlist', dynamic.id))
+  assert.equal(JSON.stringify(first).includes('track_path'), false)
+  assert.equal(JSON.stringify(first).includes('/music/'), false)
+  // Removing the cursor's playlist does not invalidate the next page.
+  await library.deletePlaylist(dynamic.id)
+  const second = api.listPlaylists(first.nextCursor, 2)!
+  assert.deepEqual(second.items.map((item) => item.ref), [signer.create('playlist', last.id)])
+  assert.equal(second.nextCursor, null)
+  assert.equal(api.listPlaylists('forged', 2), null)
+  assert.equal(api.listPlaylists(signer.create('track', normal.id), 2), null)
+  assert.throws(() => library.getCompanionApiPlaylistPage(0, 500), /Invalid/)
+})
