@@ -10,7 +10,7 @@ import { createHash, randomBytes, randomUUID } from 'crypto'
 import * as mm from 'music-metadata'
 import * as library from './services/library'
 import { isAllowedArtworkProtocolHash } from './services/artworkProtocol'
-import type { DynamicPlaylistRulesV1 } from '../shared/playlists/dynamicPlaylist'
+import type { DynamicPlaylistRules } from '../shared/playlists/dynamicPlaylist'
 import type {
   ListeningSessionCheckpoint,
   ListeningStatsApplyRequest,
@@ -1265,6 +1265,7 @@ const phoneRemoteService = new PhoneRemoteService({
       console.warn('Failed to persist phone remote paired devices:', error)
     })
   },
+  getSyncRulePlaylists: () => library.getDynamicPlaylistSyncRules(),
   getSyncState: () => buildPhoneSyncState(),
   applySyncChanges: (rawPayload) => {
     const payload = parsePhoneSyncApplyPayload(rawPayload)
@@ -9862,7 +9863,7 @@ ipcMain.handle('library:createPlaylist', async (_event, name: string) => {
   return playlist
 })
 
-ipcMain.handle('library:createDynamicPlaylist', async (_event, name: string, rules: DynamicPlaylistRulesV1) => {
+ipcMain.handle('library:createDynamicPlaylist', async (_event, name: string, rules: DynamicPlaylistRules) => {
   const playlist = await library.createDynamicPlaylist(name, rules)
   publishCompanionPlaylistEvent(playlist.id, 'created')
   return playlist
@@ -9872,12 +9873,12 @@ ipcMain.handle('library:getDynamicPlaylistRules', (_event, playlistId: number) =
   return library.getDynamicPlaylistRules(playlistId)
 })
 
-ipcMain.handle('library:updateDynamicPlaylistRules', async (_event, playlistId: number, rules: DynamicPlaylistRulesV1) => {
+ipcMain.handle('library:updateDynamicPlaylistRules', async (_event, playlistId: number, rules: DynamicPlaylistRules) => {
   await library.updateDynamicPlaylistRules(playlistId, rules)
   publishCompanionPlaylistEvent(playlistId, 'items-changed')
 })
 
-ipcMain.handle('library:previewDynamicPlaylist', (_event, rules: DynamicPlaylistRulesV1) => {
+ipcMain.handle('library:previewDynamicPlaylist', (_event, rules: DynamicPlaylistRules) => {
   return library.previewDynamicPlaylist(rules)
 })
 

@@ -67,6 +67,9 @@ function createSnapshot(overrides: Partial<MiniPlayerSnapshot> = {}): MiniPlayer
 }
 
 interface HarnessOptions {
+  getSyncRulePlaylists?: ConstructorParameters<typeof PhoneRemoteService>[0]['getSyncRulePlaylists']
+  getSyncState?: ConstructorParameters<typeof PhoneRemoteService>[0]['getSyncState']
+  applySyncChanges?: ConstructorParameters<typeof PhoneRemoteService>[0]['applySyncChanges']
   config?: Partial<PhoneRemoteServiceConfig>
   pairedDevices?: ConstructorParameters<typeof PhoneRemoteService>[0]['pairedDevices']
 }
@@ -152,6 +155,9 @@ async function createHarness(options: HarnessOptions = {}) {
       desktopName: 'Test Desktop',
       protocolVersion: PHONE_REMOTE_PROTOCOL_VERSION
     }),
+    getSyncRulePlaylists: options.getSyncRulePlaylists,
+    getSyncState: options.getSyncState,
+    applySyncChanges: options.applySyncChanges,
     pairedDevices: options.pairedDevices
   })
   const tlsIdentity = await createPhoneRemoteTlsIdentity('Astra Phone Remote Test')
@@ -1061,4 +1067,47 @@ test('pausing hardware rejects a pending approval and stops its discovery capabi
   discovery.startAdvertising({ name: 'Astra',port:harness.port,endpointUuid:'test',protocolVersion:3,transport:'https',certificateFingerprint:'ab',hardwareEnabled:true,phoneEnabled:false })
   assert.equal(published[1].txt.hardware_pairing, 'hardware-v1')
   assert.equal(published[1].txt.phone_remote, '0')
+})
+
+test('grouped playlists block legacy sync before state disclosure, writes, or conflict acknowledgements', async (t) => {
+  const token = 'groups-sync-token'
+  let version = 2
+  let preparations = 0
+  let writes = 0
+  const harness = await createHarness({
+    pairedDevices: [pairedNativeDevice(token)],
+    getSyncRulePlaylists: () => [{ kind: 'dynamic', dynamicRules: JSON.stringify({ version }) }],
+    getSyncState: () => { preparations++; return {
+      syncFormat: PHONE_SYNC_FORMAT, now: 1, favorites: [], favoriteTombstones: [], playlistTombstones: [],
+      playlists: [{ syncUid: 'grouped', name: 'Grouped', kind: 'dynamic', dynamicRules: JSON.stringify({ version }), createdAt: 1, updatedAt: 1, entries: null }]
+    } },
+    applySyncChanges: () => { writes++; return null }
+  })
+  t.after(() => harness.service.stop())
+  harness.service.resolveSyncConflict('grouped', 'desktop')
+  const endpoint = `https://127.0.0.1:${harness.port}/v1/sync/`
+  const getState = (query = '') => fetch(endpoint + 'state' + query, { headers: authHeaders(token) })
+  const legacy = await getState()
+  assert.equal(legacy.status, 409)
+  assert.match((await legacy.json() as { error: string }).error, /Update the phone/)
+  for (const path of ['apply', 'conflicts']) {
+    const result = await fetch(endpoint + path, {
+      method: 'POST', headers: authHeaders(token), body: JSON.stringify({ syncFormat: PHONE_SYNC_FORMAT, conflicts: [], consumedResolutions: ['grouped'] })
+    })
+    assert.equal(result.status, 409)
+  }
+  assert.equal(writes, 0)
+  assert.equal(preparations, 0)
+  const current = await getState('?dynamicPlaylistRulesVersion=2')
+  assert.equal(current.status, 200)
+  const state = await current.json() as { dynamicPlaylistRulesVersion: number; pendingResolutions: unknown[] }
+  assert.equal(state.dynamicPlaylistRulesVersion, 2)
+  assert.equal(state.pendingResolutions.length, 1)
+  version = 1
+  assert.equal((await getState()).status, 200)
+  const incoming = await fetch(endpoint + 'apply', {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify({ playlistUpserts: [{ kind: 'dynamic', dynamicRules: '{"version":2}' }] })
+  })
+  assert.equal(incoming.status, 409)
+  assert.equal(writes, 0)
 })

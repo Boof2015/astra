@@ -56,12 +56,15 @@ import type {
   SyncUidTombstone
 } from '../../types/phoneSync'
 import {
-  createDefaultDynamicPlaylistRules,
   normalizeDynamicPlaylistRules,
+  serializeDynamicPlaylistRules,
+  dynamicPlaylistConditions,
+  type DynamicPlaylistRules,
+  type DynamicPlaylistNode,
   type DynamicPlaylistCondition,
   type DynamicPlaylistDateField,
   type DynamicPlaylistNumericField,
-  type DynamicPlaylistRulesV1,
+  type DynamicPlaylistRulesV2,
   type DynamicPlaylistSortField,
   type DynamicPlaylistTextField,
   type PlaylistKind
@@ -11107,20 +11110,11 @@ function normalizePlaylistKind(value: unknown): PlaylistKind {
   return value === 'dynamic' ? 'dynamic' : 'normal'
 }
 
-function serializeDynamicPlaylistRules(rules: DynamicPlaylistRulesV1): string {
-  return JSON.stringify(normalizeDynamicPlaylistRules(rules))
-}
-
-function parseDynamicPlaylistRules(rawRules: unknown): DynamicPlaylistRulesV1 {
-  if (typeof rawRules !== 'string' || rawRules.trim().length === 0) {
-    return createDefaultDynamicPlaylistRules()
+function parseDynamicPlaylistRules(rawRules: unknown): DynamicPlaylistRulesV2 {
+  if (typeof rawRules !== 'string' || !rawRules.trim()) {
+    throw new Error('Dynamic playlist rules are missing.')
   }
-
-  try {
-    return normalizeDynamicPlaylistRules(JSON.parse(rawRules))
-  } catch {
-    return createDefaultDynamicPlaylistRules()
-  }
+  return normalizeDynamicPlaylistRules(JSON.parse(rawRules))
 }
 
 function readPlaylistRuleRow(playlistId: number): PlaylistRuleRow | null {
@@ -11141,7 +11135,7 @@ function assertNormalPlaylist(playlistId: number, action: string): void {
   }
 }
 
-function requireDynamicPlaylistRulesForId(playlistId: number): DynamicPlaylistRulesV1 {
+function requireDynamicPlaylistRulesForId(playlistId: number): DynamicPlaylistRulesV2 {
   const row = readPlaylistRuleRow(playlistId)
   if (!row) {
     throw new Error('Playlist not found.')
@@ -11243,33 +11237,30 @@ function appendDynamicDateCondition(
 }
 
 function buildDynamicPlaylistWhereClause(
-  rules: DynamicPlaylistRulesV1,
+  rules: DynamicPlaylistRulesV2,
   now: number = Date.now()
 ): { joins: string; where: string; params: unknown[] } {
-  const whereClauses = ['COALESCE(t.is_available, 1) = 1']
   const params: unknown[] = []
-  const needsFavoriteJoin = rules.conditions.some((condition) => (
-    condition.kind === 'exact' && condition.field === 'favorite'
-  ))
-  // The sort field must be part of the join check: these joins also feed the
-  // ORDER BY query, and sorting by rating without a rating condition would
-  // otherwise reference r.rating with no track_ratings join.
-  const needsRatingJoin = rules.sort.field === 'rating' || rules.conditions.some((condition) => (
+  const conditions = dynamicPlaylistConditions(rules.filter)
+  const needsFavoriteJoin = conditions.some((condition) => condition.kind === 'exact' && condition.field === 'favorite')
+  const needsRatingJoin = rules.sort.field === 'rating' || conditions.some((condition) => (
     (condition.kind === 'exact' && condition.field === 'rated')
     || (condition.kind === 'numeric' && condition.field === 'rating')
   ))
-
-  for (const condition of rules.conditions) {
-    if (condition.kind === 'text') {
-      appendDynamicTextCondition(condition, whereClauses, params)
-    } else if (condition.kind === 'exact') {
-      appendDynamicExactCondition(condition, whereClauses, params)
-    } else if (condition.kind === 'numeric') {
-      appendDynamicNumericCondition(condition, whereClauses, params)
-    } else {
-      appendDynamicDateCondition(condition, whereClauses, params, now)
+  const compileNode = (node: DynamicPlaylistNode): string => {
+    if (node.kind === 'group') {
+      if (node.children.length === 0) return '1 = 1'
+      return `(${node.children.map(compileNode).join(node.match === 'all' ? ' AND ' : ' OR ')})`
     }
+    const clauses: string[] = []
+    if (node.kind === 'text') appendDynamicTextCondition(node, clauses, params)
+    else if (node.kind === 'exact') appendDynamicExactCondition(node, clauses, params)
+    else if (node.kind === 'numeric') appendDynamicNumericCondition(node, clauses, params)
+    else appendDynamicDateCondition(node, clauses, params, now)
+    return clauses[0]
   }
+  // Availability always constrains the entire expression, including root ORs.
+  const where = `COALESCE(t.is_available, 1) = 1 AND (${compileNode(rules.filter)})`
 
   const joins: string[] = []
   if (needsFavoriteJoin) joins.push('LEFT JOIN favorites f ON f.track_path = t.path')
@@ -11277,12 +11268,12 @@ function buildDynamicPlaylistWhereClause(
 
   return {
     joins: joins.join('\n      '),
-    where: whereClauses.join('\n      AND '),
+    where,
     params
   }
 }
 
-function buildDynamicPlaylistOrderByClause(rules: DynamicPlaylistRulesV1): string {
+function buildDynamicPlaylistOrderByClause(rules: DynamicPlaylistRulesV2): string {
   const sort = DYNAMIC_SORT_FIELD_SQL[rules.sort.field] ?? DYNAMIC_SORT_FIELD_SQL.title
   const direction = rules.sort.direction === 'desc' ? 'DESC' : 'ASC'
   const expression = sort.text ? `${sort.expression} COLLATE NOCASE` : sort.expression
@@ -11290,7 +11281,7 @@ function buildDynamicPlaylistOrderByClause(rules: DynamicPlaylistRulesV1): strin
   return `${nullablePrefix}${expression} ${direction}, t.path COLLATE NOCASE ASC`
 }
 
-function getDynamicPlaylistTracksForRules(rules: DynamicPlaylistRulesV1): DbTrack[] {
+function getDynamicPlaylistTracksForRules(rules: DynamicPlaylistRules): DbTrack[] {
   return measureLibraryQuery('getDynamicPlaylistTracks', () => {
     const normalizedRules = normalizeDynamicPlaylistRules(rules)
     const { joins, where, params } = buildDynamicPlaylistWhereClause(normalizedRules)
@@ -11313,7 +11304,10 @@ function getDynamicPlaylistTracksForId(playlistId: number): DbTrack[] {
 }
 
 function buildDynamicPlaylistSummary(row: PlaylistSummaryRow): Playlist {
-  const tracks = getDynamicPlaylistTracksForRules(parseDynamicPlaylistRules(row.dynamic_rules_json))
+  // A broken playlist must not hide the rest of the playlist library. Opening
+  // it still reports the original validation error through the normal API.
+  let tracks: DbTrack[] = []
+  try { tracks = getDynamicPlaylistTracksForRules(parseDynamicPlaylistRules(row.dynamic_rules_json)) } catch { /* invalid rules */ }
   return {
     id: row.id,
     name: row.name,
@@ -11486,7 +11480,7 @@ export async function createPlaylist(name: string): Promise<Playlist> {
   }
 }
 
-export async function createDynamicPlaylist(name: string, rules: DynamicPlaylistRulesV1): Promise<Playlist> {
+export async function createDynamicPlaylist(name: string, rules: DynamicPlaylistRules): Promise<Playlist> {
   if (!db) throw new Error('Database not initialized')
   const trimmedName = name.trim()
   if (!trimmedName) {
@@ -11524,11 +11518,11 @@ export async function createDynamicPlaylist(name: string, rules: DynamicPlaylist
   })
 }
 
-export function getDynamicPlaylistRules(playlistId: number): DynamicPlaylistRulesV1 {
+export function getDynamicPlaylistRules(playlistId: number): DynamicPlaylistRulesV2 {
   return requireDynamicPlaylistRulesForId(playlistId)
 }
 
-export async function updateDynamicPlaylistRules(playlistId: number, rules: DynamicPlaylistRulesV1): Promise<void> {
+export async function updateDynamicPlaylistRules(playlistId: number, rules: DynamicPlaylistRules): Promise<void> {
   if (!db) throw new Error('Database not initialized')
   if (!Number.isInteger(playlistId) || playlistId <= 0) {
     throw new Error('Playlist id is required.')
@@ -11544,7 +11538,7 @@ export async function updateDynamicPlaylistRules(playlistId: number, rules: Dyna
   await saveDatabase()
 }
 
-export function previewDynamicPlaylist(rules: DynamicPlaylistRulesV1): DynamicPlaylistPreview {
+export function previewDynamicPlaylist(rules: DynamicPlaylistRules): DynamicPlaylistPreview {
   const tracks = getDynamicPlaylistTracksForRules(normalizeDynamicPlaylistRules(rules))
   return {
     track_count: tracks.length,
@@ -13248,6 +13242,15 @@ export function getFavoriteTrackPathsBySyncKey(): Map<string, string[]> {
     }
   }
   return result
+}
+
+/** Read-only preflight includes playlists which have not received a sync UID yet. */
+export function getDynamicPlaylistSyncRules(): { kind: 'dynamic'; dynamicRules: string | null }[] {
+  if (!db) return []
+  return db.all<{ dynamic_rules_json: string | null }>(`
+    SELECT dynamic_rules_json FROM playlists
+    WHERE kind = 'dynamic' AND remote_source_type IS NULL AND remote_source_id IS NULL
+  `).map((row) => ({ kind: 'dynamic', dynamicRules: row.dynamic_rules_json }))
 }
 
 export function getSyncPlaylistsState(): { playlists: SyncPlaylist[]; tombstones: SyncUidTombstone[] } {

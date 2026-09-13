@@ -13,7 +13,7 @@ import AlbumArtwork from '../library/AlbumArtwork'
 import HomeBinaryClock from '../home/HomeBinaryClock'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
-import type { DynamicPlaylistRulesV1 } from '../../../shared/playlists/dynamicPlaylist'
+import type { DynamicPlaylistRulesV2 } from '../../../shared/playlists/dynamicPlaylist'
 import { isGenericArtistName } from '../../../shared/library/artistCredits'
 
 interface HomeTrack {
@@ -1132,7 +1132,7 @@ export default function HomeView() {
     setActiveView('playlist')
   }
 
-  const handleCreateDynamicPlaylist = async (name: string, coverImagePath: string | null, rules: DynamicPlaylistRulesV1) => {
+  const handleCreateDynamicPlaylist = async (name: string, coverImagePath: string | null, rules: DynamicPlaylistRulesV2) => {
     const playlist = await createDynamicPlaylistWithOptions({ name, coverImagePath, rules })
     await selectPlaylist(playlist.id)
     setActiveView('playlist')

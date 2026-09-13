@@ -1,3 +1,4 @@
+import { dynamicPlaylistSyncNeedsUpdate } from '../../shared/playlists/dynamicPlaylistSync'
 import { parseCompanionDeviceInfo, type CompanionDeviceInfo } from '../../shared/companionDevices'
 import { readFile } from 'fs/promises'
 import { createServer, type Server } from 'https'
@@ -146,6 +147,8 @@ interface PhoneRemoteServiceOptions {
   // Favorites/playlists LAN sync (phoneSync.ts), injected so this service stays
   // decoupled from the library module. applySyncChanges returns null when the
   // payload fails validation.
+  /** Read-only preflight; getSyncState may resolve favorites or assign UIDs. */
+  getSyncRulePlaylists?: () => readonly { kind: string; dynamicRules: string | null }[]
   getSyncState?: () => PhoneSyncState
   applySyncChanges?: (payload: unknown) => PhoneSyncApplyResult | null
   tlsIdentity?: PhoneRemoteTlsIdentity
@@ -316,6 +319,7 @@ export class PhoneRemoteService {
   private readonly core: PlaybackHttpCore<PhoneRemoteAuthorizationContext>
   private readonly companionApi: CompanionApiV2 | null
   private readonly getIdentitySnapshot: () => PhoneRemoteIdentity
+  private readonly getSyncRulePlaylists: () => readonly { kind: string; dynamicRules: string | null }[]
   private readonly getSyncState?: () => PhoneSyncState
   private readonly applySyncChanges?: (payload: unknown) => PhoneSyncApplyResult | null
   private syncApplyInFlight = false
@@ -335,6 +339,7 @@ export class PhoneRemoteService {
     this.onPairedDevicesChange = options.onPairedDevicesChange
     this.onStatusChange = options.onStatusChange
     this.getSyncState = options.getSyncState
+    this.getSyncRulePlaylists = options.getSyncRulePlaylists ?? (() => this.getSyncState?.().playlists ?? [])
     this.applySyncChanges = options.applySyncChanges
     this.tlsIdentity = options.tlsIdentity ? { ...options.tlsIdentity } : null
     this.pairedDevices = [...(options.pairedDevices ?? [])]
@@ -1724,6 +1729,20 @@ export class PhoneRemoteService {
     this.respondJson(res, 404, { error: 'Not found' })
   }
 
+  private rejectIncompatibleDynamicSync(
+    req: IncomingMessage,
+    res: ServerResponse<IncomingMessage>,
+    playlists: readonly { kind: string; dynamicRules: string | null }[]
+  ): boolean {
+    const version = Number(new URL(req.url ?? '/', 'https://localhost').searchParams.get('dynamicPlaylistRulesVersion') ?? 1)
+    if (!dynamicPlaylistSyncNeedsUpdate(version, playlists)) return false
+    this.respondJson(res, 409, {
+      code: 'dynamic-playlist-update-required',
+      error: 'Update the phone app before syncing playlists with AND/OR groups.'
+    })
+    return true
+  }
+
   private handleSyncState(req: IncomingMessage, res: ServerResponse<IncomingMessage>): void {
     if (!this.authorizeRequest(req, 'sync')) {
       this.respondJson(res, 401, { error: 'Unauthorized' })
@@ -1738,8 +1757,10 @@ export class PhoneRemoteService {
       return
     }
     try {
+      if (this.rejectIncompatibleDynamicSync(req, res, this.getSyncRulePlaylists())) return
       const state: PhoneSyncState = {
         ...this.getSyncState(),
+        dynamicPlaylistRulesVersion: 2,
         pendingResolutions: [...this.syncPendingResolutions.values()]
       }
       // Serving state means the phone is syncing — the request is being handled.
@@ -1785,6 +1806,7 @@ export class PhoneRemoteService {
     }
     const body = parsedBody as Record<string, unknown>
 
+    if (this.rejectIncompatibleDynamicSync(req, res, this.getSyncRulePlaylists())) return
     this.syncConflicts = sanitizeReportedConflicts(body.conflicts)
     const consumed = Array.isArray(body.consumedResolutions)
       ? body.consumedResolutions.filter((uid): uid is string => typeof uid === 'string')
@@ -1835,6 +1857,14 @@ export class PhoneRemoteService {
       return
     }
 
+    if (parsedBody && typeof parsedBody === 'object' && 'playlistUpserts' in parsedBody && Array.isArray(parsedBody.playlistUpserts)) {
+      const incoming = parsedBody.playlistUpserts.filter((entry): entry is { kind: string; dynamicRules: string | null } => (
+        !!entry && typeof entry.kind === 'string' && (typeof entry.dynamicRules === 'string' || entry.dynamicRules === null)
+      ))
+      if (this.rejectIncompatibleDynamicSync(req, res, incoming)) return
+    }
+
+    if (this.rejectIncompatibleDynamicSync(req, res, this.getSyncRulePlaylists())) return
     this.syncApplyInFlight = true
     try {
       const result = this.applySyncChanges(parsedBody)

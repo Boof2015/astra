@@ -5,7 +5,7 @@ import DynamicPlaylistRuleEditor, { type DynamicPlaylistPreview } from './Dynami
 import {
   createDefaultDynamicPlaylistRules,
   normalizeDynamicPlaylistRules,
-  type DynamicPlaylistRulesV1,
+  type DynamicPlaylistRulesV2,
   type PlaylistKind
 } from '../../../shared/playlists/dynamicPlaylist'
 
@@ -13,8 +13,8 @@ interface CreatePlaylistModalProps {
   isOpen: boolean
   onClose: () => void
   onCreate: (name: string, coverImagePath: string | null) => Promise<unknown>
-  onCreateDynamic?: (name: string, coverImagePath: string | null, rules: DynamicPlaylistRulesV1) => Promise<unknown>
-  onPreviewDynamic?: (rules: DynamicPlaylistRulesV1) => Promise<DynamicPlaylistPreview>
+  onCreateDynamic?: (name: string, coverImagePath: string | null, rules: DynamicPlaylistRulesV2) => Promise<unknown>
+  onPreviewDynamic?: (rules: DynamicPlaylistRulesV2) => Promise<DynamicPlaylistPreview>
   allowDynamic?: boolean
   onImport?: () => Promise<boolean>
   importLabel?: string
@@ -47,7 +47,7 @@ export default function CreatePlaylistModal({
   const [name, setName] = useState('')
   const [coverImagePath, setCoverImagePath] = useState<string | null>(null)
   const [playlistKind, setPlaylistKind] = useState<PlaylistKind | null>(null)
-  const [dynamicRules, setDynamicRules] = useState<DynamicPlaylistRulesV1>(() => createDefaultDynamicPlaylistRules())
+  const [dynamicRules, setDynamicRules] = useState<DynamicPlaylistRulesV2>(() => createDefaultDynamicPlaylistRules())
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const canCreateDynamic = allowDynamic && Boolean(onCreateDynamic && onPreviewDynamic)

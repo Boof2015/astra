@@ -9,6 +9,9 @@ import * as library from './library.ts'
 import type { StatsTransferTrackTuple } from '../../shared/stats/statsTransfer.ts'
 import {
   createDefaultDynamicPlaylistRules,
+  normalizeDynamicPlaylistRules,
+  serializeDynamicPlaylistRules,
+  type DynamicPlaylistRulesV2,
   type DynamicPlaylistCondition,
   type DynamicPlaylistRulesV1,
   type DynamicPlaylistTextField,
@@ -3096,6 +3099,7 @@ test('dynamic playlist text rules match Unicode while preserving accent distinct
       const assertMatches = (operator: DynamicPlaylistTextOperator, value: string, expectedPaths: string[]) => {
         const preview = library.previewDynamicPlaylist({
           ...createDefaultDynamicPlaylistRules(),
+          version: 1,
           conditions: [{ kind: 'text', field: sample.field, operator, value }]
         })
         assert.deepEqual(preview.tracks.map((track) => track.path).sort(), [...expectedPaths].sort(), `${operator}: ${value}`)
@@ -3137,6 +3141,7 @@ test('dynamic playlist Unicode matching uses overrides and preserves null and wi
   const previewPaths = (field: DynamicPlaylistTextField, operator: DynamicPlaylistTextOperator, value: string) => (
     library.previewDynamicPlaylist({
       ...createDefaultDynamicPlaylistRules(),
+      version: 1,
       conditions: [{ kind: 'text', field, operator, value }]
     }).tracks.map((track) => track.path).sort()
   )
@@ -3197,7 +3202,7 @@ test('dynamic playlist Unicode previews and saved results agree after filtering,
     const summary = library.getPlaylists().find((entry) => entry.id === playlist.id)
     assert.equal(summary?.track_count, expectedPaths.length)
     assert.equal(summary?.name, '音楽')
-    assert.deepEqual(library.getDynamicPlaylistRules(playlist.id), expectedRules)
+    assert.deepEqual(library.getDynamicPlaylistRules(playlist.id), normalizeDynamicPlaylistRules(expectedRules))
     assert.equal(library.getTrackByPath(firstPath)?.artist, 'BJÖRK')
   }
 
@@ -5112,4 +5117,97 @@ test('companion playlist pages use signed cursors, stable order, and no library 
   assert.equal(api.listPlaylists('forged', 2), null)
   assert.equal(api.listPlaylists(signer.create('track', normal.id), 2), null)
   assert.throws(() => library.getCompanionApiPlaylistPage(0, 500), /Invalid/)
+})
+
+test('nested dynamic groups keep favorites outside artist ORs through preview, storage, sync, and reopening', async (t) => {
+  const sourceId = await setupDynamicPlaylistTextLibrary(t, [
+    createRemoteTrack({ album: 'Group test', path: 'subsonic://groups/a', title: 'A favorite', artist: 'Artist A' }),
+    createRemoteTrack({ album: 'Group test', path: 'subsonic://groups/b', title: 'B favorite', artist: 'Artist B' }),
+    createRemoteTrack({ album: 'Group test', path: 'subsonic://groups/c', title: 'C favorite', artist: 'Artist C' }),
+    createRemoteTrack({ album: 'Group test', path: 'subsonic://groups/a-no', title: 'A plain', artist: 'Artist A' }),
+    createRemoteTrack({ album: 'Group test', path: 'subsonic://groups/b-no', title: 'B plain', artist: 'Artist B' }),
+    createRemoteTrack({ album: 'Group test', path: 'subsonic://groups/missing', title: '0 missing', artist: 'Artist B' })
+  ])
+  for (const key of ['a', 'b', 'c', 'missing']) await library.addFavorite(`subsonic://groups/${key}`)
+  await library.markMissingSubsonicTracksUnavailable(sourceId, new Set(['a', 'b', 'c', 'a-no', 'b-no'].map((key) => `subsonic://groups/${key}`)))
+  const artist = (value: string): DynamicPlaylistCondition => ({ kind: 'text', field: 'artist', operator: 'is', value })
+  const rules: DynamicPlaylistRulesV2 = {
+    ...createDefaultDynamicPlaylistRules(),
+    filter: { kind: 'group', match: 'all', children: [
+      { kind: 'exact', field: 'favorite', operator: 'is', value: true },
+      { kind: 'group', match: 'any', children: [artist('Artist A'), artist('Artist B'), artist('Artist A')] }
+    ] }
+  }
+  const expected = ['subsonic://groups/a', 'subsonic://groups/b']
+  const playlist = await library.createDynamicPlaylist('Favorite artists', rules)
+  assert.deepEqual(library.previewDynamicPlaylist(rules).tracks.map((track) => track.path), expected)
+  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), expected)
+  assert.deepEqual(library.getDynamicPlaylistRules(playlist.id), rules)
+  const limited = { ...rules, sort: { field: 'title' as const, direction: 'desc' as const }, limit: 1 }
+  assert.deepEqual(library.previewDynamicPlaylist(limited).tracks.map((track) => track.path), [expected[1]])
+  const rootAny: DynamicPlaylistRulesV2 = { ...rules, filter: { kind: 'group', match: 'any', children: [artist('Artist A'), artist('Artist B')] } }
+  assert.equal(library.previewDynamicPlaylist(rootAny).track_count, 4)
+
+  const result = library.replaceSyncedPlaylist({
+    syncUid: 'grouped-mobile', name: 'From mobile', kind: 'dynamic',
+    dynamicRules: serializeDynamicPlaylistRules(rules), createdAt: 1000, updatedAt: 2000, entries: null
+  }, library.createTrackMetadataMatcher())
+  assert.equal(result.status, 'created')
+  const synced = library.getSyncPlaylistsState().playlists.find((entry) => entry.syncUid === 'grouped-mobile')!
+  assert.deepEqual(normalizeDynamicPlaylistRules(JSON.parse(synced.dynamicRules!)), rules)
+  const syncedId = library.getPlaylists().find((entry) => entry.name === 'From mobile')!.id
+  assert.deepEqual(library.getPlaylistTracks(syncedId).map((track) => track.path), expected)
+  library.closeDatabase()
+  await library.initDatabase()
+  assert.deepEqual(library.getDynamicPlaylistRules(playlist.id), rules)
+  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), expected)
+  await library.removeFavorite(expected[1])
+  assert.deepEqual(library.getPlaylistTracks(playlist.id).map((track) => track.path), [expected[0]])
+})
+
+test('nested rating and favorite branches collect their joins without excluding other OR branches', async (t) => {
+  await setupSeededLibrary(t)
+  await library.setTrackRatingForPaths(['subsonic://1/teen-1'], 5)
+  await library.addFavorite('subsonic://1/split-a')
+  const rules: DynamicPlaylistRulesV2 = {
+    ...createDefaultDynamicPlaylistRules(),
+    filter: { kind: 'group', match: 'any', children: [
+      { kind: 'group', match: 'all', children: [
+        { kind: 'exact', field: 'rated', operator: 'is', value: true },
+        { kind: 'numeric', field: 'rating', operator: 'gte', value: 4 }
+      ] },
+      { kind: 'group', match: 'all', children: [{ kind: 'exact', field: 'favorite', operator: 'is', value: true }] }
+    ] },
+    sort: { field: 'rating', direction: 'desc' }
+  }
+  assert.deepEqual(library.previewDynamicPlaylist(rules).tracks.map((track) => track.path), ['subsonic://1/teen-1', 'subsonic://1/split-a'])
+})
+
+test('invalid saved dynamic rules remain listed with zero tracks and throw when opened', async (t) => {
+  const dir = await setupSeededLibrary(t)
+  const playlist = await library.createDynamicPlaylist('Broken rules', createDefaultDynamicPlaylistRules())
+  const other = await library.createPlaylist('Still visible')
+  const directDb = new TestSqliteDatabase(join(dir, 'library.db'))
+  directDb.prepare('UPDATE playlists SET dynamic_rules_json = ? WHERE id = ?').run('{"version":2,"filter":{"kind":"group","match":"xor","children":[]}}', playlist.id)
+  directDb.close()
+  const summaries = library.getPlaylists()
+  assert.equal(summaries.find((entry) => entry.id === playlist.id)?.track_count, 0)
+  assert.ok(summaries.some((entry) => entry.id === other.id))
+  assert.throws(() => library.getPlaylistTracks(playlist.id), /Group match/)
+  assert.throws(() => library.getDynamicPlaylistRules(playlist.id), /Group match/)
+})
+
+test('dynamic sync preflight reads grouped playlists without assigning missing sync identities', async (t) => {
+  const dir = await setupSeededLibrary(t)
+  const rules: DynamicPlaylistRulesV2 = {
+    ...createDefaultDynamicPlaylistRules(),
+    filter: { kind: 'group', match: 'any', children: [{ kind: 'exact', field: 'favorite', operator: 'is', value: true }] }
+  }
+  const playlist = await library.createDynamicPlaylist('Not synced yet', rules)
+  const directDb = new TestSqliteDatabase(join(dir, 'library.db'))
+  try {
+    directDb.prepare('UPDATE playlists SET sync_uid = NULL WHERE id = ?').run(playlist.id)
+    assert.deepEqual(library.getDynamicPlaylistSyncRules(), [{ kind: 'dynamic', dynamicRules: serializeDynamicPlaylistRules(rules) }])
+    assert.deepEqual(directDb.prepare('SELECT sync_uid FROM playlists WHERE id = ?').get(playlist.id), { sync_uid: null })
+  } finally { directDb.close() }
 })

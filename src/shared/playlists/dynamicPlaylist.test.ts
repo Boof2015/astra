@@ -16,7 +16,7 @@ test('dynamic playlist date conditions preserve positive fractional day values',
   })
 
   assert.deepEqual(
-    rules.conditions.map((condition) => condition.kind === 'date' ? condition.value : null),
+    rules.filter.children.map((condition) => condition.kind === 'date' ? condition.value : null),
     [0.5, 1.75, 0.25, 1.75]
   )
 })

@@ -51,7 +51,8 @@ import type {
   ParallaxTimelineState
 } from '../types/parallax'
 import type {
-  DynamicPlaylistRulesV1,
+  DynamicPlaylistRulesV2,
+  DynamicPlaylistRules,
   PlaylistKind
 } from '../shared/playlists/dynamicPlaylist'
 import type { TrackRatingEntry } from '../shared/ratings/trackRating'
@@ -1871,10 +1872,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Playlists
     getPlaylists: () => ipcRenderer.invoke('library:getPlaylists'),
     createPlaylist: (name: string) => ipcRenderer.invoke('library:createPlaylist', name),
-    createDynamicPlaylist: (name: string, rules: DynamicPlaylistRulesV1) => ipcRenderer.invoke('library:createDynamicPlaylist', name, rules),
+    createDynamicPlaylist: (name: string, rules: DynamicPlaylistRules) => ipcRenderer.invoke('library:createDynamicPlaylist', name, rules),
     getDynamicPlaylistRules: (playlistId: number) => ipcRenderer.invoke('library:getDynamicPlaylistRules', playlistId),
-    updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRulesV1) => ipcRenderer.invoke('library:updateDynamicPlaylistRules', playlistId, rules),
-    previewDynamicPlaylist: (rules: DynamicPlaylistRulesV1) => ipcRenderer.invoke('library:previewDynamicPlaylist', rules),
+    updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRules) => ipcRenderer.invoke('library:updateDynamicPlaylistRules', playlistId, rules),
+    previewDynamicPlaylist: (rules: DynamicPlaylistRules) => ipcRenderer.invoke('library:previewDynamicPlaylist', rules),
     renamePlaylist: (id: number, name: string) => ipcRenderer.invoke('library:renamePlaylist', id, name),
     deletePlaylist: (id: number) => ipcRenderer.invoke('library:deletePlaylist', id),
     getPlaylistTracks: (playlistId: number) => ipcRenderer.invoke('library:getPlaylistTracks', playlistId),
@@ -2474,10 +2475,10 @@ declare global {
         // Playlists
         getPlaylists: () => Promise<Playlist[]>
         createPlaylist: (name: string) => Promise<Playlist>
-        createDynamicPlaylist: (name: string, rules: DynamicPlaylistRulesV1) => Promise<Playlist>
-        getDynamicPlaylistRules: (playlistId: number) => Promise<DynamicPlaylistRulesV1>
-        updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRulesV1) => Promise<void>
-        previewDynamicPlaylist: (rules: DynamicPlaylistRulesV1) => Promise<DynamicPlaylistPreview>
+        createDynamicPlaylist: (name: string, rules: DynamicPlaylistRules) => Promise<Playlist>
+        getDynamicPlaylistRules: (playlistId: number) => Promise<DynamicPlaylistRulesV2>
+        updateDynamicPlaylistRules: (playlistId: number, rules: DynamicPlaylistRules) => Promise<void>
+        previewDynamicPlaylist: (rules: DynamicPlaylistRules) => Promise<DynamicPlaylistPreview>
         renamePlaylist: (id: number, name: string) => Promise<void>
         deletePlaylist: (id: number) => Promise<void>
         getPlaylistTracks: (playlistId: number) => Promise<DbTrack[]>
