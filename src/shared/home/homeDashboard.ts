@@ -1,5 +1,7 @@
 import type { HomeRediscoveryRelease, HomeReleaseSummary } from '../../types/home'
 
+export const HOME_SHELF_ITEM_LIMIT = 30
+
 const DAY_MS = 24 * 60 * 60 * 1000
 const FAVORITE_AGE_MS = 30 * DAY_MS
 const NEVER_PLAYED_GRACE_MS = 14 * DAY_MS
@@ -88,7 +90,7 @@ export function selectHomeRediscovery(
   releases: readonly HomeReleaseSummary[],
   options: SelectHomeRediscoveryOptions
 ): HomeRediscoveryRelease[] {
-  const limit = Math.max(0, Math.min(24, Math.trunc(options.limit)))
+  const limit = Math.max(0, Math.min(HOME_SHELF_ITEM_LIMIT, Math.trunc(options.limit)))
   if (limit === 0) return []
   const excluded = options.excludedIdentityKeys ?? new Set<string>()
   const eligible = releases.filter((release) => (

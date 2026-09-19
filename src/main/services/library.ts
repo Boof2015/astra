@@ -103,7 +103,7 @@ import {
 } from './libraryLatestSync'
 import { sanitizeLyricsLines } from './lyricsParsing'
 import type { HomeDashboard, HomeDashboardQuery, HomeReleaseSummary } from '../../types/home'
-import { getLocalDayKey, selectHomeRediscovery } from '../../shared/home/homeDashboard'
+import { getLocalDayKey, HOME_SHELF_ITEM_LIMIT, selectHomeRediscovery } from '../../shared/home/homeDashboard'
 import type { LyricsFormat, LyricsLine, LyricsProvider } from '../../types/lyrics'
 import type {
   JellyfinSourceLastStatus,
@@ -5868,19 +5868,19 @@ export function getHomeDashboard(query: HomeDashboardQuery = {}): HomeDashboard 
       .filter((release) => release.available_track_count > 0)
 
     const jumpBackInReleaseLimit = Number.isFinite(query.jumpBackInReleaseLimit)
-      ? Math.max(6, Math.min(24, Math.trunc(query.jumpBackInReleaseLimit!)))
-      : 6
+      ? Math.max(6, Math.min(HOME_SHELF_ITEM_LIMIT, Math.trunc(query.jumpBackInReleaseLimit!)))
+      : HOME_SHELF_ITEM_LIMIT
     const rediscoverLimit = Number.isFinite(query.rediscoverLimit)
-      ? Math.max(8, Math.min(24, Math.trunc(query.rediscoverLimit!)))
-      : 8
+      ? Math.max(8, Math.min(HOME_SHELF_ITEM_LIMIT, Math.trunc(query.rediscoverLimit!)))
+      : HOME_SHELF_ITEM_LIMIT
     const newlyAddedLimit = Number.isFinite(query.newlyAddedLimit)
-      ? Math.max(8, Math.min(24, Math.trunc(query.newlyAddedLimit!)))
-      : 8
+      ? Math.max(8, Math.min(HOME_SHELF_ITEM_LIMIT, Math.trunc(query.newlyAddedLimit!)))
+      : HOME_SHELF_ITEM_LIMIT
 
     const recentReleases = releases
       .filter((release) => release.last_played_at !== null)
       .sort((a, b) => (b.last_played_at ?? 0) - (a.last_played_at ?? 0) || a.identity_key.localeCompare(b.identity_key))
-      .slice(0, 24)
+      .slice(0, HOME_SHELF_ITEM_LIMIT)
     const excluded = new Set<string>([
       ...recentReleases.slice(0, jumpBackInReleaseLimit).map((release) => release.identity_key),
       ...(Array.isArray(query.excludedReleaseIdentityKeys)

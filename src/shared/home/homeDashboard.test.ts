@@ -25,10 +25,15 @@ function release(overrides: Partial<HomeReleaseSummary> & Pick<HomeReleaseSummar
 }
 
 test('rediscovery is stable for the same day and rotation and changes on refresh', () => {
-  const releases = Array.from({ length: 20 }, (_, index) => release({ identity_key: `album-${index}` }))
-  const options = { now: NOW, dayKey: '2026-08-11', rotation: 0, limit: 8 }
+  const releases = Array.from({ length: 60 }, (_, index) => release({ identity_key: `album-${index}` }))
+  const options = { now: NOW, dayKey: '2026-08-11', rotation: 0, limit: 30 }
   const first = selectHomeRediscovery(releases, options).map((entry) => entry.identity_key)
+  assert.equal(first.length, 30)
+  assert.equal(new Set(first).size, 30)
   assert.deepEqual(selectHomeRediscovery(releases, options).map((entry) => entry.identity_key), first)
+  assert.deepEqual(selectHomeRediscovery(releases, { ...options, limit: 100 }).map((entry) => entry.identity_key), first)
+  assert.deepEqual(selectHomeRediscovery(releases, { ...options, limit: 0 }), [])
+  assert.deepEqual(selectHomeRediscovery([], options), [])
   assert.notDeepEqual(
     selectHomeRediscovery(releases, { ...options, rotation: 1 }).map((entry) => entry.identity_key),
     first
@@ -81,7 +86,7 @@ test('rediscovery excludes requested and unavailable releases and fills from the
     now: NOW,
     dayKey: '2026-08-11',
     rotation: 0,
-    limit: 3,
+    limit: 30,
     excludedIdentityKeys: new Set(['excluded'])
   })
   assert.deepEqual(selected.map((entry) => entry.identity_key), ['fallback'])

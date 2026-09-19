@@ -275,6 +275,90 @@ async function setupLegacyPlaycountLibrary(t: test.TestContext): Promise<string>
   return dir
 }
 
+test('Home dashboard defaults to 30 releases with stable ordering, bounds, and exclusions', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  const day = 24 * 60 * 60 * 1000
+  const now = Date.now()
+  const albumName = (index: number) => `Home Album ${String(index).padStart(2, '0')}`
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    const insert = directDb.prepare(`
+      INSERT INTO tracks (
+        path, title, artist, album, duration, format, added_at, modified_at,
+        play_count, last_played_at, is_available
+      ) VALUES (?, ?, 'Home Artist', ?, 180, 'flac', ?, ?, 1, ?, ?)
+    `)
+    for (let index = 0; index <= 80; index += 1) {
+      insert.run(
+        `/home/track-${index}.flac`, `Home Track ${index}`, albumName(index),
+        now - (200 + index) * day, now, now - (120 + index) * day,
+        index === 80 ? 0 : 1
+      )
+    }
+  })
+
+  const defaultDashboard = library.getHomeDashboard()
+  const expectedRecentAlbums = Array.from({ length: 30 }, (_, index) => albumName(index))
+  assert.deepEqual(defaultDashboard.recent_releases.map((entry) => entry.album), expectedRecentAlbums)
+  assert.deepEqual(defaultDashboard.newly_added_releases.map((entry) => entry.album), expectedRecentAlbums)
+  assert.equal(defaultDashboard.rediscover_releases.length, 30)
+
+  const excludedRelease = defaultDashboard.rediscover_releases[0]!
+  const query = { excludedReleaseIdentityKeys: [excludedRelease.identity_key] }
+  const dashboard = library.getHomeDashboard(query)
+  assert.deepEqual(library.getHomeDashboard(query), dashboard)
+  assert.equal(dashboard.rediscover_releases.length, 30)
+  const recentKeys = new Set(dashboard.recent_releases.map((entry) => entry.identity_key))
+  for (const row of [dashboard.recent_releases, dashboard.rediscover_releases, dashboard.newly_added_releases]) {
+    assert.equal(new Set(row.map((entry) => entry.identity_key)).size, 30)
+    assert.ok(row.every((entry) => entry.available_track_count > 0 && entry.album !== albumName(80)))
+  }
+  assert.ok(dashboard.rediscover_releases.every((entry) => (
+    !recentKeys.has(entry.identity_key) && entry.identity_key !== excludedRelease.identity_key
+  )))
+  assert.deepEqual(library.getHomeDashboard({
+    ...query, jumpBackInReleaseLimit: 100, rediscoverLimit: 100, newlyAddedLimit: 100
+  }), dashboard)
+  assert.deepEqual(library.getHomeDashboard({
+    ...query, jumpBackInReleaseLimit: NaN, rediscoverLimit: Infinity, newlyAddedLimit: NaN
+  }), dashboard)
+  const smaller = library.getHomeDashboard({
+    jumpBackInReleaseLimit: 6.9, rediscoverLimit: 12.9, newlyAddedLimit: 12.9
+  })
+  assert.equal(smaller.recent_releases.length, 30)
+  assert.equal(smaller.rediscover_releases.length, 12)
+  assert.equal(smaller.newly_added_releases.length, 12)
+  assert.ok(smaller.rediscover_releases.every((entry) => !expectedRecentAlbums.slice(0, 6).includes(entry.album)))
+  const minimums = library.getHomeDashboard({
+    jumpBackInReleaseLimit: -1, rediscoverLimit: -1, newlyAddedLimit: -1
+  })
+  assert.equal(minimums.rediscover_releases.length, 8)
+  assert.equal(minimums.newly_added_releases.length, 8)
+})
+
+test('Home dashboard leaves empty and smaller eligible collections short', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  const empty = library.getHomeDashboard()
+  assert.deepEqual(empty.recent_releases, [])
+  assert.deepEqual(empty.rediscover_releases, [])
+  assert.deepEqual(empty.newly_added_releases, [])
+
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    const insert = directDb.prepare(`
+      INSERT INTO tracks (
+        path, title, artist, album, duration, format, added_at, modified_at,
+        play_count, last_played_at, is_available
+      ) VALUES (?, 'Home Track', 'Home Artist', ?, 180, 'flac', 1, 1, ?, ?, ?)
+    `)
+    insert.run('/home/recent.flac', 'Recent', 1, 2, 1)
+    insert.run('/home/unplayed.flac', 'Unplayed', 0, null, 1)
+    insert.run('/home/unavailable.flac', 'Unavailable', 0, null, 0)
+  })
+  const dashboard = library.getHomeDashboard()
+  assert.deepEqual(dashboard.recent_releases.map((entry) => entry.album), ['Recent'])
+  assert.deepEqual(dashboard.rediscover_releases.map((entry) => entry.album), ['Unplayed'])
+  assert.deepEqual(new Set(dashboard.newly_added_releases.map((entry) => entry.album)), new Set(['Recent', 'Unplayed']))
+})
+
 test('playcount migration adds fresh aggregate fields without backfilling recent history', async (t) => {
   await setupLegacyPlaycountLibrary(t)
 
