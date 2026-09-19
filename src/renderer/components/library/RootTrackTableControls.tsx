@@ -378,7 +378,6 @@ export default function RootTrackTableControls({
   const columnsTriggerRef = useRef<HTMLButtonElement | null>(null)
   const sortPanelRef = useRef<HTMLDivElement | null>(null)
   const columnsPanelRef = useRef<HTMLDivElement | null>(null)
-  const blurFrameRef = useRef<number | null>(null)
   const normalizedLayout = useMemo(() => normalizeRootTrackTableLayout(layout), [layout])
   const normalizedSortRules = useMemo(
     () => normalizeTrackSortRules(sortRules, { ratingsEnabled }),
@@ -414,6 +413,13 @@ export default function RootTrackTableControls({
       if (event.target instanceof Element && event.target.closest('[data-root-track-select-menu]')) return
       setOpenPanel(null)
     }
+    // Pointer focus cleanup blurs buttons without moving focus outside the panel.
+    // Dismiss only when another element actually receives focus.
+    const handleFocusIn = (event: FocusEvent) => {
+      if (rootRef.current?.contains(event.target as Node)) return
+      if (event.target instanceof Element && event.target.closest('[data-root-track-select-menu]')) return
+      setOpenPanel(null)
+    }
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       event.preventDefault()
@@ -421,28 +427,15 @@ export default function RootTrackTableControls({
       window.requestAnimationFrame(() => trigger?.focus())
     }
     document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('focusin', handleFocusIn)
     document.addEventListener('keydown', handleKeyDown)
     return () => {
       window.cancelAnimationFrame(frameId)
       document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('focusin', handleFocusIn)
       document.removeEventListener('keydown', handleKeyDown)
     }
   }, [openPanel])
-
-  useEffect(() => () => {
-    if (blurFrameRef.current !== null) window.cancelAnimationFrame(blurFrameRef.current)
-  }, [])
-
-  const handleRootBlur = () => {
-    if (blurFrameRef.current !== null) window.cancelAnimationFrame(blurFrameRef.current)
-    blurFrameRef.current = window.requestAnimationFrame(() => {
-      blurFrameRef.current = null
-      const activeElement = document.activeElement
-      if (activeElement instanceof Node && rootRef.current?.contains(activeElement)) return
-      if (activeElement instanceof Element && activeElement.closest('[data-root-track-select-menu]')) return
-      setOpenPanel(null)
-    })
-  }
 
   const commitLayout = (nextLayout: RootTrackTableLayout) => {
     onLayoutChange(normalizeRootTrackTableLayout(nextLayout))
@@ -505,7 +498,7 @@ export default function RootTrackTableControls({
   const responsiveHiddenCount = responsiveHiddenColumns.length
 
   return (
-    <div className="root-track-table-controls" ref={rootRef} onBlur={handleRootBlur}>
+    <div className="root-track-table-controls" ref={rootRef}>
       <button
         ref={sortTriggerRef}
         id="root-track-sort-trigger"
