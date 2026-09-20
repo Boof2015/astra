@@ -12,6 +12,11 @@ const SKY_MODE_OPTIONS: ReadonlyArray<{ value: HomeSkyTimeMode; label: string }>
   { value: 'fixed', label: 'Fixed Time' }
 ]
 
+const COMPACT_SKY_MODE_OPTIONS: typeof SKY_MODE_OPTIONS = [
+  { value: 'realtime', label: 'Follow local time' },
+  { value: 'fixed', label: 'Fixed time' }
+]
+
 interface HomeSkyControlsProps {
   compact?: boolean
 }
@@ -25,18 +30,18 @@ export default function HomeSkyControls({ compact = false }: HomeSkyControlsProp
   return (
     <div className={`home-sky-controls${compact ? ' is-compact' : ''}`}>
       <div className="home-sky-control-field">
-        <span className="settings-field-label">Sky Time</span>
+        {!compact && <span className="settings-field-label">Sky Time</span>}
         <SettingsSegmentedControl
           ariaLabel="Home sky time mode"
           fullWidth
-          options={SKY_MODE_OPTIONS}
+          options={compact ? COMPACT_SKY_MODE_OPTIONS : SKY_MODE_OPTIONS}
           value={preference.mode}
           onChange={setMode}
         />
       </div>
       {preference.mode === 'fixed' && (
         <label className="home-sky-control-field home-sky-time-slider-field">
-          <span className="settings-field-label">Displayed Time</span>
+          <span className="settings-field-label">{compact ? 'Displayed time' : 'Displayed Time'}</span>
           <div className="home-sky-time-slider-row">
             <input
               className="home-sky-time-slider"
@@ -51,7 +56,9 @@ export default function HomeSkyControls({ compact = false }: HomeSkyControlsProp
             />
             <output className="home-sky-time-value">{formatHomeSkyTime(fixedMinutes)}</output>
           </div>
-          <span className="home-sky-time-hint">Messages and the clock still use your real local time.</span>
+          <span className="home-sky-time-hint">
+            {compact ? 'Only the sky changes. Your clock stays on local time.' : 'Messages and the clock still use your real local time.'}
+          </span>
         </label>
       )}
     </div>

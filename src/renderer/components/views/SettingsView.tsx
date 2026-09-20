@@ -12,6 +12,7 @@ import KeybindSettings from '../settings/KeybindSettings'
 import SettingsTransferWizard from '../settings/SettingsTransferWizard'
 import ImportedListeningDataCard from '../settings/ImportedListeningDataCard'
 import SettingsSegmentedControl, { type SettingsSegmentedOption } from '../settings/SettingsSegmentedControl'
+import HomeHeaderControls from '../home/HomeHeaderControls'
 import HomeSkyControls from '../home/HomeSkyControls'
 import { renderPairingQrSvg } from '../../utils/pairingQr'
 import { usePresence } from '../../hooks/usePresence'
@@ -24,7 +25,6 @@ import {
   MIN_UI_SCALE_PERCENT,
   UI_SCALE_STEP_PERCENT,
   useUIStore,
-  type HomeGreetingTextMode,
   type JumpToPlayingDestination,
   type TransportInfoLineMode
 } from '../../stores/uiStore'
@@ -143,13 +143,6 @@ const COVER_ART_ACCENT_METHOD_OPTIONS: readonly SettingsSegmentedOption<CoverArt
   { value: 'dominant', label: 'Dominant' },
   { value: 'vibrant', label: 'Vibrant' },
   { value: 'average', label: 'Average' },
-]
-
-const HOME_GREETING_TEXT_OPTIONS: readonly SettingsSegmentedOption<HomeGreetingTextMode>[] = [
-  { value: 'messages', label: 'Messages' },
-  { value: 'clock', label: 'Clock' },
-  { value: 'binary-clock', label: 'Binary' },
-  { value: 'off', label: 'Off' },
 ]
 
 const TRANSPORT_INFO_LINE_OPTIONS: readonly SettingsSegmentedOption<TransportInfoLineMode>[] = [
@@ -576,8 +569,6 @@ export default function SettingsView() {
   const uiScalePercent = useUIStore((state) => state.uiScalePercent)
   const setUIScalePercent = useUIStore((state) => state.setUIScalePercent)
   const resetUIScalePercent = useUIStore((state) => state.resetUIScalePercent)
-  const homeGreetingTextMode = useUIStore((state) => state.homeGreetingTextMode)
-  const setHomeGreetingTextMode = useUIStore((state) => state.setHomeGreetingTextMode)
   const transportInfoLineMode = useUIStore((state) => state.transportInfoLineMode)
   const setTransportInfoLineMode = useUIStore((state) => state.setTransportInfoLineMode)
   const activityIndicatorExperimentEnabled = useUIStore((state) => state.activityIndicatorExperimentEnabled)
@@ -1903,16 +1894,12 @@ export default function SettingsView() {
                 <div className="settings-card-label">Home Header</div>
                 <div className="settings-grid">
                   <div className="settings-field">
-                    <span className="settings-field-label">Text</span>
-                    <SettingsSegmentedControl
-                      ariaLabel="Home greeting text"
-                      fullWidth
-                      options={HOME_GREETING_TEXT_OPTIONS}
-                      value={homeGreetingTextMode}
-                      onChange={setHomeGreetingTextMode}
-                    />
+                    <span className="settings-field-label">Display</span>
+                    <HomeHeaderControls />
                   </div>
-                  <HomeSkyControls />
+                  <div className="settings-field">
+                    <HomeSkyControls />
+                  </div>
                 </div>
               </div>
               <div className="settings-card">
