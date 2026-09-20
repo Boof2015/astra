@@ -34,7 +34,7 @@ export default function HardwareIllustration({ modelId, connected = true, classN
       <circle cx="346" cy="98" r="57" fill="#080b0b" opacity=".8"/>
       <circle cx="345" cy="94" r="54" fill={`url(#${id}-dial)`} stroke="#626b69" strokeWidth="1.2"/>
       <circle cx="345" cy="94" r="50.5" stroke="#66726e" opacity=".22"/>
-      <path d="M306 61a50 50 0 0 1 74 3" stroke="#a9b4b0" opacity=".13" strokeLinecap="round"/>
+      <circle cx="345" cy="94" r="50.5" pathLength="360" strokeDasharray="100 260" transform="rotate(-140 345 94)" stroke="#a9b4b0" opacity=".13" strokeLinecap="round"/>
       <circle cx="345" cy="180" r="18" fill={`url(#${id}-dial)`} stroke="#5b6461"/>
     </svg>
   )
