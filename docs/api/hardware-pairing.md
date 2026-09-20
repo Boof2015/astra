@@ -8,6 +8,8 @@ Use **Settings → Devices → Connect a device**, or enable **Device connection
 
 Browse `_astra-remote._tcp` with mDNS. TXT includes `companion_api=2`, `hardware_pairing=hardware-v1`, `endpoint_uuid`, `name`, `protocol_version=3`, `transport=https`, and `certificate_fingerprint`. Discovery is an untrusted locator, not approval or proof of identity. USB-network devices use this same discovery mechanism; Astra does not flash, SSH into, or identify hardware by USB vendor IDs.
 
+Astra Thing connects over USB only. On Windows, Astra advertises separately on each non-loopback IPv4 interface so discovery reaches USB while Wi-Fi, VPN, or virtual adapters are also active. Each announcement contains only that interface's IPv4 address, with a `.local` target hostname shared by its SRV and A records. While discovery is enabled, Astra checks for interface changes every five seconds, including USB attachment, removal, and address changes. Interface failures are retried independently and logged with the `[phone-remote-discovery]` prefix. macOS continues to use the system DNS-SD service.
+
 Before pairing, inspect the server's actual TLS certificate. Keep its SHA-256 fingerprint fixed for this attempt. A changed certificate requires a fresh attempt and a fresh code comparison. Once paired, persist and verify the approved fingerprint **before sending any credential**, including on redirects or rediscovery. Never silently replace a remembered pin with an advertised fingerprint.
 
 ## Request and code comparison
