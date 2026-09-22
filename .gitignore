@@ -28,6 +28,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 # notes
+.local-plans/
 Untitled-1.md
 PARALLAX_HANDOFF.md
 share

@@ -6,6 +6,7 @@ import test from 'node:test'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
 import * as library from './library.ts'
+import { resolveAlbumFixtureTracks, type ResolveAlbumFixtureTrack } from '../../shared/library/__fixtures__/resolveAlbums.ts'
 import type { StatsTransferTrackTuple } from '../../shared/stats/statsTransfer.ts'
 import {
   createDefaultDynamicPlaylistRules,
@@ -1150,11 +1151,124 @@ test('derived identity rebuild reconciles live history and latest-sync keys atom
   assert.equal(stored.liveKey, afterFirstIdentityKey)
   assert.equal(stored.orphanKey, 'orphan-key')
   assert.equal(stored.cacheCount, 2)
-  assert.equal(library.getAppMeta('library_identity_algorithm_version'), '6')
+  assert.equal(library.getAppMeta('library_identity_algorithm_version'), '7')
   assert.deepEqual(
     library.getLatestLibrarySyncSummary()?.newAlbumIdentityKeys,
     [afterFirstIdentityKey, afterSecondIdentityKey].sort((a, b) => a.localeCompare(b))
   )
+})
+
+test('Resolve tester albums and version 6 history rebuild into complete version 7 releases', async (t) => {
+  const userDataDir = await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({
+    name: 'Resolve Fixtures', base_url: 'https://resolve.example.test', username: 'tester',
+    secret_encrypted: 'secret', enabled: 1, last_status: 'ok'
+  })
+  const fixturePath = (fixture: ResolveAlbumFixtureTrack) => `subsonic://${source.id}/${encodeURIComponent(fixture.id)}`
+  await library.upsertSubsonicTracks(source.id, resolveAlbumFixtureTracks.map((fixture) => createRemoteTrack({
+    ...fixture,
+    path: fixturePath(fixture),
+    artist_names: fixture.artist_names ? [...fixture.artist_names] : null,
+    album_artist_names: fixture.album_artist_names ? [...fixture.album_artist_names] : null,
+    artwork_hash: fixture.base_artwork_hash
+  })), { syncSessionKey: 'resolve-sync' })
+
+  const expectedKeys = ['album:carti leaks::aa:playboi carti', 'album:scarlet 2 claude::aa:doja cat']
+  const assertCompleteReleases = () => {
+    const albums = library.getAlbums()
+    assert.deepEqual(albums.map((album) => [album.album, album.track_count, album.year]), [
+      ['Carti Leaks', 18, 2019], ['Scarlet 2 CLAUDE', 24, 2024]
+    ])
+    assert.deepEqual(library.listAlbumIdentityKeys(), expectedKeys)
+    assert.equal(library.getTrackCount(), 42)
+    for (const album of albums) {
+      const expected = resolveAlbumFixtureTracks.filter((fixture) => fixture.album === album.album)
+        .sort((a, b) => (a.disc_number ?? 0) - (b.disc_number ?? 0) || (a.track_number ?? 0) - (b.track_number ?? 0))
+      const detail = library.getTracksByAlbum(album.album, album.artist, album.identity_key)
+      assert.deepEqual(detail.map((item) => item.path), expected.map(fixturePath))
+      assert.ok(detail.every((item) => item.album_identity_key === album.identity_key))
+      const artist = library.getArtists().find((item) => item.artist === album.artist)
+      assert.equal(artist?.album_count, 1)
+    }
+    const all = library.getAllTracks()
+    const paged = library.getTrackPage({ offset: 0, limit: 50 }).tracks
+    assert.equal(all.length, 42)
+    assert.equal(paged.length, 42)
+    const keysByPath = new Map(all.map((item) => [item.path, item.album_identity_key]))
+    assert.ok(paged.every((item) => item.album_identity_key === keysByPath.get(item.path)))
+  }
+  assertCompleteReleases()
+
+  const generation = library.getListeningHistoryStatus().generation
+  const played = [resolveAlbumFixtureTracks[9], resolveAlbumFixtureTracks[41]]
+  for (const [index, fixture] of played.entries()) {
+    await library.checkpointListeningSession({
+      generation, sessionKey: `resolve-session-${index}`, segmentKey: `resolve-segment-${index}`,
+      trackPath: fixturePath(fixture), sourcePlaylistId: null, sessionStartedAt: 1_000,
+      segmentStartedAt: 1_000, observedAt: 101_000, sessionListenedSeconds: 100,
+      segmentListenedSeconds: 100, trackDurationSeconds: 180, qualificationEligible: true,
+      finalizeSegment: true, finalizeSession: true
+    })
+  }
+  const metadataSnapshot = () => withDirectLibraryDb(userDataDir, (directDb) => directDb.prepare(`
+    SELECT path, title, album, artist, album_artist, artist_names_json, album_artist_names_json,
+           track_number, track_total, disc_number, disc_total, year, artwork_hash, play_count
+    FROM tracks ORDER BY path
+  `).all())
+  const before = metadataSnapshot()
+  library.closeDatabase()
+
+  // Recreate the five persisted identities produced by v6, independently of
+  // the new resolver, then exercise the real database startup repair.
+  const legacyIdentity = (fixture: ResolveAlbumFixtureTrack): string => {
+    if (fixture.album === 'Scarlet 2 CLAUDE') {
+      return `album:scarlet 2 claude::aa:doja cat:rp:y2024:d2:t${fixture.track_total}`
+    }
+    const year = fixture.year === 2013 ? '2013' : (fixture.year ?? 0) >= 2018 ? '2018-2019' : '2015-2016'
+    return `album:carti leaks::aa:playboi carti:rp:y${year}:du:t18`
+  }
+  const oldKeys = Array.from(new Set(resolveAlbumFixtureTracks.map(legacyIdentity))).sort()
+  assert.equal(oldKeys.length, 5)
+  withDirectLibraryDb(userDataDir, (directDb) => {
+    for (const fixture of resolveAlbumFixtureTracks) {
+      directDb.prepare('UPDATE track_album_identities SET album_identity_key = ? WHERE track_path = ?')
+        .run(legacyIdentity(fixture), fixturePath(fixture))
+      directDb.prepare('UPDATE listening_sessions SET album_identity_key = ? WHERE track_path = ?')
+        .run(legacyIdentity(fixture), fixturePath(fixture))
+    }
+    directDb.prepare("UPDATE app_meta SET value = '6' WHERE key = 'library_identity_algorithm_version'").run()
+    directDb.prepare('INSERT OR REPLACE INTO app_meta (key, value, updated_at) VALUES (?, ?, ?)').run(
+      'library_latest_sync_summary_v1',
+      JSON.stringify({ sessionKey: 'resolve-sync', completedAt: 50_000, newAlbumIdentityKeys: oldKeys }), 50_000
+    )
+    directDb.prepare(`
+      INSERT INTO listening_sessions (
+        generation, session_key, track_id, track_path, title, artist, album,
+        album_identity_key, source_type, duration_seconds, started_at, listened_seconds
+      ) VALUES ('orphan-generation', 'resolve-orphan', NULL, '/missing.flac',
+        'Missing', 'Missing Artist', 'Missing Album', 'orphan-key', 'local', 180, 1, 1)
+    `).run()
+    assert.deepEqual(directDb.prepare('SELECT COUNT(DISTINCT album_identity_key) AS count FROM track_album_identities').get(), { count: 5 })
+  })
+
+  await library.initDatabase()
+  assertCompleteReleases()
+  assert.equal(library.getAppMeta('library_identity_algorithm_version'), '7')
+  assert.deepEqual(metadataSnapshot(), before)
+  assert.deepEqual(library.getLatestLibrarySyncSummary(), {
+    sessionKey: 'resolve-sync', completedAt: 50_000, newAlbumIdentityKeys: expectedKeys
+  })
+  assert.ok(library.getAlbums().every((album) => album.is_new))
+  const stored = withDirectLibraryDb(userDataDir, (directDb) => ({
+    identities: directDb.prepare('SELECT COUNT(*) AS tracks, COUNT(DISTINCT album_identity_key) AS albums FROM track_album_identities').get(),
+    history: directDb.prepare("SELECT session_key, album_identity_key, listened_seconds FROM listening_sessions WHERE session_key LIKE 'resolve-%' ORDER BY session_key").all()
+  }))
+  assert.deepEqual(stored.identities, { tracks: 42, albums: 2 })
+  assert.deepEqual(stored.history, [
+    { session_key: 'resolve-orphan', album_identity_key: 'orphan-key', listened_seconds: 1 },
+    { session_key: 'resolve-session-0', album_identity_key: expectedKeys[0], listened_seconds: 100 },
+    { session_key: 'resolve-session-1', album_identity_key: expectedKeys[1], listened_seconds: 100 }
+  ])
 })
 
 test('library artist queries preserve primary-artist album grouping', async (t) => {

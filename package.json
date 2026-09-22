@@ -13,7 +13,7 @@
     "test:node": "node ./scripts/node/run-tests.cjs --node",
     "test:electron": "node ./scripts/node/run-tests.cjs --electron",
     "test:album-eligibility": "node --experimental-strip-types --experimental-default-type=module --test src/shared/library/albumEligibility.test.ts",
-    "test:album-grouping": "node --experimental-strip-types --experimental-default-type=module --test src/shared/library/albumGrouping.test.ts",
+    "test:album-grouping": "node --experimental-strip-types --test src/shared/library/albumGrouping.test.ts src/shared/library/albumGrouping.regression.test.ts",
     "test:artist-images": "node --experimental-strip-types --experimental-default-type=module --test src/shared/library/artistImages.test.ts",
     "test:library-latest-sync": "node --experimental-strip-types --experimental-default-type=module --test src/main/services/libraryLatestSync.test.ts",
     "test:library-sqlite": "ELECTRON_RUN_AS_NODE=1 electron --experimental-strip-types --loader ./scripts/node/electron-test-loader.mjs --test src/main/services/library.test.ts",

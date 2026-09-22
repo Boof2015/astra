@@ -849,7 +849,7 @@ const PLAYLIST_COVER_HASH_PREFIX = 'plc:'
 const ARTIST_IMAGE_HASH_PREFIX = 'ari:'
 const LATEST_LIBRARY_SYNC_SUMMARY_META_KEY = 'library_latest_sync_summary_v1'
 const LIBRARY_IDENTITY_ALGORITHM_META_KEY = 'library_identity_algorithm_version'
-const LIBRARY_IDENTITY_ALGORITHM_VERSION = '6'
+const LIBRARY_IDENTITY_ALGORITHM_VERSION = '7'
 const LIBRARY_QUERY_METRICS_ENV = 'ASTRA_LIBRARY_QUERY_METRICS'
 
 function libraryDiagnosticNow(): number {
