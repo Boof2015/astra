@@ -96,7 +96,8 @@ void SpectrogramAnalyzer::configure(const SpectrogramConfig& config) {
     if (next.orientation != "vertical") {
         next.orientation = "horizontal";
     }
-    if (next.clarityMode != "classic" && next.clarityMode != "sharp" && next.clarityMode != "sharper") {
+    if (next.clarityMode != "classic" && next.clarityMode != "sharp"
+        && next.clarityMode != "sharper" && next.clarityMode != "reassigned") {
         next.clarityMode = "sharper";
     }
 
@@ -110,6 +111,9 @@ void SpectrogramAnalyzer::configure(const SpectrogramConfig& config) {
         || next.scaleMode != config_.scaleMode
         || next.orientation != config_.orientation;
 
+    const bool modeChanged = next.clarityMode != config_.clarityMode;
+    if (modeChanged && config_.clarityMode == "reassigned") haveLastPhase_ = false;
+    const size_t previousHopSize = resolveHopSize();
     config_ = next;
 
     if (fftChanged) {
@@ -120,6 +124,13 @@ void SpectrogramAnalyzer::configure(const SpectrogramConfig& config) {
 
     if (mappingChanged) {
         rebuildFrequencyMapping();
+    }
+
+    if (config_.clarityMode == "reassigned"
+        && (mappingChanged || modeChanged || previousHopSize != resolveHopSize())) {
+        configurePhaseReassignment();
+        // Phase differences require consecutive frames with the same bin mapping and hop.
+        haveLastPhase_ = false;
     }
 }
 
@@ -362,6 +373,108 @@ void SpectrogramAnalyzer::computeReassignedSpectrum() {
     }
 }
 
+void SpectrogramAnalyzer::configurePhaseReassignment() {
+    const size_t numBins = paddedSize_ / 2;
+    const size_t hopSize = resolveHopSize();
+    expectedPhaseAdvances_.resize(numBins);
+    for (size_t bin = 0; bin < numBins; ++bin) {
+        const double advance = 2.0 * M_PI * static_cast<double>((bin * hopSize) % paddedSize_)
+            / static_cast<double>(paddedSize_);
+        expectedPhaseAdvances_[bin] = static_cast<float>(std::remainder(advance, 2.0 * M_PI));
+    }
+
+    double windowSum = 0.0;
+    double windowPower = 0.0;
+    for (float value : window_) {
+        windowSum += value;
+        windowPower += static_cast<double>(value) * value;
+    }
+    reassignmentMagnitudeScale_ = static_cast<float>(2.0 / windowSum);
+    // Coherent Hann normalization followed by ENBW / zero-padding compensation.
+    // Redistributing all bins then preserves signal power instead of multiplying it.
+    reassignmentPowerScale_ = static_cast<float>(windowSum * windowSum / (paddedSize_ * windowPower));
+
+    const float binWidth = config_.sampleRate / static_cast<float>(paddedSize_);
+    reassignmentFirstBin_ = std::min(numBins, static_cast<size_t>(std::max(1.0f, std::ceil(config_.minFrequency / binWidth))));
+    reassignmentEndBin_ = std::min(numBins, static_cast<size_t>(std::floor(config_.maxFrequency / binWidth)) + 1);
+
+    reassignmentScaleKind_ = config_.scaleMode == "linear" ? 0 : (config_.scaleMode == "mel" ? 1 : 2);
+    const auto transform = [this](float hz) {
+        return reassignmentScaleKind_ == 0 ? hz : (reassignmentScaleKind_ == 1 ? hzToMelSlaney(hz) : std::log(hz));
+    };
+    reassignmentScaleMin_ = transform(config_.minFrequency);
+    reassignmentRowScale_ = static_cast<float>(config_.rowCount - 1)
+        / (transform(config_.maxFrequency) - reassignmentScaleMin_);
+}
+
+void SpectrogramAnalyzer::computePhaseReassignedSpectrum() {
+    std::fill(reassignedPower_.begin(), reassignedPower_.end(), 0.0f);
+    // The first frame establishes phase history; one hop later reassignment is valid.
+    if (!haveLastPhase_) return;
+
+    const float twoPi = static_cast<float>(2.0 * M_PI);
+    const float binWidth = config_.sampleRate / static_cast<float>(paddedSize_);
+    const float phaseToHz = config_.sampleRate / (twoPi * static_cast<float>(resolveHopSize()));
+    const float ampThreshold = std::pow(10.0f, std::min(config_.minDecibels, HEAT_MIN_DB) / 20.0f);
+    const float rowSpan = static_cast<float>(config_.rowCount - 1);
+    const bool vertical = config_.orientation == "vertical";
+
+    for (size_t bin = reassignmentFirstBin_; bin < reassignmentEndBin_; ++bin) {
+        const float mag = magnitudesLinear_[bin];
+        if (!(mag > ampThreshold) || !std::isfinite(mag)) continue;
+        float phaseDelta = phases_[bin] - lastPhases_[bin] - expectedPhaseAdvances_[bin];
+        // Cached expected advances are wrapped already: a single wrap is sufficient.
+        if (phaseDelta > static_cast<float>(M_PI)) phaseDelta -= twoPi;
+        else if (phaseDelta < -static_cast<float>(M_PI)) phaseDelta += twoPi;
+        const float frequency = static_cast<float>(bin) * binWidth + phaseDelta * phaseToHz;
+        if (!std::isfinite(frequency) || frequency < config_.minFrequency || frequency > config_.maxFrequency) continue;
+
+        const float scaledFrequency = reassignmentScaleKind_ == 0 ? frequency
+            : (reassignmentScaleKind_ == 1 ? hzToMelSlaney(frequency) : std::log(frequency));
+        const float position = (scaledFrequency - reassignmentScaleMin_) * reassignmentRowScale_;
+        const float rowF = std::clamp(vertical ? position : rowSpan - position, 0.0f, rowSpan);
+        const size_t row = static_cast<size_t>(rowF);
+        const float fraction = rowF - static_cast<float>(row);
+        const float power = mag * mag * reassignmentPowerScale_;
+        reassignedPower_[row] += power * (1.0f - fraction);
+        if (row + 1 < config_.rowCount) reassignedPower_[row + 1] += power * fraction;
+    }
+}
+
+void SpectrogramAnalyzer::shapePhaseReassignedColumn(std::vector<float>& display, std::vector<float>& heat) {
+    const size_t rowCount = config_.rowCount;
+    for (size_t row = 0; row < rowCount; ++row) {
+        float raw = 0.0f;
+        float heatRaw = 0.0f;
+        if (reassignedPower_[row] > 0.0f) {
+            const float db = 10.0f * std::log10(reassignedPower_[row]);
+            const float tiltedDb = applyDisplayTilt(db, rowCenterFrequencies_[row]) - DISPLAY_GAIN_DB;
+            raw = displayDbToIntensity(tiltedDb);
+            heatRaw = normalizeHeatDb(tiltedDb);
+        }
+        shapedDisplay_[row] = std::pow(raw, 1.1f * config_.contrast);
+        shapedHeat_[row] = std::pow(heatRaw, SPECTROGRAM_HEAT_GAMMA);
+        strokedDisplay_[row] = shapedDisplay_[row];
+        strokedHeat_[row] = shapedHeat_[row];
+    }
+
+    // A faint one-row shoulder keeps subpixel traces legible without broadening peaks.
+    for (size_t row = 0; row < rowCount; ++row) {
+        const float displayShoulder = shapedDisplay_[row] * 0.08f;
+        const float heatShoulder = shapedHeat_[row] * 0.06f;
+        if (row > 0) {
+            strokedDisplay_[row - 1] = std::max(strokedDisplay_[row - 1], displayShoulder);
+            strokedHeat_[row - 1] = std::max(strokedHeat_[row - 1], heatShoulder);
+        }
+        if (row + 1 < rowCount) {
+            strokedDisplay_[row + 1] = std::max(strokedDisplay_[row + 1], displayShoulder);
+            strokedHeat_[row + 1] = std::max(strokedHeat_[row + 1], heatShoulder);
+        }
+    }
+    display.insert(display.end(), strokedDisplay_.begin(), strokedDisplay_.end());
+    heat.insert(heat.end(), strokedHeat_.begin(), strokedHeat_.end());
+}
+
 SpectrogramAnalyzer::ClarityProfile SpectrogramAnalyzer::clarityProfile(const std::string& mode) {
     if (mode == "classic") {
         return {1.4f, 0.0f, 3.0f};
@@ -463,6 +576,21 @@ void SpectrogramAnalyzer::processFrame(std::vector<float>& display, std::vector<
     }
 
     fft_->forward(windowedInput_.data(), fftOutput_.data());
+
+    if (config_.clarityMode == "reassigned") {
+        for (size_t bin = reassignmentFirstBin_; bin < reassignmentEndBin_; ++bin) {
+            const float re = fftOutput_[bin].real();
+            const float im = fftOutput_[bin].imag();
+            magnitudesLinear_[bin] = std::sqrt(re * re + im * im) * reassignmentMagnitudeScale_;
+            phases_[bin] = std::atan2(im, re);
+        }
+        computePhaseReassignedSpectrum();
+        shapePhaseReassignedColumn(display, heat);
+        std::copy(phases_.begin() + reassignmentFirstBin_, phases_.begin() + reassignmentEndBin_,
+            lastPhases_.begin() + reassignmentFirstBin_);
+        haveLastPhase_ = true;
+        return;
+    }
 
     const size_t numBins = paddedSize_ / 2;
     const float scale = 2.0f / static_cast<float>(fftSize_);

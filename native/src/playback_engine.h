@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -230,11 +231,6 @@ struct PlaybackEvent {
     std::string message;
 };
 
-struct VectorscopeSamples {
-    std::vector<float> left;
-    std::vector<float> right;
-};
-
 struct MultichannelSamples {
     std::vector<std::vector<float>> channels;
 };
@@ -341,10 +337,7 @@ public:
     VisualizerTapDemand getVisualizerTapDemand() const;
 
     std::vector<PlaybackEvent> drainEvents();
-    std::vector<float> drainOscilloscopeSamples();
-    std::vector<float> drainSpectrumSamples();
-    VectorscopeSamples drainVectorscopeSamples();
-    MultichannelSamples drainVUMeterSamples();
+    MultichannelSamples drainVisualizerSamples();
 
     size_t renderInto(void* outputBuffer, size_t requestedFrames, bool& streamEnded);
     void onFramesConsumed(size_t frames);
@@ -368,11 +361,13 @@ private:
     bool tryPushEvent(const PlaybackEvent& event);
     void clearPendingEvents();
     void clearTapBuffers();
+    void prepareTapBuffers(uint32_t channels);
     void appendTapSamples(
         const uint8_t* interleavedData,
         size_t frames,
         const TrackFormat& format,
-        const VisualizerTapDemand& demand
+        const VisualizerTapDemand& demand,
+        uint64_t generation
     );
     bool formatsMatch(const TrackFormat& a, const TrackFormat& b) const;
     TrackFormat selectProcessedOutputFormat(const TrackFormat& source, std::string* reason) const;
@@ -412,11 +407,10 @@ private:
     VisualizerTapDemand visualizerTapDemand_ {};
 
     std::vector<PlaybackEvent> pendingEvents_;
-    FloatSampleRingBuffer oscilloscopeTap_;
-    FloatSampleRingBuffer spectrumTap_;
-    FloatSampleRingBuffer vectorscopeLeftTap_;
-    FloatSampleRingBuffer vectorscopeRightTap_;
-    std::vector<FloatSampleRingBuffer> vumeterTaps_;
+    // Storage is prepared on the control thread, never in the audio callback.
+    std::vector<FloatSampleRingBuffer> visualizerTaps_;
+    size_t activeTapChannels_ = 0;
+    std::atomic<uint64_t> tapGeneration_ {0};
 };
 
 std::unique_ptr<AudioOutputSink> CreatePlatformAudioSink();

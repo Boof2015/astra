@@ -1,9 +1,14 @@
-import type { VectorscopeMode } from '../../stores/visualizerSettingsStore'
+import type { VectorscopeMode } from './Vectorscope'
 import { multiplyColorAlpha } from '../../utils/color'
+import {
+  formatVectorscopeReferenceDbfs,
+  normalizeVectorscopeZoomDb,
+  vectorscopeZoomDbToGain,
+} from '../../../types/vectorscope'
 
-const INV_SQRT2 = 1 / Math.sqrt(2)
-const COS45 = Math.SQRT2 / 2 // 0.7071...
-const OVERFLOW_BOUNDARY_STEP = 0.25
+const INV_SQRT2 = Math.SQRT1_2
+const COS45 = Math.SQRT1_2
+const PHASE_RISK_FILL_ALPHA = 0.08
 
 export interface VectorscopeLayout {
   centerX: number
@@ -11,368 +16,391 @@ export interface VectorscopeLayout {
   radius: number
 }
 
+export interface VectorscopePoint {
+  dx: number
+  dy: number
+}
+
 /**
- * Compute the center point and radius for a vectorscope mode.
- *
- * Unipolar modes place the center at the bottom of the canvas so the
- * semicircle/triangle fills the full vertical space.
- * Bipolar and Lissajous center in the canvas.
+ * Compute the center point and calibrated outer-reference radius for a mode.
+ * Folded modes only need the positive-Mid half of their geometry.
  */
 export function getVectorscopeLayout(
   width: number,
   height: number,
-  mode: VectorscopeMode
+  mode: VectorscopeMode,
 ): VectorscopeLayout {
   const centerX = width / 2
-  const isUnipolar = mode === 'polar-unipolar' || mode === 'linear-unipolar'
+  const isFolded = mode === 'polar-unipolar' || mode === 'linear-unipolar'
 
-  if (isUnipolar) {
-    // Center near the bottom; radius fills upward
+  if (isFolded) {
     const margin = height * 0.04
-    const centerY = height - margin
-    const radius = Math.min(width / 2, height - margin) * 0.88
+    const availableHeight = height - margin
+    const halfWidth = width / 2
+    const widthLimited = halfWidth < availableHeight
+    const radius = Math.min(halfWidth, availableHeight) * 0.88
+    const centerY = widthLimited
+      ? (height + radius) / 2
+      : availableHeight
     return { centerX, centerY, radius }
   }
 
-  // Bipolar / Lissajous: centered
   const radius = Math.min(width, height) / 2 * 0.9
   return { centerX, centerY: height / 2, radius }
 }
 
+/** Opposite-sign instantaneous channel samples are Side-dominant. */
+export function isVectorscopePhaseRisk(left: number, right: number): boolean {
+  return Number.isFinite(left) && Number.isFinite(right) && left * right < 0
+}
+
 /**
- * Transform raw L/R sample values into display coordinates based on mode.
- * Returns null for points filtered out by unipolar modes (mid < 0).
+ * Project raw L/R samples into normalized coordinates.
  *
- * dx/dy are in normalized space: positive dx = right, positive dy = up.
- * Caller maps to canvas: canvasX = centerX + dx * scale, canvasY = centerY - dy * scale.
- *
- * Polar modes apply sqrt amplitude scaling so points follow the circular
- * contours instead of forming diamond/linear patterns.
+ * XY uses raw channel amplitude. Linear modes use peak-normalized M/S, whose
+ * exact legal per-channel boundary is |Mid| + |Side| = 1. Polar modes retain
+ * Prism's classic amplitude-compressed radial presentation so quiet stereo
+ * detail remains readable instead of collapsing toward the origin. Folded
+ * modes rotate negative-Mid points through the origin instead of dropping
+ * half of the waveform.
  */
 export function transformPoint(
-  L: number,
-  R: number,
-  mode: VectorscopeMode
-): { dx: number; dy: number } | null {
+  left: number,
+  right: number,
+  mode: VectorscopeMode,
+  zoomDb: number = 0,
+): VectorscopePoint {
+  const point = { dx: 0, dy: 0 }
+  transformPointInto(left, right, mode, vectorscopeZoomDbToGain(zoomDb), point)
+  return point
+}
+
+/** Project into reusable storage with a gain already calculated for this zoom. */
+export function transformPointInto(
+  left: number,
+  right: number,
+  mode: VectorscopeMode,
+  gain: number,
+  point: VectorscopePoint,
+): void {
   if (mode === 'lissajous') {
-    return { dx: R, dy: L }
+    point.dx = right * gain
+    point.dy = left * gain
+    return
   }
 
-  // M/S transform (45° rotation), normalized to preserve amplitude range
-  const mid = (L + R) * INV_SQRT2
-  const side = (R - L) * INV_SQRT2
-
-  // Unipolar: filter out negative mid (anti-phase / lower half)
-  const isUnipolar = mode === 'polar-unipolar' || mode === 'linear-unipolar'
-  if (isUnipolar && mid < 0) {
-    return null
-  }
-
+  const isFolded = mode === 'polar-unipolar' || mode === 'linear-unipolar'
   const isPolar = mode === 'polar-unipolar' || mode === 'polar-bipolar'
   if (isPolar) {
-    // Amplitude-compressed radial scaling: pushes points toward circular contours.
-    // Power < 1 compresses dynamic range — lower = more circular.
-    // 0.5 = sqrt (mild), 0.33 = cube root (moderate), 0.25 = fourth root (strong)
-    const ampSq = mid * mid + side * side
-    if (ampSq < 1e-12) {
-      return { dx: 0, dy: 0 }
+    // Preserve the original Polar presentation: an orthonormal M/S rotation
+    // followed by strong radial expansion. Apply zoom before the curve so the
+    // unit circle remains the selected radial reference.
+    let mid = (left + right) * INV_SQRT2
+    let side = (right - left) * INV_SQRT2
+    if (isFolded && mid < 0) {
+      mid = -mid
+      side = -side
     }
-    const amp = Math.sqrt(ampSq)
-    const scaledAmp = Math.pow(amp, 0.35)
-    const factor = scaledAmp / amp
-    return { dx: side * factor, dy: mid * factor }
+
+    const amplitude = Math.hypot(mid, side)
+    if (amplitude < 1e-12) {
+      point.dx = 0
+      point.dy = 0
+      return
+    }
+
+    const shapedAmplitude = Math.pow(amplitude * gain, 0.35)
+    point.dx = side / amplitude * shapedAmplitude
+    point.dy = mid / amplitude * shapedAmplitude
+    return
   }
 
-  // Linear modes: direct M/S Cartesian mapping
-  return { dx: side, dy: mid }
+  let mid = (left + right) / 2
+  let side = (right - left) / 2
+  if (isFolded && mid < 0) {
+    mid = -mid
+    side = -side
+  }
+  point.dx = side * gain
+  point.dy = mid * gain
 }
 
-function getOverflowBoundaryLayout(
-  width: number,
-  height: number,
+function fillPhaseRiskRegions(
+  ctx: CanvasRenderingContext2D,
+  layout: VectorscopeLayout,
   mode: VectorscopeMode,
-): VectorscopeLayout | null {
+  phaseRiskColor: string,
+): void {
+  const { centerX, centerY, radius } = layout
+  ctx.fillStyle = multiplyColorAlpha(phaseRiskColor, PHASE_RISK_FILL_ALPHA)
+
   if (mode === 'lissajous') {
-    return null
+    ctx.fillRect(centerX - radius, centerY - radius, radius, radius)
+    ctx.fillRect(centerX, centerY, radius, radius)
+    return
   }
 
-  const layout = getVectorscopeLayout(width, height, mode)
-  const maxXRadius = Math.min(layout.centerX, width - layout.centerX)
-  const maxYRadius = mode === 'polar-unipolar' || mode === 'linear-unipolar'
-    ? layout.centerY
-    : Math.min(layout.centerY, height - layout.centerY)
-  const maxRadius = Math.min(maxXRadius, maxYRadius) * 0.98
-  // Continue the existing quarter-step grid spacing, then clamp to the
-  // drawable area if the next full step would fall off-canvas.
-  const overflowRadius = Math.min(maxRadius, layout.radius * (1 + OVERFLOW_BOUNDARY_STEP))
+  if (mode === 'polar-unipolar') {
+    ctx.beginPath()
+    ctx.moveTo(centerX, centerY)
+    ctx.arc(centerX, centerY, radius, Math.PI, Math.PI * 1.25, false)
+    ctx.closePath()
+    ctx.fill()
 
-  if (overflowRadius <= layout.radius + 1) {
-    return null
+    ctx.beginPath()
+    ctx.moveTo(centerX, centerY)
+    ctx.arc(centerX, centerY, radius, Math.PI * 1.75, Math.PI * 2, false)
+    ctx.closePath()
+    ctx.fill()
+    return
   }
 
-  return { ...layout, radius: overflowRadius }
+  if (mode === 'polar-bipolar') {
+    for (const [startAngle, endAngle] of [
+      [-Math.PI / 4, Math.PI / 4],
+      [Math.PI * 3 / 4, Math.PI * 5 / 4],
+    ] as const) {
+      ctx.beginPath()
+      ctx.moveTo(centerX, centerY)
+      ctx.arc(centerX, centerY, radius, startAngle, endAngle, false)
+      ctx.closePath()
+      ctx.fill()
+    }
+    return
+  }
+
+  const halfRadius = radius / 2
+  const sidePolygons = mode === 'linear-unipolar'
+    ? [
+        [[centerX, centerY], [centerX - radius, centerY], [centerX - halfRadius, centerY - halfRadius]],
+        [[centerX, centerY], [centerX + halfRadius, centerY - halfRadius], [centerX + radius, centerY]],
+      ]
+    : [
+        [[centerX, centerY], [centerX - halfRadius, centerY - halfRadius], [centerX - radius, centerY], [centerX - halfRadius, centerY + halfRadius]],
+        [[centerX, centerY], [centerX + halfRadius, centerY + halfRadius], [centerX + radius, centerY], [centerX + halfRadius, centerY - halfRadius]],
+      ]
+
+  for (const polygon of sidePolygons) {
+    ctx.beginPath()
+    ctx.moveTo(polygon[0][0], polygon[0][1])
+    for (let index = 1; index < polygon.length; index += 1) {
+      ctx.lineTo(polygon[index][0], polygon[index][1])
+    }
+    ctx.closePath()
+    ctx.fill()
+  }
 }
 
-/**
- * Draw the Lissajous grid: crosshairs + box boundary.
- */
+function drawReferenceLabel(
+  ctx: CanvasRenderingContext2D,
+  layout: VectorscopeLayout,
+  labelColor: string,
+  zoomDb: number,
+  dpr: number,
+  radial: boolean = false,
+): void {
+  const { centerX, centerY, radius } = layout
+  ctx.fillStyle = labelColor
+  ctx.font = `${9 * dpr}px monospace`
+  ctx.textAlign = 'right'
+  ctx.textBaseline = 'bottom'
+  const referenceLabel = formatVectorscopeReferenceDbfs(zoomDb)
+  ctx.fillText(
+    radial ? referenceLabel.replace(' dBFS', ' dB radial') : referenceLabel,
+    centerX + radius - 4 * dpr,
+    centerY + radius - 4 * dpr,
+  )
+}
+
 export function drawLissajousGrid(
   ctx: CanvasRenderingContext2D,
   layout: VectorscopeLayout,
   gridMajorColor: string,
   gridMinorColor: string,
   labelColor: string,
-  dpr: number
+  phaseRiskColor: string,
+  zoomDb: number,
+  dpr: number,
 ): void {
   const { centerX, centerY, radius } = layout
+  fillPhaseRiskRegions(ctx, layout, 'lissajous', phaseRiskColor)
 
   ctx.strokeStyle = gridMajorColor
   ctx.lineWidth = dpr
+  ctx.strokeRect(centerX - radius, centerY - radius, radius * 2, radius * 2)
 
-  // Outer box
-  ctx.strokeRect(
-    centerX - radius,
-    centerY - radius,
-    radius * 2,
-    radius * 2
-  )
-
-  // Vertical crosshair
   ctx.beginPath()
   ctx.moveTo(centerX, centerY - radius)
   ctx.lineTo(centerX, centerY + radius)
-  ctx.stroke()
-
-  // Horizontal crosshair
-  ctx.beginPath()
   ctx.moveTo(centerX - radius, centerY)
   ctx.lineTo(centerX + radius, centerY)
   ctx.stroke()
 
-  // Diagonal guides (dimmer)
   ctx.strokeStyle = gridMinorColor || multiplyColorAlpha(gridMajorColor, 0.5)
-
   ctx.beginPath()
   ctx.moveTo(centerX - radius, centerY - radius)
   ctx.lineTo(centerX + radius, centerY + radius)
-  ctx.stroke()
-
-  ctx.beginPath()
   ctx.moveTo(centerX + radius, centerY - radius)
   ctx.lineTo(centerX - radius, centerY + radius)
   ctx.stroke()
 
-  // Labels
   ctx.fillStyle = labelColor
   ctx.font = `${10 * dpr}px monospace`
+  ctx.textBaseline = 'middle'
   ctx.textAlign = 'center'
-  ctx.fillText('L', centerX, centerY - radius - 6 * dpr)
-  ctx.fillText('R', centerX + radius + 12 * dpr, centerY + 4 * dpr)
+  ctx.fillText('L', centerX, centerY - radius + 9 * dpr)
+  ctx.fillText('R', centerX + radius - 9 * dpr, centerY)
+  ctx.fillText('M', centerX + radius * 0.72, centerY - radius * 0.72)
+  ctx.fillText('S', centerX - radius * 0.72, centerY - radius * 0.72)
+  drawReferenceLabel(ctx, layout, labelColor, zoomDb, dpr)
 }
 
-function drawDashedOuterBoundary(
+function drawChannelGuides(
   ctx: CanvasRenderingContext2D,
   layout: VectorscopeLayout,
-  mode: VectorscopeMode,
-  color: string,
+  unipolar: boolean,
+): void {
+  const { centerX, centerY, radius } = layout
+  if (unipolar) {
+    ctx.beginPath()
+    ctx.moveTo(centerX, centerY)
+    ctx.lineTo(centerX - radius * COS45, centerY - radius * COS45)
+    ctx.moveTo(centerX, centerY)
+    ctx.lineTo(centerX + radius * COS45, centerY - radius * COS45)
+    ctx.stroke()
+    return
+  }
+
+  ctx.beginPath()
+  ctx.moveTo(centerX - radius * COS45, centerY - radius * COS45)
+  ctx.lineTo(centerX + radius * COS45, centerY + radius * COS45)
+  ctx.moveTo(centerX + radius * COS45, centerY - radius * COS45)
+  ctx.lineTo(centerX - radius * COS45, centerY + radius * COS45)
+  ctx.stroke()
+}
+
+function drawMsLabels(
+  ctx: CanvasRenderingContext2D,
+  layout: VectorscopeLayout,
+  labelColor: string,
+  unipolar: boolean,
+  channelGuideCoordinate: number,
   dpr: number,
 ): void {
   const { centerX, centerY, radius } = layout
-  const dashLength = Math.max(2, Math.round(4 * dpr))
-  const gapLength = Math.max(2, Math.round(3 * dpr))
-
-  ctx.strokeStyle = color
-  ctx.lineWidth = dpr
-  ctx.setLineDash([dashLength, gapLength])
-
-  switch (mode) {
-    case 'polar-unipolar':
-      ctx.beginPath()
-      ctx.arc(centerX, centerY, radius, Math.PI, 0, false)
-      ctx.stroke()
-      break
-    case 'polar-bipolar':
-      ctx.beginPath()
-      ctx.arc(centerX, centerY, radius, 0, Math.PI * 2)
-      ctx.stroke()
-      break
-    case 'linear-unipolar':
-      ctx.beginPath()
-      ctx.moveTo(centerX, centerY - radius)
-      ctx.lineTo(centerX - radius, centerY)
-      ctx.lineTo(centerX + radius, centerY)
-      ctx.closePath()
-      ctx.stroke()
-      break
-    case 'linear-bipolar':
-      ctx.beginPath()
-      ctx.moveTo(centerX, centerY - radius)
-      ctx.lineTo(centerX + radius, centerY)
-      ctx.lineTo(centerX, centerY + radius)
-      ctx.lineTo(centerX - radius, centerY)
-      ctx.closePath()
-      ctx.stroke()
-      break
-    default:
-      break
+  ctx.fillStyle = labelColor
+  ctx.font = `${10 * dpr}px monospace`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText('M+', centerX, centerY - radius + 9 * dpr)
+  ctx.fillText('S−', centerX - radius + 16 * dpr, centerY)
+  ctx.fillText('S+', centerX + radius - 16 * dpr, centerY)
+  ctx.fillText('L', centerX - radius * channelGuideCoordinate - 9 * dpr, centerY - radius * channelGuideCoordinate - 4 * dpr)
+  ctx.fillText('R', centerX + radius * channelGuideCoordinate + 9 * dpr, centerY - radius * channelGuideCoordinate - 4 * dpr)
+  if (!unipolar) {
+    ctx.fillText('M−', centerX, centerY + radius - 9 * dpr)
   }
-
-  ctx.setLineDash([])
 }
 
-/**
- * Draw the Polar (Scaled) grid: concentric circles + crosshairs.
- */
 export function drawPolarGrid(
   ctx: CanvasRenderingContext2D,
   layout: VectorscopeLayout,
   gridMajorColor: string,
   gridMinorColor: string,
   labelColor: string,
+  phaseRiskColor: string,
   unipolar: boolean,
-  dpr: number
+  zoomDb: number,
+  dpr: number,
 ): void {
   const { centerX, centerY, radius } = layout
+  fillPhaseRiskRegions(ctx, layout, unipolar ? 'polar-unipolar' : 'polar-bipolar', phaseRiskColor)
 
-  ctx.strokeStyle = gridMajorColor
-  ctx.lineWidth = dpr
-
-  // Concentric circles (or semicircles for unipolar)
-  const rings = [0.25, 0.5, 0.75, 1.0]
-  for (const scale of rings) {
+  for (const ringScale of [0.25, 0.5, 0.75, 1]) {
+    ctx.strokeStyle = ringScale === 1 ? gridMajorColor : gridMinorColor
+    ctx.lineWidth = dpr
     ctx.beginPath()
-    if (unipolar) {
-      ctx.arc(centerX, centerY, radius * scale, Math.PI, 0, false)
-    } else {
-      ctx.arc(centerX, centerY, radius * scale, 0, Math.PI * 2)
-    }
+    ctx.arc(centerX, centerY, radius * ringScale, unipolar ? Math.PI : 0, unipolar ? 0 : Math.PI * 2, false)
     ctx.stroke()
   }
 
-  // Vertical crosshair (mono axis)
+  ctx.strokeStyle = gridMinorColor
   ctx.beginPath()
   ctx.moveTo(centerX, centerY - radius)
-  if (unipolar) {
-    ctx.lineTo(centerX, centerY)
-  } else {
-    ctx.lineTo(centerX, centerY + radius)
-  }
-  ctx.stroke()
-
-  // Horizontal crosshair (side axis)
-  ctx.beginPath()
+  ctx.lineTo(centerX, unipolar ? centerY : centerY + radius)
   ctx.moveTo(centerX - radius, centerY)
   ctx.lineTo(centerX + radius, centerY)
   ctx.stroke()
 
-  // Diagonal guides (L and R channel axes) — dimmer
-  ctx.strokeStyle = gridMinorColor || multiplyColorAlpha(gridMajorColor, 0.5)
-
-  if (unipolar) {
-    ctx.beginPath()
-    ctx.moveTo(centerX, centerY)
-    ctx.lineTo(centerX - radius * COS45, centerY - radius * COS45)
-    ctx.stroke()
-
-    ctx.beginPath()
-    ctx.moveTo(centerX, centerY)
-    ctx.lineTo(centerX + radius * COS45, centerY - radius * COS45)
-    ctx.stroke()
-  } else {
-    ctx.beginPath()
-    ctx.moveTo(centerX - radius * COS45, centerY - radius * COS45)
-    ctx.lineTo(centerX + radius * COS45, centerY + radius * COS45)
-    ctx.stroke()
-
-    ctx.beginPath()
-    ctx.moveTo(centerX + radius * COS45, centerY - radius * COS45)
-    ctx.lineTo(centerX - radius * COS45, centerY + radius * COS45)
-    ctx.stroke()
-  }
-
-  // Labels
-  ctx.fillStyle = labelColor
-  ctx.font = `${10 * dpr}px monospace`
-  ctx.textAlign = 'center'
-
-  ctx.fillText('+', centerX, centerY - radius - 6 * dpr)
-  ctx.fillText('L', centerX - radius * COS45 - 10 * dpr, centerY - radius * COS45 - 4 * dpr)
-  ctx.fillText('R', centerX + radius * COS45 + 10 * dpr, centerY - radius * COS45 - 4 * dpr)
-
-  if (!unipolar) {
-    ctx.fillText('-', centerX, centerY + radius + 14 * dpr)
-  }
+  ctx.strokeStyle = gridMajorColor
+  drawChannelGuides(ctx, layout, unipolar)
+  drawMsLabels(ctx, layout, labelColor, unipolar, COS45, dpr)
+  drawReferenceLabel(ctx, layout, labelColor, zoomDb, dpr, true)
 }
 
-/**
- * Draw the Linear grid: diamond/triangle guides.
- */
+function drawLinearChannelGuides(
+  ctx: CanvasRenderingContext2D,
+  layout: VectorscopeLayout,
+  unipolar: boolean,
+): void {
+  const { centerX, centerY, radius } = layout
+  const halfRadius = radius / 2
+  ctx.beginPath()
+  if (unipolar) {
+    ctx.moveTo(centerX, centerY)
+    ctx.lineTo(centerX - halfRadius, centerY - halfRadius)
+    ctx.moveTo(centerX, centerY)
+    ctx.lineTo(centerX + halfRadius, centerY - halfRadius)
+  } else {
+    ctx.moveTo(centerX - halfRadius, centerY - halfRadius)
+    ctx.lineTo(centerX + halfRadius, centerY + halfRadius)
+    ctx.moveTo(centerX + halfRadius, centerY - halfRadius)
+    ctx.lineTo(centerX - halfRadius, centerY + halfRadius)
+  }
+  ctx.stroke()
+}
+
 export function drawLinearGrid(
   ctx: CanvasRenderingContext2D,
   layout: VectorscopeLayout,
   gridMajorColor: string,
-  _gridMinorColor: string,
+  gridMinorColor: string,
   labelColor: string,
+  phaseRiskColor: string,
   unipolar: boolean,
-  dpr: number
+  zoomDb: number,
+  dpr: number,
 ): void {
   const { centerX, centerY, radius } = layout
+  fillPhaseRiskRegions(ctx, layout, unipolar ? 'linear-unipolar' : 'linear-bipolar', phaseRiskColor)
 
-  ctx.strokeStyle = gridMajorColor
-  ctx.lineWidth = dpr
-
-  const scales = [0.25, 0.5, 0.75, 1.0]
-  for (const scale of scales) {
-    const r = radius * scale
+  for (const ringScale of [0.25, 0.5, 0.75, 1]) {
+    const ringRadius = radius * ringScale
+    ctx.strokeStyle = ringScale === 1 ? gridMajorColor : gridMinorColor
+    ctx.lineWidth = dpr
     ctx.beginPath()
-    if (unipolar) {
-      ctx.moveTo(centerX, centerY - r)          // top (mono)
-      ctx.lineTo(centerX - r, centerY)           // left (L)
-      ctx.lineTo(centerX + r, centerY)           // right (R)
-      ctx.closePath()
-    } else {
-      ctx.moveTo(centerX, centerY - r)          // top (mono)
-      ctx.lineTo(centerX + r, centerY)           // right (R)
-      ctx.lineTo(centerX, centerY + r)           // bottom (anti-phase)
-      ctx.lineTo(centerX - r, centerY)           // left (L)
-      ctx.closePath()
-    }
+    ctx.moveTo(centerX, centerY - ringRadius)
+    ctx.lineTo(centerX + ringRadius, centerY)
+    if (!unipolar) ctx.lineTo(centerX, centerY + ringRadius)
+    ctx.lineTo(centerX - ringRadius, centerY)
+    ctx.closePath()
     ctx.stroke()
   }
 
-  // Vertical crosshair
+  ctx.strokeStyle = gridMinorColor
   ctx.beginPath()
   ctx.moveTo(centerX, centerY - radius)
-  if (unipolar) {
-    ctx.lineTo(centerX, centerY)
-  } else {
-    ctx.lineTo(centerX, centerY + radius)
-  }
-  ctx.stroke()
-
-  // Horizontal crosshair
-  ctx.beginPath()
+  ctx.lineTo(centerX, unipolar ? centerY : centerY + radius)
   ctx.moveTo(centerX - radius, centerY)
   ctx.lineTo(centerX + radius, centerY)
   ctx.stroke()
 
-  // Labels
-  ctx.fillStyle = labelColor
-  ctx.font = `${10 * dpr}px monospace`
-  ctx.textAlign = 'center'
-
-  ctx.fillText('+', centerX, centerY - radius - 6 * dpr)
-  ctx.fillText('L', centerX - radius - 12 * dpr, centerY + 4 * dpr)
-  ctx.fillText('R', centerX + radius + 12 * dpr, centerY + 4 * dpr)
-
-  if (!unipolar) {
-    ctx.fillText('-', centerX, centerY + radius + 14 * dpr)
-  }
+  ctx.strokeStyle = gridMajorColor
+  drawLinearChannelGuides(ctx, layout, unipolar)
+  drawMsLabels(ctx, layout, labelColor, unipolar, 0.5, dpr)
+  drawReferenceLabel(ctx, layout, labelColor, zoomDb, dpr)
 }
 
-/**
- * Draw the appropriate grid for a given vectorscope mode.
- */
 export function drawVectorscopeGridForMode(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -381,31 +409,24 @@ export function drawVectorscopeGridForMode(
   gridMinorColor: string,
   labelColor: string,
   mode: VectorscopeMode,
-  dpr: number = 1
+  phaseRiskColor: string = '#8bafbd',
+  zoomDb: number = 0,
+  dpr: number = 1,
 ): void {
   const layout = getVectorscopeLayout(width, height, mode)
-  const overflowLayout = getOverflowBoundaryLayout(width, height, mode)
-  const outerBoundaryColor = multiplyColorAlpha(gridMajorColor, 1.25)
+  const normalizedZoomDb = normalizeVectorscopeZoomDb(zoomDb)
 
   switch (mode) {
     case 'lissajous':
-      drawLissajousGrid(ctx, layout, gridMajorColor, gridMinorColor, labelColor, dpr)
+      drawLissajousGrid(ctx, layout, gridMajorColor, gridMinorColor, labelColor, phaseRiskColor, normalizedZoomDb, dpr)
       break
     case 'polar-unipolar':
-      drawPolarGrid(ctx, layout, gridMajorColor, gridMinorColor, labelColor, true, dpr)
-      break
     case 'polar-bipolar':
-      drawPolarGrid(ctx, layout, gridMajorColor, gridMinorColor, labelColor, false, dpr)
+      drawPolarGrid(ctx, layout, gridMajorColor, gridMinorColor, labelColor, phaseRiskColor, mode === 'polar-unipolar', normalizedZoomDb, dpr)
       break
     case 'linear-unipolar':
-      drawLinearGrid(ctx, layout, gridMajorColor, gridMinorColor, labelColor, true, dpr)
-      break
     case 'linear-bipolar':
-      drawLinearGrid(ctx, layout, gridMajorColor, gridMinorColor, labelColor, false, dpr)
+      drawLinearGrid(ctx, layout, gridMajorColor, gridMinorColor, labelColor, phaseRiskColor, mode === 'linear-unipolar', normalizedZoomDb, dpr)
       break
-  }
-
-  if (overflowLayout) {
-    drawDashedOuterBoundary(ctx, overflowLayout, mode, outerBoundaryColor, dpr)
   }
 }

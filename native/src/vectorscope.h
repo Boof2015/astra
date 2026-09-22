@@ -1,6 +1,5 @@
 #pragma once
 
-#include "dsp_utils.h"
 #include "multiband.h"
 #include <vector>
 #include <cstddef>
@@ -52,7 +51,7 @@ private:
     size_t writePos_;
     size_t validSamples_;
 
-    // Circular buffers for filtered L/R
+    // Circular buffers for full-band L/R
     std::vector<float> leftBuffer_;
     std::vector<float> rightBuffer_;
     std::vector<float> lowLeftBuffer_;
@@ -62,11 +61,6 @@ private:
     std::vector<float> highLeftBuffer_;
     std::vector<float> highRightBuffer_;
 
-    // Cascaded lowpass filters (4th order Butterworth at 8kHz per channel)
-    DSP::BiquadFilter leftLowpass1_;
-    DSP::BiquadFilter leftLowpass2_;
-    DSP::BiquadFilter rightLowpass1_;
-    DSP::BiquadFilter rightLowpass2_;
     MultibandSplitter multibandSplitter_;
     size_t multibandWritePos_;
     size_t multibandValidSamples_;

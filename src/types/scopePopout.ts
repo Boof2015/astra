@@ -1,3 +1,4 @@
+import type { FrequencyScaleMode, FrequencyRangeMode } from './frequencyScale'
 import type { MultichannelAudioChunk } from './audioAnalysis'
 import type { LUFSMeterMode } from './lufsmeter'
 import type { SpectrumDisplayMode, SpectrumHeatPalette } from './spectrum'
@@ -48,6 +49,8 @@ export interface ScopePopoutSpectrumChunk extends ScopePopoutChunkBase {
   spectrumTiltDbPerOctave: number
   spectrumHeatmap: boolean
   spectrumHeatmapTiltDbPerOctave: number
+  spectrumScaleMode: FrequencyScaleMode
+  spectrumRangeMode: FrequencyRangeMode
   spectrumSmoothing: number
   spectrumHeatmapSmoothing: number
   spectrumBarDensity: number
@@ -72,6 +75,8 @@ export interface ScopePopoutVectorscopeChunk extends ScopePopoutChunkBase {
     right: Float32Array
   }>
   vectorscopeMode: string
+  vectorscopePhaseRiskColor: string
+  vectorscopeZoomDb: number
   vectorscopeMultiband: boolean
 }
 
@@ -81,6 +86,7 @@ export interface ScopePopoutSpectrogramChunk extends ScopePopoutChunkBase {
   fftSize: number
   spectrogramScrollSpeed: number
   spectrogramClarityMode: SpectrogramClarityMode
+  spectrogramRangeMode: FrequencyRangeMode
   spectrogramScaleMode: SpectrogramScaleMode
   spectrogramTiltDbPerOctave: number
   spectrogramContrast: number

@@ -23,8 +23,7 @@ import type {
   NativeAudioTrackGain,
   NativeAudioTrackMetadata,
   NativeAudioVisualizerTapDemand,
-  NativeAudioVUMeterChunk,
-  NativeAudioVectorscopeChunk
+  NativeAudioVisualizerChunk
 } from '../types/nativeAudio'
 import { createBitPerfectFormatError } from '../shared/audio/bitPerfectFormatError'
 
@@ -61,10 +60,7 @@ export interface NativeAudioAddonPlayback {
   getPlaybackSnapshot(): NativeAudioPlaybackSnapshot
   setVisualizerTapDemand(demand: NativeAudioVisualizerTapDemand): void
   drainEvents(): NativeAudioEvent[]
-  flushOscilloscopeSamples(): Float32Array | null
-  flushSpectrumSamples(): Float32Array | null
-  flushVectorscopeSamples(): { left: Float32Array; right: Float32Array } | null
-  flushVUMeterSamples(): NativeAudioVUMeterChunk | null
+  flushVisualizerSamples(): NativeAudioVisualizerChunk | null
 }
 
 export interface NativeAudioAddonModule {
@@ -92,10 +88,7 @@ interface NativeAudioControllerApi {
   getNativeAudioDiagnosticReport: () => Promise<NativeAudioDiagnosticReport>
   getBufferMemoryStats: () => Promise<AudioBufferMemoryStats>
   setVisualizerTapDemand: (demand: NativeAudioVisualizerTapDemand) => Promise<void>
-  flushOscilloscopeChunks: () => Float32Array[]
-  flushSpectrumChunks: () => Float32Array[]
-  flushVectorscopeChunks: () => NativeAudioVectorscopeChunk[]
-  flushVUMeterChunks: () => NativeAudioVUMeterChunk[]
+  flushVisualizerChunks: () => NativeAudioVisualizerChunk[]
   onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
 }
 
@@ -1610,28 +1603,10 @@ export function createNativeAudioController(
       })
     },
 
-    flushOscilloscopeChunks: () => {
+    flushVisualizerChunks: () => {
       if (!playback) return []
-      const samples = playback.flushOscilloscopeSamples()
-      return samples && samples.length > 0 ? [samples] : []
-    },
-
-    flushSpectrumChunks: () => {
-      if (!playback) return []
-      const samples = playback.flushSpectrumSamples()
-      return samples && samples.length > 0 ? [samples] : []
-    },
-
-    flushVectorscopeChunks: () => {
-      if (!playback) return []
-      const samples = playback.flushVectorscopeSamples()
-      return samples && samples.left.length > 0 && samples.right.length > 0 ? [samples] : []
-    },
-
-    flushVUMeterChunks: () => {
-      if (!playback) return []
-      const samples = playback.flushVUMeterSamples()
-      return samples && samples.channels.some((channel) => channel.length > 0) ? [samples] : []
+      const samples = playback.flushVisualizerSamples()
+      return samples && (samples.channels[0]?.length ?? 0) > 0 ? [samples] : []
     },
 
     onEvent: (callback) => {

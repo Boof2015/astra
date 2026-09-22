@@ -133,6 +133,7 @@ export interface SpectrumNativeFrame {
 }
 
 export interface SpectrumBarNativeConfig {
+  scaleMode?: 'log' | 'mel' | 'linear';
   barCount: number;
   minFrequency: number;
   maxFrequency: number;

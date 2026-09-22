@@ -8,6 +8,7 @@ test('vectorscope labels use their dedicated color without brightening grid line
   let fillStyle = ''
   let strokeStyle = ''
   const context = {
+    fillRect: () => undefined,
     beginPath: () => undefined,
     fillText: (text: string) => filledTexts.push({ text, style: fillStyle }),
     lineTo: () => undefined,
@@ -35,12 +36,17 @@ test('vectorscope labels use their dedicated color without brightening grid line
     gridMinorColor,
     labelColor,
     'lissajous',
+    '#ffbf00',
+    6,
     1,
   )
 
   assert.deepEqual(filledTexts, [
     { text: 'L', style: labelColor },
     { text: 'R', style: labelColor },
+    { text: 'M', style: labelColor },
+    { text: 'S', style: labelColor },
+    { text: '-6 dBFS', style: labelColor },
   ])
   assert.ok(strokeStyles.includes(gridMajorColor))
   assert.ok(strokeStyles.includes(gridMinorColor))

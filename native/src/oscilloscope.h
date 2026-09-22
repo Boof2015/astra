@@ -36,6 +36,10 @@ public:
     // Get current write position
     size_t getWritePos() const { return writePos_; }
 
+    // Latest unsmoothed detector result. The stable detectedPitch returned by
+    // process() remains the value used for pitch-locked triggering.
+    float getLatestDetectedPitch() const { return latestDetectedPitch_; }
+
     // Get samples from circular buffer (for rendering)
     void getSamples(float* output, size_t startPos, size_t count) const;
 
@@ -75,6 +79,7 @@ private:
 
     float lastTrigger_;
     float smoothedPitch_;
+    float latestDetectedPitch_;
     int pitchSamplesProcessed_;  // Track samples for adaptive smoothing
 
     // Internal helpers

@@ -12,6 +12,7 @@ Oscilloscope::Oscilloscope()
     , lastFilterPitch_(200.0f)
     , lastTrigger_(0)
     , smoothedPitch_(200.0f)
+    , latestDetectedPitch_(0.0f)
     , pitchSamplesProcessed_(0) {
 
     // Initialize circular buffers
@@ -144,6 +145,10 @@ OscilloscopeResult Oscilloscope::process() {
     result.detectedPitch = smoothedPitch_;
 
     if (!pitchLock_) {
+        const size_t samples = static_cast<size_t>(displaySamples_);
+        result.triggerIndex = static_cast<float>(
+            (writePos_ + OSCILLOSCOPE_BUFFER_SIZE - samples) %
+            OSCILLOSCOPE_BUFFER_SIZE);
         return result;
     }
 
@@ -172,6 +177,7 @@ OscilloscopeResult Oscilloscope::process() {
 
     float newPitch = DSP::detectPitchFFT(recentSamples.data(), 2048, sampleRate_, 40.0f, 1000.0f);
     if (newPitch > 0.0f) {
+        latestDetectedPitch_ = newPitch;
         pitchSamplesProcessed_++;
 
         // Adaptive smoothing: fast convergence initially, then conservative
@@ -307,6 +313,7 @@ void Oscilloscope::reset() {
     writePos_ = 0;
     lastTrigger_ = 0.0f;
     smoothedPitch_ = 200.0f;
+    latestDetectedPitch_ = 0.0f;
     lastFilterPitch_ = 200.0f;
     pitchSamplesProcessed_ = 0;  // Reset warmup counter for fast convergence on next use
 

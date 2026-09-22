@@ -22,23 +22,11 @@ Vectorscope::Vectorscope()
     highRightBuffer_.resize(VECTORSCOPE_BUFFER_SIZE, 0.0f);
     points_.reserve(1024);
 
-    // Cascaded lowpass at 8kHz, Butterworth (Q=0.707)
-    // Two stages per channel = 4th order = 24 dB/oct rolloff
-    // Removes HF noise that causes erratic Lissajous motion
-    leftLowpass1_.setLowpass(8000.0f, sampleRate_, 0.707f);
-    leftLowpass2_.setLowpass(8000.0f, sampleRate_, 0.707f);
-    rightLowpass1_.setLowpass(8000.0f, sampleRate_, 0.707f);
-    rightLowpass2_.setLowpass(8000.0f, sampleRate_, 0.707f);
     multibandSplitter_.configure(sampleRate_);
 }
 
 void Vectorscope::setSampleRate(float sampleRate) {
     sampleRate_ = sampleRate;
-    // Redesign all filters with new sample rate
-    leftLowpass1_.setLowpass(8000.0f, sampleRate_, 0.707f);
-    leftLowpass2_.setLowpass(8000.0f, sampleRate_, 0.707f);
-    rightLowpass1_.setLowpass(8000.0f, sampleRate_, 0.707f);
-    rightLowpass2_.setLowpass(8000.0f, sampleRate_, 0.707f);
     multibandSplitter_.configure(sampleRate_);
 }
 
@@ -53,15 +41,8 @@ void Vectorscope::pushSamples(
     size_t length
 ) {
     for (size_t i = 0; i < length; i++) {
-        // Apply cascaded lowpass filtering
-        float filteredL = leftLowpass1_.process(leftChannel[i]);
-        filteredL = leftLowpass2_.process(filteredL);
-
-        float filteredR = rightLowpass1_.process(rightChannel[i]);
-        filteredR = rightLowpass2_.process(filteredR);
-
-        leftBuffer_[writePos_] = filteredL;
-        rightBuffer_[writePos_] = filteredR;
+        leftBuffer_[writePos_] = leftChannel[i];
+        rightBuffer_[writePos_] = rightChannel[i];
 
         writePos_ = (writePos_ + 1) % VECTORSCOPE_BUFFER_SIZE;
         if (validSamples_ < VECTORSCOPE_BUFFER_SIZE) {
@@ -128,7 +109,7 @@ const std::vector<VectorscopePoint>& Vectorscope::process(
     const float* rightChannel,
     size_t length
 ) {
-    // Push through the filtering pipeline
+    // Push through the full-band point pipeline
     pushSamples(leftChannel, rightChannel, length);
 
     // Build legacy output from buffer
@@ -157,10 +138,6 @@ void Vectorscope::reset() {
     std::fill(midRightBuffer_.begin(), midRightBuffer_.end(), 0.0f);
     std::fill(highLeftBuffer_.begin(), highLeftBuffer_.end(), 0.0f);
     std::fill(highRightBuffer_.begin(), highRightBuffer_.end(), 0.0f);
-    leftLowpass1_.reset();
-    leftLowpass2_.reset();
-    rightLowpass1_.reset();
-    rightLowpass2_.reset();
     multibandSplitter_.reset();
     points_.clear();
 }

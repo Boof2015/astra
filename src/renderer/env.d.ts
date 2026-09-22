@@ -100,8 +100,7 @@ import type {
     NativeAudioTrackLoadResult,
     NativeAudioTrackMetadata,
     NativeAudioVisualizerTapDemand,
-    NativeAudioVUMeterChunk,
-    NativeAudioVectorscopeChunk
+    NativeAudioVisualizerChunk
 } from '../types/nativeAudio'
 import type {
     ProgressiveAudioLoadProgress,
@@ -275,10 +274,7 @@ declare global {
             getNativeAudioDiagnosticReport: () => Promise<NativeAudioDiagnosticReport>
             getBufferMemoryStats: () => Promise<AudioBufferMemoryStats>
             setVisualizerTapDemand: (demand: NativeAudioVisualizerTapDemand) => Promise<void>
-            flushOscilloscopeChunks: () => Float32Array[]
-            flushSpectrumChunks: () => Float32Array[]
-            flushVectorscopeChunks: () => NativeAudioVectorscopeChunk[]
-            flushVUMeterChunks: () => NativeAudioVUMeterChunk[]
+            flushVisualizerChunks: () => NativeAudioVisualizerChunk[]
             onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
         }
         electronAPI: {

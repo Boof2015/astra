@@ -65,10 +65,7 @@ function createPlaybackStub(overrides: Partial<NativeAudioAddonPlayback> = {}): 
     getPlaybackSnapshot: () => createPlaybackSnapshot(),
     setVisualizerTapDemand: () => undefined,
     drainEvents: () => [],
-    flushOscilloscopeSamples: () => null,
-    flushSpectrumSamples: () => null,
-    flushVectorscopeSamples: () => null,
-    flushVUMeterSamples: () => null,
+    flushVisualizerSamples: () => null,
     ...overrides
   }
 }

@@ -1,3 +1,5 @@
+import { normalizeFrequencyScaleMode, normalizeFrequencyRangeMode, type FrequencyScaleMode, type FrequencyRangeMode } from '../../types/frequencyScale'
+import { normalizeVectorscopeZoomDb } from '../../types/vectorscope'
 import { create } from 'zustand'
 import type { ScopeKind } from '../../types/scopePopout'
 import { SCOPE_KINDS, isScopeKind } from '../../types/scopePopout'
@@ -86,6 +88,8 @@ function clampSpectrumSmoothing(value: unknown, fallback: number): number {
 
 export interface AnalyzerProfileScopeSettings {
   spectrum: {
+    rangeMode: FrequencyRangeMode
+    scaleMode: FrequencyScaleMode
     fftSize: FFTSize
     displayMode: SpectrumDisplayMode
     tiltDbPerOctave: number
@@ -106,10 +110,12 @@ export interface AnalyzerProfileScopeSettings {
     mode: OscilloscopeMode
   }
   vectorscope: {
+    zoomDb: number
     mode: VectorscopeMode
     multiband: boolean
   }
   spectrogram: {
+    rangeMode: FrequencyRangeMode
     fftSize: FFTSize
     scrollSpeed: number
     clarityMode: SpectrogramClarityMode
@@ -153,6 +159,10 @@ interface LegacyAnalyzerPrefs {
 }
 
 interface VisualizerSettingsSnapshot {
+  vectorscopeZoomDb: number
+  spectrogramRangeMode: FrequencyRangeMode
+  spectrumRangeMode: FrequencyRangeMode
+  spectrumScaleMode: FrequencyScaleMode
   lineColor: string
   isRunning: boolean
   vectorscopeMultiband: boolean
@@ -204,6 +214,10 @@ interface VisualizerSettingsSnapshot {
 }
 
 interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
+  setVectorscopeZoomDb: (value: number) => void
+  setSpectrogramRangeMode: (value: FrequencyRangeMode) => void
+  setSpectrumRangeMode: (value: FrequencyRangeMode) => void
+  setSpectrumScaleMode: (value: FrequencyScaleMode) => void
   setLineColor: (color: string) => void
   setIsRunning: (running: boolean) => void
   setSelectedProfile: (profileId: string) => void
@@ -252,8 +266,8 @@ interface VisualizerSettingsStore extends VisualizerSettingsSnapshot {
   resetToDefaults: () => void
 }
 
-interface PersistedAnalyzerEnvelopeV4 {
-  version: 4
+interface PersistedAnalyzerEnvelopeV5 {
+  version: 5
   selectedProfileId: string
   workingState: AnalyzerWorkingState
   profiles: AnalyzerProfile[]
@@ -265,7 +279,7 @@ type SaveCurrentProfileAsResult =
 
 const FFT_SIZES: readonly FFTSize[] = [1024, 2048, 4096, 8192, 16384]
 
-export const ANALYZER_PROFILE_STORAGE_VERSION = 4
+export const ANALYZER_PROFILE_STORAGE_VERSION = 5
 export const ANALYZER_PROFILES_STORAGE_KEY = 'astra-analyzer-profiles-v1'
 export const OSCILLOSCOPE_UNDERFILL_STORAGE_KEY = 'astra-oscilloscope-underfill-enabled'
 export const VECTORSCOPE_MULTIBAND_STORAGE_KEY = 'astra-vectorscope-multiband'
@@ -340,6 +354,8 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
   widthWeights: { ...DEFAULT_WIDTH_WEIGHTS },
   scopeSettings: {
     spectrum: {
+      rangeMode: 'audible',
+      scaleMode: 'log',
       fftSize: DEFAULT_FFT_SIZE,
       displayMode: DEFAULT_SPECTRUM_DISPLAY_MODE,
       tiltDbPerOctave: DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE,
@@ -359,8 +375,9 @@ const DEFAULT_WORKING_STATE: AnalyzerWorkingState = {
       underfillEnabled: DEFAULT_OSCILLOSCOPE_UNDERFILL_ENABLED,
       mode: DEFAULT_OSCILLOSCOPE_MODE,
     },
-    vectorscope: { mode: DEFAULT_VECTORSCOPE_MODE, multiband: false },
+    vectorscope: { zoomDb: 0, mode: DEFAULT_VECTORSCOPE_MODE, multiband: false },
     spectrogram: {
+      rangeMode: 'audible',
       fftSize: 2048,
       scrollSpeed: DEFAULT_SPECTROGRAM_SCROLL_SPEED,
       clarityMode: DEFAULT_SPECTROGRAM_CLARITY_MODE,
@@ -579,6 +596,8 @@ function normalizeScopeSettings(
 
   return {
     spectrum: {
+      rangeMode: normalizeFrequencyRangeMode(rawSpectrum.rangeMode),
+      scaleMode: normalizeFrequencyScaleMode(rawSpectrum.scaleMode),
       fftSize: isFFTSize(fftSizeValue) ? fftSizeValue : DEFAULT_FFT_SIZE,
       displayMode: isSpectrumDisplayMode(rawSpectrum.displayMode)
         ? rawSpectrum.displayMode
@@ -611,12 +630,14 @@ function normalizeScopeSettings(
       mode: oscilloscopeModeValue === 'locked' ? 'locked' : DEFAULT_OSCILLOSCOPE_MODE,
     },
     vectorscope: {
+      zoomDb: normalizeVectorscopeZoomDb(rawVectorscope.zoomDb),
       mode: isVectorscopeMode(vectorscopeModeValue) ? vectorscopeModeValue : DEFAULT_VECTORSCOPE_MODE,
       multiband: typeof rawVectorscope.multiband === 'boolean'
         ? rawVectorscope.multiband
         : legacyAnalyzerPrefs?.vectorscopeMultiband ?? false,
     },
     spectrogram: {
+      rangeMode: normalizeFrequencyRangeMode(rawSpectrogram.rangeMode),
       fftSize: isFFTSize(rawSpectrogram.fftSize) ? rawSpectrogram.fftSize : DEFAULT_FFT_SIZE,
       scrollSpeed: clampSpectrogramScrollSpeed(rawSpectrogram.scrollSpeed),
       clarityMode: isSpectrogramClarityMode(rawSpectrogram.clarityMode)
@@ -787,6 +808,10 @@ function areWorkingStatesEqual(left: AnalyzerWorkingState, right: AnalyzerWorkin
 
   return (
     left.scopeSettings.spectrum.fftSize === right.scopeSettings.spectrum.fftSize
+    && left.scopeSettings.spectrum.scaleMode === right.scopeSettings.spectrum.scaleMode
+    && left.scopeSettings.spectrum.rangeMode === right.scopeSettings.spectrum.rangeMode
+    && left.scopeSettings.spectrogram.rangeMode === right.scopeSettings.spectrogram.rangeMode
+    && left.scopeSettings.vectorscope.zoomDb === right.scopeSettings.vectorscope.zoomDb
     && left.scopeSettings.spectrum.displayMode === right.scopeSettings.spectrum.displayMode
     && left.scopeSettings.spectrum.tiltDbPerOctave === right.scopeSettings.spectrum.tiltDbPerOctave
     && left.scopeSettings.spectrum.heatmap === right.scopeSettings.spectrum.heatmap
@@ -835,7 +860,7 @@ function persistState(
   selectedProfileId: string,
   workingState: AnalyzerWorkingState
 ): void {
-  const payload: PersistedAnalyzerEnvelopeV4 = {
+  const payload: PersistedAnalyzerEnvelopeV5 = {
     version: ANALYZER_PROFILE_STORAGE_VERSION,
     selectedProfileId,
     workingState: cloneWorkingState(workingState),
@@ -889,6 +914,10 @@ function buildSnapshot(
   const selectedProfileCanDelete = !resolvedSelectedProfile.builtIn && !hasUnsavedProfileChanges
 
   return {
+    spectrumScaleMode: workingState.scopeSettings.spectrum.scaleMode,
+    spectrumRangeMode: workingState.scopeSettings.spectrum.rangeMode,
+    spectrogramRangeMode: workingState.scopeSettings.spectrogram.rangeMode,
+    vectorscopeZoomDb: workingState.scopeSettings.vectorscope.zoomDb,
     lineColor,
     isRunning,
     vectorscopeMultiband: workingState.scopeSettings.vectorscope.multiband,
@@ -1009,6 +1038,58 @@ const initialSnapshot = loadInitialSnapshot()
 
 export const useVisualizerSettingsStore = create<VisualizerSettingsStore>((set, get) => ({
   ...initialSnapshot,
+
+  setSpectrumScaleMode: (value) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrum: { ...state.workingState.scopeSettings.spectrum, scaleMode: normalizeFrequencyScaleMode(value) },
+      },
+    })
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrumRangeMode: (value) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrum: { ...state.workingState.scopeSettings.spectrum, rangeMode: normalizeFrequencyRangeMode(value) },
+      },
+    })
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setSpectrogramRangeMode: (value) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        spectrogram: { ...state.workingState.scopeSettings.spectrogram, rangeMode: normalizeFrequencyRangeMode(value) },
+      },
+    })
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
+
+  setVectorscopeZoomDb: (value) => {
+    const state = get()
+    const nextSnapshot = updateWorkingState(state, {
+      ...state.workingState,
+      scopeSettings: {
+        ...state.workingState.scopeSettings,
+        vectorscope: { ...state.workingState.scopeSettings.vectorscope, zoomDb: normalizeVectorscopeZoomDb(value) },
+      },
+    })
+    persistState(nextSnapshot.profiles, nextSnapshot.activeProfileId, nextSnapshot.workingState)
+    set(nextSnapshot)
+  },
 
   setLineColor: (color) => {
     set({ lineColor: color })

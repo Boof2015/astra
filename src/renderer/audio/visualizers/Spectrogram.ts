@@ -1,3 +1,4 @@
+import { buildFrequencyGuides, clampFrequencyRangeToNyquist } from '../../../types/frequencyScale'
 import { audioEngine } from '../AudioEngine'
 import {
   spectrogram as nativeSpectrogram,
@@ -52,6 +53,9 @@ export interface SpectrogramOptions {
   lineColor?: string
   heatColors?: [string, string, string]
   backgroundColor?: string
+  showGrid?: boolean
+  gridColor?: string
+  labelColor?: string
   dataSource?: SpectrogramDataSource
   frameScheduler?: FrameScheduler
   nativeAnalyzer?: SpectrogramNativeAnalyzer | null
@@ -75,6 +79,9 @@ const defaultOptions: ResolvedSpectrogramOptions = {
   lineColor: '#38bdf8',
   heatColors: ['rgb(15, 7, 33)', 'rgb(163, 26, 121)', 'rgb(255, 241, 209)'],
   backgroundColor: 'transparent',
+  showGrid: true,
+  gridColor: 'rgba(255, 255, 255, 0.12)',
+  labelColor: 'rgba(255, 255, 255, 0.4)',
 }
 
 const defaultSpectrogramDataSource: SpectrogramDataSource = {
@@ -117,6 +124,9 @@ function resolveOptions(base: ResolvedSpectrogramOptions, overrides: Partial<Spe
     lineColor: overrides.lineColor ?? base.lineColor,
     heatColors: overrides.heatColors ?? base.heatColors,
     backgroundColor: overrides.backgroundColor ?? base.backgroundColor,
+    showGrid: overrides.showGrid ?? base.showGrid,
+    gridColor: overrides.gridColor ?? base.gridColor,
+    labelColor: overrides.labelColor ?? base.labelColor,
   }
 }
 
@@ -235,6 +245,8 @@ export class Spectrogram {
   private columnImageData: ImageData | null = null
   private heatLut: Uint8ClampedArray
 
+  private gridCanvas = document.createElement('canvas')
+  private gridKey = ''
   private lastNativeConfigKey: string | null = null
   private unsubscribeSessionChange: (() => void) | null = null
 
@@ -288,7 +300,9 @@ export class Spectrogram {
     const { dataSource, frameScheduler: _frameScheduler, nativeAnalyzer, ...optionUpdates } = options
     const previousOptions = this.options
     this.options = resolveOptions(previousOptions, optionUpdates)
-    this.heatLut = buildHeatLUT(this.options.heatColors)
+    if (this.options.heatColors.some((color, index) => color !== previousOptions.heatColors[index])) {
+      this.heatLut = buildHeatLUT(this.options.heatColors)
+    }
 
     if (nativeAnalyzer !== undefined && nativeAnalyzer !== this.nativeAnalyzer) {
       this.nativeAnalyzer = nativeAnalyzer
@@ -308,6 +322,8 @@ export class Spectrogram {
       || this.options.orientation !== previousOptions.orientation
       || this.options.minFrequency !== previousOptions.minFrequency
       || this.options.maxFrequency !== previousOptions.maxFrequency
+      || (this.options.clarityMode !== previousOptions.clarityMode
+        && (this.options.clarityMode === 'reassigned' || previousOptions.clarityMode === 'reassigned'))
     ) {
       this.resetDisplay()
     }
@@ -531,6 +547,56 @@ export class Spectrogram {
       this.ctx.fillRect(0, 0, width, height)
     }
     this.ctx.drawImage(this.waterfallCanvas, 0, 0)
+    this.drawFrequencyGrid(width, height)
+  }
+
+  private drawFrequencyGrid(width: number, height: number): void {
+    const options = this.options
+    if (!options.showGrid) return
+    const sampleRate = this.dataSource.getSampleRate()
+    const dpr = window.devicePixelRatio || 1
+    const key = [width, height, dpr, sampleRate, options.minFrequency, options.maxFrequency,
+      options.scaleMode, options.orientation, options.gridColor, options.labelColor].join(':')
+    if (key !== this.gridKey) {
+      this.gridCanvas.width = width
+      this.gridCanvas.height = height
+      const ctx = this.gridCanvas.getContext('2d')
+      if (!ctx) return
+      const vertical = options.orientation === 'vertical'
+      const span = vertical ? width : height
+      const range = clampFrequencyRangeToNyquist(sampleRate, options.minFrequency, options.maxFrequency)
+      const guides = buildFrequencyGuides(range.minFrequency, range.maxFrequency, options.scaleMode, span / dpr)
+      ctx.lineWidth = dpr
+      ctx.font = `${10 * dpr}px monospace`
+      ctx.textBaseline = 'bottom'
+      ctx.textAlign = vertical ? 'center' : 'left'
+      let previousLabelEnd = -Infinity
+      for (const guide of guides) {
+        const position = guide.normalizedPosition * span
+        ctx.beginPath()
+        ctx.strokeStyle = options.gridColor
+        ctx.globalAlpha = guide.kind === 'minor' ? 0.28 : 1
+        if (vertical) {
+          ctx.moveTo(position, 0)
+          ctx.lineTo(position, height)
+        } else {
+          ctx.moveTo(0, height - position)
+          ctx.lineTo(width, height - position)
+        }
+        ctx.stroke()
+        ctx.globalAlpha = 1
+        if (guide.label) {
+          const extent = vertical ? ctx.measureText(guide.label).width / 2 : 6 * dpr
+          if (position - extent >= Math.max(0, previousLabelEnd + 4 * dpr) && position + extent <= span) {
+            ctx.fillStyle = options.labelColor
+            ctx.fillText(guide.label, vertical ? position : 4 * dpr, vertical ? height - 4 * dpr : height - position - 2 * dpr)
+            previousLabelEnd = position + extent
+          }
+        }
+      }
+      this.gridKey = key
+    }
+    this.ctx.drawImage(this.gridCanvas, 0, 0)
   }
 
   private drawFrame = (): void => {

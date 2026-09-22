@@ -5,10 +5,12 @@
 #include <memory>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 namespace Visualizer {
 
 struct SpectrumBarConfig {
+    std::string scaleMode = "log";
     size_t requestedBarCount = 64;
     float minFrequency = 20.0f;
     float maxFrequency = 20000.0f;
@@ -83,6 +85,7 @@ private:
     bool barMappingDirty_ = true;
     bool barStateInitialized_ = false;
     std::vector<float> barFrequencyEdges_;
+    std::vector<float> barCenterFrequencies_;
     std::vector<float> barHeatDb_;
     std::vector<float> barPeakDb_;
     std::vector<double> barPeakHoldUntilMs_;

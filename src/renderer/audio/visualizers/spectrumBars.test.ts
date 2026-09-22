@@ -42,6 +42,7 @@ function createContext(): CanvasRenderingContext2D {
     fillText: (text: string) => filledTexts.push({ text, style: fillStyle }),
     lineTo: () => undefined,
     moveTo: () => undefined,
+    measureText: (text: string) => ({ width: text.length * 6 }),
     roundRect: (x: number, y: number, width: number, height: number, radii?: number | DOMPointInit | Iterable<number | DOMPointInit>) => {
       roundedRects.push({ x, y, width, height, radius: typeof radii === 'number' ? radii : 0 })
     },
@@ -310,7 +311,8 @@ test('spectrum labels use their dedicated color without brightening grid lines',
   visualizer.start()
   scheduler.tick()
 
-  assert.ok(filledTexts.some(({ text, style }) => text.endsWith('dB') && style === labelColor))
+  assert.ok(filledTexts.some(({ text, style }) => text === '1k' && style === labelColor))
+  assert.ok(!filledTexts.some(({ text }) => text.endsWith('dB')))
   assert.ok(filledTexts.some(({ text, style }) => /Hz|k$/.test(text) && style === labelColor))
   assert.ok(strokeStyles.includes(gridColor))
   assert.ok(!strokeStyles.includes(labelColor))

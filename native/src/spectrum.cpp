@@ -14,6 +14,21 @@ constexpr float BAR_HEAT_GAMMA = 1.4f;
 constexpr double BAR_PEAK_HOLD_MS = 750.0;
 constexpr float BAR_PEAK_DECAY_DB_PER_SECOND = 18.0f;
 constexpr size_t MAX_BAR_COUNT = 512;
+
+// Same Slaney Mel mapping as the renderer and spectrogram. Evaluated only
+// when the bar geometry changes, never for each sample or rendered frame.
+double frequencyAtPosition(double t, double low, double high, const std::string& mode) {
+    if (mode == "linear") return low + t * (high - low);
+    if (mode == "mel") {
+        const double step = std::log(6.4) / 27.0;
+        auto mel = [step](double hz) {
+            return hz < 1000.0 ? hz / (200.0 / 3.0) : 15.0 + std::log(hz / 1000.0) / step;
+        };
+        const double value = mel(low) + t * (mel(high) - mel(low));
+        return value < 15.0 ? value * (200.0 / 3.0) : 1000.0 * std::exp(step * (value - 15.0));
+    }
+    return std::exp(std::log(low) + t * (std::log(high) - std::log(low)));
+}
 }
 
 Spectrum::Spectrum(size_t fftSize)
@@ -274,6 +289,7 @@ float Spectrum::binToFrequency(int bin) const {
 
 void Spectrum::configureBars(const SpectrumBarConfig& config) {
     SpectrumBarConfig next = config;
+    if (next.scaleMode != "mel" && next.scaleMode != "linear") next.scaleMode = "log";
     next.requestedBarCount = std::clamp(next.requestedBarCount, static_cast<size_t>(1), MAX_BAR_COUNT);
     if (!std::isfinite(next.minFrequency)) next.minFrequency = 20.0f;
     next.minFrequency = std::max(1.0f, next.minFrequency);
@@ -292,6 +308,7 @@ void Spectrum::configureBars(const SpectrumBarConfig& config) {
 
     const bool changed =
         next.requestedBarCount != barConfig_.requestedBarCount
+        || next.scaleMode != barConfig_.scaleMode
         || next.minFrequency != barConfig_.minFrequency
         || next.maxFrequency != barConfig_.maxFrequency
         || next.minDecibels != barConfig_.minDecibels
@@ -333,11 +350,16 @@ void Spectrum::rebuildBarMapping() {
     barCount_ = std::max<size_t>(1, std::min(barConfig_.requestedBarCount, visibleBinCount));
 
     barFrequencyEdges_.resize(barCount_ + 1);
-    const double logMin = std::log(static_cast<double>(barConfig_.minFrequency));
-    const double logMax = std::log(static_cast<double>(barConfig_.maxFrequency));
+    barCenterFrequencies_.resize(barCount_);
     for (size_t index = 0; index <= barCount_; index++) {
         const double amount = static_cast<double>(index) / static_cast<double>(barCount_);
-        barFrequencyEdges_[index] = static_cast<float>(std::exp(logMin + amount * (logMax - logMin)));
+        barFrequencyEdges_[index] = static_cast<float>(frequencyAtPosition(
+            amount, barConfig_.minFrequency, barConfig_.maxFrequency, barConfig_.scaleMode));
+        if (index < barCount_) {
+            barCenterFrequencies_[index] = static_cast<float>(frequencyAtPosition(
+                (static_cast<double>(index) + 0.5) / barCount_,
+                barConfig_.minFrequency, barConfig_.maxFrequency, barConfig_.scaleMode));
+        }
     }
 
     barHeatDb_.assign(barCount_, BAR_HEAT_MIN_DB);
@@ -419,7 +441,7 @@ const std::vector<float>& Spectrum::getBarFrameAtTime(double nowMs) {
     for (size_t index = 0; index < barCount_; index++) {
         const float lowFrequency = barFrequencyEdges_[index];
         const float highFrequency = barFrequencyEdges_[index + 1];
-        const float centerFrequency = std::sqrt(lowFrequency * highFrequency);
+        const float centerFrequency = barCenterFrequencies_[index];
         const float startBin = lowFrequency / binWidth;
         const float endBin = highFrequency / binWidth;
 

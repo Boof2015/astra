@@ -87,8 +87,8 @@ const INITIAL_NATIVE_SNAPSHOT: VUMeterNativeSnapshot = {
 
 const NEEDLE_VISUAL_SMOOTHING_SECONDS = 0.065
 const NEEDLE_PEAK_DECAY_DB_PER_SECOND = 12
-const NEEDLE_PIVOT_FRACTION = 0.91
-const NEEDLE_STEREO_GAP_FRACTION = 0.14
+const NEEDLE_PIVOT_FRACTION = 0.885
+const NEEDLE_STEREO_GAP_FRACTION = 0.12
 export const VU_NEEDLE_FACE_WIDTH_CSS_PX = 560
 export const VU_NEEDLE_FACE_HEIGHT_CSS_PX = 360
 
@@ -155,13 +155,16 @@ export function resolveVUNeedleFaceLayout(
   const targetHeight = VU_NEEDLE_FACE_HEIGHT_CSS_PX * dpr
   const safeWidth = Math.max(0, Number.isFinite(canvasWidth) ? canvasWidth : 0)
   const safeHeight = Math.max(0, Number.isFinite(canvasHeight) ? canvasHeight : 0)
-  const scale = Math.min(1, safeWidth / targetWidth, safeHeight / targetHeight)
+  const widthScale = safeWidth / targetWidth
+  const heightScale = safeHeight / targetHeight
+  const scale = Math.min(1, widthScale, heightScale)
   const width = targetWidth * scale
   const height = targetHeight * scale
+  const widthLimited = widthScale < Math.min(1, heightScale)
 
   return {
     x: Math.max(0, (safeWidth - width) / 2),
-    y: Math.max(0, safeHeight - height),
+    y: Math.max(0, widthLimited ? (safeHeight - height) / 2 : safeHeight - height),
     width,
     height,
     scale,
@@ -184,6 +187,14 @@ export const CLASSIC_VU_LABELS: ReadonlyArray<{ vu: number; label: string }> = [
   { vu: 2, label: '+2' },
   { vu: 3, label: '+3' },
 ]
+
+function isClassicVuMajorLabel(vu: number): boolean {
+  return vu <= -10 || vu === 0 || vu > 0
+}
+
+function shouldShowClassicVuLabel(vu: number): boolean {
+  return isClassicVuMajorLabel(vu) || vu === -5 || vu === -3 || vu === -1
+}
 
 const CLASSIC_VU_ANCHORS: ReadonlyArray<{ vu: number; position: number }> = [
   { vu: -20, position: 0 },
@@ -760,6 +771,7 @@ export class VUMeter {
     labelAlpha = 0.6,
     minLabelSize = 8,
     maxLabelSize = 20,
+    outlineAlpha = 0,
   ): void {
     const centerX = x + w / 2
     const corr = Math.max(-1, Math.min(1, this.correlation))
@@ -797,6 +809,12 @@ export class VUMeter {
     ctx.fillText('Ø', centerX, y + h / 2)
     ctx.textAlign = 'right'
     ctx.fillText('+1', x + w - 2, y + h / 2)
+
+    if (outlineAlpha > 0 && w > 1 && h > 1) {
+      ctx.strokeStyle = alphaColor(this.options.scaleColor, outlineAlpha)
+      ctx.lineWidth = 1
+      ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1)
+    }
   }
 
   private drawNeedleMode(width: number, height: number): void {
@@ -818,19 +836,32 @@ export class VUMeter {
     const gap = 4 * faceScale
     const meterAreaHeight = Math.max(1, faceHeight - corrHeight - gap)
     const sidePadding = 11 * faceScale
-    const labelFontSize = 23.5 * faceScale
-    const outerArcWidth = 22 * faceScale
-    const innerArcWidth = 17 * faceScale
-    const needleWidth = 3.25 * faceScale
+    const labelFontSize = 26 * faceScale
+    const outerArcWidth = 18 * faceScale
+    const innerArcWidth = 13.5 * faceScale
+    const needleWidth = 3 * faceScale
     const pivotY = meterAreaHeight * NEEDLE_PIVOT_FRACTION
     const tickOutward = 5 * faceScale
     const topPadding = 10 * faceScale
-    const horizontalLabelAllowance = labelFontSize * 0.32
     const verticalLabelAllowance = labelFontSize * 0.62
-    const radiusXByWidth = (faceWidth / 2 - sidePadding) / spanCos
-      - outerArcWidth / 2
-      - tickOutward
-      - horizontalLabelAllowance
+    const labelOffset = outerArcWidth / 2 + tickOutward + labelFontSize * 0.68
+    let radiusXByWidth = Number.POSITIVE_INFINITY
+    for (const { vu, label } of CLASSIC_VU_LABELS) {
+      if (!shouldShowClassicVuLabel(vu)) continue
+      const isMajor = isClassicVuMajorLabel(vu)
+      ctx.font = `${isMajor ? 700 : 600} ${isMajor ? labelFontSize : labelFontSize * 0.92}px "JetBrains Mono", monospace`
+      const halfLabelWidth = ctx.measureText(label).width / 2
+      const angle = this.vuToNeedleAngle(vu, startAngle, endAngle)
+      const horizontalDirection = Math.abs(Math.cos(angle))
+      if (horizontalDirection <= 1e-6) continue
+      radiusXByWidth = Math.min(
+        radiusXByWidth,
+        (faceWidth / 2 - sidePadding - halfLabelWidth) / horizontalDirection - labelOffset,
+      )
+    }
+    if (!Number.isFinite(radiusXByWidth)) {
+      radiusXByWidth = (faceWidth / 2 - sidePadding) / spanCos - labelOffset
+    }
     const radiusYByHeight = pivotY
       - outerArcWidth / 2
       - tickOutward
@@ -870,14 +901,14 @@ export class VUMeter {
       outerArcWidth,
       innerArcWidth,
     )
-    this.drawSharedNeedleScale(ctx, centerX, centerY, outerRadiusX, outerRadiusY, outerArcWidth, startAngle, endAngle, labelFontSize, faceWidth, sidePadding, tickOutward)
+    this.drawSharedNeedleScale(ctx, centerX, centerY, outerRadiusX, outerRadiusY, outerArcWidth, startAngle, endAngle, labelFontSize, tickOutward)
     this.drawNeedlePeakMarkers(ctx, centerX, centerY, outerRadiusX, outerRadiusY, innerRadiusX, innerRadiusY, startAngle, endAngle, readoutReadings, outerArcWidth, innerArcWidth)
     this.drawSharedNeedles(ctx, centerX, centerY, outerRadiusX, outerRadiusY, startAngle, endAngle, visualReadings, needleWidth)
-    this.drawNeedleReadouts(ctx, readoutReadings, meterAreaHeight, faceWidth, sidePadding, labelFontSize)
+    this.drawNeedleReadouts(ctx, readoutReadings, meterAreaHeight, faceWidth, sidePadding, faceScale)
 
     const barLeft = Math.max(10 * faceScale, sidePadding)
     const barWidth = Math.max(1, faceWidth - barLeft * 2)
-    this.drawCorrelationBar(ctx, barLeft, meterAreaHeight + gap, barWidth, corrHeight, cr, cg, cb, 0.72, 0.76, 8 * faceScale, 18 * faceScale)
+    this.drawCorrelationBar(ctx, barLeft, meterAreaHeight + gap, barWidth, corrHeight, cr, cg, cb, 0.72, 0.76, 8 * faceScale, 18 * faceScale, 0.24)
     ctx.restore()
   }
 
@@ -919,30 +950,63 @@ export class VUMeter {
     if (!mainReading) return
 
     ctx.lineCap = 'butt'
-    ctx.strokeStyle = alphaColor(this.getNeedleColor(mainReading), 0.052)
+    ctx.strokeStyle = alphaColor(this.getNeedleColor(mainReading), 0.075)
     ctx.lineWidth = outerWidth
     ctx.beginPath()
     ctx.ellipse(centerX, centerY, outerRadiusX, outerRadiusY, 0, startAngle, hotAngle)
     ctx.stroke()
-    ctx.strokeStyle = alphaColor(this.options.clipColor, 0.085)
+    ctx.strokeStyle = alphaColor(this.options.clipColor, 0.15)
     ctx.beginPath()
     ctx.ellipse(centerX, centerY, outerRadiusX, outerRadiusY, 0, hotAngle, endAngle)
     ctx.stroke()
 
     if (leftReading) {
-      ctx.strokeStyle = alphaColor(this.getNeedleColor(leftReading), 0.04)
+      ctx.strokeStyle = alphaColor(this.getNeedleColor(leftReading), 0.06)
       ctx.lineWidth = innerWidth
       ctx.beginPath()
       ctx.ellipse(centerX, centerY, innerRadiusX, innerRadiusY, 0, startAngle, hotAngle)
       ctx.stroke()
-      ctx.strokeStyle = alphaColor(this.options.clipColor, 0.065)
+      ctx.strokeStyle = alphaColor(this.options.clipColor, 0.12)
       ctx.beginPath()
       ctx.ellipse(centerX, centerY, innerRadiusX, innerRadiusY, 0, hotAngle, endAngle)
       ctx.stroke()
-      this.drawNeedleLevelArc(ctx, leftReading, centerX, centerY, innerRadiusX, innerRadiusY, innerWidth, startAngle, hotAngle, endAngle, 0.72)
+      this.drawNeedleLevelArc(ctx, leftReading, centerX, centerY, innerRadiusX, innerRadiusY, innerWidth, startAngle, hotAngle, endAngle, 0.78)
     }
 
-    this.drawNeedleLevelArc(ctx, mainReading, centerX, centerY, outerRadiusX, outerRadiusY, outerWidth, startAngle, hotAngle, endAngle, 0.95)
+    this.drawNeedleLevelArc(ctx, mainReading, centerX, centerY, outerRadiusX, outerRadiusY, outerWidth, startAngle, hotAngle, endAngle, 0.96)
+    if (leftReading) {
+      this.drawNeedleRailOutline(ctx, centerX, centerY, innerRadiusX, innerRadiusY, innerWidth, startAngle, endAngle, 0.14)
+    }
+    this.drawNeedleRailOutline(ctx, centerX, centerY, outerRadiusX, outerRadiusY, outerWidth, startAngle, endAngle, 0.18)
+  }
+
+  private drawNeedleRailOutline(
+    ctx: CanvasRenderingContext2D,
+    centerX: number,
+    centerY: number,
+    radiusX: number,
+    radiusY: number,
+    railWidth: number,
+    startAngle: number,
+    endAngle: number,
+    alpha: number,
+  ): void {
+    ctx.strokeStyle = alphaColor(this.options.scaleColor, alpha)
+    ctx.lineWidth = Math.max(1, railWidth * 0.065)
+    ctx.lineCap = 'butt'
+    for (const offset of [-railWidth / 2, railWidth / 2]) {
+      ctx.beginPath()
+      ctx.ellipse(
+        centerX,
+        centerY,
+        Math.max(1, radiusX + offset),
+        Math.max(1, radiusY + offset),
+        0,
+        startAngle,
+        endAngle,
+      )
+      ctx.stroke()
+    }
   }
 
   private drawNeedleLevelArc(
@@ -991,8 +1055,6 @@ export class VUMeter {
     startAngle: number,
     endAngle: number,
     labelFontSize: number,
-    width: number,
-    sidePadding: number,
     tickOutward: number,
   ): void {
     const averageRadius = (radiusX + radiusY) / 2
@@ -1003,14 +1065,16 @@ export class VUMeter {
     for (const { vu, label } of CLASSIC_VU_LABELS) {
       const angle = this.vuToNeedleAngle(vu, startAngle, endAngle)
       const isHot = vu >= 0
-      const isMajor = vu <= -10 || vu === 0 || vu > 0
-      const shouldShowLabel = isMajor || vu === -5 || vu === -3 || vu === -2 || vu === -1
+      const isMajor = isClassicVuMajorLabel(vu)
+      const shouldShowLabel = shouldShowClassicVuLabel(vu)
       const inward = isMajor ? majorInward : minorInward
 
       ctx.strokeStyle = isHot
-        ? alphaColor(this.options.clipColor, 0.92)
-        : alphaColor(this.options.scaleColor, 0.72)
-      ctx.lineWidth = isMajor ? Math.max(2.25, averageRadius * 0.014) : Math.max(1.15, averageRadius * 0.008)
+        ? alphaColor(this.options.clipColor, 1)
+        : alphaColor(this.options.scaleColor, isMajor ? 0.96 : 0.82)
+      ctx.lineWidth = isMajor
+        ? Math.max(2.6, averageRadius * 0.016)
+        : Math.max(1.5, averageRadius * 0.0095)
       const tickStart = this.needleEllipsePoint(centerX, centerY, radiusX, radiusY, angle, outerWidth / 2 + tickOutward)
       const tickEnd = this.needleEllipsePoint(centerX, centerY, radiusX, radiusY, angle, outerWidth / 2 - inward)
       ctx.beginPath()
@@ -1019,46 +1083,22 @@ export class VUMeter {
       ctx.stroke()
 
       if (shouldShowLabel) {
-        const labelPoint = this.needleEllipsePoint(centerX, centerY, radiusX, radiusY, angle, outerWidth / 2 + tickOutward + labelFontSize * 0.64)
-        const x = clamp(labelPoint.x, sidePadding, width - sidePadding)
-        const y = labelPoint.y
+        const labelPoint = this.needleEllipsePoint(centerX, centerY, radiusX, radiusY, angle, outerWidth / 2 + tickOutward + labelFontSize * 0.68)
         ctx.fillStyle = isHot
-          ? alphaColor(this.options.clipColor, 0.98)
-          : alphaColor(this.options.labelColor, 0.9)
-        ctx.font = `${isMajor ? '700 ' : ''}${isMajor ? labelFontSize : labelFontSize * 0.9}px "JetBrains Mono", monospace`
+          ? alphaColor(this.options.clipColor, 1)
+          : alphaColor(this.options.labelColor, 1)
+        ctx.font = `${isMajor ? 700 : 600} ${isMajor ? labelFontSize : labelFontSize * 0.92}px "JetBrains Mono", monospace`
         ctx.textAlign = 'center'
         ctx.textBaseline = 'middle'
-        ctx.fillText(label, x, y)
-      }
-    }
-
-    const percentFontSize = labelFontSize * 0.62
-    ctx.font = `${percentFontSize}px "JetBrains Mono", monospace`
-    ctx.fillStyle = alphaColor(this.options.labelColor, 0.48)
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    const percentMarks = [
-      { vu: -20, label: '0' },
-      { vu: -10, label: '20' },
-      { vu: -5, label: '40' },
-      { vu: -3, label: '60' },
-      { vu: -1, label: '80' },
-      { vu: 0, label: '100' },
-    ]
-    for (const { vu, label } of percentMarks) {
-      const angle = this.vuToNeedleAngle(vu, startAngle, endAngle)
-      const x = centerX + Math.cos(angle) * (radiusX * 0.55)
-      const y = centerY + Math.sin(angle) * (radiusY * 0.55)
-      if (y < centerY - 4) {
-        ctx.fillText(label, x, y)
+        ctx.fillText(label, labelPoint.x, labelPoint.y)
       }
     }
 
     const titleFontSize = Math.min(labelFontSize * 0.88, averageRadius * 0.095)
     const titleY = centerY - radiusY * 0.14
     if (titleY > 4) {
-      ctx.fillStyle = alphaColor(this.options.labelColor, 0.48)
-      ctx.font = `${titleFontSize}px "JetBrains Mono", monospace`
+      ctx.fillStyle = alphaColor(this.options.labelColor, 0.66)
+      ctx.font = `700 ${titleFontSize}px "JetBrains Mono", monospace`
       ctx.fillText('VU', centerX, titleY)
     }
   }
@@ -1133,13 +1173,11 @@ export class VUMeter {
     const leftReading = readings.length > 1 ? readings[0] : null
     const averageRadius = (radiusX + radiusY) / 2
     if (leftReading) {
-      this.drawSharedNeedle(ctx, leftReading, centerX, centerY, radiusX, radiusY, startAngle, endAngle, 0.5, needleWidth * 0.72)
+      this.drawSharedNeedle(ctx, leftReading, centerX, centerY, radiusX, radiusY, startAngle, endAngle, 0.62, needleWidth * 0.76)
     }
     if (mainReading) {
       this.drawSharedNeedle(ctx, mainReading, centerX, centerY, radiusX, radiusY, startAngle, endAngle, 0.96, needleWidth)
-      const pivotSize = Math.max(2.3, averageRadius * 0.015)
-      ctx.fillStyle = alphaColor(this.getNeedleColor(mainReading), 0.65)
-      ctx.fillRect(centerX - pivotSize, centerY - pivotSize, pivotSize * 2, pivotSize * 2)
+      this.drawNeedleHub(ctx, centerX, centerY, averageRadius, mainReading)
     }
   }
 
@@ -1163,6 +1201,14 @@ export class VUMeter {
     const baseX = centerX - Math.cos(angle) * counterWeight
     const baseY = centerY - Math.sin(angle) * counterWeight
 
+    ctx.strokeStyle = alphaColor(this.options.scaleColor, alpha * 0.32)
+    ctx.lineWidth = lineWidth + Math.max(1.25, averageRadius * 0.008)
+    ctx.lineCap = 'round'
+    ctx.beginPath()
+    ctx.moveTo(baseX, baseY)
+    ctx.lineTo(tip.x, tip.y)
+    ctx.stroke()
+
     ctx.strokeStyle = alphaColor(color, alpha)
     ctx.lineWidth = lineWidth
     ctx.lineCap = 'round'
@@ -1177,37 +1223,129 @@ export class VUMeter {
     ctx.fill()
   }
 
+  private drawNeedleHub(
+    ctx: CanvasRenderingContext2D,
+    centerX: number,
+    centerY: number,
+    averageRadius: number,
+    reading: VUNeedleReading,
+  ): void {
+    const outerRadius = Math.max(2.5, averageRadius * 0.031)
+
+    ctx.fillStyle = alphaColor(this.options.labelColor, 0.12)
+    ctx.strokeStyle = alphaColor(this.options.scaleColor, 0.72)
+    ctx.lineWidth = Math.max(1, averageRadius * 0.007)
+    ctx.beginPath()
+    ctx.arc(centerX, centerY, outerRadius, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.stroke()
+
+    ctx.fillStyle = alphaColor(this.getNeedleColor(reading), 0.94)
+    ctx.beginPath()
+    ctx.arc(centerX, centerY, outerRadius * 0.42, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
   private drawNeedleReadouts(
     ctx: CanvasRenderingContext2D,
     readings: VUNeedleReading[],
     meterAreaHeight: number,
     width: number,
     sidePadding: number,
-    labelFontSize: number,
+    faceScale: number,
   ): void {
     const mainReading = readings[readings.length - 1]
     if (!mainReading) return
 
     const leftReading = readings.length > 1 ? readings[0] : null
-    const fontSize = labelFontSize * 0.88
-    const y = meterAreaHeight - 3
-    ctx.font = `${fontSize}px "JetBrains Mono", monospace`
-    ctx.textBaseline = 'bottom'
+    const plateHeight = 31 * faceScale
+    const plateY = meterAreaHeight - plateHeight - faceScale
 
     if (!leftReading) {
-      ctx.fillStyle = alphaColor(this.getNeedleColor(mainReading), 0.94)
-      ctx.textAlign = 'center'
-      ctx.fillText(`${this.formatNeedleDb(mainReading.db)} dB`, width / 2, y)
+      const plateWidth = Math.min(170 * faceScale, width - sidePadding * 2)
+      this.drawNeedleReadoutPlate(
+        ctx,
+        mainReading,
+        null,
+        (width - plateWidth) / 2,
+        plateY,
+        plateWidth,
+        plateHeight,
+        faceScale,
+      )
       return
     }
 
-    ctx.fillStyle = alphaColor(this.getNeedleColor(leftReading), 0.88)
-    ctx.textAlign = 'left'
-    ctx.fillText(`L  ${this.formatNeedleDb(leftReading.db)} dB`, sidePadding, y)
+    const centerGap = 52 * faceScale
+    const plateWidth = Math.min(
+      148 * faceScale,
+      Math.max(1, (width - sidePadding * 2 - centerGap) / 2),
+    )
+    this.drawNeedleReadoutPlate(
+      ctx,
+      leftReading,
+      'L',
+      sidePadding,
+      plateY,
+      plateWidth,
+      plateHeight,
+      faceScale,
+    )
+    this.drawNeedleReadoutPlate(
+      ctx,
+      mainReading,
+      'R',
+      width - sidePadding - plateWidth,
+      plateY,
+      plateWidth,
+      plateHeight,
+      faceScale,
+    )
+  }
 
-    ctx.fillStyle = alphaColor(this.getNeedleColor(mainReading), 0.96)
+  private drawNeedleReadoutPlate(
+    ctx: CanvasRenderingContext2D,
+    reading: VUNeedleReading,
+    channelLabel: 'L' | 'R' | null,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    faceScale: number,
+  ): void {
+    const channelColor = this.getNeedleColor(reading)
+    const padding = 8 * faceScale
+    const centerY = y + height / 2 + 0.5 * faceScale
+
+    ctx.fillStyle = alphaColor(this.options.labelColor, 0.055)
+    ctx.fillRect(x, y, width, height)
+    ctx.fillStyle = alphaColor(channelColor, 0.72)
+    ctx.fillRect(x, y, width, Math.max(1, 1.5 * faceScale))
+    ctx.strokeStyle = alphaColor(this.options.scaleColor, 0.24)
+    ctx.lineWidth = Math.max(1, faceScale)
+    ctx.strokeRect(x + 0.5 * faceScale, y + 0.5 * faceScale, width - faceScale, height - faceScale)
+
+    ctx.textBaseline = 'middle'
+    if (channelLabel) {
+      ctx.fillStyle = alphaColor(channelColor, 0.82)
+      ctx.font = `700 ${13.5 * faceScale}px "JetBrains Mono", monospace`
+      ctx.textAlign = 'left'
+      ctx.fillText(channelLabel, x + padding, centerY)
+    }
+
+    ctx.fillStyle = alphaColor(channelColor, 0.98)
+    ctx.font = `600 ${19.5 * faceScale}px "JetBrains Mono", monospace`
+    ctx.textAlign = channelLabel ? 'left' : 'center'
+    ctx.fillText(
+      this.formatNeedleDb(reading.db),
+      channelLabel ? x + padding + 24 * faceScale : x + width / 2 - 10 * faceScale,
+      centerY,
+    )
+
+    ctx.fillStyle = alphaColor(this.options.labelColor, 0.56)
+    ctx.font = `600 ${11.5 * faceScale}px "JetBrains Mono", monospace`
     ctx.textAlign = 'right'
-    ctx.fillText(`${this.formatNeedleDb(mainReading.db)} dB  R`, width - sidePadding, y)
+    ctx.fillText('dB', x + width - padding, centerY)
   }
 
   private formatNeedleDb(db: number): string {

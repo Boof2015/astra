@@ -48,6 +48,7 @@ function createCanvasContext(): CanvasRenderingContext2D {
     fillText: () => undefined,
     lineTo: () => undefined,
     moveTo: () => undefined,
+    measureText: (text: string) => ({ width: text.length * 6 }),
     stroke: () => undefined,
     set fillStyle(_value: string | CanvasGradient | CanvasPattern) {},
     set font(_value: string) {},

@@ -1,3 +1,4 @@
+import { buildFrequencyGuides, clampFrequencyRangeToNyquist, frequencyAtNormalizedPosition, type FrequencyScaleMode } from '../../../types/frequencyScale'
 import { audioEngine } from '../AudioEngine'
 import { spectrum as defaultNativeSpectrum, warnNativeUnavailableOnce, type SpectrumNativeAnalyzer } from '../native/index'
 import { defaultVisualizerSessionSource, type VisualizerSessionSource } from './dataSource'
@@ -53,7 +54,7 @@ export interface SpectrumAnalyzerOptions {
   showGrid?: boolean
   gridColor?: string
   labelColor?: string
-  scaleType?: 'linear' | 'log'
+  scaleType?: FrequencyScaleMode
   displayMode?: SpectrumDisplayMode
   smoothing?: number
   minDecibels?: number
@@ -200,7 +201,7 @@ const defaultOptions: ResolvedSpectrumAnalyzerOptions = {
   backgroundColor: 'transparent',
   showGrid: true,
   gridColor: 'rgba(255, 255, 255, 0.1)',
-  labelColor: 'rgba(255, 255, 255, 0.1)',
+  labelColor: 'rgba(255, 255, 255, 0.55)',
   scaleType: 'log',
   displayMode: DEFAULT_SPECTRUM_DISPLAY_MODE,
   smoothing: 0.9,
@@ -525,12 +526,7 @@ export class SpectrumAnalyzer {
   }
 
   private frequencyAtPosition(t: number, minFrequency: number, maxFrequency: number): number {
-    if (this.options.scaleType === 'log') {
-      const logMin = Math.log10(minFrequency)
-      const logMax = Math.log10(maxFrequency)
-      return Math.pow(10, logMin + t * (logMax - logMin))
-    }
-    return minFrequency + t * (maxFrequency - minFrequency)
+    return frequencyAtNormalizedPosition(t, minFrequency, maxFrequency, this.options.scaleType)
   }
 
   private resolvePeakInRange(
@@ -603,6 +599,7 @@ export class SpectrumAnalyzer {
       this.options.tiltReferenceHz,
       this.options.heatmapSmoothing,
       this.options.showBarPeaks,
+      this.options.scaleType,
     ].join(':')
     if (this.barConfigurationKey !== key) {
       this.nativeAnalyzer.configureBars?.({
@@ -616,6 +613,7 @@ export class SpectrumAnalyzer {
         tiltReferenceHz: this.options.tiltReferenceHz,
         heatmapSmoothing: this.options.heatmapSmoothing,
         showPeaks: this.options.showBarPeaks,
+        scaleMode: this.options.scaleType,
       })
       this.barConfigurationKey = key
     }
@@ -1185,8 +1183,7 @@ export class SpectrumAnalyzer {
     this.updateSampleRateIfNeeded()
 
     const nyquist = this.sampleRate / 2
-    const minFrequency = Math.max(1, Math.min(options.minFrequency, nyquist))
-    const maxFrequency = Math.max(minFrequency + 1, Math.min(options.maxFrequency, nyquist))
+    const { minFrequency, maxFrequency } = clampFrequencyRangeToNyquist(this.sampleRate, options.minFrequency, options.maxFrequency)
 
     if (!this.dataSource.isPlaying()) {
       this.clearPendingSpectrumQueues()
@@ -1380,53 +1377,29 @@ export class SpectrumAnalyzer {
 
   private drawGrid(ctx: CanvasRenderingContext2D, minFrequency: number, maxFrequency: number): void {
     const { canvas, options } = this
-    const width = canvas.width
-    const height = canvas.height
     const dpr = window.devicePixelRatio || 1
-
     ctx.strokeStyle = options.gridColor
-    ctx.lineWidth = dpr
-
-    const dbSteps = [-80, -60, -40, -20, 0]
     ctx.fillStyle = options.labelColor
+    ctx.lineWidth = dpr
     ctx.font = `${10 * dpr}px monospace`
-    ctx.textAlign = 'left'
-
-    for (const db of dbSteps) {
-      const normalized = (db - options.minDecibels) / (options.maxDecibels - options.minDecibels)
-      const y = height - normalized * height
-
-      ctx.beginPath()
-      ctx.moveTo(0, y)
-      ctx.lineTo(width, y)
-      ctx.stroke()
-
-      ctx.fillText(`${db}dB`, 4 * dpr, y - 2 * dpr)
-    }
-
-    const freqSteps = [50, 100, 200, 500, 1000, 2000, 5000, 10000]
     ctx.textAlign = 'center'
-
-    for (const freq of freqSteps) {
-      if (freq < minFrequency || freq > maxFrequency) continue
-
-      let x: number
-      if (options.scaleType === 'log') {
-        const logMin = Math.log10(minFrequency)
-        const logMax = Math.log10(maxFrequency)
-        const logFreq = Math.log10(freq)
-        x = ((logFreq - logMin) / (logMax - logMin)) * width
-      } else {
-        x = ((freq - minFrequency) / (maxFrequency - minFrequency)) * width
-      }
-
+    const guides = buildFrequencyGuides(minFrequency, maxFrequency, options.scaleType, canvas.width / dpr)
+    let lastLabelRight = -Infinity
+    for (const guide of guides) {
+      const x = guide.normalizedPosition * canvas.width
+      ctx.globalAlpha = guide.kind === 'minor' ? 0.38 : 1
       ctx.beginPath()
       ctx.moveTo(x, 0)
-      ctx.lineTo(x, height)
+      ctx.lineTo(x, canvas.height)
       ctx.stroke()
-
-      const label = freq >= 1000 ? `${freq / 1000}k` : `${freq}`
-      ctx.fillText(label, x, height - 4 * dpr)
+      ctx.globalAlpha = 1
+      if (guide.label) {
+        const halfWidth = ctx.measureText(guide.label).width / 2
+        if (x - halfWidth >= Math.max(0, lastLabelRight + 4 * dpr) && x + halfWidth <= canvas.width) {
+          ctx.fillText(guide.label, x, canvas.height - 4 * dpr)
+          lastLabelRight = x + halfWidth
+        }
+      }
     }
   }
 

@@ -40,6 +40,8 @@ export interface ResolvedThemeTokens {
   stageSurface: string
   stageBorder: string
   stageGrid: string
+  // Phase-risk shading follows each surface palette, independent of custom/cover-art accents.
+  stageWarning: string
   stageText: string
   stageTextMuted: string
   shadowSoft: string
@@ -66,6 +68,7 @@ type SurfaceTokens = Pick<
   | 'stageSurface'
   | 'stageBorder'
   | 'stageGrid'
+  | 'stageWarning'
   | 'stageText'
   | 'stageTextMuted'
   | 'shadowSoft'
@@ -91,6 +94,7 @@ const DARK_SURFACE_DEFAULTS: SurfaceTokens = {
   stageSurface: 'rgba(8, 10, 14, 0.985)',
   stageBorder: 'rgba(255, 255, 255, 0.08)',
   stageGrid: 'rgba(255, 255, 255, 0.1)',
+  stageWarning: '#8bafbd',
   stageText: 'rgba(255, 255, 255, 0.88)',
   stageTextMuted: 'rgba(255, 255, 255, 0.46)',
   shadowSoft: 'rgba(0, 0, 0, 0.28)',
@@ -112,6 +116,7 @@ const LIGHT_SURFACE_DEFAULTS: SurfaceTokens = {
   stageSurface: 'rgba(255, 255, 255, 0.92)',
   stageBorder: 'rgba(15, 23, 42, 0.12)',
   stageGrid: 'rgba(15, 23, 42, 0.13)',
+  stageWarning: '#607d96',
   stageText: 'rgba(15, 23, 42, 0.82)',
   stageTextMuted: 'rgba(15, 23, 42, 0.48)',
   shadowSoft: 'rgba(15, 23, 42, 0.12)',
@@ -206,6 +211,7 @@ const THEME_PRESETS: Record<ThemePresetId, ThemePresetDefinition> = {
       textSecondary: 'rgba(219, 226, 239, 0.72)',
       textTertiary: 'rgba(190, 202, 223, 0.46)',
     },
+    surfaceOverrides: { stageWarning: '#929dad' },
     accent: '#4fc3f7',
     accentHover: '#8bdaf9',
     accentGlow: 'rgba(79, 195, 247, 0.34)',
@@ -242,6 +248,7 @@ const THEME_PRESETS: Record<ThemePresetId, ThemePresetDefinition> = {
       stageSurface: '#171717',
       stageBorder: '#2a2a2a',
       stageGrid: 'rgba(240, 240, 240, 0.1)',
+      stageWarning: '#829bad',
       stageText: '#d6d6d6',
       stageTextMuted: '#9a9a9a',
       shadowSoft: 'rgba(0, 0, 0, 0.45)',
@@ -265,6 +272,7 @@ const THEME_PRESETS: Record<ThemePresetId, ThemePresetDefinition> = {
       textSecondary: 'rgba(194, 213, 242, 0.72)',
       textTertiary: 'rgba(165, 187, 222, 0.48)',
     },
+    surfaceOverrides: { stageWarning: '#8097bc' },
     accent: '#4f9bff',
     accentHover: '#89b8ff',
     accentGlow: 'rgba(79, 155, 255, 0.34)',
@@ -284,6 +292,7 @@ const THEME_PRESETS: Record<ThemePresetId, ThemePresetDefinition> = {
       textSecondary: 'rgba(242, 214, 188, 0.67)',
       textTertiary: 'rgba(222, 182, 150, 0.44)',
     },
+    surfaceOverrides: { stageWarning: '#bf9a7b' },
     accent: '#ff9f5b',
     accentHover: '#ffbf8f',
     accentGlow: 'rgba(255, 159, 91, 0.34)',
@@ -303,6 +312,7 @@ const THEME_PRESETS: Record<ThemePresetId, ThemePresetDefinition> = {
       textSecondary: 'rgba(255, 255, 255, 0.6)',
       textTertiary: 'rgba(255, 255, 255, 0.4)',
     },
+    surfaceOverrides: { stageWarning: '#b9818d' },
     accent: '#ef4444',
     accentHover: '#f87171',
     accentGlow: 'rgba(239, 68, 68, 0.32)',
@@ -494,6 +504,7 @@ function applyNonAccentTokensToDocument(tokens: ResolvedThemeTokens): void {
   root.style.setProperty('--stage-surface', tokens.stageSurface)
   root.style.setProperty('--stage-border', tokens.stageBorder)
   root.style.setProperty('--stage-grid', tokens.stageGrid)
+  root.style.setProperty('--stage-warning', tokens.stageWarning)
   root.style.setProperty('--stage-text', tokens.stageText)
   root.style.setProperty('--stage-text-muted', tokens.stageTextMuted)
   root.style.setProperty('--shadow-soft', tokens.shadowSoft)

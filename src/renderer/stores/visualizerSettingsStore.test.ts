@@ -19,8 +19,8 @@ const {
   useVisualizerSettingsStore,
 } = await import('./visualizerSettingsStore.ts')
 
-test('v4 migration fills adaptive bar defaults and round-trips valid values', () => {
-  assert.equal(ANALYZER_PROFILE_STORAGE_VERSION, 4)
+test('v5 migration fills adaptive bar defaults and round-trips valid values', () => {
+  assert.equal(ANALYZER_PROFILE_STORAGE_VERSION, 5)
   const migrated = normalizeAnalyzerWorkingState({ scopeSettings: { spectrum: { fftSize: 2048 } } })
   assert.equal(migrated.scopeSettings.spectrum.barDensity, 10)
   assert.equal(migrated.scopeSettings.spectrum.barGapPercent, 25)
@@ -45,7 +45,7 @@ test('v4 migration fills adaptive bar defaults and round-trips valid values', ()
   assert.deepEqual(normalizeAnalyzerWorkingState(customized), customized)
 })
 
-test('bar setters clamp, mark the profile dirty, and persist a v4 envelope', () => {
+test('bar setters clamp, mark the profile dirty, and persist a v5 envelope', () => {
   const store = useVisualizerSettingsStore.getState()
   store.resetToDefaults()
   useVisualizerSettingsStore.getState().setSpectrumBarDensity(999)
@@ -63,11 +63,65 @@ test('bar setters clamp, mark the profile dirty, and persist a v4 envelope', () 
   assert.equal(next.hasUnsavedProfileChanges, true)
 
   const persisted = JSON.parse(values.get(ANALYZER_PROFILES_STORAGE_KEY) ?? '{}')
-  assert.equal(persisted.version, 4)
+  assert.equal(persisted.version, 5)
   assert.equal(persisted.workingState.scopeSettings.spectrum.heatPalette, 'accent')
 })
 
 test.after(() => {
   if (originalLocalStorage) Object.defineProperty(globalThis, 'localStorage', originalLocalStorage)
   else Reflect.deleteProperty(globalThis, 'localStorage')
+})
+
+
+test('v4 profiles acquire safe frequency defaults and new controls survive saving', () => {
+  const old = normalizeAnalyzerWorkingState({ scopeSettings: {
+    spectrum: { fftSize: 8192, smoothing: 0.72 },
+    spectrogram: { scaleMode: 'mel' },
+    vectorscope: { mode: 'polar-bipolar' },
+  } })
+  assert.equal(old.scopeSettings.spectrum.scaleMode, 'log')
+  assert.equal(old.scopeSettings.spectrum.rangeMode, 'audible')
+  assert.equal(old.scopeSettings.spectrum.fftSize, 8192)
+  assert.equal(old.scopeSettings.spectrogram.scaleMode, 'mel')
+  assert.equal(old.scopeSettings.spectrogram.rangeMode, 'audible')
+  assert.equal(old.scopeSettings.vectorscope.zoomDb, 0)
+
+  const store = useVisualizerSettingsStore.getState()
+  store.resetToDefaults()
+  store.setSpectrumScaleMode('mel')
+  store.setSpectrumRangeMode('extended')
+  store.setSpectrogramRangeMode('extended')
+  store.setVectorscopeZoomDb(6)
+  const next = useVisualizerSettingsStore.getState()
+  assert.equal(next.spectrumScaleMode, 'mel')
+  assert.equal(next.vectorscopeZoomDb, 6)
+  assert.equal(next.hasUnsavedProfileChanges, true)
+  const persisted = JSON.parse(values.get(ANALYZER_PROFILES_STORAGE_KEY) ?? '{}')
+  const restored = normalizeAnalyzerWorkingState(persisted.workingState)
+  assert.equal(restored.scopeSettings.spectrum.scaleMode, 'mel')
+  assert.equal(restored.scopeSettings.spectrum.rangeMode, 'extended')
+  assert.equal(restored.scopeSettings.spectrogram.rangeMode, 'extended')
+  assert.equal(restored.scopeSettings.vectorscope.zoomDb, 6)
+  store.revertToSelectedProfile()
+  assert.equal(useVisualizerSettingsStore.getState().spectrumScaleMode, 'log')
+  assert.equal(useVisualizerSettingsStore.getState().vectorscopeZoomDb, 0)
+})
+
+test('Reassigned spectrogram is opt-in and survives profile save, normalization and revert', () => {
+  const store = useVisualizerSettingsStore.getState()
+  store.resetToDefaults()
+  assert.equal(useVisualizerSettingsStore.getState().spectrogramClarityMode, 'sharper')
+  assert.equal(normalizeAnalyzerWorkingState({}).scopeSettings.spectrogram.clarityMode, 'sharper')
+
+  store.setSpectrogramClarityMode('reassigned')
+  assert.equal(useVisualizerSettingsStore.getState().hasUnsavedProfileChanges, true)
+  const saved = store.saveCurrentProfileAs('Reassigned spectrogram')
+  assert.equal(saved.ok, true)
+  assert.equal(useVisualizerSettingsStore.getState().hasUnsavedProfileChanges, false)
+  const persisted = JSON.parse(values.get(ANALYZER_PROFILES_STORAGE_KEY) ?? '{}')
+  assert.equal(normalizeAnalyzerWorkingState(persisted.workingState).scopeSettings.spectrogram.clarityMode, 'reassigned')
+
+  store.setSpectrogramClarityMode('classic')
+  store.revertToSelectedProfile()
+  assert.equal(useVisualizerSettingsStore.getState().spectrogramClarityMode, 'reassigned')
 })

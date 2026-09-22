@@ -33,6 +33,7 @@
   --stage-surface: rgba(8, 10, 14, 0.985);
   --stage-border: rgba(255, 255, 255, 0.08);
   --stage-grid: rgba(255, 255, 255, 0.1);
+  --stage-warning: #8bafbd;
   --stage-text: rgba(255, 255, 255, 0.88);
   --stage-text-muted: rgba(255, 255, 255, 0.46);
   --shadow-soft: rgba(0, 0, 0, 0.28);
@@ -15450,6 +15451,11 @@ body::after {
   width: min(620px, calc(100vw - 64px));
 }
 
+.analyzer-edit-active-strip.is-spectrogram-active {
+  flex: 0 0 auto;
+  width: min(560px, calc(100vw - 64px));
+}
+
 .analyzer-edit-active-strip.is-spectrum-active {
   flex: 0 0 auto;
   width: min(1120px, calc(100vw - var(--sidebar-width) - 64px));
@@ -15459,7 +15465,9 @@ body::after {
 .analyzer-edit-active-strip.is-waveform-active .analyzer-edit-active-headline,
 .analyzer-edit-active-strip.is-waveform-active .analyzer-edit-active-controls,
 .analyzer-edit-active-strip.is-spectrum-active .analyzer-edit-active-headline,
-.analyzer-edit-active-strip.is-spectrum-active .analyzer-edit-active-controls {
+.analyzer-edit-active-strip.is-spectrum-active .analyzer-edit-active-controls,
+.analyzer-edit-active-strip.is-spectrogram-active .analyzer-edit-active-headline,
+.analyzer-edit-active-strip.is-spectrogram-active .analyzer-edit-active-controls {
   width: 100%;
 }
 
@@ -15584,7 +15592,7 @@ body::after {
 .analyzer-edit-active-controls .analyzer-edit-spectrogram-selects {
   flex: 1 0 100%;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
   gap: 8px 10px;
   min-width: min(320px, 100%);
 }

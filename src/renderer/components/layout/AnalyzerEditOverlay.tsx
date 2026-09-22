@@ -1,3 +1,5 @@
+import type { FrequencyScaleMode, FrequencyRangeMode } from '../../../types/frequencyScale'
+import { MIN_VECTORSCOPE_ZOOM_DB, MAX_VECTORSCOPE_ZOOM_DB, formatVectorscopeZoomDb } from '../../../types/vectorscope'
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import type { ScopeKind } from '../../../types/scopePopout'
 import {
@@ -134,6 +136,7 @@ function spectrogramClarityLabel(mode: SpectrogramClarityMode): string {
     case 'classic': return 'Classic'
     case 'sharp': return 'Sharp'
     case 'sharper': return 'Sharper'
+    case 'reassigned': return 'Reassigned'
   }
 }
 
@@ -309,6 +312,14 @@ export default function AnalyzerEditOverlay({
   onHiddenDrop,
   onScopeHoverChange,
 }: AnalyzerEditOverlayProps) {
+  const spectrumScaleMode = useVisualizerSettingsStore((state) => state.spectrumScaleMode)
+  const setSpectrumScaleMode = useVisualizerSettingsStore((state) => state.setSpectrumScaleMode)
+  const spectrumRangeMode = useVisualizerSettingsStore((state) => state.spectrumRangeMode)
+  const setSpectrumRangeMode = useVisualizerSettingsStore((state) => state.setSpectrumRangeMode)
+  const spectrogramRangeMode = useVisualizerSettingsStore((state) => state.spectrogramRangeMode)
+  const setSpectrogramRangeMode = useVisualizerSettingsStore((state) => state.setSpectrogramRangeMode)
+  const vectorscopeZoomDb = useVisualizerSettingsStore((state) => state.vectorscopeZoomDb)
+  const setVectorscopeZoomDb = useVisualizerSettingsStore((state) => state.setVectorscopeZoomDb)
   const profiles = useVisualizerSettingsStore((state) => state.profiles)
   const selectedProfileId = useVisualizerSettingsStore((state) => state.selectedProfileId)
   const selectedProfileName = useVisualizerSettingsStore((state) => state.selectedProfileName)
@@ -502,6 +513,24 @@ export default function AnalyzerEditOverlay({
         return (
           <div className="analyzer-edit-active-controls analyzer-edit-active-controls-inline analyzer-edit-active-controls-spectrum">
             <div className="analyzer-edit-spectrum-control-grid analyzer-edit-spectrum-primary-grid">
+              <div className="analyzer-edit-mini-control">
+                <span className="analyzer-edit-corner-label">Scale</span>
+                <select className="analyzer-edit-select" aria-label="Spectrum scale" value={spectrumScaleMode}
+                  onChange={(event) => setSpectrumScaleMode(event.target.value as FrequencyScaleMode)}>
+                  <option value="log">Log</option>
+                  <option value="mel">Mel</option>
+                  <option value="linear">Linear</option>
+                </select>
+              </div>
+              <div className="analyzer-edit-mini-control">
+                <span className="analyzer-edit-corner-label">Range</span>
+                <select className="analyzer-edit-select" aria-label="Spectrum range" value={spectrumRangeMode}
+                  onChange={(event) => setSpectrumRangeMode(event.target.value as FrequencyRangeMode)}>
+                  <option value="audible">Audible</option>
+                  <option value="extended">Extended</option>
+                </select>
+              </div>
+
               <div className="analyzer-edit-mini-control">
                 <span className="analyzer-edit-corner-label">Display</span>
                 <select
@@ -737,6 +766,12 @@ export default function AnalyzerEditOverlay({
                 <option value="linear-bipolar">Linear (Bi)</option>
               </select>
             </div>
+            <div className="analyzer-edit-mini-control analyzer-edit-mini-control-range" onDoubleClick={() => setVectorscopeZoomDb(0)} title="Double-click to reset zoom">
+              <span className="analyzer-edit-corner-label">Zoom {formatVectorscopeZoomDb(vectorscopeZoomDb)}</span>
+              <input type="range" className="analyzer-edit-range" aria-label="Vectorscope zoom"
+                min={MIN_VECTORSCOPE_ZOOM_DB} max={MAX_VECTORSCOPE_ZOOM_DB} step={1}
+                value={vectorscopeZoomDb} onChange={(event) => setVectorscopeZoomDb(Number(event.target.value))} />
+            </div>
             <button
               type="button"
               className={`analyzer-edit-button ${vectorscopeMultiband ? 'is-active' : ''}`.trim()}
@@ -750,6 +785,15 @@ export default function AnalyzerEditOverlay({
         return (
           <div className="analyzer-edit-active-controls">
             <div className="analyzer-edit-spectrogram-selects">
+              <div className="analyzer-edit-mini-control">
+                <span className="analyzer-edit-corner-label">Range</span>
+                <select className="analyzer-edit-select" aria-label="Spectrogram range" value={spectrogramRangeMode}
+                  onChange={(event) => setSpectrogramRangeMode(event.target.value as FrequencyRangeMode)}>
+                  <option value="audible">Audible</option>
+                  <option value="extended">Extended</option>
+                </select>
+              </div>
+
             <div className="analyzer-edit-mini-control">
               <span className="analyzer-edit-corner-label">FFT</span>
               <select
@@ -781,11 +825,13 @@ export default function AnalyzerEditOverlay({
               <select
                 className="analyzer-edit-select"
                 value={spectrogramClarityMode}
+                aria-label="Spectrogram mode"
                 onChange={(event) => setSpectrogramClarityMode(event.target.value as SpectrogramClarityMode)}
               >
                 <option value="classic">Classic</option>
                 <option value="sharp">Sharp</option>
                 <option value="sharper">Sharper</option>
+                <option value="reassigned">Reassigned</option>
               </select>
             </div>
             <div className="analyzer-edit-mini-control">
@@ -1112,7 +1158,7 @@ export default function AnalyzerEditOverlay({
             style={{ gridColumn: `${activeScopeIndex + 1}` }}
           >
             <div
-              className={`analyzer-edit-active-strip ${activeScope === 'waveform' ? 'is-waveform-active' : ''} ${activeScope === 'spectrum' ? 'is-spectrum-active' : ''}`.trim()}
+              className={`analyzer-edit-active-strip ${activeScope === 'waveform' ? 'is-waveform-active' : ''} ${activeScope === 'spectrum' ? 'is-spectrum-active' : ''} ${activeScope === 'spectrogram' ? 'is-spectrogram-active' : ''}`.trim()}
               ref={activeStripRef}
               onMouseEnter={() => onScopeHoverChange(activeScope)}
             >

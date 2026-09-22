@@ -1,12 +1,8 @@
 import { useEffect, useMemo, useRef } from 'react'
-import {
-  isNativeAvailable,
-  oscilloscope as nativeOscilloscope,
-  OSCILLOSCOPE_BUFFER_SIZE,
-  vectorscope as nativeVectorscope
-} from '../../audio/native/index'
-import { LUFSMeter, SpectrumAnalyzer, Spectrogram, VUMeter, Waveform } from '../../audio/visualizers'
-import { getNormalizedOscilloscopeDisplaySamples } from '../../audio/native/oscilloscopeDisplaySamples'
+import { LUFSMeter, Oscilloscope, SpectrumAnalyzer, Spectrogram, Vectorscope, VUMeter, Waveform } from '../../audio/visualizers'
+import { createMonoSampleQueue, createStereoSampleQueue } from '../../audio/visualizerSampleQueue'
+import { nominalFrequencyBoundsForRange, normalizeFrequencyScaleMode, normalizeFrequencyRangeMode, type FrequencyScaleMode, type FrequencyRangeMode } from '../../../types/frequencyScale'
+import { normalizeVectorscopeZoomDb } from '../../../types/vectorscope'
 import {
   isScopeKind,
   type ScopeKind,
@@ -55,78 +51,13 @@ import {
   DEFAULT_SPECTRUM_HEATMAP_SMOOTHING,
   DEFAULT_SPECTRUM_SMOOTHING,
   isVectorscopeMode,
-  type VectorscopeMode,
 } from '../../stores/visualizerSettingsStore'
 import { CLASSIC_SPECTRUM_HEAT_COLORS } from '../../audio/visualizers/spectrumHeatPalette'
 import { useBufferedCanvasResize } from '../../hooks/useBufferedCanvasResize'
-import { transformPoint, drawVectorscopeGridForMode, getVectorscopeLayout } from '../../audio/visualizers/vectorscopeGrids'
-import { MultibandSplitter, MultibandBuffer, BAND_COLORS } from '../../audio/visualizers/multibandSplitter'
 import '../../styles/scope-popout.css'
 
-const OSCILLOSCOPE_WARMUP_SAMPLES = 4096
 const DEFAULT_SPECTRUM_LINE_COLOR = '#38bdf8'
 const DEFAULT_SPECTRUM_FFT_SIZE = 4096
-
-function parseRgbChannels(color: string): string | null {
-  const normalized = color.trim()
-
-  if (normalized.startsWith('#')) {
-    const hex = normalized.slice(1)
-    const expanded = hex.length === 3
-      ? hex.split('').map((ch) => `${ch}${ch}`).join('')
-      : hex
-
-    if (expanded.length === 6) {
-      const r = Number.parseInt(expanded.slice(0, 2), 16)
-      const g = Number.parseInt(expanded.slice(2, 4), 16)
-      const b = Number.parseInt(expanded.slice(4, 6), 16)
-      if (!Number.isNaN(r) && !Number.isNaN(g) && !Number.isNaN(b)) {
-        return `${r}, ${g}, ${b}`
-      }
-    }
-  }
-
-  const rgbMatch = /^rgba?\((.*)\)$/i.exec(normalized)
-  if (!rgbMatch) return null
-
-  const tokens = rgbMatch[1]
-    ?.split(',')
-    .map((token) => token.trim())
-    .filter(Boolean) ?? []
-  if (tokens.length < 3) return null
-
-  const r = Number.parseFloat(tokens[0])
-  const g = Number.parseFloat(tokens[1])
-  const b = Number.parseFloat(tokens[2])
-  if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return null
-
-  return `${Math.max(0, Math.min(255, Math.round(r)))}, ${Math.max(0, Math.min(255, Math.round(g)))}, ${Math.max(0, Math.min(255, Math.round(b)))}`
-}
-
-function highContrastUnderfillColor(accentColor: string, alpha: number): string {
-  const safeAlpha = Math.max(0, Math.min(1, alpha))
-  const channels = parseRgbChannels(accentColor)
-  const nearWhite = { r: 245, g: 248, b: 252 }
-  const tintAmount = 0.18
-
-  if (!channels) {
-    return `rgba(${nearWhite.r}, ${nearWhite.g}, ${nearWhite.b}, ${safeAlpha})`
-  }
-
-  const [accentR, accentG, accentB] = channels
-    .split(',')
-    .map((token) => Number.parseFloat(token.trim()))
-
-  if (!Number.isFinite(accentR) || !Number.isFinite(accentG) || !Number.isFinite(accentB)) {
-    return `rgba(${nearWhite.r}, ${nearWhite.g}, ${nearWhite.b}, ${safeAlpha})`
-  }
-
-  const mix = (base: number, tint: number): number => Math.round((base * (1 - tintAmount)) + (tint * tintAmount))
-  const r = mix(nearWhite.r, accentR)
-  const g = mix(nearWhite.g, accentG)
-  const b = mix(nearWhite.b, accentB)
-  return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`
-}
 
 function getScopeLabel(scope: ScopeKind): string {
   switch (scope) {
@@ -147,28 +78,6 @@ function getScopeLabel(scope: ScopeKind): string {
   }
 }
 
-function drawUnavailableMessage(ctx: CanvasRenderingContext2D, width: number, height: number): void {
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.62)'
-  ctx.font = '12px "JetBrains Mono", monospace'
-  ctx.textAlign = 'center'
-  ctx.fillText('Native visualizer module unavailable', width / 2, height / 2)
-}
-
-function drawScopeGrid(ctx: CanvasRenderingContext2D, width: number, height: number): void {
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)'
-  ctx.lineWidth = 1
-
-  ctx.beginPath()
-  ctx.moveTo(0, height / 2)
-  ctx.lineTo(width, height / 2)
-  ctx.stroke()
-
-  ctx.beginPath()
-  ctx.moveTo(width / 2, 0)
-  ctx.lineTo(width / 2, height)
-  ctx.stroke()
-}
-
 function getSpectrumGradientColors(lineColor: string): string[] {
   return ['rgba(0, 255, 255, 0)', `${lineColor}33`, `${lineColor}66`]
 }
@@ -186,6 +95,8 @@ function SpectrumScopeCanvas() {
   const tiltDbPerOctaveRef = useRef(DEFAULT_SPECTRUM_TILT_DB_PER_OCTAVE)
   const heatmapRef = useRef(false)
   const heatmapTiltDbPerOctaveRef = useRef(DEFAULT_SPECTRUM_HEATMAP_TILT_DB_PER_OCTAVE)
+  const scaleModeRef = useRef<FrequencyScaleMode>('log')
+  const rangeModeRef = useRef<FrequencyRangeMode>('audible')
   const smoothingRef = useRef(DEFAULT_SPECTRUM_SMOOTHING)
   const heatmapSmoothingRef = useRef(DEFAULT_SPECTRUM_HEATMAP_SMOOTHING)
   const barDensityRef = useRef(DEFAULT_SPECTRUM_BAR_DENSITY)
@@ -210,6 +121,8 @@ function SpectrumScopeCanvas() {
       const nextTiltDbPerOctave = chunk.spectrumTiltDbPerOctave
       const nextHeatmap = Boolean(chunk.spectrumHeatmap)
       const nextHeatmapTiltDbPerOctave = chunk.spectrumHeatmapTiltDbPerOctave
+      const nextScaleMode = normalizeFrequencyScaleMode(chunk.spectrumScaleMode)
+      const nextRangeMode = normalizeFrequencyRangeMode(chunk.spectrumRangeMode)
       const nextSmoothing = chunk.spectrumSmoothing
       const nextHeatmapSmoothing = chunk.spectrumHeatmapSmoothing
       const nextBarDensity = chunk.spectrumBarDensity
@@ -218,6 +131,8 @@ function SpectrumScopeCanvas() {
       const nextShowBarPeaks = Boolean(chunk.spectrumShowBarPeaks)
       const nextHeatColors = chunk.spectrumHeatColors
       const optionsChanged =
+        nextScaleMode !== scaleModeRef.current ||
+        nextRangeMode !== rangeModeRef.current ||
         nextFftSize !== fftSizeRef.current ||
         nextDisplayMode !== displayModeRef.current ||
         nextLineColor !== lineColorRef.current ||
@@ -238,6 +153,8 @@ function SpectrumScopeCanvas() {
       tiltDbPerOctaveRef.current = nextTiltDbPerOctave
       heatmapRef.current = nextHeatmap
       heatmapTiltDbPerOctaveRef.current = nextHeatmapTiltDbPerOctave
+      scaleModeRef.current = nextScaleMode
+      rangeModeRef.current = nextRangeMode
       smoothingRef.current = nextSmoothing
       heatmapSmoothingRef.current = nextHeatmapSmoothing
       barDensityRef.current = nextBarDensity
@@ -265,6 +182,8 @@ function SpectrumScopeCanvas() {
           heatmapFill: nextHeatmap,
           tiltDbPerOctave: nextTiltDbPerOctave,
           heatmapTiltDbPerOctave: nextHeatmapTiltDbPerOctave,
+          scaleType: nextScaleMode,
+          ...nominalFrequencyBoundsForRange(nextRangeMode),
           smoothing: nextSmoothing,
           heatmapSmoothing: nextHeatmapSmoothing,
           barDensity: nextBarDensity,
@@ -301,7 +220,8 @@ function SpectrumScopeCanvas() {
         fftSize: fftSizeRef.current,
         displayMode: displayModeRef.current,
         gradientColors: getSpectrumGradientColors(lineColorRef.current),
-        scaleType: 'log',
+        scaleType: scaleModeRef.current,
+        ...nominalFrequencyBoundsForRange(rangeModeRef.current),
         showGrid: true,
         dataSource: {
           getPendingSpectrumSamples: () => {
@@ -339,179 +259,55 @@ function SpectrumScopeCanvas() {
 function OscilloscopeScopeCanvas() {
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const { sizeRef: canvasSizeRef } = useBufferedCanvasResize(containerRef, canvasRef, {
-    scaleContextToDpr: true,
-  })
-  const animationRef = useRef<number | null>(null)
-
-  const pendingChunksRef = useRef<Float32Array[]>([])
+  const visualizerRef = useRef<Oscilloscope | null>(null)
+  const pendingRef = useRef(createMonoSampleQueue())
   const sampleRateRef = useRef(48000)
-  const pitchLockRef = useRef(true)
-  const underfillEnabledRef = useRef(false)
-  const lineColorRef = useRef('#38bdf8')
-  const samplesReceivedRef = useRef(0)
-  const configuredSampleRateRef = useRef(0)
-  const configuredPitchLockRef = useRef<boolean | null>(null)
+  const isPlayingRef = useRef(false)
+  const resetListenersRef = useRef(new Set<() => void>())
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
+    applyResizeNow()
+    if (!canvasRef.current) return
+    const visualizer = new Oscilloscope(canvasRef.current, {
+      lineColor: DEFAULT_SPECTRUM_LINE_COLOR,
+      dataSource: {
+        getPendingOscilloscopeSamples: () => pendingRef.current.drain(),
+        getSampleRate: () => sampleRateRef.current,
+        isPlaying: () => isPlayingRef.current,
+        subscribeToSessionChanges: (listener) => {
+          resetListenersRef.current.add(listener)
+          return () => { resetListenersRef.current.delete(listener) }
+        },
+      },
+    })
+    visualizerRef.current = visualizer
     const unsubscribe = window.electronAPI.scopePopout.onChunk((chunk) => {
       if (chunk.scope !== 'oscilloscope') return
       sampleRateRef.current = Math.max(1, chunk.sampleRate)
-      pitchLockRef.current = chunk.pitchLock
-      const rawUnderfillEnabled = (chunk as { oscilloscopeUnderfillEnabled?: unknown }).oscilloscopeUnderfillEnabled
-      underfillEnabledRef.current = typeof rawUnderfillEnabled === 'boolean' ? rawUnderfillEnabled : false
-      lineColorRef.current = chunk.lineColor
-
+      visualizer.setOptions({ lineColor: chunk.lineColor, pitchLock: chunk.pitchLock, underfillEnabled: chunk.oscilloscopeUnderfillEnabled })
       if (chunk.reset) {
-        pendingChunksRef.current = []
-        samplesReceivedRef.current = 0
-        if (isNativeAvailable()) {
-          nativeOscilloscope.reset()
-        }
-        return
+        pendingRef.current.clear()
+        isPlayingRef.current = false
+        for (const reset of resetListenersRef.current) reset()
+      } else if (chunk.leftChunks.length > 0) {
+        for (const samples of chunk.leftChunks) pendingRef.current.push(samples, sampleRateRef.current * 0.25)
+        isPlayingRef.current = true
       }
-
-      if (chunk.leftChunks.length > 0) {
-        pendingChunksRef.current.push(...chunk.leftChunks)
-      }
+      visualizer.invalidate()
     })
-
-    return () => unsubscribe()
-  }, [])
-
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-
-    const draw = () => {
-      const { width, height } = canvasSizeRef.current
-      ctx.clearRect(0, 0, width, height)
-      drawScopeGrid(ctx, width, height)
-
-      if (!isNativeAvailable()) {
-        drawUnavailableMessage(ctx, width, height)
-        animationRef.current = null
-        return
-      }
-
-      const sampleRate = sampleRateRef.current
-      const pitchLock = pitchLockRef.current
-
-      if (configuredSampleRateRef.current !== sampleRate) {
-        nativeOscilloscope.setSampleRate(sampleRate)
-        const displaySamples = getNormalizedOscilloscopeDisplaySamples(sampleRate)
-        nativeOscilloscope.setDisplaySamples(displaySamples)
-        configuredSampleRateRef.current = sampleRate
-      }
-      if (configuredPitchLockRef.current !== pitchLock) {
-        nativeOscilloscope.setPitchLock(pitchLock)
-        configuredPitchLockRef.current = pitchLock
-      }
-
-      const pendingChunks = pendingChunksRef.current
-      pendingChunksRef.current = []
-      for (const chunk of pendingChunks) {
-        nativeOscilloscope.pushSamples(chunk)
-        samplesReceivedRef.current += chunk.length
-      }
-
-      if (pitchLock && samplesReceivedRef.current < OSCILLOSCOPE_WARMUP_SAMPLES) {
-        animationRef.current = window.requestAnimationFrame(draw)
-        return
-      }
-
-      const result = nativeOscilloscope.processContinuous()
-      if (!result || result.samplesToShow <= 0) {
-        animationRef.current = window.requestAnimationFrame(draw)
-        return
-      }
-
-      let triggerIndex = result.triggerIndex
-      if (!pitchLock) {
-        triggerIndex = result.writePos - result.samplesToShow
-        while (triggerIndex < 0) {
-          triggerIndex += OSCILLOSCOPE_BUFFER_SIZE
-        }
-      }
-
-      const renderData = nativeOscilloscope.getSamples(Math.floor(triggerIndex), result.samplesToShow)
-      if (!renderData || renderData.length === 0) {
-        animationRef.current = window.requestAnimationFrame(draw)
-        return
-      }
-
-      const lineColor = lineColorRef.current
-      const underfillEnabled = underfillEnabledRef.current
-      const sliceWidth = width / result.samplesToShow
-      const centerY = height / 2
-      const points: Array<{ x: number; y: number }> = []
-      for (let i = 0; i < result.samplesToShow && i < renderData.length; i++) {
-        const x = i * sliceWidth
-        const y = ((1 - renderData[i] * 1.8) / 2) * height
-        points.push({ x, y })
-      }
-
-      if (points.length < 2) {
-        animationRef.current = window.requestAnimationFrame(draw)
-        return
-      }
-
-      if (underfillEnabled) {
-        ctx.beginPath()
-        ctx.moveTo(points[0].x, centerY)
-        for (const point of points) {
-          ctx.lineTo(point.x, point.y)
-        }
-        ctx.lineTo(points[points.length - 1].x, centerY)
-        ctx.closePath()
-        const peakAlpha = 0.26
-        const shoulderAlpha = peakAlpha * 0.74
-        const centerlineAlpha = 0.08
-        const fillGradient = ctx.createLinearGradient(0, 0, 0, height)
-        fillGradient.addColorStop(0, highContrastUnderfillColor(lineColor, peakAlpha))
-        fillGradient.addColorStop(0.44, highContrastUnderfillColor(lineColor, peakAlpha * 0.94))
-        fillGradient.addColorStop(0.48, highContrastUnderfillColor(lineColor, shoulderAlpha))
-        fillGradient.addColorStop(0.5, highContrastUnderfillColor(lineColor, centerlineAlpha))
-        fillGradient.addColorStop(0.52, highContrastUnderfillColor(lineColor, shoulderAlpha))
-        fillGradient.addColorStop(0.56, highContrastUnderfillColor(lineColor, peakAlpha * 0.94))
-        fillGradient.addColorStop(1, highContrastUnderfillColor(lineColor, peakAlpha))
-        ctx.fillStyle = fillGradient
-        ctx.fill()
-      }
-
-      ctx.beginPath()
-      ctx.moveTo(points[0].x, points[0].y)
-      for (let i = 1; i < points.length; i++) {
-        ctx.lineTo(points[i].x, points[i].y)
-      }
-      ctx.lineWidth = 1.8
-      ctx.strokeStyle = lineColor
-      ctx.lineCap = 'round'
-      ctx.lineJoin = 'round'
-      ctx.stroke()
-
-      animationRef.current = window.requestAnimationFrame(draw)
-    }
-
-    animationRef.current = window.requestAnimationFrame(draw)
-
+    visualizer.start()
+    visualizer.resize()
     return () => {
-      if (animationRef.current !== null) {
-        window.cancelAnimationFrame(animationRef.current)
-        animationRef.current = null
-      }
-      if (isNativeAvailable()) {
-        nativeOscilloscope.reset()
-      }
-      pendingChunksRef.current = []
-      samplesReceivedRef.current = 0
-      configuredSampleRateRef.current = 0
-      configuredPitchLockRef.current = null
-      underfillEnabledRef.current = false
+      unsubscribe()
+      visualizer.dispose()
+      visualizerRef.current = null
+      pendingRef.current.clear()
+      isPlayingRef.current = false
     }
-  }, [canvasSizeRef])
+  }, [applyResizeNow])
 
   return (
     <div ref={containerRef} className="scope-popout-canvas-wrap">
@@ -523,206 +319,68 @@ function OscilloscopeScopeCanvas() {
 function VectorscopeScopeCanvas() {
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const { sizeRef: canvasSizeRef } = useBufferedCanvasResize(containerRef, canvasRef, {
-    scaleContextToDpr: true,
-  })
-  const animationRef = useRef<number | null>(null)
-
-  const pendingChunksRef = useRef<Array<{ left: Float32Array; right: Float32Array }>>([])
+  const visualizerRef = useRef<Vectorscope | null>(null)
+  const pendingRef = useRef(createStereoSampleQueue())
   const sampleRateRef = useRef(48000)
-  const lineColorRef = useRef('#38bdf8')
-  const vectorscopeModeRef = useRef<VectorscopeMode>('lissajous')
-  const vectorscopeMultibandRef = useRef(false)
-  const configuredSampleRateRef = useRef(0)
-  const splitterRef = useRef<MultibandSplitter>(new MultibandSplitter())
-  const multibandBufferRef = useRef<MultibandBuffer>(new MultibandBuffer())
+  const isPlayingRef = useRef(false)
+  const resetListenersRef = useRef(new Set<() => void>())
+  const { applyResizeNow } = useBufferedCanvasResize(containerRef, canvasRef, {
+    onResize: () => visualizerRef.current?.resize(),
+  })
 
   useEffect(() => {
+    applyResizeNow()
+    if (!canvasRef.current) return
+    const visualizer = new Vectorscope(canvasRef.current, {
+      lineColor: DEFAULT_SPECTRUM_LINE_COLOR,
+      dataSource: {
+        getPendingVectorscopeSamples: () => pendingRef.current.drain(),
+        getSampleRate: () => sampleRateRef.current,
+        isPlaying: () => isPlayingRef.current,
+        subscribeToSessionChanges: (listener) => {
+          resetListenersRef.current.add(listener)
+          return () => { resetListenersRef.current.delete(listener) }
+        },
+      },
+    })
+    visualizerRef.current = visualizer
+    let previousOptions: Parameters<Vectorscope['setOptions']>[0] = {}
     const unsubscribe = window.electronAPI.scopePopout.onChunk((chunk) => {
       if (chunk.scope !== 'vectorscope') return
       sampleRateRef.current = Math.max(1, chunk.sampleRate)
-      lineColorRef.current = chunk.lineColor
-
-      if ('vectorscopeMode' in chunk && isVectorscopeMode(chunk.vectorscopeMode)) {
-        vectorscopeModeRef.current = chunk.vectorscopeMode
+      const nextOptions: Parameters<Vectorscope['setOptions']>[0] = {
+        lineColor: chunk.lineColor,
+        mode: isVectorscopeMode(chunk.vectorscopeMode) ? chunk.vectorscopeMode : 'lissajous',
+        multiband: chunk.vectorscopeMultiband,
+        zoomDb: normalizeVectorscopeZoomDb(chunk.vectorscopeZoomDb),
+        phaseRiskColor: chunk.vectorscopePhaseRiskColor,
       }
-      if ('vectorscopeMultiband' in chunk) {
-        vectorscopeMultibandRef.current = Boolean(chunk.vectorscopeMultiband)
+      if (nextOptions.lineColor !== previousOptions.lineColor || nextOptions.mode !== previousOptions.mode
+        || nextOptions.multiband !== previousOptions.multiband || nextOptions.zoomDb !== previousOptions.zoomDb
+        || nextOptions.phaseRiskColor !== previousOptions.phaseRiskColor) {
+        visualizer.setOptions(nextOptions)
+        previousOptions = nextOptions
       }
-
       if (chunk.reset) {
-        pendingChunksRef.current = []
-        if (isNativeAvailable()) {
-          nativeVectorscope.reset()
-        }
-        splitterRef.current.reset()
-        multibandBufferRef.current.reset()
-        return
+        pendingRef.current.clear()
+        isPlayingRef.current = false
+        for (const reset of resetListenersRef.current) reset()
+      } else if (chunk.stereoChunks.length > 0) {
+        for (const samples of chunk.stereoChunks) pendingRef.current.push(samples, sampleRateRef.current * 0.25)
+        isPlayingRef.current = true
       }
-
-      if (chunk.stereoChunks.length > 0) {
-        pendingChunksRef.current.push(...chunk.stereoChunks)
-      }
+      visualizer.invalidate()
     })
-
-    return () => unsubscribe()
-  }, [])
-
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-
-    const draw = () => {
-      const { width, height } = canvasSizeRef.current
-
-      ctx.clearRect(0, 0, width, height)
-
-      const mode = vectorscopeModeRef.current
-      const isPolar = mode === 'polar-unipolar' || mode === 'polar-bipolar'
-      const visualGain = isPolar ? 1.2 : 1.5
-      const layout = getVectorscopeLayout(width, height, mode)
-      const centerX = layout.centerX
-      const centerY = layout.centerY
-      const scale = layout.radius * visualGain
-
-      drawVectorscopeGridForMode(
-        ctx,
-        width,
-        height,
-        'rgba(255, 255, 255, 0.08)',
-        'rgba(255, 255, 255, 0.04)',
-        'rgba(255, 255, 255, 0.5)',
-        mode,
-      )
-
-      const lineColor = lineColorRef.current
-      const multiband = vectorscopeMultibandRef.current
-      const sampleRate = sampleRateRef.current
-
-      // Configure native sample rate
-      if (isNativeAvailable() && configuredSampleRateRef.current !== sampleRate) {
-        nativeVectorscope.setSampleRate(sampleRate)
-        configuredSampleRateRef.current = sampleRate
-      }
-
-      const pendingChunks = pendingChunksRef.current
-      pendingChunksRef.current = []
-
-      if (multiband) {
-        // Multiband path: split into 3 bands, buffer, draw all with age-based opacity
-        if (sampleRate > 0) {
-          splitterRef.current.configure(sampleRate)
-        }
-
-        // Also push to native so switching back is seamless
-        if (isNativeAvailable()) {
-          for (const chunk of pendingChunks) {
-            nativeVectorscope.pushSamples(chunk.left, chunk.right)
-          }
-        }
-
-        // Split and accumulate into circular buffer
-        for (const chunk of pendingChunks) {
-          const bands = splitterRef.current.split(chunk.left, chunk.right)
-          multibandBufferRef.current.push(bands)
-        }
-
-        // Draw all buffered points with age-based opacity
-        const result = multibandBufferRef.current.getPoints(4096)
-        if (result.count > 0) {
-          const bandOrder = ['low', 'mid', 'high'] as const
-          const segments = 8
-          const pointsPerSegment = Math.ceil(result.count / segments)
-
-          for (let seg = 0; seg < segments; seg++) {
-            const start = seg * pointsPerSegment
-            const end = Math.min((seg + 1) * pointsPerSegment, result.count)
-            if (start >= result.count) break
-
-            ctx.globalAlpha = 0.16 + 0.84 * (seg / Math.max(1, segments - 1))
-
-            for (const band of bandOrder) {
-              const bandData = result.bands[band]
-              ctx.fillStyle = BAND_COLORS[band]
-
-              for (let i = start; i < end; i++) {
-                const point = transformPoint(bandData.left[i], bandData.right[i], mode)
-                if (!point) continue
-
-                const px = centerX + point.dx * scale
-                const py = centerY - point.dy * scale
-                ctx.fillRect(px - 1, py - 1, 2, 2)
-              }
-            }
-          }
-          ctx.globalAlpha = 1
-        }
-      } else if (isNativeAvailable()) {
-        for (const chunk of pendingChunks) {
-          nativeVectorscope.pushSamples(chunk.left, chunk.right)
-        }
-
-        const points = nativeVectorscope.getPoints(4096)
-        if (points && points.count > 0) {
-          const segments = 8
-          const pointsPerSegment = Math.ceil(points.count / segments)
-
-          for (let segment = 0; segment < segments; segment++) {
-            const start = segment * pointsPerSegment
-            const end = Math.min(points.count, (segment + 1) * pointsPerSegment)
-            if (start >= points.count) break
-
-            ctx.fillStyle = lineColor
-            ctx.globalAlpha = 0.16 + 0.84 * (segment / Math.max(1, segments - 1))
-
-            for (let i = start; i < end; i++) {
-              // Native returns x=Right, y=Left
-              const point = transformPoint(points.y[i], points.x[i], mode)
-              if (!point) continue
-
-              const px = centerX + point.dx * scale
-              const py = centerY - point.dy * scale
-              ctx.fillRect(px - 1, py - 1, 2, 2)
-            }
-          }
-          ctx.globalAlpha = 1
-        }
-      } else {
-        ctx.fillStyle = lineColor
-        ctx.globalAlpha = 0.85
-
-        for (const chunk of pendingChunks) {
-          for (let i = 0; i < chunk.left.length; i++) {
-            const point = transformPoint(chunk.left[i], chunk.right[i], mode)
-            if (!point) continue
-
-            const px = centerX + point.dx * scale
-            const py = centerY - point.dy * scale
-            ctx.fillRect(px - 1, py - 1, 2, 2)
-          }
-        }
-        ctx.globalAlpha = 1
-      }
-
-      animationRef.current = window.requestAnimationFrame(draw)
-    }
-
-    animationRef.current = window.requestAnimationFrame(draw)
-
+    visualizer.start()
+    visualizer.resize()
     return () => {
-      if (animationRef.current !== null) {
-        window.cancelAnimationFrame(animationRef.current)
-        animationRef.current = null
-      }
-      if (isNativeAvailable()) {
-        nativeVectorscope.reset()
-      }
-      pendingChunksRef.current = []
-      configuredSampleRateRef.current = 0
+      unsubscribe()
+      visualizer.dispose()
+      visualizerRef.current = null
+      pendingRef.current.clear()
+      isPlayingRef.current = false
     }
-  }, [canvasSizeRef])
+  }, [applyResizeNow])
 
   return (
     <div ref={containerRef} className="scope-popout-canvas-wrap">
@@ -742,6 +400,7 @@ function SpectrogramScopeCanvas() {
   const lineColorRef = useRef(DEFAULT_SPECTRUM_LINE_COLOR)
   const scrollSpeedRef = useRef(DEFAULT_SPECTROGRAM_SCROLL_SPEED)
   const clarityModeRef = useRef(DEFAULT_SPECTROGRAM_CLARITY_MODE)
+  const rangeModeRef = useRef<FrequencyRangeMode>('audible')
   const scaleModeRef = useRef(DEFAULT_SPECTROGRAM_SCALE_MODE)
   const tiltDbPerOctaveRef = useRef(DEFAULT_SPECTROGRAM_TILT_DB_PER_OCTAVE)
   const contrastRef = useRef(DEFAULT_SPECTROGRAM_CONTRAST)
@@ -761,6 +420,7 @@ function SpectrogramScopeCanvas() {
       const nextClarityMode = isSpectrogramClarityMode(chunk.spectrogramClarityMode)
         ? chunk.spectrogramClarityMode
         : DEFAULT_SPECTROGRAM_CLARITY_MODE
+      const nextRangeMode = normalizeFrequencyRangeMode(chunk.spectrogramRangeMode)
       const nextScaleMode = isSpectrogramScaleMode(chunk.spectrogramScaleMode)
         ? chunk.spectrogramScaleMode
         : DEFAULT_SPECTROGRAM_SCALE_MODE
@@ -774,6 +434,7 @@ function SpectrogramScopeCanvas() {
       lineColorRef.current = nextLineColor
       scrollSpeedRef.current = nextScrollSpeed
       clarityModeRef.current = nextClarityMode
+      rangeModeRef.current = nextRangeMode
       scaleModeRef.current = nextScaleMode
       tiltDbPerOctaveRef.current = nextTiltDbPerOctave
       contrastRef.current = nextContrast
@@ -795,6 +456,7 @@ function SpectrogramScopeCanvas() {
         scrollSpeed: nextScrollSpeed,
         clarityMode: nextClarityMode,
         scaleMode: nextScaleMode,
+        ...nominalFrequencyBoundsForRange(nextRangeMode),
         tiltDbPerOctave: nextTiltDbPerOctave,
         contrast: nextContrast,
         orientation: nextOrientation,
@@ -814,6 +476,7 @@ function SpectrogramScopeCanvas() {
         scrollSpeed: scrollSpeedRef.current,
         clarityMode: clarityModeRef.current,
         scaleMode: scaleModeRef.current,
+        ...nominalFrequencyBoundsForRange(rangeModeRef.current),
         tiltDbPerOctave: tiltDbPerOctaveRef.current,
         contrast: contrastRef.current,
         orientation: orientationRef.current,

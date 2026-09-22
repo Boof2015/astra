@@ -179,3 +179,21 @@ test('curve frame returns only requested planes and Side re-enables from silence
   const clearedSide = spectrum.getFrame({ includeSide: true }).side
   assert.ok(clearedSide.every((value) => value === -100))
 })
+
+test('native bar peaks align with Log, Slaney Mel and Linear grids in both ranges', () => {
+  const mel = hz => hz < 1000 ? hz / (200 / 3) : 15 + Math.log(hz / 1000) / (Math.log(6.4) / 27)
+  for (const scaleMode of ['log', 'mel', 'linear']) {
+    for (const [minFrequency, maxFrequency] of [[20, 20000], [10, 24000]]) {
+      configure(16384, { scaleMode, minFrequency, maxFrequency })
+      for (const frequency of [375, 1500, 6000, 15000]) {
+        spectrum.reset()
+        spectrum.pushSamples(tone(frequency, 16384))
+        const frame = spectrum.getBarFrame(0)
+        const map = scaleMode === 'mel' ? mel : scaleMode === 'log' ? Math.log : x => x
+        const position = (map(frequency) - map(minFrequency)) / (map(maxFrequency) - map(minFrequency))
+        const expected = Math.floor(position * frame.length / 3)
+        assert.ok(Math.abs(strongestBar(frame) - expected) <= 1, `${scaleMode} ${maxFrequency} ${frequency}`)
+      }
+    }
+  }
+})

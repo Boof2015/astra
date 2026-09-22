@@ -1,4 +1,4 @@
-export type SpectrogramClarityMode = 'classic' | 'sharp' | 'sharper'
+export type SpectrogramClarityMode = 'classic' | 'sharp' | 'sharper' | 'reassigned'
 export type SpectrogramScaleMode = 'mel' | 'log' | 'linear'
 export type SpectrogramOrientation = 'horizontal' | 'vertical'
 
@@ -6,6 +6,7 @@ export const SPECTROGRAM_CLARITY_MODES: readonly SpectrogramClarityMode[] = [
   'classic',
   'sharp',
   'sharper',
+  'reassigned',
 ]
 export const SPECTROGRAM_SCALE_MODES: readonly SpectrogramScaleMode[] = [
   'mel',

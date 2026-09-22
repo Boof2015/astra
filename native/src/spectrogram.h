@@ -62,6 +62,16 @@ private:
     std::vector<float> phases_;
     std::vector<float> lastPhases_;
 
+    // Prepared only for the opt-in full-bin phase reassignment mode.
+    std::vector<float> expectedPhaseAdvances_;
+    size_t reassignmentFirstBin_ = 1;
+    size_t reassignmentEndBin_ = 1;
+    float reassignmentMagnitudeScale_ = 1.0f;
+    float reassignmentPowerScale_ = 1.0f;
+    float reassignmentScaleMin_ = 0.0f;
+    float reassignmentRowScale_ = 1.0f;
+    int reassignmentScaleKind_ = 0;
+
     std::vector<float> rowCenterBins_;
     std::vector<float> rowBandStartBins_;
     std::vector<float> rowBandEndBins_;
@@ -81,6 +91,9 @@ private:
     void processFrame(std::vector<float>& display, std::vector<float>& heat);
     void computeStandardSpectrum();
     void computeReassignedSpectrum();
+    void configurePhaseReassignment();
+    void computePhaseReassignedSpectrum();
+    void shapePhaseReassignedColumn(std::vector<float>& display, std::vector<float>& heat);
     void blendAndShapeColumn(std::vector<float>& display, std::vector<float>& heat);
     size_t resolveHopSize() const;
     float sampleDbAtBin(float bin) const;

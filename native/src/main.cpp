@@ -636,6 +636,8 @@ Napi::Value SpectrumConfigureBars(const Napi::CallbackInfo& info) {
         return value.IsNumber() ? value.As<Napi::Number>().DoubleValue() : fallback;
     };
     const double requestedBarCount = readNumber("barCount", config.requestedBarCount);
+    const Napi::Value scaleMode = input.Get("scaleMode");
+    if (scaleMode.IsString()) config.scaleMode = scaleMode.As<Napi::String>().Utf8Value();
     config.requestedBarCount = std::isfinite(requestedBarCount)
         ? static_cast<size_t>(std::clamp(requestedBarCount, 1.0, 512.0))
         : config.requestedBarCount;
@@ -1324,46 +1326,9 @@ Napi::Value PlaybackDrainEvents(const Napi::CallbackInfo& info) {
     return result;
 }
 
-Napi::Value PlaybackFlushOscilloscopeSamples(const Napi::CallbackInfo& info) {
+Napi::Value PlaybackFlushVisualizerSamples(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    const auto samples = playbackEngine.drainOscilloscopeSamples();
-    Napi::Float32Array output = Napi::Float32Array::New(env, samples.size());
-    if (!samples.empty()) {
-        std::memcpy(output.Data(), samples.data(), samples.size() * sizeof(float));
-    }
-    return output;
-}
-
-Napi::Value PlaybackFlushSpectrumSamples(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    const auto samples = playbackEngine.drainSpectrumSamples();
-    Napi::Float32Array output = Napi::Float32Array::New(env, samples.size());
-    if (!samples.empty()) {
-        std::memcpy(output.Data(), samples.data(), samples.size() * sizeof(float));
-    }
-    return output;
-}
-
-Napi::Value PlaybackFlushVectorscopeSamples(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    const auto samples = playbackEngine.drainVectorscopeSamples();
-    Napi::Object result = Napi::Object::New(env);
-    Napi::Float32Array left = Napi::Float32Array::New(env, samples.left.size());
-    Napi::Float32Array right = Napi::Float32Array::New(env, samples.right.size());
-    if (!samples.left.empty()) {
-        std::memcpy(left.Data(), samples.left.data(), samples.left.size() * sizeof(float));
-    }
-    if (!samples.right.empty()) {
-        std::memcpy(right.Data(), samples.right.data(), samples.right.size() * sizeof(float));
-    }
-    result.Set("left", left);
-    result.Set("right", right);
-    return result;
-}
-
-Napi::Value PlaybackFlushVUMeterSamples(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    const auto samples = playbackEngine.drainVUMeterSamples();
+    const auto samples = playbackEngine.drainVisualizerSamples();
     Napi::Object result = Napi::Object::New(env);
     Napi::Array channels = Napi::Array::New(env, samples.channels.size());
 
@@ -1484,11 +1449,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     playbackExports.Set("clearNextTrack", Napi::Function::New(env, PlaybackClearNextTrack));
     playbackExports.Set("getPlaybackSnapshot", Napi::Function::New(env, PlaybackGetSnapshot));
     playbackExports.Set("setVisualizerTapDemand", Napi::Function::New(env, PlaybackSetVisualizerTapDemand));
+    playbackExports.Set("flushVisualizerSamples", Napi::Function::New(env, PlaybackFlushVisualizerSamples));
     playbackExports.Set("drainEvents", Napi::Function::New(env, PlaybackDrainEvents));
-    playbackExports.Set("flushOscilloscopeSamples", Napi::Function::New(env, PlaybackFlushOscilloscopeSamples));
-    playbackExports.Set("flushSpectrumSamples", Napi::Function::New(env, PlaybackFlushSpectrumSamples));
-    playbackExports.Set("flushVectorscopeSamples", Napi::Function::New(env, PlaybackFlushVectorscopeSamples));
-    playbackExports.Set("flushVUMeterSamples", Napi::Function::New(env, PlaybackFlushVUMeterSamples));
     exports.Set("playback", playbackExports);
 
     // §22 Commit 1 — Parallax loopback capture. Windows-only behavior; stubbed on

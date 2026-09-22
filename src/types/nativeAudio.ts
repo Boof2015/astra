@@ -242,12 +242,7 @@ export interface NativeAudioTrackLoadTimings {
   nativeLoadMs: number
 }
 
-export interface NativeAudioVectorscopeChunk {
-  left: Float32Array
-  right: Float32Array
-}
-
-export interface NativeAudioVUMeterChunk extends MultichannelAudioChunk {}
+export interface NativeAudioVisualizerChunk extends MultichannelAudioChunk {}
 
 export interface NativeAudioVisualizerTapDemand {
   oscilloscope: boolean

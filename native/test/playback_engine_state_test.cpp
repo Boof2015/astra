@@ -2,6 +2,9 @@
 #include "audio_processing.h"
 
 #include <algorithm>
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <cstring>
 #include <iostream>
@@ -168,6 +171,87 @@ double floatRms(const std::vector<uint8_t>& bytes, size_t skipFrames = 0) {
     return count == 0 ? 0.0 : std::sqrt(sum / count);
 }
 
+void testVisualizerTransport() {
+    for (uint32_t channels : {1u, 2u, 6u}) {
+        PlaybackEngine engine;
+        TrackBuffer track;
+        track.format = BuildTrackFormat(48000, channels, "f32");
+        constexpr size_t frames = 40000;
+        track.duration = static_cast<double>(frames) / 48000;
+        track.data.resize(frames * channels * sizeof(float));
+        for (size_t i = 0; i < frames; ++i) {
+            for (uint32_t c = 0; c < channels; ++c) {
+                const float value = 0.1f * (c + 1) + static_cast<float>(i) / 1000000.0f;
+                std::memcpy(track.data.data() + (i * channels + c) * sizeof(float), &value, sizeof(value));
+            }
+        }
+        engine.loadTrack(track);
+        engine.setVisualizerTapDemand({true, true, true, true});
+        engine.play(); // The fake sink primes two frames before Playing.
+        std::vector<float> output(frames * channels);
+        bool ended = false;
+        const size_t rendered = engine.renderInto(output.data(), 100, ended);
+        assert(rendered == 100);
+        assert(std::memcmp(output.data(), track.data.data() + 2 * track.format.bytesPerFrame(), rendered * track.format.bytesPerFrame()) == 0);
+        auto samples = engine.drainVisualizerSamples();
+        assert(samples.channels.size() == channels);
+        for (uint32_t c = 0; c < channels; ++c) {
+            assert(samples.channels[c].size() == rendered);
+            for (size_t i = 0; i < rendered; ++i) assert(samples.channels[c][i] == output[i * channels + c]);
+        }
+        for (const auto& channel : engine.drainVisualizerSamples().channels) assert(channel.empty());
+
+        engine.renderInto(output.data(), 100, ended);
+        engine.setVisualizerTapDemand({true, false, false, false});
+        assert(engine.drainVisualizerSamples().channels.empty());
+        engine.renderInto(output.data(), 100, ended);
+        samples = engine.drainVisualizerSamples();
+        assert(samples.channels.size() == 1);
+        assert(samples.channels[0].size() == 100);
+
+        engine.setVisualizerTapDemand({false, true, false, false});
+        engine.renderInto(output.data(), 35000, ended);
+        samples = engine.drainVisualizerSamples();
+        assert(samples.channels.size() == std::min(channels, 2u));
+        assert(samples.channels[0].size() == 32768);
+        assert(samples.channels[0].front() == output[(35000 - 32768) * channels]);
+        assert(samples.channels[0].back() == output[(35000 - 1) * channels]);
+
+        engine.renderInto(output.data(), 100, ended);
+        engine.seek(0);
+        assert(engine.drainVisualizerSamples().channels.empty());
+        engine.setVisualizerTapDemand({false, false, false, false});
+        engine.renderInto(output.data(), 100, ended);
+        assert(engine.drainVisualizerSamples().channels.empty());
+        engine.stop();
+    }
+}
+
+void testProcessedVisualizerTransport() {
+    PlaybackEngine engine;
+    NativeOutputRequest request;
+    request.policy = OutputPolicy::Processed;
+    request.requestedSampleRate = 96000;
+    engine.configureOutput(request);
+    NativeDspConfig config;
+    config.volume = 0.5;
+    config.eqEnabled = true;
+    config.eqBands.push_back({"peaking", 1000, 3, 1});
+    engine.setDspConfig(config);
+    engine.loadTrack(makeFloatSine(48000, 1000, 48000, 0.5));
+    engine.setVisualizerTapDemand({true, true, true, true});
+    engine.play();
+    assert(gFakeSink->format_.sampleRate == 96000);
+    assert(gFakeSink->format_.sampleFormat == SampleFormat::Float32);
+    std::vector<float> output(512);
+    bool ended = false;
+    const size_t rendered = engine.renderInto(output.data(), output.size(), ended);
+    const auto captured = engine.drainVisualizerSamples();
+    assert(rendered == output.size());
+    assert(captured.channels.size() == 1);
+    assert(captured.channels[0] == output); // Exactly the post-DSP samples sent to the sink.
+}
+
 } // namespace
 
 std::unique_ptr<AudioOutputSink> CreatePlatformAudioSink() {
@@ -180,6 +264,8 @@ std::unique_ptr<AudioOutputSink> CreatePlatformAudioSink() {
 
 int main() {
     using namespace NativePlayback;
+    testVisualizerTransport();
+    testProcessedVisualizerTransport();
 
     PlaybackEngine engine;
     TrackBuffer track = makeTrack();

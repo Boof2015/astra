@@ -64,6 +64,7 @@ export function useScopePopoutBridge(): void {
   const spectrogramFftSize = useVisualizerSettingsStore((s) => s.spectrogramFftSize)
   const spectrogramScrollSpeed = useVisualizerSettingsStore((s) => s.spectrogramScrollSpeed)
   const spectrogramClarityMode = useVisualizerSettingsStore((s) => s.spectrogramClarityMode)
+  const spectrogramRangeMode = useVisualizerSettingsStore((s) => s.spectrogramRangeMode)
   const spectrogramScaleMode = useVisualizerSettingsStore((s) => s.spectrogramScaleMode)
   const spectrogramTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrogramTiltDbPerOctave)
   const spectrogramContrast = useVisualizerSettingsStore((s) => s.spectrogramContrast)
@@ -72,6 +73,8 @@ export function useScopePopoutBridge(): void {
   const spectrumDisplayMode = useVisualizerSettingsStore((s) => s.spectrumDisplayMode)
   const spectrumTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumTiltDbPerOctave)
   const spectrumHeatmapTiltDbPerOctave = useVisualizerSettingsStore((s) => s.spectrumHeatmapTiltDbPerOctave)
+  const spectrumScaleMode = useVisualizerSettingsStore((s) => s.spectrumScaleMode)
+  const spectrumRangeMode = useVisualizerSettingsStore((s) => s.spectrumRangeMode)
   const spectrumSmoothing = useVisualizerSettingsStore((s) => s.spectrumSmoothing)
   const spectrumHeatmapSmoothing = useVisualizerSettingsStore((s) => s.spectrumHeatmapSmoothing)
   const spectrumBarDensity = useVisualizerSettingsStore((s) => s.spectrumBarDensity)
@@ -80,11 +83,13 @@ export function useScopePopoutBridge(): void {
   const spectrumShowBarPeaks = useVisualizerSettingsStore((s) => s.spectrumShowBarPeaks)
   const spectrumHeatPalette = useVisualizerSettingsStore((s) => s.spectrumHeatPalette)
   const visualizerTheme = useThemeStore((s) => s.resolvedTokens)
+  const vectorscopePhaseRiskColor = visualizerTheme.stageWarning
   const waveformScrollSpeed = useVisualizerSettingsStore((s) => s.waveformScrollSpeed)
   const waveformGainDb = useVisualizerSettingsStore((s) => s.waveformGainDb)
   const waveformMultiband = useVisualizerSettingsStore((s) => s.waveformMultiband)
   const pitchLock = useVisualizerSettingsStore((s) => s.pitchLock)
   const oscilloscopeUnderfillEnabled = useVisualizerSettingsStore((s) => s.oscilloscopeUnderfillEnabled)
+  const vectorscopeZoomDb = useVisualizerSettingsStore((s) => s.vectorscopeZoomDb)
   const vectorscopeMode = useVisualizerSettingsStore((s) => s.vectorscopeMode)
   const vectorscopeMultiband = useVisualizerSettingsStore((s) => s.vectorscopeMultiband)
   const vuMeterMode = useVisualizerSettingsStore((s) => s.vuMeterMode)
@@ -182,6 +187,8 @@ export function useScopePopoutBridge(): void {
             spectrumTiltDbPerOctave,
             spectrumHeatmap,
             spectrumHeatmapTiltDbPerOctave,
+            spectrumScaleMode,
+            spectrumRangeMode,
             spectrumSmoothing,
             spectrumHeatmapSmoothing,
             spectrumBarDensity,
@@ -212,6 +219,8 @@ export function useScopePopoutBridge(): void {
             capturedAt: Date.now(),
             sampleRate: audioEngine.getSampleRate(),
             stereoChunks: [],
+            vectorscopePhaseRiskColor,
+            vectorscopeZoomDb,
             vectorscopeMode,
             vectorscopeMultiband,
             lineColor,
@@ -227,6 +236,7 @@ export function useScopePopoutBridge(): void {
             fftSize: spectrogramFftSize,
             spectrogramScrollSpeed,
             spectrogramClarityMode,
+            spectrogramRangeMode,
             spectrogramScaleMode,
             spectrogramTiltDbPerOctave,
             spectrogramContrast,
@@ -299,6 +309,8 @@ export function useScopePopoutBridge(): void {
             spectrumTiltDbPerOctave,
             spectrumHeatmap,
             spectrumHeatmapTiltDbPerOctave,
+            spectrumScaleMode,
+            spectrumRangeMode,
             spectrumSmoothing,
             spectrumHeatmapSmoothing,
             spectrumBarDensity,
@@ -329,6 +341,8 @@ export function useScopePopoutBridge(): void {
             capturedAt: Date.now(),
             sampleRate,
             stereoChunks: [createStereoSilenceChunk(sampleRate)],
+            vectorscopePhaseRiskColor,
+            vectorscopeZoomDb,
             vectorscopeMode,
             vectorscopeMultiband,
             lineColor,
@@ -344,6 +358,7 @@ export function useScopePopoutBridge(): void {
             fftSize: spectrogramFftSize,
             spectrogramScrollSpeed,
             spectrogramClarityMode,
+            spectrogramRangeMode,
             spectrogramScaleMode,
             spectrogramTiltDbPerOctave,
             spectrogramContrast,
@@ -437,6 +452,8 @@ export function useScopePopoutBridge(): void {
               spectrumTiltDbPerOctave,
               spectrumHeatmap,
               spectrumHeatmapTiltDbPerOctave,
+              spectrumScaleMode,
+              spectrumRangeMode,
               spectrumSmoothing,
               spectrumHeatmapSmoothing,
               spectrumBarDensity,
@@ -482,6 +499,8 @@ export function useScopePopoutBridge(): void {
               capturedAt: Date.now(),
               sampleRate: audioEngine.getSampleRate(),
               stereoChunks,
+              vectorscopePhaseRiskColor,
+              vectorscopeZoomDb,
               vectorscopeMode,
               vectorscopeMultiband,
               lineColor,
@@ -501,6 +520,7 @@ export function useScopePopoutBridge(): void {
               fftSize: spectrogramFftSize,
               spectrogramScrollSpeed,
               spectrogramClarityMode,
+              spectrogramRangeMode,
               spectrogramScaleMode,
               spectrogramTiltDbPerOctave,
               spectrogramContrast,
@@ -580,6 +600,8 @@ export function useScopePopoutBridge(): void {
     spectrumTiltDbPerOctave,
     spectrumHeatmap,
     spectrumHeatmapTiltDbPerOctave,
+    spectrumScaleMode,
+    spectrumRangeMode,
     spectrumSmoothing,
     spectrumHeatmapSmoothing,
     spectrumBarDensity,
@@ -591,6 +613,7 @@ export function useScopePopoutBridge(): void {
     spectrogramFftSize,
     spectrogramScrollSpeed,
     spectrogramClarityMode,
+    spectrogramRangeMode,
     spectrogramScaleMode,
     spectrogramTiltDbPerOctave,
     spectrogramContrast,
@@ -600,6 +623,8 @@ export function useScopePopoutBridge(): void {
     waveformMultiband,
     pitchLock,
     oscilloscopeUnderfillEnabled,
+    vectorscopePhaseRiskColor,
+    vectorscopeZoomDb,
     vectorscopeMode,
     vectorscopeMultiband,
     vuMeterMode,
