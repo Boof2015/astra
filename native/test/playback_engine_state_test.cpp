@@ -6,11 +6,15 @@
 #undef NDEBUG
 #endif
 #include <cassert>
+#include <chrono>
 #include <cstring>
+#include <functional>
+#include <future>
 #include <iostream>
 #include <cmath>
 #include <memory>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 namespace NativePlayback {
@@ -24,7 +28,9 @@ public:
     std::vector<OutputDeviceInfo> enumerateOutputDevices(std::string*) const override {
         return {{"fake", "Fake Exclusive Device", 2, true}};
     }
-    uint32_t deviceMaxChannels(const std::string&) const override { return 2; }
+    uint32_t deviceMaxChannels(const std::string& deviceId) const override {
+        return onDeviceMaxChannels ? onDeviceMaxChannels(deviceId) : 2;
+    }
     DeviceFormatProbe probeDeviceFormats(const std::string&, uint32_t channels) const override {
         DeviceFormatProbe probe;
         probe.supported = true;
@@ -105,6 +111,7 @@ public:
     TrackFormat format_ {};
     NativeOutputStatus status_ {};
     bool failNextStart = false;
+    std::function<uint32_t(const std::string&)> onDeviceMaxChannels;
     std::vector<std::vector<uint8_t>> primes;
 };
 
@@ -169,6 +176,51 @@ double floatRms(const std::vector<uint8_t>& bytes, size_t skipFrames = 0) {
         count++;
     }
     return count == 0 ? 0.0 : std::sqrt(sum / count);
+}
+
+void testDeviceCapabilityQueryAllowsRendering() {
+    for (const auto policy : {OutputPolicy::Direct, OutputPolicy::Processed}) {
+        PlaybackEngine engine;
+        NativeOutputRequest request;
+        request.policy = policy;
+        engine.configureOutput(request);
+        engine.setSelectedDeviceId("selected-device");
+        engine.loadTrack(makeFloatSine(48000, 1000, 48000, 0.1));
+        engine.play();
+
+        std::promise<void> queryEntered;
+        auto queryEnteredFuture = queryEntered.get_future();
+        std::promise<void> renderFinished;
+        auto renderFinishedFuture = renderFinished.get_future();
+        bool renderedDuringQuery = false;
+        std::string queriedDeviceId;
+        gFakeSink->onDeviceMaxChannels = [&](const std::string& deviceId) {
+            queriedDeviceId = deviceId;
+            queryEntered.set_value();
+            // Model a platform property query waiting for its IO callback.
+            // The timeout lets a broken implementation unwind and join safely.
+            renderedDuringQuery = renderFinishedFuture.wait_for(std::chrono::seconds(2))
+                == std::future_status::ready;
+            return 6u;
+        };
+        size_t renderedFrames = 0;
+        std::thread callback([&]() {
+            queryEnteredFuture.wait();
+            float output[64] {};
+            bool ended = false;
+            renderedFrames = engine.renderInto(output, 64, ended);
+            engine.onFramesConsumed(renderedFrames);
+            renderFinished.set_value();
+        });
+
+        const uint32_t maxChannels = engine.getSelectedDeviceMaxChannels();
+        callback.join();
+        gFakeSink->onDeviceMaxChannels = {};
+        assert(queriedDeviceId == "selected-device");
+        assert(maxChannels == 6);
+        assert(renderedFrames == 64);
+        assert(renderedDuringQuery && "Device capability queries must not block the audio callback");
+    }
 }
 
 void testVisualizerTransport() {
@@ -264,6 +316,7 @@ std::unique_ptr<AudioOutputSink> CreatePlatformAudioSink() {
 
 int main() {
     using namespace NativePlayback;
+    testDeviceCapabilityQueryAllowsRendering();
     testVisualizerTransport();
     testProcessedVisualizerTransport();
 

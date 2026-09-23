@@ -374,8 +374,10 @@ DeviceFormatProbe PlaybackEngine::probeDeviceFormats(const std::string& deviceId
 }
 
 uint32_t PlaybackEngine::getSelectedDeviceMaxChannels() const {
-    std::lock_guard<std::mutex> lock(stateMutex_);
-    return sink_->deviceMaxChannels(selectedDeviceId_);
+    // CoreAudio property queries may wait for the IO callback, which needs
+    // stateMutex_ in renderInto(). Only hold it while copying the device ID.
+    const std::string deviceId = getSelectedDeviceId();
+    return sink_->deviceMaxChannels(deviceId);
 }
 
 std::string PlaybackEngine::getSelectedDeviceId() const {
