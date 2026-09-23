@@ -63,6 +63,9 @@ export interface SpectrogramOptions {
 
 type ResolvedSpectrogramOptions = Required<Omit<SpectrogramOptions, 'dataSource' | 'frameScheduler' | 'nativeAnalyzer'>>
 
+// RGB words are loaded from RGBA bytes; only the alpha shift depends on byte order.
+const ALPHA_SHIFT = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1 ? 24 : 0
+
 const defaultOptions: ResolvedSpectrogramOptions = {
   fftSize: 4096,
   tiltDbPerOctave: DEFAULT_SPECTROGRAM_TILT_DB_PER_OCTAVE,
@@ -241,9 +244,14 @@ export class Spectrogram {
   private waterfallCanvas: HTMLCanvasElement
   private waterfallCtx: CanvasRenderingContext2D
 
-  private columnValues = new Float32Array(0)
-  private columnImageData: ImageData | null = null
+  private waterfallOffset = 0
+  private stripImageData: ImageData | null = null
+  private stripPixels = new Uint32Array(0)
+  private stripColumnCapacity = 0
   private heatLut: Uint8ClampedArray
+  private heatRgb = new Uint32Array(256)
+  private monoRgb = new Uint32Array(1)
+  private monoAlpha = 1
 
   private gridCanvas = document.createElement('canvas')
   private gridKey = ''
@@ -261,6 +269,7 @@ export class Spectrogram {
     this.dataSource = dataSource ?? defaultSpectrogramDataSource
     this.nativeAnalyzer = nativeAnalyzer === undefined ? nativeSpectrogram : nativeAnalyzer
     this.heatLut = buildHeatLUT(this.options.heatColors)
+    this.updatePackedColors()
     this.frameLoop = new VisualizerFrameLoop({
       frameScheduler,
       shouldRun: () => this.dataSource.isPlaying(),
@@ -293,6 +302,7 @@ export class Spectrogram {
     this.nativeAnalyzer?.reset()
     this.lastNativeConfigKey = null
     this.waterfallCtx.clearRect(0, 0, this.waterfallCanvas.width, this.waterfallCanvas.height)
+    this.waterfallOffset = 0
     this.invalidate()
   }
 
@@ -302,6 +312,12 @@ export class Spectrogram {
     this.options = resolveOptions(previousOptions, optionUpdates)
     if (this.options.heatColors.some((color, index) => color !== previousOptions.heatColors[index])) {
       this.heatLut = buildHeatLUT(this.options.heatColors)
+      this.updatePackedColors()
+    } else if (this.options.lineColor !== previousOptions.lineColor) {
+      this.updatePackedColors()
+    }
+    if (this.options.orientation !== previousOptions.orientation) {
+      this.clearStripBuffer()
     }
 
     if (nativeAnalyzer !== undefined && nativeAnalyzer !== this.nativeAnalyzer) {
@@ -351,56 +367,64 @@ export class Spectrogram {
     return this.options.orientation === 'vertical' ? width : height
   }
 
-  private ensureColumnBuffers(pixelCount: number): void {
-    if (pixelCount <= 0) return
-    const imageWidth = this.options.orientation === 'vertical' ? pixelCount : 1
-    const imageHeight = this.options.orientation === 'vertical' ? 1 : pixelCount
-    if (
-      this.columnValues.length === pixelCount
-      && this.columnImageData
-      && this.columnImageData.width === imageWidth
-      && this.columnImageData.height === imageHeight
-    ) {
-      return
-    }
-
-    this.columnValues = new Float32Array(pixelCount)
-    this.columnImageData = new ImageData(imageWidth, imageHeight)
+  private clearStripBuffer(): void {
+    this.stripImageData = null
+    this.stripPixels = new Uint32Array(0)
+    this.stripColumnCapacity = 0
   }
 
-  // Scroll the waterfall once for the whole batch of new columns, then paint them —
-  // far cheaper than a full-canvas self-blit per column (which dominates cost at high
-  // scroll speeds / large windows). `display`/`heat` are columnCount * rowCount long.
-  private shiftAndPaintColumns(display: Float32Array, heat: Float32Array, columnCount: number, rowCount: number): void {
+  private ensureStripBuffer(columnCount: number, rowCount: number, vertical: boolean, span: number): ImageData {
+    const frequencyPixels = vertical ? this.stripImageData?.width : this.stripImageData?.height
+    if (!this.stripImageData || frequencyPixels !== rowCount || this.stripColumnCapacity < columnCount) {
+      // A single growing buffer avoids allocations as successive FFT batches alternate
+      // between (for example) three and four columns. Never retain more than a screen.
+      this.stripColumnCapacity = Math.min(span, Math.max(columnCount, this.stripColumnCapacity * 2, 4))
+      this.stripImageData = new ImageData(
+        vertical ? rowCount : this.stripColumnCapacity,
+        vertical ? this.stripColumnCapacity : rowCount,
+      )
+      this.stripPixels = new Uint32Array(this.stripImageData.data.buffer)
+    }
+    return this.stripImageData
+  }
+
+  // Keep history in place. Only newly arrived columns are uploaded; the cursor
+  // determines their chronological position when the history is drawn.
+  private appendColumns(display: Float32Array, heat: Float32Array, columnCount: number, rowCount: number): void {
     const width = this.waterfallCanvas.width
     const height = this.waterfallCanvas.height
-    if (width <= 0 || height <= 0 || columnCount <= 0 || rowCount <= 0 || !this.columnImageData) return
+    if (width <= 0 || height <= 0 || columnCount <= 0 || rowCount <= 0) return
 
     const vertical = this.options.orientation === 'vertical'
     const span = vertical ? height : width
-    const shift = Math.min(columnCount, span)
-
-    const previousCompositeOperation = this.waterfallCtx.globalCompositeOperation
-    this.waterfallCtx.globalCompositeOperation = 'copy'
-    if (vertical) {
-      this.waterfallCtx.drawImage(this.waterfallCanvas, 0, -shift)
-    } else {
-      this.waterfallCtx.drawImage(this.waterfallCanvas, -shift, 0)
-    }
-    this.waterfallCtx.globalCompositeOperation = previousCompositeOperation
-
-    for (let column = 0; column < columnCount; column += 1) {
-      const dst = span - columnCount + column
-      if (dst < 0) continue
-      const start = column * rowCount
-      const end = start + rowCount
-      this.paintColumnImage(display.subarray(start, end), heat.subarray(start, end))
-      if (vertical) {
-        this.waterfallCtx.putImageData(this.columnImageData, 0, dst)
-      } else {
-        this.waterfallCtx.putImageData(this.columnImageData, dst, 0)
+    const count = Math.min(columnCount, span)
+    const skipped = columnCount - count
+    const strip = this.ensureStripBuffer(count, rowCount, vertical, span)
+    const isHeat = this.options.colorScheme === 'heat'
+    const stride = vertical ? 1 : strip.width
+    for (let column = 0; column < count; column += 1) {
+      const start = (skipped + column) * rowCount
+      let destination = vertical ? column * rowCount : column
+      for (let row = 0; row < rowCount; row += 1) {
+        const intensity = Math.max(0, Math.min(1, display[start + row]))
+        const heatIntensity = Math.max(0, Math.min(1, heat[start + row] ?? intensity))
+        const lutIndex = Math.round(heatIntensity * 255)
+        const alpha = Math.round((isHeat ? this.heatLut[lutIndex * 4 + 3] : 255 * this.monoAlpha) * intensity)
+        this.stripPixels[destination] = (isHeat ? this.heatRgb[lutIndex] : this.monoRgb[0]) | (alpha << ALPHA_SHIFT)
+        destination += stride
       }
     }
+
+    const offset = (this.waterfallOffset + skipped) % span
+    const first = Math.min(count, span - offset)
+    if (vertical) {
+      this.waterfallCtx.putImageData(strip, 0, offset, 0, 0, rowCount, first)
+      if (first < count) this.waterfallCtx.putImageData(strip, 0, -first, 0, first, rowCount, count - first)
+    } else {
+      this.waterfallCtx.putImageData(strip, offset, 0, 0, 0, first, rowCount)
+      if (first < count) this.waterfallCtx.putImageData(strip, -first, 0, first, 0, count - first, rowCount)
+    }
+    this.waterfallOffset = (offset + count) % span
   }
 
   private isNativeAnalyzerReady(): boolean {
@@ -481,8 +505,6 @@ export class Spectrogram {
       return false
     }
 
-    this.ensureColumnBuffers(config.rowCount)
-
     const results: SpectrogramNativeResult[] = []
     try {
       if (!this.configureNativeAnalyzer(config)) {
@@ -506,37 +528,34 @@ export class Spectrogram {
     }
 
     for (const result of results) {
-      this.shiftAndPaintColumns(result.display, result.heat, result.columnCount, result.rowCount)
+      this.appendColumns(result.display, result.heat, result.columnCount, result.rowCount)
     }
 
     return true
   }
 
-  private paintColumnImage(values: Float32Array, heatValues: Float32Array = values): void {
-    if (!this.columnImageData) return
+  private updatePackedColors(): void {
+    const heatBytes = new Uint8ClampedArray(this.heatRgb.buffer)
+    heatBytes.set(this.heatLut)
+    for (let alpha = 3; alpha < heatBytes.length; alpha += 4) heatBytes[alpha] = 0
+    const tint: RgbaColor = parseColorToRgba(this.options.lineColor)
+      ?? { ...resolveColorToRgb(this.options.lineColor), a: 1 }
+    new Uint8ClampedArray(this.monoRgb.buffer).set([tint.r, tint.g, tint.b, 0])
+    this.monoAlpha = tint.a
+  }
 
-    const imageData = this.columnImageData.data
-    const tint: RgbaColor = this.options.colorScheme === 'mono'
-      ? parseColorToRgba(this.options.lineColor) ?? { ...resolveColorToRgb(this.options.lineColor), a: 1 }
-      : { r: 0, g: 0, b: 0, a: 1 }
-
-    for (let row = 0; row < values.length; row += 1) {
-      const intensity = Math.max(0, Math.min(1, values[row]))
-      const heatIntensity = Math.max(0, Math.min(1, heatValues[row] ?? intensity))
-      const lutIndex = Math.round(heatIntensity * 255)
-      const dataIndex = row * 4
-
-      if (this.options.colorScheme === 'heat') {
-        imageData[dataIndex] = this.heatLut[lutIndex * 4]
-        imageData[dataIndex + 1] = this.heatLut[(lutIndex * 4) + 1]
-        imageData[dataIndex + 2] = this.heatLut[(lutIndex * 4) + 2]
-        imageData[dataIndex + 3] = Math.round(this.heatLut[(lutIndex * 4) + 3] * intensity)
-      } else {
-        imageData[dataIndex] = tint.r
-        imageData[dataIndex + 1] = tint.g
-        imageData[dataIndex + 2] = tint.b
-        imageData[dataIndex + 3] = Math.round(255 * tint.a * intensity)
-      }
+  private drawHistory(ctx: CanvasRenderingContext2D): void {
+    const { width, height } = this.waterfallCanvas
+    if (width <= 0 || height <= 0) return
+    const offset = this.waterfallOffset
+    if (offset === 0) {
+      ctx.drawImage(this.waterfallCanvas, 0, 0)
+    } else if (this.options.orientation === 'vertical') {
+      ctx.drawImage(this.waterfallCanvas, 0, offset, width, height - offset, 0, 0, width, height - offset)
+      ctx.drawImage(this.waterfallCanvas, 0, 0, width, offset, 0, height - offset, width, offset)
+    } else {
+      ctx.drawImage(this.waterfallCanvas, offset, 0, width - offset, height, 0, 0, width - offset, height)
+      ctx.drawImage(this.waterfallCanvas, 0, 0, offset, height, width - offset, 0, offset, height)
     }
   }
 
@@ -546,7 +565,7 @@ export class Spectrogram {
       this.ctx.fillStyle = this.options.backgroundColor
       this.ctx.fillRect(0, 0, width, height)
     }
-    this.ctx.drawImage(this.waterfallCanvas, 0, 0)
+    this.drawHistory(this.ctx)
     this.drawFrequencyGrid(width, height)
   }
 
@@ -615,12 +634,14 @@ export class Spectrogram {
       previousCanvas.height = this.waterfallCanvas.height
       const previousCtx = previousCanvas.getContext('2d')
       if (previousCtx) {
-        previousCtx.drawImage(this.waterfallCanvas, 0, 0)
+        this.drawHistory(previousCtx)
       }
 
       this.waterfallCanvas.width = width
       this.waterfallCanvas.height = height
       this.waterfallCtx.imageSmoothingEnabled = false
+      this.waterfallOffset = 0
+      this.clearStripBuffer()
 
       if (previousCtx && previousCanvas.width > 0 && previousCanvas.height > 0) {
         if (this.options.orientation === 'vertical') {
@@ -662,6 +683,7 @@ export class Spectrogram {
   dispose(): void {
     this.stop()
     this.frameLoop.dispose()
+    this.clearStripBuffer()
     if (this.unsubscribeSessionChange) {
       this.unsubscribeSessionChange()
       this.unsubscribeSessionChange = null
