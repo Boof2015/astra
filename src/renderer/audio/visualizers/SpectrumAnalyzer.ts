@@ -29,6 +29,7 @@ import {
   normalizeHeatDb,
 } from './heatScale'
 import { CLASSIC_SPECTRUM_HEAT_COLORS } from './spectrumHeatPalette'
+import { SpectrumHeatmapColors } from './spectrumHeatmapColors'
 
 type SpectrumStereoChunk = {
   left: Float32Array
@@ -239,6 +240,7 @@ export class SpectrumAnalyzer {
   private sampleRate = 48000
   private lastSampleRate = 0
   private heatLut: Uint8ClampedArray
+  private heatmapColors: SpectrumHeatmapColors
   private staticLayerCanvas: HTMLCanvasElement
   private staticLayerCtx: CanvasRenderingContext2D
   private staticLayerKey = ''
@@ -295,6 +297,7 @@ export class SpectrumAnalyzer {
     this.dataSource = dataSource ?? defaultSpectrumDataSource
     this.nativeAnalyzer = nativeAnalyzer === undefined ? defaultNativeSpectrum : nativeAnalyzer
     this.heatLut = buildHeatLUT(this.options.heatColors)
+    this.heatmapColors = new SpectrumHeatmapColors(this.heatLut)
     this.frameLoop = new VisualizerFrameLoop({
       frameScheduler,
       // Spectrum DSP is native-only; stop the loop after one frame when native is
@@ -423,11 +426,15 @@ export class SpectrumAnalyzer {
     this.options = nextOptions
     if (heatColorsChanged) {
       this.heatLut = buildHeatLUT(this.options.heatColors)
+      this.heatmapColors.reset(this.heatLut)
     }
     if (heatmapEnabled || heatmapDisabled) {
       this.heatmapMagnitudeBuffer.fill(FFT_SILENCE_DB)
       this.heatmapHasData = false
       this.heatmapNeedsPrime = true
+    }
+    if (heatmapDisabled) {
+      this.heatmapColors.reset()
     }
     if (
       nextOptions.barDensity !== previousOptions.barDensity
@@ -1111,17 +1118,12 @@ export class SpectrumAnalyzer {
       }
 
       const lutIndex = Math.round(heatmapIntensity[index] * 255)
-      const r = this.heatLut[lutIndex * 4]
-      const g = this.heatLut[lutIndex * 4 + 1]
-      const b = this.heatLut[lutIndex * 4 + 2]
       const a = Math.round((this.heatLut[lutIndex * 4 + 3] * heatmapIntensity[index]))
       if (a <= 0) {
         continue
       }
 
-      this.ctx.fillStyle = a >= 255
-        ? `rgb(${r}, ${g}, ${b})`
-        : `rgba(${r}, ${g}, ${b}, ${Number((a / 255).toFixed(3))})`
+      this.ctx.fillStyle = this.heatmapColors.getStyle(lutIndex, a)
       this.ctx.fillRect(x, Math.floor(y), columnWidth, Math.ceil(fillHeight))
     }
   }
@@ -1406,6 +1408,7 @@ export class SpectrumAnalyzer {
   dispose(): void {
     this.stop()
     this.frameLoop.dispose()
+    this.heatmapColors.reset()
     if (this.unsubscribeSessionChange) {
       this.unsubscribeSessionChange()
       this.unsubscribeSessionChange = null
