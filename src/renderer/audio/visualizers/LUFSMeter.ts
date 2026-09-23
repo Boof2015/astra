@@ -5,7 +5,7 @@ import {
   type LUFSMeterNativeSnapshot,
 } from '../native/index'
 import type { LUFSMeterMode, LUFSMeterReadout } from '../../../types/lufsmeter'
-import { resolveColorToRgb } from '../../utils/color'
+import { MeterRenderCache } from './meterRenderCache'
 import { getCanvasBackingPixelRatio } from '../../utils/canvasSizing'
 import { defaultVisualizerSessionSource, type VisualizerSessionSource } from './dataSource'
 import { FrameScheduler } from './frameScheduler'
@@ -115,6 +115,9 @@ function normalizeNativeSnapshot(snapshot: LUFSMeterNativeSnapshot | null): LUFS
 export class LUFSMeter {
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
+  private renderCache: MeterRenderCache
+  private contrastColorKey = ''
+  private contrastColor = ''
   private options: ResolvedLUFSMeterOptions
   private dataSource: LUFSMeterDataSource
   private nativeAnalyzer: LUFSMeterNativeAnalyzer | null
@@ -130,6 +133,7 @@ export class LUFSMeter {
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Could not get 2D context')
     this.ctx = ctx
+    this.renderCache = new MeterRenderCache(canvas)
 
     const { dataSource, frameScheduler, nativeAnalyzer, ...optionOverrides } = options
     this.options = { ...defaultOptions, ...optionOverrides }
@@ -167,6 +171,7 @@ export class LUFSMeter {
   setOptions(options: Partial<LUFSMeterOptions>): void {
     const { dataSource, frameScheduler: _frameScheduler, nativeAnalyzer, ...optionUpdates } = options
     this.options = { ...this.options, ...optionUpdates }
+    this.renderCache.clear()
     let didReset = false
     if (nativeAnalyzer !== undefined && nativeAnalyzer !== this.nativeAnalyzer) {
       this.nativeAnalyzer = nativeAnalyzer
@@ -198,6 +203,7 @@ export class LUFSMeter {
 
   resize(): void {
     // Canvas resize handled externally
+    this.renderCache.clear()
     this.invalidate()
   }
 
@@ -309,13 +315,16 @@ export class LUFSMeter {
   }
 
   private contrastForLevelColor(): string {
-    const { r, g, b } = resolveColorToRgb(this.options.lineColor)
+    if (this.contrastColor && this.contrastColorKey === this.options.lineColor) return this.contrastColor
+    this.contrastColorKey = this.options.lineColor
+    const { r, g, b } = this.renderCache.color(this.options.lineColor)
     const luminance = 0.2126 * relativeLuminanceChannel(r)
       + 0.7152 * relativeLuminanceChannel(g)
       + 0.0722 * relativeLuminanceChannel(b)
-    return contrastRatio(luminance, 0) >= contrastRatio(luminance, 1)
+    this.contrastColor = contrastRatio(luminance, 0) >= contrastRatio(luminance, 1)
       ? 'rgba(0, 0, 0, 0.9)'
       : 'rgba(255, 255, 255, 0.94)'
+    return this.contrastColor
   }
 
   private resolveReadoutTextLayout(
@@ -323,13 +332,13 @@ export class LUFSMeter {
     maxWidth: number,
     maxFontSize: number,
     minFontSize: number,
-  ): { text: string; fontSize: number } {
+  ): { text: string; fontSize: number; width?: number } {
     const ctx = this.ctx
     for (const text of candidates) {
       ctx.font = `700 ${maxFontSize}px "JetBrains Mono", "SF Mono", monospace`
       const measuredWidth = ctx.measureText(text).width
       if (measuredWidth <= maxWidth) {
-        return { text, fontSize: maxFontSize }
+        return { text, fontSize: maxFontSize, width: measuredWidth }
       }
 
       const scaledFontSize = Math.floor(maxFontSize * (maxWidth / Math.max(1, measuredWidth)))
@@ -376,7 +385,7 @@ export class LUFSMeter {
 
   private drawBars(width: number, height: number): void {
     const ctx = this.ctx
-    const tint = resolveColorToRgb(this.options.lineColor)
+    const tint = this.renderCache.color(this.options.lineColor)
     const dpr = getCanvasBackingPixelRatio(this.canvas)
     const cssWidth = width / dpr
     const cssHeight = height / dpr
@@ -414,8 +423,8 @@ export class LUFSMeter {
     const readoutFontSizeCss = Math.max(9, Math.min(13, Math.floor(tagHeightCss * 0.62)))
     const readoutFontSize = Math.round(readoutFontSizeCss * dpr)
     const minimumReadoutFontSize = Math.round(Math.max(7, Math.floor(readoutFontSizeCss * 0.7)) * dpr)
-    ctx.font = `700 ${readoutFontSize}px "JetBrains Mono", "SF Mono", monospace`
-    const fullReadoutWidth = Math.ceil(ctx.measureText(FULL_READOUT_WIDTH_SAMPLE).width) + tagPadding * 2
+    const readoutFont = `700 ${readoutFontSize}px "JetBrains Mono", "SF Mono", monospace`
+    const fullReadoutWidth = Math.ceil(this.renderCache.textWidth(ctx, FULL_READOUT_WIDTH_SAMPLE, readoutFont)) + tagPadding * 2
     const fixedLayoutWidth = scaleWidth + barGap + lufsBarGap + tagGap
     const minimumBarsWidth = minimumBarWidth * 2 + minimumLufsBarWidth
     const maximumReadoutWidth = Math.max(1, viewportWidth - fixedLayoutWidth - minimumBarsWidth)
@@ -497,7 +506,7 @@ export class LUFSMeter {
     }
 
     ctx.font = `700 ${readoutLayout.fontSize}px "JetBrains Mono", "SF Mono", monospace`
-    const measuredText = ctx.measureText(readoutLayout.text).width
+    const measuredText = readoutLayout.width ?? ctx.measureText(readoutLayout.text).width
     const tagWidth = Math.max(1, Math.min(reservedReadoutWidth, Math.ceil(measuredText) + tagPadding * 2))
     const tagX = Math.round(tagAreaX + (reservedReadoutWidth - tagWidth) / 2)
     const tagY = Math.round(Math.max(meterTop, Math.min(meterBottom - tagHeight, loudnessY - tagHeight / 2)))
@@ -514,6 +523,7 @@ export class LUFSMeter {
   dispose(): void {
     this.stop()
     this.frameLoop.dispose()
+    this.renderCache.dispose()
     if (this.unsubscribeSessionChange) {
       this.unsubscribeSessionChange()
       this.unsubscribeSessionChange = null

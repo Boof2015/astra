@@ -5,6 +5,7 @@ import {
   type VUMeterNativeSnapshot,
 } from '../native/index'
 import { resolveColorToRgb } from '../../utils/color'
+import { MeterRenderCache } from './meterRenderCache'
 import { defaultVisualizerSessionSource, type VisualizerSessionSource } from './dataSource'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
@@ -304,6 +305,7 @@ export function resolveVUNeedleReadings({
 export class VUMeter {
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
+  private renderCache: MeterRenderCache
   private options: ResolvedVUMeterOptions
   private dataSource: VUMeterDataSource
   private nativeAnalyzer: VUMeterNativeAnalyzer | null
@@ -331,6 +333,7 @@ export class VUMeter {
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Could not get 2D context')
     this.ctx = ctx
+    this.renderCache = new MeterRenderCache(canvas)
 
     const { dataSource, frameScheduler, nativeAnalyzer, ...optionOverrides } = options
     this.options = { ...defaultOptions, ...optionOverrides }
@@ -370,6 +373,7 @@ export class VUMeter {
   setOptions(options: Partial<VUMeterOptions>): void {
     const { dataSource, frameScheduler: _frameScheduler, nativeAnalyzer, ...optionUpdates } = options
     this.options = { ...this.options, ...optionUpdates }
+    this.renderCache.clear()
     let didReset = false
     if (nativeAnalyzer !== undefined && nativeAnalyzer !== this.nativeAnalyzer) {
       this.nativeAnalyzer = nativeAnalyzer
@@ -401,6 +405,7 @@ export class VUMeter {
 
   resize(): void {
     // Canvas resize handled externally
+    this.renderCache.clear()
     this.invalidate()
   }
 
@@ -819,7 +824,7 @@ export class VUMeter {
 
   private drawNeedleMode(width: number, height: number): void {
     const ctx = this.ctx
-    const { r: cr, g: cg, b: cb } = resolveColorToRgb(this.options.lineColor)
+    const { r: cr, g: cg, b: cb } = this.renderCache.color(this.options.lineColor)
     const devicePixelRatio = getCanvasDevicePixelRatio()
     const faceLayout = resolveVUNeedleFaceLayout(width, height, devicePixelRatio)
     const faceScale = faceLayout.scale * devicePixelRatio
@@ -849,8 +854,8 @@ export class VUMeter {
     for (const { vu, label } of CLASSIC_VU_LABELS) {
       if (!shouldShowClassicVuLabel(vu)) continue
       const isMajor = isClassicVuMajorLabel(vu)
-      ctx.font = `${isMajor ? 700 : 600} ${isMajor ? labelFontSize : labelFontSize * 0.92}px "JetBrains Mono", monospace`
-      const halfLabelWidth = ctx.measureText(label).width / 2
+      const font = `${isMajor ? 700 : 600} ${isMajor ? labelFontSize : labelFontSize * 0.92}px "JetBrains Mono", monospace`
+      const halfLabelWidth = this.renderCache.textWidth(ctx, label, font) / 2
       const angle = this.vuToNeedleAngle(vu, startAngle, endAngle)
       const horizontalDirection = Math.abs(Math.cos(angle))
       if (horizontalDirection <= 1e-6) continue
@@ -950,23 +955,23 @@ export class VUMeter {
     if (!mainReading) return
 
     ctx.lineCap = 'butt'
-    ctx.strokeStyle = alphaColor(this.getNeedleColor(mainReading), 0.075)
+    ctx.strokeStyle = this.renderCache.alpha(this.getNeedleColor(mainReading), 0.075)
     ctx.lineWidth = outerWidth
     ctx.beginPath()
     ctx.ellipse(centerX, centerY, outerRadiusX, outerRadiusY, 0, startAngle, hotAngle)
     ctx.stroke()
-    ctx.strokeStyle = alphaColor(this.options.clipColor, 0.15)
+    ctx.strokeStyle = this.renderCache.alpha(this.options.clipColor, 0.15)
     ctx.beginPath()
     ctx.ellipse(centerX, centerY, outerRadiusX, outerRadiusY, 0, hotAngle, endAngle)
     ctx.stroke()
 
     if (leftReading) {
-      ctx.strokeStyle = alphaColor(this.getNeedleColor(leftReading), 0.06)
+      ctx.strokeStyle = this.renderCache.alpha(this.getNeedleColor(leftReading), 0.06)
       ctx.lineWidth = innerWidth
       ctx.beginPath()
       ctx.ellipse(centerX, centerY, innerRadiusX, innerRadiusY, 0, startAngle, hotAngle)
       ctx.stroke()
-      ctx.strokeStyle = alphaColor(this.options.clipColor, 0.12)
+      ctx.strokeStyle = this.renderCache.alpha(this.options.clipColor, 0.12)
       ctx.beginPath()
       ctx.ellipse(centerX, centerY, innerRadiusX, innerRadiusY, 0, hotAngle, endAngle)
       ctx.stroke()
@@ -991,7 +996,7 @@ export class VUMeter {
     endAngle: number,
     alpha: number,
   ): void {
-    ctx.strokeStyle = alphaColor(this.options.scaleColor, alpha)
+    ctx.strokeStyle = this.renderCache.alpha(this.options.scaleColor, alpha)
     ctx.lineWidth = Math.max(1, railWidth * 0.065)
     ctx.lineCap = 'butt'
     for (const offset of [-railWidth / 2, railWidth / 2]) {
@@ -1027,7 +1032,7 @@ export class VUMeter {
 
     const safeEnd = Math.min(levelAngle, hotAngle)
     if (safeEnd > startAngle) {
-      ctx.strokeStyle = alphaColor(this.getNeedleColor(reading), alpha)
+      ctx.strokeStyle = this.renderCache.alpha(this.getNeedleColor(reading), alpha)
       ctx.lineWidth = lineWidth
       ctx.lineCap = 'butt'
       ctx.beginPath()
@@ -1036,7 +1041,7 @@ export class VUMeter {
     }
 
     if (levelAngle > hotAngle) {
-      ctx.strokeStyle = alphaColor(this.options.clipColor, Math.min(1, alpha + 0.04))
+      ctx.strokeStyle = this.renderCache.alpha(this.options.clipColor, Math.min(1, alpha + 0.04))
       ctx.lineWidth = lineWidth
       ctx.lineCap = 'butt'
       ctx.beginPath()
@@ -1070,8 +1075,8 @@ export class VUMeter {
       const inward = isMajor ? majorInward : minorInward
 
       ctx.strokeStyle = isHot
-        ? alphaColor(this.options.clipColor, 1)
-        : alphaColor(this.options.scaleColor, isMajor ? 0.96 : 0.82)
+        ? this.renderCache.alpha(this.options.clipColor, 1)
+        : this.renderCache.alpha(this.options.scaleColor, isMajor ? 0.96 : 0.82)
       ctx.lineWidth = isMajor
         ? Math.max(2.6, averageRadius * 0.016)
         : Math.max(1.5, averageRadius * 0.0095)
@@ -1085,8 +1090,8 @@ export class VUMeter {
       if (shouldShowLabel) {
         const labelPoint = this.needleEllipsePoint(centerX, centerY, radiusX, radiusY, angle, outerWidth / 2 + tickOutward + labelFontSize * 0.68)
         ctx.fillStyle = isHot
-          ? alphaColor(this.options.clipColor, 1)
-          : alphaColor(this.options.labelColor, 1)
+          ? this.renderCache.alpha(this.options.clipColor, 1)
+          : this.renderCache.alpha(this.options.labelColor, 1)
         ctx.font = `${isMajor ? 700 : 600} ${isMajor ? labelFontSize : labelFontSize * 0.92}px "JetBrains Mono", monospace`
         ctx.textAlign = 'center'
         ctx.textBaseline = 'middle'
@@ -1097,7 +1102,7 @@ export class VUMeter {
     const titleFontSize = Math.min(labelFontSize * 0.88, averageRadius * 0.095)
     const titleY = centerY - radiusY * 0.14
     if (titleY > 4) {
-      ctx.fillStyle = alphaColor(this.options.labelColor, 0.66)
+      ctx.fillStyle = this.renderCache.alpha(this.options.labelColor, 0.66)
       ctx.font = `700 ${titleFontSize}px "JetBrains Mono", monospace`
       ctx.fillText('VU', centerX, titleY)
     }
@@ -1149,7 +1154,7 @@ export class VUMeter {
     const inner = this.needleEllipsePoint(centerX, centerY, radiusX, radiusY, angle, -arcWidth / 2 - markerInset)
     const outer = this.needleEllipsePoint(centerX, centerY, radiusX, radiusY, angle, arcWidth / 2 + markerInset)
 
-    ctx.strokeStyle = alphaColor(color, alpha)
+    ctx.strokeStyle = this.renderCache.alpha(color, alpha)
     ctx.lineWidth = Math.max(2.2, averageRadius * 0.011)
     ctx.lineCap = 'round'
     ctx.beginPath()
@@ -1201,7 +1206,7 @@ export class VUMeter {
     const baseX = centerX - Math.cos(angle) * counterWeight
     const baseY = centerY - Math.sin(angle) * counterWeight
 
-    ctx.strokeStyle = alphaColor(this.options.scaleColor, alpha * 0.32)
+    ctx.strokeStyle = this.renderCache.alpha(this.options.scaleColor, alpha * 0.32)
     ctx.lineWidth = lineWidth + Math.max(1.25, averageRadius * 0.008)
     ctx.lineCap = 'round'
     ctx.beginPath()
@@ -1209,7 +1214,7 @@ export class VUMeter {
     ctx.lineTo(tip.x, tip.y)
     ctx.stroke()
 
-    ctx.strokeStyle = alphaColor(color, alpha)
+    ctx.strokeStyle = this.renderCache.alpha(color, alpha)
     ctx.lineWidth = lineWidth
     ctx.lineCap = 'round'
     ctx.beginPath()
@@ -1217,7 +1222,7 @@ export class VUMeter {
     ctx.lineTo(tip.x, tip.y)
     ctx.stroke()
 
-    ctx.fillStyle = alphaColor(color, Math.min(1, alpha + 0.07))
+    ctx.fillStyle = this.renderCache.alpha(color, Math.min(1, alpha + 0.07))
     ctx.beginPath()
     ctx.arc(tip.x, tip.y, Math.max(1.5, lineWidth * 0.75), 0, Math.PI * 2)
     ctx.fill()
@@ -1232,15 +1237,15 @@ export class VUMeter {
   ): void {
     const outerRadius = Math.max(2.5, averageRadius * 0.031)
 
-    ctx.fillStyle = alphaColor(this.options.labelColor, 0.12)
-    ctx.strokeStyle = alphaColor(this.options.scaleColor, 0.72)
+    ctx.fillStyle = this.renderCache.alpha(this.options.labelColor, 0.12)
+    ctx.strokeStyle = this.renderCache.alpha(this.options.scaleColor, 0.72)
     ctx.lineWidth = Math.max(1, averageRadius * 0.007)
     ctx.beginPath()
     ctx.arc(centerX, centerY, outerRadius, 0, Math.PI * 2)
     ctx.fill()
     ctx.stroke()
 
-    ctx.fillStyle = alphaColor(this.getNeedleColor(reading), 0.94)
+    ctx.fillStyle = this.renderCache.alpha(this.getNeedleColor(reading), 0.94)
     ctx.beginPath()
     ctx.arc(centerX, centerY, outerRadius * 0.42, 0, Math.PI * 2)
     ctx.fill()
@@ -1317,23 +1322,23 @@ export class VUMeter {
     const padding = 8 * faceScale
     const centerY = y + height / 2 + 0.5 * faceScale
 
-    ctx.fillStyle = alphaColor(this.options.labelColor, 0.055)
+    ctx.fillStyle = this.renderCache.alpha(this.options.labelColor, 0.055)
     ctx.fillRect(x, y, width, height)
-    ctx.fillStyle = alphaColor(channelColor, 0.72)
+    ctx.fillStyle = this.renderCache.alpha(channelColor, 0.72)
     ctx.fillRect(x, y, width, Math.max(1, 1.5 * faceScale))
-    ctx.strokeStyle = alphaColor(this.options.scaleColor, 0.24)
+    ctx.strokeStyle = this.renderCache.alpha(this.options.scaleColor, 0.24)
     ctx.lineWidth = Math.max(1, faceScale)
     ctx.strokeRect(x + 0.5 * faceScale, y + 0.5 * faceScale, width - faceScale, height - faceScale)
 
     ctx.textBaseline = 'middle'
     if (channelLabel) {
-      ctx.fillStyle = alphaColor(channelColor, 0.82)
+      ctx.fillStyle = this.renderCache.alpha(channelColor, 0.82)
       ctx.font = `700 ${13.5 * faceScale}px "JetBrains Mono", monospace`
       ctx.textAlign = 'left'
       ctx.fillText(channelLabel, x + padding, centerY)
     }
 
-    ctx.fillStyle = alphaColor(channelColor, 0.98)
+    ctx.fillStyle = this.renderCache.alpha(channelColor, 0.98)
     ctx.font = `600 ${19.5 * faceScale}px "JetBrains Mono", monospace`
     ctx.textAlign = channelLabel ? 'left' : 'center'
     ctx.fillText(
@@ -1342,7 +1347,7 @@ export class VUMeter {
       centerY,
     )
 
-    ctx.fillStyle = alphaColor(this.options.labelColor, 0.56)
+    ctx.fillStyle = this.renderCache.alpha(this.options.labelColor, 0.56)
     ctx.font = `600 ${11.5 * faceScale}px "JetBrains Mono", monospace`
     ctx.textAlign = 'right'
     ctx.fillText('dB', x + width - padding, centerY)
@@ -1394,6 +1399,7 @@ export class VUMeter {
   dispose(): void {
     this.stop()
     this.frameLoop.dispose()
+    this.renderCache.dispose()
     if (this.unsubscribeSessionChange) {
       this.unsubscribeSessionChange()
       this.unsubscribeSessionChange = null
