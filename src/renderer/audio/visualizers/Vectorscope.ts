@@ -9,6 +9,7 @@ import { MultibandSplitter, MultibandBuffer, createMultibandChunk, type Multiban
 import { defaultVisualizerSessionSource, type VisualizerSessionSource } from './dataSource'
 import { FrameScheduler } from './frameScheduler'
 import { VisualizerFrameLoop } from './visualizerFrameLoop'
+import { createVectorscopeGpuRenderer, type VectorscopeGpuRenderer, type VectorscopePointContext } from './vectorscopeGpu'
 import { normalizeVectorscopeZoomDb, vectorscopeZoomDbToGain } from '../../../types/vectorscope'
 
 export type VectorscopeMode = 'lissajous' | 'polar-unipolar' | 'polar-bipolar' | 'linear-unipolar' | 'linear-bipolar'
@@ -76,6 +77,7 @@ export class Vectorscope {
   private ctx: CanvasRenderingContext2D
   private offscreenCanvas: HTMLCanvasElement
   private offscreenCtx: CanvasRenderingContext2D
+  private gpuRenderer: VectorscopeGpuRenderer | null = null
   private staticLayerCanvas: HTMLCanvasElement
   private staticLayerCtx: CanvasRenderingContext2D
   private options: ResolvedVectorscopeOptions
@@ -134,9 +136,24 @@ export class Vectorscope {
     const staticLayerCtx = this.staticLayerCanvas.getContext('2d')
     if (!staticLayerCtx) throw new Error('Could not get static offscreen 2D context')
     this.staticLayerCtx = staticLayerCtx
+    // Batching pays off consistently for the three multiband point layers.
+    // The ordinary layer keeps Canvas: GPU interop can cost more CPU time there.
+    if (this.options.multiband) {
+      this.gpuRenderer = createVectorscopeGpuRenderer(this.pointColors())
+    }
 
     this.initNative()
     this.subscribeToSessionChanges()
+  }
+
+  private pointColors(): string[] {
+    return [this.options.lineColor, ...BAND_ORDER.map(band => this.options.bandColors[band])]
+  }
+
+  private useCanvasRenderer(): void {
+    this.gpuRenderer?.copyHistoryTo(this.offscreenCtx)
+    this.gpuRenderer?.dispose()
+    this.gpuRenderer = null
   }
 
   private subscribeToSessionChanges(): void {
@@ -178,6 +195,7 @@ export class Vectorscope {
     this.splitter.reset()
     this.multibandBuffer.reset()
     this.projectionInputsL.fill(NaN)
+    this.gpuRenderer?.clear()
     this.offscreenCtx.clearRect(0, 0, this.offscreenCanvas.width, this.offscreenCanvas.height)
     this.invalidate()
   }
@@ -193,6 +211,15 @@ export class Vectorscope {
     const modeChanged = nextOptions.mode !== this.options.mode
     const zoomChanged = nextOptions.zoomDb !== this.options.zoomDb
     this.options = nextOptions
+    if (multibandChanged) {
+      // Changing bands already resets display history below, so no transfer is
+      // needed. Ordinary mode also releases the now-unused GPU context.
+      this.gpuRenderer?.dispose()
+      this.gpuRenderer = nextOptions.multiband ? createVectorscopeGpuRenderer(this.pointColors()) : null
+    }
+    if (this.gpuRenderer && !this.gpuRenderer.setPalette(this.pointColors())) {
+      this.useCanvasRenderer()
+    }
     this.projectionGain = vectorscopeZoomDbToGain(nextOptions.zoomDb)
     let shouldResetDisplay = false
     if (nativeAnalyzer !== undefined && nativeAnalyzer !== this.nativeAnalyzer) {
@@ -260,16 +287,22 @@ export class Vectorscope {
       return
     }
 
-    offscreenCtx.globalCompositeOperation = 'destination-in'
-    offscreenCtx.fillStyle = `rgba(255, 255, 255, ${options.persistence})`
-    offscreenCtx.fillRect(0, 0, width, height)
-    offscreenCtx.globalCompositeOperation = 'source-over'
+    if (this.gpuRenderer && !this.gpuRenderer.beginFrame(width, height, options.persistence, options.lineWidth * (window.devicePixelRatio || 1))) {
+      this.useCanvasRenderer()
+    }
+    const pointContext = this.gpuRenderer ?? offscreenCtx
+    if (!this.gpuRenderer) {
+      offscreenCtx.globalCompositeOperation = 'destination-in'
+      offscreenCtx.fillStyle = `rgba(255, 255, 255, ${options.persistence})`
+      offscreenCtx.fillRect(0, 0, width, height)
+      offscreenCtx.globalCompositeOperation = 'source-over'
+    }
 
     const pendingSamples = this.dataSource.getPendingVectorscopeSamples()
 
     if (options.multiband) {
-      if (!this.drawNativeMultibandPoints(offscreenCtx, pendingSamples, centerX, centerY, scale)) {
-        this.drawMultibandPoints(offscreenCtx, pendingSamples, centerX, centerY, scale)
+      if (!this.drawNativeMultibandPoints(pointContext, pendingSamples, centerX, centerY, scale)) {
+        this.drawMultibandPoints(pointContext, pendingSamples, centerX, centerY, scale)
       }
     } else if (this.isNativeAvailable()) {
       if (pendingSamples.length > 0) {
@@ -280,14 +313,15 @@ export class Vectorscope {
       const count = this.fillNativePoints(options.displayPoints)
       if (count > 0) {
         this.prepareProjectionCache(pendingSamples, 1)
-        this.drawPoints(offscreenCtx, this.nativePointX, this.nativePointY, count, centerX, centerY, scale)
+        this.drawPoints(pointContext, this.nativePointX, this.nativePointY, count, centerX, centerY, scale)
       }
     } else {
-      this.drawFallbackPoints(offscreenCtx, pendingSamples, centerX, centerY, scale)
+      this.drawFallbackPoints(pointContext, pendingSamples, centerX, centerY, scale)
     }
 
     this.renderStaticLayer()
-    ctx.drawImage(offscreenCanvas, 0, 0)
+    if (this.gpuRenderer) this.gpuRenderer.present(ctx)
+    else ctx.drawImage(offscreenCanvas, 0, 0)
   }
 
   private isNativeAvailable(): boolean {
@@ -355,7 +389,7 @@ export class Vectorscope {
   }
 
   private drawPoints(
-    ctx: CanvasRenderingContext2D,
+    ctx: VectorscopePointContext,
     x: Float32Array,
     y: Float32Array,
     count: number,
@@ -391,7 +425,7 @@ export class Vectorscope {
   }
 
   private drawFallbackPoints(
-    ctx: CanvasRenderingContext2D,
+    ctx: VectorscopePointContext,
     pendingSamples: { left: Float32Array; right: Float32Array }[],
     centerX: number,
     centerY: number,
@@ -416,7 +450,7 @@ export class Vectorscope {
   }
 
   private drawMultibandPoints(
-    ctx: CanvasRenderingContext2D,
+    ctx: VectorscopePointContext,
     pendingSamples: { left: Float32Array; right: Float32Array }[],
     centerX: number,
     centerY: number,
@@ -470,7 +504,7 @@ export class Vectorscope {
   }
 
   private drawNativeMultibandPoints(
-    ctx: CanvasRenderingContext2D,
+    ctx: VectorscopePointContext,
     pendingSamples: { left: Float32Array; right: Float32Array }[],
     centerX: number,
     centerY: number,
@@ -617,7 +651,7 @@ export class Vectorscope {
   }
 
   private drawProjectedDot(
-    ctx: CanvasRenderingContext2D,
+    ctx: VectorscopePointContext,
     left: number,
     right: number,
     mode: VectorscopeMode,
@@ -652,6 +686,8 @@ export class Vectorscope {
   dispose(): void {
     this.stop()
     this.frameLoop.dispose()
+    this.gpuRenderer?.dispose()
+    this.gpuRenderer = null
 
     if (this.unsubscribeSessionChange) {
       this.unsubscribeSessionChange()
