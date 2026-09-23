@@ -3600,7 +3600,6 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   cursor: default;
 }
 
-.home-jump-row,
 .home-release-row,
 .home-pinned-row,
 .home-recent-row {
@@ -3614,50 +3613,34 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   scroll-snap-type: x proximity;
 }
 
-.home-jump-row {
-  gap: 12px;
-  padding-bottom: 5px;
-}
-
-.home-jump-layout {
+.home-jump-grid {
   display: grid;
-  grid-template-columns: minmax(300px, 0.9fr) minmax(0, 3.4fr);
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
+  gap: 10px;
   min-width: 0;
 }
 
-.home-jump-layout.is-solo {
-  grid-template-columns: minmax(300px, 430px);
+.home-jump-section .home-dashboard-section-header h2 {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  text-transform: none;
 }
 
 .home-jump-card {
-  position: relative;
-  flex: 0 0 clamp(250px, 21vw, 310px);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 12px;
   min-width: 0;
-  height: 104px;
-  border: 1px solid rgba(var(--tint), 0.09);
-  border-radius: 9px;
-  background: rgba(var(--tint), 0.025);
-  overflow: hidden;
-  scroll-snap-align: start;
-  transition: border-color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(var(--tint), 0.055);
+  transition: background var(--transition-fast);
 }
 
 .home-jump-card:hover {
-  border-color: rgba(var(--tint), 0.17);
-  background: rgba(var(--tint), 0.045);
-}
-
-.home-jump-card.is-active {
-  border-color: rgba(var(--accent-rgb), 0.33);
-  background: rgba(var(--accent-rgb), 0.075);
-}
-
-.home-jump-card.is-featured {
-  width: 100%;
-  background:
-    linear-gradient(115deg, rgba(var(--accent-rgb), 0.09), transparent 70%),
-    rgba(var(--tint), 0.025);
+  background: rgba(var(--tint), 0.085);
 }
 
 .home-jump-open,
@@ -3672,96 +3655,154 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 }
 
 .home-jump-open {
-  width: 100%;
-  height: 100%;
-  padding: 10px 80px 10px 10px;
+  min-width: 0;
+  padding: 0;
   display: flex;
   align-items: center;
   gap: 12px;
+  border-radius: 6px;
+  font: inherit;
 }
 
-.home-jump-cover {
-  width: 82px;
-  height: 82px;
-  flex: 0 0 82px;
-  border-radius: 7px;
+.home-jump-artwork {
+  display: block;
+  width: 4rem;
+  aspect-ratio: 1;
+  flex: 0 0 4rem;
+  border-radius: 6px;
   overflow: hidden;
+}
+
+/* The frame owns the size for loaded art and fallbacks alike. This also
+   overrides PlaylistCover's later 44px default without changing other views. */
+.home-jump-artwork > .home-jump-cover {
+  display: block;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: 1;
+  border: 0;
+  border-radius: inherit;
   object-fit: cover;
+}
+
+.home-jump-artwork > .album-artwork-placeholder {
+  display: flex;
+  font-size: 22px;
 }
 
 .home-jump-copy {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  line-height: 1.25;
+  gap: 4px;
 }
 
-.home-jump-copy small,
-.home-jump-copy em {
-  color: rgba(var(--tint), 0.38);
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-style: normal;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.home-jump-copy small {
-  margin-bottom: 5px;
-  color: rgba(var(--accent-rgb), 0.82);
-}
-
-.home-jump-copy strong,
-.home-jump-copy > span {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.home-jump-copy strong {
+.home-jump-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   color: var(--text-strong);
   font-size: 14px;
-  font-weight: 620;
+  font-weight: 550;
+  line-height: 1.35;
 }
 
-.home-jump-copy > span {
-  margin-top: 3px;
-  color: rgba(var(--tint), 0.55);
-  font-size: 11px;
+.home-jump-title > span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.home-jump-copy em {
-  margin-top: 5px;
+.home-jump-playing {
+  flex: none;
+  color: var(--accent);
+}
+
+.home-jump-meta {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.home-jump-meta > span {
+  white-space: nowrap;
 }
 
 .home-jump-play {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
-  min-width: 62px;
-  height: 30px;
-  padding: 0 10px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  border: 1px solid rgba(var(--accent-rgb), 0.3);
-  border-radius: 6px;
-  background: rgba(var(--accent-rgb), 0.1);
-  color: var(--accent-text-strong);
-  font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--text-secondary);
   cursor: pointer;
+}
+
+.home-jump-play:hover:not(:disabled) {
+  background: rgba(var(--tint), 0.08);
+  color: var(--text-strong);
+}
+
+.home-jump-card.is-playing .home-jump-play {
+  color: var(--accent);
 }
 
 .home-jump-play:disabled {
   cursor: default;
   opacity: 0.55;
+}
+
+.home-jump-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.home-jump-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.home-jump-expand:hover {
+  background: rgba(var(--tint), 0.055);
+  color: var(--text-strong);
+}
+
+@media (pointer: coarse) {
+  .home-jump-card {
+    grid-template-columns: minmax(0, 1fr) 44px;
+    gap: 8px;
+  }
+
+  .home-jump-play {
+    width: 44px;
+    height: 44px;
+  }
+
+  .home-jump-expand {
+    min-height: 44px;
+  }
 }
 
 .home-release-row {
@@ -4464,14 +4505,6 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
     padding-inline: 10px;
   }
 
-  .home-jump-layout {
-    grid-template-columns: minmax(270px, 0.95fr) minmax(0, 2fr);
-  }
-
-  .home-jump-card {
-    flex-basis: 270px;
-  }
-
   .home-release-card {
     flex-basis: 170px;
   }
@@ -4516,21 +4549,6 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
     align-items: flex-start;
     flex-direction: column;
     gap: 3px;
-  }
-
-  .home-jump-layout,
-  .home-jump-layout.is-solo {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .home-jump-card.is-featured {
-    flex: none;
-    width: min(100%, 390px);
-  }
-
-  .home-jump-card {
-    flex-basis: 270px;
   }
 
   .home-release-card {
@@ -8516,7 +8534,8 @@ body:has(.track-drag-overlay) * {
   outline-offset: 2px;
 }
 
-.year-album-preview-card.is-expansion-reveal {
+.year-album-preview-card.is-expansion-reveal,
+.home-jump-card.is-expansion-reveal {
   animation: yearAlbumPreviewReveal 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
@@ -30101,7 +30120,6 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
   padding-inline: 24px;
 }
 
-.home-jump-row,
 .home-release-row,
 .home-pinned-row,
 .home-recent-row {
@@ -30109,31 +30127,15 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
   scrollbar-width: none;
 }
 
-.home-jump-row::-webkit-scrollbar,
 .home-release-row::-webkit-scrollbar,
 .home-pinned-row::-webkit-scrollbar,
 .home-recent-row::-webkit-scrollbar {
   display: none;
 }
 
-.home-jump-card,
 .home-release-card,
 .home-pinned-card {
   box-shadow: inset 0 1px 0 rgba(var(--tint), 0.025);
-}
-
-.home-jump-card {
-  background:
-    linear-gradient(135deg, rgba(var(--tint), 0.035), transparent 58%),
-    rgba(var(--tint), 0.016);
-}
-
-.home-jump-card.is-featured {
-  border-color: rgba(var(--accent-rgb), 0.22);
-  background:
-    radial-gradient(80% 120% at 0% 0%, rgba(var(--accent-rgb), 0.13), transparent 72%),
-    linear-gradient(135deg, rgba(var(--tint), 0.04), transparent 58%),
-    rgba(var(--tint), 0.018);
 }
 
 .home-release-card {

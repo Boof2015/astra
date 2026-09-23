@@ -19,6 +19,7 @@ import {
 import AlbumArtwork from '../library/AlbumArtwork'
 import HomeBinaryClock from '../home/HomeBinaryClock'
 import HomeCustomizeModal from '../home/HomeCustomizeModal'
+import HomeJumpBackIn, { type JumpBackInCard } from '../home/HomeJumpBackIn'
 import PlaylistCover from '../playlists/PlaylistCover'
 import {
   chooseGreeting,
@@ -41,30 +42,6 @@ interface HomeTrack {
   album: string
   artwork_hash: string | null
 }
-
-type JumpBackInCard =
-  | {
-      kind: 'album'
-      key: string
-      title: string
-      subtitle: string
-      artworkHash: string | null
-      detail: string
-      lastPlayedAt: number
-      active: boolean
-      release: HomeReleaseSummary
-    }
-  | {
-      kind: 'playlist'
-      key: string
-      title: string
-      subtitle: string
-      artworkHash: string | null
-      detail: string
-      lastPlayedAt: number
-      active: boolean
-      playlist: DisplayPlaylist
-    }
 
 interface RediscoveryRotation {
   dayKey: string
@@ -251,7 +228,7 @@ export default function HomeDashboardView() {
   const currentTrack = usePlayerStore((state) => state.currentTrack)
   const playbackState = usePlayerStore((state) => state.playbackState)
   const queueSourceContext = usePlayerStore((state) => state.queueSourceContext)
-  const play = usePlayerStore((state) => state.play)
+  const togglePlay = usePlayerStore((state) => state.togglePlay)
   const startPlaybackContextByPaths = usePlayerStore((state) => state.startPlaybackContextByPaths)
 
   const playlists = usePlaylistStore((state) => state.playlists)
@@ -284,7 +261,6 @@ export default function HomeDashboardView() {
   const heroRef = useRef<HTMLElement | null>(null)
   const skyCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const starCanvasRef = useRef<HTMLCanvasElement | null>(null)
-  const jumpRowRef = useRef<HTMLDivElement | null>(null)
   const rediscoverRowRef = useRef<HTMLDivElement | null>(null)
   const pinnedRowRef = useRef<HTMLDivElement | null>(null)
   const recentRowRef = useRef<HTMLDivElement | null>(null)
@@ -295,7 +271,6 @@ export default function HomeDashboardView() {
     ? queueSourceContext.identityKey ?? currentTrack?.albumIdentityKey ?? null
     : null
 
-  useHorizontalWheelScroll(jumpRowRef)
   useHorizontalWheelScroll(rediscoverRowRef)
   useHorizontalWheelScroll(pinnedRowRef)
   useHorizontalWheelScroll(recentRowRef)
@@ -582,14 +557,16 @@ export default function HomeDashboardView() {
   }
 
   const handleJumpPlay = async (card: JumpBackInCard) => {
+    if (pendingPlaybackKey) return
     if (card.active) {
-      if (playbackState !== 'playing') {
-        try {
-          setActionError(null)
-          await play()
-        } catch (error) {
-          setActionError(error instanceof Error ? error.message : `Could not continue ${card.title}.`)
-        }
+      setPendingPlaybackKey(card.key)
+      try {
+        setActionError(null)
+        await togglePlay()
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : `Could not ${playbackState === 'playing' ? 'pause' : 'continue'} ${card.title}.`)
+      } finally {
+        setPendingPlaybackKey(null)
       }
       return
     }
@@ -623,57 +600,14 @@ export default function HomeDashboardView() {
   }
 
   const renderJumpBackIn = () => {
-    if (!jumpBackInCards.length) return null
-    const [featuredCard, ...remainingCards] = jumpBackInCards
-    const renderCard = (card: JumpBackInCard, featured = false) => (
-      <article className={`home-jump-card${card.active ? ' is-active' : ''}${featured ? ' is-featured' : ''}`} key={card.key}>
-        <button
-          type="button"
-          className="home-jump-open"
-          onClick={() => card.kind === 'album' ? void handleOpenRelease(card.release) : void handleOpenPlaylist(card.playlist.id)}
-          data-controller-focusable="true"
-          data-controller-context="true"
-          aria-label={`Open ${card.title}`}
-        >
-          {card.kind === 'playlist' ? (
-            <PlaylistCover hash={card.artworkHash} name={card.title} isFavorites={card.playlist.isSystemFavorites} className="home-jump-cover" />
-          ) : (
-            <AlbumArtwork hash={card.artworkHash} alt={card.title} className="home-jump-cover" variant="card" />
-          )}
-          <span className="home-jump-copy">
-            {card.active && <small>{playbackState === 'playing' ? 'Playing now' : 'Ready to continue'}</small>}
-            <strong>{card.title}</strong>
-            <span>{card.subtitle}</span>
-            <em>{card.detail}</em>
-          </span>
-        </button>
-        <button
-          type="button"
-          className="home-jump-play"
-          onClick={() => void handleJumpPlay(card)}
-          disabled={pendingPlaybackKey === card.key || (card.active && playbackState === 'playing')}
-          aria-label={card.active ? `${playbackState === 'playing' ? 'Currently playing' : 'Continue'} ${card.title}` : `Play ${card.title}`}
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
-          <span>{card.active ? (playbackState === 'playing' ? 'Playing' : 'Continue') : 'Play'}</span>
-        </button>
-      </article>
-    )
     return (
-      <section className="home-dashboard-section home-jump-section" data-controller-group="home-jump-back-in" data-controller-axis="horizontal">
-        <div className="home-dashboard-section-header">
-          <div><h2>Jump Back In</h2></div>
-          <HomeShelfNavigation scrollRef={jumpRowRef} label="Jump Back In" />
-        </div>
-        <div className={`home-jump-layout${remainingCards.length ? '' : ' is-solo'}`}>
-          {renderCard(featuredCard, true)}
-          {remainingCards.length > 0 && (
-            <div className="home-jump-row" ref={jumpRowRef}>
-              {remainingCards.map((card) => renderCard(card))}
-            </div>
-          )}
-        </div>
-      </section>
+      <HomeJumpBackIn
+        cards={jumpBackInCards}
+        playbackState={playbackState}
+        pendingPlaybackKey={pendingPlaybackKey}
+        onOpen={(card) => card.kind === 'album' ? void handleOpenRelease(card.release) : void handleOpenPlaylist(card.playlist.id)}
+        onPlay={(card) => void handleJumpPlay(card)}
+      />
     )
   }
 
