@@ -88,6 +88,8 @@ export class Oscilloscope {
   private staticLayerCanvas: HTMLCanvasElement
   private staticLayerCtx: CanvasRenderingContext2D
   private staticLayerKey = ''
+  private underfillGradient: CanvasGradient | null = null
+  private underfillGradientHeight = 0
   private renderBuffer = new Float32Array(0)
   private pushScratch = new Float32Array(0)
   private static readonly WARMUP_SAMPLES = 4096
@@ -158,7 +160,13 @@ export class Oscilloscope {
 
   setOptions(options: Partial<OscilloscopeOptions>): void {
     const { dataSource, frameScheduler: _frameScheduler, ...optionUpdates } = options
+    const previousOptions = this.options
     this.options = { ...this.options, ...optionUpdates }
+    if (!this.options.underfillEnabled
+      || this.options.underfillColor !== previousOptions.underfillColor
+      || this.options.lineColor !== previousOptions.lineColor) {
+      this.underfillGradient = null
+    }
     if (dataSource && dataSource !== this.dataSource) {
       this.dataSource = dataSource
       this.subscribeToSessionChanges()
@@ -201,6 +209,27 @@ export class Oscilloscope {
     // Match Astra's pre-port amplitude: samples are drawn 1.8x taller than raw so
     // the trace fills the tile (Prism's port had dropped this visual gain).
     return ((1 - sample * OSCILLOSCOPE_VISUAL_GAIN) / 2) * height
+  }
+
+  private getUnderfillGradient(height: number): CanvasGradient {
+    if (this.underfillGradient && this.underfillGradientHeight === height) {
+      return this.underfillGradient
+    }
+    const { ctx, options } = this
+    const peakAlpha = 0.28
+    const shoulderAlpha = peakAlpha * 0.74
+    const centerlineAlpha = 0.09
+    const gradient = ctx.createLinearGradient(0, 0, 0, height)
+    gradient.addColorStop(0, options.underfillColor || highContrastUnderfillColor(options.lineColor, peakAlpha))
+    gradient.addColorStop(0.44, options.underfillColor || highContrastUnderfillColor(options.lineColor, peakAlpha * 0.94))
+    gradient.addColorStop(0.48, options.underfillColor || highContrastUnderfillColor(options.lineColor, shoulderAlpha))
+    gradient.addColorStop(0.5, options.underfillColor || highContrastUnderfillColor(options.lineColor, centerlineAlpha))
+    gradient.addColorStop(0.52, options.underfillColor || highContrastUnderfillColor(options.lineColor, shoulderAlpha))
+    gradient.addColorStop(0.56, options.underfillColor || highContrastUnderfillColor(options.lineColor, peakAlpha * 0.94))
+    gradient.addColorStop(1, options.underfillColor || highContrastUnderfillColor(options.lineColor, peakAlpha))
+    this.underfillGradient = gradient
+    this.underfillGradientHeight = height
+    return gradient
   }
 
   private concatMonoChunks(chunks: Float32Array[]): Float32Array {
@@ -293,18 +322,7 @@ export class Oscilloscope {
       }
       ctx.lineTo((sampleCount - 1) * sliceWidth, centerY)
       ctx.closePath()
-      const peakAlpha = 0.28
-      const shoulderAlpha = peakAlpha * 0.74
-      const centerlineAlpha = 0.09
-      const fillGradient = ctx.createLinearGradient(0, 0, 0, height)
-      fillGradient.addColorStop(0, options.underfillColor || highContrastUnderfillColor(options.lineColor, peakAlpha))
-      fillGradient.addColorStop(0.44, options.underfillColor || highContrastUnderfillColor(options.lineColor, peakAlpha * 0.94))
-      fillGradient.addColorStop(0.48, options.underfillColor || highContrastUnderfillColor(options.lineColor, shoulderAlpha))
-      fillGradient.addColorStop(0.5, options.underfillColor || highContrastUnderfillColor(options.lineColor, centerlineAlpha))
-      fillGradient.addColorStop(0.52, options.underfillColor || highContrastUnderfillColor(options.lineColor, shoulderAlpha))
-      fillGradient.addColorStop(0.56, options.underfillColor || highContrastUnderfillColor(options.lineColor, peakAlpha * 0.94))
-      fillGradient.addColorStop(1, options.underfillColor || highContrastUnderfillColor(options.lineColor, peakAlpha))
-      ctx.fillStyle = fillGradient
+      ctx.fillStyle = this.getUnderfillGradient(height)
       ctx.fill()
     }
 
@@ -405,6 +423,7 @@ export class Oscilloscope {
   dispose(): void {
     this.stop()
     this.frameLoop.dispose()
+    this.underfillGradient = null
 
     if (this.unsubscribeSessionChange) {
       this.unsubscribeSessionChange()
