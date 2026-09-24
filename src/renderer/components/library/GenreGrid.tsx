@@ -1,9 +1,10 @@
 import { CSSProperties, memo, ReactElement, Ref, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Grid, type CellComponentProps, type GridImperativeAPI } from 'react-window'
 import { resolveArtistGridLayout } from '../../utils/artistGridLayout'
-import { highlightSearchMatch } from '../../utils/searchHighlight'
 import { normalizeKey } from '../../utils/albumIdentity'
 import AlbumArtwork from './AlbumArtwork'
+import LibraryCollectionCard from './LibraryCollectionCard'
+import { getLibraryCardPlaybackState, type LibraryCardPlaybackSnapshot } from '../../utils/libraryCardPlayback'
 import {
   CONTROLLER_VIRTUAL_MOVE_EVENT,
   focusControllerTarget,
@@ -27,6 +28,8 @@ export interface GenreGridViewportAPI {
 
 interface GenreGridProps {
   genres: GenreRecord[]
+  playback: LibraryCardPlaybackSnapshot
+  onPlayGenre: (genre: GenreRecord) => void
   onSelectGenre: (genre: GenreRecord) => void
   viewportRef?: Ref<GenreGridViewportAPI>
   searchQuery?: string
@@ -34,6 +37,8 @@ interface GenreGridProps {
 
 interface GenreGridCellSharedProps {
   genres: GenreRecord[]
+  playback: LibraryCardPlaybackSnapshot
+  onPlayGenre: (genre: GenreRecord) => void
   columnCount: number
   onSelectGenre: (genre: GenreRecord) => void
   searchQuery: string
@@ -43,8 +48,8 @@ const GENRE_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX = 220
 const GENRE_GRID_GAP_FALLBACK_PX = 14
 const GENRE_GRID_PADDING_FALLBACK_PX = 20
 const GENRE_GRID_OVERSCAN_COUNT = 3
-// 56px artwork + 10px card padding top/bottom + 1px borders.
-const GENRE_CARD_HEIGHT_ESTIMATE_PX = 78
+// 56px artwork + 10px card padding top/bottom.
+const GENRE_CARD_HEIGHT_ESTIMATE_PX = 76
 
 function resolveCssPx(element: HTMLElement | null, propertyName: string, fallback: number): number {
   if (!element) return fallback
@@ -68,6 +73,8 @@ function GenreGridCellRenderer({
   rowIndex,
   style,
   genres,
+  playback,
+  onPlayGenre,
   columnCount,
   onSelectGenre,
   searchQuery
@@ -81,30 +88,18 @@ function GenreGridCellRenderer({
 
   return (
     <div className="genre-grid-cell" style={style as CSSProperties} {...ariaAttributes}>
-      <button
-        type="button"
+      <LibraryCollectionCard
         className="genre-card"
-        data-controller-focusable="true"
-        data-controller-key={`genre:${normalizeKey(genre.genre)}`}
-        data-controller-index={genreIndex}
-        onClick={() => {
-          onSelectGenre(genre)
-        }}
-      >
-        <div className="genre-card-artwork">
-          {genre.artwork_hash ? (
-            <AlbumArtwork hash={genre.artwork_hash} alt={genre.genre} variant="thumbnail" />
-          ) : (
-            <span>&#9835;</span>
-          )}
-        </div>
-        <div className="genre-card-info">
-          <div className="genre-card-title">{highlightSearchMatch(genre.genre, searchQuery)}</div>
-          <div className="genre-card-meta">
-            {formatTrackCount(genre.track_count)} · {genre.album_count} {genre.album_count === 1 ? 'album' : 'albums'}
-          </div>
-        </div>
-      </button>
+        title={genre.genre}
+        subtitle={`${formatTrackCount(genre.track_count)} · ${genre.album_count} ${genre.album_count === 1 ? 'album' : 'albums'}`}
+        artwork={<AlbumArtwork hash={genre.artwork_hash} alt="" variant="thumbnail" virtualized />}
+        playback={getLibraryCardPlaybackState({ type: 'genre', genre: genre.genre }, playback)}
+        onOpen={() => onSelectGenre(genre)}
+        onPlay={() => onPlayGenre(genre)}
+        controllerKey={`genre:${normalizeKey(genre.genre)}`}
+        controllerIndex={genreIndex}
+        searchQuery={searchQuery}
+      />
     </div>
   )
 }
@@ -115,6 +110,8 @@ const GenreGridCell = memo(GenreGridCellRenderer) as (
 
 export default function GenreGrid({
   genres,
+  playback,
+  onPlayGenre,
   onSelectGenre,
   viewportRef,
   searchQuery = ''
@@ -211,10 +208,12 @@ export default function GenreGrid({
 
   const cellProps = useMemo<GenreGridCellSharedProps>(() => ({
     genres,
+    playback,
+    onPlayGenre,
     columnCount: gridLayout.columnCount,
     onSelectGenre,
     searchQuery
-  }), [genres, gridLayout.columnCount, onSelectGenre, searchQuery])
+  }), [genres, playback, onPlayGenre, gridLayout.columnCount, onSelectGenre, searchQuery])
 
   useEffect(() => {
     const group = bodyRef.current
@@ -227,6 +226,7 @@ export default function GenreGrid({
       const nextIndex = event.detail.currentIndex + (event.detail.direction === 'up' ? -step : step)
       if (nextIndex < 0 || nextIndex >= genres.length) return
       event.preventDefault()
+      const action = (document.activeElement as HTMLElement | null)?.dataset.controllerAction === 'play' ? 'play' : 'open'
 
       gridApiRef.current?.scrollToRow({
         index: Math.floor(nextIndex / gridLayout.columnCount),
@@ -236,9 +236,9 @@ export default function GenreGrid({
 
       let attempts = 8
       const focusMountedGenre = (): void => {
-        const target = bodyRef.current?.querySelector<HTMLElement>(
-          `[data-controller-focusable="true"][data-controller-index="${nextIndex}"]`
-        )
+        const selector = `[data-controller-focusable="true"][data-controller-index="${nextIndex}"]`
+        const target = bodyRef.current?.querySelector<HTMLElement>(`${selector}[data-controller-action="${action}"]`)
+          ?? bodyRef.current?.querySelector<HTMLElement>(`${selector}[data-controller-action="open"]`)
         if (target) {
           focusControllerTarget(target)
           return
@@ -269,6 +269,7 @@ export default function GenreGrid({
       data-controller-scroll
       data-controller-group="library-genres"
       data-controller-axis="grid"
+      data-controller-action-rows="true"
       data-controller-virtual="true"
     >
       <Grid

@@ -21,21 +21,24 @@ test('buildLibraryYearGroups sorts newest-first and keeps Unknown Year last', ()
       label: '2025',
       album_count: 2,
       track_count: 10,
-      artwork_hash: 'newer-art'
+      artwork_hash: 'newer-art',
+      artwork_hashes: ['newer-art']
     },
     {
       key: 2021,
       label: '2021',
       album_count: 1,
       track_count: 8,
-      artwork_hash: 'older-art'
+      artwork_hash: 'older-art',
+      artwork_hashes: ['older-art']
     },
     {
       key: 'unknown',
       label: 'Unknown Year',
       album_count: 1,
       track_count: 2,
-      artwork_hash: 'unknown-art'
+      artwork_hash: 'unknown-art',
+      artwork_hashes: ['unknown-art']
     }
   ])
 })
@@ -76,4 +79,17 @@ test('year playback membership follows the supplied unsearched album collection'
     filterTracksByLibraryYearAlbums(tracks, albumsWithSingles, 'unknown').map((track) => track.path),
     ['/albums/unknown-year.flac']
   )
+})
+
+
+test('year collages choose up to four distinct covers in stable album identity order', () => {
+  const albums = [null, 'one', 'one', 'two', 'three', 'four', 'five'].map((artwork_hash, index) => ({
+    identity_key: `album:${index}`, year: 2025, artwork_hash, track_count: 2
+  }))
+  const [year] = buildLibraryYearGroups(albums)
+  assert.deepEqual(year.artwork_hashes, ['one', 'two', 'three', 'four'])
+  assert.equal(year.artwork_hash, 'one')
+  assert.equal(year.album_count, 7)
+  assert.deepEqual(buildLibraryYearGroups([...albums].reverse()), [year])
+  assert.deepEqual(buildLibraryYearGroups([albums[0]])[0].artwork_hashes, [])
 })

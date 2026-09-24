@@ -1,7 +1,8 @@
 import { memo, type CSSProperties } from 'react'
 import { highlightSearchMatch } from '../../utils/searchHighlight'
-import type { AlbumPlaybackTarget } from '../../utils/albumCardPlayback'
-import { HomePlaybackGlyph, homePlaybackLabel, type HomePlaybackControlState } from '../home/HomePlaybackControl'
+import type { AlbumPlaybackTarget } from '../../utils/libraryCardPlayback'
+import type { HomePlaybackControlState } from '../home/HomePlaybackControl'
+import LibraryCardPlaybackControl from './LibraryCardPlaybackControl'
 import AlbumArtwork from './AlbumArtwork'
 
 export interface CompactAlbumRecord extends AlbumPlaybackTarget {
@@ -24,7 +25,6 @@ interface CompactAlbumCardProps {
 }
 
 function CompactAlbumCard({ album, density, playback, onOpen, onPlay, onContextMenu, searchQuery = '', controllerIndex, style }: CompactAlbumCardProps) {
-  const label = homePlaybackLabel(`${album.album} by ${album.artist}`, playback)
   return (
     <article
       className={`compact-album-card compact-album-card--${density} ${density === 'grid' ? 'album-card' : 'library-artist-rail-card'}${playback.playing || playback.pending ? ' has-playback-indicator' : ''}`}
@@ -57,24 +57,15 @@ function CompactAlbumCard({ album, density, playback, onOpen, onPlay, onContextM
         </span>
       </button>
       <span className="compact-album-playback-anchor">
-        <button
-          type="button"
-          className="compact-album-playback home-playback-control"
-          // Native disabled drops keyboard focus during an async playback request.
-          aria-disabled={playback.disabled}
-          tabIndex={playback.disabled ? -1 : 0}
-          aria-label={label}
-          aria-busy={playback.pending}
-          title={label}
-          data-controller-focusable={playback.disabled ? undefined : 'true'}
-          data-controller-context="true"
-          data-controller-key={`album:${album.identity_key}:play`}
-          data-controller-index={controllerIndex}
-          data-controller-action="play"
-          onClick={() => { if (!playback.disabled) onPlay(album) }}
-        >
-          <HomePlaybackGlyph state={playback} />
-        </button>
+        <LibraryCardPlaybackControl
+          className="compact-album-playback"
+          title={`${album.album} by ${album.artist}`}
+          state={playback}
+          onPlay={() => onPlay(album)}
+          controllerKey={`album:${album.identity_key}`}
+          controllerIndex={controllerIndex}
+          contextMenu
+        />
       </span>
       {album.is_new && (
         <span className="library-latest-sync-pill album-card-sync-pill" title="Added in latest library sync">NEW</span>

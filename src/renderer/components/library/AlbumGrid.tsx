@@ -3,7 +3,7 @@ import { Grid, type CellComponentProps, type GridImperativeAPI } from 'react-win
 import { resolveArtistGridLayout } from '../../utils/artistGridLayout'
 import { restoreLibraryScrollPosition } from '../../utils/libraryScrollRestoration'
 import CompactAlbumCard, { type CompactAlbumRecord as AlbumRecord } from './CompactAlbumCard'
-import { getAlbumCardPlaybackState, type AlbumCardPlaybackSnapshot } from '../../utils/albumCardPlayback'
+import { getAlbumCardPlaybackState, type LibraryCardPlaybackSnapshot } from '../../utils/libraryCardPlayback'
 import {
   CONTROLLER_VIRTUAL_MOVE_EVENT,
   focusControllerTarget,
@@ -20,7 +20,7 @@ export interface AlbumGridViewportAPI {
 
 interface AlbumGridProps {
   albums: AlbumRecord[]
-  playback: AlbumCardPlaybackSnapshot
+  playback: LibraryCardPlaybackSnapshot
   onPlayAlbum: (album: AlbumRecord) => void
   onSelectAlbum: (album: AlbumRecord) => void
   onAlbumContextMenu: (album: AlbumRecord, x: number, y: number) => void
@@ -32,7 +32,7 @@ interface AlbumGridProps {
 
 interface AlbumGridCellSharedProps {
   albums: AlbumRecord[]
-  playback: AlbumCardPlaybackSnapshot
+  playback: LibraryCardPlaybackSnapshot
   onPlayAlbum: (album: AlbumRecord) => void
   columnCount: number
   onSelectAlbum: (album: AlbumRecord) => void

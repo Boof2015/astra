@@ -60,7 +60,7 @@ import {
 } from '../../utils/rootTrackTable'
 import { compareTracksBySortRules } from '../../utils/trackSort'
 import { resolveCurrentPlaybackSource } from '../../../shared/home/playbackSources'
-import { createAlbumCardPlaybackActions, getAlbumCardPlaybackState, type AlbumPlaybackTarget, type AlbumCardPlaybackSnapshot } from '../../utils/albumCardPlayback'
+import { albumCardPlaybackSource, createLibraryCardPlaybackActions, getAlbumCardPlaybackState, type AlbumPlaybackTarget, type LibraryCardPlaybackSnapshot, type LibraryCardSource } from '../../utils/libraryCardPlayback'
 import CompactAlbumCard from '../library/CompactAlbumCard'
 
 type SortDirection = 'asc' | 'desc'
@@ -285,15 +285,15 @@ export default function LibraryView() {
   const setArtistImageFromFile = useLibraryStore((state) => state.setArtistImageFromFile)
   const clearArtistImage = useLibraryStore((state) => state.clearArtistImage)
   const [isCollectionPlayPending, setIsCollectionPlayPending] = useState(false)
-  const [pendingAlbumPlaybackKey, setPendingAlbumPlaybackKey] = useState<string | null>(null)
-  const [albumPlaybackError, setAlbumPlaybackError] = useState<string | null>(null)
-  const albumCardPlayback = useMemo<AlbumCardPlaybackSnapshot>(() => ({
+  const [pendingCardPlaybackKey, setPendingCardPlaybackKey] = useState<string | null>(null)
+  const [cardPlaybackError, setCardPlaybackError] = useState<string | null>(null)
+  const cardPlayback = useMemo<LibraryCardPlaybackSnapshot>(() => ({
     currentSource: resolveCurrentPlaybackSource({ currentTrack, currentQueueItemId, queueItems }),
     currentTrackPath: currentTrack?.path ?? null,
     playbackState,
-    pendingKey: pendingAlbumPlaybackKey
-  }), [currentTrack, currentQueueItemId, queueItems, playbackState, pendingAlbumPlaybackKey])
-  const albumPlaybackActions = useMemo(() => createAlbumCardPlaybackActions({
+    pendingKey: pendingCardPlaybackKey
+  }), [currentTrack, currentQueueItemId, queueItems, playbackState, pendingCardPlaybackKey])
+  const cardPlaybackActions = useMemo(() => createLibraryCardPlaybackActions({
     getContext: () => {
       const player = usePlayerStore.getState()
       return {
@@ -302,11 +302,18 @@ export default function LibraryView() {
         loading: player.playbackState === 'loading'
       }
     },
-    getTracks: (album) => window.electronAPI.library.getTracksByAlbum(album.album, album.artist, album.identity_key),
+    getTracks: (source) => {
+      switch (source.type) {
+        case 'album': return window.electronAPI.library.getTracksByAlbum(source.album, source.albumArtist, source.identityKey)
+        case 'artist': return window.electronAPI.library.getTracksByArtist(source.artist, useLibraryStore.getState().artistBrowseMode)
+        case 'genre': return window.electronAPI.library.getTracksByGenre(source.genre)
+        case 'year': return window.electronAPI.library.getTracksByYear(source.year === 'unknown' ? null : source.year)
+      }
+    },
     toggle: () => usePlayerStore.getState().togglePlay(),
     start: (paths, index, options) => usePlayerStore.getState().startPlaybackContextByPaths(paths, index, options),
-    onPendingChange: setPendingAlbumPlaybackKey,
-    onError: setAlbumPlaybackError
+    onPendingChange: setPendingCardPlaybackKey,
+    onError: setCardPlaybackError
   }), [])
   const [isUpdatingArtistImage, setIsUpdatingArtistImage] = useState(false)
   const [isArtistImageMenuOpen, setIsArtistImageMenuOpen] = useState(false)
@@ -754,13 +761,26 @@ export default function LibraryView() {
     })
   }, [openCollectionQueueMenu])
 
-  const handlePlayAlbumCard = useCallback((album: AlbumPlaybackTarget) => {
-    void albumPlaybackActions.play(album, {
+  const handlePlayLibraryCard = useCallback((source: LibraryCardSource, title: string, albumIdentityKeys?: ReadonlySet<string>) => {
+    void cardPlaybackActions.play({ source, title }, {
       sourceFilters: shouldShowSourceFilters ? selectedSourceFilters : new Set<string>(),
       hiddenFolderPrefixes,
-      platform: window.electronAPI.platform
+      platform: window.electronAPI.platform,
+      albumIdentityKeys
     })
-  }, [albumPlaybackActions, shouldShowSourceFilters, selectedSourceFilters, hiddenFolderPrefixes])
+  }, [cardPlaybackActions, shouldShowSourceFilters, selectedSourceFilters, hiddenFolderPrefixes])
+
+  const handlePlayAlbumCard = useCallback((album: AlbumPlaybackTarget) => {
+    handlePlayLibraryCard(albumCardPlaybackSource(album), album.album)
+  }, [handlePlayLibraryCard])
+
+  const handlePlayArtistCard = useCallback((artist: string) => {
+    handlePlayLibraryCard({ type: 'artist', artist }, artist)
+  }, [handlePlayLibraryCard])
+
+  const handlePlayGenreCard = useCallback((genre: { genre: string }) => {
+    handlePlayLibraryCard({ type: 'genre', genre: genre.genre }, genre.genre)
+  }, [handlePlayLibraryCard])
 
   const handleSelectArtistAlbum = useCallback((album: AlbumPlaybackTarget) => {
     void runPreparedSelectionTransition({
@@ -947,6 +967,12 @@ export default function LibraryView() {
     if (!isYearRootView && !isYearDetailView) return []
     return buildLibraryYearGroups(sourceFilteredAlbums)
   }, [isYearDetailView, isYearRootView, sourceFilteredAlbums])
+  const handlePlayYearCard = useCallback((year: LibraryYearGroup) => {
+    const albumIdentityKeys = new Set(sourceFilteredAlbums
+      .filter((album) => albumMatchesLibraryYear(album, year.key))
+      .map((album) => album.identity_key))
+    handlePlayLibraryCard({ type: 'year', year: year.key }, year.label, albumIdentityKeys)
+  }, [sourceFilteredAlbums, handlePlayLibraryCard])
   const filteredYears = useMemo(() => {
     if (!isYearRootView) return []
     if (!hasSearchQuery) return yearGroups
@@ -1493,7 +1519,7 @@ export default function LibraryView() {
       return (
         <AlbumGrid
           albums={filteredAlbums}
-          playback={albumCardPlayback}
+          playback={cardPlayback}
           onPlayAlbum={handlePlayAlbumCard}
           viewportRef={albumViewportRef}
           restoreScrollTop={getRememberedLibraryScrollPosition(ALBUM_ROOT_SCROLL_KEY)}
@@ -1515,6 +1541,8 @@ export default function LibraryView() {
       return (
         <ArtistList
           artists={filteredArtists}
+          playback={cardPlayback}
+          onPlayArtist={handlePlayArtistCard}
           onSelectArtist={handleSelectArtistFromList}
           viewMode={artistRootViewMode}
           viewportRef={artistViewportRef}
@@ -1532,6 +1560,8 @@ export default function LibraryView() {
       return (
         <GenreGrid
           genres={filteredGenres}
+          playback={cardPlayback}
+          onPlayGenre={handlePlayGenreCard}
           viewportRef={genreViewportRef}
           searchQuery={trimmedSearchQuery}
           onSelectGenre={handleSelectGenreFromGrid}
@@ -1548,6 +1578,8 @@ export default function LibraryView() {
       return (
         <YearGrid
           years={filteredYears}
+          playback={cardPlayback}
+          onPlayYear={handlePlayYearCard}
           viewportRef={yearViewportRef}
           searchQuery={trimmedSearchQuery}
           onSelectYear={handleSelectYearFromGrid}
@@ -1574,6 +1606,8 @@ export default function LibraryView() {
           <YearAlbumPreview
             key={`year-albums:${selectedYear}`}
             albums={selectedYearAlbums}
+            playback={cardPlayback}
+            onPlayAlbum={handlePlayAlbumCard}
             searchQuery={trimmedSearchQuery}
             emptyMessage={albumEmptyMessage}
             onSelectAlbum={handleSelectAlbumFromGrid}
@@ -1689,7 +1723,7 @@ export default function LibraryView() {
                     key={album.identity_key}
                     album={album}
                     density="discography"
-                    playback={getAlbumCardPlaybackState(album, albumCardPlayback)}
+                    playback={getAlbumCardPlaybackState(album, cardPlayback)}
                     onOpen={handleSelectArtistAlbum}
                     onPlay={handlePlayAlbumCard}
                     onContextMenu={handleAlbumGridContextMenu}
@@ -2315,10 +2349,10 @@ export default function LibraryView() {
 
       {renderScanProgress()}
 
-      {albumPlaybackError && (
-        <div className="library-album-playback-error" role="alert">
-          <span>{albumPlaybackError}</span>
-          <button type="button" onClick={() => setAlbumPlaybackError(null)} data-controller-focusable="true">Dismiss</button>
+      {cardPlaybackError && (
+        <div className="library-card-playback-error" role="alert">
+          <span>{cardPlaybackError}</span>
+          <button type="button" onClick={() => setCardPlaybackError(null)} data-controller-focusable="true">Dismiss</button>
         </div>
       )}
 

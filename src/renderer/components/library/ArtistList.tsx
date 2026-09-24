@@ -4,6 +4,9 @@ import type { ArtworkVariant } from '../../stores/libraryStore'
 import { resolveArtistGridLayout } from '../../utils/artistGridLayout'
 import { highlightSearchMatch } from '../../utils/searchHighlight'
 import AlbumArtwork from './AlbumArtwork'
+import LibraryCollectionCard from './LibraryCollectionCard'
+import LibraryCardPlaybackControl from './LibraryCardPlaybackControl'
+import { getLibraryCardPlaybackState, type LibraryCardPlaybackSnapshot } from '../../utils/libraryCardPlayback'
 import {
   CONTROLLER_VIRTUAL_MOVE_EVENT,
   focusControllerTarget,
@@ -26,6 +29,8 @@ export interface ArtistListViewportAPI {
 
 interface ArtistListProps {
   artists: ArtistRecord[]
+  playback: LibraryCardPlaybackSnapshot
+  onPlayArtist: (artist: string) => void
   onSelectArtist: (artist: string) => void | Promise<void>
   viewMode?: ArtistListViewMode
   viewportRef?: Ref<ArtistListViewportAPI>
@@ -34,6 +39,8 @@ interface ArtistListProps {
 
 interface ArtistListRowSharedProps {
   artists: ArtistRecord[]
+  playback: LibraryCardPlaybackSnapshot
+  onPlayArtist: (artist: string) => void
   onSelectArtist: (artist: string) => void | Promise<void>
   searchQuery: string
 }
@@ -41,6 +48,8 @@ interface ArtistListRowSharedProps {
 interface ArtistGridCellSharedProps {
   artists: ArtistRecord[]
   columnCount: number
+  playback: LibraryCardPlaybackSnapshot
+  onPlayArtist: (artist: string) => void
   onSelectArtist: (artist: string) => void | Promise<void>
   searchQuery: string
 }
@@ -111,6 +120,8 @@ function ArtistListRowRenderer({
   style,
   artists,
   onSelectArtist,
+  playback,
+  onPlayArtist,
   searchQuery
 }: RowComponentProps<ArtistListRowSharedProps>): ReactElement | null {
   const artist = artists[index]
@@ -118,28 +129,18 @@ function ArtistListRowRenderer({
 
   return (
     <div className="artist-list-item" style={style as CSSProperties} {...ariaAttributes}>
-      <div
+      <LibraryCollectionCard
         className="artist-item"
-        data-controller-focusable="true"
-        data-controller-key={`artist:${artist.artist}`}
-        data-controller-index={index}
-        tabIndex={-1}
-        role="button"
-        aria-label={`Open ${artist.artist}`}
-        onClick={() => {
-          void onSelectArtist(artist.artist)
-        }}
-      >
-        <ArtistAvatar
-          artist={artist}
-          className="artist-avatar"
-          artworkClassName="artist-avatar-artwork"
-        />
-        <div className="artist-info">
-          <div className="artist-name">{highlightSearchMatch(artist.artist, searchQuery)}</div>
-          <div className="artist-track-count">{formatArtistLibrarySummary(artist)}</div>
-        </div>
-      </div>
+        title={artist.artist}
+        subtitle={formatArtistLibrarySummary(artist)}
+        artwork={<ArtistAvatar artist={artist} className="artist-avatar" artworkClassName="artist-avatar-artwork" />}
+        playback={getLibraryCardPlaybackState({ type: 'artist', artist: artist.artist }, playback)}
+        onOpen={() => { void onSelectArtist(artist.artist) }}
+        onPlay={() => onPlayArtist(artist.artist)}
+        controllerKey={`artist:${artist.artist}`}
+        controllerIndex={index}
+        searchQuery={searchQuery}
+      />
     </div>
   )
 }
@@ -156,6 +157,8 @@ function ArtistGridCellRenderer({
   artists,
   columnCount,
   onSelectArtist,
+  playback,
+  onPlayArtist,
   searchQuery
 }: CellComponentProps<ArtistGridCellSharedProps>): ReactElement | null {
   const artist = artists[(rowIndex * columnCount) + columnIndex]
@@ -165,29 +168,45 @@ function ArtistGridCellRenderer({
     return <div className="artist-grid-cell artist-grid-cell-empty" style={style as CSSProperties} {...ariaAttributes} />
   }
 
+  const state = getLibraryCardPlaybackState({ type: 'artist', artist: artist.artist }, playback)
   return (
     <div className="artist-grid-cell" style={style as CSSProperties} {...ariaAttributes}>
-      <button
-        type="button"
-        className="artist-grid-card"
-        data-controller-focusable="true"
-        data-controller-key={`artist:${artist.artist}`}
-        data-controller-index={artistIndex}
-        onClick={() => {
-          void onSelectArtist(artist.artist)
-        }}
-      >
-        <ArtistAvatar
-          artist={artist}
-          className="artist-grid-avatar"
-          artworkClassName="artist-grid-avatar-artwork"
-          artworkVariant="card"
-        />
-        <div className="artist-grid-info">
-          <div className="artist-grid-name">{highlightSearchMatch(artist.artist, searchQuery)}</div>
-          <div className="artist-grid-track-count">{formatArtistLibrarySummary(artist)}</div>
-        </div>
-      </button>
+      <article className={`artist-grid-card${state.playing || state.pending ? ' has-playback-indicator' : ''}`}>
+        <button
+          type="button"
+          className="artist-grid-open"
+          aria-label={`Open ${artist.artist}`}
+          title={artist.artist}
+          data-controller-action="open"
+          data-controller-focusable="true"
+          data-controller-key={`artist:${artist.artist}`}
+          data-controller-index={artistIndex}
+          onClick={() => {
+            void onSelectArtist(artist.artist)
+          }}
+        >
+          <ArtistAvatar
+            artist={artist}
+            className="artist-grid-avatar"
+            artworkClassName="artist-grid-avatar-artwork"
+            artworkVariant="card"
+          />
+          <div className="artist-grid-info">
+            <div className="artist-grid-name">{highlightSearchMatch(artist.artist, searchQuery)}</div>
+            <div className="artist-grid-track-count">{formatArtistLibrarySummary(artist)}</div>
+          </div>
+        </button>
+        <span className="artist-grid-playback-anchor">
+          <LibraryCardPlaybackControl
+            className="compact-album-playback"
+            title={artist.artist}
+            state={state}
+            onPlay={() => onPlayArtist(artist.artist)}
+            controllerKey={`artist:${artist.artist}`}
+            controllerIndex={artistIndex}
+          />
+        </span>
+      </article>
     </div>
   )
 }
@@ -199,6 +218,8 @@ const ArtistGridCell = memo(ArtistGridCellRenderer) as (
 export default function ArtistList({
   artists,
   onSelectArtist,
+  playback,
+  onPlayArtist,
   viewMode = 'list',
   viewportRef,
   searchQuery = ''
@@ -266,8 +287,10 @@ export default function ArtistList({
   const rowProps = useMemo<ArtistListRowSharedProps>(() => ({
     artists,
     onSelectArtist,
+    playback,
+    onPlayArtist,
     searchQuery
-  }), [artists, onSelectArtist, searchQuery])
+  }), [artists, onSelectArtist, playback, onPlayArtist, searchQuery])
 
   const availableGridContentWidth = gridContentWidth > 0 ? gridContentWidth : viewportSize.width
   const gridLayout = useMemo(() => resolveArtistGridLayout({
@@ -307,8 +330,10 @@ export default function ArtistList({
     artists,
     columnCount: gridLayout.columnCount,
     onSelectArtist,
+    playback,
+    onPlayArtist,
     searchQuery
-  }), [artists, gridLayout.columnCount, onSelectArtist, searchQuery])
+  }), [artists, gridLayout.columnCount, onSelectArtist, playback, onPlayArtist, searchQuery])
 
   useEffect(() => {
     const group = listBodyRef.current
@@ -332,10 +357,13 @@ export default function ArtistList({
         listApiRef.current?.scrollToRow({ index: nextIndex, align: 'center', behavior: 'auto' })
       }
 
+      const action = document.activeElement?.getAttribute('data-controller-action') === 'play' ? 'play' : 'open'
       let attempts = 8
       const focusMountedArtist = (): void => {
         const target = listBodyRef.current?.querySelector<HTMLElement>(
-          `[data-controller-focusable="true"][data-controller-index="${nextIndex}"]`
+          `[data-controller-focusable="true"][data-controller-index="${nextIndex}"][data-controller-action="${action}"]`
+        ) ?? listBodyRef.current?.querySelector<HTMLElement>(
+          `[data-controller-focusable="true"][data-controller-index="${nextIndex}"][data-controller-action="open"]`
         )
         if (target) {
           focusControllerTarget(target)
@@ -368,6 +396,7 @@ export default function ArtistList({
         data-controller-scroll
         data-controller-group="library-artists"
         data-controller-axis="grid"
+        data-controller-action-rows="true"
         data-controller-virtual="true"
       >
         <Grid
@@ -400,7 +429,8 @@ export default function ArtistList({
       ref={listBodyRef}
       data-controller-scroll
       data-controller-group="library-artists"
-      data-controller-axis="vertical"
+      data-controller-axis="grid"
+      data-controller-action-rows="true"
       data-controller-virtual="true"
     >
       <List

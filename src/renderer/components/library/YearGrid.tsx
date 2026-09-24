@@ -1,8 +1,9 @@
 import { Ref, useImperativeHandle, useRef } from 'react'
 import { normalizeKey } from '../../utils/albumIdentity'
-import { highlightSearchMatch } from '../../utils/searchHighlight'
 import type { LibraryYearGroup } from '../../utils/libraryYears'
 import AlbumArtwork from './AlbumArtwork'
+import LibraryCollectionCard from './LibraryCollectionCard'
+import { getLibraryCardPlaybackState, type LibraryCardPlaybackSnapshot } from '../../utils/libraryCardPlayback'
 
 export interface YearGridViewportAPI {
   get element(): HTMLDivElement | null
@@ -10,6 +11,8 @@ export interface YearGridViewportAPI {
 
 interface YearGridProps {
   years: LibraryYearGroup[]
+  playback: LibraryCardPlaybackSnapshot
+  onPlayYear: (year: LibraryYearGroup) => void
   onSelectYear: (year: LibraryYearGroup) => void
   viewportRef?: Ref<YearGridViewportAPI>
   searchQuery?: string
@@ -25,6 +28,8 @@ function formatTrackCount(count: number): string {
 
 export default function YearGrid({
   years,
+  playback,
+  onPlayYear,
   onSelectYear,
   viewportRef,
   searchQuery = ''
@@ -44,32 +49,29 @@ export default function YearGrid({
       data-controller-scroll
       data-controller-group="library-years"
       data-controller-axis="grid"
+      data-controller-action-rows="true"
       data-controller-auto-items="true"
     >
       {years.map((year, index) => (
-        <button
+        <LibraryCollectionCard
           key={year.key}
-          type="button"
-          className="year-card"
-          data-controller-focusable="true"
-          data-controller-key={`year:${normalizeKey(year.label)}`}
-          data-controller-index={index}
-          onClick={() => onSelectYear(year)}
-        >
-          <div className="year-card-artwork">
-            {year.artwork_hash ? (
-              <AlbumArtwork hash={year.artwork_hash} alt={year.label} variant="thumbnail" />
-            ) : (
-              <span aria-hidden="true">{year.key === 'unknown' ? '?' : year.key}</span>
-            )}
-          </div>
-          <div className="year-card-info">
-            <div className="year-card-title">{highlightSearchMatch(year.label, searchQuery)}</div>
-            <div className="year-card-meta">
-              {formatAlbumCount(year.album_count)} · {formatTrackCount(year.track_count)}
-            </div>
-          </div>
-        </button>
+          className={`year-card${year.key === 'unknown' ? ' year-card--unknown' : ''}`}
+          title={year.label}
+          subtitle={`${formatAlbumCount(year.album_count)} · ${formatTrackCount(year.track_count)}`}
+          searchQuery={searchQuery}
+          controllerKey={`year:${normalizeKey(year.label)}`}
+          controllerIndex={index}
+          onOpen={() => onSelectYear(year)}
+          onPlay={() => onPlayYear(year)}
+          playback={getLibraryCardPlaybackState({ type: 'year', year: year.key }, playback)}
+          artwork={
+            <span className={`year-cover-collage year-cover-collage--${year.artwork_hashes.length}`}>
+              {year.artwork_hashes.length > 0 ? year.artwork_hashes.map((hash) => (
+                <AlbumArtwork key={hash} hash={hash} alt="" variant="thumbnail" />
+              )) : <span className="year-cover-fallback">♫</span>}
+            </span>
+          }
+        />
       ))}
     </div>
   )

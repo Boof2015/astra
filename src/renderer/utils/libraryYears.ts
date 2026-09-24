@@ -17,6 +17,7 @@ export interface LibraryYearGroup {
   album_count: number
   track_count: number
   artwork_hash: string | null
+  artwork_hashes: string[]
 }
 
 export function formatLibraryYearKey(key: LibraryYearKey): string {
@@ -58,6 +59,9 @@ export function buildLibraryYearGroups(albums: readonly LibraryYearAlbum[]): Lib
       if (!existing.artwork_hash && album.artwork_hash) {
         existing.artwork_hash = album.artwork_hash
       }
+      if (album.artwork_hash && existing.artwork_hashes.length < 4 && !existing.artwork_hashes.includes(album.artwork_hash)) {
+        existing.artwork_hashes.push(album.artwork_hash)
+      }
       continue
     }
 
@@ -66,7 +70,8 @@ export function buildLibraryYearGroups(albums: readonly LibraryYearAlbum[]): Lib
       label: formatLibraryYearKey(key),
       album_count: 1,
       track_count: album.track_count,
-      artwork_hash: album.artwork_hash
+      artwork_hash: album.artwork_hash,
+      artwork_hashes: album.artwork_hash ? [album.artwork_hash] : []
     })
   }
 
