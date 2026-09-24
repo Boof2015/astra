@@ -47,6 +47,7 @@ import AlbumArtwork from '../library/AlbumArtwork'
 import QueueSplitButton from '../queue/QueueSplitButton'
 import AlbumGrid, { type AlbumGridViewportAPI } from '../library/AlbumGrid'
 import ArtistList, { type ArtistListViewportAPI } from '../library/ArtistList'
+import { ArtistNameLinksContent } from '../library/ArtistNameLinks'
 import FolderTreeView from '../library/FolderTreeView'
 import GenreGrid, { type GenreGridViewportAPI } from '../library/GenreGrid'
 import YearAlbumPreview from '../library/YearAlbumPreview'
@@ -716,7 +717,7 @@ export default function LibraryView() {
     return committed
   }, [commitPreparedSelection, prepareSelection])
 
-  const handleSelectArtistFromList = useCallback(async (artistName: string) => {
+  const handleSelectArtist = useCallback(async (artistName: string) => {
     await runPreparedSelectionTransition(
       { kind: 'artist', artist: artistName, origin: 'library' },
       'library-context-forward'
@@ -1229,6 +1230,10 @@ export default function LibraryView() {
       || tracks.find((track) => track.artist.trim())?.artist.trim()
       || ''
     : ''
+  const selectedAlbumArtistNames = selectedAlbumArtist
+    ? tracks.find((track) => track.album_artist?.trim() === selectedAlbumArtist)?.album_artist_names
+      ?? tracks.find((track) => track.artist.trim() === selectedAlbumArtist)?.artist_names
+    : undefined
   const detailArtworkHash = selectedAlbumArtworkHash
     ?? selectedArtistArtworkHash
     ?? selectedGenreArtworkHash
@@ -1379,7 +1384,6 @@ export default function LibraryView() {
     : null
   const detailMetaItems = selectedAlbum
     ? [
-        selectedAlbumArtist || null,
         selectedAlbumYear ? String(selectedAlbumYear) : null,
         formatTrackCount(sourceFilteredTracks.length),
         selectedAlbumDurationLabel,
@@ -1543,7 +1547,7 @@ export default function LibraryView() {
           artists={filteredArtists}
           playback={cardPlayback}
           onPlayArtist={handlePlayArtistCard}
-          onSelectArtist={handleSelectArtistFromList}
+          onSelectArtist={handleSelectArtist}
           viewMode={artistRootViewMode}
           viewportRef={artistViewportRef}
           searchQuery={trimmedSearchQuery}
@@ -2089,7 +2093,21 @@ export default function LibraryView() {
                 </div>
                 <h2 title={title}>{title}</h2>
                 <div className="library-detail-meta-row">
-                  <span className="library-detail-meta">{detailMetaItems.join(' \u00b7 ')}</span>
+                  <span className="library-detail-meta">
+                    {selectedAlbumArtist && (
+                      <>
+                        <ArtistNameLinksContent
+                          artistText={selectedAlbumArtist}
+                          artistNames={selectedAlbumArtistNames}
+                          onArtistClick={handleSelectArtist}
+                          linkClassName="artist-name-link-inline"
+                          artistBrowseMode={artistBrowseMode}
+                        />
+                        {' \u00b7 '}
+                      </>
+                    )}
+                    {detailMetaItems.join(' \u00b7 ')}
+                  </span>
                 </div>
               </div>
             </>
