@@ -3505,6 +3505,7 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   min-width: 0;
 }
 
+/* Home modules share their own components; legacy HomeView cards stay isolated. */
 .home-dashboard-section {
   min-width: 0;
   padding: 22px 0 24px;
@@ -3512,7 +3513,7 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 }
 
 .home-dashboard-section-header {
-  min-height: 30px;
+  min-height: 32px;
   margin-bottom: 14px;
   display: flex;
   align-items: center;
@@ -3530,152 +3531,126 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 .home-dashboard-section-header h2 {
   margin: 0;
   color: var(--text-strong);
-  font-size: 14px;
-  font-weight: 650;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.025em;
 }
 
-.home-dashboard-section-header span {
-  color: rgba(var(--tint), 0.38);
+.home-section-detail {
+  color: var(--text-secondary);
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.04em;
   white-space: nowrap;
 }
 
-.home-section-action {
-  min-height: 30px;
-  padding: 0 11px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: 1px solid rgba(var(--tint), 0.1);
-  border-radius: 6px;
-  background: rgba(var(--tint), 0.025);
-  color: rgba(var(--tint), 0.5);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-.home-section-action:hover:not(:disabled) {
-  border-color: rgba(var(--accent-rgb), 0.34);
-  color: var(--accent-text-strong);
-  background: rgba(var(--accent-rgb), 0.08);
-}
-
 .home-dashboard-section-actions,
 .home-shelf-navigation {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 6px;
 }
 
-.home-shelf-navigation button {
-  width: 30px;
-  height: 30px;
-  padding: 0;
+.home-section-action,
+.home-shelf-navigation button,
+.home-grid-expand {
+  min-height: 32px;
+  padding: 4px 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(var(--tint), 0.12);
-  border-radius: 7px;
-  background: rgba(var(--tint), 0.035);
-  color: rgba(var(--tint), 0.66);
+  gap: 6px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(var(--tint), 0.055);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
   cursor: pointer;
-  transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 
-.home-shelf-navigation button:hover:not(:disabled) {
-  color: var(--accent-text-strong);
-  border-color: rgba(var(--accent-rgb), 0.38);
-  background: rgba(var(--accent-rgb), 0.1);
+.home-shelf-navigation button { width: 32px; padding: 0; }
+
+.home-section-action:hover:not(:disabled),
+.home-shelf-navigation button:hover:not(:disabled),
+.home-grid-expand:hover {
+  color: var(--text-strong);
+  background: rgba(var(--tint), 0.1);
 }
 
+.home-section-action:disabled,
 .home-shelf-navigation button:disabled {
-  opacity: 0.28;
+  opacity: 0.35;
   cursor: default;
 }
 
-.home-release-row,
-.home-pinned-row,
-.home-recent-row {
-  display: flex;
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  overscroll-behavior-inline: contain;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(var(--tint), 0.13) transparent;
-  scroll-snap-type: x proximity;
-}
-
-.home-jump-grid {
+.home-media-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
   gap: 10px;
   min-width: 0;
 }
 
-.home-jump-section .home-dashboard-section-header h2 {
-  font-size: 18px;
-  font-weight: 600;
-  letter-spacing: -0.025em;
-  text-transform: none;
+.home-media-grid-item { min-width: 0; }
+
+.home-collection-card,
+.home-media-album,
+.home-track-row {
+  min-width: 0;
+  padding: 10px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(var(--tint), 0.055);
+  color: inherit;
+  transition: background var(--transition-fast);
 }
 
-.home-jump-card {
+.home-collection-card:hover,
+.home-media-album:hover,
+.home-track-row:hover:not(:disabled) {
+  background: rgba(var(--tint), 0.085);
+}
+
+.home-collection-card {
+  height: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 32px;
   align-items: center;
   gap: 12px;
+}
+
+.home-media-open {
   min-width: 0;
-  padding: 10px;
-  border-radius: 8px;
-  background: rgba(var(--tint), 0.055);
-  transition: background var(--transition-fast);
-}
-
-.home-jump-card:hover {
-  background: rgba(var(--tint), 0.085);
-}
-
-.home-jump-open,
-.home-release-open,
-.home-pinned-open {
-  appearance: none;
-  border: 0;
-  background: none;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.home-jump-open {
-  min-width: 0;
+  width: 100%;
   padding: 0;
   display: flex;
   align-items: center;
   gap: 12px;
+  appearance: none;
+  border: 0;
   border-radius: 6px;
+  background: none;
+  color: inherit;
+  text-align: left;
   font: inherit;
+  cursor: pointer;
 }
 
-.home-jump-artwork {
+.home-media-artwork {
   display: block;
   width: 4rem;
   aspect-ratio: 1;
   flex: 0 0 4rem;
   border-radius: 6px;
   overflow: hidden;
+  background: rgba(var(--tint), 0.035);
 }
 
-/* The frame owns the size for loaded art and fallbacks alike. This also
-   overrides PlaylistCover's later 44px default without changing other views. */
-.home-jump-artwork > .home-jump-cover {
+/* Own loaded art and fallbacks, including PlaylistCover's later fixed sizing. */
+.home-media-artwork > .home-media-cover {
   display: block;
   width: 100%;
   height: 100%;
@@ -3685,68 +3660,30 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   object-fit: cover;
 }
 
-.home-jump-artwork > .album-artwork-placeholder {
+.home-media-artwork > .album-artwork-placeholder {
   display: flex;
   font-size: 22px;
 }
 
-.home-jump-copy {
+.home-media-copy {
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.home-jump-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.home-media-title {
   min-width: 0;
   color: var(--text-strong);
   font-size: 14px;
   font-weight: 550;
   line-height: 1.35;
-}
-
-.home-jump-title > span {
-  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.home-jump-playing {
-  flex: none;
-  color: var(--accent);
-}
-
-.home-jump-playing path {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: homeJumpPlayingBar 760ms ease-in-out infinite alternate;
-}
-
-.home-jump-playing path:nth-child(2) {
-  animation-duration: 980ms;
-  animation-delay: -420ms;
-}
-
-.home-jump-playing path:nth-child(3) {
-  animation-duration: 680ms;
-  animation-delay: -180ms;
-}
-
-.home-jump-playing path:nth-child(4) {
-  animation-duration: 860ms;
-  animation-delay: -620ms;
-}
-
-@keyframes homeJumpPlayingBar {
-  from { transform: scaleY(0.45); }
-  to { transform: scaleY(1); }
-}
-
-.home-jump-meta {
+.home-media-subtitle {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -3757,268 +3694,168 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   overflow-wrap: anywhere;
 }
 
-.home-jump-meta > span {
-  white-space: nowrap;
-}
+.home-media-subtitle > span { white-space: nowrap; }
 
-.home-jump-play {
+.home-playback-control,
+.home-playback-glyph {
   width: 32px;
   height: 32px;
-  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: none;
+  border-radius: 8px;
+}
+
+.home-playback-control {
   border: 0;
-  border-radius: 50%;
+  padding: 0;
   background: none;
-  color: var(--text-secondary);
+  color: inherit;
   cursor: pointer;
 }
 
-.home-jump-play:hover:not(:disabled) {
-  background: rgba(var(--tint), 0.08);
+.home-playback-glyph {
+  background: rgba(var(--tint), 0.065);
+  color: var(--text-secondary);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.home-playback-control:is(:hover, :focus-visible):not(:disabled) .home-playback-glyph,
+.home-track-row:is(:hover, :focus-visible):not(:disabled) .home-playback-glyph {
+  background: rgba(var(--tint), 0.13);
   color: var(--text-strong);
 }
 
-.home-jump-card.is-playing .home-jump-play {
+.home-playback-glyph.is-playing,
+.home-playback-control:is(:hover, :focus-visible) .home-playback-glyph.is-playing,
+.home-track-row:is(:hover, :focus-visible) .home-playback-glyph.is-playing {
   color: var(--accent);
 }
 
-.home-jump-play:disabled {
-  cursor: default;
-  opacity: 0.55;
+.home-playback-control:disabled,
+.home-track-row:disabled { cursor: default; }
+.home-playback-control:disabled .home-playback-glyph,
+.home-track-row:disabled .home-playback-glyph { opacity: 0.55; }
+.home-playback-glyph.is-pending { animation: homePlaybackPending 1.4s ease-in-out infinite alternate; }
+
+@keyframes homePlaybackPending {
+  from { opacity: 0.45; }
+  to { opacity: 1; }
 }
 
-.home-jump-footer {
+.home-grid-footer {
   display: flex;
   justify-content: flex-end;
+  gap: 6px;
   margin-top: 8px;
 }
 
-.home-jump-expand {
-  display: inline-flex;
+.home-grid-expand { background: none; }
+.home-grid-expand[hidden] { display: none; }
+
+.home-album-shelf {
+  display: flex;
+  min-width: 0;
+  gap: 10px;
+  padding-bottom: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+.home-album-shelf::-webkit-scrollbar { height: 8px; }
+.home-album-shelf::-webkit-scrollbar-track { background: transparent; }
+.home-album-shelf::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
+.home-dashboard-section:is(:hover, :focus-within) .home-album-shelf::-webkit-scrollbar-thumb { background: rgba(var(--tint), 0.28); }
+.home-album-shelf::-webkit-scrollbar-thumb:hover,
+.home-album-shelf::-webkit-scrollbar-thumb:active { background: rgba(var(--tint), 0.45); }
+
+.home-media-album {
+  flex: 0 0 clamp(158px, 13.2vw, 190px);
+  display: flex;
+  flex-direction: column;
+}
+
+.home-media-album .home-media-open {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.home-media-album .home-media-artwork { width: 100%; flex: none; }
+.home-media-album .home-media-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.home-media-album .home-media-subtitle,
+.home-track-row .home-media-subtitle {
+  display: block;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.home-album-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
   align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 4px 6px;
-  border: 0;
-  border-radius: 6px;
-  background: none;
+  gap: 8px;
+  /* Keep the title and artist together; spare height belongs above the footer. */
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+.home-media-context {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.4;
   color: var(--text-secondary);
+}
+
+.home-track-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 32px;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  height: 100%;
   font: inherit;
-  font-size: 12px;
+  text-align: left;
   cursor: pointer;
 }
 
-.home-jump-expand:hover {
-  background: rgba(var(--tint), 0.055);
-  color: var(--text-strong);
-}
+.home-track-row .home-media-artwork { width: 44px; }
 
 @media (pointer: coarse) {
-  .home-jump-card {
-    grid-template-columns: minmax(0, 1fr) 44px;
-    gap: 8px;
+  .home-playback-control,
+  .home-playback-glyph { width: 44px; height: 44px; }
+  .home-collection-card { grid-template-columns: minmax(0, 1fr) 44px; gap: 8px; }
+  .home-track-row { grid-template-columns: 44px minmax(0, 1fr) 44px; gap: 8px; }
+  .home-album-footer { grid-template-columns: minmax(0, 1fr) 44px; }
+  .home-section-action, .home-shelf-navigation button, .home-grid-expand { min-height: 44px; }
+  .home-shelf-navigation button { width: 44px; }
+}
+
+@media (hover: none) {
+  .home-album-shelf::-webkit-scrollbar-thumb { background: rgba(var(--tint), 0.28); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-collection-card, .home-media-album, .home-track-row, .home-playback-glyph,
+  .home-section-action, .home-shelf-navigation button, .home-grid-expand {
+    animation: none !important;
+    transition: none !important;
   }
-
-  .home-jump-play {
-    width: 44px;
-    height: 44px;
-  }
-
-  .home-jump-expand {
-    min-height: 44px;
-  }
-}
-
-.home-release-row {
-  gap: 13px;
-  padding-bottom: 6px;
-}
-
-.home-release-card {
-  position: relative;
-  flex: 0 0 clamp(158px, 13.2vw, 190px);
-  min-width: 0;
-  border: 1px solid rgba(var(--tint), 0.085);
-  border-radius: 9px;
-  background: rgba(var(--tint), 0.02);
-  overflow: hidden;
-  scroll-snap-align: start;
-  transition: border-color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
-}
-
-.home-release-card:hover {
-  border-color: rgba(var(--tint), 0.18);
-  background: rgba(var(--tint), 0.045);
-}
-
-.home-release-open {
-  width: 100%;
-  display: block;
-  padding: 9px;
-}
-
-.home-release-artwork {
-  position: relative;
-  display: block;
-  aspect-ratio: 1;
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--bg-tertiary);
-}
-
-.home-release-artwork > img,
-.home-release-artwork > .album-artwork-placeholder {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.home-release-reason {
-  display: block;
-  margin-top: 5px;
-  color: rgba(var(--accent-rgb), 0.82);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 500;
-  line-height: 1.25;
-  letter-spacing: 0.02em;
-  text-transform: none;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.home-release-copy {
-  min-width: 0;
-  min-height: 62px;
-  padding: 9px 1px 3px;
-  display: flex;
-  flex-direction: column;
-}
-
-.home-release-copy strong,
-.home-release-copy > span,
-.home-release-copy small {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.home-release-copy strong {
-  padding-right: 31px;
-  color: var(--text-strong);
-  font-size: 13px;
-  font-weight: 620;
-}
-
-.home-release-copy > span {
-  margin-top: 3px;
-  color: rgba(var(--tint), 0.55);
-  font-size: 11px;
-}
-
-.home-release-copy small {
-  margin-top: 5px;
-}
-
-.home-card-play {
-  position: absolute;
-  right: 10px;
-  bottom: 12px;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(var(--tint), 0.12);
-  border-radius: 50%;
-  background: var(--control-bg-strong);
-  color: rgba(var(--tint), 0.65);
-  cursor: pointer;
-  transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
-}
-
-.home-card-play:hover:not(:disabled) {
-  color: var(--accent-text-strong);
-  border-color: rgba(var(--accent-rgb), 0.4);
-  background: rgba(var(--accent-rgb), 0.13);
-  transform: scale(1.04);
-}
-
-.home-card-play:disabled {
-  opacity: 0.45;
-}
-
-.home-pinned-row {
-  gap: 10px;
-  padding-bottom: 3px;
-}
-
-.home-pinned-card {
-  position: relative;
-  flex: 0 0 clamp(190px, 20vw, 272px);
-  height: 68px;
-  border: 1px solid rgba(var(--tint), 0.09);
-  border-radius: 9px;
-  background: rgba(var(--tint), 0.025);
-  overflow: hidden;
-}
-
-.home-pinned-card:hover {
-  border-color: rgba(var(--tint), 0.17);
-  background: rgba(var(--tint), 0.045);
-}
-
-.home-pinned-open {
-  width: 100%;
-  height: 100%;
-  padding: 8px 48px 8px 8px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.home-pinned-cover {
-  width: 50px;
-  height: 50px;
-  flex: 0 0 50px;
-  border-radius: 6px;
-  overflow: hidden;
-  object-fit: cover;
-}
-
-.home-pinned-open > span {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.home-pinned-open strong,
-.home-pinned-open small {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.home-pinned-open strong {
-  color: var(--text-strong);
-  font-size: 12px;
-}
-
-.home-pinned-open small {
-  color: rgba(var(--tint), 0.38);
-  font-family: var(--font-mono);
-  font-size: 8px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
-.home-pinned-card .home-card-play {
-  bottom: 21px;
 }
 
 .home-listening-snapshot {
@@ -4531,7 +4368,7 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
     padding-inline: 10px;
   }
 
-  .home-release-card {
+  .home-media-album {
     flex-basis: 170px;
   }
 }
@@ -4577,7 +4414,7 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
     gap: 3px;
   }
 
-  .home-release-card {
+  .home-media-album {
     flex-basis: 164px;
   }
 
@@ -4588,10 +4425,6 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 
 @media (prefers-reduced-motion: reduce) {
   .home-dashboard-skeleton span,
-  .home-jump-card,
-  .home-jump-playing path,
-  .home-release-card,
-  .home-card-play,
   .home-customize-module,
   .home-customize-module-copy strong,
   .home-customize-order-actions,
@@ -8561,8 +8394,7 @@ body:has(.track-drag-overlay) * {
   outline-offset: 2px;
 }
 
-.year-album-preview-card.is-expansion-reveal,
-.home-jump-card.is-expansion-reveal {
+.year-album-preview-card.is-expansion-reveal {
   animation: yearAlbumPreviewReveal 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
@@ -30092,11 +29924,6 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
   border-radius: 0;
 }
 
-.home-dashboard-view .home-recent-row {
-  gap: 11px;
-  padding-bottom: 4px;
-}
-
 @media (max-width: 900px) {
   .home-greeting-card.home-dashboard-hero {
     padding-inline: 20px;
@@ -30149,75 +29976,6 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
 .home-dashboard-modules {
   margin-top: 6px;
   padding-inline: 24px;
-}
-
-.home-release-row,
-.home-pinned-row,
-.home-recent-row {
-  scroll-snap-type: none;
-  scrollbar-width: none;
-}
-
-.home-release-row::-webkit-scrollbar,
-.home-pinned-row::-webkit-scrollbar,
-.home-recent-row::-webkit-scrollbar {
-  display: none;
-}
-
-/* Reserve scrollbar space while revealing only the active Home shelf's thumb. */
-.home-dashboard-view :is(.home-release-row, .home-pinned-row, .home-recent-row) {
-  /* Let Chromium's pseudo-elements control scrollbar sizing and appearance. */
-  scrollbar-width: auto;
-  scrollbar-color: auto;
-}
-
-.home-dashboard-view :is(.home-release-row, .home-pinned-row, .home-recent-row)::-webkit-scrollbar {
-  display: block;
-  height: 8px;
-}
-
-.home-dashboard-view :is(.home-release-row, .home-pinned-row, .home-recent-row)::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.home-dashboard-view :is(.home-release-row, .home-pinned-row, .home-recent-row)::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 4px;
-}
-
-.home-dashboard-view .home-dashboard-section:is(:hover, :focus-within) :is(.home-release-row, .home-pinned-row, .home-recent-row)::-webkit-scrollbar-thumb {
-  background: rgba(var(--tint), 0.28);
-}
-
-.home-dashboard-view .home-dashboard-section :is(.home-release-row, .home-pinned-row, .home-recent-row)::-webkit-scrollbar-thumb:hover,
-.home-dashboard-view .home-dashboard-section :is(.home-release-row, .home-pinned-row, .home-recent-row)::-webkit-scrollbar-thumb:active {
-  background: rgba(var(--tint), 0.45);
-}
-
-@media (hover: none) {
-  .home-dashboard-view :is(.home-release-row, .home-pinned-row, .home-recent-row)::-webkit-scrollbar-thumb {
-    background: rgba(var(--tint), 0.28);
-  }
-}
-
-.home-release-card,
-.home-pinned-card {
-  box-shadow: inset 0 1px 0 rgba(var(--tint), 0.025);
-}
-
-.home-release-card {
-  background:
-    linear-gradient(155deg, rgba(var(--tint), 0.035), transparent 46%),
-    rgba(var(--tint), 0.014);
-}
-
-.home-release-artwork {
-  border: 1px solid rgba(var(--tint), 0.08);
-  box-shadow: 0 9px 24px rgba(0, 0, 0, 0.16);
-}
-
-.home-dashboard-view .home-track-card:hover {
-  transform: none;
 }
 
 html[data-theme-tone="light"] .home-greeting-card.home-dashboard-hero::before {

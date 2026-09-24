@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { HomeDashboard, HomeRediscoveryRelease, HomeReleaseSummary } from '../../../types/home'
-import { buildHomeSourceCards, resolveCurrentPlaybackSource } from '../../../shared/home/playbackSources'
+import { buildHomeSourceCards, playbackSourceKey, resolveCurrentPlaybackSource } from '../../../shared/home/playbackSources'
+import type { PlaybackSourceContext } from '../../../types/playbackSource'
 import { revealTrackInLibrary } from '../../hooks/useJumpToNowPlaying'
 import { getLocalDayKey, HOME_SHELF_ITEM_LIMIT } from '../../../shared/home/homeDashboard'
 import { useHorizontalWheelScroll } from '../../hooks/useHorizontalWheelScroll'
@@ -14,14 +15,18 @@ import { formatCompactDuration } from '../../utils/collectionDuration'
 import { resolveHomeSkyDate, type HomeModuleId } from '../../utils/homePreferences'
 import {
   buildSidebarPlaylistSections,
-  FAVORITES_PLAYLIST_ID,
-  type DisplayPlaylist
+  FAVORITES_PLAYLIST_ID
 } from '../../utils/playlistSystem'
-import AlbumArtwork from '../library/AlbumArtwork'
 import HomeBinaryClock from '../home/HomeBinaryClock'
 import HomeCustomizeModal from '../home/HomeCustomizeModal'
 import HomeJumpBackIn, { type JumpBackInCard } from '../home/HomeJumpBackIn'
-import PlaylistCover from '../playlists/PlaylistCover'
+import { activateHomePlayback, isHomePlaybackTargetActive } from '../../utils/homePlayback'
+import { formatHomeAddedAge } from '../../utils/homeAddedAge'
+import HomeSection from '../home/HomeSection'
+import HomeShelfNavigation from '../home/HomeShelfNavigation'
+import HomeExpandableGrid from '../home/HomeExpandableGrid'
+import { HomeAlbumCard, HomeCollectionCard, HomeTrackRow } from '../home/HomeMediaCards'
+import type { HomePlaybackControlState } from '../home/HomePlaybackControl'
 import {
   chooseGreeting,
   createStarField,
@@ -81,131 +86,6 @@ function uniqueRecentTracks(tracks: HomeTrack[]): HomeTrack[] {
   return result
 }
 
-function HomeReleaseCard({
-  release,
-  reason,
-  onOpen,
-  onPlay,
-  isPending
-}: {
-  release: HomeReleaseSummary
-  reason: string
-  onOpen: () => void
-  onPlay: () => void
-  isPending: boolean
-}) {
-  return (
-    <article className="home-release-card">
-      <button
-        type="button"
-        className="home-release-open"
-        onClick={onOpen}
-        data-controller-focusable="true"
-        data-controller-context="true"
-        aria-label={`Open ${release.album} by ${release.artist}`}
-      >
-        <span className="home-release-artwork">
-          <AlbumArtwork hash={release.artwork_hash} alt={release.album} variant="card" />
-        </span>
-        <span className="home-release-copy">
-          <strong>{release.album}</strong>
-          <span>{release.artist}</span>
-          <small className="home-release-reason">{reason}</small>
-        </span>
-      </button>
-      <button
-        type="button"
-        className="home-card-play"
-        onClick={onPlay}
-        disabled={isPending}
-        aria-label={`Play ${release.album}`}
-        title={`Play ${release.album}`}
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
-      </button>
-    </article>
-  )
-}
-
-function HomeShelfNavigation({
-  scrollRef,
-  label
-}: {
-  scrollRef: RefObject<HTMLDivElement | null>
-  label: string
-}) {
-  const [scrollState, setScrollState] = useState({ hasOverflow: false, canScrollBack: false, canScrollForward: false })
-
-  useEffect(() => {
-    const element = scrollRef.current
-    if (!element) {
-      setScrollState((current) => current.hasOverflow
-        ? { hasOverflow: false, canScrollBack: false, canScrollForward: false }
-        : current)
-      return
-    }
-    const update = () => {
-      const maxScrollLeft = Math.max(0, element.scrollWidth - element.clientWidth)
-      const nextState = {
-        hasOverflow: maxScrollLeft > 2,
-        canScrollBack: element.scrollLeft > 2,
-        canScrollForward: element.scrollLeft < maxScrollLeft - 2
-      }
-      setScrollState((current) => (
-        current.hasOverflow === nextState.hasOverflow
-        && current.canScrollBack === nextState.canScrollBack
-        && current.canScrollForward === nextState.canScrollForward
-          ? current
-          : nextState
-      ))
-    }
-    const resizeObserver = new ResizeObserver(update)
-    const mutationObserver = new MutationObserver(update)
-    resizeObserver.observe(element)
-    mutationObserver.observe(element, { childList: true, subtree: true })
-    element.addEventListener('scroll', update, { passive: true })
-    const frameId = window.requestAnimationFrame(update)
-    return () => {
-      window.cancelAnimationFrame(frameId)
-      resizeObserver.disconnect()
-      mutationObserver.disconnect()
-      element.removeEventListener('scroll', update)
-    }
-  })
-
-  if (!scrollState.hasOverflow) return null
-
-  const move = (direction: -1 | 1) => {
-    const element = scrollRef.current
-    if (!element) return
-    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    element.scrollBy({
-      left: direction * Math.max(260, element.clientWidth * 0.72),
-      behavior: reducedMotion ? 'auto' : 'smooth'
-    })
-  }
-
-  return (
-    <div className="home-shelf-navigation" aria-label={`${label} shelf navigation`}>
-      <button
-        type="button"
-        onClick={() => move(-1)}
-        disabled={!scrollState.canScrollBack}
-        aria-label={`Scroll ${label} left`}
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
-      </button>
-      <button
-        type="button"
-        onClick={() => move(1)}
-        disabled={!scrollState.canScrollForward}
-        aria-label={`Scroll ${label} right`}
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
-      </button>
-    </div>
-  )
-}
 
 export default function HomeDashboardView() {
   const totalTrackCount = useLibraryStore((state) => state.totalTrackCount)
@@ -252,15 +132,14 @@ export default function HomeDashboardView() {
   const [rediscoveryRotation, setRediscoveryRotation] = useState(readRediscoveryRotation)
   const [isCustomizeOpen, setIsCustomizeOpen] = useState(false)
   const [pendingPlaybackKey, setPendingPlaybackKey] = useState<string | null>(null)
-  const [isShuffleStarting, setIsShuffleStarting] = useState(false)
+  const playbackRequestRef = useRef<string | null>(null)
+  const isShuffleStarting = pendingPlaybackKey === 'library:shuffle'
   const [actionError, setActionError] = useState<string | null>(null)
 
   const heroRef = useRef<HTMLElement | null>(null)
   const skyCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const starCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const rediscoverRowRef = useRef<HTMLDivElement | null>(null)
-  const pinnedRowRef = useRef<HTMLDivElement | null>(null)
-  const recentRowRef = useRef<HTMLDivElement | null>(null)
   const newlyAddedRowRef = useRef<HTMLDivElement | null>(null)
 
   const hasLibraryContent = totalTrackCount > 0 || albums.length > 0 || artists.length > 0
@@ -269,8 +148,6 @@ export default function HomeDashboardView() {
     : null
 
   useHorizontalWheelScroll(rediscoverRowRef)
-  useHorizontalWheelScroll(pinnedRowRef)
-  useHorizontalWheelScroll(recentRowRef)
   useHorizontalWheelScroll(newlyAddedRowRef)
 
   useEffect(() => {
@@ -463,102 +340,75 @@ export default function HomeDashboardView() {
     setActiveView('playlist')
   }
 
-  const handlePlayRelease = async (release: HomeReleaseSummary) => {
-    const pendingKey = `album:${release.identity_key}`
-    if (pendingPlaybackKey) return
-    setPendingPlaybackKey(pendingKey)
+  const getPlayback = (source: PlaybackSourceContext): HomePlaybackControlState => {
+    const active = isHomePlaybackTargetActive(source, { currentSource: queueSourceContext, currentTrackPath: currentTrack?.path ?? null })
+    return {
+      active,
+      playing: active && playbackState === 'playing',
+      pending: pendingPlaybackKey === playbackSourceKey(source) || (active && playbackState === 'loading'),
+      disabled: pendingPlaybackKey !== null || playbackState === 'loading'
+    }
+  }
+
+  const runPlaybackRequest = async (key: string, title: string, action: () => Promise<void>) => {
+    // A ref closes the gap before React renders disabled buttons after a click.
+    if (playbackRequestRef.current || usePlayerStore.getState().playbackState === 'loading') return
+    playbackRequestRef.current = key
+    setPendingPlaybackKey(key)
     setActionError(null)
     try {
-      const tracks = await window.electronAPI.library.getTracksByAlbum(release.album, release.artist, release.identity_key)
-      const paths = tracks.filter((track) => track.is_available !== 0).map((track) => track.path)
-      await startPlaybackContextByPaths(paths, 0, {
-        contextLabel: release.album,
-        sourceContext: { type: 'album', album: release.album, albumArtist: release.artist, identityKey: release.identity_key },
-        startShuffled: true
-      })
+      await action()
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : `Could not play ${release.album}.`)
+      setActionError(error instanceof Error ? error.message : `Could not play ${title}.`)
     } finally {
+      playbackRequestRef.current = null
       setPendingPlaybackKey(null)
     }
   }
 
-  const handlePlayPlaylist = async (playlist: DisplayPlaylist) => {
-    const pendingKey = `playlist:${playlist.id}`
-    if (pendingPlaybackKey) return
-    setPendingPlaybackKey(pendingKey)
-    setActionError(null)
-    try {
-      const tracks = playlist.id === FAVORITES_PLAYLIST_ID
-        ? await window.electronAPI.library.getFavorites()
-        : await window.electronAPI.library.getPlaylistTracks(playlist.id)
-      const paths = tracks.filter((track) => track.is_available !== 0).map((track) => track.path)
-      await startPlaybackContextByPaths(paths, 0, {
-        sourcePlaylistId: playlist.id,
-        contextLabel: playlist.name,
-        startShuffled: true
+  const playSource = async (source: PlaybackSourceContext, title: string, start?: () => Promise<void>) => {
+    await runPlaybackRequest(playbackSourceKey(source), title, async () => {
+      const player = usePlayerStore.getState()
+      await activateHomePlayback(source, {
+        currentSource: resolveCurrentPlaybackSource(player),
+        currentTrackPath: player.currentTrack?.path ?? null
+      }, {
+        toggle: togglePlay,
+        start: start ?? (async () => {
+          let tracks: Awaited<ReturnType<typeof window.electronAPI.library.getTracksByPaths>>
+          switch (source.type) {
+            case 'playlist':
+              tracks = source.playlistId === FAVORITES_PLAYLIST_ID
+                ? await window.electronAPI.library.getFavorites()
+                : await window.electronAPI.library.getPlaylistTracks(source.playlistId)
+              break
+            case 'album':
+              tracks = await window.electronAPI.library.getTracksByAlbum(source.album, source.albumArtist, source.identityKey)
+              break
+            case 'artist':
+              tracks = await window.electronAPI.library.getTracksByArtist(source.artist, artistBrowseMode)
+              break
+            case 'genre':
+              tracks = await window.electronAPI.library.getTracksByGenre(source.genre)
+              break
+            case 'year':
+              tracks = await window.electronAPI.library.getTracksByYear(source.year === 'unknown' ? null : source.year)
+              break
+            case 'track':
+              tracks = await window.electronAPI.library.getTracksByPaths([source.trackPath])
+              break
+          }
+          const paths = tracks.filter((track) => track.is_available !== 0).map((track) => track.path)
+          if (!paths.length) throw new Error(`No available tracks in ${title}.`)
+          await startPlaybackContextByPaths(paths, 0, {
+            sourceContext: source,
+            sourcePlaylistId: source.type === 'playlist' ? source.playlistId : null,
+            contextLabel: title,
+            startShuffled: source.type !== 'track'
+          })
+        })
       })
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : `Could not play ${playlist.name}.`)
-    } finally {
-      setPendingPlaybackKey(null)
-    }
-  }
-
-  const handleJumpPlay = async (card: JumpBackInCard) => {
-    if (pendingPlaybackKey) return
-    if (card.active) {
-      setPendingPlaybackKey(card.key)
-      try {
-        setActionError(null)
-        await togglePlay()
-      } catch (error) {
-        setActionError(error instanceof Error ? error.message : `Could not ${playbackState === 'playing' ? 'pause' : 'continue'} ${card.title}.`)
-      } finally {
-        setPendingPlaybackKey(null)
-      }
-      return
-    }
-    setPendingPlaybackKey(card.key)
-    setActionError(null)
-    try {
-      const source = card.source
-      let tracks: Awaited<ReturnType<typeof window.electronAPI.library.getTracksByPaths>>
-      switch (source.type) {
-        case 'playlist':
-          tracks = source.playlistId === FAVORITES_PLAYLIST_ID
-            ? await window.electronAPI.library.getFavorites()
-            : await window.electronAPI.library.getPlaylistTracks(source.playlistId)
-          break
-        case 'album':
-          tracks = await window.electronAPI.library.getTracksByAlbum(source.album, source.albumArtist, source.identityKey)
-          break
-        case 'artist':
-          tracks = await window.electronAPI.library.getTracksByArtist(source.artist, artistBrowseMode)
-          break
-        case 'genre':
-          tracks = await window.electronAPI.library.getTracksByGenre(source.genre)
-          break
-        case 'year':
-          tracks = await window.electronAPI.library.getTracksByYear(source.year === 'unknown' ? null : source.year)
-          break
-        case 'track':
-          tracks = await window.electronAPI.library.getTracksByPaths([source.trackPath])
-          break
-      }
-      const paths = tracks.filter((track) => track.is_available !== 0).map((track) => track.path)
-      if (!paths.length) throw new Error(`No available tracks in ${card.title}.`)
-      await startPlaybackContextByPaths(paths, 0, {
-        sourceContext: source,
-        sourcePlaylistId: source.type === 'playlist' ? source.playlistId : null,
-        contextLabel: card.title,
-        startShuffled: source.type !== 'track'
-      })
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : `Could not play ${card.title}.`)
-    } finally {
-      setPendingPlaybackKey(null)
-    }
+    })
   }
 
   const handleJumpOpen = async (card: JumpBackInCard) => {
@@ -581,18 +431,12 @@ export default function HomeDashboardView() {
   }
 
   const handleShuffleLibrary = async () => {
-    if (!hasLibraryContent || isShuffleStarting) return
-    setIsShuffleStarting(true)
-    setActionError(null)
-    try {
+    if (!hasLibraryContent) return
+    await runPlaybackRequest('library:shuffle', 'Library', async () => {
       const paths = await window.electronAPI.library.getAvailableTrackPaths()
       if (!paths.length) throw new Error('No available tracks could be played.')
       await startPlaybackContextByPaths(paths, 0, { contextLabel: 'Library', shuffle: true, startShuffled: true })
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : 'Could not shuffle the library.')
-    } finally {
-      setIsShuffleStarting(false)
-    }
+    })
   }
 
   const handleRefreshRediscovery = () => {
@@ -605,22 +449,18 @@ export default function HomeDashboardView() {
     setRediscoveryRotation(next)
   }
 
-  const renderJumpBackIn = () => {
-    return (
-      <HomeJumpBackIn
-        cards={jumpBackInCards}
-        playbackState={playbackState}
-        pendingPlaybackKey={pendingPlaybackKey}
-        onOpen={(card) => void handleJumpOpen(card)}
-        onPlay={(card) => void handleJumpPlay(card)}
-      />
-    )
-  }
+  const renderJumpBackIn = () => (
+    <HomeJumpBackIn cards={jumpBackInCards} getPlayback={(card) => getPlayback(card.source)}
+      onOpen={(card) => void handleJumpOpen(card)} onPlay={(card) => void playSource(card.source, card.title)} />
+  )
+
+  const releaseSource = (release: HomeReleaseSummary): PlaybackSourceContext => ({
+    type: 'album', album: release.album, albumArtist: release.artist, identityKey: release.identity_key
+  })
 
   const renderReleaseShelf = (
     id: 'rediscover' | 'newly-added',
     title: string,
-    subtitle: string,
     releases: readonly HomeReleaseSummary[],
     rowRef: typeof rediscoverRowRef,
     getReason: (release: HomeReleaseSummary) => string,
@@ -628,97 +468,49 @@ export default function HomeDashboardView() {
   ) => {
     if (!releases.length) return null
     return (
-      <section className="home-dashboard-section home-release-section" data-controller-group={`home-${id}`} data-controller-axis="horizontal">
-        <div className="home-dashboard-section-header">
-          <div><h2>{title}</h2>{subtitle ? <span>{subtitle}</span> : null}</div>
-          <div className="home-dashboard-section-actions">
-            {action}
-            <HomeShelfNavigation scrollRef={rowRef} label={title} />
-          </div>
-        </div>
-        <div className="home-release-row" ref={rowRef}>
+      <HomeSection id={id} title={title} axis="horizontal" actions={<>{action}<HomeShelfNavigation scrollRef={rowRef} label={title} /></>}>
+        <div className="home-album-shelf" ref={rowRef}>
           {releases.map((release) => (
-            <HomeReleaseCard
-              key={release.identity_key}
-              release={release}
-              reason={getReason(release)}
-              onOpen={() => void handleOpenRelease(release)}
-              onPlay={() => void handlePlayRelease(release)}
-              isPending={pendingPlaybackKey === `album:${release.identity_key}`}
-            />
+            <HomeAlbumCard key={release.identity_key} title={release.album} subtitle={release.artist} artworkHash={release.artwork_hash}
+              reason={getReason(release)} playback={getPlayback(releaseSource(release))}
+              onOpen={() => void handleOpenRelease(release)} onPlay={() => void playSource(releaseSource(release), release.album)} />
           ))}
         </div>
-      </section>
+      </HomeSection>
     )
   }
 
   const renderPinnedPlaylists = () => {
     if (!pinnedPlaylists.length) return null
     return (
-      <section className="home-dashboard-section" data-controller-group="home-pinned-playlists" data-controller-axis="horizontal">
-        <div className="home-dashboard-section-header">
-          <div><h2>Pinned Playlists</h2></div>
-          <HomeShelfNavigation scrollRef={pinnedRowRef} label="Pinned Playlists" />
-        </div>
-        <div className="home-pinned-row" ref={pinnedRowRef}>
-          {pinnedPlaylists.map((playlist) => (
-            <article
-              className="home-pinned-card"
-              key={playlist.id}
-              onContextMenu={(event) => {
-                event.preventDefault()
-                openCollectionQueueMenu({
-                  target: { kind: 'playlist', playlistId: playlist.id, name: playlist.name },
-                  x: event.clientX,
-                  y: event.clientY
-                })
-              }}
-            >
-              <button
-                type="button"
-                className="home-pinned-open"
-                onClick={() => void handleOpenPlaylist(playlist.id)}
-                data-controller-focusable="true"
-                data-controller-context="true"
-              >
-                <PlaylistCover hash={playlist.cover_hash} name={playlist.name} isFavorites={playlist.isSystemFavorites} className="home-pinned-cover" />
-                <span><strong>{playlist.name}</strong><small>{playlist.track_count} tracks</small></span>
-              </button>
-              <button type="button" className="home-card-play" onClick={() => void handlePlayPlaylist(playlist)} aria-label={`Play ${playlist.name}`}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
-              </button>
-            </article>
-          ))}
-        </div>
-      </section>
+      <HomeSection id="pinned-playlists" title="Pinned playlists">
+        <HomeExpandableGrid items={pinnedPlaylists} getKey={(playlist) => String(playlist.id)} renderItem={(playlist) => (
+          <HomeCollectionCard title={playlist.name} subtitle={`${playlist.track_count.toLocaleString()} tracks`}
+            artworkHash={playlist.cover_hash} playlist favorites={playlist.isSystemFavorites}
+            playback={getPlayback({ type: 'playlist', playlistId: playlist.id })}
+            onOpen={() => void handleOpenPlaylist(playlist.id)}
+            onPlay={() => void playSource({ type: 'playlist', playlistId: playlist.id }, playlist.name)}
+            onContextMenu={(event) => {
+              event.preventDefault()
+              openCollectionQueueMenu({ target: { kind: 'playlist', playlistId: playlist.id, name: playlist.name }, x: event.clientX, y: event.clientY })
+            }} />
+        )} />
+      </HomeSection>
     )
   }
 
   const renderRecentTracks = () => {
     if (!recentTracks.length) return null
     return (
-      <section className="home-dashboard-section" data-controller-group="home-recent-tracks" data-controller-axis="horizontal">
-        <div className="home-dashboard-section-header">
-          <div><h2>Recently Played Tracks</h2></div>
-          <HomeShelfNavigation scrollRef={recentRowRef} label="Recently Played Tracks" />
-        </div>
-        <div className="home-recent-row" ref={recentRowRef}>
-          {recentTracks.map((track, index) => (
-            <article
-              key={track.path}
-              className={`home-track-card${currentTrack?.path === track.path ? ' active' : ''}`}
-              onClick={() => void startPlaybackContextByPaths(recentTracks.map((entry) => entry.path), index, { recordSelectedTrack: true, contextLabel: 'Recently Played' })}
-              data-controller-focusable="true"
-              tabIndex={-1}
-              role="button"
-              aria-label={`Play ${track.title} by ${track.artist}`}
-            >
-              <div className="home-track-artwork"><AlbumArtwork hash={track.artwork_hash} alt={track.album} variant="card" /></div>
-              <div className="home-track-meta"><div className="home-track-title">{track.title}</div><div className="home-track-artist">{track.artist}</div></div>
-            </article>
-          ))}
-        </div>
-      </section>
+      <HomeSection id="recent-tracks" title="Recently played tracks">
+        <HomeExpandableGrid items={recentTracks} initialRows={3} getKey={(track) => track.path} renderItem={(track, index) => (
+          <HomeTrackRow title={track.title} subtitle={track.artist} artworkHash={track.artwork_hash}
+            playback={getPlayback({ type: 'track', trackPath: track.path })}
+            onPlay={() => void playSource({ type: 'track', trackPath: track.path }, track.title, async () => {
+              await startPlaybackContextByPaths(recentTracks.map((entry) => entry.path), index, { recordSelectedTrack: true, contextLabel: 'Recently Played' })
+            })} />
+        )} />
+      </HomeSection>
     )
   }
 
@@ -726,24 +518,23 @@ export default function HomeDashboardView() {
     if (!listeningDashboard?.status.startedAt) return null
     const summary = listeningDashboard.summary
     return (
-      <section className="home-dashboard-section">
-        <div className="home-dashboard-section-header"><div><h2>Listening Snapshot</h2><span>{listeningDashboard.range.toUpperCase()}</span></div></div>
+      <HomeSection id="listening-snapshot" title="Listening snapshot" detail={listeningDashboard.range.toUpperCase()}>
         <div className="home-listening-snapshot">
           <article><span>Listening time</span><strong>{formatCompactDuration(summary.listenedSeconds) ?? '0 min'}</strong></article>
           <article><span>Qualified plays</span><strong>{summary.qualifiedPlays.toLocaleString()}</strong></article>
           <article><span>Tracks played</span><strong>{summary.tracksPlayed.toLocaleString()}</strong></article>
           <article><span>Active days</span><strong>{summary.activeDays.toLocaleString()}</strong></article>
         </div>
-      </section>
+      </HomeSection>
     )
   }
 
   const renderModule = (id: HomeModuleId) => {
     if (id === 'jump-back-in') return renderJumpBackIn()
     if (id === 'rediscover') return renderReleaseShelf(
-      'rediscover', 'Rediscover', '', dashboard?.rediscover_releases ?? [],
+      'rediscover', 'Rediscover', dashboard?.rediscover_releases ?? [],
       rediscoverRowRef, (release) => (release as HomeRediscoveryRelease).reason,
-      <button className="home-section-action" type="button" onClick={handleRefreshRediscovery} disabled={dashboardLoading} aria-label="Refresh Rediscover">
+      <button className="home-section-action" type="button" onClick={handleRefreshRediscovery} disabled={dashboardLoading} aria-label="Refresh Rediscover" data-controller-focusable={dashboardLoading ? undefined : 'true'}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" /></svg>
         Refresh
       </button>
@@ -751,8 +542,8 @@ export default function HomeDashboardView() {
     if (id === 'pinned-playlists') return renderPinnedPlaylists()
     if (id === 'recent-tracks') return renderRecentTracks()
     if (id === 'newly-added') return renderReleaseShelf(
-      'newly-added', 'Newly Added', '', dashboard?.newly_added_releases ?? [], newlyAddedRowRef,
-      (release) => release.year ? `Added · ${release.year}` : 'New to your library'
+      'newly-added', 'Newly added', dashboard?.newly_added_releases ?? [], newlyAddedRowRef,
+      (release) => formatHomeAddedAge(release.latest_added_at)
     )
     if (id === 'listening-snapshot') return renderListeningSnapshot()
     return null
@@ -792,7 +583,7 @@ export default function HomeDashboardView() {
               type="button"
               className="settings-btn settings-btn-primary home-hero-action"
               onClick={() => void handleShuffleLibrary()}
-              disabled={!hasLibraryContent || isShuffleStarting}
+              disabled={!hasLibraryContent || pendingPlaybackKey !== null || playbackState === 'loading'}
             >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true"><path d="M16 3h5v5" /><path d="M4 20 21 3" /><path d="M21 16v5h-5" /><path d="m15 15 6 6" /><path d="m4 4 5 5" /></svg>
               {isShuffleStarting ? 'Starting…' : 'Shuffle Library'}
