@@ -82,7 +82,6 @@ function uniqueRecentTracks(tracks: HomeTrack[]): HomeTrack[] {
     if (!track.path || seen.has(track.path)) continue
     seen.add(track.path)
     result.push(track)
-    if (result.length >= HOME_SHELF_ITEM_LIMIT) break
   }
   return result
 }
