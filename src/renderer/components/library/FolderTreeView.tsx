@@ -468,7 +468,7 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
     const index = folderTracks.findIndex((candidate) => candidate.path === track.path)
     const queueIndex = index >= 0 ? index : 0
     await startPlaybackContextByPaths(queueTrackPaths, queueIndex, {
-      contextLabel: 'Folder'
+      recordSelectedTrack: true, contextLabel: 'Folder'
     })
   }, [startPlaybackContextByPaths])
 

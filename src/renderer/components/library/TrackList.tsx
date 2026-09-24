@@ -1449,6 +1449,7 @@ export default function TrackList({
       await startPlaybackContextByPaths(renderedQueueTrackPaths, index, {
         sourcePlaylistId: playlistSourceId,
         sourceContext,
+        recordSelectedTrack: true,
         contextLabel: queueContextLabel
       })
       return
@@ -1457,6 +1458,7 @@ export default function TrackList({
     await startPlaybackContextByPaths(queueSeedTrackPaths, queueSeedIndex, {
       sourcePlaylistId: playlistSourceId,
       sourceContext,
+      recordSelectedTrack: true,
       contextLabel: queueContextLabel
     })
   }, [

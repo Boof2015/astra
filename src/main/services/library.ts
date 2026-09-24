@@ -102,7 +102,9 @@ import {
   type LatestLibrarySyncSummary
 } from './libraryLatestSync'
 import { sanitizeLyricsLines } from './lyricsParsing'
-import type { HomeDashboard, HomeDashboardQuery, HomeReleaseSummary } from '../../types/home'
+import type { HomeDashboard, HomeDashboardQuery, HomeReleaseSummary, HomePlaybackSourceSummary } from '../../types/home'
+import type { PlaybackSourceContext } from '../../types/playbackSource'
+import { normalizePlaybackSourceContext, playbackSourceKey } from '../../shared/home/playbackSources'
 import { getLocalDayKey, HOME_SHELF_ITEM_LIMIT, selectHomeRediscovery } from '../../shared/home/homeDashboard'
 import type { LyricsFormat, LyricsLine, LyricsProvider } from '../../types/lyrics'
 import type {
@@ -2924,6 +2926,32 @@ export async function initDatabase(): Promise<void> {
     )
   `)
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS home_playback_sources (
+      source_key TEXT PRIMARY KEY NOT NULL,
+      source_json TEXT NOT NULL,
+      track_id INTEGER REFERENCES tracks(id) ON DELETE CASCADE,
+      last_played_at INTEGER NOT NULL
+    )
+  `)
+  db.run('CREATE INDEX IF NOT EXISTS idx_home_sources_recent ON home_playback_sources(last_played_at DESC)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_home_sources_track ON home_playback_sources(track_id)')
+  if (!db.get("SELECT 1 FROM app_meta WHERE key = 'home_sources_migrated_v1'")) {
+    beginLibraryWriteTransaction()
+    try {
+      for (const playlist of db.all<{ id: number; last_played_at: number }>(
+        'SELECT id, last_played_at FROM playlists WHERE last_played_at IS NOT NULL'
+      )) {
+        upsertHomePlaybackSource({ type: 'playlist', playlistId: playlist.id }, null, playlist.last_played_at)
+      }
+      writeAppMetaValue('home_sources_migrated_v1', '1')
+      commitLibraryWriteTransaction()
+    } catch (error) {
+      rollbackLibraryWriteTransaction()
+      throw error
+    }
+  }
+
   // Older versions recorded completion for these whole-library backfills but
   // could not distinguish "checked and absent" from "not checked" per row.
   // Carry the completed migration state into the new per-track flags so an
@@ -3459,6 +3487,7 @@ function moveTrackChildRows(oldPath: string, newPath: string): void {
     // conflict) — the surviving path's data wins.
     db.run(`DELETE FROM ${table} WHERE track_path = ?`, [oldPath])
   }
+  moveHomeTrackSource(oldPath, newPath)
   movePlayOriginRows(oldPath, newPath)
   db.run('UPDATE recently_played SET track_path = ? WHERE track_path = ?', [newPath, oldPath])
 }
@@ -5850,12 +5879,149 @@ function buildHomeReleaseSummary(group: AlbumSummaryAccumulator): HomeReleaseSum
   }
 }
 
+function upsertHomePlaybackSource(source: PlaybackSourceContext, trackId: number | null, playedAt: number): void {
+  if (!db) return
+  const key = source.type === 'track' ? `track:${trackId}` : playbackSourceKey(source)
+  db.run(`
+    INSERT INTO home_playback_sources (source_key, source_json, track_id, last_played_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(source_key) DO UPDATE SET
+      source_json = CASE WHEN excluded.last_played_at >= home_playback_sources.last_played_at
+        THEN excluded.source_json ELSE home_playback_sources.source_json END,
+      last_played_at = MAX(home_playback_sources.last_played_at, excluded.last_played_at)
+  `, [key, JSON.stringify(source), source.type === 'track' ? trackId : null, playedAt])
+}
+
+function moveHomeTrackSource(oldPath: string, newPath: string): void {
+  if (!db) return
+  const oldTrack = db.get<{ id: number }>('SELECT id FROM tracks WHERE path = ?', [oldPath])
+  const newTrack = db.get<{ id: number }>('SELECT id FROM tracks WHERE path = ?', [newPath])
+  if (!oldTrack || !newTrack || oldTrack.id === newTrack.id) return
+  const history = db.get<{ last_played_at: number }>(
+    'SELECT last_played_at FROM home_playback_sources WHERE track_id = ?', [oldTrack.id]
+  )
+  if (!history) return
+  upsertHomePlaybackSource({ type: 'track', trackPath: newPath }, newTrack.id, history.last_played_at)
+  db.run('DELETE FROM home_playback_sources WHERE track_id = ?', [oldTrack.id])
+}
+
+interface HomeSourceLookups {
+  playlists?: Playlist[]
+  artists?: ArtistRecord[]
+  genres?: GenreRecord[]
+}
+
+function resolveHomePlaybackSource(
+  source: PlaybackSourceContext,
+  playedAt: number,
+  releases: readonly HomeReleaseSummary[],
+  artistMode: ArtistBrowseMode,
+  lookups: HomeSourceLookups
+): HomePlaybackSourceSummary | null {
+  let title: string
+  let subtitle: string
+  let detail: string
+  let artworkHash: string | null = null
+  let tracks: DbTrack[] = []
+  const trackCount = (count: number) => `${count} ${count === 1 ? 'track' : 'tracks'}`
+  switch (source.type) {
+    case 'track': {
+      const track = getTrackByPath(source.trackPath)
+      if (!track || track.is_available === 0) return null
+      title = track.title
+      subtitle = track.artist
+      detail = 'Track'
+      artworkHash = track.artwork_hash
+      break
+    }
+    case 'album': {
+      const albumSource = source
+      const release = releases.find((entry) => albumSource.identityKey
+        ? entry.identity_key === albumSource.identityKey
+        : normalizeKey(entry.album) === normalizeKey(albumSource.album)
+          && (!albumSource.albumArtist || normalizeKey(entry.artist) === normalizeKey(albumSource.albumArtist)))
+      if (!release) return null
+      source = { type: 'album', album: release.album, albumArtist: release.artist, identityKey: release.identity_key }
+      title = release.album
+      subtitle = release.artist
+      detail = trackCount(release.track_count) + (release.year ? ` · ${release.year}` : '')
+      artworkHash = release.artwork_hash
+      break
+    }
+    case 'playlist': {
+      const playlistId = source.playlistId
+      const playlist = playlistId === -1 ? null : (lookups.playlists ??= getPlaylists()).find((entry) => entry.id === playlistId)
+      if (source.playlistId !== -1 && (!playlist || playlist.track_count === 0)) return null
+      tracks = source.playlistId === -1 ? getFavorites() : getPlaylistTracks(source.playlistId)
+      title = playlist?.name ?? 'Favorites'
+      subtitle = playlist?.kind === 'dynamic' ? 'Dynamic playlist' : 'Playlist'
+      detail = trackCount(tracks.length)
+      artworkHash = playlist?.custom_cover_hash ?? playlist?.auto_cover_hash ?? tracks[0]?.artwork_hash ?? null
+      break
+    }
+    case 'artist': {
+      const artistName = source.artist
+      const artist = (lookups.artists ??= getArtists(artistMode)).find((entry) => normalizeKey(entry.artist) === normalizeKey(artistName))
+      if (!artist) return null
+      source = { type: 'artist', artist: artist.artist }
+      tracks = getTracksByArtist(artist.artist, artistMode)
+      title = artist.artist
+      subtitle = 'Artist'
+      detail = trackCount(tracks.length)
+      artworkHash = artist.artwork_hash
+      break
+    }
+    case 'genre': {
+      const genreName = source.genre
+      const genre = (lookups.genres ??= getGenres()).find((entry) => normalizeKey(entry.genre) === normalizeKey(genreName))
+      if (!genre) return null
+      source = { type: 'genre', genre: genre.genre }
+      tracks = getTracksByGenre(genre.genre)
+      title = genre.genre
+      subtitle = 'Genre'
+      detail = trackCount(tracks.length)
+      artworkHash = genre.artwork_hash
+      break
+    }
+    case 'year': {
+      tracks = getTracksByYear(source.year === 'unknown' ? null : source.year)
+      title = source.year === 'unknown' ? 'Unknown Year' : String(source.year)
+      subtitle = 'Year'
+      detail = trackCount(tracks.length)
+      artworkHash = tracks.find((track) => track.artwork_hash)?.artwork_hash ?? null
+      break
+    }
+  }
+  if (source.type !== 'track' && source.type !== 'album' && !tracks.some((track) => track.is_available !== 0)) return null
+  return { key: playbackSourceKey(source), source, title, subtitle, detail, artwork_hash: artworkHash, last_played_at: playedAt }
+}
+
+interface HomeSourceRow {
+  source_json: string
+  track_id: number | null
+  last_played_at: number
+}
+
+function* readRecentHomeSourceRows(): Generator<HomeSourceRow> {
+  // Resolve outside a live SQLite cursor: hydration may refresh derived album
+  // identities in a write transaction. Read bounded pages until Home is full.
+  const pageSize = 60
+  for (let offset = 0; db; offset += pageSize) {
+    const rows = db.all<HomeSourceRow>(
+      'SELECT source_json, track_id, last_played_at FROM home_playback_sources ORDER BY last_played_at DESC, source_key LIMIT ? OFFSET ?',
+      [pageSize, offset]
+    )
+    yield* rows
+    if (rows.length < pageSize) return
+  }
+}
+
 export function getHomeDashboard(query: HomeDashboardQuery = {}): HomeDashboard {
   return measureLibraryQuery('getHomeDashboard', () => {
     const now = new Date()
     const dayKey = getLocalDayKey(now)
     if (!db) {
-      return { day_key: dayKey, recent_releases: [], rediscover_releases: [], newly_added_releases: [] }
+      return { day_key: dayKey, recent_sources: [], active_source: null, recent_releases: [], rediscover_releases: [], newly_added_releases: [] }
     }
 
     const favoritePaths = new Set(db.all<{ track_path: string }>(
@@ -5866,6 +6032,31 @@ export function getHomeDashboard(query: HomeDashboardQuery = {}): HomeDashboard 
       .filter((group) => isAlbumGroupEligible(group, { includeSingles: true }))
       .map(buildHomeReleaseSummary)
       .filter((release) => release.available_track_count > 0)
+
+    const artistMode = query.artistBrowseMode === 'strict' ? 'strict' : 'canonical'
+    const lookups: HomeSourceLookups = {}
+    const recentSources: HomePlaybackSourceSummary[] = []
+    const seenSourceKeys = new Set<string>()
+    for (const row of readRecentHomeSourceRows()) {
+      let source: PlaybackSourceContext | null
+      try { source = normalizePlaybackSourceContext(JSON.parse(row.source_json)) } catch { continue }
+      if (!source) continue
+      if (source.type === 'track') {
+        const track = row.track_id === null ? null : getTrackById(row.track_id)
+        if (!track) continue
+        source = { type: 'track', trackPath: track.path }
+      }
+      const summary = resolveHomePlaybackSource(source, row.last_played_at, releases, artistMode, lookups)
+      if (!summary || seenSourceKeys.has(summary.key)) continue
+      recentSources.push(summary)
+      seenSourceKeys.add(summary.key)
+      if (recentSources.length >= HOME_SHELF_ITEM_LIMIT) break
+    }
+    const activeSource = normalizePlaybackSourceContext(query.activeSource)
+    const activeSummary = activeSource
+      ? recentSources.find((entry) => entry.key === playbackSourceKey(activeSource))
+        ?? resolveHomePlaybackSource(activeSource, 0, releases, artistMode, lookups)
+      : null
 
     const jumpBackInReleaseLimit = Number.isFinite(query.jumpBackInReleaseLimit)
       ? Math.max(6, Math.min(HOME_SHELF_ITEM_LIMIT, Math.trunc(query.jumpBackInReleaseLimit!)))
@@ -5900,6 +6091,8 @@ export function getHomeDashboard(query: HomeDashboardQuery = {}): HomeDashboard 
 
     return {
       day_key: dayKey,
+      recent_sources: recentSources,
+      active_source: activeSummary,
       recent_releases: recentReleases,
       rediscover_releases: rediscoverReleases,
       newly_added_releases: newlyAddedReleases
@@ -6725,6 +6918,7 @@ export async function resetMappedFoldersData(): Promise<{ clearedFolders: number
   const clearedTracks = readCount('SELECT COUNT(*) FROM tracks')
 
   db.run('DELETE FROM playlist_tracks')
+  db.run('DELETE FROM home_playback_sources')
   db.run('DELETE FROM listening_segments')
   db.run('DELETE FROM listening_sessions')
   db.run('DELETE FROM app_meta WHERE key IN (?, ?)', [
@@ -6752,6 +6946,7 @@ export async function factoryResetLibraryData(): Promise<void> {
   if (!db) return
 
   db.run('DELETE FROM playlist_tracks')
+  db.run('DELETE FROM home_playback_sources')
   db.run('DELETE FROM listening_segments')
   db.run('DELETE FROM listening_sessions')
   db.run('DELETE FROM playlists')
@@ -9490,6 +9685,7 @@ export async function checkpointListeningSession(
   )
   const durationSeconds = finiteNonNegative(checkpoint.trackDurationSeconds || track.duration)
   const sourcePlaylistId = Number.isInteger(checkpoint.sourcePlaylistId) && Number(checkpoint.sourcePlaylistId) > 0
+    && db.get('SELECT id FROM playlists WHERE id = ?', [checkpoint.sourcePlaylistId])
     ? Number(checkpoint.sourcePlaylistId)
     : null
   const sessionEndedAt = checkpoint.finalizeSession ? observedAt : null
@@ -9571,6 +9767,15 @@ export async function checkpointListeningSession(
       if (qualification.changes > 0) {
         qualifiedNow = true
         qualifyListeningSession(track, sourcePlaylistId, observedAt)
+        // Missing source metadata from older clients is only trustworthy for playlists.
+        let source = normalizePlaybackSourceContext(checkpoint.sourceContext === undefined
+          ? (sourcePlaylistId !== null ? { type: 'playlist', playlistId: sourcePlaylistId } : null)
+          : checkpoint.sourceContext)
+        if (source?.type === 'track' && source.trackPath !== track.path) source = null
+        if (source?.type === 'album') {
+          source = { ...source, identityKey: track.album_identity_key ?? source.identityKey }
+        }
+        if (source) upsertHomePlaybackSource(source, track.id, observedAt)
       }
     }
 

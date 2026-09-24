@@ -7266,3 +7266,119 @@ test('late native waveforms never gate buffers and failures alone trigger render
     else delete (globalThis as Record<string, unknown>).window
   }
 })
+
+test('source attribution follows named contexts, explicit selections, and queued collections through shuffle and restore', async () => {
+  resetStores()
+  const tracks = [makeTrack('/sources/a'), makeTrack('/sources/b'), makeTrack('/sources/c')]
+  installMockTrackFetch((paths) => paths.map((path) => makeDbTrack(path)))
+  const originalLoad = usePlayerStore.getState()._loadAndPlayTrack
+  usePlayerStore.setState({ _loadAndPlayTrack: async (track) => {
+    usePlayerStore.setState({ currentTrack: track, playbackState: 'paused' })
+    return 'loaded'
+  } })
+  try {
+    await usePlayerStore.getState().startPlaybackContext(tracks, 1, { recordSelectedTrack: true })
+    assert.deepEqual(usePlayerStore.getState().queueItems.map((item) => item.sourceContext), [null, { type: 'track', trackPath: '/sources/b' }, null])
+    await usePlayerStore.getState().playNext()
+    assert.equal(usePlayerStore.getState().queueItems.find((item) => item.queueId === usePlayerStore.getState().currentQueueItemId)?.sourceContext, null)
+    const first = usePlayerStore.getState().queueItems[0]!
+    await usePlayerStore.getState().playQueuedItem(first.queueId, { manualStart: true })
+    assert.deepEqual(usePlayerStore.getState().queueItems[0]?.sourceContext, { type: 'track', trackPath: '/sources/a' })
+    await usePlayerStore.getState().startPlaybackContext(tracks, 0, { sourceContext: { type: 'year', year: 'unknown' }, recordSelectedTrack: true, shuffle: true })
+    assert.ok(usePlayerStore.getState().queueItems.every((item) => item.sourceContext?.type === 'year'))
+    usePlayerStore.getState().enqueueTracks(tracks.slice(0, 2), 'next', { sourceContext: { type: 'playlist', playlistId: -1 } })
+    const queuedCollection = usePlayerStore.getState().queueItems.filter((item) => item.origin === 'manual')
+    assert.equal(queuedCollection.length, 2)
+    assert.ok(queuedCollection.every((item) => item.sourceContext?.type === 'playlist' && item.sourcePlaylistId === -1))
+    usePlayerStore.getState().enqueueTrack(tracks[2]!)
+    assert.deepEqual(usePlayerStore.getState().queueItems.at(-1)?.sourceContext, { type: 'track', trackPath: '/sources/c' })
+    usePlayerStore.getState().toggleShuffle()
+    const snapshot = usePlayerStore.getState().getSessionSnapshot()
+    await usePlayerStore.getState().restoreSession(snapshot)
+    assert.deepEqual(usePlayerStore.getState().queueItems.map((item) => item.sourceContext), snapshot.queueItems.map((item) => item.sourceContext))
+    await usePlayerStore.getState().startPlaybackContext(tracks, 0, { shuffle: true })
+    assert.ok(usePlayerStore.getState().queueItems.filter((item) => item.origin === 'context').every((item) => item.sourceContext === null), 'whole-library playback must not create track selections')
+  } finally {
+    usePlayerStore.setState({ _loadAndPlayTrack: originalLoad })
+    resetStores()
+  }
+})
+
+test('listening sessions keep source snapshots across pause and split same-file source changes', async () => {
+  resetStores()
+  const checkpoints: Array<Record<string, unknown>> = []
+  const status = { generation: 'source-sessions', startedAt: null }
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const originalPerformance = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  const originalPlay = audioEngine.play
+  const originalDateNow = Date.now
+  let now = 0
+  const emit = (event: string, ...args: unknown[]) => {
+    ;(audioEngine as unknown as { emit: (name: string, ...args: unknown[]) => void }).emit(event, ...args)
+  }
+  Object.defineProperty(globalThis, 'performance', { configurable: true, value: { now: () => now } })
+  Date.now = () => 1_000_000 + now
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    location: { search: '?window=test' }, addEventListener: () => {}, removeEventListener: () => {},
+    electronAPI: {
+      library: {
+        getListeningHistoryStatus: async () => status,
+        checkpointListeningSession: async (checkpoint: Record<string, unknown>) => {
+          checkpoints.push(checkpoint)
+          return { accepted: true, qualifiedNow: false, status }
+        },
+        markTrackLatestSyncSeen: async () => undefined
+      }, onProgressiveLoadProgress: () => () => {}
+    }
+  } })
+  audioEngine.play = async () => emit('stateChange', 'playing')
+  try {
+    usePlayerStore.getState()._initListeners()
+    usePlayerStore.getState().resetListeningHistoryTracking(status)
+    const track = makeTrack('/sources/same', { origin: 'library', duration: 180 })
+    const playlistItem = { ...makeQueueItem(createQueueEntryFromTrack(track), 'source-playlist'), sourcePlaylistId: 5, sourceContext: { type: 'playlist' as const, playlistId: 5 } }
+    const trackItem = { ...makeQueueItem(createQueueEntryFromTrack(track), 'source-track'), sourceContext: { type: 'track' as const, trackPath: track.path } }
+    usePlayerStore.setState({ currentTrack: track, playbackState: 'loading', duration: 180, queueItems: [playlistItem, trackItem], currentQueueItemId: playlistItem.queueId })
+    await usePlayerStore.getState().play()
+    now = 5000
+    emit('stateChange', 'paused')
+    await flushAsyncWork()
+    const sessionKey = checkpoints.at(-1)?.sessionKey
+    assert.deepEqual(checkpoints.at(-1)?.sourceContext, playlistItem.sourceContext)
+    now = 10_000
+    await usePlayerStore.getState().play()
+    now = 15_000
+    emit('stateChange', 'paused')
+    await flushAsyncWork()
+    assert.equal(checkpoints.at(-1)?.sessionKey, sessionKey)
+    assert.equal(checkpoints.at(-1)?.sessionListenedSeconds, 10)
+    usePlayerStore.setState({ currentQueueItemId: trackItem.queueId, playbackState: 'loading' })
+    await usePlayerStore.getState().play()
+    now = 20_000
+    emit('stateChange', 'paused')
+    await flushAsyncWork()
+    assert.notEqual(checkpoints.at(-1)?.sessionKey, sessionKey)
+    assert.deepEqual(checkpoints.at(-1)?.sourceContext, trackItem.sourceContext)
+    assert.equal(checkpoints.at(-1)?.sessionListenedSeconds, 5)
+    assert.ok(checkpoints.filter((checkpoint) => checkpoint.sessionKey === sessionKey).every((checkpoint) => (checkpoint.sourceContext as { type: string }).type === 'playlist'))
+    const nextTrack = makeTrack('/sources/gapless', { origin: 'library', duration: 180 })
+    const nextItem = { ...makeQueueItem(createQueueEntryFromTrack(nextTrack), 'source-gapless'), sourceContext: { type: 'genre' as const, genre: 'Electronic' } }
+    usePlayerStore.setState({ queueItems: [playlistItem, trackItem, nextItem], upcomingQueueIds: [nextItem.queueId], baseUpcomingQueueIds: [nextItem.queueId] })
+    await usePlayerStore.getState().play()
+    now = 25_000
+    emit('gaplessTransition')
+    assert.equal(usePlayerStore.getState().currentTrack?.path, nextTrack.path)
+    now = 41_000
+    emit('timeUpdate', 16)
+    await flushAsyncWork()
+    assert.deepEqual(checkpoints.at(-1)?.sourceContext, nextItem.sourceContext)
+    assert.equal(checkpoints.at(-1)?.trackPath, nextTrack.path)
+
+  } finally {
+    audioEngine.play = originalPlay
+    Date.now = originalDateNow
+    if (originalPerformance) Object.defineProperty(globalThis, 'performance', originalPerformance)
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    resetStores()
+  }
+})

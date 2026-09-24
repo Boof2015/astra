@@ -1,3 +1,5 @@
+import type { PlaybackSourceContext } from './playbackSource'
+
 export type ListeningStatsRange = '7d' | '30d' | '1y' | 'all'
 export type ListeningStatsRankingMetric = 'plays' | 'time'
 export type ListeningStatsBucketGranularity = 'day' | 'week' | 'month'
@@ -13,6 +15,7 @@ export interface ListeningSessionCheckpoint {
   segmentKey: string
   trackPath: string
   sourcePlaylistId: number | null
+  sourceContext?: PlaybackSourceContext | null
   sessionStartedAt: number
   segmentStartedAt: number
   observedAt: number

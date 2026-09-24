@@ -1,4 +1,7 @@
 import { create } from 'zustand'
+import type { PlaybackSourceContext } from '../../types/playbackSource'
+import { normalizePlaybackSourceContext, playbackSourceKey, resolveCurrentPlaybackSource } from '../../shared/home/playbackSources'
+export type { PlaybackSourceContext } from '../../types/playbackSource'
 import {
   audioEngine,
   isSupersededAudioLoadError,
@@ -230,13 +233,8 @@ export interface ResolvedQueueTrack {
   index: number
 }
 
-export type PlaybackSourceContext =
-  | { type: 'playlist'; playlistId: number }
-  | { type: 'artist'; artist: string }
-  | { type: 'genre'; genre: string }
-  | { type: 'album'; album: string; albumArtist?: string; identityKey?: string }
-
 export interface PlaybackContextOptions {
+  recordSelectedTrack?: boolean
   sourcePlaylistId?: number | null
   contextLabel?: string | null
   sourceContext?: PlaybackSourceContext | null
@@ -334,9 +332,9 @@ interface PlayerStore {
     startIndex?: number,
     options?: PlaybackContextOptions
   ) => Promise<void>
-  enqueueTrack: (track: Track, position?: number | 'next' | 'end') => void
-  enqueueTracks: (tracks: Track[], position?: number | 'next' | 'end') => void
-  enqueueTrackPaths: (paths: string[], position?: number | 'next' | 'end') => Promise<void>
+  enqueueTrack: (track: Track, position?: number | 'next' | 'end', options?: PlaybackContextOptions) => void
+  enqueueTracks: (tracks: Track[], position?: number | 'next' | 'end', options?: PlaybackContextOptions) => void
+  enqueueTrackPaths: (paths: string[], position?: number | 'next' | 'end', options?: PlaybackContextOptions) => Promise<void>
   moveUpcomingItem: (queueId: string, toIndex: number) => void
   removeUpcomingItem: (queueId: string) => void
   clearAllQueues: () => void
@@ -429,29 +427,7 @@ function advanceNextQueueItemId(queueIds: Iterable<string>): void {
 }
 
 function sessionContextToPlaybackContext(context: SessionPlaybackSourceContext | null): PlaybackSourceContext | null {
-  if (!context) return null
-  if (context.type === 'playlist') {
-    return typeof context.playlistId === 'number'
-      ? { type: 'playlist', playlistId: context.playlistId }
-      : null
-  }
-  if (context.type === 'artist') {
-    return context.artist ? { type: 'artist', artist: context.artist } : null
-  }
-  if (context.type === 'genre') {
-    return context.genre ? { type: 'genre', genre: context.genre } : null
-  }
-  if (context.type === 'album') {
-    return context.album
-      ? {
-          type: 'album',
-          album: context.album,
-          albumArtist: context.albumArtist,
-          identityKey: context.identityKey
-        }
-      : null
-  }
-  return null
+  return normalizePlaybackSourceContext(context)
 }
 
 function sessionQueueItemToQueueItem(item: SessionQueueItem): QueueItem {
@@ -900,7 +876,7 @@ function normalizeContextLabel(value: string | null | undefined): string | null 
 }
 
 function resolvePlaybackSourceContext(options?: PlaybackContextOptions): PlaybackSourceContext | null {
-  if (options?.sourceContext) return options.sourceContext
+  if (options?.sourceContext) return normalizePlaybackSourceContext(options.sourceContext)
   if (typeof options?.sourcePlaylistId === 'number') {
     return { type: 'playlist', playlistId: options.sourcePlaylistId }
   }
@@ -937,6 +913,8 @@ interface RecentPlaySession {
   counted: boolean
   allowDbWrite: boolean
   sourcePlaylistId: number | null
+  sourceContext: PlaybackSourceContext | null
+  queueItemId: string | null
   generation: string | null
   sessionKey: string
   sessionStartedAt: number
@@ -1937,16 +1915,21 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     entry: QueueTrackEntry,
     origin: QueueItemOrigin,
     options?: PlaybackContextOptions
-  ): QueueItem => ({
-    queueId: createQueueId(),
-    entry,
-    origin,
-    sourcePlaylistId: origin === 'context' ? options?.sourcePlaylistId ?? null : null,
-    sourceContext: origin === 'context' ? resolvePlaybackSourceContext(options) : null,
-    contextLabel: origin === 'context'
-      ? normalizeContextLabel(options?.contextLabel) ?? 'Current Selection'
-      : null
-  })
+  ): QueueItem => {
+    const source = resolvePlaybackSourceContext(options)
+      ?? (origin === 'manual' && options?.recordSelectedTrack !== false
+        ? { type: 'track' as const, trackPath: entry.path } : null)
+    return {
+      queueId: createQueueId(),
+      entry,
+      origin,
+      sourcePlaylistId: source?.type === 'playlist' ? source.playlistId : null,
+      sourceContext: source,
+      contextLabel: origin === 'context' || options?.contextLabel
+        ? normalizeContextLabel(options?.contextLabel) ?? 'Current Selection'
+        : null
+    }
+  }
 
   const getCurrentPlaybackEntry = (
     state: Pick<PlayerStore, 'currentTrack' | 'currentQueueItemId' | 'queueItems'>
@@ -2045,13 +2028,6 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     })
   }
 
-  const resolveSourcePlaylistIdForState = (
-    state: Pick<PlayerStore, 'currentQueueItemId' | 'queueItems'>
-  ): number | null => {
-    if (!state.currentQueueItemId) return null
-    return state.queueItems.find((item) => item.queueId === state.currentQueueItemId)?.sourcePlaylistId ?? null
-  }
-
   const getListeningHistoryStatus = (): Promise<ListeningHistoryStatus> => {
     if (!listeningHistoryStatusPromise) {
       listeningHistoryStatusPromise = window.electronAPI.library.getListeningHistoryStatus()
@@ -2105,6 +2081,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           segmentKey: checkpointSegmentKey,
           trackPath: session.trackPath,
           sourcePlaylistId: session.sourcePlaylistId,
+          sourceContext: session.sourceContext,
           sessionStartedAt: session.sessionStartedAt,
           segmentStartedAt: session.segmentStartedAt,
           observedAt,
@@ -2134,6 +2111,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           )
         }
         if (result.qualifiedNow) {
+          if (typeof window.dispatchEvent === 'function') window.dispatchEvent(new Event('astra:home-sources-changed'))
           session.counted = true
           session.qualificationEligible = false
           await Promise.all([
@@ -2189,15 +2167,18 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   }
 
   const startRecentPlaySession = (trackPath: string): void => {
-    if (recentPlaySession?.trackPath === trackPath) {
-      const state = get()
+    const state = get()
+    const sourceContext = resolveCurrentPlaybackSource(state)
+    const sourceKey = sourceContext ? playbackSourceKey(sourceContext) : null
+    if (recentPlaySession?.trackPath === trackPath
+      && recentPlaySession.queueItemId === state.currentQueueItemId
+      && (recentPlaySession.sourceContext ? playbackSourceKey(recentPlaySession.sourceContext) : null) === sourceKey) {
       const duration = resolvePositiveDuration(state.currentTrack?.duration, state.duration)
       recentPlaySession.trackDurationSeconds = Math.max(recentPlaySession.trackDurationSeconds, duration)
       recentPlaySession.thresholdSeconds = getRecentPlayThresholdSecondsForDuration(duration)
       return
     }
     finalizeRecentPlaySession()
-    const state = get()
     const track = state.currentTrack
     const thresholdSeconds = getRecentPlayThresholdSeconds(track)
     const wallNow = Date.now()
@@ -2208,7 +2189,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       lastAccumulatedAtMs: state.playbackState === 'playing' ? performance.now() : null,
       counted: false,
       allowDbWrite: track?.origin !== 'associated-external',
-      sourcePlaylistId: resolveSourcePlaylistIdForState(state),
+      sourcePlaylistId: sourceContext?.type === 'playlist' ? sourceContext.playlistId : null,
+      sourceContext,
+      queueItemId: state.currentQueueItemId,
       generation: null,
       sessionKey: createListeningHistoryKey('session'),
       sessionStartedAt: wallNow,
@@ -2917,7 +2900,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       return
     }
 
-    const contextItems = entries.map((entry) => createQueueItem(entry, 'context', options))
+    const contextItems = entries.map((entry, index) => createQueueItem(entry, 'context', {
+      ...options,
+      sourceContext: resolvePlaybackSourceContext(options)
+        ?? (options?.recordSelectedTrack && index === playbackStartIndex ? { type: 'track', trackPath: entry.path } : null)
+    }))
     activeContextHydrationItems = contextItems
     for (const path of hydrationPlan?.missingPaths ?? []) {
       pendingContextMetadataPaths.set(path, generation)
@@ -3092,11 +3079,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     }
   }
 
-  const enqueueEntries = (entries: QueueTrackEntry[], position: number | 'next' | 'end' = 'end'): void => {
+  const enqueueEntries = (entries: QueueTrackEntry[], position: number | 'next' | 'end' = 'end', options?: PlaybackContextOptions): void => {
     if (entries.length === 0) return
 
     const state = get()
-    const items = entries.map((entry) => createQueueItem(entry, 'manual'))
+    const items = entries.map((entry) => createQueueItem(entry, 'manual', options))
     const insertionIndex = position === 'next'
       ? 0
       : position === 'end'
@@ -3954,16 +3941,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       )
     },
 
-    enqueueTrack: (track: Track, position = 'end') => {
-      get().enqueueTracks([track], position)
+    enqueueTrack: (track: Track, position = 'end', options) => {
+      get().enqueueTracks([track], position, options)
     },
 
-    enqueueTracks: (tracks: Track[], position = 'end') => {
-      enqueueEntries(createQueueEntriesFromTracks(tracks), position)
+    enqueueTracks: (tracks: Track[], position = 'end', options) => {
+      enqueueEntries(createQueueEntriesFromTracks(tracks), position, options)
     },
 
-    enqueueTrackPaths: async (paths: string[], position = 'end') => {
-      enqueueEntries(await createQueueEntriesFromPathsWithFetch(paths), position)
+    enqueueTrackPaths: async (paths: string[], position = 'end', options) => {
+      enqueueEntries(await createQueueEntriesFromPathsWithFetch(paths), position, options)
     },
 
     moveUpcomingItem: (queueId: string, toIndex: number) => {
@@ -4185,8 +4172,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
 
       const commandStartedAtMs = performance.now()
-      const state = get()
-      const item = state.queueItems.find((candidate) => candidate.queueId === queueId)
+      const state = { ...get() }
+      let item = state.queueItems.find((candidate) => candidate.queueId === queueId)
+      if (item && !item.sourceContext && item.sourcePlaylistId === null && options?.manualStart !== false) {
+        item = { ...item, sourceContext: { type: 'track', trackPath: item.entry.path } }
+        state.queueItems = state.queueItems.map((entry) => entry.queueId === queueId ? item! : entry)
+      }
       const track = resolveQueueEntryTrack(item?.entry)
       const index = state.upcomingQueueIds.indexOf(queueId)
       const candidate: NextCandidate | null = item && track
@@ -4198,9 +4189,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       clearNonmatchingPrebufferForIntent(playbackIntentId, candidate.track.path)
       supersedeInteractiveLoudnessAnalysis(candidate.track.path)
 
-      set(applyCandidateTransition(state, candidate, {
+      set({ ...applyCandidateTransition(state, candidate, {
         pushCurrentToHistory: true
-      }))
+      }), queueItems: state.queueItems })
 
       const attempt = createPlaybackAttempt('queue', commandStartedAtMs, {
         queuePreparationMs: performance.now() - commandStartedAtMs,

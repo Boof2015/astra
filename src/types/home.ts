@@ -1,3 +1,5 @@
+import type { PlaybackSourceContext } from './playbackSource'
+
 export interface HomeReleaseSummary {
   identity_key: string
   album: string
@@ -18,6 +20,8 @@ export interface HomeRediscoveryRelease extends HomeReleaseSummary {
 }
 
 export interface HomeDashboardQuery {
+  activeSource?: PlaybackSourceContext | null
+  artistBrowseMode?: 'strict' | 'canonical'
   rotation?: number
   excludedReleaseIdentityKeys?: string[]
   jumpBackInReleaseLimit?: number
@@ -27,7 +31,19 @@ export interface HomeDashboardQuery {
 
 export interface HomeDashboard {
   day_key: string
+  recent_sources: HomePlaybackSourceSummary[]
+  active_source: HomePlaybackSourceSummary | null
   recent_releases: HomeReleaseSummary[]
   rediscover_releases: HomeRediscoveryRelease[]
   newly_added_releases: HomeReleaseSummary[]
+}
+
+export interface HomePlaybackSourceSummary {
+  key: string
+  source: PlaybackSourceContext
+  title: string
+  subtitle: string
+  detail: string
+  artwork_hash: string | null
+  last_played_at: number
 }

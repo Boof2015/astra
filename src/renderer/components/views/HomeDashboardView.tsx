@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import type { HomeDashboard, HomeRediscoveryRelease, HomeReleaseSummary } from '../../../types/home'
+import { buildHomeSourceCards, resolveCurrentPlaybackSource } from '../../../shared/home/playbackSources'
+import { revealTrackInLibrary } from '../../hooks/useJumpToNowPlaying'
 import { getLocalDayKey, HOME_SHELF_ITEM_LIMIT } from '../../../shared/home/homeDashboard'
 import { useHorizontalWheelScroll } from '../../hooks/useHorizontalWheelScroll'
 import { useLibraryStore } from '../../stores/libraryStore'
@@ -11,7 +13,6 @@ import { HOME_REDISCOVERY_ROTATION_STORAGE_KEY } from '../../constants/settingsS
 import { formatCompactDuration } from '../../utils/collectionDuration'
 import { resolveHomeSkyDate, type HomeModuleId } from '../../utils/homePreferences'
 import {
-  buildAllDisplayPlaylists,
   buildSidebarPlaylistSections,
   FAVORITES_PLAYLIST_ID,
   type DisplayPlaylist
@@ -67,12 +68,6 @@ function persistRediscoveryRotation(rotation: RediscoveryRotation): void {
   } catch {
     // The in-memory rotation still works when storage is unavailable.
   }
-}
-
-function releaseDetail(release: HomeReleaseSummary): string {
-  const parts = [`${release.track_count} ${release.track_count === 1 ? 'track' : 'tracks'}`]
-  if (release.year) parts.push(String(release.year))
-  return parts.join(' · ')
 }
 
 function uniqueRecentTracks(tracks: HomeTrack[]): HomeTrack[] {
@@ -226,7 +221,10 @@ export default function HomeDashboardView() {
 
   const currentTrack = usePlayerStore((state) => state.currentTrack)
   const playbackState = usePlayerStore((state) => state.playbackState)
-  const queueSourceContext = usePlayerStore((state) => state.queueSourceContext)
+  const currentQueueItemId = usePlayerStore((state) => state.currentQueueItemId)
+  const queueItems = usePlayerStore((state) => state.queueItems)
+  const queueSourceContext = useMemo(() => resolveCurrentPlaybackSource({ currentTrack, currentQueueItemId, queueItems }), [currentTrack, currentQueueItemId, queueItems])
+  const artistBrowseMode = useLibraryStore((state) => state.artistBrowseMode)
   const togglePlay = usePlayerStore((state) => state.togglePlay)
   const startPlaybackContextByPaths = usePlayerStore((state) => state.startPlaybackContextByPaths)
 
@@ -383,17 +381,22 @@ export default function HomeDashboardView() {
     }
   }, [homeSkyTimePreference])
 
+  const dashboardRequestId = useRef(0)
   const loadHomeDashboard = useCallback(async () => {
+    const requestId = ++dashboardRequestId.current
     setDashboardLoading(true)
     setDashboardError(null)
     try {
       const result = await window.electronAPI.library.getHomeDashboard({
         rotation: rediscoveryRotation.index,
+        activeSource: queueSourceContext,
+        artistBrowseMode,
         excludedReleaseIdentityKeys: activeAlbumIdentityKey ? [activeAlbumIdentityKey] : [],
         jumpBackInReleaseLimit: HOME_SHELF_ITEM_LIMIT,
         rediscoverLimit: HOME_SHELF_ITEM_LIMIT,
         newlyAddedLimit: HOME_SHELF_ITEM_LIMIT
       })
+      if (requestId !== dashboardRequestId.current) return
       setDashboard(result)
       if (result.day_key !== rediscoveryRotation.dayKey) {
         const reset = { dayKey: result.day_key, index: 0 }
@@ -401,15 +404,21 @@ export default function HomeDashboardView() {
         setRediscoveryRotation(reset)
       }
     } catch (error) {
-      setDashboardError(error instanceof Error ? error.message : 'Home recommendations could not be loaded.')
+      if (requestId === dashboardRequestId.current) setDashboardError(error instanceof Error ? error.message : 'Home recommendations could not be loaded.')
     } finally {
-      setDashboardLoading(false)
+      if (requestId === dashboardRequestId.current) setDashboardLoading(false)
     }
-  }, [activeAlbumIdentityKey, rediscoveryRotation])
+  }, [activeAlbumIdentityKey, rediscoveryRotation, queueSourceContext, artistBrowseMode])
 
   useEffect(() => {
     void loadHomeDashboard()
-  }, [loadHomeDashboard, trackCacheVersion])
+    const refresh = () => { void loadHomeDashboard() }
+    window.addEventListener('astra:home-sources-changed', refresh)
+    return () => {
+      dashboardRequestId.current += 1
+      window.removeEventListener('astra:home-sources-changed', refresh)
+    }
+  }, [loadHomeDashboard, trackCacheVersion, playlists, favoriteTrackPaths])
 
   const favoriteTracks = useMemo(
     () => resolveTrackPaths(favoriteTrackPaths) as HomeTrack[],
@@ -419,73 +428,14 @@ export default function HomeDashboardView() {
     () => uniqueRecentTracks(resolveTrackPaths(recentlyPlayedPaths) as HomeTrack[]),
     [recentlyPlayedPaths, resolveTrackPaths, trackCacheVersion]
   )
-  const allDisplayPlaylists = useMemo(() => buildAllDisplayPlaylists(playlists, {
-    trackCount: favoriteTracks.length,
-    topArtworkHash: favoriteTracks[0]?.artwork_hash ?? null
-  }), [favoriteTracks, playlists])
   const pinnedPlaylists = useMemo(() => buildSidebarPlaylistSections(playlists, {
     trackCount: favoriteTracks.length,
     topArtworkHash: favoriteTracks[0]?.artwork_hash ?? null
   }, sidebarPinnedPlaylistIds).sidebarPinnedPlaylists, [favoriteTracks, playlists, sidebarPinnedPlaylistIds])
 
-  const jumpBackInCards = useMemo<JumpBackInCard[]>(() => {
-    const activeCards: JumpBackInCard[] = []
-    if (queueSourceContext?.type === 'album' && currentTrack) {
-      const identityKey = queueSourceContext.identityKey ?? currentTrack.albumIdentityKey ?? `${currentTrack.album}\0${currentTrack.albumArtist ?? currentTrack.artist}`
-      const release = dashboard?.recent_releases.find((entry) => entry.identity_key === identityKey) ?? {
-        identity_key: identityKey,
-        album: queueSourceContext.album || currentTrack.album,
-        artist: queueSourceContext.albumArtist ?? currentTrack.albumArtist ?? currentTrack.artist,
-        year: currentTrack.year ?? null,
-        artwork_hash: currentTrack.artworkHash ?? null,
-        track_count: 0,
-        available_track_count: 1,
-        play_count: 0,
-        favorite_track_count: 0,
-        last_played_at: null,
-        latest_added_at: 0
-      }
-      activeCards.push({
-        kind: 'album', key: `album:${identityKey}`, title: release.album, subtitle: release.artist,
-        artworkHash: release.artwork_hash, detail: releaseDetail(release), lastPlayedAt: Number.MAX_SAFE_INTEGER,
-        active: true, release
-      })
-    } else if (queueSourceContext?.type === 'playlist') {
-      const playlist = allDisplayPlaylists.find((entry) => entry.id === queueSourceContext.playlistId)
-      if (playlist?.track_count) {
-        activeCards.push({
-          kind: 'playlist', key: `playlist:${playlist.id}`, title: playlist.name,
-          subtitle: playlist.isSystemFavorites ? 'Favorites' : playlist.kind === 'dynamic' ? 'Dynamic playlist' : 'Playlist',
-          artworkHash: playlist.cover_hash, detail: `${playlist.track_count} tracks`, lastPlayedAt: Number.MAX_SAFE_INTEGER,
-          active: true, playlist
-        })
-      }
-    }
-
-    const historical: JumpBackInCard[] = [
-      ...(dashboard?.recent_releases ?? []).map((release): JumpBackInCard => ({
-        kind: 'album', key: `album:${release.identity_key}`, title: release.album, subtitle: release.artist,
-        artworkHash: release.artwork_hash, detail: releaseDetail(release), lastPlayedAt: release.last_played_at ?? 0,
-        active: false, release
-      })),
-      ...allDisplayPlaylists
-        .filter((playlist) => playlist.last_played_at !== null && playlist.track_count > 0)
-        .map((playlist): JumpBackInCard => ({
-          kind: 'playlist', key: `playlist:${playlist.id}`, title: playlist.name,
-          subtitle: playlist.kind === 'dynamic' ? 'Dynamic playlist' : 'Playlist', artworkHash: playlist.cover_hash,
-          detail: `${playlist.track_count} tracks`, lastPlayedAt: playlist.last_played_at ?? 0, active: false, playlist
-        }))
-    ].sort((a, b) => b.lastPlayedAt - a.lastPlayedAt || a.key.localeCompare(b.key))
-
-    const seen = new Set(activeCards.map((card) => card.key))
-    for (const card of historical) {
-      if (seen.has(card.key)) continue
-      activeCards.push(card)
-      seen.add(card.key)
-      if (activeCards.length >= HOME_SHELF_ITEM_LIMIT) break
-    }
-    return activeCards
-  }, [allDisplayPlaylists, currentTrack, dashboard?.recent_releases, queueSourceContext])
+  const jumpBackInCards = useMemo<JumpBackInCard[]>(() => buildHomeSourceCards(
+    dashboard?.recent_sources ?? [], queueSourceContext, dashboard?.active_source ?? null, HOME_SHELF_ITEM_LIMIT
+  ), [dashboard, queueSourceContext])
 
   const visibleModules = homeLayoutPreference.modules.filter((module) => (
     module.visible && (module.id !== 'listening-snapshot' || listeningStatsEnabled)
@@ -569,8 +519,65 @@ export default function HomeDashboardView() {
       }
       return
     }
-    if (card.kind === 'album') await handlePlayRelease(card.release)
-    else await handlePlayPlaylist(card.playlist)
+    setPendingPlaybackKey(card.key)
+    setActionError(null)
+    try {
+      const source = card.source
+      let tracks: Awaited<ReturnType<typeof window.electronAPI.library.getTracksByPaths>>
+      switch (source.type) {
+        case 'playlist':
+          tracks = source.playlistId === FAVORITES_PLAYLIST_ID
+            ? await window.electronAPI.library.getFavorites()
+            : await window.electronAPI.library.getPlaylistTracks(source.playlistId)
+          break
+        case 'album':
+          tracks = await window.electronAPI.library.getTracksByAlbum(source.album, source.albumArtist, source.identityKey)
+          break
+        case 'artist':
+          tracks = await window.electronAPI.library.getTracksByArtist(source.artist, artistBrowseMode)
+          break
+        case 'genre':
+          tracks = await window.electronAPI.library.getTracksByGenre(source.genre)
+          break
+        case 'year':
+          tracks = await window.electronAPI.library.getTracksByYear(source.year === 'unknown' ? null : source.year)
+          break
+        case 'track':
+          tracks = await window.electronAPI.library.getTracksByPaths([source.trackPath])
+          break
+      }
+      const paths = tracks.filter((track) => track.is_available !== 0).map((track) => track.path)
+      if (!paths.length) throw new Error(`No available tracks in ${card.title}.`)
+      await startPlaybackContextByPaths(paths, 0, {
+        sourceContext: source,
+        sourcePlaylistId: source.type === 'playlist' ? source.playlistId : null,
+        contextLabel: card.title,
+        startShuffled: source.type !== 'track'
+      })
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : `Could not play ${card.title}.`)
+    } finally {
+      setPendingPlaybackKey(null)
+    }
+  }
+
+  const handleJumpOpen = async (card: JumpBackInCard) => {
+    try {
+      setActionError(null)
+      const source = card.source
+      const library = useLibraryStore.getState()
+      if (source.type === 'playlist') return await handleOpenPlaylist(source.playlistId)
+      if (source.type === 'track') { await revealTrackInLibrary(source.trackPath); return }
+      if (source.type === 'album') {
+        setLibraryViewMode('albums')
+        await selectAlbum(source.album, source.albumArtist, 'home', source.identityKey)
+      } else if (source.type === 'artist') await library.selectArtist(source.artist, 'home')
+      else if (source.type === 'genre') await library.selectGenre(source.genre, 'home')
+      else await library.selectYear(source.year, 'home')
+      setActiveView('library')
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : `Could not open ${card.title}.`)
+    }
   }
 
   const handleShuffleLibrary = async () => {
@@ -604,7 +611,7 @@ export default function HomeDashboardView() {
         cards={jumpBackInCards}
         playbackState={playbackState}
         pendingPlaybackKey={pendingPlaybackKey}
-        onOpen={(card) => card.kind === 'album' ? void handleOpenRelease(card.release) : void handleOpenPlaylist(card.playlist.id)}
+        onOpen={(card) => void handleJumpOpen(card)}
         onPlay={(card) => void handleJumpPlay(card)}
       />
     )
@@ -700,7 +707,7 @@ export default function HomeDashboardView() {
             <article
               key={track.path}
               className={`home-track-card${currentTrack?.path === track.path ? ' active' : ''}`}
-              onClick={() => void startPlaybackContextByPaths(recentTracks.map((entry) => entry.path), index, { contextLabel: 'Recently Played' })}
+              onClick={() => void startPlaybackContextByPaths(recentTracks.map((entry) => entry.path), index, { recordSelectedTrack: true, contextLabel: 'Recently Played' })}
               data-controller-focusable="true"
               tabIndex={-1}
               role="button"

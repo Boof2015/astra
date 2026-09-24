@@ -393,8 +393,9 @@ export default function LibraryView() {
     if (selectedGenre) {
       return { type: 'genre', genre: selectedGenre }
     }
+    if (selectedYear !== null) return { type: 'year', year: selectedYear }
     return null
-  }, [selectedAlbum, selectedArtist, selectedGenre])
+  }, [selectedAlbum, selectedArtist, selectedGenre, selectedYear])
   const sourceFilterOptions = useMemo(() => {
     return [
       ...subsonicSources.map((source) => ({
@@ -2280,7 +2281,7 @@ export default function LibraryView() {
             </button>
           )}
           {isCollectionActionContext && inDetailView && (
-            <QueueSplitButton trackPaths={queueTrackPaths} disabled={queueTrackPaths.length === 0} />
+            <QueueSplitButton sourceContext={playbackSourceContext} trackPaths={queueTrackPaths} disabled={queueTrackPaths.length === 0} />
           )}
           {selectedArtist && graphEnabled && (
             <button

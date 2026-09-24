@@ -651,7 +651,7 @@ export default function QuickLaunchPalette() {
       } else {
         const request = buildQuickLaunchPlayRequest(rankedTrackOccurrences, occurrence.occurrenceKey)
         if (!request) throw new Error('The selected track is no longer in these results.')
-        await startPlaybackContextByPaths(request.paths, request.startIndex, { contextLabel: 'Search Results' })
+        await startPlaybackContextByPaths(request.paths, request.startIndex, { recordSelectedTrack: true, contextLabel: 'Search Results' })
       }
       closeQuickLaunch()
     } catch (error) {

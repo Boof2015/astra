@@ -1122,7 +1122,7 @@ export default function HomeView() {
 
   const handlePlayRecentList = async (_track: HomeTrack, index: number) => {
     await startPlaybackContextByPaths(recentTracks.map((recentTrack) => recentTrack.path), index, {
-      contextLabel: 'Recently Played'
+      recordSelectedTrack: true, contextLabel: 'Recently Played'
     })
   }
 

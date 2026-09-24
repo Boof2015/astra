@@ -1,3 +1,5 @@
+import type { PlaybackSourceContext } from '../../types/playbackSource'
+import { normalizePlaybackSourceContext } from '../../shared/home/playbackSources'
 import {
   ASTRA_SESSION_POSITION_CHECKPOINT_STORAGE_KEY,
   ASTRA_SESSION_STATE_STORAGE_KEY
@@ -31,15 +33,7 @@ export interface SessionAlbumSortState {
   direction: SessionSortDirection
 }
 
-export interface SessionPlaybackSourceContext {
-  type: 'playlist' | 'artist' | 'album' | 'genre'
-  playlistId?: number
-  artist?: string
-  album?: string
-  albumArtist?: string
-  identityKey?: string
-  genre?: string
-}
+export type SessionPlaybackSourceContext = PlaybackSourceContext
 
 export interface SessionQueueTrackSnapshot {
   id: string
@@ -316,38 +310,6 @@ function normalizeQueueTrackSource(value: unknown): SessionQueueTrackSource {
 
 function normalizeRepeatMode(value: unknown): SessionRepeatMode {
   return value === 'all' || value === 'one' ? value : 'none'
-}
-
-function normalizePlaybackSourceContext(value: unknown): SessionPlaybackSourceContext | null {
-  if (!isPlainRecord(value)) return null
-
-  if (value.type === 'playlist') {
-    const playlistId = integerOrNull(value.playlistId)
-    return playlistId === null ? null : { type: 'playlist', playlistId }
-  }
-
-  if (value.type === 'artist') {
-    const artist = stringValue(value.artist)
-    return artist ? { type: 'artist', artist } : null
-  }
-
-  if (value.type === 'genre') {
-    const genre = stringValue(value.genre)
-    return genre ? { type: 'genre', genre } : null
-  }
-
-  if (value.type === 'album') {
-    const album = stringValue(value.album)
-    if (!album) return null
-    return {
-      type: 'album',
-      album,
-      albumArtist: optionalString(value.albumArtist),
-      identityKey: optionalString(value.identityKey)
-    }
-  }
-
-  return null
 }
 
 function normalizeQueueTrackSnapshot(value: unknown): SessionQueueTrackSnapshot | null {

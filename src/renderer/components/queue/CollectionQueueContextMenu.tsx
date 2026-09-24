@@ -86,7 +86,11 @@ export default function CollectionQueueContextMenu() {
         setErrorMessage('No playable tracks in this collection.')
         return
       }
-      await enqueueTrackPaths(trackPaths, position)
+      await enqueueTrackPaths(trackPaths, position, {
+        sourceContext: request.target.kind === 'album'
+          ? { type: 'album', album: request.target.album, albumArtist: request.target.artist, identityKey: request.target.identityKey }
+          : { type: 'playlist', playlistId: request.target.playlistId }
+      })
       closeMenu()
     } catch (error) {
       console.error('Failed to add collection to queue:', error)

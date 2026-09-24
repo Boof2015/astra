@@ -475,3 +475,18 @@ test('session snapshot normalization preserves Years and Unknown Year selection'
   assert.equal(snapshot?.library?.viewMode, 'years')
   assert.equal(snapshot?.library?.selectedYear, 'unknown')
 })
+
+test('track and year source attribution round-trips in queue items and playback history', () => {
+  const storage = new MemoryStorage()
+  const snapshot = createQueuedSessionSnapshot()
+  const player = snapshot.player!
+  const item = player.queueItems[0]!
+  item.sourceContext = { type: 'year', year: 'unknown' }
+  player.queueSourceContext = item.sourceContext
+  player.playbackHistory = [{ item: { ...item, queueId: 'previous', sourceContext: { type: 'track', trackPath: item.entry.path } } }]
+  writeSessionSnapshot(snapshot, storage)
+  const restored = readSessionSnapshot(storage)!
+  assert.deepEqual(restored.player?.queueItems[0]?.sourceContext, { type: 'year', year: 'unknown' })
+  assert.deepEqual(restored.player?.queueSourceContext, { type: 'year', year: 'unknown' })
+  assert.deepEqual(restored.player?.playbackHistory[0]?.item.sourceContext, { type: 'track', trackPath: item.entry.path })
+})

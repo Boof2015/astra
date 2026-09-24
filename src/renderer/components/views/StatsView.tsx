@@ -194,7 +194,7 @@ export default function StatsView() {
     if (!track.trackPath) return
     const index = playableTrackPaths.indexOf(track.trackPath)
     if (index < 0) return
-    void startPlaybackContextByPaths(playableTrackPaths, index, { contextLabel: 'Listening Stats' })
+    void startPlaybackContextByPaths(playableTrackPaths, index, { recordSelectedTrack: true, contextLabel: 'Listening Stats' })
   }
 
   const handleOpenArtist = (artist: ListeningStatsRankedArtist) => {

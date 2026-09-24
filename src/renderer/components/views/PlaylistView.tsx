@@ -1401,6 +1401,7 @@ export default function PlaylistView() {
             <span className="library-shuffle-btn-label">Shuffle</span>
           </button>
           <QueueSplitButton
+            sourceContext={selectedPlaylistId !== null ? { type: 'playlist', playlistId: selectedPlaylistId } : null}
             trackPaths={displayPlayableTrackPaths}
             disabled={displayPlayableTrackPaths.length === 0}
           />

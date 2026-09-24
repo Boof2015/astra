@@ -75,7 +75,7 @@ function getArtistCandidates(track: Track): string[] {
   return candidates
 }
 
-async function revealTrackInLibrary(trackPath: string): Promise<boolean> {
+export async function revealTrackInLibrary(trackPath: string): Promise<boolean> {
   const library = useLibraryStore.getState()
   library.setViewMode('tracks')
   await library.clearSelection()
@@ -268,7 +268,7 @@ export function useJumpToNowPlaying(): () => Promise<boolean> {
       const currentItem = player.currentQueueItemId
         ? player.queueItems.find((item) => item.queueId === player.currentQueueItemId)
         : null
-      const sourceContext = currentItem?.origin === 'context' ? currentItem.sourceContext : null
+      const sourceContext = currentItem?.sourceContext ?? null
       if (
         sourceContext?.type === 'playlist'
         && (sourceContext.playlistId > 0 || isSystemFavoritesPlaylistId(sourceContext.playlistId))
@@ -280,6 +280,14 @@ export function useJumpToNowPlaying(): () => Promise<boolean> {
       }
       if (sourceContext?.type === 'genre') {
         return revealTrackGenreFromContext(sourceContext.genre, trackPath)
+      }
+      if (sourceContext?.type === 'track') return revealTrackInLibrary(trackPath)
+      if (sourceContext?.type === 'year') {
+        await useLibraryStore.getState().selectYear(sourceContext.year, 'library')
+        useUIStore.getState().setActiveView('library')
+        await afterNavigationFrame()
+        useUIStore.getState().requestLibraryTrackReveal(trackPath)
+        return true
       }
       if (sourceContext?.type === 'album') {
         return revealTrackAlbumFromContext(sourceContext, trackPath)

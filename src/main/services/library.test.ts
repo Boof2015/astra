@@ -3952,6 +3952,8 @@ test('mergeLocalDuplicateTracks preserves duplicate user data on the explicit Ke
     directDb.prepare("INSERT INTO track_loudness (track_path, loudness_lufs, method, analyzed_at) VALUES (?, -14, 'ebur128', 1)").run(removedPath)
     directDb.prepare('INSERT INTO recently_played (track_path, played_at) VALUES (?, 1000)').run(removedPath)
     const removedTrack = directDb.prepare('SELECT id FROM tracks WHERE path = ?').get(removedPath) as { id: number }
+    directDb.prepare('INSERT INTO home_playback_sources (source_key, source_json, track_id, last_played_at) VALUES (?, ?, ?, ?)')
+      .run(`track:${removedTrack.id}`, JSON.stringify({ type: 'track', trackPath: removedPath }), removedTrack.id, 2000)
     directDb.prepare(`
       INSERT INTO listening_sessions (
         generation, session_key, track_id, track_path, title, artist, album,
@@ -3965,6 +3967,7 @@ test('mergeLocalDuplicateTracks preserves duplicate user data on the explicit Ke
   await library.addToPlaylist(playlist.id, [removedPath, keepPath])
 
   assert.deepEqual(await library.mergeLocalDuplicateTracks(keepPath, [removedPath]), [removedPath])
+  assert.deepEqual(library.getHomeDashboard().recent_sources.map((entry) => entry.source), [{ type: 'track', trackPath: keepPath }])
   assert.deepEqual(getStoredTrackPaths(userDataDir), [keepPath])
   const merged = withDirectLibraryDb(userDataDir, (directDb) => ({
     track: directDb.prepare('SELECT id, play_count, last_played_at, added_at FROM tracks WHERE path = ?').get(keepPath) as {
@@ -5408,4 +5411,142 @@ test('dynamic sync preflight reads grouped playlists without assigning missing s
     assert.deepEqual(library.getDynamicPlaylistSyncRules(), [{ kind: 'dynamic', dynamicRules: serializeDynamicPlaylistRules(rules) }])
     assert.deepEqual(directDb.prepare('SELECT sync_uid FROM playlists WHERE id = ?').get(playlist.id), { sync_uid: null })
   } finally { directDb.close() }
+})
+
+// Jump back in remembers the authored playback source, independently of track recents.
+async function checkpointHomeSource(
+  trackPath: string,
+  sourceContext: import('../../types/playbackSource.ts').PlaybackSourceContext | null | undefined,
+  observedAt: number,
+  options: { sessionKey?: string; seconds?: number; duration?: number; completed?: boolean; sourcePlaylistId?: number } = {}
+) {
+  const seconds = options.seconds ?? 16
+  return library.checkpointListeningSession({
+    generation: library.getListeningHistoryStatus().generation,
+    sessionKey: options.sessionKey ?? `home:${observedAt}`,
+    segmentKey: 'segment', trackPath, sourceContext,
+    sourcePlaylistId: options.sourcePlaylistId ?? (sourceContext?.type === 'playlist' ? sourceContext.playlistId : null),
+    sessionStartedAt: observedAt - seconds * 1000,
+    segmentStartedAt: observedAt - seconds * 1000,
+    observedAt, sessionListenedSeconds: seconds, segmentListenedSeconds: seconds,
+    trackDurationSeconds: options.duration ?? 180, qualificationEligible: true,
+    finalizeSession: options.completed, completedNaturally: options.completed
+  })
+}
+
+test('Jump back in records only the playlist for its songs and retains independently chosen sources', async (t) => {
+  await setupSeededLibrary(t)
+  const a = 'subsonic://1/split-a'
+  const b = 'subsonic://1/split-b'
+  const playlist = await library.createPlaylist('Sheeno Mirin')
+  await library.addToPlaylist(playlist.id, [a, b])
+  const source = { type: 'playlist', playlistId: playlist.id } as const
+  await checkpointHomeSource(a, source, 100_000)
+  await checkpointHomeSource(b, source, 200_000)
+  let home = library.getHomeDashboard()
+  assert.deepEqual(home.recent_sources.map((entry) => entry.title), ['Sheeno Mirin'])
+  assert.equal(library.getRecentlyPlayed(10).length, 2)
+  assert.equal(home.recent_releases.length > 0, true)
+  await checkpointHomeSource(a, { type: 'track', trackPath: a }, 300_000)
+  const track = library.getTrackByPath(a)!
+  await checkpointHomeSource(a, { type: 'album', album: track.album, albumArtist: track.artist, identityKey: track.album_identity_key }, 400_000)
+  await checkpointHomeSource(b, source, 500_000)
+  home = library.getHomeDashboard({ activeSource: source })
+  assert.deepEqual(home.recent_sources.map((entry) => entry.source.type), ['playlist', 'album', 'track'])
+  assert.equal(home.active_source?.title, 'Sheeno Mirin')
+  assert.equal(home.recent_sources[2]?.last_played_at, 300_000)
+  await checkpointHomeSource(a, null, 600_000)
+  await checkpointHomeSource(a, undefined, 700_000)
+  assert.deepEqual(library.getHomeDashboard().recent_sources, home.recent_sources, 'unattributed continuation and old clients cannot manufacture sources')
+  await library.renamePlaylist(playlist.id, 'Renamed')
+  assert.equal(library.getHomeDashboard().recent_sources[0]?.title, 'Renamed')
+  await library.deletePlaylist(playlist.id)
+  await checkpointHomeSource(a, source, 800_000)
+  assert.deepEqual(library.getHomeDashboard().recent_sources.map((entry) => entry.source.type), ['album', 'track'])
+})
+
+test('Jump back in supports artist, genre, years, Favorites, and dynamic playlists', async (t) => {
+  const dir = await setupSeededLibrary(t)
+  const path = 'subsonic://1/split-a'
+  withDirectLibraryDb(dir, (db) => db.prepare("UPDATE tracks SET genre = 'Electronic', genre_names_json = '[\"Electronic\"]' WHERE path = ?").run(path))
+  // Reopen to rebuild metadata-derived indexes after the direct fixture edit.
+  library.closeDatabase()
+  await library.initDatabase()
+  await library.addFavorite(path)
+  const dynamic = await library.createDynamicPlaylist('All tracks', createDefaultDynamicPlaylistRules())
+  const sources: import('../../types/playbackSource.ts').PlaybackSourceContext[] = [
+    { type: 'artist', artist: 'artist a' }, { type: 'genre', genre: 'electronic' },
+    { type: 'year', year: 2024 }, { type: 'playlist', playlistId: -1 }, { type: 'playlist', playlistId: dynamic.id }
+  ]
+  for (const [index, source] of sources.entries()) await checkpointHomeSource(path, source, 100_000 + index * 100_000)
+  const home = library.getHomeDashboard()
+  assert.equal(home.recent_sources.length, 5)
+  assert.deepEqual(home.recent_sources.map((entry) => entry.title), ['All tracks', 'Favorites', '2024', 'Electronic', 'Artist A'])
+  assert.equal(home.recent_sources[0]?.subtitle, 'Dynamic playlist')
+  await library.upsertSubsonicTracks(1, [createRemoteTrack({ path: 'subsonic://1/unknown-year', title: 'Undated', artist: 'Undated Artist', album: 'Undated Album' })])
+  const unknownTrack = library.getTracksByYear(null)[0]
+  assert.ok(unknownTrack)
+  await checkpointHomeSource(unknownTrack.path, { type: 'year', year: 'unknown' }, 700_000)
+  assert.equal(library.getHomeDashboard().recent_sources[0]?.title, 'Unknown Year')
+  const before = library.getHomeDashboard().recent_sources
+  await library.clearDetailedListeningHistory()
+  assert.deepEqual(library.getHomeDashboard().recent_sources, before)
+  library.closeDatabase()
+  await library.initDatabase()
+  assert.deepEqual(library.getHomeDashboard().recent_sources, before)
+})
+
+test('Jump back in qualifies once, rejects short skips, and excludes missing or unavailable sources before limiting', async (t) => {
+  const dir = await setupSeededLibrary(t)
+  const path = 'subsonic://1/split-a'
+  const source = { type: 'track', trackPath: path } as const
+  await checkpointHomeSource(path, source, 100_000, { seconds: 14, sessionKey: 'qualifying' })
+  assert.deepEqual(library.getHomeDashboard().recent_sources, [])
+  await checkpointHomeSource(path, source, 102_000, { seconds: 16, sessionKey: 'qualifying' })
+  await checkpointHomeSource(path, source, 110_000, { seconds: 24, sessionKey: 'qualifying' })
+  assert.equal(library.getHomeDashboard().recent_sources[0]?.last_played_at, 102_000)
+  await checkpointHomeSource(path, source, 200_000, { seconds: 5, duration: 5, completed: false })
+  assert.equal(library.getHomeDashboard().recent_sources[0]?.last_played_at, 102_000)
+  await checkpointHomeSource(path, source, 300_000, { seconds: 5, duration: 5, completed: true })
+  assert.equal(library.getHomeDashboard().recent_sources[0]?.last_played_at, 300_000)
+  withDirectLibraryDb(dir, (db) => {
+    for (let id = 1000; id < 1080; id++) {
+      db.prepare('INSERT INTO home_playback_sources (source_key, source_json, last_played_at) VALUES (?, ?, ?)')
+        .run(`playlist:${id}`, JSON.stringify({ type: 'playlist', playlistId: id }), 500_000 + id)
+    }
+  })
+  assert.equal(library.getHomeDashboard().recent_sources.length, 1)
+  withDirectLibraryDb(dir, (db) => db.prepare('UPDATE tracks SET is_available = 0 WHERE path = ?').run(path))
+  assert.deepEqual(library.getHomeDashboard().recent_sources, [])
+})
+
+test('Jump back in migrates only verified playlists once and survives track path repairs', async (t) => {
+  const dir = await setupSeededLibrary(t)
+  const path = 'subsonic://1/split-a'
+  const playlist = await library.createPlaylist('Verified old playlist')
+  await library.addToPlaylist(playlist.id, [path])
+  await library.markPlaylistPlayed(playlist.id)
+  await library.addRecentlyPlayed(path)
+  library.closeDatabase()
+  withDirectLibraryDb(dir, (db) => {
+    db.prepare("DELETE FROM app_meta WHERE key = 'home_sources_migrated_v1'").run()
+    db.prepare('DROP TABLE home_playback_sources').run()
+  })
+  await library.initDatabase()
+  assert.deepEqual(library.getHomeDashboard().recent_sources.map((entry) => entry.source.type), ['playlist'])
+  await checkpointHomeSource(path, { type: 'track', trackPath: path }, Date.now() + 1000)
+  const original = library.getHomeDashboard().recent_sources
+  library.closeDatabase()
+  await library.initDatabase()
+  assert.deepEqual(library.getHomeDashboard().recent_sources, original)
+  withDirectLibraryDb(dir, (db) => db.prepare("UPDATE tracks SET path = ?, title = 'Updated title', artwork_hash = 'updated-cover' WHERE path = ?").run('subsonic://1/renamed', path))
+  assert.equal(library.getHomeDashboard().recent_sources[0]?.title, 'Updated title')
+  assert.equal(library.getHomeDashboard().recent_sources[0]?.artwork_hash, 'updated-cover')
+  assert.equal(library.getHomeDashboard().recent_sources[0]?.source.type, 'track')
+  assert.deepEqual(library.getHomeDashboard().recent_sources[0]?.source, { type: 'track', trackPath: 'subsonic://1/renamed' })
+  await library.resetMappedFoldersData()
+  assert.deepEqual(library.getHomeDashboard().recent_sources, [])
+  library.closeDatabase()
+  await library.initDatabase()
+  assert.deepEqual(library.getHomeDashboard().recent_sources, [], 'reset must not reseed old playlist timestamps')
 })

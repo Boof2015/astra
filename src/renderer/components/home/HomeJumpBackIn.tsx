@@ -1,24 +1,10 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react'
-import type { HomeReleaseSummary } from '../../../types/home'
+import type { HomePlaybackSourceSummary } from '../../../types/home'
 import type { PlaybackState } from '../../types/audio'
-import type { DisplayPlaylist } from '../../utils/playlistSystem'
 import AlbumArtwork from '../library/AlbumArtwork'
 import PlaylistCover from '../playlists/PlaylistCover'
 
-interface JumpBackInCardBase {
-  key: string
-  title: string
-  subtitle: string
-  artworkHash: string | null
-  detail: string
-  lastPlayedAt: number
-  active: boolean
-}
-
-export type JumpBackInCard = JumpBackInCardBase & (
-  | { kind: 'album'; release: HomeReleaseSummary }
-  | { kind: 'playlist'; playlist: DisplayPlaylist }
-)
+export type JumpBackInCard = HomePlaybackSourceSummary & { active: boolean }
 
 interface HomeJumpBackInProps {
   cards: readonly JumpBackInCard[]
@@ -103,10 +89,10 @@ export default function HomeJumpBackIn({ cards, playbackState, pendingPlaybackKe
                 title={card.title}
               >
                 <span className="home-jump-artwork">
-                  {card.kind === 'playlist' ? (
-                    <PlaylistCover hash={card.artworkHash} name={card.title} isFavorites={card.playlist.isSystemFavorites} className="home-jump-cover" />
+                  {card.source.type === 'playlist' ? (
+                    <PlaylistCover hash={card.artwork_hash} name={card.title} isFavorites={card.source.playlistId === -1} className="home-jump-cover" />
                   ) : (
-                    <AlbumArtwork hash={card.artworkHash} alt={card.title} className="home-jump-cover" variant="card" />
+                    <AlbumArtwork hash={card.artwork_hash} alt={card.title} className="home-jump-cover" variant="card" />
                   )}
                 </span>
                 <span className="home-jump-copy">

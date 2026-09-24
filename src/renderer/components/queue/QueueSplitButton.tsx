@@ -1,8 +1,10 @@
+import type { PlaybackSourceContext } from '../../../types/playbackSource'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 
 interface QueueSplitButtonProps {
   trackPaths: string[]
+  sourceContext?: PlaybackSourceContext | null
   disabled?: boolean
   className?: string
 }
@@ -16,7 +18,7 @@ const FEEDBACK_DURATION_MS = 1200
  * Clicking the main button appends to the end of the queue; hovering (or focusing)
  * reveals a narrower "Play Next" flyout that inserts at the front of the upcoming queue.
  */
-export default function QueueSplitButton({ trackPaths, disabled, className }: QueueSplitButtonProps) {
+export default function QueueSplitButton({ trackPaths, sourceContext, disabled, className }: QueueSplitButtonProps) {
   const enqueueTrackPaths = usePlayerStore((state) => state.enqueueTrackPaths)
   const [feedback, setFeedback] = useState<QueueFeedback>(null)
   const feedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -31,12 +33,12 @@ export default function QueueSplitButton({ trackPaths, disabled, className }: Qu
   const enqueue = useCallback(
     (position: 'next' | 'end') => {
       if (isDisabled) return
-      void enqueueTrackPaths(trackPaths, position)
+      void enqueueTrackPaths(trackPaths, position, { sourceContext, recordSelectedTrack: false })
       setFeedback(position === 'next' ? 'next' : 'added')
       if (feedbackTimeoutRef.current) clearTimeout(feedbackTimeoutRef.current)
       feedbackTimeoutRef.current = setTimeout(() => setFeedback(null), FEEDBACK_DURATION_MS)
     },
-    [enqueueTrackPaths, isDisabled, trackPaths]
+    [enqueueTrackPaths, isDisabled, trackPaths, sourceContext]
   )
 
   const mainLabel = feedback === 'added' ? 'Added' : 'Queue'
