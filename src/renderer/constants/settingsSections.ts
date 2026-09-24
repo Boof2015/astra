@@ -9,7 +9,7 @@ export const SETTINGS_SECTIONS = [
   {
     id: 'appearance',
     label: 'Appearance',
-    keywords: ['theme', 'accent', 'cover art', 'color', 'visual', 'dark', 'light', 'background']
+    keywords: ['theme', 'accent', 'cover art', 'color', 'visual', 'dark', 'light', 'background', 'playlist header', 'adaptive']
   },
   {
     id: 'library',

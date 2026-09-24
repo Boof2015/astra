@@ -9,7 +9,7 @@ import {
 } from '../../types/miniPlayer.ts'
 import type { UIScaleShortcutAction } from '../../types/uiScale'
 import { TRANSPORT_INFO_LINE_MODE_STORAGE_KEY } from '../constants/settingsStorageKeys'
-import { HOME_LAYOUT_STORAGE_KEY, HOME_SKY_TIME_STORAGE_KEY } from '../constants/settingsStorageKeys'
+import { HOME_LAYOUT_STORAGE_KEY, HOME_SKY_TIME_STORAGE_KEY, PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_STORAGE_KEY } from '../constants/settingsStorageKeys'
 import { runAppViewTransition, type AppViewTransitionDirection } from '../utils/viewTransitions.ts'
 import { normalizeAppView, type SessionTrackSortState, type UISessionSnapshot } from '../utils/sessionState'
 import type { SignalShareTarget } from '../utils/signalShare'
@@ -44,6 +44,7 @@ export const UI_SCALE_STEP_PERCENT = 5
 export const UI_SCALE_STORAGE_KEY = 'astra-ui-scale-percent-v1'
 export const HOME_GREETING_TEXT_MODE_STORAGE_KEY = 'astra-home-greeting-text-mode-v1'
 export const DEFAULT_HOME_GREETING_TEXT_MODE: HomeGreetingTextMode = 'messages'
+export const DEFAULT_PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_ENABLED = true
 export const ACTIVITY_INDICATOR_EXPERIMENT_STORAGE_KEY = 'astra-experimental-activity-indicator-enabled-v1'
 export const CONTROLLER_SUPPORT_EXPERIMENT_STORAGE_KEY = 'astra-experimental-controller-support-enabled-v1'
 export const JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY = 'astra-jump-to-playing-destination-v1'
@@ -361,6 +362,24 @@ function persistHomeGreetingTextModePreference(mode: HomeGreetingTextMode): void
   }
 }
 
+function readPlaylistOverviewAdaptiveHeaderPreference(): boolean {
+  try {
+    return localStorage.getItem(PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_STORAGE_KEY) === '0'
+      ? false
+      : DEFAULT_PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_ENABLED
+  } catch {
+    return DEFAULT_PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_ENABLED
+  }
+}
+
+function persistPlaylistOverviewAdaptiveHeaderPreference(enabled: boolean): void {
+  try {
+    localStorage.setItem(PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_STORAGE_KEY, enabled ? '1' : '0')
+  } catch {
+    // Ignore storage failures and continue with in-memory preference.
+  }
+}
+
 function readJsonPreference(key: string): unknown {
   try {
     const raw = localStorage.getItem(key)
@@ -530,6 +549,7 @@ const initialAnalyzerHeightPx = readAnalyzerHeightPreference()
 const initialAnalyzerRackVisible = readAnalyzerRackVisibilityPreference()
 const initialUIScalePercent = readUIScalePreference()
 const initialHomeGreetingTextMode = readHomeGreetingTextModePreference()
+const initialPlaylistOverviewAdaptiveHeaderEnabled = readPlaylistOverviewAdaptiveHeaderPreference()
 const initialHomeSkyTimePreference = readHomeSkyTimePreference()
 const initialHomeLayoutPreference = readHomeLayoutPreference()
 const initialActivityIndicatorExperimentEnabled = readActivityIndicatorExperimentPreference()
@@ -572,6 +592,7 @@ interface UIStore {
   analyzerHeightPx: number
   uiScalePercent: number
   homeGreetingTextMode: HomeGreetingTextMode
+  playlistOverviewAdaptiveHeaderEnabled: boolean
   homeSkyTimePreference: HomeSkyTimePreference
   homeLayoutPreference: HomeLayoutPreference
   activityIndicatorExperimentEnabled: boolean
@@ -625,6 +646,8 @@ interface UIStore {
   resetUIScalePercent: () => void
   setHomeGreetingTextMode: (mode: HomeGreetingTextMode) => void
   resetHomeGreetingTextMode: () => void
+  setPlaylistOverviewAdaptiveHeaderEnabled: (enabled: boolean) => void
+  resetPlaylistOverviewAdaptiveHeaderEnabled: () => void
   setHomeSkyTimeMode: (mode: HomeSkyTimeMode, now?: Date) => void
   setHomeSkyFixedMinutes: (minutes: number) => void
   resetHomeSkyTimePreference: () => void
@@ -697,6 +720,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   analyzerHeightPx: initialAnalyzerHeightPx,
   uiScalePercent: initialUIScalePercent,
   homeGreetingTextMode: initialHomeGreetingTextMode,
+  playlistOverviewAdaptiveHeaderEnabled: initialPlaylistOverviewAdaptiveHeaderEnabled,
   homeSkyTimePreference: initialHomeSkyTimePreference,
   homeLayoutPreference: initialHomeLayoutPreference,
   activityIndicatorExperimentEnabled: initialActivityIndicatorExperimentEnabled,
@@ -919,6 +943,15 @@ export const useUIStore = create<UIStore>((set, get) => ({
   resetHomeGreetingTextMode: () => {
     persistHomeGreetingTextModePreference(DEFAULT_HOME_GREETING_TEXT_MODE)
     set({ homeGreetingTextMode: DEFAULT_HOME_GREETING_TEXT_MODE })
+  },
+  setPlaylistOverviewAdaptiveHeaderEnabled: (enabled) => {
+    const normalized = Boolean(enabled)
+    persistPlaylistOverviewAdaptiveHeaderPreference(normalized)
+    set({ playlistOverviewAdaptiveHeaderEnabled: normalized })
+  },
+  resetPlaylistOverviewAdaptiveHeaderEnabled: () => {
+    persistPlaylistOverviewAdaptiveHeaderPreference(DEFAULT_PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_ENABLED)
+    set({ playlistOverviewAdaptiveHeaderEnabled: DEFAULT_PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_ENABLED })
   },
   setHomeSkyTimeMode: (mode, now = new Date()) => set((state) => {
     const nextPreference = setHomeSkyTimeModePreference(state.homeSkyTimePreference, mode, now)

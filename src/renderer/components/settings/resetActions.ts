@@ -40,6 +40,7 @@ import {
   HOME_REDISCOVERY_ROTATION_STORAGE_KEY,
   HOME_SKY_TIME_STORAGE_KEY,
   PLAYLIST_BROWSER_SORT_STORAGE_KEY,
+  PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_STORAGE_KEY,
   PLAYLIST_SIDEBAR_PINS_STORAGE_KEY,
   TRANSPORT_INFO_LINE_MODE_STORAGE_KEY,
 } from '../../constants/settingsStorageKeys'
@@ -101,6 +102,7 @@ export const RENDERER_SETTINGS_KEYS = [
   UI_SCALE_STORAGE_KEY,
   HOME_GREETING_TEXT_MODE_STORAGE_KEY,
   HOME_SKY_TIME_STORAGE_KEY,
+  PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_STORAGE_KEY,
   HOME_LAYOUT_STORAGE_KEY,
   HOME_REDISCOVERY_ROTATION_STORAGE_KEY,
   JUMP_TO_PLAYING_DESTINATION_STORAGE_KEY,
@@ -186,6 +188,7 @@ export async function resetAllSettings(): Promise<string> {
   useUIStore.getState().resetAnalyzerRackPreferences()
   useUIStore.getState().resetUIScalePercent()
   useUIStore.getState().resetHomeGreetingTextMode()
+  useUIStore.getState().resetPlaylistOverviewAdaptiveHeaderEnabled()
   useUIStore.getState().resetHomeSkyTimePreference()
   useUIStore.getState().resetHomeLayoutPreference()
   useUIStore.getState().setActivityIndicatorExperimentEnabled(false)

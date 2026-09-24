@@ -569,6 +569,8 @@ export default function SettingsView() {
   const uiScalePercent = useUIStore((state) => state.uiScalePercent)
   const setUIScalePercent = useUIStore((state) => state.setUIScalePercent)
   const resetUIScalePercent = useUIStore((state) => state.resetUIScalePercent)
+  const playlistOverviewAdaptiveHeaderEnabled = useUIStore((state) => state.playlistOverviewAdaptiveHeaderEnabled)
+  const setPlaylistOverviewAdaptiveHeaderEnabled = useUIStore((state) => state.setPlaylistOverviewAdaptiveHeaderEnabled)
   const transportInfoLineMode = useUIStore((state) => state.transportInfoLineMode)
   const setTransportInfoLineMode = useUIStore((state) => state.setTransportInfoLineMode)
   const activityIndicatorExperimentEnabled = useUIStore((state) => state.activityIndicatorExperimentEnabled)
@@ -1900,6 +1902,27 @@ export default function SettingsView() {
                   <div className="settings-field">
                     <HomeSkyControls />
                   </div>
+                </div>
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-label">Playlists Header</div>
+                <div className="settings-grid">
+                  <div className="settings-field settings-field-inline">
+                    <span className="settings-field-label" id="playlist-adaptive-header-label">Adaptive Header Color</span>
+                    <button
+                      type="button"
+                      className={`settings-toggle ${playlistOverviewAdaptiveHeaderEnabled ? 'active' : ''}`}
+                      aria-labelledby="playlist-adaptive-header-label"
+                      aria-describedby="playlist-adaptive-header-description"
+                      aria-pressed={playlistOverviewAdaptiveHeaderEnabled}
+                      onClick={() => setPlaylistOverviewAdaptiveHeaderEnabled(!playlistOverviewAdaptiveHeaderEnabled)}
+                    >
+                      {playlistOverviewAdaptiveHeaderEnabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <p className="settings-note" id="playlist-adaptive-header-description">
+                    Use playlist artwork to color the Playlists overview header. Turn off to use the current app accent.
+                  </p>
                 </div>
               </div>
               <div className="settings-card">

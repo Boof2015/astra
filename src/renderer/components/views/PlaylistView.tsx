@@ -293,6 +293,7 @@ export default function PlaylistView() {
     setSortState
   } = usePlaylistStore()
   const setActiveView = useUIStore((s) => s.setActiveView)
+  const playlistOverviewAdaptiveHeaderEnabled = useUIStore((s) => s.playlistOverviewAdaptiveHeaderEnabled)
   const trackDrag = useUIStore((s) => s.trackDrag)
   const playlistTrackRevealRequest = useUIStore((s) => s.playlistTrackRevealRequest)
   const clearPlaylistTrackRevealRequest = useUIStore((s) => s.clearPlaylistTrackRevealRequest)
@@ -900,8 +901,8 @@ export default function PlaylistView() {
     return (
       <div className="playlist-view">
         <div className="playlist-browser playlist-dashboard">
-          <header className="playlist-dashboard-hero">
-            {playlistHeaderArtwork.length > 0 && (
+          <header className={`playlist-dashboard-hero${playlistOverviewAdaptiveHeaderEnabled ? '' : ' is-non-adaptive'}`}>
+            {playlistOverviewAdaptiveHeaderEnabled && playlistHeaderArtwork.length > 0 && (
               <div className="playlist-dashboard-hero-artwork" aria-hidden="true">
                 {playlistHeaderArtwork.map((entry, index) => (
                   <PlaylistCover

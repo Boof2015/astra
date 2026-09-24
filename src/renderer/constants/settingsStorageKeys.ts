@@ -2,6 +2,7 @@ export const THEME_STORAGE_KEY = 'astra-theme-settings-v1'
 
 export const UI_SCALE_STORAGE_KEY = 'astra-ui-scale-percent-v1'
 export const HOME_GREETING_TEXT_MODE_STORAGE_KEY = 'astra-home-greeting-text-mode-v1'
+export const PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_STORAGE_KEY = 'astra-playlist-overview-adaptive-header-enabled-v1'
 export const HOME_SKY_TIME_STORAGE_KEY = 'astra-home-sky-time-v1'
 export const HOME_LAYOUT_STORAGE_KEY = 'astra-home-layout-v1'
 export const HOME_REDISCOVERY_ROTATION_STORAGE_KEY = 'astra-home-rediscovery-rotation-v1'

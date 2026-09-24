@@ -56,6 +56,7 @@ import {
   PLAYBACK_OUTPUT_MODE_STORAGE_KEY,
   PLAYER_VOLUME_STORAGE_KEY,
   PLAYLIST_BROWSER_SORT_STORAGE_KEY,
+  PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_STORAGE_KEY,
   PLAYLIST_SIDEBAR_PINS_STORAGE_KEY,
   REPLAYGAIN_MODE_STORAGE_KEY,
   ROOT_TRACK_TABLE_LAYOUT_STORAGE_KEY,
@@ -167,7 +168,7 @@ const SETTINGS_TRANSFER_CATEGORY_DEFINITIONS_INTERNAL: SettingsTransferCategoryD
   {
     id: 'interface',
     label: 'Interface',
-    description: 'UI scale, Home header and layout, transport display, analyzer rack layout, and navigation preferences.',
+    description: 'UI scale, Home header and layout, Playlists overview header, transport display, analyzer rack layout, and navigation preferences.',
   },
   {
     id: 'library_view',
@@ -225,6 +226,7 @@ export const SETTINGS_TRANSFER_CATEGORY_STORAGE_KEYS: Record<SettingsTransferCat
   interface: [
     UI_SCALE_STORAGE_KEY,
     HOME_GREETING_TEXT_MODE_STORAGE_KEY,
+    PLAYLIST_OVERVIEW_ADAPTIVE_HEADER_STORAGE_KEY,
     HOME_SKY_TIME_STORAGE_KEY,
     HOME_LAYOUT_STORAGE_KEY,
     ANALYZER_HEIGHT_STORAGE_KEY,

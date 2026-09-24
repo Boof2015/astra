@@ -18459,6 +18459,10 @@ html[data-theme-tone="light"] .playlist-dashboard-hero::after {
     linear-gradient(0deg, rgba(246, 247, 249, 0.62), rgba(246, 247, 249, 0.3));
 }
 
+.playlist-dashboard-hero.is-non-adaptive::after {
+  content: none;
+}
+
 .playlist-dashboard-hero-artwork {
   position: absolute;
   z-index: 0;
