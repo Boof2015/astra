@@ -59,6 +59,9 @@ import {
   type RootTrackColumnId
 } from '../../utils/rootTrackTable'
 import { compareTracksBySortRules } from '../../utils/trackSort'
+import { resolveCurrentPlaybackSource } from '../../../shared/home/playbackSources'
+import { createAlbumCardPlaybackActions, getAlbumCardPlaybackState, type AlbumPlaybackTarget, type AlbumCardPlaybackSnapshot } from '../../utils/albumCardPlayback'
+import CompactAlbumCard from '../library/CompactAlbumCard'
 
 type SortDirection = 'asc' | 'desc'
 type ArtistAlbumRailMode = 'albums' | 'singles' | 'featured'
@@ -261,6 +264,10 @@ export default function LibraryView() {
   const jellyfinSources = useJellyfinSettingsStore((state) => state.sources)
 
   const shuffle = usePlayerStore((s) => s.shuffle)
+  const currentTrack = usePlayerStore((s) => s.currentTrack)
+  const currentQueueItemId = usePlayerStore((s) => s.currentQueueItemId)
+  const queueItems = usePlayerStore((s) => s.queueItems)
+  const playbackState = usePlayerStore((s) => s.playbackState)
   const startPlaybackContextByPaths = usePlayerStore((s) => s.startPlaybackContextByPaths)
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const setActiveView = useUIStore((s) => s.setActiveView)
@@ -278,6 +285,29 @@ export default function LibraryView() {
   const setArtistImageFromFile = useLibraryStore((state) => state.setArtistImageFromFile)
   const clearArtistImage = useLibraryStore((state) => state.clearArtistImage)
   const [isCollectionPlayPending, setIsCollectionPlayPending] = useState(false)
+  const [pendingAlbumPlaybackKey, setPendingAlbumPlaybackKey] = useState<string | null>(null)
+  const [albumPlaybackError, setAlbumPlaybackError] = useState<string | null>(null)
+  const albumCardPlayback = useMemo<AlbumCardPlaybackSnapshot>(() => ({
+    currentSource: resolveCurrentPlaybackSource({ currentTrack, currentQueueItemId, queueItems }),
+    currentTrackPath: currentTrack?.path ?? null,
+    playbackState,
+    pendingKey: pendingAlbumPlaybackKey
+  }), [currentTrack, currentQueueItemId, queueItems, playbackState, pendingAlbumPlaybackKey])
+  const albumPlaybackActions = useMemo(() => createAlbumCardPlaybackActions({
+    getContext: () => {
+      const player = usePlayerStore.getState()
+      return {
+        currentSource: resolveCurrentPlaybackSource(player),
+        currentTrackPath: player.currentTrack?.path ?? null,
+        loading: player.playbackState === 'loading'
+      }
+    },
+    getTracks: (album) => window.electronAPI.library.getTracksByAlbum(album.album, album.artist, album.identity_key),
+    toggle: () => usePlayerStore.getState().togglePlay(),
+    start: (paths, index, options) => usePlayerStore.getState().startPlaybackContextByPaths(paths, index, options),
+    onPendingChange: setPendingAlbumPlaybackKey,
+    onError: setAlbumPlaybackError
+  }), [])
   const [isUpdatingArtistImage, setIsUpdatingArtistImage] = useState(false)
   const [isArtistImageMenuOpen, setIsArtistImageMenuOpen] = useState(false)
   const artistImageMenuPresence = usePresence(isArtistImageMenuOpen)
@@ -723,6 +753,21 @@ export default function LibraryView() {
       y
     })
   }, [openCollectionQueueMenu])
+
+  const handlePlayAlbumCard = useCallback((album: AlbumPlaybackTarget) => {
+    void albumPlaybackActions.play(album, {
+      sourceFilters: shouldShowSourceFilters ? selectedSourceFilters : new Set<string>(),
+      hiddenFolderPrefixes,
+      platform: window.electronAPI.platform
+    })
+  }, [albumPlaybackActions, shouldShowSourceFilters, selectedSourceFilters, hiddenFolderPrefixes])
+
+  const handleSelectArtistAlbum = useCallback((album: AlbumPlaybackTarget) => {
+    void runPreparedSelectionTransition({
+      kind: 'album', album: album.album, artist: album.artist,
+      origin: 'library-detail', identityKey: album.identity_key
+    }, 'library-context-forward')
+  }, [runPreparedSelectionTransition])
 
   const handleSelectGenreFromGrid = useCallback((genre: { genre: string }) => {
     void runPreparedSelectionTransition(
@@ -1448,6 +1493,8 @@ export default function LibraryView() {
       return (
         <AlbumGrid
           albums={filteredAlbums}
+          playback={albumCardPlayback}
+          onPlayAlbum={handlePlayAlbumCard}
           viewportRef={albumViewportRef}
           restoreScrollTop={getRememberedLibraryScrollPosition(ALBUM_ROOT_SCROLL_KEY)}
           onScrollTopChange={handleAlbumGridScrollTopChange}
@@ -1638,57 +1685,16 @@ export default function LibraryView() {
                 ref={artistAlbumRailRef}
               >
                 {visibleArtistAlbums.map((album, index) => (
-                  <button
+                  <CompactAlbumCard
                     key={album.identity_key}
-                    type="button"
-                    className="library-artist-rail-card"
+                    album={album}
+                    density="discography"
+                    playback={getAlbumCardPlaybackState(album, albumCardPlayback)}
+                    onOpen={handleSelectArtistAlbum}
+                    onPlay={handlePlayAlbumCard}
+                    onContextMenu={handleAlbumGridContextMenu}
                     style={{ animationDelay: `${Math.min(index, 8) * 18}ms` }}
-                    data-controller-focusable="true"
-                    data-controller-context="true"
-                    data-controller-key={`album:${album.identity_key}`}
-                    onClick={() => void runPreparedSelectionTransition(
-                      {
-                        kind: 'album',
-                        album: album.album,
-                        artist: album.artist,
-                        origin: 'library-detail',
-                        identityKey: album.identity_key
-                      },
-                      'library-context-forward'
-                    )}
-                    onContextMenu={(event) => {
-                      event.preventDefault()
-                      event.stopPropagation()
-                      openCollectionQueueMenu({
-                        target: {
-                          kind: 'album',
-                          album: album.album,
-                          artist: album.artist,
-                          identityKey: album.identity_key
-                        },
-                        x: event.clientX,
-                        y: event.clientY
-                      })
-                    }}
-                  >
-                    {album.is_new && (
-                      <span className="library-latest-sync-pill album-card-sync-pill" title="Added in latest library sync">
-                        NEW
-                      </span>
-                    )}
-                    <div className="library-artist-rail-artwork">
-                      {album.artwork_hash ? (
-                        <AlbumArtwork hash={album.artwork_hash} alt={album.album} variant="card" />
-                      ) : (
-                        <span>&#9835;</span>
-                      )}
-                    </div>
-                    <div className="library-artist-rail-title">{album.album}</div>
-                    <div className="library-artist-rail-artist">{album.artist}</div>
-                    <div className="library-artist-rail-meta">
-                      {formatTrackCount(album.track_count)}{album.year ? ` \u00b7 ${album.year}` : ''}
-                    </div>
-                  </button>
+                  />
                 ))}
               </div>
             ) : (
@@ -2308,6 +2314,13 @@ export default function LibraryView() {
       </div>
 
       {renderScanProgress()}
+
+      {albumPlaybackError && (
+        <div className="library-album-playback-error" role="alert">
+          <span>{albumPlaybackError}</span>
+          <button type="button" onClick={() => setAlbumPlaybackError(null)} data-controller-focusable="true">Dismiss</button>
+        </div>
+      )}
 
       <div className="library-content" onScrollCapture={handleLibraryContentScrollCapture}>
         {renderContent()}

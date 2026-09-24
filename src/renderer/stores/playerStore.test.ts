@@ -4019,6 +4019,28 @@ test('global shuffle without startShuffled keeps the requested current item', as
   }
 })
 
+test('ordered album card playback overrides shuffle and preserves manually queued tracks', async () => {
+  resetStores()
+  const restoreLoad = installLoadedTrackStub()
+  try {
+    await usePlayerStore.getState().startPlaybackContext([makeTrack('/old.flac')], 0)
+    usePlayerStore.getState().enqueueTrack(makeTrack('/manual.flac'), 'next')
+    usePlayerStore.setState({ shuffle: true })
+    await usePlayerStore.getState().startPlaybackContextByPaths([
+      '/disc1/01.flac', '/disc1/02.flac', '/disc2/01.flac'
+    ], 0, {
+      shuffle: false,
+      sourceContext: { type: 'album', album: 'One', albumArtist: 'Artist', identityKey: 'release:one' },
+      contextLabel: 'One'
+    })
+    assert.equal(usePlayerStore.getState().currentTrack?.path, '/disc1/01.flac')
+    assert.equal(usePlayerStore.getState().shuffle, false)
+    assert.deepEqual(resolvedUpcomingPaths(), ['/manual.flac', '/disc1/02.flac', '/disc2/01.flac'])
+  } finally {
+    restoreLoad()
+  }
+})
+
 test('play next, add, move, and remove operate on the unified upcoming order', async () => {
   resetStores()
   const restoreLoad = installLoadedTrackStub()

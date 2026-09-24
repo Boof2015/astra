@@ -74,6 +74,13 @@
   --radius-md: 10px;
   --radius-lg: 16px;
 
+  /* Shared media surfaces; individual views retain their own density. */
+  --media-card-bg: rgba(var(--tint), 0.055);
+  --media-card-hover-bg: rgba(var(--tint), 0.085);
+  --media-card-radius: 8px;
+  --media-artwork-radius: 6px;
+  --media-card-padding: 10px;
+
   /* Transitions */
   --transition-fast: 0.15s ease;
   --transition-normal: 0.25s ease;
@@ -3609,10 +3616,10 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 .home-media-album,
 .home-track-row {
   min-width: 0;
-  padding: 10px;
+  padding: var(--media-card-padding);
   border: 0;
-  border-radius: 8px;
-  background: rgba(var(--tint), 0.055);
+  border-radius: var(--media-card-radius);
+  background: var(--media-card-bg);
   color: inherit;
   transition: background var(--transition-fast);
 }
@@ -3620,7 +3627,7 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 .home-collection-card:hover,
 .home-media-album:hover,
 .home-track-row:hover:not(:disabled) {
-  background: rgba(var(--tint), 0.085);
+  background: var(--media-card-hover-bg);
 }
 
 .home-collection-card {
@@ -3653,7 +3660,7 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   width: 4rem;
   aspect-ratio: 1;
   flex: 0 0 4rem;
-  border-radius: 6px;
+  border-radius: var(--media-artwork-radius);
   overflow: hidden;
   background: rgba(var(--tint), 0.035);
 }
@@ -8120,39 +8127,6 @@ body:has(.track-drag-overlay) * {
   overflow-x: hidden;
 }
 
-.album-card {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  position: relative;
-  cursor: pointer;
-  transition: transform var(--transition-fast);
-}
-
-.album-card:hover {
-  transform: translateY(-4px);
-}
-
-.album-artwork {
-  aspect-ratio: 1;
-  background: var(--bg-tertiary);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-  margin-bottom: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 48px;
-  color: var(--text-tertiary);
-}
-
-.album-artwork img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
 .album-grid-shell {
   --album-grid-min-column-width: 160px;
   --album-grid-gap: 20px;
@@ -8628,30 +8602,6 @@ body:has(.track-drag-overlay) * {
   }
 }
 
-.album-title {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-bottom: 4px;
-}
-
-.album-artist {
-  font-size: 12px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.album-meta {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  margin-top: 2px;
-}
-
 /* ============================================
    Artist Detail Albums Rail
    ============================================ */
@@ -8744,23 +8694,9 @@ body:has(.track-drag-overlay) * {
 }
 
 .library-artist-rail-card {
-  appearance: none;
-  border: 1px solid rgba(var(--tint), 0.08);
-  margin: 0;
   width: 168px;
-  position: relative;
   flex-shrink: 0;
-  border-radius: 9px;
-  background: rgba(var(--tint), 0.02);
-  padding: 10px;
-  cursor: pointer;
-  text-align: left;
-  color: inherit;
-  display: flex;
-  flex-direction: column;
-  gap: 0;
   animation: libraryArtistRailCardPopulate 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
-  transition: border-color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
 }
 
 @keyframes libraryArtistRailCardPopulate {
@@ -8772,68 +8708,6 @@ body:has(.track-drag-overlay) * {
     opacity: 1;
     translate: 0 0;
   }
-}
-
-.library-artist-rail-card:hover {
-  border-color: rgba(var(--tint), 0.16);
-  background: rgba(var(--tint), 0.04);
-  transform: translateY(-2px);
-}
-
-.library-artist-rail-card:focus-visible {
-  outline: 2px solid rgba(var(--accent-rgb), 0.8);
-  outline-offset: 2px;
-}
-
-.library-artist-rail-artwork {
-  aspect-ratio: 1;
-  border-radius: 6px;
-  overflow: hidden;
-  border: 1px solid rgba(var(--tint), 0.08);
-  background: var(--bg-tertiary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: rgba(var(--tint), 0.28);
-  font-size: 21px;
-  margin-bottom: 8px;
-}
-
-.library-artist-rail-artwork img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.library-artist-rail-artwork .album-artwork-placeholder {
-  font-size: 20px;
-  color: rgba(var(--tint), 0.3);
-  background: transparent;
-}
-
-.library-artist-rail-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.library-artist-rail-artist {
-  margin-top: 1px;
-  font-size: 11px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.library-artist-rail-meta {
-  margin-top: 3px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-tertiary);
 }
 
 .library-artist-rail-empty {
@@ -10169,10 +10043,6 @@ body:has(.track-drag-overlay) * {
   font-size: 48px;
   color: var(--text-tertiary);
   background: var(--bg-tertiary);
-}
-
-.album-info {
-  padding: 0 4px;
 }
 
 /* ============================================
@@ -17614,21 +17484,163 @@ html.library-tab-transition-backward::view-transition-new(library-tab-content) {
   --album-grid-padding: 14px;
 }
 
-.album-card {
-  border: 1px solid rgba(var(--tint), 0.08);
-  border-radius: 9px;
-  background: rgba(var(--tint), 0.02);
-  padding: 10px;
+.compact-album-card {
+  --compact-album-artwork-gap: 10px;
+  --compact-album-title-size: 14px;
+  --compact-album-artist-size: 12px;
+  --compact-album-meta-size: 11px;
+  --compact-album-artist-gap: 4px;
+  --compact-album-meta-gap: 2px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  min-width: 0;
+  position: relative;
+  margin: 0;
+  border: 0;
+  border-radius: var(--media-card-radius);
+  background: var(--media-card-bg);
+  padding: var(--media-card-padding);
+  color: inherit;
+  transition: background var(--transition-fast);
 }
 
-.album-card:hover {
-  border-color: rgba(var(--tint), 0.16);
-  background: rgba(var(--tint), 0.04);
+.compact-album-card--discography {
+  --compact-album-artwork-gap: 8px;
+  --compact-album-title-size: 12px;
+  --compact-album-artist-size: 11px;
+  --compact-album-meta-size: 10px;
+  --compact-album-artist-gap: 1px;
+  --compact-album-meta-gap: 3px;
 }
 
-.album-artwork {
-  border-radius: 7px;
-  border: 1px solid rgba(var(--tint), 0.08);
+.compact-album-card:is(:hover, :focus-within) { background: var(--media-card-hover-bg); }
+
+.compact-album-open {
+  grid-area: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--compact-album-artwork-gap);
+  width: 100%;
+  min-width: 0;
+  appearance: none;
+  border: 0;
+  border-radius: var(--media-artwork-radius);
+  padding: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.compact-album-artwork {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  border: 0;
+  border-radius: var(--media-artwork-radius);
+  overflow: hidden;
+  background: rgba(var(--tint), 0.035);
+}
+
+.compact-album-artwork > img,
+.compact-album-artwork > .album-artwork-placeholder {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: inherit;
+  object-fit: cover;
+}
+
+.compact-album-artwork > img { display: block; }
+.compact-album-artwork > .album-artwork-placeholder { background: none; font-size: 32px; }
+.compact-album-card--discography .album-artwork-placeholder { font-size: 20px; }
+.compact-album-info { display: block; width: 100%; min-width: 0; }
+
+.compact-album-title,
+.compact-album-artist,
+.compact-album-meta {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.5;
+}
+
+.compact-album-title { font-size: var(--compact-album-title-size); font-weight: 550; color: var(--text-strong); }
+.compact-album-artist { font-size: var(--compact-album-artist-size); margin-top: var(--compact-album-artist-gap); color: var(--text-secondary); }
+.compact-album-meta { font-size: var(--compact-album-meta-size); margin-top: var(--compact-album-meta-gap); color: var(--text-secondary); }
+
+/* A square overlay shares the open button's grid cell without affecting height. */
+.compact-album-playback-anchor {
+  grid-area: 1 / 1;
+  align-self: start;
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  pointer-events: none;
+}
+
+.compact-album-playback {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  opacity: 0;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--bg-primary), rgb(var(--tint)) 12%);
+  box-shadow: 0 1px 5px var(--shadow-soft);
+  transition: opacity var(--transition-fast);
+}
+
+.compact-album-playback .home-playback-glyph { background: none; color: var(--text-strong); }
+.compact-album-playback .home-playback-glyph.is-playing { color: var(--accent); }
+.compact-album-playback[aria-disabled="true"] { cursor: default; }
+.compact-album-playback[aria-disabled="true"] .home-playback-glyph { opacity: 0.55; }
+.compact-album-card:is(:hover, :focus-within, .has-playback-indicator) .compact-album-playback { opacity: 1; pointer-events: auto; }
+.compact-album-open:focus-visible,
+.compact-album-playback:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.library-album-playback-error {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 14px;
+  padding: 8px 10px;
+  border: 1px solid rgba(var(--tint), 0.15);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.library-album-playback-error > span { min-width: 0; overflow-wrap: anywhere; }
+.library-album-playback-error button {
+  flex: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--media-card-bg);
+  color: var(--text-strong);
+  font: inherit;
+  cursor: pointer;
+}
+.library-album-playback-error button:hover { background: var(--media-card-hover-bg); }
+.library-album-playback-error button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+@media (hover: none), (pointer: coarse) {
+  .compact-album-playback { opacity: 1; pointer-events: auto; }
+}
+
+@media (pointer: coarse) {
+  .compact-album-playback,
+  .compact-album-playback .home-playback-glyph { width: 44px; height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compact-album-card,
+  .compact-album-playback,
+  .compact-album-playback .home-playback-glyph { transition: none; animation: none; }
 }
 
 .artist-list {

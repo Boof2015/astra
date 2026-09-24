@@ -232,10 +232,29 @@ function moveWithinControllerGroup(
   // user actually sees on screen — including rows of differing widths and wrapped grids.
   if (axis === 'horizontal' && direction !== 'left' && direction !== 'right') return null
   if (axis === 'vertical' && direction !== 'up' && direction !== 'down') return null
+  let candidates = groupTargets.filter((target) => target !== current)
+  const action = current.dataset.controllerAction
+  const index = current.dataset.controllerIndex
+  if (
+    axis === 'grid' && (direction === 'up' || direction === 'down')
+    && getControllerGroup(current)?.dataset.controllerActionRows === 'true'
+    && action && index !== undefined
+  ) {
+    // Two actions can occupy one card. Up/down moves between cards, keeping
+    // the same action; left/right can still move between open and play.
+    const indicesWithAction = new Set(groupTargets
+      .filter((target) => target.dataset.controllerAction === action)
+      .map((target) => target.dataset.controllerIndex))
+    candidates = candidates.filter((target) => (
+      target.dataset.controllerIndex !== index && (
+        target.dataset.controllerAction === action
+        || (target.dataset.controllerAction === 'open' && !indicesWithAction.has(target.dataset.controllerIndex))
+      )
+    ))
+  }
   return findSpatialCandidate(
     current.getBoundingClientRect(),
-    groupTargets
-      .filter((target) => target !== current)
+    candidates
       .map((target) => ({ item: target, rect: target.getBoundingClientRect() })),
     direction
   )

@@ -1,9 +1,9 @@
 import { CSSProperties, memo, ReactElement, Ref, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type UIEvent } from 'react'
 import { Grid, type CellComponentProps, type GridImperativeAPI } from 'react-window'
 import { resolveArtistGridLayout } from '../../utils/artistGridLayout'
-import { highlightSearchMatch } from '../../utils/searchHighlight'
 import { restoreLibraryScrollPosition } from '../../utils/libraryScrollRestoration'
-import AlbumArtwork from './AlbumArtwork'
+import CompactAlbumCard, { type CompactAlbumRecord as AlbumRecord } from './CompactAlbumCard'
+import { getAlbumCardPlaybackState, type AlbumCardPlaybackSnapshot } from '../../utils/albumCardPlayback'
 import {
   CONTROLLER_VIRTUAL_MOVE_EVENT,
   focusControllerTarget,
@@ -14,22 +14,14 @@ import {
   resolveVirtualGridContentWidth
 } from '../../utils/virtualGridSizing'
 
-interface AlbumRecord {
-  identity_key: string
-  album: string
-  artist: string
-  year: number | null
-  artwork_hash: string | null
-  track_count: number
-  is_new: boolean
-}
-
 export interface AlbumGridViewportAPI {
   get element(): HTMLDivElement | null
 }
 
 interface AlbumGridProps {
   albums: AlbumRecord[]
+  playback: AlbumCardPlaybackSnapshot
+  onPlayAlbum: (album: AlbumRecord) => void
   onSelectAlbum: (album: AlbumRecord) => void
   onAlbumContextMenu: (album: AlbumRecord, x: number, y: number) => void
   onScrollTopChange?: (scrollTop: number) => void
@@ -40,6 +32,8 @@ interface AlbumGridProps {
 
 interface AlbumGridCellSharedProps {
   albums: AlbumRecord[]
+  playback: AlbumCardPlaybackSnapshot
+  onPlayAlbum: (album: AlbumRecord) => void
   columnCount: number
   onSelectAlbum: (album: AlbumRecord) => void
   onAlbumContextMenu: (album: AlbumRecord, x: number, y: number) => void
@@ -50,10 +44,10 @@ const ALBUM_GRID_MIN_COLUMN_WIDTH_FALLBACK_PX = 160
 const ALBUM_GRID_GAP_FALLBACK_PX = 14
 const ALBUM_GRID_PADDING_FALLBACK_PX = 14
 const ALBUM_GRID_OVERSCAN_COUNT = 3
-// Card chrome that stacks on top of the square artwork: card padding + borders
-// + artwork margin + three single-line info rows. Only used until the first
-// mounted card is measured.
-const ALBUM_CARD_NON_ARTWORK_HEIGHT_ESTIMATE_PX = 91
+// Height beyond the outer card width: artwork gap + three single-line info
+// rows and their margins. Padding cancels against the square artwork's width.
+// Only used until the first mounted card is measured.
+const ALBUM_CARD_NON_ARTWORK_HEIGHT_ESTIMATE_PX = 72
 
 function resolveCssPx(element: HTMLElement | null, propertyName: string, fallback: number): number {
   if (!element) return fallback
@@ -67,16 +61,14 @@ function resolveCssPx(element: HTMLElement | null, propertyName: string, fallbac
   return fallback
 }
 
-function formatTrackCount(count: number): string {
-  return `${count} ${count === 1 ? 'track' : 'tracks'}`
-}
-
 function AlbumGridCellRenderer({
   ariaAttributes,
   columnIndex,
   rowIndex,
   style,
   albums,
+  playback,
+  onPlayAlbum,
   columnCount,
   onSelectAlbum,
   onAlbumContextMenu,
@@ -91,38 +83,16 @@ function AlbumGridCellRenderer({
 
   return (
     <div className="album-grid-cell" style={style as CSSProperties} {...ariaAttributes}>
-      <div
-        className="album-card"
-        data-controller-focusable="true"
-        data-controller-context="true"
-        data-controller-key={`album:${album.identity_key}`}
-        data-controller-index={albumIndex}
-        tabIndex={-1}
-        role="button"
-        aria-label={`Open ${album.album} by ${album.artist}`}
-        onClick={() => {
-          onSelectAlbum(album)
-        }}
-        onContextMenu={(event) => {
-          event.preventDefault()
-          event.stopPropagation()
-          onAlbumContextMenu(album, event.clientX, event.clientY)
-        }}
-      >
-        {album.is_new && (
-          <span className="library-latest-sync-pill album-card-sync-pill" title="Added in latest library sync">
-            NEW
-          </span>
-        )}
-        <div className="album-artwork">
-          <AlbumArtwork hash={album.artwork_hash} alt={album.album} variant="card" />
-        </div>
-        <div className="album-info">
-          <div className="album-title">{highlightSearchMatch(album.album, searchQuery)}</div>
-          <div className="album-artist">{highlightSearchMatch(album.artist, searchQuery)}</div>
-          <div className="album-meta">{formatTrackCount(album.track_count)}{album.year ? ` • ${album.year}` : ''}</div>
-        </div>
-      </div>
+      <CompactAlbumCard
+        album={album}
+        density="grid"
+        playback={getAlbumCardPlaybackState(album, playback)}
+        onOpen={onSelectAlbum}
+        onPlay={onPlayAlbum}
+        onContextMenu={onAlbumContextMenu}
+        searchQuery={searchQuery}
+        controllerIndex={albumIndex}
+      />
     </div>
   )
 }
@@ -133,6 +103,8 @@ const AlbumGridCell = memo(AlbumGridCellRenderer) as (
 
 export default function AlbumGrid({
   albums,
+  playback,
+  onPlayAlbum,
   onSelectAlbum,
   onAlbumContextMenu,
   onScrollTopChange,
@@ -284,11 +256,13 @@ export default function AlbumGrid({
 
   const cellProps = useMemo<AlbumGridCellSharedProps>(() => ({
     albums,
+    playback,
+    onPlayAlbum,
     columnCount: gridLayout.columnCount,
     onSelectAlbum,
     onAlbumContextMenu,
     searchQuery
-  }), [albums, gridLayout.columnCount, onAlbumContextMenu, onSelectAlbum, searchQuery])
+  }), [albums, playback, onPlayAlbum, gridLayout.columnCount, onAlbumContextMenu, onSelectAlbum, searchQuery])
 
   useEffect(() => {
     const group = bodyRef.current
@@ -301,6 +275,7 @@ export default function AlbumGrid({
       const nextIndex = event.detail.currentIndex + (event.detail.direction === 'up' ? -step : step)
       if (nextIndex < 0 || nextIndex >= albums.length) return
       event.preventDefault()
+      const action = (document.activeElement as HTMLElement | null)?.dataset.controllerAction === 'play' ? 'play' : 'open'
 
       gridApiRef.current?.scrollToRow({
         index: Math.floor(nextIndex / gridLayout.columnCount),
@@ -310,9 +285,9 @@ export default function AlbumGrid({
 
       let attempts = 8
       const focusMountedAlbum = (): void => {
-        const target = bodyRef.current?.querySelector<HTMLElement>(
-          `[data-controller-focusable="true"][data-controller-index="${nextIndex}"]`
-        )
+        const selector = `[data-controller-focusable="true"][data-controller-index="${nextIndex}"]`
+        const target = bodyRef.current?.querySelector<HTMLElement>(`${selector}[data-controller-action="${action}"]`)
+          ?? bodyRef.current?.querySelector<HTMLElement>(`${selector}[data-controller-action="open"]`)
         if (target) {
           focusControllerTarget(target)
           return
@@ -343,6 +318,7 @@ export default function AlbumGrid({
       data-controller-scroll
       data-controller-group="library-albums"
       data-controller-axis="grid"
+      data-controller-action-rows="true"
       data-controller-virtual="true"
     >
       <Grid
