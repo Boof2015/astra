@@ -48,6 +48,7 @@ import {
 } from '../../utils/quickLaunchSearch'
 import { highlightSearchMatch } from '../../utils/searchHighlight'
 import { scoreTrackIdentityQuery } from '../../utils/trackSearch'
+import QuickLaunchBoundary from './QuickLaunchBoundary'
 
 const SETTINGS_RESULT_LIMIT = 3
 const NAV_RESULT_LIMIT = 3
@@ -178,6 +179,10 @@ function StructuredTrackRow({
 }
 
 export default function QuickLaunchPalette() {
+  return <QuickLaunchBoundary><QuickLaunchContent /></QuickLaunchBoundary>
+}
+
+function QuickLaunchContent() {
   const isQuickLaunchOpen = useUIStore((state) => state.isQuickLaunchOpen)
   const closeQuickLaunch = useUIStore((state) => state.closeQuickLaunch)
   const setPendingLibrarySearchQuery = useUIStore((state) => state.setPendingLibrarySearchQuery)
@@ -218,7 +223,8 @@ export default function QuickLaunchPalette() {
   const [filterEditor, setFilterEditor] = useState<FilterEditor | null>(null)
   const [dismissedTokenStart, setDismissedTokenStart] = useState<number | null>(null)
   const [armedChipId, setArmedChipId] = useState<string | null>(null)
-  const [selectedResultIndex, setSelectedResultIndex] = useState(0)
+  const [requestedSelectedIndex, setSelectedResultIndex] = useState(0)
+  const [selectionContext, setSelectionContext] = useState('')
   const [isTrackCorpusLoading, setIsTrackCorpusLoading] = useState(false)
   const [trackCorpus, setTrackCorpus] = useState<QuickLaunchTrackRecord[]>([])
   const [playlistOccurrences, setPlaylistOccurrences] = useState<QuickLaunchTrackOccurrence[] | null>(null)
@@ -558,18 +564,27 @@ export default function QuickLaunchPalette() {
     return results
   }, [resultGroups, seeAllResult])
   const selectableCount = composerSuggestions?.length ?? (structuredTrackMode ? rankedTrackOccurrences.length : flatResults.length)
+  const selectionResetKey = JSON.stringify([
+    isQuickLaunchOpen, query, lockedFilters.map(({ kind, id, value }) => [kind, id, value]),
+    resultAction, filterEditor ? [filterEditor.kind, filterEditor.value] : null, composerSuggestions !== null
+  ])
+  const selectedResultIndex = selectionContext !== selectionResetKey || selectableCount === 0
+    ? 0
+    : Math.max(0, Math.min(requestedSelectedIndex, selectableCount - 1))
+
+  // Reconcile before committing children or effects: the old suggestion index
+  // may be outside the new track list, and react-window rejects that index.
+  if (selectionContext !== selectionResetKey || requestedSelectedIndex !== selectedResultIndex) {
+    setSelectionContext(selectionResetKey)
+    setSelectedResultIndex(selectedResultIndex)
+  }
   const selectedResult = structuredTrackMode ? null : flatResults[selectedResultIndex] ?? null
   const selectedOccurrence = structuredTrackMode ? rankedTrackOccurrences[selectedResultIndex] ?? null : null
 
-  const selectionResetKey = `${query}\n${lockedFilters.map((filter) => filter.id).join('|')}\n${resultAction ?? ''}\n${filterEditor?.kind ?? ''}:${filterEditor?.value ?? ''}`
-  useEffect(() => { setSelectedResultIndex(0) }, [selectionResetKey])
   useEffect(() => {
-    setSelectedResultIndex((current) => selectableCount > 0 ? Math.min(current, selectableCount - 1) : 0)
-  }, [selectableCount])
-  useEffect(() => {
-    if (!isQuickLaunchOpen || composerSuggestions || structuredTrackMode) return
+    if (!isQuickLaunchOpen || composerSuggestions || structuredTrackMode || selectableCount === 0) return
     selectedRowRef.current?.scrollIntoView({ block: 'nearest' })
-  }, [composerSuggestions, isQuickLaunchOpen, selectedResultIndex, structuredTrackMode])
+  }, [composerSuggestions, isQuickLaunchOpen, selectableCount, selectedResultIndex, structuredTrackMode])
   useEffect(() => {
     if (!isQuickLaunchOpen || !structuredTrackMode || composerSuggestions || rankedTrackOccurrences.length === 0) return
     structuredListRef.current?.scrollToRow({ index: selectedResultIndex, align: 'auto', behavior: 'auto' })
