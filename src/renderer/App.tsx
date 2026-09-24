@@ -629,8 +629,12 @@ function App() {
         <QuickLaunchPalette />
         <LibraryIntegrityPanel />
         <TrackIntegrityResultModal />
-        <MetadataEditorPanel />
-        <LyricsEditorPanel />
+        {!isFullscreen && (
+          <>
+            <MetadataEditorPanel />
+            <LyricsEditorPanel />
+          </>
+        )}
         <SignalShareModal />
         <CollectionQueueContextMenu />
         <TrackDragRuntime />

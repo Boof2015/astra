@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+import { useLyricsEditorStore } from './lyricsEditorStore'
+import { useMetadataEditorStore } from './metadataEditorStore'
 import type { SettingsSectionId } from '../constants/settingsSections'
 import type { Track } from '../types/audio'
 import {
@@ -570,6 +572,7 @@ let nextPlaylistTrackRevealRequestId = 0
 let nextQueueNowPlayingRevealRequestId = 0
 let nextPlaylistNavigationRestoreRequestId = 0
 let pendingActiveView: AppView | null = null
+const fullscreenEntryGuards = new Set<() => boolean>()
 
 interface UIStore {
   activeView: AppView
@@ -632,6 +635,7 @@ interface UIStore {
   showAnalyzerRack: () => void
   hideAnalyzerRack: () => void
   toggleAnalyzerRack: () => void
+  registerFullscreenEntryGuard: (guard: () => boolean) => () => void
   setFullscreen: (fs: boolean) => void
   setOpenZoneDisplayOnLaunch: (enabled: boolean) => void
   setParallaxExperimentEnabled: (enabled: boolean) => void
@@ -886,7 +890,26 @@ export const useUIStore = create<UIStore>((set, get) => ({
       isAnalyzerEditMode: nextVisible ? s.isAnalyzerEditMode : false,
     }
   }),
-  setFullscreen: (fs) => set({ isFullscreen: fs }),
+  registerFullscreenEntryGuard: (guard) => {
+    fullscreenEntryGuards.add(guard)
+    return () => { fullscreenEntryGuards.delete(guard) }
+  },
+  setFullscreen: (fs) => {
+    if (get().isFullscreen === fs) return
+    if (!fs) {
+      set({ isFullscreen: false })
+      return
+    }
+
+    // Confirm every editor can close before changing any panel state.
+    for (const canEnterFullscreen of fullscreenEntryGuards) {
+      if (!canEnterFullscreen()) return
+    }
+
+    useMetadataEditorStore.getState().closePanel()
+    useLyricsEditorStore.getState().closePanel()
+    set({ isAnalyzerEditMode: false, isFullscreen: true })
+  },
   setOpenZoneDisplayOnLaunch: (enabled) => {
     persistOpenZoneDisplayOnLaunchPreference(enabled)
     set({ openZoneDisplayOnLaunch: enabled })

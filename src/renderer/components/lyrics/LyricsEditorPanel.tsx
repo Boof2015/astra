@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { useLyricsEditorStore } from '../../stores/lyricsEditorStore'
 import { useLyricsStore } from '../../stores/lyricsStore'
 import { usePlayerStore } from '../../stores/playerStore'
+import { useUIStore } from '../../stores/uiStore'
 import type { LyricsFormat, LyricsTrackOverride } from '../../../types/lyrics'
 import { usePresence } from '../../hooks/usePresence'
 
@@ -65,6 +66,7 @@ function buildLyricsQueryForCurrentTrack() {
 }
 
 export default function LyricsEditorPanel() {
+  const registerFullscreenEntryGuard = useUIStore((state) => state.registerFullscreenEntryGuard)
   const panelRequest = useLyricsEditorStore((state) => state.panelRequest)
   const closePanel = useLyricsEditorStore((state) => state.closePanel)
   const refreshLyricsForTrack = useLyricsStore((state) => state.refreshForTrack)
@@ -368,13 +370,20 @@ export default function LyricsEditorPanel() {
     }
   }, [importLyricsText, isSingleTrack])
 
+  const canClose = useCallback(() => {
+    if (isActionRunning) return false
+    return !(lyricsTextDirty || offsetDirty) || window.confirm('Discard unsaved lyrics changes?')
+  }, [isActionRunning, lyricsTextDirty, offsetDirty])
+
+  useLayoutEffect(() => {
+    if (!panelRequest) return
+    return registerFullscreenEntryGuard(canClose)
+  }, [canClose, panelRequest, registerFullscreenEntryGuard])
+
   const handleClose = useCallback(() => {
-    if (isActionRunning) return
-    if ((lyricsTextDirty || offsetDirty) && !window.confirm('Discard unsaved lyrics changes?')) {
-      return
-    }
+    if (!canClose()) return
     closePanel()
-  }, [closePanel, isActionRunning, lyricsTextDirty, offsetDirty])
+  }, [canClose, closePanel])
 
   if (!presence.shouldRender || !displayedPanelRequest) return null
 

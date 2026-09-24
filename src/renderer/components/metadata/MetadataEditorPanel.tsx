@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import AlbumArtwork from '../library/AlbumArtwork'
 import DiffConfirmModal, { type DiffEntry } from './DiffConfirmModal'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { useMetadataEditorStore, type MetadataEditChanges } from '../../stores/metadataEditorStore'
 import { usePlayerStore } from '../../stores/playerStore'
 import { usePlaylistStore } from '../../stores/playlistStore'
+import { useUIStore } from '../../stores/uiStore'
 import { usePresence } from '../../hooks/usePresence'
 
 interface DraftField {
@@ -198,6 +199,7 @@ function isLocalTrack(track: TrackRecord): boolean {
 }
 
 export default function MetadataEditorPanel() {
+  const registerFullscreenEntryGuard = useUIStore((state) => state.registerFullscreenEntryGuard)
   const loadLibrary = useLibraryStore((state) => state.loadLibrary)
   const playlistsSelectedId = usePlaylistStore((state) => state.selectedPlaylistId)
   const selectPlaylist = usePlaylistStore((state) => state.selectPlaylist)
@@ -372,13 +374,20 @@ export default function MetadataEditorPanel() {
     }))
   }, [])
 
+  const canClose = useCallback(() => {
+    if (isSaving) return false
+    return !hasDirtyFields || window.confirm('Discard unsaved metadata edits?')
+  }, [hasDirtyFields, isSaving])
+
+  useLayoutEffect(() => {
+    if (!panelRequest) return
+    return registerFullscreenEntryGuard(canClose)
+  }, [canClose, panelRequest, registerFullscreenEntryGuard])
+
   const handleClose = useCallback(() => {
-    if (isSaving) return
-    if (hasDirtyFields && !window.confirm('Discard unsaved metadata edits?')) {
-      return
-    }
+    if (!canClose()) return
     closePanel()
-  }, [closePanel, hasDirtyFields, isSaving])
+  }, [canClose, closePanel])
 
   const handleChooseArtwork = useCallback(async () => {
     const imagePath = await window.electronAPI.openFileDialog({
