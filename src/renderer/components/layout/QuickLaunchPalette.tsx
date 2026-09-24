@@ -733,6 +733,21 @@ export default function QuickLaunchPalette() {
       return
     }
 
+    if (event.key === 'Backspace' && filterEditor?.value === '' && !event.nativeEvent.isComposing) {
+      event.preventDefault()
+      setFilterEditor(null)
+      setArmedChipId(null)
+      setDismissedTokenStart(null)
+      setActionError(null)
+      requestAnimationFrame(() => {
+        const input = inputRef.current
+        if (!input) return
+        input.focus()
+        input.setSelectionRange(query.length, query.length)
+      })
+      return
+    }
+
     if ((event.key === 'Backspace' || event.key === 'Delete') && !filterEditor && query.length === 0) {
       const lastFilter = lockedFilters.at(-1)
       const lastId = resultAction ? 'action' : lastFilter?.id
