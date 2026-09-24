@@ -30164,6 +30164,42 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
   display: none;
 }
 
+/* Reserve scrollbar space while revealing only the active Home shelf's thumb. */
+.home-dashboard-view :is(.home-release-row, .home-pinned-row, .home-recent-row) {
+  /* Let Chromium's pseudo-elements control scrollbar sizing and appearance. */
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+.home-dashboard-view :is(.home-release-row, .home-pinned-row, .home-recent-row)::-webkit-scrollbar {
+  display: block;
+  height: 8px;
+}
+
+.home-dashboard-view :is(.home-release-row, .home-pinned-row, .home-recent-row)::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.home-dashboard-view :is(.home-release-row, .home-pinned-row, .home-recent-row)::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 4px;
+}
+
+.home-dashboard-view .home-dashboard-section:is(:hover, :focus-within) :is(.home-release-row, .home-pinned-row, .home-recent-row)::-webkit-scrollbar-thumb {
+  background: rgba(var(--tint), 0.28);
+}
+
+.home-dashboard-view .home-dashboard-section :is(.home-release-row, .home-pinned-row, .home-recent-row)::-webkit-scrollbar-thumb:hover,
+.home-dashboard-view .home-dashboard-section :is(.home-release-row, .home-pinned-row, .home-recent-row)::-webkit-scrollbar-thumb:active {
+  background: rgba(var(--tint), 0.45);
+}
+
+@media (hover: none) {
+  .home-dashboard-view :is(.home-release-row, .home-pinned-row, .home-recent-row)::-webkit-scrollbar-thumb {
+    background: rgba(var(--tint), 0.28);
+  }
+}
+
 .home-release-card,
 .home-pinned-card {
   box-shadow: inset 0 1px 0 rgba(var(--tint), 0.025);
