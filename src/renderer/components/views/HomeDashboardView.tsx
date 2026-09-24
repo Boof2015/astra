@@ -26,6 +26,7 @@ import type { HomeRecentTrack } from '../../utils/homeRecentTracks'
 import HomeSection from '../home/HomeSection'
 import HomeShelfNavigation from '../home/HomeShelfNavigation'
 import HomeExpandableGrid from '../home/HomeExpandableGrid'
+import { HomeLoadingAlbumCards } from '../home/HomeLoadingCards'
 import HomeRecentTracksDrawer from '../home/HomeRecentTracksDrawer'
 import { HomeAlbumCard, HomeCollectionCard, HomeTrackRow } from '../home/HomeMediaCards'
 import type { HomePlaybackControlState } from '../home/HomePlaybackControl'
@@ -122,6 +123,7 @@ export default function HomeDashboardView() {
   const [clockNow, setClockNow] = useState(() => new Date())
   const [dashboard, setDashboard] = useState<HomeDashboard | null>(null)
   const [dashboardLoading, setDashboardLoading] = useState(true)
+  const initialDashboardLoading = dashboardLoading && dashboard === null
   const [dashboardError, setDashboardError] = useState<string | null>(null)
   const [rediscoveryRotation, setRediscoveryRotation] = useState(readRediscoveryRotation)
   const [isCustomizeOpen, setIsCustomizeOpen] = useState(false)
@@ -445,7 +447,7 @@ export default function HomeDashboardView() {
   }
 
   const renderJumpBackIn = () => (
-    <HomeJumpBackIn cards={jumpBackInCards} getPlayback={(card) => getPlayback(card.source)}
+    <HomeJumpBackIn cards={jumpBackInCards} loading={initialDashboardLoading} getPlayback={(card) => getPlayback(card.source)}
       onOpen={(card) => void handleJumpOpen(card)} onPlay={(card) => void playSource(card.source, card.title)} />
   )
 
@@ -461,11 +463,14 @@ export default function HomeDashboardView() {
     getReason: (release: HomeReleaseSummary) => string,
     action?: ReactNode
   ) => {
-    if (!releases.length) return null
+    if (!releases.length && !initialDashboardLoading) return null
     return (
-      <HomeSection id={id} title={title} axis="horizontal" actions={<>{action}<HomeShelfNavigation scrollRef={rowRef} label={title} /></>}>
-        <div className="home-album-shelf" ref={rowRef}>
-          {releases.map((release) => (
+      <HomeSection id={id} title={title} axis="horizontal" actions={<>{action}{!initialDashboardLoading && <HomeShelfNavigation scrollRef={rowRef} label={title} />}</>}>
+        <div className="home-album-shelf" ref={rowRef}
+          role={initialDashboardLoading ? 'status' : undefined}
+          aria-label={initialDashboardLoading ? `Loading ${title}` : undefined}
+          tabIndex={initialDashboardLoading ? -1 : undefined}>
+          {initialDashboardLoading ? <HomeLoadingAlbumCards /> : releases.map((release) => (
             <HomeAlbumCard key={release.identity_key} title={release.album} subtitle={release.artist} artworkHash={release.artwork_hash}
               reason={getReason(release)} playback={getPlayback(releaseSource(release))}
               onOpen={() => void handleOpenRelease(release)} onPlay={() => void playSource(releaseSource(release), release.album)} />
@@ -613,11 +618,6 @@ export default function HomeDashboardView() {
                 ) : (
                   <button type="button" onClick={() => setActionError(null)}>Dismiss</button>
                 )}
-              </div>
-            )}
-            {dashboardLoading && !dashboard && (
-              <div className="home-dashboard-skeleton" role="status" aria-label="Loading Home collections">
-                {Array.from({ length: 5 }, (_, index) => <span key={index} />)}
               </div>
             )}
             {visibleModules.map((module) => <div key={module.id}>{renderModule(module.id)}</div>)}

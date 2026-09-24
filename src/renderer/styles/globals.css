@@ -4062,20 +4062,44 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   cursor: pointer;
 }
 
-.home-dashboard-skeleton {
-  height: 120px;
-  padding-top: 18px;
-  display: flex;
-  gap: 10px;
+.home-loading-card,
+.home-loading-expand {
+  pointer-events: none;
 }
 
-.home-dashboard-skeleton span {
-  flex: 0 0 clamp(180px, 18vw, 260px);
-  height: 82px;
-  border-radius: 9px;
+.home-loading-card .home-media-copy {
+  flex: 1;
+}
+
+.home-skeleton-block {
+  border-radius: 4px;
   background: linear-gradient(100deg, rgba(var(--tint), 0.025), rgba(var(--tint), 0.07), rgba(var(--tint), 0.025));
   background-size: 200% 100%;
   animation: homeDashboardShimmer 1.5s ease-in-out infinite;
+}
+
+.home-loading-card .home-media-title {
+  width: 80%;
+  height: 1.35em;
+}
+
+.home-loading-card .home-media-subtitle {
+  width: 60%;
+  height: 1.5em;
+}
+
+.home-loading-card.home-media-album .home-media-title {
+  height: 2.7em;
+}
+
+.home-loading-card .home-media-context {
+  width: 80%;
+  height: 2.8em;
+}
+
+.home-loading-expand > span {
+  width: 80px;
+  height: 12px;
 }
 
 @keyframes homeDashboardShimmer {
@@ -4548,7 +4572,7 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .home-dashboard-skeleton span,
+  .home-skeleton-block,
   .home-customize-module,
   .home-customize-module-copy strong,
   .home-customize-order-actions,
