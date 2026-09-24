@@ -33,6 +33,7 @@ import { multiFieldScore, normalizeSearchValue } from '../../utils/fuzzySearch'
 import { FAVORITES_PLAYLIST_ID, FAVORITES_PLAYLIST_NAME } from '../../utils/playlistSystem'
 import {
   buildQuickLaunchPlayRequest,
+  filterQuickLaunchAlbumOptions,
   findQuickLaunchTokenFragment,
   QUICK_LAUNCH_FILTER_REGISTRY,
   QUICK_LAUNCH_IMMEDIATE_COMMANDS,
@@ -237,6 +238,8 @@ export default function QuickLaunchPalette() {
   const trimmedQuery = query.trim()
   const hasQuery = trimmedQuery.length > 0
   const structuredTrackMode = lockedFilters.length > 0 || resultAction !== null
+  const artistFilter = lockedFilters.find((filter) => filter.kind === 'artist')
+  const confirmedArtist = typeof artistFilter?.value === 'string' ? artistFilter.value : null
   const playlistFilter = lockedFilters.find((filter) => filter.kind === 'playlist')
   const tokenFragment = useMemo(() => {
     if (filterEditor) return null
@@ -386,9 +389,17 @@ export default function QuickLaunchPalette() {
     }
   }, [artists, favoriteTrackPaths.length, playlists, trackCorpus])
 
+  const scopedAlbumOptions = useMemo(() => filterQuickLaunchAlbumOptions(
+    filterOptions.album,
+    trackCorpus,
+    confirmedArtist,
+    artistBrowseMode
+  ), [artistBrowseMode, confirmedArtist, filterOptions.album, trackCorpus])
+
   const composerSuggestions = useMemo<ComposerSuggestion[] | null>(() => {
     if (filterEditor) {
-      return rankQuickLaunchFilterOptions(filterOptions[filterEditor.kind], filterEditor.value).map((option) => ({
+      const options = filterEditor.kind === 'album' ? scopedAlbumOptions : filterOptions[filterEditor.kind]
+      return rankQuickLaunchFilterOptions(options, filterEditor.value).map((option) => ({
         kind: 'filter-value',
         id: `value:${filterEditor.kind}:${option.id}`,
         label: option.label,
@@ -425,7 +436,7 @@ export default function QuickLaunchPalette() {
         actionId: command.actionId
       }))
     ].filter((command) => command.label.slice(1).startsWith(fragment.toLocaleLowerCase()))
-  }, [filterEditor, filterOptions, tokenFragment])
+  }, [filterEditor, filterOptions, scopedAlbumOptions, tokenFragment])
 
   const navResults = useMemo(() => {
     if (!hasQuery || structuredTrackMode) return []
@@ -903,6 +914,9 @@ export default function QuickLaunchPalette() {
                   </button>
                 ))}
               </div>
+              {filterEditor?.kind === 'album' && confirmedArtist !== null && composerSuggestions.length === 0 && !isTrackCorpusLoading && (
+                <div className="ql-empty">No albums match this artist and search.</div>
+              )}
             </div>
           ) : structuredTrackMode ? (
             <div className="quick-launch-group ql-structured-track-group">

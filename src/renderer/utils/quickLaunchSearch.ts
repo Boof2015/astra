@@ -95,6 +95,24 @@ export function trackMatchesArtistFilter(
   return candidates.some((candidate) => normalizedEquals(candidate, target))
 }
 
+export function filterQuickLaunchAlbumOptions(
+  options: readonly QuickLaunchFilterOption[],
+  tracks: readonly QuickLaunchTrackRecord[],
+  artist: string | null,
+  artistMode: LibraryArtistBrowseMode
+): QuickLaunchFilterOption[] {
+  if (artist === null) return [...options]
+
+  const eligibleAlbumKeys = new Set<string>()
+  for (const track of tracks) {
+    if (!eligibleAlbumKeys.has(track.album_identity_key) && trackMatchesArtistFilter(track, artist, artistMode)) {
+      eligibleAlbumKeys.add(track.album_identity_key)
+    }
+  }
+
+  return options.filter((option) => typeof option.value === 'string' && eligibleAlbumKeys.has(option.value))
+}
+
 export function trackMatchesQuickLaunchFilters(
   track: QuickLaunchTrackRecord,
   filters: readonly QuickLaunchLockedFilter[],

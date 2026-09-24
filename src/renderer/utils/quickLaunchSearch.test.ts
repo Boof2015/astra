@@ -3,13 +3,16 @@ import test from 'node:test'
 import type { QuickLaunchLockedFilter, QuickLaunchTrackRecord } from '../types/quickLaunch'
 import {
   buildQuickLaunchPlayRequest,
+  filterQuickLaunchAlbumOptions,
   findQuickLaunchTokenFragment,
+  rankQuickLaunchFilterOptions,
   rankQuickLaunchTrackOccurrences,
   removeQuickLaunchTokenFragment,
   replaceQuickLaunchTokenFragment,
   trackMatchesArtistFilter,
   trackMatchesQuickLaunchFilters,
   upsertQuickLaunchFilter,
+  type QuickLaunchFilterOption,
   type QuickLaunchTrackOccurrence
 } from './quickLaunchSearch'
 
@@ -52,11 +55,100 @@ function occurrence(value: QuickLaunchTrackRecord, index: number, key = `${index
   return { occurrenceKey: key, track: value, sourceIndex: index }
 }
 
+function albumSuggestionsFixture() {
+  const options: QuickLaunchFilterOption[] = [
+    { id: 'album-one', label: 'Vespertine', subtitle: 'Björk · 2001', value: 'album-one' },
+    { id: 'album-two', label: 'Together', subtitle: 'Ensemble · 2002', value: 'album-two' },
+    { id: 'album-three', label: 'Together', subtitle: 'Radiohead · 2003', value: 'album-three' },
+    { id: 'album-four', label: 'Together', subtitle: 'Ensemble · 2004', value: 'album-four' }
+  ]
+  const tracks = [
+    track({ artist: 'Björk', artist_names: ['Björk'] }),
+    track({
+      album_identity_key: 'album-four', album: 'Together', year: 2004,
+      artist: 'Ensemble', artist_names: ['Ensemble'], album_artist: 'Ensemble', album_artist_names: ['Ensemble']
+    }),
+    track({
+      album_identity_key: 'album-three', album: 'Together', year: 2003,
+      artist: 'Radiohead', artist_names: ['Radiohead'], album_artist: 'Radiohead', album_artist_names: ['Radiohead']
+    }),
+    track({
+      album_identity_key: 'album-two', album: 'Together', year: 2002,
+      artist: 'Ensemble', artist_names: ['Ensemble'], album_artist: 'Ensemble', album_artist_names: ['Ensemble']
+    }),
+    track({ id: 2, path: '/music/two.flac', track_number: 2 })
+  ]
+  return { options, tracks }
+}
+
 test('artist filters follow strict and canonical browse semantics', () => {
   const value = track()
   assert.equal(trackMatchesArtistFilter(value, 'Ensemble', 'strict'), false)
   assert.equal(trackMatchesArtistFilter(value, 'Ensemble', 'canonical'), true)
   assert.equal(trackMatchesArtistFilter(value, 'bjork', 'strict'), true)
+})
+
+test('album suggestions include later featured appearances and preserve release identities and option order', () => {
+  const { options, tracks } = albumSuggestionsFixture()
+  const eligible = filterQuickLaunchAlbumOptions(options, tracks, 'Ensemble', 'canonical')
+  assert.deepEqual(eligible, [options[0], options[1], options[3]])
+  assert.equal(eligible[0], options[0])
+
+  // The first track on Vespertine has no Ensemble credit; the later track qualifies the release.
+  assert.deepEqual(
+    filterQuickLaunchAlbumOptions(options, tracks.slice(0, -1), 'Ensemble', 'canonical'),
+    [options[1], options[3]]
+  )
+})
+
+test('album suggestions follow strict mode and normalize artist names', () => {
+  const { options, tracks } = albumSuggestionsFixture()
+  assert.deepEqual(
+    filterQuickLaunchAlbumOptions(options, tracks, ' ensemble ', 'strict'),
+    [options[1], options[3]]
+  )
+  for (const mode of ['canonical', 'strict'] as const) {
+    assert.deepEqual(filterQuickLaunchAlbumOptions(options, tracks, ' BJORK ', mode), [options[0]])
+  }
+})
+
+test('album suggestions recognize structured album artist credits and strict track artist fallback', () => {
+  const { options } = albumSuggestionsFixture()
+  const collaboration = track({
+    artist: 'Soloist', artist_names: ['Soloist'],
+    album_artist: 'Björk & Ensemble', album_artist_names: ['Björk', 'Ensemble']
+  })
+  assert.deepEqual(filterQuickLaunchAlbumOptions(options, [collaboration], 'Ensemble', 'canonical'), [options[0]])
+  assert.deepEqual(filterQuickLaunchAlbumOptions(options, [collaboration], 'Ensemble', 'strict'), [])
+
+  const noAlbumArtist = track({ artist: 'Ensemble', artist_names: [], album_artist: null, album_artist_names: [] })
+  assert.deepEqual(filterQuickLaunchAlbumOptions(options, [noAlbumArtist], 'Ensemble', 'strict'), [options[0]])
+})
+
+test('changing or removing the artist recomputes album suggestions without altering the full list', () => {
+  const { options, tracks } = albumSuggestionsFixture()
+  const original = structuredClone(options)
+  assert.deepEqual(filterQuickLaunchAlbumOptions(options, tracks, null, 'canonical'), original)
+  assert.deepEqual(filterQuickLaunchAlbumOptions(options, tracks, 'Björk', 'canonical'), [options[0]])
+  assert.deepEqual(filterQuickLaunchAlbumOptions(options, tracks, 'Radiohead', 'canonical'), [options[2]])
+  assert.deepEqual(filterQuickLaunchAlbumOptions(options, tracks, null, 'canonical'), original)
+  assert.deepEqual(options, original)
+})
+
+test('album suggestions never fall back to unrelated releases when the artist has no matches', () => {
+  const { options, tracks } = albumSuggestionsFixture()
+  assert.deepEqual(filterQuickLaunchAlbumOptions(options, tracks, 'Missing Artist', 'canonical'), [])
+  assert.deepEqual(filterQuickLaunchAlbumOptions(options, [], 'Björk', 'canonical'), [])
+})
+
+test('album text ranking only searches the artist-scoped options', () => {
+  const { options, tracks } = albumSuggestionsFixture()
+  const eligible = filterQuickLaunchAlbumOptions(options, tracks, 'Ensemble', 'canonical')
+  assert.deepEqual(rankQuickLaunchFilterOptions(eligible, ''), eligible)
+  assert.deepEqual(rankQuickLaunchFilterOptions(eligible, 'Together'), [options[1], options[3]])
+  assert.deepEqual(rankQuickLaunchFilterOptions(eligible, 'Vespertine'), [options[0]])
+  assert.deepEqual(rankQuickLaunchFilterOptions(eligible, 'Radiohead'), [])
+  assert.deepEqual(rankQuickLaunchFilterOptions(eligible, 'zzzzzzzzzz'), [])
 })
 
 test('distinct filters combine with AND and Unknown year is exact', () => {
