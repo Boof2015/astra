@@ -477,12 +477,16 @@ export default function TransportBar() {
                   )
                 }}
               >
-                <span className="transport-output-line-prefix">{transportInfoLine.prefix}</span>
+                {transportInfoLine.prefix && (
+                  <span className="transport-output-line-prefix">{transportInfoLine.prefix}</span>
+                )}
                 <span className="transport-output-line-value">{transportInfoLine.value}</span>
               </button>
             ) : (
               <div className="transport-output-line" title={transportInfoLine.title}>
-                <span className="transport-output-line-prefix">{transportInfoLine.prefix}</span>
+                {transportInfoLine.prefix && (
+                  <span className="transport-output-line-prefix">{transportInfoLine.prefix}</span>
+                )}
                 <span className="transport-output-line-value">{transportInfoLine.value}</span>
               </div>
             )

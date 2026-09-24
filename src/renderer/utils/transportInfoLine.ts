@@ -1,7 +1,7 @@
 import type { TransportInfoLineMode } from '../stores/uiStore'
 
 export interface TransportInfoLineDescriptor {
-  prefix: 'OUT' | 'ALB'
+  prefix: 'OUT' | null
   value: string
   title: string
   action: 'open-album' | null
@@ -17,7 +17,7 @@ export function resolveTransportInfoLine(
   if (mode === 'album') {
     const normalizedAlbum = album?.trim() ?? ''
     return {
-      prefix: 'ALB',
+      prefix: null,
       value: normalizedAlbum || '\u2014',
       title: normalizedAlbum ? `Show album ${normalizedAlbum}` : 'Album unavailable',
       action: normalizedAlbum ? 'open-album' : null

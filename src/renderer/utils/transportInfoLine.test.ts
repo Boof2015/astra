@@ -13,7 +13,7 @@ test('output mode preserves the current output-device line', () => {
 
 test('album mode creates an actionable album line', () => {
   assert.deepEqual(resolveTransportInfoLine('album', 'Desk DAC', '  Blue Train  '), {
-    prefix: 'ALB',
+    prefix: null,
     value: 'Blue Train',
     title: 'Show album Blue Train',
     action: 'open-album'
@@ -22,7 +22,7 @@ test('album mode creates an actionable album line', () => {
 
 test('album mode uses a non-actionable placeholder when album metadata is missing', () => {
   assert.deepEqual(resolveTransportInfoLine('album', 'Desk DAC', '   '), {
-    prefix: 'ALB',
+    prefix: null,
     value: '\u2014',
     title: 'Album unavailable',
     action: null
