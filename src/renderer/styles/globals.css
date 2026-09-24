@@ -3712,6 +3712,36 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 
 .home-media-subtitle > span { white-space: nowrap; }
 
+.home-media-subtitle.home-media-subtitle--with-detail {
+  display: flex;
+  min-width: 0;
+  column-gap: 0.25em;
+  -webkit-line-clamp: unset;
+}
+.home-media-subtitle--with-detail > :first-child {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home-media-subtitle-detail { flex-shrink: 0; }
+
+/* Idle text stays inline so native ellipsis works without duplicating its accessible name. */
+.hover-reveal-text.hover-reveal-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  -webkit-line-clamp: unset;
+  overflow-wrap: normal;
+}
+.hover-reveal-text[data-revealing] { text-overflow: clip; }
+.hover-reveal-text[data-revealing] > .hover-reveal-text-content {
+  display: inline-block;
+  vertical-align: top;
+}
+
 .home-playback-control,
 .home-playback-glyph {
   width: 32px;
@@ -3803,11 +3833,8 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 
 .home-media-album .home-media-artwork { width: 100%; flex: none; }
 .home-media-album .home-media-title {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  white-space: normal;
-  overflow-wrap: anywhere;
+  display: block;
+  white-space: nowrap;
 }
 
 .home-media-album .home-media-subtitle,

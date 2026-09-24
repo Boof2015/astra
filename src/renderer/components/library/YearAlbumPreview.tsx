@@ -119,6 +119,8 @@ export default function YearAlbumPreview({
                 ? { animationDelay: `${Math.min(index - layout.collapsedItemCount, 8) * 18}ms` } as CSSProperties
                 : undefined}
               title={album.album}
+              revealTitle
+              revealSubtitle={album.artist}
               subtitle={highlightSearchMatch(album.artist, searchQuery)}
               metadata={`${formatTrackCount(album.track_count)}${album.year ? ` · ${album.year}` : ''}`}
               artwork={<AlbumArtwork hash={album.artwork_hash} alt="" variant="thumbnail" />}

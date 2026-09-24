@@ -6,6 +6,8 @@ import { highlightSearchMatch } from '../../utils/searchHighlight'
 import AlbumArtwork from './AlbumArtwork'
 import LibraryCollectionCard from './LibraryCollectionCard'
 import LibraryCardPlaybackControl from './LibraryCardPlaybackControl'
+import HoverRevealText from '../common/HoverRevealText'
+import { useHoverRevealCard } from '../../hooks/useHoverRevealCard'
 import { getLibraryCardPlaybackState, type LibraryCardPlaybackSnapshot } from '../../utils/libraryCardPlayback'
 import {
   CONTROLLER_VIRTUAL_MOVE_EVENT,
@@ -132,6 +134,7 @@ function ArtistListRowRenderer({
       <LibraryCollectionCard
         className="artist-item"
         title={artist.artist}
+        revealTitle
         subtitle={formatArtistLibrarySummary(artist)}
         artwork={<ArtistAvatar artist={artist} className="artist-avatar" artworkClassName="artist-avatar-artwork" />}
         playback={getLibraryCardPlaybackState({ type: 'artist', artist: artist.artist }, playback)}
@@ -163,6 +166,7 @@ function ArtistGridCellRenderer({
 }: CellComponentProps<ArtistGridCellSharedProps>): ReactElement | null {
   const artist = artists[(rowIndex * columnCount) + columnIndex]
   const artistIndex = (rowIndex * columnCount) + columnIndex
+  const reveal = useHoverRevealCard(`${artist?.artist ?? ''}:${searchQuery}`)
 
   if (!artist) {
     return <div className="artist-grid-cell artist-grid-cell-empty" style={style as CSSProperties} {...ariaAttributes} />
@@ -171,12 +175,12 @@ function ArtistGridCellRenderer({
   const state = getLibraryCardPlaybackState({ type: 'artist', artist: artist.artist }, playback)
   return (
     <div className="artist-grid-cell" style={style as CSSProperties} {...ariaAttributes}>
-      <article className={`artist-grid-card${state.playing || state.pending ? ' has-playback-indicator' : ''}`}>
+      <article {...reveal.cardProps} className={`artist-grid-card${state.playing || state.pending ? ' has-playback-indicator' : ''}`}>
         <button
           type="button"
           className="artist-grid-open"
           aria-label={`Open ${artist.artist}`}
-          title={artist.artist}
+          title={reveal.reducedMotion ? artist.artist : undefined}
           data-controller-action="open"
           data-controller-focusable="true"
           data-controller-key={`artist:${artist.artist}`}
@@ -192,7 +196,7 @@ function ArtistGridCellRenderer({
             artworkVariant="card"
           />
           <div className="artist-grid-info">
-            <div className="artist-grid-name">{highlightSearchMatch(artist.artist, searchQuery)}</div>
+            <HoverRevealText className="artist-grid-name" text={artist.artist} {...reveal.textProps}>{highlightSearchMatch(artist.artist, searchQuery)}</HoverRevealText>
             <div className="artist-grid-track-count">{formatArtistLibrarySummary(artist)}</div>
           </div>
         </button>

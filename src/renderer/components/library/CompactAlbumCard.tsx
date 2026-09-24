@@ -4,6 +4,8 @@ import type { AlbumPlaybackTarget } from '../../utils/libraryCardPlayback'
 import type { HomePlaybackControlState } from '../home/HomePlaybackControl'
 import LibraryCardPlaybackControl from './LibraryCardPlaybackControl'
 import AlbumArtwork from './AlbumArtwork'
+import HoverRevealText from '../common/HoverRevealText'
+import { useHoverRevealCard } from '../../hooks/useHoverRevealCard'
 
 export interface CompactAlbumRecord extends AlbumPlaybackTarget {
   year: number | null
@@ -25,8 +27,10 @@ interface CompactAlbumCardProps {
 }
 
 function CompactAlbumCard({ album, density, playback, onOpen, onPlay, onContextMenu, searchQuery = '', controllerIndex, style }: CompactAlbumCardProps) {
+  const reveal = useHoverRevealCard(`${album.identity_key}:${searchQuery}`)
   return (
     <article
+      {...reveal.cardProps}
       className={`compact-album-card compact-album-card--${density} ${density === 'grid' ? 'album-card' : 'library-artist-rail-card'}${playback.playing || playback.pending ? ' has-playback-indicator' : ''}`}
       style={style}
       onContextMenu={(event) => {
@@ -39,7 +43,7 @@ function CompactAlbumCard({ album, density, playback, onOpen, onPlay, onContextM
         type="button"
         className="compact-album-open"
         aria-label={`Open ${album.album} by ${album.artist}`}
-        title={`${album.album} — ${album.artist}`}
+        title={reveal.reducedMotion ? `${album.album} — ${album.artist}` : undefined}
         data-controller-focusable="true"
         data-controller-context="true"
         data-controller-key={`album:${album.identity_key}`}
@@ -51,8 +55,8 @@ function CompactAlbumCard({ album, density, playback, onOpen, onPlay, onContextM
           <AlbumArtwork hash={album.artwork_hash} alt="" variant="card" virtualized={density === 'grid'} />
         </span>
         <span className="compact-album-info">
-          <span className="compact-album-title">{highlightSearchMatch(album.album, searchQuery)}</span>
-          <span className="compact-album-artist">{highlightSearchMatch(album.artist, searchQuery)}</span>
+          <HoverRevealText className="compact-album-title" text={album.album} {...reveal.textProps}>{highlightSearchMatch(album.album, searchQuery)}</HoverRevealText>
+          <HoverRevealText className="compact-album-artist" text={album.artist} {...reveal.textProps}>{highlightSearchMatch(album.artist, searchQuery)}</HoverRevealText>
           <span className="compact-album-meta">{album.track_count} {album.track_count === 1 ? 'track' : 'tracks'}{album.year ? ` · ${album.year}` : ''}</span>
         </span>
       </button>

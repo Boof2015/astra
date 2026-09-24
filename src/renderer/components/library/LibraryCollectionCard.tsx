@@ -2,6 +2,8 @@ import { memo, type CSSProperties, type MouseEventHandler, type ReactNode } from
 import { highlightSearchMatch } from '../../utils/searchHighlight'
 import type { HomePlaybackControlState } from '../home/HomePlaybackControl'
 import LibraryCardPlaybackControl from './LibraryCardPlaybackControl'
+import HoverRevealText from '../common/HoverRevealText'
+import { useHoverRevealCard } from '../../hooks/useHoverRevealCard'
 
 interface LibraryCollectionCardProps {
   title: string
@@ -18,21 +20,26 @@ interface LibraryCollectionCardProps {
   className?: string
   style?: CSSProperties
   badge?: ReactNode
+  revealTitle?: boolean
+  revealSubtitle?: string
 }
 
 /** The compact horizontal member of Home's media-card family. */
 function LibraryCollectionCard({
   title, subtitle, metadata, artwork, playback, onOpen, onPlay, onContextMenu,
-  controllerKey, controllerIndex, searchQuery = '', className = '', style, badge
+  controllerKey, controllerIndex, searchQuery = '', className = '', style, badge,
+  revealTitle = false, revealSubtitle
 }: LibraryCollectionCardProps) {
+  const revealEnabled = revealTitle || revealSubtitle !== undefined
+  const reveal = useHoverRevealCard(`${controllerKey}:${searchQuery}`, revealEnabled)
   return (
-    <article className={`home-collection-card home-hover-playback library-collection-card ${className}${playback.playing || playback.pending ? ' has-playback-indicator' : ''}`} style={style} onContextMenu={onContextMenu}>
+    <article {...reveal.cardProps} className={`home-collection-card home-hover-playback library-collection-card ${className}${playback.playing || playback.pending ? ' has-playback-indicator' : ''}`} style={style} onContextMenu={onContextMenu}>
       <button
         type="button"
         className="home-media-open library-collection-open"
         onClick={onOpen}
-        aria-label={`Open ${title}`}
-        title={title}
+        aria-label={`Open ${title}${revealSubtitle ? ` by ${revealSubtitle}` : ''}`}
+        title={!revealEnabled || reveal.reducedMotion ? `${title}${revealSubtitle ? ` — ${revealSubtitle}` : ''}` : undefined}
         data-controller-focusable="true"
         data-controller-context={onContextMenu ? 'true' : undefined}
         data-controller-key={controllerKey}
@@ -41,8 +48,12 @@ function LibraryCollectionCard({
       >
         <span className="library-collection-artwork" aria-hidden="true">{artwork}</span>
         <span className="home-media-copy library-collection-copy">
-          <strong className="home-media-title library-collection-title">{highlightSearchMatch(title, searchQuery)}</strong>
-          <span className="library-collection-subtitle">{subtitle}</span>
+          {revealTitle
+            ? <HoverRevealText className="home-media-title library-collection-title" text={title} {...reveal.textProps}>{highlightSearchMatch(title, searchQuery)}</HoverRevealText>
+            : <strong className="home-media-title library-collection-title">{highlightSearchMatch(title, searchQuery)}</strong>}
+          {revealSubtitle !== undefined
+            ? <HoverRevealText className="library-collection-subtitle" text={revealSubtitle} {...reveal.textProps}>{subtitle}</HoverRevealText>
+            : <span className="library-collection-subtitle">{subtitle}</span>}
           {metadata && <span className="library-collection-meta">{metadata}</span>}
         </span>
       </button>
