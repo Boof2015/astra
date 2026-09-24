@@ -3596,6 +3596,15 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 
 .home-media-grid-item { min-width: 0; }
 
+.home-media-grid-item.is-expansion-reveal {
+  animation: homeGridReveal 180ms var(--motion-structural-ease) both;
+}
+
+@keyframes homeGridReveal {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .home-collection-card,
 .home-media-album,
 .home-track-row {
@@ -3836,6 +3845,104 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 
 .home-track-row .home-media-artwork { width: 44px; }
 
+/* Compact quick-play cards reclaim the action column until interaction. */
+.home-hover-playback {
+  position: relative;
+  --home-floating-surface: color-mix(in srgb, var(--home-card-base, var(--bg-primary)), rgb(var(--tint)) 5.5%);
+}
+
+.home-hover-playback:hover {
+  --home-floating-surface: color-mix(in srgb, var(--home-card-base, var(--bg-primary)), rgb(var(--tint)) 8.5%);
+}
+
+.home-collection-card.home-hover-playback { grid-template-columns: minmax(0, 1fr); }
+.home-track-row.home-hover-playback { grid-template-columns: 44px minmax(0, 1fr); }
+
+.home-floating-playback {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 76px;
+  padding-right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  border-radius: 0 8px 8px 0;
+  background: linear-gradient(to right, transparent, var(--home-floating-surface) 45%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast);
+}
+
+.home-hover-playback:is(:hover, :focus-within, .has-playback-indicator) > .home-floating-playback { opacity: 1; }
+.home-hover-playback:is(:hover, :focus-within, .has-playback-indicator) > .home-floating-playback > .home-playback-control { pointer-events: auto; }
+
+.home-recent-drawer {
+  position: fixed;
+  inset: 0 0 0 auto;
+  width: min(480px, 100vw);
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--glass-border);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font: inherit;
+  overflow: hidden;
+  box-shadow: -16px 0 48px var(--shadow-soft);
+  --home-card-base: var(--bg-secondary);
+  opacity: 1;
+  transform: translateX(0);
+  transition: opacity var(--motion-structural-enter) ease, transform var(--motion-structural-enter) var(--motion-structural-ease);
+}
+
+.home-recent-drawer[open] { display: flex; flex-direction: column; }
+.home-recent-drawer::backdrop { background: var(--scrim-soft); opacity: 1; transition: opacity var(--motion-structural-enter) ease; }
+.home-recent-drawer:is([data-presence="entering"], [data-presence="exiting"]) { opacity: 0; transform: translateX(24px); }
+.home-recent-drawer:is([data-presence="entering"], [data-presence="exiting"])::backdrop { opacity: 0; }
+.home-recent-drawer[data-presence="exiting"],
+.home-recent-drawer[data-presence="exiting"]::backdrop { transition-duration: var(--motion-structural-exit); pointer-events: none; }
+
+.home-recent-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 24px 20px 18px;
+  flex: none;
+}
+
+.home-recent-drawer-header h2 { font-size: 18px; font-weight: 600; letter-spacing: -0.025em; color: var(--text-strong); }
+.home-recent-drawer-header button { width: 32px; flex: none; }
+
+.home-recent-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  margin: 0 20px;
+  padding: 4px 8px;
+  flex: none;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: rgba(var(--tint), 0.035);
+  color: var(--text-secondary);
+}
+
+.home-recent-search > svg { flex: none; }
+.home-recent-search input { min-width: 0; width: 100%; flex: 1; height: 32px; padding: 0; border: 0; outline: none; background: none; color: var(--text-primary); font: inherit; font-size: 13px; }
+.home-recent-search input::placeholder { color: var(--text-secondary); }
+.home-recent-search input::-webkit-search-cancel-button { display: none; }
+.home-recent-count { margin: 10px 20px 14px; color: var(--text-secondary); font-size: 12px; flex: none; }
+.home-recent-drawer-list { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 0 20px 20px; overflow-y: auto; overscroll-behavior: contain; }
+.home-recent-drawer-list > .home-track-row { flex: none; height: auto; }
+.home-recent-empty { padding: 24px 8px; text-align: center; color: var(--text-secondary); font-size: 13px; }
+.home-recent-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 20px 14px; padding: 8px 10px; border: 1px solid rgba(248, 113, 113, 0.24); border-radius: 8px; font-size: 12px; }
+.home-recent-search:focus-within,
+.home-recent-drawer button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 @media (pointer: coarse) {
   .home-playback-control,
   .home-playback-glyph { width: 44px; height: 44px; }
@@ -3844,6 +3951,14 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   .home-album-footer { grid-template-columns: minmax(0, 1fr) 44px; }
   .home-section-action, .home-shelf-navigation button, .home-grid-expand { min-height: 44px; }
   .home-shelf-navigation button { width: 44px; }
+  .home-hover-playback { --home-floating-control-size: 44px; }
+  .home-recent-drawer-header button { width: 44px; }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .home-hover-playback > .home-floating-playback { opacity: 1; }
+  .home-hover-playback > .home-floating-playback > .home-playback-control { pointer-events: auto; }
+  .home-hover-playback .home-media-copy { padding-right: calc(var(--home-floating-control-size, 32px) + 12px); }
 }
 
 @media (hover: none) {
@@ -3852,7 +3967,9 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 
 @media (prefers-reduced-motion: reduce) {
   .home-collection-card, .home-media-album, .home-track-row, .home-playback-glyph,
-  .home-section-action, .home-shelf-navigation button, .home-grid-expand {
+  .home-section-action, .home-shelf-navigation button, .home-grid-expand,
+  .home-media-grid-item.is-expansion-reveal, .home-floating-playback,
+  .home-recent-drawer, .home-recent-drawer::backdrop {
     animation: none !important;
     transition: none !important;
   }

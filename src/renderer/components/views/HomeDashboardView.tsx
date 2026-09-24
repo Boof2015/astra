@@ -22,9 +22,11 @@ import HomeCustomizeModal from '../home/HomeCustomizeModal'
 import HomeJumpBackIn, { type JumpBackInCard } from '../home/HomeJumpBackIn'
 import { activateHomePlayback, isHomePlaybackTargetActive } from '../../utils/homePlayback'
 import { formatHomeAddedAge } from '../../utils/homeAddedAge'
+import type { HomeRecentTrack } from '../../utils/homeRecentTracks'
 import HomeSection from '../home/HomeSection'
 import HomeShelfNavigation from '../home/HomeShelfNavigation'
 import HomeExpandableGrid from '../home/HomeExpandableGrid'
+import HomeRecentTracksDrawer from '../home/HomeRecentTracksDrawer'
 import { HomeAlbumCard, HomeCollectionCard, HomeTrackRow } from '../home/HomeMediaCards'
 import type { HomePlaybackControlState } from '../home/HomePlaybackControl'
 import {
@@ -41,14 +43,6 @@ import {
 } from './HomeView'
 
 const GREETING_ROTATION_MS = 30 * 60 * 1000
-interface HomeTrack {
-  path: string
-  title: string
-  artist: string
-  album: string
-  artwork_hash: string | null
-}
-
 interface RediscoveryRotation {
   dayKey: string
   index: number
@@ -75,9 +69,9 @@ function persistRediscoveryRotation(rotation: RediscoveryRotation): void {
   }
 }
 
-function uniqueRecentTracks(tracks: HomeTrack[]): HomeTrack[] {
+function uniqueRecentTracks(tracks: HomeRecentTrack[]): HomeRecentTrack[] {
   const seen = new Set<string>()
-  const result: HomeTrack[] = []
+  const result: HomeRecentTrack[] = []
   for (const track of tracks) {
     if (!track.path || seen.has(track.path)) continue
     seen.add(track.path)
@@ -131,6 +125,7 @@ export default function HomeDashboardView() {
   const [dashboardError, setDashboardError] = useState<string | null>(null)
   const [rediscoveryRotation, setRediscoveryRotation] = useState(readRediscoveryRotation)
   const [isCustomizeOpen, setIsCustomizeOpen] = useState(false)
+  const [isRecentTracksOpen, setIsRecentTracksOpen] = useState(false)
   const [pendingPlaybackKey, setPendingPlaybackKey] = useState<string | null>(null)
   const playbackRequestRef = useRef<string | null>(null)
   const isShuffleStarting = pendingPlaybackKey === 'library:shuffle'
@@ -298,11 +293,11 @@ export default function HomeDashboardView() {
   }, [loadHomeDashboard, trackCacheVersion, playlists, favoriteTrackPaths])
 
   const favoriteTracks = useMemo(
-    () => resolveTrackPaths(favoriteTrackPaths) as HomeTrack[],
+    () => resolveTrackPaths(favoriteTrackPaths) as HomeRecentTrack[],
     [favoriteTrackPaths, resolveTrackPaths, trackCacheVersion]
   )
   const recentTracks = useMemo(
-    () => uniqueRecentTracks(resolveTrackPaths(recentlyPlayedPaths) as HomeTrack[]),
+    () => uniqueRecentTracks(resolveTrackPaths(recentlyPlayedPaths) as HomeRecentTrack[]),
     [recentlyPlayedPaths, resolveTrackPaths, trackCacheVersion]
   )
   const pinnedPlaylists = useMemo(() => buildSidebarPlaylistSections(playlists, {
@@ -499,16 +494,26 @@ export default function HomeDashboardView() {
     )
   }
 
+  const handlePlayRecentTrack = (track: HomeRecentTrack) => {
+    const index = recentTracks.findIndex((entry) => entry.path === track.path)
+    if (index < 0) return
+    void playSource({ type: 'track', trackPath: track.path }, track.title, async () => {
+      // Home's preview and the drawer's search only filter the display, not the queue.
+      await startPlaybackContextByPaths(recentTracks.map((entry) => entry.path), index, { recordSelectedTrack: true, contextLabel: 'Recently Played' })
+    })
+  }
+
   const renderRecentTracks = () => {
     if (!recentTracks.length) return null
     return (
-      <HomeSection id="recent-tracks" title="Recently played tracks">
-        <HomeExpandableGrid items={recentTracks} initialRows={3} getKey={(track) => track.path} renderItem={(track, index) => (
+      <HomeSection id="recent-tracks" title="Recently played tracks" actions={
+        <button type="button" className="home-section-action" data-controller-focusable="true" aria-label="View all recently played tracks"
+          onClick={() => { setActionError(null); setIsRecentTracksOpen(true) }}>View all</button>
+      }>
+        <HomeExpandableGrid items={recentTracks} initialRows={3} maxRows={6} getKey={(track) => track.path} renderItem={(track) => (
           <HomeTrackRow title={track.title} subtitle={track.artist} artworkHash={track.artwork_hash}
             playback={getPlayback({ type: 'track', trackPath: track.path })}
-            onPlay={() => void playSource({ type: 'track', trackPath: track.path }, track.title, async () => {
-              await startPlaybackContextByPaths(recentTracks.map((entry) => entry.path), index, { recordSelectedTrack: true, contextLabel: 'Recently Played' })
-            })} />
+            onPlay={() => handlePlayRecentTrack(track)} />
         )} />
       </HomeSection>
     )
@@ -620,6 +625,9 @@ export default function HomeDashboardView() {
         )}
       </div>
       <HomeCustomizeModal isOpen={isCustomizeOpen} onClose={() => setIsCustomizeOpen(false)} />
+      <HomeRecentTracksDrawer isOpen={isRecentTracksOpen} tracks={recentTracks}
+        getPlayback={(track) => getPlayback({ type: 'track', trackPath: track.path })} onPlay={handlePlayRecentTrack}
+        onClose={() => setIsRecentTracksOpen(false)} error={actionError} onDismissError={() => setActionError(null)} />
     </div>
   )
 }
