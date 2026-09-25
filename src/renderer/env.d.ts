@@ -282,6 +282,7 @@ declare global {
             maximize: () => void
             close: () => void
             isMaximized: () => Promise<boolean>
+            setUIScale: (scale: number) => void
             associatedOpenFiles: {
                 markReady: () => void
                 onOpenFiles: (callback: (paths: string[]) => void) => () => void

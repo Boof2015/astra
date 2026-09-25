@@ -241,6 +241,12 @@ function App() {
     } as CSSProperties
   }, [analyzerHeightPreviewPx, analyzerHeightPx, isAnalyzerRackVisible, uiScalePercent])
 
+  // Native traffic lights don't follow the CSS scale, so main re-centers them in the title bar.
+  useEffect(() => {
+    if (window.electronAPI?.platform !== 'darwin') return
+    window.electronAPI.setUIScale?.(uiScalePercent / 100)
+  }, [uiScalePercent])
+
   useEffect(() => {
     if (!isAnalyzerRackVisible) {
       setAnalyzerHeightPreviewPx(null)

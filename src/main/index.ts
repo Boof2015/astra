@@ -4837,6 +4837,22 @@ async function createLyricsPopoutWindow(): Promise<void> {
   broadcastLyricsPopoutWindowState()
 }
 
+// Must match the effective --titlebar-height in globals.css (the Concept V2 override layer, not
+// the 40px base value). The renderer scales the whole UI (title bar included) with --ui-scale,
+// but the native buttons don't scale, so their y is recomputed whenever the renderer reports a
+// new scale. 14pt is the traffic-light height on macOS 26; older releases use 12pt and end up
+// 1pt high, which isn't visible.
+const MAC_TITLEBAR_HEIGHT = 34
+const MAC_TRAFFIC_LIGHT_X = 16
+const MAC_TRAFFIC_LIGHT_HEIGHT = 14
+
+function macTrafficLightPosition(uiScale = 1): Electron.Point {
+  return {
+    x: MAC_TRAFFIC_LIGHT_X,
+    y: Math.round((MAC_TITLEBAR_HEIGHT * uiScale - MAC_TRAFFIC_LIGHT_HEIGHT) / 2)
+  }
+}
+
 function createWindow(): void {
   associatedOpenRendererReady = false
 
@@ -4856,7 +4872,7 @@ function createWindow(): void {
     minHeight: MAIN_WINDOW_MIN_HEIGHT,
     frame: false,
     titleBarStyle: 'hidden',
-    trafficLightPosition: { x: 16, y: 16 },
+    trafficLightPosition: macTrafficLightPosition(),
     transparent: false,
     backgroundColor: '#0a0a0f',
     vibrancy: process.platform === 'darwin' ? 'under-window' : undefined,
@@ -5748,6 +5764,12 @@ ipcMain.on('window:close', () => {
 
 ipcMain.handle('window:isMaximized', () => {
   return mainWindow?.isMaximized() ?? false
+})
+
+ipcMain.on('window:set-ui-scale', (_event, scale: unknown) => {
+  if (process.platform !== 'darwin' || !mainWindow || mainWindow.isDestroyed()) return
+  if (typeof scale !== 'number' || !Number.isFinite(scale) || scale <= 0) return
+  mainWindow.setWindowButtonPosition(macTrafficLightPosition(scale))
 })
 
 ipcMain.handle('desktop-integration:getPrefs', () => {

@@ -360,7 +360,8 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 }
 
 .titlebar-macos-spacer {
-  width: 70px;
+  /* Reserves room for the native traffic lights, which don't scale with --ui-scale. */
+  width: calc(70px / var(--ui-scale, 1));
   flex-shrink: 0;
 }
 
@@ -13416,7 +13417,7 @@ button.ql-token-chip {
    Concept V2 Override Layer
    ============================================ */
 :root {
-  --titlebar-height: 34px;
+  --titlebar-height: 34px; /* keep in sync with MAC_TITLEBAR_HEIGHT in src/main/index.ts */
   --sidebar-width: 56px;
   --analyzer-height: 196px;
   --now-playing-height: 112px;

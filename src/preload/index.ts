@@ -919,6 +919,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   maximize: () => ipcRenderer.send('window:maximize'),
   close: () => ipcRenderer.send('window:close'),
   isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
+  setUIScale: (scale: number) => ipcRenderer.send('window:set-ui-scale', scale),
   associatedOpenFiles: {
     markReady: () => ipcRenderer.send('associated-open-files:rendererReady'),
     onOpenFiles: (callback: (paths: string[]) => void) => {
@@ -1973,6 +1974,7 @@ declare global {
       maximize: () => void
       close: () => void
       isMaximized: () => Promise<boolean>
+      setUIScale: (scale: number) => void
       associatedOpenFiles: {
         markReady: () => void
         onOpenFiles: (callback: (paths: string[]) => void) => () => void
