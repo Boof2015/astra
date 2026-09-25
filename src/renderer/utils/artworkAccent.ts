@@ -371,3 +371,51 @@ export async function extractArtworkAccent(
     return null
   }
 }
+
+function hexToRgb(hex: string): Rgb | null {
+  const match = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim())
+  if (!match) return null
+  const digits = match[1].length === 3
+    ? match[1].split('').map((digit) => digit + digit).join('')
+    : match[1]
+  return {
+    r: parseInt(digits.slice(0, 2), 16),
+    g: parseInt(digits.slice(2, 4), 16),
+    b: parseInt(digits.slice(4, 6), 16),
+  }
+}
+
+function relativeLuminance({ r, g, b }: Rgb): number {
+  const channel = (value: number) => {
+    const normalized = clampByte(value) / 255
+    return normalized <= 0.03928 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4
+  }
+  return (0.2126 * channel(r)) + (0.7152 * channel(g)) + (0.0722 * channel(b))
+}
+
+export function contrastRatio(foreground: string, background: string): number {
+  const fg = hexToRgb(foreground)
+  const bg = hexToRgb(background)
+  if (!fg || !bg) return 1
+  const a = relativeLuminance(fg)
+  const b = relativeLuminance(bg)
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)
+}
+
+/**
+ * Raise a colour's lightness, keeping its hue, until it reaches `minContrast`
+ * against a dark background. Vibrant artwork accents may sit at L≈0.38, which
+ * for deep blues and reds is unreadable as text on near-black.
+ */
+export function ensureReadableOnDark(color: string, background: string, minContrast = 4.5): string {
+  const rgb = hexToRgb(color)
+  if (!rgb) return color
+  if (contrastRatio(color, background) >= minContrast) return rgbToHex(rgb)
+
+  const hsl = rgbToHsl(rgb)
+  for (let lightness = hsl.l; lightness <= 1; lightness += 0.02) {
+    const candidate = rgbToHex(hslToRgb({ ...hsl, l: lightness }))
+    if (contrastRatio(candidate, background) >= minContrast) return candidate
+  }
+  return '#ffffff'
+}

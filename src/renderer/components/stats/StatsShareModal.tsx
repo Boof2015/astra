@@ -4,12 +4,15 @@ import astraWordmarkUrl from '../../assets/astra-wordmark.svg'
 import { usePresence } from '../../hooks/usePresence'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { createAstraLogoSvgDataUrl } from '../icons/astraLogoShared'
+import { ensureReadableOnDark, extractArtworkAccent } from '../../utils/artworkAccent'
 import {
   buildListeningStatsShareModel,
   type ListeningStatsShareLens
 } from '../../utils/listeningStatsShare'
 import {
+  LISTENING_STATS_SHARE_BACKGROUND,
   LISTENING_STATS_SHARE_HEIGHT,
+  LISTENING_STATS_SHARE_SCALE,
   LISTENING_STATS_SHARE_WIDTH,
   listeningStatsShareCanvasToPng,
   loadListeningStatsShareImage,
@@ -85,7 +88,23 @@ export default function StatsShareModal({ isOpen, snapshot, onClose }: StatsShar
           document.fonts.ready
         ])
       }
-      const accentColor = shareAccentColor()
+      const artworkEntries = await Promise.all(model.artworkHashes.map(async (hash) => {
+        const dataUrl = await getArtwork(hash, { variant: 'full', format: 'data-url' })
+        if (!dataUrl) return [hash, null, null] as const
+        const image = await loadListeningStatsShareImage(dataUrl).catch(() => null)
+        return [hash, image, dataUrl] as const
+      }))
+      // The card takes its palette from the hero cover (the first collage tile for
+      // the overview); the app theme accent is only the no-artwork fallback.
+      const heroHash = model.hero?.artworkHash ?? model.artworkHashes[0] ?? null
+      const heroDataUrl = artworkEntries.find(([hash, image]) => hash === heroHash && image)?.[2] ?? null
+      const [vibrant, tintColor] = heroDataUrl
+        ? await Promise.all([
+          extractArtworkAccent(heroDataUrl, 'vibrant'),
+          extractArtworkAccent(heroDataUrl, 'dominant')
+        ])
+        : [null, null]
+      const accentColor = ensureReadableOnDark(vibrant ?? shareAccentColor(), LISTENING_STATS_SHARE_BACKGROUND)
       const logoDataUrl = createAstraLogoSvgDataUrl({
         includeBackground: false,
         mainFill: accentColor,
@@ -95,16 +114,11 @@ export default function StatsShareModal({ isOpen, snapshot, onClose }: StatsShar
         loadListeningStatsShareImage(logoDataUrl).catch(() => null),
         loadListeningStatsShareImage(astraWordmarkUrl).catch(() => null)
       ])
-      const artworkEntries = await Promise.all(model.artworkHashes.map(async (hash) => {
-        const dataUrl = await getArtwork(hash, { variant: 'full', format: 'data-url' })
-        if (!dataUrl) return [hash, null] as const
-        const image = await loadListeningStatsShareImage(dataUrl).catch(() => null)
-        return [hash, image] as const
-      }))
       if (cancelled || !canvasRef.current) return
       renderListeningStatsShareCard(canvasRef.current, model, {
         accentColor,
-        artworkByHash: new Map(artworkEntries.filter((entry): entry is readonly [string, HTMLImageElement] => entry[1] !== null)),
+        tintColor,
+        artworkByHash: new Map(artworkEntries.flatMap(([hash, image]) => image ? [[hash, image] as const] : [])),
         astraLogo,
         astraWordmark
       })
@@ -162,7 +176,7 @@ export default function StatsShareModal({ isOpen, snapshot, onClose }: StatsShar
       >
         <div className="modal-header listening-stats-share-modal-header">
           <div>
-            <p>{LISTENING_STATS_SHARE_WIDTH} × {LISTENING_STATS_SHARE_HEIGHT} PNG</p>
+            <p>{LISTENING_STATS_SHARE_WIDTH * LISTENING_STATS_SHARE_SCALE} × {LISTENING_STATS_SHARE_HEIGHT * LISTENING_STATS_SHARE_SCALE} PNG</p>
             <h2 id="listening-stats-share-title">Share Listening Stats</h2>
           </div>
           <button ref={closeButtonRef} className="modal-close" type="button" onClick={onClose} aria-label="Close share preview">
@@ -177,8 +191,8 @@ export default function StatsShareModal({ isOpen, snapshot, onClose }: StatsShar
             <canvas
               ref={canvasRef}
               className="listening-stats-share-canvas"
-              width={LISTENING_STATS_SHARE_WIDTH}
-              height={LISTENING_STATS_SHARE_HEIGHT}
+              width={LISTENING_STATS_SHARE_WIDTH * LISTENING_STATS_SHARE_SCALE}
+              height={LISTENING_STATS_SHARE_HEIGHT * LISTENING_STATS_SHARE_SCALE}
               role="img"
               aria-label={`${model.title} share-card preview for ${model.rangeLabel}`}
             />

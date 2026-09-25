@@ -20,7 +20,7 @@ function createPngHeader(width = STATS_SHARE_PNG_WIDTH, height = STATS_SHARE_PNG
 test('share-card PNG validation accepts only the fixed export dimensions', () => {
   const bytes = createPngHeader()
   assert.equal(validateStatsSharePng(bytes), bytes)
-  assert.throws(() => validateStatsSharePng(createPngHeader(1080, 1350)), /1474×1920/)
+  assert.throws(() => validateStatsSharePng(createPngHeader(2160, 3840)), /1080×1920/)
   assert.throws(() => validateStatsSharePng(new Uint8Array(33)), /not a PNG/)
   assert.throws(() => validateStatsSharePng('not bytes'), /Invalid share-card PNG data/)
 })

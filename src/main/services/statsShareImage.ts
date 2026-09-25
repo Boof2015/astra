@@ -1,6 +1,8 @@
 import { basename } from 'path'
 
-export const STATS_SHARE_PNG_WIDTH = 1474
+// Must match the renderer's export size: LISTENING_STATS_SHARE_WIDTH/HEIGHT × SCALE
+// in src/renderer/utils/listeningStatsShareCanvas.ts.
+export const STATS_SHARE_PNG_WIDTH = 1080
 export const STATS_SHARE_PNG_HEIGHT = 1920
 export const STATS_SHARE_PNG_MAX_BYTES = 20 * 1024 * 1024
 

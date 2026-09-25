@@ -1,26 +1,59 @@
 import type { ListeningStatsShareItem, ListeningStatsShareModel } from './listeningStatsShare'
 
-export const LISTENING_STATS_SHARE_WIDTH = 1474
+/** Logical layout size (9:16 story). The canvas backing store is SCALE× this. */
+export const LISTENING_STATS_SHARE_WIDTH = 1080
 export const LISTENING_STATS_SHARE_HEIGHT = 1920
+export const LISTENING_STATS_SHARE_SCALE = 1
 
 export interface ListeningStatsShareCanvasAssets {
   accentColor: string
+  /** Dominant artwork colour used to tint the background; null keeps it neutral. */
+  tintColor: string | null
   artworkByHash: ReadonlyMap<string, HTMLImageElement>
   astraLogo: HTMLImageElement | null
   astraWordmark: HTMLImageElement | null
 }
 
-const BACKGROUND = '#0f0f10'
+export const LISTENING_STATS_SHARE_BACKGROUND = '#0c0c0e'
+
 const TEXT = '#f5f5f6'
-const TEXT_SECONDARY = '#c5c5ca'
-const CENTER_X = LISTENING_STATS_SHARE_WIDTH / 2
-const FRAME_LEFT = 64
-const FRAME_RIGHT = 1410
-const CONTENT_LEFT = 120
-const CONTENT_RIGHT = 1354
-const HERO_X = 437
-const HERO_Y = 190
-const HERO_SIZE = 600
+const TEXT_SECONDARY = 'rgba(245, 245, 246, 0.7)'
+const TEXT_TERTIARY = 'rgba(245, 245, 246, 0.5)'
+const RULE = 'rgba(245, 245, 246, 0.14)'
+const MONO = '"JetBrains Mono", monospace'
+const SANS = 'Inter, sans-serif'
+const LABEL_TRACKING = '0.08em'
+
+// Grid: one margin, one content column. Everything aligns to LEFT or RIGHT.
+const LEFT = 72
+const RIGHT = LISTENING_STATS_SHARE_WIDTH - 72
+const CONTENT_WIDTH = RIGHT - LEFT
+
+const HEADER_BASELINE = 100
+const HEADER_RULE_Y = 132
+const SECTION_BASELINE = 196
+const ART_TOP = 228
+const ART_SIZE = 480
+const ART_BOTTOM = ART_TOP + ART_SIZE
+const READOUT_LEFT = LEFT + ART_SIZE + 40
+const READOUT_WIDTH = RIGHT - READOUT_LEFT
+const READOUT_ROW_HEIGHT = 72
+const TITLE_BASELINE = ART_BOTTOM + 92
+const TITLE_LINE_HEIGHT = 80
+const LIST_HEADING_OFFSET = 52
+const LIST_ROWS_OFFSET = 80
+const LIST_ROW_HEIGHT = 116
+const LIST_THUMB = 80
+const LIST_RANK_WIDTH = 64
+const LIST_METER_WIDTH = 150
+const PERIOD_RULE_Y = 1404
+const PERIOD_HEADING_BASELINE = 1452
+const PERIOD_VALUE_BASELINE = 1524
+const PERIOD_LABEL_BASELINE = 1566
+const ACTIVITY_BOTTOM = 1704
+const ACTIVITY_DATE_BASELINE = 1746
+const FOOTER_RULE_Y = 1784
+const FOOTER_BASELINE = 1846
 
 function roundedRectPath(
   context: CanvasRenderingContext2D,
@@ -91,7 +124,7 @@ function setFittedFont(
   weight: number,
   initialSize: number,
   minimumSize: number,
-  family = 'Inter, sans-serif'
+  family = SANS
 ): number {
   let size = initialSize
   while (size > minimumSize) {
@@ -103,17 +136,89 @@ function setFittedFont(
   return minimumSize
 }
 
+/**
+ * Greedy line wrap. Breaks on spaces, and falls back to per-character breaks for
+ * words wider than the line (unspaced CJK titles). When the text needs more than
+ * `maxLines`, the last line is ellipsized and `overflowed` is set.
+ */
+function wrapText(
+  context: CanvasRenderingContext2D,
+  value: string,
+  maxWidth: number,
+  maxLines: number
+): { lines: string[]; overflowed: boolean } {
+  const normalized = value.trim().replace(/\s+/g, ' ') || 'Unknown'
+  const tokens = normalized.split(/( )/).flatMap((token) =>
+    context.measureText(token).width > maxWidth ? [...token] : [token]
+  )
+  const lines: string[] = []
+  let current = ''
+  let index = 0
+  for (; index < tokens.length; index++) {
+    const candidate = current + tokens[index]
+    if (current.trim() && context.measureText(candidate.trimEnd()).width > maxWidth) {
+      lines.push(current.trimEnd())
+      if (lines.length === maxLines) break
+      current = tokens[index].trimStart()
+    } else {
+      current = candidate
+    }
+  }
+  if (lines.length < maxLines) {
+    if (current.trim()) lines.push(current.trim())
+    return { lines, overflowed: false }
+  }
+  const separator = tokens[index - 1] === ' ' ? ' ' : ''
+  const rest = tokens.slice(index).join('').trimStart()
+  lines[maxLines - 1] = fitText(context, `${lines[maxLines - 1]}${separator}${rest}`, maxWidth)
+  return { lines, overflowed: true }
+}
+
+function withLabelFont(context: CanvasRenderingContext2D, size: number, weight = 600): void {
+  context.font = `${weight} ${size}px ${MONO}`
+  context.letterSpacing = LABEL_TRACKING
+}
+
+function resetTracking(context: CanvasRenderingContext2D): void {
+  context.letterSpacing = '0px'
+}
+
+function hexToRgb(hex: string): [number, number, number] | null {
+  const match = /^#?([0-9a-f]{6})$/i.exec(hex.trim())
+  if (!match) return null
+  const value = parseInt(match[1], 16)
+  return [(value >> 16) & 255, (value >> 8) & 255, value & 255]
+}
+
+function mixHex(base: string, other: string | null, amount: number): string {
+  const a = hexToRgb(base)
+  const b = other ? hexToRgb(other) : null
+  if (!a || !b) return base
+  const mixed = a.map((channel, index) => Math.round(channel + (b[index] - channel) * amount))
+  return `rgb(${mixed[0]}, ${mixed[1]}, ${mixed[2]})`
+}
+
+function withAlpha(color: string, alpha: number): string {
+  const rgb = hexToRgb(color)
+  if (rgb) return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha})`
+  const channels = /^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/.exec(color)
+  return channels ? `rgba(${channels[1]}, ${channels[2]}, ${channels[3]}, ${alpha})` : color
+}
+
 function formatItemMetric(item: ListeningStatsShareItem, model: ListeningStatsShareModel): string {
   if (model.rankingMetric === 'plays') {
-    const plays = Math.max(0, Math.round(item.qualifiedPlays))
-    return `${plays.toLocaleString('en-US')} ${plays === 1 ? 'PLAY' : 'PLAYS'}`
+    return Math.max(0, Math.round(item.qualifiedPlays)).toLocaleString('en-US')
   }
   const minutes = Math.floor(Math.max(0, item.listenedSeconds) / 60)
-  if (minutes < 1) return '<1 MIN'
+  if (minutes < 1) return '<1m'
   const hours = Math.floor(minutes / 60)
   const remainder = minutes % 60
-  if (hours === 0) return `${minutes} MIN`
-  return remainder === 0 ? `${hours} HR` : `${hours} HR ${remainder} MIN`
+  if (hours === 0) return `${minutes}m`
+  return remainder === 0 ? `${hours}h` : `${hours}h ${remainder}m`
+}
+
+function itemMetricValue(item: ListeningStatsShareItem, model: ListeningStatsShareModel): number {
+  return Math.max(0, model.rankingMetric === 'plays' ? item.qualifiedPlays : item.listenedSeconds)
 }
 
 function artworkForItem(
@@ -167,276 +272,449 @@ function drawArtworkTile(
   else drawPlaceholder(context, x, y, width, height, assets)
 }
 
+function drawRule(context: CanvasRenderingContext2D, y: number, left = LEFT, right = RIGHT): void {
+  context.fillStyle = RULE
+  context.fillRect(left, y, right - left, 1)
+}
+
 function drawBackground(
   context: CanvasRenderingContext2D,
   model: ListeningStatsShareModel,
   assets: ListeningStatsShareCanvasAssets
 ): void {
-  context.fillStyle = BACKGROUND
+  const base = mixHex(LISTENING_STATS_SHARE_BACKGROUND, assets.tintColor, 0.1)
+  context.fillStyle = base
   context.fillRect(0, 0, LISTENING_STATS_SHARE_WIDTH, LISTENING_STATS_SHARE_HEIGHT)
 
   const artwork = heroArtwork(model, assets)
   if (artwork) {
     context.save()
-    context.globalAlpha = 0.24
-    context.filter = 'blur(164px) saturate(1.35)'
-    drawImageCover(context, artwork, 120, -235, 1234, 1234)
+    context.globalAlpha = 0.5
+    context.filter = 'blur(120px) saturate(1.3)'
+    drawImageCover(context, artwork, -120, -260, 1320, 1320)
     context.restore()
   }
 
-  const verticalVeil = context.createLinearGradient(0, 0, 0, 1200)
-  verticalVeil.addColorStop(0, 'rgba(15, 15, 16, 0.4)')
-  verticalVeil.addColorStop(0.5, 'rgba(15, 15, 16, 0.7)')
-  verticalVeil.addColorStop(1, BACKGROUND)
-  context.fillStyle = verticalVeil
-  context.fillRect(0, 0, LISTENING_STATS_SHARE_WIDTH, 1200)
-
-  const edgeVeil = context.createRadialGradient(CENTER_X, 425, 230, CENTER_X, 425, 940)
-  edgeVeil.addColorStop(0, 'rgba(15, 15, 16, 0)')
-  edgeVeil.addColorStop(1, 'rgba(15, 15, 16, 0.48)')
-  context.fillStyle = edgeVeil
-  context.fillRect(0, 0, LISTENING_STATS_SHARE_WIDTH, 1040)
+  // Let the art glow through behind the hero, then settle into the tinted base
+  // well before the list so small text always sits on a calm, even field.
+  const fade = context.createLinearGradient(0, 0, 0, 1180)
+  fade.addColorStop(0, withAlpha(base, 0.45))
+  fade.addColorStop(0.55, withAlpha(base, 0.72))
+  fade.addColorStop(1, base)
+  context.fillStyle = fade
+  context.fillRect(0, 0, LISTENING_STATS_SHARE_WIDTH, 1180)
+  context.fillStyle = base
+  context.fillRect(0, 1180, LISTENING_STATS_SHARE_WIDTH, LISTENING_STATS_SHARE_HEIGHT - 1180)
 }
 
-function drawHeader(
+function drawHeader(context: CanvasRenderingContext2D, model: ListeningStatsShareModel): void {
+  context.fillStyle = TEXT_SECONDARY
+  withLabelFont(context, 26)
+  context.fillText(`LISTENING REPORT · ${model.rangeTag}`, LEFT, HEADER_BASELINE)
+  context.textAlign = 'right'
+  context.fillStyle = TEXT_TERTIARY
+  context.fillText(fitText(context, model.rangeLabel, CONTENT_WIDTH * 0.46), RIGHT, HEADER_BASELINE)
+  context.textAlign = 'left'
+  resetTracking(context)
+
+  // Instrument-style scale: a hairline with minor ticks and a major tick every sixth.
+  drawRule(context, HEADER_RULE_Y)
+  const ticks = 24
+  for (let index = 0; index <= ticks; index++) {
+    const x = Math.round(LEFT + (CONTENT_WIDTH * index) / ticks)
+    const major = index % 6 === 0
+    context.fillStyle = major ? 'rgba(245, 245, 246, 0.32)' : RULE
+    context.fillRect(Math.min(x, RIGHT - 1), HEADER_RULE_Y, 1, major ? 14 : 7)
+  }
+}
+
+function drawSectionLabel(
   context: CanvasRenderingContext2D,
   model: ListeningStatsShareModel,
   accentColor: string
 ): void {
-  context.fillStyle = TEXT_SECONDARY
-  context.font = '600 32px "JetBrains Mono", monospace'
-  context.fillText('LISTENING STATS', FRAME_LEFT, 80)
-  context.textAlign = 'right'
-  context.fillText(model.rankingLabel.replace('RANKED ', ''), FRAME_RIGHT, 80)
-
-  context.textAlign = 'center'
+  withLabelFont(context, 26, 700)
   context.fillStyle = accentColor
-  context.font = '700 36px "JetBrains Mono", monospace'
-  context.fillText(model.title, CENTER_X, 145)
+  context.fillText(model.lens === 'overview' ? 'OVERVIEW' : `01 / ${model.title}`, LEFT, SECTION_BASELINE)
+  context.textAlign = 'right'
+  context.fillStyle = TEXT_TERTIARY
+  context.fillText(model.rankingLabel, RIGHT, SECTION_BASELINE)
   context.textAlign = 'left'
+  resetTracking(context)
 }
 
 function drawHeroFrame(context: CanvasRenderingContext2D, drawContent: () => void): void {
   context.save()
-  context.shadowColor = 'rgba(0, 0, 0, 0.55)'
-  context.shadowBlur = 32
-  context.shadowOffsetY = 16
-  roundedRectPath(context, HERO_X, HERO_Y, HERO_SIZE, HERO_SIZE, 22)
+  context.shadowColor = 'rgba(0, 0, 0, 0.5)'
+  context.shadowBlur = 40
+  context.shadowOffsetY = 18
+  roundedRectPath(context, LEFT, ART_TOP, ART_SIZE, ART_SIZE, 12)
   context.fillStyle = '#09090a'
   context.fill()
   context.restore()
 
   context.save()
-  roundedRectPath(context, HERO_X, HERO_Y, HERO_SIZE, HERO_SIZE, 22)
+  roundedRectPath(context, LEFT, ART_TOP, ART_SIZE, ART_SIZE, 12)
   context.clip()
   drawContent()
   context.restore()
 
-  roundedRectPath(context, HERO_X, HERO_Y, HERO_SIZE, HERO_SIZE, 22)
+  roundedRectPath(context, LEFT, ART_TOP, ART_SIZE, ART_SIZE, 12)
   context.strokeStyle = 'rgba(255, 255, 255, 0.12)'
   context.lineWidth = 1
   context.stroke()
 }
 
-function drawSingleArtwork(
+function drawHeroArt(
   context: CanvasRenderingContext2D,
   model: ListeningStatsShareModel,
   assets: ListeningStatsShareCanvasAssets
 ): void {
-  drawHeroFrame(context, () => {
-    drawArtworkTile(context, heroArtwork(model, assets), HERO_X, HERO_Y, HERO_SIZE, HERO_SIZE, assets)
-  })
-}
+  if (model.lens !== 'overview') {
+    drawHeroFrame(context, () => {
+      drawArtworkTile(context, heroArtwork(model, assets), LEFT, ART_TOP, ART_SIZE, ART_SIZE, assets)
+    })
+    return
+  }
 
-function drawOverviewCollage(
-  context: CanvasRenderingContext2D,
-  model: ListeningStatsShareModel,
-  assets: ListeningStatsShareCanvasAssets
-): void {
   const gap = 4
-  const half = (HERO_SIZE - gap) / 2
+  const half = (ART_SIZE - gap) / 2
   const images = model.artworkHashes.slice(0, 4).map((hash) => assets.artworkByHash.get(hash) ?? null)
   drawHeroFrame(context, () => {
     if (images.length <= 1) {
-      drawArtworkTile(context, images[0] ?? null, HERO_X, HERO_Y, HERO_SIZE, HERO_SIZE, assets)
+      drawArtworkTile(context, images[0] ?? null, LEFT, ART_TOP, ART_SIZE, ART_SIZE, assets)
       return
     }
     if (images.length === 2) {
-      drawArtworkTile(context, images[0], HERO_X, HERO_Y, half, HERO_SIZE, assets)
-      drawArtworkTile(context, images[1], HERO_X + half + gap, HERO_Y, half, HERO_SIZE, assets)
+      drawArtworkTile(context, images[0], LEFT, ART_TOP, half, ART_SIZE, assets)
+      drawArtworkTile(context, images[1], LEFT + half + gap, ART_TOP, half, ART_SIZE, assets)
       return
     }
     if (images.length === 3) {
-      drawArtworkTile(context, images[0], HERO_X, HERO_Y, half, HERO_SIZE, assets)
-      drawArtworkTile(context, images[1], HERO_X + half + gap, HERO_Y, half, half, assets)
-      drawArtworkTile(context, images[2], HERO_X + half + gap, HERO_Y + half + gap, half, half, assets)
+      drawArtworkTile(context, images[0], LEFT, ART_TOP, half, ART_SIZE, assets)
+      drawArtworkTile(context, images[1], LEFT + half + gap, ART_TOP, half, half, assets)
+      drawArtworkTile(context, images[2], LEFT + half + gap, ART_TOP + half + gap, half, half, assets)
       return
     }
     images.forEach((image, index) => {
       const column = index % 2
       const row = Math.floor(index / 2)
-      drawArtworkTile(
-        context,
-        image,
-        HERO_X + column * (half + gap),
-        HERO_Y + row * (half + gap),
-        half,
-        half,
-        assets
-      )
+      drawArtworkTile(context, image, LEFT + column * (half + gap), ART_TOP + row * (half + gap), half, half, assets)
     })
   })
 }
 
-function drawHeroCopy(context: CanvasRenderingContext2D, model: ListeningStatsShareModel): void {
-  const title = model.hero?.title ?? 'YOUR TOP PICKS'
-  const subtitle = model.hero?.subtitle ?? 'TRACK • ALBUM • ARTIST'
-
-  context.textAlign = 'center'
+function drawHeroReadout(context: CanvasRenderingContext2D, model: ListeningStatsShareModel): void {
+  // Number first, unit label under it ("17 / PLAYS"), centred in the space
+  // between the artwork's top edge and the readout rows so neither side of it
+  // is left with a dead gap.
+  const rowsTop = ART_BOTTOM - model.heroReadouts.length * READOUT_ROW_HEIGHT
+  const size = setFittedFont(context, model.heroStat.value, READOUT_WIDTH, 600, 176, 72, MONO)
+  const capHeight = size * 0.73
+  const labelDrop = 50
+  const spare = Math.max(0, rowsTop - ART_TOP - capHeight - labelDrop)
+  const numberBaseline = ART_TOP + spare / 2 + capHeight
   context.fillStyle = TEXT
-  setFittedFont(context, title, 1180, 700, 56, 36)
-  context.fillText(fitText(context, title, 1180), CENTER_X, 878)
+  context.letterSpacing = '-0.04em'
+  context.fillText(model.heroStat.value, READOUT_LEFT - size * 0.04, numberBaseline)
+  resetTracking(context)
 
-  context.fillStyle = TEXT_SECONDARY
-  setFittedFont(context, subtitle, 1120, 500, 34, 26)
-  context.fillText(fitText(context, subtitle, 1120), CENTER_X, 936)
-  context.textAlign = 'left'
+  withLabelFont(context, 26)
+  context.fillStyle = TEXT_TERTIARY
+  context.fillText(model.heroStat.label, READOUT_LEFT, numberBaseline + labelDrop)
+  resetTracking(context)
+
+  model.heroReadouts.forEach((row, index) => {
+    const top = rowsTop + index * READOUT_ROW_HEIGHT
+    drawRule(context, top, READOUT_LEFT, RIGHT)
+    const baseline = top + READOUT_ROW_HEIGHT / 2 + 12
+
+    context.fillStyle = TEXT
+    context.font = `600 36px ${MONO}`
+    context.textAlign = 'right'
+    const value = fitText(context, row.value, READOUT_WIDTH * 0.5)
+    const valueWidth = context.measureText(value).width
+    context.fillText(value, RIGHT, baseline)
+    context.textAlign = 'left'
+
+    withLabelFont(context, 26)
+    context.fillStyle = TEXT_TERTIARY
+    context.fillText(fitText(context, row.label, READOUT_WIDTH - valueWidth - 20), READOUT_LEFT, baseline)
+    resetTracking(context)
+  })
 }
 
-function drawPersonality(
+/** Draws the hero title block and returns the y where it ends. */
+function drawHeroTitle(context: CanvasRenderingContext2D, model: ListeningStatsShareModel): number {
+  context.fillStyle = TEXT
+  let size = 72
+  let lines: string[] = []
+  // Prefer two lines at full size; only shrink when the title needs more than that.
+  while (size >= 56) {
+    context.font = `700 ${size}px ${SANS}`
+    context.letterSpacing = '-0.02em'
+    const wrapped = wrapText(context, model.heroTitle, CONTENT_WIDTH, 2)
+    lines = wrapped.lines
+    if (!wrapped.overflowed || size === 56) break
+    size -= 4
+  }
+  lines.forEach((line, index) => {
+    context.fillText(line, LEFT, TITLE_BASELINE + index * TITLE_LINE_HEIGHT)
+  })
+  resetTracking(context)
+
+  const lastTitleBaseline = TITLE_BASELINE + (lines.length - 1) * TITLE_LINE_HEIGHT
+  if (!model.heroSubtitle) return lastTitleBaseline + 20
+  context.fillStyle = TEXT_SECONDARY
+  context.font = `500 34px ${SANS}`
+  const subtitleBaseline = lastTitleBaseline + 54
+  context.fillText(fitText(context, model.heroSubtitle, CONTENT_WIDTH), LEFT, subtitleBaseline)
+  return subtitleBaseline + 20
+}
+
+function drawRankedList(
+  context: CanvasRenderingContext2D,
+  model: ListeningStatsShareModel,
+  assets: ListeningStatsShareCanvasAssets,
+  titleBottom: number
+): void {
+  const isOverview = model.lens === 'overview'
+  const items = (isOverview ? model.overviewItems : model.secondaryItems).slice(0, 3)
+  if (items.length === 0) return
+
+  // The title block grows with a second line; split whatever room is left evenly
+  // above and below the list so a short title doesn't leave one big hole.
+  const blockHeight = LIST_ROWS_OFFSET + items.length * LIST_ROW_HEIGHT
+  const spare = Math.max(0, PERIOD_RULE_Y - titleBottom - blockHeight)
+  const ruleY = Math.round(titleBottom + spare / 2)
+  const headingBaseline = ruleY + LIST_HEADING_OFFSET
+  const listTop = ruleY + LIST_ROWS_OFFSET
+
+  drawRule(context, ruleY)
+  withLabelFont(context, 26)
+  context.fillStyle = TEXT_TERTIARY
+  context.fillText(model.listHeading, LEFT, headingBaseline)
+  context.textAlign = 'right'
+  context.fillText(model.rankingMetric === 'plays' ? 'PLAYS' : 'TIME', RIGHT, headingBaseline)
+  context.textAlign = 'left'
+  resetTracking(context)
+
+  // Bars are scaled against the #1 item so the gaps between ranks are visible.
+  const leaderValue = Math.max(1, model.hero ? itemMetricValue(model.hero, model) : 0)
+  const thumbLeft = isOverview ? LEFT : LEFT + LIST_RANK_WIDTH
+  const textLeft = thumbLeft + LIST_THUMB + 28
+  const textWidth = RIGHT - LIST_METER_WIDTH - 32 - textLeft
+
+  items.forEach((item, index) => {
+    const top = listTop + index * LIST_ROW_HEIGHT
+    const thumbTop = top + (LIST_ROW_HEIGHT - LIST_THUMB) / 2
+    const titleBaseline = top + 50
+    const subtitleBaseline = top + 86
+
+    if (!isOverview) {
+      context.font = `500 28px ${MONO}`
+      context.fillStyle = TEXT_TERTIARY
+      context.fillText(String(item.rank).padStart(2, '0'), LEFT, titleBaseline + 12)
+    }
+
+    context.save()
+    roundedRectPath(context, thumbLeft, thumbTop, LIST_THUMB, LIST_THUMB, 6)
+    context.clip()
+    drawArtworkTile(context, artworkForItem(item, assets), thumbLeft, thumbTop, LIST_THUMB, LIST_THUMB, assets)
+    context.restore()
+
+    context.fillStyle = TEXT
+    context.font = `600 38px ${SANS}`
+    context.fillText(fitText(context, item.title, textWidth), textLeft, titleBaseline)
+    context.fillStyle = TEXT_SECONDARY
+    context.font = `500 28px ${SANS}`
+    context.fillText(fitText(context, item.subtitle, textWidth), textLeft, subtitleBaseline)
+
+    context.textAlign = 'right'
+    context.fillStyle = TEXT
+    context.font = `600 36px ${MONO}`
+    context.fillText(formatItemMetric(item, model), RIGHT, titleBaseline)
+    context.textAlign = 'left'
+
+    if (isOverview) {
+      withLabelFont(context, 24)
+      context.textAlign = 'right'
+      context.fillStyle = TEXT_TERTIARY
+      context.fillText(`TOP ${item.kind.toUpperCase()}`, RIGHT, subtitleBaseline)
+      context.textAlign = 'left'
+      resetTracking(context)
+      return
+    }
+
+    const meterTop = subtitleBaseline - 12
+    const fraction = Math.min(1, itemMetricValue(item, model) / leaderValue)
+    context.fillStyle = 'rgba(245, 245, 246, 0.12)'
+    roundedRectPath(context, RIGHT - LIST_METER_WIDTH, meterTop, LIST_METER_WIDTH, 8, 4)
+    context.fill()
+    context.fillStyle = assets.accentColor
+    roundedRectPath(context, RIGHT - LIST_METER_WIDTH, meterTop, Math.max(8, LIST_METER_WIDTH * fraction), 8, 4)
+    context.fill()
+  })
+}
+
+function drawActivity(
+  context: CanvasRenderingContext2D,
+  model: ListeningStatsShareModel,
+  accentColor: string,
+  top: number
+): void {
+  const values = model.activity
+  if (values.length === 0) return
+  const height = ACTIVITY_BOTTOM - top
+  const peak = Math.max(...values)
+  const peakIndex = model.activityPeak?.index ?? -1
+  const gap = values.length > 40 ? 3 : values.length > 14 ? 6 : 12
+  const barWidth = (CONTENT_WIDTH - gap * (values.length - 1)) / values.length
+
+  values.forEach((value, index) => {
+    const x = LEFT + index * (barWidth + gap)
+    if (value <= 0 || peak <= 0) {
+      // Silent days stay visible as baseline ticks, like an idle meter.
+      context.fillStyle = RULE
+      context.fillRect(x, ACTIVITY_BOTTOM - 3, barWidth, 3)
+      return
+    }
+    const barHeight = Math.max(6, (value / peak) * height)
+    context.fillStyle = index === peakIndex ? accentColor : 'rgba(245, 245, 246, 0.42)'
+    roundedRectPath(context, x, ACTIVITY_BOTTOM - barHeight, barWidth, barHeight, Math.min(3, barWidth / 2))
+    context.fill()
+  })
+
+  withLabelFont(context, 24)
+  const edgeGap = 24
+  let peakLeft = Infinity
+  let peakRight = -Infinity
+  if (model.activityPeak && peakIndex >= 0) {
+    // Caption the highlighted bar from directly underneath: a caret at the bar's
+    // centre, and the label centred on it but kept inside the grid.
+    const peakCenter = LEFT + peakIndex * (barWidth + gap) + barWidth / 2
+    const caretTop = ACTIVITY_BOTTOM + 8
+    context.fillStyle = accentColor
+    context.beginPath()
+    context.moveTo(peakCenter, caretTop)
+    context.lineTo(peakCenter + 8, caretTop + 10)
+    context.lineTo(peakCenter - 8, caretTop + 10)
+    context.closePath()
+    context.fill()
+
+    // Prefer sliding the caption between the range dates, as long as the caret
+    // stays under it; only when that fails does it take over an edge date's spot.
+    const labelWidth = context.measureText(model.activityPeak.label).width
+    const centered = peakCenter - labelWidth / 2
+    const minLeft = LEFT + context.measureText(model.activityStartLabel).width + edgeGap
+    const maxLeft = RIGHT - context.measureText(model.activityEndLabel).width - edgeGap - labelWidth
+    const nudged = Math.min(Math.max(centered, minLeft), maxLeft)
+    const caretInside = peakCenter >= nudged + 12 && peakCenter <= nudged + labelWidth - 12
+    peakLeft = minLeft <= maxLeft && caretInside
+      ? nudged
+      : Math.min(Math.max(LEFT, centered), RIGHT - labelWidth)
+    peakRight = peakLeft + labelWidth
+    context.fillText(model.activityPeak.label, peakLeft, ACTIVITY_DATE_BASELINE)
+  }
+
+  // Range dates give way when the peak caption still runs into them.
+  context.fillStyle = TEXT_TERTIARY
+  const startWidth = context.measureText(model.activityStartLabel).width
+  if (LEFT + startWidth + edgeGap <= peakLeft) {
+    context.fillText(model.activityStartLabel, LEFT, ACTIVITY_DATE_BASELINE)
+  }
+  const endWidth = context.measureText(model.activityEndLabel).width
+  if (RIGHT - endWidth - edgeGap >= peakRight) {
+    context.textAlign = 'right'
+    context.fillText(model.activityEndLabel, RIGHT, ACTIVITY_DATE_BASELINE)
+    context.textAlign = 'left'
+  }
+  resetTracking(context)
+}
+
+function drawPeriod(
   context: CanvasRenderingContext2D,
   model: ListeningStatsShareModel,
   accentColor: string
 ): void {
-  if (!model.personalityText) return
-  const value = model.personalityValue
-  const sentence = model.personalityText
-  const gap = 18
-  let size = 40
-  let valueWidth = 0
-  let sentenceWidth = 0
-  while (size >= 28) {
-    context.font = `650 ${size}px Inter, sans-serif`
-    valueWidth = context.measureText(value).width
-    context.font = `500 ${size}px Inter, sans-serif`
-    sentenceWidth = context.measureText(sentence).width
-    if (valueWidth + gap + sentenceWidth <= 1220) break
-    size -= 1
+  const hasStats = model.periodStats.length > 0
+  if (!hasStats && model.activity.length === 0) return
+
+  drawRule(context, PERIOD_RULE_Y)
+  withLabelFont(context, 26)
+  context.fillStyle = TEXT_TERTIARY
+  context.fillText(hasStats ? 'ALL LISTENING' : 'ACTIVITY', LEFT, PERIOD_HEADING_BASELINE)
+  resetTracking(context)
+
+  if (!hasStats) {
+    drawActivity(context, model, accentColor, PERIOD_HEADING_BASELINE + 40)
+    return
   }
 
-  context.font = `650 ${size}px Inter, sans-serif`
-  valueWidth = context.measureText(value).width
-  context.font = `500 ${size}px Inter, sans-serif`
-  const fittedSentence = fitText(context, sentence, 1220 - valueWidth - gap)
-  sentenceWidth = context.measureText(fittedSentence).width
-  let x = CENTER_X - (valueWidth + gap + sentenceWidth) / 2
-
-  context.fillStyle = accentColor
-  context.font = `650 ${size}px Inter, sans-serif`
-  context.fillText(value, x, 1042)
-  x += valueWidth + gap
-  context.fillStyle = TEXT
-  context.font = `500 ${size}px Inter, sans-serif`
-  context.fillText(fittedSentence, x, 1042)
-}
-
-function drawSummary(context: CanvasRenderingContext2D, model: ListeningStatsShareModel): void {
-  const centers = [240, 737, 1234]
-  model.summaryStats.forEach((stat, index) => {
-    context.textAlign = 'center'
-    context.fillStyle = TEXT
-    setFittedFont(context, stat.value, 330, 600, 48, 35)
-    context.fillText(stat.value, centers[index], 1178)
-    context.fillStyle = TEXT_SECONDARY
-    context.font = '600 27px "JetBrains Mono", monospace'
-    context.fillText(stat.label, centers[index], 1232)
-  })
-  context.textAlign = 'left'
-}
-
-function drawRankedItems(
-  context: CanvasRenderingContext2D,
-  model: ListeningStatsShareModel,
-  assets: ListeningStatsShareCanvasAssets
-): void {
-  const isOverview = model.lens === 'overview'
-  const items = isOverview ? model.overviewItems.slice(0, 3) : model.secondaryItems.slice(0, 3)
-  if (items.length === 0) return
-
-  const heading = isOverview
-    ? 'YOUR TOP PICKS'
-    : `NEXT ${model.lens === 'track' ? 'TRACKS' : 'ALBUMS'}`
-  context.fillStyle = assets.accentColor
-  context.font = '700 27px "JetBrains Mono", monospace'
-  context.fillText(heading, CONTENT_LEFT, 1395)
-  context.textAlign = 'right'
-  context.fillStyle = TEXT_SECONDARY
-  context.fillText(model.rankingLabel, CONTENT_RIGHT, 1395)
-  context.textAlign = 'left'
-
-  items.forEach((item, index) => {
-    const rowTops = [1448, 1563, 1678]
-    const titleBaselines = [1490, 1605, 1720]
-    const metadataBaselines = [1528, 1643, 1758]
-    const y = rowTops[index]
-    const image = artworkForItem(item, assets)
-
-    context.textAlign = 'center'
-    context.fillStyle = TEXT_SECONDARY
-    context.font = isOverview
-      ? '600 17px "JetBrains Mono", monospace'
-      : '500 27px "JetBrains Mono", monospace'
-    context.fillText(isOverview ? item.kind.toUpperCase() : String(item.rank).padStart(2, '0'), 133, y + 55)
-    context.textAlign = 'left'
-
-    context.save()
-    roundedRectPath(context, 226, y, 92, 92, 4)
-    context.clip()
-    drawArtworkTile(context, image, 226, y, 92, 92, assets)
-    context.restore()
-
-    context.fillStyle = TEXT
-    context.font = '600 42px Inter, sans-serif'
-    context.fillText(fitText(context, item.title, 740), 356, titleBaselines[index])
-    context.fillStyle = TEXT_SECONDARY
-    context.font = '500 27px Inter, sans-serif'
-    context.fillText(fitText(context, item.subtitle, 740), 356, metadataBaselines[index])
-
-    context.textAlign = 'right'
-    context.fillStyle = TEXT_SECONDARY
-    context.font = '500 28px "JetBrains Mono", monospace'
-    context.fillText(formatItemMetric(item, model), CONTENT_RIGHT, y + 55)
-    context.textAlign = 'left'
-  })
-}
-
-function drawFooter(
-  context: CanvasRenderingContext2D,
-  model: ListeningStatsShareModel,
-  assets: ListeningStatsShareCanvasAssets
-): void {
-  const baseline = 1880
-  context.fillStyle = TEXT_SECONDARY
-  context.font = '600 24px "JetBrains Mono", monospace'
-  context.fillText(model.rangeLabel, FRAME_LEFT, baseline)
-
-  const wordmarkWidth = 190
-  const wordmarkHeight = 24
-  const logoSize = 46
-  const wordmarkX = 1256
-  const logoX = 1191
-  const label = 'LISTENED LOCALLY WITH'
-  context.font = '600 24px "JetBrains Mono", monospace'
-  context.textAlign = 'right'
-  context.fillText(label, logoX - 16, baseline)
-  context.textAlign = 'left'
-  if (assets.astraLogo) context.drawImage(assets.astraLogo, logoX, 1846, logoSize, logoSize)
-  if (assets.astraWordmark) {
-    context.save()
-    context.globalAlpha = 0.84
-    context.drawImage(assets.astraWordmark, wordmarkX, 1859, wordmarkWidth, wordmarkHeight)
-    context.restore()
+  // Columns are sized to their content and justified across the grid, shrinking
+  // the values together until every column keeps at least MIN_GAP between them.
+  const MIN_GAP = 36
+  const stats = model.periodStats
+  withLabelFont(context, 22)
+  const labelWidths = stats.map((stat) => context.measureText(stat.label).width)
+  resetTracking(context)
+  let valueSize = 52
+  let widths: number[] = []
+  for (; valueSize >= 32; valueSize -= 2) {
+    context.font = `600 ${valueSize}px ${MONO}`
+    widths = stats.map((stat, index) => Math.max(context.measureText(stat.value).width, labelWidths[index]))
+    const total = widths.reduce((sum, width) => sum + width, 0)
+    if (total + MIN_GAP * (stats.length - 1) <= CONTENT_WIDTH) break
   }
+  const gap = stats.length > 1
+    ? (CONTENT_WIDTH - widths.reduce((sum, width) => sum + width, 0)) / (stats.length - 1)
+    : 0
+  let x = LEFT
+  stats.forEach((stat, index) => {
+    context.fillStyle = TEXT
+    context.font = `600 ${valueSize}px ${MONO}`
+    context.fillText(fitText(context, stat.value, widths[index]), x, PERIOD_VALUE_BASELINE)
+    withLabelFont(context, 22)
+    context.fillStyle = TEXT_TERTIARY
+    context.fillText(fitText(context, stat.label, widths[index]), x, PERIOD_LABEL_BASELINE)
+    resetTracking(context)
+    x += widths[index] + gap
+  })
+
+  drawActivity(context, model, accentColor, PERIOD_LABEL_BASELINE + 40)
+}
+
+function drawFooter(context: CanvasRenderingContext2D, assets: ListeningStatsShareCanvasAssets): void {
+  drawRule(context, FOOTER_RULE_Y)
+
+  // Lay the brand out right-to-left from the grid edge so it can never overshoot.
+  const markHeight = 20
+  const logoSize = 40
+  const wordmark = assets.astraWordmark
+  const wordmarkWidth = wordmark
+    ? markHeight * ((wordmark.naturalWidth || wordmark.width) / Math.max(1, wordmark.naturalHeight || wordmark.height))
+    : 0
+  const centerY = FOOTER_BASELINE - 9
+  let x = RIGHT
+  if (wordmark && wordmarkWidth > 0) {
+    x -= wordmarkWidth
+    context.save()
+    context.globalAlpha = 0.86
+    context.drawImage(wordmark, x, centerY - markHeight / 2, wordmarkWidth, markHeight)
+    context.restore()
+    x -= 18
+  }
+  if (assets.astraLogo) {
+    x -= logoSize
+    context.drawImage(assets.astraLogo, x, centerY - logoSize / 2, logoSize, logoSize)
+    x -= 16
+  }
+  withLabelFont(context, 24)
+  context.fillStyle = TEXT_TERTIARY
+  context.textAlign = 'right'
+  context.fillText('LISTENED LOCALLY WITH', x, FOOTER_BASELINE)
+  context.textAlign = 'left'
+  resetTracking(context)
 }
 
 export function renderListeningStatsShareCard(
@@ -444,23 +722,24 @@ export function renderListeningStatsShareCard(
   model: ListeningStatsShareModel,
   assets: ListeningStatsShareCanvasAssets
 ): void {
-  canvas.width = LISTENING_STATS_SHARE_WIDTH
-  canvas.height = LISTENING_STATS_SHARE_HEIGHT
+  canvas.width = LISTENING_STATS_SHARE_WIDTH * LISTENING_STATS_SHARE_SCALE
+  canvas.height = LISTENING_STATS_SHARE_HEIGHT * LISTENING_STATS_SHARE_SCALE
   const context = canvas.getContext('2d')
   if (!context) throw new Error('Canvas rendering is unavailable.')
+  context.setTransform(LISTENING_STATS_SHARE_SCALE, 0, 0, LISTENING_STATS_SHARE_SCALE, 0, 0)
   context.imageSmoothingEnabled = true
   context.imageSmoothingQuality = 'high'
   context.textBaseline = 'alphabetic'
 
   drawBackground(context, model, assets)
-  drawHeader(context, model, assets.accentColor)
-  if (model.lens === 'overview') drawOverviewCollage(context, model, assets)
-  else drawSingleArtwork(context, model, assets)
-  drawHeroCopy(context, model)
-  drawPersonality(context, model, assets.accentColor)
-  drawSummary(context, model)
-  drawRankedItems(context, model, assets)
-  drawFooter(context, model, assets)
+  drawHeader(context, model)
+  drawSectionLabel(context, model, assets.accentColor)
+  drawHeroArt(context, model, assets)
+  drawHeroReadout(context, model)
+  const titleBottom = drawHeroTitle(context, model)
+  drawRankedList(context, model, assets, titleBottom)
+  drawPeriod(context, model, assets.accentColor)
+  drawFooter(context, assets)
 }
 
 export async function loadListeningStatsShareImage(source: string): Promise<HTMLImageElement> {

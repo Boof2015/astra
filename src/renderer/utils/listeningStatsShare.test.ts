@@ -4,7 +4,10 @@ import type { ListeningStatsDashboard } from '../../types/listeningStats'
 import {
   buildListeningStatsShareModel,
   formatCompactListeningDuration,
-  formatListeningShare
+  formatListeningShare,
+  formatPlayShare,
+  MAX_ACTIVITY_BARS,
+  mergeActivityBars
 } from './listeningStatsShare'
 
 function createDashboard(overrides: Partial<ListeningStatsDashboard> = {}): ListeningStatsDashboard {
@@ -46,6 +49,10 @@ test('compact share-card values favor readable hours, minutes, and small percent
   assert.equal(formatListeningShare(1, 1_000), '<1%')
   assert.equal(formatListeningShare(180, 1_000), '18%')
   assert.equal(formatListeningShare(0, 0), '0%')
+  assert.equal(formatPlayShare(12, 74), '16%')
+  assert.equal(formatPlayShare(0, 74), '0%')
+  assert.equal(formatPlayShare(5, 0), '0%')
+  assert.equal(formatPlayShare(74, 74), '100%')
 })
 
 test('track lens uses the first ranked track as hero and omits unavailable secondary rows', () => {
@@ -54,13 +61,93 @@ test('track lens uses the first ranked track as hero and omits unavailable secon
   assert.deepEqual(model.secondaryItems.map((item) => item.key), ['track-2', 'track-3'])
   assert.deepEqual(model.secondaryItems.map((item) => item.rank), [2, 3])
   assert.deepEqual(model.artworkHashes, ['shared-art', 'track-art-2', 'track-art-3'])
-  assert.equal(model.personality, 'You gave this track 18% of your listening time.')
   assert.equal(model.rankingLabel, 'RANKED BY PLAYS')
-  assert.deepEqual(model.summaryStats, [
+  assert.equal(model.heroTitle, 'First Track')
+  assert.deepEqual(model.periodStats, [
     { label: 'LISTENED', value: '2h 46m' },
     { label: 'PLAYS', value: '74' },
-    { label: 'ACTIVE DAYS', value: '11' }
+    { label: 'ACTIVE DAYS', value: '11/30' },
+    { label: 'TRACKS', value: '42' }
   ])
+})
+
+test('hero readout speaks in the ranking metric and is kept apart from period totals', () => {
+  const byPlays = buildListeningStatsShareModel(createDashboard(), 'track')
+  assert.deepEqual(byPlays.heroStat, { label: 'PLAYS', value: '12' })
+  assert.deepEqual(byPlays.heroReadouts, [
+    { label: 'LISTENED', value: '30m' },
+    { label: 'LEAD ON #2', value: '+2' },
+    { label: 'SHARE OF PLAYS', value: '16%' }
+  ])
+
+  const byTime = buildListeningStatsShareModel(createDashboard({ rankingMetric: 'time' }), 'track')
+  assert.deepEqual(byTime.heroStat, { label: 'LISTENED', value: '30m' })
+  assert.deepEqual(byTime.heroReadouts, [
+    { label: 'PLAYS', value: '12' },
+    { label: 'LEAD ON #2', value: '+6m' },
+    { label: 'SHARE OF LISTENING', value: '18%' }
+  ])
+})
+
+test('lead is measured against the true #2 even when it is hidden from the list', () => {
+  const dashboard = createDashboard()
+  dashboard.topTracks[1] = { ...dashboard.topTracks[1], available: false, qualifiedPlays: 12 }
+  const model = buildListeningStatsShareModel(dashboard, 'track')
+  assert.deepEqual(model.secondaryItems.map((item) => item.key), ['track-3'])
+  assert.equal(model.heroReadouts.find((row) => row.label === 'LEAD ON #2')?.value, 'TIED')
+
+  const solo = buildListeningStatsShareModel(createDashboard({ topTracks: [createDashboard().topTracks[0]] }), 'track')
+  assert.equal(solo.heroReadouts.find((row) => row.label === 'LEAD ON #2')?.value, '—')
+})
+
+test('active days are measured against the recorded part of bounded ranges only', () => {
+  const dashboard = createDashboard()
+  const week = { ...dashboard, range: '7d' as const, summary: { ...dashboard.summary, activeDays: 4 } }
+  assert.equal(buildListeningStatsShareModel(week, 'track').periodStats[2].value, '4/7')
+  const lateStart = {
+    ...dashboard,
+    summary: { ...dashboard.summary, activeDays: 3 },
+    status: { ...dashboard.status, startedAt: dashboard.rangeEndAt - 4.5 * 86_400_000 }
+  }
+  assert.equal(buildListeningStatsShareModel(lateStart, 'track').periodStats[2].value, '3/5')
+  assert.equal(buildListeningStatsShareModel({ ...dashboard, range: 'all' }, 'track').periodStats[2].value, '11')
+})
+
+test('activity follows the ranking metric and merges long histories into a bounded bar count', () => {
+  const day = 86_400_000
+  const start = createDashboard().rangeStartAt as number
+  const activity = Array.from({ length: 30 }, (_, index) => ({
+    startAt: start + index * day,
+    endAt: start + (index + 1) * day,
+    label: '',
+    listenedSeconds: index * 60,
+    qualifiedPlays: index % 3
+  }))
+  const byPlays = buildListeningStatsShareModel(createDashboard({ activity }), 'track')
+  assert.equal(byPlays.activity.length, 30)
+  assert.equal(byPlays.activity[2], 2)
+  assert.equal(byPlays.activityStartLabel, 'JUN 18')
+  assert.equal(byPlays.activityEndLabel, 'JUL 18')
+  assert.deepEqual(byPlays.activityPeak, { index: 2, label: 'PEAK JUN 20 · 2 PLAYS' })
+  const byTime = buildListeningStatsShareModel(createDashboard({ activity, rankingMetric: 'time' }), 'track')
+  assert.equal(byTime.activity[2], 120)
+  assert.deepEqual(byTime.activityPeak, { index: 29, label: 'PEAK JUL 17 · 29M' })
+  assert.equal(buildListeningStatsShareModel(createDashboard(), 'track').activityPeak, null)
+
+  const merged = mergeActivityBars(Array.from({ length: 130 }, () => 1))
+  assert.ok(merged.length <= MAX_ACTIVITY_BARS)
+  assert.equal(merged.reduce((sum, value) => sum + value, 0), 130)
+  assert.deepEqual(mergeActivityBars([1, Number.NaN, -2]), [1, 0, 0])
+
+  const months = Array.from({ length: 80 }, (_, index) => ({
+    startAt: new Date(2020, index, 1).getTime(),
+    endAt: new Date(2020, index + 1, 1).getTime(),
+    label: '',
+    listenedSeconds: 0,
+    qualifiedPlays: index === 21 ? 50 : 1
+  }))
+  const allTime = buildListeningStatsShareModel(createDashboard({ range: 'all', granularity: 'month', activity: months }), 'track')
+  assert.deepEqual(allTime.activityPeak, { index: 10, label: 'PEAK SEP–OCT 2021 · 51 PLAYS' })
 })
 
 test('album lens follows time ranking metadata and keeps missing hero art representable', () => {
@@ -74,7 +161,8 @@ test('album lens follows time ranking metadata and keeps missing hero art repres
   assert.equal(model.hero?.key, 'album-no-art')
   assert.deepEqual(model.artworkHashes, [])
   assert.equal(model.rankingLabel, 'RANKED BY LISTENING TIME')
-  assert.equal(model.personality, 'You spent <1% of your listening time inside this album.')
+  assert.equal(model.title, 'TOP ALBUM')
+  assert.deepEqual(model.heroReadouts.at(-1), { label: 'SHARE OF LISTENING', value: '<1%' })
   assert.deepEqual(model.secondaryItems, [])
 })
 
@@ -82,7 +170,10 @@ test('overview selects each category winner and deduplicates four leading covers
   const model = buildListeningStatsShareModel(createDashboard(), 'overview')
   assert.deepEqual(model.overviewItems.map((item) => item.kind), ['track', 'album', 'artist'])
   assert.deepEqual(model.artworkHashes, ['shared-art', 'artist-art', 'album-art-2', 'album-art-3'])
-  assert.equal(model.personality, 'First Artist accounted for 25% of your listening time.')
+  assert.equal(model.heroSubtitle, 'First Artist led with 24% of plays')
+  assert.deepEqual(model.heroStat, { label: 'LISTENED', value: '2h 46m' })
+  assert.deepEqual(model.heroReadouts.map((row) => row.label), ['PLAYS', 'ACTIVE DAYS', 'TRACKS'])
+  assert.deepEqual(model.periodStats, [])
 })
 
 test('range footer uses exact local dates and all-time uses the detailed-history baseline', () => {
@@ -97,5 +188,5 @@ test('sparse overview omits unavailable categories and still produces a safe emp
   const model = buildListeningStatsShareModel(dashboard, 'overview')
   assert.deepEqual(model.overviewItems, [])
   assert.deepEqual(model.artworkHashes, [])
-  assert.equal(model.personality, '')
+  assert.equal(model.heroSubtitle, '')
 })

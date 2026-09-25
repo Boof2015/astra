@@ -29463,7 +29463,7 @@ html[data-theme-tone="light"] .parallax-setup-status.is-good {
   max-width: 100%;
   height: auto;
   max-height: calc(min(94vh, 900px) - 190px);
-  aspect-ratio: 1474 / 1920;
+  aspect-ratio: 9 / 16;
   border-radius: 10px;
   box-shadow: 0 18px 46px rgba(0, 0, 0, 0.48);
 }
