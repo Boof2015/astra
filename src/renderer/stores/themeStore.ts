@@ -3,7 +3,9 @@ import { useVisualizerSettingsStore } from './visualizerSettingsStore'
 
 export type ThemePresetId = 'default' | 'graphite' | 'editor' | 'midnight' | 'studio' | 'crimson' | 'light'
 export type AccentSource = 'theme' | 'cover-art'
-export type CoverArtAccentMethod = 'dominant' | 'average' | 'vibrant'
+export type CoverArtAccentMethod = 'adaptive' | 'dominant' | 'average' | 'vibrant'
+
+const COVER_ART_ACCENT_METHODS: readonly CoverArtAccentMethod[] = ['adaptive', 'dominant', 'average', 'vibrant']
 
 export interface ResolvedThemeTokens {
   bgPrimary: string
@@ -171,7 +173,7 @@ export interface ThemeSettingsState {
 export const THEME_STORAGE_KEY = 'astra-theme-settings-v1'
 const DEFAULT_PRESET_ID: ThemePresetId = 'default'
 const DEFAULT_ACCENT_SOURCE: AccentSource = 'theme'
-const DEFAULT_COVER_ART_ACCENT_METHOD: CoverArtAccentMethod = 'dominant'
+const DEFAULT_COVER_ART_ACCENT_METHOD: CoverArtAccentMethod = 'adaptive'
 const DEFAULT_ACCENT = '#38bdf8'
 const ACCENT_TRANSITION_MS = 280
 const REDUCED_MOTION_ACCENT_TRANSITION_MS = 80
@@ -426,6 +428,21 @@ function deriveHueFromRgb({ r, g, b }: { r: number; g: number; b: number }): num
   return Math.round(hue)
 }
 
+/**
+ * 0 for grey accents, 1 otherwise. Hue-only consumers (the logo draws
+ * `hsl(var(--accent-h) 100% 50%)`) multiply their saturation by this, so a
+ * neutral cover-art accent gives a grey logo instead of hue 0's red.
+ */
+export function deriveAccentSaturationScale(hex: string): number {
+  const rgb = hexToRgb(hex)
+  if (!rgb) return 1
+  const max = Math.max(rgb.r, rgb.g, rgb.b) / 255
+  const min = Math.min(rgb.r, rgb.g, rgb.b) / 255
+  const lightness = (max + min) / 2
+  const saturation = max === min ? 0 : (max - min) / (1 - Math.abs(2 * lightness - 1))
+  return saturation < 0.08 ? 0 : 1
+}
+
 export function deriveAccentHue(hex: string): number {
   const rgb = hexToRgb(hex)
   if (rgb) return deriveHueFromRgb(rgb)
@@ -538,6 +555,7 @@ function applyAccentTokensToDocument(
   root.style.setProperty('--accent-text', accentText)
   root.style.setProperty('--accent-text-strong', accentTextStrong)
   root.style.setProperty('--accent-h', `${accentHue}`)
+  root.style.setProperty('--accent-sat-scale', `${deriveAccentSaturationScale(accent)}`)
 }
 
 function persistThemeSettings(
@@ -587,11 +605,10 @@ function readSavedThemeSettings(): SavedThemeSettings | null {
       ? 'cover-art'
       : DEFAULT_ACCENT_SOURCE
 
-    const coverArtAccentMethod = (
-      parsed.coverArtAccentMethod === 'average'
-      || parsed.coverArtAccentMethod === 'vibrant'
-    )
-      ? parsed.coverArtAccentMethod
+    // Every method is listed explicitly: a saved 'dominant' must survive the
+    // default moving to 'adaptive'.
+    const coverArtAccentMethod = COVER_ART_ACCENT_METHODS.includes(parsed.coverArtAccentMethod as CoverArtAccentMethod)
+      ? parsed.coverArtAccentMethod as CoverArtAccentMethod
       : DEFAULT_COVER_ART_ACCENT_METHOD
 
     return {

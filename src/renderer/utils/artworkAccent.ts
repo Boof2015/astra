@@ -1,4 +1,5 @@
 import type { CoverArtAccentMethod } from '../stores/themeStore'
+import { extractAdaptiveAccent, type AdaptiveAccentTarget } from './adaptiveAccent'
 
 const SAMPLE_SIZE = 128
 const MIN_ALPHA = 24
@@ -347,9 +348,16 @@ function sampleArtworkPixels(image: HTMLImageElement): Uint8ClampedArray | null 
   }
 }
 
+const DEFAULT_ADAPTIVE_TARGET: AdaptiveAccentTarget = { isLight: false, onAccent: '#050505' }
+
+/**
+ * `target` only affects the 'adaptive' method, which tones its result for the
+ * theme; the older methods return the same colour for every theme.
+ */
 export async function extractArtworkAccent(
   artworkDataUrl: string,
-  method: CoverArtAccentMethod
+  method: CoverArtAccentMethod,
+  target: AdaptiveAccentTarget = DEFAULT_ADAPTIVE_TARGET
 ): Promise<string | null> {
   if (!artworkDataUrl || typeof artworkDataUrl !== 'string') return null
 
@@ -357,6 +365,10 @@ export async function extractArtworkAccent(
     const image = await loadImage(artworkDataUrl)
     const pixels = sampleArtworkPixels(image)
     if (!pixels) return null
+
+    if (method === 'adaptive') {
+      return extractAdaptiveAccent(pixels, target).hex
+    }
 
     if (method === 'average') {
       return extractAverageColor(pixels)

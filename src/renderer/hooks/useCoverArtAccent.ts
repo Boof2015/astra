@@ -63,6 +63,10 @@ export function useCoverArtAccent(): void {
   const accentSource = useThemeStore((state) => state.accentSource)
   const coverArtAccentMethod = useThemeStore((state) => state.coverArtAccentMethod)
   const setCoverArtAccent = useThemeStore((state) => state.setCoverArtAccent)
+  // Adaptive accents are toned for the theme, so they re-resolve when the
+  // theme flips between light and dark (or its on-accent text changes).
+  const isLight = useThemeStore((state) => state.resolvedTokens.isLight)
+  const onAccent = useThemeStore((state) => state.resolvedTokens.onAccent)
 
   const requestTokenRef = useRef(0)
 
@@ -98,7 +102,9 @@ export function useCoverArtAccent(): void {
       }
 
       const artworkIdentity = buildArtworkIdentity(currentTrack)
-      const cacheKey = `${coverArtAccentMethod}:${artworkIdentity}`
+      const cacheKey = coverArtAccentMethod === 'adaptive'
+        ? `${coverArtAccentMethod}:${isLight ? 'light' : 'dark'}:${onAccent}:${artworkIdentity}`
+        : `${coverArtAccentMethod}:${artworkIdentity}`
 
       const cachedAccent = getCoverArtAccentCacheEntry(cacheKey)
       if (cachedAccent !== undefined) {
@@ -106,7 +112,7 @@ export function useCoverArtAccent(): void {
         return
       }
 
-      const accent = await extractArtworkAccent(artworkDataUrl, coverArtAccentMethod)
+      const accent = await extractArtworkAccent(artworkDataUrl, coverArtAccentMethod, { isLight, onAccent })
       if (requestTokenRef.current !== requestToken) return
 
       setCoverArtAccentCacheEntry(cacheKey, accent)
@@ -118,5 +124,5 @@ export function useCoverArtAccent(): void {
     return () => {
       requestTokenRef.current += 1
     }
-  }, [accentSource, coverArtAccentMethod, currentTrack, getArtwork, setCoverArtAccent])
+  }, [accentSource, coverArtAccentMethod, currentTrack, getArtwork, isLight, onAccent, setCoverArtAccent])
 }

@@ -5,7 +5,7 @@ import {
   ASTRA_APP_ICON_SYMBOL_SCALE,
   renderAstraLogoPngDataUrl,
 } from '../components/icons/astraLogoShared'
-import { deriveAccentHue, useThemeStore } from '../stores/themeStore'
+import { deriveAccentHue, deriveAccentSaturationScale, useThemeStore } from '../stores/themeStore'
 
 const ICON_SYNC_DEBOUNCE_MS = 140
 const ICON_RENDER_SIZES = [16, 32, 48, 64, 128, 256, 512, 1024] as const
@@ -17,7 +17,9 @@ interface RuntimeIconImageSetPayload {
   }>
 }
 
-async function renderRuntimeIconImageSet(hue: number): Promise<RuntimeIconImageSetPayload | null> {
+// `saturationScale` is 0 for grey accents so the icon goes grey instead of
+// taking hue 0's red, matching the in-app logo (see --accent-sat-scale).
+async function renderRuntimeIconImageSet(hue: number, saturationScale: number): Promise<RuntimeIconImageSetPayload | null> {
   const images = await Promise.all(ICON_RENDER_SIZES.map(async (size) => {
     const dataUrl = await renderAstraLogoPngDataUrl({
       includeBackground: false,
@@ -25,8 +27,8 @@ async function renderRuntimeIconImageSet(hue: number): Promise<RuntimeIconImageS
       symbolScale: ASTRA_APP_ICON_SYMBOL_SCALE,
       squircleInsetRatio: ASTRA_APP_ICON_SQUIRCLE_INSET_RATIO,
       squircleRadiusRatio: ASTRA_APP_ICON_SQUIRCLE_RADIUS_RATIO,
-      mainFill: `hsl(${hue} 100% 50%)`,
-      shadowFill: `hsl(${hue} 40% 14%)`,
+      mainFill: `hsl(${hue} ${100 * saturationScale}% 50%)`,
+      shadowFill: `hsl(${hue} ${40 * saturationScale}% 14%)`,
     }, size)
     return dataUrl ? { size, dataUrl } : null
   }))
@@ -61,8 +63,7 @@ export function useRuntimeAppIconSync(): void {
     timeoutRef.current = window.setTimeout(() => {
       timeoutRef.current = null
       void (async () => {
-        const hue = deriveAccentHue(accent)
-        const payload = await renderRuntimeIconImageSet(hue)
+        const payload = await renderRuntimeIconImageSet(deriveAccentHue(accent), deriveAccentSaturationScale(accent))
         if (!payload) return
         if (requestTokenRef.current !== requestToken) return
 

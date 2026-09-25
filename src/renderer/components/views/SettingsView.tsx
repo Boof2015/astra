@@ -140,6 +140,7 @@ const ACCENT_SOURCE_OPTIONS: readonly SettingsSegmentedOption<AccentSource>[] = 
 ]
 
 const COVER_ART_ACCENT_METHOD_OPTIONS: readonly SettingsSegmentedOption<CoverArtAccentMethod>[] = [
+  { value: 'adaptive', label: 'Adaptive' },
   { value: 'dominant', label: 'Dominant' },
   { value: 'vibrant', label: 'Vibrant' },
   { value: 'average', label: 'Average' },
