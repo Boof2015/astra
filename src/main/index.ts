@@ -2,6 +2,7 @@ import { parseCompanionDeviceInfo, type CompanionDeviceInfo } from '../shared/co
 import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, clipboard, screen, safeStorage, powerMonitor, protocol, session, globalShortcut, Menu, Tray, type MenuItemConstructorOptions } from 'electron'
 import { join, basename, extname } from 'path'
 import { NotchController } from './services/notchController'
+import { installFixedWindowZoom } from './fixedWindowZoom'
 import { readFile, writeFile, mkdtemp, rm, access, mkdir, stat } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
 import { cpus, tmpdir, hostname, networkInterfaces, setPriority, constants as osConstants } from 'os'
@@ -4703,6 +4704,7 @@ async function createMiniPlayerWindow(): Promise<void> {
   logMemoryDiagnosticsMainEvent('window_opened', {
     windowType: 'mini_player'
   })
+  installFixedWindowZoom(miniWindow.webContents)
 
   miniWindow.on('page-title-updated', (event) => {
     event.preventDefault()
@@ -4794,6 +4796,7 @@ async function createLyricsPopoutWindow(): Promise<void> {
   logMemoryDiagnosticsMainEvent('window_opened', {
     windowType: 'lyrics_popout'
   })
+  installFixedWindowZoom(lyricsPopoutWindow.webContents)
 
   lyricsPopoutWindow.on('ready-to-show', () => {
     lyricsPopoutWindow?.show()

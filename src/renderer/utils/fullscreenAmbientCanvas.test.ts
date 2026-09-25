@@ -40,3 +40,17 @@ test('fullscreen ambient canvas detects repeated same-size resizes', () => {
   assert.equal(isSameFullscreenAmbientCanvasSize(first, second), true)
   assert.equal(isSameFullscreenAmbientCanvasSize(first, different), false)
 })
+
+test('scaled fullscreen layout preserves display coverage within the backing-store budget', () => {
+  for (const scale of [0.8, 1, 1.25]) {
+    for (const deviceDpr of [1, 2]) {
+      for (const [width, height] of [[1280, 720], [3840, 2160], [6016, 3384]]) {
+        const size = resolveFullscreenAmbientCanvasSize(width / scale, height / scale, deviceDpr * scale)
+        assert.ok(Math.abs(size.cssWidth * scale - width) < 1.25)
+        assert.ok(Math.abs(size.cssHeight * scale - height) < 1.25)
+        assert.ok(size.dpr <= Math.min(FULLSCREEN_AMBIENT_CANVAS_MAX_DPR, deviceDpr * scale))
+        assert.ok(size.pixelWidth * size.pixelHeight <= FULLSCREEN_AMBIENT_CANVAS_MAX_PIXELS)
+      }
+    }
+  }
+})

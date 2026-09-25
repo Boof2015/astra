@@ -89,16 +89,20 @@ export default function EQFrequencyResponse({
   }, [bands, enabled, sampleRate, width, height])
 
   const getSVGCoords = useCallback(
-    (e: React.PointerEvent): { x: number; y: number } => {
+    (e: React.PointerEvent): { x: number; y: number } | null => {
       const svg = svgRef.current
-      if (!svg) return { x: 0, y: 0 }
+      if (!svg) return null
       const rect = svg.getBoundingClientRect()
+      if (![rect.width, rect.height, width, height].every((size) => Number.isFinite(size) && size > 0)) {
+        return null
+      }
+      // Pointer positions are in viewport pixels; the viewBox uses unscaled layout pixels.
       return {
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top,
+        x: (e.clientX - rect.left) * width / rect.width,
+        y: (e.clientY - rect.top) * height / rect.height,
       }
     },
-    []
+    [width, height]
   )
 
   const handlePointPointerDown = useCallback(
@@ -117,7 +121,9 @@ export default function EQFrequencyResponse({
       if (draggingRef.current === null) return
       const band = bands[draggingRef.current]
       if (!band) return
-      const { x, y } = getSVGCoords(e)
+      const coords = getSVGCoords(e)
+      if (!coords) return
+      const { x, y } = coords
       const freq = Math.max(MIN_FREQ, Math.min(MAX_FREQ, xToFreq(x, width)))
       if (isPassEQBandType(band.type)) {
         onBandDrag(draggingRef.current, { frequency: Math.round(freq) })

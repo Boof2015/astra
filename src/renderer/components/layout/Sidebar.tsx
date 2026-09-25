@@ -8,6 +8,7 @@ import { useListeningStatsStore } from '../../stores/listeningStatsStore'
 import { buildSidebarPlaylistSections } from '../../utils/playlistSystem'
 import { formatPlaylistImportStatus } from '../../utils/playlistImportStatus'
 import { runViewTransition } from '../../utils/viewTransitions'
+import { viewportRectToAppLayout, viewportSizeToAppLayout } from '../../utils/overlayPositioning'
 import CreatePlaylistModal from '../playlists/CreatePlaylistModal'
 import PlaylistCover from '../playlists/PlaylistCover'
 import { usePresence } from '../../hooks/usePresence'
@@ -116,6 +117,7 @@ interface SidebarDropOverlayLabel {
 
 export default function Sidebar() {
   const { activeView, setActiveView } = useUIStore()
+  const uiScalePercent = useUIStore((s) => s.uiScalePercent)
   const trackDrag = useUIStore((s) => s.trackDrag)
   const sidebarPlaylistCreateRequest = useUIStore((s) => s.sidebarPlaylistCreateRequest)
   const clearSidebarPlaylistCreateRequest = useUIStore((s) => s.clearSidebarPlaylistCreateRequest)
@@ -163,6 +165,7 @@ export default function Sidebar() {
   const [overflowPopoutStyle, setOverflowPopoutStyle] = useState<{
     top: number
     left: number
+    width: number
     maxHeight: number
   } | null>(null)
   useEffect(() => {
@@ -191,27 +194,30 @@ export default function Sidebar() {
     const anchor = overflowButtonRef.current
     if (!anchor) return
 
-    const rect = anchor.getBoundingClientRect()
+    const uiScale = uiScalePercent / 100
+    const rect = viewportRectToAppLayout(anchor.getBoundingClientRect(), uiScale)
+    const viewport = viewportSizeToAppLayout({ width: window.innerWidth, height: window.innerHeight }, uiScale)
     const edgePadding = 10
     const gap = 12
-    const assumedWidth = 304
+    const width = Math.min(304, Math.max(1, viewport.width - edgePadding * 2))
 
     let left = rect.right + gap
-    if (left + assumedWidth > window.innerWidth - edgePadding) {
-      left = Math.max(edgePadding, rect.left - assumedWidth - gap)
+    if (left + width > viewport.width - edgePadding) {
+      left = Math.max(edgePadding, rect.x - width - gap)
     }
 
-    let top = rect.top - 24
+    let top = rect.y - 24
     const minTop = edgePadding
-    const maxTop = Math.max(minTop, window.innerHeight - edgePadding - 220)
+    const maxTop = Math.max(minTop, viewport.height - edgePadding - 220)
     top = Math.min(Math.max(top, minTop), maxTop)
 
     setOverflowPopoutStyle({
       top,
       left,
-      maxHeight: Math.max(180, window.innerHeight - top - edgePadding)
+      width,
+      maxHeight: Math.max(1, viewport.height - top - edgePadding)
     })
-  }, [])
+  }, [uiScalePercent])
 
   const clearSidebarTooltip = useCallback(() => {
     sidebarTooltipAnchorRef.current = null

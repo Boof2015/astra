@@ -1,5 +1,7 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 import { useVisualizerSettingsStore } from '../../stores/visualizerSettingsStore'
+import { useUIStore } from '../../stores/uiStore'
+import { measureCanvasResizeState } from '../../utils/canvasSizing'
 import {
   getEQAnalyzerFrameSnapshot,
   subscribeToEQAnalyzerFrames,
@@ -33,17 +35,18 @@ export default function FullscreenAmbientSpectrum({
 
   const lineColor = useVisualizerSettingsStore((s) => s.lineColor)
   const isRunning = useVisualizerSettingsStore((s) => s.isRunning)
+  const uiScalePercent = useUIStore((s) => s.uiScalePercent)
 
   const resizeCanvas = useCallback(() => {
     const canvas = canvasRef.current
     const container = containerRef.current
     if (!canvas || !container) return
 
-    const rect = container.getBoundingClientRect()
+    const measured = measureCanvasResizeState(container)
     const nextSize = resolveFullscreenAmbientCanvasSize(
-      rect.width,
-      rect.height,
-      window.devicePixelRatio || 1
+      measured.cssWidth,
+      measured.cssHeight,
+      measured.dpr
     )
 
     canvas.style.width = `${nextSize.cssWidth}px`
@@ -182,6 +185,11 @@ export default function FullscreenAmbientSpectrum({
     ctx.lineCap = 'round'
     ctx.stroke()
   }, [isRunning, lineColor, opacityIntent])
+
+  useLayoutEffect(() => {
+    resizeCanvas()
+    renderFrame()
+  }, [resizeCanvas, renderFrame, uiScalePercent])
 
   useEffect(() => {
     renderFrame()
