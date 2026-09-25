@@ -1,5 +1,10 @@
 import type { CoverArtAccentMethod } from '../stores/themeStore'
-import { extractAdaptiveAccent, type AdaptiveAccentTarget } from './adaptiveAccent'
+import {
+  extractAdaptiveAccent,
+  extractAdaptivePalette,
+  type AdaptiveAccentTarget,
+  type AdaptivePalette
+} from './adaptiveAccent'
 
 const SAMPLE_SIZE = 128
 const MIN_ALPHA = 24
@@ -430,4 +435,18 @@ export function ensureReadableOnDark(color: string, background: string, minContr
     if (contrastRatio(candidate, background) >= minContrast) return candidate
   }
   return '#ffffff'
+}
+
+/** Adaptive accent plus the cover's mood colour (for tinting backgrounds), from one sample. */
+export async function extractArtworkPalette(
+  artworkDataUrl: string,
+  target: AdaptiveAccentTarget
+): Promise<AdaptivePalette | null> {
+  if (!artworkDataUrl || typeof artworkDataUrl !== 'string') return null
+  try {
+    const pixels = sampleArtworkPixels(await loadImage(artworkDataUrl))
+    return pixels ? extractAdaptivePalette(pixels, target) : null
+  } catch {
+    return null
+  }
 }

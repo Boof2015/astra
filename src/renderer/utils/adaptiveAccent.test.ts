@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   chromaOf,
   extractAdaptiveAccent,
+  extractAdaptivePalette,
   hueOf,
   pickAdaptiveSource,
   rgbToOklab,
@@ -121,4 +122,20 @@ test('transparent pixels are ignored and results are deterministic', () => {
   assert.ok(hueDistance(hueOfHex(first.hex), hueOf(rgbToOklab(30, 160, 90))) < 12)
   assert.deepEqual(extractAdaptiveAccent(pixels, DARK), first)
   assert.equal(extractAdaptiveAccent(new Uint8ClampedArray(0), DARK).neutral, true)
+})
+
+test('mood follows the most common coloured area, while the accent can pick a smaller vivid one', () => {
+  // Mostly white, a large calm slate-blue area and a small vivid magenta.
+  const pixels = image([[[245, 245, 248], 5000], [[110, 130, 170], 3000], [[240, 30, 200], 1200]])
+  const palette = extractAdaptivePalette(pixels, DARK)
+  assert.ok(palette.mood)
+  assert.ok(hueDistance(hueOfHex(palette.mood), hueOf(rgbToOklab(110, 130, 170))) < 12, `mood ${palette.mood} should be slate blue`)
+  assert.ok(hueDistance(hueOfHex(palette.hex), hueOf(rgbToOklab(240, 30, 200))) < 12, `accent ${palette.hex} should be magenta`)
+})
+
+test('mood is null for colourless covers and ignores coloured specks', () => {
+  const greys = image([[[10, 10, 10], 4000], [[250, 250, 250], 4000]])
+  assert.equal(extractAdaptivePalette(greys, DARK).mood, null)
+  const speck = image([[[10, 10, 10], 4000], [[250, 250, 250], 4000], [[255, 40, 40], 100]])
+  assert.equal(extractAdaptivePalette(speck, DARK).mood, null, 'a ~1% red speck must not tint the background')
 })

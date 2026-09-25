@@ -4,7 +4,7 @@ import astraWordmarkUrl from '../../assets/astra-wordmark.svg'
 import { usePresence } from '../../hooks/usePresence'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { createAstraLogoSvgDataUrl } from '../icons/astraLogoShared'
-import { ensureReadableOnDark, extractArtworkAccent } from '../../utils/artworkAccent'
+import { ensureReadableOnDark, extractArtworkPalette } from '../../utils/artworkAccent'
 import {
   buildListeningStatsShareModel,
   type ListeningStatsShareLens
@@ -96,15 +96,18 @@ export default function StatsShareModal({ isOpen, snapshot, onClose }: StatsShar
       }))
       // The card takes its palette from the hero cover (the first collage tile for
       // the overview); the app theme accent is only the no-artwork fallback.
+      // The accent is drawn as text and bars on the card's dark background, so
+      // Adaptive tones it against that background rather than button text.
       const heroHash = model.hero?.artworkHash ?? model.artworkHashes[0] ?? null
       const heroDataUrl = artworkEntries.find(([hash, image]) => hash === heroHash && image)?.[2] ?? null
-      const [vibrant, tintColor] = heroDataUrl
-        ? await Promise.all([
-          extractArtworkAccent(heroDataUrl, 'vibrant'),
-          extractArtworkAccent(heroDataUrl, 'dominant')
-        ])
-        : [null, null]
-      const accentColor = ensureReadableOnDark(vibrant ?? shareAccentColor(), LISTENING_STATS_SHARE_BACKGROUND)
+      // The background tint is the cover's mood (its most common coloured area),
+      // not the accent: the accent is its most distinctive colour, which can make
+      // the whole card lean further toward it than the cover actually does.
+      const palette = heroDataUrl
+        ? await extractArtworkPalette(heroDataUrl, { isLight: false, onAccent: LISTENING_STATS_SHARE_BACKGROUND })
+        : null
+      const accentColor = palette?.hex ?? ensureReadableOnDark(shareAccentColor(), LISTENING_STATS_SHARE_BACKGROUND)
+      const tintColor = palette?.mood ?? null
       const logoDataUrl = createAstraLogoSvgDataUrl({
         includeBackground: false,
         mainFill: accentColor,

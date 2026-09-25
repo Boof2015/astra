@@ -290,7 +290,9 @@ function drawBackground(
   if (artwork) {
     context.save()
     context.globalAlpha = 0.5
-    context.filter = 'blur(120px) saturate(1.3)'
+    // Filter lengths ignore the canvas transform, so scale the radius to stay
+    // 60 layout px at any export scale (the cover's shapes stay recognisable).
+    context.filter = `blur(${60 * LISTENING_STATS_SHARE_SCALE}px) saturate(1.3)`
     drawImageCover(context, artwork, -120, -260, 1320, 1320)
     context.restore()
   }

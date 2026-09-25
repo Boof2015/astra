@@ -28,6 +28,16 @@ export interface AdaptiveAccentResult {
   neutral: boolean
 }
 
+export interface AdaptivePalette extends AdaptiveAccentResult {
+  /**
+   * The cover's overall mood: its most common *coloured* area, toned calm and
+   * mid-light for tinting backgrounds. Null when the cover has no real colour.
+   * Unlike the accent (the most distinctive colour, even if small), this follows
+   * what most of the cover looks like.
+   */
+  mood: string | null
+}
+
 export interface Oklab {
   L: number
   a: number
@@ -64,6 +74,13 @@ const LIGHT_THEME_LIGHTNESS = { preferred: 0.5, min: 0.42, max: 0.56 }
 /** Chroma a candidate must gain to justify each unit of lightness drift. */
 const LIGHTNESS_DRIFT_COST = 0.5
 const MIN_ON_ACCENT_CONTRAST = 4.5
+
+// Mood colour: a coloured cluster must cover this share of the image, so grey
+// noise can't pose as the cover's hue; then it's toned to a calm, fixed level.
+const MOOD_MIN_SHARE = 0.03
+const MOOD_LIGHTNESS = 0.6
+const MOOD_CHROMA_MIN = 0.05
+const MOOD_CHROMA_MAX = 0.12
 
 // ── Colour maths ─────────────────────────────────────────
 
@@ -595,15 +612,48 @@ export function toneForTheme(source: Oklab | null, target: AdaptiveAccentTarget)
   return linearToHex(rgb)
 }
 
-// ── Entry point ──────────────────────────────────────────
+/** The most common cluster with real colour, or null for colourless covers. */
+export function pickMoodSource(colors: WeightedColor[]): Oklab | null {
+  const total = colors.reduce((sum, color) => sum + color.population, 0)
+  if (total <= 0) return null
+  let best: WeightedColor | null = null
+  for (const color of colors) {
+    if (chromaOf(color.lab) * CHROMA_UNITS < CHROMA_CUTOFF) continue
+    if (color.population / total < MOOD_MIN_SHARE) continue
+    if (!best || color.population > best.population) best = color
+  }
+  return best?.lab ?? null
+}
+
+function toneMood(source: Oklab): string {
+  const chroma = Math.min(Math.max(chromaOf(source), MOOD_CHROMA_MIN), MOOD_CHROMA_MAX)
+  return linearToHex(gamutMapped(MOOD_LIGHTNESS, chroma, hueOf(source)))
+}
+
+// ── Entry points ─────────────────────────────────────────
+
+function clusterPixels(pixels: ArrayLike<number>): WeightedColor[] {
+  const histogram = buildHistogram(pixels)
+  return refineInOklab(histogram, quantizeWu(histogram))
+}
 
 export function pickAdaptiveSource(pixels: ArrayLike<number>): Oklab | null {
-  const histogram = buildHistogram(pixels)
-  const clusters = refineInOklab(histogram, quantizeWu(histogram))
-  return scoreColors(clusters)[0]?.lab ?? null
+  return scoreColors(clusterPixels(pixels))[0]?.lab ?? null
 }
 
 export function extractAdaptiveAccent(pixels: ArrayLike<number>, target: AdaptiveAccentTarget): AdaptiveAccentResult {
   const source = pickAdaptiveSource(pixels)
   return { hex: toneForTheme(source, target), neutral: source === null }
+}
+
+/** Accent and mood from a single clustering pass. */
+export function extractAdaptivePalette(pixels: ArrayLike<number>, target: AdaptiveAccentTarget): AdaptivePalette {
+  const clusters = clusterPixels(pixels)
+  const source = scoreColors(clusters)[0]?.lab ?? null
+  const moodSource = pickMoodSource(clusters)
+  return {
+    hex: toneForTheme(source, target),
+    neutral: source === null,
+    mood: moodSource ? toneMood(moodSource) : null
+  }
 }
