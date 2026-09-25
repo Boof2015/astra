@@ -230,6 +230,7 @@ function App() {
   const [isCollapseToggleNearby, setIsCollapseToggleNearby] = useState(false)
   const queuePresence = usePresence(showQueue)
   const infoSidebarPresence = usePresence(showInfoSidebar)
+  const fullscreenPresence = usePresence(isFullscreen, 180)
 
   const appStyle = useMemo(() => {
     const uiScale = uiScalePercent / 100
@@ -638,7 +639,7 @@ function App() {
         <SignalShareModal />
         <CollectionQueueContextMenu />
         <TrackDragRuntime />
-        {isFullscreen && <FullscreenMode />}
+        {fullscreenPresence.shouldRender && <FullscreenMode presencePhase={fullscreenPresence.phase} />}
         <ControllerRuntime showOverlays />
       </div>
     </div>

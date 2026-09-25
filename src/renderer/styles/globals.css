@@ -1958,6 +1958,8 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
    Fullscreen Mode
    ============================================ */
 .fullscreen-overlay {
+  --fullscreen-presence-duration: 300ms;
+  --fullscreen-presence-easing: cubic-bezier(0.22, 1, 0.36, 1);
   /* Immersive fullscreen is an intentional lights-off art stage in every theme.
      Re-pin the dark token palette here so its baked-in dark scrims and white-tint
      controls stay legible even when the light theme is active. Identical to the
@@ -1998,6 +2000,19 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   justify-content: center;
   overflow: hidden;
   isolation: isolate;
+  opacity: 1;
+  transition: opacity var(--fullscreen-presence-duration) var(--fullscreen-presence-easing);
+}
+
+.fullscreen-overlay[data-presence='entering'],
+.fullscreen-overlay[data-presence='exiting'] {
+  opacity: 0;
+}
+
+.fullscreen-overlay[data-presence='exiting'] {
+  /* Match the retention time passed to usePresence in App. Keep the overlay
+     hit-testable while its controls are inert so exit clicks cannot leak through. */
+  --fullscreen-presence-duration: 180ms;
 }
 
 .fullscreen-backdrop {
@@ -2018,8 +2033,9 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 }
 
 .fullscreen-backdrop-layer-previous.is-fading {
-  opacity: 0;
-  transition: opacity 0.68s ease;
+  /* This layer mounts at the start of the crossfade, so a transition has no
+     painted starting value. Animate it to keep the fallback from disappearing. */
+  animation: fullscreenBackdropLayerExit 0.68s ease both;
 }
 
 .fullscreen-backdrop-layer-current {
@@ -2121,6 +2137,18 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   z-index: 3;
   width: min(960px, calc(100vw - 76px));
   transition: width 0.48s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.fullscreen-overlay .fullscreen-content {
+  transform: translateY(0) scale(1);
+  transition:
+    width 0.48s cubic-bezier(0.22, 1, 0.36, 1),
+    transform var(--fullscreen-presence-duration) var(--fullscreen-presence-easing);
+}
+
+.fullscreen-overlay[data-presence='entering'] .fullscreen-content,
+.fullscreen-overlay[data-presence='exiting'] .fullscreen-content {
+  transform: translateY(12px) scale(0.98);
 }
 
 /* Immersive lyrics: the stage takes over most of the viewport */
@@ -3281,14 +3309,21 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   }
 }
 
+@keyframes fullscreenBackdropLayerExit {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
 @keyframes fullscreenBackdropLayerEnter {
   from {
     opacity: 0;
-    transform: scale(1.16);
+    transform: scale(1.02);
   }
   to {
     opacity: 1;
-    transform: scale(1.14);
+    /* The image already supplies blur overscan; the layer must settle at its
+       untransformed size before is-entering is removed. */
+    transform: scale(1);
   }
 }
 
@@ -3304,8 +3339,17 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .fullscreen-overlay[data-presence] {
+    transition: none;
+  }
+
+  .fullscreen-overlay[data-presence] .fullscreen-content {
+    transform: none;
+    transition: none !important;
+  }
+
   .fullscreen-backdrop-layer-previous.is-fading {
-    transition-duration: 0.08s !important;
+    animation-duration: 0.08s !important;
   }
 
   .fullscreen-backdrop-layer-current.is-entering {

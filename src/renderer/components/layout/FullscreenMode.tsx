@@ -12,6 +12,7 @@ import VolumeControl from '../player/VolumeControl'
 import FullscreenAmbientSpectrum from './FullscreenAmbientSpectrum'
 import LyricsLineContent from '../lyrics/LyricsLineContent'
 import { usePlaybackClock } from '../../hooks/usePlaybackClock'
+import type { PresencePhase } from '../../hooks/usePresence'
 import { getFullscreenBackdropArtworkCandidates } from '../../utils/fullscreenBackdropArtwork'
 import {
   buildLyricsQuery,
@@ -491,7 +492,8 @@ function FullscreenNextCueOverlay({
   )
 }
 
-export default function FullscreenMode() {
+export default function FullscreenMode({ presencePhase }: { presencePhase: PresencePhase }) {
+  const isExiting = presencePhase === 'exiting'
   const setFullscreen = useUIStore((s) => s.setFullscreen)
   const showLyricsDock = useUIStore((s) => s.fullscreenLyricsVisible)
   const toggleFullscreenLyricsVisible = useUIStore((s) => s.toggleFullscreenLyricsVisible)
@@ -523,7 +525,7 @@ export default function FullscreenMode() {
   const [fullscreenTitleOverflows, setFullscreenTitleOverflows] = useState(false)
 
   const backdropRequestTokenRef = useRef(0)
-  const previousTrackIdRef = useRef<string | null>(null)
+  const previousTrackIdRef = useRef<string | null>(currentTrack?.id ?? null)
   const enterResetTimeoutRef = useRef<number | null>(null)
   const backdropCrossfadeTimeoutRef = useRef<number | null>(null)
   const heroEnterRafRef = useRef<number | null>(null)
@@ -571,6 +573,8 @@ export default function FullscreenMode() {
   }, [])
 
   useEffect(() => {
+    if (isExiting) return
+
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target
       const isEditableTarget = target instanceof HTMLElement && (
@@ -595,7 +599,7 @@ export default function FullscreenMode() {
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [setFullscreen, toggleFullscreenLyricsVisible])
+  }, [isExiting, setFullscreen, toggleFullscreenLyricsVisible])
 
   useEffect(() => {
     checkFullscreenTitleOverflow()
@@ -675,15 +679,6 @@ export default function FullscreenMode() {
       backdropCrossfadeTimeoutRef.current = null
     }
 
-    // First resolved backdrop should appear immediately instead of crossfading from fallback.
-    if (!activeBackdropArtwork && resolvedBackdropArtwork) {
-      setPreviousBackdropArtwork(null)
-      setShowPreviousBackdropLayer(false)
-      setActiveBackdropArtwork(resolvedBackdropArtwork)
-      setIsBackdropCrossfading(false)
-      return
-    }
-
     setPreviousBackdropArtwork(activeBackdropArtwork)
     setShowPreviousBackdropLayer(true)
     setActiveBackdropArtwork(resolvedBackdropArtwork)
@@ -728,10 +723,12 @@ export default function FullscreenMode() {
   return (
     <div
       className="fullscreen-overlay"
+      data-presence={presencePhase}
       role="dialog"
       aria-modal="true"
       aria-label="Fullscreen player"
       data-controller-scope="overlay"
+      data-controller-exclude={isExiting ? 'true' : undefined}
     >
       <div className="fullscreen-backdrop" aria-hidden="true">
         {showPreviousBackdropLayer && (
@@ -766,13 +763,14 @@ export default function FullscreenMode() {
         onClick={() => setFullscreen(false)}
         title="Exit fullscreen"
         aria-label="Exit fullscreen"
+        disabled={isExiting}
       >
         <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
           <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z" />
         </svg>
       </button>
 
-      <div className="fullscreen-content">
+      <div className="fullscreen-content" inert={isExiting} aria-hidden={isExiting}>
         <div className={`fullscreen-stage ${showLyricsDock ? 'lyrics-open' : ''}`}>
           <div
             className={`fullscreen-hero fullscreen-hero-${heroPhase}${showLyricsDock ? ' lyrics-active' : ''}`}
