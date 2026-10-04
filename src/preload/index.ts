@@ -274,6 +274,8 @@ export type LocalAudioPcmDecodeResponse = LocalAudioPcmDecodeResult | LocalPcmDe
 
 export interface ProgressiveStreamStartOptions {
   startTimeSeconds?: number | null
+  slot?: 'current' | 'next'
+  preserveNext?: boolean
 }
 
 // Library types
@@ -1601,7 +1603,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('audio:startProgressiveStream', filePath, outputSampleRate, expectedChannels, options) as Promise<ProgressiveStreamInfo>,
   updateProgressiveStreamPosition: (sessionId: number, currentFrame: number) =>
     ipcRenderer.send('audio:updateProgressiveStreamPosition', sessionId, currentFrame),
-  cancelPendingProgressiveStream: () => ipcRenderer.invoke('audio:cancelPendingProgressiveStream') as Promise<void>,
+  activateProgressiveStream: (sessionId: number) => ipcRenderer.send('audio:activateProgressiveStream', sessionId),
+  cancelPendingProgressiveStream: (slot?: 'current' | 'next') => ipcRenderer.invoke('audio:cancelPendingProgressiveStream', slot) as Promise<void>,
   cancelProgressiveStream: (sessionId: number) => ipcRenderer.invoke('audio:cancelProgressiveStream', sessionId) as Promise<void>,
   startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) =>
     ipcRenderer.invoke('audio:startRemoteStream', filePath, outputSampleRate, expectedChannels) as Promise<RemoteStreamInfo>,
@@ -2303,7 +2306,8 @@ declare global {
         options?: ProgressiveStreamStartOptions
       ) => Promise<ProgressiveStreamInfo>
       updateProgressiveStreamPosition: (sessionId: number, currentFrame: number) => void
-      cancelPendingProgressiveStream: () => Promise<void>
+      activateProgressiveStream: (sessionId: number) => void
+      cancelPendingProgressiveStream: (slot?: 'current' | 'next') => Promise<void>
       cancelProgressiveStream: (sessionId: number) => Promise<void>
       startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) => Promise<RemoteStreamInfo>
       cancelRemoteStream: (sessionId: number) => Promise<void>

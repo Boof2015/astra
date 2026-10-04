@@ -36,6 +36,7 @@ import { LibraryLatestSyncCoordinator } from './services/libraryLatestSync'
 import { RemoteAudioCache, type RemoteAudioLease } from './services/remoteAudioCache'
 import { normalizeRemoteCacheLimitGb } from '../types/remoteAudioCache'
 import { ProgressivePcmDelivery } from './progressivePcmDelivery'
+import { ProgressiveStartupRegistry } from './progressiveStartupRegistry'
 import { createThrottledLibraryScanProgressReporter } from './libraryScanProgress'
 import {
   buildEbur128Args,
@@ -693,7 +694,7 @@ const jellyfinAuthCacheBySourceId = new Map<number, { authContext: { accessToken
 const remoteStreamSessions = new Map<number, RemoteStreamSession>()
 let nextRemoteStreamSessionId = 1
 let remoteAudioCache: RemoteAudioCache | null = null
-const progressiveStartupControllers = new Map<number, AbortController>()
+const progressiveStartupControllers = new ProgressiveStartupRegistry()
 
 function getRemoteAudioCache(): RemoteAudioCache {
   const limitGb = normalizeRemoteCacheLimitGb(library.getAppMeta('remote_audio_cache_limit_gb'))
@@ -729,6 +730,8 @@ function getActiveMemoryFootprintChildProcessPids(): number[] {
 
 interface ProgressiveStreamStartOptions {
   startTimeSeconds?: number | null
+  slot?: 'current' | 'next'
+  preserveNext?: boolean
 }
 
 let localApiConfig: LocalApiServiceConfig = {
@@ -5698,7 +5701,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isAppQuitting = true
-  for (const controller of progressiveStartupControllers.values()) controller.abort()
+  progressiveStartupControllers.cancelAll()
   void remoteAudioCache?.close()
   notchController?.dispose()
   destroyAppTray()
@@ -7767,8 +7770,15 @@ ipcMain.handle('audio:cancelProgressiveStream', async (_event, sessionId: number
   await cancelProgressiveStreamSession(sessionId)
 })
 
-ipcMain.handle('audio:cancelPendingProgressiveStream', (event) => {
-  progressiveStartupControllers.get(event.sender.id)?.abort()
+ipcMain.handle('audio:cancelPendingProgressiveStream', (event, slot?: 'current' | 'next') => {
+  progressiveStartupControllers.cancel(event.sender.id, slot === 'next' ? 'next' : 'current')
+})
+
+ipcMain.on('audio:activateProgressiveStream', (event, sessionId: number) => {
+  const session = remoteStreamSessions.get(sessionId)
+  if (!session || session.sender !== event.sender) return
+  session.slot = 'current'
+  safeSendRemoteLoadProgress(session, session.failed ? 'failed' : session.done ? 'complete' : 'streaming', true)
 })
 
 ipcMain.handle('audio:getReplayGainScanEnabled', () => {
@@ -10176,6 +10186,7 @@ const localPcmDecodeSessions = new Map<string, LocalPcmDecodeSession>()
 
 interface RemoteStreamSession {
   id: number
+  slot: 'current' | 'next'
   sender: Electron.WebContents
   filePath: string
   sourceType: RemoteStreamSourceType
@@ -10235,7 +10246,7 @@ function normalizeProgressiveStartTimeSeconds(value: unknown): number {
 function buildRemoteLoadProgress(
   session: Pick<
     RemoteStreamSession,
-    'filePath' | 'sourceType' | 'startTimeSeconds' | 'loadedBytes' | 'totalBytes' | 'chunkCount' | 'decodedFrames' | 'sampleRate' | 'durationSeconds' | 'done' | 'failed'
+    'id' | 'slot' | 'filePath' | 'sourceType' | 'startTimeSeconds' | 'loadedBytes' | 'totalBytes' | 'chunkCount' | 'decodedFrames' | 'sampleRate' | 'durationSeconds' | 'done' | 'failed'
   >,
   stage: RemoteAudioLoadProgress['stage']
 ): RemoteAudioLoadProgress {
@@ -10249,6 +10260,8 @@ function buildRemoteLoadProgress(
     : null
 
   return {
+    sessionId: session.id,
+    slot: session.slot,
     path: session.filePath,
     sourceType: session.sourceType,
     stage,
@@ -10691,9 +10704,8 @@ async function startProgressiveStreamSession(
   expectedChannels?: number | null,
   options: ProgressiveStreamStartOptions = {}
 ): Promise<RemoteStreamInfo> {
-  const abortController = new AbortController()
-  progressiveStartupControllers.get(sender.id)?.abort()
-  progressiveStartupControllers.set(sender.id, abortController)
+  const slot = options.slot === 'next' ? 'next' : 'current'
+  const abortController = progressiveStartupControllers.begin(sender.id, slot, options.preserveNext === true)
   const abortStartup = () => abortController.abort()
   sender.once('destroyed', abortStartup)
   let cacheLease: RemoteAudioLease | null = null
@@ -10773,6 +10785,7 @@ async function startProgressiveStreamSession(
     const infoPromise = new Promise<RemoteStreamInfo>((resolve, reject) => {
       const session: RemoteStreamSession = {
         id: sessionId,
+        slot,
         sender,
         filePath,
         sourceType,
@@ -10959,9 +10972,7 @@ async function startProgressiveStreamSession(
     return await infoPromise
   } finally {
     sender.removeListener('destroyed', abortStartup)
-    if (progressiveStartupControllers.get(sender.id) === abortController) {
-      progressiveStartupControllers.delete(sender.id)
-    }
+    progressiveStartupControllers.finish(sender.id, slot, abortController)
     if (!sessionCreated) cacheLease?.release()
   }
 }

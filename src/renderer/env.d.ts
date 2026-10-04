@@ -711,10 +711,11 @@ declare global {
                 filePath: string,
                 outputSampleRate: number,
                 expectedChannels?: number | null,
-                options?: { startTimeSeconds?: number | null }
+                options?: { startTimeSeconds?: number | null; slot?: 'current' | 'next'; preserveNext?: boolean }
             ) => Promise<ProgressiveStreamInfo>
             updateProgressiveStreamPosition: (sessionId: number, currentFrame: number) => void
-            cancelPendingProgressiveStream: () => Promise<void>
+            activateProgressiveStream: (sessionId: number) => void
+            cancelPendingProgressiveStream: (slot?: 'current' | 'next') => Promise<void>
             cancelProgressiveStream: (sessionId: number) => Promise<void>
             startRemoteStream: (
                 filePath: string,

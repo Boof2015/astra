@@ -327,3 +327,34 @@ test('real FFmpeg can decode an original M4A whose index follows its audio', { t
   assert.deepEqual(sought, expectedSeek)
   lease.release()
 })
+
+test('adjacent cached FLAC tracks decode to the original continuous PCM without boundary padding', { timeout: 15_000 }, async t => {
+  const { cache } = await fixture(t, 4 * 1024 ** 2)
+  const boundary = 48_037
+  const frames = boundary + 48_091
+  const pcm = Buffer.alloc(frames * 4)
+  const expected = Buffer.alloc(frames * 8)
+  for (let frame = 0; frame < frames; frame++) {
+    for (let channel = 0; channel < 2; channel++) {
+      // Integer PCM has one zero representation (Math.round can return -0).
+      const sample = Math.round(12_000 * Math.sin(frame * (channel ? 0.071 : 0.043))) || 0
+      pcm.writeInt16LE(sample, frame * 4 + channel * 2)
+      expected.writeFloatLE(sample / 32_768, frame * 8 + channel * 4)
+    }
+  }
+  const encode = (input: Buffer) => execFileSync(ffmpeg, [
+    '-v', 'error', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:0',
+    '-c:a', 'flac', '-f', 'flac', 'pipe:1'
+  ], { input, maxBuffer: 4 * 1024 ** 2 })
+  const encoded = [encode(pcm.subarray(0, boundary * 4)), encode(pcm.subarray(boundary * 4))]
+  const leases = await Promise.all(encoded.map((bytes, index) => cache.acquire(source(`adjacent-${index}`,
+    async () => new Response(bytes, { headers: { 'content-type': 'audio/flac', 'content-length': String(bytes.length) } })))))
+  const decoded = await Promise.all(leases.map(lease => decode(lease.url).result))
+  assert.equal(decoded[0].length, boundary * 8)
+  assert.deepEqual(Buffer.concat(decoded), expected)
+  await cache.clearUnused()
+  const status = await cache.status()
+  assert.equal(status.usedBytes, encoded[0].length + encoded[1].length)
+  assert.equal(status.activeBytes, status.usedBytes, 'current and prepared tracks remain protected')
+  for (const lease of leases) lease.release()
+})

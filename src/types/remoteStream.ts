@@ -4,6 +4,8 @@ export type RemoteStreamSourceType = ProgressiveStreamSourceType
 export type RemoteLoadStage = 'downloading' | 'streaming' | 'complete' | 'failed'
 
 export interface RemoteAudioLoadProgress {
+  sessionId?: number
+  slot?: 'current' | 'next'
   path: string
   sourceType: RemoteStreamSourceType
   stage: RemoteLoadStage
