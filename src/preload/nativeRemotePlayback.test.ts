@@ -89,35 +89,42 @@ function harness(overrides: NativeAudioControllerOptions = {}) {
 const a = 'subsonic://server/track/a'
 const b = 'subsonic://server/track/b'
 
-test('remote current/next stay leased after decode, seek retains next, and promotion follows audible identity', async () => {
-  const h = harness()
-  await h.controller.loadTrack(a)
-  await h.controller.play()
-  const next = await h.controller.preloadNextTrack(b)
-  await h.controller.pause()
-  const seek = await h.controller.seek(17)
-  assert.equal(seek.playbackState, 'paused')
-  assert.equal(seek.currentTime, 17)
-  assert.deepEqual(h.leases.map(x => x.released), [true, false, false])
-  assert.equal(h.inputs[1].status().state, 'open', 'seeking must preserve prepared next')
-  assert.ok(h.decoders[2].args.includes('17'))
-  assert.equal(h.decoders[2].args.includes(a), false, 'FFmpeg receives only the internal cache URL')
-  const observed: NativeAudioEvent[] = []
-  h.controller.onEvent(event => observed.push(event))
-  h.transition()
-  const snapshot = await h.controller.getPlaybackSnapshot()
-  assert.equal(snapshot.playbackSequence, next.playbackSequence)
-  assert.equal(snapshot.progressiveSessionId, h.inputs[1].status().sessionId)
-  assert.equal(observed.filter(x => x.type === 'gaplessTransition').length, 1)
-  assert.deepEqual(h.leases.map(x => x.released), [true, false, true])
-  const report = await h.controller.getNativeAudioDiagnosticReport()
-  assert.equal(report.track?.path, b)
-  assert.ok(!report.text.includes('http://cache'))
-  await h.controller.stop()
-  assert.ok(h.leases.every(x => x.released))
-  assert.equal((await h.controller.getBufferMemoryStats()).totalBytes, 0)
-  assert.deepEqual(h.local(), { localLoads: 0, localDecodes: 0 })
-})
+for (const currentProvider of ['subsonic', 'jellyfin']) {
+  for (const nextProvider of ['subsonic', 'jellyfin']) {
+    const a = `${currentProvider}://7/a`
+    const b = `${nextProvider}://7/b`
+    test(`${currentProvider} to ${nextProvider}: leases survive decode/seek and promotion follows audible identity`, async () => {
+      const h = harness()
+      await h.controller.loadTrack(a)
+      await h.controller.play()
+      const next = await h.controller.preloadNextTrack(b)
+      await h.controller.pause()
+      const seek = await h.controller.seek(17)
+      assert.equal(seek.playbackState, 'paused')
+      assert.equal(seek.currentTime, 17)
+      assert.deepEqual(h.leases.map(x => x.released), [true, false, false])
+      assert.equal(h.inputs[1].status().state, 'open', 'seeking must preserve prepared next')
+      assert.ok(h.decoders[2].args.includes('17'))
+      assert.equal(h.decoders[2].args.includes(a), false, 'FFmpeg receives only the internal cache URL')
+      const observed: NativeAudioEvent[] = []
+      h.controller.onEvent(event => observed.push(event))
+      h.transition()
+      const snapshot = await h.controller.getPlaybackSnapshot()
+      assert.equal(snapshot.playbackSequence, next.playbackSequence)
+      assert.equal(snapshot.progressiveSessionId, h.inputs[1].status().sessionId)
+      assert.equal(observed.filter(x => x.type === 'gaplessTransition').length, 1)
+      assert.deepEqual(h.leases.map(x => x.released), [true, false, true])
+      const report = await h.controller.getNativeAudioDiagnosticReport()
+      assert.equal(report.track?.path, b)
+      assert.ok(!report.text.includes('http://cache'))
+      await h.controller.stop()
+      assert.ok(h.leases.every(x => x.released))
+      assert.equal((await h.controller.getBufferMemoryStats()).totalBytes, 0)
+      assert.deepEqual(h.local(), { localLoads: 0, localDecodes: 0 })
+    })
+
+  }
+}
 
 test('pending-decode cancellation leaves attached playback alone; stop cancels it and local loading stays complete', async () => {
   const h = harness()

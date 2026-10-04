@@ -703,6 +703,11 @@ export function parseJellyfinTrackPath(path: string): { sourceId: number; source
   }
 }
 
+/** Original audio through the streaming API; authentication is sent in headers. */
+export function buildJellyfinOriginalStreamUrl(config: JellyfinConnectionConfig, sourceTrackId: string): string {
+  return buildJellyfinUrl(config, `/Audio/${encodeURIComponent(sourceTrackId)}/stream`, { static: true }).toString()
+}
+
 export function buildJellyfinStreamUrl(
   config: JellyfinConnectionConfig,
   sourceTrackId: string,

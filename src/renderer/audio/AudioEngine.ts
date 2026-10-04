@@ -1,3 +1,4 @@
+import { isRetainedRemoteSource, retainedRemoteSourceFromPath } from '../../shared/audio/retainedRemoteSource'
 import { createMonoSampleQueue, createStereoSampleQueue, createMultichannelSampleQueue, createMiniSampleQueue } from './visualizerSampleQueue'
 import type { PlaybackState, EQBand, Track } from '../types/audio'
 import type { RemoteAudioLoadProgress, RemoteStreamChunk, RemoteStreamEvent, RemoteStreamInfo } from '../../types/remoteStream'
@@ -1961,7 +1962,7 @@ export class AudioEngine {
     this._playbackState = 'loading'
     this.emit('stateChange', this._playbackState)
     this.stopTimeUpdate()
-    const promotingRemoteNext = track.sourceType === 'subsonic'
+    const promotingRemoteNext = isRetainedRemoteSource(track.sourceType)
       && this.nativeNextTrackBuffered && this.nextBufferTrackPath === track.path
     if (!promotingRemoteNext && (this.nativeSnapshot?.playbackState === 'playing' || this.nativeSnapshot?.playbackState === 'paused')) {
       try {
@@ -3666,13 +3667,13 @@ export class AudioEngine {
 
   canPreBufferRemoteTrack(track: Track): boolean {
     if (this.isNativeExclusiveMode()) {
-      return !!this.nativeSnapshot?.progressiveSessionId && this.currentBufferTrackPath?.startsWith('subsonic://') === true
-        && track.sourceType === 'subsonic' && (track.channels ?? 2) === this.nativeSnapshot.channels
+      return !!this.nativeSnapshot?.progressiveSessionId && retainedRemoteSourceFromPath(this.currentBufferTrackPath) !== null
+        && isRetainedRemoteSource(track.sourceType) && (track.channels ?? 2) === this.nativeSnapshot.channels
     }
     const current = this.remoteStreamState ?? this.getActiveProgressiveSeek()?.retainedStream?.state
     const channels = Math.max(1, Math.min(8, Math.round(track.channels ?? 2)))
     return this.playbackOutputMode === 'standard' && !!current?.seekableCache
-      && current.sourceType === 'subsonic' && track.sourceType === 'subsonic'
+      && isRetainedRemoteSource(current.sourceType) && isRetainedRemoteSource(track.sourceType)
       && current.channels === channels
   }
 
@@ -9153,7 +9154,7 @@ export class AudioEngine {
       playRequested: this._playbackState === 'playing' || remoteState.playRequested,
       cancellation: null,
       operation: null,
-      retainedStream: remoteState.seekableCache && remoteState.sourceType === 'subsonic' && this.remoteStreamNode
+      retainedStream: remoteState.seekableCache && isRetainedRemoteSource(remoteState.sourceType) && this.remoteStreamNode
         ? { node: this.remoteStreamNode, state: remoteState } : null
     }
     const options = {

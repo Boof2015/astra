@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startNativePcmDecoder } from './nativePcmDecoder.ts'
 import { RemoteAudioCache } from '../main/services/remoteAudioCache.ts'
+import { createJellyfinAudioSource } from '../main/services/jellyfinAudioSource.ts'
 import { createNativeAudioController, type NativeAudioAddonPlayback } from './nativeAudioController.ts'
 
 const require = createRequire(import.meta.url)
@@ -121,5 +122,65 @@ test('real FFmpeg decodes retained original audio and replacement seeks into add
   assert.equal((await controller.getNativeAudioDiagnosticReport()).track?.path, logicalPath)
   await controller.stop()
   assert.equal(released, 3)
+  assert.equal(downloads, 1)
+})
+
+test('Jellyfin originals use the real native controller and retained cache without authenticating offline', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'astra-jellyfin-decoder-'))
+  let cache = new RemoteAudioCache(directory, 1024 * 1024)
+  const encoded = execFileSync(ffmpeg, [
+    '-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=0.25',
+    '-ac', '2', '-c:a', 'flac', '-f', 'flac', 'pipe:1'
+  ])
+  let offline = false
+  let authentications = 0
+  let downloads = 0
+  t.mock.method(globalThis, 'fetch', async (input: string) => {
+    assert.equal(offline, false, 'completed cache entries must not contact the server')
+    const url = new URL(input)
+    assert.equal(url.pathname, '/Audio/song/stream')
+    assert.equal(url.searchParams.get('static'), 'true')
+    downloads++
+    return new Response(encoded, { headers: { 'content-type': 'audio/flac', 'content-length': String(encoded.length) } })
+  })
+  const source = createJellyfinAudioSource({
+    sourceId: 7, connection: { baseUrl: 'https://music.example', username: 'listener', password: 'secret' },
+    trackId: 'song', revision: '1', authenticate: async () => {
+      assert.equal(offline, false, 'cached playback must not need a fresh login')
+      authentications++
+      return { accessToken: 'test-token', userId: 'user' }
+    }
+  })
+  const controller = createNativeAudioController({ playback: { ...playback,
+    getCapabilities: () => ({ ...playback.getCapabilities(), bitPerfectAvailable: true })
+  } }, {
+    eventPolling: false,
+    resolveBinary: async binary => binary === 'ffmpeg' ? ffmpeg : require('ffprobe-static').path,
+    acquireRemoteSource: async (path, signal) => {
+      assert.equal(path, 'jellyfin://7/song')
+      const lease = await cache.acquire(source, signal)
+      return { ...lease, duration: 0.25, progress: async () => ({ ...lease.progress(), error: null }) }
+    }
+  })
+  t.after(async () => { await controller.stop(); await cache.close(); await rm(directory, { recursive: true, force: true }) })
+  const loaded = await controller.loadTrack('jellyfin://7/song')
+  assert.equal(loaded.sampleRate, 48000)
+  assert.equal(loaded.sampleFormat, 's16')
+  assert.equal(loaded.duration, 0.25)
+  await controller.preloadNextTrack('jellyfin://7/song')
+  assert.equal((await controller.seek(0.125)).currentTime, 0.125)
+  await cache.clearUnused()
+  assert.ok((await cache.status()).activeBytes > 0)
+  await controller.stop()
+  await cache.close()
+
+  offline = true
+  cache = new RemoteAudioCache(directory, 1024 * 1024)
+  await controller.loadTrack('jellyfin://7/song')
+  assert.equal((await controller.seek(0.125)).currentTime, 0.125)
+  const report = await controller.getNativeAudioDiagnosticReport()
+  assert.equal(report.track?.path, 'jellyfin://7/song')
+  assert.ok(!report.text.includes('test-token'))
+  assert.equal(authentications, 1)
   assert.equal(downloads, 1)
 })

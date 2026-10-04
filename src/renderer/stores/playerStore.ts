@@ -1,3 +1,4 @@
+import { isRetainedRemoteSource } from '../../shared/audio/retainedRemoteSource'
 import { create } from 'zustand'
 import type { PlaybackSourceContext } from '../../types/playbackSource'
 import { normalizePlaybackSourceContext, playbackSourceKey, resolveCurrentPlaybackSource } from '../../shared/home/playbackSources'
@@ -823,7 +824,7 @@ type NextCandidate =
 function isUnavailableRemoteTrack(track: Track | null | undefined): boolean {
   if (!track) return false
   // Connectivity is not playability once encoded audio may be cached locally.
-  if (track.sourceType === 'subsonic' && track.availabilityReason === 'source_unavailable') return false
+  if (isRetainedRemoteSource(track.sourceType) && track.availabilityReason === 'source_unavailable') return false
   return track.sourceType !== undefined
     && track.sourceType !== 'local'
     && track.isAvailable === false
@@ -1123,7 +1124,7 @@ function getReplayGainCandidateDb(
 function shouldUseNativeExclusivePath(track: Track | null | undefined): boolean {
   if (!track) return false
   const sourceType = track.sourceType ?? 'local'
-  if (sourceType !== 'local' && sourceType !== 'subsonic') return false
+  if (sourceType !== 'local' && !isRetainedRemoteSource(sourceType)) return false
   if (isIamfTrack(track)) return false
   return useAudioSettingsStore.getState().playbackOutputMode !== 'standard'
 }
@@ -1131,7 +1132,7 @@ function shouldUseNativeExclusivePath(track: Track | null | undefined): boolean 
 async function ensureCompatiblePlaybackMode(track: Track): Promise<void> {
   const sourceType = track.sourceType ?? 'local'
   const iamf = isIamfTrack(track)
-  if ((sourceType === 'local' || sourceType === 'subsonic') && !iamf) {
+  if ((sourceType === 'local' || isRetainedRemoteSource(sourceType)) && !iamf) {
     return
   }
 
@@ -2290,7 +2291,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
   const markTrackUnavailableInState = (trackPath: string, reason: string = 'source_unavailable'): void => {
     if (reason === 'source_unavailable' && get().currentTrack?.path === trackPath
-      && get().currentTrack?.sourceType === 'subsonic') return
+      && isRetainedRemoteSource(get().currentTrack?.sourceType)) return
     set((state) => ({
       queueItems: state.queueItems.map((item) => ({
         ...item,
@@ -3354,7 +3355,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           failed: true,
           deviceFormatRejected: isFormatFailure
         })
-        const remoteFailure = track.sourceType === 'subsonic'
+        const remoteFailure = isRetainedRemoteSource(track.sourceType)
           ? { ...createInitialRemoteLoadProgress(track), stage: 'failed' as const, failed: true, done: true }
           : null
         set({
@@ -3902,7 +3903,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         })
         return
       }
-      const seekTime = state.currentTrack?.sourceType && state.currentTrack.sourceType !== 'local' && state.currentTrack.sourceType !== 'subsonic'
+      const seekTime = state.currentTrack?.sourceType && state.currentTrack.sourceType !== 'local' && !isRetainedRemoteSource(state.currentTrack.sourceType)
         ? Math.max(0, Math.min(time, state.remoteBufferedSeconds))
         : time
       const parallaxSeekTimeline = await useParallaxStore.getState().prepareHostSeek(
@@ -3919,12 +3920,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       if (audioEngine.getPlaybackOutputMode() !== 'standard') {
         try {
           await runSerializedNativeSeek(seekIntentId, seekTime)
-          if (isCurrentSeek() && state.currentTrack?.sourceType === 'subsonic') {
+          if (isCurrentSeek() && isRetainedRemoteSource(state.currentTrack?.sourceType)) {
             set({ remoteStreamSessionId: audioEngine.getRemoteStreamSessionId() })
           }
         } catch (error) {
           if (!isCurrentSeek() || isSupersededAudioLoadError(error)) return
-          if (state.currentTrack?.sourceType !== 'subsonic') throw error
+          if (!state.currentTrack || !isRetainedRemoteSource(state.currentTrack.sourceType)) throw error
           showBitPerfectFormatNotice(state.currentTrack, error)
           set({ remoteLoadProgress: { ...(get().remoteLoadProgress ?? createInitialRemoteLoadProgress(state.currentTrack)),
             stage: 'failed', failed: true, done: true } })
@@ -3933,12 +3934,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       } else {
         try {
           await audioEngine.seek(seekTime)
-          if (isCurrentSeek() && state.currentTrack?.sourceType === 'subsonic') {
+          if (isCurrentSeek() && isRetainedRemoteSource(state.currentTrack?.sourceType)) {
             set({ remoteStreamSessionId: audioEngine.getRemoteStreamSessionId() })
           }
         } catch (error) {
           if (!isCurrentSeek() || isSupersededAudioLoadError(error)) return
-          if (state.currentTrack?.sourceType !== 'subsonic') throw error
+          if (!state.currentTrack || !isRetainedRemoteSource(state.currentTrack.sourceType)) throw error
           // A failed seek has already released the old decoder. Retry must load
           // a fresh session at this position, not seek a now-missing worklet.
           set({
@@ -4872,7 +4873,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           try {
             const streamInfo = await audioEngine.loadRemoteStream(track, {
               replayGainDb,
-              startTimeSeconds: track.sourceType === 'subsonic' ? startTime : 0
+              startTimeSeconds: isRetainedRemoteSource(track.sourceType) ? startTime : 0
             })
             throwIfSupersededLoad(loadRequestId)
             const resolvedTrack: Track = {
@@ -4942,7 +4943,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             }
             // A connection/cache failure must not silently select the old
             // bitrate-limited, whole-track-memory fallback for Original mode.
-            if (track.sourceType === 'subsonic') throw streamError
+            if (isRetainedRemoteSource(track.sourceType)) throw streamError
             console.warn(`Remote progressive stream setup failed for ${track.path}; falling back to full download.`, streamError)
             logMemoryDiagnosticsEvent('remote_stream_fallback', {
               trackPath: track.path,
@@ -5320,7 +5321,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         if (track.sourceType && track.sourceType !== 'local') {
           markTrackUnavailableInState(track.path)
         }
-        const retainedRemoteFailure = track.sourceType === 'subsonic'
+        const retainedRemoteFailure = isRetainedRemoteSource(track.sourceType)
           ? { ...(get().remoteLoadProgress ?? createInitialRemoteLoadProgress(track)), stage: 'failed' as const, failed: true, done: true }
           : null
         set({
@@ -5416,7 +5417,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           try {
             if (!canApplyPrebufferResult(nextTrack)) return
             if (shouldUseNativeExclusivePath(nextTrack)) {
-              if (nextTrack.sourceType === 'subsonic'
+              if (isRetainedRemoteSource(nextTrack.sourceType)
                 && (!audioEngine.canPreBufferRemoteTrack(nextTrack) || !audioEngine.hasRemotePrebufferHeadroom())) return
               const nativePrebufferIntentId = playbackIntentGeneration
               const nextReplayGainDb = getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
@@ -5430,7 +5431,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
                 })
               })
               if (!canApplyPrebufferResult(nextTrack)) {
-                if (nextTrack.sourceType === 'subsonic') {
+                if (isRetainedRemoteSource(nextTrack.sourceType)) {
                   await runNativeControlAfterActiveTransition(playbackIntentGeneration, () => {
                     if (audioEngine.nextBufferedTrackPath === nextTrack.path) return audioEngine.clearNextBuffer()
                   })
@@ -5603,7 +5604,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             // An incompatible native boundary is an ordinary next-track load,
             // not an unavailable song or permission to prepare a later item.
             if (activeOutputMode !== 'standard'
-              && (state.currentTrack?.sourceType === 'subsonic' || nextTrack.sourceType === 'subsonic')) return
+              && (isRetainedRemoteSource(state.currentTrack?.sourceType) || isRetainedRemoteSource(nextTrack.sourceType))) return
             if (isActivePrebufferRequest(prebufferRequestId) && nextTrack.sourceType && nextTrack.sourceType !== 'local') {
               markTrackUnavailableInState(nextTrack.path)
             }

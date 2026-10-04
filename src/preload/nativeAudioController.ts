@@ -28,6 +28,7 @@ import type {
 import { createBitPerfectFormatError } from '../shared/audio/bitPerfectFormatError'
 import type { NativeProgressiveInput, NativeProgressiveInputOptions } from '../types/nativeProgressive'
 import type { NativeRemoteSource, NativeRemoteProgress } from '../types/nativeRemoteSource'
+import { retainedRemoteSourceFromPath } from '../shared/audio/retainedRemoteSource'
 import { startNativePcmDecoder, type NativePcmDecoder, type NativePcmDecoderOptions } from './nativePcmDecoder'
 
 export interface NativeAudioAddonPlayback {
@@ -118,7 +119,7 @@ interface RemoteNativeSession {
   bytes: number
 }
 
-const isNativeRemotePath = (path: string): boolean => path.startsWith('subsonic://')
+const isNativeRemotePath = (path: string): boolean => retainedRemoteSourceFromPath(path) !== null
 
 class SupersededNativeAudioLoadError extends Error {
   constructor(message = 'Native audio load was superseded by a newer request.') {
@@ -1270,7 +1271,7 @@ export function createNativeAudioController(
         progressiveSessionId: status.sessionId, buffering: snapshot.buffering === true,
         currentTime: snapshot.currentTime, playbackState: snapshot.playbackState,
         progress: {
-          sessionId: status.sessionId, slot: 'current', path: session.request.filePath, sourceType: 'subsonic',
+          sessionId: status.sessionId, slot: 'current', path: session.request.filePath, sourceType: retainedRemoteSourceFromPath(session.request.filePath)!,
           stage: session.error ? 'failed' : progress.complete ? 'complete' : 'streaming',
           loadedBytes: progress.loadedBytes, totalBytes: progress.totalBytes,
           percent: progress.totalBytes ? Math.min(1, progress.loadedBytes / progress.totalBytes) : null,

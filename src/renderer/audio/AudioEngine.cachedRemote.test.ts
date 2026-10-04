@@ -52,7 +52,7 @@ async function flush() {
 
 // Exercise the real load/seek/play lifecycle, including the interval with no
 // remoteStreamState. Only the browser audio graph and Electron transport are fake.
-async function remoteHarness(t: TestContext, playing: boolean) {
+async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'subsonic' | 'jellyfin' = 'subsonic') {
   const engine = new AudioEngine()
   const internals = engine as unknown as {
     context: AudioContext
@@ -125,13 +125,13 @@ async function remoteHarness(t: TestContext, playing: boolean) {
     if (originalWorkletNode) Object.defineProperty(globalThis, 'AudioWorkletNode', originalWorkletNode)
     else delete (globalThis as Record<string, unknown>).AudioWorkletNode
   })
-  const track = { path: 'subsonic://7/drag', sourceType: 'subsonic', duration: 1800 } as Track
+  const track = { path: `${sourceType}://7/drag`, sourceType, duration: 1800 } as Track
   const complete = (index: number, withPcm = true) => {
     const request = requests[index]
-    request.resolve({ sessionId: request.sessionId, path: request.path, sourceType: 'subsonic',
+    request.resolve({ sessionId: request.sessionId, path: request.path, sourceType: request.path.startsWith('jellyfin://') ? 'jellyfin' : 'subsonic',
       sampleRate: 1000, channels: 2, durationSeconds: 1800, startTimeSeconds: request.target,
       seekableCache: true,
-      initialChunk: withPcm ? { sessionId: request.sessionId, path: request.path, sourceType: 'subsonic',
+      initialChunk: withPcm ? { sessionId: request.sessionId, path: request.path, sourceType: request.path.startsWith('jellyfin://') ? 'jellyfin' : 'subsonic',
         sampleRate: 1000, channels: 2, frameCount: 1000, pcmData: new ArrayBuffer(8000),
         decodedFrames: 1000, decodedSeconds: 1 } : null
     })
@@ -147,22 +147,25 @@ async function remoteHarness(t: TestContext, playing: boolean) {
     setCancellationGate: (gate: Promise<void>) => { cancellationGate = gate } }
 }
 
-for (const playing of [false, true]) {
-  test(`dragging cached audio keeps the final target and ${playing ? 'playing' : 'paused'} intent`, async (t) => {
-    const h = await remoteHarness(t, playing)
-    const first = h.engine.seek(120)
-    await flush()
-    assert.equal(h.internals.remoteStreamState, null)
-    const moves = [300, 600, 900, 900].map((time) => h.engine.seek(time))
-    await flush()
-    assert.deepEqual(h.requests.map((request) => request.target), [0, 120, 900])
-    h.complete(2)
-    await Promise.all([first, ...moves])
-    assert.equal(h.engine.currentTime, 900)
-    assert.equal(h.engine.playbackState, playing ? 'playing' : 'paused')
-    assert.deepEqual(h.playedTimes, playing ? [900] : [])
-    assert.equal(h.engine.getRemoteStreamSessionId(), 3)
-  })
+for (const sourceType of ['subsonic', 'jellyfin'] as const) {
+  for (const playing of [false, true]) {
+    test(`${sourceType}: dragging cached audio keeps the final target and ${playing ? 'playing' : 'paused'} intent`, async (t) => {
+      const h = await remoteHarness(t, playing, sourceType)
+      const first = h.engine.seek(120)
+      await flush()
+      assert.equal(h.internals.remoteStreamState, null)
+      const moves = [300, 600, 900, 900].map((time) => h.engine.seek(time))
+      await flush()
+      assert.deepEqual(h.requests.map((request) => request.target), [0, 120, 900])
+      h.complete(2)
+      await Promise.all([first, ...moves])
+      assert.equal(h.engine.currentTime, 900)
+      assert.equal(h.engine.playbackState, playing ? 'playing' : 'paused')
+      assert.deepEqual(h.playedTimes, playing ? [900] : [])
+      assert.equal(h.engine.getRemoteStreamSessionId(), 3)
+    })
+  }
+
 }
 
 test('drag cancellation finishes before opening the final decoder', async (t) => {
@@ -272,30 +275,35 @@ test('stopping during a seek cancels startup and cannot resume playback', async 
   assert.deepEqual(h.playedTimes, [])
 })
 
-test('prepared remote playback stays separate until the audio-thread handoff', async (t) => {
-  const h = await remoteHarness(t, true)
-  const nextTrack = { ...h.track, path: 'subsonic://7/next' }
-  const transitions: unknown[] = []
-  h.engine.on('gaplessTransition', (event) => transitions.push(event))
-  const prepare = h.engine.preBufferNextRemoteTrack(nextTrack, null)
-  await flush()
-  assert.equal(h.requests[1].slot, 'next')
-  h.complete(1)
-  await prepare
-  assert.equal(h.engine.getRemoteStreamSessionId(), 1)
-  assert.equal(h.engine.hasNextBuffered, true)
-  assert.equal(h.engine.nextBufferedTrackPath, nextTrack.path)
-  assert.equal(h.engine.playbackState, 'playing')
-  assert.deepEqual(transitions, [])
-  assert.ok(h.workletMessages.some((message) => message.type === 'append-chunk' && message.sessionId === 2))
-  h.internals.promoteRemoteStream(1, 2)
-  assert.equal(h.engine.getRemoteStreamSessionId(), 2)
-  assert.equal(h.internals.remoteStreamState?.path, nextTrack.path)
-  assert.equal(h.engine.hasNextBuffered, false)
-  assert.deepEqual(h.cancelledSessions, [1])
-  assert.deepEqual(h.activatedSessions, [2])
-  assert.deepEqual(transitions, [{ trackPath: nextTrack.path }])
-})
+for (const sourceType of ['subsonic', 'jellyfin'] as const) {
+  for (const nextProvider of ['subsonic', 'jellyfin'] as const) {
+    test(`${sourceType} to ${nextProvider}: preparation stays separate until the audio-thread handoff`, async (t) => {
+      const h = await remoteHarness(t, true, sourceType)
+      const nextTrack = { ...h.track, path: `${nextProvider}://7/next`, sourceType: nextProvider }
+      const transitions: unknown[] = []
+      h.engine.on('gaplessTransition', (event) => transitions.push(event))
+      const prepare = h.engine.preBufferNextRemoteTrack(nextTrack, null)
+      await flush()
+      assert.equal(h.requests[1].slot, 'next')
+      h.complete(1)
+      await prepare
+      assert.equal(h.engine.getRemoteStreamSessionId(), 1)
+      assert.equal(h.engine.hasNextBuffered, true)
+      assert.equal(h.engine.nextBufferedTrackPath, nextTrack.path)
+      assert.equal(h.engine.playbackState, 'playing')
+      assert.deepEqual(transitions, [])
+      assert.ok(h.workletMessages.some((message) => message.type === 'append-chunk' && message.sessionId === 2))
+      h.internals.promoteRemoteStream(1, 2)
+      assert.equal(h.engine.getRemoteStreamSessionId(), 2)
+      assert.equal(h.internals.remoteStreamState?.path, nextTrack.path)
+      assert.equal(h.engine.hasNextBuffered, false)
+      assert.deepEqual(h.cancelledSessions, [1])
+      assert.deepEqual(h.activatedSessions, [2])
+      assert.deepEqual(transitions, [{ trackPath: nextTrack.path }])
+    })
+
+  }
+}
 
 test('failed preparation releases only the next session and leaves current playback usable', async (t) => {
   const h = await remoteHarness(t, true)
@@ -336,35 +344,37 @@ test('a pause racing with the handoff notification stays paused after promotion'
   assert.equal(h.engine.playbackState, 'playing')
 })
 
-for (const playing of [false, true]) {
-  test(`seeking near EOF retains the ready successor and ${playing ? 'playing' : 'paused'} intent`, async (t) => {
-    const h = await remoteHarness(t, playing)
-    const node = h.internals.remoteStreamNode
-    const nextTrack = { ...h.track, path: 'subsonic://7/next' }
-    const prepare = h.engine.preBufferNextRemoteTrack(nextTrack, null)
-    await flush()
-    h.complete(1)
-    await prepare
-    const seek = h.engine.seek(1799.9)
-    await flush()
-    assert.equal(h.engine.canPreBufferRemoteTrack(nextTrack), true, 'queue scheduling stays eligible during seek startup')
-    assert.equal(h.engine.hasNextBuffered, true)
-    assert.equal(h.requests[2].preserveNext, true)
-    h.complete(2)
-    await seek
-    h.internals.promoteRemoteStream(1, 2)
-    assert.equal(h.engine.getRemoteStreamSessionId(), 3)
-    assert.equal(h.engine.currentTime, 1799.9)
-    assert.equal(h.engine.hasNextBuffered, true)
-    assert.equal(h.engine.playbackState, playing ? 'playing' : 'paused')
-    assert.equal(h.internals.remoteStreamNode, node, 'staged PCM remains in the same worklet')
-    assert.deepEqual(h.cancelledSessions, [1])
-    assert.ok(h.workletMessages.some(message => message.type === 'reset-current' && message.nextSessionId === 2))
-    h.internals.promoteRemoteStream(3, 2)
-    assert.equal(h.engine.getRemoteStreamSessionId(), 2)
-    assert.equal(h.engine.currentTime, 0)
-    assert.equal(h.engine.playbackState, playing ? 'playing' : 'paused')
-  })
+for (const sourceType of ['subsonic', 'jellyfin'] as const) {
+  for (const playing of [false, true]) {
+    test(`${sourceType}: seeking near EOF retains the ready successor and ${playing ? 'playing' : 'paused'} intent`, async (t) => {
+      const h = await remoteHarness(t, playing, sourceType)
+      const node = h.internals.remoteStreamNode
+      const nextTrack = { ...h.track, path: `${sourceType}://7/next` }
+      const prepare = h.engine.preBufferNextRemoteTrack(nextTrack, null)
+      await flush()
+      h.complete(1)
+      await prepare
+      const seek = h.engine.seek(1799.9)
+      await flush()
+      assert.equal(h.engine.canPreBufferRemoteTrack(nextTrack), true, 'queue scheduling stays eligible during seek startup')
+      assert.equal(h.engine.hasNextBuffered, true)
+      assert.equal(h.requests[2].preserveNext, true)
+      h.complete(2)
+      await seek
+      h.internals.promoteRemoteStream(1, 2)
+      assert.equal(h.engine.getRemoteStreamSessionId(), 3)
+      assert.equal(h.engine.currentTime, 1799.9)
+      assert.equal(h.engine.hasNextBuffered, true)
+      assert.equal(h.engine.playbackState, playing ? 'playing' : 'paused')
+      assert.equal(h.internals.remoteStreamNode, node, 'staged PCM remains in the same worklet')
+      assert.deepEqual(h.cancelledSessions, [1])
+      assert.ok(h.workletMessages.some(message => message.type === 'reset-current' && message.nextSessionId === 2))
+      h.internals.promoteRemoteStream(3, 2)
+      assert.equal(h.engine.getRemoteStreamSessionId(), 2)
+      assert.equal(h.engine.currentTime, 0)
+      assert.equal(h.engine.playbackState, playing ? 'playing' : 'paused')
+    })
+  }
 }
 
 test('dragging preserves successor startup even when it completes between current decoders', async (t) => {

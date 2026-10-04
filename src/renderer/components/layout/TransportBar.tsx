@@ -1,3 +1,4 @@
+import { isRetainedRemoteSource } from '../../../shared/audio/retainedRemoteSource'
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -44,7 +45,6 @@ function TransportWaveformSection({
   const waveformData = usePlayerStore((s) => s.waveformData)
   const waveformBufferedRatio = usePlayerStore((s) => s.waveformBufferedRatio)
   const waveformAnalyzedRatio = usePlayerStore((s) => s.waveformAnalyzedRatio)
-  const remoteBufferedSeconds = usePlayerStore((s) => s.remoteBufferedSeconds)
   // 30Hz keeps the waveform playhead visually smooth without re-rendering
   // the transport section at display refresh rate.
   const currentTime = usePlaybackClock(1 / 30)
@@ -86,7 +86,7 @@ function TransportWaveformSection({
         currentTime={compensatedTime}
         bufferedRatio={waveformBufferedRatio}
         analyzedRatio={waveformAnalyzedRatio}
-        seekableDuration={currentTrack?.sourceType === 'jellyfin' ? remoteBufferedSeconds : duration}
+        seekableDuration={duration}
         onSeek={(time) => {
           const rawSeekTime = Math.max(0, Math.min(duration, time + effectiveDelaySec))
           void seek(rawSeekTime)
@@ -95,7 +95,7 @@ function TransportWaveformSection({
       {loadingLabel && (
         <div className="transport-loading-hint" role="status" aria-live="polite">
           <span className="transport-loading-hint-label">{loadingLabel}</span>
-          {currentTrack?.sourceType === 'subsonic' && remoteLoadFailed && (
+          {isRetainedRemoteSource(currentTrack?.sourceType) && remoteLoadFailed && (
             <button type="button" className="transport-loading-retry" onClick={() => {
               const state = usePlayerStore.getState()
               const retry = state.remoteStreamSessionId === null ? state.play() : state.seek(currentTime)
@@ -241,7 +241,7 @@ export default function TransportBar() {
     ? Math.max(0, Math.min(1, activeRemoteLoadProgress.percent))
     : null
   const loadingLabel = (() => {
-    if (currentTrack?.sourceType === 'subsonic' && activeRemoteLoadProgress?.failed) return 'Playback interrupted'
+    if (isRetainedRemoteSource(currentTrack?.sourceType) && activeRemoteLoadProgress?.failed) return 'Playback interrupted'
     if (!isLoadingTrack || !currentTrack) return null
     if (loadingStatus) return loadingStatus
     if (!activeRemoteLoadProgress) return null

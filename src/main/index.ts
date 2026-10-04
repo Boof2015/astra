@@ -37,6 +37,7 @@ import { RemoteAudioCache, type RemoteAudioLease } from './services/remoteAudioC
 import { normalizeRemoteCacheLimitGb } from '../types/remoteAudioCache'
 import { ProgressivePcmDelivery } from './progressivePcmDelivery'
 import { ProgressiveStartupRegistry } from './progressiveStartupRegistry'
+import { createJellyfinAudioSource } from './services/jellyfinAudioSource'
 import { NativeRemoteLeaseRegistry } from './nativeRemoteLeaseRegistry'
 import { createThrottledLibraryScanProgressReporter } from './libraryScanProgress'
 import {
@@ -62,9 +63,7 @@ import {
 } from './services/subsonic'
 import {
   authenticateJellyfin,
-  buildJellyfinStreamRequestHeaders,
   buildJellyfinStreamUrl,
-  buildJellyfinTranscodeStreamUrl,
   fetchJellyfinCoverArt,
   fetchJellyfinTrackBytes,
   normalizeJellyfinBaseUrl,
@@ -3955,7 +3954,7 @@ function isJellyfinUnauthorizedError(error: unknown): boolean {
 async function getJellyfinAuthContext(
   sourceId: number,
   connection: { baseUrl: string; username: string; password: string },
-  options: { forceRefresh?: boolean } = {}
+  options: { forceRefresh?: boolean; signal?: AbortSignal } = {}
 ): Promise<{ accessToken: string; userId: string }> {
   const now = Date.now()
   if (!options.forceRefresh) {
@@ -3966,6 +3965,7 @@ async function getJellyfinAuthContext(
   }
 
   const authContext = await authenticateJellyfin(connection, {
+    signal: options.signal,
     timeoutMs: 12_000,
     retries: 1
   })
@@ -10197,7 +10197,6 @@ interface RemoteStreamSession {
   durationSeconds: number | null
   ffmpeg: ChildProcessWithoutNullStreams
   abortController: AbortController
-  responseReader: ReadableStreamDefaultReader<Uint8Array> | null
   cacheLease: RemoteAudioLease | null
   cacheProgressTimer: NodeJS.Timeout | null
   pcmDelivery: ProgressivePcmDelivery | null
@@ -10444,13 +10443,6 @@ function finalizeRemoteStreamSession(
   }
 
   try {
-    session.responseReader?.cancel().catch(() => undefined)
-  } catch {
-    // Ignore reader cancellation failures during teardown.
-  }
-  session.responseReader = null
-
-  try {
     session.stdinClosed = true
     if (!session.ffmpeg.stdin.destroyed) {
       session.ffmpeg.stdin.end()
@@ -10526,109 +10518,7 @@ function isRemoteStreamPipeTeardownError(error: unknown): boolean {
   return false
 }
 
-async function writeRemoteStreamInput(session: RemoteStreamSession, chunk: Uint8Array): Promise<void> {
-  if (session.cancelled || session.done) return
-  if (session.stdinClosed || !session.ffmpeg.stdin.writable || session.ffmpeg.stdin.destroyed) {
-    throw new Error('FFmpeg input pipe is not writable.')
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    session.ffmpeg.stdin.write(chunk, (error) => {
-      if (error) {
-        if (session.cancelled || session.done || session.stdinClosed) {
-          resolve()
-          return
-        }
-        reject(error)
-        return
-      }
-      resolve()
-    })
-  })
-}
-
-function validateRemoteAudioResponse(response: Response, label: string): void {
-  if (!response.ok) {
-    throw new Error(`${label} stream request failed (${response.status})`)
-  }
-
-  const contentType = (response.headers.get('content-type') ?? '').trim().toLowerCase()
-  if (
-    contentType
-    && (contentType.includes('json') || contentType.includes('xml') || contentType.startsWith('text/'))
-  ) {
-    throw new Error(`${label} stream response was not audio.`)
-  }
-}
-
-async function fetchJellyfinRemoteStreamResponse(
-  filePath: string,
-  signal: AbortSignal
-): Promise<{ response: Response; sourceType: 'jellyfin' }> {
-  const parsed = parseJellyfinTrackPath(filePath)
-  if (!parsed) {
-    throw new Error('Invalid Jellyfin track path.')
-  }
-
-  const credentials = requireJellyfinSourceCredentials(parsed.sourceId)
-  if (credentials.source.enabled !== 1) {
-    await library.setTrackAvailability(filePath, false, 'source_disabled')
-    throw new Error(`Jellyfin source "${credentials.source.name}" is disabled.`)
-  }
-
-  const fetchWithContext = async (
-    useTranscode: boolean,
-    forceRefreshAuth: boolean = false
-  ): Promise<Response> => {
-    let authContext = await getJellyfinAuthContext(parsed.sourceId, credentials.connection, {
-      forceRefresh: forceRefreshAuth
-    })
-
-    const performFetch = async (): Promise<Response> => {
-      const url = useTranscode
-        ? buildJellyfinTranscodeStreamUrl(credentials.connection, parsed.sourceTrackId, authContext, JELLYFIN_STREAM_MAX_BITRATE_KBPS)
-        : buildJellyfinStreamUrl(credentials.connection, parsed.sourceTrackId, authContext.accessToken)
-      const response = await fetch(url, {
-        method: 'GET',
-        signal,
-        headers: buildJellyfinStreamRequestHeaders(credentials.connection, authContext)
-      })
-      validateRemoteAudioResponse(response, 'Jellyfin')
-      return response
-    }
-
-    try {
-      return await performFetch()
-    } catch (error) {
-      if (!isJellyfinUnauthorizedError(error)) {
-        throw error
-      }
-
-      clearJellyfinAuthContext(parsed.sourceId)
-      authContext = await getJellyfinAuthContext(parsed.sourceId, credentials.connection, { forceRefresh: true })
-      return await performFetch()
-    }
-  }
-
-  try {
-    const response = await fetchWithContext(true)
-    await library.setTrackAvailability(filePath, true, null, { persist: false })
-    return { response, sourceType: 'jellyfin' }
-  } catch (transcodeError) {
-    console.warn(`Jellyfin bitrate-limited stream failed for ${filePath}, retrying raw stream:`, transcodeError)
-  }
-
-  try {
-    const response = await fetchWithContext(false)
-    await library.setTrackAvailability(filePath, true, null, { persist: false })
-    return { response, sourceType: 'jellyfin' }
-  } catch (error) {
-    await library.setTrackAvailability(filePath, false, 'source_unavailable')
-    throw error instanceof Error ? error : new Error('Jellyfin stream request failed.')
-  }
-}
-
-const nativeRemoteLeases = new NativeRemoteLeaseRegistry(acquireSubsonicCachedAudio)
+const nativeRemoteLeases = new NativeRemoteLeaseRegistry(acquireCachedRemoteAudio)
 const nativeRemoteOwners = new WeakSet<Electron.WebContents>()
 function nativeRemoteOwner(event: Electron.IpcMainInvokeEvent): number {
   const sender = event.sender
@@ -10651,6 +10541,24 @@ ipcMain.handle('native-remote:acquire', async (event, id: string, path: string) 
 ipcMain.handle('native-remote:progress', (event, id: string) => nativeRemoteLeases.progress(nativeRemoteOwner(event), id))
 ipcMain.handle('native-remote:finished', (event, id: string) => nativeRemoteLeases.finished(nativeRemoteOwner(event), id))
 ipcMain.handle('native-remote:release', (event, id: string) => nativeRemoteLeases.release(nativeRemoteOwner(event), id))
+
+async function acquireCachedRemoteAudio(filePath: string, signal: AbortSignal): Promise<RemoteAudioLease> {
+  if (isSubsonicPath(filePath)) return acquireSubsonicCachedAudio(filePath, signal)
+  const parsed = parseJellyfinTrackPath(filePath)
+  if (!parsed) throw new Error('Invalid remote track path.')
+  const { source, connection } = requireJellyfinSourceCredentials(parsed.sourceId)
+  if (source.enabled !== 1) throw new Error(`Jellyfin source "${source.name}" is disabled.`)
+  const track = library.getTrackByPath(filePath)
+  return getRemoteAudioCache().acquire(createJellyfinAudioSource({
+    sourceId: source.id,
+    connection,
+    trackId: parsed.sourceTrackId,
+    revision: JSON.stringify([track?.source_path, track?.duration, track?.format, track?.codec,
+      track?.sample_rate, track?.bit_depth, track?.channels, track?.bitrate]),
+    authenticate: (downloadSignal, forceRefresh) => getJellyfinAuthContext(parsed.sourceId, connection,
+      { signal: downloadSignal, forceRefresh })
+  }), signal)
+}
 
 async function acquireSubsonicCachedAudio(filePath: string, signal: AbortSignal): Promise<RemoteAudioLease> {
   const parsed = parseSubsonicTrackPath(filePath)
@@ -10743,9 +10651,7 @@ async function startProgressiveStreamSession(
     }
 
     const sourceType = resolveProgressiveStreamSourceType(filePath)
-    const requestedStartTimeSeconds = sourceType === 'local' || sourceType === 'subsonic'
-      ? normalizeProgressiveStartTimeSeconds(options.startTimeSeconds)
-      : 0
+    const requestedStartTimeSeconds = normalizeProgressiveStartTimeSeconds(options.startTimeSeconds)
     const normalizedSampleRate = Number.isFinite(outputSampleRate) && outputSampleRate > 0
       ? Math.max(8_000, Math.round(outputSampleRate))
       : 48_000
@@ -10754,36 +10660,14 @@ async function startProgressiveStreamSession(
       ? Math.max(1, Math.min(8, Math.round(Number(expectedChannels))))
       : Math.max(1, Math.min(8, dbTrack?.channels ?? 2))
 
-    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
-    let totalBytes: number | null = null
-    if (sourceType === 'local') {
-      totalBytes = null
-    } else if (sourceType === 'subsonic') {
-      cacheLease = await acquireSubsonicCachedAudio(filePath, abortController.signal)
+    if (sourceType !== 'local') {
+      cacheLease = await acquireCachedRemoteAudio(filePath, abortController.signal)
       abortController.signal.throwIfAborted()
-    } else {
-      const { response } = await fetchJellyfinRemoteStreamResponse(filePath, abortController.signal)
-      reader = response.body?.getReader() ?? null
-      if (!reader) {
-        throw new Error('Remote stream response body was not readable.')
-      }
-
-      const contentLengthHeader = response.headers.get('content-length')
-      const parsedContentLength = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : Number.NaN
-      totalBytes = Number.isFinite(parsedContentLength) && parsedContentLength > 0 ? parsedContentLength : null
     }
-
-    const ffmpegInputArgs = sourceType === 'local'
-      ? [
-          ...(requestedStartTimeSeconds > 0 ? ['-ss', String(requestedStartTimeSeconds)] : []),
-          '-i', filePath
-        ]
-      : cacheLease
-        ? [
-            ...(requestedStartTimeSeconds > 0 ? ['-ss', String(requestedStartTimeSeconds)] : []),
-            '-i', cacheLease.url
-          ]
-        : ['-i', 'pipe:0']
+    const ffmpegInputArgs = [
+      ...(requestedStartTimeSeconds > 0 ? ['-ss', String(requestedStartTimeSeconds)] : []),
+      '-i', cacheLease?.url ?? filePath
+    ]
     const ffmpeg = spawn(
       ffmpegPath,
       [
@@ -10820,7 +10704,6 @@ async function startProgressiveStreamSession(
         durationSeconds: resolveRemoteTrackDurationSeconds(filePath),
         ffmpeg,
         abortController,
-        responseReader: reader,
         cacheLease,
         cacheProgressTimer: null,
         pcmDelivery: null,
@@ -10832,7 +10715,7 @@ async function startProgressiveStreamSession(
         stdoutRemainder: Buffer.alloc(0),
         stderrChunks: [],
         loadedBytes: 0,
-        totalBytes,
+        totalBytes: null,
         chunkCount: 0,
         decodedFrames: 0,
         consumedFrames: 0,
@@ -10961,36 +10844,10 @@ async function startProgressiveStreamSession(
         ))
       })
 
-      if (sourceType === 'local' || cacheLease) {
-        try {
-          if (!ffmpeg.stdin.destroyed) {
-            ffmpeg.stdin.end()
-          }
-        } catch {
-          // File/cache inputs are read directly; stdin is intentionally unused.
-        }
-      } else if (reader) {
-        void (async () => {
-          try {
-            while (true) {
-              const { done, value } = await reader.read()
-              if (done) break
-              if (!value || value.byteLength === 0) continue
-
-              session.loadedBytes += value.byteLength
-              safeSendRemoteLoadProgress(session, session.decodedFrames > 0 ? 'streaming' : 'downloading')
-              await writeRemoteStreamInput(session, value)
-            }
-
-            if (!ffmpeg.stdin.destroyed) {
-              ffmpeg.stdin.end()
-            }
-          } catch (error) {
-            if (session.done || session.cancelled) return
-            if (isRemoteStreamPipeTeardownError(error)) return
-            finalizeRemoteStreamSession(session, 'failed', error instanceof Error ? error : new Error('Remote stream download failed.'))
-          }
-        })()
+      try {
+        if (!ffmpeg.stdin.destroyed) ffmpeg.stdin.end()
+      } catch {
+        // File/cache inputs are read directly; stdin is intentionally unused.
       }
     })
 
