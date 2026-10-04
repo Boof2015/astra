@@ -195,6 +195,7 @@ import type {
   IntegrityScanScope
 } from '../types/libraryIntegrity'
 import { createNativeAudioController, type NativeAudioAddonModule } from './nativeAudioController'
+import { createNativeRemoteSourceResolver } from './nativeRemoteSource'
 
 type RuntimeIconImageSetPayload = {
   images: Array<{
@@ -729,7 +730,8 @@ try {
 }
 
 const nativeAudioController = createNativeAudioController(visualizerDSP, {
-  unavailableReason: nativeAddonLoadError
+  unavailableReason: nativeAddonLoadError,
+  acquireRemoteSource: createNativeRemoteSourceResolver((channel, ...args) => ipcRenderer.invoke(channel, ...args))
 })
 
 function getBlinkResourceUsage(): MemoryDiagnosticsBlinkResourceUsageSnapshot {

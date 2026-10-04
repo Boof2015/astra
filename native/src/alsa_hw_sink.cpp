@@ -1,7 +1,9 @@
 #include "playback_engine.h"
+#include "endpoint_pcm_writer.h"
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
@@ -1039,8 +1041,7 @@ private:
         std::vector<uint8_t> renderBuffer(maxFramesPerChunk * wireBytesPerFrame, 0);
         std::vector<uint8_t> sourceBuffer(needsWidening ? maxFramesPerChunk * sourceBytesPerFrame : 0, 0);
 
-        snd_pcm_uframes_t queuedEndpointFrames = 0;
-        snd_pcm_uframes_t queuedAudioFrames = 0;
+        EndpointFrameQueue queuedFrames(bufferFrames);
         bool endOfStreamReached = false;
         bool streamStarted = false;
         bool naturallyDrained = false;
@@ -1073,8 +1074,8 @@ private:
                 return false;
             }
 
-            queuedEndpointFrames = 0;
-            queuedAudioFrames = 0;
+            queuedFrames.reset();
+            endOfStreamReached = false;
             streamStarted = false;
             const int prepareResult = snd_pcm_prepare(pcmHandle);
             if (prepareResult < 0) {
@@ -1112,18 +1113,7 @@ private:
         };
 
         auto consumeAvailableFrames = [&](snd_pcm_uframes_t available) {
-            if (queuedEndpointFrames == 0 || available == 0) {
-                return;
-            }
-
-            const snd_pcm_uframes_t consumedEndpointFrames = std::min(queuedEndpointFrames, available);
-            queuedEndpointFrames -= consumedEndpointFrames;
-            if (consumedEndpointFrames == 0) {
-                return;
-            }
-
-            const snd_pcm_uframes_t consumedAudioFrames = std::min(queuedAudioFrames, consumedEndpointFrames);
-            queuedAudioFrames -= consumedAudioFrames;
+            const size_t consumedAudioFrames = queuedFrames.updateAvailable(available);
             if (consumedAudioFrames > 0) {
                 engine->onFramesConsumed(consumedAudioFrames);
             }
@@ -1132,6 +1122,14 @@ private:
         auto updatePlaybackProgress = [&]() -> bool {
             const snd_pcm_sframes_t availableFrames = snd_pcm_avail_update(pcmHandle);
             if (availableFrames < 0) {
+                if (availableFrames == -EPIPE && endOfStreamReached && streamStarted) {
+                    // With final PCM already submitted, playback underrun means
+                    // the endpoint drained before this poll. Do not rewind and
+                    // replay the tail merely because there is nothing after EOF.
+                    const size_t consumed = queuedFrames.consume(queuedFrames.queuedFrames());
+                    if (consumed) engine->onFramesConsumed(consumed);
+                    return true;
+                }
                 return recoverStream(static_cast<int>(availableFrames));
             }
 
@@ -1151,50 +1149,67 @@ private:
             consumeAvailableFrames(available);
         };
 
-        auto fillAndWriteFrames = [&](snd_pcm_uframes_t requestedFrames, snd_pcm_uframes_t* writtenAudioFrames, bool* reachedEndOfStream, std::string* fillError) -> bool {
+        auto fillAndWriteFrames = [&](snd_pcm_uframes_t requestedFrames, bool* reachedEndOfStream, std::string* fillError) -> bool {
+            if (requestedFrames > bufferFrames - queuedFrames.queuedFrames()) {
+                if (fillError != nullptr) *fillError = "ALSA output queue exceeded its endpoint capacity.";
+                return false;
+            }
             bool streamEnded = false;
             uint8_t* engineBuffer = needsWidening ? sourceBuffer.data() : renderBuffer.data();
-            const size_t framesWritten = engine->renderInto(engineBuffer, requestedFrames, streamEnded);
-            const snd_pcm_uframes_t usedFrames = static_cast<snd_pcm_uframes_t>(std::min<size_t>(framesWritten, requestedFrames));
-
-            if (needsWidening && usedFrames > 0) {
-                widenAlsaSampleBlock(sourceBuffer.data(), format.sampleFormat, renderBuffer.data(), wireOption,
-                    static_cast<size_t>(usedFrames) * format.channels);
-            }
-
-            if (usedFrames < requestedFrames && wireBytesPerFrame > 0) {
-                const size_t usedBytes = static_cast<size_t>(usedFrames) * wireBytesPerFrame;
-                const size_t remainingBytes = static_cast<size_t>(requestedFrames - usedFrames) * wireBytesPerFrame;
-                std::memset(renderBuffer.data() + usedBytes, 0, remainingBytes);
-            }
-
-            snd_pcm_uframes_t totalWritten = 0;
-            while (totalWritten < requestedFrames) {
-                const uint8_t* writePointer = renderBuffer.data() + (static_cast<size_t>(totalWritten) * wireBytesPerFrame);
-                const snd_pcm_sframes_t writeResult = snd_pcm_writei(pcmHandle, writePointer, requestedFrames - totalWritten);
-                if (writeResult > 0) {
-                    totalWritten += static_cast<snd_pcm_uframes_t>(writeResult);
-                    continue;
+            snd_pcm_uframes_t usedFrames = 0;
+            auto renderFrames = [&] {
+                const size_t framesWritten = engine->renderInto(engineBuffer, requestedFrames, streamEnded);
+                usedFrames = static_cast<snd_pcm_uframes_t>(std::min<size_t>(framesWritten, requestedFrames));
+                if (needsWidening && usedFrames > 0) {
+                    widenAlsaSampleBlock(sourceBuffer.data(), format.sampleFormat, renderBuffer.data(), wireOption,
+                        static_cast<size_t>(usedFrames) * format.channels);
                 }
 
+                if (usedFrames < requestedFrames && wireBytesPerFrame > 0) {
+                    const size_t usedBytes = static_cast<size_t>(usedFrames) * wireBytesPerFrame;
+                    const size_t remainingBytes = static_cast<size_t>(requestedFrames - usedFrames) * wireBytesPerFrame;
+                    std::memset(renderBuffer.data() + usedBytes, 0, remainingBytes);
+                }
+                return usedFrames;
+            };
+            auto writeFrames = [&](size_t offset, size_t count) -> snd_pcm_sframes_t {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (stopRequested_) return -ECANCELED;
+                }
+                return snd_pcm_writei(pcmHandle, renderBuffer.data() + offset * wireBytesPerFrame, count);
+            };
+            auto recoverWrite = [&](snd_pcm_sframes_t writeResult) {
+                if (writeResult == -ECANCELED) {
+                    bool accountProgress = false;
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        accountProgress = accountProgressOnStop_;
+                    }
+                    if (accountProgress) updatePlaybackProgress();
+                    return EndpointWriteRecovery::Abort;
+                }
                 if (writeResult == 0 || writeResult == -EAGAIN || writeResult == -EINTR) {
                     snd_pcm_wait(pcmHandle, kRenderThreadWaitTimeoutMs);
-                    continue;
+                    return EndpointWriteRecovery::Retry;
                 }
-
                 if (!recoverStream(static_cast<int>(writeResult))) {
                     if (fillError != nullptr) {
                         *fillError = formatAlsaError("ALSA hw output could not write to the device", static_cast<int>(writeResult));
                     }
-                    return false;
+                    return EndpointWriteRecovery::Abort;
                 }
-
-                totalWritten = 0;
+                // Recovery discarded the device queue and rewound the engine.
+                return EndpointWriteRecovery::RenderAgain;
+            };
+            const auto result = WriteEndpointPcm(queuedFrames, requestedFrames, renderFrames, writeFrames, recoverWrite);
+            if (result != EndpointWriteResult::Complete) {
+                if (result == EndpointWriteResult::InvalidFrameCount && fillError != nullptr) {
+                    *fillError = "ALSA accepted an invalid endpoint frame count.";
+                }
+                return false;
             }
 
-            if (writtenAudioFrames != nullptr) {
-                *writtenAudioFrames = usedFrames;
-            }
             if (reachedEndOfStream != nullptr) {
                 *reachedEndOfStream = streamEnded;
             }
@@ -1202,22 +1217,18 @@ private:
         };
 
         const snd_pcm_uframes_t initialPrimeTarget = std::max<snd_pcm_uframes_t>(periodFrames, bufferFrames);
-        while (queuedEndpointFrames < initialPrimeTarget && !endOfStreamReached) {
-            const snd_pcm_uframes_t requestedFrames = std::min<snd_pcm_uframes_t>(periodFrames, initialPrimeTarget - queuedEndpointFrames);
-            snd_pcm_uframes_t writtenAudioFrames = 0;
+        while (queuedFrames.queuedFrames() < initialPrimeTarget && !endOfStreamReached) {
+            const snd_pcm_uframes_t requestedFrames = std::min<snd_pcm_uframes_t>(periodFrames, initialPrimeTarget - queuedFrames.queuedFrames());
             std::string fillError;
-            if (!fillAndWriteFrames(requestedFrames, &writtenAudioFrames, &endOfStreamReached, &fillError)) {
+            if (!fillAndWriteFrames(requestedFrames, &endOfStreamReached, &fillError)) {
                 finishStart(false, fillError);
                 snd_pcm_drop(pcmHandle);
                 snd_pcm_prepare(pcmHandle);
                 return;
             }
-
-            queuedEndpointFrames += requestedFrames;
-            queuedAudioFrames = std::min(bufferFrames, queuedAudioFrames + writtenAudioFrames);
         }
 
-        if (queuedAudioFrames == 0) {
+        if (queuedFrames.queuedAudioFrames() == 0) {
             finishStart(false, "ALSA hw output started without any audio frames to enqueue.");
             snd_pcm_drop(pcmHandle);
             snd_pcm_prepare(pcmHandle);
@@ -1261,40 +1272,32 @@ private:
                 break;
             }
 
-            if (endOfStreamReached) {
-                if (queuedAudioFrames == 0 && queuedEndpointFrames == 0) {
-                    naturallyDrained = true;
-                    break;
-                }
-
-                const int waitResult = snd_pcm_wait(pcmHandle, kRenderThreadWaitTimeoutMs);
-                if (waitResult < 0) {
-                    if (!recoverStream(waitResult)) break;
-                    continue;
-                }
-                if (waitResult > 0) {
-                    if (!updatePlaybackProgress()) break;
-                }
-                continue;
-            }
-
             if (!streamStarted) {
-                snd_pcm_uframes_t writtenAudioFrames = 0;
                 std::string fillError;
-                bool streamEnded = false;
-                if (!fillAndWriteFrames(periodFrames, &writtenAudioFrames, &streamEnded, &fillError)) {
+                // A recovery inside a write may already have re-primed one
+                // block. Start it even if that re-render reached EOF.
+                if (queuedFrames.queuedFrames() == 0
+                    && !fillAndWriteFrames(periodFrames, &endOfStreamReached, &fillError)) {
                     terminalError = fillError;
                     break;
                 }
-
-                queuedEndpointFrames = std::min(bufferFrames, queuedEndpointFrames + periodFrames);
-                queuedAudioFrames = std::min(bufferFrames, queuedAudioFrames + writtenAudioFrames);
-                endOfStreamReached = streamEnded;
-
                 if (!startStream(&fillError)) {
                     terminalError = fillError;
                     break;
                 }
+                continue;
+            }
+
+            if (endOfStreamReached) {
+                if (!updatePlaybackProgress()) break;
+                if (!streamStarted) continue; // Recovered; EOF was withdrawn.
+                if (queuedFrames.queuedFrames() == 0) {
+                    naturallyDrained = true;
+                    break;
+                }
+                // Free space can exceed avail_min while the final partial
+                // buffer is still playing, making snd_pcm_wait return at once.
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 continue;
             }
 
@@ -1332,16 +1335,13 @@ private:
                 continue;
             }
 
-            snd_pcm_uframes_t writtenAudioFrames = 0;
             std::string fillError;
             bool streamEnded = false;
-            if (!fillAndWriteFrames(requestedFrames, &writtenAudioFrames, &streamEnded, &fillError)) {
+            if (!fillAndWriteFrames(requestedFrames, &streamEnded, &fillError)) {
                 terminalError = fillError;
                 break;
             }
 
-            queuedEndpointFrames = std::min(bufferFrames, queuedEndpointFrames + requestedFrames);
-            queuedAudioFrames = std::min(bufferFrames, queuedAudioFrames + writtenAudioFrames);
             endOfStreamReached = streamEnded;
         }
 

@@ -1,6 +1,6 @@
 import { createMonoSampleQueue, createStereoSampleQueue, createMultichannelSampleQueue, createMiniSampleQueue } from './visualizerSampleQueue'
 import type { PlaybackState, EQBand, Track } from '../types/audio'
-import type { RemoteStreamChunk, RemoteStreamEvent, RemoteStreamInfo } from '../../types/remoteStream'
+import type { RemoteAudioLoadProgress, RemoteStreamChunk, RemoteStreamEvent, RemoteStreamInfo } from '../../types/remoteStream'
 import type {
   ParallaxAudioChunk,
   ParallaxNormalizationMode,
@@ -693,6 +693,8 @@ export class AudioEngine {
   private nativeSeekPromise: Promise<void> | null = null
   private pendingNativeSeekTime: number | null = null
   private remoteStreamState: RemoteStreamRuntimeState | null = null
+  private nativeRemoteProgress: RemoteAudioLoadProgress | null = null
+  private nativeRemoteBufferCapacitySeconds = 8
   private pendingProgressiveLoadGeneration: number | null = null
   private progressiveSeek: ProgressiveSeekRequest | null = null
   private nextRemoteStream: PreparedRemoteStream | null = null
@@ -1411,7 +1413,8 @@ export class AudioEngine {
 
   private shouldSuppressNativeLifecycleEvents(): boolean {
     return this.isNativeExclusiveMode()
-      && (this.nativeLifecycleSuppressionTokens.size > 0 || this._playbackState === 'loading')
+      && (this.nativeLifecycleSuppressionTokens.size > 0
+        || (this._playbackState === 'loading' && !this.nativeSnapshot?.buffering))
   }
 
   private adoptNativePlaybackSequence(snapshot: NativeAudioPlaybackSnapshot | null): void {
@@ -1457,6 +1460,30 @@ export class AudioEngine {
       if (expectedSequence === null || event.playbackSequence !== expectedSequence) return
     }
     switch (event.type) {
+      case 'prebufferInvalidated':
+        if (!this.isNativeExclusiveMode() || this.nextBufferTrackPath !== event.path) return
+        this.nativeNextTrackBuffered = false
+        this.nativeNextPlaybackSequence = null
+        this.nextBufferTrackPath = null
+        this.emit('remotePrebufferInvalidated')
+        break
+      case 'remoteProgress': {
+        if (!this.isNativeExclusiveMode() || this.nativeLifecycleSuppressionTokens.size > 0
+          || event.playbackSequence !== this.nativeCurrentPlaybackSequence
+          || event.progress.path !== this.currentBufferTrackPath) return
+        this.nativeRemoteProgress = event.progress
+        this.nativeRemoteBufferCapacitySeconds = event.bufferCapacitySeconds
+        if (this.nativeSnapshot) this.nativeSnapshot = { ...this.nativeSnapshot,
+          progressiveSessionId: event.progressiveSessionId, buffering: event.buffering, currentTime: event.currentTime }
+        const state = event.playbackState === 'starting' || (event.buffering && event.playbackState === 'playing')
+          ? 'loading' : event.playbackState
+        if (this._playbackState !== state) {
+          this._playbackState = state
+          this.emit('stateChange', state)
+        }
+        this.emit('nativeRemoteProgress', event.progress)
+        break
+      }
       case 'stateChange':
         if (this.nativeSnapshot) {
           this.nativeSnapshot = {
@@ -1502,9 +1529,13 @@ export class AudioEngine {
         this.nativeNextTrackBuffered = false
         this.currentBufferTrackPath = this.nextBufferTrackPath
         this.nextBufferTrackPath = null
+        this.nativeRemoteProgress = null
+        if (this.nativeSnapshot && event.progressiveSessionId) {
+          this.nativeSnapshot = { ...this.nativeSnapshot, progressiveSessionId: event.progressiveSessionId, buffering: false, currentTime: 0 }
+        }
         void this.refreshNativeSnapshot()
         this.notifyTrackChange()
-        this.emit('gaplessTransition')
+        this.emit('gaplessTransition', event.progressiveSessionId ? { trackPath: this.currentBufferTrackPath } : undefined)
         break
       case 'ended':
         this.nativeNextTrackBuffered = false
@@ -1930,7 +1961,9 @@ export class AudioEngine {
     this._playbackState = 'loading'
     this.emit('stateChange', this._playbackState)
     this.stopTimeUpdate()
-    if (this.nativeSnapshot?.playbackState === 'playing' || this.nativeSnapshot?.playbackState === 'paused') {
+    const promotingRemoteNext = track.sourceType === 'subsonic'
+      && this.nativeNextTrackBuffered && this.nextBufferTrackPath === track.path
+    if (!promotingRemoteNext && (this.nativeSnapshot?.playbackState === 'playing' || this.nativeSnapshot?.playbackState === 'paused')) {
       try {
         await window.nativeAudioAPI.stop()
       } catch {
@@ -3632,6 +3665,10 @@ export class AudioEngine {
   }
 
   canPreBufferRemoteTrack(track: Track): boolean {
+    if (this.isNativeExclusiveMode()) {
+      return !!this.nativeSnapshot?.progressiveSessionId && this.currentBufferTrackPath?.startsWith('subsonic://') === true
+        && track.sourceType === 'subsonic' && (track.channels ?? 2) === this.nativeSnapshot.channels
+    }
     const current = this.remoteStreamState ?? this.getActiveProgressiveSeek()?.retainedStream?.state
     const channels = Math.max(1, Math.min(8, Math.round(track.channels ?? 2)))
     return this.playbackOutputMode === 'standard' && !!current?.seekableCache
@@ -3640,6 +3677,12 @@ export class AudioEngine {
   }
 
   hasRemotePrebufferHeadroom(): boolean {
+    if (this.isNativeExclusiveMode()) {
+      const progress = this.nativeRemoteProgress
+      return !!progress && progress.path === this.currentBufferTrackPath && !progress.failed
+        && (progress.bufferedSeconds - this.currentTime >= Math.min(5, this.nativeRemoteBufferCapacitySeconds * 0.75)
+          || (this.duration > 0 && progress.bufferedSeconds >= this.duration - 0.01))
+    }
     const current = this.remoteStreamState
     return !!current && (current.sourceEnded
       || (current.bufferedFrames - current.currentFrame) / current.sampleRate >= 5)
@@ -5905,11 +5948,14 @@ export class AudioEngine {
   }
 
   getRemoteBufferedSeconds(): number {
+    if (this.isNativeExclusiveMode()) return this.nativeRemoteProgress?.path === this.currentBufferTrackPath
+      ? this.nativeRemoteProgress.bufferedSeconds : 0
     if (!this.remoteStreamState || this.remoteStreamState.sampleRate <= 0) return 0
     return (this.remoteStreamState.startFrame + this.remoteStreamState.bufferedFrames) / this.remoteStreamState.sampleRate
   }
 
   getRemoteStreamSessionId(): number | null {
+    if (this.isNativeExclusiveMode()) return this.nativeSnapshot?.progressiveSessionId ?? null
     return this.remoteStreamState?.sessionId ?? null
   }
 
@@ -8646,6 +8692,22 @@ export class AudioEngine {
     this.nextNormalizationAnalysis = null
     this.lastPrebufferLoadTimings = null
     if (this.isNativeExclusiveMode()) {
+      if (this.nativeSnapshot?.progressiveSessionId) {
+        // With streamed input, withdrawing queued audio can acknowledge a
+        // handoff while the sink pauses. Keep its identity available until the
+        // controller has reconciled that boundary; a new load still suppresses
+        // lifecycle events through its own retained command token.
+        const generation = this.prebufferGeneration
+        return window.nativeAudioAPI.clearNextTrack().catch((error) => {
+          this.emit('error', error instanceof Error ? error : new Error('Failed to clear native next track'))
+        }).finally(() => {
+          if (generation !== this.prebufferGeneration) return
+          this.nativeNextTrackBuffered = false
+          this.nativeNextPlaybackSequence = null
+          this.nextBufferTrackPath = null
+          this.nextWaveformRequestId = null
+        })
+      }
       this.nativeNextTrackBuffered = false
       this.nativeNextPlaybackSequence = null
       this.nextBufferTrackPath = null

@@ -634,6 +634,49 @@ test('cached Subsonic startup failure retains the selected track and position fo
   }
 })
 
+test('Subsonic uses native loading in both exclusive modes and retains a startup failure for Retry', async (t) => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const settings = useAudioSettingsStore.getState()
+  const track = makeTrack('subsonic://7/track/native-retry', { sourceType: 'subsonic', duration: 180 })
+  let nativeLoads = 0
+  let mode: 'exclusive' | 'bitperfect' = 'exclusive'
+  t.mock.method(audioEngine, 'on', () => () => undefined)
+  t.mock.method(audioEngine, 'getPlaybackOutputMode', () => mode)
+  t.mock.method(audioEngine, 'loadTrackFromPath', async (requested: Track) => {
+    assert.equal(requested.path, track.path)
+    nativeLoads++
+    throw new Error('Remote connection unavailable')
+  })
+  t.mock.method(audioEngine, 'loadRemoteStream', async () => { throw new Error('Wrong output route') })
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    location: { search: '?window=test' }, addEventListener() {}, removeEventListener() {},
+    electronAPI: { onProgressiveLoadProgress: () => () => undefined,
+      supersedeTrackLoudness: async () => undefined,
+      library: { getListeningHistoryStatus: async () => ({ generation: 'native-remote', startedAt: null }),
+        checkpointListeningSession: async () => ({ accepted: true, qualifiedNow: false,
+          status: { generation: 'native-remote', startedAt: null } }) } }
+  } })
+  try {
+    for (mode of ['exclusive', 'bitperfect'] as const) {
+      resetStores()
+      usePlayerStore.getState()._cleanupListeners()
+      useAudioSettingsStore.setState({ playbackOutputMode: mode, normalizationEnabled: false })
+      assert.equal(await usePlayerStore.getState()._loadAndPlayTrack(track, { startTime: 75 }), 'failed')
+      assert.equal(usePlayerStore.getState().currentTrack?.path, track.path)
+      assert.equal(usePlayerStore.getState().restoredPlaybackTime, 75)
+      assert.equal(usePlayerStore.getState().remoteLoadProgress?.failed, true)
+    }
+    assert.equal(nativeLoads, 2)
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    await flushAsyncWork()
+    useAudioSettingsStore.setState({ playbackOutputMode: settings.playbackOutputMode, normalizationEnabled: settings.normalizationEnabled })
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+    resetStores()
+  }
+})
+
 test('an obsolete remote seek failure cannot overwrite the final drag target or session', async (t) => {
   resetStores()
   const originalParallax = useParallaxStore.getState()

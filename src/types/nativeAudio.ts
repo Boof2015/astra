@@ -1,4 +1,5 @@
 import type { MultichannelAudioChunk } from './audioAnalysis'
+import type { RemoteAudioLoadProgress } from './remoteStream'
 
 export type PlaybackOutputMode = 'standard' | 'exclusive' | 'bitperfect'
 
@@ -214,6 +215,8 @@ export interface AudioBufferMemoryStats {
 }
 
 export interface NativeAudioPlaybackSnapshot {
+  progressiveSessionId?: number
+  buffering?: boolean
   playbackSequence?: number
   playbackState: NativeAudioPlaybackState
   currentTime: number
@@ -251,7 +254,19 @@ export interface NativeAudioVisualizerTapDemand {
   vumeter: boolean
 }
 
-export type NativeAudioEvent =
+export type NativeAudioEvent = NativeAudioEventContent & { progressiveSessionId?: number }
+
+type NativeAudioEventContent =
+  | { type: 'prebufferInvalidated'; path: string }
+  | {
+      type: 'remoteProgress'
+      playbackSequence: number
+      bufferCapacitySeconds: number
+      currentTime: number
+      playbackState: NativeAudioPlaybackState
+      buffering: boolean
+      progress: RemoteAudioLoadProgress
+    }
   | {
       type: 'stateChange'
       playbackSequence: number

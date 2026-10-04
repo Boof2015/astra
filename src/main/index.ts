@@ -37,6 +37,7 @@ import { RemoteAudioCache, type RemoteAudioLease } from './services/remoteAudioC
 import { normalizeRemoteCacheLimitGb } from '../types/remoteAudioCache'
 import { ProgressivePcmDelivery } from './progressivePcmDelivery'
 import { ProgressiveStartupRegistry } from './progressiveStartupRegistry'
+import { NativeRemoteLeaseRegistry } from './nativeRemoteLeaseRegistry'
 import { createThrottledLibraryScanProgressReporter } from './libraryScanProgress'
 import {
   buildEbur128Args,
@@ -10626,6 +10627,30 @@ async function fetchJellyfinRemoteStreamResponse(
     throw error instanceof Error ? error : new Error('Jellyfin stream request failed.')
   }
 }
+
+const nativeRemoteLeases = new NativeRemoteLeaseRegistry(acquireSubsonicCachedAudio)
+const nativeRemoteOwners = new WeakSet<Electron.WebContents>()
+function nativeRemoteOwner(event: Electron.IpcMainInvokeEvent): number {
+  const sender = event.sender
+  if (event.senderFrame !== sender.mainFrame) throw new Error('Native playback requires the main frame.')
+  if (!nativeRemoteOwners.has(sender)) {
+    nativeRemoteOwners.add(sender)
+    const release = (): void => nativeRemoteLeases.releaseOwner(sender.id)
+    sender.once('destroyed', release)
+    sender.on('render-process-gone', release)
+    sender.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+      if (isMainFrame && !isInPlace) release()
+    })
+  }
+  return sender.id
+}
+ipcMain.handle('native-remote:acquire', async (event, id: string, path: string) => ({
+  url: await nativeRemoteLeases.acquire(nativeRemoteOwner(event), id, path),
+  duration: resolveRemoteTrackDurationSeconds(path) ?? 0
+}))
+ipcMain.handle('native-remote:progress', (event, id: string) => nativeRemoteLeases.progress(nativeRemoteOwner(event), id))
+ipcMain.handle('native-remote:finished', (event, id: string) => nativeRemoteLeases.finished(nativeRemoteOwner(event), id))
+ipcMain.handle('native-remote:release', (event, id: string) => nativeRemoteLeases.release(nativeRemoteOwner(event), id))
 
 async function acquireSubsonicCachedAudio(filePath: string, signal: AbortSignal): Promise<RemoteAudioLease> {
   const parsed = parseSubsonicTrackPath(filePath)
