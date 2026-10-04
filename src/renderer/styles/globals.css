@@ -1300,6 +1300,25 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   white-space: nowrap;
 }
 
+.transport-loading-retry {
+  pointer-events: auto;
+  padding: 2px 4px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--accent-text-strong);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.transport-loading-retry:focus-visible {
+  outline: 1px solid var(--accent-text-strong);
+  outline-offset: 2px;
+}
+
 .transport-loading-hint-bar {
   position: relative;
   flex: 1;

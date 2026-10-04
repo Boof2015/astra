@@ -33,6 +33,9 @@ import {
   type IntegrityScanTrackTarget
 } from './services/libraryIntegrity'
 import { LibraryLatestSyncCoordinator } from './services/libraryLatestSync'
+import { RemoteAudioCache, type RemoteAudioLease } from './services/remoteAudioCache'
+import { normalizeRemoteCacheLimitGb } from '../types/remoteAudioCache'
+import { ProgressivePcmDelivery } from './progressivePcmDelivery'
 import { createThrottledLibraryScanProgressReporter } from './libraryScanProgress'
 import {
   buildEbur128Args,
@@ -331,7 +334,7 @@ import {
   type TrayRendererCommand,
   type TrayRendererState,
 } from '../types/desktopIntegration'
-import { resolveLocalProgressiveBackpressureAction } from './progressiveStreamBackpressure'
+import { REMOTE_PROGRESSIVE_PCM_MAX_BYTES, resolveLocalProgressiveBackpressureAction } from './progressiveStreamBackpressure'
 
 // Check if running in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -689,6 +692,20 @@ const jellyfinSyncProgressBySourceId = new Map<number, JellyfinSourceSyncProgres
 const jellyfinAuthCacheBySourceId = new Map<number, { authContext: { accessToken: string; userId: string }; expiresAt: number }>()
 const remoteStreamSessions = new Map<number, RemoteStreamSession>()
 let nextRemoteStreamSessionId = 1
+let remoteAudioCache: RemoteAudioCache | null = null
+const progressiveStartupControllers = new Map<number, AbortController>()
+
+function getRemoteAudioCache(): RemoteAudioCache {
+  const limitGb = normalizeRemoteCacheLimitGb(library.getAppMeta('remote_audio_cache_limit_gb'))
+  return remoteAudioCache ??= new RemoteAudioCache(join(app.getPath('userData'), 'remote-audio-cache'), limitGb * 1024 ** 3)
+}
+
+async function getRemoteAudioCacheStatus() {
+  return {
+    ...await getRemoteAudioCache().status(),
+    limitGb: normalizeRemoteCacheLimitGb(library.getAppMeta('remote_audio_cache_limit_gb'))
+  }
+}
 
 function getActiveMemoryFootprintChildProcessPids(): number[] {
   const pids: number[] = []
@@ -5681,6 +5698,8 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isAppQuitting = true
+  for (const controller of progressiveStartupControllers.values()) controller.abort()
+  void remoteAudioCache?.close()
   notchController?.dispose()
   destroyAppTray()
   globalInputShortcutService.clear()
@@ -7701,6 +7720,18 @@ ipcMain.handle('audio:startRemoteStream', async (event, filePath: string, output
   return startProgressiveStreamSession(event.sender, filePath, outputSampleRate, expectedChannels)
 })
 
+ipcMain.handle('audio:getRemoteCacheStatus', getRemoteAudioCacheStatus)
+ipcMain.handle('audio:setRemoteCacheLimit', async (_event, value: unknown) => {
+  const limitGb = normalizeRemoteCacheLimitGb(value)
+  await getRemoteAudioCache().setLimitBytes(limitGb * 1024 ** 3)
+  await library.setAppMeta('remote_audio_cache_limit_gb', String(limitGb))
+  return getRemoteAudioCacheStatus()
+})
+ipcMain.handle('audio:clearRemoteCache', async () => {
+  await getRemoteAudioCache().clearUnused()
+  return getRemoteAudioCacheStatus()
+})
+
 ipcMain.handle('audio:cancelRemoteStream', async (_event, sessionId: number) => {
   await cancelProgressiveStreamSession(sessionId)
 })
@@ -7717,7 +7748,7 @@ ipcMain.handle('audio:startProgressiveStream', async (
 
 ipcMain.on('audio:updateProgressiveStreamPosition', (event, sessionId: number, currentFrame: number) => {
   const session = remoteStreamSessions.get(sessionId)
-  if (!session || session.sender !== event.sender || session.sourceType !== 'local') return
+  if (!session || session.sender !== event.sender) return
 
   const normalizedFrame = Number.isFinite(currentFrame)
     ? Math.max(0, Math.min(session.decodedFrames, Math.floor(currentFrame)))
@@ -7725,10 +7756,19 @@ ipcMain.on('audio:updateProgressiveStreamPosition', (event, sessionId: number, c
   session.rendererReady = true
   session.consumedFrames = Math.max(session.consumedFrames, normalizedFrame)
   updateLocalProgressiveStreamBackpressure(session)
+  if (session.pendingOutcome && session.pcmDelivery?.drained) {
+    const pending = session.pendingOutcome
+    session.pendingOutcome = null
+    finalizeRemoteStreamSession(session, pending.outcome, pending.error)
+  }
 })
 
 ipcMain.handle('audio:cancelProgressiveStream', async (_event, sessionId: number) => {
   await cancelProgressiveStreamSession(sessionId)
+})
+
+ipcMain.handle('audio:cancelPendingProgressiveStream', (event) => {
+  progressiveStartupControllers.get(event.sender.id)?.abort()
 })
 
 ipcMain.handle('audio:getReplayGainScanEnabled', () => {
@@ -10146,6 +10186,10 @@ interface RemoteStreamSession {
   ffmpeg: ChildProcessWithoutNullStreams
   abortController: AbortController
   responseReader: ReadableStreamDefaultReader<Uint8Array> | null
+  cacheLease: RemoteAudioLease | null
+  cacheProgressTimer: NodeJS.Timeout | null
+  pcmDelivery: ProgressivePcmDelivery | null
+  pendingOutcome: { outcome: 'complete' | 'failed'; error?: Error } | null
   startupResolve: ((info: RemoteStreamInfo) => void) | null
   startupReject: ((error: Error) => void) | null
   startupSettled: boolean
@@ -10199,9 +10243,7 @@ function buildRemoteLoadProgress(
     ? Math.max(0, Math.min(1, session.loadedBytes / session.totalBytes))
     : null
   const decodedSeconds = session.sampleRate > 0 ? session.decodedFrames / session.sampleRate : 0
-  const bufferedSeconds = session.sourceType === 'local'
-    ? session.startTimeSeconds + decodedSeconds
-    : decodedSeconds
+  const bufferedSeconds = session.startTimeSeconds + decodedSeconds
   const bufferedPercent = session.durationSeconds && session.durationSeconds > 0
     ? Math.max(0, Math.min(1, bufferedSeconds / session.durationSeconds))
     : null
@@ -10226,6 +10268,11 @@ function buildRemoteLoadProgress(
 
 function safeSendRemoteLoadProgress(session: RemoteStreamSession, stage: RemoteAudioLoadProgress['stage'], force: boolean = false): void {
   if (session.sender.isDestroyed()) return
+  if (session.cacheLease) {
+    const progress = session.cacheLease.progress()
+    session.loadedBytes = progress.loadedBytes
+    session.totalBytes = progress.totalBytes
+  }
   const now = Date.now()
   if (!force && stage !== 'complete' && stage !== 'failed' && now - session.lastProgressEmitAt < SUBSONIC_DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS) {
     return
@@ -10258,6 +10305,7 @@ function settleRemoteStreamStartup(session: RemoteStreamSession, outcome: { ok: 
       channels: session.channels,
       durationSeconds: session.durationSeconds,
       startTimeSeconds: session.startTimeSeconds,
+      seekableCache: session.cacheLease !== null,
       initialChunk: session.startupChunk
     })
   } else {
@@ -10268,7 +10316,7 @@ function settleRemoteStreamStartup(session: RemoteStreamSession, outcome: { ok: 
 }
 
 function updateLocalProgressiveStreamBackpressure(session: RemoteStreamSession): void {
-  if (session.sourceType !== 'local' || session.done || session.cancelled) return
+  if ((session.sourceType !== 'local' && !session.cacheLease) || session.done || session.cancelled) return
 
   const action = resolveLocalProgressiveBackpressureAction({
     sampleRate: session.sampleRate,
@@ -10276,7 +10324,8 @@ function updateLocalProgressiveStreamBackpressure(session: RemoteStreamSession):
     consumedFrames: session.consumedFrames,
     rendererReady: session.rendererReady,
     stdoutPaused: session.stdoutPausedForBackpressure,
-    startupFrames: LOCAL_STREAM_STARTUP_CHUNK_FRAMES
+    startupFrames: session.cacheLease ? REMOTE_STREAM_CHUNK_FRAMES : LOCAL_STREAM_STARTUP_CHUNK_FRAMES,
+    maxBufferedFrames: session.cacheLease ? Math.floor(REMOTE_PROGRESSIVE_PCM_MAX_BYTES / (session.channels * 4)) : undefined
   })
   if (action === 'pause') {
     session.ffmpeg.stdout.pause()
@@ -10286,7 +10335,8 @@ function updateLocalProgressiveStreamBackpressure(session: RemoteStreamSession):
 
   if (action === 'resume') {
     session.stdoutPausedForBackpressure = false
-    session.ffmpeg.stdout.resume()
+    if (session.cacheLease) pumpRemoteStreamOutput(session, Buffer.alloc(0))
+    if (!session.stdoutPausedForBackpressure) session.ffmpeg.stdout.resume()
   }
 }
 
@@ -10341,18 +10391,40 @@ function finalizeRemoteStreamSession(
   outcome: 'complete' | 'cancelled' | 'failed',
   error?: Error
 ): void {
-  if (session.done) return
+  if (session.done) {
+    if (outcome === 'cancelled') {
+      session.cacheLease?.release()
+      session.cacheLease = null
+      session.releaseSenderHooks?.()
+      session.releaseSenderHooks = null
+      remoteStreamSessions.delete(session.id)
+    }
+    return
+  }
+
+  if (session.cacheLease && outcome !== 'cancelled' && session.emittedStartedEvent
+    && (!session.rendererReady || (outcome === 'complete' && !session.pcmDelivery?.drained))) {
+    session.pendingOutcome = { outcome, error }
+    return
+  }
 
   session.done = true
   session.failed = outcome === 'failed'
   session.cancelled = outcome === 'cancelled'
-  remoteStreamSessions.delete(session.id)
-
-  session.releaseSenderHooks?.()
-  session.releaseSenderHooks = null
+  if (session.cacheProgressTimer) clearInterval(session.cacheProgressTimer)
+  session.cacheProgressTimer = null
+  // Decoding completion precedes audible completion. Keep the cache protected
+  // until the renderer releases this session, including its final PCM window.
+  if (outcome !== 'complete' || !session.cacheLease) {
+    remoteStreamSessions.delete(session.id)
+    session.cacheLease?.release()
+    session.cacheLease = null
+    session.releaseSenderHooks?.()
+    session.releaseSenderHooks = null
+  }
 
   try {
-    session.abortController.abort()
+    if (outcome !== 'complete' || !session.cacheLease) session.abortController.abort()
   } catch {
     // Ignore abort races during teardown.
   }
@@ -10475,44 +10547,6 @@ function validateRemoteAudioResponse(response: Response, label: string): void {
   }
 }
 
-async function openSubsonicRemoteStreamResponse(
-  filePath: string,
-  signal: AbortSignal
-): Promise<{ response: Response; sourceType: 'subsonic' }> {
-  const parsed = parseSubsonicTrackPath(filePath)
-  if (!parsed) {
-    throw new Error('Invalid Subsonic track path.')
-  }
-
-  const credentials = requireSubsonicSourceCredentials(parsed.sourceId)
-  if (credentials.source.enabled !== 1) {
-    await library.setTrackAvailability(filePath, false, 'source_disabled')
-    throw new Error(`Subsonic source "${credentials.source.name}" is disabled.`)
-  }
-
-  const urls = [
-    buildSubsonicStreamUrl(credentials.connection, parsed.sourceTrackId, {
-      maxBitRateKbps: SUBSONIC_STREAM_MAX_BITRATE_KBPS
-    }),
-    buildSubsonicStreamUrl(credentials.connection, parsed.sourceTrackId)
-  ]
-
-  let lastError: Error | null = null
-  for (const url of urls) {
-    try {
-      const response = await fetch(url, { method: 'GET', signal })
-      validateRemoteAudioResponse(response, 'Subsonic')
-      await library.setTrackAvailability(filePath, true, null, { persist: false })
-      return { response, sourceType: 'subsonic' }
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error('Subsonic stream request failed.')
-    }
-  }
-
-  await library.setTrackAvailability(filePath, false, 'source_unavailable')
-  throw lastError ?? new Error('Subsonic stream request failed.')
-}
-
 async function fetchJellyfinRemoteStreamResponse(
   filePath: string,
   signal: AbortSignal
@@ -10580,21 +10614,38 @@ async function fetchJellyfinRemoteStreamResponse(
   }
 }
 
-async function openRemoteStreamResponse(
-  filePath: string,
-  signal: AbortSignal
-): Promise<{ response: Response; sourceType: RemoteStreamSourceType }> {
-  if (isSubsonicPath(filePath)) {
-    return openSubsonicRemoteStreamResponse(filePath, signal)
-  }
-  if (isJellyfinPath(filePath)) {
-    return fetchJellyfinRemoteStreamResponse(filePath, signal)
-  }
-  throw new Error('Remote streaming is only available for Subsonic and Jellyfin tracks.')
+async function acquireSubsonicCachedAudio(filePath: string, signal: AbortSignal): Promise<RemoteAudioLease> {
+  const parsed = parseSubsonicTrackPath(filePath)
+  if (!parsed) throw new Error('Invalid Subsonic track path.')
+  const { source, connection } = requireSubsonicSourceCredentials(parsed.sourceId)
+  if (source.enabled !== 1) throw new Error(`Subsonic source "${source.name}" is disabled.`)
+  const track = library.getTrackByPath(filePath)
+  return getRemoteAudioCache().acquire({
+    provider: 'subsonic',
+    account: JSON.stringify([source.id, normalizeSubsonicBaseUrl(connection.baseUrl), connection.username]),
+    track: parsed.sourceTrackId,
+    representation: 'original',
+    // The local modified_at changes on catalog refresh, not just audio changes.
+    // Use audio metadata until provider revision/validator discovery is added.
+    revision: JSON.stringify([track?.source_path, track?.duration, track?.format, track?.codec,
+      track?.sample_rate, track?.bit_depth, track?.channels, track?.bitrate]),
+    open: async downloadSignal => {
+      const response = await fetch(buildSubsonicStreamUrl(connection, parsed.sourceTrackId, { original: true }), {
+        signal: downloadSignal,
+        headers: { 'Accept-Encoding': 'identity' }
+      })
+      return response
+    }
+  }, signal)
 }
 
 function pumpRemoteStreamOutput(session: RemoteStreamSession, chunk: Buffer): void {
-  if (chunk.length === 0) return
+  if (session.pcmDelivery) {
+    if (chunk.length) session.pcmDelivery.push(chunk)
+    else session.pcmDelivery.drain()
+    return
+  }
+  if (chunk.length === 0 && session.stdoutRemainder.length === 0) return
 
   const frameSizeBytes = session.channels * 4
   if (frameSizeBytes <= 0) return
@@ -10619,6 +10670,7 @@ function pumpRemoteStreamOutput(session: RemoteStreamSession, chunk: Buffer): vo
 }
 
 function flushRemoteStreamOutput(session: RemoteStreamSession): void {
+  if (session.pcmDelivery) { session.pcmDelivery.finish(); return }
   if (session.stdoutRemainder.length === 0) return
 
   const frameSizeBytes = session.channels * 4
@@ -10639,228 +10691,279 @@ async function startProgressiveStreamSession(
   expectedChannels?: number | null,
   options: ProgressiveStreamStartOptions = {}
 ): Promise<RemoteStreamInfo> {
-  const ffmpegPath = await resolveBinary('ffmpeg')
-  if (!ffmpegPath) {
-    throw new Error('FFmpeg could not be resolved for progressive streaming.')
-  }
-
-  const sourceType = resolveProgressiveStreamSourceType(filePath)
-  const requestedStartTimeSeconds = sourceType === 'local'
-    ? normalizeProgressiveStartTimeSeconds(options.startTimeSeconds)
-    : 0
-  const normalizedSampleRate = Number.isFinite(outputSampleRate) && outputSampleRate > 0
-    ? Math.max(8_000, Math.round(outputSampleRate))
-    : 48_000
-  const dbTrack = library.getTrackByPath(filePath)
-  const normalizedChannels = Number.isFinite(expectedChannels)
-    ? Math.max(1, Math.min(8, Math.round(Number(expectedChannels))))
-    : Math.max(1, Math.min(8, dbTrack?.channels ?? 2))
   const abortController = new AbortController()
-
-  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
-  let totalBytes: number | null = null
-  if (sourceType === 'local') {
-    totalBytes = null
-  } else {
-    const { response } = await openRemoteStreamResponse(filePath, abortController.signal)
-    reader = response.body?.getReader() ?? null
-    if (!reader) {
-      throw new Error('Remote stream response body was not readable.')
+  progressiveStartupControllers.get(sender.id)?.abort()
+  progressiveStartupControllers.set(sender.id, abortController)
+  const abortStartup = () => abortController.abort()
+  sender.once('destroyed', abortStartup)
+  let cacheLease: RemoteAudioLease | null = null
+  let sessionCreated = false
+  try {
+    const ffmpegPath = await resolveBinary('ffmpeg')
+    abortController.signal.throwIfAborted()
+    if (!ffmpegPath) {
+      throw new Error('FFmpeg could not be resolved for progressive streaming.')
     }
 
-    const contentLengthHeader = response.headers.get('content-length')
-    const parsedContentLength = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : Number.NaN
-    totalBytes = Number.isFinite(parsedContentLength) && parsedContentLength > 0 ? parsedContentLength : null
-  }
+    const sourceType = resolveProgressiveStreamSourceType(filePath)
+    const requestedStartTimeSeconds = sourceType === 'local' || sourceType === 'subsonic'
+      ? normalizeProgressiveStartTimeSeconds(options.startTimeSeconds)
+      : 0
+    const normalizedSampleRate = Number.isFinite(outputSampleRate) && outputSampleRate > 0
+      ? Math.max(8_000, Math.round(outputSampleRate))
+      : 48_000
+    const dbTrack = library.getTrackByPath(filePath)
+    const normalizedChannels = Number.isFinite(expectedChannels)
+      ? Math.max(1, Math.min(8, Math.round(Number(expectedChannels))))
+      : Math.max(1, Math.min(8, dbTrack?.channels ?? 2))
 
-  const ffmpegInputArgs = sourceType === 'local'
-    ? [
-        ...(requestedStartTimeSeconds > 0 ? ['-ss', String(requestedStartTimeSeconds)] : []),
-        '-i', filePath
-      ]
-    : ['-i', 'pipe:0']
-  const ffmpeg = spawn(
-    ffmpegPath,
-    [
-      '-v', 'error',
-      '-nostdin',
-      ...ffmpegInputArgs,
-      '-map', '0:a:0',
-      '-vn',
-      '-acodec', 'pcm_f32le',
-      '-f', 'f32le',
-      '-ar', String(normalizedSampleRate),
-      '-ac', String(normalizedChannels),
-      'pipe:1'
-    ],
-    {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true
-    }
-  )
-
-  const sessionId = nextRemoteStreamSessionId
-  nextRemoteStreamSessionId += 1
-
-  const infoPromise = new Promise<RemoteStreamInfo>((resolve, reject) => {
-    const session: RemoteStreamSession = {
-      id: sessionId,
-      sender,
-      filePath,
-      sourceType,
-      startTimeSeconds: requestedStartTimeSeconds,
-      sampleRate: normalizedSampleRate,
-      channels: normalizedChannels,
-      durationSeconds: resolveRemoteTrackDurationSeconds(filePath),
-      ffmpeg,
-      abortController,
-      responseReader: reader,
-      startupResolve: resolve,
-      startupReject: reject,
-      startupSettled: false,
-      startupChunk: null,
-      stdoutRemainder: Buffer.alloc(0),
-      stderrChunks: [],
-      loadedBytes: 0,
-      totalBytes,
-      chunkCount: 0,
-      decodedFrames: 0,
-      consumedFrames: 0,
-      rendererReady: false,
-      stdoutPausedForBackpressure: false,
-      lastProgressEmitAt: 0,
-      done: false,
-      failed: false,
-      cancelled: false,
-      emittedStartedEvent: false,
-      stdinClosed: false,
-      releaseSenderHooks: null
-    }
-
-    remoteStreamSessions.set(session.id, session)
-
-    // Tear the session down if the renderer goes away mid-stream (window
-    // closed or reloaded); otherwise ffmpeg keeps decoding for nothing.
-    const handleSenderDestroyed = (): void => {
-      finalizeRemoteStreamSession(session, 'cancelled')
-    }
-    const handleSenderNavigation = (
-      _event: Electron.Event,
-      _url: string,
-      isInPlace: boolean,
-      isMainFrame: boolean
-    ): void => {
-      if (!isMainFrame || isInPlace) return
-      finalizeRemoteStreamSession(session, 'cancelled')
-    }
-    sender.once('destroyed', handleSenderDestroyed)
-    sender.on('did-start-navigation', handleSenderNavigation)
-    session.releaseSenderHooks = () => {
-      try {
-        sender.removeListener('destroyed', handleSenderDestroyed)
-        sender.removeListener('did-start-navigation', handleSenderNavigation)
-      } catch {
-        // Listener removal can race with sender teardown.
-      }
-    }
-
-    safeSendRemoteLoadProgress(session, sourceType === 'local' ? 'streaming' : 'downloading', true)
-
-    ffmpeg.stderr.setEncoding('utf8')
-    ffmpeg.stderr.on('data', (data: string | Buffer) => {
-      session.stderrChunks.push(String(data))
-      if (session.stderrChunks.length > 8) {
-        session.stderrChunks.shift()
-      }
-    })
-
-    ffmpeg.stdin.on('finish', () => {
-      session.stdinClosed = true
-    })
-
-    ffmpeg.stdin.on('close', () => {
-      session.stdinClosed = true
-    })
-
-    ffmpeg.stdin.on('error', (error) => {
-      session.stdinClosed = true
-      if (session.done || session.cancelled) return
-      if (isRemoteStreamPipeTeardownError(error)) {
-        return
-      }
-      finalizeRemoteStreamSession(
-        session,
-        'failed',
-        error instanceof Error ? error : new Error('Progressive FFmpeg input pipe failed.')
-      )
-    })
-
-    ffmpeg.stdout.on('data', (data: Buffer) => {
-      pumpRemoteStreamOutput(session, data)
-    })
-
-    ffmpeg.stdout.on('end', () => {
-      flushRemoteStreamOutput(session)
-    })
-
-    ffmpeg.on('error', (error) => {
-      finalizeRemoteStreamSession(session, 'failed', error instanceof Error ? error : new Error('Progressive FFmpeg process failed.'))
-    })
-
-    ffmpeg.on('close', (code) => {
-      session.stdinClosed = true
-      if (session.done) return
-      if (session.cancelled) {
-        finalizeRemoteStreamSession(session, 'cancelled')
-        return
-      }
-      if (code === 0) {
-        finalizeRemoteStreamSession(session, 'complete')
-        return
-      }
-
-      const stderr = session.stderrChunks.join(' ').trim()
-      finalizeRemoteStreamSession(session, 'failed', new Error(
-        stderr.length > 0
-          ? `Progressive stream decode failed: ${stderr}`
-          : `Progressive stream decode failed (ffmpeg exit ${code ?? 'unknown'}).`
-      ))
-    })
-
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
+    let totalBytes: number | null = null
     if (sourceType === 'local') {
-      try {
-        if (!ffmpeg.stdin.destroyed) {
-          ffmpeg.stdin.end()
-        }
-      } catch {
-        // FFmpeg reads local files directly; stdin is intentionally unused.
+      totalBytes = null
+    } else if (sourceType === 'subsonic') {
+      cacheLease = await acquireSubsonicCachedAudio(filePath, abortController.signal)
+      abortController.signal.throwIfAborted()
+    } else {
+      const { response } = await fetchJellyfinRemoteStreamResponse(filePath, abortController.signal)
+      reader = response.body?.getReader() ?? null
+      if (!reader) {
+        throw new Error('Remote stream response body was not readable.')
       }
-    } else if (reader) {
-      void (async () => {
+
+      const contentLengthHeader = response.headers.get('content-length')
+      const parsedContentLength = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : Number.NaN
+      totalBytes = Number.isFinite(parsedContentLength) && parsedContentLength > 0 ? parsedContentLength : null
+    }
+
+    const ffmpegInputArgs = sourceType === 'local'
+      ? [
+          ...(requestedStartTimeSeconds > 0 ? ['-ss', String(requestedStartTimeSeconds)] : []),
+          '-i', filePath
+        ]
+      : cacheLease
+        ? [
+            ...(requestedStartTimeSeconds > 0 ? ['-ss', String(requestedStartTimeSeconds)] : []),
+            '-i', cacheLease.url
+          ]
+        : ['-i', 'pipe:0']
+    const ffmpeg = spawn(
+      ffmpegPath,
+      [
+        '-v', 'error',
+        '-nostdin',
+        ...ffmpegInputArgs,
+        '-map', '0:a:0',
+        '-vn',
+        '-acodec', 'pcm_f32le',
+        '-f', 'f32le',
+        '-ar', String(normalizedSampleRate),
+        '-ac', String(normalizedChannels),
+        'pipe:1'
+      ],
+      {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true
+      }
+    )
+
+    const sessionId = nextRemoteStreamSessionId
+    nextRemoteStreamSessionId += 1
+
+    const infoPromise = new Promise<RemoteStreamInfo>((resolve, reject) => {
+      const session: RemoteStreamSession = {
+        id: sessionId,
+        sender,
+        filePath,
+        sourceType,
+        startTimeSeconds: requestedStartTimeSeconds,
+        sampleRate: normalizedSampleRate,
+        channels: normalizedChannels,
+        durationSeconds: resolveRemoteTrackDurationSeconds(filePath),
+        ffmpeg,
+        abortController,
+        responseReader: reader,
+        cacheLease,
+        cacheProgressTimer: null,
+        pcmDelivery: null,
+        pendingOutcome: null,
+        startupResolve: resolve,
+        startupReject: reject,
+        startupSettled: false,
+        startupChunk: null,
+        stdoutRemainder: Buffer.alloc(0),
+        stderrChunks: [],
+        loadedBytes: 0,
+        totalBytes,
+        chunkCount: 0,
+        decodedFrames: 0,
+        consumedFrames: 0,
+        rendererReady: false,
+        stdoutPausedForBackpressure: false,
+        lastProgressEmitAt: 0,
+        done: false,
+        failed: false,
+        cancelled: false,
+        emittedStartedEvent: false,
+        stdinClosed: false,
+        releaseSenderHooks: null
+      }
+
+      remoteStreamSessions.set(session.id, session)
+      if (cacheLease) {
+        session.pcmDelivery = new ProgressivePcmDelivery(session.channels, REMOTE_STREAM_CHUNK_FRAMES,
+          () => !session.stdoutPausedForBackpressure && (!session.emittedStartedEvent || session.rendererReady),
+          chunk => emitRemoteStreamChunk(session, chunk))
+      }
+      sessionCreated = true
+      const handleAbort = () => finalizeRemoteStreamSession(session, 'cancelled')
+      abortController.signal.addEventListener('abort', handleAbort, { once: true })
+      if (cacheLease) {
+        session.cacheProgressTimer = setInterval(() => {
+          safeSendRemoteLoadProgress(session, session.decodedFrames > 0 ? 'streaming' : 'downloading')
+        }, 250)
+        session.cacheProgressTimer.unref()
+      }
+
+      // Tear the session down if the renderer goes away mid-stream (window
+      // closed or reloaded); otherwise ffmpeg keeps decoding for nothing.
+      const handleSenderDestroyed = (): void => {
+        finalizeRemoteStreamSession(session, 'cancelled')
+      }
+      const handleSenderNavigation = (
+        _event: Electron.Event,
+        _url: string,
+        isInPlace: boolean,
+        isMainFrame: boolean
+      ): void => {
+        if (!isMainFrame || isInPlace) return
+        finalizeRemoteStreamSession(session, 'cancelled')
+      }
+      sender.once('destroyed', handleSenderDestroyed)
+      sender.on('did-start-navigation', handleSenderNavigation)
+      session.releaseSenderHooks = () => {
+        abortController.signal.removeEventListener('abort', handleAbort)
         try {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            if (!value || value.byteLength === 0) continue
+          sender.removeListener('destroyed', handleSenderDestroyed)
+          sender.removeListener('did-start-navigation', handleSenderNavigation)
+        } catch {
+          // Listener removal can race with sender teardown.
+        }
+      }
 
-            session.loadedBytes += value.byteLength
-            safeSendRemoteLoadProgress(session, session.decodedFrames > 0 ? 'streaming' : 'downloading')
-            await writeRemoteStreamInput(session, value)
-          }
+      safeSendRemoteLoadProgress(session, sourceType === 'local' ? 'streaming' : 'downloading', true)
 
+      ffmpeg.stderr.setEncoding('utf8')
+      ffmpeg.stderr.on('data', (data: string | Buffer) => {
+        session.stderrChunks.push(String(data))
+        if (session.stderrChunks.length > 8) {
+          session.stderrChunks.shift()
+        }
+      })
+
+      ffmpeg.stdin.on('finish', () => {
+        session.stdinClosed = true
+      })
+
+      ffmpeg.stdin.on('close', () => {
+        session.stdinClosed = true
+      })
+
+      ffmpeg.stdin.on('error', (error) => {
+        session.stdinClosed = true
+        if (session.done || session.cancelled) return
+        if (isRemoteStreamPipeTeardownError(error)) {
+          return
+        }
+        finalizeRemoteStreamSession(
+          session,
+          'failed',
+          error instanceof Error ? error : new Error('Progressive FFmpeg input pipe failed.')
+        )
+      })
+
+      ffmpeg.stdout.on('data', (data: Buffer) => {
+        pumpRemoteStreamOutput(session, data)
+      })
+
+      ffmpeg.stdout.on('end', () => {
+        flushRemoteStreamOutput(session)
+      })
+
+      ffmpeg.on('error', (error) => {
+        finalizeRemoteStreamSession(session, 'failed', error instanceof Error ? error : new Error('Progressive FFmpeg process failed.'))
+      })
+
+      ffmpeg.on('close', (code) => {
+        session.stdinClosed = true
+        if (session.done) return
+        if (session.cancelled) {
+          finalizeRemoteStreamSession(session, 'cancelled')
+          return
+        }
+      if (code === 0) {
+        if (session.cacheLease) {
+          // Some demuxers exit successfully after a truncated network input.
+          // Successful decoding alone must not turn a failed fetch into EOF.
+          void session.cacheLease.finished().then(
+            () => finalizeRemoteStreamSession(session, 'complete'),
+            error => finalizeRemoteStreamSession(session, 'failed', error)
+          )
+        } else {
+          finalizeRemoteStreamSession(session, 'complete')
+        }
+        return
+        }
+
+        const stderr = session.stderrChunks.join(' ').trim()
+        finalizeRemoteStreamSession(session, 'failed', new Error(
+          stderr.length > 0
+            ? `Progressive stream decode failed: ${stderr}`
+            : `Progressive stream decode failed (ffmpeg exit ${code ?? 'unknown'}).`
+        ))
+      })
+
+      if (sourceType === 'local' || cacheLease) {
+        try {
           if (!ffmpeg.stdin.destroyed) {
             ffmpeg.stdin.end()
           }
-        } catch (error) {
-          if (session.done || session.cancelled) return
-          if (isRemoteStreamPipeTeardownError(error)) return
-          finalizeRemoteStreamSession(session, 'failed', error instanceof Error ? error : new Error('Remote stream download failed.'))
+        } catch {
+          // File/cache inputs are read directly; stdin is intentionally unused.
         }
-      })()
-    }
-  })
+      } else if (reader) {
+        void (async () => {
+          try {
+            while (true) {
+              const { done, value } = await reader.read()
+              if (done) break
+              if (!value || value.byteLength === 0) continue
 
-  return infoPromise
+              session.loadedBytes += value.byteLength
+              safeSendRemoteLoadProgress(session, session.decodedFrames > 0 ? 'streaming' : 'downloading')
+              await writeRemoteStreamInput(session, value)
+            }
+
+            if (!ffmpeg.stdin.destroyed) {
+              ffmpeg.stdin.end()
+            }
+          } catch (error) {
+            if (session.done || session.cancelled) return
+            if (isRemoteStreamPipeTeardownError(error)) return
+            finalizeRemoteStreamSession(session, 'failed', error instanceof Error ? error : new Error('Remote stream download failed.'))
+          }
+        })()
+      }
+    })
+
+    return await infoPromise
+  } finally {
+    sender.removeListener('destroyed', abortStartup)
+    if (progressiveStartupControllers.get(sender.id) === abortController) {
+      progressiveStartupControllers.delete(sender.id)
+    }
+    if (!sessionCreated) cacheLease?.release()
+  }
 }
 
 async function cancelProgressiveStreamSession(sessionId: number): Promise<void> {

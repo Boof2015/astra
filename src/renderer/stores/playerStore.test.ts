@@ -21,7 +21,7 @@ import type { Track } from '../types/audio.ts'
 import { resolveCollectionTrackPaths } from '../utils/collectionQueue.ts'
 import { FAVORITES_PLAYLIST_ID } from '../utils/playlistSystem.ts'
 import type { PlayerSessionSnapshot } from '../utils/sessionState.ts'
-import { audioEngine, type StandardPcmLoadOutcome } from '../audio/AudioEngine.ts'
+import { audioEngine, SupersededAudioLoadError, type StandardPcmLoadOutcome } from '../audio/AudioEngine.ts'
 import { useAudioSettingsStore } from './audioSettingsStore.ts'
 import { useParallaxStore } from './parallaxStore.ts'
 import {
@@ -560,6 +560,146 @@ async function exerciseStandardPcmRoute(
     resetStores()
   }
 }
+
+test('cached Subsonic startup failure retains the selected track and position for Retry', async () => {
+  resetStores()
+  const track = makeTrack('subsonic://7/retry', { sourceType: 'subsonic', duration: 180, isAvailable: true })
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const originalSettings = useAudioSettingsStore.getState()
+  const originalOn = audioEngine.on
+  const originalLoadRemoteStream = audioEngine.loadRemoteStream
+  const originalOutputMode = audioEngine.getPlaybackOutputMode
+  const originalSeek = audioEngine.seek
+  const originalParallax = useParallaxStore.getState()
+  let fallbackReads = 0
+  let requestedStart: number | null | undefined
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    location: { search: '?window=test' },
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    electronAPI: {
+      onProgressiveLoadProgress: () => () => undefined,
+      supersedeTrackLoudness: async () => undefined,
+      loadAudioFile: async () => { fallbackReads++; return { data: new ArrayBuffer(0) } },
+      library: {
+        getListeningHistoryStatus: async () => ({ generation: 'remote-retry', startedAt: null }),
+        checkpointListeningSession: async () => ({ accepted: true, qualifiedNow: false,
+          status: { generation: 'remote-retry', startedAt: null } })
+      }
+    }
+  } })
+  useAudioSettingsStore.setState({ playbackOutputMode: 'standard', normalizationEnabled: false })
+  audioEngine.on = () => () => undefined
+  audioEngine.getPlaybackOutputMode = () => 'standard'
+  useParallaxStore.setState({ prepareHostSeek: async () => null, cancelHostNextStream: async () => undefined })
+  audioEngine.loadRemoteStream = async (_track, options) => {
+    requestedStart = options?.startTimeSeconds
+    throw new Error('Remote source unavailable')
+  }
+  try {
+    usePlayerStore.getState()._cleanupListeners()
+    assert.equal(await usePlayerStore.getState()._loadAndPlayTrack(track, { startTime: 75 }), 'failed')
+    const state = usePlayerStore.getState()
+    assert.equal(requestedStart, 75)
+    assert.equal(state.currentTrack?.path, track.path)
+    assert.equal(state.currentTrack?.isAvailable, true)
+    assert.equal(state.remoteLoadProgress?.failed, true)
+    assert.equal(state.restoredTrackNeedsLoad, true)
+    assert.equal(state.restoredPlaybackTime, 75)
+    assert.equal(state.currentTime, 75)
+    assert.equal(fallbackReads, 0)
+    usePlayerStore.setState({ restoredTrackNeedsLoad: false, restoredPlaybackTime: null, remoteStreamSessionId: 42 })
+    audioEngine.seek = async () => { throw new Error('Seek could not reconnect') }
+    await usePlayerStore.getState().seek(120)
+    const failedSeek = usePlayerStore.getState()
+    assert.equal(failedSeek.currentTrack?.path, track.path)
+    assert.equal(failedSeek.remoteStreamSessionId, null)
+    assert.equal(failedSeek.restoredTrackNeedsLoad, true)
+    assert.equal(failedSeek.restoredPlaybackTime, 120)
+    assert.equal(failedSeek.remoteLoadProgress?.failed, true)
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    await flushAsyncWork()
+    audioEngine.on = originalOn
+    audioEngine.loadRemoteStream = originalLoadRemoteStream
+    audioEngine.getPlaybackOutputMode = originalOutputMode
+    audioEngine.seek = originalSeek
+    useParallaxStore.setState({ prepareHostSeek: originalParallax.prepareHostSeek,
+      cancelHostNextStream: originalParallax.cancelHostNextStream })
+    useAudioSettingsStore.setState({ playbackOutputMode: originalSettings.playbackOutputMode,
+      normalizationEnabled: originalSettings.normalizationEnabled })
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+    resetStores()
+  }
+})
+
+test('an obsolete remote seek failure cannot overwrite the final drag target or session', async (t) => {
+  resetStores()
+  const originalParallax = useParallaxStore.getState()
+  const firstSeek = createDeferred<void>()
+  const finalSeek = createDeferred<void>()
+  t.mock.method(audioEngine, 'getPlaybackOutputMode', () => 'standard')
+  t.mock.method(audioEngine, 'getRemoteStreamSessionId', () => 43)
+  t.mock.method(audioEngine, 'seek', (time: number) => time === 30 ? firstSeek.promise : finalSeek.promise)
+  useParallaxStore.setState({ status: null, prepareHostSeek: async () => null,
+    cancelHostNextStream: async () => undefined })
+  usePlayerStore.setState({
+    currentTrack: makeTrack('subsonic://7/drag', { sourceType: 'subsonic' }),
+    playbackState: 'paused', duration: 180, remoteStreamSessionId: 42, remoteLoadProgress: null
+  })
+  try {
+    const first = usePlayerStore.getState().seek(30)
+    await flushAsyncWork()
+    const final = usePlayerStore.getState().seek(120)
+    await flushAsyncWork()
+    finalSeek.resolve()
+    await final
+    firstSeek.reject(new Error('Obsolete decoder was cancelled'))
+    await first
+    const state = usePlayerStore.getState()
+    assert.equal(state.playbackState, 'paused')
+    assert.equal(state.remoteStreamSessionId, 43)
+    assert.equal(state.restoredTrackNeedsLoad, false)
+    assert.equal(state.restoredPlaybackTime, null)
+    assert.notEqual(state.remoteLoadProgress?.failed, true)
+
+    t.mock.method(audioEngine, 'seek', async () => { throw new SupersededAudioLoadError() })
+    await usePlayerStore.getState().seek(150)
+    assert.equal(usePlayerStore.getState().restoredTrackNeedsLoad, false)
+    assert.equal(usePlayerStore.getState().remoteStreamSessionId, 43)
+  } finally {
+    useParallaxStore.setState({ status: originalParallax.status,
+      prepareHostSeek: originalParallax.prepareHostSeek,
+      cancelHostNextStream: originalParallax.cancelHostNextStream })
+    resetStores()
+  }
+})
+
+test('resuming a pending remote seek preserves its decoder and adopts the final session', async (t) => {
+  resetStores()
+  const originalParallax = useParallaxStore.getState()
+  const track = makeTrack('subsonic://7/resume-seek', { sourceType: 'subsonic' })
+  const playback = createDeferred<void>()
+  const supersede = t.mock.method(audioEngine, 'supersedeCurrentLoadPreservingPrebuffer', () => undefined)
+  const play = t.mock.method(audioEngine, 'play', () => playback.promise)
+  t.mock.method(audioEngine, 'getPendingProgressiveSeekTrackPath', () => track.path)
+  t.mock.method(audioEngine, 'getRemoteStreamSessionId', () => 43)
+  useParallaxStore.setState({ status: null })
+  usePlayerStore.setState({ currentTrack: track, playbackState: 'paused', remoteStreamSessionId: 42 })
+  try {
+    const resume = usePlayerStore.getState().play()
+    assert.equal(play.mock.callCount(), 1)
+    assert.equal(supersede.mock.callCount(), 0)
+    assert.equal(usePlayerStore.getState().remoteStreamSessionId, 42)
+    playback.resolve()
+    await resume
+    assert.equal(usePlayerStore.getState().remoteStreamSessionId, 43)
+  } finally {
+    useParallaxStore.setState({ status: originalParallax.status })
+    resetStores()
+  }
+})
 
 interface MandatoryProgressiveMetrics {
   progressiveCalls: Array<{

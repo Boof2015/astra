@@ -413,6 +413,7 @@ interface RemoteStreamRuntimeState {
   started: boolean
   paused: boolean
   sourceEnded: boolean
+  seekableCache: boolean
   waveform: ProgressiveWaveformAccumulator
   lastWaveformUpdateAt: number
   waveformUpdateTimer: ReturnType<typeof setTimeout> | null
@@ -438,6 +439,17 @@ interface ParallaxSinkRuntimeState {
   playbackRatePpm: number
   starvedFrames: number
   rebuffering: boolean
+}
+
+interface ProgressiveSeekRequest {
+  trackPath: string
+  loadGeneration: number
+  durationSeconds: number
+  targetTime: number
+  revision: number
+  playRequested: boolean
+  cancellation: Promise<void> | null
+  operation: Promise<void> | null
 }
 
 export type OutputDelayCalibrationFailureCode =
@@ -670,6 +682,8 @@ export class AudioEngine {
   private nativeSeekPromise: Promise<void> | null = null
   private pendingNativeSeekTime: number | null = null
   private remoteStreamState: RemoteStreamRuntimeState | null = null
+  private pendingProgressiveLoadGeneration: number | null = null
+  private progressiveSeek: ProgressiveSeekRequest | null = null
   private parallaxSinkState: ParallaxSinkRuntimeState | null = null
   // §21 Gapless sink handoff. Staged next stream, held alongside `parallaxSinkState` from
   // pre-announce until the boundary crossover. Its worklet node is created via the normal factory,
@@ -2917,6 +2931,9 @@ export class AudioEngine {
   }
 
   private async clearRemoteStreamState(cancelSession: boolean): Promise<void> {
+    const pendingCancellation = cancelSession && this.pendingProgressiveLoadGeneration !== null
+      ? window.electronAPI?.cancelPendingProgressiveStream?.()
+      : undefined
     const remoteState = this.remoteStreamState
     if (remoteState?.waveformUpdateTimer) {
       clearTimeout(remoteState.waveformUpdateTimer)
@@ -2929,7 +2946,10 @@ export class AudioEngine {
     this.normalizationApproximate = false
     this.resetRemotePlayPromise(cancelSession ? new Error('Remote stream was cancelled.') : undefined)
 
-    if (remoteState && cancelSession) {
+    // Detach synchronously: a replacement load may install its state while
+    // cancellation IPC is in flight, and this cleanup must not clear that state.
+    await pendingCancellation
+    if (remoteState && (cancelSession || remoteState.seekableCache)) {
       try {
         await window.electronAPI.cancelProgressiveStream(remoteState.sessionId)
       } catch {
@@ -2977,6 +2997,13 @@ export class AudioEngine {
       const payload = event.data ?? {}
       if (!payload || typeof payload !== 'object') return
 
+      if (payload.type === 'buffering' && this.remoteStreamState?.seekableCache) {
+        if (!this.remoteStreamState.playRequested || this.remoteStreamState.paused) return
+        this._playbackState = payload.buffering ? 'loading' : 'playing'
+        this.emit('stateChange', this._playbackState)
+        if (!payload.buffering) this.resetRemotePlayPromise()
+      }
+
       if (payload.type === 'position' && this.remoteStreamState) {
         this.remoteStreamState.currentFrame = Number.isFinite(payload.frame)
           ? Math.max(0, Math.floor(payload.frame))
@@ -3012,7 +3039,7 @@ export class AudioEngine {
     remoteState: RemoteStreamRuntimeState,
     force: boolean = false
   ): void {
-    if (remoteState.sourceType !== 'local') return
+    if (remoteState.sourceType !== 'local' && !remoteState.seekableCache) return
 
     const reportIntervalFrames = Math.max(1, Math.floor(remoteState.sampleRate * 0.5))
     if (
@@ -3355,6 +3382,14 @@ export class AudioEngine {
     }
 
     if (payload.type === 'failed') {
+      if (remoteState.seekableCache) {
+        // A failed download is not an audio boundary. Keep the track/position
+        // instead of letting the drained worklet emit ended and skip the queue.
+        const error = new Error(payload.message)
+        this.emit('error', error)
+        this.resetRemotePlayPromise(error)
+        return
+      }
       remoteState.sourceEnded = true
       this.remoteStreamNode?.port.postMessage({
         type: 'set-source-ended',
@@ -3392,6 +3427,12 @@ export class AudioEngine {
     await this.clearRemoteStreamState(true)
     this.clearParallaxSinkState()
     this.assertCurrentLoadOperation(loadOperation)
+    const progressiveSeek = this.getActiveProgressiveSeek()
+    if (progressiveSeek && progressiveSeek.targetTime !== options.startTimeSeconds) {
+      // Pointer movement during context setup/teardown can supersede this
+      // target before startup IPC exists to cancel. Do not open that decoder.
+      throw new SupersededAudioLoadError()
+    }
     this.audioBuffer = null
     this.currentWaveformRequestId = null
     this.currentNormalizationAnalysis = null
@@ -3404,6 +3445,7 @@ export class AudioEngine {
 
     let info: RemoteStreamInfo
     try {
+      this.pendingProgressiveLoadGeneration = loadOperation
       info = await window.electronAPI.startProgressiveStream(
         track.path,
         this.context.sampleRate,
@@ -3415,6 +3457,8 @@ export class AudioEngine {
         throw new SupersededAudioLoadError()
       }
       throw error
+    } finally {
+      if (this.pendingProgressiveLoadGeneration === loadOperation) this.pendingProgressiveLoadGeneration = null
     }
 
     if (loadOperation !== this.loadGeneration) {
@@ -3426,7 +3470,7 @@ export class AudioEngine {
       throw new SupersededAudioLoadError()
     }
 
-    this.remoteStreamNode = this.createRemoteStreamNode(info.channels, info.sourceType === 'local')
+    this.remoteStreamNode = this.createRemoteStreamNode(info.channels, info.sourceType === 'local' || !!info.seekableCache)
     const resolvedStartTimeSeconds = Number.isFinite(info.startTimeSeconds)
       ? Math.max(0, Number(info.startTimeSeconds))
       : Math.max(0, Number(options.startTimeSeconds ?? 0))
@@ -3460,6 +3504,7 @@ export class AudioEngine {
       started: false,
       paused: false,
       sourceEnded: false,
+      seekableCache: !!info.seekableCache,
       waveform: new ProgressiveWaveformAccumulator(
         durationSeconds > 0 ? durationSeconds : Math.max(track.duration, 1),
         info.sampleRate
@@ -5650,6 +5695,10 @@ export class AudioEngine {
   getRemoteBufferedSeconds(): number {
     if (!this.remoteStreamState || this.remoteStreamState.sampleRate <= 0) return 0
     return (this.remoteStreamState.startFrame + this.remoteStreamState.bufferedFrames) / this.remoteStreamState.sampleRate
+  }
+
+  getRemoteStreamSessionId(): number | null {
+    return this.remoteStreamState?.sessionId ?? null
   }
 
   isNormalizationApproximate(): boolean {
@@ -8420,6 +8469,11 @@ export class AudioEngine {
 
   // Play
   async play(): Promise<void> {
+    const progressiveSeek = this.getActiveProgressiveSeek()
+    if (progressiveSeek) {
+      progressiveSeek.playRequested = true
+      if (!this.remoteStreamState) return progressiveSeek.operation ?? Promise.resolve()
+    }
     const playLoadGeneration = this.loadGeneration
     if (this.isNativeExclusiveMode()) {
       const previousPlaybackState = this._playbackState
@@ -8578,6 +8632,16 @@ export class AudioEngine {
 
   // Pause
   pause(): void | Promise<void> {
+    const progressiveSeek = this.getActiveProgressiveSeek()
+    if (progressiveSeek) {
+      progressiveSeek.playRequested = false
+      if (!this.remoteStreamState) {
+        this._playbackState = 'paused'
+        this.emit('stateChange', this._playbackState)
+        this.emit('timeUpdate', progressiveSeek.targetTime)
+        return
+      }
+    }
     if (this.isNativeExclusiveMode()) {
       const pauseLoadGeneration = this.loadGeneration
       const lifecycleSuppression = this.beginNativeLifecycleSuppression()
@@ -8676,7 +8740,7 @@ export class AudioEngine {
       })
     }
 
-    if (this.remoteStreamState) {
+    if (this.remoteStreamState || this.pendingProgressiveLoadGeneration !== null) {
       this.remoteStreamNode?.port.postMessage({ type: 'clear' })
       void this.clearRemoteStreamState(true)
       this.pauseTime = 0
@@ -8722,36 +8786,33 @@ export class AudioEngine {
       return
     }
 
+    // Decoder replacement temporarily leaves remoteStreamState empty. Retain
+    // the seek context across that gap and coalesce pointer moves to the latest
+    // target instead of dropping them or starting overlapping decoder loads.
+    const progressiveSeek = this.getActiveProgressiveSeek()
+    if (progressiveSeek) {
+      const targetTime = Math.max(0, Math.min(time, progressiveSeek.durationSeconds || time))
+      if (targetTime !== progressiveSeek.targetTime) {
+        progressiveSeek.targetTime = targetTime
+        progressiveSeek.revision += 1
+        if (this.pendingProgressiveLoadGeneration !== null && !progressiveSeek.cancellation) {
+          progressiveSeek.cancellation = window.electronAPI.cancelPendingProgressiveStream?.()
+            .catch(() => { /* The current load still has generation/target guards. */ }) ?? null
+        }
+        if (this.remoteStreamState) this.remoteStreamState.playRequested = false
+        // A seek waiting for playable PCM must also yield to a newer target.
+        this.resetRemotePlayPromise()
+      }
+      return progressiveSeek.operation ?? Promise.resolve()
+    }
+
     if (this.remoteStreamState) {
       const remoteState = this.remoteStreamState
       const durationSeconds = Math.max(0, remoteState.durationSeconds)
       const clampedAbsoluteTime = Math.max(0, Math.min(time, durationSeconds > 0 ? durationSeconds : time))
 
-      if (remoteState.sourceType === 'local') {
-        const wasPlaying = this._playbackState === 'playing'
-        const track = remoteState.track
-        const replayGainDb = this.currentReplayGainDb
-        const loudnessAnalysis = this.currentNormalizationAnalysis
-          ? {
-              loudnessLufs: this.currentNormalizationAnalysis.loudnessLufs,
-              peakLinear: this.currentNormalizationAnalysis.peakLinear
-            }
-          : null
-
-        await this.loadProgressiveStream(track, {
-          replayGainDb,
-          loudnessAnalysis,
-          startTimeSeconds: clampedAbsoluteTime
-        })
-
-        if (wasPlaying) {
-          await this.play()
-        } else {
-          this._playbackState = 'paused'
-          this.emit('stateChange', this._playbackState)
-          this.emit('timeUpdate', clampedAbsoluteTime)
-        }
-        return
+      if (remoteState.sourceType === 'local' || remoteState.seekableCache) {
+        return this.seekProgressiveStream(remoteState, clampedAbsoluteTime)
       }
 
       const bufferedEndTime = this.getRemoteBufferedSeconds()
@@ -8796,6 +8857,78 @@ export class AudioEngine {
     }
 
     this.emit('timeUpdate', clampedTime)
+  }
+
+  private getActiveProgressiveSeek(): ProgressiveSeekRequest | null {
+    return this.progressiveSeek?.loadGeneration === this.loadGeneration ? this.progressiveSeek : null
+  }
+
+  getPendingProgressiveSeekTrackPath(): string | null {
+    return this.getActiveProgressiveSeek()?.trackPath ?? null
+  }
+
+  private seekProgressiveStream(remoteState: RemoteStreamRuntimeState, targetTime: number): Promise<void> {
+    const request: ProgressiveSeekRequest = {
+      trackPath: remoteState.path,
+      loadGeneration: this.loadGeneration,
+      durationSeconds: Math.max(0, remoteState.durationSeconds),
+      targetTime,
+      revision: 0,
+      playRequested: this._playbackState === 'playing' || remoteState.playRequested,
+      cancellation: null,
+      operation: null
+    }
+    const options = {
+      replayGainDb: this.currentReplayGainDb,
+      loudnessAnalysis: this.currentNormalizationAnalysis
+        ? { loudnessLufs: this.currentNormalizationAnalysis.loudnessLufs,
+            peakLinear: this.currentNormalizationAnalysis.peakLinear }
+        : null
+    }
+    this.progressiveSeek = request
+    request.operation = (async () => {
+      try {
+        for (;;) {
+          this.assertCurrentLoadOperation(request.loadGeneration)
+          const revision = request.revision
+          const seekTime = request.targetTime
+          try {
+            const load = this.loadProgressiveStream(remoteState.track, { ...options, startTimeSeconds: seekTime })
+            request.loadGeneration = this.loadGeneration
+            await load
+            this.assertCurrentLoadOperation(request.loadGeneration)
+            if (revision === request.revision) {
+              if (request.playRequested) {
+                try {
+                  await this.play()
+                } catch (error) {
+                  // Pause may interrupt the wait for the first playable PCM.
+                  if (request.playRequested) throw error
+                }
+                this.assertCurrentLoadOperation(request.loadGeneration)
+              } else {
+                this._playbackState = 'paused'
+                this.emit('stateChange', this._playbackState)
+                this.emit('timeUpdate', seekTime)
+              }
+            }
+          } catch (error) {
+            this.assertCurrentLoadOperation(request.loadGeneration)
+            if (revision === request.revision) throw error
+          } finally {
+            // Finish cancellation before opening the replacement, so a late
+            // cancellation cannot abort the decoder for the latest target.
+            await request.cancellation
+            request.cancellation = null
+          }
+          this.assertCurrentLoadOperation(request.loadGeneration)
+          if (revision === request.revision) return
+        }
+      } finally {
+        if (this.progressiveSeek === request) this.progressiveSeek = null
+      }
+    })()
+    return request.operation
   }
 
   private async seekNativeBitPerfect(time: number): Promise<void> {

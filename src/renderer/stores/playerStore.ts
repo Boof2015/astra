@@ -822,6 +822,8 @@ type NextCandidate =
 
 function isUnavailableRemoteTrack(track: Track | null | undefined): boolean {
   if (!track) return false
+  // Connectivity is not playability once encoded audio may be cached locally.
+  if (track.sourceType === 'subsonic' && track.availabilityReason === 'source_unavailable') return false
   return track.sourceType !== undefined
     && track.sourceType !== 'local'
     && track.isAvailable === false
@@ -1196,6 +1198,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   let pendingNativeTransition: PendingTransitionLoad | null = null
   let activeExecutingTransition: PendingTransitionLoad | null = null
   let committedPlaybackTransition: CommittedPlaybackTransition | null = null
+  let seekRequestGeneration = 0
   let pendingNativeSeek: {
     intentId: number
     targetTime: number
@@ -2286,6 +2289,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   }
 
   const markTrackUnavailableInState = (trackPath: string, reason: string = 'source_unavailable'): void => {
+    if (reason === 'source_unavailable' && get().currentTrack?.path === trackPath
+      && get().currentTrack?.sourceType === 'subsonic') return
     set((state) => ({
       queueItems: state.queueItems.map((item) => ({
         ...item,
@@ -3395,6 +3400,20 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
 
       const state = get()
+      if (state.currentTrack && audioEngine.getPendingProgressiveSeekTrackPath() === state.currentTrack.path) {
+        // Resuming an in-flight seek changes its play/pause intent. Starting a
+        // fresh playback intent here would invalidate the decoder it awaits.
+        const seekIntentId = playbackIntentGeneration
+        try {
+          await audioEngine.play()
+          if (isCurrentPlaybackIntent(seekIntentId)) {
+            set({ remoteStreamSessionId: audioEngine.getRemoteStreamSessionId() })
+          }
+        } catch (error) {
+          if (isCurrentPlaybackIntent(seekIntentId) && !isSupersededAudioLoadError(error)) throw error
+        }
+        return
+      }
       const pendingInterruption = pendingPlaybackInterruptionReconciliation
       if (
         pendingInterruption
@@ -3850,6 +3869,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     seek: async (time: number) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
       const seekIntentId = playbackIntentGeneration
+      const seekRequestId = ++seekRequestGeneration
+      const isCurrentSeek = (): boolean => isCurrentPlaybackIntent(seekIntentId)
+        && seekRequestId === seekRequestGeneration
 
       // §21 Gapless sink handoff — a seek moves the current track's boundary, invalidating the
       // pre-announced next stream's scheduled crossover. Withdraw it; this boundary falls back to the
@@ -3868,26 +3890,48 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         })
         return
       }
-      const seekTime = state.currentTrack?.sourceType && state.currentTrack.sourceType !== 'local'
+      const seekTime = state.currentTrack?.sourceType && state.currentTrack.sourceType !== 'local' && state.currentTrack.sourceType !== 'subsonic'
         ? Math.max(0, Math.min(time, state.remoteBufferedSeconds))
         : time
       const parallaxSeekTimeline = await useParallaxStore.getState().prepareHostSeek(
         seekTime,
         state.playbackState === 'playing'
       )
-      if (!isCurrentPlaybackIntent(seekIntentId)) return
+      if (!isCurrentSeek()) return
       if (parallaxSeekTimeline && state.playbackState === 'playing') {
         await audioEngine.playCurrentBufferOnParallaxTimeline(parallaxSeekTimeline)
-        if (!isCurrentPlaybackIntent(seekIntentId)) return
+        if (!isCurrentSeek()) return
         schedulePreBufferNextTrack()
         return
       }
       if (audioEngine.getPlaybackOutputMode() !== 'standard') {
         await runSerializedNativeSeek(seekIntentId, seekTime)
       } else {
-        await audioEngine.seek(seekTime)
+        try {
+          await audioEngine.seek(seekTime)
+          if (isCurrentSeek() && state.currentTrack?.sourceType === 'subsonic') {
+            set({ remoteStreamSessionId: audioEngine.getRemoteStreamSessionId() })
+          }
+        } catch (error) {
+          if (!isCurrentSeek() || isSupersededAudioLoadError(error)) return
+          if (state.currentTrack?.sourceType !== 'subsonic') throw error
+          // A failed seek has already released the old decoder. Retry must load
+          // a fresh session at this position, not seek a now-missing worklet.
+          set({
+            playbackState: 'stopped',
+            currentTime: seekTime,
+            remoteStreamSessionId: null,
+            restoredTrackNeedsLoad: true,
+            restoredPlaybackTime: seekTime,
+            remoteLoadProgress: {
+              ...(get().remoteLoadProgress ?? createInitialRemoteLoadProgress(state.currentTrack)),
+              stage: 'failed', failed: true, done: true
+            }
+          })
+          return
+        }
       }
-      if (!isCurrentPlaybackIntent(seekIntentId)) return
+      if (!isCurrentSeek()) return
       schedulePreBufferNextTrack()
     },
 
@@ -4802,10 +4846,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         if (track.sourceType && track.sourceType !== 'local') {
           attemptBackend = 'remote'
           try {
-            const streamInfo = await audioEngine.loadRemoteStream(track, { replayGainDb })
+            const streamInfo = await audioEngine.loadRemoteStream(track, {
+              replayGainDb,
+              startTimeSeconds: track.sourceType === 'subsonic' ? startTime : 0
+            })
             throwIfSupersededLoad(loadRequestId)
             const resolvedTrack: Track = {
               ...track,
+              ...(streamInfo.seekableCache ? { isAvailable: true, availabilityReason: undefined } : {}),
               duration: streamInfo.durationSeconds && streamInfo.durationSeconds > 0 ? streamInfo.durationSeconds : track.duration,
               channels: streamInfo.channels ?? track.channels
             }
@@ -4819,7 +4867,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               loadingStatus: null,
               remoteBufferedSeconds: audioEngine.getRemoteBufferedSeconds(),
               remoteStreamSessionId: streamInfo.sessionId,
-              currentTime: 0,
+              currentTime: streamInfo.startTimeSeconds ?? 0,
               restoredTrackNeedsLoad: false,
               restoredPlaybackTime: null
             })
@@ -4868,6 +4916,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             if (isSupersededPlaybackLoad(streamError, loadRequestId)) {
               throw streamError
             }
+            // A connection/cache failure must not silently select the old
+            // bitrate-limited, whole-track-memory fallback for Original mode.
+            if (track.sourceType === 'subsonic') throw streamError
             console.warn(`Remote progressive stream setup failed for ${track.path}; falling back to full download.`, streamError)
             logMemoryDiagnosticsEvent('remote_stream_fallback', {
               trackPath: track.path,
@@ -5245,12 +5296,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         if (track.sourceType && track.sourceType !== 'local') {
           markTrackUnavailableInState(track.path)
         }
+        const retainedRemoteFailure = track.sourceType === 'subsonic'
+          ? { ...(get().remoteLoadProgress ?? createInitialRemoteLoadProgress(track)), stage: 'failed' as const, failed: true, done: true }
+          : null
         set({
           playbackState: 'stopped',
-          remoteLoadProgress: null,
+          remoteLoadProgress: retainedRemoteFailure,
           loadingStatus: null,
           remoteBufferedSeconds: 0,
-          remoteStreamSessionId: null
+          remoteStreamSessionId: null,
+          ...(retainedRemoteFailure ? { restoredTrackNeedsLoad: true, restoredPlaybackTime: startTime, currentTime: startTime } : {})
         })
         finishAttempt('failed')
         return 'failed'

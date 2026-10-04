@@ -82,6 +82,34 @@ function renderWorkletChunk(payload: Record<string, unknown>): number[][] {
   return output.map((channel) => Array.from(channel))
 }
 
+test('starvation holds the musical position, resumes queued PCM, and never means EOF', () => {
+  const Processor = loadRemoteStreamProcessor()
+  const processor = new Processor({ outputChannelCount: [1], processorOptions: { discardConsumedChunks: true } })
+  const events: Array<{ type: string; buffering?: boolean }> = []
+  processor.port.postMessage = event => events.push(event as { type: string; buffering?: boolean })
+  const send = (data: unknown) => processor.port.onmessage!({ data })
+  send({ type: 'append-chunk', frameCount: 4, channelData: [Float32Array.of(1, 2, 3, 4)] })
+  send({ type: 'set-playing', playing: true })
+  processor.process([], [[new Float32Array(8)]])
+  assert.equal(processor.currentFrame, 4)
+  assert.equal(processor.chunks?.length, 0, 'consumed PCM is released')
+  const count = events.length
+  for (let index = 0; index < 100; index++) processor.process([], [[new Float32Array(128)]])
+  assert.equal(processor.currentFrame, 4, 'silence must not advance the track')
+  assert.equal(events.length, count, 'starvation should not flood IPC')
+  assert.ok(!events.some(event => event.type === 'ended'))
+  send({ type: 'set-playing', playing: false })
+  send({ type: 'append-chunk', frameCount: 4, channelData: [Float32Array.of(5, 6, 7, 8)] })
+  processor.process([], [[new Float32Array(4)]])
+  assert.equal(processor.currentFrame, 4, 'new audio must not override pause')
+  send({ type: 'set-playing', playing: true })
+  const resumed = new Float32Array(4)
+  processor.process([], [[resumed]])
+  assert.deepEqual([...resumed], [5, 6, 7, 8])
+  send({ type: 'set-source-ended', ended: true })
+  assert.equal(events.filter(event => event.type === 'ended').length, 1)
+})
+
 test('remote stream worklet renders planar and legacy interleaved chunks identically', () => {
   const interleaved = Float32Array.from([
     1, 10,

@@ -120,7 +120,7 @@ function FullscreenWaveformSection(): ReactElement {
         currentTime={compensatedTime}
         bufferedRatio={waveformBufferedRatio}
         analyzedRatio={waveformAnalyzedRatio}
-        seekableDuration={currentTrack?.sourceType && currentTrack.sourceType !== 'local' ? remoteBufferedSeconds : duration}
+        seekableDuration={currentTrack?.sourceType === 'jellyfin' ? remoteBufferedSeconds : duration}
         onSeek={(time) => {
           const rawSeekTime = Math.max(0, Math.min(duration, time + effectiveDelaySec))
           void seek(rawSeekTime)

@@ -1,3 +1,4 @@
+import type { RemoteAudioCacheStatus } from '../types/remoteAudioCache'
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import type { NotchAPI } from '../types/notch'
 import { join } from 'path'
@@ -1588,6 +1589,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('audio:supersedeTrackLoudness', filePath) as Promise<void>,
   storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) =>
     ipcRenderer.invoke('audio:storeTrackLoudness', filePath, payload) as Promise<boolean>,
+  getRemoteCacheStatus: () => ipcRenderer.invoke('audio:getRemoteCacheStatus') as Promise<RemoteAudioCacheStatus>,
+  setRemoteCacheLimit: (limitGb: number) => ipcRenderer.invoke('audio:setRemoteCacheLimit', limitGb) as Promise<RemoteAudioCacheStatus>,
+  clearRemoteCache: () => ipcRenderer.invoke('audio:clearRemoteCache') as Promise<RemoteAudioCacheStatus>,
   startProgressiveStream: (
     filePath: string,
     outputSampleRate: number,
@@ -1597,6 +1601,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('audio:startProgressiveStream', filePath, outputSampleRate, expectedChannels, options) as Promise<ProgressiveStreamInfo>,
   updateProgressiveStreamPosition: (sessionId: number, currentFrame: number) =>
     ipcRenderer.send('audio:updateProgressiveStreamPosition', sessionId, currentFrame),
+  cancelPendingProgressiveStream: () => ipcRenderer.invoke('audio:cancelPendingProgressiveStream') as Promise<void>,
   cancelProgressiveStream: (sessionId: number) => ipcRenderer.invoke('audio:cancelProgressiveStream', sessionId) as Promise<void>,
   startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) =>
     ipcRenderer.invoke('audio:startRemoteStream', filePath, outputSampleRate, expectedChannels) as Promise<RemoteStreamInfo>,
@@ -2288,6 +2293,9 @@ declare global {
       warmupTrackLoudness: (filePath: string) => Promise<TrackLoudnessResult | null>
       supersedeTrackLoudness: (filePath: string | null) => Promise<void>
       storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) => Promise<boolean>
+      getRemoteCacheStatus: () => Promise<RemoteAudioCacheStatus>
+      setRemoteCacheLimit: (limitGb: number) => Promise<RemoteAudioCacheStatus>
+      clearRemoteCache: () => Promise<RemoteAudioCacheStatus>
       startProgressiveStream: (
         filePath: string,
         outputSampleRate: number,
@@ -2295,6 +2303,7 @@ declare global {
         options?: ProgressiveStreamStartOptions
       ) => Promise<ProgressiveStreamInfo>
       updateProgressiveStreamPosition: (sessionId: number, currentFrame: number) => void
+      cancelPendingProgressiveStream: () => Promise<void>
       cancelProgressiveStream: (sessionId: number) => Promise<void>
       startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) => Promise<RemoteStreamInfo>
       cancelRemoteStream: (sessionId: number) => Promise<void>

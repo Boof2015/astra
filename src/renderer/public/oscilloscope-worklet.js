@@ -63,6 +63,7 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
           break
         case 'set-playing':
           this.playing = Boolean(payload.playing)
+          this.setBuffering(false)
           this.endedEmitted = false
           this.postPosition(true)
           break
@@ -90,6 +91,7 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
     this.currentChunkIndex = 0
     this.playing = false
     this.sourceEnded = false
+    this.buffering = false
     this.endedEmitted = false
     this.framesSinceReport = 0
     this.lastReportedFrame = -1
@@ -195,6 +197,12 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
     })
   }
 
+  setBuffering(value) {
+    if (this.buffering === value) return
+    this.buffering = value
+    this.port.postMessage({ type: 'buffering', buffering: value })
+  }
+
   emitEnded() {
     if (this.endedEmitted) return
     this.endedEmitted = true
@@ -226,6 +234,9 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
       if (this.currentFrame >= this.totalFrames) {
         if (this.sourceEnded) {
           this.emitEnded()
+        } else {
+          if (!this.buffering) this.postPosition(true)
+          this.setBuffering(true)
         }
         break
       }
@@ -243,6 +254,7 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
       }
 
       const availableFrames = chunk.frameCount - chunkOffset
+      this.setBuffering(false)
       const framesToCopy = Math.min(remainingFrames, availableFrames)
       if (chunk.interleaved) {
         for (let channel = 0; channel < output.length; channel++) {

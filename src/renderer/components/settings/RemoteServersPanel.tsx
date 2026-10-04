@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
 import { useJellyfinSettingsStore } from '../../stores/jellyfinSettingsStore'
+import RemoteAudioCacheSettings from './RemoteAudioCacheSettings'
 import type {
   JellyfinSourceCreateInput,
   JellyfinSourceTestResult,
@@ -860,6 +861,7 @@ export default function RemoteServersPanel() {
         </div>
       )}
 
+      <RemoteAudioCacheSettings />
       {feedback && <p className="settings-note settings-note-success">{feedback}</p>}
       {remoteErrorMessages.map((msg, i) => (
         <p key={`${msg}-${i}`} className="settings-note settings-note-error">{msg}</p>

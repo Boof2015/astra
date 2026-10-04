@@ -28,6 +28,8 @@ export interface RemoteStreamInfo {
   channels: number
   durationSeconds: number | null
   startTimeSeconds: number
+  /** This session can restart decoding from retained encoded bytes. */
+  seekableCache?: boolean
   initialChunk?: RemoteStreamChunk | null
 }
 

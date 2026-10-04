@@ -51,6 +51,7 @@ function TransportWaveformSection({
   const duration = usePlayerStore((s) => s.duration)
   const seek = usePlayerStore((s) => s.seek)
   const currentTrack = usePlayerStore((s) => s.currentTrack)
+  const remoteLoadFailed = usePlayerStore((s) => s.remoteLoadProgress?.failed ?? false)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const waveformTimeDisplayMode = useUIStore((s) => s.waveformTimeDisplayMode)
   const toggleWaveformTimeDisplayMode = useUIStore((s) => s.toggleWaveformTimeDisplayMode)
@@ -85,7 +86,7 @@ function TransportWaveformSection({
         currentTime={compensatedTime}
         bufferedRatio={waveformBufferedRatio}
         analyzedRatio={waveformAnalyzedRatio}
-        seekableDuration={currentTrack?.sourceType && currentTrack.sourceType !== 'local' ? remoteBufferedSeconds : duration}
+        seekableDuration={currentTrack?.sourceType === 'jellyfin' ? remoteBufferedSeconds : duration}
         onSeek={(time) => {
           const rawSeekTime = Math.max(0, Math.min(duration, time + effectiveDelaySec))
           void seek(rawSeekTime)
@@ -94,6 +95,13 @@ function TransportWaveformSection({
       {loadingLabel && (
         <div className="transport-loading-hint" role="status" aria-live="polite">
           <span className="transport-loading-hint-label">{loadingLabel}</span>
+          {currentTrack?.sourceType === 'subsonic' && remoteLoadFailed && (
+            <button type="button" className="transport-loading-retry" onClick={() => {
+              const state = usePlayerStore.getState()
+              const retry = state.remoteStreamSessionId === null ? state.play() : state.seek(currentTime)
+              void retry.catch(error => console.error('Remote playback retry failed:', error))
+            }}>Retry</button>
+          )}
           <span
             className={`transport-loading-hint-bar ${loadingPercent === null ? 'indeterminate' : ''}`}
             aria-hidden="true"
@@ -224,8 +232,7 @@ export default function TransportBar() {
 
   const isPlaying = playbackState === 'playing'
   const isLoadingTrack = playbackState === 'loading'
-  const activeRemoteLoadProgress = isLoadingTrack
-    && currentTrack
+  const activeRemoteLoadProgress = currentTrack
     && remoteLoadProgress
     && remoteLoadProgress.path === currentTrack.path
     ? remoteLoadProgress
@@ -234,6 +241,7 @@ export default function TransportBar() {
     ? Math.max(0, Math.min(1, activeRemoteLoadProgress.percent))
     : null
   const loadingLabel = (() => {
+    if (currentTrack?.sourceType === 'subsonic' && activeRemoteLoadProgress?.failed) return 'Playback interrupted'
     if (!isLoadingTrack || !currentTrack) return null
     if (loadingStatus) return loadingStatus
     if (!activeRemoteLoadProgress) return null
