@@ -11,6 +11,9 @@ namespace NativePlayback {
 class ProgressivePlayback {
 public:
     explicit ProgressivePlayback(ProgressiveTrack track);
+    ProgressivePlayback(TrackBuffer track, OutputPolicy policy, const TrackFormat& output,
+        const NativeDspConfig& dsp, ProcessedAudioPipeline& pipeline,
+        uint64_t readFrame, uint64_t playedFrame, double consumedSourceFrameExact);
     ~ProgressivePlayback();
 
     const ProgressiveTrack& current() const { return current_->track; }
@@ -27,6 +30,8 @@ public:
     void setDspConfig(const NativeDspConfig& dsp);
     void setGain(const NativeTrackGain& gain);
     void stageNext(ProgressiveTrack track);
+    void stageNext(TrackBuffer track);
+    void seekComplete(uint64_t frame);
     void clearNext();
     bool promoteNext();
     void replaceCurrent(ProgressiveTrack track);
@@ -45,6 +50,10 @@ private:
     struct Session {
         explicit Session(ProgressiveTrack source);
         ProgressiveTrack track;
+        CompletePcmInput completeInput;
+        const PcmInput& input() const { return track.complete ? static_cast<const PcmInput&>(completeInput) : *track.input; }
+        uint64_t startFrame() const { return track.input ? track.input->startFrame() : 0; }
+        void cancel() { if (track.input) track.input->cancel(); }
         uint64_t originFrame = 0;
         uint64_t readFrame = 0;
         uint64_t renderedOutputFrames = 0;

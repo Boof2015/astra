@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startNativePcmDecoder } from './nativePcmDecoder.ts'
@@ -123,6 +123,28 @@ test('real FFmpeg decodes retained original audio and replacement seeks into add
   await controller.stop()
   assert.equal(released, 3)
   assert.equal(downloads, 1)
+
+  const localPath = join(directory, 'local.flac')
+  await writeFile(localPath, encoded)
+  await controller.loadTrack(logicalPath)
+  await controller.preloadNextTrack(localPath)
+  await controller.promoteNextTrack(localPath)
+  assert.equal(released, 4, 'remote-to-local promotion releases the former lease')
+  assert.equal((await controller.getBufferMemoryStats()).currentBytes, pcm.byteLength)
+  assert.equal((await controller.seek(0.125)).currentTime, 0.125)
+  assert.equal((await controller.getPlaybackSnapshot()).progressiveSessionId, undefined)
+  await controller.preloadNextTrack(logicalPath)
+  await controller.promoteNextTrack(logicalPath)
+  assert.ok((await controller.getPlaybackSnapshot()).progressiveSessionId)
+  await controller.stop()
+  // Also adopt an ordinary full local load, before any remote session existed.
+  await controller.loadTrack(localPath)
+  await controller.preloadNextTrack(logicalPath)
+  await controller.clearNextTrack()
+  assert.equal((await controller.seek(0.125)).currentTime, 0.125)
+  await controller.stop()
+  assert.equal((await controller.getBufferMemoryStats()).currentBytes, pcm.byteLength)
+  assert.equal(released, 6)
 })
 
 test('Jellyfin originals use the real native controller and retained cache without authenticating offline', async t => {

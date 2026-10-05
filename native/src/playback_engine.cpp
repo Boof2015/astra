@@ -727,6 +727,33 @@ void PlaybackEngine::loadProgressiveTrack(ProgressiveTrack track) {
 void PlaybackEngine::preloadNextProgressiveTrack(ProgressiveTrack track) {
     std::lock_guard<std::mutex> controlLock(controlMutex_);
     std::lock_guard<std::mutex> lock(stateMutex_);
+    if (!progressive_ && hasCurrentTrack_) {
+        const auto output = activeRenderFormatLocked();
+        if (hasNextTrack_ || !track.input || track.input->startFrame() != 0
+            || track.format.channels != output.channels
+            || (outputRequest_.policy == OutputPolicy::Direct && !formatsMatch(track.format, output))) {
+            throw std::invalid_argument("Prepared source must match the active native output route.");
+        }
+        if (outputRequest_.policy == OutputPolicy::Processed ? processedPipeline_->ended()
+            : nextRenderFrame_ >= currentTrack_.totalFrames()) {
+            throw std::logic_error("Native output has already rendered EOF; start the successor separately.");
+        }
+        // Validate the incoming producer before moving any current ownership.
+        if (!track.sessionId || track.input->bytesPerFrame() != track.format.bytesPerFrame()
+            || track.input->snapshot().state == PcmInputState::Cancelled
+            || track.input->snapshot().retainedFrame != 0) {
+            throw std::invalid_argument("Invalid prepared progressive input.");
+        }
+        const auto currentFormat = currentTrack_.format;
+        const auto duration = currentTrack_.duration;
+        const auto gain = currentTrack_.gain;
+        progressive_ = std::make_unique<ProgressivePlayback>(std::move(currentTrack_), outputRequest_.policy,
+            output, dspConfig_, *processedPipeline_, nextRenderFrame_, playedFrame_, consumedSourceFrameExact_);
+        currentTrack_ = TrackBuffer{};
+        currentTrack_.format = currentFormat;
+        currentTrack_.duration = duration;
+        currentTrack_.gain = gain;
+    }
     if (!progressive_ || progressive_->cancelled()) {
         throw std::logic_error("No active progressive native session to prepare for.");
     }
@@ -772,7 +799,10 @@ PlaybackSnapshot PlaybackEngine::seekProgressiveTrack(uint64_t expectedSessionId
 void PlaybackEngine::preloadNextTrack(TrackBuffer track) {
     std::lock_guard<std::mutex> controlLock(controlMutex_);
     std::lock_guard<std::mutex> lock(stateMutex_);
-    if (progressive_) throw std::logic_error("Use the progressive preloader for a progressive native session.");
+    if (progressive_) {
+        progressive_->stageNext(std::move(track));
+        return;
+    }
     nextTrack_ = std::move(track);
     hasNextTrack_ = true;
     if (outputRequest_.policy == OutputPolicy::Processed && hasCurrentTrack_) {
@@ -991,7 +1021,12 @@ PlaybackSnapshot PlaybackEngine::stop() {
     if (progressive_) suspendProgressiveOutput();
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
-        if (progressive_) progressive_->cancel();
+        if (progressive_) {
+            if (progressive_->current().complete) {
+                progressive_->clearNext();
+                progressive_->seekComplete(0);
+            } else progressive_->cancel();
+        }
         state_ = State::Stopped;
         nextRenderFrame_ = 0;
         playedFrame_ = 0;
@@ -1038,7 +1073,34 @@ PlaybackSnapshot PlaybackEngine::stop() {
 
 PlaybackSnapshot PlaybackEngine::seek(double seconds) {
     std::lock_guard<std::mutex> controlLock(controlMutex_);
-    if (progressive_) throw std::logic_error("Progressive seeking requires a replacement decoder input.");
+    if (progressive_) {
+        bool resume = false;
+        std::shared_ptr<TrackBuffer> expected;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            expected = progressive_->current().complete;
+            if (!expected) throw std::logic_error("Progressive seeking requires a replacement decoder input.");
+            resume = state_ == State::Playing;
+        }
+        suspendProgressiveOutput();
+        bool changed = false;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            changed = progressive_->current().complete != expected;
+            if (changed) rollbackRenderLocked();
+            else {
+                progressive_->seekComplete(clampTargetFrameLocked(seconds));
+                syncProgressiveMetadataLocked();
+                lastTimeUpdateFrame_ = playedFrame_;
+            }
+        }
+        if (changed) {
+            if (resume) playLocked();
+            throw std::invalid_argument("Native track changed while pausing for seek.");
+        }
+        clearPendingEvents();
+        return resume ? playLocked() : getSnapshot();
+    }
     bool shouldRestart = false;
     bool wasPlaying = false;
     bool hasTrack = true;
@@ -1781,7 +1843,8 @@ uint64_t PlaybackEngine::clampTargetFrameLocked(double seconds) const {
     const uint64_t target = exactFrame <= 0.0
         ? 0
         : static_cast<uint64_t>(std::floor(exactFrame));
-    return std::min<uint64_t>(target, currentTrack_.totalFrames());
+    return std::min<uint64_t>(target, progressive_ && progressive_->current().complete
+        ? progressive_->current().complete->totalFrames() : currentTrack_.totalFrames());
 }
 
 } // namespace NativePlayback

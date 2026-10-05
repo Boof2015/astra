@@ -1541,8 +1541,9 @@ export class AudioEngine {
         this.currentBufferTrackPath = this.nextBufferTrackPath
         this.nextBufferTrackPath = null
         this.nativeRemoteProgress = null
-        if (this.nativeSnapshot && event.progressiveSessionId) {
-          this.nativeSnapshot = { ...this.nativeSnapshot, progressiveSessionId: event.progressiveSessionId, buffering: false, currentTime: 0 }
+        if (this.nativeSnapshot) {
+          this.nativeSnapshot = { ...this.nativeSnapshot, progressiveSessionId: event.progressiveSessionId,
+            buffering: false, currentTime: 0 }
         }
         void this.refreshNativeSnapshot()
         this.notifyTrackChange()
@@ -3804,8 +3805,10 @@ export class AudioEngine {
 
   canPreBufferRemoteTrack(track: Track): boolean {
     if (this.isNativeExclusiveMode()) {
-      return !!this.nativeSnapshot?.progressiveSessionId && retainedRemoteSourceFromPath(this.currentBufferTrackPath) !== null
-        && isRetainedRemoteSource(track.sourceType) && (track.channels ?? 2) === this.nativeSnapshot.channels
+      return !!this.currentBufferTrackPath && !!this.nativeSnapshot
+        && (retainedRemoteSourceFromPath(this.currentBufferTrackPath) !== null || isRetainedRemoteSource(track.sourceType))
+        && ((track.sourceType ?? 'local') === 'local' || isRetainedRemoteSource(track.sourceType))
+        && (track.channels ?? 2) === this.nativeSnapshot.channels
     }
     const current = this.remoteStreamState ?? this.getActiveProgressiveSeek()?.retainedStream?.state
     const channels = Math.max(1, Math.min(8, Math.round(track.channels ?? 2)))
@@ -3822,6 +3825,7 @@ export class AudioEngine {
 
   hasRemotePrebufferHeadroom(): boolean {
     if (this.isNativeExclusiveMode()) {
+      if (this.currentBufferTrackPath && retainedRemoteSourceFromPath(this.currentBufferTrackPath) === null) return true
       const progress = this.nativeRemoteProgress
       return !!progress && progress.path === this.currentBufferTrackPath && !progress.failed
         && (progress.bufferedSeconds - this.currentTime >= Math.min(5, this.nativeRemoteBufferCapacitySeconds * 0.75)

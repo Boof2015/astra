@@ -5,23 +5,62 @@
 
 namespace NativePlayback {
 
-ProgressivePlayback::Session::Session(ProgressiveTrack source) : track(std::move(source)) {
-    if (!track.sessionId || !track.input || !track.format.sampleRate || !track.format.channels
-        || track.format.bytesPerFrame() != track.input->bytesPerFrame()
-        || track.input->snapshot().state == PcmInputState::Cancelled
-        || track.input->snapshot().retainedFrame != track.input->startFrame()) {
+namespace {
+ProgressiveTrack completeTrack(TrackBuffer source) {
+    ProgressiveTrack result;
+    result.format = source.format;
+    result.duration = source.duration;
+    result.gain = source.gain;
+    result.complete = std::make_shared<TrackBuffer>(std::move(source));
+    return result;
+}
+}
+
+ProgressivePlayback::Session::Session(ProgressiveTrack source) : track(std::move(source)),
+    completeInput(track.complete ? track.complete->data.data() : nullptr,
+        track.complete ? track.complete->totalFrames() : 0, track.format.bytesPerFrame()) {
+    const bool local = track.complete && !track.input && !track.sessionId && track.complete->totalFrames() > 0;
+    const bool remote = track.sessionId && track.input && !track.complete
+        && track.format.bytesPerFrame() == track.input->bytesPerFrame()
+        && track.input->snapshot().state != PcmInputState::Cancelled
+        && track.input->snapshot().retainedFrame == track.input->startFrame();
+    if ((!local && !remote) || !track.format.sampleRate || !track.format.channels) {
         throw std::invalid_argument("Invalid or already consumed progressive native input.");
     }
-    originFrame = readFrame = track.input->startFrame();
+    originFrame = readFrame = startFrame();
 }
 
 ProgressivePlayback::ProgressivePlayback(ProgressiveTrack track)
     : current_(std::make_unique<Session>(std::move(track))), output_(current_->track.format) {}
 
+ProgressivePlayback::ProgressivePlayback(TrackBuffer track, OutputPolicy policy, const TrackFormat& output,
+    const NativeDspConfig& dsp, ProcessedAudioPipeline& pipeline,
+    uint64_t readFrame, uint64_t playedFrame, double consumedSourceFrameExact)
+    : ProgressivePlayback(completeTrack(std::move(track))) {
+    policy_ = policy;
+    output_ = output;
+    dsp_ = dsp;
+    current_->readFrame = readFrame;
+    if (policy == OutputPolicy::Processed) {
+        // Transfer the live DSP queues and filter history, including speculative
+        // audio already submitted to the device. Do not pause or re-render it.
+        pipeline_.swap(pipeline);
+        current_->originFrame = pipeline_.startSourceFrame();
+        current_->renderedOutputFrames = pipeline_.emittedOutputFrames();
+        current_->consumedOutputFrames = std::min(current_->renderedOutputFrames,
+            static_cast<uint64_t>(std::llround(std::max(0.0, consumedSourceFrameExact - current_->originFrame)
+                * output.sampleRate / current_->track.format.sampleRate)));
+        current_->resamplerLatency = pipeline_.resamplerLatencyFrames();
+    } else {
+        current_->renderedOutputFrames = readFrame;
+        current_->consumedOutputFrames = playedFrame;
+    }
+}
+
 ProgressivePlayback::~ProgressivePlayback() { cancel(); }
 
 uint64_t ProgressivePlayback::playedFrame(const Session& session) const {
-    const auto view = session.track.input->snapshot();
+    const auto view = session.input().snapshot();
     if (session.renderEnded && session.consumedOutputFrames == session.renderedOutputFrames
         && view.state == PcmInputState::Ended) return view.publishedFrame;
     // Count output consumption, not DSP source read-ahead or device silence.
@@ -33,7 +72,7 @@ uint64_t ProgressivePlayback::playedFrame(const Session& session) const {
 uint64_t ProgressivePlayback::playedFrame() const { return playedFrame(*current_); }
 
 bool ProgressivePlayback::cancelled() const {
-    return current_->track.input->snapshot().state == PcmInputState::Cancelled;
+    return current_->input().snapshot().state == PcmInputState::Cancelled;
 }
 
 bool ProgressivePlayback::drained() const {
@@ -60,7 +99,7 @@ void ProgressivePlayback::configure(OutputPolicy policy, const TrackFormat& outp
     output_ = output;
     dsp_ = dsp;
     resetSession(*current_, frame);
-    if (next_) resetSession(*next_, next_->track.input->startFrame());
+    if (next_) resetSession(*next_, next_->startFrame());
     renderingNext_ = buffering_ = false;
     // A newly selected direct route may require a format change between songs.
     if (next_ && (next_->track.format.channels != output.channels
@@ -84,7 +123,8 @@ void ProgressivePlayback::stageNext(ProgressiveTrack track) {
     if (current_->renderEnded) {
         throw std::logic_error("Native output has already rendered EOF; start the successor separately.");
     }
-    if (track.sessionId == current_->track.sessionId || !track.input || track.input == current_->track.input || track.input->startFrame() != 0
+    if ((track.sessionId && track.sessionId == current_->track.sessionId)
+        || (track.input && (track.input == current_->track.input || track.input->startFrame() != 0))
         || track.format.channels != output_.channels
         || (policy_ == OutputPolicy::Direct && (track.format.sampleRate != output_.sampleRate
             || track.format.sampleFormat != output_.sampleFormat))) {
@@ -96,18 +136,29 @@ void ProgressivePlayback::stageNext(ProgressiveTrack track) {
     next_ = std::move(next);
 }
 
+void ProgressivePlayback::stageNext(TrackBuffer track) { stageNext(completeTrack(std::move(track))); }
+
+void ProgressivePlayback::seekComplete(uint64_t frame) {
+    if (!current_->track.complete) throw std::logic_error("Current source is not a complete local buffer.");
+    resetSession(*current_, std::min(frame, current_->track.complete->totalFrames()));
+    if (next_) resetSession(*next_, next_->startFrame());
+    renderingNext_ = buffering_ = false;
+    collectRetired();
+    configurePipeline();
+}
+
 void ProgressivePlayback::clearNext() {
-    if (next_) next_->track.input->cancel();
+    if (next_) next_->cancel();
     next_.reset();
     renderingNext_ = false;
 }
 
 bool ProgressivePlayback::promoteNext() {
-    if (!next_ || next_->track.input->snapshot().state == PcmInputState::Cancelled) return false;
-    current_->track.input->cancel();
+    if (!next_ || next_->input().snapshot().state == PcmInputState::Cancelled) return false;
+    current_->cancel();
     current_ = std::move(next_);
     collectRetired();
-    resetSession(*current_, current_->track.input->startFrame());
+    resetSession(*current_, current_->startFrame());
     renderingNext_ = buffering_ = false;
     configurePipeline();
     return true;
@@ -116,9 +167,9 @@ bool ProgressivePlayback::promoteNext() {
 void ProgressivePlayback::replaceCurrent(ProgressiveTrack track) {
     validateReplacement(track);
     auto replacement = std::make_unique<Session>(std::move(track));
-    current_->track.input->cancel();
+    current_->cancel();
     current_ = std::move(replacement);
-    if (next_) resetSession(*next_, next_->track.input->startFrame());
+    if (next_) resetSession(*next_, next_->startFrame());
     renderingNext_ = buffering_ = false;
     collectRetired();
     configurePipeline();
@@ -134,14 +185,14 @@ void ProgressivePlayback::validateReplacement(const ProgressiveTrack& track) con
 
 void ProgressivePlayback::rollback() {
     resetSession(*current_, playedFrame());
-    if (next_) resetSession(*next_, next_->track.input->startFrame());
+    if (next_) resetSession(*next_, next_->startFrame());
     renderingNext_ = buffering_ = false;
     configurePipeline();
 }
 
 void ProgressivePlayback::cancel() {
-    current_->track.input->cancel();
-    if (next_) next_->track.input->cancel();
+    current_->cancel();
+    if (next_) next_->cancel();
     collectRetired();
     buffering_ = false;
 }
@@ -150,7 +201,7 @@ void ProgressivePlayback::collectRetired() { retired_.reset(); }
 
 bool ProgressivePlayback::nextReady() const {
     if (!next_) return false;
-    const auto view = next_->track.input->snapshot();
+    const auto view = next_->input().snapshot();
     if (view.state == PcmInputState::Cancelled || view.publishedFrame == view.retainedFrame) return false;
     return view.state == PcmInputState::Ended
         || view.publishedFrame - view.retainedFrame >= next_->track.format.sampleRate * 3 / 4;
@@ -159,16 +210,16 @@ bool ProgressivePlayback::nextReady() const {
 size_t ProgressivePlayback::renderSession(Session& session, uint8_t* output, size_t frames) {
     size_t written = 0;
     if (policy_ == OutputPolicy::Processed) {
-        written = pipeline_.render(*session.track.input, session.readFrame, output, frames, session.renderEnded);
+        written = pipeline_.render(session.input(), session.readFrame, output, frames, session.renderEnded);
     } else {
         while (written < frames) {
-            const auto chunk = session.track.input->read(session.readFrame, frames - written);
+            const auto chunk = session.input().read(session.readFrame, frames - written);
             if (chunk.state != PcmReadState::Ready || !chunk.frames) break;
             std::memcpy(output + written * output_.bytesPerFrame(), chunk.data, chunk.frames * output_.bytesPerFrame());
             session.readFrame += chunk.frames;
             written += chunk.frames;
         }
-        const auto view = session.track.input->snapshot();
+        const auto view = session.input().snapshot();
         session.renderEnded = view.state == PcmInputState::Ended && session.readFrame == view.publishedFrame;
     }
     session.renderedOutputFrames += written;
@@ -181,7 +232,7 @@ size_t ProgressivePlayback::render(void* output, size_t frames, bool& ended) {
     size_t written = 0;
     while (written < frames) {
         Session& session = renderingNext_ ? *next_ : *current_;
-        if (session.track.input->snapshot().state == PcmInputState::Cancelled) break;
+        if (session.input().snapshot().state == PcmInputState::Cancelled) break;
         if (!session.renderEnded) {
             written += renderSession(session, static_cast<uint8_t*>(output) + written * output_.bytesPerFrame(), frames - written);
         }
@@ -206,7 +257,7 @@ bool ProgressivePlayback::consume(size_t frames) {
         const auto count = std::min<uint64_t>(available, frames);
         current_->consumedOutputFrames += count;
         frames -= static_cast<size_t>(count);
-        current_->track.input->releaseBefore(playedFrame());
+        if (current_->track.input) current_->track.input->releaseBefore(playedFrame());
         if (!frames || !renderingNext_ || !next_ || !next_->renderedOutputFrames) break;
         // stageNext() collected the previous retired owner on the control
         // thread. Keep this one alive until a later control/poll call.

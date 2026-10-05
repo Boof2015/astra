@@ -367,6 +367,50 @@ test('native remote buffering can recover while loading, and failed progress nev
   assert.equal(engine.playbackState, 'paused', 'device/load commands remain authoritative')
 })
 
+for (const mode of ['exclusive', 'bitperfect'] as const) {
+  test(`${mode}: mixed source preparation keeps local tracks eligible without remote progress`, () => {
+    const engine = new AudioEngine()
+    const internals = engine as unknown as AudioEngineInternals
+    internals.playbackOutputMode = mode
+    internals.currentBufferTrackPath = '/pcm/current.flac'
+    internals.nativeSnapshot = { channels: 2, playbackState: 'playing' } as NativeAudioPlaybackSnapshot
+    const local = makeLocalPcmTrack('next')
+    assert.equal(engine.canPreBufferRemoteTrack(local), false, 'local-only preparation keeps its established path')
+    assert.equal(engine.hasRemotePrebufferHeadroom(), true)
+    for (const sourceType of ['subsonic', 'jellyfin'] as const) {
+      assert.equal(engine.canPreBufferRemoteTrack({ ...local, path: `${sourceType}://7/a`, sourceType }), true)
+      internals.currentBufferTrackPath = `${sourceType}://7/current`
+      assert.equal(engine.canPreBufferRemoteTrack(local), true)
+      assert.equal(engine.canPreBufferRemoteTrack({ ...local, channels: 6 }), false)
+      internals.currentBufferTrackPath = '/pcm/current.flac'
+    }
+  })
+
+  test(`${mode}: remote-to-local acknowledgment clears streaming identity immediately`, () => {
+    const engine = new AudioEngine()
+    const internals = engine as unknown as AudioEngineInternals
+    internals.playbackOutputMode = mode
+    internals._playbackState = 'playing'
+    internals.nativeCurrentPlaybackSequence = 1
+    internals.nativeNextPlaybackSequence = 2
+    internals.nativeNextTrackBuffered = true
+    internals.currentBufferTrackPath = 'subsonic://7/current'
+    internals.nextBufferTrackPath = '/pcm/next.flac'
+    internals.nativeSnapshot = { progressiveSessionId: 11, buffering: true, currentTime: 60,
+      playbackState: 'playing' } as NativeAudioPlaybackSnapshot
+    internals.notifyTrackChange = () => undefined
+    internals.refreshNativeSnapshot = async () => null
+    let transitions = 0
+    engine.on('gaplessTransition', () => { transitions++ })
+    internals.handleNativeAudioEvent({ type: 'gaplessTransition', playbackSequence: 2 })
+    assert.equal(transitions, 1)
+    assert.equal(internals.currentBufferTrackPath, '/pcm/next.flac')
+    assert.equal(engine.getRemoteStreamSessionId(), null)
+    assert.equal(internals.nativeSnapshot?.buffering, false)
+    assert.equal(internals.nativeSnapshot?.currentTime, 0)
+  })
+}
+
 test('native remote clear-next reconciles a handoff acknowledged while the device pauses', async () => {
   const engine = new AudioEngine()
   const internals = engine as unknown as AudioEngineInternals

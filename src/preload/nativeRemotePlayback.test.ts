@@ -15,10 +15,13 @@ function harness(overrides: NativeAudioControllerOptions = {}) {
   let state: NativeAudioPlaybackSnapshot['playbackState'] = 'stopped'
   let localLoads = 0
   let localDecodes = 0
+  let localNext = false
+  let localTime = 0
+  const localSeeks: number[] = []
   let buffering = false
   const snapshot = (): NativeAudioPlaybackSnapshot => ({
     progressiveSessionId: current?.status().sessionId, buffering, playbackState: state,
-    currentTime: (current?.status().startFrame ?? 0) / 48000, duration: 60,
+    currentTime: current ? current.status().startFrame / 48000 : localTime, duration: 60,
     sampleRate: 48000, channels: 2, sampleFormat: 's16', deviceId: 'test', deviceLabel: 'test',
     outputStatus: normalizeNativeAudioOutputStatus(null)
   })
@@ -35,8 +38,8 @@ function harness(overrides: NativeAudioControllerOptions = {}) {
         finish: () => { inputState = 'ended'; return true }, cancel: () => { inputState = 'cancelled' },
         status: () => ({ sessionId: id, startFrame: options.startFrame ?? 0, retainedFrame: options.startFrame ?? 0,
           publishedFrame: published, capacityFrames: options.capacityFrames, sampleRate: 48000, bytesPerFrame: 4, state: inputState }),
-        load: () => { current?.cancel(); next?.cancel(); current = input; next = null; state = 'stopped'; return snapshot() },
-        preloadNext: () => { assert.equal(next, null); next = input },
+        load: () => { current?.cancel(); next?.cancel(); current = input; next = null; localNext = false; state = 'stopped'; return snapshot() },
+        preloadNext: () => { assert.equal(next, null); assert.equal(localNext, false); next = input },
         seek: async expected => {
           assert.equal(current?.status().sessionId, expected)
           assert.notEqual(inputState, 'cancelled')
@@ -47,15 +50,15 @@ function harness(overrides: NativeAudioControllerOptions = {}) {
       inputs.push(input)
       return input
     },
-    clearNextTrack: () => { next?.cancel(); next = null },
-    loadTrack: () => { localLoads++; current?.cancel(); current = null; return snapshot() },
-    preloadNextTrack() {},
+    clearNextTrack: () => { next?.cancel(); next = null; localNext = false },
+    loadTrack: () => { localLoads++; current?.cancel(); current = null; localTime = 0; return snapshot() },
+    preloadNextTrack: () => { assert.equal(next, null); assert.equal(localNext, false); localNext = true },
     setCurrentTrackGain: snapshot,
-    promoteNextTrack: () => { current?.cancel(); current = next; next = null; state = 'stopped'; return snapshot() },
+    promoteNextTrack: () => { assert.ok(next || localNext); current?.cancel(); current = next; next = null; localNext = false; localTime = 0; state = 'stopped'; return snapshot() },
     play: async () => { state = 'playing'; return snapshot() },
     pause: () => { state = 'paused'; return snapshot() },
-    stop: () => { current?.cancel(); next?.cancel(); next = null; state = 'stopped'; return snapshot() },
-    seek: () => { assert.fail('Remote seek must replace its decoder') }
+    stop: () => { current?.cancel(); next?.cancel(); next = null; localNext = false; localTime = 0; state = 'stopped'; return snapshot() },
+    seek: (seconds: number) => { assert.equal(current, null, 'Remote seek must replace its decoder'); localSeeks.push(seconds); localTime = seconds; return snapshot() }
   } as unknown as NativeAudioAddonPlayback
   const controller = createNativeAudioController({ playback }, {
     eventPolling: false,
@@ -75,19 +78,117 @@ function harness(overrides: NativeAudioControllerOptions = {}) {
     },
     ...overrides
   })
-  return { controller, playback, inputs, leases, decoders,
+  return { controller, playback, inputs, leases, decoders, localSeeks,
     local: () => ({ localLoads, localDecodes }),
     setBuffering: (value: boolean) => { buffering = value },
     transition: () => {
-      assert.ok(next)
-      current = next; next = null
-      events.push({ type: 'gaplessTransition', playbackSequence: 0, progressiveSessionId: current.status().sessionId })
+      assert.ok(next || localNext)
+      current = next; next = null; localNext = false; localTime = 0
+      events.push({ type: 'gaplessTransition', playbackSequence: 0, progressiveSessionId: current?.status().sessionId })
     }
   }
 }
 
 const a = 'subsonic://server/track/a'
 const b = 'subsonic://server/track/b'
+
+for (const provider of ['subsonic', 'jellyfin']) {
+  test(`${provider}: mixed handoffs preserve full local PCM and acknowledge remote ownership`, async () => {
+    const h = harness()
+    await h.controller.loadTrack('/local.flac')
+    await h.controller.play()
+    const remote = await h.controller.preloadNextTrack(`${provider}://7/a`)
+    assert.deepEqual(h.local(), { localLoads: 1, localDecodes: 1 })
+    assert.equal((await h.controller.seek(20)).currentTime, 20)
+    assert.equal(h.leases.length, 1, 'local seek must not create a remote decoder')
+    h.transition()
+    assert.equal((await h.controller.getPlaybackSnapshot()).playbackSequence, remote.playbackSequence)
+    assert.equal(h.leases[0].released, false)
+    const local = await h.controller.preloadNextTrack('/next.flac', undefined, { mode: 'replaygain', gainDb: -4 })
+    assert.deepEqual(h.local(), { localLoads: 1, localDecodes: 2 })
+    h.transition()
+    const snapshot = await h.controller.getPlaybackSnapshot()
+    assert.equal(snapshot.playbackSequence, local.playbackSequence)
+    assert.equal(snapshot.progressiveSessionId, undefined)
+    assert.equal(h.leases[0].released, true)
+    assert.equal((await h.controller.getNativeAudioDiagnosticReport()).track?.path, '/next.flac')
+    assert.equal((await h.controller.seek(35)).currentTime, 35)
+    assert.deepEqual(h.localSeeks, [20, 35])
+    await h.controller.preloadNextTrack(`${provider}://7/b`)
+    await h.controller.stop()
+    assert.ok(h.leases.every(lease => lease.released))
+    assert.equal((await h.controller.getBufferMemoryStats()).currentBytes, 4, 'stop retains the local buffer')
+  })
+}
+
+for (const direction of ['to-local', 'to-remote']) {
+  test(`manual mixed promotion ${direction} preserves the prepared source`, async () => {
+    const h = harness()
+    const target = direction === 'to-local' ? '/local.flac' : a
+    await h.controller.loadTrack(direction === 'to-local' ? a : '/local.flac')
+    const prepared = await h.controller.preloadNextTrack(target)
+    const promoted = await h.controller.promoteNextTrack(target)
+    assert.equal(promoted.playbackSequence, prepared.playbackSequence)
+    assert.equal((await h.controller.getNativeAudioDiagnosticReport()).track?.path, target)
+    assert.equal(h.leases[0].released, direction === 'to-local')
+    await h.controller.stop()
+  })
+
+  test(`pause acknowledges a mixed handoff ${direction} before returning its identity`, async () => {
+    const h = harness()
+    await h.controller.loadTrack(direction === 'to-local' ? a : '/local.flac')
+    const prepared = await h.controller.preloadNextTrack(direction === 'to-local' ? '/local.flac' : a)
+    const pause = h.playback.pause
+    h.playback.pause = () => { h.transition(); return pause() }
+    assert.equal((await h.controller.pause()).playbackSequence, prepared.playbackSequence)
+    assert.equal(h.leases[0].released, direction === 'to-local')
+    await h.controller.stop()
+  })
+}
+
+test('replacing a remote successor cannot discard a local-to-remote handoff acknowledged during withdrawal', async () => {
+  const h = harness()
+  await h.controller.loadTrack('/local.flac')
+  const prepared = await h.controller.preloadNextTrack(a)
+  const clear = h.playback.clearNextTrack
+  h.playback.clearNextTrack = () => { h.transition(); clear() }
+  await assert.rejects(h.controller.preloadNextTrack(b), { name: 'SupersededNativeAudioLoadError' })
+  assert.equal((await h.controller.getPlaybackSnapshot()).playbackSequence, prepared.playbackSequence)
+  assert.equal((await h.controller.getNativeAudioDiagnosticReport()).track?.path, a)
+  assert.equal(h.leases[0].released, false)
+  await h.controller.stop()
+})
+
+test('local successors after a remote handoff retain consumption-based withdrawal and seek bookkeeping', async () => {
+  const h = harness()
+  await h.controller.loadTrack(a)
+  await h.controller.preloadNextTrack('/first.flac')
+  h.transition()
+  await h.controller.getPlaybackSnapshot()
+  await h.controller.preloadNextTrack('/obsolete.flac')
+  const prepared = await h.controller.preloadNextTrack('/next.flac')
+  const clear = h.playback.clearNextTrack
+  h.playback.clearNextTrack = () => { h.transition(); clear() }
+  await h.controller.clearNextTrack()
+  assert.equal((await h.controller.getPlaybackSnapshot()).playbackSequence, prepared.playbackSequence)
+  assert.equal((await h.controller.getNativeAudioDiagnosticReport()).track?.path, '/next.flac')
+  assert.equal((await h.controller.seek(25)).currentTime, 25)
+  await h.controller.stop()
+  assert.equal((await h.controller.getBufferMemoryStats()).currentBytes, 4)
+})
+
+test('first remote preparation credits a prior local handoff acknowledged during withdrawal', async () => {
+  const h = harness()
+  await h.controller.loadTrack('/first.flac')
+  const prepared = await h.controller.preloadNextTrack('/next.flac')
+  const clear = h.playback.clearNextTrack
+  h.playback.clearNextTrack = () => { h.transition(); clear() }
+  await assert.rejects(h.controller.preloadNextTrack(a), { name: 'SupersededNativeAudioLoadError' })
+  assert.equal((await h.controller.getPlaybackSnapshot()).playbackSequence, prepared.playbackSequence)
+  assert.equal((await h.controller.getNativeAudioDiagnosticReport()).track?.path, '/next.flac')
+  assert.equal(h.leases.length, 0)
+  await h.controller.stop()
+})
 
 for (const currentProvider of ['subsonic', 'jellyfin']) {
   for (const nextProvider of ['subsonic', 'jellyfin']) {

@@ -947,6 +947,8 @@ export function createNativeAudioController(
   let nextBufferBytes = 0
   let remoteCurrent: RemoteNativeSession | null = null
   let remoteNext: RemoteNativeSession | null = null
+  // Mixed queues keep consumption-based handoffs even after returning to local PCM.
+  let usesProgressivePlayback = false
   let remoteProgressAt = 0
   let remoteProgressPending = false
   let lastDiagnosticReport: NativeAudioDiagnosticReport | null = null
@@ -1066,7 +1068,7 @@ export function createNativeAudioController(
     nextBufferBytes = 0
     currentTrackRequest = nextTrackRequest
     nextTrackRequest = null
-    if (remoteCurrent) trackGainCache = { ...remoteCurrent.request.gain }
+    trackGainCache = { ...(currentTrackRequest?.gain ?? { mode: 'off', gainDb: 0 }) }
   }
 
   const notify = (event: NativeAudioEvent) => {
@@ -1555,6 +1557,7 @@ export function createNativeAudioController(
           const started = performance.now()
           const snapshot = normalizePlaybackSnapshot(session.input.load())
           remoteCurrent = session
+          usesProgressivePlayback = true
           currentTrackRequest = session.request
           nextTrackRequest = null
           currentBufferBytes = session.bytes
@@ -1593,6 +1596,7 @@ export function createNativeAudioController(
         const playbackSequence = allocatePlaybackSequence()
         trackGainCache = { ...gain }
         const result = loadDecodedTrack(engine, decoded, playbackSequence, gain)
+        usesProgressivePlayback = false
         currentPlaybackSequence = playbackSequence
         currentBufferBytes = decodedByteLength
         nextBufferBytes = 0
@@ -1604,13 +1608,13 @@ export function createNativeAudioController(
     },
 
     preloadNextTrack: async (filePath: string, metadata?: NativeAudioTrackMetadata, gain: NativeAudioTrackGain = { mode: 'off', gainDb: 0 }) => {
-      if (remoteCurrent && playback) dispatchNativeEvents(playback, playback.drainEvents())
-      const expectedCurrent = remoteCurrent
+      if ((usesProgressivePlayback || isNativeRemotePath(filePath)) && playback) dispatchNativeEvents(playback, playback.drainEvents())
+      const expectedCurrent = currentTrackRequest
       const prebufferOperation = beginPrebufferOperation()
-      if (!remoteCurrent) bufferedPlaybackSequence = null
+      if (!usesProgressivePlayback && !isNativeRemotePath(filePath)) bufferedPlaybackSequence = null
       const engine = await ensureAvailable()
       assertCurrentPrebufferOperation(prebufferOperation)
-      if (remoteCurrent || remoteNext) {
+      if (usesProgressivePlayback || isNativeRemotePath(filePath)) {
         engine.clearNextTrack()
         // Pausing the sink to withdraw next can acknowledge its handoff first.
         dispatchNativeEvents(engine, engine.drainEvents())
@@ -1620,10 +1624,7 @@ export function createNativeAudioController(
         nextBufferBytes = 0
         bufferedPlaybackSequence = null
       }
-      if (expectedCurrent && expectedCurrent !== remoteCurrent) throw new SupersededNativeAudioLoadError()
-      if (isNativeRemotePath(filePath) !== !!remoteCurrent) {
-        throw new Error('This source change requires starting the next track separately.')
-      }
+      if (currentTrackRequest !== expectedCurrent) throw new SupersededNativeAudioLoadError()
       const decodeController = new AbortController()
       activePrebufferDecode = { generation: prebufferOperation, controller: decodeController }
       if (isNativeRemotePath(filePath)) {
@@ -1631,10 +1632,12 @@ export function createNativeAudioController(
         try {
           session = await prepareRemote(engine, filePath, metadata, gain, decodeController)
           assertCurrentPrebufferOperation(prebufferOperation)
-          if (remoteCurrent !== expectedCurrent) throw new SupersededNativeAudioLoadError()
+          dispatchNativeEvents(engine, engine.drainEvents())
+          if (currentTrackRequest !== expectedCurrent) throw new SupersededNativeAudioLoadError()
           const started = performance.now()
           session.input.preloadNext()
           remoteNext = session
+          usesProgressivePlayback = true
           nextTrackRequest = session.request
           nextBufferBytes = session.bytes
           bufferedPlaybackSequence = allocatePlaybackSequence()
@@ -1659,6 +1662,8 @@ export function createNativeAudioController(
       const decodedByteLength = decoded.pcmData.byteLength
       try {
         assertCurrentPrebufferOperation(prebufferOperation)
+        if (usesProgressivePlayback) dispatchNativeEvents(engine, engine.drainEvents())
+        if (currentTrackRequest !== expectedCurrent) throw new SupersededNativeAudioLoadError()
         const nativeLoadStartedAt = performance.now()
         const playbackSequence = allocatePlaybackSequence()
         engine.preloadNextTrack(
@@ -1697,13 +1702,13 @@ export function createNativeAudioController(
       const loadOperation = beginLoadOperation()
       const engine = await ensureAvailable()
       assertCurrentLoadOperation(loadOperation)
-      if (remoteCurrent) {
+      if (usesProgressivePlayback) {
         dispatchNativeEvents(engine, engine.drainEvents(), true)
-        if (remoteCurrent.request.filePath === filePath && !remoteNext) {
+        if (currentTrackRequest?.filePath === filePath && !nextTrackRequest) {
           return normalizePromotedTrackLoadResult(normalizePlaybackSnapshot(engine.getPlaybackSnapshot()),
-            remoteCurrent.request, 0, currentPlaybackSequence ?? allocatePlaybackSequence())
+            currentTrackRequest, 0, currentPlaybackSequence ?? allocatePlaybackSequence())
         }
-        if (remoteNext?.request.filePath !== filePath) throw new Error('Prepared native source is no longer available.')
+        if (nextTrackRequest?.filePath !== filePath) throw new Error('Prepared native source is no longer available.')
       }
       const promotedRequest = nextTrackRequest?.filePath === filePath
         ? nextTrackRequest
@@ -1711,7 +1716,7 @@ export function createNativeAudioController(
       const promotedPlaybackSequence = bufferedPlaybackSequence ?? allocatePlaybackSequence()
       const nativeLoadStartedAt = performance.now()
       const snapshot = normalizePlaybackSnapshot(engine.promoteNextTrack())
-      if (remoteNext) {
+      if (remoteCurrent || remoteNext) {
         disposeRemote(remoteCurrent)
         remoteCurrent = remoteNext
         remoteNext = null
@@ -1781,9 +1786,11 @@ export function createNativeAudioController(
 
     pause: async () => {
       const engine = await ensureAvailable()
-      if (remoteCurrent) dispatchNativeEvents(engine, engine.drainEvents())
+      if (usesProgressivePlayback) dispatchNativeEvents(engine, engine.drainEvents())
+      const snapshot = normalizePlaybackSnapshot(engine.pause())
+      if (usesProgressivePlayback) dispatchNativeEvents(engine, engine.drainEvents())
       return {
-        ...normalizePlaybackSnapshot(engine.pause()),
+        ...snapshot,
         ...(currentPlaybackSequence === null ? {} : { playbackSequence: currentPlaybackSequence })
       }
     },
@@ -1791,12 +1798,15 @@ export function createNativeAudioController(
     stop: async () => {
       invalidateLoadOperations()
       const engine = await ensureAvailable()
+      if (usesProgressivePlayback) dispatchNativeEvents(engine, engine.drainEvents())
       const snapshot = normalizePlaybackSnapshot(engine.stop())
-      if (remoteCurrent || remoteNext) {
+      if (usesProgressivePlayback) dispatchNativeEvents(engine, engine.drainEvents())
+      if (usesProgressivePlayback) {
+        if (remoteCurrent) currentBufferBytes = 0
         disposeRemote(remoteCurrent)
         disposeRemote(remoteNext)
         remoteCurrent = remoteNext = null
-        currentBufferBytes = nextBufferBytes = 0
+        nextBufferBytes = 0
         nextTrackRequest = null
         bufferedPlaybackSequence = null
       }
@@ -1808,9 +1818,9 @@ export function createNativeAudioController(
 
     seek: async (seconds: number) => {
       const engine = await ensureAvailable()
+      if (usesProgressivePlayback) dispatchNativeEvents(engine, engine.drainEvents())
       if (remoteCurrent) {
         if (!Number.isFinite(seconds)) throw new Error('Invalid native seek position.')
-        dispatchNativeEvents(engine, engine.drainEvents())
         const previous = remoteCurrent
         activeLoadDecode?.controller.abort()
         const generation = ++loadGeneration
@@ -1854,8 +1864,11 @@ export function createNativeAudioController(
           throw error
         } finally { if (activeLoadDecode?.generation === generation) activeLoadDecode = null }
       }
+      let snapshot: NativeAudioPlaybackSnapshot
+      try { snapshot = normalizePlaybackSnapshot(engine.seek(seconds)) }
+      finally { if (usesProgressivePlayback) dispatchNativeEvents(engine, engine.drainEvents()) }
       return {
-        ...normalizePlaybackSnapshot(engine.seek(seconds)),
+        ...snapshot,
         ...(currentPlaybackSequence === null ? {} : { playbackSequence: currentPlaybackSequence })
       }
     },
@@ -1863,9 +1876,9 @@ export function createNativeAudioController(
     clearNextTrack: async () => {
       invalidatePrebufferOperations()
       const engine = await ensureAvailable()
-      if (remoteCurrent) dispatchNativeEvents(engine, engine.drainEvents())
+      if (usesProgressivePlayback) dispatchNativeEvents(engine, engine.drainEvents())
       engine.clearNextTrack()
-      if (remoteCurrent) dispatchNativeEvents(engine, engine.drainEvents())
+      if (usesProgressivePlayback) dispatchNativeEvents(engine, engine.drainEvents())
       disposeRemote(remoteNext)
       remoteNext = null
       bufferedPlaybackSequence = null
@@ -1875,7 +1888,7 @@ export function createNativeAudioController(
 
     getPlaybackSnapshot: async () => {
       const engine = await ensureAvailable()
-      if (remoteCurrent) dispatchNativeEvents(engine, engine.drainEvents())
+      if (usesProgressivePlayback) dispatchNativeEvents(engine, engine.drainEvents())
       return {
         ...normalizePlaybackSnapshot(engine.getPlaybackSnapshot()),
         ...(currentPlaybackSequence === null ? {} : { playbackSequence: currentPlaybackSequence })

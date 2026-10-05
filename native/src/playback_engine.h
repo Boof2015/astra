@@ -74,6 +74,8 @@ struct ProgressiveTrack {
     double duration = 0.0;
     NativeTrackGain gain;
     std::shared_ptr<ProgressivePcmInput> input;
+    // Mixed queues retain ordinary immutable local PCM, without a decoder ring.
+    std::shared_ptr<TrackBuffer> complete;
 };
 
 struct OutputDeviceInfo {

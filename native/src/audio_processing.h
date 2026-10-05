@@ -52,6 +52,10 @@ public:
     NativeProcessingStatus status(const TrackFormat& source, const NativeTrackGain& gain, int resamplerLatency) const;
     int resamplerLatencyFrames() const;
     const TrackFormat& outputFormat() const;
+    uint64_t startSourceFrame() const;
+    uint64_t emittedOutputFrames() const;
+    bool ended() const;
+    void swap(ProcessedAudioPipeline& other) noexcept;
 
 private:
     struct Impl;

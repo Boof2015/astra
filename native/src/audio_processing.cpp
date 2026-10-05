@@ -517,6 +517,13 @@ void ProcessedAudioPipeline::reset(uint64_t sourceFrame) {
     impl_->resetState(sourceFrame);
 }
 
+uint64_t ProcessedAudioPipeline::startSourceFrame() const { return impl_->startSourceFrame; }
+uint64_t ProcessedAudioPipeline::emittedOutputFrames() const { return impl_->emittedOutputFrames; }
+bool ProcessedAudioPipeline::ended() const {
+    return impl_->outputLengthKnown && impl_->emittedOutputFrames >= impl_->expectedOutputFrames;
+}
+void ProcessedAudioPipeline::swap(ProcessedAudioPipeline& other) noexcept { impl_.swap(other.impl_); }
+
 size_t ProcessedAudioPipeline::render(
     const TrackBuffer& track,
     uint64_t& sourceFrame,
