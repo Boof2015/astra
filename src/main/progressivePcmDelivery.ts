@@ -5,13 +5,13 @@ export class ProgressivePcmDelivery {
   private remainder: Buffer = Buffer.alloc(0)
   private ended = false
   private readonly frameBytes: number
-  private readonly chunkBytes: number
+  private readonly chunkFrames: number | (() => number)
   private readonly canEmit: () => boolean
   private readonly emit: (chunk: Buffer) => void
 
-  constructor(channels: number, chunkFrames: number, canEmit: () => boolean, emit: (chunk: Buffer) => void) {
+  constructor(channels: number, chunkFrames: number | (() => number), canEmit: () => boolean, emit: (chunk: Buffer) => void) {
     this.frameBytes = channels * 4
-    this.chunkBytes = chunkFrames * this.frameBytes
+    this.chunkFrames = chunkFrames
     this.canEmit = canEmit
     this.emit = emit
   }
@@ -27,9 +27,10 @@ export class ProgressivePcmDelivery {
 
   drain(): void {
     while (this.canEmit()) {
+      const chunkBytes = (typeof this.chunkFrames === 'function' ? this.chunkFrames() : this.chunkFrames) * this.frameBytes
       const length = this.ended
-        ? Math.min(this.chunkBytes, this.remainder.length - this.remainder.length % this.frameBytes)
-        : this.remainder.length >= this.chunkBytes ? this.chunkBytes : 0
+        ? Math.min(chunkBytes, this.remainder.length - this.remainder.length % this.frameBytes)
+        : this.remainder.length >= chunkBytes ? chunkBytes : 0
       if (!length) return
       const chunk = this.remainder.subarray(0, length)
       this.remainder = this.remainder.subarray(length)

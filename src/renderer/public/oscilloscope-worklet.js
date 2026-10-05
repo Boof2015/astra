@@ -97,6 +97,8 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
           break
         case 'set-playing':
           this.playing = Boolean(payload.playing)
+          this.startAtContextFrame = this.playing && Number.isFinite(payload.contextFrame)
+            ? Math.max(0, Math.round(payload.contextFrame)) : null
           this.setBuffering(false)
           this.endedEmitted = false
           this.postPosition(true)
@@ -129,6 +131,7 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
     this.currentFrame = 0
     this.currentChunkIndex = 0
     this.playing = false
+    this.startAtContextFrame = null
     this.sourceEnded = false
     this.buffering = false
     this.endedEmitted = false
@@ -293,8 +296,15 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
       return true
     }
 
-    let remainingFrames = output[0].length
     let outputOffset = 0
+    if (this.startAtContextFrame !== null) {
+      // A complete local source can stop on this same AudioContext frame.
+      // Renderer callback timing must not insert or repeat samples at the join.
+      outputOffset = Math.max(0, this.startAtContextFrame - currentFrame)
+      if (outputOffset >= output[0].length) return true
+      this.startAtContextFrame = null
+    }
+    let remainingFrames = output[0].length - outputOffset
 
     while (remainingFrames > 0) {
       if (this.currentFrame >= this.totalFrames) {

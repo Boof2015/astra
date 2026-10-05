@@ -10348,7 +10348,7 @@ function updateLocalProgressiveStreamBackpressure(session: RemoteStreamSession):
 
   if (action === 'resume') {
     session.stdoutPausedForBackpressure = false
-    if (session.cacheLease) pumpRemoteStreamOutput(session, Buffer.alloc(0))
+    pumpRemoteStreamOutput(session, Buffer.alloc(0))
     if (!session.stdoutPausedForBackpressure) session.ffmpeg.stdout.resume()
   }
 }
@@ -10415,7 +10415,7 @@ function finalizeRemoteStreamSession(
     return
   }
 
-  if (session.cacheLease && outcome !== 'cancelled' && session.emittedStartedEvent
+  if (session.pcmDelivery && outcome !== 'cancelled' && session.emittedStartedEvent
     && (!session.rendererReady || (outcome === 'complete' && !session.pcmDelivery?.drained))) {
     session.pendingOutcome = { outcome, error }
     return
@@ -10731,11 +10731,15 @@ async function startProgressiveStreamSession(
       }
 
       remoteStreamSessions.set(session.id, session)
-      if (cacheLease) {
-        session.pcmDelivery = new ProgressivePcmDelivery(session.channels, REMOTE_STREAM_CHUNK_FRAMES,
-          () => !session.stdoutPausedForBackpressure && (!session.emittedStartedEvent || session.rendererReady),
-          chunk => emitRemoteStreamChunk(session, chunk))
-      }
+      // Gate every source on renderer attachment, including a local successor.
+      // Pausing stdout does not stop the remaining IPC chunks in the same read.
+      session.pcmDelivery = new ProgressivePcmDelivery(session.channels,
+        () => sourceType === 'local'
+          ? session.decodedFrames >= Math.floor(session.sampleRate * LOCAL_STREAM_STEADY_AFTER_SECONDS)
+            ? LOCAL_STREAM_STEADY_CHUNK_FRAMES : LOCAL_STREAM_STARTUP_CHUNK_FRAMES
+          : REMOTE_STREAM_CHUNK_FRAMES,
+        () => !session.stdoutPausedForBackpressure && (!session.emittedStartedEvent || session.rendererReady),
+        chunk => emitRemoteStreamChunk(session, chunk))
       sessionCreated = true
       const handleAbort = () => finalizeRemoteStreamSession(session, 'cancelled')
       abortController.signal.addEventListener('abort', handleAbort, { once: true })

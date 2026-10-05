@@ -747,19 +747,25 @@ test('resuming a pending remote seek preserves its decoder and adopts the final 
   }
 })
 
-test('remote prebuffering waits for current headroom and never skips a failed next item', async (t) => {
+for (const [currentSource, nextSource] of [['subsonic', 'subsonic'], ['local', 'jellyfin'], ['jellyfin', 'local']] as const) {
+test(`${currentSource} to ${nextSource} prebuffering waits for headroom and never skips a failed next item`, async (t) => {
   resetStores()
   const settings = useAudioSettingsStore.getState()
   const parallax = useParallaxStore.getState()
-  const current = makeTrack('subsonic://7/current', { sourceType: 'subsonic' })
-  const next = makeTrack('subsonic://7/next', { sourceType: 'subsonic' })
+  const current = makeTrack(currentSource === 'local' ? '/music/current.flac' : `${currentSource}://7/current`, { sourceType: currentSource })
+  const next = makeTrack(nextSource === 'local' ? '/music/next.flac' : `${nextSource}://7/next`, {
+    sourceType: nextSource, ...(nextSource === 'local' ? { duration: 3600, sampleRate: 48_000, channels: 2 } : {})
+  })
   const later = makeTrack('subsonic://7/later', { sourceType: 'subsonic' })
   const items = [current, next, later].map((track, index) => makeQueueItem(createQueueEntryFromTrack(track), `remote-${index}`))
   let headroom = false
   const prepared: string[] = []
   t.mock.method(audioEngine, 'canPreBufferRemoteTrack', () => true)
   t.mock.method(audioEngine, 'hasRemotePrebufferHeadroom', () => headroom)
-  t.mock.method(audioEngine, 'preBufferNextRemoteTrack', async (track: Track) => {
+  t.mock.method(audioEngine, 'getPlaybackOutputMode', () => 'standard')
+  t.mock.method(audioEngine, 'needsLoudnessAnalysisForLoad', () => false)
+  t.mock.method(audioEngine, 'preBufferNextRemoteTrack', async (track: Track, _gain: number | null, options: { currentTrack?: Track } = {}) => {
+    assert.equal(options.currentTrack?.path, current.path)
     prepared.push(track.path)
     throw new Error('Next track is offline')
   })
@@ -783,6 +789,78 @@ test('remote prebuffering waits for current headroom and never skips a failed ne
     resetStores()
   }
 })
+}
+
+for (const fails of [false, true]) {
+test(`ordinary local successor uses complete decoding and ${fails ? 'does not skip a failed item' : 'stages the completed buffer'}`, async t => {
+  resetStores()
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const parallax = useParallaxStore.getState()
+  const current = makeTrack('jellyfin://7/current', { sourceType: 'jellyfin' })
+  const next = makeTrack('/music/next.flac', { sourceType: 'local', channels: 2, sampleRate: 48_000, duration: 180 })
+  const later = makeTrack('/music/later.flac', { sourceType: 'local' })
+  const items = [current, next, later].map((track, index) => makeQueueItem(createQueueEntryFromTrack(track), `complete-${index}`))
+  const decoded: string[] = []
+  let buffered: string | null = null
+  const descriptor = Object.getOwnPropertyDescriptor(audioEngine, 'nextBufferedTrackPath')
+  Object.defineProperty(audioEngine, 'nextBufferedTrackPath', { configurable: true, get: () => buffered })
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { electronAPI: {
+    getAudioFileStat: async () => ({ size: 1024 }), decodeLocalAudioToPcm: async () => undefined
+  } } })
+  useParallaxStore.setState({ status: null, publishHostNextStream: async () => undefined })
+  t.mock.method(audioEngine, 'getPlaybackOutputMode', () => 'standard')
+  t.mock.method(audioEngine, 'canPreBufferRemoteTrack', () => true)
+  t.mock.method(audioEngine, 'hasRemotePrebufferHeadroom', () => true)
+  t.mock.method(audioEngine, 'needsLoudnessAnalysisForLoad', () => false)
+  t.mock.method(audioEngine, 'getBufferMemoryStats', async () => ({ currentBytes: 0, nextBytes: 0, totalBytes: 0 }))
+  const progressive = t.mock.method(audioEngine, 'preBufferNextRemoteTrack', async () => undefined)
+  t.mock.method(audioEngine, 'preBufferNextStandardTrackFromPath', async (track: Track) => {
+    decoded.push(track.path)
+    if (fails) throw new Error('Local decode failed')
+    buffered = track.path
+    return 'loaded' as const
+  })
+  const stage = t.mock.method(audioEngine, 'stageNextLocalBuffer', (track: Track) => track.path === buffered)
+  usePlayerStore.setState({ currentTrack: current, playbackState: 'playing', currentQueueItemId: items[0].queueId,
+    queueItems: items, upcomingQueueIds: items.slice(1).map(item => item.queueId), baseUpcomingQueueIds: items.slice(1).map(item => item.queueId) })
+  try {
+    await usePlayerStore.getState()._preBufferNextTrack()
+    assert.deepEqual(decoded, [next.path])
+    assert.equal(progressive.mock.callCount(), 0)
+    assert.equal(stage.mock.callCount(), fails ? 0 : 1)
+    assert.equal(usePlayerStore.getState().currentTrack?.path, current.path)
+    assert.deepEqual(usePlayerStore.getState().upcomingQueueIds, items.slice(1).map(item => item.queueId))
+  } finally {
+    resetStores()
+    useParallaxStore.setState({ status: parallax.status, publishHostNextStream: parallax.publishHostNextStream })
+    if (descriptor) Object.defineProperty(audioEngine, 'nextBufferedTrackPath', descriptor)
+    else Reflect.deleteProperty(audioEngine, 'nextBufferedTrackPath')
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
+})
+}
+
+for (const iamfCurrent of [true, false]) {
+test(`mixed preparation keeps IAMF ${iamfCurrent ? 'current' : 'successor'} on its existing decoder`, async t => {
+  resetStores()
+  const current = makeTrack(iamfCurrent ? '/music/current.iamf' : 'jellyfin://7/current', { sourceType: iamfCurrent ? 'local' : 'jellyfin' })
+  const next = makeTrack(iamfCurrent ? 'jellyfin://7/next' : '/music/next.iamf', { sourceType: iamfCurrent ? 'jellyfin' : 'local' })
+  const items = [current, next].map((track, index) => makeQueueItem(createQueueEntryFromTrack(track), `iamf-${index}`))
+  t.mock.method(audioEngine, 'getPlaybackOutputMode', () => 'standard')
+  t.mock.method(audioEngine, 'canPreBufferRemoteTrack', () => true)
+  t.mock.method(audioEngine, 'hasRemotePrebufferHeadroom', () => true)
+  const prepare = t.mock.method(audioEngine, 'preBufferNextRemoteTrack', async () => undefined)
+  usePlayerStore.setState({ currentTrack: current, playbackState: 'playing', currentQueueItemId: items[0].queueId,
+    queueItems: items, upcomingQueueIds: [items[1].queueId], baseUpcomingQueueIds: [items[1].queueId] })
+  try {
+    await usePlayerStore.getState()._preBufferNextTrack()
+    assert.equal(prepare.mock.callCount(), 0)
+  } finally {
+    resetStores()
+  }
+})
+}
 
 test('remote seek scheduling preserves preparation and can retry a consumed successor', async (t) => {
   resetStores()
@@ -862,7 +940,8 @@ test('remote seek scheduling preserves preparation and can retry a consumed succ
   }
 })
 
-test('remote handoff advances duplicate queue entries once and isolates preparation progress', async (t) => {
+for (const localNext of [false, true]) {
+test(`remote handoff ${localNext ? 'restores complete local presentation' : 'advances duplicate queue entries once and isolates progress'}`, async (t) => {
   resetStores()
   usePlayerStore.getState()._cleanupListeners()
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
@@ -870,7 +949,8 @@ test('remote handoff advances duplicate queue entries once and isolates preparat
   const settings = useAudioSettingsStore.getState()
   const track = makeTrack('subsonic://7/repeated', { sourceType: 'subsonic' })
   const first = makeQueueItem(createQueueEntryFromTrack(track), 'repeat-first')
-  const second = makeQueueItem(createQueueEntryFromTrack(track), 'repeat-second')
+  const successor = localNext ? makeTrack('/music/local.flac', { sourceType: 'local' }) : track
+  const second = makeQueueItem(createQueueEntryFromTrack(successor), 'repeat-second')
   const events = new Map<string, (...args: unknown[]) => void>()
   let progressListener!: (progress: unknown) => void
   let activeSession = 1
@@ -880,6 +960,7 @@ test('remote handoff advances duplicate queue entries once and isolates preparat
   })
   t.mock.method(audioEngine, 'getRemoteStreamSessionId', () => activeSession)
   t.mock.method(audioEngine, 'getRemoteBufferedSeconds', () => 30)
+  t.mock.method(audioEngine, 'getAudioBuffer', () => localNext && activeSession === 2 ? {} as AudioBuffer : null)
   t.mock.method(audioEngine, 'setCurrentReplayGainDb', () => undefined)
   Object.defineProperty(globalThis, 'window', { configurable: true, value: {
     location: { search: '?window=test' }, addEventListener: () => undefined, removeEventListener: () => undefined,
@@ -901,10 +982,17 @@ test('remote handoff advances duplicate queue entries once and isolates preparat
     progressListener({ path: track.path, slot: 'next', sessionId: 2, failed: true, bufferedSeconds: 0 })
     assert.equal(usePlayerStore.getState().remoteLoadProgress, null)
     activeSession = 2
-    events.get('gaplessTransition')?.({ trackPath: track.path })
+    events.get('gaplessTransition')?.({ trackPath: successor.path })
     assert.equal(usePlayerStore.getState().currentQueueItemId, second.queueId)
-    assert.equal(usePlayerStore.getState().remoteStreamSessionId, 2)
+    assert.equal(usePlayerStore.getState().remoteStreamSessionId, localNext ? null : 2)
     assert.deepEqual(usePlayerStore.getState().playbackHistory.map(entry => entry.item.queueId), [first.queueId])
+    if (localNext) {
+      assert.equal(usePlayerStore.getState().remoteLoadProgress, null)
+      assert.equal(usePlayerStore.getState().remoteBufferedSeconds, 0)
+      assert.equal(usePlayerStore.getState().waveformBufferedRatio, 1)
+      assert.equal(usePlayerStore.getState().waveformAnalyzedRatio, 1)
+      return
+    }
     progressListener({ path: track.path, slot: 'current', sessionId: 1, failed: true, bufferedSeconds: 0 })
     assert.notEqual(usePlayerStore.getState().remoteLoadProgress?.failed, true)
     progressListener({ path: track.path, slot: 'current', sessionId: 2, failed: false, done: true, bufferedSeconds: 180 })
@@ -919,6 +1007,7 @@ test('remote handoff advances duplicate queue entries once and isolates preparat
     resetStores()
   }
 })
+}
 
 interface MandatoryProgressiveMetrics {
   progressiveCalls: Array<{

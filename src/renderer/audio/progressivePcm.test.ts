@@ -39,7 +39,7 @@ type WorkletProcessorConstructor = new (options: {
   processorOptions?: { discardConsumedChunks?: boolean }
 }) => WorkletProcessorInstance
 
-function loadRemoteStreamProcessor(): WorkletProcessorConstructor {
+function loadRemoteStreamProcessor(clock = { frame: 0 }): WorkletProcessorConstructor {
   const processors = new Map<string, WorkletProcessorConstructor>()
   class TestAudioWorkletProcessor {
     port: WorkletPort = {
@@ -59,6 +59,7 @@ function loadRemoteStreamProcessor(): WorkletProcessorConstructor {
     Number,
     Object,
     sampleRate: 48_000,
+    get currentFrame() { return clock.frame },
   })
 
   const processor = processors.get('remote-stream-player')
@@ -81,6 +82,48 @@ function renderWorkletChunk(payload: Record<string, unknown>): number[][] {
   assert.equal(processor.process([], [output]), true)
   return output.map((channel) => Array.from(channel))
 }
+
+test('a local buffer can join the worklet on an exact audio-clock frame and continue into remote PCM', () => {
+  const clock = { frame: 0 }
+  const Processor = loadRemoteStreamProcessor(clock)
+  const processor = new Processor({ outputChannelCount: [1] })
+  const send = (data: unknown) => processor.port.onmessage!({ data })
+  send({ type: 'set-session', sessionId: -1 })
+  send({ type: 'append-chunk', sessionId: -1, frameCount: 4, channelData: [Float32Array.of(5, 6, 7, 8)] })
+  send({ type: 'set-source-ended', sessionId: -1, ended: true })
+  send({ type: 'stage-next', sessionId: 2 })
+  send({ type: 'append-chunk', sessionId: 2, frameCount: 4, channelData: [Float32Array.of(9, 10, 11, 12)] })
+  send({ type: 'set-next-ready', sessionId: 2, ready: true })
+  send({ type: 'set-playing', playing: true, contextFrame: 4 })
+  const before = new Float32Array(2)
+  processor.process([], [[before]])
+  assert.deepEqual([...before], [0, 0])
+  assert.equal(processor.currentFrame, 0, 'waiting for the clock must not consume source samples')
+  clock.frame = 2
+  const joined = new Float32Array(10)
+  processor.process([], [[joined]])
+  // The BufferSource supplies the prefix through the same stop frame.
+  joined[0] += 3
+  joined[1] += 4
+  assert.deepEqual([...joined], [3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+})
+
+test('pausing a scheduled worklet start cancels its clock wait without consuming PCM', () => {
+  const clock = { frame: 0 }
+  const Processor = loadRemoteStreamProcessor(clock)
+  const processor = new Processor({ outputChannelCount: [1] })
+  const send = (data: unknown) => processor.port.onmessage!({ data })
+  send({ type: 'append-chunk', frameCount: 2, channelData: [Float32Array.of(1, 2)] })
+  send({ type: 'set-playing', playing: true, contextFrame: 100 })
+  send({ type: 'set-playing', playing: false })
+  clock.frame = 120
+  processor.process([], [[new Float32Array(2)]])
+  assert.equal(processor.currentFrame, 0)
+  send({ type: 'set-playing', playing: true })
+  const output = new Float32Array(2)
+  processor.process([], [[output]])
+  assert.deepEqual([...output], [1, 2])
+})
 
 test('starvation holds the musical position, resumes queued PCM, and never means EOF', () => {
   const Processor = loadRemoteStreamProcessor()

@@ -2496,7 +2496,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     const expectedTrack = resolveExpectedPrebufferTrack(state)
     const expectedTrackPath = expectedTrack?.path ?? null
     const activeOutputMode = audioEngine.getPlaybackOutputMode()
-    const usesRemotePrebuffer = !!expectedTrack && audioEngine.canPreBufferRemoteTrack(expectedTrack)
+    const usesRemotePrebuffer = !!expectedTrack && !isIamfTrack(expectedTrack) && !isIamfTrack(state.currentTrack)
+      && audioEngine.canPreBufferRemoteTrack(expectedTrack)
     const usesNativePrebuffer = activeOutputMode !== 'standard'
       && shouldUseNativeExclusivePath(expectedTrack)
 
@@ -2605,7 +2606,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       void startPrebufferNextTrack()
     }
 
-    if (delayMs > 0 && usesNativePrebuffer) {
+    if (delayMs > 0 && (usesNativePrebuffer || (usesRemotePrebuffer && audioEngine.hasDecodedAudioBuffer()))) {
       scheduleTimer(delayMs, startIfStillEligible)
       return
     }
@@ -5378,11 +5379,23 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         for (const candidate of iterateNextCandidates(state)) {
           const nextTrack = candidate.track
           if (!nextTrack) continue
-          if (nextTrack.sourceType && nextTrack.sourceType !== 'local' && !shouldUseNativeExclusivePath(nextTrack)) {
+          const usesStreamHandoff = audioEngine.getPlaybackOutputMode() === 'standard'
+            && audioEngine.canPreBufferRemoteTrack(nextTrack)
+          if (usesStreamHandoff && (isIamfTrack(nextTrack) || isIamfTrack(state.currentTrack))) return
+          if (usesStreamHandoff && !audioEngine.hasRemotePrebufferHeadroom()) return
+          const completeLocalHandoff = usesStreamHandoff && (nextTrack.sourceType ?? 'local') === 'local'
+            && !(await shouldUseLocalProgressivePath(nextTrack))
+          if ((usesStreamHandoff && !completeLocalHandoff)
+            || (nextTrack.sourceType && nextTrack.sourceType !== 'local' && !shouldUseNativeExclusivePath(nextTrack))) {
+            if (isIamfTrack(nextTrack) || isIamfTrack(state.currentTrack)) return
             if (!audioEngine.canPreBufferRemoteTrack(nextTrack) || !audioEngine.hasRemotePrebufferHeadroom()) return
             try {
-              await audioEngine.preBufferNextRemoteTrack(nextTrack,
-                getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode))
+              const replayGainDb = getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
+              const loudnessAnalysis = (nextTrack.sourceType ?? 'local') === 'local'
+                ? await requestTrackLoudnessAnalysis(nextTrack, replayGainDb, 'background') : null
+              if (!canApplyPrebufferResult(nextTrack)) return
+              await audioEngine.preBufferNextRemoteTrack(nextTrack, replayGainDb,
+                { currentTrack: state.currentTrack ?? undefined, loudnessAnalysis })
               if (!canApplyPrebufferResult(nextTrack)) {
                 if (audioEngine.nextBufferedTrackPath === nextTrack.path) audioEngine.clearNextBuffer()
                 return
@@ -5403,7 +5416,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           if (activeOutputMode !== 'standard' && !shouldUseNativeExclusivePath(nextTrack)) {
             return
           }
-          if (await shouldUseLocalProgressivePath(nextTrack)) {
+          if (!completeLocalHandoff && await shouldUseLocalProgressivePath(nextTrack)) {
             logMemoryDiagnosticsEvent('prebuffer_skipped_local_progressive', {
               trackPath: nextTrack.path
             })
@@ -5563,6 +5576,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               }
               return
             }
+            if (completeLocalHandoff && !audioEngine.stageNextLocalBuffer(nextTrack)) {
+              audioEngine.clearNextBuffer()
+              return
+            }
             logSlowPath('preBufferNextTrack', bufferStart, {
               trackPath: nextTrack.path,
               loaded: true,
@@ -5601,6 +5618,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             }
             console.error('Failed to pre-buffer next track:', error)
             prebufferRetryAtLateTrackPath = nextTrack.path
+            if (completeLocalHandoff) return
             // An incompatible native boundary is an ordinary next-track load,
             // not an unavailable song or permission to prepare a later item.
             if (activeOutputMode !== 'standard'
@@ -5962,6 +5980,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           completedPreAppliedGaplessQueueItemId = preAppliedQueueItem.queueId
         }
         preAppliedGaplessQueueItemId = null
+        const progressiveHandoff = !!promotedPath && !audioEngine.getAudioBuffer()
         const nextState = {
           ...transitionState,
           currentTrack: nextTrack,
@@ -5970,11 +5989,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           waveformData: shouldUseWaveformCache(nextTrack)
             ? (getWaveformCacheEntry(nextTrack.path) ?? null)
             : null,
-          waveformBufferedRatio: promotedPath ? 0 : 1,
-          waveformAnalyzedRatio: promotedPath ? 0 : 1,
-          remoteBufferedSeconds: promotedPath ? audioEngine.getRemoteBufferedSeconds() : 0,
-          remoteStreamSessionId: promotedPath ? audioEngine.getRemoteStreamSessionId() : null,
-          remoteLoadProgress: promotedPath ? createInitialRemoteLoadProgress(nextTrack) : null
+          waveformBufferedRatio: progressiveHandoff ? 0 : 1,
+          waveformAnalyzedRatio: progressiveHandoff ? 0 : 1,
+          remoteBufferedSeconds: progressiveHandoff ? audioEngine.getRemoteBufferedSeconds() : 0,
+          remoteStreamSessionId: progressiveHandoff ? audioEngine.getRemoteStreamSessionId() : null,
+          remoteLoadProgress: progressiveHandoff ? createInitialRemoteLoadProgress(nextTrack) : null
         }
         set(nextState)
         audioEngine.setCurrentReplayGainDb(
