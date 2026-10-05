@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'crypto'
+import { buildProviderRequestHeaders } from './providerClientIdentity'
 import { formatArtistNames, normalizeArtistNames } from '../../shared/library/artistCredits'
 
 const SUBSONIC_API_VERSION = '1.16.1'
@@ -72,6 +73,16 @@ interface SubsonicRequestOptions {
   retries?: number
   signal?: AbortSignal
   onDownloadProgress?: (progress: SubsonicDownloadProgress) => void
+}
+
+export class SubsonicRequestError extends Error {
+  readonly httpStatus?: number
+  readonly apiCode?: number
+  constructor(message: string, details: { httpStatus?: number; apiCode?: number }) {
+    super(message)
+    this.httpStatus = details.httpStatus
+    this.apiCode = details.apiCode
+  }
 }
 
 export interface SubsonicDownloadProgress {
@@ -326,11 +337,12 @@ async function requestSubsonicJson(
     try {
       const response = await fetch(url, {
         method: 'GET',
+        headers: buildProviderRequestHeaders(),
         signal: merged.signal
       })
 
       if (!response.ok) {
-        throw new Error(`Subsonic request failed (${response.status})`)
+        throw new SubsonicRequestError(`Subsonic request failed (${response.status})`, { httpStatus: response.status })
       }
 
       const json = await response.json() as SubsonicResponseEnvelope
@@ -340,7 +352,7 @@ async function requestSubsonicJson(
       }
       if (envelope.status !== 'ok') {
         const message = toTrimmedText(envelope.error?.message) ?? 'Subsonic request failed.'
-        throw new Error(message)
+        throw new SubsonicRequestError(message, { apiCode: envelope.error?.code })
       }
 
       return envelope as Record<string, unknown>
@@ -373,6 +385,7 @@ async function requestSubsonicBytes(
     try {
       const response = await fetch(url, {
         method: 'GET',
+        headers: buildProviderRequestHeaders(),
         signal: merged.signal
       })
       if (!response.ok) {
@@ -489,6 +502,41 @@ export async function testSubsonicConnection(
   options: SubsonicRequestOptions = {}
 ): Promise<void> {
   await requestSubsonicJson(config, 'ping', {}, options)
+}
+
+/** Live status and counted plays are separate Subsonic operations. No write retries. */
+export async function reportSubsonicScrobble(
+  config: SubsonicConnectionConfig, trackId: string,
+  report: { submission: boolean; startedAt: number; position?: number },
+  options: SubsonicRequestOptions = {}
+): Promise<void> {
+  await requestSubsonicJson(config, 'scrobble', {
+    id: trackId, submission: report.submission, time: Math.round(report.startedAt),
+    position: report.position === undefined ? undefined : Math.floor(report.position)
+  }, { ...options, retries: 0 })
+}
+
+export async function getSubsonicPlaybackCapabilities(
+  config: SubsonicConnectionConfig, options: SubsonicRequestOptions = {}
+): Promise<{ timeline: boolean; navidrome: boolean }> {
+  const response = await requestSubsonicJson(config, 'getOpenSubsonicExtensions', {}, { ...options, retries: 0 })
+  const extensions = asArray<{ name?: unknown; versions?: unknown }>(response.openSubsonicExtensions)
+  return {
+    timeline: extensions.some(extension => extension.name === 'playbackReport'
+      && Array.isArray(extension.versions) && extension.versions.includes(1)),
+    navidrome: typeof response.type === 'string' && response.type.toLowerCase() === 'navidrome'
+  }
+}
+
+export async function reportSubsonicTimeline(
+  config: SubsonicConnectionConfig, trackId: string,
+  state: 'starting' | 'playing' | 'paused' | 'stopped', position: number,
+  options: SubsonicRequestOptions = {}
+): Promise<void> {
+  await requestSubsonicJson(config, 'reportPlayback', {
+    mediaId: trackId, mediaType: 'song', state, positionMs: Math.round(position * 1000),
+    playbackRate: 1, ignoreScrobble: true
+  }, { ...options, retries: 0 })
 }
 
 function toArtistRefs(indexResponse: Record<string, unknown>): SubsonicArtistRef[] {
@@ -899,6 +947,7 @@ export async function fetchSubsonicCoverArt(
     try {
       const response = await fetch(url, {
         method: 'GET',
+        headers: buildProviderRequestHeaders(),
         signal: merged.signal
       })
       if (!response.ok) {

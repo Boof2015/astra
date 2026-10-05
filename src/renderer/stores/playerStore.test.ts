@@ -1,4 +1,5 @@
 import test from 'node:test'
+import type { ProviderPlaybackSnapshot } from '../../types/providerPlayback.ts'
 import assert from 'node:assert/strict'
 import {
   advanceRecentPlayAccumulation,
@@ -7266,6 +7267,87 @@ test('playing a restored session lazily loads from the saved position', async ()
     assert.equal(usePlayerStore.getState().playbackState, 'playing')
   } finally {
     usePlayerStore.setState({ _loadAndPlayTrack: originalLoad })
+  }
+})
+
+test('server live reporting follows real player events and retains identity across pause, seek and history reset', async () => {
+  resetStores()
+  const reports: ProviderPlaybackSnapshot[] = []
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const ownCurrentTime = Object.getOwnPropertyDescriptor(audioEngine, 'currentTime')
+  const originalPlay = audioEngine.play
+  const originalStop = audioEngine.stop
+  const originalOn = audioEngine.on
+  const unsubscribe: Array<() => void> = []
+  audioEngine.on = (event, callback) => {
+    const dispose = originalOn.call(audioEngine, event, callback)
+    unsubscribe.push(dispose)
+    return dispose
+  }
+  const originalPerformance = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  const history = { generation: 'first', startedAt: null }
+  let time = 0
+  let now = 0
+  Object.defineProperty(globalThis, 'performance', { configurable: true, value: { now: () => now } })
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    location: { search: '?window=test' }, addEventListener() {}, removeEventListener() {},
+    electronAPI: {
+      reportProviderPlayback: (snapshot: ProviderPlaybackSnapshot) => reports.push(snapshot),
+      library: {
+        getListeningHistoryStatus: async () => history,
+        checkpointListeningSession: async () => ({ accepted: true, qualifiedNow: false, status: history }),
+        markTrackLatestSyncSeen: async () => undefined
+      },
+      onProgressiveLoadProgress: () => () => undefined
+    }
+  } })
+  const emit = (name: string, ...args: unknown[]) => {
+    ;(audioEngine as unknown as { emit: (name: string, ...args: unknown[]) => void }).emit(name, ...args)
+  }
+  Object.defineProperty(audioEngine, 'currentTime', { configurable: true, get: () => time })
+  audioEngine.play = async () => emit('stateChange', 'playing')
+  audioEngine.stop = () => emit('stateChange', 'stopped')
+  try {
+    usePlayerStore.getState()._initListeners()
+    const track = makeTrack('subsonic://7/track/one', { sourceType: 'subsonic', duration: 60 })
+    usePlayerStore.setState({ currentTrack: track, playbackState: 'loading', duration: 60 })
+    emit('timeUpdate', 0)
+    assert.equal(reports.length, 0, 'loading is not now playing')
+    await usePlayerStore.getState().play()
+    assert.equal(reports[0]?.state, 'playing')
+    const id = reports[0].sessionId
+    now += 1000; time = 1; emit('timeUpdate', time)
+    time = 40; emit('timeUpdate', time)
+    assert.equal(reports.at(-1)?.position, 40)
+    emit('stateChange', 'paused')
+    assert.equal(reports.at(-1)?.state, 'paused')
+    usePlayerStore.getState().resetListeningHistoryTracking({ generation: 'second', startedAt: null })
+    now += 60_000; emit('stateChange', 'playing')
+    assert.equal(reports.at(-1)?.sessionId, id, 'history reset must not create a second server play')
+    emit('stateChange', 'loading'); emit('timeUpdate', 0)
+    assert.equal(reports.at(-1)?.position, 40, 'buffering UI reset must not rewind the server clock')
+    emit('stateChange', 'playing')
+    emit('gaplessTransition')
+    assert.equal(reports.at(-1)?.state, 'stopped')
+    assert.equal(reports.at(-1)?.position, 60)
+    usePlayerStore.setState({ currentTrack: track, playbackState: 'loading', duration: 60 })
+    time = 0
+    await usePlayerStore.getState().play()
+    assert.notEqual(reports.at(-1)?.sessionId, id, 'repeated copies are distinct plays')
+    usePlayerStore.getState().stop()
+    assert.equal(reports.at(-1)?.state, 'stopped')
+    await new Promise(resolve => setImmediate(resolve))
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    unsubscribe.forEach(dispose => dispose())
+    audioEngine.on = originalOn
+    audioEngine.play = originalPlay
+    audioEngine.stop = originalStop
+    if (ownCurrentTime) Object.defineProperty(audioEngine, 'currentTime', ownCurrentTime)
+    else delete (audioEngine as unknown as Record<string, unknown>).currentTime
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    if (originalPerformance) Object.defineProperty(globalThis, 'performance', originalPerformance)
+    resetStores()
   }
 })
 

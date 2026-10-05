@@ -1,4 +1,5 @@
 import { isRetainedRemoteSource } from '../../shared/audio/retainedRemoteSource'
+import { ProviderPlaybackPublisher } from '../audio/providerPlaybackPublisher'
 import { create } from 'zustand'
 import type { PlaybackSourceContext } from '../../types/playbackSource'
 import { normalizePlaybackSourceContext, playbackSourceKey, resolveCurrentPlaybackSource } from '../../shared/home/playbackSources'
@@ -1177,6 +1178,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   let pendingManualLoadCueTrack: Track | null = null
   let recentPlaySession: RecentPlaySession | null = null
   let listeningHistoryStatusPromise: Promise<ListeningHistoryStatus> | null = null
+  const providerPlayback = new ProviderPlaybackPublisher(snapshot => window.electronAPI.reportProviderPlayback?.(snapshot))
   let activeLoadRequestId = 0
   let activePrebufferRequestId = 0
   let playbackIntentGeneration = 0
@@ -2162,6 +2164,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   ): void => {
     const session = updateRecentPlayAccumulation(playbackState)
     if (!session) return
+    providerPlayback.finish(Boolean(options.completedNaturally))
     checkpointRecentPlay(session, {
       finalizeSegment: true,
       finalizeSession: true,
@@ -2207,6 +2210,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       qualificationEligible: true
     }
     const session = recentPlaySession
+    providerPlayback.start(session.sessionKey, trackPath, session.trackDurationSeconds)
+    providerPlayback.observe(state.playbackState, state.currentTime, session.trackDurationSeconds)
     if (session.allowDbWrite) {
       void getListeningHistoryStatus().then((status) => {
         if (recentPlaySession === session && session.generation === null) session.generation = status.generation
@@ -5740,6 +5745,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       audioEngine.on('stateChange', (state) => {
         const nextPlaybackState = state as PlaybackState
+        providerPlayback.observe(nextPlaybackState, audioEngine.currentTime, get().duration)
         const previousPlaybackState = get().playbackState
         const now = performance.now()
         maybeCommitRecentPlay(previousPlaybackState, now)
@@ -5795,6 +5801,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       audioEngine.on('timeUpdate', (time) => {
         const normalizedTime = time as number
+        providerPlayback.observe(get().playbackState, normalizedTime, get().duration)
         maybeCommitRecentPlay()
 
         const state = get()

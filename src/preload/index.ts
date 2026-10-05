@@ -1,4 +1,5 @@
 import type { RemoteAudioCacheStatus } from '../types/remoteAudioCache'
+import type { ProviderPlaybackSnapshot } from '../types/providerPlayback'
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import type { NotchAPI } from '../types/notch'
 import { join } from 'path'
@@ -919,6 +920,7 @@ function openLocalAudioPcmStream(
 
 // Expose APIs to renderer
 contextBridge.exposeInMainWorld('electronAPI', {
+  reportProviderPlayback: (snapshot: ProviderPlaybackSnapshot) => ipcRenderer.send('provider-playback:observe', snapshot),
   // Window controls
   minimize: () => ipcRenderer.send('window:minimize'),
   maximize: () => ipcRenderer.send('window:maximize'),
@@ -1979,6 +1981,7 @@ declare global {
       onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
     }
     electronAPI: {
+      reportProviderPlayback: (snapshot: ProviderPlaybackSnapshot) => void
       // Window controls
       minimize: () => void
       maximize: () => void

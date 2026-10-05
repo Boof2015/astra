@@ -38,6 +38,9 @@ import { normalizeRemoteCacheLimitGb } from '../types/remoteAudioCache'
 import { ProgressivePcmDelivery } from './progressivePcmDelivery'
 import { ProgressiveStartupRegistry } from './progressiveStartupRegistry'
 import { createJellyfinAudioSource } from './services/jellyfinAudioSource'
+import { ProviderPlaybackService } from './services/providerPlayback'
+import { createJellyfinPlaybackClient, createSubsonicPlaybackClient } from './services/providerPlaybackClients'
+import { buildProviderRequestHeaders } from './services/providerClientIdentity'
 import { NativeRemoteLeaseRegistry } from './nativeRemoteLeaseRegistry'
 import { createThrottledLibraryScanProgressReporter } from './libraryScanProgress'
 import {
@@ -1422,6 +1425,37 @@ const parallaxService = new ParallaxService({
   // ParallaxStatus.sink.incomingPairRequest on every status push.
   getIncomingPairRequest: () => parallaxIncomingPairRequest,
   getSecurityMigrationRequired: () => parallaxSecurityMigrationRequired
+})
+
+const providerPlaybackErrorAt = new Map<string, number>()
+const providerPlaybackService = new ProviderPlaybackService({
+  onError: (provider) => {
+    const now = Date.now()
+    if (now - (providerPlaybackErrorAt.get(provider) ?? 0) < 60_000) return
+    providerPlaybackErrorAt.set(provider, now)
+    console.warn(`[Playback reporting] ${provider} could not receive an update; audio playback continues.`)
+  },
+  resolve: async (target) => {
+    if (target.provider === 'subsonic') {
+      const { source, connection } = requireSubsonicSourceCredentials(target.sourceId)
+      if (source.enabled !== 1) return null
+      const isCurrent = () => {
+        const current = library.getSubsonicSourceById(target.sourceId)
+        return current?.enabled === 1 && current.base_url === source.base_url
+          && current.username === source.username && current.secret_encrypted === source.secret_encrypted
+      }
+      return createSubsonicPlaybackClient(connection, target.trackId, isCurrent)
+    }
+    const { source, connection } = requireJellyfinSourceCredentials(target.sourceId)
+    if (source.enabled !== 1) return null
+    const isCurrent = () => {
+      const current = library.getJellyfinSourceById(target.sourceId)
+      return current?.enabled === 1 && current.base_url === source.base_url
+        && current.username === source.username && current.secret_encrypted === source.secret_encrypted
+    }
+    return createJellyfinPlaybackClient(connection, target.trackId,
+      (signal, forceRefresh) => getJellyfinAuthContext(target.sourceId, connection, { signal, forceRefresh }), isCurrent)
+  }
 })
 
 const lastFmService = new LastFmService({
@@ -4948,6 +4982,7 @@ function createWindow(): void {
     void persistMainWindowPrefs()
   })
   mainWindow.on('closed', () => {
+    providerPlaybackService.finishCurrent()
     globalInputShortcutService.clear()
     mainWindow = null
     notchController?.mainWindowClosed()
@@ -4972,6 +5007,7 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
+  mainWindow.webContents.on('render-process-gone', () => providerPlaybackService.finishCurrent())
   mainWindow.webContents.on('before-input-event', (event, input) => {
     const interceptedInput = resolveInterceptedKeyboardInput(input, process.platform)
     if (!interceptedInput) return
@@ -5700,7 +5736,23 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', () => {
+let providerPlaybackQuitPending = false
+let providerPlaybackQuitReady = false
+app.on('before-quit', (event) => {
+  if (!providerPlaybackQuitReady) {
+    event.preventDefault()
+    if (!providerPlaybackQuitPending) {
+      providerPlaybackQuitPending = true
+      const deadline = setTimeout(() => { providerPlaybackQuitReady = true; app.quit() }, 1500)
+      void providerPlaybackService.shutdown().finally(() => {
+        if (providerPlaybackQuitReady) return
+        clearTimeout(deadline)
+        providerPlaybackQuitReady = true
+        app.quit()
+      })
+    }
+    return
+  }
   isAppQuitting = true
   progressiveStartupControllers.cancelAll()
   void remoteAudioCache?.close()
@@ -5912,6 +5964,11 @@ ipcMain.handle('mini-player:toggleAlwaysOnTop', async () => {
 
 ipcMain.handle('mini-player:getSnapshot', () => {
   return latestMiniPlayerSnapshot
+})
+
+ipcMain.on('provider-playback:observe', (event, snapshot: unknown) => {
+  if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame) return
+  providerPlaybackService.observe(snapshot)
 })
 
 ipcMain.on('mini-player:publishSnapshot', (event, snapshot: MiniPlayerSnapshot) => {
@@ -10578,7 +10635,7 @@ async function acquireSubsonicCachedAudio(filePath: string, signal: AbortSignal)
     open: async downloadSignal => {
       const response = await fetch(buildSubsonicStreamUrl(connection, parsed.sourceTrackId, { original: true }), {
         signal: downloadSignal,
-        headers: { 'Accept-Encoding': 'identity' }
+        headers: { ...buildProviderRequestHeaders(), 'Accept-Encoding': 'identity' }
       })
       return response
     }

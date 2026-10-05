@@ -1,11 +1,11 @@
 import { createHash } from 'crypto'
+import { PROVIDER_CLIENT_VERSION, buildProviderRequestHeaders } from './providerClientIdentity'
 import { formatArtistNames, normalizeArtistNames } from '../../shared/library/artistCredits'
 
 const DEFAULT_TIMEOUT_MS = 12_000
 const DEFAULT_RETRIES = 1
 const DEFAULT_PAGE_SIZE = 500
 const CLIENT_NAME = 'Astra'
-const CLIENT_VERSION = '0.4.0'
 const DEVICE_NAME = 'Astra Desktop'
 const TRANSCODE_AUDIO_CODEC = 'mp3'
 const TRANSCODE_CONTAINER = 'mp3'
@@ -205,7 +205,7 @@ function buildJellyfinAuthorizationHeader(
     `Client=\"${escapeHeaderTokenValue(CLIENT_NAME)}\"`,
     `Device=\"${escapeHeaderTokenValue(DEVICE_NAME)}\"`,
     `DeviceId=\"${escapeHeaderTokenValue(buildJellyfinDeviceId(config))}\"`,
-    `Version=\"${escapeHeaderTokenValue(CLIENT_VERSION)}\"`
+    `Version=\"${escapeHeaderTokenValue(PROVIDER_CLIENT_VERSION)}\"`
   ]
   if (options.token) {
     parts.push(`Token=\"${escapeHeaderTokenValue(options.token)}\"`)
@@ -218,9 +218,33 @@ export function buildJellyfinStreamRequestHeaders(
   authContext: JellyfinAuthContext
 ): Record<string, string> {
   return {
+    ...buildProviderRequestHeaders(),
     'X-Emby-Authorization': buildJellyfinAuthorizationHeader(config, { token: authContext.accessToken }),
     'X-Emby-Token': authContext.accessToken
   }
+}
+
+export async function reportJellyfinPlayback(
+  config: JellyfinConnectionConfig, authContext: JellyfinAuthContext,
+  event: 'start' | 'progress' | 'stop',
+  report: { trackId: string; sessionId: string; position: number; paused: boolean },
+  options: JellyfinRequestOptions = {}
+): Promise<void> {
+  const suffix = event === 'progress' ? '/Progress' : event === 'stop' ? '/Stopped' : ''
+  const merged = mergeAbortSignals(options.signal, options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+  try {
+    const response = await fetch(buildJellyfinUrl(config, `/Sessions/Playing${suffix}`, {}), {
+      method: 'POST', signal: merged.signal,
+      headers: { ...buildJellyfinStreamRequestHeaders(config, authContext), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ItemId: report.trackId, PlaySessionId: report.sessionId,
+        PositionTicks: Math.round(report.position * 10_000_000),
+        ...(event === 'stop' ? {} : { IsPaused: report.paused, CanSeek: true, PlayMethod: 'DirectPlay' })
+      })
+    })
+    if (!response.ok) throw new Error(`Jellyfin playback report failed (${response.status})`)
+    // Successful reporting returns 204; there is no JSON response to parse.
+  } finally { merged.cleanup() }
 }
 
 function buildJellyfinUrl(
@@ -291,8 +315,7 @@ async function requestJellyfinJson(
         signal: merged.signal,
         headers: {
           Accept: 'application/json',
-          'X-Emby-Authorization': buildJellyfinAuthorizationHeader(config, { token: authContext.accessToken }),
-          'X-Emby-Token': authContext.accessToken
+          ...buildJellyfinStreamRequestHeaders(config, authContext)
         }
       })
 
@@ -447,6 +470,7 @@ export async function authenticateJellyfin(
         headers: {
           Accept: 'application/json',
           'Content-Type': 'application/json',
+          ...buildProviderRequestHeaders(),
           'X-Emby-Authorization': buildJellyfinAuthorizationHeader(config)
         },
         body: JSON.stringify({
@@ -790,10 +814,7 @@ export async function fetchJellyfinCoverArt(
       const response = await fetch(url, {
         method: 'GET',
         signal: merged.signal,
-        headers: {
-          'X-Emby-Authorization': buildJellyfinAuthorizationHeader(config, { token: authContext.accessToken }),
-          'X-Emby-Token': authContext.accessToken
-        }
+        headers: buildJellyfinStreamRequestHeaders(config, authContext)
       })
 
       if (!response.ok) {
