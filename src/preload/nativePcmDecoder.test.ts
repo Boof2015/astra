@@ -114,9 +114,15 @@ test('failed/truncated/empty output never publishes decoder EOF or starts anothe
   assert.equal(input.status().state, 'open')
 })
 
-test('abort and native cancellation interrupt both idle reading and source validation', async () => {
+test('abort and native cancellation interrupt both idle reading and source validation', { timeout: 5000 }, async t => {
+  // The cancellation monitor deliberately does not keep the app alive. Once the
+  // child exits, this isolated test must supply the application's event-loop
+  // lifetime while it waits for the monitor to observe native cancellation.
+  const keepAlive = setInterval(() => {}, 1000)
+  t.after(() => clearInterval(keepAlive))
   const controller = new AbortController()
   const waiting = run('setInterval(() => {}, 100)', fakeInput(), { signal: controller.signal })
+  t.after(waiting.decoder.cancel)
   controller.abort()
   await assert.rejects(waiting.decoder.ready, { name: 'AbortError' })
   await assert.rejects(waiting.decoder.done, { name: 'AbortError' })
@@ -125,6 +131,7 @@ test('abort and native cancellation interrupt both idle reading and source valid
   const validating = run('process.stdout.write(Buffer.alloc(4))', fakeInput(), {
     validateEof: () => { entered(); return new Promise(() => {}) }
   })
+  t.after(validating.decoder.cancel)
   await validationEntered
   validating.input.cancel() // Engine stop/replace cancels an attached native input.
   await assert.rejects(validating.decoder.done, { name: 'AbortError' })

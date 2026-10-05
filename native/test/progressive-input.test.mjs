@@ -49,7 +49,11 @@ test('handles attach once, expose identity, replace seeks, and cancel old/next i
   assert.equal(loaded.playbackState, 'stopped')
   assert.throws(() => first.load(), /attached once/)
   assert.throws(() => playback.seek(1), /replacement decoder input/)
-  assert.throws(() => playback.preloadNextTrack(new Uint8Array(16), 48000, 2, 's16', 1), /progressive preloader/)
+  // A complete local successor is supported by the mixed-source gapless route.
+  assert.doesNotThrow(() => playback.preloadNextTrack(new Uint8Array(16), 48000, 2, 's16', 1))
+  assert.equal(playback.getPlaybackSnapshot().progressiveSessionId, first.status().sessionId)
+  playback.clearNextTrack()
+  assert.equal(first.status().state, 'ended')
   const next = input()
   next.append(new Uint8Array(16))
   next.finish()
