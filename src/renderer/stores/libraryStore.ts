@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { useProviderSyncStore } from './providerSyncStore'
 import type { TrackSourceType } from '../../types/subsonic'
 import type {
   LibraryDiagnosticsOperationKind,
@@ -2400,22 +2401,24 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Toggle favorite status
   toggleFavorite: async (trackPath: string) => {
-    const { favorites } = get()
-    if (favorites.has(trackPath)) {
-      await window.electronAPI.library.removeFavorite(trackPath)
-      const next = new Set(favorites)
-      next.delete(trackPath)
-      set({ favorites: next })
-    } else {
-      await window.electronAPI.library.addFavorite(trackPath)
-      const next = new Set(favorites)
-      next.add(trackPath)
-      set({ favorites: next })
+    try {
+      const removing = get().favorites.has(trackPath)
+      if (removing) await window.electronAPI.library.removeFavorite(trackPath)
+      else await window.electronAPI.library.addFavorite(trackPath)
+      set(state => {
+        const next = new Set(state.favorites)
+        if (removing) next.delete(trackPath)
+        else next.add(trackPath)
+        return { favorites: next }
+      })
+      // Reload full favorite tracks list
+      const favoriteTracks = await window.electronAPI.library.getFavorites()
+      const favoriteTrackPaths = getUniqueTrackPaths(favoriteTracks)
+      set((state) => ingestTracksForPatch(state, favoriteTracks, { favoriteTrackPaths }))
+    } catch {
+      useProviderSyncStore.getState().notifyError('Could not save the favorite. For a synced server, check its connection and try again.')
+      await get().loadFavorites()
     }
-    // Reload full favorite tracks list
-    const favoriteTracks = await window.electronAPI.library.getFavorites()
-    const favoriteTrackPaths = getUniqueTrackPaths(favoriteTracks)
-    set((state) => ingestTracksForPatch(state, favoriteTracks, { favoriteTrackPaths }))
   },
 
   // Sync check if track is a favorite

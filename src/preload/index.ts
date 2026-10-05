@@ -1,5 +1,6 @@
 import type { RemoteAudioCacheStatus } from '../types/remoteAudioCache'
 import type { ProviderPlaybackSnapshot } from '../types/providerPlayback'
+import type { ProviderSyncAPI } from '../types/providerSync'
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import type { NotchAPI } from '../types/notch'
 import { join } from 'path'
@@ -920,6 +921,18 @@ function openLocalAudioPcmStream(
 
 // Expose APIs to renderer
 contextBridge.exposeInMainWorld('electronAPI', {
+  providerSync: {
+    status: () => ipcRenderer.invoke('provider-sync:status'),
+    review: (ref) => ipcRenderer.invoke('provider-sync:review', ref),
+    apply: (token, choices) => ipcRenderer.invoke('provider-sync:apply', token, choices),
+    disable: (ref) => ipcRenderer.invoke('provider-sync:disable', ref),
+    refresh: (ref) => ipcRenderer.invoke('provider-sync:refresh', ref),
+    onChanged: (callback) => {
+      const handler = () => callback()
+      ipcRenderer.on('provider-sync:changed', handler)
+      return () => ipcRenderer.removeListener('provider-sync:changed', handler)
+    }
+  } satisfies ProviderSyncAPI,
   reportProviderPlayback: (snapshot: ProviderPlaybackSnapshot) => ipcRenderer.send('provider-playback:observe', snapshot),
   // Window controls
   minimize: () => ipcRenderer.send('window:minimize'),
@@ -1981,6 +1994,7 @@ declare global {
       onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
     }
     electronAPI: {
+      providerSync: ProviderSyncAPI
       reportProviderPlayback: (snapshot: ProviderPlaybackSnapshot) => void
       // Window controls
       minimize: () => void

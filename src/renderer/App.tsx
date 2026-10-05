@@ -13,6 +13,9 @@ import FullscreenMode from './components/layout/FullscreenMode'
 import ZoneDisplay from './components/layout/ZoneDisplay'
 import QuickLaunchPalette from './components/layout/QuickLaunchPalette'
 import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
+import ProviderSyncNotice from './components/layout/ProviderSyncNotice'
+import ProviderSyncReviewModal from './components/sync/ProviderSyncReviewModal'
+import { useProviderSyncStore } from './stores/providerSyncStore'
 import OutputDelayCue from './components/layout/OutputDelayCue'
 import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
 import AssociatedOpenCue from './components/layout/AssociatedOpenCue'
@@ -513,13 +516,19 @@ function App() {
     // A mobile LAN sync mutates favorites/playlists in the main process.
     const unsubscribeExternalLibraryMutation = window.electronAPI.library.onExternalLibraryMutation(() => {
       void useLibraryStore.getState().loadFavorites()
+      void useRatingsStore.getState().loadRatings()
       void usePlaylistStore.getState().loadPlaylists()
+    })
+    void useProviderSyncStore.getState().refreshStatus()
+    const unsubscribeProviderSync = window.electronAPI.providerSync.onChanged(() => {
+      void useProviderSyncStore.getState().refreshStatus()
     })
     return () => {
       didUnmount = true
       unsubscribeFileCreatedAtBackfill()
       unsubscribeBackfill()
       unsubscribeExternalLibraryMutation()
+      unsubscribeProviderSync()
       unsubscribeAssociatedOpenFiles()
       sessionPersistenceCleanup?.()
       if (!associatedOpenReady) {
@@ -629,6 +638,8 @@ function App() {
         <PhoneRemoteIncomingPairCard />
         <PhoneSyncConflictResolverModal />
         <DecodeFallbackCue />
+        <ProviderSyncNotice />
+        <ProviderSyncReviewModal />
         <OutputDelayCue />
         <AssociatedOpenCue />
         <UpdateAvailableCue />

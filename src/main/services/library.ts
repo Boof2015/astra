@@ -70,6 +70,7 @@ import {
   type PlaylistKind
 } from '../../shared/playlists/dynamicPlaylist'
 import { normalizeTrackRating, type TrackRatingEntry } from '../../shared/ratings/trackRating'
+import type { ProviderSyncRef, ProviderSyncTrack, ProviderSyncField, ProviderSyncValue } from '../../types/providerSync'
 import {
   LISTENING_STATS_TRANSFER_VERSION,
   createEmptyListeningStatsImportResult,
@@ -2708,6 +2709,16 @@ export async function initDatabase(): Promise<void> {
   `)
   db.run('CREATE INDEX IF NOT EXISTS idx_jellyfin_sources_enabled ON jellyfin_sources(enabled)')
 
+  db.run(`CREATE TABLE IF NOT EXISTS provider_state_sync (
+    provider TEXT NOT NULL, source_id INTEGER NOT NULL, fingerprint TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (provider, source_id)
+  )`)
+  db.run(`CREATE TABLE IF NOT EXISTS provider_state_baselines (
+    provider TEXT NOT NULL, source_id INTEGER NOT NULL, track_path TEXT NOT NULL,
+    field TEXT NOT NULL, value_json TEXT NOT NULL,
+    PRIMARY KEY (provider, source_id, track_path, field)
+  )`)
+
   db.run(`UPDATE tracks SET source_type = 'local' WHERE source_type IS NULL OR TRIM(source_type) = ''`)
   db.run('UPDATE tracks SET is_available = 1 WHERE is_available IS NULL')
 
@@ -3123,6 +3134,118 @@ function toJellyfinSourcePublic(row: JellyfinSourceRow): JellyfinSourcePublic {
     updated_at: row.updated_at,
     has_stored_secret: typeof row.secret_encrypted === 'string' && row.secret_encrypted.trim().length > 0
   }
+}
+
+export function getProviderSyncSetting(ref: ProviderSyncRef): { fingerprint: string; enabled: number } | null {
+  return db?.get<{ fingerprint: string; enabled: number }>(
+    'SELECT fingerprint, enabled FROM provider_state_sync WHERE provider = ? AND source_id = ?',
+    [ref.provider, ref.sourceId]) ?? null
+}
+
+export async function setProviderSyncSetting(ref: ProviderSyncRef, fingerprint: string, enabled: boolean): Promise<void> {
+  if (!db) throw new Error('Database not initialized')
+  const previous = getProviderSyncSetting(ref)
+  if (previous?.fingerprint !== fingerprint || !enabled) {
+    db.run('DELETE FROM provider_state_baselines WHERE provider = ? AND source_id = ?', [ref.provider, ref.sourceId])
+  }
+  db.run(`INSERT INTO provider_state_sync (provider, source_id, fingerprint, enabled) VALUES (?, ?, ?, ?)
+    ON CONFLICT(provider, source_id) DO UPDATE SET fingerprint = excluded.fingerprint, enabled = excluded.enabled`,
+  [ref.provider, ref.sourceId, fingerprint, enabled ? 1 : 0])
+  await saveDatabase()
+}
+
+export function getProviderSyncTracks(ref: ProviderSyncRef, path?: string): ProviderSyncTrack[] {
+  if (!db) return []
+  const links = getProviderFavoriteLinks().localByRemote
+  return db.all<{ path: string; id: string; title: string; artist: string; favorite: number; rating: number | null; baseline: string | null }>(`
+    SELECT t.path, t.source_track_id AS id, COALESCE(t.title, t.path) AS title,
+      COALESCE(t.artist, '') AS artist, CASE WHEN f.track_path IS NULL THEN 0 ELSE 1 END AS favorite, r.rating,
+      b.value_json AS baseline
+    FROM tracks t LEFT JOIN favorites f ON f.track_path = t.path
+    LEFT JOIN track_ratings r ON r.track_path = t.path
+    LEFT JOIN provider_state_baselines b ON b.provider = t.source_type AND b.source_id = t.source_id
+      AND b.track_path = t.path AND b.field = 'favorite'
+    WHERE t.source_type = ? AND t.source_id = ? AND t.source_track_id IS NOT NULL
+      ${path === undefined ? '' : 'AND t.path = ?'}`, path === undefined ? [ref.provider, ref.sourceId] : [ref.provider, ref.sourceId, path])
+    .map(({ baseline, ...row }) => {
+      const localPath = links.get(row.path)
+      const favorite = row.favorite === 1
+      if (!localPath) return { ...row, favorite }
+      const localFavorite = Boolean(db!.get('SELECT 1 FROM favorites WHERE track_path = ?', [localPath]))
+      const favoriteMixed = favorite !== localFavorite
+      // At first connection preserve either Astra copy's favorite. Afterwards,
+      // the value differing from the acknowledged baseline is the newer edit.
+      return { ...row, favoriteMixed, favorite: favoriteMixed ? baseline !== 'true' : favorite }
+    })
+}
+
+interface ProviderFavoriteLink extends ProviderSyncRef { path: string }
+interface ProviderFavoriteLinks {
+  generation: number
+  localByRemote: Map<string, string>
+  remoteByLocal: Map<string, ProviderFavoriteLink[]>
+}
+let providerFavoriteLinks: ProviderFavoriteLinks | null = null
+
+function getProviderFavoriteLinks(): ProviderFavoriteLinks {
+  if (providerFavoriteLinks?.generation === libraryWriteGeneration) return providerFavoriteLinks
+  type Row = { path: string; title: string; artist: string; album: string; duration: number;
+    source_type: string; source_id: number | null }
+  const groups = new Map<string, Row[]>()
+  const rows = db?.all<Row>(`SELECT t.path, COALESCE(o.title, t.title) AS title,
+    COALESCE(o.artist, t.artist) AS artist, COALESCE(o.album, t.album) AS album,
+    t.duration, t.source_type, t.source_id FROM tracks t
+    LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
+    WHERE t.is_available = 1 AND t.source_type IN ('local', 'subsonic', 'jellyfin')`) ?? []
+  for (const row of rows) {
+    if (!(row.duration > 0) || [row.title, row.artist, row.album].some(value =>
+      !value?.trim() || /^\[?unknown(?: artist| album)?\]?$/i.test(value.trim()))) continue
+    const key = buildTrackSyncKey(row.title, row.artist, row.album)
+    const group = groups.get(key) ?? []
+    group.push(row)
+    groups.set(key, group)
+  }
+  const links: ProviderFavoriteLinks = { generation: libraryWriteGeneration, localByRemote: new Map(), remoteByLocal: new Map() }
+  for (const group of groups.values()) {
+    const local = group.filter(row => row.source_type === 'local')
+    const remote = group.filter(row => row.source_type !== 'local')
+    for (const target of remote) {
+      const candidates = local.filter(row => Math.abs(row.duration - target.duration) <= 2)
+      if (candidates.length !== 1) continue
+      const match = candidates[0]
+      if (remote.filter(row => row.source_type === target.source_type && row.source_id === target.source_id
+        && Math.abs(row.duration - match.duration) <= 2).length !== 1) continue
+      links.localByRemote.set(target.path, match.path)
+      const matches = links.remoteByLocal.get(match.path) ?? []
+      matches.push({ provider: target.source_type as ProviderSyncRef['provider'], sourceId: target.source_id!, path: target.path })
+      links.remoteByLocal.set(match.path, matches)
+    }
+  }
+  providerFavoriteLinks = links
+  return links
+}
+
+export function getProviderFavoriteTargets(localPath: string): ProviderFavoriteLink[] {
+  return getProviderFavoriteLinks().remoteByLocal.get(localPath) ?? []
+}
+
+export function getProviderFavoritePaths(remotePath: string): string[] {
+  const localPath = getProviderFavoriteLinks().localByRemote.get(remotePath)
+  return localPath ? [remotePath, localPath] : [remotePath]
+}
+
+export function getProviderSyncBaselines(ref: ProviderSyncRef): Map<string, ProviderSyncValue> {
+  const rows = db?.all<{ track_path: string; field: string; value_json: string }>(
+    'SELECT track_path, field, value_json FROM provider_state_baselines WHERE provider = ? AND source_id = ?',
+    [ref.provider, ref.sourceId]) ?? []
+  return new Map(rows.map(row => [JSON.stringify([row.track_path, row.field]), JSON.parse(row.value_json) as ProviderSyncValue]))
+}
+
+export function saveProviderSyncBaseline(ref: ProviderSyncRef, path: string, field: ProviderSyncField, value: ProviderSyncValue): void {
+  if (!db) throw new Error('Database not initialized')
+  db.run(`INSERT INTO provider_state_baselines (provider, source_id, track_path, field, value_json) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(provider, source_id, track_path, field) DO UPDATE SET value_json = excluded.value_json`,
+  [ref.provider, ref.sourceId, path, field, JSON.stringify(value)])
 }
 
 export function listSubsonicSources(): SubsonicSourcePublic[] {
@@ -4046,10 +4169,70 @@ export async function markMissingSubsonicTracksUnavailable(
 
   const result = db.run(sql, params)
   const count = result.changes
-  if (options.persist !== false && count > 0) {
+  const recovered = reconcileSubsonicTrackIds(sourceId)
+  if (recovered > 0) rebuildDerivedLibraryState()
+  if (options.persist !== false && (count > 0 || recovered > 0)) {
     await saveDatabase()
   }
-  return Number.isFinite(count) ? count : 0
+  return Number.isFinite(count) ? Math.max(0, count - recovered) : 0
+}
+
+/** Recover a server ID change only after a complete catalog identifies missing IDs. */
+function reconcileSubsonicTrackIds(sourceId: number): number {
+  if (!db) return 0
+  type Row = DuplicateTrackRowRef & {
+    source_path: string; title: string; artist: string; album: string;
+    duration: number; format: string; is_available: number; availability_reason: string | null
+  }
+  const tracks = db.all<Row>(`SELECT id, path, source_path, title, artist, album,
+      duration, format, is_available, availability_reason FROM tracks
+    WHERE source_type = 'subsonic' AND source_id = ?
+      AND source_path IS NOT NULL AND TRIM(source_path) <> ''`, [sourceId])
+  const currentByPath = new Map<string, Row[]>()
+  for (const track of tracks) {
+    if (track.is_available !== 1) continue
+    const group = currentByPath.get(track.source_path) ?? []
+    group.push(track)
+    currentByPath.set(track.source_path, group)
+  }
+  const replacements = new Map<Row, Row[]>()
+  for (const stale of tracks) {
+    if (stale.is_available !== 0 || stale.availability_reason !== 'missing_upstream') continue
+    // Subsonic paths may be virtual rather than physical. Require matching
+    // metadata and duration too; never guess between indistinguishable copies.
+    const candidates = (currentByPath.get(stale.source_path) ?? []).filter(current =>
+      current.title === stale.title && current.artist === stale.artist && current.album === stale.album
+      && current.format === stale.format && current.duration > 0 && stale.duration > 0
+      && Math.abs(current.duration - stale.duration) <= 1)
+    if (candidates.length !== 1) continue
+    const target = candidates[0]
+    const group = replacements.get(target) ?? []
+    group.push(stale)
+    replacements.set(target, group)
+  }
+  if (!replacements.size) return 0
+  const ownsTransaction = !db.inTransaction
+  if (ownsTransaction) beginLibraryWriteTransaction()
+  let recovered = 0
+  try {
+    for (const [target, stale] of replacements) {
+      for (const old of stale) {
+        db.run('UPDATE listening_sessions SET track_path = ? WHERE track_id = ? AND track_path = ?', [target.path, old.id, old.path])
+        db.run(`DELETE FROM provider_state_baselines
+          WHERE provider = 'subsonic' AND source_id = ? AND track_path IN (?, ?)`, [sourceId, old.path, target.path])
+      }
+      // Reuse reference-preserving recovery: playlists, favorites, ratings,
+      // listening sessions, play counts, Home, metadata and lyrics all survive.
+      mergeDuplicateTrackRows(target.id, target.path, stale)
+      recovered += stale.length
+    }
+    refreshListeningSessionAlbumIdentities([...replacements.keys()].map(track => track.path))
+    if (ownsTransaction) commitLibraryWriteTransaction()
+  } catch (error) {
+    if (ownsTransaction) rollbackLibraryWriteTransaction()
+    throw error
+  }
+  return recovered
 }
 
 export async function replaceSubsonicArtworkHash(

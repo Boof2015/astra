@@ -80,6 +80,7 @@ export function TrackRatingControlValue({
   return (
     <div className={`track-rating-control track-rating-control-${size}`}>
       <StarRating
+        step={trackPaths.some(path => path.startsWith('subsonic://')) ? 1 : 0.5}
         value={value}
         indeterminate={indeterminate}
         size={size}

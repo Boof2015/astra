@@ -38,7 +38,12 @@ import { normalizeRemoteCacheLimitGb } from '../types/remoteAudioCache'
 import { ProgressivePcmDelivery } from './progressivePcmDelivery'
 import { ProgressiveStartupRegistry } from './progressiveStartupRegistry'
 import { createJellyfinAudioSource } from './services/jellyfinAudioSource'
-import { ProviderPlaybackService } from './services/providerPlayback'
+import { ProviderPlaybackService, playbackReportSource } from './services/providerPlayback'
+import { ProviderStateSync } from './services/providerStateSync'
+import { normalizeProviderSyncRef } from '../shared/sync/providerState'
+import type { ProviderSyncRef, ProviderSyncChoice } from '../types/providerSync'
+import { fetchSubsonicUserStates, writeSubsonicUserState } from './services/subsonic'
+import { fetchJellyfinUserStates, writeJellyfinFavorite } from './services/jellyfin'
 import { createJellyfinPlaybackClient, createSubsonicPlaybackClient } from './services/providerPlaybackClients'
 import { buildProviderRequestHeaders } from './services/providerClientIdentity'
 import { NativeRemoteLeaseRegistry } from './nativeRemoteLeaseRegistry'
@@ -54,7 +59,6 @@ import {
 import {
   buildSubsonicStreamUrl,
   fetchSubsonicCoverArt,
-  fetchSubsonicStarredTrackIds,
   fetchSubsonicTrackBytes,
   normalizeSubsonicBaseUrl,
   parseSubsonicArtworkHash,
@@ -1455,6 +1459,81 @@ const providerPlaybackService = new ProviderPlaybackService({
     }
     return createJellyfinPlaybackClient(connection, target.trackId,
       (signal, forceRefresh) => getJellyfinAuthContext(target.sourceId, connection, { signal, forceRefresh }), isCurrent)
+  }
+})
+
+function providerSyncFingerprint(ref: ProviderSyncRef): string | null {
+  const source = ref.provider === 'subsonic' ? library.getSubsonicSourceById(ref.sourceId) : library.getJellyfinSourceById(ref.sourceId)
+  if (!source || source.enabled !== 1) return null
+  return createHash('sha256').update(JSON.stringify([source.base_url, source.username, source.secret_encrypted])).digest('hex')
+}
+
+let providerStateMutationTimer: ReturnType<typeof setTimeout> | null = null
+const providerStateSync = new ProviderStateSync({
+  sources: () => [
+    ...library.listSubsonicSources().map(s => ({ provider: 'subsonic' as const, sourceId: s.id })),
+    ...library.listJellyfinSources().map(s => ({ provider: 'jellyfin' as const, sourceId: s.id }))
+  ],
+  fingerprint: providerSyncFingerprint,
+  setting: library.getProviderSyncSetting,
+  setSetting: library.setProviderSyncSetting,
+  tracks: library.getProviderSyncTracks,
+  track: (ref, path) => library.getProviderSyncTracks(ref, path)[0],
+  baselines: library.getProviderSyncBaselines,
+  saveBaseline: library.saveProviderSyncBaseline,
+  persist: library.persistLibraryDatabase,
+  applyLocal: async (path, field, value) => {
+    if (field === 'favorite') {
+      const favorites = new Set(library.getFavoritePaths())
+      for (const favoritePath of library.getProviderFavoritePaths(path)) {
+        if (favorites.has(favoritePath) === value) continue
+        if (value) await library.addFavorite(favoritePath)
+        else await library.removeFavorite(favoritePath)
+        publishCompanionFavoriteEvent(favoritePath, Boolean(value))
+      }
+    } else await library.setTrackRatingForPaths([path], value as number | null)
+    if (!providerStateMutationTimer) providerStateMutationTimer = setTimeout(() => {
+      providerStateMutationTimer = null
+      mainWindow?.webContents.send('library:externalLibraryMutation')
+    }, 100)
+  },
+  changed: () => mainWindow?.webContents.send('provider-sync:changed'),
+  client: async (ref, signal) => {
+    const fingerprint = providerSyncFingerprint(ref)
+    const guard = () => {
+      signal.throwIfAborted()
+      if (!fingerprint || fingerprint !== providerSyncFingerprint(ref)) throw new Error('Server settings changed.')
+    }
+    const options = { signal, timeoutMs: 12_000, retries: 0 }
+    if (ref.provider === 'subsonic') {
+      const { connection } = requireSubsonicSourceCredentials(ref.sourceId)
+      return {
+        read: ids => { guard(); return fetchSubsonicUserStates(connection, options, ids,
+          ids ? undefined : library.getProviderSyncTracks(ref).map(track => track.id)) },
+        write: (id, field, value) => { guard(); return writeSubsonicUserState(connection, id, field, value, options) }
+      }
+    }
+    const { connection } = requireJellyfinSourceCredentials(ref.sourceId)
+    const authenticate = async (forceRefresh = false) => {
+      guard()
+      const auth = await getJellyfinAuthContext(ref.sourceId, connection, { signal, forceRefresh })
+      guard()
+      return auth
+    }
+    const authenticated = async <T>(operation: (auth: Awaited<ReturnType<typeof authenticate>>) => Promise<T>): Promise<T> => {
+      try { return await operation(await authenticate()) }
+      catch (error) {
+        if (!(error instanceof Error) || !error.message.endsWith('(401)')) throw error
+        return operation(await authenticate(true))
+      }
+    }
+    return {
+      read: ids => authenticated(auth => fetchJellyfinUserStates(connection, auth, options, ids)),
+      write: async (id, field, value) => {
+        if (field !== 'favorite' || typeof value !== 'boolean') throw new Error('Jellyfin star rating sync is not supported.')
+        return authenticated(auth => writeJellyfinFavorite(connection, auth, id, value, options))
+      }
+    }
   }
 })
 
@@ -4223,13 +4302,9 @@ async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): 
 
     setSubsonicSyncProgress(sourceId, {
       phase: 'playlists',
-      activity: 'Loading favorites and playlists...'
+      activity: 'Loading playlists...'
     })
-    const [starredResult, playlistsResult] = await Promise.allSettled([
-      fetchSubsonicStarredTrackIds(credentials.connection, {
-        timeoutMs: 12_000,
-        retries: 1
-      }),
+    const [playlistsResult] = await Promise.allSettled([
       syncSubsonicPlaylists(sourceId, credentials.connection, {
         timeoutMs: 12_000,
         retries: 1,
@@ -4247,13 +4322,10 @@ async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): 
 
     setSubsonicSyncProgress(sourceId, {
       phase: 'finalizing',
-      activity: 'Applying favorites and playlists...'
+      activity: 'Applying playlists...'
     })
-    if (starredResult.status === 'fulfilled') {
-      await library.syncSubsonicFavoriteTrackIds(sourceId, starredResult.value, { persist: false })
-    } else {
-      console.warn(`Failed to sync Subsonic starred tracks for source ${sourceId}:`, starredResult.reason)
-    }
+    // User state is managed by per-server opt-in/reconciliation, never catalog import.
+    void providerStateSync.refresh({ provider: 'subsonic', sourceId }).catch(() => {})
     if (playlistsResult.status === 'fulfilled') {
       await library.syncSubsonicRemotePlaylists(sourceId, playlistsResult.value, { persist: false })
     } else {
@@ -5564,6 +5636,7 @@ app.whenReady().then(async () => {
 
   // Initialize library database
   await library.initDatabase()
+  providerStateSync.start()
   companionApiReferenceSigner = await loadCompanionApiReferenceSigner()
   try {
     const orphanedRemoteDeleted = await library.cleanupOrphanedRemoteTracks()
@@ -5739,6 +5812,7 @@ app.on('window-all-closed', () => {
 let providerPlaybackQuitPending = false
 let providerPlaybackQuitReady = false
 app.on('before-quit', (event) => {
+  providerStateSync.close()
   if (!providerPlaybackQuitReady) {
     event.preventDefault()
     if (!providerPlaybackQuitPending) {
@@ -9824,12 +9898,35 @@ ipcMain.handle('library:getFavoritePaths', () => {
   return library.getFavoritePaths()
 })
 
+ipcMain.handle('provider-sync:status', () => providerStateSync.status())
+ipcMain.handle('provider-sync:review', (_event, ref: unknown) => providerStateSync.review(normalizeProviderSyncRef(ref)))
+ipcMain.handle('provider-sync:disable', (_event, ref: unknown) => providerStateSync.disable(normalizeProviderSyncRef(ref)))
+ipcMain.handle('provider-sync:refresh', (_event, ref: unknown) => providerStateSync.refresh(normalizeProviderSyncRef(ref)))
+ipcMain.handle('provider-sync:apply', (_event, token: unknown, choices: Record<string, ProviderSyncChoice>) => {
+  if (typeof token !== 'string' || !choices || typeof choices !== 'object' || Array.isArray(choices)) throw new Error('Invalid review.')
+  return providerStateSync.apply(token, choices)
+})
+
 ipcMain.handle('library:addFavorite', async (_event, trackPath: string) => {
+  const source = playbackReportSource(trackPath)
+  if (source && providerStateSync.enabled(source)) return providerStateSync.edit(source, trackPath, 'favorite', true)
+  const targets = library.getProviderFavoriteTargets(trackPath).filter(ref => providerStateSync.enabled(ref))
+  if (targets.length) {
+    for (const target of targets) await providerStateSync.edit(target, target.path, 'favorite', true)
+    return
+  }
   await library.addFavorite(trackPath)
   publishCompanionFavoriteEvent(trackPath, true)
 })
 
 ipcMain.handle('library:removeFavorite', async (_event, trackPath: string) => {
+  const source = playbackReportSource(trackPath)
+  if (source && providerStateSync.enabled(source)) return providerStateSync.edit(source, trackPath, 'favorite', false)
+  const targets = library.getProviderFavoriteTargets(trackPath).filter(ref => providerStateSync.enabled(ref))
+  if (targets.length) {
+    for (const target of targets) await providerStateSync.edit(target, target.path, 'favorite', false)
+    return
+  }
   await library.removeFavorite(trackPath)
   publishCompanionFavoriteEvent(trackPath, false)
 })
@@ -9843,7 +9940,16 @@ ipcMain.handle('library:getTrackRatings', () => {
 })
 
 ipcMain.handle('library:setTrackRating', async (_event, trackPaths: string[], rating: number | null) => {
-  await library.setTrackRatingForPaths(trackPaths, rating)
+  if (!Array.isArray(trackPaths) || trackPaths.some(path => typeof path !== 'string')) throw new Error('Invalid track selection.')
+  if (rating !== null && trackPaths.some(path => path.startsWith('subsonic://'))
+    && (!Number.isInteger(rating) || rating < 1 || rating > 5)) throw new Error('Subsonic ratings must be whole stars from 1 to 5.')
+  const local: string[] = []
+  for (const path of new Set(trackPaths)) {
+    const source = playbackReportSource(path)
+    if (source?.provider === 'subsonic' && providerStateSync.enabled(source)) await providerStateSync.edit(source, path, 'rating', rating)
+    else local.push(path)
+  }
+  await library.setTrackRatingForPaths(local, rating)
 })
 
 ipcMain.handle('library:resetTrackRatings', async () => {

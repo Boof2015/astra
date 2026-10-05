@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from 'crypto'
 import { buildProviderRequestHeaders } from './providerClientIdentity'
+import type { ProviderUserState, ProviderSyncField, ProviderSyncValue } from '../../types/providerSync'
+import { validProviderValue } from '../../shared/sync/providerState'
 import { formatArtistNames, normalizeArtistNames } from '../../shared/library/artistCredits'
 
 const SUBSONIC_API_VERSION = '1.16.1'
@@ -850,6 +852,72 @@ export async function fetchSubsonicStarredTrackIds(
 ): Promise<string[]> {
   const starredResponse = await requestSubsonicJson(config, 'getStarred', {}, options)
   return toStarredTrackIds(starredResponse)
+}
+
+export async function fetchSubsonicUserStates(config: SubsonicConnectionConfig,
+  options: SubsonicRequestOptions, ids?: string[], knownIds?: string[]): Promise<Map<string, ProviderUserState>> {
+  const result = new Map<string, ProviderUserState>()
+  const add = (value: unknown) => {
+    const song = value as Record<string, unknown> | undefined
+    if (!song || typeof song.id !== 'string') throw new Error('Invalid server track state.')
+    const rating = song.userRating === undefined || song.userRating === 0 ? null : song.userRating
+    if (!validProviderValue('rating', rating)) throw new Error('Server returned an unsupported rating.')
+    result.set(song.id, { favorite: typeof song.starred === 'string' && song.starred.length > 0, rating: rating as number | null })
+  }
+  const readSongs = async (trackIds: string[]) => {
+    const pending = [...new Set(trackIds)]
+    let index = 0
+    await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => {
+      while (index < pending.length) {
+        const id = pending[index++]
+        options.signal?.throwIfAborted()
+        try {
+          const response = await requestSubsonicJson(config, 'getSong', { id }, options)
+          add(response.song)
+        } catch (error) {
+          if (!(error instanceof SubsonicRequestError) || error.apiCode !== 70) {
+            index = pending.length
+            throw error
+          }
+          // An explicitly missing track is unknown, not a cleared favorite/rating.
+        }
+      }
+    }))
+  }
+  if (ids) {
+    await readSongs(ids)
+  } else {
+    // Empty search is standardized by OpenSubsonic. Older Subsonic servers can
+    // still sync known library tracks using getSong, with bounded concurrency.
+    if (knownIds) {
+      const ping = await requestSubsonicJson(config, 'ping', {}, options)
+      if (ping.openSubsonic !== true) {
+        await readSongs(knownIds)
+        return result
+      }
+    }
+    for (let offset = 0; ; ) {
+      options.signal?.throwIfAborted()
+      const response = await requestSubsonicJson(config, 'search3',
+        { query: '', artistCount: 0, albumCount: 0, songCount: 500, songOffset: offset }, options)
+      const container = response.searchResult3 as { song?: unknown } | undefined
+      if (!container || typeof container !== 'object') throw new Error('This server does not support a full user-state listing.')
+      const songs = asArray<unknown>(container.song)
+      if (!songs.length) break
+      const before = result.size
+      songs.forEach(add)
+      if (result.size === before || result.size > 250_000) throw new Error('Server user-state pagination did not complete.')
+      offset += songs.length
+    }
+  }
+  return result
+}
+
+export async function writeSubsonicUserState(config: SubsonicConnectionConfig, id: string,
+  field: ProviderSyncField, value: ProviderSyncValue, options: SubsonicRequestOptions): Promise<void> {
+  if (!validProviderValue(field, value)) throw new Error('Invalid server value.')
+  await requestSubsonicJson(config, field === 'favorite' ? (value ? 'star' : 'unstar') : 'setRating',
+    { id, ...(field === 'rating' ? { rating: value === null ? 0 : Number(value) } : {}) }, { ...options, retries: 0 })
 }
 
 export async function syncSubsonicPlaylists(

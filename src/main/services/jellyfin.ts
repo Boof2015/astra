@@ -1,5 +1,6 @@
 import { createHash } from 'crypto'
 import { PROVIDER_CLIENT_VERSION, buildProviderRequestHeaders } from './providerClientIdentity'
+import type { ProviderUserState } from '../../types/providerSync'
 import { formatArtistNames, normalizeArtistNames } from '../../shared/library/artistCredits'
 
 const DEFAULT_TIMEOUT_MS = 12_000
@@ -643,6 +644,53 @@ export function mapJellyfinItemToCatalogTrack(sourceId: number, item: JellyfinAu
     bpm: null,
     musical_key: null
   }
+}
+
+export async function fetchJellyfinUserStates(config: JellyfinConnectionConfig, auth: JellyfinAuthContext,
+  options: JellyfinRequestOptions, ids?: string[]): Promise<Map<string, ProviderUserState>> {
+  const result = new Map<string, ProviderUserState>()
+  const add = (value: unknown) => {
+    const item = value as { Id?: unknown; UserData?: { IsFavorite?: unknown } } | undefined
+    if (!item || typeof item.Id !== 'string' || typeof item.UserData?.IsFavorite !== 'boolean') {
+      throw new Error('Server did not return favorite state.')
+    }
+    result.set(item.Id, { favorite: item.UserData.IsFavorite })
+  }
+  const endpoint = `/Users/${encodeURIComponent(auth.userId)}/Items`
+  if (ids) {
+    for (const id of new Set(ids)) {
+      options.signal?.throwIfAborted()
+      add(await requestJellyfinJson(config, auth, `${endpoint}/${encodeURIComponent(id)}`, {}, options))
+    }
+  } else {
+    for (let offset = 0; ; ) {
+      options.signal?.throwIfAborted()
+      const response = await requestJellyfinJson(config, auth, endpoint, {
+        Recursive: true, IncludeItemTypes: 'Audio', EnableUserData: true,
+        SortBy: 'SortName', SortOrder: 'Ascending', StartIndex: offset, Limit: 500
+      }, options)
+      if (!Array.isArray(response.Items)) throw new Error('Invalid server user-state listing.')
+      if (!response.Items.length) break
+      const before = result.size
+      response.Items.forEach(add)
+      if (result.size === before || result.size > 250_000) throw new Error('Server user-state pagination did not complete.')
+      offset += response.Items.length
+    }
+  }
+  return result
+}
+
+export async function writeJellyfinFavorite(config: JellyfinConnectionConfig, auth: JellyfinAuthContext,
+  id: string, favorite: boolean, options: JellyfinRequestOptions): Promise<void> {
+  const merged = mergeAbortSignals(options.signal, options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+  try {
+    const response = await fetch(buildJellyfinUrl(config,
+      `/Users/${encodeURIComponent(auth.userId)}/FavoriteItems/${encodeURIComponent(id)}`, {}), {
+      method: favorite ? 'POST' : 'DELETE', signal: merged.signal,
+      headers: buildJellyfinStreamRequestHeaders(config, auth)
+    })
+    if (!response.ok) throw new Error(`Jellyfin favorite update failed (${response.status})`)
+  } finally { merged.cleanup() }
 }
 
 export async function syncJellyfinCatalog(

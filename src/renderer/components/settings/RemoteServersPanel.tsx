@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
 import { useJellyfinSettingsStore } from '../../stores/jellyfinSettingsStore'
 import RemoteAudioCacheSettings from './RemoteAudioCacheSettings'
+import ProviderSyncControls from './ProviderSyncControls'
 import type {
   JellyfinSourceCreateInput,
   JellyfinSourceTestResult,
@@ -809,6 +810,7 @@ export default function RemoteServersPanel() {
                     {progress.detail ? ` · ${progress.detail}` : ''}
                   </p>
                 )}
+                <ProviderSyncControls provider={source.sourceType} sourceId={source.id} connected={source.enabled === 1} />
                 <div className="remote-source-card-footer">
                   <button
                     className="settings-btn"
