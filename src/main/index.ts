@@ -35,6 +35,9 @@ import {
 import { LibraryLatestSyncCoordinator } from './services/libraryLatestSync'
 import { RemoteAudioCache, type RemoteAudioLease } from './services/remoteAudioCache'
 import { normalizeRemoteCacheLimitGb } from '../types/remoteAudioCache'
+import { StreamingQualityPreferences, STREAMING_QUALITY_SETTINGS_KEY } from './services/streamingQualitySettings'
+import { deliveredAudioFormat, isStreamingQuality, qualityRequestForTrack, resolveStreamingQuality, type RemotePlaybackQuality, type StreamingQuality, type StreamingQualitySource } from '../types/streamingQuality'
+import { createSubsonicAudioSource } from './services/subsonicAudioSource'
 import { ProgressivePcmDelivery } from './progressivePcmDelivery'
 import { ProgressiveStartupRegistry } from './progressiveStartupRegistry'
 import { createJellyfinAudioSource } from './services/jellyfinAudioSource'
@@ -45,7 +48,6 @@ import type { ProviderSyncRef, ProviderSyncChoice } from '../types/providerSync'
 import { fetchSubsonicUserStates, writeSubsonicUserState } from './services/subsonic'
 import { fetchJellyfinUserStates, writeJellyfinFavorite } from './services/jellyfin'
 import { createJellyfinPlaybackClient, createSubsonicPlaybackClient } from './services/providerPlaybackClients'
-import { buildProviderRequestHeaders } from './services/providerClientIdentity'
 import { NativeRemoteLeaseRegistry } from './nativeRemoteLeaseRegistry'
 import { createThrottledLibraryScanProgressReporter } from './libraryScanProgress'
 import {
@@ -736,6 +738,7 @@ function getActiveMemoryFootprintChildProcessPids(): number[] {
 }
 
 interface ProgressiveStreamStartOptions {
+  streamingQuality?: StreamingQuality
   startTimeSeconds?: number | null
   slot?: 'current' | 'next'
   preserveNext?: boolean
@@ -7856,6 +7859,20 @@ ipcMain.handle('audio:startRemoteStream', async (event, filePath: string, output
 })
 
 ipcMain.handle('audio:getRemoteCacheStatus', getRemoteAudioCacheStatus)
+const streamingQualityPreferences = new StreamingQualityPreferences({
+  read: () => library.getAppMeta(STREAMING_QUALITY_SETTINGS_KEY),
+  write: value => library.setAppMeta(STREAMING_QUALITY_SETTINGS_KEY, value),
+  sourceExists: source => !!(source.provider === 'subsonic'
+    ? library.getSubsonicSourceById(source.sourceId) : library.getJellyfinSourceById(source.sourceId)),
+  changed: (settings, previous) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.webContents.isDestroyed()) window.webContents.send('audio:streamingQualityChanged', settings, previous)
+    }
+  }
+})
+ipcMain.handle('audio:getStreamingQuality', () => streamingQualityPreferences.read())
+ipcMain.handle('audio:setStreamingQuality', (_event, quality: StreamingQuality | null, source?: StreamingQualitySource) =>
+  streamingQualityPreferences.update(quality, source))
 ipcMain.handle('audio:setRemoteCacheLimit', async (_event, value: unknown) => {
   const limitGb = normalizeRemoteCacheLimitGb(value)
   await getRemoteAudioCache().setLimitBytes(limitGb * 1024 ** 3)
@@ -10349,6 +10366,7 @@ interface LocalPcmStreamState {
 const localPcmDecodeSessions = new Map<string, LocalPcmDecodeSession>()
 
 interface RemoteStreamSession {
+  quality?: RemotePlaybackQuality
   id: number
   slot: 'current' | 'next'
   sender: Electron.WebContents
@@ -10455,6 +10473,7 @@ function safeSendRemoteLoadProgress(session: RemoteStreamSession, stage: RemoteA
   }
   session.lastProgressEmitAt = now
   const progress = buildRemoteLoadProgress(session, stage)
+  if (session.quality) progress.quality = session.quality
   session.sender.send('audio:progressiveLoadProgress', progress)
   if (session.sourceType !== 'local') {
     session.sender.send('audio:remoteLoadProgress', progress)
@@ -10482,6 +10501,7 @@ function settleRemoteStreamStartup(session: RemoteStreamSession, outcome: { ok: 
       durationSeconds: session.durationSeconds,
       startTimeSeconds: session.startTimeSeconds,
       seekableCache: session.cacheLease !== null,
+      quality: session.quality,
       initialChunk: session.startupChunk
     })
   } else {
@@ -10697,23 +10717,28 @@ function nativeRemoteOwner(event: Electron.IpcMainInvokeEvent): number {
   }
   return sender.id
 }
-ipcMain.handle('native-remote:acquire', async (event, id: string, path: string) => ({
-  url: await nativeRemoteLeases.acquire(nativeRemoteOwner(event), id, path),
-  duration: resolveRemoteTrackDurationSeconds(path) ?? 0
-}))
+ipcMain.handle('native-remote:acquire', async (event, id: string, path: string, quality?: StreamingQuality) => {
+  const owner = nativeRemoteOwner(event)
+  const url = await nativeRemoteLeases.acquire(owner, id, path, quality)
+  return { url, duration: resolveRemoteTrackDurationSeconds(path) ?? 0, quality: nativeRemoteLeases.quality(owner, id) }
+})
 ipcMain.handle('native-remote:progress', (event, id: string) => nativeRemoteLeases.progress(nativeRemoteOwner(event), id))
 ipcMain.handle('native-remote:finished', (event, id: string) => nativeRemoteLeases.finished(nativeRemoteOwner(event), id))
 ipcMain.handle('native-remote:release', (event, id: string) => nativeRemoteLeases.release(nativeRemoteOwner(event), id))
 
-async function acquireCachedRemoteAudio(filePath: string, signal: AbortSignal): Promise<RemoteAudioLease> {
-  if (isSubsonicPath(filePath)) return acquireSubsonicCachedAudio(filePath, signal)
+async function acquireCachedRemoteAudio(filePath: string, signal: AbortSignal, pinnedQuality?: StreamingQuality): Promise<RemoteAudioLease> {
+  if (pinnedQuality !== undefined && !isStreamingQuality(pinnedQuality)) throw new Error('Invalid streaming quality.')
+  if (isSubsonicPath(filePath)) return acquireSubsonicCachedAudio(filePath, signal, pinnedQuality)
   const parsed = parseJellyfinTrackPath(filePath)
   if (!parsed) throw new Error('Invalid remote track path.')
   const { source, connection } = requireJellyfinSourceCredentials(parsed.sourceId)
   if (source.enabled !== 1) throw new Error(`Jellyfin source "${source.name}" is disabled.`)
   const track = library.getTrackByPath(filePath)
-  return getRemoteAudioCache().acquire(createJellyfinAudioSource({
+  const quality = pinnedQuality ?? resolveStreamingQuality(streamingQualityPreferences.read(), { provider: 'jellyfin', sourceId: source.id })
+  const request = qualityRequestForTrack(quality, track)
+  const lease = await getRemoteAudioCache().acquire(createJellyfinAudioSource({
     sourceId: source.id,
+    quality: request,
     connection,
     trackId: parsed.sourceTrackId,
     revision: JSON.stringify([track?.source_path, track?.duration, track?.format, track?.codec,
@@ -10721,31 +10746,25 @@ async function acquireCachedRemoteAudio(filePath: string, signal: AbortSignal): 
     authenticate: (downloadSignal, forceRefresh) => getJellyfinAuthContext(parsed.sourceId, connection,
       { signal: downloadSignal, forceRefresh })
   }), signal)
+  return { ...lease, quality: { requested: quality, requestedCodec: request === 'original' ? null : 'mp3', delivered: null } }
 }
 
-async function acquireSubsonicCachedAudio(filePath: string, signal: AbortSignal): Promise<RemoteAudioLease> {
+async function acquireSubsonicCachedAudio(filePath: string, signal: AbortSignal, pinnedQuality?: StreamingQuality): Promise<RemoteAudioLease> {
   const parsed = parseSubsonicTrackPath(filePath)
   if (!parsed) throw new Error('Invalid Subsonic track path.')
   const { source, connection } = requireSubsonicSourceCredentials(parsed.sourceId)
   if (source.enabled !== 1) throw new Error(`Subsonic source "${source.name}" is disabled.`)
   const track = library.getTrackByPath(filePath)
-  return getRemoteAudioCache().acquire({
-    provider: 'subsonic',
-    account: JSON.stringify([source.id, normalizeSubsonicBaseUrl(connection.baseUrl), connection.username]),
-    track: parsed.sourceTrackId,
-    representation: 'original',
+  const quality = pinnedQuality ?? resolveStreamingQuality(streamingQualityPreferences.read(), { provider: 'subsonic', sourceId: source.id })
+  const request = qualityRequestForTrack(quality, track)
+  const lease = await getRemoteAudioCache().acquire(createSubsonicAudioSource({
+    sourceId: source.id, connection, trackId: parsed.sourceTrackId, quality: request,
     // The local modified_at changes on catalog refresh, not just audio changes.
     // Use audio metadata until provider revision/validator discovery is added.
     revision: JSON.stringify([track?.source_path, track?.duration, track?.format, track?.codec,
-      track?.sample_rate, track?.bit_depth, track?.channels, track?.bitrate]),
-    open: async downloadSignal => {
-      const response = await fetch(buildSubsonicStreamUrl(connection, parsed.sourceTrackId, { original: true }), {
-        signal: downloadSignal,
-        headers: { ...buildProviderRequestHeaders(), 'Accept-Encoding': 'identity' }
-      })
-      return response
-    }
-  }, signal)
+      track?.sample_rate, track?.bit_depth, track?.channels, track?.bitrate])
+  }), signal)
+  return { ...lease, quality: { requested: quality, requestedCodec: request === 'original' ? null : 'mp3', delivered: null } }
 }
 
 function pumpRemoteStreamOutput(session: RemoteStreamSession, chunk: Buffer): void {
@@ -10819,12 +10838,25 @@ async function startProgressiveStreamSession(
       ? Math.max(8_000, Math.round(outputSampleRate))
       : 48_000
     const dbTrack = library.getTrackByPath(filePath)
-    const normalizedChannels = Number.isFinite(expectedChannels)
+    let normalizedChannels = Number.isFinite(expectedChannels)
       ? Math.max(1, Math.min(8, Math.round(Number(expectedChannels))))
       : Math.max(1, Math.min(8, dbTrack?.channels ?? 2))
 
     if (sourceType !== 'local') {
-      cacheLease = await acquireCachedRemoteAudio(filePath, abortController.signal)
+      cacheLease = await acquireCachedRemoteAudio(filePath, abortController.signal, options.streamingQuality)
+      // A manual target can change codec/rate/channels. Probe the actual retained
+      // response, never replace catalog metadata with the requested settings.
+      if (cacheLease.quality && cacheLease.quality.requested !== 'original') {
+        const probe = await resolveBinary('ffprobe')
+        if (probe) {
+          try {
+            const payload = await execFileAsync(probe, ['-v', 'error', '-analyzeduration', '100000', '-probesize', '65536',
+              '-show_streams', '-of', 'json', cacheLease.url], { signal: abortController.signal, timeout: 10_000, maxBuffer: 256 * 1024 })
+            cacheLease.quality.delivered = deliveredAudioFormat(JSON.parse(payload))
+            normalizedChannels = Math.max(1, Math.min(8, cacheLease.quality.delivered?.channels ?? normalizedChannels))
+          } catch { /* A metadata probe is advisory; playback can still decode. */ }
+        }
+      }
       abortController.signal.throwIfAborted()
     }
     const ffmpegInputArgs = [
@@ -10856,6 +10888,7 @@ async function startProgressiveStreamSession(
 
     const infoPromise = new Promise<RemoteStreamInfo>((resolve, reject) => {
       const session: RemoteStreamSession = {
+        quality: cacheLease?.quality,
         id: sessionId,
         slot,
         sender,

@@ -196,6 +196,7 @@ export interface NativeAudioDiagnosticReport {
 }
 
 export interface NativeAudioTrackMetadata {
+  streamingQuality?: import('./streamingQuality').StreamingQuality
   path: string
   title?: string
   artist?: string
@@ -230,6 +231,7 @@ export interface NativeAudioPlaybackSnapshot {
 }
 
 export interface NativeAudioTrackLoadResult {
+  quality?: import('./streamingQuality').RemotePlaybackQuality
   playbackSequence: number
   sampleRate: number
   channels: number

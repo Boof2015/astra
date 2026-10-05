@@ -25,6 +25,7 @@ import { usePlaylistStore } from './playlistStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore'
 import { useParallaxStore } from './parallaxStore'
 import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
+import { resolveStreamingQuality, streamingQualitySourceFromPath } from '../../types/streamingQuality'
 import { selectUpcomingLoudnessWarmupTracks } from '../utils/loudnessWarmup'
 import {
   type PlayerSessionSnapshot,
@@ -34,6 +35,7 @@ import {
 } from '../utils/sessionState'
 
 interface RemoteLoadProgress {
+  quality?: import('../../types/streamingQuality').RemotePlaybackQuality
   path: string
   sourceType: 'local' | 'subsonic' | 'jellyfin'
   stage: 'downloading' | 'streaming' | 'complete' | 'failed'
@@ -83,6 +85,7 @@ interface CommittedPlaybackTransition {
 }
 
 interface PlaybackLoadOptions {
+  streamingQuality?: import('../../types/streamingQuality').StreamingQuality
   manualStart?: boolean
   startTime?: number
   attempt?: PlaybackAttempt
@@ -773,13 +776,14 @@ function getTrackRetentionDiagnostics(state: Pick<PlayerStore, 'currentTrack' | 
   }
 }
 
-function createInitialRemoteLoadProgress(track: Track): RemoteLoadProgress {
+function createInitialRemoteLoadProgress(track: Track, quality?: import('../../types/streamingQuality').RemotePlaybackQuality): RemoteLoadProgress {
   const sourceType = track.sourceType === 'jellyfin'
     ? 'jellyfin'
     : track.sourceType === 'subsonic'
       ? 'subsonic'
       : 'local'
   return {
+    ...(quality ? { quality } : {}),
     path: track.path,
     sourceType,
     stage: sourceType === 'local' ? 'streaming' : 'downloading',
@@ -1161,6 +1165,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   // Track if listeners are initialized
   let listenersInitialized = false
   let remoteLoadProgressUnsubscribe: (() => void) | null = null
+  let streamingQualityUnsubscribe: (() => void) | null = null
   let staticWaveformResultUnsubscribe: (() => void) | null = null
   let staticWaveformResultListenerAvailable = false
   const pendingStaticWaveformBuffers = new Map<number, { trackPath: string; buffer: AudioBuffer }>()
@@ -3542,6 +3547,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         const loaded = await runSerializedTrackLoad(track, {
           manualStart: true,
           startTime,
+          streamingQuality: state.remoteLoadProgress?.quality?.requested,
           attempt
         }, 'resume')
         if (loaded === 'failed' && track.sourceType && track.sourceType !== 'local') {
@@ -4776,7 +4782,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         waveformBufferedRatio: track.sourceType && track.sourceType !== 'local' ? 0 : 1,
         waveformAnalyzedRatio: track.sourceType && track.sourceType !== 'local' ? 0 : 1,
         remoteLoadProgress: track.sourceType && track.sourceType !== 'local'
-          ? createInitialRemoteLoadProgress(track)
+          ? createInitialRemoteLoadProgress(track, options.streamingQuality === undefined ? undefined : {
+            requested: options.streamingQuality, requestedCodec: options.streamingQuality === 'original' ? null : 'mp3', delivered: null
+          })
           : null,
         loadingStatus: null,
         remoteBufferedSeconds: 0,
@@ -4799,6 +4807,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           audioEngine.setCurrentReplayGainDb(replayGainDb)
           const loudnessAnalysis = requestTrackLoudnessAnalysis(track, replayGainDb)
           const loadResult = await audioEngine.loadTrackFromPath(track, {
+            streamingQuality: options.streamingQuality,
             replayGainDb,
             trackPath: track.path,
             loudnessAnalysis
@@ -4812,7 +4821,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           set({
             duration: loadResult.duration > 0 ? loadResult.duration : track.duration,
             currentTrack: resolvedTrack,
-            remoteLoadProgress: null,
+            remoteLoadProgress: loadResult.quality ? createInitialRemoteLoadProgress(resolvedTrack, loadResult.quality) : null,
             loadingStatus: null,
             currentTime: 0,
             restoredTrackNeedsLoad: false,
@@ -4878,6 +4887,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           attemptBackend = 'remote'
           try {
             const streamInfo = await audioEngine.loadRemoteStream(track, {
+              streamingQuality: options.streamingQuality,
               replayGainDb,
               startTimeSeconds: isRetainedRemoteSource(track.sourceType) ? startTime : 0
             })
@@ -4894,7 +4904,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               waveformData: null,
               waveformBufferedRatio: 0,
               waveformAnalyzedRatio: 0,
-              remoteLoadProgress: createInitialRemoteLoadProgress(resolvedTrack),
+              remoteLoadProgress: createInitialRemoteLoadProgress(resolvedTrack, streamInfo.quality),
               loadingStatus: null,
               remoteBufferedSeconds: audioEngine.getRemoteBufferedSeconds(),
               remoteStreamSessionId: streamInfo.sessionId,
@@ -5661,6 +5671,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       listeningBeforeUnloadHandler = () => finalizeRecentPlaySession()
       window.addEventListener('beforeunload', listeningBeforeUnloadHandler)
 
+      streamingQualityUnsubscribe?.()
+      streamingQualityUnsubscribe = window.electronAPI.onStreamingQualityChanged?.((settings, previous) => {
+        const nextPath = resolveExpectedPrebufferTrackPath()
+        if (!nextPath?.startsWith('subsonic://') && !nextPath?.startsWith('jellyfin://')) return
+        const source = streamingQualitySourceFromPath(nextPath)
+        if (source && previous && resolveStreamingQuality(settings, source) === resolveStreamingQuality(previous, source)) return
+        clearBufferedNextTrack()
+        schedulePreBufferNextTrack()
+      }) ?? null
+
       remoteLoadProgressUnsubscribe?.()
       remoteLoadProgressUnsubscribe = window.electronAPI.onProgressiveLoadProgress((progress) => {
         const activeSessionId = audioEngine.getRemoteStreamSessionId()
@@ -6000,7 +6020,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           waveformAnalyzedRatio: progressiveHandoff ? 0 : 1,
           remoteBufferedSeconds: progressiveHandoff ? audioEngine.getRemoteBufferedSeconds() : 0,
           remoteStreamSessionId: progressiveHandoff ? audioEngine.getRemoteStreamSessionId() : null,
-          remoteLoadProgress: progressiveHandoff ? createInitialRemoteLoadProgress(nextTrack) : null
+          remoteLoadProgress: progressiveHandoff ? createInitialRemoteLoadProgress(nextTrack, audioEngine.getRemotePlaybackQuality()) : null
         }
         set(nextState)
         audioEngine.setCurrentReplayGainDb(
@@ -6070,6 +6090,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         remoteLoadProgressUnsubscribe()
         remoteLoadProgressUnsubscribe = null
       }
+      streamingQualityUnsubscribe?.()
+      streamingQualityUnsubscribe = null
       if (staticWaveformResultUnsubscribe) {
         staticWaveformResultUnsubscribe()
         staticWaveformResultUnsubscribe = null

@@ -959,7 +959,7 @@ export async function syncSubsonicPlaylists(
 export function buildSubsonicStreamUrl(
   config: SubsonicConnectionConfig,
   sourceTrackId: string,
-  options: { maxBitRateKbps?: number; original?: boolean } = {}
+  options: { maxBitRateKbps?: number; original?: boolean; format?: 'mp3' } = {}
 ): string {
   const maxBitRateKbps = options.maxBitRateKbps
   return buildSubsonicEndpointUrl(
@@ -967,7 +967,7 @@ export function buildSubsonicStreamUrl(
     'stream',
     {
       id: sourceTrackId,
-      format: options.original ? 'raw' : undefined,
+      format: options.original ? 'raw' : options.format,
       maxBitRate: options.original ? 0 : typeof maxBitRateKbps === 'number' && Number.isFinite(maxBitRateKbps) && maxBitRateKbps > 0
         ? Math.trunc(maxBitRateKbps)
         : undefined

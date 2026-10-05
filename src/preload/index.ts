@@ -1,4 +1,5 @@
 import type { RemoteAudioCacheStatus } from '../types/remoteAudioCache'
+import type { StreamingQuality, StreamingQualitySettings, StreamingQualitySource } from '../types/streamingQuality'
 import type { ProviderPlaybackSnapshot } from '../types/providerPlayback'
 import type { ProviderSyncAPI } from '../types/providerSync'
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
@@ -276,6 +277,7 @@ export interface LocalAudioPcmDecodeResult {
 export type LocalAudioPcmDecodeResponse = LocalAudioPcmDecodeResult | LocalPcmDecodeLimitRefusal | null
 
 export interface ProgressiveStreamStartOptions {
+  streamingQuality?: StreamingQuality
   startTimeSeconds?: number | null
   slot?: 'current' | 'next'
   preserveNext?: boolean
@@ -1609,6 +1611,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) =>
     ipcRenderer.invoke('audio:storeTrackLoudness', filePath, payload) as Promise<boolean>,
   getRemoteCacheStatus: () => ipcRenderer.invoke('audio:getRemoteCacheStatus') as Promise<RemoteAudioCacheStatus>,
+  getStreamingQuality: () => ipcRenderer.invoke('audio:getStreamingQuality') as Promise<StreamingQualitySettings>,
+  setStreamingQuality: (quality: StreamingQuality | null, source?: StreamingQualitySource) =>
+    ipcRenderer.invoke('audio:setStreamingQuality', quality, source) as Promise<StreamingQualitySettings>,
+  onStreamingQualityChanged: (callback: (settings: StreamingQualitySettings, previous: StreamingQualitySettings) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, settings: StreamingQualitySettings, previous: StreamingQualitySettings) => callback(settings, previous)
+    ipcRenderer.on('audio:streamingQualityChanged', handler)
+    return () => ipcRenderer.removeListener('audio:streamingQualityChanged', handler)
+  },
   setRemoteCacheLimit: (limitGb: number) => ipcRenderer.invoke('audio:setRemoteCacheLimit', limitGb) as Promise<RemoteAudioCacheStatus>,
   clearRemoteCache: () => ipcRenderer.invoke('audio:clearRemoteCache') as Promise<RemoteAudioCacheStatus>,
   startProgressiveStream: (
@@ -2316,6 +2326,9 @@ declare global {
       supersedeTrackLoudness: (filePath: string | null) => Promise<void>
       storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) => Promise<boolean>
       getRemoteCacheStatus: () => Promise<RemoteAudioCacheStatus>
+      getStreamingQuality: () => Promise<StreamingQualitySettings>
+      setStreamingQuality: (quality: StreamingQuality | null, source?: StreamingQualitySource) => Promise<StreamingQualitySettings>
+      onStreamingQualityChanged: (callback: (settings: StreamingQualitySettings, previous: StreamingQualitySettings) => void) => () => void
       setRemoteCacheLimit: (limitGb: number) => Promise<RemoteAudioCacheStatus>
       clearRemoteCache: () => Promise<RemoteAudioCacheStatus>
       startProgressiveStream: (

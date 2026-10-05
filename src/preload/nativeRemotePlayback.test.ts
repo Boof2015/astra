@@ -92,6 +92,32 @@ function harness(overrides: NativeAudioControllerOptions = {}) {
 const a = 'subsonic://server/track/a'
 const b = 'subsonic://server/track/b'
 
+test('native quality stays pinned on seeks while a new successor inherits the changed preference', async () => {
+  let globalQuality = 128 as 128 | 320
+  const requests: Array<{ path: string; quality: unknown }> = []
+  const h = harness({ acquireRemoteSource: async (path, _signal, pinned) => {
+    const requested = pinned ?? globalQuality
+    requests.push({ path, quality: requested })
+    return { url: 'http://cache/internal', duration: 60,
+      quality: { requested, requestedCodec: 'mp3', delivered: null },
+      release() {}, finished: async () => {},
+      progress: async () => ({ loadedBytes: 100, totalBytes: 100, complete: true, error: null }) }
+  } })
+  await h.controller.loadTrack(a)
+  await h.controller.play()
+  globalQuality = 320
+  await h.controller.preloadNextTrack(b)
+  await h.controller.seek(20)
+  assert.deepEqual(requests, [{ path: a, quality: 128 }, { path: b, quality: 320 }, { path: a, quality: 128 }])
+  assert.equal((await h.controller.getNativeAudioDiagnosticReport()).track?.streamingQuality, 128)
+  h.transition()
+  await h.controller.getPlaybackSnapshot()
+  assert.equal((await h.controller.getNativeAudioDiagnosticReport()).track?.streamingQuality, 320)
+  await h.controller.seek(30)
+  assert.equal(requests.at(-1)?.quality, 320, 'a promoted successor retains its own selection')
+  await h.controller.stop()
+})
+
 for (const provider of ['subsonic', 'jellyfin']) {
   test(`${provider}: mixed handoffs preserve full local PCM and acknowledge remote ownership`, async () => {
     const h = harness()

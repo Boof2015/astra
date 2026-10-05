@@ -1,5 +1,6 @@
 import test from 'node:test'
 import type { ProviderPlaybackSnapshot } from '../../types/providerPlayback.ts'
+import type { StreamingQualitySettings } from '../../types/streamingQuality.ts'
 import assert from 'node:assert/strict'
 import {
   advanceRecentPlayAccumulation,
@@ -575,6 +576,7 @@ for (const sourceType of ['subsonic', 'jellyfin'] as const) {
     const originalParallax = useParallaxStore.getState()
     let fallbackReads = 0
     let requestedStart: number | null | undefined
+    let requestedQuality: unknown
     Object.defineProperty(globalThis, 'window', { configurable: true, value: {
       location: { search: '?window=test' },
       addEventListener: () => undefined,
@@ -596,13 +598,16 @@ for (const sourceType of ['subsonic', 'jellyfin'] as const) {
     useParallaxStore.setState({ prepareHostSeek: async () => null, cancelHostNextStream: async () => undefined })
     audioEngine.loadRemoteStream = async (_track, options) => {
       requestedStart = options?.startTimeSeconds
+      requestedQuality = options?.streamingQuality
       throw new Error('Remote source unavailable')
     }
     try {
       usePlayerStore.getState()._cleanupListeners()
-      assert.equal(await usePlayerStore.getState()._loadAndPlayTrack(track, { startTime: 75 }), 'failed')
+      assert.equal(await usePlayerStore.getState()._loadAndPlayTrack(track, { startTime: 75, streamingQuality: 128 }), 'failed')
       const state = usePlayerStore.getState()
       assert.equal(requestedStart, 75)
+      assert.equal(requestedQuality, 128)
+      assert.equal(state.remoteLoadProgress?.quality?.requested, 128)
       assert.equal(state.currentTrack?.path, track.path)
       assert.equal(state.currentTrack?.isAvailable, true)
       assert.equal(state.remoteLoadProgress?.failed, true)
@@ -619,6 +624,11 @@ for (const sourceType of ['subsonic', 'jellyfin'] as const) {
       assert.equal(failedSeek.restoredTrackNeedsLoad, true)
       assert.equal(failedSeek.restoredPlaybackTime, 120)
       assert.equal(failedSeek.remoteLoadProgress?.failed, true)
+      for (let retry = 0; retry < 2; retry++) {
+        await usePlayerStore.getState().play()
+        assert.equal(requestedQuality, 128, 'repeated Retry keeps the playing selection after a preference change')
+        assert.equal(usePlayerStore.getState().remoteLoadProgress?.quality?.requested, 128)
+      }
     } finally {
       usePlayerStore.getState()._cleanupListeners()
       await flushAsyncWork()
@@ -680,6 +690,63 @@ for (const sourceType of ['subsonic', 'jellyfin'] as const) {
   })
 
 }
+
+test('a quality change invalidates a remote successor without restarting current playback or clearing local successors', async t => {
+  resetStores()
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const settings = useAudioSettingsStore.getState()
+  let notify: ((settings: StreamingQualitySettings, previous: StreamingQualitySettings) => void) | undefined
+  let clears = 0
+  t.mock.method(audioEngine, 'on', () => () => undefined)
+  t.mock.method(audioEngine, 'getPlaybackOutputMode', () => 'standard')
+  t.mock.method(audioEngine, 'canPreBufferRemoteTrack', () => true)
+  t.mock.method(audioEngine, 'clearNextBuffer', () => { clears++ })
+  t.mock.method(audioEngine, 'loadRemoteStream', async () => { throw new Error('Must not reload current playback') })
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    location: { search: '?window=test' }, addEventListener() {}, removeEventListener() {},
+    electronAPI: {
+      onProgressiveLoadProgress: () => () => {},
+      onStreamingQualityChanged: (callback: NonNullable<typeof notify>) => { notify = callback; return () => { notify = undefined } },
+      library: { getListeningHistoryStatus: async () => ({ generation: 'quality', startedAt: null }),
+        checkpointListeningSession: async () => ({ accepted: true, qualifiedNow: false, status: { generation: 'quality', startedAt: null } }) }
+    }
+  } })
+  try {
+    usePlayerStore.getState()._cleanupListeners()
+    useAudioSettingsStore.setState({ disableGaplessPrebufferDev: true })
+    usePlayerStore.getState()._initListeners()
+    const current = makeTrack('/current.flac')
+    for (const path of ['subsonic://7/next', 'jellyfin://7/next', '/next.flac']) {
+      const next = makeTrack(path, { sourceType: path.startsWith('subsonic:') ? 'subsonic' : path.startsWith('jellyfin:') ? 'jellyfin' : 'local' })
+      const items = [current, next].map((track, index) => makeQueueItem(createQueueEntryFromTrack(track), `quality-${index}`))
+      usePlayerStore.setState({ currentTrack: current, playbackState: 'playing', currentTime: 45,
+        duration: 180, queueItems: items, currentQueueItemId: items[0].queueId,
+        upcomingQueueIds: [items[1].queueId], baseUpcomingQueueIds: [items[1].queueId], repeat: 'none' })
+      const before = clears
+      assert.ok(notify)
+      if (path.startsWith('subsonic:')) {
+        notify({ global: 64, overrides: { 'subsonic:7': 320 } }, { global: 'original', overrides: { 'subsonic:7': 320 } })
+        assert.equal(clears, before, 'an override isolates the successor from a global change')
+        notify({ global: 128, overrides: { 'jellyfin:7': 320 } }, { global: 128, overrides: {} })
+        assert.equal(clears, before, 'another server has no effect on this successor')
+      }
+      notify({ global: 128, overrides: {} }, { global: 'original', overrides: {} })
+      assert.equal(clears > before, path !== '/next.flac')
+      assert.equal(usePlayerStore.getState().playbackState, 'playing')
+      assert.equal(usePlayerStore.getState().currentTime, 45)
+      assert.equal(usePlayerStore.getState().currentTrack?.path, current.path)
+    }
+    usePlayerStore.getState()._cleanupListeners()
+    assert.equal(notify, undefined, 'teardown removes the quality listener')
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    await flushAsyncWork()
+    useAudioSettingsStore.setState({ disableGaplessPrebufferDev: settings.disableGaplessPrebufferDev })
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+    resetStores()
+  }
+})
 
 test('an obsolete remote seek failure cannot overwrite the final drag target or session', async (t) => {
   resetStores()

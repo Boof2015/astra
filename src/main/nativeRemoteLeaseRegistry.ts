@@ -1,5 +1,6 @@
 import type { RemoteAudioLease } from './services/remoteAudioCache'
 import type { NativeRemoteProgress } from '../types/nativeRemoteSource'
+import type { StreamingQuality } from '../types/streamingQuality'
 
 interface LeaseEntry {
   controller: AbortController
@@ -10,13 +11,13 @@ interface LeaseEntry {
 /** Sender-scoped ownership includes pending acquisitions, not just ready leases. */
 export class NativeRemoteLeaseRegistry {
   private owners = new Map<number, Map<string, LeaseEntry>>()
-  private acquireSource: (path: string, signal: AbortSignal) => Promise<RemoteAudioLease>
+  private acquireSource: (path: string, signal: AbortSignal, quality?: StreamingQuality) => Promise<RemoteAudioLease>
 
-  constructor(acquireSource: (path: string, signal: AbortSignal) => Promise<RemoteAudioLease>) {
+  constructor(acquireSource: (path: string, signal: AbortSignal, quality?: StreamingQuality) => Promise<RemoteAudioLease>) {
     this.acquireSource = acquireSource
   }
 
-  async acquire(owner: number, id: string, path: string): Promise<string> {
+  async acquire(owner: number, id: string, path: string, quality?: StreamingQuality): Promise<string> {
     if (typeof id !== 'string' || id.length < 1 || id.length > 128 || typeof path !== 'string') {
       throw new Error('Invalid native remote source request.')
     }
@@ -26,7 +27,7 @@ export class NativeRemoteLeaseRegistry {
     const entry: LeaseEntry = { controller: new AbortController(), lease: null, error: null }
     entries.set(id, entry)
     try {
-      const lease = await this.acquireSource(path, entry.controller.signal)
+      const lease = await this.acquireSource(path, entry.controller.signal, quality)
       if (entry.controller.signal.aborted) { lease.release(); throw new Error('Native source request cancelled.') }
       entry.lease = lease
       // Observe early download failure even when decoding is backpressured.
@@ -42,6 +43,8 @@ export class NativeRemoteLeaseRegistry {
     const entry = this.require(owner, id)
     return { ...entry.lease!.progress(), error: entry.error }
   }
+
+  quality(owner: number, id: string) { return this.require(owner, id).lease!.quality }
 
   async finished(owner: number, id: string): Promise<void> {
     const entry = this.require(owner, id)

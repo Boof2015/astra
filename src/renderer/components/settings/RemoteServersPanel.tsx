@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
 import { useJellyfinSettingsStore } from '../../stores/jellyfinSettingsStore'
 import RemoteAudioCacheSettings from './RemoteAudioCacheSettings'
+import StreamingQualitySettings from './StreamingQualitySettings'
 import ProviderSyncControls from './ProviderSyncControls'
 import type {
   JellyfinSourceCreateInput,
@@ -811,6 +812,7 @@ export default function RemoteServersPanel() {
                   </p>
                 )}
                 <ProviderSyncControls provider={source.sourceType} sourceId={source.id} connected={source.enabled === 1} />
+                <StreamingQualitySettings source={{ provider: source.sourceType, sourceId: source.id }} />
                 <div className="remote-source-card-footer">
                   <button
                     className="settings-btn"
@@ -863,6 +865,7 @@ export default function RemoteServersPanel() {
         </div>
       )}
 
+      <StreamingQualitySettings />
       <RemoteAudioCacheSettings />
       {feedback && <p className="settings-note settings-note-success">{feedback}</p>}
       {remoteErrorMessages.map((msg, i) => (

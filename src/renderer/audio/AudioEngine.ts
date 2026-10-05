@@ -346,6 +346,7 @@ export interface AudioLoadTimings {
 export type StandardPcmLoadOutcome = 'loaded' | 'failed' | 'cancelled' | 'progressive_required'
 
 interface AudioLoadDataOptions {
+  streamingQuality?: import('../../types/streamingQuality').StreamingQuality
   replayGainDb?: number | null
   trackPath?: string | null
   // Pre-resolved loudness (DB lookup or main-process ffmpeg pass) so the
@@ -380,6 +381,7 @@ export interface AudioBufferReadyMetadata {
 }
 
 interface RemoteStreamLoadOptions {
+  streamingQuality?: import('../../types/streamingQuality').StreamingQuality
   replayGainDb?: number | null
   loudnessAnalysis?: ExternalLoudnessResult | null
   startTimeSeconds?: number | null
@@ -399,6 +401,7 @@ interface ProgressiveNormalizationAccumulator {
 }
 
 interface RemoteStreamRuntimeState {
+  quality?: import('../../types/streamingQuality').RemotePlaybackQuality
   sessionId: number
   path: string
   sourceType: 'local' | 'subsonic' | 'jellyfin'
@@ -2030,7 +2033,7 @@ export class AudioEngine {
     try {
       result = await window.nativeAudioAPI.loadTrack(
         track.path,
-        this.buildNativeTrackMetadata(track),
+        { ...this.buildNativeTrackMetadata(track), streamingQuality: options.streamingQuality },
         initialGain
       )
     } catch (error) {
@@ -3577,7 +3580,7 @@ export class AudioEngine {
         track.path,
         this.context.sampleRate,
         track.channels ?? null,
-        { startTimeSeconds: options.startTimeSeconds ?? 0, preserveNext: !!retainedNode }
+        { startTimeSeconds: options.startTimeSeconds ?? 0, preserveNext: !!retainedNode, streamingQuality: options.streamingQuality }
       )
     } catch (error) {
       if (loadOperation !== this.loadGeneration) {
@@ -3616,6 +3619,7 @@ export class AudioEngine {
     this.currentBufferTrackPath = track.path
     this.currentNormalizationAnalysis = fixedLoudnessAnalysis
     this.remoteStreamState = {
+      quality: info.quality,
       sessionId: info.sessionId,
       path: track.path,
       sourceType: info.sourceType,
@@ -3687,6 +3691,12 @@ export class AudioEngine {
 
     this.assertCurrentLoadOperation(loadOperation)
     return info
+  }
+
+  getRemotePlaybackQuality(): import('../../types/streamingQuality').RemotePlaybackQuality | undefined {
+    if (this.isNativeExclusiveMode()) return this.nativeRemoteProgress?.path === this.currentBufferTrackPath
+      ? this.nativeRemoteProgress.quality : undefined
+    return this.remoteStreamState?.quality
   }
 
   async loadRemoteStream(track: Track, options: RemoteStreamLoadOptions = {}): Promise<RemoteStreamInfo> {
@@ -3879,6 +3889,7 @@ export class AudioEngine {
     }
     const durationSeconds = info.durationSeconds && info.durationSeconds > 0 ? info.durationSeconds : track.duration
     const state: RemoteStreamRuntimeState = {
+      quality: info.quality,
       sessionId: info.sessionId, path: track.path, sourceType: info.sourceType, track,
       sampleRate: info.sampleRate, channels: info.channels, durationSeconds,
       startFrame: 0, bufferedFrames: 0, analyzedFrames: 0, currentFrame: 0, lastReportedConsumedFrame: 0,
@@ -9383,6 +9394,7 @@ export class AudioEngine {
         ? { node: this.remoteStreamNode, state: remoteState } : null
     }
     const options = {
+      streamingQuality: remoteState.quality?.requested,
       replayGainDb: this.currentReplayGainDb,
       loudnessAnalysis: this.currentNormalizationAnalysis
         ? { loudnessLufs: this.currentNormalizationAnalysis.loudnessLufs,

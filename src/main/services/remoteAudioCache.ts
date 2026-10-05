@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type Server, type ServerResponse, type IncomingMessage } from 'node:http'
 import { join } from 'node:path'
+import type { RemotePlaybackQuality } from '../../types/streamingQuality'
 
 export const DEFAULT_REMOTE_CACHE_BYTES = 5 * 1024 ** 3
 
@@ -41,6 +42,7 @@ interface Entry {
 }
 
 export interface RemoteAudioLease {
+  quality?: RemotePlaybackQuality
   url: string
   progress: () => { loadedBytes: number; totalBytes: number | null; complete: boolean }
   release: () => void
@@ -95,6 +97,7 @@ export class RemoteAudioCache {
   private origin = ''
   private mutations: Promise<unknown> = Promise.resolve()
   private closed = false
+  private readonly readers = new Set<Promise<void>>()
 
   constructor(directory: string, limitBytes = DEFAULT_REMOTE_CACHE_BYTES) {
     this.directory = directory
@@ -137,10 +140,12 @@ export class RemoteAudioCache {
     }
     await this.makeRoom(0)
     this.server = createServer((request, response) => {
-      void this.serve(request, response).catch(() => {
+      const task = this.serve(request, response).catch(() => {
         if (!response.headersSent) response.writeHead(502)
         response.destroy()
       })
+      this.readers.add(task)
+      void task.finally(() => this.readers.delete(task))
     })
     await new Promise<void>((resolve, reject) => {
       this.server!.once('error', reject)
@@ -505,7 +510,18 @@ export class RemoteAudioCache {
           if (entry.error) throw entry.error
         }
         await new Promise<void>((resolve, reject) => {
-          response.write(buffer.subarray(0, bytesRead), (error?: Error | null) => error ? reject(error) : resolve())
+          // A probe may close as soon as it has enough metadata. Node need not
+          // call a queued write callback after that close; always wake the file
+          // reader so its finally block closes the descriptor.
+          const finish = (error?: Error | null) => {
+            controller.signal.removeEventListener('abort', abort)
+            if (error) reject(error)
+            else resolve()
+          }
+          const abort = () => finish(new Error('Cached audio reader closed.'))
+          controller.signal.addEventListener('abort', abort, { once: true })
+          if (controller.signal.aborted) { abort(); return }
+          response.write(buffer.subarray(0, bytesRead), finish)
         })
       }
       response.end()
@@ -526,6 +542,7 @@ export class RemoteAudioCache {
     this.server?.closeAllConnections()
     await new Promise<void>((resolve) => this.server ? this.server.close(() => resolve()) : resolve())
     await Promise.all([...this.entries.values()].map(entry => entry.task))
+    await Promise.all([...this.readers])
     await this.mutations
   }
 }

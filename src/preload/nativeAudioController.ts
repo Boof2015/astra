@@ -1,6 +1,7 @@
 import { access } from 'fs/promises'
 import { execFile, spawn } from 'child_process'
 import { join } from 'path'
+import { deliveredAudioFormat, type StreamingQuality } from '../types/streamingQuality'
 import type {
   AudioBufferMemoryStats,
   NativeAudioBackendKind,
@@ -105,7 +106,7 @@ export interface NativeAudioControllerOptions {
   resolveBinary?: NativeAudioBinaryResolver
   runProbe?: (file: string, args: string[], signal: AbortSignal) => Promise<string>
   runDecode?: (file: string, args: string[], signal: AbortSignal) => Promise<Buffer>
-  acquireRemoteSource?: (path: string, signal: AbortSignal) => Promise<NativeRemoteSource>
+  acquireRemoteSource?: (path: string, signal: AbortSignal, quality?: StreamingQuality) => Promise<NativeRemoteSource>
   startRemoteDecoder?: (options: NativePcmDecoderOptions) => NativePcmDecoder
 }
 
@@ -149,6 +150,7 @@ interface DecodeFileOptions {
 }
 
 interface LoadedTrackRequest {
+  quality?: import('../types/streamingQuality').RemotePlaybackQuality
   filePath: string
   metadata?: NativeAudioTrackMetadata
   sampleRate: number
@@ -636,6 +638,7 @@ function normalizePromotedTrackLoadResult(
   playbackSequence: number
 ): NativeAudioTrackLoadResult {
   return {
+    ...(fallback?.quality ? { quality: fallback.quality } : {}),
     playbackSequence,
     sampleRate: snapshot.sampleRate ?? fallback?.sampleRate ?? fallback?.metadata?.sampleRate ?? 0,
     channels: snapshot.channels ?? fallback?.channels ?? fallback?.metadata?.channels ?? 2,
@@ -1273,6 +1276,7 @@ export function createNativeAudioController(
         progressiveSessionId: status.sessionId, buffering: snapshot.buffering === true,
         currentTime: snapshot.currentTime, playbackState: snapshot.playbackState,
         progress: {
+          quality: session.source.quality,
           sessionId: status.sessionId, slot: 'current', path: session.request.filePath, sourceType: retainedRemoteSourceFromPath(session.request.filePath)!,
           stage: session.error ? 'failed' : progress.complete ? 'complete' : 'streaming',
           loadedBytes: progress.loadedBytes, totalBytes: progress.totalBytes,
@@ -1295,7 +1299,7 @@ export function createNativeAudioController(
     let session: RemoteNativeSession | null = null
     let input: NativeProgressiveInput | null = null
     try {
-      source = await options.acquireRemoteSource(path, signal)
+      source = await options.acquireRemoteSource(path, signal, metadata?.streamingQuality)
       throwIfDecodeAborted(signal)
       const binaryStart = performance.now()
       const [probe, ffmpeg] = await Promise.all([binaryResolver('ffprobe'), binaryResolver('ffmpeg')])
@@ -1307,6 +1311,7 @@ export function createNativeAudioController(
       throwIfDecodeAborted(signal)
       const stream = payload.streams?.find(item => item.codec_type === 'audio') ?? payload.streams?.[0]
       if (!stream) throw new Error('No audio stream found for native playback.')
+      if (source.quality) source.quality.delivered = deliveredAudioFormat(payload)
       const sampleRate = parseSampleRate(stream.sample_rate) ?? metadata?.sampleRate ?? 0
       const channels = stream.channels ?? metadata?.channels ?? 2
       const sampleFormat = resolveSampleFormat(stream, metadata, outputRequestCache.policy === 'processed' ? 'unavailable' : capabilitiesCache.activeBackend)
@@ -1330,8 +1335,9 @@ export function createNativeAudioController(
       })
       session = {
         input, decoder, source, controller, error: null, bytes: capacityFrames * stride,
-        request: { filePath: path, sampleRate, channels, sampleFormat, duration, gain,
-          metadata: { ...metadata, path, codec: stream.codec_name ?? metadata?.codec, sampleRate, channels,
+        request: { filePath: path, sampleRate, channels, sampleFormat, duration, gain, quality: source.quality,
+          metadata: { ...metadata, path, streamingQuality: source.quality?.requested ?? metadata?.streamingQuality,
+            codec: stream.codec_name ?? metadata?.codec, sampleRate, channels,
             bitDepth: Number(stream.bits_per_raw_sample) > 0 ? Number(stream.bits_per_raw_sample) : metadata?.bitDepth,
             format: stream.sample_fmt ?? metadata?.format },
           timings: { binaryResolutionMs, probeMs, decodeMs: 0 } }

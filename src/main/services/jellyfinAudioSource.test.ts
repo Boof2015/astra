@@ -7,6 +7,22 @@ const connection = { baseUrl: 'https://music.example/jellyfin/', username: 'list
 const options = { sourceId: 7, connection, trackId: 'song', revision: '1',
   authenticate: async () => ({ accessToken: 'token', userId: 'user' }) }
 
+test('manual Jellyfin quality uses progressive MP3 with header auth and a distinct cache representation', async t => {
+  t.mock.method(globalThis, 'fetch', async (input: string, init: RequestInit) => {
+    const url = new URL(input)
+    assert.equal(url.pathname, '/jellyfin/Audio/song/stream.mp3')
+    assert.equal(url.searchParams.get('AudioCodec'), 'mp3')
+    assert.equal(url.searchParams.get('AudioBitRate'), '128000')
+    assert.equal(url.searchParams.get('static'), 'false')
+    assert.equal(url.searchParams.get('api_key'), null)
+    assert.equal(new Headers(init.headers).get('X-Emby-Token'), 'token')
+    return new Response('mp3', { headers: { 'Content-Type': 'audio/mpeg' } })
+  })
+  const manual = createJellyfinAudioSource({ ...options, quality: 128 })
+  assert.notEqual(remoteAudioCacheKey(manual), remoteAudioCacheKey(createJellyfinAudioSource(options)))
+  assert.equal(await (await manual.open(new AbortController().signal)).text(), 'mp3')
+})
+
 test('Jellyfin original audio uses static streaming and authenticates only when fetching bytes', async t => {
   let authentications = 0
   const signal = new AbortController().signal

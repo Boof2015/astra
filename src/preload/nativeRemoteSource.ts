@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type { NativeRemoteSource } from '../types/nativeRemoteSource'
+import type { StreamingQuality } from '../types/streamingQuality'
 
 export function createNativeRemoteSourceResolver(invoke: (channel: string, ...args: unknown[]) => Promise<any>) {
-  return async (path: string, signal: AbortSignal): Promise<NativeRemoteSource> => {
+  return async (path: string, signal: AbortSignal, quality?: StreamingQuality): Promise<NativeRemoteSource> => {
     signal.throwIfAborted()
     const id = randomUUID()
     let released = false
@@ -13,14 +14,14 @@ export function createNativeRemoteSourceResolver(invoke: (channel: string, ...ar
       void invoke('native-remote:release', id).catch(() => {})
     }
     // IPC ordering registers acquisition before cancellation can release it.
-    const acquisition = invoke('native-remote:acquire', id, path)
+    const acquisition = invoke('native-remote:acquire', id, path, quality)
     signal.addEventListener('abort', release, { once: true })
     if (signal.aborted) release()
     try {
       const result = await acquisition
       signal.throwIfAborted()
       return {
-        url: result.url, duration: result.duration,
+        url: result.url, duration: result.duration, quality: result.quality,
         progress: () => invoke('native-remote:progress', id),
         finished: () => invoke('native-remote:finished', id),
         release

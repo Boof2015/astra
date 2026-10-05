@@ -21,7 +21,8 @@ test('cached remote seek restarts decoding beyond PCM headroom and preserves pau
   let ended = false
   const state = { sessionId: 42, seekableCache: true, sourceType: 'subsonic', track,
     durationSeconds: 1800, sampleRate: 48000, bufferedFrames: 48000 * 30,
-    startFrame: 0, currentFrame: 48000 * 10, playRequested: false, sourceEnded: false }
+    startFrame: 0, currentFrame: 48000 * 10, playRequested: false, sourceEnded: false,
+    quality: { requested: 128, requestedCodec: 'mp3', delivered: null } }
   internals.remoteStreamState = state
   internals._playbackState = 'paused'
   internals.remoteStreamNode = { port: { postMessage: (value: unknown) => workletMessages.push(value) } }
@@ -33,6 +34,7 @@ test('cached remote seek restarts decoding beyond PCM headroom and preserves pau
   engine.on('error', () => undefined)
   await engine.seek(900)
   assert.equal((requests[0] as { startTimeSeconds: number }).startTimeSeconds, 900)
+  assert.equal((requests[0] as { streamingQuality: number }).streamingQuality, 128, 'seeking reuses the playing representation')
   assert.equal(internals._playbackState, 'paused')
   internals.handleRemoteStreamEvent({ sessionId: 42, path: track.path, sourceType: 'subsonic',
     type: 'failed', message: 'Offline', decodedFrames: 48000 * 30, decodedSeconds: 30 })

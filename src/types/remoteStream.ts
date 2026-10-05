@@ -1,9 +1,11 @@
+import type { RemotePlaybackQuality } from './streamingQuality'
 export type ProgressiveStreamSourceType = 'local' | 'subsonic' | 'jellyfin'
 export type RemoteStreamSourceType = ProgressiveStreamSourceType
 
 export type RemoteLoadStage = 'downloading' | 'streaming' | 'complete' | 'failed'
 
 export interface RemoteAudioLoadProgress {
+  quality?: RemotePlaybackQuality
   sessionId?: number
   slot?: 'current' | 'next'
   path: string
@@ -23,6 +25,7 @@ export interface RemoteAudioLoadProgress {
 }
 
 export interface RemoteStreamInfo {
+  quality?: RemotePlaybackQuality
   sessionId: number
   path: string
   sourceType: RemoteStreamSourceType

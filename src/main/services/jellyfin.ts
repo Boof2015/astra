@@ -780,6 +780,18 @@ export function buildJellyfinOriginalStreamUrl(config: JellyfinConnectionConfig,
   return buildJellyfinUrl(config, `/Audio/${encodeURIComponent(sourceTrackId)}/stream`, { static: true }).toString()
 }
 
+/** Progressive audio with header authentication, suitable for the retained byte cache. */
+export function buildJellyfinQualityStreamUrl(config: JellyfinConnectionConfig, sourceTrackId: string, bitrateKbps: number): string {
+  return buildJellyfinUrl(config, `/Audio/${encodeURIComponent(sourceTrackId)}/stream.mp3`, {
+    static: false,
+    DeviceId: buildJellyfinDeviceId(config),
+    AudioCodec: 'mp3',
+    AudioBitRate: bitrateKbps * 1000,
+    MaxAudioChannels: 2,
+    EnableAutoStreamCopy: true
+  }).toString()
+}
+
 export function buildJellyfinStreamUrl(
   config: JellyfinConnectionConfig,
   sourceTrackId: string,
