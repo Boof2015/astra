@@ -1,7 +1,10 @@
 #include "playback_engine.h"
 #include "audio_processing.h"
+#include "progressive_pcm_input.h"
+#include "endpoint_pcm_writer.h"
 
 #include <algorithm>
+#include <array>
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -18,6 +21,8 @@
 #include <vector>
 
 namespace NativePlayback {
+
+void RunEndpointFrameQueueTests();
 
 namespace {
 
@@ -71,11 +76,14 @@ public:
         status_.sourceSamplesModified = false;
         status_.wireFormatCanCarrySourceExactly = true;
         status_.wireFormat = DescribeTrackFormat(format_);
-        std::vector<uint8_t> prime(format_.bytesPerFrame() * 2, 0);
+        std::vector<uint8_t> prime(format_.bytesPerFrame() * primeFrames, 0);
         bool ended = false;
-        const size_t rendered = engine_->renderInto(prime.data(), 2, ended);
+        const size_t rendered = engine_->renderInto(prime.data(), primeFrames, ended);
         prime.resize(rendered * format_.bytesPerFrame());
         primes.push_back(prime);
+        if (consumeDuringStart) engine_->onFramesConsumed(rendered);
+        if (signalEndDuringStart && ended) engine_->onNativeStreamEnded();
+        if (afterPrime) afterPrime();
         if (failNextStart) {
             failNextStart = false;
             status_.streamStarted = false;
@@ -94,6 +102,7 @@ public:
     }
 
     void pause() override {
+        if (onPause) onPause();
         status_.streamStarted = false;
         status_.streamRunning = false;
         // Reservation deliberately retained.
@@ -111,6 +120,11 @@ public:
     TrackFormat format_ {};
     NativeOutputStatus status_ {};
     bool failNextStart = false;
+    size_t primeFrames = 2;
+    bool consumeDuringStart = false;
+    bool signalEndDuringStart = false;
+    std::function<void()> afterPrime;
+    std::function<void()> onPause;
     std::function<uint32_t(const std::string&)> onDeviceMaxChannels;
     std::vector<std::vector<uint8_t>> primes;
 };
@@ -304,6 +318,686 @@ void testProcessedVisualizerTransport() {
     assert(captured.channels[0] == output); // Exactly the post-DSP samples sent to the sink.
 }
 
+ProgressiveTrack progressiveTrack(const TrackBuffer& track, uint64_t id, size_t initiallyAvailable,
+    bool ended, uint64_t startFrame = 0, size_t capacity = 8192) {
+    ProgressiveTrack result;
+    result.sessionId = id;
+    result.format = track.format;
+    result.duration = track.duration;
+    result.gain = track.gain;
+    result.input = std::make_shared<ProgressivePcmInput>(track.format.bytesPerFrame(), capacity, startFrame);
+    assert(result.input->append(track.data.data(), initiallyAvailable) == initiallyAvailable);
+    if (ended) result.input->finish();
+    return result;
+}
+
+size_t eventCount(const std::vector<PlaybackEvent>& events, const char* type) {
+    return static_cast<size_t>(std::count_if(events.begin(), events.end(), [&](const auto& event) { return event.type == type; }));
+}
+
+void testEndpointSilenceAndGapless() {
+    for (const auto policy : {OutputPolicy::Direct, OutputPolicy::Processed}) {
+        PlaybackEngine engine;
+        gFakeSink->primeFrames = 0;
+        engine.configureOutput({policy, 48000});
+        NativeDspConfig config;
+        config.limiterEnabled = false;
+        engine.setDspConfig(config);
+        const auto source = makeTrack();
+        auto first = progressiveTrack(source, 80, 2, false);
+        engine.loadProgressiveTrack(first);
+        engine.preloadNextProgressiveTrack(progressiveTrack(source, 81, 4, true));
+        engine.play();
+        engine.drainEvents();
+        EndpointFrameQueue endpoint(8);
+        std::vector<uint8_t> block(4 * gFakeSink->format_.bytesPerFrame());
+        bool ended = false;
+        assert(engine.renderInto(block.data(), 4, ended) == 2 && !ended);
+        assert(endpoint.append(4, 2));
+        engine.onFramesConsumed(endpoint.consume(2));
+        assert(engine.getSnapshot().currentTime == 2.0 / 48000);
+        assert(first.input->append(source.data.data() + 8, 2) == 2);
+        first.input->finish();
+        assert(engine.renderInto(block.data(), 4, ended) == 4 && !ended);
+        assert(endpoint.append(4, 4)); // Remaining A then B, preceded by old silence.
+        engine.onFramesConsumed(endpoint.updatePadding(4));
+        assert(engine.getSnapshot().currentTime == 2.0 / 48000);
+        assert(engine.getSnapshot().progressiveSessionId == 80);
+        assert(first.input->snapshot().retainedFrame == 2);
+        assert(eventCount(engine.drainEvents(), "gaplessTransition") == 0);
+        engine.onFramesConsumed(endpoint.consume(2));
+        assert(engine.getSnapshot().progressiveSessionId == 80);
+        engine.onFramesConsumed(endpoint.consume(1));
+        assert(engine.getSnapshot().progressiveSessionId == 81);
+        assert(engine.getSnapshot().currentTime == 1.0 / 48000);
+        assert(eventCount(engine.drainEvents(), "gaplessTransition") == 1);
+        assert(engine.renderInto(block.data(), 4, ended) == 2 && ended);
+        assert(endpoint.append(4, 2));
+        engine.onFramesConsumed(endpoint.consume(3));
+        assert(engine.getSnapshot().currentTime == 4.0 / 48000);
+        assert(endpoint.consume(2) == 0); // Device drains trailing padding, not music.
+        engine.onNativeStreamEnded();
+        assert(engine.getSnapshot().playbackState == "stopped");
+        assert(eventCount(engine.drainEvents(), "ended") == 1);
+    }
+}
+
+void testEndpointWriteRollback() {
+    PlaybackEngine engine;
+    gFakeSink->primeFrames = 0;
+    const auto source = makeFloatSine(48000, 4000, 8, 0.2);
+    engine.loadProgressiveTrack(progressiveTrack(source, 90, 8, true));
+    engine.play();
+    EndpointFrameQueue endpoint(8);
+    std::array<float, 4> block {};
+    bool ended = false;
+    assert(engine.renderInto(block.data(), 4, ended) == 4);
+    assert(endpoint.append(4, 4));
+    engine.onFramesConsumed(endpoint.consume(2));
+    std::vector<float> accepted;
+    const std::array<int, 4> writeResults {1, -1, 2, 2};
+    size_t write = 0;
+    assert(WriteEndpointPcm(endpoint, 4,
+        [&] { return engine.renderInto(block.data(), 4, ended); },
+        [&](size_t offset, size_t) {
+            const int count = writeResults.at(write++);
+            if (count > 0) accepted.insert(accepted.end(), block.begin() + offset, block.begin() + offset + count);
+            return count;
+        }, [&](int error) {
+            assert(error == -1 && ended); // The abandoned block had included EOF.
+            endpoint.reset();
+            accepted.clear();
+            engine.rollbackSpeculativeRender();
+            return EndpointWriteRecovery::RenderAgain;
+        }) == EndpointWriteResult::Complete);
+    assert(!ended); // Rewinding withdrew EOF and re-rendered the unheard prefix.
+    assert(accepted.size() == 4);
+    assert(std::memcmp(accepted.data(), source.data.data() + 2 * sizeof(float), 4 * sizeof(float)) == 0);
+    assert(engine.getSnapshot().currentTime == 2.0 / 48000);
+    engine.onFramesConsumed(endpoint.consume(4));
+    assert(engine.getSnapshot().currentTime == 6.0 / 48000);
+    assert(engine.renderInto(block.data(), 4, ended) == 2 && ended);
+    assert(endpoint.append(4, 2));
+    engine.onFramesConsumed(endpoint.consume(4));
+    engine.onNativeStreamEnded();
+    assert(engine.getSnapshot().currentTime == 8.0 / 48000);
+    assert(engine.getSnapshot().playbackState == "stopped");
+}
+
+void testEndpointLocalPlayback() {
+    for (const auto policy : {OutputPolicy::Direct, OutputPolicy::Processed}) {
+        PlaybackEngine engine;
+        gFakeSink->primeFrames = 0;
+        engine.configureOutput({policy, 96000});
+        NativeDspConfig config;
+        config.eqEnabled = true;
+        config.eqBands = {{"peaking", 2000, 3, 1}};
+        engine.setDspConfig(config);
+        const auto source = makeFloatSine(48000, 2000, 1703, 0.2);
+        engine.loadTrack(source);
+        engine.play();
+        const auto expected = policy == OutputPolicy::Direct ? source.data
+            : renderProcessed(source, gFakeSink->format_, config);
+        const auto bytesPerFrame = gFakeSink->format_.bytesPerFrame();
+        EndpointFrameQueue endpoint(1024);
+        std::vector<uint8_t> rendered;
+        std::vector<uint8_t> block(512 * bytesPerFrame);
+        bool ended = false;
+        while (!ended || endpoint.queuedFrames()) {
+            if (!ended && endpoint.queuedFrames() <= 512) {
+                const size_t count = engine.renderInto(block.data(), 512, ended);
+                assert(count || ended);
+                rendered.insert(rendered.end(), block.begin(), block.begin() + count * bytesPerFrame);
+                assert(endpoint.append(512, count));
+            }
+            const auto before = engine.getSnapshot();
+            const auto freeSpace = 1024 - endpoint.queuedFrames();
+            // Unchanged device availability, even with a final partial write,
+            // is not fresh consumption. Then acknowledge a real half period.
+            assert(endpoint.updateAvailable(freeSpace) == 0);
+            assert(endpoint.updateAvailable(freeSpace) == 0);
+            assert(engine.getSnapshot().currentTime == before.currentTime);
+            engine.onFramesConsumed(endpoint.consume(256));
+            assert(engine.getSnapshot().progressiveSessionId == 0);
+        }
+        assert(rendered == expected);
+        engine.onNativeStreamEnded();
+        assert(engine.getSnapshot().playbackState == "stopped");
+        assert(engine.getSnapshot().currentTime == source.duration);
+        assert(eventCount(engine.drainEvents(), "ended") == 1);
+    }
+}
+
+void testProgressiveConsumptionAndGapless() {
+    PlaybackEngine engine;
+    gFakeSink->primeFrames = 0;
+    const auto original = makeTrack();
+    auto first = progressiveTrack(original, 1, 2, false, 0, 8);
+    auto next = progressiveTrack(original, 2, 4, true, 0, 8);
+    engine.loadProgressiveTrack(first);
+    engine.preloadNextProgressiveTrack(next);
+    engine.play();
+    engine.drainEvents();
+    std::vector<uint8_t> block(8 * original.format.bytesPerFrame());
+    bool ended = false;
+    assert(engine.renderInto(block.data(), 8, ended) == 2);
+    assert(!ended && engine.getSnapshot().buffering);
+    assert(engine.getSnapshot().currentTime == 0);
+    engine.onFramesConsumed(2);
+    assert(engine.getSnapshot().currentTime == 2.0 / 48000);
+    for (size_t iteration = 0; iteration < 20; ++iteration) {
+        assert(engine.renderInto(block.data(), 8, ended) == 0 && !ended);
+        assert(engine.getSnapshot().progressiveSessionId == 1);
+    }
+    assert(eventCount(engine.drainEvents(), "gaplessTransition") == 0);
+    first.input->append(original.data.data() + 2 * original.format.bytesPerFrame(), 2);
+    first.input->finish();
+    std::weak_ptr<ProgressivePcmInput> oldOwner = first.input;
+    first.input.reset();
+    assert(engine.renderInto(block.data(), 8, ended) == 6 && ended);
+    assert(std::memcmp(block.data(), original.data.data() + 2 * original.format.bytesPerFrame(), 2 * original.format.bytesPerFrame()) == 0);
+    assert(std::memcmp(block.data() + 2 * original.format.bytesPerFrame(), original.data.data(), original.data.size()) == 0);
+    assert(engine.getSnapshot().progressiveSessionId == 1 && "rendering next is not device consumption");
+    engine.onNativeStreamEnded(); // The device has queued EOF, but not consumed it.
+    assert(engine.getSnapshot().playbackState == "playing");
+    engine.onFramesConsumed(1);
+    assert(engine.getSnapshot().currentTime == 3.0 / 48000);
+    engine.onFramesConsumed(2); // One remaining A frame, then one B frame.
+    assert(engine.getSnapshot().progressiveSessionId == 2);
+    assert(engine.getSnapshot().currentTime == 1.0 / 48000);
+    assert(next.input->snapshot().retainedFrame == 1);
+    assert(!oldOwner.expired() && "a consumed owner must not be destroyed on the audio callback");
+    const auto transitions = engine.drainEvents();
+    assert(oldOwner.expired());
+    assert(eventCount(transitions, "gaplessTransition") == 1);
+    assert(std::any_of(transitions.begin(), transitions.end(), [](const auto& event) {
+        return event.type == "gaplessTransition" && event.progressiveSessionId == 2;
+    }));
+    engine.onFramesConsumed(3);
+    assert(engine.getSnapshot().playbackState == "stopped");
+    assert(engine.getSnapshot().currentTime == original.duration);
+    assert(eventCount(engine.drainEvents(), "ended") == 1);
+}
+
+void testProgressiveFailedStartAcrossBoundary() {
+    for (const auto policy : {OutputPolicy::Direct, OutputPolicy::Processed}) {
+        PlaybackEngine engine;
+        engine.configureOutput({policy, 48000});
+        NativeDspConfig config;
+        config.limiterEnabled = false;
+        engine.setDspConfig(config);
+        const auto a = makeFloatSine(48000, 901, 3, 0.1);
+        const auto b = makeFloatSine(48000, 1301, 8, 0.1);
+        auto first = progressiveTrack(a, 10, 3, true);
+        auto next = progressiveTrack(b, 11, 8, true);
+        engine.loadProgressiveTrack(first);
+        engine.preloadNextProgressiveTrack(next);
+        gFakeSink->primeFrames = 6;
+        gFakeSink->consumeDuringStart = true;
+        gFakeSink->failNextStart = true;
+        gFakeSink->afterPrime = [&] {
+            assert(engine.getSnapshot().progressiveSessionId == 10);
+            assert(engine.getSnapshot().currentTime == 0);
+            assert(first.input->snapshot().retainedFrame == 0);
+            assert(next.input->snapshot().retainedFrame == 0);
+            assert(eventCount(engine.drainEvents(), "gaplessTransition") == 0);
+        };
+        bool failed = false;
+        try { engine.play(); } catch (const std::runtime_error&) { failed = true; }
+        assert(failed);
+        assert(engine.getSnapshot().progressiveSessionId == 10);
+        assert(engine.getSnapshot().currentTime == 0);
+        assert(engine.getSnapshot().playbackState == "stopped");
+        engine.play();
+        assert(gFakeSink->primes.size() == 2 && gFakeSink->primes[0] == gFakeSink->primes[1]);
+        assert(engine.getSnapshot().progressiveSessionId == 11);
+        assert(engine.getSnapshot().currentTime == 3.0 / 48000);
+        assert(eventCount(engine.drainEvents(), "gaplessTransition") == 1);
+        assert(engine.getSnapshot().outputStatus.bitPerfectActive == (policy == OutputPolicy::Direct));
+        gFakeSink->afterPrime = {};
+    }
+}
+
+void testProgressiveSeekPauseQueueAndStop() {
+    PlaybackEngine engine;
+    gFakeSink->primeFrames = 0;
+    const auto source = makeTrack();
+    auto first = progressiveTrack(source, 20, 4, true);
+    auto next = progressiveTrack(source, 21, 4, true);
+    engine.loadProgressiveTrack(first);
+    engine.preloadNextProgressiveTrack(next);
+    engine.play();
+    std::array<uint8_t, 8 * 4> bytes {};
+    bool ended = false;
+    assert(engine.renderInto(bytes.data(), 2, ended) == 2);
+    engine.onFramesConsumed(1);
+    engine.pause();
+    assert(engine.getSnapshot().currentTime == 1.0 / 48000);
+    auto seeked = progressiveTrack(source, 22, 4, true, 48000 * 30);
+    engine.seekProgressiveTrack(20, seeked);
+    assert(engine.getSnapshot().playbackState == "paused");
+    assert(engine.getSnapshot().currentTime == 30);
+    assert(first.input->snapshot().state == PcmInputState::Cancelled);
+    assert(next.input->snapshot().state == PcmInputState::Ended);
+    assert(engine.renderInto(bytes.data(), 8, ended) == 0);
+    bool staleRejected = false;
+    try { engine.seekProgressiveTrack(20, progressiveTrack(source, 23, 4, true)); }
+    catch (const std::invalid_argument&) { staleRejected = true; }
+    assert(staleRejected && engine.getSnapshot().progressiveSessionId == 22);
+    engine.play();
+    assert(engine.renderInto(bytes.data(), 8, ended) == 8 && ended);
+    assert(engine.getSnapshot().progressiveSessionId == 22);
+    engine.clearNextTrack(); // B was rendered, but still unheard; flush and withdraw it.
+    assert(next.input->snapshot().state == PcmInputState::Cancelled);
+    assert(engine.getSnapshot().progressiveSessionId == 22);
+    assert(engine.renderInto(bytes.data(), 8, ended) == 4 && ended);
+    assert(std::memcmp(bytes.data(), source.data.data(), source.data.size()) == 0);
+    assert(eventCount(engine.drainEvents(), "gaplessTransition") == 0);
+    engine.stop();
+    assert(seeked.input->snapshot().state == PcmInputState::Cancelled);
+    assert(seeked.input->append(source.data.data(), 1) == 0);
+    engine.onFramesConsumed(8);
+    assert(engine.getSnapshot().currentTime == 0);
+    assert(engine.renderInto(bytes.data(), 8, ended) == 0);
+    engine.loadTrack(source);
+    engine.play();
+    assert(engine.getSnapshot().progressiveSessionId == 0);
+    assert(engine.renderInto(bytes.data(), 8, ended) == 4 && ended);
+    assert(std::memcmp(bytes.data(), source.data.data(), source.data.size()) == 0);
+}
+
+void testProgressiveProcessedConsumptionAndPause() {
+    PlaybackEngine engine;
+    gFakeSink->primeFrames = 0;
+    engine.configureOutput({OutputPolicy::Processed, 96000});
+    NativeDspConfig config;
+    config.limiterEnabled = false;
+    engine.setDspConfig(config);
+    const auto source = makeFloatSine(48000, 1000, 4096, 0.2);
+    auto input = progressiveTrack(source, 30, 4096, true);
+    engine.loadProgressiveTrack(input);
+    engine.play();
+    std::array<float, 128> first {};
+    bool ended = false;
+    assert(engine.renderInto(first.data(), 128, ended) == 128 && !ended);
+    assert(engine.getSnapshot().currentTime == 0);
+    engine.onFramesConsumed(64);
+    assert(engine.getSnapshot().currentTime == 32.0 / 48000);
+    assert(input.input->snapshot().retainedFrame == 32);
+    engine.pause();
+    engine.play();
+    std::array<float, 128> resumed {};
+    assert(engine.renderInto(resumed.data(), 128, ended) == 128);
+    ProcessedAudioPipeline reference;
+    reference.configure(source.format, BuildTrackFormat(96000, 1, "f32"), config, {}, 32);
+    uint64_t frame = 32;
+    std::array<float, 128> expected {};
+    assert(reference.render(source, frame, expected.data(), 128, ended) == 128);
+    assert(resumed == expected);
+    engine.onFramesConsumed(128);
+    const auto position = engine.getSnapshot().currentTime;
+    engine.setSelectedDeviceId("other-device");
+    assert(engine.getSnapshot().playbackState == "playing");
+    assert(engine.getSnapshot().currentTime == position);
+}
+
+void testProgressiveQueueRaces() {
+    PlaybackEngine engine;
+    gFakeSink->primeFrames = 0;
+    const auto source = makeTrack();
+    auto first = progressiveTrack(source, 50, 4, true);
+    auto next = progressiveTrack(source, 51, 1, false);
+    engine.loadProgressiveTrack(first);
+    engine.preloadNextProgressiveTrack(next);
+    engine.play();
+    std::array<uint8_t, 8 * 4> bytes {};
+    bool ended = false;
+    assert(engine.renderInto(bytes.data(), 8, ended) == 4 && !ended);
+    engine.onFramesConsumed(4);
+    assert(engine.getSnapshot().buffering);
+    assert(engine.renderInto(bytes.data(), 8, ended) == 0 && !ended);
+    // A short next song becomes ready on true EOF, even below the normal buffer threshold.
+    next.input->append(source.data.data() + 4, 3);
+    next.input->finish();
+    assert(engine.renderInto(bytes.data(), 8, ended) == 4 && ended);
+    gFakeSink->onPause = [&] { engine.onFramesConsumed(1); };
+    bool staleRejected = false;
+    try { engine.seekProgressiveTrack(50, progressiveTrack(source, 52, 4, true)); }
+    catch (const std::invalid_argument&) { staleRejected = true; }
+    gFakeSink->onPause = {};
+    assert(staleRejected);
+    assert(engine.getSnapshot().progressiveSessionId == 51);
+    assert(engine.getSnapshot().playbackState == "playing");
+    assert(engine.getSnapshot().currentTime == 1.0 / 48000);
+    assert(engine.renderInto(bytes.data(), 8, ended) == 3 && ended);
+    assert(std::memcmp(bytes.data(), source.data.data() + 4, 12) == 0);
+    auto late = progressiveTrack(source, 53, 4, true);
+    bool lateRejected = false;
+    try { engine.preloadNextProgressiveTrack(late); }
+    catch (const std::logic_error&) { lateRejected = true; }
+    assert(lateRejected);
+    assert(late.input->snapshot().state == PcmInputState::Ended);
+    engine.onFramesConsumed(3);
+    engine.onNativeStreamEnded();
+    assert(engine.getSnapshot().playbackState == "stopped");
+    assert(eventCount(engine.drainEvents(), "gaplessTransition") == 1);
+}
+
+void testProgressiveShortStartupEof() {
+    for (const auto policy : {OutputPolicy::Direct, OutputPolicy::Processed}) {
+        PlaybackEngine engine;
+        engine.configureOutput({policy, 48000});
+        const auto source = makeFloatSine(48000, 1000, 4, 0.1);
+        auto track = progressiveTrack(source, 60, 4, true);
+        engine.loadProgressiveTrack(track);
+        gFakeSink->primeFrames = 8;
+        gFakeSink->consumeDuringStart = true;
+        gFakeSink->signalEndDuringStart = true;
+        gFakeSink->failNextStart = true;
+        bool failed = false;
+        try { engine.play(); } catch (const std::runtime_error&) { failed = true; }
+        assert(failed && engine.getSnapshot().currentTime == 0);
+        assert(track.input->snapshot().retainedFrame == 0);
+        assert(eventCount(engine.drainEvents(), "ended") == 0);
+        engine.play();
+        assert(gFakeSink->primes[0] == gFakeSink->primes[1]);
+        assert(engine.getSnapshot().playbackState == "stopped");
+        assert(engine.getSnapshot().currentTime == source.duration);
+        assert(track.input->snapshot().retainedFrame == 4);
+        assert(eventCount(engine.drainEvents(), "ended") == 1);
+    }
+}
+
+void testProgressiveProcessedRateHandoff() {
+    PlaybackEngine engine;
+    gFakeSink->primeFrames = 0;
+    engine.configureOutput({OutputPolicy::Processed, 96000});
+    NativeDspConfig config;
+    config.eqEnabled = true;
+    config.preampDb = -3;
+    config.eqBands = {{"peaking", 1000, 4, 1}};
+    engine.setDspConfig(config);
+    auto a = makeFloatSine(44100, 880, 4410, 0.1);
+    auto b = makeFloatSine(48000, 1760, 4800, 0.2);
+    b.gain.gainDb = -2;
+    b.gain.mode = TrackGainMode::ReplayGain;
+    auto first = progressiveTrack(a, 70, 4410, true);
+    auto next = progressiveTrack(b, 71, 4800, true);
+    engine.loadProgressiveTrack(first);
+    engine.preloadNextProgressiveTrack(next);
+    engine.play();
+    ProcessedAudioPipeline reference;
+    reference.configure(a.format, BuildTrackFormat(96000, 1, "f32"), config, a.gain, 0);
+    reference.prepareGaplessTrack(b.format);
+    std::vector<float> expected;
+    std::array<float, 257> block {};
+    uint64_t read = 0;
+    bool ended = false;
+    while (!ended) {
+        const auto count = reference.render(a, read, block.data(), block.size(), ended);
+        assert(count || ended);
+        expected.insert(expected.end(), block.begin(), block.begin() + count);
+    }
+    reference.beginGaplessTrack(b.format, b.gain);
+    read = 0;
+    ended = false;
+    while (!ended) {
+        const auto count = reference.render(b, read, block.data(), block.size(), ended);
+        assert(count || ended);
+        expected.insert(expected.end(), block.begin(), block.begin() + count);
+    }
+    size_t played = 0;
+    ended = false;
+    while (!ended) {
+        const auto count = engine.renderInto(block.data(), block.size(), ended);
+        assert(count || ended);
+        assert(played + count <= expected.size());
+        assert(std::equal(block.begin(), block.begin() + count, expected.begin() + played));
+        const auto beforeConsumption = engine.getSnapshot();
+        assert(beforeConsumption.outputStatus.processing.sourceSampleRate == (played <= 9600 ? 44100 : 48000));
+        assert(beforeConsumption.outputStatus.processing.trackGainDb == (played <= 9600 ? 0 : -2));
+        engine.onFramesConsumed(count);
+        played += count;
+        const auto snapshot = engine.getSnapshot();
+        if (played <= 9600) {
+            assert(snapshot.progressiveSessionId == 70);
+        } else {
+            assert(snapshot.progressiveSessionId == 71);
+            assert(snapshot.currentTime == static_cast<double>((played - 9600) / 2) / 48000);
+        }
+    }
+    assert(played == expected.size() && played == 19200);
+    engine.onNativeStreamEnded();
+    assert(engine.getSnapshot().playbackState == "stopped");
+    assert(eventCount(engine.drainEvents(), "gaplessTransition") == 1);
+}
+
+void testMixedSourceContinuity() {
+    for (const auto policy : {OutputPolicy::Direct, OutputPolicy::Processed}) {
+      for (const uint64_t startFrame : {0u, 333u}) {
+        PlaybackEngine engine;
+        gFakeSink->primeFrames = 0;
+        engine.configureOutput({policy, policy == OutputPolicy::Processed ? 96000u : 48000u});
+        NativeDspConfig config;
+        config.eqEnabled = true;
+        config.eqBands = {{"peaking", 1000, 4, 1}};
+        config.limiterEnabled = true;
+        engine.setDspConfig(config);
+        auto a = makeFloatSine(policy == OutputPolicy::Processed ? 44100 : 48000, 877, 4800, 0.15);
+        auto b = makeFloatSine(policy == OutputPolicy::Processed ? 44100 : 48000, 1553, 4410, 0.2);
+        auto c = makeFloatSine(48000, 2111, 3200, 0.1);
+        b.gain = {TrackGainMode::ReplayGain, -3};
+        c.gain = {TrackGainMode::ReplayGain, -1};
+        engine.loadTrack(a);
+        if (startFrame) engine.seek(static_cast<double>(startFrame) / a.format.sampleRate);
+        engine.play();
+        engine.drainEvents();
+        const auto output = gFakeSink->format_;
+        std::vector<uint8_t> expected;
+        ProcessedAudioPipeline reference;
+        reference.configure(a.format, output, config, a.gain, startFrame);
+        const TrackBuffer* tracks[] = {&a, &b, &c};
+        if (policy == OutputPolicy::Direct) {
+            for (const auto* track : tracks) expected.insert(expected.end(),
+                track->data.begin() + (track == &a ? startFrame * a.format.bytesPerFrame() : 0), track->data.end());
+        } else {
+            // Match callback sizes: the limiter's lookahead also advances filter
+            // history past a track's final emitted sample.
+            reference.prepareGaplessTrack(b.format);
+            size_t index = 0;
+            uint64_t read = startFrame;
+            std::array<float, 512> samples {};
+            while (index < 3) {
+                const size_t requested = expected.empty() ? 512 : 257;
+                size_t written = 0;
+                while (written < requested && index < 3) {
+                    bool trackEnded = false;
+                    const auto count = reference.render(*tracks[index], read, samples.data() + written,
+                        requested - written, trackEnded);
+                    assert(count || trackEnded);
+                    written += count;
+                    if (!trackEnded) break;
+                    if (++index < 3) {
+                        reference.beginGaplessTrack(tracks[index]->format, tracks[index]->gain);
+                        if (index < 2) reference.prepareGaplessTrack(tracks[index + 1]->format);
+                        read = 0;
+                    }
+                }
+                const auto* bytes = reinterpret_cast<const uint8_t*>(samples.data());
+                expected.insert(expected.end(), bytes, bytes + written * output.bytesPerFrame());
+            }
+        }
+        std::vector<uint8_t> actual;
+        std::vector<uint8_t> block(512 * output.bytesPerFrame());
+        bool ended = false;
+        assert(engine.renderInto(block.data(), 512, ended) == 512 && !ended);
+        actual.insert(actual.end(), block.begin(), block.end());
+        engine.onFramesConsumed(256); // Adoption must preserve this queued remainder.
+        const auto before = engine.getSnapshot();
+        engine.preloadNextProgressiveTrack(progressiveTrack(b, 91, b.totalFrames(), true));
+        assert(engine.getSnapshot().currentTime == before.currentTime);
+        assert(engine.getSnapshot().playbackState == "playing");
+        engine.onFramesConsumed(256);
+        bool stagedLocal = false;
+        size_t played = 512;
+        const size_t boundaryA = static_cast<size_t>(std::llround(
+            static_cast<double>(a.totalFrames() - startFrame) * output.sampleRate / a.format.sampleRate));
+        const size_t boundaryB = boundaryA + static_cast<size_t>(std::llround(
+            static_cast<double>(b.totalFrames()) * output.sampleRate / b.format.sampleRate));
+        while (!ended) {
+            const auto count = engine.renderInto(block.data(), 257, ended);
+            assert(count || ended);
+            actual.insert(actual.end(), block.begin(), block.begin() + count * output.bytesPerFrame());
+            engine.onFramesConsumed(count);
+            played += count;
+            const auto snapshot = engine.getSnapshot();
+            assert(snapshot.progressiveSessionId == (played > boundaryA && played <= boundaryB ? 91 : 0));
+            if (snapshot.progressiveSessionId == 91 && !stagedLocal) {
+                engine.preloadNextTrack(c);
+                stagedLocal = true;
+            }
+        }
+        if (actual != expected) {
+            size_t mismatch = 0;
+            while (mismatch < std::min(actual.size(), expected.size()) && actual[mismatch] == expected[mismatch]) ++mismatch;
+            std::cerr << "Mixed continuity policy=" << static_cast<int>(policy) << " actual=" << actual.size()
+                << " expected=" << expected.size() << " first differing byte=" << mismatch << std::endl;
+        }
+        assert(stagedLocal && actual == expected);
+        engine.onNativeStreamEnded();
+        assert(engine.getSnapshot().playbackState == "stopped");
+        assert(eventCount(engine.drainEvents(), "gaplessTransition") == 2);
+      }
+    }
+}
+
+void testMixedLocalSeekAndCompatibility() {
+    for (const auto policy : {OutputPolicy::Direct, OutputPolicy::Processed}) {
+        PlaybackEngine engine;
+        gFakeSink->primeFrames = 0;
+        engine.configureOutput({policy, 48000});
+        NativeDspConfig config;
+        config.limiterEnabled = false;
+        engine.setDspConfig(config);
+        const auto source = makeFloatSine(48000, 997, 2000, 0.1);
+        engine.loadProgressiveTrack(progressiveTrack(source, 92, source.totalFrames(), true));
+        engine.preloadNextTrack(source);
+        engine.play();
+        std::array<float, 2010> block {};
+        bool ended = false;
+        assert(engine.renderInto(block.data(), block.size(), ended) == block.size());
+        engine.onFramesConsumed(block.size());
+        assert(engine.getSnapshot().progressiveSessionId == 0);
+        auto next = progressiveTrack(source, 93, source.totalFrames(), true);
+        engine.preloadNextProgressiveTrack(next);
+        engine.seek(1900.0 / 48000);
+        assert(engine.getSnapshot().currentTime == 1900.0 / 48000);
+        engine.pause();
+        engine.play();
+        assert(engine.renderInto(block.data(), 101, ended) == 101);
+        engine.onFramesConsumed(101);
+        assert(engine.getSnapshot().progressiveSessionId == 93);
+        assert(eventCount(engine.drainEvents(), "gaplessTransition") == 1); // Seek cleared the earlier event.
+
+        engine.loadTrack(source);
+        engine.play();
+        auto pending = progressiveTrack(source, 94, source.totalFrames(), true);
+        engine.preloadNextProgressiveTrack(pending);
+        engine.clearNextTrack();
+        assert(pending.input->snapshot().state == PcmInputState::Cancelled);
+        engine.seek(1000.0 / 48000);
+        assert(engine.getSnapshot().currentTime == 1000.0 / 48000);
+        engine.stop();
+        assert(engine.getSnapshot().currentTime == 0);
+        engine.play();
+        assert(engine.renderInto(block.data(), 100, ended) == 100);
+        assert(std::memcmp(block.data(), source.data.data(), 100 * sizeof(float)) == 0);
+    }
+    PlaybackEngine direct;
+    gFakeSink->primeFrames = 0;
+    const auto local = makeTrack();
+    const auto incompatible = makeFloatSine(48000, 900, 1000, 0.1);
+    direct.loadTrack(local);
+    direct.play();
+    bool rejected = false;
+    try { direct.preloadNextProgressiveTrack(progressiveTrack(incompatible, 95, 1000, true)); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    assert(rejected);
+    std::array<uint8_t, 16> bytes {};
+    bool ended = false;
+    assert(direct.renderInto(bytes.data(), 4, ended) == 4);
+    assert(std::equal(bytes.begin(), bytes.end(), local.data.begin()));
+
+    // Matching channels alone must not admit a direct-route rate/bit-depth change.
+    for (const auto format : {BuildTrackFormat(44100, 1, "f32"), BuildTrackFormat(48000, 1, "s16")}) {
+        const auto source = makeFloatSine(48000, 900, 1000, 0.1);
+        auto different = source;
+        different.format = format;
+        direct.loadTrack(source);
+        auto remote = progressiveTrack(different, 96, different.totalFrames(), true);
+        rejected = false;
+        try { direct.preloadNextProgressiveTrack(remote); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        assert(rejected && remote.input->snapshot().state == PcmInputState::Ended);
+        direct.loadProgressiveTrack(progressiveTrack(source, 97, source.totalFrames(), true));
+        rejected = false;
+        try { direct.preloadNextTrack(different); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        assert(rejected && direct.getSnapshot().progressiveSessionId == 97);
+    }
+}
+
+void testProgressiveConcurrentDecodeAndPlayback() {
+    PlaybackEngine engine;
+    gFakeSink->primeFrames = 0;
+    TrackBuffer source;
+    source.format = BuildTrackFormat(48000, 2, "s16");
+    constexpr size_t frames = 200003;
+    source.duration = 10000; // Metadata does not define EOF.
+    source.data.resize(frames * 4);
+    for (size_t index = 0; index < source.data.size(); ++index) source.data[index] = static_cast<uint8_t>(index * 137);
+    auto track = progressiveTrack(source, 40, 0, false, 0, 257);
+    engine.loadProgressiveTrack(track);
+    engine.play();
+    std::thread producer([&] {
+        size_t written = 0;
+        while (written < frames) {
+            written += track.input->append(source.data.data() + written * 4, std::min<size_t>(131, frames - written));
+            std::this_thread::yield();
+        }
+        track.input->finish();
+    });
+    std::atomic<bool> done {false};
+    std::thread observer([&] {
+        while (!done.load()) {
+            assert(engine.getSnapshot().progressiveSessionId == 40);
+            engine.drainEvents();
+            std::this_thread::yield();
+        }
+    });
+    size_t played = 0;
+    std::array<uint8_t, 127 * 4> block {};
+    bool ended = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!ended) {
+        assert(std::chrono::steady_clock::now() < deadline);
+        const size_t count = engine.renderInto(block.data(), 127, ended);
+        assert(std::memcmp(block.data(), source.data.data() + played * 4, count * 4) == 0);
+        played += count;
+        engine.onFramesConsumed(count);
+        const auto view = track.input->snapshot();
+        assert(view.publishedFrame - view.retainedFrame <= 257);
+        if (!count) std::this_thread::yield();
+    }
+    done.store(true);
+    producer.join();
+    observer.join();
+    assert(played == frames);
+    engine.onNativeStreamEnded();
+    assert(engine.getSnapshot().playbackState == "stopped");
+    assert(engine.getSnapshot().currentTime == static_cast<double>(frames) / 48000);
+}
+
 } // namespace
 
 std::unique_ptr<AudioOutputSink> CreatePlatformAudioSink() {
@@ -316,9 +1010,23 @@ std::unique_ptr<AudioOutputSink> CreatePlatformAudioSink() {
 
 int main() {
     using namespace NativePlayback;
+    RunEndpointFrameQueueTests();
+    testEndpointSilenceAndGapless();
+    testEndpointWriteRollback();
+    testEndpointLocalPlayback();
     testDeviceCapabilityQueryAllowsRendering();
     testVisualizerTransport();
     testProcessedVisualizerTransport();
+    testProgressiveConsumptionAndGapless();
+    testProgressiveFailedStartAcrossBoundary();
+    testProgressiveSeekPauseQueueAndStop();
+    testProgressiveProcessedConsumptionAndPause();
+    testProgressiveQueueRaces();
+    testProgressiveShortStartupEof();
+    testProgressiveProcessedRateHandoff();
+    testMixedSourceContinuity();
+    testMixedLocalSeekAndCompatibility();
+    testProgressiveConcurrentDecodeAndPlayback();
 
     PlaybackEngine engine;
     TrackBuffer track = makeTrack();

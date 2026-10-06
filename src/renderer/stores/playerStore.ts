@@ -1,3 +1,5 @@
+import { isRetainedRemoteSource } from '../../shared/audio/retainedRemoteSource'
+import { ProviderPlaybackPublisher } from '../audio/providerPlaybackPublisher'
 import { create } from 'zustand'
 import type { PlaybackSourceContext } from '../../types/playbackSource'
 import { normalizePlaybackSourceContext, playbackSourceKey, resolveCurrentPlaybackSource } from '../../shared/home/playbackSources'
@@ -18,11 +20,13 @@ import {
   stripBitPerfectFormatTag
 } from '../../shared/audio/bitPerfectFormatError'
 import { extractWaveformPeaks } from '../audio/waveformExtractor'
+import { isRemoteAudioAnalysis, type RemoteAudioAnalysis } from '../../types/remoteAudioAnalysis'
 import { useLibraryStore, type DbTrack } from './libraryStore'
 import { usePlaylistStore } from './playlistStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore'
 import { useParallaxStore } from './parallaxStore'
 import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
+import { playbackQualityRequest, resolveStreamingQuality, streamingQualitySourceFromPath } from '../../types/streamingQuality'
 import { selectUpcomingLoudnessWarmupTracks } from '../utils/loudnessWarmup'
 import {
   type PlayerSessionSnapshot,
@@ -32,6 +36,8 @@ import {
 } from '../utils/sessionState'
 
 interface RemoteLoadProgress {
+  quality?: import('../../types/streamingQuality').RemotePlaybackQuality
+  sessionId?: number
   path: string
   sourceType: 'local' | 'subsonic' | 'jellyfin'
   stage: 'downloading' | 'streaming' | 'complete' | 'failed'
@@ -81,6 +87,7 @@ interface CommittedPlaybackTransition {
 }
 
 interface PlaybackLoadOptions {
+  streamingQuality?: import('../../types/streamingQuality').StreamingQualityRequest
   manualStart?: boolean
   startTime?: number
   attempt?: PlaybackAttempt
@@ -396,7 +403,7 @@ export const ADAPTIVE_PREBUFFER_IDLE_TIMEOUT_MS = 2000
 export const CONTEXT_HYDRATION_BATCH_SIZE = 200
 const STANDARD_TRANSITION_COALESCE_MS = 75
 export const PLAYER_VOLUME_STORAGE_KEY = 'astra-player-volume-v1'
-const NATIVE_REMOTE_FAILURE_MESSAGE = 'Native exclusive playback is local-file-only. Switch to Standard to play remote or progressive sources.'
+const NATIVE_REMOTE_FAILURE_MESSAGE = 'This server source does not yet support native exclusive playback. Switch to Standard to play it.'
 const IAMF_NATIVE_FAILURE_MESSAGE = 'Eclipsa (IAMF) and Parallax sources are Standard-only. Switch to Standard to play this track.'
 let nextQueueItemId = 1
 let nextPlaybackAttemptId = 1
@@ -770,13 +777,14 @@ function getTrackRetentionDiagnostics(state: Pick<PlayerStore, 'currentTrack' | 
   }
 }
 
-function createInitialRemoteLoadProgress(track: Track): RemoteLoadProgress {
+function createInitialRemoteLoadProgress(track: Track, quality?: import('../../types/streamingQuality').RemotePlaybackQuality): RemoteLoadProgress {
   const sourceType = track.sourceType === 'jellyfin'
     ? 'jellyfin'
     : track.sourceType === 'subsonic'
       ? 'subsonic'
       : 'local'
   return {
+    ...(quality ? { quality } : {}),
     path: track.path,
     sourceType,
     stage: sourceType === 'local' ? 'streaming' : 'downloading',
@@ -821,6 +829,8 @@ type NextCandidate =
 
 function isUnavailableRemoteTrack(track: Track | null | undefined): boolean {
   if (!track) return false
+  // Connectivity is not playability once encoded audio may be cached locally.
+  if (isRetainedRemoteSource(track.sourceType) && track.availabilityReason === 'source_unavailable') return false
   return track.sourceType !== undefined
     && track.sourceType !== 'local'
     && track.isAvailable === false
@@ -1120,7 +1130,7 @@ function getReplayGainCandidateDb(
 function shouldUseNativeExclusivePath(track: Track | null | undefined): boolean {
   if (!track) return false
   const sourceType = track.sourceType ?? 'local'
-  if (sourceType !== 'local') return false
+  if (sourceType !== 'local' && !isRetainedRemoteSource(sourceType)) return false
   if (isIamfTrack(track)) return false
   return useAudioSettingsStore.getState().playbackOutputMode !== 'standard'
 }
@@ -1128,7 +1138,7 @@ function shouldUseNativeExclusivePath(track: Track | null | undefined): boolean 
 async function ensureCompatiblePlaybackMode(track: Track): Promise<void> {
   const sourceType = track.sourceType ?? 'local'
   const iamf = isIamfTrack(track)
-  if (sourceType === 'local' && !iamf) {
+  if ((sourceType === 'local' || isRetainedRemoteSource(sourceType)) && !iamf) {
     return
   }
 
@@ -1156,6 +1166,37 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   // Track if listeners are initialized
   let listenersInitialized = false
   let remoteLoadProgressUnsubscribe: (() => void) | null = null
+  let streamingQualityUnsubscribe: (() => void) | null = null
+  let remoteAnalysisUnsubscribe: (() => void) | null = null
+  let remoteWaveformIdentity: string | null = null
+  let remoteWaveformKey: string | null = null
+
+  const applyRemoteWaveform = (key: string, analysis: RemoteAudioAnalysis | null): void => {
+    const state = get()
+    if (!isRetainedRemoteSource(state.currentTrack?.sourceType) || !isRemoteAudioAnalysis(analysis)
+      || state.remoteLoadProgress?.path !== state.currentTrack?.path
+      || state.remoteLoadProgress?.quality?.analysisKey !== key) return
+    remoteWaveformKey = key
+    set({ waveformData: Float32Array.from(analysis.peaks), waveformAnalyzedRatio: 1, waveformBufferedRatio: 1 })
+  }
+
+  const refreshRemoteWaveform = (progress: RemoteLoadProgress & { sessionId?: number }, force = false): void => {
+    const state = get()
+    if (!isRetainedRemoteSource(state.currentTrack?.sourceType) || state.currentTrack?.path !== progress.path
+      || state.remoteLoadProgress !== progress) return
+    const key = progress.quality?.analysisKey
+    const identity = `${progress.path}:${progress.sessionId}:${key}`
+    if (!force && remoteWaveformIdentity === identity) return
+    remoteWaveformIdentity = identity
+    // A seek replaces the decoder, but not the cached representation. Keep a
+    // complete waveform visible while that new session starts.
+    if (!key || remoteWaveformKey !== key) {
+      remoteWaveformKey = null
+      set({ waveformData: null, waveformAnalyzedRatio: 0 })
+    }
+    if (key) void window.electronAPI.getRemoteAudioAnalysis?.(key)
+      .then(result => { if (remoteWaveformIdentity === identity) applyRemoteWaveform(key, result) }).catch(() => {})
+  }
   let staticWaveformResultUnsubscribe: (() => void) | null = null
   let staticWaveformResultListenerAvailable = false
   const pendingStaticWaveformBuffers = new Map<number, { trackPath: string; buffer: AudioBuffer }>()
@@ -1173,6 +1214,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   let pendingManualLoadCueTrack: Track | null = null
   let recentPlaySession: RecentPlaySession | null = null
   let listeningHistoryStatusPromise: Promise<ListeningHistoryStatus> | null = null
+  const providerPlayback = new ProviderPlaybackPublisher(snapshot => window.electronAPI.reportProviderPlayback?.(snapshot))
   let activeLoadRequestId = 0
   let activePrebufferRequestId = 0
   let playbackIntentGeneration = 0
@@ -1195,6 +1237,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   let pendingNativeTransition: PendingTransitionLoad | null = null
   let activeExecutingTransition: PendingTransitionLoad | null = null
   let committedPlaybackTransition: CommittedPlaybackTransition | null = null
+  let seekRequestGeneration = 0
   let pendingNativeSeek: {
     intentId: number
     targetTime: number
@@ -2153,6 +2196,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   ): void => {
     const session = updateRecentPlayAccumulation(playbackState)
     if (!session) return
+    providerPlayback.finish(Boolean(options.completedNaturally))
     checkpointRecentPlay(session, {
       finalizeSegment: true,
       finalizeSession: true,
@@ -2198,6 +2242,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       qualificationEligible: true
     }
     const session = recentPlaySession
+    providerPlayback.start(session.sessionKey, trackPath, session.trackDurationSeconds)
+    providerPlayback.observe(state.playbackState, state.currentTime, session.trackDurationSeconds)
     if (session.allowDbWrite) {
       void getListeningHistoryStatus().then((status) => {
         if (recentPlaySession === session && session.generation === null) session.generation = status.generation
@@ -2281,6 +2327,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   }
 
   const markTrackUnavailableInState = (trackPath: string, reason: string = 'source_unavailable'): void => {
+    if (reason === 'source_unavailable' && get().currentTrack?.path === trackPath
+      && isRetainedRemoteSource(get().currentTrack?.sourceType)) return
     set((state) => ({
       queueItems: state.queueItems.map((item) => ({
         ...item,
@@ -2428,7 +2476,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       }
       // The first playable queue entry defines the handoff. Never prebuffer a local
       // track hidden behind a remote entry.
-      if (candidateTrack.sourceType && candidateTrack.sourceType !== 'local') return null
+      if (candidateTrack.sourceType && candidateTrack.sourceType !== 'local'
+        && !audioEngine.canPreBufferRemoteTrack(candidateTrack)) return null
       return candidateTrack
     }
 
@@ -2510,6 +2559,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     const expectedTrack = resolveExpectedPrebufferTrack(state)
     const expectedTrackPath = expectedTrack?.path ?? null
     const activeOutputMode = audioEngine.getPlaybackOutputMode()
+    const usesRemotePrebuffer = !!expectedTrack && !isIamfTrack(expectedTrack) && !isIamfTrack(state.currentTrack)
+      && audioEngine.canPreBufferRemoteTrack(expectedTrack)
     const usesNativePrebuffer = activeOutputMode !== 'standard'
       && shouldUseNativeExclusivePath(expectedTrack)
 
@@ -2518,7 +2569,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       || !state.currentTrack
       || state.repeat === 'one'
       || !expectedTrackPath
-      || (state.currentTrack.sourceType && state.currentTrack.sourceType !== 'local')
+      || (state.currentTrack.sourceType && state.currentTrack.sourceType !== 'local' && !usesRemotePrebuffer)
       // IAMF and other Standard-only targets must not start eager file/loudness
       // work while a native-exclusive backend is active. Their eventual play action
       // performs the existing safe fallback to Standard first.
@@ -2547,12 +2598,17 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       return
     }
 
+    if (usesRemotePrebuffer && !audioEngine.hasRemotePrebufferHeadroom()) {
+      clearScheduledPrebufferTimer()
+      return
+    }
+
     if (audioEngine.nextBufferedTrackPath === expectedTrackPath) {
       clearScheduledPrebufferTimer()
       // Eager decode may have installed the buffer long before Parallax's
       // announcement window. Re-enter its existing deferred scheduler on
       // resume so a pause cannot leave behind a stale boundary timer.
-      void useParallaxStore.getState().publishHostNextStream(expectedTrack)
+      if (!usesRemotePrebuffer) void useParallaxStore.getState().publishHostNextStream(expectedTrack)
       return
     }
     if (
@@ -2606,13 +2662,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         latestState.playbackState !== 'playing'
         || resolveExpectedPrebufferTrackPath(latestState) !== expectedTrackPath
         || useAudioSettingsStore.getState().disableGaplessPrebufferDev
+        || (usesRemotePrebuffer && !audioEngine.hasRemotePrebufferHeadroom())
       ) {
         return
       }
       void startPrebufferNextTrack()
     }
 
-    if (delayMs > 0 && usesNativePrebuffer) {
+    if (delayMs > 0 && (usesNativePrebuffer || (usesRemotePrebuffer && audioEngine.hasDecodedAudioBuffer()))) {
       scheduleTimer(delayMs, startIfStillEligible)
       return
     }
@@ -3365,12 +3422,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           failed: true,
           deviceFormatRejected: isFormatFailure
         })
+        const remoteFailure = isRetainedRemoteSource(track.sourceType)
+          ? { ...createInitialRemoteLoadProgress(track), stage: 'failed' as const, failed: true, done: true }
+          : null
         set({
           playbackState: 'stopped',
-          remoteLoadProgress: null,
+          remoteLoadProgress: remoteFailure,
           loadingStatus: null,
           remoteBufferedSeconds: 0,
-          remoteStreamSessionId: null
+          remoteStreamSessionId: null,
+          ...(remoteFailure ? { restoredTrackNeedsLoad: true, restoredPlaybackTime: 0 } : {})
         })
         pendingManualLoadCueTrack = null
         return false
@@ -3419,6 +3480,20 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
 
       const state = get()
+      if (state.currentTrack && audioEngine.getPendingProgressiveSeekTrackPath() === state.currentTrack.path) {
+        // Resuming an in-flight seek changes its play/pause intent. Starting a
+        // fresh playback intent here would invalidate the decoder it awaits.
+        const seekIntentId = playbackIntentGeneration
+        try {
+          await audioEngine.play()
+          if (isCurrentPlaybackIntent(seekIntentId)) {
+            set({ remoteStreamSessionId: audioEngine.getRemoteStreamSessionId() })
+          }
+        } catch (error) {
+          if (isCurrentPlaybackIntent(seekIntentId) && !isSupersededAudioLoadError(error)) throw error
+        }
+        return
+      }
       const pendingInterruption = pendingPlaybackInterruptionReconciliation
       if (
         pendingInterruption
@@ -3528,6 +3603,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         const loaded = await runSerializedTrackLoad(track, {
           manualStart: true,
           startTime,
+          streamingQuality: playbackQualityRequest(state.remoteLoadProgress?.quality),
           attempt
         }, 'resume')
         if (loaded === 'failed' && track.sourceType && track.sourceType !== 'local') {
@@ -3874,6 +3950,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     seek: async (time: number) => {
       if (blockLocalPlaybackInParallaxSinkMode()) return
       const seekIntentId = playbackIntentGeneration
+      const seekRequestId = ++seekRequestGeneration
+      const isCurrentSeek = (): boolean => isCurrentPlaybackIntent(seekIntentId)
+        && seekRequestId === seekRequestGeneration
 
       // §21 Gapless sink handoff — a seek moves the current track's boundary, invalidating the
       // pre-announced next stream's scheduled crossover. Withdraw it; this boundary falls back to the
@@ -3892,26 +3971,60 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         })
         return
       }
-      const seekTime = state.currentTrack?.sourceType && state.currentTrack.sourceType !== 'local'
+      const seekTime = state.currentTrack?.sourceType && state.currentTrack.sourceType !== 'local' && !isRetainedRemoteSource(state.currentTrack.sourceType)
         ? Math.max(0, Math.min(time, state.remoteBufferedSeconds))
         : time
       const parallaxSeekTimeline = await useParallaxStore.getState().prepareHostSeek(
         seekTime,
         state.playbackState === 'playing'
       )
-      if (!isCurrentPlaybackIntent(seekIntentId)) return
+      if (!isCurrentSeek()) return
       if (parallaxSeekTimeline && state.playbackState === 'playing') {
         await audioEngine.playCurrentBufferOnParallaxTimeline(parallaxSeekTimeline)
-        if (!isCurrentPlaybackIntent(seekIntentId)) return
+        if (!isCurrentSeek()) return
         schedulePreBufferNextTrack()
         return
       }
       if (audioEngine.getPlaybackOutputMode() !== 'standard') {
-        await runSerializedNativeSeek(seekIntentId, seekTime)
+        try {
+          await runSerializedNativeSeek(seekIntentId, seekTime)
+          if (isCurrentSeek() && isRetainedRemoteSource(state.currentTrack?.sourceType)) {
+            set({ remoteStreamSessionId: audioEngine.getRemoteStreamSessionId() })
+          }
+        } catch (error) {
+          if (!isCurrentSeek() || isSupersededAudioLoadError(error)) return
+          if (!state.currentTrack || !isRetainedRemoteSource(state.currentTrack.sourceType)) throw error
+          showBitPerfectFormatNotice(state.currentTrack, error)
+          set({ remoteLoadProgress: { ...(get().remoteLoadProgress ?? createInitialRemoteLoadProgress(state.currentTrack)),
+            stage: 'failed', failed: true, done: true } })
+          return
+        }
       } else {
-        await audioEngine.seek(seekTime)
+        try {
+          await audioEngine.seek(seekTime)
+          if (isCurrentSeek() && isRetainedRemoteSource(state.currentTrack?.sourceType)) {
+            set({ remoteStreamSessionId: audioEngine.getRemoteStreamSessionId() })
+          }
+        } catch (error) {
+          if (!isCurrentSeek() || isSupersededAudioLoadError(error)) return
+          if (!state.currentTrack || !isRetainedRemoteSource(state.currentTrack.sourceType)) throw error
+          // A failed seek has already released the old decoder. Retry must load
+          // a fresh session at this position, not seek a now-missing worklet.
+          set({
+            playbackState: 'stopped',
+            currentTime: seekTime,
+            remoteStreamSessionId: null,
+            restoredTrackNeedsLoad: true,
+            restoredPlaybackTime: seekTime,
+            remoteLoadProgress: {
+              ...(get().remoteLoadProgress ?? createInitialRemoteLoadProgress(state.currentTrack)),
+              stage: 'failed', failed: true, done: true
+            }
+          })
+          return
+        }
       }
-      if (!isCurrentPlaybackIntent(seekIntentId)) return
+      if (!isCurrentSeek()) return
       schedulePreBufferNextTrack()
     },
 
@@ -4725,7 +4838,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         waveformBufferedRatio: track.sourceType && track.sourceType !== 'local' ? 0 : 1,
         waveformAnalyzedRatio: track.sourceType && track.sourceType !== 'local' ? 0 : 1,
         remoteLoadProgress: track.sourceType && track.sourceType !== 'local'
-          ? createInitialRemoteLoadProgress(track)
+          ? createInitialRemoteLoadProgress(track, typeof options.streamingQuality === 'object' ? {
+            mode: options.streamingQuality.mode, requested: options.streamingQuality.target,
+            requestedCodec: options.streamingQuality.target === 'original' ? null : 'mp3', delivered: null
+          } : options.streamingQuality === 'original' || typeof options.streamingQuality === 'number' ? {
+            requested: options.streamingQuality, requestedCodec: options.streamingQuality === 'original' ? null : 'mp3', delivered: null
+          } : undefined)
           : null,
         loadingStatus: null,
         remoteBufferedSeconds: 0,
@@ -4748,6 +4866,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           audioEngine.setCurrentReplayGainDb(replayGainDb)
           const loudnessAnalysis = requestTrackLoudnessAnalysis(track, replayGainDb)
           const loadResult = await audioEngine.loadTrackFromPath(track, {
+            streamingQuality: options.streamingQuality,
             replayGainDb,
             trackPath: track.path,
             loudnessAnalysis
@@ -4761,12 +4880,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           set({
             duration: loadResult.duration > 0 ? loadResult.duration : track.duration,
             currentTrack: resolvedTrack,
-            remoteLoadProgress: null,
+            remoteLoadProgress: loadResult.quality ? createInitialRemoteLoadProgress(resolvedTrack, loadResult.quality) : null,
             loadingStatus: null,
             currentTime: 0,
             restoredTrackNeedsLoad: false,
             restoredPlaybackTime: null
           })
+          const progress = get().remoteLoadProgress
+          if (progress) refreshRemoteWaveform(progress, true)
           hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
           await seekLoadedTrackBeforePlay(resolvedTrack, startTime)
           if (manualStart) {
@@ -4826,10 +4947,15 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         if (track.sourceType && track.sourceType !== 'local') {
           attemptBackend = 'remote'
           try {
-            const streamInfo = await audioEngine.loadRemoteStream(track, { replayGainDb })
+            const streamInfo = await audioEngine.loadRemoteStream(track, {
+              streamingQuality: options.streamingQuality,
+              replayGainDb,
+              startTimeSeconds: isRetainedRemoteSource(track.sourceType) ? startTime : 0
+            })
             throwIfSupersededLoad(loadRequestId)
             const resolvedTrack: Track = {
               ...track,
+              ...(streamInfo.seekableCache ? { isAvailable: true, availabilityReason: undefined } : {}),
               duration: streamInfo.durationSeconds && streamInfo.durationSeconds > 0 ? streamInfo.durationSeconds : track.duration,
               channels: streamInfo.channels ?? track.channels
             }
@@ -4839,14 +4965,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               waveformData: null,
               waveformBufferedRatio: 0,
               waveformAnalyzedRatio: 0,
-              remoteLoadProgress: createInitialRemoteLoadProgress(resolvedTrack),
+              remoteLoadProgress: { ...createInitialRemoteLoadProgress(resolvedTrack, streamInfo.quality), sessionId: streamInfo.sessionId },
               loadingStatus: null,
               remoteBufferedSeconds: audioEngine.getRemoteBufferedSeconds(),
               remoteStreamSessionId: streamInfo.sessionId,
-              currentTime: 0,
+              currentTime: streamInfo.startTimeSeconds ?? 0,
               restoredTrackNeedsLoad: false,
               restoredPlaybackTime: null
             })
+            const progress = get().remoteLoadProgress
+            if (progress) refreshRemoteWaveform(progress, true)
             hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
             if (manualStart) {
               showOutputDelayNotice(resolvedTrack)
@@ -4892,6 +5020,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             if (isSupersededPlaybackLoad(streamError, loadRequestId)) {
               throw streamError
             }
+            // A connection/cache failure must not silently select the old
+            // bitrate-limited, whole-track-memory fallback for Original mode.
+            if (isRetainedRemoteSource(track.sourceType)) throw streamError
             console.warn(`Remote progressive stream setup failed for ${track.path}; falling back to full download.`, streamError)
             logMemoryDiagnosticsEvent('remote_stream_fallback', {
               trackPath: track.path,
@@ -5269,12 +5400,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         if (track.sourceType && track.sourceType !== 'local') {
           markTrackUnavailableInState(track.path)
         }
+        const retainedRemoteFailure = isRetainedRemoteSource(track.sourceType)
+          ? { ...(get().remoteLoadProgress ?? createInitialRemoteLoadProgress(track)), stage: 'failed' as const, failed: true, done: true }
+          : null
         set({
           playbackState: 'stopped',
-          remoteLoadProgress: null,
+          remoteLoadProgress: retainedRemoteFailure,
           loadingStatus: null,
           remoteBufferedSeconds: 0,
-          remoteStreamSessionId: null
+          remoteStreamSessionId: null,
+          ...(retainedRemoteFailure ? { restoredTrackNeedsLoad: true, restoredPlaybackTime: startTime, currentTime: startTime } : {})
         })
         finishAttempt('failed')
         return 'failed'
@@ -5322,16 +5457,44 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         for (const candidate of iterateNextCandidates(state)) {
           const nextTrack = candidate.track
           if (!nextTrack) continue
-          if (nextTrack.sourceType && nextTrack.sourceType !== 'local') {
-            // Remote prebuffering downloads entire files and can stall click-to-play on constrained links.
-            continue
+          const usesStreamHandoff = audioEngine.getPlaybackOutputMode() === 'standard'
+            && audioEngine.canPreBufferRemoteTrack(nextTrack)
+          if (usesStreamHandoff && (isIamfTrack(nextTrack) || isIamfTrack(state.currentTrack))) return
+          if (usesStreamHandoff && !audioEngine.hasRemotePrebufferHeadroom()) return
+          const completeLocalHandoff = usesStreamHandoff && (nextTrack.sourceType ?? 'local') === 'local'
+            && !(await shouldUseLocalProgressivePath(nextTrack))
+          if ((usesStreamHandoff && !completeLocalHandoff)
+            || (nextTrack.sourceType && nextTrack.sourceType !== 'local' && !shouldUseNativeExclusivePath(nextTrack))) {
+            if (isIamfTrack(nextTrack) || isIamfTrack(state.currentTrack)) return
+            if (!audioEngine.canPreBufferRemoteTrack(nextTrack) || !audioEngine.hasRemotePrebufferHeadroom()) return
+            try {
+              const replayGainDb = getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
+              const loudnessAnalysis = (nextTrack.sourceType ?? 'local') === 'local'
+                ? await requestTrackLoudnessAnalysis(nextTrack, replayGainDb, 'background') : null
+              if (!canApplyPrebufferResult(nextTrack)) return
+              await audioEngine.preBufferNextRemoteTrack(nextTrack, replayGainDb,
+                { currentTrack: state.currentTrack ?? undefined, loudnessAnalysis })
+              if (!canApplyPrebufferResult(nextTrack)) {
+                if (audioEngine.nextBufferedTrackPath === nextTrack.path) audioEngine.clearNextBuffer()
+                return
+              }
+              completedPrebufferRequestId = prebufferRequestId
+              completedPrebufferTrackPath = nextTrack.path
+              prebufferRetryAtLateTrackPath = null
+            } catch (error) {
+              if (!isSupersededAudioLoadError(error) && isActivePrebufferRequest(prebufferRequestId)) {
+                prebufferRetryAtLateTrackPath = nextTrack.path
+              }
+            }
+            // A failed preparation must not jump over the real next queue item.
+            return
           }
           if (isUnavailableRemoteTrack(nextTrack)) continue
           const activeOutputMode = audioEngine.getPlaybackOutputMode()
           if (activeOutputMode !== 'standard' && !shouldUseNativeExclusivePath(nextTrack)) {
             return
           }
-          if (await shouldUseLocalProgressivePath(nextTrack)) {
+          if (!completeLocalHandoff && await shouldUseLocalProgressivePath(nextTrack)) {
             logMemoryDiagnosticsEvent('prebuffer_skipped_local_progressive', {
               trackPath: nextTrack.path
             })
@@ -5345,6 +5508,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           try {
             if (!canApplyPrebufferResult(nextTrack)) return
             if (shouldUseNativeExclusivePath(nextTrack)) {
+              if (isRetainedRemoteSource(nextTrack.sourceType)
+                && (!audioEngine.canPreBufferRemoteTrack(nextTrack) || !audioEngine.hasRemotePrebufferHeadroom())) return
               const nativePrebufferIntentId = playbackIntentGeneration
               const nextReplayGainDb = getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
               const nextLoudnessAnalysis = requestTrackLoudnessAnalysis(nextTrack, nextReplayGainDb)
@@ -5357,6 +5522,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
                 })
               })
               if (!canApplyPrebufferResult(nextTrack)) {
+                if (isRetainedRemoteSource(nextTrack.sourceType)) {
+                  await runNativeControlAfterActiveTransition(playbackIntentGeneration, () => {
+                    if (audioEngine.nextBufferedTrackPath === nextTrack.path) return audioEngine.clearNextBuffer()
+                  })
+                  return
+                }
                 // Leave a just-completed native prebuffer in place. Clearing it
                 // here can overlap an active device handshake; path checks keep
                 // it ineligible, and the next serialized native load/stop clears
@@ -5483,6 +5654,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               }
               return
             }
+            if (completeLocalHandoff && !audioEngine.stageNextLocalBuffer(nextTrack)) {
+              audioEngine.clearNextBuffer()
+              return
+            }
             logSlowPath('preBufferNextTrack', bufferStart, {
               trackPath: nextTrack.path,
               loaded: true,
@@ -5521,6 +5696,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             }
             console.error('Failed to pre-buffer next track:', error)
             prebufferRetryAtLateTrackPath = nextTrack.path
+            if (completeLocalHandoff) return
+            // An incompatible native boundary is an ordinary next-track load,
+            // not an unavailable song or permission to prepare a later item.
+            if (activeOutputMode !== 'standard'
+              && (isRetainedRemoteSource(state.currentTrack?.sourceType) || isRetainedRemoteSource(nextTrack.sourceType))) return
             if (isActivePrebufferRequest(prebufferRequestId) && nextTrack.sourceType && nextTrack.sourceType !== 'local') {
               markTrackUnavailableInState(nextTrack.path)
             }
@@ -5554,8 +5734,28 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       listeningBeforeUnloadHandler = () => finalizeRecentPlaySession()
       window.addEventListener('beforeunload', listeningBeforeUnloadHandler)
 
+      streamingQualityUnsubscribe?.()
+      streamingQualityUnsubscribe = window.electronAPI.onStreamingQualityChanged?.((settings, previous) => {
+        const nextPath = resolveExpectedPrebufferTrackPath()
+        if (!nextPath?.startsWith('subsonic://') && !nextPath?.startsWith('jellyfin://')) return
+        const source = streamingQualitySourceFromPath(nextPath)
+        if (source && previous && resolveStreamingQuality(settings, source) === resolveStreamingQuality(previous, source)) return
+        clearBufferedNextTrack()
+        schedulePreBufferNextTrack()
+      }) ?? null
+
       remoteLoadProgressUnsubscribe?.()
+      remoteAnalysisUnsubscribe?.()
+      remoteWaveformIdentity = null
+      remoteWaveformKey = null
+      remoteAnalysisUnsubscribe = window.electronAPI.onRemoteAudioAnalysisReady?.(({ key, analysis }) => {
+        applyRemoteWaveform(key, analysis)
+      }) ?? null
       remoteLoadProgressUnsubscribe = window.electronAPI.onProgressiveLoadProgress((progress) => {
+        audioEngine.observeAutomaticQuality(progress)
+        const activeSessionId = audioEngine.getRemoteStreamSessionId()
+        if (progress.sessionId != null && progress.sessionId !== activeSessionId
+          && (progress.slot === 'next' || activeSessionId !== null)) return
         set((state) => {
           const activeTrackPath = state.currentTrack?.path
           if (!activeTrackPath || activeTrackPath !== progress.path) {
@@ -5566,6 +5766,17 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             remoteBufferedSeconds: progress.bufferedSeconds
           }
         })
+        refreshRemoteWaveform(progress)
+      })
+
+      audioEngine.on('nativeRemoteProgress', (payload) => {
+        const progress = payload as RemoteLoadProgress & { sessionId?: number }
+        if (progress.path !== get().currentTrack?.path) return
+        audioEngine.observeAutomaticQuality(progress)
+        set({ remoteLoadProgress: progress, remoteBufferedSeconds: progress.bufferedSeconds,
+          remoteStreamSessionId: progress.sessionId ?? null })
+        refreshRemoteWaveform(progress)
+        schedulePreBufferNextTrack()
       })
 
       const scheduleRendererWaveformFallback = (trackPath: string, buffer: AudioBuffer): void => {
@@ -5627,6 +5838,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       audioEngine.on('stateChange', (state) => {
         const nextPlaybackState = state as PlaybackState
+        providerPlayback.observe(nextPlaybackState, audioEngine.currentTime, get().duration)
         const previousPlaybackState = get().playbackState
         const now = performance.now()
         maybeCommitRecentPlay(previousPlaybackState, now)
@@ -5653,6 +5865,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         lastCommittedCurrentTimeMs = now
         set({
           playbackState: nextPlaybackState,
+          ...(nextPlaybackState === 'stopped' ? { remoteStreamSessionId: audioEngine.getRemoteStreamSessionId() } : {}),
           currentTime: nextPlaybackState === 'paused' ? audioEngine.currentTime : 0
         })
         const reconciliation = pendingPlaybackInterruptionReconciliation
@@ -5681,6 +5894,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
 
       audioEngine.on('timeUpdate', (time) => {
         const normalizedTime = time as number
+        providerPlayback.observe(get().playbackState, normalizedTime, get().duration)
         maybeCommitRecentPlay()
 
         const state = get()
@@ -5732,6 +5946,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         schedulePreBufferNextTrack()
       })
 
+      audioEngine.on('remotePrebufferInvalidated', () => {
+        // A seek caught an audio-thread handoff before its notification reached
+        // us. Reprepare from the beginning instead of retaining a consumed prefix.
+        schedulePreBufferNextTrack({ invalidatePending: true })
+      })
+
       audioEngine.on('remoteWaveformUpdate', (payload) => {
         const next = payload as {
           waveformData: Float32Array
@@ -5740,7 +5960,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           bufferedSeconds: number
         }
         const track = get().currentTrack
-        if (!track || get().remoteStreamSessionId === null) {
+        if (!track || isRetainedRemoteSource(track.sourceType) || get().remoteStreamSessionId === null) {
           return
         }
 
@@ -5756,6 +5976,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           waveformAnalyzedRatio: Math.max(state.waveformAnalyzedRatio, next.analyzedRatio),
           remoteBufferedSeconds: next.bufferedSeconds
         }))
+        schedulePreBufferNextTrack()
       })
 
       audioEngine.on('bufferReady', (buffer, metadataValue) => {
@@ -5803,7 +6024,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       })
 
       // Handle gapless transition - advance queue without reloading
-      audioEngine.on('gaplessTransition', () => {
+      audioEngine.on('gaplessTransition', (payload) => {
         if (isParallaxSinkModeActive()) return
         const state = get()
         // A queued gapless callback can outlive the buffer it belongs to. Once a
@@ -5839,6 +6060,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           preAppliedGaplessQueueItemId = null
           return
         }
+        const promotedPath = (payload as { trackPath?: string } | undefined)?.trackPath
+        if (promotedPath && promotedPath !== nextTrack.path) {
+          // A queue edit won the race with the audio-thread boundary.
+          nextPlaybackIntentOverride = 'automatic'
+          void get().playNext()
+          return
+        }
         if (isUnavailableRemoteTrack(nextTrack)) return
         logMemoryDiagnosticsEvent('gapless_transition_state', {
           previousTrackPath: state.currentTrack?.path ?? null,
@@ -5854,20 +6082,23 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           completedPreAppliedGaplessQueueItemId = preAppliedQueueItem.queueId
         }
         preAppliedGaplessQueueItemId = null
+        const progressiveHandoff = !!promotedPath && !audioEngine.getAudioBuffer()
         const nextState = {
           ...transitionState,
           currentTrack: nextTrack,
-          currentTime: 0,
+          currentTime: promotedPath ? audioEngine.currentTime : 0,
           duration: nextTrack.duration,
           waveformData: shouldUseWaveformCache(nextTrack)
             ? (getWaveformCacheEntry(nextTrack.path) ?? null)
             : null,
-          waveformBufferedRatio: 1,
-          waveformAnalyzedRatio: 1,
-          remoteBufferedSeconds: 0,
-          remoteStreamSessionId: null
+          waveformBufferedRatio: progressiveHandoff ? 0 : 1,
+          waveformAnalyzedRatio: progressiveHandoff ? 0 : 1,
+          remoteBufferedSeconds: progressiveHandoff ? audioEngine.getRemoteBufferedSeconds() : 0,
+          remoteStreamSessionId: progressiveHandoff ? audioEngine.getRemoteStreamSessionId() : null,
+          remoteLoadProgress: progressiveHandoff ? createInitialRemoteLoadProgress(nextTrack, audioEngine.getRemotePlaybackQuality()) : null
         }
         set(nextState)
+        if (nextState.remoteLoadProgress) refreshRemoteWaveform(nextState.remoteLoadProgress, true)
         audioEngine.setCurrentReplayGainDb(
           getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
         )
@@ -5935,6 +6166,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         remoteLoadProgressUnsubscribe()
         remoteLoadProgressUnsubscribe = null
       }
+      streamingQualityUnsubscribe?.()
+      streamingQualityUnsubscribe = null
+      remoteAnalysisUnsubscribe?.()
+      remoteAnalysisUnsubscribe = null
+      remoteWaveformIdentity = null
+      remoteWaveformKey = null
       if (staticWaveformResultUnsubscribe) {
         staticWaveformResultUnsubscribe()
         staticWaveformResultUnsubscribe = null

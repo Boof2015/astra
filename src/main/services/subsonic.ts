@@ -1,4 +1,7 @@
 import { createHash, randomBytes } from 'crypto'
+import { buildProviderRequestHeaders } from './providerClientIdentity'
+import type { ProviderUserState, ProviderSyncField, ProviderSyncValue } from '../../types/providerSync'
+import { validProviderValue } from '../../shared/sync/providerState'
 import { formatArtistNames, normalizeArtistNames } from '../../shared/library/artistCredits'
 
 const SUBSONIC_API_VERSION = '1.16.1'
@@ -74,6 +77,16 @@ interface SubsonicRequestOptions {
   onDownloadProgress?: (progress: SubsonicDownloadProgress) => void
 }
 
+export class SubsonicRequestError extends Error {
+  readonly httpStatus?: number
+  readonly apiCode?: number
+  constructor(message: string, details: { httpStatus?: number; apiCode?: number }) {
+    super(message)
+    this.httpStatus = details.httpStatus
+    this.apiCode = details.apiCode
+  }
+}
+
 export interface SubsonicDownloadProgress {
   loadedBytes: number
   totalBytes: number | null
@@ -133,6 +146,7 @@ interface SubsonicAlbumSongs {
 }
 
 interface SubsonicSong {
+  replayGain?: { trackGain?: unknown; albumGain?: unknown }
   id?: unknown
   title?: unknown
   artist?: unknown
@@ -326,11 +340,12 @@ async function requestSubsonicJson(
     try {
       const response = await fetch(url, {
         method: 'GET',
+        headers: buildProviderRequestHeaders(),
         signal: merged.signal
       })
 
       if (!response.ok) {
-        throw new Error(`Subsonic request failed (${response.status})`)
+        throw new SubsonicRequestError(`Subsonic request failed (${response.status})`, { httpStatus: response.status })
       }
 
       const json = await response.json() as SubsonicResponseEnvelope
@@ -340,7 +355,7 @@ async function requestSubsonicJson(
       }
       if (envelope.status !== 'ok') {
         const message = toTrimmedText(envelope.error?.message) ?? 'Subsonic request failed.'
-        throw new Error(message)
+        throw new SubsonicRequestError(message, { apiCode: envelope.error?.code })
       }
 
       return envelope as Record<string, unknown>
@@ -373,6 +388,7 @@ async function requestSubsonicBytes(
     try {
       const response = await fetch(url, {
         method: 'GET',
+        headers: buildProviderRequestHeaders(),
         signal: merged.signal
       })
       if (!response.ok) {
@@ -489,6 +505,41 @@ export async function testSubsonicConnection(
   options: SubsonicRequestOptions = {}
 ): Promise<void> {
   await requestSubsonicJson(config, 'ping', {}, options)
+}
+
+/** Live status and counted plays are separate Subsonic operations. No write retries. */
+export async function reportSubsonicScrobble(
+  config: SubsonicConnectionConfig, trackId: string,
+  report: { submission: boolean; startedAt: number; position?: number },
+  options: SubsonicRequestOptions = {}
+): Promise<void> {
+  await requestSubsonicJson(config, 'scrobble', {
+    id: trackId, submission: report.submission, time: Math.round(report.startedAt),
+    position: report.position === undefined ? undefined : Math.floor(report.position)
+  }, { ...options, retries: 0 })
+}
+
+export async function getSubsonicPlaybackCapabilities(
+  config: SubsonicConnectionConfig, options: SubsonicRequestOptions = {}
+): Promise<{ timeline: boolean; navidrome: boolean }> {
+  const response = await requestSubsonicJson(config, 'getOpenSubsonicExtensions', {}, { ...options, retries: 0 })
+  const extensions = asArray<{ name?: unknown; versions?: unknown }>(response.openSubsonicExtensions)
+  return {
+    timeline: extensions.some(extension => extension.name === 'playbackReport'
+      && Array.isArray(extension.versions) && extension.versions.includes(1)),
+    navidrome: typeof response.type === 'string' && response.type.toLowerCase() === 'navidrome'
+  }
+}
+
+export async function reportSubsonicTimeline(
+  config: SubsonicConnectionConfig, trackId: string,
+  state: 'starting' | 'playing' | 'paused' | 'stopped', position: number,
+  options: SubsonicRequestOptions = {}
+): Promise<void> {
+  await requestSubsonicJson(config, 'reportPlayback', {
+    mediaId: trackId, mediaType: 'song', state, positionMs: Math.round(position * 1000),
+    playbackRate: 1, ignoreScrobble: true
+  }, { ...options, retries: 0 })
 }
 
 function toArtistRefs(indexResponse: Record<string, unknown>): SubsonicArtistRef[] {
@@ -626,8 +677,10 @@ export function mapSongToCatalogTrack(
     codec: contentType,
     codec_profile: null,
     is_atmos_joc: null,
-    replaygain_track_gain_db: null,
-    replaygain_album_gain_db: null,
+    replaygain_track_gain_db: typeof song.replayGain?.trackGain === 'number' && Number.isFinite(song.replayGain.trackGain)
+      ? song.replayGain.trackGain : null,
+    replaygain_album_gain_db: typeof song.replayGain?.albumGain === 'number' && Number.isFinite(song.replayGain.albumGain)
+      ? song.replayGain.albumGain : null,
     bpm: null,
     musical_key: null
   }
@@ -804,6 +857,72 @@ export async function fetchSubsonicStarredTrackIds(
   return toStarredTrackIds(starredResponse)
 }
 
+export async function fetchSubsonicUserStates(config: SubsonicConnectionConfig,
+  options: SubsonicRequestOptions, ids?: string[], knownIds?: string[]): Promise<Map<string, ProviderUserState>> {
+  const result = new Map<string, ProviderUserState>()
+  const add = (value: unknown) => {
+    const song = value as Record<string, unknown> | undefined
+    if (!song || typeof song.id !== 'string') throw new Error('Invalid server track state.')
+    const rating = song.userRating === undefined || song.userRating === 0 ? null : song.userRating
+    if (!validProviderValue('rating', rating)) throw new Error('Server returned an unsupported rating.')
+    result.set(song.id, { favorite: typeof song.starred === 'string' && song.starred.length > 0, rating: rating as number | null })
+  }
+  const readSongs = async (trackIds: string[]) => {
+    const pending = [...new Set(trackIds)]
+    let index = 0
+    await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => {
+      while (index < pending.length) {
+        const id = pending[index++]
+        options.signal?.throwIfAborted()
+        try {
+          const response = await requestSubsonicJson(config, 'getSong', { id }, options)
+          add(response.song)
+        } catch (error) {
+          if (!(error instanceof SubsonicRequestError) || error.apiCode !== 70) {
+            index = pending.length
+            throw error
+          }
+          // An explicitly missing track is unknown, not a cleared favorite/rating.
+        }
+      }
+    }))
+  }
+  if (ids) {
+    await readSongs(ids)
+  } else {
+    // Empty search is standardized by OpenSubsonic. Older Subsonic servers can
+    // still sync known library tracks using getSong, with bounded concurrency.
+    if (knownIds) {
+      const ping = await requestSubsonicJson(config, 'ping', {}, options)
+      if (ping.openSubsonic !== true) {
+        await readSongs(knownIds)
+        return result
+      }
+    }
+    for (let offset = 0; ; ) {
+      options.signal?.throwIfAborted()
+      const response = await requestSubsonicJson(config, 'search3',
+        { query: '', artistCount: 0, albumCount: 0, songCount: 500, songOffset: offset }, options)
+      const container = response.searchResult3 as { song?: unknown } | undefined
+      if (!container || typeof container !== 'object') throw new Error('This server does not support a full user-state listing.')
+      const songs = asArray<unknown>(container.song)
+      if (!songs.length) break
+      const before = result.size
+      songs.forEach(add)
+      if (result.size === before || result.size > 250_000) throw new Error('Server user-state pagination did not complete.')
+      offset += songs.length
+    }
+  }
+  return result
+}
+
+export async function writeSubsonicUserState(config: SubsonicConnectionConfig, id: string,
+  field: ProviderSyncField, value: ProviderSyncValue, options: SubsonicRequestOptions): Promise<void> {
+  if (!validProviderValue(field, value)) throw new Error('Invalid server value.')
+  await requestSubsonicJson(config, field === 'favorite' ? (value ? 'star' : 'unstar') : 'setRating',
+    { id, ...(field === 'rating' ? { rating: value === null ? 0 : Number(value) } : {}) }, { ...options, retries: 0 })
+}
+
 export async function syncSubsonicPlaylists(
   sourceId: number,
   config: SubsonicConnectionConfig,
@@ -843,7 +962,7 @@ export async function syncSubsonicPlaylists(
 export function buildSubsonicStreamUrl(
   config: SubsonicConnectionConfig,
   sourceTrackId: string,
-  options: { maxBitRateKbps?: number } = {}
+  options: { maxBitRateKbps?: number; original?: boolean; format?: 'mp3' } = {}
 ): string {
   const maxBitRateKbps = options.maxBitRateKbps
   return buildSubsonicEndpointUrl(
@@ -851,7 +970,8 @@ export function buildSubsonicStreamUrl(
     'stream',
     {
       id: sourceTrackId,
-      maxBitRate: typeof maxBitRateKbps === 'number' && Number.isFinite(maxBitRateKbps) && maxBitRateKbps > 0
+      format: options.original ? 'raw' : options.format,
+      maxBitRate: options.original ? 0 : typeof maxBitRateKbps === 'number' && Number.isFinite(maxBitRateKbps) && maxBitRateKbps > 0
         ? Math.trunc(maxBitRateKbps)
         : undefined
     },
@@ -898,6 +1018,7 @@ export async function fetchSubsonicCoverArt(
     try {
       const response = await fetch(url, {
         method: 'GET',
+        headers: buildProviderRequestHeaders(),
         signal: merged.signal
       })
       if (!response.ok) {

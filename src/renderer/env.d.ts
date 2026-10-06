@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import type { RemoteAudioCacheStatus } from '../types/remoteAudioCache'
 import type { NotchAPI } from '../types/notch'
 
 import { VisualizerDSP } from './audio/native/visualizer-dsp'
@@ -703,13 +704,18 @@ declare global {
                 filePath: string,
                 payload: { loudnessLufs: number; peakLinear?: number | null; method?: string }
             ) => Promise<boolean>
+            getRemoteCacheStatus: () => Promise<RemoteAudioCacheStatus>
+            setRemoteCacheLimit: (limitGb: number) => Promise<RemoteAudioCacheStatus>
+            clearRemoteCache: () => Promise<RemoteAudioCacheStatus>
             startProgressiveStream: (
                 filePath: string,
                 outputSampleRate: number,
                 expectedChannels?: number | null,
-                options?: { startTimeSeconds?: number | null }
+                options?: { startTimeSeconds?: number | null; slot?: 'current' | 'next'; preserveNext?: boolean }
             ) => Promise<ProgressiveStreamInfo>
             updateProgressiveStreamPosition: (sessionId: number, currentFrame: number) => void
+            activateProgressiveStream: (sessionId: number) => void
+            cancelPendingProgressiveStream: (slot?: 'current' | 'next') => Promise<void>
             cancelProgressiveStream: (sessionId: number) => Promise<void>
             startRemoteStream: (
                 filePath: string,

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "playback_engine.h"
+#include "pcm_input.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -34,8 +35,27 @@ public:
         bool& streamEnded
     );
 
+    // Incremental-input boundary used by progressive native playback.
+    // Callers must match sourceFormat, retain uncommitted input, and count only
+    // returned musical frames when the device fills a short render with silence.
+    size_t render(
+        const PcmInput& input,
+        uint64_t& sourceFrame,
+        void* output,
+        size_t requestedFrames,
+        bool& streamEnded
+    );
+
     NativeProcessingStatus status() const;
+    // A progressive render can be ahead of the device's current track. Describe
+    // that acknowledged source while retaining the pipeline's output/DSP state.
+    NativeProcessingStatus status(const TrackFormat& source, const NativeTrackGain& gain, int resamplerLatency) const;
+    int resamplerLatencyFrames() const;
     const TrackFormat& outputFormat() const;
+    uint64_t startSourceFrame() const;
+    uint64_t emittedOutputFrames() const;
+    bool ended() const;
+    void swap(ProcessedAudioPipeline& other) noexcept;
 
 private:
     struct Impl;

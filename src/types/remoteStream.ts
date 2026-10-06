@@ -1,9 +1,15 @@
+import type { RemotePlaybackQuality } from './streamingQuality'
 export type ProgressiveStreamSourceType = 'local' | 'subsonic' | 'jellyfin'
 export type RemoteStreamSourceType = ProgressiveStreamSourceType
 
 export type RemoteLoadStage = 'downloading' | 'streaming' | 'complete' | 'failed'
 
 export interface RemoteAudioLoadProgress {
+  quality?: RemotePlaybackQuality
+  /** Encoded download completion is independent of bounded PCM lookahead. */
+  downloadComplete?: boolean
+  sessionId?: number
+  slot?: 'current' | 'next'
   path: string
   sourceType: RemoteStreamSourceType
   stage: RemoteLoadStage
@@ -21,6 +27,7 @@ export interface RemoteAudioLoadProgress {
 }
 
 export interface RemoteStreamInfo {
+  quality?: RemotePlaybackQuality
   sessionId: number
   path: string
   sourceType: RemoteStreamSourceType
@@ -28,6 +35,8 @@ export interface RemoteStreamInfo {
   channels: number
   durationSeconds: number | null
   startTimeSeconds: number
+  /** This session can restart decoding from retained encoded bytes. */
+  seekableCache?: boolean
   initialChunk?: RemoteStreamChunk | null
 }
 

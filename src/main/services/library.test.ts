@@ -6,6 +6,8 @@ import test from 'node:test'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
 import * as library from './library.ts'
+import { ProviderStateSync } from './providerStateSync.ts'
+import type { ProviderSyncValue, ProviderUserState } from '../../types/providerSync.ts'
 import { resolveAlbumFixtureTracks, type ResolveAlbumFixtureTrack } from '../../shared/library/__fixtures__/resolveAlbums.ts'
 import type { StatsTransferTrackTuple } from '../../shared/stats/statsTransfer.ts'
 import {
@@ -5632,4 +5634,206 @@ test('Jump back in migrates only verified playlists once and survives track path
   library.closeDatabase()
   await library.initDatabase()
   assert.deepEqual(library.getHomeDashboard().recent_sources, [], 'reset must not reseed old playlist timestamps')
+})
+
+test('provider sync defaults off across accounts and persists baselines without altering favorites or half-star ratings', async (t) => {
+  await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({ name: 'One', base_url: 'https://one.test', username: 'user', secret_encrypted: 'test', enabled: 1 })
+  const second = await library.createSubsonicSource({ name: 'Two', base_url: 'https://two.test', username: 'user', secret_encrypted: 'test', enabled: 1 })
+  const ref = { provider: 'subsonic' as const, sourceId: source.id }
+  const other = { provider: 'subsonic' as const, sourceId: second.id }
+  const path = `subsonic://${source.id}/track/a`
+  await library.upsertSubsonicTracks(source.id, [createRemoteTrack({ path, source_track_id: 'a', title: 'Sync test', artist: 'Artist', album: 'Album' })])
+  await library.addFavorite(path)
+  await library.setTrackRatingForPaths([path], 4.5)
+  assert.equal(library.getProviderSyncSetting(ref), null)
+  assert.equal(library.getProviderSyncSetting(other), null)
+  const tracks = library.getProviderSyncTracks(ref)
+  assert.equal(tracks[0].favorite, true)
+  assert.equal(tracks[0].rating, 4.5)
+  assert.equal(library.getProviderSyncTracks(other).length, 0)
+  await library.setProviderSyncSetting(ref, 'account-one', true)
+  library.saveProviderSyncBaseline(ref, path, 'favorite', true)
+  library.saveProviderSyncBaseline(ref, path, 'rating', null)
+  await library.persistLibraryDatabase()
+  library.closeDatabase()
+  await library.initDatabase()
+  assert.equal(library.getProviderSyncSetting(ref)?.enabled, 1)
+  assert.equal(library.getProviderSyncSetting(other), null)
+  assert.equal(library.getProviderSyncBaselines(ref).get(JSON.stringify([path, 'rating'])), null)
+  await library.setProviderSyncSetting(ref, 'account-one', false)
+  assert.equal(library.getProviderSyncBaselines(ref).size, 0)
+  assert.equal(library.getProviderSyncTracks(ref)[0].rating, 4.5)
+  assert.ok(library.getFavoritePaths().includes(path))
+})
+
+test('adding provider sync tables to an existing library does not opt in or modify user state', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  await library.addFavorite('/local/song.flac')
+  await library.setTrackRatingForPaths(['/local/song.flac'], 3.5)
+  library.closeDatabase()
+  const legacy = new TestSqliteDatabase(join(dir, 'library.db'))
+  legacy.prepare('DROP TABLE provider_state_sync').run()
+  legacy.prepare('DROP TABLE provider_state_baselines').run()
+  legacy.close()
+  await library.initDatabase()
+  assert.equal(library.getProviderSyncSetting({ provider: 'jellyfin', sourceId: 1 }), null)
+  assert.deepEqual(library.getFavoritePaths(), ['/local/song.flac'])
+  assert.equal(library.getTrackRatingEntries()[0].rating, 3.5)
+})
+
+test('Subsonic ID changes recover old rows without losing favorites, ratings, playlists or history', async t => {
+  const dir = await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({ name: 'Server', base_url: 'https://test.invalid', username: 'test', secret_encrypted: 'test', enabled: 1 })
+  const oldPath = `subsonic://${source.id}/track/old`
+  const newPath = `subsonic://${source.id}/track/new`
+  const metadata = { source_path: 'Artist/Album/song.flac', title: 'Song', artist: 'Artist', album: 'Album' }
+  await library.upsertSubsonicTracks(source.id, [createRemoteTrack({ ...metadata, path: oldPath, source_track_id: 'old' })])
+  await library.addFavorite(oldPath)
+  await library.setTrackRatingForPaths([oldPath], 4.5)
+  const playlist = await library.createPlaylist('Saved occurrences')
+  await library.addToPlaylist(playlist.id, [oldPath])
+  await seedListeningSession(library.getListeningHistoryStatus().generation, {
+    sessionKey: 'before-id-change', trackPath: oldPath, startedAt: Date.now() - 200_000, listenedSeconds: 150
+  })
+  const before = library.getTrackByPath(oldPath)!
+  const ref = { provider: 'subsonic' as const, sourceId: source.id }
+  await library.setProviderSyncSetting(ref, 'account', true)
+  library.saveProviderSyncBaseline(ref, oldPath, 'favorite', true)
+  withDirectLibraryDb(dir, db => {
+    db.prepare('INSERT INTO track_metadata_overrides (track_path, title, updated_at) VALUES (?, ?, ?)').run(oldPath, 'Custom title', 1)
+  })
+  await library.upsertSubsonicTracks(source.id, [createRemoteTrack({ ...metadata, path: newPath, source_track_id: 'new' })])
+  library.saveProviderSyncBaseline(ref, newPath, 'favorite', false)
+  assert.equal(await library.markMissingSubsonicTracksUnavailable(source.id, new Set(['new'])), 0)
+  assert.ok(!library.getTrackByPath(oldPath))
+  const recovered = library.getTrackByPath(newPath)!
+  assert.equal(recovered.is_available, 1)
+  assert.equal(recovered.title, 'Custom title')
+  assert.equal(recovered.added_at, before.added_at)
+  assert.equal(recovered.play_count, before.play_count)
+  assert.deepEqual(library.getFavoritePaths(), [newPath])
+  assert.equal(library.getTrackRatingEntries()[0].track_path, newPath)
+  assert.equal(library.getTrackRatingEntries()[0].rating, 4.5)
+  assert.deepEqual(library.getPlaylistTracks(playlist.id).map(track => track.path), [newPath])
+  assert.equal(library.getProviderSyncBaselines(ref).size, 0)
+  const stored = withDirectLibraryDb(dir, db => ({
+    session: db.prepare('SELECT track_id, track_path FROM listening_sessions WHERE session_key = ?').get('before-id-change'),
+    fkErrors: db.prepare('PRAGMA foreign_key_check').all()
+  }))
+  assert.deepEqual(stored.session, { track_id: recovered.id, track_path: newPath })
+  assert.deepEqual(stored.fkErrors, [])
+  assert.equal(await library.markMissingSubsonicTracksUnavailable(source.id, new Set(['new'])), 0)
+  assert.equal(library.getTrackByPath(newPath)?.play_count, before.play_count)
+})
+
+test('Subsonic ID recovery leaves ambiguous copies, other servers and genuinely missing files alone', async t => {
+  await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({ name: 'One', base_url: 'https://one.invalid', username: 'test', secret_encrypted: 'test', enabled: 1 })
+  const other = await library.createSubsonicSource({ name: 'Two', base_url: 'https://two.invalid', username: 'test', secret_encrypted: 'test', enabled: 1 })
+  const row = (id: string, sourceId = source.id, duration = 180) => createRemoteTrack({
+    path: `subsonic://${sourceId}/track/${id}`, source_track_id: id, source_path: 'same.flac', title: 'Song', artist: 'Artist', album: 'Album', duration
+  })
+  await library.upsertSubsonicTracks(source.id, [row('old'), row('a'), row('b')])
+  await library.upsertSubsonicTracks(other.id, [row('other', other.id)])
+  await library.markMissingSubsonicTracksUnavailable(source.id, new Set(['a', 'b']))
+  assert.equal(library.getTrackByPath(row('old').path)?.is_available, 0)
+  assert.equal(library.getTrackByPath(row('other', other.id).path)?.is_available, 1)
+  // A virtual server path can name different recordings. Duration disambiguates.
+  await library.upsertSubsonicTracks(source.id, [row('b', source.id, 250)])
+  await library.markMissingSubsonicTracksUnavailable(source.id, new Set(['a', 'b']))
+  assert.ok(!library.getTrackByPath(row('old').path))
+  assert.equal(library.getTrackByPath(row('b').path)?.is_available, 1)
+  await library.upsertSubsonicTracks(source.id, [createRemoteTrack({ ...row('missing'), source_path: 'different.flac' })])
+  await library.markMissingSubsonicTracksUnavailable(source.id, new Set(['a', 'b']))
+  assert.equal(library.getTrackByPath(row('missing').path)?.is_available, 0)
+  await library.markMissingSubsonicTracksUnavailable(other.id, new Set())
+  assert.equal(library.getTrackByPath(row('other', other.id).path)?.is_available, 0)
+})
+
+test('local favorites reconcile and sync through unique matches on enabled servers, including removals', async t => {
+  const dir = await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({ name: 'One', base_url: 'https://one.invalid', username: 'test', secret_encrypted: 'test', enabled: 1 })
+  const other = await library.createSubsonicSource({ name: 'Two', base_url: 'https://two.invalid', username: 'test', secret_encrypted: 'test', enabled: 1 })
+  const localPath = '/music/song.flac'
+  withDirectLibraryDb(dir, db => db.prepare(`INSERT INTO tracks
+    (path,title,artist,album,duration,format,source_type,is_available,added_at,modified_at)
+    VALUES (?, 'Song', 'Artist', 'Album', 180.75, 'flac', 'local', 1, 1, 1)`).run(localPath))
+  const path = `subsonic://${source.id}/track/a`
+  const otherPath = `subsonic://${other.id}/track/a`
+  for (const [id, trackPath] of [[source.id, path], [other.id, otherPath]] as const) {
+    await library.upsertSubsonicTracks(id, [createRemoteTrack({ path: trackPath, source_track_id: 'a', title: 'Song', artist: 'Artist', album: 'Album' })])
+  }
+  await library.addFavorite(localPath)
+  await library.setTrackRatingForPaths([localPath], 4.5)
+  const ref = { provider: 'subsonic' as const, sourceId: source.id }
+  assert.deepEqual(library.getProviderFavoritePaths(path), [path, localPath])
+  assert.equal(library.getProviderFavoriteTargets(localPath).length, 2)
+  const server: ProviderUserState = { favorite: false, rating: null }
+  const writes: ProviderSyncValue[] = []
+  const service = new ProviderStateSync({
+    sources: () => [ref, { provider: 'subsonic', sourceId: other.id }], fingerprint: () => 'account',
+    setting: library.getProviderSyncSetting, setSetting: library.setProviderSyncSetting,
+    tracks: library.getProviderSyncTracks, track: (ref, path) => library.getProviderSyncTracks(ref, path)[0],
+    baselines: library.getProviderSyncBaselines, saveBaseline: library.saveProviderSyncBaseline,
+    persist: library.persistLibraryDatabase, changed: () => {},
+    client: async ref => {
+      assert.equal(ref.sourceId, source.id, 'the opted-out server must receive no requests')
+      return {
+        read: async () => new Map([['a', { ...server }]]),
+        write: async (_id, field, value) => { assert.equal(field, 'favorite'); writes.push(value); server.favorite = value as boolean }
+      }
+    },
+    applyLocal: async (path, field, value) => {
+      assert.equal(field, 'favorite')
+      for (const linkedPath of library.getProviderFavoritePaths(path)) {
+        if (value) await library.addFavorite(linkedPath)
+        else await library.removeFavorite(linkedPath)
+      }
+    }
+  })
+  const review = await service.review(ref)
+  assert.equal(review.differences.length, 1)
+  assert.equal(review.differences[0].local, true)
+  assert.equal(review.differences[0].server, false)
+  assert.deepEqual(library.getFavoritePaths(), [localPath], 'comparison must not mutate either copy')
+  await service.apply(review.token, { [review.differences[0].key]: 'local' })
+  assert.equal(server.favorite, true)
+  assert.deepEqual(new Set(library.getFavoritePaths()), new Set([path, localPath]))
+  assert.equal(library.getFavoritePaths().includes(otherPath), false)
+  await service.edit(ref, path, 'favorite', false)
+  assert.equal(server.favorite, false)
+  assert.deepEqual(library.getFavoritePaths(), [])
+  server.favorite = true
+  await service.refresh(ref)
+  assert.deepEqual(new Set(library.getFavoritePaths()), new Set([path, localPath]))
+  await library.removeFavorite(localPath)
+  await service.refresh(ref)
+  assert.equal(server.favorite, false, 'a changed local copy must not be resurrected by the old server-copy favorite')
+  assert.deepEqual(library.getFavoritePaths(), [])
+  assert.equal(library.getTrackRatingEntries()[0].rating, 4.5, 'local ratings are not coerced into server whole stars')
+  assert.deepEqual(writes, [true, false, false])
+  await service.disable(ref)
+  await library.addFavorite(localPath)
+  await service.refresh(ref)
+  assert.deepEqual(writes, [true, false, false])
+  assert.deepEqual(library.getFavoritePaths(), [localPath])
+})
+
+test('favorite matching does not guess between local copies or different releases', async t => {
+  const dir = await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({ name: 'Server', base_url: 'https://test.invalid', username: 'test', secret_encrypted: 'test', enabled: 1 })
+  withDirectLibraryDb(dir, db => {
+    const insert = db.prepare(`INSERT INTO tracks
+      (path,title,artist,album,duration,format,source_type,is_available,added_at,modified_at)
+      VALUES (?, 'Song', 'Artist', ?, 180, 'flac', 'local', 1, 1, 1)`)
+    insert.run('/one.flac', 'Album'); insert.run('/two.flac', 'Album'); insert.run('/other-release.flac', 'Other album')
+  })
+  const path = `subsonic://${source.id}/track/a`
+  await library.upsertSubsonicTracks(source.id, [createRemoteTrack({ path, source_track_id: 'a', title: 'Song', artist: 'Artist', album: 'Album' })])
+  await library.addFavorite('/one.flac')
+  await library.addFavorite('/other-release.flac')
+  assert.deepEqual(library.getProviderFavoritePaths(path), [path])
+  assert.deepEqual(library.getProviderFavoriteTargets('/one.flac'), [])
+  assert.equal(library.getProviderSyncTracks({ provider: 'subsonic', sourceId: source.id })[0].favorite, false)
 })

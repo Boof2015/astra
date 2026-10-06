@@ -65,6 +65,19 @@ struct TrackBuffer {
     uint64_t totalFrames() const;
 };
 
+class ProgressivePcmInput;
+class ProgressivePlayback;
+
+struct ProgressiveTrack {
+    uint64_t sessionId = 0;
+    TrackFormat format;
+    double duration = 0.0;
+    NativeTrackGain gain;
+    std::shared_ptr<ProgressivePcmInput> input;
+    // Mixed queues retain ordinary immutable local PCM, without a decoder ring.
+    std::shared_ptr<TrackBuffer> complete;
+};
+
 struct OutputDeviceInfo {
     std::string id;
     std::string label;
@@ -218,6 +231,8 @@ struct PlaybackSnapshot {
     std::string deviceId;
     std::string deviceLabel;
     NativeOutputStatus outputStatus;
+    uint64_t progressiveSessionId = 0;
+    bool buffering = false;
 };
 
 struct PlaybackEvent {
@@ -229,6 +244,7 @@ struct PlaybackEvent {
     std::string sampleFormat;
     std::string deviceId;
     std::string message;
+    uint64_t progressiveSessionId = 0;
 };
 
 struct MultichannelSamples {
@@ -321,6 +337,9 @@ public:
 
     void loadTrack(TrackBuffer track);
     void preloadNextTrack(TrackBuffer track);
+    void loadProgressiveTrack(ProgressiveTrack track);
+    void preloadNextProgressiveTrack(ProgressiveTrack track);
+    PlaybackSnapshot seekProgressiveTrack(uint64_t expectedSessionId, ProgressiveTrack replacement);
     bool promoteNextTrack();
     void clearNextTrack();
 
@@ -356,6 +375,10 @@ private:
     };
 
     bool ensureSinkOpen(std::string* error);
+    PlaybackSnapshot playLocked();
+    void suspendProgressiveOutput();
+    void syncProgressiveMetadataLocked();
+    void rollbackRenderLocked();
     std::string recordPlayError(const std::string& error, const char* fallback);
     void pushEvent(const PlaybackEvent& event);
     bool tryPushEvent(const PlaybackEvent& event);
@@ -381,6 +404,7 @@ private:
     mutable std::mutex tapMutex_;
     std::unique_ptr<AudioOutputSink> sink_;
     std::unique_ptr<ProcessedAudioPipeline> processedPipeline_;
+    std::unique_ptr<ProgressivePlayback> progressive_;
     std::string selectedDeviceId_;
     std::string lastUnavailableReason_;
     mutable std::mutex lastPlayErrorMutex_;
@@ -395,6 +419,7 @@ private:
     uint64_t playedFrame_ = 0;
     uint64_t lastTimeUpdateFrame_ = 0;
     bool platformStartVerified_ = false;
+    size_t pendingStartConsumedFrames_ = 0;
     bool nativeEndPending_ = false;
     NativeOutputRequest outputRequest_ {};
     NativeDspConfig dspConfig_ {};

@@ -1,4 +1,17 @@
 import type { PlaybackOutputMode } from '../../types/nativeAudio'
+import { streamingQualityLabel, type RemotePlaybackQuality } from '../../types/streamingQuality'
+
+export function describeRemotePlaybackQuality(quality: RemotePlaybackQuality): string {
+  const selection = quality.requested === 'original' ? 'Original requested' : `${quality.requested} kbps target`
+  const target = quality.mode ? `${streamingQualityLabel(quality.mode)} · ${selection}` : selection
+  const delivered = quality.delivered
+  if (!delivered?.codec) return quality.requested === 'original' ? target : `${target} · format unverified`
+  const detail = [delivered.codec.toUpperCase()]
+  if (delivered.bitrateKbps) detail.push(`${Math.round(delivered.bitrateKbps)} kbps`)
+  if (delivered.bitDepth) detail.push(`${delivered.bitDepth}-bit`)
+  if (delivered.sampleRate) detail.push(`${Number((delivered.sampleRate / 1000).toFixed(1))} kHz`)
+  return `${detail.join(' · ')} (${target})`
+}
 
 export interface PipelineResamplerState {
   playbackOutputMode: PlaybackOutputMode

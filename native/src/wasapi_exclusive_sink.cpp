@@ -1,4 +1,5 @@
 #include "playback_engine.h"
+#include "endpoint_frame_queue.h"
 
 #include <algorithm>
 #include <condition_variable>
@@ -1209,42 +1210,34 @@ private:
         }
 
         std::string fillError;
+        EndpointFrameQueue queuedFrames(bufferFrameCount);
         // An exclusive event-driven stream completes exactly one buffer period per event, and
         // GetCurrentPadding always reports the buffer as full on this path, so it cannot be
         // used to measure consumption -- doing so yields zero consumed frames forever and the
         // reported position never moves. Credit one period per event instead.
-        auto accountConsumedPeriod = [&](UINT32& queuedEndpointFrames, UINT32& queuedAudioFrames) {
-            queuedEndpointFrames = queuedEndpointFrames > bufferFrameCount
-                ? queuedEndpointFrames - bufferFrameCount
-                : 0;
-
-            const UINT32 consumedAudioFrames = std::min(queuedAudioFrames, bufferFrameCount);
-            if (consumedAudioFrames == 0) {
-                return;
-            }
-            queuedAudioFrames -= consumedAudioFrames;
-            engine->onFramesConsumed(consumedAudioFrames);
+        auto accountConsumedPeriod = [&]() {
+            const size_t consumedAudioFrames = queuedFrames.consume(bufferFrameCount);
+            if (consumedAudioFrames > 0) engine->onFramesConsumed(consumedAudioFrames);
         };
 
-        auto queryTimerAvailability = [&](UINT32& queuedEndpointFrames, UINT32& queuedAudioFrames, UINT32* availableFrames) -> bool {
+        auto queryTimerAvailability = [&](UINT32* availableFrames) -> bool {
             UINT32 padding = 0;
             const HRESULT paddingHr = audioClient->GetCurrentPadding(&padding);
             if (FAILED(paddingHr) || padding > bufferFrameCount) {
                 fillError = "WASAPI timer-driven output could not query current padding (" + formatHRESULT(paddingHr) + ").";
                 return false;
             }
-            const UINT32 consumedEndpointFrames = queuedEndpointFrames > padding
-                ? queuedEndpointFrames - padding
-                : 0;
-            const UINT32 consumedAudioFrames = std::min(queuedAudioFrames, consumedEndpointFrames);
-            queuedEndpointFrames = padding;
-            queuedAudioFrames -= consumedAudioFrames;
+            const size_t consumedAudioFrames = queuedFrames.updatePadding(padding);
             if (consumedAudioFrames > 0) engine->onFramesConsumed(consumedAudioFrames);
             if (availableFrames != nullptr) *availableFrames = bufferFrameCount - padding;
             return true;
         };
 
         auto fillBuffer = [&](UINT32 requestedFrames, UINT32* writtenAudioFrames, bool* reachedEndOfStream, std::string* fillError) -> bool {
+            if (requestedFrames > bufferFrameCount - queuedFrames.queuedFrames()) {
+                if (fillError != nullptr) *fillError = "WASAPI output queue exceeded its endpoint capacity.";
+                return false;
+            }
             BYTE* renderBuffer = nullptr;
             HRESULT bufferHr = renderClient->GetBuffer(requestedFrames, &renderBuffer);
             if (FAILED(bufferHr) || renderBuffer == nullptr) {
@@ -1293,6 +1286,8 @@ private:
                 return false;
             }
 
+            queuedFrames.append(requestedFrames, usedFrames);
+
             if (writtenAudioFrames != nullptr) {
                 *writtenAudioFrames = usedFrames;
             }
@@ -1302,8 +1297,6 @@ private:
             return true;
         };
 
-        UINT32 queuedEndpointFrames = 0;
-        UINT32 queuedAudioFrames = 0;
         bool endOfStreamReached = false;
         bool naturallyDrained = false;
         UINT32 primedFrames = 0;
@@ -1327,8 +1320,6 @@ private:
             return;
         }
 
-        queuedEndpointFrames = bufferFrameCount;
-        queuedAudioFrames = primedFrames;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             status_.attempts.back().bufferPrimed = true;
@@ -1381,9 +1372,12 @@ private:
                 }
                 if (accountProgress) {
                     if (eventDriven) {
-                        accountConsumedPeriod(queuedEndpointFrames, queuedAudioFrames);
+                        // A pause request is not a completed render period. Only
+                        // acknowledge a pending device event; otherwise retain
+                        // the unheard period for the engine's restart rollback.
+                        if (WaitForSingleObject(sampleReadyEvent, 0) == WAIT_OBJECT_0) accountConsumedPeriod();
                     } else {
-                        queryTimerAvailability(queuedEndpointFrames, queuedAudioFrames, nullptr);
+                        queryTimerAvailability(nullptr);
                     }
                 }
                 break;
@@ -1403,13 +1397,13 @@ private:
 
             UINT32 availableFrames = bufferFrameCount;
             if (eventDriven) {
-                accountConsumedPeriod(queuedEndpointFrames, queuedAudioFrames);
-            } else if (!queryTimerAvailability(queuedEndpointFrames, queuedAudioFrames, &availableFrames)) {
+                accountConsumedPeriod();
+            } else if (!queryTimerAvailability(&availableFrames)) {
                 break;
             }
 
             if (endOfStreamReached) {
-                if (queuedAudioFrames == 0 && queuedEndpointFrames == 0) {
+                if (queuedFrames.queuedFrames() == 0) {
                     naturallyDrained = true;
                     break;
                 }
@@ -1426,8 +1420,6 @@ private:
             if (!fillBuffer(requestedFrames, &writtenFrames, &streamEnded, &fillError)) {
                 break;
             }
-            queuedEndpointFrames = std::min<UINT32>(bufferFrameCount, queuedEndpointFrames + requestedFrames);
-            queuedAudioFrames = std::min<UINT32>(bufferFrameCount, queuedAudioFrames + writtenFrames);
             endOfStreamReached = streamEnded;
         }
 

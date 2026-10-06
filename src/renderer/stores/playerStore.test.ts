@@ -1,4 +1,6 @@
 import test from 'node:test'
+import type { ProviderPlaybackSnapshot } from '../../types/providerPlayback.ts'
+import type { StreamingQualitySettings } from '../../types/streamingQuality.ts'
 import assert from 'node:assert/strict'
 import {
   advanceRecentPlayAccumulation,
@@ -20,7 +22,7 @@ import type { Track } from '../types/audio.ts'
 import { resolveCollectionTrackPaths } from '../utils/collectionQueue.ts'
 import { FAVORITES_PLAYLIST_ID } from '../utils/playlistSystem.ts'
 import type { PlayerSessionSnapshot } from '../utils/sessionState.ts'
-import { audioEngine, type StandardPcmLoadOutcome } from '../audio/AudioEngine.ts'
+import { audioEngine, SupersededAudioLoadError, type StandardPcmLoadOutcome } from '../audio/AudioEngine.ts'
 import { useAudioSettingsStore } from './audioSettingsStore.ts'
 import { useParallaxStore } from './parallaxStore.ts'
 import {
@@ -558,6 +560,520 @@ async function exerciseStandardPcmRoute(
     else delete (globalThis as Record<string, unknown>).window
     resetStores()
   }
+}
+
+for (const sourceType of ['subsonic', 'jellyfin'] as const) {
+  test(`cached ${sourceType} startup failure retains the selected track and position for Retry`, async () => {
+    resetStores()
+    const track = makeTrack(`${sourceType}://7/retry`, { sourceType, duration: 180, isAvailable: true })
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+    const originalSettings = useAudioSettingsStore.getState()
+    const originalOn = audioEngine.on
+    const originalLoadRemoteStream = audioEngine.loadRemoteStream
+    const originalOutputMode = audioEngine.getPlaybackOutputMode
+    const originalSeek = audioEngine.seek
+    const originalParallax = useParallaxStore.getState()
+    let fallbackReads = 0
+    let requestedStart: number | null | undefined
+    let requestedQuality: unknown
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+      location: { search: '?window=test' },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      electronAPI: {
+        onProgressiveLoadProgress: () => () => undefined,
+        supersedeTrackLoudness: async () => undefined,
+        loadAudioFile: async () => { fallbackReads++; return { data: new ArrayBuffer(0) } },
+        library: {
+          getListeningHistoryStatus: async () => ({ generation: 'remote-retry', startedAt: null }),
+          checkpointListeningSession: async () => ({ accepted: true, qualifiedNow: false,
+            status: { generation: 'remote-retry', startedAt: null } })
+        }
+      }
+    } })
+    useAudioSettingsStore.setState({ playbackOutputMode: 'standard', normalizationEnabled: false })
+    audioEngine.on = () => () => undefined
+    audioEngine.getPlaybackOutputMode = () => 'standard'
+    useParallaxStore.setState({ prepareHostSeek: async () => null, cancelHostNextStream: async () => undefined })
+    audioEngine.loadRemoteStream = async (_track, options) => {
+      requestedStart = options?.startTimeSeconds
+      requestedQuality = options?.streamingQuality
+      throw new Error('Remote source unavailable')
+    }
+    try {
+      usePlayerStore.getState()._cleanupListeners()
+      assert.equal(await usePlayerStore.getState()._loadAndPlayTrack(track, { startTime: 75, streamingQuality: 128 }), 'failed')
+      const state = usePlayerStore.getState()
+      assert.equal(requestedStart, 75)
+      assert.equal(requestedQuality, 128)
+      assert.equal(state.remoteLoadProgress?.quality?.requested, 128)
+      assert.equal(state.currentTrack?.path, track.path)
+      assert.equal(state.currentTrack?.isAvailable, true)
+      assert.equal(state.remoteLoadProgress?.failed, true)
+      assert.equal(state.restoredTrackNeedsLoad, true)
+      assert.equal(state.restoredPlaybackTime, 75)
+      assert.equal(state.currentTime, 75)
+      assert.equal(fallbackReads, 0)
+      usePlayerStore.setState({ restoredTrackNeedsLoad: false, restoredPlaybackTime: null, remoteStreamSessionId: 42 })
+      audioEngine.seek = async () => { throw new Error('Seek could not reconnect') }
+      await usePlayerStore.getState().seek(120)
+      const failedSeek = usePlayerStore.getState()
+      assert.equal(failedSeek.currentTrack?.path, track.path)
+      assert.equal(failedSeek.remoteStreamSessionId, null)
+      assert.equal(failedSeek.restoredTrackNeedsLoad, true)
+      assert.equal(failedSeek.restoredPlaybackTime, 120)
+      assert.equal(failedSeek.remoteLoadProgress?.failed, true)
+      for (let retry = 0; retry < 2; retry++) {
+        await usePlayerStore.getState().play()
+        assert.equal(requestedQuality, 128, 'repeated Retry keeps the playing selection after a preference change')
+        assert.equal(usePlayerStore.getState().remoteLoadProgress?.quality?.requested, 128)
+      }
+    } finally {
+      usePlayerStore.getState()._cleanupListeners()
+      await flushAsyncWork()
+      audioEngine.on = originalOn
+      audioEngine.loadRemoteStream = originalLoadRemoteStream
+      audioEngine.getPlaybackOutputMode = originalOutputMode
+      audioEngine.seek = originalSeek
+      useParallaxStore.setState({ prepareHostSeek: originalParallax.prepareHostSeek,
+        cancelHostNextStream: originalParallax.cancelHostNextStream })
+      useAudioSettingsStore.setState({ playbackOutputMode: originalSettings.playbackOutputMode,
+        normalizationEnabled: originalSettings.normalizationEnabled })
+      if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+      else delete (globalThis as Record<string, unknown>).window
+      resetStores()
+    }
+  })
+
+  test(`${sourceType} uses native loading in both exclusive modes and retains a startup failure for Retry`, async (t) => {
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+    const settings = useAudioSettingsStore.getState()
+    const track = makeTrack(`${sourceType}://7/track/native-retry`, { sourceType, duration: 180 })
+    let nativeLoads = 0
+    let mode: 'exclusive' | 'bitperfect' = 'exclusive'
+    t.mock.method(audioEngine, 'on', () => () => undefined)
+    t.mock.method(audioEngine, 'getPlaybackOutputMode', () => mode)
+    t.mock.method(audioEngine, 'loadTrackFromPath', async (requested: Track) => {
+      assert.equal(requested.path, track.path)
+      nativeLoads++
+      throw new Error('Remote connection unavailable')
+    })
+    t.mock.method(audioEngine, 'loadRemoteStream', async () => { throw new Error('Wrong output route') })
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+      location: { search: '?window=test' }, addEventListener() {}, removeEventListener() {},
+      electronAPI: { onProgressiveLoadProgress: () => () => undefined,
+        supersedeTrackLoudness: async () => undefined,
+        library: { getListeningHistoryStatus: async () => ({ generation: 'native-remote', startedAt: null }),
+          checkpointListeningSession: async () => ({ accepted: true, qualifiedNow: false,
+            status: { generation: 'native-remote', startedAt: null } }) } }
+    } })
+    try {
+      for (mode of ['exclusive', 'bitperfect'] as const) {
+        resetStores()
+        usePlayerStore.getState()._cleanupListeners()
+        useAudioSettingsStore.setState({ playbackOutputMode: mode, normalizationEnabled: false })
+        assert.equal(await usePlayerStore.getState()._loadAndPlayTrack(track, { startTime: 75 }), 'failed')
+        assert.equal(usePlayerStore.getState().currentTrack?.path, track.path)
+        assert.equal(usePlayerStore.getState().restoredPlaybackTime, 75)
+        assert.equal(usePlayerStore.getState().remoteLoadProgress?.failed, true)
+      }
+      assert.equal(nativeLoads, 2)
+    } finally {
+      usePlayerStore.getState()._cleanupListeners()
+      await flushAsyncWork()
+      useAudioSettingsStore.setState({ playbackOutputMode: settings.playbackOutputMode, normalizationEnabled: settings.normalizationEnabled })
+      if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+      else Reflect.deleteProperty(globalThis, 'window')
+      resetStores()
+    }
+  })
+
+}
+
+test('a quality change invalidates a remote successor without restarting current playback or clearing local successors', async t => {
+  resetStores()
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const settings = useAudioSettingsStore.getState()
+  let notify: ((settings: StreamingQualitySettings, previous: StreamingQualitySettings) => void) | undefined
+  let clears = 0
+  t.mock.method(audioEngine, 'on', () => () => undefined)
+  t.mock.method(audioEngine, 'getPlaybackOutputMode', () => 'standard')
+  t.mock.method(audioEngine, 'canPreBufferRemoteTrack', () => true)
+  t.mock.method(audioEngine, 'clearNextBuffer', () => { clears++ })
+  t.mock.method(audioEngine, 'loadRemoteStream', async () => { throw new Error('Must not reload current playback') })
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    location: { search: '?window=test' }, addEventListener() {}, removeEventListener() {},
+    electronAPI: {
+      onProgressiveLoadProgress: () => () => {},
+      onStreamingQualityChanged: (callback: NonNullable<typeof notify>) => { notify = callback; return () => { notify = undefined } },
+      library: { getListeningHistoryStatus: async () => ({ generation: 'quality', startedAt: null }),
+        checkpointListeningSession: async () => ({ accepted: true, qualifiedNow: false, status: { generation: 'quality', startedAt: null } }) }
+    }
+  } })
+  try {
+    usePlayerStore.getState()._cleanupListeners()
+    useAudioSettingsStore.setState({ disableGaplessPrebufferDev: true })
+    usePlayerStore.getState()._initListeners()
+    const current = makeTrack('/current.flac')
+    for (const path of ['subsonic://7/next', 'jellyfin://7/next', '/next.flac']) {
+      const next = makeTrack(path, { sourceType: path.startsWith('subsonic:') ? 'subsonic' : path.startsWith('jellyfin:') ? 'jellyfin' : 'local' })
+      const items = [current, next].map((track, index) => makeQueueItem(createQueueEntryFromTrack(track), `quality-${index}`))
+      usePlayerStore.setState({ currentTrack: current, playbackState: 'playing', currentTime: 45,
+        duration: 180, queueItems: items, currentQueueItemId: items[0].queueId,
+        upcomingQueueIds: [items[1].queueId], baseUpcomingQueueIds: [items[1].queueId], repeat: 'none' })
+      const before = clears
+      assert.ok(notify)
+      if (path.startsWith('subsonic:')) {
+        notify({ global: 64, overrides: { 'subsonic:7': 320 } }, { global: 'original', overrides: { 'subsonic:7': 320 } })
+        assert.equal(clears, before, 'an override isolates the successor from a global change')
+        notify({ global: 128, overrides: { 'jellyfin:7': 320 } }, { global: 128, overrides: {} })
+        assert.equal(clears, before, 'another server has no effect on this successor')
+      }
+      notify({ global: 128, overrides: {} }, { global: 'original', overrides: {} })
+      assert.equal(clears > before, path !== '/next.flac')
+      assert.equal(usePlayerStore.getState().playbackState, 'playing')
+      assert.equal(usePlayerStore.getState().currentTime, 45)
+      assert.equal(usePlayerStore.getState().currentTrack?.path, current.path)
+    }
+    usePlayerStore.getState()._cleanupListeners()
+    assert.equal(notify, undefined, 'teardown removes the quality listener')
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    await flushAsyncWork()
+    useAudioSettingsStore.setState({ disableGaplessPrebufferDev: settings.disableGaplessPrebufferDev })
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+    resetStores()
+  }
+})
+
+test('an obsolete remote seek failure cannot overwrite the final drag target or session', async (t) => {
+  resetStores()
+  const originalParallax = useParallaxStore.getState()
+  const firstSeek = createDeferred<void>()
+  const finalSeek = createDeferred<void>()
+  t.mock.method(audioEngine, 'getPlaybackOutputMode', () => 'standard')
+  t.mock.method(audioEngine, 'getRemoteStreamSessionId', () => 43)
+  t.mock.method(audioEngine, 'seek', (time: number) => time === 30 ? firstSeek.promise : finalSeek.promise)
+  useParallaxStore.setState({ status: null, prepareHostSeek: async () => null,
+    cancelHostNextStream: async () => undefined })
+  usePlayerStore.setState({
+    currentTrack: makeTrack('subsonic://7/drag', { sourceType: 'subsonic' }),
+    playbackState: 'paused', duration: 180, remoteStreamSessionId: 42, remoteLoadProgress: null
+  })
+  try {
+    const first = usePlayerStore.getState().seek(30)
+    await flushAsyncWork()
+    const final = usePlayerStore.getState().seek(120)
+    await flushAsyncWork()
+    finalSeek.resolve()
+    await final
+    firstSeek.reject(new Error('Obsolete decoder was cancelled'))
+    await first
+    const state = usePlayerStore.getState()
+    assert.equal(state.playbackState, 'paused')
+    assert.equal(state.remoteStreamSessionId, 43)
+    assert.equal(state.restoredTrackNeedsLoad, false)
+    assert.equal(state.restoredPlaybackTime, null)
+    assert.notEqual(state.remoteLoadProgress?.failed, true)
+
+    t.mock.method(audioEngine, 'seek', async () => { throw new SupersededAudioLoadError() })
+    await usePlayerStore.getState().seek(150)
+    assert.equal(usePlayerStore.getState().restoredTrackNeedsLoad, false)
+    assert.equal(usePlayerStore.getState().remoteStreamSessionId, 43)
+  } finally {
+    useParallaxStore.setState({ status: originalParallax.status,
+      prepareHostSeek: originalParallax.prepareHostSeek,
+      cancelHostNextStream: originalParallax.cancelHostNextStream })
+    resetStores()
+  }
+})
+
+test('resuming a pending remote seek preserves its decoder and adopts the final session', async (t) => {
+  resetStores()
+  const originalParallax = useParallaxStore.getState()
+  const track = makeTrack('subsonic://7/resume-seek', { sourceType: 'subsonic' })
+  const playback = createDeferred<void>()
+  const supersede = t.mock.method(audioEngine, 'supersedeCurrentLoadPreservingPrebuffer', () => undefined)
+  const play = t.mock.method(audioEngine, 'play', () => playback.promise)
+  t.mock.method(audioEngine, 'getPendingProgressiveSeekTrackPath', () => track.path)
+  t.mock.method(audioEngine, 'getRemoteStreamSessionId', () => 43)
+  useParallaxStore.setState({ status: null })
+  usePlayerStore.setState({ currentTrack: track, playbackState: 'paused', remoteStreamSessionId: 42 })
+  try {
+    const resume = usePlayerStore.getState().play()
+    assert.equal(play.mock.callCount(), 1)
+    assert.equal(supersede.mock.callCount(), 0)
+    assert.equal(usePlayerStore.getState().remoteStreamSessionId, 42)
+    playback.resolve()
+    await resume
+    assert.equal(usePlayerStore.getState().remoteStreamSessionId, 43)
+  } finally {
+    useParallaxStore.setState({ status: originalParallax.status })
+    resetStores()
+  }
+})
+
+for (const [currentSource, nextSource] of [['subsonic', 'subsonic'], ['local', 'jellyfin'], ['jellyfin', 'local']] as const) {
+test(`${currentSource} to ${nextSource} prebuffering waits for headroom and never skips a failed next item`, async (t) => {
+  resetStores()
+  const settings = useAudioSettingsStore.getState()
+  const parallax = useParallaxStore.getState()
+  const current = makeTrack(currentSource === 'local' ? '/music/current.flac' : `${currentSource}://7/current`, { sourceType: currentSource })
+  const next = makeTrack(nextSource === 'local' ? '/music/next.flac' : `${nextSource}://7/next`, {
+    sourceType: nextSource, ...(nextSource === 'local' ? { duration: 3600, sampleRate: 48_000, channels: 2 } : {})
+  })
+  const later = makeTrack('subsonic://7/later', { sourceType: 'subsonic' })
+  const items = [current, next, later].map((track, index) => makeQueueItem(createQueueEntryFromTrack(track), `remote-${index}`))
+  let headroom = false
+  const prepared: string[] = []
+  t.mock.method(audioEngine, 'canPreBufferRemoteTrack', () => true)
+  t.mock.method(audioEngine, 'hasRemotePrebufferHeadroom', () => headroom)
+  t.mock.method(audioEngine, 'getPlaybackOutputMode', () => 'standard')
+  t.mock.method(audioEngine, 'needsLoudnessAnalysisForLoad', () => false)
+  t.mock.method(audioEngine, 'preBufferNextRemoteTrack', async (track: Track, _gain: number | null, options: { currentTrack?: Track } = {}) => {
+    assert.equal(options.currentTrack?.path, current.path)
+    prepared.push(track.path)
+    throw new Error('Next track is offline')
+  })
+  useParallaxStore.setState({ status: null })
+  useAudioSettingsStore.setState({ disableGaplessPrebufferDev: false })
+  usePlayerStore.setState({ currentTrack: current, playbackState: 'playing', currentQueueItemId: items[0].queueId,
+    queueItems: items, upcomingQueueIds: items.slice(1).map(item => item.queueId),
+    baseUpcomingQueueIds: items.slice(1).map(item => item.queueId) })
+  try {
+    await usePlayerStore.getState()._preBufferNextTrack()
+    assert.deepEqual(prepared, [])
+    headroom = true
+    await usePlayerStore.getState()._preBufferNextTrack()
+    assert.deepEqual(prepared, [next.path])
+    assert.equal(usePlayerStore.getState().currentTrack?.path, current.path)
+    assert.deepEqual(usePlayerStore.getState().upcomingQueueIds, items.slice(1).map(item => item.queueId))
+    assert.equal(usePlayerStore.getState().playbackState, 'playing')
+  } finally {
+    useParallaxStore.setState({ status: parallax.status })
+    useAudioSettingsStore.setState({ disableGaplessPrebufferDev: settings.disableGaplessPrebufferDev })
+    resetStores()
+  }
+})
+}
+
+for (const fails of [false, true]) {
+test(`ordinary local successor uses complete decoding and ${fails ? 'does not skip a failed item' : 'stages the completed buffer'}`, async t => {
+  resetStores()
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const parallax = useParallaxStore.getState()
+  const current = makeTrack('jellyfin://7/current', { sourceType: 'jellyfin' })
+  const next = makeTrack('/music/next.flac', { sourceType: 'local', channels: 2, sampleRate: 48_000, duration: 180 })
+  const later = makeTrack('/music/later.flac', { sourceType: 'local' })
+  const items = [current, next, later].map((track, index) => makeQueueItem(createQueueEntryFromTrack(track), `complete-${index}`))
+  const decoded: string[] = []
+  let buffered: string | null = null
+  const descriptor = Object.getOwnPropertyDescriptor(audioEngine, 'nextBufferedTrackPath')
+  Object.defineProperty(audioEngine, 'nextBufferedTrackPath', { configurable: true, get: () => buffered })
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { electronAPI: {
+    getAudioFileStat: async () => ({ size: 1024 }), decodeLocalAudioToPcm: async () => undefined
+  } } })
+  useParallaxStore.setState({ status: null, publishHostNextStream: async () => undefined })
+  t.mock.method(audioEngine, 'getPlaybackOutputMode', () => 'standard')
+  t.mock.method(audioEngine, 'canPreBufferRemoteTrack', () => true)
+  t.mock.method(audioEngine, 'hasRemotePrebufferHeadroom', () => true)
+  t.mock.method(audioEngine, 'needsLoudnessAnalysisForLoad', () => false)
+  t.mock.method(audioEngine, 'getBufferMemoryStats', async () => ({ currentBytes: 0, nextBytes: 0, totalBytes: 0 }))
+  const progressive = t.mock.method(audioEngine, 'preBufferNextRemoteTrack', async () => undefined)
+  t.mock.method(audioEngine, 'preBufferNextStandardTrackFromPath', async (track: Track) => {
+    decoded.push(track.path)
+    if (fails) throw new Error('Local decode failed')
+    buffered = track.path
+    return 'loaded' as const
+  })
+  const stage = t.mock.method(audioEngine, 'stageNextLocalBuffer', (track: Track) => track.path === buffered)
+  usePlayerStore.setState({ currentTrack: current, playbackState: 'playing', currentQueueItemId: items[0].queueId,
+    queueItems: items, upcomingQueueIds: items.slice(1).map(item => item.queueId), baseUpcomingQueueIds: items.slice(1).map(item => item.queueId) })
+  try {
+    await usePlayerStore.getState()._preBufferNextTrack()
+    assert.deepEqual(decoded, [next.path])
+    assert.equal(progressive.mock.callCount(), 0)
+    assert.equal(stage.mock.callCount(), fails ? 0 : 1)
+    assert.equal(usePlayerStore.getState().currentTrack?.path, current.path)
+    assert.deepEqual(usePlayerStore.getState().upcomingQueueIds, items.slice(1).map(item => item.queueId))
+  } finally {
+    resetStores()
+    useParallaxStore.setState({ status: parallax.status, publishHostNextStream: parallax.publishHostNextStream })
+    if (descriptor) Object.defineProperty(audioEngine, 'nextBufferedTrackPath', descriptor)
+    else Reflect.deleteProperty(audioEngine, 'nextBufferedTrackPath')
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
+})
+}
+
+for (const iamfCurrent of [true, false]) {
+test(`mixed preparation keeps IAMF ${iamfCurrent ? 'current' : 'successor'} on its existing decoder`, async t => {
+  resetStores()
+  const current = makeTrack(iamfCurrent ? '/music/current.iamf' : 'jellyfin://7/current', { sourceType: iamfCurrent ? 'local' : 'jellyfin' })
+  const next = makeTrack(iamfCurrent ? 'jellyfin://7/next' : '/music/next.iamf', { sourceType: iamfCurrent ? 'jellyfin' : 'local' })
+  const items = [current, next].map((track, index) => makeQueueItem(createQueueEntryFromTrack(track), `iamf-${index}`))
+  t.mock.method(audioEngine, 'getPlaybackOutputMode', () => 'standard')
+  t.mock.method(audioEngine, 'canPreBufferRemoteTrack', () => true)
+  t.mock.method(audioEngine, 'hasRemotePrebufferHeadroom', () => true)
+  const prepare = t.mock.method(audioEngine, 'preBufferNextRemoteTrack', async () => undefined)
+  usePlayerStore.setState({ currentTrack: current, playbackState: 'playing', currentQueueItemId: items[0].queueId,
+    queueItems: items, upcomingQueueIds: [items[1].queueId], baseUpcomingQueueIds: [items[1].queueId] })
+  try {
+    await usePlayerStore.getState()._preBufferNextTrack()
+    assert.equal(prepare.mock.callCount(), 0)
+  } finally {
+    resetStores()
+  }
+})
+}
+
+test('remote seek scheduling preserves preparation and can retry a consumed successor', async (t) => {
+  resetStores()
+  usePlayerStore.getState()._cleanupListeners()
+  usePlayerStore.getState()._schedulePreBufferNextTrack({ invalidatePending: true })
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const parallax = useParallaxStore.getState()
+  const settings = useAudioSettingsStore.getState()
+  const current = makeTrack('subsonic://7/current', { sourceType: 'subsonic' })
+  const next = makeTrack('subsonic://7/next', { sourceType: 'subsonic' })
+  const items = [current, next].map((track, index) => makeQueueItem(createQueueEntryFromTrack(track), `seek-${index}`))
+  const events = new Map<string, (...args: unknown[]) => void>()
+  let bufferedPath: string | null = null
+  let headroom = true
+  let preparations = 0
+  let clears = 0
+  const properties = ['nextBufferedTrackPath', 'hasNextBuffered', 'currentTime', 'duration'] as const
+  const descriptors = properties.map(key => Object.getOwnPropertyDescriptor(audioEngine, key))
+  Object.defineProperties(audioEngine, {
+    nextBufferedTrackPath: { configurable: true, get: () => bufferedPath },
+    hasNextBuffered: { configurable: true, get: () => bufferedPath !== null },
+    currentTime: { configurable: true, get: () => 179.9 },
+    duration: { configurable: true, get: () => 180 }
+  })
+  t.mock.method(audioEngine, 'on', (event: string, callback: (...args: unknown[]) => void) => {
+    events.set(event, callback)
+    return () => undefined
+  })
+  t.mock.method(audioEngine, 'canPreBufferRemoteTrack', () => true)
+  t.mock.method(audioEngine, 'hasRemotePrebufferHeadroom', () => headroom)
+  t.mock.method(audioEngine, 'getPlaybackOutputMode', () => 'standard')
+  t.mock.method(audioEngine, 'preBufferNextRemoteTrack', async (track: Track) => {
+    preparations += 1
+    bufferedPath = track.path
+  })
+  t.mock.method(audioEngine, 'clearNextBuffer', () => { clears += 1; bufferedPath = null })
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    location: { search: '?window=test' }, addEventListener: () => undefined, removeEventListener: () => undefined,
+    electronAPI: { library: {}, onProgressiveLoadProgress: () => () => undefined }
+  } })
+  useParallaxStore.setState({ status: null })
+  useAudioSettingsStore.setState({ disableGaplessPrebufferDev: false })
+  usePlayerStore.setState({ currentTrack: current, playbackState: 'playing', currentQueueItemId: items[0].queueId,
+    queueItems: items, upcomingQueueIds: [items[1].queueId], baseUpcomingQueueIds: [items[1].queueId] })
+  try {
+    usePlayerStore.getState()._initListeners()
+    usePlayerStore.getState()._schedulePreBufferNextTrack()
+    await flushAsyncWork()
+    assert.equal(preparations, 1)
+    assert.equal(bufferedPath, next.path)
+    headroom = false
+    usePlayerStore.setState({ playbackState: 'loading' })
+    usePlayerStore.getState()._schedulePreBufferNextTrack()
+    assert.equal(clears, 0, 'seeking does not clear a matching successor')
+    bufferedPath = null // The worklet reports that it had already consumed this successor.
+    events.get('remotePrebufferInvalidated')?.()
+    assert.equal(preparations, 1, 'wait for the seek to finish before replacing preparation')
+    headroom = true
+    usePlayerStore.setState({ playbackState: 'playing' })
+    usePlayerStore.getState()._schedulePreBufferNextTrack()
+    await flushAsyncWork()
+    assert.equal(preparations, 2, 'a previous successful attempt must not suppress the replacement')
+    assert.equal(bufferedPath, next.path)
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    resetStores()
+    usePlayerStore.getState()._schedulePreBufferNextTrack({ invalidatePending: true })
+    await flushAsyncWork()
+    properties.forEach((key, index) => {
+      if (descriptors[index]) Object.defineProperty(audioEngine, key, descriptors[index]!)
+      else Reflect.deleteProperty(audioEngine, key)
+    })
+    useParallaxStore.setState({ status: parallax.status })
+    useAudioSettingsStore.setState({ disableGaplessPrebufferDev: settings.disableGaplessPrebufferDev })
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
+})
+
+for (const localNext of [false, true]) {
+test(`remote handoff ${localNext ? 'restores complete local presentation' : 'advances duplicate queue entries once and isolates progress'}`, async (t) => {
+  resetStores()
+  usePlayerStore.getState()._cleanupListeners()
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const parallax = useParallaxStore.getState()
+  const settings = useAudioSettingsStore.getState()
+  const track = makeTrack('subsonic://7/repeated', { sourceType: 'subsonic' })
+  const first = makeQueueItem(createQueueEntryFromTrack(track), 'repeat-first')
+  const successor = localNext ? makeTrack('/music/local.flac', { sourceType: 'local' }) : track
+  const second = makeQueueItem(createQueueEntryFromTrack(successor), 'repeat-second')
+  const events = new Map<string, (...args: unknown[]) => void>()
+  let progressListener!: (progress: unknown) => void
+  let activeSession = 1
+  t.mock.method(audioEngine, 'on', (event: string, callback: (...args: unknown[]) => void) => {
+    events.set(event, callback)
+    return () => undefined
+  })
+  t.mock.method(audioEngine, 'getRemoteStreamSessionId', () => activeSession)
+  t.mock.method(audioEngine, 'getRemoteBufferedSeconds', () => 30)
+  t.mock.method(audioEngine, 'getAudioBuffer', () => localNext && activeSession === 2 ? {} as AudioBuffer : null)
+  t.mock.method(audioEngine, 'setCurrentReplayGainDb', () => undefined)
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    location: { search: '?window=test' }, addEventListener: () => undefined, removeEventListener: () => undefined,
+    electronAPI: {
+      onProgressiveLoadProgress: (callback: (progress: unknown) => void) => { progressListener = callback; return () => undefined },
+      library: {
+        getListeningHistoryStatus: async () => ({ generation: 'remote-handoff', startedAt: null }),
+        checkpointListeningSession: async () => ({ accepted: true, qualifiedNow: false,
+          status: { generation: 'remote-handoff', startedAt: null } })
+      }
+    }
+  } })
+  useParallaxStore.setState({ status: null, promoteHostNextStream: async () => undefined })
+  useAudioSettingsStore.setState({ disableGaplessPrebufferDev: true })
+  usePlayerStore.setState({ currentTrack: track, playbackState: 'playing', remoteStreamSessionId: 1, remoteLoadProgress: null,
+    currentQueueItemId: first.queueId, queueItems: [first, second], upcomingQueueIds: [second.queueId], baseUpcomingQueueIds: [second.queueId] })
+  try {
+    usePlayerStore.getState()._initListeners()
+    progressListener({ path: track.path, slot: 'next', sessionId: 2, failed: true, bufferedSeconds: 0 })
+    assert.equal(usePlayerStore.getState().remoteLoadProgress, null)
+    activeSession = 2
+    events.get('gaplessTransition')?.({ trackPath: successor.path })
+    assert.equal(usePlayerStore.getState().currentQueueItemId, second.queueId)
+    assert.equal(usePlayerStore.getState().remoteStreamSessionId, localNext ? null : 2)
+    assert.deepEqual(usePlayerStore.getState().playbackHistory.map(entry => entry.item.queueId), [first.queueId])
+    if (localNext) {
+      assert.equal(usePlayerStore.getState().remoteLoadProgress, null)
+      assert.equal(usePlayerStore.getState().remoteBufferedSeconds, 0)
+      assert.equal(usePlayerStore.getState().waveformBufferedRatio, 1)
+      assert.equal(usePlayerStore.getState().waveformAnalyzedRatio, 1)
+      return
+    }
+    progressListener({ path: track.path, slot: 'current', sessionId: 1, failed: true, bufferedSeconds: 0 })
+    assert.notEqual(usePlayerStore.getState().remoteLoadProgress?.failed, true)
+    progressListener({ path: track.path, slot: 'current', sessionId: 2, failed: false, done: true, bufferedSeconds: 180 })
+    assert.equal(usePlayerStore.getState().remoteLoadProgress?.done, true)
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    await flushAsyncWork()
+    useParallaxStore.setState({ status: parallax.status, promoteHostNextStream: parallax.promoteHostNextStream })
+    useAudioSettingsStore.setState({ disableGaplessPrebufferDev: settings.disableGaplessPrebufferDev })
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+    resetStores()
+  }
+})
 }
 
 interface MandatoryProgressiveMetrics {
@@ -7081,6 +7597,87 @@ test('playing a restored session lazily loads from the saved position', async ()
   }
 })
 
+test('server live reporting follows real player events and retains identity across pause, seek and history reset', async () => {
+  resetStores()
+  const reports: ProviderPlaybackSnapshot[] = []
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const ownCurrentTime = Object.getOwnPropertyDescriptor(audioEngine, 'currentTime')
+  const originalPlay = audioEngine.play
+  const originalStop = audioEngine.stop
+  const originalOn = audioEngine.on
+  const unsubscribe: Array<() => void> = []
+  audioEngine.on = (event, callback) => {
+    const dispose = originalOn.call(audioEngine, event, callback)
+    unsubscribe.push(dispose)
+    return dispose
+  }
+  const originalPerformance = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  const history = { generation: 'first', startedAt: null }
+  let time = 0
+  let now = 0
+  Object.defineProperty(globalThis, 'performance', { configurable: true, value: { now: () => now } })
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    location: { search: '?window=test' }, addEventListener() {}, removeEventListener() {},
+    electronAPI: {
+      reportProviderPlayback: (snapshot: ProviderPlaybackSnapshot) => reports.push(snapshot),
+      library: {
+        getListeningHistoryStatus: async () => history,
+        checkpointListeningSession: async () => ({ accepted: true, qualifiedNow: false, status: history }),
+        markTrackLatestSyncSeen: async () => undefined
+      },
+      onProgressiveLoadProgress: () => () => undefined
+    }
+  } })
+  const emit = (name: string, ...args: unknown[]) => {
+    ;(audioEngine as unknown as { emit: (name: string, ...args: unknown[]) => void }).emit(name, ...args)
+  }
+  Object.defineProperty(audioEngine, 'currentTime', { configurable: true, get: () => time })
+  audioEngine.play = async () => emit('stateChange', 'playing')
+  audioEngine.stop = () => emit('stateChange', 'stopped')
+  try {
+    usePlayerStore.getState()._initListeners()
+    const track = makeTrack('subsonic://7/track/one', { sourceType: 'subsonic', duration: 60 })
+    usePlayerStore.setState({ currentTrack: track, playbackState: 'loading', duration: 60 })
+    emit('timeUpdate', 0)
+    assert.equal(reports.length, 0, 'loading is not now playing')
+    await usePlayerStore.getState().play()
+    assert.equal(reports[0]?.state, 'playing')
+    const id = reports[0].sessionId
+    now += 1000; time = 1; emit('timeUpdate', time)
+    time = 40; emit('timeUpdate', time)
+    assert.equal(reports.at(-1)?.position, 40)
+    emit('stateChange', 'paused')
+    assert.equal(reports.at(-1)?.state, 'paused')
+    usePlayerStore.getState().resetListeningHistoryTracking({ generation: 'second', startedAt: null })
+    now += 60_000; emit('stateChange', 'playing')
+    assert.equal(reports.at(-1)?.sessionId, id, 'history reset must not create a second server play')
+    emit('stateChange', 'loading'); emit('timeUpdate', 0)
+    assert.equal(reports.at(-1)?.position, 40, 'buffering UI reset must not rewind the server clock')
+    emit('stateChange', 'playing')
+    emit('gaplessTransition')
+    assert.equal(reports.at(-1)?.state, 'stopped')
+    assert.equal(reports.at(-1)?.position, 60)
+    usePlayerStore.setState({ currentTrack: track, playbackState: 'loading', duration: 60 })
+    time = 0
+    await usePlayerStore.getState().play()
+    assert.notEqual(reports.at(-1)?.sessionId, id, 'repeated copies are distinct plays')
+    usePlayerStore.getState().stop()
+    assert.equal(reports.at(-1)?.state, 'stopped')
+    await new Promise(resolve => setImmediate(resolve))
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    unsubscribe.forEach(dispose => dispose())
+    audioEngine.on = originalOn
+    audioEngine.play = originalPlay
+    audioEngine.stop = originalStop
+    if (ownCurrentTime) Object.defineProperty(audioEngine, 'currentTime', ownCurrentTime)
+    else delete (audioEngine as unknown as Record<string, unknown>).currentTime
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    if (originalPerformance) Object.defineProperty(globalThis, 'performance', originalPerformance)
+    resetStores()
+  }
+})
+
 test('detailed listening checkpoints exclude paused time, flush boundaries, and skip associated external files', async () => {
   resetStores()
   const checkpointCalls: Array<Record<string, unknown>> = []
@@ -7346,6 +7943,76 @@ test('gapless prebuffer scheduling is event-driven instead of running on time up
     else delete (audioEngine as unknown as Record<string, unknown>).currentTime
     if (ownDuration) Object.defineProperty(audioEngine, 'duration', ownDuration)
     else delete (audioEngine as unknown as Record<string, unknown>).duration
+  }
+})
+
+test('complete remote waveforms follow the exact representation, survive seeks and reject stale results', async () => {
+  resetStores()
+  const track = makeTrack('subsonic://1/song', { sourceType: 'subsonic', duration: 180 })
+  usePlayerStore.setState({ currentTrack: track, waveformData: null, waveformAnalyzedRatio: 0, remoteLoadProgress: null })
+  const originalOn = audioEngine.on
+  const originalSession = audioEngine.getRemoteStreamSessionId
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const listeners = new Map<string, (...args: unknown[]) => void>()
+  type Analysis = import('../../types/remoteAudioAnalysis.ts').RemoteAudioAnalysis
+  type Progress = import('../../types/remoteStream.ts').RemoteAudioLoadProgress
+  const saved: Analysis = { version: 1, duration: 180, loudnessLufs: -18, peakLinear: 0.3, peaks: Array(512).fill(0.75) }
+  const lookups: Array<{ key: string; result: Deferred<Analysis | null> }> = []
+  let progressListener!: (progress: Progress) => void
+  let readyListener!: (result: { key: string; analysis: Analysis }) => void
+  let session = 1
+  let unsubscribed = false
+  audioEngine.on = (event, callback) => { listeners.set(event, callback); return () => undefined }
+  audioEngine.getRemoteStreamSessionId = () => session
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    addEventListener() {}, removeEventListener() {}, electronAPI: {
+      onProgressiveLoadProgress: (cb: typeof progressListener) => { progressListener = cb; return () => undefined },
+      getRemoteAudioAnalysis: (key: string) => { const result = createDeferred<Analysis | null>(); lookups.push({ key, result }); return result.promise },
+      onRemoteAudioAnalysisReady: (cb: typeof readyListener) => { readyListener = cb; return () => { unsubscribed = true } }
+    }
+  } })
+  const progress = (key: string): Progress => ({ path: track.path, sessionId: session, loadedBytes: 100,
+    totalBytes: 100, bufferedSeconds: 8, done: false, failed: false,
+    sourceType: 'subsonic', stage: 'streaming', chunkCount: 1, percent: 100,
+    bufferedPercent: 5, analyzedSeconds: 0, analyzedPercent: 0, playable: true,
+    quality: { requested: 'original', requestedCodec: null, delivered: null, analysisKey: key, loudness: null } })
+  try {
+    usePlayerStore.getState()._cleanupListeners()
+    usePlayerStore.getState()._initListeners()
+    progressListener(progress('original'))
+    assert.equal(usePlayerStore.getState().waveformData, null)
+    listeners.get('remoteWaveformUpdate')?.({ waveformData: new Float32Array(512).fill(0.2), bufferedRatio: 0.1, analyzedRatio: 0.1, bufferedSeconds: 8 })
+    assert.equal(usePlayerStore.getState().waveformData, null, 'partial remote waveforms stay hidden')
+    readyListener({ key: 'unrelated', analysis: saved })
+    assert.equal(usePlayerStore.getState().waveformData, null)
+    readyListener({ key: 'original', analysis: saved })
+    const waveform = usePlayerStore.getState().waveformData
+    assert.equal(waveform?.[0], 0.75)
+    assert.equal(usePlayerStore.getState().waveformAnalyzedRatio, 1)
+    session++
+    progressListener(progress('original'))
+    assert.equal(usePlayerStore.getState().waveformData, waveform, 'decoder replacement must not collapse the same waveform')
+    session++
+    listeners.get('nativeRemoteProgress')?.(progress('converted'))
+    assert.equal(usePlayerStore.getState().waveformData, null, 'a new representation starts with a plain seek bar')
+    for (const lookup of lookups.filter(x => x.key === 'original')) lookup.result.resolve(saved)
+    readyListener({ key: 'original', analysis: saved })
+    await flushAsyncWork()
+    assert.equal(usePlayerStore.getState().waveformData, null, 'late original results cannot replace the converted waveform')
+    lookups.find(x => x.key === 'converted')!.result.resolve(saved)
+    await flushAsyncWork()
+    assert.equal(usePlayerStore.getState().waveformData?.[0], 0.75, 'cached analysis also loads through native progress')
+    const localWaveform = new Float32Array([0.2])
+    usePlayerStore.setState({ currentTrack: makeTrack('/local.flac'), waveformData: localWaveform })
+    readyListener({ key: 'converted', analysis: saved })
+    assert.equal(usePlayerStore.getState().waveformData, localWaveform)
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    assert.equal(unsubscribed, true)
+    audioEngine.on = originalOn
+    audioEngine.getRemoteStreamSessionId = originalSession
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
   }
 })
 

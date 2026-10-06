@@ -1,3 +1,8 @@
+import type { RemoteAudioCacheStatus } from '../types/remoteAudioCache'
+import type { RemoteAudioAnalysis } from '../types/remoteAudioAnalysis'
+import type { AutomaticQualityPlayback, StreamQualityTarget, AutomaticStreamingQuality, StreamingQualityRequest, StreamingQuality, StreamingQualitySettings, StreamingQualitySource } from '../types/streamingQuality'
+import type { ProviderPlaybackSnapshot } from '../types/providerPlayback'
+import type { ProviderSyncAPI } from '../types/providerSync'
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import type { NotchAPI } from '../types/notch'
 import { join } from 'path'
@@ -194,6 +199,7 @@ import type {
   IntegrityScanScope
 } from '../types/libraryIntegrity'
 import { createNativeAudioController, type NativeAudioAddonModule } from './nativeAudioController'
+import { createNativeRemoteSourceResolver } from './nativeRemoteSource'
 
 type RuntimeIconImageSetPayload = {
   images: Array<{
@@ -272,7 +278,10 @@ export interface LocalAudioPcmDecodeResult {
 export type LocalAudioPcmDecodeResponse = LocalAudioPcmDecodeResult | LocalPcmDecodeLimitRefusal | null
 
 export interface ProgressiveStreamStartOptions {
+  streamingQuality?: StreamingQualityRequest
   startTimeSeconds?: number | null
+  slot?: 'current' | 'next'
+  preserveNext?: boolean
 }
 
 // Library types
@@ -726,7 +735,8 @@ try {
 }
 
 const nativeAudioController = createNativeAudioController(visualizerDSP, {
-  unavailableReason: nativeAddonLoadError
+  unavailableReason: nativeAddonLoadError,
+  acquireRemoteSource: createNativeRemoteSourceResolver((channel, ...args) => ipcRenderer.invoke(channel, ...args))
 })
 
 function getBlinkResourceUsage(): MemoryDiagnosticsBlinkResourceUsageSnapshot {
@@ -914,6 +924,19 @@ function openLocalAudioPcmStream(
 
 // Expose APIs to renderer
 contextBridge.exposeInMainWorld('electronAPI', {
+  providerSync: {
+    status: () => ipcRenderer.invoke('provider-sync:status'),
+    review: (ref) => ipcRenderer.invoke('provider-sync:review', ref),
+    apply: (token, choices) => ipcRenderer.invoke('provider-sync:apply', token, choices),
+    disable: (ref) => ipcRenderer.invoke('provider-sync:disable', ref),
+    refresh: (ref) => ipcRenderer.invoke('provider-sync:refresh', ref),
+    onChanged: (callback) => {
+      const handler = () => callback()
+      ipcRenderer.on('provider-sync:changed', handler)
+      return () => ipcRenderer.removeListener('provider-sync:changed', handler)
+    }
+  } satisfies ProviderSyncAPI,
+  reportProviderPlayback: (snapshot: ProviderPlaybackSnapshot) => ipcRenderer.send('provider-playback:observe', snapshot),
   // Window controls
   minimize: () => ipcRenderer.send('window:minimize'),
   maximize: () => ipcRenderer.send('window:maximize'),
@@ -1588,6 +1611,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('audio:supersedeTrackLoudness', filePath) as Promise<void>,
   storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) =>
     ipcRenderer.invoke('audio:storeTrackLoudness', filePath, payload) as Promise<boolean>,
+  getRemoteCacheStatus: () => ipcRenderer.invoke('audio:getRemoteCacheStatus') as Promise<RemoteAudioCacheStatus>,
+  getRemoteAudioAnalysis: (key: string) => ipcRenderer.invoke('audio:getRemoteAudioAnalysis', key) as Promise<RemoteAudioAnalysis | null>,
+  onRemoteAudioAnalysisReady: (callback: (result: { key: string; analysis: RemoteAudioAnalysis }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, result: { key: string; analysis: RemoteAudioAnalysis }) => callback(result)
+    ipcRenderer.on('audio:remoteAnalysisReady', listener)
+    return () => ipcRenderer.removeListener('audio:remoteAnalysisReady', listener)
+  },
+  recommendAutomaticQuality: (state: AutomaticQualityPlayback) => ipcRenderer.invoke('audio:recommendAutomaticQuality', state) as Promise<StreamQualityTarget | null>,
+  prepareAutomaticQuality: (id: string, path: string, request: StreamingQualityRequest, position: number, previous?: StreamingQualityRequest) =>
+    ipcRenderer.invoke('audio:prepareAutomaticQuality', id, path, request, position, previous) as Promise<{ complete: boolean }>,
+  releaseAutomaticQuality: (id: string) => ipcRenderer.invoke('audio:releaseAutomaticQuality', id) as Promise<void>,
+  automaticQualityCommitted: (path: string, mode: AutomaticStreamingQuality, target: StreamQualityTarget) => ipcRenderer.invoke('audio:automaticQualityCommitted', path, mode, target) as Promise<void>,
+  automaticQualityFailed: (path: string, mode: AutomaticStreamingQuality) => ipcRenderer.invoke('audio:automaticQualityFailed', path, mode) as Promise<void>,
+  getStreamingQuality: () => ipcRenderer.invoke('audio:getStreamingQuality') as Promise<StreamingQualitySettings>,
+  setStreamingQuality: (quality: StreamingQuality | null, source?: StreamingQualitySource) =>
+    ipcRenderer.invoke('audio:setStreamingQuality', quality, source) as Promise<StreamingQualitySettings>,
+  onStreamingQualityChanged: (callback: (settings: StreamingQualitySettings, previous: StreamingQualitySettings) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, settings: StreamingQualitySettings, previous: StreamingQualitySettings) => callback(settings, previous)
+    ipcRenderer.on('audio:streamingQualityChanged', handler)
+    return () => ipcRenderer.removeListener('audio:streamingQualityChanged', handler)
+  },
+  setRemoteCacheLimit: (limitGb: number) => ipcRenderer.invoke('audio:setRemoteCacheLimit', limitGb) as Promise<RemoteAudioCacheStatus>,
+  clearRemoteCache: () => ipcRenderer.invoke('audio:clearRemoteCache') as Promise<RemoteAudioCacheStatus>,
   startProgressiveStream: (
     filePath: string,
     outputSampleRate: number,
@@ -1597,6 +1643,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('audio:startProgressiveStream', filePath, outputSampleRate, expectedChannels, options) as Promise<ProgressiveStreamInfo>,
   updateProgressiveStreamPosition: (sessionId: number, currentFrame: number) =>
     ipcRenderer.send('audio:updateProgressiveStreamPosition', sessionId, currentFrame),
+  activateProgressiveStream: (sessionId: number) => ipcRenderer.send('audio:activateProgressiveStream', sessionId),
+  cancelPendingProgressiveStream: (slot?: 'current' | 'next') => ipcRenderer.invoke('audio:cancelPendingProgressiveStream', slot) as Promise<void>,
   cancelProgressiveStream: (sessionId: number) => ipcRenderer.invoke('audio:cancelProgressiveStream', sessionId) as Promise<void>,
   startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) =>
     ipcRenderer.invoke('audio:startRemoteStream', filePath, outputSampleRate, expectedChannels) as Promise<RemoteStreamInfo>,
@@ -1960,6 +2008,7 @@ declare global {
       pause: () => Promise<NativeAudioPlaybackSnapshot>
       stop: () => Promise<NativeAudioPlaybackSnapshot>
       seek: (seconds: number) => Promise<NativeAudioPlaybackSnapshot>
+      changeRemoteQuality: (path: string, request: StreamingQualityRequest) => Promise<NativeAudioPlaybackSnapshot>
       clearNextTrack: () => Promise<void>
       getPlaybackSnapshot: () => Promise<NativeAudioPlaybackSnapshot>
       getNativeAudioDiagnosticReport: () => Promise<NativeAudioDiagnosticReport>
@@ -1969,6 +2018,8 @@ declare global {
       onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
     }
     electronAPI: {
+      providerSync: ProviderSyncAPI
+      reportProviderPlayback: (snapshot: ProviderPlaybackSnapshot) => void
       // Window controls
       minimize: () => void
       maximize: () => void
@@ -2288,6 +2339,19 @@ declare global {
       warmupTrackLoudness: (filePath: string) => Promise<TrackLoudnessResult | null>
       supersedeTrackLoudness: (filePath: string | null) => Promise<void>
       storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) => Promise<boolean>
+      getRemoteCacheStatus: () => Promise<RemoteAudioCacheStatus>
+      getRemoteAudioAnalysis: (key: string) => Promise<RemoteAudioAnalysis | null>
+      onRemoteAudioAnalysisReady: (callback: (result: { key: string; analysis: RemoteAudioAnalysis }) => void) => () => void
+      recommendAutomaticQuality: (state: AutomaticQualityPlayback) => Promise<StreamQualityTarget | null>
+      prepareAutomaticQuality: (id: string, path: string, request: StreamingQualityRequest, position: number, previous?: StreamingQualityRequest) => Promise<{ complete: boolean }>
+      releaseAutomaticQuality: (id: string) => Promise<void>
+      automaticQualityCommitted: (path: string, mode: AutomaticStreamingQuality, target: StreamQualityTarget) => Promise<void>
+      automaticQualityFailed: (path: string, mode: AutomaticStreamingQuality) => Promise<void>
+      getStreamingQuality: () => Promise<StreamingQualitySettings>
+      setStreamingQuality: (quality: StreamingQuality | null, source?: StreamingQualitySource) => Promise<StreamingQualitySettings>
+      onStreamingQualityChanged: (callback: (settings: StreamingQualitySettings, previous: StreamingQualitySettings) => void) => () => void
+      setRemoteCacheLimit: (limitGb: number) => Promise<RemoteAudioCacheStatus>
+      clearRemoteCache: () => Promise<RemoteAudioCacheStatus>
       startProgressiveStream: (
         filePath: string,
         outputSampleRate: number,
@@ -2295,6 +2359,8 @@ declare global {
         options?: ProgressiveStreamStartOptions
       ) => Promise<ProgressiveStreamInfo>
       updateProgressiveStreamPosition: (sessionId: number, currentFrame: number) => void
+      activateProgressiveStream: (sessionId: number) => void
+      cancelPendingProgressiveStream: (slot?: 'current' | 'next') => Promise<void>
       cancelProgressiveStream: (sessionId: number) => Promise<void>
       startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) => Promise<RemoteStreamInfo>
       cancelRemoteStream: (sessionId: number) => Promise<void>

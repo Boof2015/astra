@@ -143,9 +143,9 @@ struct ProcessedAudioPipeline::Impl {
     NativeTrackGain trackGain {};
     uint64_t startSourceFrame = 0;
     uint64_t expectedOutputFrames = 0;
+    bool outputLengthKnown = false;
     uint64_t emittedOutputFrames = 0;
     bool inputExhausted = false;
-    bool flushed = false;
     std::vector<std::unique_ptr<r8b::CDSPResampler>> resamplers;
     std::vector<std::vector<double>> inputPlanar;
     TrackFormat preparedSourceFormat {};
@@ -191,9 +191,9 @@ struct ProcessedAudioPipeline::Impl {
     void resetState(uint64_t sourceFrame) {
         startSourceFrame = sourceFrame;
         expectedOutputFrames = 0;
+        outputLengthKnown = false;
         emittedOutputFrames = 0;
         inputExhausted = false;
-        flushed = false;
         resampled.clear();
         resampled.resize(outputFormat.channels);
         for (auto& channel : resampled) channel.reserve(kInputChunkFrames * 16);
@@ -261,9 +261,9 @@ struct ProcessedAudioPipeline::Impl {
     void resetTrackQueues(uint64_t sourceFrame) {
         startSourceFrame = sourceFrame;
         expectedOutputFrames = 0;
+        outputLengthKnown = false;
         emittedOutputFrames = 0;
         inputExhausted = false;
-        flushed = false;
         if (resampled.size() != outputFormat.channels) resampled.resize(outputFormat.channels);
         for (auto& channel : resampled) {
             channel.clear();
@@ -308,13 +308,11 @@ struct ProcessedAudioPipeline::Impl {
         }
     }
 
-    void appendInput(const TrackBuffer& track, uint64_t& sourceFrame) {
-        const uint64_t totalSourceFrames = track.totalFrames();
-        if (sourceFrame >= totalSourceFrames) {
-            inputExhausted = true;
-        }
-        const size_t frames = inputExhausted ? kInputChunkFrames : static_cast<size_t>(std::min<uint64_t>(kInputChunkFrames, totalSourceFrames - sourceFrame));
-        if (frames == 0) return;
+    bool appendInput(const PcmInput& source, uint64_t& sourceFrame) {
+        const auto chunk = source.read(sourceFrame, kInputChunkFrames);
+        if (chunk.state == PcmReadState::Ended) inputExhausted = true;
+        else if (chunk.state != PcmReadState::Ready || chunk.frames == 0) return false;
+        const size_t frames = inputExhausted ? kInputChunkFrames : chunk.frames;
 
         for (uint32_t channel = 0; channel < sourceFormat.channels; channel++) {
             auto& input = inputPlanar[channel];
@@ -322,9 +320,9 @@ struct ProcessedAudioPipeline::Impl {
                 if (inputExhausted) {
                     input[frame] = 0.0;
                 } else {
-                    const size_t byteOffset = static_cast<size_t>(sourceFrame + frame) * sourceFormat.bytesPerFrame()
+                    const size_t byteOffset = frame * sourceFormat.bytesPerFrame()
                         + channel * sourceFormat.bytesPerSample();
-                    input[frame] = decodeSample(track.data.data() + byteOffset, sourceFormat.sampleFormat);
+                    input[frame] = decodeSample(chunk.data + byteOffset, sourceFormat.sampleFormat);
                 }
             }
         }
@@ -345,7 +343,7 @@ struct ProcessedAudioPipeline::Impl {
             }
         }
 
-        if (inputExhausted) flushed = true;
+        return true;
     }
 
     void processAvailable(size_t desiredFrames) {
@@ -519,6 +517,13 @@ void ProcessedAudioPipeline::reset(uint64_t sourceFrame) {
     impl_->resetState(sourceFrame);
 }
 
+uint64_t ProcessedAudioPipeline::startSourceFrame() const { return impl_->startSourceFrame; }
+uint64_t ProcessedAudioPipeline::emittedOutputFrames() const { return impl_->emittedOutputFrames; }
+bool ProcessedAudioPipeline::ended() const {
+    return impl_->outputLengthKnown && impl_->emittedOutputFrames >= impl_->expectedOutputFrames;
+}
+void ProcessedAudioPipeline::swap(ProcessedAudioPipeline& other) noexcept { impl_.swap(other.impl_); }
+
 size_t ProcessedAudioPipeline::render(
     const TrackBuffer& track,
     uint64_t& sourceFrame,
@@ -526,32 +531,64 @@ size_t ProcessedAudioPipeline::render(
     size_t requestedFrames,
     bool& streamEnded
 ) {
+    const CompletePcmInput input(track.data.data(), track.totalFrames(), track.format.bytesPerFrame());
+    return render(input, sourceFrame, output, requestedFrames, streamEnded);
+}
+
+size_t ProcessedAudioPipeline::render(
+    const PcmInput& input,
+    uint64_t& sourceFrame,
+    void* output,
+    size_t requestedFrames,
+    bool& streamEnded
+) {
     streamEnded = false;
     if (requestedFrames == 0 || output == nullptr || impl_->outputFormat.channels == 0) return 0;
-    if (impl_->expectedOutputFrames == 0) {
-        const uint64_t remaining = track.totalFrames() > impl_->startSourceFrame
-            ? track.totalFrames() - impl_->startSourceFrame
+    const auto updateLength = [&]() {
+        const auto snapshot = input.snapshot();
+        if (snapshot.state == PcmInputState::Cancelled) return false;
+        if (snapshot.state != PcmInputState::Ended) return true;
+        const uint64_t remaining = snapshot.publishedFrame > impl_->startSourceFrame
+            ? snapshot.publishedFrame - impl_->startSourceFrame
             : 0;
         impl_->expectedOutputFrames = static_cast<uint64_t>(std::llround(
             static_cast<double>(remaining) * impl_->outputFormat.sampleRate / impl_->sourceFormat.sampleRate
         ));
-    }
-    const uint64_t remainingOutput = impl_->expectedOutputFrames > impl_->emittedOutputFrames
-        ? impl_->expectedOutputFrames - impl_->emittedOutputFrames
-        : 0;
+        impl_->outputLengthKnown = true;
+        return true;
+    };
+    if (!updateLength()) return 0;
+    const auto remainingFrames = [&]() -> uint64_t {
+        if (!impl_->outputLengthKnown) return std::numeric_limits<uint64_t>::max();
+        return impl_->expectedOutputFrames > impl_->emittedOutputFrames
+            ? impl_->expectedOutputFrames - impl_->emittedOutputFrames : 0;
+    };
+    const uint64_t remainingOutput = remainingFrames();
     const size_t wanted = static_cast<size_t>(std::min<uint64_t>(requestedFrames, remainingOutput));
     const size_t lookaheadFrames = impl_->config.limiterEnabled
         ? std::max<size_t>(1, static_cast<size_t>(impl_->outputFormat.sampleRate * 0.005))
         : 0;
 
-    while (impl_->availableProcessedFrames() < wanted + lookaheadFrames && impl_->emittedOutputFrames + impl_->availableProcessedFrames() < impl_->expectedOutputFrames) {
-        if (impl_->availableResampledFrames() == 0) impl_->appendInput(track, sourceFrame);
+    while (impl_->availableProcessedFrames() < wanted + lookaheadFrames
+        && impl_->availableProcessedFrames() < remainingFrames()) {
+        if (impl_->availableResampledFrames() == 0 && !impl_->appendInput(input, sourceFrame)) break;
         const size_t before = impl_->availableProcessedFrames();
         impl_->processAvailable(wanted + lookaheadFrames - before);
-        if (before == impl_->availableProcessedFrames() && impl_->flushed) break;
+        // Short resampled tracks can need several zero-input blocks to drain
+        // the filter. True EOF supplies those blocks without a silent callback
+        // between them; an open, starved input returns above without flushing.
+        if (impl_->inputExhausted && !updateLength()) return 0;
     }
 
-    const size_t frames = std::min(wanted, impl_->availableProcessedFrames());
+    // EOF can arrive while filling the DSP queues. Never emit zero flush input
+    // as music, and never flush the resampler merely because the producer stalls.
+    if (!updateLength()) return 0;
+    size_t available = impl_->availableProcessedFrames();
+    if (!impl_->outputLengthKnown || available < remainingFrames()) {
+        available = available > lookaheadFrames ? available - lookaheadFrames : 0;
+    }
+    const size_t frames = static_cast<size_t>(std::min<uint64_t>(
+        std::min(wanted, available), remainingFrames()));
     const size_t channels = impl_->outputFormat.channels;
     const double peak = impl_->futurePeak(frames + lookaheadFrames);
     const double targetLimiterGain = impl_->config.limiterEnabled && peak > kLimiterCeiling
@@ -576,23 +613,33 @@ size_t ProcessedAudioPipeline::render(
     impl_->processedOffsetFrames += frames;
     impl_->emittedOutputFrames += frames;
     impl_->compactQueues();
-    streamEnded = impl_->emittedOutputFrames >= impl_->expectedOutputFrames;
+    streamEnded = impl_->outputLengthKnown && impl_->emittedOutputFrames >= impl_->expectedOutputFrames;
     return frames;
 }
 
 NativeProcessingStatus ProcessedAudioPipeline::status() const {
+    return status(impl_->sourceFormat, impl_->trackGain, impl_->resamplerLatencyFrames());
+}
+
+int ProcessedAudioPipeline::resamplerLatencyFrames() const {
+    return impl_->resamplerLatencyFrames();
+}
+
+NativeProcessingStatus ProcessedAudioPipeline::status(
+    const TrackFormat& source, const NativeTrackGain& gain, int resamplerLatency
+) const {
     NativeProcessingStatus status;
     status.outputPolicy = "processed";
     status.processingActive = true;
-    status.resamplingActive = impl_->sourceFormat.sampleRate != impl_->outputFormat.sampleRate;
+    status.resamplingActive = source.sampleRate != impl_->outputFormat.sampleRate;
     status.resamplerName = status.resamplingActive ? "r8brain-free-src 7.1" : "bypassed";
     status.resamplerQuality = status.resamplingActive ? "linear phase, 2% transition, 160 dB" : "source rate";
-    status.sourceSampleRate = static_cast<int>(impl_->sourceFormat.sampleRate);
+    status.sourceSampleRate = static_cast<int>(source.sampleRate);
     status.targetSampleRate = static_cast<int>(impl_->outputFormat.sampleRate);
-    status.processingLatencyFrames = impl_->resamplerLatencyFrames()
+    status.processingLatencyFrames = resamplerLatency
         + (impl_->config.limiterEnabled ? static_cast<int>(impl_->outputFormat.sampleRate * 0.005) : 0);
-    status.gainMode = gainModeId(impl_->trackGain.mode);
-    status.trackGainDb = impl_->trackGain.gainDb;
+    status.gainMode = gainModeId(gain.mode);
+    status.trackGainDb = gain.gainDb;
     status.preampDb = impl_->config.eqEnabled ? impl_->config.preampDb : 0.0;
     status.volume = impl_->config.volume;
     status.muted = impl_->config.muted;
