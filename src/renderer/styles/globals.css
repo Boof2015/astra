@@ -1256,6 +1256,61 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   color: rgba(var(--tint), 0.35);
 }
 
+.transport-waveform-meta {
+  position: absolute;
+  top: 0;
+  left: 24px;
+  right: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.transport-waveform-meta .waveform-time {
+  position: static;
+  flex-shrink: 0;
+}
+
+.transport-stream-quality {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.transport-stream-quality-mode {
+  color: var(--accent-text);
+}
+
+.transport-stream-quality-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.transport-stream-quality:hover {
+  color: var(--text-primary);
+}
+
+.transport-stream-quality:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .waveform-time-toggle,
 .fullscreen-time-toggle {
   pointer-events: auto;
@@ -19369,6 +19424,11 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
   }
 
   .waveform-time-remaining {
+    right: 12px;
+  }
+
+  .transport-waveform-meta {
+    left: 12px;
     right: 12px;
   }
 

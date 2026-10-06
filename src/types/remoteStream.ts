@@ -6,6 +6,8 @@ export type RemoteLoadStage = 'downloading' | 'streaming' | 'complete' | 'failed
 
 export interface RemoteAudioLoadProgress {
   quality?: RemotePlaybackQuality
+  /** Encoded download completion is independent of bounded PCM lookahead. */
+  downloadComplete?: boolean
   sessionId?: number
   slot?: 'current' | 'next'
   path: string

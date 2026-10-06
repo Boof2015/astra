@@ -20,12 +20,13 @@ import {
   stripBitPerfectFormatTag
 } from '../../shared/audio/bitPerfectFormatError'
 import { extractWaveformPeaks } from '../audio/waveformExtractor'
+import { isRemoteAudioAnalysis, type RemoteAudioAnalysis } from '../../types/remoteAudioAnalysis'
 import { useLibraryStore, type DbTrack } from './libraryStore'
 import { usePlaylistStore } from './playlistStore'
 import { resolveOutputDeviceLabel, useAudioSettingsStore, type ReplayGainMode } from './audioSettingsStore'
 import { useParallaxStore } from './parallaxStore'
 import { logMemoryDiagnosticsEvent } from '../utils/memoryDiagnostics'
-import { resolveStreamingQuality, streamingQualitySourceFromPath } from '../../types/streamingQuality'
+import { playbackQualityRequest, resolveStreamingQuality, streamingQualitySourceFromPath } from '../../types/streamingQuality'
 import { selectUpcomingLoudnessWarmupTracks } from '../utils/loudnessWarmup'
 import {
   type PlayerSessionSnapshot,
@@ -36,6 +37,7 @@ import {
 
 interface RemoteLoadProgress {
   quality?: import('../../types/streamingQuality').RemotePlaybackQuality
+  sessionId?: number
   path: string
   sourceType: 'local' | 'subsonic' | 'jellyfin'
   stage: 'downloading' | 'streaming' | 'complete' | 'failed'
@@ -85,7 +87,7 @@ interface CommittedPlaybackTransition {
 }
 
 interface PlaybackLoadOptions {
-  streamingQuality?: import('../../types/streamingQuality').StreamingQuality
+  streamingQuality?: import('../../types/streamingQuality').StreamingQualityRequest
   manualStart?: boolean
   startTime?: number
   attempt?: PlaybackAttempt
@@ -1166,6 +1168,36 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   let listenersInitialized = false
   let remoteLoadProgressUnsubscribe: (() => void) | null = null
   let streamingQualityUnsubscribe: (() => void) | null = null
+  let remoteAnalysisUnsubscribe: (() => void) | null = null
+  let remoteWaveformIdentity: string | null = null
+  let remoteWaveformKey: string | null = null
+
+  const applyRemoteWaveform = (key: string, analysis: RemoteAudioAnalysis | null): void => {
+    const state = get()
+    if (!isRetainedRemoteSource(state.currentTrack?.sourceType) || !isRemoteAudioAnalysis(analysis)
+      || state.remoteLoadProgress?.path !== state.currentTrack?.path
+      || state.remoteLoadProgress?.quality?.analysisKey !== key) return
+    remoteWaveformKey = key
+    set({ waveformData: Float32Array.from(analysis.peaks), waveformAnalyzedRatio: 1, waveformBufferedRatio: 1 })
+  }
+
+  const refreshRemoteWaveform = (progress: RemoteLoadProgress & { sessionId?: number }, force = false): void => {
+    const state = get()
+    if (!isRetainedRemoteSource(state.currentTrack?.sourceType) || state.currentTrack?.path !== progress.path
+      || state.remoteLoadProgress !== progress) return
+    const key = progress.quality?.analysisKey
+    const identity = `${progress.path}:${progress.sessionId}:${key}`
+    if (!force && remoteWaveformIdentity === identity) return
+    remoteWaveformIdentity = identity
+    // A seek replaces the decoder, but not the cached representation. Keep a
+    // complete waveform visible while that new session starts.
+    if (!key || remoteWaveformKey !== key) {
+      remoteWaveformKey = null
+      set({ waveformData: null, waveformAnalyzedRatio: 0 })
+    }
+    if (key) void window.electronAPI.getRemoteAudioAnalysis?.(key)
+      .then(result => { if (remoteWaveformIdentity === identity) applyRemoteWaveform(key, result) }).catch(() => {})
+  }
   let staticWaveformResultUnsubscribe: (() => void) | null = null
   let staticWaveformResultListenerAvailable = false
   const pendingStaticWaveformBuffers = new Map<number, { trackPath: string; buffer: AudioBuffer }>()
@@ -3547,7 +3579,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         const loaded = await runSerializedTrackLoad(track, {
           manualStart: true,
           startTime,
-          streamingQuality: state.remoteLoadProgress?.quality?.requested,
+          streamingQuality: playbackQualityRequest(state.remoteLoadProgress?.quality),
           attempt
         }, 'resume')
         if (loaded === 'failed' && track.sourceType && track.sourceType !== 'local') {
@@ -4782,9 +4814,12 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         waveformBufferedRatio: track.sourceType && track.sourceType !== 'local' ? 0 : 1,
         waveformAnalyzedRatio: track.sourceType && track.sourceType !== 'local' ? 0 : 1,
         remoteLoadProgress: track.sourceType && track.sourceType !== 'local'
-          ? createInitialRemoteLoadProgress(track, options.streamingQuality === undefined ? undefined : {
+          ? createInitialRemoteLoadProgress(track, typeof options.streamingQuality === 'object' ? {
+            mode: options.streamingQuality.mode, requested: options.streamingQuality.target,
+            requestedCodec: options.streamingQuality.target === 'original' ? null : 'mp3', delivered: null
+          } : options.streamingQuality === 'original' || typeof options.streamingQuality === 'number' ? {
             requested: options.streamingQuality, requestedCodec: options.streamingQuality === 'original' ? null : 'mp3', delivered: null
-          })
+          } : undefined)
           : null,
         loadingStatus: null,
         remoteBufferedSeconds: 0,
@@ -4827,6 +4862,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             restoredTrackNeedsLoad: false,
             restoredPlaybackTime: null
           })
+          const progress = get().remoteLoadProgress
+          if (progress) refreshRemoteWaveform(progress, true)
           hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
           await seekLoadedTrackBeforePlay(resolvedTrack, startTime)
           if (manualStart) {
@@ -4904,7 +4941,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               waveformData: null,
               waveformBufferedRatio: 0,
               waveformAnalyzedRatio: 0,
-              remoteLoadProgress: createInitialRemoteLoadProgress(resolvedTrack, streamInfo.quality),
+              remoteLoadProgress: { ...createInitialRemoteLoadProgress(resolvedTrack, streamInfo.quality), sessionId: streamInfo.sessionId },
               loadingStatus: null,
               remoteBufferedSeconds: audioEngine.getRemoteBufferedSeconds(),
               remoteStreamSessionId: streamInfo.sessionId,
@@ -4912,6 +4949,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
               restoredTrackNeedsLoad: false,
               restoredPlaybackTime: null
             })
+            const progress = get().remoteLoadProgress
+            if (progress) refreshRemoteWaveform(progress, true)
             hydrateAssociatedCurrentTrackMetadata(resolvedTrack)
             if (manualStart) {
               showOutputDelayNotice(resolvedTrack)
@@ -5682,7 +5721,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       }) ?? null
 
       remoteLoadProgressUnsubscribe?.()
+      remoteAnalysisUnsubscribe?.()
+      remoteWaveformIdentity = null
+      remoteWaveformKey = null
+      remoteAnalysisUnsubscribe = window.electronAPI.onRemoteAudioAnalysisReady?.(({ key, analysis }) => {
+        applyRemoteWaveform(key, analysis)
+      }) ?? null
       remoteLoadProgressUnsubscribe = window.electronAPI.onProgressiveLoadProgress((progress) => {
+        audioEngine.observeAutomaticQuality(progress)
         const activeSessionId = audioEngine.getRemoteStreamSessionId()
         if (progress.sessionId != null && progress.sessionId !== activeSessionId
           && (progress.slot === 'next' || activeSessionId !== null)) return
@@ -5696,13 +5742,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
             remoteBufferedSeconds: progress.bufferedSeconds
           }
         })
+        refreshRemoteWaveform(progress)
       })
 
       audioEngine.on('nativeRemoteProgress', (payload) => {
         const progress = payload as RemoteLoadProgress & { sessionId?: number }
         if (progress.path !== get().currentTrack?.path) return
+        audioEngine.observeAutomaticQuality(progress)
         set({ remoteLoadProgress: progress, remoteBufferedSeconds: progress.bufferedSeconds,
           remoteStreamSessionId: progress.sessionId ?? null })
+        refreshRemoteWaveform(progress)
         schedulePreBufferNextTrack()
       })
 
@@ -5887,7 +5936,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           bufferedSeconds: number
         }
         const track = get().currentTrack
-        if (!track || get().remoteStreamSessionId === null) {
+        if (!track || isRetainedRemoteSource(track.sourceType) || get().remoteStreamSessionId === null) {
           return
         }
 
@@ -6023,6 +6072,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           remoteLoadProgress: progressiveHandoff ? createInitialRemoteLoadProgress(nextTrack, audioEngine.getRemotePlaybackQuality()) : null
         }
         set(nextState)
+        if (nextState.remoteLoadProgress) refreshRemoteWaveform(nextState.remoteLoadProgress, true)
         audioEngine.setCurrentReplayGainDb(
           getReplayGainCandidateDb(nextTrack, useAudioSettingsStore.getState().replayGainMode)
         )
@@ -6092,6 +6142,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       }
       streamingQualityUnsubscribe?.()
       streamingQualityUnsubscribe = null
+      remoteAnalysisUnsubscribe?.()
+      remoteAnalysisUnsubscribe = null
+      remoteWaveformIdentity = null
+      remoteWaveformKey = null
       if (staticWaveformResultUnsubscribe) {
         staticWaveformResultUnsubscribe()
         staticWaveformResultUnsubscribe = null

@@ -1,6 +1,6 @@
 import type { RemoteAudioLease } from './services/remoteAudioCache'
 import type { NativeRemoteProgress } from '../types/nativeRemoteSource'
-import type { StreamingQuality } from '../types/streamingQuality'
+import type { StreamingQualityRequest } from '../types/streamingQuality'
 
 interface LeaseEntry {
   controller: AbortController
@@ -11,13 +11,13 @@ interface LeaseEntry {
 /** Sender-scoped ownership includes pending acquisitions, not just ready leases. */
 export class NativeRemoteLeaseRegistry {
   private owners = new Map<number, Map<string, LeaseEntry>>()
-  private acquireSource: (path: string, signal: AbortSignal, quality?: StreamingQuality) => Promise<RemoteAudioLease>
+  private acquireSource: (path: string, signal: AbortSignal, quality?: StreamingQualityRequest) => Promise<RemoteAudioLease>
 
-  constructor(acquireSource: (path: string, signal: AbortSignal, quality?: StreamingQuality) => Promise<RemoteAudioLease>) {
+  constructor(acquireSource: (path: string, signal: AbortSignal, quality?: StreamingQualityRequest) => Promise<RemoteAudioLease>) {
     this.acquireSource = acquireSource
   }
 
-  async acquire(owner: number, id: string, path: string, quality?: StreamingQuality): Promise<string> {
+  async acquire(owner: number, id: string, path: string, quality?: StreamingQualityRequest): Promise<string> {
     if (typeof id !== 'string' || id.length < 1 || id.length > 128 || typeof path !== 'string') {
       throw new Error('Invalid native remote source request.')
     }

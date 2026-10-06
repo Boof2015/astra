@@ -22,6 +22,8 @@ import EQPopover from '../eq/EQPopover'
 import { usePresence } from '../../hooks/usePresence'
 import EQResponsePreview from '../eq/EQResponsePreview'
 import AudioPipelineShelf from './AudioPipelineShelf'
+import StreamQualityIndicator from './StreamQualityIndicator'
+import type { RemotePlaybackQuality } from '../../../types/streamingQuality'
 import TransportLyricsShelf from './TransportLyricsShelf'
 import { useLyricsPopoutStore } from '../../stores/lyricsPopoutStore'
 import { useParallaxStore } from '../../stores/parallaxStore'
@@ -37,10 +39,12 @@ function formatTime(seconds: number): string {
 
 function TransportWaveformSection({
   loadingLabel,
-  loadingPercent
+  loadingPercent,
+  streamQuality
 }: {
   loadingLabel: string | null
   loadingPercent: number | null
+  streamQuality: RemotePlaybackQuality | undefined
 }) {
   const waveformData = usePlayerStore((s) => s.waveformData)
   const waveformBufferedRatio = usePlayerStore((s) => s.waveformBufferedRatio)
@@ -55,6 +59,8 @@ function TransportWaveformSection({
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const waveformTimeDisplayMode = useUIStore((s) => s.waveformTimeDisplayMode)
   const toggleWaveformTimeDisplayMode = useUIStore((s) => s.toggleWaveformTimeDisplayMode)
+  const showPipelineShelf = useUIStore((s) => s.showPipelineShelf)
+  const togglePipelineShelf = useUIStore((s) => s.togglePipelineShelf)
 
   const effectiveDelaySec = Math.max(0, effectiveDelayMs / 1000)
   const compensatedTime = duration > 0
@@ -68,16 +74,19 @@ function TransportWaveformSection({
 
   return (
     <div className="transport-waveform-wrap">
-      <span className="waveform-time waveform-time-current">{formatTime(compensatedTime)}</span>
-      <button
-        type="button"
-        className="waveform-time waveform-time-remaining waveform-time-toggle"
-        onClick={toggleWaveformTimeDisplayMode}
-        aria-label={rightTimeToggleLabel}
-        title={rightTimeToggleLabel}
-      >
-        {rightTimeLabel}
-      </button>
+      <div className="transport-waveform-meta">
+        <span className="waveform-time waveform-time-current">{formatTime(compensatedTime)}</span>
+        <StreamQualityIndicator quality={streamQuality} expanded={showPipelineShelf} onClick={togglePipelineShelf} />
+        <button
+          type="button"
+          className="waveform-time waveform-time-remaining waveform-time-toggle"
+          onClick={toggleWaveformTimeDisplayMode}
+          aria-label={rightTimeToggleLabel}
+          title={rightTimeToggleLabel}
+        >
+          {rightTimeLabel}
+        </button>
+      </div>
       <WaveformSeekBar
         waveformData={waveformData}
         waveformKey={currentTrack?.path ?? null}
@@ -619,7 +628,8 @@ export default function TransportBar() {
         </div>
 
         {/* Waveform with floating time labels */}
-        <TransportWaveformSection loadingLabel={loadingLabel} loadingPercent={loadingPercent} />
+        <TransportWaveformSection loadingLabel={loadingLabel} loadingPercent={loadingPercent}
+          streamQuality={isRetainedRemoteSource(currentTrack?.sourceType) ? activeRemoteLoadProgress?.quality : undefined} />
 
         {/* Volume */}
         <VolumeControl className="transport-volume" />

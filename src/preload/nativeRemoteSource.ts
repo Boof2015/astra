@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type { NativeRemoteSource } from '../types/nativeRemoteSource'
-import type { StreamingQuality } from '../types/streamingQuality'
+import type { StreamingQualityRequest } from '../types/streamingQuality'
 
 export function createNativeRemoteSourceResolver(invoke: (channel: string, ...args: unknown[]) => Promise<any>) {
-  return async (path: string, signal: AbortSignal, quality?: StreamingQuality): Promise<NativeRemoteSource> => {
+  return async (path: string, signal: AbortSignal, quality?: StreamingQualityRequest): Promise<NativeRemoteSource> => {
     signal.throwIfAborted()
     const id = randomUUID()
     let released = false

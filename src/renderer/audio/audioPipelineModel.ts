@@ -1,8 +1,9 @@
 import type { PlaybackOutputMode } from '../../types/nativeAudio'
-import type { RemotePlaybackQuality } from '../../types/streamingQuality'
+import { streamingQualityLabel, type RemotePlaybackQuality } from '../../types/streamingQuality'
 
 export function describeRemotePlaybackQuality(quality: RemotePlaybackQuality): string {
-  const target = quality.requested === 'original' ? 'Original requested' : `${quality.requested} kbps target`
+  const selection = quality.requested === 'original' ? 'Original requested' : `${quality.requested} kbps target`
+  const target = quality.mode ? `${streamingQualityLabel(quality.mode)} · ${selection}` : selection
   const delivered = quality.delivered
   if (!delivered?.codec) return quality.requested === 'original' ? target : `${target} · format unverified`
   const detail = [delivered.codec.toUpperCase()]

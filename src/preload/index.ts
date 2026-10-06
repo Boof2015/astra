@@ -1,5 +1,6 @@
 import type { RemoteAudioCacheStatus } from '../types/remoteAudioCache'
-import type { StreamingQuality, StreamingQualitySettings, StreamingQualitySource } from '../types/streamingQuality'
+import type { RemoteAudioAnalysis } from '../types/remoteAudioAnalysis'
+import type { AutomaticQualityPlayback, StreamQualityTarget, AutomaticStreamingQuality, StreamingQualityRequest, StreamingQuality, StreamingQualitySettings, StreamingQualitySource } from '../types/streamingQuality'
 import type { ProviderPlaybackSnapshot } from '../types/providerPlayback'
 import type { ProviderSyncAPI } from '../types/providerSync'
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
@@ -277,7 +278,7 @@ export interface LocalAudioPcmDecodeResult {
 export type LocalAudioPcmDecodeResponse = LocalAudioPcmDecodeResult | LocalPcmDecodeLimitRefusal | null
 
 export interface ProgressiveStreamStartOptions {
-  streamingQuality?: StreamingQuality
+  streamingQuality?: StreamingQualityRequest
   startTimeSeconds?: number | null
   slot?: 'current' | 'next'
   preserveNext?: boolean
@@ -1611,6 +1612,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) =>
     ipcRenderer.invoke('audio:storeTrackLoudness', filePath, payload) as Promise<boolean>,
   getRemoteCacheStatus: () => ipcRenderer.invoke('audio:getRemoteCacheStatus') as Promise<RemoteAudioCacheStatus>,
+  getRemoteAudioAnalysis: (key: string) => ipcRenderer.invoke('audio:getRemoteAudioAnalysis', key) as Promise<RemoteAudioAnalysis | null>,
+  onRemoteAudioAnalysisReady: (callback: (result: { key: string; analysis: RemoteAudioAnalysis }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, result: { key: string; analysis: RemoteAudioAnalysis }) => callback(result)
+    ipcRenderer.on('audio:remoteAnalysisReady', listener)
+    return () => ipcRenderer.removeListener('audio:remoteAnalysisReady', listener)
+  },
+  recommendAutomaticQuality: (state: AutomaticQualityPlayback) => ipcRenderer.invoke('audio:recommendAutomaticQuality', state) as Promise<StreamQualityTarget | null>,
+  prepareAutomaticQuality: (id: string, path: string, request: StreamingQualityRequest, position: number, previous?: StreamingQualityRequest) =>
+    ipcRenderer.invoke('audio:prepareAutomaticQuality', id, path, request, position, previous) as Promise<{ complete: boolean }>,
+  releaseAutomaticQuality: (id: string) => ipcRenderer.invoke('audio:releaseAutomaticQuality', id) as Promise<void>,
+  automaticQualityCommitted: (path: string, mode: AutomaticStreamingQuality, target: StreamQualityTarget) => ipcRenderer.invoke('audio:automaticQualityCommitted', path, mode, target) as Promise<void>,
+  automaticQualityFailed: (path: string, mode: AutomaticStreamingQuality) => ipcRenderer.invoke('audio:automaticQualityFailed', path, mode) as Promise<void>,
   getStreamingQuality: () => ipcRenderer.invoke('audio:getStreamingQuality') as Promise<StreamingQualitySettings>,
   setStreamingQuality: (quality: StreamingQuality | null, source?: StreamingQualitySource) =>
     ipcRenderer.invoke('audio:setStreamingQuality', quality, source) as Promise<StreamingQualitySettings>,
@@ -1995,6 +2008,7 @@ declare global {
       pause: () => Promise<NativeAudioPlaybackSnapshot>
       stop: () => Promise<NativeAudioPlaybackSnapshot>
       seek: (seconds: number) => Promise<NativeAudioPlaybackSnapshot>
+      changeRemoteQuality: (path: string, request: StreamingQualityRequest) => Promise<NativeAudioPlaybackSnapshot>
       clearNextTrack: () => Promise<void>
       getPlaybackSnapshot: () => Promise<NativeAudioPlaybackSnapshot>
       getNativeAudioDiagnosticReport: () => Promise<NativeAudioDiagnosticReport>
@@ -2326,6 +2340,13 @@ declare global {
       supersedeTrackLoudness: (filePath: string | null) => Promise<void>
       storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) => Promise<boolean>
       getRemoteCacheStatus: () => Promise<RemoteAudioCacheStatus>
+      getRemoteAudioAnalysis: (key: string) => Promise<RemoteAudioAnalysis | null>
+      onRemoteAudioAnalysisReady: (callback: (result: { key: string; analysis: RemoteAudioAnalysis }) => void) => () => void
+      recommendAutomaticQuality: (state: AutomaticQualityPlayback) => Promise<StreamQualityTarget | null>
+      prepareAutomaticQuality: (id: string, path: string, request: StreamingQualityRequest, position: number, previous?: StreamingQualityRequest) => Promise<{ complete: boolean }>
+      releaseAutomaticQuality: (id: string) => Promise<void>
+      automaticQualityCommitted: (path: string, mode: AutomaticStreamingQuality, target: StreamQualityTarget) => Promise<void>
+      automaticQualityFailed: (path: string, mode: AutomaticStreamingQuality) => Promise<void>
       getStreamingQuality: () => Promise<StreamingQualitySettings>
       setStreamingQuality: (quality: StreamingQuality | null, source?: StreamingQualitySource) => Promise<StreamingQualitySettings>
       onStreamingQualityChanged: (callback: (settings: StreamingQualitySettings, previous: StreamingQualitySettings) => void) => () => void

@@ -7,7 +7,7 @@ import {
   type JellyfinConnectionConfig
 } from './jellyfin'
 import type { RemoteAudioSource } from './remoteAudioCache'
-import { streamingRepresentation, type StreamingQuality } from '../../types/streamingQuality'
+import { streamingRepresentation, type StreamQualityTarget } from '../../types/streamingQuality'
 
 /** Resolve auth only on a cache miss. Tokens are neither cache identity nor decoder input. */
 export function createJellyfinAudioSource(options: {
@@ -15,7 +15,7 @@ export function createJellyfinAudioSource(options: {
   connection: JellyfinConnectionConfig
   trackId: string
   revision: string
-  quality?: StreamingQuality
+  quality?: StreamQualityTarget
   authenticate: (signal: AbortSignal, forceRefresh: boolean) => Promise<JellyfinAuthContext>
 }): RemoteAudioSource {
   const { sourceId, connection, trackId, revision, authenticate, quality = 'original' } = options

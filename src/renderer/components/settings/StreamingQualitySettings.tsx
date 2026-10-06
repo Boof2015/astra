@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { STREAMING_BITRATES, streamingQualitySourceKey, type StreamingQuality, type StreamingQualitySettings as Settings,
+import { STREAMING_BITRATES, streamingQualitySourceKey, streamingQualityLabel, isStreamingQuality, type StreamingQuality, type StreamingQualitySettings as Settings,
   type StreamingQualitySource } from '../../../types/streamingQuality'
 
 export default function StreamingQualitySettings({ source }: { source?: StreamingQualitySource }) {
@@ -23,7 +23,7 @@ export default function StreamingQualitySettings({ source }: { source?: Streamin
   }, [])
 
   const update = async (value: string) => {
-    const quality: StreamingQuality | null = value === 'global' ? null : value === 'original' ? 'original' : Number(value) as StreamingQuality
+    const quality: StreamingQuality | null = value === 'global' ? null : isStreamingQuality(value) ? value : Number(value) as StreamingQuality
     setBusy(true)
     setError(null)
     const generation = eventGeneration.current
@@ -41,7 +41,9 @@ export default function StreamingQualitySettings({ source }: { source?: Streamin
       <select className="settings-select" disabled={!settings || busy}
         value={sourceKey ? settings?.overrides[sourceKey] ?? 'global' : settings?.global ?? 'original'}
         onChange={event => { void update(event.target.value) }}>
-        {sourceKey && <option value="global">Use global setting ({settings?.global === 'original' ? 'Original' : `${settings?.global ?? ''} kbps`})</option>}
+        {sourceKey && <option value="global">Use global setting ({streamingQualityLabel(settings?.global ?? 'original')})</option>}
+        <option value="automatic">Automatic</option>
+        <option value="automatic-original">Automatic (prioritize original)</option>
         <option value="original">Original{!sourceKey ? ' (default)' : ''}</option>
         {STREAMING_BITRATES.map(bitrate => <option key={bitrate} value={bitrate}>{bitrate} kbps</option>)}
       </select>
@@ -52,7 +54,7 @@ export default function StreamingQualitySettings({ source }: { source?: Streamin
   return <section className="settings-card">
     <h4 className="settings-card-label">Streaming quality</h4>
     {selector}
-    <p className="settings-note">Original preserves the server file. Bitrate presets request a smaller stream when the server supports conversion. Actual audio details appear in the audio pipeline.</p>
+    <p className="settings-note">Automatic adapts to sustained connection speed and buffer headroom. Prioritize original holds onto original quality longer. Original preserves the server file. Bitrate presets request a smaller stream when the server supports conversion. Actual audio details appear in the audio pipeline.</p>
     <p className="settings-note">Applies to Subsonic, Navidrome and Jellyfin unless a server overrides it. Changes apply to the next track.</p>
   </section>
 }

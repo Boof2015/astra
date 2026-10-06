@@ -1,6 +1,10 @@
 /** Manual values are server bitrate targets, never measurements of the response. */
 export const STREAMING_BITRATES = [64, 128, 192, 256, 320] as const
-export type StreamingQuality = 'original' | typeof STREAMING_BITRATES[number]
+export type StreamQualityTarget = 'original' | typeof STREAMING_BITRATES[number]
+export type AutomaticStreamingQuality = 'automatic' | 'automatic-original'
+export type StreamingQuality = StreamQualityTarget | AutomaticStreamingQuality
+/** Pin the current representation without losing the automatic mode on seeks. */
+export type StreamingQualityRequest = StreamingQuality | { mode: AutomaticStreamingQuality; target: StreamQualityTarget }
 export interface StreamingQualitySource { provider: 'subsonic' | 'jellyfin'; sourceId: number }
 export interface StreamingQualitySettings {
   global: StreamingQuality
@@ -14,14 +18,51 @@ export interface DeliveredAudioFormat {
   bitrateKbps: number | null
 }
 export interface RemotePlaybackQuality {
-  requested: StreamingQuality
+  analysisKey?: string
+  /** Snapshot at acquisition; a scan finishing mid-play never changes gain. */
+  loudness?: import('./remoteAudioAnalysis').RemoteAudioLoudness | null
+  requested: StreamQualityTarget
+  mode?: AutomaticStreamingQuality
   /** Preferred server encoder; servers may decline or ignore this request. */
   requestedCodec: 'mp3' | null
   delivered: DeliveredAudioFormat | null
 }
 
 export function isStreamingQuality(value: unknown): value is StreamingQuality {
+  return isStreamQualityTarget(value) || isAutomaticStreamingQuality(value)
+}
+
+export function isStreamQualityTarget(value: unknown): value is StreamQualityTarget {
   return value === 'original' || STREAMING_BITRATES.some(bitrate => bitrate === value)
+}
+
+export function isAutomaticStreamingQuality(value: unknown): value is AutomaticStreamingQuality {
+  return value === 'automatic' || value === 'automatic-original'
+}
+
+export function isStreamingQualityRequest(value: unknown): value is StreamingQualityRequest {
+  if (isStreamingQuality(value)) return true
+  const request = value as { mode?: unknown; target?: unknown } | null
+  return !!request && isAutomaticStreamingQuality(request.mode) && isStreamQualityTarget(request.target)
+}
+
+export function playbackQualityRequest(quality: RemotePlaybackQuality | undefined): StreamingQualityRequest | undefined {
+  return quality?.mode ? { mode: quality.mode, target: quality.requested } : quality?.requested
+}
+
+export function streamingQualityLabel(quality: StreamingQuality): string {
+  return quality === 'automatic' ? 'Automatic' : quality === 'automatic-original' ? 'Automatic (prioritize original)'
+    : quality === 'original' ? 'Original' : `${quality} kbps`
+}
+
+export interface AutomaticQualityPlayback {
+  path: string
+  quality: RemotePlaybackQuality
+  position: number
+  bufferedSeconds: number
+  loadedBytes: number
+  totalBytes: number | null
+  complete: boolean
 }
 
 export function streamingQualitySourceKey(source: StreamingQualitySource): string {
@@ -53,13 +94,13 @@ export function streamingQualitySourceFromPath(path: string): StreamingQualitySo
   return match && Number.isSafeInteger(sourceId) ? { provider: match[1] as StreamingQualitySource['provider'], sourceId } : null
 }
 
-export function streamingRepresentation(quality: StreamingQuality): string {
+export function streamingRepresentation(quality: StreamQualityTarget): string {
   // Keep the existing original key so upgrading does not invalidate retained audio.
   return quality === 'original' ? 'original' : `mp3:${quality}:v1`
 }
 
 /** Avoid another lossy encode when the existing lossy file is already below the target. */
-export function qualityRequestForTrack(quality: StreamingQuality, track: { codec?: string | null; format?: string | null; bitrate?: number | null } | null): StreamingQuality {
+export function qualityRequestForTrack(quality: StreamQualityTarget, track: { codec?: string | null; format?: string | null; bitrate?: number | null } | null): StreamQualityTarget {
   const codec = (track?.codec || track?.format || '').toLowerCase()
   const bitrate = track?.bitrate
   if (quality !== 'original' && typeof bitrate === 'number' && Number.isFinite(bitrate) && bitrate > 0 && bitrate <= quality

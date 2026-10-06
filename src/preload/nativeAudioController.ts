@@ -1,7 +1,9 @@
 import { access } from 'fs/promises'
+import { resolveStaticNormalizationGain } from '../shared/audio/normalizationGain'
+import type { RemoteAudioLoudness } from '../types/remoteAudioAnalysis'
 import { execFile, spawn } from 'child_process'
 import { join } from 'path'
-import { deliveredAudioFormat, type StreamingQuality } from '../types/streamingQuality'
+import { deliveredAudioFormat, isStreamingQualityRequest, playbackQualityRequest, type StreamingQualityRequest } from '../types/streamingQuality'
 import type {
   AudioBufferMemoryStats,
   NativeAudioBackendKind,
@@ -89,6 +91,7 @@ interface NativeAudioControllerApi {
   pause: () => Promise<NativeAudioPlaybackSnapshot>
   stop: () => Promise<NativeAudioPlaybackSnapshot>
   seek: (seconds: number) => Promise<NativeAudioPlaybackSnapshot>
+  changeRemoteQuality: (path: string, request: StreamingQualityRequest) => Promise<NativeAudioPlaybackSnapshot>
   clearNextTrack: () => Promise<void>
   getPlaybackSnapshot: () => Promise<NativeAudioPlaybackSnapshot>
   getNativeAudioDiagnosticReport: () => Promise<NativeAudioDiagnosticReport>
@@ -106,7 +109,7 @@ export interface NativeAudioControllerOptions {
   resolveBinary?: NativeAudioBinaryResolver
   runProbe?: (file: string, args: string[], signal: AbortSignal) => Promise<string>
   runDecode?: (file: string, args: string[], signal: AbortSignal) => Promise<Buffer>
-  acquireRemoteSource?: (path: string, signal: AbortSignal, quality?: StreamingQuality) => Promise<NativeRemoteSource>
+  acquireRemoteSource?: (path: string, signal: AbortSignal, quality?: StreamingQualityRequest) => Promise<NativeRemoteSource>
   startRemoteDecoder?: (options: NativePcmDecoderOptions) => NativePcmDecoder
 }
 
@@ -950,6 +953,7 @@ export function createNativeAudioController(
   let nextBufferBytes = 0
   let remoteCurrent: RemoteNativeSession | null = null
   let remoteNext: RemoteNativeSession | null = null
+  let automaticChange: { resume: boolean } | null = null
   // Mixed queues keep consumption-based handoffs even after returning to local PCM.
   let usesProgressivePlayback = false
   let remoteProgressAt = 0
@@ -1023,6 +1027,7 @@ export function createNativeAudioController(
   }
 
   const beginLoadOperation = (): number => {
+    automaticChange = null
     activeLoadDecode?.controller.abort()
     activePrebufferDecode?.controller.abort()
     loadGeneration += 1
@@ -1031,6 +1036,7 @@ export function createNativeAudioController(
   }
 
   const invalidateLoadOperations = (): void => {
+    automaticChange = null
     activeLoadDecode?.controller.abort()
     activePrebufferDecode?.controller.abort()
     loadGeneration += 1
@@ -1276,7 +1282,7 @@ export function createNativeAudioController(
         progressiveSessionId: status.sessionId, buffering: snapshot.buffering === true,
         currentTime: snapshot.currentTime, playbackState: snapshot.playbackState,
         progress: {
-          quality: session.source.quality,
+          quality: session.source.quality, downloadComplete: progress.complete,
           sessionId: status.sessionId, slot: 'current', path: session.request.filePath, sourceType: retainedRemoteSourceFromPath(session.request.filePath)!,
           stage: session.error ? 'failed' : progress.complete ? 'complete' : 'streaming',
           loadedBytes: progress.loadedBytes, totalBytes: progress.totalBytes,
@@ -1291,7 +1297,8 @@ export function createNativeAudioController(
 
   const prepareRemote = async (
     engine: NativeAudioAddonPlayback, path: string, metadata: NativeAudioTrackMetadata | undefined,
-    gain: NativeAudioTrackGain, controller: AbortController, seconds = 0
+    gain: NativeAudioTrackGain, controller: AbortController, seconds = 0,
+    preservedLoudness?: RemoteAudioLoudness | null
   ): Promise<RemoteNativeSession> => {
     if (!options.acquireRemoteSource || !engine.createProgressiveInput) throw new Error('Native remote playback is unavailable in this build.')
     const signal = controller.signal
@@ -1301,6 +1308,15 @@ export function createNativeAudioController(
     try {
       source = await options.acquireRemoteSource(path, signal, metadata?.streamingQuality)
       throwIfDecodeAborted(signal)
+      if (preservedLoudness !== undefined && source.quality) source.quality.loudness = preservedLoudness
+      const loudness = source.quality?.loudness
+      const target = metadata?.remoteNormalizationTargetLufs
+      if (preservedLoudness === undefined && outputRequestCache.policy === 'processed'
+        && gain.mode !== 'replaygain' && loudness && typeof target === 'number' && Number.isFinite(target)) {
+        const normalized = resolveStaticNormalizationGain({ targetLufs: target, ...loudness,
+          peakLinear: loudness.peakLinear ?? 0, minGainDb: -18, maxGainDb: 6, peakCeilingLinear: 0.98 })
+        gain = { mode: 'normalization', gainDb: normalized.gainDb }
+      }
       const binaryStart = performance.now()
       const [probe, ffmpeg] = await Promise.all([binaryResolver('ffprobe'), binaryResolver('ffmpeg')])
       const binaryResolutionMs = Math.round(performance.now() - binaryStart)
@@ -1336,7 +1352,7 @@ export function createNativeAudioController(
       session = {
         input, decoder, source, controller, error: null, bytes: capacityFrames * stride,
         request: { filePath: path, sampleRate, channels, sampleFormat, duration, gain, quality: source.quality,
-          metadata: { ...metadata, path, streamingQuality: source.quality?.requested ?? metadata?.streamingQuality,
+          metadata: { ...metadata, path, streamingQuality: playbackQualityRequest(source.quality) ?? metadata?.streamingQuality,
             codec: stream.codec_name ?? metadata?.codec, sampleRate, channels,
             bitDepth: Number(stream.bits_per_raw_sample) > 0 ? Number(stream.bits_per_raw_sample) : metadata?.bitDepth,
             format: stream.sample_fmt ?? metadata?.format },
@@ -1756,6 +1772,7 @@ export function createNativeAudioController(
     },
 
     cancelPendingDecode: async () => {
+      automaticChange = null
       // Cancellation is deliberately scoped to ffprobe/FFmpeg. Once decoded PCM has been
       // handed to the addon, native load/play (including an active device-start handshake)
       // is allowed to finish under the existing serialization policy.
@@ -1769,6 +1786,11 @@ export function createNativeAudioController(
 
     play: async () => {
       const engine = await ensureAvailable()
+      if (automaticChange) {
+        automaticChange.resume = true
+        return { ...normalizePlaybackSnapshot(engine.getPlaybackSnapshot()),
+          ...(currentPlaybackSequence === null ? {} : { playbackSequence: currentPlaybackSequence }) }
+      }
       if (currentTrackRequest && isNativeRemotePath(currentTrackRequest.filePath)
         && (!remoteCurrent || remoteCurrent.input.status().state === 'cancelled')) {
         await api.loadTrack(currentTrackRequest.filePath, currentTrackRequest.metadata, currentTrackRequest.gain)
@@ -1791,6 +1813,7 @@ export function createNativeAudioController(
     },
 
     pause: async () => {
+      if (automaticChange) automaticChange.resume = false
       const engine = await ensureAvailable()
       if (usesProgressivePlayback) dispatchNativeEvents(engine, engine.drainEvents())
       const snapshot = normalizePlaybackSnapshot(engine.pause())
@@ -1822,12 +1845,89 @@ export function createNativeAudioController(
       }
     },
 
+    changeRemoteQuality: async (path, request) => {
+      if (!isStreamingQualityRequest(request) || typeof request !== 'object') throw new Error('Invalid automatic quality.')
+      const engine = await ensureAvailable()
+      dispatchNativeEvents(engine, engine.drainEvents())
+      const previous = remoteCurrent
+      if (!previous || previous.request.filePath !== path || automaticChange) throw new SupersededNativeAudioLoadError()
+      const before = normalizePlaybackSnapshot(engine.getPlaybackSnapshot())
+      const change = automaticChange = { resume: before.playbackState === 'playing' }
+      // Freeze at the acknowledged audible frame only after the candidate has
+      // been warmed. User pause/resume can still change the desired final state.
+      let paused: NativeAudioPlaybackSnapshot
+      try {
+        paused = normalizePlaybackSnapshot(engine.pause())
+        dispatchNativeEvents(engine, engine.drainEvents())
+      } catch (error) { automaticChange = null; throw error }
+      if (remoteCurrent !== previous) {
+        automaticChange = null
+        if (change.resume) await engine.play()
+        throw new SupersededNativeAudioLoadError()
+      }
+      activeLoadDecode?.controller.abort()
+      const generation = ++loadGeneration
+      const controller = new AbortController()
+      activeLoadDecode = { generation, controller }
+      let replacement: RemoteNativeSession | null = null
+      let committed = false
+      try {
+        replacement = await prepareRemote(engine, path, { ...previous.request.metadata, path, streamingQuality: request },
+          previous.request.gain, controller, paused.currentTime, previous.source.quality?.loudness ?? null)
+        assertCurrentLoadOperation(generation)
+        if (remoteCurrent !== previous) throw new SupersededNativeAudioLoadError()
+        activeLoadDecode = null
+        const invalidatedNextPath = nextTrackRequest?.filePath ?? remoteNext?.request.filePath
+        const sameFormat = replacement.request.sampleRate === previous.request.sampleRate
+          && replacement.request.channels === previous.request.channels
+          && replacement.request.sampleFormat === previous.request.sampleFormat
+        if (sameFormat) await replacement.input.seek(previous.input.status().sessionId)
+        else {
+          // A source format change may require native device reconfiguration.
+          // Keep the selected output policy and report the actual new format.
+          invalidatePrebufferOperations()
+          replacement.input.load()
+          disposeRemote(remoteNext)
+          remoteNext = null
+          nextTrackRequest = null
+          nextBufferBytes = 0
+          bufferedPlaybackSequence = null
+        }
+        assertCurrentLoadOperation(generation)
+        committed = true
+        disposeRemote(previous)
+        remoteCurrent = replacement
+        currentTrackRequest = replacement.request
+        currentBufferBytes = replacement.bytes
+        remoteProgressAt = 0
+        if (!sameFormat && invalidatedNextPath) notify({ type: 'prebufferInvalidated', path: invalidatedNextPath })
+        if (change.resume) await engine.play()
+        const snapshot = normalizePlaybackSnapshot(engine.getPlaybackSnapshot())
+        return { ...snapshot, ...(currentPlaybackSequence === null ? {} : { playbackSequence: currentPlaybackSequence }) }
+      } catch (error) {
+        if (!committed) {
+          disposeRemote(replacement)
+          if (generation === loadGeneration && remoteCurrent === previous && change.resume) await engine.play()
+        } else if (generation === loadGeneration) {
+          const failure = asNativeOutputFailure(engine, error, currentTrackRequest)
+          notify({ type: 'error', message: failure.message })
+          throw failure
+        }
+        throw error
+      } finally {
+        if (automaticChange === change) automaticChange = null
+        if (activeLoadDecode?.generation === generation) activeLoadDecode = null
+      }
+    },
+
     seek: async (seconds: number) => {
       const engine = await ensureAvailable()
       if (usesProgressivePlayback) dispatchNativeEvents(engine, engine.drainEvents())
       if (remoteCurrent) {
         if (!Number.isFinite(seconds)) throw new Error('Invalid native seek position.')
         const previous = remoteCurrent
+        const interruptedChange = automaticChange
+        automaticChange = null
         activeLoadDecode?.controller.abort()
         const generation = ++loadGeneration
         const controller = new AbortController()
@@ -1841,8 +1941,14 @@ export function createNativeAudioController(
           remoteProgressAt = 0
         }
         try {
+          // Quality replacement paused the device internally. A user seek must
+          // retain the intended playing state, not inherit that internal pause.
+          if (interruptedChange?.resume) {
+            await engine.play()
+            assertCurrentLoadOperation(generation)
+          }
           replacement = await prepareRemote(engine, previous.request.filePath, previous.request.metadata,
-            previous.request.gain, controller, seconds)
+            previous.request.gain, controller, seconds, previous.source.quality?.loudness ?? null)
           assertCurrentLoadOperation(generation)
           dispatchNativeEvents(engine, engine.drainEvents())
           if (remoteCurrent !== previous) throw new SupersededNativeAudioLoadError()

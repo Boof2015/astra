@@ -103,6 +103,13 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
           this.endedEmitted = false
           this.postPosition(true)
           break
+        case 'pause-for-quality':
+          // A renderer position report can be several render blocks old. Freeze
+          // and acknowledge this exact frame before replacing a representation.
+          if (payload.sessionId === this.sessionId) this.playing = false
+          this.port.postMessage({ type: 'quality-paused', requestedSessionId: payload.sessionId,
+            sessionId: this.sessionId, frame: this.currentFrame })
+          break
         case 'seek':
           this.seekToFrame(payload.frame)
           break

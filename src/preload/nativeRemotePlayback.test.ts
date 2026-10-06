@@ -7,6 +7,7 @@ import type { NativePcmDecoderOptions } from './nativePcmDecoder.ts'
 
 function harness(overrides: NativeAudioControllerOptions = {}) {
   const inputs: NativeProgressiveInput[] = []
+  const inputOptions: NativeProgressiveInputOptions[] = []
   const leases: { path: string; released: boolean }[] = []
   const decoders: NativePcmDecoderOptions[] = []
   const events: NativeAudioEvent[] = []
@@ -21,15 +22,16 @@ function harness(overrides: NativeAudioControllerOptions = {}) {
   let buffering = false
   const snapshot = (): NativeAudioPlaybackSnapshot => ({
     progressiveSessionId: current?.status().sessionId, buffering, playbackState: state,
-    currentTime: current ? current.status().startFrame / 48000 : localTime, duration: 60,
+    currentTime: current ? current.status().startFrame / current.status().sampleRate : localTime, duration: 60,
     sampleRate: 48000, channels: 2, sampleFormat: 's16', deviceId: 'test', deviceLabel: 'test',
     outputStatus: normalizeNativeAudioOutputStatus(null)
   })
   const caps = { activeBackend: 'coreaudio', bitPerfectAvailable: true, processedExclusiveAvailable: true, devices: [] }
   const playback = {
-    getCapabilities: () => caps, getPlaybackSnapshot: snapshot, setVisualizerTapDemand() {}, flushVisualizerSamples: () => null,
+    getCapabilities: () => caps, configureOutput: () => caps, getPlaybackSnapshot: snapshot, setVisualizerTapDemand() {}, flushVisualizerSamples: () => null,
     drainEvents: () => events.splice(0),
     createProgressiveInput: (options: NativeProgressiveInputOptions) => {
+      inputOptions.push(options)
       let published = options.startFrame ?? 0
       let inputState: 'open' | 'ended' | 'cancelled' = 'open'
       const id = inputs.length + 1
@@ -37,7 +39,7 @@ function harness(overrides: NativeAudioControllerOptions = {}) {
         append: bytes => { const frames = bytes.length / 4; published += frames; return frames },
         finish: () => { inputState = 'ended'; return true }, cancel: () => { inputState = 'cancelled' },
         status: () => ({ sessionId: id, startFrame: options.startFrame ?? 0, retainedFrame: options.startFrame ?? 0,
-          publishedFrame: published, capacityFrames: options.capacityFrames, sampleRate: 48000, bytesPerFrame: 4, state: inputState }),
+          publishedFrame: published, capacityFrames: options.capacityFrames, sampleRate: options.sampleRate, bytesPerFrame: 4, state: inputState }),
         load: () => { current?.cancel(); next?.cancel(); current = input; next = null; localNext = false; state = 'stopped'; return snapshot() },
         preloadNext: () => { assert.equal(next, null); assert.equal(localNext, false); next = input },
         seek: async expected => {
@@ -78,7 +80,7 @@ function harness(overrides: NativeAudioControllerOptions = {}) {
     },
     ...overrides
   })
-  return { controller, playback, inputs, leases, decoders, localSeeks,
+  return { controller, playback, inputs, inputOptions, leases, decoders, localSeeks,
     local: () => ({ localLoads, localDecodes }),
     setBuffering: (value: boolean) => { buffering = value },
     transition: () => {
@@ -92,10 +94,131 @@ function harness(overrides: NativeAudioControllerOptions = {}) {
 const a = 'subsonic://server/track/a'
 const b = 'subsonic://server/track/b'
 
+for (const policy of ['processed', 'direct'] as const) {
+  test(`saved remote loudness is fixed before ${policy} playback and successor preparation`, async () => {
+    let loudness: { loudnessLufs: number; peakLinear: number } | null = null
+    const h = harness({ acquireRemoteSource: async (_path, _signal, request) => {
+      const source = automaticSource(request)
+      return { ...source, quality: { ...source.quality, loudness } }
+    } })
+    await h.controller.configureNativeOutput({ policy, requestedSampleRate: null })
+    const metadata = { path: a, remoteNormalizationTargetLufs: -14 }
+    await h.controller.loadTrack(a, metadata)
+    await h.controller.play()
+    const initialGain = h.inputOptions[0].gain
+    assert.equal(initialGain?.gainDb, 0)
+    loudness = { loudnessLufs: -18, peakLinear: 0.3 }
+    await h.controller.seek(20)
+    assert.deepEqual(h.inputOptions.at(-1)?.gain, initialGain, 'a completed scan must not alter a seek in this play')
+    await h.controller.changeRemoteQuality(a, { mode: 'automatic', target: 128 })
+    assert.deepEqual(h.inputOptions.at(-1)?.gain, initialGain, 'automatic changes retain the playing gain')
+    await h.controller.preloadNextTrack(b, { ...metadata, path: b })
+    assert.equal(h.inputOptions.at(-1)?.gain?.gainDb, policy === 'processed' ? 4 : 0)
+    h.transition()
+    await h.controller.getPlaybackSnapshot()
+    loudness = { loudnessLufs: -25, peakLinear: 0.1 }
+    await h.controller.seek(30)
+    assert.equal(h.inputOptions.at(-1)?.gain?.gainDb, policy === 'processed' ? 4 : 0, 'promotion and seek retain prepared gain')
+    await h.controller.loadTrack(a, metadata, { mode: 'replaygain', gainDb: -3 })
+    assert.equal(h.inputOptions.at(-1)?.gain?.gainDb, -3, 'explicit ReplayGain takes priority over measured loudness')
+    await h.controller.stop()
+  })
+}
+
+function automaticSource(request: import('../types/streamingQuality.ts').StreamingQualityRequest | undefined) {
+  const pin = typeof request === 'object' ? request : { mode: 'automatic' as const, target: 'original' as const }
+  return { url: 'http://cache/internal', duration: 60,
+    quality: { requested: pin.target, mode: pin.mode, requestedCodec: pin.target === 'original' ? null : 'mp3' as const, delivered: null },
+    release() {}, finished: async () => {},
+    progress: async () => ({ loadedBytes: 100, totalBytes: null, complete: false, error: null }) }
+}
+
+test('automatic native changes preserve audible position, playback identity, prepared next and mode through subsequent seeks', async () => {
+  const requests: unknown[] = []
+  const h = harness({ acquireRemoteSource: async (_path, _signal, request) => {
+    requests.push(request); return automaticSource(request)
+  } })
+  await h.controller.loadTrack(a)
+  const playing = await h.controller.play()
+  await h.controller.seek(23)
+  await h.controller.preloadNextTrack(b)
+  const changed = await h.controller.changeRemoteQuality(a, { mode: 'automatic', target: 128 })
+  assert.equal(changed.currentTime, 23)
+  assert.equal(changed.playbackState, 'playing')
+  assert.equal(changed.playbackSequence, playing.playbackSequence)
+  await h.controller.seek(25)
+  assert.deepEqual(requests.at(-1), { mode: 'automatic', target: 128 })
+  h.transition()
+  await h.controller.getPlaybackSnapshot()
+  assert.equal((await h.controller.getNativeAudioDiagnosticReport()).track?.path, b)
+  await h.controller.stop()
+})
+
+test('automatic native format changes keep the output policy and rebuild the incompatible successor', async () => {
+  let reduced = false
+  const h = harness({ acquireRemoteSource: async (_path, _signal, request) => {
+    reduced = typeof request === 'object' && request.target !== 'original'
+    return automaticSource(request)
+  }, runProbe: async () => JSON.stringify({ streams: [{ codec_type: 'audio', codec_name: 'flac',
+    sample_rate: reduced ? '44100' : '48000', channels: 2, sample_fmt: 's16', duration: '60' }] }) })
+  const events: NativeAudioEvent[] = []
+  h.controller.onEvent(event => events.push(event))
+  await h.controller.loadTrack(a)
+  await h.controller.play()
+  await h.controller.seek(23)
+  await h.controller.preloadNextTrack(b)
+  const next = h.inputs.at(-1)!
+  const result = await h.controller.changeRemoteQuality(a, { mode: 'automatic-original', target: 192 })
+  assert.equal(result.currentTime, 23)
+  assert.equal(result.playbackState, 'playing')
+  assert.equal(next.status().state, 'cancelled')
+  assert.ok(events.some(event => event.type === 'prebufferInvalidated'))
+  assert.deepEqual((await h.controller.getNativeAudioDiagnosticReport()).track?.streamingQuality,
+    { mode: 'automatic-original', target: 192 })
+  await h.controller.stop()
+})
+
+for (const action of ['pause', 'seek', 'paused-seek', 'skip', 'failure'] as const) {
+  test(`native automatic preparation respects ${action} and keeps obsolete work from resuming playback`, async () => {
+    let resolve!: () => void
+    const ready = new Promise<void>(done => { resolve = done })
+    let replacing = false
+    const h = harness({ acquireRemoteSource: async (_path, _signal, request) => {
+      replacing = typeof request === 'object' && request.target === 128
+      return automaticSource(request)
+    }, runProbe: async (_file, args) => {
+      if (replacing && args.at(-1) === 'http://cache/internal') {
+        await ready
+        if (action === 'failure') throw new Error('Candidate probe failed')
+      }
+      return JSON.stringify({ streams: [{ codec_type: 'audio', codec_name: 'flac', sample_rate: '48000',
+        channels: 2, sample_fmt: 's16', duration: '60' }] })
+    } })
+    await h.controller.loadTrack(a)
+    await h.controller.play()
+    const old = h.inputs[0]
+    const change = h.controller.changeRemoteQuality(a, { mode: 'automatic', target: 128 })
+    const outcome = action === 'pause' ? change : assert.rejects(change)
+    await new Promise<void>(done => setImmediate(done))
+    if (action === 'pause' || action === 'paused-seek') await h.controller.pause()
+    if (action === 'seek' || action === 'paused-seek') await h.controller.seek(25)
+    if (action === 'skip') { await h.controller.loadTrack('/local.flac'); await h.controller.play() }
+    resolve()
+    await outcome
+    const result = await h.controller.getPlaybackSnapshot()
+    assert.equal(result.playbackState, action === 'pause' || action === 'paused-seek' ? 'paused' : 'playing')
+    if (action === 'seek' || action === 'paused-seek') assert.equal(result.currentTime, 25)
+    if (action === 'failure') assert.equal(old.status().state, 'open')
+    if (action === 'skip') assert.equal((await h.controller.getNativeAudioDiagnosticReport()).track?.path, '/local.flac')
+    await h.controller.stop()
+  })
+}
+
 test('native quality stays pinned on seeks while a new successor inherits the changed preference', async () => {
   let globalQuality = 128 as 128 | 320
   const requests: Array<{ path: string; quality: unknown }> = []
   const h = harness({ acquireRemoteSource: async (path, _signal, pinned) => {
+    assert.ok(pinned === undefined || pinned === 128 || pinned === 320)
     const requested = pinned ?? globalQuality
     requests.push({ path, quality: requested })
     return { url: 'http://cache/internal', duration: 60,

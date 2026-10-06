@@ -1,3 +1,4 @@
+import { analyzeRemoteAudioFile } from './services/remoteAudioAnalysis'
 import { parseCompanionDeviceInfo, type CompanionDeviceInfo } from '../shared/companionDevices'
 import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, clipboard, screen, safeStorage, powerMonitor, protocol, session, globalShortcut, Menu, Tray, type MenuItemConstructorOptions } from 'electron'
 import { join, basename, extname } from 'path'
@@ -35,8 +36,11 @@ import {
 import { LibraryLatestSyncCoordinator } from './services/libraryLatestSync'
 import { RemoteAudioCache, type RemoteAudioLease } from './services/remoteAudioCache'
 import { normalizeRemoteCacheLimitGb } from '../types/remoteAudioCache'
+import { acquireQualityAudio } from './services/streamingQualityAcquisition'
+import { AutomaticStreamingQuality } from './services/automaticStreamingQuality'
+import { AutomaticQualityPreparations } from './services/automaticQualityPreparations'
 import { StreamingQualityPreferences, STREAMING_QUALITY_SETTINGS_KEY } from './services/streamingQualitySettings'
-import { deliveredAudioFormat, isStreamingQuality, qualityRequestForTrack, resolveStreamingQuality, type RemotePlaybackQuality, type StreamingQuality, type StreamingQualitySource } from '../types/streamingQuality'
+import { deliveredAudioFormat, isStreamingQualityRequest, isAutomaticStreamingQuality, isStreamQualityTarget, resolveStreamingQuality, type AutomaticQualityPlayback, type StreamQualityTarget, type RemotePlaybackQuality, type StreamingQualityRequest, type StreamingQuality, type StreamingQualitySource } from '../types/streamingQuality'
 import { createSubsonicAudioSource } from './services/subsonicAudioSource'
 import { ProgressivePcmDelivery } from './progressivePcmDelivery'
 import { ProgressiveStartupRegistry } from './progressiveStartupRegistry'
@@ -707,7 +711,18 @@ const progressiveStartupControllers = new ProgressiveStartupRegistry()
 
 function getRemoteAudioCache(): RemoteAudioCache {
   const limitGb = normalizeRemoteCacheLimitGb(library.getAppMeta('remote_audio_cache_limit_gb'))
-  return remoteAudioCache ??= new RemoteAudioCache(join(app.getPath('userData'), 'remote-audio-cache'), limitGb * 1024 ** 3)
+  return remoteAudioCache ??= new RemoteAudioCache(join(app.getPath('userData'), 'remote-audio-cache'), limitGb * 1024 ** 3, {
+    analyze: async (file, signal) => {
+      const [ffmpeg, ffprobe] = await Promise.all([resolveBinary('ffmpeg'), resolveBinary('ffprobe')])
+      if (!ffmpeg || !ffprobe) throw new Error('Audio analysis tools unavailable.')
+      return analyzeRemoteAudioFile(file, ffmpeg, ffprobe, signal)
+    },
+    ready: (key, analysis) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send('audio:remoteAnalysisReady', { key, analysis })
+      }
+    }
+  })
 }
 
 async function getRemoteAudioCacheStatus() {
@@ -738,7 +753,7 @@ function getActiveMemoryFootprintChildProcessPids(): number[] {
 }
 
 interface ProgressiveStreamStartOptions {
-  streamingQuality?: StreamingQuality
+  streamingQuality?: StreamingQualityRequest
   startTimeSeconds?: number | null
   slot?: 'current' | 'next'
   preserveNext?: boolean
@@ -7859,6 +7874,8 @@ ipcMain.handle('audio:startRemoteStream', async (event, filePath: string, output
 })
 
 ipcMain.handle('audio:getRemoteCacheStatus', getRemoteAudioCacheStatus)
+ipcMain.handle('audio:getRemoteAudioAnalysis', (_event, key: string) => getRemoteAudioCache().getAnalysis(key))
+const automaticStreamingQuality = new AutomaticStreamingQuality()
 const streamingQualityPreferences = new StreamingQualityPreferences({
   read: () => library.getAppMeta(STREAMING_QUALITY_SETTINGS_KEY),
   write: value => library.setAppMeta(STREAMING_QUALITY_SETTINGS_KEY, value),
@@ -10473,6 +10490,7 @@ function safeSendRemoteLoadProgress(session: RemoteStreamSession, stage: RemoteA
   }
   session.lastProgressEmitAt = now
   const progress = buildRemoteLoadProgress(session, stage)
+  if (session.cacheLease) progress.downloadComplete = session.cacheLease.progress().complete
   if (session.quality) progress.quality = session.quality
   session.sender.send('audio:progressiveLoadProgress', progress)
   if (session.sourceType !== 'local') {
@@ -10708,7 +10726,10 @@ function nativeRemoteOwner(event: Electron.IpcMainInvokeEvent): number {
   if (event.senderFrame !== sender.mainFrame) throw new Error('Native playback requires the main frame.')
   if (!nativeRemoteOwners.has(sender)) {
     nativeRemoteOwners.add(sender)
-    const release = (): void => nativeRemoteLeases.releaseOwner(sender.id)
+    const release = (): void => {
+      nativeRemoteLeases.releaseOwner(sender.id)
+      automaticQualityPreparations.releaseOwner(sender.id)
+    }
     sender.once('destroyed', release)
     sender.on('render-process-gone', release)
     sender.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
@@ -10717,7 +10738,7 @@ function nativeRemoteOwner(event: Electron.IpcMainInvokeEvent): number {
   }
   return sender.id
 }
-ipcMain.handle('native-remote:acquire', async (event, id: string, path: string, quality?: StreamingQuality) => {
+ipcMain.handle('native-remote:acquire', async (event, id: string, path: string, quality?: StreamingQualityRequest) => {
   const owner = nativeRemoteOwner(event)
   const url = await nativeRemoteLeases.acquire(owner, id, path, quality)
   return { url, duration: resolveRemoteTrackDurationSeconds(path) ?? 0, quality: nativeRemoteLeases.quality(owner, id) }
@@ -10726,46 +10747,79 @@ ipcMain.handle('native-remote:progress', (event, id: string) => nativeRemoteLeas
 ipcMain.handle('native-remote:finished', (event, id: string) => nativeRemoteLeases.finished(nativeRemoteOwner(event), id))
 ipcMain.handle('native-remote:release', (event, id: string) => nativeRemoteLeases.release(nativeRemoteOwner(event), id))
 
-async function acquireCachedRemoteAudio(filePath: string, signal: AbortSignal, pinnedQuality?: StreamingQuality): Promise<RemoteAudioLease> {
-  if (pinnedQuality !== undefined && !isStreamingQuality(pinnedQuality)) throw new Error('Invalid streaming quality.')
-  if (isSubsonicPath(filePath)) return acquireSubsonicCachedAudio(filePath, signal, pinnedQuality)
-  const parsed = parseJellyfinTrackPath(filePath)
-  if (!parsed) throw new Error('Invalid remote track path.')
-  const { source, connection } = requireJellyfinSourceCredentials(parsed.sourceId)
-  if (source.enabled !== 1) throw new Error(`Jellyfin source "${source.name}" is disabled.`)
+function remoteQualityContext(filePath: string) {
   const track = library.getTrackByPath(filePath)
-  const quality = pinnedQuality ?? resolveStreamingQuality(streamingQualityPreferences.read(), { provider: 'jellyfin', sourceId: source.id })
-  const request = qualityRequestForTrack(quality, track)
-  const lease = await getRemoteAudioCache().acquire(createJellyfinAudioSource({
-    sourceId: source.id,
-    quality: request,
-    connection,
-    trackId: parsed.sourceTrackId,
-    revision: JSON.stringify([track?.source_path, track?.duration, track?.format, track?.codec,
-      track?.sample_rate, track?.bit_depth, track?.channels, track?.bitrate]),
-    authenticate: (downloadSignal, forceRefresh) => getJellyfinAuthContext(parsed.sourceId, connection,
-      { signal: downloadSignal, forceRefresh })
-  }), signal)
-  return { ...lease, quality: { requested: quality, requestedCodec: request === 'original' ? null : 'mp3', delivered: null } }
+  const revision = JSON.stringify([track?.source_path, track?.duration, track?.format, track?.codec,
+    track?.sample_rate, track?.bit_depth, track?.channels, track?.bitrate])
+  const subsonic = parseSubsonicTrackPath(filePath)
+  const jellyfin = parseJellyfinTrackPath(filePath)
+  if (!subsonic && !jellyfin) throw new Error('Invalid remote track path.')
+  const sourceId = (subsonic ?? jellyfin)!.sourceId
+  const provider = subsonic ? 'subsonic' as const : 'jellyfin' as const
+  const make = subsonic ? (() => {
+    const { source, connection } = requireSubsonicSourceCredentials(sourceId)
+    if (source.enabled !== 1) throw new Error('Subsonic source is disabled.')
+    return (quality: StreamQualityTarget) => createSubsonicAudioSource({ sourceId, connection,
+      trackId: subsonic.sourceTrackId, revision, quality })
+  })() : (() => {
+    const { source, connection } = requireJellyfinSourceCredentials(sourceId)
+    if (source.enabled !== 1) throw new Error('Jellyfin source is disabled.')
+    return (quality: StreamQualityTarget) => createJellyfinAudioSource({ sourceId, connection,
+      trackId: jellyfin!.sourceTrackId, revision, quality,
+      authenticate: (signal, forceRefresh) => getJellyfinAuthContext(sourceId, connection, { signal, forceRefresh }) })
+  })()
+  const original = make('original')
+  const key = `${provider}:${original.account}`
+  const originalKbps = track?.bitrate && track.bitrate > 0 ? track.bitrate
+    : track?.sample_rate && track?.channels ? track.sample_rate * track.channels * (track.bit_depth || 16) / 1000 : 1500
+  return { track, make, key, originalKbps, source: { provider, sourceId } }
 }
 
-async function acquireSubsonicCachedAudio(filePath: string, signal: AbortSignal, pinnedQuality?: StreamingQuality): Promise<RemoteAudioLease> {
-  const parsed = parseSubsonicTrackPath(filePath)
-  if (!parsed) throw new Error('Invalid Subsonic track path.')
-  const { source, connection } = requireSubsonicSourceCredentials(parsed.sourceId)
-  if (source.enabled !== 1) throw new Error(`Subsonic source "${source.name}" is disabled.`)
-  const track = library.getTrackByPath(filePath)
-  const quality = pinnedQuality ?? resolveStreamingQuality(streamingQualityPreferences.read(), { provider: 'subsonic', sourceId: source.id })
-  const request = qualityRequestForTrack(quality, track)
-  const lease = await getRemoteAudioCache().acquire(createSubsonicAudioSource({
-    sourceId: source.id, connection, trackId: parsed.sourceTrackId, quality: request,
-    // The local modified_at changes on catalog refresh, not just audio changes.
-    // Use audio metadata until provider revision/validator discovery is added.
-    revision: JSON.stringify([track?.source_path, track?.duration, track?.format, track?.codec,
-      track?.sample_rate, track?.bit_depth, track?.channels, track?.bitrate])
-  }), signal)
-  return { ...lease, quality: { requested: quality, requestedCodec: request === 'original' ? null : 'mp3', delivered: null } }
+async function acquireCachedRemoteAudio(filePath: string, signal: AbortSignal,
+  pinnedQuality?: StreamingQualityRequest): Promise<RemoteAudioLease> {
+  if (pinnedQuality !== undefined && !isStreamingQualityRequest(pinnedQuality)) throw new Error('Invalid streaming quality.')
+  const context = remoteQualityContext(filePath)
+  const selected = pinnedQuality ?? resolveStreamingQuality(streamingQualityPreferences.read(), context.source)
+  return acquireQualityAudio({ ...context, cache: getRemoteAudioCache(), policy: automaticStreamingQuality,
+    selected, signal })
 }
+
+const automaticQualityPreparations = new AutomaticQualityPreparations({
+  acquire: (path, signal, request) => acquireCachedRemoteAudio(path, signal, request),
+  prime: async (lease, position, signal) => {
+    const ffmpeg = await resolveBinary('ffmpeg')
+    if (!ffmpeg) throw new Error('FFmpeg is unavailable.')
+    const progress = await execFileAsync(ffmpeg, ['-v', 'error', '-nostdin', '-ss', String(position), '-i', lease.url,
+      '-map', '0:a:0', '-t', '8', '-vn', '-progress', 'pipe:1', '-f', 'null', '-'], { signal, timeout: 20_000, maxBuffer: 256 * 1024 })
+    const times = [...progress.matchAll(/^out_time_us=(\d+)$/gm)].map(match => Number(match[1]))
+    if (!times.some(time => time >= 7_500_000)) throw new Error('Replacement audio is not ready at the current position.')
+  }
+})
+ipcMain.handle('audio:recommendAutomaticQuality', (_event, state: AutomaticQualityPlayback) => {
+  if (!state || !isAutomaticStreamingQuality(state.quality?.mode) || !isStreamQualityTarget(state.quality?.requested)
+    || ![state.position, state.bufferedSeconds, state.loadedBytes].every(value => Number.isFinite(value) && value >= 0)) return null
+  const context = remoteQualityContext(state.path)
+  return automaticStreamingQuality.recommend(context.key, state.quality.mode, {
+    ...state, current: state.quality.requested, deliveredKbps: state.quality.delivered?.bitrateKbps,
+    originalKbps: context.originalKbps, duration: context.track?.duration ?? 0
+  })
+})
+ipcMain.handle('audio:prepareAutomaticQuality', async (event, id: string, path: string, request: StreamingQualityRequest, position: number, previous?: StreamingQualityRequest) => {
+  const owner = nativeRemoteOwner(event)
+  const cancel = () => automaticQualityPreparations.releaseOwner(owner)
+  event.sender.once('destroyed', cancel)
+  try { return await automaticQualityPreparations.prepare(owner, id, path, request, position, previous) }
+  finally { event.sender.removeListener('destroyed', cancel) }
+})
+ipcMain.handle('audio:releaseAutomaticQuality', (event, id: string) => automaticQualityPreparations.release(event.sender.id, id))
+ipcMain.handle('audio:automaticQualityCommitted', (_event, path: string, mode: unknown, target: unknown) => {
+  if (isAutomaticStreamingQuality(mode) && isStreamQualityTarget(target)) {
+    automaticStreamingQuality.committed(remoteQualityContext(path).key, mode, target)
+  }
+})
+ipcMain.handle('audio:automaticQualityFailed', (_event, path: string, mode: unknown) => {
+  if (isAutomaticStreamingQuality(mode)) automaticStreamingQuality.failed(remoteQualityContext(path).key, mode)
+})
 
 function pumpRemoteStreamOutput(session: RemoteStreamSession, chunk: Buffer): void {
   if (session.pcmDelivery) {

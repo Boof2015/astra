@@ -7,6 +7,15 @@ import {
   parseSubsonicArtworkHash
 } from './subsonic.ts'
 
+test('OpenSubsonic ReplayGain imports finite server values without inventing gains for missing tags', () => {
+  const track = mapSongToCatalogTrack(7, { id: 'song', replayGain: { trackGain: -5.4, albumGain: 0 } }, null)!
+  assert.equal(track.replaygain_track_gain_db, -5.4)
+  assert.equal(track.replaygain_album_gain_db, 0)
+  const missing = mapSongToCatalogTrack(7, { id: 'song', replayGain: { trackGain: NaN, albumGain: '3' } }, null)!
+  assert.equal(missing.replaygain_track_gain_db, null)
+  assert.equal(missing.replaygain_album_gain_db, null)
+})
+
 test('original streaming explicitly disables server transcoding and bitrate limits', () => {
   const connection = { baseUrl: 'https://music.example', username: 'listener', password: 'test' }
   const original = new URL(buildSubsonicStreamUrl(connection, 'track/id', { original: true, maxBitRateKbps: 256 }))

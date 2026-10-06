@@ -196,7 +196,9 @@ export interface NativeAudioDiagnosticReport {
 }
 
 export interface NativeAudioTrackMetadata {
-  streamingQuality?: import('./streamingQuality').StreamingQuality
+  /** Only processed remote output may use a previously completed cache scan. */
+  remoteNormalizationTargetLufs?: number
+  streamingQuality?: import('./streamingQuality').StreamingQualityRequest
   path: string
   title?: string
   artist?: string

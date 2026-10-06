@@ -7686,6 +7686,76 @@ test('gapless prebuffer scheduling is event-driven instead of running on time up
   }
 })
 
+test('complete remote waveforms follow the exact representation, survive seeks and reject stale results', async () => {
+  resetStores()
+  const track = makeTrack('subsonic://1/song', { sourceType: 'subsonic', duration: 180 })
+  usePlayerStore.setState({ currentTrack: track, waveformData: null, waveformAnalyzedRatio: 0, remoteLoadProgress: null })
+  const originalOn = audioEngine.on
+  const originalSession = audioEngine.getRemoteStreamSessionId
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const listeners = new Map<string, (...args: unknown[]) => void>()
+  type Analysis = import('../../types/remoteAudioAnalysis.ts').RemoteAudioAnalysis
+  type Progress = import('../../types/remoteStream.ts').RemoteAudioLoadProgress
+  const saved: Analysis = { version: 1, duration: 180, loudnessLufs: -18, peakLinear: 0.3, peaks: Array(512).fill(0.75) }
+  const lookups: Array<{ key: string; result: Deferred<Analysis | null> }> = []
+  let progressListener!: (progress: Progress) => void
+  let readyListener!: (result: { key: string; analysis: Analysis }) => void
+  let session = 1
+  let unsubscribed = false
+  audioEngine.on = (event, callback) => { listeners.set(event, callback); return () => undefined }
+  audioEngine.getRemoteStreamSessionId = () => session
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    addEventListener() {}, removeEventListener() {}, electronAPI: {
+      onProgressiveLoadProgress: (cb: typeof progressListener) => { progressListener = cb; return () => undefined },
+      getRemoteAudioAnalysis: (key: string) => { const result = createDeferred<Analysis | null>(); lookups.push({ key, result }); return result.promise },
+      onRemoteAudioAnalysisReady: (cb: typeof readyListener) => { readyListener = cb; return () => { unsubscribed = true } }
+    }
+  } })
+  const progress = (key: string): Progress => ({ path: track.path, sessionId: session, loadedBytes: 100,
+    totalBytes: 100, bufferedSeconds: 8, done: false, failed: false,
+    sourceType: 'subsonic', stage: 'streaming', chunkCount: 1, percent: 100,
+    bufferedPercent: 5, analyzedSeconds: 0, analyzedPercent: 0, playable: true,
+    quality: { requested: 'original', requestedCodec: null, delivered: null, analysisKey: key, loudness: null } })
+  try {
+    usePlayerStore.getState()._cleanupListeners()
+    usePlayerStore.getState()._initListeners()
+    progressListener(progress('original'))
+    assert.equal(usePlayerStore.getState().waveformData, null)
+    listeners.get('remoteWaveformUpdate')?.({ waveformData: new Float32Array(512).fill(0.2), bufferedRatio: 0.1, analyzedRatio: 0.1, bufferedSeconds: 8 })
+    assert.equal(usePlayerStore.getState().waveformData, null, 'partial remote waveforms stay hidden')
+    readyListener({ key: 'unrelated', analysis: saved })
+    assert.equal(usePlayerStore.getState().waveformData, null)
+    readyListener({ key: 'original', analysis: saved })
+    const waveform = usePlayerStore.getState().waveformData
+    assert.equal(waveform?.[0], 0.75)
+    assert.equal(usePlayerStore.getState().waveformAnalyzedRatio, 1)
+    session++
+    progressListener(progress('original'))
+    assert.equal(usePlayerStore.getState().waveformData, waveform, 'decoder replacement must not collapse the same waveform')
+    session++
+    listeners.get('nativeRemoteProgress')?.(progress('converted'))
+    assert.equal(usePlayerStore.getState().waveformData, null, 'a new representation starts with a plain seek bar')
+    for (const lookup of lookups.filter(x => x.key === 'original')) lookup.result.resolve(saved)
+    readyListener({ key: 'original', analysis: saved })
+    await flushAsyncWork()
+    assert.equal(usePlayerStore.getState().waveformData, null, 'late original results cannot replace the converted waveform')
+    lookups.find(x => x.key === 'converted')!.result.resolve(saved)
+    await flushAsyncWork()
+    assert.equal(usePlayerStore.getState().waveformData?.[0], 0.75, 'cached analysis also loads through native progress')
+    const localWaveform = new Float32Array([0.2])
+    usePlayerStore.setState({ currentTrack: makeTrack('/local.flac'), waveformData: localWaveform })
+    readyListener({ key: 'converted', analysis: saved })
+    assert.equal(usePlayerStore.getState().waveformData, localWaveform)
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    assert.equal(unsubscribed, true)
+    audioEngine.on = originalOn
+    audioEngine.getRemoteStreamSessionId = originalSession
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
+})
+
 test('late native waveforms never gate buffers and failures alone trigger renderer fallback', () => {
   resetStores()
   const track = makeTrack('/waveform/late-native.flac', {

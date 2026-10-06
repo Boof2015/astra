@@ -3,6 +3,8 @@ import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'nod
 import { createServer, type Server, type ServerResponse, type IncomingMessage } from 'node:http'
 import { join } from 'node:path'
 import type { RemotePlaybackQuality } from '../../types/streamingQuality'
+import type { AudioTransferEvent } from './automaticStreamingQuality'
+import { isRemoteAudioAnalysis, type RemoteAudioAnalysis } from '../../types/remoteAudioAnalysis'
 
 export const DEFAULT_REMOTE_CACHE_BYTES = 5 * 1024 ** 3
 
@@ -15,6 +17,7 @@ export interface RemoteAudioSource {
   representation: string
   revision: string
   open: (signal: AbortSignal) => Promise<Response>
+  observeTransfer?: (event: AudioTransferEvent) => void
 }
 
 interface CacheRecord {
@@ -22,6 +25,7 @@ interface CacheRecord {
   bytes: number
   contentType: string
   lastPlayed: number
+  analysis?: RemoteAudioAnalysis
 }
 
 interface Entry {
@@ -42,6 +46,8 @@ interface Entry {
 }
 
 export interface RemoteAudioLease {
+  cacheKey?: string
+  analysis?: RemoteAudioAnalysis
   quality?: RemotePlaybackQuality
   url: string
   progress: () => { loadedBytes: number; totalBytes: number | null; complete: boolean }
@@ -98,11 +104,19 @@ export class RemoteAudioCache {
   private mutations: Promise<unknown> = Promise.resolve()
   private closed = false
   private readonly readers = new Set<Promise<void>>()
+  private analysisQueue = new Set<string>()
+  private analysisTask: Promise<void> | null = null
+  private analysisController: AbortController | null = null
+  private analysisOptions?: {
+    analyze: (file: string, signal: AbortSignal) => Promise<RemoteAudioAnalysis>
+    ready: (key: string, analysis: RemoteAudioAnalysis) => void
+  }
 
-  constructor(directory: string, limitBytes = DEFAULT_REMOTE_CACHE_BYTES) {
+  constructor(directory: string, limitBytes = DEFAULT_REMOTE_CACHE_BYTES, analysisOptions?: RemoteAudioCache['analysisOptions']) {
     this.directory = directory
     if (!Number.isSafeInteger(limitBytes) || limitBytes <= 0) throw new Error('Invalid remote cache size.')
     this.limitBytes = limitBytes
+    this.analysisOptions = analysisOptions
   }
 
   private serialize<T>(work: () => Promise<T>): Promise<T> {
@@ -126,6 +140,7 @@ export class RemoteAudioCache {
         if (record.version !== 1 || !Number.isSafeInteger(record.bytes) || record.bytes <= 0
           || size !== record.bytes || typeof record.contentType !== 'string'
           || !Number.isFinite(record.lastPlayed)) throw new Error('Invalid cache record')
+        if (!isRemoteAudioAnalysis(record.analysis)) delete record.analysis
         this.records.set(key, record)
       } catch {
         await rm(this.recordPath(key), { force: true })
@@ -213,6 +228,7 @@ export class RemoteAudioCache {
     }
     // Start outside the mutation queue: the downloader uses that queue for disk accounting.
     this.startDownload(entry, source)
+    if (entry.complete) this.scheduleAnalysis(entry.key)
     let released = false
     const release = () => {
       if (released) return
@@ -239,6 +255,8 @@ export class RemoteAudioCache {
     if (signal?.aborted) release()
     signal?.throwIfAborted()
     return {
+      cacheKey: key,
+      analysis: this.records.get(key)?.analysis,
       url: `${this.origin}/${entry.token}`,
       progress: () => ({ loadedBytes: entry.bytes, totalBytes: entry.total, complete: entry.complete }),
       finished: async () => { await entry.task; if (entry.error) throw entry.error },
@@ -248,9 +266,67 @@ export class RemoteAudioCache {
 
   private readonly producers = new WeakSet<Entry>()
 
+  async getAnalysis(key: string): Promise<RemoteAudioAnalysis | null> {
+    if (!/^[a-f0-9]{64}$/.test(key) || this.closed) return null
+    await (this.initialization ??= this.initialize())
+    return this.records.get(key)?.analysis ?? null
+  }
+
+  private scheduleAnalysis(key: string): void {
+    if (!this.analysisOptions || this.closed || this.records.get(key)?.analysis) return
+    this.analysisQueue.add(key)
+    // Rapid skipping must not create an unbounded background backlog.
+    if (this.analysisQueue.size > 32) this.analysisQueue.delete(this.analysisQueue.values().next().value!)
+    this.pumpAnalysisQueue()
+  }
+
+  private pumpAnalysisQueue(): void {
+    if (this.closed || !this.analysisQueue.size) return
+    if (this.analysisTask) return
+    this.analysisTask = this.runAnalysisQueue().finally(() => {
+      this.analysisTask = null
+      this.pumpAnalysisQueue()
+    })
+  }
+
+  private async runAnalysisQueue(): Promise<void> {
+    while (this.analysisQueue.size && !this.closed) {
+      const key = this.analysisQueue.values().next().value!
+      this.analysisQueue.delete(key)
+      const entry = this.entries.get(key)
+      const record = this.records.get(key)
+      if (!entry?.complete || !record || record.analysis) continue
+      // Pin only the single active scan. Queued files remain evictable.
+      entry.leases++
+      const controller = this.analysisController = new AbortController()
+      try {
+        const analysis = await this.analysisOptions!.analyze(this.dataPath(key), controller.signal)
+        if (controller.signal.aborted || !isRemoteAudioAnalysis(analysis)) continue
+        await this.serialize(async () => {
+          if (this.closed || this.records.get(key) !== record) return
+          await this.saveRecord(key, { ...record, analysis })
+          record.analysis = analysis
+        })
+        if (!this.closed && record.analysis) this.analysisOptions!.ready(key, analysis)
+      } catch { /* Optional analysis never fails playback. Retry on a later acquisition. */ }
+      finally {
+        entry.leases--
+        this.analysisController = null
+        await this.serialize(() => this.makeRoom(0)).catch(() => {})
+      }
+    }
+  }
+
+  async hasComplete(source: RemoteAudioSource): Promise<boolean> {
+    if (this.closed) return false
+    await (this.initialization ??= this.initialize())
+    return this.records.has(remoteAudioCacheKey(source))
+  }
+
   private startDownload(entry: Entry, source: RemoteAudioSource): void {
     if (entry.complete || entry.error || this.producers.has(entry)) return
     this.producers.add(entry)
+    source.observeTransfer?.({ phase: 'start' })
     entry.task = this.download(entry, source).catch(async () => {
       // Never expose authenticated request URLs through fetch error messages.
       entry.error ??= new Error('Remote audio download failed. Retry this track.')
@@ -261,7 +337,11 @@ export class RemoteAudioCache {
       } catch {
         // Continue accounting for any bytes that could not be removed.
       }
-    }).finally(() => { entry.settled = true })
+    }).finally(() => {
+      entry.settled = true
+      source.observeTransfer?.({ phase: 'end', complete: entry.complete })
+      if (entry.complete) this.scheduleAnalysis(entry.key)
+    })
   }
 
   private async download(entry: Entry, source: RemoteAudioSource): Promise<void> {
@@ -301,6 +381,7 @@ export class RemoteAudioCache {
             const { done, value } = await networkOperation(() => reader!.read(), request)
             if (done) break
             if (!value?.byteLength) continue
+            source.observeTransfer?.({ phase: 'data', bytes: value.byteLength })
             // Recovery restarts the original request. Compare the prefix before
             // appending: never splice together bytes from different revisions.
             const retained = Math.min(value.byteLength, Math.max(0, entry.bytes - responseOffset))
@@ -532,6 +613,8 @@ export class RemoteAudioCache {
 
   async close(): Promise<void> {
     this.closed = true
+    this.analysisController?.abort()
+    this.analysisQueue.clear()
     if (this.initialization) await this.initialization.catch(() => undefined)
     for (const entry of this.entries.values()) {
       if (entry.releaseTimer) clearTimeout(entry.releaseTimer)
@@ -543,6 +626,7 @@ export class RemoteAudioCache {
     await new Promise<void>((resolve) => this.server ? this.server.close(() => resolve()) : resolve())
     await Promise.all([...this.entries.values()].map(entry => entry.task))
     await Promise.all([...this.readers])
+    await this.analysisTask
     await this.mutations
   }
 }

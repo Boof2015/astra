@@ -146,6 +146,7 @@ interface SubsonicAlbumSongs {
 }
 
 interface SubsonicSong {
+  replayGain?: { trackGain?: unknown; albumGain?: unknown }
   id?: unknown
   title?: unknown
   artist?: unknown
@@ -676,8 +677,10 @@ export function mapSongToCatalogTrack(
     codec: contentType,
     codec_profile: null,
     is_atmos_joc: null,
-    replaygain_track_gain_db: null,
-    replaygain_album_gain_db: null,
+    replaygain_track_gain_db: typeof song.replayGain?.trackGain === 'number' && Number.isFinite(song.replayGain.trackGain)
+      ? song.replayGain.trackGain : null,
+    replaygain_album_gain_db: typeof song.replayGain?.albumGain === 'number' && Number.isFinite(song.replayGain.albumGain)
+      ? song.replayGain.albumGain : null,
     bpm: null,
     musical_key: null
   }

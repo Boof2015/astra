@@ -1,10 +1,10 @@
 import { buildSubsonicStreamUrl, normalizeSubsonicBaseUrl, type SubsonicConnectionConfig } from './subsonic'
 import { buildProviderRequestHeaders } from './providerClientIdentity'
 import type { RemoteAudioSource } from './remoteAudioCache'
-import { streamingRepresentation, type StreamingQuality } from '../../types/streamingQuality'
+import { streamingRepresentation, type StreamQualityTarget } from '../../types/streamingQuality'
 
 export function createSubsonicAudioSource(options: {
-  sourceId: number; connection: SubsonicConnectionConfig; trackId: string; revision: string; quality?: StreamingQuality
+  sourceId: number; connection: SubsonicConnectionConfig; trackId: string; revision: string; quality?: StreamQualityTarget
 }): RemoteAudioSource {
   const { sourceId, connection, trackId, revision, quality = 'original' } = options
   return {

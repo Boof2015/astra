@@ -1,3 +1,5 @@
+import type { StreamingQualityRequest, RemotePlaybackQuality } from '../../types/streamingQuality.ts'
+import type { AutomaticPlaybackSnapshot } from './AutomaticQualityCoordinator.ts'
 import assert from 'node:assert/strict'
 import test, { type TestContext } from 'node:test'
 import { readFileSync } from 'node:fs'
@@ -56,7 +58,8 @@ async function flush() {
 
 // Exercise the real load/seek/play lifecycle, including the interval with no
 // remoteStreamState. Only the browser audio graph and Electron transport are fake.
-async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'local' | 'subsonic' | 'jellyfin' = 'subsonic', renderAudio = false) {
+async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'local' | 'subsonic' | 'jellyfin' = 'subsonic', renderAudio = false,
+  options: { quality?: () => RemotePlaybackQuality; normalization?: boolean } = {}) {
   const engine = new AudioEngine()
   const internals = engine as unknown as {
     context: AudioContext
@@ -79,22 +82,22 @@ async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'loca
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
   const originalWorkletNode = Object.getOwnPropertyDescriptor(globalThis, 'AudioWorkletNode')
   const requests: Array<ReturnType<typeof deferred<RemoteStreamInfo>> & {
-    path: string; target: number; sampleRate: number; sessionId: number; slot: 'current' | 'next'; preserveNext?: boolean
+    path: string; target: number; sampleRate: number; sessionId: number; slot: 'current' | 'next'; preserveNext?: boolean; quality?: StreamingQualityRequest
   }> = []
   const pending = new Map<string, (typeof requests)[number]>()
   let cancellationGate: Promise<void> | null = null
   const cancelledSessions: number[] = []
   const playedTimes: number[] = []
-  const workletMessages: Array<{ type: string; sessionId?: number; nextSessionId?: number }> = []
+  const workletMessages: Array<{ type: string; sessionId?: number; nextSessionId?: number; gain?: number }> = []
   const activatedSessions: number[] = []
   const reportedSessions: number[] = []
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { electronAPI: {
-    startProgressiveStream: (path: string, _rate: number, _channels: number, options: { startTimeSeconds: number; slot?: 'current' | 'next'; preserveNext?: boolean }) => {
+    startProgressiveStream: (path: string, _rate: number, _channels: number, options: { startTimeSeconds: number; slot?: 'current' | 'next'; preserveNext?: boolean; streamingQuality?: StreamingQualityRequest }) => {
       const slot = options.slot ?? 'current'
       assert.equal(pending.has(slot), false, 'decoder startups in the same slot must not overlap')
       if (slot === 'current' && !options.preserveNext) pending.get('next')?.reject(new Error('Startup cancelled'))
       const request = { ...deferred<RemoteStreamInfo>(), path, target: options.startTimeSeconds, sampleRate: _rate,
-        sessionId: requests.length + 1, slot, preserveNext: options.preserveNext }
+        sessionId: requests.length + 1, slot, preserveNext: options.preserveNext, quality: options.streamingQuality }
       requests.push(request)
       pending.set(slot, request)
       return request.promise.finally(() => { if (pending.get(slot) === request) pending.delete(slot) })
@@ -109,7 +112,7 @@ async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'loca
   } } })
   internals.context = { sampleRate: 1000, currentTime: 0 } as AudioContext
   internals.workletLoaded = true
-  internals._normalizationEnabled = false
+  internals._normalizationEnabled = options.normalization ?? false
   internals.initContext = async () => undefined
   type Processor = { port: { onmessage: (event: { data: unknown }) => void; postMessage: (data: unknown) => void };
     process: (inputs: Float32Array[][], outputs: Float32Array[][]) => boolean }
@@ -148,7 +151,7 @@ async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'loca
   internals.disconnectSourceRouting = () => undefined
   internals.applyChannelRoutingPreferences = () => undefined
   internals.applyAnalysisRoutingPreferences = () => undefined
-  internals.applyGainState = () => undefined
+  if (!options.normalization) internals.applyGainState = () => undefined
   internals.startTimeUpdate = () => undefined
   engine.on('stateChange', (state) => { if (state === 'playing') playedTimes.push(engine.currentTime) })
   t.after(async () => {
@@ -163,7 +166,7 @@ async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'loca
   const complete = (index: number, withPcm = true) => {
     const request = requests[index]
     const requestSource = request.path.startsWith('jellyfin://') ? 'jellyfin' : request.path.startsWith('subsonic://') ? 'subsonic' : 'local'
-    request.resolve({ sessionId: request.sessionId, path: request.path, sourceType: requestSource,
+    request.resolve({ quality: options.quality?.() ?? (typeof request.quality === 'object' ? { mode: request.quality.mode, requested: request.quality.target, requestedCodec: 'mp3', delivered: null } : undefined), sessionId: request.sessionId, path: request.path, sourceType: requestSource,
       sampleRate: request.sampleRate, channels: 2, durationSeconds: 1800, startTimeSeconds: request.target,
       seekableCache: requestSource !== 'local',
       initialChunk: withPcm ? { sessionId: request.sessionId, path: request.path, sourceType: requestSource,
@@ -182,6 +185,113 @@ async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'loca
     restoreGain: () => { internals.applyGainState = realApplyGainState },
     setCancellationGate: (gate: Promise<void>) => { cancellationGate = gate } }
 }
+
+for (const initiallyAnalysed of [false, true]) {
+  test(`Standard remote playback keeps ${initiallyAnalysed ? 'saved' : 'missing'} loudness stable across seeks and prepares each successor independently`, async t => {
+    let loudness = initiallyAnalysed ? { loudnessLufs: -18, peakLinear: 0.3 } : null
+    const h = await remoteHarness(t, true, 'subsonic', false, { normalization: true,
+      quality: () => ({ requested: 'original', requestedCodec: null, delivered: null, loudness }) })
+    const expected = initiallyAnalysed ? 4 : 0
+    assert.equal(h.engine.getNormalizationGainDb(), expected)
+    let partialWaveforms = 0
+    h.engine.on('remoteWaveformUpdate', () => { partialWaveforms++ })
+    // This represents a cache scan completing after the playback lease was acquired.
+    loudness = { loudnessLufs: -16, peakLinear: 0.3 }
+    const seek = h.engine.seek(20)
+    await flush(); h.complete(1); await seek
+    assert.equal(h.engine.getNormalizationGainDb(), expected, 'new decoder metadata cannot change the current gain')
+    const nextTrack = { ...h.track, path: 'jellyfin://7/next', sourceType: 'jellyfin' as const }
+    const next = h.engine.preBufferNextRemoteTrack(nextTrack, null)
+    await flush(); h.complete(2); await next
+    assert.equal(h.engine.getNormalizationGainDb(), expected, 'preparing the next track cannot affect this one')
+    const gains = h.workletMessages.filter(m => m.type === 'set-gain')
+    assert.ok(gains.some(m => m.sessionId === 3 && m.gain != null && Math.abs(m.gain - 10 ** (2 / 20)) < 1e-6))
+    h.internals.promoteRemoteStream(2, 3)
+    assert.equal(h.engine.getNormalizationGainDb(), 2)
+    assert.equal(partialWaveforms, 0, 'remote PCM chunks must not publish a partial waveform')
+  })
+}
+
+async function automaticHarness(t: TestContext) {
+  const h = await remoteHarness(t, true, 'subsonic', true)
+  const internal = h.engine as unknown as {
+    remoteStreamState: { quality: RemotePlaybackQuality }
+    automaticQualityProgress: unknown
+    automaticQualitySnapshot: () => AutomaticPlaybackSnapshot
+    changeAutomaticQuality: (state: AutomaticPlaybackSnapshot, request: StreamingQualityRequest) => Promise<void>
+  }
+  internal.remoteStreamState.quality = { mode: 'automatic', requested: 'original', requestedCodec: null, delivered: null }
+  internal.automaticQualityProgress = { path: h.track.path, sessionId: 1, slot: 'current', loadedBytes: 1000,
+    totalBytes: null, bufferedSeconds: 1, done: false, failed: false }
+  const node = h.internals.remoteStreamNode as unknown as { render: (frames: number) => void }
+  node.render(137)
+  // Do not deliver an ordinary position report; the handoff must ask the audio
+  // thread for the exact consumed frame instead of using the previous UI time.
+  return { ...h, internal }
+}
+
+test('automatic Standard change resumes from the acknowledged audio frame and retains its mode', async t => {
+  const h = await automaticHarness(t)
+  const change = h.internal.changeAutomaticQuality(h.internal.automaticQualitySnapshot(), { mode: 'automatic', target: 128 })
+  await flush()
+  assert.equal(h.requests[1].target, 0.137)
+  assert.deepEqual(h.requests[1].quality, { mode: 'automatic', target: 128 })
+  h.complete(1)
+  await change
+  assert.equal(h.engine.playbackState, 'playing')
+  assert.equal(h.engine.currentTime, 0.137)
+  const seek = h.engine.seek(20)
+  await flush()
+  assert.deepEqual(h.requests[2].quality, { mode: 'automatic', target: 128 })
+  h.complete(2)
+  await seek
+})
+
+test('failed Standard quality replacement restores the original copy at the same acknowledged frame', async t => {
+  const h = await automaticHarness(t)
+  const change = h.internal.changeAutomaticQuality(h.internal.automaticQualitySnapshot(), { mode: 'automatic', target: 64 })
+  const rejection = assert.rejects(change, /Conversion refused/)
+  await flush()
+  h.requests[1].reject(new Error('Conversion refused'))
+  await flush()
+  assert.equal(h.requests[2].target, 0.137)
+  assert.deepEqual(h.requests[2].quality, { mode: 'automatic', target: 'original' })
+  h.complete(2)
+  await rejection
+  assert.equal(h.engine.playbackState, 'playing')
+  assert.equal(h.engine.currentTime, 0.137)
+})
+
+test('pause during the Standard quality handoff prevents an automatic resume', async t => {
+  const h = await automaticHarness(t)
+  const change = h.internal.changeAutomaticQuality(h.internal.automaticQualitySnapshot(), { mode: 'automatic', target: 192 })
+  await flush()
+  h.engine.pause()
+  h.complete(1)
+  await change
+  assert.equal(h.engine.playbackState, 'paused')
+  assert.equal(h.engine.currentTime, 0.137)
+})
+
+test('failed Standard quality replacement preserves pause and the latest dragged position during rollback', async t => {
+  const h = await automaticHarness(t)
+  const change = h.internal.changeAutomaticQuality(h.internal.automaticQualitySnapshot(), { mode: 'automatic', target: 64 })
+  const rejection = assert.rejects(change, /Conversion refused/)
+  await flush()
+  const seek = h.engine.seek(25)
+  const seekRejection = assert.rejects(seek, /Conversion refused/)
+  await flush()
+  h.engine.pause()
+  h.requests.at(-1)!.reject(new Error('Conversion refused'))
+  await flush()
+  const restored = h.requests.length - 1
+  assert.equal(h.requests[restored].target, 25)
+  assert.deepEqual(h.requests[restored].quality, { mode: 'automatic', target: 'original' })
+  h.complete(restored)
+  await Promise.all([rejection, seekRejection])
+  assert.equal(h.engine.playbackState, 'paused')
+  assert.equal(h.engine.currentTime, 25)
+})
 
 for (const sourceType of ['subsonic', 'jellyfin'] as const) {
   for (const playing of [false, true]) {

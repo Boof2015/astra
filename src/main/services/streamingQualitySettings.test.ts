@@ -51,7 +51,7 @@ test('invalid inputs, missing servers and failed writes leave preferences intact
   const service = new StreamingQualityPreferences({ read: () => '{"global":256}',
     write: async () => { throw new Error('Disk full') }, sourceExists: () => false,
     changed: () => assert.fail('Must only notify after persistence') })
-  for (const value of [65, '128', null, {}, 'automatic']) {
+  for (const value of [65, '128', null, {}, 'automatic-invalid']) {
     await assert.rejects(service.update(value as never), /Invalid streaming quality/)
   }
   await assert.rejects(service.update(128, navi), /no longer exists/)
