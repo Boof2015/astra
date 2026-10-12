@@ -4,6 +4,14 @@ import { createNativeAudioController, normalizeNativeAudioOutputStatus, type Nat
 import type { NativeProgressiveInput, NativeProgressiveInputOptions } from '../types/nativeProgressive.ts'
 import type { NativeAudioEvent, NativeAudioPlaybackSnapshot } from '../types/nativeAudio.ts'
 import type { NativePcmDecoderOptions } from './nativePcmDecoder.ts'
+import { startNativePcmDecoder } from './nativePcmDecoder.ts'
+import { RemoteAudioCache } from '../main/services/remoteAudioCache.ts'
+import { createRequire } from 'node:module'
+import { execFile, execFileSync } from 'node:child_process'
+import { promisify } from 'node:util'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 function harness(overrides: NativeAudioControllerOptions = {}) {
   const inputs: NativeProgressiveInput[] = []
@@ -35,11 +43,12 @@ function harness(overrides: NativeAudioControllerOptions = {}) {
       let published = options.startFrame ?? 0
       let inputState: 'open' | 'ended' | 'cancelled' = 'open'
       const id = inputs.length + 1
+      const stride = options.channels * (options.sampleFormat === 's16' ? 2 : options.sampleFormat === 's24' ? 3 : 4)
       const input: NativeProgressiveInput = {
-        append: bytes => { const frames = bytes.length / 4; published += frames; return frames },
+        append: bytes => { const frames = bytes.length / stride; published += frames; return frames },
         finish: () => { inputState = 'ended'; return true }, cancel: () => { inputState = 'cancelled' },
         status: () => ({ sessionId: id, startFrame: options.startFrame ?? 0, retainedFrame: options.startFrame ?? 0,
-          publishedFrame: published, capacityFrames: options.capacityFrames, sampleRate: options.sampleRate, bytesPerFrame: 4, state: inputState }),
+          publishedFrame: published, capacityFrames: options.capacityFrames, sampleRate: options.sampleRate, bytesPerFrame: stride, state: inputState }),
         load: () => { current?.cancel(); next?.cancel(); current = input; next = null; localNext = false; state = 'stopped'; return snapshot() },
         preloadNext: () => { assert.equal(next, null); assert.equal(localNext, false); next = input },
         seek: async expected => {
@@ -94,38 +103,84 @@ function harness(overrides: NativeAudioControllerOptions = {}) {
 const a = 'subsonic://server/track/a'
 const b = 'subsonic://server/track/b'
 
-for (const policy of ['processed', 'direct'] as const) {
-  test(`${policy}: unsupported remote decoding retries lossless, pins seeks and stages a converted successor`, async () => {
-    const requests: unknown[] = [], released: string[] = []
-    const h = harness({ acquireRemoteSource: async (_path, _signal, request) => {
-      requests.push(request)
-      const compatibility = typeof request === 'object' ? request.compatibility : undefined
-      const url = `http://cache/${compatibility ?? 'original'}`
-      return { url, duration: 60, quality: { requested: 'original', requestedCodec: compatibility ?? null, compatibility, delivered: null },
-        release: () => { released.push(url) }, finished: async () => {},
-        progress: async () => ({ complete: true, loadedBytes: 100, totalBytes: 100, error: null }) }
-    }, startRemoteDecoder: options => {
-      if (options.args.includes('http://cache/original')) throw new Error('Decoder (codec ac4) not found for input stream #0:0')
-      options.input.append(Buffer.alloc(40000 * 4))
-      return { ready: Promise.resolve(), done: Promise.resolve(), cancel: () => options.input.cancel(), pid: undefined, pendingBytes: 0 }
-    } })
-    await h.controller.configureNativeOutput({ policy, requestedSampleRate: null })
-    const result = await h.controller.loadTrack(a)
-    assert.equal(result.quality?.compatibility, 'flac')
-    assert.equal(result.quality?.delivered?.codec, 'flac')
-    assert.ok(released.includes('http://cache/original'))
-    assert.equal(h.inputs[0].status().state, 'cancelled')
-    await h.controller.play()
-    await h.controller.seek(20)
-    assert.deepEqual(requests.at(-1), { target: 'original', compatibility: 'flac' })
-    await h.controller.preloadNextTrack(b)
-    h.transition()
-    await h.controller.getPlaybackSnapshot()
-    await h.controller.seek(30)
-    assert.deepEqual(requests.at(-1), { target: 'original', compatibility: 'flac' })
-    assert.ok((await h.controller.getNativeAudioDiagnosticReport()).text.includes(`"policy":"${policy}"`))
-    await h.controller.stop()
+test('real native Opus decoding starts before EOF and retains exact frames through a seek', { timeout: 15_000 }, async t => {
+  const require = createRequire(import.meta.url)
+  const ffmpeg = require('ffmpeg-static') as string, ffprobe = require('ffprobe-static').path as string
+  const frames = 480_037
+  const encoded = execFileSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'anoisesrc=sample_rate=48000:seed=1',
+    '-af', `atrim=end_sample=${frames}`, '-ac', '2', '-c:a', 'libopus', '-b:a', '64k', '-f', 'opus', 'pipe:1'])
+  const directory = await mkdtemp(join(tmpdir(), 'astra-native-opus-'))
+  const cache = new RemoteAudioCache(directory)
+  let upstream!: ReadableStreamDefaultController<Uint8Array>
+  let requests = 0
+  const source = { provider: 'fixture', account: 'a', track: 'song', revision: '1', representation: 'opus:64:v1',
+    open: async () => { requests++; return new Response(new ReadableStream<Uint8Array>({ start(c) { upstream = c } }), {
+      headers: { 'content-type': 'audio/ogg' }
+    }) } }
+  const lease = await cache.acquire(source)
+  while (!upstream) await new Promise(resolve => setImmediate(resolve))
+  const split = Math.floor(encoded.length * 0.8)
+  upstream.enqueue(encoded.subarray(0, split))
+  const decoders: ReturnType<typeof startNativePcmDecoder>[] = []
+  const h = harness({ resolveBinary: async binary => binary === 'ffmpeg' ? ffmpeg : ffprobe,
+    runProbe: async (binary, args, signal) => (await promisify(execFile)(binary, args, { signal, timeout: 5000 })).stdout,
+    acquireRemoteSource: async () => {
+      const held = await cache.acquire(source)
+      return { ...held, duration: frames / 48000, quality: { requested: 64, requestedCodec: 'opus', delivered: null },
+        progress: async () => ({ ...held.progress(), error: null }) }
+    },
+    startRemoteDecoder: options => { const decoder = startNativePcmDecoder(options); decoders.push(decoder); return decoder }
   })
+  t.after(async () => { await h.controller.stop(); lease.release(); await cache.close(); await rm(directory, { recursive: true, force: true }) })
+  const result = await h.controller.loadTrack(a)
+  assert.equal(result.quality?.delivered?.codec, 'opus')
+  assert.equal(lease.progress().complete, false, 'native preparation uses an incomplete response')
+  assert.ok(h.inputs[0].status().publishedFrame > 0)
+  upstream.enqueue(encoded.subarray(split)); upstream.close()
+  await decoders[0].done
+  assert.equal(h.inputs[0].status().publishedFrame, frames)
+  await h.controller.seek(2)
+  await decoders[1].done
+  assert.equal(h.inputs[1].status().startFrame, 96000)
+  assert.equal(h.inputs[1].status().publishedFrame, frames)
+  assert.equal(requests, 1, 'seek uses retained Opus bytes')
+})
+
+for (const policy of ['processed', 'direct'] as const) {
+  for (const codec of ['flac', 'opus'] as const) {
+    test(`${policy}: compatibility ${codec} pins seeks and stages a converted successor`, async () => {
+      const requests: unknown[] = [], released: string[] = []
+      const h = harness({ acquireRemoteSource: async (_path, _signal, request) => {
+        requests.push(request)
+        const compatibility = typeof request === 'object' ? request.compatibility : undefined
+        const url = `http://cache/${compatibility ?? 'original'}`
+        return { url, duration: 60, quality: { requested: 'original', requestedCodec: compatibility ?? null, compatibility, delivered: null },
+          release: () => { released.push(url) }, finished: async () => {},
+          progress: async () => ({ complete: true, loadedBytes: 100, totalBytes: 100, error: null }) }
+      }, runProbe: async () => JSON.stringify({ streams: [{ codec_type: 'audio', codec_name: codec, sample_rate: '48000', channels: 2, sample_fmt: 's16', duration: '60' }] }),
+      startRemoteDecoder: options => {
+        if (!options.args.includes(`http://cache/${codec}`)) throw new Error('Decoder (codec ac4) not found for input stream #0:0')
+        options.input.append(Buffer.alloc(40000 * 4))
+        return { ready: Promise.resolve(), done: Promise.resolve(), cancel: () => options.input.cancel(), pid: undefined, pendingBytes: 0 }
+      } })
+      await h.controller.configureNativeOutput({ policy, requestedSampleRate: null })
+      const result = await h.controller.loadTrack(a)
+      assert.equal(result.quality?.compatibility, codec)
+      assert.equal(result.quality?.delivered?.codec, codec)
+      assert.ok(released.includes('http://cache/original'))
+      assert.equal(h.inputs[0].status().state, 'cancelled')
+      await h.controller.play()
+      await h.controller.seek(20)
+      assert.deepEqual(requests.at(-1), { target: 'original', compatibility: codec })
+      await h.controller.preloadNextTrack(b)
+      h.transition()
+      await h.controller.getPlaybackSnapshot()
+      await h.controller.seek(30)
+      assert.deepEqual(requests.at(-1), { target: 'original', compatibility: codec })
+      assert.ok((await h.controller.getNativeAudioDiagnosticReport()).text.includes(`"policy":"${policy}"`))
+      await h.controller.stop()
+    })
+  }
 }
 
 test('native corrupt media and device errors never request a compatibility encode', async () => {
@@ -182,7 +237,7 @@ for (const policy of ['processed', 'direct'] as const) {
 function automaticSource(request: import('../types/streamingQuality.ts').StreamingQualityRequest | undefined) {
   const pin = typeof request === 'object' ? request : { mode: 'automatic' as const, target: 'original' as const }
   return { url: 'http://cache/internal', duration: 60,
-    quality: { requested: pin.target, mode: pin.mode, requestedCodec: pin.target === 'original' ? null : 'mp3' as const, delivered: null },
+    quality: { requested: pin.target, mode: pin.mode, requestedCodec: pin.target === 'original' ? null : 'opus' as const, delivered: null },
     release() {}, finished: async () => {},
     progress: async () => ({ loadedBytes: 100, totalBytes: null, complete: false, error: null }) }
 }
@@ -525,7 +580,7 @@ test('seek preparation that loses a gapless race cannot replace the newly audibl
   await h.controller.stop()
 })
 
-test('native format rejection falls through FLAC to MP3, while forbidden requests stay errors', async () => {
+test('native format rejection falls through FLAC and Opus to MP3, while forbidden requests stay errors', async () => {
   for (const failureKind of ['unsupported-format', undefined] as const) {
     const requests: unknown[] = [], released: string[] = []
     const h = harness({ acquireRemoteSource: async (_path, _signal, request) => {
@@ -537,14 +592,14 @@ test('native format rejection falls through FLAC to MP3, while forbidden request
         progress: async () => ({ loadedBytes: 0, totalBytes: null, complete: false, error: 'HTTP failure', failureKind }) }
     }, runProbe: async (_command, args) => {
       if (args.includes('http://cache/original')) throw new Error('Decoder (codec ac4) not found')
-      if (args.includes('http://cache/flac')) throw new Error('HTTP error')
+      if (args.includes('http://cache/flac') || args.includes('http://cache/opus')) throw new Error('HTTP error')
       return JSON.stringify({ streams: [{ codec_type: 'audio', codec_name: 'mp3', sample_rate: '48000', channels: 2, sample_fmt: 's16' }] })
     } })
     if (failureKind) {
       const result = await h.controller.loadTrack(a)
       assert.equal(result.quality?.compatibility, 'mp3')
       assert.equal(result.quality?.delivered?.codec, 'mp3')
-      assert.equal(requests.length, 3)
+      assert.equal(requests.length, 4)
     } else {
       await assert.rejects(h.controller.loadTrack(a), /HTTP error/)
       assert.equal(requests.length, 2)

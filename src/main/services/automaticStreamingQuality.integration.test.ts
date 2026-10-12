@@ -14,7 +14,7 @@ import { acquireQualityAudio } from './streamingQualityAcquisition.ts'
 import { RemoteAudioCache } from './remoteAudioCache.ts'
 import { createSubsonicAudioSource } from './subsonicAudioSource.ts'
 import { createJellyfinAudioSource } from './jellyfinAudioSource.ts'
-import type { StreamQualityTarget } from '../../types/streamingQuality.ts'
+import { streamingRepresentation, type StreamQualityTarget, type RemoteCompatibilityCodec } from '../../types/streamingQuality.ts'
 
 const require = createRequire(import.meta.url)
 const ffmpeg = require('ffmpeg-static') as string
@@ -26,7 +26,7 @@ test('automatic modes prepare real reduced audio under throttling without releas
     '-ac', '2', '-c:a', 'pcm_s16le', '-f', 'wav', 'pipe:1'], { maxBuffer: 10 * 1024 * 1024 })
   const variants = new Map<StreamQualityTarget, Buffer>([['original', original]])
   for (const target of [64, 128, 192, 256, 320] as const) variants.set(target, execFileSync(ffmpeg, [
-    '-v', 'error', '-i', 'pipe:0', '-c:a', 'libmp3lame', '-b:a', `${target}k`, '-f', 'mp3', 'pipe:1'
+    '-v', 'error', '-i', 'pipe:0', '-c:a', 'libopus', '-b:a', `${target}k`, '-f', 'opus', 'pipe:1'
   ], { input: original, maxBuffer: 3 * 1024 * 1024 }))
   const urls: URL[] = []
   const server = createServer((request, response) => {
@@ -36,7 +36,7 @@ test('automatic modes prepare real reduced audio under throttling without releas
       : Number(url.searchParams.get('maxBitRate') ?? Number(url.searchParams.get('AudioBitRate')) / 1000) as StreamQualityTarget
     const bytes = variants.get(target)
     if (!bytes) { response.writeHead(400).end(); return }
-    response.writeHead(200, { 'Content-Type': target === 'original' ? 'audio/wav' : 'audio/mpeg',
+    response.writeHead(200, { 'Content-Type': target === 'original' ? 'audio/wav' : 'audio/ogg',
       ...(target === 'original' ? { 'Content-Length': String(bytes.length) } : {}) })
     let offset = 0
     // Accelerated clock: approximately 300 kbps of measured delivery at 50x time.
@@ -110,4 +110,42 @@ test('automatic modes prepare real reduced audio under throttling without releas
     offline.release()
   }
   assert.equal(urls.length, 4, 'shared current/hold/decoder leases do not duplicate provider requests')
+  for (const url of urls) {
+    if (url.searchParams.get('format') === 'raw' || url.searchParams.get('static') === 'true') continue
+    assert.equal(url.searchParams.get('format') ?? url.searchParams.get('AudioCodec'), 'opus')
+  }
+})
+
+test('an automatic candidate rejected with HTTP 415 is primed as MP3 before handoff', { timeout: 10_000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'astra-auto-compat-'))
+  const cache = new RemoteAudioCache(directory)
+  const encoded = execFileSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'sine=sample_rate=48000:duration=12',
+    '-ac', '2', '-c:a', 'libmp3lame', '-b:a', '128k', '-f', 'mp3', 'pipe:1'])
+  const requests: string[] = []
+  const make = (target: StreamQualityTarget, compatibility?: RemoteCompatibilityCodec) => ({
+    provider: 'fixture', account: 'a', track: 'song', revision: '1', representation: streamingRepresentation(target, compatibility),
+    open: async () => {
+      requests.push(compatibility ?? 'opus')
+      return compatibility === 'mp3' ? new Response(encoded, { headers: { 'content-type': 'audio/mpeg' } })
+        : new Response(null, { status: 415 })
+    }
+  })
+  const base = { cache, make, policy: new AutomaticStreamingQuality(), key: 'fixture', track: null, originalKbps: 1500 }
+  const preparation = new AutomaticQualityPreparations({
+    acquire: (_path, signal, selected) => acquireQualityAudio({ ...base, selected, signal }),
+    prime: async (lease, position, signal) => {
+      const result = await run(ffmpeg, ['-v', 'error', '-ss', String(position), '-i', lease.url,
+        '-t', '8', '-progress', 'pipe:1', '-f', 'null', '-'], { signal, timeout: 5000 })
+      const times = [...result.stdout.matchAll(/^out_time_us=(\d+)$/gm)].map(match => Number(match[1]))
+      assert.ok(times.some(time => time >= 7_500_000))
+    }
+  })
+  t.after(async () => { preparation.releaseOwner(1); await cache.close(); await rm(directory, { recursive: true, force: true }) })
+  const result = await preparation.prepare(1, 'fallback', 'subsonic://1/song', { mode: 'automatic', target: 128 }, 2)
+  assert.deepEqual(result.request, { mode: 'automatic', target: 128, compatibility: 'mp3' })
+  assert.deepEqual(requests, ['opus', 'mp3'])
+  const adopted = await acquireQualityAudio({ ...base, selected: result.request!, signal: new AbortController().signal })
+  assert.equal(adopted.quality?.requestedCodec, 'mp3')
+  assert.deepEqual(requests, ['opus', 'mp3'], 'handoff reuses the successfully primed fallback')
+  adopted.release()
 })

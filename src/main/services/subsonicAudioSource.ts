@@ -13,7 +13,7 @@ export function createSubsonicAudioSource(options: {
     open: signal => fetch(buildSubsonicStreamUrl(connection, trackId, compatibility
       ? { format: compatibility, maxBitRateKbps: compatibility === 'flac' ? 0 : quality === 'original' ? 320 : quality }
       : quality === 'original'
-      ? { original: true } : { format: 'mp3', maxBitRateKbps: quality }), {
+      ? { original: true } : { format: 'opus', maxBitRateKbps: quality }), {
       signal, headers: { ...buildProviderRequestHeaders(), 'Accept-Encoding': 'identity' }
     })
   }

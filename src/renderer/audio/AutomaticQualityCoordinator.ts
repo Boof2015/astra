@@ -1,4 +1,4 @@
-import type { AutomaticQualityPlayback, StreamingQualityRequest, StreamQualityTarget } from '../../types/streamingQuality'
+import type { AutomaticQualityPlayback, AutomaticQualityPreparationResult, StreamingQualityRequest, StreamQualityTarget } from '../../types/streamingQuality'
 import { playbackQualityRequest } from '../../types/streamingQuality'
 
 export interface AutomaticPlaybackSnapshot extends AutomaticQualityPlayback { identity: string }
@@ -15,7 +15,7 @@ export class AutomaticQualityCoordinator {
   private options: {
     snapshot: () => AutomaticPlaybackSnapshot | null
     recommend: (state: AutomaticQualityPlayback) => Promise<StreamQualityTarget | null>
-    prepare: (id: string, state: AutomaticPlaybackSnapshot, request: StreamingQualityRequest) => Promise<{ complete: boolean }>
+    prepare: (id: string, state: AutomaticPlaybackSnapshot, request: StreamingQualityRequest) => Promise<AutomaticQualityPreparationResult>
     release: (id: string) => Promise<unknown>
     apply: (state: AutomaticPlaybackSnapshot, request: StreamingQualityRequest) => Promise<void>
     failed: (state: AutomaticPlaybackSnapshot) => Promise<unknown>
@@ -54,14 +54,15 @@ export class AutomaticQualityCoordinator {
       if (initial.complete || !current()) return
       const target = await this.options.recommend(initial)
       if (target === null || target === initial.quality.requested || !current()) return
-      const request: StreamingQualityRequest = { mode: initial.quality.mode, target,
-        ...(initial.quality.compatibility ? { compatibility: target === 'original' ? initial.quality.compatibility : 'mp3' as const } : {}) }
+      let request: StreamingQualityRequest = { mode: initial.quality.mode, target,
+        ...(initial.quality.compatibility ? { compatibility: target === 'original' || initial.quality.compatibility !== 'flac' ? initial.quality.compatibility : 'opus' as const } : {}) }
       for (let attempt = 0; attempt < 3; attempt++) {
         const state = current()
         if (!state || state.complete) return
         if (id) await this.options.release(id)
         id = this.preparation = `auto-${generation}-${Math.round(now)}-${attempt}`
         const prepared = await this.options.prepare(id, state, request)
+        request = prepared.request ?? request
         const ready = current()
         if (!ready || ready.complete) return
         // A slow first fetch may have fallen behind the playing position. Prime

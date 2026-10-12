@@ -962,7 +962,7 @@ export async function syncSubsonicPlaylists(
 export function buildSubsonicStreamUrl(
   config: SubsonicConnectionConfig,
   sourceTrackId: string,
-  options: { maxBitRateKbps?: number; original?: boolean; format?: 'mp3' | 'flac' } = {}
+  options: { maxBitRateKbps?: number; original?: boolean; format?: 'mp3' | 'flac' | 'opus' } = {}
 ): string {
   const maxBitRateKbps = options.maxBitRateKbps
   return buildSubsonicEndpointUrl(

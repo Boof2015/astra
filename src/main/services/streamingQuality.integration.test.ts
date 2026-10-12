@@ -23,7 +23,7 @@ test('real encoded quality variants decode, seek and replay offline from distinc
     '-ac', '2', '-c:a', 'pcm_s16le', '-f', 'wav', 'pipe:1'], { maxBuffer: 2 * 1024 * 1024 })
   const variants = new Map<StreamingQuality, Buffer>([['original', original]])
   for (const quality of [64, 320] as const) variants.set(quality, execFileSync(ffmpeg, [
-    '-v', 'error', '-i', 'pipe:0', '-c:a', 'libmp3lame', '-b:a', `${quality}k`, '-f', 'mp3', 'pipe:1'
+    '-v', 'error', '-i', 'pipe:0', '-c:a', 'libopus', '-b:a', `${quality}k`, '-f', 'opus', 'pipe:1'
   ], { input: original, maxBuffer: 2 * 1024 * 1024 }))
   assert.ok(variants.get(64)!.length < variants.get(320)!.length)
   assert.ok(variants.get(320)!.length < original.length)
@@ -36,7 +36,7 @@ test('real encoded quality variants decode, seek and replay offline from distinc
       ? 'original' : Number(url.searchParams.get('maxBitRate') ?? Number(url.searchParams.get('AudioBitRate')) / 1000) as StreamingQuality
     const data = variants.get(quality)
     if (!data) { response.writeHead(400).end(); return }
-    response.writeHead(200, { 'Content-Type': quality === 'original' ? 'audio/wav' : 'audio/mpeg' })
+    response.writeHead(200, { 'Content-Type': quality === 'original' ? 'audio/wav' : 'audio/ogg' })
     // Exercise chunked server transcodes without a Content-Length header.
     response.write(data.subarray(0, 16384))
     if (url.searchParams.get('maxBitRate') === '64') finishPartial = () => response.end(data.subarray(16384))
@@ -70,8 +70,8 @@ test('real encoded quality variants decode, seek and replay offline from distinc
         finish()
       }
       const delivered = deliveredAudioFormat(JSON.parse(stdout))
-      assert.equal(delivered?.codec, quality === 'original' ? 'pcm_s16le' : 'mp3')
-      if (quality !== 'original') assert.equal(delivered?.bitrateKbps, quality)
+      assert.equal(delivered?.codec, quality === 'original' ? 'pcm_s16le' : 'opus')
+      if (quality !== 'original') assert.equal(delivered?.sampleRate, 48000)
       const decoded = await run(ffmpeg, ['-v', 'error', '-ss', '0.5', '-i', lease.url, '-t', '0.1',
         '-map', '0:a:0', '-f', 'f32le', 'pipe:1'], { encoding: 'buffer', timeout: 10000 })
       assert.ok(decoded.stdout.length >= 4800 * 4, 'seeks produce real decoded audio')
@@ -81,6 +81,11 @@ test('real encoded quality variants decode, seek and replay offline from distinc
     }
   }
   assert.equal(requests.length, 6)
+  for (const url of requests) {
+    if (url.searchParams.get('format') === 'raw' || url.searchParams.get('static') === 'true') continue
+    assert.equal(url.searchParams.get('format') ?? url.searchParams.get('AudioCodec'), 'opus')
+    if (url.searchParams.has('AudioCodec')) assert.ok(url.pathname.endsWith('/stream.opus'))
+  }
   await cache.close()
   const reopened = new RemoteAudioCache(folder)
   t.after(() => reopened.close())

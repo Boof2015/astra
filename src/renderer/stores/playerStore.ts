@@ -4816,10 +4816,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         remoteLoadProgress: track.sourceType && track.sourceType !== 'local'
           ? createInitialRemoteLoadProgress(track, typeof options.streamingQuality === 'object' ? {
             mode: options.streamingQuality.mode, requested: options.streamingQuality.target,
-            requestedCodec: options.streamingQuality.compatibility ?? (options.streamingQuality.target === 'original' ? null : 'mp3'), delivered: null,
+            requestedCodec: options.streamingQuality.compatibility ?? (options.streamingQuality.target === 'original' ? null : 'opus'), delivered: null,
             ...(options.streamingQuality.compatibility ? { compatibility: options.streamingQuality.compatibility } : {})
           } : options.streamingQuality === 'original' || typeof options.streamingQuality === 'number' ? {
-            requested: options.streamingQuality, requestedCodec: options.streamingQuality === 'original' ? null : 'mp3', delivered: null
+            requested: options.streamingQuality, requestedCodec: options.streamingQuality === 'original' ? null : 'opus', delivered: null
           } : undefined)
           : null,
         loadingStatus: null,

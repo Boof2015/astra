@@ -7,20 +7,20 @@ const connection = { baseUrl: 'https://music.example/jellyfin/', username: 'list
 const options = { sourceId: 7, connection, trackId: 'song', revision: '1',
   authenticate: async () => ({ accessToken: 'token', userId: 'user' }) }
 
-test('manual Jellyfin quality uses progressive MP3 with header auth and a distinct cache representation', async t => {
+test('manual Jellyfin quality uses progressive Opus with header auth and a distinct cache representation', async t => {
   t.mock.method(globalThis, 'fetch', async (input: string, init: RequestInit) => {
     const url = new URL(input)
-    assert.equal(url.pathname, '/jellyfin/Audio/song/stream.mp3')
-    assert.equal(url.searchParams.get('AudioCodec'), 'mp3')
+    assert.equal(url.pathname, '/jellyfin/Audio/song/stream.opus')
+    assert.equal(url.searchParams.get('AudioCodec'), 'opus')
     assert.equal(url.searchParams.get('AudioBitRate'), '128000')
     assert.equal(url.searchParams.get('static'), 'false')
     assert.equal(url.searchParams.get('api_key'), null)
     assert.equal(new Headers(init.headers).get('X-Emby-Token'), 'token')
-    return new Response('mp3', { headers: { 'Content-Type': 'audio/mpeg' } })
+    return new Response('opus', { headers: { 'Content-Type': 'audio/ogg' } })
   })
   const manual = createJellyfinAudioSource({ ...options, quality: 128 })
   assert.notEqual(remoteAudioCacheKey(manual), remoteAudioCacheKey(createJellyfinAudioSource(options)))
-  assert.equal(await (await manual.open(new AbortController().signal)).text(), 'mp3')
+  assert.equal(await (await manual.open(new AbortController().signal)).text(), 'opus')
 })
 
 test('Jellyfin original audio uses static streaming and authenticates only when fetching bytes', async t => {
@@ -105,7 +105,7 @@ test('Jellyfin compatibility disables stream copy and leaves lossless rate, dept
     assert.equal(new Headers(init.headers).get('X-Emby-Token'), 'token')
     return new Response('audio')
   })
-  for (const [quality, compatibility, bitrate] of [['original', 'flac', null], ['original', 'mp3', '320000'], [64, 'mp3', '64000']] as const) {
+  for (const [quality, compatibility, bitrate] of [['original', 'flac', null], ['original', 'opus', '320000'], [64, 'opus', '64000'], ['original', 'mp3', '320000'], [64, 'mp3', '64000']] as const) {
     const source = createJellyfinAudioSource({ ...options, quality, compatibility })
     await source.open(new AbortController().signal)
     const url = requests.at(-1)!

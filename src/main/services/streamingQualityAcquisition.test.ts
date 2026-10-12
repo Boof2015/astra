@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { acquireQualityAudio } from './streamingQualityAcquisition.ts'
 import { AutomaticStreamingQuality } from './automaticStreamingQuality.ts'
-import { streamingRepresentation } from '../../types/streamingQuality.ts'
+import { playbackQualityRequest, streamingRepresentation, type StreamQualityTarget, type RemoteCompatibilityCodec } from '../../types/streamingQuality.ts'
 
 test('automatic selection shares provider targets, prefers complete original audio, and pins seeks without changing their mode', async () => {
   let now = 0
@@ -33,7 +33,7 @@ test('automatic selection shares provider targets, prefers complete original aud
   const seek = await acquireQualityAudio({ ...options, selected: { mode: 'automatic', target: 192 } })
   assert.equal(seek.quality?.requested, 192, 'a seek keeps its representation even when another copy is cached')
   assert.equal(seek.quality?.mode, 'automatic')
-  assert.deepEqual(requested, ['mp3:192:v1', 'original', 'mp3:192:v1'])
+  assert.deepEqual(requested, ['opus:192:v1', 'original', 'opus:192:v1'])
   const manual = await acquireQualityAudio({ ...options, selected: 64 })
   assert.equal(manual.quality?.requested, 64)
   assert.equal(manual.quality?.mode, undefined)
@@ -55,7 +55,7 @@ for (const offline of [false, true]) {
     const result = await acquireQualityAudio({ policy: new AutomaticStreamingQuality(), key: 'server', originalKbps: 1500,
       track: null, selected: 'automatic-original', signal: new AbortController().signal,
       make: quality => ({ provider: 'fixture', account: 'a', track: 'song', revision: '1', representation: streamingRepresentation(quality), open: async () => new Response() }),
-      cache: { hasComplete: async source => source.representation === 'mp3:64:v1', acquire: async source => {
+      cache: { hasComplete: async source => source.representation === 'opus:64:v1', acquire: async source => {
         requests.push(source.representation)
         const missing = offline && source.representation === 'original'
         return { url: 'fixture', progress: () => ({ complete: !missing, loadedBytes: missing ? 0 : 100, totalBytes: 100 }),
@@ -66,4 +66,38 @@ for (const offline of [false, true]) {
     assert.equal(result.quality?.mode, 'automatic-original')
     assert.equal(requests.length, offline ? 2 : 1)
   })
+}
+
+for (const selected of [128, 'automatic-original', 'original'] as const) {
+  for (const offline of [false, true]) {
+    test(`legacy MP3 cache: ${selected}, ${offline ? 'offline' : 'online'}, retains playback without hiding new Opus`, async () => {
+      const requests: string[] = [], released: string[] = []
+      const options = { policy: new AutomaticStreamingQuality(), key: 'server', originalKbps: 1500,
+        track: null, signal: new AbortController().signal,
+        make: (target: StreamQualityTarget, compatibility?: RemoteCompatibilityCodec) => ({ provider: 'fixture', account: 'a',
+          track: 'song', revision: '1', representation: streamingRepresentation(target, compatibility), open: async () => new Response() }),
+        cache: { hasComplete: async (source: { representation: string }) => source.representation === 'mp3:128:v1',
+          acquire: async (source: { representation: string }) => {
+            const representation = source.representation
+            requests.push(representation)
+            const missing = offline && representation !== 'mp3:128:v1'
+            return { url: 'fixture', cacheKey: representation,
+              progress: () => ({ complete: !missing, loadedBytes: missing ? 0 : 100, totalBytes: 100 }),
+              release() { released.push(representation) }, finished: async () => { if (missing) throw new Error('Offline') } }
+          } }
+      }
+      const result = await acquireQualityAudio({ ...options, selected })
+      const usedLegacy = offline && selected !== 'original'
+      assert.deepEqual(requests, [selected === 128 ? 'opus:128:v1' : 'original', ...(usedLegacy ? ['mp3:128:v1'] : [])])
+      assert.equal(result.quality?.compatibility, usedLegacy ? 'mp3' : undefined)
+      assert.equal(result.quality?.mode, selected === 'automatic-original' ? selected : undefined)
+      assert.equal(released.length, usedLegacy ? 1 : 0)
+      if (usedLegacy) {
+        assert.equal(result.quality?.analysisKey, 'mp3:128:v1')
+        const seek = await acquireQualityAudio({ ...options, selected: playbackQualityRequest(result.quality)! })
+        assert.equal(seek.quality?.requestedCodec, 'mp3')
+        assert.equal(requests.at(-1), 'mp3:128:v1', 'seeks keep using the completed legacy copy')
+      }
+    })
+  }
 }

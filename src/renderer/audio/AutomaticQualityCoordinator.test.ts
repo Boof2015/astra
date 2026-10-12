@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { AutomaticQualityCoordinator, type AutomaticPlaybackSnapshot } from './AutomaticQualityCoordinator.ts'
+import type { AutomaticQualityPreparationResult } from '../../types/streamingQuality.ts'
 
 function harness() {
-  let resolve!: (value: { complete: boolean }) => void
-  const prepared = new Promise<{ complete: boolean }>(done => { resolve = done })
+  let resolve!: (value: AutomaticQualityPreparationResult) => void
+  const prepared = new Promise<AutomaticQualityPreparationResult>(done => { resolve = done })
   const applied: unknown[] = [], released: string[] = [], failures: unknown[] = []
   let snapshot: AutomaticPlaybackSnapshot | null = { path: 'subsonic://1/a', identity: 'a:1',
     quality: { mode: 'automatic', requested: 'original', requestedCodec: null, delivered: null },
@@ -68,5 +69,25 @@ test('automatic reductions retain the compatibility requirement instead of retry
   await flush()
   h.ready({ complete: false })
   await pending
+  assert.deepEqual((h.applied[0] as any).request, { mode: 'automatic', target: 128, compatibility: 'opus' })
+})
+
+test('automatic changes retain MP3 when Opus already required a compatibility fallback', async () => {
+  const h = harness()
+  h.change({ ...h.snapshot(), quality: { ...h.snapshot().quality, compatibility: 'mp3', requestedCodec: 'mp3' } })
+  const pending = h.coordinator.tick()
+  await flush()
+  h.ready({ complete: false })
+  await pending
   assert.deepEqual((h.applied[0] as any).request, { mode: 'automatic', target: 128, compatibility: 'mp3' })
+})
+
+test('handoff adopts the codec actually prepared after an Opus rejection', async () => {
+  const h = harness()
+  const pending = h.coordinator.tick()
+  await flush()
+  const fallback = { mode: 'automatic' as const, target: 128 as const, compatibility: 'mp3' as const }
+  h.ready({ complete: false, request: fallback })
+  await pending
+  assert.deepEqual((h.applied[0] as any).request, fallback)
 })

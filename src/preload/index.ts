@@ -1,6 +1,6 @@
 import type { RemoteAudioCacheStatus } from '../types/remoteAudioCache'
 import type { RemoteAudioAnalysis } from '../types/remoteAudioAnalysis'
-import type { AutomaticQualityPlayback, StreamQualityTarget, AutomaticStreamingQuality, StreamingQualityRequest, StreamingQuality, StreamingQualitySettings, StreamingQualitySource } from '../types/streamingQuality'
+import type { AutomaticQualityPlayback, AutomaticQualityPreparationResult, StreamQualityTarget, AutomaticStreamingQuality, StreamingQualityRequest, StreamingQuality, StreamingQualitySettings, StreamingQualitySource } from '../types/streamingQuality'
 import type { ProviderPlaybackSnapshot } from '../types/providerPlayback'
 import type { ProviderSyncAPI } from '../types/providerSync'
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
@@ -1620,7 +1620,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   recommendAutomaticQuality: (state: AutomaticQualityPlayback) => ipcRenderer.invoke('audio:recommendAutomaticQuality', state) as Promise<StreamQualityTarget | null>,
   prepareAutomaticQuality: (id: string, path: string, request: StreamingQualityRequest, position: number, previous?: StreamingQualityRequest) =>
-    ipcRenderer.invoke('audio:prepareAutomaticQuality', id, path, request, position, previous) as Promise<{ complete: boolean }>,
+    ipcRenderer.invoke('audio:prepareAutomaticQuality', id, path, request, position, previous) as Promise<AutomaticQualityPreparationResult>,
   releaseAutomaticQuality: (id: string) => ipcRenderer.invoke('audio:releaseAutomaticQuality', id) as Promise<void>,
   automaticQualityCommitted: (path: string, mode: AutomaticStreamingQuality, target: StreamQualityTarget) => ipcRenderer.invoke('audio:automaticQualityCommitted', path, mode, target) as Promise<void>,
   automaticQualityFailed: (path: string, mode: AutomaticStreamingQuality) => ipcRenderer.invoke('audio:automaticQualityFailed', path, mode) as Promise<void>,
@@ -2343,7 +2343,7 @@ declare global {
       getRemoteAudioAnalysis: (key: string) => Promise<RemoteAudioAnalysis | null>
       onRemoteAudioAnalysisReady: (callback: (result: { key: string; analysis: RemoteAudioAnalysis }) => void) => () => void
       recommendAutomaticQuality: (state: AutomaticQualityPlayback) => Promise<StreamQualityTarget | null>
-      prepareAutomaticQuality: (id: string, path: string, request: StreamingQualityRequest, position: number, previous?: StreamingQualityRequest) => Promise<{ complete: boolean }>
+      prepareAutomaticQuality: (id: string, path: string, request: StreamingQualityRequest, position: number, previous?: StreamingQualityRequest) => Promise<AutomaticQualityPreparationResult>
       releaseAutomaticQuality: (id: string) => Promise<void>
       automaticQualityCommitted: (path: string, mode: AutomaticStreamingQuality, target: StreamQualityTarget) => Promise<void>
       automaticQualityFailed: (path: string, mode: AutomaticStreamingQuality) => Promise<void>

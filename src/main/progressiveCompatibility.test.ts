@@ -91,8 +91,8 @@ test('Standard stops after bounded compatibility attempts and leaves no sessions
     assert.ok(!error.message.includes('secret-capability'))
     return true
   })
-  assert.deepEqual(h.requests, [undefined, { target: 'original', compatibility: 'flac' }, { target: 'original', compatibility: 'mp3' }])
-  assert.deepEqual(h.released, [1, 2, 3])
+  assert.deepEqual(h.requests, [undefined, { target: 'original', compatibility: 'flac' }, { target: 'original', compatibility: 'opus' }, { target: 'original', compatibility: 'mp3' }])
+  assert.deepEqual(h.released, [1, 2, 3, 4])
   assert.equal(h.sessions.size, 0)
   assert.equal(h.sender.listenerCount('did-start-navigation'), 0)
 })

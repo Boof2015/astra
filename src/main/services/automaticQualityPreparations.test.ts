@@ -57,3 +57,34 @@ test('failed candidates release their holds and do not expose internal decoder U
   assert.equal(current.released, true)
   await assert.rejects(preparations.prepare(1, 'a', '/local.flac', 'original', -1), /Invalid/)
 })
+
+for (const failure of ['http-415', 'decoder', 'network'] as const) {
+  test(`automatic preparation handles ${failure} without releasing current audio and pins a successful fallback`, async () => {
+    const requests: unknown[] = []
+    const current = lease(), opus = lease(), mp3 = lease()
+    opus.quality = { requested: 128, mode: 'automatic', requestedCodec: 'opus', delivered: null }
+    mp3.quality = { ...opus.quality, requestedCodec: 'mp3', compatibility: 'mp3' }
+    if (failure === 'http-415') opus.progress = () => ({ complete: false, loadedBytes: 0, totalBytes: null, failureKind: 'unsupported-format' })
+    const preparations = new AutomaticQualityPreparations({ acquire: async (_path, _signal, quality) => {
+      requests.push(quality)
+      return quality === previous ? current : typeof quality === 'object' && quality.compatibility === 'mp3' ? mp3 : opus
+    }, prime: async candidate => {
+      assert.equal(current.released, false)
+      if (candidate === opus) throw new Error(failure === 'decoder' ? 'Decoder (codec opus) not found for input stream #0:0' : 'Could not read input')
+    } })
+    if (failure === 'network') {
+      await assert.rejects(preparations.prepare(1, 'a', 'subsonic://1/a', request, 10, previous))
+      assert.deepEqual(requests, [previous, request])
+    } else {
+      const fallback = { ...request, compatibility: 'mp3' }
+      assert.deepEqual(await preparations.prepare(1, 'a', 'subsonic://1/a', request, 10, previous), { complete: false, request: fallback })
+      assert.deepEqual(requests, [previous, request, fallback])
+      assert.equal(opus.released, true)
+      assert.equal(current.released, false)
+      assert.equal(mp3.released, false)
+    }
+    preparations.releaseOwner(1)
+    assert.equal(current.released, true)
+    assert.equal(opus.released, true)
+  })
+}

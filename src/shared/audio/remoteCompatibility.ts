@@ -20,7 +20,7 @@ export class RemoteCompatibilityFailure extends Error {
   }
 }
 
-/** Original -> FLAC -> MP3; bitrate-limited requests -> forced MP3. A candidate
+/** Original -> FLAC -> Opus -> MP3; bitrate-limited Opus -> forced MP3. A candidate
  * can only fail over on another explicit format failure. Cancellation, network,
  * auth, corrupt media, resource limits and device errors stop immediately.
  */
@@ -35,7 +35,10 @@ export async function withRemoteCompatibility<T>(request: StreamingQualityReques
       if (!(error instanceof RemoteCompatibilityFailure)) throw error
       const quality = error.quality
       const compatibility = quality.compatibility === 'mp3' ? null
-        : quality.compatibility === 'flac' || quality.requested !== 'original' ? 'mp3' : 'flac'
+        : quality.compatibility === 'opus' ? 'mp3'
+        : quality.compatibility === 'flac' ? 'opus'
+        : quality.requested === 'original' ? 'flac'
+        : quality.requestedCodec === null ? 'opus' : 'mp3'
       if (!compatibility || tried.has(compatibility)) throw error
       tried.add(compatibility)
       request = { target: quality.requested, ...(quality.mode ? { mode: quality.mode } : {}), compatibility }

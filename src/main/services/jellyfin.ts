@@ -782,10 +782,10 @@ export function buildJellyfinOriginalStreamUrl(config: JellyfinConnectionConfig,
 
 /** Progressive audio with header authentication, suitable for the retained byte cache. */
 export function buildJellyfinQualityStreamUrl(config: JellyfinConnectionConfig, sourceTrackId: string, bitrateKbps: number): string {
-  return buildJellyfinUrl(config, `/Audio/${encodeURIComponent(sourceTrackId)}/stream.mp3`, {
+  return buildJellyfinUrl(config, `/Audio/${encodeURIComponent(sourceTrackId)}/stream.opus`, {
     static: false,
     DeviceId: buildJellyfinDeviceId(config),
-    AudioCodec: 'mp3',
+    AudioCodec: 'opus',
     AudioBitRate: bitrateKbps * 1000,
     MaxAudioChannels: 2,
     EnableAutoStreamCopy: true
@@ -795,11 +795,11 @@ export function buildJellyfinQualityStreamUrl(config: JellyfinConnectionConfig, 
 /** Compatibility conversion must not copy the unsupported input codec. FLAC
  * leaves rate, depth and channel count to the server without a lossy bitrate cap. */
 export function buildJellyfinCompatibilityStreamUrl(config: JellyfinConnectionConfig, sourceTrackId: string,
-  codec: 'flac' | 'mp3', bitrateKbps = 320): string {
+  codec: 'flac' | 'opus' | 'mp3', bitrateKbps = 320): string {
   return buildJellyfinUrl(config, `/Audio/${encodeURIComponent(sourceTrackId)}/stream.${codec}`, {
     static: false, DeviceId: buildJellyfinDeviceId(config), AudioCodec: codec,
     EnableAutoStreamCopy: false, AllowAudioStreamCopy: false,
-    ...(codec === 'mp3' ? { AudioBitRate: bitrateKbps * 1000, MaxAudioChannels: 2 } : {})
+    ...(codec !== 'flac' ? { AudioBitRate: bitrateKbps * 1000, MaxAudioChannels: 2 } : {})
   }).toString()
 }
 

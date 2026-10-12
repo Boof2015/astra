@@ -369,3 +369,30 @@ test('only an explicit HTTP 415 exposes unsupported-format evidence to decoders'
     lease.release()
   }
 })
+
+test('streamed Opus retains exact adjacent track lengths at every quality, including intentional silence', { timeout: 15_000 }, async t => {
+  const { cache } = await fixture(t, 4 * 1024 ** 2)
+  const lengths = [48_037, 48_091]
+  for (const bitrate of [64, 128, 192, 256, 320]) {
+    const decoded: Buffer[] = []
+    for (const [index, frames] of lengths.entries()) {
+      const pcm = Buffer.alloc(frames * 4)
+      // Real silence at both ends must remain; only codec delay/padding is removed.
+      for (let frame = 2400; frame < frames - 2400; frame++) {
+        pcm.writeInt16LE(Math.round(12000 * Math.sin(frame * 0.043)), frame * 4)
+        pcm.writeInt16LE(Math.round(12000 * Math.sin(frame * 0.071)), frame * 4 + 2)
+      }
+      const encoded = execFileSync(ffmpeg, ['-v', 'error', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:0',
+        '-c:a', 'libopus', '-b:a', `${bitrate}k`, '-f', 'opus', 'pipe:1'], { input: pcm })
+      const lease = await cache.acquire({ ...source(`opus-${index}`, async () => new Response(encoded, {
+        headers: { 'content-type': 'audio/ogg' }
+      })), representation: `opus:${bitrate}:v1` })
+      const audio = await decode(lease.url).result
+      assert.equal(audio.length, frames * 8, `${bitrate} kbps track ${index} has no added or missing frames`)
+      decoded.push(audio)
+      await lease.finished()
+      lease.release()
+    }
+    assert.equal(Buffer.concat(decoded).length, (lengths[0] + lengths[1]) * 8)
+  }
+})

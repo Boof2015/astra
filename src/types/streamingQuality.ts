@@ -4,11 +4,16 @@ export type StreamQualityTarget = 'original' | typeof STREAMING_BITRATES[number]
 export type AutomaticStreamingQuality = 'automatic' | 'automatic-original'
 export type StreamingQuality = StreamQualityTarget | AutomaticStreamingQuality
 /** Pin the current representation without losing the automatic mode on seeks. */
-export type RemoteCompatibilityCodec = 'flac' | 'mp3'
+export type RemoteCompatibilityCodec = 'flac' | 'opus' | 'mp3'
 export type StreamingQualityRequest = StreamingQuality | {
   mode?: AutomaticStreamingQuality
   target: StreamQualityTarget
   compatibility?: RemoteCompatibilityCodec
+}
+export interface AutomaticQualityPreparationResult {
+  complete: boolean
+  /** Adopt the representation actually primed, including compatibility fallback. */
+  request?: StreamingQualityRequest
 }
 export interface StreamingQualitySource { provider: 'subsonic' | 'jellyfin'; sourceId: number }
 export interface StreamingQualitySettings {
@@ -52,7 +57,7 @@ export function isStreamingQualityRequest(value: unknown): value is StreamingQua
   const request = value as { mode?: unknown; target?: unknown; compatibility?: unknown } | null
   return !!request && isStreamQualityTarget(request.target)
     && (request.mode === undefined || isAutomaticStreamingQuality(request.mode))
-    && (request.compatibility === undefined || request.compatibility === 'flac' || request.compatibility === 'mp3')
+    && (request.compatibility === undefined || request.compatibility === 'flac' || request.compatibility === 'opus' || request.compatibility === 'mp3')
     && (request.mode !== undefined || request.compatibility !== undefined)
     && (request.compatibility !== 'flac' || request.target === 'original')
 }
@@ -111,7 +116,9 @@ export function streamingQualitySourceFromPath(path: string): StreamingQualitySo
 export function streamingRepresentation(quality: StreamQualityTarget, compatibility?: RemoteCompatibilityCodec): string {
   if (compatibility) return `compatibility:${compatibility}:${compatibility === 'flac' ? 'lossless' : quality === 'original' ? 320 : quality}:v1`
   // Keep the existing original key so upgrading does not invalidate retained audio.
-  return quality === 'original' ? 'original' : `mp3:${quality}:v1`
+  // Opus retains encoder pre-skip/end trimming in progressive responses. Never
+  // reuse old MP3 bytes for this request; their cache records can expire normally.
+  return quality === 'original' ? 'original' : `opus:${quality}:v1`
 }
 
 /** Avoid another lossy encode when the existing lossy file is already below the target. */

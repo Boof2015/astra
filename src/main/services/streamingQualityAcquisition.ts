@@ -20,6 +20,8 @@ export async function acquireQualityAudio(options: {
     : isAutomaticStreamingQuality(selected) ? policy.select(key, selected, options.originalKbps) : selected
   let compatibility = typeof selected === 'object' ? selected.compatibility : undefined
   let cached: StreamQualityTarget | undefined
+  let cachedLegacyMp3 = false
+  const legacyMp3 = (target: StreamQualityTarget) => ({ ...make(target, 'mp3'), representation: `mp3:${target}:v1` })
   if (mode && typeof selected !== 'object') {
     // A cached original always wins. A smaller cached copy must not silently
     // cap a healthy connection: keep it as an offline/slow-start fallback.
@@ -28,12 +30,21 @@ export async function acquireQualityAudio(options: {
     }
     if (cached === 'original' || (typeof cached === 'number' && typeof target === 'number' && cached >= target)) target = cached
   }
+  // Old MP3 entries remain useful offline, but must not prevent a healthy
+  // connection from fetching the new preferred Opus representation.
+  if (!compatibility && cached === undefined) {
+    const candidates = mode && typeof selected !== 'object' ? [320, 256, 192, 128, 64] as const
+      : typeof target === 'number' ? [target] : []
+    for (const candidate of candidates) {
+      if (await cache.hasComplete(legacyMp3(candidate))) { cached = candidate; cachedLegacyMp3 = true; break }
+    }
+  }
   signal.throwIfAborted()
   // These keys are only populated after an explicit decoder/format failure.
   // Reuse that compatible representation after restart, even if the original
   // has since been evicted and the server is currently offline.
   if (!compatibility) {
-    for (const codec of target === 'original' ? ['flac', 'mp3'] as const : ['mp3'] as const) {
+    for (const codec of target === 'original' ? ['flac', 'opus', 'mp3'] as const : ['opus', 'mp3'] as const) {
       const candidate = make(target, codec)
       // Older/inert factories may ignore the optional compatibility argument.
       if (candidate.representation !== make(qualityRequestForTrack(target, track)).representation
@@ -41,12 +52,14 @@ export async function acquireQualityAudio(options: {
     }
   }
   const acquire = async (target: StreamQualityTarget) => {
-    const source = make(compatibility ? target : qualityRequestForTrack(target, track), compatibility)
+    let source = make(compatibility ? target : qualityRequestForTrack(target, track), compatibility)
+    if (compatibility === 'mp3' && typeof target === 'number' && !await cache.hasComplete(source)
+      && await cache.hasComplete(legacyMp3(target))) source = legacyMp3(target)
     source.observeTransfer = policy.observer(key)
     return cache.acquire(source, signal)
   }
   let lease = await acquire(target)
-  if (!compatibility && cached !== undefined && cached !== target) {
+  if (!compatibility && cached !== undefined && (cached !== target || cachedLegacyMp3)) {
     let failed = false
     void lease.finished().catch(() => { failed = true })
     const deadline = performance.now() + 1500
@@ -57,6 +70,7 @@ export async function acquireQualityAudio(options: {
       if (failed || !lease.progress().loadedBytes) {
         lease.release()
         target = cached
+        if (cachedLegacyMp3) compatibility = 'mp3'
         lease = await acquire(target)
       }
     } catch (error) { lease.release(); throw error }
@@ -68,5 +82,5 @@ export async function acquireQualityAudio(options: {
     ...(lease.cacheKey ? { analysisKey: lease.cacheKey, loudness: lease.analysis
       ? { loudnessLufs: lease.analysis.loudnessLufs, peakLinear: lease.analysis.peakLinear } : null } : {}),
     ...(compatibility ? { compatibility } : {}),
-    requestedCodec: compatibility ?? (request === 'original' ? null : 'mp3'), delivered: null } }
+    requestedCodec: compatibility ?? (request === 'original' ? null : 'opus'), delivered: null } }
 }

@@ -18,7 +18,7 @@ test('only explicit unsupported decoder diagnostics qualify, not generic media, 
   }
 })
 
-test('unsupported Original retries lossless first, then MP3, while retaining automatic mode and an explicit conversion identity', async () => {
+test('unsupported Original retries lossless first, then Opus and MP3, while retaining automatic mode and an explicit conversion identity', async () => {
   const requests: Array<StreamingQualityRequest | undefined> = []
   await withRemoteCompatibility('automatic-original', new AbortController().signal, async request => {
     requests.push(request)
@@ -27,6 +27,7 @@ test('unsupported Original retries lossless first, then MP3, while retaining aut
     throw new RemoteCompatibilityFailure({ ...original, mode: 'automatic-original', compatibility }, 'Unsupported input')
   })
   assert.deepEqual(requests, ['automatic-original', { mode: 'automatic-original', target: 'original', compatibility: 'flac' },
+    { mode: 'automatic-original', target: 'original', compatibility: 'opus' },
     { mode: 'automatic-original', target: 'original', compatibility: 'mp3' }])
   const pin = playbackQualityRequest({ ...original, compatibility: 'mp3', requestedCodec: 'mp3' })
   assert.deepEqual(pin, { target: 'original', compatibility: 'mp3' })
@@ -40,7 +41,7 @@ test('manual limits retry forced MP3 once; ordinary errors and cancellation cann
   const requests: unknown[] = []
   await assert.rejects(withRemoteCompatibility(64, new AbortController().signal, async request => {
     requests.push(request)
-    throw new RemoteCompatibilityFailure({ ...original, requested: 64,
+    throw new RemoteCompatibilityFailure({ ...original, requested: 64, requestedCodec: 'opus',
       compatibility: typeof request === 'object' ? request.compatibility : undefined }, 'Unsupported input')
   }))
   assert.deepEqual(requests, [64, { target: 64, compatibility: 'mp3' }])
@@ -53,5 +54,34 @@ test('manual limits retry forced MP3 once; ordinary errors and cancellation cann
       throw abort ? new RemoteCompatibilityFailure(original, 'Unsupported input') : new Error('Network failed')
     }))
     assert.equal(count, 1)
+  }
+})
+
+test('a rejected original below the bitrate target tries Opus, and successful Opus stays pinned', async () => {
+  const requests: unknown[] = []
+  const result = await withRemoteCompatibility(128, new AbortController().signal, async request => {
+    requests.push(request)
+    if (typeof request !== 'object') throw new RemoteCompatibilityFailure({ ...original, requested: 128 }, 'Unsupported input')
+    return { ...original, requested: request.target, requestedCodec: request.compatibility!, compatibility: request.compatibility }
+  })
+  assert.deepEqual(requests, [128, { target: 128, compatibility: 'opus' }])
+  const pin = playbackQualityRequest(result)
+  assert.deepEqual(pin, { target: 128, compatibility: 'opus' })
+  assert.equal(isStreamingQualityRequest(pin), true)
+  assert.notEqual(streamingRepresentation(128, 'opus'), streamingRepresentation(128))
+  assert.notEqual(streamingRepresentation(128), 'mp3:128:v1')
+})
+
+test('Original stops at lossless when possible, otherwise accepts Opus before trying MP3', async () => {
+  for (const supported of ['flac', 'opus'] as const) {
+    const requests: unknown[] = []
+    await withRemoteCompatibility('original', new AbortController().signal, async request => {
+      requests.push(request)
+      const compatibility = typeof request === 'object' ? request.compatibility : undefined
+      if (compatibility === supported) return
+      throw new RemoteCompatibilityFailure({ ...original, compatibility }, 'Unsupported input')
+    })
+    assert.equal(requests.length, supported === 'flac' ? 2 : 3)
+    assert.deepEqual(requests.at(-1), { target: 'original', compatibility: supported })
   }
 })
