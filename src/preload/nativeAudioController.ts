@@ -1,4 +1,5 @@
 import { access } from 'fs/promises'
+import { withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemoteDecoder } from '../shared/audio/remoteCompatibility'
 import { resolveStaticNormalizationGain } from '../shared/audio/normalizationGain'
 import type { RemoteAudioLoudness } from '../types/remoteAudioAnalysis'
 import { execFile, spawn } from 'child_process'
@@ -1295,7 +1296,7 @@ export function createNativeAudioController(
     } finally { remoteProgressPending = false }
   }
 
-  const prepareRemote = async (
+  const prepareRemoteAttempt = async (
     engine: NativeAudioAddonPlayback, path: string, metadata: NativeAudioTrackMetadata | undefined,
     gain: NativeAudioTrackGain, controller: AbortController, seconds = 0,
     preservedLoudness?: RemoteAudioLoudness | null
@@ -1305,6 +1306,7 @@ export function createNativeAudioController(
     let source: NativeRemoteSource | null = null
     let session: RemoteNativeSession | null = null
     let input: NativeProgressiveInput | null = null
+    let decoding = false
     try {
       source = await options.acquireRemoteSource(path, signal, metadata?.streamingQuality)
       throwIfDecodeAborted(signal)
@@ -1323,6 +1325,7 @@ export function createNativeAudioController(
       throwIfDecodeAborted(signal)
       if (!probe || !ffmpeg) throw new Error('FFmpeg/ffprobe could not be resolved for native playback.')
       const probeStart = performance.now()
+      decoding = true
       const payload = JSON.parse(await runProbe(probe, ['-v', 'error', '-show_streams', '-of', 'json', source.url], signal)) as { streams?: FfprobeStreamInfo[] }
       throwIfDecodeAborted(signal)
       const stream = payload.streams?.find(item => item.codec_type === 'audio') ?? payload.streams?.[0]
@@ -1335,10 +1338,12 @@ export function createNativeAudioController(
       const stride = channels * (sampleFormat === 's16' ? 2 : sampleFormat === 's24' ? 3 : 4)
       const capacityFrames = Math.min(sampleRate * 8, Math.floor(32 * 1024 * 1024 / stride))
       const startFrame = Math.floor(Math.max(0, duration > 0 ? Math.min(seconds, Math.max(0, duration - 1 / sampleRate)) : seconds) * sampleRate)
+      decoding = false
       input = engine.createProgressiveInput({ sampleRate, channels, sampleFormat, duration, capacityFrames, startFrame, gain })
       const probeMs = Math.round(performance.now() - probeStart)
       const decodeStart = performance.now()
       const heldSource = source
+      decoding = true
       const decoder = (options.startRemoteDecoder ?? startNativePcmDecoder)({
         command: ffmpeg,
         args: ['-v', 'error', '-nostdin', ...(startFrame ? ['-ss', String(startFrame / sampleRate)] : []),
@@ -1364,14 +1369,41 @@ export function createNativeAudioController(
       return session
     } catch (error) {
       const aborted = signal.aborted
+      const status = input?.status()
+      const noPcm = !status || status.publishedFrame === status.startFrame
+      const progress = source && !aborted ? await source.progress().catch(() => null) : null
+      const diagnostic = error instanceof Error ? error.message : ''
+      const unsupported = source?.quality && noPcm && decoding && !aborted
+        && (progress?.failureKind === 'unsupported-format' || isUnsupportedRemoteDecoder(diagnostic))
       input?.cancel()
       disposeRemote(session)
       source?.release()
       if (aborted) throw new SupersededNativeAudioLoadError()
-      if (source && error instanceof Error) throw new Error(error.message.split(source.url).join(path))
+      if (source && error instanceof Error) {
+        const message = error.message.split(source.url).join(path)
+        if (unsupported) throw new RemoteCompatibilityFailure(source.quality!, message)
+        throw new Error(message)
+      }
       throw error
     }
   }
+
+  const prepareRemote = async (
+    engine: NativeAudioAddonPlayback, path: string, metadata: NativeAudioTrackMetadata | undefined,
+    gain: NativeAudioTrackGain, controller: AbortController, seconds = 0,
+    preservedLoudness?: RemoteAudioLoudness | null
+  ): Promise<RemoteNativeSession> => withRemoteCompatibility(metadata?.streamingQuality, controller.signal, async streamingQuality => {
+    const attempt = new AbortController()
+    const abort = () => attempt.abort()
+    controller.signal.addEventListener('abort', abort, { once: true })
+    if (controller.signal.aborted) abort()
+    try {
+      return await prepareRemoteAttempt(engine, path, { ...metadata, path, streamingQuality }, gain, attempt, seconds, preservedLoudness)
+    } finally { controller.signal.removeEventListener('abort', abort) }
+  }).catch(error => {
+    if (controller.signal.aborted) throw new SupersededNativeAudioLoadError()
+    throw error
+  })
 
   const decodeFileToPcm = async (
     filePath: string,

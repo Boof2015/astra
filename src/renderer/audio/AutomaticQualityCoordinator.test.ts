@@ -60,3 +60,13 @@ test('an unready or failed replacement never interrupts the current stream', asy
   assert.equal(applied, 0)
   assert.equal(failed, 1)
 })
+
+test('automatic reductions retain the compatibility requirement instead of retrying an undecodable original', async () => {
+  const h = harness()
+  h.change({ ...h.snapshot(), quality: { ...h.snapshot().quality, compatibility: 'flac', requestedCodec: 'flac' } })
+  const pending = h.coordinator.tick()
+  await flush()
+  h.ready({ complete: false })
+  await pending
+  assert.deepEqual((h.applied[0] as any).request, { mode: 'automatic', target: 128, compatibility: 'mp3' })
+})

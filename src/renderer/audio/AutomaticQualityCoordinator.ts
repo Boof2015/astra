@@ -54,7 +54,8 @@ export class AutomaticQualityCoordinator {
       if (initial.complete || !current()) return
       const target = await this.options.recommend(initial)
       if (target === null || target === initial.quality.requested || !current()) return
-      const request = { mode: initial.quality.mode, target }
+      const request: StreamingQualityRequest = { mode: initial.quality.mode, target,
+        ...(initial.quality.compatibility ? { compatibility: target === 'original' ? initial.quality.compatibility : 'mp3' as const } : {}) }
       for (let attempt = 0; attempt < 3; attempt++) {
         const state = current()
         if (!state || state.complete) return

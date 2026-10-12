@@ -95,6 +95,60 @@ const a = 'subsonic://server/track/a'
 const b = 'subsonic://server/track/b'
 
 for (const policy of ['processed', 'direct'] as const) {
+  test(`${policy}: unsupported remote decoding retries lossless, pins seeks and stages a converted successor`, async () => {
+    const requests: unknown[] = [], released: string[] = []
+    const h = harness({ acquireRemoteSource: async (_path, _signal, request) => {
+      requests.push(request)
+      const compatibility = typeof request === 'object' ? request.compatibility : undefined
+      const url = `http://cache/${compatibility ?? 'original'}`
+      return { url, duration: 60, quality: { requested: 'original', requestedCodec: compatibility ?? null, compatibility, delivered: null },
+        release: () => { released.push(url) }, finished: async () => {},
+        progress: async () => ({ complete: true, loadedBytes: 100, totalBytes: 100, error: null }) }
+    }, startRemoteDecoder: options => {
+      if (options.args.includes('http://cache/original')) throw new Error('Decoder (codec ac4) not found for input stream #0:0')
+      options.input.append(Buffer.alloc(40000 * 4))
+      return { ready: Promise.resolve(), done: Promise.resolve(), cancel: () => options.input.cancel(), pid: undefined, pendingBytes: 0 }
+    } })
+    await h.controller.configureNativeOutput({ policy, requestedSampleRate: null })
+    const result = await h.controller.loadTrack(a)
+    assert.equal(result.quality?.compatibility, 'flac')
+    assert.equal(result.quality?.delivered?.codec, 'flac')
+    assert.ok(released.includes('http://cache/original'))
+    assert.equal(h.inputs[0].status().state, 'cancelled')
+    await h.controller.play()
+    await h.controller.seek(20)
+    assert.deepEqual(requests.at(-1), { target: 'original', compatibility: 'flac' })
+    await h.controller.preloadNextTrack(b)
+    h.transition()
+    await h.controller.getPlaybackSnapshot()
+    await h.controller.seek(30)
+    assert.deepEqual(requests.at(-1), { target: 'original', compatibility: 'flac' })
+    assert.ok((await h.controller.getNativeAudioDiagnosticReport()).text.includes(`"policy":"${policy}"`))
+    await h.controller.stop()
+  })
+}
+
+test('native corrupt media and device errors never request a compatibility encode', async () => {
+  for (const failure of ['corrupt', 'device', 'partial'] as const) {
+    let acquisitions = 0
+    const h = harness({ acquireRemoteSource: async () => { acquisitions++; return automaticSource(undefined) },
+      startRemoteDecoder: options => {
+        if (failure === 'corrupt') throw new Error('Invalid data found when processing input')
+        if (failure === 'partial') {
+          options.input.append(Buffer.alloc(4))
+          throw new Error('Decoder (codec ac4) not found for input stream #0:0')
+        }
+        options.input.append(Buffer.alloc(40000 * 4))
+        return { ready: Promise.resolve(), done: Promise.resolve(), cancel: () => options.input.cancel(), pid: undefined, pendingBytes: 0 }
+      } })
+    if (failure === 'device') h.playback.createProgressiveInput = () => { throw new Error('Decoder (codec ac4) not found for input stream #0:0') }
+    await assert.rejects(h.controller.loadTrack(a))
+    assert.equal(acquisitions, 1)
+    await h.controller.stop()
+  }
+})
+
+for (const policy of ['processed', 'direct'] as const) {
   test(`saved remote loudness is fixed before ${policy} playback and successor preparation`, async () => {
     let loudness: { loudnessLufs: number; peakLinear: number } | null = null
     const h = harness({ acquireRemoteSource: async (_path, _signal, request) => {
@@ -469,4 +523,55 @@ test('seek preparation that loses a gapless race cannot replace the newly audibl
   assert.equal((await h.controller.getNativeAudioDiagnosticReport()).track?.path, b)
   assert.deepEqual(h.leases.map(x => x.released), [true, false, true])
   await h.controller.stop()
+})
+
+test('native format rejection falls through FLAC to MP3, while forbidden requests stay errors', async () => {
+  for (const failureKind of ['unsupported-format', undefined] as const) {
+    const requests: unknown[] = [], released: string[] = []
+    const h = harness({ acquireRemoteSource: async (_path, _signal, request) => {
+      requests.push(request)
+      const compatibility = typeof request === 'object' ? request.compatibility : undefined
+      return { url: `http://cache/${compatibility ?? 'original'}`, duration: 60,
+        quality: { requested: 'original', requestedCodec: compatibility ?? null, compatibility, delivered: null },
+        release: () => { released.push(compatibility ?? 'original') }, finished: async () => {},
+        progress: async () => ({ loadedBytes: 0, totalBytes: null, complete: false, error: 'HTTP failure', failureKind }) }
+    }, runProbe: async (_command, args) => {
+      if (args.includes('http://cache/original')) throw new Error('Decoder (codec ac4) not found')
+      if (args.includes('http://cache/flac')) throw new Error('HTTP error')
+      return JSON.stringify({ streams: [{ codec_type: 'audio', codec_name: 'mp3', sample_rate: '48000', channels: 2, sample_fmt: 's16' }] })
+    } })
+    if (failureKind) {
+      const result = await h.controller.loadTrack(a)
+      assert.equal(result.quality?.compatibility, 'mp3')
+      assert.equal(result.quality?.delivered?.codec, 'mp3')
+      assert.equal(requests.length, 3)
+    } else {
+      await assert.rejects(h.controller.loadTrack(a), /HTTP error/)
+      assert.equal(requests.length, 2)
+    }
+    assert.ok(released.includes('original') && released.includes('flac'))
+    await h.controller.stop()
+  }
+})
+
+test('stopping during a compatibility retry releases the stale source without starting another decoder', async () => {
+  let deliver!: () => void
+  const requests: unknown[] = [], released: unknown[] = []
+  const h = harness({ acquireRemoteSource: async (_path, _signal, request) => {
+    requests.push(request)
+    if (typeof request === 'object') await new Promise<void>(resolve => { deliver = resolve })
+    const source = automaticSource(request)
+    return { ...source, release: () => { released.push(request) } }
+  }, runProbe: async () => { throw new Error('Decoder (codec ac4) not found') } })
+  const pending = h.controller.loadTrack(a)
+  const rejected = assert.rejects(pending, { name: 'SupersededNativeAudioLoadError' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(requests.length, 2)
+  // Stop cancels retry without needing a decoder for a new track.
+  await h.controller.stop()
+  deliver()
+  await rejected
+  assert.equal(requests.length, 2)
+  assert.equal(released.length, 2)
+  assert.equal(h.inputs.length, 0)
 })

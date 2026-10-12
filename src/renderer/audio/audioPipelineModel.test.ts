@@ -48,3 +48,11 @@ test('Bit-Perfect never displays a resampler', () => {
     nativeResamplingActive: true,
   }), null)
 })
+
+test('compatibility details distinguish Original selection, conversion request and actual server delivery', () => {
+  const quality = { requested: 'original', requestedCodec: 'flac', compatibility: 'flac', delivered: null } as const
+  assert.equal(describeRemotePlaybackQuality(quality), 'Original selected · compatibility conversion (FLAC requested) · format unverified')
+  assert.equal(describeRemotePlaybackQuality({ ...quality, delivered: {
+    codec: 'mp3', sampleRate: 44100, channels: 2, bitDepth: null, bitrateKbps: 320
+  } }), 'MP3 · 320 kbps · 44.1 kHz (Original selected · compatibility conversion (FLAC requested))')
+})

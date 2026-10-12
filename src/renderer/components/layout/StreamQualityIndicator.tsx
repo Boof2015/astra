@@ -6,14 +6,17 @@ export default function StreamQualityIndicator({ quality, expanded, onClick }: {
   expanded: boolean
   onClick: () => void
 }) {
-  if (!quality?.mode) return null
+  if (!quality || (!quality.mode && !quality.compatibility)) return null
 
-  const original = quality.requested === 'original' || quality.requestedCodec === null
+  const original = !quality.compatibility && (quality.requested === 'original' || quality.requestedCodec === null)
   const bitrate = quality.delivered?.bitrateKbps
-  const label = original ? 'Original'
-    : typeof bitrate === 'number' && Number.isFinite(bitrate) && bitrate > 0
-      ? `${Math.round(bitrate)} kbps`
-      : `${quality.requested} kbps target`
+  const bitrateLabel = typeof bitrate === 'number' && Number.isFinite(bitrate) && bitrate > 0
+    ? `${Math.round(bitrate)} kbps` : null
+  const label = quality.compatibility
+    ? quality.delivered?.codec
+      ? [quality.delivered.codec.toUpperCase(), bitrateLabel].filter(Boolean).join(' ')
+      : `${quality.compatibility.toUpperCase()} requested`
+    : original ? 'Original' : bitrateLabel ?? `${quality.requested} kbps target`
   const details = describeRemotePlaybackQuality(quality)
   const action = expanded ? 'Hide audio pipeline' : 'Show audio pipeline'
 
@@ -25,7 +28,7 @@ export default function StreamQualityIndicator({ quality, expanded, onClick }: {
     aria-label={`${details}. ${action}`}
     aria-expanded={expanded}
   >
-    <span className="transport-stream-quality-mode">Auto</span>
+    <span className="transport-stream-quality-mode">{quality.compatibility ? 'Converted' : 'Auto'}</span>
     <span aria-hidden="true">·</span>
     <span className="transport-stream-quality-value" aria-live="polite" aria-atomic="true">{label}</span>
   </button>

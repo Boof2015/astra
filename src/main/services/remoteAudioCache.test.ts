@@ -358,3 +358,14 @@ test('adjacent cached FLAC tracks decode to the original continuous PCM without 
   assert.equal(status.activeBytes, status.usedBytes, 'current and prepared tracks remain protected')
   for (const lease of leases) lease.release()
 })
+
+test('only an explicit HTTP 415 exposes unsupported-format evidence to decoders', async t => {
+  const { cache } = await fixture(t)
+  for (const status of [415, 401, 403, 400]) {
+    const lease = await cache.acquire(source(`status-${status}`, async () => new Response(null, { status })))
+    await assert.rejects(lease.finished())
+    assert.equal(lease.progress().failureKind, status === 415 ? 'unsupported-format' : undefined)
+    assert.equal(lease.progress().complete, false)
+    lease.release()
+  }
+})

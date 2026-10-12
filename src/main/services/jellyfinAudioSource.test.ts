@@ -97,3 +97,24 @@ test('Jellyfin cache identity separates accounts, providers and audio revisions 
     createJellyfinAudioSource({ ...options, revision: '2' })
   ]) assert.notEqual(remoteAudioCacheKey(changed), key)
 })
+
+test('Jellyfin compatibility disables stream copy and leaves lossless rate, depth and channels unrestricted', async t => {
+  const requests: URL[] = []
+  t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+    requests.push(new URL(url))
+    assert.equal(new Headers(init.headers).get('X-Emby-Token'), 'token')
+    return new Response('audio')
+  })
+  for (const [quality, compatibility, bitrate] of [['original', 'flac', null], ['original', 'mp3', '320000'], [64, 'mp3', '64000']] as const) {
+    const source = createJellyfinAudioSource({ ...options, quality, compatibility })
+    await source.open(new AbortController().signal)
+    const url = requests.at(-1)!
+    assert.equal(url.searchParams.get('AudioCodec'), compatibility)
+    assert.equal(url.searchParams.get('EnableAutoStreamCopy'), 'false')
+    assert.equal(url.searchParams.get('AllowAudioStreamCopy'), 'false')
+    assert.equal(url.searchParams.get('AudioBitRate'), bitrate)
+    assert.equal(url.searchParams.get('AudioSampleRate'), null)
+    assert.equal(url.searchParams.get('MaxAudioChannels'), compatibility === 'flac' ? null : '2')
+    assert.notEqual(remoteAudioCacheKey(source), remoteAudioCacheKey(createJellyfinAudioSource({ ...options, quality })))
+  }
+})

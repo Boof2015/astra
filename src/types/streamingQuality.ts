@@ -4,7 +4,12 @@ export type StreamQualityTarget = 'original' | typeof STREAMING_BITRATES[number]
 export type AutomaticStreamingQuality = 'automatic' | 'automatic-original'
 export type StreamingQuality = StreamQualityTarget | AutomaticStreamingQuality
 /** Pin the current representation without losing the automatic mode on seeks. */
-export type StreamingQualityRequest = StreamingQuality | { mode: AutomaticStreamingQuality; target: StreamQualityTarget }
+export type RemoteCompatibilityCodec = 'flac' | 'mp3'
+export type StreamingQualityRequest = StreamingQuality | {
+  mode?: AutomaticStreamingQuality
+  target: StreamQualityTarget
+  compatibility?: RemoteCompatibilityCodec
+}
 export interface StreamingQualitySource { provider: 'subsonic' | 'jellyfin'; sourceId: number }
 export interface StreamingQualitySettings {
   global: StreamingQuality
@@ -24,7 +29,9 @@ export interface RemotePlaybackQuality {
   requested: StreamQualityTarget
   mode?: AutomaticStreamingQuality
   /** Preferred server encoder; servers may decline or ignore this request. */
-  requestedCodec: 'mp3' | null
+  requestedCodec: RemoteCompatibilityCodec | null
+  /** A separate representation requested because the original could not decode. */
+  compatibility?: RemoteCompatibilityCodec
   delivered: DeliveredAudioFormat | null
 }
 
@@ -42,12 +49,19 @@ export function isAutomaticStreamingQuality(value: unknown): value is AutomaticS
 
 export function isStreamingQualityRequest(value: unknown): value is StreamingQualityRequest {
   if (isStreamingQuality(value)) return true
-  const request = value as { mode?: unknown; target?: unknown } | null
-  return !!request && isAutomaticStreamingQuality(request.mode) && isStreamQualityTarget(request.target)
+  const request = value as { mode?: unknown; target?: unknown; compatibility?: unknown } | null
+  return !!request && isStreamQualityTarget(request.target)
+    && (request.mode === undefined || isAutomaticStreamingQuality(request.mode))
+    && (request.compatibility === undefined || request.compatibility === 'flac' || request.compatibility === 'mp3')
+    && (request.mode !== undefined || request.compatibility !== undefined)
+    && (request.compatibility !== 'flac' || request.target === 'original')
 }
 
 export function playbackQualityRequest(quality: RemotePlaybackQuality | undefined): StreamingQualityRequest | undefined {
-  return quality?.mode ? { mode: quality.mode, target: quality.requested } : quality?.requested
+  return quality?.mode || quality?.compatibility ? {
+    ...(quality.mode ? { mode: quality.mode } : {}), target: quality.requested,
+    ...(quality.compatibility ? { compatibility: quality.compatibility } : {})
+  } : quality?.requested
 }
 
 export function streamingQualityLabel(quality: StreamingQuality): string {
@@ -94,7 +108,8 @@ export function streamingQualitySourceFromPath(path: string): StreamingQualitySo
   return match && Number.isSafeInteger(sourceId) ? { provider: match[1] as StreamingQualitySource['provider'], sourceId } : null
 }
 
-export function streamingRepresentation(quality: StreamQualityTarget): string {
+export function streamingRepresentation(quality: StreamQualityTarget, compatibility?: RemoteCompatibilityCodec): string {
+  if (compatibility) return `compatibility:${compatibility}:${compatibility === 'flac' ? 'lossless' : quality === 'original' ? 320 : quality}:v1`
   // Keep the existing original key so upgrading does not invalidate retained audio.
   return quality === 'original' ? 'original' : `mp3:${quality}:v1`
 }

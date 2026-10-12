@@ -36,6 +36,7 @@ interface Entry {
   contentType: string
   complete: boolean
   error: Error | null
+  failureKind?: 'unsupported-format'
   leases: number
   lastPlayed: number
   controller: AbortController
@@ -50,7 +51,7 @@ export interface RemoteAudioLease {
   analysis?: RemoteAudioAnalysis
   quality?: RemotePlaybackQuality
   url: string
-  progress: () => { loadedBytes: number; totalBytes: number | null; complete: boolean }
+  progress: () => { loadedBytes: number; totalBytes: number | null; complete: boolean; failureKind?: 'unsupported-format' }
   release: () => void
   finished: () => Promise<void>
 }
@@ -258,7 +259,8 @@ export class RemoteAudioCache {
       cacheKey: key,
       analysis: this.records.get(key)?.analysis,
       url: `${this.origin}/${entry.token}`,
-      progress: () => ({ loadedBytes: entry.bytes, totalBytes: entry.total, complete: entry.complete }),
+      progress: () => ({ loadedBytes: entry.bytes, totalBytes: entry.total, complete: entry.complete,
+        ...(entry.failureKind ? { failureKind: entry.failureKind } : {}) }),
       finished: async () => { await entry.task; if (entry.error) throw entry.error },
       release
     }
@@ -357,6 +359,11 @@ export class RemoteAudioCache {
           const response = await networkOperation(() => source.open(request.signal), request)
           reader = response.body?.getReader()
           const contentType = response.headers.get('content-type')?.toLowerCase() ?? 'application/octet-stream'
+          if (response.status === 415) {
+            entry.failureKind = 'unsupported-format'
+            entry.error = new Error('The server cannot provide this audio format.')
+            throw entry.error
+          }
           if (response.status >= 500 || response.status === 408 || response.status === 429) {
             throw new RetryableDownloadError('Remote server temporarily unavailable.')
           }

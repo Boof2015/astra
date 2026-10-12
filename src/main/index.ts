@@ -37,6 +37,8 @@ import { LibraryLatestSyncCoordinator } from './services/libraryLatestSync'
 import { RemoteAudioCache, type RemoteAudioLease } from './services/remoteAudioCache'
 import { normalizeRemoteCacheLimitGb } from '../types/remoteAudioCache'
 import { acquireQualityAudio } from './services/streamingQualityAcquisition'
+import { withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemoteDecoder } from '../shared/audio/remoteCompatibility'
+import type { RemoteCompatibilityCodec } from '../types/streamingQuality'
 import { AutomaticStreamingQuality } from './services/automaticStreamingQuality'
 import { AutomaticQualityPreparations } from './services/automaticQualityPreparations'
 import { StreamingQualityPreferences, STREAMING_QUALITY_SETTINGS_KEY } from './services/streamingQualitySettings'
@@ -10682,6 +10684,7 @@ function finalizeRemoteStreamSession(
 
   const failure = error ?? new Error(outcome === 'cancelled' ? 'Progressive stream was cancelled.' : 'Progressive stream failed.')
   settleRemoteStreamStartup(session, { ok: false, error: failure })
+  if (failure instanceof RemoteCompatibilityFailure && !session.emittedStartedEvent) return
   safeSendRemoteLoadProgress(session, 'failed', true)
   safeSendRemoteStreamEvent(session, outcome === 'cancelled'
     ? {
@@ -10759,13 +10762,13 @@ function remoteQualityContext(filePath: string) {
   const make = subsonic ? (() => {
     const { source, connection } = requireSubsonicSourceCredentials(sourceId)
     if (source.enabled !== 1) throw new Error('Subsonic source is disabled.')
-    return (quality: StreamQualityTarget) => createSubsonicAudioSource({ sourceId, connection,
-      trackId: subsonic.sourceTrackId, revision, quality })
+    return (quality: StreamQualityTarget, compatibility?: RemoteCompatibilityCodec) => createSubsonicAudioSource({ sourceId, connection,
+      trackId: subsonic.sourceTrackId, revision, quality, compatibility })
   })() : (() => {
     const { source, connection } = requireJellyfinSourceCredentials(sourceId)
     if (source.enabled !== 1) throw new Error('Jellyfin source is disabled.')
-    return (quality: StreamQualityTarget) => createJellyfinAudioSource({ sourceId, connection,
-      trackId: jellyfin!.sourceTrackId, revision, quality,
+    return (quality: StreamQualityTarget, compatibility?: RemoteCompatibilityCodec) => createJellyfinAudioSource({ sourceId, connection,
+      trackId: jellyfin!.sourceTrackId, revision, quality, compatibility,
       authenticate: (signal, forceRefresh) => getJellyfinAuthContext(sourceId, connection, { signal, forceRefresh }) })
   })()
   const original = make('original')
@@ -10874,9 +10877,37 @@ async function startProgressiveStreamSession(
   options: ProgressiveStreamStartOptions = {}
 ): Promise<RemoteStreamInfo> {
   const slot = options.slot === 'next' ? 'next' : 'current'
-  const abortController = progressiveStartupControllers.begin(sender.id, slot, options.preserveNext === true)
+  const controller = progressiveStartupControllers.begin(sender.id, slot, options.preserveNext === true)
+  const abort = () => controller.abort()
+  sender.once('destroyed', abort)
+  const navigate = (_event: Electron.Event, _url: string, inPlace: boolean, mainFrame: boolean) => {
+    if (mainFrame && !inPlace) abort()
+  }
+  sender.on('did-start-navigation', navigate)
+  try {
+    return await withRemoteCompatibility(options.streamingQuality, controller.signal, streamingQuality =>
+      startProgressiveStreamAttempt(sender, filePath, outputSampleRate, expectedChannels,
+        { ...options, streamingQuality }, controller.signal))
+  } finally {
+    sender.removeListener('destroyed', abort)
+    sender.removeListener('did-start-navigation', navigate)
+    progressiveStartupControllers.finish(sender.id, slot, controller)
+  }
+}
+
+async function startProgressiveStreamAttempt(
+  sender: Electron.WebContents,
+  filePath: string,
+  outputSampleRate: number,
+  expectedChannels: number | null | undefined,
+  options: ProgressiveStreamStartOptions,
+  parentSignal: AbortSignal
+): Promise<RemoteStreamInfo> {
+  const slot = options.slot === 'next' ? 'next' : 'current'
+  const abortController = new AbortController()
   const abortStartup = () => abortController.abort()
-  sender.once('destroyed', abortStartup)
+  parentSignal.addEventListener('abort', abortStartup, { once: true })
+  if (parentSignal.aborted) abortStartup()
   let cacheLease: RemoteAudioLease | null = null
   let sessionCreated = false
   try {
@@ -10900,7 +10931,7 @@ async function startProgressiveStreamSession(
       cacheLease = await acquireCachedRemoteAudio(filePath, abortController.signal, options.streamingQuality)
       // A manual target can change codec/rate/channels. Probe the actual retained
       // response, never replace catalog metadata with the requested settings.
-      if (cacheLease.quality && cacheLease.quality.requested !== 'original') {
+      if (cacheLease.quality && (cacheLease.quality.requested !== 'original' || cacheLease.quality.compatibility)) {
         const probe = await resolveBinary('ffprobe')
         if (probe) {
           try {
@@ -11091,11 +11122,13 @@ async function startProgressiveStreamSession(
         }
 
         const stderr = session.stderrChunks.join(' ').trim()
-        finalizeRemoteStreamSession(session, 'failed', new Error(
-          stderr.length > 0
-            ? `Progressive stream decode failed: ${stderr}`
-            : `Progressive stream decode failed (ffmpeg exit ${code ?? 'unknown'}).`
-        ))
+        const message = stderr.length > 0
+          ? `Progressive stream decode failed: ${cacheLease ? stderr.split(cacheLease.url).join(filePath) : stderr}`
+          : `Progressive stream decode failed (ffmpeg exit ${code ?? 'unknown'}).`
+        const unsupported = session.decodedFrames === 0 && session.quality
+          && (session.cacheLease?.progress().failureKind === 'unsupported-format' || isUnsupportedRemoteDecoder(stderr))
+        finalizeRemoteStreamSession(session, 'failed', unsupported
+          ? new RemoteCompatibilityFailure(session.quality!, message) : new Error(message))
       })
 
       try {
@@ -11107,8 +11140,7 @@ async function startProgressiveStreamSession(
 
     return await infoPromise
   } finally {
-    sender.removeListener('destroyed', abortStartup)
-    progressiveStartupControllers.finish(sender.id, slot, abortController)
+    parentSignal.removeEventListener('abort', abortStartup)
     if (!sessionCreated) cacheLease?.release()
   }
 }

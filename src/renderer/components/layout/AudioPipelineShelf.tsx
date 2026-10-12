@@ -192,7 +192,7 @@ export default function AudioPipelineShelf() {
     const contextSR = audioEngine.getSampleRate()
     const resampler = resolvePipelineResampler({
       playbackOutputMode,
-      trackSampleRate: streamQuality?.requested !== undefined && streamQuality.requested !== 'original'
+      trackSampleRate: streamQuality?.compatibility || (streamQuality?.requested !== undefined && streamQuality.requested !== 'original')
         ? streamQuality.delivered?.sampleRate : currentTrack.sampleRate,
       standardOutputSampleRate: contextSR,
       nativeSourceSampleRate,

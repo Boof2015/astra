@@ -5,6 +5,7 @@ export interface NativeRemoteProgress {
   totalBytes: number | null
   complete: boolean
   error: string | null
+  failureKind?: 'unsupported-format'
 }
 
 export interface NativeRemoteSource {

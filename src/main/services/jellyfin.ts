@@ -792,6 +792,17 @@ export function buildJellyfinQualityStreamUrl(config: JellyfinConnectionConfig, 
   }).toString()
 }
 
+/** Compatibility conversion must not copy the unsupported input codec. FLAC
+ * leaves rate, depth and channel count to the server without a lossy bitrate cap. */
+export function buildJellyfinCompatibilityStreamUrl(config: JellyfinConnectionConfig, sourceTrackId: string,
+  codec: 'flac' | 'mp3', bitrateKbps = 320): string {
+  return buildJellyfinUrl(config, `/Audio/${encodeURIComponent(sourceTrackId)}/stream.${codec}`, {
+    static: false, DeviceId: buildJellyfinDeviceId(config), AudioCodec: codec,
+    EnableAutoStreamCopy: false, AllowAudioStreamCopy: false,
+    ...(codec === 'mp3' ? { AudioBitRate: bitrateKbps * 1000, MaxAudioChannels: 2 } : {})
+  }).toString()
+}
+
 export function buildJellyfinStreamUrl(
   config: JellyfinConnectionConfig,
   sourceTrackId: string,
