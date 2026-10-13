@@ -3,6 +3,8 @@ import { PROVIDER_CLIENT_VERSION, buildProviderRequestHeaders } from './provider
 import type { JellyfinCatalogTrack } from './jellyfin'
 import type { PlexLibraryChoice } from '../../types/plex'
 import type { RemoteCompatibilityCodec, StreamQualityTarget } from '../../types/streamingQuality'
+import type { ProviderUserState } from '../../types/providerSync'
+import { validProviderValue } from '../../shared/sync/providerState'
 
 const ACCOUNT_API = 'https://clients.plex.tv/api/v2/'
 export interface PlexDevice { clientId: string }
@@ -192,6 +194,84 @@ export async function fetchPlexCatalog(sourceId: number, credentials: PlexCreden
   }
   return [...tracks.values()]
 }
+/** Plex likes share userRating; never synthesize an independent favorite flag. */
+export async function fetchPlexUserStates(credentials: PlexCredentials, libraryId: string,
+  options: PlexRequestOptions = {}, ids?: string[]): Promise<Map<string, ProviderUserState>> {
+  if (!/^\d+$/.test(libraryId) || ids?.some(id => !/^\d+$/.test(id))) throw new Error('Invalid Plex music selection.')
+  const result = new Map<string, ProviderUserState>()
+  const add = (item: any) => {
+    if (item?.type !== 'track' || !/^\d+$/.test(String(item.ratingKey)) || result.has(String(item.ratingKey))) {
+      throw new Error('Plex returned an inconsistent rating listing.')
+    }
+    // A moved track is unavailable in the selected library, not newly unrated.
+    if (item.librarySectionID != null && String(item.librarySectionID) !== libraryId) return
+    const raw = item.userRating
+    const rating = raw == null || raw === 0 ? null : typeof raw === 'number' ? raw / 2 : NaN
+    if (!validProviderValue('rating', rating, 'plex')) throw new Error('Plex returned an unsupported rating.')
+    result.set(String(item.ratingKey), { rating })
+  }
+  if (ids) {
+    for (const id of new Set(ids)) {
+      options.signal?.throwIfAborted()
+      let data: any
+      try { data = await plexJson(credentials, `/library/metadata/${id}`, options) }
+      catch (error) {
+        if (error instanceof PlexRequestError && error.status === 404) continue
+        throw error
+      }
+      const items = data.MediaContainer?.Metadata
+      if (!Array.isArray(items) || items.length !== 1 || String(items[0]?.ratingKey) !== id) {
+        throw new Error('Plex did not return the requested track rating.')
+      }
+      add(items[0])
+    }
+    return result
+  }
+  let expectedTotal: number | null = null
+  const seen = new Set<string>()
+  for (let offset = 0; ; ) {
+    options.signal?.throwIfAborted()
+    const data = await plexJson(credentials, `/library/sections/${libraryId}/all?type=10`, options,
+      { headers: { 'X-Plex-Container-Start': String(offset), 'X-Plex-Container-Size': '500' } })
+    const container = data.MediaContainer
+    if (!container || (!Array.isArray(container.Metadata) && container.size !== 0)) throw new Error('Plex returned an incomplete rating listing.')
+    const items = container.Metadata ?? []
+    if (container.offset !== undefined && Number(container.offset) !== offset) throw new Error('Plex returned an inconsistent rating page.')
+    const total = number(container.totalSize)
+    if (total !== null) {
+      if (!Number.isSafeInteger(total) || total < 0 || (expectedTotal !== null && expectedTotal !== total)) throw new Error('Plex library changed during rating sync. Try again.')
+      expectedTotal = total
+    }
+    for (const item of items) {
+      const id = String(item?.ratingKey)
+      if (seen.has(id)) throw new Error('Plex returned a repeated rating page.')
+      seen.add(id)
+      add(item)
+    }
+    offset += items.length
+    if (offset > 2_000_000 || (expectedTotal !== null && offset > expectedTotal)) throw new Error('Plex returned an inconsistent rating count.')
+    if (expectedTotal !== null && offset === expectedTotal) break
+    if (!items.length) {
+      if (expectedTotal !== null) throw new Error('Plex returned an incomplete rating listing.')
+      break
+    }
+  }
+  return result
+}
+
+export async function writePlexRating(credentials: PlexCredentials, id: string, rating: number | null,
+  options: PlexRequestOptions = {}): Promise<void> {
+  if (!/^\d+$/.test(id) || !validProviderValue('rating', rating, 'plex')) throw new Error('Invalid Plex rating.')
+  const url = plexUrl(credentials.baseUrl, '/:/rate')
+  url.searchParams.set('identifier', 'com.plexapp.plugins.library')
+  url.searchParams.set('key', id)
+  url.searchParams.set('rating', String(rating === null ? 0 : rating * 2))
+  const response = await request(url, plexHeaders(credentials.account, credentials.server.token), options, { method: 'PUT' })
+  // Successful rating writes can have an empty body. The sync service reads back
+  // the value before acknowledging it locally or advancing the baseline.
+  await response.body?.cancel()
+}
+
 export async function fetchPlexArtwork(credentials: PlexCredentials, path: string, options: PlexRequestOptions = {}): Promise<Buffer> {
   if (!/^\/library\/metadata\/\d+\/(?:thumb|art)\//.test(path)) throw new Error('Invalid Plex artwork path.')
   const response = await request(plexUrl(credentials.baseUrl, path), plexHeaders(credentials.account, credentials.server.token), options)

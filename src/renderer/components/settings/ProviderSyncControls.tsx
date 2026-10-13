@@ -8,13 +8,13 @@ export default function ProviderSyncControls({ provider, sourceId, connected }: 
   const ref = { provider, sourceId }
   return <div className="provider-sync-controls">
     <div className="provider-sync-heading">
-      <span>{provider === 'subsonic' ? 'Sync favorites and ratings' : 'Sync favorites'}</span>
+      <span>{provider === 'plex' ? 'Sync ratings' : provider === 'subsonic' ? 'Sync favorites and ratings' : 'Sync favorites'}</span>
       <button className={`settings-toggle ${status?.enabled ? 'active' : ''}`} role="switch"
         aria-label="Sync with this server" aria-checked={status?.enabled ?? false}
         disabled={!connected || (!status?.enabled && (working || status?.busy))}
         onClick={() => void (status?.enabled ? disable(ref) : openReview(ref))}>{status?.enabled ? 'Enabled' : 'Disabled'}</button>
     </div>
-    <p className="settings-note">{provider === 'jellyfin' ? 'Star ratings stay in Astra. ' : ''}
+    <p className="settings-note">{provider === 'plex' ? 'Favorites stay in Astra. Half-star ratings are supported. ' : provider === 'jellyfin' ? 'Star ratings stay in Astra. ' : ''}
       {status?.enabled ? 'Changes sync automatically with this server.' : 'Off. Enable to compare existing values before syncing.'}</p>
     {status?.error && <p className="remote-source-card-status-error" role="status">{status.error}</p>}
     {status?.enabled && <div className="provider-sync-actions">

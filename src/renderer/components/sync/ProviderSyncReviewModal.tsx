@@ -3,19 +3,21 @@ import { createPortal } from 'react-dom'
 import { useProviderSyncStore } from '../../stores/providerSyncStore'
 import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
 import { useJellyfinSettingsStore } from '../../stores/jellyfinSettingsStore'
+import { usePlexSettingsStore } from '../../stores/plexSettingsStore'
 import { resolveProviderChoice, validProviderValue } from '../../../shared/sync/providerState'
-import type { ProviderSyncChoice, ProviderSyncDifference, ProviderSyncValue } from '../../../types/providerSync'
+import type { ProviderSyncChoice, ProviderSyncDifference, ProviderSyncRef, ProviderSyncValue } from '../../../types/providerSync'
 
 const format = (value: ProviderSyncValue) => typeof value === 'boolean' ? (value ? 'Favorite' : 'Not favorite') : value === null ? 'Unrated' : `${value} ★`
 const labels: Record<ProviderSyncChoice, string> = { local: 'Keep Astra', server: 'Keep server', up: 'Round up', down: 'Round down', clear: 'Clear rating' }
-function validChoice(row: ProviderSyncDifference, choice: ProviderSyncChoice | undefined): boolean {
-  try { resolveProviderChoice(row, choice!); return true } catch { return false }
+function validChoice(row: ProviderSyncDifference, choice: ProviderSyncChoice | undefined, provider: ProviderSyncRef['provider']): boolean {
+  try { resolveProviderChoice(row, choice!, provider); return true } catch { return false }
 }
 
 export default function ProviderSyncReviewModal() {
   const { review, working, error, apply, closeReview, openReview } = useProviderSyncStore()
   const subsonicSources = useSubsonicSettingsStore(s => s.sources)
   const jellyfinSources = useJellyfinSettingsStore(s => s.sources)
+  const plexSources = usePlexSettingsStore(s => s.sources)
   const [choices, setChoices] = useState<Record<string, ProviderSyncChoice>>({})
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [page, setPage] = useState(0)
@@ -29,16 +31,17 @@ export default function ProviderSyncReviewModal() {
     return () => previous?.focus()
   }, [review?.token])
   if (!review) return null
-  const sourceName = (review.ref.provider === 'subsonic' ? subsonicSources : jellyfinSources).find(s => s.id === review.ref.sourceId)?.name
-    ?? `${review.ref.provider === 'subsonic' ? 'Subsonic' : 'Jellyfin'} server ${review.ref.sourceId}`
+  const provider = review.ref.provider
+  const sourceName = (provider === 'plex' ? plexSources : provider === 'subsonic' ? subsonicSources : jellyfinSources).find(s => s.id === review.ref.sourceId)?.name
+    ?? `${provider === 'plex' ? 'Plex' : provider === 'subsonic' ? 'Subsonic' : 'Jellyfin'} server ${review.ref.sourceId}`
   const rows = review.differences
-  const unresolved = rows.filter(row => !validChoice(row, choices[row.key])).length
+  const unresolved = rows.filter(row => !validChoice(row, choices[row.key], provider)).length
   const visible = rows.slice(page * 100, (page + 1) * 100)
   const bulk = (choice: ProviderSyncChoice) => setChoices(current => {
     const next = { ...current }
     for (const row of rows) {
       if (selected.size && !selected.has(row.key)) continue
-      if (validChoice(row, choice)) next[row.key] = choice
+      if (validChoice(row, choice, provider)) next[row.key] = choice
     }
     return next
   })
@@ -64,7 +67,7 @@ export default function ProviderSyncReviewModal() {
           onClick={() => void openReview(review.ref)}>Refresh comparison</button></div>}
         {!preview && rows.length > 0 && <div className="provider-sync-bulk">
           <span>{selected.size ? `${selected.size} selected` : `All ${rows.length} differences`}</span>
-          {(Object.keys(labels) as ProviderSyncChoice[]).filter(choice => review.ref.provider === 'subsonic' || choice === 'local' || choice === 'server').map(choice =>
+          {(Object.keys(labels) as ProviderSyncChoice[]).filter(choice => provider === 'subsonic' || choice === 'local' || choice === 'server' || (provider === 'plex' && choice === 'clear')).map(choice =>
             <button key={choice} className="settings-btn" disabled={working} onClick={() => bulk(choice)}>{labels[choice]}</button>)}
           {selected.size > 0 && <button className="settings-btn" onClick={() => setSelected(new Set())}>Clear selection</button>}
         </div>}
@@ -75,13 +78,13 @@ export default function ProviderSyncReviewModal() {
               onChange={() => setSelected(current => { const next = new Set(current); if (next.has(row.key)) next.delete(row.key); else next.add(row.key); return next })} /></td>}
             <td className="provider-sync-track"><strong>{row.title}</strong><small>{row.artist}</small></td><td>{row.field === 'favorite' ? 'Favorite' : 'Rating'}</td>
             <td>{format(row.local)}</td><td>{format(row.server)}</td><td>{preview
-              ? format(resolveProviderChoice(row, choices[row.key]))
+              ? format(resolveProviderChoice(row, choices[row.key], provider))
               : <select aria-label={`Value to keep for ${row.title} ${row.field}`} value={choices[row.key] ?? ''} disabled={working}
                 onChange={event => setChoices(current => ({ ...current, [row.key]: event.target.value as ProviderSyncChoice }))}>
                 <option value="" disabled>Choose…</option>
-                <option value="local" disabled={!validProviderValue(row.field, row.local)}>Keep Astra</option><option value="server">Keep server</option>
-                {row.field === 'rating' && <><option value="up" disabled={typeof row.local !== 'number'}>Round up</option>
-                  <option value="down" disabled={typeof row.local !== 'number'}>Round down</option><option value="clear">Clear rating</option></>}
+                <option value="local" disabled={!validProviderValue(row.field, row.local, provider)}>Keep Astra</option><option value="server">Keep server</option>
+                {row.field === 'rating' && <>{provider === 'subsonic' && <><option value="up" disabled={typeof row.local !== 'number'}>Round up</option>
+                  <option value="down" disabled={typeof row.local !== 'number'}>Round down</option></>}<option value="clear">Clear rating</option></>}
               </select>}</td>
           </tr>)}</tbody></table></div> : <p>All matching values already agree.</p>}
         {rows.length > 100 && <div className="provider-sync-actions">

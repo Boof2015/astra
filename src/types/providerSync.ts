@@ -1,9 +1,10 @@
-export interface ProviderSyncRef { provider: 'subsonic' | 'jellyfin'; sourceId: number }
+export interface ProviderSyncRef { provider: 'subsonic' | 'jellyfin' | 'plex'; sourceId: number }
 export type ProviderSyncField = 'favorite' | 'rating'
 export type ProviderSyncValue = boolean | number | null
-export interface ProviderUserState { favorite: boolean; rating?: number | null }
+export interface ProviderUserState { favorite?: boolean; rating?: number | null }
 export interface ProviderSyncTrack extends ProviderUserState {
   path: string; id: string; title: string; artist: string
+  favorite: boolean
   favoriteMixed?: boolean
 }
 export interface ProviderSyncDifference {

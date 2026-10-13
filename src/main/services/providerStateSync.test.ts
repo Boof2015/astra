@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { ProviderStateSync, type ProviderStateClient } from './providerStateSync.ts'
-import { resolveProviderChoice } from '../../shared/sync/providerState.ts'
+import { normalizeProviderSyncRef, resolveProviderChoice, validProviderValue } from '../../shared/sync/providerState.ts'
 import type { ProviderSyncRef, ProviderSyncTrack, ProviderSyncField, ProviderSyncValue, ProviderUserState } from '../../types/providerSync.ts'
 
 const ref: ProviderSyncRef = { provider: 'subsonic', sourceId: 1 }
 const path = 'subsonic://1/track/a'
 const copy = <T>(value: T): T => structuredClone(value)
-function fixture() {
+function fixture(sourceRef = ref, trackPath = path) {
   let fingerprint: string | null = 'account-1'
   let setting: { fingerprint: string; enabled: number } | null = null
-  const tracks: ProviderSyncTrack[] = [{ id: 'a', path, title: 'Song', artist: 'Artist', favorite: false, rating: null }]
+  const tracks: ProviderSyncTrack[] = [{ id: 'a', path: trackPath, title: 'Song', artist: 'Artist', favorite: false, rating: null }]
   const remote = new Map<string, ProviderUserState>([['a', { favorite: false, rating: null }]])
   const baseline = new Map<string, ProviderSyncValue>()
   const writes: { id: string; field: ProviderSyncField; value: ProviderSyncValue }[] = []
@@ -25,7 +25,7 @@ function fixture() {
     }
   }
   const service = new ProviderStateSync({
-    sources: () => [ref], fingerprint: () => fingerprint, setting: () => setting,
+    sources: () => [sourceRef], fingerprint: () => fingerprint, setting: () => setting,
     setSetting: async (_ref, fp, enabled) => {
       if (!enabled || setting?.fingerprint !== fp) baseline.clear()
       setting = { fingerprint: fp, enabled: Number(enabled) }
@@ -40,7 +40,7 @@ function fixture() {
     persist: async () => {}, changed: () => {}, client: async () => client
   })
   const enable = async () => {
-    const review = await service.review(ref)
+    const review = await service.review(sourceRef)
     await service.apply(review.token, Object.fromEntries(review.differences.map(row => [row.key, 'server'])))
   }
   return { service, client, tracks, remote, baseline, writes, enable, reads: () => reads,
@@ -286,4 +286,85 @@ test('disable/re-enable compares current values again; no edits replay on a back
   assert.equal(review.enabling, true)
   assert.equal(review.differences.length, 2)
   assert.equal(f.writes.length, 0)
+})
+
+const plexRef: ProviderSyncRef = { provider: 'plex', sourceId: 1 }
+const plexPath = 'plex://1/123'
+
+test('Plex enables with half-star choices and ignores independent Astra favorites', async () => {
+  const f = fixture(plexRef, plexPath)
+  f.tracks[0].favorite = true
+  f.tracks[0].rating = 4.5
+  f.remote.set('a', { rating: 0.5 })
+  await f.service.refresh(plexRef)
+  assert.equal(f.reads(), 0)
+  const review = await f.service.review(plexRef)
+  assert.deepEqual(review.differences.map(row => [row.field, row.reason]), [['rating', 'initial']])
+  assert.equal(resolveProviderChoice(review.differences[0], 'local', 'plex'), 4.5)
+  assert.throws(() => resolveProviderChoice(review.differences[0], 'up', 'plex'))
+  await f.service.apply(review.token, { [review.differences[0].key]: 'local' })
+  assert.equal(f.service.enabled(plexRef), true)
+  assert.deepEqual(f.remote.get('a'), { rating: 4.5 })
+  assert.equal(f.tracks[0].favorite, true)
+  assert.deepEqual([...f.baseline], [[JSON.stringify([plexPath, 'rating']), 4.5]])
+  const reads = f.reads()
+  await assert.rejects(f.service.edit(plexRef, plexPath, 'favorite', false), /Unsupported/)
+  assert.equal(f.reads(), reads)
+  assert.equal(f.tracks[0].favorite, true)
+})
+
+test('Plex half-star edits and clears sync both ways without changing favorites', async () => {
+  const f = fixture(plexRef, plexPath)
+  f.tracks[0].favorite = true
+  f.remote.set('a', { rating: null })
+  await f.enable()
+  await f.service.edit(plexRef, plexPath, 'rating', 0.5)
+  assert.equal(f.remote.get('a')!.rating, 0.5)
+  f.remote.set('a', { rating: 3.5 })
+  await f.service.refresh(plexRef)
+  assert.equal(f.tracks[0].rating, 3.5)
+  f.remote.set('a', { rating: null })
+  await f.service.refresh(plexRef)
+  assert.equal(f.tracks[0].rating, null)
+  f.tracks[0].rating = 4.5
+  await f.service.refresh(plexRef)
+  assert.equal(f.remote.get('a')!.rating, 4.5)
+  await f.service.edit(plexRef, plexPath, 'rating', null)
+  assert.equal(f.remote.get('a')!.rating, null)
+  assert.equal(f.tracks[0].favorite, true)
+  assert.ok(f.writes.every(write => write.field === 'rating'))
+  await f.service.disable(plexRef)
+  f.remote.get('a')!.rating = 5
+  await f.service.refresh(plexRef)
+  assert.equal(f.tracks[0].rating, null)
+  assert.equal(f.baseline.size, 0)
+})
+
+test('Plex concurrent rating edits require review; missing tracks cannot clear ratings', async () => {
+  const f = fixture(plexRef, plexPath)
+  await f.enable()
+  f.remote.set('a', { rating: 0.5 })
+  await f.service.edit(plexRef, plexPath, 'rating', 4.5)
+  assert.equal(f.tracks[0].rating, 4.5)
+  assert.equal(f.remote.get('a')!.rating, 0.5)
+  assert.equal(f.writes.length, 0)
+  assert.equal(f.service.status()[0].conflicts, 1)
+  const review = await f.service.review(plexRef)
+  await f.service.apply(review.token, { [review.differences[0].key]: 'server' })
+  assert.equal(f.tracks[0].rating, 0.5)
+  f.remote.clear()
+  await f.service.refresh(plexRef)
+  assert.equal(f.tracks[0].rating, 0.5)
+  assert.equal(f.baseline.get(JSON.stringify([plexPath, 'rating'])), 0.5)
+})
+
+test('provider precision and supported fields remain distinct', () => {
+  assert.deepEqual(normalizeProviderSyncRef(plexRef), plexRef)
+  for (const value of [0.5, 1.5, 4.5, 5, null]) assert.equal(validProviderValue('rating', value, 'plex'), true)
+  for (const value of [0, 0.25, 4.75, 5.5, NaN, Infinity, '4.5']) assert.equal(validProviderValue('rating', value, 'plex'), false)
+  assert.equal(validProviderValue('rating', 4.5, 'subsonic'), false)
+  assert.equal(validProviderValue('rating', 4, 'subsonic'), true)
+  assert.equal(validProviderValue('rating', 4, 'jellyfin'), false)
+  assert.equal(validProviderValue('favorite', true, 'plex'), false)
+  assert.equal(validProviderValue('favorite', true, 'jellyfin'), true)
 })

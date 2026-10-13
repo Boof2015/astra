@@ -54,10 +54,11 @@ import { ProgressiveStartupRegistry } from './progressiveStartupRegistry'
 import { createJellyfinAudioSource } from './services/jellyfinAudioSource'
 import { ProviderPlaybackService, playbackReportSource } from './services/providerPlayback'
 import { ProviderStateSync } from './services/providerStateSync'
-import { normalizeProviderSyncRef } from '../shared/sync/providerState'
-import type { ProviderSyncRef, ProviderSyncChoice } from '../types/providerSync'
+import { normalizeProviderSyncRef, providerSyncFields } from '../shared/sync/providerState'
+import type { ProviderSyncRef, ProviderSyncChoice, ProviderSyncField } from '../types/providerSync'
 import { fetchSubsonicUserStates, writeSubsonicUserState } from './services/subsonic'
 import { fetchJellyfinUserStates, writeJellyfinFavorite } from './services/jellyfin'
+import { fetchPlexUserStates, writePlexRating } from './services/plex'
 import { createJellyfinPlaybackClient, createSubsonicPlaybackClient } from './services/providerPlaybackClients'
 import { NativeRemoteLeaseRegistry } from './nativeRemoteLeaseRegistry'
 import { createThrottledLibraryScanProgressReporter } from './libraryScanProgress'
@@ -1510,6 +1511,13 @@ const providerPlaybackService = new ProviderPlaybackService({
 })
 
 function providerSyncFingerprint(ref: ProviderSyncRef): string | null {
+  if (ref.provider === 'plex') {
+    const source = library.getPlexSourceById(ref.sourceId)
+    if (!source || source.enabled !== 1) return null
+    // Tokens and LAN addresses may rotate during normal credential refresh.
+    // Consent belongs to this account, server and library, not its current token.
+    return createHash('sha256').update(JSON.stringify([source.account_id, source.server_id, source.library_id])).digest('hex')
+  }
   const source = ref.provider === 'subsonic' ? library.getSubsonicSourceById(ref.sourceId) : library.getJellyfinSourceById(ref.sourceId)
   if (!source || source.enabled !== 1) return null
   return createHash('sha256').update(JSON.stringify([source.base_url, source.username, source.secret_encrypted])).digest('hex')
@@ -1519,7 +1527,8 @@ let providerStateMutationTimer: ReturnType<typeof setTimeout> | null = null
 const providerStateSync = new ProviderStateSync({
   sources: () => [
     ...library.listSubsonicSources().map(s => ({ provider: 'subsonic' as const, sourceId: s.id })),
-    ...library.listJellyfinSources().map(s => ({ provider: 'jellyfin' as const, sourceId: s.id }))
+    ...library.listJellyfinSources().map(s => ({ provider: 'jellyfin' as const, sourceId: s.id })),
+    ...library.listPlexSources().map(s => ({ provider: 'plex' as const, sourceId: s.id }))
   ],
   fingerprint: providerSyncFingerprint,
   setting: library.getProviderSyncSetting,
@@ -1552,6 +1561,24 @@ const providerStateSync = new ProviderStateSync({
       if (!fingerprint || fingerprint !== providerSyncFingerprint(ref)) throw new Error('Server settings changed.')
     }
     const options = { signal, timeoutMs: 12_000, retries: 0 }
+    if (ref.provider === 'plex') {
+      guard()
+      const source = library.getPlexSourceById(ref.sourceId)!
+      const request = { ...plexRequestOptions, signal, timeoutMs: 12_000 }
+      return {
+        read: ids => plexSources.withCredentials(ref.sourceId, signal, credentials => {
+          guard()
+          return fetchPlexUserStates(credentials, source.library_id, request, ids)
+        }),
+        write: (id, field, value) => {
+          if (field !== 'rating' || (value !== null && typeof value !== 'number')) throw new Error('Plex only supports rating sync.')
+          return plexSources.withCredentials(ref.sourceId, signal, credentials => {
+            guard()
+            return writePlexRating(credentials, id, value, request)
+          })
+        }
+      }
+    }
     if (ref.provider === 'subsonic') {
       const { connection } = requireSubsonicSourceCredentials(ref.sourceId)
       return {
@@ -9986,13 +10013,13 @@ ipcMain.handle('provider-sync:apply', (_event, token: unknown, choices: Record<s
   return providerStateSync.apply(token, choices)
 })
 
-function providerStateSource(path: string) {
+function providerStateSource(path: string, field: ProviderSyncField) {
   const source = playbackReportSource(path)
-  return source && source.provider !== 'plex' ? { ...source, provider: source.provider } : null
+  return source && providerSyncFields(source.provider).includes(field) ? source : null
 }
 
 ipcMain.handle('library:addFavorite', async (_event, trackPath: string) => {
-  const source = providerStateSource(trackPath)
+  const source = providerStateSource(trackPath, 'favorite')
   if (source && providerStateSync.enabled(source)) return providerStateSync.edit(source, trackPath, 'favorite', true)
   const targets = library.getProviderFavoriteTargets(trackPath).filter(ref => providerStateSync.enabled(ref))
   if (targets.length) {
@@ -10004,7 +10031,7 @@ ipcMain.handle('library:addFavorite', async (_event, trackPath: string) => {
 })
 
 ipcMain.handle('library:removeFavorite', async (_event, trackPath: string) => {
-  const source = providerStateSource(trackPath)
+  const source = providerStateSource(trackPath, 'favorite')
   if (source && providerStateSync.enabled(source)) return providerStateSync.edit(source, trackPath, 'favorite', false)
   const targets = library.getProviderFavoriteTargets(trackPath).filter(ref => providerStateSync.enabled(ref))
   if (targets.length) {
@@ -10029,8 +10056,8 @@ ipcMain.handle('library:setTrackRating', async (_event, trackPaths: string[], ra
     && (!Number.isInteger(rating) || rating < 1 || rating > 5)) throw new Error('Subsonic ratings must be whole stars from 1 to 5.')
   const local: string[] = []
   for (const path of new Set(trackPaths)) {
-    const source = providerStateSource(path)
-    if (source?.provider === 'subsonic' && providerStateSync.enabled(source)) await providerStateSync.edit(source, path, 'rating', rating)
+    const source = providerStateSource(path, 'rating')
+    if (source && providerStateSync.enabled(source)) await providerStateSync.edit(source, path, 'rating', rating)
     else local.push(path)
   }
   await library.setTrackRatingForPaths(local, rating)

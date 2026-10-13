@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { compareProviderValue, providerSyncKey, resolveProviderChoice, validProviderValue } from '../../shared/sync/providerState'
+import { compareProviderValue, providerSyncFields, providerSyncKey, resolveProviderChoice, validProviderValue } from '../../shared/sync/providerState'
 import type { ProviderSyncRef, ProviderSyncTrack, ProviderUserState, ProviderSyncField, ProviderSyncValue,
   ProviderSyncReview, ProviderSyncStatus, ProviderSyncDifference, ProviderSyncChoice } from '../../types/providerSync'
 
@@ -23,7 +23,7 @@ interface Options {
 }
 interface Session { check(): void; client: ProviderStateClient }
 const fieldKey = (path: string, field: ProviderSyncField) => JSON.stringify([path, field])
-const fields = (ref: ProviderSyncRef): ProviderSyncField[] => ref.provider === 'subsonic' ? ['favorite', 'rating'] : ['favorite']
+const fields = (ref: ProviderSyncRef) => providerSyncFields(ref.provider)
 const valueOf = (state: ProviderUserState, field: ProviderSyncField): ProviderSyncValue => state[field] ?? null
 
 /** Provider-specific transport; shared opt-in, comparison and conflict handling. */
@@ -123,12 +123,12 @@ export class ProviderStateSync {
     return work
   }
 
-  private difference(track: ProviderSyncTrack, field: ProviderSyncField, server: ProviderSyncValue,
+  private difference(ref: ProviderSyncRef, track: ProviderSyncTrack, field: ProviderSyncField, server: ProviderSyncValue,
     initial: boolean): ProviderSyncDifference {
     const local = valueOf(track, field)
     return { key: fieldKey(track.path, field), path: track.path, id: track.id,
       title: track.title, artist: track.artist, field, local, server,
-      reason: !validProviderValue(field, local) ? 'precision' : initial ? 'initial' : 'changed' }
+      reason: !validProviderValue(field, local, ref.provider) ? 'precision' : initial ? 'initial' : 'changed' }
   }
 
   review(ref: ProviderSyncRef): Promise<ProviderSyncReview> {
@@ -144,9 +144,9 @@ export class ProviderStateSync {
         matchedTracks++
         for (const field of fields(ref)) {
           const value = valueOf(remote, field)
-          if (!validProviderValue(field, value)) throw new Error('Server returned an unsupported value.')
-          if (valueOf(track, field) !== value || !validProviderValue(field, valueOf(track, field))) {
-            differences.push(this.difference(track, field, value, !this.enabled(ref)))
+          if (!validProviderValue(field, value, ref.provider)) throw new Error('Server returned an unsupported value.')
+          if (valueOf(track, field) !== value || !validProviderValue(field, valueOf(track, field), ref.provider)) {
+            differences.push(this.difference(ref, track, field, value, !this.enabled(ref)))
           }
         }
       }
@@ -168,7 +168,7 @@ export class ProviderStateSync {
       throw new Error('Server settings changed. Refresh the comparison.')
     }
     // Validate every choice before any local or server write.
-    const resolved = review.differences.map(row => ({ row, value: resolveProviderChoice(row, choices[row.key]) }))
+    const resolved = review.differences.map(row => ({ row, value: resolveProviderChoice(row, choices[row.key], ref.provider) }))
     this.reviews.delete(providerSyncKey(ref))
     return this.run(ref, !review.enabling, async ({ check, client }) => {
       const remote = await client.read()
@@ -185,7 +185,7 @@ export class ProviderStateSync {
           matched++
           for (const field of fields(ref)) {
             const value = valueOf(track, field)
-            if (!validProviderValue(field, value) || value !== valueOf(state, field)) {
+            if (!validProviderValue(field, value, ref.provider) || value !== valueOf(state, field)) {
               throw new Error('Values changed during setup. Review this server again to choose which values to keep.')
             }
           }
@@ -230,7 +230,7 @@ export class ProviderStateSync {
         if (!state) continue
         for (const field of fields(ref)) {
           const value = valueOf(track, field)
-          if (validProviderValue(field, value) && value === valueOf(state, field)) {
+          if (validProviderValue(field, value, ref.provider) && value === valueOf(state, field)) {
             if (field === 'favorite' && track.favoriteMixed) {
               await this.options.applyLocal(track.path, field, value)
               check()
@@ -260,10 +260,10 @@ export class ProviderStateSync {
         for (const field of fields(ref)) {
           check()
           const server = valueOf(state, field)
-          if (!validProviderValue(field, server)) throw new Error('Server returned an unsupported value.')
+          if (!validProviderValue(field, server, ref.provider)) throw new Error('Server returned an unsupported value.')
           const current = this.options.track(ref, track.path)
           if (!current) continue
-          const comparison = compareProviderValue(field, valueOf(current, field), server, baselines.get(fieldKey(track.path, field)))
+          const comparison = compareProviderValue(field, valueOf(current, field), server, baselines.get(fieldKey(track.path, field)), ref.provider)
           if (comparison === 'review') { conflicts++; continue }
           let confirmed = server
           if (comparison === 'outgoing') {
@@ -298,7 +298,7 @@ export class ProviderStateSync {
 
   /** Online edits use fresh server state; no durable offline write queue. */
   edit(ref: ProviderSyncRef, path: string, field: ProviderSyncField, value: ProviderSyncValue): Promise<void> {
-    if (!validProviderValue(field, value)) return Promise.reject(new Error('Unsupported server value.'))
+    if (!validProviderValue(field, value, ref.provider)) return Promise.reject(new Error('Unsupported server value.'))
     return this.run(ref, true, async ({ check, client }) => {
       const track = this.options.track(ref, path)
       if (!track) throw new Error('Track is no longer in this server library.')

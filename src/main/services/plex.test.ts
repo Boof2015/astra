@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { beginPlexSignIn, createPlexDevice, pollPlexSignIn,
   discoverPlexServers, connectPlexServer, listPlexLibraries, fetchPlexCatalog, mapPlexTrack,
-  plexUrl, PlexRequestError, reportPlexPlayback, type PlexCredentials } from './plex.ts'
+  plexUrl, PlexRequestError, reportPlexPlayback, fetchPlexUserStates, writePlexRating, type PlexCredentials } from './plex.ts'
 import { createPlexAudioSource } from './plexAudioSource.ts'
 import { remoteAudioCacheKey } from './remoteAudioCache.ts'
 import { playbackReportSource } from './providerPlayback.ts'
@@ -202,4 +202,66 @@ test('Plex timeline sends actual position, output state and Astra identity', asy
       return new Response(null, { status: 204 })
     })
   })
+})
+
+test('Plex ratings read all library pages and preserve half-stars without inventing favorites', async () => {
+  const starts: number[] = []
+  const states = await fetchPlexUserStates(credentials, '2', { fetch: mockFetch((url, init) => {
+    assert.equal(url.pathname, '/library/sections/2/all')
+    assert.equal(url.searchParams.get('type'), '10')
+    assert.equal(new Headers(init.headers).get('X-Plex-Token'), 'server-secret')
+    const start = Number(new Headers(init.headers).get('X-Plex-Container-Start')); starts.push(start)
+    return json({ MediaContainer: { offset: start, totalSize: 4, Metadata: start === 0
+      ? [{ ...fixture(1), userRating: 9 }, { ...fixture(2), userRating: 1 }]
+      : [{ ...fixture(3), userRating: 0 }, fixture(4)] } })
+  }) })
+  assert.deepEqual(starts, [0, 2])
+  assert.deepEqual([...states], [['1', { rating: 4.5 }], ['2', { rating: 0.5 }], ['3', { rating: null }], ['4', { rating: null }]])
+})
+
+test('Plex single-track reads distinguish unrated, missing and moved tracks', async () => {
+  const states = await fetchPlexUserStates(credentials, '2', { fetch: mockFetch(url => {
+    const id = Number(url.pathname.split('/').at(-1))
+    if (id === 2) return new Response(null, { status: 404 })
+    return json({ MediaContainer: { Metadata: [{ ...fixture(id), librarySectionID: id === 3 ? 7 : 2 }] } })
+  }) }, ['1', '2', '3', '1'])
+  assert.deepEqual([...states], [['1', { rating: null }]])
+  await assert.rejects(fetchPlexUserStates(credentials, '2', { fetch: mockFetch(() => json({ MediaContainer: { Metadata: [fixture(9)] } })) }, ['1']), /requested track/)
+  await assert.rejects(fetchPlexUserStates(credentials, '2', { fetch: mockFetch(() => new Response(null, { status: 401 })) }, ['1']), error => error instanceof PlexRequestError && error.status === 401)
+})
+
+test('Plex malformed ratings and incomplete listings cannot be mistaken for clears', async () => {
+  for (const raw of ['9', 9.5, -1, 11, false]) {
+    await assert.rejects(fetchPlexUserStates(credentials, '2', { fetch: mockFetch(() => json({ MediaContainer: {
+      totalSize: 1, Metadata: [{ ...fixture(1), userRating: raw }] } })) }), /unsupported rating/)
+  }
+  for (const response of [{}, { MediaContainer: {} }, { MediaContainer: { totalSize: 2, size: 0 } },
+    { MediaContainer: { offset: 1, totalSize: 1, Metadata: [fixture(1)] } }]) {
+    await assert.rejects(fetchPlexUserStates(credentials, '2', { fetch: mockFetch(() => json(response)) }), /incomplete|inconsistent/)
+  }
+  await assert.rejects(fetchPlexUserStates(credentials, '2', { fetch: mockFetch(() => json({ MediaContainer: {
+    totalSize: 2, Metadata: [fixture(1)] } })) }), /repeated/)
+  assert.deepEqual(await fetchPlexUserStates(credentials, '2', { fetch: mockFetch(() => json({ MediaContainer: { totalSize: 0, size: 0 } })) }), new Map())
+})
+
+test('Plex rating writes use server auth and the 0–10 scale, including empty-body clear responses', async () => {
+  for (const [rating, expected] of [[0.5, '1'], [4.5, '9'], [5, '10'], [null, '0']] as const) {
+    await writePlexRating(credentials, '3', rating, { fetch: mockFetch((url, init) => {
+      assert.equal(url.pathname, '/:/rate')
+      assert.equal(url.searchParams.get('identifier'), 'com.plexapp.plugins.library')
+      assert.equal(url.searchParams.get('key'), '3')
+      assert.equal(url.searchParams.get('rating'), expected)
+      assert.equal(url.searchParams.get('X-Plex-Token'), null)
+      assert.equal(init.method, 'PUT'); assert.equal(init.redirect, 'error')
+      assert.equal(new Headers(init.headers).get('X-Plex-Token'), 'server-secret')
+      assert.ok(init.signal)
+      return new Response(null, { status: 204 })
+    }) })
+  }
+  const noRequest = { fetch: mockFetch(() => { assert.fail('Invalid input must not send a request') }) }
+  await assert.rejects(writePlexRating(credentials, '../1', 4, noRequest), /Invalid/)
+  await assert.rejects(writePlexRating(credentials, '3', 4.75, noRequest), /Invalid/)
+  await assert.rejects(fetchPlexUserStates(credentials, '2', noRequest, ['1', '../2']), /Invalid/)
+  await assert.rejects(writePlexRating(credentials, '3', 4, { fetch: mockFetch(() => new Response('secret', { status: 403 })) }), error =>
+    error instanceof PlexRequestError && error.status === 403 && !error.message.includes('secret'))
 })

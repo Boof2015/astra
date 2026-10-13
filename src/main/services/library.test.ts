@@ -7,6 +7,7 @@ import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
 import * as library from './library.ts'
 import { ProviderStateSync } from './providerStateSync.ts'
+import { fetchPlexUserStates, writePlexRating, type PlexCredentials } from './plex.ts'
 import type { ProviderSyncValue, ProviderUserState } from '../../types/providerSync.ts'
 import { resolveAlbumFixtureTracks, type ResolveAlbumFixtureTrack } from '../../shared/library/__fixtures__/resolveAlbums.ts'
 import type { StatsTransferTrackTuple } from '../../shared/stats/statsTransfer.ts'
@@ -5871,4 +5872,90 @@ test('Plex library identity survives reconnect and retained removal without dupl
   await library.deletePlexSource(restored.id, true)
   assert.equal(library.getTrackByPath(path), null)
   assert.equal(library.getFavorites().length, 0)
+})
+
+test('Plex rating sync persists half-stars and opt-in per library while favorites remain independent', async t => {
+  await setupEmptyLibrary(t)
+  const input = { name: 'Music', base_url: 'https://plex.test', username: 'listener', account_id: 'account',
+    server_id: 'server', library_id: '2', library_name: 'Music', secret_encrypted: 'encrypted' }
+  const source = await library.savePlexSource(input)
+  const other = await library.savePlexSource({ ...input, library_id: '3' })
+  const ref = { provider: 'plex' as const, sourceId: source.id }
+  const otherRef = { provider: 'plex' as const, sourceId: other.id }
+  const path = `plex://${source.id}/123`, otherPath = `plex://${other.id}/456`
+  for (const [id, trackPath, trackId] of [[source.id, path, '123'], [other.id, otherPath, '456']] as const) {
+    await library.upsertPlexTracks(id, [createRemoteTrack({ path: trackPath, source_track_id: trackId, title: 'Song', artist: 'Artist', album: 'Album' })])
+    await library.addFavorite(trackPath)
+  }
+  await library.setTrackRatingForPaths([path], 4.5)
+  assert.equal(library.getProviderSyncSetting(ref), null)
+  const credentials: PlexCredentials = { account: { accountId: 'account', clientId: 'client', username: 'listener', token: 'account-token' },
+    server: { id: 'server', name: 'Server', token: 'server-token', owned: true, connections: [] }, baseUrl: input.base_url }
+  let serverRating = 1
+  let requests = 0
+  const writes: string[] = []
+  const options = { fetch: async (url: URL, init: RequestInit) => {
+    requests++
+    assert.equal(new Headers(init.headers).get('X-Plex-Token'), 'server-token')
+    if (url.pathname === '/:/rate') {
+      assert.equal(init.method, 'PUT')
+      assert.equal(url.searchParams.get('key'), '123')
+      serverRating = Number(url.searchParams.get('rating'))
+      writes.push(String(serverRating))
+      return new Response(null, { status: 204 })
+    }
+    assert.ok(['/library/sections/2/all', '/library/metadata/123'].includes(url.pathname))
+    return new Response(JSON.stringify({ MediaContainer: { totalSize: 1, Metadata: [
+      { type: 'track', ratingKey: '123', librarySectionID: 2, userRating: serverRating }
+    ] } }), { headers: { 'Content-Type': 'application/json' } })
+  } }
+  const service = new ProviderStateSync({
+    sources: () => [ref, otherRef], fingerprint: () => 'account/server/library',
+    setting: library.getProviderSyncSetting, setSetting: library.setProviderSyncSetting,
+    tracks: library.getProviderSyncTracks, track: (ref, path) => library.getProviderSyncTracks(ref, path)[0],
+    baselines: library.getProviderSyncBaselines, saveBaseline: library.saveProviderSyncBaseline,
+    persist: library.persistLibraryDatabase, changed: () => {},
+    client: async target => {
+      assert.equal(target.sourceId, source.id, 'an opted-out library receives no requests')
+      return { read: ids => fetchPlexUserStates(credentials, '2', options, ids),
+        write: (id, field, value) => {
+          assert.equal(field, 'rating', 'Plex must never receive a favorite write')
+          return writePlexRating(credentials, id, value as number | null, options)
+        } }
+    },
+    applyLocal: async (path, field, value) => {
+      assert.equal(field, 'rating', 'incoming Plex state must not edit favorites')
+      await library.setTrackRatingForPaths([path], value as number | null)
+    }
+  })
+  t.after(() => service.close())
+  await service.refresh(ref)
+  assert.equal(requests, 0)
+  const review = await service.review(ref)
+  assert.equal(review.differences.length, 1)
+  await service.apply(review.token, { [review.differences[0].key]: 'local' })
+  assert.equal(serverRating, 9)
+  assert.deepEqual(writes, ['9'])
+  assert.equal(service.enabled(otherRef), false)
+  library.closeDatabase()
+  await library.initDatabase()
+  assert.equal(service.enabled(ref), true)
+  assert.equal(library.getProviderSyncBaselines(ref).get(JSON.stringify([path, 'rating'])), 4.5)
+  serverRating = 7
+  await service.refresh(ref)
+  assert.equal(library.getProviderSyncTracks(ref)[0].rating, 3.5)
+  await library.removeFavorite(path)
+  await service.refresh(ref)
+  assert.equal(serverRating, 7)
+  assert.deepEqual(writes, ['9'], 'unfavoriting must not clear or replace the rating')
+  assert.ok(library.getFavoritePaths().includes(otherPath))
+  await service.edit(ref, path, 'rating', null)
+  assert.equal(serverRating, 0)
+  assert.equal(library.getProviderSyncTracks(ref)[0].rating, null)
+  await service.disable(ref)
+  serverRating = 9
+  await service.refresh(ref)
+  assert.equal(library.getProviderSyncTracks(ref)[0].rating, null)
+  assert.equal(library.getProviderSyncBaselines(ref).size, 0)
+  assert.ok(library.getFavoritePaths().includes(otherPath))
 })

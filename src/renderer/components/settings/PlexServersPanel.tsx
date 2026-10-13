@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { PlexLibraryChoice, PlexSignInStatus, PlexSource } from '../../../types/plex'
 import { usePlexSettingsStore } from '../../stores/plexSettingsStore'
 import StreamingQualitySettings from './StreamingQualitySettings'
+import ProviderSyncControls from './ProviderSyncControls'
 
 export default function PlexServersPanel() {
   const { sources, status, refresh, error: storeError } = usePlexSettingsStore()
@@ -100,6 +101,7 @@ export default function PlexServersPanel() {
         <p className="remote-source-card-meta">{source.username} · {source.library_name}{source.enabled !== 1 ? ' · Disabled' : ''}</p>
         {state?.progress && <p className="remote-source-card-progress" role="status">{state.progress.activity}{state.progress.total !== null ? ` (${state.progress.current ?? 0}/${state.progress.total})` : ''}</p>}
         {state?.error && <p className="settings-note settings-note-error">{state.error}</p>}
+        <ProviderSyncControls provider="plex" sourceId={source.id} connected={source.enabled === 1} />
         <StreamingQualitySettings source={{ provider: 'plex', sourceId: source.id }} />
         {deleting === source.id ? <div className="remote-delete-confirm">
           <p>Remove this connection and keep its tracks as unavailable placeholders, or purge its tracks?</p>
