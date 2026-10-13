@@ -1,3 +1,4 @@
+import type { PlexSource } from '../../types/plex'
 import * as mm from 'music-metadata'
 import { app, powerMonitor } from 'electron'
 import { join, extname, basename, dirname, isAbsolute as isAbsolutePath, normalize as normalizePath, resolve as resolvePath, relative as relativePath, sep as pathSep } from 'path'
@@ -322,6 +323,74 @@ export interface JellyfinSourceRow {
   last_checked_at: number | null
   created_at: number
   updated_at: number
+}
+
+export type PlexSourceRow = Omit<PlexSource, 'has_stored_secret'> & { secret_encrypted: string; deleted: number }
+
+function publicPlexSource(row: PlexSourceRow): PlexSource {
+  const { secret_encrypted, deleted: _deleted, ...source } = row
+  return { ...source, has_stored_secret: !!secret_encrypted }
+}
+export function listPlexSources(): PlexSource[] {
+  return (db?.all<PlexSourceRow>('SELECT * FROM plex_sources WHERE deleted = 0 ORDER BY created_at, id') ?? []).map(publicPlexSource)
+}
+export function getPlexSourceById(id: number): PlexSourceRow | null {
+  return db?.get<PlexSourceRow>('SELECT * FROM plex_sources WHERE id = ? AND deleted = 0', [id]) ?? null
+}
+export async function savePlexSource(input: Pick<PlexSourceRow, 'name' | 'base_url' | 'username' | 'account_id' | 'server_id' | 'library_id' | 'library_name' | 'secret_encrypted'>): Promise<PlexSource> {
+  if (!db) throw new Error('Database not initialized')
+  const now = Date.now()
+  db.run(`INSERT INTO plex_sources (name, base_url, username, account_id, server_id, library_id, library_name, secret_encrypted, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, server_id, library_id) DO UPDATE SET
+      name = excluded.name, base_url = excluded.base_url, username = excluded.username,
+      library_name = excluded.library_name, secret_encrypted = excluded.secret_encrypted,
+      enabled = 1, deleted = 0, last_status = 'unknown', last_error = NULL, updated_at = excluded.updated_at`,
+  [input.name, input.base_url, input.username, input.account_id, input.server_id, input.library_id, input.library_name, input.secret_encrypted, now, now])
+  await saveDatabase()
+  return publicPlexSource(db.get<PlexSourceRow>('SELECT * FROM plex_sources WHERE account_id = ? AND server_id = ? AND library_id = ?',
+    [input.account_id, input.server_id, input.library_id])!)
+}
+export async function updatePlexSource(id: number, input: Partial<Pick<PlexSourceRow,
+  'name' | 'base_url' | 'secret_encrypted' | 'enabled' | 'last_status' | 'last_error' | 'last_sync_at' | 'last_checked_at'>>): Promise<PlexSource> {
+  if (!db || !getPlexSourceById(id)) throw new Error('Plex source not found.')
+  const allowed = ['name', 'base_url', 'secret_encrypted', 'enabled', 'last_status', 'last_error', 'last_sync_at', 'last_checked_at'] as const
+  const keys = allowed.filter(key => input[key] !== undefined)
+  if (keys.length) db.run(`UPDATE plex_sources SET ${keys.map(key => `${key} = ?`).join(', ')}, updated_at = ? WHERE id = ?`,
+    [...keys.map(key => input[key]!), Date.now(), id])
+  await saveDatabase()
+  return publicPlexSource(getPlexSourceById(id)!)
+}
+export async function markPlexTracksAvailability(id: number, available: boolean, reason: string | null): Promise<void> {
+  db?.run(`UPDATE tracks SET is_available = ?, availability_reason = ?, modified_at = ? WHERE source_type = 'plex' AND source_id = ?`,
+    [available ? 1 : 0, available ? null : reason, Date.now(), id])
+  await saveDatabase()
+}
+export async function markMissingPlexTracksUnavailable(id: number, seen: Set<string>): Promise<void> {
+  if (!db) return
+  const rows = db.all<{ path: string; source_track_id: string }>("SELECT path, source_track_id FROM tracks WHERE source_type = 'plex' AND source_id = ?", [id])
+  beginLibraryWriteTransaction()
+  try {
+    for (const row of rows) if (!seen.has(row.source_track_id)) db!.run(
+      "UPDATE tracks SET is_available = 0, availability_reason = 'missing_upstream', modified_at = ? WHERE path = ?", [Date.now(), row.path])
+    commitLibraryWriteTransaction()
+  } catch (error) { rollbackLibraryWriteTransaction(); throw error }
+  await saveDatabase()
+}
+export async function deletePlexSource(id: number, purge: boolean): Promise<void> {
+  if (!db) return
+  if (purge) {
+    const paths = db.all<{ path: string }>("SELECT path FROM tracks WHERE source_type = 'plex' AND source_id = ?", [id]).map(row => row.path)
+    deleteTrackRelatedRows(paths)
+    db.run("DELETE FROM tracks WHERE source_type = 'plex' AND source_id = ?", [id])
+    rebuildDerivedLibraryState()
+    db.run('DELETE FROM plex_sources WHERE id = ?', [id])
+  } else {
+    await markPlexTracksAvailability(id, false, 'source_deleted')
+    // Keep only stable identity so re-adding this library revives its tracks.
+    db.run("UPDATE plex_sources SET deleted = 1, enabled = 0, secret_encrypted = '', last_status = 'disabled' WHERE id = ?", [id])
+  }
+  await saveDatabase()
 }
 
 export interface JellyfinSourcePublic {
@@ -2709,6 +2778,17 @@ export async function initDatabase(): Promise<void> {
   `)
   db.run('CREATE INDEX IF NOT EXISTS idx_jellyfin_sources_enabled ON jellyfin_sources(enabled)')
 
+  db.run(`CREATE TABLE IF NOT EXISTS plex_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, base_url TEXT NOT NULL,
+    username TEXT NOT NULL, account_id TEXT NOT NULL, server_id TEXT NOT NULL,
+    library_id TEXT NOT NULL, library_name TEXT NOT NULL, secret_encrypted TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, last_status TEXT NOT NULL DEFAULT 'unknown',
+    last_error TEXT, last_sync_at INTEGER, last_checked_at INTEGER,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    UNIQUE(account_id, server_id, library_id)
+  )`)
+
+
   db.run(`CREATE TABLE IF NOT EXISTS provider_state_sync (
     provider TEXT NOT NULL, source_id INTEGER NOT NULL, fingerprint TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (provider, source_id)
@@ -4442,7 +4522,17 @@ export async function restoreJellyfinTracksFromSourceUnavailable(
   return Number.isFinite(count) ? count : 0
 }
 
-export async function upsertJellyfinTracks(
+export function upsertJellyfinTracks(sourceId: number, tracks: JellyfinTrackUpsertInput[],
+  options: { persist?: boolean; syncSessionKey?: string | null } = {}) {
+  return upsertRemoteCatalogTracks('jellyfin', sourceId, tracks, options)
+}
+export function upsertPlexTracks(sourceId: number, tracks: JellyfinTrackUpsertInput[],
+  options: { persist?: boolean; syncSessionKey?: string | null } = {}) {
+  return upsertRemoteCatalogTracks('plex', sourceId, tracks, options)
+}
+
+async function upsertRemoteCatalogTracks(
+  provider: 'jellyfin' | 'plex',
   sourceId: number,
   tracks: JellyfinTrackUpsertInput[],
   options: { persist?: boolean; syncSessionKey?: string | null } = {}
@@ -4451,7 +4541,7 @@ export async function upsertJellyfinTracks(
     return { inserted: 0, updated: 0 }
   }
 
-  const sourceExists = Boolean(db.get('SELECT 1 FROM jellyfin_sources WHERE id = ? LIMIT 1', [sourceId]))
+  const sourceExists = Boolean(db.get(`SELECT 1 FROM ${provider}_sources WHERE id = ? LIMIT 1`, [sourceId]))
   if (!sourceExists) {
     return { inserted: 0, updated: 0 }
   }
@@ -4485,7 +4575,7 @@ export async function upsertJellyfinTracks(
              year = ?,
              genre = ?,
              genre_names_json = ?,
-             artwork_hash = ?,
+             artwork_hash = ${provider === 'plex' ? 'COALESCE(?, artwork_hash)' : '?'},
              format = ?,
              sample_rate = ?,
              bit_depth = ?,
@@ -4498,7 +4588,7 @@ export async function upsertJellyfinTracks(
              replaygain_album_gain_db = ?,
              bpm = ?,
              musical_key = ?,
-             source_type = 'jellyfin',
+             source_type = '${provider}',
              source_id = ?,
              source_track_id = ?,
              source_path = ?,
@@ -4585,7 +4675,7 @@ export async function upsertJellyfinTracks(
         sync_session_key,
         added_at,
         modified_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'jellyfin', ?, ?, ?, 1, NULL, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '${provider}', ?, ?, ?, 1, NULL, ?, ?, ?)`,
       [
         track.path,
         track.title,
@@ -4697,6 +4787,10 @@ export async function cleanupOrphanedRemoteTracks(options: { persist?: boolean }
     ) OR (
       source_type = 'jellyfin'
       AND (source_id IS NULL OR source_id NOT IN (SELECT id FROM jellyfin_sources))
+      AND COALESCE(availability_reason, '') <> 'source_deleted'
+    ) OR (
+      source_type = 'plex'
+      AND (source_id IS NULL OR source_id NOT IN (SELECT id FROM plex_sources))
       AND COALESCE(availability_reason, '') <> 'source_deleted'
     )
   `)

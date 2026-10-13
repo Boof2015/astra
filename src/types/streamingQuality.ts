@@ -15,7 +15,7 @@ export interface AutomaticQualityPreparationResult {
   /** Adopt the representation actually primed, including compatibility fallback. */
   request?: StreamingQualityRequest
 }
-export interface StreamingQualitySource { provider: 'subsonic' | 'jellyfin'; sourceId: number }
+export interface StreamingQualitySource { provider: 'subsonic' | 'jellyfin' | 'plex'; sourceId: number }
 export interface StreamingQualitySettings {
   global: StreamingQuality
   overrides: Record<string, StreamingQuality>
@@ -85,7 +85,7 @@ export interface AutomaticQualityPlayback {
 }
 
 export function streamingQualitySourceKey(source: StreamingQualitySource): string {
-  if (!source || (source.provider !== 'subsonic' && source.provider !== 'jellyfin')
+  if (!source || (source.provider !== 'subsonic' && source.provider !== 'jellyfin' && source.provider !== 'plex')
     || !Number.isSafeInteger(source.sourceId) || source.sourceId <= 0) throw new Error('Invalid streaming server.')
   return `${source.provider}:${source.sourceId}`
 }
@@ -97,7 +97,7 @@ export function parseStreamingQualitySettings(serialized: string | null | undefi
     if (!value || typeof value !== 'object') return defaults
     const overrides: Record<string, StreamingQuality> = {}
     for (const [key, quality] of Object.entries(value.overrides ?? {})) {
-      if (/^(subsonic|jellyfin):[1-9]\d*$/.test(key) && isStreamingQuality(quality)) overrides[key] = quality
+      if (/^(subsonic|jellyfin|plex):[1-9]\d*$/.test(key) && isStreamingQuality(quality)) overrides[key] = quality
     }
     return { global: isStreamingQuality(value.global) ? value.global : 'original', overrides }
   } catch { return defaults }
@@ -108,7 +108,7 @@ export function resolveStreamingQuality(settings: StreamingQualitySettings, sour
 }
 
 export function streamingQualitySourceFromPath(path: string): StreamingQualitySource | null {
-  const match = /^(subsonic|jellyfin):\/\/([1-9]\d*)\//.exec(path)
+  const match = /^(subsonic|jellyfin|plex):\/\/([1-9]\d*)\//.exec(path)
   const sourceId = Number(match?.[2])
   return match && Number.isSafeInteger(sourceId) ? { provider: match[1] as StreamingQualitySource['provider'], sourceId } : null
 }

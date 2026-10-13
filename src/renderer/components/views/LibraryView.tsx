@@ -1,3 +1,4 @@
+import { usePlexSettingsStore } from '../../stores/plexSettingsStore'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent as ReactUIEvent } from 'react'
 import {
   useLibraryStore,
@@ -132,7 +133,7 @@ function compareNullableDuration(a: number | null | undefined, b: number | null 
 }
 
 function resolveEffectiveAddedAt(
-  track: { source_type: 'local' | 'subsonic' | 'jellyfin'; file_created_at: number | null; added_at: number }
+  track: { source_type: 'local' | 'subsonic' | 'jellyfin' | 'plex'; file_created_at: number | null; added_at: number }
 ): number {
   if (track.source_type === 'local' && typeof track.file_created_at === 'number' && Number.isFinite(track.file_created_at) && track.file_created_at > 0) {
     return track.file_created_at
@@ -141,8 +142,8 @@ function resolveEffectiveAddedAt(
 }
 
 function compareAddedAt(
-  a: { source_type: 'local' | 'subsonic' | 'jellyfin'; file_created_at: number | null; added_at: number },
-  b: { source_type: 'local' | 'subsonic' | 'jellyfin'; file_created_at: number | null; added_at: number },
+  a: { source_type: 'local' | 'subsonic' | 'jellyfin' | 'plex'; file_created_at: number | null; added_at: number },
+  b: { source_type: 'local' | 'subsonic' | 'jellyfin' | 'plex'; file_created_at: number | null; added_at: number },
   direction: SortDirection
 ): number {
   return compareWithDirection(resolveEffectiveAddedAt(a) - resolveEffectiveAddedAt(b), direction)
@@ -262,6 +263,7 @@ export default function LibraryView() {
   const artistRootViewMode = useLibraryStore((state) => state.artistRootViewMode)
   const setArtistRootViewMode = useLibraryStore((state) => state.setArtistRootViewMode)
   const subsonicSources = useSubsonicSettingsStore((state) => state.sources)
+  const plexSources = usePlexSettingsStore(state => state.sources)
   const jellyfinSources = useJellyfinSettingsStore((state) => state.sources)
 
   const shuffle = usePlayerStore((s) => s.shuffle)
@@ -440,12 +442,13 @@ export default function LibraryView() {
         key: `subsonic:${source.id}`,
         label: source.name
       })),
+      ...plexSources.map(source => ({ key: `plex:${source.id}`, label: source.name })),
       ...jellyfinSources.map((source) => ({
         key: `jellyfin:${source.id}`,
         label: source.name
       }))
     ]
-  }, [jellyfinSources, subsonicSources])
+  }, [plexSources, jellyfinSources, subsonicSources])
   const shouldShowSourceFilters = sourceFilterOptions.length > 0
   const hasEffectiveLibraryFilters = hasHiddenFolders || (shouldShowSourceFilters && selectedSourceFilters.size > 0)
   const selectedArtistRecord = useMemo(() => {
@@ -534,6 +537,7 @@ export default function LibraryView() {
     const validFilterKeys = new Set<string>([
       'local',
       ...subsonicSources.map((source) => `subsonic:${source.id}`),
+      ...plexSources.map(source => `plex:${source.id}`),
       ...jellyfinSources.map((source) => `jellyfin:${source.id}`)
     ])
 
@@ -545,7 +549,7 @@ export default function LibraryView() {
       }
     }
     setSelectedSourceFilters(next)
-  }, [jellyfinSources, selectedSourceFilters, setSelectedSourceFilters, subsonicSources])
+  }, [plexSources, jellyfinSources, selectedSourceFilters, setSelectedSourceFilters, subsonicSources])
 
   useEffect(() => {
     if (shouldShowSourceFilters) return
@@ -820,6 +824,7 @@ export default function LibraryView() {
         if (track.source_id == null) return false
         return selectedSourceFilters.has(`subsonic:${track.source_id}`)
       }
+      if (track.source_type === 'plex') return track.source_id != null && selectedSourceFilters.has(`plex:${track.source_id}`)
       if (track.source_type === 'jellyfin') {
         if (track.source_id == null) return false
         return selectedSourceFilters.has(`jellyfin:${track.source_id}`)

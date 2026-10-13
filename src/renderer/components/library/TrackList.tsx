@@ -581,7 +581,7 @@ function TrackListRowRenderer({
 
   const isMissingPlaylistEntry = isMissingPlaylistEntryTrack(track)
   const isUnavailable = isUnavailableRemoteTrack(track) || isMissingPlaylistEntry
-  const sourceLabel = track.source_type === 'jellyfin'
+  const sourceLabel = track.source_type === 'plex' ? 'Plex' : track.source_type === 'jellyfin'
     ? 'Jellyfin'
     : track.source_type === 'subsonic'
       ? 'Subsonic'

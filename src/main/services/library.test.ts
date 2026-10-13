@@ -5837,3 +5837,38 @@ test('favorite matching does not guess between local copies or different release
   assert.deepEqual(library.getProviderFavoriteTargets('/one.flac'), [])
   assert.equal(library.getProviderSyncTracks({ provider: 'subsonic', sourceId: source.id })[0].favorite, false)
 })
+
+test('Plex library identity survives reconnect and retained removal without duplicate tracks or lost favorites', async t => {
+  await setupEmptyLibrary(t)
+  const input = { name: 'Home · Music', base_url: 'https://plex.example', username: 'listener', account_id: 'account',
+    server_id: 'server', library_id: '2', library_name: 'Music', secret_encrypted: 'encrypted' }
+  const source = await library.savePlexSource(input)
+  assert.equal('secret_encrypted' in source, false)
+  const path = `plex://${source.id}/123`
+  const track = createRemoteTrack({ path, source_track_id: '123', title: 'Song', artist: 'Artist', album: 'Album' })
+  await library.upsertPlexTracks(source.id, [track])
+  await library.addFavorite(path)
+  await library.setTrackRatingForPaths([path], 4.5)
+  const before = library.getTrackByPath(path)!
+  assert.equal(before.source_type, 'plex')
+  const reconnected = await library.savePlexSource({ ...input, base_url: 'https://new-connection.example', secret_encrypted: 'renewed' })
+  assert.equal(reconnected.id, source.id)
+  await library.markMissingPlexTracksUnavailable(source.id, new Set())
+  assert.equal(library.getTrackByPath(path)?.is_available, 0)
+  await library.upsertPlexTracks(source.id, [track])
+  assert.equal(library.getTrackByPath(path)?.id, before.id)
+  assert.equal(library.getTrackByPath(path)?.is_available, 1)
+  await library.deletePlexSource(source.id, false)
+  assert.equal(library.listPlexSources().length, 0)
+  assert.equal(library.getPlexSourceById(source.id), null)
+  assert.equal(library.getTrackByPath(path)?.availability_reason, 'source_deleted')
+  const restored = await library.savePlexSource(input)
+  assert.equal(restored.id, source.id)
+  await library.upsertPlexTracks(restored.id, [track])
+  assert.equal(library.getTrackByPath(path)?.id, before.id)
+  assert.equal(library.getTrackRatingEntries().find(entry => entry.track_path === path)?.rating, 4.5)
+  assert.ok(library.getFavorites().some(entry => entry.path === path))
+  await library.deletePlexSource(restored.id, true)
+  assert.equal(library.getTrackByPath(path), null)
+  assert.equal(library.getFavorites().length, 0)
+})

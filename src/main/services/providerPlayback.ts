@@ -1,3 +1,4 @@
+import { parsePlexTrackPath } from './plex'
 import { normalizeProviderPlaybackSnapshot, type ProviderPlaybackSnapshot } from '../../types/providerPlayback'
 import { parseJellyfinTrackPath } from './jellyfin'
 import { parseSubsonicTrackPath } from './subsonic'
@@ -9,8 +10,10 @@ export interface PlaybackReportClient {
   stop(report: PlaybackReport, signal: AbortSignal): Promise<void>
   scrobble?(report: PlaybackReport, signal: AbortSignal): Promise<void>
 }
-export interface PlaybackReportSource { provider: 'subsonic' | 'jellyfin'; sourceId: number; trackId: string }
+export interface PlaybackReportSource { provider: 'subsonic' | 'jellyfin' | 'plex'; sourceId: number; trackId: string }
 export function playbackReportSource(path: string): PlaybackReportSource | null {
+  const plex = parsePlexTrackPath(path)
+  if (plex) return { provider: 'plex', sourceId: plex.sourceId, trackId: plex.sourceTrackId }
   const jellyfin = parseJellyfinTrackPath(path)
   if (jellyfin) return { provider: 'jellyfin', sourceId: jellyfin.sourceId, trackId: jellyfin.sourceTrackId }
   const subsonic = parseSubsonicTrackPath(path)

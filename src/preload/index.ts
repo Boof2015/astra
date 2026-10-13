@@ -1,3 +1,4 @@
+import type { PlexAPI } from '../types/plex'
 import type { RemoteAudioCacheStatus } from '../types/remoteAudioCache'
 import type { RemoteAudioAnalysis } from '../types/remoteAudioAnalysis'
 import type { AutomaticQualityPlayback, AutomaticQualityPreparationResult, StreamQualityTarget, AutomaticStreamingQuality, StreamingQualityRequest, StreamingQuality, StreamingQualitySettings, StreamingQualitySource } from '../types/streamingQuality'
@@ -1487,6 +1488,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return () => ipcRenderer.removeListener('subsonic:status', handler)
     }
   },
+  plex: {
+    beginSignIn: () => ipcRenderer.invoke('plex:beginSignIn'),
+    pollSignIn: id => ipcRenderer.invoke('plex:pollSignIn', id),
+    cancelSignIn: id => ipcRenderer.invoke('plex:cancelSignIn', id),
+    libraries: (id, serverId) => ipcRenderer.invoke('plex:libraries', id, serverId),
+    connect: input => ipcRenderer.invoke('plex:connect', input),
+    listSources: () => ipcRenderer.invoke('plex:listSources'),
+    updateSource: (id, input) => ipcRenderer.invoke('plex:updateSource', id, input),
+    deleteSource: (id, purge) => ipcRenderer.invoke('plex:deleteSource', id, purge),
+    syncSource: (id, key) => ipcRenderer.invoke('plex:syncSource', id, key),
+    syncAll: key => ipcRenderer.invoke('plex:syncAll', key),
+    getStatus: () => ipcRenderer.invoke('plex:getStatus'),
+    onStatus: callback => {
+      const handler = (_event: Electron.IpcRendererEvent, status: Parameters<typeof callback>[0]) => callback(status)
+      ipcRenderer.on('plex:status', handler)
+      return () => ipcRenderer.removeListener('plex:status', handler)
+    }
+  } satisfies PlexAPI,
   jellyfin: {
     listSources: (): Promise<JellyfinSource[]> => ipcRenderer.invoke('jellyfin:listSources'),
     createSource: (input: JellyfinSourceCreateInput): Promise<JellyfinSource> =>
@@ -2285,6 +2304,7 @@ declare global {
         getStatus: () => Promise<SubsonicStatusSnapshot>
         onStatus: (callback: (status: SubsonicStatusSnapshot) => void) => () => void
       }
+      plex: PlexAPI
       jellyfin: {
         listSources: () => Promise<JellyfinSource[]>
         createSource: (input: JellyfinSourceCreateInput) => Promise<JellyfinSource>

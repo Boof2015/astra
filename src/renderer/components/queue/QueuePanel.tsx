@@ -289,7 +289,7 @@ function QueueRowRenderer({
     && isCurrentLoading
     && row.track.sourceType !== undefined
     && row.track.sourceType !== 'local'
-  const sourceLabel = row.track.sourceType === 'jellyfin'
+  const sourceLabel = row.track.sourceType === 'plex' ? 'Plex' : row.track.sourceType === 'jellyfin'
     ? 'Jellyfin'
     : row.track.sourceType === 'subsonic'
       ? 'Subsonic'

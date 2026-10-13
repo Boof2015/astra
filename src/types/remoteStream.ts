@@ -1,5 +1,5 @@
 import type { RemotePlaybackQuality } from './streamingQuality'
-export type ProgressiveStreamSourceType = 'local' | 'subsonic' | 'jellyfin'
+export type ProgressiveStreamSourceType = 'local' | 'subsonic' | 'jellyfin' | 'plex'
 export type RemoteStreamSourceType = ProgressiveStreamSourceType
 
 export type RemoteLoadStage = 'downloading' | 'streaming' | 'complete' | 'failed'

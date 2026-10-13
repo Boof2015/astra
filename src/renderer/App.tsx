@@ -1,3 +1,4 @@
+import { usePlexSettingsStore } from './stores/plexSettingsStore'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import TitleBar from './components/layout/TitleBar'
 import Sidebar from './components/layout/Sidebar'
@@ -434,6 +435,7 @@ function App() {
     void useLyricsStore.getState().init()
     void useSubsonicSettingsStore.getState().init()
     void useJellyfinSettingsStore.getState().init()
+    void usePlexSettingsStore.getState().init()
 
     const handleAssociatedOpenFiles = async (rawPaths: string[]) => {
       const queuePaths = [...new Set(

@@ -39,7 +39,7 @@ interface RemoteLoadProgress {
   quality?: import('../../types/streamingQuality').RemotePlaybackQuality
   sessionId?: number
   path: string
-  sourceType: 'local' | 'subsonic' | 'jellyfin'
+  sourceType: 'local' | 'subsonic' | 'jellyfin' | 'plex'
   stage: 'downloading' | 'streaming' | 'complete' | 'failed'
   loadedBytes: number
   totalBytes: number | null
@@ -779,7 +779,7 @@ function getTrackRetentionDiagnostics(state: Pick<PlayerStore, 'currentTrack' | 
 }
 
 function createInitialRemoteLoadProgress(track: Track, quality?: import('../../types/streamingQuality').RemotePlaybackQuality): RemoteLoadProgress {
-  const sourceType = track.sourceType === 'jellyfin'
+  const sourceType = track.sourceType === 'plex' ? 'plex' : track.sourceType === 'jellyfin'
     ? 'jellyfin'
     : track.sourceType === 'subsonic'
       ? 'subsonic'
@@ -5714,7 +5714,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
       streamingQualityUnsubscribe?.()
       streamingQualityUnsubscribe = window.electronAPI.onStreamingQualityChanged?.((settings, previous) => {
         const nextPath = resolveExpectedPrebufferTrackPath()
-        if (!nextPath?.startsWith('subsonic://') && !nextPath?.startsWith('jellyfin://')) return
+        if (!nextPath?.startsWith('subsonic://') && !nextPath?.startsWith('jellyfin://') && !nextPath?.startsWith('plex://')) return
         const source = streamingQualitySourceFromPath(nextPath)
         if (source && previous && resolveStreamingQuality(settings, source) === resolveStreamingQuality(previous, source)) return
         clearBufferedNextTrack()
@@ -5927,6 +5927,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         // A seek caught an audio-thread handoff before its notification reached
         // us. Reprepare from the beginning instead of retaining a consumed prefix.
         schedulePreBufferNextTrack({ invalidatePending: true })
+      })
+
+      audioEngine.on('remotePrebufferHeadroom', () => {
+        schedulePreBufferNextTrack()
       })
 
       audioEngine.on('remoteWaveformUpdate', (payload) => {

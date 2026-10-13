@@ -15,7 +15,7 @@ export class ProviderPlaybackPublisher {
 
   start(id: string, path: string, duration: number): void {
     this.finish()
-    if (!/^(subsonic|jellyfin):\/\//.test(path)) return
+    if (!/^(subsonic|jellyfin|plex):\/\//.test(path)) return
     this.session = { id, path, duration, started: false }
     this.last = null
   }

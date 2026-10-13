@@ -407,7 +407,7 @@ interface RemoteStreamRuntimeState {
   quality?: import('../../types/streamingQuality').RemotePlaybackQuality
   sessionId: number
   path: string
-  sourceType: 'local' | 'subsonic' | 'jellyfin'
+  sourceType: 'local' | 'subsonic' | 'jellyfin' | 'plex'
   track: Track
   sampleRate: number
   channels: number
@@ -3467,6 +3467,7 @@ export class AudioEngine {
       return
     }
 
+    const previouslyReady = this.hasRemotePrebufferHeadroom()
     const channelData = this.deinterleaveRemoteChunk(chunk)
     const startFrame = remoteState.bufferedFrames
     remoteState.bufferedFrames = Math.max(remoteState.bufferedFrames, chunk.decodedFrames)
@@ -3502,6 +3503,7 @@ export class AudioEngine {
     )
     if (prepared) this.markPreparedRemoteReady()
     else this.maybeStartRemotePlayback()
+    this.notifyRemotePrebufferHeadroom(remoteState, previouslyReady)
   }
 
   private handleRemoteStreamEvent(payload: RemoteStreamEvent): void {
@@ -3521,6 +3523,7 @@ export class AudioEngine {
     if (!remoteState || payload.sessionId !== remoteState.sessionId) return
 
     if (payload.type === 'complete') {
+      const previouslyReady = this.hasRemotePrebufferHeadroom()
       remoteState.sourceEnded = true
       if (remoteState.normalization) {
         this.applyRemoteNormalizationIfNeeded(remoteState, { force: true, markComplete: true })
@@ -3534,6 +3537,7 @@ export class AudioEngine {
         ended: true
       })
       this.maybeStartRemotePlayback()
+      this.notifyRemotePrebufferHeadroom(remoteState, previouslyReady)
       return
     }
 
@@ -3944,6 +3948,13 @@ export class AudioEngine {
     if (!current) return !!this.audioBuffer
     return !!current && (!!current.completeBuffer || current.sourceEnded
       || (current.bufferedFrames - current.currentFrame) / current.sampleRate >= 5)
+  }
+
+  private notifyRemotePrebufferHeadroom(state: RemoteStreamRuntimeState, previouslyReady: boolean): void {
+    if (state !== this.remoteStreamState || !state.seekableCache || previouslyReady) return
+    // Retained audio does not emit partial waveforms. Wake preparation when PCM
+    // becomes ready, without continually postponing the scheduler's settle timer.
+    if (this.hasRemotePrebufferHeadroom()) this.emit('remotePrebufferHeadroom')
   }
 
   async preBufferNextRemoteTrack(track: Track, replayGainDb: number | null,

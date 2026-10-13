@@ -1,4 +1,4 @@
-export type TrackSourceType = 'local' | 'subsonic' | 'jellyfin'
+export type TrackSourceType = 'local' | 'subsonic' | 'jellyfin' | 'plex'
 
 export type SubsonicSourceLastStatus =
   | 'unknown'

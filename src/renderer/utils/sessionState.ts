@@ -210,7 +210,7 @@ function requiredStringArray(value: unknown): string[] {
 }
 
 function normalizeTrackSourceType(value: unknown): TrackSourceType | undefined {
-  return value === 'local' || value === 'subsonic' || value === 'jellyfin'
+  return value === 'local' || value === 'subsonic' || value === 'jellyfin' || value === 'plex'
     ? value
     : undefined
 }

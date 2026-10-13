@@ -1,3 +1,8 @@
+import { PlexSources } from './services/plexSources'
+import { plexRequestOptions } from './services/plexNetwork'
+import { parsePlexTrackPath, reportPlexPlayback } from './services/plex'
+import { createPlexAudioSource } from './services/plexAudioSource'
+import type { PlexConnectInput } from '../types/plex'
 import { analyzeRemoteAudioFile } from './services/remoteAudioAnalysis'
 import { parseCompanionDeviceInfo, type CompanionDeviceInfo } from '../shared/companionDevices'
 import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, clipboard, screen, safeStorage, powerMonitor, protocol, session, globalShortcut, Menu, Tray, type MenuItemConstructorOptions } from 'electron'
@@ -1451,6 +1456,21 @@ const parallaxService = new ParallaxService({
   getSecurityMigrationRequired: () => parallaxSecurityMigrationRequired
 })
 
+const plexSources = new PlexSources({
+  library,
+  request: plexRequestOptions,
+  encrypt: value => {
+    if (!canUseSecureLocalStorage()) throw new Error('Secure credential storage is unavailable. Unlock your system keychain and try again.')
+    return safeStorage.encryptString(value).toString('base64')
+  },
+  decrypt: value => safeStorage.decryptString(Buffer.from(value, 'base64')),
+  openExternal: url => shell.openExternal(url),
+  changed: status => sendToWindow(mainWindow, 'plex:status', status),
+  beginLibrarySync: key => latestLibrarySyncCoordinator.beginOperation(key),
+  finishLibrarySync: (key, success) => finalizeLatestLibrarySyncSession(key, success, 'Plex sync')
+})
+let plexSyncTimer: ReturnType<typeof setInterval> | null = null
+
 const providerPlaybackErrorAt = new Map<string, number>()
 const providerPlaybackService = new ProviderPlaybackService({
   onError: (provider) => {
@@ -1460,6 +1480,13 @@ const providerPlaybackService = new ProviderPlaybackService({
     console.warn(`[Playback reporting] ${provider} could not receive an update; audio playback continues.`)
   },
   resolve: async (target) => {
+    if (target.provider === 'plex') {
+      const send = async (report: import('./services/providerPlayback').PlaybackReport, signal: AbortSignal) => {
+        await plexSources.withCredentials(target.sourceId, signal, credentials =>
+          reportPlexPlayback(credentials, target.trackId, report, { ...plexRequestOptions, signal, timeoutMs: 4000 }))
+      }
+      return { start: send, progress: send, stop: send }
+    }
     if (target.provider === 'subsonic') {
       const { source, connection } = requireSubsonicSourceCredentials(target.sourceId)
       if (source.enabled !== 1) return null
@@ -5786,6 +5813,8 @@ app.whenReady().then(async () => {
   broadcastJellyfinStatus()
   startSubsonicSyncScheduler()
   startJellyfinSyncScheduler()
+  plexSyncTimer = setInterval(() => { void plexSources.syncAll() }, SUBSONIC_SYNC_INTERVAL_MS)
+  void plexSources.syncAll()
   void runSubsonicSync().catch((error) => {
     if (error instanceof Error && error.message.includes('already in progress')) {
       return
@@ -5847,6 +5876,8 @@ app.on('before-quit', (event) => {
     }
     return
   }
+  if (plexSyncTimer) clearInterval(plexSyncTimer)
+  plexSources.dispose()
   isAppQuitting = true
   progressiveStartupControllers.cancelAll()
   void remoteAudioCache?.close()
@@ -6857,6 +6888,18 @@ ipcMain.handle('subsonic:getStatus', () => {
   return refreshSubsonicStatusCache(subsonicSyncInFlight)
 })
 
+ipcMain.handle('plex:beginSignIn', event => plexSources.begin(nativeRemoteOwner(event)))
+ipcMain.handle('plex:pollSignIn', (event, id: string) => plexSources.poll(nativeRemoteOwner(event), id))
+ipcMain.handle('plex:cancelSignIn', (event, id: string) => plexSources.cancel(nativeRemoteOwner(event), id))
+ipcMain.handle('plex:libraries', (event, id: string, serverId: string) => plexSources.libraries(nativeRemoteOwner(event), id, serverId))
+ipcMain.handle('plex:connect', (event, input: PlexConnectInput) => plexSources.connect(nativeRemoteOwner(event), input))
+ipcMain.handle('plex:listSources', () => library.listPlexSources())
+ipcMain.handle('plex:getStatus', () => plexSources.status())
+ipcMain.handle('plex:updateSource', (_event, id: number, input: { name?: string; enabled?: boolean }) => plexSources.update(id, input))
+ipcMain.handle('plex:deleteSource', (_event, id: number, purge: boolean) => plexSources.remove(id, purge === true))
+ipcMain.handle('plex:syncSource', (_event, id: number, key?: string) => plexSources.sync(id, key))
+ipcMain.handle('plex:syncAll', (_event, key?: string) => plexSources.syncAll(key))
+
 ipcMain.handle('jellyfin:listSources', () => {
   return library.listJellyfinSources().map(toJellyfinSourcePayload)
 })
@@ -7704,7 +7747,7 @@ ipcMain.handle('audio:getMetadata', async (_event, filePath: string) => {
 })
 
 ipcMain.handle('audio:getFileStat', async (_event, filePath: string) => {
-  if (!filePath || isSubsonicPath(filePath) || isJellyfinPath(filePath)) return null
+  if (!filePath || isSubsonicPath(filePath) || isJellyfinPath(filePath) || isPlexPath(filePath)) return null
   try {
     const fileStat = await stat(filePath)
     return {
@@ -9943,8 +9986,13 @@ ipcMain.handle('provider-sync:apply', (_event, token: unknown, choices: Record<s
   return providerStateSync.apply(token, choices)
 })
 
+function providerStateSource(path: string) {
+  const source = playbackReportSource(path)
+  return source && source.provider !== 'plex' ? { ...source, provider: source.provider } : null
+}
+
 ipcMain.handle('library:addFavorite', async (_event, trackPath: string) => {
-  const source = playbackReportSource(trackPath)
+  const source = providerStateSource(trackPath)
   if (source && providerStateSync.enabled(source)) return providerStateSync.edit(source, trackPath, 'favorite', true)
   const targets = library.getProviderFavoriteTargets(trackPath).filter(ref => providerStateSync.enabled(ref))
   if (targets.length) {
@@ -9956,7 +10004,7 @@ ipcMain.handle('library:addFavorite', async (_event, trackPath: string) => {
 })
 
 ipcMain.handle('library:removeFavorite', async (_event, trackPath: string) => {
-  const source = playbackReportSource(trackPath)
+  const source = providerStateSource(trackPath)
   if (source && providerStateSync.enabled(source)) return providerStateSync.edit(source, trackPath, 'favorite', false)
   const targets = library.getProviderFavoriteTargets(trackPath).filter(ref => providerStateSync.enabled(ref))
   if (targets.length) {
@@ -9981,7 +10029,7 @@ ipcMain.handle('library:setTrackRating', async (_event, trackPaths: string[], ra
     && (!Number.isInteger(rating) || rating < 1 || rating > 5)) throw new Error('Subsonic ratings must be whole stars from 1 to 5.')
   const local: string[] = []
   for (const path of new Set(trackPaths)) {
-    const source = playbackReportSource(path)
+    const source = providerStateSource(path)
     if (source?.provider === 'subsonic' && providerStateSync.enabled(source)) await providerStateSync.edit(source, path, 'rating', rating)
     else local.push(path)
   }
@@ -10434,6 +10482,7 @@ function resolveRemoteTrackDurationSeconds(filePath: string): number | null {
 function resolveProgressiveStreamSourceType(filePath: string): RemoteStreamSourceType {
   if (isSubsonicPath(filePath)) return 'subsonic'
   if (isJellyfinPath(filePath)) return 'jellyfin'
+  if (isPlexPath(filePath)) return 'plex'
   return 'local'
 }
 
@@ -10730,6 +10779,7 @@ function nativeRemoteOwner(event: Electron.IpcMainInvokeEvent): number {
   if (!nativeRemoteOwners.has(sender)) {
     nativeRemoteOwners.add(sender)
     const release = (): void => {
+      plexSources.cancelOwner(sender.id)
       nativeRemoteLeases.releaseOwner(sender.id)
       automaticQualityPreparations.releaseOwner(sender.id)
     }
@@ -10754,6 +10804,20 @@ function remoteQualityContext(filePath: string) {
   const track = library.getTrackByPath(filePath)
   const revision = JSON.stringify([track?.source_path, track?.duration, track?.format, track?.codec,
     track?.sample_rate, track?.bit_depth, track?.channels, track?.bitrate])
+  const plex = parsePlexTrackPath(filePath)
+  if (plex) {
+    const source = library.getPlexSourceById(plex.sourceId)
+    if (!source || source.enabled !== 1) throw new Error('Plex source is disabled or no longer exists.')
+    const make = (quality: StreamQualityTarget, compatibility?: RemoteCompatibilityCodec) => createPlexAudioSource({
+      sourceId: source.id, accountId: source.account_id, serverId: source.server_id, libraryId: source.library_id,
+      trackId: plex.sourceTrackId, revision, quality, compatibility,
+      fetch: plexRequestOptions.fetch,
+      credentials: (signal, force) => plexSources.credentials(source.id, signal, force)
+    })
+    return { track, make, key: `plex:${make('original').account}`,
+      originalKbps: track?.bitrate || (track?.sample_rate && track.channels ? track.sample_rate * track.channels * (track.bit_depth || 16) / 1000 : 1500),
+      source: { provider: 'plex' as const, sourceId: source.id } }
+  }
   const subsonic = parseSubsonicTrackPath(filePath)
   const jellyfin = parseJellyfinTrackPath(filePath)
   if (!subsonic && !jellyfin) throw new Error('Invalid remote track path.')
@@ -11365,6 +11429,8 @@ function isSubsonicPath(pathValue: string): boolean {
   return parseSubsonicTrackPath(pathValue) !== null
 }
 
+function isPlexPath(filePath: string): boolean { return filePath.startsWith('plex://') }
+
 function isJellyfinPath(pathValue: string): boolean {
   return parseJellyfinTrackPath(pathValue) !== null
 }
@@ -11695,13 +11761,25 @@ async function resolveJellyfinAudioPayload(
   }
 }
 
+async function resolvePlexAudioPayload(filePath: string) {
+  const parsed = parsePlexTrackPath(filePath)
+  if (!parsed) throw new Error('Invalid Plex track path.')
+  const lease = await acquireCachedRemoteAudio(filePath, new AbortController().signal, 'original')
+  try {
+    await lease.finished()
+    const response = await fetch(lease.url)
+    if (!response.ok) throw new Error('Plex audio could not be read from the cache.')
+    return { parsed, track: library.getTrackByPath(filePath), data: await response.arrayBuffer() }
+  } finally { lease.release() }
+}
+
 async function decodeAudioWithFfmpeg(filePath: string): Promise<ArrayBuffer | null> {
-  if (isSubsonicPath(filePath) || isJellyfinPath(filePath)) {
+  if (isSubsonicPath(filePath) || isJellyfinPath(filePath) || isPlexPath(filePath)) {
     let tempDir: string | null = null
     try {
       const payload = isSubsonicPath(filePath)
         ? await resolveSubsonicAudioPayload(filePath)
-        : await resolveJellyfinAudioPayload(filePath)
+        : isPlexPath(filePath) ? await resolvePlexAudioPayload(filePath) : await resolveJellyfinAudioPayload(filePath)
       const temp = await writeTempAudioFileFromBuffer(payload.data, payload.track?.format)
       tempDir = temp.tempDir
       return await decodeAudioWithFfmpeg(temp.filePath)
@@ -11773,7 +11851,7 @@ function normalizeLocalPcmDecodeRequest(
     throw new Error('Local audio decode requires a file path.')
   }
   const filePath = filePathValue
-  if (isSubsonicPath(filePath) || isJellyfinPath(filePath)) {
+  if (isSubsonicPath(filePath) || isJellyfinPath(filePath) || isPlexPath(filePath)) {
     throw new Error('Local audio decode does not accept remote track paths.')
   }
 
@@ -13035,7 +13113,7 @@ async function analyzeTrackLoudness(
   filePath: string,
   priority: LoudnessAnalysisPriority = 'interactive'
 ): Promise<TrackLoudnessAnalysisResult | null> {
-  if (!filePath || isSubsonicPath(filePath) || isJellyfinPath(filePath)) return null
+  if (!filePath || isSubsonicPath(filePath) || isJellyfinPath(filePath) || isPlexPath(filePath)) return null
 
   const interactiveRequestId = priority === 'interactive'
     ? ++latestInteractiveLoudnessRequestId
@@ -13076,7 +13154,7 @@ async function analyzeTrackLoudness(
 
 // Persist a loudness value the renderer computed via its JS fallback analyzer.
 async function storeRendererTrackLoudness(filePath: string, payload: RendererTrackLoudnessPayload): Promise<boolean> {
-  if (!filePath || isSubsonicPath(filePath) || isJellyfinPath(filePath)) return false
+  if (!filePath || isSubsonicPath(filePath) || isJellyfinPath(filePath) || isPlexPath(filePath)) return false
   if (typeof payload?.loudnessLufs !== 'number' || !Number.isFinite(payload.loudnessLufs)) return false
 
   const fileStat = await statForLoudness(filePath)
@@ -13092,13 +13170,13 @@ async function storeRendererTrackLoudness(filePath: string, payload: RendererTra
 }
 
 async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata | null> {
-  if (isSubsonicPath(filePath) || isJellyfinPath(filePath)) {
+  if (isSubsonicPath(filePath) || isJellyfinPath(filePath) || isPlexPath(filePath)) {
     let tempDir: string | null = null
     const dbTrack = library.getTrackByPath(filePath)
     try {
       const payload = isSubsonicPath(filePath)
         ? await resolveSubsonicAudioPayload(filePath)
-        : await resolveJellyfinAudioPayload(filePath)
+        : isPlexPath(filePath) ? await resolvePlexAudioPayload(filePath) : await resolveJellyfinAudioPayload(filePath)
       const temp = await writeTempAudioFileFromBuffer(payload.data, payload.track?.format)
       tempDir = temp.tempDir
       const parsed = await loadAudioMetadata(temp.filePath)
@@ -13280,12 +13358,12 @@ async function loadAudioFile(
 ) {
   const loadStartMs = Date.now()
   try {
-    if (isSubsonicPath(filePath) || isJellyfinPath(filePath)) {
+    if (isSubsonicPath(filePath) || isJellyfinPath(filePath) || isPlexPath(filePath)) {
       const payload = isSubsonicPath(filePath)
         ? await resolveSubsonicAudioPayload(filePath, {
             onDownloadProgress: runtime.onRemoteLoadProgress
           })
-        : await resolveJellyfinAudioPayload(filePath, {
+        : isPlexPath(filePath) ? await resolvePlexAudioPayload(filePath) : await resolveJellyfinAudioPayload(filePath, {
             onDownloadProgress: runtime.onRemoteLoadProgress
           })
       const name = payload.track?.title ?? payload.parsed.sourceTrackId

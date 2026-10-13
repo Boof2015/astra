@@ -55,6 +55,6 @@ export default function StreamingQualitySettings({ source }: { source?: Streamin
     <h4 className="settings-card-label">Streaming quality</h4>
     {selector}
     <p className="settings-note">Automatic adapts to sustained connection speed and buffer headroom. Prioritize original holds onto original quality longer. Original preserves the server file. Bitrate presets request a smaller stream when the server supports conversion. Actual audio details appear in the audio pipeline.</p>
-    <p className="settings-note">Applies to Subsonic, Navidrome and Jellyfin unless a server overrides it. Changes apply to the next track.</p>
+    <p className="settings-note">Applies to Subsonic, Navidrome, Jellyfin and Plex unless a server overrides it. Changes apply to the next track.</p>
   </section>
 }

@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import type { PlexAPI } from '../types/plex'
 import type { RemoteAudioCacheStatus } from '../types/remoteAudioCache'
 import type { NotchAPI } from '../types/notch'
 
@@ -565,6 +566,7 @@ declare global {
                 getStatus: () => Promise<SubsonicStatusSnapshot>
                 onStatus: (callback: (status: SubsonicStatusSnapshot) => void) => () => void
             }
+            plex: PlexAPI
             jellyfin: {
                 listSources: () => Promise<JellyfinSource[]>
                 createSource: (input: JellyfinSourceCreateInput) => Promise<JellyfinSource>

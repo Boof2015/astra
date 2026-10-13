@@ -167,7 +167,7 @@ function compareNullableDuration(a: number | null | undefined, b: number | null 
 }
 
 function resolveEffectiveAddedAt(
-  track: { source_type: 'local' | 'subsonic' | 'jellyfin'; file_created_at: number | null; added_at: number }
+  track: { source_type: 'local' | 'subsonic' | 'jellyfin' | 'plex'; file_created_at: number | null; added_at: number }
 ): number {
   if (track.source_type === 'local' && typeof track.file_created_at === 'number' && Number.isFinite(track.file_created_at) && track.file_created_at > 0) {
     return track.file_created_at

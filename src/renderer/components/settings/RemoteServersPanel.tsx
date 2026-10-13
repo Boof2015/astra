@@ -1,3 +1,5 @@
+import { usePlexSettingsStore } from '../../stores/plexSettingsStore'
+import PlexServersPanel from './PlexServersPanel'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
 import { useJellyfinSettingsStore } from '../../stores/jellyfinSettingsStore'
@@ -89,6 +91,8 @@ function getStatusDotClass(source: RemoteSourceListItem, statusItem: RemoteSourc
 }
 
 export default function RemoteServersPanel() {
+  const plexSources = usePlexSettingsStore(state => state.sources)
+  const plexStatus = usePlexSettingsStore(state => state.status)
   const {
     sources: subsonicSources,
     status: subsonicStatus,
@@ -149,7 +153,7 @@ export default function RemoteServersPanel() {
     return map
   }, [subsonicStatus, jellyfinStatus])
 
-  const isAnyRemoteSyncing = (subsonicStatus?.isSyncing ?? false) || (jellyfinStatus?.isSyncing ?? false)
+  const isAnyRemoteSyncing = (subsonicStatus?.isSyncing ?? false) || (jellyfinStatus?.isSyncing ?? false) || (plexStatus?.isSyncing ?? false)
 
   const remoteErrorMessages = useMemo(() => {
     const messages: string[] = []
@@ -485,13 +489,17 @@ export default function RemoteServersPanel() {
 
   // Sync all
   const handleSyncAll = () => {
-    if (remoteSources.length === 0) return
+    if (remoteSources.length === 0 && plexSources.length === 0) return
     const syncSessionKey = createRemoteSyncSessionKey()
     void Promise.all([
       subsonicSources.length > 0 ? syncAllSubsonicSources(syncSessionKey) : Promise.resolve(true),
-      jellyfinSources.length > 0 ? syncAllJellyfinSources(syncSessionKey) : Promise.resolve(true)
-    ]).then(([subOk, jelOk]) => {
-      if (!subOk || !jelOk) return
+      jellyfinSources.length > 0 ? syncAllJellyfinSources(syncSessionKey) : Promise.resolve(true),
+      plexSources.length > 0 ? window.electronAPI.plex.syncAll(syncSessionKey).then(async () => {
+        await usePlexSettingsStore.getState().refresh()
+        return !usePlexSettingsStore.getState().status?.sources.some(source => source.enabled && source.status === 'error')
+      }).catch(() => false) : Promise.resolve(true)
+    ]).then(([subOk, jelOk, plexOk]) => {
+      if (!subOk || !jelOk || !plexOk) return
       setFeedback('Sync finished for all configured remote sources.')
     })
   }
@@ -739,7 +747,7 @@ export default function RemoteServersPanel() {
           <button
             className="settings-btn"
             onClick={handleSyncAll}
-            disabled={isAnyRemoteSyncing || remoteSources.length === 0}
+            disabled={isAnyRemoteSyncing || (remoteSources.length === 0 && plexSources.length === 0)}
           >
             {isAnyRemoteSyncing ? 'Syncing...' : 'Sync All'}
           </button>
@@ -855,7 +863,7 @@ export default function RemoteServersPanel() {
         </div>
       ) : (
         <div className="remote-empty-state">
-          <p className="remote-empty-state-title">No remote servers configured</p>
+          <p className="remote-empty-state-title">Connect another server</p>
           <p className="remote-empty-state-desc">
             Connect a Subsonic, Navidrome, or Jellyfin server to stream your music library.
           </p>
@@ -865,6 +873,7 @@ export default function RemoteServersPanel() {
         </div>
       )}
 
+      <PlexServersPanel />
       <StreamingQualitySettings />
       <RemoteAudioCacheSettings />
       {feedback && <p className="settings-note settings-note-success">{feedback}</p>}

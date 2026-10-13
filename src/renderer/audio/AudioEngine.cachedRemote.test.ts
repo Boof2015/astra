@@ -58,7 +58,7 @@ async function flush() {
 
 // Exercise the real load/seek/play lifecycle, including the interval with no
 // remoteStreamState. Only the browser audio graph and Electron transport are fake.
-async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'local' | 'subsonic' | 'jellyfin' = 'subsonic', renderAudio = false,
+async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'local' | 'subsonic' | 'jellyfin' | 'plex' = 'subsonic', renderAudio = false,
   options: { quality?: () => RemotePlaybackQuality; normalization?: boolean } = {}) {
   const engine = new AudioEngine()
   const internals = engine as unknown as {
@@ -165,7 +165,7 @@ async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'loca
   const track = { path: sourceType === 'local' ? '/music/local.flac' : `${sourceType}://7/drag`, sourceType, duration: 1800 } as Track
   const complete = (index: number, withPcm = true) => {
     const request = requests[index]
-    const requestSource = request.path.startsWith('jellyfin://') ? 'jellyfin' : request.path.startsWith('subsonic://') ? 'subsonic' : 'local'
+    const requestSource = request.path.startsWith('plex://') ? 'plex' : request.path.startsWith('jellyfin://') ? 'jellyfin' : request.path.startsWith('subsonic://') ? 'subsonic' : 'local'
     request.resolve({ quality: options.quality?.() ?? (typeof request.quality === 'object' ? { mode: request.quality.mode, requested: request.quality.target, requestedCodec: 'mp3', delivered: null } : undefined), sessionId: request.sessionId, path: request.path, sourceType: requestSource,
       sampleRate: request.sampleRate, channels: 2, durationSeconds: 1800, startTimeSeconds: request.target,
       seekableCache: requestSource !== 'local',
@@ -293,7 +293,29 @@ test('failed Standard quality replacement preserves pause and the latest dragged
   assert.equal(h.engine.currentTime, 25)
 })
 
-for (const sourceType of ['subsonic', 'jellyfin'] as const) {
+for (const sourceType of ['subsonic', 'jellyfin', 'plex'] as const) {
+  for (const shortTrack of [false, true]) {
+    test(`${sourceType}: ${shortTrack ? 'short-track EOF' : 'growing PCM headroom'} wakes next-track preparation without a waveform`, async t => {
+      const h = await remoteHarness(t, true, sourceType)
+      let ready = 0, waveforms = 0
+      h.engine.on('remotePrebufferHeadroom', () => { ready++ })
+      h.engine.on('remoteWaveformUpdate', () => { waveforms++ })
+      assert.equal(h.engine.hasRemotePrebufferHeadroom(), false)
+      if (shortTrack) {
+        h.internals.handleRemoteStreamEvent({ type: 'complete', sessionId: 1, path: h.track.path,
+          sourceType, decodedFrames: 1000, decodedSeconds: 1 })
+      } else {
+        const receive = h.engine as unknown as { handleRemoteStreamChunk: (chunk: import('../../types/remoteStream.ts').RemoteStreamChunk) => void }
+        for (let seconds = 2; seconds <= 8; seconds++) receive.handleRemoteStreamChunk({
+          sessionId: 1, path: h.track.path, sourceType, sampleRate: 1000, channels: 2,
+          frameCount: 1000, pcmData: new ArrayBuffer(8000), decodedFrames: seconds * 1000, decodedSeconds: seconds
+        })
+      }
+      assert.equal(h.engine.hasRemotePrebufferHeadroom(), true)
+      assert.equal(ready, 1, 'readiness must wake the scheduler once, not restart its timer on every PCM chunk')
+      assert.equal(waveforms, 0, 'retained waveform analysis stays independent from next-track preparation')
+    })
+  }
   for (const playing of [false, true]) {
     test(`${sourceType}: dragging cached audio keeps the final target and ${playing ? 'playing' : 'paused'} intent`, async (t) => {
       const h = await remoteHarness(t, playing, sourceType)
@@ -716,8 +738,8 @@ test('stopping during a seek cancels startup and cannot resume playback', async 
   assert.deepEqual(h.playedTimes, [])
 })
 
-for (const sourceType of ['subsonic', 'jellyfin'] as const) {
-  for (const nextProvider of ['subsonic', 'jellyfin'] as const) {
+for (const sourceType of ['subsonic', 'jellyfin', 'plex'] as const) {
+  for (const nextProvider of ['subsonic', 'jellyfin', 'plex'] as const) {
     test(`${sourceType} to ${nextProvider}: preparation stays separate until the audio-thread handoff`, async (t) => {
       const h = await remoteHarness(t, true, sourceType)
       const nextTrack = { ...h.track, path: `${nextProvider}://7/next`, sourceType: nextProvider }
@@ -785,7 +807,7 @@ test('a pause racing with the handoff notification stays paused after promotion'
   assert.equal(h.engine.playbackState, 'playing')
 })
 
-for (const sourceType of ['subsonic', 'jellyfin'] as const) {
+for (const sourceType of ['subsonic', 'jellyfin', 'plex'] as const) {
   for (const playing of [false, true]) {
     test(`${sourceType}: seeking near EOF retains the ready successor and ${playing ? 'playing' : 'paused'} intent`, async (t) => {
       const h = await remoteHarness(t, playing, sourceType)

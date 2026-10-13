@@ -815,6 +815,60 @@ test('resuming a pending remote seek preserves its decoder and adopts the final 
   }
 })
 
+test('Plex buffering readiness prepares the next album track without waveform events', async t => {
+  resetStores()
+  const settings = useAudioSettingsStore.getState()
+  const parallax = useParallaxStore.getState()
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const listeners = new Map<string, (...args: unknown[]) => void>()
+  let headroom = false
+  const current = makeTrack('plex://1/10', { sourceType: 'plex', duration: 10 })
+  const next = makeTrack('plex://1/11', { sourceType: 'plex', duration: 10 })
+  const items = [current, next].map((track, index) => makeQueueItem(createQueueEntryFromTrack(track), `plex-gapless-${index}`))
+  t.mock.method(audioEngine, 'on', (event: string, callback: (...args: unknown[]) => void) => { listeners.set(event, callback); return () => undefined })
+  t.mock.method(audioEngine, 'getPlaybackOutputMode', () => 'standard')
+  t.mock.method(audioEngine, 'canPreBufferRemoteTrack', () => true)
+  t.mock.method(audioEngine, 'hasRemotePrebufferHeadroom', () => headroom)
+  const prepare = t.mock.method(audioEngine, 'preBufferNextRemoteTrack', async (_track: Track) => undefined)
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    addEventListener() {}, removeEventListener() {}, electronAPI: {
+      onProgressiveLoadProgress: () => () => undefined
+    }
+  } })
+  useParallaxStore.setState({ status: null })
+  useAudioSettingsStore.setState({ playbackOutputMode: 'standard', disableGaplessPrebufferDev: false })
+  try {
+    usePlayerStore.getState()._cleanupListeners()
+    usePlayerStore.getState()._initListeners()
+    // A short remaining window runs preparation immediately, avoiding fake audio
+    // clocks/timers. The readiness trigger is the same for an early settled load.
+    usePlayerStore.setState({ currentTrack: current, playbackState: 'playing', duration: 10, currentTime: 0,
+      currentQueueItemId: items[0].queueId, queueItems: items,
+      upcomingQueueIds: [items[1].queueId], baseUpcomingQueueIds: [items[1].queueId] })
+    usePlayerStore.getState()._schedulePreBufferNextTrack()
+    await flushAsyncWork()
+    assert.equal(prepare.mock.callCount(), 0, 'initial playback can start before it has prebuffer headroom')
+    headroom = true
+    listeners.get('remotePrebufferHeadroom')?.()
+    await flushAsyncWork()
+    assert.equal(prepare.mock.callCount(), 1)
+    assert.equal(prepare.mock.calls[0].arguments[0].path, next.path)
+    assert.equal(usePlayerStore.getState().currentTrack?.path, current.path)
+    assert.equal(usePlayerStore.getState().waveformData, null)
+    listeners.get('remotePrebufferHeadroom')?.()
+    await flushAsyncWork()
+    assert.equal(prepare.mock.callCount(), 1, 'subsequent progress cannot duplicate the prepared successor')
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    useParallaxStore.setState({ status: parallax.status })
+    useAudioSettingsStore.setState({ playbackOutputMode: settings.playbackOutputMode,
+      disableGaplessPrebufferDev: settings.disableGaplessPrebufferDev })
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+    resetStores()
+  }
+})
+
 for (const [currentSource, nextSource] of [['subsonic', 'subsonic'], ['local', 'jellyfin'], ['jellyfin', 'local']] as const) {
 test(`${currentSource} to ${nextSource} prebuffering waits for headroom and never skips a failed next item`, async (t) => {
   resetStores()
