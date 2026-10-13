@@ -1,3 +1,4 @@
+import type { RemotePlaylistLink, RemotePlaylistLocal, RemotePlaylistSnapshot } from '../../types/remotePlaylists'
 import type { PlexSource } from '../../types/plex'
 import * as mm from 'music-metadata'
 import { app, powerMonitor } from 'electron'
@@ -554,6 +555,7 @@ export interface LyricsTrackManualInput {
 }
 
 export interface Playlist {
+  remote?: RemotePlaylistLink
   id: number
   name: string
   kind: PlaylistKind
@@ -2789,6 +2791,9 @@ export async function initDatabase(): Promise<void> {
   )`)
 
 
+  db.run(`CREATE TABLE IF NOT EXISTS remote_playlist_sync (provider TEXT NOT NULL, source_id INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (provider, source_id))`)
+
   db.run(`CREATE TABLE IF NOT EXISTS provider_state_sync (
     provider TEXT NOT NULL, source_id INTEGER NOT NULL, fingerprint TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (provider, source_id)
@@ -2918,6 +2923,7 @@ export async function initDatabase(): Promise<void> {
   } catch {
     // Column already exists.
   }
+  try { db.run('ALTER TABLE playlists ADD COLUMN remote_writable INTEGER NOT NULL DEFAULT 0') } catch { /* Existing column. */ }
   db.run("UPDATE playlists SET kind = 'normal' WHERE kind IS NULL OR kind NOT IN ('normal', 'dynamic')")
   db.run("UPDATE playlists SET dynamic_rules_json = NULL WHERE kind <> 'dynamic'")
   db.run('CREATE INDEX IF NOT EXISTS idx_playlists_last_played ON playlists(last_played_at DESC)')
@@ -6187,6 +6193,7 @@ function resolveHomePlaylistSource(
   playedAt: number
 ): HomePlaybackSourceSummary | null {
   if (!db) return null
+  if (source.playlistId !== -1 && !isPlaylistVisible(source.playlistId)) return null
   const playlist = source.playlistId === -1 ? null : db.get<{
     name: string; kind: string; dynamic_rules_json: string | null; custom_cover_hash: string | null
   }>('SELECT name, kind, dynamic_rules_json, custom_cover_hash FROM playlists WHERE id = ?', [source.playlistId])
@@ -11874,6 +11881,7 @@ function buildDynamicPlaylistSummary(row: PlaylistSummaryRow): Playlist {
 function buildNormalPlaylistSummary(row: PlaylistSummaryRow): Playlist {
   return {
     id: row.id,
+    ...(getRemotePlaylistLink(row.id) ? { remote: getRemotePlaylistLink(row.id)! } : {}),
     name: row.name,
     kind: 'normal',
     created_at: row.created_at,
@@ -11920,6 +11928,7 @@ export function getPlaylists(): Playlist[] {
           AND t.path IS NULL
       ) as missing_track_count
     FROM playlists p
+    WHERE ${visiblePlaylistsSql('p')}
     ORDER BY
       CASE WHEN p.last_played_at IS NULL THEN 1 ELSE 0 END,
       p.last_played_at DESC,
@@ -11945,14 +11954,14 @@ export function getCompanionApiPlaylistPage(afterId: number, limit: number): {
       SELECT COUNT(*) FROM playlist_tracks pt
       INNER JOIN tracks t ON t.path = pt.track_path WHERE pt.playlist_id = p.id
     ) END AS track_count
-    FROM playlists p WHERE p.id > ? ORDER BY p.id ASC LIMIT ?
+    FROM playlists p WHERE ${visiblePlaylistsSql('p')} AND p.id > ? ORDER BY p.id ASC LIMIT ?
   `, [afterId, limit])
-  const total = db.get<{ count: number }>('SELECT COUNT(*) AS count FROM playlists')?.count ?? 0
+  const total = db.get<{ count: number }>(`SELECT COUNT(*) AS count FROM playlists p WHERE ${visiblePlaylistsSql('p')}`)?.count ?? 0
   return { items, total }
 }
 
 export function getCompanionApiPlaylistTarget(playlistId: number): CompanionApiPlaylistTarget | null {
-  if (!db || !Number.isInteger(playlistId) || playlistId <= 0) return null
+  if (!db || !Number.isInteger(playlistId) || playlistId <= 0 || !isPlaylistVisible(playlistId)) return null
   const row = db.get<{
     id?: unknown
     name?: unknown
@@ -12095,120 +12104,109 @@ export function previewDynamicPlaylist(rules: DynamicPlaylistRules): DynamicPlay
   }
 }
 
-export async function syncSubsonicRemotePlaylists(
-  sourceId: number,
-  playlists: SubsonicRemotePlaylistSyncInput[],
-  options: { persist?: boolean } = {}
-): Promise<{ created: number; updated: number; removed: number }> {
-  if (!db) return { created: 0, updated: 0, removed: 0 }
+export function remotePlaylistFingerprint(ref: ProviderSyncRef): string | null {
+  if (ref.provider === 'plex') {
+    const source = getPlexSourceById(ref.sourceId)
+    if (!source || source.enabled !== 1) return null
+    return createHash('sha256').update(JSON.stringify([source.account_id, source.server_id, source.library_id])).digest('hex')
+  }
+  const source = ref.provider === 'subsonic' ? getSubsonicSourceById(ref.sourceId) : getJellyfinSourceById(ref.sourceId)
+  if (!source || source.enabled !== 1) return null
+  return createHash('sha256').update(JSON.stringify([source.base_url, source.username, source.secret_encrypted])).digest('hex')
+}
+export function remotePlaylistsEnabled(ref: ProviderSyncRef): boolean {
+  const row = db?.get<{ enabled: number; fingerprint: string }>('SELECT enabled, fingerprint FROM remote_playlist_sync WHERE provider = ? AND source_id = ?', [ref.provider, ref.sourceId])
+  return row?.enabled === 1 && row.fingerprint === remotePlaylistFingerprint(ref)
+}
+export async function setRemotePlaylistsEnabled(ref: ProviderSyncRef, enabled: boolean): Promise<void> {
+  if (!db) throw new Error('Database not initialized')
+  const fingerprint = remotePlaylistFingerprint(ref)
+  if (enabled && !fingerprint) throw new Error('Connect this server before enabling playlist sync.')
+  db.run(`INSERT INTO remote_playlist_sync (provider, source_id, fingerprint, enabled) VALUES (?, ?, ?, ?)
+    ON CONFLICT(provider, source_id) DO UPDATE SET fingerprint = excluded.fingerprint, enabled = excluded.enabled`,
+  [ref.provider, ref.sourceId, fingerprint ?? '', Number(enabled)])
+  await saveDatabase()
+}
+function visiblePlaylistsSql(alias: string): string {
+  const refs = db?.all<ProviderSyncRef>('SELECT provider, source_id AS sourceId FROM remote_playlist_sync WHERE enabled = 1') ?? []
+  const predicates = refs.filter(ref => ['subsonic', 'jellyfin', 'plex'].includes(ref.provider) && Number.isSafeInteger(ref.sourceId) && remotePlaylistsEnabled(ref))
+    .map(ref => `(${alias}.remote_source_type = '${ref.provider}' AND ${alias}.remote_source_id = ${ref.sourceId})`)
+  return `(${alias}.remote_source_id IS NULL${predicates.length ? ` OR ${predicates.join(' OR ')}` : ''})`
+}
+export function getRemotePlaylistLink(id: number): RemotePlaylistLink | null {
+  const row = db?.get<{ remote_source_type: ProviderSyncRef['provider']; remote_source_id: number; remote_playlist_id: string; remote_writable: number }>(
+    'SELECT remote_source_type, remote_source_id, remote_playlist_id, remote_writable FROM playlists WHERE id = ? AND remote_source_id IS NOT NULL', [id])
+  return row ? { provider: row.remote_source_type, sourceId: row.remote_source_id, id: row.remote_playlist_id, writable: row.remote_writable === 1 } : null
+}
+function isPlaylistVisible(id: number): boolean {
+  const link = getRemotePlaylistLink(id)
+  return !link || remotePlaylistsEnabled(link)
+}
+export function getRemotePlaylistLocal(id: number): RemotePlaylistLocal | null {
+  const ref = getRemotePlaylistLink(id)
+  if (!ref || !db) return null
+  const row = db.get<{ name: string }>('SELECT name FROM playlists WHERE id = ?', [id])!
+  const tracks = db.all<{ entryId: number; path: string; title: string | null; artist: string | null; album: string | null }>(
+    `SELECT id AS entryId, track_path AS path, fallback_title AS title, fallback_artist AS artist, fallback_album AS album
+      FROM playlist_tracks WHERE playlist_id = ? ORDER BY position, id`, [id])
+  return { localId: id, ref: { provider: ref.provider, sourceId: ref.sourceId }, id: ref.id, name: row.name, writable: ref.writable, tracks }
+}
 
-  const normalizedPlaylists = playlists
-    .map((playlist) => {
-      const sourcePlaylistId = typeof playlist.source_playlist_id === 'string'
-        ? playlist.source_playlist_id.trim()
-        : ''
-      if (!sourcePlaylistId) return null
-
-      const name = typeof playlist.name === 'string' && playlist.name.trim().length > 0
-        ? playlist.name.trim()
-        : `Playlist ${sourcePlaylistId}`
-
-      const tracks: PlaylistEntryInsertInput[] = []
-      for (const track of playlist.tracks) {
-        const trackPath = typeof track.path === 'string' ? track.path.trim() : ''
-        if (!trackPath) continue
-        tracks.push({
-          trackPath,
-          fallbackTitle: normalizeOptionalTextField(track.title ?? null),
-          fallbackArtist: normalizeOptionalTextField(track.artist ?? null),
-          fallbackAlbum: normalizeOptionalTextField(track.album ?? null)
-        })
+export async function applyRemotePlaylists(ref: ProviderSyncRef, snapshots: RemotePlaylistSnapshot[],
+  options: { prune?: boolean; persist?: boolean } = {}): Promise<{ created: number; updated: number; removed: number }> {
+  if (!db) throw new Error('Database not initialized')
+  if (new Set(snapshots.map(s => s.id)).size !== snapshots.length || snapshots.some(s => !s.id || !s.name || !Array.isArray(s.tracks))) throw new Error('Invalid server playlists.')
+  const existing = new Map(db.all<{ id: number; remote_playlist_id: string }>(
+    'SELECT id, remote_playlist_id FROM playlists WHERE remote_source_type = ? AND remote_source_id = ?', [ref.provider, ref.sourceId])
+    .map(row => [row.remote_playlist_id, row.id]))
+  let created = 0, updated = 0, removed = 0
+  beginLibraryWriteTransaction()
+  try {
+    for (const snapshot of snapshots) {
+      let id = existing.get(snapshot.id)
+      const before = id === undefined ? null : getRemotePlaylistLocal(id)
+      const normalize = (tracks: RemotePlaylistSnapshot['tracks']) => tracks.map(t => [t.path, t.title ?? null, t.artist ?? null, t.album ?? null])
+      if (before && before.name === snapshot.name && before.writable === snapshot.writable
+        && JSON.stringify(normalize(before.tracks)) === JSON.stringify(normalize(snapshot.tracks))
+        && snapshot.tracks.every((t, i) => t.entryId === undefined || t.entryId === before.tracks[i].entryId)) continue
+      if (id === undefined) {
+        id = Number(db.run(`INSERT INTO playlists (name, created_at, updated_at, remote_source_type, remote_source_id, remote_playlist_id, remote_writable)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`, [snapshot.name, Date.now(), Date.now(), ref.provider, ref.sourceId, snapshot.id, Number(snapshot.writable)]).lastInsertRowid)
+        created++
+      } else updated++
+      const old = before?.tracks ?? []
+      const used = new Set<number>()
+      const reserved = new Set(snapshot.tracks.flatMap(t => t.entryId === undefined ? [] : [t.entryId]))
+      for (const [position, track] of snapshot.tracks.entries()) {
+        const match = track.entryId !== undefined ? old.find(t => t.entryId === track.entryId && t.path === track.path)
+          : old.find(t => t.path === track.path && !used.has(t.entryId!) && !reserved.has(t.entryId!))
+        if (match && !used.has(match.entryId!)) {
+          used.add(match.entryId!)
+          db.run('UPDATE playlist_tracks SET position = ?, fallback_title = ?, fallback_artist = ?, fallback_album = ? WHERE id = ?',
+            [position, track.title ?? null, track.artist ?? null, track.album ?? null, match.entryId!])
+        } else {
+          const entry = db.run(`INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`, [id, track.path, position, Date.now(), track.title ?? null, track.artist ?? null, track.album ?? null])
+          used.add(Number(entry.lastInsertRowid))
+        }
       }
-
-      return {
-        sourcePlaylistId,
-        name,
-        tracks
-      }
-    })
-    .filter((playlist): playlist is { sourcePlaylistId: string; name: string; tracks: PlaylistEntryInsertInput[] } => playlist !== null)
-
-  const seenRemotePlaylistIds = new Set(normalizedPlaylists.map((playlist) => playlist.sourcePlaylistId))
-  const existingRows = db.all<{ id?: unknown; remote_playlist_id?: unknown }>(`
-    SELECT id, remote_playlist_id
-    FROM playlists
-    WHERE remote_source_type = 'subsonic'
-      AND remote_source_id = ?
-  `, [sourceId])
-
-  const existingByRemotePlaylistId = new Map<string, number>()
-  for (const row of existingRows) {
-    const id = Number(row.id)
-    const remotePlaylistId = typeof row.remote_playlist_id === 'string' ? row.remote_playlist_id : ''
-    if (Number.isInteger(id) && id > 0 && remotePlaylistId) {
-      existingByRemotePlaylistId.set(remotePlaylistId, id)
+      for (const track of old) if (!used.has(track.entryId!)) db.run('DELETE FROM playlist_tracks WHERE id = ?', [track.entryId!])
+      db.run('UPDATE playlists SET name = ?, remote_writable = ?, updated_at = ? WHERE id = ?', [snapshot.name, Number(snapshot.writable), Date.now(), id])
     }
-  }
-
-  const now = Date.now()
-  let created = 0
-  let updated = 0
-
-  for (const playlist of normalizedPlaylists) {
-    let playlistId = existingByRemotePlaylistId.get(playlist.sourcePlaylistId) ?? null
-    if (playlistId === null) {
-      const insertResult = db.run(
-        `INSERT INTO playlists (
-          name,
-          created_at,
-          updated_at,
-          last_played_at,
-          custom_cover_hash,
-          remote_source_type,
-          remote_source_id,
-          remote_playlist_id
-        ) VALUES (?, ?, ?, NULL, NULL, 'subsonic', ?, ?)`,
-        [playlist.name, now, now, sourceId, playlist.sourcePlaylistId]
-      )
-      playlistId = Number(insertResult.lastInsertRowid)
-      existingByRemotePlaylistId.set(playlist.sourcePlaylistId, playlistId)
-      created += 1
-    } else {
-      db.run('UPDATE playlists SET name = ?, updated_at = ? WHERE id = ?', [playlist.name, now, playlistId])
-      db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [playlistId])
-      updated += 1
+    if (options.prune) for (const [remoteId, id] of existing) if (!snapshots.some(s => s.id === remoteId)) {
+      db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [id])
+      db.run('DELETE FROM playlists WHERE id = ?', [id]); removed++
     }
-
-    let position = 0
-    for (const entry of playlist.tracks) {
-      db.run(
-        'INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [
-          playlistId,
-          entry.trackPath,
-          position++,
-          now,
-          entry.fallbackTitle ?? null,
-          entry.fallbackArtist ?? null,
-          entry.fallbackAlbum ?? null
-        ]
-      )
-    }
-  }
-
-  let removed = 0
-  for (const [remotePlaylistId, playlistId] of existingByRemotePlaylistId.entries()) {
-    if (seenRemotePlaylistIds.has(remotePlaylistId)) continue
-    db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [playlistId])
-    const result = db.run('DELETE FROM playlists WHERE id = ?', [playlistId])
-    removed += Number(result.changes) || 0
-  }
-
-  if (options.persist !== false && (created > 0 || updated > 0 || removed > 0)) {
-    await saveDatabase()
-  }
-
+    commitLibraryWriteTransaction()
+  } catch (error) { rollbackLibraryWriteTransaction(); throw error }
+  if (options.persist !== false && (created || updated || removed)) await saveDatabase()
   return { created, updated, removed }
+}
+
+export async function syncSubsonicRemotePlaylists(sourceId: number, playlists: SubsonicRemotePlaylistSyncInput[],
+  options: { persist?: boolean } = {}): Promise<{ created: number; updated: number; removed: number }> {
+  return applyRemotePlaylists({ provider: 'subsonic', sourceId }, playlists.map(p => ({ id: p.source_playlist_id,
+    name: p.name, tracks: p.tracks, writable: false })), { ...options, prune: true })
 }
 
 export async function renamePlaylist(id: number, name: string): Promise<void> {
@@ -12246,6 +12244,7 @@ export async function markPlaylistPlayed(id: number): Promise<void> {
 }
 
 export function getPlaylistTracks(playlistId: number): DbTrack[] {
+  if (!isPlaylistVisible(playlistId)) return []
   if (getPlaylistKindById(playlistId) === 'dynamic') {
     return getDynamicPlaylistTracksForId(playlistId)
   }
@@ -12284,6 +12283,7 @@ function getDynamicPlaylistTrackEntries(playlistId: number): PlaylistTrackEntry[
 }
 
 export function getPlaylistTrackEntries(playlistId: number): PlaylistTrackEntry[] {
+  if (!isPlaylistVisible(playlistId)) return []
   if (!db) return []
   if (!Number.isInteger(playlistId) || playlistId <= 0) return []
   if (getPlaylistKindById(playlistId) === 'dynamic') {
@@ -12778,7 +12778,7 @@ export function getPlaylistsContainingTrack(trackPath: string): number[] {
   const ids: number[] = []
   for (const row of db.iterate<{ playlist_id?: unknown }>('SELECT DISTINCT playlist_id FROM playlist_tracks WHERE track_path = ? ORDER BY playlist_id', [trackPath])) {
     const playlistId = Number(row.playlist_id)
-    if (Number.isFinite(playlistId) && playlistId > 0) {
+    if (Number.isFinite(playlistId) && playlistId > 0 && isPlaylistVisible(playlistId)) {
       ids.push(playlistId)
     }
   }
@@ -12827,6 +12827,7 @@ export function getPlaylistsContainingTracks(trackPaths: string[]): PlaylistTrac
   }
 
   return Array.from(summaryByPlaylistId.entries())
+    .filter(([id]) => isPlaylistVisible(id))
     .sort((left, right) => left[0] - right[0])
     .map(([playlistId, matchedTrackCount]) => ({ playlistId, matchedTrackCount }))
 }

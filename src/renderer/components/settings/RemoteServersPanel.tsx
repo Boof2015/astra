@@ -1,3 +1,4 @@
+import RemotePlaylistControls from './RemotePlaylistControls'
 import { usePlexSettingsStore } from '../../stores/plexSettingsStore'
 import PlexServersPanel from './PlexServersPanel'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -820,6 +821,7 @@ export default function RemoteServersPanel() {
                   </p>
                 )}
                 <ProviderSyncControls provider={source.sourceType} sourceId={source.id} connected={source.enabled === 1} />
+                {source.sourceType === 'subsonic' && <RemotePlaylistControls provider={source.sourceType} sourceId={source.id} connected={source.enabled === 1} />}
                 <StreamingQualitySettings source={{ provider: source.sourceType, sourceId: source.id }} />
                 <div className="remote-source-card-footer">
                   <button

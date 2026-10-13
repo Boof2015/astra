@@ -1,3 +1,4 @@
+import type { RemotePlaylistsAPI } from '../types/remotePlaylists'
 import type { PlexAPI } from '../types/plex'
 import type { RemoteAudioCacheStatus } from '../types/remoteAudioCache'
 import type { RemoteAudioAnalysis } from '../types/remoteAudioAnalysis'
@@ -925,6 +926,16 @@ function openLocalAudioPcmStream(
 
 // Expose APIs to renderer
 contextBridge.exposeInMainWorld('electronAPI', {
+  remotePlaylists: {
+    status: () => ipcRenderer.invoke('remote-playlists:status'),
+    setEnabled: (ref, enabled) => ipcRenderer.invoke('remote-playlists:setEnabled', ref, enabled),
+    refresh: ref => ipcRenderer.invoke('remote-playlists:refresh', ref),
+    onChanged: callback => {
+      const handler = () => callback()
+      ipcRenderer.on('remote-playlists:changed', handler)
+      return () => ipcRenderer.removeListener('remote-playlists:changed', handler)
+    }
+  } satisfies RemotePlaylistsAPI,
   providerSync: {
     status: () => ipcRenderer.invoke('provider-sync:status'),
     review: (ref) => ipcRenderer.invoke('provider-sync:review', ref),
@@ -2037,6 +2048,7 @@ declare global {
       onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
     }
     electronAPI: {
+      remotePlaylists: RemotePlaylistsAPI
       providerSync: ProviderSyncAPI
       reportProviderPlayback: (snapshot: ProviderPlaybackSnapshot) => void
       // Window controls

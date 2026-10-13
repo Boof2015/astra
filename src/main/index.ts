@@ -1,3 +1,6 @@
+import { RemotePlaylists } from './services/remotePlaylists'
+import type { RemotePlaylistEdit } from '../types/remotePlaylists'
+import { listSubsonicRemotePlaylists, readSubsonicRemotePlaylist, writeSubsonicRemotePlaylist } from './services/subsonic'
 import { PlexSources } from './services/plexSources'
 import { plexRequestOptions } from './services/plexNetwork'
 import { parsePlexTrackPath, reportPlexPlayback } from './services/plex'
@@ -78,7 +81,6 @@ import {
   parseSubsonicArtworkHash,
   parseSubsonicTrackPath,
   syncSubsonicCatalog,
-  syncSubsonicPlaylists,
   testSubsonicConnection,
   type SubsonicDownloadProgress
 } from './services/subsonic'
@@ -1607,6 +1609,33 @@ const providerStateSync = new ProviderStateSync({
         if (field !== 'favorite' || typeof value !== 'boolean') throw new Error('Jellyfin star rating sync is not supported.')
         return authenticated(auth => writeJellyfinFavorite(connection, auth, id, value, options))
       }
+    }
+  }
+})
+
+const remotePlaylists = new RemotePlaylists({
+  sources: () => library.listSubsonicSources().map(s => ({ provider: 'subsonic' as const, sourceId: s.id })),
+  fingerprint: library.remotePlaylistFingerprint,
+  enabled: library.remotePlaylistsEnabled,
+  setEnabled: async (ref, enabled) => {
+    await library.setRemotePlaylistsEnabled(ref, enabled)
+    mainWindow?.webContents.send('library:externalLibraryMutation')
+  },
+  local: library.getRemotePlaylistLocal,
+  apply: async (ref, snapshots, prune) => {
+    const result = await library.applyRemotePlaylists(ref, snapshots, { prune })
+    if (result.created || result.updated || result.removed) mainWindow?.webContents.send('library:externalLibraryMutation')
+  },
+  remove: async id => { await library.deletePlaylist(id); mainWindow?.webContents.send('library:externalLibraryMutation') },
+  changed: () => mainWindow?.webContents.send('remote-playlists:changed'),
+  client: async (ref, signal) => {
+    if (ref.provider !== 'subsonic') throw new Error('Playlist sync is not supported for this server yet.')
+    const { connection } = requireSubsonicSourceCredentials(ref.sourceId)
+    const options = { signal, retries: 0, timeoutMs: 12_000 }
+    return {
+      list: () => listSubsonicRemotePlaylists(ref.sourceId, connection, options),
+      read: id => readSubsonicRemotePlaylist(ref.sourceId, connection, id, options),
+      write: (before, after) => writeSubsonicRemotePlaylist(ref.sourceId, connection, before, after, options)
     }
   }
 })
@@ -4374,37 +4403,9 @@ async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): 
     )
     await library.persistLibraryDatabase()
 
-    setSubsonicSyncProgress(sourceId, {
-      phase: 'playlists',
-      activity: 'Loading playlists...'
-    })
-    const [playlistsResult] = await Promise.allSettled([
-      syncSubsonicPlaylists(sourceId, credentials.connection, {
-        timeoutMs: 12_000,
-        retries: 1,
-        onProgress: (progress) => {
-          setSubsonicSyncProgress(sourceId, {
-            phase: progress.phase,
-            activity: 'Loading favorites and playlists...',
-            current: progress.current,
-            total: progress.total,
-            detail: progress.detail
-          })
-        }
-      })
-    ])
-
-    setSubsonicSyncProgress(sourceId, {
-      phase: 'finalizing',
-      activity: 'Applying playlists...'
-    })
-    // User state is managed by per-server opt-in/reconciliation, never catalog import.
+    // Playlist import and user-state reconciliation have independent per-server opt-ins.
+    await remotePlaylists.refresh({ provider: 'subsonic', sourceId }).catch(() => {})
     void providerStateSync.refresh({ provider: 'subsonic', sourceId }).catch(() => {})
-    if (playlistsResult.status === 'fulfilled') {
-      await library.syncSubsonicRemotePlaylists(sourceId, playlistsResult.value, { persist: false })
-    } else {
-      console.warn(`Failed to sync Subsonic playlists for source ${sourceId}:`, playlistsResult.reason)
-    }
     await library.updateSubsonicSourceStatus(
       sourceId,
       {
@@ -5711,6 +5712,7 @@ app.whenReady().then(async () => {
   // Initialize library database
   await library.initDatabase()
   providerStateSync.start()
+  remotePlaylists.start()
   companionApiReferenceSigner = await loadCompanionApiReferenceSigner()
   try {
     const orphanedRemoteDeleted = await library.cleanupOrphanedRemoteTracks()
@@ -5889,6 +5891,7 @@ let providerPlaybackQuitPending = false
 let providerPlaybackQuitReady = false
 app.on('before-quit', (event) => {
   providerStateSync.close()
+  remotePlaylists.close()
   if (!providerPlaybackQuitReady) {
     event.preventDefault()
     if (!providerPlaybackQuitPending) {
@@ -10203,6 +10206,18 @@ ipcMain.handle('signal-share:save-png', async (_event, input: unknown, suggested
 // Playlist IPC handlers
 // ============================================
 
+ipcMain.handle('remote-playlists:status', () => remotePlaylists.status())
+ipcMain.handle('remote-playlists:setEnabled', (_event, ref: unknown, enabled: unknown) => {
+  if (typeof enabled !== 'boolean') throw new Error('Invalid playlist setting.')
+  return remotePlaylists.setEnabled(normalizeProviderSyncRef(ref), enabled)
+})
+ipcMain.handle('remote-playlists:refresh', (_event, ref: unknown) => remotePlaylists.refresh(normalizeProviderSyncRef(ref)))
+async function editServerPlaylist(id: number, edit: RemotePlaylistEdit): Promise<boolean> {
+  if (!library.getRemotePlaylistLink(id)) return false
+  await remotePlaylists.edit(id, edit)
+  return true
+}
+
 ipcMain.handle('library:getPlaylists', () => {
   return library.getPlaylists()
 })
@@ -10233,12 +10248,12 @@ ipcMain.handle('library:previewDynamicPlaylist', (_event, rules: DynamicPlaylist
 })
 
 ipcMain.handle('library:renamePlaylist', async (_event, id: number, name: string) => {
-  await library.renamePlaylist(id, name)
+  if (!await editServerPlaylist(id, { kind: 'rename', name })) await library.renamePlaylist(id, name)
   publishCompanionPlaylistEvent(id, 'renamed')
 })
 
 ipcMain.handle('library:deletePlaylist', async (_event, id: number) => {
-  await library.deletePlaylist(id)
+  if (!await editServerPlaylist(id, { kind: 'delete' })) await library.deletePlaylist(id)
   publishCompanionPlaylistEvent(id, 'deleted')
 })
 
@@ -10251,7 +10266,7 @@ ipcMain.handle('library:getPlaylistTrackEntries', (_event, playlistId: number) =
 })
 
 ipcMain.handle('library:addToPlaylist', async (_event, playlistId: number, trackPaths: string[]) => {
-  await library.addToPlaylist(playlistId, trackPaths)
+  if (!await editServerPlaylist(playlistId, { kind: 'insert', paths: trackPaths, position: 'end' })) await library.addToPlaylist(playlistId, trackPaths)
   publishCompanionPlaylistEvent(playlistId, 'items-changed')
 })
 
@@ -10261,7 +10276,15 @@ ipcMain.handle('library:insertTracksIntoPlaylist', async (
   trackPaths: string[],
   position: library.PlaylistInsertPosition
 ) => {
-  const result = await library.insertTracksIntoPlaylist(playlistId, trackPaths, position)
+  const before = library.getRemotePlaylistLocal(playlistId)
+  let result: library.PlaylistInsertResult
+  if (before) {
+    await remotePlaylists.edit(playlistId, { kind: 'insert', paths: trackPaths, position })
+    const previousIds = new Set(before.tracks.map(t => t.entryId))
+    const added = library.getPlaylistTrackEntries(playlistId).filter(t => !previousIds.has(t.id))
+    result = { insertedEntryIds: added.map(t => t.id), insertedTrackPaths: added.map(t => t.track_path),
+      skippedTrackPaths: trackPaths.filter(path => !added.some(t => t.track_path === path)) }
+  } else result = await library.insertTracksIntoPlaylist(playlistId, trackPaths, position)
   if (result.insertedEntryIds.length > 0) {
     publishCompanionPlaylistEvent(playlistId, 'items-changed')
   }
@@ -10274,7 +10297,8 @@ ipcMain.handle('library:movePlaylistEntries', async (
   entryIds: number[],
   position: number
 ) => {
-  const result = await library.movePlaylistEntries(playlistId, entryIds, position)
+  const result = await editServerPlaylist(playlistId, { kind: 'move', entryIds, position })
+    ? { changed: true } : await library.movePlaylistEntries(playlistId, entryIds, position)
   if (result.changed) {
     publishCompanionPlaylistEvent(playlistId, 'items-changed')
   }
@@ -10282,12 +10306,12 @@ ipcMain.handle('library:movePlaylistEntries', async (
 })
 
 ipcMain.handle('library:removeFromPlaylist', async (_event, playlistId: number, trackPath: string) => {
-  await library.removeFromPlaylist(playlistId, trackPath)
+  if (!await editServerPlaylist(playlistId, { kind: 'removePath', path: trackPath })) await library.removeFromPlaylist(playlistId, trackPath)
   publishCompanionPlaylistEvent(playlistId, 'items-changed')
 })
 
 ipcMain.handle('library:removePlaylistEntry', async (_event, playlistId: number, entryId: number) => {
-  await library.removePlaylistEntry(playlistId, entryId)
+  if (!await editServerPlaylist(playlistId, { kind: 'remove', entryId })) await library.removePlaylistEntry(playlistId, entryId)
   publishCompanionPlaylistEvent(playlistId, 'items-changed')
 })
 
@@ -10297,12 +10321,13 @@ ipcMain.handle('library:reassociatePlaylistEntry', async (
   entryId: number,
   targetTrackPath: string
 ) => {
+  if (library.getRemotePlaylistLink(playlistId)) throw new Error('Server playlists cannot link to a local file. Add a track from the same server instead.')
   await library.reassociatePlaylistEntry(playlistId, entryId, targetTrackPath)
   publishCompanionPlaylistEvent(playlistId, 'items-changed')
 })
 
 ipcMain.handle('library:reorderPlaylistEntries', async (_event, playlistId: number, orderedEntryIds: number[]) => {
-  await library.reorderPlaylistEntries(playlistId, orderedEntryIds)
+  if (!await editServerPlaylist(playlistId, { kind: 'reorder', entryIds: orderedEntryIds })) await library.reorderPlaylistEntries(playlistId, orderedEntryIds)
   publishCompanionPlaylistEvent(playlistId, 'items-changed')
 })
 
@@ -10311,10 +10336,12 @@ ipcMain.handle('library:markPlaylistPlayed', async (_event, playlistId: number) 
 })
 
 ipcMain.handle('library:setPlaylistCustomCoverFromFile', async (_event, playlistId: number, imagePath: string) => {
+  if (library.getRemotePlaylistLink(playlistId)) throw new Error('Server playlist artwork editing is not supported.')
   await library.setPlaylistCustomCoverFromFile(playlistId, imagePath)
 })
 
 ipcMain.handle('library:clearPlaylistCustomCover', async (_event, playlistId: number) => {
+  if (library.getRemotePlaylistLink(playlistId)) throw new Error('Server playlist artwork editing is not supported.')
   await library.clearPlaylistCustomCover(playlistId)
 })
 

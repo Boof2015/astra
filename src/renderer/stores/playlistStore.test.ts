@@ -117,6 +117,21 @@ test('getNormalPlaylists filters dynamic playlists out of manual targets', () =>
   assert.deepEqual(getNormalPlaylists([normal, dynamic]), [normal])
 })
 
+test('a pending refresh cannot restore tracks after the selected server playlist is hidden', async () => {
+  installPlaylistMock([])
+  resetPlaylistStore([makePlaylist(7)])
+  usePlaylistStore.setState({ selectedPlaylistId: 7 })
+  let reject!: (error: Error) => void
+  window.electronAPI.library.getPlaylistTrackEntries = () => new Promise((_resolve, rejectPromise) => { reject = rejectPromise })
+  const pending = usePlaylistStore.getState().refreshSelectedPlaylist()
+  await usePlaylistStore.getState().loadPlaylists()
+  reject(new Error('Late result for hidden playlist'))
+  await pending
+  assert.equal(usePlaylistStore.getState().selectedPlaylistId, null)
+  assert.equal(usePlaylistStore.getState().selectedPlaylistError, null)
+  assert.deepEqual(usePlaylistStore.getState().selectedPlaylistTracks, [])
+})
+
 test('sidebar pins persist exact order and allow an empty custom list', () => {
   const storage = installLocalStorageMock()
   try {
@@ -184,4 +199,22 @@ test('failed playlist selection clears previous tracks and exposes the error', a
   assert.equal(usePlaylistStore.getState().selectedPlaylistError, 'Group match is not supported.')
   usePlaylistStore.getState().clearSelection()
   assert.equal(usePlaylistStore.getState().selectedPlaylistError, null)
+})
+
+test('hidden server playlist selection is cleared while other playlists stay usable', async () => {
+  const local = makePlaylist(1)
+  const remote = { ...makePlaylist(2), remote: { provider: 'subsonic' as const, sourceId: 1, id: 'mix', writable: true } }
+  installPlaylistMock([local])
+  resetPlaylistStore([local, remote])
+  usePlaylistStore.setState({ selectedPlaylistId: remote.id })
+  await usePlaylistStore.getState().loadPlaylists()
+  assert.equal(usePlaylistStore.getState().selectedPlaylistId, null)
+  assert.deepEqual(usePlaylistStore.getState().playlists, [local])
+})
+
+test('read-only server playlists stay browsable but are excluded from add-to-playlist targets', () => {
+  const local = makePlaylist(1)
+  const remote = { ...makePlaylist(2), remote: { provider: 'subsonic' as const, sourceId: 1, id: 'mix', writable: false } }
+  const writable = { ...remote, id: 3, remote: { ...remote.remote, writable: true } }
+  assert.deepEqual(getNormalPlaylists([local, remote, writable]), [local, writable])
 })

@@ -318,6 +318,7 @@ export default function PlaylistView() {
   const isFavoritesPlaylist = isSystemFavoritesPlaylistId(selectedPlaylistId)
   const playlist = playlists.find((p) => p.id === selectedPlaylistId)
   const isDynamicPlaylist = playlist?.kind === 'dynamic'
+  const isReadOnlyServerPlaylist = playlist?.remote?.writable === false
   const playlistName = isFavoritesPlaylist ? FAVORITES_PLAYLIST_NAME : playlist?.name
   const isSelectedPlaylistPinned = selectedPlaylistId !== null
     && sidebarPinnedPlaylistIds.includes(selectedPlaylistId)
@@ -596,7 +597,8 @@ export default function PlaylistView() {
     }
     const name = renameValue.trim()
     if (name && selectedPlaylistId !== null) {
-      await renamePlaylist(selectedPlaylistId, name)
+      try { await renamePlaylist(selectedPlaylistId, name) }
+      catch (error) { setPlaylistImportStatus({ tone: 'error', message: error instanceof Error ? error.message : 'Could not rename playlist.' }); return }
     }
     setIsRenaming(false)
   }
@@ -705,6 +707,9 @@ export default function PlaylistView() {
       await deletePlaylist(selectedPlaylistId)
       setIsDeleteConfirmOpen(false)
       handleBack()
+    } catch (error) {
+      setIsDeleteConfirmOpen(false)
+      setPlaylistImportStatus({ tone: 'error', message: error instanceof Error ? error.message : 'Could not delete playlist.' })
     } finally {
       setIsDeletingPlaylist(false)
     }
@@ -969,7 +974,7 @@ export default function PlaylistView() {
                 {sidebarPinnedPlaylists.map((entry, index) => {
                   const isDragging = draggedPinnedPlaylistId === entry.id
                   const isDropTarget = pinnedDropTargetId === entry.id && !isDragging
-                  const isTrackDropAvailable = !entry.isSystemFavorites && entry.kind !== 'dynamic'
+                  const isTrackDropAvailable = !entry.isSystemFavorites && entry.kind !== 'dynamic' && entry.remote?.writable !== false
                   const isTrackDropHover = trackDrag?.dropTarget?.surface === 'sidebar'
                     && trackDrag.dropTarget.kind === 'playlist'
                     && trackDrag.dropTarget.playlistId === entry.id
@@ -1101,7 +1106,7 @@ export default function PlaylistView() {
             >
               {visibleBrowserPlaylists.map((entry) => {
                 const isPinned = sidebarPinnedPlaylistIdSet.has(entry.id)
-                const isTrackDropAvailable = !entry.isSystemFavorites && entry.kind !== 'dynamic'
+                const isTrackDropAvailable = !entry.isSystemFavorites && entry.kind !== 'dynamic' && entry.remote?.writable !== false
                 const isTrackDropHover = trackDrag?.dropTarget?.surface === 'sidebar'
                   && trackDrag.dropTarget.kind === 'playlist'
                   && trackDrag.dropTarget.playlistId === entry.id
@@ -1267,7 +1272,7 @@ export default function PlaylistView() {
                 className="playlist-header-cover"
               />
             </div>
-            {!isFavoritesPlaylist && (
+            {!isFavoritesPlaylist && !playlist?.remote && (
               <>
                 <button
                   type="button"
@@ -1354,6 +1359,7 @@ export default function PlaylistView() {
               <h2>
                 {playlistName}
                 {isDynamicPlaylist && <span className="playlist-kind-badge">Dynamic</span>}
+                {playlist?.remote && <span className="playlist-kind-badge">{isReadOnlyServerPlaylist ? 'Server · Read-only' : 'Server playlist'}</span>}
               </h2>
             )}
             <div className="library-detail-meta-row">
@@ -1483,7 +1489,7 @@ export default function PlaylistView() {
                       className="playlist-header-menu-item"
                       role="menuitem"
                       onClick={handleStartRename}
-                      disabled={isDeletingPlaylist}
+                      disabled={isDeletingPlaylist || isReadOnlyServerPlaylist}
                     >
                       Rename
                     </button>
@@ -1492,7 +1498,7 @@ export default function PlaylistView() {
                       className="playlist-header-menu-item danger"
                       role="menuitem"
                       onClick={handleRequestDelete}
-                      disabled={isDeletingPlaylist}
+                      disabled={isDeletingPlaylist || isReadOnlyServerPlaylist}
                     >
                       Delete
                     </button>
@@ -1551,9 +1557,9 @@ export default function PlaylistView() {
               contextTrackNumbers={visibleTrackNumbers}
               trackInstanceKeys={visibleTrackInstanceKeys}
               playlistEntryIds={visiblePlaylistEntryIds}
-              playlistSourceId={!isFavoritesPlaylist && !isDynamicPlaylist ? selectedPlaylistId : null}
-              playlistDropEnabled={!hasPlaylistTrackSearchQuery}
-              onChangeMissingPlaylistAssociation={handleChangeMissingPlaylistAssociation}
+              playlistSourceId={!isFavoritesPlaylist && !isDynamicPlaylist && !isReadOnlyServerPlaylist ? selectedPlaylistId : null}
+              playlistDropEnabled={!hasPlaylistTrackSearchQuery && !isReadOnlyServerPlaylist}
+              onChangeMissingPlaylistAssociation={playlist?.remote ? undefined : handleChangeMissingPlaylistAssociation}
               enableColumnSorting
               sortState={sortState}
               onSortColumnToggle={handleSortColumnToggle}
@@ -1579,8 +1585,8 @@ export default function PlaylistView() {
         ) : (
           <div
             className="library-empty"
-            data-track-drop-playlist-id={!isDynamicPlaylist && selectedPlaylistId !== FAVORITES_PLAYLIST_ID ? selectedPlaylistId ?? undefined : undefined}
-            data-track-drop-playlist-count={!isDynamicPlaylist && selectedPlaylistId !== FAVORITES_PLAYLIST_ID ? 0 : undefined}
+            data-track-drop-playlist-id={!isDynamicPlaylist && !isReadOnlyServerPlaylist && selectedPlaylistId !== FAVORITES_PLAYLIST_ID ? selectedPlaylistId ?? undefined : undefined}
+            data-track-drop-playlist-count={!isDynamicPlaylist && !isReadOnlyServerPlaylist && selectedPlaylistId !== FAVORITES_PLAYLIST_ID ? 0 : undefined}
           >
             {selectedPlaylistError && <p role="alert">{selectedPlaylistError}</p>}
             <p>{selectedPlaylistId === FAVORITES_PLAYLIST_ID ? 'No favorites yet' : isDynamicPlaylist ? 'No matching tracks' : 'This playlist is empty'}</p>
@@ -1591,7 +1597,7 @@ export default function PlaylistView() {
                   ? 'Edit the rules or add more music to the library.'
                   : 'Add tracks from the Library view'}
             </p>
-            {selectedPlaylistId !== FAVORITES_PLAYLIST_ID && !isDynamicPlaylist && (
+            {selectedPlaylistId !== FAVORITES_PLAYLIST_ID && !isDynamicPlaylist && !isReadOnlyServerPlaylist && (
               <div className="playlist-empty-actions">
                 <button type="button" className="settings-btn settings-btn-primary" onClick={handleOpenLibrary}>
                   Open Library
@@ -1678,7 +1684,7 @@ export default function PlaylistView() {
       <ConfirmActionModal
         isOpen={isDeleteConfirmOpen}
         title="Delete Playlist?"
-        message={`Delete "${playlistName ?? 'this playlist'}"? This cannot be undone.`}
+        message={`Delete "${playlistName ?? 'this playlist'}"${playlist?.remote ? ' from its server' : ''}? This cannot be undone.`}
         confirmLabel="Delete Playlist"
         cancelLabel="Cancel"
         isDestructive

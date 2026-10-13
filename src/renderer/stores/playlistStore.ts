@@ -1,3 +1,4 @@
+import type { RemotePlaylistLink } from '../../types/remotePlaylists'
 import { create } from 'zustand'
 import {
   FAVORITES_PLAYLIST_ID,
@@ -22,6 +23,7 @@ import {
 } from '../../shared/playlists/dynamicPlaylist'
 
 export interface Playlist {
+  remote?: RemotePlaylistLink
   id: number
   name: string
   kind: PlaylistKind
@@ -219,7 +221,7 @@ function ensurePlaylistExportExtension(filePath: string): string {
 }
 
 export function getNormalPlaylists(playlists: Playlist[]): Playlist[] {
-  return playlists.filter((playlist) => playlist.kind !== 'dynamic')
+  return playlists.filter((playlist) => playlist.kind !== 'dynamic' && playlist.remote?.writable !== false)
 }
 
 function arraysEqual(a: readonly number[], b: readonly number[]): boolean {
@@ -280,7 +282,8 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
 
   const refreshSelectedPlaylist = async (playlistId: number) => {
     if (get().selectedPlaylistId !== playlistId) return
-    set(await loadPlaylistSelection(playlistId))
+    const selection = await loadPlaylistSelection(playlistId)
+    if (get().selectedPlaylistId === playlistId) set(selection)
   }
 
   return {
@@ -319,7 +322,10 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
         sidebarPinnedPlaylistIds = getDefaultSidebarPinnedPlaylistIds(playlists)
       }
 
-      set({ playlists, sidebarPinnedPlaylistIds, sidebarPinsInitialized })
+      const hiddenSelection = state.selectedPlaylistId !== null && state.selectedPlaylistId > 0
+        && !playlists.some(playlist => playlist.id === state.selectedPlaylistId)
+      set({ playlists, sidebarPinnedPlaylistIds, sidebarPinsInitialized,
+        ...(hiddenSelection ? { selectedPlaylistId: null, selectedPlaylistEntries: [], selectedPlaylistTracks: [], selectedPlaylistError: null } : {}) })
     },
 
     createPlaylist: async (name: string) => {

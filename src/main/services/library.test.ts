@@ -1692,6 +1692,7 @@ test('subsonic sync helpers import starred tracks and server playlists', async (
   assert.equal(favoritesInserted, 1)
   assert.deepEqual(library.getFavoritePaths(), [secondPath])
 
+  await library.setRemotePlaylistsEnabled({ provider: 'subsonic', sourceId: source.id }, true)
   const createdSummary = await library.syncSubsonicRemotePlaylists(source.id, [
     {
       source_playlist_id: 'playlist-1',
@@ -5958,4 +5959,67 @@ test('Plex rating sync persists half-stars and opt-in per library while favorite
   assert.equal(library.getProviderSyncTracks(ref)[0].rating, null)
   assert.equal(library.getProviderSyncBaselines(ref).size, 0)
   assert.ok(library.getFavoritePaths().includes(otherPath))
+})
+
+test('server playlist opt-in hides existing imports everywhere, persists, and never removes their stored content', async t => {
+  await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({ name: 'One', base_url: 'https://one.test', username: 'user', secret_encrypted: 'one', enabled: 1 })
+  const other = await library.createSubsonicSource({ name: 'Two', base_url: 'https://two.test', username: 'user', secret_encrypted: 'two', enabled: 1 })
+  const ref = { provider: 'subsonic' as const, sourceId: source.id }
+  const otherRef = { provider: 'subsonic' as const, sourceId: other.id }
+  const local = await library.createPlaylist('Local')
+  const path = `subsonic://${source.id}/track/a`
+  await library.upsertSubsonicTracks(source.id, [createRemoteTrack({ path, source_track_id: 'a', title: 'Song', artist: 'Artist', album: 'Album' })])
+  const snapshot = { id: 'mix', name: 'Server', writable: true, tracks: [{ path }] }
+  await library.applyRemotePlaylists(ref, [snapshot], { prune: true })
+  await library.applyRemotePlaylists(otherRef, [{ ...snapshot, name: 'Other server', tracks: [] }], { prune: true })
+  assert.equal(library.remotePlaylistsEnabled(ref), false)
+  assert.deepEqual(library.getPlaylists().map(p => p.id), [local.id])
+  assert.equal(library.getCompanionApiPlaylistPage(0, 20).total, 1)
+  assert.deepEqual(library.getPlaylistsContainingTrack(path), [])
+  await library.setRemotePlaylistsEnabled(ref, true)
+  const remote = library.getPlaylists().find(p => p.remote)!
+  assert.equal(remote.remote!.writable, true)
+  assert.equal(library.getPlaylists().length, 2)
+  const entry = library.getPlaylistTrackEntries(remote.id)[0]
+  assert.equal(library.getCompanionApiPlaylistPage(0, 20).total, 2)
+  assert.deepEqual(library.getPlaylistsContainingTrack(path), [remote.id])
+  library.closeDatabase(); await library.initDatabase()
+  assert.equal(library.remotePlaylistsEnabled(ref), true)
+  assert.equal(library.remotePlaylistsEnabled(otherRef), false)
+  await library.setRemotePlaylistsEnabled(ref, false)
+  assert.deepEqual(library.getPlaylists().map(p => p.id), [local.id])
+  assert.deepEqual(library.getPlaylistTrackEntries(remote.id), [])
+  assert.deepEqual(library.getPlaylistTracks(remote.id), [])
+  assert.equal(library.getCompanionApiPlaylistTarget(remote.id), null)
+  assert.deepEqual(library.getPlaylistsContainingTracks([path]), [])
+  assert.equal(library.getRemotePlaylistLocal(remote.id)!.tracks[0].entryId, entry.id)
+  await library.setRemotePlaylistsEnabled(ref, true)
+  assert.equal(library.getPlaylistTrackEntries(remote.id)[0].id, entry.id)
+  assert.equal(library.getProviderSyncSetting(ref), null, 'playlist opt-in must not enable favorites/ratings')
+  await library.updateSubsonicSource(source.id, { secret_encrypted: 'different-account-secret' })
+  assert.equal(library.remotePlaylistsEnabled(ref), false)
+  assert.deepEqual(library.getPlaylists().map(p => p.id), [local.id])
+})
+
+test('remote playlist refresh preserves occurrence ids, exact duplicate removal and atomic mirrors', async t => {
+  await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({ name: 'One', base_url: 'https://one.test', username: 'user', secret_encrypted: 'one', enabled: 1 })
+  const ref = { provider: 'subsonic' as const, sourceId: source.id }
+  await library.setRemotePlaylistsEnabled(ref, true)
+  const snapshot = { id: 'mix', name: 'Mix', writable: true, tracks: ['a', 'b', 'a'].map(id => ({ path: `subsonic://${source.id}/track/${id}` })) }
+  await library.applyRemotePlaylists(ref, [snapshot], { prune: true })
+  const id = library.getPlaylists()[0].id
+  const before = library.getRemotePlaylistLocal(id)!
+  assert.deepEqual(await library.applyRemotePlaylists(ref, [snapshot], { prune: true }), { created: 0, updated: 0, removed: 0 })
+  assert.deepEqual(library.getRemotePlaylistLocal(id)!.tracks, before.tracks)
+  const moved = [before.tracks[2], before.tracks[1], before.tracks[0]]
+  await library.applyRemotePlaylists(ref, [{ ...snapshot, tracks: moved }])
+  assert.deepEqual(library.getRemotePlaylistLocal(id)!.tracks.map(t => t.entryId), moved.map(t => t.entryId))
+  await library.applyRemotePlaylists(ref, [{ ...snapshot, tracks: moved.slice(0, 2) }])
+  assert.deepEqual(library.getRemotePlaylistLocal(id)!.tracks.map(t => t.entryId), [before.tracks[2].entryId, before.tracks[1].entryId])
+  await assert.rejects(library.applyRemotePlaylists(ref, [{ ...snapshot, name: 'Should roll back', tracks: [{ path: null as unknown as string }] }]))
+  assert.equal(library.getRemotePlaylistLocal(id)!.name, 'Mix')
+  assert.equal(library.getRemotePlaylistLocal(id)!.tracks.length, 2)
+  assert.equal(library.getSyncPlaylistsState().playlists.length, 0, 'server mirrors must not become mobile-owned playlists')
 })

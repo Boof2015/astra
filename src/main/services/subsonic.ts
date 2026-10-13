@@ -1,3 +1,4 @@
+import type { RemotePlaylistSnapshot } from '../../types/remotePlaylists'
 import { createHash, randomBytes } from 'crypto'
 import { buildProviderRequestHeaders } from './providerClientIdentity'
 import type { ProviderUserState, ProviderSyncField, ProviderSyncValue } from '../../types/providerSync'
@@ -71,6 +72,7 @@ export interface SubsonicPlaylist {
 }
 
 interface SubsonicRequestOptions {
+  formPost?: boolean
   timeoutMs?: number
   retries?: number
   signal?: AbortSignal
@@ -279,7 +281,7 @@ function buildAuthQuery(
 function buildSubsonicEndpointUrl(
   config: SubsonicConnectionConfig,
   endpoint: string,
-  params: Record<string, string | number | boolean | null | undefined>,
+  params: Record<string, string | number | boolean | readonly string[] | null | undefined>,
   options: { includeFormat?: boolean } = {}
 ): URL {
   const baseUrl = normalizeSubsonicBaseUrl(config.baseUrl)
@@ -290,7 +292,8 @@ function buildSubsonicEndpointUrl(
   }
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === null) continue
-    url.searchParams.set(key, String(value))
+    if (Array.isArray(value)) value.forEach(item => url.searchParams.append(key, item))
+    else url.searchParams.set(key, String(value))
   }
   return url
 }
@@ -327,20 +330,25 @@ function mergeAbortSignals(signal: AbortSignal | undefined, timeoutMs: number): 
 async function requestSubsonicJson(
   config: SubsonicConnectionConfig,
   endpoint: string,
-  params: Record<string, string | number | boolean | null | undefined>,
+  params: Record<string, string | number | boolean | readonly string[] | null | undefined>,
   options: SubsonicRequestOptions = {}
 ): Promise<Record<string, unknown>> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const retries = Math.max(0, options.retries ?? DEFAULT_RETRIES)
   const url = buildSubsonicEndpointUrl(config, endpoint, params, { includeFormat: true })
 
+  const body = options.formPost ? url.searchParams.toString() : undefined
+  if (options.formPost) url.search = ''
+
   let lastError: unknown = null
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     const merged = mergeAbortSignals(options.signal, timeoutMs)
     try {
       const response = await fetch(url, {
-        method: 'GET',
-        headers: buildProviderRequestHeaders(),
+        method: options.formPost ? 'POST' : 'GET',
+        body,
+        ...(options.formPost ? { redirect: 'error' as const } : {}),
+        headers: { ...buildProviderRequestHeaders(), ...(options.formPost ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}) },
         signal: merged.signal
       })
 
@@ -375,7 +383,7 @@ async function requestSubsonicJson(
 async function requestSubsonicBytes(
   config: SubsonicConnectionConfig,
   endpoint: string,
-  params: Record<string, string | number | boolean | null | undefined>,
+  params: Record<string, string | number | boolean | readonly string[] | null | undefined>,
   options: SubsonicRequestOptions = {}
 ): Promise<ArrayBuffer> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
@@ -605,12 +613,10 @@ function toPlaylistTracks(sourceId: number, playlistResponse: Record<string, unk
 
   const entries = asArray<SubsonicSong>(playlistContainer.entry ?? playlistContainer.song)
   const tracks: SubsonicPlaylistTrack[] = []
-  const seenTrackIds = new Set<string>()
 
   for (const entry of entries) {
     const sourceTrackId = toTrimmedText(entry.id)
-    if (!sourceTrackId || seenTrackIds.has(sourceTrackId)) continue
-    seenTrackIds.add(sourceTrackId)
+    if (!sourceTrackId) throw new Error('Server returned an incomplete playlist.')
     tracks.push({
       path: buildSubsonicTrackPath(sourceId, sourceTrackId),
       source_track_id: sourceTrackId,
@@ -1043,4 +1049,80 @@ export async function fetchSubsonicCoverArt(
   }
 
   throw lastError instanceof Error ? lastError : new Error('Subsonic cover art request failed.')
+}
+
+export async function readSubsonicRemotePlaylist(sourceId: number, config: SubsonicConnectionConfig,
+  id: string, options: SubsonicRequestOptions = {}): Promise<RemotePlaylistSnapshot | null> {
+  let response: Record<string, unknown>
+  try { response = await requestSubsonicJson(config, 'getPlaylist', { id }, { ...options, retries: 0 }) }
+  catch (error) {
+    if (error instanceof SubsonicRequestError && (error.apiCode === 70 || error.httpStatus === 404)) return null
+    throw error
+  }
+  const row = response.playlist as Record<string, unknown> | undefined
+  if (!row || row.id !== id || typeof row.name !== 'string' || !Number.isSafeInteger(row.songCount) || Number(row.songCount) < 0) {
+    throw new Error('Server returned an invalid playlist.')
+  }
+  const tracks = toPlaylistTracks(sourceId, response)
+  if (tracks.length !== row.songCount) throw new Error('Server returned an incomplete playlist.')
+  const writable = typeof row.readonly === 'boolean' ? !row.readonly : !row.owner || row.owner === config.username
+  return { id, name: row.name, writable, tracks }
+}
+
+export async function listSubsonicRemotePlaylists(sourceId: number, config: SubsonicConnectionConfig,
+  options: SubsonicRequestOptions = {}): Promise<RemotePlaylistSnapshot[]> {
+  const response = await requestSubsonicJson(config, 'getPlaylists', {}, options)
+  const container = response.playlists as Record<string, unknown> | undefined
+  if (!container || typeof container !== 'object' || Array.isArray(container)
+    || (container.playlist != null && typeof container.playlist !== 'object')) throw new Error('Server returned an incomplete playlist list.')
+  const rows = asArray<Record<string, unknown>>(container.playlist)
+  const ids = rows.map(row => toTrimmedText(row.id))
+  if (ids.some(id => !id) || new Set(ids).size !== ids.length) throw new Error('Server returned an invalid playlist list.')
+  return runWithConcurrency(ids as string[], MAX_SYNC_CONCURRENCY, async id => {
+    const playlist = await readSubsonicRemotePlaylist(sourceId, config, id, options)
+    if (!playlist) throw new Error('Server playlists changed during refresh. Please try again.')
+    return playlist
+  })
+}
+
+export async function writeSubsonicRemotePlaylist(sourceId: number, config: SubsonicConnectionConfig,
+  before: RemotePlaylistSnapshot, after: RemotePlaylistSnapshot | null, options: SubsonicRequestOptions = {}): Promise<void> {
+  if (!before.writable) throw new Error('This server playlist is read-only.')
+  if (after && after.id !== before.id) throw new Error('Invalid server playlist.')
+  const writeOptions = { ...options, retries: 0 }
+  if (!after) {
+    await requestSubsonicJson(config, 'deletePlaylist', { id: before.id }, writeOptions)
+  } else if (before.name !== after.name) {
+    await requestSubsonicJson(config, 'updatePlaylist', { playlistId: before.id, name: after.name }, writeOptions)
+  } else {
+    const ids = after.tracks.map(track => {
+      const parsed = parseSubsonicTrackPath(track.path)
+      if (!parsed || parsed.sourceId !== sourceId) throw new Error('A server playlist can only contain tracks from that same server.')
+      return parsed.sourceTrackId
+    })
+    // Replacing the ordered list in one request preserves repeated occurrences
+    // and avoids the intermediate empty state of remove-all followed by add-all.
+    const params = { playlistId: before.id, songId: ids }
+    const large = buildSubsonicEndpointUrl(config, 'createPlaylist', params).toString().length > 6000
+    const formPost = large && await supportsPlaylistFormPost(config, options)
+    await requestSubsonicJson(config, 'createPlaylist', params, { ...writeOptions, formPost })
+  }
+}
+
+const playlistFormPostSupport = new Map<string, boolean>()
+async function supportsPlaylistFormPost(config: SubsonicConnectionConfig, options: SubsonicRequestOptions): Promise<boolean> {
+  const key = createHash('sha256').update(JSON.stringify([config.baseUrl, config.username, config.password])).digest('hex')
+  const cached = playlistFormPostSupport.get(key)
+  if (cached !== undefined) return cached
+  let supported = false
+  try {
+    const response = await requestSubsonicJson(config, 'getOpenSubsonicExtensions', {}, { ...options, retries: 0 })
+    supported = asArray<{ name?: string; versions?: number[] }>(response.openSubsonicExtensions)
+      .some(extension => extension.name === 'formPost' && extension.versions?.includes(1))
+  } catch (error) {
+    if (!(error instanceof SubsonicRequestError) || !([0, 70].includes(error.apiCode ?? -1) || error.httpStatus === 404)) throw error
+  }
+  if (playlistFormPostSupport.size >= 100) playlistFormPostSupport.clear()
+  playlistFormPostSupport.set(key, supported)
+  return supported
 }

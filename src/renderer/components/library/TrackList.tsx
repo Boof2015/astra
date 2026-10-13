@@ -1,3 +1,4 @@
+import { useProviderSyncStore } from '../../stores/providerSyncStore'
 import { CSSProperties, memo, ReactElement, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
 import { usePlayerStore, type PlaybackSourceContext, type QueueItem } from '../../stores/playerStore'
@@ -1876,6 +1877,8 @@ export default function TrackList({
       }
 
       await refreshPlaylistMembership(trackPaths)
+    } catch (error) {
+      setPlaylistPopupFeedback({ kind: 'error', message: error instanceof Error ? error.message : 'Could not update playlist.' })
     } finally {
       setIsPlaylistMembershipMutating(false)
     }
@@ -1897,6 +1900,8 @@ export default function TrackList({
       closePlaylistPopup()
       setTrackContextMenu(null)
       setSelectedTrackKeys(new Set())
+    } catch (error) {
+      useProviderSyncStore.getState().notifyError(error instanceof Error ? error.message : 'Could not remove tracks from playlist.')
     } finally {
       setIsRemovingFromPlaylist(false)
     }
@@ -1916,6 +1921,8 @@ export default function TrackList({
       closePlaylistPopup()
       setTrackContextMenu(null)
       setSelectedTrackKeys(new Set())
+    } catch (error) {
+      useProviderSyncStore.getState().notifyError(error instanceof Error ? error.message : 'Could not remove tracks from playlist.')
     } finally {
       setIsRemovingFromPlaylist(false)
     }

@@ -519,7 +519,7 @@ function App() {
     const unsubscribeExternalLibraryMutation = window.electronAPI.library.onExternalLibraryMutation(() => {
       void useLibraryStore.getState().loadFavorites()
       void useRatingsStore.getState().loadRatings()
-      void usePlaylistStore.getState().loadPlaylists()
+      void usePlaylistStore.getState().loadPlaylists().then(() => usePlaylistStore.getState().refreshSelectedPlaylist())
     })
     void useProviderSyncStore.getState().refreshStatus()
     const unsubscribeProviderSync = window.electronAPI.providerSync.onChanged(() => {
