@@ -22,6 +22,10 @@ const same = (a: RemotePlaylistSnapshot, b: RemotePlaylistSnapshot) => a.name ==
   && a.tracks.length === b.tracks.length && a.tracks.every((track, i) => track.path === b.tracks[i].path)
 
 export function planRemotePlaylistEdit(before: RemotePlaylistLocal, edit: RemotePlaylistEdit): RemotePlaylistSnapshot | null {
+  if (edit.kind === 'delete') {
+    if (!(before.deletable ?? before.writable)) throw new Error('You do not have permission to delete this server playlist.')
+    return null
+  }
   if (!before.writable) throw new Error('This server playlist is read-only.')
   const after: RemotePlaylistSnapshot = { ...before, tracks: before.tracks.map(track => ({ ...track })) }
   const validEntries = (ids: number[]) => {
@@ -32,7 +36,6 @@ export function planRemotePlaylistEdit(before: RemotePlaylistLocal, edit: Remote
     if (!Number.isFinite(value)) throw new Error('Invalid playlist position.')
     return Math.max(0, Math.min(after.tracks.length, Math.trunc(value)))
   }
-  if (edit.kind === 'delete') return null
   if (edit.kind === 'rename') {
     if (typeof edit.name !== 'string' || !edit.name.trim()) throw new Error('Playlist name is required.')
     after.name = edit.name.trim()
@@ -138,7 +141,10 @@ export class RemotePlaylists {
       }
       const remote = await client.read(captured.id); check()
       if (!remote) { await this.options.remove(id); throw new Error('This playlist was removed from the server.') }
-      if (!remote.writable) { await this.options.apply(captured.ref, [remote], false); throw new Error('This server playlist is read-only.') }
+      if (after === null ? !(remote.deletable ?? remote.writable) : !remote.writable) {
+        await this.options.apply(captured.ref, [remote], false)
+        throw new Error(after === null ? 'You do not have permission to delete this server playlist.' : 'This server playlist is read-only.')
+      }
       if (!same(remote, captured)) {
         await this.options.apply(captured.ref, [remote], false)
         throw new Error('This playlist changed on the server. Astra refreshed it; please try your edit again.')

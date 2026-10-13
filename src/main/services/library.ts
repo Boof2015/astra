@@ -2924,6 +2924,7 @@ export async function initDatabase(): Promise<void> {
     // Column already exists.
   }
   try { db.run('ALTER TABLE playlists ADD COLUMN remote_writable INTEGER NOT NULL DEFAULT 0') } catch { /* Existing column. */ }
+  try { db.run('ALTER TABLE playlists ADD COLUMN remote_deletable INTEGER') } catch { /* Existing column. */ }
   db.run("UPDATE playlists SET kind = 'normal' WHERE kind IS NULL OR kind NOT IN ('normal', 'dynamic')")
   db.run("UPDATE playlists SET dynamic_rules_json = NULL WHERE kind <> 'dynamic'")
   db.run('CREATE INDEX IF NOT EXISTS idx_playlists_last_played ON playlists(last_played_at DESC)')
@@ -4452,6 +4453,11 @@ export async function deleteJellyfinSource(sourceId: number, purgeTracks: boolea
   }
 
   if (source) {
+    db.run(`DELETE FROM playlist_tracks WHERE playlist_id IN (
+      SELECT id FROM playlists WHERE remote_source_type = 'jellyfin' AND remote_source_id = ?
+    )`, [sourceId])
+    db.run("DELETE FROM playlists WHERE remote_source_type = 'jellyfin' AND remote_source_id = ?", [sourceId])
+    db.run("DELETE FROM remote_playlist_sync WHERE provider = 'jellyfin' AND source_id = ?", [sourceId])
     db.run('DELETE FROM jellyfin_sources WHERE id = ?', [sourceId])
   }
   await saveDatabase()
@@ -12134,9 +12140,10 @@ function visiblePlaylistsSql(alias: string): string {
   return `(${alias}.remote_source_id IS NULL${predicates.length ? ` OR ${predicates.join(' OR ')}` : ''})`
 }
 export function getRemotePlaylistLink(id: number): RemotePlaylistLink | null {
-  const row = db?.get<{ remote_source_type: ProviderSyncRef['provider']; remote_source_id: number; remote_playlist_id: string; remote_writable: number }>(
-    'SELECT remote_source_type, remote_source_id, remote_playlist_id, remote_writable FROM playlists WHERE id = ? AND remote_source_id IS NOT NULL', [id])
-  return row ? { provider: row.remote_source_type, sourceId: row.remote_source_id, id: row.remote_playlist_id, writable: row.remote_writable === 1 } : null
+  const row = db?.get<{ remote_source_type: ProviderSyncRef['provider']; remote_source_id: number; remote_playlist_id: string; remote_writable: number; remote_deletable: number | null }>(
+    'SELECT remote_source_type, remote_source_id, remote_playlist_id, remote_writable, remote_deletable FROM playlists WHERE id = ? AND remote_source_id IS NOT NULL', [id])
+  return row ? { provider: row.remote_source_type, sourceId: row.remote_source_id, id: row.remote_playlist_id,
+    writable: row.remote_writable === 1, deletable: (row.remote_deletable ?? row.remote_writable) === 1 } : null
 }
 function isPlaylistVisible(id: number): boolean {
   const link = getRemotePlaylistLink(id)
@@ -12149,7 +12156,8 @@ export function getRemotePlaylistLocal(id: number): RemotePlaylistLocal | null {
   const tracks = db.all<{ entryId: number; path: string; title: string | null; artist: string | null; album: string | null }>(
     `SELECT id AS entryId, track_path AS path, fallback_title AS title, fallback_artist AS artist, fallback_album AS album
       FROM playlist_tracks WHERE playlist_id = ? ORDER BY position, id`, [id])
-  return { localId: id, ref: { provider: ref.provider, sourceId: ref.sourceId }, id: ref.id, name: row.name, writable: ref.writable, tracks }
+  return { localId: id, ref: { provider: ref.provider, sourceId: ref.sourceId }, id: ref.id, name: row.name,
+    writable: ref.writable, deletable: ref.deletable, tracks }
 }
 
 export async function applyRemotePlaylists(ref: ProviderSyncRef, snapshots: RemotePlaylistSnapshot[],
@@ -12167,6 +12175,7 @@ export async function applyRemotePlaylists(ref: ProviderSyncRef, snapshots: Remo
       const before = id === undefined ? null : getRemotePlaylistLocal(id)
       const normalize = (tracks: RemotePlaylistSnapshot['tracks']) => tracks.map(t => [t.path, t.title ?? null, t.artist ?? null, t.album ?? null])
       if (before && before.name === snapshot.name && before.writable === snapshot.writable
+        && before.deletable === (snapshot.deletable ?? snapshot.writable)
         && JSON.stringify(normalize(before.tracks)) === JSON.stringify(normalize(snapshot.tracks))
         && snapshot.tracks.every((t, i) => t.entryId === undefined || t.entryId === before.tracks[i].entryId)) continue
       if (id === undefined) {
@@ -12191,7 +12200,8 @@ export async function applyRemotePlaylists(ref: ProviderSyncRef, snapshots: Remo
         }
       }
       for (const track of old) if (!used.has(track.entryId!)) db.run('DELETE FROM playlist_tracks WHERE id = ?', [track.entryId!])
-      db.run('UPDATE playlists SET name = ?, remote_writable = ?, updated_at = ? WHERE id = ?', [snapshot.name, Number(snapshot.writable), Date.now(), id])
+      db.run('UPDATE playlists SET name = ?, remote_writable = ?, remote_deletable = ?, updated_at = ? WHERE id = ?',
+        [snapshot.name, Number(snapshot.writable), Number(snapshot.deletable ?? snapshot.writable), Date.now(), id])
     }
     if (options.prune) for (const [remoteId, id] of existing) if (!snapshots.some(s => s.id === remoteId)) {
       db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [id])

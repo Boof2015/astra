@@ -96,13 +96,31 @@ test('permission changes and offline failures do not produce an editable local f
   const f = fixture()
   await f.service.setEnabled(ref, true)
   f.change(remote => { remote.writable = false })
-  await assert.rejects(f.service.edit(1, { kind: 'delete' }), /read-only/)
+  await assert.rejects(f.service.edit(1, { kind: 'rename', name: 'Denied' }), /read-only/)
   assert.equal(f.local()!.writable, false); assert.equal(f.writes(), 0)
   const offline = fixture()
   await offline.service.setEnabled(ref, true)
   offline.client.read = async () => { throw new Error('offline') }
   await assert.rejects(offline.service.edit(1, { kind: 'rename', name: 'Lost' }), /offline/)
   assert.equal(offline.local()!.name, 'Mix'); assert.equal(offline.writes(), 0)
+})
+
+test('playlist deletion permission is independent of editing and is checked again before writing', async () => {
+  const f = fixture()
+  f.change(remote => { remote.deletable = false })
+  await f.service.setEnabled(ref, true)
+  assert.throws(() => f.service.edit(1, { kind: 'delete' }), /permission/)
+  await f.service.edit(1, { kind: 'rename', name: 'Can edit' })
+  assert.equal(f.writes(), 1)
+  f.change(remote => { remote.writable = false; remote.deletable = true })
+  await f.service.refresh(ref)
+  f.change(remote => { remote.deletable = false })
+  await assert.rejects(f.service.edit(1, { kind: 'delete' }), /permission/)
+  assert.equal(f.writes(), 1)
+  f.change(remote => { remote.deletable = true })
+  await f.service.refresh(ref)
+  await f.service.edit(1, { kind: 'delete' })
+  assert.equal(f.remote(), null)
 })
 
 test('ignored writes are not acknowledged, and ambiguous writes are never retried', async () => {

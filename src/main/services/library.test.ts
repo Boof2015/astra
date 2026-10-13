@@ -6023,3 +6023,39 @@ test('remote playlist refresh preserves occurrence ids, exact duplicate removal 
   assert.equal(library.getRemotePlaylistLocal(id)!.tracks.length, 2)
   assert.equal(library.getSyncPlaylistsState().playlists.length, 0, 'server mirrors must not become mobile-owned playlists')
 })
+
+test('Jellyfin playlist opt-in and delete permission persist independently of Subsonic and favorites', async t => {
+  await setupEmptyLibrary(t)
+  const source = await library.createJellyfinSource({ name: 'Jellyfin', base_url: 'https://jellyfin.test', username: 'user', secret_encrypted: 'one', enabled: 1 })
+  const subsonic = await library.createSubsonicSource({ name: 'Navidrome', base_url: 'https://navidrome.test', username: 'user', secret_encrypted: 'two', enabled: 1 })
+  const ref = { provider: 'jellyfin' as const, sourceId: source.id }
+  const other = { provider: 'subsonic' as const, sourceId: subsonic.id }
+  const local = await library.createPlaylist('Local')
+  const snapshot = { id: 'shared', name: 'Shared', writable: true, deletable: false,
+    tracks: [{ path: `jellyfin://${source.id}/track/song` }] }
+  await library.applyRemotePlaylists(ref, [snapshot])
+  await library.applyRemotePlaylists(other, [{ ...snapshot, tracks: [], deletable: undefined }])
+  assert.equal(library.remotePlaylistsEnabled(ref), false)
+  assert.deepEqual(library.getPlaylists().map(p => p.id), [local.id])
+  await library.setRemotePlaylistsEnabled(ref, true)
+  const mirror = library.getPlaylists().find(p => p.remote?.provider === 'jellyfin')!
+  assert.equal(mirror.remote!.writable, true)
+  assert.equal(mirror.remote!.deletable, false)
+  library.closeDatabase(); await library.initDatabase()
+  assert.equal(library.getRemotePlaylistLocal(mirror.id)!.deletable, false)
+  assert.equal(library.remotePlaylistsEnabled(ref), true)
+  assert.equal(library.remotePlaylistsEnabled(other), false)
+  assert.equal(library.getProviderSyncSetting(ref), null)
+  await library.setRemotePlaylistsEnabled(ref, false)
+  assert.deepEqual(library.getPlaylists().map(p => p.id), [local.id])
+  await library.setRemotePlaylistsEnabled(ref, true)
+  const changed = await library.applyRemotePlaylists(ref, [{ ...snapshot, writable: false, deletable: true }])
+  assert.equal(changed.updated, 1, 'permission-only changes must update the mirror')
+  assert.equal(library.getPlaylists().find(p => p.id === mirror.id)!.remote!.deletable, true)
+  assert.equal(library.getRemotePlaylistLocal(mirror.id)!.writable, false)
+  await library.setRemotePlaylistsEnabled(other, true)
+  assert.equal(library.getPlaylists().find(p => p.remote?.provider === 'subsonic')!.remote!.deletable, true)
+  await library.deleteJellyfinSource(source.id, false)
+  assert.equal(library.getRemotePlaylistLocal(mirror.id), null)
+  assert.equal(library.getPlaylists().length, 2, 'removing Jellyfin must leave local and Subsonic playlists alone')
+})

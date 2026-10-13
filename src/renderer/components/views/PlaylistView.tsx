@@ -1498,7 +1498,7 @@ export default function PlaylistView() {
                       className="playlist-header-menu-item danger"
                       role="menuitem"
                       onClick={handleRequestDelete}
-                      disabled={isDeletingPlaylist || isReadOnlyServerPlaylist}
+                      disabled={isDeletingPlaylist || (playlist?.remote && !(playlist.remote.deletable ?? playlist.remote.writable))}
                     >
                       Delete
                     </button>

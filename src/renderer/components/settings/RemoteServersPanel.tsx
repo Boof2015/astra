@@ -821,7 +821,7 @@ export default function RemoteServersPanel() {
                   </p>
                 )}
                 <ProviderSyncControls provider={source.sourceType} sourceId={source.id} connected={source.enabled === 1} />
-                {source.sourceType === 'subsonic' && <RemotePlaylistControls provider={source.sourceType} sourceId={source.id} connected={source.enabled === 1} />}
+                <RemotePlaylistControls provider={source.sourceType} sourceId={source.id} connected={source.enabled === 1} />
                 <StreamingQualitySettings source={{ provider: source.sourceType, sourceId: source.id }} />
                 <div className="remote-source-card-footer">
                   <button

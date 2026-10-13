@@ -1,4 +1,5 @@
 import { RemotePlaylists } from './services/remotePlaylists'
+import { createJellyfinPlaylistClient } from './services/jellyfinPlaylists'
 import type { RemotePlaylistEdit } from '../types/remotePlaylists'
 import { listSubsonicRemotePlaylists, readSubsonicRemotePlaylist, writeSubsonicRemotePlaylist } from './services/subsonic'
 import { PlexSources } from './services/plexSources'
@@ -1614,7 +1615,10 @@ const providerStateSync = new ProviderStateSync({
 })
 
 const remotePlaylists = new RemotePlaylists({
-  sources: () => library.listSubsonicSources().map(s => ({ provider: 'subsonic' as const, sourceId: s.id })),
+  sources: () => [
+    ...library.listSubsonicSources().map(s => ({ provider: 'subsonic' as const, sourceId: s.id })),
+    ...library.listJellyfinSources().map(s => ({ provider: 'jellyfin' as const, sourceId: s.id }))
+  ],
   fingerprint: library.remotePlaylistFingerprint,
   enabled: library.remotePlaylistsEnabled,
   setEnabled: async (ref, enabled) => {
@@ -1629,6 +1633,19 @@ const remotePlaylists = new RemotePlaylists({
   remove: async id => { await library.deletePlaylist(id); mainWindow?.webContents.send('library:externalLibraryMutation') },
   changed: () => mainWindow?.webContents.send('remote-playlists:changed'),
   client: async (ref, signal) => {
+    if (ref.provider === 'jellyfin') {
+      const { connection } = requireJellyfinSourceCredentials(ref.sourceId)
+      const fingerprint = library.remotePlaylistFingerprint(ref)
+      return createJellyfinPlaylistClient(ref.sourceId, connection, {
+        signal,
+        authenticate: forceRefresh => getJellyfinAuthContext(ref.sourceId, connection, { signal, forceRefresh }),
+        check: () => {
+          if (!library.remotePlaylistsEnabled(ref) || fingerprint !== library.remotePlaylistFingerprint(ref)) {
+            throw new Error('Playlist sync is off or the server connection changed.')
+          }
+        }
+      })
+    }
     if (ref.provider !== 'subsonic') throw new Error('Playlist sync is not supported for this server yet.')
     const { connection } = requireSubsonicSourceCredentials(ref.sourceId)
     const options = { signal, retries: 0, timeoutMs: 12_000 }
@@ -4664,6 +4681,7 @@ async function syncOneJellyfinSource(sourceId: number, syncSessionKey: string): 
       new Set(result.tracks.map((track) => track.source_track_id)),
       { persist: false }
     )
+    await remotePlaylists.refresh({ provider: 'jellyfin', sourceId }).catch(() => {})
     await library.updateJellyfinSourceStatus(
       sourceId,
       {
