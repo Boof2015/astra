@@ -5875,6 +5875,85 @@ test('Plex library identity survives reconnect and retained removal without dupl
   assert.equal(library.getFavorites().length, 0)
 })
 
+test('Plex playlists share one opt-in across libraries and retain their identity as connections change', async t => {
+  await setupEmptyLibrary(t)
+  const input = { name: 'Music', base_url: 'https://plex.test', username: 'listener', account_id: 'account',
+    server_id: 'server', library_id: '2', library_name: 'Music', secret_encrypted: 'encrypted' }
+  const first = await library.savePlexSource(input)
+  const second = await library.savePlexSource({ ...input, library_id: '3' })
+  const otherAccount = await library.savePlexSource({ ...input, account_id: 'other' })
+  const otherServer = await library.savePlexSource({ ...input, server_id: 'other' })
+  const ref = (sourceId: number) => ({ provider: 'plex' as const, sourceId })
+  assert.equal(library.remotePlaylistsEnabled(ref(first.id)), false)
+  assert.deepEqual(library.normalizeRemotePlaylistRef(ref(second.id)), ref(first.id))
+  await library.setRemotePlaylistsEnabled(ref(second.id), true)
+  assert.equal(library.remotePlaylistsEnabled(ref(first.id)), true)
+  assert.equal(library.remotePlaylistsEnabled(ref(otherAccount.id)), false)
+  assert.equal(library.remotePlaylistsEnabled(ref(otherServer.id)), false)
+  const snapshot = { id: '1', name: 'Across libraries', writable: true, tracks: [
+    { path: `plex://${first.id}/10`, remoteEntryId: '100', title: 'First' },
+    { path: `plex://${second.id}/20`, remoteEntryId: '101', title: 'Second' },
+    { path: `plex://${first.id}/unavailable/30`, remoteEntryId: '102', title: 'Missing library' }
+  ] }
+  await library.upsertPlexTracks(first.id, [createRemoteTrack({ path: snapshot.tracks[0].path,
+    source_track_id: '10', title: 'First', artist: 'Artist', album: 'Album' })])
+  await library.applyRemotePlaylists(ref(first.id), [snapshot])
+  const playlist = library.getPlaylists()[0]
+  assert.equal(library.getPlaylists().length, 1)
+  assert.equal(library.getPlaylistTrackEntries(playlist.id)[2].missing, true)
+  assert.equal(library.getPlaylistTrackEntries(playlist.id)[2].title, 'Missing library')
+  const occurrenceIds = library.getRemotePlaylistLocal(playlist.id)!.tracks.map(track => track.entryId)
+  await library.updatePlexSource(first.id, { enabled: 0 })
+  assert.equal(library.remotePlaylistsEnabled(ref(first.id)), true, 'another library keeps the server connection usable')
+  await library.updatePlexSource(second.id, { enabled: 0 })
+  assert.equal(library.getPlaylists().length, 0)
+  await library.updatePlexSource(second.id, { enabled: 1, secret_encrypted: 'rotated', base_url: 'https://new.test' })
+  assert.equal(library.getPlaylists().length, 1)
+  await library.deletePlexSource(first.id, false)
+  assert.equal(library.getPlaylists()[0].id, playlist.id)
+  assert.deepEqual(library.getRemotePlaylistLocal(playlist.id)!.ref, ref(second.id))
+  assert.equal(library.remotePlaylistsEnabled(ref(second.id)), true)
+  await library.savePlexSource(input)
+  assert.deepEqual(library.getRemotePlaylistLocal(playlist.id)!.ref, ref(first.id))
+  assert.equal(library.remotePlaylistsEnabled(ref(first.id)), true)
+  library.closeDatabase(); await library.initDatabase()
+  assert.deepEqual(library.getRemotePlaylistLocal(playlist.id)!.tracks.map(track => track.entryId), occurrenceIds)
+  await library.setRemotePlaylistsEnabled(ref(second.id), false)
+  assert.equal(library.getPlaylists().length, 0)
+  assert.equal(library.getRemotePlaylistLocal(playlist.id)!.tracks.length, 3)
+  await library.setRemotePlaylistsEnabled(ref(first.id), true)
+  await library.deletePlexSource(first.id, true)
+  assert.equal(library.getPlaylists()[0].id, playlist.id)
+  assert.equal(library.getRemotePlaylistLocal(playlist.id)!.tracks.length, 3, 'purging a library must not truncate its server playlists')
+  assert.equal(library.getPlaylistTrackEntries(playlist.id)[0].missing, true)
+  await library.deletePlexSource(second.id, false)
+  assert.equal(library.getRemotePlaylistLocal(playlist.id), null)
+  const reconnected = await library.savePlexSource({ ...input, library_id: '3' })
+  assert.equal(library.remotePlaylistsEnabled(ref(reconnected.id)), false, 'removing the last connection resets consent')
+})
+
+test('Plex provider occurrence IDs preserve duplicate selection and unavailable-track resolution during refresh', async t => {
+  await setupEmptyLibrary(t)
+  const source = await library.savePlexSource({ name: 'Music', base_url: 'https://plex.test', username: 'listener', account_id: 'account',
+    server_id: 'server', library_id: '2', library_name: 'Music', secret_encrypted: 'encrypted' })
+  const ref = { provider: 'plex' as const, sourceId: source.id }
+  await library.setRemotePlaylistsEnabled(ref, true)
+  const snapshot = { id: '1', name: 'Duplicates', writable: true, tracks: [
+    { path: `plex://${source.id}/10`, remoteEntryId: '100' },
+    { path: `plex://${source.id}/10`, remoteEntryId: '101' },
+    { path: `plex://${source.id}/unavailable/20`, remoteEntryId: '102', title: 'Missing library' }
+  ] }
+  await library.applyRemotePlaylists(ref, [snapshot])
+  const playlistId = library.getPlaylists()[0].id
+  const before = library.getRemotePlaylistLocal(playlistId)!
+  await library.applyRemotePlaylists(ref, [{ ...snapshot, tracks: [snapshot.tracks[1], snapshot.tracks[0], { path: 'plex://99/20', remoteEntryId: '102' }] }])
+  const after = library.getRemotePlaylistLocal(playlistId)!
+  assert.deepEqual(after.tracks.map(track => track.entryId), [before.tracks[1].entryId, before.tracks[0].entryId, before.tracks[2].entryId])
+  assert.equal(after.tracks[2].path, 'plex://99/20')
+  await library.applyRemotePlaylists(ref, [{ ...snapshot, tracks: [snapshot.tracks[1]] }])
+  assert.equal(library.getRemotePlaylistLocal(playlistId)!.tracks[0].entryId, before.tracks[1].entryId)
+})
+
 test('Plex rating sync persists half-stars and opt-in per library while favorites remain independent', async t => {
   await setupEmptyLibrary(t)
   const input = { name: 'Music', base_url: 'https://plex.test', username: 'listener', account_id: 'account',

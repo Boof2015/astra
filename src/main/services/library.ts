@@ -348,6 +348,13 @@ export async function savePlexSource(input: Pick<PlexSourceRow, 'name' | 'base_u
       library_name = excluded.library_name, secret_encrypted = excluded.secret_encrypted,
       enabled = 1, deleted = 0, last_status = 'unknown', last_error = NULL, updated_at = excluded.updated_at`,
   [input.name, input.base_url, input.username, input.account_id, input.server_id, input.library_id, input.library_name, input.secret_encrypted, now, now])
+  // A retained lower-ID library may have been reconnected after its playlist
+  // collection moved to another library. Move the existing collection with it.
+  const peers = listPlexSources().filter(source => source.account_id === input.account_id && source.server_id === input.server_id).sort((a, b) => a.id - b.id)
+  for (const peer of peers.slice(1)) {
+    db.run("UPDATE playlists SET remote_source_id = ? WHERE remote_source_type = 'plex' AND remote_source_id = ?", [peers[0].id, peer.id])
+    db.run("UPDATE remote_playlist_sync SET source_id = ? WHERE provider = 'plex' AND source_id = ?", [peers[0].id, peer.id])
+  }
   await saveDatabase()
   return publicPlexSource(db.get<PlexSourceRow>('SELECT * FROM plex_sources WHERE account_id = ? AND server_id = ? AND library_id = ?',
     [input.account_id, input.server_id, input.library_id])!)
@@ -380,14 +387,33 @@ export async function markMissingPlexTracksUnavailable(id: number, seen: Set<str
 }
 export async function deletePlexSource(id: number, purge: boolean): Promise<void> {
   if (!db) return
+  const group = getPlexPlaylistSources(id)
+  const owner = group[0]
+  const successor = group.find(source => source.id !== id)
+  if (owner?.id === id && successor) {
+    // Playlists belong to the account/server, not the removed Music library.
+    db.run("UPDATE playlists SET remote_source_id = ? WHERE remote_source_type = 'plex' AND remote_source_id = ?", [successor.id, id])
+    db.run("UPDATE remote_playlist_sync SET source_id = ? WHERE provider = 'plex' AND source_id = ?", [successor.id, id])
+  } else if (!successor) {
+    db.run("DELETE FROM playlist_tracks WHERE playlist_id IN (SELECT id FROM playlists WHERE remote_source_type = 'plex' AND remote_source_id = ?)", [id])
+    db.run("DELETE FROM playlists WHERE remote_source_type = 'plex' AND remote_source_id = ?", [id])
+    db.run("DELETE FROM remote_playlist_sync WHERE provider = 'plex' AND source_id = ?", [id])
+  }
   if (purge) {
+    // Keep full server-owned playlist contents when one of its libraries is
+    // purged locally. Local playlists retain the existing purge behavior.
+    db.run(`UPDATE playlist_tracks SET track_path = 'plex://' ||
+      (SELECT remote_source_id FROM playlists WHERE id = playlist_tracks.playlist_id) || '/unavailable/' ||
+      (SELECT source_track_id FROM tracks WHERE path = playlist_tracks.track_path)
+      WHERE playlist_id IN (SELECT id FROM playlists WHERE remote_source_type = 'plex')
+        AND track_path IN (SELECT path FROM tracks WHERE source_type = 'plex' AND source_id = ?)`, [id])
     const paths = db.all<{ path: string }>("SELECT path FROM tracks WHERE source_type = 'plex' AND source_id = ?", [id]).map(row => row.path)
     deleteTrackRelatedRows(paths)
     db.run("DELETE FROM tracks WHERE source_type = 'plex' AND source_id = ?", [id])
     rebuildDerivedLibraryState()
     db.run('DELETE FROM plex_sources WHERE id = ?', [id])
   } else {
-    await markPlexTracksAvailability(id, false, 'source_deleted')
+    db.run("UPDATE tracks SET is_available = 0, availability_reason = 'source_deleted', modified_at = ? WHERE source_type = 'plex' AND source_id = ?", [Date.now(), id])
     // Keep only stable identity so re-adding this library revives its tracks.
     db.run("UPDATE plex_sources SET deleted = 1, enabled = 0, secret_encrypted = '', last_status = 'disabled' WHERE id = ?", [id])
   }
@@ -2981,6 +3007,7 @@ export async function initDatabase(): Promise<void> {
   } catch {
     // Column already exists.
   }
+  try { db.run('ALTER TABLE playlist_tracks ADD COLUMN remote_entry_id TEXT') } catch { /* Existing column. */ }
   db.run('CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist ON playlist_tracks(playlist_id, position)')
   // Playlist rows are ordered occurrences, not unique memberships. Older
   // databases may still carry the legacy membership constraint, so remove it
@@ -12110,22 +12137,33 @@ export function previewDynamicPlaylist(rules: DynamicPlaylistRules): DynamicPlay
   }
 }
 
+/** One playlist collection/opt-in per Plex account and server, across libraries. */
+export function getPlexPlaylistSources(sourceId: number): PlexSource[] {
+  const source = getPlexSourceById(sourceId)
+  return source ? listPlexSources().filter(peer => peer.account_id === source.account_id && peer.server_id === source.server_id)
+    .sort((a, b) => a.id - b.id) : []
+}
+export function normalizeRemotePlaylistRef(ref: ProviderSyncRef): ProviderSyncRef {
+  return ref.provider === 'plex' ? { ...ref, sourceId: getPlexPlaylistSources(ref.sourceId)[0]?.id ?? ref.sourceId } : ref
+}
 export function remotePlaylistFingerprint(ref: ProviderSyncRef): string | null {
   if (ref.provider === 'plex') {
     const source = getPlexSourceById(ref.sourceId)
-    if (!source || source.enabled !== 1) return null
-    return createHash('sha256').update(JSON.stringify([source.account_id, source.server_id, source.library_id])).digest('hex')
+    if (!source || !getPlexPlaylistSources(source.id).some(peer => peer.enabled === 1)) return null
+    return createHash('sha256').update(JSON.stringify([source.account_id, source.server_id])).digest('hex')
   }
   const source = ref.provider === 'subsonic' ? getSubsonicSourceById(ref.sourceId) : getJellyfinSourceById(ref.sourceId)
   if (!source || source.enabled !== 1) return null
   return createHash('sha256').update(JSON.stringify([source.base_url, source.username, source.secret_encrypted])).digest('hex')
 }
 export function remotePlaylistsEnabled(ref: ProviderSyncRef): boolean {
+  ref = normalizeRemotePlaylistRef(ref)
   const row = db?.get<{ enabled: number; fingerprint: string }>('SELECT enabled, fingerprint FROM remote_playlist_sync WHERE provider = ? AND source_id = ?', [ref.provider, ref.sourceId])
   return row?.enabled === 1 && row.fingerprint === remotePlaylistFingerprint(ref)
 }
 export async function setRemotePlaylistsEnabled(ref: ProviderSyncRef, enabled: boolean): Promise<void> {
   if (!db) throw new Error('Database not initialized')
+  ref = normalizeRemotePlaylistRef(ref)
   const fingerprint = remotePlaylistFingerprint(ref)
   if (enabled && !fingerprint) throw new Error('Connect this server before enabling playlist sync.')
   db.run(`INSERT INTO remote_playlist_sync (provider, source_id, fingerprint, enabled) VALUES (?, ?, ?, ?)
@@ -12153,9 +12191,10 @@ export function getRemotePlaylistLocal(id: number): RemotePlaylistLocal | null {
   const ref = getRemotePlaylistLink(id)
   if (!ref || !db) return null
   const row = db.get<{ name: string }>('SELECT name FROM playlists WHERE id = ?', [id])!
-  const tracks = db.all<{ entryId: number; path: string; title: string | null; artist: string | null; album: string | null }>(
-    `SELECT id AS entryId, track_path AS path, fallback_title AS title, fallback_artist AS artist, fallback_album AS album
+  const tracks = db.all<{ entryId: number; path: string; title: string | null; artist: string | null; album: string | null; remoteEntryId: string | null }>(
+    `SELECT id AS entryId, track_path AS path, fallback_title AS title, fallback_artist AS artist, fallback_album AS album, remote_entry_id AS remoteEntryId
       FROM playlist_tracks WHERE playlist_id = ? ORDER BY position, id`, [id])
+    .map(({ remoteEntryId, ...track }) => ({ ...track, ...(remoteEntryId === null ? {} : { remoteEntryId }) }))
   return { localId: id, ref: { provider: ref.provider, sourceId: ref.sourceId }, id: ref.id, name: row.name,
     writable: ref.writable, deletable: ref.deletable, tracks }
 }
@@ -12173,7 +12212,7 @@ export async function applyRemotePlaylists(ref: ProviderSyncRef, snapshots: Remo
     for (const snapshot of snapshots) {
       let id = existing.get(snapshot.id)
       const before = id === undefined ? null : getRemotePlaylistLocal(id)
-      const normalize = (tracks: RemotePlaylistSnapshot['tracks']) => tracks.map(t => [t.path, t.title ?? null, t.artist ?? null, t.album ?? null])
+      const normalize = (tracks: RemotePlaylistSnapshot['tracks']) => tracks.map(t => [t.path, t.title ?? null, t.artist ?? null, t.album ?? null, t.remoteEntryId ?? null])
       if (before && before.name === snapshot.name && before.writable === snapshot.writable
         && before.deletable === (snapshot.deletable ?? snapshot.writable)
         && JSON.stringify(normalize(before.tracks)) === JSON.stringify(normalize(snapshot.tracks))
@@ -12188,14 +12227,15 @@ export async function applyRemotePlaylists(ref: ProviderSyncRef, snapshots: Remo
       const reserved = new Set(snapshot.tracks.flatMap(t => t.entryId === undefined ? [] : [t.entryId]))
       for (const [position, track] of snapshot.tracks.entries()) {
         const match = track.entryId !== undefined ? old.find(t => t.entryId === track.entryId && t.path === track.path)
-          : old.find(t => t.path === track.path && !used.has(t.entryId!) && !reserved.has(t.entryId!))
+          : track.remoteEntryId !== undefined ? old.find(t => t.remoteEntryId === track.remoteEntryId)
+            : old.find(t => t.path === track.path && !used.has(t.entryId!) && !reserved.has(t.entryId!))
         if (match && !used.has(match.entryId!)) {
           used.add(match.entryId!)
-          db.run('UPDATE playlist_tracks SET position = ?, fallback_title = ?, fallback_artist = ?, fallback_album = ? WHERE id = ?',
-            [position, track.title ?? null, track.artist ?? null, track.album ?? null, match.entryId!])
+          db.run('UPDATE playlist_tracks SET track_path = ?, position = ?, fallback_title = ?, fallback_artist = ?, fallback_album = ?, remote_entry_id = ? WHERE id = ?',
+            [track.path, position, track.title ?? null, track.artist ?? null, track.album ?? null, track.remoteEntryId ?? null, match.entryId!])
         } else {
-          const entry = db.run(`INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album)
-            VALUES (?, ?, ?, ?, ?, ?, ?)`, [id, track.path, position, Date.now(), track.title ?? null, track.artist ?? null, track.album ?? null])
+          const entry = db.run(`INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album, remote_entry_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [id, track.path, position, Date.now(), track.title ?? null, track.artist ?? null, track.album ?? null, track.remoteEntryId ?? null])
           used.add(Number(entry.lastInsertRowid))
         }
       }

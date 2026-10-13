@@ -71,6 +71,11 @@ export async function plexJson(credentials: PlexCredentials, path: string, optio
   const response = await request(plexUrl(credentials.baseUrl, path), plexHeaders(credentials.account, credentials.server.token), options, init)
   try { return await response.json() } catch { throw new PlexConnectionError('response', 'Plex returned an invalid server response.') }
 }
+/** Playlist mutations may return JSON, text or no content. Never replay them. */
+export async function plexWrite(credentials: PlexCredentials, path: string, method: 'PUT' | 'DELETE', options: PlexRequestOptions = {}): Promise<void> {
+  const response = await request(plexUrl(credentials.baseUrl, path), plexHeaders(credentials.account, credentials.server.token), options, { method })
+  await response.body?.cancel()
+}
 export function createPlexDevice(): PlexDevice {
   return { clientId: randomUUID() }
 }

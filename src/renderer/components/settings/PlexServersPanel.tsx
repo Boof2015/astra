@@ -3,6 +3,7 @@ import type { PlexLibraryChoice, PlexSignInStatus, PlexSource } from '../../../t
 import { usePlexSettingsStore } from '../../stores/plexSettingsStore'
 import StreamingQualitySettings from './StreamingQualitySettings'
 import ProviderSyncControls from './ProviderSyncControls'
+import RemotePlaylistControls from './RemotePlaylistControls'
 
 export default function PlexServersPanel() {
   const { sources, status, refresh, error: storeError } = usePlexSettingsStore()
@@ -93,6 +94,8 @@ export default function PlexServersPanel() {
     {sources.map(source => {
       const state = status?.sources.find(item => item.sourceId === source.id)
       const syncing = state?.status === 'syncing'
+      const playlistSources = sources.filter(peer => peer.account_id === source.account_id && peer.server_id === source.server_id)
+        .sort((a, b) => a.id - b.id)
       return <div key={source.id} className="remote-source-card">
         <div className="remote-source-card-header">
           <span className="remote-source-card-header-title">{source.name}</span>
@@ -102,6 +105,8 @@ export default function PlexServersPanel() {
         {state?.progress && <p className="remote-source-card-progress" role="status">{state.progress.activity}{state.progress.total !== null ? ` (${state.progress.current ?? 0}/${state.progress.total})` : ''}</p>}
         {state?.error && <p className="settings-note settings-note-error">{state.error}</p>}
         <ProviderSyncControls provider="plex" sourceId={source.id} connected={source.enabled === 1} />
+        {playlistSources[0].id === source.id && <RemotePlaylistControls provider="plex" sourceId={source.id}
+          connected={playlistSources.some(peer => peer.enabled === 1)} />}
         <StreamingQualitySettings source={{ provider: 'plex', sourceId: source.id }} />
         {deleting === source.id ? <div className="remote-delete-confirm">
           <p>Remove this connection and keep its tracks as unavailable placeholders, or purge its tracks?</p>

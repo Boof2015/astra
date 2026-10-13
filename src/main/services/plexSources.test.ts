@@ -88,6 +88,19 @@ test('Plex sign-in sessions are renderer-owned, cancellable and public responses
   await assert.rejects(h.service.poll(10, ready.id), /no longer active/)
 })
 
+test('Plex refreshes opted-in playlists after a successful catalog scan; playlist errors do not fail the scan', async t => {
+  const h = harness(); t.after(() => h.service.dispose())
+  const { source } = await h.connect()
+  const refreshed: number[] = []
+  h.options.afterCatalogSync = async id => { refreshed.push(id); throw new Error('playlist unavailable') }
+  await h.service.sync(source.id)
+  assert.deepEqual(refreshed, [source.id])
+  assert.equal(h.rows.get(source.id)!.last_status, 'ok')
+  h.mutations.brokenCatalog = true
+  await assert.rejects(h.service.sync(source.id))
+  assert.deepEqual(refreshed, [source.id])
+})
+
 test('Plex cannot connect a renderer-invented server/library and cancellation wins an in-flight sign-in', async t => {
   const h = harness(); t.after(() => h.service.dispose())
   const started = await h.service.begin(10); h.mutations.pending = false; await h.service.poll(10, started.id)

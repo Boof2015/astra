@@ -1,10 +1,11 @@
 import { RemotePlaylists } from './services/remotePlaylists'
 import { createJellyfinPlaylistClient } from './services/jellyfinPlaylists'
+import { createPlexPlaylistClient } from './services/plexPlaylists'
 import type { RemotePlaylistEdit } from '../types/remotePlaylists'
 import { listSubsonicRemotePlaylists, readSubsonicRemotePlaylist, writeSubsonicRemotePlaylist } from './services/subsonic'
 import { PlexSources } from './services/plexSources'
 import { plexRequestOptions } from './services/plexNetwork'
-import { parsePlexTrackPath, reportPlexPlayback } from './services/plex'
+import { buildPlexTrackPath, parsePlexTrackPath, reportPlexPlayback } from './services/plex'
 import { createPlexAudioSource } from './services/plexAudioSource'
 import type { PlexConnectInput } from '../types/plex'
 import { analyzeRemoteAudioFile } from './services/remoteAudioAnalysis'
@@ -1460,7 +1461,7 @@ const parallaxService = new ParallaxService({
   getSecurityMigrationRequired: () => parallaxSecurityMigrationRequired
 })
 
-const plexSources = new PlexSources({
+const plexSources: PlexSources = new PlexSources({
   library,
   request: plexRequestOptions,
   encrypt: value => {
@@ -1471,7 +1472,8 @@ const plexSources = new PlexSources({
   openExternal: url => shell.openExternal(url),
   changed: status => sendToWindow(mainWindow, 'plex:status', status),
   beginLibrarySync: key => latestLibrarySyncCoordinator.beginOperation(key),
-  finishLibrarySync: (key, success) => finalizeLatestLibrarySyncSession(key, success, 'Plex sync')
+  finishLibrarySync: (key, success) => finalizeLatestLibrarySyncSession(key, success, 'Plex sync'),
+  afterCatalogSync: id => remotePlaylists.refresh(library.normalizeRemotePlaylistRef({ provider: 'plex', sourceId: id }))
 })
 let plexSyncTimer: ReturnType<typeof setInterval> | null = null
 
@@ -1614,12 +1616,18 @@ const providerStateSync = new ProviderStateSync({
   }
 })
 
-const remotePlaylists = new RemotePlaylists({
+const remotePlaylists: RemotePlaylists = new RemotePlaylists({
   sources: () => [
     ...library.listSubsonicSources().map(s => ({ provider: 'subsonic' as const, sourceId: s.id })),
-    ...library.listJellyfinSources().map(s => ({ provider: 'jellyfin' as const, sourceId: s.id }))
+    ...library.listJellyfinSources().map(s => ({ provider: 'jellyfin' as const, sourceId: s.id })),
+    ...library.listPlexSources().filter(s => library.normalizeRemotePlaylistRef({ provider: 'plex', sourceId: s.id }).sourceId === s.id)
+      .map(s => ({ provider: 'plex' as const, sourceId: s.id }))
   ],
-  fingerprint: library.remotePlaylistFingerprint,
+  fingerprint: ref => {
+    const identity = library.remotePlaylistFingerprint(ref)
+    return identity && ref.provider === 'plex' ? JSON.stringify([identity,
+      library.getPlexPlaylistSources(ref.sourceId).map(s => [s.id, s.library_id, s.enabled])]) : identity
+  },
   enabled: library.remotePlaylistsEnabled,
   setEnabled: async (ref, enabled) => {
     await library.setRemotePlaylistsEnabled(ref, enabled)
@@ -1633,6 +1641,34 @@ const remotePlaylists = new RemotePlaylists({
   remove: async id => { await library.deletePlaylist(id); mainWindow?.webContents.send('library:externalLibraryMutation') },
   changed: () => mainWindow?.webContents.send('remote-playlists:changed'),
   client: async (ref, signal) => {
+    if (ref.provider === 'plex') {
+      const sources = library.getPlexPlaylistSources(ref.sourceId)
+      const connection = sources.find(source => source.enabled === 1)
+      if (!connection) throw new Error('Connect this Plex server before syncing playlists.')
+      const fingerprint = library.remotePlaylistFingerprint(ref)
+      const configuration = () => JSON.stringify(library.getPlexPlaylistSources(ref.sourceId).map(s => [s.id, s.library_id, s.enabled]))
+      const capturedConfiguration = configuration()
+      return createPlexPlaylistClient({
+        ...plexRequestOptions, signal,
+        authenticate: force => plexSources.credentials(connection.id, signal, force),
+        check: () => {
+          if (!library.remotePlaylistsEnabled(ref) || fingerprint !== library.remotePlaylistFingerprint(ref)
+            || configuration() !== capturedConfiguration) throw new Error('Playlist sync is off or the Plex libraries changed. Please refresh.')
+        },
+        trackPath: (id, libraryId) => {
+          const source = libraryId ? sources.find(s => s.library_id === libraryId)
+            : sources.find(s => library.getTrackByPath(buildPlexTrackPath(s.id, id)))
+          // Missing-library entries retain their title and position as unavailable
+          // placeholders. A later refresh resolves them when that library connects.
+          return source ? buildPlexTrackPath(source.id, id) : `plex://${ref.sourceId}/unavailable/${id}`
+        },
+        trackId: path => {
+          const parsed = parsePlexTrackPath(path)
+          return parsed && sources.some(source => source.id === parsed.sourceId && source.enabled === 1)
+            && library.getTrackByPath(path)?.is_available === 1 ? parsed.sourceTrackId : null
+        }
+      })
+    }
     if (ref.provider === 'jellyfin') {
       const { connection } = requireJellyfinSourceCredentials(ref.sourceId)
       const fingerprint = library.remotePlaylistFingerprint(ref)
@@ -6943,8 +6979,17 @@ ipcMain.handle('plex:libraries', (event, id: string, serverId: string) => plexSo
 ipcMain.handle('plex:connect', (event, input: PlexConnectInput) => plexSources.connect(nativeRemoteOwner(event), input))
 ipcMain.handle('plex:listSources', () => library.listPlexSources())
 ipcMain.handle('plex:getStatus', () => plexSources.status())
-ipcMain.handle('plex:updateSource', (_event, id: number, input: { name?: string; enabled?: boolean }) => plexSources.update(id, input))
-ipcMain.handle('plex:deleteSource', (_event, id: number, purge: boolean) => plexSources.remove(id, purge === true))
+ipcMain.handle('plex:updateSource', async (_event, id: number, input: { name?: string; enabled?: boolean }) => {
+  const result = await plexSources.update(id, input)
+  mainWindow?.webContents.send('library:externalLibraryMutation')
+  mainWindow?.webContents.send('remote-playlists:changed')
+  return result
+})
+ipcMain.handle('plex:deleteSource', async (_event, id: number, purge: boolean) => {
+  await plexSources.remove(id, purge === true)
+  mainWindow?.webContents.send('library:externalLibraryMutation')
+  mainWindow?.webContents.send('remote-playlists:changed')
+})
 ipcMain.handle('plex:syncSource', (_event, id: number, key?: string) => plexSources.sync(id, key))
 ipcMain.handle('plex:syncAll', (_event, key?: string) => plexSources.syncAll(key))
 
@@ -10227,9 +10272,9 @@ ipcMain.handle('signal-share:save-png', async (_event, input: unknown, suggested
 ipcMain.handle('remote-playlists:status', () => remotePlaylists.status())
 ipcMain.handle('remote-playlists:setEnabled', (_event, ref: unknown, enabled: unknown) => {
   if (typeof enabled !== 'boolean') throw new Error('Invalid playlist setting.')
-  return remotePlaylists.setEnabled(normalizeProviderSyncRef(ref), enabled)
+  return remotePlaylists.setEnabled(library.normalizeRemotePlaylistRef(normalizeProviderSyncRef(ref)), enabled)
 })
-ipcMain.handle('remote-playlists:refresh', (_event, ref: unknown) => remotePlaylists.refresh(normalizeProviderSyncRef(ref)))
+ipcMain.handle('remote-playlists:refresh', (_event, ref: unknown) => remotePlaylists.refresh(library.normalizeRemotePlaylistRef(normalizeProviderSyncRef(ref))))
 async function editServerPlaylist(id: number, edit: RemotePlaylistEdit): Promise<boolean> {
   if (!library.getRemotePlaylistLink(id)) return false
   await remotePlaylists.edit(id, edit)

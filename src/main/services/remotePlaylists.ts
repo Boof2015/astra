@@ -19,7 +19,8 @@ interface Options {
   changed(): void
 }
 const same = (a: RemotePlaylistSnapshot, b: RemotePlaylistSnapshot) => a.name === b.name
-  && a.tracks.length === b.tracks.length && a.tracks.every((track, i) => track.path === b.tracks[i].path)
+  && a.tracks.length === b.tracks.length && a.tracks.every((track, i) => track.path === b.tracks[i].path
+    && (track.remoteEntryId === undefined || b.tracks[i].remoteEntryId === undefined || track.remoteEntryId === b.tracks[i].remoteEntryId))
 
 export function planRemotePlaylistEdit(before: RemotePlaylistLocal, edit: RemotePlaylistEdit): RemotePlaylistSnapshot | null {
   if (edit.kind === 'delete') {
@@ -158,7 +159,18 @@ export class RemotePlaylists {
         await this.options.apply(captured.ref, [withOccurrenceIds(remote, after)], false)
         return
       }
-      await client.write(remote, after); check()
+      try { await client.write(remote, after); check() }
+      catch (error) {
+        // Multi-request providers can have applied part of an edit. Read back
+        // the actual state, but never replay an ambiguous mutation.
+        try {
+          check()
+          const actual = await client.read(captured.id); check()
+          if (actual) await this.options.apply(captured.ref, [actual], false)
+          else await this.options.remove(id)
+        } catch { /* Preserve the original write error if recovery is unavailable. */ }
+        throw error
+      }
       const verified = await client.read(captured.id); check()
       if (after === null) {
         if (verified) throw new Error('The server did not delete this playlist.')

@@ -19,6 +19,7 @@ interface Options {
   changed: (status: PlexStatusSnapshot) => void
   beginLibrarySync: (key?: string) => string
   finishLibrarySync: (key: string, success: boolean) => Promise<void>
+  afterCatalogSync?: (sourceId: number) => Promise<void>
   request?: PlexRequestOptions
 }
 /** All account and resource tokens are main-process-only. */
@@ -256,6 +257,8 @@ export class PlexSources {
       await this.options.library.markMissingPlexTracksUnavailable(id, new Set(tracks.map(track => track.source_track_id)))
       await this.options.library.updatePlexSource(id, { last_status: 'ok', last_error: null, last_checked_at: Date.now(), last_sync_at: Date.now() })
       success = true
+      // Playlist errors have their own status and do not fail the music scan.
+      await this.options.afterCatalogSync?.(id).catch(() => {})
     } catch (error) {
       if (!signal.aborted) await this.options.library.updatePlexSource(id, { last_status: 'error', last_checked_at: Date.now(),
         last_error: error instanceof Error ? error.message : 'Plex refresh failed.' })

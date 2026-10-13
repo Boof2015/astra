@@ -1,6 +1,6 @@
 import type { ProviderSyncRef } from './providerSync'
 
-export interface RemotePlaylistTrack { path: string; title?: string | null; artist?: string | null; album?: string | null; entryId?: number }
+export interface RemotePlaylistTrack { path: string; title?: string | null; artist?: string | null; album?: string | null; entryId?: number; remoteEntryId?: string }
 export interface RemotePlaylistSnapshot { id: string; name: string; writable: boolean; deletable?: boolean; tracks: RemotePlaylistTrack[] }
 export interface RemotePlaylistLink extends ProviderSyncRef { id: string; writable: boolean; deletable?: boolean }
 export interface RemotePlaylistLocal extends RemotePlaylistSnapshot { localId: number; ref: ProviderSyncRef }
