@@ -438,12 +438,12 @@ export default function LibraryView() {
   }, [selectedAlbum, selectedArtist, selectedGenre, selectedYear])
   const sourceFilterOptions = useMemo(() => {
     return [
-      ...subsonicSources.map((source) => ({
+      ...subsonicSources.filter((source) => source.enabled === 1).map((source) => ({
         key: `subsonic:${source.id}`,
         label: source.name
       })),
-      ...plexSources.map(source => ({ key: `plex:${source.id}`, label: source.name })),
-      ...jellyfinSources.map((source) => ({
+      ...plexSources.filter(source => source.enabled === 1).map(source => ({ key: `plex:${source.id}`, label: source.name })),
+      ...jellyfinSources.filter((source) => source.enabled === 1).map((source) => ({
         key: `jellyfin:${source.id}`,
         label: source.name
       }))
@@ -536,9 +536,7 @@ export default function LibraryView() {
   useEffect(() => {
     const validFilterKeys = new Set<string>([
       'local',
-      ...subsonicSources.map((source) => `subsonic:${source.id}`),
-      ...plexSources.map(source => `plex:${source.id}`),
-      ...jellyfinSources.map((source) => `jellyfin:${source.id}`)
+      ...sourceFilterOptions.map((source) => source.key)
     ])
 
     if (selectedSourceFilters.size === 0) return
@@ -549,7 +547,7 @@ export default function LibraryView() {
       }
     }
     setSelectedSourceFilters(next)
-  }, [plexSources, jellyfinSources, selectedSourceFilters, setSelectedSourceFilters, subsonicSources])
+  }, [sourceFilterOptions, selectedSourceFilters, setSelectedSourceFilters])
 
   useEffect(() => {
     if (shouldShowSourceFilters) return

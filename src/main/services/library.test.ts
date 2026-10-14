@@ -6029,6 +6029,142 @@ test('synthetic sync audit: importing a local-file favorite updates unique match
   assert.equal(library.getProviderSyncTracks(sources[0])[0].rating, null, 'local-file ratings remain independent')
 })
 
+for (const provider of ['subsonic', 'jellyfin', 'plex'] as const) {
+  test(`disabled source visibility: ${provider} hides browsing without losing stored state`, async t => {
+    const dir = await setupEmptyLibrary(t)
+    t.mock.method(globalThis, 'fetch', async () => { throw new Error('Live network forbidden in visibility tests') })
+    const input = { name: 'Remote', base_url: 'https://test.invalid', username: 'test', secret_encrypted: 'test', enabled: 1 }
+    const source = provider === 'plex'
+      ? await library.savePlexSource({ ...input, account_id: 'account', server_id: 'server', library_id: '1', library_name: 'Music' })
+      : provider === 'jellyfin' ? await library.createJellyfinSource(input) : await library.createSubsonicSource(input)
+    const update = async (enabled: number) => {
+      if (provider === 'plex') await library.updatePlexSource(source.id, { enabled })
+      else if (provider === 'jellyfin') await library.updateJellyfinSource(source.id, { enabled })
+      else await library.updateSubsonicSource(source.id, { enabled })
+    }
+    const localPath = '/fixture/local.flac'
+    withDirectLibraryDb(dir, db => db.prepare(`INSERT INTO tracks
+      (path,title,artist,album,duration,format,source_type,is_available,added_at,modified_at)
+      VALUES (?, 'Local song', 'Local artist', 'Local album', 180, 'flac', 'local', 1, 1, 1)`).run(localPath))
+    const path = `${provider}://${source.id}/${provider === 'subsonic' ? 'track/' : ''}123`
+    const remote = createRemoteTrack({ path, source_track_id: '123', title: 'Remote song', artist: 'Remote artist',
+      album: 'Remote album', genre: 'Remote genre', year: 2024 })
+    if (provider === 'plex') await library.upsertPlexTracks(source.id, [remote])
+    else if (provider === 'jellyfin') await library.upsertJellyfinTracks(source.id, [remote])
+    else await library.upsertSubsonicTracks(source.id, [remote])
+    await library.addFavorite(path)
+    await library.addRecentlyPlayed(path)
+    await library.setTrackRatingForPaths([path], 4)
+    const manual = await library.createPlaylist('Keep entries')
+    await library.addToPlaylist(manual.id, [path, localPath, path])
+    const dynamic = await library.createDynamicPlaylist('Visible songs', createDefaultDynamicPlaylistRules())
+    const ref = { provider, sourceId: source.id }
+    await library.setRemotePlaylistsEnabled(ref, true)
+    await library.applyRemotePlaylists(ref, [{ id: 'mix', name: 'Server list', writable: true, tracks: [{ path }] }])
+    const serverPlaylist = library.getPlaylists().find(playlist => playlist.remote)!
+
+    assert.equal(library.getTrackPage({ limit: 1 }).total, 2)
+    assert.equal(library.getHomeDashboard().newly_added_releases.some(album => album.album === 'Remote album'), true)
+    assert.equal(library.getAllTracks().length, 2)
+
+    // An offline source stays browsable with its existing unavailable row.
+    await library.setTrackAvailability(path, false, 'source_unavailable')
+    assert.equal(library.getAllTracks().find(track => track.path === path)?.is_available, 0)
+    assert.equal(library.getAlbums({ includeSingles: true }).some(album => album.album === 'Remote album'), true)
+    assert.equal(library.searchTracks('Remote').length, 1)
+    assert.equal(library.getPlaylists().some(playlist => playlist.id === serverPlaylist.id), true)
+    await library.setTrackAvailability(path, true, null)
+    const storedTrack = library.getTrackByPath(path)!
+    const originalEntries = library.getPlaylistTrackEntries(manual.id)
+
+    // The source preference alone must invalidate warm pages and Home caches,
+    // even before playback availability is updated by the source controller.
+    library.getTrackPage({ limit: 1 })
+    library.getHomeDashboard()
+    await update(0)
+    const assertHidden = () => {
+      assert.deepEqual(library.getAllTracks().map(track => track.path), [localPath])
+      const page = library.getTrackPage({ limit: 1 })
+      assert.equal(page.total, 1)
+      assert.equal(page.hasMore, false)
+      assert.equal(library.getTrackPage({ offset: 1, limit: 1 }).tracks.length, 0)
+      assert.equal(library.getTrackCount(), 1)
+      assert.equal(library.getTotalTrackDuration(), 180)
+      assert.deepEqual(library.getAvailableLibraryTrackPaths(), [localPath])
+      assert.deepEqual(library.searchTracks('Remote'), [])
+      assert.deepEqual(library.getTracksByArtist('Remote artist'), [])
+      assert.deepEqual(library.getTracksByAlbum('Remote album'), [])
+      assert.deepEqual(library.getTracksByGenre('Remote genre'), [])
+      assert.deepEqual(library.getTracksByYear(2024), [])
+      assert.deepEqual(library.getAlbums({ includeSingles: true }).map(album => album.album), ['Local album'])
+      assert.deepEqual(library.getArtists().map(artist => artist.artist), ['Local artist'])
+      assert.deepEqual(library.getArtists('strict').map(artist => artist.artist), ['Local artist'])
+      assert.deepEqual(library.getGenres(), [])
+      assert.deepEqual(library.getFavorites(), [])
+      assert.deepEqual(library.getRecentlyPlayed(), [])
+      assert.deepEqual(library.getPlaylistTracks(dynamic.id).map(track => track.path), [localPath])
+      assert.equal(library.getHomeDashboard().newly_added_releases.some(album => album.album === 'Remote album'), false)
+      assert.equal(library.getPlaylists().some(playlist => playlist.id === serverPlaylist.id), false)
+      assert.deepEqual(library.getPlaylistTrackEntries(manual.id), originalEntries)
+      assert.deepEqual(library.getTrackByPath(path), storedTrack)
+      assert.equal(library.getFavoritePaths().includes(path), true)
+      assert.equal(library.getTrackRatingEntries().find(entry => entry.track_path === path)?.rating, 4)
+    }
+    assertHidden()
+    library.closeDatabase()
+    await library.initDatabase()
+    assertHidden()
+    await update(1)
+    assert.equal(library.getTrackPage({ limit: 1 }).total, 2)
+    assert.equal(library.getTrackCount(), 2)
+    assert.equal(library.getTotalTrackDuration(), 360)
+    assert.equal(library.getAllTracks().find(track => track.path === path)?.id, storedTrack.id)
+    assert.equal(library.getFavorites()[0].path, path)
+    assert.equal(library.getRecentlyPlayed()[0].path, path)
+    assert.equal(library.getPlaylistTracks(dynamic.id).length, 2)
+    assert.equal(library.getHomeDashboard().newly_added_releases.some(album => album.album === 'Remote album'), true)
+    assert.equal(library.getPlaylists().some(playlist => playlist.id === serverPlaylist.id), true)
+    assert.deepEqual(library.getPlaylistTrackEntries(manual.id), originalEntries)
+    // Removing a source while retaining tracks is a separate existing action.
+    await update(0)
+    if (provider === 'plex') await library.deletePlexSource(source.id, false)
+    else if (provider === 'jellyfin') await library.deleteJellyfinSource(source.id, false)
+    else await library.deleteSubsonicSource(source.id, false)
+    assert.equal(library.getAllTracks().find(track => track.path === path)?.availability_reason, 'source_deleted')
+  })
+}
+
+test('disabled source visibility preserves shared albums and other providers with the same source ID', async t => {
+  const dir = await setupEmptyLibrary(t)
+  const input = { name: 'Remote', base_url: 'https://test.invalid', username: 'test', secret_encrypted: 'test', enabled: 1 }
+  const navi = await library.createSubsonicSource(input)
+  const jelly = await library.createJellyfinSource(input)
+  assert.equal(navi.id, jelly.id)
+  withDirectLibraryDb(dir, db => db.prepare(`INSERT INTO tracks
+    (path,title,artist,album,album_artist,duration,format,source_type,is_available,added_at,modified_at)
+    VALUES ('/fixture/shared.flac', 'Local', 'Shared artist', 'Shared album', 'Shared artist', 180, 'flac', 'local', 1, 1, 1)`).run())
+  for (const [provider, source] of [['subsonic', navi], ['jellyfin', jelly]] as const) {
+    const track = createRemoteTrack({ path: `${provider}://${source.id}/123`, source_track_id: '123', title: provider,
+      album: 'Shared album', artist: 'Shared artist', album_artist: 'Shared artist' })
+    if (provider === 'subsonic') await library.upsertSubsonicTracks(source.id, [track])
+    else await library.upsertJellyfinTracks(source.id, [track])
+  }
+  const allIdentities = library.listAlbumIdentityKeys()
+  assert.equal(library.getArtists()[0].track_count, 3)
+  assert.equal(library.getAlbums({ includeSingles: true })[0].track_count, 3)
+  await library.updateSubsonicSource(navi.id, { enabled: 0 })
+  const visible = library.getAllTracks()
+  assert.deepEqual(new Set(visible.map(track => track.source_type)), new Set(['local', 'jellyfin']))
+  const albums = library.getAlbums({ includeSingles: true })
+  assert.equal(albums.length, 1)
+  assert.equal(albums[0].track_count, 2)
+  assert.equal(library.getTracksByAlbum(albums[0].album, albums[0].artist, albums[0].identity_key).length, 2)
+  assert.equal(library.getArtists()[0].track_count, 2)
+  assert.deepEqual(library.listAlbumIdentityKeys(), allIdentities, 'browsing must not alter stored sync identities')
+  await library.updateSubsonicSource(navi.id, { enabled: 1 })
+  assert.equal(library.getAlbums({ includeSingles: true })[0].track_count, 3)
+})
+
 test('favorite matching does not guess between local copies or different releases', async t => {
   const dir = await setupEmptyLibrary(t)
   const source = await library.createSubsonicSource({ name: 'Server', base_url: 'https://test.invalid', username: 'test', secret_encrypted: 'test', enabled: 1 })

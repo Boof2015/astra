@@ -1022,6 +1022,21 @@ const EFFECTIVE_TRACK_FROM_CLAUSE = `
   LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
 `
 
+// Visibility is a source preference, independent of reachability and cached audio.
+// Retained tracks from deleted sources keep their existing unavailable behavior.
+const VISIBLE_TRACK_PREDICATE = `
+  NOT EXISTS (SELECT 1 FROM subsonic_sources s
+    WHERE tracks.source_type = 'subsonic' AND s.id = tracks.source_id AND s.enabled = 0)
+  AND NOT EXISTS (SELECT 1 FROM jellyfin_sources s
+    WHERE tracks.source_type = 'jellyfin' AND s.id = tracks.source_id AND s.enabled = 0)
+  AND NOT EXISTS (SELECT 1 FROM plex_sources s
+    WHERE tracks.source_type = 'plex' AND s.id = tracks.source_id AND s.enabled = 0 AND s.deleted = 0)
+`
+const VISIBLE_TRACK_FROM_CLAUSE = `
+  FROM (SELECT * FROM tracks WHERE ${VISIBLE_TRACK_PREDICATE}) t
+  LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
+`
+
 interface TrackMetadataOverrideRow {
   title: string | null
   artist: string | null
@@ -1506,16 +1521,18 @@ interface DerivedAlbumIdentityRow {
 
 let libraryWriteGeneration = 0
 let trackSnapshot: LibraryTrackSnapshot | null = null
+let storedTrackSnapshot: LibraryTrackSnapshot | null = null
 let homeReleaseSummaryCache: { dataVersion: number; releases: HomeReleaseSummary[] } | null = null
 
 const SNAPSHOT_WRITE_STATEMENT_PATTERN = /^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/im
 const SNAPSHOT_ALWAYS_INVALIDATE_PATTERN = /^\s*(?:CREATE|DROP|ALTER|ROLLBACK)\b/im
-const SNAPSHOT_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|app_meta)\b/i
-const HOME_RELEASE_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|favorites)\b/i
+const SNAPSHOT_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|app_meta|subsonic_sources|jellyfin_sources|plex_sources)\b/i
+const HOME_RELEASE_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|favorites|subsonic_sources|jellyfin_sources|plex_sources)\b/i
 
 function invalidateLibraryTrackSnapshot(): void {
   libraryWriteGeneration += 1
   trackSnapshot = null
+  storedTrackSnapshot = null
 }
 
 function noteLibrarySqlMutation(sql: string): void {
@@ -1534,16 +1551,25 @@ function noteLibrarySqlMutation(sql: string): void {
 
 // The main process is single threaded and all library reads/writes are
 // synchronous, so a rebuild can never interleave with a write.
-function getLibraryTrackSnapshot(): LibraryTrackSnapshot | null {
+function getLibraryTrackSnapshot(includeDisabledSources = false): LibraryTrackSnapshot | null {
   if (!db) return null
-  if (trackSnapshot && trackSnapshot.generation === libraryWriteGeneration) {
+  const cached = includeDisabledSources ? storedTrackSnapshot : trackSnapshot
+  if (cached && cached.generation === libraryWriteGeneration) {
+    return cached
+  }
+  // Share the usual snapshot when nothing is hidden, without retaining two
+  // complete identity maps for the common case.
+  if (!includeDisabledSources && !db.get(`SELECT 1 FROM subsonic_sources WHERE enabled = 0
+    UNION ALL SELECT 1 FROM jellyfin_sources WHERE enabled = 0
+    UNION ALL SELECT 1 FROM plex_sources WHERE enabled = 0 AND deleted = 0 LIMIT 1`)) {
+    trackSnapshot = getLibraryTrackSnapshot(true)
     return trackSnapshot
   }
 
   return measureLibraryQuery('rebuildTrackSnapshot', () => {
     const rows = readEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${includeDisabledSources ? EFFECTIVE_TRACK_FROM_CLAUSE : VISIBLE_TRACK_FROM_CLAUSE}
       ${ALL_TRACKS_ORDER_BY_CLAUSE}
     `)
     const artistIndex = buildArtistIdentityIndex(rows)
@@ -1573,8 +1599,9 @@ function getLibraryTrackSnapshot(): LibraryTrackSnapshot | null {
       artistNamesByPath.set(row.path, resolveTrackArtistNames(row, artistIndex))
       albumArtistNamesByPath.set(row.path, resolveTrackArtistNames(row, artistIndex, true))
     }
-    persistDerivedAlbumIdentities(rows, derivedIdentityRows)
-    trackSnapshot = {
+    // Browsing a subset must not rewrite historical identities or sync metadata.
+    if (includeDisabledSources) persistDerivedAlbumIdentities(rows, derivedIdentityRows)
+    const snapshot: LibraryTrackSnapshot = {
       generation: libraryWriteGeneration,
       sortedPaths,
       identityKeysByPath,
@@ -1582,14 +1609,16 @@ function getLibraryTrackSnapshot(): LibraryTrackSnapshot | null {
       artistNamesByPath,
       albumArtistNamesByPath
     }
-    return trackSnapshot
+    if (includeDisabledSources) storedTrackSnapshot = snapshot
+    else trackSnapshot = snapshot
+    return snapshot
   })
 }
 
 function rebuildDerivedLibraryState(): void {
   if (!db) return
   invalidateLibraryTrackSnapshot()
-  getLibraryTrackSnapshot()
+  getLibraryTrackSnapshot(true)
 }
 
 function readEffectiveTrackRowsByPaths(paths: readonly string[]): DbTrackRow[] {
@@ -1706,12 +1735,13 @@ function resolveTrackGenreStorageFields(track: { genre: string | null; genres?: 
 function attachAlbumIdentityKeys(
   tracks: readonly DbTrackRow[],
   libraryTracks?: readonly DbTrackRow[],
-  latestSyncSummary: LatestLibrarySyncSummary | null = getLatestLibrarySyncSummary()
+  latestSyncSummary: LatestLibrarySyncSummary | null = getLatestLibrarySyncSummary(),
+  includeDisabledSources = false
 ): DbTrack[] {
   if (tracks.length === 0) return []
 
   if (!libraryTracks) {
-    const snapshot = getLibraryTrackSnapshot()
+    const snapshot = getLibraryTrackSnapshot(includeDisabledSources)
     if (snapshot) {
       return attachAlbumIdentityKeysWithMap(
         tracks,
@@ -1778,9 +1808,9 @@ function attachAlbumIdentityKeysWithMap(
   })
 }
 
-function readEffectiveTracks(sql: string, libraryTracks?: readonly DbTrackRow[], params: unknown[] = []): DbTrack[] {
+function readEffectiveTracks(sql: string, libraryTracks?: readonly DbTrackRow[], params: unknown[] = [], includeDisabledSources = false): DbTrack[] {
   const tracks = readEffectiveTrackRows(sql, params)
-  return attachAlbumIdentityKeys(tracks, libraryTracks)
+  return attachAlbumIdentityKeys(tracks, libraryTracks, undefined, includeDisabledSources)
 }
 
 function normalizeRequiredTextField(value: string, fieldName: 'title' | 'artist' | 'album'): string {
@@ -2293,7 +2323,7 @@ function collectAlbumSummaryGroups(
   const groups = new Map<string, AlbumSummaryAccumulator>()
   const tracks = readEffectiveTrackRows(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    ${VISIBLE_TRACK_FROM_CLAUSE}
   `)
 
   for (const identityGroup of groupTracksByAlbumIdentity(tracks, (track) => track.path).values()) {
@@ -4384,7 +4414,7 @@ export function getTrackByPath(trackPath: string): DbTrack | null {
     WHERE t.path = ?
     LIMIT 1
   `, [trackPath]) ?? null
-  return row ? attachAlbumIdentityKeys([row])[0] ?? null : null
+  return row ? attachAlbumIdentityKeys([row], undefined, undefined, true)[0] ?? null : null
 }
 
 export function getTrackById(trackId: number): DbTrack | null {
@@ -4395,7 +4425,7 @@ export function getTrackById(trackId: number): DbTrack | null {
     WHERE t.id = ?
     LIMIT 1
   `, [trackId]) ?? null
-  return row ? attachAlbumIdentityKeys([row])[0] ?? null : null
+  return row ? attachAlbumIdentityKeys([row], undefined, undefined, true)[0] ?? null : null
 }
 
 export async function setTrackAvailability(
@@ -5333,7 +5363,7 @@ export function getAllTracks(): DbTrack[] {
   return measureLibraryQuery('getTracks', () => {
     const tracks = readEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
       ${ALL_TRACKS_ORDER_BY_CLAUSE}
     `)
     const snapshot = getLibraryTrackSnapshot()
@@ -5398,7 +5428,7 @@ export function getTracksByPaths(trackPaths: readonly string[] | null | undefine
     if (requestedPaths.length === 0) return []
 
     const rows = readEffectiveTrackRowsByPaths(requestedPaths)
-    const tracksByPath = new Map(attachAlbumIdentityKeys(rows).map((track) => [track.path, track]))
+    const tracksByPath = new Map(attachAlbumIdentityKeys(rows, undefined, undefined, true).map((track) => [track.path, track]))
     const tracks: DbTrack[] = []
     for (const trackPath of requestedPaths) {
       const track = tracksByPath.get(trackPath)
@@ -5441,11 +5471,12 @@ export function getTracksByArtist(artist: string, mode: ArtistBrowseMode = 'cano
     const targetArtistKey = normalizeKey(artist)
     if (!targetArtistKey) return []
     const resolvedMode: ArtistBrowseMode = mode === 'strict' ? 'strict' : 'canonical'
+    getLibraryTrackSnapshot()
 
     const matched: DbTrackRow[] = []
     for (const track of iterateEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
     `)) {
       if (trackMatchesBrowseArtist(track, targetArtistKey, resolvedMode)) {
         matched.push(track)
@@ -5518,7 +5549,7 @@ export function getTracksByGenre(genre: string): DbTrack[] {
     const matched: DbTrackRow[] = []
     for (const track of iterateEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
     `)) {
       if (getGenreNamesForTrack(track).some((name) => normalizeKey(name) === targetGenreKey)) {
         matched.push(track)
@@ -5526,8 +5557,7 @@ export function getTracksByGenre(genre: string): DbTrack[] {
     }
 
     return attachAlbumIdentityKeys(
-      matched.sort(compareTracksByAlbumDiscTrackTitle),
-      readAlbumIdentityRowsForTracks(matched)
+      matched.sort(compareTracksByAlbumDiscTrackTitle)
     )
   })
 }
@@ -5539,7 +5569,7 @@ export function getTracksByYear(year: number | null): DbTrack[] {
 
     const tracks = Array.from(iterateEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
     `))
     const groups = buildAlbumGroups(tracks)
     const matched: DbTrackRow[] = []
@@ -5576,7 +5606,7 @@ export function getGenres(): GenreRecord[] {
 
     for (const track of iterateEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
     `)) {
       const genreNames = getGenreNamesForTrack(track)
       if (genreNames.length === 0) continue
@@ -6081,7 +6111,7 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
 
     for (const track of iterateEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
     `)) {
       const trackAlbumIdentityKey = albumIdentityKeysByPath.get(track.path)
         ?? buildFallbackAlbumIdentityKeyFromTrack(track)
@@ -6128,7 +6158,7 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
 
 // Get unique albums
 export function listAlbumIdentityKeys(): string[] {
-  const identityKeys = new Set(getLibraryTrackSnapshot()?.identityKeysByPath.values() ?? [])
+  const identityKeys = new Set(getLibraryTrackSnapshot(true)?.identityKeysByPath.values() ?? [])
   return Array.from(identityKeys).sort((a, b) => a.localeCompare(b))
 }
 
@@ -6259,7 +6289,7 @@ function resolveHomePlaylistSource(
     SELECT t.is_available, t.artwork_hash AS base_artwork_hash,
       CASE WHEN COALESCE(o.artwork_cleared, 0) = 1 THEN NULL
         ELSE COALESCE(o.artwork_hash, t.artwork_hash) END AS artwork_hash
-    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    ${dynamic || source.playlistId === -1 ? VISIBLE_TRACK_FROM_CLAUSE : EFFECTIVE_TRACK_FROM_CLAUSE}
     ${suffix}
   ) SELECT COUNT(*) AS track_count, MAX(COALESCE(is_available, 1) != 0) AS available,
     (SELECT artwork_hash FROM source_tracks LIMIT 1) AS artwork_hash,
@@ -6327,6 +6357,7 @@ function resolveHomePlaybackSource(
     case 'track': {
       const track = getTrackByPath(source.trackPath)
       if (!track || track.is_available === 0) return null
+      if (!db?.get(`SELECT 1 FROM tracks WHERE path = ? AND ${VISIBLE_TRACK_PREDICATE}`, [track.path])) return null
       title = track.title
       subtitle = track.artist
       detail = 'Track'
@@ -6489,7 +6520,7 @@ export function getAvailableLibraryTrackPaths(): string[] {
   return db.all<{ path: string }>(`
     SELECT path
     FROM tracks
-    WHERE is_available != 0
+    WHERE is_available != 0 AND ${VISIBLE_TRACK_PREDICATE}
     ORDER BY path COLLATE NOCASE
   `).map((row) => row.path)
 }
@@ -6501,7 +6532,7 @@ export function searchTracks(query: string): DbTrack[] {
     const pattern = `%${query}%`
     const tracks = db.all<DbTrackRow>(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
       WHERE COALESCE(o.title, t.title) LIKE ?
         OR COALESCE(o.artist, t.artist) LIKE ?
         OR (o.artist IS NULL AND t.artist_names_json LIKE ?)
@@ -9295,7 +9326,7 @@ export function getArtworkPath(hash: string): string {
 // Get track count
 export function getTrackCount(): number {
   if (!db) return 0
-  return Number(db.get<{ count?: unknown }>('SELECT COUNT(*) as count FROM tracks')?.count ?? 0)
+  return Number(db.get<{ count?: unknown }>(`SELECT COUNT(*) as count FROM tracks WHERE ${VISIBLE_TRACK_PREDICATE}`)?.count ?? 0)
 }
 
 export function getTrackSourceCounts(): { total: number; local: number; remote: number } {
@@ -9308,7 +9339,7 @@ export function getTrackSourceCounts(): { total: number; local: number; remote: 
 export function getTotalTrackDuration(): number {
   if (!db) return 0
   const total = Number(db.get<{ total?: unknown }>(
-    'SELECT SUM(duration) as total FROM tracks WHERE duration > 0'
+    `SELECT SUM(duration) as total FROM tracks WHERE duration > 0 AND ${VISIBLE_TRACK_PREDICATE}`
   )?.total ?? 0)
   return Number.isFinite(total) && total > 0 ? total : 0
 }
@@ -9688,7 +9719,7 @@ export function getTrackOverrideFields(trackPaths: string[]): Record<string, str
 export function getFavorites(): DbTrack[] {
   return readEffectiveTracks(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    ${VISIBLE_TRACK_FROM_CLAUSE}
     INNER JOIN favorites f ON f.track_path = t.path
     ORDER BY f.added_at DESC
   `)
@@ -11601,7 +11632,7 @@ function applyListeningHistorySection(
 export function getRecentlyPlayed(limit: number = 50): DbTrack[] {
   return readEffectiveTracks(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    ${VISIBLE_TRACK_FROM_CLAUSE}
     INNER JOIN recently_played r ON r.track_path = t.path
     ORDER BY r.played_at DESC
     LIMIT ${limit}
@@ -11880,7 +11911,7 @@ function getDynamicPlaylistTracksForRules(rules: DynamicPlaylistRules): DbTrack[
 
     return readEffectiveTracks(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
       ${joins}
       WHERE ${where}
       ORDER BY ${orderBy}${limitSql}
@@ -12326,7 +12357,7 @@ export function getPlaylistTracks(playlistId: number): DbTrack[] {
     INNER JOIN playlist_tracks pt ON pt.track_path = t.path
     WHERE pt.playlist_id = ${playlistId}
     ORDER BY pt.position ASC, pt.id ASC
-  `)
+  `, undefined, [], true)
 }
 
 type PlaylistTrackEntryRow = Partial<DbTrackRow> & {
@@ -12384,7 +12415,7 @@ export function getPlaylistTrackEntries(playlistId: number): PlaylistTrackEntry[
       availableRows.push(row as DbTrackRow)
     }
   }
-  const tracksByPath = new Map(attachAlbumIdentityKeys(availableRows).map((track) => [track.path, track]))
+  const tracksByPath = new Map(attachAlbumIdentityKeys(availableRows, undefined, undefined, true).map((track) => [track.path, track]))
 
   return rows.map((row, index) => {
     const entryId = Number(row.playlist_track_id)
