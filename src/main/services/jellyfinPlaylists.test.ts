@@ -29,6 +29,11 @@ function fixture(t: TestContext) {
     const custom = override?.(url, method)
     if (custom) return custom
     const endpoint = url.pathname.replace('/jellyfin', '')
+    if (method === 'POST' && endpoint === '/Playlists') {
+      assert.deepEqual(body, { Name: 'New playlist', Ids: [], UserId: userId, MediaType: 'Audio', IsPublic: false })
+      playlists.set(id(50), { name: String(body!.Name), tracks: [], writable: true, deletable: true })
+      return Response.json({ Id: id(50) })
+    }
     const page = (items: unknown[]) => {
       const start = Number(url.searchParams.get('StartIndex') ?? 0)
       const limit = Number(url.searchParams.get('Limit') ?? 500)
@@ -74,6 +79,20 @@ function fixture(t: TestContext) {
   return { client, playlists, calls, authCalls, controller,
     override: (value: typeof override) => { override = value }, disconnect: () => { connected = false } }
 }
+
+test('Jellyfin creates a private audio playlist and does not replay rejected or ambiguous creation', async t => {
+  const f = fixture(t)
+  assert.equal(await f.client.create!('New playlist'), id(50))
+  assert.equal((await f.client.read(id(50)))!.tracks.length, 0)
+  assert.equal((await f.client.read(id(50)))!.writable, true)
+  f.override((_url, method) => method === 'POST' ? new Response(null, { status: 401 }) : null)
+  await assert.rejects(f.client.create!('New playlist'), /401/)
+  assert.deepEqual(f.authCalls, [false])
+  assert.equal(f.calls.filter(call => call.method === 'POST').length, 2)
+  f.override((_url, method) => method === 'POST' ? Response.json({}) : null)
+  await assert.rejects(f.client.create!('New playlist'), /invalid playlist/)
+  assert.equal(f.calls.filter(call => call.method === 'POST').length, 3)
+})
 
 test('Jellyfin imports music playlists with duplicate songs and separate edit/delete permissions', async t => {
   const f = fixture(t)

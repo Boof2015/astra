@@ -1,3 +1,4 @@
+import type { ProviderSyncRef } from '../../../types/providerSync'
 import { memo, ReactElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
 import { useLibraryStore, type DbTrack, type LibraryFolder } from '../../stores/libraryStore'
@@ -562,12 +563,12 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
     setCreatePlaylistTarget(null)
   }, [])
 
-  const handleCreatePlaylistFromFolder = useCallback(async (name: string, coverImagePath: string | null) => {
+  const handleCreatePlaylistFromFolder = useCallback(async (name: string, coverImagePath: string | null, destination?: ProviderSyncRef) => {
     if (!createPlaylistTarget) {
       throw new Error('No folder is selected for playlist creation.')
     }
 
-    await createPlaylistWithOptions({
+    await createPlaylistWithOptions({ destination,
       name,
       coverImagePath,
       trackPaths: createPlaylistTarget.trackPaths
@@ -768,6 +769,8 @@ export default function FolderTreeView({ tracks, allTracks, folders, searchQuery
         onClose={handleCloseCreatePlaylistModal}
         onCreate={handleCreatePlaylistFromFolder}
         title="Create Playlist from Folder"
+        pendingTrackCount={createPlaylistTarget?.trackPaths.length}
+        trackPaths={createPlaylistTarget?.trackPaths}
       />
     </>
   )

@@ -927,6 +927,8 @@ function openLocalAudioPcmStream(
 // Expose APIs to renderer
 contextBridge.exposeInMainWorld('electronAPI', {
   remotePlaylists: {
+    destinations: paths => ipcRenderer.invoke('remote-playlists:destinations', paths),
+    create: (ref, name, paths) => ipcRenderer.invoke('remote-playlists:create', ref, name, paths),
     status: () => ipcRenderer.invoke('remote-playlists:status'),
     setEnabled: (ref, enabled) => ipcRenderer.invoke('remote-playlists:setEnabled', ref, enabled),
     refresh: ref => ipcRenderer.invoke('remote-playlists:refresh', ref),

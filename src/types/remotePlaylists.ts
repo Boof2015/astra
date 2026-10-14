@@ -13,7 +13,11 @@ export type RemotePlaylistEdit =
   | { kind: 'move'; entryIds: number[]; position: number }
   | { kind: 'reorder'; entryIds: number[] }
 export interface RemotePlaylistStatus extends ProviderSyncRef { enabled: boolean; busy: boolean; error: string | null }
+export interface RemotePlaylistDestination extends ProviderSyncRef { name: string; reason: string | null }
+export type RemotePlaylistCreateResult = { ok: true; playlistId: number } | { ok: false; error: string; uncertain: boolean }
 export interface RemotePlaylistsAPI {
+  destinations(trackPaths: string[]): Promise<RemotePlaylistDestination[]>
+  create(ref: ProviderSyncRef, name: string, trackPaths: string[]): Promise<RemotePlaylistCreateResult>
   status(): Promise<RemotePlaylistStatus[]>
   setEnabled(ref: ProviderSyncRef, enabled: boolean): Promise<void>
   refresh(ref: ProviderSyncRef): Promise<void>

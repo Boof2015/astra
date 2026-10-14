@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ProviderSyncRef } from '../../../types/providerSync'
+import type { RemotePlaylistDestination } from '../../../types/remotePlaylists'
+import { RemotePlaylistCreationUncertainError } from '../../stores/playlistStore'
 import PlaylistCover from './PlaylistCover'
 import { usePresence } from '../../hooks/usePresence'
 import DynamicPlaylistRuleEditor, { type DynamicPlaylistPreview } from './DynamicPlaylistRuleEditor'
@@ -12,7 +15,7 @@ import {
 interface CreatePlaylistModalProps {
   isOpen: boolean
   onClose: () => void
-  onCreate: (name: string, coverImagePath: string | null) => Promise<unknown>
+  onCreate: (name: string, coverImagePath: string | null, destination?: ProviderSyncRef) => Promise<unknown>
   onCreateDynamic?: (name: string, coverImagePath: string | null, rules: DynamicPlaylistRulesV2) => Promise<unknown>
   onPreviewDynamic?: (rules: DynamicPlaylistRulesV2) => Promise<DynamicPlaylistPreview>
   allowDynamic?: boolean
@@ -22,7 +25,11 @@ interface CreatePlaylistModalProps {
   title?: string
   initialName?: string
   pendingTrackCount?: number
+  trackPaths?: string[]
 }
+const NO_TRACKS: string[] = []
+const destinationKey = (destination: ProviderSyncRef) => `${destination.provider}:${destination.sourceId}`
+const providerNames = { subsonic: 'Subsonic', jellyfin: 'Jellyfin', plex: 'Plex' }
 
 function toFilePreviewSource(filePath: string): string {
   const normalized = filePath.replace(/\\/g, '/')
@@ -41,12 +48,19 @@ export default function CreatePlaylistModal({
   isImporting = false,
   title = 'Create Playlist',
   initialName = '',
-  pendingTrackCount
+  pendingTrackCount,
+  trackPaths = NO_TRACKS
 }: CreatePlaylistModalProps) {
   const presence = usePresence(isOpen)
   const [name, setName] = useState('')
   const [coverImagePath, setCoverImagePath] = useState<string | null>(null)
-  const [playlistKind, setPlaylistKind] = useState<PlaylistKind | null>(null)
+  const [playlistKind, setPlaylistKind] = useState<PlaylistKind | 'server' | null>(null)
+  const [destinations, setDestinations] = useState<RemotePlaylistDestination[]>([])
+  const [destination, setDestination] = useState('')
+  const [destinationsError, setDestinationsError] = useState<string | null>(null)
+  const [loadingDestinations, setLoadingDestinations] = useState(false)
+  const [creationUncertain, setCreationUncertain] = useState(false)
+  const submitting = useRef(false)
   const [dynamicRules, setDynamicRules] = useState<DynamicPlaylistRulesV2>(() => createDefaultDynamicPlaylistRules())
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -66,7 +80,9 @@ export default function CreatePlaylistModal({
 
     setName(initialName)
     setCoverImagePath(null)
-    setPlaylistKind(canCreateDynamic ? null : 'normal')
+    setPlaylistKind(null)
+    setDestination('')
+    setCreationUncertain(false)
     setDynamicRules(createDefaultDynamicPlaylistRules())
     setIsSubmitting(false)
     setSubmitError(null)
@@ -74,11 +90,33 @@ export default function CreatePlaylistModal({
 
   useEffect(() => {
     if (!isOpen) return
+    let active = true, generation = 0
+    const refresh = async () => {
+      const request = ++generation
+      setLoadingDestinations(true)
+      try {
+        const choices = await window.electronAPI.remotePlaylists.destinations(trackPaths)
+        if (!active || request !== generation) return
+        setDestinations(choices); setDestinationsError(null)
+        // Once chosen, never silently switch to another server during refresh.
+        setDestination(current => current || (choices[0] ? destinationKey(choices.find(choice => !choice.reason) ?? choices[0]) : ''))
+        if (!canCreateDynamic && !choices.length) setPlaylistKind(current => current === null ? 'normal' : current)
+      } catch {
+        if (active && request === generation) { setDestinations([]); setDestinationsError('Could not load server destinations. Close and reopen this dialog to try again.') }
+      } finally { if (active && request === generation) setLoadingDestinations(false) }
+    }
+    void refresh()
+    const unsubscribe = window.electronAPI.remotePlaylists.onChanged(() => { void refresh() })
+    return () => { active = false; unsubscribe() }
+  }, [isOpen, trackPaths, canCreateDynamic])
+
+  useEffect(() => {
+    if (!isOpen) return
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault()
-        onClose()
+        if (!submitting.current) onClose()
       }
     }
 
@@ -116,11 +154,13 @@ export default function CreatePlaylistModal({
   }
 
   const handleCreate = async () => {
-    if (isSubmitting) return
-    if (canCreateDynamic && playlistKind === null) return
+    if (submitting.current || playlistKind === null) return
+    const server = playlistKind === 'server' ? destinations.find(choice => destinationKey(choice) === destination) : undefined
+    if (playlistKind === 'server' && (!server || server.reason || creationUncertain || loadingDestinations)) return
     const trimmedName = name.trim()
     if (!trimmedName) return
 
+    submitting.current = true
     setIsSubmitting(true)
     setSubmitError(null)
     try {
@@ -130,12 +170,14 @@ export default function CreatePlaylistModal({
         }
         await onCreateDynamic(trimmedName, coverImagePath, normalizeDynamicPlaylistRules(dynamicRules))
       } else {
-        await onCreate(trimmedName, coverImagePath)
+        await onCreate(trimmedName, server ? null : coverImagePath, server ? { provider: server.provider, sourceId: server.sourceId } : undefined)
       }
       onClose()
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : 'Failed to create playlist.')
+      if (error instanceof RemotePlaylistCreationUncertainError) setCreationUncertain(true)
+      setSubmitError(error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '') : 'Failed to create playlist.')
     } finally {
+      submitting.current = false
       setIsSubmitting(false)
     }
   }
@@ -157,16 +199,20 @@ export default function CreatePlaylistModal({
   if (!presence.shouldRender) return null
 
   const isDynamicMode = playlistKind === 'dynamic'
-  const isChoosingKind = canCreateDynamic && playlistKind === null
+  const isServerMode = playlistKind === 'server'
+  const selectedServer = destinations.find(choice => destinationKey(choice) === destination)
+  const isChoosingKind = playlistKind === null
   const isCreateDisabled = isChoosingKind || isSubmitting || name.trim().length === 0 || (isDynamicMode && dynamicRulesError !== null)
-  const effectiveTitle = isDynamicMode ? 'Create Dynamic Playlist' : title
+    || (isServerMode && (!selectedServer || !!selectedServer.reason || loadingDestinations || creationUncertain))
+  const effectiveTitle = isDynamicMode ? 'Create Dynamic Playlist' : isServerMode ? 'Create Server Playlist' : title
+  const close = () => { if (!submitting.current) onClose() }
 
   return (
     <div
       className="modal-overlay playlist-create-modal-overlay"
       data-presence={presence.phase}
       aria-hidden={presence.phase === 'exiting'}
-      onClick={onClose}
+      onClick={close}
     >
       <div
         className={`modal-content playlist-create-modal ${isDynamicMode ? 'playlist-create-modal-dynamic' : ''} ${isChoosingKind ? 'playlist-create-modal-choice' : ''}`.trim()}
@@ -174,7 +220,7 @@ export default function CreatePlaylistModal({
       >
         <div className="modal-header playlist-create-modal-header">
           <div className="playlist-create-title-row">
-            {canCreateDynamic && playlistKind !== null && (
+            {(canCreateDynamic || destinations.length > 0) && playlistKind !== null && (
               <button
                 type="button"
                 className="playlist-create-back-btn"
@@ -186,7 +232,7 @@ export default function CreatePlaylistModal({
             )}
             <h2>{effectiveTitle}</h2>
           </div>
-          <button className="modal-close" onClick={onClose} aria-label="Close">
+          <button className="modal-close" onClick={close} aria-label="Close" disabled={isSubmitting}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
               <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
             </svg>
@@ -195,17 +241,17 @@ export default function CreatePlaylistModal({
 
         <div className="modal-body playlist-create-modal-body">
           {isChoosingKind ? (
-            <div className="playlist-create-choice-grid" role="radiogroup" aria-label="Playlist type">
+            <div className="playlist-create-choice-grid" role="group" aria-label="Playlist type">
               <button
                 type="button"
                 className="playlist-create-kind-option"
                 onClick={() => setPlaylistKind('normal')}
                 disabled={isSubmitting}
               >
-                <span className="playlist-create-kind-title">Normal Playlist</span>
-                <span className="playlist-create-kind-subtitle">Fixed track list</span>
+                <span className="playlist-create-kind-title">Local Playlist</span>
+                <span className="playlist-create-kind-subtitle">Saved in Astra</span>
               </button>
-              <button
+              {canCreateDynamic && <button
                 type="button"
                 className="playlist-create-kind-option"
                 onClick={() => setPlaylistKind('dynamic')}
@@ -213,11 +259,30 @@ export default function CreatePlaylistModal({
               >
                 <span className="playlist-create-kind-title">Dynamic Playlist</span>
                 <span className="playlist-create-kind-subtitle">Rule-based track list</span>
-              </button>
+              </button>}
+              {(loadingDestinations || destinations.length > 0 || destinationsError) && <button type="button"
+                className="playlist-create-kind-option" disabled={isSubmitting || loadingDestinations || !destinations.length}
+                onClick={() => setPlaylistKind('server')}>
+                <span className="playlist-create-kind-title">Server Playlist</span>
+                <span className="playlist-create-kind-subtitle">Saved on a music server</span>
+              </button>}
             </div>
           ) : (
             <>
               <div className={isDynamicMode ? 'playlist-dynamic-builder-top' : 'playlist-create-normal-fields'}>
+                {isServerMode && <>
+                  <label className="playlist-create-field">
+                    <span className="playlist-create-label">Server</span>
+                    <select className="playlist-create-input" value={destination} disabled={isSubmitting || loadingDestinations}
+                      onChange={event => setDestination(event.target.value)}>
+                      {!selectedServer && <option value={destination} disabled>{destination ? 'Selected server unavailable' : 'No server available'}</option>}
+                      {destinations.map(choice => <option key={destinationKey(choice)} value={destinationKey(choice)} disabled={!!choice.reason}>
+                        {choice.name} ({providerNames[choice.provider]}){choice.reason ? ` — ${choice.reason}` : ''}
+                      </option>)}
+                    </select>
+                  </label>
+                  <p className="settings-note">{!selectedServer ? 'Choose an available server.' : selectedServer.reason ?? 'This playlist and your edits will be saved directly to the selected server.'}</p>
+                </>}
                 <label className="playlist-create-field">
                   <span className="playlist-create-label">Name</span>
                   <input
@@ -233,6 +298,7 @@ export default function CreatePlaylistModal({
                     }}
                     placeholder="Night drive"
                     maxLength={80}
+                    disabled={isSubmitting}
                     autoFocus
                   />
                 </label>
@@ -263,7 +329,7 @@ export default function CreatePlaylistModal({
                       </button>
                     )}
                   </div>
-                ) : (
+                ) : !isServerMode ? (
                   <div className="playlist-create-cover-row">
                     <div className="playlist-create-cover-preview">
                       {coverPreviewSource ? (
@@ -302,7 +368,7 @@ export default function CreatePlaylistModal({
                       )}
                     </div>
                   </div>
-                )}
+                ) : null}
               </div>
 
               {isDynamicMode && onPreviewDynamic && (
@@ -321,10 +387,11 @@ export default function CreatePlaylistModal({
               {submitError}
             </div>
           )}
+          {destinationsError && (isChoosingKind || isServerMode) && <p className="playlist-create-error" role="alert">{destinationsError}</p>}
         </div>
 
         <div className="modal-footer playlist-create-modal-footer">
-          {onImport && !isDynamicMode && (
+          {onImport && !isDynamicMode && !isServerMode && (
             <button
               type="button"
               className="settings-btn playlist-create-import-btn"
@@ -335,8 +402,8 @@ export default function CreatePlaylistModal({
             </button>
           )}
           <div className="playlist-create-modal-actions">
-            <button className="settings-btn" onClick={onClose} disabled={isSubmitting}>
-              Cancel
+            <button className="settings-btn" onClick={close} disabled={isSubmitting}>
+              {creationUncertain ? 'Close' : 'Cancel'}
             </button>
             {!isChoosingKind && (
               <button

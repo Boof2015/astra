@@ -1,3 +1,4 @@
+import type { ProviderSyncRef } from '../../../types/providerSync'
 import { DragEvent, useCallback, useEffect, useMemo, useRef, useState, type UIEvent as ReactUIEvent } from 'react'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { useRatingsStore, type TrackRatingState } from '../../stores/ratingsStore'
@@ -603,8 +604,8 @@ export default function PlaylistView() {
     setIsRenaming(false)
   }
 
-  const handleCreatePlaylist = async (name: string, coverImagePath: string | null) => {
-    const playlist = await createPlaylistWithOptions({ name, coverImagePath })
+  const handleCreatePlaylist = async (name: string, coverImagePath: string | null, destination?: ProviderSyncRef) => {
+    const playlist = await createPlaylistWithOptions({ destination, name, coverImagePath })
     await selectPlaylist(playlist.id)
     setActiveView('playlist')
   }

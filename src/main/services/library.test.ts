@@ -5932,6 +5932,34 @@ test('Plex playlists share one opt-in across libraries and retain their identity
   assert.equal(library.remotePlaylistsEnabled(ref(reconnected.id)), false, 'removing the last connection resets consent')
 })
 
+test('server creation destinations enforce opt-in, source ownership and track availability across Plex libraries', async t => {
+  await setupEmptyLibrary(t)
+  const subsonic = await library.createSubsonicSource({ name: 'Navi', base_url: 'https://navi.test', username: 'user', secret_encrypted: 'secret', enabled: 1 })
+  const jellyfin = await library.createJellyfinSource({ name: 'Jelly', base_url: 'https://jelly.test', username: 'user', secret_encrypted: 'secret', enabled: 1 })
+  const plexInput = { name: 'Plex', base_url: 'https://plex.test', username: 'listener', account_id: 'account', server_id: 'server', library_id: '2', library_name: 'Music', secret_encrypted: 'secret' }
+  const plex = await library.savePlexSource(plexInput)
+  const otherLibrary = await library.savePlexSource({ ...plexInput, library_id: '3' })
+  const otherAccount = await library.savePlexSource({ ...plexInput, account_id: 'other' })
+  assert.equal(library.getRemotePlaylistDestinations([]).length, 4, 'Plex library connections share one destination')
+  assert.ok(library.getRemotePlaylistDestinations([]).every(destination => destination.reason?.includes('Enable Sync playlists')))
+  for (const ref of [{ provider: 'subsonic' as const, sourceId: subsonic.id }, { provider: 'jellyfin' as const, sourceId: jellyfin.id },
+    { provider: 'plex' as const, sourceId: plex.id }, { provider: 'plex' as const, sourceId: otherAccount.id }]) await library.setRemotePlaylistsEnabled(ref, true)
+  assert.ok(library.getRemotePlaylistDestinations([]).every(destination => destination.reason === null))
+  const naviPath = `subsonic://${subsonic.id}/track/a`
+  const firstPath = `plex://${plex.id}/10`, secondPath = `plex://${otherLibrary.id}/20`
+  await library.upsertSubsonicTracks(subsonic.id, [createRemoteTrack({ path: naviPath, source_track_id: 'a', title: 'A', artist: 'Artist', album: 'Album' })])
+  await library.upsertPlexTracks(plex.id, [createRemoteTrack({ path: firstPath, source_track_id: '10', title: 'A', artist: 'Artist', album: 'Album' })])
+  await library.upsertPlexTracks(otherLibrary.id, [createRemoteTrack({ path: secondPath, source_track_id: '20', title: 'B', artist: 'Artist', album: 'Album' })])
+  assert.deepEqual(library.getRemotePlaylistDestinations([naviPath]).filter(destination => !destination.reason).map(destination => destination.provider), ['subsonic'])
+  assert.deepEqual(library.getRemotePlaylistDestinations([firstPath, secondPath, firstPath]).filter(destination => !destination.reason).map(destination => destination.sourceId), [plex.id])
+  assert.ok(library.getRemotePlaylistDestinations([naviPath, firstPath]).every(destination => !!destination.reason))
+  assert.ok(library.getRemotePlaylistDestinations(['/local/file.flac']).every(destination => !!destination.reason))
+  await library.markPlexTracksAvailability(otherLibrary.id, false, 'missing_upstream')
+  assert.ok(library.getRemotePlaylistDestinations([secondPath]).every(destination => !!destination.reason))
+  await library.updateJellyfinSource(jellyfin.id, { enabled: 0 })
+  assert.match(library.getRemotePlaylistDestinations([]).find(destination => destination.provider === 'jellyfin')!.reason!, /Connect/)
+})
+
 test('Plex provider occurrence IDs preserve duplicate selection and unavailable-track resolution during refresh', async t => {
   await setupEmptyLibrary(t)
   const source = await library.savePlexSource({ name: 'Music', base_url: 'https://plex.test', username: 'listener', account_id: 'account',

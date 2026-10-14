@@ -1,3 +1,4 @@
+import type { ProviderSyncRef } from '../../../types/providerSync'
 import { useProviderSyncStore } from '../../stores/providerSyncStore'
 import { CSSProperties, memo, ReactElement, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
@@ -1960,12 +1961,12 @@ export default function TrackList({
     setCreatePlaylistTarget(null)
   }, [])
 
-  const handleCreatePlaylistForTrack = useCallback(async (name: string, coverImagePath: string | null) => {
+  const handleCreatePlaylistForTrack = useCallback(async (name: string, coverImagePath: string | null, destination?: ProviderSyncRef) => {
     if (!createPlaylistTarget) {
       throw new Error('No track is selected for playlist creation.')
     }
 
-    const playlist = await createPlaylistWithOptions({
+    const playlist = await createPlaylistWithOptions({ destination,
       name,
       coverImagePath,
       trackPaths: createPlaylistTarget.trackPaths
@@ -2731,6 +2732,7 @@ export default function TrackList({
         onCreate={handleCreatePlaylistForTrack}
         title={createPlaylistTarget?.trackPaths.length === 1 ? 'Create Playlist for Track' : 'Create Playlist from Tracks'}
         pendingTrackCount={createPlaylistTarget?.trackPaths.length}
+        trackPaths={createPlaylistTarget?.trackPaths}
       />
     </div>
   )

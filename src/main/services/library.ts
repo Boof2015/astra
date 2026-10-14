@@ -1,4 +1,4 @@
-import type { RemotePlaylistLink, RemotePlaylistLocal, RemotePlaylistSnapshot } from '../../types/remotePlaylists'
+import type { RemotePlaylistDestination, RemotePlaylistLink, RemotePlaylistLocal, RemotePlaylistSnapshot } from '../../types/remotePlaylists'
 import type { PlexSource } from '../../types/plex'
 import * as mm from 'music-metadata'
 import { app, powerMonitor } from 'electron'
@@ -12145,6 +12145,27 @@ export function getPlexPlaylistSources(sourceId: number): PlexSource[] {
 }
 export function normalizeRemotePlaylistRef(ref: ProviderSyncRef): ProviderSyncRef {
   return ref.provider === 'plex' ? { ...ref, sourceId: getPlexPlaylistSources(ref.sourceId)[0]?.id ?? ref.sourceId } : ref
+}
+export function getRemotePlaylistDestinations(paths: string[]): RemotePlaylistDestination[] {
+  if (!Array.isArray(paths) || paths.length > 250_000 || paths.some(path => typeof path !== 'string' || !path.trim())) throw new Error('Invalid playlist tracks.')
+  const uniquePaths = [...new Set(paths)]
+  const tracks = getTracksByPaths(uniquePaths)
+  const sources = [
+    ...listSubsonicSources().map(source => ({ provider: 'subsonic' as const, source })),
+    ...listJellyfinSources().map(source => ({ provider: 'jellyfin' as const, source })),
+    ...listPlexSources().filter(source => normalizeRemotePlaylistRef({ provider: 'plex', sourceId: source.id }).sourceId === source.id)
+      .map(source => ({ provider: 'plex' as const, source }))
+  ]
+  return sources.map(({ provider, source }) => {
+    const ref = { provider, sourceId: source.id }
+    const enabledSources = provider === 'plex' ? getPlexPlaylistSources(source.id).filter(peer => peer.enabled === 1).map(peer => peer.id)
+      : source.enabled === 1 ? [source.id] : []
+    const reason = !enabledSources.length ? 'Connect this server to create playlists.'
+      : !remotePlaylistsEnabled(ref) ? 'Enable Sync playlists in this server’s settings.'
+        : tracks.length !== uniquePaths.length || tracks.some(track => track.source_type !== provider
+          || !enabledSources.includes(track.source_id!) || track.is_available !== 1) ? 'Selected tracks must be available from this server.' : null
+    return { ...ref, name: `${source.name} · ${source.username}`, reason }
+  })
 }
 export function remotePlaylistFingerprint(ref: ProviderSyncRef): string | null {
   if (ref.provider === 'plex') {

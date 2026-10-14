@@ -3,10 +3,14 @@ import type { RemotePlaylistEdit, RemotePlaylistLocal, RemotePlaylistSnapshot, R
 import { providerSyncKey } from '../../shared/sync/providerState'
 
 export interface RemotePlaylistClient {
+  create?(name: string): Promise<string>
   list(): Promise<RemotePlaylistSnapshot[]>
   read(id: string): Promise<RemotePlaylistSnapshot | null>
   write(before: RemotePlaylistSnapshot, after: RemotePlaylistSnapshot | null): Promise<void>
 }
+export class RemotePlaylistCreationError extends Error {}
+/** A provider explicitly rejected creation before creating a playlist. */
+export class RemotePlaylistCreationRejectedError extends Error {}
 interface Options {
   sources(): ProviderSyncRef[]
   fingerprint(ref: ProviderSyncRef): string | null
@@ -16,6 +20,7 @@ interface Options {
   apply(ref: ProviderSyncRef, playlists: RemotePlaylistSnapshot[], prune: boolean): Promise<void>
   remove(id: number): Promise<void>
   client(ref: ProviderSyncRef, signal: AbortSignal): Promise<RemotePlaylistClient>
+  validateCreate?(ref: ProviderSyncRef, paths: string[]): void
   changed(): void
 }
 const same = (a: RemotePlaylistSnapshot, b: RemotePlaylistSnapshot) => a.name === b.name
@@ -128,6 +133,46 @@ export class RemotePlaylists {
     return this.run(ref, async (client, check) => {
       const snapshots = await client.list(); check()
       await this.options.apply(ref, snapshots, true); check()
+    })
+  }
+  async create(ref: ProviderSyncRef, name: string, paths: string[]): Promise<string> {
+    if (typeof name !== 'string' || !name.trim() || name.trim().length > 80) throw new Error('Use a playlist name between 1 and 80 characters.')
+    if (!Array.isArray(paths) || paths.some(path => typeof path !== 'string' || !path.trim())) throw new Error('Invalid playlist tracks.')
+    const tracks = [...new Set(paths)].map(path => ({ path }))
+    return this.run(ref, async (client, check) => {
+      if (!client.create) throw new Error('Playlist creation is not supported on this server.')
+      this.options.validateCreate?.(ref, paths)
+      let createdId: string | null = null
+      try {
+        // Create once, then reuse the provider's verified ordered-list writer.
+        // Keep the ID before adding songs so partial progress can be recovered.
+        createdId = await client.create(name.trim()); check()
+        const empty = await client.read(createdId); check()
+        if (!empty || empty.name !== name.trim() || empty.tracks.length) throw new Error('The server did not return the expected new playlist.')
+        let verified = empty
+        if (tracks.length) {
+          if (!empty.writable) throw new Error('The server did not grant permission to add tracks to the new playlist.')
+          const after = { ...empty, tracks }
+          await client.write(empty, after); check()
+          const updated = await client.read(createdId); check()
+          if (!updated || !same(updated, after)) throw new Error('The server did not retain all of the selected tracks in order.')
+          verified = updated
+        }
+        await this.options.apply(ref, [verified], false); check()
+        return createdId
+      } catch (error) {
+        if (!createdId && error instanceof RemotePlaylistCreationRejectedError) throw error
+        // Creation has no portable idempotency key. Never retry it, guess an ID
+        // from a name, or delete a partially created playlist as rollback.
+        try {
+          check()
+          const actual = createdId ? await client.read(createdId) : null
+          const snapshots = createdId ? (actual ? [actual] : []) : await client.list()
+          check(); await this.options.apply(ref, snapshots, false)
+        } catch { /* The original failure remains useful if offline or disabled. */ }
+        const detail = error instanceof Error ? error.message : 'The server could not confirm creation.'
+        throw new RemotePlaylistCreationError(`${detail} ${createdId ? 'The playlist was created, but setup could not be completed.' : 'The playlist may have been created.'} Check the server’s playlists before creating another.`)
+      }
     })
   }
   edit(id: number, edit: RemotePlaylistEdit): Promise<void> {

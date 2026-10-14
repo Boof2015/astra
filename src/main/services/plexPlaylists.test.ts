@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createPlexPlaylistClient } from './plexPlaylists.ts'
-import { RemotePlaylists } from './remotePlaylists.ts'
+import { RemotePlaylists, RemotePlaylistCreationError, RemotePlaylistCreationRejectedError } from './remotePlaylists.ts'
 import { parsePlexTrackPath, type PlexCredentials } from './plex.ts'
 import type { RemotePlaylistLocal, RemotePlaylistSnapshot } from '../../types/remotePlaylists.ts'
 
@@ -30,6 +30,16 @@ function fixture() {
     assert.equal(init.redirect, 'error')
     const early = changes.beforeRequest?.(url, method)
     if (early) return early
+    if (method === 'POST' && url.pathname === '/playlists') {
+      // PMS 1.43.4 rejects an omitted source with 400, but accepts uri= for
+      // an empty regular playlist. Keep the fixture faithful to that behavior.
+      if (!url.searchParams.has('uri')) return new Response(null, { status: 400 })
+      assert.equal(url.searchParams.get('type'), 'audio')
+      assert.equal(url.searchParams.get('smart'), '0')
+      assert.equal(url.searchParams.get('uri'), '')
+      name = url.searchParams.get('title')!; rows = []; deleted = false
+      return json({ size: 1, Metadata: [metadata()] })
+    }
     if (method === 'GET') {
       if (deleted) return new Response(null, { status: 404 })
       if (url.pathname === '/playlists/1') return json({ size: 1, Metadata: [metadata()] })
@@ -73,6 +83,17 @@ function fixture() {
     writable: (value: boolean) => { readOnly = !value }, smart: () => { smart = true }, count: (value: number) => { count = value },
     rename: (value: string) => { name = value }, name: () => name, writes: () => requests.filter(request => request.method !== 'GET') }
 }
+
+test('Plex creates a regular audio playlist once; creation never retries on authorization errors', async () => {
+  const f = fixture()
+  assert.equal(await f.client.create!('New & empty'), '1')
+  assert.equal((await f.client.read('1'))!.name, 'New & empty')
+  assert.equal(f.rows().length, 0)
+  f.changes.beforeRequest = (_url, method) => method === 'POST' ? new Response(null, { status: 401 }) : undefined
+  await assert.rejects(f.client.create!('Rejected'), /401/)
+  assert.equal(f.requests.filter(request => request.method === 'POST').length, 2)
+  assert.deepEqual(f.auth, [false])
+})
 async function shared(f: ReturnType<typeof fixture>) {
   const ref = { provider: 'plex' as const, sourceId: 1 }
   let enabled = false, local: RemotePlaylistLocal | null = null, nextEntry = 1
@@ -88,6 +109,31 @@ async function shared(f: ReturnType<typeof fixture>) {
   await service.setEnabled(ref, true)
   return { service, local: () => local!, ref }
 }
+
+test('Plex distinguishes rejected creation from a lost or failed confirmation without replaying requests', async () => {
+  for (const status of [400, 401, 403, 404, 405, 422, 498, 500, 408]) {
+    const f = fixture(), h = await shared(f)
+    const knownRejection = ![500, 408].includes(status)
+    f.changes.beforeRequest = (_url, method) => method === 'POST' ? new Response(null, { status }) : undefined
+    await assert.rejects(h.service.create(h.ref, 'Rejected', []), error => {
+      assert.ok(error instanceof (knownRejection ? RemotePlaylistCreationRejectedError : RemotePlaylistCreationError))
+      assert.match((error as Error).message, knownRejection ? /was not created/ : /may have been created/)
+      return true
+    })
+    assert.equal(f.writes().length, 1)
+    assert.equal(h.local().name, 'Mix')
+  }
+  const f = fixture(), h = await shared(f)
+  f.changes.beforeRequest = (url, method) => method === 'GET' && url.pathname === '/playlists/1'
+    ? new Response(null, { status: 400 }) : undefined
+  await assert.rejects(h.service.create(h.ref, 'Created but unreadable', []), error => {
+    assert.ok(error instanceof RemotePlaylistCreationError)
+    assert.match(error.message, /was created, but setup/)
+    return true
+  })
+  assert.equal(f.name(), 'Created but unreadable')
+  assert.equal(f.writes().length, 1)
+})
 
 test('Plex playlists support verified direct edits, exact duplicates, cross-library additions and empty/delete', async () => {
   const f = fixture(), h = await shared(f)

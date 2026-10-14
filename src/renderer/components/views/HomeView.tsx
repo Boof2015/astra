@@ -1,3 +1,4 @@
+import type { ProviderSyncRef } from '../../../types/providerSync'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLibraryStore, type LibraryArtistBrowseMode } from '../../stores/libraryStore'
 import { usePlayerStore } from '../../stores/playerStore'
@@ -1126,8 +1127,8 @@ export default function HomeView() {
     })
   }
 
-  const handleCreatePlaylist = async (name: string, coverImagePath: string | null) => {
-    const playlist = await createPlaylistWithOptions({ name, coverImagePath })
+  const handleCreatePlaylist = async (name: string, coverImagePath: string | null, destination?: ProviderSyncRef) => {
+    const playlist = await createPlaylistWithOptions({ destination, name, coverImagePath })
     await selectPlaylist(playlist.id)
     setActiveView('playlist')
   }

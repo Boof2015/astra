@@ -1,5 +1,5 @@
 import { plexJson, plexWrite, PlexRequestError, type PlexCredentials, type PlexRequestOptions } from './plex'
-import type { RemotePlaylistClient } from './remotePlaylists'
+import { RemotePlaylistCreationRejectedError, type RemotePlaylistClient } from './remotePlaylists'
 import type { RemotePlaylistSnapshot, RemotePlaylistTrack } from '../../types/remotePlaylists'
 
 interface Options extends PlexRequestOptions {
@@ -117,6 +117,31 @@ export function createPlexPlaylistClient(options: Options): RemotePlaylistClient
     return { id: playlistId, name: String(item.title), writable, deletable: writable, tracks }
   }
   return {
+    create: async name => {
+      check()
+      const current = credentials ?? await authenticate()
+      check()
+      // POST must not use json(), whose auth refresh is intentionally read-only.
+      let response: unknown
+      try {
+        // Plex requires a source parameter even for a blank playlist. Omitting
+        // uri yields 400; an explicit empty uri creates a regular audio list.
+        response = await plexJson(current, `/playlists?${new URLSearchParams({ title: name, type: 'audio', smart: '0', uri: '' })}`,
+          options, { method: 'POST' })
+      } catch (error) {
+        if (error instanceof PlexRequestError && [400, 401, 403, 404, 405, 422, 498].includes(error.status)) {
+          throw new RemotePlaylistCreationRejectedError(`${error.message} The playlist was not created.`)
+        }
+        throw error
+      }
+      const result = record(response)
+      check()
+      const container = record(result.MediaContainer)
+      if (!Array.isArray(container.Metadata) || container.Metadata.length !== 1) throw new Error('Plex did not return the new playlist ID.')
+      const playlist = record(container.Metadata[0])
+      if (playlist.type !== 'playlist' || playlist.playlistType !== 'audio') throw new Error('Plex did not return a new music playlist.')
+      return id(playlist.ratingKey)
+    },
     read,
     list: async () => {
       const rows = await pages('/playlists?type=15&playlistType=audio', false)

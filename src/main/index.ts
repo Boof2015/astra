@@ -1,8 +1,8 @@
-import { RemotePlaylists } from './services/remotePlaylists'
+import { RemotePlaylists, RemotePlaylistCreationError } from './services/remotePlaylists'
 import { createJellyfinPlaylistClient } from './services/jellyfinPlaylists'
 import { createPlexPlaylistClient } from './services/plexPlaylists'
-import type { RemotePlaylistEdit } from '../types/remotePlaylists'
-import { listSubsonicRemotePlaylists, readSubsonicRemotePlaylist, writeSubsonicRemotePlaylist } from './services/subsonic'
+import type { RemotePlaylistCreateResult, RemotePlaylistEdit } from '../types/remotePlaylists'
+import { createSubsonicRemotePlaylist, listSubsonicRemotePlaylists, readSubsonicRemotePlaylist, writeSubsonicRemotePlaylist } from './services/subsonic'
 import { PlexSources } from './services/plexSources'
 import { plexRequestOptions } from './services/plexNetwork'
 import { buildPlexTrackPath, parsePlexTrackPath, reportPlexPlayback } from './services/plex'
@@ -1617,6 +1617,10 @@ const providerStateSync = new ProviderStateSync({
 })
 
 const remotePlaylists: RemotePlaylists = new RemotePlaylists({
+  validateCreate: (ref, paths) => {
+    const destination = library.getRemotePlaylistDestinations(paths).find(item => item.provider === ref.provider && item.sourceId === ref.sourceId)
+    if (!destination || destination.reason) throw new Error(destination?.reason ?? 'This playlist destination is unavailable.')
+  },
   sources: () => [
     ...library.listSubsonicSources().map(s => ({ provider: 'subsonic' as const, sourceId: s.id })),
     ...library.listJellyfinSources().map(s => ({ provider: 'jellyfin' as const, sourceId: s.id })),
@@ -1686,6 +1690,7 @@ const remotePlaylists: RemotePlaylists = new RemotePlaylists({
     const { connection } = requireSubsonicSourceCredentials(ref.sourceId)
     const options = { signal, retries: 0, timeoutMs: 12_000 }
     return {
+      create: name => createSubsonicRemotePlaylist(connection, name, options),
       list: () => listSubsonicRemotePlaylists(ref.sourceId, connection, options),
       read: id => readSubsonicRemotePlaylist(ref.sourceId, connection, id, options),
       write: (before, after) => writeSubsonicRemotePlaylist(ref.sourceId, connection, before, after, options)
@@ -10270,6 +10275,21 @@ ipcMain.handle('signal-share:save-png', async (_event, input: unknown, suggested
 // ============================================
 
 ipcMain.handle('remote-playlists:status', () => remotePlaylists.status())
+ipcMain.handle('remote-playlists:destinations', (_event, paths: string[]) => library.getRemotePlaylistDestinations(paths))
+ipcMain.handle('remote-playlists:create', async (_event, rawRef: unknown, name: string, paths: string[]): Promise<RemotePlaylistCreateResult> => {
+  try {
+    const ref = library.normalizeRemotePlaylistRef(normalizeProviderSyncRef(rawRef))
+    const destination = library.getRemotePlaylistDestinations(paths).find(item => item.provider === ref.provider && item.sourceId === ref.sourceId)
+    if (!destination || destination.reason) throw new Error(destination?.reason ?? 'This playlist destination is unavailable.')
+    const remoteId = await remotePlaylists.create(ref, name, paths)
+    const playlist = library.getPlaylists().find(item => item.remote?.provider === ref.provider
+      && item.remote.sourceId === ref.sourceId && item.remote.id === remoteId)
+    if (!playlist) throw new RemotePlaylistCreationError('The server playlist was created, but is not currently visible. Refresh playlists before creating another.')
+    return { ok: true, playlistId: playlist.id }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : 'Could not create the playlist.', uncertain: error instanceof RemotePlaylistCreationError }
+  }
+})
 ipcMain.handle('remote-playlists:setEnabled', (_event, ref: unknown, enabled: unknown) => {
   if (typeof enabled !== 'boolean') throw new Error('Invalid playlist setting.')
   return remotePlaylists.setEnabled(library.normalizeRemotePlaylistRef(normalizeProviderSyncRef(ref)), enabled)

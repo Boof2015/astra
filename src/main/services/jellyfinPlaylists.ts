@@ -50,7 +50,7 @@ export function createJellyfinPlaylistClient(sourceId: number, config: JellyfinC
     return auth
   }
   const request = async (method: 'GET' | 'POST' | 'DELETE', endpoint: string,
-    params: Record<string, string | number | boolean> = {}, body?: unknown): Promise<unknown> => {
+    params: Record<string, string | number | boolean> = {}, body?: unknown, readResponse = method === 'GET'): Promise<unknown> => {
     check()
     const currentAuth = auth ?? await authenticate()
     check()
@@ -65,7 +65,7 @@ export function createJellyfinPlaylistClient(sourceId: number, config: JellyfinC
     })
     check()
     if (!response.ok) throw new PlaylistRequestError(response.status)
-    if (method !== 'GET') return
+    if (!readResponse) { await response.body?.cancel(); return }
     const value: unknown = await response.json()
     check()
     return value
@@ -141,6 +141,13 @@ export function createJellyfinPlaylistClient(sourceId: number, config: JellyfinC
     return { id, name: String(item.Name), writable: canEdit, deletable: item.CanDelete === true, tracks }
   }
   return {
+    create: async name => {
+      const current = auth ?? await authenticate()
+      const result = record(await request('POST', '/Playlists', {}, {
+        Name: name, Ids: [], UserId: current.userId, MediaType: 'Audio', IsPublic: false
+      }, true))
+      return guid(result.Id)
+    },
     list: async () => {
       const rows = await items(await userItemsEndpoint(), {
         Recursive: true, IncludeItemTypes: 'Playlist', MediaTypes: 'Audio', SortBy: 'SortName', SortOrder: 'Ascending',

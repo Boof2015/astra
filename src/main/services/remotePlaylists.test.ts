@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { RemotePlaylists, planRemotePlaylistEdit, type RemotePlaylistClient } from './remotePlaylists.ts'
+import { RemotePlaylists, RemotePlaylistCreationError, planRemotePlaylistEdit, type RemotePlaylistClient } from './remotePlaylists.ts'
 import type { RemotePlaylistLocal, RemotePlaylistSnapshot } from '../../types/remotePlaylists.ts'
 
 const ref = { provider: 'subsonic' as const, sourceId: 1 }
@@ -13,6 +13,7 @@ function fixture() {
   let remote: RemotePlaylistSnapshot | null = clone(local)
   let reads = 0, writes = 0, nextEntry = 10
   const client: RemotePlaylistClient = {
+    create: async name => { remote = { id: 'new', name, writable: true, tracks: [] }; return 'new' },
     list: async () => { reads++; return remote ? [clone(remote)] : [] },
     read: async () => { reads++; return clone(remote) },
     write: async (_before, after) => { writes++; remote = clone(after) }
@@ -43,6 +44,56 @@ test('playlist sync defaults off; enable imports and disable never deletes serve
   await f.service.refresh(ref)
   assert.equal(f.reads(), 1)
   assert.equal(f.remote()!.name, 'Mix')
+  assert.equal(f.local()!.name, 'Mix')
+})
+
+test('server creation requires opt-in and imports verified empty or seeded playlists', async () => {
+  const f = fixture()
+  await assert.rejects(f.service.create(ref, 'Empty', []), /sync is off/)
+  await f.service.setEnabled(ref, true)
+  await assert.rejects(f.service.create(ref, ' ', []), /name/)
+  assert.equal(await f.service.create(ref, ' Empty ', []), 'new')
+  assert.equal(f.local()!.name, 'Empty')
+  assert.equal(f.local()!.tracks.length, 0)
+  assert.equal(f.writes(), 0)
+  await f.service.create(ref, 'Seeded', [path('b'), path('a'), path('b')])
+  assert.deepEqual(f.local()!.tracks.map(track => track.path), [path('b'), path('a')])
+  assert.equal(f.writes(), 1)
+})
+
+test('creation never retries an ambiguous request, guesses identity by name, or deletes partial progress', async () => {
+  const f = fixture()
+  await f.service.setEnabled(ref, true)
+  let creates = 0
+  f.client.create = async name => { creates++; f.change(remote => { remote.name = name }); throw new Error('Connection lost') }
+  await assert.rejects(f.service.create(ref, 'Maybe created', []), RemotePlaylistCreationError)
+  assert.equal(creates, 1)
+  assert.equal(f.writes(), 0)
+  assert.equal(f.local()!.name, 'Maybe created', 'recovery refreshes server state without pretending it knows the new ID')
+
+  const partial = fixture()
+  await partial.service.setEnabled(ref, true)
+  partial.client.write = async (_before, after) => {
+    partial.change(remote => { remote.tracks = after!.tracks.slice(0, 1) })
+    throw new Error('Stopped after one track')
+  }
+  await assert.rejects(partial.service.create(ref, 'Partial', [path('a'), path('b')]), /was created, but setup/)
+  assert.equal(partial.local()!.name, 'Partial')
+  assert.deepEqual(partial.local()!.tracks.map(track => track.path), [path('a')])
+})
+
+test('disabling playlist sync during creation prevents subsequent writes and a stale local result', async () => {
+  const f = fixture()
+  await f.service.setEnabled(ref, true)
+  let release!: () => void, began!: () => void
+  const started = new Promise<void>(resolve => { began = resolve })
+  f.client.create = async () => { began(); await new Promise<void>(resolve => { release = resolve }); return 'new' }
+  const pending = f.service.create(ref, 'Pending', [path('a')])
+  await started
+  await f.service.setEnabled(ref, false)
+  release()
+  await assert.rejects(pending, RemotePlaylistCreationError)
+  assert.equal(f.writes(), 0)
   assert.equal(f.local()!.name, 'Mix')
 })
 

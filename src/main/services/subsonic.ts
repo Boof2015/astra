@@ -1051,6 +1051,14 @@ export async function fetchSubsonicCoverArt(
   throw lastError instanceof Error ? lastError : new Error('Subsonic cover art request failed.')
 }
 
+export async function createSubsonicRemotePlaylist(config: SubsonicConnectionConfig, name: string,
+  options: SubsonicRequestOptions = {}): Promise<string> {
+  const response = await requestSubsonicJson(config, 'createPlaylist', { name }, { ...options, retries: 0 })
+  const id = toTrimmedText((response.playlist as Record<string, unknown> | undefined)?.id)
+  if (!id) throw new Error('The server did not return the new playlist ID. Creation requires Subsonic API 1.14 or newer.')
+  return id
+}
+
 export async function readSubsonicRemotePlaylist(sourceId: number, config: SubsonicConnectionConfig,
   id: string, options: SubsonicRequestOptions = {}): Promise<RemotePlaylistSnapshot | null> {
   let response: Record<string, unknown>
@@ -1100,12 +1108,20 @@ export async function writeSubsonicRemotePlaylist(sourceId: number, config: Subs
       if (!parsed || parsed.sourceId !== sourceId) throw new Error('A server playlist can only contain tracks from that same server.')
       return parsed.sourceTrackId
     })
-    // Replacing the ordered list in one request preserves repeated occurrences
-    // and avoids the intermediate empty state of remove-all followed by add-all.
-    const params = { playlistId: before.id, songId: ids }
-    const large = buildSubsonicEndpointUrl(config, 'createPlaylist', params).toString().length > 6000
+    // Navidrome treats createPlaylist without songId parameters as leaving the
+    // existing tracks unchanged. Explicitly remove positions when clearing;
+    // descending indices also work with servers that remove them sequentially.
+    const clearing = !ids.length
+    if (clearing && !before.tracks.length) return
+    const endpoint = clearing ? 'updatePlaylist' : 'createPlaylist'
+    const params = clearing
+      ? { playlistId: before.id, songIndexToRemove: before.tracks.map((_, i) => String(before.tracks.length - i - 1)) }
+      : { playlistId: before.id, songId: ids }
+    // Nonempty replacements preserve order and repeated occurrences in one
+    // request, without an intermediate remove-all/add-all state.
+    const large = buildSubsonicEndpointUrl(config, endpoint, params).toString().length > 6000
     const formPost = large && await supportsPlaylistFormPost(config, options)
-    await requestSubsonicJson(config, 'createPlaylist', params, { ...writeOptions, formPost })
+    await requestSubsonicJson(config, endpoint, params, { ...writeOptions, formPost })
   }
 }
 

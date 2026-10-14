@@ -1,3 +1,4 @@
+import type { ProviderSyncRef } from '../../../types/providerSync'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type FocusEvent, type PointerEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useLibraryStore } from '../../stores/libraryStore'
@@ -463,8 +464,8 @@ export default function Sidebar() {
     setIsOverflowOpen(false)
   }
 
-  const handleCreatePlaylist = useCallback(async (name: string, coverImagePath: string | null) => {
-    const playlist = await createPlaylistWithOptions({
+  const handleCreatePlaylist = useCallback(async (name: string, coverImagePath: string | null, destination?: ProviderSyncRef) => {
+    const playlist = await createPlaylistWithOptions({ destination,
       name,
       coverImagePath,
       trackPaths: createPlaylistTrackPaths ?? undefined
@@ -854,6 +855,7 @@ export default function Sidebar() {
         isImporting={isImportingPlaylist}
         title={createPlaylistTrackPaths ? 'Create Playlist from Tracks' : 'Create Playlist'}
         pendingTrackCount={createPlaylistTrackPaths?.length}
+        trackPaths={createPlaylistTrackPaths ?? undefined}
       />
     </aside>
   )
