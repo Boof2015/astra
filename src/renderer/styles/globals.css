@@ -30246,3 +30246,738 @@ html[data-theme-tone="light"] .home-greeting-card.home-dashboard-hero::before {
 .provider-sync-error { padding: 12px 0; color: var(--text-primary); }
 .provider-sync-notice { z-index: 260; pointer-events: auto; }
 .provider-sync-notice .provider-sync-actions { margin-top: 10px; }
+
+/* ============================================
+   Settings → Servers
+   Its own layout within Astra's tokens: quiet rows in grouped panels, color only
+   for problems and syncing, mono only for real values (addresses, sizes, bitrates).
+   ============================================ */
+.servers-section {
+  --servers-ok: #34d399;
+  --servers-line: rgba(var(--tint), 0.08);
+  --servers-hair: rgba(var(--tint), 0.06);
+}
+
+html[data-theme-tone="light"] .servers-section {
+  --servers-ok: #059669;
+}
+
+.servers-section-head {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 30px;
+}
+
+.servers-page {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  container-type: inline-size;
+}
+
+.servers-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.servers-subsection h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.servers-group {
+  position: relative;
+  border: 1px solid var(--servers-line);
+  border-radius: 10px;
+  background: rgba(var(--tint), 0.025);
+}
+
+.servers-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+}
+
+.servers-row + .servers-row,
+.servers-reveal .servers-row {
+  border-top: 1px solid var(--servers-hair);
+}
+
+.servers-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.servers-label {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.servers-sub {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-tertiary);
+}
+
+.servers-sub.is-warn {
+  color: var(--warning);
+}
+
+.servers-hint {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
+.servers-mono {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.01em;
+}
+
+.servers-error {
+  margin: -14px 0 0;
+  font-size: 12px;
+  color: var(--warning);
+}
+
+/* Buttons */
+.servers-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 5px 11px;
+  border-radius: 7px;
+  border: 1px solid rgba(var(--tint), 0.1);
+  background: rgba(var(--tint), 0.04);
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.servers-btn:hover:not(:disabled) {
+  border-color: rgba(var(--tint), 0.22);
+  background: rgba(var(--tint), 0.06);
+}
+
+.servers-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.servers-btn.is-accent {
+  border-color: rgba(var(--accent-rgb), 0.38);
+  background: rgba(var(--accent-rgb), 0.1);
+  color: var(--accent-text);
+}
+
+.servers-btn.is-accent:hover:not(:disabled) {
+  border-color: rgba(var(--accent-rgb), 0.5);
+  background: rgba(var(--accent-rgb), 0.16);
+}
+
+.servers-link {
+  flex-shrink: 0;
+  border: 0;
+  background: none;
+  padding: 0;
+  font-size: 12.5px;
+  color: var(--accent-text);
+  cursor: pointer;
+}
+
+.servers-link:hover:not(:disabled) {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.servers-link-inline {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.servers-link:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.servers-btn:focus-visible,
+.servers-link:focus-visible,
+.servers-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Switch */
+.servers-switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 34px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(var(--tint), 0.18);
+  cursor: pointer;
+  transition: background 0.18s ease;
+}
+
+.servers-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: transform 0.18s ease;
+}
+
+.servers-switch[aria-checked="true"] {
+  background: var(--accent);
+}
+
+.servers-switch[aria-checked="true"]::after {
+  transform: translateX(14px);
+}
+
+.servers-switch:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Server identity */
+.servers-tile {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  border: 1px solid rgba(var(--tint), 0.12);
+  background: rgba(var(--tint), 0.05);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.servers-tile.is-large {
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
+  font-size: 12px;
+}
+
+.servers-name {
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.servers-name.is-large {
+  font-size: 15px;
+}
+
+.servers-meta {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.servers-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.servers-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(var(--tint), 0.35);
+}
+
+.servers-dot.is-ok {
+  background: var(--servers-ok);
+}
+
+.servers-dot.is-syncing {
+  background: var(--accent);
+  animation: serversPulse 1.4s ease-in-out infinite;
+}
+
+.servers-dot.is-checking {
+  animation: serversPulse 1.4s ease-in-out infinite;
+}
+
+.servers-status.is-warn {
+  color: var(--warning);
+}
+
+.servers-status.is-warn .servers-dot {
+  background: var(--warning);
+}
+
+.servers-status.is-off {
+  color: var(--text-tertiary);
+}
+
+.servers-status.is-off .servers-dot {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px currentColor;
+}
+
+@keyframes serversPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* One server: its header, then its rows */
+.servers-hero {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 16px 14px 14px;
+}
+
+.servers-hero .servers-row-text {
+  gap: 3px;
+}
+
+.servers-hero-actions {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.servers-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 14px 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+  background: color-mix(in srgb, var(--warning) 7%, transparent);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.servers-notice svg {
+  flex-shrink: 0;
+  color: var(--warning);
+}
+
+.servers-notice span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.servers-row.is-paused .servers-row-text {
+  opacity: 0.5;
+}
+
+/* Several servers */
+.servers-server-row:hover {
+  background: rgba(var(--tint), 0.025);
+}
+
+.servers-server-row:first-child:hover {
+  border-radius: 10px 10px 0 0;
+}
+
+.servers-server-row:last-child:hover {
+  border-radius: 0 0 10px 10px;
+}
+
+.servers-server-row:only-child:hover {
+  border-radius: 10px;
+}
+
+.servers-server-row.is-hidden .servers-tile,
+.servers-server-row.is-hidden .servers-row-text {
+  opacity: 0.55;
+}
+
+.servers-status-col {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* Sync progress: text over the transport's loading bar */
+.servers-progress-compact {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 200px;
+}
+
+.servers-progress-row {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0 14px 14px;
+}
+
+.servers-progress-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.servers-progress-text {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.servers-progress-pct {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The transport's bar grows to fill its row; here it sits in a column. */
+.transport-loading-hint-bar.servers-progress-bar {
+  flex: none;
+}
+
+/* First run */
+.servers-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 26px 22px 24px;
+}
+
+.servers-empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.servers-empty .servers-sub {
+  max-width: 440px;
+  margin: -4px 0 4px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* Astra's sliding selector, in sentence case for this page */
+.servers-page .servers-seg.settings-segmented-control {
+  height: 30px;
+  border-color: var(--servers-line);
+  border-radius: 7px;
+}
+
+.servers-seg .settings-segmented-highlight {
+  border-radius: 5px;
+  transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.servers-seg .settings-segmented-button {
+  padding: 0 10px;
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.servers-page .servers-seg.servers-seg-quality,
+.servers-page .servers-seg.servers-seg-priority {
+  width: 300px;
+}
+
+.servers-page .servers-seg.servers-seg-server {
+  width: 380px;
+}
+
+.servers-page .servers-seg.servers-seg-bitrate {
+  width: 270px;
+}
+
+.servers-seg-bitrate .settings-segmented-button {
+  padding: 0 6px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.servers-control {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.servers-unit {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.servers-sub-row {
+  padding-left: 28px;
+}
+
+.servers-applied {
+  color: var(--accent-text);
+}
+
+/* Follow-up rows slide open and closed instead of popping in */
+.servers-reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 0.26s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s ease;
+}
+
+.servers-reveal.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.servers-reveal-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Storage */
+.servers-cache {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 9px;
+}
+
+.servers-cache-top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.servers-amount {
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.servers-amount span {
+  color: var(--text-tertiary);
+}
+
+.servers-usage-bar {
+  display: flex;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(var(--tint), 0.08);
+}
+
+.servers-usage-bar i {
+  display: block;
+  height: 100%;
+  transition: width 0.25s ease;
+}
+
+.servers-usage-bar .is-use,
+.servers-legend b.is-use {
+  background: var(--accent);
+}
+
+.servers-usage-bar .is-cached,
+.servers-legend b.is-cached {
+  background: rgba(var(--accent-rgb), 0.35);
+}
+
+.servers-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+.servers-legend b {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 2px;
+  vertical-align: -0.5px;
+}
+
+.servers-over {
+  /* A sentence, not a value, so not mono like the rest of the legend. */
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 11.5px;
+  color: var(--warning);
+}
+
+.servers-limit {
+  gap: 16px;
+}
+
+.servers-slider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: min(420px, 60%);
+}
+
+.servers-slider-col {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.servers-slider-col input {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* Ticks line up with the native thumb's centre: 8px in from each end. */
+.servers-ticks {
+  position: relative;
+  height: 20px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.servers-ticks span {
+  position: absolute;
+  top: 0;
+  left: calc(8px + (100% - 16px) * var(--tick));
+  padding-top: 7px;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  transition: color var(--transition-fast);
+}
+
+.servers-ticks span::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 1px;
+  height: 4px;
+  background: rgba(var(--tint), 0.25);
+}
+
+.servers-ticks span.is-minor {
+  padding-top: 0;
+}
+
+.servers-ticks span.is-minor::before {
+  height: 3px;
+  background: rgba(var(--tint), 0.18);
+}
+
+.servers-ticks span.is-on {
+  color: var(--text-primary);
+}
+
+.servers-ticks span.is-on::before {
+  background: var(--accent);
+}
+
+.servers-slider-value {
+  width: 46px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+@container (max-width: 560px) {
+  .servers-row-wrap,
+  .servers-server-row,
+  .servers-hero,
+  .servers-limit {
+    flex-wrap: wrap;
+  }
+
+  .servers-server-row .servers-row-text {
+    flex-basis: calc(100% - 80px);
+  }
+
+  .servers-server-row .servers-status-col {
+    order: 3;
+    flex-basis: 100%;
+    justify-content: flex-start;
+    padding-left: 50px;
+  }
+
+  .servers-progress-compact,
+  .servers-slider,
+  .servers-control,
+  .servers-page .servers-seg.settings-segmented-control {
+    width: 100%;
+  }
+
+  .servers-page .servers-control .servers-seg.settings-segmented-control {
+    flex: 1;
+    width: auto;
+  }
+
+  .servers-sub-row {
+    padding-left: 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .servers-dot,
+  .servers-reveal,
+  .servers-switch,
+  .servers-switch::after,
+  .servers-seg .settings-segmented-highlight {
+    animation: none;
+    transition: none;
+  }
+}

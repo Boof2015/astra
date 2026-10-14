@@ -1,0 +1,94 @@
+import { useState } from 'react'
+import { formatAgo } from './serverModel'
+import { AlertIcon, ProgressRow, RefreshIcon, ServerSwitch } from './ServerParts'
+import { setServerEnabled, syncServer, useNow, type ServerEntry } from './useServers'
+
+function StatusLine({ server, variant }: { server: ServerEntry; variant: 'header' | 'list' }) {
+  const now = useNow()
+  switch (server.state) {
+    case 'off':
+      return <span className="servers-status is-off"><i className="servers-dot" />{variant === 'header' ? 'Not in use · hidden from your library' : 'Not in use'}</span>
+    case 'failed':
+      return <span className="servers-status is-warn"><i className="servers-dot" />Sync failed</span>
+    case 'syncing':
+      return <span className="servers-status"><i className="servers-dot is-syncing" />Syncing</span>
+    case 'checking':
+      return <span className="servers-status"><i className="servers-dot is-checking" />Checking…</span>
+    default: {
+      const ago = server.lastSyncAt ? formatAgo(server.lastSyncAt, now) : null
+      const text = !ago ? 'Connected' : variant === 'header' ? `Connected · synced ${ago}` : `Connected · ${ago}`
+      return <span className="servers-status"><i className="servers-dot is-ok" />{text}</span>
+    }
+  }
+}
+export { StatusLine as ServerStatusLine }
+
+function sentence(text: string | null): string | null {
+  const trimmed = text?.trim()
+  if (!trimmed) return null
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`
+}
+
+export function ServerMeta({ server }: { server: ServerEntry }) {
+  return (
+    <span className="servers-meta">
+      {server.kind} · {server.address ? <span className="servers-mono">{server.host}</span> : server.host} · {server.user}
+    </span>
+  )
+}
+
+/** Sync now, or Retry now when the last sync failed. Disabled while syncing or not in use. */
+function PrimaryAction({ server }: { server: ServerEntry }) {
+  const [pending, setPending] = useState(false)
+  const busy = pending || server.state === 'syncing'
+  return (
+    <button type="button" className="servers-btn" disabled={!server.enabled || busy}
+      onClick={() => { setPending(true); void syncServer(server).finally(() => setPending(false)) }}>
+      <RefreshIcon />
+      {busy && server.enabled ? 'Syncing…' : server.state === 'failed' ? 'Retry now' : 'Sync now'}
+    </button>
+  )
+}
+
+/** Name, status and address, with the main action. The same block heads a server's page. */
+export function ServerHeader({ server }: { server: ServerEntry }) {
+  return (
+    <>
+      <div className="servers-hero">
+        <span className="servers-tile is-large" aria-hidden="true">{server.monogram}</span>
+        <div className="servers-row-text">
+          <span className="servers-name is-large">{server.name}</span>
+          <StatusLine server={server} variant="header" />
+          <ServerMeta server={server} />
+        </div>
+        <div className="servers-hero-actions"><PrimaryAction server={server} /></div>
+      </div>
+      {server.state === 'failed' && (
+        <div className="servers-notice" role="status">
+          <AlertIcon />
+          <span>{sentence(server.error) ?? 'Astra couldn’t sync with this server.'} Astra tries again every 20 minutes.</span>
+        </div>
+      )}
+      {server.state === 'syncing' && server.progress && <ProgressRow progress={server.progress} />}
+    </>
+  )
+}
+
+/** Turning a server off is also how you hide its music, so it's a row rather than a menu item. */
+export function UseServerRow({ server }: { server: ServerEntry }) {
+  const [pending, setPending] = useState(false)
+  return (
+    <div className="servers-row">
+      <div className="servers-row-text">
+        <span className="servers-label">Use this server</span>
+        <span className="servers-sub">
+          {server.enabled
+            ? 'Turn off to hide its music and stop syncing. Your settings are kept.'
+            : 'Its music is hidden and Astra won’t contact it. Your settings are kept.'}
+        </span>
+      </div>
+      <ServerSwitch checked={server.enabled} label="Use this server" disabled={pending}
+        onChange={enabled => { setPending(true); void setServerEnabled(server, enabled).finally(() => setPending(false)) }} />
+    </div>
+  )
+}

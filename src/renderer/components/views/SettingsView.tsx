@@ -56,6 +56,7 @@ import { useListeningStatsStore } from '../../stores/listeningStatsStore'
 import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
 import { useRatingsStore } from '../../stores/ratingsStore'
 import RemoteServersPanel from '../settings/RemoteServersPanel'
+import ServersSection from '../settings/servers/ServersSection'
 import {
   SLEEP_TIMER_MAX_MINUTES,
   SLEEP_TIMER_MIN_MINUTES,
@@ -2191,6 +2192,8 @@ export default function SettingsView() {
             <RemoteServersPanel />
           </section>
             )}
+
+            {activeSectionId === 'servers' && <ServersSection />}
 
             {activeSectionId === 'analyzer' && (
             <section className="settings-section settings-section-panel">
