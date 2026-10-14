@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { formatAgo } from './serverModel'
+import { ServerMenu, type ServerMenuAction } from './ServerMenu'
 import { AlertIcon, ProgressRow, RefreshIcon, ServerSwitch } from './ServerParts'
 import { setServerEnabled, syncServer, useNow, type ServerEntry } from './useServers'
 
@@ -51,7 +52,7 @@ function PrimaryAction({ server }: { server: ServerEntry }) {
 }
 
 /** Name, status and address, with the main action. The same block heads a server's page. */
-export function ServerHeader({ server }: { server: ServerEntry }) {
+export function ServerHeader({ server, onMenuAction }: { server: ServerEntry; onMenuAction: (action: ServerMenuAction) => void }) {
   return (
     <>
       <div className="servers-hero">
@@ -61,7 +62,10 @@ export function ServerHeader({ server }: { server: ServerEntry }) {
           <StatusLine server={server} variant="header" />
           <ServerMeta server={server} />
         </div>
-        <div className="servers-hero-actions"><PrimaryAction server={server} /></div>
+        <div className="servers-hero-actions">
+          <PrimaryAction server={server} />
+          <ServerMenu server={server} onAction={onMenuAction} />
+        </div>
       </div>
       {server.state === 'failed' && (
         <div className="servers-notice" role="status">

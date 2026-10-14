@@ -23,6 +23,8 @@ export interface ServerEntry {
   /** Full server address; Plex connects through addresses Plex chooses, so it has none to show. */
   address: string | null
   user: string
+  /** Plex connects one music library per entry. */
+  libraryName: string | null
   enabled: boolean
   state: ServerState
   error: string | null
@@ -39,7 +41,9 @@ type StatusItem = SubsonicSourceStatus | JellyfinSourceStatus
 function entry(provider: ServerProvider, source: {
   id: number; name: string; base_url: string; username: string; enabled: number; last_status: string
   last_error: string | null; last_sync_at: number | null; created_at: number
-}, status: StatusItem | undefined, extra: { host?: string; playlistRef?: ProviderSyncRef; playlistPeers?: number } = {}): ServerEntry {
+}, status: StatusItem | undefined, extra: {
+  host?: string; libraryName?: string; playlistRef?: ProviderSyncRef; playlistPeers?: number
+} = {}): ServerEntry {
   const enabled = source.enabled === 1
   const progress = status?.progress
     ? { activity: status.progress.activity, current: status.progress.current, total: status.progress.total }
@@ -55,6 +59,7 @@ function entry(provider: ServerProvider, source: {
     host: extra.host ?? hostOf(source.base_url),
     address: provider === 'plex' ? null : source.base_url,
     user: source.username,
+    libraryName: extra.libraryName ?? null,
     enabled,
     state,
     error: state === 'failed' ? status?.error ?? source.last_error : null,
@@ -85,6 +90,7 @@ export function useServers(): ServerEntry[] {
           .sort((a, b) => a.id - b.id)
         return entry('plex', source, statusOf(plexStatus?.sources, source.id), {
           host: source.library_name,
+          libraryName: source.library_name,
           playlistRef: { provider: 'plex', sourceId: peers[0]?.id ?? source.id },
           playlistPeers: peers.length
         })

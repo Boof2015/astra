@@ -63,6 +63,13 @@ export function formatAgo(timestamp: number, now: number): string {
   return days === 1 ? '1 day ago' : `${days} days ago`
 }
 
+/** The Details row. A server that's not in use isn't contacted, so it isn't checked either. */
+export function lastSyncedText(server: { state: ServerState; enabled: boolean; lastSyncAt: number | null }, now: number): string {
+  if (server.state === 'syncing') return 'Syncing now · checks every 20 min'
+  const ago = server.lastSyncAt ? formatAgo(server.lastSyncAt, now) : 'Not yet'
+  return server.enabled ? `${ago} · checks every 20 min` : ago
+}
+
 /* ---------- Streaming quality ---------- */
 
 export type QualityMode = 'automatic' | 'original' | 'fixed'

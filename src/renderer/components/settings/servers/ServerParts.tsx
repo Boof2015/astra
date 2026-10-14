@@ -15,6 +15,8 @@ export const RefreshIcon = () => (
   </Icon>
 )
 export const PlusIcon = () => <Icon size={13}><path d="M5 12h14" /><path d="M12 5v14" /></Icon>
+export const ChevronRightIcon = () => <Icon size={15}><path d="m9 18 6-6-6-6" /></Icon>
+export const ChevronLeftIcon = () => <Icon size={14}><path d="m15 18-6-6 6-6" /></Icon>
 export const AlertIcon = () => (
   <Icon size={15}>
     <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" /><path d="M12 9v4" /><path d="M12 17h.01" />

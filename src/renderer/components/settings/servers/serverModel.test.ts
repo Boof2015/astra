@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   CACHE_SLIDER_MAX, CACHE_STOPS, CacheLimitEdits, cacheSliderValue, deriveServerState, formatAgo, hostOf, nearestCacheStop,
-  progressFraction, progressText, qualityCopy, qualityFollowUps, qualityFromChoice, qualityLabel, qualityMode,
+  lastSyncedText, progressFraction, progressText, qualityCopy, qualityFollowUps, qualityFromChoice, qualityLabel, qualityMode,
   SerialQueue, stepCacheStop
 } from './serverModel.ts'
 
@@ -163,4 +163,12 @@ test('quality copy discloses a lone server\'s own setting instead of presenting 
     'Follows your default (Automatic).')
   assert.equal(qualityCopy({ global: 'automatic', overrides: { 'jellyfin:2': 256 }, servers: [nav, jf], serverKey: 'jellyfin:2' }).description,
     'Overrides your default (Automatic). Always streams at the bitrate you pick.')
+})
+
+test('last synced reads as when, plus the 20-minute check only while the server is in use', () => {
+  const now = Date.UTC(2026, 9, 14, 12)
+  assert.equal(lastSyncedText({ state: 'connected', enabled: true, lastSyncAt: now - 4 * 60_000 }, now), '4 min ago · checks every 20 min')
+  assert.equal(lastSyncedText({ state: 'checking', enabled: true, lastSyncAt: null }, now), 'Not yet · checks every 20 min')
+  assert.equal(lastSyncedText({ state: 'syncing', enabled: true, lastSyncAt: null }, now), 'Syncing now · checks every 20 min')
+  assert.equal(lastSyncedText({ state: 'off', enabled: false, lastSyncAt: now - 72 * 3_600_000 }, now), '3 days ago')
 })

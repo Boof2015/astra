@@ -30254,12 +30254,14 @@ html[data-theme-tone="light"] .home-greeting-card.home-dashboard-hero::before {
    ============================================ */
 .servers-section {
   --servers-ok: #34d399;
+  --servers-danger: #fca5a5;
   --servers-line: rgba(var(--tint), 0.08);
   --servers-hair: rgba(var(--tint), 0.06);
 }
 
 html[data-theme-tone="light"] .servers-section {
   --servers-ok: #059669;
+  --servers-danger: #b91c1c;
 }
 
 .servers-section-head {
@@ -30275,6 +30277,40 @@ html[data-theme-tone="light"] .servers-section {
   flex-direction: column;
   gap: 26px;
   container-type: inline-size;
+}
+
+.servers-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+
+.servers-pane.is-entering {
+  animation: serversPaneIn 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes serversPaneIn {
+  from { opacity: 0; transform: translateX(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+.servers-back {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: -10px;
+  padding: 2px 6px 2px 0;
+  border: 0;
+  background: none;
+  font-size: 12.5px;
+  color: var(--accent-text);
+  cursor: pointer;
+}
+
+.servers-back:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .servers-subsection {
@@ -30608,6 +30644,44 @@ html[data-theme-tone="light"] .servers-section {
 }
 
 /* Several servers */
+.servers-name-btn {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The name's button covers the whole row; real buttons in the row sit above it. */
+.servers-name-btn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.servers-name-btn:focus-visible {
+  outline: none;
+}
+
+.servers-server-row:has(.servers-name-btn:focus-visible) {
+  box-shadow: inset 0 0 0 2px var(--accent);
+  border-radius: 10px;
+}
+
+.servers-row-action {
+  position: relative;
+  z-index: 1;
+}
+
+.servers-chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
 .servers-server-row:hover {
   background: rgba(var(--tint), 0.025);
 }
@@ -30636,6 +30710,100 @@ html[data-theme-tone="light"] .servers-section {
   justify-content: flex-end;
   gap: 14px;
   min-width: 0;
+}
+
+/* Details */
+.servers-kv {
+  padding-block: 10px;
+}
+
+.servers-kv .servers-label {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.servers-kv-value {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+/* The ··· menu */
+.servers-menu-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.servers-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 7px;
+  border: 1px solid rgba(var(--tint), 0.1);
+  background: rgba(var(--tint), 0.04);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.servers-icon-btn:hover,
+.servers-icon-btn[aria-expanded="true"] {
+  border-color: rgba(var(--tint), 0.22);
+  color: var(--text-primary);
+}
+
+.servers-icon-btn:focus-visible,
+.servers-menu button:focus-visible,
+.servers-back:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.servers-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  padding: 5px;
+  border-radius: 10px;
+  border: 1px solid rgba(var(--tint), 0.14);
+  /* The overlay token is slightly translucent; over the base it's solid, so switches don't show through. */
+  background: linear-gradient(var(--surface-overlay), var(--surface-overlay)), var(--bg-primary);
+  box-shadow: 0 16px 32px var(--shadow-soft);
+}
+
+.servers-menu button {
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.servers-menu button:hover,
+.servers-menu button:focus-visible {
+  background: rgba(var(--tint), 0.06);
+}
+
+.servers-menu button.is-danger {
+  color: var(--servers-danger);
+}
+
+.servers-menu hr {
+  margin: 4px 2px;
+  border: 0;
+  border-top: 1px solid var(--servers-hair);
 }
 
 /* Sync progress: text over the transport's loading bar */
@@ -30973,6 +31141,7 @@ html[data-theme-tone="light"] .servers-section {
 
 @media (prefers-reduced-motion: reduce) {
   .servers-dot,
+  .servers-pane.is-entering,
   .servers-reveal,
   .servers-switch,
   .servers-switch::after,
