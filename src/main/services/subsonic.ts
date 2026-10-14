@@ -65,12 +65,6 @@ export interface SubsonicPlaylistTrack {
   album: string | null
 }
 
-export interface SubsonicPlaylist {
-  source_playlist_id: string
-  name: string
-  tracks: SubsonicPlaylistTrack[]
-}
-
 interface SubsonicRequestOptions {
   formPost?: boolean
   timeoutMs?: number
@@ -107,17 +101,6 @@ export interface SubsonicCatalogSyncOptions extends SubsonicRequestOptions {
   onProgress?: (progress: SubsonicCatalogSyncProgress) => void
 }
 
-export interface SubsonicPlaylistSyncProgress {
-  phase: 'playlists'
-  current: number
-  total: number
-  detail: string | null
-}
-
-export interface SubsonicPlaylistSyncOptions extends SubsonicRequestOptions {
-  onProgress?: (progress: SubsonicPlaylistSyncProgress) => void
-}
-
 interface SubsonicResponseEnvelope {
   'subsonic-response'?: {
     status?: string
@@ -135,11 +118,6 @@ interface SubsonicArtistRef {
 
 interface SubsonicAlbumRef {
   id: string
-}
-
-interface SubsonicPlaylistRef {
-  id: string
-  name: string
 }
 
 interface SubsonicAlbumSongs {
@@ -591,22 +569,6 @@ function toStarredTrackIds(starredResponse: Record<string, unknown>): string[] {
   return Array.from(ids)
 }
 
-function toPlaylistRefs(playlistsResponse: Record<string, unknown>): SubsonicPlaylistRef[] {
-  const playlistsContainer = playlistsResponse.playlists as Record<string, unknown> | undefined
-  if (!playlistsContainer || typeof playlistsContainer !== 'object') return []
-
-  return asArray<Record<string, unknown>>(playlistsContainer.playlist)
-    .map((playlist) => {
-      const id = toTrimmedText(playlist.id)
-      if (!id) return null
-      return {
-        id,
-        name: toTrimmedText(playlist.name) ?? `Playlist ${id}`
-      }
-    })
-    .filter((playlist): playlist is SubsonicPlaylistRef => playlist !== null)
-}
-
 function toPlaylistTracks(sourceId: number, playlistResponse: Record<string, unknown>): SubsonicPlaylistTrack[] {
   const playlistContainer = playlistResponse.playlist as Record<string, unknown> | undefined
   if (!playlistContainer || typeof playlistContainer !== 'object') return []
@@ -927,42 +889,6 @@ export async function writeSubsonicUserState(config: SubsonicConnectionConfig, i
   if (!validProviderValue(field, value)) throw new Error('Invalid server value.')
   await requestSubsonicJson(config, field === 'favorite' ? (value ? 'star' : 'unstar') : 'setRating',
     { id, ...(field === 'rating' ? { rating: value === null ? 0 : Number(value) } : {}) }, { ...options, retries: 0 })
-}
-
-export async function syncSubsonicPlaylists(
-  sourceId: number,
-  config: SubsonicConnectionConfig,
-  options: SubsonicPlaylistSyncOptions = {}
-): Promise<SubsonicPlaylist[]> {
-  const playlistsResponse = await requestSubsonicJson(config, 'getPlaylists', {}, options)
-  const playlistRefs = toPlaylistRefs(playlistsResponse)
-  options.onProgress?.({
-    phase: 'playlists',
-    current: 0,
-    total: playlistRefs.length,
-    detail: null
-  })
-
-  let playlistsProcessed = 0
-  return runWithConcurrency(
-    playlistRefs,
-    MAX_SYNC_CONCURRENCY,
-    async (playlistRef): Promise<SubsonicPlaylist> => {
-      const playlistResponse = await requestSubsonicJson(config, 'getPlaylist', { id: playlistRef.id }, options)
-      playlistsProcessed += 1
-      options.onProgress?.({
-        phase: 'playlists',
-        current: playlistsProcessed,
-        total: playlistRefs.length,
-        detail: playlistRef.id
-      })
-      return {
-        source_playlist_id: playlistRef.id,
-        name: playlistRef.name,
-        tracks: toPlaylistTracks(sourceId, playlistResponse)
-      }
-    }
-  )
 }
 
 export function buildSubsonicStreamUrl(

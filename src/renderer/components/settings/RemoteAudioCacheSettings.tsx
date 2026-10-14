@@ -28,7 +28,7 @@ export default function RemoteAudioCacheSettings() {
   return (
     <section className="settings-card">
       <h4 className="settings-card-label">Remote audio cache</h4>
-      <p className="settings-note">Keep recently played audio for faster replay. Available for Subsonic, Navidrome and Jellyfin.</p>
+      <p className="settings-note">Keep recently played audio for faster replay. Available for Plex, Jellyfin, Subsonic and Navidrome.</p>
       <label className="settings-field">
         <span className="settings-field-label">Cache limit</span>
         <select

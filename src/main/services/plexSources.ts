@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type * as Library from './library'
 import type { PlexConnectInput, PlexLibraryChoice, PlexSignInStatus, PlexSource, PlexStatusSnapshot } from '../../types/plex'
 import { beginPlexSignIn, connectPlexServer, createPlexDevice, discoverPlexServers, fetchPlexArtwork,
-  fetchPlexCatalog, listPlexLibraries, pollPlexSignIn, PlexRequestError,
+  fetchPlexCatalog, isPlexAccessFailure, listPlexLibraries, pollPlexSignIn, PlexAccessError, PlexRequestError,
   type PlexAccount, type PlexCredentials, type PlexDevice, type PlexRequestOptions, type PlexServer } from './plex'
 
 interface SignIn {
@@ -12,7 +12,7 @@ interface SignIn {
 }
 interface Options {
   library: Pick<typeof Library, 'listPlexSources' | 'getPlexSourceById' | 'savePlexSource' | 'updatePlexSource'
-    | 'deletePlexSource' | 'markPlexTracksAvailability' | 'upsertPlexTracks' | 'markMissingPlexTracksUnavailable' | 'cacheArtworkBuffer'>
+    | 'deletePlexSource' | 'markPlexTracksAvailability' | 'markPlexTracksUnreachable' | 'restorePlexTracksFromSourceUnavailable' | 'upsertPlexTracks' | 'markMissingPlexTracksUnavailable' | 'cacheArtworkBuffer'>
   encrypt: (value: string) => string
   decrypt: (value: string) => string
   openExternal: (url: string) => Promise<void>
@@ -140,14 +140,14 @@ export class PlexSources {
       // Shared renewal is independent of a single seek/prefetch cancellation.
       pending = (async () => {
         let stored: PlexCredentials
-        try { stored = JSON.parse(this.options.decrypt(source.secret_encrypted)) } catch { throw new Error('Plex sign-in could not be read. Reconnect this source.') }
+        try { stored = JSON.parse(this.options.decrypt(source.secret_encrypted)) } catch { throw new PlexAccessError('Plex sign-in could not be read. Reconnect this source.') }
         const options = { ...this.options.request }
         // Traditional account tokens stay valid until revoked. Refresh only the
         // server resource token after a rejection; revoked accounts need sign-in.
         if (force) {
           const servers = await discoverPlexServers(stored.account, options)
           const server = servers.find(item => item.id === source.server_id)
-          if (!server) throw new Error('This Plex account no longer has access to the server. Reconnect this source.')
+          if (!server) throw new PlexAccessError('This Plex account no longer has access to the server. Reconnect this source.')
           stored.server = server
         }
         let credentials: PlexCredentials
@@ -156,7 +156,7 @@ export class PlexSources {
           if (force) throw error
           const servers = await discoverPlexServers(stored.account, options)
           const server = servers.find(item => item.id === source.server_id)
-          if (!server) throw new Error('This Plex account no longer has access to the server.')
+          if (!server) throw new PlexAccessError('This Plex account no longer has access to the server.')
           credentials = await connectPlexServer(stored.account, server, options)
         }
         const latest = this.options.library.getPlexSourceById(id)
@@ -227,8 +227,15 @@ export class PlexSources {
     if (!source || source.enabled !== 1) return
     const key = this.options.beginLibrarySync(requestedKey)
     let success = false
+    let connected = false
     try {
       this.progress.set(id, { phase: 'connecting', activity: 'Connecting to Plex…', current: null, total: null, detail: null, updatedAt: Date.now() }); this.changed()
+      // The Plex counterpart of the Subsonic/Jellyfin ping. Cached credentials and the public
+      // /identity check don't prove the server still accepts this sign-in; an authenticated
+      // request does.
+      await this.withCredentials(id, signal, credentials => listPlexLibraries(credentials, { ...this.options.request, signal }))
+      connected = true
+      await this.options.library.restorePlexTracksFromSourceUnavailable(id)
       const tracks = await this.withCredentials(id, signal, credentials => fetchPlexCatalog(id, credentials, source.library_id,
         { ...this.options.request, signal, onProgress: (current, total) => {
           this.progress.set(id, { phase: 'items', activity: 'Loading music…', current, total, detail: null, updatedAt: Date.now() }); this.changed()
@@ -260,8 +267,16 @@ export class PlexSources {
       // Playlist errors have their own status and do not fail the music scan.
       await this.options.afterCatalogSync?.(id).catch(() => {})
     } catch (error) {
-      if (!signal.aborted) await this.options.library.updatePlexSource(id, { last_status: 'error', last_checked_at: Date.now(),
-        last_error: error instanceof Error ? error.message : 'Plex refresh failed.' })
+      if (!signal.aborted) {
+        // Match Subsonic/Jellyfin: a failed connection check leaves the tracks listed but unplayable.
+        // After it passes, only a lost sign-in does. One failing catalog request doesn't mean the
+        // server can't stream.
+        if (!connected || isPlexAccessFailure(error)) {
+          await this.options.library.markPlexTracksUnreachable(id)
+        }
+        await this.options.library.updatePlexSource(id, { last_status: 'error', last_checked_at: Date.now(),
+          last_error: error instanceof Error ? error.message : 'Plex refresh failed.' })
+      }
       throw error
     } finally { await this.options.finishLibrarySync(key, success) }
   }

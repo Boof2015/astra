@@ -374,6 +374,19 @@ export async function markPlexTracksAvailability(id: number, available: boolean,
     [available ? 1 : 0, available ? null : reason, Date.now(), id])
   await saveDatabase()
 }
+/** An outage hides only playable tracks, keeping other reasons, so recovery can't revive a removed track. */
+export async function markPlexTracksUnreachable(id: number): Promise<void> {
+  const changes = db?.run(`UPDATE tracks SET is_available = 0, availability_reason = 'source_unavailable', modified_at = ?
+    WHERE source_type = 'plex' AND source_id = ? AND is_available = 1`, [Date.now(), id]).changes ?? 0
+  if (changes > 0) await saveDatabase()
+}
+/** Undo an outage once the server answers again. Missing, disabled and deleted tracks stay unavailable. */
+export async function restorePlexTracksFromSourceUnavailable(id: number): Promise<void> {
+  const changes = db?.run(`UPDATE tracks SET is_available = 1, availability_reason = NULL, modified_at = ?
+    WHERE source_type = 'plex' AND source_id = ? AND is_available = 0 AND availability_reason = 'source_unavailable'`,
+  [Date.now(), id]).changes ?? 0
+  if (changes > 0) await saveDatabase()
+}
 export async function markMissingPlexTracksUnavailable(id: number, seen: Set<string>): Promise<void> {
   if (!db) return
   const rows = db.all<{ path: string; source_track_id: string }>("SELECT path, source_track_id FROM tracks WHERE source_type = 'plex' AND source_id = ?", [id])
@@ -4060,6 +4073,30 @@ export async function markSubsonicTracksAvailability(
   return Number.isFinite(count) ? count : 0
 }
 
+/** An outage hides only playable tracks, keeping other reasons, so recovery can't revive a removed track. */
+export async function markSubsonicTracksUnreachable(
+  sourceId: number,
+  options: { persist?: boolean } = {}
+): Promise<number> {
+  if (!db) return 0
+
+  const result = db.run(
+    `UPDATE tracks
+     SET is_available = 0,
+         availability_reason = 'source_unavailable',
+         modified_at = ?
+     WHERE source_type = 'subsonic'
+       AND source_id = ?
+       AND is_available = 1`,
+    [Date.now(), sourceId]
+  )
+  const count = result.changes
+  if (options.persist !== false && count > 0) {
+    await saveDatabase()
+  }
+  return Number.isFinite(count) ? count : 0
+}
+
 export async function restoreSubsonicTracksFromSourceUnavailable(
   sourceId: number,
   options: { persist?: boolean } = {}
@@ -4559,6 +4596,30 @@ export async function markJellyfinTracksAvailability(
          modified_at = ?
      WHERE source_type = 'jellyfin' AND source_id = ?`,
     [isAvailable ? 1 : 0, isAvailable ? null : reason, Date.now(), sourceId]
+  )
+  const count = result.changes
+  if (options.persist !== false && count > 0) {
+    await saveDatabase()
+  }
+  return Number.isFinite(count) ? count : 0
+}
+
+/** An outage hides only playable tracks, keeping other reasons, so recovery can't revive a removed track. */
+export async function markJellyfinTracksUnreachable(
+  sourceId: number,
+  options: { persist?: boolean } = {}
+): Promise<number> {
+  if (!db) return 0
+
+  const result = db.run(
+    `UPDATE tracks
+     SET is_available = 0,
+         availability_reason = 'source_unavailable',
+         modified_at = ?
+     WHERE source_type = 'jellyfin'
+       AND source_id = ?
+       AND is_available = 1`,
+    [Date.now(), sourceId]
   )
   const count = result.changes
   if (options.persist !== false && count > 0) {

@@ -58,6 +58,10 @@
   --accent-text: #bae6fd;
   --accent-text-strong: #e0f2fe;
 
+  /* Status: needs attention (offline, sign-in expired, pending conflicts).
+     Amber matches the existing hardcoded warning chips; light tone below. */
+  --warning: #fbbf24;
+
   /* Spacing */
   --titlebar-height: 40px;
   --now-playing-height: 112px;
@@ -15798,6 +15802,10 @@ body::after {
   background: var(--transport-center-bg, #0a0a0a);
   border-left: 1px solid var(--transport-divider, rgba(var(--tint), 0.06));
   border-right: 1px solid var(--transport-divider, rgba(var(--tint), 0.06));
+}
+
+html[data-theme-tone="light"] {
+  --warning: #b45309;
 }
 
 html[data-theme-tone="light"] .transport-center {

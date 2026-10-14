@@ -6,7 +6,7 @@ import type { PlexSourceRow } from './library.ts'
 type Options = ConstructorParameters<typeof PlexSources>[0]
 function harness() {
   const rows = new Map<number, PlexSourceRow>()
-  const commits: unknown[] = [], missing: unknown[] = [], opened: string[] = [], finishes: boolean[] = []
+  const commits: unknown[] = [], missing: unknown[] = [], opened: string[] = [], finishes: boolean[] = [], availability: unknown[] = [], restored: number[] = []
   const mutations = { brokenCatalog: false, pending: true, revokedAccount: false, rejectServer: false, failArtwork: false,
     serverToken: 'server-token', shared: false }
   let jwtSignIn = false
@@ -24,7 +24,9 @@ function harness() {
       },
       updatePlexSource: async (id, patch) => { const row = rows.get(id)!; Object.assign(row, patch); return publicRow(row) },
       deletePlexSource: async id => { rows.delete(id) },
-      markPlexTracksAvailability: async () => {},
+      markPlexTracksAvailability: async (id, available, reason) => { availability.push([id, available, reason]) },
+      markPlexTracksUnreachable: async id => { availability.push([id, false, 'source_unavailable']) },
+      restorePlexTracksFromSourceUnavailable: async id => { restored.push(id) },
       upsertPlexTracks: async (_id, tracks) => { commits.push(tracks); return { inserted: tracks.length, updated: 0 } },
       markMissingPlexTracksUnavailable: async (_id, ids) => { missing.push([...ids]) },
       cacheArtworkBuffer: async () => 'hash'
@@ -69,7 +71,7 @@ function harness() {
     const source = await service.connect(10, { signInId: started.id, serverId: 'server', libraryId: libraries[0].id })
     return { started, ready, source }
   }
-  return { service, connect, rows, commits, missing, opened, finishes, mutations, requests, options }
+  return { service, connect, rows, commits, missing, opened, finishes, mutations, requests, options, availability, restored }
 }
 
 test('Plex sign-in sessions are renderer-owned, cancellable and public responses contain no credentials', async t => {
@@ -127,6 +129,8 @@ test('Plex incomplete sync preserves existing catalog and only successful catalo
   h.mutations.brokenCatalog = true
   await assert.rejects(h.service.sync(source.id), /incomplete/)
   assert.equal(h.commits.length, 0); assert.equal(h.missing.length, 0)
+  // The server answered, so its tracks stay playable.
+  assert.deepEqual(h.availability, [])
   assert.equal(h.service.status().sources[0].status, 'error')
   h.mutations.brokenCatalog = false
   await Promise.all([h.service.sync(source.id), h.service.sync(source.id)])
@@ -182,16 +186,92 @@ test('Plex revoked account asks for sign-in without committing a partial catalog
   await assert.rejects(h.service.sync(source.id), /Sign in to Plex again/)
   assert.equal(h.requests.filter(path => path.endsWith('/resources')).length, 2)
   assert.equal(h.commits.length, 0); assert.equal(h.missing.length, 0)
+  assert.deepEqual(h.availability, [[source.id, false, 'source_unavailable']])
+})
+
+test('Plex unreachable server marks its tracks unavailable', async t => {
+  const h = harness(); t.after(() => h.service.dispose())
+  const { source } = await h.connect()
+  h.service.dispose()
+  const offline = new PlexSources({ ...h.options, request: { fetch: (async () => { throw new TypeError('fetch failed') }) as typeof fetch } })
+  t.after(() => offline.dispose())
+  await assert.rejects(offline.sync(source.id), /reach|unavailable/)
+  assert.deepEqual(h.availability, [[source.id, false, 'source_unavailable']])
+  assert.deepEqual(h.restored, [])
+  assert.equal(h.rows.get(source.id)!.last_status, 'error')
+  assert.equal(h.commits.length, 0)
+})
+
+for (const kind of ['invalid JSON', 'HTTP 500'] as const) {
+  test(`Plex catalog ${kind} after a passing connection check keeps tracks playable`, async t => {
+    const h = harness(); t.after(() => h.service.dispose())
+    const { source } = await h.connect()
+    const online = h.options.request!.fetch!
+    h.options.request!.fetch = (async (input: any, init: RequestInit = {}) => new URL(String(input)).pathname.endsWith('/all')
+      ? new Response(kind === 'invalid JSON' ? '<html>bad catalog</html>' : null, { status: kind === 'invalid JSON' ? 200 : 500 })
+      : online(input, init)) as typeof fetch
+    await assert.rejects(h.service.sync(source.id))
+    assert.deepEqual(h.availability, [])
+    assert.deepEqual(h.restored, [source.id])
+    assert.equal(h.rows.get(source.id)!.last_status, 'error')
+  })
+}
+
+test('Plex lost server access marks tracks unavailable even with cached credentials', async t => {
+  const h = harness(); t.after(() => h.service.dispose())
+  const { source } = await h.connect()
+  const online = h.options.request!.fetch!
+  // Cached credentials skip discovery; the server then refuses them and discovery no longer lists it.
+  h.mutations.rejectServer = true
+  h.options.request!.fetch = (async (input: any, init: RequestInit = {}) => new URL(String(input)).pathname.endsWith('/resources')
+    ? new Response('[]', { headers: { 'Content-Type': 'application/json' } }) : online(input, init)) as typeof fetch
+  await assert.rejects(h.service.sync(source.id), /no longer has access/)
+  assert.deepEqual(h.availability, [[source.id, false, 'source_unavailable']])
+})
+
+test('Plex access lost during the catalog marks tracks unavailable', async t => {
+  const h = harness(); t.after(() => h.service.dispose())
+  const { source } = await h.connect()
+  const online = h.options.request!.fetch!
+  h.options.request!.fetch = (async (input: any, init: RequestInit = {}) => {
+    const path = new URL(String(input)).pathname
+    if (path.endsWith('/all')) return new Response(null, { status: 401 })
+    if (path.endsWith('/resources')) return new Response('[]', { headers: { 'Content-Type': 'application/json' } })
+    return online(input, init)
+  }) as typeof fetch
+  await assert.rejects(h.service.sync(source.id), /no longer has access/)
+  assert.deepEqual(h.restored, [source.id])
+  assert.deepEqual(h.availability, [[source.id, false, 'source_unavailable']])
+})
+
+test('Plex reconnection restores outage-only tracks even if the catalog then fails', async t => {
+  const h = harness(); t.after(() => h.service.dispose())
+  const { source } = await h.connect()
+  const online = h.options.request!.fetch!
+  h.service.dispose()
+  const service = new PlexSources(h.options); t.after(() => service.dispose())
+  h.options.request!.fetch = (async () => { throw new TypeError('fetch failed') }) as typeof fetch
+  await assert.rejects(service.sync(source.id), /reach|unavailable/)
+  assert.deepEqual(h.availability, [[source.id, false, 'source_unavailable']])
+  h.options.request!.fetch = online
+  h.mutations.brokenCatalog = true
+  await assert.rejects(service.sync(source.id), /incomplete/)
+  assert.deepEqual(h.restored, [source.id])
+  assert.equal(h.availability.length, 1)
 })
 
 test('Plex persistent server rejection retries authorization only once', async t => {
   const h = harness(); t.after(() => h.service.dispose())
   const { source } = await h.connect()
   h.mutations.rejectServer = true
+  const checks = h.requests.filter(path => path === '/library/sections').length
   await assert.rejects(h.service.sync(source.id), /Sign in to Plex again/)
   assert.equal(h.requests.filter(path => path.endsWith('/resources')).length, 2)
-  assert.equal(h.requests.filter(path => path.endsWith('/all')).length, 2)
+  // The connection check is refused before and after renewing, so the catalog is never requested.
+  assert.equal(h.requests.filter(path => path === '/library/sections').length - checks, 2)
+  assert.equal(h.requests.filter(path => path.endsWith('/all')).length, 0)
   assert.equal(h.commits.length, 0); assert.equal(h.missing.length, 0)
+  assert.deepEqual(h.availability, [[source.id, false, 'source_unavailable']])
 })
 
 test('Plex reconnect must preserve account, server and Music library identity', async t => {

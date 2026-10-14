@@ -12,7 +12,6 @@ export type SubsonicSyncPhase =
   | 'artists'
   | 'albums'
   | 'tracks'
-  | 'playlists'
   | 'artwork'
   | 'finalizing'
 

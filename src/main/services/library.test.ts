@@ -8,6 +8,7 @@ import { createRequire } from 'module'
 import { createHash } from 'node:crypto'
 import * as library from './library.ts'
 import { ProviderStateSync } from './providerStateSync.ts'
+import { PlexSources } from './plexSources.ts'
 import { fetchPlexUserStates, writePlexRating, type PlexCredentials } from './plex.ts'
 import type { ProviderSyncRef, ProviderSyncField, ProviderSyncValue, ProviderUserState } from '../../types/providerSync.ts'
 import { resolveAlbumFixtureTracks, type ResolveAlbumFixtureTrack } from '../../shared/library/__fixtures__/resolveAlbums.ts'
@@ -6323,6 +6324,80 @@ test('Plex provider occurrence IDs preserve duplicate selection and unavailable-
   assert.equal(after.tracks[2].path, 'plex://99/20')
   await library.applyRemotePlaylists(ref, [{ ...snapshot, tracks: [snapshot.tracks[1]] }])
   assert.equal(library.getRemotePlaylistLocal(playlistId)!.tracks[0].entryId, before.tracks[1].entryId)
+})
+
+for (const provider of ['subsonic', 'jellyfin'] as const) {
+  // Replays the library calls runSubsonicSync / syncOneJellyfinSource make: failed ping, passing ping, failed catalog.
+  test(`${provider} outage recovery restores only outage-hidden tracks, even when the catalog then fails`, async t => {
+    await setupEmptyLibrary(t)
+    const input = { name: 'Server', base_url: `https://${provider}.test`, username: 'user', secret_encrypted: 'secret', enabled: 1 }
+    const source = provider === 'subsonic' ? await library.createSubsonicSource(input) : await library.createJellyfinSource(input)
+    const present = `${provider}://${source.id}/track/here`, removed = `${provider}://${source.id}/track/gone`
+    const tracks = [
+      createRemoteTrack({ path: present, source_track_id: 'here', title: 'Still here', artist: 'Artist', album: 'Album' }),
+      createRemoteTrack({ path: removed, source_track_id: 'gone', title: 'Removed', artist: 'Artist', album: 'Album' })
+    ]
+    const calls = provider === 'subsonic' ? {
+      upsert: () => library.upsertSubsonicTracks(source.id, tracks),
+      markMissing: () => library.markMissingSubsonicTracksUnavailable(source.id, new Set(['here'])),
+      unreachable: () => library.markSubsonicTracksUnreachable(source.id),
+      restore: () => library.restoreSubsonicTracksFromSourceUnavailable(source.id)
+    } : {
+      upsert: () => library.upsertJellyfinTracks(source.id, tracks),
+      markMissing: () => library.markMissingJellyfinTracksUnavailable(source.id, new Set(['here'])),
+      unreachable: () => library.markJellyfinTracksUnreachable(source.id),
+      restore: () => library.restoreJellyfinTracksFromSourceUnavailable(source.id)
+    }
+    const state = (path: string) => { const track = library.getTrackByPath(path)!; return [track.is_available, track.availability_reason] }
+    await calls.upsert()
+    await calls.markMissing()
+    assert.deepEqual(state(removed), [0, 'missing_upstream'])
+
+    await calls.unreachable()
+    assert.deepEqual(state(present), [0, 'source_unavailable'])
+    assert.deepEqual(state(removed), [0, 'missing_upstream'], 'an outage keeps the earlier reason')
+
+    await calls.restore()
+    assert.deepEqual(state(present), [1, null], 'a passing ping restores outage-hidden tracks')
+    assert.deepEqual(state(removed), [0, 'missing_upstream'], 'reaching the server does not prove a removed track is back')
+  })
+}
+
+test('Plex outage recovery restores only outage-hidden tracks, even when the catalog then fails', async t => {
+  await setupEmptyLibrary(t)
+  const credentials: PlexCredentials = {
+    account: { clientId: 'client', token: 'account-token', accountId: 'account', username: 'listener' },
+    server: { id: 'server', name: 'Home', owned: true, token: 'server-token', connections: [{ uri: 'https://plex.test', local: true, relay: false }] },
+    baseUrl: 'https://plex.test'
+  }
+  const source = await library.savePlexSource({ name: 'Music', base_url: credentials.baseUrl, username: 'listener', account_id: 'account',
+    server_id: 'server', library_id: '2', library_name: 'Music', secret_encrypted: JSON.stringify(credentials) })
+  const present = `plex://${source.id}/10`, removed = `plex://${source.id}/20`
+  await library.upsertPlexTracks(source.id, [
+    createRemoteTrack({ path: present, source_track_id: '10', title: 'Still here', artist: 'Artist', album: 'Album' }),
+    createRemoteTrack({ path: removed, source_track_id: '20', title: 'Removed', artist: 'Artist', album: 'Album' })
+  ])
+  await library.markMissingPlexTracksUnavailable(source.id, new Set(['10']))
+  let server: 'offline' | 'incomplete catalog' = 'offline'
+  const plex = new PlexSources({ library, encrypt: value => value, decrypt: value => value, openExternal: async () => {}, changed: () => {},
+    beginLibrarySync: () => 'sync', finishLibrarySync: async () => {},
+    request: { fetch: async url => {
+      if (server === 'offline') throw new TypeError('fetch failed')
+      if (url.pathname === '/identity') return Response.json({ MediaContainer: { machineIdentifier: 'server' } })
+      if (url.pathname === '/library/sections') return Response.json({ MediaContainer: { Directory: [{ key: '2', title: 'Music', type: 'artist' }] } })
+      return Response.json({ MediaContainer: { totalSize: 10, size: 0 } })
+    } } })
+  t.after(() => plex.dispose())
+  const state = (path: string) => { const track = library.getTrackByPath(path)!; return [track.is_available, track.availability_reason] }
+
+  await assert.rejects(plex.sync(source.id))
+  assert.deepEqual(state(present), [0, 'source_unavailable'])
+  assert.deepEqual(state(removed), [0, 'missing_upstream'], 'an outage keeps the earlier reason')
+
+  server = 'incomplete catalog'
+  await assert.rejects(plex.sync(source.id), /incomplete/)
+  assert.deepEqual(state(present), [1, null], 'reaching the server again restores outage-hidden tracks')
+  assert.deepEqual(state(removed), [0, 'missing_upstream'], 'reaching the server does not prove a removed track is back')
 })
 
 test('Plex rating sync persists half-stars and opt-in per library while favorites remain independent', async t => {

@@ -37,6 +37,12 @@ export class PlexRequestError extends Error {
     ? `Plex rejected authorization (${status}). Sign in to Plex again.`
     : `Plex request failed (${status}).`) { super(message); this.status = status }
 }
+/** The account lost access to this server, or its stored sign-in can't be used. */
+export class PlexAccessError extends Error {}
+/** Plex refused this sign-in. The tracks can't play until the user signs in again. */
+export function isPlexAccessFailure(error: unknown): boolean {
+  return error instanceof PlexAccessError || (error instanceof PlexRequestError && [401, 403, 498].includes(error.status))
+}
 export function plexHeaders(device: Pick<PlexDevice, 'clientId'>, token?: string): Record<string, string> {
   return { ...buildProviderRequestHeaders(), Accept: 'application/json', 'X-Plex-Client-Identifier': device.clientId,
     'X-Plex-Product': 'Astra', 'X-Plex-Version': PROVIDER_CLIENT_VERSION, 'X-Plex-Platform': process.platform,

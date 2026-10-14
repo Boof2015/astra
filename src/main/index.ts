@@ -1473,7 +1473,10 @@ const plexSources: PlexSources = new PlexSources({
   changed: status => sendToWindow(mainWindow, 'plex:status', status),
   beginLibrarySync: key => latestLibrarySyncCoordinator.beginOperation(key),
   finishLibrarySync: (key, success) => finalizeLatestLibrarySyncSession(key, success, 'Plex sync'),
-  afterCatalogSync: id => remotePlaylists.refresh(library.normalizeRemotePlaylistRef({ provider: 'plex', sourceId: id }))
+  afterCatalogSync: async id => {
+    await remotePlaylists.refresh(library.normalizeRemotePlaylistRef({ provider: 'plex', sourceId: id }))
+      .finally(() => { void providerStateSync.refresh({ provider: 'plex', sourceId: id }).catch(() => {}) })
+  }
 })
 let plexSyncTimer: ReturnType<typeof setInterval> | null = null
 
@@ -4408,7 +4411,7 @@ async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): 
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to reach Subsonic source.'
-    await library.markSubsonicTracksAvailability(sourceId, false, 'source_unavailable', { persist: false })
+    await library.markSubsonicTracksUnreachable(sourceId, { persist: false })
     await library.updateSubsonicSourceStatus(
       sourceId,
       {
@@ -4647,7 +4650,7 @@ async function syncOneJellyfinSource(sourceId: number, syncSessionKey: string): 
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to reach Jellyfin source.'
-    await library.markJellyfinTracksAvailability(sourceId, false, 'source_unavailable', { persist: false })
+    await library.markJellyfinTracksUnreachable(sourceId, { persist: false })
     await library.updateJellyfinSourceStatus(
       sourceId,
       {
@@ -4723,6 +4726,7 @@ async function syncOneJellyfinSource(sourceId: number, syncSessionKey: string): 
       { persist: false }
     )
     await remotePlaylists.refresh({ provider: 'jellyfin', sourceId }).catch(() => {})
+    void providerStateSync.refresh({ provider: 'jellyfin', sourceId }).catch(() => {})
     await library.updateJellyfinSourceStatus(
       sourceId,
       {
@@ -6867,6 +6871,7 @@ ipcMain.handle('subsonic:createSource', async (_event, rawInput: SubsonicSourceC
   }
 
   broadcastSubsonicStatus(refreshSubsonicStatusCache(false))
+  mainWindow?.webContents.send('remote-playlists:changed')
   return toSubsonicSourcePayload(created)
 })
 
@@ -6908,6 +6913,8 @@ ipcMain.handle('subsonic:updateSource', async (_event, sourceIdValue: unknown, r
   }
 
   broadcastSubsonicStatus(refreshSubsonicStatusCache(false))
+  // Enabling, disabling or new credentials change which playlist destinations are usable.
+  mainWindow?.webContents.send('remote-playlists:changed')
   return toSubsonicSourcePayload(updated)
 })
 
@@ -6920,6 +6927,7 @@ ipcMain.handle('subsonic:deleteSource', async (_event, sourceIdValue: unknown, p
   await library.deleteSubsonicSource(sourceId, purgeTracks)
   clearSubsonicSyncProgress(sourceId)
   broadcastSubsonicStatus(refreshSubsonicStatusCache(false))
+  mainWindow?.webContents.send('remote-playlists:changed')
 })
 
 ipcMain.handle('subsonic:testSource', async (_event, rawInput: SubsonicSourceTestInput): Promise<SubsonicSourceTestResult> => {
@@ -6981,7 +6989,11 @@ ipcMain.handle('plex:beginSignIn', event => plexSources.begin(nativeRemoteOwner(
 ipcMain.handle('plex:pollSignIn', (event, id: string) => plexSources.poll(nativeRemoteOwner(event), id))
 ipcMain.handle('plex:cancelSignIn', (event, id: string) => plexSources.cancel(nativeRemoteOwner(event), id))
 ipcMain.handle('plex:libraries', (event, id: string, serverId: string) => plexSources.libraries(nativeRemoteOwner(event), id, serverId))
-ipcMain.handle('plex:connect', (event, input: PlexConnectInput) => plexSources.connect(nativeRemoteOwner(event), input))
+ipcMain.handle('plex:connect', async (event, input: PlexConnectInput) => {
+  const source = await plexSources.connect(nativeRemoteOwner(event), input)
+  mainWindow?.webContents.send('remote-playlists:changed')
+  return source
+})
 ipcMain.handle('plex:listSources', () => library.listPlexSources())
 ipcMain.handle('plex:getStatus', () => plexSources.status())
 ipcMain.handle('plex:updateSource', async (_event, id: number, input: { name?: string; enabled?: boolean }) => {
@@ -7022,6 +7034,7 @@ ipcMain.handle('jellyfin:createSource', async (_event, rawInput: JellyfinSourceC
   clearJellyfinAuthContext(created.id)
 
   broadcastJellyfinStatus(refreshJellyfinStatusCache(false))
+  mainWindow?.webContents.send('remote-playlists:changed')
   return toJellyfinSourcePayload(created)
 })
 
@@ -7064,6 +7077,8 @@ ipcMain.handle('jellyfin:updateSource', async (_event, sourceIdValue: unknown, r
   }
 
   broadcastJellyfinStatus(refreshJellyfinStatusCache(false))
+  // Enabling, disabling or new credentials change which playlist destinations are usable.
+  mainWindow?.webContents.send('remote-playlists:changed')
   return toJellyfinSourcePayload(updated)
 })
 
@@ -7077,6 +7092,7 @@ ipcMain.handle('jellyfin:deleteSource', async (_event, sourceIdValue: unknown, p
   clearJellyfinAuthContext(sourceId)
   clearJellyfinSyncProgress(sourceId)
   broadcastJellyfinStatus(refreshJellyfinStatusCache(false))
+  mainWindow?.webContents.send('remote-playlists:changed')
 })
 
 ipcMain.handle('jellyfin:testSource', async (_event, rawInput: JellyfinSourceTestInput): Promise<JellyfinSourceTestResult> => {
@@ -8022,8 +8038,9 @@ const automaticStreamingQuality = new AutomaticStreamingQuality()
 const streamingQualityPreferences = new StreamingQualityPreferences({
   read: () => library.getAppMeta(STREAMING_QUALITY_SETTINGS_KEY),
   write: value => library.setAppMeta(STREAMING_QUALITY_SETTINGS_KEY, value),
-  sourceExists: source => !!(source.provider === 'subsonic'
-    ? library.getSubsonicSourceById(source.sourceId) : library.getJellyfinSourceById(source.sourceId)),
+  sourceExists: source => !!(source.provider === 'subsonic' ? library.getSubsonicSourceById(source.sourceId)
+    : source.provider === 'plex' ? library.getPlexSourceById(source.sourceId)
+      : library.getJellyfinSourceById(source.sourceId)),
   changed: (settings, previous) => {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.webContents.isDestroyed()) window.webContents.send('audio:streamingQualityChanged', settings, previous)
