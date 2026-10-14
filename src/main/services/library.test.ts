@@ -5,10 +5,11 @@ import { join, relative } from 'path'
 import test from 'node:test'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
+import { createHash } from 'node:crypto'
 import * as library from './library.ts'
 import { ProviderStateSync } from './providerStateSync.ts'
 import { fetchPlexUserStates, writePlexRating, type PlexCredentials } from './plex.ts'
-import type { ProviderSyncValue, ProviderUserState } from '../../types/providerSync.ts'
+import type { ProviderSyncRef, ProviderSyncField, ProviderSyncValue, ProviderUserState } from '../../types/providerSync.ts'
 import { resolveAlbumFixtureTracks, type ResolveAlbumFixtureTrack } from '../../shared/library/__fixtures__/resolveAlbums.ts'
 import type { StatsTransferTrackTuple } from '../../shared/stats/statsTransfer.ts'
 import {
@@ -5820,6 +5821,212 @@ test('local favorites reconcile and sync through unique matches on enabled serve
   await service.refresh(ref)
   assert.deepEqual(writes, [true, false, false])
   assert.deepEqual(library.getFavoritePaths(), [localPath])
+})
+
+/** Real temporary SQLite + sync coordinator, with entirely in-memory servers. */
+async function setupProviderMutationAudit(t: test.TestContext) {
+  await setupEmptyLibrary(t)
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('Network access is forbidden in the synthetic sync audit') })
+  const targets: { ref: ProviderSyncRef; path: string; title: string; optedIn: boolean;
+    server: ProviderUserState; available: boolean; reads: number }[] = []
+  for (const provider of ['subsonic', 'jellyfin', 'plex'] as const) {
+    for (const optedIn of [true, false]) {
+      const name = `${provider}-${optedIn ? 'on' : 'off'}`
+      const input = { name, base_url: `https://${name}.invalid`, username: 'fixture', secret_encrypted: 'fixture', enabled: 1 }
+      const source = provider === 'plex'
+        ? await library.savePlexSource({ ...input, account_id: 'fixture', server_id: name, library_id: '1', library_name: 'Music' })
+        : provider === 'jellyfin' ? await library.createJellyfinSource(input) : await library.createSubsonicSource(input)
+      const path = provider === 'subsonic' ? `subsonic://${source.id}/track/123` : `${provider}://${source.id}/123`
+      const row = createRemoteTrack({ path, source_track_id: '123', title: name, artist: 'Fixture Artist', album: 'Fixture Album' })
+      if (provider === 'plex') await library.upsertPlexTracks(source.id, [row])
+      else if (provider === 'jellyfin') await library.upsertJellyfinTracks(source.id, [row])
+      else await library.upsertSubsonicTracks(source.id, [row])
+      targets.push({ ref: { provider, sourceId: source.id }, path, title: name, optedIn,
+        server: { favorite: false, rating: null }, available: true, reads: 0 })
+    }
+  }
+  const writes: { path: string; field: ProviderSyncField; value: ProviderSyncValue }[] = []
+  const service = new ProviderStateSync({
+    sources: () => targets.map(target => target.ref), fingerprint: ref => `${ref.provider}:${ref.sourceId}:fixture`,
+    setting: library.getProviderSyncSetting, setSetting: library.setProviderSyncSetting,
+    tracks: library.getProviderSyncTracks, track: (ref, path) => library.getProviderSyncTracks(ref, path)[0],
+    baselines: library.getProviderSyncBaselines, saveBaseline: library.saveProviderSyncBaseline,
+    persist: library.persistLibraryDatabase, changed: () => {},
+    applyLocal: async (path, field, value) => {
+      if (field === 'rating') await library.setTrackRatingForPaths([path], value as number | null)
+      else for (const linked of library.getProviderFavoritePaths(path)) {
+        if (value) await library.addFavorite(linked)
+        else await library.removeFavorite(linked)
+      }
+    },
+    client: async ref => {
+      const target = targets.find(target => target.ref.provider === ref.provider && target.ref.sourceId === ref.sourceId)!
+      assert.equal(target.optedIn, true, 'opted-out servers must receive no requests')
+      return {
+        read: async ids => {
+          target.reads++
+          assert.ok(!ids || ids.every(id => id === '123'))
+          return new Map(target.available ? [['123', { ...target.server }]] : [])
+        },
+        write: async (id, field, value) => {
+          assert.equal(id, '123')
+          writes.push({ path: target.path, field, value })
+          if (field === 'favorite') target.server.favorite = value as boolean
+          else target.server.rating = value as number | null
+        }
+      }
+    }
+  })
+  t.after(() => service.close())
+  const enable = async () => {
+    for (const target of targets.filter(target => target.optedIn)) {
+      const review = await service.review(target.ref)
+      await service.apply(review.token, Object.fromEntries(review.differences.map(row => [row.key, 'server'])))
+    }
+  }
+  const refresh = async () => { for (const target of targets) await service.refresh(target.ref) }
+  const imported = (rating: (provider: ProviderSyncRef['provider']) => number) => JSON.stringify({
+    v: 2, origins: [], plays: [],
+    tracks: targets.map(target => ['', '', target.title, 'Fixture Artist', 'Fixture Album', '']),
+    ratings: targets.map((target, i) => [i, rating(target.ref.provider), Date.now() + 1000]),
+    favorites: targets.map((_, i) => [i, 1000])
+  })
+  return { targets, writes, service, enable, refresh, imported }
+}
+
+test('synthetic sync audit: stats imports honor each server opt-in and field support without echoing changes', async t => {
+  const f = await setupProviderMutationAudit(t)
+  await f.enable()
+  const encoded = f.imported(provider => provider === 'subsonic' ? 4 : 4.5)
+  const result = await library.applyListeningStatsTransfer({ counts: encoded })
+  assert.equal(result.ratingsApplied, 6)
+  assert.equal(result.favoritesAdded, 6)
+  assert.deepEqual(f.writes, [], 'import is local; the regular refresh detects its changes')
+  await f.refresh()
+  assert.equal(f.writes.length, 4, 'Subsonic favorite/rating, Jellyfin favorite, Plex rating')
+  for (const target of f.targets) {
+    assert.equal(target.server.favorite, target.optedIn && target.ref.provider !== 'plex')
+    assert.equal(target.server.rating, target.optedIn && target.ref.provider !== 'jellyfin'
+      ? target.ref.provider === 'subsonic' ? 4 : 4.5 : null)
+    if (!target.optedIn) assert.equal(target.reads, 0)
+  }
+  assert.equal(library.getFavoritePaths().length, 6, 'unsupported Plex favorites stay local')
+  assert.equal(library.getTrackRatingEntries().length, 6, 'unsupported Jellyfin ratings stay local')
+  library.closeDatabase()
+  await library.initDatabase()
+  await library.applyListeningStatsTransfer({ counts: encoded })
+  await f.refresh()
+  assert.equal(f.writes.length, 4, 'persisted baselines and repeated import prevent duplicate writes')
+  for (const target of f.targets.filter(target => target.optedIn)) {
+    if (target.ref.provider === 'jellyfin') target.server.favorite = false
+    else target.server.rating = 2
+  }
+  await f.refresh()
+  await f.refresh()
+  assert.equal(f.writes.length, 4, 'incoming server changes must not echo back as outgoing edits')
+  for (const target of f.targets.filter(target => target.optedIn)) {
+    const state = library.getProviderSyncTracks(target.ref)[0]
+    if (target.ref.provider === 'jellyfin') assert.equal(state.favorite, false)
+    else assert.equal(state.rating, 2)
+  }
+})
+
+for (const conflict of [false, true]) test(`synthetic sync audit: global rating reset ${conflict ? 'preserves concurrent server edits' : 'clears only opted-in supported server ratings'}`, async t => {
+  const f = await setupProviderMutationAudit(t)
+  for (const target of f.targets) {
+    target.server.rating = target.ref.provider === 'subsonic' ? 4 : 4.5
+    await library.setTrackRatingForPaths([target.path], target.server.rating)
+    await library.addFavorite(target.path)
+    target.server.favorite = true
+  }
+  await library.setTrackRatingForPaths(['/fixture/local.flac'], 3.5)
+  await f.enable()
+  if (conflict) f.targets.find(target => target.optedIn && target.ref.provider === 'subsonic')!.server.rating = 5
+  const favoritePaths = library.getFavoritePaths()
+  assert.equal(await library.resetAllTrackRatings(), 7)
+  await f.refresh()
+  assert.deepEqual(library.getTrackRatingEntries(), [])
+  assert.deepEqual(library.getFavoritePaths(), favoritePaths)
+  assert.equal(f.writes.length, conflict ? 1 : 2)
+  assert.ok(f.writes.every(write => write.field === 'rating' && write.value === null))
+  for (const target of f.targets) {
+    const conflicting = conflict && target.optedIn && target.ref.provider === 'subsonic'
+    assert.equal(target.server.rating, conflicting ? 5 : target.optedIn && target.ref.provider !== 'jellyfin'
+      ? null : target.ref.provider === 'subsonic' ? 4 : 4.5)
+    assert.equal(f.service.status().find(status => status.provider === target.ref.provider && status.sourceId === target.ref.sourceId)!.conflicts,
+      conflicting ? 1 : 0)
+    if (!target.optedIn) assert.equal(target.reads, 0)
+  }
+  await f.refresh()
+  assert.equal(f.writes.length, conflict ? 1 : 2, 'a reset is acknowledged once')
+})
+
+test('synthetic sync audit: imported half-stars, missing tracks and disabling sync do not cause silent writes', async t => {
+  const f = await setupProviderMutationAudit(t)
+  await f.enable()
+  const navi = f.targets.find(target => target.optedIn && target.ref.provider === 'subsonic')!
+  const plex = f.targets.find(target => target.optedIn && target.ref.provider === 'plex')!
+  const jelly = f.targets.find(target => target.optedIn && target.ref.provider === 'jellyfin')!
+  await library.applyListeningStatsTransfer({ counts: f.imported(() => 4.5) })
+  plex.available = false
+  await f.service.disable(jelly.ref)
+  const jellyReads = jelly.reads
+  await f.refresh()
+  assert.deepEqual(f.writes, [{ path: navi.path, field: 'favorite', value: true }])
+  assert.equal(navi.server.rating, null, 'Subsonic must not silently round an imported half-star')
+  assert.equal(library.getProviderSyncTracks(navi.ref)[0].rating, 4.5)
+  assert.equal(f.service.status().find(status => status.provider === 'subsonic' && status.sourceId === navi.ref.sourceId)!.conflicts, 1)
+  assert.equal(library.getProviderSyncTracks(plex.ref)[0].rating, 4.5, 'missing server tracks must not clear imported values')
+  assert.deepEqual(plex.server, { favorite: false, rating: null })
+  assert.equal(jelly.reads, jellyReads, 'disabling before refresh prevents import from reaching that server')
+  assert.deepEqual(jelly.server, { favorite: false, rating: null })
+})
+
+test('synthetic sync audit: importing a local-file favorite updates unique matches only on enabled servers', async t => {
+  const dir = await setupEmptyLibrary(t)
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('Network access is forbidden in the synthetic sync audit') })
+  const localPath = '/fixture/local-song.flac'
+  withDirectLibraryDb(dir, db => db.prepare(`INSERT INTO tracks
+    (path,title,artist,album,duration,format,source_type,is_available,added_at,modified_at)
+    VALUES (?, 'Song', 'Artist', 'Album', 180, 'flac', 'local', 1, 1, 1)`).run(localPath))
+  const sources: ProviderSyncRef[] = []
+  for (const name of ['On', 'Off']) {
+    const source = await library.createSubsonicSource({ name, base_url: `https://${name.toLowerCase()}.invalid`, username: 'fixture', secret_encrypted: 'fixture', enabled: 1 })
+    await library.upsertSubsonicTracks(source.id, [createRemoteTrack({ path: `subsonic://${source.id}/track/a`, source_track_id: 'a', title: 'Song', artist: 'Artist', album: 'Album' })])
+    sources.push({ provider: 'subsonic' as const, sourceId: source.id })
+  }
+  const writes: ProviderSyncValue[] = []
+  let favorite = false
+  const service = new ProviderStateSync({ sources: () => sources, fingerprint: () => 'fixture',
+    setting: library.getProviderSyncSetting, setSetting: library.setProviderSyncSetting,
+    tracks: library.getProviderSyncTracks, track: (ref, path) => library.getProviderSyncTracks(ref, path)[0],
+    baselines: library.getProviderSyncBaselines, saveBaseline: library.saveProviderSyncBaseline,
+    persist: library.persistLibraryDatabase, changed: () => {},
+    applyLocal: async (path, field, value) => {
+      assert.equal(field, 'favorite')
+      for (const linked of library.getProviderFavoritePaths(path)) {
+        if (value) await library.addFavorite(linked)
+        else await library.removeFavorite(linked)
+      }
+    },
+    client: async ref => {
+      assert.deepEqual(ref, sources[0], 'opted-out matches receive no requests')
+      return { read: async () => new Map([['a', { favorite, rating: null }]]),
+        write: async (_id, field, value) => { assert.equal(field, 'favorite'); favorite = value as boolean; writes.push(value) } }
+    }
+  })
+  t.after(() => service.close())
+  const review = await service.review(sources[0])
+  await service.apply(review.token, {})
+  const hash = createHash('sha256').update(localPath).digest('hex').slice(0, 16)
+  const result = await library.applyListeningStatsTransfer({ counts: JSON.stringify({ v: 2,
+    tracks: [[hash, '', 'Song', 'Artist', 'Album', '']], origins: [], plays: [], ratings: [[0, 4.5, 1000]], favorites: [[0, 1000]] }) })
+  assert.equal(result.favoritesAdded, 1)
+  for (const ref of sources) await service.refresh(ref)
+  assert.deepEqual(writes, [true])
+  assert.deepEqual(new Set(library.getFavoritePaths()), new Set([localPath, `subsonic://${sources[0].sourceId}/track/a`]))
+  assert.equal(library.getTrackRatingEntries().find(entry => entry.track_path === localPath)!.rating, 4.5)
+  assert.equal(library.getProviderSyncTracks(sources[0])[0].rating, null, 'local-file ratings remain independent')
 })
 
 test('favorite matching does not guess between local copies or different releases', async t => {
