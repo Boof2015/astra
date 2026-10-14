@@ -486,11 +486,13 @@ async function runWithConcurrency<T, R>(
   return results
 }
 
+/** Resolves with the server's own name for itself (OpenSubsonic `type`, e.g. "navidrome") when it gives one. */
 export async function testSubsonicConnection(
   config: SubsonicConnectionConfig,
   options: SubsonicRequestOptions = {}
-): Promise<void> {
-  await requestSubsonicJson(config, 'ping', {}, options)
+): Promise<{ serverType: string | null }> {
+  const response = await requestSubsonicJson(config, 'ping', {}, options)
+  return { serverType: typeof response.type === 'string' && response.type.trim() ? response.type.trim().toLowerCase() : null }
 }
 
 /** Live status and counted plays are separate Subsonic operations. No write retries. */

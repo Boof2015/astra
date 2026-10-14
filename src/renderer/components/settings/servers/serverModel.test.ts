@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  addressHost, cleanIpcError, defaultServerName, detectionOrder, subsonicProductName,
   CACHE_SLIDER_MAX, CACHE_STOPS, CacheLimitEdits, cacheSliderValue, deriveServerState, formatAgo, hostOf, nearestCacheStop,
   lastSyncedText, progressFraction, progressText, qualityCopy, qualityFollowUps, qualityFromChoice, qualityLabel, qualityMode,
-  SerialQueue, stepCacheStop
+  SerialQueue, stepCacheStop, syncSucceeded
 } from './serverModel.ts'
 
 test('server state: off wins, then syncing, failed, connected, checking', () => {
@@ -171,4 +172,28 @@ test('last synced reads as when, plus the 20-minute check only while the server 
   assert.equal(lastSyncedText({ state: 'checking', enabled: true, lastSyncAt: null }, now), 'Not yet · checks every 20 min')
   assert.equal(lastSyncedText({ state: 'syncing', enabled: true, lastSyncAt: null }, now), 'Syncing now · checks every 20 min')
   assert.equal(lastSyncedText({ state: 'off', enabled: false, lastSyncAt: now - 72 * 3_600_000 }, now), '3 days ago')
+})
+
+test('add-server helpers: detection order, default name, host, product name, IPC errors', () => {
+  assert.deepEqual(detectionOrder('http://den.local:8096'), ['jellyfin', 'subsonic'])
+  assert.deepEqual(detectionOrder('https://home.example/jellyfin'), ['jellyfin', 'subsonic'])
+  assert.deepEqual(detectionOrder('http://music.home.lan:4533'), ['subsonic', 'jellyfin'])
+  assert.equal(defaultServerName('http://music.home.lan:4533'), 'music.home.lan')
+  assert.equal(defaultServerName('den.local:8096'), 'den.local')
+  assert.equal(addressHost('https://music.example.com/rest'), 'music.example.com')
+  assert.equal(addressHost(''), 'that address')
+  assert.equal(subsonicProductName('navidrome'), 'Navidrome')
+  assert.equal(subsonicProductName(null), 'Subsonic')
+  assert.equal(cleanIpcError(new Error("Error invoking remote method 'plex:connect': Error: Reconnect using the same Plex account."), 'x'),
+    'Reconnect using the same Plex account.')
+  assert.equal(cleanIpcError(undefined, 'Could not connect.'), 'Could not connect.')
+})
+
+test('a sync counts as working only when the source recorded ok, not when the request settled', () => {
+  assert.equal(syncSucceeded('ok', 'error'), true, 'live status wins')
+  assert.equal(syncSucceeded('error', 'ok'), false, 'a recorded failure after a resolved request')
+  assert.equal(syncSucceeded(undefined, 'ok'), true)
+  assert.equal(syncSucceeded(undefined, 'error'), false)
+  assert.equal(syncSucceeded('syncing', 'ok'), false, 'still running is not success')
+  assert.equal(syncSucceeded(undefined, undefined), false)
 })

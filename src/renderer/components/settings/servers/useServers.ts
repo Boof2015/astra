@@ -7,7 +7,7 @@ import { usePlexSettingsStore } from '../../../stores/plexSettingsStore'
 import { useProviderSyncStore } from '../../../stores/providerSyncStore'
 import { useSubsonicSettingsStore } from '../../../stores/subsonicSettingsStore'
 import {
-  deriveServerState, hostOf, PROVIDER_KIND, PROVIDER_MONOGRAM,
+  cleanIpcError, deriveServerState, hostOf, syncSucceeded, PROVIDER_KIND, PROVIDER_MONOGRAM,
   type ServerProgress, type ServerProvider, type ServerState
 } from './serverModel'
 
@@ -149,29 +149,72 @@ async function refreshProvider(provider: ServerProvider): Promise<void> {
 
 /**
  * Sync one server. A failure shows on the server itself (its status and error),
- * so it isn't repeated as a store-wide error.
+ * so it isn't repeated as a store-wide error. Resolves to whether it succeeded.
  */
-export async function syncServer(server: Pick<ServerEntry, 'provider' | 'id'>): Promise<void> {
+export async function syncServer(server: Pick<ServerEntry, 'provider' | 'id'>): Promise<boolean> {
+  let rejected = false
   try {
     if (server.provider === 'subsonic') await window.electronAPI.subsonic.syncSource(server.id)
     else if (server.provider === 'jellyfin') await window.electronAPI.jellyfin.syncSource(server.id)
     else await window.electronAPI.plex.syncSource(server.id)
-  } catch { /* Shown on the server's row. */ }
-  finally { await refreshProvider(server.provider) }
+  } catch { rejected = true /* Shown on the server's row. */ }
+  await refreshProvider(server.provider)
+  return !rejected && syncSucceeded(...recordedStatus(server))
+}
+
+/** The source's live status and its stored status, as the stores have them after a refresh. */
+function recordedStatus(server: Pick<ServerEntry, 'provider' | 'id'>): [string | undefined, string | undefined] {
+  const state = server.provider === 'subsonic' ? useSubsonicSettingsStore.getState()
+    : server.provider === 'jellyfin' ? useJellyfinSettingsStore.getState() : usePlexSettingsStore.getState()
+  const live = (state.status?.sources as { sourceId: number; status: string }[] | undefined)?.find(item => item.sourceId === server.id)?.status
+  const stored = (state.sources as { id: number; last_status: string }[]).find(item => item.id === server.id)?.last_status
+  return [live, stored]
+}
+
+/**
+ * After the add window closes: the first sync, then the sync options chosen there.
+ * Playlist sync turns on after the first sync, so its first refresh finds the tracks.
+ * Favorites/ratings need a comparison, which needs the server's values, so it runs only
+ * once that sync worked; the switch turns on when the comparison is confirmed.
+ */
+export async function finishAddingServer(server: Pick<ServerEntry, 'provider' | 'id'>,
+  wants: { favorites: boolean; playlists: boolean }): Promise<void> {
+  const synced = await syncServer(server)
+  if (wants.playlists) {
+    // The main process maps a Plex library to the one that owns its server's playlists.
+    await window.electronAPI.remotePlaylists.setEnabled({ provider: server.provider, sourceId: server.id }, true)
+      .catch(error => useProviderSyncStore.getState().notifyError(cleanIpcError(error, 'Could not turn on playlist sync.')))
+  }
+  if (wants.favorites && synced) await useProviderSyncStore.getState().openReview({ provider: server.provider, sourceId: server.id })
+}
+
+/** Remove a server, keeping its tracks as unavailable or deleting them. Rejects with a readable message. */
+export async function removeServer(server: Pick<ServerEntry, 'provider' | 'id'>, deleteTracks: boolean): Promise<void> {
+  // Through the API, then a refresh that reports its own errors: a failed refresh isn't a failed removal.
+  try {
+    if (server.provider === 'subsonic') await window.electronAPI.subsonic.deleteSource(server.id, deleteTracks)
+    else if (server.provider === 'jellyfin') await window.electronAPI.jellyfin.deleteSource(server.id, deleteTracks)
+    else await window.electronAPI.plex.deleteSource(server.id, deleteTracks)
+  } catch (error) {
+    throw new Error(cleanIpcError(error, 'Could not remove this server.'))
+  }
+  await refreshProvider(server.provider)
 }
 
 /** "Use this server". Turning a server back on syncs it, so its music returns right away. */
 export async function setServerEnabled(server: Pick<ServerEntry, 'provider' | 'id'>, enabled: boolean): Promise<void> {
-  if (server.provider === 'plex') {
-    try { await window.electronAPI.plex.updateSource(server.id, { enabled }) }
-    catch (error) {
-      usePlexSettingsStore.setState({ error: error instanceof Error ? error.message : 'Could not update this server.' })
-      return
-    }
-    await refreshProvider('plex')
-  } else {
-    const store = server.provider === 'subsonic' ? useSubsonicSettingsStore.getState() : useJellyfinSettingsStore.getState()
-    if (!await store.updateSource(server.id, { enabled })) return
+  try {
+    if (server.provider === 'subsonic') await window.electronAPI.subsonic.updateSource(server.id, { enabled })
+    else if (server.provider === 'jellyfin') await window.electronAPI.jellyfin.updateSource(server.id, { enabled })
+    else await window.electronAPI.plex.updateSource(server.id, { enabled })
+  } catch (error) {
+    // Shown under the servers; a failed refresh afterwards isn't a failed change.
+    const message = cleanIpcError(error, 'Could not update this server.')
+    if (server.provider === 'subsonic') useSubsonicSettingsStore.setState({ errorMessage: message })
+    else if (server.provider === 'jellyfin') useJellyfinSettingsStore.setState({ errorMessage: message })
+    else usePlexSettingsStore.setState({ error: message })
+    return
   }
+  await refreshProvider(server.provider)
   if (enabled) void syncServer(server)
 }

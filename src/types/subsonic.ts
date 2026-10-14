@@ -66,16 +66,21 @@ export interface SubsonicSourceUpdateInput {
 }
 
 export interface SubsonicSourceTestInput {
+  /** Tests this saved source as stored, and records the result as its status. */
   sourceId?: number
   baseUrl?: string
   username?: string
   password?: string
+  /** With no password: test the given address and username with this source's stored password. Status is untouched. */
+  passwordFromSourceId?: number
 }
 
 export interface SubsonicSourceTestResult {
   ok: boolean
   message: string
   error?: string
+  /** What the server calls itself, e.g. "navidrome", when it says. */
+  serverType?: string | null
 }
 
 export interface SubsonicStatusSnapshot {
@@ -148,10 +153,13 @@ export interface JellyfinSourceUpdateInput {
 }
 
 export interface JellyfinSourceTestInput {
+  /** Tests this saved source as stored, and records the result as its status. */
   sourceId?: number
   baseUrl?: string
   username?: string
   password?: string
+  /** With no password: test the given address and username with this source's stored password. Status is untouched. */
+  passwordFromSourceId?: number
 }
 
 export interface JellyfinSourceTestResult {

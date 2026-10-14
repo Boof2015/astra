@@ -34,9 +34,52 @@ export function deriveServerState(enabled: boolean, status: string | undefined, 
   return 'checking'
 }
 
+/**
+ * Whether a sync worked, by what the source recorded rather than by the request
+ * settling: Subsonic and Jellyfin record a failed sync and still resolve. Live
+ * status wins over the stored row. Anything but 'ok' (still syncing, error) isn't success.
+ */
+export function syncSucceeded(liveStatus: string | undefined, storedStatus: string | undefined): boolean {
+  return (liveStatus ?? storedStatus) === 'ok'
+}
+
 /** Host and port only, for the quiet meta line. The full address shows on the server's page. */
 export function hostOf(address: string): string {
   try { return new URL(address).host || address } catch { return address }
+}
+
+/** Error text without Electron's "Error invoking remote method …" wrapper. */
+export function cleanIpcError(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  return message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '').trim() || fallback
+}
+
+function parseAddress(address: string): URL | null {
+  const trimmed = address.trim()
+  if (!trimmed) return null
+  try { return new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`) } catch { return null }
+}
+
+/** Which server type to try first. Jellyfin's usual port or path makes it the likelier one. */
+export function detectionOrder(address: string): ('subsonic' | 'jellyfin')[] {
+  const lower = address.toLowerCase()
+  return lower.includes(':8096') || lower.includes('/jellyfin') ? ['jellyfin', 'subsonic'] : ['subsonic', 'jellyfin']
+}
+
+/** The name a new server starts with: its host, without scheme or port. */
+export function defaultServerName(address: string): string {
+  return parseAddress(address)?.hostname || address.trim()
+}
+
+/** "Couldn't sign in to <this>". */
+export function addressHost(address: string): string {
+  return parseAddress(address)?.host || address.trim() || 'that address'
+}
+
+/** How a Subsonic-compatible server introduces itself: "navidrome" reads as Navidrome. */
+export function subsonicProductName(serverType: string | null | undefined): string {
+  if (!serverType) return 'Subsonic'
+  return serverType.charAt(0).toUpperCase() + serverType.slice(1)
 }
 
 const count = (value: number) => value.toLocaleString('en-US')

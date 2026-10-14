@@ -6,7 +6,7 @@ import { ServerSwitch } from './ServerParts'
 import { useProviderSyncStatus, type ServerEntry } from './useServers'
 
 /** What each provider can keep in step with Astra. */
-const FAVORITES_COPY: Record<ServerProvider, { label: string; switchLabel: string; sub: string }> = {
+export const FAVORITES_COPY: Record<ServerProvider, { label: string; switchLabel: string; sub: string }> = {
   subsonic: {
     label: 'Sync favorites & ratings',
     switchLabel: 'Sync favorites and ratings',

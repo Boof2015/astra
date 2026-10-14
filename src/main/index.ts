@@ -4177,7 +4177,13 @@ function resolveSubsonicTestConnectionInput(input: SubsonicSourceTestInput): {
 
   const baseUrl = normalizeSubsonicBaseUrl(String(input.baseUrl ?? ''))
   const username = String(input.username ?? '').trim()
-  const password = String(input.password ?? '')
+  let password = String(input.password ?? '')
+  // Changing a server's address or username without retyping its password: the
+  // stored password is used here and never sent to the renderer.
+  const keepFrom = input.passwordFromSourceId
+  if (!password && typeof keepFrom === 'number' && Number.isInteger(keepFrom) && keepFrom > 0) {
+    password = requireSubsonicSourceCredentials(keepFrom).connection.password
+  }
 
   if (!username) throw new Error('Username is required.')
   if (!password) throw new Error('Password is required.')
@@ -4354,7 +4360,13 @@ function resolveJellyfinTestConnectionInput(input: JellyfinSourceTestInput): {
 
   const baseUrl = normalizeJellyfinBaseUrl(String(input.baseUrl ?? ''))
   const username = String(input.username ?? '').trim()
-  const password = String(input.password ?? '')
+  let password = String(input.password ?? '')
+  // Changing a server's address or username without retyping its password: the
+  // stored password is used here and never sent to the renderer.
+  const keepFrom = input.passwordFromSourceId
+  if (!password && typeof keepFrom === 'number' && Number.isInteger(keepFrom) && keepFrom > 0) {
+    password = requireJellyfinSourceCredentials(keepFrom).connection.password
+  }
 
   if (!username) throw new Error('Username is required.')
   if (!password) throw new Error('Password is required.')
@@ -6936,7 +6948,7 @@ ipcMain.handle('subsonic:testSource', async (_event, rawInput: SubsonicSourceTes
     : null
   try {
     const resolved = resolveSubsonicTestConnectionInput(rawInput)
-    await testSubsonicConnection(resolved, { timeoutMs: 12_000, retries: 1 })
+    const { serverType } = await testSubsonicConnection(resolved, { timeoutMs: 12_000, retries: 1 })
     if (sourceId !== null) {
       clearSubsonicSyncProgress(sourceId)
       await library.updateSubsonicSourceStatus(sourceId, {
@@ -6948,7 +6960,8 @@ ipcMain.handle('subsonic:testSource', async (_event, rawInput: SubsonicSourceTes
     }
     return {
       ok: true,
-      message: 'Connection successful.'
+      message: 'Connection successful.',
+      serverType
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Connection test failed.'

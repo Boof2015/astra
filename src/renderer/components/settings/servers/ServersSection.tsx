@@ -1,14 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
-import { useUIStore } from '../../../stores/uiStore'
+import { usePresence } from '../../../hooks/usePresence'
+import { AddServerWindow } from './AddServerWindow'
+import { ChangeConnectionWindow } from './ChangeConnectionWindow'
 import { QualityControl } from './QualityControl'
+import { RemoveServerWindow } from './RemoveServerWindow'
 import { ServerHeader, UseServerRow } from './ServerHeader'
 import { ServerList } from './ServerList'
 import type { ServerMenuAction } from './ServerMenu'
 import { ServerPage } from './ServerPage'
 import { PlusIcon } from './ServerParts'
 import { StorageGroup } from './StorageGroup'
+import { SignInAgainWindow } from './SignInAgainWindow'
 import { SyncRows } from './SyncRows'
-import { useRemotePlaylistStatuses, useServers, useServerStoreErrors } from './useServers'
+import { useRemotePlaylistStatuses, useServers, useServerStoreErrors, type ServerEntry } from './useServers'
+
+/** The focused windows. Each keeps the server as it was when opened, so it can finish closing after a removal. */
+type WindowState =
+  | { kind: 'add' }
+  | { kind: 'connection' | 'sign-in' | 'remove'; server: ServerEntry }
 
 /**
  * Settings → Servers. Health first: one glance shows whether every server works,
@@ -25,10 +34,21 @@ export default function ServersSection() {
   const returnKey = useRef<string | null>(null)
   const pageRef = useRef<HTMLDivElement>(null)
 
-  // Interim until the windows land: adding, changing and removing servers still
-  // happen in the old panel under Library.
-  const openLegacyPanel = () => useUIStore.getState().setPendingSettingsSection('library')
-  const onMenuAction = (_action: ServerMenuAction) => openLegacyPanel()
+  const [windowState, setWindowState] = useState<WindowState | null>(null)
+  const windowPresence = usePresence(windowState)
+  const closeWindow = () => setWindowState(null)
+  const openAdd = () => setWindowState({ kind: 'add' })
+  const onMenuAction = (server: ServerEntry) => (action: ServerMenuAction) => setWindowState(action === 'remove'
+    ? { kind: 'remove', server }
+    : { kind: server.provider === 'plex' ? 'sign-in' : 'connection', server })
+
+  // A newly added server's row lights up briefly as it appears.
+  const [justAdded, setJustAdded] = useState<string | null>(null)
+  useEffect(() => {
+    if (!justAdded) return
+    const timer = window.setTimeout(() => setJustAdded(null), 1600)
+    return () => window.clearTimeout(timer)
+  }, [justAdded])
 
   // A server's page only exists while there are several; one left (or a removed
   // server) means the overview.
@@ -44,8 +64,10 @@ export default function ServersSection() {
   }, [openKey])
 
   const addButton = (
-    <button type="button" className="servers-btn" onClick={openLegacyPanel}><PlusIcon />Add server</button>
+    <button type="button" className="servers-btn" onClick={openAdd}><PlusIcon />Add server</button>
   )
+  const shown = windowPresence.shouldRender ? windowPresence.presentValue : null
+  const phase = windowPresence.phase
 
   return (
     <section className="settings-section settings-section-panel servers-section">
@@ -56,7 +78,7 @@ export default function ServersSection() {
       <div className="servers-page" ref={pageRef}>
         {opened ? (
           <ServerPage key={opened.key} server={opened} servers={servers} playlistStatuses={playlistStatuses}
-            errors={storeErrors} onMenuAction={onMenuAction}
+            errors={storeErrors} onMenuAction={onMenuAction(opened)}
             onBack={() => { returnKey.current = opened.key; setNavigated(true); setOpenKey(null) }} />
         ) : (
           <div className={`servers-pane${navigated ? ' is-entering' : ''}`}>
@@ -64,18 +86,20 @@ export default function ServersSection() {
               <div className="servers-group servers-empty">
                 <span className="servers-empty-title">No servers yet</span>
                 <span className="servers-sub">Stream your Plex, Jellyfin, Subsonic or Navidrome library alongside your local music.</span>
-                <button type="button" className="servers-btn is-accent" onClick={openLegacyPanel}><PlusIcon />Add server</button>
+                <button type="button" className="servers-btn is-accent" onClick={openAdd}><PlusIcon />Add server</button>
                 <span className="servers-hint">Favorites, ratings and playlists only sync if you turn them on.</span>
               </div>
             )}
             {servers.length === 1 && (
               <div className="servers-group">
-                <ServerHeader server={servers[0]} onMenuAction={onMenuAction} />
+                <ServerHeader server={servers[0]} onMenuAction={onMenuAction(servers[0])} />
                 <UseServerRow server={servers[0]} />
                 <SyncRows server={servers[0]} playlistStatuses={playlistStatuses} />
               </div>
             )}
-            {servers.length > 1 && <ServerList servers={servers} onOpen={key => { setNavigated(true); setOpenKey(key) }} />}
+            {servers.length > 1 && (
+              <ServerList servers={servers} highlightKey={justAdded} onOpen={key => { setNavigated(true); setOpenKey(key) }} />
+            )}
             {storeErrors.map(message => <p key={message} className="servers-error" role="alert">{message}</p>)}
 
             {servers.length > 0 && (
@@ -93,6 +117,12 @@ export default function ServersSection() {
           </div>
         )}
       </div>
+      {shown?.kind === 'add' && (
+        <AddServerWindow phase={phase} onClose={closeWindow} onAdded={key => { closeWindow(); setJustAdded(key) }} />
+      )}
+      {shown?.kind === 'connection' && <ChangeConnectionWindow phase={phase} server={shown.server} onClose={closeWindow} />}
+      {shown?.kind === 'sign-in' && <SignInAgainWindow phase={phase} server={shown.server} onClose={closeWindow} />}
+      {shown?.kind === 'remove' && <RemoveServerWindow phase={phase} server={shown.server} onClose={closeWindow} />}
     </section>
   )
 }

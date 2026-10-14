@@ -55,7 +55,6 @@ import { useGraphStore } from '../../stores/graphStore'
 import { useListeningStatsStore } from '../../stores/listeningStatsStore'
 import { useLibraryIntegrityStore } from '../../stores/libraryIntegrityStore'
 import { useRatingsStore } from '../../stores/ratingsStore'
-import RemoteServersPanel from '../settings/RemoteServersPanel'
 import ServersSection from '../settings/servers/ServersSection'
 import {
   SLEEP_TIMER_MAX_MINUTES,
@@ -2189,7 +2188,6 @@ export default function SettingsView() {
                 ReplayGain is configured but playback gain is bypassed while normalization is off.
               </p>
             )}
-            <RemoteServersPanel />
           </section>
             )}
 

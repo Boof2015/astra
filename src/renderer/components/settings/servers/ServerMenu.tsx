@@ -55,8 +55,9 @@ export function ServerMenu({ server, onAction }: { server: ServerEntry; onAction
       close(false)
     }
   }
+  // Focus goes back to ··· first, so the window that opens returns it there when it closes.
   const choose = (action: ServerMenuAction) => {
-    close(false)
+    close(true)
     onAction(action)
   }
 
