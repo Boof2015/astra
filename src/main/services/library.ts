@@ -1,3 +1,5 @@
+import type { RemotePlaylistDestination, RemotePlaylistLink, RemotePlaylistLocal, RemotePlaylistSnapshot } from '../../types/remotePlaylists'
+import type { PlexSource } from '../../types/plex'
 import * as mm from 'music-metadata'
 import { app, powerMonitor } from 'electron'
 import { join, extname, basename, dirname, isAbsolute as isAbsolutePath, normalize as normalizePath, resolve as resolvePath, relative as relativePath, sep as pathSep } from 'path'
@@ -70,6 +72,7 @@ import {
   type PlaylistKind
 } from '../../shared/playlists/dynamicPlaylist'
 import { normalizeTrackRating, type TrackRatingEntry } from '../../shared/ratings/trackRating'
+import type { ProviderSyncRef, ProviderSyncTrack, ProviderSyncField, ProviderSyncValue } from '../../types/providerSync'
 import {
   LISTENING_STATS_TRANSFER_VERSION,
   createEmptyListeningStatsImportResult,
@@ -109,6 +112,8 @@ import { getLocalDayKey, HOME_SHELF_ITEM_LIMIT, selectHomeRediscovery } from '..
 import type { LyricsFormat, LyricsLine, LyricsProvider } from '../../types/lyrics'
 import type {
   JellyfinSourceLastStatus,
+  RemoteSourceCounts,
+  SourceErrorKind,
   SubsonicSourceLastStatus,
   TrackSourceType
 } from '../../types/subsonic'
@@ -287,6 +292,7 @@ export interface SubsonicSourceRow {
   enabled: number
   last_status: SubsonicSourceLastStatus
   last_error: string | null
+  last_error_kind: SourceErrorKind | null
   last_sync_at: number | null
   last_checked_at: number | null
   created_at: number
@@ -301,6 +307,7 @@ export interface SubsonicSourcePublic {
   enabled: number
   last_status: SubsonicSourceLastStatus
   last_error: string | null
+  last_error_kind: SourceErrorKind | null
   last_sync_at: number | null
   last_checked_at: number | null
   created_at: number
@@ -317,10 +324,148 @@ export interface JellyfinSourceRow {
   enabled: number
   last_status: JellyfinSourceLastStatus
   last_error: string | null
+  last_error_kind: SourceErrorKind | null
   last_sync_at: number | null
   last_checked_at: number | null
   created_at: number
   updated_at: number
+}
+
+export type PlexSourceRow = Omit<PlexSource, 'has_stored_secret'> & { secret_encrypted: string; deleted: number }
+
+function publicPlexSource(row: PlexSourceRow): PlexSource {
+  const { secret_encrypted, deleted: _deleted, ...source } = row
+  return { ...source, last_error_kind: normalizeSourceErrorKind(source.last_error_kind), has_stored_secret: !!secret_encrypted }
+}
+
+function normalizeSourceErrorKind(value: unknown): SourceErrorKind | null {
+  return value === 'auth' || value === 'unreachable' || value === 'sync' ? value : null
+}
+export function listPlexSources(): PlexSource[] {
+  return (db?.all<PlexSourceRow>('SELECT * FROM plex_sources WHERE deleted = 0 ORDER BY created_at, id') ?? []).map(publicPlexSource)
+}
+export function getPlexSourceById(id: number): PlexSourceRow | null {
+  return db?.get<PlexSourceRow>('SELECT * FROM plex_sources WHERE id = ? AND deleted = 0', [id]) ?? null
+}
+export async function savePlexSource(input: Pick<PlexSourceRow, 'name' | 'base_url' | 'username' | 'account_id' | 'server_id' | 'library_id' | 'library_name' | 'secret_encrypted'>): Promise<PlexSource> {
+  if (!db) throw new Error('Database not initialized')
+  const now = Date.now()
+  db.run(`INSERT INTO plex_sources (name, base_url, username, account_id, server_id, library_id, library_name, secret_encrypted, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, server_id, library_id) DO UPDATE SET
+      name = excluded.name, base_url = excluded.base_url, username = excluded.username,
+      library_name = excluded.library_name, secret_encrypted = excluded.secret_encrypted,
+      enabled = 1, deleted = 0, last_status = 'unknown', last_error = NULL, last_error_kind = NULL, updated_at = excluded.updated_at`,
+  [input.name, input.base_url, input.username, input.account_id, input.server_id, input.library_id, input.library_name, input.secret_encrypted, now, now])
+  // A retained lower-ID library may have been reconnected after its playlist
+  // collection moved to another library. Move the existing collection with it.
+  const peers = listPlexSources().filter(source => source.account_id === input.account_id && source.server_id === input.server_id).sort((a, b) => a.id - b.id)
+  for (const peer of peers.slice(1)) {
+    db.run("UPDATE playlists SET remote_source_id = ? WHERE remote_source_type = 'plex' AND remote_source_id = ?", [peers[0].id, peer.id])
+    db.run("UPDATE remote_playlist_sync SET source_id = ? WHERE provider = 'plex' AND source_id = ?", [peers[0].id, peer.id])
+  }
+  await saveDatabase()
+  return publicPlexSource(db.get<PlexSourceRow>('SELECT * FROM plex_sources WHERE account_id = ? AND server_id = ? AND library_id = ?',
+    [input.account_id, input.server_id, input.library_id])!)
+}
+export async function updatePlexSource(id: number, input: Partial<Pick<PlexSourceRow,
+  'name' | 'base_url' | 'secret_encrypted' | 'enabled' | 'last_status' | 'last_error' | 'last_error_kind' | 'last_sync_at' | 'last_checked_at'>>): Promise<PlexSource> {
+  if (!db || !getPlexSourceById(id)) throw new Error('Plex source not found.')
+  const allowed = ['name', 'base_url', 'secret_encrypted', 'enabled', 'last_status', 'last_error', 'last_error_kind', 'last_sync_at', 'last_checked_at'] as const
+  const keys = allowed.filter(key => input[key] !== undefined)
+  if (keys.length) db.run(`UPDATE plex_sources SET ${keys.map(key => `${key} = ?`).join(', ')}, updated_at = ? WHERE id = ?`,
+    [...keys.map(key => input[key]!), Date.now(), id])
+  await saveDatabase()
+  return publicPlexSource(getPlexSourceById(id)!)
+}
+export async function markPlexTracksAvailability(id: number, available: boolean, reason: string | null): Promise<void> {
+  db?.run(`UPDATE tracks SET is_available = ?, availability_reason = ?, modified_at = ? WHERE source_type = 'plex' AND source_id = ?`,
+    [available ? 1 : 0, available ? null : reason, Date.now(), id])
+  await saveDatabase()
+}
+/** An outage hides only playable tracks, keeping other reasons, so recovery can't revive a removed track. */
+export async function markPlexTracksUnreachable(id: number): Promise<void> {
+  const changes = db?.run(`UPDATE tracks SET is_available = 0, availability_reason = 'source_unavailable', modified_at = ?
+    WHERE source_type = 'plex' AND source_id = ? AND is_available = 1`, [Date.now(), id]).changes ?? 0
+  if (changes > 0) await saveDatabase()
+}
+/** Undo an outage once the server answers again. Missing, disabled and deleted tracks stay unavailable. */
+export async function restorePlexTracksFromSourceUnavailable(id: number): Promise<void> {
+  const changes = db?.run(`UPDATE tracks SET is_available = 1, availability_reason = NULL, modified_at = ?
+    WHERE source_type = 'plex' AND source_id = ? AND is_available = 0 AND availability_reason = 'source_unavailable'`,
+  [Date.now(), id]).changes ?? 0
+  if (changes > 0) await saveDatabase()
+}
+export async function markMissingPlexTracksUnavailable(id: number, seen: Set<string>): Promise<void> {
+  if (!db) return
+  const rows = db.all<{ path: string; source_track_id: string }>("SELECT path, source_track_id FROM tracks WHERE source_type = 'plex' AND source_id = ?", [id])
+  beginLibraryWriteTransaction()
+  try {
+    for (const row of rows) if (!seen.has(row.source_track_id)) db!.run(
+      "UPDATE tracks SET is_available = 0, availability_reason = 'missing_upstream', modified_at = ? WHERE path = ?", [Date.now(), row.path])
+    commitLibraryWriteTransaction()
+  } catch (error) { rollbackLibraryWriteTransaction(); throw error }
+  await saveDatabase()
+}
+/**
+ * The tracks that removing a server with "Delete them" deletes: everything it brought in,
+ * including tracks it no longer has. A Subsonic or Jellyfin source also takes rows under its
+ * path prefix, and the last one of its kind takes tracks from before sources had ids.
+ */
+function purgedTrackScope(provider: RemoteSourceCounts['provider'], sourceId: number): { where: string; params: unknown[] } {
+  if (provider === 'plex') return { where: "source_type = 'plex' AND source_id = ?", params: [sourceId] }
+  const exists = !!(provider === 'subsonic' ? getSubsonicSourceById(sourceId) : getJellyfinSourceById(sourceId))
+  const others = Number(db?.get<{ count?: unknown }>(`SELECT COUNT(*) AS count FROM ${provider}_sources WHERE id <> ?`, [sourceId])?.count ?? 0)
+  const includeUnknownSourceTracks = exists && Number.isFinite(others) && others <= 0
+  return {
+    where: includeUnknownSourceTracks
+      ? `((source_type = '${provider}' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)`
+      : `((source_type = '${provider}' AND source_id = ?) OR path LIKE ?)`,
+    params: [sourceId, `${provider}://${sourceId}/%`]
+  }
+}
+
+/** How many tracks removing this server with "Delete them" would delete, for the Remove window. */
+export function countTracksRemovedWithSource(provider: RemoteSourceCounts['provider'], sourceId: number): number {
+  if (!db) return 0
+  const scope = purgedTrackScope(provider, sourceId)
+  return Number(db.get<{ count?: unknown }>(`SELECT COUNT(*) AS count FROM tracks WHERE ${scope.where}`, scope.params)?.count ?? 0) || 0
+}
+
+export async function deletePlexSource(id: number, purge: boolean): Promise<void> {
+  if (!db) return
+  const group = getPlexPlaylistSources(id)
+  const owner = group[0]
+  const successor = group.find(source => source.id !== id)
+  if (owner?.id === id && successor) {
+    // Playlists belong to the account/server, not the removed Music library.
+    db.run("UPDATE playlists SET remote_source_id = ? WHERE remote_source_type = 'plex' AND remote_source_id = ?", [successor.id, id])
+    db.run("UPDATE remote_playlist_sync SET source_id = ? WHERE provider = 'plex' AND source_id = ?", [successor.id, id])
+  } else if (!successor) {
+    db.run("DELETE FROM playlist_tracks WHERE playlist_id IN (SELECT id FROM playlists WHERE remote_source_type = 'plex' AND remote_source_id = ?)", [id])
+    db.run("DELETE FROM playlists WHERE remote_source_type = 'plex' AND remote_source_id = ?", [id])
+    db.run("DELETE FROM remote_playlist_sync WHERE provider = 'plex' AND source_id = ?", [id])
+  }
+  if (purge) {
+    // Keep full server-owned playlist contents when one of its libraries is
+    // purged locally. Local playlists retain the existing purge behavior.
+    db.run(`UPDATE playlist_tracks SET track_path = 'plex://' ||
+      (SELECT remote_source_id FROM playlists WHERE id = playlist_tracks.playlist_id) || '/unavailable/' ||
+      (SELECT source_track_id FROM tracks WHERE path = playlist_tracks.track_path)
+      WHERE playlist_id IN (SELECT id FROM playlists WHERE remote_source_type = 'plex')
+        AND track_path IN (SELECT path FROM tracks WHERE source_type = 'plex' AND source_id = ?)`, [id])
+    const scope = purgedTrackScope('plex', id)
+    const paths = db.all<{ path: string }>(`SELECT path FROM tracks WHERE ${scope.where}`, scope.params).map(row => row.path)
+    deleteTrackRelatedRows(paths)
+    db.run(`DELETE FROM tracks WHERE ${scope.where}`, scope.params)
+    rebuildDerivedLibraryState()
+    db.run('DELETE FROM plex_sources WHERE id = ?', [id])
+  } else {
+    db.run("UPDATE tracks SET is_available = 0, availability_reason = 'source_deleted', modified_at = ? WHERE source_type = 'plex' AND source_id = ?", [Date.now(), id])
+    // Keep only stable identity so re-adding this library revives its tracks.
+    db.run("UPDATE plex_sources SET deleted = 1, enabled = 0, secret_encrypted = '', last_status = 'disabled' WHERE id = ?", [id])
+  }
+  await saveDatabase()
 }
 
 export interface JellyfinSourcePublic {
@@ -331,6 +476,7 @@ export interface JellyfinSourcePublic {
   enabled: number
   last_status: JellyfinSourceLastStatus
   last_error: string | null
+  last_error_kind: SourceErrorKind | null
   last_sync_at: number | null
   last_checked_at: number | null
   created_at: number
@@ -484,6 +630,7 @@ export interface LyricsTrackManualInput {
 }
 
 export interface Playlist {
+  remote?: RemotePlaylistLink
   id: number
   name: string
   kind: PlaylistKind
@@ -921,6 +1068,21 @@ const EFFECTIVE_TRACK_SELECT_COLUMNS = `
 `
 const EFFECTIVE_TRACK_FROM_CLAUSE = `
   FROM tracks t
+  LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
+`
+
+// Visibility is a source preference, independent of reachability and cached audio.
+// Retained tracks from deleted sources keep their existing unavailable behavior.
+const VISIBLE_TRACK_PREDICATE = `
+  NOT EXISTS (SELECT 1 FROM subsonic_sources s
+    WHERE tracks.source_type = 'subsonic' AND s.id = tracks.source_id AND s.enabled = 0)
+  AND NOT EXISTS (SELECT 1 FROM jellyfin_sources s
+    WHERE tracks.source_type = 'jellyfin' AND s.id = tracks.source_id AND s.enabled = 0)
+  AND NOT EXISTS (SELECT 1 FROM plex_sources s
+    WHERE tracks.source_type = 'plex' AND s.id = tracks.source_id AND s.enabled = 0 AND s.deleted = 0)
+`
+const VISIBLE_TRACK_FROM_CLAUSE = `
+  FROM (SELECT * FROM tracks WHERE ${VISIBLE_TRACK_PREDICATE}) t
   LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
 `
 
@@ -1408,16 +1570,18 @@ interface DerivedAlbumIdentityRow {
 
 let libraryWriteGeneration = 0
 let trackSnapshot: LibraryTrackSnapshot | null = null
+let storedTrackSnapshot: LibraryTrackSnapshot | null = null
 let homeReleaseSummaryCache: { dataVersion: number; releases: HomeReleaseSummary[] } | null = null
 
 const SNAPSHOT_WRITE_STATEMENT_PATTERN = /^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/im
 const SNAPSHOT_ALWAYS_INVALIDATE_PATTERN = /^\s*(?:CREATE|DROP|ALTER|ROLLBACK)\b/im
-const SNAPSHOT_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|app_meta)\b/i
-const HOME_RELEASE_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|favorites)\b/i
+const SNAPSHOT_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|app_meta|subsonic_sources|jellyfin_sources|plex_sources)\b/i
+const HOME_RELEASE_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|favorites|subsonic_sources|jellyfin_sources|plex_sources)\b/i
 
 function invalidateLibraryTrackSnapshot(): void {
   libraryWriteGeneration += 1
   trackSnapshot = null
+  storedTrackSnapshot = null
 }
 
 function noteLibrarySqlMutation(sql: string): void {
@@ -1436,16 +1600,25 @@ function noteLibrarySqlMutation(sql: string): void {
 
 // The main process is single threaded and all library reads/writes are
 // synchronous, so a rebuild can never interleave with a write.
-function getLibraryTrackSnapshot(): LibraryTrackSnapshot | null {
+function getLibraryTrackSnapshot(includeDisabledSources = false): LibraryTrackSnapshot | null {
   if (!db) return null
-  if (trackSnapshot && trackSnapshot.generation === libraryWriteGeneration) {
+  const cached = includeDisabledSources ? storedTrackSnapshot : trackSnapshot
+  if (cached && cached.generation === libraryWriteGeneration) {
+    return cached
+  }
+  // Share the usual snapshot when nothing is hidden, without retaining two
+  // complete identity maps for the common case.
+  if (!includeDisabledSources && !db.get(`SELECT 1 FROM subsonic_sources WHERE enabled = 0
+    UNION ALL SELECT 1 FROM jellyfin_sources WHERE enabled = 0
+    UNION ALL SELECT 1 FROM plex_sources WHERE enabled = 0 AND deleted = 0 LIMIT 1`)) {
+    trackSnapshot = getLibraryTrackSnapshot(true)
     return trackSnapshot
   }
 
   return measureLibraryQuery('rebuildTrackSnapshot', () => {
     const rows = readEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${includeDisabledSources ? EFFECTIVE_TRACK_FROM_CLAUSE : VISIBLE_TRACK_FROM_CLAUSE}
       ${ALL_TRACKS_ORDER_BY_CLAUSE}
     `)
     const artistIndex = buildArtistIdentityIndex(rows)
@@ -1475,8 +1648,9 @@ function getLibraryTrackSnapshot(): LibraryTrackSnapshot | null {
       artistNamesByPath.set(row.path, resolveTrackArtistNames(row, artistIndex))
       albumArtistNamesByPath.set(row.path, resolveTrackArtistNames(row, artistIndex, true))
     }
-    persistDerivedAlbumIdentities(rows, derivedIdentityRows)
-    trackSnapshot = {
+    // Browsing a subset must not rewrite historical identities or sync metadata.
+    if (includeDisabledSources) persistDerivedAlbumIdentities(rows, derivedIdentityRows)
+    const snapshot: LibraryTrackSnapshot = {
       generation: libraryWriteGeneration,
       sortedPaths,
       identityKeysByPath,
@@ -1484,14 +1658,16 @@ function getLibraryTrackSnapshot(): LibraryTrackSnapshot | null {
       artistNamesByPath,
       albumArtistNamesByPath
     }
-    return trackSnapshot
+    if (includeDisabledSources) storedTrackSnapshot = snapshot
+    else trackSnapshot = snapshot
+    return snapshot
   })
 }
 
 function rebuildDerivedLibraryState(): void {
   if (!db) return
   invalidateLibraryTrackSnapshot()
-  getLibraryTrackSnapshot()
+  getLibraryTrackSnapshot(true)
 }
 
 function readEffectiveTrackRowsByPaths(paths: readonly string[]): DbTrackRow[] {
@@ -1608,12 +1784,13 @@ function resolveTrackGenreStorageFields(track: { genre: string | null; genres?: 
 function attachAlbumIdentityKeys(
   tracks: readonly DbTrackRow[],
   libraryTracks?: readonly DbTrackRow[],
-  latestSyncSummary: LatestLibrarySyncSummary | null = getLatestLibrarySyncSummary()
+  latestSyncSummary: LatestLibrarySyncSummary | null = getLatestLibrarySyncSummary(),
+  includeDisabledSources = false
 ): DbTrack[] {
   if (tracks.length === 0) return []
 
   if (!libraryTracks) {
-    const snapshot = getLibraryTrackSnapshot()
+    const snapshot = getLibraryTrackSnapshot(includeDisabledSources)
     if (snapshot) {
       return attachAlbumIdentityKeysWithMap(
         tracks,
@@ -1680,9 +1857,9 @@ function attachAlbumIdentityKeysWithMap(
   })
 }
 
-function readEffectiveTracks(sql: string, libraryTracks?: readonly DbTrackRow[], params: unknown[] = []): DbTrack[] {
+function readEffectiveTracks(sql: string, libraryTracks?: readonly DbTrackRow[], params: unknown[] = [], includeDisabledSources = false): DbTrack[] {
   const tracks = readEffectiveTrackRows(sql, params)
-  return attachAlbumIdentityKeys(tracks, libraryTracks)
+  return attachAlbumIdentityKeys(tracks, libraryTracks, undefined, includeDisabledSources)
 }
 
 function normalizeRequiredTextField(value: string, fieldName: 'title' | 'artist' | 'album'): string {
@@ -2190,12 +2367,13 @@ function addTrackToAlbumSummary(
 
 function collectAlbumSummaryGroups(
   latestSyncSummary: LatestLibrarySyncSummary | null,
-  favoritePaths?: ReadonlySet<string>
+  favoritePaths?: ReadonlySet<string>,
+  onTrack?: (identityKey: string, track: DbTrackRow) => void
 ): Map<string, AlbumSummaryAccumulator> {
   const groups = new Map<string, AlbumSummaryAccumulator>()
   const tracks = readEffectiveTrackRows(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    ${VISIBLE_TRACK_FROM_CLAUSE}
   `)
 
   for (const identityGroup of groupTracksByAlbumIdentity(tracks, (track) => track.path).values()) {
@@ -2208,6 +2386,7 @@ function collectAlbumSummaryGroups(
     const group = createAlbumSummaryAccumulator(identity)
     for (const track of identityGroup.tracks) {
       addTrackToAlbumSummary(group, track, latestSyncSummary, favoritePaths)
+      onTrack?.(identity.identityKey, track)
     }
     groups.set(identity.identityKey, group)
   }
@@ -2231,6 +2410,82 @@ function collectEligibleAlbumIdentityKeys(
   }
 
   return identityKeys
+}
+
+/** Listed tracks that are no longer on their server, or that a removed server left behind. */
+const GONE_FROM_SOURCE_REASONS = ['missing_upstream', 'source_deleted']
+const isRemoteSourceType = (type: string): type is RemoteSourceCounts['provider'] =>
+  type === 'subsonic' || type === 'jellyfin' || type === 'plex'
+let remoteSourceCountsCache: { generation: number; counts: RemoteSourceCounts[] } | null = null
+
+/**
+ * How many tracks and albums each server has in the library, for Settings → Servers.
+ * Tracks the server no longer has don't count; tracks unavailable during an outage do.
+ * Albums are counted as the Albums view shows them (album identity, singles left out),
+ * so a server's albums are those with at least one of its tracks. Grouping albums reads
+ * the whole library, so the result is kept until the library next changes.
+ */
+export function getRemoteSourceCounts(): RemoteSourceCounts[] {
+  if (!db) return []
+  const generation = libraryWriteGeneration
+  if (remoteSourceCountsCache?.generation === generation) return remoteSourceCountsCache.counts
+  return measureLibraryQuery('getRemoteSourceCounts', () => {
+    const gone = GONE_FROM_SOURCE_REASONS.map(() => '?').join(', ')
+    const rows = db!.all<{ source_type: string; source_id: number; tracks: number }>(`
+      SELECT source_type, source_id, COUNT(*) AS tracks
+      FROM tracks
+      WHERE source_type IN ('subsonic', 'jellyfin', 'plex') AND source_id IS NOT NULL
+        AND (availability_reason IS NULL OR availability_reason NOT IN (${gone}))
+      GROUP BY source_type, source_id
+    `, GONE_FROM_SOURCE_REASONS)
+
+    // A Plex server's libraries are one server: each library maps to its server's first library.
+    const plexServerOf = new Map<number, string>()
+    const firstLibrary = new Map<string, number>()
+    for (const source of listPlexSources().sort((a, b) => a.id - b.id)) {
+      const server = JSON.stringify([source.account_id, source.server_id])
+      if (!firstLibrary.has(server)) firstLibrary.set(server, source.id)
+      plexServerOf.set(source.id, `plex:${firstLibrary.get(server)}`)
+    }
+    const serverOf = (key: string, type: string, id: number) => type === 'plex' ? plexServerOf.get(id) ?? key : key
+
+    // Which sources and servers each album has tracks from (only those that are on are listed).
+    const sourcesByAlbum = new Map<string, Set<string>>()
+    const serversByAlbum = new Map<string, Set<string>>()
+    const groups = collectAlbumSummaryGroups(null, undefined, (identityKey, track) => {
+      if (!isRemoteSourceType(track.source_type) || track.source_id == null) return
+      if (track.availability_reason && GONE_FROM_SOURCE_REASONS.includes(track.availability_reason)) return
+      const key = `${track.source_type}:${track.source_id}`
+      let sources = sourcesByAlbum.get(identityKey)
+      if (!sources) sourcesByAlbum.set(identityKey, sources = new Set())
+      sources.add(key)
+      let servers = serversByAlbum.get(identityKey)
+      if (!servers) serversByAlbum.set(identityKey, servers = new Set())
+      servers.add(serverOf(key, track.source_type, track.source_id))
+    })
+    const albums = new Map<string, number>()
+    const serverAlbums = new Map<string, number>()
+    for (const [identityKey, sources] of sourcesByAlbum) {
+      const group = groups.get(identityKey)
+      if (!group || !isAlbumGroupEligible(group, { includeSingles: false })) continue
+      for (const key of sources) albums.set(key, (albums.get(key) ?? 0) + 1)
+      for (const key of serversByAlbum.get(identityKey) ?? []) serverAlbums.set(key, (serverAlbums.get(key) ?? 0) + 1)
+    }
+    const visible = new Set(db!.all<{ key: string }>(`
+      SELECT 'subsonic:' || id AS key FROM subsonic_sources WHERE enabled = 1
+      UNION ALL SELECT 'jellyfin:' || id FROM jellyfin_sources WHERE enabled = 1
+      UNION ALL SELECT 'plex:' || id FROM plex_sources WHERE enabled = 1 AND deleted = 0
+    `).map(row => row.key))
+
+    const counts = rows.filter(row => isRemoteSourceType(row.source_type)).map(row => {
+      const key = `${row.source_type}:${row.source_id}`
+      return { provider: row.source_type as RemoteSourceCounts['provider'], sourceId: Number(row.source_id),
+        tracks: Number(row.tracks) || 0, albums: visible.has(key) ? albums.get(key) ?? 0 : null,
+        serverAlbums: visible.has(key) ? serverAlbums.get(serverOf(key, row.source_type, Number(row.source_id))) ?? 0 : null }
+    })
+    remoteSourceCountsCache = { generation, counts }
+    return counts
+  })
 }
 
 // Initialize database
@@ -2682,6 +2937,7 @@ export async function initDatabase(): Promise<void> {
       enabled INTEGER NOT NULL DEFAULT 1,
       last_status TEXT NOT NULL DEFAULT 'unknown',
       last_error TEXT,
+      last_error_kind TEXT,
       last_sync_at INTEGER,
       last_checked_at INTEGER,
       created_at INTEGER NOT NULL,
@@ -2700,6 +2956,7 @@ export async function initDatabase(): Promise<void> {
       enabled INTEGER NOT NULL DEFAULT 1,
       last_status TEXT NOT NULL DEFAULT 'unknown',
       last_error TEXT,
+      last_error_kind TEXT,
       last_sync_at INTEGER,
       last_checked_at INTEGER,
       created_at INTEGER NOT NULL,
@@ -2707,6 +2964,34 @@ export async function initDatabase(): Promise<void> {
     )
   `)
   db.run('CREATE INDEX IF NOT EXISTS idx_jellyfin_sources_enabled ON jellyfin_sources(enabled)')
+
+  db.run(`CREATE TABLE IF NOT EXISTS plex_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, base_url TEXT NOT NULL,
+    username TEXT NOT NULL, account_id TEXT NOT NULL, server_id TEXT NOT NULL,
+    library_id TEXT NOT NULL, library_name TEXT NOT NULL, secret_encrypted TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, last_status TEXT NOT NULL DEFAULT 'unknown',
+    last_error TEXT, last_error_kind TEXT, last_sync_at INTEGER, last_checked_at INTEGER,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    UNIQUE(account_id, server_id, library_id)
+  )`)
+  // Schema migration: why a server last failed (sign-in, unreachable, sync), for existing databases.
+  for (const table of ['subsonic_sources', 'jellyfin_sources', 'plex_sources']) {
+    try { db.run(`ALTER TABLE ${table} ADD COLUMN last_error_kind TEXT`) } catch { /* Column already exists. */ }
+  }
+
+
+  db.run(`CREATE TABLE IF NOT EXISTS remote_playlist_sync (provider TEXT NOT NULL, source_id INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (provider, source_id))`)
+
+  db.run(`CREATE TABLE IF NOT EXISTS provider_state_sync (
+    provider TEXT NOT NULL, source_id INTEGER NOT NULL, fingerprint TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (provider, source_id)
+  )`)
+  db.run(`CREATE TABLE IF NOT EXISTS provider_state_baselines (
+    provider TEXT NOT NULL, source_id INTEGER NOT NULL, track_path TEXT NOT NULL,
+    field TEXT NOT NULL, value_json TEXT NOT NULL,
+    PRIMARY KEY (provider, source_id, track_path, field)
+  )`)
 
   db.run(`UPDATE tracks SET source_type = 'local' WHERE source_type IS NULL OR TRIM(source_type) = ''`)
   db.run('UPDATE tracks SET is_available = 1 WHERE is_available IS NULL')
@@ -2827,6 +3112,8 @@ export async function initDatabase(): Promise<void> {
   } catch {
     // Column already exists.
   }
+  try { db.run('ALTER TABLE playlists ADD COLUMN remote_writable INTEGER NOT NULL DEFAULT 0') } catch { /* Existing column. */ }
+  try { db.run('ALTER TABLE playlists ADD COLUMN remote_deletable INTEGER') } catch { /* Existing column. */ }
   db.run("UPDATE playlists SET kind = 'normal' WHERE kind IS NULL OR kind NOT IN ('normal', 'dynamic')")
   db.run("UPDATE playlists SET dynamic_rules_json = NULL WHERE kind <> 'dynamic'")
   db.run('CREATE INDEX IF NOT EXISTS idx_playlists_last_played ON playlists(last_played_at DESC)')
@@ -2883,6 +3170,7 @@ export async function initDatabase(): Promise<void> {
   } catch {
     // Column already exists.
   }
+  try { db.run('ALTER TABLE playlist_tracks ADD COLUMN remote_entry_id TEXT') } catch { /* Existing column. */ }
   db.run('CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist ON playlist_tracks(playlist_id, position)')
   // Playlist rows are ordered occurrences, not unique memberships. Older
   // databases may still carry the legacy membership constraint, so remove it
@@ -3100,6 +3388,7 @@ function toSubsonicSourcePublic(row: SubsonicSourceRow): SubsonicSourcePublic {
     enabled: row.enabled,
     last_status: normalizeSubsonicLastStatus(row.last_status),
     last_error: row.last_error,
+    last_error_kind: normalizeSourceErrorKind(row.last_error_kind),
     last_sync_at: row.last_sync_at,
     last_checked_at: row.last_checked_at,
     created_at: row.created_at,
@@ -3117,12 +3406,125 @@ function toJellyfinSourcePublic(row: JellyfinSourceRow): JellyfinSourcePublic {
     enabled: row.enabled,
     last_status: normalizeJellyfinLastStatus(row.last_status),
     last_error: row.last_error,
+    last_error_kind: normalizeSourceErrorKind(row.last_error_kind),
     last_sync_at: row.last_sync_at,
     last_checked_at: row.last_checked_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
     has_stored_secret: typeof row.secret_encrypted === 'string' && row.secret_encrypted.trim().length > 0
   }
+}
+
+export function getProviderSyncSetting(ref: ProviderSyncRef): { fingerprint: string; enabled: number } | null {
+  return db?.get<{ fingerprint: string; enabled: number }>(
+    'SELECT fingerprint, enabled FROM provider_state_sync WHERE provider = ? AND source_id = ?',
+    [ref.provider, ref.sourceId]) ?? null
+}
+
+export async function setProviderSyncSetting(ref: ProviderSyncRef, fingerprint: string, enabled: boolean): Promise<void> {
+  if (!db) throw new Error('Database not initialized')
+  const previous = getProviderSyncSetting(ref)
+  if (previous?.fingerprint !== fingerprint || !enabled) {
+    db.run('DELETE FROM provider_state_baselines WHERE provider = ? AND source_id = ?', [ref.provider, ref.sourceId])
+  }
+  db.run(`INSERT INTO provider_state_sync (provider, source_id, fingerprint, enabled) VALUES (?, ?, ?, ?)
+    ON CONFLICT(provider, source_id) DO UPDATE SET fingerprint = excluded.fingerprint, enabled = excluded.enabled`,
+  [ref.provider, ref.sourceId, fingerprint, enabled ? 1 : 0])
+  await saveDatabase()
+}
+
+export function getProviderSyncTracks(ref: ProviderSyncRef, path?: string): ProviderSyncTrack[] {
+  if (!db) return []
+  const links = getProviderFavoriteLinks().localByRemote
+  return db.all<{ path: string; id: string; title: string; artist: string; favorite: number; rating: number | null; baseline: string | null }>(`
+    SELECT t.path, t.source_track_id AS id, COALESCE(t.title, t.path) AS title,
+      COALESCE(t.artist, '') AS artist, CASE WHEN f.track_path IS NULL THEN 0 ELSE 1 END AS favorite, r.rating,
+      b.value_json AS baseline
+    FROM tracks t LEFT JOIN favorites f ON f.track_path = t.path
+    LEFT JOIN track_ratings r ON r.track_path = t.path
+    LEFT JOIN provider_state_baselines b ON b.provider = t.source_type AND b.source_id = t.source_id
+      AND b.track_path = t.path AND b.field = 'favorite'
+    WHERE t.source_type = ? AND t.source_id = ? AND t.source_track_id IS NOT NULL
+      ${path === undefined ? '' : 'AND t.path = ?'}`, path === undefined ? [ref.provider, ref.sourceId] : [ref.provider, ref.sourceId, path])
+    .map(({ baseline, ...row }) => {
+      const localPath = links.get(row.path)
+      const favorite = row.favorite === 1
+      if (!localPath) return { ...row, favorite }
+      const localFavorite = Boolean(db!.get('SELECT 1 FROM favorites WHERE track_path = ?', [localPath]))
+      const favoriteMixed = favorite !== localFavorite
+      // At first connection preserve either Astra copy's favorite. Afterwards,
+      // the value differing from the acknowledged baseline is the newer edit.
+      return { ...row, favoriteMixed, favorite: favoriteMixed ? baseline !== 'true' : favorite }
+    })
+}
+
+interface ProviderFavoriteLink extends ProviderSyncRef { path: string }
+interface ProviderFavoriteLinks {
+  generation: number
+  localByRemote: Map<string, string>
+  remoteByLocal: Map<string, ProviderFavoriteLink[]>
+}
+let providerFavoriteLinks: ProviderFavoriteLinks | null = null
+
+function getProviderFavoriteLinks(): ProviderFavoriteLinks {
+  if (providerFavoriteLinks?.generation === libraryWriteGeneration) return providerFavoriteLinks
+  type Row = { path: string; title: string; artist: string; album: string; duration: number;
+    source_type: string; source_id: number | null }
+  const groups = new Map<string, Row[]>()
+  const rows = db?.all<Row>(`SELECT t.path, COALESCE(o.title, t.title) AS title,
+    COALESCE(o.artist, t.artist) AS artist, COALESCE(o.album, t.album) AS album,
+    t.duration, t.source_type, t.source_id FROM tracks t
+    LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
+    WHERE t.is_available = 1 AND t.source_type IN ('local', 'subsonic', 'jellyfin')`) ?? []
+  for (const row of rows) {
+    if (!(row.duration > 0) || [row.title, row.artist, row.album].some(value =>
+      !value?.trim() || /^\[?unknown(?: artist| album)?\]?$/i.test(value.trim()))) continue
+    const key = buildTrackSyncKey(row.title, row.artist, row.album)
+    const group = groups.get(key) ?? []
+    group.push(row)
+    groups.set(key, group)
+  }
+  const links: ProviderFavoriteLinks = { generation: libraryWriteGeneration, localByRemote: new Map(), remoteByLocal: new Map() }
+  for (const group of groups.values()) {
+    const local = group.filter(row => row.source_type === 'local')
+    const remote = group.filter(row => row.source_type !== 'local')
+    for (const target of remote) {
+      const candidates = local.filter(row => Math.abs(row.duration - target.duration) <= 2)
+      if (candidates.length !== 1) continue
+      const match = candidates[0]
+      if (remote.filter(row => row.source_type === target.source_type && row.source_id === target.source_id
+        && Math.abs(row.duration - match.duration) <= 2).length !== 1) continue
+      links.localByRemote.set(target.path, match.path)
+      const matches = links.remoteByLocal.get(match.path) ?? []
+      matches.push({ provider: target.source_type as ProviderSyncRef['provider'], sourceId: target.source_id!, path: target.path })
+      links.remoteByLocal.set(match.path, matches)
+    }
+  }
+  providerFavoriteLinks = links
+  return links
+}
+
+export function getProviderFavoriteTargets(localPath: string): ProviderFavoriteLink[] {
+  return getProviderFavoriteLinks().remoteByLocal.get(localPath) ?? []
+}
+
+export function getProviderFavoritePaths(remotePath: string): string[] {
+  const localPath = getProviderFavoriteLinks().localByRemote.get(remotePath)
+  return localPath ? [remotePath, localPath] : [remotePath]
+}
+
+export function getProviderSyncBaselines(ref: ProviderSyncRef): Map<string, ProviderSyncValue> {
+  const rows = db?.all<{ track_path: string; field: string; value_json: string }>(
+    'SELECT track_path, field, value_json FROM provider_state_baselines WHERE provider = ? AND source_id = ?',
+    [ref.provider, ref.sourceId]) ?? []
+  return new Map(rows.map(row => [JSON.stringify([row.track_path, row.field]), JSON.parse(row.value_json) as ProviderSyncValue]))
+}
+
+export function saveProviderSyncBaseline(ref: ProviderSyncRef, path: string, field: ProviderSyncField, value: ProviderSyncValue): void {
+  if (!db) throw new Error('Database not initialized')
+  db.run(`INSERT INTO provider_state_baselines (provider, source_id, track_path, field, value_json) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(provider, source_id, track_path, field) DO UPDATE SET value_json = excluded.value_json`,
+  [ref.provider, ref.sourceId, path, field, JSON.stringify(value)])
 }
 
 export function listSubsonicSources(): SubsonicSourcePublic[] {
@@ -3137,6 +3539,7 @@ export function listSubsonicSources(): SubsonicSourcePublic[] {
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
@@ -3158,6 +3561,7 @@ export function getSubsonicSourceById(sourceId: number): SubsonicSourceRow | nul
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
@@ -3192,11 +3596,12 @@ export async function createSubsonicSource(input: {
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
     [
       input.name.trim(),
       input.base_url.trim(),
@@ -3228,6 +3633,7 @@ export async function updateSubsonicSource(
     enabled?: number
     last_status?: SubsonicSourceLastStatus
     last_error?: string | null
+    last_error_kind?: SourceErrorKind | null
     last_sync_at?: number | null
     last_checked_at?: number | null
   },
@@ -3251,6 +3657,7 @@ export async function updateSubsonicSource(
          enabled = ?,
          last_status = ?,
          last_error = ?,
+         last_error_kind = ?,
          last_sync_at = ?,
          last_checked_at = ?,
          updated_at = ?
@@ -3263,6 +3670,7 @@ export async function updateSubsonicSource(
       input.enabled !== undefined ? (input.enabled ? 1 : 0) : current.enabled,
       input.last_status !== undefined ? normalizeSubsonicLastStatus(input.last_status) : normalizeSubsonicLastStatus(current.last_status),
       input.last_error !== undefined ? input.last_error : current.last_error,
+      input.last_error_kind !== undefined ? input.last_error_kind : current.last_error_kind ?? null,
       input.last_sync_at !== undefined ? input.last_sync_at : current.last_sync_at,
       input.last_checked_at !== undefined ? input.last_checked_at : current.last_checked_at,
       now,
@@ -3294,6 +3702,7 @@ export function listJellyfinSources(): JellyfinSourcePublic[] {
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
@@ -3315,6 +3724,7 @@ export function getJellyfinSourceById(sourceId: number): JellyfinSourceRow | nul
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
@@ -3349,11 +3759,12 @@ export async function createJellyfinSource(input: {
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
     [
       input.name.trim(),
       input.base_url.trim(),
@@ -3385,6 +3796,7 @@ export async function updateJellyfinSource(
     enabled?: number
     last_status?: JellyfinSourceLastStatus
     last_error?: string | null
+    last_error_kind?: SourceErrorKind | null
     last_sync_at?: number | null
     last_checked_at?: number | null
   },
@@ -3408,6 +3820,7 @@ export async function updateJellyfinSource(
          enabled = ?,
          last_status = ?,
          last_error = ?,
+         last_error_kind = ?,
          last_sync_at = ?,
          last_checked_at = ?,
          updated_at = ?
@@ -3420,6 +3833,7 @@ export async function updateJellyfinSource(
       input.enabled !== undefined ? (input.enabled ? 1 : 0) : current.enabled,
       input.last_status !== undefined ? normalizeJellyfinLastStatus(input.last_status) : normalizeJellyfinLastStatus(current.last_status),
       input.last_error !== undefined ? input.last_error : current.last_error,
+      input.last_error_kind !== undefined ? input.last_error_kind : current.last_error_kind ?? null,
       input.last_sync_at !== undefined ? input.last_sync_at : current.last_sync_at,
       input.last_checked_at !== undefined ? input.last_checked_at : current.last_checked_at,
       now,
@@ -3688,34 +4102,14 @@ export async function deleteSubsonicSource(sourceId: number, purgeTracks: boolea
   const source = getSubsonicSourceById(sourceId)
 
   if (purgeTracks) {
-    const sourcePathPattern = `subsonic://${sourceId}/%`
-    let includeUnknownSourceTracks = false
-    if (source) {
-      const countRow = db.get<{ count?: unknown }>('SELECT COUNT(*) as count FROM subsonic_sources WHERE id <> ?', [sourceId])
-      const otherSourcesCount = Number(countRow?.count ?? 0)
-      includeUnknownSourceTracks = Number.isFinite(otherSourcesCount) && otherSourcesCount <= 0
-    }
-
-    const trackSelectSql = includeUnknownSourceTracks
-      ? "SELECT path FROM tracks WHERE ((source_type = 'subsonic' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)"
-      : "SELECT path FROM tracks WHERE ((source_type = 'subsonic' AND source_id = ?) OR path LIKE ?)"
-    const trackPaths = db.all<{ path?: unknown }>(trackSelectSql, [sourceId, sourcePathPattern])
+    const scope = purgedTrackScope('subsonic', sourceId)
+    const trackPaths = db.all<{ path?: unknown }>(`SELECT path FROM tracks WHERE ${scope.where}`, scope.params)
       .map((row) => (typeof row.path === 'string' && row.path.trim().length > 0 ? row.path : null))
       .filter((path): path is string => path !== null)
 
     deleteTrackRelatedRows(trackPaths)
-    deleteTrackRelatedRowsByPathPattern(sourcePathPattern)
-    if (includeUnknownSourceTracks) {
-      db.run(
-        "DELETE FROM tracks WHERE ((source_type = 'subsonic' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)",
-        [sourceId, sourcePathPattern]
-      )
-    } else {
-      db.run(
-        "DELETE FROM tracks WHERE ((source_type = 'subsonic' AND source_id = ?) OR path LIKE ?)",
-        [sourceId, sourcePathPattern]
-      )
-    }
+    deleteTrackRelatedRowsByPathPattern(`subsonic://${sourceId}/%`)
+    db.run(`DELETE FROM tracks WHERE ${scope.where}`, scope.params)
   } else {
     db.run(
       `UPDATE tracks
@@ -3751,6 +4145,7 @@ export async function updateSubsonicSourceStatus(
   input: {
     status: SubsonicSourceLastStatus
     error?: string | null
+    errorKind?: SourceErrorKind | null
     syncedAt?: number | null
     checkedAt?: number | null
   },
@@ -3764,6 +4159,8 @@ export async function updateSubsonicSourceStatus(
     {
       last_status: normalizeSubsonicLastStatus(input.status),
       last_error: input.error === undefined ? existing.last_error : input.error,
+      // A kind only goes with an error; anything else clears it.
+      last_error_kind: input.status === 'error' ? (input.errorKind ?? existing.last_error_kind ?? 'sync') : null,
       last_sync_at: input.syncedAt === undefined ? existing.last_sync_at : input.syncedAt,
       last_checked_at: input.checkedAt === undefined ? existing.last_checked_at : input.checkedAt
     },
@@ -3785,6 +4182,30 @@ export async function markSubsonicTracksAvailability(
          modified_at = ?
      WHERE source_type = 'subsonic' AND source_id = ?`,
     [isAvailable ? 1 : 0, isAvailable ? null : reason, Date.now(), sourceId]
+  )
+  const count = result.changes
+  if (options.persist !== false && count > 0) {
+    await saveDatabase()
+  }
+  return Number.isFinite(count) ? count : 0
+}
+
+/** An outage hides only playable tracks, keeping other reasons, so recovery can't revive a removed track. */
+export async function markSubsonicTracksUnreachable(
+  sourceId: number,
+  options: { persist?: boolean } = {}
+): Promise<number> {
+  if (!db) return 0
+
+  const result = db.run(
+    `UPDATE tracks
+     SET is_available = 0,
+         availability_reason = 'source_unavailable',
+         modified_at = ?
+     WHERE source_type = 'subsonic'
+       AND source_id = ?
+       AND is_available = 1`,
+    [Date.now(), sourceId]
   )
   const count = result.changes
   if (options.persist !== false && count > 0) {
@@ -4046,10 +4467,70 @@ export async function markMissingSubsonicTracksUnavailable(
 
   const result = db.run(sql, params)
   const count = result.changes
-  if (options.persist !== false && count > 0) {
+  const recovered = reconcileSubsonicTrackIds(sourceId)
+  if (recovered > 0) rebuildDerivedLibraryState()
+  if (options.persist !== false && (count > 0 || recovered > 0)) {
     await saveDatabase()
   }
-  return Number.isFinite(count) ? count : 0
+  return Number.isFinite(count) ? Math.max(0, count - recovered) : 0
+}
+
+/** Recover a server ID change only after a complete catalog identifies missing IDs. */
+function reconcileSubsonicTrackIds(sourceId: number): number {
+  if (!db) return 0
+  type Row = DuplicateTrackRowRef & {
+    source_path: string; title: string; artist: string; album: string;
+    duration: number; format: string; is_available: number; availability_reason: string | null
+  }
+  const tracks = db.all<Row>(`SELECT id, path, source_path, title, artist, album,
+      duration, format, is_available, availability_reason FROM tracks
+    WHERE source_type = 'subsonic' AND source_id = ?
+      AND source_path IS NOT NULL AND TRIM(source_path) <> ''`, [sourceId])
+  const currentByPath = new Map<string, Row[]>()
+  for (const track of tracks) {
+    if (track.is_available !== 1) continue
+    const group = currentByPath.get(track.source_path) ?? []
+    group.push(track)
+    currentByPath.set(track.source_path, group)
+  }
+  const replacements = new Map<Row, Row[]>()
+  for (const stale of tracks) {
+    if (stale.is_available !== 0 || stale.availability_reason !== 'missing_upstream') continue
+    // Subsonic paths may be virtual rather than physical. Require matching
+    // metadata and duration too; never guess between indistinguishable copies.
+    const candidates = (currentByPath.get(stale.source_path) ?? []).filter(current =>
+      current.title === stale.title && current.artist === stale.artist && current.album === stale.album
+      && current.format === stale.format && current.duration > 0 && stale.duration > 0
+      && Math.abs(current.duration - stale.duration) <= 1)
+    if (candidates.length !== 1) continue
+    const target = candidates[0]
+    const group = replacements.get(target) ?? []
+    group.push(stale)
+    replacements.set(target, group)
+  }
+  if (!replacements.size) return 0
+  const ownsTransaction = !db.inTransaction
+  if (ownsTransaction) beginLibraryWriteTransaction()
+  let recovered = 0
+  try {
+    for (const [target, stale] of replacements) {
+      for (const old of stale) {
+        db.run('UPDATE listening_sessions SET track_path = ? WHERE track_id = ? AND track_path = ?', [target.path, old.id, old.path])
+        db.run(`DELETE FROM provider_state_baselines
+          WHERE provider = 'subsonic' AND source_id = ? AND track_path IN (?, ?)`, [sourceId, old.path, target.path])
+      }
+      // Reuse reference-preserving recovery: playlists, favorites, ratings,
+      // listening sessions, play counts, Home, metadata and lyrics all survive.
+      mergeDuplicateTrackRows(target.id, target.path, stale)
+      recovered += stale.length
+    }
+    refreshListeningSessionAlbumIdentities([...replacements.keys()].map(track => track.path))
+    if (ownsTransaction) commitLibraryWriteTransaction()
+  } catch (error) {
+    if (ownsTransaction) rollbackLibraryWriteTransaction()
+    throw error
+  }
+  return recovered
 }
 
 export async function replaceSubsonicArtworkHash(
@@ -4087,7 +4568,7 @@ export function getTrackByPath(trackPath: string): DbTrack | null {
     WHERE t.path = ?
     LIMIT 1
   `, [trackPath]) ?? null
-  return row ? attachAlbumIdentityKeys([row])[0] ?? null : null
+  return row ? attachAlbumIdentityKeys([row], undefined, undefined, true)[0] ?? null : null
 }
 
 export function getTrackById(trackId: number): DbTrack | null {
@@ -4098,7 +4579,7 @@ export function getTrackById(trackId: number): DbTrack | null {
     WHERE t.id = ?
     LIMIT 1
   `, [trackId]) ?? null
-  return row ? attachAlbumIdentityKeys([row])[0] ?? null : null
+  return row ? attachAlbumIdentityKeys([row], undefined, undefined, true)[0] ?? null : null
 }
 
 export async function setTrackAvailability(
@@ -4143,34 +4624,14 @@ export async function deleteJellyfinSource(sourceId: number, purgeTracks: boolea
   const source = getJellyfinSourceById(sourceId)
 
   if (purgeTracks) {
-    const sourcePathPattern = `jellyfin://${sourceId}/%`
-    let includeUnknownSourceTracks = false
-    if (source) {
-      const countRow = db.get<{ count?: unknown }>('SELECT COUNT(*) as count FROM jellyfin_sources WHERE id <> ?', [sourceId])
-      const otherSourcesCount = Number(countRow?.count ?? 0)
-      includeUnknownSourceTracks = Number.isFinite(otherSourcesCount) && otherSourcesCount <= 0
-    }
-
-    const trackSelectSql = includeUnknownSourceTracks
-      ? "SELECT path FROM tracks WHERE ((source_type = 'jellyfin' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)"
-      : "SELECT path FROM tracks WHERE ((source_type = 'jellyfin' AND source_id = ?) OR path LIKE ?)"
-    const trackPaths = db.all<{ path?: unknown }>(trackSelectSql, [sourceId, sourcePathPattern])
+    const scope = purgedTrackScope('jellyfin', sourceId)
+    const trackPaths = db.all<{ path?: unknown }>(`SELECT path FROM tracks WHERE ${scope.where}`, scope.params)
       .map((row) => (typeof row.path === 'string' && row.path.trim().length > 0 ? row.path : null))
       .filter((path): path is string => path !== null)
 
     deleteTrackRelatedRows(trackPaths)
-    deleteTrackRelatedRowsByPathPattern(sourcePathPattern)
-    if (includeUnknownSourceTracks) {
-      db.run(
-        "DELETE FROM tracks WHERE ((source_type = 'jellyfin' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)",
-        [sourceId, sourcePathPattern]
-      )
-    } else {
-      db.run(
-        "DELETE FROM tracks WHERE ((source_type = 'jellyfin' AND source_id = ?) OR path LIKE ?)",
-        [sourceId, sourcePathPattern]
-      )
-    }
+    deleteTrackRelatedRowsByPathPattern(`jellyfin://${sourceId}/%`)
+    db.run(`DELETE FROM tracks WHERE ${scope.where}`, scope.params)
   } else {
     db.run(
       `UPDATE tracks
@@ -4183,6 +4644,11 @@ export async function deleteJellyfinSource(sourceId: number, purgeTracks: boolea
   }
 
   if (source) {
+    db.run(`DELETE FROM playlist_tracks WHERE playlist_id IN (
+      SELECT id FROM playlists WHERE remote_source_type = 'jellyfin' AND remote_source_id = ?
+    )`, [sourceId])
+    db.run("DELETE FROM playlists WHERE remote_source_type = 'jellyfin' AND remote_source_id = ?", [sourceId])
+    db.run("DELETE FROM remote_playlist_sync WHERE provider = 'jellyfin' AND source_id = ?", [sourceId])
     db.run('DELETE FROM jellyfin_sources WHERE id = ?', [sourceId])
   }
   await saveDatabase()
@@ -4193,6 +4659,7 @@ export async function updateJellyfinSourceStatus(
   input: {
     status: JellyfinSourceLastStatus
     error?: string | null
+    errorKind?: SourceErrorKind | null
     syncedAt?: number | null
     checkedAt?: number | null
   },
@@ -4206,6 +4673,8 @@ export async function updateJellyfinSourceStatus(
     {
       last_status: normalizeJellyfinLastStatus(input.status),
       last_error: input.error === undefined ? existing.last_error : input.error,
+      // A kind only goes with an error; anything else clears it.
+      last_error_kind: input.status === 'error' ? (input.errorKind ?? existing.last_error_kind ?? 'sync') : null,
       last_sync_at: input.syncedAt === undefined ? existing.last_sync_at : input.syncedAt,
       last_checked_at: input.checkedAt === undefined ? existing.last_checked_at : input.checkedAt
     },
@@ -4227,6 +4696,30 @@ export async function markJellyfinTracksAvailability(
          modified_at = ?
      WHERE source_type = 'jellyfin' AND source_id = ?`,
     [isAvailable ? 1 : 0, isAvailable ? null : reason, Date.now(), sourceId]
+  )
+  const count = result.changes
+  if (options.persist !== false && count > 0) {
+    await saveDatabase()
+  }
+  return Number.isFinite(count) ? count : 0
+}
+
+/** An outage hides only playable tracks, keeping other reasons, so recovery can't revive a removed track. */
+export async function markJellyfinTracksUnreachable(
+  sourceId: number,
+  options: { persist?: boolean } = {}
+): Promise<number> {
+  if (!db) return 0
+
+  const result = db.run(
+    `UPDATE tracks
+     SET is_available = 0,
+         availability_reason = 'source_unavailable',
+         modified_at = ?
+     WHERE source_type = 'jellyfin'
+       AND source_id = ?
+       AND is_available = 1`,
+    [Date.now(), sourceId]
   )
   const count = result.changes
   if (options.persist !== false && count > 0) {
@@ -4259,7 +4752,17 @@ export async function restoreJellyfinTracksFromSourceUnavailable(
   return Number.isFinite(count) ? count : 0
 }
 
-export async function upsertJellyfinTracks(
+export function upsertJellyfinTracks(sourceId: number, tracks: JellyfinTrackUpsertInput[],
+  options: { persist?: boolean; syncSessionKey?: string | null } = {}) {
+  return upsertRemoteCatalogTracks('jellyfin', sourceId, tracks, options)
+}
+export function upsertPlexTracks(sourceId: number, tracks: JellyfinTrackUpsertInput[],
+  options: { persist?: boolean; syncSessionKey?: string | null } = {}) {
+  return upsertRemoteCatalogTracks('plex', sourceId, tracks, options)
+}
+
+async function upsertRemoteCatalogTracks(
+  provider: 'jellyfin' | 'plex',
   sourceId: number,
   tracks: JellyfinTrackUpsertInput[],
   options: { persist?: boolean; syncSessionKey?: string | null } = {}
@@ -4268,7 +4771,7 @@ export async function upsertJellyfinTracks(
     return { inserted: 0, updated: 0 }
   }
 
-  const sourceExists = Boolean(db.get('SELECT 1 FROM jellyfin_sources WHERE id = ? LIMIT 1', [sourceId]))
+  const sourceExists = Boolean(db.get(`SELECT 1 FROM ${provider}_sources WHERE id = ? LIMIT 1`, [sourceId]))
   if (!sourceExists) {
     return { inserted: 0, updated: 0 }
   }
@@ -4302,7 +4805,7 @@ export async function upsertJellyfinTracks(
              year = ?,
              genre = ?,
              genre_names_json = ?,
-             artwork_hash = ?,
+             artwork_hash = ${provider === 'plex' ? 'COALESCE(?, artwork_hash)' : '?'},
              format = ?,
              sample_rate = ?,
              bit_depth = ?,
@@ -4315,7 +4818,7 @@ export async function upsertJellyfinTracks(
              replaygain_album_gain_db = ?,
              bpm = ?,
              musical_key = ?,
-             source_type = 'jellyfin',
+             source_type = '${provider}',
              source_id = ?,
              source_track_id = ?,
              source_path = ?,
@@ -4402,7 +4905,7 @@ export async function upsertJellyfinTracks(
         sync_session_key,
         added_at,
         modified_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'jellyfin', ?, ?, ?, 1, NULL, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '${provider}', ?, ?, ?, 1, NULL, ?, ?, ?)`,
       [
         track.path,
         track.title,
@@ -4514,6 +5017,10 @@ export async function cleanupOrphanedRemoteTracks(options: { persist?: boolean }
     ) OR (
       source_type = 'jellyfin'
       AND (source_id IS NULL OR source_id NOT IN (SELECT id FROM jellyfin_sources))
+      AND COALESCE(availability_reason, '') <> 'source_deleted'
+    ) OR (
+      source_type = 'plex'
+      AND (source_id IS NULL OR source_id NOT IN (SELECT id FROM plex_sources))
       AND COALESCE(availability_reason, '') <> 'source_deleted'
     )
   `)
@@ -5017,7 +5524,7 @@ export function getAllTracks(): DbTrack[] {
   return measureLibraryQuery('getTracks', () => {
     const tracks = readEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
       ${ALL_TRACKS_ORDER_BY_CLAUSE}
     `)
     const snapshot = getLibraryTrackSnapshot()
@@ -5082,7 +5589,7 @@ export function getTracksByPaths(trackPaths: readonly string[] | null | undefine
     if (requestedPaths.length === 0) return []
 
     const rows = readEffectiveTrackRowsByPaths(requestedPaths)
-    const tracksByPath = new Map(attachAlbumIdentityKeys(rows).map((track) => [track.path, track]))
+    const tracksByPath = new Map(attachAlbumIdentityKeys(rows, undefined, undefined, true).map((track) => [track.path, track]))
     const tracks: DbTrack[] = []
     for (const trackPath of requestedPaths) {
       const track = tracksByPath.get(trackPath)
@@ -5125,11 +5632,12 @@ export function getTracksByArtist(artist: string, mode: ArtistBrowseMode = 'cano
     const targetArtistKey = normalizeKey(artist)
     if (!targetArtistKey) return []
     const resolvedMode: ArtistBrowseMode = mode === 'strict' ? 'strict' : 'canonical'
+    getLibraryTrackSnapshot()
 
     const matched: DbTrackRow[] = []
     for (const track of iterateEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
     `)) {
       if (trackMatchesBrowseArtist(track, targetArtistKey, resolvedMode)) {
         matched.push(track)
@@ -5202,7 +5710,7 @@ export function getTracksByGenre(genre: string): DbTrack[] {
     const matched: DbTrackRow[] = []
     for (const track of iterateEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
     `)) {
       if (getGenreNamesForTrack(track).some((name) => normalizeKey(name) === targetGenreKey)) {
         matched.push(track)
@@ -5210,8 +5718,7 @@ export function getTracksByGenre(genre: string): DbTrack[] {
     }
 
     return attachAlbumIdentityKeys(
-      matched.sort(compareTracksByAlbumDiscTrackTitle),
-      readAlbumIdentityRowsForTracks(matched)
+      matched.sort(compareTracksByAlbumDiscTrackTitle)
     )
   })
 }
@@ -5223,7 +5730,7 @@ export function getTracksByYear(year: number | null): DbTrack[] {
 
     const tracks = Array.from(iterateEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
     `))
     const groups = buildAlbumGroups(tracks)
     const matched: DbTrackRow[] = []
@@ -5260,7 +5767,7 @@ export function getGenres(): GenreRecord[] {
 
     for (const track of iterateEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
     `)) {
       const genreNames = getGenreNamesForTrack(track)
       if (genreNames.length === 0) continue
@@ -5765,7 +6272,7 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
 
     for (const track of iterateEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
     `)) {
       const trackAlbumIdentityKey = albumIdentityKeysByPath.get(track.path)
         ?? buildFallbackAlbumIdentityKeyFromTrack(track)
@@ -5812,7 +6319,7 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
 
 // Get unique albums
 export function listAlbumIdentityKeys(): string[] {
-  const identityKeys = new Set(getLibraryTrackSnapshot()?.identityKeysByPath.values() ?? [])
+  const identityKeys = new Set(getLibraryTrackSnapshot(true)?.identityKeysByPath.values() ?? [])
   return Array.from(identityKeys).sort((a, b) => a.localeCompare(b))
 }
 
@@ -5910,6 +6417,7 @@ function resolveHomePlaylistSource(
   playedAt: number
 ): HomePlaybackSourceSummary | null {
   if (!db) return null
+  if (source.playlistId !== -1 && !isPlaylistVisible(source.playlistId)) return null
   const playlist = source.playlistId === -1 ? null : db.get<{
     name: string; kind: string; dynamic_rules_json: string | null; custom_cover_hash: string | null
   }>('SELECT name, kind, dynamic_rules_json, custom_cover_hash FROM playlists WHERE id = ?', [source.playlistId])
@@ -5942,7 +6450,7 @@ function resolveHomePlaylistSource(
     SELECT t.is_available, t.artwork_hash AS base_artwork_hash,
       CASE WHEN COALESCE(o.artwork_cleared, 0) = 1 THEN NULL
         ELSE COALESCE(o.artwork_hash, t.artwork_hash) END AS artwork_hash
-    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    ${dynamic || source.playlistId === -1 ? VISIBLE_TRACK_FROM_CLAUSE : EFFECTIVE_TRACK_FROM_CLAUSE}
     ${suffix}
   ) SELECT COUNT(*) AS track_count, MAX(COALESCE(is_available, 1) != 0) AS available,
     (SELECT artwork_hash FROM source_tracks LIMIT 1) AS artwork_hash,
@@ -6010,6 +6518,7 @@ function resolveHomePlaybackSource(
     case 'track': {
       const track = getTrackByPath(source.trackPath)
       if (!track || track.is_available === 0) return null
+      if (!db?.get(`SELECT 1 FROM tracks WHERE path = ? AND ${VISIBLE_TRACK_PREDICATE}`, [track.path])) return null
       title = track.title
       subtitle = track.artist
       detail = 'Track'
@@ -6172,7 +6681,7 @@ export function getAvailableLibraryTrackPaths(): string[] {
   return db.all<{ path: string }>(`
     SELECT path
     FROM tracks
-    WHERE is_available != 0
+    WHERE is_available != 0 AND ${VISIBLE_TRACK_PREDICATE}
     ORDER BY path COLLATE NOCASE
   `).map((row) => row.path)
 }
@@ -6184,7 +6693,7 @@ export function searchTracks(query: string): DbTrack[] {
     const pattern = `%${query}%`
     const tracks = db.all<DbTrackRow>(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
       WHERE COALESCE(o.title, t.title) LIKE ?
         OR COALESCE(o.artist, t.artist) LIKE ?
         OR (o.artist IS NULL AND t.artist_names_json LIKE ?)
@@ -8978,7 +9487,7 @@ export function getArtworkPath(hash: string): string {
 // Get track count
 export function getTrackCount(): number {
   if (!db) return 0
-  return Number(db.get<{ count?: unknown }>('SELECT COUNT(*) as count FROM tracks')?.count ?? 0)
+  return Number(db.get<{ count?: unknown }>(`SELECT COUNT(*) as count FROM tracks WHERE ${VISIBLE_TRACK_PREDICATE}`)?.count ?? 0)
 }
 
 export function getTrackSourceCounts(): { total: number; local: number; remote: number } {
@@ -8991,7 +9500,7 @@ export function getTrackSourceCounts(): { total: number; local: number; remote: 
 export function getTotalTrackDuration(): number {
   if (!db) return 0
   const total = Number(db.get<{ total?: unknown }>(
-    'SELECT SUM(duration) as total FROM tracks WHERE duration > 0'
+    `SELECT SUM(duration) as total FROM tracks WHERE duration > 0 AND ${VISIBLE_TRACK_PREDICATE}`
   )?.total ?? 0)
   return Number.isFinite(total) && total > 0 ? total : 0
 }
@@ -9371,7 +9880,7 @@ export function getTrackOverrideFields(trackPaths: string[]): Record<string, str
 export function getFavorites(): DbTrack[] {
   return readEffectiveTracks(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    ${VISIBLE_TRACK_FROM_CLAUSE}
     INNER JOIN favorites f ON f.track_path = t.path
     ORDER BY f.added_at DESC
   `)
@@ -11284,7 +11793,7 @@ function applyListeningHistorySection(
 export function getRecentlyPlayed(limit: number = 50): DbTrack[] {
   return readEffectiveTracks(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    ${VISIBLE_TRACK_FROM_CLAUSE}
     INNER JOIN recently_played r ON r.track_path = t.path
     ORDER BY r.played_at DESC
     LIMIT ${limit}
@@ -11563,7 +12072,7 @@ function getDynamicPlaylistTracksForRules(rules: DynamicPlaylistRules): DbTrack[
 
     return readEffectiveTracks(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
       ${joins}
       WHERE ${where}
       ORDER BY ${orderBy}${limitSql}
@@ -11597,6 +12106,7 @@ function buildDynamicPlaylistSummary(row: PlaylistSummaryRow): Playlist {
 function buildNormalPlaylistSummary(row: PlaylistSummaryRow): Playlist {
   return {
     id: row.id,
+    ...(getRemotePlaylistLink(row.id) ? { remote: getRemotePlaylistLink(row.id)! } : {}),
     name: row.name,
     kind: 'normal',
     created_at: row.created_at,
@@ -11643,6 +12153,7 @@ export function getPlaylists(): Playlist[] {
           AND t.path IS NULL
       ) as missing_track_count
     FROM playlists p
+    WHERE ${visiblePlaylistsSql('p')}
     ORDER BY
       CASE WHEN p.last_played_at IS NULL THEN 1 ELSE 0 END,
       p.last_played_at DESC,
@@ -11668,14 +12179,14 @@ export function getCompanionApiPlaylistPage(afterId: number, limit: number): {
       SELECT COUNT(*) FROM playlist_tracks pt
       INNER JOIN tracks t ON t.path = pt.track_path WHERE pt.playlist_id = p.id
     ) END AS track_count
-    FROM playlists p WHERE p.id > ? ORDER BY p.id ASC LIMIT ?
+    FROM playlists p WHERE ${visiblePlaylistsSql('p')} AND p.id > ? ORDER BY p.id ASC LIMIT ?
   `, [afterId, limit])
-  const total = db.get<{ count: number }>('SELECT COUNT(*) AS count FROM playlists')?.count ?? 0
+  const total = db.get<{ count: number }>(`SELECT COUNT(*) AS count FROM playlists p WHERE ${visiblePlaylistsSql('p')}`)?.count ?? 0
   return { items, total }
 }
 
 export function getCompanionApiPlaylistTarget(playlistId: number): CompanionApiPlaylistTarget | null {
-  if (!db || !Number.isInteger(playlistId) || playlistId <= 0) return null
+  if (!db || !Number.isInteger(playlistId) || playlistId <= 0 || !isPlaylistVisible(playlistId)) return null
   const row = db.get<{
     id?: unknown
     name?: unknown
@@ -11818,120 +12329,150 @@ export function previewDynamicPlaylist(rules: DynamicPlaylistRules): DynamicPlay
   }
 }
 
-export async function syncSubsonicRemotePlaylists(
-  sourceId: number,
-  playlists: SubsonicRemotePlaylistSyncInput[],
-  options: { persist?: boolean } = {}
-): Promise<{ created: number; updated: number; removed: number }> {
-  if (!db) return { created: 0, updated: 0, removed: 0 }
+/** One playlist collection/opt-in per Plex account and server, across libraries. */
+export function getPlexPlaylistSources(sourceId: number): PlexSource[] {
+  const source = getPlexSourceById(sourceId)
+  return source ? listPlexSources().filter(peer => peer.account_id === source.account_id && peer.server_id === source.server_id)
+    .sort((a, b) => a.id - b.id) : []
+}
+export function normalizeRemotePlaylistRef(ref: ProviderSyncRef): ProviderSyncRef {
+  return ref.provider === 'plex' ? { ...ref, sourceId: getPlexPlaylistSources(ref.sourceId)[0]?.id ?? ref.sourceId } : ref
+}
+export function getRemotePlaylistDestinations(paths: string[]): RemotePlaylistDestination[] {
+  if (!Array.isArray(paths) || paths.length > 250_000 || paths.some(path => typeof path !== 'string' || !path.trim())) throw new Error('Invalid playlist tracks.')
+  const uniquePaths = [...new Set(paths)]
+  const tracks = getTracksByPaths(uniquePaths)
+  const sources = [
+    ...listSubsonicSources().map(source => ({ provider: 'subsonic' as const, source })),
+    ...listJellyfinSources().map(source => ({ provider: 'jellyfin' as const, source })),
+    ...listPlexSources().filter(source => normalizeRemotePlaylistRef({ provider: 'plex', sourceId: source.id }).sourceId === source.id)
+      .map(source => ({ provider: 'plex' as const, source }))
+  ]
+  return sources.map(({ provider, source }) => {
+    const ref = { provider, sourceId: source.id }
+    const enabledSources = provider === 'plex' ? getPlexPlaylistSources(source.id).filter(peer => peer.enabled === 1).map(peer => peer.id)
+      : source.enabled === 1 ? [source.id] : []
+    const reasonKind = !enabledSources.length ? 'not-in-use' as const
+      : !remotePlaylistsEnabled(ref) ? 'sync-off' as const
+        : tracks.length !== uniquePaths.length || tracks.some(track => track.source_type !== provider
+          || !enabledSources.includes(track.source_id!) || track.is_available !== 1) ? 'tracks' as const : null
+    const reason = reasonKind === 'not-in-use' ? 'Connect this server to create playlists.'
+      : reasonKind === 'sync-off' ? 'Enable Sync playlists in this server’s settings.'
+        : reasonKind === 'tracks' ? 'Selected tracks must be available from this server.' : null
+    return { ...ref, name: `${source.name} · ${source.username}`, reason, reasonKind }
+  })
+}
+export function remotePlaylistFingerprint(ref: ProviderSyncRef): string | null {
+  if (ref.provider === 'plex') {
+    const source = getPlexSourceById(ref.sourceId)
+    if (!source || !getPlexPlaylistSources(source.id).some(peer => peer.enabled === 1)) return null
+    return createHash('sha256').update(JSON.stringify([source.account_id, source.server_id])).digest('hex')
+  }
+  const source = ref.provider === 'subsonic' ? getSubsonicSourceById(ref.sourceId) : getJellyfinSourceById(ref.sourceId)
+  if (!source || source.enabled !== 1) return null
+  return createHash('sha256').update(JSON.stringify([source.base_url, source.username, source.secret_encrypted])).digest('hex')
+}
+export function remotePlaylistsEnabled(ref: ProviderSyncRef): boolean {
+  ref = normalizeRemotePlaylistRef(ref)
+  const row = db?.get<{ enabled: number; fingerprint: string }>('SELECT enabled, fingerprint FROM remote_playlist_sync WHERE provider = ? AND source_id = ?', [ref.provider, ref.sourceId])
+  return row?.enabled === 1 && row.fingerprint === remotePlaylistFingerprint(ref)
+}
+export async function setRemotePlaylistsEnabled(ref: ProviderSyncRef, enabled: boolean): Promise<void> {
+  if (!db) throw new Error('Database not initialized')
+  ref = normalizeRemotePlaylistRef(ref)
+  const fingerprint = remotePlaylistFingerprint(ref)
+  if (enabled && !fingerprint) throw new Error('Connect this server before enabling playlist sync.')
+  db.run(`INSERT INTO remote_playlist_sync (provider, source_id, fingerprint, enabled) VALUES (?, ?, ?, ?)
+    ON CONFLICT(provider, source_id) DO UPDATE SET fingerprint = excluded.fingerprint, enabled = excluded.enabled`,
+  [ref.provider, ref.sourceId, fingerprint ?? '', Number(enabled)])
+  await saveDatabase()
+}
+function visiblePlaylistsSql(alias: string): string {
+  const refs = db?.all<ProviderSyncRef>('SELECT provider, source_id AS sourceId FROM remote_playlist_sync WHERE enabled = 1') ?? []
+  const predicates = refs.filter(ref => ['subsonic', 'jellyfin', 'plex'].includes(ref.provider) && Number.isSafeInteger(ref.sourceId) && remotePlaylistsEnabled(ref))
+    .map(ref => `(${alias}.remote_source_type = '${ref.provider}' AND ${alias}.remote_source_id = ${ref.sourceId})`)
+  return `(${alias}.remote_source_id IS NULL${predicates.length ? ` OR ${predicates.join(' OR ')}` : ''})`
+}
+export function getRemotePlaylistLink(id: number): RemotePlaylistLink | null {
+  const row = db?.get<{ remote_source_type: ProviderSyncRef['provider']; remote_source_id: number; remote_playlist_id: string; remote_writable: number; remote_deletable: number | null }>(
+    'SELECT remote_source_type, remote_source_id, remote_playlist_id, remote_writable, remote_deletable FROM playlists WHERE id = ? AND remote_source_id IS NOT NULL', [id])
+  return row ? { provider: row.remote_source_type, sourceId: row.remote_source_id, id: row.remote_playlist_id,
+    writable: row.remote_writable === 1, deletable: (row.remote_deletable ?? row.remote_writable) === 1 } : null
+}
+function isPlaylistVisible(id: number): boolean {
+  const link = getRemotePlaylistLink(id)
+  return !link || remotePlaylistsEnabled(link)
+}
+export function getRemotePlaylistLocal(id: number): RemotePlaylistLocal | null {
+  const ref = getRemotePlaylistLink(id)
+  if (!ref || !db) return null
+  const row = db.get<{ name: string }>('SELECT name FROM playlists WHERE id = ?', [id])!
+  const tracks = db.all<{ entryId: number; path: string; title: string | null; artist: string | null; album: string | null; remoteEntryId: string | null }>(
+    `SELECT id AS entryId, track_path AS path, fallback_title AS title, fallback_artist AS artist, fallback_album AS album, remote_entry_id AS remoteEntryId
+      FROM playlist_tracks WHERE playlist_id = ? ORDER BY position, id`, [id])
+    .map(({ remoteEntryId, ...track }) => ({ ...track, ...(remoteEntryId === null ? {} : { remoteEntryId }) }))
+  return { localId: id, ref: { provider: ref.provider, sourceId: ref.sourceId }, id: ref.id, name: row.name,
+    writable: ref.writable, deletable: ref.deletable, tracks }
+}
 
-  const normalizedPlaylists = playlists
-    .map((playlist) => {
-      const sourcePlaylistId = typeof playlist.source_playlist_id === 'string'
-        ? playlist.source_playlist_id.trim()
-        : ''
-      if (!sourcePlaylistId) return null
-
-      const name = typeof playlist.name === 'string' && playlist.name.trim().length > 0
-        ? playlist.name.trim()
-        : `Playlist ${sourcePlaylistId}`
-
-      const tracks: PlaylistEntryInsertInput[] = []
-      for (const track of playlist.tracks) {
-        const trackPath = typeof track.path === 'string' ? track.path.trim() : ''
-        if (!trackPath) continue
-        tracks.push({
-          trackPath,
-          fallbackTitle: normalizeOptionalTextField(track.title ?? null),
-          fallbackArtist: normalizeOptionalTextField(track.artist ?? null),
-          fallbackAlbum: normalizeOptionalTextField(track.album ?? null)
-        })
+export async function applyRemotePlaylists(ref: ProviderSyncRef, snapshots: RemotePlaylistSnapshot[],
+  options: { prune?: boolean; persist?: boolean } = {}): Promise<{ created: number; updated: number; removed: number }> {
+  if (!db) throw new Error('Database not initialized')
+  if (new Set(snapshots.map(s => s.id)).size !== snapshots.length || snapshots.some(s => !s.id || !s.name || !Array.isArray(s.tracks))) throw new Error('Invalid server playlists.')
+  const existing = new Map(db.all<{ id: number; remote_playlist_id: string }>(
+    'SELECT id, remote_playlist_id FROM playlists WHERE remote_source_type = ? AND remote_source_id = ?', [ref.provider, ref.sourceId])
+    .map(row => [row.remote_playlist_id, row.id]))
+  let created = 0, updated = 0, removed = 0
+  beginLibraryWriteTransaction()
+  try {
+    for (const snapshot of snapshots) {
+      let id = existing.get(snapshot.id)
+      const before = id === undefined ? null : getRemotePlaylistLocal(id)
+      const normalize = (tracks: RemotePlaylistSnapshot['tracks']) => tracks.map(t => [t.path, t.title ?? null, t.artist ?? null, t.album ?? null, t.remoteEntryId ?? null])
+      if (before && before.name === snapshot.name && before.writable === snapshot.writable
+        && before.deletable === (snapshot.deletable ?? snapshot.writable)
+        && JSON.stringify(normalize(before.tracks)) === JSON.stringify(normalize(snapshot.tracks))
+        && snapshot.tracks.every((t, i) => t.entryId === undefined || t.entryId === before.tracks[i].entryId)) continue
+      if (id === undefined) {
+        id = Number(db.run(`INSERT INTO playlists (name, created_at, updated_at, remote_source_type, remote_source_id, remote_playlist_id, remote_writable)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`, [snapshot.name, Date.now(), Date.now(), ref.provider, ref.sourceId, snapshot.id, Number(snapshot.writable)]).lastInsertRowid)
+        created++
+      } else updated++
+      const old = before?.tracks ?? []
+      const used = new Set<number>()
+      const reserved = new Set(snapshot.tracks.flatMap(t => t.entryId === undefined ? [] : [t.entryId]))
+      for (const [position, track] of snapshot.tracks.entries()) {
+        const match = track.entryId !== undefined ? old.find(t => t.entryId === track.entryId && t.path === track.path)
+          : track.remoteEntryId !== undefined ? old.find(t => t.remoteEntryId === track.remoteEntryId)
+            : old.find(t => t.path === track.path && !used.has(t.entryId!) && !reserved.has(t.entryId!))
+        if (match && !used.has(match.entryId!)) {
+          used.add(match.entryId!)
+          db.run('UPDATE playlist_tracks SET track_path = ?, position = ?, fallback_title = ?, fallback_artist = ?, fallback_album = ?, remote_entry_id = ? WHERE id = ?',
+            [track.path, position, track.title ?? null, track.artist ?? null, track.album ?? null, track.remoteEntryId ?? null, match.entryId!])
+        } else {
+          const entry = db.run(`INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album, remote_entry_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [id, track.path, position, Date.now(), track.title ?? null, track.artist ?? null, track.album ?? null, track.remoteEntryId ?? null])
+          used.add(Number(entry.lastInsertRowid))
+        }
       }
-
-      return {
-        sourcePlaylistId,
-        name,
-        tracks
-      }
-    })
-    .filter((playlist): playlist is { sourcePlaylistId: string; name: string; tracks: PlaylistEntryInsertInput[] } => playlist !== null)
-
-  const seenRemotePlaylistIds = new Set(normalizedPlaylists.map((playlist) => playlist.sourcePlaylistId))
-  const existingRows = db.all<{ id?: unknown; remote_playlist_id?: unknown }>(`
-    SELECT id, remote_playlist_id
-    FROM playlists
-    WHERE remote_source_type = 'subsonic'
-      AND remote_source_id = ?
-  `, [sourceId])
-
-  const existingByRemotePlaylistId = new Map<string, number>()
-  for (const row of existingRows) {
-    const id = Number(row.id)
-    const remotePlaylistId = typeof row.remote_playlist_id === 'string' ? row.remote_playlist_id : ''
-    if (Number.isInteger(id) && id > 0 && remotePlaylistId) {
-      existingByRemotePlaylistId.set(remotePlaylistId, id)
+      for (const track of old) if (!used.has(track.entryId!)) db.run('DELETE FROM playlist_tracks WHERE id = ?', [track.entryId!])
+      db.run('UPDATE playlists SET name = ?, remote_writable = ?, remote_deletable = ?, updated_at = ? WHERE id = ?',
+        [snapshot.name, Number(snapshot.writable), Number(snapshot.deletable ?? snapshot.writable), Date.now(), id])
     }
-  }
-
-  const now = Date.now()
-  let created = 0
-  let updated = 0
-
-  for (const playlist of normalizedPlaylists) {
-    let playlistId = existingByRemotePlaylistId.get(playlist.sourcePlaylistId) ?? null
-    if (playlistId === null) {
-      const insertResult = db.run(
-        `INSERT INTO playlists (
-          name,
-          created_at,
-          updated_at,
-          last_played_at,
-          custom_cover_hash,
-          remote_source_type,
-          remote_source_id,
-          remote_playlist_id
-        ) VALUES (?, ?, ?, NULL, NULL, 'subsonic', ?, ?)`,
-        [playlist.name, now, now, sourceId, playlist.sourcePlaylistId]
-      )
-      playlistId = Number(insertResult.lastInsertRowid)
-      existingByRemotePlaylistId.set(playlist.sourcePlaylistId, playlistId)
-      created += 1
-    } else {
-      db.run('UPDATE playlists SET name = ?, updated_at = ? WHERE id = ?', [playlist.name, now, playlistId])
-      db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [playlistId])
-      updated += 1
+    if (options.prune) for (const [remoteId, id] of existing) if (!snapshots.some(s => s.id === remoteId)) {
+      db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [id])
+      db.run('DELETE FROM playlists WHERE id = ?', [id]); removed++
     }
-
-    let position = 0
-    for (const entry of playlist.tracks) {
-      db.run(
-        'INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [
-          playlistId,
-          entry.trackPath,
-          position++,
-          now,
-          entry.fallbackTitle ?? null,
-          entry.fallbackArtist ?? null,
-          entry.fallbackAlbum ?? null
-        ]
-      )
-    }
-  }
-
-  let removed = 0
-  for (const [remotePlaylistId, playlistId] of existingByRemotePlaylistId.entries()) {
-    if (seenRemotePlaylistIds.has(remotePlaylistId)) continue
-    db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [playlistId])
-    const result = db.run('DELETE FROM playlists WHERE id = ?', [playlistId])
-    removed += Number(result.changes) || 0
-  }
-
-  if (options.persist !== false && (created > 0 || updated > 0 || removed > 0)) {
-    await saveDatabase()
-  }
-
+    commitLibraryWriteTransaction()
+  } catch (error) { rollbackLibraryWriteTransaction(); throw error }
+  if (options.persist !== false && (created || updated || removed)) await saveDatabase()
   return { created, updated, removed }
+}
+
+export async function syncSubsonicRemotePlaylists(sourceId: number, playlists: SubsonicRemotePlaylistSyncInput[],
+  options: { persist?: boolean } = {}): Promise<{ created: number; updated: number; removed: number }> {
+  return applyRemotePlaylists({ provider: 'subsonic', sourceId }, playlists.map(p => ({ id: p.source_playlist_id,
+    name: p.name, tracks: p.tracks, writable: false })), { ...options, prune: true })
 }
 
 export async function renamePlaylist(id: number, name: string): Promise<void> {
@@ -11969,6 +12510,7 @@ export async function markPlaylistPlayed(id: number): Promise<void> {
 }
 
 export function getPlaylistTracks(playlistId: number): DbTrack[] {
+  if (!isPlaylistVisible(playlistId)) return []
   if (getPlaylistKindById(playlistId) === 'dynamic') {
     return getDynamicPlaylistTracksForId(playlistId)
   }
@@ -11979,7 +12521,7 @@ export function getPlaylistTracks(playlistId: number): DbTrack[] {
     INNER JOIN playlist_tracks pt ON pt.track_path = t.path
     WHERE pt.playlist_id = ${playlistId}
     ORDER BY pt.position ASC, pt.id ASC
-  `)
+  `, undefined, [], true)
 }
 
 type PlaylistTrackEntryRow = Partial<DbTrackRow> & {
@@ -12007,6 +12549,7 @@ function getDynamicPlaylistTrackEntries(playlistId: number): PlaylistTrackEntry[
 }
 
 export function getPlaylistTrackEntries(playlistId: number): PlaylistTrackEntry[] {
+  if (!isPlaylistVisible(playlistId)) return []
   if (!db) return []
   if (!Number.isInteger(playlistId) || playlistId <= 0) return []
   if (getPlaylistKindById(playlistId) === 'dynamic') {
@@ -12036,7 +12579,7 @@ export function getPlaylistTrackEntries(playlistId: number): PlaylistTrackEntry[
       availableRows.push(row as DbTrackRow)
     }
   }
-  const tracksByPath = new Map(attachAlbumIdentityKeys(availableRows).map((track) => [track.path, track]))
+  const tracksByPath = new Map(attachAlbumIdentityKeys(availableRows, undefined, undefined, true).map((track) => [track.path, track]))
 
   return rows.map((row, index) => {
     const entryId = Number(row.playlist_track_id)
@@ -12501,7 +13044,7 @@ export function getPlaylistsContainingTrack(trackPath: string): number[] {
   const ids: number[] = []
   for (const row of db.iterate<{ playlist_id?: unknown }>('SELECT DISTINCT playlist_id FROM playlist_tracks WHERE track_path = ? ORDER BY playlist_id', [trackPath])) {
     const playlistId = Number(row.playlist_id)
-    if (Number.isFinite(playlistId) && playlistId > 0) {
+    if (Number.isFinite(playlistId) && playlistId > 0 && isPlaylistVisible(playlistId)) {
       ids.push(playlistId)
     }
   }
@@ -12550,6 +13093,7 @@ export function getPlaylistsContainingTracks(trackPaths: string[]): PlaylistTrac
   }
 
   return Array.from(summaryByPlaylistId.entries())
+    .filter(([id]) => isPlaylistVisible(id))
     .sort((left, right) => left[0] - right[0])
     .map(([playlistId, matchedTrackCount]) => ({ playlistId, matchedTrackCount }))
 }

@@ -55,7 +55,7 @@ export const ASTRA_ACTIVITY_STATE_NOTES: Record<AstraActivityState, string> = {
   'loading-track': 'Fetching or decoding next file',
   'library-scan': 'Indexing local files',
   'remote-streaming': 'Buffering remote audio',
-  'remote-sync': 'Subsonic / Jellyfin sync',
+  'remote-sync': 'Server sync',
   'integrity-scan': 'Verifying library integrity',
   'lyrics-lookup': 'Internet lookup active',
   'parallax-connected': 'Parallax connection active',

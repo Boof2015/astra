@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { useProviderSyncStore } from './providerSyncStore'
 import type { TrackSourceType } from '../../types/subsonic'
 import type {
   LibraryDiagnosticsOperationKind,
@@ -1175,6 +1176,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Load entire library
   loadLibrary: async (diagnosticsContext) => {
+    invalidatePreparedSelections()
     const diagnosticsContexts = diagnosticsContext
       ? (Array.isArray(diagnosticsContext) ? diagnosticsContext : [diagnosticsContext])
       : []
@@ -1193,12 +1195,19 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         stepDurationMs[step] = Math.round((performance.now() - startedAt) * 100) / 100
       }
     }
-    set({ isLoading: true })
+    // Membership may have changed even when cached tracks still exist (for
+    // example, disabling a server). Back/forward must fetch the current subset.
+    set((state) => ({
+      isLoading: true,
+      selectionHistory: state.selectionHistory.map((entry) => ({ ...entry, trackPaths: [], trackPathsPruned: true })),
+      selectionForwardHistory: state.selectionForwardHistory.map((entry) => ({ ...entry, trackPaths: [], trackPathsPruned: true }))
+    }))
     const shouldReloadAlbumsIncludingSingles = get().albumsIncludingSinglesLoaded
     const currentSelection = {
       album: get().selectedAlbum,
       artist: get().selectedArtist,
       genre: get().selectedGenre,
+      year: get().selectedYear,
       artistBrowseMode: get().artistBrowseMode,
       hasFullTrackConsumers: get().fullTrackConsumers.size > 0
     }
@@ -1269,9 +1278,18 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         const paths = getUniqueTrackPaths(tracks)
         return ingestTracksForPatch(state, tracks, { trackPaths: paths })
       })
+    } else if (currentSelection.year !== null) {
+      const yearSelection = currentSelection.year
+      const tracks = await window.electronAPI.library.getTracksByYear(
+        yearSelection === 'unknown' ? null : yearSelection
+      )
+      set((state) => {
+        if (state.selectedYear !== yearSelection) return {}
+        return ingestTracksForPatch(state, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
+      })
     }
     stepDurationMs.active_selection = Math.round((performance.now() - activeSelectionStartedAt) * 100) / 100
-    stepRequestCount.active_selection = currentSelection.album || currentSelection.artist || currentSelection.genre ? 1 : 0
+    stepRequestCount.active_selection = currentSelection.album || currentSelection.artist || currentSelection.genre || currentSelection.year !== null ? 1 : 0
 
     set({ isLoading: false })
     if (diagnosticsEnabled) {
@@ -1394,7 +1412,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
               const patch: Parameters<typeof ingestTracksForPatch>[2] = {
                 fullTrackPaths: revealedPaths
               }
-              const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && !state.selectedGenre && (
+              const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && !state.selectedGenre && state.selectedYear === null && (
                 state.viewMode === 'tracks' || state.viewMode === 'genres' || state.viewMode === 'folders'
               )
               if (shouldUseAsVisibleTracks) {
@@ -1423,7 +1441,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
             return {}
           }
 
-          const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && !state.selectedGenre && (
+          const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && !state.selectedGenre && state.selectedYear === null && (
             state.viewMode === 'tracks' || state.viewMode === 'genres' || state.viewMode === 'folders'
           )
           const ingested = ingestTracksIntoCache(state.trackByPath, tracksToPublish, { mutate: true })
@@ -2400,22 +2418,24 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Toggle favorite status
   toggleFavorite: async (trackPath: string) => {
-    const { favorites } = get()
-    if (favorites.has(trackPath)) {
-      await window.electronAPI.library.removeFavorite(trackPath)
-      const next = new Set(favorites)
-      next.delete(trackPath)
-      set({ favorites: next })
-    } else {
-      await window.electronAPI.library.addFavorite(trackPath)
-      const next = new Set(favorites)
-      next.add(trackPath)
-      set({ favorites: next })
+    try {
+      const removing = get().favorites.has(trackPath)
+      if (removing) await window.electronAPI.library.removeFavorite(trackPath)
+      else await window.electronAPI.library.addFavorite(trackPath)
+      set(state => {
+        const next = new Set(state.favorites)
+        if (removing) next.delete(trackPath)
+        else next.add(trackPath)
+        return { favorites: next }
+      })
+      // Reload full favorite tracks list
+      const favoriteTracks = await window.electronAPI.library.getFavorites()
+      const favoriteTrackPaths = getUniqueTrackPaths(favoriteTracks)
+      set((state) => ingestTracksForPatch(state, favoriteTracks, { favoriteTrackPaths }))
+    } catch {
+      useProviderSyncStore.getState().notifyError('Could not save the favorite. For a synced server, check its connection and try again.')
+      await get().loadFavorites()
     }
-    // Reload full favorite tracks list
-    const favoriteTracks = await window.electronAPI.library.getFavorites()
-    const favoriteTrackPaths = getUniqueTrackPaths(favoriteTracks)
-    set((state) => ingestTracksForPatch(state, favoriteTracks, { favoriteTrackPaths }))
   },
 
   // Sync check if track is a favorite

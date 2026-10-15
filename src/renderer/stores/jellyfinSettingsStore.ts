@@ -127,22 +127,16 @@ export const useJellyfinSettingsStore = create<JellyfinSettingsStore>((set, get)
       }
     },
 
+    // A test only answers the caller; server type auto-detect probes both
+    // providers, so a failed probe must not leave a store-wide error behind.
     testSource: async (input) => {
       try {
-        const result = await window.electronAPI.jellyfin.testSource(input)
-        if (!result.ok) {
-          set({ errorMessage: result.error ?? result.message })
-        } else {
-          set({ errorMessage: '' })
-        }
-        return result
+        return await window.electronAPI.jellyfin.testSource(input)
       } catch (error) {
-        const message = toErrorMessage(error)
-        set({ errorMessage: message })
         return {
           ok: false,
           message: 'Connection failed.',
-          error: message
+          error: toErrorMessage(error)
         }
       }
     },

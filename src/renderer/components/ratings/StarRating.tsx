@@ -9,6 +9,7 @@ interface StarRatingProps {
   size?: 'sm' | 'md'
   ariaLabel?: string
   indeterminate?: boolean
+  step?: 0.5 | 1
 }
 
 // Stars render with no flex gap so the fill-overlay width percentage maps
@@ -26,12 +27,12 @@ function StarGlyphs(): ReactElement {
   )
 }
 
-function ratingFromClientX(clientX: number, element: HTMLElement): number {
+function ratingFromClientX(clientX: number, element: HTMLElement, step: number): number {
   const rect = element.getBoundingClientRect()
-  if (rect.width <= 0) return MIN_TRACK_RATING
+  if (rect.width <= 0) return step
   const raw = ((clientX - rect.left) / rect.width) * MAX_TRACK_RATING
-  const halfStepped = Math.ceil(raw * 2) / 2
-  return Math.min(MAX_TRACK_RATING, Math.max(MIN_TRACK_RATING, halfStepped))
+  const stepped = Math.ceil(raw / step) * step
+  return Math.min(MAX_TRACK_RATING, Math.max(step, stepped))
 }
 
 function formatRatingText(value: number | null): string {
@@ -44,7 +45,8 @@ export default function StarRating({
   onPreview,
   size = 'sm',
   ariaLabel = 'Track rating',
-  indeterminate = false
+  indeterminate = false,
+  step = MIN_TRACK_RATING
 }: StarRatingProps): ReactElement {
   const [tentative, setTentative] = useState<number | null>(null)
   const didDragRef = useRef(false)
@@ -73,7 +75,7 @@ export default function StarRating({
     event.stopPropagation()
     event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
-    const next = ratingFromClientX(event.clientX, event.currentTarget)
+    const next = ratingFromClientX(event.clientX, event.currentTarget, step)
     didDragRef.current = false
     pressedValueRef.current = next
     updateTentative(next)
@@ -81,7 +83,7 @@ export default function StarRating({
 
   const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
     if (!interactive) return
-    const next = ratingFromClientX(event.clientX, event.currentTarget)
+    const next = ratingFromClientX(event.clientX, event.currentTarget, step)
     if (event.currentTarget.hasPointerCapture(event.pointerId) && next !== pressedValueRef.current) {
       didDragRef.current = true
     }
@@ -94,7 +96,7 @@ export default function StarRating({
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
     if (pressedValueRef.current === null) return
-    const next = ratingFromClientX(event.clientX, event.currentTarget)
+    const next = ratingFromClientX(event.clientX, event.currentTarget, step)
     pressedValueRef.current = null
     // Clicking the value the track already has clears the rating (heart-toggle
     // idiom); a drag that ends on the same value keeps it.
@@ -127,14 +129,14 @@ export default function StarRating({
     switch (event.key) {
       case 'ArrowRight':
       case 'ArrowUp':
-        next = value === null ? MIN_TRACK_RATING : Math.min(MAX_TRACK_RATING, value + 0.5)
+        next = value === null ? step : Math.min(MAX_TRACK_RATING, (Math.floor(value / step) + 1) * step)
         break
       case 'ArrowLeft':
       case 'ArrowDown':
-        next = value !== null && value - 0.5 >= MIN_TRACK_RATING ? value - 0.5 : null
+        next = value !== null && (Math.ceil(value / step) - 1) * step >= step ? (Math.ceil(value / step) - 1) * step : null
         break
       case 'Home':
-        next = MIN_TRACK_RATING
+        next = step
         break
       case 'End':
         next = MAX_TRACK_RATING
