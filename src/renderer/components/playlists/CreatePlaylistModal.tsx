@@ -3,6 +3,8 @@ import type { ProviderSyncRef } from '../../../types/providerSync'
 import type { RemotePlaylistDestination } from '../../../types/remotePlaylists'
 import { RemotePlaylistCreationUncertainError } from '../../stores/playlistStore'
 import PlaylistCover from './PlaylistCover'
+import ServerDestinationPicker, { destinationKey } from './ServerDestinationPicker'
+import { useServers } from '../settings/servers/useServers'
 import { usePresence } from '../../hooks/usePresence'
 import DynamicPlaylistRuleEditor, { type DynamicPlaylistPreview } from './DynamicPlaylistRuleEditor'
 import {
@@ -28,8 +30,6 @@ interface CreatePlaylistModalProps {
   trackPaths?: string[]
 }
 const NO_TRACKS: string[] = []
-const destinationKey = (destination: ProviderSyncRef) => `${destination.provider}:${destination.sourceId}`
-const providerNames = { subsonic: 'Subsonic', jellyfin: 'Jellyfin', plex: 'Plex' }
 
 function toFilePreviewSource(filePath: string): string {
   const normalized = filePath.replace(/\\/g, '/')
@@ -55,6 +55,7 @@ export default function CreatePlaylistModal({
   const [name, setName] = useState('')
   const [coverImagePath, setCoverImagePath] = useState<string | null>(null)
   const [playlistKind, setPlaylistKind] = useState<PlaylistKind | 'server' | null>(null)
+  const servers = useServers()
   const [destinations, setDestinations] = useState<RemotePlaylistDestination[]>([])
   const [destination, setDestination] = useState('')
   const [destinationsError, setDestinationsError] = useState<string | null>(null)
@@ -201,6 +202,7 @@ export default function CreatePlaylistModal({
   const isDynamicMode = playlistKind === 'dynamic'
   const isServerMode = playlistKind === 'server'
   const selectedServer = destinations.find(choice => destinationKey(choice) === destination)
+  const selectedServerName = servers.find(server => server.key === destination)?.name ?? selectedServer?.name
   const isChoosingKind = playlistKind === null
   const isCreateDisabled = isChoosingKind || isSubmitting || name.trim().length === 0 || (isDynamicMode && dynamicRulesError !== null)
     || (isServerMode && (!selectedServer || !!selectedServer.reason || loadingDestinations || creationUncertain))
@@ -270,19 +272,18 @@ export default function CreatePlaylistModal({
           ) : (
             <>
               <div className={isDynamicMode ? 'playlist-dynamic-builder-top' : 'playlist-create-normal-fields'}>
-                {isServerMode && <>
-                  <label className="playlist-create-field">
+                {isServerMode && (
+                  <div className="playlist-create-field">
                     <span className="playlist-create-label">Server</span>
-                    <select className="playlist-create-input" value={destination} disabled={isSubmitting || loadingDestinations}
-                      onChange={event => setDestination(event.target.value)}>
-                      {!selectedServer && <option value={destination} disabled>{destination ? 'Selected server unavailable' : 'No server available'}</option>}
-                      {destinations.map(choice => <option key={destinationKey(choice)} value={destinationKey(choice)} disabled={!!choice.reason}>
-                        {choice.name} ({providerNames[choice.provider]}){choice.reason ? ` — ${choice.reason}` : ''}
-                      </option>)}
-                    </select>
-                  </label>
-                  <p className="settings-note">{!selectedServer ? 'Choose an available server.' : selectedServer.reason ?? 'This playlist and your edits will be saved directly to the selected server.'}</p>
-                </>}
+                    <ServerDestinationPicker destinations={destinations} value={destination}
+                      disabled={isSubmitting || loadingDestinations} onChange={setDestination} />
+                    <p className="settings-note">
+                      {selectedServer && !selectedServer.reason
+                        ? 'The playlist and your edits are saved directly to this server.'
+                        : 'Choose a server that can take this playlist.'}
+                    </p>
+                  </div>
+                )}
                 <label className="playlist-create-field">
                   <span className="playlist-create-label">Name</span>
                   <input
@@ -411,7 +412,8 @@ export default function CreatePlaylistModal({
                 onClick={() => void handleCreate()}
                 disabled={isCreateDisabled}
               >
-                {isSubmitting ? 'Creating...' : isDynamicMode ? 'Create Dynamic' : 'Create'}
+                {isSubmitting ? 'Creating...' : isDynamicMode ? 'Create Dynamic'
+                  : isServerMode && selectedServer && !selectedServer.reason ? `Create on ${selectedServerName}` : 'Create'}
               </button>
             )}
           </div>

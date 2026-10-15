@@ -1,36 +1,49 @@
 import { create } from 'zustand'
 import type { ProviderSyncChoice, ProviderSyncRef, ProviderSyncReview, ProviderSyncStatus } from '../../types/providerSync'
 import { providerSyncKey } from '../../shared/sync/providerState'
+import { useServerNoticeStore } from './serverNoticeStore'
 
 interface State {
   statuses: ProviderSyncStatus[]
   review: ProviderSyncReview | null
   working: boolean
   error: string | null
-  notice: { message: string; ref?: ProviderSyncRef } | null
   refreshStatus(): Promise<void>
   openReview(ref: ProviderSyncRef): Promise<void>
   apply(choices: Record<string, ProviderSyncChoice>): Promise<void>
   closeReview(): void
   disable(ref: ProviderSyncRef): Promise<void>
+  /** A save that didn't go through, as a corner notice. */
   notifyError(message: string): void
-  dismissNotice(): void
 }
+const notices = () => useServerNoticeStore.getState()
 const message = (error: unknown) => error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '') : 'Could not sync this server.'
 
 export const useProviderSyncStore = create<State>((set, get) => ({
-  statuses: [], review: null, working: false, error: null, notice: null,
+  statuses: [], review: null, working: false, error: null,
   refreshStatus: async () => {
     try {
       const statuses = await window.electronAPI.providerSync.status()
       const old = new Map(get().statuses.map(s => [providerSyncKey(s), s]))
-      const conflict = statuses.find(s => s.enabled && s.conflicts > (old.get(providerSyncKey(s))?.conflicts ?? 0))
-      set({ statuses, ...(conflict ? { notice: { message: 'Server favorites or ratings have changes to review.', ref: conflict } } : {}) })
+      set({ statuses })
+      // New changes on both sides are worth a notice; the count updates while one is waiting.
+      for (const status of statuses) {
+        const key = providerSyncKey(status)
+        if (status.enabled && status.conflicts > (old.get(key)?.conflicts ?? 0)) {
+          notices().push({ kind: 'review', serverKey: key, ref: { provider: status.provider, sourceId: status.sourceId }, count: status.conflicts })
+        } else if (!status.enabled || status.conflicts === 0) {
+          notices().clear('review', key)
+        } else {
+          // Fewer changes than before: keep a waiting cue accurate, but don't raise a new one.
+          notices().updateQueued('review', key, { count: status.conflicts })
+        }
+      }
     } catch { /* Window may be closing. */ }
   },
   openReview: async ref => {
     if (get().working) return
-    set({ working: true, error: null, review: null, notice: null })
+    set({ working: true, error: null, review: null })
+    notices().clear('review', providerSyncKey(ref))
     try {
       const review = await window.electronAPI.providerSync.review(ref)
       if (review.differences.length) set({ review })
@@ -41,7 +54,10 @@ export const useProviderSyncStore = create<State>((set, get) => ({
       }
     }
     catch (error) {
-      if (!/AbortError|aborted/i.test(message(error))) set({ notice: { message: message(error) }, error: message(error) })
+      if (!/AbortError|aborted/i.test(message(error))) {
+        set({ error: message(error) })
+        notices().push({ kind: 'error', message: message(error) })
+      }
     }
     finally { set({ working: false }); await get().refreshStatus() }
   },
@@ -51,7 +67,9 @@ export const useProviderSyncStore = create<State>((set, get) => ({
     set({ working: true, error: null })
     try {
       await window.electronAPI.providerSync.apply(review.token, choices)
-      set({ review: null, notice: { message: review.enabling ? 'Server sync enabled.' : 'Server changes reconciled.' } })
+      // The switch and the server's row show the result; no confirmation notice.
+      set({ review: null })
+      notices().clear('review', providerSyncKey(review.ref))
     } catch (error) { set({ error: message(error) }) }
     finally { set({ working: false }); await get().refreshStatus() }
   },
@@ -59,10 +77,10 @@ export const useProviderSyncStore = create<State>((set, get) => ({
   disable: async ref => {
     try {
       await window.electronAPI.providerSync.disable(ref)
-      set({ review: null, notice: { message: 'Server sync disabled. Existing favorites and ratings are kept.' } })
-    } catch (error) { set({ notice: { message: message(error) } }) }
+      set({ review: null })
+      notices().clear('review', providerSyncKey(ref))
+    } catch (error) { notices().push({ kind: 'error', message: message(error) }) }
     await get().refreshStatus()
   },
-  notifyError: error => set({ notice: { message: error } }),
-  dismissNotice: () => set({ notice: null })
+  notifyError: error => notices().push({ kind: 'error', message: error })
 }))

@@ -14,7 +14,7 @@ import FullscreenMode from './components/layout/FullscreenMode'
 import ZoneDisplay from './components/layout/ZoneDisplay'
 import QuickLaunchPalette from './components/layout/QuickLaunchPalette'
 import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
-import ProviderSyncNotice from './components/layout/ProviderSyncNotice'
+import ServerNotices from './components/layout/ServerNotices'
 import CompareWindow from './components/settings/servers/CompareWindow'
 import { useProviderSyncStore } from './stores/providerSyncStore'
 import OutputDelayCue from './components/layout/OutputDelayCue'
@@ -640,7 +640,7 @@ function App() {
         <PhoneRemoteIncomingPairCard />
         <PhoneSyncConflictResolverModal />
         <DecodeFallbackCue />
-        <ProviderSyncNotice />
+        <ServerNotices />
         <CompareWindow />
         <OutputDelayCue />
         <AssociatedOpenCue />

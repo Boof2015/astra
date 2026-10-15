@@ -5,6 +5,7 @@ import type { JellyfinSourceStatus, SubsonicSourceStatus } from '../../../../typ
 import { useJellyfinSettingsStore } from '../../../stores/jellyfinSettingsStore'
 import { usePlexSettingsStore } from '../../../stores/plexSettingsStore'
 import { useProviderSyncStore } from '../../../stores/providerSyncStore'
+import { useServerNoticeStore } from '../../../stores/serverNoticeStore'
 import { useSubsonicSettingsStore } from '../../../stores/subsonicSettingsStore'
 import {
   cleanIpcError, deriveServerState, hostOf, syncSucceeded, PROVIDER_KIND, PROVIDER_MONOGRAM,
@@ -139,7 +140,22 @@ export function useNow(intervalMs = 30_000): number {
   return now
 }
 
+/** A server's name, for places that only know a track's source (the transport tooltip, the pipeline). */
+export function useServerName(provider: string | undefined, id: number | undefined): string | null {
+  const subsonic = useSubsonicSettingsStore(state => provider === 'subsonic' ? state.sources.find(item => item.id === id)?.name ?? null : null)
+  const jellyfin = useJellyfinSettingsStore(state => provider === 'jellyfin' ? state.sources.find(item => item.id === id)?.name ?? null : null)
+  const plex = usePlexSettingsStore(state => provider === 'plex' ? state.sources.find(item => item.id === id)?.name ?? null : null)
+  return subsonic ?? jellyfin ?? plex
+}
+
 /* ---------- Actions ---------- */
+
+/**
+ * Syncs the user started (Sync now, Retry, the first sync after adding). Their result
+ * shows on the server's row, so a failure during one doesn't also get a corner notice.
+ */
+const userSyncs = new Set<string>()
+export const isUserSyncing = (key: string) => userSyncs.has(key)
 
 async function refreshProvider(provider: ServerProvider): Promise<void> {
   if (provider === 'subsonic') await useSubsonicSettingsStore.getState().refresh()
@@ -152,14 +168,18 @@ async function refreshProvider(provider: ServerProvider): Promise<void> {
  * so it isn't repeated as a store-wide error. Resolves to whether it succeeded.
  */
 export async function syncServer(server: Pick<ServerEntry, 'provider' | 'id'>): Promise<boolean> {
+  const key = `${server.provider}:${server.id}`
+  userSyncs.add(key)
   let rejected = false
   try {
     if (server.provider === 'subsonic') await window.electronAPI.subsonic.syncSource(server.id)
     else if (server.provider === 'jellyfin') await window.electronAPI.jellyfin.syncSource(server.id)
     else await window.electronAPI.plex.syncSource(server.id)
   } catch { rejected = true /* Shown on the server's row. */ }
-  await refreshProvider(server.provider)
-  return !rejected && syncSucceeded(...recordedStatus(server))
+  try {
+    await refreshProvider(server.provider)
+    return !rejected && syncSucceeded(...recordedStatus(server))
+  } finally { userSyncs.delete(key) }
 }
 
 /** The source's live status and its stored status, as the stores have them after a refresh. */
@@ -180,6 +200,7 @@ function recordedStatus(server: Pick<ServerEntry, 'provider' | 'id'>): [string |
 export async function finishAddingServer(server: Pick<ServerEntry, 'provider' | 'id'>,
   wants: { favorites: boolean; playlists: boolean }): Promise<void> {
   const synced = await syncServer(server)
+  if (synced) useServerNoticeStore.getState().push({ kind: 'ready', serverKey: `${server.provider}:${server.id}` })
   if (wants.playlists) {
     // The main process maps a Plex library to the one that owns its server's playlists.
     await window.electronAPI.remotePlaylists.setEnabled({ provider: server.provider, sourceId: server.id }, true)

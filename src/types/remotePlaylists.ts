@@ -13,7 +13,13 @@ export type RemotePlaylistEdit =
   | { kind: 'move'; entryIds: number[]; position: number }
   | { kind: 'reorder'; entryIds: number[] }
 export interface RemotePlaylistStatus extends ProviderSyncRef { enabled: boolean; busy: boolean; error: string | null }
-export interface RemotePlaylistDestination extends ProviderSyncRef { name: string; reason: string | null }
+/** Why a server can't take a new playlist, for choosing a fix: not in use, playlist sync off, or tracks it doesn't have. */
+export type RemotePlaylistDestinationReason = 'not-in-use' | 'sync-off' | 'tracks'
+export interface RemotePlaylistDestination extends ProviderSyncRef {
+  name: string
+  reason: string | null
+  reasonKind: RemotePlaylistDestinationReason | null
+}
 export type RemotePlaylistCreateResult = { ok: true; playlistId: number } | { ok: false; error: string; uncertain: boolean }
 export interface RemotePlaylistsAPI {
   destinations(trackPaths: string[]): Promise<RemotePlaylistDestination[]>

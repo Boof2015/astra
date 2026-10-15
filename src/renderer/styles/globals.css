@@ -3388,6 +3388,83 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   }
 }
 
+/* Server cues: a server stopped syncing, changes to review, a new server ready. */
+.server-cue {
+  position: fixed;
+  right: clamp(18px, 4vw, 40px);
+  bottom: calc(var(--now-playing-height) + 14px);
+  z-index: 239;
+  width: min(360px, calc(100vw - 40px));
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(16px) scale(0.98);
+  transition: opacity 0.3s ease, transform 0.36s ease;
+}
+
+.server-cue-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.server-cue-fullscreen {
+  bottom: clamp(18px, 3.6vh, 36px);
+}
+
+.server-cue-tile {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  /* The cue artwork tile is dark in every theme, so its monogram stays light. */
+  color: rgba(255, 255, 255, 0.62);
+}
+
+/* A message can run to a sentence; two lines rather than one clipped one. */
+.server-cue-detail {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+}
+
+.server-cue-badge {
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  color: rgba(var(--tint), 0.94);
+  padding: 5px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--accent-rgb), 0.4);
+  background: rgba(var(--accent-rgb), 0.2);
+  flex-shrink: 0;
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background-color 0.18s ease, color 0.18s ease;
+}
+
+.server-cue-badge:hover:not(:disabled) {
+  border-color: rgba(var(--accent-rgb), 0.64);
+  background: rgba(var(--accent-rgb), 0.3);
+}
+
+.server-cue-badge:focus-visible {
+  outline: none;
+  border-color: rgba(var(--accent-rgb), 0.9);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.34);
+}
+
+.server-cue-badge:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.server-cue-fill {
+  animation: updateAvailableCueFill 5.6s linear forwards;
+}
+
 @keyframes fullscreenBackdropLayerExit {
   from { opacity: 1; }
   to { opacity: 0; }
@@ -3459,10 +3536,12 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   .output-delay-cue,
   .associated-open-cue,
   .update-available-cue,
+  .server-cue,
   .fullscreen-next-cue-fill,
   .output-delay-cue-fill,
   .associated-open-cue-fill,
   .update-available-cue-fill,
+  .server-cue-fill,
   .pipeline-shelf,
   .transport-lyrics-expanded-list {
     transition-duration: 0.08s !important;
@@ -3495,12 +3574,14 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   .output-delay-cue,
   .associated-open-cue,
   .update-available-cue,
+  .server-cue,
   .fullscreen-next-cue-visible,
   .fullscreen-next-cue-handoff,
   .decode-fallback-cue-visible,
   .output-delay-cue-visible,
   .associated-open-cue-visible,
-  .update-available-cue-visible {
+  .update-available-cue-visible,
+  .server-cue-visible {
     transform: none !important;
   }
 
@@ -8264,6 +8345,38 @@ body:has(.track-drag-overlay) * {
   border-color: rgba(var(--accent-rgb), 0.45);
   color: var(--accent-text);
   background: rgba(var(--accent-rgb), 0.14);
+}
+
+/* A server with a problem: a dot on its chip, explained on hover or focus. */
+.library-source-problem-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: var(--warning);
+  vertical-align: 1px;
+}
+
+.library-source-tooltip {
+  position: fixed;
+  z-index: 300;
+  max-width: 280px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(var(--tint), 0.14);
+  background: linear-gradient(var(--surface-overlay), var(--surface-overlay)), var(--bg-primary);
+  box-shadow: 0 8px 24px var(--shadow-soft);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.library-source-tooltip strong {
+  font-weight: 600;
+  color: var(--warning);
 }
 
 .view-tab {
@@ -19293,7 +19406,8 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
     width: min(320px, calc(100vw - 32px));
   }
 
-  .update-available-cue {
+  .update-available-cue,
+  .server-cue {
     right: 16px;
     width: min(320px, calc(100vw - 32px));
   }
@@ -19743,7 +19857,8 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
     width: auto;
   }
 
-  .update-available-cue {
+  .update-available-cue,
+  .server-cue {
     right: 10px;
     left: 10px;
     width: auto;
@@ -29711,10 +29826,7 @@ html[data-theme-tone="light"] .home-greeting-card.home-dashboard-hero::before {
   .playlist-dynamic-group .playlist-dynamic-remove-btn { grid-column: 3; grid-row: 1; }
 }
 
-/* Per-server user-state sync and reconciliation. */
-.provider-sync-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.provider-sync-notice { z-index: 260; pointer-events: auto; }
-.provider-sync-notice .provider-sync-actions { margin-top: 10px; }
+
 
 /* ============================================
    Settings → Servers
@@ -30583,6 +30695,101 @@ html[data-theme-tone="light"] .servers-window {
 @keyframes serversRowNew {
   from { background: rgba(var(--accent-rgb), 0.12); }
   to { background: transparent; }
+}
+
+/* New playlist → Server playlist: a card per destination */
+.playlist-destinations {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.playlist-destination {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(var(--tint), 0.08);
+  background: rgba(var(--tint), 0.025);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.playlist-destination.is-on {
+  border-color: rgba(var(--accent-rgb), 0.5);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+.playlist-destination-pick {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 0 9px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.playlist-destination-pick:disabled {
+  cursor: default;
+}
+
+.playlist-destination-pick:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.playlist-destination .servers-tile {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  font-size: 10px;
+}
+
+.playlist-destination.is-unusable .servers-tile,
+.playlist-destination.is-unusable .playlist-destination-name {
+  opacity: 0.55;
+}
+
+.playlist-destination.is-on .servers-radio {
+  border-color: var(--accent);
+}
+
+.playlist-destination.is-on .servers-radio::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.playlist-destination.is-unusable .servers-radio {
+  opacity: 0.4;
+}
+
+.playlist-destination-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.playlist-destination-name {
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.playlist-destination-line {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
 }
 
 /* Windows: add a server, change its connection, sign in again, remove */

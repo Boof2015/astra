@@ -1,11 +1,15 @@
 import type { RemotePlaybackQuality } from '../../../types/streamingQuality'
 import { describeRemotePlaybackQuality } from '../../audio/audioPipelineModel'
+import { usePlayerStore } from '../../stores/playerStore'
+import { useServerName } from '../settings/servers/useServers'
 
 export default function StreamQualityIndicator({ quality, expanded, onClick }: {
   quality: RemotePlaybackQuality | undefined
   expanded: boolean
   onClick: () => void
 }) {
+  const source = usePlayerStore(state => state.currentTrack)
+  const serverName = useServerName(source?.sourceType, source?.sourceId)
   if (!quality || (!quality.mode && !quality.compatibility)) return null
 
   const original = !quality.compatibility && (quality.requested === 'original' || quality.requestedCodec === null)
@@ -18,14 +22,15 @@ export default function StreamQualityIndicator({ quality, expanded, onClick }: {
       : `${quality.compatibility.toUpperCase()} requested`
     : original ? 'Original' : bitrateLabel ?? `${quality.requested} kbps target`
   const details = describeRemotePlaybackQuality(quality)
+  const from = serverName ? `From ${serverName}` : null
   const action = expanded ? 'Hide audio pipeline' : 'Show audio pipeline'
 
   return <button
     type="button"
     className="transport-stream-quality"
     onClick={onClick}
-    title={`${details}\n${action}`}
-    aria-label={`${details}. ${action}`}
+    title={[details, from, action].filter(Boolean).join('\n')}
+    aria-label={[details, from, action].filter(Boolean).join('. ')}
     aria-expanded={expanded}
   >
     <span className="transport-stream-quality-mode">{quality.compatibility ? 'Converted' : 'Auto'}</span>

@@ -1,4 +1,6 @@
 import { usePlexSettingsStore } from '../../stores/plexSettingsStore'
+import { useServers } from '../settings/servers/useServers'
+import { sourceProblemText, useSourceProblemTooltip } from '../library/SourceProblemTooltip'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent as ReactUIEvent } from 'react'
 import {
   useLibraryStore,
@@ -450,6 +452,10 @@ export default function LibraryView() {
     ]
   }, [plexSources, jellyfinSources, subsonicSources])
   const shouldShowSourceFilters = sourceFilterOptions.length > 0
+  // A dot only when a server has a problem; syncing doesn't get one.
+  const servers = useServers()
+  const sourceProblems = useMemo(() => new Map(servers.filter(server => server.state === 'failed').map(server => [server.key, server])), [servers])
+  const sourceProblemTooltip = useSourceProblemTooltip(sourceProblems)
   const hasEffectiveLibraryFilters = hasHiddenFolders || (shouldShowSourceFilters && selectedSourceFilters.size > 0)
   const selectedArtistRecord = useMemo(() => {
     if (!selectedArtist) return null
@@ -1853,16 +1859,26 @@ export default function LibraryView() {
         >
           Local
         </button>
-        {sourceFilterOptions.map((source) => (
-          <button
-            key={source.key}
-            type="button"
-            className={`library-source-filter-chip ${selectedSourceFilters.has(source.key) ? 'active' : ''}`}
-            onClick={() => handleToggleSourceFilter(source.key)}
-          >
-            {source.label}
-          </button>
-        ))}
+        {sourceFilterOptions.map((source) => {
+          const problem = sourceProblems.get(source.key)
+          return (
+            <button
+              key={source.key}
+              type="button"
+              className={`library-source-filter-chip ${selectedSourceFilters.has(source.key) ? 'active' : ''}`}
+              onClick={() => handleToggleSourceFilter(source.key)}
+              onMouseEnter={problem ? sourceProblemTooltip.show(problem) : undefined}
+              onMouseLeave={sourceProblemTooltip.hide}
+              onFocus={problem ? sourceProblemTooltip.show(problem) : undefined}
+              onBlur={sourceProblemTooltip.hide}
+            >
+              {problem && <span className="library-source-problem-dot" aria-hidden="true" />}
+              {source.label}
+              {problem && <span className="sr-only">. {sourceProblemText(problem).title}: {sourceProblemText(problem).detail}</span>}
+            </button>
+          )
+        })}
+        {sourceProblemTooltip.element}
       </div>
     )
   }

@@ -12252,11 +12252,14 @@ export function getRemotePlaylistDestinations(paths: string[]): RemotePlaylistDe
     const ref = { provider, sourceId: source.id }
     const enabledSources = provider === 'plex' ? getPlexPlaylistSources(source.id).filter(peer => peer.enabled === 1).map(peer => peer.id)
       : source.enabled === 1 ? [source.id] : []
-    const reason = !enabledSources.length ? 'Connect this server to create playlists.'
-      : !remotePlaylistsEnabled(ref) ? 'Enable Sync playlists in this server’s settings.'
+    const reasonKind = !enabledSources.length ? 'not-in-use' as const
+      : !remotePlaylistsEnabled(ref) ? 'sync-off' as const
         : tracks.length !== uniquePaths.length || tracks.some(track => track.source_type !== provider
-          || !enabledSources.includes(track.source_id!) || track.is_available !== 1) ? 'Selected tracks must be available from this server.' : null
-    return { ...ref, name: `${source.name} · ${source.username}`, reason }
+          || !enabledSources.includes(track.source_id!) || track.is_available !== 1) ? 'tracks' as const : null
+    const reason = reasonKind === 'not-in-use' ? 'Connect this server to create playlists.'
+      : reasonKind === 'sync-off' ? 'Enable Sync playlists in this server’s settings.'
+        : reasonKind === 'tracks' ? 'Selected tracks must be available from this server.' : null
+    return { ...ref, name: `${source.name} · ${source.username}`, reason, reasonKind }
   })
 }
 export function remotePlaylistFingerprint(ref: ProviderSyncRef): string | null {

@@ -6286,6 +6286,7 @@ test('server creation destinations enforce opt-in, source ownership and track av
   const otherAccount = await library.savePlexSource({ ...plexInput, account_id: 'other' })
   assert.equal(library.getRemotePlaylistDestinations([]).length, 4, 'Plex library connections share one destination')
   assert.ok(library.getRemotePlaylistDestinations([]).every(destination => destination.reason?.includes('Enable Sync playlists')))
+  assert.ok(library.getRemotePlaylistDestinations([]).every(destination => destination.reasonKind === 'sync-off'))
   for (const ref of [{ provider: 'subsonic' as const, sourceId: subsonic.id }, { provider: 'jellyfin' as const, sourceId: jellyfin.id },
     { provider: 'plex' as const, sourceId: plex.id }, { provider: 'plex' as const, sourceId: otherAccount.id }]) await library.setRemotePlaylistsEnabled(ref, true)
   assert.ok(library.getRemotePlaylistDestinations([]).every(destination => destination.reason === null))
@@ -6297,11 +6298,14 @@ test('server creation destinations enforce opt-in, source ownership and track av
   assert.deepEqual(library.getRemotePlaylistDestinations([naviPath]).filter(destination => !destination.reason).map(destination => destination.provider), ['subsonic'])
   assert.deepEqual(library.getRemotePlaylistDestinations([firstPath, secondPath, firstPath]).filter(destination => !destination.reason).map(destination => destination.sourceId), [plex.id])
   assert.ok(library.getRemotePlaylistDestinations([naviPath, firstPath]).every(destination => !!destination.reason))
+  assert.ok(library.getRemotePlaylistDestinations([naviPath, firstPath]).every(destination => destination.reasonKind === 'tracks'))
   assert.ok(library.getRemotePlaylistDestinations(['/local/file.flac']).every(destination => !!destination.reason))
   await library.markPlexTracksAvailability(otherLibrary.id, false, 'missing_upstream')
   assert.ok(library.getRemotePlaylistDestinations([secondPath]).every(destination => !!destination.reason))
   await library.updateJellyfinSource(jellyfin.id, { enabled: 0 })
   assert.match(library.getRemotePlaylistDestinations([]).find(destination => destination.provider === 'jellyfin')!.reason!, /Connect/)
+  assert.equal(library.getRemotePlaylistDestinations([]).find(destination => destination.provider === 'jellyfin')!.reasonKind, 'not-in-use')
+  assert.equal(library.getRemotePlaylistDestinations([]).find(destination => destination.provider === 'subsonic')!.reasonKind, null)
 })
 
 test('Plex provider occurrence IDs preserve duplicate selection and unavailable-track resolution during refresh', async t => {
