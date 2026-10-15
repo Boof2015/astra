@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { useProviderSyncStore } from '../../stores/providerSyncStore'
 import { planOutageNotices, useServerNoticeStore, type ServerNotice } from '../../stores/serverNoticeStore'
+import { useServerWindowRequest } from '../../stores/serverWindowRequest'
 import { useUIStore } from '../../stores/uiStore'
 import { isUserSyncing, useServers, type ServerEntry } from '../settings/servers/useServers'
 
@@ -25,7 +26,12 @@ function useOutageNotices(servers: ServerEntry[]) {
   useEffect(() => {
     const store = useServerNoticeStore.getState()
     const plan = planOutageNotices(servers, memory.current, isUserSyncing)
-    for (const server of plan.push) store.push({ kind: 'problem', serverKey: server.key, message: server.error ?? undefined })
+    for (const server of plan.push) {
+      store.push({ kind: 'problem', serverKey: server.key, message: server.error ?? undefined, problem: server.problem ?? 'sync' })
+    }
+    for (const server of plan.update) {
+      store.updateQueued('problem', server.key, { message: server.error ?? undefined, problem: server.problem ?? 'sync' })
+    }
     for (const key of plan.clear) store.clear('problem', key)
     for (const key of plan.removed) store.clearServer(key)
   }, [servers])
@@ -73,6 +79,19 @@ export default function ServerNotices() {
         Review
       </button>
     )
+  } else if (head.kind === 'problem' && head.problem === 'signed-out' && head.serverKey) {
+    const key = head.serverKey
+    badge = (
+      <button type="button" className="server-cue-badge" onClick={() => {
+        // The sign-in window lives in Settings → Servers; it opens there.
+        useServerWindowRequest.getState().requestReconnect(key)
+        useUIStore.getState().setPendingSettingsSection('servers')
+        useUIStore.getState().setActiveView('settings')
+        dismiss()
+      }}>
+        Sign in
+      </button>
+    )
   } else if (head.kind === 'ready' && head.serverKey) {
     const key = head.serverKey
     badge = (
@@ -115,7 +134,8 @@ function cueContent(notice: ServerNotice, name: string): { label: string; title:
     case 'review':
       return { label: 'Server Sync', title: `${plural(notice.count ?? 1, 'change')} on both sides`, detail: name }
     case 'problem':
-      // Offline and sign-in expired read the same until source status carries an error kind.
+      if (notice.problem === 'offline') return { label: 'Server Offline', title: `Can’t reach ${name}`, detail: 'Its tracks are unavailable until it’s back.' }
+      if (notice.problem === 'signed-out') return { label: 'Sign-in Expired', title: `${name} needs you to sign in again`, detail: 'Its tracks are unavailable until you do.' }
       return { label: 'Server Problem', title: `Can’t sync ${name}`, detail: notice.message }
     case 'ready':
       return { label: 'Server Ready', title: `${name} is ready`, detail: 'Its music is in your library.' }

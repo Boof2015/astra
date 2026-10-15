@@ -19,7 +19,7 @@ function harness() {
       savePlexSource: async input => {
         const id = [...rows.values()].find(row => row.server_id === input.server_id && row.account_id === input.account_id && row.library_id === input.library_id)?.id ?? rows.size + 1
         const row: PlexSourceRow = { ...input, id, enabled: 1, deleted: 0, created_at: 1, updated_at: 1, last_status: 'unknown',
-          last_error: null, last_sync_at: null, last_checked_at: null }
+          last_error: null, last_error_kind: null, last_sync_at: null, last_checked_at: null }
         rows.set(id, row); return publicRow(row)
       },
       updatePlexSource: async (id, patch) => { const row = rows.get(id)!; Object.assign(row, patch); return publicRow(row) },
@@ -131,6 +131,8 @@ test('Plex incomplete sync preserves existing catalog and only successful catalo
   assert.equal(h.commits.length, 0); assert.equal(h.missing.length, 0)
   // The server answered, so its tracks stay playable.
   assert.deepEqual(h.availability, [])
+  assert.equal(h.rows.get(source.id)!.last_error_kind, 'sync')
+  assert.equal(h.service.status().sources[0].errorKind, 'sync')
   assert.equal(h.service.status().sources[0].status, 'error')
   h.mutations.brokenCatalog = false
   await Promise.all([h.service.sync(source.id), h.service.sync(source.id)])
@@ -187,6 +189,7 @@ test('Plex revoked account asks for sign-in without committing a partial catalog
   assert.equal(h.requests.filter(path => path.endsWith('/resources')).length, 2)
   assert.equal(h.commits.length, 0); assert.equal(h.missing.length, 0)
   assert.deepEqual(h.availability, [[source.id, false, 'source_unavailable']])
+  assert.equal(h.rows.get(source.id)!.last_error_kind, 'auth', 'a revoked account is a sign-in problem')
 })
 
 test('Plex unreachable server marks its tracks unavailable', async t => {
@@ -199,6 +202,7 @@ test('Plex unreachable server marks its tracks unavailable', async t => {
   assert.deepEqual(h.availability, [[source.id, false, 'source_unavailable']])
   assert.deepEqual(h.restored, [])
   assert.equal(h.rows.get(source.id)!.last_status, 'error')
+  assert.equal(h.rows.get(source.id)!.last_error_kind, 'unreachable')
   assert.equal(h.commits.length, 0)
 })
 

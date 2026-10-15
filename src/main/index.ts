@@ -60,6 +60,7 @@ import { createJellyfinAudioSource } from './services/jellyfinAudioSource'
 import { ProviderPlaybackService, playbackReportSource } from './services/providerPlayback'
 import { ProviderStateSync } from './services/providerStateSync'
 import { normalizeProviderSyncRef, providerSyncFields } from '../shared/sync/providerState'
+import { classifySourceError } from './services/sourceErrorKind'
 import type { ProviderSyncRef, ProviderSyncChoice, ProviderSyncField } from '../types/providerSync'
 import { fetchSubsonicUserStates, writeSubsonicUserState } from './services/subsonic'
 import { fetchJellyfinUserStates, writeJellyfinFavorite } from './services/jellyfin'
@@ -3961,6 +3962,7 @@ function computeSubsonicStatusSnapshot(isSyncing: boolean): SubsonicStatusSnapsh
     enabled: source.enabled === 1,
     status: source.last_status,
     error: source.last_error,
+    errorKind: source.last_status === 'error' ? source.last_error_kind : null,
     lastSyncAt: source.last_sync_at,
     lastCheckedAt: source.last_checked_at,
     progress: subsonicSyncProgressBySourceId.get(source.id) ?? null
@@ -4016,6 +4018,7 @@ function computeJellyfinStatusSnapshot(isSyncing: boolean): JellyfinStatusSnapsh
     enabled: source.enabled === 1,
     status: source.last_status,
     error: source.last_error,
+    errorKind: source.last_status === 'error' ? source.last_error_kind : null,
     lastSyncAt: source.last_sync_at,
     lastCheckedAt: source.last_checked_at,
     progress: jellyfinSyncProgressBySourceId.get(source.id) ?? null
@@ -4085,6 +4088,7 @@ function toSubsonicSourcePayload(source: library.SubsonicSourcePublic): Subsonic
     enabled: source.enabled,
     last_status: source.last_status,
     last_error: source.last_error,
+    last_error_kind: source.last_error_kind,
     last_sync_at: source.last_sync_at,
     last_checked_at: source.last_checked_at,
     created_at: source.created_at,
@@ -4268,6 +4272,7 @@ function toJellyfinSourcePayload(source: library.JellyfinSourcePublic): Jellyfin
     enabled: source.enabled,
     last_status: source.last_status,
     last_error: source.last_error,
+    last_error_kind: source.last_error_kind,
     last_sync_at: source.last_sync_at,
     last_checked_at: source.last_checked_at,
     created_at: source.created_at,
@@ -4429,6 +4434,7 @@ async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): 
       {
         status: 'error',
         error: message,
+        errorKind: classifySourceError(error, 'connect'),
         checkedAt: Date.now()
       },
       { persist: false }
@@ -4494,11 +4500,16 @@ async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): 
     return true
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown Subsonic sync failure.'
+    const errorKind = classifySourceError(error, 'sync')
+    // Like Plex: after the connection check passes, one failing catalog request leaves the
+    // tracks playable, but a refused sign-in doesn't.
+    if (errorKind === 'auth') await library.markSubsonicTracksUnreachable(sourceId, { persist: false })
     await library.updateSubsonicSourceStatus(
       sourceId,
       {
         status: 'error',
         error: message,
+        errorKind,
         checkedAt: Date.now()
       },
       { persist: false }
@@ -4668,6 +4679,7 @@ async function syncOneJellyfinSource(sourceId: number, syncSessionKey: string): 
       {
         status: 'error',
         error: message,
+        errorKind: classifySourceError(error, 'connect'),
         checkedAt: Date.now()
       },
       { persist: false }
@@ -4754,11 +4766,16 @@ async function syncOneJellyfinSource(sourceId: number, syncSessionKey: string): 
     return true
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown Jellyfin sync failure.'
+    const errorKind = classifySourceError(error, 'sync')
+    // Like Plex: after the connection check passes, one failing catalog request leaves the
+    // tracks playable, but a refused sign-in doesn't.
+    if (errorKind === 'auth') await library.markJellyfinTracksUnreachable(sourceId, { persist: false })
     await library.updateJellyfinSourceStatus(
       sourceId,
       {
         status: 'error',
         error: message,
+        errorKind,
         checkedAt: Date.now()
       },
       { persist: false }
@@ -6970,6 +6987,7 @@ ipcMain.handle('subsonic:testSource', async (_event, rawInput: SubsonicSourceTes
       await library.updateSubsonicSourceStatus(sourceId, {
         status: 'error',
         error: message,
+        errorKind: classifySourceError(error, 'connect'),
         checkedAt: Date.now()
       })
       broadcastSubsonicStatus(refreshSubsonicStatusCache(subsonicSyncInFlight))
@@ -7135,6 +7153,7 @@ ipcMain.handle('jellyfin:testSource', async (_event, rawInput: JellyfinSourceTes
       await library.updateJellyfinSourceStatus(sourceId, {
         status: 'error',
         error: message,
+        errorKind: classifySourceError(error, 'connect'),
         checkedAt: Date.now()
       })
       broadcastJellyfinStatus(refreshJellyfinStatusCache(jellyfinSyncInFlight))

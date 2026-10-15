@@ -15,13 +15,15 @@ function RetryButton({ server }: { server: ServerEntry }) {
 
 /**
  * Several servers: a quiet row each, opening that server's page. Only a problem
- * gets color and a button. The name is the row's button and stretches over the
+ * gets color, and a button when there's something to do about it. The name is the row's button and stretches over the
  * whole row, so the row is one click target and one tab stop.
  */
-export function ServerList({ servers, highlightKey, onOpen }: {
+export function ServerList({ servers, highlightKey, onOpen, onReconnect }: {
   servers: ServerEntry[]
   highlightKey?: string | null
   onOpen: (key: string) => void
+  /** Sign in again (Plex) or change the connection (others). */
+  onReconnect: (server: ServerEntry) => void
 }) {
   return (
     <div className="servers-group">
@@ -43,7 +45,11 @@ export function ServerList({ servers, highlightKey, onOpen }: {
             {server.state === 'syncing' && server.progress
               ? <CompactProgress progress={server.progress} />
               : <ServerStatusLine server={server} variant="list" />}
-            {server.state === 'failed' && <RetryButton server={server} />}
+            {/* Offline needs no button: Astra retries on its own, and the status says so. */}
+            {server.problem === 'sync' && <RetryButton server={server} />}
+            {server.problem === 'signed-out' && (
+              <button type="button" className="servers-btn is-accent servers-row-action" onClick={() => onReconnect(server)}>Reconnect</button>
+            )}
           </div>
           <span className="servers-chevron" aria-hidden="true"><ChevronRightIcon /></span>
         </div>

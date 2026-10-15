@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { classifySourceError } from './sourceErrorKind'
 import type * as Library from './library'
 import type { PlexConnectInput, PlexLibraryChoice, PlexSignInStatus, PlexSource, PlexStatusSnapshot } from '../../types/plex'
 import { beginPlexSignIn, connectPlexServer, createPlexDevice, discoverPlexServers, fetchPlexArtwork,
@@ -36,7 +37,8 @@ export class PlexSources {
   status(): PlexStatusSnapshot {
     return { isSyncing: this.syncs.size > 0, updatedAt: Date.now(), sources: this.options.library.listPlexSources().map(source => ({
       sourceId: source.id, enabled: source.enabled === 1, status: this.syncs.has(source.id) ? 'syncing' : source.last_status,
-      error: source.last_error, lastSyncAt: source.last_sync_at, lastCheckedAt: source.last_checked_at,
+      error: source.last_error, errorKind: !this.syncs.has(source.id) && source.last_status === 'error' ? source.last_error_kind : null,
+      lastSyncAt: source.last_sync_at, lastCheckedAt: source.last_checked_at,
       progress: this.progress.get(source.id) ?? null
     })) }
   }
@@ -187,7 +189,7 @@ export class PlexSources {
     await this.syncs.get(id)?.promise.catch(() => {})
     this.credentialCache.delete(id)
     const source = await this.options.library.updatePlexSource(id, { ...(input.name !== undefined ? { name: input.name.trim().slice(0, 200) } : {}),
-      ...(input.enabled !== undefined ? { enabled: input.enabled ? 1 : 0, last_status: input.enabled ? 'unknown' : 'disabled', last_error: null } : {}) })
+      ...(input.enabled !== undefined ? { enabled: input.enabled ? 1 : 0, last_status: input.enabled ? 'unknown' : 'disabled', last_error: null, last_error_kind: null } : {}) })
     if (input.enabled === false) await this.options.library.markPlexTracksAvailability(id, false, 'source_disabled')
     this.changed()
     return source
@@ -262,7 +264,7 @@ export class PlexSources {
       await this.options.library.upsertPlexTracks(id, tracks.map(track => ({ ...track,
         artwork_hash: track.artwork_source_id ? hashes.get(track.artwork_source_id) ?? null : null })), { syncSessionKey: key })
       await this.options.library.markMissingPlexTracksUnavailable(id, new Set(tracks.map(track => track.source_track_id)))
-      await this.options.library.updatePlexSource(id, { last_status: 'ok', last_error: null, last_checked_at: Date.now(), last_sync_at: Date.now() })
+      await this.options.library.updatePlexSource(id, { last_status: 'ok', last_error: null, last_error_kind: null, last_checked_at: Date.now(), last_sync_at: Date.now() })
       success = true
       // Playlist errors have their own status and do not fail the music scan.
       await this.options.afterCatalogSync?.(id).catch(() => {})
@@ -275,7 +277,8 @@ export class PlexSources {
           await this.options.library.markPlexTracksUnreachable(id)
         }
         await this.options.library.updatePlexSource(id, { last_status: 'error', last_checked_at: Date.now(),
-          last_error: error instanceof Error ? error.message : 'Plex refresh failed.' })
+          last_error: error instanceof Error ? error.message : 'Plex refresh failed.',
+          last_error_kind: classifySourceError(error, connected ? 'sync' : 'connect') })
       }
       throw error
     } finally { await this.options.finishLibrarySync(key, success) }

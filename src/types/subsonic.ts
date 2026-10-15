@@ -1,5 +1,8 @@
 export type TrackSourceType = 'local' | 'subsonic' | 'jellyfin' | 'plex'
 
+/** Why a source's last check or sync failed: sign-in refused, server unreachable, or the sync itself. */
+export type SourceErrorKind = 'auth' | 'unreachable' | 'sync'
+
 export type SubsonicSourceLastStatus =
   | 'unknown'
   | 'ok'
@@ -29,6 +32,7 @@ export interface SubsonicSourceStatus {
   enabled: boolean
   status: SubsonicSourceLastStatus
   error: string | null
+  errorKind: SourceErrorKind | null
   lastSyncAt: number | null
   lastCheckedAt: number | null
   progress: SubsonicSourceSyncProgress | null
@@ -42,6 +46,7 @@ export interface SubsonicSource {
   enabled: number
   last_status: SubsonicSourceLastStatus
   last_error: string | null
+  last_error_kind: SourceErrorKind | null
   last_sync_at: number | null
   last_checked_at: number | null
   created_at: number
@@ -116,6 +121,7 @@ export interface JellyfinSourceStatus {
   enabled: boolean
   status: JellyfinSourceLastStatus
   error: string | null
+  errorKind: SourceErrorKind | null
   lastSyncAt: number | null
   lastCheckedAt: number | null
   progress: JellyfinSourceSyncProgress | null
@@ -129,6 +135,7 @@ export interface JellyfinSource {
   enabled: number
   last_status: JellyfinSourceLastStatus
   last_error: string | null
+  last_error_kind: SourceErrorKind | null
   last_sync_at: number | null
   last_checked_at: number | null
   created_at: number

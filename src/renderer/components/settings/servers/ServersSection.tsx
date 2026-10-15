@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { usePresence } from '../../../hooks/usePresence'
+import { useServerWindowRequest } from '../../../stores/serverWindowRequest'
 import { AddServerWindow } from './AddServerWindow'
 import { ChangeConnectionWindow } from './ChangeConnectionWindow'
 import { QualityControl } from './QualityControl'
@@ -41,6 +42,16 @@ export default function ServersSection() {
   const onMenuAction = (server: ServerEntry) => (action: ServerMenuAction) => setWindowState(action === 'remove'
     ? { kind: 'remove', server }
     : { kind: server.provider === 'plex' ? 'sign-in' : 'connection', server })
+
+  // A corner cue's "Sign in" asks for a server's sign-in window; open it once that server is known.
+  const reconnectRequest = useServerWindowRequest(state => state.reconnect)
+  useEffect(() => {
+    if (!reconnectRequest) return
+    const server = servers.find(item => item.key === reconnectRequest)
+    if (!server) return
+    useServerWindowRequest.getState().take()
+    onMenuAction(server)('connection')
+  }, [reconnectRequest, servers])
 
   // A newly added server's row lights up briefly as it appears.
   const [justAdded, setJustAdded] = useState<string | null>(null)
@@ -98,7 +109,8 @@ export default function ServersSection() {
               </div>
             )}
             {servers.length > 1 && (
-              <ServerList servers={servers} highlightKey={justAdded} onOpen={key => { setNavigated(true); setOpenKey(key) }} />
+              <ServerList servers={servers} highlightKey={justAdded} onOpen={key => { setNavigated(true); setOpenKey(key) }}
+                onReconnect={server => onMenuAction(server)('connection')} />
             )}
             {storeErrors.map(message => <p key={message} className="servers-error" role="alert">{message}</p>)}
 

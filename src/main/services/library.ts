@@ -112,6 +112,7 @@ import { getLocalDayKey, HOME_SHELF_ITEM_LIMIT, selectHomeRediscovery } from '..
 import type { LyricsFormat, LyricsLine, LyricsProvider } from '../../types/lyrics'
 import type {
   JellyfinSourceLastStatus,
+  SourceErrorKind,
   SubsonicSourceLastStatus,
   TrackSourceType
 } from '../../types/subsonic'
@@ -290,6 +291,7 @@ export interface SubsonicSourceRow {
   enabled: number
   last_status: SubsonicSourceLastStatus
   last_error: string | null
+  last_error_kind: SourceErrorKind | null
   last_sync_at: number | null
   last_checked_at: number | null
   created_at: number
@@ -304,6 +306,7 @@ export interface SubsonicSourcePublic {
   enabled: number
   last_status: SubsonicSourceLastStatus
   last_error: string | null
+  last_error_kind: SourceErrorKind | null
   last_sync_at: number | null
   last_checked_at: number | null
   created_at: number
@@ -320,6 +323,7 @@ export interface JellyfinSourceRow {
   enabled: number
   last_status: JellyfinSourceLastStatus
   last_error: string | null
+  last_error_kind: SourceErrorKind | null
   last_sync_at: number | null
   last_checked_at: number | null
   created_at: number
@@ -330,7 +334,11 @@ export type PlexSourceRow = Omit<PlexSource, 'has_stored_secret'> & { secret_enc
 
 function publicPlexSource(row: PlexSourceRow): PlexSource {
   const { secret_encrypted, deleted: _deleted, ...source } = row
-  return { ...source, has_stored_secret: !!secret_encrypted }
+  return { ...source, last_error_kind: normalizeSourceErrorKind(source.last_error_kind), has_stored_secret: !!secret_encrypted }
+}
+
+function normalizeSourceErrorKind(value: unknown): SourceErrorKind | null {
+  return value === 'auth' || value === 'unreachable' || value === 'sync' ? value : null
 }
 export function listPlexSources(): PlexSource[] {
   return (db?.all<PlexSourceRow>('SELECT * FROM plex_sources WHERE deleted = 0 ORDER BY created_at, id') ?? []).map(publicPlexSource)
@@ -346,7 +354,7 @@ export async function savePlexSource(input: Pick<PlexSourceRow, 'name' | 'base_u
     ON CONFLICT(account_id, server_id, library_id) DO UPDATE SET
       name = excluded.name, base_url = excluded.base_url, username = excluded.username,
       library_name = excluded.library_name, secret_encrypted = excluded.secret_encrypted,
-      enabled = 1, deleted = 0, last_status = 'unknown', last_error = NULL, updated_at = excluded.updated_at`,
+      enabled = 1, deleted = 0, last_status = 'unknown', last_error = NULL, last_error_kind = NULL, updated_at = excluded.updated_at`,
   [input.name, input.base_url, input.username, input.account_id, input.server_id, input.library_id, input.library_name, input.secret_encrypted, now, now])
   // A retained lower-ID library may have been reconnected after its playlist
   // collection moved to another library. Move the existing collection with it.
@@ -360,9 +368,9 @@ export async function savePlexSource(input: Pick<PlexSourceRow, 'name' | 'base_u
     [input.account_id, input.server_id, input.library_id])!)
 }
 export async function updatePlexSource(id: number, input: Partial<Pick<PlexSourceRow,
-  'name' | 'base_url' | 'secret_encrypted' | 'enabled' | 'last_status' | 'last_error' | 'last_sync_at' | 'last_checked_at'>>): Promise<PlexSource> {
+  'name' | 'base_url' | 'secret_encrypted' | 'enabled' | 'last_status' | 'last_error' | 'last_error_kind' | 'last_sync_at' | 'last_checked_at'>>): Promise<PlexSource> {
   if (!db || !getPlexSourceById(id)) throw new Error('Plex source not found.')
-  const allowed = ['name', 'base_url', 'secret_encrypted', 'enabled', 'last_status', 'last_error', 'last_sync_at', 'last_checked_at'] as const
+  const allowed = ['name', 'base_url', 'secret_encrypted', 'enabled', 'last_status', 'last_error', 'last_error_kind', 'last_sync_at', 'last_checked_at'] as const
   const keys = allowed.filter(key => input[key] !== undefined)
   if (keys.length) db.run(`UPDATE plex_sources SET ${keys.map(key => `${key} = ?`).join(', ')}, updated_at = ? WHERE id = ?`,
     [...keys.map(key => input[key]!), Date.now(), id])
@@ -441,6 +449,7 @@ export interface JellyfinSourcePublic {
   enabled: number
   last_status: JellyfinSourceLastStatus
   last_error: string | null
+  last_error_kind: SourceErrorKind | null
   last_sync_at: number | null
   last_checked_at: number | null
   created_at: number
@@ -2823,6 +2832,7 @@ export async function initDatabase(): Promise<void> {
       enabled INTEGER NOT NULL DEFAULT 1,
       last_status TEXT NOT NULL DEFAULT 'unknown',
       last_error TEXT,
+      last_error_kind TEXT,
       last_sync_at INTEGER,
       last_checked_at INTEGER,
       created_at INTEGER NOT NULL,
@@ -2841,6 +2851,7 @@ export async function initDatabase(): Promise<void> {
       enabled INTEGER NOT NULL DEFAULT 1,
       last_status TEXT NOT NULL DEFAULT 'unknown',
       last_error TEXT,
+      last_error_kind TEXT,
       last_sync_at INTEGER,
       last_checked_at INTEGER,
       created_at INTEGER NOT NULL,
@@ -2854,10 +2865,14 @@ export async function initDatabase(): Promise<void> {
     username TEXT NOT NULL, account_id TEXT NOT NULL, server_id TEXT NOT NULL,
     library_id TEXT NOT NULL, library_name TEXT NOT NULL, secret_encrypted TEXT NOT NULL,
     deleted INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, last_status TEXT NOT NULL DEFAULT 'unknown',
-    last_error TEXT, last_sync_at INTEGER, last_checked_at INTEGER,
+    last_error TEXT, last_error_kind TEXT, last_sync_at INTEGER, last_checked_at INTEGER,
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
     UNIQUE(account_id, server_id, library_id)
   )`)
+  // Schema migration: why a server last failed (sign-in, unreachable, sync), for existing databases.
+  for (const table of ['subsonic_sources', 'jellyfin_sources', 'plex_sources']) {
+    try { db.run(`ALTER TABLE ${table} ADD COLUMN last_error_kind TEXT`) } catch { /* Column already exists. */ }
+  }
 
 
   db.run(`CREATE TABLE IF NOT EXISTS remote_playlist_sync (provider TEXT NOT NULL, source_id INTEGER NOT NULL,
@@ -3268,6 +3283,7 @@ function toSubsonicSourcePublic(row: SubsonicSourceRow): SubsonicSourcePublic {
     enabled: row.enabled,
     last_status: normalizeSubsonicLastStatus(row.last_status),
     last_error: row.last_error,
+    last_error_kind: normalizeSourceErrorKind(row.last_error_kind),
     last_sync_at: row.last_sync_at,
     last_checked_at: row.last_checked_at,
     created_at: row.created_at,
@@ -3285,6 +3301,7 @@ function toJellyfinSourcePublic(row: JellyfinSourceRow): JellyfinSourcePublic {
     enabled: row.enabled,
     last_status: normalizeJellyfinLastStatus(row.last_status),
     last_error: row.last_error,
+    last_error_kind: normalizeSourceErrorKind(row.last_error_kind),
     last_sync_at: row.last_sync_at,
     last_checked_at: row.last_checked_at,
     created_at: row.created_at,
@@ -3417,6 +3434,7 @@ export function listSubsonicSources(): SubsonicSourcePublic[] {
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
@@ -3438,6 +3456,7 @@ export function getSubsonicSourceById(sourceId: number): SubsonicSourceRow | nul
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
@@ -3472,11 +3491,12 @@ export async function createSubsonicSource(input: {
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
     [
       input.name.trim(),
       input.base_url.trim(),
@@ -3508,6 +3528,7 @@ export async function updateSubsonicSource(
     enabled?: number
     last_status?: SubsonicSourceLastStatus
     last_error?: string | null
+    last_error_kind?: SourceErrorKind | null
     last_sync_at?: number | null
     last_checked_at?: number | null
   },
@@ -3531,6 +3552,7 @@ export async function updateSubsonicSource(
          enabled = ?,
          last_status = ?,
          last_error = ?,
+         last_error_kind = ?,
          last_sync_at = ?,
          last_checked_at = ?,
          updated_at = ?
@@ -3543,6 +3565,7 @@ export async function updateSubsonicSource(
       input.enabled !== undefined ? (input.enabled ? 1 : 0) : current.enabled,
       input.last_status !== undefined ? normalizeSubsonicLastStatus(input.last_status) : normalizeSubsonicLastStatus(current.last_status),
       input.last_error !== undefined ? input.last_error : current.last_error,
+      input.last_error_kind !== undefined ? input.last_error_kind : current.last_error_kind ?? null,
       input.last_sync_at !== undefined ? input.last_sync_at : current.last_sync_at,
       input.last_checked_at !== undefined ? input.last_checked_at : current.last_checked_at,
       now,
@@ -3574,6 +3597,7 @@ export function listJellyfinSources(): JellyfinSourcePublic[] {
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
@@ -3595,6 +3619,7 @@ export function getJellyfinSourceById(sourceId: number): JellyfinSourceRow | nul
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
@@ -3629,11 +3654,12 @@ export async function createJellyfinSource(input: {
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
     [
       input.name.trim(),
       input.base_url.trim(),
@@ -3665,6 +3691,7 @@ export async function updateJellyfinSource(
     enabled?: number
     last_status?: JellyfinSourceLastStatus
     last_error?: string | null
+    last_error_kind?: SourceErrorKind | null
     last_sync_at?: number | null
     last_checked_at?: number | null
   },
@@ -3688,6 +3715,7 @@ export async function updateJellyfinSource(
          enabled = ?,
          last_status = ?,
          last_error = ?,
+         last_error_kind = ?,
          last_sync_at = ?,
          last_checked_at = ?,
          updated_at = ?
@@ -3700,6 +3728,7 @@ export async function updateJellyfinSource(
       input.enabled !== undefined ? (input.enabled ? 1 : 0) : current.enabled,
       input.last_status !== undefined ? normalizeJellyfinLastStatus(input.last_status) : normalizeJellyfinLastStatus(current.last_status),
       input.last_error !== undefined ? input.last_error : current.last_error,
+      input.last_error_kind !== undefined ? input.last_error_kind : current.last_error_kind ?? null,
       input.last_sync_at !== undefined ? input.last_sync_at : current.last_sync_at,
       input.last_checked_at !== undefined ? input.last_checked_at : current.last_checked_at,
       now,
@@ -4031,6 +4060,7 @@ export async function updateSubsonicSourceStatus(
   input: {
     status: SubsonicSourceLastStatus
     error?: string | null
+    errorKind?: SourceErrorKind | null
     syncedAt?: number | null
     checkedAt?: number | null
   },
@@ -4044,6 +4074,8 @@ export async function updateSubsonicSourceStatus(
     {
       last_status: normalizeSubsonicLastStatus(input.status),
       last_error: input.error === undefined ? existing.last_error : input.error,
+      // A kind only goes with an error; anything else clears it.
+      last_error_kind: input.status === 'error' ? (input.errorKind ?? existing.last_error_kind ?? 'sync') : null,
       last_sync_at: input.syncedAt === undefined ? existing.last_sync_at : input.syncedAt,
       last_checked_at: input.checkedAt === undefined ? existing.last_checked_at : input.checkedAt
     },
@@ -4562,6 +4594,7 @@ export async function updateJellyfinSourceStatus(
   input: {
     status: JellyfinSourceLastStatus
     error?: string | null
+    errorKind?: SourceErrorKind | null
     syncedAt?: number | null
     checkedAt?: number | null
   },
@@ -4575,6 +4608,8 @@ export async function updateJellyfinSourceStatus(
     {
       last_status: normalizeJellyfinLastStatus(input.status),
       last_error: input.error === undefined ? existing.last_error : input.error,
+      // A kind only goes with an error; anything else clears it.
+      last_error_kind: input.status === 'error' ? (input.errorKind ?? existing.last_error_kind ?? 'sync') : null,
       last_sync_at: input.syncedAt === undefined ? existing.last_sync_at : input.syncedAt,
       last_checked_at: input.checkedAt === undefined ? existing.last_checked_at : input.checkedAt
     },

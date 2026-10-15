@@ -3,7 +3,7 @@ import type { ProviderSyncRef } from '../../../types/providerSync'
 import type { RemotePlaylistDestination } from '../../../types/remotePlaylists'
 import { RemotePlaylistCreationUncertainError } from '../../stores/playlistStore'
 import PlaylistCover from './PlaylistCover'
-import ServerDestinationPicker, { destinationKey } from './ServerDestinationPicker'
+import ServerDestinationPicker, { destinationBlocked, destinationKey } from './ServerDestinationPicker'
 import { useServers } from '../settings/servers/useServers'
 import { usePresence } from '../../hooks/usePresence'
 import DynamicPlaylistRuleEditor, { type DynamicPlaylistPreview } from './DynamicPlaylistRuleEditor'
@@ -157,7 +157,9 @@ export default function CreatePlaylistModal({
   const handleCreate = async () => {
     if (submitting.current || playlistKind === null) return
     const server = playlistKind === 'server' ? destinations.find(choice => destinationKey(choice) === destination) : undefined
-    if (playlistKind === 'server' && (!server || server.reason || creationUncertain || loadingDestinations)) return
+    // The same block as the Create button, so Enter in Name can't get past it.
+    if (playlistKind === 'server' && (!server || destinationBlocked(server, servers.find(item => item.key === destination))
+      || creationUncertain || loadingDestinations)) return
     const trimmedName = name.trim()
     if (!trimmedName) return
 
@@ -203,9 +205,10 @@ export default function CreatePlaylistModal({
   const isServerMode = playlistKind === 'server'
   const selectedServer = destinations.find(choice => destinationKey(choice) === destination)
   const selectedServerName = servers.find(server => server.key === destination)?.name ?? selectedServer?.name
+  const selectedBlocked = !selectedServer || destinationBlocked(selectedServer, servers.find(server => server.key === destination))
   const isChoosingKind = playlistKind === null
   const isCreateDisabled = isChoosingKind || isSubmitting || name.trim().length === 0 || (isDynamicMode && dynamicRulesError !== null)
-    || (isServerMode && (!selectedServer || !!selectedServer.reason || loadingDestinations || creationUncertain))
+    || (isServerMode && (selectedBlocked || loadingDestinations || creationUncertain))
   const effectiveTitle = isDynamicMode ? 'Create Dynamic Playlist' : isServerMode ? 'Create Server Playlist' : title
   const close = () => { if (!submitting.current) onClose() }
 
@@ -278,7 +281,7 @@ export default function CreatePlaylistModal({
                     <ServerDestinationPicker destinations={destinations} value={destination}
                       disabled={isSubmitting || loadingDestinations} onChange={setDestination} />
                     <p className="settings-note">
-                      {selectedServer && !selectedServer.reason
+                      {!selectedBlocked
                         ? 'The playlist and your edits are saved directly to this server.'
                         : 'Choose a server that can take this playlist.'}
                     </p>
@@ -413,7 +416,7 @@ export default function CreatePlaylistModal({
                 disabled={isCreateDisabled}
               >
                 {isSubmitting ? 'Creating...' : isDynamicMode ? 'Create Dynamic'
-                  : isServerMode && selectedServer && !selectedServer.reason ? `Create on ${selectedServerName}` : 'Create'}
+                  : isServerMode && !selectedBlocked ? `Create on ${selectedServerName}` : 'Create'}
               </button>
             )}
           </div>

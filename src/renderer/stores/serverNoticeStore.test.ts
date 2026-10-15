@@ -24,7 +24,7 @@ test('one outage notice per outage, none for a failure seen during the user’s 
   const memory = { notified: new Set<string>(), known: new Set<string>() }
   const none = () => false
   const failed = [{ key: 'subsonic:1', state: 'failed', error: 'Unable to reach the server.' }]
-  assert.deepEqual(planOutageNotices(failed, memory, none).push, [{ key: 'subsonic:1', error: 'Unable to reach the server.' }])
+  assert.deepEqual(planOutageNotices(failed, memory, none).push.map(item => [item.key, item.error]), [['subsonic:1', 'Unable to reach the server.']])
   assert.deepEqual(planOutageNotices(failed, memory, none).push, [], 'still the same outage')
   assert.deepEqual(planOutageNotices([{ key: 'subsonic:1', state: 'syncing', error: null }], memory, none).push, [], 'a retry in progress')
   assert.deepEqual(planOutageNotices(failed, memory, none).push, [], 'failing again after the retry: same outage')
@@ -67,4 +67,14 @@ test('a queued cue updates in place; a dismissed one is not recreated', () => {
   store.getState().dismiss(store.getState().queue[0].id)
   store.getState().updateQueued('review', 'plex:3', { count: 1 })
   assert.deepEqual(store.getState().queue, [])
+})
+
+test('a waiting problem cue keeps up when the problem changes within an outage', () => {
+  const memory = { notified: new Set<string>(), known: new Set<string>() }
+  const offline = [{ key: 'plex:3', state: 'failed', error: 'Could not reach Plex.', problem: 'offline' as const }]
+  const signedOut = [{ key: 'plex:3', state: 'failed', error: 'Sign in to Plex again.', problem: 'signed-out' as const }]
+  assert.equal(planOutageNotices(offline, memory, () => false).push.length, 1)
+  const plan = planOutageNotices(signedOut, memory, () => false)
+  assert.deepEqual(plan.push, [], 'still one outage')
+  assert.deepEqual(plan.update.map(item => item.problem), ['signed-out'])
 })

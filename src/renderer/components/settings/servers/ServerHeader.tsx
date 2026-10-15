@@ -9,8 +9,12 @@ function StatusLine({ server, variant }: { server: ServerEntry; variant: 'header
   switch (server.state) {
     case 'off':
       return <span className="servers-status is-off"><i className="servers-dot" />{variant === 'header' ? 'Not in use · hidden from your library' : 'Not in use'}</span>
-    case 'failed':
-      return <span className="servers-status is-warn"><i className="servers-dot" />Sync failed</span>
+    case 'failed': {
+      const text = server.problem === 'offline'
+        ? (variant === 'header' ? `Can’t reach ${server.host} · retrying` : 'Offline · retrying')
+        : server.problem === 'signed-out' ? 'Sign-in expired' : 'Sync failed'
+      return <span className="servers-status is-warn"><i className="servers-dot" />{text}</span>
+    }
     case 'syncing':
       return <span className="servers-status"><i className="servers-dot is-syncing" />Syncing</span>
     case 'checking':
@@ -38,10 +42,27 @@ export function ServerMeta({ server }: { server: ServerEntry }) {
   )
 }
 
-/** Sync now, or Retry now when the last sync failed. Disabled while syncing or not in use. */
-function PrimaryAction({ server }: { server: ServerEntry }) {
+/** What fixes a failed server, in a sentence, for the notice under its header. */
+function problemNotice(server: ServerEntry): string {
+  if (server.problem === 'offline') return 'Its tracks show as unavailable until the server is back. Astra tries again every 20 minutes.'
+  if (server.problem === 'signed-out') {
+    return server.provider === 'plex'
+      ? 'Its tracks are unavailable until you sign in to Plex again.'
+      : 'The server didn’t accept the saved username and password. Its tracks are unavailable until you update them.'
+  }
+  return `${sentence(server.error) ?? 'Astra couldn’t sync with this server.'} Astra tries again every 20 minutes.`
+}
+
+/**
+ * Sync now; Retry now after a failure; Reconnect when the sign-in expired (it opens
+ * Sign in again for Plex, Change connection otherwise). Disabled while syncing or not in use.
+ */
+function PrimaryAction({ server, onReconnect }: { server: ServerEntry; onReconnect: () => void }) {
   const [pending, setPending] = useState(false)
   const busy = pending || server.state === 'syncing'
+  if (server.problem === 'signed-out') {
+    return <button type="button" className="servers-btn is-accent" onClick={onReconnect}>Reconnect</button>
+  }
   return (
     <button type="button" className="servers-btn" disabled={!server.enabled || busy}
       onClick={() => { setPending(true); void syncServer(server).finally(() => setPending(false)) }}>
@@ -63,14 +84,14 @@ export function ServerHeader({ server, onMenuAction }: { server: ServerEntry; on
           <ServerMeta server={server} />
         </div>
         <div className="servers-hero-actions">
-          <PrimaryAction server={server} />
+          <PrimaryAction server={server} onReconnect={() => onMenuAction('connection')} />
           <ServerMenu server={server} onAction={onMenuAction} />
         </div>
       </div>
       {server.state === 'failed' && (
         <div className="servers-notice" role="status">
           <AlertIcon />
-          <span>{sentence(server.error) ?? 'Astra couldn’t sync with this server.'} Astra tries again every 20 minutes.</span>
+          <span>{problemNotice(server)}</span>
         </div>
       )}
       {server.state === 'syncing' && server.progress && <ProgressRow progress={server.progress} />}

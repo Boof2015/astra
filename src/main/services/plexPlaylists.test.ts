@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createPlexPlaylistClient } from './plexPlaylists.ts'
 import { RemotePlaylists, RemotePlaylistCreationError, RemotePlaylistCreationRejectedError } from './remotePlaylists.ts'
-import { parsePlexTrackPath, type PlexCredentials } from './plex.ts'
+import { connectPlexServer, parsePlexTrackPath, type PlexCredentials } from './plex.ts'
 import type { RemotePlaylistLocal, RemotePlaylistSnapshot } from '../../types/remotePlaylists.ts'
 
 const clone = <T>(value: T): T => structuredClone(value)
@@ -208,6 +208,18 @@ test('Plex read authentication refreshes once; mutation failures are not replaye
   })
   assert.equal(f.writes().length, 1)
   assert.deepEqual(f.auth, [false, true])
+})
+
+test('Plex reading a playlist while its server can\'t be connected fails, rather than reporting the playlist gone', async () => {
+  // Reconnecting finds an address answering 404 (not a Plex server). That's about the
+  // address, not the playlist, so the read must not come back as "deleted on the server".
+  const account = { clientId: 'astra', accountId: 'account', username: 'listener', token: 'private-account' }
+  const server = { id: 'machine', name: 'Home', owned: false, token: 'private-resource', connections: [{ uri: 'https://plex.test', local: true, relay: false }] }
+  const notPlex = (async () => new Response(null, { status: 404 })) as typeof fetch
+  const client = createPlexPlaylistClient({ signal: new AbortController().signal, check: () => {}, fetch: notPlex,
+    authenticate: () => connectPlexServer(account, server, { fetch: notPlex }),
+    trackPath: id => `plex://1/${id}`, trackId: () => null })
+  await assert.rejects(client.read('1'), /answered with an error \(HTTP 404\)/)
 })
 
 test('Plex checks cancellation and account identity after awaited credential refresh', async () => {

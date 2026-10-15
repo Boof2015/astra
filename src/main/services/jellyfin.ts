@@ -321,7 +321,7 @@ async function requestJellyfinJson(
       })
 
       if (!response.ok) {
-        throw new Error(`Jellyfin request failed (${response.status})`)
+        throw new JellyfinHttpError(`Jellyfin request failed (${response.status})`, response.status)
       }
 
       return await response.json() as Record<string, unknown>
@@ -442,6 +442,12 @@ async function requestJellyfinBytesFromUrl(
   throw lastError instanceof Error ? lastError : new Error('Jellyfin stream request failed.')
 }
 
+/** A Jellyfin HTTP failure, carrying the status so a rejected sign-in can be told from an unreachable server. */
+export class JellyfinHttpError extends Error {
+  readonly status: number
+  constructor(message: string, status: number) { super(message); this.status = status }
+}
+
 export async function authenticateJellyfin(
   config: JellyfinConnectionConfig,
   options: JellyfinRequestOptions = {}
@@ -481,7 +487,7 @@ export async function authenticateJellyfin(
       })
 
       if (!response.ok) {
-        throw new Error(`Jellyfin authentication failed (${response.status})`)
+        throw new JellyfinHttpError(`Jellyfin authentication failed (${response.status})`, response.status)
       }
 
       const payload = await response.json() as JellyfinAuthenticateResponse

@@ -4,7 +4,7 @@ import {
   addressHost, cleanIpcError, defaultServerName, detectionOrder, subsonicProductName,
   CACHE_SLIDER_MAX, CACHE_STOPS, CacheLimitEdits, cacheSliderValue, deriveServerState, formatAgo, hostOf, nearestCacheStop,
   lastSyncedText, progressFraction, progressText, qualityCopy, qualityFollowUps, qualityFromChoice, qualityLabel, qualityMode,
-  SerialQueue, stepCacheStop, syncSucceeded
+  SerialQueue, serverProblem, stepCacheStop, syncSucceeded
 } from './serverModel.ts'
 
 test('server state: off wins, then syncing, failed, connected, checking', () => {
@@ -196,4 +196,12 @@ test('a sync counts as working only when the source recorded ok, not when the re
   assert.equal(syncSucceeded(undefined, 'error'), false)
   assert.equal(syncSucceeded('syncing', 'ok'), false, 'still running is not success')
   assert.equal(syncSucceeded(undefined, undefined), false)
+})
+
+test('a failure’s kind decides the problem shown: offline, signed out, or a sync problem', () => {
+  assert.equal(serverProblem('unreachable'), 'offline')
+  assert.equal(serverProblem('auth'), 'signed-out')
+  assert.equal(serverProblem('sync'), 'sync')
+  assert.equal(serverProblem(null), 'sync', 'an error from before kinds existed')
+  assert.equal(serverProblem(undefined), 'sync')
 })

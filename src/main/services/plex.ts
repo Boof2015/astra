@@ -15,7 +15,7 @@ export interface PlexCredentials { account: PlexAccount; server: PlexServer; bas
 export type PlexFetch = (url: URL, init: RequestInit) => Promise<Response>
 export interface PlexRequestOptions { signal?: AbortSignal; timeoutMs?: number; fetch?: PlexFetch; accountApi?: string }
 
-type PlexConnectionFailure = 'certificate' | 'dns' | 'timeout' | 'network' | 'response' | 'identity'
+type PlexConnectionFailure = 'certificate' | 'dns' | 'timeout' | 'network' | 'response' | 'identity' | 'http'
 class PlexConnectionError extends Error {
   readonly reason: PlexConnectionFailure
   constructor(reason: PlexConnectionFailure, message: string) { super(message); this.reason = reason }
@@ -42,6 +42,13 @@ export class PlexAccessError extends Error {}
 /** Plex refused this sign-in. The tracks can't play until the user signs in again. */
 export function isPlexAccessFailure(error: unknown): boolean {
   return error instanceof PlexAccessError || (error instanceof PlexRequestError && [401, 403, 498].includes(error.status))
+}
+/**
+ * Nothing answered: no address resolved or connected, or it timed out. A certificate the
+ * computer doesn't trust, or an answer Plex couldn't use, isn't fixed by waiting.
+ */
+export function isPlexTransportFailure(error: unknown): boolean {
+  return error instanceof PlexConnectionError && ['dns', 'timeout', 'network'].includes(error.reason)
 }
 export function plexHeaders(device: Pick<PlexDevice, 'clientId'>, token?: string): Record<string, string> {
   return { ...buildProviderRequestHeaders(), Accept: 'application/json', 'X-Plex-Client-Identifier': device.clientId,
@@ -122,6 +129,8 @@ export async function discoverPlexServers(account: PlexAccount, options: PlexReq
 export async function connectPlexServer(account: PlexAccount, server: PlexServer, options: PlexRequestOptions = {}): Promise<PlexCredentials> {
   const rank = (c: PlexConnection) => (c.relay ? 8 : 0) + (c.local ? 0 : 2) + (c.uri.startsWith('https:') ? 0 : 1)
   const failures = new Set<PlexConnectionFailure>()
+  // The first address that answered with an HTTP error, to report if none connects.
+  let answered: number | null = null
   for (const connection of [...server.connections].sort((a, b) => rank(a) - rank(b))) {
     options.signal?.throwIfAborted()
     try {
@@ -131,15 +140,19 @@ export async function connectPlexServer(account: PlexAccount, server: PlexServer
       failures.add('identity')
     } catch (error) {
       if (error instanceof PlexRequestError && [401, 403, 498].includes(error.status)) throw error
-      failures.add(error instanceof PlexConnectionError ? error.reason : 'network')
+      // A gateway saying the server is down (502/503/504, as in sourceErrorKind) counts as unavailable.
+      if (error instanceof PlexRequestError && ![502, 503, 504].includes(error.status)) answered ??= error.status
+      else failures.add(error instanceof PlexConnectionError ? error.reason : 'network')
     }
   }
   options.signal?.throwIfAborted()
   if (failures.has('certificate')) throw new Error('Plex could not establish a trusted secure connection. Check the server certificate and this computer’s date and time.')
   if (failures.has('response')) throw new Error('A Plex address responded, but did not return valid server information.')
+  // Not a PlexRequestError: callers read those as the requested item's status (a 404 playlist is gone).
+  if (answered !== null) throw new PlexConnectionError('http', `The Plex server answered with an error (HTTP ${answered}).`)
   if (failures.has('identity')) throw new Error('The responding Plex server did not match the selected server. Refresh the server list and try again.')
-  if (failures.has('dns')) throw new Error('Plex server names could not be resolved. Check this computer’s DNS connection.')
-  throw new Error('This Plex server is unavailable. Check that it is running and accessible from this computer.')
+  if (failures.has('dns')) throw new PlexConnectionError('dns', 'Plex server names could not be resolved. Check this computer’s DNS connection.')
+  throw new PlexConnectionError('network', 'This Plex server is unavailable. Check that it is running and accessible from this computer.')
 }
 export async function listPlexLibraries(credentials: PlexCredentials, options: PlexRequestOptions = {}): Promise<PlexLibraryChoice[]> {
   const data = await plexJson(credentials, '/library/sections', options)

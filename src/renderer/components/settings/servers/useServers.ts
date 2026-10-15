@@ -8,8 +8,8 @@ import { useProviderSyncStore } from '../../../stores/providerSyncStore'
 import { useServerNoticeStore } from '../../../stores/serverNoticeStore'
 import { useSubsonicSettingsStore } from '../../../stores/subsonicSettingsStore'
 import {
-  cleanIpcError, deriveServerState, hostOf, syncSucceeded, PROVIDER_KIND, PROVIDER_MONOGRAM,
-  type ServerProgress, type ServerProvider, type ServerState
+  cleanIpcError, deriveServerState, hostOf, serverProblem, syncSucceeded, PROVIDER_KIND, PROVIDER_MONOGRAM,
+  type ServerProblem, type ServerProgress, type ServerProvider, type ServerState
 } from './serverModel'
 
 export interface ServerEntry {
@@ -28,6 +28,8 @@ export interface ServerEntry {
   libraryName: string | null
   enabled: boolean
   state: ServerState
+  /** Set while the state is 'failed'. */
+  problem: ServerProblem | null
   error: string | null
   progress: ServerProgress | null
   lastSyncAt: number | null
@@ -41,7 +43,7 @@ type StatusItem = SubsonicSourceStatus | JellyfinSourceStatus
 
 function entry(provider: ServerProvider, source: {
   id: number; name: string; base_url: string; username: string; enabled: number; last_status: string
-  last_error: string | null; last_sync_at: number | null; created_at: number
+  last_error: string | null; last_error_kind?: string | null; last_sync_at: number | null; created_at: number
 }, status: StatusItem | undefined, extra: {
   host?: string; libraryName?: string; playlistRef?: ProviderSyncRef; playlistPeers?: number
 } = {}): ServerEntry {
@@ -63,6 +65,7 @@ function entry(provider: ServerProvider, source: {
     libraryName: extra.libraryName ?? null,
     enabled,
     state,
+    problem: state === 'failed' ? serverProblem(status ? status.errorKind : source.last_error_kind) : null,
     error: state === 'failed' ? status?.error ?? source.last_error : null,
     progress: state === 'syncing' ? progress : null,
     lastSyncAt: status?.lastSyncAt ?? source.last_sync_at,

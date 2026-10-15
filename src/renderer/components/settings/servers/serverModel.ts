@@ -8,6 +8,16 @@ export type ServerProvider = 'subsonic' | 'jellyfin' | 'plex'
  */
 export type ServerState = 'connected' | 'syncing' | 'checking' | 'failed' | 'off'
 
+/**
+ * What went wrong with a failed server, for the fix the app offers: wait for it to
+ * come back (offline), sign in again (signed-out), or retry and read the message (sync).
+ */
+export type ServerProblem = 'offline' | 'signed-out' | 'sync'
+
+export function serverProblem(errorKind: string | null | undefined): ServerProblem {
+  return errorKind === 'unreachable' ? 'offline' : errorKind === 'auth' ? 'signed-out' : 'sync'
+}
+
 export interface ServerProgress {
   activity: string
   current: number | null

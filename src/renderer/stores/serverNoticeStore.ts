@@ -20,6 +20,8 @@ export interface ServerNotice {
   ref?: ProviderSyncRef
   /** Review: how many changes are waiting. */
   count?: number
+  /** Problem: what went wrong, for the right words and fix. */
+  problem?: 'offline' | 'signed-out' | 'sync'
   /** Error text, or extra detail for a problem. */
   message?: string
 }
@@ -73,12 +75,14 @@ export const useServerNoticeStore = create<ServerNoticeState>((set) => ({
  * attempts is the same outage. A server only counts as removed once it has been seen
  * (`memory.known`), so notices queued before the server list first loads survive.
  */
+type OutageServer = { key: string; state: string; error: string | null; problem?: 'offline' | 'signed-out' | 'sync' | null }
+
 export function planOutageNotices(
-  servers: readonly { key: string; state: string; error: string | null }[],
+  servers: readonly OutageServer[],
   memory: { notified: Set<string>; known: Set<string> },
   isUserSyncing: (key: string) => boolean
-): { push: { key: string; error: string | null }[]; clear: string[]; removed: string[] } {
-  const push: { key: string; error: string | null }[] = [], clear: string[] = [], removed: string[] = []
+): { push: OutageServer[]; update: OutageServer[]; clear: string[]; removed: string[] } {
+  const push: OutageServer[] = [], update: OutageServer[] = [], clear: string[] = [], removed: string[] = []
   const { notified, known } = memory
   const present = new Set(servers.map(server => server.key))
   for (const key of [...known]) {
@@ -90,13 +94,14 @@ export function planOutageNotices(
   for (const key of present) known.add(key)
   for (const server of servers) {
     if (server.state === 'failed') {
-      if (notified.has(server.key)) continue
+      // Same outage: a waiting cue keeps up if the problem changes (offline, then signed out).
+      if (notified.has(server.key)) { update.push(server); continue }
       notified.add(server.key)
-      if (!isUserSyncing(server.key)) push.push({ key: server.key, error: server.error })
+      if (!isUserSyncing(server.key)) push.push(server)
     } else if (server.state === 'connected' || server.state === 'off') {
       notified.delete(server.key)
       clear.push(server.key)
     }
   }
-  return { push, clear, removed }
+  return { push, update, clear, removed }
 }

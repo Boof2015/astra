@@ -4,11 +4,13 @@ import type { ServerEntry } from '../settings/servers/useServers'
 
 interface Tip { key: string; left: number; top: number }
 
-/** What a problem dot means. Offline and sign-in expired read the same until source status carries an error kind. */
+/** What a problem dot means. */
 export function sourceProblemText(server: ServerEntry): { title: string; detail: string } {
+  if (server.problem === 'offline') return { title: 'Offline', detail: 'Its tracks are unavailable until it’s back.' }
+  if (server.problem === 'signed-out') return { title: 'Sign-in expired', detail: 'Its tracks are unavailable until you sign in again.' }
   return {
     title: 'Can’t sync',
-    detail: server.error?.trim() || 'Astra couldn’t sync with this server. Its tracks may be unavailable until it’s back.'
+    detail: server.error?.trim() || 'Astra couldn’t sync with this server.'
   }
 }
 

@@ -6330,6 +6330,33 @@ test('Plex provider occurrence IDs preserve duplicate selection and unavailable-
   assert.equal(library.getRemotePlaylistLocal(playlistId)!.tracks[0].entryId, before.tracks[1].entryId)
 })
 
+test('a server records why it last failed, and forgets it once it works again', async t => {
+  await setupEmptyLibrary(t)
+  const input = { name: 'Server', base_url: 'https://music.test', username: 'user', secret_encrypted: 'secret', enabled: 1 }
+  const subsonic = await library.createSubsonicSource(input)
+  const jellyfin = await library.createJellyfinSource(input)
+  assert.equal(library.getSubsonicSourceById(subsonic.id)!.last_error_kind, null)
+  await library.updateSubsonicSourceStatus(subsonic.id, { status: 'error', error: 'Wrong username or password', errorKind: 'auth' })
+  await library.updateJellyfinSourceStatus(jellyfin.id, { status: 'error', error: 'fetch failed', errorKind: 'unreachable' })
+  assert.equal(library.listSubsonicSources()[0].last_error_kind, 'auth')
+  assert.equal(library.listJellyfinSources()[0].last_error_kind, 'unreachable')
+  // An error without a kind keeps the last known one (a source with none counts it as a sync problem).
+  await library.updateSubsonicSourceStatus(subsonic.id, { status: 'error', error: 'Something else' })
+  assert.equal(library.getSubsonicSourceById(subsonic.id)!.last_error_kind, 'auth', 'keeps the last known kind')
+  await library.updateSubsonicSourceStatus(subsonic.id, { status: 'ok', error: null })
+  await library.updateJellyfinSourceStatus(jellyfin.id, { status: 'syncing' })
+  assert.equal(library.getSubsonicSourceById(subsonic.id)!.last_error_kind, null)
+  assert.equal(library.getJellyfinSourceById(jellyfin.id)!.last_error_kind, null)
+
+  const plex = await library.savePlexSource({ name: 'Plex', base_url: 'https://plex.test', username: 'listener', account_id: 'a',
+    server_id: 's', library_id: '2', library_name: 'Music', secret_encrypted: 'secret' })
+  await library.updatePlexSource(plex.id, { last_status: 'error', last_error: 'Sign in to Plex again.', last_error_kind: 'auth' })
+  assert.equal(library.listPlexSources()[0].last_error_kind, 'auth')
+  await library.savePlexSource({ name: 'Plex', base_url: 'https://plex.test', username: 'listener', account_id: 'a',
+    server_id: 's', library_id: '2', library_name: 'Music', secret_encrypted: 'new secret' })
+  assert.equal(library.listPlexSources()[0].last_error_kind, null, 'signing in again clears it')
+})
+
 for (const provider of ['subsonic', 'jellyfin'] as const) {
   // Replays the library calls runSubsonicSync / syncOneJellyfinSource make: failed ping, passing ping, failed catalog.
   test(`${provider} outage recovery restores only outage-hidden tracks, even when the catalog then fails`, async t => {
