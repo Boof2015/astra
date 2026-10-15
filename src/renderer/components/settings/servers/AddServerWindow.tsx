@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { plexServerName } from '../../../../shared/plex/serverName'
 import type { PlexLibraryChoice } from '../../../../types/plex'
 import type { PresencePhase } from '../../../hooks/usePresence'
 import { useJellyfinSettingsStore } from '../../../stores/jellyfinSettingsStore'
@@ -18,7 +19,8 @@ type AddressProvider = 'subsonic' | 'jellyfin'
 type Step = 'connect' | 'plex-wait' | 'plex-pick' | 'options'
 type Detected =
   | { provider: AddressProvider; label: string }
-  | { provider: 'plex'; serverId: string; serverName: string; library: PlexLibraryChoice }
+  /** `existing`: the Astra entry of a server that already has libraries here; the new ones join it. */
+  | { provider: 'plex'; serverId: string; serverName: string; libraries: PlexLibraryChoice[]; existing: { id: number; name: string } | null }
 
 async function testAddress(provider: AddressProvider, input: { baseUrl: string; username: string; password: string }) {
   try {
@@ -59,7 +61,7 @@ export function AddServerWindow({ phase, onClose, onAdded }: {
   const plexSources = usePlexSettingsStore(state => state.sources)
   const [serverId, setServerId] = useState('')
   const [libraries, setLibraries] = useState<PlexLibraryChoice[] | null>(null)
-  const [libraryId, setLibraryId] = useState('')
+  const [libraryIds, setLibraryIds] = useState<string[]>([])
   const [libraryError, setLibraryError] = useState<string | null>(null)
   // Each library request belongs to one sign-in and one server. A newer choice, a new
   // sign-in or leaving the picker makes older answers stale; they're ignored on arrival.
@@ -68,7 +70,7 @@ export function AddServerWindow({ phase, onClose, onAdded }: {
     libraryRequest.current++
     setServerId('')
     setLibraries(null)
-    setLibraryId('')
+    setLibraryIds([])
     setLibraryError(null)
   }
   useEffect(resetPlexChoice, [plex.status?.id])
@@ -120,46 +122,59 @@ export function AddServerWindow({ phase, onClose, onAdded }: {
     const request = ++libraryRequest.current
     setServerId(id)
     setLibraries(null)
-    setLibraryId('')
+    setLibraryIds([])
     setLibraryError(null)
     try {
       const choices = await window.electronAPI.plex.libraries(plex.status.id, id)
       if (request !== libraryRequest.current) return
       setLibraries(choices)
-      const open = choices.filter(choice => !isAdded(id, choice.id))
-      // A server with one music library picks it for you.
-      if (choices.length === 1 && open.length === 1) setLibraryId(choices[0].id)
+      // Every music library not in Astra yet starts selected.
+      setLibraryIds(choices.filter(choice => !isAdded(id, choice.id)).map(choice => choice.id))
     } catch (error) {
       if (request !== libraryRequest.current) return
       setLibraryError(cleanIpcError(error, 'Couldn’t load the music libraries on this server.'))
     }
   }
+  // A server is in Astra for the account that added it; another account's sign-in adds it separately.
+  const sameAccount = (source: { account_id: string }) => !plex.status?.accountId || source.account_id === plex.status.accountId
   const isAdded = (server: string, library: string) =>
-    plexSources.some(source => source.server_id === server && source.library_id === library)
+    plexSources.some(source => sameAccount(source) && source.server_id === server && source.library_id === library)
+  // A server already in Astra: the entry its new libraries join (named after its first library).
+  const existingEntry = (server: string) => {
+    const owner = plexSources.filter(source => sameAccount(source) && source.server_id === server).sort((a, b) => a.id - b.id)[0]
+    return owner ? { id: owner.id, name: plexServerName(owner) } : null
+  }
+  const toggleLibrary = (id: string) => setLibraryIds(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id])
 
   const continueWithPlex = () => {
     const server = plex.status?.servers?.find(item => item.id === serverId)
-    const library = libraries?.find(item => item.id === libraryId)
-    if (!server || !library) return
-    goToOptions({ provider: 'plex', serverId: server.id, serverName: server.name, library }, `${server.name} · ${library.name}`)
+    const chosen = libraries?.filter(item => libraryIds.includes(item.id)) ?? []
+    if (!server || !chosen.length) return
+    const existing = existingEntry(server.id)
+    goToOptions({ provider: 'plex', serverId: server.id, serverName: server.name, libraries: chosen, existing }, existing?.name ?? server.name)
   }
 
+  const joining = detected?.provider === 'plex' ? detected.existing : null
   const add = async () => {
-    if (!detected || adding || !name.trim()) return
+    if (!detected || adding || (!joining && !name.trim())) return
     setAdding(true)
     setAddError(null)
     try {
-      let provider: ServerProvider, id: number
+      let provider: ServerProvider, id: number, sourceIds: number[] | undefined
       if (detected.provider === 'plex') {
         const signInId = plex.status?.id
         if (!signInId) throw new Error('The Plex sign-in ended. Go back and sign in again.')
-        const source = await window.electronAPI.plex.connect({
-          signInId, serverId: detected.serverId, libraryId: detected.library.id, name: name.trim()
+        // Joining a server already in Astra keeps its name; a new one is named here.
+        const sources = await window.electronAPI.plex.connect({
+          signInId, serverId: detected.serverId, libraryIds: detected.libraries.map(library => library.id),
+          ...(detected.existing ? {} : { name: name.trim() })
         })
         plex.release()
         await usePlexSettingsStore.getState().refresh()
         provider = 'plex'
-        id = source.id
+        sourceIds = sources.map(source => source.id)
+        // The server's entry is keyed by its first library: the existing one, or the first new one.
+        id = detected.existing?.id ?? Math.min(...sourceIds)
       } else {
         // Through the API rather than the store: the store reports a failed library refresh
         // after saving as a failed save, which here would invite adding the server twice.
@@ -172,7 +187,8 @@ export function AddServerWindow({ phase, onClose, onAdded }: {
         id = created.id
       }
       onAdded(`${provider}:${id}`)
-      void finishAddingServer({ provider, id }, { favorites, playlists })
+      // Libraries joining a server already here follow its settings; its page offers to turn ratings on for them.
+      void finishAddingServer({ provider, id, sourceIds }, joining ? { favorites: false, playlists: false } : { favorites, playlists })
     } catch (error) {
       setAddError(cleanIpcError(error, 'Couldn’t add this server.'))
       setAdding(false)
@@ -261,6 +277,7 @@ export function AddServerWindow({ phase, onClose, onAdded }: {
   } else if (step === 'plex-pick') {
     const servers = plex.status?.servers ?? []
     const open = libraries?.filter(choice => !isAdded(serverId, choice.id)) ?? []
+    const selected = open.filter(choice => libraryIds.includes(choice.id))
     body = (
       <>
         <div className="servers-ok-line"><CheckIcon />Signed in to Plex as {plex.status?.username ?? 'you'}</div>
@@ -272,7 +289,7 @@ export function AddServerWindow({ phase, onClose, onAdded }: {
                 <button key={server.id} type="button" className={`servers-pick-item${serverId === server.id ? ' is-on' : ''}`}
                   aria-pressed={serverId === server.id} onClick={() => void chooseServer(server.id)}>
                   <span className="servers-radio" /><span>{server.name}</span>
-                  <span className="servers-pick-tag">{server.owned ? 'Owned' : 'Shared with you'}</span>
+                  <span className="servers-pick-tag">{existingEntry(server.id) ? 'In Astra' : server.owned ? 'Owned' : 'Shared with you'}</span>
                 </button>
               ))}
             </div>
@@ -280,22 +297,24 @@ export function AddServerWindow({ phase, onClose, onAdded }: {
         </div>
         {serverId && (
           <div className="servers-field">
-            <span>Music library</span>
+            <span>{libraries && libraries.length > 1 ? 'Music libraries' : 'Music library'}</span>
             {libraryError ? <p className="servers-hint is-warn">{libraryError}</p>
               : !libraries ? <p className="servers-hint"><Spinner /> Loading libraries…</p>
               : !libraries.length ? <p className="servers-hint">This server has no music libraries.</p>
-              : libraries.length === 1 && open.length === 1
+              : !open.length ? <p className="servers-hint">This server’s music {libraries.length === 1 ? 'library is' : 'libraries are'} already in Astra.</p>
+              : libraries.length === 1
                 ? <p className="servers-hint">{libraries[0].name} is the only music library on this server, so it’s picked for you.</p>
                 : (
-                  <div className="servers-pick">
+                  <div className="servers-pick" role="group" aria-label="Music libraries">
                     {libraries.map(choice => {
                       const added = isAdded(serverId, choice.id)
+                      const on = added || libraryIds.includes(choice.id)
                       return (
-                        <button key={choice.id} type="button" disabled={added}
-                          className={`servers-pick-item${libraryId === choice.id ? ' is-on' : ''}`}
-                          aria-pressed={libraryId === choice.id} onClick={() => setLibraryId(choice.id)}>
-                          <span className="servers-radio" /><span>{choice.name}</span>
-                          {added && <span className="servers-pick-tag">Already added</span>}
+                        <button key={choice.id} type="button" role="checkbox" disabled={added}
+                          className={`servers-pick-item${on ? ' is-on' : ''}`}
+                          aria-checked={on} onClick={() => toggleLibrary(choice.id)}>
+                          <span className="servers-check" /><span>{choice.name}</span>
+                          {added && <span className="servers-pick-tag">Added</span>}
                         </button>
                       )
                     })}
@@ -308,7 +327,7 @@ export function AddServerWindow({ phase, onClose, onAdded }: {
     footer = <>
       <button type="button" className="servers-btn" onClick={backToConnect}>Back</button>
       <span className="servers-spacer" />
-      <button type="button" className="servers-btn is-accent" disabled={!libraryId} onClick={continueWithPlex}>Continue</button>
+      <button type="button" className="servers-btn is-accent" disabled={!selected.length} onClick={continueWithPlex}>Continue</button>
     </>
   } else {
     const provider = detected?.provider ?? 'subsonic'
@@ -321,40 +340,52 @@ export function AddServerWindow({ phase, onClose, onAdded }: {
             ? `Signed in to Plex · ${detected.serverName}`
             : `Connected to ${detected?.label ?? PROVIDER_KIND[provider]} as ${username.trim()}`}
         </div>
-        <label className="servers-field">
-          <span>Name</span>
-          <input className="servers-input" data-autofocus type="text" value={name} disabled={adding} autoComplete="off"
-            onChange={event => setName(event.target.value)}
-            onKeyDown={event => { if (event.key === 'Enter') void add() }} />
-        </label>
-        <div className="servers-window-rows">
-          <div className="servers-row">
-            <div className="servers-row-text">
-              <span className="servers-label">{copy.label}</span>
-              <span className="servers-sub">
-                {copy.sub}{favorites && ' You’ll compare existing values once the first sync finishes.'}
-              </span>
+        {joining && detected?.provider === 'plex' ? (
+          <>
+            <p className="servers-window-text">
+              {detected.libraries.map(library => library.name).join(', ')} {detected.libraries.length === 1 ? 'joins' : 'join'} {joining.name},
+              with the same settings.
+            </p>
+            {addError && <div className="servers-window-error" role="alert"><AlertIcon /><div>{addError}</div></div>}
+          </>
+        ) : (
+          <>
+            <label className="servers-field">
+              <span>Name</span>
+              <input className="servers-input" data-autofocus type="text" value={name} disabled={adding} autoComplete="off"
+                onChange={event => setName(event.target.value)}
+                onKeyDown={event => { if (event.key === 'Enter') void add() }} />
+            </label>
+            <div className="servers-window-rows">
+              <div className="servers-row">
+                <div className="servers-row-text">
+                  <span className="servers-label">{copy.label}</span>
+                  <span className="servers-sub">
+                    {copy.sub}{favorites && ' You’ll compare existing values once the first sync finishes.'}
+                  </span>
+                </div>
+                <ServerSwitch checked={favorites} label={copy.switchLabel} disabled={adding} onChange={setFavorites} />
+              </div>
+              <div className="servers-row">
+                <div className="servers-row-text">
+                  <span className="servers-label">Sync playlists</span>
+                  <span className="servers-sub">Show this server’s playlists in Astra and save your edits back to it.</span>
+                </div>
+                <ServerSwitch checked={playlists} label="Sync playlists" disabled={adding} onChange={setPlaylists} />
+              </div>
             </div>
-            <ServerSwitch checked={favorites} label={copy.switchLabel} disabled={adding} onChange={setFavorites} />
-          </div>
-          <div className="servers-row">
-            <div className="servers-row-text">
-              <span className="servers-label">Sync playlists</span>
-              <span className="servers-sub">Show this server’s playlists in Astra and save your edits back to it.</span>
-            </div>
-            <ServerSwitch checked={playlists} label="Sync playlists" disabled={adding} onChange={setPlaylists} />
-          </div>
-        </div>
-        <p className="servers-hint">You can change these later on the server’s page.</p>
-        {addError && <div className="servers-window-error" role="alert"><AlertIcon /><div>{addError}</div></div>}
+            <p className="servers-hint">You can change these later on the server’s page.</p>
+            {addError && <div className="servers-window-error" role="alert"><AlertIcon /><div>{addError}</div></div>}
+          </>
+        )}
       </>
     )
     footer = <>
       <button type="button" className="servers-btn" disabled={adding}
         onClick={() => setStep(detected?.provider === 'plex' ? 'plex-pick' : 'connect')}>Back</button>
       <span className="servers-spacer" />
-      <button type="button" className="servers-btn is-accent" disabled={adding || !name.trim()} onClick={() => void add()}>
-        {adding ? <><Spinner />Adding…</> : 'Add server'}
+      <button type="button" className="servers-btn is-accent" disabled={adding || (!joining && !name.trim())} onClick={() => void add()}>
+        {adding ? <><Spinner />Adding…</> : joining ? (detected?.provider === 'plex' && detected.libraries.length > 1 ? 'Add libraries' : 'Add library') : 'Add server'}
       </button>
     </>
   }

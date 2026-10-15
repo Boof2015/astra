@@ -5,7 +5,7 @@ import { planOutageNotices, useServerNoticeStore, type ServerNotice } from '../.
 import { useServerWindowRequest } from '../../stores/serverWindowRequest'
 import { useUIStore } from '../../stores/uiStore'
 import { plural } from '../settings/servers/serverModel'
-import { isUserSyncing, useServers, type ServerEntry } from '../settings/servers/useServers'
+import { isUserSyncing, serverForKey, useServers, type ServerEntry } from '../settings/servers/useServers'
 
 type CueVisibility = 'hidden' | 'visible'
 
@@ -22,7 +22,8 @@ function useOutageNotices(servers: ServerEntry[]) {
   const memory = useRef({ notified: new Set<string>(), known: new Set<string>() })
   useEffect(() => {
     const store = useServerNoticeStore.getState()
-    const plan = planOutageNotices(servers, memory.current, isUserSyncing)
+    const plan = planOutageNotices(servers.map(server => ({ ...server, memberKeys: server.sourceIds.map(id => `${server.provider}:${id}`) })),
+      memory.current, isUserSyncing)
     for (const server of plan.push) {
       store.push({ kind: 'problem', serverKey: server.key, message: server.error ?? undefined, problem: server.problem ?? 'sync' })
     }
@@ -63,7 +64,8 @@ export default function ServerNotices() {
   }, [head?.id])
 
   if (!head) return null
-  const server = servers.find(item => item.key === head.serverKey)
+  // A review cue is keyed by the Plex library that has the changes; it belongs to that library's server.
+  const server = serverForKey(servers, head.serverKey)
   const content = cueContent(head, server?.name ?? 'A server')
   const dismiss = () => useServerNoticeStore.getState().dismiss(head.id)
 
@@ -81,7 +83,7 @@ export default function ServerNotices() {
     badge = (
       <button type="button" className="server-cue-badge" onClick={() => {
         // The sign-in window lives in Settings → Servers; it opens there.
-        useServerWindowRequest.getState().requestReconnect(key)
+        useServerWindowRequest.getState().requestReconnect(server?.key ?? key)
         useUIStore.getState().setPendingSettingsSection('servers')
         useUIStore.getState().setActiveView('settings')
         dismiss()
@@ -93,7 +95,8 @@ export default function ServerNotices() {
     const key = head.serverKey
     badge = (
       <button type="button" className="server-cue-badge" onClick={() => {
-        useLibraryStore.getState().setSelectedSourceFilters([key])
+        // Every library of a Plex server, like its chip in the library.
+        useLibraryStore.getState().setSelectedSourceFilters(server ? server.sourceIds.map(id => `${server.provider}:${id}`) : [key])
         useUIStore.getState().setActiveView('library')
         dismiss()
       }}>

@@ -7,7 +7,7 @@ import { PlexSources } from './services/plexSources'
 import { plexRequestOptions } from './services/plexNetwork'
 import { buildPlexTrackPath, parsePlexTrackPath, reportPlexPlayback } from './services/plex'
 import { createPlexAudioSource } from './services/plexAudioSource'
-import type { PlexConnectInput } from '../types/plex'
+import type { PlexConnectInput, PlexSource } from '../types/plex'
 import { analyzeRemoteAudioFile } from './services/remoteAudioAnalysis'
 import { parseCompanionDeviceInfo, type CompanionDeviceInfo } from '../shared/companionDevices'
 import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, clipboard, screen, safeStorage, powerMonitor, protocol, session, globalShortcut, Menu, Tray, type MenuItemConstructorOptions } from 'electron'
@@ -51,7 +51,7 @@ import { withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemot
 import type { RemoteCompatibilityCodec } from '../types/streamingQuality'
 import { AutomaticStreamingQuality } from './services/automaticStreamingQuality'
 import { AutomaticQualityPreparations } from './services/automaticQualityPreparations'
-import { StreamingQualityPreferences, STREAMING_QUALITY_SETTINGS_KEY } from './services/streamingQualitySettings'
+import { sharedSourceQuality, StreamingQualityPreferences, STREAMING_QUALITY_SETTINGS_KEY } from './services/streamingQualitySettings'
 import { deliveredAudioFormat, isStreamingQualityRequest, isAutomaticStreamingQuality, isStreamQualityTarget, resolveStreamingQuality, type AutomaticQualityPlayback, type StreamQualityTarget, type RemotePlaybackQuality, type StreamingQualityRequest, type StreamingQuality, type StreamingQualitySource } from '../types/streamingQuality'
 import { createSubsonicAudioSource } from './services/subsonicAudioSource'
 import { ProgressivePcmDelivery } from './progressivePcmDelivery'
@@ -7032,10 +7032,51 @@ ipcMain.handle('plex:beginSignIn', event => plexSources.begin(nativeRemoteOwner(
 ipcMain.handle('plex:pollSignIn', (event, id: string) => plexSources.poll(nativeRemoteOwner(event), id))
 ipcMain.handle('plex:cancelSignIn', (event, id: string) => plexSources.cancel(nativeRemoteOwner(event), id))
 ipcMain.handle('plex:libraries', (event, id: string, serverId: string) => plexSources.libraries(nativeRemoteOwner(event), id, serverId))
+/**
+ * Libraries joining a Plex server that's already in Astra take its streaming quality, when
+ * its libraries agree on one (quality is stored per library). Mixed settings are left for
+ * the server's page, which shows them and applies one choice to every library.
+ */
+async function inheritPlexServerQuality(joined: PlexSource[]): Promise<void> {
+  const first = joined[0]
+  if (!first) return
+  const joinedIds = new Set(joined.map(source => source.id))
+  const members = library.listPlexSources()
+    .filter(source => source.account_id === first.account_id && source.server_id === first.server_id && !joinedIds.has(source.id))
+  if (!members.length) return
+  const shared = sharedSourceQuality(streamingQualityPreferences.read(), members.map(source => ({ provider: 'plex' as const, sourceId: source.id })))
+  if (shared === undefined) return
+  for (const source of joined) await streamingQualityPreferences.update(shared, { provider: 'plex', sourceId: source.id })
+}
+
+/**
+ * Inheriting comes after the libraries are added, so a failure there mustn't fail the
+ * addition (the window would show an error for libraries that exist, skip their first sync,
+ * and a retry would say they're already added). The server's quality control then shows
+ * its libraries' different settings and offers one choice for all of them.
+ */
+async function inheritPlexServerQualityAfterAdding(joined: PlexSource[]): Promise<void> {
+  try { await inheritPlexServerQuality(joined) }
+  catch (error) { console.error('[plex] New libraries kept their own streaming quality:', error) }
+}
+
 ipcMain.handle('plex:connect', async (event, input: PlexConnectInput) => {
-  const source = await plexSources.connect(nativeRemoteOwner(event), input)
+  const sources = await plexSources.connect(nativeRemoteOwner(event), input)
+  // A reconnect keeps the libraries' own settings; new libraries joining a server follow it.
+  if (input?.sourceIds === undefined) await inheritPlexServerQualityAfterAdding(sources)
   mainWindow?.webContents.send('remote-playlists:changed')
-  return source
+  return sources
+})
+ipcMain.handle('plex:serverLibraries', (_event, id: unknown) => {
+  if (!Number.isSafeInteger(id) || (id as number) <= 0) throw new Error('Invalid Plex source.')
+  return plexSources.serverLibraries(id as number)
+})
+ipcMain.handle('plex:addLibraries', async (_event, id: unknown, libraryIds: unknown) => {
+  if (!Number.isSafeInteger(id) || (id as number) <= 0) throw new Error('Invalid Plex source.')
+  const sources = await plexSources.addLibraries(id as number, libraryIds as string[])
+  await inheritPlexServerQualityAfterAdding(sources)
+  mainWindow?.webContents.send('remote-playlists:changed')
+  return sources
 })
 ipcMain.handle('plex:listSources', () => library.listPlexSources())
 ipcMain.handle('plex:getStatus', () => plexSources.status())

@@ -9,19 +9,19 @@ function stubCounts() {
   ;(globalThis as any).window = { electronAPI: { servers: { counts: () => new Promise((resolve, reject) => { pending.push({ resolve, reject }) }) } } }
   return pending
 }
-const rows = (tracks: number): RemoteSourceCounts[] => [{ provider: 'subsonic', sourceId: 1, tracks, albums: 1 }]
+const rows = (tracks: number): RemoteSourceCounts[] => [{ provider: 'subsonic', sourceId: 1, tracks, albums: 1, serverAlbums: 1 }]
 
 test('server counts are keyed by server, read as zero once loaded, and stay stable for selectors', async () => {
   useServerCountsStore.setState({ counts: {}, loaded: false })
   const pending = stubCounts()
   assert.equal(serverCounts(useServerCountsStore.getState(), 'subsonic:1'), null, 'not read yet')
   const refresh = useServerCountsStore.getState().refresh()
-  pending[0].resolve([{ provider: 'subsonic', sourceId: 1, tracks: 8412, albums: 1204 }, { provider: 'plex', sourceId: 3, tracks: 20, albums: null }])
+  pending[0].resolve([{ provider: 'subsonic', sourceId: 1, tracks: 8412, albums: 1204, serverAlbums: 1204 }, { provider: 'plex', sourceId: 3, tracks: 20, albums: null, serverAlbums: null }])
   await refresh
   const state = useServerCountsStore.getState()
-  assert.deepEqual(serverCounts(state, 'subsonic:1'), { tracks: 8412, albums: 1204 })
-  assert.deepEqual(serverCounts(state, 'plex:3'), { tracks: 20, albums: null })
-  assert.deepEqual(serverCounts(state, 'jellyfin:2'), { tracks: 0, albums: 0 }, 'no tracks in the library')
+  assert.deepEqual(serverCounts(state, 'subsonic:1'), { tracks: 8412, albums: 1204, serverAlbums: 1204 })
+  assert.deepEqual(serverCounts(state, 'plex:3'), { tracks: 20, albums: null, serverAlbums: null })
+  assert.deepEqual(serverCounts(state, 'jellyfin:2'), { tracks: 0, albums: 0, serverAlbums: 0 }, 'no tracks in the library')
   // A selector must return the same value for the same state, or React re-renders forever.
   assert.equal(serverCounts(state, 'jellyfin:2'), serverCounts(state, 'jellyfin:2'))
   assert.equal(serverCounts(state, 'subsonic:1'), serverCounts(state, 'subsonic:1'))
@@ -52,7 +52,7 @@ test('each read resolves with its own result, even one a newer read replaced; a 
   const mine = useServerCountsStore.getState().refresh()
   const newer = useServerCountsStore.getState().refresh()
   pending[0].resolve(rows(640))
-  assert.deepEqual(await mine, { 'subsonic:1': { tracks: 640, albums: 1 } })
+  assert.deepEqual(await mine, { 'subsonic:1': { tracks: 640, albums: 1, serverAlbums: 1 } })
   assert.equal(useServerCountsStore.getState().loaded, false, 'the store waits for the newest read')
   pending[1].resolve(rows(640))
   await newer

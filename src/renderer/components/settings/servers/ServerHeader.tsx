@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { serverCounts, useServerCountsStore } from '../../../stores/serverCountsStore'
+import { useServerTotals } from '../../../stores/serverCountsStore'
 import { formatAgo, libraryCountsText } from './serverModel'
 import { ServerMenu, type ServerMenuAction } from './ServerMenu'
 import { AlertIcon, ProgressRow, RefreshIcon, ServerSwitch } from './ServerParts'
@@ -48,7 +48,7 @@ export function ServerMeta({ server }: { server: ServerEntry }) {
  * it in Details). Nothing while it's off: the status already says its music is hidden.
  */
 function CountsLine({ server }: { server: ServerEntry }) {
-  const text = libraryCountsText(server, useServerCountsStore(state => serverCounts(state, server.key)))
+  const text = libraryCountsText(server, useServerTotals(server))
   if (!server.enabled || !text) return null
   return <span className="servers-meta">{text}</span>
 }

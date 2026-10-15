@@ -1513,6 +1513,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     cancelSignIn: id => ipcRenderer.invoke('plex:cancelSignIn', id),
     libraries: (id, serverId) => ipcRenderer.invoke('plex:libraries', id, serverId),
     connect: input => ipcRenderer.invoke('plex:connect', input),
+    serverLibraries: id => ipcRenderer.invoke('plex:serverLibraries', id),
+    addLibraries: (id, libraryIds) => ipcRenderer.invoke('plex:addLibraries', id, libraryIds),
     listSources: () => ipcRenderer.invoke('plex:listSources'),
     updateSource: (id, input) => ipcRenderer.invoke('plex:updateSource', id, input),
     deleteSource: (id, purge) => ipcRenderer.invoke('plex:deleteSource', id, purge),

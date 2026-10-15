@@ -25,6 +25,49 @@ export interface ServerProgress {
   total: number | null
 }
 
+/** One library of a Plex server, with its own status. */
+export interface LibraryStatus {
+  name: string
+  enabled: boolean
+  state: ServerState
+  problem: ServerProblem | null
+  error: string | null
+  progress: ServerProgress | null
+  lastSyncAt: number | null
+}
+
+const STATE_WEIGHT: Record<ServerState, number> = { failed: 4, syncing: 3, checking: 2, connected: 1, off: 0 }
+const PROBLEM_WEIGHT: Record<ServerProblem, number> = { 'signed-out': 3, offline: 2, sync: 1 }
+
+/**
+ * A Plex server's status from its libraries'. It's in use while any library is. The state
+ * is the worst of those in use (a failure, then syncing, then checking); a failure is the
+ * most serious problem (signed out, then offline, then sync). With several libraries, the
+ * error and progress say which library. "Last synced" is the oldest, and "not yet" while
+ * any library hasn't synced.
+ */
+export function combineLibraryStatus(libraries: readonly LibraryStatus[]): Omit<LibraryStatus, 'name'> {
+  const inUse = libraries.filter(library => library.enabled)
+  const syncs = libraries.map(library => library.lastSyncAt)
+  const lastSyncAt = syncs.length && syncs.every(at => at !== null) ? Math.min(...(syncs as number[])) : null
+  if (!inUse.length) return { enabled: false, state: 'off', problem: null, error: null, progress: null, lastSyncAt }
+  const named = (library: LibraryStatus, text: string) => libraries.length > 1 ? `${library.name}: ${text}` : text
+  const worst = inUse.reduce((a, b) => STATE_WEIGHT[b.state] > STATE_WEIGHT[a.state] ? b : a)
+  const inUseSyncs = inUse.map(library => library.lastSyncAt)
+  const combined = { enabled: true, state: worst.state, problem: null, error: null, progress: null,
+    lastSyncAt: inUseSyncs.every(at => at !== null) ? Math.min(...(inUseSyncs as number[])) : null }
+  if (worst.state === 'failed') {
+    const failing = inUse.filter(library => library.state === 'failed')
+      .reduce((a, b) => PROBLEM_WEIGHT[b.problem ?? 'sync'] > PROBLEM_WEIGHT[a.problem ?? 'sync'] ? b : a)
+    return { ...combined, problem: failing.problem ?? 'sync', error: failing.error ? named(failing, failing.error) : null }
+  }
+  if (worst.state === 'syncing' && worst.progress) {
+    const activity = libraries.length > 1 ? `${worst.name} · ${worst.progress.activity}` : worst.progress.activity
+    return { ...combined, progress: { ...worst.progress, activity } }
+  }
+  return combined
+}
+
 export const PROVIDER_KIND: Record<ServerProvider, string> = {
   subsonic: 'Subsonic / Navidrome',
   jellyfin: 'Jellyfin',
@@ -221,15 +264,19 @@ export function qualityFollowUps(current: StreamingQuality | null, remembered: {
 export interface QualityCopyInput {
   global: StreamingQuality
   overrides: Readonly<Record<string, StreamingQuality>>
-  /** Keys match streaming quality override keys ("provider:id"). */
-  servers: readonly { key: string; name: string }[]
+  /**
+   * Keys match streaming quality override keys ("provider:id"). `libraries` is set for a
+   * Plex server whose libraries have different settings: each one's own (null for the default).
+   */
+  servers: readonly { key: string; name: string; libraries?: readonly { name: string; quality: StreamingQuality | null }[] }[]
   /** Set for one server's own control. */
   serverKey?: string
 }
 
+const joinNames = (names: string[]) => names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+
 function namesSentence(names: string[]): string {
-  if (names.length === 1) return `${names[0]} uses its own setting.`
-  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} use their own settings.`
+  return names.length === 1 ? `${names[0]} uses its own setting.` : `${joinNames(names)} use their own settings.`
 }
 
 /**
@@ -256,17 +303,29 @@ export function qualityCopy({ global, overrides, servers, serverKey }: QualityCo
   }
   const overridden = servers.filter(server => overrides[server.key] !== undefined)
     .map(server => ({ key: server.key, name: server.name, quality: overrides[server.key] }))
+  // A server whose libraries differ is never described by one library's setting.
+  const differing = new Map(servers.filter(server => server.libraries).map(server => [server.key, server.libraries!]))
   const base = QUALITY_DESCRIPTION[qualityMode(global)]
   if (servers.length <= 1) {
     if (!overridden.length) return { label: 'Quality', description: base, overridden }
     const [own] = overridden
-    return { label: 'Default quality', description: `${base} ${own.name} uses its own setting (${qualityLabel(own.quality)}).`, overridden }
+    const libraries = differing.get(own.key)
+    return {
+      label: 'Default quality',
+      description: libraries
+        ? `${base} ${own.name}’s libraries use different settings: ${libraries.map(library =>
+          `${library.name} uses ${library.quality === null ? 'this default' : qualityLabel(library.quality)}`).join(', ')}.`
+        : `${base} ${own.name} uses its own setting (${qualityLabel(own.quality)}).`,
+      overridden
+    }
   }
-  return {
-    label: 'Default quality',
-    description: `${base} ${overridden.length ? namesSentence(overridden.map(server => server.name)) : 'Each server can override it.'}`,
-    overridden
-  }
+  const whole = overridden.filter(server => !differing.has(server.key)).map(server => server.name)
+  const partly = overridden.filter(server => differing.has(server.key)).map(server => server.name)
+  const exceptions = [
+    whole.length ? namesSentence(whole) : null,
+    partly.length ? `${joinNames(partly)} ${partly.length === 1 ? 'has' : 'have'} libraries with their own settings.` : null
+  ].filter(Boolean).join(' ')
+  return { label: 'Default quality', description: `${base} ${exceptions || 'Each server can override it.'}`, overridden }
 }
 
 /* ---------- Ordered saves ---------- */

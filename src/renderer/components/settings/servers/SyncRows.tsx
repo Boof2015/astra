@@ -3,7 +3,7 @@ import type { RemotePlaylistStatus } from '../../../../types/remotePlaylists'
 import { useProviderSyncStore } from '../../../stores/providerSyncStore'
 import type { ServerProvider } from './serverModel'
 import { ServerSwitch } from './ServerParts'
-import { useProviderSyncStatus, type ServerEntry } from './useServers'
+import type { ServerEntry } from './useServers'
 
 /** What each provider can keep in step with Astra. */
 export const FAVORITES_COPY: Record<ServerProvider, { label: string; switchLabel: string; sub: string }> = {
@@ -29,34 +29,54 @@ const cleanError = (error: unknown, fallback: string) =>
 
 /**
  * Turning sync on compares existing values first; the switch only turns on once
- * that's confirmed, and cancelling leaves it off.
+ * that's confirmed, and cancelling leaves it off. A Plex server's libraries each sync
+ * on their own, so one switch covers them all: on while any library syncs, turning on
+ * compares them one at a time, and a line names any not on yet (a library added later).
  */
 function FavoritesRow({ server }: { server: ServerEntry }) {
-  const ref = { provider: server.provider, sourceId: server.id }
-  const status = useProviderSyncStatus(ref)
+  const statuses = useProviderSyncStore(state => state.statuses)
   const working = useProviderSyncStore(state => state.working)
   const copy = FAVORITES_COPY[server.provider]
-  const enabled = status?.enabled ?? false
-  // `working` covers any server's review loading; `busy` is this server's own comparison.
-  const comparing = !enabled && !!status?.busy
-  const { openReview, disable } = useProviderSyncStore.getState()
+  const parts = server.sourceIds.map(id => ({
+    ref: { provider: server.provider, sourceId: id },
+    status: statuses.find(item => item.provider === server.provider && item.sourceId === id),
+    name: server.libraries.find(library => library.id === id)?.name ?? null
+  }))
+  const on = parts.filter(part => part.status?.enabled)
+  const off = parts.filter(part => !part.status?.enabled)
+  const enabled = on.length > 0
+  // `working` covers any server's review loading; `busy` is a source's own comparison.
+  const comparing = off.find(part => part.status?.busy)
+  const conflicts = on.reduce((sum, part) => sum + (part.status?.conflicts ?? 0), 0)
+  const reviewable = on.find(part => (part.status?.conflicts ?? 0) > 0 && !part.status?.busy)
+  const failed = parts.find(part => part.status?.error)
+  const named = (part: typeof parts[number] | undefined, text: string) => parts.length > 1 && part?.name ? `${part.name}: ${text}` : text
+  const { openReview, openReviews, disable } = useProviderSyncStore.getState()
+  const turnOff = async () => { for (const part of on) await disable(part.ref) }
   return (
     <div className={`servers-row${server.enabled ? '' : ' is-paused'}`}>
       <div className="servers-row-text">
         <span className="servers-label">{copy.label}</span>
-        <span className="servers-sub">{comparing ? 'Comparing with the server…' : copy.sub}</span>
-        {status?.error && <span className="servers-sub is-warn">{status.error}</span>}
+        <span className="servers-sub">{comparing ? `Comparing ${parts.length > 1 && comparing.name ? comparing.name : 'with the server'}…` : copy.sub}</span>
+        {enabled && off.length > 0 && !comparing && (
+          <span className="servers-sub">
+            Not on yet for {off.map(part => part.name ?? server.name).join(', ')}.{' '}
+            <button type="button" className="servers-link" disabled={!server.enabled || working}
+              onClick={() => void openReviews(off.map(part => part.ref))}>Turn on</button>
+          </span>
+        )}
+        {failed?.status?.error && <span className="servers-sub is-warn">{named(failed, failed.status.error)}</span>}
       </div>
       {comparing && (
-        <button type="button" className="servers-link" onClick={() => void disable(ref)}>Cancel</button>
+        <button type="button" className="servers-link" onClick={() => void disable(comparing.ref)}>Cancel</button>
       )}
-      {server.enabled && enabled && status && status.conflicts > 0 && (
-        <button type="button" className="servers-link" disabled={working || status.busy} onClick={() => void openReview(ref)}>
-          Review {status.conflicts} {status.conflicts === 1 ? 'change' : 'changes'}
+      {server.enabled && reviewable && conflicts > 0 && (
+        <button type="button" className="servers-link" disabled={working} onClick={() => void openReview(reviewable.ref)}>
+          Review {conflicts} {conflicts === 1 ? 'change' : 'changes'}
         </button>
       )}
-      <ServerSwitch checked={enabled} label={copy.switchLabel} disabled={!server.enabled || comparing || (!enabled && working)}
-        onChange={on => void (on ? openReview(ref) : disable(ref))} />
+      <ServerSwitch checked={enabled} label={copy.switchLabel} disabled={!server.enabled || !!comparing || (!enabled && working)}
+        onChange={turnOn => void (turnOn ? openReviews(off.map(part => part.ref)) : turnOff())} />
     </div>
   )
 }

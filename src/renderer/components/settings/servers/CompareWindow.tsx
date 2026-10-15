@@ -9,7 +9,7 @@ import {
 } from './compareModel'
 import { AlertIcon, ChevronRightIcon } from './ServerParts'
 import { ServerWindow, Spinner } from './ServerWindow'
-import { useServers } from './useServers'
+import { serverForKey, useServers } from './useServers'
 
 /** Rows render a page at a time; a large first comparison can have thousands. */
 const PAGE = 150
@@ -33,9 +33,14 @@ export default function CompareWindow() {
 function CompareContent({ review, phase }: { review: ProviderSyncReview; phase: PresencePhase }) {
   const working = useProviderSyncStore(state => state.working)
   const error = useProviderSyncStore(state => state.error)
-  const { apply, closeReview, openReview } = useProviderSyncStore.getState()
+  const { apply, closeReview, refreshReview } = useProviderSyncStore.getState()
   const provider = review.ref.provider
-  const serverName = useServers().find(item => item.key === `${provider}:${review.ref.sourceId}`)?.name ?? 'this server'
+  const server = serverForKey(useServers(), `${provider}:${review.ref.sourceId}`)
+  const serverName = server?.name ?? 'this server'
+  // A Plex server's libraries are compared one at a time: say which, and how far along.
+  const step = useProviderSyncStore(state => state.queueStep)
+  const library = server && server.libraries.length > 1 ? server.libraries.find(item => item.id === review.ref.sourceId)?.name : undefined
+  const where = library ? `${library}${step ? `, ${step.index} of ${step.total}` : ''}` : null
 
   const [rule, setRule] = useState<CompareRule>(DEFAULT_COMPARE.rule)
   const [clash, setClash] = useState<ClashChoice>(DEFAULT_COMPARE.clash)
@@ -111,7 +116,7 @@ function CompareContent({ review, phase }: { review: ProviderSyncReview; phase: 
   const title = review.enabling ? `Turn on sync with ${serverName}` : `Review ${plural(rows.length, 'change')}`
   return (
     <ServerWindow phase={phase} wide title={title} busy={working} onClose={closeReview}
-      subtitle={review.enabling ? `Sync ${SYNCED_VALUES[provider]}. Nothing changes until you confirm.` : undefined}
+      subtitle={review.enabling ? `${where ? `${where} · ` : ''}Sync ${SYNCED_VALUES[provider]}. Nothing changes until you confirm.` : where ?? undefined}
       footer={<>
         <span className="servers-cmp-summary">
           Changes <b>{plural(summary.serverTracks, 'track')}</b> on the server and <b>{summary.astraTracks.toLocaleString('en-US')}</b> in Astra
@@ -136,7 +141,7 @@ function CompareContent({ review, phase }: { review: ProviderSyncReview; phase: 
           <div>
             {error} Some changes may already have been made. Refresh to compare the current values.
             <div className="servers-error-actions">
-              <button type="button" className="servers-btn is-small" disabled={working} onClick={() => void openReview(review.ref)}>
+              <button type="button" className="servers-btn is-small" disabled={working} onClick={() => void refreshReview()}>
                 Refresh comparison
               </button>
             </div>

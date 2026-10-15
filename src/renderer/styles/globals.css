@@ -20568,6 +20568,11 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
   transition: transform var(--transition-fast);
 }
 
+/* A value none of the options shows (e.g. a server whose libraries differ): nothing is highlighted. */
+.settings-segmented-control.has-no-choice .settings-segmented-highlight {
+  opacity: 0;
+}
+
 .settings-segmented-button {
   position: relative;
   z-index: 1;
@@ -30029,6 +30034,12 @@ html[data-theme-tone="light"] .servers-window {
   margin-top: 4px;
 }
 
+.servers-add-library {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .servers-link:disabled {
   opacity: 0.55;
   cursor: default;
@@ -31164,6 +31175,31 @@ html[data-theme-tone="light"] .servers-window {
   height: 6px;
   border-radius: 50%;
   background: var(--accent);
+}
+
+/* A choice of several: a square box with a check mark, in the same accent as the radio. */
+.servers-check {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1.5px solid rgba(var(--tint), 0.35);
+}
+
+.servers-pick-item.is-on .servers-check {
+  border-color: var(--accent);
+}
+
+.servers-pick-item.is-on .servers-check::after {
+  content: '';
+  width: 7px;
+  height: 3.5px;
+  margin-top: -2px;
+  border-left: 1.5px solid var(--accent);
+  border-bottom: 1.5px solid var(--accent);
+  transform: rotate(-45deg);
 }
 
 .servers-pick-item.is-danger.is-on .servers-radio {

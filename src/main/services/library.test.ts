@@ -6390,6 +6390,23 @@ test('each server counts the tracks it still has and the albums they belong to',
   assert.equal(counts()[`plex:${plex.id}`], undefined)
 })
 
+test('a Plex server counts an album once, even when two of its libraries have it', async t => {
+  await setupEmptyLibrary(t)
+  const addLibrary = (library_id: string, library_name: string) => library.savePlexSource({ name: `Plex · ${library_name}`, base_url: 'https://plex.test',
+    username: 'listener', account_id: 'a', server_id: 's', library_id, library_name, secret_encrypted: 'secret' })
+  const music = await addLibrary('2', 'Music')
+  const live = await addLibrary('3', 'Live')
+  const track = (id: number, key: string, album: string) =>
+    createRemoteTrack({ path: `plex://${id}/track/${key}`, source_track_id: key, title: key, artist: 'Artist', album })
+  await library.upsertPlexTracks(music.id, [track(music.id, 'g1', 'Green'), track(music.id, 'r1', 'Red'), track(music.id, 'r2', 'Red')])
+  await library.upsertPlexTracks(live.id, [track(live.id, 'g2', 'Green')])
+  const counts = Object.fromEntries(library.getRemoteSourceCounts().map(row => [row.sourceId, row]))
+  // Per library: Music has Green and Red, Live has Green. The server has two albums, not three.
+  assert.deepEqual([counts[music.id].albums, counts[live.id].albums], [2, 1])
+  assert.deepEqual([counts[music.id].serverAlbums, counts[live.id].serverAlbums], [2, 2])
+  assert.deepEqual([counts[music.id].tracks, counts[live.id].tracks], [3, 1])
+})
+
 for (const provider of ['subsonic', 'jellyfin', 'plex'] as const) {
   test(`${provider}: the Remove window's count is exactly what "Delete them" deletes`, async t => {
     await setupEmptyLibrary(t)

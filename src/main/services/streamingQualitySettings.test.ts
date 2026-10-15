@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { StreamingQualityPreferences } from './streamingQualitySettings.ts'
+import { sharedSourceQuality, StreamingQualityPreferences } from './streamingQualitySettings.ts'
 import { deliveredAudioFormat, parseStreamingQualitySettings, qualityRequestForTrack, resolveStreamingQuality, streamingRepresentation } from '../../types/streamingQuality.ts'
 
 const navi = { provider: 'subsonic' as const, sourceId: 7 }
@@ -72,4 +72,12 @@ test('delivered format uses probe evidence, including server responses that igno
   })
   assert.equal(deliveredAudioFormat({ streams: [] }), null)
   assert.equal(deliveredAudioFormat({ streams: [{ codec_type: 'audio', codec_name: 'mp3', bit_rate: '128000' }] })?.bitrateKbps, 128)
+})
+
+test('libraries joining a Plex server take the quality its libraries share, and nothing when they differ', () => {
+  const music = { provider: 'plex' as const, sourceId: 3 }, live = { provider: 'plex' as const, sourceId: 4 }
+  assert.equal(sharedSourceQuality({ global: 'original', overrides: { 'plex:3': 64, 'plex:4': 64 } }, [music, live]), 64)
+  assert.equal(sharedSourceQuality({ global: 'original', overrides: {} }, [music, live]), null, 'all on the default')
+  assert.equal(sharedSourceQuality({ global: 'original', overrides: { 'plex:3': 64 } }, [music, live]), undefined, 'mixed: left alone')
+  assert.equal(sharedSourceQuality({ global: 'original', overrides: { 'plex:3': 64 } }, []), undefined)
 })

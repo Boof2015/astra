@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { usePresence } from '../../../hooks/usePresence'
 import { useServerCountsStore } from '../../../stores/serverCountsStore'
 import { useServerWindowRequest } from '../../../stores/serverWindowRequest'
+import { AddLibraryWindow } from './AddLibraryWindow'
 import { AddServerWindow } from './AddServerWindow'
 import { ChangeConnectionWindow } from './ChangeConnectionWindow'
+import { LibrariesGroup } from './LibrariesGroup'
 import { QualityControl } from './QualityControl'
 import { RemoveServerWindow } from './RemoveServerWindow'
 import { ServerHeader, UseServerRow } from './ServerHeader'
@@ -14,12 +16,13 @@ import { PlusIcon } from './ServerParts'
 import { StorageGroup } from './StorageGroup'
 import { SignInAgainWindow } from './SignInAgainWindow'
 import { SyncRows } from './SyncRows'
-import { useRemotePlaylistStatuses, useServers, useServerStoreErrors, type ServerEntry } from './useServers'
+import { useRemotePlaylistStatuses, useServers, useServerStoreErrors, type ServerEntry, type ServerLibrary } from './useServers'
 
 /** The focused windows. Each keeps the server as it was when opened, so it can finish closing after a removal. */
 type WindowState =
   | { kind: 'add' }
-  | { kind: 'connection' | 'sign-in' | 'remove'; server: ServerEntry }
+  | { kind: 'connection' | 'sign-in' | 'add-library'; server: ServerEntry }
+  | { kind: 'remove'; server: ServerEntry; library?: ServerLibrary }
 
 /**
  * Settings → Servers. Health first: one glance shows whether every server works,
@@ -43,6 +46,8 @@ export default function ServersSection() {
   const onMenuAction = (server: ServerEntry) => (action: ServerMenuAction) => setWindowState(action === 'remove'
     ? { kind: 'remove', server }
     : { kind: server.provider === 'plex' ? 'sign-in' : 'connection', server })
+  const onAddLibrary = (server: ServerEntry) => () => setWindowState({ kind: 'add-library', server })
+  const onRemoveLibrary = (server: ServerEntry) => (library: ServerLibrary) => setWindowState({ kind: 'remove', server, library })
 
   // A corner cue's "Sign in" asks for a server's sign-in window; open it once that server is known.
   const reconnectRequest = useServerWindowRequest(state => state.reconnect)
@@ -56,8 +61,10 @@ export default function ServersSection() {
 
   // Each server's track and album counts: read on opening, then again when they can have
   // changed: a sync finished (a failed one changes nothing), a server was turned on or off,
-  // or one was added or removed.
-  const countsKey = servers.map(server => [server.key, server.enabled, server.lastSyncAt].join(':')).join('|')
+  // or one was added or removed. For a Plex server that's per library: one library syncing,
+  // or being added or removed, changes counts its combined status may not show.
+  const countsKey = servers.map(server => [server.key, server.enabled, server.lastSyncAt,
+    ...server.libraries.map(library => `${library.id}/${library.enabled}/${library.lastSyncAt}`)].join(':')).join('|')
   useEffect(() => { void useServerCountsStore.getState().refresh() }, [countsKey])
 
   // A newly added server's row lights up briefly as it appears.
@@ -97,6 +104,7 @@ export default function ServersSection() {
         {opened ? (
           <ServerPage key={opened.key} server={opened} servers={servers} playlistStatuses={playlistStatuses}
             errors={storeErrors} onMenuAction={onMenuAction(opened)}
+            onAddLibrary={onAddLibrary(opened)} onRemoveLibrary={onRemoveLibrary(opened)}
             onBack={() => { returnKey.current = opened.key; setNavigated(true); setOpenKey(null) }} />
         ) : (
           <div className={`servers-pane${navigated ? ' is-entering' : ''}`}>
@@ -114,6 +122,9 @@ export default function ServersSection() {
                 <UseServerRow server={servers[0]} />
                 <SyncRows server={servers[0]} playlistStatuses={playlistStatuses} />
               </div>
+            )}
+            {servers.length === 1 && servers[0].provider === 'plex' && (
+              <LibrariesGroup server={servers[0]} onAdd={onAddLibrary(servers[0])} onRemove={onRemoveLibrary(servers[0])} />
             )}
             {servers.length > 1 && (
               <ServerList servers={servers} highlightKey={justAdded} onOpen={key => { setNavigated(true); setOpenKey(key) }}
@@ -141,7 +152,8 @@ export default function ServersSection() {
       )}
       {shown?.kind === 'connection' && <ChangeConnectionWindow phase={phase} server={shown.server} onClose={closeWindow} />}
       {shown?.kind === 'sign-in' && <SignInAgainWindow phase={phase} server={shown.server} onClose={closeWindow} />}
-      {shown?.kind === 'remove' && <RemoveServerWindow phase={phase} server={shown.server} onClose={closeWindow} />}
+      {shown?.kind === 'remove' && <RemoveServerWindow phase={phase} server={shown.server} library={shown.library} onClose={closeWindow} />}
+      {shown?.kind === 'add-library' && <AddLibraryWindow phase={phase} server={shown.server} onClose={closeWindow} />}
     </section>
   )
 }

@@ -1,3 +1,4 @@
+import { plexServerName } from '../../../shared/plex/serverName'
 import { usePlexSettingsStore } from '../../stores/plexSettingsStore'
 import { useServers } from '../settings/servers/useServers'
 import { sourceProblemText, useSourceProblemTooltip } from '../library/SourceProblemTooltip'
@@ -438,15 +439,27 @@ export default function LibraryView() {
     if (selectedYear !== null) return { type: 'year', year: selectedYear }
     return null
   }, [selectedAlbum, selectedArtist, selectedGenre, selectedYear])
+  // One chip per server. A Plex server's chip covers its libraries in use (`keys`); it's keyed,
+  // like its Settings entry, by its first library.
   const sourceFilterOptions = useMemo(() => {
+    const plexServers = new Map<string, typeof plexSources>()
+    for (const source of [...plexSources].sort((a, b) => a.id - b.id)) {
+      const server = JSON.stringify([source.account_id, source.server_id])
+      plexServers.set(server, [...(plexServers.get(server) ?? []), source])
+    }
     return [
       ...subsonicSources.filter((source) => source.enabled === 1).map((source) => ({
         key: `subsonic:${source.id}`,
+        keys: [`subsonic:${source.id}`],
         label: source.name
       })),
-      ...plexSources.filter(source => source.enabled === 1).map(source => ({ key: `plex:${source.id}`, label: source.name })),
+      ...[...plexServers.values()].flatMap(libraries => {
+        const inUse = libraries.filter(source => source.enabled === 1)
+        return inUse.length ? [{ key: `plex:${libraries[0].id}`, keys: inUse.map(source => `plex:${source.id}`), label: plexServerName(libraries[0]) }] : []
+      }),
       ...jellyfinSources.filter((source) => source.enabled === 1).map((source) => ({
         key: `jellyfin:${source.id}`,
+        keys: [`jellyfin:${source.id}`],
         label: source.name
       }))
     ]
@@ -542,7 +555,7 @@ export default function LibraryView() {
   useEffect(() => {
     const validFilterKeys = new Set<string>([
       'local',
-      ...sourceFilterOptions.map((source) => source.key)
+      ...sourceFilterOptions.flatMap((source) => source.keys)
     ])
 
     if (selectedSourceFilters.size === 0) return
@@ -691,6 +704,16 @@ export default function LibraryView() {
   const handleToggleSourceFilter = useCallback((filterKey: string) => {
     toggleSourceFilter(filterKey)
   }, [toggleSourceFilter])
+  // A server's chip is on when all its libraries are, and turns them on or off together.
+  const handleToggleSourceChip = useCallback((keys: readonly string[]) => {
+    const on = keys.every(key => selectedSourceFilters.has(key))
+    const next = new Set(selectedSourceFilters)
+    for (const key of keys) {
+      if (on) next.delete(key)
+      else next.add(key)
+    }
+    setSelectedSourceFilters(next)
+  }, [selectedSourceFilters, setSelectedSourceFilters])
 
   const handleLibraryContentScrollCapture = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     if (!inDetailView) return
@@ -1865,8 +1888,8 @@ export default function LibraryView() {
             <button
               key={source.key}
               type="button"
-              className={`library-source-filter-chip ${selectedSourceFilters.has(source.key) ? 'active' : ''}`}
-              onClick={() => handleToggleSourceFilter(source.key)}
+              className={`library-source-filter-chip ${source.keys.every(key => selectedSourceFilters.has(key)) ? 'active' : ''}`}
+              onClick={() => handleToggleSourceChip(source.keys)}
               onMouseEnter={problem ? sourceProblemTooltip.show(problem) : undefined}
               onMouseLeave={sourceProblemTooltip.hide}
               onFocus={problem ? sourceProblemTooltip.show(problem) : undefined}

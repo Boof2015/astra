@@ -78,3 +78,11 @@ test('a waiting problem cue keeps up when the problem changes within an outage',
   assert.deepEqual(plan.push, [], 'still one outage')
   assert.deepEqual(plan.update.map(item => item.problem), ['signed-out'])
 })
+
+test('removing one library of a server, or the whole server, removes that library’s own cues', () => {
+  const memory = { notified: new Set<string>(), known: new Set<string>() }
+  const plex = (memberKeys: string[]) => ({ key: memberKeys[0], state: 'connected', error: null, memberKeys })
+  planOutageNotices([plex(['plex:3', 'plex:4'])], memory, () => false)
+  assert.deepEqual(planOutageNotices([plex(['plex:3'])], memory, () => false).removed, ['plex:4'], 'its second library was removed')
+  assert.deepEqual(planOutageNotices([], memory, () => false).removed, ['plex:3'], 'then the server')
+})

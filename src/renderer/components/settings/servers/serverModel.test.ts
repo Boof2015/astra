@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   addressHost, cleanIpcError, connectionFailureText, defaultServerName, detectionOrder, subsonicProductName,
-  CACHE_SLIDER_MAX, CACHE_STOPS, CacheLimitEdits, cacheSliderValue, deriveServerState, formatAgo, hostOf, nearestCacheStop,
+  CACHE_SLIDER_MAX, CACHE_STOPS, CacheLimitEdits, cacheSliderValue, combineLibraryStatus, deriveServerState, formatAgo, hostOf, nearestCacheStop,
   lastSyncedText, libraryCountsText, plural, progressFraction, progressText, qualityCopy, qualityFollowUps, qualityFromChoice, qualityLabel, qualityMode,
   SerialQueue, serverProblem, stepCacheStop, syncSucceeded
 } from './serverModel.ts'
@@ -166,6 +166,19 @@ test('quality copy discloses a lone server\'s own setting instead of presenting 
     'Overrides your default (Automatic). Always streams at the bitrate you pick.')
 })
 
+test('quality copy never lets one library’s setting stand for a Plex server whose libraries differ', () => {
+  const plex = { key: 'plex:3', name: 'Home Plex', libraries: [{ name: 'Music', quality: 64 as const }, { name: 'Live', quality: null }] }
+  const nav = { key: 'subsonic:1', name: 'Home Navidrome' }
+  // The only server: the overview is the only place to see it, so each library is named.
+  assert.equal(qualityCopy({ global: 'original', overrides: { 'plex:3': 64 }, servers: [plex] }).description,
+    'Plays the server’s file as is. Home Plex’s libraries use different settings: Music uses Fixed, 64 kbps, Live uses this default.')
+  // Among several: it has libraries with their own settings, apart from servers that override as a whole.
+  assert.equal(qualityCopy({ global: 'original', overrides: { 'plex:3': 64, 'subsonic:1': 128 }, servers: [nav, plex] }).description,
+    'Plays the server’s file as is. Home Navidrome uses its own setting. Home Plex has libraries with their own settings.')
+  // It still counts as overriding, so "Use the default for …" stays offered.
+  assert.equal(qualityCopy({ global: 'original', overrides: { 'plex:3': 64 }, servers: [plex] }).overridden.length, 1)
+})
+
 test('last synced reads as when, plus the 20-minute check only while the server is in use', () => {
   const now = Date.UTC(2026, 9, 14, 12)
   assert.equal(lastSyncedText({ state: 'connected', enabled: true, lastSyncAt: now - 4 * 60_000 }, now), '4 min ago · checks every 20 min')
@@ -185,6 +198,33 @@ test('"In your library" shows the counts once a sync brought music in, and Hidde
   assert.equal(libraryCountsText({ enabled: false, lastSyncAt: 1 }, { tracks: 12, albums: null }), 'Hidden')
   assert.equal(plural(1, 'track'), '1 track')
   assert.equal(plural(2, 'library', 'libraries'), '2 libraries')
+})
+
+test('a Plex server’s status is the worst of its libraries’, naming the library when there are several', () => {
+  const ok = { name: 'Music', enabled: true, state: 'connected' as const, problem: null, error: null, progress: null, lastSyncAt: 2000 }
+  const audiobooks = { ...ok, name: 'Audiobooks', lastSyncAt: 1000 }
+  // All fine: connected, synced as of the oldest library.
+  assert.deepEqual(combineLibraryStatus([ok, audiobooks]), { enabled: true, state: 'connected', problem: null, error: null, progress: null, lastSyncAt: 1000 })
+  // One library failing makes the server failing, and says which.
+  const failing = { ...audiobooks, state: 'failed' as const, problem: 'sync' as const, error: 'The server said: “Busy.”' }
+  assert.deepEqual(combineLibraryStatus([ok, failing]).error, 'Audiobooks: The server said: “Busy.”')
+  assert.equal(combineLibraryStatus([ok, failing]).state, 'failed')
+  // The more serious problem wins: signed out over offline over sync.
+  const signedOut = { ...ok, state: 'failed' as const, problem: 'signed-out' as const, error: 'x' }
+  assert.equal(combineLibraryStatus([failing, signedOut]).problem, 'signed-out')
+  // A failure beats a sync in progress; a sync in progress names its library.
+  const syncing = { ...ok, state: 'syncing' as const, progress: { activity: 'Loading music…', current: 10, total: 20 } }
+  assert.equal(combineLibraryStatus([syncing, failing]).state, 'failed')
+  assert.deepEqual(combineLibraryStatus([syncing, audiobooks]).progress, { activity: 'Music · Loading music…', current: 10, total: 20 })
+  // One library alone isn't named.
+  assert.equal(combineLibraryStatus([syncing]).progress?.activity, 'Loading music…')
+  assert.equal(combineLibraryStatus([{ ...failing }]).error, 'The server said: “Busy.”')
+  // A library that hasn't synced yet (just added) means "not yet".
+  assert.equal(combineLibraryStatus([ok, { ...audiobooks, lastSyncAt: null }]).lastSyncAt, null)
+  // Off only when every library is off; a library that's off doesn't count toward the status.
+  const off = { ...failing, enabled: false, state: 'off' as const }
+  assert.equal(combineLibraryStatus([off, { ...off, name: 'Music' }]).state, 'off')
+  assert.equal(combineLibraryStatus([ok, off]).state, 'connected')
 })
 
 test('a failed Connect says what the most telling attempt learned', () => {

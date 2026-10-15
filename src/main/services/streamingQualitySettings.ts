@@ -5,6 +5,17 @@ import {
 
 export const STREAMING_QUALITY_SETTINGS_KEY = 'streaming_quality_v1'
 
+/**
+ * The setting sources joining a group should take (new libraries of a Plex server): the one
+ * its existing sources share, null when they all use the default, and undefined when they
+ * differ, so nothing is changed silently.
+ */
+export function sharedSourceQuality(settings: StreamingQualitySettings, sources: readonly StreamingQualitySource[]): StreamingQuality | null | undefined {
+  const values = sources.map(source => settings.overrides[streamingQualitySourceKey(source)] ?? null)
+  if (!values.length || values.some(value => value !== values[0])) return undefined
+  return values[0]
+}
+
 interface QualityStorage {
   read(): string | null | undefined
   write(value: string): Promise<unknown>

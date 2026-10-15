@@ -2439,20 +2439,37 @@ export function getRemoteSourceCounts(): RemoteSourceCounts[] {
       GROUP BY source_type, source_id
     `, GONE_FROM_SOURCE_REASONS)
 
-    // Which servers each album has tracks from (only servers that are on are listed).
+    // A Plex server's libraries are one server: each library maps to its server's first library.
+    const plexServerOf = new Map<number, string>()
+    const firstLibrary = new Map<string, number>()
+    for (const source of listPlexSources().sort((a, b) => a.id - b.id)) {
+      const server = JSON.stringify([source.account_id, source.server_id])
+      if (!firstLibrary.has(server)) firstLibrary.set(server, source.id)
+      plexServerOf.set(source.id, `plex:${firstLibrary.get(server)}`)
+    }
+    const serverOf = (key: string, type: string, id: number) => type === 'plex' ? plexServerOf.get(id) ?? key : key
+
+    // Which sources and servers each album has tracks from (only those that are on are listed).
     const sourcesByAlbum = new Map<string, Set<string>>()
+    const serversByAlbum = new Map<string, Set<string>>()
     const groups = collectAlbumSummaryGroups(null, undefined, (identityKey, track) => {
       if (!isRemoteSourceType(track.source_type) || track.source_id == null) return
       if (track.availability_reason && GONE_FROM_SOURCE_REASONS.includes(track.availability_reason)) return
+      const key = `${track.source_type}:${track.source_id}`
       let sources = sourcesByAlbum.get(identityKey)
       if (!sources) sourcesByAlbum.set(identityKey, sources = new Set())
-      sources.add(`${track.source_type}:${track.source_id}`)
+      sources.add(key)
+      let servers = serversByAlbum.get(identityKey)
+      if (!servers) serversByAlbum.set(identityKey, servers = new Set())
+      servers.add(serverOf(key, track.source_type, track.source_id))
     })
     const albums = new Map<string, number>()
+    const serverAlbums = new Map<string, number>()
     for (const [identityKey, sources] of sourcesByAlbum) {
       const group = groups.get(identityKey)
       if (!group || !isAlbumGroupEligible(group, { includeSingles: false })) continue
       for (const key of sources) albums.set(key, (albums.get(key) ?? 0) + 1)
+      for (const key of serversByAlbum.get(identityKey) ?? []) serverAlbums.set(key, (serverAlbums.get(key) ?? 0) + 1)
     }
     const visible = new Set(db!.all<{ key: string }>(`
       SELECT 'subsonic:' || id AS key FROM subsonic_sources WHERE enabled = 1
@@ -2463,7 +2480,8 @@ export function getRemoteSourceCounts(): RemoteSourceCounts[] {
     const counts = rows.filter(row => isRemoteSourceType(row.source_type)).map(row => {
       const key = `${row.source_type}:${row.source_id}`
       return { provider: row.source_type as RemoteSourceCounts['provider'], sourceId: Number(row.source_id),
-        tracks: Number(row.tracks) || 0, albums: visible.has(key) ? albums.get(key) ?? 0 : null }
+        tracks: Number(row.tracks) || 0, albums: visible.has(key) ? albums.get(key) ?? 0 : null,
+        serverAlbums: visible.has(key) ? serverAlbums.get(serverOf(key, row.source_type, Number(row.source_id))) ?? 0 : null }
     })
     remoteSourceCountsCache = { generation, counts }
     return counts

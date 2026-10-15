@@ -3,12 +3,16 @@ import type { PresencePhase } from '../../../hooks/usePresence'
 import { cleanIpcError, plural } from './serverModel'
 import { AlertIcon } from './ServerParts'
 import { ServerWindow, Spinner } from './ServerWindow'
-import { removeServer, type ServerEntry } from './useServers'
+import { removePlexLibrary, removeServer, type ServerEntry, type ServerLibrary } from './useServers'
 
-/** Remove a server. Its tracks are kept as unavailable unless you choose to delete them. */
-export function RemoveServerWindow({ phase, server, onClose }: {
+/**
+ * Remove a server, or with `library` just that library of a Plex server. Its tracks are
+ * kept as unavailable unless you choose to delete them.
+ */
+export function RemoveServerWindow({ phase, server, library, onClose }: {
   phase: PresencePhase
   server: ServerEntry
+  library?: ServerLibrary
   onClose: () => void
 }) {
   const [deleteTracks, setDeleteTracks] = useState(false)
@@ -17,12 +21,14 @@ export function RemoveServerWindow({ phase, server, onClose }: {
   // Exactly what "Delete them" deletes, read as the window opens: unlike the counts shown
   // elsewhere, it includes tracks the server no longer has. "Its tracks" until it's known.
   const [removalCount, setRemovalCount] = useState<number | null>(null)
+  const ids = library ? [library.id] : server.sourceIds
+  const idsKey = ids.join(',')
   useEffect(() => {
     let active = true
-    window.electronAPI.servers.removalCount(server.provider, server.id)
-      .then(count => { if (active) setRemovalCount(count) }, () => { /* Keeps "its tracks". */ })
+    Promise.all(ids.map(id => window.electronAPI.servers.removalCount(server.provider, id)))
+      .then(counts => { if (active) setRemovalCount(counts.reduce((sum, count) => sum + count, 0)) }, () => { /* Keeps "its tracks". */ })
     return () => { active = false }
-  }, [server.provider, server.id])
+  }, [server.provider, idsKey])
   const theirCount = removalCount ? plural(removalCount, 'track') : null
 
   const remove = async () => {
@@ -30,10 +36,11 @@ export function RemoveServerWindow({ phase, server, onClose }: {
     setRemoving(true)
     setError(null)
     try {
-      await removeServer(server, deleteTracks)
+      if (library) await removePlexLibrary(library.id, deleteTracks)
+      else await removeServer(server, deleteTracks)
       onClose()
     } catch (failure) {
-      setError(cleanIpcError(failure, 'Couldn’t remove this server.'))
+      setError(cleanIpcError(failure, library ? 'Couldn’t remove this library.' : 'Couldn’t remove this server.'))
       setRemoving(false)
     }
   }
@@ -48,14 +55,18 @@ export function RemoveServerWindow({ phase, server, onClose }: {
   )
 
   return (
-    <ServerWindow phase={phase} title={`Remove ${server.name}?`} busy={removing} onClose={onClose}
+    <ServerWindow phase={phase} title={`Remove ${library?.name ?? server.name}?`} subtitle={library ? server.name : undefined}
+      busy={removing} onClose={onClose}
       footer={<>
         <button type="button" className="servers-btn" disabled={removing} onClick={onClose}>Cancel</button>
         <button type="button" className="servers-btn is-danger" disabled={removing} onClick={() => void remove()}>
-          {removing ? <><Spinner />Removing…</> : deleteTracks ? `Remove server and ${theirCount ?? 'tracks'}` : 'Remove server'}
+          {removing ? <><Spinner />Removing…</> : `Remove ${library ? 'library' : 'server'}${deleteTracks ? ` and ${theirCount ?? 'tracks'}` : ''}`}
         </button>
       </>}>
-      <p className="servers-window-text">Astra stops syncing and forgets the connection. What should happen to its {theirCount ?? 'tracks'}?</p>
+      <p className="servers-window-text">
+        {library ? `Astra stops syncing ${library.name} from ${server.name}.` : 'Astra stops syncing and forgets the connection.'}{' '}
+        What should happen to its {theirCount ?? 'tracks'}?
+      </p>
       <div className="servers-pick">
         {option(false, 'Keep them as unavailable', 'They stay in your playlists and listening history, marked unavailable.')}
         {option(true, 'Delete them from your library', 'Removes the tracks from Astra. This can’t be undone.')}

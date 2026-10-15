@@ -4,7 +4,7 @@ import {
 } from '../../../../types/streamingQuality'
 import SettingsSegmentedControl from '../SettingsSegmentedControl'
 import {
-  DEFAULT_FIXED_BITRATE, QUALITY_BITRATES, qualityCopy, qualityFollowUps, qualityFromChoice, qualityMode,
+  DEFAULT_FIXED_BITRATE, QUALITY_BITRATES, qualityCopy, qualityFollowUps, qualityFromChoice, qualityLabel, qualityMode,
   type AutomaticPriority, type QualityBitrate, type QualityMode
 } from './serverModel'
 import type { ServerEntry } from './useServers'
@@ -27,23 +27,34 @@ function useStreamingQualitySettings() {
       .catch(() => { if (active) setError('Could not read streaming quality.') })
     return () => { active = false; unsubscribe() }
   }, [])
-  const save = async (quality: StreamingQuality | null, source?: StreamingQualitySource) => {
+  /**
+   * Save the global setting, or one setting for several sources (each library of a Plex
+   * server). One error covers them all: a later library saving doesn't hide an earlier one
+   * that didn't, and the libraries it couldn't save are named.
+   */
+  const save = async (quality: StreamingQuality | null, targets?: { source: StreamingQualitySource; name: string }[]) => {
     setError(null)
     const generation = eventGeneration.current
-    try {
-      const value = await window.electronAPI.setStreamingQuality(quality, source)
-      // A broadcast may already carry a later edit from another control or window.
-      if (eventGeneration.current === generation) setSettings(value)
-      return true
-    } catch {
-      setError('Could not save streaming quality. Please try again.')
-      return false
+    const failed: string[] = []
+    let latest: StreamingQualitySettings | null = null
+    for (const target of targets ?? [null]) {
+      try { latest = await window.electronAPI.setStreamingQuality(quality, target?.source) }
+      catch { failed.push(target?.name ?? '') }
     }
+    // A broadcast may already carry a later edit from another control or window.
+    if (latest && eventGeneration.current === generation) setSettings(latest)
+    if (failed.length) {
+      setError(targets && targets.length > 1 && failed.length < targets.length
+        ? `Could not save it for ${failed.join(', ')}. Choose it again to try once more.`
+        : 'Could not save streaming quality. Please try again.')
+    }
+    return !failed.length
   }
   return { settings, error, save }
 }
 
-type Choice = QualityMode | 'default'
+// 'mixed': a Plex server whose libraries have different settings. It's no option; nothing is highlighted.
+type Choice = QualityMode | 'default' | 'mixed'
 
 const MODE_OPTIONS = [
   { value: 'automatic', label: 'Automatic' },
@@ -67,10 +78,21 @@ const BITRATE_OPTIONS = QUALITY_BITRATES.map(bitrate => ({ value: bitrate, label
  */
 export function QualityControl({ server, servers }: { server?: ServerEntry; servers: ServerEntry[] }) {
   const { settings, error, save } = useStreamingQualitySettings()
-  const source = server ? { provider: server.provider, sourceId: server.id } : undefined
-  const sourceKey = source ? streamingQualitySourceKey(source) : null
+  const keyOf = (item: ServerEntry) => streamingQualitySourceKey({ provider: item.provider, sourceId: item.id })
+  // Overrides are stored per source, so each library of a Plex server has its own: null is the default.
+  const ownSettings = (item: ServerEntry) => item.sourceIds
+    .map(id => settings?.overrides[streamingQualitySourceKey({ provider: item.provider, sourceId: id })] ?? null)
+  const isMixed = (values: (StreamingQuality | null)[]) => values.some(value => value !== values[0])
+  // For the default's wording: a server overrides it if any of its libraries does.
+  const overrides = Object.fromEntries(servers.flatMap(item => {
+    const own = ownSettings(item).find(value => value !== null)
+    return own == null ? [] : [[keyOf(item), own]]
+  })) as Record<string, StreamingQuality>
+  const sourceKey = server ? keyOf(server) : null
   const global = settings?.global ?? 'original'
-  const current: StreamingQuality | null = sourceKey ? settings?.overrides[sourceKey] ?? null : global
+  const serverValues = server ? ownSettings(server) : []
+  const mixed = !!server && isMixed(serverValues)
+  const current: StreamingQuality | null = server ? (mixed ? null : serverValues[0] ?? null) : global
 
   // Remember the saved follow-up choices so switching away and back restores them.
   // Only saved values are remembered; the open row always shows what's saved.
@@ -88,20 +110,31 @@ export function QualityControl({ server, servers }: { server?: ServerEntry; serv
   useEffect(() => () => { if (appliedTimer.current !== null) window.clearTimeout(appliedTimer.current) }, [])
   const [busy, setBusy] = useState(false)
 
-  const choice: Choice = current === null ? 'default' : qualityMode(current)
+  const choice: Choice = mixed ? 'mixed' : current === null ? 'default' : qualityMode(current)
   const copy = qualityCopy({
     global,
-    overrides: settings?.overrides ?? {},
-    servers: servers.map(item => ({ key: streamingQualitySourceKey({ provider: item.provider, sourceId: item.id }), name: item.name })),
+    overrides,
+    servers: servers.map(item => {
+      const values = ownSettings(item)
+      return isMixed(values)
+        ? { key: keyOf(item), name: item.name, libraries: item.sourceIds.map((id, index) => ({
+          name: item.libraries.find(library => library.id === id)?.name ?? item.name, quality: values[index] })) }
+        : { key: keyOf(item), name: item.name }
+    }),
     serverKey: sourceKey ?? undefined
   })
   // The default only reaches servers without their own setting.
   const reachesAnyServer = !!server || copy.overridden.length < servers.length
-  const commit = async (next: StreamingQuality | null, target = source) => {
-    // A click on what's already saved for this control changes nothing.
-    if (target === source && next === current) return
+  /** Save the global setting, or a server's (every source behind it, so they agree). */
+  const commit = async (next: StreamingQuality | null, target: ServerEntry | null = server ?? null) => {
+    // A click on what's already saved for this control changes nothing; when a server's
+    // libraries differ, any choice applies to all of them.
+    if (target === (server ?? null) && !mixed && next === current) return
     setBusy(true)
-    const ok = await save(next, target)
+    const names = new Map(target?.libraries.map(library => [library.id, library.name]) ?? [])
+    const ok = await save(next, target ? target.sourceIds.map(id => ({
+      source: { provider: target.provider, sourceId: id }, name: names.get(id) ?? target.name
+    })) : undefined)
     setBusy(false)
     if (!ok || (!target && !reachesAnyServer)) return
     // Said once after a change rather than always: it only matters right then.
@@ -110,7 +143,15 @@ export function QualityControl({ server, servers }: { server?: ServerEntry; serv
     appliedTimer.current = window.setTimeout(() => setApplied(false), 4000)
   }
 
-  const { label, description } = copy
+  const { label } = copy
+  // Say which library uses what, rather than letting one library stand for the server.
+  const description = mixed && server
+    ? `Its libraries use different settings: ${server.sourceIds.map((id, index) => {
+      const value = serverValues[index]
+      const name = server.libraries.find(library => library.id === id)?.name ?? server.name
+      return `${name} ${value === null ? `uses your default (${qualityLabel(global)})` : `uses ${qualityLabel(value)}`}`
+    }).join(', ')}. Choose one for all of them.`
+    : copy.description
   // With one server there's no server page yet to change its own setting on, so
   // offer the way back here. It's never removed without the user asking.
   const lone = !server && servers.length === 1 && copy.overridden.length === 1 ? servers[0] : null
@@ -128,7 +169,7 @@ export function QualityControl({ server, servers }: { server?: ServerEntry; serv
           </span>
           {lone && (
             <button type="button" className="servers-link servers-link-inline" disabled={disabled}
-              onClick={() => void commit(null, { provider: lone.provider, sourceId: lone.id })}>
+              onClick={() => void commit(null, lone)}>
               Use the default for {lone.name}
             </button>
           )}
@@ -140,7 +181,7 @@ export function QualityControl({ server, servers }: { server?: ServerEntry; serv
           disabled={disabled}
           options={server ? SERVER_OPTIONS : MODE_OPTIONS}
           value={choice}
-          onChange={next => void commit(next === 'default' ? null : qualityFromChoice(next, priority, bitrate))}
+          onChange={next => { if (next !== 'mixed') void commit(next === 'default' ? null : qualityFromChoice(next, priority, bitrate)) }}
         />
       </div>
       <div className={`servers-reveal${open('automatic') ? ' is-open' : ''}`} inert={!open('automatic')}>

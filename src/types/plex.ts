@@ -14,17 +14,28 @@ export interface PlexSignInStatus {
   state: 'waiting' | 'ready'
   expiresAt: number
   username?: string
+  /** Which Plex account signed in, to tell its servers from another account's. */
+  accountId?: string
   servers?: PlexServerChoice[]
 }
 export interface PlexStatusSnapshot { isSyncing: boolean; sources: JellyfinSourceStatus[]; updatedAt: number }
-export interface PlexConnectInput { signInId: string; serverId: string; libraryId: string; name?: string; sourceId?: number }
+/**
+ * Connect libraries of one server from a sign-in. `name` is the server's name (each library
+ * is saved as "<name> · <library>"). With `sourceIds`, it reconnects those libraries instead,
+ * keeping their names; `libraryIds` must then be exactly theirs.
+ */
+export interface PlexConnectInput { signInId: string; serverId: string; libraryIds: string[]; name?: string; sourceIds?: number[] }
 
 export interface PlexAPI {
   beginSignIn(): Promise<PlexSignInStatus>
   pollSignIn(id: string): Promise<PlexSignInStatus>
   cancelSignIn(id: string): Promise<void>
   libraries(signInId: string, serverId: string): Promise<PlexLibraryChoice[]>
-  connect(input: PlexConnectInput): Promise<PlexSource>
+  connect(input: PlexConnectInput): Promise<PlexSource[]>
+  /** The music libraries on a connected library's server, through its stored sign-in. */
+  serverLibraries(sourceId: number): Promise<PlexLibraryChoice[]>
+  /** Add more libraries of a connected library's server, through its stored sign-in. */
+  addLibraries(sourceId: number, libraryIds: string[]): Promise<PlexSource[]>
   listSources(): Promise<PlexSource[]>
   updateSource(id: number, input: { name?: string; enabled?: boolean }): Promise<PlexSource>
   deleteSource(id: number, purgeTracks: boolean): Promise<void>

@@ -75,7 +75,8 @@ export const useServerNoticeStore = create<ServerNoticeState>((set) => ({
  * attempts is the same outage. A server only counts as removed once it has been seen
  * (`memory.known`), so notices queued before the server list first loads survive.
  */
-type OutageServer = { key: string; state: string; error: string | null; problem?: 'offline' | 'signed-out' | 'sync' | null }
+/** `memberKeys`: every source behind the server (each Plex library), whose own cues go when it's removed. */
+type OutageServer = { key: string; state: string; error: string | null; problem?: 'offline' | 'signed-out' | 'sync' | null; memberKeys?: string[] }
 
 export function planOutageNotices(
   servers: readonly OutageServer[],
@@ -84,7 +85,9 @@ export function planOutageNotices(
 ): { push: OutageServer[]; update: OutageServer[]; clear: string[]; removed: string[] } {
   const push: OutageServer[] = [], update: OutageServer[] = [], clear: string[] = [], removed: string[] = []
   const { notified, known } = memory
-  const present = new Set(servers.map(server => server.key))
+  // A Plex library's review cues are keyed by the library, so each library counts as known
+  // too: removing one library (or the whole server) removes its cues.
+  const present = new Set(servers.flatMap(server => [server.key, ...(server.memberKeys ?? [])]))
   for (const key of [...known]) {
     if (present.has(key)) continue
     known.delete(key)

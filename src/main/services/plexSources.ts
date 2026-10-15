@@ -1,10 +1,17 @@
 import { randomUUID } from 'node:crypto'
+import { plexLibraryEntryName, plexServerName } from '../../shared/plex/serverName'
 import { classifySourceError } from './sourceErrorKind'
 import type * as Library from './library'
 import type { PlexConnectInput, PlexLibraryChoice, PlexSignInStatus, PlexSource, PlexStatusSnapshot } from '../../types/plex'
 import { beginPlexSignIn, connectPlexServer, createPlexDevice, discoverPlexServers, fetchPlexArtwork,
   fetchPlexCatalog, isPlexAccessFailure, listPlexLibraries, pollPlexSignIn, PlexAccessError, PlexRequestError,
   type PlexAccount, type PlexCredentials, type PlexDevice, type PlexRequestOptions, type PlexServer } from './plex'
+
+/** A non-empty list of distinct library ids. */
+function validLibraryIds(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.length <= 100
+    && value.every(id => typeof id === 'string' && id.length > 0) && new Set(value).size === value.length
+}
 
 interface SignIn {
   owner: number; id: string; device: PlexDevice; pinId: number; expiresAt: number; controller: AbortController
@@ -53,7 +60,7 @@ export class PlexSources {
   }
   private publicSignIn(session: SignIn): PlexSignInStatus {
     return { id: session.id, state: session.account && session.servers ? 'ready' : 'waiting', expiresAt: session.expiresAt,
-      ...(session.account && session.servers ? { username: session.account.username,
+      ...(session.account && session.servers ? { username: session.account.username, accountId: session.account.accountId,
         servers: session.servers.map(({ id, name, owned }) => ({ id, name, owned })) } : {}) }
   }
   async begin(owner: number): Promise<PlexSignInStatus> {
@@ -110,25 +117,70 @@ export class PlexSources {
     session.connections.set(serverId, { credentials, libraries })
     return libraries
   }
-  async connect(owner: number, input: PlexConnectInput): Promise<PlexSource> {
-    if (!input || typeof input.signInId !== 'string') throw new Error('Invalid Plex connection.')
+  async connect(owner: number, input: PlexConnectInput): Promise<PlexSource[]> {
+    if (!input || typeof input.signInId !== 'string' || !validLibraryIds(input.libraryIds)) throw new Error('Invalid Plex connection.')
     const session = this.session(owner, input.signInId)
     const selection = session.connections.get(input.serverId)
-    const library = selection?.libraries.find(item => item.id === input.libraryId)
-    if (!selection || !library || !session.account) throw new Error('Select a Plex server and music library first.')
-    if (input.sourceId !== undefined) {
-      const previous = this.options.library.getPlexSourceById(input.sourceId)
-      if (!previous || previous.account_id !== session.account.accountId || previous.server_id !== input.serverId
-        || previous.library_id !== input.libraryId) throw new Error('Reconnect using the same Plex account, server and music library.')
+    const libraries = input.libraryIds.map(id => selection?.libraries.find(item => item.id === id))
+    if (!selection || !session.account || libraries.some(library => !library)) throw new Error('Select a Plex server and music library first.')
+    const account = session.account
+    // Reconnecting keeps each library's name; the libraries must be exactly the ones it had.
+    let previousNames: Map<string, string> | null = null
+    if (input.sourceIds !== undefined) {
+      const rows = Array.isArray(input.sourceIds) ? input.sourceIds.map(id => this.options.library.getPlexSourceById(id)) : []
+      if (!rows.length || rows.some(row => !row || row.account_id !== account.accountId || row.server_id !== input.serverId)
+        || rows.length !== input.libraryIds.length || !input.libraryIds.every(id => rows.some(row => row!.library_id === id))) {
+        throw new Error('Reconnect using the same Plex account, server and music libraries.')
+      }
+      previousNames = new Map(rows.map(row => [row!.library_id, row!.name]))
     }
-    const name = typeof input.name === 'string' && input.name.trim() ? input.name.trim().slice(0, 200) : `${selection.credentials.server.name} · ${library.name}`
-    const source = await this.options.library.savePlexSource({ name, username: session.account.username,
-      account_id: session.account.accountId, server_id: input.serverId, library_id: input.libraryId, library_name: library.name,
-      base_url: selection.credentials.baseUrl, secret_encrypted: this.options.encrypt(JSON.stringify(selection.credentials)) })
-    this.credentialCache.set(source.id, { credentials: selection.credentials, checkedAt: Date.now() })
+    const serverName = typeof input.name === 'string' && input.name.trim() ? input.name.trim().slice(0, 160) : this.serverName(account.accountId, input.serverId, selection.credentials.server.name)
+    const saved: PlexSource[] = []
+    for (const library of libraries as PlexLibraryChoice[]) {
+      const name = previousNames?.get(library.id) ?? plexLibraryEntryName(serverName, library.name)
+      const source = await this.options.library.savePlexSource({ name, username: account.username,
+        account_id: account.accountId, server_id: input.serverId, library_id: library.id, library_name: library.name,
+        base_url: selection.credentials.baseUrl, secret_encrypted: this.options.encrypt(JSON.stringify(selection.credentials)) })
+      this.credentialCache.set(source.id, { credentials: selection.credentials, checkedAt: Date.now() })
+      saved.push(source)
+    }
     this.cancel(owner, input.signInId)
     this.changed()
-    return source
+    return saved
+  }
+  /** The server's name in Astra: its already-connected libraries' name, else Plex's. */
+  private serverName(accountId: string, serverId: string, fallback: string): string {
+    const peer = this.options.library.listPlexSources().filter(source => source.account_id === accountId && source.server_id === serverId)
+      .sort((a, b) => a.id - b.id)[0]
+    return peer ? plexServerName(peer) : fallback
+  }
+  /** The music libraries on a connected library's server, for "Add library". Uses the stored sign-in. */
+  async serverLibraries(id: number): Promise<PlexLibraryChoice[]> {
+    return this.withCredentials(id, undefined, credentials => listPlexLibraries(credentials, this.options.request))
+  }
+  /** Adds more libraries of a connected library's server, with its stored sign-in (no browser step). */
+  async addLibraries(id: number, libraryIds: string[]): Promise<PlexSource[]> {
+    if (!validLibraryIds(libraryIds)) throw new Error('Choose the music libraries to add.')
+    const source = this.options.library.getPlexSourceById(id)
+    if (!source) throw new Error('This Plex server is no longer connected.')
+    const credentials = await this.credentials(id)
+    const libraries = await listPlexLibraries(credentials, this.options.request)
+    const connected = new Set(this.options.library.listPlexSources()
+      .filter(peer => peer.account_id === source.account_id && peer.server_id === source.server_id).map(peer => peer.library_id))
+    const chosen = libraryIds.map(libraryId => libraries.find(library => library.id === libraryId))
+    if (chosen.some(library => !library)) throw new Error('That music library is no longer on this server.')
+    if (chosen.some(library => connected.has(library!.id))) throw new Error('That music library is already added.')
+    const serverName = this.serverName(source.account_id, source.server_id, credentials.server.name)
+    const saved: PlexSource[] = []
+    for (const library of chosen as PlexLibraryChoice[]) {
+      const added = await this.options.library.savePlexSource({ name: plexLibraryEntryName(serverName, library.name), username: source.username,
+        account_id: source.account_id, server_id: source.server_id, library_id: library.id, library_name: library.name,
+        base_url: credentials.baseUrl, secret_encrypted: this.options.encrypt(JSON.stringify(credentials)) })
+      this.credentialCache.set(added.id, { credentials, checkedAt: Date.now() })
+      saved.push(added)
+    }
+    this.changed()
+    return saved
   }
   async credentials(id: number, signal?: AbortSignal, force = false): Promise<PlexCredentials> {
     signal?.throwIfAborted()

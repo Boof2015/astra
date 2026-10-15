@@ -24,6 +24,11 @@ export interface RemoteSourceCounts {
   tracks: number
   /** As the Albums view counts them. Null while the server is off: its tracks are hidden, so they aren't grouped. */
   albums: number | null
+  /**
+   * Albums across every source of the same server: a Plex server's libraries, counted once
+   * when two share an album. The same as `albums` for other servers.
+   */
+  serverAlbums: number | null
 }
 
 export type SubsonicSourceLastStatus =

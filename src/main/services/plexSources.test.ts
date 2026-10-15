@@ -8,7 +8,7 @@ function harness() {
   const rows = new Map<number, PlexSourceRow>()
   const commits: unknown[] = [], missing: unknown[] = [], opened: string[] = [], finishes: boolean[] = [], availability: unknown[] = [], restored: number[] = []
   const mutations = { brokenCatalog: false, pending: true, revokedAccount: false, rejectServer: false, failArtwork: false,
-    serverToken: 'server-token', shared: false }
+    serverToken: 'server-token', shared: false, secondLibrary: false }
   let jwtSignIn = false
   const requests: string[] = []
   const json = (v: unknown) => new Response(JSON.stringify(v), { headers: { 'Content-Type': 'application/json' } })
@@ -53,7 +53,8 @@ function harness() {
       // the token. Emulate servers that accept only traditional resource tokens.
       if (url.pathname === '/identity') return json({ MediaContainer: { machineIdentifier: 'server' } })
       if (mutations.rejectServer || token !== mutations.serverToken) return new Response(null, { status: 401 })
-      if (url.pathname === '/library/sections') return json({ MediaContainer: { Directory: [{ key: '2', title: 'Music', type: 'artist' }] } })
+      if (url.pathname === '/library/sections') return json({ MediaContainer: { Directory: [{ key: '2', title: 'Music', type: 'artist' },
+        ...(mutations.secondLibrary ? [{ key: '3', title: 'Audiobooks', type: 'artist' }] : []), { key: '5', title: 'Films', type: 'movie' }] } })
       if (url.pathname === '/library/sections/2/all') {
         if (mutations.brokenCatalog) return json({ MediaContainer: { totalSize: 10, size: 0 } })
         return json({ MediaContainer: { totalSize: 1, Metadata: [{ type: 'track', ratingKey: '123', title: 'Song', parentThumb: '/library/metadata/12/thumb/1' }] } })
@@ -68,7 +69,7 @@ function harness() {
     mutations.pending = false
     const ready = await service.poll(10, started.id)
     const libraries = await service.libraries(10, started.id, 'server')
-    const source = await service.connect(10, { signInId: started.id, serverId: 'server', libraryId: libraries[0].id })
+    const [source] = await service.connect(10, { signInId: started.id, serverId: 'server', libraryIds: [libraries[0].id] })
     return { started, ready, source }
   }
   return { service, connect, rows, commits, missing, opened, finishes, mutations, requests, options, availability, restored }
@@ -107,9 +108,9 @@ test('Plex cannot connect a renderer-invented server/library and cancellation wi
   const h = harness(); t.after(() => h.service.dispose())
   const started = await h.service.begin(10); h.mutations.pending = false; await h.service.poll(10, started.id)
   await assert.rejects(h.service.libraries(10, started.id, 'invented'), /Select a Plex server/)
-  await assert.rejects(h.service.connect(10, { signInId: started.id, serverId: 'server', libraryId: '2' }), /Select a Plex server and music library/)
+  await assert.rejects(h.service.connect(10, { signInId: started.id, serverId: 'server', libraryIds: ['2'] }), /Select a Plex server and music library/)
   await h.service.libraries(10, started.id, 'server')
-  await assert.rejects(h.service.connect(10, { signInId: started.id, serverId: 'server', libraryId: '999' }), /Select/)
+  await assert.rejects(h.service.connect(10, { signInId: started.id, serverId: 'server', libraryIds: ['999'] }), /Select/)
   const pending = h.service.begin(10)
   h.service.cancelOwner(10)
   await assert.rejects(pending, /no longer active/)
@@ -282,8 +283,8 @@ test('Plex reconnect must preserve account, server and Music library identity', 
   const h = harness(); t.after(() => h.service.dispose())
   const { source } = await h.connect()
   const next = await h.service.begin(10); await h.service.poll(10, next.id); await h.service.libraries(10, next.id, 'server')
-  await assert.rejects(h.service.connect(10, { signInId: next.id, serverId: 'server', libraryId: '2', sourceId: 999 }), /same Plex account/)
-  const saved = await h.service.connect(10, { signInId: next.id, serverId: 'server', libraryId: '2', sourceId: source.id })
+  await assert.rejects(h.service.connect(10, { signInId: next.id, serverId: 'server', libraryIds: ['2'], sourceIds: [999] }), /same Plex account/)
+  const [saved] = await h.service.connect(10, { signInId: next.id, serverId: 'server', libraryIds: ['2'], sourceIds: [source.id] })
   assert.equal(saved.id, source.id); assert.equal(h.rows.size, 1)
 })
 
@@ -302,4 +303,39 @@ test('Plex Sync All shares a latest-library session across sources and stops aft
   await h.service.sync(source.id)
   assert.equal(h.commits.length, 2)
   await assert.rejects(h.service.begin(10), /shutting down/)
+})
+
+test('Plex connects several libraries of one server in one sign-in, and reconnects them together', async t => {
+  const h = harness(); t.after(() => h.service.dispose())
+  h.mutations.secondLibrary = true
+  const started = await h.service.begin(10); h.mutations.pending = false; await h.service.poll(10, started.id)
+  assert.deepEqual((await h.service.libraries(10, started.id, 'server')).map(library => library.name), ['Music', 'Audiobooks'], 'music libraries only')
+  const sources = await h.service.connect(10, { signInId: started.id, serverId: 'server', libraryIds: ['2', '3'], name: 'Lander’s Plex' })
+  assert.deepEqual(sources.map(source => source.name), ['Lander’s Plex · Music', 'Lander’s Plex · Audiobooks'])
+  assert.equal(h.rows.size, 2)
+
+  // Reconnecting both keeps their names and ids; a different set of libraries is refused.
+  const next = await h.service.begin(10); await h.service.poll(10, next.id); await h.service.libraries(10, next.id, 'server')
+  await assert.rejects(h.service.connect(10, { signInId: next.id, serverId: 'server', libraryIds: ['2', '3'], sourceIds: [sources[0].id] }), /same Plex account/)
+  await assert.rejects(h.service.connect(10, { signInId: next.id, serverId: 'server', libraryIds: ['2', '2'] }), /Invalid Plex connection/)
+  const again = await h.service.connect(10, { signInId: next.id, serverId: 'server', libraryIds: ['2', '3'], sourceIds: sources.map(source => source.id), name: 'Ignored' })
+  assert.deepEqual(again.map(source => [source.id, source.name]), sources.map(source => [source.id, source.name]))
+  assert.equal(h.rows.size, 2)
+})
+
+test('Adding a library to a connected server uses its stored sign-in and the server’s name in Astra', async t => {
+  const h = harness(); t.after(() => h.service.dispose())
+  const { source } = await h.connect()
+  assert.equal(source.name, 'Home · Music')
+  await h.service.update(source.id, { name: 'Den · Music' })
+  h.mutations.secondLibrary = true
+  h.requests.length = 0
+  assert.deepEqual((await h.service.serverLibraries(source.id)).map(library => library.id), ['2', '3'])
+  const [added] = await h.service.addLibraries(source.id, ['3'])
+  assert.equal(added.name, 'Den · Audiobooks', 'named after the server as it is called in Astra')
+  assert.equal(added.library_name, 'Audiobooks')
+  assert.equal(h.requests.some(path => path.startsWith('/api/v2/pins')), false, 'no new browser sign-in')
+  await assert.rejects(h.service.addLibraries(source.id, ['2']), /already added/)
+  await assert.rejects(h.service.addLibraries(source.id, ['9']), /no longer on this server/)
+  await assert.rejects(h.service.addLibraries(source.id, []), /Choose the music libraries/)
 })
