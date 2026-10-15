@@ -15,7 +15,7 @@ import ZoneDisplay from './components/layout/ZoneDisplay'
 import QuickLaunchPalette from './components/layout/QuickLaunchPalette'
 import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
 import ProviderSyncNotice from './components/layout/ProviderSyncNotice'
-import ProviderSyncReviewModal from './components/sync/ProviderSyncReviewModal'
+import CompareWindow from './components/settings/servers/CompareWindow'
 import { useProviderSyncStore } from './stores/providerSyncStore'
 import OutputDelayCue from './components/layout/OutputDelayCue'
 import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
@@ -641,7 +641,7 @@ function App() {
         <PhoneSyncConflictResolverModal />
         <DecodeFallbackCue />
         <ProviderSyncNotice />
-        <ProviderSyncReviewModal />
+        <CompareWindow />
         <OutputDelayCue />
         <AssociatedOpenCue />
         <UpdateAvailableCue />
