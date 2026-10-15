@@ -3,6 +3,19 @@ export type TrackSourceType = 'local' | 'subsonic' | 'jellyfin' | 'plex'
 /** Why a source's last check or sync failed: sign-in refused, server unreachable, or the sync itself. */
 export type SourceErrorKind = 'auth' | 'unreachable' | 'sync'
 
+/**
+ * Why a connection check failed, so the windows can say what to fix:
+ * - auth: the server refused this sign-in
+ * - unreachable: nothing answered (or a proxy said the server is down)
+ * - certificate: this computer doesn't trust the server's certificate
+ * - secure-connection: a secure connection couldn't be set up at all, e.g. https:// to a plain-HTTP port
+ * - not-server: something answered, but not as this kind of server
+ * - incompatible: the server's Subsonic version doesn't work with Astra's
+ * - server-error: the server answered with an error of its own
+ * - other: anything else, e.g. an invalid address
+ */
+export type ConnectionFailureKind = 'auth' | 'unreachable' | 'certificate' | 'secure-connection' | 'not-server' | 'incompatible' | 'server-error' | 'other'
+
 /** How much of a server is in the library. */
 export interface RemoteSourceCounts {
   provider: 'subsonic' | 'jellyfin' | 'plex'
@@ -93,7 +106,9 @@ export interface SubsonicSourceTestInput {
 export interface SubsonicSourceTestResult {
   ok: boolean
   message: string
+  /** A plain sentence saying what went wrong. */
   error?: string
+  failure?: ConnectionFailureKind
   /** What the server calls itself, e.g. "navidrome", when it says. */
   serverType?: string | null
 }
@@ -182,7 +197,9 @@ export interface JellyfinSourceTestInput {
 export interface JellyfinSourceTestResult {
   ok: boolean
   message: string
+  /** A plain sentence saying what went wrong. */
   error?: string
+  failure?: ConnectionFailureKind
 }
 
 export interface JellyfinStatusSnapshot {

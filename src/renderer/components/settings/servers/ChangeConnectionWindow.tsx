@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import type { PresencePhase } from '../../../hooks/usePresence'
 import { useJellyfinSettingsStore } from '../../../stores/jellyfinSettingsStore'
 import { useSubsonicSettingsStore } from '../../../stores/subsonicSettingsStore'
-import { addressHost, cleanIpcError } from './serverModel'
+import { addressHost, cleanIpcError, connectionFailureText } from './serverModel'
 import { AlertIcon } from './ServerParts'
 import { ServerWindow, Spinner } from './ServerWindow'
 import { syncServer, useProviderSyncStatus, useRemotePlaylistStatuses, type ServerEntry } from './useServers'
@@ -53,7 +53,10 @@ export function ChangeConnectionWindow({ phase, server, onClose }: {
         const result = provider === 'subsonic'
           ? await window.electronAPI.subsonic.testSource(input)
           : await window.electronAPI.jellyfin.testSource(input)
-        if (!result.ok) throw new Error(`Couldn’t sign in to ${addressHost(address)}. ${result.error ?? 'Check the address, username and password.'}`)
+        if (!result.ok) {
+          const text = connectionFailureText(addressHost(address), [{ failure: result.failure, error: result.error }])
+          throw new Error(`${text.title} ${text.detail}`)
+        }
       }
       const update = {
         name: name.trim(),

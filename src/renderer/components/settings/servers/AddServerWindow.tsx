@@ -5,7 +5,8 @@ import { useJellyfinSettingsStore } from '../../../stores/jellyfinSettingsStore'
 import { usePlexSettingsStore } from '../../../stores/plexSettingsStore'
 import { useSubsonicSettingsStore } from '../../../stores/subsonicSettingsStore'
 import {
-  addressHost, cleanIpcError, defaultServerName, detectionOrder, PROVIDER_KIND, subsonicProductName, type ServerProvider
+  addressHost, cleanIpcError, connectionFailureText, defaultServerName, detectionOrder, PROVIDER_KIND, subsonicProductName,
+  type ConnectionAttempt, type ServerProvider
 } from './serverModel'
 import { AlertIcon, CheckIcon, ExternalIcon, ServerSwitch } from './ServerParts'
 import { ServerWindow, Spinner } from './ServerWindow'
@@ -25,7 +26,7 @@ async function testAddress(provider: AddressProvider, input: { baseUrl: string; 
       ? await window.electronAPI.subsonic.testSource(input)
       : await window.electronAPI.jellyfin.testSource(input)
   } catch (error) {
-    return { ok: false, message: 'Connection failed.', error: cleanIpcError(error, 'Connection failed.') }
+    return { ok: false, message: 'Connection failed.', error: cleanIpcError(error, 'Connection failed.'), failure: 'other' as const }
   }
 }
 
@@ -46,7 +47,7 @@ export function AddServerWindow({ phase, onClose, onAdded }: {
   const [password, setPassword] = useState('')
   const [testing, setTesting] = useState(false)
   // 'missing': a field is empty. 'sign-in': no server type accepted it; `detail` is that type's reason when one was chosen.
-  const [failure, setFailure] = useState<{ kind: 'missing' } | { kind: 'sign-in'; detail: string | null } | null>(null)
+  const [failure, setFailure] = useState<{ kind: 'missing' } | { kind: 'connect'; attempts: ConnectionAttempt[] } | null>(null)
   const [detected, setDetected] = useState<Detected | null>(null)
   const [name, setName] = useState('')
   const [favorites, setFavorites] = useState(false)
@@ -95,7 +96,7 @@ export function AddServerWindow({ phase, onClose, onAdded }: {
     }
     setTesting(true)
     setFailure(null)
-    let lastError: string | null = null
+    const attempts: ConnectionAttempt[] = []
     for (const provider of only ? [only] : detectionOrder(input.baseUrl)) {
       const result = await testAddress(provider, input)
       if (result.ok) {
@@ -104,11 +105,10 @@ export function AddServerWindow({ phase, onClose, onAdded }: {
         goToOptions({ provider, label }, defaultServerName(input.baseUrl))
         return
       }
-      lastError = result.error ?? result.message
+      attempts.push({ failure: result.failure, error: result.error })
     }
     setTesting(false)
-    // With a chosen type, that type's own reason helps; after auto-detect it would be one of two guesses.
-    setFailure({ kind: 'sign-in', detail: only ? lastError : null })
+    setFailure({ kind: 'connect', attempts })
   }
 
   const startPlex = () => { resetPlexChoice(); setStep('plex-wait'); void plex.begin() }
@@ -209,19 +209,24 @@ export function AddServerWindow({ phase, onClose, onAdded }: {
               <AlertIcon /><div>Enter the server address, username and password.</div>
             </div>
           )}
-          {failure?.kind === 'sign-in' && (
-            <div className="servers-window-error" role="alert">
-              <AlertIcon />
-              <div>
-                <strong>Couldn’t sign in to {addressHost(address)}.</strong> {failure.detail ?? 'Check the address, username and password.'}
-                <div className="servers-error-actions">
-                  <span>Or choose the server type:</span>
-                  <button type="button" className="servers-btn is-small" onClick={() => void connect(undefined, 'jellyfin')}>Jellyfin</button>
-                  <button type="button" className="servers-btn is-small" onClick={() => void connect(undefined, 'subsonic')}>Subsonic / Navidrome</button>
+          {failure?.kind === 'connect' && (() => {
+            const text = connectionFailureText(addressHost(address), failure.attempts)
+            return (
+              <div className="servers-window-error" role="alert">
+                <AlertIcon />
+                <div>
+                  <strong>{text.title}</strong> {text.detail}
+                  {text.offerTypes && (
+                    <div className="servers-error-actions">
+                      <span>Or choose the server type:</span>
+                      <button type="button" className="servers-btn is-small" onClick={() => void connect(undefined, 'jellyfin')}>Jellyfin</button>
+                      <button type="button" className="servers-btn is-small" onClick={() => void connect(undefined, 'subsonic')}>Subsonic / Navidrome</button>
+                    </div>
+                  )}
                 </div>
               </div>
-            </div>
-          )}
+            )
+          })()}
           <div className="servers-form-foot">
             <p className="servers-hint">Works with Jellyfin, Navidrome and other Subsonic servers. Astra detects which one.</p>
             <button type="submit" className="servers-btn is-accent" disabled={testing}>

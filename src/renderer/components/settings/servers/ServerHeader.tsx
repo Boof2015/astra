@@ -57,9 +57,11 @@ function CountsLine({ server }: { server: ServerEntry }) {
 function problemNotice(server: ServerEntry): string {
   if (server.problem === 'offline') return 'Its tracks show as unavailable until the server is back. Astra tries again every 20 minutes.'
   if (server.problem === 'signed-out') {
-    return server.provider === 'plex'
-      ? 'Its tracks are unavailable until you sign in to Plex again.'
-      : 'The server didn’t accept the saved username and password. Its tracks are unavailable until you update them.'
+    if (server.provider === 'plex') return 'Its tracks are unavailable until you sign in to Plex again.'
+    // The server's reason, as the main process worded it: a refused password, an account
+    // without access, or a sign-in method it doesn't support. Only the first is fixed by a
+    // new password, so the rest of the sentence doesn't assume one.
+    return `${sentence(server.error) ?? 'The server didn’t accept the saved sign-in.'} Its tracks are unavailable until Astra can sign in again.`
   }
   return `${sentence(server.error) ?? 'Astra couldn’t sync with this server.'} Astra tries again every 20 minutes.`
 }

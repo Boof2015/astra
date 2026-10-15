@@ -4,7 +4,7 @@ import type { AddressInfo, Socket } from 'node:net'
 import test from 'node:test'
 import { JellyfinHttpError, testJellyfinConnection } from './jellyfin.ts'
 import { connectPlexServer, PlexAccessError, PlexRequestError } from './plex.ts'
-import { classifySourceError, isSignInFailure } from './sourceErrorKind.ts'
+import { classifySourceError, describeConnectionFailure, isSignInFailure, syncFailureMessage } from './sourceErrorKind.ts'
 import { SubsonicRequestError, testSubsonicConnection } from './subsonic.ts'
 
 /** A local server answering every request with `respond`; `null` never answers. */
@@ -157,4 +157,107 @@ test('Plex keeps an address\'s HTTP error while it tries the others', async () =
   const connected = await connectPlexServer(account, twoAddresses, { fetch: respond({ 'local.example': status(500),
     'remote.example': () => new Response(JSON.stringify({ MediaContainer: { machineIdentifier: plexServer.id } })) }) })
   assert.equal(connected.baseUrl, 'https://remote.example')
+})
+
+test('a failed connection check reads as a plain sentence that says what to fix', async () => {
+  const said = (error: unknown, provider: 'subsonic' | 'jellyfin') => {
+    const failure = describeConnectionFailure(error, provider)
+    assert.doesNotMatch(failure.message, /fetch failed|request failed|authentication failed|payload/i, failure.message)
+    return [failure.kind, failure.message]
+  }
+  const subsonicError = (code: number, message: string) => subsonicAnswer({ 'subsonic-response': { status: 'failed', error: { code, message } } })
+
+  // Signing in
+  await withServer(subsonicError(40, 'Wrong username or password'), async url => {
+    assert.deepEqual(said(await subsonicFailure(url), 'subsonic'), ['auth', 'The server didn’t accept this username and password.'])
+  })
+  await withServer(plain(401, ''), async url => {
+    assert.deepEqual(said(await jellyfinFailure(url), 'jellyfin'), ['auth', 'The server didn’t accept this username and password.'])
+  })
+  // A permission refusal isn't called a wrong password.
+  await withServer(subsonicError(50, 'User is not authorized for the given operation.'), async url => {
+    assert.deepEqual(said(await subsonicFailure(url), 'subsonic'), ['auth', 'The server didn’t allow this account to sign in.'])
+  })
+  await withServer(subsonicError(41, 'Token authentication not supported for LDAP users.'), async url => {
+    assert.match(said(await subsonicFailure(url), 'subsonic')[1], /LDAP/)
+  })
+
+  // Reaching it
+  const closed = await closedAddress()
+  for (const provider of ['subsonic', 'jellyfin'] as const) {
+    const error = provider === 'subsonic' ? await subsonicFailure(closed) : await jellyfinFailure(closed)
+    assert.deepEqual(said(error, provider), ['unreachable', 'The server refused the connection. Check the address and port, and that the server is running.'])
+  }
+  await withServer(null, async url => {
+    assert.deepEqual(said(await subsonicFailure(url, 150), 'subsonic'), ['unreachable', 'The server didn’t respond. Check that it’s running and reachable from this computer.'])
+  })
+  await withServer(plain(503), async url => {
+    assert.deepEqual(said(await jellyfinFailure(url), 'jellyfin'), ['unreachable', 'The server is unavailable right now (HTTP 503).'])
+  })
+  assert.deepEqual(said(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENOTFOUND' } }), 'subsonic'),
+    ['unreachable', 'No server was found at that address. Check the address.'])
+  assert.deepEqual(said(Object.assign(new TypeError('fetch failed'), { cause: { code: 'DEPTH_ZERO_SELF_SIGNED_CERT' } }), 'jellyfin'),
+    ['certificate', 'The server’s security certificate isn’t trusted by this computer.'])
+
+  // The wrong kind of server, or the wrong path
+  await withServer(plain(200), async url => {
+    assert.deepEqual(said(await subsonicFailure(url), 'subsonic'), ['not-server', 'The server answered, but not as a Subsonic or Navidrome server. Check the address, including any path.'])
+    assert.deepEqual(said(await jellyfinFailure(url), 'jellyfin'), ['not-server', 'The server answered, but not as a Jellyfin server. Check the address, including any path (like /jellyfin).'])
+  })
+  await withServer(plain(404), async url => {
+    assert.equal(said(await subsonicFailure(url), 'subsonic')[0], 'not-server')
+    assert.equal(said(await jellyfinFailure(url), 'jellyfin')[0], 'not-server')
+  })
+  await withServer(plain(200, '{}', 'application/json'), async url => {
+    assert.equal(said(await subsonicFailure(url), 'subsonic')[0], 'not-server')
+    assert.equal(said(await jellyfinFailure(url), 'jellyfin')[0], 'not-server')
+  })
+
+  // The server's own answer is kept
+  await withServer(subsonicError(20, 'Incompatible Subsonic REST protocol version. Client must upgrade.'), async url => {
+    assert.deepEqual(said(await subsonicFailure(url), 'subsonic'),
+      ['incompatible', 'Astra and the server don’t use compatible Subsonic versions. The server said: “Incompatible Subsonic REST protocol version. Client must upgrade.”'])
+  })
+  await withServer(subsonicError(60, 'The trial period for the Subsonic server is over.'), async url => {
+    assert.deepEqual(said(await subsonicFailure(url), 'subsonic'), ['server-error', 'The server said: “The trial period for the Subsonic server is over.”'])
+  })
+  await withServer(plain(500), async url => {
+    assert.deepEqual(said(await subsonicFailure(url), 'subsonic'), ['server-error', 'The server answered with an error (HTTP 500).'])
+    assert.deepEqual(said(await jellyfinFailure(url), 'jellyfin'), ['server-error', 'The server answered with an error (HTTP 500).'])
+  })
+  // Anything else keeps its message (here, the address check before any request).
+  assert.deepEqual(said(new Error('Server URL must use http:// or https://'), 'subsonic'), ['other', 'Server URL must use http:// or https://'])
+})
+
+test('a stored sync failure only rewords what the server never said', () => {
+  const dropped = Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } })
+  assert.equal(syncFailureMessage(dropped, 'subsonic', 'sync'), 'The connection to the server failed. Check the address and your network.')
+  assert.equal(syncFailureMessage(new Error('Server returned an incomplete playlist.'), 'subsonic', 'sync'), 'Server returned an incomplete playlist.')
+  assert.equal(syncFailureMessage(new JellyfinHttpError('Jellyfin request failed (500)', 500), 'jellyfin', 'connect'), 'The server answered with an error (HTTP 500).')
+  assert.equal(syncFailureMessage(Object.assign(new TypeError('fetch failed'), { cause: { code: 'CERT_HAS_EXPIRED' } }), 'jellyfin', 'sync'),
+    'The server’s security certificate isn’t trusted by this computer.')
+})
+
+test('https:// to a plain-HTTP port is a secure-connection problem, not an untrusted certificate or an offline server', async () => {
+  await withServer(plain(200), async url => {
+    const secureUrl = url.replace('http://', 'https://')
+    for (const provider of ['subsonic', 'jellyfin'] as const) {
+      const error = provider === 'subsonic' ? await subsonicFailure(secureUrl) : await jellyfinFailure(secureUrl)
+      assert.deepEqual(describeConnectionFailure(error, provider), { kind: 'secure-connection',
+        message: 'Astra couldn’t set up a secure connection. If the server doesn’t use HTTPS, start the address with http:// instead.' }, String((error as any).cause?.code))
+      // The server answered, so it isn't offline: the page shows this reason instead of retry advice.
+      assert.equal(classifySourceError(error, 'connect'), 'sync')
+      assert.match(syncFailureMessage(error, provider, 'connect'), /start the address with http:\/\//)
+    }
+  })
+  // A real certificate problem, including a name mismatch, still says so.
+  for (const code of ['ERR_TLS_CERT_ALTNAME_INVALID', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE']) {
+    assert.equal(describeConnectionFailure(Object.assign(new TypeError('fetch failed'), { cause: { code } }), 'subsonic').kind, 'certificate', code)
+  }
+})
+
+test('a sign-in refused partway through a sync is stored in plain words too', () => {
+  assert.equal(syncFailureMessage(new JellyfinHttpError('Jellyfin request failed (401)', 401), 'jellyfin', 'sync'), 'The server didn’t accept this username and password.')
+  assert.equal(syncFailureMessage(new SubsonicRequestError('User is not authorized for the given operation.', { apiCode: 50 }), 'subsonic', 'sync'),
+    'The server didn’t allow this account to sign in.')
 })

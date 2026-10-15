@@ -60,7 +60,7 @@ import { createJellyfinAudioSource } from './services/jellyfinAudioSource'
 import { ProviderPlaybackService, playbackReportSource } from './services/providerPlayback'
 import { ProviderStateSync } from './services/providerStateSync'
 import { normalizeProviderSyncRef, providerSyncFields } from '../shared/sync/providerState'
-import { classifySourceError } from './services/sourceErrorKind'
+import { classifySourceError, describeConnectionFailure, syncFailureMessage } from './services/sourceErrorKind'
 import type { ProviderSyncRef, ProviderSyncChoice, ProviderSyncField } from '../types/providerSync'
 import { fetchSubsonicUserStates, writeSubsonicUserState } from './services/subsonic'
 import { fetchJellyfinUserStates, writeJellyfinFavorite } from './services/jellyfin'
@@ -4427,7 +4427,7 @@ async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): 
       retries: 1
     })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unable to reach Subsonic source.'
+    const message = syncFailureMessage(error, 'subsonic', 'connect')
     await library.markSubsonicTracksUnreachable(sourceId, { persist: false })
     await library.updateSubsonicSourceStatus(
       sourceId,
@@ -4499,7 +4499,7 @@ async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): 
     clearSubsonicSyncProgress(sourceId)
     return true
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown Subsonic sync failure.'
+    const message = syncFailureMessage(error, 'subsonic', 'sync')
     const errorKind = classifySourceError(error, 'sync')
     // Like Plex: after the connection check passes, one failing catalog request leaves the
     // tracks playable, but a refused sign-in doesn't.
@@ -4672,7 +4672,7 @@ async function syncOneJellyfinSource(sourceId: number, syncSessionKey: string): 
       retries: 1
     })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unable to reach Jellyfin source.'
+    const message = syncFailureMessage(error, 'jellyfin', 'connect')
     await library.markJellyfinTracksUnreachable(sourceId, { persist: false })
     await library.updateJellyfinSourceStatus(
       sourceId,
@@ -4765,7 +4765,7 @@ async function syncOneJellyfinSource(sourceId: number, syncSessionKey: string): 
     clearJellyfinSyncProgress(sourceId)
     return true
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown Jellyfin sync failure.'
+    const message = syncFailureMessage(error, 'jellyfin', 'sync')
     const errorKind = classifySourceError(error, 'sync')
     // Like Plex: after the connection check passes, one failing catalog request leaves the
     // tracks playable, but a refused sign-in doesn't.
@@ -6991,7 +6991,8 @@ ipcMain.handle('subsonic:testSource', async (_event, rawInput: SubsonicSourceTes
       serverType
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Connection test failed.'
+    const failure = describeConnectionFailure(error, 'subsonic')
+    const message = failure.message
     if (sourceId !== null) {
       clearSubsonicSyncProgress(sourceId)
       await library.updateSubsonicSourceStatus(sourceId, {
@@ -7005,7 +7006,8 @@ ipcMain.handle('subsonic:testSource', async (_event, rawInput: SubsonicSourceTes
     return {
       ok: false,
       message: 'Connection failed.',
-      error: message
+      error: message,
+      failure: failure.kind
     }
   }
 })
@@ -7157,7 +7159,8 @@ ipcMain.handle('jellyfin:testSource', async (_event, rawInput: JellyfinSourceTes
       message: 'Connection successful.'
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Connection test failed.'
+    const failure = describeConnectionFailure(error, 'jellyfin')
+    const message = failure.message
     if (sourceId !== null) {
       clearJellyfinSyncProgress(sourceId)
       await library.updateJellyfinSourceStatus(sourceId, {
@@ -7171,7 +7174,8 @@ ipcMain.handle('jellyfin:testSource', async (_event, rawInput: JellyfinSourceTes
     return {
       ok: false,
       message: 'Connection failed.',
-      error: message
+      error: message,
+      failure: failure.kind
     }
   }
 })

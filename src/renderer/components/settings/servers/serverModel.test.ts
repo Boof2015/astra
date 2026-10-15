@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  addressHost, cleanIpcError, defaultServerName, detectionOrder, subsonicProductName,
+  addressHost, cleanIpcError, connectionFailureText, defaultServerName, detectionOrder, subsonicProductName,
   CACHE_SLIDER_MAX, CACHE_STOPS, CacheLimitEdits, cacheSliderValue, deriveServerState, formatAgo, hostOf, nearestCacheStop,
   lastSyncedText, libraryCountsText, plural, progressFraction, progressText, qualityCopy, qualityFollowUps, qualityFromChoice, qualityLabel, qualityMode,
   SerialQueue, serverProblem, stepCacheStop, syncSucceeded
@@ -185,6 +185,31 @@ test('"In your library" shows the counts once a sync brought music in, and Hidde
   assert.equal(libraryCountsText({ enabled: false, lastSyncAt: 1 }, { tracks: 12, albums: null }), 'Hidden')
   assert.equal(plural(1, 'track'), '1 track')
   assert.equal(plural(2, 'library', 'libraries'), '2 libraries')
+})
+
+test('a failed Connect says what the most telling attempt learned', () => {
+  const host = 'music.home.lan:4533'
+  const refused = { failure: 'unreachable' as const, error: 'The server refused the connection. Check the address and port, and that the server is running.' }
+  const notJellyfin = { failure: 'not-server' as const, error: 'The server answered, but not as a Jellyfin server. Check the address, including any path (like /jellyfin).' }
+  const notSubsonic = { failure: 'not-server' as const, error: 'The server answered, but not as a Subsonic or Navidrome server. Check the address, including any path.' }
+  // A Navidrome that refused the password, tried as Jellyfin first: the refusal speaks.
+  assert.deepEqual(connectionFailureText(host, [notJellyfin, { failure: 'auth', error: 'The server didn’t accept this username and password.' }]),
+    { title: `Couldn’t sign in to ${host}.`, detail: 'The server didn’t accept this username and password.', offerTypes: true })
+  // Nothing answered: the type can't help, so it isn't offered.
+  assert.deepEqual(connectionFailureText(host, [refused, refused]), { title: `Couldn’t connect to ${host}.`, detail: refused.error, offerTypes: false })
+  assert.equal(connectionFailureText(host, [{ failure: 'certificate', error: 'x' }]).offerTypes, false)
+  assert.equal(connectionFailureText(host, [{ failure: 'secure-connection', error: 'x' }]).offerTypes, false)
+  // Neither type: one sentence for both.
+  assert.deepEqual(connectionFailureText(host, [notJellyfin, notSubsonic]), { title: `Couldn’t connect to ${host}.`,
+    detail: 'The server answered, but not as a Jellyfin, Navidrome or Subsonic server. Check the address, including any path (like /jellyfin).', offerTypes: true })
+  // A chosen type that isn't it says so for that type.
+  assert.equal(connectionFailureText(host, [notJellyfin]).detail, notJellyfin.error)
+  // The server's own answer beats a guess about the other type.
+  assert.equal(connectionFailureText(host, [notJellyfin, { failure: 'incompatible', error: 'Astra and the server don’t use compatible Subsonic versions.' }]).detail,
+    'Astra and the server don’t use compatible Subsonic versions.')
+  assert.equal(connectionFailureText(host, [{ failure: 'other', error: 'Server URL must use http:// or https://' }, notSubsonic]).detail, 'Server URL must use http:// or https://')
+  // Nothing to go on: the agreed sentence.
+  assert.deepEqual(connectionFailureText(host, [{}]), { title: `Couldn’t connect to ${host}.`, detail: 'Check the address, username and password.', offerTypes: true })
 })
 
 test('add-server helpers: detection order, default name, host, product name, IPC errors', () => {

@@ -1,10 +1,11 @@
 import type { StreamingQuality } from '../../../../types/streamingQuality'
+import type { ConnectionFailureKind } from '../../../../types/subsonic'
 
 export type ServerProvider = 'subsonic' | 'jellyfin' | 'plex'
 
 /**
- * What a server's row says about it. Offline and sign-in expired can't be told
- * apart until source status carries an error kind, so both are 'failed' for now.
+ * What a server's row says about it. Offline, sign-in expired and a sync problem are
+ * all 'failed'; `serverProblem` says which.
  */
 export type ServerState = 'connected' | 'syncing' | 'checking' | 'failed' | 'off'
 
@@ -84,6 +85,38 @@ export function defaultServerName(address: string): string {
 /** "Couldn't sign in to <this>". */
 export function addressHost(address: string): string {
   return parseAddress(address)?.host || address.trim() || 'that address'
+}
+
+/** One connection check while adding or changing an address server. */
+export interface ConnectionAttempt {
+  failure?: ConnectionFailureKind
+  /** The main process's plain sentence. */
+  error?: string
+}
+
+// When detection tried both types, the attempt that learned the most speaks: a server that
+// answered (refusing the sign-in, or with its own error) over one that couldn't be reached,
+// and that over "not this kind of server", which the other type's attempt usually explains.
+const FAILURE_WEIGHT: Record<ConnectionFailureKind, number> = {
+  auth: 6, incompatible: 5, 'server-error': 4, other: 3, certificate: 2, 'secure-connection': 2, unreachable: 1, 'not-server': 0
+}
+
+/**
+ * What a failed Connect says: a title, a sentence, and whether choosing the server type
+ * could help (not when nothing answered or no secure connection could be set up: the type
+ * doesn't matter then).
+ */
+export function connectionFailureText(host: string, attempts: readonly ConnectionAttempt[]): { title: string; detail: string; offerTypes: boolean } {
+  const best = [...attempts].sort((a, b) => FAILURE_WEIGHT[b.failure ?? 'other'] - FAILURE_WEIGHT[a.failure ?? 'other'])[0]
+  const kind = best?.failure ?? 'other'
+  const neitherType = attempts.length > 1 && attempts.every(attempt => attempt.failure === 'not-server')
+  return {
+    title: kind === 'auth' ? `Couldn’t sign in to ${host}.` : `Couldn’t connect to ${host}.`,
+    detail: neitherType
+      ? 'The server answered, but not as a Jellyfin, Navidrome or Subsonic server. Check the address, including any path (like /jellyfin).'
+      : best?.error ?? 'Check the address, username and password.',
+    offerTypes: kind !== 'unreachable' && kind !== 'certificate' && kind !== 'secure-connection'
+  }
 }
 
 /** How a Subsonic-compatible server introduces itself: "navidrome" reads as Navidrome. */
