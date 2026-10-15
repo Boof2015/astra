@@ -3,7 +3,8 @@ import type { RemotePlaylistStatus } from '../../../../types/remotePlaylists'
 import { QualityControl } from './QualityControl'
 import { ServerHeader, UseServerRow } from './ServerHeader'
 import type { ServerMenuAction } from './ServerMenu'
-import { lastSyncedText } from './serverModel'
+import { serverCounts, useServerCountsStore } from '../../../stores/serverCountsStore'
+import { lastSyncedText, libraryCountsText } from './serverModel'
 import { ChevronLeftIcon } from './ServerParts'
 import { SyncRows } from './SyncRows'
 import { useNow, type ServerEntry } from './useServers'
@@ -11,12 +12,13 @@ import { useNow, type ServerEntry } from './useServers'
 /** Quiet key/value rows; mono only for real values like the address. */
 function Details({ server }: { server: ServerEntry }) {
   const now = useNow()
+  const inLibrary = libraryCountsText(server, useServerCountsStore(state => serverCounts(state, server.key)))
   const rows: [string, ReactNode][] = [
     server.address
       ? ['Address', <span className="servers-mono">{server.address}</span>]
       : ['Library', server.libraryName ?? '—'],
     ['Account', server.user],
-    ...(!server.enabled ? [['In your library', 'Hidden'] as [string, string]] : []),
+    ...(inLibrary ? [['In your library', inLibrary] as [string, string]] : []),
     ['Last synced', lastSyncedText(server, now)]
   ]
   return (

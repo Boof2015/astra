@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { PresencePhase } from '../../../hooks/usePresence'
-import { cleanIpcError } from './serverModel'
+import { cleanIpcError, plural } from './serverModel'
 import { AlertIcon } from './ServerParts'
 import { ServerWindow, Spinner } from './ServerWindow'
 import { removeServer, type ServerEntry } from './useServers'
@@ -14,6 +14,16 @@ export function RemoveServerWindow({ phase, server, onClose }: {
   const [deleteTracks, setDeleteTracks] = useState(false)
   const [removing, setRemoving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Exactly what "Delete them" deletes, read as the window opens: unlike the counts shown
+  // elsewhere, it includes tracks the server no longer has. "Its tracks" until it's known.
+  const [removalCount, setRemovalCount] = useState<number | null>(null)
+  useEffect(() => {
+    let active = true
+    window.electronAPI.servers.removalCount(server.provider, server.id)
+      .then(count => { if (active) setRemovalCount(count) }, () => { /* Keeps "its tracks". */ })
+    return () => { active = false }
+  }, [server.provider, server.id])
+  const theirCount = removalCount ? plural(removalCount, 'track') : null
 
   const remove = async () => {
     if (removing) return
@@ -42,10 +52,10 @@ export function RemoveServerWindow({ phase, server, onClose }: {
       footer={<>
         <button type="button" className="servers-btn" disabled={removing} onClick={onClose}>Cancel</button>
         <button type="button" className="servers-btn is-danger" disabled={removing} onClick={() => void remove()}>
-          {removing ? <><Spinner />Removing…</> : deleteTracks ? 'Remove server and tracks' : 'Remove server'}
+          {removing ? <><Spinner />Removing…</> : deleteTracks ? `Remove server and ${theirCount ?? 'tracks'}` : 'Remove server'}
         </button>
       </>}>
-      <p className="servers-window-text">Astra stops syncing and forgets the connection. What should happen to its tracks?</p>
+      <p className="servers-window-text">Astra stops syncing and forgets the connection. What should happen to its {theirCount ?? 'tracks'}?</p>
       <div className="servers-pick">
         {option(false, 'Keep them as unavailable', 'They stay in your playlists and listening history, marked unavailable.')}
         {option(true, 'Delete them from your library', 'Removes the tracks from Astra. This can’t be undone.')}

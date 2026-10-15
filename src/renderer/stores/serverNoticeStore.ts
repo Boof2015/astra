@@ -18,7 +18,7 @@ export interface ServerNotice {
   /** "provider:id" of the server it's about, when it's about one. */
   serverKey?: string
   ref?: ProviderSyncRef
-  /** Review: how many changes are waiting. */
+  /** Review: how many changes are waiting. Ready: how many tracks the first sync added. */
   count?: number
   /** Problem: what went wrong, for the right words and fix. */
   problem?: 'offline' | 'signed-out' | 'sync'

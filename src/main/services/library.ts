@@ -112,6 +112,7 @@ import { getLocalDayKey, HOME_SHELF_ITEM_LIMIT, selectHomeRediscovery } from '..
 import type { LyricsFormat, LyricsLine, LyricsProvider } from '../../types/lyrics'
 import type {
   JellyfinSourceLastStatus,
+  RemoteSourceCounts,
   SourceErrorKind,
   SubsonicSourceLastStatus,
   TrackSourceType
@@ -406,6 +407,31 @@ export async function markMissingPlexTracksUnavailable(id: number, seen: Set<str
   } catch (error) { rollbackLibraryWriteTransaction(); throw error }
   await saveDatabase()
 }
+/**
+ * The tracks that removing a server with "Delete them" deletes: everything it brought in,
+ * including tracks it no longer has. A Subsonic or Jellyfin source also takes rows under its
+ * path prefix, and the last one of its kind takes tracks from before sources had ids.
+ */
+function purgedTrackScope(provider: RemoteSourceCounts['provider'], sourceId: number): { where: string; params: unknown[] } {
+  if (provider === 'plex') return { where: "source_type = 'plex' AND source_id = ?", params: [sourceId] }
+  const exists = !!(provider === 'subsonic' ? getSubsonicSourceById(sourceId) : getJellyfinSourceById(sourceId))
+  const others = Number(db?.get<{ count?: unknown }>(`SELECT COUNT(*) AS count FROM ${provider}_sources WHERE id <> ?`, [sourceId])?.count ?? 0)
+  const includeUnknownSourceTracks = exists && Number.isFinite(others) && others <= 0
+  return {
+    where: includeUnknownSourceTracks
+      ? `((source_type = '${provider}' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)`
+      : `((source_type = '${provider}' AND source_id = ?) OR path LIKE ?)`,
+    params: [sourceId, `${provider}://${sourceId}/%`]
+  }
+}
+
+/** How many tracks removing this server with "Delete them" would delete, for the Remove window. */
+export function countTracksRemovedWithSource(provider: RemoteSourceCounts['provider'], sourceId: number): number {
+  if (!db) return 0
+  const scope = purgedTrackScope(provider, sourceId)
+  return Number(db.get<{ count?: unknown }>(`SELECT COUNT(*) AS count FROM tracks WHERE ${scope.where}`, scope.params)?.count ?? 0) || 0
+}
+
 export async function deletePlexSource(id: number, purge: boolean): Promise<void> {
   if (!db) return
   const group = getPlexPlaylistSources(id)
@@ -428,9 +454,10 @@ export async function deletePlexSource(id: number, purge: boolean): Promise<void
       (SELECT source_track_id FROM tracks WHERE path = playlist_tracks.track_path)
       WHERE playlist_id IN (SELECT id FROM playlists WHERE remote_source_type = 'plex')
         AND track_path IN (SELECT path FROM tracks WHERE source_type = 'plex' AND source_id = ?)`, [id])
-    const paths = db.all<{ path: string }>("SELECT path FROM tracks WHERE source_type = 'plex' AND source_id = ?", [id]).map(row => row.path)
+    const scope = purgedTrackScope('plex', id)
+    const paths = db.all<{ path: string }>(`SELECT path FROM tracks WHERE ${scope.where}`, scope.params).map(row => row.path)
     deleteTrackRelatedRows(paths)
-    db.run("DELETE FROM tracks WHERE source_type = 'plex' AND source_id = ?", [id])
+    db.run(`DELETE FROM tracks WHERE ${scope.where}`, scope.params)
     rebuildDerivedLibraryState()
     db.run('DELETE FROM plex_sources WHERE id = ?', [id])
   } else {
@@ -2340,7 +2367,8 @@ function addTrackToAlbumSummary(
 
 function collectAlbumSummaryGroups(
   latestSyncSummary: LatestLibrarySyncSummary | null,
-  favoritePaths?: ReadonlySet<string>
+  favoritePaths?: ReadonlySet<string>,
+  onTrack?: (identityKey: string, track: DbTrackRow) => void
 ): Map<string, AlbumSummaryAccumulator> {
   const groups = new Map<string, AlbumSummaryAccumulator>()
   const tracks = readEffectiveTrackRows(`
@@ -2358,6 +2386,7 @@ function collectAlbumSummaryGroups(
     const group = createAlbumSummaryAccumulator(identity)
     for (const track of identityGroup.tracks) {
       addTrackToAlbumSummary(group, track, latestSyncSummary, favoritePaths)
+      onTrack?.(identity.identityKey, track)
     }
     groups.set(identity.identityKey, group)
   }
@@ -2381,6 +2410,64 @@ function collectEligibleAlbumIdentityKeys(
   }
 
   return identityKeys
+}
+
+/** Listed tracks that are no longer on their server, or that a removed server left behind. */
+const GONE_FROM_SOURCE_REASONS = ['missing_upstream', 'source_deleted']
+const isRemoteSourceType = (type: string): type is RemoteSourceCounts['provider'] =>
+  type === 'subsonic' || type === 'jellyfin' || type === 'plex'
+let remoteSourceCountsCache: { generation: number; counts: RemoteSourceCounts[] } | null = null
+
+/**
+ * How many tracks and albums each server has in the library, for Settings → Servers.
+ * Tracks the server no longer has don't count; tracks unavailable during an outage do.
+ * Albums are counted as the Albums view shows them (album identity, singles left out),
+ * so a server's albums are those with at least one of its tracks. Grouping albums reads
+ * the whole library, so the result is kept until the library next changes.
+ */
+export function getRemoteSourceCounts(): RemoteSourceCounts[] {
+  if (!db) return []
+  const generation = libraryWriteGeneration
+  if (remoteSourceCountsCache?.generation === generation) return remoteSourceCountsCache.counts
+  return measureLibraryQuery('getRemoteSourceCounts', () => {
+    const gone = GONE_FROM_SOURCE_REASONS.map(() => '?').join(', ')
+    const rows = db!.all<{ source_type: string; source_id: number; tracks: number }>(`
+      SELECT source_type, source_id, COUNT(*) AS tracks
+      FROM tracks
+      WHERE source_type IN ('subsonic', 'jellyfin', 'plex') AND source_id IS NOT NULL
+        AND (availability_reason IS NULL OR availability_reason NOT IN (${gone}))
+      GROUP BY source_type, source_id
+    `, GONE_FROM_SOURCE_REASONS)
+
+    // Which servers each album has tracks from (only servers that are on are listed).
+    const sourcesByAlbum = new Map<string, Set<string>>()
+    const groups = collectAlbumSummaryGroups(null, undefined, (identityKey, track) => {
+      if (!isRemoteSourceType(track.source_type) || track.source_id == null) return
+      if (track.availability_reason && GONE_FROM_SOURCE_REASONS.includes(track.availability_reason)) return
+      let sources = sourcesByAlbum.get(identityKey)
+      if (!sources) sourcesByAlbum.set(identityKey, sources = new Set())
+      sources.add(`${track.source_type}:${track.source_id}`)
+    })
+    const albums = new Map<string, number>()
+    for (const [identityKey, sources] of sourcesByAlbum) {
+      const group = groups.get(identityKey)
+      if (!group || !isAlbumGroupEligible(group, { includeSingles: false })) continue
+      for (const key of sources) albums.set(key, (albums.get(key) ?? 0) + 1)
+    }
+    const visible = new Set(db!.all<{ key: string }>(`
+      SELECT 'subsonic:' || id AS key FROM subsonic_sources WHERE enabled = 1
+      UNION ALL SELECT 'jellyfin:' || id FROM jellyfin_sources WHERE enabled = 1
+      UNION ALL SELECT 'plex:' || id FROM plex_sources WHERE enabled = 1 AND deleted = 0
+    `).map(row => row.key))
+
+    const counts = rows.filter(row => isRemoteSourceType(row.source_type)).map(row => {
+      const key = `${row.source_type}:${row.source_id}`
+      return { provider: row.source_type as RemoteSourceCounts['provider'], sourceId: Number(row.source_id),
+        tracks: Number(row.tracks) || 0, albums: visible.has(key) ? albums.get(key) ?? 0 : null }
+    })
+    remoteSourceCountsCache = { generation, counts }
+    return counts
+  })
 }
 
 // Initialize database
@@ -3997,34 +4084,14 @@ export async function deleteSubsonicSource(sourceId: number, purgeTracks: boolea
   const source = getSubsonicSourceById(sourceId)
 
   if (purgeTracks) {
-    const sourcePathPattern = `subsonic://${sourceId}/%`
-    let includeUnknownSourceTracks = false
-    if (source) {
-      const countRow = db.get<{ count?: unknown }>('SELECT COUNT(*) as count FROM subsonic_sources WHERE id <> ?', [sourceId])
-      const otherSourcesCount = Number(countRow?.count ?? 0)
-      includeUnknownSourceTracks = Number.isFinite(otherSourcesCount) && otherSourcesCount <= 0
-    }
-
-    const trackSelectSql = includeUnknownSourceTracks
-      ? "SELECT path FROM tracks WHERE ((source_type = 'subsonic' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)"
-      : "SELECT path FROM tracks WHERE ((source_type = 'subsonic' AND source_id = ?) OR path LIKE ?)"
-    const trackPaths = db.all<{ path?: unknown }>(trackSelectSql, [sourceId, sourcePathPattern])
+    const scope = purgedTrackScope('subsonic', sourceId)
+    const trackPaths = db.all<{ path?: unknown }>(`SELECT path FROM tracks WHERE ${scope.where}`, scope.params)
       .map((row) => (typeof row.path === 'string' && row.path.trim().length > 0 ? row.path : null))
       .filter((path): path is string => path !== null)
 
     deleteTrackRelatedRows(trackPaths)
-    deleteTrackRelatedRowsByPathPattern(sourcePathPattern)
-    if (includeUnknownSourceTracks) {
-      db.run(
-        "DELETE FROM tracks WHERE ((source_type = 'subsonic' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)",
-        [sourceId, sourcePathPattern]
-      )
-    } else {
-      db.run(
-        "DELETE FROM tracks WHERE ((source_type = 'subsonic' AND source_id = ?) OR path LIKE ?)",
-        [sourceId, sourcePathPattern]
-      )
-    }
+    deleteTrackRelatedRowsByPathPattern(`subsonic://${sourceId}/%`)
+    db.run(`DELETE FROM tracks WHERE ${scope.where}`, scope.params)
   } else {
     db.run(
       `UPDATE tracks
@@ -4539,34 +4606,14 @@ export async function deleteJellyfinSource(sourceId: number, purgeTracks: boolea
   const source = getJellyfinSourceById(sourceId)
 
   if (purgeTracks) {
-    const sourcePathPattern = `jellyfin://${sourceId}/%`
-    let includeUnknownSourceTracks = false
-    if (source) {
-      const countRow = db.get<{ count?: unknown }>('SELECT COUNT(*) as count FROM jellyfin_sources WHERE id <> ?', [sourceId])
-      const otherSourcesCount = Number(countRow?.count ?? 0)
-      includeUnknownSourceTracks = Number.isFinite(otherSourcesCount) && otherSourcesCount <= 0
-    }
-
-    const trackSelectSql = includeUnknownSourceTracks
-      ? "SELECT path FROM tracks WHERE ((source_type = 'jellyfin' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)"
-      : "SELECT path FROM tracks WHERE ((source_type = 'jellyfin' AND source_id = ?) OR path LIKE ?)"
-    const trackPaths = db.all<{ path?: unknown }>(trackSelectSql, [sourceId, sourcePathPattern])
+    const scope = purgedTrackScope('jellyfin', sourceId)
+    const trackPaths = db.all<{ path?: unknown }>(`SELECT path FROM tracks WHERE ${scope.where}`, scope.params)
       .map((row) => (typeof row.path === 'string' && row.path.trim().length > 0 ? row.path : null))
       .filter((path): path is string => path !== null)
 
     deleteTrackRelatedRows(trackPaths)
-    deleteTrackRelatedRowsByPathPattern(sourcePathPattern)
-    if (includeUnknownSourceTracks) {
-      db.run(
-        "DELETE FROM tracks WHERE ((source_type = 'jellyfin' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)",
-        [sourceId, sourcePathPattern]
-      )
-    } else {
-      db.run(
-        "DELETE FROM tracks WHERE ((source_type = 'jellyfin' AND source_id = ?) OR path LIKE ?)",
-        [sourceId, sourcePathPattern]
-      )
-    }
+    deleteTrackRelatedRowsByPathPattern(`jellyfin://${sourceId}/%`)
+    db.run(`DELETE FROM tracks WHERE ${scope.where}`, scope.params)
   } else {
     db.run(
       `UPDATE tracks

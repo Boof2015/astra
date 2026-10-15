@@ -6877,6 +6877,16 @@ ipcMain.handle('lyrics:resetToDefaults', async () => {
   })
 })
 
+// Settings → Servers: how many tracks and albums each server has in the library.
+ipcMain.handle('servers:counts', () => library.getRemoteSourceCounts())
+// The Remove window: how many tracks "Delete them" would delete.
+ipcMain.handle('servers:removal-count', (_event, provider: unknown, sourceId: unknown) => {
+  if ((provider !== 'subsonic' && provider !== 'jellyfin' && provider !== 'plex') || !Number.isSafeInteger(sourceId) || (sourceId as number) <= 0) {
+    throw new Error('Invalid server.')
+  }
+  return library.countTracksRemovedWithSource(provider, sourceId as number)
+})
+
 ipcMain.handle('subsonic:listSources', () => {
   return library.listSubsonicSources().map(toSubsonicSourcePayload)
 })

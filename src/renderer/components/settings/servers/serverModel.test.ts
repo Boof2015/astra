@@ -3,7 +3,7 @@ import test from 'node:test'
 import {
   addressHost, cleanIpcError, defaultServerName, detectionOrder, subsonicProductName,
   CACHE_SLIDER_MAX, CACHE_STOPS, CacheLimitEdits, cacheSliderValue, deriveServerState, formatAgo, hostOf, nearestCacheStop,
-  lastSyncedText, progressFraction, progressText, qualityCopy, qualityFollowUps, qualityFromChoice, qualityLabel, qualityMode,
+  lastSyncedText, libraryCountsText, plural, progressFraction, progressText, qualityCopy, qualityFollowUps, qualityFromChoice, qualityLabel, qualityMode,
   SerialQueue, serverProblem, stepCacheStop, syncSucceeded
 } from './serverModel.ts'
 
@@ -172,6 +172,19 @@ test('last synced reads as when, plus the 20-minute check only while the server 
   assert.equal(lastSyncedText({ state: 'checking', enabled: true, lastSyncAt: null }, now), 'Not yet · checks every 20 min')
   assert.equal(lastSyncedText({ state: 'syncing', enabled: true, lastSyncAt: null }, now), 'Syncing now · checks every 20 min')
   assert.equal(lastSyncedText({ state: 'off', enabled: false, lastSyncAt: now - 72 * 3_600_000 }, now), '3 days ago')
+})
+
+test('"In your library" shows the counts once a sync brought music in, and Hidden while off', () => {
+  const on = { enabled: true, lastSyncAt: 1 }
+  assert.equal(libraryCountsText(on, { tracks: 8412, albums: 1204 }), '8,412 tracks · 1,204 albums')
+  assert.equal(libraryCountsText(on, { tracks: 1, albums: 0 }), '1 track · 0 albums')
+  assert.equal(libraryCountsText(on, { tracks: 0, albums: 0 }), 'No tracks')
+  assert.equal(libraryCountsText(on, { tracks: 12, albums: null }), '12 tracks')
+  assert.equal(libraryCountsText(on, null), null, 'not read yet')
+  assert.equal(libraryCountsText({ enabled: true, lastSyncAt: null }, { tracks: 0, albums: 0 }), null, 'before the first sync')
+  assert.equal(libraryCountsText({ enabled: false, lastSyncAt: 1 }, { tracks: 12, albums: null }), 'Hidden')
+  assert.equal(plural(1, 'track'), '1 track')
+  assert.equal(plural(2, 'library', 'libraries'), '2 libraries')
 })
 
 test('add-server helpers: detection order, default name, host, product name, IPC errors', () => {

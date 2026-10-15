@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { formatAgo } from './serverModel'
+import { serverCounts, useServerCountsStore } from '../../../stores/serverCountsStore'
+import { formatAgo, libraryCountsText } from './serverModel'
 import { ServerMenu, type ServerMenuAction } from './ServerMenu'
 import { AlertIcon, ProgressRow, RefreshIcon, ServerSwitch } from './ServerParts'
 import { setServerEnabled, syncServer, useNow, type ServerEntry } from './useServers'
@@ -42,6 +43,16 @@ export function ServerMeta({ server }: { server: ServerEntry }) {
   )
 }
 
+/**
+ * How much of the server is in the library, for the one-server overview (a server's page has
+ * it in Details). Nothing while it's off: the status already says its music is hidden.
+ */
+function CountsLine({ server }: { server: ServerEntry }) {
+  const text = libraryCountsText(server, useServerCountsStore(state => serverCounts(state, server.key)))
+  if (!server.enabled || !text) return null
+  return <span className="servers-meta">{text}</span>
+}
+
 /** What fixes a failed server, in a sentence, for the notice under its header. */
 function problemNotice(server: ServerEntry): string {
   if (server.problem === 'offline') return 'Its tracks show as unavailable until the server is back. Astra tries again every 20 minutes.'
@@ -73,7 +84,12 @@ function PrimaryAction({ server, onReconnect }: { server: ServerEntry; onReconne
 }
 
 /** Name, status and address, with the main action. The same block heads a server's page. */
-export function ServerHeader({ server, onMenuAction }: { server: ServerEntry; onMenuAction: (action: ServerMenuAction) => void }) {
+export function ServerHeader({ server, showCounts = false, onMenuAction }: {
+  server: ServerEntry
+  /** The one-server overview has no Details, so the counts go here. */
+  showCounts?: boolean
+  onMenuAction: (action: ServerMenuAction) => void
+}) {
   return (
     <>
       <div className="servers-hero">
@@ -82,6 +98,7 @@ export function ServerHeader({ server, onMenuAction }: { server: ServerEntry; on
           <span className="servers-name is-large">{server.name}</span>
           <StatusLine server={server} variant="header" />
           <ServerMeta server={server} />
+          {showCounts && <CountsLine server={server} />}
         </div>
         <div className="servers-hero-actions">
           <PrimaryAction server={server} onReconnect={() => onMenuAction('connection')} />

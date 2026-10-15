@@ -6357,6 +6357,69 @@ test('a server records why it last failed, and forgets it once it works again', 
   assert.equal(library.listPlexSources()[0].last_error_kind, null, 'signing in again clears it')
 })
 
+test('each server counts the tracks it still has and the albums they belong to', async t => {
+  await setupEmptyLibrary(t)
+  const input = { name: 'Server', base_url: 'https://music.test', username: 'user', secret_encrypted: 'secret', enabled: 1 }
+  const subsonic = await library.createSubsonicSource(input)
+  const jellyfin = await library.createJellyfinSource(input)
+  const plex = await library.savePlexSource({ name: 'Plex', base_url: 'https://plex.test', username: 'listener', account_id: 'a',
+    server_id: 's', library_id: '2', library_name: 'Music', secret_encrypted: 'secret' })
+  const track = (provider: string, id: number, key: string, album: string) =>
+    createRemoteTrack({ path: `${provider}://${id}/track/${key}`, source_track_id: key, title: key, artist: 'Artist', album })
+  const counts = () => Object.fromEntries(library.getRemoteSourceCounts().map(item => [`${item.provider}:${item.sourceId}`, [item.tracks, item.albums]]))
+
+  // Two albums and a single (one track isn't an album, as in the Albums view).
+  await library.upsertSubsonicTracks(subsonic.id, [track('subsonic', subsonic.id, 'b1', 'Blue'), track('subsonic', subsonic.id, 'b2', 'Blue'),
+    track('subsonic', subsonic.id, 'r1', 'Red'), track('subsonic', subsonic.id, 'r2', 'Red'), track('subsonic', subsonic.id, 'lone', 'Lone')])
+  // One track of an album another server also has: that album counts for both.
+  await library.upsertJellyfinTracks(jellyfin.id, [track('jellyfin', jellyfin.id, 'b3', 'Blue')])
+  await library.upsertPlexTracks(plex.id, [track('plex', plex.id, 'g1', 'Green'), track('plex', plex.id, 'g2', 'Green')])
+  assert.deepEqual(counts(), { [`subsonic:${subsonic.id}`]: [5, 2], [`jellyfin:${jellyfin.id}`]: [1, 1], [`plex:${plex.id}`]: [2, 1] })
+
+  // A track the server no longer has doesn't count; one hidden by an outage does.
+  await library.markMissingSubsonicTracksUnavailable(subsonic.id, new Set(['b1', 'b2', 'r1', 'lone']))
+  await library.markSubsonicTracksUnreachable(subsonic.id)
+  assert.deepEqual(counts()[`subsonic:${subsonic.id}`], [4, 2], 'Red still has a track on the server')
+
+  // A server that's off keeps its track count, but its hidden tracks aren't grouped into albums.
+  await library.updateJellyfinSource(jellyfin.id, { enabled: 0 })
+  assert.deepEqual(counts()[`jellyfin:${jellyfin.id}`], [1, null])
+
+  // A removed Plex library's kept tracks belong to no server.
+  await library.deletePlexSource(plex.id, false)
+  assert.equal(counts()[`plex:${plex.id}`], undefined)
+})
+
+for (const provider of ['subsonic', 'jellyfin', 'plex'] as const) {
+  test(`${provider}: the Remove window's count is exactly what "Delete them" deletes`, async t => {
+    await setupEmptyLibrary(t)
+    const input = { name: 'Server', base_url: 'https://music.test', username: 'user', secret_encrypted: 'secret', enabled: 1 }
+    const source = provider === 'subsonic' ? await library.createSubsonicSource(input)
+      : provider === 'jellyfin' ? await library.createJellyfinSource(input)
+        : await library.savePlexSource({ name: 'Plex', base_url: 'https://plex.test', username: 'listener', account_id: 'a',
+          server_id: 's', library_id: '2', library_name: 'Music', secret_encrypted: 'secret' })
+    const paths = ['here', 'gone'].map(key => `${provider}://${source.id}/track/${key}`)
+    const tracks = paths.map((path, i) => createRemoteTrack({ path, source_track_id: ['here', 'gone'][i], title: path, artist: 'Artist', album: 'Album' }))
+    if (provider === 'subsonic') {
+      await library.upsertSubsonicTracks(source.id, tracks)
+      await library.markMissingSubsonicTracksUnavailable(source.id, new Set(['here']))
+    } else if (provider === 'jellyfin') {
+      await library.upsertJellyfinTracks(source.id, tracks)
+      await library.markMissingJellyfinTracksUnavailable(source.id, new Set(['here']))
+    } else {
+      await library.upsertPlexTracks(source.id, tracks)
+      await library.markMissingPlexTracksUnavailable(source.id, new Set(['here']))
+    }
+    // Details counts the track the server still has; removal also takes the one it no longer has.
+    assert.equal(library.getRemoteSourceCounts()[0].tracks, 1)
+    assert.equal(library.countTracksRemovedWithSource(provider, source.id), 2)
+    if (provider === 'subsonic') await library.deleteSubsonicSource(source.id, true)
+    else if (provider === 'jellyfin') await library.deleteJellyfinSource(source.id, true)
+    else await library.deletePlexSource(source.id, true)
+    assert.deepEqual(paths.map(path => library.getTrackByPath(path)), [null, null], 'both were deleted')
+  })
+}
+
 for (const provider of ['subsonic', 'jellyfin'] as const) {
   // Replays the library calls runSubsonicSync / syncOneJellyfinSource make: failed ping, passing ping, failed catalog.
   test(`${provider} outage recovery restores only outage-hidden tracks, even when the catalog then fails`, async t => {

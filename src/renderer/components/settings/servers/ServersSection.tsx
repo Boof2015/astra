@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { usePresence } from '../../../hooks/usePresence'
+import { useServerCountsStore } from '../../../stores/serverCountsStore'
 import { useServerWindowRequest } from '../../../stores/serverWindowRequest'
 import { AddServerWindow } from './AddServerWindow'
 import { ChangeConnectionWindow } from './ChangeConnectionWindow'
@@ -53,6 +54,12 @@ export default function ServersSection() {
     onMenuAction(server)('connection')
   }, [reconnectRequest, servers])
 
+  // Each server's track and album counts: read on opening, then again when they can have
+  // changed: a sync finished (a failed one changes nothing), a server was turned on or off,
+  // or one was added or removed.
+  const countsKey = servers.map(server => [server.key, server.enabled, server.lastSyncAt].join(':')).join('|')
+  useEffect(() => { void useServerCountsStore.getState().refresh() }, [countsKey])
+
   // A newly added server's row lights up briefly as it appears.
   const [justAdded, setJustAdded] = useState<string | null>(null)
   useEffect(() => {
@@ -103,7 +110,7 @@ export default function ServersSection() {
             )}
             {servers.length === 1 && (
               <div className="servers-group">
-                <ServerHeader server={servers[0]} onMenuAction={onMenuAction(servers[0])} />
+                <ServerHeader server={servers[0]} showCounts onMenuAction={onMenuAction(servers[0])} />
                 <UseServerRow server={servers[0]} />
                 <SyncRows server={servers[0]} playlistStatuses={playlistStatuses} />
               </div>

@@ -4,6 +4,7 @@ import { useProviderSyncStore } from '../../stores/providerSyncStore'
 import { planOutageNotices, useServerNoticeStore, type ServerNotice } from '../../stores/serverNoticeStore'
 import { useServerWindowRequest } from '../../stores/serverWindowRequest'
 import { useUIStore } from '../../stores/uiStore'
+import { plural } from '../settings/servers/serverModel'
 import { isUserSyncing, useServers, type ServerEntry } from '../settings/servers/useServers'
 
 type CueVisibility = 'hidden' | 'visible'
@@ -11,10 +12,6 @@ type CueVisibility = 'hidden' | 'visible'
 // Same rhythm as the update cue.
 const SERVER_CUE_HIDE_MS = 5200
 const SERVER_CUE_CLEAR_MS = 5600
-
-function plural(count: number, one: string, many = `${one}s`) {
-  return `${count.toLocaleString('en-US')} ${count === 1 ? one : many}`
-}
 
 /**
  * Watches for servers that stop syncing in the background: one cue per outage,
@@ -138,7 +135,10 @@ function cueContent(notice: ServerNotice, name: string): { label: string; title:
       if (notice.problem === 'signed-out') return { label: 'Sign-in Expired', title: `${name} needs you to sign in again`, detail: 'Its tracks are unavailable until you do.' }
       return { label: 'Server Problem', title: `Can’t sync ${name}`, detail: notice.message }
     case 'ready':
-      return { label: 'Server Ready', title: `${name} is ready`, detail: 'Its music is in your library.' }
+      // The count is read after the first sync; without it, the plain line.
+      return { label: 'Server Ready', title: `${name} is ready`,
+        detail: notice.count === undefined ? 'Its music is in your library.'
+          : notice.count === 0 ? 'It has no music yet.' : `${plural(notice.count, 'track')} added to your library.` }
     default:
       return { label: 'Server Sync', title: 'Couldn’t save that change', detail: notice.message }
   }

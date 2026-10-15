@@ -100,6 +100,7 @@ import type {
   SubsonicSourceTestResult,
   SubsonicSourceUpdateInput,
   SubsonicStatusSnapshot,
+  RemoteSourceCounts,
   TrackSourceType
 } from '../types/subsonic'
 import type {
@@ -951,6 +952,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   } satisfies ProviderSyncAPI,
   reportProviderPlayback: (snapshot: ProviderPlaybackSnapshot) => ipcRenderer.send('provider-playback:observe', snapshot),
+  servers: {
+    counts: (): Promise<RemoteSourceCounts[]> => ipcRenderer.invoke('servers:counts'),
+    removalCount: (provider: RemoteSourceCounts['provider'], sourceId: number): Promise<number> =>
+      ipcRenderer.invoke('servers:removal-count', provider, sourceId)
+  },
   // Window controls
   minimize: () => ipcRenderer.send('window:minimize'),
   maximize: () => ipcRenderer.send('window:maximize'),
@@ -2053,6 +2059,11 @@ declare global {
       remotePlaylists: RemotePlaylistsAPI
       providerSync: ProviderSyncAPI
       reportProviderPlayback: (snapshot: ProviderPlaybackSnapshot) => void
+      servers: {
+        counts: () => Promise<RemoteSourceCounts[]>
+        /** How many tracks removing this server with "Delete them" would delete. */
+        removalCount: (provider: RemoteSourceCounts['provider'], sourceId: number) => Promise<number>
+      }
       // Window controls
       minimize: () => void
       maximize: () => void

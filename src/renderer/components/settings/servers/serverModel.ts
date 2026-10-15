@@ -123,6 +123,24 @@ export function lastSyncedText(server: { state: ServerState; enabled: boolean; l
   return server.enabled ? `${ago} · checks every 20 min` : ago
 }
 
+/** "1 track", "8,412 tracks". */
+export function plural(count: number, one: string, many = `${one}s`): string {
+  return `${count.toLocaleString('en-US')} ${count === 1 ? one : many}`
+}
+
+/**
+ * Details' "In your library": hidden while the server is off, "8,412 tracks · 1,204 albums"
+ * once its music is in. Nothing to show (null) until the counts are read, or before a
+ * first sync has brought anything in.
+ */
+export function libraryCountsText(server: { enabled: boolean; lastSyncAt: number | null },
+  counts: { tracks: number; albums: number | null } | null): string | null {
+  if (!server.enabled) return 'Hidden'
+  if (!counts || (counts.tracks === 0 && server.lastSyncAt === null)) return null
+  if (counts.tracks === 0) return 'No tracks'
+  return counts.albums === null ? plural(counts.tracks, 'track') : `${plural(counts.tracks, 'track')} · ${plural(counts.albums, 'album')}`
+}
+
 /* ---------- Streaming quality ---------- */
 
 export type QualityMode = 'automatic' | 'original' | 'fixed'

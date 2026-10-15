@@ -5,6 +5,7 @@ import type { JellyfinSourceStatus, SubsonicSourceStatus } from '../../../../typ
 import { useJellyfinSettingsStore } from '../../../stores/jellyfinSettingsStore'
 import { usePlexSettingsStore } from '../../../stores/plexSettingsStore'
 import { useProviderSyncStore } from '../../../stores/providerSyncStore'
+import { useServerCountsStore } from '../../../stores/serverCountsStore'
 import { useServerNoticeStore } from '../../../stores/serverNoticeStore'
 import { useSubsonicSettingsStore } from '../../../stores/subsonicSettingsStore'
 import {
@@ -203,7 +204,13 @@ function recordedStatus(server: Pick<ServerEntry, 'provider' | 'id'>): [string |
 export async function finishAddingServer(server: Pick<ServerEntry, 'provider' | 'id'>,
   wants: { favorites: boolean; playlists: boolean }): Promise<void> {
   const synced = await syncServer(server)
-  if (synced) useServerNoticeStore.getState().push({ kind: 'ready', serverKey: `${server.provider}:${server.id}` })
+  if (synced) {
+    const key = `${server.provider}:${server.id}`
+    // This read's own result: the store may hold an older snapshot (from before the music
+    // arrived) if a newer read replaced this one, or this one failed. No fresh count, no number.
+    const counts = await useServerCountsStore.getState().refresh()
+    useServerNoticeStore.getState().push({ kind: 'ready', serverKey: key, count: counts ? counts[key]?.tracks ?? 0 : undefined })
+  }
   if (wants.playlists) {
     // The main process maps a Plex library to the one that owns its server's playlists.
     await window.electronAPI.remotePlaylists.setEnabled({ provider: server.provider, sourceId: server.id }, true)

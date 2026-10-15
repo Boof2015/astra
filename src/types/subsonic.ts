@@ -3,6 +3,16 @@ export type TrackSourceType = 'local' | 'subsonic' | 'jellyfin' | 'plex'
 /** Why a source's last check or sync failed: sign-in refused, server unreachable, or the sync itself. */
 export type SourceErrorKind = 'auth' | 'unreachable' | 'sync'
 
+/** How much of a server is in the library. */
+export interface RemoteSourceCounts {
+  provider: 'subsonic' | 'jellyfin' | 'plex'
+  sourceId: number
+  /** Tracks still on the server (including ones unavailable during an outage). */
+  tracks: number
+  /** As the Albums view counts them. Null while the server is off: its tracks are hidden, so they aren't grouped. */
+  albums: number | null
+}
+
 export type SubsonicSourceLastStatus =
   | 'unknown'
   | 'ok'
