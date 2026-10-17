@@ -28,7 +28,7 @@ async function close(code = 0) {
 }
 process.on('SIGTERM', () => { void close() })
 app.on('window-all-closed', () => { void close() })
-setTimeout(() => { void close(1) }, 60000).unref()
+setTimeout(() => { void close(1) }, config.scenario === 'automatic' ? 140000 : 60000).unref()
 ipcMain.handle('test:start', (_event, path, rate, channels, options) => h.startOptions(path, rate, channels,
   { ...options, streamingQuality: options?.streamingQuality ?? (path.endsWith('/second') ? 64 : 'original') }))
 ipcMain.handle('test:cancel', (_event, id) => h.cancel(id))

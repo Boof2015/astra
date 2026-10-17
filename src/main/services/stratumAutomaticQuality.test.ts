@@ -92,7 +92,7 @@ test('controller adapts with a deterministic delivery schedule and recovers', ()
     const quality = controller.choose(48000 * 4)
     const bits = (quality === 'lossless' ? 1500 : quality === 'opus-64' ? 64 : 128) * 4000
     const seconds = bits / (kbps * 1000)
-    const delivery = controller.begin()
+    const delivery = controller.begin(48000 * 4)
     h.advance(overhead * 1000)
     delivery.observe({ phase: 'start' })
     h.advance(seconds * 1000)
@@ -122,4 +122,39 @@ test('automatic seeks retain their pinned initial quality before evaluating late
     assert.equal(controller.choose(192000), pinInitial ? 'lossless' : 'opus-128')
     controller.close()
   }
+})
+
+test('observes a sustained slowdown within a long segment before fetching another one would empty the buffer', () => {
+  const h = harness()
+  let position = 0, delivered = 0, minimumAhead = Infinity
+  const controller = new StratumAutomaticQuality({ mode: 'automatic', policy: h.policy, key: 'stratum', decisionKey: 'song',
+    source, initial: 'lossless', now: h.now, buffer: () => ({ position, ahead: delivered - position }) })
+  const advance = (seconds: number) => {
+    h.advance(seconds * 1000)
+    if (delivered) { position += seconds; minimumAhead = Math.min(minimumAhead, delivered - position) }
+  }
+  const run = (kbps: number) => {
+    const quality = controller.choose(192000)
+    const bytes = quality === 'lossless' ? 960000 : 70000
+    const transfer = controller.begin(192000)
+    advance(.18)
+    transfer.observe({ phase: 'start' })
+    for (let remaining = bytes; remaining > 0;) {
+      const chunk = Math.min(remaining, 4096)
+      advance(chunk * 8 / kbps / 1000)
+      transfer.observe({ phase: 'data', bytes: chunk })
+      remaining -= chunk
+    }
+    transfer.observe({ phase: 'end' })
+    transfer.ready(quality, 192000, bytes)
+    delivered += 4
+    return quality
+  }
+  try {
+    for (let i = 0; i < 4; i++) assert.equal(run(16000), 'lossless')
+    assert.equal(run(900), 'lossless', 'the in-flight original interval finishes unchanged')
+    run(900)
+    assert.equal(run(900), 'opus-128', 'the next decision uses stress observed during transfer')
+    assert.ok(minimumAhead > 0, `buffer emptied by ${-minimumAhead} seconds`)
+  } finally { controller.close() }
 })

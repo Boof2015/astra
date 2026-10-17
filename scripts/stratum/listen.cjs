@@ -16,6 +16,10 @@ assert.ok(['--prepare', '--check', '--play'].includes(mode) && path.isAbsolute(d
 const root = path.resolve(__dirname, '../..')
 const config = JSON.parse(fs.readFileSync(path.join(directory, 'listen.json'), 'utf8'))
 const qualityTest = config.scenario === 'quality'
+const automaticTest = config.scenario === 'automatic'
+const singleTrack = qualityTest || automaticTest
+const scenario = automaticTest ? 'automatic' : qualityTest ? 'quality' : 'gapless'
+const lifetimeSeconds = automaticTest ? 160 : 90
 const ffmpeg = require('ffmpeg-static')
 const ffprobe = require('ffprobe-static').path
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -24,15 +28,17 @@ async function until(check, message, ms = 8000) {
   while (!check()) { assert.ok(Date.now() < end, message); await delay(20) }
 }
 async function prepare() {
-  assert.ok(config.sources.length >= (qualityTest ? 1 : 2))
-  for (let index = 0; index < (qualityTest ? 1 : 2); index++) {
+  assert.ok(config.sources.length >= (singleTrack ? 1 : 2))
+  for (let index = 0; index < (singleTrack ? 1 : 2); index++) {
     const source = config.sources[index]
     const info = JSON.parse(execFileSync(ffprobe, ['-v', 'error', '-select_streams', 'a:0',
       '-show_entries', 'stream=sample_rate,channels,duration_ts,time_base', '-of', 'json', source], { timeout: 10000 })).streams[0]
     assert.equal(Number(info.sample_rate), 48000); assert.equal(info.channels, 2)
     const [num, den] = info.time_base.split('/').map(Number)
     const total = Math.round(Number(info.duration_ts) * num / den * 48000)
-    const filter = qualityTest ? 'atrim=start_sample=3840000:end_sample=5376000,asetpts=PTS-STARTPTS'
+    assert.ok(total >= (automaticTest ? 8640000 : qualityTest ? 5376000 : 768000), 'Source is shorter than the requested excerpt.')
+    const filter = automaticTest ? 'atrim=start_sample=3840000:end_sample=8640000,asetpts=PTS-STARTPTS'
+      : qualityTest ? 'atrim=start_sample=3840000:end_sample=5376000,asetpts=PTS-STARTPTS'
       : index ? 'atrim=end_sample=768000,asetpts=PTS-STARTPTS'
       : `atrim=start_sample=${total - 768000},asetpts=PTS-STARTPTS`
     execFileSync(ffmpeg, ['-v', 'error', '-nostdin', '-y', '-i', source, '-map', '0:a:0', '-af', filter,
@@ -50,7 +56,7 @@ async function prepare() {
   fs.copyFileSync(path.join(root, 'src/renderer/public/oscilloscope-worklet.js'), path.join(directory, 'oscilloscope-worklet.js'))
   fs.writeFileSync(path.join(directory, 'preload.cjs'), `
 const {contextBridge,ipcRenderer}=require('electron');
-contextBridge.exposeInMainWorld('stratumListen', {scenario:${JSON.stringify(qualityTest ? 'quality' : 'gapless')}});
+contextBridge.exposeInMainWorld('stratumListen', {scenario:${JSON.stringify(scenario)}});
 const listen=(name,cb)=>{const fn=(_e,data)=>cb(data);ipcRenderer.on(name,fn);return()=>ipcRenderer.removeListener(name,fn)};
 contextBridge.exposeInMainWorld('electronAPI', {
  startProgressiveStream:(...args)=>ipcRenderer.invoke('test:start',...args),
@@ -64,7 +70,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   fs.writeFileSync(path.join(directory, 'index.html'), `<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'none'">
 <title>Astra · Stratum listening check</title><style>body{background:#17191c;color:#eee;font:18px system-ui;padding:28px}button{font:inherit;padding:10px 28px}small{color:#aaa}</style></head><body>
-<h2>Stratum · Bluetooth listening check</h2><p id="message">Preparing…</p><p><small>32 seconds · reduced volume · temporary profile</small></p>
+<h2>Stratum · Bluetooth listening check</h2><p id="message">Preparing…</p><p><small>${automaticTest ? 100 : 32} seconds · reduced volume · temporary profile</small></p>
 <button id="stop">Stop</button><script type="module" src="./renderer.js"></script></body></html>`)
   execFileSync('/usr/bin/clang++', ['-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', path.join(__dirname, 'outputRoute.cpp'),
     '-framework', 'CoreAudio', '-framework', 'CoreFoundation', '-o', path.join(directory, 'output-route')], { timeout: 20000 })
@@ -80,13 +86,13 @@ async function run() {
   }
   const terminate = () => { for (const { child } of children) if (child.exitCode === null) child.kill('SIGTERM') }
   const force = () => { for (const { child } of children) if (child.exitCode === null) child.kill('SIGKILL') }
-  const deadline = setTimeout(force, 90000)
+  const deadline = setTimeout(force, lifetimeSeconds * 1000)
   process.once('SIGINT', terminate); process.once('SIGTERM', terminate)
-  let upstream, active
+  let upstream, active, link
   try {
     let guard
     if (mode === '--play') {
-      guard = start(path.join(directory, 'output-route'), [config.outputUid, 'watch'], { stdio: ['ignore', 'pipe', 'inherit'] })
+      guard = start(path.join(directory, 'output-route'), [config.outputUid, 'watch', String(lifetimeSeconds)], { stdio: ['ignore', 'pipe', 'inherit'] })
       let verified = false
       guard.child.stdout.on('data', chunk => { if (chunk.toString().includes('ROUTE_VERIFIED')) verified = true })
       await until(() => verified || guard.child.exitCode !== null, 'Audio route check timed out.')
@@ -115,7 +121,7 @@ async function run() {
     })
     upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
     const sidecarFile = path.join(directory, 'sidecar.json')
-    fs.writeFileSync(sidecarFile, JSON.stringify({ upstream: `http://127.0.0.1:${upstream.address().port}`, run_seconds: 90 }), { mode: 0o600 })
+    fs.writeFileSync(sidecarFile, JSON.stringify({ upstream: `http://127.0.0.1:${upstream.address().port}`, run_seconds: lifetimeSeconds }), { mode: 0o600 })
     const service = start(config.sidecar, ['--config', sidecarFile], { env: { ...process.env, TMPDIR: directory }, stdio: ['ignore', 'pipe', 'inherit'] })
     let greeting = ''
     service.child.stdout.on('data', chunk => { greeting += chunk.toString() })
@@ -125,7 +131,13 @@ async function run() {
       body: JSON.stringify({ username: 'listener', token, salt: 'disposable-listen' }), signal: AbortSignal.timeout(3000) })
     assert.equal(result.status, 201)
     const connection = { endpoint, session: (await result.json()).session, sourceId: 7, tracks: ['first', 'second'] }
-    if (mode === '--check') {
+    if (automaticTest) {
+      link = await require('./throttledLink.cjs').throttledLink(endpoint)
+      connection.endpoint = link.endpoint
+    }
+    if (mode === '--check' && automaticTest) {
+      await require('./automaticPreflight.cjs').automaticPreflight(directory, connection, ffmpeg)
+    } else if (mode === '--check') {
       const { mainHarness } = require(path.join(directory, 'harness.cjs'))
       const h = mainHarness(connection, ffmpeg, qualityTest ? { segmentQuality: seconds => seconds >= 12 && seconds < 24 ? 'opus-64' : 'lossless' } : {})
       try {
@@ -150,7 +162,7 @@ async function run() {
         console.log('SILENT_PREFLIGHT_PASSED: music through authenticated Stratum and actual Astra sessions at 44.1 kHz.')
       } finally { await h.close() }
     } else {
-      fs.writeFileSync(path.join(directory, 'active.json'), JSON.stringify({ connection, ffmpeg, scenario: qualityTest ? 'quality' : 'gapless' }), { mode: 0o600 })
+      fs.writeFileSync(path.join(directory, 'active.json'), JSON.stringify({ connection, ffmpeg, scenario }), { mode: 0o600 })
       assert.ok(guard.child.exitCode === null, 'Bluetooth output changed before launch.')
       const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE
       active = start(require('electron'), [path.join(directory, 'main.cjs'), directory], { env, stdio: 'inherit' })
@@ -162,6 +174,10 @@ async function run() {
     const killTimer = setTimeout(force, 3000)
     await Promise.all(children.map(entry => entry.done))
     clearTimeout(killTimer); clearTimeout(deadline)
+    if (link) {
+      await link.close()
+      fs.writeFileSync(path.join(directory, mode === '--check' ? 'silent-link.json' : 'listening-link.json'), JSON.stringify(link.segments, null, 2))
+    }
     if (upstream) { upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve)) }
     await fsp.rm(path.join(directory, 'active.json'), { force: true })
     console.log('CLEANUP_COMPLETE')

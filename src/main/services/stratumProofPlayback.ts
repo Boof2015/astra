@@ -148,7 +148,7 @@ export class StratumProofPcm {
       signal.throwIfAborted()
       const frames = Math.min(4 * source.sample_rate, source.frames - start)
       const selected = automatic?.choose(frames) ?? (typeof quality === 'function' ? quality(start) : quality)
-      const timing = automatic?.begin()
+      const timing = automatic?.begin(frames)
       const segment = await this.client.segment(this.playback, start, frames, selected, signal, timing?.observe)
       signal.throwIfAborted()
       const pcm = await decodeStratumProofSegment(ffmpeg, segment, signal)

@@ -40,7 +40,7 @@ export class StratumAutomaticQuality {
   }
   private now() { return this.options.now?.() ?? performance.now() }
   choose(frames: number): StratumProofQuality {
-    const { policy, mode, key, decisionKey, source } = this.options
+    const { policy, mode, key, decisionKey } = this.options
     const ladder = { decisionKey, bitrates: [64, 128] as const }
     if (this.first) {
       this.first = false
@@ -49,6 +49,11 @@ export class StratumAutomaticQuality {
       if (!this.options.pinInitial && this.current === 'lossless') this.current = representation(policy.select(key, mode, this.originalKbps, ladder))
       return this.current
     }
+    return this.recommend(frames)
+  }
+  private recommend(frames: number): StratumProofQuality {
+    const { policy, mode, key, decisionKey, source } = this.options
+    const ladder = { decisionKey, bitrates: [64, 128] as const }
     const buffer = this.options.buffer()
     const ready = this.samples.reduce((sum, sample) => sum + sample.ready, 0)
     const media = this.samples.reduce((sum, sample) => sum + sample.media, 0)
@@ -62,8 +67,9 @@ export class StratumAutomaticQuality {
     })
     return target === null ? this.current : representation(target)
   }
-  begin() {
+  begin(frames: number) {
     const started = this.now()
+    let lastObservation = started
     const observe = this.options.policy.observer(this.options.key, 20)
     let transferStart = 0, transferMs = 0
     return {
@@ -71,6 +77,14 @@ export class StratumAutomaticQuality {
         if (event.phase === 'start') transferStart = this.now()
         if (event.phase === 'end') transferMs = this.now() - transferStart
         observe(event)
+        // A slow segment can take longer than the policy's persistence window.
+        // Observe the shrinking buffer during delivery so that the next choice
+        // need not wait for another entire slow segment to prove the shortfall.
+        // Only choose() selects a representation, at the next interval boundary.
+        if (this.committed && event.phase === 'data' && this.now() - lastObservation >= 1000) {
+          lastObservation = this.now()
+          this.recommend(frames)
+        }
       },
       ready: (quality: StratumProofQuality, frames: number, bytes: number) => {
         const seconds = Math.max(.001, (this.now() - started) / 1000)

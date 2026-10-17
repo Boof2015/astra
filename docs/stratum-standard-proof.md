@@ -84,6 +84,32 @@ first song and first 16 seconds of the second. `quality` uses only the first
 source, copying 1:20–1:52; it therefore needs at least 1:52 of audio. Originals
 are read only. This fixture and its read-only output guard currently target macOS.
 
+`automatic` copies 1:20–3:00 of the first source (100 seconds). A test-only
+loopback proxy paces actual segment-response bytes: the first four segments at
+16 Mbps, then 900 kbps until 28 seconds after the first segment request, then
+16 Mbps again. It changes no system network settings. Astra's normal Automatic
+policy chooses each unfetched interval; the fixture injects no quality decisions
+or timing observations. The exact switch points depend on measured delivery and
+queued audio. Both service request and playback-quality histories are recorded.
+The test window reads quality from AudioEngine's playback markers.
+
+The automatic silent preflight consumes PCM through the real worklet at wall-clock
+speed. It requires Original → reduced quality → Original in one session, zero
+buffering and exactly 4,410,000 output frames at 44.1 kHz. This exercises real
+paced HTTP bodies, but not a WAN, packet loss or a congested production server.
+On 2026-10-17 it passed with Original at 0 seconds, Opus 128 at 24 seconds and
+Original again at 80 seconds. An earlier run exposed a delayed downgrade and
+buffered once; observing pressure during transfers fixed that regression.
+
+The matching 100-second Bluetooth listen also passed, using the same 48 kHz
+source, existing 44.1 kHz output and gain 0.25. AudioEngine reported Opus 128 at
+24.009 seconds and Original at 80.016 seconds, one completed PCM session,
+4,410,000 decoded frames and zero buffering. The user heard no gaps, clicks or
+repeats. The Original recovery request happened at about 57.8 seconds; the
+readout correctly waited for that audio to play at 80 seconds. The one test
+window exited and supervised cleanup completed. This verifies Automatic in this
+controlled scenario; original-priority mode retains silent regression coverage.
+
 ```sh
 node scripts/stratum/listen.cjs --prepare /private/test-directory
 node scripts/stratum/listen.cjs --check /private/test-directory
@@ -94,7 +120,7 @@ node scripts/stratum/listen.cjs --play /private/test-directory
 Preparation launches no Electron or audio. Checking uses disposable loopback
 services without audio. Play launches exactly one Electron child with a separate
 profile, a Stop button and bounded lifetime (60-second app / 90-second supervisor
-deadlines). The output guard stops the run if the selected device changes; no
+deadlines; 140/160 seconds for the automatic scenario). The output guard stops the run if the selected device changes; no
 system volume or device setting is changed. Microphone permissions are denied.
 Processes are reaped and the active bearer file removed at teardown. The private
 directory retains music excerpts and the listening report for inspection.
@@ -164,6 +190,12 @@ recovery. Conventional transfers retain their 250 ms floor and existing rules.
 Upgrades also require sufficient buffered audio. Estimates begin conservatively
 from native PCM bitrate and refine with lossless payload sizes.
 
+During a long segment transfer, Stratum also evaluates buffer pressure at most
+once per second as bytes arrive. This lets the sustained-shortfall timer run
+while the download is slow. Checking only at segment boundaries could wait for
+another entire slow segment and exhaust the buffer. The in-flight representation
+is unchanged; the next interval's choice uses the accumulated observations.
+
 Bandwidth history is isolated by Stratum endpoint/disposable session; each
 playback owns its own decisions so prefetch cannot reset the current track's
 cooldowns. A successful representation change commits policy state once, rather
@@ -181,8 +213,8 @@ the playback clock, without claiming measurement of Bluetooth's physical latency
 
 ## Remaining work
 
-- Automatic-mode listening and real throttled-network testing. The Bluetooth
-  checks above used scheduled changes before the automatic policy was connected.
+- Paced-link listening in Automatic (prioritize original), and broader
+  real-network testing beyond the controlled Automatic scenario above.
 - Discovery, trusted association, protected real-network transport and session
   renewal. The current disposable bearer expires without automatic renewal.
 - Evaluate full-source staging latency: Sidecar still stages the original;
