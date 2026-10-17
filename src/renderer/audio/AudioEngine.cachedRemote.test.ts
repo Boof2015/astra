@@ -59,7 +59,7 @@ async function flush() {
 // Exercise the real load/seek/play lifecycle, including the interval with no
 // remoteStreamState. Only the browser audio graph and Electron transport are fake.
 async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'local' | 'subsonic' | 'jellyfin' | 'plex' = 'subsonic', renderAudio = false,
-  options: { quality?: () => RemotePlaybackQuality; normalization?: boolean } = {}) {
+  options: { quality?: () => RemotePlaybackQuality; normalization?: boolean; segmented?: boolean } = {}) {
   const engine = new AudioEngine()
   const internals = engine as unknown as {
     context: AudioContext
@@ -168,7 +168,8 @@ async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'loca
     const requestSource = request.path.startsWith('plex://') ? 'plex' : request.path.startsWith('jellyfin://') ? 'jellyfin' : request.path.startsWith('subsonic://') ? 'subsonic' : 'local'
     request.resolve({ quality: options.quality?.() ?? (typeof request.quality === 'object' ? { mode: request.quality.mode, requested: request.quality.target, requestedCodec: 'mp3', delivered: null } : undefined), sessionId: request.sessionId, path: request.path, sourceType: requestSource,
       sampleRate: request.sampleRate, channels: 2, durationSeconds: 1800, startTimeSeconds: request.target,
-      seekableCache: requestSource !== 'local',
+      seekableCache: requestSource !== 'local' && !options.segmented,
+      restartable: options.segmented, transport: options.segmented ? 'stratum-proof' : undefined,
       initialChunk: withPcm ? { sessionId: request.sessionId, path: request.path, sourceType: requestSource,
         sampleRate: request.sampleRate, channels: 2, frameCount: request.sampleRate, pcmData: new ArrayBuffer(request.sampleRate * 8),
         decodedFrames: request.sampleRate, decodedSeconds: 1 } : null
@@ -990,4 +991,83 @@ test('cancelling preparation and pausing at the boundary cannot trigger automati
   assert.equal(h.engine.playbackState, 'stopped')
   assert.equal(h.engine.getRemoteStreamSessionId(), null)
   assert.equal(ended, false, 'a user pause must suppress automatic next-track loading')
+})
+
+
+test('Stratum restartable PCM keeps Standard seek, failure and next-track behavior without claiming a cache file', async t => {
+  const h = await remoteHarness(t, true, 'subsonic', true, { segmented: true })
+  const seek = h.engine.seek(900)
+  await flush()
+  assert.equal(h.requests[1].target, 900)
+  h.complete(1); await seek
+  assert.equal(h.engine.currentTime, 900)
+  const nextTrack = { ...h.track, path: 'jellyfin://7/next', sourceType: 'jellyfin' as const }
+  const prepare = h.engine.preBufferNextRemoteTrack(nextTrack, null)
+  await flush(); h.complete(2); await prepare
+  assert.ok(h.workletMessages.some(message => message.type === 'set-next-ready' && message.sessionId === 3))
+  let ended = false
+  h.engine.on('ended', () => { ended = true })
+  h.engine.on('error', () => {})
+  const before = h.workletMessages.length
+  h.internals.handleRemoteStreamEvent({ sessionId: 2, path: h.track.path, sourceType: 'subsonic', type: 'failed',
+    message: 'Stratum test sign-in expired', decodedFrames: 1000, decodedSeconds: 1 })
+  assert.equal(ended, false)
+  assert.ok(!h.workletMessages.slice(before).some(message => message.type === 'set-source-ended'))
+})
+
+test('Stratum quality follows rendered frames, survives pauses, and drops obsolete markers on seek', async t => {
+  const original: RemotePlaybackQuality = { requested: 'original', mode: 'automatic', requestedCodec: 'flac', delivered: null }
+  const reduced: RemotePlaybackQuality = { ...original, requested: 64, requestedCodec: 'opus' }
+  const h = await remoteHarness(t, true, 'subsonic', true, { segmented: true, quality: () => original })
+  const engine = h.engine as unknown as {
+    handleRemoteStreamChunk: (chunk: import('../../types/remoteStream.ts').RemoteStreamChunk) => void
+    automaticQualitySnapshot: () => unknown
+  }
+  const changes: number[] = []
+  h.engine.on('remoteQualityChange', () => { changes.push(h.engine.currentTime) })
+  const chunk = { sessionId: 1, path: h.track.path, sourceType: 'subsonic' as const,
+    sampleRate: 1000, channels: 2, frameCount: 5000, pcmData: new ArrayBuffer(40000), decodedFrames: 6000, decodedSeconds: 6,
+    qualityChanges: [{ frame: 2048, quality: reduced }, { frame: 4096, quality: original }] }
+  engine.handleRemoteStreamChunk(chunk)
+  assert.equal(h.engine.getRemotePlaybackQuality()?.requested, 'original', 'downloading ahead cannot change the readout')
+  assert.equal(engine.automaticQualitySnapshot(), null, 'segmented playback must never invoke conventional replacement')
+  const node = h.internals.remoteStreamNode as unknown as { render: (frames: number) => void }
+  node.render(2047); await flush()
+  assert.equal(h.engine.getRemotePlaybackQuality()?.requested, 'original')
+  h.engine.pause(); node.render(1000); await flush()
+  assert.equal(h.engine.getRemotePlaybackQuality()?.requested, 'original', 'wall time while paused cannot consume a marker')
+  await h.engine.play(); node.render(1); await flush()
+  assert.equal(h.engine.getRemotePlaybackQuality()?.requested, 64)
+  node.render(2047); await flush()
+  assert.equal(h.engine.getRemotePlaybackQuality()?.requested, 64)
+  node.render(1); await flush()
+  assert.equal(h.engine.getRemotePlaybackQuality()?.requested, 'original')
+  assert.deepEqual(changes, [2.048, 4.096])
+  const seek = h.engine.seek(900)
+  await flush(); h.complete(1); await seek
+  assert.deepEqual(h.requests[1].quality, { mode: 'automatic', target: 'original' })
+  engine.handleRemoteStreamChunk({ ...chunk, qualityChanges: [{ frame: 0, quality: reduced }] })
+  assert.equal(h.engine.getRemotePlaybackQuality()?.requested, 'original', 'old session cannot modify the new seek')
+})
+
+test('Stratum successor quality is isolated until the real worklet handoff', async t => {
+  let quality: RemotePlaybackQuality = { requested: 'original', mode: 'automatic-original', requestedCodec: 'flac', delivered: null }
+  const h = await remoteHarness(t, true, 'subsonic', true, { segmented: true, quality: () => quality })
+  quality = { ...quality, requested: 64, requestedCodec: 'opus' }
+  const next = { ...h.track, path: 'subsonic://7/next' }
+  const preparation = h.engine.preBufferNextRemoteTrack(next, null)
+  await flush(); h.complete(1); await preparation
+  const receive = h.engine as unknown as { handleRemoteStreamChunk: (chunk: import('../../types/remoteStream.ts').RemoteStreamChunk) => void }
+  receive.handleRemoteStreamChunk({ sessionId: 2, path: next.path, sourceType: 'subsonic', sampleRate: 1000, channels: 2,
+    frameCount: 3000, pcmData: new ArrayBuffer(24000), decodedFrames: 4000, decodedSeconds: 4,
+    qualityChanges: [{ frame: 2048, quality: { ...quality, requested: 128 } }] })
+  assert.equal(h.engine.getRemotePlaybackQuality()?.requested, 'original')
+  h.internals.handleRemoteStreamEvent({ sessionId: 1, path: h.track.path, sourceType: 'subsonic', type: 'complete', decodedFrames: 1000, decodedSeconds: 1 })
+  const node = h.internals.remoteStreamNode as unknown as { render: (frames: number) => void }
+  node.render(1000); await flush()
+  // Worklet promotion occurs when it asks for the first frame after EOF.
+  node.render(1); await flush()
+  assert.equal(h.engine.getRemotePlaybackQuality()?.requested, 64)
+  node.render(2047); await flush()
+  assert.equal(h.engine.getRemotePlaybackQuality()?.requested, 128)
 })

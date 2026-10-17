@@ -5733,6 +5733,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
         const activeSessionId = audioEngine.getRemoteStreamSessionId()
         if (progress.sessionId != null && progress.sessionId !== activeSessionId
           && (progress.slot === 'next' || activeSessionId !== null)) return
+        if (progress.transport === 'stratum-proof' && progress.sessionId === activeSessionId) {
+          progress = { ...progress, quality: audioEngine.getRemotePlaybackQuality() ?? progress.quality }
+        }
         set((state) => {
           const activeTrackPath = state.currentTrack?.path
           if (!activeTrackPath || activeTrackPath !== progress.path) {
@@ -5754,6 +5757,13 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
           remoteStreamSessionId: progress.sessionId ?? null })
         refreshRemoteWaveform(progress)
         schedulePreBufferNextTrack()
+      })
+
+      audioEngine.on('remoteQualityChange', (payload) => {
+        const change = payload as { sessionId: number; path: string; quality: import('../../types/streamingQuality').RemotePlaybackQuality }
+        if (change.sessionId !== audioEngine.getRemoteStreamSessionId() || change.path !== get().currentTrack?.path) return
+        set(state => state.remoteLoadProgress?.path === change.path
+          ? { remoteLoadProgress: { ...state.remoteLoadProgress, quality: change.quality } } : state)
       })
 
       const scheduleRendererWaveformFallback = (trackPath: string, buffer: AudioBuffer): void => {

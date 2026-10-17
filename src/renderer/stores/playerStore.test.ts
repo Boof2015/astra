@@ -7740,6 +7740,45 @@ test('gapless prebuffer scheduling is event-driven instead of running on time up
   }
 })
 
+test('Stratum transport readout uses playback quality despite later download progress and ignores stale sessions', () => {
+  resetStores()
+  const track = makeTrack('subsonic://1/song', { sourceType: 'subsonic', duration: 180 })
+  usePlayerStore.setState({ currentTrack: track, remoteLoadProgress: null })
+  const originalOn = audioEngine.on, originalSession = audioEngine.getRemoteStreamSessionId, originalQuality = audioEngine.getRemotePlaybackQuality
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const listeners = new Map<string, (...args: unknown[]) => void>()
+  type Progress = import('../../types/remoteStream.ts').RemoteAudioLoadProgress
+  let quality: import('../../types/streamingQuality.ts').RemotePlaybackQuality = { requested: 'original', mode: 'automatic', requestedCodec: 'flac', delivered: null }
+  let receive!: (progress: Progress) => void
+  audioEngine.on = (event, callback) => { listeners.set(event, callback); return () => undefined }
+  audioEngine.getRemoteStreamSessionId = () => 1
+  audioEngine.getRemotePlaybackQuality = () => quality
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { addEventListener() {}, removeEventListener() {},
+    electronAPI: { onProgressiveLoadProgress: (callback: typeof receive) => { receive = callback; return () => undefined } } } })
+  const progress: Progress = { transport: 'stratum-proof', path: track.path, sessionId: 1, sourceType: 'subsonic', stage: 'streaming',
+    loadedBytes: 100, totalBytes: null, bufferedSeconds: 30, done: false, failed: false, chunkCount: 1, percent: null,
+    bufferedPercent: .1, analyzedSeconds: 0, analyzedPercent: 0, playable: true, quality }
+  try {
+    usePlayerStore.getState()._cleanupListeners(); usePlayerStore.getState()._initListeners()
+    receive(progress)
+    quality = { ...quality, requested: 64, requestedCodec: 'opus' }
+    listeners.get('remoteQualityChange')?.({ path: track.path, sessionId: 1, quality })
+    assert.equal(usePlayerStore.getState().remoteLoadProgress?.quality?.requested, 64)
+    receive({ ...progress, done: true })
+    assert.equal(usePlayerStore.getState().remoteLoadProgress?.quality?.requested, 64, 'completion must not restore the first segment quality')
+    listeners.get('remoteQualityChange')?.({ path: track.path, sessionId: 2, quality: progress.quality })
+    receive({ ...progress, sessionId: 2, slot: 'next' })
+    assert.equal(usePlayerStore.getState().remoteLoadProgress?.quality?.requested, 64)
+    receive({ ...progress, transport: undefined })
+    assert.equal(usePlayerStore.getState().remoteLoadProgress?.quality?.requested, 'original', 'ordinary progress retains its existing behavior')
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    audioEngine.on = originalOn; audioEngine.getRemoteStreamSessionId = originalSession; audioEngine.getRemotePlaybackQuality = originalQuality
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
+})
+
 test('complete remote waveforms follow the exact representation, survive seeks and reject stale results', async () => {
   resetStores()
   const track = makeTrack('subsonic://1/song', { sourceType: 'subsonic', duration: 180 })

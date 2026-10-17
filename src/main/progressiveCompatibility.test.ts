@@ -29,7 +29,7 @@ function harness(fail: (attempt: number) => string | null, holdRetry = false) {
   const sender = Object.assign(new EventEmitter(), { id: 1, isDestroyed: () => false,
     send: (_channel: string, payload: unknown) => { events.push(payload) } })
   const context = {
-    Buffer, AbortController, setInterval, clearInterval, ProgressivePcmDelivery,
+    Buffer, AbortController, setInterval, clearInterval, ProgressivePcmDelivery, isDev: false,
     withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemoteDecoder, deliveredAudioFormat,
     remoteStreamSessions: sessions, progressiveStartupControllers: registry,
     library: { getTrackByPath: () => ({ channels: 2 }) }, resolveBinary: async (name: string) => name,
@@ -121,4 +121,17 @@ test('Standard network/corrupt-media failures and local decoder failures never r
     assert.ok(h.events.some(event => event.type === 'failed'))
     assert.equal(h.sessions.size, 0)
   }
+})
+
+test('a cancelled Standard decoder cannot flush leftover PCM on a late stdout end', async () => {
+  const h = harness(() => null)
+  const info = await h.api.start(h.sender, path, 48000)
+  const session = h.sessions.get(info.sessionId)
+  session.rendererReady = true
+  session.pcmDelivery.drain()
+  session.pcmDelivery.push(Buffer.alloc(40))
+  await h.api.cancel(info.sessionId)
+  const before = h.events.length
+  session.ffmpeg.stdout.emit('end')
+  assert.equal(h.events.length, before, 'late EOF must not emit an obsolete partial PCM chunk')
 })

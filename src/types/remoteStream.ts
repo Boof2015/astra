@@ -5,6 +5,7 @@ export type RemoteStreamSourceType = ProgressiveStreamSourceType
 export type RemoteLoadStage = 'downloading' | 'streaming' | 'complete' | 'failed'
 
 export interface RemoteAudioLoadProgress {
+  transport?: 'stratum-proof'
   quality?: RemotePlaybackQuality
   /** Encoded download completion is independent of bounded PCM lookahead. */
   downloadComplete?: boolean
@@ -27,6 +28,9 @@ export interface RemoteAudioLoadProgress {
 }
 
 export interface RemoteStreamInfo {
+  /** Can restart decoding at a new position without retaining a client file. */
+  restartable?: boolean
+  transport?: 'stratum-proof'
   quality?: RemotePlaybackQuality
   sessionId: number
   path: string
@@ -41,6 +45,8 @@ export interface RemoteStreamInfo {
 }
 
 export interface RemoteStreamChunk {
+  /** Output-frame boundaries relative to this session's seek origin, not arrival time. */
+  qualityChanges?: RemoteStreamQualityChange[]
   sessionId: number
   path: string
   sourceType: RemoteStreamSourceType
@@ -51,6 +57,8 @@ export interface RemoteStreamChunk {
   decodedFrames: number
   decodedSeconds: number
 }
+
+export interface RemoteStreamQualityChange { frame: number; quality: RemotePlaybackQuality }
 
 export type RemoteStreamEvent =
   | {

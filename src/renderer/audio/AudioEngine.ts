@@ -404,6 +404,8 @@ interface ProgressiveNormalizationAccumulator {
 }
 
 interface RemoteStreamRuntimeState {
+  transport?: 'stratum-proof'
+  qualityChanges?: import('../../types/remoteStream').RemoteStreamQualityChange[]
   quality?: import('../../types/streamingQuality').RemotePlaybackQuality
   sessionId: number
   path: string
@@ -421,6 +423,7 @@ interface RemoteStreamRuntimeState {
   started: boolean
   paused: boolean
   sourceEnded: boolean
+  /** Historical name: also covers a restartable segmented source without a cache file. */
   seekableCache: boolean
   /** Local input already participating in a mixed queue can keep staging next. */
   mixedHandoff?: boolean
@@ -3131,6 +3134,7 @@ export class AudioEngine {
         this.remoteStreamState.currentFrame = Number.isFinite(payload.frame)
           ? Math.max(0, Math.floor(payload.frame))
           : this.remoteStreamState.currentFrame
+        this.updateRemoteQuality(this.remoteStreamState)
         this.reportLocalProgressiveStreamPosition(this.remoteStreamState)
         this.feedCompleteStream(this.remoteStreamState)
         this.emit('timeUpdate', this.currentTime)
@@ -3462,6 +3466,11 @@ export class AudioEngine {
       return
     }
 
+    if (remoteState.transport === 'stratum-proof' && chunk.qualityChanges?.length) {
+      (remoteState.qualityChanges ??= []).push(...chunk.qualityChanges)
+      this.updateRemoteQuality(remoteState)
+    }
+
     if (remoteState.sourceType === 'local') {
       this.handleLocalStreamChunk(chunk, remoteState, !!prepared)
       return
@@ -3644,7 +3653,7 @@ export class AudioEngine {
       this.emit('remotePrebufferInvalidated')
     }
     this.remoteStreamNode = (retained?.state.channels === info.channels ? retainedNode : null)
-      ?? this.createRemoteStreamNode(info.channels, info.sourceType === 'local' || !!info.seekableCache)
+      ?? this.createRemoteStreamNode(info.channels, info.sourceType === 'local' || !!(info.seekableCache || info.restartable))
     const resolvedStartTimeSeconds = Number.isFinite(info.startTimeSeconds)
       ? Math.max(0, Number(info.startTimeSeconds))
       : Math.max(0, Number(options.startTimeSeconds ?? 0))
@@ -3663,6 +3672,7 @@ export class AudioEngine {
     this.currentBufferTrackPath = track.path
     this.currentNormalizationAnalysis = fixedLoudnessAnalysis
     this.remoteStreamState = {
+      transport: info.transport,
       quality: info.quality,
       sessionId: info.sessionId,
       path: track.path,
@@ -3680,7 +3690,7 @@ export class AudioEngine {
       started: false,
       paused: false,
       sourceEnded: false,
-      seekableCache: !!info.seekableCache,
+      seekableCache: !!(info.seekableCache || info.restartable),
       mixedHandoff: retained?.state.mixedHandoff,
       gainBase: retained?.state.gainBase,
       waveform: new ProgressiveWaveformAccumulator(
@@ -3744,6 +3754,9 @@ export class AudioEngine {
   }
 
   private automaticQualitySnapshot(): AutomaticPlaybackSnapshot | null {
+    // Segmented delivery chooses the next interval in main, without preparing
+    // or seeking to another conventional stream in the renderer.
+    if (this.remoteStreamState?.transport === 'stratum-proof') return null
     const progress = this.automaticQualityProgress
     const quality = this.getRemotePlaybackQuality()
     const session = this.getRemoteStreamSessionId()
@@ -3800,6 +3813,19 @@ export class AudioEngine {
     if (this.isNativeExclusiveMode()) return this.nativeRemoteProgress?.path === this.currentBufferTrackPath
       ? this.nativeRemoteProgress.quality : undefined
     return this.remoteStreamState?.quality
+  }
+
+  private updateRemoteQuality(state: RemoteStreamRuntimeState): void {
+    const changes = state.qualityChanges
+    if (!changes?.length) return
+    let changed = false
+    while (changes.length && changes[0].frame <= state.currentFrame) {
+      state.quality = changes.shift()!.quality
+      changed = true
+    }
+    if (changed && state === this.remoteStreamState) {
+      this.emit('remoteQualityChange', { sessionId: state.sessionId, path: state.path, quality: state.quality })
+    }
   }
 
   async loadRemoteStream(track: Track, options: RemoteStreamLoadOptions = {}): Promise<RemoteStreamInfo> {
@@ -3981,7 +4007,7 @@ export class AudioEngine {
       await window.electronAPI.cancelProgressiveStream(info.sessionId)
       throw new SupersededAudioLoadError()
     }
-    if ((!info.seekableCache && info.sourceType !== 'local')
+    if ((!info.seekableCache && !info.restartable && info.sourceType !== 'local')
       || info.channels !== (current?.channels ?? completeBuffer?.numberOfChannels)
       || info.sampleRate !== (current?.sampleRate ?? completeBuffer?.sampleRate)) {
       await window.electronAPI.cancelProgressiveStream(info.sessionId)
@@ -3999,12 +4025,13 @@ export class AudioEngine {
     }
     const durationSeconds = info.durationSeconds && info.durationSeconds > 0 ? info.durationSeconds : track.duration
     const state: RemoteStreamRuntimeState = {
+      transport: info.transport,
       quality: info.quality,
       sessionId: info.sessionId, path: track.path, sourceType: info.sourceType, track,
       sampleRate: info.sampleRate, channels: info.channels, durationSeconds,
       startFrame: 0, bufferedFrames: 0, analyzedFrames: 0, currentFrame: 0, lastReportedConsumedFrame: 0,
       playRequested: false, started: false, paused: false, sourceEnded: false,
-      seekableCache: !!info.seekableCache, mixedHandoff: true, gainBase: current.gainBase,
+      seekableCache: !!(info.seekableCache || info.restartable), mixedHandoff: true, gainBase: current.gainBase,
       waveform: new ProgressiveWaveformAccumulator(Math.max(durationSeconds, 1), info.sampleRate),
       lastWaveformUpdateAt: 0, waveformUpdateTimer: null,
       normalization: info.sourceType === 'local' || isRetainedRemoteSource(info.sourceType)
