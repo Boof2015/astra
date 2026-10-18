@@ -165,6 +165,66 @@ system volume or device setting is changed. Microphone permissions are denied.
 Processes are reaped and the active bearer file removed at teardown. The private
 directory retains music excerpts and the listening report for inspection.
 
+## Full application check
+
+`scripts/stratum/fullApp.cjs` builds and runs the actual application with its
+player store, database, preload/IPC, native modules, AudioEngine and transport UI.
+It owns a fresh profile, two generated eight-second FLAC files, a loopback
+Subsonic catalog and one real Sidecar. Normal catalog parsing creates two remote
+sources; the local folder is scanned normally. Only the first source is
+allowlisted for Stratum. This remains a controlled server fixture, not a real
+Navidrome deployment.
+
+Create a private temporary directory containing `config.json`:
+
+```json
+{ "sidecar": "/absolute/path/to/sidecar-access" }
+```
+
+```sh
+node scripts/stratum/fullApp.cjs --prepare /private/test-directory
+node scripts/stratum/fullApp.cjs --check /private/test-directory
+```
+
+Prepare builds into that directory without launching Electron. Check launches
+exactly one hidden, muted Electron window with app volume zero. It denies
+microphone permission, does not alter device settings, and requires no listening
+step. App/supervisor deadlines are 160/180 seconds. There is no relaunch loop.
+The normal build never imports the test driver or database seed hook. Reports
+and a screenshot stay in the temporary directory; active credentials and the
+Sidecar bearer configuration are removed at teardown.
+
+The full-app check passed on 2026-10-17 with native modules available and no
+renderer errors. It verifies:
+
+- Clicking a real catalog row starts a Stratum session. The main-process result
+  must identify the transport; conventional playback cannot masquerade as success.
+- A five-entry queue crosses Stratum → local → Stratum → conventional Subsonic
+  → Stratum with four natural handoffs and zero buffering. Repeated paths retain
+  distinct queue entry IDs, and each handoff advances exactly one entry.
+- Local promotion restores its complete buffer/waveform and clears remote state
+  and the streaming indicator. Remote promotion retains provider identity and
+  displays Automatic · Original in the actual transport bar.
+- Pause/seek/resume preserves the selected track and paused intent. Rapid skips
+  finish on the latest requested queue entry without stale audio taking over.
+- Changing the server setting while its next track is already prepared replaces
+  that preparation with Opus 64. The current track stays Original; the promoted
+  track reports Opus/64, the pipeline shelf agrees, and the Automatic badge clears.
+- Provider playback reports still reach the Subsonic fixture. Stratum does not
+  replace catalog/reporting identity.
+
+This check exposed a route bug missed by the earlier fixtures: real catalog paths
+are `subsonic://<source>/track/<id>`, while the original proof accepted a shorter
+fixture-only path. The development route now uses Astra's actual Subsonic parser,
+and the silent/listening fixtures use the canonical path. The regression uses
+the real catalog path builder and fails on the old route. Existing allowlist and
+quality restrictions remain in place.
+
+This muted check validates application wiring, not audible continuity or the
+automatic slowdown/recovery timeline inside the full app. Those retain the
+separate engine-level listening evidence above. Native modules loading here does
+not constitute Exclusive or Bit-perfect playback coverage.
+
 ## Development route and trust boundary
 
 Only an unpackaged development build reads `ASTRA_STRATUM_PROOF_CONFIG`. This
@@ -259,6 +319,7 @@ the playback clock, without claiming measurement of Bluetooth's physical latency
   renewal. The current disposable bearer expires without automatic renewal.
 - Evaluate full-source staging latency: Sidecar still stages the original;
   the client receives requested encoded segments only.
-- Full application mixed-source listening, UI, cache/offline and analysis policy.
+- Full application audible mixed-source/automatic checks, user-facing setup,
+  cache/offline and analysis policy. The muted app queue/readout check is complete.
 - Deliberate native-output integration and broader format/platform/device tests.
   The real-service silent fixture currently covers stereo on macOS.

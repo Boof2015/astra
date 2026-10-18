@@ -1,4 +1,5 @@
 import { isAutomaticStreamingQuality, type StreamingQualityRequest } from '../../types/streamingQuality.ts'
+import { parseSubsonicTrackPath } from './subsonic.ts'
 import { validateStratumProofConnection, type StratumProofConnection, type StratumProofQuality } from './stratumProofClient.ts'
 
 export interface StratumProofConfig extends StratumProofConnection { sourceId: number; tracks: string[] }
@@ -17,8 +18,8 @@ export function parseStratumProofConfig(text: string): StratumProofConfig {
 }
 
 export function stratumProofRoute(config: StratumProofConfig | null, path: string, quality: StreamingQualityRequest) {
-  const match = /^subsonic:\/\/([1-9]\d*)\/([a-zA-Z0-9_-]{1,128})$/.exec(path)
-  if (!config || !match || Number(match[1]) !== config.sourceId || !config.tracks.includes(match[2])) return null
+  const track = parseSubsonicTrackPath(path)
+  if (!config || !track || track.sourceId !== config.sourceId || !config.tracks.includes(track.sourceTrackId)) return null
   // The proof service exposes only this ladder. Unsupported manual requests
   // and compatibility conversions retain the conventional route.
   const mode = typeof quality === 'object' ? quality.mode : isAutomaticStreamingQuality(quality) ? quality : undefined
@@ -26,5 +27,5 @@ export function stratumProofRoute(config: StratumProofConfig | null, path: strin
   if (typeof quality === 'object' && quality.compatibility) return null
   const representation: StratumProofQuality | null = target === 'original' ? 'lossless'
     : target === 64 ? 'opus-64' : target === 128 ? 'opus-128' : null
-  return representation ? { connection: config, track: match[2], quality: representation, mode, pinInitial: typeof quality === 'object' } : null
+  return representation ? { connection: config, track: track.sourceTrackId, quality: representation, mode, pinInitial: typeof quality === 'object' } : null
 }

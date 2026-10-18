@@ -1,6 +1,7 @@
 // Silent integration harness: execute Astra's actual main-process functions with
 // a fake Electron sender/library. Network, FFmpeg and PCM delivery remain real.
 import assert from 'node:assert/strict'
+import { buildSubsonicTrackPath, parseSubsonicTrackPath } from '../../src/main/services/subsonic.ts'
 import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
@@ -67,7 +68,7 @@ export function mainHarness(config: StratumProofConfig, ffmpeg: string,
     isDev: true, app: { isPackaged: false }, process: { env: { ASTRA_STRATUM_PROOF_CONFIG: 'fixture' } },
     readFileSync: () => JSON.stringify({ experiment: 'astra-stratum-standard-proof-1', ...config }),
     library: { getTrackByPath: () => ({ channels: 2 }), getSubsonicSourceById: () => ({ enabled: 1 }) },
-    parseSubsonicTrackPath: (path: string) => ({ sourceId: Number(path.split('/')[2]) }),
+    parseSubsonicTrackPath,
     isSubsonicPath: (path: string) => path.startsWith('subsonic://'),
     isJellyfinPath: (path: string) => path.startsWith('jellyfin://'), isPlexPath: (path: string) => path.startsWith('plex://'),
     resolveBinary: async () => ffmpeg,
@@ -83,7 +84,7 @@ export function mainHarness(config: StratumProofConfig, ffmpeg: string,
     startOptions: (path: string, rate: number, channels: number | null, startOptions: Record<string, unknown>): Promise<RemoteStreamInfo> =>
       api.start(sender, path, rate, channels, startOptions),
     start: (track: string, rate: number, quality: StreamingQualityRequest = 'original', seconds = 0, slot = 'current'): Promise<RemoteStreamInfo> =>
-      api.start(sender, `subsonic://${config.sourceId}/${track}`, rate, 2, { streamingQuality: quality, startTimeSeconds: seconds, slot }),
+      api.start(sender, buildSubsonicTrackPath(config.sourceId, track), rate, 2, { streamingQuality: quality, startTimeSeconds: seconds, slot }),
     ready: (id: number, consume = true) => {
       const session = sessions.get(id)
       if (!session) return

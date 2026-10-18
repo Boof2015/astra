@@ -3,6 +3,7 @@ import test from 'node:test'
 import { createServer } from 'node:http'
 import { createHash } from 'node:crypto'
 import { StratumProofClient, validateStratumProofConnection } from './stratumProofClient.ts'
+import { buildSubsonicTrackPath } from './subsonic.ts'
 import { parseStratumProofConfig, stratumProofRoute } from './stratumProofConfig.ts'
 import { stratumOutputInterval } from './stratumProofPlayback.ts'
 
@@ -21,19 +22,20 @@ test('Stratum proof cannot forward a bearer outside literal loopback or accept c
 
 test('Stratum development route is restricted to allowlisted Navidrome tracks and proven quality choices', () => {
   const parsed = parseStratumProofConfig(JSON.stringify(config))
-  for (const path of ['/song.flac', 'jellyfin://7/song', 'plex://7/song', 'subsonic://8/song', 'subsonic://7/another']) {
+  assert.equal(stratumProofRoute(parsed, buildSubsonicTrackPath(7, 'song'), 'original')?.track, 'song')
+  for (const path of ['/song.flac', 'jellyfin://7/song', 'plex://7/song', buildSubsonicTrackPath(8, 'song'), buildSubsonicTrackPath(7, 'another'), 'subsonic://7/song']) {
     assert.equal(stratumProofRoute(parsed, path, 'original'), null)
   }
   for (const quality of [192, 256, 320, { mode: 'automatic', target: 192 },
-    { target: 'original', compatibility: 'flac' }] as const) assert.equal(stratumProofRoute(parsed, 'subsonic://7/song', quality), null)
+    { target: 'original', compatibility: 'flac' }] as const) assert.equal(stratumProofRoute(parsed, buildSubsonicTrackPath(7, 'song'), quality), null)
   for (const [quality, expected] of [['original', 'lossless'], [64, 'opus-64'], [128, 'opus-128']] as const) {
-    assert.equal(stratumProofRoute(parsed, 'subsonic://7/song', quality)?.quality, expected)
+    assert.equal(stratumProofRoute(parsed, buildSubsonicTrackPath(7, 'song'), quality)?.quality, expected)
   }
   for (const mode of ['automatic', 'automatic-original'] as const) {
-    assert.equal(stratumProofRoute(parsed, 'subsonic://7/song', mode)?.mode, mode)
-    assert.equal(stratumProofRoute(parsed, 'subsonic://7/song', { mode, target: 64 })?.quality, 'opus-64')
+    assert.equal(stratumProofRoute(parsed, buildSubsonicTrackPath(7, 'song'), mode)?.mode, mode)
+    assert.equal(stratumProofRoute(parsed, buildSubsonicTrackPath(7, 'song'), { mode, target: 64 })?.quality, 'opus-64')
   }
-  assert.equal(stratumProofRoute(null, 'subsonic://7/song', 'original'), null)
+  assert.equal(stratumProofRoute(null, buildSubsonicTrackPath(7, 'song'), 'original'), null)
   assert.throws(() => parseStratumProofConfig(JSON.stringify({ ...config, tracks: ['../credentials'] })))
 })
 

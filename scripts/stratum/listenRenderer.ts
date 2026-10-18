@@ -47,7 +47,7 @@ scope.testPlay = async () => {
 document.getElementById('stop')!.addEventListener('click', () => { void scope.testStop() })
 window.addEventListener('beforeunload', () => { engine.setMuted(true); void engine.stop() })
 
-const track = (id: string, title: string): Track => ({ id, title, path: `subsonic://7/${id}`,
+const track = (id: string, title: string): Track => ({ id, title, path: `subsonic://7/track/${id}`,
   sourceType: 'subsonic', sourceId: 7, artist: 'Alohaii', album: 'Patchwork', duration: automaticTest ? 100 : qualityTest ? 32 : 16,
   format: 'FLAC', channels: 2, sampleRate: 48000 })
 async function prepare() {

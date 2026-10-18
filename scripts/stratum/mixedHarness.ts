@@ -18,7 +18,7 @@ const execute = promisify(execFile)
 export function mixedTrack(directory: string, route: MixedRoute, id: 'first' | 'second', duration: number): Track {
   const sourceType = route === 'stratum' ? 'subsonic' : route === 'progressive-local' ? 'local' : route
   return { id: `${route}-${id}`, path: sourceType === 'local' ? join(directory, `${id}.flac`)
-    : `${sourceType}://${route === 'stratum' ? 7 : 8}/${id}`, sourceType, sourceId: route === 'stratum' ? 7 : 8,
+    : `${sourceType}://${route === 'stratum' ? 7 : 8}/${sourceType === 'subsonic' ? 'track/' : ''}${id}`, sourceType, sourceId: route === 'stratum' ? 7 : 8,
     title: id === 'first' ? 'Safe Room' : 'What Are The Odds', artist: 'Alohaii', album: 'Patchwork',
     channels: 2, sampleRate: 48000, format: 'FLAC', duration }
 }
@@ -33,7 +33,7 @@ export function mixedHarness(connection: StratumProofConfig, ffmpeg: string, con
   const infos: RemoteStreamInfo[] = []
   const h = mainHarness(connection, ffmpeg, { ...options, duration: () => config.duration,
     acquire: async (path, signal) => {
-      const match = /^(subsonic|jellyfin|plex):\/\/8\/(first|second)$/.exec(path)
+      const match = /^(subsonic|jellyfin|plex):\/\/8\/(?:track\/)?(first|second)$/.exec(path)
       assert.ok(match, 'Only explicit conventional fixture tracks may reach the test cache.')
       acquisitions.push(path)
       const lease = await cache.acquire({ provider: match[1], account: 'isolated-mixed-fixture', track: match[2],

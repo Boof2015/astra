@@ -23,7 +23,7 @@ const message = document.getElementById('message')!
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 const track = (route: Route, index: number): Track => ({ id: `${route}-${index}`, sourceType: route === 'local' ? 'local' : 'subsonic',
   sourceId: route === 'stratum' ? 7 : 8, path: route === 'local' ? api.localFiles[index]
-    : `subsonic://${route === 'stratum' ? 7 : 8}/${index ? 'second' : 'first'}`,
+    : `subsonic://${route === 'stratum' ? 7 : 8}/track/${index ? 'second' : 'first'}`,
   title: index ? 'What Are The Odds' : 'Safe Room', artist: 'Alohaii', album: 'Patchwork', duration: 8,
   format: 'FLAC', sampleRate: 48000, channels: 2 })
 function draw() {
