@@ -4,7 +4,7 @@ import { StratumAutomaticQuality, stratumPlaybackQuality } from './stratumAutoma
 import type { AutomaticStreamingQuality } from './automaticStreamingQuality.ts'
 import type { AutomaticStreamingQuality as QualityMode, RemotePlaybackQuality } from '../../types/streamingQuality.ts'
 import type { RemoteStreamQualityChange } from '../../types/remoteStream.ts'
-import { StratumProofClient, type StratumProofConnection, type StratumProofPlayback,
+import { StratumProofClient, type StratumProofAuthentication, type StratumProofConnection, type StratumProofPlayback,
   type StratumProofQuality, type StratumProofSegment } from './stratumProofClient.ts'
 
 /** Container decoding applies Opus pre-skip/end trim exactly once. Then return
@@ -110,7 +110,7 @@ export class StratumProofPcm {
     this.interval = stratumOutputInterval(playback.source, rate, seconds)
   }
 
-  static async open(connection: StratumProofConnection, track: string, rate: number, seconds: number, signal: AbortSignal): Promise<StratumProofPcm> {
+  static async open(connection: StratumProofConnection | StratumProofAuthentication, track: string, rate: number, seconds: number, signal: AbortSignal): Promise<StratumProofPcm> {
     const client = new StratumProofClient(connection)
     const playback = await client.open(track, signal)
     try {

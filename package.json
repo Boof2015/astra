@@ -12,6 +12,7 @@
     "test": "node ./scripts/node/run-tests.cjs",
     "test:node": "node ./scripts/node/run-tests.cjs --node",
     "test:stratum-proof": "node --experimental-strip-types --loader ./scripts/node/electron-test-loader.mjs --test scripts/stratum/standardProof.ts",
+    "test:stratum-session": "node --experimental-strip-types --loader ./scripts/node/electron-test-loader.mjs --test scripts/stratum/sessionProof.ts",
     "test:electron": "node ./scripts/node/run-tests.cjs --electron",
     "test:album-eligibility": "node --experimental-strip-types --experimental-default-type=module --test src/shared/library/albumEligibility.test.ts",
     "test:album-grouping": "node --experimental-strip-types --test src/shared/library/albumGrouping.test.ts src/shared/library/albumGrouping.regression.test.ts",

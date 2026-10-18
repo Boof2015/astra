@@ -1,10 +1,18 @@
 import { createHash } from 'node:crypto'
-import { request as httpRequest } from 'node:http'
 import type { AudioTransferEvent } from './automaticStreamingQuality.ts'
+import { stratumProofRequest, validateStratumProofEndpoint, StratumProofError } from './stratumProofTransport.ts'
+export { StratumProofError } from './stratumProofTransport.ts'
 
 /** Checkpoint protocol only. This is not a discovery or production pairing API. */
 export type StratumProofQuality = 'lossless' | 'opus-64' | 'opus-128'
 export interface StratumProofConnection { endpoint: string; session: string }
+/** Main-process owner shared by current/next playback. Never sent over IPC. */
+export interface StratumProofAuthentication {
+  readonly endpoint: string
+  readonly signal: AbortSignal
+  getBearer(signal: AbortSignal): Promise<string>
+  reject(): void
+}
 export interface StratumProofSource {
   sha256: string; sample_rate: number; channels: number; bits_per_sample: number; frames: number
 }
@@ -38,95 +46,32 @@ function json(bytes: Buffer): Record<string, unknown> {
 }
 
 export function validateStratumProofConnection(value: StratumProofConnection): StratumProofConnection {
-  let url: URL
-  try { url = new URL(value.endpoint) } catch { throw new Error('Invalid Stratum proof endpoint.') }
-  // Literal loopback, no DNS, proxy, redirects, userinfo, paths or real Navidrome
-  // credentials. A bearer comes from the disposable proof's external sign-in.
-  if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(url.hostname)
-    || !url.port || url.username || url.password || url.pathname !== '/' || url.search || url.hash
-    || typeof value.session !== 'string' || !HASH.test(value.session)) {
-    throw new Error('Stratum proof requires a loopback endpoint and a disposable session.')
+  const endpoint = validateStratumProofEndpoint(value.endpoint)
+  if (typeof value.session !== 'string' || !HASH.test(value.session)) {
+    throw new Error('Stratum proof requires a disposable session.')
   }
-  return { endpoint: url.origin, session: value.session }
-}
-
-export class StratumProofError extends Error {
-  readonly status: number
-  constructor(status: number) {
-    super(status === 401 ? 'The Stratum test sign-in expired. Create a new disposable session.'
-      : status === 404 ? 'This track or playback is no longer available through Stratum.'
-      : status === 415 ? 'This source format is not supported by the Stratum proof.'
-      : status === 429 ? 'The Stratum proof is busy. Try again.'
-      : status === 503 ? 'Stratum cannot reach its test music server.'
-      : `The Stratum proof request failed (HTTP ${status}).`)
-    this.status = status
-  }
+  return { endpoint, session: value.session }
 }
 
 export class StratumProofClient {
-  private connection: StratumProofConnection
-  constructor(connection: StratumProofConnection) { this.connection = validateStratumProofConnection(connection) }
+  private connection: StratumProofConnection | StratumProofAuthentication
+  constructor(connection: StratumProofConnection | StratumProofAuthentication) {
+    validateStratumProofEndpoint(connection.endpoint)
+    this.connection = 'getBearer' in connection ? connection : validateStratumProofConnection(connection)
+  }
 
   private async request(path: string, method: 'GET' | 'POST' | 'DELETE', signal: AbortSignal,
     body?: unknown, authenticated = true, limit = 64 * 1024,
     observe?: (event: AudioTransferEvent) => void): Promise<{ bytes: Buffer; type: string }> {
-    signal.throwIfAborted()
-    return new Promise((resolve, reject) => {
-      const bytes = body === undefined ? undefined : Buffer.from(JSON.stringify(body))
-      let settled = false
-      let transferring = false
-      const finish = (error?: Error, result?: { bytes: Buffer; type: string }) => {
-        if (settled) return
-        settled = true
-        if (transferring) observe?.({ phase: 'end', complete: !error })
-        clearTimeout(timer)
-        signal.removeEventListener('abort', abort)
-        if (error) reject(error)
-        else resolve(result!)
-      }
-      const req = httpRequest(new URL(path, this.connection.endpoint), {
-        method, agent: false, headers: {
-          ...(authenticated ? { Authorization: `Bearer ${this.connection.session}` } : {}),
-          ...(bytes ? { 'Content-Type': 'application/json', 'Content-Length': bytes.length } : {})
-        }
-      }, response => {
-        if (![200, 201, 204].includes(response.statusCode ?? 0)) {
-          finish(new StratumProofError(response.statusCode ?? 0))
-          response.destroy()
-          return
-        }
-        const chunks: Buffer[] = []
-        // Server authorization/encoding precedes headers. Measure body transfer
-        // here; the adapter separately measures total time until PCM is ready.
-        transferring = true
-        observe?.({ phase: 'start' })
-        let length = 0
-        response.on('data', (chunk: Buffer) => {
-          length += chunk.length
-          observe?.({ phase: 'data', bytes: chunk.length })
-          if (length > limit) {
-            finish(new Error('Stratum proof response exceeded its size limit.'))
-            response.destroy()
-          } else chunks.push(chunk)
-        })
-        response.on('error', () => finish(new Error('Stratum proof response was interrupted.')))
-        response.on('end', () => finish(undefined, { bytes: Buffer.concat(chunks),
-          type: String(response.headers['content-type'] ?? '').split(';')[0] }))
-      })
-      const abort = () => {
-        finish(new Error('Stratum playback was cancelled.'))
-        req.destroy()
-      }
-      const timer = setTimeout(() => {
-        finish(new Error('Stratum proof request timed out.'))
-        req.destroy()
-      }, 12_000)
-      timer.unref()
-      req.on('error', () => finish(new Error('Could not connect to the Stratum proof.')))
-      signal.addEventListener('abort', abort, { once: true })
-      if (signal.aborted) abort()
-      req.end(bytes)
-    })
+    const owner = 'getBearer' in this.connection ? this.connection : undefined
+    const combined = owner ? AbortSignal.any([signal, owner.signal]) : signal
+    const bearer = authenticated ? owner ? await owner.getBearer(combined) : (this.connection as StratumProofConnection).session : undefined
+    try {
+      return await stratumProofRequest(this.connection.endpoint, path, method, combined, body, bearer, limit, observe)
+    } catch (error) {
+      if (error instanceof StratumProofError && error.status === 401) owner?.reject()
+      throw error
+    }
   }
 
   async open(trackId: string, signal: AbortSignal): Promise<StratumProofPlayback> {

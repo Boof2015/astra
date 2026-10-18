@@ -311,12 +311,49 @@ markers cannot survive a seek. Download progress cannot overwrite the playback
 quality shown by the existing transport indicator and pipeline shelf. This follows
 the playback clock, without claiming measurement of Bluetooth's physical latency.
 
+## Renewable session checkpoint
+
+The main-process `StratumProofSession` owns one disposable connection shared by
+current/next/seek clients. It establishes the session with fresh Subsonic
+username/token/salt credentials supplied by a caller, then renews halfway through
+each lease. Concurrent clients share the pending exchange; cancelling one waiter
+does not cancel the other. The password and session never go to the renderer.
+
+Renewal retains the bearer and existing playback handles. Sidecar requires fresh
+same-user authentication, checks that bogus credentials still fail, and updates
+the stored tuple and expiry. Logout, shutdown and expiry win over late replies.
+An expired or failed renewal cannot silently log in again underneath old handles.
+The experimental owner ends the connection on a renewal failure; automatic
+transient-error recovery and user-facing reconnect behavior remain future work.
+
+Run the silent service/client check with a newly built Sidecar supporting renewal:
+
+```sh
+ASTRA_STRATUM_SIDECAR=/path/to/stratum/target/debug/sidecar-access npm run test:stratum-session
+```
+
+This starts one bounded Sidecar and a disposable Subsonic protocol server in
+Node, with generated WAV data and no Electron/audio device. Two-second leases
+force several renewals while Astra's real PCM adapter is held under backpressure.
+The test compares current/next lossless PCM exactly, verifies their staged sources
+are not fetched again, then checks seeking and denial of revoked track access.
+Unit tests also cover shared authentication, caller cancellation, close/expiry
+races, account changes, malformed replies, refusal and bearer continuity.
+
+This owner is not yet connected to saved server credentials or settings. Existing
+development config files still supply static bearers. Literal-loopback restrictions
+remain; real-server connection requires owner pairing and protected transport.
+Owner-provided pairing is the agreed setup option without existing HTTPS, with no
+new reverse-proxy requirement for LAN/Docker installations. Pairing must bind the
+Sidecar identity and its declared Navidrome association before credentials move.
+
 ## Remaining work
 
 - Paced-link listening in Automatic (prioritize original), and broader
   real-network testing beyond the controlled Automatic scenario above.
-- Discovery, trusted association, protected real-network transport and session
-  renewal. The current disposable bearer expires without automatic renewal.
+- Discovery, owner pairing, protected real-network transport, and wiring the
+  renewable session owner into source settings/lifecycle. Static proof config
+  bearers still expire without automatic renewal.
 - Evaluate full-source staging latency: Sidecar still stages the original;
   the client receives requested encoded segments only.
 - Full application audible mixed-source/automatic checks, user-facing setup,
