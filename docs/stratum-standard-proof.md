@@ -110,6 +110,45 @@ readout correctly waited for that audio to play at 80 seconds. The one test
 window exited and supervised cleanup completed. This verifies Automatic in this
 controlled scenario; original-priority mode retains silent regression coverage.
 
+### Mixed-source fixture
+
+`scenario: "mixed"` copies the last eight seconds of the first song and first
+eight seconds of the second. Its silent check runs ten directed handoffs:
+Stratum ↔ complete local, progressive local, conventional Subsonic, Jellyfin and
+Plex. All ten passed on 2026-10-17. The actual AudioEngine and worklet consume
+real Sidecar/FFmpeg PCM; conventional routes use the real retained-audio cache
+in a temporary directory. Only browser audio nodes/clock, IPC and catalog/provider
+login are simulated. Conventional provider names exercise their route identity
+through the shared cache path; this does not retest each provider's HTTP protocol.
+
+The check compares every sample through each handoff, including the scheduled
+bridge from an already-playing local BufferSource. It verifies one transition,
+zero buffering, local buffer ownership, quality/transport identity, and a paused
+seek/resume on the promoted track through EOF. A complete local seek reuses the
+buffer with no decoder request. Conventional progressive seek output is compared
+with an independent FFmpeg decode starting at the same position, preserving its
+existing resampler edge behavior; Stratum and complete-local seeks match the
+uninterrupted PCM reference. This is an engine integration test, not the full
+player-store queue or application UI.
+
+The mixed listening window runs four Original-quality album transitions:
+Stratum → local, local → Stratum, Stratum → conventional Subsonic and the reverse.
+Each is 16 seconds, with a deliberate two-second pause between cases (~70 seconds
+total plus preparation). It uses real Web Audio and IPC. It is launched only by
+`--play` after fresh readiness. The app/supervisor limits are 140/160 seconds.
+The silent matrix writes `mixed-report.json`; failed steps write a short
+`mixed-failure.json`. PCM differences report the first sample, never a multi-MB
+Buffer diff. Preserve reference PCM separately: AudioEngine clears the incoming
+PCM object's buffer field when it takes ownership.
+
+The four-pair Bluetooth listen passed on 2026-10-17 at the device's existing
+44.1 kHz output rate and gain 0.25. Each pair reported one handoff and zero
+buffering; the user confirmed all four sounded clean. All six progressive
+sessions completed with 352,800 frames (eight seconds) each. Only the two
+conventional tracks acquired retained-cache leases, and the local handoff kept
+its complete audio buffer. The test window exited and supervised cleanup
+completed. No production playback changes were needed for this check.
+
 ```sh
 node scripts/stratum/listen.cjs --prepare /private/test-directory
 node scripts/stratum/listen.cjs --check /private/test-directory
@@ -120,7 +159,8 @@ node scripts/stratum/listen.cjs --play /private/test-directory
 Preparation launches no Electron or audio. Checking uses disposable loopback
 services without audio. Play launches exactly one Electron child with a separate
 profile, a Stop button and bounded lifetime (60-second app / 90-second supervisor
-deadlines; 140/160 seconds for the automatic scenario). The output guard stops the run if the selected device changes; no
+deadlines; 140/160 seconds for automatic and mixed scenarios). The output guard
+stops the run if the selected device changes; no
 system volume or device setting is changed. Microphone permissions are denied.
 Processes are reaped and the active bearer file removed at teardown. The private
 directory retains music excerpts and the listening report for inspection.

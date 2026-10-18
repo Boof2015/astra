@@ -16,6 +16,7 @@ import { parseStratumProofConfig, stratumProofRoute, type StratumProofConfig } f
 import type { RemoteStreamInfo, RemoteStreamChunk, RemoteStreamEvent } from '../../src/types/remoteStream.ts'
 import type { StreamingQualityRequest } from '../../src/types/streamingQuality.ts'
 import type { StratumProofQuality } from '../../src/main/services/stratumProofClient.ts'
+import type { RemoteAudioLease } from '../../src/main/services/remoteAudioCache.ts'
 
 const names = ['startProgressiveStreamSession', 'startProgressiveStreamAttempt', 'finalizeRemoteStreamSession',
   'settleRemoteStreamStartup', 'pumpRemoteStreamOutput', 'flushRemoteStreamOutput', 'emitRemoteStreamChunk',
@@ -30,7 +31,9 @@ const javascript = ts.transpileModule(declarations.map(node => node.getText(sour
 
 export function mainHarness(config: StratumProofConfig, ffmpeg: string,
   options: { deliver?: (channel: string, value: unknown) => void; recordPcm?: boolean;
-    segmentQuality?: (seconds: number) => StratumProofQuality; policy?: AutomaticStreamingQuality } = {}) {
+    segmentQuality?: (seconds: number) => StratumProofQuality; policy?: AutomaticStreamingQuality;
+    duration?: (path: string) => number;
+    acquire?: (path: string, signal: AbortSignal, quality?: StreamingQualityRequest) => Promise<RemoteAudioLease> } = {}) {
   const chunks: RemoteStreamChunk[] = [], events: RemoteStreamEvent[] = []
   const sessions = new Map<number, any>()
   const registry = new ProgressiveStartupRegistry()
@@ -64,14 +67,16 @@ export function mainHarness(config: StratumProofConfig, ffmpeg: string,
     isDev: true, app: { isPackaged: false }, process: { env: { ASTRA_STRATUM_PROOF_CONFIG: 'fixture' } },
     readFileSync: () => JSON.stringify({ experiment: 'astra-stratum-standard-proof-1', ...config }),
     library: { getTrackByPath: () => ({ channels: 2 }), getSubsonicSourceById: () => ({ enabled: 1 }) },
-    parseSubsonicTrackPath: () => ({ sourceId: config.sourceId }),
-    isSubsonicPath: (path: string) => path.startsWith('subsonic://'), isJellyfinPath: () => false, isPlexPath: () => false,
-    resolveBinary: async () => ffmpeg, resolveRemoteTrackDurationSeconds: () => { throw new Error('Catalog duration used instead of authenticated source.') },
+    parseSubsonicTrackPath: (path: string) => ({ sourceId: Number(path.split('/')[2]) }),
+    isSubsonicPath: (path: string) => path.startsWith('subsonic://'),
+    isJellyfinPath: (path: string) => path.startsWith('jellyfin://'), isPlexPath: (path: string) => path.startsWith('plex://'),
+    resolveBinary: async () => ffmpeg,
+    resolveRemoteTrackDurationSeconds: options.duration ?? (() => { throw new Error('Catalog duration used instead of authenticated source.') }),
     safeSendRemoteLoadProgress() {},
     toStandaloneArrayBuffer: (data: Buffer) => new Uint8Array(data).buffer,
     REMOTE_STREAM_CHUNK_FRAMES: 4096, LOCAL_STREAM_STARTUP_CHUNK_FRAMES: 8192,
     LOCAL_STREAM_STEADY_AFTER_SECONDS: 1, LOCAL_STREAM_STEADY_CHUNK_FRAMES: 65536, REMOTE_PROGRESSIVE_PCM_MAX_BYTES,
-    acquireCachedRemoteAudio: () => { throw new Error('Unexpected conventional cache fallback.') }
+    acquireCachedRemoteAudio: options.acquire ?? (() => { throw new Error('Unexpected conventional cache fallback.') })
   }
   const api = new Function(...Object.keys(context), `let nextRemoteStreamSessionId = 1;\n${javascript}\nreturn { start: startProgressiveStreamSession, cancel: cancelProgressiveStreamSession, update: updateLocalProgressiveStreamBackpressure, finalize: finalizeRemoteStreamSession }`)(...Object.values(context))
   return { sessions, events, chunks, sender, registry, qualityEvents,

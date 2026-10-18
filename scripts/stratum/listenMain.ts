@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain } from 'electron'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { mainHarness } from './mainHarness.ts'
+import { mixedHarness } from './mixedHarness.ts'
 
 // This file is launched ONLY as an Electron main entry, never as a launcher.
 // The separate Node supervisor spawns it once, enforces the deadline and watches
@@ -13,11 +14,13 @@ app.setPath('userData', join(directory, 'profile'))
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 app.commandLine.appendSwitch('disable-background-timer-throttling')
 let win: BrowserWindow | null = null
-const h = mainHarness(config.connection, config.ffmpeg, {
+const options = {
   recordPcm: false,
   ...(config.scenario === 'quality' ? { segmentQuality: (seconds: number) => seconds >= 12 && seconds < 24 ? 'opus-64' as const : 'lossless' as const } : {}),
-  deliver: (channel, value) => { if (win && !win.isDestroyed()) win.webContents.send(channel, value) }
-})
+  deliver: (channel: string, value: unknown) => { if (win && !win.isDestroyed()) win.webContents.send(channel, value) }
+}
+const mixed = config.scenario === 'mixed' ? mixedHarness(config.connection, config.ffmpeg, config.mixed, options) : null
+const h = mixed ?? mainHarness(config.connection, config.ffmpeg, options)
 let closing = false
 async function close(code = 0) {
   if (closing) return
@@ -28,16 +31,20 @@ async function close(code = 0) {
 }
 process.on('SIGTERM', () => { void close() })
 app.on('window-all-closed', () => { void close() })
-setTimeout(() => { void close(1) }, config.scenario === 'automatic' ? 140000 : 60000).unref()
+setTimeout(() => { void close(1) }, ['automatic', 'mixed'].includes(config.scenario) ? 140000 : 60000).unref()
 ipcMain.handle('test:start', (_event, path, rate, channels, options) => h.startOptions(path, rate, channels,
-  { ...options, streamingQuality: options?.streamingQuality ?? (path.endsWith('/second') ? 64 : 'original') }))
+  { ...options, streamingQuality: options?.streamingQuality ?? (config.scenario === 'mixed' ? 'original' : path.endsWith('/second') ? 64 : 'original') }))
+ipcMain.handle('test:local-pcm', (_event, path, rate) => {
+  if (!mixed) throw new Error('Local PCM is only available to the mixed fixture.')
+  return mixed.decodeLocal(path, rate)
+})
 ipcMain.handle('test:cancel', (_event, id) => h.cancel(id))
 ipcMain.handle('test:pending', (_event, slot) => h.registry.cancel(1, slot === 'next' ? 'next' : 'current'))
 ipcMain.on('test:position', (_event, id, frame) => h.position(id, frame))
 ipcMain.on('test:activate', (_event, id) => { const value = h.sessions.get(id); if (value) value.slot = 'current' })
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 app.whenReady().then(async () => {
-  win = new BrowserWindow({ width: 620, height: 300, title: 'Astra · isolated Stratum listen',
+  win = new BrowserWindow({ width: config.scenario === 'mixed' ? 700 : 620, height: config.scenario === 'mixed' ? 360 : 300, title: 'Astra · isolated Stratum listen',
     webPreferences: { preload: join(directory, 'preload.cjs'), contextIsolation: true, nodeIntegration: false,
       sandbox: true, backgroundThrottling: false } })
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -60,6 +67,7 @@ app.whenReady().then(async () => {
     if (state?.done) {
       writeFileSync(join(directory, 'listening-report.json'), JSON.stringify({ ...state,
         scenario: config.scenario ?? 'gapless', qualityEvents: h.qualityEvents,
+        ...(mixed ? { starts: mixed.starts, acquisitions: mixed.acquisitions, decodedLocal: mixed.decodedLocal } : {}),
         sessions: h.events.filter(event => event.type === 'complete' || event.type === 'failed') }, null, 2))
       console.log('LISTENING_FINISHED')
       await close()
