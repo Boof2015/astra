@@ -28,6 +28,7 @@ export interface DeliveredAudioFormat {
   bitrateKbps: number | null
 }
 export interface RemotePlaybackQuality {
+  transport?: 'stratum'
   analysisKey?: string
   /** Snapshot at acquisition; a scan finishing mid-play never changes gain. */
   loudness?: import('./remoteAudioAnalysis').RemoteAudioLoudness | null

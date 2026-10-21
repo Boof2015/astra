@@ -8,7 +8,7 @@ const representation = (target: StreamQualityTarget): StratumProofQuality =>
   target === 'original' ? 'lossless' : target === 64 ? 'opus-64' : 'opus-128'
 
 export function stratumPlaybackQuality(source: StratumProofSource, quality: StratumProofQuality, mode?: QualityMode): RemotePlaybackQuality {
-  return { requested: stratumTarget(quality), ...(mode ? { mode } : {}),
+  return { transport: 'stratum', requested: stratumTarget(quality), ...(mode ? { mode } : {}),
     requestedCodec: quality === 'lossless' ? 'flac' : 'opus',
     delivered: { codec: quality === 'lossless' ? 'flac' : 'opus',
       sampleRate: quality === 'lossless' ? source.sample_rate : 48000, channels: source.channels,
@@ -39,6 +39,15 @@ export class StratumAutomaticQuality {
     this.originalKbps = options.source.sample_rate * options.source.channels * options.source.bits_per_sample / 1000
   }
   private now() { return this.options.now?.() ?? performance.now() }
+  /** Cache reads update the chosen representation, never network evidence. */
+  retained(quality: StratumProofQuality): void {
+    const changed = quality !== this.current
+    if (changed) this.samples = []
+    this.current = quality
+    const { policy, key, mode, decisionKey } = this.options
+    if (!this.committed || changed) policy.committed(key, mode, stratumTarget(quality), decisionKey)
+    this.committed = true
+  }
   choose(frames: number): StratumProofQuality {
     const { policy, mode, key, decisionKey } = this.options
     const ladder = { decisionKey, bitrates: [64, 128] as const }
@@ -90,15 +99,10 @@ export class StratumAutomaticQuality {
         const seconds = Math.max(.001, (this.now() - started) / 1000)
         const media = frames / this.options.source.sample_rate
         // Do not include waiting for renderer capacity in delivery timings.
-        const changed = quality !== this.current
-        if (changed) this.samples = []
+        this.retained(quality)
         this.samples.push({ ready: seconds, media, overhead: Math.max(0, seconds - transferMs / 1000) })
         this.samples = this.samples.slice(-5)
         if (quality === 'lossless') this.originalKbps = Math.max(bytes * 8 / media / 1000, this.originalKbps * .85)
-        this.current = quality
-        const { policy, key, mode, decisionKey } = this.options
-        if (!this.committed || changed) policy.committed(key, mode, stratumTarget(quality), decisionKey)
-        this.committed = true
       }
     }
   }

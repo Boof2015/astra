@@ -8,7 +8,7 @@ import { plexRequestOptions } from './services/plexNetwork'
 import { buildPlexTrackPath, parsePlexTrackPath, reportPlexPlayback } from './services/plex'
 import { createPlexAudioSource } from './services/plexAudioSource'
 import type { PlexConnectInput, PlexSource } from '../types/plex'
-import { analyzeRemoteAudioFile } from './services/remoteAudioAnalysis'
+import { analyzeRemoteAudioFile, analyzeRemoteAudioPcm } from './services/remoteAudioAnalysis'
 import { parseCompanionDeviceInfo, type CompanionDeviceInfo } from '../shared/companionDevices'
 import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, clipboard, screen, safeStorage, powerMonitor, protocol, session, globalShortcut, Menu, Tray, type MenuItemConstructorOptions } from 'electron'
 import { join, basename, extname } from 'path'
@@ -55,9 +55,15 @@ import { sharedSourceQuality, StreamingQualityPreferences, STREAMING_QUALITY_SET
 import { deliveredAudioFormat, isStreamingQualityRequest, isAutomaticStreamingQuality, isStreamQualityTarget, resolveStreamingQuality, type AutomaticQualityPlayback, type StreamQualityTarget, type RemotePlaybackQuality, type StreamingQualityRequest, type StreamingQuality, type StreamingQualitySource } from '../types/streamingQuality'
 import { createSubsonicAudioSource } from './services/subsonicAudioSource'
 import { ProgressivePcmDelivery } from './progressivePcmDelivery'
-import { StratumProofPcm } from './services/stratumProofPlayback'
+import { StratumAudioCache } from './services/stratumAudioCache'
+import { StratumProofPcm, decodeStratumProofSegment } from './services/stratumProofPlayback'
+import { CompletedStreamingDiagnostics } from './services/streamingDiagnostics'
+import type { StreamingDiagnosticsSession } from '../types/streamingDiagnostics'
 import { stratumPlaybackQuality } from './services/stratumAutomaticQuality'
 import { parseStratumProofConfig, stratumProofRoute } from './services/stratumProofConfig'
+import { stratumQualitySelection } from './services/stratumProofConfig'
+import { StratumConnections, stratumSourceBinding, STRATUM_SETTINGS_KEY } from './services/stratumConnections'
+import { getSubsonicRadios } from './services/subsonic'
 import { ProgressiveStartupRegistry } from './progressiveStartupRegistry'
 import { createJellyfinAudioSource } from './services/jellyfinAudioSource'
 import { ProviderPlaybackService, playbackReportSource } from './services/providerPlayback'
@@ -721,8 +727,10 @@ let jellyfinStatusCache: JellyfinStatusSnapshot = {
 const jellyfinSyncProgressBySourceId = new Map<number, JellyfinSourceSyncProgress>()
 const jellyfinAuthCacheBySourceId = new Map<number, { authContext: { accessToken: string; userId: string }; expiresAt: number }>()
 const remoteStreamSessions = new Map<number, RemoteStreamSession>()
+const completedStreamingDiagnostics = new CompletedStreamingDiagnostics()
 let nextRemoteStreamSessionId = 1
 let remoteAudioCache: RemoteAudioCache | null = null
+let stratumAudioCache: StratumAudioCache | null = null
 const progressiveStartupControllers = new ProgressiveStartupRegistry()
 
 function getRemoteAudioCache(): RemoteAudioCache {
@@ -737,6 +745,21 @@ function getRemoteAudioCache(): RemoteAudioCache {
       for (const window of BrowserWindow.getAllWindows()) {
         if (!window.isDestroyed()) window.webContents.send('audio:remoteAnalysisReady', { key, analysis })
       }
+    }
+  })
+}
+
+function getStratumAudioCache(): StratumAudioCache {
+  return stratumAudioCache ??= new StratumAudioCache(getRemoteAudioCache(), {
+    decode: async (segment, signal) => {
+      const ffmpeg = await resolveBinary('ffmpeg')
+      if (!ffmpeg) throw new Error('Audio analysis tools unavailable.')
+      return decodeStratumProofSegment(ffmpeg, segment, signal)
+    },
+    scan: async (source, pcm, signal) => {
+      const ffmpeg = await resolveBinary('ffmpeg')
+      if (!ffmpeg) throw new Error('Audio analysis tools unavailable.')
+      return analyzeRemoteAudioPcm(ffmpeg, source, pcm, signal)
     }
   })
 }
@@ -4082,6 +4105,22 @@ function requireSubsonicSourceCredentials(sourceId: number): {
   }
 }
 
+const stratumConnections = new StratumConnections({
+  source: id => {
+    const source = library.getSubsonicSourceById(id)
+    return source ? { binding: stratumSourceBinding(source), enabled: source.enabled === 1 } : null
+  },
+  credentials: async id => requireSubsonicSourceCredentials(id).connection,
+  radios: (id, signal) => getSubsonicRadios(requireSubsonicSourceCredentials(id).connection, signal),
+  read: () => library.getAppMeta(STRATUM_SETTINGS_KEY),
+  write: value => library.setAppMeta(STRATUM_SETTINGS_KEY, value),
+  changed: status => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.webContents.isDestroyed()) window.webContents.send('stratum:changed', status)
+    }
+  }
+})
+
 function toSubsonicSourcePayload(source: library.SubsonicSourcePublic): SubsonicSource {
   return {
     id: source.id,
@@ -5985,6 +6024,7 @@ app.on('window-all-closed', () => {
 let providerPlaybackQuitPending = false
 let providerPlaybackQuitReady = false
 app.on('before-quit', (event) => {
+  stratumConnections.close()
   providerStateSync.close()
   remotePlaylists.close()
   if (!providerPlaybackQuitReady) {
@@ -6005,7 +6045,7 @@ app.on('before-quit', (event) => {
   plexSources.dispose()
   isAppQuitting = true
   progressiveStartupControllers.cancelAll()
-  void remoteAudioCache?.close()
+  void (stratumAudioCache?.close() ?? Promise.resolve()).finally(() => remoteAudioCache?.close())
   notchController?.dispose()
   destroyAppTray()
   globalInputShortcutService.clear()
@@ -6894,6 +6934,10 @@ ipcMain.handle('subsonic:listSources', () => {
   return library.listSubsonicSources().map(toSubsonicSourcePayload)
 })
 
+ipcMain.handle('stratum:status', (_event, id: number) => stratumConnections.status(id))
+ipcMain.handle('stratum:discover', (_event, id: number) => stratumConnections.discover(id))
+ipcMain.handle('stratum:setEnabled', (_event, id: number, enabled: boolean) => stratumConnections.setEnabled(id, enabled))
+
 ipcMain.handle('subsonic:createSource', async (_event, rawInput: SubsonicSourceCreateInput) => {
   const input = normalizeSubsonicSourceCreateInput(rawInput)
   const encryptedSecret = encryptSubsonicSecret(input.password)
@@ -6948,6 +6992,9 @@ ipcMain.handle('subsonic:updateSource', async (_event, sourceIdValue: unknown, r
     }
   }
 
+  if (input.baseUrl !== undefined || input.username !== undefined || input.password !== undefined || input.enabled !== undefined) {
+    stratumConnections.invalidate(sourceId)
+  }
   const updated = await library.updateSubsonicSource(sourceId, updatePayload)
   if (input.enabled === false) {
     await setSubsonicSourceDisabledState(sourceId)
@@ -6966,7 +7013,9 @@ ipcMain.handle('subsonic:deleteSource', async (_event, sourceIdValue: unknown, p
     throw new Error('Invalid Subsonic source id.')
   }
   const purgeTracks = Boolean(purgeTracksValue)
+  await stratumConnections.setEnabled(sourceId, false)
   await library.deleteSubsonicSource(sourceId, purgeTracks)
+  stratumConnections.invalidate(sourceId)
   clearSubsonicSyncProgress(sourceId)
   broadcastSubsonicStatus(refreshSubsonicStatusCache(false))
   mainWindow?.webContents.send('remote-playlists:changed')
@@ -8123,6 +8172,15 @@ ipcMain.handle('audio:startRemoteStream', async (event, filePath: string, output
 })
 
 ipcMain.handle('audio:getRemoteCacheStatus', getRemoteAudioCacheStatus)
+ipcMain.handle('audio:getStreamingDiagnostics', (event, ids: unknown): StreamingDiagnosticsSession[] => {
+  if (!Array.isArray(ids) || ids.length > 2 || !ids.every(id => Number.isSafeInteger(id) && id > 0)) return []
+  return [...new Set<number>(ids)].flatMap(id => {
+    const session = remoteStreamSessions.get(id)
+    const snapshot = session?.sender === event.sender ? streamingDiagnosticsSnapshot(session)
+      : completedStreamingDiagnostics.get(event.sender, id)
+    return snapshot ? [snapshot] : []
+  })
+})
 ipcMain.handle('audio:getRemoteAudioAnalysis', (_event, key: string) => getRemoteAudioCache().getAnalysis(key))
 const automaticStreamingQuality = new AutomaticStreamingQuality()
 const streamingQualityPreferences = new StreamingQualityPreferences({
@@ -10788,7 +10846,11 @@ function safeSendRemoteLoadProgress(session: RemoteStreamSession, stage: RemoteA
   const progress = buildRemoteLoadProgress(session, stage)
   if (session.cacheLease) progress.downloadComplete = session.cacheLease.progress().complete
   if (session.quality) progress.quality = session.quality
-  if (session.stratum) progress.transport = 'stratum-proof'
+  if (session.stratum) {
+    progress.transport = 'stratum-proof'
+    progress.downloadComplete = session.stratum.cacheComplete
+    progress.analysisReady = session.stratum.analysisReady
+  }
   session.sender.send('audio:progressiveLoadProgress', progress)
   if (session.sourceType !== 'local') {
     session.sender.send('audio:remoteLoadProgress', progress)
@@ -10900,13 +10962,34 @@ function emitRemoteStreamChunk(session: RemoteStreamSession, data: Buffer): void
   updateLocalProgressiveStreamBackpressure(session)
 }
 
+function streamingDiagnosticsSnapshot(session: RemoteStreamSession): StreamingDiagnosticsSession {
+  const cache = session.cacheLease?.progress()
+  return {
+    sessionId: session.id,
+    transport: session.stratum ? 'stratum' : session.sourceType === 'local' ? 'local' : 'stream',
+    start: session.startTimeSeconds,
+    duration: session.durationSeconds,
+    bufferedEnd: session.startTimeSeconds + session.decodedFrames / session.sampleRate,
+    sourceRate: session.stratum?.playback.source.sample_rate ?? null,
+    outputRate: session.sampleRate,
+    channels: session.channels,
+    loadedBytes: cache?.loadedBytes ?? session.loadedBytes,
+    totalBytes: cache?.totalBytes ?? session.totalBytes,
+    localCacheComplete: session.stratum?.cacheComplete ?? cache?.complete === true,
+    state: session.failed ? 'failed' : session.done ? 'complete' : 'preparing',
+    ...(session.stratum?.diagnostics.snapshot() ?? { segments: [], omittedSegments: 0 })
+  }
+}
+
 function finalizeRemoteStreamSession(
   session: RemoteStreamSession,
   outcome: 'complete' | 'cancelled' | 'failed',
   error?: Error
 ): void {
+  if (outcome === 'cancelled') completedStreamingDiagnostics.forget(session.sender, session.id)
   if (session.done) {
     if (outcome === 'cancelled') {
+      session.stratum?.dispose()
       session.cacheLease?.release()
       session.cacheLease = null
       session.releaseSenderHooks?.()
@@ -10926,12 +11009,16 @@ function finalizeRemoteStreamSession(
   void session.stratum?.release()
   session.failed = outcome === 'failed'
   session.cancelled = outcome === 'cancelled'
+  if (session.stratum && outcome !== 'cancelled') {
+    completedStreamingDiagnostics.remember(session.sender, streamingDiagnosticsSnapshot(session))
+  }
   if (session.cacheProgressTimer) clearInterval(session.cacheProgressTimer)
   session.cacheProgressTimer = null
   // Decoding completion precedes audible completion. Keep the cache protected
   // until the renderer releases this session, including its final PCM window.
-  if (outcome !== 'complete' || !session.cacheLease) {
+  if (outcome !== 'complete' || (!session.cacheLease && !session.stratum?.retainsCache)) {
     remoteStreamSessions.delete(session.id)
+    session.stratum?.dispose()
     session.cacheLease?.release()
     session.cacheLease = null
     session.releaseSenderHooks?.()
@@ -10939,7 +11026,7 @@ function finalizeRemoteStreamSession(
   }
 
   try {
-    if (outcome !== 'complete' || !session.cacheLease) session.abortController.abort()
+    if (outcome !== 'complete' || (!session.cacheLease && !session.stratum?.retainsCache)) session.abortController.abort()
   } catch {
     // Ignore abort races during teardown.
   }
@@ -11209,6 +11296,36 @@ async function startProgressiveStreamSession(
   }
 }
 
+/** Installed Stratum currently supports Standard playback and the proven format/quality ladder.
+ * Unsupported tracks and settings retain the existing provider path. */
+async function installedStratumRoute(path: string, request: StreamingQualityRequest | undefined, signal: AbortSignal) {
+  const source = parseSubsonicTrackPath(path)
+  if (!source) return null
+  const track = library.getTrackByPath(path)
+  if (!track || !['flac', 'wav'].includes((track.format ?? '').toLowerCase())
+    || (track.sample_rate && ![44100, 48000, 96000].includes(track.sample_rate))
+    || (track.bit_depth && ![16, 24].includes(track.bit_depth)) || (track.channels && track.channels > 2)
+    || (track.duration && track.duration > 1800)) return null
+  const quality = stratumQualitySelection(request ?? resolveStreamingQuality(streamingQualityPreferences.read(),
+    { provider: 'subsonic', sourceId: source.sourceId }))
+  if (!quality) return null
+  try {
+    signal.throwIfAborted()
+    const approved = stratumConnections.cachedConnection(source.sourceId)
+    return approved ? { ...quality, connection: approved.connection, track: source.sourceTrackId,
+      key: `stratum:${approved.scope}`, cache: { owner: getStratumAudioCache(), options: {
+        scope: approved.scope, track: source.sourceTrackId, profile: quality.mode ?? quality.quality,
+        revision: JSON.stringify([track.source_path, track.duration, track.format, track.codec,
+          track.sample_rate, track.bit_depth, track.channels, track.bitrate])
+      } } } : null
+  } catch {
+    signal.throwIfAborted()
+    // Connection errors are shown with this server's Stratum setting. No audio
+    // has started yet, so the normal provider route remains usable.
+    return null
+  }
+}
+
 async function startProgressiveStreamAttempt(
   sender: Electron.WebContents,
   filePath: string,
@@ -11242,8 +11359,7 @@ async function startProgressiveStreamAttempt(
       ? Math.max(1, Math.min(8, Math.round(Number(expectedChannels))))
       : Math.max(1, Math.min(8, dbTrack?.channels ?? 2))
 
-    // Private development connection only; never derive or forward real saved
-    // Navidrome credentials to an arbitrary endpoint. Native modes do not enter here.
+    // Keep the disposable loopback allowlist independent of saved HTTPS approvals.
     const proofFile = sourceType === 'subsonic' && isDev && !app.isPackaged ? process.env.ASTRA_STRATUM_PROOF_CONFIG : undefined
     const proofConfig = proofFile ? parseStratumProofConfig(readFileSync(proofFile, 'utf8')) : null
     const proofSource = proofConfig ? parseSubsonicTrackPath(filePath) : null
@@ -11251,15 +11367,27 @@ async function startProgressiveStreamAttempt(
       ? resolveStreamingQuality(streamingQualityPreferences.read(), { provider: 'subsonic', sourceId: proofSource.sourceId })
       : 'original')
     const proofRoute = proofConfig ? stratumProofRoute(proofConfig, filePath, proofQuality) : null
-    if (proofRoute) {
-      const source = library.getSubsonicSourceById(proofConfig!.sourceId)
-      if (!source || source.enabled !== 1 || !dbTrack) throw new Error('Stratum test source or track is unavailable.')
-      stratum = await StratumProofPcm.open(proofRoute.connection, proofRoute.track, normalizedSampleRate,
-        requestedStartTimeSeconds, abortController.signal)
-      abortController.signal.throwIfAborted()
-      normalizedChannels = stratum.playback.source.channels
-      requestedStartTimeSeconds = stratum.interval.origin / stratum.playback.source.sample_rate
-    } else if (sourceType !== 'local') {
+    const stratumRoute = proofRoute ? { ...proofRoute, key: `stratum:${proofRoute.connection.endpoint}:${proofRoute.connection.session}` }
+      : sourceType === 'subsonic' && !proofFile ? await installedStratumRoute(filePath, options.streamingQuality, abortController.signal) : null
+    if (stratumRoute) {
+      if (proofRoute) {
+        const source = library.getSubsonicSourceById(proofConfig!.sourceId)
+        if (!source || source.enabled !== 1 || !dbTrack) throw new Error('Stratum test source or track is unavailable.')
+      }
+      try {
+        stratum = await StratumProofPcm.open(stratumRoute.connection, stratumRoute.track, normalizedSampleRate,
+          requestedStartTimeSeconds, abortController.signal, 'cache' in stratumRoute ? stratumRoute.cache : undefined)
+        abortController.signal.throwIfAborted()
+        if (!proofRoute) stratumConnections.playbackStarted(parseSubsonicTrackPath(filePath)!.sourceId)
+        normalizedChannels = stratum.playback.source.channels
+        requestedStartTimeSeconds = stratum.interval.origin / stratum.playback.source.sample_rate
+      } catch (error) {
+        abortController.signal.throwIfAborted()
+        if (proofRoute) throw error
+        stratumConnections.playbackFailed(parseSubsonicTrackPath(filePath)!.sourceId)
+      }
+    }
+    if (!stratum && sourceType !== 'local') {
       cacheLease = await acquireCachedRemoteAudio(filePath, abortController.signal, options.streamingQuality)
       // A manual target can change codec/rate/channels. Probe the actual retained
       // response, never replace catalog metadata with the requested settings.
@@ -11306,7 +11434,7 @@ async function startProgressiveStreamAttempt(
     const infoPromise = new Promise<RemoteStreamInfo>((resolve, reject) => {
       const session: RemoteStreamSession = {
         stratum,
-        quality: stratum && proofRoute ? stratumPlaybackQuality(stratum.playback.source, proofRoute.quality, proofRoute.mode) : cacheLease?.quality,
+        quality: stratum && stratumRoute ? stratum.withAnalysis(stratumPlaybackQuality(stratum.playback.source, stratumRoute.quality, stratumRoute.mode)) : cacheLease?.quality,
         id: sessionId,
         slot,
         sender,
@@ -11358,7 +11486,7 @@ async function startProgressiveStreamAttempt(
       sessionCreated = true
       const handleAbort = () => finalizeRemoteStreamSession(session, 'cancelled')
       abortController.signal.addEventListener('abort', handleAbort, { once: true })
-      if (cacheLease) {
+      if (cacheLease || stratum?.retainsCache) {
         session.cacheProgressTimer = setInterval(() => {
           safeSendRemoteLoadProgress(session, session.decodedFrames > 0 ? 'streaming' : 'downloading')
         }, 250)
@@ -11473,13 +11601,13 @@ async function startProgressiveStreamAttempt(
           ? new RemoteCompatibilityFailure(session.quality!, message) : new Error(message))
       })
 
-      if (stratum && proofRoute) {
-        void stratum.feed(ffmpeg.stdin, ffmpegPath, abortController.signal, proofRoute.quality,
-          bytes => { session.loadedBytes += bytes }, proofRoute.mode ? {
-            mode: proofRoute.mode, policy: automaticStreamingQuality, pinInitial: proofRoute.pinInitial,
+      if (stratum && stratumRoute) {
+        void stratum.feed(ffmpeg.stdin, ffmpegPath, abortController.signal, stratumRoute.quality,
+          bytes => { session.loadedBytes += bytes }, stratumRoute.mode ? {
+            mode: stratumRoute.mode, policy: automaticStreamingQuality, pinInitial: stratumRoute.pinInitial,
             // A separate transport/account namespace keeps conventional evidence
             // intact. The disposable bearer is only an in-memory identity here.
-            key: `stratum:${proofRoute.connection.endpoint}:${proofRoute.connection.session}`,
+            key: stratumRoute.key,
             buffer: () => ({ position: session.startTimeSeconds + session.consumedFrames / session.sampleRate,
               ahead: Math.max(0, session.decodedFrames - session.consumedFrames) / session.sampleRate })
           } : undefined).catch(error => finalizeRemoteStreamSession(session, 'failed', error))
@@ -11496,7 +11624,7 @@ async function startProgressiveStreamAttempt(
     return await infoPromise
   } finally {
     parentSignal.removeEventListener('abort', abortStartup)
-    if (!sessionCreated) { cacheLease?.release(); await stratum?.release() }
+    if (!sessionCreated) { cacheLease?.release(); stratum?.dispose(); await stratum?.release() }
   }
 }
 

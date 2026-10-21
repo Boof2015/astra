@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
-import { analyzeRemoteAudioFile } from './remoteAudioAnalysis.ts'
+import { analyzeRemoteAudioFile, analyzeRemoteAudioPcm } from './remoteAudioAnalysis.ts'
 import { RemoteAudioCache, type RemoteAudioSource } from './remoteAudioCache.ts'
 import { isRemoteAudioAnalysis, type RemoteAudioAnalysis } from '../../types/remoteAudioAnalysis.ts'
 import { buildEbur128Args, parseEbur128Summary } from './loudnessAnalysis.ts'
@@ -105,4 +105,13 @@ test('real background scan produces a complete compact waveform and the same lou
   await assert.rejects(analyzeRemoteAudioFile(invalid, ffmpeg, ffprobe, new AbortController().signal))
   const abort = new AbortController(); abort.abort()
   await assert.rejects(analyzeRemoteAudioFile(file, ffmpeg, ffprobe, abort.signal))
+})
+
+
+test('raw retained analysis rejects incomplete input and producer failure without leaving a scanner running', { timeout: 5000 }, async () => {
+  const native = { sample_rate: 48000, channels: 2, frames: 48000 }
+  async function* short() { yield Buffer.alloc(1000) }
+  async function* broken() { yield Buffer.alloc(1000); throw new Error('Retained segment could not decode.') }
+  await assert.rejects(analyzeRemoteAudioPcm(ffmpeg, native, short(), AbortSignal.timeout(2000)), /did not finish/)
+  await assert.rejects(analyzeRemoteAudioPcm(ffmpeg, native, broken(), AbortSignal.timeout(2000)), /did not finish/)
 })

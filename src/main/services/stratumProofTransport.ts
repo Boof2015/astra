@@ -15,11 +15,11 @@ export function validateStratumProofEndpoint(endpoint: string): string {
 export class StratumProofError extends Error {
   readonly status: number
   constructor(status: number) {
-    super(status === 401 ? 'The Stratum test sign-in expired or was refused.'
+    super(status === 401 ? 'The Stratum sign-in expired or was refused.'
       : status === 404 ? 'This track or playback is no longer available through Stratum.'
       : status === 415 ? 'This source format is not supported by the Stratum proof.'
       : status === 429 ? 'The Stratum proof is busy. Try again.'
-      : status === 503 ? 'Stratum cannot reach its test music server.'
+      : status === 503 ? 'Stratum cannot reach Navidrome.'
       : `The Stratum proof request failed (HTTP ${status}).`)
     this.status = status
   }

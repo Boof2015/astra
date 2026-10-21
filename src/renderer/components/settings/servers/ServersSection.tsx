@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { StratumControl } from './StratumControl'
 import { usePresence } from '../../../hooks/usePresence'
 import { useServerCountsStore } from '../../../stores/serverCountsStore'
 import { useServerWindowRequest } from '../../../stores/serverWindowRequest'
@@ -136,7 +137,10 @@ export default function ServersSection() {
               <>
                 <section className="servers-subsection" aria-labelledby="servers-streaming">
                   <h4 id="servers-streaming">Streaming</h4>
-                  <div className="servers-group"><QualityControl servers={servers} /></div>
+                  <div className="servers-group">
+                    {servers.length === 1 && <StratumControl server={servers[0]} />}
+                    <QualityControl servers={servers} />
+                  </div>
                 </section>
                 <section className="servers-subsection" aria-labelledby="servers-storage">
                   <h4 id="servers-storage">Storage</h4>

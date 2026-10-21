@@ -66,6 +66,7 @@ export interface SubsonicPlaylistTrack {
 }
 
 interface SubsonicRequestOptions {
+  maxResponseBytes?: number
   formPost?: boolean
   timeoutMs?: number
   retries?: number
@@ -334,7 +335,25 @@ async function requestSubsonicJson(
         throw new SubsonicRequestError(`Subsonic request failed (${response.status})`, { httpStatus: response.status })
       }
 
-      const json = await response.json() as SubsonicResponseEnvelope
+      let json: SubsonicResponseEnvelope
+      if (options.maxResponseBytes && response.body) {
+        const reader = response.body.getReader()
+        const chunks: Uint8Array[] = []
+        let length = 0
+        try {
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            length += value.byteLength
+            if (length > options.maxResponseBytes) {
+              await reader.cancel()
+              throw new Error('Subsonic response exceeded its size limit.')
+            }
+            chunks.push(value)
+          }
+          json = JSON.parse(Buffer.concat(chunks).toString('utf8')) as SubsonicResponseEnvelope
+        } finally { reader.releaseLock() }
+      } else json = await response.json() as SubsonicResponseEnvelope
       const envelope = json['subsonic-response']
       if (!envelope || typeof envelope !== 'object') {
         throw new Error('Invalid Subsonic response payload.')
@@ -356,6 +375,17 @@ async function requestSubsonicJson(
   }
 
   throw lastError instanceof Error ? lastError : new Error('Subsonic request failed.')
+}
+
+/** Authenticated discovery only. No redirects or credentials in the URL. */
+export async function getSubsonicRadios(config: SubsonicConnectionConfig, signal: AbortSignal): Promise<unknown[]> {
+  const envelope = await requestSubsonicJson(config, 'getInternetRadioStations', {}, {
+    formPost: true, retries: 0, signal, maxResponseBytes: 1024 * 1024
+  })
+  const radios = (envelope.internetRadioStations as { internetRadioStation?: unknown } | undefined)?.internetRadioStation
+  if (radios === undefined) return []
+  if (!Array.isArray(radios) || radios.length > 4096) throw new Error('Invalid radio list from Navidrome.')
+  return radios
 }
 
 async function requestSubsonicBytes(

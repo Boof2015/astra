@@ -124,6 +124,21 @@ test('automatic seeks retain their pinned initial quality before evaluating late
   }
 })
 
+test('retained representations update decisions without inventing transfer capacity or recovery', () => {
+  const h = harness()
+  const controller = new StratumAutomaticQuality({ mode: 'automatic', policy: h.policy, key: 'stratum', decisionKey: 'cached-song',
+    source, initial: 'lossless', now: h.now, buffer: () => ({ position: 0, ahead: 80 }) })
+  assert.equal(controller.choose(192000), 'lossless')
+  controller.retained('opus-128')
+  h.advance(60000)
+  assert.equal(controller.choose(192000), 'opus-128', 'elapsed playback/cache time is not evidence of recovery')
+  assert.equal(h.policy.select('stratum', 'automatic', 2000, { decisionKey: 'other-song', bitrates: [64, 128] }), 'original',
+    'using cached Opus must not poison another playback’s network history')
+  h.feed(8000, 16)
+  assert.equal(controller.choose(192000), 'lossless', 'real transfer evidence can restore original with ample retained audio')
+  controller.close()
+})
+
 test('observes a sustained slowdown within a long segment before fetching another one would empty the buffer', () => {
   const h = harness()
   let position = 0, delivered = 0, minimumAhead = Infinity

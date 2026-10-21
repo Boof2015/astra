@@ -37,6 +37,7 @@ import {
 
 interface RemoteLoadProgress {
   quality?: import('../../types/streamingQuality').RemotePlaybackQuality
+  analysisReady?: boolean
   sessionId?: number
   path: string
   sourceType: 'local' | 'subsonic' | 'jellyfin' | 'plex'
@@ -1186,7 +1187,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
     if (!isRetainedRemoteSource(state.currentTrack?.sourceType) || state.currentTrack?.path !== progress.path
       || state.remoteLoadProgress !== progress) return
     const key = progress.quality?.analysisKey
-    const identity = `${progress.path}:${progress.sessionId}:${key}`
+    // Analysis may finish after the first lookup returned null. Its persistent
+    // readiness also travels with progress, so an early/missed notification does
+    // not leave this listen without a waveform until the track is reloaded.
+    const identity = `${progress.path}:${progress.sessionId}:${key}:${progress.analysisReady === true}`
     if (!force && remoteWaveformIdentity === identity) return
     remoteWaveformIdentity = identity
     // A seek replaces the decoder, but not the cached representation. Keep a

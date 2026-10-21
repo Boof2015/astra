@@ -1,0 +1,55 @@
+.streaming-diagnostics { grid-column: 1 / -1; }
+.streaming-diagnostics-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.streaming-diagnostics-heading h4 { margin: 0; }
+.streaming-diagnostics-live { margin-top: 18px; }
+.streaming-diagnostics-track { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; font-size: 13px; }
+.streaming-diagnostics-track strong { overflow-wrap: anywhere; }
+.streaming-diagnostics-track > span { color: var(--text-secondary); }
+.streaming-diagnostics-transport { margin-left: auto; font: 11px var(--font-mono); }
+.streaming-block-map { margin: 18px 0 12px; }
+.streaming-block-map svg { display: block; width: 100%; min-height: 52px; overflow: visible; }
+.stream-map-empty { fill: var(--control-bg-strong); stroke: var(--control-border); }
+.stream-map-grid { fill: var(--bg-secondary); opacity: .7; }
+.stream-map-buffered { fill: var(--accent); opacity: .65; }
+.stream-map-neutral { color: var(--accent); }
+.stream-map-quality-lossless { color: #83cda9; }
+.stream-map-quality-opus-128 { color: #73a9d5; }
+.stream-map-quality-opus-64 { color: #b19ad9; }
+.stream-map-cache { fill: none; stroke: var(--text-primary); stroke-width: 2; pointer-events: none; }
+.stream-map-failed { fill: none; stroke: var(--warning); stroke-width: 2; }
+.stream-map-played { fill: var(--bg-primary); opacity: .58; }
+.stream-map-playhead { fill: var(--text-strong); }
+.stream-map-axis { display: flex; justify-content: space-between; gap: 12px; font: 11px var(--font-mono); color: var(--text-secondary); }
+.stream-map-axis span:nth-child(2) { color: var(--text-primary); }
+.streaming-diagnostics-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 11px; color: var(--text-secondary); }
+.streaming-diagnostics-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.streaming-diagnostics-legend i { display: inline-block; width: 11px; height: 11px; background: currentColor; flex-shrink: 0; }
+.streaming-diagnostics-legend .stream-map-legend-outline { background: transparent; border: 1px solid currentColor; }
+.streaming-diagnostics-legend .stream-map-legend-dots { background: repeating-conic-gradient(currentColor 0% 25%, transparent 0% 50%) 0 0 / 6px 6px; border: 1px solid currentColor; }
+.streaming-diagnostics-legend .stream-map-legend-played { opacity: .35; }
+.streaming-diagnostics-legend .stream-map-legend-cache { background: transparent; border: 2px solid currentColor; clip-path: polygon(0 0, 40% 0, 40% 30%, 60% 30%, 60% 0, 100% 0, 100% 40%, 70% 40%, 70% 60%, 100% 60%, 100% 100%, 60% 100%, 60% 70%, 40% 70%, 40% 100%, 0 100%, 0 60%, 30% 60%, 30% 40%, 0 40%); }
+.streaming-diagnostics-values { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 14px 24px; margin: 22px 0; }
+.streaming-diagnostics-values div { min-width: 0; }
+.streaming-diagnostics-values dt { color: var(--text-secondary); font-size: 11px; margin-bottom: 5px; }
+.streaming-diagnostics-values dd { margin: 0; font: 12px/1.6 var(--font-mono); overflow-wrap: anywhere; }
+.streaming-diagnostics-details { border-top: 1px solid var(--control-border); padding-top: 12px; font-size: 12px; }
+.streaming-diagnostics-details summary { cursor: pointer; color: var(--text-secondary); }
+.streaming-diagnostics-table-scroll { overflow-x: auto; margin-top: 12px; }
+.streaming-diagnostics-details table { border-collapse: collapse; width: 100%; white-space: nowrap; font: 11px/1.5 var(--font-mono); }
+.streaming-diagnostics-details th { color: var(--text-secondary); font-weight: 400; }
+.streaming-diagnostics-details td, .streaming-diagnostics-details th { text-align: left; padding: 6px 12px 6px 0; border-bottom: 1px solid var(--control-border); }
+.settings-info-panel .streaming-diagnostics-note { font-size: 11px; line-height: 1.6; color: var(--text-tertiary); margin: 12px 0 0; }
+@media (max-width: 1000px) {
+  .streaming-diagnostics-values { grid-template-columns: 1fr; gap: 12px; }
+  .streaming-diagnostics-transport { margin-left: 0; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .stream-map-active { animation: stream-map-activity 1.2s steps(2, end) infinite; }
+  @keyframes stream-map-activity { 50% { opacity: .55; } }
+}

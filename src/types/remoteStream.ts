@@ -9,6 +9,8 @@ export interface RemoteAudioLoadProgress {
   quality?: RemotePlaybackQuality
   /** Encoded download completion is independent of bounded PCM lookahead. */
   downloadComplete?: boolean
+  /** Full retained analysis is available now; playback loudness stays snapshotted. */
+  analysisReady?: boolean
   sessionId?: number
   slot?: 'current' | 'next'
   path: string

@@ -7849,6 +7849,67 @@ test('complete remote waveforms follow the exact representation, survive seeks a
   }
 })
 
+test('Stratum shows late complete analysis during the same listen even when its ready notification is missed', async () => {
+  resetStores()
+  const track = makeTrack('subsonic://1/stratum-song', { sourceType: 'subsonic', duration: 180 })
+  usePlayerStore.setState({ currentTrack: track, waveformData: null, waveformAnalyzedRatio: 0, remoteLoadProgress: null })
+  const originalOn = audioEngine.on
+  const originalSession = audioEngine.getRemoteStreamSessionId
+  const originalQuality = audioEngine.getRemotePlaybackQuality
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  type Analysis = import('../../types/remoteAudioAnalysis.ts').RemoteAudioAnalysis
+  type Progress = import('../../types/remoteStream.ts').RemoteAudioLoadProgress
+  const saved: Analysis = { version: 1, duration: 180, loudnessLufs: -18, peakLinear: .3, peaks: Array(512).fill(.75) }
+  const quality: NonNullable<Progress['quality']> = { transport: 'stratum', requested: 'original', requestedCodec: 'flac',
+    delivered: null, analysisKey: 'stratum-analysis', loudness: null }
+  let analysis: Analysis | null = null, lookups = 0
+  let receive!: (progress: Progress) => void
+  audioEngine.on = () => () => {}
+  audioEngine.getRemoteStreamSessionId = () => 42
+  audioEngine.getRemotePlaybackQuality = () => quality
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    addEventListener() {}, removeEventListener() {}, electronAPI: {
+      onProgressiveLoadProgress: (callback: typeof receive) => { receive = callback; return () => {} },
+      // Deliberately drop the one-off event; progress must carry readiness too.
+      onRemoteAudioAnalysisReady: () => () => {},
+      getRemoteAudioAnalysis: async () => { lookups++; return analysis }
+    }
+  } })
+  const progress: Progress = { path: track.path, sessionId: 42, transport: 'stratum-proof', quality,
+    sourceType: 'subsonic', stage: 'streaming', chunkCount: 1, loadedBytes: 100, totalBytes: null,
+    bufferedSeconds: 30, bufferedPercent: 1 / 6, analyzedSeconds: 30, analyzedPercent: 1 / 6,
+    percent: null, done: false, failed: false, playable: true, downloadComplete: false, analysisReady: false }
+  try {
+    usePlayerStore.getState()._cleanupListeners(); usePlayerStore.getState()._initListeners()
+    receive(progress)
+    await flushAsyncWork()
+    assert.equal(usePlayerStore.getState().waveformData, null)
+    receive({ ...progress, downloadComplete: true })
+    await flushAsyncWork()
+    assert.equal(usePlayerStore.getState().waveformData, null, 'downloading is not the same as finishing analysis')
+    assert.equal(lookups, 1)
+    analysis = saved
+    receive({ ...progress, downloadComplete: true, analysisReady: true })
+    await flushAsyncWork()
+    const waveform = usePlayerStore.getState().waveformData
+    assert.equal(waveform?.[0], .75, 'complete waveform must appear without replaying or reaching EOF')
+    assert.equal(usePlayerStore.getState().waveformAnalyzedRatio, 1)
+    assert.equal(usePlayerStore.getState().remoteLoadProgress?.done, false)
+    assert.equal(usePlayerStore.getState().remoteLoadProgress?.quality?.loudness, null, 'live waveform cannot change playback normalization')
+    for (let i = 0; i < 20; i++) receive({ ...progress, downloadComplete: true, analysisReady: true })
+    await flushAsyncWork()
+    assert.equal(lookups, 2, 'progress must not poll for the waveform on every tick')
+    assert.equal(usePlayerStore.getState().waveformData, waveform)
+    receive({ ...progress, sessionId: 43, slot: 'next', analysisReady: true })
+    assert.equal(usePlayerStore.getState().waveformData, waveform, 'next-track readiness cannot replace the current waveform')
+  } finally {
+    usePlayerStore.getState()._cleanupListeners()
+    audioEngine.on = originalOn; audioEngine.getRemoteStreamSessionId = originalSession; audioEngine.getRemotePlaybackQuality = originalQuality
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
+})
+
 test('late native waveforms never gate buffers and failures alone trigger renderer fallback', () => {
   resetStores()
   const track = makeTrack('/waveform/late-native.flac', {

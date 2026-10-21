@@ -1,6 +1,8 @@
 import type { RemotePlaylistsAPI } from '../types/remotePlaylists'
+import type { StratumAPI, StratumStatus } from '../types/stratum'
 import type { PlexAPI } from '../types/plex'
 import type { RemoteAudioCacheStatus } from '../types/remoteAudioCache'
+import type { StreamingDiagnosticsSession } from '../types/streamingDiagnostics'
 import type { RemoteAudioAnalysis } from '../types/remoteAudioAnalysis'
 import type { AutomaticQualityPlayback, AutomaticQualityPreparationResult, StreamQualityTarget, AutomaticStreamingQuality, StreamingQualityRequest, StreamingQuality, StreamingQualitySettings, StreamingQualitySource } from '../types/streamingQuality'
 import type { ProviderPlaybackSnapshot } from '../types/providerPlayback'
@@ -1488,6 +1490,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  stratum: {
+    status: (sourceId: number): Promise<StratumStatus> => ipcRenderer.invoke('stratum:status', sourceId),
+    discover: (sourceId: number): Promise<StratumStatus> => ipcRenderer.invoke('stratum:discover', sourceId),
+    setEnabled: (sourceId: number, enabled: boolean): Promise<StratumStatus> => ipcRenderer.invoke('stratum:setEnabled', sourceId, enabled),
+    onChanged: (callback: (status: StratumStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: StratumStatus) => callback(status)
+      ipcRenderer.on('stratum:changed', handler)
+      return () => ipcRenderer.removeListener('stratum:changed', handler)
+    }
+  },
   subsonic: {
     listSources: (): Promise<SubsonicSource[]> => ipcRenderer.invoke('subsonic:listSources'),
     createSource: (input: SubsonicSourceCreateInput): Promise<SubsonicSource> =>
@@ -1674,6 +1686,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   setRemoteCacheLimit: (limitGb: number) => ipcRenderer.invoke('audio:setRemoteCacheLimit', limitGb) as Promise<RemoteAudioCacheStatus>,
   clearRemoteCache: () => ipcRenderer.invoke('audio:clearRemoteCache') as Promise<RemoteAudioCacheStatus>,
+  getStreamingDiagnostics: (ids: number[]): Promise<StreamingDiagnosticsSession[]> => ipcRenderer.invoke('audio:getStreamingDiagnostics', ids),
   startProgressiveStream: (
     filePath: string,
     outputSampleRate: number,
@@ -2320,6 +2333,7 @@ declare global {
         resetToDefaults: () => Promise<LyricsStatus>
         onStatus: (callback: (status: LyricsStatus) => void) => () => void
       }
+      stratum: StratumAPI
       subsonic: {
         listSources: () => Promise<SubsonicSource[]>
         createSource: (input: SubsonicSourceCreateInput) => Promise<SubsonicSource>
@@ -2399,6 +2413,7 @@ declare global {
       onStreamingQualityChanged: (callback: (settings: StreamingQualitySettings, previous: StreamingQualitySettings) => void) => () => void
       setRemoteCacheLimit: (limitGb: number) => Promise<RemoteAudioCacheStatus>
       clearRemoteCache: () => Promise<RemoteAudioCacheStatus>
+      getStreamingDiagnostics: (ids: number[]) => Promise<StreamingDiagnosticsSession[]>
       startProgressiveStream: (
         filePath: string,
         outputSampleRate: number,

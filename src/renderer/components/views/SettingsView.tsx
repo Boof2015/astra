@@ -11,6 +11,7 @@ import LocalApiPairingModal from '../settings/LocalApiPairingModal'
 import KeybindSettings from '../settings/KeybindSettings'
 import SettingsTransferWizard from '../settings/SettingsTransferWizard'
 import ImportedListeningDataCard from '../settings/ImportedListeningDataCard'
+import StreamingDiagnosticsPanel from '../settings/StreamingDiagnosticsPanel'
 import SettingsSegmentedControl, { type SettingsSegmentedOption } from '../settings/SettingsSegmentedControl'
 import HomeHeaderControls from '../home/HomeHeaderControls'
 import HomeSkyControls from '../home/HomeSkyControls'
@@ -3431,6 +3432,7 @@ export default function SettingsView() {
               </button>
             </div>
             <div className="settings-info-panels">
+              <StreamingDiagnosticsPanel />
               <div className="settings-info-panel">
                 <h4>Memory Diagnostics</h4>
                 <p>

@@ -18,6 +18,9 @@ export interface RemoteAudioSource {
   revision: string
   open: (signal: AbortSignal) => Promise<Response>
   observeTransfer?: (event: AudioTransferEvent) => void
+  /** Validated Stratum packets/metadata share storage accounting, not file scans. */
+  analyze?: false
+  group?: string
 }
 
 interface CacheRecord {
@@ -26,6 +29,8 @@ interface CacheRecord {
   contentType: string
   lastPlayed: number
   analysis?: RemoteAudioAnalysis
+  analyze?: false
+  group?: string
 }
 
 interface Entry {
@@ -44,6 +49,8 @@ interface Entry {
   task: Promise<void>
   settled: boolean
   releaseTimer: ReturnType<typeof setTimeout> | null
+  analyze?: false
+  group?: string
 }
 
 export interface RemoteAudioLease {
@@ -54,6 +61,7 @@ export interface RemoteAudioLease {
   progress: () => { loadedBytes: number; totalBytes: number | null; complete: boolean; failureKind?: 'unsupported-format' }
   release: () => void
   finished: () => Promise<void>
+  readBytes?: (limit: number) => Promise<Buffer>
 }
 
 class RetryableDownloadError extends Error {}
@@ -98,6 +106,7 @@ export class RemoteAudioCache {
   private limitBytes: number
   private readonly entries = new Map<string, Entry>()
   private readonly records = new Map<string, CacheRecord>()
+  private readonly groups = new Map<string, number>()
   private readonly tokens = new Map<string, Entry>()
   private initialization: Promise<void> | null = null
   private server: Server | null = null
@@ -129,6 +138,26 @@ export class RemoteAudioCache {
   private dataPath(key: string): string { return join(this.directory, `${key}.audio`) }
   private recordPath(key: string): string { return join(this.directory, `${key}.json`) }
 
+  /** Protect all retained ranges of the playing/prepared track, including ranges
+   * not decoded yet. Group names are opaque hashes, never server credentials. */
+  pinGroup(group: string): () => void {
+    if (!/^[a-f0-9]{64}$/.test(group)) throw new Error('Invalid cache group.')
+    this.groups.set(group, (this.groups.get(group) ?? 0) + 1)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      const count = (this.groups.get(group) ?? 1) - 1
+      if (count) this.groups.set(group, count)
+      else this.groups.delete(group)
+      void this.serialize(() => this.makeRoom(0)).catch(() => {})
+    }
+  }
+
+  private protected(key: string, record: { group?: string }): boolean {
+    return !!this.entries.get(key)?.leases || !!(record.group && this.groups.has(record.group))
+  }
+
   private async initialize(): Promise<void> {
     await mkdir(this.directory, { recursive: true })
     const files = await readdir(this.directory)
@@ -142,6 +171,7 @@ export class RemoteAudioCache {
           || size !== record.bytes || typeof record.contentType !== 'string'
           || !Number.isFinite(record.lastPlayed)) throw new Error('Invalid cache record')
         if (!isRemoteAudioAnalysis(record.analysis)) delete record.analysis
+        if (record.group !== undefined && !/^[a-f0-9]{64}$/.test(record.group)) throw new Error('Invalid cache group')
         this.records.set(key, record)
       } catch {
         await rm(this.recordPath(key), { force: true })
@@ -178,6 +208,7 @@ export class RemoteAudioCache {
 
   async acquire(source: RemoteAudioSource, signal?: AbortSignal): Promise<RemoteAudioLease> {
     if (this.closed) throw new Error('Remote cache is closed.')
+    if (source.group !== undefined && !/^[a-f0-9]{64}$/.test(source.group)) throw new Error('Invalid cache group.')
     await (this.initialization ??= this.initialize())
     signal?.throwIfAborted()
     if (this.closed) throw new Error('Remote cache is closed.')
@@ -216,7 +247,8 @@ export class RemoteAudioCache {
           key, token: randomBytes(24).toString('hex'), bytes: record?.bytes ?? 0,
           total: record?.bytes ?? null, contentType: record?.contentType ?? 'application/octet-stream',
           complete: !!record, error: null, leases: 1, lastPlayed: Date.now(),
-          controller: new AbortController(), changed: new Set(), task: Promise.resolve(), settled: !!record, releaseTimer: null
+          controller: new AbortController(), changed: new Set(), task: Promise.resolve(), settled: !!record, releaseTimer: null,
+          analyze: record?.analyze ?? source.analyze, group: record?.group ?? source.group
         }
         this.entries.set(key, created)
         this.tokens.set(created.token, created)
@@ -262,6 +294,26 @@ export class RemoteAudioCache {
       progress: () => ({ loadedBytes: entry.bytes, totalBytes: entry.total, complete: entry.complete,
         ...(entry.failureKind ? { failureKind: entry.failureKind } : {}) }),
       finished: async () => { await entry.task; if (entry.error) throw entry.error },
+      readBytes: async limit => {
+        if (!Number.isSafeInteger(limit) || limit < 1 || released) throw new Error('Invalid cache read.')
+        await entry.task
+        signal?.throwIfAborted()
+        if (entry.error) throw entry.error
+        if (released || !entry.complete || entry.bytes > limit) throw new Error('Cached data exceeds its size limit.')
+        const file = await open(this.dataPath(key), 'r')
+        try {
+          const bytes = Buffer.alloc(entry.bytes + 1)
+          let offset = 0
+          while (offset < bytes.length) {
+            const read = await file.read(bytes, offset, bytes.length - offset, offset)
+            if (!read.bytesRead) break
+            offset += read.bytesRead
+          }
+          signal?.throwIfAborted()
+          if (released || offset !== entry.bytes) throw new Error('Cached data changed during reading.')
+          return bytes.subarray(0, offset)
+        } finally { await file.close() }
+      },
       release
     }
   }
@@ -274,8 +326,27 @@ export class RemoteAudioCache {
     return this.records.get(key)?.analysis ?? null
   }
 
+  /** Readiness for an already initialized playback's progress snapshot. This
+   * avoids a disk read or polling job just to recover a missed ready event. */
+  hasAnalysis(key: string): boolean { return !this.closed && !!this.records.get(key)?.analysis }
+
+  /** A complete Stratum interval set is scanned separately, without building a
+   * duplicate full-track PCM cache file. Reuse the same compact result/event. */
+  async storeAnalysis(key: string, analysis: RemoteAudioAnalysis): Promise<void> {
+    if (!isRemoteAudioAnalysis(analysis) || this.closed) return
+    await (this.initialization ??= this.initialize())
+    const saved = await this.serialize(async () => {
+      const record = this.records.get(key)
+      if (!record || this.closed) return false
+      await this.saveRecord(key, { ...record, analysis })
+      record.analysis = analysis
+      return true
+    })
+    if (saved) this.analysisOptions?.ready(key, analysis)
+  }
+
   private scheduleAnalysis(key: string): void {
-    if (!this.analysisOptions || this.closed || this.records.get(key)?.analysis) return
+    if (!this.analysisOptions || this.closed || this.records.get(key)?.analysis || this.records.get(key)?.analyze === false) return
     this.analysisQueue.add(key)
     // Rapid skipping must not create an unbounded background backlog.
     if (this.analysisQueue.size > 32) this.analysisQueue.delete(this.analysisQueue.values().next().value!)
@@ -443,7 +514,8 @@ export class RemoteAudioCache {
       entry.controller.signal.throwIfAborted()
       await this.serialize(async () => {
         const record: CacheRecord = {
-          version: 1, bytes: entry.bytes, contentType: entry.contentType, lastPlayed: entry.lastPlayed
+          version: 1, bytes: entry.bytes, contentType: entry.contentType, lastPlayed: entry.lastPlayed,
+          ...(entry.analyze === false ? { analyze: false } : {}), ...(entry.group ? { group: entry.group } : {})
         }
         await this.saveRecord(entry.key, record)
         this.records.set(entry.key, record)
@@ -465,12 +537,22 @@ export class RemoteAudioCache {
     let used = [...this.records.values()].reduce((total, record) => total + record.bytes, 0)
     for (const entry of this.entries.values()) if (!entry.complete) used += entry.bytes
     if (used + additionalBytes <= this.limitBytes) return
-    const candidates = [...this.records.entries()]
-      .filter(([key]) => !this.entries.get(key)?.leases)
-      .sort((a, b) => a[1].lastPlayed - b[1].lastPlayed)
-    for (const [key, record] of candidates) {
-      await this.removeRecord(key)
-      used -= record.bytes
+    // A segmented track is one eviction unit: retaining packets after removing
+    // their source index would consume space without allowing offline playback.
+    const units = new Map<string, Array<[string, CacheRecord]>>()
+    for (const [key, record] of this.records) {
+      const unit = record.group ? `group:${record.group}` : key
+      const members = units.get(unit) ?? []
+      members.push([key, record]); units.set(unit, members)
+    }
+    const candidates = [...units.values()]
+      .filter(members => members.every(([key, record]) => !this.protected(key, record)))
+      .sort((a, b) => Math.max(...a.map(([, record]) => record.lastPlayed)) - Math.max(...b.map(([, record]) => record.lastPlayed)))
+    for (const members of candidates) {
+      for (const [key, record] of members) {
+        await this.removeRecord(key)
+        used -= record.bytes
+      }
       if (used + additionalBytes <= this.limitBytes) return
     }
     // Lowering a limit may leave active entries over budget until released.
@@ -499,8 +581,8 @@ export class RemoteAudioCache {
     }
     await Promise.all(cancelled)
     await this.serialize(async () => {
-      for (const key of this.records.keys()) {
-        if (!this.entries.get(key)?.leases) await this.removeRecord(key)
+      for (const [key, record] of this.records) {
+        if (!this.protected(key, record)) await this.removeRecord(key)
       }
     })
   }
@@ -515,10 +597,10 @@ export class RemoteAudioCache {
     await (this.initialization ??= this.initialize())
     return this.serialize(async () => {
       let usedBytes = [...this.records.values()].reduce((total, record) => total + record.bytes, 0)
-      let activeBytes = 0
+      let activeBytes = [...this.records].reduce((total, [key, record]) => total + (this.protected(key, record) ? record.bytes : 0), 0)
       for (const entry of this.entries.values()) {
         if (!entry.complete) usedBytes += entry.bytes
-        if (entry.leases > 0) activeBytes += entry.bytes
+        if (!entry.complete && this.protected(entry.key, entry)) activeBytes += entry.bytes
       }
       return { usedBytes, activeBytes }
     })

@@ -20,6 +20,11 @@ export function parseStratumProofConfig(text: string): StratumProofConfig {
 export function stratumProofRoute(config: StratumProofConfig | null, path: string, quality: StreamingQualityRequest) {
   const track = parseSubsonicTrackPath(path)
   if (!config || !track || track.sourceId !== config.sourceId || !config.tracks.includes(track.sourceTrackId)) return null
+  const selected = stratumQualitySelection(quality)
+  return selected ? { connection: config, track: track.sourceTrackId, ...selected } : null
+}
+
+export function stratumQualitySelection(quality: StreamingQualityRequest) {
   // The proof service exposes only this ladder. Unsupported manual requests
   // and compatibility conversions retain the conventional route.
   const mode = typeof quality === 'object' ? quality.mode : isAutomaticStreamingQuality(quality) ? quality : undefined
@@ -27,5 +32,5 @@ export function stratumProofRoute(config: StratumProofConfig | null, path: strin
   if (typeof quality === 'object' && quality.compatibility) return null
   const representation: StratumProofQuality | null = target === 'original' ? 'lossless'
     : target === 64 ? 'opus-64' : target === 128 ? 'opus-128' : null
-  return representation ? { connection: config, track: track.sourceTrackId, quality: representation, mode, pinInitial: typeof quality === 'object' } : null
+  return representation ? { quality: representation, mode, pinInitial: typeof quality === 'object' } : null
 }

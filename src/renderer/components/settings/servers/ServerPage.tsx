@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import type { RemotePlaylistStatus } from '../../../../types/remotePlaylists'
 import { QualityControl } from './QualityControl'
+import { StratumControl } from './StratumControl'
 import { LibrariesGroup } from './LibrariesGroup'
 import { ServerHeader, UseServerRow } from './ServerHeader'
 import type { ServerMenuAction } from './ServerMenu'
@@ -62,7 +63,7 @@ export function ServerPage({ server, servers, playlistStatuses, errors, onBack, 
       </section>
       <section className="servers-subsection" aria-label="Streaming">
         <h4>Streaming</h4>
-        <div className="servers-group"><QualityControl server={server} servers={servers} /></div>
+        <div className="servers-group"><StratumControl server={server} /><QualityControl server={server} servers={servers} /></div>
       </section>
       <section className="servers-subsection" aria-label="Details">
         <h4>Details</h4>

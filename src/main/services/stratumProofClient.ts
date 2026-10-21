@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { AudioTransferEvent } from './automaticStreamingQuality.ts'
 import { stratumProofRequest, validateStratumProofEndpoint, StratumProofError } from './stratumProofTransport.ts'
+import type { StratumRequest } from './stratumTransport.ts'
 export { StratumProofError } from './stratumProofTransport.ts'
 
 /** Checkpoint protocol only. This is not a discovery or production pairing API. */
@@ -10,6 +11,8 @@ export interface StratumProofConnection { endpoint: string; session: string }
 export interface StratumProofAuthentication {
   readonly endpoint: string
   readonly signal: AbortSignal
+  /** Installed services supply a verified HTTPS transport; proofs stay loopback-only. */
+  readonly request?: StratumRequest
   getBearer(signal: AbortSignal): Promise<string>
   reject(): void
 }
@@ -23,6 +26,7 @@ export interface StratumProofSegment {
     quality: StratumProofQuality; sample_rate: number; codec_sample_rate: number
     channels: number; decoded_frames: number; discard_start_frames: number
     discard_end_frames: number; presentation: { start: number; frames: number }
+    retained_cache_hit?: boolean
   }
 }
 
@@ -53,11 +57,17 @@ export function validateStratumProofConnection(value: StratumProofConnection): S
   return { endpoint, session: value.session }
 }
 
+// A preparation reserves a server slot before its response reaches us. Serialize
+// handle mutations across current/next clients so cancellation can reclaim it
+// before a replacement reserves another. Segment delivery remains concurrent.
+const playbackMutations = new WeakMap<object, Promise<unknown>>()
+
 export class StratumProofClient {
   private connection: StratumProofConnection | StratumProofAuthentication
   constructor(connection: StratumProofConnection | StratumProofAuthentication) {
-    validateStratumProofEndpoint(connection.endpoint)
-    this.connection = 'getBearer' in connection ? connection : validateStratumProofConnection(connection)
+    if (!('request' in connection) || !connection.request) validateStratumProofEndpoint(connection.endpoint)
+    if (!('getBearer' in connection)) validateStratumProofConnection(connection)
+    this.connection = connection
   }
 
   private async request(path: string, method: 'GET' | 'POST' | 'DELETE', signal: AbortSignal,
@@ -67,24 +77,44 @@ export class StratumProofClient {
     const combined = owner ? AbortSignal.any([signal, owner.signal]) : signal
     const bearer = authenticated ? owner ? await owner.getBearer(combined) : (this.connection as StratumProofConnection).session : undefined
     try {
-      return await stratumProofRequest(this.connection.endpoint, path, method, combined, body, bearer, limit, observe)
+      return await (owner?.request ? owner.request(path, method, combined, body, bearer, limit, observe)
+        : stratumProofRequest(this.connection.endpoint, path, method, combined, body, bearer, limit, observe))
     } catch (error) {
       if (error instanceof StratumProofError && error.status === 401) owner?.reject()
       throw error
     }
   }
 
-  async open(trackId: string, signal: AbortSignal): Promise<StratumProofPlayback> {
+  private mutate<T>(work: () => Promise<T>): Promise<T> {
+    const previous = playbackMutations.get(this.connection) ?? Promise.resolve()
+    const task = previous.catch(() => {}).then(work)
+    playbackMutations.set(this.connection, task)
+    void task.finally(() => {
+      if (playbackMutations.get(this.connection) === task) playbackMutations.delete(this.connection)
+    }).catch(() => {})
+    return task
+  }
+
+  open(trackId: string, signal: AbortSignal): Promise<StratumProofPlayback> {
+    return this.mutate(() => this.openHandle(trackId, signal))
+  }
+
+  private async openHandle(trackId: string, signal: AbortSignal): Promise<StratumProofPlayback> {
+    signal.throwIfAborted()
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(trackId)) throw new Error('Invalid Stratum test track.')
     const capabilities = await this.request('/access/v1/capabilities', 'GET', signal, undefined, false)
     const advertised = json(capabilities.bytes)
     if (advertised.protocol !== 'stratum-access-proof-1' || advertised.audioExperiment !== 'stratum-authenticated-audio-1') {
       throw new Error('This endpoint does not provide the authenticated Stratum audio proof.')
     }
-    const response = await this.request(`/audio/v1/playbacks/${trackId}`, 'POST', signal)
+    signal.throwIfAborted()
+    // Keep the bounded POST alive long enough to receive and delete its handle.
+    // Destroying its socket on seek would discard the only handle we can close.
+    const response = await this.request(`/audio/v1/playbacks/${trackId}`, 'POST', AbortSignal.timeout(12_000))
     const value = json(response.bytes)
     const playback = hash(value.playback)
     try {
+      signal.throwIfAborted()
       const raw = record(value.source)
       const rate = integer(raw.sample_rate, 44100, 96000)
       if (![44100, 48000, 96000].includes(rate) || !['flac', 'pcm_s16le', 'pcm_s24le'].includes(String(raw.codec))
@@ -94,7 +124,7 @@ export class StratumProofClient {
       return { playback, source: { sha256: hash(raw.sha256), sample_rate: rate,
         channels: integer(raw.channels, 1, 2), bits_per_sample: bits, frames: integer(raw.frames, 1, rate * 1800) } }
     } catch (error) {
-      await this.close(playback)
+      await this.closeHandle(playback)
       throw error
     }
   }
@@ -105,8 +135,42 @@ export class StratumProofClient {
     integer(start, 0, source.frames - 1)
     integer(frames, 1, Math.min(4 * source.sample_rate, source.frames - start))
     if (!['lossless', 'opus-64', 'opus-128'].includes(quality)) invalid()
+    const response = await this.segmentResponse(playback, start, frames, quality, signal, observe)
+    return parseStratumSegment(response, source, start, frames, quality, signal)
+  }
+
+  async segmentResponse(playback: StratumProofPlayback, start: number, frames: number, quality: StratumProofQuality,
+    signal: AbortSignal, observe?: (event: AudioTransferEvent) => void) {
+    integer(start, 0, playback.source.frames - 1)
+    integer(frames, 1, Math.min(4 * playback.source.sample_rate, playback.source.frames - start))
+    if (!['lossless', 'opus-64', 'opus-128'].includes(quality)) invalid()
     const response = await this.request(`/audio/v1/playback/${hash(playback.playback)}/segment`, 'POST', signal,
       { start, frames, quality }, true, PAYLOAD_LIMIT + 16_388, observe)
+    parseStratumSegment(response, playback.source, start, frames, quality, signal)
+    return response
+  }
+
+  close(playback: string): Promise<void> { return this.mutate(() => this.closeHandle(playback)) }
+
+  /** Reserve cleanup's place before a replacement can open. Cached downloads
+   * may still be completing an interval when their decoder is cancelled. */
+  closeAfter(playback: Promise<StratumProofPlayback>, pending: Promise<unknown>[]): Promise<void> {
+    return this.mutate(async () => {
+      await Promise.allSettled(pending)
+      try { await this.closeHandle((await playback).playback) } catch { /* Failed preparation has no handle. */ }
+    })
+  }
+
+  private async closeHandle(playback: string): Promise<void> {
+    if (!HASH.test(playback)) return
+    try { await this.request(`/audio/v1/playback/${playback}`, 'DELETE', AbortSignal.timeout(1500)) }
+    catch { /* Best effort: server expiry also reclaims abandoned handles. */ }
+  }
+}
+
+/** Apply the same contract and payload hash checks to disk and network bytes. */
+export function parseStratumSegment(response: { bytes: Buffer; type: string }, source: StratumProofSource,
+  start: number, frames: number, quality: StratumProofQuality, signal: AbortSignal): StratumProofSegment {
     const bytes = response.bytes
     if (response.type !== 'application/vnd.stratum.segment' || bytes.length < 4) invalid()
     const size = bytes.readUInt32BE(0)
@@ -137,12 +201,7 @@ export class StratumProofClient {
     signal.throwIfAborted()
     return { payload, metadata: { quality, sample_rate: source.sample_rate, codec_sample_rate: codecRate,
       channels: source.channels, decoded_frames: decoded, discard_start_frames: skip,
-      discard_end_frames: tail, presentation: { start, frames } } }
-  }
-
-  async close(playback: string): Promise<void> {
-    if (!HASH.test(playback)) return
-    try { await this.request(`/audio/v1/playback/${playback}`, 'DELETE', AbortSignal.timeout(1500)) }
-    catch { /* Best effort: server expiry also reclaims abandoned handles. */ }
-  }
+      discard_end_frames: tail, presentation: { start, frames },
+      // Optional diagnostic hint. Older proofs omit it; absence is not a miss.
+      ...(typeof metadata.retained_cache_hit === 'boolean' ? { retained_cache_hit: metadata.retained_cache_hit } : {}) } }
 }

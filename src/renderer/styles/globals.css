@@ -30014,6 +30014,16 @@ html[data-theme-tone="light"] .servers-window {
   background: rgba(var(--accent-rgb), 0.16);
 }
 
+.servers-stratum {
+  border-bottom: 1px solid var(--servers-hair);
+}
+
+.servers-stratum > .servers-hint,
+.servers-stratum > .servers-error {
+  margin: 0;
+  padding: 0 14px 12px;
+}
+
 .servers-link {
   flex-shrink: 0;
   border: 0;

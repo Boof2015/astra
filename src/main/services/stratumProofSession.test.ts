@@ -148,7 +148,7 @@ test('malformed replies and supplier errors never expose secret text', { timeout
   await assert.rejects(owner.getBearer(signal()), { message: 'Invalid Stratum session response.' })
   const second = new StratumProofSession(endpoint, async () => { throw new Error(password) })
   t.after(() => second.close())
-  await assert.rejects(second.getBearer(signal()), { message: 'Could not read the disposable Navidrome sign-in.' })
+  await assert.rejects(second.getBearer(signal()), { message: 'Could not read the saved Navidrome sign-in.' })
 })
 
 test('renewal cannot replace the bearer underneath existing playback handles', { timeout: 6000 }, async t => {

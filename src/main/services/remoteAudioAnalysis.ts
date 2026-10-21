@@ -22,14 +22,54 @@ export async function analyzeRemoteAudioFile(file: string, ffmpeg: string, ffpro
   if (!Number.isInteger(channels) || channels < 1 || channels > 32 || !Number.isFinite(duration) || duration <= 0) {
     throw new Error('Remote analysis requires a complete audio duration and channel layout.')
   }
+  return scanRemoteAudio(ffmpeg, ['-i', file], channels, duration, signal)
+}
+
+/** Scan only a complete retained Stratum interval set. The producer decodes one
+ * cached interval at a time; no second download or whole-track PCM allocation. */
+export async function analyzeRemoteAudioPcm(ffmpeg: string,
+  source: { sample_rate: number; channels: number; frames: number },
+  pcm: AsyncIterable<Buffer>, signal: AbortSignal): Promise<RemoteAudioAnalysis> {
+  return scanRemoteAudio(ffmpeg, ['-f', 's32le', '-ar', String(source.sample_rate), '-ac', String(source.channels),
+    '-i', 'pipe:0'], source.channels, source.frames / source.sample_rate, signal, pcm, source.frames * source.channels * 4)
+}
+
+async function scanRemoteAudio(ffmpeg: string, input: string[], channels: number, duration: number,
+  signal: AbortSignal, pcm?: AsyncIterable<Buffer>, expectedBytes?: number): Promise<RemoteAudioAnalysis> {
   signal.throwIfAborted()
   return new Promise((resolve, reject) => {
     const sums = new Float64Array(512), counts = new Float64Array(512)
     const stride = channels * 4
     let frames = 0, remainder = Buffer.alloc(0), stderr = '', failed = false
-    const child = spawn(ffmpeg, ['-hide_banner', '-nostats', '-nostdin', '-i', file, '-map', '0:a:0', '-vn',
+    const child = spawn(ffmpeg, ['-hide_banner', '-nostats', '-nostdin', ...input, '-map', '0:a:0', '-vn',
       '-af', 'ebur128=peak=sample:framelog=verbose', '-ar', '8000', '-c:a', 'pcm_f32le', '-f', 'f32le', 'pipe:1'],
-    { signal, timeout: 180_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    { signal, timeout: 180_000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    child.stdin.on('error', () => { failed = true })
+    const feeding = (async () => {
+      let bytes = 0
+      if (pcm) for await (const chunk of pcm) {
+        signal.throwIfAborted()
+        bytes += chunk.length
+        if (bytes > expectedBytes!) throw new Error('Unexpected analysis frames.')
+        await new Promise<void>((resolve, reject) => {
+          let settled = false
+          const close = () => done(new Error('Analysis input closed.'))
+          const done = (error?: Error | null) => {
+            if (settled) return
+            settled = true
+            child.stdin.removeListener('close', close)
+            signal.removeEventListener('abort', close)
+            if (error) reject(error); else resolve()
+          }
+          child.stdin.once('close', close)
+          signal.addEventListener('abort', close, { once: true })
+          if (child.stdin.destroyed || signal.aborted) close()
+          else child.stdin.write(chunk, done)
+        })
+      }
+      if (pcm && bytes !== expectedBytes) throw new Error('Incomplete analysis frames.')
+      child.stdin.end()
+    })().catch(() => { failed = true; child.kill('SIGKILL') })
     if (child.pid) {
       try { setPriority(child.pid, constants.priority.PRIORITY_BELOW_NORMAL) } catch { /* Best effort. */ }
     }
@@ -51,7 +91,8 @@ export async function analyzeRemoteAudioFile(file: string, ffmpeg: string, ffpro
     // Wait for close even after cancellation so cache shutdown does not remove
     // the scanner's file lease while the child still has the file open.
     child.on('error', () => { failed = true })
-    child.on('close', code => {
+    child.on('close', async code => {
+      await feeding
       const loudness = parseEbur128Summary(stderr)
       if (failed || signal.aborted || code !== 0 || !frames || remainder.length || !loudness
         || Math.abs(frames / 8000 - duration) > Math.max(0.5, duration * 0.01)) {

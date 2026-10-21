@@ -6,6 +6,7 @@ import { PassThrough } from 'node:stream'
 import ts from 'typescript'
 import { ProgressiveStartupRegistry } from './progressiveStartupRegistry.ts'
 import { ProgressivePcmDelivery } from './progressivePcmDelivery.ts'
+import { CompletedStreamingDiagnostics } from './services/streamingDiagnostics.ts'
 import { withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemoteDecoder } from '../shared/audio/remoteCompatibility.ts'
 import { deliveredAudioFormat, type StreamingQualityRequest } from '../types/streamingQuality.ts'
 
@@ -21,7 +22,7 @@ const javascript = ts.transpileModule(declarations.map(node => node.getText(sour
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None }
 }).outputText
 
-function harness(fail: (attempt: number) => string | null, holdRetry = false) {
+function harness(fail: (attempt: number) => string | null, holdRetry = false, stratumUnavailable = false) {
   const requests: Array<StreamingQualityRequest | undefined> = [], released: number[] = [], events: any[] = []
   const sessions = new Map(), registry = new ProgressiveStartupRegistry()
   let resume!: () => void
@@ -30,8 +31,12 @@ function harness(fail: (attempt: number) => string | null, holdRetry = false) {
     send: (_channel: string, payload: unknown) => { events.push(payload) } })
   const context = {
     Buffer, AbortController, setInterval, clearInterval, ProgressivePcmDelivery, isDev: false,
+    installedStratumRoute: async () => stratumUnavailable ? { connection: {}, track: 'song', quality: 'lossless' } : null,
+    StratumProofPcm: { open: async () => { throw new Error('Sidecar cannot prepare this track.') } },
+    stratumConnections: { playbackFailed: () => { events.push({ stratumFallback: true }) } },
+    parseSubsonicTrackPath: () => ({ sourceId: 1, sourceTrackId: 'song' }),
     withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemoteDecoder, deliveredAudioFormat,
-    remoteStreamSessions: sessions, progressiveStartupControllers: registry,
+    remoteStreamSessions: sessions, completedStreamingDiagnostics: new CompletedStreamingDiagnostics(), progressiveStartupControllers: registry,
     library: { getTrackByPath: () => ({ channels: 2 }) }, resolveBinary: async (name: string) => name,
     resolveProgressiveStreamSourceType: (path: string) => path.startsWith('/') ? 'local' : 'subsonic',
     normalizeProgressiveStartTimeSeconds: (value: number) => value ?? 0, resolveRemoteTrackDurationSeconds: () => 60,
@@ -68,6 +73,17 @@ function harness(fail: (attempt: number) => string | null, holdRetry = false) {
 
 const unsupported = 'Decoder (codec ac4) not found for input stream #0:0'
 const path = 'subsonic://1/song'
+
+test('an installed Sidecar preparation failure falls back before audio starts and leaves the normal stream usable', async () => {
+  const h = harness(() => null, false, true)
+  const result = await h.api.start(h.sender, path, 48000, 2, { startTimeSeconds: 10 })
+  assert.equal(result.startTimeSeconds, 10)
+  assert.deepEqual(h.requests, [undefined])
+  assert.equal(h.events.some(event => event.stratumFallback), true)
+  assert.equal(h.events.some(event => event.type === 'failed' || event.stage === 'failed'), false)
+  await h.api.cancel(result.sessionId)
+  assert.deepEqual(h.released, [1])
+})
 
 test('Standard retries an unsupported decoder without a failed event, then releases the compatible session normally', async () => {
   const h = harness(attempt => attempt === 1 ? unsupported : null)

@@ -6327,6 +6327,26 @@ export class AudioEngine {
     return this.remoteStreamState?.completeBuffer ? null : this.remoteStreamState?.sessionId ?? null
   }
 
+  /** Read only, sampled by the hidden diagnostics panel. No new worklet messages. */
+  getStreamingDiagnosticsState() {
+    const native = this.isNativeExclusiveMode()
+    const current = native ? null : this.remoteStreamState
+    const next = native ? null : this.nextRemoteStream?.state
+    return {
+      sessionId: this.getRemoteStreamSessionId(),
+      nextSessionId: next && !next.completeBuffer ? next.sessionId : null,
+      path: this.currentBufferTrackPath,
+      position: this.currentTime,
+      duration: this.duration,
+      state: this.playbackState,
+      start: current ? current.startFrame / current.sampleRate : null,
+      bufferedEnd: this.getRemoteBufferedSeconds(),
+      completeLocalBuffer: !native && !!(this.audioBuffer || current?.completeBuffer) && !current?.transport,
+      transport: current?.transport === 'stratum-proof' ? 'stratum' as const : null,
+      quality: this.getRemotePlaybackQuality()
+    }
+  }
+
   isNormalizationApproximate(): boolean {
     return this.normalizationApproximate
   }

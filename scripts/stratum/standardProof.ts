@@ -12,9 +12,14 @@ import { spawn, execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { runInNewContext } from 'node:vm'
 import { mainHarness } from './mainHarness.ts'
-import { StratumProofPcm } from '../../src/main/services/stratumProofPlayback.ts'
+import { StratumAudioCache } from '../../src/main/services/stratumAudioCache.ts'
+import { RemoteAudioCache } from '../../src/main/services/remoteAudioCache.ts'
+import { analyzeRemoteAudioPcm, analyzeRemoteAudioFile } from '../../src/main/services/remoteAudioAnalysis.ts'
+import { stratumProofRequest } from '../../src/main/services/stratumProofTransport.ts'
+import type { StratumConnections } from '../../src/main/services/stratumConnections.ts'
+import { StratumProofPcm, decodeStratumProofSegment } from '../../src/main/services/stratumProofPlayback.ts'
 import { AutomaticStreamingQuality, type AudioTransferEvent } from '../../src/main/services/automaticStreamingQuality.ts'
-import type { RemoteStreamInfo } from '../../src/types/remoteStream.ts'
+import type { RemoteStreamInfo, RemoteAudioLoadProgress } from '../../src/types/remoteStream.ts'
 
 const binary = process.env.ASTRA_STRATUM_SIDECAR
 assert.ok(binary, 'Set ASTRA_STRATUM_SIDECAR to the checkpoint B sidecar-access binary.')
@@ -106,6 +111,12 @@ test('authenticated Stratum → actual Astra Standard session → real worklet, 
       '-f', 'f32le', 'pipe:1'], { maxBuffer: 8 * 1024 * 1024, timeout: 5000 })
     assert.equal(pcm.length, Math.floor((rate * 9 + 317) * 48000 / rate) * 8)
     assert.deepEqual(pcm, reference.subarray(0, pcm.length), `lossless ${rate} native frames differ`)
+    const diagnostic = h.diagnostics(info.sessionId)
+    assert.equal(diagnostic.state, 'complete', 'diagnostics survive decoder EOF until audible EOF')
+    assert.equal(diagnostic.localCacheComplete, false, 'Stratum segments are not a retained local file')
+    assert.equal(diagnostic.segments.length, 3)
+    assert.ok(diagnostic.segments.every((segment: { state: string; payloadBytes: number }) => segment.state === 'decoded' && segment.payloadBytes > 0))
+    assert.ok(!JSON.stringify(diagnostic).includes(session), 'diagnostics must not contain a bearer')
     rendered.push(pcm)
     for (const quality of [64, 128] as const) {
       const lossy = await collect(await h.start(track, 48000, quality))
@@ -132,6 +143,150 @@ test('authenticated Stratum → actual Astra Standard session → real worklet, 
     const first = Math.floor(Math.floor(1.234567 * rate) * 48000 / rate)
     assert.deepEqual(sought, reference.subarray(first * 8, first * 8 + sought.length), `seek at ${rate} lost resampler phase`)
   }
+  // Installed route with the real retained cache/decoder/scanner. The transport
+  // here points only at the disposable authenticated Sidecar above.
+  let cacheOffline = false, cacheRequests = 0, analyses = 0
+  const disk = new RemoteAudioCache(join(directory, 'cache'), 64 * 1024 ** 2, {
+    analyze: async () => { throw new Error('Segment sent to file scanner.') }, ready: () => { analyses++ }
+  })
+  const retained = new StratumAudioCache(disk, {
+    decode: (segment, signal) => decodeStratumProofSegment(ffmpeg, segment, signal),
+    scan: (source, pcm, signal) => analyzeRemoteAudioPcm(ffmpeg, source, pcm, signal)
+  })
+  const approved = { scope: 'disposable-approved-account', connection: { endpoint, signal: new AbortController().signal,
+    getBearer: async () => session, reject() {},
+    request: ((...args: Parameters<typeof stratumProofRequest> extends [string, ...infer R] ? R : never) => {
+      cacheRequests++
+      if (cacheOffline) return Promise.reject(new Error('Offline fixture'))
+      return stratumProofRequest(endpoint, ...args)
+    })
+  } }
+  const installed = { cachedConnection: () => approved, playbackStarted() {}, playbackFailed() { throw new Error('Unexpected Stratum fallback') } } as unknown as StratumConnections
+  const aheadObservations: number[] = []
+  class CachedPolicy extends AutomaticStreamingQuality {
+    override recommend(...args: Parameters<AutomaticStreamingQuality['recommend']>) {
+      aheadObservations.push(args[2].segments?.aheadSeconds ?? 0)
+      return super.recommend(...args)
+    }
+  }
+  const cacheProgress: RemoteAudioLoadProgress[] = []
+  const cached = mainHarness(config, ffmpeg, { installed, cache: retained, policy: new CachedPolicy(),
+    deliver: (channel, value) => { if (channel === 'audio:progressiveLoadProgress') cacheProgress.push(value as RemoteAudioLoadProgress) } })
+  t.after(async () => { await cached.close(); await retained.close(); await disk.close() })
+  async function cachedCollect(track: string, quality: 'original' | 64 | 128, seek = 0) {
+    const info = await cached.start(track, 48000, quality, seek)
+    assert.equal(info.quality?.transport, 'stratum')
+    assert.equal(info.quality?.requested, quality)
+    assert.ok(info.quality?.analysisKey)
+    const tick = setInterval(() => cached.ready(info.sessionId), 2)
+    try {
+      await until(() => cached.events.some(e => e.sessionId === info.sessionId && ['failed', 'complete'].includes(e.type)), 'Cached audio did not finish.')
+      assert.equal(cached.events.some(e => e.sessionId === info.sessionId && e.type === 'failed'), false)
+      const pcm = Buffer.concat([Buffer.from(info.initialChunk!.pcmData), ...cached.chunks.filter(c => c.sessionId === info.sessionId).map(c => Buffer.from(c.pcmData))])
+      // Completion retains the group through audible EOF, until the renderer releases it.
+      assert.ok(cached.sessions.has(info.sessionId))
+      await disk.clearUnused()
+      assert.ok((await disk.status()).activeBytes > 0)
+      return { info, pcm }
+    } finally { clearInterval(tick); await cached.cancel(info.sessionId) }
+  }
+  for (const [i, rate] of [44100, 48000, 96000].entries()) {
+    const track = `r${rate}`
+    const first = await cachedCollect(track, 'original')
+    assert.deepEqual(first.pcm, rendered[i], 'cache changed original decoded samples')
+    assert.equal(first.info.quality?.loudness, undefined, 'first listen must not change gain midway')
+    await until(() => analyses === i + 1, 'Retained analysis did not finish')
+    const full = await disk.getAnalysis(first.info.quality!.analysisKey!)
+    const reference = await analyzeRemoteAudioFile(join(directory, `${track}.wav`), ffmpeg,
+      createRequire(import.meta.url)('ffprobe-static').path, AbortSignal.timeout(10000))
+    assert.ok(full)
+    assert.equal(full.loudnessLufs, reference.loudnessLufs)
+    assert.equal(full.peakLinear, reference.peakLinear)
+    const waveformError = Math.max(...full.peaks.map((peak, bin) => Math.abs(peak - reference.peaks[bin])))
+    // ffprobe rounds duration to microseconds; a bin boundary can move by one 8 kHz sample.
+    assert.ok(waveformError < .005, `PCM/file waveform difference at ${rate}: ${waveformError}`)
+    cacheOffline = true
+    const before = cacheRequests
+    const sought = await cachedCollect(track, 'original', 1.234567)
+    const offset = Math.floor(Math.floor(1.234567 * rate) * 48000 / rate)
+    assert.deepEqual(sought.pcm, rendered[i].subarray(offset * 8, offset * 8 + sought.pcm.length), 'canonical cache seek lost phase')
+    assert.equal(cacheRequests, before, 'warm seek must make no server or authentication requests')
+    assert.equal(sought.info.quality?.loudness?.loudnessLufs, reference.loudnessLufs)
+    cacheOffline = false
+  }
+  for (const quality of [64, 128] as const) {
+    const first = await cachedCollect('r48000', quality)
+    await until(() => analyses === (quality === 64 ? 4 : 5), 'Opus analysis did not finish')
+    cacheOffline = true
+    const before = cacheRequests
+    const warm = await cachedCollect('r48000', quality)
+    assert.deepEqual(warm.pcm, first.pcm)
+    assert.equal(cacheRequests, before)
+    assert.ok(warm.info.quality?.loudness)
+    assert.equal(warm.info.quality?.requestedCodec, 'opus')
+    cacheOffline = false
+  }
+
+  // Reproduce the real limitation: the listener stays at zero while the PCM
+  // buffer reaches its cap. Encoded fetching and waveform analysis must still
+  // finish the entire two-minute track; memory remains bounded by backpressure.
+  const heldCached = await cached.start('adaptive', 48000, 'automatic')
+  cached.ready(heldCached.sessionId, false)
+  const heldSession = cached.sessions.get(heldCached.sessionId)!
+  await until(() => heldSession.stratum.cacheComplete, 'Fetching stopped at the PCM lookahead limit.')
+  await until(() => analyses === 6, 'Full waveform analysis waited for playback consumption.')
+  await until(() => cacheProgress.some(progress => progress.sessionId === heldCached.sessionId && progress.analysisReady === true),
+    'Completed Stratum analysis never reached ongoing progress for the current listen.')
+  const readyProgress = cacheProgress.find(progress => progress.sessionId === heldCached.sessionId && progress.analysisReady === true)!
+  assert.equal(readyProgress.quality?.analysisKey, heldCached.quality?.analysisKey)
+  assert.equal(readyProgress.quality?.loudness, undefined)
+  assert.equal(readyProgress.done, false)
+  assert.equal(heldSession.consumedFrames, 0)
+  assert.ok(heldSession.decodedFrames <= 32 * 48000, `unbounded PCM: ${heldSession.decodedFrames}`)
+  assert.ok(heldSession.decodedFrames < heldSession.stratum.interval.frames)
+  assert.ok(aheadObservations.some(ahead => ahead > 60), 'automatic quality must see encoded cache beyond the PCM cap')
+  assert.ok(await disk.getAnalysis(heldCached.quality!.analysisKey!))
+  assert.equal(heldCached.quality?.loudness, undefined, 'analysis must not change first-listen gain')
+  await heldSession.stratum.release()
+  const fetchedRequests = cacheRequests
+  const fetchedBytes = heldSession.loadedBytes
+  cacheOffline = true
+  const heldTick = setInterval(() => cached.ready(heldCached.sessionId), 2)
+  try {
+    await until(() => cached.events.some(e => e.sessionId === heldCached.sessionId && ['complete', 'failed'].includes(e.type)), 'Retained playback did not drain.')
+    assert.ok(!cached.events.some(e => e.sessionId === heldCached.sessionId && e.type === 'failed'))
+    const decoded = Buffer.concat([Buffer.from(heldCached.initialChunk!.pcmData),
+      ...cached.chunks.filter(c => c.sessionId === heldCached.sessionId).map(c => Buffer.from(c.pcmData))])
+    const original = fixtures.get('adaptive')!.subarray(44)
+    assert.equal(decoded.length, original.length * 2)
+    for (let sample = 0; sample < original.length / 2; sample++) {
+      assert.equal(decoded.readFloatLE(sample * 4), original.readInt16LE(sample * 2) / 32768, `changed sample ${sample}`)
+    }
+    assert.equal(cacheRequests, fetchedRequests, 'draining retained audio must not contact Sidecar')
+    assert.equal(heldSession.loadedBytes, fetchedBytes, 'decode reads must not count as new downloads')
+  } finally { clearInterval(heldTick); await cached.cancel(heldCached.sessionId); cacheOffline = false }
+
+  // Fetching later qualities must not move the audible-quality marker early.
+  const scheduled = mainHarness(config, ffmpeg, { installed, cache: retained,
+    segmentQuality: seconds => seconds < 40 || seconds >= 80 ? 'lossless' : 'opus-64' })
+  t.after(() => scheduled.close())
+  const scheduledInfo = await scheduled.start('adaptive', 48000)
+  await until(() => {
+    const tail = scheduled.diagnostics(scheduledInfo.sessionId)?.segments.at(-1)
+    return !!tail && tail.end > 120 && ['received', 'decoded'].includes(tail.state)
+  }, 'Scheduled qualities did not fetch ahead of the held decoder.')
+  assert.equal(scheduledInfo.quality?.requested, 'original')
+  assert.ok(!scheduled.chunks.some(c => c.qualityChanges?.some(change => change.quality.requested === 64)))
+  const scheduledTick = setInterval(() => scheduled.ready(scheduledInfo.sessionId), 2)
+  try {
+    await until(() => scheduled.events.some(e => ['complete', 'failed'].includes(e.type)), 'Scheduled cached PCM did not finish.')
+    assert.ok(!scheduled.events.some(e => e.type === 'failed'))
+    const changes = [scheduledInfo.initialChunk!, ...scheduled.chunks].flatMap(c => c.qualityChanges ?? [])
+    assert.deepEqual(changes.map(change => [change.frame, change.quality.requested]), [[0, 'original'], [40 * 48000, 64], [80 * 48000, 'original']])
+  } finally { clearInterval(scheduledTick); await scheduled.close() }
+  console.log('Fetch-ahead proof: full 120-second cache and waveform with listener held at zero, bounded PCM, exact offline drain, correct quality markers.')
+  await cached.close(); await retained.close(); await disk.close()
+
   // Real worklet natural handoff with the delivered PCM, crossing native clocks.
   let Processor: any
   runInNewContext(readFileSync(new URL('../../src/renderer/public/oscilloscope-worklet.js', import.meta.url), 'utf8'), {
@@ -191,7 +346,14 @@ test('authenticated Stratum → actual Astra Standard session → real worklet, 
         const session = adaptive.sessions.get(info.sessionId)
         if (session) adaptive.position(info.sessionId, Math.max(0, session.decodedFrames - 44100 * 10))
       }, 2)
-      try { await until(() => adaptive.events.some(e => e.type === 'complete' || e.type === 'failed'), 'Automatic PCM did not finish.', 25000) }
+      try {
+        await until(() => adaptive.events.some(e => e.type === 'complete' || e.type === 'failed'), 'Automatic PCM did not finish.', 25000)
+      } catch (error) {
+        const active = adaptive.sessions.get(info.sessionId)
+        const diagnostic = adaptive.diagnostics(info.sessionId)
+        throw new Error(`${String(error)} ${JSON.stringify({ decodedFrames: active?.decodedFrames, consumedFrames: active?.consumedFrames,
+          paused: active?.stdoutPausedForBackpressure, pending: active?.pendingOutcome?.outcome, lastSegment: diagnostic?.segments.at(-1) })}`)
+      }
       finally { clearInterval(tick) }
       assert.ok(!adaptive.events.some(e => e.type === 'failed'))
       const chunks = [info.initialChunk!, ...adaptive.chunks]

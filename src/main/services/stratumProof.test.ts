@@ -75,6 +75,11 @@ test('segment delivery validates identity, native trims and payload before decod
   const client = new StratumProofClient({ ...connection, endpoint: `http://127.0.0.1:${(server.address() as { port: number }).port}` })
   const request = () => client.segment(playback, 200, 500, 'lossless', AbortSignal.timeout(2000))
   assert.deepEqual((await request()).payload, payload)
+  assert.equal((await request()).metadata.retained_cache_hit, undefined)
+  for (const hint of [true, false, 'true']) {
+    change = { retained_cache_hit: hint }
+    assert.equal((await request()).metadata.retained_cache_hit, typeof hint === 'boolean' ? hint : undefined)
+  }
   for (const invalid of [{ source_sha256: 'e'.repeat(64) }, { sample_rate: 48000 }, { presentation: { start: 201, frames: 500 } },
     { decoded_frames: 999 }, { discard_end_frames: 299 }, { payload_sha256: 'f'.repeat(64) }, { quality: 'opus-64' }]) {
     change = invalid
@@ -86,4 +91,36 @@ test('segment delivery validates identity, native trims and payload before decod
   assert.equal(count, before + 1)
   status = 401
   await assert.rejects(request(), /sign-in expired/)
+})
+
+test('cancelled preparation reclaims the server slot before its replacement opens', { timeout: 6000 }, async t => {
+  let active = 0, opens = 0, deleted = 0
+  let release!: () => void, accepted!: () => void
+  const held = new Promise<void>(resolve => { release = resolve })
+  const started = new Promise<void>(resolve => { accepted = resolve })
+  const server = createServer(async (req, res) => {
+    req.resume()
+    res.setHeader('content-type', 'application/json')
+    if (req.url?.includes('capabilities')) { res.end(JSON.stringify({ protocol: 'stratum-access-proof-1', audioExperiment: 'stratum-authenticated-audio-1' })); return }
+    if (req.method === 'DELETE') { active--; deleted++; res.end('{}'); return }
+    opens++
+    if (active) { res.writeHead(429); res.end('{}'); return }
+    active++
+    if (opens === 1) { accepted(); await held }
+    res.end(JSON.stringify({ ...playback, source: { ...source, codec: 'flac' }, sourcePolicy: 'complete-private-copy', maxSegmentSeconds: 4 }))
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()) }))
+  const shared = { ...connection, endpoint: `http://127.0.0.1:${(server.address() as { port: number }).port}` }
+  const first = new StratumProofClient(shared), replacement = new StratumProofClient(shared)
+  const abort = new AbortController()
+  const old = assert.rejects(first.open('song', abort.signal))
+  await started; abort.abort()
+  const next = replacement.open('song', AbortSignal.timeout(4000))
+  release()
+  await old
+  const value = await next
+  assert.equal(deleted, 1); assert.equal(active, 1)
+  await replacement.close(value.playback)
+  assert.equal(active, 0)
 })
