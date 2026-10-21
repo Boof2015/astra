@@ -195,8 +195,25 @@ export class StratumConnections {
     if (typeof enabled !== 'boolean') throw new Error('Invalid Stratum setting.')
     const source = this.source(id)
     if (!enabled) {
+      const status = this.status(id)
+      const saved = this.saved(id)
+      // Turning playback off is not forgetting that Sidecar exists. Re-enabling
+      // still verifies the current announcement and identity before signing in.
+      // A failed check must instead offer discovery of the replacement server.
+      const candidate = status.state !== 'error' ? this.candidates.get(id) ?? (saved ? {
+        ...saved, endpoint: status.endpoint ?? saved.manifest.endpoints[0].url
+      } : undefined) : undefined
       this.invalidate(id)
-      await this.persist(id, undefined, () => { this.source(id) })
+      const controller = this.controller(id)
+      const validate = () => {
+        if (controller.signal.aborted || this.source(id).binding !== source.binding) throw cancelled()
+      }
+      await this.persist(id, undefined, validate)
+      validate()
+      if (candidate?.binding === source.binding) {
+        this.candidates.set(id, candidate)
+        return this.publish(id, 'available', candidate.endpoint)
+      }
       return this.publish(id, 'unchecked', null)
     }
     if (!source.enabled) throw new Error('Turn on this server before enabling Stratum.')

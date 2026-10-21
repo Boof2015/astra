@@ -30015,7 +30015,39 @@ html[data-theme-tone="light"] .servers-window {
 }
 
 .servers-stratum {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
   border-bottom: 1px solid var(--servers-hair);
+}
+
+.servers-stratum-wave {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: min(360px, 60%);
+  height: 100%;
+  pointer-events: none;
+  z-index: -1;
+  shape-rendering: crispEdges;
+}
+.servers-stratum-wave rect {
+  fill: #81abc4;
+  stroke: none;
+  opacity: 0;
+  animation: stratum-enable-wave 1350ms both;
+  animation-delay: var(--wave-delay);
+}
+.servers-stratum-wave rect.is-original { fill: #b6d2a6; }
+html[data-theme-tone="light"] .servers-stratum-wave rect { fill: #7ba8c3; }
+html[data-theme-tone="light"] .servers-stratum-wave rect.is-original { fill: #a1c08e; }
+@keyframes stratum-enable-wave {
+  0% { opacity: 0; }
+  18%, 38% { opacity: var(--wave-strength); }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .servers-stratum-wave { display: none; }
 }
 
 .servers-stratum > .servers-hint,

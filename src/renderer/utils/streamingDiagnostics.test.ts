@@ -1,6 +1,7 @@
+import type { StreamingDiagnosticsSession, StreamingDiagnosticSegment } from '../../types/streamingDiagnostics.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { diagnosticBufferedRange, diagnosticWindow, pollStreamingDiagnostics, type StreamingDiagnosticsReading } from './streamingDiagnostics.ts'
+import { diagnosticBufferedRange, diagnosticMapSpans, diagnosticWindow, pollStreamingDiagnostics, type StreamingDiagnosticsReading } from './streamingDiagnostics.ts'
 
 const reading: StreamingDiagnosticsReading = { title: 'Track', artist: 'Artist', duration: 180, position: 90,
   playbackState: 'playing', start: 80, bufferedEnd: 100, completeLocalBuffer: false,
@@ -55,3 +56,39 @@ test('diagnostic polling does not overlap, publish hidden/stale samples, or cont
   assert.equal(calls, 3)
   assert.equal(removed, true)
 })
+
+test('activity map separates retained islands, prepared PCM, transfers and unprepared time after a seek', () => {
+  const session: StreamingDiagnosticsSession = { sessionId: 1, transport: 'stratum', start: 8, duration: 24,
+    bufferedEnd: 12, sourceRate: 48000, outputRate: 48000, channels: 2, loadedBytes: 500, totalBytes: null,
+    localCacheComplete: false, state: 'preparing', omittedSegments: 0,
+    cachedRanges: [{ start: 0, end: 4, qualities: ['lossless'] }, { start: 8, end: 12, qualities: ['lossless', 'opus-64'] },
+      { start: 20, end: 24, qualities: ['opus-128'] }],
+    segments: [segment(8, 'decoded', 'opus-64'), { ...segment(12, 'downloading'), receivedBytes: 100, transferTotalBytes: 400 }] }
+  const actual = diagnosticMapSpans({ ...reading, transport: 'stratum', start: 8, position: 9, duration: 24, bufferedEnd: 12, session })
+  assert.deepEqual(actual.map(s => [s.start, s.end, s.state, s.quality, s.progress]), [
+    [0, 4, 'cached', 'lossless', null], [4, 8, 'unprepared', null, null], [8, 9, 'cached', 'opus-64', null],
+    [9, 12, 'buffered', 'opus-64', null], [12, 16, 'downloading', 'lossless', .25],
+    [16, 20, 'unprepared', null, null], [20, 24, 'cached', 'opus-128', null]
+  ])
+  // A Sidecar hit or old receipt is not Astra's retained cache.
+  session.cachedRanges = []
+  session.segments = [segment(0, 'received')]
+  assert.equal(diagnosticMapSpans({ ...reading, transport: 'stratum', session, bufferedEnd: 0 })[0].state, 'unprepared')
+})
+
+test('unknown transfer size stays indeterminate; reading retained music does not pretend to download', () => {
+  const session: StreamingDiagnosticsSession = { sessionId: 1, transport: 'stratum', start: 0, duration: 8,
+    bufferedEnd: 0, sourceRate: 48000, outputRate: 48000, channels: 2, loadedBytes: 100, totalBytes: null,
+    localCacheComplete: false, state: 'preparing', omittedSegments: 0, segments: [segment(0, 'downloading')] }
+  const sample = { ...reading, session, transport: 'stratum' as const, start: 0, position: 0, duration: 8, bufferedEnd: 0 }
+  assert.equal(diagnosticMapSpans(sample)[0].progress, null)
+  session.segments[0].state = 'requesting'
+  session.cachedRanges = [{ start: 0, end: 4, qualities: ['lossless'] }]
+  assert.equal(diagnosticMapSpans(sample)[0].state, 'cached')
+  assert.equal(diagnosticMapSpans({ ...sample, duration: NaN }).length, 0)
+})
+
+function segment(start: number, state: StreamingDiagnosticSegment['state'], quality: StreamingDiagnosticSegment['quality'] = 'lossless'): StreamingDiagnosticSegment {
+  return { start, end: start + 4, quality, state, receivedBytes: 100, payloadBytes: null,
+    elapsedMs: 20, transferMs: null, decodeMs: null, serverCacheHit: true }
+}

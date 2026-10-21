@@ -24,7 +24,10 @@ export class StratumSegmentDiagnostics {
     let receivedAt = started
     return {
       observe: (event: AudioTransferEvent) => {
-        if (event.phase === 'start') { segment.state = 'downloading'; transferStarted = this.now() }
+        if (event.phase === 'start') {
+          segment.state = 'downloading'; transferStarted = this.now()
+          if (Number.isSafeInteger(event.totalBytes) && event.totalBytes! > 0) segment.transferTotalBytes = event.totalBytes
+        }
         if (event.phase === 'data') segment.receivedBytes += event.bytes ?? 0
         if (event.phase === 'end' && transferStarted !== null) segment.transferMs = Math.max(0, this.now() - transferStarted)
       },
@@ -68,7 +71,9 @@ export class CompletedStreamingDiagnostics {
   remember(owner: object, snapshot: StreamingDiagnosticsSession): void {
     let sessions = this.owners.get(owner)
     if (!sessions) { sessions = new Map(); this.owners.set(owner, sessions) }
-    sessions.set(snapshot.sessionId, snapshot)
+    // Once the active session is released it no longer pins the disk cache.
+    // Keep its decoding history, but never describe that old cache snapshot as live.
+    sessions.set(snapshot.sessionId, { ...snapshot, cachedRanges: [], localCacheComplete: false })
     while (sessions.size > 4) sessions.delete(sessions.keys().next().value!)
   }
   get(owner: object, id: number): StreamingDiagnosticsSession | undefined { return this.owners.get(owner)?.get(id) }

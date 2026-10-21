@@ -7,6 +7,8 @@ export interface StreamingDiagnosticSegment {
   state: 'requesting' | 'downloading' | 'received' | 'decoded' | 'failed' | 'cancelled'
   receivedBytes: number
   payloadBytes: number | null
+  /** Response size when supplied by Sidecar; not a playable time range. */
+  transferTotalBytes?: number
   elapsedMs: number
   transferMs: number | null
   decodeMs: number | null
@@ -14,6 +16,12 @@ export interface StreamingDiagnosticSegment {
   serverCacheHit: boolean | null
   /** Retained by Astra; distinct from Sidecar’s conversion cache. */
   localCacheHit?: boolean
+}
+
+export interface StreamingDiagnosticCacheRange {
+  start: number
+  end: number
+  qualities: DiagnosticSegmentQuality[]
 }
 
 export interface StreamingDiagnosticsSession {
@@ -28,6 +36,8 @@ export interface StreamingDiagnosticsSession {
   loadedBytes: number
   totalBytes: number | null
   localCacheComplete: boolean
+  /** Current, pinned Astra inventory, including islands outside this seek session. */
+  cachedRanges?: StreamingDiagnosticCacheRange[]
   state: 'preparing' | 'complete' | 'failed'
   segments: StreamingDiagnosticSegment[]
   omittedSegments: number

@@ -144,7 +144,25 @@ test('discovery needs no listener secret; enable shares a verified HTTPS session
   await assert.rejects(new StratumProofClient(first!).open('track', signal()), /no longer available/)
   const disabled = await manager.setEnabled(1, false)
   assert.equal(disabled.enabled, false); assert.equal(first!.signal.aborted, true)
+  assert.equal(disabled.state, 'available', 'turning off keeps discovery and the switch available')
   assert.equal(await manager.connection(1, signal()), null)
+  const reads = state.reads
+  assert.equal((await manager.setEnabled(1, true)).enabled, true, 'no extra Check again is needed')
+  assert.equal(state.reads, reads + 1, 're-enable still signs in afresh')
+})
+
+test('turning off a restored approval keeps discovery, but re-enable must reverify it', { timeout: 8000 }, async t => {
+  const { state, manager, deps } = await fixture(t)
+  await manager.discover(1); await manager.setEnabled(1, true)
+  manager.close()
+  const restarted = new StratumConnections(deps)
+  t.after(() => restarted.close())
+  assert.equal((await restarted.setEnabled(1, false)).state, 'available')
+  const reads = state.reads
+  state.wrongIdentity = true
+  assert.equal((await restarted.setEnabled(1, true)).state, 'error')
+  assert.equal(state.reads, reads, 'remembering availability never bypasses identity verification')
+  assert.equal((await restarted.setEnabled(1, false)).state, 'unchecked', 'an identity error requires rediscovery')
 })
 
 test('saved approval survives restart, but account changes and disablement stop old sessions', { timeout: 8000 }, async t => {

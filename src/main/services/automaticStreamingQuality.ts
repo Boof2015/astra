@@ -2,7 +2,7 @@ import {
   STREAMING_BITRATES, type AutomaticStreamingQuality as AutomaticQualityMode, type StreamQualityTarget
 } from '../../types/streamingQuality'
 
-export interface AudioTransferEvent { phase: 'start' | 'data' | 'end'; bytes?: number; complete?: boolean }
+export interface AudioTransferEvent { phase: 'start' | 'data' | 'end'; bytes?: number; complete?: boolean; totalBytes?: number }
 interface Sample { at: number; ms: number; bytes: number }
 interface Network {
   active: Set<symbol>; since: number; bytes: number; samples: Sample[]; completed: Sample[]; minimumSampleMs: number

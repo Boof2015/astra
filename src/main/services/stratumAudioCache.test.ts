@@ -115,12 +115,34 @@ test('current and next groups survive Clear cache; unprotected segments share it
   const before = await f.cache.status()
   await f.cache.clearUnused()
   assert.deepEqual(await f.cache.status(), before)
+  assert.deepEqual(current.cachedRanges, [{ start: 0, end: 4, qualities: ['lossless'] }])
+  assert.deepEqual(next.cachedRanges, [{ start: 4, end: 8, qualities: ['opus-128'] }])
   await f.cache.setLimitBytes(1)
   assert.deepEqual(await f.cache.status(), before)
   current.dispose(); next.dispose()
   await Promise.all([current.releaseRemote(), next.releaseRemote()])
   await f.cache.clearUnused()
   assert.equal((await f.cache.status()).usedBytes, 0)
+  assert.deepEqual(current.cachedRanges, [], 'released playback cannot report an evictable snapshot as current')
+})
+
+test('diagnostics report actual partial cache islands and quality variants before replay requests', async t => {
+  const f = await fixture(t)
+  const p = await f.owner.open(f.connection, options, signal())
+  await p.segment(0, 'lossless', signal())
+  await p.segment(0, 'opus-64', signal())
+  await p.segment(384000, 'opus-128', signal())
+  const expected = [{ start: 0, end: 4, qualities: ['lossless', 'opus-64'] }, { start: 8, end: 10, qualities: ['opus-128'] }]
+  assert.deepEqual(p.cachedRanges, expected)
+  p.dispose(); await p.releaseRemote()
+  f.state.offline = true
+  const replay = await f.owner.open(f.connection, options, signal())
+  t.after(() => replay.dispose())
+  const reads = f.state.reads
+  assert.deepEqual(replay.cachedRanges, expected)
+  replay.cachedRanges[0].qualities.length = 0
+  assert.deepEqual(replay.cachedRanges, expected, 'view snapshots cannot mutate cache inventory')
+  assert.equal(f.state.reads, reads, 'opening and sampling the view must not fetch missing music')
 })
 
 test('account, catalog revision and quality cannot reuse another representation; invalid packets are not retained', async t => {

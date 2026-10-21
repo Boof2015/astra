@@ -18,6 +18,7 @@ async function readDiagnostics(): Promise<StreamingDiagnosticsReading | null> {
   const matching = progress?.path === track.path && progress.sessionId === clock.sessionId ? progress : null
   const transport = session?.transport ?? clock.transport ?? (track.sourceType && track.sourceType !== 'local' ? 'stream' : 'local')
   return {
+    trackKey: track.path,
     title: track.title, artist: track.artist, position: after.position, duration: after.duration,
     playbackState: after.state, start: after.start, bufferedEnd: after.bufferedEnd,
     completeLocalBuffer: transport === 'local' && after.completeLocalBuffer, transport,

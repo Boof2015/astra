@@ -79,7 +79,8 @@ export function createStratumTransport(target: StratumEndpoint, spkiSha256: stri
           const chunks: Buffer[] = []
           let length = 0
           transferring = true
-          observe?.({ phase: 'start' })
+          const totalBytes = Number(response.headers['content-length'])
+          observe?.({ phase: 'start', ...(Number.isSafeInteger(totalBytes) && totalBytes > 0 && totalBytes <= limit ? { totalBytes } : {}) })
           response.on('data', (chunk: Buffer) => {
             length += chunk.length
             observe?.({ phase: 'data', bytes: chunk.length })

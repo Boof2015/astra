@@ -248,6 +248,7 @@ export class StratumProofPcm {
   }
   get retainsCache(): boolean { return !!this.cached }
   get cacheComplete(): boolean { return this.cached?.complete ?? false }
+  get cachedRanges() { return this.cached?.cachedRanges ?? [] }
   get analysisReady(): boolean { return this.cached?.analysisReady ?? false }
   dispose(): void { this.stop.abort(); this.cached?.dispose(); void this.release() }
   release(): Promise<void> { return this.releasePromise ??= this.cached ? this.cached.releaseRemote() : this.client.close(this.playback.playback) }

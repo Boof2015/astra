@@ -10976,6 +10976,7 @@ function streamingDiagnosticsSnapshot(session: RemoteStreamSession): StreamingDi
     loadedBytes: cache?.loadedBytes ?? session.loadedBytes,
     totalBytes: cache?.totalBytes ?? session.totalBytes,
     localCacheComplete: session.stratum?.cacheComplete ?? cache?.complete === true,
+    cachedRanges: session.stratum?.cachedRanges,
     state: session.failed ? 'failed' : session.done ? 'complete' : 'preparing',
     ...(session.stratum?.diagnostics.snapshot() ?? { segments: [], omittedSegments: 0 })
   }

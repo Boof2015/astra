@@ -59,7 +59,8 @@ export async function stratumProofRequest(endpoint: string, path: string, method
       }
       const chunks: Buffer[] = []
       transferring = true
-      observe?.({ phase: 'start' })
+      const totalBytes = Number(response.headers['content-length'])
+      observe?.({ phase: 'start', ...(Number.isSafeInteger(totalBytes) && totalBytes > 0 && totalBytes <= limit ? { totalBytes } : {}) })
       let length = 0
       response.on('data', (chunk: Buffer) => {
         length += chunk.length

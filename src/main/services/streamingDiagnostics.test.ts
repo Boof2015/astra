@@ -42,6 +42,16 @@ test('seek/skip failures stop pending timing and do not create cache hits', () =
   assert.equal(trace.snapshot().segments[1].serverCacheHit, true)
 })
 
+test('transfer progress uses the declared response length, including the segment envelope', () => {
+  const trace = new StratumSegmentDiagnostics()
+  const request = trace.begin(0, 4, 'lossless')
+  request.observe({ phase: 'start', totalBytes: 4000 })
+  request.observe({ phase: 'data', bytes: 1000 })
+  assert.equal(trace.snapshot().segments[0].transferTotalBytes, 4000)
+  assert.equal(trace.snapshot().segments[0].receivedBytes, 1000)
+  assert.equal(trace.snapshot().segments[0].payloadBytes, null)
+})
+
 test('fetch-ahead receipts freeze transfer timing and exclude waiting for decoder capacity', () => {
   let now = 0
   const trace = new StratumSegmentDiagnostics(() => now)
@@ -76,12 +86,13 @@ test('completed session retention is bounded and isolated by renderer', () => {
   const owner = {}, other = {}
   const snapshot: StreamingDiagnosticsSession = { sessionId: 1, transport: 'stratum', start: 0, duration: 12,
     bufferedEnd: 12, sourceRate: 44100, outputRate: 48000, channels: 2, loadedBytes: 4096, totalBytes: null,
-    localCacheComplete: false, state: 'complete', segments: [], omittedSegments: 0 }
+    localCacheComplete: true, cachedRanges: [{ start: 0, end: 12, qualities: ['lossless'] }], state: 'complete', segments: [], omittedSegments: 0 }
   for (let id = 1; id <= 9; id++) history.remember(owner, { ...snapshot, sessionId: id })
   assert.equal(history.get(owner, 5), undefined)
   assert.equal(history.get(owner, 6)?.sessionId, 6)
   assert.equal(history.get(other, 9), undefined)
   assert.equal(history.get(owner, 9)?.localCacheComplete, false)
+  assert.deepEqual(history.get(owner, 9)?.cachedRanges, [], 'completed history must not claim released cache is still present')
   history.forget(owner, 9)
   assert.equal(history.get(owner, 9), undefined)
 })

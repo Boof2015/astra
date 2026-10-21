@@ -4,6 +4,7 @@ import { StratumProofClient, parseStratumSegment, type StratumProofAuthenticatio
   type StratumProofSource, type StratumProofQuality, type StratumProofSegment } from './stratumProofClient.ts'
 import type { AudioTransferEvent } from './automaticStreamingQuality.ts'
 import type { RemoteAudioAnalysis } from '../../types/remoteAudioAnalysis.ts'
+import type { StreamingDiagnosticCacheRange } from '../../types/streamingDiagnostics.ts'
 
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const qualities: StratumProofQuality[] = ['lossless', 'opus-128', 'opus-64']
@@ -290,6 +291,16 @@ export class StratumCachedPlayback {
   }
 
   get complete(): boolean { return !!this.analysisPlan() }
+  /** The active group is pinned against clear/eviction. Sampling this existing
+   * inventory does no I/O and includes retained intervals from earlier seeks. */
+  get cachedRanges(): StreamingDiagnosticCacheRange[] {
+    if (this.closed) return []
+    const rate = this.playback.source.sample_rate
+    return [...this.available].flatMap(([start, found]) => found.size ? [{
+      start: start / rate, end: (start + this.frames(start)) / rate,
+      qualities: qualities.filter(quality => found.has(quality))
+    }] : [])
+  }
   get analysisReady(): boolean { return this.owner.cache.hasAnalysis(this.analysisKey) }
   releaseRemote(): Promise<void> {
     return this.remoteRelease ??= this.remote

@@ -1,64 +1,52 @@
-import { useId } from 'react'
-import type { StreamingDiagnosticSegment } from '../../../types/streamingDiagnostics'
 import { describeRemotePlaybackQuality } from '../../audio/audioPipelineModel'
-import { diagnosticBufferedRange, diagnosticQualityLabel, diagnosticWindow, type StreamingDiagnosticsReading } from '../../utils/streamingDiagnostics'
+import { diagnosticMapSpans, diagnosticQualityLabel, diagnosticWindow, type StreamingDiagnosticsReading } from '../../utils/streamingDiagnostics'
 import './streamingDiagnostics.css'
+import StreamingActivityPreview from './StreamingActivityPreview'
 
 const time = (seconds: number) => `${Math.floor(Math.max(0, seconds) / 60)}:${String(Math.floor(Math.max(0, seconds) % 60)).padStart(2, '0')}`
 const bytes = (value: number | null) => value === null ? '—' : value < 1024 ? `${value} B` : value < 1024 ** 2
   ? `${(value / 1024).toFixed(1)} KiB` : `${(value / 1024 ** 2).toFixed(1)} MiB`
 const ms = (value: number | null) => value === null ? '—' : value < 1000 ? `${Math.round(value)} ms` : `${(value / 1000).toFixed(2)} s`
 
-function segmentDescription(segment: StreamingDiagnosticSegment) {
-  return `${time(segment.start)}–${time(segment.end)} · ${diagnosticQualityLabel(segment.quality)} · ${segment.state}\n`
-    + `${bytes(segment.payloadBytes ?? segment.receivedBytes)} · ${segment.state === 'decoded' ? 'ready in' : 'elapsed'} ${ms(segment.elapsedMs)}\n`
-    + `Astra cache: ${segment.localCacheHit === true ? 'hit' : segment.localCacheHit === false ? 'miss' : 'not reported'}\n`
-    + `Sidecar cache: ${segment.serverCacheHit === true ? 'hit' : segment.serverCacheHit === false ? 'miss' : 'not reported'}`
-}
-
 export function StreamBlockMap({ reading }: { reading: StreamingDiagnosticsReading }) {
-  const id = useId().replace(/:/g, '')
   const range = diagnosticWindow(reading.duration, reading.position)
-  const buffered = diagnosticBufferedRange(reading)
   if (!range) return <p>Waiting for the track’s duration…</p>
-  const width = 960, top = 18, height = 46
+  const width = 960, top = 14, height = 72
   const x = (seconds: number) => Math.max(0, Math.min(width, (seconds - range.start) / (range.end - range.start) * width))
   const position = x(reading.position)
-  const segments = reading.session?.segments.filter(segment => segment.end > range.start && segment.start < range.end) ?? []
-  const stratum = reading.transport === 'stratum'
-  const preparedStart = buffered ? x(buffered.start) : 0
-  const preparedWidth = buffered ? Math.max(0, x(buffered.end) - preparedStart) : 0
+  const spans = diagnosticMapSpans(reading)
   return <div className="streaming-block-map">
-    <svg viewBox={`-6 0 ${width + 12} 76`} role="img" aria-label={`Stream map. Playing at ${time(reading.position)}. ${Math.max(0, (buffered?.end ?? reading.bufferedEnd) - reading.position).toFixed(1)} seconds buffered ahead.`}>
-      <defs>
-        <pattern id={`${id}-grid`} width={4 / (range.end - range.start) * width} height={height} patternUnits="userSpaceOnUse" y={top}>
-          <rect width="1" height={height} className="stream-map-grid" />
-        </pattern>
-        <pattern id={`${id}-active`} width="8" height="8" patternUnits="userSpaceOnUse">
-          <rect width="3" height="3" fill="currentColor" opacity=".4" />
-        </pattern>
-        <clipPath id={`${id}-buffered`}><rect x={preparedStart} y={top} width={preparedWidth} height={height} /></clipPath>
-      </defs>
-      <rect y={top} width={width} height={height} className="stream-map-empty"><title>Unprepared, or outside the recorded part of this session</title></rect>
-      {!stratum && buffered && <rect x={preparedStart} y={top} width={preparedWidth} height={height} className="stream-map-buffered"><title>Decoded audio for this playback session</title></rect>}
-      {segments.map(segment => {
-        const left = x(Math.max(segment.start, reading.session?.start ?? 0)), right = x(segment.end)
-        const w = Math.max(0, right - left - 1)
-        if (w === 0) return null
-        const active = segment.state === 'requesting' || segment.state === 'downloading'
-        return <g key={segment.start} className={`stream-map-quality-${segment.quality}${active ? ' stream-map-active' : ''}`}>
-          <title>{segmentDescription(segment)}</title>
-          <rect x={left + .5} y={top + .5} width={w} height={height - 1} fill={active ? `url(#${id}-active)` : 'none'} stroke="currentColor" strokeWidth="1" />
-          <rect x={left + 1} y={top + 1} width={Math.max(0, w - 1)} height={height - 2} fill="currentColor" clipPath={`url(#${id}-buffered)`} />
-          {segment.serverCacheHit === true && w >= 6 && <path className="stream-map-cache" d={`M${left + 2} ${top + 8}v-6h4 M${right - 7} ${top + 2}h4v6 M${left + 2} ${top + height - 8}v6h4 M${right - 7} ${top + height - 2}h4v-6`} />}
-          {(segment.state === 'failed' || segment.state === 'cancelled') && <path className="stream-map-failed" d={`M${left + 2} ${top + 2}L${right - 2} ${top + height - 2}`} />}
+    <svg viewBox={`-6 0 ${width + 12} 96`} role="img" aria-label={`Stream activity. Playing at ${time(reading.position)}. ${Math.max(0, reading.bufferedEnd - reading.position).toFixed(1)} seconds buffered ahead. Soft fill is cached in Astra; solid fill is prepared for playback.`}>
+      <rect y={top} width={width} height={height} className="stream-map-empty"><title>Unprepared</title></rect>
+      {spans.filter(span => span.state !== 'unprepared').map(span => {
+        const left = x(span.start), w = x(span.end) - left
+        const active = span.state === 'downloading' || span.state === 'waiting'
+        // Small pieces inside the *actual requested interval*. Their stepped
+        // infill represents packet bytes; it does not invent playable ranges.
+        const columns = Math.max(1, Math.ceil(w / 12)), rows = 6
+        const label = span.quality ? diagnosticQualityLabel(span.quality) : reading.transport === 'stratum' ? 'Quality not recorded' : 'Audio'
+        return <g key={span.start} data-state={span.state} className={span.quality ? `stream-map-quality-${span.quality}` : 'stream-map-neutral'}>
+          <title>{`${time(span.start)}–${time(span.end)} · ${label} · ${span.state}${span.progress !== null ? ` · ${Math.floor(span.progress * 100)}% received` : ''}${span.qualities.length > 1 ? `\nCached versions: ${span.qualities.map(diagnosticQualityLabel).join(', ')}` : ''}`}</title>
+          {!active ? <rect x={left} y={top} width={w} height={height} fill="currentColor" opacity={span.state === 'cached' ? .42 : 1} />
+            : Array.from({ length: columns * rows }, (_, index) => {
+              const row = Math.floor(index / columns), col = index % columns
+              const cw = w / columns, ch = height / rows
+              const tileX = left + col * cw, tileY = top + row * ch
+              // Stable row order makes the packet arrive as a patchwork instead
+              // of a second left-to-right progress bar. No timers or randomness.
+              const order = ((row * 5 + col * 7) % rows) * columns + col
+              const fraction = span.progress === null ? 0 : Math.max(0, Math.min(1, span.progress * columns * rows - order))
+              const fillHeight = Math.floor(fraction * 3) / 3 * (ch - 4)
+              return <g key={index}>
+                <rect x={tileX + .5} y={tileY + .5} width={Math.max(0, cw - 1)} height={ch - 1} fill="none" stroke="currentColor" opacity=".55" />
+                {fillHeight > 0 && <rect x={tileX + 2} y={tileY + ch - 2 - fillHeight} width={Math.max(0, cw - 4)} height={fillHeight} fill="currentColor" opacity=".8" />}
+              </g>
+            })}
         </g>
       })}
-      <rect y={top} width={width} height={height} fill={`url(#${id}-grid)`} pointerEvents="none" />
       <rect y={top} width={position} height={height} className="stream-map-played" pointerEvents="none" />
-      {reading.session?.localCacheComplete && <path className="stream-map-cache" d={`M0 ${top + 12}v-12h12 M${width - 12} ${top}h12v12 M0 ${top + height - 12}v12h12 M${width - 12} ${top + height}h12v-12`} />}
       <g transform={`translate(${position} 0)`} className="stream-map-playhead" pointerEvents="none">
-        <path d="M-6 2h12v6H3v4H1v58H-1V12H-3V8H-6Z" />
+        <path d="M-5 1h10v5H2v4H1v80H-1V10H-2V6H-5Z" />
       </g>
     </svg>
     <div className="stream-map-axis"><span>{time(range.start)}</span><span>{time(reading.position)} / {time(reading.duration)}</span><span>{time(range.end)}</span></div>
@@ -76,14 +64,16 @@ export default function StreamingDiagnosticsView({ reading }: { reading: Streami
     <div className="streaming-diagnostics-track"><strong>{reading.title}</strong><span>{reading.artist}</span>
       <span className="streaming-diagnostics-transport">{stratum ? 'Stratum' : reading.transport === 'local' ? 'Local' : 'Conventional stream'} · {reading.playbackState}</span>
     </div>
+    {stratum && <div className="streaming-activity-caption"><span>Literal map</span></div>}
     <StreamBlockMap reading={reading} />
+    {stratum && <StreamingActivityPreview reading={reading} />}
     <div className="streaming-diagnostics-legend">
-      {stratum ? <><span><i className="stream-map-quality-lossless" />Original</span><span><i className="stream-map-quality-opus-128" />Opus 128</span><span><i className="stream-map-quality-opus-64" />Opus 64</span></> : <span><i className="stream-map-neutral" />Decoded</span>}
-      <span><i className="stream-map-legend-outline" />{stratum ? 'Outline: requested / received' : 'Empty: not mapped'}</span>
-      {stratum && <span><i className="stream-map-legend-dots" />Downloading</span>}
-      <span><i className="stream-map-legend-played" />Dimmed: played</span>
-      {stratum && <span><i className="stream-map-legend-cache" />Corners: Sidecar cache hit</span>}
-      {session?.localCacheComplete && <span><i className="stream-map-legend-cache" />Outer frame: cached locally</span>}
+      {stratum ? <><span><i className="stream-map-quality-lossless" />Original</span><span><i className="stream-map-quality-opus-128" />Opus</span></> : <span><i className="stream-map-neutral" />Audio</span>}
+      {stratum && <span><i className="stream-map-legend-download" />Downloading</span>}
+      <span><i className="stream-map-legend-soft" />Cached</span>
+      <span><i />Prepared</span>
+      <span><i className="stream-map-legend-played" />Played</span>
+      <span><i className="stream-map-legend-empty" />Unprepared</span>
     </div>
     <dl className="streaming-diagnostics-values">
       <div><dt>Hearing now</dt><dd>{audible}</dd></div>
@@ -106,7 +96,7 @@ export default function StreamingDiagnosticsView({ reading }: { reading: Streami
       </table></div>
     </details>}
     <p className="streaming-diagnostics-note">{stratum
-      ? 'Filled blocks have reached the playback buffer. Empty areas are unprepared or outside this session’s recorded range. Opus labels are bitrate targets.'
+      ? 'Cached means retained in Astra, including earlier visits. Downloading tiles show packet progress, not playable audio. Hover for quality and range.'
       : 'The map shows decoded audio for this playback session. Partial file downloads cannot be mapped accurately to track time.'}</p>
     <p className="streaming-diagnostics-note">Live at 2 updates/s while visible. No extra audio requests. Nothing is written to disk.</p>
   </div>
