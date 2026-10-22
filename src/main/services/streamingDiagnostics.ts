@@ -26,6 +26,8 @@ export class StratumSegmentDiagnostics {
       observe: (event: AudioTransferEvent) => {
         if (event.phase === 'start') {
           segment.state = 'downloading'; transferStarted = this.now()
+          if (Number.isFinite(event.connectionMs) && event.connectionMs! >= 0) segment.connectionMs = event.connectionMs
+          if (Number.isFinite(event.responseWaitMs) && event.responseWaitMs! >= 0) segment.responseWaitMs = event.responseWaitMs
           if (Number.isSafeInteger(event.totalBytes) && event.totalBytes! > 0) segment.transferTotalBytes = event.totalBytes
         }
         if (event.phase === 'data') segment.receivedBytes += event.bytes ?? 0

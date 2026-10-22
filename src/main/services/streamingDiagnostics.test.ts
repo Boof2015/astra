@@ -42,6 +42,30 @@ test('seek/skip failures stop pending timing and do not create cache hits', () =
   assert.equal(trace.snapshot().segments[1].serverCacheHit, true)
 })
 
+test('HTTPS setup and response waits remain separate from body transfer and decoding', () => {
+  let now = 0
+  const trace = new StratumSegmentDiagnostics(() => now)
+  const interval = trace.begin(0, 4, 'opus-64')
+  now = 2200
+  interval.observe({ phase: 'start', connectionMs: 1800, responseWaitMs: 300 })
+  now = 2400
+  interval.observe({ phase: 'end', complete: true })
+  interval.received(32000, false)
+  interval.decoding()
+  now = 2430
+  interval.decoded()
+  const segment = trace.snapshot().segments[0]
+  assert.equal(segment.elapsedMs, 2430)
+  assert.equal(segment.connectionMs, 1800)
+  assert.equal(segment.responseWaitMs, 300)
+  assert.equal(segment.transferMs, 200)
+  assert.equal(segment.decodeMs, 30)
+  const unknown = trace.begin(4, 8, 'opus-64')
+  unknown.observe({ phase: 'start', connectionMs: NaN, responseWaitMs: -1 })
+  assert.equal(trace.snapshot().segments[1].connectionMs, undefined)
+  assert.equal(trace.snapshot().segments[1].responseWaitMs, undefined)
+})
+
 test('transfer progress uses the declared response length, including the segment envelope', () => {
   const trace = new StratumSegmentDiagnostics()
   const request = trace.begin(0, 4, 'lossless')

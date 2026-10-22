@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { RemoteAudioCache, remoteAudioCacheKey, type RemoteAudioSource, type RemoteAudioLease } from './remoteAudioCache.ts'
+import { isStratumRefusal } from './stratumProofTransport.ts'
 import { StratumProofClient, parseStratumSegment, type StratumProofAuthentication, type StratumProofPlayback,
   type StratumProofSource, type StratumProofQuality, type StratumProofSegment } from './stratumProofClient.ts'
 import type { AudioTransferEvent } from './automaticStreamingQuality.ts'
@@ -158,7 +159,12 @@ export class StratumCachedPlayback {
     fetch: RemoteAudioSource['open'] = async () => { throw new Error('Stratum interval is not retained.') }): RemoteAudioSource {
     return { provider: 'stratum', account: this.options.scope, track: this.options.track,
       representation: `segment:v1:${quality}:${start}:${this.frames(start)}`,
-      revision: JSON.stringify([this.options.revision, this.playback.source]), analyze: false, group: this.group, open: fetch }
+      revision: JSON.stringify([this.options.revision, this.playback.source]), analyze: false, group: this.group, open: fetch,
+      // An interval nobody reads any more stops competing for the link at once;
+      // a refusal keeps its safe type so callers do not retry it.
+      releaseGraceMs: 0, refusal: error => isStratumRefusal(error) ? error : null,
+      // Automatic quality retries a failed interval at a cheaper representation itself.
+      ...(this.options.profile.startsWith('automatic') ? { retries: 0 } : {}) }
   }
   private frames(start: number): number { return Math.min(4 * this.playback.source.sample_rate, this.playback.source.frames - start) }
 
@@ -208,6 +214,8 @@ export class StratumCachedPlayback {
     let bytes: Buffer
     try { bytes = await lease.readBytes!(packetLimit) }
     catch (error) {
+      this.leases.delete(key)
+      lease.release()
       signal.throwIfAborted()
       // Automatic playback may use a different retained representation offline.
       // A fixed/original request never silently substitutes a lower quality.

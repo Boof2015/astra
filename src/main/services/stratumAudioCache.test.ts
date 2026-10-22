@@ -10,7 +10,11 @@ import { StratumAudioCache, type StratumCacheOptions } from './stratumAudioCache
 import type { StratumProofAuthentication, StratumProofSource } from './stratumProofClient.ts'
 import type { RemoteAudioAnalysis } from '../../types/remoteAudioAnalysis.ts'
 import { StratumFetchAhead } from './stratumFetchAhead.ts'
+import { StratumPrefetchGate, canPrefetchStratum } from './stratumPrefetch.ts'
 import { StratumSegmentDiagnostics } from './streamingDiagnostics.ts'
+import type { AudioTransferEvent } from './automaticStreamingQuality.ts'
+import { StratumLinkEstimates, StratumQualityController } from './stratumQuality.ts'
+import { StratumProofError } from './stratumProofTransport.ts'
 
 const source: StratumProofSource = { sha256: 'a'.repeat(64), sample_rate: 48000, channels: 2, bits_per_sample: 16, frames: 480000 }
 const options: StratumCacheOptions = { scope: 'approved-account', track: 'song', revision: 'catalog-v1', profile: 'lossless' }
@@ -18,11 +22,12 @@ const analysis: RemoteAudioAnalysis = { version: 1, duration: 10, peaks: Array(5
 const signal = () => AbortSignal.timeout(10000)
 
 function fake() {
-  const state = { offline: false, corrupt: false, opens: 0, closes: 0, reads: 0, scans: 0, starts: [] as number[], segmentHold: null as Promise<void> | null, hold: null as Promise<void> | null }
+  const state = { offline: false, corrupt: false, opens: 0, closes: 0, reads: 0, scans: 0, starts: [] as number[], segmentHold: null as Promise<void> | null, hold: null as Promise<void> | null,
+    transfer: null as null | ((quality: string, signal: AbortSignal, observe?: (event: AudioTransferEvent) => void) => Promise<void>) }
   const connection: StratumProofAuthentication = {
     endpoint: 'https://cache-fixture.test', signal: new AbortController().signal,
     getBearer: async () => 'test-only', reject() {},
-    request: async (path, method, requestSignal, body) => {
+    request: async (path, method, requestSignal, body, _bearer, _limit, observe) => {
       requestSignal.throwIfAborted()
       if (state.offline) throw new Error('offline')
       if (method === 'DELETE') { state.closes++; return { bytes: Buffer.alloc(0), type: '' } }
@@ -38,6 +43,7 @@ function fake() {
       if (state.segmentHold) await state.segmentHold
       const { start, frames, quality } = body as { start: number; frames: number; quality: string }
       state.starts.push(start)
+      await state.transfer?.(quality, requestSignal, observe)
       const payload = Buffer.from(`${start}-${frames}-${quality}`)
       const meta = Buffer.from(JSON.stringify({ experiment: 'stratum-audio-poc-2', source_sha256: source.sha256,
         encoder: 'b'.repeat(64), quality, sample_rate: 48000, codec_sample_rate: 48000, channels: 2,
@@ -65,6 +71,47 @@ async function fixture(t: TestContext) {
   return { ...service, cache, owner, directory, events, tools }
 }
 async function until(check: () => boolean) { for (let i = 0; i < 1000; i++) { if (check()) return; await delay(5) }; assert.fail('Timed out') }
+
+test('automatic abandons a late interval for a cheaper one at once, keeping the handle and discarding its bytes', { timeout: 10000 }, async t => {
+  const f = await fixture(t)
+  const cached = await f.owner.open(f.connection, { ...options, profile: 'automatic' }, signal())
+  const stop = new AbortController()
+  t.after(() => { stop.abort(); cached.dispose() })
+  let now = 0
+  // Recent evidence says the link is fast, so Original is chosen; it has just dropped to 3G.
+  const estimates = new StratumLinkEstimates(() => now)
+  estimates.overhead('cold', 100); estimates.body('cold', 150_000)
+  const attempted: string[] = []
+  let abortedAfterMs: number | null = null
+  f.state.transfer = async (quality, requestSignal, observe) => {
+    attempted.push(quality)
+    observe?.({ phase: 'start' })
+    if (quality !== 'lossless') { observe?.({ phase: 'data', bytes: 16 }); return }
+    const began = performance.now()
+    try {
+      for (let i = 0; i < 40; i++) {
+        requestSignal.throwIfAborted()
+        now += 16384 * 8 / 700
+        observe?.({ phase: 'data', bytes: 16384 })
+        await delay(5)
+      }
+      assert.fail('the late Original interval was not abandoned')
+    } catch (error) { abortedAfterMs = performance.now() - began; throw error }
+  }
+  const automatic = new StratumQualityController({ source, initial: 'lossless', mode: 'automatic', key: 'cold',
+    now: () => now, estimates, buffer: () => ({ position: 0, ahead: cached.playableAhead(0) }) })
+  const fetching = new StratumFetchAhead(cached, 0, stop.signal, 'lossless', new StratumSegmentDiagnostics(), () => {}, automatic)
+  const first = await fetching.take(0)
+  assert.equal(first.segment.metadata.quality, 'opus-128')
+  assert.equal(first.segment.metadata.presentation.start, 0)
+  assert.equal(first.segment.metadata.presentation.frames, 192000)
+  assert.deepEqual(attempted.slice(0, 2), ['lossless', 'opus-128'], 'the same interval is requested again, cheaper')
+  assert.ok(abortedAfterMs! < 500, 'the abandoned transfer stops at once, not after the cache sharing grace period')
+  await fetching.finished
+  assert.equal(cached.complete, true)
+  assert.equal(f.state.opens, 1, 'quality changes keep the original server playback handle')
+  assert.equal(cached.cachedRanges[0].qualities.includes('lossless'), false, 'abandoned bytes are not retained as playable audio')
+})
 
 test('partial intervals survive restart, reuse locally, and never trigger incomplete analysis', { timeout: 15000 }, async t => {
   const f = await fixture(t)
@@ -332,4 +379,175 @@ test('automatic fetch ahead reuses retained qualities without treating disk read
   assert.equal(fixed.playableAhead(0), 0); assert.equal(fixed.playableAhead(4), 4)
   assert.equal(fixed.retainedQuality(0, 'lossless'), undefined)
   fixed.dispose()
+})
+
+test('replay replaces retained lower intervals at Original when the link allows, and falls back to them otherwise', async t => {
+  const f = await fixture(t)
+  const first = await f.owner.open(f.connection, { ...options, profile: 'automatic' }, signal())
+  for (const start of [0, 192000, 384000]) await first.segment(start, 'opus-128', signal())
+  first.dispose(); await first.releaseRemote()
+  const replay = async (kbps: number) => {
+    const estimates = new StratumLinkEstimates()
+    estimates.overhead('replay', 100); estimates.body('replay', kbps)
+    const cached = await f.owner.open(f.connection, { ...options, profile: 'automatic' }, signal())
+    const automatic = new StratumQualityController({ source, initial: 'lossless', mode: 'automatic', key: 'replay', estimates,
+      buffer: () => ({ position: 0, ahead: cached.playableAhead(0) }) })
+    const diagnostics = new StratumSegmentDiagnostics()
+    const fetcher = new StratumFetchAhead(cached, 0, signal(), 'lossless', diagnostics, () => {}, automatic)
+    await fetcher.finished
+    for (const start of [0, 192000, 384000]) await fetcher.take(start)
+    const result = diagnostics.snapshot().segments.filter(s => s.state !== 'cancelled').map(s => [s.quality, s.localCacheHit])
+    cached.dispose(); await cached.releaseRemote()
+    return result
+  }
+  const reads = f.state.reads
+  assert.deepEqual(await replay(700), [['opus-128', true], ['opus-128', true], ['opus-128', true]], 'a 3G link keeps the retained copies')
+  assert.equal(f.state.reads, reads, 'without an upgrade, replay makes no segment requests')
+  f.state.offline = true
+  assert.deepEqual(await replay(150_000), [['opus-128', true], ['opus-128', true], ['opus-128', true]],
+    'an upgrade that cannot reach Sidecar plays the retained copy')
+  f.state.offline = false
+  assert.deepEqual(await replay(150_000), [['lossless', false], ['lossless', false], ['lossless', false]], 'a fast link replaces them at Original')
+})
+
+test('a throttled successor serves cached audio immediately, yields new network work, and resumes on promotion', async t => {
+  const f = await fixture(t)
+  const p = await f.owner.open(f.connection, options, signal())
+  await p.segment(0, 'lossless', signal())
+  const gate = new StratumPrefetchGate()
+  const state = { slot: 'next' as 'current' | 'next', nextAhead: 4, current: [{ ahead: 6.4, complete: false }] }
+  const diagnostics = new StratumSegmentDiagnostics()
+  const fetcher = new StratumFetchAhead(p, 0, signal(), 'lossless', diagnostics, () => {}, undefined,
+    signal => gate.wait(() => canPrefetchStratum(state), signal))
+  assert.equal((await fetcher.take(0)).segment.localCacheHit, true)
+  await delay(20)
+  assert.equal(f.state.reads, 1)
+  assert.equal(diagnostics.snapshot().segments.length, 1, 'priority waiting is not a pending network request')
+  state.slot = 'current'; gate.changed()
+  await fetcher.finished
+  assert.equal(f.state.reads, 3)
+  assert.equal((await fetcher.take(192000)).segment.payload.toString(), '192000-192000-lossless')
+  p.dispose()
+})
+
+test('cancelling a successor waiting for bandwidth releases its remote handle without a segment request', async t => {
+  const f = await fixture(t)
+  const stop = new AbortController()
+  const p = await f.owner.open(f.connection, options, stop.signal)
+  const gate = new StratumPrefetchGate()
+  const fetcher = new StratumFetchAhead(p, 0, stop.signal, 'lossless', new StratumSegmentDiagnostics(), () => {}, undefined,
+    signal => gate.wait(() => false, signal))
+  const pending = assert.rejects(fetcher.take(0))
+  await delay(20)
+  stop.abort()
+  await pending; await fetcher.finished
+  assert.equal(f.state.reads, 0)
+  assert.equal(f.state.closes, 1)
+  p.dispose()
+})
+
+// Regression cases from review: optional upgrades, shared producers and refusals.
+async function retainAt128(f: Awaited<ReturnType<typeof fixture>>) {
+  const first = await f.owner.open(f.connection, { ...options, profile: 'automatic' }, signal())
+  for (const start of [0, 192000, 384000]) await first.segment(start, 'opus-128', signal())
+  first.dispose(); await first.releaseRemote()
+}
+function fastLink(key: string) {
+  const estimates = new StratumLinkEstimates()
+  estimates.overhead(key, 100); estimates.body(key, 150_000)
+  return estimates
+}
+
+test('a cached successor plays at once while its optional upgrade waits for the next-track gate', async t => {
+  const f = await fixture(t)
+  await retainAt128(f)
+  const cached = await f.owner.open(f.connection, { ...options, profile: 'automatic' }, signal())
+  const automatic = new StratumQualityController({ source, initial: 'lossless', mode: 'automatic', key: 'replay',
+    estimates: fastLink('replay'), buffer: () => ({ position: 0, ahead: cached.playableAhead(0) }) })
+  const stop = new AbortController(), gate = new StratumPrefetchGate()
+  const state = { slot: 'next' as const, nextAhead: 10, current: [{ ahead: 6.4, complete: false }] }
+  let waiting = false, fulfilled = false
+  const reads = f.state.reads
+  const fetcher = new StratumFetchAhead(cached, 0, stop.signal, 'lossless', new StratumSegmentDiagnostics(), () => {}, automatic,
+    gateSignal => { waiting = true; return gate.wait(() => canPrefetchStratum(state), gateSignal) })
+  const taken = fetcher.take(0).then(() => { fulfilled = true }, () => {})
+  try {
+    await until(() => waiting)
+    await delay(50)
+    assert.equal(f.state.reads, reads, 'the gate still holds the upgrade')
+    assert.equal(fulfilled, true, 'retained audio must not wait for permission to upgrade it')
+  } finally { stop.abort(); await taken; await fetcher.finished; cached.dispose() }
+})
+
+test('a retained interval plays when its pending upgrade would miss the playback deadline', async t => {
+  const f = await fixture(t)
+  await retainAt128(f)
+  const cached = await f.owner.open(f.connection, { ...options, profile: 'automatic' }, signal())
+  const began = performance.now()
+  const automatic = new StratumQualityController({ source, initial: 'lossless', mode: 'automatic', key: 'replay',
+    estimates: fastLink('replay'), buffer: () => {
+      const position = 3.5 + (performance.now() - began) / 1000
+      return { position, ahead: cached.playableAhead(position) }
+    } })
+  let requested = false, fulfilled = false
+  f.state.transfer = async (_quality, transferSignal) => {
+    requested = true
+    await new Promise<void>((_resolve, reject) => {
+      transferSignal.addEventListener('abort', () => reject(transferSignal.reason), { once: true })
+      if (transferSignal.aborted) reject(transferSignal.reason)
+    })
+  }
+  const stop = new AbortController()
+  const fetcher = new StratumFetchAhead(cached, 192000, stop.signal, 'lossless', new StratumSegmentDiagnostics(), () => {}, automatic)
+  const taken = fetcher.take(192000).then(() => { fulfilled = true }, () => {})
+  try {
+    await until(() => requested)
+    await delay(650)
+    assert.ok(cached.playableAhead(4) > 0)
+    assert.equal(fulfilled, true, 'playback reached the interval; its retained copy must play')
+  } finally { stop.abort(); await taken; await fetcher.finished; cached.dispose() }
+})
+
+test('cancelling one playback leaves a shared interval downloading for another', async t => {
+  const f = await fixture(t)
+  const a = await f.owner.open(f.connection, { ...options, profile: 'automatic' }, signal())
+  const b = await f.owner.open(f.connection, { ...options, profile: 'automatic' }, signal())
+  const stopA = new AbortController(), stopB = new AbortController()
+  let finish!: () => void
+  f.state.transfer = async (_quality, transferSignal) => new Promise<void>((resolve, reject) => {
+    finish = resolve
+    transferSignal.addEventListener('abort', () => reject(transferSignal.reason), { once: true })
+  })
+  const first = a.segment(0, 'lossless', stopA.signal).then(() => null, error => error)
+  await until(() => !!finish)
+  const second = b.segment(0, 'lossless', stopB.signal).then(value => ({ value, error: null }), error => ({ value: null, error }))
+  try {
+    await until(() => (b as unknown as { leases: Map<string, unknown> }).leases.size === 1)
+    assert.equal(f.state.reads, 1, 'both playbacks share one producer')
+    stopA.abort()
+    assert.ok(await first, 'the cancelled reader stops waiting at once')
+    finish()
+    const result = await second
+    assert.equal(result.error, null, 'the remaining reader keeps the download')
+    assert.equal(result.value?.metadata.quality, 'lossless')
+  } finally { stopA.abort(); stopB.abort(); finish?.(); await Promise.all([first, second]); a.dispose(); b.dispose() }
+})
+
+test('an access refusal through the installed cache path is not retried at other qualities', async t => {
+  const f = await fixture(t)
+  const request = f.connection.request!
+  const attempts: string[] = []
+  const connection: StratumProofAuthentication = { ...f.connection, request: async (path, method, requestSignal, body, ...rest) => {
+    if (path.endsWith('/segment')) { attempts.push((body as { quality: string }).quality); throw new StratumProofError(404) }
+    return request(path, method, requestSignal, body, ...rest)
+  } }
+  const cached = await f.owner.open(connection, { ...options, profile: 'automatic' }, signal())
+  const automatic = new StratumQualityController({ source, initial: 'lossless', mode: 'automatic', key: 'denied',
+    estimates: fastLink('denied'), buffer: () => ({ position: 0, ahead: 0 }) })
+  const stop = new AbortController()
+  const fetcher = new StratumFetchAhead(cached, 0, stop.signal, 'lossless', new StratumSegmentDiagnostics(), () => {}, automatic)
+  try {
+    await assert.rejects(fetcher.take(0), StratumProofError)
+    assert.deepEqual(attempts, ['lossless'])
+  } finally { stop.abort(); await fetcher.finished; cached.dispose() }
 })

@@ -21,6 +21,15 @@ export interface RemoteAudioSource {
   /** Validated Stratum packets/metadata share storage accounting, not file scans. */
   analyze?: false
   group?: string
+  /** Transient-failure retries of the same request (default 2). A caller that
+   * chooses a cheaper representation after a failure sets 0. */
+  retries?: number
+  /** How long an unfinished download outlives its last reader (default 1 s, so a
+   * replacement decoder can claim it). 0 frees the link as soon as nobody reads. */
+  releaseGraceMs?: number
+  /** A safe, final error for a producer failure (such as refused access): it is
+   * not retried and is surfaced instead of the generic message. */
+  refusal?: (error: unknown) => Error | null
 }
 
 interface CacheRecord {
@@ -82,12 +91,22 @@ async function networkOperation<T>(work: () => Promise<T>, controller: AbortCont
         }, 20_000)
       })
     ])
-  } catch {
-    throw new RetryableDownloadError('Remote audio connection interrupted.')
+  } catch (error) {
+    throw new RetryableDownloadError('Remote audio connection interrupted.', { cause: error })
   } finally {
     clearTimeout(timer)
     if (onAbort) controller.signal.removeEventListener('abort', onAbort)
   }
+}
+
+function untilSettledOrAborted(task: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+  if (!signal) return task
+  signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason)
+    signal.addEventListener('abort', abort, { once: true })
+    task.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
+  })
 }
 
 export function remoteAudioCacheKey(source: Omit<RemoteAudioSource, 'open'>): string {
@@ -278,7 +297,7 @@ export class RemoteAudioCache {
             entry.controller.abort()
             this.notify(entry)
           }
-        }, 1_000)
+        }, source.releaseGraceMs ?? 1_000)
         entry.releaseTimer.unref()
       } else if (entry.leases === 0) {
         void this.serialize(() => this.makeRoom(0)).catch(() => undefined)
@@ -296,7 +315,9 @@ export class RemoteAudioCache {
       finished: async () => { await entry.task; if (entry.error) throw entry.error },
       readBytes: async limit => {
         if (!Number.isSafeInteger(limit) || limit < 1 || released) throw new Error('Invalid cache read.')
-        await entry.task
+        // A cancelled reader stops waiting at once; the producer continues for
+        // any remaining readers and is abandoned when the last one leaves.
+        await untilSettledOrAborted(entry.task, signal)
         signal?.throwIfAborted()
         if (entry.error) throw entry.error
         if (released || !entry.complete || entry.bytes > limit) throw new Error('Cached data exceeds its size limit.')
@@ -492,7 +513,9 @@ export class RemoteAudioCache {
           }
           break
         } catch (error) {
-          if (entry.controller.signal.aborted || !(error instanceof RetryableDownloadError) || attempt >= 2) throw error
+          const refusal = source.refusal?.(error instanceof RetryableDownloadError ? error.cause : error)
+          if (refusal) { entry.error ??= refusal; throw refusal }
+          if (entry.controller.signal.aborted || !(error instanceof RetryableDownloadError) || attempt >= (source.retries ?? 2)) throw error
           // Bounded retry while readers hold their exact byte position. A pause
           // affects decoded playback, while this independent fetch can finish.
           await new Promise<void>(resolve => {

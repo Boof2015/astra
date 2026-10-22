@@ -5,7 +5,12 @@ const { once } = require('node:events')
 const { setTimeout: delay } = require('node:timers/promises')
 const assert = require('node:assert/strict')
 
-exports.throttledLink = async function throttledLink(endpoint) {
+// The default schedule is the automatic listening fixture's: four fast segments,
+// 900 kbps until 28 seconds after the first segment request, then fast again.
+const listeningSchedule = (entry, elapsedMs) => entry.number <= 4 || elapsedMs >= 28000 ? 16000 : 900
+
+/** `rate(entry, elapsedMs)` returns kbps for each paced chunk of a segment body. */
+exports.throttledLink = async function throttledLink(endpoint, rate = listeningSchedule) {
   const origin = new URL(endpoint)
   assert.equal(origin.hostname, '127.0.0.1')
   assert.equal(origin.protocol, 'http:')
@@ -50,9 +55,8 @@ exports.throttledLink = async function throttledLink(endpoint) {
       const transferStart = performance.now()
       for (let offset = 0; offset < data.length;) {
         controller.signal.throwIfAborted()
-        // Build some headroom, then constrain original delivery for a sustained
-        // interval, then restore capacity. Recovery is measured in real time.
-        const kbps = entry.number <= 4 || performance.now() - began >= 28000 ? 16000 : 900
+        // Recovery is measured in real time; the schedule can change mid-body.
+        const kbps = rate(entry, performance.now() - began)
         const end = Math.min(offset + 4096, data.length)
         await delay((end - offset) * 8 / kbps, undefined, { signal: controller.signal })
         if (!res.write(data.subarray(offset, end))) await once(res, 'drain', { signal: controller.signal })

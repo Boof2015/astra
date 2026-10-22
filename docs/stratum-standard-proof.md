@@ -31,10 +31,13 @@ Checks cover:
 - Non-boundary seeks with source-zero conversion phase and real pre-roll.
 - A worklet handoff between different native rates, compared sample for sample.
 - Scripted lossless → Opus 64 → Opus 128 through one continuous output converter.
-- Both automatic modes lowering quality and recovering to Original in one main
-  PCM session, with exact frame counts and seek-relative quality markers. These
-  cases use real service audio with simulated transfer timing/consumption, not
-  a shaped real network. Policy unit tests separately exercise delivery costs.
+- Both automatic modes starting cold at Opus 128, climbing to Original, lowering
+  quality and recovering in one main PCM session, with exact frame counts and
+  seek-relative quality markers. A loopback proxy paces the real segment bytes
+  (fast, then 150 kbps for nine seconds, then fast); the in-flight Original interval
+  must be abandoned and the same interval requested cheaper. Consumption is
+  simulated; this is not a shaped real network. Controller unit tests separately
+  exercise costs, abandonment and failures; `shapedBaseline.ts` covers 3G/Edge.
 - Held-consumer backpressure, cancellation without late chunks, and seeking
   current while the prepared successor owns the other service playback slot.
 - Midstream permission refusal/outage produces failure, never EOF or a bypass
@@ -100,6 +103,10 @@ paced HTTP bodies, but not a WAN, packet loss or a congested production server.
 On 2026-10-17 it passed with Original at 0 seconds, Opus 128 at 24 seconds and
 Original again at 80 seconds. An earlier run exposed a delayed downgrade and
 buffered once; observing pressure during transfers fixed that regression.
+With the Stratum-native controller (2026-10-21) the same silent preflight plays
+Opus 128 at 0 seconds (cold start), Original at 8, Opus 128 at 20 and Original at
+76, with zero buffering and exact frame counts. The Bluetooth listen below predates
+that controller and should be repeated.
 
 The matching 100-second Bluetooth listen also passed, using the same 48 kHz
 source, existing 44.1 kHz output and gain 0.25. AudioEngine reported Opus 128 at
@@ -225,6 +232,37 @@ automatic slowdown/recovery timeline inside the full app. Those retain the
 separate engine-level listening evidence above. Native modules loading here does
 not constitute Exclusive or Bit-perfect playback coverage.
 
+## Shaped-link baseline
+
+`scripts/stratum/shapedBaseline.ts` measures delivery on a slow link, silently. It
+starts a disposable Navidrome and an installed HTTPS `sidecar serve`, then drives
+Astra's actual installed-route main session (discovery, pinned TLS, renewable
+session, retained cache, analysis, fetch-ahead and next-track gate) and consumes
+PCM through the real worklet at wall-clock speed. The next track is scheduled as
+the player store does (five seconds of PCM headroom, then a one-second settle) and
+handed off through the worklet. Conventional Subsonic Opus streaming crosses the
+same link as a baseline. Each scenario plays tagged copies of the sources so the
+Sidecar's retained cache starts cold. No audio device, Electron window, personal
+library or live server is used; sources are read only.
+
+`scripts/stratum/shapedLink.cjs` is the link: a loopback TCP proxy in which every
+connection shares one bottleneck per direction (rate, a 75 kB FIFO queue and
+one-way delay), with a SYN round trip, per-connection slow start that restarts
+after idle, and a bounded receiver window. Profiles follow Network Link
+Conditioner's 3G (780/330 kbps, 100 ms) and Edge (240/200 kbps, 400/440 ms), plus
+a fast LAN control; a schedule can switch profiles mid-run (delivery stays FIFO).
+It models queueing delay under load, not loss or retransmission.
+
+```sh
+node --experimental-strip-types --loader ./scripts/node/electron-test-loader.mjs \
+  scripts/stratum/shapedBaseline.ts /private/test-directory
+```
+
+The directory holds `config.json` (`navidrome`, `sidecar`, two `sources`,
+`profile`, optional `schedule`, `scenarios`, `playSeconds`, `nextSeconds`) and
+receives `shaped-report.json`: startup stages, every Stratum request's connection,
+header wait and body time, stalls, played qualities and link statistics.
+
 ## Development route and trust boundary
 
 Only an unpackaged development build reads `ASTRA_STRATUM_PROOF_CONFIG`. This
@@ -274,34 +312,50 @@ observing disconnection.
 
 ## Automatic quality and the readout
 
-Stratum reuses `AutomaticStreamingQuality`, including sustained-shortfall and
-recovery rules, the original-priority bias, and settling times. Existing global
-and per-source settings select the mode. Optional segment conditions replace
-whole-file lookahead estimates and replacement catch-up cost with exact delivered
-PCM headroom and the next interval's cost. Conventional callers keep their
-existing defaults and replacement coordinator.
+Stratum has its own controller, `StratumQualityController`. Conventional streaming
+keeps `AutomaticStreamingQuality`, unchanged, for whole-file replacement. Existing
+global and per-source settings select Automatic or Automatic (Prioritize Original);
+fixed qualities never adapt.
 
-`StratumAutomaticQuality` uses the proof's supported Original/64/128 ladder.
-Successful response bodies supply network evidence; total request-through-decode
-time measures readiness separately, including server/decoder work. Waiting for
-PCM capacity supplies neither bandwidth nor recovery evidence. Short bodies use
-a 20 ms timing floor and repeated transfers spanning at least 15 seconds to prove
-recovery. Conventional transfers retain their 250 ms floor and existing rules.
-Upgrades also require sufficient buffered audio. Estimates begin conservatively
-from native PCM bitrate and refine with lossless payload sizes.
+Each interval is chosen from what it costs to fetch: measured request overhead plus
+its expected bytes at the measured body rate. A rung is sustainable when that cost,
+times a headroom factor (1.5 Automatic, 1.25 Prioritize Original), fits within a
+full four-second interval. The link estimate is a harmonic average (time per bit),
+so one slow transfer lowers it at once while recovery needs several fast ones. It
+is shared by the current and next playback of one Sidecar account and reused for a
+cold start for five minutes. Cache reads and PCM waits are never evidence.
 
-During a long segment transfer, Stratum also evaluates buffer pressure at most
-once per second as bytes arrive. This lets the sustained-shortfall timer run
-while the download is slow. Checking only at segment boundaries could wait for
-another entire slow segment and exhaust the buffer. The in-flight representation
-is unchanged; the next interval's choice uses the accumulated observations.
+- **Cold start without fresh evidence:** the account's last known link, which is
+  kept across pauses and saved (by key digest, for 30 days) across restarts, must
+  clear 1.25× extra headroom; without one, Opus 128, never Original first. On an
+  unthrottled link a hint-less start reaches Original by the third interval. A
+  wrong hint costs one abandoned interval, priced from that transfer itself.
+- **Replay:** a retained interval is reused unless the link clearly supports a
+  better one (the upgrade margin). That upgrade's deadline is when playback
+  reaches the interval, and a slow, failed or offline upgrade plays the retained
+  copy instead.
+- **Down:** immediately, to the highest sustainable rung, or to a rung that arrives
+  before the buffered audio runs out (one second kept in reserve).
+- **Up:** one rung at a time, after two fresh transfers, with extra margin and
+  enough buffered audio. There are no wall-clock cooldowns.
+- **In flight:** an interval is abandoned whenever it would arrive after the buffer
+  runs out and a lower rung, including a new connection, would arrive sooner. The
+  same interval is requested again; the abandoned transfer stops at once rather
+  than after the cache's sharing grace period. A silent transfer moves to a cheaper
+  rung after at least eight seconds (more with buffer); at the lowest rung the
+  transport deadline applies, since restarting would only lose its queue position. Failures move down a rung (or retry the
+  lowest) for at most three attempts; refusals and cancellation are not retried, and
+  the cache's own same-quality retries are disabled for automatic intervals.
 
-Bandwidth history is isolated by Stratum endpoint/disposable session; each
-playback owns its own decisions so prefetch cannot reset the current track's
-cooldowns. A successful representation change commits policy state once, rather
-than resetting the sustained-trouble timer for every segment. Seeks preserve the
-pinned initial quality and automatic mode, then evaluate subsequent intervals.
-Only unfetched intervals can change: already queued PCM keeps its quality.
+Starting or seeking a remote track also holds display artwork downloads (at most
+six run at a time): queued art waits and in-flight art restarts later, until the
+track has eight seconds decoded, ten seconds after its first audio, or thirty
+seconds after the request. On a saturated link this keeps a page of covers from
+delaying or failing playback; preparing the next track never holds artwork.
+
+Seeks keep their pinned initial quality and automatic mode, then evaluate later
+intervals. Only unfetched intervals can change: already queued PCM keeps its
+quality. The controller's buffer includes retained intervals beyond the PCM cap.
 
 Validated segment boundaries are mapped through the continuous converter and
 seek trim into output-frame markers, then sent alongside PCM chunks. The engine

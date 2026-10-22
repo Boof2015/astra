@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import type { AudioTransferEvent } from './automaticStreamingQuality.ts'
 import { stratumProofRequest, validateStratumProofEndpoint, StratumProofError } from './stratumProofTransport.ts'
 import type { StratumRequest } from './stratumTransport.ts'
+import { STRATUM_CONTROL_TIMEOUT_MS, STRATUM_CLEANUP_TIMEOUT_MS } from './stratumNetwork.ts'
 export { StratumProofError } from './stratumProofTransport.ts'
 
 /** Checkpoint protocol only. This is not a discovery or production pairing API. */
@@ -110,7 +111,7 @@ export class StratumProofClient {
     signal.throwIfAborted()
     // Keep the bounded POST alive long enough to receive and delete its handle.
     // Destroying its socket on seek would discard the only handle we can close.
-    const response = await this.request(`/audio/v1/playbacks/${trackId}`, 'POST', AbortSignal.timeout(12_000))
+    const response = await this.request(`/audio/v1/playbacks/${trackId}`, 'POST', AbortSignal.timeout(STRATUM_CONTROL_TIMEOUT_MS))
     const value = json(response.bytes)
     const playback = hash(value.playback)
     try {
@@ -163,7 +164,7 @@ export class StratumProofClient {
 
   private async closeHandle(playback: string): Promise<void> {
     if (!HASH.test(playback)) return
-    try { await this.request(`/audio/v1/playback/${playback}`, 'DELETE', AbortSignal.timeout(1500)) }
+    try { await this.request(`/audio/v1/playback/${playback}`, 'DELETE', AbortSignal.timeout(STRATUM_CLEANUP_TIMEOUT_MS)) }
     catch { /* Best effort: server expiry also reclaims abandoned handles. */ }
   }
 }

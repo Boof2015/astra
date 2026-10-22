@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process'
 import type { Writable } from 'node:stream'
-import { StratumAutomaticQuality, stratumPlaybackQuality } from './stratumAutomaticQuality.ts'
-import type { AutomaticStreamingQuality } from './automaticStreamingQuality.ts'
+import { StratumQualityController, stratumPlaybackQuality } from './stratumQuality.ts'
 import type { AutomaticStreamingQuality as QualityMode, RemotePlaybackQuality } from '../../types/streamingQuality.ts'
 import type { RemoteStreamQualityChange } from '../../types/remoteStream.ts'
 import type { StratumAudioCache, StratumCachedPlayback, StratumCacheOptions } from './stratumAudioCache.ts'
@@ -143,33 +142,34 @@ export class StratumProofPcm {
 
   feed(input: Writable, ffmpeg: string, signal: AbortSignal,
     quality: StratumProofQuality | ((start: number) => StratumProofQuality), onBytes: (count: number) => void = () => {},
-    automatic?: { mode: QualityMode; policy: AutomaticStreamingQuality; key: string; pinInitial?: boolean;
-      buffer: () => { position: number; ahead: number } }): Promise<void> {
+    automatic?: { mode: QualityMode; key: string; pinInitial?: boolean;
+      buffer: () => { position: number; ahead: number } },
+    beforeFetch?: (signal: AbortSignal) => Promise<void>): Promise<void> {
     if (this.feeding) throw new Error('Stratum PCM input already started.')
     signal = AbortSignal.any([signal, this.stop.signal])
-    const controller = automatic && typeof quality === 'string' ? new StratumAutomaticQuality({ ...automatic,
-      decisionKey: this.playback.playback, source: this.playback.source, initial: quality,
+    const controller = automatic && typeof quality === 'string' ? new StratumQualityController({ ...automatic,
+      source: this.playback.source, initial: quality,
       buffer: () => {
         const buffer = automatic.buffer()
         return { ...buffer, ahead: Math.max(buffer.ahead, this.cached?.playableAhead(buffer.position) ?? 0) }
       } }) : undefined
-    this.feeding = this.run(input, ffmpeg, signal, quality, onBytes, controller, automatic?.mode)
-      .finally(() => { this.stop.abort(); controller?.close() })
+    this.feeding = this.run(input, ffmpeg, signal, quality, onBytes, controller, automatic?.mode, beforeFetch)
+      .finally(() => this.stop.abort())
     return this.feeding
   }
 
   private async run(input: Writable, ffmpeg: string, signal: AbortSignal,
     quality: StratumProofQuality | ((start: number) => StratumProofQuality), onBytes: (count: number) => void,
-    automatic?: StratumAutomaticQuality, mode?: QualityMode): Promise<void> {
+    automatic?: StratumQualityController, mode?: QualityMode, beforeFetch?: (signal: AbortSignal) => Promise<void>): Promise<void> {
     const source = this.playback.source
     const begin = this.cached ? Math.floor(this.interval.begin / (4 * source.sample_rate)) * 4 * source.sample_rate : this.interval.begin
-    const fetching = this.cached ? new StratumFetchAhead(this.cached, begin, signal, quality, this.diagnostics, onBytes, automatic) : undefined
+    const fetching = this.cached ? new StratumFetchAhead(this.cached, begin, signal, quality, this.diagnostics, onBytes, automatic, beforeFetch) : undefined
     try {
       for (let start = begin; start < source.frames;) {
         signal.throwIfAborted()
         const frames = Math.min(4 * source.sample_rate, source.frames - start)
+        if (!fetching) await beforeFetch?.(signal)
         let selected: StratumProofQuality = fetching ? 'lossless' : automatic?.choose(frames) ?? (typeof quality === 'function' ? quality(start) : quality)
-        const timing = fetching ? undefined : automatic?.begin(frames)
         let diagnostic: ReturnType<StratumSegmentDiagnostics['begin']> | undefined
         let segment: StratumProofSegment & { localCacheHit?: boolean }
         let pcm: Buffer
@@ -179,26 +179,33 @@ export class StratumProofPcm {
             segment = prepared.segment
             diagnostic = prepared.diagnostic
           } else {
-            diagnostic = this.diagnostics.begin(start / source.sample_rate, (start + frames) / source.sample_rate, selected)
-            const observe = (event: Parameters<NonNullable<Parameters<StratumProofClient['segment']>[5]>>[0]) => {
-              timing?.observe(event)
-              diagnostic!.observe(event)
+            const read = async (requested: StratumProofQuality, attemptSignal: AbortSignal,
+              timing?: ReturnType<StratumQualityController['begin']>) => {
+              const current = this.diagnostics.begin(start / source.sample_rate, (start + frames) / source.sample_rate, requested)
+              diagnostic = current
+              try {
+                const result = await this.client.segment(this.playback, start, frames, requested, attemptSignal, event => {
+                  timing?.observe(event)
+                  current.observe(event)
+                })
+                current.received(result.payload.length, result.metadata.retained_cache_hit ?? null, false, result.metadata.quality)
+                timing?.ready(result.metadata.quality, frames, result.payload.length)
+                return result
+              } catch (error) { current.failed(attemptSignal.aborted); throw error }
             }
-            segment = await this.client.segment(this.playback, start, frames, selected, signal, observe)
-            diagnostic.received(segment.payload.length, segment.localCacheHit ? null : segment.metadata.retained_cache_hit ?? null, segment.localCacheHit, selected)
+            segment = automatic ? await automatic.fetch(frames, selected, signal, read) : await read(selected, signal)
           }
           selected = segment.metadata.quality
           signal.throwIfAborted()
-          diagnostic.decoding()
+          diagnostic!.decoding()
           pcm = await decodeStratumProofSegment(ffmpeg, segment, signal)
           if (start < this.interval.begin) pcm = pcm.subarray((this.interval.begin - start) * source.channels * 4)
           signal.throwIfAborted()
-          diagnostic.decoded()
+          diagnostic!.decoded()
         } catch (error) {
           diagnostic?.failed(signal.aborted)
           throw error
         }
-        if (!segment.localCacheHit) timing?.ready(selected, frames, segment.payload.length)
         if (this.previousQuality !== selected) {
           const value = this.withAnalysis(stratumPlaybackQuality(source, selected, mode))
           this.initialQuality ??= value
@@ -246,6 +253,7 @@ export class StratumProofPcm {
       ...(this.cached.analysis ? { loudness: { loudnessLufs: this.cached.analysis.loudnessLufs,
         peakLinear: this.cached.analysis.peakLinear } } : {}) } : quality
   }
+  playableAhead(position: number): number { return this.cached?.playableAhead(position) ?? 0 }
   get retainsCache(): boolean { return !!this.cached }
   get cacheComplete(): boolean { return this.cached?.complete ?? false }
   get cachedRanges() { return this.cached?.cachedRanges ?? [] }

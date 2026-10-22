@@ -56,10 +56,12 @@ import { deliveredAudioFormat, isStreamingQualityRequest, isAutomaticStreamingQu
 import { createSubsonicAudioSource } from './services/subsonicAudioSource'
 import { ProgressivePcmDelivery } from './progressivePcmDelivery'
 import { StratumAudioCache } from './services/stratumAudioCache'
+import { StratumPrefetchGate, canPrefetchStratum } from './services/stratumPrefetch'
+import { PlaybackNetworkPriority } from './services/playbackNetworkPriority'
 import { StratumProofPcm, decodeStratumProofSegment } from './services/stratumProofPlayback'
 import { CompletedStreamingDiagnostics } from './services/streamingDiagnostics'
 import type { StreamingDiagnosticsSession } from '../types/streamingDiagnostics'
-import { stratumPlaybackQuality } from './services/stratumAutomaticQuality'
+import { stratumLinkEstimates, stratumPlaybackQuality } from './services/stratumQuality'
 import { parseStratumProofConfig, stratumProofRoute } from './services/stratumProofConfig'
 import { stratumQualitySelection } from './services/stratumProofConfig'
 import { StratumConnections, stratumSourceBinding, STRATUM_SETTINGS_KEY } from './services/stratumConnections'
@@ -713,6 +715,8 @@ interface ArtworkBytes {
 }
 const artworkThumbnailRequestCache = new Map<string, Promise<ArtworkBytes | null>>()
 const subsonicArtworkResolveRequestCache = new Map<string, Promise<string | null>>()
+// Display artwork downloads yield to a remote track the listener just started.
+const playbackNetworkPriority = new PlaybackNetworkPriority()
 let subsonicStatusCache: SubsonicStatusSnapshot = {
   isSyncing: false,
   updatedAt: Date.now(),
@@ -4121,6 +4125,13 @@ const stratumConnections = new StratumConnections({
   }
 })
 
+// The last measured Sidecar link per account (as a digest) lets a cold start
+// begin at the quality that link supported, instead of always Opus 128.
+stratumLinkEstimates.attach({
+  read: () => library.getAppMeta('stratum_link_hints_v1'),
+  write: value => library.setAppMeta('stratum_link_hints_v1', value)
+})
+
 function toSubsonicSourcePayload(source: library.SubsonicSourcePublic): SubsonicSource {
   return {
     id: source.id,
@@ -5569,10 +5580,8 @@ async function resolveSubsonicArtworkHash(hash: string): Promise<string | null> 
   const request = (async () => {
     try {
       const credentials = requireSubsonicSourceCredentials(parsed.sourceId)
-      const artworkPayload = await fetchSubsonicCoverArt(credentials.connection, parsed.artworkId, {
-        timeoutMs: 12_000,
-        retries: 1
-      })
+      const artworkPayload = await playbackNetworkPriority.run(signal =>
+        fetchSubsonicCoverArt(credentials.connection, parsed.artworkId, { timeoutMs: 12_000, retries: 1, signal }))
       const cachedHash = await library.cacheArtworkBuffer(artworkPayload.data, artworkPayload.contentType)
       if (!cachedHash) return null
       await library.replaceSubsonicArtworkHash(parsed.sourceId, hash, cachedHash)
@@ -6025,6 +6034,7 @@ let providerPlaybackQuitPending = false
 let providerPlaybackQuitReady = false
 app.on('before-quit', (event) => {
   stratumConnections.close()
+  stratumLinkEstimates.flush()
   providerStateSync.close()
   remotePlaylists.close()
   if (!providerPlaybackQuitReady) {
@@ -8232,6 +8242,7 @@ ipcMain.on('audio:updateProgressiveStreamPosition', (event, sessionId: number, c
     : 0
   session.rendererReady = true
   session.consumedFrames = Math.max(session.consumedFrames, normalizedFrame)
+  if (session.stratum) stratumPrefetchGate.changed()
   updateLocalProgressiveStreamBackpressure(session)
   if (session.pendingOutcome && session.pcmDelivery?.drained) {
     const pending = session.pendingOutcome
@@ -8252,6 +8263,7 @@ ipcMain.on('audio:activateProgressiveStream', (event, sessionId: number) => {
   const session = remoteStreamSessions.get(sessionId)
   if (!session || session.sender !== event.sender) return
   session.slot = 'current'
+  if (session.stratum) stratumPrefetchGate.changed()
   safeSendRemoteLoadProgress(session, session.failed ? 'failed' : session.done ? 'complete' : 'streaming', true)
 })
 
@@ -10734,6 +10746,20 @@ interface LocalPcmStreamState {
 
 const localPcmDecodeSessions = new Map<string, LocalPcmDecodeSession>()
 
+const stratumPrefetchGate = new StratumPrefetchGate()
+
+function stratumPrefetchAllowed(session: RemoteStreamSession): boolean {
+  const position = session.startTimeSeconds + session.consumedFrames / session.sampleRate
+  return canPrefetchStratum({ slot: session.slot, nextAhead: session.stratum?.playableAhead(position) ?? 0,
+    current: [...remoteStreamSessions.values()].filter(current => current !== session && current.sender === session.sender
+      && current.slot === 'current' && current.stratum && !current.failed && !current.cancelled).map(current => {
+        const position = current.startTimeSeconds + current.consumedFrames / current.sampleRate
+        const ahead = Math.max((current.decodedFrames - current.consumedFrames) / current.sampleRate,
+          current.stratum!.playableAhead(position))
+        return { ahead, complete: current.done || (current.durationSeconds !== null && position + ahead >= current.durationSeconds - .001) }
+      }) })
+}
+
 interface RemoteStreamSession {
   stratum: StratumProofPcm | null
   quality?: RemotePlaybackQuality
@@ -10996,6 +11022,7 @@ function finalizeRemoteStreamSession(
       session.releaseSenderHooks?.()
       session.releaseSenderHooks = null
       remoteStreamSessions.delete(session.id)
+      if (session.stratum) stratumPrefetchGate.changed()
     }
     return
   }
@@ -11010,6 +11037,7 @@ function finalizeRemoteStreamSession(
   void session.stratum?.release()
   session.failed = outcome === 'failed'
   session.cancelled = outcome === 'cancelled'
+  if (session.stratum) stratumPrefetchGate.changed()
   if (session.stratum && outcome !== 'cancelled') {
     completedStreamingDiagnostics.remember(session.sender, streamingDiagnosticsSnapshot(session))
   }
@@ -11286,14 +11314,50 @@ async function startProgressiveStreamSession(
     if (mainFrame && !inPlace) abort()
   }
   sender.on('did-start-navigation', navigate)
+  // Next-track preparation runs in the background and never holds artwork.
+  const artwork = slot === 'current' && resolveProgressiveStreamSourceType(filePath) !== 'local' ? holdArtworkForPlayback() : null
   try {
-    return await withRemoteCompatibility(options.streamingQuality, controller.signal, streamingQuality =>
+    const info = await withRemoteCompatibility(options.streamingQuality, controller.signal, streamingQuality =>
       startProgressiveStreamAttempt(sender, filePath, outputSampleRate, expectedChannels,
         { ...options, streamingQuality }, controller.signal))
+    artwork?.started(info.sessionId)
+    return info
+  } catch (error) {
+    artwork?.release()
+    throw error
   } finally {
     sender.removeListener('destroyed', abort)
     sender.removeListener('did-start-navigation', navigate)
     progressiveStartupControllers.finish(sender.id, slot, controller)
+  }
+}
+
+/** A clicked or sought remote track holds display artwork until it has a short
+ * reserve: eight seconds decoded ahead, ten seconds after its first audio, or
+ * thirty seconds after the request, whichever comes first. A bounded check reads
+ * the session only during that window. */
+function holdArtworkForPlayback(): { started: (sessionId: number) => void; release: () => void } {
+  const yieldArtwork = playbackNetworkPriority.hold()
+  let check: ReturnType<typeof setInterval> | null = null
+  const release = () => {
+    clearTimeout(cap)
+    if (check) clearInterval(check)
+    check = null
+    yieldArtwork()
+  }
+  const cap = setTimeout(release, 30_000)
+  cap.unref()
+  return {
+    started: sessionId => {
+      const firstAudioAt = performance.now()
+      check = setInterval(() => {
+        const session = remoteStreamSessions.get(sessionId)
+        if (!session || session.done || session.failed || session.cancelled || performance.now() - firstAudioAt >= 10_000
+          || (session.decodedFrames - session.consumedFrames) / session.sampleRate >= 8) release()
+      }, 250)
+      check.unref()
+    },
+    release
   }
 }
 
@@ -11385,7 +11449,7 @@ async function startProgressiveStreamAttempt(
       } catch (error) {
         abortController.signal.throwIfAborted()
         if (proofRoute) throw error
-        stratumConnections.playbackFailed(parseSubsonicTrackPath(filePath)!.sourceId)
+        stratumConnections.playbackFailed(parseSubsonicTrackPath(filePath)!.sourceId, error)
       }
     }
     if (!stratum && sourceType !== 'local') {
@@ -11604,14 +11668,15 @@ async function startProgressiveStreamAttempt(
 
       if (stratum && stratumRoute) {
         void stratum.feed(ffmpeg.stdin, ffmpegPath, abortController.signal, stratumRoute.quality,
-          bytes => { session.loadedBytes += bytes }, stratumRoute.mode ? {
-            mode: stratumRoute.mode, policy: automaticStreamingQuality, pinInitial: stratumRoute.pinInitial,
-            // A separate transport/account namespace keeps conventional evidence
-            // intact. The disposable bearer is only an in-memory identity here.
+          bytes => { session.loadedBytes += bytes; stratumPrefetchGate.changed() }, stratumRoute.mode ? {
+            mode: stratumRoute.mode, pinInitial: stratumRoute.pinInitial,
+            // Link estimates are shared per Sidecar account (current and next).
+            // The disposable bearer is only an in-memory identity here.
             key: stratumRoute.key,
             buffer: () => ({ position: session.startTimeSeconds + session.consumedFrames / session.sampleRate,
               ahead: Math.max(0, session.decodedFrames - session.consumedFrames) / session.sampleRate })
-          } : undefined).catch(error => finalizeRemoteStreamSession(session, 'failed', error))
+          } : undefined, signal => stratumPrefetchGate.wait(() => stratumPrefetchAllowed(session), signal))
+          .catch(error => finalizeRemoteStreamSession(session, 'failed', error))
       } else {
         try {
           if (!ffmpeg.stdin.destroyed) ffmpeg.stdin.end()

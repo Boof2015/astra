@@ -19,6 +19,27 @@ export interface StreamingDiagnosticsReading {
   totalBytes: number | null
 }
 
+/** A bounded, explicit timing-only export: no track paths, titles, accounts,
+ * server addresses, bearer tokens or opaque playback handles. */
+export function streamingTimingReport(reading: StreamingDiagnosticsReading): string {
+  const session = (value: StreamingDiagnosticsSession | null) => value && ({
+    transport: value.transport, state: value.state, start: value.start, duration: value.duration,
+    bufferedEnd: value.bufferedEnd, sourceRate: value.sourceRate, outputRate: value.outputRate,
+    channels: value.channels, loadedBytes: value.loadedBytes, localCacheComplete: value.localCacheComplete,
+    omittedSegments: value.omittedSegments + Math.max(0, value.segments.length - 256),
+    segments: value.segments.slice(-256).map(segment => ({
+      start: segment.start, end: segment.end, quality: segment.quality, state: segment.state,
+      elapsedMs: segment.elapsedMs, connectionMs: segment.connectionMs ?? null,
+      responseWaitMs: segment.responseWaitMs ?? null, transferMs: segment.transferMs,
+      decodeMs: segment.decodeMs, receivedBytes: segment.receivedBytes, payloadBytes: segment.payloadBytes,
+      localCacheHit: segment.localCacheHit ?? null, serverCacheHit: segment.serverCacheHit
+    }))
+  })
+  return JSON.stringify({ version: 1, transport: reading.transport, playbackState: reading.playbackState,
+    position: reading.position, bufferedAhead: Math.max(0, reading.bufferedEnd - reading.position),
+    current: session(reading.session), next: session(reading.next) }, null, 2)
+}
+
 export function diagnosticQualityLabel(quality: DiagnosticSegmentQuality): string {
   return quality === 'lossless' ? 'Original' : quality === 'opus-64' ? 'Opus 64' : 'Opus 128'
 }

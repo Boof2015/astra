@@ -11,8 +11,10 @@ import { ProgressivePcmDelivery } from '../../src/main/progressivePcmDelivery.ts
 import { resolveLocalProgressiveBackpressureAction, REMOTE_PROGRESSIVE_PCM_MAX_BYTES } from '../../src/main/progressiveStreamBackpressure.ts'
 import { withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemoteDecoder } from '../../src/shared/audio/remoteCompatibility.ts'
 import { StratumProofPcm } from '../../src/main/services/stratumProofPlayback.ts'
+import { StratumPrefetchGate, canPrefetchStratum } from '../../src/main/services/stratumPrefetch.ts'
+import { PlaybackNetworkPriority } from '../../src/main/services/playbackNetworkPriority.ts'
 import { CompletedStreamingDiagnostics } from '../../src/main/services/streamingDiagnostics.ts'
-import { stratumPlaybackQuality } from '../../src/main/services/stratumAutomaticQuality.ts'
+import { stratumPlaybackQuality } from '../../src/main/services/stratumQuality.ts'
 import { AutomaticStreamingQuality } from '../../src/main/services/automaticStreamingQuality.ts'
 import { parseStratumProofConfig, stratumProofRoute, stratumQualitySelection, type StratumProofConfig } from '../../src/main/services/stratumProofConfig.ts'
 import type { StratumAudioCache } from '../../src/main/services/stratumAudioCache.ts'
@@ -27,7 +29,7 @@ const names = ['startProgressiveStreamSession', 'startProgressiveStreamAttempt',
   'settleRemoteStreamStartup', 'pumpRemoteStreamOutput', 'flushRemoteStreamOutput', 'emitRemoteStreamChunk',
   'cancelProgressiveStreamSession', 'isRemoteStreamPipeTeardownError', 'updateLocalProgressiveStreamBackpressure',
   'resolveProgressiveStreamSourceType', 'normalizeProgressiveStartTimeSeconds', 'safeSendRemoteStreamEvent', 'streamingDiagnosticsSnapshot', 'installedStratumRoute',
-  'buildRemoteLoadProgress', 'safeSendRemoteLoadProgress']
+  'buildRemoteLoadProgress', 'safeSendRemoteLoadProgress', 'stratumPrefetchAllowed', 'holdArtworkForPlayback']
 const source = ts.createSourceFile('index.ts', readFileSync(new URL('../../src/main/index.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true)
 const declarations = source.statements.filter(statement => ts.isFunctionDeclaration(statement) && names.includes(statement.name?.text ?? ''))
 assert.equal(declarations.length, names.length)
@@ -39,13 +41,14 @@ export function mainHarness(config: StratumProofConfig, ffmpeg: string,
   options: { deliver?: (channel: string, value: unknown) => void; recordPcm?: boolean;
     segmentQuality?: (seconds: number) => StratumProofQuality; policy?: AutomaticStreamingQuality;
     duration?: (path: string) => number;
-    installed?: StratumConnections; cache?: StratumAudioCache;
+    installed?: StratumConnections; cache?: StratumAudioCache; priority?: PlaybackNetworkPriority;
     acquire?: (path: string, signal: AbortSignal, quality?: StreamingQualityRequest) => Promise<RemoteAudioLease> } = {}) {
   const chunks: RemoteStreamChunk[] = [], events: RemoteStreamEvent[] = []
   const sessions = new Map<number, any>()
   const registry = new ProgressiveStartupRegistry()
   const qualityEvents: Array<{ seconds: number; quality: StratumProofQuality }> = []
   const completedStreamingDiagnostics = new CompletedStreamingDiagnostics()
+  const stratumPrefetchGate = new StratumPrefetchGate()
   // Listening-only schedule injection at the adapter's existing quality callback.
   // Application preferences/automatic decisions are not modified by this fixture.
   const proofPcm = options.segmentQuality ? {
@@ -73,7 +76,8 @@ export function mainHarness(config: StratumProofConfig, ffmpeg: string,
     parseStratumProofConfig, stratumProofRoute, stratumQualitySelection, resolveStreamingQuality,
     stratumConnections: options.installed, getStratumAudioCache: () => options.cache, streamingQualityPreferences: { read: () => ({ global: 'original', overrides: {} }) },
     withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemoteDecoder,
-    remoteStreamSessions: sessions, completedStreamingDiagnostics, progressiveStartupControllers: registry, resolveLocalProgressiveBackpressureAction,
+    remoteStreamSessions: sessions, completedStreamingDiagnostics, stratumPrefetchGate, canPrefetchStratum,
+    playbackNetworkPriority: options.priority ?? new PlaybackNetworkPriority(), progressiveStartupControllers: registry, resolveLocalProgressiveBackpressureAction,
     isDev: !options.installed, app: { isPackaged: false }, process: { env: { ASTRA_STRATUM_PROOF_CONFIG: 'fixture' } },
     readFileSync: () => JSON.stringify({ experiment: 'astra-stratum-standard-proof-1', ...config }),
     library: { getTrackByPath: () => ({ channels: 2, format: 'wav', sample_rate: 48000, bit_depth: 16 }), getSubsonicSourceById: () => ({ enabled: 1 }) },
@@ -112,11 +116,19 @@ export function mainHarness(config: StratumProofConfig, ffmpeg: string,
       session.rendererReady = true
       session.consumedFrames = Math.max(session.consumedFrames,
         Number.isFinite(frame) ? Math.max(0, Math.min(session.decodedFrames, Math.floor(frame))) : 0)
+      if (session.stratum) stratumPrefetchGate.changed()
       api.update(session)
       if (session.pendingOutcome && session.pcmDelivery?.drained) {
         const pending = session.pendingOutcome; session.pendingOutcome = null
         api.finalize(session, pending.outcome, pending.error)
       }
+    },
+    // Mirrors audio:activateProgressiveStream after a renderer gapless handoff.
+    activate: (id: number) => {
+      const session = sessions.get(id)
+      if (!session) return
+      session.slot = 'current'
+      if (session.stratum) stratumPrefetchGate.changed()
     },
     cancel: (id: number): Promise<void> => api.cancel(id),
     close: async () => { registry.cancelAll(); for (const id of sessions.keys()) await api.cancel(id) }

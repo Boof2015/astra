@@ -1,5 +1,6 @@
 import { request as httpRequest } from 'node:http'
 import type { AudioTransferEvent } from './automaticStreamingQuality.ts'
+import { StratumNetworkError, stratumAborted, stratumRequestTimeout, stratumRequestStage, stratumTimeoutContext } from './stratumNetwork.ts'
 
 /** Disposable loopback only. Pairing/TLS must precede any remote credential use. */
 export function validateStratumProofEndpoint(endpoint: string): string {
@@ -25,6 +26,11 @@ export class StratumProofError extends Error {
   }
 }
 
+/** Access or format refusals that asking again (at any quality) cannot fix. */
+export function isStratumRefusal(error: unknown): error is StratumProofError {
+  return error instanceof StratumProofError && [401, 403, 404, 415].includes(error.status)
+}
+
 /** No proxies, redirects, cookies or raw upstream error text. */
 export async function stratumProofRequest(endpoint: string, path: string, method: 'GET' | 'POST' | 'DELETE',
   signal: AbortSignal, body?: unknown, bearer?: string, limit = 64 * 1024,
@@ -43,7 +49,7 @@ export async function stratumProofRequest(endpoint: string, path: string, method
       if (transferring) observe?.({ phase: 'end', complete: !error })
       clearTimeout(timer)
       signal.removeEventListener('abort', abort)
-      if (error) reject(error)
+      if (error) reject(stratumTimeoutContext(error, stratumRequestStage(path)))
       else resolve(result!)
     }
     const req = httpRequest(new URL(path, origin), {
@@ -74,8 +80,8 @@ export async function stratumProofRequest(endpoint: string, path: string, method
       response.on('end', () => finish(undefined, { bytes: Buffer.concat(chunks),
         type: String(response.headers['content-type'] ?? '').split(';')[0] }))
     })
-    const abort = () => { finish(new Error('Stratum playback was cancelled.')); req.destroy() }
-    const timer = setTimeout(() => { finish(new Error('Stratum proof request timed out.')); req.destroy() }, 12_000)
+    const abort = () => { finish(stratumAborted(signal)); req.destroy() }
+    const timer = setTimeout(() => { finish(new StratumNetworkError('timeout')); req.destroy() }, stratumRequestTimeout(path))
     timer.unref()
     req.on('error', () => finish(new Error('Could not connect to the Stratum proof.')))
     signal.addEventListener('abort', abort, { once: true })

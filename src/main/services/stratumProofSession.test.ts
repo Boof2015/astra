@@ -175,3 +175,29 @@ test('remote endpoints are rejected before a credential supplier can be called',
     assert.throws(() => new StratumProofSession(endpoint, async () => { assert.fail('must not read credentials') }), /loopback/)
   }
 })
+
+test('closing during a completed login race logs out its late lease before destroying the transport', { timeout: 2000 }, async () => {
+  const reached = gate(), release = gate(), events: string[] = []
+  const endpoint = 'https://disposable.invalid'
+  const owner = new StratumProofSession(endpoint, async () => ({ username: 'listener', password }), {
+    endpoint, close: () => { events.push('closed') }, request: async (path, method) => {
+      if (method === 'DELETE') { events.push('logout'); return { bytes: Buffer.alloc(0), type: '' } }
+      if (path.endsWith('/capabilities')) return { type: 'application/json', bytes: Buffer.from(JSON.stringify({
+        protocol: 'stratum-access-proof-1', audioExperiment: 'stratum-authenticated-audio-1',
+        authentication: 'subsonic-token', sessionRenewal: 'fresh-credentials-same-user'
+      })) }
+      reached.resolve()
+      // Model a response already completed when cancellation wins the outer wait.
+      await release.promise
+      return { type: 'application/json', bytes: Buffer.from(JSON.stringify({ session: bearer, expiresInSeconds: 600 })) }
+    }
+  })
+  const pending = assert.rejects(owner.getBearer(signal()), /ended/)
+  await reached.promise
+  const closing = owner.close()
+  assert.equal(owner.signal.aborted, true)
+  assert.deepEqual(events, [])
+  release.resolve()
+  await closing; await pending
+  assert.deepEqual(events, ['logout', 'closed'])
+})

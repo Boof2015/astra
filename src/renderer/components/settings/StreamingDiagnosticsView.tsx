@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { describeRemotePlaybackQuality } from '../../audio/audioPipelineModel'
-import { diagnosticMapSpans, diagnosticQualityLabel, diagnosticWindow, type StreamingDiagnosticsReading } from '../../utils/streamingDiagnostics'
+import { diagnosticMapSpans, diagnosticQualityLabel, diagnosticWindow, streamingTimingReport, type StreamingDiagnosticsReading } from '../../utils/streamingDiagnostics'
 import './streamingDiagnostics.css'
 import StreamingActivityPreview from './StreamingActivityPreview'
 
@@ -54,6 +55,7 @@ export function StreamBlockMap({ reading }: { reading: StreamingDiagnosticsReadi
 }
 
 export default function StreamingDiagnosticsView({ reading }: { reading: StreamingDiagnosticsReading }) {
+  const [copyStatus, setCopyStatus] = useState('')
   const { session, next } = reading
   const stratum = reading.transport === 'stratum'
   const last = session?.segments.at(-1)
@@ -64,6 +66,13 @@ export default function StreamingDiagnosticsView({ reading }: { reading: Streami
     <div className="streaming-diagnostics-track"><strong>{reading.title}</strong><span>{reading.artist}</span>
       <span className="streaming-diagnostics-transport">{stratum ? 'Stratum' : reading.transport === 'local' ? 'Local' : 'Conventional stream'} · {reading.playbackState}</span>
     </div>
+    {stratum && <div className="streaming-activity-caption">
+      <button type="button" className="settings-btn" onClick={() => {
+        void navigator.clipboard.writeText(streamingTimingReport(reading)).then(
+          () => setCopyStatus('Timing report copied.'), () => setCopyStatus('Could not copy the timing report.'))
+      }}>Copy timing report</button>
+      <span role="status">{copyStatus}</span>
+    </div>}
     {stratum && <div className="streaming-activity-caption"><span>Literal map</span></div>}
     <StreamBlockMap reading={reading} />
     {stratum && <StreamingActivityPreview reading={reading} />}
@@ -86,10 +95,10 @@ export default function StreamingDiagnosticsView({ reading }: { reading: Streami
     {stratum && !!session?.segments.length && <details className="streaming-diagnostics-details">
       <summary>Recent segments · {session.segments.filter(segment => segment.localCacheHit === true).length} Astra hits · {session.segments.filter(segment => segment.serverCacheHit === true).length} Sidecar hits{session.omittedSegments ? ` · ${session.omittedSegments} earlier segments omitted` : ''}</summary>
       <div className="streaming-diagnostics-table-scroll"><table>
-        <thead><tr><th>Track time</th><th>Quality</th><th>State</th><th>Ready in</th><th>Body transfer</th><th>Decode</th><th>Astra cache</th><th>Sidecar cache</th></tr></thead>
-        <tbody>{session.segments.slice(-8).reverse().map(segment => <tr key={segment.start}>
+        <thead><tr><th>Track time</th><th>Quality</th><th>State</th><th>Elapsed</th><th>HTTPS</th><th>Response wait</th><th>Body transfer</th><th>Decode</th><th>Astra cache</th><th>Sidecar cache</th></tr></thead>
+        <tbody>{session.segments.slice(-8).reverse().map((segment, index) => <tr key={`${segment.start}-${index}`}>
           <td>{time(segment.start)}–{time(segment.end)}</td><td>{diagnosticQualityLabel(segment.quality)}</td><td>{segment.state}</td>
-          <td>{segment.state === 'decoded' ? ms(segment.elapsedMs) : '—'}</td><td>{ms(segment.transferMs)}</td><td>{ms(segment.decodeMs)}</td>
+          <td>{ms(segment.elapsedMs)}</td><td>{ms(segment.connectionMs ?? null)}</td><td>{ms(segment.responseWaitMs ?? null)}</td><td>{ms(segment.transferMs)}</td><td>{ms(segment.decodeMs)}</td>
           <td>{segment.localCacheHit === true ? 'Hit' : segment.localCacheHit === false ? 'Miss' : '—'}</td>
           <td>{segment.serverCacheHit === true ? 'Hit' : segment.serverCacheHit === false ? 'Miss' : 'Not reported'}</td>
         </tr>)}</tbody>

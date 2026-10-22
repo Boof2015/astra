@@ -18,7 +18,6 @@ import { analyzeRemoteAudioPcm, analyzeRemoteAudioFile } from '../../src/main/se
 import { stratumProofRequest } from '../../src/main/services/stratumProofTransport.ts'
 import type { StratumConnections } from '../../src/main/services/stratumConnections.ts'
 import { StratumProofPcm, decodeStratumProofSegment } from '../../src/main/services/stratumProofPlayback.ts'
-import { AutomaticStreamingQuality, type AudioTransferEvent } from '../../src/main/services/automaticStreamingQuality.ts'
 import type { RemoteStreamInfo, RemoteAudioLoadProgress } from '../../src/types/remoteStream.ts'
 
 const binary = process.env.ASTRA_STRATUM_SIDECAR
@@ -162,15 +161,8 @@ test('authenticated Stratum → actual Astra Standard session → real worklet, 
     })
   } }
   const installed = { cachedConnection: () => approved, playbackStarted() {}, playbackFailed() { throw new Error('Unexpected Stratum fallback') } } as unknown as StratumConnections
-  const aheadObservations: number[] = []
-  class CachedPolicy extends AutomaticStreamingQuality {
-    override recommend(...args: Parameters<AutomaticStreamingQuality['recommend']>) {
-      aheadObservations.push(args[2].segments?.aheadSeconds ?? 0)
-      return super.recommend(...args)
-    }
-  }
   const cacheProgress: RemoteAudioLoadProgress[] = []
-  const cached = mainHarness(config, ffmpeg, { installed, cache: retained, policy: new CachedPolicy(),
+  const cached = mainHarness(config, ffmpeg, { installed, cache: retained,
     deliver: (channel, value) => { if (channel === 'audio:progressiveLoadProgress') cacheProgress.push(value as RemoteAudioLoadProgress) } })
   t.after(async () => { await cached.close(); await retained.close(); await disk.close() })
   async function cachedCollect(track: string, quality: 'original' | 64 | 128, seek = 0) {
@@ -244,7 +236,8 @@ test('authenticated Stratum → actual Astra Standard session → real worklet, 
   assert.equal(heldSession.consumedFrames, 0)
   assert.ok(heldSession.decodedFrames <= 32 * 48000, `unbounded PCM: ${heldSession.decodedFrames}`)
   assert.ok(heldSession.decodedFrames < heldSession.stratum.interval.frames)
-  assert.ok(aheadObservations.some(ahead => ahead > 60), 'automatic quality must see encoded cache beyond the PCM cap')
+  // Automatic quality's buffer combines decoded PCM with this retained run.
+  assert.ok(heldSession.stratum.playableAhead(0) > 60, 'encoded cache beyond the PCM cap must count as buffered audio')
   assert.ok(await disk.getAnalysis(heldCached.quality!.analysisKey!))
   assert.equal(heldCached.quality?.loudness, undefined, 'analysis must not change first-listen gain')
   await heldSession.stratum.release()
@@ -255,11 +248,19 @@ test('authenticated Stratum → actual Astra Standard session → real worklet, 
   try {
     await until(() => cached.events.some(e => e.sessionId === heldCached.sessionId && ['complete', 'failed'].includes(e.type)), 'Retained playback did not drain.')
     assert.ok(!cached.events.some(e => e.sessionId === heldCached.sessionId && e.type === 'failed'))
-    const decoded = Buffer.concat([Buffer.from(heldCached.initialChunk!.pcmData),
-      ...cached.chunks.filter(c => c.sessionId === heldCached.sessionId).map(c => Buffer.from(c.pcmData))])
+    const heldChunks = [heldCached.initialChunk!, ...cached.chunks.filter(c => c.sessionId === heldCached.sessionId)]
+    const decoded = Buffer.concat(heldChunks.map(c => Buffer.from(c.pcmData)))
     const original = fixtures.get('adaptive')!.subarray(44)
     assert.equal(decoded.length, original.length * 2)
-    for (let sample = 0; sample < original.length / 2; sample++) {
+    // A cold automatic start has no link evidence and begins at Opus 128; on
+    // loopback it must reach Original and stay there, sample-exact from that point.
+    const markers = heldChunks.flatMap(c => c.qualityChanges ?? [])
+    assert.equal(markers[0]?.quality.requested, 128)
+    const reached = markers.findIndex(marker => marker.quality.requested === 'original')
+    assert.ok(reached > 0 && markers.slice(reached).every(marker => marker.quality.requested === 'original'),
+      `automatic did not settle on Original: ${JSON.stringify(markers.map(marker => marker.quality.requested))}`)
+    assert.ok(markers[reached].frame <= 3 * 4 * 48000, 'Original by the third interval on an unthrottled link')
+    for (let sample = markers[reached].frame * 2; sample < original.length / 2; sample++) {
       assert.equal(decoded.readFloatLE(sample * 4), original.readInt16LE(sample * 2) / 32768, `changed sample ${sample}`)
     }
     assert.equal(cacheRequests, fetchedRequests, 'draining retained audio must not contact Sidecar')
@@ -323,23 +324,21 @@ test('authenticated Stratum → actual Astra Standard session → real worklet, 
       [[0, 'original'], [4 * 48000, 64], [8 * 48000, 128]])
   } finally { converter.kill('SIGKILL'); await pcm.release() }
 
-  // Real authenticated segments/decoding/main sessions; deterministic transfer
-  // measurements and consumption simulate a slowdown/recovery without a real
-  // device or minutes of wall-clock sleeping. This is not a WAN benchmark.
+  // Real authenticated segments/decoding/main sessions through a loopback proxy
+  // that paces actual segment bytes: fast, then 150 kbps for nine seconds after
+  // the fourth request, then fast. Consumption is simulated (ten seconds behind
+  // decoding); no device. This is a controller proof, not a WAN benchmark.
+  const { throttledLink } = createRequire(import.meta.url)('./throttledLink.cjs')
   for (const mode of ['automatic', 'automatic-original'] as const) {
-    let clock = 0, requests = 0
-    class MeasuredPolicy extends AutomaticStreamingQuality {
-      override observer(key: string, minimum = 250) {
-        const observe = super.observer(key, minimum)
-        let kbps = 0
-        return (event: AudioTransferEvent) => {
-          if (event.phase === 'start') { requests++; kbps = requests <= 6 ? 80 : 8000; clock += 4000 }
-          if (event.phase === 'data') clock += (event.bytes ?? 0) * 8 / kbps
-          observe(event)
-        }
-      }
-    }
-    const adaptive = mainHarness(config, ffmpeg, { policy: new MeasuredPolicy(() => clock) })
+    let slowFrom: number | null = null
+    const link = await throttledLink(config.endpoint, (entry: { number: number }, elapsedMs: number) => {
+      if (entry.number < 4) return 16000
+      slowFrom ??= elapsedMs
+      return elapsedMs - slowFrom < 9000 ? 150 : 16000
+    })
+    // A separate endpoint is a separate account key: this cold start has no
+    // link evidence from the earlier loopback sections.
+    const adaptive = mainHarness({ ...config, endpoint: link.endpoint }, ffmpeg)
     try {
       const info = await adaptive.start('adaptive', 44100, mode)
       const tick = setInterval(() => {
@@ -347,7 +346,7 @@ test('authenticated Stratum → actual Astra Standard session → real worklet, 
         if (session) adaptive.position(info.sessionId, Math.max(0, session.decodedFrames - 44100 * 10))
       }, 2)
       try {
-        await until(() => adaptive.events.some(e => e.type === 'complete' || e.type === 'failed'), 'Automatic PCM did not finish.', 25000)
+        await until(() => adaptive.events.some(e => e.type === 'complete' || e.type === 'failed'), 'Automatic PCM did not finish.', 60000)
       } catch (error) {
         const active = adaptive.sessions.get(info.sessionId)
         const diagnostic = adaptive.diagnostics(info.sessionId)
@@ -358,14 +357,20 @@ test('authenticated Stratum → actual Astra Standard session → real worklet, 
       assert.ok(!adaptive.events.some(e => e.type === 'failed'))
       const chunks = [info.initialChunk!, ...adaptive.chunks]
       const changes = chunks.flatMap(chunk => chunk.qualityChanges ?? [])
-      assert.equal(changes[0].quality.requested, 'original')
-      assert.ok(changes.some(change => change.quality.requested === 64), JSON.stringify(changes))
-      assert.equal(changes.at(-1)!.quality.requested, 'original', JSON.stringify(changes))
+      const sequence = changes.map(change => change.quality.requested)
+      assert.equal(sequence[0], 128, `a cold start begins at Opus 128, not Original: ${JSON.stringify(sequence)}`)
+      const lowered = sequence.indexOf(64)
+      assert.ok(sequence.indexOf('original') > 0 && sequence.indexOf('original') < lowered, `climbs to Original, then lowers: ${JSON.stringify(sequence)}`)
+      assert.equal(sequence.at(-1), 'original', `recovers to Original: ${JSON.stringify(sequence)}`)
+      const requests = link.segments as Array<{ start: number; quality: string }>
+      assert.ok(requests.some((request, index) => request.quality === 'lossless'
+        && requests[index + 1]?.start === request.start && requests[index + 1].quality !== 'lossless'),
+        'the slow Original interval in flight was abandoned and the same interval requested cheaper')
       assert.ok(changes.every(change => change.quality.mode === mode))
       assert.ok(changes.every((change, index) => !index || change.frame > changes[index - 1].frame))
       assert.equal(chunks.reduce((frames, chunk) => frames + chunk.frameCount, 0), Math.floor((48000 * 120 + 317) * 44100 / 48000))
       assert.equal(adaptive.events.filter(e => e.type === 'started').length, 1, 'automatic changes must keep the same PCM session')
-    } finally { await adaptive.close() }
+    } finally { await adaptive.close(); await link.close() }
     const sought = await h.start('r44100', 48000, { mode, target: 64 }, 1.234567)
     const soughtPcm = await collect(sought)
     assert.equal(sought.quality?.mode, mode)
@@ -385,6 +390,9 @@ test('authenticated Stratum → actual Astra Standard session → real worklet, 
   await delay(100)
   assert.equal(h.chunks.length, delivered)
   const current = await h.start('long', 48000)
+  // The successor waits for the playing track's reserve; an attached renderer
+  // that has not consumed anything lets that reserve build.
+  h.ready(current.sessionId, false)
   const next = await h.start('r44100', 48000, 64, 0, 'next')
   await h.cancel(current.sessionId)
   const sought = await h.start('long', 48000, 'original', 7.12345)
@@ -404,5 +412,5 @@ test('authenticated Stratum → actual Astra Standard session → real worklet, 
   assert.ok(reads >= 12)
   assert.equal(h.sessions.size, 0)
   assert.equal(h.sender.listenerCount('destroyed'), 0)
-  t.diagnostic('44.1/48/96 kHz lossless, Opus 64/128, exact seeks, mixed-rate worklet handoff, scheduled and automatic quality changes (simulated transfer timing), seek quality markers, backpressure, cancellation, denial and outage passed; no audio device opened.')
+  t.diagnostic('44.1/48/96 kHz lossless, Opus 64/128, exact seeks, mixed-rate worklet handoff, scheduled and automatic quality changes (paced loopback bytes, abandonment), seek quality markers, backpressure, cancellation, denial and outage passed; no audio device opened.')
 })

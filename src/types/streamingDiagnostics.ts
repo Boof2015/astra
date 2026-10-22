@@ -10,6 +10,9 @@ export interface StreamingDiagnosticSegment {
   /** Response size when supplied by Sidecar; not a playable time range. */
   transferTotalBytes?: number
   elapsedMs: number
+  /** DNS/TCP/TLS connection, then request delivery/server wait through response headers. */
+  connectionMs?: number
+  responseWaitMs?: number
   transferMs: number | null
   decodeMs: number | null
   /** A report about this response, not the server's current cache contents. */

@@ -1,11 +1,32 @@
 import type { StreamingDiagnosticsSession, StreamingDiagnosticSegment } from '../../types/streamingDiagnostics.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { diagnosticBufferedRange, diagnosticMapSpans, diagnosticWindow, pollStreamingDiagnostics, type StreamingDiagnosticsReading } from './streamingDiagnostics.ts'
+import { diagnosticBufferedRange, diagnosticMapSpans, diagnosticWindow, pollStreamingDiagnostics, streamingTimingReport, type StreamingDiagnosticsReading } from './streamingDiagnostics.ts'
 
 const reading: StreamingDiagnosticsReading = { title: 'Track', artist: 'Artist', duration: 180, position: 90,
   playbackState: 'playing', start: 80, bufferedEnd: 100, completeLocalBuffer: false,
   transport: 'stream', session: null, next: null, loadedBytes: 900, totalBytes: 1000 }
+
+test('copied timing reports retain failed/pending attempts but omit identifying fields and bound their size', () => {
+  const segments = Array.from({ length: 300 }, (_, i) => ({ ...segment(i * 4, i === 299 ? 'requesting' : 'decoded'),
+    elapsedMs: 8000, connectionMs: 6000, responseWaitMs: 1200, transferMs: 700, decodeMs: 100,
+    privateDetail: 'PRIVATE-SEGMENT-DATA' }))
+  const session: StreamingDiagnosticsSession = { sessionId: 9876, transport: 'stratum', start: 0, duration: 1200,
+    bufferedEnd: 1196, sourceRate: 44100, outputRate: 48000, channels: 2, loadedBytes: 9600000,
+    totalBytes: null, localCacheComplete: false, state: 'preparing', omittedSegments: 4, segments }
+  const raw = streamingTimingReport({ ...reading, title: 'PRIVATE-TITLE', artist: 'PRIVATE-ARTIST',
+    trackKey: 'PRIVATE-PATH', transport: 'stratum', session, next: null })
+  assert.doesNotMatch(raw, /PRIVATE|sessionId|9876|trackKey/)
+  const report = JSON.parse(raw)
+  assert.equal(report.current.segments.length, 256)
+  assert.equal(report.current.omittedSegments, 48)
+  assert.equal(report.current.segments.at(-1).state, 'requesting')
+  assert.equal(report.current.segments.at(-1).elapsedMs, 8000)
+  assert.equal(report.current.segments.at(-1).connectionMs, 6000)
+  assert.equal(report.current.segments.at(-1).responseWaitMs, 1200)
+  assert.equal(report.next, null)
+  assert.equal(segments.length, 300, 'export must not mutate the live trace')
+})
 
 test('buffer maps respect seeks and never turn byte progress into track time', () => {
   assert.deepEqual(diagnosticBufferedRange(reading), { start: 80, end: 100 })

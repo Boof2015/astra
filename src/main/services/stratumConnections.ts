@@ -4,6 +4,8 @@ import { discoverStratum, parseStratumManifest, verifyStratumCapabilities, Strat
 import { createStratumTransport, type StratumTransport } from './stratumTransport.ts'
 import type { StratumProofAuthentication } from './stratumProofClient.ts'
 import { StratumProofSession } from './stratumProofSession.ts'
+import { StratumProofError } from './stratumProofTransport.ts'
+import { STRATUM_CONNECT_TIMEOUT_MS, STRATUM_VERIFY_TIMEOUT_MS, StratumNetworkError, stratumAborted, stratumTimeoutContext } from './stratumNetwork.ts'
 
 export const STRATUM_SETTINGS_KEY = 'stratum_connections_v1'
 interface Source { binding: string; enabled: boolean }
@@ -103,7 +105,10 @@ export class StratumConnections {
   private async announcement(id: number, signal: AbortSignal): Promise<StratumManifest | null> {
     let radios: unknown[]
     try { radios = await this.deps.radios(id, signal) }
-    catch { throw new Error('Could not check Navidrome for Stratum. Check the server connection and try again.') }
+    catch {
+      if (signal.aborted) throw stratumTimeoutContext(signal.reason, 'discovery')
+      throw new Error('Could not check Navidrome for Stratum. Check the server connection and try again.')
+    }
     signal.throwIfAborted()
     return discoverStratum(radios)
   }
@@ -115,16 +120,22 @@ export class StratumConnections {
       const transport = (this.deps.transport ?? createStratumTransport)(endpoint, manifest.spkiSha256)
       try {
         const result = await transport.request('/access/v1/capabilities', 'GET',
-          AbortSignal.any([signal, AbortSignal.timeout(4000)]), undefined, undefined, 16 * 1024)
+          AbortSignal.any([signal, AbortSignal.timeout(STRATUM_VERIFY_TIMEOUT_MS)]), undefined, undefined, 16 * 1024)
         verifyStratumCapabilities(result.bytes, manifest)
-        // Every later capabilities check (including session login and playback open)
-        // rechecks the installation. Credentials only follow this verified result.
-        return { endpoint: transport.endpoint, request: async (...args) => {
-          const response = await transport.request(...args)
-          if (args[0] === '/access/v1/capabilities') verifyStratumCapabilities(response.bytes, manifest)
-          return response
+        // The connection, its login and its playback clients share this verified
+        // public snapshot. Repeating the same GET at each layer adds handshakes
+        // before any audio can start. Fresh connections and explicit discovery
+        // still verify afresh; every authenticated request still checks TLS trust.
+        return { endpoint: transport.endpoint, close: transport.close, request: async (...args) => {
+          args[2].throwIfAborted()
+          if (args[0] === '/access/v1/capabilities' && args[1] === 'GET' && args[3] === undefined && args[4] === undefined) {
+            if (result.bytes.length > (args[5] ?? 64 * 1024)) throw new Error('Stratum response exceeded its size limit.')
+            return { ...result, bytes: Buffer.from(result.bytes) }
+          }
+          return transport.request(...args)
         } }
       } catch (error) {
+        transport.close?.()
         failure = error instanceof Error ? error : failure
         if (failure instanceof StratumVerificationError) throw failure
       }
@@ -145,7 +156,7 @@ export class StratumConnections {
     const source = this.source(id)
     if (!source.enabled) return this.status(id)
     const controller = this.controller(id)
-    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)])
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(STRATUM_CONNECT_TIMEOUT_MS)])
     this.publish(id, 'checking', this.status(id).endpoint)
     try {
       const manifest = await this.announcement(id, signal)
@@ -156,9 +167,11 @@ export class StratumConnections {
       }
       if (!manifest) { this.candidates.delete(id); return this.publish(id, 'unavailable', null) }
       const transport = await this.verified(manifest, signal)
-      this.assertCurrent(id, source.binding, signal)
-      this.candidates.set(id, { binding: source.binding, manifest, endpoint: transport.endpoint })
-      return this.publish(id, saved ? 'enabled' : 'available', transport.endpoint)
+      try {
+        this.assertCurrent(id, source.binding, signal)
+        this.candidates.set(id, { binding: source.binding, manifest, endpoint: transport.endpoint })
+        return this.publish(id, saved ? 'enabled' : 'available', transport.endpoint)
+      } finally { transport.close?.() }
     } catch (error) {
       if (controller.signal.aborted || this.deps.source(id)?.binding !== source.binding) throw cancelled()
       this.candidates.delete(id)
@@ -221,12 +234,13 @@ export class StratumConnections {
     const candidate = this.candidates.get(id)
     if (!candidate || candidate.binding !== source.binding) throw new Error('Check for Stratum before enabling it.')
     const controller = this.controller(id)
-    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)])
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(STRATUM_CONNECT_TIMEOUT_MS)])
     let session: StratumProofSession | undefined
+    let transport: StratumTransport | undefined
     try {
       const manifest = await this.announcement(id, signal)
       if (!manifest || !equal(candidate.manifest, manifest)) throw new Error('The Stratum announcement changed. Check again before enabling it.')
-      const transport = await this.verified(manifest, signal)
+      transport = await this.verified(manifest, signal)
       session = this.makeSession(id, source.binding, controller.signal, transport)
       await session.getBearer(signal)
       this.assertCurrent(id, source.binding, signal)
@@ -237,6 +251,7 @@ export class StratumConnections {
       return this.publish(id, 'enabled', transport.endpoint)
     } catch (error) {
       void session?.close()
+      if (!session) transport?.close?.()
       if (controller.signal.aborted || this.deps.source(id)?.binding !== source.binding) throw cancelled()
       return this.publish(id, 'error', candidate.endpoint, error instanceof Error ? error.message : 'Could not enable Stratum.')
     }
@@ -298,7 +313,7 @@ export class StratumConnections {
       void pending.finally(() => { if (this.connecting.get(id) === captured) this.connecting.delete(id) }).catch(() => {})
     }
     return new Promise((resolve, reject) => {
-      const abort = () => reject(cancelled())
+      const abort = () => reject(stratumTimeoutContext(stratumAborted(signal), 'setup'))
       signal.addEventListener('abort', abort, { once: true })
       pending!.then(value => { if (signal.aborted) reject(cancelled()); else resolve(value) }, reject)
         .finally(() => signal.removeEventListener('abort', abort))
@@ -308,14 +323,15 @@ export class StratumConnections {
 
   private async connect(id: number, saved: Saved): Promise<StratumProofSession> {
     const controller = this.controller(id)
-    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)])
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(STRATUM_CONNECT_TIMEOUT_MS)])
     let session: StratumProofSession | undefined
+    let transport: StratumTransport | undefined
     try {
       const manifest = await this.announcement(id, signal)
       if (!manifest || !equal(saved.manifest, manifest)) {
         throw new Error('The Stratum announcement changed. Turn Stratum off and check its connection again.')
       }
-      const transport = await this.verified(manifest, signal)
+      transport = await this.verified(manifest, signal)
       this.assertCurrent(id, saved.binding, signal)
       session = this.makeSession(id, saved.binding, controller.signal, transport)
       await session.getBearer(signal)
@@ -326,6 +342,8 @@ export class StratumConnections {
       return session
     } catch (error) {
       void session?.close()
+      if (!session) transport?.close?.()
+      error = stratumTimeoutContext(error, 'setup')
       if (!controller.signal.aborted && this.deps.source(id)?.binding === saved.binding) {
         this.publish(id, 'error', null, error instanceof Error ? error.message : 'Could not connect to Stratum.')
       }
@@ -333,9 +351,17 @@ export class StratumConnections {
     }
   }
 
-  playbackFailed(id: number): void {
+  playbackFailed(id: number, error?: unknown): void {
     if (this.deps.source(id) && this.saved(id)) {
-      this.publish(id, 'error', this.status(id).endpoint, 'Stratum could not prepare this track. Astra is using the server’s usual streaming.')
+      const current = this.status(id)
+      // Connection setup already publishes a safe, specific reason. Do not
+      // overwrite it, or expose arbitrary cache/filesystem errors to the UI.
+      const reason = error instanceof StratumNetworkError || error instanceof StratumProofError || error instanceof StratumVerificationError
+        ? error.message : error instanceof Error && error.name === 'TimeoutError'
+          ? new StratumNetworkError('timeout').message
+          : error instanceof Error && current.state === 'error' && current.error === error.message
+            ? current.error : 'Stratum could not prepare this track.'
+      this.publish(id, 'error', current.endpoint, `${reason} Astra is using the server’s usual streaming.`)
     }
   }
 

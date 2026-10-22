@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import type { StratumProofAuthentication } from './stratumProofClient.ts'
 import { stratumProofRequest, validateStratumProofEndpoint } from './stratumProofTransport.ts'
 import type { StratumRequest, StratumTransport } from './stratumTransport.ts'
+import { STRATUM_CONTROL_TIMEOUT_MS, STRATUM_CLEANUP_TIMEOUT_MS, stratumTimeoutContext } from './stratumNetwork.ts'
 
 interface SignIn { username: string; password: string }
 interface Lease { token: string; expires: number; renewAt: number }
@@ -41,11 +42,14 @@ export class StratumProofSession implements StratumProofAuthentication {
   private pending?: Promise<void>
   private timer?: ReturnType<typeof setTimeout>
   private cleanup?: Promise<void>
+  private transportClosed?: Promise<void>
+  private readonly closeTransport?: () => void
 
   constructor(endpoint: string, credentials: () => Promise<SignIn>, transport?: StratumTransport) {
     if (transport && transport.endpoint !== endpoint) throw new Error('Stratum transport address does not match.')
     this.endpoint = transport ? transport.endpoint : validateStratumProofEndpoint(endpoint)
     this.request = transport?.request ?? ((...args) => stratumProofRequest(this.endpoint, ...args))
+    this.closeTransport = transport?.close
     this.credentials = credentials
   }
 
@@ -57,7 +61,8 @@ export class StratumProofSession implements StratumProofAuthentication {
       throw new Error('The Stratum sign-in expired. Reconnect to start another session.')
     }
     if (this.pending || !this.lease || performance.now() >= this.lease.renewAt) {
-      await waitFor(this.refresh(), AbortSignal.any([signal, this.signal]))
+      try { await waitFor(this.refresh(), AbortSignal.any([signal, this.signal])) }
+      catch (error) { throw stratumTimeoutContext(error, 'signin') }
     }
     signal.throwIfAborted()
     this.signal.throwIfAborted()
@@ -79,8 +84,8 @@ export class StratumProofSession implements StratumProofAuthentication {
     if (old && performance.now() >= old.expires) throw new Error('The Stratum sign-in expired.')
     // One bounded attempt. A failed renewal ends this experimental connection;
     // it never silently creates a different session underneath old handles.
-    const remaining = old ? Math.max(1, Math.ceil(old.expires - performance.now())) : 12000
-    const signal = AbortSignal.any([this.signal, AbortSignal.timeout(Math.min(12000, remaining))])
+    const remaining = old ? Math.max(1, Math.ceil(old.expires - performance.now())) : STRATUM_CONTROL_TIMEOUT_MS
+    const signal = AbortSignal.any([this.signal, AbortSignal.timeout(Math.min(STRATUM_CONTROL_TIMEOUT_MS, remaining))])
     if (!old) {
       const result = await this.request('/access/v1/capabilities', 'GET', signal, undefined, undefined, 4096)
       const value = responseJson(result.bytes)
@@ -135,9 +140,16 @@ export class StratumProofSession implements StratumProofAuthentication {
     this.controller.abort(reason)
     clearTimeout(this.timer)
     this.cleanup ??= this.lease
-      ? this.request('/access/v1/session', 'DELETE', AbortSignal.timeout(1500),
+      ? this.request('/access/v1/session', 'DELETE', AbortSignal.timeout(STRATUM_CLEANUP_TIMEOUT_MS),
         undefined, this.lease.token).then(() => {}, () => {})
       : Promise.resolve()
-    return this.cleanup
+    // A cancelled login may still return a lease that needs logout. Let that
+    // bounded exchange settle, then finish its cleanup before closing the pool.
+    this.transportClosed ??= (async () => {
+      await this.pending?.catch(() => {})
+      await this.cleanup
+      this.closeTransport?.()
+    })()
+    return this.transportClosed
   }
 }

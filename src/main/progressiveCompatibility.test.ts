@@ -7,6 +7,7 @@ import ts from 'typescript'
 import { ProgressiveStartupRegistry } from './progressiveStartupRegistry.ts'
 import { ProgressivePcmDelivery } from './progressivePcmDelivery.ts'
 import { CompletedStreamingDiagnostics } from './services/streamingDiagnostics.ts'
+import { PlaybackNetworkPriority } from './services/playbackNetworkPriority.ts'
 import { withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemoteDecoder } from '../shared/audio/remoteCompatibility.ts'
 import { deliveredAudioFormat, type StreamingQualityRequest } from '../types/streamingQuality.ts'
 
@@ -14,7 +15,7 @@ import { deliveredAudioFormat, type StreamingQualityRequest } from '../types/str
 // the user's library. Only OS/IPC/cache boundaries are substituted.
 const names = ['startProgressiveStreamSession', 'startProgressiveStreamAttempt', 'finalizeRemoteStreamSession',
   'settleRemoteStreamStartup', 'pumpRemoteStreamOutput', 'flushRemoteStreamOutput', 'emitRemoteStreamChunk',
-  'cancelProgressiveStreamSession', 'isRemoteStreamPipeTeardownError']
+  'cancelProgressiveStreamSession', 'isRemoteStreamPipeTeardownError', 'holdArtworkForPlayback']
 const source = ts.createSourceFile('index.ts', readFileSync(new URL('./index.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true)
 const declarations = source.statements.filter(statement => ts.isFunctionDeclaration(statement) && names.includes(statement.name?.text ?? ''))
 assert.equal(declarations.length, names.length)
@@ -37,6 +38,7 @@ function harness(fail: (attempt: number) => string | null, holdRetry = false, st
     parseSubsonicTrackPath: () => ({ sourceId: 1, sourceTrackId: 'song' }),
     withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemoteDecoder, deliveredAudioFormat,
     remoteStreamSessions: sessions, completedStreamingDiagnostics: new CompletedStreamingDiagnostics(), progressiveStartupControllers: registry,
+    playbackNetworkPriority: new PlaybackNetworkPriority(),
     library: { getTrackByPath: () => ({ channels: 2 }) }, resolveBinary: async (name: string) => name,
     resolveProgressiveStreamSourceType: (path: string) => path.startsWith('/') ? 'local' : 'subsonic',
     normalizeProgressiveStartTimeSeconds: (value: number) => value ?? 0, resolveRemoteTrackDurationSeconds: () => 60,

@@ -68,12 +68,15 @@ exports.automaticPreflight = async function automaticPreflight(directory, connec
     }
     report()
     assert.equal(buffering, 0, 'The silent test buffered; inspect its report before listening.')
-    assert.equal(played[0]?.quality, 'original')
-    assert.ok(played.some(value => typeof value.quality === 'number'), 'Automatic did not lower quality.')
+    // No link evidence yet: a cold start begins at Opus 128, then climbs.
+    assert.equal(played[0]?.quality, 128, 'A cold start must not pay for Original first.')
+    const reached = played.findIndex(value => value.quality === 'original')
+    assert.ok(reached > 0, 'Automatic did not reach Original on the fast link.')
+    assert.ok(played.slice(reached).some(value => typeof value.quality === 'number'), 'Automatic did not lower quality.')
     assert.equal(played.at(-1)?.quality, 'original', 'Automatic did not recover before the excerpt ended.')
     assert.equal(worklet.currentFrame, 100 * 44100)
     assert.equal(h.events.filter(event => event.type === 'started').length, 1)
-    console.log('SILENT_AUTOMATIC_PASSED: real paced bytes, one session, automatic downgrade/recovery, no buffering.')
+    console.log('SILENT_AUTOMATIC_PASSED: real paced bytes, one session, 128 cold start, climb, downgrade/recovery, no buffering.')
   } catch (error) { report(error); throw error }
   finally { await h.close() }
 }
