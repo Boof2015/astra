@@ -57,3 +57,12 @@ test('local progressive producer maintains a bounded ahead-of-playback window', 
     startupFrames,
   }), 'none')
 })
+
+test('remote high-rate multichannel PCM is bounded by bytes as well as duration', () => {
+  const maxBufferedFrames = Math.floor(32 * 1024 ** 2 / (8 * 4))
+  const options = { sampleRate: 192000, decodedFrames: maxBufferedFrames, consumedFrames: 0,
+    rendererReady: true, stdoutPaused: false, startupFrames, maxBufferedFrames }
+  assert.equal(resolveLocalProgressiveBackpressureAction(options), 'pause')
+  assert.equal(resolveLocalProgressiveBackpressureAction({ ...options, stdoutPaused: true,
+    consumedFrames: Math.ceil(maxBufferedFrames / 2) }), 'resume')
+})

@@ -1,3 +1,4 @@
+import { usePlexSettingsStore } from './stores/plexSettingsStore'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import TitleBar from './components/layout/TitleBar'
 import Sidebar from './components/layout/Sidebar'
@@ -13,6 +14,9 @@ import FullscreenMode from './components/layout/FullscreenMode'
 import ZoneDisplay from './components/layout/ZoneDisplay'
 import QuickLaunchPalette from './components/layout/QuickLaunchPalette'
 import DecodeFallbackCue from './components/layout/DecodeFallbackCue'
+import ServerNotices from './components/layout/ServerNotices'
+import CompareWindow from './components/settings/servers/CompareWindow'
+import { useProviderSyncStore } from './stores/providerSyncStore'
 import OutputDelayCue from './components/layout/OutputDelayCue'
 import UpdateAvailableCue from './components/layout/UpdateAvailableCue'
 import AssociatedOpenCue from './components/layout/AssociatedOpenCue'
@@ -431,6 +435,7 @@ function App() {
     void useLyricsStore.getState().init()
     void useSubsonicSettingsStore.getState().init()
     void useJellyfinSettingsStore.getState().init()
+    void usePlexSettingsStore.getState().init()
 
     const handleAssociatedOpenFiles = async (rawPaths: string[]) => {
       const queuePaths = [...new Set(
@@ -513,13 +518,19 @@ function App() {
     // A mobile LAN sync mutates favorites/playlists in the main process.
     const unsubscribeExternalLibraryMutation = window.electronAPI.library.onExternalLibraryMutation(() => {
       void useLibraryStore.getState().loadFavorites()
-      void usePlaylistStore.getState().loadPlaylists()
+      void useRatingsStore.getState().loadRatings()
+      void usePlaylistStore.getState().loadPlaylists().then(() => usePlaylistStore.getState().refreshSelectedPlaylist())
+    })
+    void useProviderSyncStore.getState().refreshStatus()
+    const unsubscribeProviderSync = window.electronAPI.providerSync.onChanged(() => {
+      void useProviderSyncStore.getState().refreshStatus()
     })
     return () => {
       didUnmount = true
       unsubscribeFileCreatedAtBackfill()
       unsubscribeBackfill()
       unsubscribeExternalLibraryMutation()
+      unsubscribeProviderSync()
       unsubscribeAssociatedOpenFiles()
       sessionPersistenceCleanup?.()
       if (!associatedOpenReady) {
@@ -629,6 +640,8 @@ function App() {
         <PhoneRemoteIncomingPairCard />
         <PhoneSyncConflictResolverModal />
         <DecodeFallbackCue />
+        <ServerNotices />
+        <CompareWindow />
         <OutputDelayCue />
         <AssociatedOpenCue />
         <UpdateAvailableCue />

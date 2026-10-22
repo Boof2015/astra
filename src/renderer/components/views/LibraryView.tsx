@@ -1,3 +1,7 @@
+import { plexServerName } from '../../../shared/plex/serverName'
+import { usePlexSettingsStore } from '../../stores/plexSettingsStore'
+import { useServers } from '../settings/servers/useServers'
+import { sourceProblemText, useSourceProblemTooltip } from '../library/SourceProblemTooltip'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent as ReactUIEvent } from 'react'
 import {
   useLibraryStore,
@@ -132,7 +136,7 @@ function compareNullableDuration(a: number | null | undefined, b: number | null 
 }
 
 function resolveEffectiveAddedAt(
-  track: { source_type: 'local' | 'subsonic' | 'jellyfin'; file_created_at: number | null; added_at: number }
+  track: { source_type: 'local' | 'subsonic' | 'jellyfin' | 'plex'; file_created_at: number | null; added_at: number }
 ): number {
   if (track.source_type === 'local' && typeof track.file_created_at === 'number' && Number.isFinite(track.file_created_at) && track.file_created_at > 0) {
     return track.file_created_at
@@ -141,8 +145,8 @@ function resolveEffectiveAddedAt(
 }
 
 function compareAddedAt(
-  a: { source_type: 'local' | 'subsonic' | 'jellyfin'; file_created_at: number | null; added_at: number },
-  b: { source_type: 'local' | 'subsonic' | 'jellyfin'; file_created_at: number | null; added_at: number },
+  a: { source_type: 'local' | 'subsonic' | 'jellyfin' | 'plex'; file_created_at: number | null; added_at: number },
+  b: { source_type: 'local' | 'subsonic' | 'jellyfin' | 'plex'; file_created_at: number | null; added_at: number },
   direction: SortDirection
 ): number {
   return compareWithDirection(resolveEffectiveAddedAt(a) - resolveEffectiveAddedAt(b), direction)
@@ -262,6 +266,7 @@ export default function LibraryView() {
   const artistRootViewMode = useLibraryStore((state) => state.artistRootViewMode)
   const setArtistRootViewMode = useLibraryStore((state) => state.setArtistRootViewMode)
   const subsonicSources = useSubsonicSettingsStore((state) => state.sources)
+  const plexSources = usePlexSettingsStore(state => state.sources)
   const jellyfinSources = useJellyfinSettingsStore((state) => state.sources)
 
   const shuffle = usePlayerStore((s) => s.shuffle)
@@ -434,19 +439,36 @@ export default function LibraryView() {
     if (selectedYear !== null) return { type: 'year', year: selectedYear }
     return null
   }, [selectedAlbum, selectedArtist, selectedGenre, selectedYear])
+  // One chip per server. A Plex server's chip covers its libraries in use (`keys`); it's keyed,
+  // like its Settings entry, by its first library.
   const sourceFilterOptions = useMemo(() => {
+    const plexServers = new Map<string, typeof plexSources>()
+    for (const source of [...plexSources].sort((a, b) => a.id - b.id)) {
+      const server = JSON.stringify([source.account_id, source.server_id])
+      plexServers.set(server, [...(plexServers.get(server) ?? []), source])
+    }
     return [
-      ...subsonicSources.map((source) => ({
+      ...subsonicSources.filter((source) => source.enabled === 1).map((source) => ({
         key: `subsonic:${source.id}`,
+        keys: [`subsonic:${source.id}`],
         label: source.name
       })),
-      ...jellyfinSources.map((source) => ({
+      ...[...plexServers.values()].flatMap(libraries => {
+        const inUse = libraries.filter(source => source.enabled === 1)
+        return inUse.length ? [{ key: `plex:${libraries[0].id}`, keys: inUse.map(source => `plex:${source.id}`), label: plexServerName(libraries[0]) }] : []
+      }),
+      ...jellyfinSources.filter((source) => source.enabled === 1).map((source) => ({
         key: `jellyfin:${source.id}`,
+        keys: [`jellyfin:${source.id}`],
         label: source.name
       }))
     ]
-  }, [jellyfinSources, subsonicSources])
+  }, [plexSources, jellyfinSources, subsonicSources])
   const shouldShowSourceFilters = sourceFilterOptions.length > 0
+  // A dot only when a server has a problem; syncing doesn't get one.
+  const servers = useServers()
+  const sourceProblems = useMemo(() => new Map(servers.filter(server => server.state === 'failed').map(server => [server.key, server])), [servers])
+  const sourceProblemTooltip = useSourceProblemTooltip(sourceProblems)
   const hasEffectiveLibraryFilters = hasHiddenFolders || (shouldShowSourceFilters && selectedSourceFilters.size > 0)
   const selectedArtistRecord = useMemo(() => {
     if (!selectedArtist) return null
@@ -533,8 +555,7 @@ export default function LibraryView() {
   useEffect(() => {
     const validFilterKeys = new Set<string>([
       'local',
-      ...subsonicSources.map((source) => `subsonic:${source.id}`),
-      ...jellyfinSources.map((source) => `jellyfin:${source.id}`)
+      ...sourceFilterOptions.flatMap((source) => source.keys)
     ])
 
     if (selectedSourceFilters.size === 0) return
@@ -545,7 +566,7 @@ export default function LibraryView() {
       }
     }
     setSelectedSourceFilters(next)
-  }, [jellyfinSources, selectedSourceFilters, setSelectedSourceFilters, subsonicSources])
+  }, [sourceFilterOptions, selectedSourceFilters, setSelectedSourceFilters])
 
   useEffect(() => {
     if (shouldShowSourceFilters) return
@@ -683,6 +704,16 @@ export default function LibraryView() {
   const handleToggleSourceFilter = useCallback((filterKey: string) => {
     toggleSourceFilter(filterKey)
   }, [toggleSourceFilter])
+  // A server's chip is on when all its libraries are, and turns them on or off together.
+  const handleToggleSourceChip = useCallback((keys: readonly string[]) => {
+    const on = keys.every(key => selectedSourceFilters.has(key))
+    const next = new Set(selectedSourceFilters)
+    for (const key of keys) {
+      if (on) next.delete(key)
+      else next.add(key)
+    }
+    setSelectedSourceFilters(next)
+  }, [selectedSourceFilters, setSelectedSourceFilters])
 
   const handleLibraryContentScrollCapture = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     if (!inDetailView) return
@@ -820,6 +851,7 @@ export default function LibraryView() {
         if (track.source_id == null) return false
         return selectedSourceFilters.has(`subsonic:${track.source_id}`)
       }
+      if (track.source_type === 'plex') return track.source_id != null && selectedSourceFilters.has(`plex:${track.source_id}`)
       if (track.source_type === 'jellyfin') {
         if (track.source_id == null) return false
         return selectedSourceFilters.has(`jellyfin:${track.source_id}`)
@@ -1850,16 +1882,26 @@ export default function LibraryView() {
         >
           Local
         </button>
-        {sourceFilterOptions.map((source) => (
-          <button
-            key={source.key}
-            type="button"
-            className={`library-source-filter-chip ${selectedSourceFilters.has(source.key) ? 'active' : ''}`}
-            onClick={() => handleToggleSourceFilter(source.key)}
-          >
-            {source.label}
-          </button>
-        ))}
+        {sourceFilterOptions.map((source) => {
+          const problem = sourceProblems.get(source.key)
+          return (
+            <button
+              key={source.key}
+              type="button"
+              className={`library-source-filter-chip ${source.keys.every(key => selectedSourceFilters.has(key)) ? 'active' : ''}`}
+              onClick={() => handleToggleSourceChip(source.keys)}
+              onMouseEnter={problem ? sourceProblemTooltip.show(problem) : undefined}
+              onMouseLeave={sourceProblemTooltip.hide}
+              onFocus={problem ? sourceProblemTooltip.show(problem) : undefined}
+              onBlur={sourceProblemTooltip.hide}
+            >
+              {problem && <span className="library-source-problem-dot" aria-hidden="true" />}
+              {source.label}
+              {problem && <span className="sr-only">. {sourceProblemText(problem).title}: {sourceProblemText(problem).detail}</span>}
+            </button>
+          )
+        })}
+        {sourceProblemTooltip.element}
       </div>
     )
   }

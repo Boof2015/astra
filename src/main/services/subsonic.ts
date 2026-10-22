@@ -1,4 +1,8 @@
+import type { RemotePlaylistSnapshot } from '../../types/remotePlaylists'
 import { createHash, randomBytes } from 'crypto'
+import { buildProviderRequestHeaders } from './providerClientIdentity'
+import type { ProviderUserState, ProviderSyncField, ProviderSyncValue } from '../../types/providerSync'
+import { validProviderValue } from '../../shared/sync/providerState'
 import { formatArtistNames, normalizeArtistNames } from '../../shared/library/artistCredits'
 
 const SUBSONIC_API_VERSION = '1.16.1'
@@ -61,17 +65,23 @@ export interface SubsonicPlaylistTrack {
   album: string | null
 }
 
-export interface SubsonicPlaylist {
-  source_playlist_id: string
-  name: string
-  tracks: SubsonicPlaylistTrack[]
-}
-
 interface SubsonicRequestOptions {
+  maxResponseBytes?: number
+  formPost?: boolean
   timeoutMs?: number
   retries?: number
   signal?: AbortSignal
   onDownloadProgress?: (progress: SubsonicDownloadProgress) => void
+}
+
+export class SubsonicRequestError extends Error {
+  readonly httpStatus?: number
+  readonly apiCode?: number
+  constructor(message: string, details: { httpStatus?: number; apiCode?: number }) {
+    super(message)
+    this.httpStatus = details.httpStatus
+    this.apiCode = details.apiCode
+  }
 }
 
 export interface SubsonicDownloadProgress {
@@ -90,17 +100,6 @@ export interface SubsonicCatalogSyncProgress {
 
 export interface SubsonicCatalogSyncOptions extends SubsonicRequestOptions {
   onProgress?: (progress: SubsonicCatalogSyncProgress) => void
-}
-
-export interface SubsonicPlaylistSyncProgress {
-  phase: 'playlists'
-  current: number
-  total: number
-  detail: string | null
-}
-
-export interface SubsonicPlaylistSyncOptions extends SubsonicRequestOptions {
-  onProgress?: (progress: SubsonicPlaylistSyncProgress) => void
 }
 
 interface SubsonicResponseEnvelope {
@@ -122,17 +121,13 @@ interface SubsonicAlbumRef {
   id: string
 }
 
-interface SubsonicPlaylistRef {
-  id: string
-  name: string
-}
-
 interface SubsonicAlbumSongs {
   coverArtId: string | null
   songs: SubsonicSong[]
 }
 
 interface SubsonicSong {
+  replayGain?: { trackGain?: unknown; albumGain?: unknown }
   id?: unknown
   title?: unknown
   artist?: unknown
@@ -265,7 +260,7 @@ function buildAuthQuery(
 function buildSubsonicEndpointUrl(
   config: SubsonicConnectionConfig,
   endpoint: string,
-  params: Record<string, string | number | boolean | null | undefined>,
+  params: Record<string, string | number | boolean | readonly string[] | null | undefined>,
   options: { includeFormat?: boolean } = {}
 ): URL {
   const baseUrl = normalizeSubsonicBaseUrl(config.baseUrl)
@@ -276,7 +271,8 @@ function buildSubsonicEndpointUrl(
   }
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === null) continue
-    url.searchParams.set(key, String(value))
+    if (Array.isArray(value)) value.forEach(item => url.searchParams.append(key, item))
+    else url.searchParams.set(key, String(value))
   }
   return url
 }
@@ -313,34 +309,58 @@ function mergeAbortSignals(signal: AbortSignal | undefined, timeoutMs: number): 
 async function requestSubsonicJson(
   config: SubsonicConnectionConfig,
   endpoint: string,
-  params: Record<string, string | number | boolean | null | undefined>,
+  params: Record<string, string | number | boolean | readonly string[] | null | undefined>,
   options: SubsonicRequestOptions = {}
 ): Promise<Record<string, unknown>> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const retries = Math.max(0, options.retries ?? DEFAULT_RETRIES)
   const url = buildSubsonicEndpointUrl(config, endpoint, params, { includeFormat: true })
 
+  const body = options.formPost ? url.searchParams.toString() : undefined
+  if (options.formPost) url.search = ''
+
   let lastError: unknown = null
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     const merged = mergeAbortSignals(options.signal, timeoutMs)
     try {
       const response = await fetch(url, {
-        method: 'GET',
+        method: options.formPost ? 'POST' : 'GET',
+        body,
+        ...(options.formPost ? { redirect: 'error' as const } : {}),
+        headers: { ...buildProviderRequestHeaders(), ...(options.formPost ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}) },
         signal: merged.signal
       })
 
       if (!response.ok) {
-        throw new Error(`Subsonic request failed (${response.status})`)
+        throw new SubsonicRequestError(`Subsonic request failed (${response.status})`, { httpStatus: response.status })
       }
 
-      const json = await response.json() as SubsonicResponseEnvelope
+      let json: SubsonicResponseEnvelope
+      if (options.maxResponseBytes && response.body) {
+        const reader = response.body.getReader()
+        const chunks: Uint8Array[] = []
+        let length = 0
+        try {
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            length += value.byteLength
+            if (length > options.maxResponseBytes) {
+              await reader.cancel()
+              throw new Error('Subsonic response exceeded its size limit.')
+            }
+            chunks.push(value)
+          }
+          json = JSON.parse(Buffer.concat(chunks).toString('utf8')) as SubsonicResponseEnvelope
+        } finally { reader.releaseLock() }
+      } else json = await response.json() as SubsonicResponseEnvelope
       const envelope = json['subsonic-response']
       if (!envelope || typeof envelope !== 'object') {
         throw new Error('Invalid Subsonic response payload.')
       }
       if (envelope.status !== 'ok') {
         const message = toTrimmedText(envelope.error?.message) ?? 'Subsonic request failed.'
-        throw new Error(message)
+        throw new SubsonicRequestError(message, { apiCode: envelope.error?.code })
       }
 
       return envelope as Record<string, unknown>
@@ -357,10 +377,21 @@ async function requestSubsonicJson(
   throw lastError instanceof Error ? lastError : new Error('Subsonic request failed.')
 }
 
+/** Authenticated discovery only. No redirects or credentials in the URL. */
+export async function getSubsonicRadios(config: SubsonicConnectionConfig, signal: AbortSignal): Promise<unknown[]> {
+  const envelope = await requestSubsonicJson(config, 'getInternetRadioStations', {}, {
+    formPost: true, retries: 0, signal, maxResponseBytes: 1024 * 1024
+  })
+  const radios = (envelope.internetRadioStations as { internetRadioStation?: unknown } | undefined)?.internetRadioStation
+  if (radios === undefined) return []
+  if (!Array.isArray(radios) || radios.length > 4096) throw new Error('Invalid radio list from Navidrome.')
+  return radios
+}
+
 async function requestSubsonicBytes(
   config: SubsonicConnectionConfig,
   endpoint: string,
-  params: Record<string, string | number | boolean | null | undefined>,
+  params: Record<string, string | number | boolean | readonly string[] | null | undefined>,
   options: SubsonicRequestOptions = {}
 ): Promise<ArrayBuffer> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
@@ -373,6 +404,7 @@ async function requestSubsonicBytes(
     try {
       const response = await fetch(url, {
         method: 'GET',
+        headers: buildProviderRequestHeaders(),
         signal: merged.signal
       })
       if (!response.ok) {
@@ -484,11 +516,48 @@ async function runWithConcurrency<T, R>(
   return results
 }
 
+/** Resolves with the server's own name for itself (OpenSubsonic `type`, e.g. "navidrome") when it gives one. */
 export async function testSubsonicConnection(
   config: SubsonicConnectionConfig,
   options: SubsonicRequestOptions = {}
+): Promise<{ serverType: string | null }> {
+  const response = await requestSubsonicJson(config, 'ping', {}, options)
+  return { serverType: typeof response.type === 'string' && response.type.trim() ? response.type.trim().toLowerCase() : null }
+}
+
+/** Live status and counted plays are separate Subsonic operations. No write retries. */
+export async function reportSubsonicScrobble(
+  config: SubsonicConnectionConfig, trackId: string,
+  report: { submission: boolean; startedAt: number; position?: number },
+  options: SubsonicRequestOptions = {}
 ): Promise<void> {
-  await requestSubsonicJson(config, 'ping', {}, options)
+  await requestSubsonicJson(config, 'scrobble', {
+    id: trackId, submission: report.submission, time: Math.round(report.startedAt),
+    position: report.position === undefined ? undefined : Math.floor(report.position)
+  }, { ...options, retries: 0 })
+}
+
+export async function getSubsonicPlaybackCapabilities(
+  config: SubsonicConnectionConfig, options: SubsonicRequestOptions = {}
+): Promise<{ timeline: boolean; navidrome: boolean }> {
+  const response = await requestSubsonicJson(config, 'getOpenSubsonicExtensions', {}, { ...options, retries: 0 })
+  const extensions = asArray<{ name?: unknown; versions?: unknown }>(response.openSubsonicExtensions)
+  return {
+    timeline: extensions.some(extension => extension.name === 'playbackReport'
+      && Array.isArray(extension.versions) && extension.versions.includes(1)),
+    navidrome: typeof response.type === 'string' && response.type.toLowerCase() === 'navidrome'
+  }
+}
+
+export async function reportSubsonicTimeline(
+  config: SubsonicConnectionConfig, trackId: string,
+  state: 'starting' | 'playing' | 'paused' | 'stopped', position: number,
+  options: SubsonicRequestOptions = {}
+): Promise<void> {
+  await requestSubsonicJson(config, 'reportPlayback', {
+    mediaId: trackId, mediaType: 'song', state, positionMs: Math.round(position * 1000),
+    playbackRate: 1, ignoreScrobble: true
+  }, { ...options, retries: 0 })
 }
 
 function toArtistRefs(indexResponse: Record<string, unknown>): SubsonicArtistRef[] {
@@ -532,34 +601,16 @@ function toStarredTrackIds(starredResponse: Record<string, unknown>): string[] {
   return Array.from(ids)
 }
 
-function toPlaylistRefs(playlistsResponse: Record<string, unknown>): SubsonicPlaylistRef[] {
-  const playlistsContainer = playlistsResponse.playlists as Record<string, unknown> | undefined
-  if (!playlistsContainer || typeof playlistsContainer !== 'object') return []
-
-  return asArray<Record<string, unknown>>(playlistsContainer.playlist)
-    .map((playlist) => {
-      const id = toTrimmedText(playlist.id)
-      if (!id) return null
-      return {
-        id,
-        name: toTrimmedText(playlist.name) ?? `Playlist ${id}`
-      }
-    })
-    .filter((playlist): playlist is SubsonicPlaylistRef => playlist !== null)
-}
-
 function toPlaylistTracks(sourceId: number, playlistResponse: Record<string, unknown>): SubsonicPlaylistTrack[] {
   const playlistContainer = playlistResponse.playlist as Record<string, unknown> | undefined
   if (!playlistContainer || typeof playlistContainer !== 'object') return []
 
   const entries = asArray<SubsonicSong>(playlistContainer.entry ?? playlistContainer.song)
   const tracks: SubsonicPlaylistTrack[] = []
-  const seenTrackIds = new Set<string>()
 
   for (const entry of entries) {
     const sourceTrackId = toTrimmedText(entry.id)
-    if (!sourceTrackId || seenTrackIds.has(sourceTrackId)) continue
-    seenTrackIds.add(sourceTrackId)
+    if (!sourceTrackId) throw new Error('Server returned an incomplete playlist.')
     tracks.push({
       path: buildSubsonicTrackPath(sourceId, sourceTrackId),
       source_track_id: sourceTrackId,
@@ -626,8 +677,10 @@ export function mapSongToCatalogTrack(
     codec: contentType,
     codec_profile: null,
     is_atmos_joc: null,
-    replaygain_track_gain_db: null,
-    replaygain_album_gain_db: null,
+    replaygain_track_gain_db: typeof song.replayGain?.trackGain === 'number' && Number.isFinite(song.replayGain.trackGain)
+      ? song.replayGain.trackGain : null,
+    replaygain_album_gain_db: typeof song.replayGain?.albumGain === 'number' && Number.isFinite(song.replayGain.albumGain)
+      ? song.replayGain.albumGain : null,
     bpm: null,
     musical_key: null
   }
@@ -804,46 +857,76 @@ export async function fetchSubsonicStarredTrackIds(
   return toStarredTrackIds(starredResponse)
 }
 
-export async function syncSubsonicPlaylists(
-  sourceId: number,
-  config: SubsonicConnectionConfig,
-  options: SubsonicPlaylistSyncOptions = {}
-): Promise<SubsonicPlaylist[]> {
-  const playlistsResponse = await requestSubsonicJson(config, 'getPlaylists', {}, options)
-  const playlistRefs = toPlaylistRefs(playlistsResponse)
-  options.onProgress?.({
-    phase: 'playlists',
-    current: 0,
-    total: playlistRefs.length,
-    detail: null
-  })
-
-  let playlistsProcessed = 0
-  return runWithConcurrency(
-    playlistRefs,
-    MAX_SYNC_CONCURRENCY,
-    async (playlistRef): Promise<SubsonicPlaylist> => {
-      const playlistResponse = await requestSubsonicJson(config, 'getPlaylist', { id: playlistRef.id }, options)
-      playlistsProcessed += 1
-      options.onProgress?.({
-        phase: 'playlists',
-        current: playlistsProcessed,
-        total: playlistRefs.length,
-        detail: playlistRef.id
-      })
-      return {
-        source_playlist_id: playlistRef.id,
-        name: playlistRef.name,
-        tracks: toPlaylistTracks(sourceId, playlistResponse)
+export async function fetchSubsonicUserStates(config: SubsonicConnectionConfig,
+  options: SubsonicRequestOptions, ids?: string[], knownIds?: string[]): Promise<Map<string, ProviderUserState>> {
+  const result = new Map<string, ProviderUserState>()
+  const add = (value: unknown) => {
+    const song = value as Record<string, unknown> | undefined
+    if (!song || typeof song.id !== 'string') throw new Error('Invalid server track state.')
+    const rating = song.userRating === undefined || song.userRating === 0 ? null : song.userRating
+    if (!validProviderValue('rating', rating)) throw new Error('Server returned an unsupported rating.')
+    result.set(song.id, { favorite: typeof song.starred === 'string' && song.starred.length > 0, rating: rating as number | null })
+  }
+  const readSongs = async (trackIds: string[]) => {
+    const pending = [...new Set(trackIds)]
+    let index = 0
+    await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => {
+      while (index < pending.length) {
+        const id = pending[index++]
+        options.signal?.throwIfAborted()
+        try {
+          const response = await requestSubsonicJson(config, 'getSong', { id }, options)
+          add(response.song)
+        } catch (error) {
+          if (!(error instanceof SubsonicRequestError) || error.apiCode !== 70) {
+            index = pending.length
+            throw error
+          }
+          // An explicitly missing track is unknown, not a cleared favorite/rating.
+        }
+      }
+    }))
+  }
+  if (ids) {
+    await readSongs(ids)
+  } else {
+    // Empty search is standardized by OpenSubsonic. Older Subsonic servers can
+    // still sync known library tracks using getSong, with bounded concurrency.
+    if (knownIds) {
+      const ping = await requestSubsonicJson(config, 'ping', {}, options)
+      if (ping.openSubsonic !== true) {
+        await readSongs(knownIds)
+        return result
       }
     }
-  )
+    for (let offset = 0; ; ) {
+      options.signal?.throwIfAborted()
+      const response = await requestSubsonicJson(config, 'search3',
+        { query: '', artistCount: 0, albumCount: 0, songCount: 500, songOffset: offset }, options)
+      const container = response.searchResult3 as { song?: unknown } | undefined
+      if (!container || typeof container !== 'object') throw new Error('This server does not support a full user-state listing.')
+      const songs = asArray<unknown>(container.song)
+      if (!songs.length) break
+      const before = result.size
+      songs.forEach(add)
+      if (result.size === before || result.size > 250_000) throw new Error('Server user-state pagination did not complete.')
+      offset += songs.length
+    }
+  }
+  return result
+}
+
+export async function writeSubsonicUserState(config: SubsonicConnectionConfig, id: string,
+  field: ProviderSyncField, value: ProviderSyncValue, options: SubsonicRequestOptions): Promise<void> {
+  if (!validProviderValue(field, value)) throw new Error('Invalid server value.')
+  await requestSubsonicJson(config, field === 'favorite' ? (value ? 'star' : 'unstar') : 'setRating',
+    { id, ...(field === 'rating' ? { rating: value === null ? 0 : Number(value) } : {}) }, { ...options, retries: 0 })
 }
 
 export function buildSubsonicStreamUrl(
   config: SubsonicConnectionConfig,
   sourceTrackId: string,
-  options: { maxBitRateKbps?: number } = {}
+  options: { maxBitRateKbps?: number; original?: boolean; format?: 'mp3' | 'flac' | 'opus' } = {}
 ): string {
   const maxBitRateKbps = options.maxBitRateKbps
   return buildSubsonicEndpointUrl(
@@ -851,7 +934,8 @@ export function buildSubsonicStreamUrl(
     'stream',
     {
       id: sourceTrackId,
-      maxBitRate: typeof maxBitRateKbps === 'number' && Number.isFinite(maxBitRateKbps) && maxBitRateKbps > 0
+      format: options.original ? 'raw' : options.format,
+      maxBitRate: options.original ? 0 : typeof maxBitRateKbps === 'number' && Number.isFinite(maxBitRateKbps) && maxBitRateKbps >= 0
         ? Math.trunc(maxBitRateKbps)
         : undefined
     },
@@ -898,6 +982,7 @@ export async function fetchSubsonicCoverArt(
     try {
       const response = await fetch(url, {
         method: 'GET',
+        headers: buildProviderRequestHeaders(),
         signal: merged.signal
       })
       if (!response.ok) {
@@ -922,4 +1007,96 @@ export async function fetchSubsonicCoverArt(
   }
 
   throw lastError instanceof Error ? lastError : new Error('Subsonic cover art request failed.')
+}
+
+export async function createSubsonicRemotePlaylist(config: SubsonicConnectionConfig, name: string,
+  options: SubsonicRequestOptions = {}): Promise<string> {
+  const response = await requestSubsonicJson(config, 'createPlaylist', { name }, { ...options, retries: 0 })
+  const id = toTrimmedText((response.playlist as Record<string, unknown> | undefined)?.id)
+  if (!id) throw new Error('The server did not return the new playlist ID. Creation requires Subsonic API 1.14 or newer.')
+  return id
+}
+
+export async function readSubsonicRemotePlaylist(sourceId: number, config: SubsonicConnectionConfig,
+  id: string, options: SubsonicRequestOptions = {}): Promise<RemotePlaylistSnapshot | null> {
+  let response: Record<string, unknown>
+  try { response = await requestSubsonicJson(config, 'getPlaylist', { id }, { ...options, retries: 0 }) }
+  catch (error) {
+    if (error instanceof SubsonicRequestError && (error.apiCode === 70 || error.httpStatus === 404)) return null
+    throw error
+  }
+  const row = response.playlist as Record<string, unknown> | undefined
+  if (!row || row.id !== id || typeof row.name !== 'string' || !Number.isSafeInteger(row.songCount) || Number(row.songCount) < 0) {
+    throw new Error('Server returned an invalid playlist.')
+  }
+  const tracks = toPlaylistTracks(sourceId, response)
+  if (tracks.length !== row.songCount) throw new Error('Server returned an incomplete playlist.')
+  const writable = typeof row.readonly === 'boolean' ? !row.readonly : !row.owner || row.owner === config.username
+  return { id, name: row.name, writable, tracks }
+}
+
+export async function listSubsonicRemotePlaylists(sourceId: number, config: SubsonicConnectionConfig,
+  options: SubsonicRequestOptions = {}): Promise<RemotePlaylistSnapshot[]> {
+  const response = await requestSubsonicJson(config, 'getPlaylists', {}, options)
+  const container = response.playlists as Record<string, unknown> | undefined
+  if (!container || typeof container !== 'object' || Array.isArray(container)
+    || (container.playlist != null && typeof container.playlist !== 'object')) throw new Error('Server returned an incomplete playlist list.')
+  const rows = asArray<Record<string, unknown>>(container.playlist)
+  const ids = rows.map(row => toTrimmedText(row.id))
+  if (ids.some(id => !id) || new Set(ids).size !== ids.length) throw new Error('Server returned an invalid playlist list.')
+  return runWithConcurrency(ids as string[], MAX_SYNC_CONCURRENCY, async id => {
+    const playlist = await readSubsonicRemotePlaylist(sourceId, config, id, options)
+    if (!playlist) throw new Error('Server playlists changed during refresh. Please try again.')
+    return playlist
+  })
+}
+
+export async function writeSubsonicRemotePlaylist(sourceId: number, config: SubsonicConnectionConfig,
+  before: RemotePlaylistSnapshot, after: RemotePlaylistSnapshot | null, options: SubsonicRequestOptions = {}): Promise<void> {
+  if (!before.writable) throw new Error('This server playlist is read-only.')
+  if (after && after.id !== before.id) throw new Error('Invalid server playlist.')
+  const writeOptions = { ...options, retries: 0 }
+  if (!after) {
+    await requestSubsonicJson(config, 'deletePlaylist', { id: before.id }, writeOptions)
+  } else if (before.name !== after.name) {
+    await requestSubsonicJson(config, 'updatePlaylist', { playlistId: before.id, name: after.name }, writeOptions)
+  } else {
+    const ids = after.tracks.map(track => {
+      const parsed = parseSubsonicTrackPath(track.path)
+      if (!parsed || parsed.sourceId !== sourceId) throw new Error('A server playlist can only contain tracks from that same server.')
+      return parsed.sourceTrackId
+    })
+    // Navidrome treats createPlaylist without songId parameters as leaving the
+    // existing tracks unchanged. Explicitly remove positions when clearing;
+    // descending indices also work with servers that remove them sequentially.
+    const clearing = !ids.length
+    if (clearing && !before.tracks.length) return
+    const endpoint = clearing ? 'updatePlaylist' : 'createPlaylist'
+    const params = clearing
+      ? { playlistId: before.id, songIndexToRemove: before.tracks.map((_, i) => String(before.tracks.length - i - 1)) }
+      : { playlistId: before.id, songId: ids }
+    // Nonempty replacements preserve order and repeated occurrences in one
+    // request, without an intermediate remove-all/add-all state.
+    const large = buildSubsonicEndpointUrl(config, endpoint, params).toString().length > 6000
+    const formPost = large && await supportsPlaylistFormPost(config, options)
+    await requestSubsonicJson(config, endpoint, params, { ...writeOptions, formPost })
+  }
+}
+
+const playlistFormPostSupport = new Map<string, boolean>()
+async function supportsPlaylistFormPost(config: SubsonicConnectionConfig, options: SubsonicRequestOptions): Promise<boolean> {
+  const key = createHash('sha256').update(JSON.stringify([config.baseUrl, config.username, config.password])).digest('hex')
+  const cached = playlistFormPostSupport.get(key)
+  if (cached !== undefined) return cached
+  let supported = false
+  try {
+    const response = await requestSubsonicJson(config, 'getOpenSubsonicExtensions', {}, { ...options, retries: 0 })
+    supported = asArray<{ name?: string; versions?: number[] }>(response.openSubsonicExtensions)
+      .some(extension => extension.name === 'formPost' && extension.versions?.includes(1))
+  } catch (error) {
+    if (!(error instanceof SubsonicRequestError) || !([0, 70].includes(error.apiCode ?? -1) || error.httpStatus === 404)) throw error
+  }
+  if (playlistFormPostSupport.size >= 100) playlistFormPostSupport.clear()
+  playlistFormPostSupport.set(key, supported)
+  return supported
 }

@@ -1,3 +1,4 @@
+import { isRetainedRemoteSource } from '../../../shared/audio/retainedRemoteSource'
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { usePlayerStore } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -21,6 +22,8 @@ import EQPopover from '../eq/EQPopover'
 import { usePresence } from '../../hooks/usePresence'
 import EQResponsePreview from '../eq/EQResponsePreview'
 import AudioPipelineShelf from './AudioPipelineShelf'
+import StreamQualityIndicator from './StreamQualityIndicator'
+import type { RemotePlaybackQuality } from '../../../types/streamingQuality'
 import TransportLyricsShelf from './TransportLyricsShelf'
 import { useLyricsPopoutStore } from '../../stores/lyricsPopoutStore'
 import { useParallaxStore } from '../../stores/parallaxStore'
@@ -36,24 +39,28 @@ function formatTime(seconds: number): string {
 
 function TransportWaveformSection({
   loadingLabel,
-  loadingPercent
+  loadingPercent,
+  streamQuality
 }: {
   loadingLabel: string | null
   loadingPercent: number | null
+  streamQuality: RemotePlaybackQuality | undefined
 }) {
   const waveformData = usePlayerStore((s) => s.waveformData)
   const waveformBufferedRatio = usePlayerStore((s) => s.waveformBufferedRatio)
   const waveformAnalyzedRatio = usePlayerStore((s) => s.waveformAnalyzedRatio)
-  const remoteBufferedSeconds = usePlayerStore((s) => s.remoteBufferedSeconds)
   // 30Hz keeps the waveform playhead visually smooth without re-rendering
   // the transport section at display refresh rate.
   const currentTime = usePlaybackClock(1 / 30)
   const duration = usePlayerStore((s) => s.duration)
   const seek = usePlayerStore((s) => s.seek)
   const currentTrack = usePlayerStore((s) => s.currentTrack)
+  const remoteLoadFailed = usePlayerStore((s) => s.remoteLoadProgress?.failed ?? false)
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const waveformTimeDisplayMode = useUIStore((s) => s.waveformTimeDisplayMode)
   const toggleWaveformTimeDisplayMode = useUIStore((s) => s.toggleWaveformTimeDisplayMode)
+  const showPipelineShelf = useUIStore((s) => s.showPipelineShelf)
+  const togglePipelineShelf = useUIStore((s) => s.togglePipelineShelf)
 
   const effectiveDelaySec = Math.max(0, effectiveDelayMs / 1000)
   const compensatedTime = duration > 0
@@ -67,16 +74,19 @@ function TransportWaveformSection({
 
   return (
     <div className="transport-waveform-wrap">
-      <span className="waveform-time waveform-time-current">{formatTime(compensatedTime)}</span>
-      <button
-        type="button"
-        className="waveform-time waveform-time-remaining waveform-time-toggle"
-        onClick={toggleWaveformTimeDisplayMode}
-        aria-label={rightTimeToggleLabel}
-        title={rightTimeToggleLabel}
-      >
-        {rightTimeLabel}
-      </button>
+      <div className="transport-waveform-meta">
+        <span className="waveform-time waveform-time-current">{formatTime(compensatedTime)}</span>
+        <StreamQualityIndicator quality={streamQuality} expanded={showPipelineShelf} onClick={togglePipelineShelf} />
+        <button
+          type="button"
+          className="waveform-time waveform-time-remaining waveform-time-toggle"
+          onClick={toggleWaveformTimeDisplayMode}
+          aria-label={rightTimeToggleLabel}
+          title={rightTimeToggleLabel}
+        >
+          {rightTimeLabel}
+        </button>
+      </div>
       <WaveformSeekBar
         waveformData={waveformData}
         waveformKey={currentTrack?.path ?? null}
@@ -85,7 +95,7 @@ function TransportWaveformSection({
         currentTime={compensatedTime}
         bufferedRatio={waveformBufferedRatio}
         analyzedRatio={waveformAnalyzedRatio}
-        seekableDuration={currentTrack?.sourceType && currentTrack.sourceType !== 'local' ? remoteBufferedSeconds : duration}
+        seekableDuration={duration}
         onSeek={(time) => {
           const rawSeekTime = Math.max(0, Math.min(duration, time + effectiveDelaySec))
           void seek(rawSeekTime)
@@ -94,6 +104,13 @@ function TransportWaveformSection({
       {loadingLabel && (
         <div className="transport-loading-hint" role="status" aria-live="polite">
           <span className="transport-loading-hint-label">{loadingLabel}</span>
+          {isRetainedRemoteSource(currentTrack?.sourceType) && remoteLoadFailed && (
+            <button type="button" className="transport-loading-retry" onClick={() => {
+              const state = usePlayerStore.getState()
+              const retry = state.remoteStreamSessionId === null ? state.play() : state.seek(currentTime)
+              void retry.catch(error => console.error('Remote playback retry failed:', error))
+            }}>Retry</button>
+          )}
           <span
             className={`transport-loading-hint-bar ${loadingPercent === null ? 'indeterminate' : ''}`}
             aria-hidden="true"
@@ -224,8 +241,7 @@ export default function TransportBar() {
 
   const isPlaying = playbackState === 'playing'
   const isLoadingTrack = playbackState === 'loading'
-  const activeRemoteLoadProgress = isLoadingTrack
-    && currentTrack
+  const activeRemoteLoadProgress = currentTrack
     && remoteLoadProgress
     && remoteLoadProgress.path === currentTrack.path
     ? remoteLoadProgress
@@ -234,6 +250,7 @@ export default function TransportBar() {
     ? Math.max(0, Math.min(1, activeRemoteLoadProgress.percent))
     : null
   const loadingLabel = (() => {
+    if (isRetainedRemoteSource(currentTrack?.sourceType) && activeRemoteLoadProgress?.failed) return 'Playback interrupted'
     if (!isLoadingTrack || !currentTrack) return null
     if (loadingStatus) return loadingStatus
     if (!activeRemoteLoadProgress) return null
@@ -611,7 +628,8 @@ export default function TransportBar() {
         </div>
 
         {/* Waveform with floating time labels */}
-        <TransportWaveformSection loadingLabel={loadingLabel} loadingPercent={loadingPercent} />
+        <TransportWaveformSection loadingLabel={loadingLabel} loadingPercent={loadingPercent}
+          streamQuality={isRetainedRemoteSource(currentTrack?.sourceType) ? activeRemoteLoadProgress?.quality : undefined} />
 
         {/* Volume */}
         <VolumeControl className="transport-volume" />

@@ -93,6 +93,18 @@ test('derives bit-perfect activation solely from the verified runtime rule', () 
   }
 })
 
+test('native snapshot forwarding preserves progressive identity and buffering without altering local snapshots', async () => {
+  let snapshot = createPlaybackSnapshot('playing')
+  const controller = createNativeAudioController({ playback: createPlaybackStub({ getPlaybackSnapshot: () => snapshot }) }, {
+    eventPolling: false
+  })
+  assert.equal((await controller.getPlaybackSnapshot()).progressiveSessionId, undefined)
+  snapshot = { ...snapshot, progressiveSessionId: 17, buffering: true }
+  const streamed = await controller.getPlaybackSnapshot()
+  assert.equal(streamed.progressiveSessionId, 17)
+  assert.equal(streamed.buffering, true)
+})
+
 test('does not report activation while output is merely open, negotiated, or initialized', () => {
   const status = normalizeNativeAudioOutputStatus({
     outputOpen: true,
@@ -272,7 +284,7 @@ test('native playback sequences identify current and buffered lifecycle epochs',
 
     rawEvents.push(
       { type: 'timeUpdate', playbackSequence: 0, currentTime: 0.5 },
-      { type: 'gaplessTransition', playbackSequence: 0 },
+      { type: 'gaplessTransition', playbackSequence: 0, progressiveSessionId: 17 },
       { type: 'timeUpdate', playbackSequence: 0, currentTime: 0.75 }
     )
     ;(pollEvents as (() => void) | null)?.()
@@ -284,7 +296,8 @@ test('native playback sequences identify current and buffered lifecycle epochs',
       },
       {
         type: 'gaplessTransition',
-        playbackSequence: preloaded.playbackSequence
+        playbackSequence: preloaded.playbackSequence,
+        progressiveSessionId: 17
       },
       {
         type: 'timeUpdate',

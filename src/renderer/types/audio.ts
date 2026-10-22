@@ -30,7 +30,7 @@ export interface Track {
   isIamf?: boolean
   replayGainTrackDb?: number
   replayGainAlbumDb?: number
-  sourceType?: 'local' | 'subsonic' | 'jellyfin'
+  sourceType?: 'local' | 'subsonic' | 'jellyfin' | 'plex'
   sourceId?: number
   sourceTrackId?: string
   sourcePath?: string

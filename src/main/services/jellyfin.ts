@@ -1,11 +1,12 @@
 import { createHash } from 'crypto'
+import { PROVIDER_CLIENT_VERSION, buildProviderRequestHeaders } from './providerClientIdentity'
+import type { ProviderUserState } from '../../types/providerSync'
 import { formatArtistNames, normalizeArtistNames } from '../../shared/library/artistCredits'
 
 const DEFAULT_TIMEOUT_MS = 12_000
 const DEFAULT_RETRIES = 1
 const DEFAULT_PAGE_SIZE = 500
 const CLIENT_NAME = 'Astra'
-const CLIENT_VERSION = '0.4.0'
 const DEVICE_NAME = 'Astra Desktop'
 const TRANSCODE_AUDIO_CODEC = 'mp3'
 const TRANSCODE_CONTAINER = 'mp3'
@@ -205,7 +206,7 @@ function buildJellyfinAuthorizationHeader(
     `Client=\"${escapeHeaderTokenValue(CLIENT_NAME)}\"`,
     `Device=\"${escapeHeaderTokenValue(DEVICE_NAME)}\"`,
     `DeviceId=\"${escapeHeaderTokenValue(buildJellyfinDeviceId(config))}\"`,
-    `Version=\"${escapeHeaderTokenValue(CLIENT_VERSION)}\"`
+    `Version=\"${escapeHeaderTokenValue(PROVIDER_CLIENT_VERSION)}\"`
   ]
   if (options.token) {
     parts.push(`Token=\"${escapeHeaderTokenValue(options.token)}\"`)
@@ -218,9 +219,33 @@ export function buildJellyfinStreamRequestHeaders(
   authContext: JellyfinAuthContext
 ): Record<string, string> {
   return {
+    ...buildProviderRequestHeaders(),
     'X-Emby-Authorization': buildJellyfinAuthorizationHeader(config, { token: authContext.accessToken }),
     'X-Emby-Token': authContext.accessToken
   }
+}
+
+export async function reportJellyfinPlayback(
+  config: JellyfinConnectionConfig, authContext: JellyfinAuthContext,
+  event: 'start' | 'progress' | 'stop',
+  report: { trackId: string; sessionId: string; position: number; paused: boolean },
+  options: JellyfinRequestOptions = {}
+): Promise<void> {
+  const suffix = event === 'progress' ? '/Progress' : event === 'stop' ? '/Stopped' : ''
+  const merged = mergeAbortSignals(options.signal, options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+  try {
+    const response = await fetch(buildJellyfinUrl(config, `/Sessions/Playing${suffix}`, {}), {
+      method: 'POST', signal: merged.signal,
+      headers: { ...buildJellyfinStreamRequestHeaders(config, authContext), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ItemId: report.trackId, PlaySessionId: report.sessionId,
+        PositionTicks: Math.round(report.position * 10_000_000),
+        ...(event === 'stop' ? {} : { IsPaused: report.paused, CanSeek: true, PlayMethod: 'DirectPlay' })
+      })
+    })
+    if (!response.ok) throw new Error(`Jellyfin playback report failed (${response.status})`)
+    // Successful reporting returns 204; there is no JSON response to parse.
+  } finally { merged.cleanup() }
 }
 
 function buildJellyfinUrl(
@@ -291,13 +316,12 @@ async function requestJellyfinJson(
         signal: merged.signal,
         headers: {
           Accept: 'application/json',
-          'X-Emby-Authorization': buildJellyfinAuthorizationHeader(config, { token: authContext.accessToken }),
-          'X-Emby-Token': authContext.accessToken
+          ...buildJellyfinStreamRequestHeaders(config, authContext)
         }
       })
 
       if (!response.ok) {
-        throw new Error(`Jellyfin request failed (${response.status})`)
+        throw new JellyfinHttpError(`Jellyfin request failed (${response.status})`, response.status)
       }
 
       return await response.json() as Record<string, unknown>
@@ -418,6 +442,12 @@ async function requestJellyfinBytesFromUrl(
   throw lastError instanceof Error ? lastError : new Error('Jellyfin stream request failed.')
 }
 
+/** A Jellyfin HTTP failure, carrying the status so a rejected sign-in can be told from an unreachable server. */
+export class JellyfinHttpError extends Error {
+  readonly status: number
+  constructor(message: string, status: number) { super(message); this.status = status }
+}
+
 export async function authenticateJellyfin(
   config: JellyfinConnectionConfig,
   options: JellyfinRequestOptions = {}
@@ -447,6 +477,7 @@ export async function authenticateJellyfin(
         headers: {
           Accept: 'application/json',
           'Content-Type': 'application/json',
+          ...buildProviderRequestHeaders(),
           'X-Emby-Authorization': buildJellyfinAuthorizationHeader(config)
         },
         body: JSON.stringify({
@@ -456,7 +487,7 @@ export async function authenticateJellyfin(
       })
 
       if (!response.ok) {
-        throw new Error(`Jellyfin authentication failed (${response.status})`)
+        throw new JellyfinHttpError(`Jellyfin authentication failed (${response.status})`, response.status)
       }
 
       const payload = await response.json() as JellyfinAuthenticateResponse
@@ -621,6 +652,53 @@ export function mapJellyfinItemToCatalogTrack(sourceId: number, item: JellyfinAu
   }
 }
 
+export async function fetchJellyfinUserStates(config: JellyfinConnectionConfig, auth: JellyfinAuthContext,
+  options: JellyfinRequestOptions, ids?: string[]): Promise<Map<string, ProviderUserState>> {
+  const result = new Map<string, ProviderUserState>()
+  const add = (value: unknown) => {
+    const item = value as { Id?: unknown; UserData?: { IsFavorite?: unknown } } | undefined
+    if (!item || typeof item.Id !== 'string' || typeof item.UserData?.IsFavorite !== 'boolean') {
+      throw new Error('Server did not return favorite state.')
+    }
+    result.set(item.Id, { favorite: item.UserData.IsFavorite })
+  }
+  const endpoint = `/Users/${encodeURIComponent(auth.userId)}/Items`
+  if (ids) {
+    for (const id of new Set(ids)) {
+      options.signal?.throwIfAborted()
+      add(await requestJellyfinJson(config, auth, `${endpoint}/${encodeURIComponent(id)}`, {}, options))
+    }
+  } else {
+    for (let offset = 0; ; ) {
+      options.signal?.throwIfAborted()
+      const response = await requestJellyfinJson(config, auth, endpoint, {
+        Recursive: true, IncludeItemTypes: 'Audio', EnableUserData: true,
+        SortBy: 'SortName', SortOrder: 'Ascending', StartIndex: offset, Limit: 500
+      }, options)
+      if (!Array.isArray(response.Items)) throw new Error('Invalid server user-state listing.')
+      if (!response.Items.length) break
+      const before = result.size
+      response.Items.forEach(add)
+      if (result.size === before || result.size > 250_000) throw new Error('Server user-state pagination did not complete.')
+      offset += response.Items.length
+    }
+  }
+  return result
+}
+
+export async function writeJellyfinFavorite(config: JellyfinConnectionConfig, auth: JellyfinAuthContext,
+  id: string, favorite: boolean, options: JellyfinRequestOptions): Promise<void> {
+  const merged = mergeAbortSignals(options.signal, options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+  try {
+    const response = await fetch(buildJellyfinUrl(config,
+      `/Users/${encodeURIComponent(auth.userId)}/FavoriteItems/${encodeURIComponent(id)}`, {}), {
+      method: favorite ? 'POST' : 'DELETE', signal: merged.signal,
+      headers: buildJellyfinStreamRequestHeaders(config, auth)
+    })
+    if (!response.ok) throw new Error(`Jellyfin favorite update failed (${response.status})`)
+  } finally { merged.cleanup() }
+}
+
 export async function syncJellyfinCatalog(
   sourceId: number,
   config: JellyfinConnectionConfig,
@@ -701,6 +779,34 @@ export function parseJellyfinTrackPath(path: string): { sourceId: number; source
   } catch {
     return null
   }
+}
+
+/** Original audio through the streaming API; authentication is sent in headers. */
+export function buildJellyfinOriginalStreamUrl(config: JellyfinConnectionConfig, sourceTrackId: string): string {
+  return buildJellyfinUrl(config, `/Audio/${encodeURIComponent(sourceTrackId)}/stream`, { static: true }).toString()
+}
+
+/** Progressive audio with header authentication, suitable for the retained byte cache. */
+export function buildJellyfinQualityStreamUrl(config: JellyfinConnectionConfig, sourceTrackId: string, bitrateKbps: number): string {
+  return buildJellyfinUrl(config, `/Audio/${encodeURIComponent(sourceTrackId)}/stream.opus`, {
+    static: false,
+    DeviceId: buildJellyfinDeviceId(config),
+    AudioCodec: 'opus',
+    AudioBitRate: bitrateKbps * 1000,
+    MaxAudioChannels: 2,
+    EnableAutoStreamCopy: true
+  }).toString()
+}
+
+/** Compatibility conversion must not copy the unsupported input codec. FLAC
+ * leaves rate, depth and channel count to the server without a lossy bitrate cap. */
+export function buildJellyfinCompatibilityStreamUrl(config: JellyfinConnectionConfig, sourceTrackId: string,
+  codec: 'flac' | 'opus' | 'mp3', bitrateKbps = 320): string {
+  return buildJellyfinUrl(config, `/Audio/${encodeURIComponent(sourceTrackId)}/stream.${codec}`, {
+    static: false, DeviceId: buildJellyfinDeviceId(config), AudioCodec: codec,
+    EnableAutoStreamCopy: false, AllowAudioStreamCopy: false,
+    ...(codec !== 'flac' ? { AudioBitRate: bitrateKbps * 1000, MaxAudioChannels: 2 } : {})
+  }).toString()
 }
 
 export function buildJellyfinStreamUrl(
@@ -785,10 +891,7 @@ export async function fetchJellyfinCoverArt(
       const response = await fetch(url, {
         method: 'GET',
         signal: merged.signal,
-        headers: {
-          'X-Emby-Authorization': buildJellyfinAuthorizationHeader(config, { token: authContext.accessToken }),
-          'X-Emby-Token': authContext.accessToken
-        }
+        headers: buildJellyfinStreamRequestHeaders(config, authContext)
       })
 
       if (!response.ok) {

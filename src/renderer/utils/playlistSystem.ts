@@ -1,7 +1,10 @@
+import type { RemotePlaylistLink } from '../../types/remotePlaylists'
+
 export const FAVORITES_PLAYLIST_ID = -1
 export const FAVORITES_PLAYLIST_NAME = 'Favorites'
 
 export interface PlaylistLike {
+  remote?: RemotePlaylistLink
   id: number
   name: string
   kind?: 'normal' | 'dynamic'

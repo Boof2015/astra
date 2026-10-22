@@ -58,22 +58,66 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
       if (!event || typeof event.data !== 'object' || event.data == null) return
       const payload = event.data
       switch (payload.type) {
+        case 'set-session':
+          this.sessionId = payload.sessionId
+          break
+        case 'reset-current': {
+          const next = this.next
+          this.reset()
+          this.next = next
+          // A handoff may already have happened on the audio thread while the
+          // renderer was requesting a seek. Its consumed prefix cannot be reused.
+          if (payload.nextSessionId != null && next?.sessionId !== payload.nextSessionId) {
+            this.port.postMessage({ type: 'next-invalidated', sessionId: payload.nextSessionId })
+          }
+          break
+        }
+        case 'stage-next':
+          this.next = { sessionId: payload.sessionId, chunks: [], totalFrames: 0,
+            currentFrame: 0, currentChunkIndex: 0, sourceEnded: false, ready: false,
+            gain: 1, targetGain: 1, gainFrames: 0 }
+          break
+        case 'clear-next':
+          if (this.next && this.next.sessionId === payload.sessionId) this.next = null
+          break
+        case 'set-next-ready':
+          if (this.next && this.next.sessionId === payload.sessionId) this.next.ready = Boolean(payload.ready)
+          break
+        case 'set-gain': {
+          const stream = this.streamForPayload(payload)
+          if (stream && Number.isFinite(payload.gain) && payload.gain >= 0) {
+            stream.targetGain = payload.gain
+            stream.gainFrames = Math.max(0, Math.floor(Number(payload.rampFrames) || 0))
+            if (!stream.gainFrames) stream.gain = stream.targetGain
+          }
+          break
+        }
         case 'append-chunk':
-          this.appendChunk(payload)
+          this.appendChunk(payload, this.streamForPayload(payload))
           break
         case 'set-playing':
           this.playing = Boolean(payload.playing)
+          this.startAtContextFrame = this.playing && Number.isFinite(payload.contextFrame)
+            ? Math.max(0, Math.round(payload.contextFrame)) : null
+          this.setBuffering(false)
           this.endedEmitted = false
           this.postPosition(true)
+          break
+        case 'pause-for-quality':
+          // A renderer position report can be several render blocks old. Freeze
+          // and acknowledge this exact frame before replacing a representation.
+          if (payload.sessionId === this.sessionId) this.playing = false
+          this.port.postMessage({ type: 'quality-paused', requestedSessionId: payload.sessionId,
+            sessionId: this.sessionId, frame: this.currentFrame })
           break
         case 'seek':
           this.seekToFrame(payload.frame)
           break
         case 'set-source-ended':
-          this.sourceEnded = Boolean(payload.ended)
-          if (this.sourceEnded && this.currentFrame >= this.totalFrames && !this.endedEmitted) {
-            this.emitEnded()
+          if (this.streamForPayload(payload)) {
+            this.streamForPayload(payload).sourceEnded = Boolean(payload.ended)
           }
+          if (this.sourceEnded && this.currentFrame >= this.totalFrames) this.advanceAtEnd()
           break
         case 'clear':
           this.reset()
@@ -84,18 +128,31 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
   }
 
   reset() {
+    this.sessionId = null
+    this.next = null
+    this.gain = 1
+    this.targetGain = 1
+    this.gainFrames = 0
     this.chunks = []
     this.totalFrames = 0
     this.currentFrame = 0
     this.currentChunkIndex = 0
     this.playing = false
+    this.startAtContextFrame = null
     this.sourceEnded = false
+    this.buffering = false
     this.endedEmitted = false
     this.framesSinceReport = 0
     this.lastReportedFrame = -1
   }
 
-  appendChunk(payload) {
+  streamForPayload(payload) {
+    if (payload.sessionId == null || payload.sessionId === this.sessionId) return this
+    return this.next && payload.sessionId === this.next.sessionId ? this.next : null
+  }
+
+  appendChunk(payload, stream = this) {
+    if (!stream) return
     const frameCount = Number(payload.frameCount)
     if (!Number.isFinite(frameCount) || frameCount <= 0) return
 
@@ -108,22 +165,22 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
     const channelData = Array.isArray(payload.channelData) ? payload.channelData : null
     if (!interleavedData && !channelData) return
 
-    this.chunks.push(interleavedData
+    stream.chunks.push(interleavedData
       ? {
-          startFrame: this.totalFrames,
+          startFrame: stream.totalFrames,
           frameCount,
           interleaved: interleavedData,
           channelCount
         }
       : {
-          startFrame: this.totalFrames,
+          startFrame: stream.totalFrames,
           frameCount,
           channels: channelData
         }
     )
-    this.totalFrames += frameCount
-    if (this.currentChunkIndex >= this.chunks.length) {
-      this.currentChunkIndex = Math.max(0, this.chunks.length - 1)
+    stream.totalFrames += frameCount
+    if (stream.currentChunkIndex >= stream.chunks.length) {
+      stream.currentChunkIndex = Math.max(0, stream.chunks.length - 1)
     }
   }
 
@@ -190,9 +247,16 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
     this.lastReportedFrame = this.currentFrame
     this.port.postMessage({
       type: 'position',
+      sessionId: this.sessionId,
       frame: this.currentFrame,
       totalFrames: this.totalFrames
     })
+  }
+
+  setBuffering(value) {
+    if (this.buffering === value) return
+    this.buffering = value
+    this.port.postMessage({ type: 'buffering', sessionId: this.sessionId, buffering: value })
   }
 
   emitEnded() {
@@ -202,9 +266,29 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
     this.postPosition(true)
     this.port.postMessage({
       type: 'ended',
+      sessionId: this.sessionId,
       frame: this.currentFrame,
       totalFrames: this.totalFrames
     })
+  }
+
+  advanceAtEnd() {
+    if (!this.playing || !this.sourceEnded || this.currentFrame < this.totalFrames) return false
+    if (!this.next || !this.next.ready || this.next.totalFrames <= 0) {
+      this.emitEnded()
+      return false
+    }
+    const previousSessionId = this.sessionId
+    const next = this.next
+    this.next = null
+    Object.assign(this, next)
+    this.buffering = false
+    this.endedEmitted = false
+    this.framesSinceReport = 0
+    this.lastReportedFrame = -1
+    this.port.postMessage({ type: 'gapless-transition', previousSessionId, sessionId: this.sessionId })
+    this.postPosition(true)
+    return true
   }
 
   process(inputs, outputs) {
@@ -219,13 +303,23 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
       return true
     }
 
-    let remainingFrames = output[0].length
     let outputOffset = 0
+    if (this.startAtContextFrame !== null) {
+      // A complete local source can stop on this same AudioContext frame.
+      // Renderer callback timing must not insert or repeat samples at the join.
+      outputOffset = Math.max(0, this.startAtContextFrame - currentFrame)
+      if (outputOffset >= output[0].length) return true
+      this.startAtContextFrame = null
+    }
+    let remainingFrames = output[0].length - outputOffset
 
     while (remainingFrames > 0) {
       if (this.currentFrame >= this.totalFrames) {
         if (this.sourceEnded) {
-          this.emitEnded()
+          if (this.advanceAtEnd()) continue
+        } else {
+          if (!this.buffering) this.postPosition(true)
+          this.setBuffering(true)
         }
         break
       }
@@ -243,6 +337,7 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
       }
 
       const availableFrames = chunk.frameCount - chunkOffset
+      this.setBuffering(false)
       const framesToCopy = Math.min(remainingFrames, availableFrames)
       if (chunk.interleaved) {
         for (let channel = 0; channel < output.length; channel++) {
@@ -257,6 +352,22 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
           const sourceChannel = chunk.channels[channel] || chunk.channels[0]
           if (!sourceChannel) continue
           output[channel].set(sourceChannel.subarray(chunkOffset, chunkOffset + framesToCopy), outputOffset)
+        }
+      }
+
+      // The first sample after a handoff uses the next track's gain even if
+      // the renderer is busy updating its UI.
+      if (this.gainFrames > 0 || this.gain !== 1) {
+        for (let frame = 0; frame < framesToCopy; frame++) {
+          if (this.gainFrames > 0) {
+            this.gain += (this.targetGain - this.gain) / this.gainFrames
+            this.gainFrames -= 1
+          }
+          if (this.gain !== 1) {
+            for (let channel = 0; channel < output.length; channel++) {
+              output[channel][outputOffset + frame] *= this.gain
+            }
+          }
         }
       }
 
@@ -278,7 +389,7 @@ class RemoteStreamPlayerProcessor extends AudioWorkletProcessor {
     }
 
     if (this.sourceEnded && this.currentFrame >= this.totalFrames) {
-      this.emitEnded()
+      this.advanceAtEnd()
     }
 
     return true

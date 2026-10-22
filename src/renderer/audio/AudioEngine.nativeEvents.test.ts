@@ -329,6 +329,119 @@ test('gapless promotion preserves a pending late-waveform request without waitin
   assert.equal(events[0]?.waveformRequestId, 73)
 })
 
+test('native remote buffering can recover while loading, and failed progress never emits ended', () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  internals.playbackOutputMode = 'bitperfect'
+  internals._playbackState = 'playing'
+  internals.nativeCurrentPlaybackSequence = 7
+  internals.currentBufferTrackPath = 'subsonic://7/track/a'
+  internals.nativeSnapshot = { playbackSequence: 7, progressiveSessionId: 11, buffering: false,
+    playbackState: 'playing', currentTime: 12 } as NativeAudioPlaybackSnapshot
+  const progress: Extract<NativeAudioEvent, { type: 'remoteProgress' }> = {
+    type: 'remoteProgress', playbackSequence: 7, progressiveSessionId: 11, buffering: true,
+    bufferCapacitySeconds: 8,
+    currentTime: 12, playbackState: 'playing', progress: {
+      sessionId: 11, path: 'subsonic://7/track/a', sourceType: 'subsonic', stage: 'failed',
+      loadedBytes: 10, totalBytes: 100, percent: .1, done: true, failed: true, chunkCount: 0,
+      bufferedSeconds: 12, bufferedPercent: .1, analyzedSeconds: 0, analyzedPercent: null, playable: false
+    }
+  }
+  let ended = false
+  let published = 0
+  engine.on('ended', () => { ended = true })
+  engine.on('nativeRemoteProgress', () => { published++ })
+  internals.handleNativeAudioEvent({ ...progress, playbackSequence: 6 })
+  assert.equal(published, 0)
+  internals.handleNativeAudioEvent(progress)
+  assert.equal(engine.playbackState, 'loading')
+  assert.equal(engine.currentTime, 12)
+  assert.equal(engine.getRemoteStreamSessionId(), 11)
+  assert.equal(ended, false)
+  internals.handleNativeAudioEvent({ ...progress, buffering: false })
+  assert.equal(engine.playbackState, 'playing')
+  internals.handleNativeAudioEvent({ ...progress, playbackState: 'paused' })
+  assert.equal(engine.playbackState, 'paused', 'buffering must not override pause intent')
+  internals.nativeLifecycleSuppressionTokens.add(1)
+  internals.handleNativeAudioEvent(progress)
+  assert.equal(engine.playbackState, 'paused', 'device/load commands remain authoritative')
+})
+
+for (const mode of ['exclusive', 'bitperfect'] as const) {
+  test(`${mode}: mixed source preparation keeps local tracks eligible without remote progress`, () => {
+    const engine = new AudioEngine()
+    const internals = engine as unknown as AudioEngineInternals
+    internals.playbackOutputMode = mode
+    internals.currentBufferTrackPath = '/pcm/current.flac'
+    internals.nativeSnapshot = { channels: 2, playbackState: 'playing' } as NativeAudioPlaybackSnapshot
+    const local = makeLocalPcmTrack('next')
+    assert.equal(engine.canPreBufferRemoteTrack(local), false, 'local-only preparation keeps its established path')
+    assert.equal(engine.hasRemotePrebufferHeadroom(), true)
+    for (const sourceType of ['subsonic', 'jellyfin'] as const) {
+      assert.equal(engine.canPreBufferRemoteTrack({ ...local, path: `${sourceType}://7/a`, sourceType }), true)
+      internals.currentBufferTrackPath = `${sourceType}://7/current`
+      assert.equal(engine.canPreBufferRemoteTrack(local), true)
+      assert.equal(engine.canPreBufferRemoteTrack({ ...local, channels: 6 }), false)
+      internals.currentBufferTrackPath = '/pcm/current.flac'
+    }
+  })
+
+  test(`${mode}: remote-to-local acknowledgment clears streaming identity immediately`, () => {
+    const engine = new AudioEngine()
+    const internals = engine as unknown as AudioEngineInternals
+    internals.playbackOutputMode = mode
+    internals._playbackState = 'playing'
+    internals.nativeCurrentPlaybackSequence = 1
+    internals.nativeNextPlaybackSequence = 2
+    internals.nativeNextTrackBuffered = true
+    internals.currentBufferTrackPath = 'subsonic://7/current'
+    internals.nextBufferTrackPath = '/pcm/next.flac'
+    internals.nativeSnapshot = { progressiveSessionId: 11, buffering: true, currentTime: 60,
+      playbackState: 'playing' } as NativeAudioPlaybackSnapshot
+    internals.notifyTrackChange = () => undefined
+    internals.refreshNativeSnapshot = async () => null
+    let transitions = 0
+    engine.on('gaplessTransition', () => { transitions++ })
+    internals.handleNativeAudioEvent({ type: 'gaplessTransition', playbackSequence: 2 })
+    assert.equal(transitions, 1)
+    assert.equal(internals.currentBufferTrackPath, '/pcm/next.flac')
+    assert.equal(engine.getRemoteStreamSessionId(), null)
+    assert.equal(internals.nativeSnapshot?.buffering, false)
+    assert.equal(internals.nativeSnapshot?.currentTime, 0)
+  })
+}
+
+test('native remote clear-next reconciles a handoff acknowledged while the device pauses', async () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  internals.playbackOutputMode = 'bitperfect'
+  internals._playbackState = 'playing'
+  internals.nativeCurrentPlaybackSequence = 1
+  internals.nativeNextPlaybackSequence = 2
+  internals.nativeNextTrackBuffered = true
+  internals.currentBufferTrackPath = 'subsonic://7/track/a'
+  internals.nextBufferTrackPath = 'subsonic://7/track/b'
+  internals.nativeSnapshot = { progressiveSessionId: 11, playbackState: 'playing' } as NativeAudioPlaybackSnapshot
+  internals.notifyTrackChange = () => undefined
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  let promoted: unknown
+  engine.on('gaplessTransition', payload => { promoted = payload })
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { nativeAudioAPI: {
+    clearNextTrack: async () => {
+      internals.handleNativeAudioEvent({ type: 'gaplessTransition', playbackSequence: 2, progressiveSessionId: 12 })
+    }
+  } } })
+  try {
+    await engine.clearNextBuffer()
+    assert.deepEqual(promoted, { trackPath: 'subsonic://7/track/b' })
+    assert.equal(internals.currentBufferTrackPath, 'subsonic://7/track/b')
+    assert.equal(internals.nativeNextPlaybackSequence, null)
+  } finally {
+    if (original) Object.defineProperty(globalThis, 'window', original)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
 test('polled native lifecycle events cannot override an authoritative load or device command', () => {
   const engine = new AudioEngine()
   const internals = engine as unknown as AudioEngineInternals
