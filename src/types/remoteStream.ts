@@ -5,6 +5,8 @@ export type RemoteStreamSourceType = ProgressiveStreamSourceType
 export type RemoteLoadStage = 'downloading' | 'streaming' | 'complete' | 'failed'
 
 export interface RemoteAudioLoadProgress {
+  /** Main-process Stratum diagnostics identity; native input IDs are separate. */
+  diagnosticsSessionId?: number
   transport?: 'stratum-proof'
   quality?: RemotePlaybackQuality
   /** Encoded download completion is independent of bounded PCM lookahead. */

@@ -86,7 +86,7 @@ export function StratumControl({ server }: { server: ServerEntry }) {
     </div>
     {(error || status?.error) && <p className="servers-error" role="alert">{error ?? status?.error}</p>}
     {(status?.enabled || status?.state === 'available') && <p className="servers-hint">
-      Standard output · Original, Automatic, 64 or 128 kbps. Other formats and settings use normal streaming.
+      Standard or Exclusive output · Original, Automatic, 64 or 128 kbps. Other formats and settings use normal streaming.
     </p>}
   </div>
 }

@@ -367,6 +367,42 @@ test('native remote buffering can recover while loading, and failed progress nev
   assert.equal(engine.playbackState, 'paused', 'device/load commands remain authoritative')
 })
 
+test('Exclusive Stratum keeps native playback identity, main diagnostics and interval quality separate', () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals & { automaticQualitySnapshot(): unknown;
+    automaticQualityProgress: import('../../types/remoteStream.ts').RemoteAudioLoadProgress }
+  internals.playbackOutputMode = 'exclusive'
+  internals._playbackState = 'playing'
+  internals.nativeCurrentPlaybackSequence = 7
+  internals.currentBufferTrackPath = 'subsonic://7/track/a'
+  internals.nativeSnapshot = { playbackSequence: 7, progressiveSessionId: 11, buffering: false,
+    playbackState: 'playing', currentTime: 12 } as NativeAudioPlaybackSnapshot
+  const progress: Extract<NativeAudioEvent, { type: 'remoteProgress' }> = {
+    type: 'remoteProgress', playbackSequence: 7, progressiveSessionId: 11, buffering: false,
+    bufferCapacitySeconds: 8, currentTime: 12, playbackState: 'playing', progress: {
+      sessionId: 11, diagnosticsSessionId: 91, path: internals.currentBufferTrackPath,
+      transport: 'stratum-proof', sourceType: 'subsonic', stage: 'streaming',
+      quality: { requested: 64, mode: 'automatic', transport: 'stratum', requestedCodec: 'opus', delivered: null },
+      loadedBytes: 100, totalBytes: null, percent: null, done: false, failed: false, chunkCount: 0,
+      bufferedSeconds: 20, bufferedPercent: null, analyzedSeconds: 0, analyzedPercent: null, playable: true
+    }
+  }
+  internals.handleNativeAudioEvent(progress)
+  internals.automaticQualityProgress = progress.progress
+  assert.equal(engine.getRemoteStreamSessionId(), 11)
+  assert.equal(engine.getStreamingDiagnosticsState().sessionId, 91)
+  assert.equal(engine.getStreamingDiagnosticsState().transport, 'stratum')
+  assert.equal(engine.getRemotePlaybackQuality()?.requested, 64)
+  assert.equal(internals.automaticQualitySnapshot(), null, 'main owns interval adaptation')
+  // Prove the gate matters: a conventional native stream with the same evidence
+  // remains eligible for the existing whole-stream replacement controller.
+  internals.handleNativeAudioEvent({ ...progress, progress: { ...progress.progress, transport: undefined,
+    diagnosticsSessionId: undefined, quality: { ...progress.progress.quality!, transport: undefined } } })
+  internals.automaticQualityProgress = { ...progress.progress, transport: undefined }
+  assert.ok(internals.automaticQualitySnapshot())
+  assert.equal(engine.getStreamingDiagnosticsState().sessionId, null)
+})
+
 for (const mode of ['exclusive', 'bitperfect'] as const) {
   test(`${mode}: mixed source preparation keeps local tracks eligible without remote progress`, () => {
     const engine = new AudioEngine()

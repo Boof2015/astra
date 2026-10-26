@@ -31,7 +31,8 @@ function harness(overrides: NativeAudioControllerOptions = {}) {
   const snapshot = (): NativeAudioPlaybackSnapshot => ({
     progressiveSessionId: current?.status().sessionId, buffering, playbackState: state,
     currentTime: current ? current.status().startFrame / current.status().sampleRate : localTime, duration: 60,
-    sampleRate: 48000, channels: 2, sampleFormat: 's16', deviceId: 'test', deviceLabel: 'test',
+    sampleRate: current?.status().sampleRate ?? 48000, channels: 2,
+    sampleFormat: current ? inputOptions[current.status().sessionId - 1].sampleFormat : 's16', deviceId: 'test', deviceLabel: 'test',
     outputStatus: normalizeNativeAudioOutputStatus(null)
   })
   const caps = { activeBackend: 'coreaudio', bitPerfectAvailable: true, processedExclusiveAvailable: true, devices: [] }
@@ -102,6 +103,46 @@ function harness(overrides: NativeAudioControllerOptions = {}) {
 
 const a = 'subsonic://server/track/a'
 const b = 'subsonic://server/track/b'
+
+test('processed Stratum uses source-rate s32 input, preserves gain, and activates a prepared successor', async () => {
+  const requests: import('../types/nativeRemoteSource.ts').NativeRemoteRequest[] = []
+  const lifecycle: string[] = []
+  const h = harness({ acquireRemoteSource: async (path, _signal, _quality, request) => {
+    assert.ok(request)
+    requests.push(request)
+    lifecycle.push(`open:${path}:${request.startTimeSeconds}`)
+    const rate = path === a ? 44100 : 96000
+    const startFrame = Math.floor(request.startTimeSeconds * rate)
+    const quality = { transport: 'stratum' as const, requested: 64 as const, requestedCodec: 'opus' as const,
+      mode: 'automatic' as const, delivered: null, loudness: { loudnessLufs: -18, peakLinear: .25 } }
+    let remaining = (6 * rate - startFrame) * 8
+    return { url: '', duration: 6, quality, release() {}, finished: async () => {},
+      progress: async () => ({ loadedBytes: 100, totalBytes: null, complete: true, error: null }),
+      pcm: { info: { sessionId: 100 + requests.length, sampleRate: rate, channels: 2, startFrame, duration: 6, quality },
+        read: async () => { if (!remaining) return null
+          const count = Math.min(remaining, 65536); remaining -= count; return new ArrayBuffer(count) },
+        close: async () => { lifecycle.push(`close:${path}`) }, activate: () => { lifecycle.push(`activate:${path}`) } }
+    }
+  }, resolveBinary: async () => { throw new Error('Stratum must not use the conventional decoder/probe') } })
+  await h.controller.configureNativeOutput({ policy: 'processed', requestedSampleRate: 48000 })
+  const loaded = await h.controller.loadTrack(a, { path: a, remoteNormalizationTargetLufs: -14 })
+  assert.equal(loaded.quality?.transport, 'stratum')
+  assert.equal(loaded.sampleRate, 44100)
+  assert.equal(loaded.sampleFormat, 's32')
+  assert.equal(h.inputOptions[0].gain?.gainDb, 4)
+  await h.controller.preloadNextTrack(b)
+  assert.equal(requests[1].slot, 'next')
+  assert.equal(h.inputOptions[1].sampleRate, 96000)
+  await h.controller.seek(2.125)
+  assert.ok(lifecycle.indexOf(`close:${a}`) < lifecycle.indexOf(`open:${a}:2.125`))
+  assert.equal(h.inputs[2].status().startFrame, Math.floor(2.125 * 44100))
+  assert.deepEqual(h.inputOptions[2].gain, h.inputOptions[0].gain)
+  h.transition()
+  await h.controller.getPlaybackSnapshot()
+  assert.ok(lifecycle.includes(`activate:${b}`))
+  assert.equal(h.decoders.length, 0)
+  await h.controller.stop()
+})
 
 test('real native Opus decoding starts before EOF and retains exact frames through a seek', { timeout: 15_000 }, async t => {
   const require = createRequire(import.meta.url)

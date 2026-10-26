@@ -1,5 +1,7 @@
 # Stratum: first Standard playback connection
 
+Processed Exclusive has its own [implementation and verification notes](stratum-exclusive-proof.md).
+
 Development experiment, not a released client. Checkpoint B's authenticated
 Sidecar segments now feed Astra's existing Standard PCM sessions and worklet.
 Track/catalog identity, playlists and playback reporting remain with Navidrome.

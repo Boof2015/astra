@@ -31,9 +31,10 @@ import type {
 } from '../types/nativeAudio'
 import { createBitPerfectFormatError } from '../shared/audio/bitPerfectFormatError'
 import type { NativeProgressiveInput, NativeProgressiveInputOptions } from '../types/nativeProgressive'
-import type { NativeRemoteSource, NativeRemoteProgress } from '../types/nativeRemoteSource'
+import type { NativeRemoteSource, NativeRemoteProgress, NativeRemoteRequest } from '../types/nativeRemoteSource'
 import { retainedRemoteSourceFromPath } from '../shared/audio/retainedRemoteSource'
 import { startNativePcmDecoder, type NativePcmDecoder, type NativePcmDecoderOptions } from './nativePcmDecoder'
+import { startNativeStratumDecoder } from './nativeStratumDecoder'
 
 export interface NativeAudioAddonPlayback {
   createProgressiveInput?(options: NativeProgressiveInputOptions): NativeProgressiveInput
@@ -110,7 +111,7 @@ export interface NativeAudioControllerOptions {
   resolveBinary?: NativeAudioBinaryResolver
   runProbe?: (file: string, args: string[], signal: AbortSignal) => Promise<string>
   runDecode?: (file: string, args: string[], signal: AbortSignal) => Promise<Buffer>
-  acquireRemoteSource?: (path: string, signal: AbortSignal, quality?: StreamingQualityRequest) => Promise<NativeRemoteSource>
+  acquireRemoteSource?: (path: string, signal: AbortSignal, quality?: StreamingQualityRequest, request?: NativeRemoteRequest) => Promise<NativeRemoteSource>
   startRemoteDecoder?: (options: NativePcmDecoderOptions) => NativePcmDecoder
 }
 
@@ -1072,6 +1073,7 @@ export function createNativeAudioController(
       disposeRemote(remoteCurrent)
       remoteCurrent = remoteNext
       remoteNext = null
+      remoteCurrent?.source.pcm?.activate()
       remoteProgressAt = 0
     }
     currentBufferBytes = nextBufferBytes
@@ -1265,7 +1267,11 @@ export function createNativeAudioController(
     remoteProgressAt = performance.now()
     try {
       let progress: NativeRemoteProgress
-      try { progress = await session.source.progress() }
+      const before = normalizePlaybackSnapshot(engine.getPlaybackSnapshot())
+      const inputBefore = session.input.status()
+      try { progress = await session.source.progress(before.progressiveSessionId === inputBefore.sessionId ? before.currentTime : undefined,
+        inputBefore.publishedFrame / session.request.sampleRate,
+        before.outputStatus.wireFormat.sampleRate ?? before.outputStatus.processing.targetSampleRate ?? undefined) }
       catch { progress = { loadedBytes: 0, totalBytes: null, complete: false, error: session.error?.message ?? null } }
       if (session !== remoteCurrent || currentPlaybackSequence === null) return
       if (progress.error && !session.error) {
@@ -1277,6 +1283,13 @@ export function createNativeAudioController(
       if (snapshot.progressiveSessionId !== status.sessionId) return // Await acknowledged handoff event.
       const bufferedSeconds = status.publishedFrame / session.request.sampleRate
       const duration = session.request.duration
+      if (session.source.pcm && progress.quality) {
+        // Keep this track's gain snapshot even if analysis completes mid-play.
+        session.source.quality = { ...progress.quality, loudness: session.request.quality?.loudness }
+        session.request.quality = session.source.quality
+        session.request.metadata = { ...session.request.metadata, path: session.request.filePath,
+          streamingQuality: playbackQualityRequest(progress.quality) }
+      }
       notify({
         type: 'remoteProgress', playbackSequence: currentPlaybackSequence,
         bufferCapacitySeconds: status.capacityFrames / session.request.sampleRate,
@@ -1284,6 +1297,8 @@ export function createNativeAudioController(
         currentTime: snapshot.currentTime, playbackState: snapshot.playbackState,
         progress: {
           quality: session.source.quality, downloadComplete: progress.complete,
+          ...(progress.transport ? { transport: progress.transport, analysisReady: progress.analysisReady,
+            diagnosticsSessionId: progress.diagnosticsSessionId } : {}),
           sessionId: status.sessionId, slot: 'current', path: session.request.filePath, sourceType: retainedRemoteSourceFromPath(session.request.filePath)!,
           stage: session.error ? 'failed' : progress.complete ? 'complete' : 'streaming',
           loadedBytes: progress.loadedBytes, totalBytes: progress.totalBytes,
@@ -1299,7 +1314,7 @@ export function createNativeAudioController(
   const prepareRemoteAttempt = async (
     engine: NativeAudioAddonPlayback, path: string, metadata: NativeAudioTrackMetadata | undefined,
     gain: NativeAudioTrackGain, controller: AbortController, seconds = 0,
-    preservedLoudness?: RemoteAudioLoudness | null
+    preservedLoudness?: RemoteAudioLoudness | null, slot: 'current' | 'next' = 'current'
   ): Promise<RemoteNativeSession> => {
     if (!options.acquireRemoteSource || !engine.createProgressiveInput) throw new Error('Native remote playback is unavailable in this build.')
     const signal = controller.signal
@@ -1308,7 +1323,8 @@ export function createNativeAudioController(
     let input: NativeProgressiveInput | null = null
     let decoding = false
     try {
-      source = await options.acquireRemoteSource(path, signal, metadata?.streamingQuality)
+      source = await options.acquireRemoteSource(path, signal, metadata?.streamingQuality,
+        { policy: outputRequestCache.policy, slot, startTimeSeconds: seconds })
       throwIfDecodeAborted(signal)
       if (preservedLoudness !== undefined && source.quality) source.quality.loudness = preservedLoudness
       const loudness = source.quality?.loudness
@@ -1318,6 +1334,27 @@ export function createNativeAudioController(
         const normalized = resolveStaticNormalizationGain({ targetLufs: target, ...loudness,
           peakLinear: loudness.peakLinear ?? 0, minGainDb: -18, maxGainDb: 6, peakCeilingLinear: 0.98 })
         gain = { mode: 'normalization', gainDb: normalized.gainDb }
+      }
+      if (source.pcm) {
+        if (outputRequestCache.policy !== 'processed') throw new Error('Stratum PCM requires processed output.')
+        const { sampleRate, channels, duration, startFrame } = source.pcm.info
+        const capacityFrames = Math.min(sampleRate * 8, Math.floor(32 * 1024 * 1024 / (channels * 4)))
+        input = engine.createProgressiveInput({ sampleRate, channels, sampleFormat: 's32', duration, capacityFrames, startFrame, gain })
+        const heldSource = source
+        const started = performance.now()
+        const decoder = startNativeStratumDecoder(source, input, signal, error => {
+          if (session) session.error = error
+          heldSource.release()
+        })
+        session = { input, decoder, source, controller, error: null, bytes: capacityFrames * channels * 4,
+          request: { filePath: path, sampleRate, channels, sampleFormat: 's32', duration, gain, quality: source.quality,
+            metadata: { ...metadata, path, sampleRate, channels,
+              streamingQuality: playbackQualityRequest(source.quality) ?? metadata?.streamingQuality },
+            timings: { binaryResolutionMs: 0, probeMs: 0, decodeMs: 0 } } }
+        await decoder.ready
+        throwIfDecodeAborted(signal)
+        session.request.timings!.decodeMs = Math.round(performance.now() - started)
+        return session
       }
       const binaryStart = performance.now()
       const [probe, ffmpeg] = await Promise.all([binaryResolver('ffprobe'), binaryResolver('ffmpeg')])
@@ -1380,7 +1417,7 @@ export function createNativeAudioController(
       source?.release()
       if (aborted) throw new SupersededNativeAudioLoadError()
       if (source && error instanceof Error) {
-        const message = error.message.split(source.url).join(path)
+        const message = source.url ? error.message.split(source.url).join(path) : error.message
         if (unsupported) throw new RemoteCompatibilityFailure(source.quality!, message)
         throw new Error(message)
       }
@@ -1391,14 +1428,14 @@ export function createNativeAudioController(
   const prepareRemote = async (
     engine: NativeAudioAddonPlayback, path: string, metadata: NativeAudioTrackMetadata | undefined,
     gain: NativeAudioTrackGain, controller: AbortController, seconds = 0,
-    preservedLoudness?: RemoteAudioLoudness | null
+    preservedLoudness?: RemoteAudioLoudness | null, slot: 'current' | 'next' = 'current'
   ): Promise<RemoteNativeSession> => withRemoteCompatibility(metadata?.streamingQuality, controller.signal, async streamingQuality => {
     const attempt = new AbortController()
     const abort = () => attempt.abort()
     controller.signal.addEventListener('abort', abort, { once: true })
     if (controller.signal.aborted) abort()
     try {
-      return await prepareRemoteAttempt(engine, path, { ...metadata, path, streamingQuality }, gain, attempt, seconds, preservedLoudness)
+      return await prepareRemoteAttempt(engine, path, { ...metadata, path, streamingQuality }, gain, attempt, seconds, preservedLoudness, slot)
     } finally { controller.signal.removeEventListener('abort', abort) }
   }).catch(error => {
     if (controller.signal.aborted) throw new SupersededNativeAudioLoadError()
@@ -1684,7 +1721,7 @@ export function createNativeAudioController(
       if (isNativeRemotePath(filePath)) {
         let session: RemoteNativeSession | null = null
         try {
-          session = await prepareRemote(engine, filePath, metadata, gain, decodeController)
+          session = await prepareRemote(engine, filePath, metadata, gain, decodeController, 0, undefined, 'next')
           assertCurrentPrebufferOperation(prebufferOperation)
           dispatchNativeEvents(engine, engine.drainEvents())
           if (currentTrackRequest !== expectedCurrent) throw new SupersededNativeAudioLoadError()
@@ -1774,6 +1811,7 @@ export function createNativeAudioController(
         disposeRemote(remoteCurrent)
         remoteCurrent = remoteNext
         remoteNext = null
+        remoteCurrent?.source.pcm?.activate()
         remoteProgressAt = 0
       }
       currentTrackRequest = promotedRequest ?? (
@@ -1979,6 +2017,11 @@ export function createNativeAudioController(
             await engine.play()
             assertCurrentLoadOperation(generation)
           }
+          // Release obsolete Sidecar work before seeking: current + prepared next
+          // already occupy the server's two playback slots. Native keeps its old
+          // ring until the replacement commits.
+          await previous.source.pcm?.close()
+          assertCurrentLoadOperation(generation)
           replacement = await prepareRemote(engine, previous.request.filePath, previous.request.metadata,
             previous.request.gain, controller, seconds, previous.source.quality?.loudness ?? null)
           assertCurrentLoadOperation(generation)

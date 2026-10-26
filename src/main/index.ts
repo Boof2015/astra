@@ -78,6 +78,8 @@ import { fetchJellyfinUserStates, writeJellyfinFavorite } from './services/jelly
 import { fetchPlexUserStates, writePlexRating } from './services/plex'
 import { createJellyfinPlaybackClient, createSubsonicPlaybackClient } from './services/providerPlaybackClients'
 import { NativeRemoteLeaseRegistry } from './nativeRemoteLeaseRegistry'
+import { NativeStratumRegistry } from './nativeStratum'
+import type { NativeRemoteRequest } from '../types/nativeRemoteSource'
 import { createThrottledLibraryScanProgressReporter } from './libraryScanProgress'
 import {
   buildEbur128Args,
@@ -6055,7 +6057,7 @@ app.on('before-quit', (event) => {
   plexSources.dispose()
   isAppQuitting = true
   progressiveStartupControllers.cancelAll()
-  void (stratumAudioCache?.close() ?? Promise.resolve()).finally(() => remoteAudioCache?.close())
+  void nativeStratum.close().finally(() => stratumAudioCache?.close()).finally(() => remoteAudioCache?.close())
   notchController?.dispose()
   destroyAppTray()
   globalInputShortcutService.clear()
@@ -8187,7 +8189,7 @@ ipcMain.handle('audio:getStreamingDiagnostics', (event, ids: unknown): Streaming
   return [...new Set<number>(ids)].flatMap(id => {
     const session = remoteStreamSessions.get(id)
     const snapshot = session?.sender === event.sender ? streamingDiagnosticsSnapshot(session)
-      : completedStreamingDiagnostics.get(event.sender, id)
+      : nativeStratum.diagnostics(event.sender.id, id) ?? completedStreamingDiagnostics.get(event.sender, id)
     return snapshot ? [snapshot] : []
   })
 })
@@ -11138,6 +11140,19 @@ function isRemoteStreamPipeTeardownError(error: unknown): boolean {
 }
 
 const nativeRemoteLeases = new NativeRemoteLeaseRegistry(acquireCachedRemoteAudio)
+const nativeStratum = new NativeStratumRegistry({
+  route: installedStratumRoute,
+  ffmpeg: () => resolveBinary('ffmpeg'),
+  allocateId: () => nextRemoteStreamSessionId++,
+  started: path => stratumConnections.playbackStarted(parseSubsonicTrackPath(path)!.sourceId),
+  failed: (path, error) => stratumConnections.playbackFailed(parseSubsonicTrackPath(path)!.sourceId, error),
+  holdArtwork: () => {
+    const release = playbackNetworkPriority.hold()
+    const timer = setTimeout(release, 30_000)
+    timer.unref()
+    return () => { clearTimeout(timer); release() }
+  }
+})
 const nativeRemoteOwners = new WeakSet<Electron.WebContents>()
 function nativeRemoteOwner(event: Electron.IpcMainInvokeEvent): number {
   const sender = event.sender
@@ -11147,6 +11162,7 @@ function nativeRemoteOwner(event: Electron.IpcMainInvokeEvent): number {
     const release = (): void => {
       plexSources.cancelOwner(sender.id)
       nativeRemoteLeases.releaseOwner(sender.id)
+      void nativeStratum.releaseOwner(sender.id)
       automaticQualityPreparations.releaseOwner(sender.id)
     }
     sender.once('destroyed', release)
@@ -11165,6 +11181,14 @@ ipcMain.handle('native-remote:acquire', async (event, id: string, path: string, 
 ipcMain.handle('native-remote:progress', (event, id: string) => nativeRemoteLeases.progress(nativeRemoteOwner(event), id))
 ipcMain.handle('native-remote:finished', (event, id: string) => nativeRemoteLeases.finished(nativeRemoteOwner(event), id))
 ipcMain.handle('native-remote:release', (event, id: string) => nativeRemoteLeases.release(nativeRemoteOwner(event), id))
+ipcMain.handle('native-stratum:open', (event, id: string, path: string, quality: StreamingQualityRequest | undefined, request: NativeRemoteRequest) =>
+  nativeStratum.open(nativeRemoteOwner(event), id, path, quality, request))
+ipcMain.handle('native-stratum:read', (event, id: string) => nativeStratum.read(nativeRemoteOwner(event), id))
+ipcMain.handle('native-stratum:progress', (event, id: string, position?: number, bufferedEnd?: number, outputRate?: number) =>
+  nativeStratum.progress(nativeRemoteOwner(event), id, position, bufferedEnd, outputRate))
+ipcMain.handle('native-stratum:finished', (event, id: string) => nativeStratum.finished(nativeRemoteOwner(event), id))
+ipcMain.handle('native-stratum:activate', (event, id: string) => nativeStratum.activate(nativeRemoteOwner(event), id))
+ipcMain.handle('native-stratum:release', (event, id: string) => nativeStratum.release(nativeRemoteOwner(event), id))
 
 function remoteQualityContext(filePath: string) {
   const track = library.getTrackByPath(filePath)
@@ -11361,7 +11385,7 @@ function holdArtworkForPlayback(): { started: (sessionId: number) => void; relea
   }
 }
 
-/** Installed Stratum currently supports Standard playback and the proven format/quality ladder.
+/** Installed Stratum supports Standard/processed Exclusive and the proven format/quality ladder.
  * Unsupported tracks and settings retain the existing provider path. */
 async function installedStratumRoute(path: string, request: StreamingQualityRequest | undefined, signal: AbortSignal) {
   const source = parseSubsonicTrackPath(path)

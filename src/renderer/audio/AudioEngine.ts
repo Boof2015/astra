@@ -3756,7 +3756,8 @@ export class AudioEngine {
   private automaticQualitySnapshot(): AutomaticPlaybackSnapshot | null {
     // Segmented delivery chooses the next interval in main, without preparing
     // or seeking to another conventional stream in the renderer.
-    if (this.remoteStreamState?.transport === 'stratum-proof') return null
+    if (this.remoteStreamState?.transport === 'stratum-proof'
+      || (this.isNativeExclusiveMode() && this.nativeRemoteProgress?.transport === 'stratum-proof')) return null
     const progress = this.automaticQualityProgress
     const quality = this.getRemotePlaybackQuality()
     const session = this.getRemoteStreamSessionId()
@@ -6333,7 +6334,7 @@ export class AudioEngine {
     const current = native ? null : this.remoteStreamState
     const next = native ? null : this.nextRemoteStream?.state
     return {
-      sessionId: this.getRemoteStreamSessionId(),
+      sessionId: native ? this.nativeRemoteProgress?.diagnosticsSessionId ?? null : this.getRemoteStreamSessionId(),
       nextSessionId: next && !next.completeBuffer ? next.sessionId : null,
       path: this.currentBufferTrackPath,
       position: this.currentTime,
@@ -6342,7 +6343,8 @@ export class AudioEngine {
       start: current ? current.startFrame / current.sampleRate : null,
       bufferedEnd: this.getRemoteBufferedSeconds(),
       completeLocalBuffer: !native && !!(this.audioBuffer || current?.completeBuffer) && !current?.transport,
-      transport: current?.transport === 'stratum-proof' ? 'stratum' as const : null,
+      transport: current?.transport === 'stratum-proof' || (native && this.nativeRemoteProgress?.transport === 'stratum-proof')
+        ? 'stratum' as const : null,
       quality: this.getRemotePlaybackQuality()
     }
   }

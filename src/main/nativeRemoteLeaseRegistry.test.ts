@@ -3,6 +3,39 @@ import test from 'node:test'
 import { NativeRemoteLeaseRegistry } from './nativeRemoteLeaseRegistry.ts'
 import { createNativeRemoteSourceResolver } from '../preload/nativeRemoteSource.ts'
 
+test('processed Subsonic tries Stratum; direct and other providers retain conventional acquisition', async () => {
+  const calls: string[] = []
+  const resolve = createNativeRemoteSourceResolver(async channel => {
+    calls.push(channel)
+    if (channel === 'native-stratum:open') return null
+    if (channel === 'native-remote:acquire') return { url: 'http://cache', duration: 1 }
+  })
+  for (const [path, policy, expected] of [
+    ['subsonic://1/a', 'processed', true], ['subsonic://1/a', 'direct', false], ['jellyfin://1/a', 'processed', false]
+  ] as const) {
+    calls.length = 0
+    const source = await resolve(path, new AbortController().signal, 'original', { policy, slot: 'current', startTimeSeconds: 0 })
+    assert.equal(calls.includes('native-stratum:open'), expected)
+    assert.ok(calls.includes('native-remote:acquire'))
+    source.release()
+  }
+})
+
+test('cancelling pending Stratum acquisition releases only its request and never falls back', async () => {
+  let deliver!: (value: null) => void
+  const calls: Array<[string, unknown]> = []
+  const resolve = createNativeRemoteSourceResolver(async (channel, id) => {
+    calls.push([channel, id])
+    if (channel === 'native-stratum:open') return new Promise<null>(done => { deliver = done })
+  })
+  const stop = new AbortController()
+  const pending = resolve('subsonic://1/a', stop.signal, 'original', { policy: 'processed', slot: 'current', startTimeSeconds: 0 })
+  stop.abort(); deliver(null)
+  await assert.rejects(pending, { name: 'AbortError' })
+  assert.deepEqual(calls.map(call => call[0]), ['native-stratum:open', 'native-stratum:release'])
+  assert.equal(calls[0][1], calls[1][1])
+})
+
 test('sender-scoped leases retain completed audio and release pending acquisitions on teardown', async () => {
   let released = 0
   let deliver!: () => void

@@ -15,7 +15,7 @@ const javascript = ts.transpileModule(`${mapper.getText(source)}\nconst handler 
 }).outputText
 
 test('diagnostics IPC reads only the requesting renderer, bounds requests, and strips private session data', () => {
-  const sender = {}, other = {}
+  const sender = { id: 1 }, other = { id: 2 }
   const diagnostics = new StratumSegmentDiagnostics()
   diagnostics.begin(20, 24, 'opus-64').decoded()
   const session = { id: 7, sender, startTimeSeconds: 20, durationSeconds: 120, decodedFrames: 96000,
@@ -24,13 +24,18 @@ test('diagnostics IPC reads only the requesting renderer, bounds requests, and s
     stratum: { playback: { playback: 'secret handle', source: { sha256: 'secret hash', sample_rate: 44100 } }, diagnostics } }
   const active = new Map([[7, session]])
   const completed = new CompletedStreamingDiagnostics()
-  const api = new Function('remoteStreamSessions', 'completedStreamingDiagnostics', `${javascript}\nreturn { handler, snapshot: streamingDiagnosticsSnapshot };`)(active, completed)
+  const nativeStratum = { diagnostics: (owner: number, id: number) => owner === sender.id && id === 8
+    ? { sessionId: 8, transport: 'stratum', state: 'preparing' } : undefined }
+  const api = new Function('remoteStreamSessions', 'completedStreamingDiagnostics', 'nativeStratum',
+    `${javascript}\nreturn { handler, snapshot: streamingDiagnosticsSnapshot };`)(active, completed, nativeStratum)
   const result = api.handler({ sender }, [7])
   assert.equal(result[0].bufferedEnd, 22)
   assert.equal(result[0].transport, 'stratum')
   assert.equal(result[0].localCacheComplete, false)
   assert.equal(JSON.stringify(result).includes('secret'), false)
   assert.deepEqual(api.handler({ sender: other }, [7]), [])
+  assert.equal(api.handler({ sender }, [8])[0].transport, 'stratum')
+  assert.deepEqual(api.handler({ sender: other }, [8]), [])
   for (const invalid of [null, [7, 8, 9], [-1], [NaN], ['7']]) assert.deepEqual(api.handler({ sender }, invalid), [])
   assert.equal(api.handler({ sender }, [7, 7]).length, 1)
   completed.remember(sender, { ...api.snapshot(session), state: 'complete' })

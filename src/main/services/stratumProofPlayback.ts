@@ -116,13 +116,14 @@ export class StratumProofPcm {
     this.interval = stratumOutputInterval(playback.source, rate, seconds)
   }
 
-  static async open(connection: StratumProofConnection | StratumProofAuthentication, track: string, rate: number, seconds: number, signal: AbortSignal, cache?: { owner: StratumAudioCache; options: StratumCacheOptions }): Promise<StratumProofPcm> {
+  static async open(connection: StratumProofConnection | StratumProofAuthentication, track: string, rate: number | null, seconds: number, signal: AbortSignal, cache?: { owner: StratumAudioCache; options: StratumCacheOptions }): Promise<StratumProofPcm> {
     const client = new StratumProofClient(connection)
     const cached = cache && 'getBearer' in connection ? await cache.owner.open(connection, cache.options, signal) : undefined
     const playback = cached?.playback ?? await client.open(track, signal)
     try {
       signal.throwIfAborted()
-      return new StratumProofPcm(client, playback, rate, seconds, cached)
+      // Native processed output accepts source-rate PCM and owns its resampler.
+      return new StratumProofPcm(client, playback, rate ?? playback.source.sample_rate, seconds, cached)
     } catch (error) {
       if (cached) cached.dispose()
       else await client.close(playback.playback)
