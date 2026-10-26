@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto'
-import type { NativeRemoteSource, NativeRemoteRequest, NativeStratumInfo, NativeRemoteProgress } from '../types/nativeRemoteSource'
+import type { NativeRemoteSource, NativeRemoteRequest, NativeStratumOpenResult, NativeRemoteProgress } from '../types/nativeRemoteSource'
 import type { StreamingQualityRequest } from '../types/streamingQuality'
 
 export function createNativeRemoteSourceResolver(invoke: (channel: string, ...args: unknown[]) => Promise<any>) {
   return async (path: string, signal: AbortSignal, quality?: StreamingQualityRequest, request?: NativeRemoteRequest): Promise<NativeRemoteSource> => {
     signal.throwIfAborted()
-    if (request?.policy === 'processed' && path.startsWith('subsonic://')) {
+    if (request && path.startsWith('subsonic://')) {
       const stratum = await acquireStratum(invoke, path, signal, quality, request)
-      if (stratum) return stratum
+      if (stratum === 'original') quality = 'original'
+      else if (stratum) return stratum
     }
     const id = randomUUID()
     let released = false
@@ -35,7 +36,7 @@ export function createNativeRemoteSourceResolver(invoke: (channel: string, ...ar
 }
 
 async function acquireStratum(invoke: (channel: string, ...args: unknown[]) => Promise<any>, path: string,
-  signal: AbortSignal, quality: StreamingQualityRequest | undefined, request: NativeRemoteRequest): Promise<NativeRemoteSource | null> {
+  signal: AbortSignal, quality: StreamingQualityRequest | undefined, request: NativeRemoteRequest): Promise<NativeRemoteSource | 'original' | null> {
   signal.throwIfAborted()
   const id = randomUUID()
   let closing: Promise<void> | undefined
@@ -48,9 +49,10 @@ async function acquireStratum(invoke: (channel: string, ...args: unknown[]) => P
   signal.addEventListener('abort', release, { once: true })
   if (signal.aborted) release()
   try {
-    const info: NativeStratumInfo | null = await pending
+    const info: NativeStratumOpenResult = await pending
     signal.throwIfAborted()
     if (!info) { await close(); return null }
+    if ('fallbackQuality' in info) { await close(); return info.fallbackQuality }
     const source: NativeRemoteSource = {
       url: '', duration: info.duration, quality: info.quality, release,
       finished: () => invoke('native-stratum:finished', id),

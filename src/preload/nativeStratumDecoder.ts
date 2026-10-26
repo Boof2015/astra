@@ -8,6 +8,10 @@ export function startNativeStratumDecoder(source: NativeRemoteSource, input: Nat
   signal: AbortSignal, onFailure: (error: Error) => void): NativePcmDecoder {
   const initial = input.status()
   const stride = initial.bytesPerFrame
+  const channels = source.pcm!.info.channels
+  const sourceStride = channels * 4
+  const sampleBytes = stride / channels
+  if (![2, 3, 4].includes(sampleBytes)) throw new Error('Unsupported Stratum native integer format.')
   let pendingBytes = 0, cancelled = false, settled = false, readySettled = false
   let resolveReady!: () => void, rejectReady!: (error: Error) => void
   const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject })
@@ -34,10 +38,23 @@ export function startNativeStratumDecoder(source: NativeRemoteSource, input: Nat
         const data = await source.pcm!.read()
         active()
         if (data === null) break
-        if (!(data instanceof ArrayBuffer) || !data.byteLength || data.byteLength > 64 * 1024 || data.byteLength % stride) {
+        if (!(data instanceof ArrayBuffer) || !data.byteLength || data.byteLength > 64 * 1024 || data.byteLength % sourceStride) {
           throw new Error('Invalid Stratum PCM packet.')
         }
-        const bytes = new Uint8Array(data)
+        const sourceBytes = new Uint8Array(data)
+        const bytes = sampleBytes === 4 ? sourceBytes : new Uint8Array(sourceBytes.length / 4 * sampleBytes)
+        if (sampleBytes < 4) {
+          // FFmpeg's s32 is left-aligned. Remove only zero padding, with no
+          // floating-point conversion, rounding or dither. Reject real precision
+          // loss instead of silently truncating it for a narrower device format.
+          const padding = 4 - sampleBytes
+          for (let from = 0, to = 0; from < sourceBytes.length; from += 4) {
+            for (let byte = 0; byte < padding; byte++) {
+              if (sourceBytes[from + byte] !== 0) throw new Error('Stratum PCM cannot fit the native integer format exactly.')
+            }
+            for (let byte = padding; byte < 4; byte++) bytes[to++] = sourceBytes[from + byte]
+          }
+        }
         let offset = 0
         pendingBytes = bytes.length
         while (offset < bytes.length) {

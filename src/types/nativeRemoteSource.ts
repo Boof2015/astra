@@ -9,10 +9,13 @@ export interface NativeStratumInfo {
   sessionId: number
   sampleRate: number
   channels: number
+  bitDepth: 16 | 24
   startFrame: number
   duration: number
   quality: RemotePlaybackQuality
 }
+/** A failed direct Stratum attempt must fall back to Original, not a saved lossy preference. */
+export type NativeStratumOpenResult = NativeStratumInfo | { fallbackQuality: 'original' } | null
 /** Internal main/preload transport; never expose decoder URLs to the renderer. */
 export interface NativeRemoteProgress {
   loadedBytes: number
@@ -33,7 +36,7 @@ export interface NativeRemoteSource {
   progress(position?: number, bufferedEnd?: number, outputRate?: number): Promise<NativeRemoteProgress>
   finished(): Promise<void>
   release(): void
-  /** Source-rate signed 32-bit PCM for processed output only. No decoder URL. */
+  /** Source-rate signed 32-bit PCM; direct output repacks integers exactly. No decoder URL. */
   pcm?: {
     info: NativeStratumInfo
     read(): Promise<ArrayBuffer | null>

@@ -3,7 +3,7 @@ import test from 'node:test'
 import { NativeRemoteLeaseRegistry } from './nativeRemoteLeaseRegistry.ts'
 import { createNativeRemoteSourceResolver } from '../preload/nativeRemoteSource.ts'
 
-test('processed Subsonic tries Stratum; direct and other providers retain conventional acquisition', async () => {
+test('native Subsonic tries Stratum in both policies; other providers retain conventional acquisition', async () => {
   const calls: string[] = []
   const resolve = createNativeRemoteSourceResolver(async channel => {
     calls.push(channel)
@@ -11,12 +11,27 @@ test('processed Subsonic tries Stratum; direct and other providers retain conven
     if (channel === 'native-remote:acquire') return { url: 'http://cache', duration: 1 }
   })
   for (const [path, policy, expected] of [
-    ['subsonic://1/a', 'processed', true], ['subsonic://1/a', 'direct', false], ['jellyfin://1/a', 'processed', false]
+    ['subsonic://1/a', 'processed', true], ['subsonic://1/a', 'direct', true], ['jellyfin://1/a', 'processed', false]
   ] as const) {
     calls.length = 0
     const source = await resolve(path, new AbortController().signal, 'original', { policy, slot: 'current', startTimeSeconds: 0 })
     assert.equal(calls.includes('native-stratum:open'), expected)
     assert.ok(calls.includes('native-remote:acquire'))
+    source.release()
+  }
+})
+
+test('a failed direct Stratum attempt falls back to Original; an ineligible source keeps its preference', async () => {
+  for (const attempted of [true, false]) {
+    const resolve = createNativeRemoteSourceResolver(async (channel, _id, _path, quality) => {
+      if (channel === 'native-stratum:open') return attempted ? { fallbackQuality: 'original' } : null
+      if (channel === 'native-remote:acquire') {
+        assert.equal(quality, attempted ? 'original' : 64)
+        return { url: 'cache', duration: 1 }
+      }
+    })
+    const source = await resolve('subsonic://1/a', new AbortController().signal, 64,
+      { policy: 'direct', slot: 'current', startTimeSeconds: 0 })
     source.release()
   }
 })

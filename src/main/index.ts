@@ -11385,7 +11385,8 @@ function holdArtworkForPlayback(): { started: (sessionId: number) => void; relea
   }
 }
 
-/** Installed Stratum supports Standard/processed Exclusive and the proven format/quality ladder.
+/** Installed Stratum supports Standard/native output and the proven format/quality ladder.
+ * Native direct output requests Original explicitly before reaching this route.
  * Unsupported tracks and settings retain the existing provider path. */
 async function installedStratumRoute(path: string, request: StreamingQualityRequest | undefined, signal: AbortSignal) {
   const source = parseSubsonicTrackPath(path)

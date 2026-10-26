@@ -5,7 +5,7 @@ import { canPrefetchStratum, StratumPrefetchGate } from './services/stratumPrefe
 import type { StratumProofAuthentication, StratumProofConnection, StratumProofQuality } from './services/stratumProofClient.ts'
 import type { StratumAudioCache, StratumCacheOptions } from './services/stratumAudioCache.ts'
 import type { AutomaticStreamingQuality, StreamingQualityRequest } from '../types/streamingQuality.ts'
-import type { NativeRemoteProgress, NativeRemoteRequest, NativeStratumInfo } from '../types/nativeRemoteSource.ts'
+import type { NativeRemoteProgress, NativeRemoteRequest, NativeStratumInfo, NativeStratumOpenResult } from '../types/nativeRemoteSource.ts'
 import type { RemoteStreamQualityChange } from '../types/remoteStream.ts'
 import type { StreamingDiagnosticsSession } from '../types/streamingDiagnostics.ts'
 
@@ -61,10 +61,13 @@ export class NativeStratumRegistry {
   constructor(deps: NativeStratumRegistry['deps']) { this.deps = deps }
 
   async open(owner: number, id: string, path: string, quality: StreamingQualityRequest | undefined,
-    request: NativeRemoteRequest): Promise<NativeStratumInfo | null> {
+    request: NativeRemoteRequest): Promise<NativeStratumOpenResult> {
     if (typeof id !== 'string' || !id.length || id.length > 128 || typeof path !== 'string'
-      || !request || request.policy !== 'processed' || !['current', 'next'].includes(request.slot)
+      || !request || !['processed', 'direct'].includes(request.policy) || !['current', 'next'].includes(request.slot)
       || !Number.isFinite(request.startTimeSeconds) || request.startTimeSeconds < 0) throw new Error('Invalid native Stratum request.')
+    // Preserve the existing conventional compatibility retry path. It already
+    // has explicit evidence that a different server representation is needed.
+    if (quality && typeof quality === 'object' && quality.compatibility) return null
     const entries = this.owners.get(owner) ?? new Map<string, Entry>()
     if (entries.has(id) || [...entries.values()].filter(entry => !entry.closing).length >= 4) throw new Error('Too many native Stratum requests.')
     this.owners.set(owner, entries)
@@ -79,9 +82,15 @@ export class NativeStratumRegistry {
       // handles close before consuming another of Sidecar's two session slots.
       await Promise.all([...entries.values()].flatMap(other => other.closing ? [other.closing] : []))
       signal.throwIfAborted()
-      route = await this.deps.route(path, quality, signal)
+      route = await this.deps.route(path, request.policy === 'direct' ? 'original' : quality, signal)
       signal.throwIfAborted()
       if (!route) { await this.release(owner, id); return null }
+      if (request.policy === 'direct') {
+        // Neither the controller nor an Automatic cache profile may substitute
+        // a retained Opus interval for Original in direct output.
+        route = { ...route, quality: 'lossless', mode: undefined, pinInitial: true,
+          cache: route.cache && { ...route.cache, options: { ...route.cache.options, profile: 'lossless' } } }
+      }
       entry.releaseArtwork = request.slot === 'current' ? this.deps.holdArtwork?.() : undefined
       const binary = await this.deps.ffmpeg()
       signal.throwIfAborted()
@@ -90,9 +99,10 @@ export class NativeStratumRegistry {
       entry.pcm = pcm
       if (signal.aborted) { pcm.dispose(); await pcm.release(); signal.throwIfAborted() }
       const source = pcm.playback.source
+      if (source.bits_per_sample !== 16 && source.bits_per_sample !== 24) throw new Error('Unsupported Stratum integer precision.')
       entry.position = pcm.interval.origin / source.sample_rate
       entry.bufferedEnd = entry.position
-      entry.info = { sessionId: entry.sessionId, sampleRate: source.sample_rate, channels: source.channels,
+      entry.info = { sessionId: entry.sessionId, sampleRate: source.sample_rate, channels: source.channels, bitDepth: source.bits_per_sample,
         startFrame: pcm.interval.origin, duration: source.frames / source.sample_rate,
         quality: pcm.withAnalysis(stratumPlaybackQuality(source, route.quality, route.mode)) }
       const stream = entry.stream = new PassThrough({ highWaterMark: 64 * 1024 })
@@ -127,7 +137,7 @@ export class NativeStratumRegistry {
       await this.release(owner, id)
       if (cancelled) throw new Error('Native Stratum request cancelled.')
       if (route) this.deps.failed(path, error)
-      return null
+      return route && request.policy === 'direct' ? { fallbackQuality: 'original' } : null
     }
   }
 

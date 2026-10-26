@@ -20,6 +20,7 @@ function fixture() {
   for (let i = 0; i < expected.length; i++) expected[i] = i % 251
   let offset = 0, reads = 0, releases = 0
   const source = { release() { releases++ }, finished: async () => {}, pcm: {
+    info: { channels: 2, bitDepth: 24 },
     read: async () => { reads++; if (offset === expected.length) return null
       const data = Uint8Array.from(expected.subarray(offset, offset + 65536)).buffer
       offset += data.byteLength; return data }
@@ -41,6 +42,32 @@ test('Stratum PCM keeps exact native frames across partial appends and bounded p
   assert.deepEqual(Buffer.concat(f.bytes), f.expected)
   assert.equal(f.input.status().publishedFrame - f.input.status().startFrame, 44100 * 3)
 })
+
+for (const sampleBytes of [2, 3]) {
+  for (const channels of [1, 2]) {
+    test(`direct PCM repacks ${sampleBytes * 8}-bit/${channels}ch extrema exactly and rejects precision loss`, async () => {
+      const values = [-(2 ** (sampleBytes * 8 - 1)), 2 ** (sampleBytes * 8 - 1) - 1, -1, 0, 1, -293, 301, 42]
+      const raw = Buffer.alloc(values.length * 4), expected = Buffer.alloc(values.length * sampleBytes)
+      values.forEach((value, i) => { raw.writeInt32LE(value * 2 ** (32 - sampleBytes * 8), i * 4)
+        expected.writeIntLE(value, i * sampleBytes, sampleBytes) })
+      for (const corrupt of [false, true]) {
+        const packet = Uint8Array.from(raw); if (corrupt) packet[0] = 1
+        let delivered = false, ended = false, published = 0
+        const chunks: Buffer[] = [], failures: Error[] = []
+        const source = { release() {}, finished: async () => {}, pcm: { info: { channels },
+          read: async () => { if (delivered) return null; delivered = true; return packet.buffer }
+        } } as unknown as NativeRemoteSource
+        const input = { status: () => ({ state: 'open', sampleRate: 44100, bytesPerFrame: sampleBytes * channels,
+          startFrame: 0, publishedFrame: published }), append: (bytes: Uint8Array) => {
+          chunks.push(Buffer.from(bytes)); published += bytes.length / (sampleBytes * channels); return bytes.length / (sampleBytes * channels)
+        }, cancel() {}, finish: () => { ended = true; return true } } as NativeProgressiveInput
+        const decoder = startNativeStratumDecoder(source, input, new AbortController().signal, error => failures.push(error))
+        if (corrupt) { await assert.rejects(decoder.done, /exactly/); assert.equal(ended, false); assert.equal(published, 0) }
+        else { await decoder.done; assert.deepEqual(Buffer.concat(chunks), expected); assert.equal(failures.length, 0) }
+      }
+    })
+  }
+}
 
 test('cancel stops a pending IPC read without waiting for more audio', async () => {
   const f = fixture(), stop = new AbortController()

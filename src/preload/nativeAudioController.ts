@@ -1336,19 +1336,27 @@ export function createNativeAudioController(
         gain = { mode: 'normalization', gainDb: normalized.gainDb }
       }
       if (source.pcm) {
-        if (outputRequestCache.policy !== 'processed') throw new Error('Stratum PCM requires processed output.')
-        const { sampleRate, channels, duration, startFrame } = source.pcm.info
-        const capacityFrames = Math.min(sampleRate * 8, Math.floor(32 * 1024 * 1024 / (channels * 4)))
-        input = engine.createProgressiveInput({ sampleRate, channels, sampleFormat: 's32', duration, capacityFrames, startFrame, gain })
+        const { sampleRate, channels, duration, startFrame, bitDepth } = source.pcm.info
+        const direct = outputRequestCache.policy === 'direct'
+        if (direct && (source.quality?.requested !== 'original' || source.quality.mode
+          || source.quality.delivered?.codec !== 'flac' || ![16, 24].includes(bitDepth))) {
+          throw new Error('Bit-perfect Stratum requires Original integer audio.')
+        }
+        const sampleFormat = direct ? resolveSampleFormat({ codec_name: 'flac', sample_fmt: bitDepth === 16 ? 's16' : 's32',
+          bits_per_raw_sample: String(bitDepth) }, undefined, capabilitiesCache.activeBackend) : 's32'
+        if (direct) gain = { mode: 'off', gainDb: 0 }
+        const stride = channels * (sampleFormat === 's16' ? 2 : sampleFormat === 's24' ? 3 : 4)
+        const capacityFrames = Math.min(sampleRate * 8, Math.floor(32 * 1024 * 1024 / stride))
+        input = engine.createProgressiveInput({ sampleRate, channels, sampleFormat, duration, capacityFrames, startFrame, gain })
         const heldSource = source
         const started = performance.now()
         const decoder = startNativeStratumDecoder(source, input, signal, error => {
           if (session) session.error = error
           heldSource.release()
         })
-        session = { input, decoder, source, controller, error: null, bytes: capacityFrames * channels * 4,
-          request: { filePath: path, sampleRate, channels, sampleFormat: 's32', duration, gain, quality: source.quality,
-            metadata: { ...metadata, path, sampleRate, channels,
+        session = { input, decoder, source, controller, error: null, bytes: capacityFrames * stride,
+          request: { filePath: path, sampleRate, channels, sampleFormat, duration, gain, quality: source.quality,
+            metadata: { ...metadata, path, sampleRate, channels, bitDepth, codec: source.quality?.delivered?.codec ?? metadata?.codec,
               streamingQuality: playbackQualityRequest(source.quality) ?? metadata?.streamingQuality },
             timings: { binaryResolutionMs: 0, probeMs: 0, decodeMs: 0 } } }
         await decoder.ready

@@ -1,9 +1,31 @@
-# Stratum in processed Exclusive output
+# Stratum in native Exclusive and Bit-perfect output
 
 Processed Exclusive uses the same installed Sidecar connection, retained segment
 cache, automatic quality controller and next-track fetch priority as Standard.
-Bit-perfect keeps its existing conventional source path. The supported source
-formats, source limits and Original/Opus 64/128 ladder are unchanged.
+Bit-perfect uses the same bridge with Original-only delivery and exact integer
+packing. The supported source formats, source limits and Original/Opus 64/128
+ladder are unchanged.
+
+## Bit-perfect rules
+
+An eligible, enabled Stratum connection always uses Original in direct output,
+even when the saved streaming preference is Automatic or Fixed. Both the quality
+controller and the Automatic cache profile are disabled for this route. Retained
+Opus never substitutes for a missing Original interval, including offline replay.
+
+The bridge carries authenticated source precision alongside source-rate s32 PCM.
+Preload uses the same native format selection as conventional playback: 16-bit
+sources use s16; 24-bit sources use packed s24 for WASAPI/ALSA and s32 for
+CoreAudio. Repacking removes only zero padding and rejects nonzero discarded
+bits. It performs no floating-point conversion, gain, dither or resampling.
+Track gain is explicitly off. Existing native device negotiation and format
+compatibility rules still decide whether output and a handoff are possible.
+
+If an attempted direct Stratum startup fails, conventional playback is requested
+at Original instead of reverting to the saved reduced-quality preference.
+Ineligible sources, disabled Stratum and explicit conventional compatibility
+retries retain their existing behavior. A failure after playback starts remains
+an error; it never changes to lossy Stratum or reports successful EOF.
 
 ## Playback ownership
 
@@ -51,12 +73,17 @@ uses the real main registry, cache, PCM decoder and preload bridge, with a
 capacity-limited fake native input. It opens no Electron window or audio device,
 does not use a personal database or server, and removes its temporary files.
 
-It verifies exact Original PCM and non-boundary seeks at 44.1/48/96 kHz, exact
-Opus 64/128 frame counts, bounded delivery, cached seeks, audible quality markers,
-diagnostic rates, startup refusals and refusal of direct/bit-perfect requests.
+It verifies exact 16/24-bit Original PCM and non-boundary seeks at 44.1/48/96 kHz,
+native integer packing, exact Opus 64/128 frame counts, bounded delivery, cached
+seeks, audible quality markers, diagnostic rates and startup fallback. Mixed
+quality and Opus-only caches prove direct playback requests lossless intervals,
+while processed Automatic can still use its retained Opus offline.
 
 The Node suite adds native controller, cancellation, owner isolation, fallback,
-normalization snapshot, promotion and renderer identity checks. Separately:
+normalization snapshot, promotion and renderer identity checks. Direct-format
+tests cover all three backend policies, mono/stereo integer extrema, precision
+loss rejection, and rejection of a reduced representation before native input
+creation. Separately:
 
 ```sh
 npm run test:native-progressive-input
@@ -77,5 +104,7 @@ network slowdown/recovery, pause/resume and seeks, a known gapless album pair,
 and transitions to/from local or conventional remote tracks. Verify the quality
 readout, DSP and a cached replay. No Sidecar upgrade is required for this change.
 
-As of 2026-10-25, automated verification is silent; this new route has not yet
-been listened to on a physical output device.
+The user confirmed processed Exclusive playback on 2026-10-26 and committed that
+checkpoint. Bit-perfect verification on 2026-10-26 is still silent: a physical
+device check remains, including the Bit-perfect indicator, source rate/precision,
+seeks and cached replay. No Sidecar update is required.
