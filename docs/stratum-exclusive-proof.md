@@ -3,8 +3,10 @@
 Processed Exclusive uses the same installed Sidecar connection, retained segment
 cache, automatic quality controller and next-track fetch priority as Standard.
 Bit-perfect uses the same bridge with Original-only delivery and exact integer
-packing. The supported source formats, source limits and Original/Opus 64/128
-ladder are unchanged.
+packing. Standard and processed Exclusive negotiate Original and Opus
+64/128/192/256/320 with updated Sidecars. Older Sidecars retain their
+Original/64/128 ladder. The supported source formats and source limits are
+unchanged.
 
 ## Bit-perfect rules
 
@@ -74,7 +76,7 @@ capacity-limited fake native input. It opens no Electron window or audio device,
 does not use a personal database or server, and removes its temporary files.
 
 It verifies exact 16/24-bit Original PCM and non-boundary seeks at 44.1/48/96 kHz,
-native integer packing, exact Opus 64/128 frame counts, bounded delivery, cached
+native integer packing, exact Opus 64/128/192/256/320 frame counts, bounded delivery, cached
 seeks, audible quality markers, diagnostic rates and startup fallback. Mixed
 quality and Opus-only caches prove direct playback requests lossless intervals,
 while processed Automatic can still use its retained Opus offline.
@@ -102,9 +104,9 @@ With an installed Sidecar already enabled in Astra, restart the development app
 and select Exclusive output. Check Original and fixed Opus, Automatic through a
 network slowdown/recovery, pause/resume and seeks, a known gapless album pair,
 and transitions to/from local or conventional remote tracks. Verify the quality
-readout, DSP and a cached replay. No Sidecar upgrade is required for this change.
+readout, DSP and a cached replay. Higher bitrates require the expanded-ladder
+Sidecar build; Exclusive and Bit-perfect support alone require no server update.
 
 The user confirmed processed Exclusive playback on 2026-10-26 and committed that
-checkpoint. Bit-perfect verification on 2026-10-26 is still silent: a physical
-device check remains, including the Bit-perfect indicator, source rate/precision,
-seeks and cached replay. No Sidecar update is required.
+checkpoint, then confirmed Bit-perfect playback and committed that checkpoint.
+The expanded ladder's new bitrates still need a physical-device listening check.

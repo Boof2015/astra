@@ -45,6 +45,10 @@ function wav(rate: number, seconds = 9): Buffer {
 test('authenticated Stratum → actual Astra Standard session → real worklet, silently', { timeout: 110000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'astra-stratum-standard-'))
   const fixtures = new Map([['r44100', wav(44100)], ['r48000', wav(48000)], ['r96000', wav(96000)], ['long', wav(48000, 40)], ['adaptive', wav(48000, 120)]])
+  const hours = join(directory, 'two-hours.flac')
+  execFileSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-t', '7200',
+    '-c:a', 'flac', '-sample_fmt', 's16', '-compression_level', '0', hours], { timeout: 30000 })
+  fixtures.set('hours', readFileSync(hours))
   let deny = false, unavailable = false, reads = 0
   const upstream = createServer(async (req, res) => {
     const chunks: Buffer[] = []
@@ -117,7 +121,7 @@ test('authenticated Stratum → actual Astra Standard session → real worklet, 
     assert.ok(diagnostic.segments.every((segment: { state: string; payloadBytes: number }) => segment.state === 'decoded' && segment.payloadBytes > 0))
     assert.ok(!JSON.stringify(diagnostic).includes(session), 'diagnostics must not contain a bearer')
     rendered.push(pcm)
-    for (const quality of [64, 128] as const) {
+    for (const quality of [64, 128, 192, 256, 320] as const) {
       const lossy = await collect(await h.start(track, 48000, quality))
       assert.equal(lossy.length, pcm.length, `${rate} / Opus ${quality} changed duration`)
       // Measure alignment inside each independently decoded interval, not just
@@ -218,6 +222,19 @@ test('authenticated Stratum → actual Astra Standard session → real worklet, 
     assert.equal(warm.info.quality?.requestedCodec, 'opus')
     cacheOffline = false
   }
+
+  // A long source must open through the production cache route and retain exact
+  // late-seek duration, without decoding or retaining hours of earlier PCM.
+  const longSeek = await cachedCollect('hours', 'original', 7198.25)
+  assert.equal(longSeek.info.durationSeconds, 7200)
+  assert.equal(longSeek.pcm.length, 84000 * 8)
+  assert.ok(longSeek.pcm.every(byte => byte === 0))
+  cacheOffline = true
+  const longBefore = cacheRequests
+  const longReplay = await cachedCollect('hours', 'original', 7198.25)
+  assert.deepEqual(longReplay.pcm, longSeek.pcm)
+  assert.equal(cacheRequests, longBefore, 'a retained late seek in a two-hour source replays offline')
+  cacheOffline = false
 
   // Reproduce the real limitation: the listener stays at zero while the PCM
   // buffer reaches its cap. Encoded fetching and waveform analysis must still
@@ -412,5 +429,5 @@ test('authenticated Stratum → actual Astra Standard session → real worklet, 
   assert.ok(reads >= 12)
   assert.equal(h.sessions.size, 0)
   assert.equal(h.sender.listenerCount('destroyed'), 0)
-  t.diagnostic('44.1/48/96 kHz lossless, Opus 64/128, exact seeks, mixed-rate worklet handoff, scheduled and automatic quality changes (paced loopback bytes, abandonment), seek quality markers, backpressure, cancellation, denial and outage passed; no audio device opened.')
+  t.diagnostic('44.1/48/96 kHz lossless, Opus 64/128/192/256/320, exact seeks, mixed-rate worklet handoff, scheduled and automatic quality changes (paced loopback bytes, abandonment), seek quality markers, backpressure, cancellation, denial and outage passed; no audio device opened.')
 })

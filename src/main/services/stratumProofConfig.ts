@@ -1,6 +1,7 @@
 import { isAutomaticStreamingQuality, type StreamingQualityRequest } from '../../types/streamingQuality.ts'
 import { parseSubsonicTrackPath } from './subsonic.ts'
 import { validateStratumProofConnection, type StratumProofConnection, type StratumProofQuality } from './stratumProofClient.ts'
+import { isStratumQuality } from '../../shared/stratumQuality.ts'
 
 export interface StratumProofConfig extends StratumProofConnection { sourceId: number; tracks: string[] }
 
@@ -30,7 +31,7 @@ export function stratumQualitySelection(quality: StreamingQualityRequest) {
   const mode = typeof quality === 'object' ? quality.mode : isAutomaticStreamingQuality(quality) ? quality : undefined
   const target = typeof quality === 'object' ? quality.target : mode ? 'original' : quality
   if (typeof quality === 'object' && quality.compatibility) return null
-  const representation: StratumProofQuality | null = target === 'original' ? 'lossless'
-    : target === 64 ? 'opus-64' : target === 128 ? 'opus-128' : null
+  const candidate = target === 'original' ? 'lossless' : `opus-${target}`
+  const representation: StratumProofQuality | null = isStratumQuality(candidate) ? candidate : null
   return representation ? { quality: representation, mode, pinInitial: typeof quality === 'object' } : null
 }

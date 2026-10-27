@@ -17,10 +17,14 @@
 .stream-map-empty { fill: var(--control-bg-strong); stroke: var(--control-border); }
 .stream-map-neutral { color: var(--accent); }
 .stream-map-quality-lossless { color: #b6d2a6; }
-.stream-map-quality-opus-128, .stream-map-quality-opus-64 { color: #81abc4; }
+.stream-map-quality-opus-128, .stream-map-quality-opus-64,
+.stream-map-quality-opus-192, .stream-map-quality-opus-256, .stream-map-quality-opus-320 { color: #81abc4; }
 html[data-theme-tone="light"] .stream-map-quality-lossless { color: #a1c08e; }
 html[data-theme-tone="light"] .stream-map-quality-opus-128,
-html[data-theme-tone="light"] .stream-map-quality-opus-64 { color: #7ba8c3; }
+html[data-theme-tone="light"] .stream-map-quality-opus-64,
+html[data-theme-tone="light"] .stream-map-quality-opus-192,
+html[data-theme-tone="light"] .stream-map-quality-opus-256,
+html[data-theme-tone="light"] .stream-map-quality-opus-320 { color: #7ba8c3; }
 .stream-map-played { fill: var(--bg-primary); opacity: .36; }
 .stream-map-playhead { fill: var(--text-strong); }
 .stream-map-axis { display: flex; justify-content: space-between; gap: 12px; font: 11px var(--font-mono); color: var(--text-secondary); }

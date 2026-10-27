@@ -125,7 +125,7 @@ test('native Stratum preserves processed and bit-perfect PCM, seeks, cache and a
   const stop = new AbortController()
   try {
     for (const [track, reference] of tracks) {
-      for (const quality of ['original', 64, 128] as const) {
+      for (const quality of ['original', 64, 128, 192, 256, 320] as const) {
         const source = await resolve(`subsonic://1/${track}`, stop.signal, quality, request)
         const info = source.pcm!.info
         assert.equal(info.sampleRate, reference.rate)
@@ -214,6 +214,6 @@ test('native Stratum preserves processed and bit-perfect PCM, seeks, cache and a
     assert.equal(offline.quality?.requested, 64)
     await offline.pcm!.close()
     assert.equal(holds, 0)
-    t.diagnostic('Exact 16/24-bit 44.1/48/96 kHz Original PCM and seeks, native integer packing, no cached Opus substitution in direct mode; processed Opus 64/128, bounded delivery, audible markers and startup fallback passed. No device opened.')
+    t.diagnostic('Exact 16/24-bit 44.1/48/96 kHz Original PCM and seeks, native integer packing, no cached Opus substitution in direct mode; processed Opus 64/128/192/256/320, bounded delivery, audible markers and startup fallback passed. No device opened.')
   } finally { stop.abort(); await registry.close(); await audio.close(); await cache.close(); await owner.close() }
 })

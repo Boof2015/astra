@@ -6,11 +6,37 @@ import { StratumProofClient, validateStratumProofConnection } from './stratumPro
 import { buildSubsonicTrackPath } from './subsonic.ts'
 import { parseStratumProofConfig, stratumProofRoute } from './stratumProofConfig.ts'
 import { stratumOutputInterval } from './stratumProofPlayback.ts'
+import { stratumProofRequest, isStratumRefusal, StratumProofError } from './stratumProofTransport.ts'
 
 const connection = { endpoint: 'http://127.0.0.1:1234', session: 'a'.repeat(64) }
 const source = { sha256: 'b'.repeat(64), sample_rate: 44100, channels: 2, bits_per_sample: 24, frames: 441000 }
 const playback = { playback: 'c'.repeat(64), source }
 const config = { experiment: 'astra-stratum-standard-proof-1', ...connection, sourceId: 7, tracks: ['song'] }
+
+test('capacity errors have actionable app-owned messages and bounded untrusted response parsing', async t => {
+  let status = 503, response = JSON.stringify({ error: 'working_storage_unavailable', message: 'SECRET URL' }), stall = false
+  const server = createServer((req, res) => {
+    req.resume()
+    res.writeHead(status, { 'content-type': 'application/json' })
+    if (stall) { res.flushHeaders(); return }
+    res.end(response)
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()) }))
+  const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+  const read = () => stratumProofRequest(endpoint, '/audio/v1/playbacks/track', 'POST', AbortSignal.timeout(3000))
+  await assert.rejects(read(), /working.storage limit and free disk space/)
+  for (const body of ['not JSON SECRET', JSON.stringify({ error: 'SECRET' }), JSON.stringify({ error: 'working_storage_unavailable', padding: 'x'.repeat(4096) })]) {
+    response = body
+    await assert.rejects(read(), error => error instanceof Error && error.message === 'Stratum cannot reach Navidrome.')
+  }
+  stall = true
+  await assert.rejects(read(), error => error instanceof StratumProofError && error.status === 503)
+  stall = false; status = 413
+  await assert.rejects(read(), /source size limit/)
+  assert.ok(isStratumRefusal(new StratumProofError(413)))
+  assert.ok(isStratumRefusal(new StratumProofError(422)))
+})
 
 test('Stratum proof cannot forward a bearer outside literal loopback or accept credential URLs', () => {
   for (const endpoint of ['https://127.0.0.1:1234', 'http://localhost:1234', 'http://192.168.1.1:1234',
@@ -26,9 +52,8 @@ test('Stratum development route is restricted to allowlisted Navidrome tracks an
   for (const path of ['/song.flac', 'jellyfin://7/song', 'plex://7/song', buildSubsonicTrackPath(8, 'song'), buildSubsonicTrackPath(7, 'another'), 'subsonic://7/song']) {
     assert.equal(stratumProofRoute(parsed, path, 'original'), null)
   }
-  for (const quality of [192, 256, 320, { mode: 'automatic', target: 192 },
-    { target: 'original', compatibility: 'flac' }] as const) assert.equal(stratumProofRoute(parsed, buildSubsonicTrackPath(7, 'song'), quality), null)
-  for (const [quality, expected] of [['original', 'lossless'], [64, 'opus-64'], [128, 'opus-128']] as const) {
+  for (const quality of [{ target: 'original', compatibility: 'flac' }] as const) assert.equal(stratumProofRoute(parsed, buildSubsonicTrackPath(7, 'song'), quality), null)
+  for (const [quality, expected] of [['original', 'lossless'], [64, 'opus-64'], [128, 'opus-128'], [192, 'opus-192'], [256, 'opus-256'], [320, 'opus-320']] as const) {
     assert.equal(stratumProofRoute(parsed, buildSubsonicTrackPath(7, 'song'), quality)?.quality, expected)
   }
   for (const mode of ['automatic', 'automatic-original'] as const) {

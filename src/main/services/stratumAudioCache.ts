@@ -6,9 +6,11 @@ import { StratumProofClient, parseStratumSegment, type StratumProofAuthenticatio
 import type { AudioTransferEvent } from './automaticStreamingQuality.ts'
 import type { RemoteAudioAnalysis } from '../../types/remoteAudioAnalysis.ts'
 import type { StreamingDiagnosticCacheRange } from '../../types/streamingDiagnostics.ts'
+import { STRATUM_QUALITIES, isStratumQuality } from '../../shared/stratumQuality.ts'
+import { STRATUM_MAX_SOURCE_SECONDS } from '../../shared/stratumSource.ts'
 
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
-const qualities: StratumProofQuality[] = ['lossless', 'opus-128', 'opus-64']
+const qualities: StratumProofQuality[] = [...STRATUM_QUALITIES].reverse()
 const packetType = 'application/vnd.stratum.segment'
 const packetLimit = 4 * 1024 * 1024 + 16_388
 export interface StratumCacheOptions {
@@ -26,7 +28,7 @@ function sourceFromBytes(bytes: Buffer): StratumProofSource {
   const s = JSON.parse(bytes.toString()) as StratumProofSource
   if (!s || !/^[a-f0-9]{64}$/.test(s.sha256) || ![44100, 48000, 96000].includes(s.sample_rate)
     || ![16, 24].includes(s.bits_per_sample) || ![1, 2].includes(s.channels)
-    || !Number.isSafeInteger(s.frames) || s.frames < 1 || s.frames > s.sample_rate * 1800) {
+    || !Number.isSafeInteger(s.frames) || s.frames < 1 || s.frames > s.sample_rate * STRATUM_MAX_SOURCE_SECONDS) {
     throw new Error('Invalid retained Stratum source.')
   }
   return s
@@ -97,6 +99,7 @@ export class StratumCachedPlayback {
   private readonly index: RemoteAudioLease
   private readonly analysisSource: RemoteAudioSource
   private readonly analysisLease: RemoteAudioLease
+  get qualities(): readonly StratumProofQuality[] { return this.client.qualities }
 
   private constructor(owner: StratumAudioCache, options: StratumCacheOptions,
     connection: StratumProofAuthentication, source: StratumProofSource,
@@ -130,7 +133,7 @@ export class StratumCachedPlayback {
       // Handle preparation has its own cancellation/cleanup contract. Do not
       // put it behind the generic cache's delayed download cancellation.
       if (!await owner.cache.hasComplete(indexSource)) {
-        remote = client.open(options.track, signal)
+        remote = client.open(options.track, signal, isStratumQuality(options.profile) ? options.profile : undefined)
         await remote
       }
       index = await owner.cache.acquire(indexSource, signal)
@@ -177,7 +180,7 @@ export class StratumCachedPlayback {
   }
 
   private async remotePlayback(signal: AbortSignal): Promise<StratumProofPlayback> {
-    this.remote ??= this.client.open(this.options.track, signal)
+    this.remote ??= this.client.open(this.options.track, signal, isStratumQuality(this.options.profile) ? this.options.profile : undefined)
     const playback = await this.remote
     if (JSON.stringify(playback.source) !== JSON.stringify(this.playback.source)) {
       throw new Error('The Stratum source audio changed. Clear the streaming cache and retry.')
@@ -304,10 +307,17 @@ export class StratumCachedPlayback {
   get cachedRanges(): StreamingDiagnosticCacheRange[] {
     if (this.closed) return []
     const rate = this.playback.source.sample_rate
-    return [...this.available].flatMap(([start, found]) => found.size ? [{
-      start: start / rate, end: (start + this.frames(start)) / rate,
-      qualities: qualities.filter(quality => found.has(quality))
-    }] : [])
+    const ranges: StreamingDiagnosticCacheRange[] = []
+    for (const [start, found] of this.available) {
+      if (!found.size) continue
+      const selected = qualities.filter(quality => found.has(quality))
+      const end = (start + this.frames(start)) / rate
+      const previous = ranges.at(-1)
+      if (previous?.end === start / rate && previous.qualities.length === selected.length
+        && previous.qualities.every((quality, i) => quality === selected[i])) previous.end = end
+      else ranges.push({ start: start / rate, end, qualities: selected })
+    }
+    return ranges
   }
   get analysisReady(): boolean { return this.owner.cache.hasAnalysis(this.analysisKey) }
   releaseRemote(): Promise<void> {

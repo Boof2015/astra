@@ -41,7 +41,7 @@ export function streamingTimingReport(reading: StreamingDiagnosticsReading): str
 }
 
 export function diagnosticQualityLabel(quality: DiagnosticSegmentQuality): string {
-  return quality === 'lossless' ? 'Original' : quality === 'opus-64' ? 'Opus 64' : 'Opus 128'
+  return quality === 'lossless' ? 'Original' : `Opus ${quality.slice(5)}`
 }
 
 export function diagnosticWindow(duration: number, position: number): { start: number; end: number } | null {

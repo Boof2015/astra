@@ -86,7 +86,7 @@ export function StratumControl({ server }: { server: ServerEntry }) {
     </div>
     {(error || status?.error) && <p className="servers-error" role="alert">{error ?? status?.error}</p>}
     {(status?.enabled || status?.state === 'available') && <p className="servers-hint">
-      Standard or Exclusive · Original, Automatic, 64 or 128 kbps. Bit-perfect uses Original. Other formats and settings use normal streaming.
+      Standard or Exclusive · Original, Automatic, or a fixed bitrate supported by Sidecar. Bit-perfect uses Original. Other formats and settings use normal streaming.
     </p>}
   </div>
 }

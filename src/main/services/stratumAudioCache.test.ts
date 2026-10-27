@@ -15,14 +15,15 @@ import { StratumSegmentDiagnostics } from './streamingDiagnostics.ts'
 import type { AudioTransferEvent } from './automaticStreamingQuality.ts'
 import { StratumLinkEstimates, StratumQualityController } from './stratumQuality.ts'
 import { StratumProofError } from './stratumProofTransport.ts'
+import { STRATUM_QUALITIES, type StratumQuality } from '../../shared/stratumQuality.ts'
 
 const source: StratumProofSource = { sha256: 'a'.repeat(64), sample_rate: 48000, channels: 2, bits_per_sample: 16, frames: 480000 }
 const options: StratumCacheOptions = { scope: 'approved-account', track: 'song', revision: 'catalog-v1', profile: 'lossless' }
 const analysis: RemoteAudioAnalysis = { version: 1, duration: 10, peaks: Array(512).fill(.5), loudnessLufs: -18, peakLinear: .5 }
 const signal = () => AbortSignal.timeout(10000)
 
-function fake() {
-  const state = { offline: false, corrupt: false, opens: 0, closes: 0, reads: 0, scans: 0, starts: [] as number[], segmentHold: null as Promise<void> | null, hold: null as Promise<void> | null,
+function fake(sourceInfo: StratumProofSource = source) {
+  const state = { offered: undefined as readonly StratumQuality[] | undefined, offline: false, corrupt: false, opens: 0, closes: 0, reads: 0, scans: 0, starts: [] as number[], segmentHold: null as Promise<void> | null, hold: null as Promise<void> | null,
     transfer: null as null | ((quality: string, signal: AbortSignal, observe?: (event: AudioTransferEvent) => void) => Promise<void>) }
   const connection: StratumProofAuthentication = {
     endpoint: 'https://cache-fixture.test', signal: new AbortController().signal,
@@ -32,12 +33,12 @@ function fake() {
       if (state.offline) throw new Error('offline')
       if (method === 'DELETE') { state.closes++; return { bytes: Buffer.alloc(0), type: '' } }
       if (path.includes('capabilities')) return { type: 'application/json', bytes: Buffer.from(JSON.stringify({
-        protocol: 'stratum-access-proof-1', audioExperiment: 'stratum-authenticated-audio-1' })) }
+        protocol: 'stratum-access-proof-1', audioExperiment: 'stratum-authenticated-audio-1', qualities: state.offered })) }
       if (path.includes('/playbacks/')) {
         state.opens++
         if (state.hold) await state.hold
         return { type: 'application/json', bytes: Buffer.from(JSON.stringify({ playback: state.opens.toString(16).padStart(64, '0'),
-          source: { ...source, codec: 'flac' }, sourcePolicy: 'complete-private-copy', maxSegmentSeconds: 4 })) }
+          source: { ...sourceInfo, codec: 'flac' }, sourcePolicy: 'complete-private-copy', maxSegmentSeconds: 4 })) }
       }
       state.reads++
       if (state.segmentHold) await state.segmentHold
@@ -45,7 +46,7 @@ function fake() {
       state.starts.push(start)
       await state.transfer?.(quality, requestSignal, observe)
       const payload = Buffer.from(`${start}-${frames}-${quality}`)
-      const meta = Buffer.from(JSON.stringify({ experiment: 'stratum-audio-poc-2', source_sha256: source.sha256,
+      const meta = Buffer.from(JSON.stringify({ experiment: 'stratum-audio-poc-2', source_sha256: sourceInfo.sha256,
         encoder: 'b'.repeat(64), quality, sample_rate: 48000, codec_sample_rate: 48000, channels: 2,
         presentation: { start, frames }, encoded_interval: { start, frames }, decoded_frames: frames,
         discard_start_frames: 0, discard_end_frames: 0, resample_tail_frames: 0, codec_decoded_frames: frames,
@@ -57,9 +58,9 @@ function fake() {
   }
   return { state, connection }
 }
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, frames = source.frames) {
   const directory = await mkdtemp(join(tmpdir(), 'astra-stratum-cache-'))
-  const service = fake()
+  const service = fake({ ...source, frames })
   const events: string[] = []
   const cache = new RemoteAudioCache(directory, 1024 * 1024, { analyze: async () => { throw new Error('Segments are not full tracks.') }, ready: key => { events.push(key) } })
   const tools = { decode: async () => Buffer.alloc(8), scan: async (_s: StratumProofSource, pcm: AsyncIterable<Buffer>) => {
@@ -71,6 +72,51 @@ async function fixture(t: TestContext) {
   return { ...service, cache, owner, directory, events, tools }
 }
 async function until(check: () => boolean) { for (let i = 0; i < 1000; i++) { if (check()) return; await delay(5) }; assert.fail('Timed out') }
+
+test('expanded cache qualities stay distinct and replay offline without changing Fixed requests', async t => {
+  const f = await fixture(t)
+  f.state.offered = STRATUM_QUALITIES
+  const config = { ...options, profile: 'automatic' as const }
+  const first = await f.owner.open(f.connection, config, signal())
+  const expected = ['opus-192', 'opus-256', 'opus-320'] as const
+  for (let i = 0; i < 3; i++) await first.segment(i * 192000, expected[i], signal())
+  assert.equal(first.complete, true)
+  first.dispose(); await first.releaseRemote()
+  const reads = f.state.reads
+  f.state.offline = true
+  const replay = await f.owner.open(f.connection, config, signal())
+  assert.deepEqual(replay.cachedRanges.map(range => range.qualities[0]), expected)
+  for (let i = 0; i < 3; i++) {
+    const segment = await replay.segment(i * 192000, expected[i], signal())
+    assert.equal(segment.metadata.quality, expected[i]); assert.equal(segment.localCacheHit, true)
+  }
+  assert.equal(f.state.reads, reads)
+  const fixed = await f.owner.open(f.connection, { ...options, profile: 'opus-256' }, signal())
+  assert.equal(fixed.retainedQuality(0, 'opus-256'), undefined)
+  await assert.rejects(fixed.segment(0, 'opus-256', signal()))
+  fixed.dispose(); replay.dispose()
+})
+
+test('long-track cache reopens partial ranges offline and merges only matching adjacent ranges', async t => {
+  const frames = 48000 * 7200
+  const f = await fixture(t, frames)
+  const current = await f.owner.open(f.connection, options, signal())
+  await current.segment(0, 'lossless', signal())
+  await current.segment(192000, 'lossless', signal())
+  await current.segment(frames - 192000, 'opus-64', signal())
+  const expected = [{ start: 0, end: 8, qualities: ['lossless'] },
+    { start: 7196, end: 7200, qualities: ['opus-64'] }]
+  assert.deepEqual(current.cachedRanges, expected)
+  assert.equal(current.complete, false)
+  current.dispose(); await current.releaseRemote()
+  f.state.offline = true
+  const replay = await f.owner.open(f.connection, options, signal())
+  t.after(() => replay.dispose())
+  assert.equal(replay.playback.source.frames, frames)
+  assert.deepEqual(replay.cachedRanges, expected)
+  assert.equal((await replay.segment(192000, 'lossless', signal())).localCacheHit, true)
+  assert.deepEqual(replay.cachedRanges, expected)
+})
 
 test('automatic abandons a late interval for a cheaper one at once, keeping the handle and discarding its bytes', { timeout: 10000 }, async t => {
   const f = await fixture(t)

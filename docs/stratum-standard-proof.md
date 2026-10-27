@@ -27,10 +27,13 @@ service has a hard deadline and its temporary directory is removed at teardown.
 
 Checks cover:
 
-- Native 44.1/48/96 kHz to 48 kHz output, Original and Opus 64/128, exact lossless
+- Native 44.1/48/96 kHz to 48 kHz output, Original and Opus 64/128/192/256/320, exact lossless
   PCM against independent whole-source decoding, measured Opus alignment inside
   each interval, and exact remaining frame counts through EOF.
 - Non-boundary seeks with source-zero conversion phase and real pre-roll.
+- A two-hour 44.1 kHz FLAC opened through the production cache adapter, seeking
+  to 7,198.25 seconds with exactly 84,000 frames at 48 kHz remaining. The same
+  partial cached tail replays identically with network requests disabled.
 - A worklet handoff between different native rates, compared sample for sample.
 - Scripted lossless → Opus 64 → Opus 128 through one continuous output converter.
 - Both automatic modes starting cold at Opus 128, climbing to Original, lowering
@@ -50,6 +53,43 @@ renderer seeking, next-track preparation and failures for restartable PCM
 without a cache file, alongside existing conventional/local playback tests.
 It also checks quality markers against the real worklet cursor, pause/seek and
 successor isolation, plus the player store's transport-readout updates.
+
+## Long sources and startup
+
+Astra accepts supported Stratum sources up to eight hours. Sidecar's matching
+ceiling is eight hours / 2 GiB; older Sidecar versions still enforce their older
+limits. These are admission ceilings, not a promise that every recording below
+them fits the configured storage or finishes preparation within the deadline.
+
+Sidecar still acquires one complete original from Navidrome before playback.
+It hashes those bytes as they are written, then probes the immutable file and
+decodes only its first four seconds for startup validation. Each requested
+interval has exact frame validation; corrupt audio later in a recording fails
+that interval. Full-source content identity and cache keys are unchanged.
+
+Acquisition has a 15-second total and three-second body-idle budget. The complete
+preparation request has 25 seconds, with the existing eight-second worker limit.
+This removes the full-track decode and second hash pass from startup; it does
+not yet provide playback while the original is still downloading to Sidecar.
+
+The owner's working-storage budget remains unchanged (512 MB by default): each
+prepared track reserves its original size plus 32 MiB, and a prepared next track
+needs its own reservation. Astra reports a storage-specific refusal rather than
+calling this a Navidrome outage. Owners may need to raise the working limit for
+long recordings, while leaving enough disk space for the retained cache.
+
+Astra's existing remote-cache limit still applies too. Active Stratum tracks pin
+their retained intervals; there is no rolling eviction of already-played parts
+of an active track in this pass. A long recording or its retained quality variants
+can fill a small cache and prevent further fetching. Cache-range diagnostics
+merge adjacent intervals with identical quality availability, preserving gaps
+and quality differences without sending thousands of redundant ranges.
+
+The long-source proof uses synthetic silence, so it verifies admission, seeking,
+frame counts and partial offline replay, not long-form listening or worst-case
+encoding cost. Sidecar separately tests a 70 MiB WAV with exact final samples,
+over-limit refusal, storage admission, slow/stalled acquisition and corruption
+after the validated prefix. Live LXC validation remains separate.
 
 ## Isolated listening proof
 
@@ -279,7 +319,10 @@ no path, userinfo or query. Direct Node HTTP avoids proxies and redirects. This
 is a development boundary, not production pairing; capabilities prove no trust.
 
 Only allowlisted tracks on that enabled Subsonic source enter the route, for
-Original, 64 or 128 kbps and both automatic modes. Other tracks/providers, bitrates and
+Original, 64/128/192/256/320 kbps and both automatic modes. The client negotiates
+the server's `qualities` capability; omission retains the legacy Original/64/128
+ladder. Fixed requires the requested representation before source preparation.
+Other tracks/providers, bitrates and
 compatibility conversions retain conventional behavior. Packaged builds cannot
 enable this route. Native output is unchanged. There is no public setting or
 special transport badge yet.

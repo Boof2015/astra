@@ -3,9 +3,10 @@ import type { AudioTransferEvent } from './automaticStreamingQuality.ts'
 import type { AutomaticStreamingQuality as QualityMode, RemotePlaybackQuality, StreamQualityTarget } from '../../types/streamingQuality.ts'
 import type { StratumProofQuality, StratumProofSource } from './stratumProofClient.ts'
 import { isStratumRefusal } from './stratumProofTransport.ts'
+import { STRATUM_QUALITIES, STRATUM_OPUS_KBPS, LEGACY_STRATUM_QUALITIES } from '../../shared/stratumQuality.ts'
 
 export const stratumTarget = (quality: StratumProofQuality): StreamQualityTarget =>
-  quality === 'lossless' ? 'original' : quality === 'opus-64' ? 64 : 128
+  quality === 'lossless' ? 'original' : STRATUM_OPUS_KBPS[quality]
 
 export function stratumPlaybackQuality(source: StratumProofSource, quality: StratumProofQuality, mode?: QualityMode): RemotePlaybackQuality {
   return { transport: 'stratum', requested: stratumTarget(quality), ...(mode ? { mode } : {}),
@@ -17,11 +18,9 @@ export function stratumPlaybackQuality(source: StratumProofSource, quality: Stra
       bitrateKbps: null } }
 }
 
-const LADDER: readonly StratumProofQuality[] = ['opus-64', 'opus-128', 'lossless']
-export const stratumQualityRank = (quality: StratumProofQuality) => LADDER.indexOf(quality)
+export const stratumQualityRank = (quality: StratumProofQuality) => STRATUM_QUALITIES.indexOf(quality)
 const rank = stratumQualityRank
 // Ogg pages add about 7% to the nominal Opus rate (measured 68.6 and 135 kbps).
-const OPUS_KBPS = { 'opus-64': 64 * 1.08, 'opus-128': 128 * 1.08 } as const
 const ESTIMATE_LIFETIME_MS = 5 * 60_000
 // Sidecar's fixed interval length. Sustainability is judged over a full interval
 // so that a track's short final interval is not mistaken for a slow link.
@@ -154,6 +153,7 @@ export class StratumQualityController {
     buffer: () => { position: number; ahead: number }
     now?: () => number
     estimates?: StratumLinkEstimates
+    qualities?: () => readonly StratumProofQuality[] | undefined
   }
   constructor(options: StratumQualityController['options']) {
     this.options = options
@@ -164,17 +164,26 @@ export class StratumQualityController {
   private now() { return this.options.now?.() ?? performance.now() }
   private get estimates() { return this.options.estimates ?? stratumLinkEstimates }
   private get policy() { return POLICY[this.options.mode] }
+  private get ladder(): readonly StratumProofQuality[] {
+    const offered = this.options.qualities?.() ?? LEGACY_STRATUM_QUALITIES
+    const ladder = STRATUM_QUALITIES.filter(quality => offered.includes(quality))
+    if (!ladder.length) throw new Error('Sidecar offers no supported Stratum quality.')
+    return ladder
+  }
+  private coldQuality(): StratumProofQuality {
+    return [...this.ladder].reverse().find(quality => rank(quality) <= rank('opus-128')) ?? this.ladder[0]
+  }
   private seconds(frames: number) { return frames / this.options.source.sample_rate }
   private bits(quality: StratumProofQuality, seconds: number) {
-    return (quality === 'lossless' ? this.losslessKbps : OPUS_KBPS[quality]) * 1000 * seconds
+    return (quality === 'lossless' ? this.losslessKbps : STRATUM_OPUS_KBPS[quality] * 1.08) * 1000 * seconds
   }
   /** Seconds to fetch an interval: request overhead plus its body. */
   private cost(quality: StratumProofQuality, seconds: number, link: { kbps: number; overheadMs: number }) {
     return link.overheadMs / 1000 + this.bits(quality, seconds) / Math.max(1, link.kbps * 1000)
   }
   private sustainable(link: { kbps: number; overheadMs: number }, margin = 1) {
-    return [...LADDER].reverse().find(quality =>
-      this.cost(quality, INTERVAL_SECONDS, link) * this.policy.headroom * margin <= INTERVAL_SECONDS) ?? LADDER[0]
+    return [...this.ladder].reverse().find(quality =>
+      this.cost(quality, INTERVAL_SECONDS, link) * this.policy.headroom * margin <= INTERVAL_SECONDS) ?? this.ladder[0]
   }
   private set(quality: StratumProofQuality) {
     if (quality !== this.current) this.samplesSinceChange = 0
@@ -191,24 +200,31 @@ export class StratumQualityController {
       // wrong hint costs one abandoned interval, priced from its own transfer.
       if (!this.options.pinInitial) {
         const hint = link ?? this.estimates.hint(this.options.key)
-        this.set(hint ? this.sustainable(hint, link ? 1 : HINT_MARGIN) : 'opus-128')
+        this.set(hint ? this.sustainable(hint, link ? 1 : HINT_MARGIN) : this.coldQuality())
       }
+      if (!this.ladder.includes(this.current)) this.set(this.coldQuality())
       return this.current
     }
+    if (!this.ladder.includes(this.current)) this.set(link ? this.sustainable(link) : this.coldQuality())
     if (!link) return this.current
     const ahead = this.options.buffer().ahead
     let target = this.sustainable(link)
     // The next interval must arrive before the buffered audio runs out.
     if (this.cost(this.current, seconds, link) > ahead - 1) {
-      const fits = [...LADDER].reverse().find(quality => this.cost(quality, seconds, link) <= Math.max(0, ahead - 1)) ?? LADDER[0]
+      const fits = [...this.ladder].reverse().find(quality => this.cost(quality, seconds, link) <= Math.max(0, ahead - 1)) ?? this.ladder[0]
       if (rank(fits) < rank(target)) target = fits
     }
     if (rank(target) < rank(this.current)) { this.set(target); return this.current }
-    if (rank(target) > rank(this.current)) {
-      const up = LADDER[rank(this.current) + 1]
-      const cost = this.cost(up, INTERVAL_SECONDS, link)
-      const needed = Math.min(this.policy.upBuffer, Math.max(INTERVAL_SECONDS, 4 * cost))
-      if (this.samplesSinceChange >= 2 && ahead >= needed && cost * this.policy.headroom * this.policy.upMargin <= INTERVAL_SECONDS) this.set(up)
+    if (rank(target) > rank(this.current) && this.samplesSinceChange >= 2) {
+      // More rungs must not delay recovery on a proven fast link. Keep the
+      // same buffer/evidence margin, applied to the actual upgrade target.
+      const up = [...this.ladder].reverse().find(quality => {
+        if (rank(quality) <= rank(this.current) || rank(quality) > rank(target)) return false
+        const cost = this.cost(quality, INTERVAL_SECONDS, link)
+        const needed = Math.min(this.policy.upBuffer, Math.max(INTERVAL_SECONDS, 4 * cost))
+        return ahead >= needed && cost * this.policy.headroom * this.policy.upMargin <= INTERVAL_SECONDS
+      })
+      if (up) this.set(up)
     }
     return this.current
   }
@@ -242,7 +258,15 @@ export class StratumQualityController {
         signal.throwIfAborted()
         timing.failed()
         if (attempt >= 3 || (!replacement && !retryable(error))) throw error
-        quality = replacement ?? LADDER[Math.max(0, rank(quality) - 1)]
+        // Keep retries bounded even with a larger ladder. A failed Original does
+        // not spend all three attempts on nearby high bitrates before reaching
+        // a viable reduced quality.
+        const lower = this.ladder.filter(candidate => rank(candidate) < rank(quality))
+        const link = this.estimates.get(this.options.key)
+        const sustainable = link ? this.sustainable(link) : this.coldQuality()
+        const viable = rank(sustainable) < rank(quality) ? sustainable : this.coldQuality()
+        quality = replacement ?? [...lower].reverse().find(candidate => rank(candidate) <= rank(viable))
+          ?? lower[0] ?? this.ladder[0]
         if (rank(quality) < rank(this.current)) this.set(quality)
       } finally { timing.close() }
     }
@@ -275,7 +299,8 @@ export class StratumQualityController {
       if (remaining <= ahead - 1) return
       const rate = { kbps: kbps ?? link?.kbps ?? 1, overheadMs }
       const reconnect = 2 * overheadMs / 1000
-      const lower = LADDER.slice(0, rank(quality)).reverse()
+      const viable = !stalled && kbps ? this.sustainable(rate) : this.coldQuality()
+      const lower = this.ladder.filter(candidate => rank(candidate) < rank(quality) && rank(candidate) <= rank(viable)).reverse()
         .find(candidate => this.cost(candidate, seconds, rate) + reconnect < remaining)
       if (lower) { settled = true; abandon(lower) }
     }

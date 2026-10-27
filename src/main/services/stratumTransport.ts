@@ -5,7 +5,7 @@ import { connect } from 'node:tls'
 import { createHash, X509Certificate } from 'node:crypto'
 import { isIP } from 'node:net'
 import type { AudioTransferEvent } from './automaticStreamingQuality.ts'
-import { StratumProofError } from './stratumProofTransport.ts'
+import { readStratumFailure } from './stratumProofTransport.ts'
 import { stratumEndpoint, StratumVerificationError, type StratumEndpoint } from './stratumDiscovery.ts'
 import { StratumNetworkError, stratumAborted, stratumConnectionFailure, stratumRequestTimeout, stratumRequestStage, stratumTimeoutContext } from './stratumNetwork.ts'
 
@@ -131,7 +131,7 @@ export function createStratumTransport(target: StratumEndpoint, spkiSha256: stri
         } }
         const req = request(url, options, response => {
           if (![200, 201, 204].includes(response.statusCode ?? 0)) {
-            finish(new StratumProofError(response.statusCode ?? 0)); response.destroy(); return
+            readStratumFailure(response, error => finish(error)); return
           }
           const chunks: Buffer[] = []
           let length = 0

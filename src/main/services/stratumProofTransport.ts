@@ -1,4 +1,4 @@
-import { request as httpRequest } from 'node:http'
+import { request as httpRequest, type IncomingMessage } from 'node:http'
 import type { AudioTransferEvent } from './automaticStreamingQuality.ts'
 import { StratumNetworkError, stratumAborted, stratumRequestTimeout, stratumRequestStage, stratumTimeoutContext } from './stratumNetwork.ts'
 
@@ -15,10 +15,14 @@ export function validateStratumProofEndpoint(endpoint: string): string {
 
 export class StratumProofError extends Error {
   readonly status: number
-  constructor(status: number) {
-    super(status === 401 ? 'The Stratum sign-in expired or was refused.'
+  constructor(status: number, code?: string) {
+    super(status === 503 && code === 'working_storage_unavailable'
+      ? 'Sidecar has insufficient working storage. Check its working-storage limit and free disk space.'
+      : status === 413 ? 'This track exceeds Sidecar’s source size limit.'
+      : status === 401 ? 'The Stratum sign-in expired or was refused.'
       : status === 404 ? 'This track or playback is no longer available through Stratum.'
-      : status === 415 ? 'This source format is not supported by the Stratum proof.'
+      : status === 415 ? 'Sidecar does not support this track’s format or duration.'
+      : status === 422 ? 'Sidecar could not decode this audio interval.'
       : status === 429 ? 'The Stratum proof is busy. Try again.'
       : status === 503 ? 'Stratum cannot reach Navidrome.'
       : `The Stratum proof request failed (HTTP ${status}).`)
@@ -28,7 +32,36 @@ export class StratumProofError extends Error {
 
 /** Access or format refusals that asking again (at any quality) cannot fix. */
 export function isStratumRefusal(error: unknown): error is StratumProofError {
-  return error instanceof StratumProofError && [401, 403, 404, 415].includes(error.status)
+  return error instanceof StratumProofError && [401, 403, 404, 413, 415, 422].includes(error.status)
+}
+
+/** Only recognized codes select app-owned wording. Never display the response,
+ * even when a proxy includes URLs or credentials in its error page. */
+export function readStratumFailure(response: IncomingMessage, finish: (error: Error) => void): void {
+  const status = response.statusCode ?? 0
+  let settled = false, length = 0
+  const chunks: Buffer[] = []
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const done = (parse = false) => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    let code: unknown
+    if (parse) { try { code = JSON.parse(Buffer.concat(chunks).toString()).error } catch {} }
+    finish(new StratumProofError(status, typeof code === 'string' ? code : undefined))
+    response.destroy()
+  }
+  // Only storage refusals need their small structured body to disambiguate 503.
+  if (status !== 503 || !String(response.headers['content-type']).startsWith('application/json')) { done(); return }
+  timer = setTimeout(() => done(), 1000); timer.unref()
+  response.on('data', (chunk: Buffer) => {
+    length += chunk.length
+    if (length > 4096) done()
+    else chunks.push(chunk)
+  })
+  response.once('end', () => done(true))
+  response.once('error', () => done())
+  response.once('aborted', () => done())
 }
 
 /** No proxies, redirects, cookies or raw upstream error text. */
@@ -59,8 +92,7 @@ export async function stratumProofRequest(endpoint: string, path: string, method
       }
     }, response => {
       if (![200, 201, 204].includes(response.statusCode ?? 0)) {
-        finish(new StratumProofError(response.statusCode ?? 0))
-        response.destroy()
+        readStratumFailure(response, error => finish(error))
         return
       }
       const chunks: Buffer[] = []

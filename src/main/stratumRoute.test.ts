@@ -28,8 +28,11 @@ test('installed routing respects format, source, per-server quality, compatibili
   assert.equal((await route('subsonic://7/track/song', 'automatic-original', signal)).mode, 'automatic-original')
   assert.equal((await route('subsonic://7/track/song', { mode: 'automatic', target: 128 }, signal)).pinInitial, true)
   assert.equal((await route('subsonic://7/track/song', 128, signal)).quality, 'opus-128')
-  const before = calls.length
-  for (const quality of [192, 256, 320, { target: 'original', compatibility: 'flac' }]) {
+  for (const quality of [192, 256, 320]) {
+    assert.equal((await route('subsonic://7/track/song', quality, signal)).quality, `opus-${quality}`)
+  }
+  const afterLadder = calls.length
+  for (const quality of [{ target: 'original', compatibility: 'flac' }]) {
     assert.equal(await route('subsonic://7/track/song', quality, signal), null)
   }
   for (const path of ['/music/local.flac', 'jellyfin://7/track', 'plex://7/track']) assert.equal(await route(path, 'original', signal), null)
@@ -38,7 +41,7 @@ test('installed routing respects format, source, per-server quality, compatibili
     assert.equal(await route('subsonic://7/track/song', 'original', signal), null)
     track = original
   }
-  assert.equal(calls.length, before)
+  assert.equal(calls.length, afterLadder)
   failure = true
   assert.equal(await route('subsonic://7/track/song', 'original', signal), null)
   const aborted = new AbortController(); aborted.abort()

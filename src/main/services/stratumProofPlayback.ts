@@ -150,6 +150,7 @@ export class StratumProofPcm {
     signal = AbortSignal.any([signal, this.stop.signal])
     const controller = automatic && typeof quality === 'string' ? new StratumQualityController({ ...automatic,
       source: this.playback.source, initial: quality,
+      qualities: () => this.cached?.qualities ?? this.playback.qualities,
       buffer: () => {
         const buffer = automatic.buffer()
         return { ...buffer, ahead: Math.max(buffer.ahead, this.cached?.playableAhead(buffer.position) ?? 0) }

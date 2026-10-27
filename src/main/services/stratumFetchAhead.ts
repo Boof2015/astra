@@ -19,7 +19,7 @@ function within<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
 
 /** One sequential downloader per active playback, independent of PCM pressure.
  * Audio lives in the budgeted disk cache; only small interval receipts are queued
- * here (at most 450 for the supported 30-minute source limit). No decoder or
+ * here (at most 7,200 for the supported eight-hour source limit). No decoder or
  * playback-clock wait limits how far a healthy connection can fetch ahead.
  * Replacing a retained interval with a better one is optional: it may use only
  * the time before playback needs that interval, and never delays the retained copy. */

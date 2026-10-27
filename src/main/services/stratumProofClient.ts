@@ -3,10 +3,12 @@ import type { AudioTransferEvent } from './automaticStreamingQuality.ts'
 import { stratumProofRequest, validateStratumProofEndpoint, StratumProofError } from './stratumProofTransport.ts'
 import type { StratumRequest } from './stratumTransport.ts'
 import { STRATUM_CONTROL_TIMEOUT_MS, STRATUM_CLEANUP_TIMEOUT_MS } from './stratumNetwork.ts'
+import { advertisedStratumQualities, LEGACY_STRATUM_QUALITIES, isStratumQuality, type StratumQuality } from '../../shared/stratumQuality.ts'
+import { STRATUM_MAX_SOURCE_SECONDS } from '../../shared/stratumSource.ts'
 export { StratumProofError } from './stratumProofTransport.ts'
 
 /** Checkpoint protocol only. This is not a discovery or production pairing API. */
-export type StratumProofQuality = 'lossless' | 'opus-64' | 'opus-128'
+export type StratumProofQuality = StratumQuality
 export interface StratumProofConnection { endpoint: string; session: string }
 /** Main-process owner shared by current/next playback. Never sent over IPC. */
 export interface StratumProofAuthentication {
@@ -20,7 +22,7 @@ export interface StratumProofAuthentication {
 export interface StratumProofSource {
   sha256: string; sample_rate: number; channels: number; bits_per_sample: number; frames: number
 }
-export interface StratumProofPlayback { playback: string; source: StratumProofSource }
+export interface StratumProofPlayback { playback: string; source: StratumProofSource; qualities?: readonly StratumProofQuality[] }
 export interface StratumProofSegment {
   payload: Buffer
   metadata: {
@@ -62,6 +64,9 @@ export function validateStratumProofConnection(value: StratumProofConnection): S
 // handle mutations across current/next clients so cancellation can reclaim it
 // before a replacement reserves another. Segment delivery remains concurrent.
 const playbackMutations = new WeakMap<object, Promise<unknown>>()
+// Connection evidence is not stored as source metadata or folded into cache
+// identity. Cached audio can play offline; a fresh network open negotiates again.
+const connectionQualities = new WeakMap<object, readonly StratumProofQuality[]>()
 
 export class StratumProofClient {
   private connection: StratumProofConnection | StratumProofAuthentication
@@ -96,11 +101,13 @@ export class StratumProofClient {
     return task
   }
 
-  open(trackId: string, signal: AbortSignal): Promise<StratumProofPlayback> {
-    return this.mutate(() => this.openHandle(trackId, signal))
+  get qualities(): readonly StratumProofQuality[] { return connectionQualities.get(this.connection) ?? LEGACY_STRATUM_QUALITIES }
+
+  open(trackId: string, signal: AbortSignal, requiredQuality?: StratumProofQuality): Promise<StratumProofPlayback> {
+    return this.mutate(() => this.openHandle(trackId, signal, requiredQuality))
   }
 
-  private async openHandle(trackId: string, signal: AbortSignal): Promise<StratumProofPlayback> {
+  private async openHandle(trackId: string, signal: AbortSignal, requiredQuality?: StratumProofQuality): Promise<StratumProofPlayback> {
     signal.throwIfAborted()
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(trackId)) throw new Error('Invalid Stratum test track.')
     const capabilities = await this.request('/access/v1/capabilities', 'GET', signal, undefined, false)
@@ -108,6 +115,9 @@ export class StratumProofClient {
     if (advertised.protocol !== 'stratum-access-proof-1' || advertised.audioExperiment !== 'stratum-authenticated-audio-1') {
       throw new Error('This endpoint does not provide the authenticated Stratum audio proof.')
     }
+    const qualities = advertisedStratumQualities(advertised.qualities)
+    connectionQualities.set(this.connection, qualities)
+    if (requiredQuality && !qualities.includes(requiredQuality)) throw new Error('Sidecar does not offer the selected streaming quality.')
     signal.throwIfAborted()
     // Keep the bounded POST alive long enough to receive and delete its handle.
     // Destroying its socket on seek would discard the only handle we can close.
@@ -122,8 +132,8 @@ export class StratumProofClient {
         || value.sourcePolicy !== 'complete-private-copy' || value.maxSegmentSeconds !== 4) invalid()
       const bits = integer(raw.bits_per_sample, 16, 24)
       if (bits !== 16 && bits !== 24) invalid()
-      return { playback, source: { sha256: hash(raw.sha256), sample_rate: rate,
-        channels: integer(raw.channels, 1, 2), bits_per_sample: bits, frames: integer(raw.frames, 1, rate * 1800) } }
+      return { playback, qualities, source: { sha256: hash(raw.sha256), sample_rate: rate,
+        channels: integer(raw.channels, 1, 2), bits_per_sample: bits, frames: integer(raw.frames, 1, rate * STRATUM_MAX_SOURCE_SECONDS) } }
     } catch (error) {
       await this.closeHandle(playback)
       throw error
@@ -135,7 +145,7 @@ export class StratumProofClient {
     const source = playback.source
     integer(start, 0, source.frames - 1)
     integer(frames, 1, Math.min(4 * source.sample_rate, source.frames - start))
-    if (!['lossless', 'opus-64', 'opus-128'].includes(quality)) invalid()
+    if (!isStratumQuality(quality)) invalid()
     const response = await this.segmentResponse(playback, start, frames, quality, signal, observe)
     return parseStratumSegment(response, source, start, frames, quality, signal)
   }
@@ -144,7 +154,10 @@ export class StratumProofClient {
     signal: AbortSignal, observe?: (event: AudioTransferEvent) => void) {
     integer(start, 0, playback.source.frames - 1)
     integer(frames, 1, Math.min(4 * playback.source.sample_rate, playback.source.frames - start))
-    if (!['lossless', 'opus-64', 'opus-128'].includes(quality)) invalid()
+    if (!isStratumQuality(quality)) invalid()
+    if (!(playback.qualities ?? LEGACY_STRATUM_QUALITIES).includes(quality)) {
+      throw new Error('Sidecar does not offer the selected streaming quality.')
+    }
     const response = await this.request(`/audio/v1/playback/${hash(playback.playback)}/segment`, 'POST', signal,
       { start, frames, quality }, true, PAYLOAD_LIMIT + 16_388, observe)
     parseStratumSegment(response, playback.source, start, frames, quality, signal)
@@ -172,6 +185,7 @@ export class StratumProofClient {
 /** Apply the same contract and payload hash checks to disk and network bytes. */
 export function parseStratumSegment(response: { bytes: Buffer; type: string }, source: StratumProofSource,
   start: number, frames: number, quality: StratumProofQuality, signal: AbortSignal): StratumProofSegment {
+    if (!isStratumQuality(quality)) invalid()
     const bytes = response.bytes
     if (response.type !== 'application/vnd.stratum.segment' || bytes.length < 4) invalid()
     const size = bytes.readUInt32BE(0)

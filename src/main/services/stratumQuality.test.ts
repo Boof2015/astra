@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { StratumLinkEstimates, StratumQualityController } from './stratumQuality.ts'
+import { StratumLinkEstimates, StratumQualityController, stratumPlaybackQuality } from './stratumQuality.ts'
+import { STRATUM_QUALITIES } from '../../shared/stratumQuality.ts'
 import { StratumProofError } from './stratumProofTransport.ts'
 import { StratumNetworkError } from './stratumNetwork.ts'
 import type { StratumProofQuality } from './stratumProofClient.ts'
@@ -9,12 +10,13 @@ const source = { sha256: 'a'.repeat(64), sample_rate: 48000, channels: 2, bits_p
 const FRAMES = 4 * 48000
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
-function rig(options: { mode?: 'automatic' | 'automatic-original'; ahead?: number; pinInitial?: boolean; initial?: StratumProofQuality } = {}) {
+function rig(options: { mode?: 'automatic' | 'automatic-original'; ahead?: number; pinInitial?: boolean; initial?: StratumProofQuality;
+  qualities?: readonly StratumProofQuality[] } = {}) {
   const state = { now: 0, ahead: options.ahead ?? 0 }
   const estimates = new StratumLinkEstimates(() => state.now)
   const controller = new StratumQualityController({ mode: options.mode ?? 'automatic', key: 'account', source,
     initial: options.initial ?? 'lossless', pinInitial: options.pinInitial, now: () => state.now, estimates,
-    buffer: () => ({ position: 0, ahead: state.ahead }) })
+    buffer: () => ({ position: 0, ahead: state.ahead }), qualities: () => options.qualities })
   /** One completed network transfer at a given rate, through the controller's own timing. */
   const transfer = (quality: StratumProofQuality, kbps: number, overheadMs: number, bytes: number) => {
     const timing = controller.begin(FRAMES, quality)
@@ -33,6 +35,35 @@ function rig(options: { mode?: 'automatic' | 'automatic-original'; ahead?: numbe
   return { state, estimates, controller, transfer, link }
 }
 const OPUS_128_BYTES = 69_580, LOSSLESS_BYTES = 900_000
+
+test('Automatic chooses and reports every advertised high bitrate without inventing legacy support', () => {
+  for (const [bandwidth, target] of [[350, 192], [450, 256], [600, 320]] as const) {
+    const full = rig({ qualities: STRATUM_QUALITIES, ahead: 20 })
+    full.link(bandwidth, 100)
+    const quality = full.controller.choose(FRAMES)
+    assert.equal(quality, `opus-${target}`)
+    assert.equal(stratumPlaybackQuality(source, quality, 'automatic').requested, target)
+    const legacy = rig({ ahead: 20 }); legacy.link(bandwidth, 100)
+    assert.equal(legacy.controller.choose(FRAMES), 'opus-128')
+  }
+  const subset = rig({ qualities: ['opus-64', 'opus-256', 'lossless'], ahead: 20 })
+  assert.equal(subset.controller.choose(FRAMES), 'opus-64', 'cold start cannot invent 128 support')
+  const pinned = rig({ qualities: ['opus-64', 'lossless'], initial: 'opus-320', pinInitial: true })
+  assert.equal(pinned.controller.choose(FRAMES), 'opus-64')
+})
+
+test('expanded ladder failures still reach a cheap quality within three attempts', async () => {
+  const r = rig({ qualities: STRATUM_QUALITIES, ahead: 0 })
+  r.link(150_000, 100)
+  const attempts: StratumProofQuality[] = []
+  const result = await r.controller.fetch(FRAMES, 'lossless', new AbortController().signal, async quality => {
+    attempts.push(quality)
+    if (quality !== 'opus-64') throw new Error('network failed')
+    return quality
+  })
+  assert.deepEqual(attempts, ['lossless', 'opus-128', 'opus-64'])
+  assert.equal(result, 'opus-64')
+})
 
 test('a cold start with no evidence or hint begins at Opus 128 in both automatic modes, never Original first', () => {
   for (const mode of ['automatic', 'automatic-original'] as const) {
@@ -61,7 +92,7 @@ test('each interval is chosen from what it costs to fetch, including request ove
   assert.equal(slowServer.controller.choose(FRAMES), 'opus-64')
 })
 
-test('one slow transfer lowers the estimate at once; recovery climbs one rung at a time with buffer and evidence', () => {
+test('one slow transfer lowers the estimate at once; recovery needs buffer and fresh evidence', () => {
   const r = rig({ ahead: 3 })
   r.link(150_000, 100)
   assert.equal(r.controller.choose(FRAMES), 'lossless')
@@ -78,8 +109,8 @@ test('one slow transfer lowers the estimate at once; recovery climbs one rung at
   assert.equal(r.controller.choose(FRAMES), 'lossless')
 })
 
-test('an unthrottled cold start reaches Original by the third interval', () => {
-  const r = rig()
+for (const qualities of [undefined, STRATUM_QUALITIES]) test(`an unthrottled cold start reaches Original by the third interval (${qualities ? 'expanded' : 'legacy'})`, () => {
+  const r = rig({ qualities })
   const chosen: StratumProofQuality[] = []
   for (let i = 0; i < 4; i++) {
     const quality = r.controller.choose(FRAMES)
@@ -88,6 +119,22 @@ test('an unthrottled cold start reaches Original by the third interval', () => {
     r.state.ahead += 4
   }
   assert.deepEqual(chosen.slice(0, 3), ['opus-128', 'opus-128', 'lossless'])
+})
+
+test('an expanded ladder drops a late Original directly to a sustainable quality', () => {
+  const r = rig({ qualities: STRATUM_QUALITIES, ahead: 3.5 })
+  r.link(150_000, 100)
+  assert.equal(r.controller.choose(FRAMES), 'lossless')
+  let lower: StratumProofQuality | undefined
+  const timing = r.controller.begin(FRAMES, 'lossless', quality => { lower = quality })
+  r.state.now += 500
+  timing.observe({ phase: 'start' })
+  for (let i = 0; i < 6 && !lower; i++) {
+    r.state.now += 16384 * 8 / 220
+    timing.observe({ phase: 'data', bytes: 16384 })
+  }
+  timing.close()
+  assert.equal(lower, 'opus-64', 'do not spend the remaining buffer stepping through high bitrates')
 })
 
 test('a buffer shorter than the next interval’s fetch time chooses a rung that arrives in time', () => {

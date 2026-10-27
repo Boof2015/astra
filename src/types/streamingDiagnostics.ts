@@ -1,5 +1,5 @@
 /** In-memory observations only. No URLs, account IDs, playback handles or audio. */
-export type DiagnosticSegmentQuality = 'lossless' | 'opus-64' | 'opus-128'
+export type DiagnosticSegmentQuality = import('../shared/stratumQuality').StratumQuality
 export interface StreamingDiagnosticSegment {
   start: number
   end: number
