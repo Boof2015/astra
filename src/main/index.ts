@@ -58,6 +58,7 @@ import { ProgressivePcmDelivery } from './progressivePcmDelivery'
 import { StratumAudioCache } from './services/stratumAudioCache'
 import { StratumPrefetchGate, canPrefetchStratum } from './services/stratumPrefetch'
 import { PlaybackNetworkPriority } from './services/playbackNetworkPriority'
+import { RemoteArtworkCache } from './services/remoteArtworkCache'
 import { StratumProofPcm, decodeStratumProofSegment } from './services/stratumProofPlayback'
 import { CompletedStreamingDiagnostics } from './services/streamingDiagnostics'
 import type { StreamingDiagnosticsSession } from '../types/streamingDiagnostics'
@@ -719,6 +720,14 @@ const artworkThumbnailRequestCache = new Map<string, Promise<ArtworkBytes | null
 const subsonicArtworkResolveRequestCache = new Map<string, Promise<string | null>>()
 // Display artwork downloads yield to a remote track the listener just started.
 const playbackNetworkPriority = new PlaybackNetworkPriority()
+let remoteArtworkCache: RemoteArtworkCache | null = null
+function getRemoteArtworkCache(): RemoteArtworkCache {
+  return remoteArtworkCache ??= new RemoteArtworkCache(join(app.getPath('userData'), 'artwork-references'), {
+    store: async (bytes, mimeType) => nativeImage.createFromBuffer(bytes).isEmpty()
+      ? null : library.cacheArtworkBuffer(bytes, mimeType),
+    exists: async hash => { try { return (await stat(library.getArtworkPath(hash))).isFile() } catch { return false } }
+  })
+}
 let subsonicStatusCache: SubsonicStatusSnapshot = {
   isSyncing: false,
   updatedAt: Date.now(),
@@ -1496,6 +1505,8 @@ const parallaxService = new ParallaxService({
 
 const plexSources: PlexSources = new PlexSources({
   library,
+  artwork: request => getRemoteArtworkCache().resolve({ ...request,
+    load: () => playbackNetworkPriority.run(signal => request.load(signal)) }),
   request: plexRequestOptions,
   encrypt: value => {
     if (!canUseSecureLocalStorage()) throw new Error('Secure credential storage is unavailable. Unlock your system keychain and try again.')
@@ -4525,7 +4536,13 @@ async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): 
       phase: 'finalizing',
       activity: 'Applying track metadata...'
     })
-    await library.upsertSubsonicTracks(sourceId, result.tracks, {
+    const artworkHashes = new Map<string, string>()
+    for (const hash of new Set(result.tracks.map(track => track.artwork_hash).filter((hash): hash is string => !!hash))) {
+      const cached = await resolveSubsonicArtworkHash(hash, true, true)
+      if (cached) artworkHashes.set(hash, cached)
+    }
+    await library.upsertSubsonicTracks(sourceId, result.tracks.map(track => ({ ...track,
+      artwork_hash: track.artwork_hash ? artworkHashes.get(track.artwork_hash) ?? track.artwork_hash : null })), {
       persist: false,
       syncSessionKey,
       preserveExistingArtwork: true
@@ -4657,9 +4674,10 @@ async function setJellyfinSourceDisabledState(sourceId: number): Promise<void> {
 }
 
 async function hydrateJellyfinTrackArtworkHashes(
+  sourceId: number,
   connection: { baseUrl: string; username: string; password: string },
   authContext: { accessToken: string; userId: string },
-  tracks: Array<{ artwork_source_id: string | null }>,
+  tracks: Array<{ artwork_source_id: string | null; artwork_revision?: string | null }>,
   onProgress?: (current: number, total: number, artworkId: string | null) => void
 ): Promise<Map<string, string>> {
   const artworkIds = Array.from(new Set(
@@ -4669,15 +4687,19 @@ async function hydrateJellyfinTrackArtworkHashes(
   ))
 
   const hashesByArtworkId = new Map<string, string>()
+  const revisions = new Map(tracks.map(track => [track.artwork_source_id, track.artwork_revision]))
   onProgress?.(0, artworkIds.length, null)
   let processed = 0
   for (const artworkId of artworkIds) {
     try {
-      const artworkPayload = await fetchJellyfinCoverArt(connection, artworkId, authContext, {
-        timeoutMs: 12_000,
-        retries: 1
+      const hash = await getRemoteArtworkCache().resolve({
+        scope: ['jellyfin', sourceId, connection.baseUrl, authContext.userId], id: artworkId,
+        revision: revisions.get(artworkId), refresh: true,
+        load: () => playbackNetworkPriority.run(async signal => {
+          const payload = await fetchJellyfinCoverArt(connection, artworkId, authContext, { timeoutMs: 12_000, retries: 1, signal })
+          return { data: Buffer.from(payload.data), contentType: payload.contentType }
+        })
       })
-      const hash = await library.cacheArtworkBuffer(artworkPayload.data, artworkPayload.contentType)
       if (hash) {
         hashesByArtworkId.set(artworkId, hash)
       }
@@ -4771,6 +4793,7 @@ async function syncOneJellyfinSource(sourceId: number, syncSessionKey: string): 
       activity: 'Syncing artwork...'
     })
     const artworkHashesBySourceId = await hydrateJellyfinTrackArtworkHashes(
+      sourceId,
       credentials.connection,
       authContext,
       result.tracks,
@@ -5571,22 +5594,29 @@ function getArtworkThumbnailCacheKey(hash: string, maxEdgePx: number): string {
     .digest('hex')
 }
 
-async function resolveSubsonicArtworkHash(hash: string): Promise<string | null> {
+async function resolveSubsonicArtworkHash(hash: string, refresh = false, existingOnly = false): Promise<string | null> {
   const parsed = parseSubsonicArtworkHash(hash)
   if (!parsed) return hash
 
-  if (subsonicArtworkResolveRequestCache.has(hash)) {
-    return subsonicArtworkResolveRequestCache.get(hash)!
+  const requestKey = `${hash}:${refresh ? 'refresh' : 'display'}`
+  if (subsonicArtworkResolveRequestCache.has(requestKey)) {
+    return subsonicArtworkResolveRequestCache.get(requestKey)!
   }
 
   const request = (async () => {
     try {
-      const credentials = requireSubsonicSourceCredentials(parsed.sourceId)
-      const artworkPayload = await playbackNetworkPriority.run(signal =>
-        fetchSubsonicCoverArt(credentials.connection, parsed.artworkId, { timeoutMs: 12_000, retries: 1, signal }))
-      const cachedHash = await library.cacheArtworkBuffer(artworkPayload.data, artworkPayload.contentType)
+      const source = library.getSubsonicSourceById(parsed.sourceId)
+      if (!source) return null
+      const cachedHash = await getRemoteArtworkCache().resolve({
+        scope: ['subsonic', source.id, source.base_url, source.username], id: parsed.artworkId, refresh, existingOnly,
+        load: () => playbackNetworkPriority.run(async signal => {
+          const credentials = requireSubsonicSourceCredentials(parsed.sourceId)
+          const payload = await fetchSubsonicCoverArt(credentials.connection, parsed.artworkId, { timeoutMs: 12_000, retries: 1, signal })
+          return { data: Buffer.from(payload.data), contentType: payload.contentType }
+        })
+      })
       if (!cachedHash) return null
-      await library.replaceSubsonicArtworkHash(parsed.sourceId, hash, cachedHash)
+      if (!refresh) await library.replaceSubsonicArtworkHash(parsed.sourceId, hash, cachedHash)
       return cachedHash
     } catch (error) {
       console.warn(`Failed to resolve Subsonic artwork ${parsed.artworkId}:`, error)
@@ -5594,10 +5624,10 @@ async function resolveSubsonicArtworkHash(hash: string): Promise<string | null> 
     }
   })()
     .finally(() => {
-      subsonicArtworkResolveRequestCache.delete(hash)
+      subsonicArtworkResolveRequestCache.delete(requestKey)
     })
 
-  subsonicArtworkResolveRequestCache.set(hash, request)
+  subsonicArtworkResolveRequestCache.set(requestKey, request)
   return request
 }
 

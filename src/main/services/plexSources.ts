@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { plexLibraryEntryName, plexServerName } from '../../shared/plex/serverName'
 import { classifySourceError } from './sourceErrorKind'
 import type * as Library from './library'
+import type { RemoteArtworkRequest } from './remoteArtworkCache'
 import type { PlexConnectInput, PlexLibraryChoice, PlexSignInStatus, PlexSource, PlexStatusSnapshot } from '../../types/plex'
 import { beginPlexSignIn, connectPlexServer, createPlexDevice, discoverPlexServers, fetchPlexArtwork,
   fetchPlexCatalog, isPlexAccessFailure, listPlexLibraries, pollPlexSignIn, PlexAccessError, PlexRequestError,
@@ -19,6 +20,7 @@ interface SignIn {
   connections: Map<string, { credentials: PlexCredentials; libraries: PlexLibraryChoice[] }>
 }
 interface Options {
+  artwork: (request: Omit<RemoteArtworkRequest, 'load'> & { load: (signal: AbortSignal) => ReturnType<RemoteArtworkRequest['load']> }) => Promise<string | null>
   library: Pick<typeof Library, 'listPlexSources' | 'getPlexSourceById' | 'savePlexSource' | 'updatePlexSource'
     | 'deletePlexSource' | 'markPlexTracksAvailability' | 'markPlexTracksUnreachable' | 'restorePlexTracksFromSourceUnavailable' | 'upsertPlexTracks' | 'markMissingPlexTracksUnavailable' | 'cacheArtworkBuffer'>
   encrypt: (value: string) => string
@@ -37,7 +39,6 @@ export class PlexSources {
   private credentialCache = new Map<number, { credentials: PlexCredentials; checkedAt: number }>()
   private credentialRequests = new Map<number, Promise<PlexCredentials>>()
   private syncs = new Map<number, { controller: AbortController; promise: Promise<void> }>()
-  private artworkHashes = new Map<string, string>()
   private progress = new Map<number, PlexStatusSnapshot['sources'][number]['progress']>()
   private options: Options
   constructor(options: Options) { this.options = options }
@@ -301,15 +302,12 @@ export class PlexSources {
         signal.throwIfAborted()
         this.progress.set(id, { phase: 'artwork', activity: 'Loading artwork…', current: index, total: artwork.length, detail: null, updatedAt: Date.now() }); this.changed()
         try {
-          const artworkKey = JSON.stringify([source.account_id, source.server_id, path])
-          const cachedHash = this.artworkHashes.get(artworkKey)
-          if (cachedHash) { hashes.set(path, cachedHash); continue }
-          const bytes = await fetchPlexArtwork(credentials, path, { ...this.options.request, signal })
-          const hash = await this.options.library.cacheArtworkBuffer(bytes)
-          if (hash) {
-            hashes.set(path, hash); this.artworkHashes.set(artworkKey, hash)
-            if (this.artworkHashes.size > 5000) this.artworkHashes.delete(this.artworkHashes.keys().next().value!)
-          }
+          const hash = await this.options.artwork({
+            scope: ['plex', source.account_id, source.server_id], id: path, refresh: true,
+            load: async artworkSignal => ({ data: await fetchPlexArtwork(credentials, path,
+              { ...this.options.request, signal: AbortSignal.any([signal, artworkSignal]) }) })
+          })
+          if (hash) hashes.set(path, hash)
         } catch { signal.throwIfAborted() }
       }
       signal.throwIfAborted()

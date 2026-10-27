@@ -27,6 +27,7 @@ export interface JellyfinCatalogTrack {
   source_track_id: string
   source_path: string | null
   artwork_source_id: string | null
+  artwork_revision?: string | null
   title: string
   artist: string
   artist_names: string[]
@@ -624,6 +625,9 @@ export function mapJellyfinItemToCatalogTrack(sourceId: number, item: JellyfinAu
     source_track_id: sourceTrackId,
     source_path: sourcePath,
     artwork_source_id: artworkSourceId,
+    artwork_revision: artworkSourceId === toTrimmedText(item.AlbumId)
+      ? toTrimmedText(item.AlbumPrimaryImageTag)
+      : toTrimmedText(item.ImageTags && typeof item.ImageTags === 'object' ? (item.ImageTags as Record<string, unknown>).Primary : null),
     title,
     artist,
     artist_names: artistNames,

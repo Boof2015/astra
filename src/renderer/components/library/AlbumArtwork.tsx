@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import { buildArtworkProtocolUrl, useLibraryStore } from '../../stores/libraryStore'
 import type { ArtworkVariant } from '../../stores/libraryStore'
+import { forgetDisplayedArtwork, hasDisplayedArtwork, rememberDisplayedArtwork } from '../../utils/displayedArtwork'
 import {
   ARTWORK_PRELOAD_MARGIN_PX,
   isElementWithinPreloadRange,
@@ -47,9 +48,10 @@ function VirtualizedAlbumArtwork({
       src={artworkUrl}
       alt={alt}
       className={className}
-      loading="lazy"
+      loading={hasDisplayedArtwork(artworkUrl) ? 'eager' : 'lazy'}
       decoding="async"
-      onError={() => setFailedArtworkUrl(artworkUrl)}
+      onLoad={() => rememberDisplayedArtwork(artworkUrl)}
+      onError={() => { forgetDisplayedArtwork(artworkUrl); setFailedArtworkUrl(artworkUrl) }}
     />
   )
 }
@@ -114,15 +116,18 @@ function LazyAlbumArtwork({
   className,
   variant
 }: VirtualizedAlbumArtworkProps) {
-  const [artworkUrl, setArtworkUrl] = useState<string | null>(null)
+  const requestedUrl = hash ? buildArtworkProtocolUrl(hash, variant) : null
+  const [readyUrl, setArtworkUrl] = useState<string | null>(() => hasDisplayedArtwork(requestedUrl) ? requestedUrl : null)
+  // A recycled card must never show its previous track's art for one render.
+  const artworkUrl = readyUrl === requestedUrl ? readyUrl : hasDisplayedArtwork(requestedUrl) ? requestedUrl : null
   const [isVisible, setIsVisible] = useState(false)
   const placeholderRef = useRef<HTMLDivElement | null>(null)
   const getArtwork = useLibraryStore((state) => state.getArtwork)
 
   useEffect(() => {
-    setArtworkUrl(null)
+    setArtworkUrl(hasDisplayedArtwork(requestedUrl) ? requestedUrl : null)
     setIsVisible(false)
-  }, [hash, variant])
+  }, [requestedUrl])
 
   useEffect(() => {
     if (!hash) {
@@ -235,7 +240,7 @@ function LazyAlbumArtwork({
   useEffect(() => {
     let isCancelled = false
 
-    if (!hash || !isVisible) {
+    if (!hash || !isVisible || hasDisplayedArtwork(requestedUrl)) {
       return
     }
 
@@ -246,6 +251,7 @@ function LazyAlbumArtwork({
       })
       .then((url) => {
         if (isCancelled) return
+        if (url) rememberDisplayedArtwork(url)
         setArtworkUrl(url)
       })
       .catch(() => {
@@ -256,7 +262,7 @@ function LazyAlbumArtwork({
     return () => {
       isCancelled = true
     }
-  }, [getArtwork, hash, isVisible, variant])
+  }, [getArtwork, hash, isVisible, variant, requestedUrl])
 
   if (!hash || !artworkUrl) {
     return (
@@ -273,7 +279,9 @@ function LazyAlbumArtwork({
       className={className}
       loading="eager"
       decoding="async"
+      onLoad={() => rememberDisplayedArtwork(artworkUrl)}
       onError={() => {
+        forgetDisplayedArtwork(artworkUrl)
         setArtworkUrl(null)
         setIsVisible(false)
       }}

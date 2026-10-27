@@ -6490,7 +6490,7 @@ test('Plex outage recovery restores only outage-hidden tracks, even when the cat
   ])
   await library.markMissingPlexTracksUnavailable(source.id, new Set(['10']))
   let server: 'offline' | 'incomplete catalog' = 'offline'
-  const plex = new PlexSources({ library, encrypt: value => value, decrypt: value => value, openExternal: async () => {}, changed: () => {},
+  const plex = new PlexSources({ library, artwork: async () => { throw new Error('Outage test must not request artwork') }, encrypt: value => value, decrypt: value => value, openExternal: async () => {}, changed: () => {},
     beginLibrarySync: () => 'sync', finishLibrarySync: async () => {},
     request: { fetch: async url => {
       if (server === 'offline') throw new TypeError('fetch failed')

@@ -1,10 +1,28 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { type TestContext } from 'node:test'
+import { createHash } from 'node:crypto'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { RemoteArtworkCache } from './remoteArtworkCache.ts'
 import { PlexSources } from './plexSources.ts'
 import type { PlexSourceRow } from './library.ts'
 
 type Options = ConstructorParameters<typeof PlexSources>[0]
-function harness() {
+function harness(t: TestContext) {
+  const directory = mkdtempSync(join(tmpdir(), 'astra-plex-artwork-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const artworkOptions = {
+    store: async (bytes: Buffer) => {
+      const hash = createHash('md5').update(bytes).digest('hex') + '.jpg'
+      await writeFile(join(directory, hash), bytes)
+      return hash
+    },
+    exists: async (hash: string) => { try { return (await stat(join(directory, hash))).isFile() } catch { return false } }
+  }
+  let artwork = new RemoteArtworkCache(join(directory, 'references'), artworkOptions)
+  const restartArtwork = () => { artwork = new RemoteArtworkCache(join(directory, 'references'), artworkOptions) }
   const rows = new Map<number, PlexSourceRow>()
   const commits: unknown[] = [], missing: unknown[] = [], opened: string[] = [], finishes: boolean[] = [], availability: unknown[] = [], restored: number[] = []
   const mutations = { brokenCatalog: false, pending: true, revokedAccount: false, rejectServer: false, failArtwork: false,
@@ -14,6 +32,7 @@ function harness() {
   const json = (v: unknown) => new Response(JSON.stringify(v), { headers: { 'Content-Type': 'application/json' } })
   const publicRow = (row: PlexSourceRow) => { const { secret_encrypted, deleted, ...source } = row; return { ...source, has_stored_secret: !!secret_encrypted } }
   const options: Options = {
+    artwork: request => artwork.resolve({ ...request, load: () => request.load(new AbortController().signal) }),
     library: {
       listPlexSources: () => [...rows.values()].map(publicRow), getPlexSourceById: id => rows.get(id) ?? null,
       savePlexSource: async input => {
@@ -72,11 +91,11 @@ function harness() {
     const [source] = await service.connect(10, { signInId: started.id, serverId: 'server', libraryIds: [libraries[0].id] })
     return { started, ready, source }
   }
-  return { service, connect, rows, commits, missing, opened, finishes, mutations, requests, options, availability, restored }
+  return { service, connect, rows, commits, missing, opened, finishes, mutations, requests, options, availability, restored, restartArtwork }
 }
 
 test('Plex sign-in sessions are renderer-owned, cancellable and public responses contain no credentials', async t => {
-  const h = harness(); t.after(() => h.service.dispose())
+  const h = harness(t); t.after(() => h.service.dispose())
   const first = await h.service.begin(10)
   assert.equal(first.state, 'waiting'); assert.equal(h.opened.length, 1)
   await assert.rejects(h.service.poll(11, first.id), /no longer active/)
@@ -92,7 +111,7 @@ test('Plex sign-in sessions are renderer-owned, cancellable and public responses
 })
 
 test('Plex refreshes opted-in playlists after a successful catalog scan; playlist errors do not fail the scan', async t => {
-  const h = harness(); t.after(() => h.service.dispose())
+  const h = harness(t); t.after(() => h.service.dispose())
   const { source } = await h.connect()
   const refreshed: number[] = []
   h.options.afterCatalogSync = async id => { refreshed.push(id); throw new Error('playlist unavailable') }
@@ -105,7 +124,7 @@ test('Plex refreshes opted-in playlists after a successful catalog scan; playlis
 })
 
 test('Plex cannot connect a renderer-invented server/library and cancellation wins an in-flight sign-in', async t => {
-  const h = harness(); t.after(() => h.service.dispose())
+  const h = harness(t); t.after(() => h.service.dispose())
   const started = await h.service.begin(10); h.mutations.pending = false; await h.service.poll(10, started.id)
   await assert.rejects(h.service.libraries(10, started.id, 'invented'), /Select a Plex server/)
   await assert.rejects(h.service.connect(10, { signInId: started.id, serverId: 'server', libraryIds: ['2'] }), /Select a Plex server and music library/)
@@ -117,15 +136,15 @@ test('Plex cannot connect a renderer-invented server/library and cancellation wi
   assert.equal(h.rows.size, 0)
 })
 
-test('Plex refuses to begin browser sign-in without encrypted storage', async () => {
-  const h = harness()
+test('Plex refuses to begin browser sign-in without encrypted storage', async t => {
+  const h = harness(t)
   const service = new PlexSources({ ...h.options, encrypt: () => { throw new Error('keychain unavailable') } })
   await assert.rejects(service.begin(10), /keychain/)
   assert.equal(h.opened.length, 0); assert.equal(h.requests.length, 0)
 })
 
 test('Plex incomplete sync preserves existing catalog and only successful catalogs mark missing tracks', async t => {
-  const h = harness(); t.after(() => h.service.dispose())
+  const h = harness(t); t.after(() => h.service.dispose())
   const { source } = await h.connect()
   h.mutations.brokenCatalog = true
   await assert.rejects(h.service.sync(source.id), /incomplete/)
@@ -145,7 +164,7 @@ test('Plex incomplete sync preserves existing catalog and only successful catalo
 })
 
 test('Plex sync rediscovers a changed resource token without upgrading account auth to JWT', async t => {
-  const h = harness(); t.after(() => h.service.dispose())
+  const h = harness(t); t.after(() => h.service.dispose())
   const { source } = await h.connect(); h.mutations.serverToken = 'new-server-token'
   await h.service.sync(source.id)
   assert.equal(h.requests.filter(path => path.endsWith('/resources')).length, 2)
@@ -159,8 +178,25 @@ test('Plex sync rediscovers a changed resource token without upgrading account a
   assert.equal(h.service.status().sources[0].status, 'disabled')
 })
 
+test('Plex artwork remains local after recreating both the source service and its artwork cache', async t => {
+  const h = harness(t)
+  t.after(() => h.service.dispose())
+  const { source } = await h.connect()
+  await h.service.sync(source.id)
+  const before = h.requests.filter(path => path.includes('/thumb/')).length
+  assert.equal(before, 1)
+  h.service.dispose()
+  h.restartArtwork()
+  h.mutations.failArtwork = true
+  const reopened = new PlexSources(h.options)
+  t.after(() => reopened.dispose())
+  await reopened.sync(source.id)
+  assert.equal(h.requests.filter(path => path.includes('/thumb/')).length, before)
+  assert.deepEqual(h.commits[1], h.commits[0])
+})
+
 test('Plex traditional browser sign-in can list and sync a shared server that rejects JWTs', async t => {
-  const h = harness(); t.after(() => h.service.dispose())
+  const h = harness(t); t.after(() => h.service.dispose())
   h.mutations.shared = true
   const { source, ready } = await h.connect()
   assert.equal(ready.servers?.[0].owned, false)
@@ -169,7 +205,7 @@ test('Plex traditional browser sign-in can list and sync a shared server that re
 })
 
 test('Plex persisted traditional credentials reopen without JWT renewal or an account request', async t => {
-  const h = harness(); t.after(() => h.service.dispose())
+  const h = harness(t); t.after(() => h.service.dispose())
   const { source } = await h.connect()
   h.service.dispose()
   const reopened = new PlexSources(h.options); t.after(() => reopened.dispose())
@@ -182,7 +218,7 @@ test('Plex persisted traditional credentials reopen without JWT renewal or an ac
 })
 
 test('Plex revoked account asks for sign-in without committing a partial catalog', async t => {
-  const h = harness(); t.after(() => h.service.dispose())
+  const h = harness(t); t.after(() => h.service.dispose())
   const { source } = await h.connect()
   h.mutations.serverToken = 'new-server-token'
   h.mutations.revokedAccount = true
@@ -194,7 +230,7 @@ test('Plex revoked account asks for sign-in without committing a partial catalog
 })
 
 test('Plex unreachable server marks its tracks unavailable', async t => {
-  const h = harness(); t.after(() => h.service.dispose())
+  const h = harness(t); t.after(() => h.service.dispose())
   const { source } = await h.connect()
   h.service.dispose()
   const offline = new PlexSources({ ...h.options, request: { fetch: (async () => { throw new TypeError('fetch failed') }) as typeof fetch } })
@@ -209,7 +245,7 @@ test('Plex unreachable server marks its tracks unavailable', async t => {
 
 for (const kind of ['invalid JSON', 'HTTP 500'] as const) {
   test(`Plex catalog ${kind} after a passing connection check keeps tracks playable`, async t => {
-    const h = harness(); t.after(() => h.service.dispose())
+    const h = harness(t); t.after(() => h.service.dispose())
     const { source } = await h.connect()
     const online = h.options.request!.fetch!
     h.options.request!.fetch = (async (input: any, init: RequestInit = {}) => new URL(String(input)).pathname.endsWith('/all')
@@ -223,7 +259,7 @@ for (const kind of ['invalid JSON', 'HTTP 500'] as const) {
 }
 
 test('Plex lost server access marks tracks unavailable even with cached credentials', async t => {
-  const h = harness(); t.after(() => h.service.dispose())
+  const h = harness(t); t.after(() => h.service.dispose())
   const { source } = await h.connect()
   const online = h.options.request!.fetch!
   // Cached credentials skip discovery; the server then refuses them and discovery no longer lists it.
@@ -235,7 +271,7 @@ test('Plex lost server access marks tracks unavailable even with cached credenti
 })
 
 test('Plex access lost during the catalog marks tracks unavailable', async t => {
-  const h = harness(); t.after(() => h.service.dispose())
+  const h = harness(t); t.after(() => h.service.dispose())
   const { source } = await h.connect()
   const online = h.options.request!.fetch!
   h.options.request!.fetch = (async (input: any, init: RequestInit = {}) => {
@@ -250,7 +286,7 @@ test('Plex access lost during the catalog marks tracks unavailable', async t => 
 })
 
 test('Plex reconnection restores outage-only tracks even if the catalog then fails', async t => {
-  const h = harness(); t.after(() => h.service.dispose())
+  const h = harness(t); t.after(() => h.service.dispose())
   const { source } = await h.connect()
   const online = h.options.request!.fetch!
   h.service.dispose()
@@ -266,7 +302,7 @@ test('Plex reconnection restores outage-only tracks even if the catalog then fai
 })
 
 test('Plex persistent server rejection retries authorization only once', async t => {
-  const h = harness(); t.after(() => h.service.dispose())
+  const h = harness(t); t.after(() => h.service.dispose())
   const { source } = await h.connect()
   h.mutations.rejectServer = true
   const checks = h.requests.filter(path => path === '/library/sections').length
@@ -280,7 +316,7 @@ test('Plex persistent server rejection retries authorization only once', async t
 })
 
 test('Plex reconnect must preserve account, server and Music library identity', async t => {
-  const h = harness(); t.after(() => h.service.dispose())
+  const h = harness(t); t.after(() => h.service.dispose())
   const { source } = await h.connect()
   const next = await h.service.begin(10); await h.service.poll(10, next.id); await h.service.libraries(10, next.id, 'server')
   await assert.rejects(h.service.connect(10, { signInId: next.id, serverId: 'server', libraryIds: ['2'], sourceIds: [999] }), /same Plex account/)
@@ -289,7 +325,7 @@ test('Plex reconnect must preserve account, server and Music library identity', 
 })
 
 test('Plex Sync All shares a latest-library session across sources and stops after disposal', async t => {
-  const h = harness(); t.after(() => h.service.dispose())
+  const h = harness(t); t.after(() => h.service.dispose())
   const { source } = await h.connect()
   h.rows.set(2, { ...h.rows.get(source.id)!, id: 2 })
   const events: string[] = []
@@ -306,7 +342,7 @@ test('Plex Sync All shares a latest-library session across sources and stops aft
 })
 
 test('Plex connects several libraries of one server in one sign-in, and reconnects them together', async t => {
-  const h = harness(); t.after(() => h.service.dispose())
+  const h = harness(t); t.after(() => h.service.dispose())
   h.mutations.secondLibrary = true
   const started = await h.service.begin(10); h.mutations.pending = false; await h.service.poll(10, started.id)
   assert.deepEqual((await h.service.libraries(10, started.id, 'server')).map(library => library.name), ['Music', 'Audiobooks'], 'music libraries only')
@@ -324,7 +360,7 @@ test('Plex connects several libraries of one server in one sign-in, and reconnec
 })
 
 test('Adding a library to a connected server uses its stored sign-in and the server’s name in Astra', async t => {
-  const h = harness(); t.after(() => h.service.dispose())
+  const h = harness(t); t.after(() => h.service.dispose())
   const { source } = await h.connect()
   assert.equal(source.name, 'Home · Music')
   await h.service.update(source.id, { name: 'Den · Music' })
