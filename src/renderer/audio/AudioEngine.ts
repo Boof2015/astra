@@ -6328,7 +6328,7 @@ export class AudioEngine {
     return this.remoteStreamState?.completeBuffer ? null : this.remoteStreamState?.sessionId ?? null
   }
 
-  /** Read only, sampled by the hidden diagnostics panel. No new worklet messages. */
+  /** Read only, sampled by visible streaming views. No new worklet messages. */
   getStreamingDiagnosticsState() {
     const native = this.isNativeExclusiveMode()
     const current = native ? null : this.remoteStreamState

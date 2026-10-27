@@ -144,3 +144,51 @@ export function pollStreamingDiagnostics<T>(options: {
   void tick()
   return () => { disposed = true; generation++; clearTimeout(timer); unsubscribe() }
 }
+
+export interface StreamingDiagnosticsSnapshot<T> { reading: T | null; failed: boolean }
+
+/** All visible views share one existing-rate sampler. Closing the last view
+ * releases its timer/listener and prevents an outstanding result from resurfacing. */
+export function createStreamingDiagnosticsFeed<T>(options: {
+  read: () => Promise<T | null>
+  visible: () => boolean
+  subscribeVisibility: (changed: () => void) => () => void
+  intervalMs?: number
+}) {
+  const empty: StreamingDiagnosticsSnapshot<T> = { reading: null, failed: false }
+  let snapshot = empty
+  const listeners = new Set<() => void>()
+  let stop: (() => void) | null = null
+  let pendingRead: Promise<T | null> | null = null
+  let generation = 0
+  const publish = (reading: T | null, failed: boolean) => {
+    snapshot = { reading, failed }
+    for (const listener of listeners) listener()
+  }
+  return {
+    getSnapshot: () => snapshot,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener)
+      if (!stop) {
+        const started = ++generation
+        stop = pollStreamingDiagnostics({
+          ...options,
+          read: async () => {
+            // Rapid close/reopen must not overlap the previous view's IPC.
+            while (pendingRead) await pendingRead.catch(() => {})
+            if (started !== generation || !listeners.size || !options.visible()) return null
+            const request = options.read()
+            pendingRead = request
+            try { return await request } finally { if (pendingRead === request) pendingRead = null }
+          },
+          deliver: value => publish(value, false),
+          failed: () => publish(null, true)
+        })
+      }
+      return () => {
+        listeners.delete(listener)
+        if (!listeners.size) { generation++; stop?.(); stop = null; snapshot = empty }
+      }
+    }
+  }
+}

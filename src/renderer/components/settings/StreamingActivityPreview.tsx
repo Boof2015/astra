@@ -3,9 +3,19 @@ import { useMediaQuery } from '../../hooks/useMediaQuery'
 import { diagnosticQualityLabel, diagnosticWindow, type DiagnosticMapSpan, type StreamingDiagnosticsReading } from '../../utils/streamingDiagnostics'
 import { ACTIVITY_SETTLE_MS, StreamActivityPresentation } from '../../utils/streamActivityPresentation'
 
-const width = 960, top = 14, height = 72
+const width = 960, top = 14
+const compactHeight = 52
 const qualityClass = (quality: DiagnosticMapSpan['quality']) => quality ? `stream-map-quality-${quality}` : 'stream-map-neutral'
 const time = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
+
+/** Reserve the compact plot and axis while a fresh playback reading is pending. */
+export function StreamingActivityPlaceholder({ message, failed = false }: { message: string; failed?: boolean }) {
+  return <div className="streaming-activity-preview streaming-activity-placeholder">
+    <svg viewBox={`-6 0 ${width + 12} ${compactHeight + 24}`} aria-hidden="true" />
+    <p className="streaming-shelf-message" role={failed ? 'status' : undefined}>{message}</p>
+    <div className="stream-map-axis" aria-hidden="true"><span>&nbsp;</span></div>
+  </div>
+}
 
 interface Tile {
   x: number; y: number; w: number; h: number
@@ -38,7 +48,10 @@ function ActivityTile({ tile, mode, progress = null, layer }: {
 
 /** Uses the same snapshots as the literal map. CSS animates only observed
  * arrivals/preparation/byte changes, and has no continuous animation loop. */
-export default function StreamingActivityPreview({ reading }: { reading: StreamingDiagnosticsReading }) {
+export default function StreamingActivityPreview({ reading, showCaption = true, compact = false }: {
+  reading: StreamingDiagnosticsReading; showCaption?: boolean; compact?: boolean
+}) {
+  const height = compact ? compactHeight : 72
   const host = useRef<HTMLDivElement>(null)
   const plot = useRef<SVGSVGElement>(null)
   const presentation = useRef(new StreamActivityPresentation())
@@ -145,9 +158,9 @@ export default function StreamingActivityPreview({ reading }: { reading: Streami
     return cells.map((tile, order) => ({ ...tile, order }))
   }
   return <div ref={host} className={`streaming-activity-preview${!visible || reducedMotion ? ' is-still' : ''}`}>
-    <div className="streaming-activity-caption"><span>Activity preview</span><span>Same data · tile transitions</span></div>
+    {showCaption && <div className="streaming-activity-caption"><span>Activity preview</span><span>Same data · tile transitions</span></div>}
     {!range ? <p>Waiting for the track’s duration…</p> : <>
-      <svg ref={plot} viewBox={`-6 0 ${width + 12} 96`} role="img" aria-label="Streaming activity preview. Brief tile transitions show confirmed arrivals and preparation; quality and ranges match the literal map.">
+      <svg ref={plot} viewBox={`-6 0 ${width + 12} ${height + 24}`} role="img" aria-label={`Stream activity. Playing at ${time(reading.position)}. Soft fill is cached in Astra; solid fill is prepared for playback. Tiles show downloads and newly prepared audio.`}>
         <rect y={top} width={width} height={height} className="stream-map-empty" />
         {surfaces.filter(span => span.state !== 'unprepared').map(span => <g key={span.start}
           className={qualityClass(span.quality)} data-activity-state={span.state}>
@@ -172,7 +185,7 @@ export default function StreamingActivityPreview({ reading }: { reading: Streami
           className={`stream-map-played${frame.smoothPosition ? ' stream-activity-played' : ''}`} pointerEvents="none" />
         <g className={`stream-map-playhead${frame.smoothPosition ? ' stream-activity-playhead' : ''}`}
           style={{ transform: `translateX(${x(reading.position)}px)` }} pointerEvents="none">
-          <path d="M-5 1h10v5H2v4H1v80H-1V10H-2V6H-5Z" />
+          <path d={`M-5 1h10v5H2v4H1v${height + 8}H-1V10H-2V6H-5Z`} />
         </g>
       </svg>
       <div className="stream-map-axis"><span>{time(range.start)}</span><span>{time(reading.position)} / {time(reading.duration)}</span><span>{time(range.end)}</span></div>

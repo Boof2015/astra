@@ -23,6 +23,7 @@ import { usePresence } from '../../hooks/usePresence'
 import EQResponsePreview from '../eq/EQResponsePreview'
 import AudioPipelineShelf from './AudioPipelineShelf'
 import StreamQualityIndicator from './StreamQualityIndicator'
+import StreamingActivityShelf from './StreamingActivityShelf'
 import type { RemotePlaybackQuality } from '../../../types/streamingQuality'
 import TransportLyricsShelf from './TransportLyricsShelf'
 import { useLyricsPopoutStore } from '../../stores/lyricsPopoutStore'
@@ -59,8 +60,8 @@ function TransportWaveformSection({
   const effectiveDelayMs = useAudioSettingsStore((s) => s.effectiveDelayMs)
   const waveformTimeDisplayMode = useUIStore((s) => s.waveformTimeDisplayMode)
   const toggleWaveformTimeDisplayMode = useUIStore((s) => s.toggleWaveformTimeDisplayMode)
-  const showPipelineShelf = useUIStore((s) => s.showPipelineShelf)
-  const togglePipelineShelf = useUIStore((s) => s.togglePipelineShelf)
+  const showStreamingShelf = useUIStore((s) => s.showStreamingShelf)
+  const toggleStreamingShelf = useUIStore((s) => s.toggleStreamingShelf)
 
   const effectiveDelaySec = Math.max(0, effectiveDelayMs / 1000)
   const compensatedTime = duration > 0
@@ -76,7 +77,7 @@ function TransportWaveformSection({
     <div className="transport-waveform-wrap">
       <div className="transport-waveform-meta">
         <span className="waveform-time waveform-time-current">{formatTime(compensatedTime)}</span>
-        <StreamQualityIndicator quality={streamQuality} expanded={showPipelineShelf} onClick={togglePipelineShelf} />
+        <StreamQualityIndicator quality={streamQuality} expanded={showStreamingShelf} onClick={toggleStreamingShelf} />
         <button
           type="button"
           className="waveform-time waveform-time-remaining waveform-time-toggle"
@@ -393,6 +394,7 @@ export default function TransportBar() {
       </button>
       <AudioPipelineShelf />
       <TransportLyricsShelf />
+      <StreamingActivityShelf />
 
       {/* Left: Track info */}
       <div className="transport-info">

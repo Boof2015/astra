@@ -1291,12 +1291,16 @@ html.app-view-transition-up::view-transition-new(app-main-view) {
   font-family: var(--font-mono);
   font-size: 10px;
   line-height: inherit;
+  white-space: nowrap;
   cursor: pointer;
   pointer-events: auto;
 }
 
 .transport-stream-quality-mode {
   color: var(--accent-text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .transport-stream-quality-value {

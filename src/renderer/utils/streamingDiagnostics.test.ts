@@ -1,7 +1,7 @@
 import type { StreamingDiagnosticsSession, StreamingDiagnosticSegment } from '../../types/streamingDiagnostics.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { diagnosticBufferedRange, diagnosticMapSpans, diagnosticWindow, pollStreamingDiagnostics, streamingTimingReport, type StreamingDiagnosticsReading } from './streamingDiagnostics.ts'
+import { createStreamingDiagnosticsFeed, diagnosticBufferedRange, diagnosticMapSpans, diagnosticWindow, pollStreamingDiagnostics, streamingTimingReport, type StreamingDiagnosticsReading } from './streamingDiagnostics.ts'
 
 const reading: StreamingDiagnosticsReading = { title: 'Track', artist: 'Artist', duration: 180, position: 90,
   playbackState: 'playing', start: 80, bufferedEnd: 100, completeLocalBuffer: false,
@@ -113,3 +113,74 @@ function segment(start: number, state: StreamingDiagnosticSegment['state'], qual
   return { start, end: start + 4, quality, state, receivedBytes: 100, payloadBytes: null,
     elapsedMs: 20, transferMs: null, decodeMs: null, serverCacheHit: true }
 }
+
+
+test('visible activity views share one sampler and release it when the last view closes', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let reads = 0, visibilityListeners = 0, notices = 0
+  const feed = createStreamingDiagnosticsFeed({
+    read: async () => ++reads, visible: () => true,
+    subscribeVisibility: () => { visibilityListeners++; return () => { visibilityListeners-- } }
+  })
+  const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve() }
+  const stopPanel = feed.subscribe(() => { notices++ })
+  const stopDeveloper = feed.subscribe(() => { notices++ })
+  await flush()
+  assert.equal(reads, 1)
+  assert.equal(notices, 2)
+  assert.equal(visibilityListeners, 1)
+  assert.deepEqual(feed.getSnapshot(), { reading: 1, failed: false })
+  t.mock.timers.tick(500); await flush()
+  assert.equal(reads, 2, 'opening two views does not double collection')
+  stopPanel(); t.mock.timers.tick(500); await flush()
+  assert.equal(reads, 3)
+  stopDeveloper(); t.mock.timers.tick(5000); await flush()
+  assert.equal(reads, 3)
+  assert.equal(visibilityListeners, 0)
+  assert.deepEqual(feed.getSnapshot(), { reading: null, failed: false })
+})
+
+test('rapidly reopening activity never overlaps IPC or revives an old reading', async () => {
+  const pending: ((value: number) => void)[] = []
+  const values: (number | null)[] = []
+  const feed = createStreamingDiagnosticsFeed({
+    read: () => new Promise<number>(resolve => { pending.push(resolve) }),
+    visible: () => true, subscribeVisibility: () => () => {}
+  })
+  const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve() }
+  const subscribe = () => feed.subscribe(() => { values.push(feed.getSnapshot().reading) })
+  const stopFirst = subscribe(); stopFirst()
+  const stopSecond = subscribe(); stopSecond()
+  const stopThird = subscribe()
+  try {
+    assert.equal(pending.length, 1)
+    pending[0](1); await flush()
+    assert.deepEqual(values, [])
+    assert.equal(pending.length, 2, 'only the still-open view starts a fresh request')
+    pending[1](2); await flush()
+    assert.deepEqual(values, [2])
+  } finally { stopThird() }
+})
+
+test('activity feed pauses while hidden, discards hidden work and recovers from failures', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let visible = true, reads = 0, change = () => {}
+  let finish!: (value: number) => void
+  const feed = createStreamingDiagnosticsFeed({
+    read: () => { reads++; if (reads === 2) return Promise.reject(new Error('unavailable'))
+      return new Promise<number>(resolve => { finish = resolve }) },
+    visible: () => visible, subscribeVisibility: listener => { change = listener; return () => {} }
+  })
+  const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve() }
+  const stop = feed.subscribe(() => {})
+  try {
+    visible = false; change(); finish(1); await flush()
+    t.mock.timers.tick(5000); await flush()
+    assert.equal(reads, 1)
+    assert.equal(feed.getSnapshot().reading, null)
+    visible = true; change(); await flush()
+    assert.deepEqual(feed.getSnapshot(), { reading: null, failed: true })
+    t.mock.timers.tick(500); finish(3); await flush()
+    assert.deepEqual(feed.getSnapshot(), { reading: 3, failed: false })
+  } finally { stop() }
+})
