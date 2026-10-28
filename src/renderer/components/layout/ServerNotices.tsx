@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { useLibraryStore } from '../../stores/libraryStore'
 import { useProviderSyncStore } from '../../stores/providerSyncStore'
 import { planOutageNotices, useServerNoticeStore, type ServerNotice } from '../../stores/serverNoticeStore'
 import { useServerWindowRequest } from '../../stores/serverWindowRequest'
@@ -92,11 +91,8 @@ export default function ServerNotices() {
       </button>
     )
   } else if (head.kind === 'ready' && head.serverKey) {
-    const key = head.serverKey
     badge = (
       <button type="button" className="server-cue-badge" onClick={() => {
-        // Every library of a Plex server, like its chip in the library.
-        useLibraryStore.getState().setSelectedSourceFilters(server ? server.sourceIds.map(id => `${server.provider}:${id}`) : [key])
         useUIStore.getState().setActiveView('library')
         dismiss()
       }}>

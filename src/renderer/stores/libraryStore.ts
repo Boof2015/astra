@@ -344,7 +344,6 @@ interface LibraryStore {
   tracksViewSortState: LibraryTrackListSortState | null
   tracksViewSortRules: TrackSortRule[]
   rootTrackTableLayout: RootTrackTableLayout
-  selectedSourceFilters: Set<string>
   albumSortState: LibraryAlbumSortState
   includeSinglesInAlbums: boolean
   includeCollabArtists: boolean
@@ -423,9 +422,6 @@ interface LibraryStore {
   resetTrackListSortState: () => void
   setTracksViewSortRules: (rules: readonly TrackSortRule[]) => void
   setRootTrackTableLayout: (layout: RootTrackTableLayout) => void
-  setSelectedSourceFilters: (filters: Iterable<string>) => void
-  clearSelectedSourceFilters: () => void
-  toggleSourceFilter: (filterKey: string) => void
   setAlbumSortState: (state: LibraryAlbumSortState) => void
   setIncludeSinglesInAlbums: (enabled: boolean) => void
   setIncludeCollabArtists: (enabled: boolean) => void
@@ -649,7 +645,6 @@ type TrackCachePatch = Partial<Pick<
   | 'trackListSortState'
   | 'tracksViewSortState'
   | 'tracksViewSortRules'
-  | 'selectedSourceFilters'
   | 'albumSortState'
   | 'includeSinglesInAlbums'
   | 'includeCollabArtists'
@@ -947,24 +942,6 @@ function persistBooleanPreference(storageKey: string, value: boolean): void {
   persistStringPreference(storageKey, value ? '1' : '0')
 }
 
-function normalizeSourceFilters(filters: Iterable<string>): Set<string> {
-  const next = new Set<string>()
-  for (const filter of filters) {
-    if (typeof filter === 'string' && filter.trim().length > 0) {
-      next.add(filter)
-    }
-  }
-  return next
-}
-
-function areStringSetsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
-  if (left.size !== right.size) return false
-  for (const value of left) {
-    if (!right.has(value)) return false
-  }
-  return true
-}
-
 function updateAlbumNewFlagInCollection(albums: Album[], albumIdentityKey: string | null, isNew: boolean): Album[] {
   if (!albumIdentityKey) return albums
 
@@ -1166,7 +1143,6 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   tracksViewSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE },
   tracksViewSortRules: DEFAULT_TRACK_SORT_RULES.map((rule) => ({ ...rule })),
   rootTrackTableLayout: loadRootTrackTableLayoutSetting(),
-  selectedSourceFilters: new Set<string>(),
   albumSortState: loadAlbumSortStateSetting(),
   includeSinglesInAlbums: loadIncludeSinglesInAlbumsSetting(),
   includeCollabArtists: loadIncludeCollabArtistsSetting(),
@@ -2649,36 +2625,6 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     set({ rootTrackTableLayout: normalized })
   },
 
-  setSelectedSourceFilters: (filters: Iterable<string>) => {
-    const next = normalizeSourceFilters(filters)
-    set((state) => (
-      areStringSetsEqual(state.selectedSourceFilters, next)
-        ? {}
-        : { selectedSourceFilters: next }
-    ))
-  },
-
-  clearSelectedSourceFilters: () => {
-    set((state) => (
-      state.selectedSourceFilters.size === 0
-        ? {}
-        : { selectedSourceFilters: new Set<string>() }
-    ))
-  },
-
-  toggleSourceFilter: (filterKey: string) => {
-    if (!filterKey.trim()) return
-    set((state) => {
-      const next = new Set(state.selectedSourceFilters)
-      if (next.has(filterKey)) {
-        next.delete(filterKey)
-      } else {
-        next.add(filterKey)
-      }
-      return { selectedSourceFilters: next }
-    })
-  },
-
   setAlbumSortState: (sortState: LibraryAlbumSortState) => {
     const normalized = normalizeAlbumSortState(sortState)
     try {
@@ -2744,7 +2690,6 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       trackListSortState: state.trackListSortState ? { ...state.trackListSortState } : null,
       tracksViewSortState: state.tracksViewSortState ? { ...state.tracksViewSortState } : null,
       tracksViewSortRules: state.tracksViewSortRules.map((rule) => ({ ...rule })),
-      selectedSourceFilters: [...state.selectedSourceFilters],
       albumSortState: { ...state.albumSortState },
       includeSinglesInAlbums: state.includeSinglesInAlbums,
       includeCollabArtists: state.includeCollabArtists,
@@ -2767,7 +2712,6 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       normalizeSessionTrackSortRules(snapshot.tracksViewSortRules, tracksViewSortState)
     )
     const tracksViewPrimarySort = tracksViewSortRules[0] ?? DEFAULT_TRACK_LIST_SORT_STATE
-    const selectedSourceFilters = normalizeSourceFilters(snapshot.selectedSourceFilters)
     const albumSortState = normalizeAlbumSortState(
       normalizeSessionAlbumSortState(snapshot.albumSortState, snapshot.albumSortMode)
     )
@@ -2786,7 +2730,6 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         : normalizedSortState,
       tracksViewSortState: { ...tracksViewPrimarySort },
       tracksViewSortRules,
-      selectedSourceFilters,
       albumSortState,
       includeSinglesInAlbums: Boolean(snapshot.includeSinglesInAlbums),
       includeCollabArtists: Boolean(snapshot.includeCollabArtists),

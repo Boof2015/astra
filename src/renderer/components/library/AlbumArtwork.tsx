@@ -48,7 +48,10 @@ function VirtualizedAlbumArtwork({
       src={artworkUrl}
       alt={alt}
       className={className}
-      loading={hasDisplayedArtwork(artworkUrl) ? 'eager' : 'lazy'}
+      // A previous display is not a guarantee that Chromium still has the
+      // decoded bitmap. Keep remounted/overscan rows on the lazy path too;
+      // their deterministic URLs already reuse the normal image cache.
+      loading="lazy"
       decoding="async"
       onLoad={() => rememberDisplayedArtwork(artworkUrl)}
       onError={() => { forgetDisplayedArtwork(artworkUrl); setFailedArtworkUrl(artworkUrl) }}
@@ -277,7 +280,9 @@ function LazyAlbumArtwork({
       src={artworkUrl!}
       alt={alt}
       className={className}
-      loading="eager"
+      // Warm URLs may be reused before the visibility observer runs. Keep
+      // those images lazy: a display hint must not load every offscreen card.
+      loading={isVisible ? 'eager' : 'lazy'}
       decoding="async"
       onLoad={() => rememberDisplayedArtwork(artworkUrl)}
       onError={() => {

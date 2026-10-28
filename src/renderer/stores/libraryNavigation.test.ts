@@ -110,7 +110,6 @@ function resetLibraryNavigation(): void {
     tracksViewSortRules: [{ key: 'title', direction: 'asc' }]
   })
   useLibraryStore.getState().setTrackListSortState({ key: 'title', direction: 'asc' })
-  useLibraryStore.getState().clearSelectedSourceFilters()
 }
 
 test('Library detail navigation traverses backward and forward', async () => {
@@ -155,7 +154,6 @@ test('explicit Library root exit handles every detail type and retains root brow
   for (const scenario of scenarios) {
     resetLibraryNavigation()
     useLibraryStore.getState().setViewMode(scenario.mode)
-    useLibraryStore.getState().setSelectedSourceFilters(['local'])
     useLibraryStore.setState({ searchQuery: 'remember this search' })
 
     await scenario.open()
@@ -170,7 +168,6 @@ test('explicit Library root exit handles every detail type and retains root brow
     assert.equal(state.selectionOrigin, null)
     assert.deepEqual(state.selectionHistory, [])
     assert.deepEqual(state.selectionForwardHistory, [])
-    assert.deepEqual([...state.selectedSourceFilters], ['local'])
     assert.equal(state.searchQuery, 'remember this search')
   }
 })
@@ -232,20 +229,17 @@ test('album opened from global search exits to the remembered Library root', asy
   assert.deepEqual(state.selectionHistory, [])
 })
 
-test('root Tracks sort and source filters survive Library tab switches', () => {
+test('root Tracks sort survives Library tab switches', () => {
   installLibraryMock()
   resetLibraryNavigation()
   useLibraryStore.getState().setViewMode('tracks')
   useLibraryStore.getState().setTrackListSortState({ key: 'duration', direction: 'desc' })
-  useLibraryStore.getState().setSelectedSourceFilters(['local'])
 
   useLibraryStore.getState().setViewMode('artists')
   assert.deepEqual(useLibraryStore.getState().trackListSortState, { key: 'title', direction: 'asc' })
-  assert.deepEqual([...useLibraryStore.getState().selectedSourceFilters], ['local'])
 
   useLibraryStore.getState().setViewMode('tracks')
   assert.deepEqual(useLibraryStore.getState().trackListSortState, { key: 'duration', direction: 'desc' })
-  assert.deepEqual([...useLibraryStore.getState().selectedSourceFilters], ['local'])
 })
 
 test('detail sorting does not overwrite the root Tracks sort', async () => {
@@ -253,14 +247,12 @@ test('detail sorting does not overwrite the root Tracks sort', async () => {
   resetLibraryNavigation()
   useLibraryStore.getState().setViewMode('tracks')
   useLibraryStore.getState().setTrackListSortState({ key: 'duration', direction: 'desc' })
-  useLibraryStore.getState().setSelectedSourceFilters(['local'])
 
   await useLibraryStore.getState().selectArtist('Artist A')
   useLibraryStore.getState().setTrackListSortState({ key: 'added', direction: 'desc' })
   await useLibraryStore.getState().clearSelection()
 
   assert.deepEqual(useLibraryStore.getState().trackListSortState, { key: 'duration', direction: 'desc' })
-  assert.deepEqual([...useLibraryStore.getState().selectedSourceFilters], ['local'])
 })
 
 test('Library root participates in forward navigation and fresh selection clears forward history', async () => {
@@ -482,7 +474,7 @@ test('releasing the full-library cache preserves selected Year tracks', async ()
   assert.deepEqual(useLibraryStore.getState().fullTrackPaths, [])
 })
 
-test('Library session restore applies valid detail, sort, and source filters', async () => {
+test('Library session restore applies valid detail and sort', async () => {
   const track = makeDbTrack('/artist/a.flac', 'Artist A')
   installLibraryMock({ artistTracks: [track] })
   resetLibraryNavigation()
@@ -505,7 +497,6 @@ test('Library session restore applies valid detail, sort, and source filters', a
     selectedYear: null,
     trackListSortState: { key: 'added', direction: 'desc' },
     tracksViewSortState: { key: 'duration', direction: 'desc' },
-    selectedSourceFilters: ['local'],
     albumSortMode: 'artist',
     includeSinglesInAlbums: true,
     includeCollabArtists: true,
@@ -517,7 +508,6 @@ test('Library session restore applies valid detail, sort, and source filters', a
   assert.equal(state.selectedArtist, 'Artist A')
   assert.deepEqual(state.trackPaths, [track.path])
   assert.deepEqual(state.trackListSortState, { key: 'added', direction: 'desc' })
-  assert.deepEqual([...state.selectedSourceFilters], ['local'])
   assert.deepEqual(state.albumSortState, { key: 'artist', direction: 'asc' })
   assert.equal(state.includeSinglesInAlbums, true)
   assert.equal(state.includeCollabArtists, true)
@@ -527,7 +517,6 @@ test('Library session restore applies valid detail, sort, and source filters', a
   useLibraryStore.getState().setViewMode('tracks')
   assert.deepEqual(useLibraryStore.getState().trackListSortState, { key: 'duration', direction: 'desc' })
   assert.deepEqual(useLibraryStore.getState().tracksViewSortRules, [{ key: 'duration', direction: 'desc' }])
-  assert.deepEqual([...useLibraryStore.getState().selectedSourceFilters], ['local'])
 })
 
 test('Library session restore applies a valid genre detail', async () => {
@@ -550,7 +539,6 @@ test('Library session restore applies a valid genre detail', async () => {
     selectedGenre: 'Electronic',
     selectedYear: null,
     trackListSortState: { key: 'title', direction: 'asc' },
-    selectedSourceFilters: [],
     albumSortMode: 'title',
     includeSinglesInAlbums: false,
     includeCollabArtists: false,
@@ -574,7 +562,6 @@ test('legacy root Tracks snapshots derive the dedicated Tracks sort from the act
     selectedGenre: null,
     selectedYear: null,
     trackListSortState: { key: 'added', direction: 'desc' },
-    selectedSourceFilters: ['local'],
     albumSortMode: 'title',
     includeSinglesInAlbums: false,
     includeCollabArtists: false,
@@ -585,7 +572,6 @@ test('legacy root Tracks snapshots derive the dedicated Tracks sort from the act
   useLibraryStore.getState().setViewMode('albums')
   useLibraryStore.getState().setViewMode('tracks')
   assert.deepEqual(useLibraryStore.getState().trackListSortState, { key: 'added', direction: 'desc' })
-  assert.deepEqual([...useLibraryStore.getState().selectedSourceFilters], ['local'])
 })
 
 test('Library session restore preserves root Tracks multikey sorting', async () => {
@@ -605,7 +591,6 @@ test('Library session restore preserves root Tracks multikey sorting', async () 
       { key: 'year', direction: 'desc' },
       { key: 'album', direction: 'asc' }
     ],
-    selectedSourceFilters: [],
     albumSortState: { key: 'year', direction: 'desc' },
     includeSinglesInAlbums: false,
     includeCollabArtists: false,
@@ -636,7 +621,6 @@ test('Library session restore drops a stale album detail and keeps root state', 
     selectedGenre: null,
     selectedYear: null,
     trackListSortState: null,
-    selectedSourceFilters: ['local'],
     albumSortMode: 'title',
     includeSinglesInAlbums: false,
     includeCollabArtists: false,
@@ -649,7 +633,6 @@ test('Library session restore drops a stale album detail and keeps root state', 
   assert.equal(state.selectedArtist, null)
   assert.equal(state.selectedGenre, null)
   assert.deepEqual(state.trackPaths, [])
-  assert.deepEqual([...state.selectedSourceFilters], ['local'])
 })
 
 test('Library session restore drops a stale genre detail and keeps root state', async () => {
@@ -663,7 +646,6 @@ test('Library session restore drops a stale genre detail and keeps root state', 
     selectedGenre: 'Missing Genre',
     selectedYear: null,
     trackListSortState: null,
-    selectedSourceFilters: ['local'],
     albumSortMode: 'title',
     includeSinglesInAlbums: false,
     includeCollabArtists: false,
@@ -676,7 +658,6 @@ test('Library session restore drops a stale genre detail and keeps root state', 
   assert.equal(state.selectedArtist, null)
   assert.equal(state.selectedGenre, null)
   assert.deepEqual(state.trackPaths, [])
-  assert.deepEqual([...state.selectedSourceFilters], ['local'])
 })
 
 test('Library session restore preserves Unknown Year and drops a stale year', async () => {
@@ -708,7 +689,6 @@ test('Library session restore preserves Unknown Year and drops a stale year', as
     selectedArtist: null,
     selectedGenre: null,
     trackListSortState: null,
-    selectedSourceFilters: [],
     albumSortMode: 'title' as const,
     includeSinglesInAlbums: false,
     includeCollabArtists: false,

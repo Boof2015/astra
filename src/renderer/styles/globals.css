@@ -8324,65 +8324,6 @@ body:has(.track-drag-overlay) * {
   border-radius: var(--radius-sm);
 }
 
-.library-source-filters {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.library-source-filter-chip {
-  background: transparent;
-  color: var(--text-tertiary);
-  border: 1px solid var(--glass-border);
-  border-radius: 999px;
-  padding: 3px 10px;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.library-source-filter-chip:hover {
-  color: var(--text-secondary);
-}
-
-.library-source-filter-chip.active {
-  border-color: rgba(var(--accent-rgb), 0.45);
-  color: var(--accent-text);
-  background: rgba(var(--accent-rgb), 0.14);
-}
-
-/* A server with a problem: a dot on its chip, explained on hover or focus. */
-.library-source-problem-dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  margin-right: 5px;
-  border-radius: 50%;
-  background: var(--warning);
-  vertical-align: 1px;
-}
-
-.library-source-tooltip {
-  position: fixed;
-  z-index: 300;
-  max-width: 280px;
-  padding: 7px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(var(--tint), 0.14);
-  background: linear-gradient(var(--surface-overlay), var(--surface-overlay)), var(--bg-primary);
-  box-shadow: 0 8px 24px var(--shadow-soft);
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: var(--text-secondary);
-  transform: translateX(-50%);
-  pointer-events: none;
-}
-
-.library-source-tooltip strong {
-  font-weight: 600;
-  color: var(--warning);
-}
-
 .view-tab {
   padding: 6px 14px;
   background: transparent;
@@ -16870,24 +16811,6 @@ html[data-theme-tone="light"] .home-greeting-message {
   color: rgba(var(--accent-rgb), 0.72);
 }
 
-.library-detail-toolbar .library-source-filters {
-  min-width: 0;
-  max-width: 360px;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.library-detail-toolbar .library-source-filters::-webkit-scrollbar {
-  display: none;
-}
-
-.library-detail-toolbar .library-source-filter-chip {
-  flex-shrink: 0;
-  padding: 2px 8px;
-  font-size: 9px;
-}
-
 .library-detail-header {
   --library-detail-header-expanded-height: 132px;
   --library-detail-header-collapsed-height: 58px;
@@ -17264,11 +17187,16 @@ html.library-context-backward .library-view {
   view-transition-name: library-context-surface;
 }
 
+/* The breadcrumb and tab strip have different sizes and contents. Animate them
+   separately so the full tab strip never scales out of the narrow breadcrumb. */
 html.library-context-forward .view-tabs,
+html.library-context-backward .view-tabs {
+  view-transition-name: library-context-tabs;
+}
+
 html.library-context-forward .library-detail-breadcrumb,
-html.library-context-backward .view-tabs,
 html.library-context-backward .library-detail-breadcrumb {
-  view-transition-name: library-context-nav;
+  view-transition-name: library-context-breadcrumb;
 }
 
 /* Keep transport shelves/popovers in the overlay stack above the contextual
@@ -17285,35 +17213,42 @@ html.library-context-backward .transport-bar {
 }
 
 ::view-transition-group(library-context-surface),
-::view-transition-group(library-context-nav) {
+::view-transition-group(library-context-tabs),
+::view-transition-group(library-context-breadcrumb) {
   animation-duration: var(--motion-structural-enter);
   animation-timing-function: var(--motion-structural-ease);
 }
 
 ::view-transition-old(library-context-surface),
 ::view-transition-new(library-context-surface),
-::view-transition-old(library-context-nav),
-::view-transition-new(library-context-nav) {
+::view-transition-old(library-context-tabs),
+::view-transition-old(library-context-breadcrumb),
+::view-transition-new(library-context-tabs),
+::view-transition-new(library-context-breadcrumb) {
   mix-blend-mode: normal;
 }
 
 html.library-context-forward::view-transition-old(library-context-surface),
-html.library-context-forward::view-transition-old(library-context-nav) {
+html.library-context-forward::view-transition-old(library-context-tabs),
+html.library-context-forward::view-transition-old(library-context-breadcrumb) {
   animation: libraryContextForwardExit var(--motion-structural-exit) ease-in both;
 }
 
 html.library-context-forward::view-transition-new(library-context-surface),
-html.library-context-forward::view-transition-new(library-context-nav) {
+html.library-context-forward::view-transition-new(library-context-tabs),
+html.library-context-forward::view-transition-new(library-context-breadcrumb) {
   animation: libraryContextForwardEnter var(--motion-structural-enter) var(--motion-structural-ease) both;
 }
 
 html.library-context-backward::view-transition-old(library-context-surface),
-html.library-context-backward::view-transition-old(library-context-nav) {
+html.library-context-backward::view-transition-old(library-context-tabs),
+html.library-context-backward::view-transition-old(library-context-breadcrumb) {
   animation: libraryContextBackwardExit var(--motion-structural-exit) ease-in both;
 }
 
 html.library-context-backward::view-transition-new(library-context-surface),
-html.library-context-backward::view-transition-new(library-context-nav) {
+html.library-context-backward::view-transition-new(library-context-tabs),
+html.library-context-backward::view-transition-new(library-context-breadcrumb) {
   animation: libraryContextBackwardEnter var(--motion-structural-enter) var(--motion-structural-ease) both;
 }
 
@@ -19264,10 +19199,6 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
 
   .library-detail-toolbar {
     padding-inline: 12px;
-  }
-
-  .library-detail-toolbar .library-source-filters {
-    max-width: 220px;
   }
 
   .library-detail-header {

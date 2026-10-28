@@ -1,7 +1,3 @@
-import { plexServerName } from '../../../shared/plex/serverName'
-import { usePlexSettingsStore } from '../../stores/plexSettingsStore'
-import { useServers } from '../settings/servers/useServers'
-import { sourceProblemText, useSourceProblemTooltip } from '../library/SourceProblemTooltip'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent as ReactUIEvent } from 'react'
 import {
   useLibraryStore,
@@ -10,8 +6,6 @@ import {
 } from '../../stores/libraryStore'
 import { usePlayerStore, type PlaybackSourceContext } from '../../stores/playerStore'
 import { useUIStore } from '../../stores/uiStore'
-import { useSubsonicSettingsStore } from '../../stores/subsonicSettingsStore'
-import { useJellyfinSettingsStore } from '../../stores/jellyfinSettingsStore'
 import { useGraphStore } from '../../stores/graphStore'
 import { useRatingsStore } from '../../stores/ratingsStore'
 import { useHorizontalWheelScroll } from '../../hooks/useHorizontalWheelScroll'
@@ -253,10 +247,6 @@ export default function LibraryView() {
   const setTracksViewSortRules = useLibraryStore((state) => state.setTracksViewSortRules)
   const rootTrackTableLayout = useLibraryStore((state) => state.rootTrackTableLayout)
   const setRootTrackTableLayout = useLibraryStore((state) => state.setRootTrackTableLayout)
-  const selectedSourceFilters = useLibraryStore((state) => state.selectedSourceFilters)
-  const setSelectedSourceFilters = useLibraryStore((state) => state.setSelectedSourceFilters)
-  const clearSelectedSourceFilters = useLibraryStore((state) => state.clearSelectedSourceFilters)
-  const toggleSourceFilter = useLibraryStore((state) => state.toggleSourceFilter)
   const albumSortState = useLibraryStore((state) => state.albumSortState)
   const setAlbumSortState = useLibraryStore((state) => state.setAlbumSortState)
   const includeSinglesInAlbums = useLibraryStore((state) => state.includeSinglesInAlbums)
@@ -265,9 +255,6 @@ export default function LibraryView() {
   const setIncludeCollabArtists = useLibraryStore((state) => state.setIncludeCollabArtists)
   const artistRootViewMode = useLibraryStore((state) => state.artistRootViewMode)
   const setArtistRootViewMode = useLibraryStore((state) => state.setArtistRootViewMode)
-  const subsonicSources = useSubsonicSettingsStore((state) => state.sources)
-  const plexSources = usePlexSettingsStore(state => state.sources)
-  const jellyfinSources = useJellyfinSettingsStore((state) => state.sources)
 
   const shuffle = usePlayerStore((s) => s.shuffle)
   const currentTrack = usePlayerStore((s) => s.currentTrack)
@@ -388,7 +375,7 @@ export default function LibraryView() {
 
   const shouldRetainFullTracks = !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null && (
     viewMode === 'tracks' || viewMode === 'genres' || viewMode === 'folders'
-    || selectedSourceFilters.size > 0 || hasHiddenFolders
+    || hasHiddenFolders
   )
   const isFullTrackListPending = shouldRetainFullTracks && totalTrackCount > 0 && fullTrackPaths.length === 0
   const activeTrackPaths = shouldRetainFullTracks ? fullTrackPaths : trackPaths
@@ -439,37 +426,6 @@ export default function LibraryView() {
     if (selectedYear !== null) return { type: 'year', year: selectedYear }
     return null
   }, [selectedAlbum, selectedArtist, selectedGenre, selectedYear])
-  // One chip per server. A Plex server's chip covers its libraries in use (`keys`); it's keyed,
-  // like its Settings entry, by its first library.
-  const sourceFilterOptions = useMemo(() => {
-    const plexServers = new Map<string, typeof plexSources>()
-    for (const source of [...plexSources].sort((a, b) => a.id - b.id)) {
-      const server = JSON.stringify([source.account_id, source.server_id])
-      plexServers.set(server, [...(plexServers.get(server) ?? []), source])
-    }
-    return [
-      ...subsonicSources.filter((source) => source.enabled === 1).map((source) => ({
-        key: `subsonic:${source.id}`,
-        keys: [`subsonic:${source.id}`],
-        label: source.name
-      })),
-      ...[...plexServers.values()].flatMap(libraries => {
-        const inUse = libraries.filter(source => source.enabled === 1)
-        return inUse.length ? [{ key: `plex:${libraries[0].id}`, keys: inUse.map(source => `plex:${source.id}`), label: plexServerName(libraries[0]) }] : []
-      }),
-      ...jellyfinSources.filter((source) => source.enabled === 1).map((source) => ({
-        key: `jellyfin:${source.id}`,
-        keys: [`jellyfin:${source.id}`],
-        label: source.name
-      }))
-    ]
-  }, [plexSources, jellyfinSources, subsonicSources])
-  const shouldShowSourceFilters = sourceFilterOptions.length > 0
-  // A dot only when a server has a problem; syncing doesn't get one.
-  const servers = useServers()
-  const sourceProblems = useMemo(() => new Map(servers.filter(server => server.state === 'failed').map(server => [server.key, server])), [servers])
-  const sourceProblemTooltip = useSourceProblemTooltip(sourceProblems)
-  const hasEffectiveLibraryFilters = hasHiddenFolders || (shouldShowSourceFilters && selectedSourceFilters.size > 0)
   const selectedArtistRecord = useMemo(() => {
     if (!selectedArtist) return null
     const selectedArtistKey = normalizeKey(selectedArtist)
@@ -505,8 +461,7 @@ export default function LibraryView() {
   useEffect(() => {
     if (!libraryTrackRevealRequest) return
     setSearchQuery('')
-    clearSelectedSourceFilters()
-  }, [clearSelectedSourceFilters, libraryTrackRevealRequest])
+  }, [libraryTrackRevealRequest])
 
   useEffect(() => {
     setIsArtistImageMenuOpen(false)
@@ -551,27 +506,6 @@ export default function LibraryView() {
       releaseFullTracks('library')
     }
   }, [loadFullTracks, releaseFullTracks, shouldRetainFullTracks])
-
-  useEffect(() => {
-    const validFilterKeys = new Set<string>([
-      'local',
-      ...sourceFilterOptions.flatMap((source) => source.keys)
-    ])
-
-    if (selectedSourceFilters.size === 0) return
-    const next = new Set<string>()
-    for (const key of selectedSourceFilters) {
-      if (validFilterKeys.has(key)) {
-        next.add(key)
-      }
-    }
-    setSelectedSourceFilters(next)
-  }, [sourceFilterOptions, selectedSourceFilters, setSelectedSourceFilters])
-
-  useEffect(() => {
-    if (shouldShowSourceFilters) return
-    clearSelectedSourceFilters()
-  }, [clearSelectedSourceFilters, shouldShowSourceFilters])
 
   useEffect(() => {
     setArtistAlbumRailMode('albums')
@@ -697,24 +631,6 @@ export default function LibraryView() {
     setIncludeCollabArtists(!includeCollabArtists)
   }, [includeCollabArtists, setIncludeCollabArtists])
 
-  const handleResetSourceFilters = useCallback(() => {
-    clearSelectedSourceFilters()
-  }, [clearSelectedSourceFilters])
-
-  const handleToggleSourceFilter = useCallback((filterKey: string) => {
-    toggleSourceFilter(filterKey)
-  }, [toggleSourceFilter])
-  // A server's chip is on when all its libraries are, and turns them on or off together.
-  const handleToggleSourceChip = useCallback((keys: readonly string[]) => {
-    const on = keys.every(key => selectedSourceFilters.has(key))
-    const next = new Set(selectedSourceFilters)
-    for (const key of keys) {
-      if (on) next.delete(key)
-      else next.add(key)
-    }
-    setSelectedSourceFilters(next)
-  }, [selectedSourceFilters, setSelectedSourceFilters])
-
   const handleLibraryContentScrollCapture = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     if (!inDetailView) return
 
@@ -795,12 +711,11 @@ export default function LibraryView() {
 
   const handlePlayLibraryCard = useCallback((source: LibraryCardSource, title: string, albumIdentityKeys?: ReadonlySet<string>) => {
     void cardPlaybackActions.play({ source, title }, {
-      sourceFilters: shouldShowSourceFilters ? selectedSourceFilters : new Set<string>(),
       hiddenFolderPrefixes,
       platform: window.electronAPI.platform,
       albumIdentityKeys
     })
-  }, [cardPlaybackActions, shouldShowSourceFilters, selectedSourceFilters, hiddenFolderPrefixes])
+  }, [cardPlaybackActions, hiddenFolderPrefixes])
 
   const handlePlayAlbumCard = useCallback((album: AlbumPlaybackTarget) => {
     handlePlayLibraryCard(albumCardPlaybackSource(album), album.album)
@@ -840,34 +755,14 @@ export default function LibraryView() {
     void runViewTransition(() => setViewMode(mode), getLibraryTabTransitionScopeClasses(viewMode, mode))
   }, [setViewMode, viewMode])
 
-  const sourceFilteredTracks = useMemo(() => {
-    if (!shouldShowSourceFilters || selectedSourceFilters.size === 0) return visibleTracks
-
-    return visibleTracks.filter((track) => {
-      if (track.source_type === 'local') {
-        return selectedSourceFilters.has('local')
-      }
-      if (track.source_type === 'subsonic') {
-        if (track.source_id == null) return false
-        return selectedSourceFilters.has(`subsonic:${track.source_id}`)
-      }
-      if (track.source_type === 'plex') return track.source_id != null && selectedSourceFilters.has(`plex:${track.source_id}`)
-      if (track.source_type === 'jellyfin') {
-        if (track.source_id == null) return false
-        return selectedSourceFilters.has(`jellyfin:${track.source_id}`)
-      }
-      return false
-    })
-  }, [selectedSourceFilters, shouldShowSourceFilters, visibleTracks])
-
   const albumGridSourceAlbums = isReleaseBrowseView && includeSinglesInAlbums && albumsIncludingSinglesLoaded
     ? albumsIncludingSingles
     : albums
 
   const collectionSeedTracks = useMemo(() => {
-    if (selectedYear === null) return sourceFilteredTracks
-    return filterTracksByLibraryYearAlbums(sourceFilteredTracks, albumGridSourceAlbums, selectedYear)
-  }, [albumGridSourceAlbums, selectedYear, sourceFilteredTracks])
+    if (selectedYear === null) return visibleTracks
+    return filterTracksByLibraryYearAlbums(visibleTracks, albumGridSourceAlbums, selectedYear)
+  }, [albumGridSourceAlbums, selectedYear, visibleTracks])
 
   const queueSeedSortedTracks = useMemo(() => {
     const sorted = [...collectionSeedTracks]
@@ -965,27 +860,27 @@ export default function LibraryView() {
     return queueSeedSortedTracks.filter((track) => matchesTrackIdentityQuery(track, trimmedSearchQuery, 'context'))
   }, [hasSearchQuery, trimmedSearchQuery, queueSeedSortedTracks])
 
-  const sourceFilteredAlbumIdentityKeys = useMemo(() => {
-    if (!isReleaseBrowseView || !hasEffectiveLibraryFilters) return null
+  const folderFilteredAlbumIdentityKeys = useMemo(() => {
+    if (!isReleaseBrowseView || !hasHiddenFolders) return null
     const keys = new Set<string>()
-    for (const track of sourceFilteredTracks) {
+    for (const track of visibleTracks) {
       keys.add(track.album_identity_key || buildAlbumIdentityKeyFromTrack(track))
     }
     return keys
-  }, [hasEffectiveLibraryFilters, isReleaseBrowseView, sourceFilteredTracks])
+  }, [hasHiddenFolders, isReleaseBrowseView, visibleTracks])
 
-  const sourceFilteredAlbums = useMemo(() => {
+  const folderFilteredAlbums = useMemo(() => {
     if (!isReleaseBrowseView) return []
-    if (!sourceFilteredAlbumIdentityKeys) return albumGridSourceAlbums
-    return albumGridSourceAlbums.filter((album) => sourceFilteredAlbumIdentityKeys.has(album.identity_key))
-  }, [albumGridSourceAlbums, isReleaseBrowseView, sourceFilteredAlbumIdentityKeys])
+    if (!folderFilteredAlbumIdentityKeys) return albumGridSourceAlbums
+    return albumGridSourceAlbums.filter((album) => folderFilteredAlbumIdentityKeys.has(album.identity_key))
+  }, [albumGridSourceAlbums, isReleaseBrowseView, folderFilteredAlbumIdentityKeys])
 
   const filteredAlbums = useMemo(() => {
     if (!isAlbumRootView && !isYearDetailView) return []
     const shouldFilterByQuery = hasSearchQuery && (isAlbumRootView || isYearDetailView)
     const visibleAlbums = !shouldFilterByQuery
-      ? sourceFilteredAlbums
-      : sourceFilteredAlbums.filter((album) => matchesFuzzyFields(trimmedSearchQuery, [
+      ? folderFilteredAlbums
+      : folderFilteredAlbums.filter((album) => matchesFuzzyFields(trimmedSearchQuery, [
           { value: album.album, weight: 1.4 },
           { value: album.artist, weight: 1.1 }
         ], 'context'))
@@ -994,18 +889,18 @@ export default function LibraryView() {
     sortedAlbums.sort((a, b) => compareAlbumsBySortState(a, b, effectiveAlbumSortState))
 
     return sortedAlbums
-  }, [effectiveAlbumSortState, hasSearchQuery, isAlbumRootView, isYearDetailView, trimmedSearchQuery, sourceFilteredAlbums])
+  }, [effectiveAlbumSortState, hasSearchQuery, isAlbumRootView, isYearDetailView, trimmedSearchQuery, folderFilteredAlbums])
 
   const yearGroups = useMemo(() => {
     if (!isYearRootView && !isYearDetailView) return []
-    return buildLibraryYearGroups(sourceFilteredAlbums)
-  }, [isYearDetailView, isYearRootView, sourceFilteredAlbums])
+    return buildLibraryYearGroups(folderFilteredAlbums)
+  }, [isYearDetailView, isYearRootView, folderFilteredAlbums])
   const handlePlayYearCard = useCallback((year: LibraryYearGroup) => {
-    const albumIdentityKeys = new Set(sourceFilteredAlbums
+    const albumIdentityKeys = new Set(folderFilteredAlbums
       .filter((album) => albumMatchesLibraryYear(album, year.key))
       .map((album) => album.identity_key))
     handlePlayLibraryCard({ type: 'year', year: year.key }, year.label, albumIdentityKeys)
-  }, [sourceFilteredAlbums, handlePlayLibraryCard])
+  }, [folderFilteredAlbums, handlePlayLibraryCard])
   const filteredYears = useMemo(() => {
     if (!isYearRootView) return []
     if (!hasSearchQuery) return yearGroups
@@ -1022,11 +917,11 @@ export default function LibraryView() {
     return filteredAlbums.filter((album) => albumMatchesLibraryYear(album, selectedYear))
   }, [filteredAlbums, isYearDetailView, selectedYear])
 
-  const sourceFilteredArtistKeys = useMemo(() => {
+  const folderFilteredArtistKeys = useMemo(() => {
     if (!isArtistRootView) return null
-    if ((!shouldShowSourceFilters || selectedSourceFilters.size === 0) && !hasHiddenFolders) return null
+    if (!hasHiddenFolders) return null
     const keys = new Set<string>()
-    for (const track of sourceFilteredTracks) {
+    for (const track of visibleTracks) {
       const parsedArtistNames = track.artist_names.length > 0 ? track.artist_names : track.album_artist_names
       if (artistBrowseMode === 'canonical' && parsedArtistNames.length > 0) {
         const browseArtistKey = normalizeKey(resolveBrowseArtistForTrack(track, artistBrowseMode))
@@ -1044,37 +939,37 @@ export default function LibraryView() {
       }
     }
     return keys
-  }, [artistBrowseMode, hasHiddenFolders, isArtistRootView, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
+  }, [artistBrowseMode, hasHiddenFolders, isArtistRootView, visibleTracks])
 
-  const sourceFilteredPrimaryArtistKeys = useMemo(() => {
+  const folderFilteredPrimaryArtistKeys = useMemo(() => {
     if (!isArtistRootView) return null
     if (artistBrowseMode !== 'canonical') return null
-    if ((!shouldShowSourceFilters || selectedSourceFilters.size === 0) && !hasHiddenFolders) return null
+    if (!hasHiddenFolders) return null
 
     const keys = new Set<string>()
-    for (const track of sourceFilteredTracks) {
+    for (const track of visibleTracks) {
       const browseArtistKey = normalizeKey(resolveBrowseArtistForTrack(track, artistBrowseMode))
       if (browseArtistKey) keys.add(browseArtistKey)
     }
     return keys
-  }, [artistBrowseMode, hasHiddenFolders, isArtistRootView, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
+  }, [artistBrowseMode, hasHiddenFolders, isArtistRootView, visibleTracks])
 
   const visibleArtists = useMemo(() => {
     if (!isArtistRootView) return []
-    if (!sourceFilteredArtistKeys) return artists
-    return artists.filter((artist) => sourceFilteredArtistKeys.has(normalizeKey(artist.artist)))
-  }, [artists, isArtistRootView, sourceFilteredArtistKeys])
+    if (!folderFilteredArtistKeys) return artists
+    return artists.filter((artist) => folderFilteredArtistKeys.has(normalizeKey(artist.artist)))
+  }, [artists, isArtistRootView, folderFilteredArtistKeys])
 
   const rootVisibleArtists = useMemo(() => {
     if (!isArtistRootView) return []
     if (artistBrowseMode !== 'canonical' || includeCollabArtists) return visibleArtists
 
-    if (sourceFilteredPrimaryArtistKeys) {
-      return visibleArtists.filter((artist) => sourceFilteredPrimaryArtistKeys.has(normalizeKey(artist.artist)))
+    if (folderFilteredPrimaryArtistKeys) {
+      return visibleArtists.filter((artist) => folderFilteredPrimaryArtistKeys.has(normalizeKey(artist.artist)))
     }
 
     return visibleArtists.filter((artist) => artist.primary_track_count > 0)
-  }, [artistBrowseMode, includeCollabArtists, isArtistRootView, sourceFilteredPrimaryArtistKeys, visibleArtists])
+  }, [artistBrowseMode, includeCollabArtists, isArtistRootView, folderFilteredPrimaryArtistKeys, visibleArtists])
 
   const filteredArtists = useMemo(() => {
     if (!isArtistRootView) return []
@@ -1084,24 +979,24 @@ export default function LibraryView() {
     ], 'context'))
   }, [hasSearchQuery, isArtistRootView, trimmedSearchQuery, rootVisibleArtists])
 
-  const sourceFilteredGenreKeys = useMemo(() => {
+  const folderFilteredGenreKeys = useMemo(() => {
     if (!isGenreRootView) return null
-    if ((!shouldShowSourceFilters || selectedSourceFilters.size === 0) && !hasHiddenFolders) return null
+    if (!hasHiddenFolders) return null
     const keys = new Set<string>()
-    for (const track of sourceFilteredTracks) {
+    for (const track of visibleTracks) {
       for (const genre of track.genres) {
         const normalizedGenreKey = normalizeKey(genre)
         if (normalizedGenreKey) keys.add(normalizedGenreKey)
       }
     }
     return keys
-  }, [hasHiddenFolders, isGenreRootView, selectedSourceFilters.size, shouldShowSourceFilters, sourceFilteredTracks])
+  }, [hasHiddenFolders, isGenreRootView, visibleTracks])
 
   const visibleGenres = useMemo(() => {
     if (!isGenreRootView) return []
-    if (!sourceFilteredGenreKeys) return genres
-    return genres.filter((genre) => sourceFilteredGenreKeys.has(normalizeKey(genre.genre)))
-  }, [genres, isGenreRootView, sourceFilteredGenreKeys])
+    if (!folderFilteredGenreKeys) return genres
+    return genres.filter((genre) => folderFilteredGenreKeys.has(normalizeKey(genre.genre)))
+  }, [genres, isGenreRootView, folderFilteredGenreKeys])
 
   const filteredGenres = useMemo(() => {
     if (!isGenreRootView) return []
@@ -1150,7 +1045,7 @@ export default function LibraryView() {
       isPrimary: boolean
     }>()
 
-    for (const track of sourceFilteredTracks) {
+    for (const track of visibleTracks) {
       const identityKey = track.album_identity_key || buildAlbumIdentityKeyFromTrack(track)
       const identityArtist = getAlbumIdentityArtist(track)
       const browseArtist = resolveBrowseArtistForTrack(track, artistBrowseMode)
@@ -1224,7 +1119,7 @@ export default function LibraryView() {
       primaryArtistSingles: sections.singles,
       featuredArtistAlbums: sections.featured
     }
-  }, [albumByIdentityKey, albumByKey, albums, artistBrowseMode, selectedArtist, sourceFilteredTracks])
+  }, [albumByIdentityKey, albumByKey, albums, artistBrowseMode, selectedArtist, visibleTracks])
 
   const selectedAlbumRecord = useMemo(() => {
     if (!selectedAlbum) return null
@@ -1288,7 +1183,6 @@ export default function LibraryView() {
               : viewMode === 'folders'
                 ? 'Search folders & tracks...'
                 : 'Search tracks...'
-  const isAllSourcesFilterActive = selectedSourceFilters.size === 0
 
   const contextualAlbumParent = selectedAlbum && selectionOrigin === 'library-detail'
     ? selectionHistory[selectionHistory.length - 1] ?? null
@@ -1387,11 +1281,11 @@ export default function LibraryView() {
     itemCount = filteredYears.length
     itemLabel = filteredYears.length === 1 ? 'year' : 'years'
   } else if (viewMode === 'folders') {
-    itemCount = sourceFilteredTracks.length
-    itemLabel = sourceFilteredTracks.length === 1 ? 'track' : 'tracks'
+    itemCount = visibleTracks.length
+    itemLabel = visibleTracks.length === 1 ? 'track' : 'tracks'
   }
   const selectedAlbumDurationLabel = selectedAlbum
-    ? formatCompactTotalTrackDuration(sourceFilteredTracks)
+    ? formatCompactTotalTrackDuration(visibleTracks)
     : null
   // Average of the album's RATED tracks only, computed renderer-side from the
   // loaded track list like the duration above. Unrated albums show nothing.
@@ -1399,7 +1293,7 @@ export default function LibraryView() {
     if (!ratingsEnabled || !selectedAlbum) return null
     let sum = 0
     let count = 0
-    for (const track of sourceFilteredTracks) {
+    for (const track of visibleTracks) {
       const entry = ratings.get(track.path)
       if (entry) {
         sum += entry.rating
@@ -1407,30 +1301,30 @@ export default function LibraryView() {
       }
     }
     return count > 0 ? `★ ${(sum / count).toFixed(1)}` : null
-  }, [ratings, ratingsEnabled, selectedAlbum, sourceFilteredTracks])
+  }, [ratings, ratingsEnabled, selectedAlbum, visibleTracks])
   const selectedArtistDurationLabel = selectedArtist
-    ? formatCompactTotalTrackDuration(sourceFilteredTracks)
+    ? formatCompactTotalTrackDuration(visibleTracks)
     : null
   const selectedGenreDurationLabel = selectedGenre
-    ? formatCompactTotalTrackDuration(sourceFilteredTracks)
+    ? formatCompactTotalTrackDuration(visibleTracks)
     : null
   const detailMetaItems = selectedAlbum
     ? [
         selectedAlbumYear ? String(selectedAlbumYear) : null,
-        formatTrackCount(sourceFilteredTracks.length),
+        formatTrackCount(visibleTracks.length),
         selectedAlbumDurationLabel,
         selectedAlbumAverageRatingLabel
       ].filter((item): item is string => Boolean(item))
     : selectedArtist
       ? [
           `${primaryArtistAlbums.length} ${primaryArtistAlbums.length === 1 ? 'album' : 'albums'}`,
-          formatTrackCount(sourceFilteredTracks.length),
+          formatTrackCount(visibleTracks.length),
           selectedArtistDurationLabel
         ].filter((item): item is string => Boolean(item))
       : selectedGenre
         ? [
             `${selectedGenreRecord?.album_count ?? 0} ${(selectedGenreRecord?.album_count ?? 0) === 1 ? 'album' : 'albums'}`,
-            formatTrackCount(sourceFilteredTracks.length),
+            formatTrackCount(visibleTracks.length),
             selectedGenreDurationLabel
           ].filter((item): item is string => Boolean(item))
         : selectedYear !== null
@@ -1505,12 +1399,12 @@ export default function LibraryView() {
       )
     }
 
-    // When filters are active, every browse collection is derived from this
+    // When folders are hidden, every browse collection is derived from this
     // same filtered track set. Otherwise the aggregate metadata arrays retain
     // the previous empty-library semantics without deriving inactive tabs.
-    const hasContent = hasEffectiveLibraryFilters
-      ? sourceFilteredTracks.length > 0
-      : sourceFilteredTracks.length > 0 || albumGridSourceAlbums.length > 0 || artists.length > 0 || genres.length > 0
+    const hasContent = hasHiddenFolders
+      ? visibleTracks.length > 0
+      : visibleTracks.length > 0 || albumGridSourceAlbums.length > 0 || artists.length > 0 || genres.length > 0
     if (!hasContent && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null) {
       return (
         <div className="library-empty">
@@ -1536,7 +1430,7 @@ export default function LibraryView() {
     if (viewMode === 'folders' && !selectedAlbum && !selectedArtist && !selectedGenre && selectedYear === null) {
       return (
         <FolderTreeView
-          tracks={sourceFilteredTracks}
+          tracks={visibleTracks}
           allTracks={visibleTracks}
           folders={visibleFolders}
           searchQuery={searchQuery}
@@ -1863,49 +1757,6 @@ export default function LibraryView() {
     )
   }
 
-  const renderSourceFilters = () => {
-    if (!shouldShowSourceFilters) return null
-
-    return (
-      <div className="library-source-filters" role="group" aria-label="Source filters">
-        <button
-          type="button"
-          className={`library-source-filter-chip ${isAllSourcesFilterActive ? 'active' : ''}`}
-          onClick={handleResetSourceFilters}
-        >
-          All
-        </button>
-        <button
-          type="button"
-          className={`library-source-filter-chip ${selectedSourceFilters.has('local') ? 'active' : ''}`}
-          onClick={() => handleToggleSourceFilter('local')}
-        >
-          Local
-        </button>
-        {sourceFilterOptions.map((source) => {
-          const problem = sourceProblems.get(source.key)
-          return (
-            <button
-              key={source.key}
-              type="button"
-              className={`library-source-filter-chip ${source.keys.every(key => selectedSourceFilters.has(key)) ? 'active' : ''}`}
-              onClick={() => handleToggleSourceChip(source.keys)}
-              onMouseEnter={problem ? sourceProblemTooltip.show(problem) : undefined}
-              onMouseLeave={sourceProblemTooltip.hide}
-              onFocus={problem ? sourceProblemTooltip.show(problem) : undefined}
-              onBlur={sourceProblemTooltip.hide}
-            >
-              {problem && <span className="library-source-problem-dot" aria-hidden="true" />}
-              {source.label}
-              {problem && <span className="sr-only">. {sourceProblemText(problem).title}: {sourceProblemText(problem).detail}</span>}
-            </button>
-          )
-        })}
-        {sourceProblemTooltip.element}
-      </div>
-    )
-  }
-
   const renderSearchControl = () => (
     <div className="search-container">
       <span className="search-icon" aria-hidden="true">
@@ -1972,7 +1823,6 @@ export default function LibraryView() {
                 <span className="library-detail-breadcrumb-separator" aria-hidden="true">/</span>
                 <span>{detailTypeLabel}</span>
               </div>
-            {renderSourceFilters()}
           </div>
           <div className="library-detail-toolbar-right">
             {renderSearchControl()}
@@ -1993,7 +1843,12 @@ export default function LibraryView() {
             />
           </div>
         )}
-        <div className={`library-header-left ${inDetailView ? 'library-detail-header-left' : ''}`}>
+        <div
+          // Preserve the outer header's size animation, but never recycle the
+          // artist's edit-image button into a root tab with animated styles.
+          key={inDetailView ? 'detail-content' : 'library-content'}
+          className={`library-header-left ${inDetailView ? 'library-detail-header-left' : ''}`}
+        >
           {inDetailView ? (
             <>
               {selectedAlbum && (
@@ -2215,11 +2070,13 @@ export default function LibraryView() {
                 </div>
               )}
               <span className="track-count">{itemCount} {itemLabel}</span>
-              {renderSourceFilters()}
             </>
           )}
         </div>
-        <div className={`library-header-right ${inDetailView ? 'library-detail-header-actions' : ''}`}>
+        <div
+          key={inDetailView ? 'detail-actions' : 'library-actions'}
+          className={`library-header-right ${inDetailView ? 'library-detail-header-actions' : ''}`}
+        >
           {isReleaseBrowseView && (
             <div className="library-album-view-controls">
               <button
