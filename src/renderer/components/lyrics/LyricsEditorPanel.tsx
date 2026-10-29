@@ -12,7 +12,7 @@ interface TrackRecord {
   artist: string
   album: string
   duration: number
-  source_type?: 'local' | 'subsonic' | 'jellyfin'
+  source_type?: 'local' | 'subsonic' | 'jellyfin' | 'plex'
 }
 
 const EMPTY_TRACK_PATHS: string[] = []
@@ -48,6 +48,7 @@ function formatLyricsFormat(format: LyricsFormat): string {
 
 function formatSourceLabel(track: TrackRecord | null): string {
   if (!track) return ''
+  if (track.source_type === 'plex') return 'Plex'
   if ((track.source_type ?? 'local') === 'jellyfin') return 'Jellyfin'
   if ((track.source_type ?? 'local') === 'subsonic') return 'Subsonic'
   return 'Local'

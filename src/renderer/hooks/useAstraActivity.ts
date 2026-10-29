@@ -11,6 +11,7 @@ import { useMetadataEditorStore } from '../stores/metadataEditorStore'
 import { usePhoneRemoteSettingsStore } from '../stores/phoneRemoteSettingsStore'
 import { useParallaxStore } from '../stores/parallaxStore'
 import { usePlayerStore } from '../stores/playerStore'
+import { usePlexSettingsStore } from '../stores/plexSettingsStore'
 import { useSubsonicSettingsStore } from '../stores/subsonicSettingsStore'
 import { useUpdateStore } from '../stores/updateStore'
 import {
@@ -60,6 +61,11 @@ export function useAstraActivity(): AstraActivitySnapshot {
     Boolean(state.errorMessage)
     || Boolean(state.status?.sources.some((source) => source.status === 'error' || Boolean(source.error)))
   ))
+  const plexSyncing = usePlexSettingsStore((state) => Boolean(state.status?.isSyncing))
+  const plexError = usePlexSettingsStore((state) => (
+    Boolean(state.error)
+    || Boolean(state.status?.sources.some((source) => source.status === 'error' || Boolean(source.error)))
+  ))
 
   const localApiConnected = useLocalApiSettingsStore((state) => (state.status?.connectedClients ?? 0) > 0)
   const localApiError = useLocalApiSettingsStore((state) => Boolean(state.errorMessage || state.status?.lastError))
@@ -91,7 +97,7 @@ export function useAstraActivity(): AstraActivitySnapshot {
     playbackState,
     isIntegrityScanning,
     isLibraryScanning,
-    isRemoteSyncing: subsonicSyncing || jellyfinSyncing,
+    isRemoteSyncing: subsonicSyncing || jellyfinSyncing || plexSyncing,
     isRemoteStreaming,
     isInternetLookup: isLyricsLookup || discordCoverArtLookupActive,
     isParallaxConnected,
@@ -106,6 +112,7 @@ export function useAstraActivity(): AstraActivitySnapshot {
       || metadataFailed
       || subsonicError
       || jellyfinError
+      || plexError
       || localApiError
       || phoneRemoteError
       || lastFmError
@@ -122,6 +129,7 @@ export function useAstraActivity(): AstraActivitySnapshot {
     metadataSaving,
     phoneRemoteConnected,
     phoneRemoteError,
+    plexError,
     subsonicError,
     updateError,
   ])

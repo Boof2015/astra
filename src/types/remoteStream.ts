@@ -1,9 +1,20 @@
-export type ProgressiveStreamSourceType = 'local' | 'subsonic' | 'jellyfin'
+import type { RemotePlaybackQuality } from './streamingQuality'
+export type ProgressiveStreamSourceType = 'local' | 'subsonic' | 'jellyfin' | 'plex'
 export type RemoteStreamSourceType = ProgressiveStreamSourceType
 
 export type RemoteLoadStage = 'downloading' | 'streaming' | 'complete' | 'failed'
 
 export interface RemoteAudioLoadProgress {
+  /** Main-process Stratum diagnostics identity; native input IDs are separate. */
+  diagnosticsSessionId?: number
+  transport?: 'stratum-proof'
+  quality?: RemotePlaybackQuality
+  /** Encoded download completion is independent of bounded PCM lookahead. */
+  downloadComplete?: boolean
+  /** Full retained analysis is available now; playback loudness stays snapshotted. */
+  analysisReady?: boolean
+  sessionId?: number
+  slot?: 'current' | 'next'
   path: string
   sourceType: RemoteStreamSourceType
   stage: RemoteLoadStage
@@ -21,6 +32,10 @@ export interface RemoteAudioLoadProgress {
 }
 
 export interface RemoteStreamInfo {
+  /** Can restart decoding at a new position without retaining a client file. */
+  restartable?: boolean
+  transport?: 'stratum-proof'
+  quality?: RemotePlaybackQuality
   sessionId: number
   path: string
   sourceType: RemoteStreamSourceType
@@ -28,10 +43,14 @@ export interface RemoteStreamInfo {
   channels: number
   durationSeconds: number | null
   startTimeSeconds: number
+  /** This session can restart decoding from retained encoded bytes. */
+  seekableCache?: boolean
   initialChunk?: RemoteStreamChunk | null
 }
 
 export interface RemoteStreamChunk {
+  /** Output-frame boundaries relative to this session's seek origin, not arrival time. */
+  qualityChanges?: RemoteStreamQualityChange[]
   sessionId: number
   path: string
   sourceType: RemoteStreamSourceType
@@ -42,6 +61,8 @@ export interface RemoteStreamChunk {
   decodedFrames: number
   decodedSeconds: number
 }
+
+export interface RemoteStreamQualityChange { frame: number; quality: RemotePlaybackQuality }
 
 export type RemoteStreamEvent =
   | {

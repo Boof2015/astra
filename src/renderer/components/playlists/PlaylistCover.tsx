@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { useLibraryStore } from '../../stores/libraryStore'
+import { useState } from 'react'
+import { buildArtworkProtocolUrl } from '../../stores/libraryStore'
 
 interface PlaylistCoverProps {
   hash: string | null
@@ -14,33 +14,9 @@ export default function PlaylistCover({
   isFavorites = false,
   className = ''
 }: PlaylistCoverProps) {
-  const getArtwork = useLibraryStore((state) => state.getArtwork)
-  const [artworkUrl, setArtworkUrl] = useState<string | null>(null)
-
-  useEffect(() => {
-    let isCancelled = false
-    setArtworkUrl(null)
-
-    if (isFavorites || !hash) {
-      return () => {
-        isCancelled = true
-      }
-    }
-
-    void getArtwork(hash, { variant: 'card' })
-      .then((url) => {
-        if (isCancelled) return
-        setArtworkUrl(url)
-      })
-      .catch(() => {
-        if (isCancelled) return
-        setArtworkUrl(null)
-      })
-
-    return () => {
-      isCancelled = true
-    }
-  }, [getArtwork, hash, isFavorites])
+  const requestedUrl = !isFavorites && hash ? buildArtworkProtocolUrl(hash, 'card') : null
+  const [failedUrl, setFailedUrl] = useState<string | null>(null)
+  const artworkUrl = requestedUrl !== failedUrl ? requestedUrl : null
 
   return (
     <div className={`playlist-cover ${isFavorites ? 'is-favorites' : ''} ${className}`.trim()}>
@@ -51,7 +27,7 @@ export default function PlaylistCover({
           className="playlist-cover-image"
           loading="lazy"
           decoding="async"
-          onError={() => setArtworkUrl(null)}
+          onError={() => setFailedUrl(artworkUrl)}
         />
       ) : (
         <div className="playlist-cover-fallback" aria-hidden="true">

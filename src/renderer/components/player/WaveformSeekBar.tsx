@@ -371,7 +371,8 @@ export default function WaveformSeekBar({
       ctx.fillStyle = loadedColor
       ctx.fillRect(0, centerY - barHeight / 2, analyzedX, barHeight)
       ctx.fillStyle = playedColor
-      ctx.fillRect(0, centerY - barHeight / 2, Math.min(playedX, analyzedX), barHeight)
+      // Playback position is known even before a complete waveform is available.
+      ctx.fillRect(0, centerY - barHeight / 2, playedX, barHeight)
       ctx.restore()
     }
 
