@@ -59,7 +59,7 @@ export function verifyStratumCapabilities(bytes: Buffer, manifest: StratumManife
   let value: Record<string, unknown>
   try { value = JSON.parse(bytes.toString('utf8')) } catch { throw new Error('Sidecar returned an invalid response.') }
   if (!value || value.service !== 'astra-sidecar' || value.installation !== manifest.installation
-    || value.spkiSha256 !== manifest.spkiSha256) throw new StratumVerificationError('Sidecar does not match this server’s Stratum announcement.')
+    || value.spkiSha256 !== manifest.spkiSha256) throw new StratumVerificationError('Sidecar does not match the expected identity. Check its connection before trusting it again.')
   if (value.protocol !== 'stratum-access-proof-1' || value.audioExperiment !== 'stratum-authenticated-audio-1'
     || value.authentication !== 'subsonic-token' || value.sessionRenewal !== 'fresh-credentials-same-user') {
     throw new StratumVerificationError('This Sidecar version is not supported by Astra.')

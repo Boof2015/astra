@@ -6979,6 +6979,9 @@ ipcMain.handle('subsonic:listSources', () => {
 ipcMain.handle('stratum:status', (_event, id: number) => stratumConnections.status(id))
 ipcMain.handle('stratum:discover', (_event, id: number) => stratumConnections.discover(id))
 ipcMain.handle('stratum:setEnabled', (_event, id: number, enabled: boolean) => stratumConnections.setEnabled(id, enabled))
+ipcMain.handle('stratum:inspectManual', (_event, id: number, address: string) => stratumConnections.inspectManual(id, address))
+ipcMain.handle('stratum:connectManual', (_event, id: number, token: string) => stratumConnections.connectManual(id, token))
+ipcMain.handle('stratum:forgetManual', (_event, id: number) => stratumConnections.forgetManual(id))
 
 ipcMain.handle('subsonic:createSource', async (_event, rawInput: SubsonicSourceCreateInput) => {
   const input = normalizeSubsonicSourceCreateInput(rawInput)

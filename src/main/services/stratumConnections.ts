@@ -1,5 +1,6 @@
-import { createHash } from 'node:crypto'
-import type { StratumStatus } from '../../types/stratum.ts'
+import { createHash, randomUUID } from 'node:crypto'
+import type { StratumManualCheck, StratumStatus } from '../../types/stratum.ts'
+import { inspectManualSidecar } from './stratumManual.ts'
 import { discoverStratum, parseStratumManifest, verifyStratumCapabilities, StratumVerificationError, type StratumManifest } from './stratumDiscovery.ts'
 import { createStratumTransport, type StratumTransport } from './stratumTransport.ts'
 import type { StratumProofAuthentication } from './stratumProofClient.ts'
@@ -9,8 +10,9 @@ import { STRATUM_CONNECT_TIMEOUT_MS, STRATUM_VERIFY_TIMEOUT_MS, StratumNetworkEr
 
 export const STRATUM_SETTINGS_KEY = 'stratum_connections_v1'
 interface Source { binding: string; enabled: boolean }
-interface Saved { binding: string; manifest: StratumManifest }
+interface Saved { binding: string; manifest: StratumManifest; manual?: boolean; enabled?: boolean }
 interface Candidate { binding: string; manifest: StratumManifest; endpoint: string }
+interface ManualProposal extends Candidate { token: string; expires: number; controller: AbortController }
 interface Dependencies {
   source(id: number): Source | null
   credentials(id: number): Promise<{ username: string; password: string }>
@@ -19,6 +21,7 @@ interface Dependencies {
   write(value: string): Promise<unknown>
   changed(status: StratumStatus): void
   transport?: typeof createStratumTransport
+  inspectManual?: typeof inspectManualSidecar
 }
 
 /** Bind approval to the saved server/account/credential generation, never just a numeric id. */
@@ -40,6 +43,8 @@ export class StratumConnections {
   private readonly checks = new Map<number, Promise<StratumStatus>>()
   private readonly enabling = new Map<number, Promise<StratumStatus>>()
   private readonly cachedConnections = new Map<number, { connection: StratumProofAuthentication; scope: string }>()
+  private readonly manualChecks = new Map<number, AbortController>()
+  private readonly manualProposals = new Map<number, ManualProposal>()
   private writes: Promise<unknown> = Promise.resolve()
   private closed = false
 
@@ -61,7 +66,8 @@ export class StratumConnections {
       for (const [id, item] of Object.entries(value)) {
         const saved = item as Saved
         if (/^[1-9]\d*$/.test(id) && saved && /^[a-f0-9]{64}$/.test(saved.binding)) {
-          result[id] = { binding: saved.binding, manifest: parseStratumManifest(saved.manifest) }
+          result[id] = { binding: saved.binding, manifest: parseStratumManifest(saved.manifest),
+            ...(saved.manual === true ? { manual: true, enabled: saved.enabled !== false } : {}) }
         }
       }
       return result
@@ -73,18 +79,24 @@ export class StratumConnections {
     return saved?.binding === this.source(id).binding ? saved : undefined
   }
 
+  private enabled(id: number): boolean { const saved = this.saved(id); return !!saved && saved.enabled !== false }
+
   status(id: number): StratumStatus {
     const source = this.source(id)
     const saved = this.saved(id)
     const current = this.statuses.get(id)
-    if (current) return { ...current, enabled: !!saved }
-    return { sourceId: id, enabled: !!saved, state: saved ? 'enabled' : 'unchecked',
+    if (current) return { ...current, enabled: this.enabled(id) }
+    return { sourceId: id, enabled: this.enabled(id), state: saved ? saved.enabled === false ? 'available' : 'enabled' : 'unchecked',
+      connection: saved ? saved.manual ? 'manual' : 'discovery' : null,
       endpoint: saved?.manifest.endpoints[0].url ?? null,
       error: source.enabled ? null : 'Turn on this server to use Stratum.' }
   }
 
   private publish(id: number, state: StratumStatus['state'], endpoint: string | null, error: string | null = null): StratumStatus {
-    const status: StratumStatus = { sourceId: id, enabled: !!this.saved(id), state, endpoint, error }
+    const saved = this.saved(id)
+    const status: StratumStatus = { sourceId: id, enabled: this.enabled(id), state,
+      connection: saved?.manual ? 'manual' : saved || this.candidates.has(id) ? 'discovery' : null,
+      endpoint: endpoint ?? (saved?.manual ? saved.manifest.endpoints[0].url : null), error }
     this.statuses.set(id, status)
     this.deps.changed(status)
     return status
@@ -159,9 +171,9 @@ export class StratumConnections {
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(STRATUM_CONNECT_TIMEOUT_MS)])
     this.publish(id, 'checking', this.status(id).endpoint)
     try {
-      const manifest = await this.announcement(id, signal)
-      this.assertCurrent(id, source.binding, signal)
       const saved = this.saved(id)
+      const manifest = saved?.manual ? saved.manifest : await this.announcement(id, signal)
+      this.assertCurrent(id, source.binding, signal)
       if (saved && (!manifest || !equal(saved.manifest, manifest))) {
         throw new StratumVerificationError('The Stratum announcement changed. Turn Stratum off, check again, then enable it to use the new connection.')
       }
@@ -170,7 +182,7 @@ export class StratumConnections {
       try {
         this.assertCurrent(id, source.binding, signal)
         this.candidates.set(id, { binding: source.binding, manifest, endpoint: transport.endpoint })
-        return this.publish(id, saved ? 'enabled' : 'available', transport.endpoint)
+        return this.publish(id, this.enabled(id) ? 'enabled' : 'available', transport.endpoint)
       } finally { transport.close?.() }
     } catch (error) {
       if (controller.signal.aborted || this.deps.source(id)?.binding !== source.binding) throw cancelled()
@@ -221,8 +233,10 @@ export class StratumConnections {
       const validate = () => {
         if (controller.signal.aborted || this.source(id).binding !== source.binding) throw cancelled()
       }
-      await this.persist(id, undefined, validate)
+      await this.persist(id, saved?.manual ? { ...saved, enabled: false } : undefined, validate)
       validate()
+      if (saved?.manual) return this.publish(id, status.state === 'error' ? 'error' : 'available',
+        saved.manifest.endpoints[0].url, status.state === 'error' ? status.error : null)
       if (candidate?.binding === source.binding) {
         this.candidates.set(id, candidate)
         return this.publish(id, 'available', candidate.endpoint)
@@ -230,21 +244,23 @@ export class StratumConnections {
       return this.publish(id, 'unchecked', null)
     }
     if (!source.enabled) throw new Error('Turn on this server before enabling Stratum.')
-    if (this.saved(id)) return this.status(id)
-    const candidate = this.candidates.get(id)
+    if (this.enabled(id)) return this.status(id)
+    const saved = this.saved(id)
+    const candidate = this.candidates.get(id) ?? (saved?.manual ? { ...saved, endpoint: saved.manifest.endpoints[0].url } : undefined)
     if (!candidate || candidate.binding !== source.binding) throw new Error('Check for Stratum before enabling it.')
     const controller = this.controller(id)
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(STRATUM_CONNECT_TIMEOUT_MS)])
     let session: StratumProofSession | undefined
     let transport: StratumTransport | undefined
     try {
-      const manifest = await this.announcement(id, signal)
+      const manifest = saved?.manual ? saved.manifest : await this.announcement(id, signal)
       if (!manifest || !equal(candidate.manifest, manifest)) throw new Error('The Stratum announcement changed. Check again before enabling it.')
       transport = await this.verified(manifest, signal)
       session = this.makeSession(id, source.binding, controller.signal, transport)
       await session.getBearer(signal)
       this.assertCurrent(id, source.binding, signal)
-      await this.persist(id, { binding: source.binding, manifest }, () => this.assertCurrent(id, source.binding, signal))
+      await this.persist(id, { binding: source.binding, manifest, ...(saved?.manual ? { manual: true, enabled: true } : {}) },
+        () => this.assertCurrent(id, source.binding, signal))
       this.assertCurrent(id, source.binding, signal)
       void this.sessions.get(id)?.close()
       this.sessions.set(id, session)
@@ -255,6 +271,85 @@ export class StratumConnections {
       if (controller.signal.aborted || this.deps.source(id)?.binding !== source.binding) throw cancelled()
       return this.publish(id, 'error', candidate.endpoint, error instanceof Error ? error.message : 'Could not enable Stratum.')
     }
+  }
+
+  async inspectManual(id: number, address: string): Promise<StratumManualCheck> {
+    const source = this.source(id)
+    if (!source.enabled) throw new Error('Turn on this server before connecting Sidecar.')
+    this.manualChecks.get(id)?.abort()
+    this.manualProposals.delete(id)
+    const controller = new AbortController()
+    this.manualChecks.set(id, controller)
+    const signal = AbortSignal.any([controller.signal, this.controller(id).signal, AbortSignal.timeout(STRATUM_VERIFY_TIMEOUT_MS)])
+    try {
+      const { manifest, requiresTrust } = await (this.deps.inspectManual ?? inspectManualSidecar)(address, signal)
+      this.assertCurrent(id, source.binding, signal)
+      const endpoint = manifest.endpoints[0].url
+      const saved = this.saved(id)
+      const previous = saved?.manifest.endpoints.find(value => value.url === endpoint)
+      const sameIdentity = !!previous && saved!.manifest.installation === manifest.installation
+        && saved!.manifest.spkiSha256 === manifest.spkiSha256 && previous.trust === manifest.endpoints[0].trust
+      const token = randomUUID()
+      this.manualProposals.set(id, { token, binding: source.binding, manifest, endpoint,
+        expires: Date.now() + 5 * 60_000, controller })
+      return { token, endpoint, fingerprint: manifest.spkiSha256,
+        requiresTrust: (requiresTrust && !sameIdentity) || (!!previous && !sameIdentity),
+        identityChanged: !!previous && !sameIdentity }
+    } catch (error) {
+      if (this.manualChecks.get(id) === controller) this.manualChecks.delete(id)
+      controller.abort()
+      throw error
+    }
+  }
+
+  /** The user accepts this exact main-owned proposal. Recheck the same identity
+   * before reading credentials, and replace saved settings only after sign-in. */
+  async connectManual(id: number, token: string): Promise<StratumStatus> {
+    const source = this.source(id)
+    const proposal = this.manualProposals.get(id)
+    if (typeof token !== 'string' || !proposal || proposal.token !== token || proposal.expires < Date.now()
+      || proposal.binding !== source.binding || proposal.controller.signal.aborted) {
+      throw new Error('This connection check has expired. Check the address again.')
+    }
+    this.manualProposals.delete(id)
+    const controller = proposal.controller
+    const signal = AbortSignal.any([controller.signal, this.controller(id).signal, AbortSignal.timeout(STRATUM_CONNECT_TIMEOUT_MS)])
+    let transport: StratumTransport | undefined
+    let session: StratumProofSession | undefined
+    try {
+      this.assertCurrent(id, source.binding, signal)
+      transport = await this.verified(proposal.manifest, signal)
+      session = this.makeSession(id, source.binding, controller.signal, transport)
+      await session.getBearer(signal)
+      this.assertCurrent(id, source.binding, signal)
+      await this.persist(id, { binding: source.binding, manifest: proposal.manifest, manual: true, enabled: true },
+        () => this.assertCurrent(id, source.binding, signal))
+      this.assertCurrent(id, source.binding, signal)
+      // Keep the new session's controller alive while retiring the old connection.
+      this.manualChecks.delete(id)
+      this.invalidate(id)
+      this.controllers.set(id, controller)
+      this.sessions.set(id, session)
+      return this.publish(id, 'enabled', transport.endpoint)
+    } catch (error) {
+      void session?.close()
+      if (!session) transport?.close?.()
+      if (this.manualChecks.get(id) === controller) this.manualChecks.delete(id)
+      controller.abort()
+      throw stratumTimeoutContext(error, 'setup')
+    }
+  }
+
+  async forgetManual(id: number): Promise<StratumStatus> {
+    const source = this.source(id)
+    if (!this.saved(id)?.manual) return this.status(id)
+    this.invalidate(id)
+    const signal = this.controller(id).signal
+    const validate = () => { if (signal.aborted || this.source(id).binding !== source.binding) throw cancelled() }
+    await this.persist(id, undefined, validate)
+    validate()
+    this.publish(id, 'unchecked', null)
+    return this.discover(id)
   }
 
   private makeSession(id: number, binding: string, signal: AbortSignal, transport: StratumTransport): StratumProofSession {
@@ -274,7 +369,7 @@ export class StratumConnections {
   cachedConnection(id: number): { connection: StratumProofAuthentication; scope: string } | null {
     const source = this.source(id)
     const saved = this.saved(id)
-    if (!source.enabled || !saved) return null
+    if (!source.enabled || !saved || !this.enabled(id)) return null
     const scope = createHash('sha256').update(JSON.stringify([id, saved.binding, saved.manifest])).digest('hex')
     const previous = this.cachedConnections.get(id)
     if (previous?.scope === scope && !previous.connection.signal.aborted) return previous
@@ -301,7 +396,7 @@ export class StratumConnections {
   async connection(id: number, signal: AbortSignal): Promise<StratumProofSession | null> {
     const source = this.source(id)
     const saved = this.saved(id)
-    if (!source.enabled || !saved) return null
+    if (!source.enabled || !saved || !this.enabled(id)) return null
     signal.throwIfAborted()
     const current = this.sessions.get(id)
     if (current && !current.signal.aborted) return current
@@ -327,7 +422,7 @@ export class StratumConnections {
     let session: StratumProofSession | undefined
     let transport: StratumTransport | undefined
     try {
-      const manifest = await this.announcement(id, signal)
+      const manifest = saved.manual ? saved.manifest : await this.announcement(id, signal)
       if (!manifest || !equal(saved.manifest, manifest)) {
         throw new Error('The Stratum announcement changed. Turn Stratum off and check its connection again.')
       }
@@ -336,7 +431,7 @@ export class StratumConnections {
       session = this.makeSession(id, saved.binding, controller.signal, transport)
       await session.getBearer(signal)
       this.assertCurrent(id, saved.binding, signal)
-      if (!this.saved(id)) throw cancelled()
+      if (!this.enabled(id)) throw cancelled()
       this.sessions.set(id, session)
       this.publish(id, 'enabled', transport.endpoint)
       return session
@@ -352,7 +447,7 @@ export class StratumConnections {
   }
 
   playbackFailed(id: number, error?: unknown): void {
-    if (this.deps.source(id) && this.saved(id)) {
+    if (this.deps.source(id) && this.enabled(id)) {
       const current = this.status(id)
       // Connection setup already publishes a safe, specific reason. Do not
       // overwrite it, or expose arbitrary cache/filesystem errors to the UI.
@@ -367,12 +462,15 @@ export class StratumConnections {
 
   playbackStarted(id: number): void {
     const session = this.sessions.get(id)
-    if (session && !session.signal.aborted && this.saved(id) && this.statuses.get(id)?.state === 'error') {
+    if (session && !session.signal.aborted && this.enabled(id) && this.statuses.get(id)?.state === 'error') {
       this.publish(id, 'enabled', session.endpoint)
     }
   }
 
   invalidate(id: number): void {
+    this.manualChecks.get(id)?.abort()
+    this.manualChecks.delete(id)
+    this.manualProposals.delete(id)
     this.cachedConnections.delete(id)
     this.controllers.get(id)?.abort()
     this.controllers.delete(id)

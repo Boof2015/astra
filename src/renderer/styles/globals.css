@@ -29991,6 +29991,38 @@ html[data-theme-tone="light"] .servers-stratum-wave rect.is-original { fill: #a1
   padding: 0 14px 12px;
 }
 
+.servers-stratum-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 14px;
+}
+.servers-stratum-links {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+.servers-stratum-connection {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.servers-stratum-address {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.servers-stratum-identity {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.servers-stratum-identity > summary { cursor: pointer; }
+.servers-stratum-identity > span { display: block; margin-top: 12px; }
+.servers-stratum-identity > code { display: block; margin-top: 6px; overflow-wrap: anywhere; }
+
 .servers-link {
   flex-shrink: 0;
   border: 0;

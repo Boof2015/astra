@@ -10,6 +10,7 @@ import { discoverStratum, parseStratumManifest, verifyStratumCapabilities, type 
 import { StratumConnections, stratumSourceBinding } from './stratumConnections.ts'
 import { StratumProofClient } from './stratumProofClient.ts'
 import { StratumNetworkError, stratumConnectionFailure, stratumTimeoutContext } from './stratumNetwork.ts'
+import { inspectManualSidecar, inspectSidecarIdentity } from './stratumManual.ts'
 
 const installation = 'a'.repeat(32)
 const bearer = 'b'.repeat(64)
@@ -114,7 +115,7 @@ async function fixture(t: TestContext) {
     server.closeAllConnections()
     await new Promise<void>(resolve => server.close(() => resolve()))
   })
-  return { state, manager, manifest, deps, transport: createStratumTransport(manifest.endpoints[0], spkiSha256) }
+  return { state, manager, manifest, deps, server, transport: createStratumTransport(manifest.endpoints[0], spkiSha256) }
 }
 
 test('cold installed playback verifies capabilities once, shares that result, and rechecks on a fresh connection', async t => {
@@ -431,4 +432,179 @@ test('retained playback approval is local, stable across current/next, and bound
   assert.equal(restarted.cachedConnection(1)!.scope, first.scope, 're-enable of the same account/installation can reuse retained music')
   state.sources.set(1, { binding: 'e'.repeat(64), enabled: true })
   assert.equal(restarted.cachedConnection(1), null, 'different credentials require a new approval and cache scope')
+})
+
+test('manual self-signed setup reads no credentials until accepted, and remembers disabled connections across restart', async t => {
+  const { state, manager, manifest, deps } = await fixture(t)
+  state.rows = []
+  const checked = await manager.inspectManual(1, manifest.endpoints[0].url + '/')
+  assert.equal(checked.requiresTrust, true)
+  assert.equal(checked.fingerprint, manifest.spkiSha256)
+  assert.equal(state.reads, 0); assert.equal(state.creates, 0)
+  assert.ok(state.requests.every(request => request.path.endsWith('/capabilities') && !request.authorization && !request.body))
+  assert.equal(manager.status(1).enabled, false)
+  assert.equal((await manager.connectManual(1, checked.token)).connection, 'manual')
+  assert.equal(state.reads, 1)
+  assert.equal((await manager.setEnabled(1, false)).enabled, false)
+  manager.close()
+  const restarted = new StratumConnections({ ...deps, radios: async () => { throw new Error('must not use discovery') } })
+  t.after(() => restarted.close())
+  assert.equal(restarted.status(1).connection, 'manual')
+  assert.equal(restarted.status(1).endpoint, manifest.endpoints[0].url)
+  assert.equal(restarted.status(1).enabled, false)
+  assert.equal(restarted.cachedConnection(1), null)
+  assert.equal(await restarted.connection(1, signal()), null)
+  assert.equal((await restarted.discover(1)).state, 'available')
+  assert.equal((await restarted.setEnabled(1, true)).enabled, true)
+  assert.ok(await restarted.connection(1, signal()))
+  assert.equal((await restarted.inspectManual(1, manifest.endpoints[0].url)).requiresTrust, false)
+  assert.ok(!state.settings.includes(credential.password) && !state.settings.includes(bearer))
+})
+
+test('manual key replacement between check and acceptance never receives listener credentials', async t => {
+  const { state, manager, manifest, server } = await fixture(t)
+  const checked = await manager.inspectManual(1, manifest.endpoints[0].url)
+  const other = await createParallaxTlsIdentity('Changed Sidecar')
+  server.setSecureContext({ key: other.privateKeyPem, cert: other.certificatePem })
+  await assert.rejects(manager.connectManual(1, checked.token), /identity/)
+  assert.equal(state.reads, 0); assert.equal(state.creates, 0)
+  assert.equal(manager.status(1).enabled, false)
+})
+
+test('a manual identity change cannot be accepted by toggling off and on or checking again', async t => {
+  const { state, manager, manifest, server, deps } = await fixture(t)
+  const checked = await manager.inspectManual(1, manifest.endpoints[0].url)
+  await manager.connectManual(1, checked.token)
+  await manager.setEnabled(1, false)
+  const other = await createParallaxTlsIdentity('Changed Sidecar')
+  server.setSecureContext({ key: other.privateKeyPem, cert: other.certificatePem })
+  manifest.spkiSha256 = createHash('sha256').update(new X509Certificate(other.certificatePem)
+    .publicKey.export({ type: 'spki', format: 'der' })).digest('hex')
+  const reads = state.reads
+  assert.equal((await manager.setEnabled(1, true)).state, 'error')
+  assert.equal((await manager.discover(1)).state, 'error')
+  assert.equal((await manager.setEnabled(1, false)).connection, 'manual')
+  manager.close()
+  const restarted = new StratumConnections(deps)
+  t.after(() => restarted.close())
+  assert.equal((await restarted.setEnabled(1, true)).state, 'error')
+  assert.equal(state.reads, reads)
+  const replacement = await restarted.inspectManual(1, manifest.endpoints[0].url)
+  assert.equal(replacement.requiresTrust, true); assert.equal(replacement.identityChanged, true)
+  await restarted.connectManual(1, replacement.token)
+  assert.equal(state.reads, reads + 1)
+})
+
+test('manual proposals cannot cross sources, survive new checks or be replayed', async t => {
+  const { state, manager, manifest } = await fixture(t)
+  const first = await manager.inspectManual(1, manifest.endpoints[0].url)
+  await assert.rejects(manager.connectManual(2, first.token), /expired/)
+  const next = await manager.inspectManual(1, manifest.endpoints[0].url)
+  await assert.rejects(manager.connectManual(1, first.token), /expired/)
+  assert.equal(state.reads, 0)
+  await manager.connectManual(1, next.token)
+  await assert.rejects(manager.connectManual(1, next.token), /expired/)
+  assert.equal(state.reads, 1)
+})
+
+test('disabled sources and changed Navidrome credentials invalidate a manual proposal', async t => {
+  const { state, manager, manifest } = await fixture(t)
+  const first = await manager.inspectManual(1, manifest.endpoints[0].url)
+  await manager.setEnabled(1, false)
+  await assert.rejects(manager.connectManual(1, first.token), /expired/)
+  const next = await manager.inspectManual(1, manifest.endpoints[0].url)
+  state.sources.set(1, { binding: '0'.repeat(64), enabled: true })
+  await assert.rejects(manager.connectManual(1, next.token), /expired/)
+  state.sources.get(1)!.enabled = false
+  await assert.rejects(manager.inspectManual(1, manifest.endpoints[0].url), /Turn on/)
+  assert.equal(state.reads, 0)
+})
+
+test('a late manual sign-in cannot undo disabling Stratum', async t => {
+  const { state, manager, manifest } = await fixture(t)
+  const checked = await manager.inspectManual(1, manifest.endpoints[0].url)
+  let release!: () => void
+  state.hold = new Promise(resolve => { release = resolve })
+  const pending = manager.connectManual(1, checked.token)
+  const rejected = assert.rejects(pending)
+  for (let i = 0; !state.creates && i < 100; i++) await delay(10)
+  assert.equal(state.creates, 1)
+  await manager.setEnabled(1, false)
+  release(); await rejected
+  assert.equal(manager.status(1).enabled, false)
+  assert.equal(manager.cachedConnection(1), null)
+})
+
+test('failed manual sign-in and save retain the previous saved connection', async t => {
+  const { state, manager, manifest } = await fixture(t)
+  await manager.discover(1); await manager.setEnabled(1, true)
+  const previous = state.settings
+  let checked = await manager.inspectManual(1, manifest.endpoints[0].url)
+  state.signInStatus = 401
+  await assert.rejects(manager.connectManual(1, checked.token))
+  assert.equal(state.settings, previous)
+  state.signInStatus = 201
+  checked = await manager.inspectManual(1, manifest.endpoints[0].url)
+  state.writeFails = true
+  await assert.rejects(manager.connectManual(1, checked.token), /save/)
+  assert.equal(state.settings, previous)
+  assert.equal(manager.status(1).connection, 'discovery')
+  assert.ok(await manager.connection(1, signal()))
+})
+
+test('forgetting a manual connection restores discovery without enabling or signing in', async t => {
+  const { state, manager, manifest } = await fixture(t)
+  const checked = await manager.inspectManual(1, manifest.endpoints[0].url)
+  await manager.connectManual(1, checked.token)
+  const reads = state.reads
+  const status = await manager.forgetManual(1)
+  assert.equal(status.state, 'available'); assert.equal(status.enabled, false)
+  assert.equal(status.connection, 'discovery'); assert.equal(state.reads, reads)
+  assert.equal(manager.cachedConnection(1), null)
+})
+
+test('manual checks reject bad addresses, redirects and wrong public identities without signing in', async t => {
+  const { state, manager, manifest } = await fixture(t)
+  for (const value of ['http://127.0.0.1:7843', 'https://user:password@sidecar.test', 'https://sidecar.test?secret=x']) {
+    await assert.rejects(manager.inspectManual(1, value))
+  }
+  state.redirect = true
+  await assert.rejects(manager.inspectManual(1, manifest.endpoints[0].url), /302/)
+  state.redirect = false
+  const original = manifest.spkiSha256
+  manifest.spkiSha256 = '0'.repeat(64)
+  await assert.rejects(manager.inspectManual(1, manifest.endpoints[0].url), /identity/)
+  manifest.spkiSha256 = original
+  assert.equal(state.reads, 0); assert.equal(state.creates, 0)
+})
+
+test('manual trusted HTTPS keeps proxy verification and uses only the entered URL', async () => {
+  const manifest = sample()
+  const targets: unknown[] = []
+  let closed = 0
+  const result = await inspectManualSidecar('https://music.home.test:7843/base/', signal(), {
+    identity: async () => ({ fingerprint: 'e'.repeat(64), trusted: true }),
+    transport: (target, pin) => {
+      targets.push({ target, pin })
+      return { endpoint: target.url, close: () => { closed++ }, request: async (...args) => {
+        assert.equal(args[0], '/access/v1/capabilities'); assert.equal(args[1], 'GET')
+        assert.equal(args[3], undefined); assert.equal(args[4], undefined)
+        return { bytes: Buffer.from(JSON.stringify({ ...capabilities(manifest), endpoints: ['https://untrusted.test'] })), type: 'application/json' }
+      } }
+    }
+  })
+  assert.equal(result.requiresTrust, false)
+  assert.deepEqual(result.manifest.endpoints, [{ url: manifest.endpoints[0].url, trust: 'https_proxy' }])
+  assert.equal(result.manifest.spkiSha256, manifest.spkiSha256, 'proxy certificate key can differ from the Sidecar key')
+  assert.deepEqual(targets, [{ target: result.manifest.endpoints[0], pin: 'e'.repeat(64) }])
+  assert.equal(closed, 1)
+})
+
+test('manual certificate inspection has a bounded, cancellable TLS handshake', async t => {
+  const sockets = new Set<import('node:net').Socket>()
+  const tcp = createTcpServer(socket => { sockets.add(socket); socket.resume(); socket.on('close', () => sockets.delete(socket)) })
+  await new Promise<void>(resolve => tcp.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise<void>(resolve => { for (const socket of sockets) socket.destroy(); tcp.close(() => resolve()) }))
+  await assert.rejects(inspectSidecarIdentity(`https://127.0.0.1:${(tcp.address() as { port: number }).port}`, AbortSignal.timeout(80)),
+    /too long to establish a secure connection/)
 })

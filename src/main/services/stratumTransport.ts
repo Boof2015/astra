@@ -81,7 +81,7 @@ export function createStratumTransport(target: StratumEndpoint, spkiSha256: stri
           const key = new X509Certificate(socket.getPeerCertificate().raw).publicKey.export({ type: 'spki', format: 'der' })
           if (createHash('sha256').update(key).digest('hex') !== spkiSha256) throw new Error()
         } catch {
-          trustError = new StratumVerificationError('Sidecar’s identity does not match its announcement. Check its discovery settings.')
+          trustError = new StratumVerificationError('Sidecar’s identity does not match the saved connection. Check its connection before trusting it again.')
           socket.destroy(trustError)
           return
         }

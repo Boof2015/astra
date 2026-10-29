@@ -1494,6 +1494,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     status: (sourceId: number): Promise<StratumStatus> => ipcRenderer.invoke('stratum:status', sourceId),
     discover: (sourceId: number): Promise<StratumStatus> => ipcRenderer.invoke('stratum:discover', sourceId),
     setEnabled: (sourceId: number, enabled: boolean): Promise<StratumStatus> => ipcRenderer.invoke('stratum:setEnabled', sourceId, enabled),
+    inspectManual: (sourceId: number, address: string) => ipcRenderer.invoke('stratum:inspectManual', sourceId, address),
+    connectManual: (sourceId: number, token: string): Promise<StratumStatus> => ipcRenderer.invoke('stratum:connectManual', sourceId, token),
+    forgetManual: (sourceId: number): Promise<StratumStatus> => ipcRenderer.invoke('stratum:forgetManual', sourceId),
     onChanged: (callback: (status: StratumStatus) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: StratumStatus) => callback(status)
       ipcRenderer.on('stratum:changed', handler)
