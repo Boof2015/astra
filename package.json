@@ -8,6 +8,7 @@
     "build": "electron-vite build && node ./scripts/build/writeAppBuildMetadata.cjs",
     "build:icons": "node scripts/build/generate-astra-icons.mjs",
     "preview": "electron-vite preview",
+    "check:media-binaries": "node scripts/electron-builder/validate-media-binaries.cjs",
     "check:packaging-config": "node ./scripts/electron-builder/validate-config.cjs",
     "test": "node ./scripts/node/run-tests.cjs",
     "test:node": "node ./scripts/node/run-tests.cjs --node",
@@ -58,7 +59,7 @@
     "dist": "npm run build && electron-builder --publish never",
     "dist:win": "npm run build && electron-builder --win --publish never",
     "dist:mac": "npm run build && electron-builder --mac --publish never",
-    "dist:linux": "npm run build && electron-builder --linux --publish never"
+    "dist:linux": "npm run build && node scripts/electron-builder/build-linux.cjs"
   },
   "repository": {
     "type": "git",
@@ -85,7 +86,7 @@
     "better-sqlite3": "^12.10.0",
     "bonjour-service": "^1.4.0",
     "ffmpeg-static": "^5.2.0",
-    "ffprobe-static": "^3.1.0",
+    "ffmpeg-ffprobe-static": "6.1.2-rc.1",
     "music-metadata": "^11.12.3",
     "node-addon-api": "^8.7.0",
     "react": "^19.2.6",
@@ -117,10 +118,10 @@
     "directories": {
       "output": "dist"
     },
-    "afterPack": "./scripts/electron-builder/afterPack-prune-ffprobe.cjs",
+    "afterPack": "./scripts/electron-builder/afterPack-validate-binaries.cjs",
     "asarUnpack": [
       "node_modules/ffmpeg-static/**",
-      "node_modules/ffprobe-static/**",
+      "node_modules/ffmpeg-ffprobe-static/**",
       "node_modules/better-sqlite3/**"
     ],
     "files": [
@@ -128,7 +129,9 @@
       ".env.local",
       "native/build/Release/*.node",
       "node_modules/ffmpeg-static/**/*",
-      "node_modules/ffprobe-static/**/*"
+      "node_modules/ffmpeg-ffprobe-static/**/*",
+      "!node_modules/ffmpeg-ffprobe-static/ffmpeg",
+      "!node_modules/ffmpeg-ffprobe-static/ffmpeg.exe"
     ],
     "extraResources": [
       {

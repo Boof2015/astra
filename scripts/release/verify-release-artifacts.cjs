@@ -45,7 +45,7 @@ function toRpmArch(arch) {
 function expectedArtifactNames({ platform, arch, version }) {
   if (platform === 'linux') {
     return [
-      `Astra-${version}-Linux.AppImage`,
+      `Astra-${version}-Linux${arch === 'x64' ? '' : `-${arch}`}.AppImage`,
       `Astra-${version}-Linux-${toDebArch(arch)}.deb`,
       `Astra-${version}-Linux-${toRpmArch(arch)}.rpm`,
       `Astra-${version}-Linux-${arch}.tar.gz`,
@@ -120,4 +120,5 @@ function main() {
   }
 }
 
-main()
+module.exports = { expectedArtifactNames }
+if (require.main === module) main()

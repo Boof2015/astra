@@ -1,3 +1,4 @@
+import { isAtmosJocStream, parseFfprobeAudioMetadata } from '../shared/audio/ffprobeMetadata'
 import { RemotePlaylists, RemotePlaylistCreationError } from './services/remotePlaylists'
 import { createJellyfinPlaylistClient } from './services/jellyfinPlaylists'
 import { createPlexPlaylistClient } from './services/plexPlaylists'
@@ -19,7 +20,6 @@ import { existsSync, readFileSync } from 'fs'
 import { cpus, tmpdir, hostname, networkInterfaces, setPriority, constants as osConstants } from 'os'
 import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, type ExecFileOptions } from 'child_process'
 import { createHash, randomBytes, randomUUID } from 'crypto'
-import * as mm from 'music-metadata'
 import * as library from './services/library'
 import { isAllowedArtworkProtocolHash } from './services/artworkProtocol'
 import type { DynamicPlaylistRules } from '../shared/playlists/dynamicPlaylist'
@@ -167,7 +167,6 @@ import {
   type HrtfProfileCandidateResult,
   type HrtfProfileCommitResult,
 } from '../types/hrtfProfiles'
-import { getMusicMetadataParseOptions } from './utils/musicMetadata'
 import { extractReplayGainDb } from './utils/replayGain'
 import {
   MINI_WINDOW_MAX_HEIGHT,
@@ -437,6 +436,8 @@ let miniWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let lyricsPopoutWindowPersistTimer: ReturnType<typeof setTimeout> | null = null
 let fileCreatedAtBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let audioMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
+let atmosMetadataRefreshTimer: ReturnType<typeof setTimeout> | null = null
+const atmosMetadataRefreshController = new AbortController()
 let artistCreditsBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let genreMetadataBackfillTimer: ReturnType<typeof setTimeout> | null = null
 let replayGainBackfillTimer: ReturnType<typeof setTimeout> | null = null
@@ -615,6 +616,7 @@ const FILE_CREATED_AT_BACKFILL_STARTUP_DELAY_MS = 13_000
 const FILE_CREATED_AT_BACKFILL_MIGRATION_KEY = 'file_created_at_backfill_v1_done'
 const AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS = 15_000
 const AUDIO_METADATA_BACKFILL_MIGRATION_KEY = 'audio_metadata_backfill_v2_done'
+const ATMOS_METADATA_REFRESH_STARTUP_DELAY_MS = 18_000
 const ARTIST_CREDITS_BACKFILL_STARTUP_DELAY_MS = 16_000
 const ARTIST_CREDITS_BACKFILL_MIGRATION_KEY = 'artist_credits_backfill_v1_done'
 const GENRE_METADATA_BACKFILL_STARTUP_DELAY_MS = 16_500
@@ -5427,6 +5429,18 @@ function scheduleAudioMetadataBackfillMigration(): void {
   }, AUDIO_METADATA_BACKFILL_STARTUP_DELAY_MS)
 }
 
+function scheduleAtmosMetadataRefresh(): void {
+  atmosMetadataRefreshTimer = setTimeout(() => {
+    atmosMetadataRefreshTimer = null
+    void library.refreshAtmosMetadataOnce({
+      signal: atmosMetadataRefreshController.signal,
+      onComplete: result => mainWindow?.webContents.send('library:audioMetadataBackfillComplete', result)
+    }).catch(error => {
+      if (!atmosMetadataRefreshController.signal.aborted) console.warn('Atmos metadata refresh failed:', error)
+    })
+  }, ATMOS_METADATA_REFRESH_STARTUP_DELAY_MS)
+}
+
 async function maybeRunArtistCreditsBackfillOnce(): Promise<void> {
   if (library.getAppMeta(ARTIST_CREDITS_BACKFILL_MIGRATION_KEY) === '1') {
     return
@@ -6043,6 +6057,7 @@ app.whenReady().then(async () => {
   })()
   scheduleFileCreatedAtBackfillMigration()
   scheduleAudioMetadataBackfillMigration()
+  scheduleAtmosMetadataRefresh()
   scheduleArtistCreditsBackfillMigration()
   scheduleGenreMetadataBackfillMigration()
   scheduleReplayGainBackfillMigration()
@@ -6106,6 +6121,11 @@ app.on('before-quit', (event) => {
   if (audioMetadataBackfillTimer !== null) {
     clearTimeout(audioMetadataBackfillTimer)
     audioMetadataBackfillTimer = null
+  }
+  atmosMetadataRefreshController.abort()
+  if (atmosMetadataRefreshTimer !== null) {
+    clearTimeout(atmosMetadataRefreshTimer)
+    atmosMetadataRefreshTimer = null
   }
   if (artistCreditsBackfillTimer !== null) {
     clearTimeout(artistCreditsBackfillTimer)
@@ -11796,7 +11816,7 @@ async function resolveBinary(binary: 'ffmpeg' | 'ffprobe'): Promise<string | nul
     : (
         binary === 'ffmpeg'
           ? [join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'ffmpeg-static', executable)]
-          : [join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'ffprobe-static', 'bin', process.platform, process.arch, executable)]
+          : [join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'ffmpeg-ffprobe-static', executable)]
       )
   const systemCandidates = binary === 'ffmpeg'
     ? (isWindows ? ['ffmpeg.exe', 'ffmpeg'] : ['ffmpeg', '/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg'])
@@ -11845,8 +11865,8 @@ async function resolveStaticModuleBinary(binary: 'ffmpeg' | 'ffprobe'): Promise<
       return typeof module.default === 'string' ? module.default : null
     }
 
-    const module = await import('ffprobe-static') as { path?: string; default?: { path?: string } }
-    const modulePath = module.path ?? module.default?.path
+    const module = await import('ffmpeg-ffprobe-static')
+    const modulePath = module.ffprobePath ?? module.default?.ffprobePath
     return typeof modulePath === 'string' ? modulePath : null
   } catch {
     return null
@@ -11854,18 +11874,11 @@ async function resolveStaticModuleBinary(binary: 'ffmpeg' | 'ffprobe'): Promise<
 }
 
 function toAsarUnpackedPath(candidate: string): string {
-  if (!candidate.includes('app.asar')) return candidate
-  return candidate.replace('app.asar', 'app.asar.unpacked')
+  return candidate.replace(/app\.asar(?=[\\/]|$)/, 'app.asar.unpacked')
 }
 
 function looksLikePath(candidate: string): boolean {
   return candidate.includes('/') || candidate.includes('\\') || /^[a-zA-Z]:[\\/]/.test(candidate)
-}
-
-function toStringOrUndefined(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const normalized = value.trim()
-  return normalized.length > 0 ? normalized : undefined
 }
 
 function toNumberOrUndefined(value: unknown): number | undefined {
@@ -11875,51 +11888,6 @@ function toNumberOrUndefined(value: unknown): number | undefined {
     return Number.isFinite(parsed) ? parsed : undefined
   }
   return undefined
-}
-
-function collectFfprobeHints(stream: Record<string, unknown>, format?: Record<string, unknown>): string[] {
-  const hints: string[] = []
-  const push = (value: unknown) => {
-    const text = toStringOrUndefined(value)
-    if (text) hints.push(text)
-  }
-
-  push(stream.codec_name)
-  push(stream.codec_long_name)
-  push(stream.profile)
-  push(stream.codec_tag_string)
-  push(stream.codec_tag)
-  push(stream.channel_layout)
-
-  const streamTags = stream.tags
-  if (streamTags && typeof streamTags === 'object') {
-    for (const tagValue of Object.values(streamTags)) {
-      push(tagValue)
-    }
-  }
-
-  const sideDataList = stream.side_data_list
-  if (Array.isArray(sideDataList)) {
-    for (const sideData of sideDataList) {
-      if (!sideData || typeof sideData !== 'object') continue
-      for (const sideDataValue of Object.values(sideData)) {
-        push(sideDataValue)
-      }
-    }
-  }
-
-  if (format && typeof format === 'object') {
-    push(format.format_name)
-    push(format.format_long_name)
-    const formatTags = format.tags
-    if (formatTags && typeof formatTags === 'object') {
-      for (const tagValue of Object.values(formatTags)) {
-        push(tagValue)
-      }
-    }
-  }
-
-  return hints
 }
 
 function shouldProbeWithFfprobe(filePath: string, metadata: LoadedAudioMetadata): boolean {
@@ -11948,23 +11916,14 @@ async function probeAudioMetadataWithFfprobe(filePath: string): Promise<FfprobeA
       ],
       { timeout: 10000, maxBuffer: 1024 * 1024 }
     )
-    const parsed = JSON.parse(stdout) as { streams?: Array<Record<string, unknown>>; format?: Record<string, unknown> }
-    const stream = parsed.streams?.[0]
-    if (!stream) return null
-
-    const codecName = toStringOrUndefined(stream.codec_name)
-    const codecLongName = toStringOrUndefined(stream.codec_long_name)
-    const codecProfile = toStringOrUndefined(stream.profile)
-    const channels = toNumberOrUndefined(stream.channels)
-    const hints = collectFfprobeHints(stream, parsed.format)
-
-    return {
-      channels,
-      codec: codecName ?? codecLongName,
-      codecProfile,
-      isAtmosJoc: isAtmosJocStream(codecName ?? codecLongName, codecProfile, hints),
-      hints
-    }
+    const metadata = parseFfprobeAudioMetadata(stdout)
+    return metadata ? {
+      channels: metadata.channels ?? undefined,
+      codec: metadata.codec ?? undefined,
+      codecProfile: metadata.codecProfile ?? undefined,
+      isAtmosJoc: metadata.isAtmosJoc,
+      hints: metadata.hints
+    } : null
   } catch (error) {
     console.warn(`ffprobe metadata probe failed for ${filePath}:`, error)
     return null
@@ -13788,7 +13747,7 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
   }
 
   // IAMF (Eclipsa) sources: neither music-metadata nor the bundled ffprobe
-  // (6.0) can read them; duration comes from the OBU walker / moov and
+  // (6.1) can read them; duration comes from the OBU walker / moov and
   // channels from the fixed 7.1.4 decode target.
   if (format === 'iamf') {
     try {
@@ -13816,7 +13775,7 @@ async function loadAudioMetadata(filePath: string): Promise<LoadedAudioMetadata 
   }
 
   try {
-    const mm_metadata = await mm.parseFile(filePath, getMusicMetadataParseOptions(filePath))
+    const mm_metadata = await library.readAudioFileMetadata(filePath)
     const common = mm_metadata.common
     const replayGain = extractReplayGainDb(mm_metadata)
     const parsedArtistNames = normalizeArtistNames(common.artists ?? [])
@@ -13978,27 +13937,4 @@ async function loadAudioFile(
     }
     return null
   }
-}
-
-function isAtmosJocStream(codec?: string, codecProfile?: string, hints: string[] = []): boolean {
-  const codecText = (codec ?? '').toLowerCase()
-  const profileText = (codecProfile ?? '').toLowerCase()
-  const hintText = hints.join(' ').toLowerCase()
-  const combined = `${codecText} ${profileText} ${hintText}`
-  const mentionsAtmos =
-    combined.includes('joc') ||
-    combined.includes('atmos') ||
-    combined.includes('dby1')
-  const isEc3Family =
-    combined.includes('ec-3') ||
-    combined.includes('eac3') ||
-    combined.includes('ec3') ||
-    combined.includes('e-ac-3') ||
-    combined.includes('dolby digital plus') ||
-    combined.includes('dd+')
-
-  // JOC indicates Atmos in E-AC-3-based streams.
-  if (combined.includes('joc')) return true
-
-  return mentionsAtmos && isEc3Family
 }

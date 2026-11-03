@@ -194,7 +194,7 @@ test('authenticated Stratum → actual Astra Standard session → real worklet, 
     await until(() => analyses === i + 1, 'Retained analysis did not finish')
     const full = await disk.getAnalysis(first.info.quality!.analysisKey!)
     const reference = await analyzeRemoteAudioFile(join(directory, `${track}.wav`), ffmpeg,
-      createRequire(import.meta.url)('ffprobe-static').path, AbortSignal.timeout(10000))
+      createRequire(import.meta.url)('ffmpeg-ffprobe-static').ffprobePath, AbortSignal.timeout(10000))
     assert.ok(full)
     assert.equal(full.loudnessLufs, reference.loudnessLufs)
     assert.equal(full.peakLinear, reference.peakLinear)

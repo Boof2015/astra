@@ -295,8 +295,7 @@ function looksLikePath(candidate: string): boolean {
 }
 
 function toAsarUnpackedPath(candidate: string): string {
-  if (!candidate.includes('app.asar')) return candidate
-  return candidate.replace('app.asar', 'app.asar.unpacked')
+  return candidate.replace(/app\.asar(?=[\\/]|$)/, 'app.asar.unpacked')
 }
 
 function normalizeBackendKind(value: unknown): NativeAudioBackendKind {
@@ -752,8 +751,8 @@ async function resolveStaticBinary(binary: 'ffmpeg' | 'ffprobe'): Promise<string
       const mod = await import('ffmpeg-static')
       return typeof mod.default === 'string' ? mod.default : null
     }
-    const mod = await import('ffprobe-static') as { path?: string; default?: { path?: string } }
-    const modulePath = mod.path ?? mod.default?.path
+    const mod = await import('ffmpeg-ffprobe-static')
+    const modulePath = mod.ffprobePath ?? mod.default?.ffprobePath
     return typeof modulePath === 'string' ? modulePath : null
   } catch {
     return null
@@ -769,7 +768,7 @@ async function resolveBinaryUncached(binary: 'ffmpeg' | 'ffprobe'): Promise<stri
     : (
         binary === 'ffmpeg'
           ? [join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'ffmpeg-static', executable)]
-          : [join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'ffprobe-static', 'bin', process.platform, process.arch, executable)]
+          : [join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'ffmpeg-ffprobe-static', executable)]
       )
   const candidates = [
     ...(process.env.NODE_ENV === 'development' ? [] : [

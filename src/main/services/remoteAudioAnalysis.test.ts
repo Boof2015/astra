@@ -13,7 +13,7 @@ import { buildEbur128Args, parseEbur128Summary } from './loudnessAnalysis.ts'
 
 const require = createRequire(import.meta.url)
 const ffmpeg = require('ffmpeg-static') as string
-const ffprobe = require('ffprobe-static').path as string
+const ffprobe = require('ffmpeg-ffprobe-static').ffprobePath as string
 const result: RemoteAudioAnalysis = { version: 1, duration: 10, peaks: Array(512).fill(0.5), loudnessLufs: -18, peakLinear: 0.5 }
 const source: RemoteAudioSource = { provider: 'subsonic', account: 'fixture', track: 'song', revision: '1', representation: 'original',
   open: async () => new Response(Buffer.from('complete audio')) }

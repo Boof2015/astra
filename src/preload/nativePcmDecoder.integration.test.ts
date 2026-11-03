@@ -98,7 +98,7 @@ test('real FFmpeg decodes retained original audio and replacement seeks into add
     getCapabilities: () => ({ ...playback.getCapabilities(), bitPerfectAvailable: true })
   } }, {
     eventPolling: false,
-    resolveBinary: async binary => binary === 'ffmpeg' ? ffmpeg : require('ffprobe-static').path,
+    resolveBinary: async binary => binary === 'ffmpeg' ? ffmpeg : require('ffmpeg-ffprobe-static').ffprobePath,
     acquireRemoteSource: async (_path, signal) => {
       const acquired = await cache.acquire(source, signal)
       let disposed = false
@@ -177,7 +177,7 @@ test('Jellyfin originals use the real native controller and retained cache witho
     getCapabilities: () => ({ ...playback.getCapabilities(), bitPerfectAvailable: true })
   } }, {
     eventPolling: false,
-    resolveBinary: async binary => binary === 'ffmpeg' ? ffmpeg : require('ffprobe-static').path,
+    resolveBinary: async binary => binary === 'ffmpeg' ? ffmpeg : require('ffmpeg-ffprobe-static').ffprobePath,
     acquireRemoteSource: async (path, signal) => {
       assert.equal(path, 'jellyfin://7/song')
       const lease = await cache.acquire(source, signal)

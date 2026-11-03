@@ -22,7 +22,7 @@ const singleTrack = qualityTest || automaticTest
 const scenario = mixedTest ? 'mixed' : automaticTest ? 'automatic' : qualityTest ? 'quality' : 'gapless'
 const lifetimeSeconds = automaticTest || mixedTest ? 160 : 90
 const ffmpeg = require('ffmpeg-static')
-const ffprobe = require('ffprobe-static').path
+const ffprobe = require('ffmpeg-ffprobe-static').ffprobePath
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 async function until(check, message, ms = 8000) {
   const end = Date.now() + ms

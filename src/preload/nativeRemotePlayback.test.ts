@@ -192,7 +192,7 @@ for (const backend of ['coreaudio', 'wasapi-exclusive', 'alsa-hw']) {
 
 test('real native Opus decoding starts before EOF and retains exact frames through a seek', { timeout: 15_000 }, async t => {
   const require = createRequire(import.meta.url)
-  const ffmpeg = require('ffmpeg-static') as string, ffprobe = require('ffprobe-static').path as string
+  const ffmpeg = require('ffmpeg-static') as string, ffprobe = require('ffmpeg-ffprobe-static').ffprobePath as string
   const frames = 480_037
   const encoded = execFileSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'anoisesrc=sample_rate=48000:seed=1',
     '-af', `atrim=end_sample=${frames}`, '-ac', '2', '-c:a', 'libopus', '-b:a', '64k', '-f', 'opus', 'pipe:1'])

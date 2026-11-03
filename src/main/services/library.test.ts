@@ -6695,3 +6695,80 @@ test('Jellyfin playlist opt-in and delete permission persist independently of Su
   assert.equal(library.getRemotePlaylistLocal(mirror.id), null)
   assert.equal(library.getPlaylists().length, 2, 'removing Jellyfin must leave local and Subsonic playlists alone')
 })
+
+test('Atmos refresh targets old local entries and preserves tags and failed-probe metadata', async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  const valid = join(dir, 'valid.wav')
+  const unknown = join(dir, 'unknown.wav')
+  const broken = join(dir, 'broken.m4a')
+  await writeTaggedWavFixture(valid, 'Source title', 'Source artist')
+  await writeTaggedWavFixture(unknown, 'Unknown channels', 'Source artist')
+  await writeFile(broken, 'invalid media')
+  const directDb = new TestSqliteDatabase(join(dir, 'library.db'))
+  const insert = directDb.prepare(`INSERT INTO tracks
+    (path, title, artist, album, duration, format, channels, codec, codec_profile, is_atmos_joc,
+     is_iamf, source_type, is_available, bpm, musical_key, added_at, modified_at)
+    VALUES (?, 'Keep title', 'Keep artist', 'Keep album', 123, ?, ?, ?, 'Keep profile', ?, ?, ?, ?, 120, 'C', 1, 1)`)
+  insert.run(valid, 'm4a', 6, 'eac3', 0, 0, 'local', 1)
+  insert.run(unknown, 'm4a', null, null, 0, 0, 'local', 1)
+  insert.run(broken, 'm4a', 6, 'E-AC-3', 0, 0, 'local', 1)
+  for (const [name, format, channels, codec, atmos, iamf, source, available] of [
+    ['stereo', 'm4a', 2, 'aac', 0, 0, 'local', 1],
+    ['known-atmos', 'm4a', 6, 'eac3', 1, 0, 'local', 1],
+    ['iamf', 'mp4', 12, 'iamf', 0, 1, 'local', 1],
+    ['remote', 'm4a', 6, 'eac3', 0, 0, 'subsonic', 1],
+    ['unavailable', 'm4a', 6, 'eac3', 0, 0, 'local', 0],
+    ['ordinary-flac', 'flac', 2, 'flac', 0, 0, 'local', 1]
+  ]) insert.run(join(dir, String(name)), format, channels, codec, atmos, iamf, source, available)
+  directDb.close()
+  const snapshotDb = new TestSqliteDatabase(join(dir, 'library.db'))
+  const beforeBroken = snapshotDb.prepare('SELECT * FROM tracks WHERE path=?').get(broken)
+  const notifications: unknown[] = []
+  const result = await library.refreshAtmosMetadataOnce({ onComplete: value => notifications.push(value) })
+  assert.deepEqual(result, { scanned: 3, updated: 2, errors: 1 })
+  assert.deepEqual(notifications, [result])
+  const updated = library.getTrackByPath(valid)!
+  assert.equal(updated.codec, 'pcm_s16le')
+  assert.equal(updated.channels, 1)
+  assert.equal(updated.title, 'Keep title')
+  assert.equal(updated.artist, 'Keep artist')
+  assert.equal(updated.duration, 123)
+  assert.equal(updated.bpm, 120)
+  assert.equal(updated.musical_key, 'C')
+  assert.equal(updated.codec_profile, 'Keep profile')
+  assert.deepEqual(snapshotDb.prepare('SELECT * FROM tracks WHERE path=?').get(broken), beforeBroken)
+  snapshotDb.close()
+  assert.equal(library.getAppMeta('atmos_ffprobe_6_1_refresh_v1_done'), '1')
+  assert.equal(await library.refreshAtmosMetadataOnce(), null)
+})
+
+test('interrupted Atmos refresh leaves its migration pending', async (t) => {
+  await setupEmptyLibrary(t)
+  const controller = new AbortController()
+  controller.abort()
+  await assert.rejects(library.refreshAtmosMetadataOnce({ signal: controller.signal }))
+  assert.equal(library.getAppMeta('atmos_ffprobe_6_1_refresh_v1_done'), null)
+})
+
+test('external Atmos sample imports and refreshes using the bundled probe', {
+  skip: !process.env.ASTRA_ATMOS_TEST_FILE
+}, async (t) => {
+  const dir = await setupEmptyLibrary(t)
+  const musicDir = join(dir, 'music')
+  await mkdir(musicDir)
+  const file = join(musicDir, 'sample.m4a')
+  await copyFile(process.env.ASTRA_ATMOS_TEST_FILE!, file)
+  const scan = await library.scanFolder(musicDir)
+  assert.equal(scan.errors, 0)
+  const imported = library.getTrackByPath(file)!
+  assert.equal(imported.codec, 'eac3')
+  assert.equal(imported.codec_profile, 'Dolby Digital Plus + Dolby Atmos')
+  assert.equal(imported.channels, 6)
+  assert.equal(imported.is_atmos_joc, 1)
+  const directDb = new TestSqliteDatabase(join(dir, 'library.db'))
+  directDb.prepare('UPDATE tracks SET is_atmos_joc=0, codec_profile=NULL WHERE path=?').run(file)
+  directDb.close()
+  const result = await library.refreshAtmosMetadataOnce()
+  assert.deepEqual(result, { scanned: 1, updated: 1, errors: 0 })
+  assert.deepEqual(library.getTrackByPath(file), imported)
+})

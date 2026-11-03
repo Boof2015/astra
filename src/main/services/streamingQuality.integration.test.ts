@@ -14,7 +14,7 @@ import { deliveredAudioFormat, type StreamingQuality } from '../../types/streami
 
 const require = createRequire(import.meta.url)
 const ffmpeg = require('ffmpeg-static') as string
-const ffprobe = require('ffprobe-static').path as string
+const ffprobe = require('ffmpeg-ffprobe-static').ffprobePath as string
 const run = promisify(execFile)
 
 test('real encoded quality variants decode, seek and replay offline from distinct retained files for both providers', async t => {
