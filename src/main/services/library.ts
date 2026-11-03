@@ -1,5 +1,5 @@
 import { isAtmosJocStream, parseFfprobeAudioMetadata, type FfprobeAudioMetadata } from '../../shared/audio/ffprobeMetadata'
-import { ATMOS_METADATA_REFRESH_KEY, runAtmosMetadataRefreshOnce, type AtmosRefreshResult } from './atmosMetadataRefresh'
+import { ATMOS_METADATA_REFRESH_KEY, runAtmosMetadataRefreshOnce, supportsAtmosMetadataRefresh, type AtmosRefreshResult } from './atmosMetadataRefresh'
 import type { RemotePlaylistDestination, RemotePlaylistLink, RemotePlaylistLocal, RemotePlaylistSnapshot } from '../../types/remotePlaylists'
 import type { PlexSource } from '../../types/plex'
 import * as mm from 'music-metadata'
@@ -9155,8 +9155,7 @@ export async function refreshAtmosMetadataOnce(
       if (!binaryPath) return null
       // A system fallback may still be too old to recognize E-AC-3 Atmos profiles.
       const version = await execFileAsync(binaryPath, ['-version'], { timeout: 4000, signal: options.signal })
-      const match = /^ffprobe version (\d+)\.(\d+)(?:\.|\s|-)/m.exec(version)
-      if (!match || (+match[1] < 6 || (+match[1] === 6 && +match[2] < 1))) return null
+      if (!supportsAtmosMetadataRefresh(version)) return null
       checkActive()
       const paths = refreshDb.all<{ path: string }>(`
         SELECT path FROM tracks

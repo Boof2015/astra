@@ -7,8 +7,8 @@ const { linuxBuildArgs } = require('./build-linux.cjs')
 const { expectedArtifactNames } = require('../release/verify-release-artifacts.cjs')
 
 test('reject old ffprobe versions despite misleading package release labels', () => {
-  for (const version of ['4.4-tessus', '6.0', 'N-unknown']) assert.throws(() => assertProbeVersion(`ffprobe version ${version} Copyright`))
-  for (const version of ['6.1.1', '6.1.1-tessus', '7.0.2']) assert.doesNotThrow(() => assertProbeVersion(`ffprobe version ${version} Copyright`))
+  for (const version of ['4.4-tessus', '6.0', 'n6.0.1-9-g123456', 'N-unknown']) assert.throws(() => assertProbeVersion(`ffprobe version ${version} Copyright`))
+  for (const version of ['6.1.1', '6.1.1-tessus', 'n6.1.2-9-g4571c80b40-20241023', '7.0.2', 'n7.0.2']) assert.doesNotThrow(() => assertProbeVersion(`ffprobe version ${version} Copyright`))
 })
 
 test('recognize native headers across the five desktop targets', () => {

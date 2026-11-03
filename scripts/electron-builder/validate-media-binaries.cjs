@@ -32,7 +32,8 @@ function validateTarget(file, platform, arch) {
 }
 
 function assertProbeVersion(version) {
-  const match = /^ffprobe version (\d+)\.(\d+)(?:\.|\s|-)/m.exec(version)
+  // Release-tag builds can report n6.1.2-<commits>-g<hash> instead of 6.1.2.
+  const match = /^ffprobe version n?(\d+)\.(\d+)(?:\.|\s|-)/m.exec(version)
   assert.ok(match && (+match[1] > 6 || (+match[1] === 6 && +match[2] >= 1)),
     `ffprobe >=6.1 is required for Atmos detection; received ${version.split('\n')[0]}`)
 }

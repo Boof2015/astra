@@ -1,5 +1,11 @@
 export const ATMOS_METADATA_REFRESH_KEY = 'atmos_ffprobe_6_1_refresh_v1_done'
 
+export function supportsAtmosMetadataRefresh(version: string): boolean {
+  // Linux release-tag builds include an n prefix; unversioned N-<hash> builds remain unknown.
+  const match = /^ffprobe version n?(\d+)\.(\d+)(?:\.|\s|-)/m.exec(version)
+  return Boolean(match && (+match[1] > 6 || (+match[1] === 6 && +match[2] >= 1)))
+}
+
 export interface AtmosRefreshResult {
   scanned: number
   updated: number
