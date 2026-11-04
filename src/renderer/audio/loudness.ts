@@ -1,3 +1,5 @@
+export { resolveStaticNormalizationGain } from '../../shared/audio/normalizationGain'
+export type { StaticNormalizationGainOptions, StaticNormalizationGain } from '../../shared/audio/normalizationGain'
 export interface BiquadCoeffs {
   b0: number
   b1: number
@@ -30,21 +32,6 @@ export interface LoudnessAnalysis {
   frameCount: number
 }
 
-export interface StaticNormalizationGainOptions {
-  targetLufs: number
-  loudnessLufs: number
-  peakLinear: number
-  minGainDb: number
-  maxGainDb: number
-  peakCeilingLinear: number
-}
-
-export interface StaticNormalizationGain {
-  gainDb: number
-  linearGain: number
-  peakLimited: boolean
-}
-
 const LOUDNESS_OFFSET_LU = -0.691
 const SILENCE_ENERGY_FLOOR = 1e-20
 
@@ -53,10 +40,6 @@ const PRE_FILTER_FREQUENCY_HZ = 1681.974450955533
 const PRE_FILTER_Q = 0.7071752369554196
 const RLB_FILTER_FREQUENCY_HZ = 38.13547087602444
 const RLB_FILTER_Q = 0.5003270373238773
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value))
-}
 
 export function dbToLinear(db: number): number {
   return Math.pow(10, db / 20)
@@ -286,41 +269,6 @@ export async function analyzeAudioBufferLoudness(buffer: AudioBuffer): Promise<L
   } catch (error) {
     console.warn('Offline loudness analysis failed; falling back to JS K-weighting.', error)
     return analyzeAudioBufferLoudnessSync(buffer)
-  }
-}
-
-export function resolveStaticNormalizationGain(
-  options: StaticNormalizationGainOptions
-): StaticNormalizationGain {
-  if (!Number.isFinite(options.loudnessLufs)) {
-    return {
-      gainDb: 0,
-      linearGain: 1,
-      peakLimited: false
-    }
-  }
-
-  const loudnessGainDb = options.targetLufs - options.loudnessLufs
-  let gainDb = clamp(loudnessGainDb, options.minGainDb, options.maxGainDb)
-  let peakLimited = false
-
-  if (
-    Number.isFinite(options.peakLinear)
-    && options.peakLinear > 0
-    && Number.isFinite(options.peakCeilingLinear)
-    && options.peakCeilingLinear > 0
-  ) {
-    const peakSafeGainDb = linearToDb(options.peakCeilingLinear / options.peakLinear)
-    if (gainDb > peakSafeGainDb) {
-      gainDb = Math.max(options.minGainDb, peakSafeGainDb)
-      peakLimited = true
-    }
-  }
-
-  return {
-    gainDb,
-    linearGain: dbToLinear(gainDb),
-    peakLimited
   }
 }
 

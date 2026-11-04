@@ -12,6 +12,7 @@
 #include "vumeter.h"
 #include "lufsmeter.h"
 #include "playback_engine.h"
+#include "progressive_input_binding.h"
 #include "parallax_loopback.h"
 #include "process_memory.h"
 
@@ -26,6 +27,17 @@ static Visualizer::LUFSMeterAnalyzer lufsMeter;
 static NativePlayback::PlaybackEngine playbackEngine;
 
 namespace {
+
+template<class Work>
+Napi::Value PlaybackGuard(const Napi::CallbackInfo& info, Work work) {
+    try { return work(); }
+    catch (const std::exception& error) {
+        Napi::Error::New(info.Env(), error.what()).ThrowAsJavaScriptException();
+    } catch (...) {
+        Napi::Error::New(info.Env(), "Native playback operation failed.").ThrowAsJavaScriptException();
+    }
+    return info.Env().Null();
+}
 
 float GetObjectFloat(const Napi::Object& obj, const char* key, float fallback) {
     Napi::Value value = obj.Get(key);
@@ -185,12 +197,17 @@ Napi::Object CreatePlaybackSnapshotObject(Napi::Env env, const NativePlayback::P
     obj.Set("deviceId", ToNullableString(env, snapshot.deviceId));
     obj.Set("deviceLabel", ToNullableString(env, snapshot.deviceLabel));
     obj.Set("outputStatus", CreateOutputStatusObject(env, snapshot.outputStatus));
+    if (snapshot.progressiveSessionId) {
+        obj.Set("progressiveSessionId", Napi::Number::New(env, snapshot.progressiveSessionId));
+        obj.Set("buffering", Napi::Boolean::New(env, snapshot.buffering));
+    }
     return obj;
 }
 
 Napi::Object CreatePlaybackEventObject(Napi::Env env, const NativePlayback::PlaybackEvent& event) {
     Napi::Object obj = Napi::Object::New(env);
     obj.Set("type", Napi::String::New(env, event.type));
+    if (event.progressiveSessionId) obj.Set("progressiveSessionId", Napi::Number::New(env, event.progressiveSessionId));
     if (!event.playbackState.empty()) {
         obj.Set("playbackState", Napi::String::New(env, event.playbackState));
     }
@@ -1174,8 +1191,10 @@ Napi::Value PlaybackLoadTrack(const Napi::CallbackInfo& info) {
         return env.Null();
     }
 
-    playbackEngine.loadTrack(std::move(track));
-    return CreatePlaybackSnapshotObject(env, playbackEngine.getSnapshot());
+    return PlaybackGuard(info, [&] {
+        playbackEngine.loadTrack(std::move(track));
+        return CreatePlaybackSnapshotObject(env, playbackEngine.getSnapshot());
+    });
 }
 
 Napi::Value PlaybackPreloadNextTrack(const Napi::CallbackInfo& info) {
@@ -1185,18 +1204,18 @@ Napi::Value PlaybackPreloadNextTrack(const Napi::CallbackInfo& info) {
         return env.Null();
     }
 
-    playbackEngine.preloadNextTrack(std::move(track));
-    return env.Undefined();
+    return PlaybackGuard(info, [&] {
+        playbackEngine.preloadNextTrack(std::move(track));
+        return env.Undefined();
+    });
 }
 
 Napi::Value PlaybackPromoteNextTrack(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    if (!playbackEngine.promoteNextTrack()) {
-        Napi::Error::New(env, "No native preloaded next track is available.").ThrowAsJavaScriptException();
-        return env.Null();
-    }
-
-    return CreatePlaybackSnapshotObject(env, playbackEngine.getSnapshot());
+    return PlaybackGuard(info, [&] {
+        if (!playbackEngine.promoteNextTrack()) throw std::runtime_error("No native preloaded next track is available.");
+        return CreatePlaybackSnapshotObject(env, playbackEngine.getSnapshot());
+    });
 }
 
 class PlaybackPlayAsyncWorker : public Napi::AsyncWorker {
@@ -1256,11 +1275,11 @@ Napi::Value PlaybackPlay(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value PlaybackPause(const Napi::CallbackInfo& info) {
-    return CreatePlaybackSnapshotObject(info.Env(), playbackEngine.pause());
+    return PlaybackGuard(info, [&] { return CreatePlaybackSnapshotObject(info.Env(), playbackEngine.pause()); });
 }
 
 Napi::Value PlaybackStop(const Napi::CallbackInfo& info) {
-    return CreatePlaybackSnapshotObject(info.Env(), playbackEngine.stop());
+    return PlaybackGuard(info, [&] { return CreatePlaybackSnapshotObject(info.Env(), playbackEngine.stop()); });
 }
 
 Napi::Value PlaybackSeek(const Napi::CallbackInfo& info) {
@@ -1270,12 +1289,16 @@ Napi::Value PlaybackSeek(const Napi::CallbackInfo& info) {
         return env.Null();
     }
 
-    return CreatePlaybackSnapshotObject(env, playbackEngine.seek(info[0].As<Napi::Number>().DoubleValue()));
+    return PlaybackGuard(info, [&] {
+        return CreatePlaybackSnapshotObject(env, playbackEngine.seek(info[0].As<Napi::Number>().DoubleValue()));
+    });
 }
 
 Napi::Value PlaybackClearNextTrack(const Napi::CallbackInfo& info) {
-    playbackEngine.clearNextTrack();
-    return info.Env().Undefined();
+    return PlaybackGuard(info, [&] {
+        playbackEngine.clearNextTrack();
+        return info.Env().Undefined();
+    });
 }
 
 Napi::Value PlaybackGetSnapshot(const Napi::CallbackInfo& info) {
@@ -1440,6 +1463,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     playbackExports.Set("setCurrentTrackGain", Napi::Function::New(env, PlaybackSetCurrentTrackGain));
     playbackExports.Set("probeDeviceFormats", Napi::Function::New(env, PlaybackProbeDeviceFormats));
     playbackExports.Set("loadTrack", Napi::Function::New(env, PlaybackLoadTrack));
+    NativePlayback::RegisterProgressiveInputBinding(env, playbackExports, playbackEngine, CreatePlaybackSnapshotObject);
     playbackExports.Set("preloadNextTrack", Napi::Function::New(env, PlaybackPreloadNextTrack));
     playbackExports.Set("promoteNextTrack", Napi::Function::New(env, PlaybackPromoteNextTrack));
     playbackExports.Set("play", Napi::Function::New(env, PlaybackPlay));

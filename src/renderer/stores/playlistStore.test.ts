@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { getNormalPlaylists, usePlaylistStore, type Playlist } from './playlistStore.ts'
+import { getNormalPlaylists, RemotePlaylistCreationUncertainError, usePlaylistStore, type Playlist } from './playlistStore.ts'
 import { FAVORITES_PLAYLIST_ID, parsePlaylistSidebarPins } from '../utils/playlistSystem.ts'
 import { PLAYLIST_SIDEBAR_PINS_STORAGE_KEY } from '../constants/settingsStorageKeys.ts'
 
@@ -117,6 +117,50 @@ test('getNormalPlaylists filters dynamic playlists out of manual targets', () =>
   assert.deepEqual(getNormalPlaylists([normal, dynamic]), [normal])
 })
 
+test('server creation routes selected tracks and destination to the remote API without local creation or rollback', async () => {
+  const localStorageMock = installLocalStorageMock()
+  try {
+    const destination = { provider: 'plex' as const, sourceId: 1 }
+    const playlist = { ...makePlaylist(20, 'Remote'), remote: { ...destination, id: '200', writable: true } }
+    installPlaylistMock([playlist]); resetPlaylistStore()
+    let calls = 0
+    window.electronAPI.remotePlaylists = { ...window.electronAPI.remotePlaylists, create: async (ref, name, paths) => {
+      calls++; assert.deepEqual(ref, destination); assert.equal(name, 'Remote'); assert.deepEqual(paths, ['plex://1/10'])
+      return { ok: true, playlistId: 20 }
+    } }
+    const created = await usePlaylistStore.getState().createPlaylistWithOptions({ name: ' Remote ', destination, trackPaths: ['plex://1/10'] })
+    assert.equal(created.id, 20); assert.equal(calls, 1)
+    await assert.rejects(usePlaylistStore.getState().createPlaylistWithOptions({ name: 'Remote', destination, coverImagePath: '/cover.png' }), /artwork/)
+    assert.equal(calls, 1)
+    window.electronAPI.remotePlaylists.create = async () => { calls++; return { ok: false, uncertain: true, error: 'May have been created' } }
+    await assert.rejects(usePlaylistStore.getState().createPlaylistWithOptions({ name: 'Remote', destination }), RemotePlaylistCreationUncertainError)
+    assert.equal(calls, 2)
+    assert.equal(usePlaylistStore.getState().playlists[0].id, 20, 'partial server result remains available')
+    window.electronAPI.remotePlaylists.create = async () => { throw new Error('IPC response lost') }
+    await assert.rejects(usePlaylistStore.getState().createPlaylistWithOptions({ name: 'Remote', destination }), RemotePlaylistCreationUncertainError)
+    window.electronAPI.remotePlaylists.create = async () => ({ ok: false, uncertain: false, error: 'Enable Sync playlists' })
+    await assert.rejects(usePlaylistStore.getState().createPlaylistWithOptions({ name: 'Remote', destination }), error => {
+      assert.equal(error instanceof RemotePlaylistCreationUncertainError, false)
+      return /Enable Sync playlists/.test(String(error))
+    })
+  } finally { localStorageMock.restore() }
+})
+
+test('a pending refresh cannot restore tracks after the selected server playlist is hidden', async () => {
+  installPlaylistMock([])
+  resetPlaylistStore([makePlaylist(7)])
+  usePlaylistStore.setState({ selectedPlaylistId: 7 })
+  let reject!: (error: Error) => void
+  window.electronAPI.library.getPlaylistTrackEntries = () => new Promise((_resolve, rejectPromise) => { reject = rejectPromise })
+  const pending = usePlaylistStore.getState().refreshSelectedPlaylist()
+  await usePlaylistStore.getState().loadPlaylists()
+  reject(new Error('Late result for hidden playlist'))
+  await pending
+  assert.equal(usePlaylistStore.getState().selectedPlaylistId, null)
+  assert.equal(usePlaylistStore.getState().selectedPlaylistError, null)
+  assert.deepEqual(usePlaylistStore.getState().selectedPlaylistTracks, [])
+})
+
 test('sidebar pins persist exact order and allow an empty custom list', () => {
   const storage = installLocalStorageMock()
   try {
@@ -184,4 +228,22 @@ test('failed playlist selection clears previous tracks and exposes the error', a
   assert.equal(usePlaylistStore.getState().selectedPlaylistError, 'Group match is not supported.')
   usePlaylistStore.getState().clearSelection()
   assert.equal(usePlaylistStore.getState().selectedPlaylistError, null)
+})
+
+test('hidden server playlist selection is cleared while other playlists stay usable', async () => {
+  const local = makePlaylist(1)
+  const remote = { ...makePlaylist(2), remote: { provider: 'subsonic' as const, sourceId: 1, id: 'mix', writable: true } }
+  installPlaylistMock([local])
+  resetPlaylistStore([local, remote])
+  usePlaylistStore.setState({ selectedPlaylistId: remote.id })
+  await usePlaylistStore.getState().loadPlaylists()
+  assert.equal(usePlaylistStore.getState().selectedPlaylistId, null)
+  assert.deepEqual(usePlaylistStore.getState().playlists, [local])
+})
+
+test('read-only server playlists stay browsable but are excluded from add-to-playlist targets', () => {
+  const local = makePlaylist(1)
+  const remote = { ...makePlaylist(2), remote: { provider: 'subsonic' as const, sourceId: 1, id: 'mix', writable: false } }
+  const writable = { ...remote, id: 3, remote: { ...remote.remote, writable: true } }
+  assert.deepEqual(getNormalPlaylists([local, remote, writable]), [local, writable])
 })

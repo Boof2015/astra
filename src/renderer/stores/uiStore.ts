@@ -581,6 +581,7 @@ interface UIStore {
   showQueue: boolean
   showInfoSidebar: boolean
   showPipelineShelf: boolean
+  showStreamingShelf: boolean
   showLyricsShelf: boolean
   lyricsShelfExpanded: boolean
   fullscreenLyricsVisible: boolean
@@ -624,6 +625,8 @@ interface UIStore {
   setQueueVisible: (visible: boolean) => void
   toggleInfoSidebar: () => void
   togglePipelineShelf: () => void
+  toggleStreamingShelf: () => void
+  closeStreamingShelf: () => void
   toggleLyricsShelf: () => void
   setLyricsShelfExpanded: (expanded: boolean) => void
   closeLyricsShelf: () => void
@@ -710,6 +713,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   showQueue: false,
   showInfoSidebar: false,
   showPipelineShelf: false,
+  showStreamingShelf: false,
   showLyricsShelf: false,
   lyricsShelfExpanded: false,
   fullscreenLyricsVisible: false,
@@ -842,7 +846,12 @@ export const useUIStore = create<UIStore>((set, get) => ({
   toggleQueue: () => set((s) => ({ showQueue: !s.showQueue })),
   setQueueVisible: (visible) => set((state) => state.showQueue === visible ? state : { showQueue: visible }),
   toggleInfoSidebar: () => set((s) => ({ showInfoSidebar: !s.showInfoSidebar })),
-  togglePipelineShelf: () => set((s) => ({ showPipelineShelf: !s.showPipelineShelf })),
+  togglePipelineShelf: () => set((s) => ({ showPipelineShelf: !s.showPipelineShelf, showStreamingShelf: false })),
+  // The stream view is opt-in each launch and shares the transport's shelf space.
+  toggleStreamingShelf: () => set((s) => s.showStreamingShelf
+    ? { showStreamingShelf: false }
+    : { showStreamingShelf: true, showPipelineShelf: false, showLyricsShelf: false, lyricsShelfExpanded: false }),
+  closeStreamingShelf: () => set({ showStreamingShelf: false }),
   toggleLyricsShelf: () => set((s) => {
     if (s.showLyricsShelf) {
       return {
@@ -851,7 +860,8 @@ export const useUIStore = create<UIStore>((set, get) => ({
       }
     }
     return {
-      showLyricsShelf: true
+      showLyricsShelf: true,
+      showStreamingShelf: false
     }
   }),
   setLyricsShelfExpanded: (expanded) => set((s) => {
@@ -1209,6 +1219,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
       showQueue: Boolean(snapshot.showQueue),
       showInfoSidebar: Boolean(snapshot.showInfoSidebar),
       showPipelineShelf: Boolean(snapshot.showPipelineShelf),
+      showStreamingShelf: false,
       showLyricsShelf,
       lyricsShelfExpanded: showLyricsShelf && Boolean(snapshot.lyricsShelfExpanded),
       fullscreenLyricsVisible: Boolean(snapshot.fullscreenLyricsVisible),

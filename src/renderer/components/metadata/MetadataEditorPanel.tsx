@@ -58,7 +58,7 @@ interface TrackRecord {
   track_number: number | null
   disc_number: number | null
   artwork_hash: string | null
-  source_type?: 'local' | 'subsonic' | 'jellyfin'
+  source_type?: 'local' | 'subsonic' | 'jellyfin' | 'plex'
 }
 
 const EMPTY_TRACK_PATHS: string[] = []

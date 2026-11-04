@@ -66,6 +66,7 @@ function makeTrack(path: string, overrides: Partial<DbTrack> = {}): DbTrack {
 
 interface MockLibraryApi {
   getTracksByPaths: (trackPaths: string[]) => Promise<DbTrack[]> | DbTrack[]
+  getTracksByYear: (year: number | null) => Promise<DbTrack[]> | DbTrack[]
   getTracksPage: (request: { offset?: number; limit?: number }) => Promise<{
     tracks: DbTrack[]
     total: number
@@ -86,6 +87,7 @@ interface MockLibraryApi {
 function installMockLibraryApi(overrides: Partial<MockLibraryApi> = {}): void {
   const libraryApi: MockLibraryApi = {
     getTracksByPaths: async () => [],
+    getTracksByYear: async () => [],
     getTracksPage: async () => ({ tracks: [], total: 0, hasMore: false, nextOffset: null }),
     getTrackCount: async () => 0,
     getTotalTrackDuration: async () => 0,
@@ -431,6 +433,58 @@ function deferred<T>() {
 type TrackPage = Awaited<ReturnType<MockLibraryApi['getTracksPage']>>
 const finalTrackPage = (tracks: DbTrack[]): TrackPage => ({
   tracks, total: tracks.length, hasMore: false, nextOffset: null
+})
+
+for (const year of [2024, 'unknown'] as const) {
+  test(`library reload refreshes the open ${year} year after source visibility changes`, async t => {
+    prepareFullTrackLoadTest(t)
+    const local = makeTrack('/local.flac', { year: 2024 })
+    const remote = makeTrack('subsonic://1/123', { year: 2024, source_type: 'subsonic', source_id: 1 })
+    const otherYear = makeTrack('/other.flac', { year: 2020 })
+    let enabled = true
+    const requests: Array<number | null> = []
+    installMockLibraryApi({
+      getTracksPage: async () => finalTrackPage(enabled ? [local, remote, otherYear] : [local, otherYear]),
+      getTracksByYear: async value => { requests.push(value); return enabled ? [local, remote] : [local] }
+    })
+    useLibraryStore.setState({
+      selectedYear: year, trackPaths: [local.path, remote.path],
+      trackByPath: new Map([[local.path, local], [remote.path, remote]])
+    })
+    const store = useLibraryStore.getState()
+    await store.loadFullTracks('library')
+    assert.deepEqual(useLibraryStore.getState().trackPaths, [local.path, remote.path], 'paging must not replace the year selection')
+    enabled = false
+    await store.loadLibrary()
+    assert.deepEqual(useLibraryStore.getState().trackPaths, [local.path])
+    assert.equal(useLibraryStore.getState().fullTrackPaths.includes(remote.path), false)
+    enabled = true
+    await store.loadLibrary()
+    assert.deepEqual(useLibraryStore.getState().trackPaths, [local.path, remote.path])
+    assert.deepEqual(requests, [year === 'unknown' ? null : year, year === 'unknown' ? null : year])
+  })
+}
+
+test('library reload invalidates cached history membership after disabling a source', async t => {
+  prepareFullTrackLoadTest(t)
+  const hidden = makeTrack('subsonic://1/123', { source_type: 'subsonic', source_id: 1 })
+  const snapshot = { selectedAlbum: null, selectedArtist: null, selectedGenre: null, selectedYear: 2024,
+    selectionOrigin: 'library' as const, trackPaths: [hidden.path] }
+  let requests = 0
+  installMockLibraryApi({ getTracksByYear: async () => { requests++; return [] } })
+  useLibraryStore.setState({
+    trackByPath: new Map([[hidden.path, hidden]]),
+    selectionHistory: [snapshot], selectionForwardHistory: [snapshot]
+  })
+  const store = useLibraryStore.getState()
+  await store.loadLibrary()
+  useLibraryStore.setState({ selectedYear: 2025 })
+  for (const direction of ['back', 'forward'] as const) {
+    const selection = await store.prepareSelection({ kind: 'history', direction })
+    assert.ok(selection)
+    assert.deepEqual(selection.tracks, [])
+  }
+  assert.equal(requests, 2, 'both history directions must refresh membership instead of restoring hidden cached tracks')
 })
 
 test('full-library consumers share in-flight pages and retain the completed list', async (t) => {

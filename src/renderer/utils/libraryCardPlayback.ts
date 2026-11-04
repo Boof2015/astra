@@ -13,13 +13,12 @@ export interface AlbumPlaybackTarget {
 }
 
 export interface LibraryCardPlaybackFilters {
-  sourceFilters: ReadonlySet<string>
   hiddenFolderPrefixes: readonly string[]
   platform: string
   albumIdentityKeys?: ReadonlySet<string>
 }
 
-type LibraryCardTrack = Pick<DbTrack, 'path' | 'source_type' | 'source_id' | 'is_available'> & Partial<Pick<DbTrack, 'album_identity_key'>>
+type LibraryCardTrack = Pick<DbTrack, 'path' | 'is_available'> & Partial<Pick<DbTrack, 'album_identity_key'>>
 
 export interface LibraryCardPlaybackSnapshot extends HomePlaybackContext {
   playbackState: string
@@ -53,11 +52,7 @@ export function getLibraryCardPlaybackState(source: PlaybackSourceContext, snaps
 function isPlayableLibraryTrack(track: LibraryCardTrack, filters: LibraryCardPlaybackFilters): boolean {
   if (track.is_available === 0) return false
   if (filters.albumIdentityKeys && !filters.albumIdentityKeys.has(track.album_identity_key ?? '')) return false
-  if (filters.hiddenFolderPrefixes.some((prefix) => isSameOrDescendantFsPath(track.path, prefix, filters.platform))) return false
-  if (filters.sourceFilters.size === 0) return true
-  const source = track.source_type === 'local' ? 'local'
-    : track.source_id === null ? null : `${track.source_type}:${track.source_id}`
-  return source !== null && filters.sourceFilters.has(source)
+  return !filters.hiddenFolderPrefixes.some((prefix) => isSameOrDescendantFsPath(track.path, prefix, filters.platform))
 }
 
 /** One request lock across library cards, including the time before React renders. */

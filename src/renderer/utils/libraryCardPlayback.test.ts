@@ -13,7 +13,7 @@ import {
 const album: AlbumPlaybackTarget = { album: 'One', artist: 'Artist', identity_key: 'release:one' }
 const source = albumCardPlaybackSource(album)
 const target = { source, title: album.album }
-const filters: LibraryCardPlaybackFilters = { sourceFilters: new Set(), hiddenFolderPrefixes: [], platform: 'darwin' }
+const filters: LibraryCardPlaybackFilters = { hiddenFolderPrefixes: [], platform: 'darwin' }
 const track = (path: string) => ({ path, is_available: 1, source_type: 'local' as const, source_id: null })
 type Actions = Parameters<typeof createLibraryCardPlaybackActions>[0]
 
@@ -69,20 +69,15 @@ test('playlist membership and identically titled releases do not activate an alb
   }
 })
 
-test('album playback applies availability, hidden-folder and source filters without changing order', async () => {
+test('album playback applies availability and hidden-folder filters without changing order', async () => {
   const tracks = [
     track('/Music/Hidden/a.flac'), track('/music/hidden-extra/keep.flac'),
     { ...track('/unavailable.flac'), is_available: 0 },
     { ...track('subsonic:keep'), source_type: 'subsonic' as const, source_id: 2 },
-    { ...track('subsonic:other'), source_type: 'subsonic' as const, source_id: 3 },
-    { ...track('subsonic:missing-source'), source_type: 'subsonic' as const },
-    { ...track('jellyfin:keep'), source_type: 'jellyfin' as const, source_id: 5 },
-    { ...track('jellyfin:other'), source_type: 'jellyfin' as const, source_id: 6 }
+    { ...track('jellyfin:keep'), source_type: 'jellyfin' as const, source_id: 5 }
   ]
   const { controller, starts } = setup({ getTracks: async () => tracks })
-  await controller.play(target, {
-    sourceFilters: new Set(['local', 'subsonic:2', 'jellyfin:5']), hiddenFolderPrefixes: ['/music/hidden'], platform: 'darwin'
-  })
+  await controller.play(target, { hiddenFolderPrefixes: ['/music/hidden'], platform: 'darwin' })
   assert.deepEqual(starts[0][0], ['/music/hidden-extra/keep.flac', 'subsonic:keep', 'jellyfin:keep'])
 })
 

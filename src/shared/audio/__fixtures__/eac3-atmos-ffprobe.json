@@ -1,0 +1,14 @@
+{
+  "streams": [{
+    "codec_name": "eac3",
+    "codec_long_name": "ATSC A/52B (AC-3, E-AC-3)",
+    "profile": "Dolby Digital Plus + Dolby Atmos",
+    "codec_type": "audio",
+    "codec_tag_string": "ec-3",
+    "sample_rate": "48000",
+    "channels": 6,
+    "channel_layout": "5.1(side)",
+    "side_data_list": [{ "side_data_type": "Audio Service Type" }]
+  }],
+  "format": { "format_name": "mov,mp4,m4a,3gp,3g2,mj2" }
+}

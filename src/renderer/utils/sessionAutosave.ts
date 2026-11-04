@@ -150,15 +150,6 @@ function didSortStateChange(
   return state?.key !== previous?.key || state?.direction !== previous?.direction
 }
 
-function didStringSetChange(state: ReadonlySet<string>, previous: ReadonlySet<string>): boolean {
-  if (state === previous) return false
-  if (state.size !== previous.size) return true
-  for (const value of state) {
-    if (!previous.has(value)) return true
-  }
-  return false
-}
-
 function didSortRulesChange(
   state: readonly { key: string; direction: string }[],
   previous: readonly { key: string; direction: string }[]
@@ -185,7 +176,6 @@ function didLibrarySessionStateChange(
     || didSortStateChange(state.trackListSortState, previous.trackListSortState)
     || didSortStateChange(state.tracksViewSortState, previous.tracksViewSortState)
     || didSortRulesChange(state.tracksViewSortRules, previous.tracksViewSortRules)
-    || didStringSetChange(state.selectedSourceFilters, previous.selectedSourceFilters)
     || state.albumSortState.key !== previous.albumSortState.key
     || state.albumSortState.direction !== previous.albumSortState.direction
     || state.includeSinglesInAlbums !== previous.includeSinglesInAlbums

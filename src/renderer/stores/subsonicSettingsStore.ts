@@ -27,8 +27,6 @@ interface SubsonicSettingsStore {
 }
 
 let statusUnsubscribe: (() => void) | null = null
-const metadataReadySourceIds = new Set<number>()
-let metadataReadyRefreshPromise: Promise<void> | null = null
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message
@@ -45,17 +43,6 @@ export const useSubsonicSettingsStore = create<SubsonicSettingsStore>((set, get)
     }
   }
 
-  const scheduleMetadataReadyRefresh = (): void => {
-    if (metadataReadyRefreshPromise) return
-    metadataReadyRefreshPromise = refreshLibraryViews()
-      .catch((error) => {
-        console.error('Failed to refresh library after Subsonic metadata sync.', error)
-      })
-      .finally(() => {
-        metadataReadyRefreshPromise = null
-      })
-  }
-
   const applySources = async (sources: SubsonicSource[]): Promise<void> => {
     set({
       sources,
@@ -68,15 +55,6 @@ export const useSubsonicSettingsStore = create<SubsonicSettingsStore>((set, get)
     if (statusUnsubscribe) return
     statusUnsubscribe = window.electronAPI.subsonic.onStatus((status) => {
       set({ status })
-      for (const sourceStatus of status.sources) {
-        if (sourceStatus.progress?.phase !== 'playlists') continue
-        if (metadataReadySourceIds.has(sourceStatus.sourceId)) continue
-        metadataReadySourceIds.add(sourceStatus.sourceId)
-        scheduleMetadataReadyRefresh()
-      }
-      if (!status.isSyncing) {
-        metadataReadySourceIds.clear()
-      }
     })
   }
 
@@ -153,22 +131,16 @@ export const useSubsonicSettingsStore = create<SubsonicSettingsStore>((set, get)
       }
     },
 
+    // A test only answers the caller; server type auto-detect probes both
+    // providers, so a failed probe must not leave a store-wide error behind.
     testSource: async (input) => {
       try {
-        const result = await window.electronAPI.subsonic.testSource(input)
-        if (!result.ok) {
-          set({ errorMessage: result.error ?? result.message })
-        } else {
-          set({ errorMessage: '' })
-        }
-        return result
+        return await window.electronAPI.subsonic.testSource(input)
       } catch (error) {
-        const message = toErrorMessage(error)
-        set({ errorMessage: message })
         return {
           ok: false,
           message: 'Connection failed.',
-          error: message
+          error: toErrorMessage(error)
         }
       }
     },

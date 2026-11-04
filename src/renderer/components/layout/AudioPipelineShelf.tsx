@@ -7,7 +7,8 @@ import {
 } from '../../stores/audioSettingsStore'
 import { useUIStore } from '../../stores/uiStore'
 import { audioEngine } from '../../audio/AudioEngine'
-import { resolvePipelineResampler } from '../../audio/audioPipelineModel'
+import { describeRemotePlaybackQuality, resolvePipelineResampler } from '../../audio/audioPipelineModel'
+import { useServerName } from '../settings/servers/useServers'
 import { canUseStereoUpmix } from '../../utils/sourceChannelLayout'
 import {
   buildSpeakerHardwareRoutingPlan,
@@ -134,6 +135,8 @@ const OutputIcon = (
 export default function AudioPipelineShelf() {
   const showShelf = useUIStore((s) => s.showPipelineShelf)
   const currentTrack = usePlayerStore((s) => s.currentTrack)
+  const streamQuality = usePlayerStore((s) => s.remoteLoadProgress?.path === s.currentTrack?.path ? s.remoteLoadProgress?.quality : undefined)
+  const serverName = useServerName(currentTrack?.sourceType, currentTrack?.sourceId)
   const eqEnabled = useEQStore((s) => s.enabled)
   const eqBands = useEQStore((s) => s.bands)
   const selectedDeviceId = useAudioSettingsStore((s) => s.selectedDeviceId)
@@ -176,21 +179,25 @@ export default function AudioPipelineShelf() {
       const sr = currentTrack.sampleRate ? (currentTrack.sampleRate / 1000).toFixed(1) : ''
       sourceDetail = bd && sr ? `${fmt} ${bd}/${sr}` : fmt
     }
-    result.push({ id: 'source', icon: SourceIcon, label: 'Source', detail: sourceDetail })
+    // A server's file names the server it comes from.
+    result.push({ id: 'source', icon: SourceIcon, label: streamQuality ? 'Server file' : 'Source',
+      detail: streamQuality && serverName ? `${serverName} · ${sourceDetail}` : sourceDetail })
+    if (streamQuality) result.push({ id: 'stream', icon: SourceIcon, label: 'Stream', detail: describeRemotePlaybackQuality(streamQuality) })
 
     // Decoder
     result.push({
       id: 'decoder',
       icon: DecoderIcon,
       label: 'Decoder',
-      detail: playbackOutputMode === 'standard' ? 'Web Audio API' : 'FFmpeg PCM'
+      detail: streamQuality || playbackOutputMode !== 'standard' ? 'FFmpeg PCM' : 'Web Audio API'
     })
 
     // Native negotiation can change independently of the Web Audio context.
     const contextSR = audioEngine.getSampleRate()
     const resampler = resolvePipelineResampler({
       playbackOutputMode,
-      trackSampleRate: currentTrack.sampleRate,
+      trackSampleRate: streamQuality?.compatibility || (streamQuality?.requested !== undefined && streamQuality.requested !== 'original')
+        ? streamQuality.delivered?.sampleRate : currentTrack.sampleRate,
       standardOutputSampleRate: contextSR,
       nativeSourceSampleRate,
       nativeTargetSampleRate,
@@ -301,6 +308,8 @@ export default function AudioPipelineShelf() {
     return result
   }, [
     currentTrack,
+    streamQuality,
+    serverName,
     eqEnabled,
     eqBands.length,
     selectedDeviceId,

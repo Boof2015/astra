@@ -131,7 +131,6 @@ export interface LibrarySessionSnapshot {
   trackListSortState: SessionTrackSortState | null
   tracksViewSortState?: SessionTrackSortState | null
   tracksViewSortRules?: SessionTrackSortState[]
-  selectedSourceFilters: string[]
   albumSortState?: SessionAlbumSortState
   albumSortMode?: SessionAlbumSortMode
   includeSinglesInAlbums: boolean
@@ -205,12 +204,8 @@ function stringArray(value: unknown): string[] | undefined {
   return out.length > 0 ? out : undefined
 }
 
-function requiredStringArray(value: unknown): string[] {
-  return stringArray(value) ?? []
-}
-
 function normalizeTrackSourceType(value: unknown): TrackSourceType | undefined {
-  return value === 'local' || value === 'subsonic' || value === 'jellyfin'
+  return value === 'local' || value === 'subsonic' || value === 'jellyfin' || value === 'plex'
     ? value
     : undefined
 }
@@ -512,7 +507,6 @@ function normalizeLibrarySession(value: unknown): LibrarySessionSnapshot | null 
     ...(Object.hasOwn(value, 'tracksViewSortRules')
       ? { tracksViewSortRules: normalizeSessionTrackSortRules(value.tracksViewSortRules, value.tracksViewSortState) }
       : {}),
-    selectedSourceFilters: requiredStringArray(value.selectedSourceFilters),
     albumSortState: normalizeSessionAlbumSortState(value.albumSortState, value.albumSortMode),
     includeSinglesInAlbums: value.includeSinglesInAlbums === true,
     includeCollabArtists: value.includeCollabArtists === true,

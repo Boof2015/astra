@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { useProviderSyncStore } from './providerSyncStore'
 import type { TrackSourceType } from '../../types/subsonic'
 import type {
   LibraryDiagnosticsOperationKind,
@@ -343,7 +344,6 @@ interface LibraryStore {
   tracksViewSortState: LibraryTrackListSortState | null
   tracksViewSortRules: TrackSortRule[]
   rootTrackTableLayout: RootTrackTableLayout
-  selectedSourceFilters: Set<string>
   albumSortState: LibraryAlbumSortState
   includeSinglesInAlbums: boolean
   includeCollabArtists: boolean
@@ -422,9 +422,6 @@ interface LibraryStore {
   resetTrackListSortState: () => void
   setTracksViewSortRules: (rules: readonly TrackSortRule[]) => void
   setRootTrackTableLayout: (layout: RootTrackTableLayout) => void
-  setSelectedSourceFilters: (filters: Iterable<string>) => void
-  clearSelectedSourceFilters: () => void
-  toggleSourceFilter: (filterKey: string) => void
   setAlbumSortState: (state: LibraryAlbumSortState) => void
   setIncludeSinglesInAlbums: (enabled: boolean) => void
   setIncludeCollabArtists: (enabled: boolean) => void
@@ -648,7 +645,6 @@ type TrackCachePatch = Partial<Pick<
   | 'trackListSortState'
   | 'tracksViewSortState'
   | 'tracksViewSortRules'
-  | 'selectedSourceFilters'
   | 'albumSortState'
   | 'includeSinglesInAlbums'
   | 'includeCollabArtists'
@@ -946,24 +942,6 @@ function persistBooleanPreference(storageKey: string, value: boolean): void {
   persistStringPreference(storageKey, value ? '1' : '0')
 }
 
-function normalizeSourceFilters(filters: Iterable<string>): Set<string> {
-  const next = new Set<string>()
-  for (const filter of filters) {
-    if (typeof filter === 'string' && filter.trim().length > 0) {
-      next.add(filter)
-    }
-  }
-  return next
-}
-
-function areStringSetsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
-  if (left.size !== right.size) return false
-  for (const value of left) {
-    if (!right.has(value)) return false
-  }
-  return true
-}
-
 function updateAlbumNewFlagInCollection(albums: Album[], albumIdentityKey: string | null, isNew: boolean): Album[] {
   if (!albumIdentityKey) return albums
 
@@ -1165,7 +1143,6 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   tracksViewSortState: { ...DEFAULT_TRACK_LIST_SORT_STATE },
   tracksViewSortRules: DEFAULT_TRACK_SORT_RULES.map((rule) => ({ ...rule })),
   rootTrackTableLayout: loadRootTrackTableLayoutSetting(),
-  selectedSourceFilters: new Set<string>(),
   albumSortState: loadAlbumSortStateSetting(),
   includeSinglesInAlbums: loadIncludeSinglesInAlbumsSetting(),
   includeCollabArtists: loadIncludeCollabArtistsSetting(),
@@ -1175,6 +1152,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Load entire library
   loadLibrary: async (diagnosticsContext) => {
+    invalidatePreparedSelections()
     const diagnosticsContexts = diagnosticsContext
       ? (Array.isArray(diagnosticsContext) ? diagnosticsContext : [diagnosticsContext])
       : []
@@ -1193,12 +1171,19 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         stepDurationMs[step] = Math.round((performance.now() - startedAt) * 100) / 100
       }
     }
-    set({ isLoading: true })
+    // Membership may have changed even when cached tracks still exist (for
+    // example, disabling a server). Back/forward must fetch the current subset.
+    set((state) => ({
+      isLoading: true,
+      selectionHistory: state.selectionHistory.map((entry) => ({ ...entry, trackPaths: [], trackPathsPruned: true })),
+      selectionForwardHistory: state.selectionForwardHistory.map((entry) => ({ ...entry, trackPaths: [], trackPathsPruned: true }))
+    }))
     const shouldReloadAlbumsIncludingSingles = get().albumsIncludingSinglesLoaded
     const currentSelection = {
       album: get().selectedAlbum,
       artist: get().selectedArtist,
       genre: get().selectedGenre,
+      year: get().selectedYear,
       artistBrowseMode: get().artistBrowseMode,
       hasFullTrackConsumers: get().fullTrackConsumers.size > 0
     }
@@ -1269,9 +1254,18 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         const paths = getUniqueTrackPaths(tracks)
         return ingestTracksForPatch(state, tracks, { trackPaths: paths })
       })
+    } else if (currentSelection.year !== null) {
+      const yearSelection = currentSelection.year
+      const tracks = await window.electronAPI.library.getTracksByYear(
+        yearSelection === 'unknown' ? null : yearSelection
+      )
+      set((state) => {
+        if (state.selectedYear !== yearSelection) return {}
+        return ingestTracksForPatch(state, tracks, { trackPaths: getUniqueTrackPaths(tracks) })
+      })
     }
     stepDurationMs.active_selection = Math.round((performance.now() - activeSelectionStartedAt) * 100) / 100
-    stepRequestCount.active_selection = currentSelection.album || currentSelection.artist || currentSelection.genre ? 1 : 0
+    stepRequestCount.active_selection = currentSelection.album || currentSelection.artist || currentSelection.genre || currentSelection.year !== null ? 1 : 0
 
     set({ isLoading: false })
     if (diagnosticsEnabled) {
@@ -1394,7 +1388,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
               const patch: Parameters<typeof ingestTracksForPatch>[2] = {
                 fullTrackPaths: revealedPaths
               }
-              const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && !state.selectedGenre && (
+              const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && !state.selectedGenre && state.selectedYear === null && (
                 state.viewMode === 'tracks' || state.viewMode === 'genres' || state.viewMode === 'folders'
               )
               if (shouldUseAsVisibleTracks) {
@@ -1423,7 +1417,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
             return {}
           }
 
-          const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && !state.selectedGenre && (
+          const shouldUseAsVisibleTracks = !state.selectedAlbum && !state.selectedArtist && !state.selectedGenre && state.selectedYear === null && (
             state.viewMode === 'tracks' || state.viewMode === 'genres' || state.viewMode === 'folders'
           )
           const ingested = ingestTracksIntoCache(state.trackByPath, tracksToPublish, { mutate: true })
@@ -2400,22 +2394,24 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
   // Toggle favorite status
   toggleFavorite: async (trackPath: string) => {
-    const { favorites } = get()
-    if (favorites.has(trackPath)) {
-      await window.electronAPI.library.removeFavorite(trackPath)
-      const next = new Set(favorites)
-      next.delete(trackPath)
-      set({ favorites: next })
-    } else {
-      await window.electronAPI.library.addFavorite(trackPath)
-      const next = new Set(favorites)
-      next.add(trackPath)
-      set({ favorites: next })
+    try {
+      const removing = get().favorites.has(trackPath)
+      if (removing) await window.electronAPI.library.removeFavorite(trackPath)
+      else await window.electronAPI.library.addFavorite(trackPath)
+      set(state => {
+        const next = new Set(state.favorites)
+        if (removing) next.delete(trackPath)
+        else next.add(trackPath)
+        return { favorites: next }
+      })
+      // Reload full favorite tracks list
+      const favoriteTracks = await window.electronAPI.library.getFavorites()
+      const favoriteTrackPaths = getUniqueTrackPaths(favoriteTracks)
+      set((state) => ingestTracksForPatch(state, favoriteTracks, { favoriteTrackPaths }))
+    } catch {
+      useProviderSyncStore.getState().notifyError('Could not save the favorite. For a synced server, check its connection and try again.')
+      await get().loadFavorites()
     }
-    // Reload full favorite tracks list
-    const favoriteTracks = await window.electronAPI.library.getFavorites()
-    const favoriteTrackPaths = getUniqueTrackPaths(favoriteTracks)
-    set((state) => ingestTracksForPatch(state, favoriteTracks, { favoriteTrackPaths }))
   },
 
   // Sync check if track is a favorite
@@ -2629,36 +2625,6 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     set({ rootTrackTableLayout: normalized })
   },
 
-  setSelectedSourceFilters: (filters: Iterable<string>) => {
-    const next = normalizeSourceFilters(filters)
-    set((state) => (
-      areStringSetsEqual(state.selectedSourceFilters, next)
-        ? {}
-        : { selectedSourceFilters: next }
-    ))
-  },
-
-  clearSelectedSourceFilters: () => {
-    set((state) => (
-      state.selectedSourceFilters.size === 0
-        ? {}
-        : { selectedSourceFilters: new Set<string>() }
-    ))
-  },
-
-  toggleSourceFilter: (filterKey: string) => {
-    if (!filterKey.trim()) return
-    set((state) => {
-      const next = new Set(state.selectedSourceFilters)
-      if (next.has(filterKey)) {
-        next.delete(filterKey)
-      } else {
-        next.add(filterKey)
-      }
-      return { selectedSourceFilters: next }
-    })
-  },
-
   setAlbumSortState: (sortState: LibraryAlbumSortState) => {
     const normalized = normalizeAlbumSortState(sortState)
     try {
@@ -2724,7 +2690,6 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       trackListSortState: state.trackListSortState ? { ...state.trackListSortState } : null,
       tracksViewSortState: state.tracksViewSortState ? { ...state.tracksViewSortState } : null,
       tracksViewSortRules: state.tracksViewSortRules.map((rule) => ({ ...rule })),
-      selectedSourceFilters: [...state.selectedSourceFilters],
       albumSortState: { ...state.albumSortState },
       includeSinglesInAlbums: state.includeSinglesInAlbums,
       includeCollabArtists: state.includeCollabArtists,
@@ -2747,7 +2712,6 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
       normalizeSessionTrackSortRules(snapshot.tracksViewSortRules, tracksViewSortState)
     )
     const tracksViewPrimarySort = tracksViewSortRules[0] ?? DEFAULT_TRACK_LIST_SORT_STATE
-    const selectedSourceFilters = normalizeSourceFilters(snapshot.selectedSourceFilters)
     const albumSortState = normalizeAlbumSortState(
       normalizeSessionAlbumSortState(snapshot.albumSortState, snapshot.albumSortMode)
     )
@@ -2766,7 +2730,6 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         : normalizedSortState,
       tracksViewSortState: { ...tracksViewPrimarySort },
       tracksViewSortRules,
-      selectedSourceFilters,
       albumSortState,
       includeSinglesInAlbums: Boolean(snapshot.includeSinglesInAlbums),
       includeCollabArtists: Boolean(snapshot.includeCollabArtists),

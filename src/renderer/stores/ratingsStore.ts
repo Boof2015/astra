@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { TRACK_RATINGS_ENABLED_STORAGE_KEY } from '../constants/settingsStorageKeys'
+import { useProviderSyncStore } from './providerSyncStore'
 
 export interface TrackRatingState {
   rating: number
@@ -70,6 +71,7 @@ export const useRatingsStore = create<RatingsStore>((set, get) => ({
       await window.electronAPI.library.setTrackRating(trackPaths, rating)
     } catch (error) {
       console.error('Failed to save track rating:', error)
+      useProviderSyncStore.getState().notifyError('Could not save the rating. For a synced server, check its connection and try again.')
       await get().loadRatings()
     }
   }

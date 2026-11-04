@@ -1,3 +1,4 @@
+import type { ProviderSyncRef } from '../../../types/providerSync'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type FocusEvent, type PointerEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useLibraryStore } from '../../stores/libraryStore'
@@ -463,8 +464,8 @@ export default function Sidebar() {
     setIsOverflowOpen(false)
   }
 
-  const handleCreatePlaylist = useCallback(async (name: string, coverImagePath: string | null) => {
-    const playlist = await createPlaylistWithOptions({
+  const handleCreatePlaylist = useCallback(async (name: string, coverImagePath: string | null, destination?: ProviderSyncRef) => {
+    const playlist = await createPlaylistWithOptions({ destination,
       name,
       coverImagePath,
       trackPaths: createPlaylistTrackPaths ?? undefined
@@ -667,7 +668,7 @@ export default function Sidebar() {
                 <button
                   key={playlist.id}
                   draggable={!trackDrag}
-                  className={`sidebar-icon-btn nav-btn sidebar-playlist-btn ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''} ${!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? getSidebarDropClassName(`playlist:${playlist.id}`) : trackDrag ? 'is-drop-unavailable' : ''} ${isDragging ? 'is-pin-dragging' : ''} ${isPinDropTarget ? 'is-pin-drop-target' : ''}`.trim()}
+                  className={`sidebar-icon-btn nav-btn sidebar-playlist-btn ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''} ${!playlist.isSystemFavorites && playlist.kind !== 'dynamic' && playlist.remote?.writable !== false ? getSidebarDropClassName(`playlist:${playlist.id}`) : trackDrag ? 'is-drop-unavailable' : ''} ${isDragging ? 'is-pin-dragging' : ''} ${isPinDropTarget ? 'is-pin-drop-target' : ''}`.trim()}
                   onClick={() => void handleOpenPlaylist(playlist.id)}
                   onDragStart={(event) => handleSidebarPlaylistDragStart(event, playlist.id)}
                   onDragOver={(event) => handleSidebarPlaylistDragOver(event, playlist.id)}
@@ -686,10 +687,10 @@ export default function Sidebar() {
                   aria-label={playlist.name}
                   data-controller-context="true"
                   data-sidebar-tooltip={playlist.name}
-                  data-sidebar-drop-target={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? 'playlist' : undefined}
-                  data-sidebar-drop-playlist-id={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? playlist.id : undefined}
-                  data-sidebar-drop-overlay-key={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? `playlist:${playlist.id}` : undefined}
-                  data-sidebar-drop-overlay-label={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? `Add to ${playlist.name}` : undefined}
+                  data-sidebar-drop-target={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' && playlist.remote?.writable !== false ? 'playlist' : undefined}
+                  data-sidebar-drop-playlist-id={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' && playlist.remote?.writable !== false ? playlist.id : undefined}
+                  data-sidebar-drop-overlay-key={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' && playlist.remote?.writable !== false ? `playlist:${playlist.id}` : undefined}
+                  data-sidebar-drop-overlay-label={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' && playlist.remote?.writable !== false ? `Add to ${playlist.name}` : undefined}
                 >
                   {playlist.isSystemFavorites ? (
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -784,7 +785,7 @@ export default function Sidebar() {
               {sidebarOverflowPlaylists.map((playlist) => (
                 <button
                   key={playlist.id}
-                  className={`sidebar-playlist-popout-item ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''} ${!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? getSidebarDropClassName(`playlist:${playlist.id}`) : trackDrag ? 'is-drop-unavailable' : ''}`.trim()}
+                  className={`sidebar-playlist-popout-item ${activeView === 'playlist' && selectedPlaylistId === playlist.id ? 'active' : ''} ${!playlist.isSystemFavorites && playlist.kind !== 'dynamic' && playlist.remote?.writable !== false ? getSidebarDropClassName(`playlist:${playlist.id}`) : trackDrag ? 'is-drop-unavailable' : ''}`.trim()}
                   onClick={() => void handleOpenPlaylist(playlist.id)}
                   onContextMenu={(event) => {
                     event.preventDefault()
@@ -796,9 +797,9 @@ export default function Sidebar() {
                       y: event.clientY
                     })
                   }}
-                  data-sidebar-drop-target={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? 'playlist' : undefined}
+                  data-sidebar-drop-target={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' && playlist.remote?.writable !== false ? 'playlist' : undefined}
                   data-controller-context="true"
-                  data-sidebar-drop-playlist-id={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' ? playlist.id : undefined}
+                  data-sidebar-drop-playlist-id={!playlist.isSystemFavorites && playlist.kind !== 'dynamic' && playlist.remote?.writable !== false ? playlist.id : undefined}
                 >
                   <PlaylistCover
                     hash={playlist.cover_hash}
@@ -812,7 +813,7 @@ export default function Sidebar() {
                       {playlist.track_count} {playlist.track_count === 1 ? 'track' : 'tracks'}
                     </span>
                   </span>
-                  {!playlist.isSystemFavorites && playlist.kind !== 'dynamic' && <span className="sidebar-drop-label">Add to Playlist</span>}
+                  {!playlist.isSystemFavorites && playlist.kind !== 'dynamic' && playlist.remote?.writable !== false && <span className="sidebar-drop-label">Add to Playlist</span>}
                 </button>
               ))}
             </div>
@@ -854,6 +855,7 @@ export default function Sidebar() {
         isImporting={isImportingPlaylist}
         title={createPlaylistTrackPaths ? 'Create Playlist from Tracks' : 'Create Playlist'}
         pendingTrackCount={createPlaylistTrackPaths?.length}
+        trackPaths={createPlaylistTrackPaths ?? undefined}
       />
     </aside>
   )

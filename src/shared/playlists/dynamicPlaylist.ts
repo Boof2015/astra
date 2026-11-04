@@ -31,7 +31,7 @@ export type DynamicPlaylistExactOperator = 'is' | 'is_not'
 export type DynamicPlaylistNumericOperator = 'eq' | 'gte' | 'lte'
 export type DynamicPlaylistLastPlayedOperator = 'never' | 'within_days' | 'not_within_days'
 export type DynamicPlaylistAddedAtOperator = 'within_days' | 'older_than_days'
-export type DynamicPlaylistSourceType = 'local' | 'subsonic' | 'jellyfin'
+export type DynamicPlaylistSourceType = 'local' | 'subsonic' | 'jellyfin' | 'plex'
 export type DynamicPlaylistSortDirection = 'asc' | 'desc'
 
 export interface DynamicPlaylistTextCondition {
@@ -158,7 +158,8 @@ export const DYNAMIC_PLAYLIST_SORT_FIELDS: readonly DynamicPlaylistSortField[] =
 export const DYNAMIC_PLAYLIST_SOURCE_TYPES: readonly DynamicPlaylistSourceType[] = [
   'local',
   'subsonic',
-  'jellyfin'
+  'jellyfin',
+  'plex'
 ]
 
 export const DEFAULT_DYNAMIC_PLAYLIST_SORT: DynamicPlaylistSort = {

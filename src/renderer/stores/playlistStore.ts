@@ -1,3 +1,4 @@
+import type { RemotePlaylistLink } from '../../types/remotePlaylists'
 import { create } from 'zustand'
 import {
   FAVORITES_PLAYLIST_ID,
@@ -22,6 +23,7 @@ import {
 } from '../../shared/playlists/dynamicPlaylist'
 
 export interface Playlist {
+  remote?: RemotePlaylistLink
   id: number
   name: string
   kind: PlaylistKind
@@ -67,9 +69,11 @@ export interface DynamicPlaylistPreview {
 
 export interface CreatePlaylistOptions {
   name: string
+  destination?: import('../../types/providerSync').ProviderSyncRef | null
   coverImagePath?: string | null
   trackPaths?: string[]
 }
+export class RemotePlaylistCreationUncertainError extends Error {}
 
 export interface CreateDynamicPlaylistOptions {
   name: string
@@ -219,7 +223,7 @@ function ensurePlaylistExportExtension(filePath: string): string {
 }
 
 export function getNormalPlaylists(playlists: Playlist[]): Playlist[] {
-  return playlists.filter((playlist) => playlist.kind !== 'dynamic')
+  return playlists.filter((playlist) => playlist.kind !== 'dynamic' && playlist.remote?.writable !== false)
 }
 
 function arraysEqual(a: readonly number[], b: readonly number[]): boolean {
@@ -280,7 +284,8 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
 
   const refreshSelectedPlaylist = async (playlistId: number) => {
     if (get().selectedPlaylistId !== playlistId) return
-    set(await loadPlaylistSelection(playlistId))
+    const selection = await loadPlaylistSelection(playlistId)
+    if (get().selectedPlaylistId === playlistId) set(selection)
   }
 
   return {
@@ -319,17 +324,38 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
         sidebarPinnedPlaylistIds = getDefaultSidebarPinnedPlaylistIds(playlists)
       }
 
-      set({ playlists, sidebarPinnedPlaylistIds, sidebarPinsInitialized })
+      const hiddenSelection = state.selectedPlaylistId !== null && state.selectedPlaylistId > 0
+        && !playlists.some(playlist => playlist.id === state.selectedPlaylistId)
+      set({ playlists, sidebarPinnedPlaylistIds, sidebarPinsInitialized,
+        ...(hiddenSelection ? { selectedPlaylistId: null, selectedPlaylistEntries: [], selectedPlaylistTracks: [], selectedPlaylistError: null } : {}) })
     },
 
     createPlaylist: async (name: string) => {
       return get().createPlaylistWithOptions({ name })
     },
 
-    createPlaylistWithOptions: async ({ name, coverImagePath = null, trackPaths = [] }) => {
+    createPlaylistWithOptions: async ({ name, coverImagePath = null, trackPaths = [], destination = null }) => {
       const trimmedName = name.trim()
       if (!trimmedName) {
         throw new Error('Playlist name is required.')
+      }
+
+      if (destination) {
+        if (coverImagePath) throw new Error('Choose server playlist artwork in the server’s app.')
+        let result: import('../../types/remotePlaylists').RemotePlaylistCreateResult
+        try { result = await window.electronAPI.remotePlaylists.create(destination, trimmedName, trackPaths) }
+        catch { throw new RemotePlaylistCreationUncertainError('Could not confirm server playlist creation. Check the server’s playlists before creating another.') }
+        // A server creation failure may have left a real playlist. Never use
+        // the local creation rollback/delete path for that playlist.
+        if (!result.ok) {
+          await get().loadPlaylists().catch(() => {})
+          throw result.uncertain ? new RemotePlaylistCreationUncertainError(result.error) : new Error(result.error)
+        }
+        try { await get().loadPlaylists() }
+        catch { throw new RemotePlaylistCreationUncertainError('The server playlist was created. Refresh playlists to see it before creating another.') }
+        const created = get().playlists.find(playlist => playlist.id === result.playlistId)
+        if (!created) throw new RemotePlaylistCreationUncertainError('The server playlist was created, but is currently hidden. Check Sync playlists in server settings.')
+        return created
       }
 
       const playlist = await window.electronAPI.library.createPlaylist(trimmedName)

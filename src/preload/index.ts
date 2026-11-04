@@ -1,3 +1,12 @@
+import type { RemotePlaylistsAPI } from '../types/remotePlaylists'
+import type { StratumAPI, StratumStatus } from '../types/stratum'
+import type { PlexAPI } from '../types/plex'
+import type { RemoteAudioCacheStatus } from '../types/remoteAudioCache'
+import type { StreamingDiagnosticsSession } from '../types/streamingDiagnostics'
+import type { RemoteAudioAnalysis } from '../types/remoteAudioAnalysis'
+import type { AutomaticQualityPlayback, AutomaticQualityPreparationResult, StreamQualityTarget, AutomaticStreamingQuality, StreamingQualityRequest, StreamingQuality, StreamingQualitySettings, StreamingQualitySource } from '../types/streamingQuality'
+import type { ProviderPlaybackSnapshot } from '../types/providerPlayback'
+import type { ProviderSyncAPI } from '../types/providerSync'
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import type { NotchAPI } from '../types/notch'
 import { join } from 'path'
@@ -93,6 +102,7 @@ import type {
   SubsonicSourceTestResult,
   SubsonicSourceUpdateInput,
   SubsonicStatusSnapshot,
+  RemoteSourceCounts,
   TrackSourceType
 } from '../types/subsonic'
 import type {
@@ -194,6 +204,7 @@ import type {
   IntegrityScanScope
 } from '../types/libraryIntegrity'
 import { createNativeAudioController, type NativeAudioAddonModule } from './nativeAudioController'
+import { createNativeRemoteSourceResolver } from './nativeRemoteSource'
 
 type RuntimeIconImageSetPayload = {
   images: Array<{
@@ -272,7 +283,10 @@ export interface LocalAudioPcmDecodeResult {
 export type LocalAudioPcmDecodeResponse = LocalAudioPcmDecodeResult | LocalPcmDecodeLimitRefusal | null
 
 export interface ProgressiveStreamStartOptions {
+  streamingQuality?: StreamingQualityRequest
   startTimeSeconds?: number | null
+  slot?: 'current' | 'next'
+  preserveNext?: boolean
 }
 
 // Library types
@@ -726,7 +740,8 @@ try {
 }
 
 const nativeAudioController = createNativeAudioController(visualizerDSP, {
-  unavailableReason: nativeAddonLoadError
+  unavailableReason: nativeAddonLoadError,
+  acquireRemoteSource: createNativeRemoteSourceResolver((channel, ...args) => ipcRenderer.invoke(channel, ...args))
 })
 
 function getBlinkResourceUsage(): MemoryDiagnosticsBlinkResourceUsageSnapshot {
@@ -914,6 +929,36 @@ function openLocalAudioPcmStream(
 
 // Expose APIs to renderer
 contextBridge.exposeInMainWorld('electronAPI', {
+  remotePlaylists: {
+    destinations: paths => ipcRenderer.invoke('remote-playlists:destinations', paths),
+    create: (ref, name, paths) => ipcRenderer.invoke('remote-playlists:create', ref, name, paths),
+    status: () => ipcRenderer.invoke('remote-playlists:status'),
+    setEnabled: (ref, enabled) => ipcRenderer.invoke('remote-playlists:setEnabled', ref, enabled),
+    refresh: ref => ipcRenderer.invoke('remote-playlists:refresh', ref),
+    onChanged: callback => {
+      const handler = () => callback()
+      ipcRenderer.on('remote-playlists:changed', handler)
+      return () => ipcRenderer.removeListener('remote-playlists:changed', handler)
+    }
+  } satisfies RemotePlaylistsAPI,
+  providerSync: {
+    status: () => ipcRenderer.invoke('provider-sync:status'),
+    review: (ref) => ipcRenderer.invoke('provider-sync:review', ref),
+    apply: (token, choices) => ipcRenderer.invoke('provider-sync:apply', token, choices),
+    disable: (ref) => ipcRenderer.invoke('provider-sync:disable', ref),
+    refresh: (ref) => ipcRenderer.invoke('provider-sync:refresh', ref),
+    onChanged: (callback) => {
+      const handler = () => callback()
+      ipcRenderer.on('provider-sync:changed', handler)
+      return () => ipcRenderer.removeListener('provider-sync:changed', handler)
+    }
+  } satisfies ProviderSyncAPI,
+  reportProviderPlayback: (snapshot: ProviderPlaybackSnapshot) => ipcRenderer.send('provider-playback:observe', snapshot),
+  servers: {
+    counts: (): Promise<RemoteSourceCounts[]> => ipcRenderer.invoke('servers:counts'),
+    removalCount: (provider: RemoteSourceCounts['provider'], sourceId: number): Promise<number> =>
+      ipcRenderer.invoke('servers:removal-count', provider, sourceId)
+  },
   // Window controls
   minimize: () => ipcRenderer.send('window:minimize'),
   maximize: () => ipcRenderer.send('window:maximize'),
@@ -1445,6 +1490,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  stratum: {
+    status: (sourceId: number): Promise<StratumStatus> => ipcRenderer.invoke('stratum:status', sourceId),
+    discover: (sourceId: number): Promise<StratumStatus> => ipcRenderer.invoke('stratum:discover', sourceId),
+    setEnabled: (sourceId: number, enabled: boolean): Promise<StratumStatus> => ipcRenderer.invoke('stratum:setEnabled', sourceId, enabled),
+    inspectManual: (sourceId: number, address: string) => ipcRenderer.invoke('stratum:inspectManual', sourceId, address),
+    connectManual: (sourceId: number, token: string): Promise<StratumStatus> => ipcRenderer.invoke('stratum:connectManual', sourceId, token),
+    forgetManual: (sourceId: number): Promise<StratumStatus> => ipcRenderer.invoke('stratum:forgetManual', sourceId),
+    onChanged: (callback: (status: StratumStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: StratumStatus) => callback(status)
+      ipcRenderer.on('stratum:changed', handler)
+      return () => ipcRenderer.removeListener('stratum:changed', handler)
+    }
+  },
   subsonic: {
     listSources: (): Promise<SubsonicSource[]> => ipcRenderer.invoke('subsonic:listSources'),
     createSource: (input: SubsonicSourceCreateInput): Promise<SubsonicSource> =>
@@ -1464,6 +1522,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return () => ipcRenderer.removeListener('subsonic:status', handler)
     }
   },
+  plex: {
+    beginSignIn: () => ipcRenderer.invoke('plex:beginSignIn'),
+    pollSignIn: id => ipcRenderer.invoke('plex:pollSignIn', id),
+    cancelSignIn: id => ipcRenderer.invoke('plex:cancelSignIn', id),
+    libraries: (id, serverId) => ipcRenderer.invoke('plex:libraries', id, serverId),
+    connect: input => ipcRenderer.invoke('plex:connect', input),
+    serverLibraries: id => ipcRenderer.invoke('plex:serverLibraries', id),
+    addLibraries: (id, libraryIds) => ipcRenderer.invoke('plex:addLibraries', id, libraryIds),
+    listSources: () => ipcRenderer.invoke('plex:listSources'),
+    updateSource: (id, input) => ipcRenderer.invoke('plex:updateSource', id, input),
+    deleteSource: (id, purge) => ipcRenderer.invoke('plex:deleteSource', id, purge),
+    syncSource: (id, key) => ipcRenderer.invoke('plex:syncSource', id, key),
+    syncAll: key => ipcRenderer.invoke('plex:syncAll', key),
+    getStatus: () => ipcRenderer.invoke('plex:getStatus'),
+    onStatus: callback => {
+      const handler = (_event: Electron.IpcRendererEvent, status: Parameters<typeof callback>[0]) => callback(status)
+      ipcRenderer.on('plex:status', handler)
+      return () => ipcRenderer.removeListener('plex:status', handler)
+    }
+  } satisfies PlexAPI,
   jellyfin: {
     listSources: (): Promise<JellyfinSource[]> => ipcRenderer.invoke('jellyfin:listSources'),
     createSource: (input: JellyfinSourceCreateInput): Promise<JellyfinSource> =>
@@ -1588,6 +1666,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('audio:supersedeTrackLoudness', filePath) as Promise<void>,
   storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) =>
     ipcRenderer.invoke('audio:storeTrackLoudness', filePath, payload) as Promise<boolean>,
+  getRemoteCacheStatus: () => ipcRenderer.invoke('audio:getRemoteCacheStatus') as Promise<RemoteAudioCacheStatus>,
+  getRemoteAudioAnalysis: (key: string) => ipcRenderer.invoke('audio:getRemoteAudioAnalysis', key) as Promise<RemoteAudioAnalysis | null>,
+  onRemoteAudioAnalysisReady: (callback: (result: { key: string; analysis: RemoteAudioAnalysis }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, result: { key: string; analysis: RemoteAudioAnalysis }) => callback(result)
+    ipcRenderer.on('audio:remoteAnalysisReady', listener)
+    return () => ipcRenderer.removeListener('audio:remoteAnalysisReady', listener)
+  },
+  recommendAutomaticQuality: (state: AutomaticQualityPlayback) => ipcRenderer.invoke('audio:recommendAutomaticQuality', state) as Promise<StreamQualityTarget | null>,
+  prepareAutomaticQuality: (id: string, path: string, request: StreamingQualityRequest, position: number, previous?: StreamingQualityRequest) =>
+    ipcRenderer.invoke('audio:prepareAutomaticQuality', id, path, request, position, previous) as Promise<AutomaticQualityPreparationResult>,
+  releaseAutomaticQuality: (id: string) => ipcRenderer.invoke('audio:releaseAutomaticQuality', id) as Promise<void>,
+  automaticQualityCommitted: (path: string, mode: AutomaticStreamingQuality, target: StreamQualityTarget) => ipcRenderer.invoke('audio:automaticQualityCommitted', path, mode, target) as Promise<void>,
+  automaticQualityFailed: (path: string, mode: AutomaticStreamingQuality) => ipcRenderer.invoke('audio:automaticQualityFailed', path, mode) as Promise<void>,
+  getStreamingQuality: () => ipcRenderer.invoke('audio:getStreamingQuality') as Promise<StreamingQualitySettings>,
+  setStreamingQuality: (quality: StreamingQuality | null, source?: StreamingQualitySource) =>
+    ipcRenderer.invoke('audio:setStreamingQuality', quality, source) as Promise<StreamingQualitySettings>,
+  onStreamingQualityChanged: (callback: (settings: StreamingQualitySettings, previous: StreamingQualitySettings) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, settings: StreamingQualitySettings, previous: StreamingQualitySettings) => callback(settings, previous)
+    ipcRenderer.on('audio:streamingQualityChanged', handler)
+    return () => ipcRenderer.removeListener('audio:streamingQualityChanged', handler)
+  },
+  setRemoteCacheLimit: (limitGb: number) => ipcRenderer.invoke('audio:setRemoteCacheLimit', limitGb) as Promise<RemoteAudioCacheStatus>,
+  clearRemoteCache: () => ipcRenderer.invoke('audio:clearRemoteCache') as Promise<RemoteAudioCacheStatus>,
+  getStreamingDiagnostics: (ids: number[]): Promise<StreamingDiagnosticsSession[]> => ipcRenderer.invoke('audio:getStreamingDiagnostics', ids),
   startProgressiveStream: (
     filePath: string,
     outputSampleRate: number,
@@ -1597,6 +1699,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('audio:startProgressiveStream', filePath, outputSampleRate, expectedChannels, options) as Promise<ProgressiveStreamInfo>,
   updateProgressiveStreamPosition: (sessionId: number, currentFrame: number) =>
     ipcRenderer.send('audio:updateProgressiveStreamPosition', sessionId, currentFrame),
+  activateProgressiveStream: (sessionId: number) => ipcRenderer.send('audio:activateProgressiveStream', sessionId),
+  cancelPendingProgressiveStream: (slot?: 'current' | 'next') => ipcRenderer.invoke('audio:cancelPendingProgressiveStream', slot) as Promise<void>,
   cancelProgressiveStream: (sessionId: number) => ipcRenderer.invoke('audio:cancelProgressiveStream', sessionId) as Promise<void>,
   startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) =>
     ipcRenderer.invoke('audio:startRemoteStream', filePath, outputSampleRate, expectedChannels) as Promise<RemoteStreamInfo>,
@@ -1960,6 +2064,7 @@ declare global {
       pause: () => Promise<NativeAudioPlaybackSnapshot>
       stop: () => Promise<NativeAudioPlaybackSnapshot>
       seek: (seconds: number) => Promise<NativeAudioPlaybackSnapshot>
+      changeRemoteQuality: (path: string, request: StreamingQualityRequest) => Promise<NativeAudioPlaybackSnapshot>
       clearNextTrack: () => Promise<void>
       getPlaybackSnapshot: () => Promise<NativeAudioPlaybackSnapshot>
       getNativeAudioDiagnosticReport: () => Promise<NativeAudioDiagnosticReport>
@@ -1969,6 +2074,14 @@ declare global {
       onEvent: (callback: (event: NativeAudioEvent) => void) => () => void
     }
     electronAPI: {
+      remotePlaylists: RemotePlaylistsAPI
+      providerSync: ProviderSyncAPI
+      reportProviderPlayback: (snapshot: ProviderPlaybackSnapshot) => void
+      servers: {
+        counts: () => Promise<RemoteSourceCounts[]>
+        /** How many tracks removing this server with "Delete them" would delete. */
+        removalCount: (provider: RemoteSourceCounts['provider'], sourceId: number) => Promise<number>
+      }
       // Window controls
       minimize: () => void
       maximize: () => void
@@ -2223,6 +2336,7 @@ declare global {
         resetToDefaults: () => Promise<LyricsStatus>
         onStatus: (callback: (status: LyricsStatus) => void) => () => void
       }
+      stratum: StratumAPI
       subsonic: {
         listSources: () => Promise<SubsonicSource[]>
         createSource: (input: SubsonicSourceCreateInput) => Promise<SubsonicSource>
@@ -2234,6 +2348,7 @@ declare global {
         getStatus: () => Promise<SubsonicStatusSnapshot>
         onStatus: (callback: (status: SubsonicStatusSnapshot) => void) => () => void
       }
+      plex: PlexAPI
       jellyfin: {
         listSources: () => Promise<JellyfinSource[]>
         createSource: (input: JellyfinSourceCreateInput) => Promise<JellyfinSource>
@@ -2288,6 +2403,20 @@ declare global {
       warmupTrackLoudness: (filePath: string) => Promise<TrackLoudnessResult | null>
       supersedeTrackLoudness: (filePath: string | null) => Promise<void>
       storeTrackLoudness: (filePath: string, payload: TrackLoudnessStorePayload) => Promise<boolean>
+      getRemoteCacheStatus: () => Promise<RemoteAudioCacheStatus>
+      getRemoteAudioAnalysis: (key: string) => Promise<RemoteAudioAnalysis | null>
+      onRemoteAudioAnalysisReady: (callback: (result: { key: string; analysis: RemoteAudioAnalysis }) => void) => () => void
+      recommendAutomaticQuality: (state: AutomaticQualityPlayback) => Promise<StreamQualityTarget | null>
+      prepareAutomaticQuality: (id: string, path: string, request: StreamingQualityRequest, position: number, previous?: StreamingQualityRequest) => Promise<AutomaticQualityPreparationResult>
+      releaseAutomaticQuality: (id: string) => Promise<void>
+      automaticQualityCommitted: (path: string, mode: AutomaticStreamingQuality, target: StreamQualityTarget) => Promise<void>
+      automaticQualityFailed: (path: string, mode: AutomaticStreamingQuality) => Promise<void>
+      getStreamingQuality: () => Promise<StreamingQualitySettings>
+      setStreamingQuality: (quality: StreamingQuality | null, source?: StreamingQualitySource) => Promise<StreamingQualitySettings>
+      onStreamingQualityChanged: (callback: (settings: StreamingQualitySettings, previous: StreamingQualitySettings) => void) => () => void
+      setRemoteCacheLimit: (limitGb: number) => Promise<RemoteAudioCacheStatus>
+      clearRemoteCache: () => Promise<RemoteAudioCacheStatus>
+      getStreamingDiagnostics: (ids: number[]) => Promise<StreamingDiagnosticsSession[]>
       startProgressiveStream: (
         filePath: string,
         outputSampleRate: number,
@@ -2295,6 +2424,8 @@ declare global {
         options?: ProgressiveStreamStartOptions
       ) => Promise<ProgressiveStreamInfo>
       updateProgressiveStreamPosition: (sessionId: number, currentFrame: number) => void
+      activateProgressiveStream: (sessionId: number) => void
+      cancelPendingProgressiveStream: (slot?: 'current' | 'next') => Promise<void>
       cancelProgressiveStream: (sessionId: number) => Promise<void>
       startRemoteStream: (filePath: string, outputSampleRate: number, expectedChannels?: number | null) => Promise<RemoteStreamInfo>
       cancelRemoteStream: (sessionId: number) => Promise<void>

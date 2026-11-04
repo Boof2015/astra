@@ -98,6 +98,22 @@
       ]
     },
     {
+      "target_name": "native_progressive_binding",
+      "type": "static_library",
+      "cflags!": ["-fno-exceptions"],
+      "cflags_cc!": ["-fno-exceptions"],
+      "cflags_cc": ["-std=c++17", "-O3", "-fno-fast-math"],
+      "sources": ["src/progressive_input_binding.cpp"],
+      "include_dirs": ["<!@(node -p \"require('node-addon-api').include\")", "src"],
+      "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS"],
+      "conditions": [
+        ["OS=='mac'", { "xcode_settings": { "GCC_ENABLE_CPP_EXCEPTIONS": "YES" } }],
+        ["OS=='win'", { "msvs_settings": { "VCCLCompilerTool": {
+          "ExceptionHandling": 1, "AdditionalOptions": ["/O2", "/fp:strict"]
+        } } }]
+      ]
+    },
+    {
       "target_name": "native_playback_state_tests",
       "type": "executable",
       "cflags!": ["-fno-exceptions"],
@@ -106,6 +122,8 @@
       "cflags_cc": ["-std=c++17"],
       "sources": [
         "src/playback_engine.cpp",
+        "src/progressive_playback.cpp",
+        "test/endpoint_frame_queue_test.cpp",
         "test/playback_engine_state_test.cpp"
       ],
       "include_dirs": ["src"],
@@ -166,7 +184,7 @@
     },
     {
       "target_name": "visualizer_dsp",
-      "dependencies": ["native_audio_processing"],
+      "dependencies": ["native_audio_processing", "native_progressive_binding"],
       "cflags!": ["-fno-exceptions"],
       "cflags_cc!": ["-fno-exceptions"],
       "cflags_cc": ["-std=c++17", "-O3", "-ffast-math"],
@@ -182,6 +200,7 @@
         "src/lufsmeter.cpp",
         "src/dsp_utils.cpp",
         "src/playback_engine.cpp",
+        "src/progressive_playback.cpp",
         "src/coreaudio_hal_sink.cpp",
         "src/alsa_hw_sink.cpp",
         "src/wasapi_exclusive_sink.cpp",

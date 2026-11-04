@@ -33,15 +33,34 @@ export const SETTINGS_SECTIONS = [
       'normalization',
       'loudness',
       'gain',
-      'subsonic',
-      'navidrome',
-      'jellyfin',
-      'remote source',
-      'remote server',
       'rating',
       'ratings',
       'stars',
       'star rating'
+    ]
+  },
+  {
+    id: 'servers',
+    label: 'Servers',
+    keywords: [
+      'server',
+      'servers',
+      'subsonic',
+      'navidrome',
+      'jellyfin',
+      'plex',
+      'remote',
+      'remote source',
+      'remote server',
+      'streaming',
+      'streaming quality',
+      'quality',
+      'bitrate',
+      'cache',
+      'audio cache',
+      'storage',
+      'sync favorites',
+      'sync playlists'
     ]
   },
   {

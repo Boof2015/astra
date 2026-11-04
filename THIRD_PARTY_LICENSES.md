@@ -228,7 +228,11 @@ Licensed under the MIT License:
 ## Bundled decoder binaries
 
 Astra bundles `ffmpeg` and `ffprobe` binaries via the `ffmpeg-static` and
-`ffprobe-static` npm packages. FFmpeg is a trademark of Fabrice Bellard;
+`ffmpeg-ffprobe-static` (pinned to 6.1.2-rc.1) npm packages, respectively.
+Only `ffprobe` from the paired package is distributed; its unused `ffmpeg`
+executable is excluded.
+Binary provenance: https://github.com/descriptinc/ffmpeg-ffprobe-static/releases/tag/b6.1.2-rc.1.
+FFmpeg is a trademark of Fabrice Bellard;
 the binaries are licensed under the GPL (see https://ffmpeg.org/legal.html).
 
 ## r8brain-free-src
