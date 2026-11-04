@@ -6357,6 +6357,254 @@ test('a server records why it last failed, and forgets it once it works again', 
   assert.equal(library.listPlexSources()[0].last_error_kind, null, 'signing in again clears it')
 })
 
+for (const provider of ['subsonic', 'jellyfin', 'plex'] as const) {
+  const createSource = () => {
+    const input = { name: 'Large server', base_url: 'https://music.test', username: 'test', secret_encrypted: 'test', enabled: 1 }
+    return provider === 'subsonic' ? library.createSubsonicSource(input)
+      : provider === 'jellyfin' ? library.createJellyfinSource(input)
+      : library.savePlexSource({ ...input, account_id: 'test', server_id: 'test', library_id: 'music', library_name: 'Music' })
+  }
+  const upsert = provider === 'subsonic' ? library.upsertSubsonicTracks
+    : provider === 'jellyfin' ? library.upsertJellyfinTracks : library.upsertPlexTracks
+  const track = (id: number, index: number) => createRemoteTrack({
+    path: `${provider}://${id}/track/${index}`, source_track_id: String(index),
+    title: `Track ${index}`, artist: `Artist ${Math.floor(index / 100)}`,
+    album_artist: `Artist ${Math.floor(index / 100)}`, album: `Album ${Math.floor(index / 10)}`,
+    track_number: index % 10 + 1
+  })
+
+  test(`${provider}: 11k-track imports yield between committed batches and keep all counts current`, async t => {
+    await setupEmptyLibrary(t)
+    const source = await createSource()
+    assert.deepEqual(library.getRemoteSourceCounts(), [], 'prime the empty counts cache')
+    const tracks = Array.from({ length: 11_000 }, (_, index) => track(source.id, index))
+    let completed = false
+    let partialCount: number | null = null
+    let pulse = setImmediate(function check() {
+      if (completed) return
+      const count = library.getTrackCount()
+      if (count > 0 && count < tracks.length) {
+        partialCount = count
+        // A different writer must never be enlisted into the import's transaction.
+        library.beginLibraryWriteTransaction()
+        library.rollbackLibraryWriteTransaction()
+      }
+      pulse = setImmediate(check)
+    })
+    try {
+      assert.deepEqual(await upsert(source.id, tracks), { inserted: 11_000, updated: 0 })
+    } finally { completed = true; clearImmediate(pulse) }
+    assert.notEqual(partialCount, null, 'the main event loop must run before the import finishes')
+    assert.equal(library.getTrackCount(), 11_000)
+    assert.equal(library.getAllTracks().length, 11_000)
+    assert.equal(library.getRemoteSourceCounts().find(row => row.sourceId === source.id && row.provider === provider)?.tracks, 11_000)
+    assert.deepEqual(await upsert(source.id, tracks), { inserted: 0, updated: 0 })
+    assert.equal(library.getTrackCount(), 11_000, 'a refresh must not duplicate rows')
+    assert.equal(library.getRemoteSourceCounts().find(row => row.sourceId === source.id && row.provider === provider)?.tracks, 11_000)
+  })
+
+  test(`${provider}: unchanged catalog and sync bookkeeping perform no track writes or index rebuilds`, async t => {
+    const dir = await setupEmptyLibrary(t)
+    const source = await createSource()
+    const tracks = [track(source.id, 0), track(source.id, 1)]
+    await upsert(source.id, tracks, { syncSessionKey: 'first' })
+    const raw = new TestSqliteDatabase(join(dir, 'library.db'))
+    t.after(() => raw.close())
+    raw.prepare('CREATE TABLE sync_write_audit (kind TEXT, path TEXT)').run()
+    raw.prepare(`CREATE TRIGGER audit_track_update AFTER UPDATE ON tracks
+      BEGIN INSERT INTO sync_write_audit VALUES ('track', NEW.path); END`).run()
+    raw.prepare(`CREATE TRIGGER audit_identity_update AFTER UPDATE ON track_album_identities
+      BEGIN INSERT INTO sync_write_audit VALUES ('identity', NEW.track_path); END`).run()
+    const before = raw.prepare('SELECT * FROM tracks ORDER BY path').all()
+    library.getTrackPage()
+    library.getHomeDashboard()
+    const counts = library.getRemoteSourceCounts()
+    const queries: string[] = []
+    library.setLibraryQueryDiagnosticsReporter(row => queries.push(row.name))
+    t.after(() => library.setLibraryQueryDiagnosticsReporter(null))
+
+    const status = async (last_status: 'syncing' | 'ok') => {
+      if (provider === 'subsonic') await library.updateSubsonicSourceStatus(source.id, { status: last_status, checkedAt: 100, syncedAt: 100 })
+      else if (provider === 'jellyfin') await library.updateJellyfinSourceStatus(source.id, { status: last_status, checkedAt: 100, syncedAt: 100 })
+      else await library.updatePlexSource(source.id, { last_status, last_checked_at: 100, last_sync_at: 100 })
+    }
+    await status('syncing')
+    // Plex refreshes its saved connection before a catalog fetch. That must not
+    // throw away metadata caches either; the same holds for the other providers.
+    const connection = { base_url: 'https://music.test', secret_encrypted: 'renewed', enabled: 1 }
+    if (provider === 'subsonic') await library.updateSubsonicSource(source.id, connection)
+    else if (provider === 'jellyfin') await library.updateJellyfinSource(source.id, connection)
+    else await library.updatePlexSource(source.id, connection)
+    const restore = provider === 'subsonic' ? library.restoreSubsonicTracksFromSourceUnavailable
+      : provider === 'jellyfin' ? library.restoreJellyfinTracksFromSourceUnavailable : library.restorePlexTracksFromSourceUnavailable
+    await restore(source.id)
+    // Null and absent optional fields have the same stored meaning.
+    assert.deepEqual(await upsert(source.id, tracks.map(row => ({ ...row, track_total: undefined, disc_total: undefined })),
+      { syncSessionKey: 'second' }), { inserted: 0, updated: 0 })
+    const markMissing = provider === 'subsonic' ? library.markMissingSubsonicTracksUnavailable
+      : provider === 'jellyfin' ? library.markMissingJellyfinTracksUnavailable : library.markMissingPlexTracksUnavailable
+    await markMissing(source.id, new Set(tracks.map(row => row.source_track_id)))
+    await status('ok')
+    await library.setLatestLibrarySyncSummary({ sessionKey: 'second', completedAt: 100, newAlbumIdentityKeys: [] })
+    assert.equal(library.getTrackPage().total, 2)
+    assert.ok(library.getAllTracks().every(row => !row.is_new), 'badges still read the latest summary without rebuilding identities')
+    library.getHomeDashboard()
+    assert.strictEqual(library.getRemoteSourceCounts(), counts, 'unchanged counts keep their cached result')
+    assert.deepEqual(queries.filter(name => ['rebuildTrackSnapshot', 'buildHomeReleaseSummaries', 'getRemoteSourceCounts'].includes(name)), [])
+    assert.deepEqual(raw.prepare('SELECT * FROM sync_write_audit').all(), [])
+    assert.deepEqual(raw.prepare('SELECT * FROM tracks ORDER BY path').all(), before)
+
+    queries.length = 0
+    assert.deepEqual(await upsert(source.id, [{ ...tracks[0], title: 'Changed title' }, tracks[1]]), { inserted: 0, updated: 1 })
+    assert.deepEqual(raw.prepare('SELECT * FROM sync_write_audit').all(), [{ kind: 'track', path: tracks[0].path }],
+      'one title edit must not rewrite its peer or unchanged album identities')
+    assert.ok(queries.includes('rebuildTrackSnapshot'))
+    assert.equal(library.getTrackByPath(tracks[0].path)?.title, 'Changed title')
+    assert.deepEqual(raw.prepare('SELECT * FROM tracks WHERE path = ?').get(tracks[1].path), before[1])
+    // A visibility change still invalidates cached rows/counts.
+    if (provider === 'subsonic') await library.updateSubsonicSource(source.id, { enabled: 0 })
+    else if (provider === 'jellyfin') await library.updateJellyfinSource(source.id, { enabled: 0 })
+    else await library.updatePlexSource(source.id, { enabled: 0 })
+    assert.equal(library.getTrackPage().total, 0)
+    assert.equal(library.getRemoteSourceCounts()[0].albums, null)
+  })
+
+  test(`${provider}: unchanged metadata still restores a missing track, and repeated absence is a no-op`, async t => {
+    const dir = await setupEmptyLibrary(t)
+    const source = await createSource()
+    const row = track(source.id, 0)
+    await upsert(source.id, [row])
+    const raw = new TestSqliteDatabase(join(dir, 'library.db'))
+    t.after(() => raw.close())
+    const markMissing = provider === 'subsonic' ? library.markMissingSubsonicTracksUnavailable
+      : provider === 'jellyfin' ? library.markMissingJellyfinTracksUnavailable : library.markMissingPlexTracksUnavailable
+    await markMissing(source.id, new Set())
+    const missing = raw.prepare('SELECT * FROM tracks').get()
+    assert.equal(library.getTrackByPath(row.path)?.availability_reason, 'missing_upstream')
+    const counts = library.getRemoteSourceCounts()
+    await markMissing(source.id, new Set())
+    assert.deepEqual(raw.prepare('SELECT * FROM tracks').get(), missing, 'even modified_at must stay unchanged')
+    assert.strictEqual(library.getRemoteSourceCounts(), counts)
+    assert.deepEqual(await upsert(source.id, [row]), { inserted: 0, updated: 1 })
+    assert.equal(library.getTrackByPath(row.path)?.is_available, 1)
+    assert.equal(library.getTrackByPath(row.path)?.availability_reason, null)
+    assert.equal(library.getRemoteSourceCounts()[0].tracks, 1)
+  })
+
+  test(`${provider}: metadata comparison preserves overrides, history, analysis and normalized credits`, async t => {
+    const dir = await setupEmptyLibrary(t)
+    const source = await createSource()
+    const row = { ...track(source.id, 0), artist_names: ['Artist A', 'Artist B'],
+      album_artist_names: ['Artist A', 'Artist B'], genres: ['Rock', 'Pop'], genre: 'Rock' }
+    await upsert(source.id, [row], { syncSessionKey: 'first' })
+    const raw = new TestSqliteDatabase(join(dir, 'library.db'))
+    t.after(() => raw.close())
+    raw.prepare('INSERT INTO track_metadata_overrides (track_path, title, updated_at) VALUES (?, ?, ?)').run(row.path, 'My title', 1)
+    raw.prepare('UPDATE tracks SET play_count = 5, last_played_at = 123, replaygain_track_gain_scanned = 1, latest_sync_dismissed_at = 50 WHERE path = ?').run(row.path)
+    raw.prepare(`INSERT INTO track_loudness (track_path, loudness_lufs, method, analyzed_at) VALUES (?, -12, 'test', 1)`).run(row.path)
+    const before = raw.prepare('SELECT * FROM tracks').get()
+    assert.deepEqual(await upsert(source.id, [{ ...row, artist_names: ['Artist A ', 'Artist A', 'Artist B'],
+      album_artist_names: ['Artist A', 'Artist B', 'Artist B'], genres: ['Rock', 'Pop', 'Rock'] }], { syncSessionKey: 'second' }),
+    { inserted: 0, updated: 0 })
+    assert.deepEqual(raw.prepare('SELECT * FROM tracks').get(), before)
+    assert.equal(library.getTrackByPath(row.path)?.title, 'My title')
+    assert.deepEqual(await upsert(source.id, [{ ...row, title: 'New server title', duration: 201, sample_rate: 96_000,
+      track_total: 12, disc_total: 2, genres: ['Jazz'], genre: 'Jazz', source_path: 'renamed/file.flac' }]), { inserted: 0, updated: 1 })
+    const after = raw.prepare('SELECT * FROM tracks').get() as Record<string, unknown>
+    assert.equal(after.title, 'New server title')
+    assert.equal(after.genre, 'Jazz')
+    assert.equal(after.sample_rate, 96_000)
+    assert.equal(after.track_total, 12)
+    assert.equal(after.source_path, 'renamed/file.flac')
+    assert.equal(after.play_count, 5)
+    assert.equal(after.last_played_at, 123)
+    assert.equal(after.replaygain_track_gain_scanned, 1)
+    assert.equal(after.sync_session_key, 'first')
+    assert.equal(after.latest_sync_dismissed_at, 50)
+    assert.equal(library.getTrackByPath(row.path)?.title, 'My title')
+    assert.equal(library.getTrackLoudness(row.path)?.loudnessLufs, -12)
+  })
+
+  test(`${provider}: artwork comparison follows provider preservation rules`, async t => {
+    await setupEmptyLibrary(t)
+    const source = await createSource()
+    const row = { ...track(source.id, 0), artwork_hash: 'cached-cover' }
+    await upsert(source.id, [row])
+    // The Subsonic sync opts into preservation; Plex always preserves a missing cover.
+    const syncUpsert = (rows: library.SubsonicTrackUpsertInput[]) => provider === 'subsonic'
+      ? library.upsertSubsonicTracks(source.id, rows, { preserveExistingArtwork: true }) : upsert(source.id, rows)
+    assert.deepEqual(await syncUpsert([{ ...row, artwork_hash: null }]),
+      { inserted: 0, updated: provider === 'jellyfin' ? 1 : 0 })
+    assert.equal(library.getTrackByPath(row.path)?.artwork_hash, provider === 'jellyfin' ? null : 'cached-cover')
+    assert.deepEqual(await syncUpsert([{ ...row, artwork_hash: 'new-cover' }]), { inserted: 0, updated: 1 })
+    assert.deepEqual(await syncUpsert([{ ...row, artwork_hash: 'new-cover' }]), { inserted: 0, updated: 0 })
+    if (provider === 'subsonic') {
+      assert.deepEqual(await upsert(source.id, [{ ...row, artwork_hash: null }]), { inserted: 0, updated: 1 })
+      assert.equal(library.getTrackByPath(row.path)?.artwork_hash, null, 'explicit non-preserving calls can still clear artwork')
+    }
+  })
+
+  test(`${provider}: removing a source between import batches cannot bring its tracks back`, async t => {
+    await setupEmptyLibrary(t)
+    const source = await createSource()
+    let removed: Promise<void> | undefined
+    const pulse = setImmediate(() => {
+      removed = provider === 'subsonic' ? library.deleteSubsonicSource(source.id, true)
+        : provider === 'jellyfin' ? library.deleteJellyfinSource(source.id, true)
+        : library.deletePlexSource(source.id, true)
+    })
+    try {
+      await assert.rejects(upsert(source.id, Array.from({ length: 600 }, (_, i) => track(source.id, i))), /server changed during sync/)
+      await removed
+      assert.equal(library.getTrackCount(), 0)
+    } finally { clearImmediate(pulse) }
+  })
+
+  test(`${provider}: disabling a source between import batches stops the import`, async t => {
+    await setupEmptyLibrary(t)
+    const source = await createSource()
+    let disabled: Promise<void> | undefined
+    const pulse = setImmediate(() => {
+      disabled = (async () => {
+        if (provider === 'subsonic') {
+          await library.updateSubsonicSource(source.id, { enabled: 0 })
+          await library.markSubsonicTracksAvailability(source.id, false, 'source_disabled')
+        } else if (provider === 'jellyfin') {
+          await library.updateJellyfinSource(source.id, { enabled: 0 })
+          await library.markJellyfinTracksAvailability(source.id, false, 'source_disabled')
+        } else {
+          await library.updatePlexSource(source.id, { enabled: 0 })
+          await library.markPlexTracksAvailability(source.id, false, 'source_disabled')
+        }
+      })()
+    })
+    try {
+      await assert.rejects(upsert(source.id, Array.from({ length: 600 }, (_, i) => track(source.id, i))), /server changed during sync/)
+      await disabled
+      assert.equal(library.getTrackCount(), 0, 'disabled-source tracks stay hidden')
+      const retained = library.countTracksRemovedWithSource(provider, source.id)
+      assert.ok(retained > 0 && retained <= 200, 'no later batch was imported')
+      assert.equal(library.getTrackByPath(`${provider}://${source.id}/track/0`)?.availability_reason, 'source_disabled')
+    } finally { clearImmediate(pulse) }
+  })
+}
+
+test('a caller-owned import transaction stays atomic and can still roll back', async t => {
+  await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({ name: 'Server', base_url: 'https://music.test', username: 'test', secret_encrypted: 'test', enabled: 1 })
+  let yielded = false
+  const pulse = setImmediate(() => { yielded = true })
+  library.beginLibraryWriteTransaction()
+  try {
+    await library.upsertSubsonicTracks(source.id, Array.from({ length: 600 }, (_, i) => createRemoteTrack({
+      path: `subsonic://${source.id}/track/${i}`, title: `Track ${i}`, artist: 'Artist', album: `Album ${Math.floor(i / 10)}`
+    })))
+    assert.equal(yielded, false, 'do not yield while the caller holds a transaction')
+    assert.equal(library.getTrackCount(), 600)
+  } finally { library.rollbackLibraryWriteTransaction(); clearImmediate(pulse) }
+  assert.equal(library.getTrackCount(), 0)
+})
+
 test('each server counts the tracks it still has and the albums they belong to', async t => {
   await setupEmptyLibrary(t)
   const input = { name: 'Server', base_url: 'https://music.test', username: 'user', secret_encrypted: 'secret', enabled: 1 }

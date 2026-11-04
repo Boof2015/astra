@@ -372,11 +372,14 @@ export async function savePlexSource(input: Pick<PlexSourceRow, 'name' | 'base_u
 }
 export async function updatePlexSource(id: number, input: Partial<Pick<PlexSourceRow,
   'name' | 'base_url' | 'secret_encrypted' | 'enabled' | 'last_status' | 'last_error' | 'last_error_kind' | 'last_sync_at' | 'last_checked_at'>>): Promise<PlexSource> {
-  if (!db || !getPlexSourceById(id)) throw new Error('Plex source not found.')
+  const current = getPlexSourceById(id)
+  if (!db || !current) throw new Error('Plex source not found.')
   const allowed = ['name', 'base_url', 'secret_encrypted', 'enabled', 'last_status', 'last_error', 'last_error_kind', 'last_sync_at', 'last_checked_at'] as const
   const keys = allowed.filter(key => input[key] !== undefined)
   if (keys.length) db.run(`UPDATE plex_sources SET ${keys.map(key => `${key} = ?`).join(', ')}, updated_at = ? WHERE id = ?`,
-    [...keys.map(key => input[key]!), Date.now(), id])
+    [...keys.map(key => input[key]!), Date.now(), id],
+    // Credential renewal and status don't change the stored library. Visibility does.
+    { affectsLibrary: input.enabled !== undefined && input.enabled !== current.enabled })
   await saveDatabase()
   return publicPlexSource(getPlexSourceById(id)!)
 }
@@ -400,7 +403,9 @@ export async function restorePlexTracksFromSourceUnavailable(id: number): Promis
 }
 export async function markMissingPlexTracksUnavailable(id: number, seen: Set<string>): Promise<void> {
   if (!db) return
-  const rows = db.all<{ path: string; source_track_id: string }>("SELECT path, source_track_id FROM tracks WHERE source_type = 'plex' AND source_id = ?", [id])
+  const rows = db.all<{ path: string; source_track_id: string }>(`SELECT path, source_track_id FROM tracks
+    WHERE source_type = 'plex' AND source_id = ?
+      AND (is_available IS NOT 0 OR availability_reason IS NOT 'missing_upstream')`, [id])
   beginLibraryWriteTransaction()
   try {
     for (const row of rows) if (!seen.has(row.source_track_id)) db!.run(
@@ -941,12 +946,18 @@ class LibrarySqliteDatabase {
     return this.database.inTransaction
   }
 
-  run(sql: string, params: unknown[] = []): { changes: number; lastInsertRowid: number | bigint } {
-    noteLibrarySqlMutation(sql)
+  run(sql: string, params: unknown[] = [], options: { affectsLibrary?: boolean } = {}): { changes: number; lastInsertRowid: number | bigint } {
     if (params.length > 0) {
-      return this.database.prepare(sql).run(...params)
+      const result = this.database.prepare(sql).run(...params)
+      // A no-op availability check must not discard the full-library caches.
+      if (options.affectsLibrary !== false && (result.changes > 0 || SNAPSHOT_ALWAYS_INVALIDATE_PATTERN.test(sql))) {
+        noteLibrarySqlMutation(sql)
+      }
+      return result
     }
 
+    // exec can contain several statements; stay conservative if a later one fails.
+    if (options.affectsLibrary !== false) noteLibrarySqlMutation(sql)
     this.database.exec(sql)
     return { changes: 0, lastInsertRowid: 0 }
   }
@@ -1449,6 +1460,10 @@ function persistDerivedAlbumIdentities(
           album_key = excluded.album_key,
           grouping_mode = excluded.grouping_mode,
           display_artist = excluded.display_artist
+        WHERE album_identity_key IS NOT excluded.album_identity_key
+          OR album_key IS NOT excluded.album_key
+          OR grouping_mode IS NOT excluded.grouping_mode
+          OR display_artist IS NOT excluded.display_artist
       `, [
         identity.trackPath,
         identity.albumIdentityKey,
@@ -1577,7 +1592,9 @@ let homeReleaseSummaryCache: { dataVersion: number; releases: HomeReleaseSummary
 
 const SNAPSHOT_WRITE_STATEMENT_PATTERN = /^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/im
 const SNAPSHOT_ALWAYS_INVALIDATE_PATTERN = /^\s*(?:CREATE|DROP|ALTER|ROLLBACK)\b/im
-const SNAPSHOT_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|app_meta|subsonic_sources|jellyfin_sources|plex_sources)\b/i
+// App settings and the latest-sync badge summary aren't inputs to track identity
+// or ordering. Badges read that summary when returning tracks, outside the cache.
+const SNAPSHOT_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|subsonic_sources|jellyfin_sources|plex_sources)\b/i
 const HOME_RELEASE_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|favorites|subsonic_sources|jellyfin_sources|plex_sources)\b/i
 
 function invalidateLibraryTrackSnapshot(): void {
@@ -3677,7 +3694,8 @@ export async function updateSubsonicSource(
       input.last_checked_at !== undefined ? input.last_checked_at : current.last_checked_at,
       now,
       sourceId
-    ]
+    ],
+    { affectsLibrary: input.enabled !== undefined && (input.enabled ? 1 : 0) !== current.enabled }
   )
 
   const next = getSubsonicSourceById(sourceId)
@@ -3840,7 +3858,8 @@ export async function updateJellyfinSource(
       input.last_checked_at !== undefined ? input.last_checked_at : current.last_checked_at,
       now,
       sourceId
-    ]
+    ],
+    { affectsLibrary: input.enabled !== undefined && (input.enabled ? 1 : 0) !== current.enabled }
   )
 
   const next = getJellyfinSourceById(sourceId)
@@ -4240,208 +4259,52 @@ export async function restoreSubsonicTracksFromSourceUnavailable(
   return Number.isFinite(count) ? count : 0
 }
 
-export async function upsertSubsonicTracks(
+/** Commit bounded batches before yielding: never leave our transaction open while
+ * playback IPC or another library writer runs. An explicit caller transaction
+ * retains its existing synchronous/atomic behavior. */
+async function writeRemoteCatalogBatches<T>(
+  provider: 'subsonic' | 'jellyfin' | 'plex', sourceId: number,
+  tracks: readonly T[], write: (track: T) => void
+): Promise<void> {
+  const database = db
+  if (!database) return
+  const binding = () => database.get<Record<string, unknown>>(`
+    SELECT base_url, username, secret_encrypted, enabled${provider === 'plex' ? ', deleted' : ''}
+    FROM ${provider}_sources WHERE id = ?`, [sourceId])
+  const initialBinding = JSON.stringify(binding())
+  const callerOwnsTransaction = database.inTransaction
+  let offset = 0
+  while (offset < tracks.length) {
+    if (db !== database || JSON.stringify(binding()) !== initialBinding) {
+      throw new Error('The server changed during sync. Sync again to load its current library.')
+    }
+    if (!callerOwnsTransaction) {
+      if (database.inTransaction) throw new Error('Another library update interrupted server sync. Please sync again.')
+      database.run('BEGIN IMMEDIATE TRANSACTION')
+    }
+    try {
+      const started = performance.now()
+      const end = Math.min(tracks.length, offset + 200)
+      do {
+        write(tracks[offset++])
+      } while (offset < end && (callerOwnsTransaction || performance.now() - started < 12))
+      if (!callerOwnsTransaction) database.run('COMMIT')
+    } catch (error) {
+      if (!callerOwnsTransaction && database.inTransaction) database.run('ROLLBACK')
+      throw error
+    }
+    if (!callerOwnsTransaction && offset < tracks.length) {
+      await new Promise<void>(resolve => setImmediate(resolve))
+    }
+  }
+}
+
+export function upsertSubsonicTracks(
   sourceId: number,
   tracks: SubsonicTrackUpsertInput[],
   options: { persist?: boolean; syncSessionKey?: string | null; preserveExistingArtwork?: boolean } = {}
 ): Promise<{ inserted: number; updated: number }> {
-  if (!db || tracks.length === 0) {
-    return { inserted: 0, updated: 0 }
-  }
-
-  const sourceExists = Boolean(db.get('SELECT 1 FROM subsonic_sources WHERE id = ? LIMIT 1', [sourceId]))
-  if (!sourceExists) {
-    return { inserted: 0, updated: 0 }
-  }
-
-  let inserted = 0
-  let updated = 0
-  const now = Date.now()
-
-  for (const track of tracks) {
-    const genreFields = resolveTrackGenreStorageFields(track)
-    const artistNames = normalizeArtistNames(track.artist_names)
-    const albumArtistNames = normalizeArtistNames(track.album_artist_names)
-    const artistNamesJson = artistNames.length > 1 ? serializeArtistNames(artistNames) : null
-    const albumArtistNamesJson = albumArtistNames.length > 1 ? serializeArtistNames(albumArtistNames) : null
-    const existing = db.get<{ id?: unknown; artwork_hash?: unknown }>(
-      'SELECT id, artwork_hash FROM tracks WHERE path = ? LIMIT 1',
-      [track.path]
-    )
-    const exists = Boolean(existing)
-    const artworkHash = track.artwork_hash
-      ?? (
-        options.preserveExistingArtwork && typeof existing?.artwork_hash === 'string'
-          ? existing.artwork_hash
-          : null
-      )
-
-    if (exists) {
-      db.run(
-        `UPDATE tracks
-         SET title = ?,
-             artist = ?,
-             artist_names_json = ?,
-             album = ?,
-             album_artist = ?,
-             album_artist_names_json = ?,
-             duration = ?,
-             track_number = ?,
-             track_total = ?,
-             disc_number = ?,
-             disc_total = ?,
-             year = ?,
-             genre = ?,
-             genre_names_json = ?,
-             artwork_hash = ?,
-             format = ?,
-             sample_rate = ?,
-             bit_depth = ?,
-             bitrate = ?,
-             channels = ?,
-             codec = ?,
-             codec_profile = ?,
-             is_atmos_joc = ?,
-             replaygain_track_gain_db = ?,
-             replaygain_album_gain_db = ?,
-             bpm = ?,
-             musical_key = ?,
-             source_type = 'subsonic',
-             source_id = ?,
-             source_track_id = ?,
-             source_path = ?,
-             is_available = 1,
-             availability_reason = NULL,
-             file_created_at = NULL,
-             modified_at = ?
-         WHERE path = ?`,
-        [
-          track.title,
-          track.artist,
-          artistNamesJson,
-          track.album,
-          track.album_artist,
-          albumArtistNamesJson,
-          track.duration,
-          track.track_number,
-          track.track_total ?? null,
-          track.disc_number,
-          track.disc_total ?? null,
-          track.year,
-          genreFields.genre,
-          genreFields.genreNamesJson,
-          artworkHash,
-          track.format,
-          track.sample_rate,
-          track.bit_depth,
-          track.bitrate,
-          track.channels,
-          track.codec,
-          track.codec_profile,
-          track.is_atmos_joc,
-          track.replaygain_track_gain_db,
-          track.replaygain_album_gain_db,
-          track.bpm,
-          track.musical_key,
-          sourceId,
-          track.source_track_id,
-          track.source_path,
-          now,
-          track.path
-        ]
-      )
-      updated += 1
-      continue
-    }
-
-    db.run(
-      `INSERT INTO tracks (
-        path,
-        title,
-        artist,
-        artist_names_json,
-        album,
-        album_artist,
-        album_artist_names_json,
-        duration,
-        track_number,
-        track_total,
-        disc_number,
-        disc_total,
-        year,
-        genre,
-        genre_names_json,
-        artwork_hash,
-        format,
-        sample_rate,
-        bit_depth,
-        bitrate,
-        channels,
-        codec,
-        codec_profile,
-        is_atmos_joc,
-        replaygain_track_gain_db,
-        replaygain_album_gain_db,
-        bpm,
-        musical_key,
-        source_type,
-        source_id,
-        source_track_id,
-        source_path,
-        is_available,
-        availability_reason,
-        sync_session_key,
-        added_at,
-        modified_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'subsonic', ?, ?, ?, 1, NULL, ?, ?, ?)`,
-      [
-        track.path,
-        track.title,
-        track.artist,
-        artistNamesJson,
-        track.album,
-        track.album_artist,
-        albumArtistNamesJson,
-        track.duration,
-        track.track_number,
-        track.track_total ?? null,
-        track.disc_number,
-        track.disc_total ?? null,
-        track.year,
-        genreFields.genre,
-        genreFields.genreNamesJson,
-        artworkHash,
-        track.format,
-        track.sample_rate,
-        track.bit_depth,
-        track.bitrate,
-        track.channels,
-        track.codec,
-        track.codec_profile,
-        track.is_atmos_joc,
-        track.replaygain_track_gain_db,
-        track.replaygain_album_gain_db,
-        track.bpm,
-        track.musical_key,
-        sourceId,
-        track.source_track_id,
-        track.source_path,
-        options.syncSessionKey ?? null,
-        now,
-        now
-      ]
-    )
-    inserted += 1
-  }
-
-  if (inserted > 0 || updated > 0) {
-    rebuildDerivedLibraryState()
-  }
-  if (options.persist !== false && (inserted > 0 || updated > 0)) {
-    await saveDatabase()
-  }
-
-  return { inserted, updated }
+  return upsertRemoteCatalogTracks('subsonic', sourceId, tracks, options)
 }
 
 export async function markMissingSubsonicTracksUnavailable(
@@ -4459,6 +4322,7 @@ export async function markMissingSubsonicTracksUnavailable(
         modified_at = ?
     WHERE source_type = 'subsonic'
       AND source_id = ?
+      AND (is_available IS NOT 0 OR availability_reason IS NOT 'missing_upstream')
   `
 
   if (seenSourceTrackIds.size > 0) {
@@ -4764,197 +4628,88 @@ export function upsertPlexTracks(sourceId: number, tracks: JellyfinTrackUpsertIn
 }
 
 async function upsertRemoteCatalogTracks(
-  provider: 'jellyfin' | 'plex',
+  provider: 'subsonic' | 'jellyfin' | 'plex',
   sourceId: number,
-  tracks: JellyfinTrackUpsertInput[],
-  options: { persist?: boolean; syncSessionKey?: string | null } = {}
+  tracks: SubsonicTrackUpsertInput[],
+  options: { persist?: boolean; syncSessionKey?: string | null; preserveExistingArtwork?: boolean } = {}
 ): Promise<{ inserted: number; updated: number }> {
-  if (!db || tracks.length === 0) {
-    return { inserted: 0, updated: 0 }
-  }
-
-  const sourceExists = Boolean(db.get(`SELECT 1 FROM ${provider}_sources WHERE id = ? LIMIT 1`, [sourceId]))
-  if (!sourceExists) {
+  if (!db || tracks.length === 0) return { inserted: 0, updated: 0 }
+  const database = db
+  if (!database.get(`SELECT 1 FROM ${provider}_sources WHERE id = ? LIMIT 1`, [sourceId])) {
     return { inserted: 0, updated: 0 }
   }
 
   let inserted = 0
   let updated = 0
   const now = Date.now()
-
-  for (const track of tracks) {
+  await writeRemoteCatalogBatches(provider, sourceId, tracks, (track) => {
+    // Compare stored server values, not effective values with the user's overrides.
+    // Read inside the batch so earlier yields cannot leave us with stale row state.
+    const existing = database.get<Record<string, unknown>>('SELECT * FROM tracks WHERE path = ?', [track.path])
     const genreFields = resolveTrackGenreStorageFields(track)
     const artistNames = normalizeArtistNames(track.artist_names)
     const albumArtistNames = normalizeArtistNames(track.album_artist_names)
-    const artistNamesJson = artistNames.length > 1 ? serializeArtistNames(artistNames) : null
-    const albumArtistNamesJson = albumArtistNames.length > 1 ? serializeArtistNames(albumArtistNames) : null
-    const exists = Boolean(db.get('SELECT id FROM tracks WHERE path = ? LIMIT 1', [track.path]))
-
-    if (exists) {
-      db.run(
-        `UPDATE tracks
-         SET title = ?,
-             artist = ?,
-             artist_names_json = ?,
-             album = ?,
-             album_artist = ?,
-             album_artist_names_json = ?,
-             duration = ?,
-             track_number = ?,
-             track_total = ?,
-             disc_number = ?,
-             disc_total = ?,
-             year = ?,
-             genre = ?,
-             genre_names_json = ?,
-             artwork_hash = ${provider === 'plex' ? 'COALESCE(?, artwork_hash)' : '?'},
-             format = ?,
-             sample_rate = ?,
-             bit_depth = ?,
-             bitrate = ?,
-             channels = ?,
-             codec = ?,
-             codec_profile = ?,
-             is_atmos_joc = ?,
-             replaygain_track_gain_db = ?,
-             replaygain_album_gain_db = ?,
-             bpm = ?,
-             musical_key = ?,
-             source_type = '${provider}',
-             source_id = ?,
-             source_track_id = ?,
-             source_path = ?,
-             is_available = 1,
-             availability_reason = NULL,
-             file_created_at = NULL,
-             modified_at = ?
-         WHERE path = ?`,
-        [
-          track.title,
-          track.artist,
-          artistNamesJson,
-          track.album,
-          track.album_artist,
-          albumArtistNamesJson,
-          track.duration,
-          track.track_number,
-          track.track_total ?? null,
-          track.disc_number,
-          track.disc_total ?? null,
-          track.year,
-          genreFields.genre,
-          genreFields.genreNamesJson,
-          track.artwork_hash,
-          track.format,
-          track.sample_rate,
-          track.bit_depth,
-          track.bitrate,
-          track.channels,
-          track.codec,
-          track.codec_profile,
-          track.is_atmos_joc,
-          track.replaygain_track_gain_db,
-          track.replaygain_album_gain_db,
-          track.bpm,
-          track.musical_key,
-          sourceId,
-          track.source_track_id,
-          track.source_path,
-          now,
-          track.path
-        ]
-      )
-      updated += 1
-      continue
+    const preserveArtwork = provider === 'plex' || (provider === 'subsonic' && options.preserveExistingArtwork)
+    // This same field set drives comparison and writes, including availability.
+    // Playback history, local analysis, overrides and the original import session
+    // are deliberately outside the server-owned metadata update.
+    const fields = {
+      title: track.title,
+      artist: track.artist,
+      artist_names_json: artistNames.length > 1 ? serializeArtistNames(artistNames) : null,
+      album: track.album,
+      album_artist: track.album_artist,
+      album_artist_names_json: albumArtistNames.length > 1 ? serializeArtistNames(albumArtistNames) : null,
+      duration: track.duration,
+      track_number: track.track_number,
+      track_total: track.track_total ?? null,
+      disc_number: track.disc_number,
+      disc_total: track.disc_total ?? null,
+      year: track.year,
+      genre: genreFields.genre,
+      genre_names_json: genreFields.genreNamesJson,
+      artwork_hash: track.artwork_hash ?? (preserveArtwork ? existing?.artwork_hash ?? null : null),
+      format: track.format,
+      sample_rate: track.sample_rate,
+      bit_depth: track.bit_depth,
+      bitrate: track.bitrate,
+      channels: track.channels,
+      codec: track.codec,
+      codec_profile: track.codec_profile,
+      is_atmos_joc: track.is_atmos_joc,
+      replaygain_track_gain_db: track.replaygain_track_gain_db,
+      replaygain_album_gain_db: track.replaygain_album_gain_db,
+      bpm: track.bpm,
+      musical_key: track.musical_key,
+      source_type: provider,
+      source_id: sourceId,
+      source_track_id: track.source_track_id,
+      source_path: track.source_path,
+      is_available: 1,
+      availability_reason: null,
+      file_created_at: null
     }
+    const entries = Object.entries(fields).map(([key, value]) => [key, value ?? null] as const)
+    if (existing && entries.every(([key, value]) => existing[key] === value)) return
 
-    db.run(
-      `INSERT INTO tracks (
-        path,
-        title,
-        artist,
-        artist_names_json,
-        album,
-        album_artist,
-        album_artist_names_json,
-        duration,
-        track_number,
-        track_total,
-        disc_number,
-        disc_total,
-        year,
-        genre,
-        genre_names_json,
-        artwork_hash,
-        format,
-        sample_rate,
-        bit_depth,
-        bitrate,
-        channels,
-        codec,
-        codec_profile,
-        is_atmos_joc,
-        replaygain_track_gain_db,
-        replaygain_album_gain_db,
-        bpm,
-        musical_key,
-        source_type,
-        source_id,
-        source_track_id,
-        source_path,
-        is_available,
-        availability_reason,
-        sync_session_key,
-        added_at,
-        modified_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '${provider}', ?, ?, ?, 1, NULL, ?, ?, ?)`,
-      [
-        track.path,
-        track.title,
-        track.artist,
-        artistNamesJson,
-        track.album,
-        track.album_artist,
-        albumArtistNamesJson,
-        track.duration,
-        track.track_number,
-        track.track_total ?? null,
-        track.disc_number,
-        track.disc_total ?? null,
-        track.year,
-        genreFields.genre,
-        genreFields.genreNamesJson,
-        track.artwork_hash,
-        track.format,
-        track.sample_rate,
-        track.bit_depth,
-        track.bitrate,
-        track.channels,
-        track.codec,
-        track.codec_profile,
-        track.is_atmos_joc,
-        track.replaygain_track_gain_db,
-        track.replaygain_album_gain_db,
-        track.bpm,
-        track.musical_key,
-        sourceId,
-        track.source_track_id,
-        track.source_path,
-        options.syncSessionKey ?? null,
-        now,
-        now
-      ]
-    )
-    inserted += 1
-  }
+    const columns = entries.map(([key]) => key)
+    const values = entries.map(([, value]) => value)
+    if (existing) {
+      database.run(`UPDATE tracks SET ${columns.map(key => `${key} = ?`).join(', ')}, modified_at = ? WHERE path = ?`,
+        [...values, now, track.path])
+      updated += 1
+    } else {
+      database.run(`INSERT INTO tracks (path, ${columns.join(', ')}, sync_session_key, added_at, modified_at)
+        VALUES (?, ${columns.map(() => '?').join(', ')}, ?, ?, ?)`,
+      [track.path, ...values, options.syncSessionKey ?? null, now, now])
+      inserted += 1
+    }
+  })
 
   if (inserted > 0 || updated > 0) {
     rebuildDerivedLibraryState()
+    if (options.persist !== false) await saveDatabase()
   }
-  if (options.persist !== false && (inserted > 0 || updated > 0)) {
-    await saveDatabase()
-  }
-
   return { inserted, updated }
 }
 
@@ -4973,6 +4728,7 @@ export async function markMissingJellyfinTracksUnavailable(
         modified_at = ?
     WHERE source_type = 'jellyfin'
       AND source_id = ?
+      AND (is_available IS NOT 0 OR availability_reason IS NOT 'missing_upstream')
   `
 
   if (seenSourceTrackIds.size > 0) {

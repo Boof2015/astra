@@ -4,7 +4,9 @@ import {
   buildSubsonicArtworkHash,
   buildSubsonicStreamUrl,
   mapSongToCatalogTrack,
-  parseSubsonicArtworkHash
+  parseSubsonicArtworkHash,
+  syncSubsonicCatalog,
+  type SubsonicCatalogSyncProgress
 } from './subsonic.ts'
 
 test('OpenSubsonic ReplayGain imports finite server values without inventing gains for missing tags', () => {
@@ -53,4 +55,48 @@ test('OpenSubsonic structured artist arrays remain distinct catalog credits', ()
   assert.ok(track)
   assert.deepEqual(track.artist_names, ['Earth, Wind & Fire', 'The Emotions'])
   assert.deepEqual(track.album_artist_names, ['Curator', 'Orchestra'])
+})
+
+test('large catalog progress counts unique tracks rather than albums and yields while mapping', async t => {
+  const trackCount = 11_000
+  const albumCount = 2_980
+  const progress: SubsonicCatalogSyncProgress[] = []
+  let yieldedDuringTracks = false
+  let pulse: ReturnType<typeof setImmediate> | undefined
+  t.after(() => { if (pulse) clearImmediate(pulse) })
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
+    const url = new URL(String(input))
+    let payload: Record<string, unknown>
+    if (url.pathname.endsWith('/getArtists.view')) {
+      payload = { artists: { index: [{ artist: [{ id: 'artist' }] }] } }
+    } else if (url.pathname.endsWith('/getArtist.view')) {
+      payload = { artist: { album: Array.from({ length: albumCount }, (_, i) => ({ id: String(i) })) } }
+    } else {
+      assert.ok(url.pathname.endsWith('/getAlbum.view'))
+      const album = Number(url.searchParams.get('id'))
+      const start = Math.floor(album * trackCount / albumCount)
+      const end = Math.floor((album + 1) * trackCount / albumCount)
+      const song = Array.from({ length: end - start }, (_, i) => ({
+        id: String(start + i), title: `Track ${start + i}`, artist: 'Artist', album: `Album ${album}`
+      }))
+      // Repeated IDs across albums must not inflate either the import or its progress.
+      if (album > 0) song.push({ id: '0', title: 'Track 0', artist: 'Artist', album: 'Album 0' })
+      payload = { album: { song } }
+    }
+    return new Response(JSON.stringify({ 'subsonic-response': { status: 'ok', ...payload } }))
+  })
+  const result = await syncSubsonicCatalog(1, {
+    baseUrl: 'https://music.example.test', username: 'test', password: 'test'
+  }, { retries: 0, onProgress: value => {
+    if (value.phase !== 'tracks') return
+    progress.push(value)
+    if (value.current === 0) pulse = setImmediate(() => { yieldedDuringTracks = true })
+  } })
+  assert.equal(result.tracksScanned, trackCount)
+  assert.equal(result.tracks.length, trackCount)
+  assert.equal(result.albumsScanned, albumCount)
+  assert.equal(new Set(result.tracks.map(track => track.source_track_id)).size, trackCount)
+  assert.ok(progress.every(value => value.total === trackCount))
+  assert.equal(progress.at(-1)?.current, trackCount)
+  assert.ok(yieldedDuringTracks, 'catalog mapping must let the main process handle other work')
 })

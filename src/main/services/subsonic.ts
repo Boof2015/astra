@@ -769,30 +769,32 @@ export async function syncSubsonicCatalog(
     }
   )
 
-  const byTrackId = new Map<string, SubsonicCatalogTrack>()
+  // Albums can share tracks. Count unique songs here, not the number of albums
+  // visited, so the tracks phase agrees with what will actually be imported.
+  const songsById = new Map<string, { song: SubsonicSong; coverArtId: string | null }>()
+  for (const album of albumSongLists) {
+    for (const song of album.songs) {
+      const id = toTrimmedText(song.id)
+      if (id) songsById.set(id, { song, coverArtId: album.coverArtId })
+    }
+  }
+  const tracks: SubsonicCatalogTrack[] = []
   options.onProgress?.({
     phase: 'tracks',
     current: 0,
-    total: albumSongLists.length,
+    total: songsById.size,
     detail: null
   })
-  let trackAlbumProcessed = 0
-  for (const albumSongs of albumSongLists) {
-    for (const song of albumSongs.songs) {
-      const mapped = mapSongToCatalogTrack(sourceId, song, albumSongs.coverArtId)
-      if (!mapped) continue
-      byTrackId.set(mapped.source_track_id, mapped)
+  for (const { song, coverArtId } of songsById.values()) {
+    options.signal?.throwIfAborted()
+    const mapped = mapSongToCatalogTrack(sourceId, song, coverArtId)
+    if (mapped) tracks.push(mapped)
+    if (tracks.length % 200 === 0 || tracks.length === songsById.size) {
+      options.onProgress?.({ phase: 'tracks', current: tracks.length, total: songsById.size, detail: null })
+      if (tracks.length < songsById.size) await new Promise<void>(resolve => setImmediate(resolve))
     }
-    trackAlbumProcessed += 1
-    options.onProgress?.({
-      phase: 'tracks',
-      current: trackAlbumProcessed,
-      total: albumSongLists.length,
-      detail: null
-    })
   }
 
-  const tracks = Array.from(byTrackId.values())
   return {
     artistsScanned: artistRefs.length,
     albumsScanned: uniqueAlbumIds.length,
