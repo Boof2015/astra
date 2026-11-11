@@ -803,6 +803,48 @@ function invalidatePreparedSelections(): void {
   selectionRequestGeneration += 1
 }
 
+/**
+ * A reload reads the whole library through the main process, which is busy for most of a
+ * second per reload on a large library. Several things ask for one at the same moment
+ * (startup, a sync finishing, a backfill), so only one runs at a time. Callers that ask
+ * while one is running share a single reload that starts after it. That one still
+ * reflects whatever changed before they asked.
+ */
+function coalesceLibraryLoads(
+  load: (diagnosticsContexts: LibraryReloadDiagnosticsContext[]) => Promise<void>
+): LibraryStore['loadLibrary'] {
+  let active: Promise<void> | null = null
+  let queued: { contexts: LibraryReloadDiagnosticsContext[]; promise: Promise<void> } | null = null
+  const start = (contexts: LibraryReloadDiagnosticsContext[]): Promise<void> => {
+    const run = load(contexts).finally(() => {
+      if (active === run) active = null
+    })
+    active = run
+    return run
+  }
+
+  return (diagnosticsContext) => {
+    const contexts = diagnosticsContext
+      ? (Array.isArray(diagnosticsContext) ? diagnosticsContext : [diagnosticsContext])
+      : []
+    if (queued) {
+      invalidatePreparedSelections()
+      queued.contexts.push(...contexts)
+      return queued.promise
+    }
+    if (!active) return start(contexts)
+
+    invalidatePreparedSelections()
+    const entry = { contexts: [...contexts], promise: Promise.resolve() }
+    entry.promise = active.catch(() => {}).then(() => {
+      queued = null
+      return start(entry.contexts)
+    })
+    queued = entry
+    return entry.promise
+  }
+}
+
 function loadTracklistBpmKeyVisibilitySetting(): boolean {
   try {
     return localStorage.getItem(TRACKLIST_BPM_KEY_VISIBILITY_STORAGE_KEY) === '1'
@@ -1151,11 +1193,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   folderViewScrollTop: 0,
 
   // Load entire library
-  loadLibrary: async (diagnosticsContext) => {
+  loadLibrary: coalesceLibraryLoads(async (diagnosticsContexts) => {
     invalidatePreparedSelections()
-    const diagnosticsContexts = diagnosticsContext
-      ? (Array.isArray(diagnosticsContext) ? diagnosticsContext : [diagnosticsContext])
-      : []
     const diagnosticsEnabled = diagnosticsContexts.length > 0
     const reloadStartedAt = performance.now()
     const stepDurationMs: Partial<Record<LibraryReloadStep, number>> = {}
@@ -1298,7 +1337,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         })
       }
     }
-  },
+  }),
 
   // Load tracks
   loadTracks: async () => {

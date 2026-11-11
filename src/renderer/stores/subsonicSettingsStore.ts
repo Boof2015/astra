@@ -43,14 +43,6 @@ export const useSubsonicSettingsStore = create<SubsonicSettingsStore>((set, get)
     }
   }
 
-  const applySources = async (sources: SubsonicSource[]): Promise<void> => {
-    set({
-      sources,
-      errorMessage: ''
-    })
-    await refreshLibraryViews()
-  }
-
   const ensureSubscription = () => {
     if (statusUnsubscribe) return
     statusUnsubscribe = window.electronAPI.subsonic.onStatus((status) => {
@@ -58,14 +50,19 @@ export const useSubsonicSettingsStore = create<SubsonicSettingsStore>((set, get)
     })
   }
 
-  const fetchAll = async (): Promise<void> => {
+  const fetchSources = async (): Promise<void> => {
     const [sources, status] = await Promise.all([
       window.electronAPI.subsonic.listSources(),
       window.electronAPI.subsonic.getStatus()
     ])
     ensureSubscription()
-    set({ status })
-    await applySources(sources)
+    set({ status, sources, errorMessage: '' })
+  }
+
+  // After a server is added, changed, removed or synced, the library shows different tracks.
+  const fetchAll = async (): Promise<void> => {
+    await fetchSources()
+    await refreshLibraryViews()
   }
 
   return {
@@ -79,7 +76,9 @@ export const useSubsonicSettingsStore = create<SubsonicSettingsStore>((set, get)
       if (get().isInitialized) return
       set({ isLoading: true })
       try {
-        await fetchAll()
+        // Only the server list. The app loads the library itself at startup, and
+        // nothing about the servers has changed yet.
+        await fetchSources()
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
       } finally {

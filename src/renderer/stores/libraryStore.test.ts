@@ -538,6 +538,46 @@ test('explicit library reload supersedes shared pages and publishes fresh metada
   assert.equal(calls, 3, 'a reload must refresh even a completed retained list')
 })
 
+test('library reloads requested while one is running share a single reload after it', async (t) => {
+  prepareFullTrackLoadTest(t)
+  const firstAlbums = deferred<unknown[]>()
+  let requests = 0
+  let album = 'Before'
+  installMockLibraryApi({ getAlbums: () => ++requests === 1 ? firstAlbums.promise : Promise.resolve([{ album }]) })
+  const store = useLibraryStore.getState()
+  const running = store.loadLibrary()
+  await Promise.resolve()
+  // Startup, a sync finishing and a backfill can all ask within the same moment.
+  const during = [store.loadLibrary(), store.loadLibrary(), store.loadLibrary()]
+  album = 'After'
+  await Promise.resolve()
+  assert.equal(requests, 1, 'only one reload reads the library at a time')
+  firstAlbums.resolve([{ album: 'Before' }])
+  await Promise.all([running, ...during])
+  assert.equal(requests, 2, 'the three later requests share one reload')
+  assert.deepEqual(useLibraryStore.getState().albums, [{ album: 'After' }], 'and it reflects what changed before they asked')
+  assert.equal(useLibraryStore.getState().isLoading, false)
+
+  await store.loadLibrary()
+  assert.equal(requests, 3, 'a request made once nothing is running reloads again')
+})
+
+test('a failed library reload does not block the one queued behind it', async (t) => {
+  prepareFullTrackLoadTest(t)
+  const firstAlbums = deferred<unknown[]>()
+  let requests = 0
+  installMockLibraryApi({ getAlbums: () => ++requests === 1 ? firstAlbums.promise : Promise.resolve([]) })
+  const store = useLibraryStore.getState()
+  const failing = store.loadLibrary()
+  await Promise.resolve()
+  const queued = store.loadLibrary()
+  firstAlbums.reject(new Error('main process unavailable'))
+  await assert.rejects(failing, /main process unavailable/)
+  await queued
+  assert.equal(requests, 2)
+  assert.equal(useLibraryStore.getState().isLoading, false)
+})
+
 test('releasing all consumers cancels shared pages and permits a new request', async (t) => {
   prepareFullTrackLoadTest(t)
   const stalePage = deferred<TrackPage>()
