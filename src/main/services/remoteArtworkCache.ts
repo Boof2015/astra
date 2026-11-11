@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 export const REMOTE_ARTWORK_REFRESH_MS = 24 * 60 * 60_000
@@ -54,8 +54,25 @@ export class RemoteArtworkCache {
     return entry
   }
 
+  /** The key of a server reference, which is also the name of its record file. */
+  keyFor(scope: readonly (string | number)[], id: string): string {
+    return createHash('sha256').update(JSON.stringify([scope, id])).digest('hex')
+  }
+
+  /** Keys that have a saved record. A catalog sync holds one reference per track on some
+   * servers; this lets it skip the ones never loaded without a file read for each. */
+  async knownKeys(): Promise<Set<string>> {
+    const keys = new Set(this.entries.keys())
+    try {
+      for (const name of await readdir(this.directory)) {
+        if (name.endsWith('.json')) keys.add(name.slice(0, -'.json'.length))
+      }
+    } catch { /* No records saved yet. */ }
+    return keys
+  }
+
   async resolve(request: RemoteArtworkRequest): Promise<string | null> {
-    const key = createHash('sha256').update(JSON.stringify([request.scope, request.id])).digest('hex')
+    const key = this.keyFor(request.scope, request.id)
     const cached = await this.read(key)
     const now = (this.options.now ?? Date.now)()
     const revision = request.revision ?? null

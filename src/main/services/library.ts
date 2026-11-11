@@ -935,6 +935,12 @@ function createLibraryScanIssue(phase: LibraryScanIssuePhase, path: string, erro
   }
 }
 
+interface LibraryWriteOptions {
+  affectsLibrary?: boolean
+  /** For track columns the snapshot never reads (play counts, badges). Other caches still clear. */
+  keepsTrackSnapshot?: boolean
+}
+
 class LibrarySqliteDatabase {
   private readonly database: BetterSqliteDatabase
 
@@ -946,20 +952,32 @@ class LibrarySqliteDatabase {
     return this.database.inTransaction
   }
 
-  run(sql: string, params: unknown[] = [], options: { affectsLibrary?: boolean } = {}): { changes: number; lastInsertRowid: number | bigint } {
+  run(sql: string, params: unknown[] = [], options: LibraryWriteOptions = {}): { changes: number; lastInsertRowid: number | bigint } {
     if (params.length > 0) {
       const result = this.database.prepare(sql).run(...params)
       // A no-op availability check must not discard the full-library caches.
       if (options.affectsLibrary !== false && (result.changes > 0 || SNAPSHOT_ALWAYS_INVALIDATE_PATTERN.test(sql))) {
-        noteLibrarySqlMutation(sql)
+        noteLibrarySqlMutation(sql, options.keepsTrackSnapshot === true)
       }
       return result
     }
 
     // exec can contain several statements; stay conservative if a later one fails.
-    if (options.affectsLibrary !== false) noteLibrarySqlMutation(sql)
+    if (options.affectsLibrary !== false) noteLibrarySqlMutation(sql, options.keepsTrackSnapshot === true)
     this.database.exec(sql)
     return { changes: 0, lastInsertRowid: 0 }
+  }
+
+  /** run() for a loop of writes: the statement is compiled once, with the same cache bookkeeping. */
+  prepareRun(sql: string, options: LibraryWriteOptions = {}): (params: unknown[]) => { changes: number; lastInsertRowid: number | bigint } {
+    const statement = this.database.prepare(sql)
+    return (params) => {
+      const result = statement.run(...params)
+      if (options.affectsLibrary !== false && (result.changes > 0 || SNAPSHOT_ALWAYS_INVALIDATE_PATTERN.test(sql))) {
+        noteLibrarySqlMutation(sql, options.keepsTrackSnapshot === true)
+      }
+      return result
+    }
   }
 
   exec(sql: string): void {
@@ -1450,21 +1468,23 @@ function persistDerivedAlbumIdentities(
   if (ownsTransaction) beginLibraryWriteTransaction()
 
   try {
+    // One row per track in the library, so compile the statement once.
+    const upsertIdentity = db.prepareRun(`
+      INSERT INTO track_album_identities (
+        track_path, album_identity_key, album_key, grouping_mode, display_artist
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(track_path) DO UPDATE SET
+        album_identity_key = excluded.album_identity_key,
+        album_key = excluded.album_key,
+        grouping_mode = excluded.grouping_mode,
+        display_artist = excluded.display_artist
+      WHERE album_identity_key IS NOT excluded.album_identity_key
+        OR album_key IS NOT excluded.album_key
+        OR grouping_mode IS NOT excluded.grouping_mode
+        OR display_artist IS NOT excluded.display_artist
+    `)
     for (const identity of identities) {
-      db.run(`
-        INSERT INTO track_album_identities (
-          track_path, album_identity_key, album_key, grouping_mode, display_artist
-        ) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(track_path) DO UPDATE SET
-          album_identity_key = excluded.album_identity_key,
-          album_key = excluded.album_key,
-          grouping_mode = excluded.grouping_mode,
-          display_artist = excluded.display_artist
-        WHERE album_identity_key IS NOT excluded.album_identity_key
-          OR album_key IS NOT excluded.album_key
-          OR grouping_mode IS NOT excluded.grouping_mode
-          OR display_artist IS NOT excluded.display_artist
-      `, [
+      upsertIdentity([
         identity.trackPath,
         identity.albumIdentityKey,
         identity.albumKey,
@@ -1509,20 +1529,26 @@ function persistDerivedAlbumIdentities(
           const key = keysByPath.get(track.path)
           if (key) keys.add(key)
         }
-        const reconciledSummary: LatestLibrarySyncSummary = {
-          ...latestSummary,
-          newAlbumIdentityKeys: Array.from(keys).sort((a, b) => a.localeCompare(b))
+        const newAlbumIdentityKeys = Array.from(keys).sort((a, b) => a.localeCompare(b))
+        // The list holds every new album after a first import (hundreds of KB), so only
+        // write it back when it changed.
+        const previous = latestSummary.newAlbumIdentityKeys
+        if (previous.length !== newAlbumIdentityKeys.length
+          || previous.some((key, index) => key !== newAlbumIdentityKeys[index])) {
+          const reconciledSummary: LatestLibrarySyncSummary = { ...latestSummary, newAlbumIdentityKeys }
+          db.run(
+            `UPDATE app_meta SET value = ?, updated_at = ? WHERE key = ?`,
+            [JSON.stringify(reconciledSummary), Date.now(), LATEST_LIBRARY_SYNC_SUMMARY_META_KEY]
+          )
         }
-        db.run(
-          `UPDATE app_meta SET value = ?, updated_at = ? WHERE key = ?`,
-          [JSON.stringify(reconciledSummary), Date.now(), LATEST_LIBRARY_SYNC_SUMMARY_META_KEY]
-        )
       }
-      db.run(`
-        INSERT INTO app_meta (key, value, updated_at)
-        VALUES (?, ?, ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-      `, [LIBRARY_IDENTITY_ALGORITHM_META_KEY, LIBRARY_IDENTITY_ALGORITHM_VERSION, Date.now()])
+      if (getAppMeta(LIBRARY_IDENTITY_ALGORITHM_META_KEY) !== LIBRARY_IDENTITY_ALGORITHM_VERSION) {
+        db.run(`
+          INSERT INTO app_meta (key, value, updated_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        `, [LIBRARY_IDENTITY_ALGORITHM_META_KEY, LIBRARY_IDENTITY_ALGORITHM_VERSION, Date.now()])
+      }
     }
 
     if (ownsTransaction) commitLibraryWriteTransaction()
@@ -1597,13 +1623,29 @@ const SNAPSHOT_ALWAYS_INVALIDATE_PATTERN = /^\s*(?:CREATE|DROP|ALTER|ROLLBACK)\b
 const SNAPSHOT_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|subsonic_sources|jellyfin_sources|plex_sources)\b/i
 const HOME_RELEASE_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|favorites|subsonic_sources|jellyfin_sources|plex_sources)\b/i
 
+// A rebuild blocks the main thread for about a second on a large library. A remote
+// import commits in small batches and yields between them, so without this every
+// library read landing between two batches paid for a full rebuild. While an import
+// runs, reads keep the snapshot from before it, and one rebuild follows the import.
+let snapshotRebuildDeferrals = 0
+let heldTrackSnapshot: LibraryTrackSnapshot | null = null
+let heldStoredTrackSnapshot: LibraryTrackSnapshot | null = null
+let pendingSnapshotRebuildTimer: ReturnType<typeof setTimeout> | null = null
+let snapshotRebuildCount = 0
+const PENDING_SNAPSHOT_REBUILD_DELAY_MS = 2000
+
+/** How many times the library snapshot has been rebuilt, for sync timing. */
+export function getLibrarySnapshotRebuildCount(): number {
+  return snapshotRebuildCount
+}
+
 function invalidateLibraryTrackSnapshot(): void {
   libraryWriteGeneration += 1
   trackSnapshot = null
   storedTrackSnapshot = null
 }
 
-function noteLibrarySqlMutation(sql: string): void {
+function noteLibrarySqlMutation(sql: string, keepsTrackSnapshot = false): void {
   if (SNAPSHOT_ALWAYS_INVALIDATE_PATTERN.test(sql)
     || (SNAPSHOT_WRITE_STATEMENT_PATTERN.test(sql) && HOME_RELEASE_SOURCE_TABLE_PATTERN.test(sql))) {
     homeReleaseSummaryCache = null
@@ -1612,29 +1654,67 @@ function noteLibrarySqlMutation(sql: string): void {
     invalidateLibraryTrackSnapshot()
     return
   }
-  if (SNAPSHOT_WRITE_STATEMENT_PATTERN.test(sql) && SNAPSHOT_SOURCE_TABLE_PATTERN.test(sql)) {
+  if (!keepsTrackSnapshot && SNAPSHOT_WRITE_STATEMENT_PATTERN.test(sql) && SNAPSHOT_SOURCE_TABLE_PATTERN.test(sql)) {
     invalidateLibraryTrackSnapshot()
   }
 }
 
+function beginSnapshotRebuildDeferral(): void {
+  if (snapshotRebuildDeferrals === 0) {
+    heldStoredTrackSnapshot = getLibraryTrackSnapshot(true)
+    const visible = getLibraryTrackSnapshot(false)
+    heldTrackSnapshot = visible === heldStoredTrackSnapshot ? null : visible
+  }
+  snapshotRebuildDeferrals += 1
+}
+
+function endSnapshotRebuildDeferral(): void {
+  snapshotRebuildDeferrals = Math.max(0, snapshotRebuildDeferrals - 1)
+  if (snapshotRebuildDeferrals === 0) {
+    heldTrackSnapshot = null
+    heldStoredTrackSnapshot = null
+  }
+}
+
+/** For writes that arrive one at a time in a burst (covers loading): they share one rebuild once they stop. */
+function scheduleDerivedLibraryStateRebuild(): void {
+  if (pendingSnapshotRebuildTimer) clearTimeout(pendingSnapshotRebuildTimer)
+  pendingSnapshotRebuildTimer = setTimeout(() => {
+    pendingSnapshotRebuildTimer = null
+    if (!db) return
+    // An import rebuilds when it ends, but only if it wrote something, so keep this one queued.
+    if (snapshotRebuildDeferrals > 0 || db.inTransaction) {
+      scheduleDerivedLibraryStateRebuild()
+      return
+    }
+    rebuildDerivedLibraryState()
+  }, PENDING_SNAPSHOT_REBUILD_DELAY_MS)
+  pendingSnapshotRebuildTimer.unref?.()
+}
+
 // The main process is single threaded and all library reads/writes are
 // synchronous, so a rebuild can never interleave with a write.
-function getLibraryTrackSnapshot(includeDisabledSources = false): LibraryTrackSnapshot | null {
+function getLibraryTrackSnapshot(includeDisabledSources = false, force = false): LibraryTrackSnapshot | null {
   if (!db) return null
   const cached = includeDisabledSources ? storedTrackSnapshot : trackSnapshot
   if (cached && cached.generation === libraryWriteGeneration) {
     return cached
+  }
+  if (snapshotRebuildDeferrals > 0 && !force) {
+    const held = includeDisabledSources ? heldStoredTrackSnapshot : heldTrackSnapshot
+    if (held) return held
   }
   // Share the usual snapshot when nothing is hidden, without retaining two
   // complete identity maps for the common case.
   if (!includeDisabledSources && !db.get(`SELECT 1 FROM subsonic_sources WHERE enabled = 0
     UNION ALL SELECT 1 FROM jellyfin_sources WHERE enabled = 0
     UNION ALL SELECT 1 FROM plex_sources WHERE enabled = 0 AND deleted = 0 LIMIT 1`)) {
-    trackSnapshot = getLibraryTrackSnapshot(true)
+    trackSnapshot = getLibraryTrackSnapshot(true, force)
     return trackSnapshot
   }
 
   return measureLibraryQuery('rebuildTrackSnapshot', () => {
+    snapshotRebuildCount += 1
     const rows = readEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
       ${includeDisabledSources ? EFFECTIVE_TRACK_FROM_CLAUSE : VISIBLE_TRACK_FROM_CLAUSE}
@@ -1679,14 +1759,27 @@ function getLibraryTrackSnapshot(includeDisabledSources = false): LibraryTrackSn
     }
     if (includeDisabledSources) storedTrackSnapshot = snapshot
     else trackSnapshot = snapshot
+    if (snapshotRebuildDeferrals > 0) {
+      // A forced rebuild during an import becomes what reads see until it ends.
+      if (includeDisabledSources) {
+        heldStoredTrackSnapshot = snapshot
+        heldTrackSnapshot = null
+      } else {
+        heldTrackSnapshot = snapshot
+      }
+    }
     return snapshot
   })
 }
 
 function rebuildDerivedLibraryState(): void {
   if (!db) return
+  if (pendingSnapshotRebuildTimer) {
+    clearTimeout(pendingSnapshotRebuildTimer)
+    pendingSnapshotRebuildTimer = null
+  }
   invalidateLibraryTrackSnapshot()
-  getLibraryTrackSnapshot(true)
+  getLibraryTrackSnapshot(true, true)
 }
 
 function readEffectiveTrackRowsByPaths(paths: readonly string[]): DbTrackRow[] {
@@ -2530,6 +2623,15 @@ export async function initDatabase(): Promise<void> {
   db = new LibrarySqliteDatabase(new BetterSqliteDatabase(dbPath, { timeout: 5000 }))
   db.pragma('foreign_keys = ON')
   db.pragma('busy_timeout = 5000')
+  // The default rollback journal flushes to disk twice on every commit. Every library
+  // write runs on the main thread, and on Windows and Linux each flush waits for the
+  // disk. WAL only flushes at checkpoints. A power cut can lose the last few seconds
+  // of writes but cannot corrupt the database.
+  const journalMode = (db.pragma('journal_mode = WAL') as Array<{ journal_mode?: unknown }> | undefined)?.[0]?.journal_mode
+  // NORMAL is only crash-safe together with WAL, so a database that stayed on the
+  // rollback journal keeps the default.
+  if (journalMode === 'wal') db.pragma('synchronous = NORMAL')
+  else console.warn('Library database could not switch to WAL journaling:', journalMode)
   db.registerFunction('astra_normalize_album_key', { deterministic: true }, normalizeSqliteAlbumKey)
   db.registerFunction('astra_dynamic_text_key', { deterministic: true }, normalizeDynamicPlaylistText)
 
@@ -3309,11 +3411,17 @@ export async function initDatabase(): Promise<void> {
 
 // Close database
 export function closeDatabase(): void {
+  if (pendingSnapshotRebuildTimer) {
+    clearTimeout(pendingSnapshotRebuildTimer)
+    pendingSnapshotRebuildTimer = null
+  }
   if (db) {
     db.close()
     db = null
   }
   invalidateLibraryTrackSnapshot()
+  heldTrackSnapshot = null
+  heldStoredTrackSnapshot = null
   homeReleaseSummaryCache = null
 }
 
@@ -3980,7 +4088,7 @@ function recomputePlayCountsFromOrigins(trackPaths: readonly string[]): number {
             SELECT MAX(o.last_played_at) FROM ${PLAY_ORIGIN_TABLE} o WHERE o.track_path = tracks.path
           )
         )
-    `, chunk)
+    `, chunk, { keepsTrackSnapshot: true })
     updated += Number(db.get<{ changed?: unknown }>('SELECT changes() AS changed')?.changed) || 0
   }
   return updated
@@ -4326,9 +4434,9 @@ export async function markMissingSubsonicTracksUnavailable(
   `
 
   if (seenSourceTrackIds.size > 0) {
-    const placeholders = Array.from(seenSourceTrackIds).map(() => '?').join(', ')
-    sql += ` AND (source_track_id IS NULL OR source_track_id NOT IN (${placeholders}))`
-    params.push(...seenSourceTrackIds)
+    // One JSON parameter. A placeholder per track hits SQLite's 32,766 variable limit.
+    sql += ' AND (source_track_id IS NULL OR source_track_id NOT IN (SELECT value FROM json_each(?)))'
+    params.push(JSON.stringify(Array.from(seenSourceTrackIds)))
   }
 
   const result = db.run(sql, params)
@@ -4417,9 +4525,14 @@ export async function replaceSubsonicArtworkHash(
      WHERE source_type = 'subsonic'
        AND source_id = ?
        AND artwork_hash = ?`,
-    [next, Date.now(), sourceId, current]
+    [next, Date.now(), sourceId, current],
+    { keepsTrackSnapshot: true }
   )
   const count = result.changes
+  // Album grouping reads the artwork hash, so the snapshot does have to be rebuilt. A
+  // view loading its covers swaps them one at a time (Navidrome gives every track its
+  // own cover ID), and rebuilding per cover froze the app. They share one rebuild.
+  if (count > 0) scheduleDerivedLibraryStateRebuild()
   if (options.persist !== false && count > 0) {
     await saveDatabase()
   }
@@ -4639,78 +4752,126 @@ async function upsertRemoteCatalogTracks(
     return { inserted: 0, updated: 0 }
   }
 
+  const preserveArtwork = provider === 'plex' || (provider === 'subsonic' && options.preserveExistingArtwork === true)
+  const matchesStored = (existing: Record<string, unknown>, entries: RemoteCatalogTrackEntries) =>
+    entries.every(([key, value]) => existing[key] === value)
+
+  // One read finds the tracks this sync would change, so an unchanged library costs no
+  // per-track statements or transactions. It only narrows the work: every remaining
+  // row is read again inside its write batch.
+  const callerOwnsTransaction = database.inTransaction
+  const stored = new Map<string, Record<string, unknown>>()
+  for (const row of database.all<Record<string, unknown>>(
+    'SELECT * FROM tracks WHERE source_type = ? AND source_id = ?', [provider, sourceId])) {
+    stored.set(row.path as string, row)
+  }
+  const pending: SubsonicTrackUpsertInput[] = []
+  let sliceStarted = performance.now()
+  for (const track of tracks) {
+    const existing = stored.get(track.path)
+    if (!existing || !matchesStored(existing, remoteCatalogTrackEntries(provider, sourceId, track, existing, preserveArtwork))) {
+      pending.push(track)
+    }
+    if (!callerOwnsTransaction && performance.now() - sliceStarted >= 12) {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      sliceStarted = performance.now()
+    }
+  }
+  if (pending.length === 0) return { inserted: 0, updated: 0 }
+
   let inserted = 0
   let updated = 0
   const now = Date.now()
-  await writeRemoteCatalogBatches(provider, sourceId, tracks, (track) => {
-    // Compare stored server values, not effective values with the user's overrides.
-    // Read inside the batch so earlier yields cannot leave us with stale row state.
-    const existing = database.get<Record<string, unknown>>('SELECT * FROM tracks WHERE path = ?', [track.path])
-    const genreFields = resolveTrackGenreStorageFields(track)
-    const artistNames = normalizeArtistNames(track.artist_names)
-    const albumArtistNames = normalizeArtistNames(track.album_artist_names)
-    const preserveArtwork = provider === 'plex' || (provider === 'subsonic' && options.preserveExistingArtwork)
-    // This same field set drives comparison and writes, including availability.
-    // Playback history, local analysis, overrides and the original import session
-    // are deliberately outside the server-owned metadata update.
-    const fields = {
-      title: track.title,
-      artist: track.artist,
-      artist_names_json: artistNames.length > 1 ? serializeArtistNames(artistNames) : null,
-      album: track.album,
-      album_artist: track.album_artist,
-      album_artist_names_json: albumArtistNames.length > 1 ? serializeArtistNames(albumArtistNames) : null,
-      duration: track.duration,
-      track_number: track.track_number,
-      track_total: track.track_total ?? null,
-      disc_number: track.disc_number,
-      disc_total: track.disc_total ?? null,
-      year: track.year,
-      genre: genreFields.genre,
-      genre_names_json: genreFields.genreNamesJson,
-      artwork_hash: track.artwork_hash ?? (preserveArtwork ? existing?.artwork_hash ?? null : null),
-      format: track.format,
-      sample_rate: track.sample_rate,
-      bit_depth: track.bit_depth,
-      bitrate: track.bitrate,
-      channels: track.channels,
-      codec: track.codec,
-      codec_profile: track.codec_profile,
-      is_atmos_joc: track.is_atmos_joc,
-      replaygain_track_gain_db: track.replaygain_track_gain_db,
-      replaygain_album_gain_db: track.replaygain_album_gain_db,
-      bpm: track.bpm,
-      musical_key: track.musical_key,
-      source_type: provider,
-      source_id: sourceId,
-      source_track_id: track.source_track_id,
-      source_path: track.source_path,
-      is_available: 1,
-      availability_reason: null,
-      file_created_at: null
-    }
-    const entries = Object.entries(fields).map(([key, value]) => [key, value ?? null] as const)
-    if (existing && entries.every(([key, value]) => existing[key] === value)) return
+  let runUpdate: ReturnType<LibrarySqliteDatabase['prepareRun']> | null = null
+  let runInsert: ReturnType<LibrarySqliteDatabase['prepareRun']> | null = null
+  // Each batch below discards the library snapshot. Reads between batches keep the one
+  // from before the import, and the single rebuild after it picks up every change.
+  beginSnapshotRebuildDeferral()
+  try {
+    await writeRemoteCatalogBatches(provider, sourceId, pending, (track) => {
+      // Compare stored server values, not effective values with the user's overrides.
+      // Read inside the batch so earlier yields cannot leave us with stale row state.
+      const existing = database.get<Record<string, unknown>>('SELECT * FROM tracks WHERE path = ?', [track.path])
+      const entries = remoteCatalogTrackEntries(provider, sourceId, track, existing, preserveArtwork)
+      if (existing && matchesStored(existing, entries)) return
 
-    const columns = entries.map(([key]) => key)
-    const values = entries.map(([, value]) => value)
-    if (existing) {
-      database.run(`UPDATE tracks SET ${columns.map(key => `${key} = ?`).join(', ')}, modified_at = ? WHERE path = ?`,
-        [...values, now, track.path])
-      updated += 1
-    } else {
-      database.run(`INSERT INTO tracks (path, ${columns.join(', ')}, sync_session_key, added_at, modified_at)
-        VALUES (?, ${columns.map(() => '?').join(', ')}, ?, ?, ?)`,
-      [track.path, ...values, options.syncSessionKey ?? null, now, now])
-      inserted += 1
-    }
-  })
+      const columns = entries.map(([key]) => key)
+      const values = entries.map(([, value]) => value)
+      if (existing) {
+        runUpdate ??= database.prepareRun(
+          `UPDATE tracks SET ${columns.map(key => `${key} = ?`).join(', ')}, modified_at = ? WHERE path = ?`)
+        runUpdate([...values, now, track.path])
+        updated += 1
+      } else {
+        runInsert ??= database.prepareRun(`INSERT INTO tracks (path, ${columns.join(', ')}, sync_session_key, added_at, modified_at)
+          VALUES (?, ${columns.map(() => '?').join(', ')}, ?, ?, ?)`)
+        runInsert([track.path, ...values, options.syncSessionKey ?? null, now, now])
+        inserted += 1
+      }
+    })
+  } finally {
+    endSnapshotRebuildDeferral()
+  }
 
   if (inserted > 0 || updated > 0) {
     rebuildDerivedLibraryState()
     if (options.persist !== false) await saveDatabase()
   }
   return { inserted, updated }
+}
+
+type RemoteCatalogTrackEntries = Array<readonly [string, unknown]>
+
+/** The server-owned columns of a remote track. Comparison and writes share this set,
+ * including availability. Playback history, local analysis, overrides and the original
+ * import session are deliberately outside it. */
+function remoteCatalogTrackEntries(
+  provider: 'subsonic' | 'jellyfin' | 'plex',
+  sourceId: number,
+  track: SubsonicTrackUpsertInput,
+  existing: Record<string, unknown> | undefined,
+  preserveArtwork: boolean
+): RemoteCatalogTrackEntries {
+  const genreFields = resolveTrackGenreStorageFields(track)
+  const artistNames = normalizeArtistNames(track.artist_names)
+  const albumArtistNames = normalizeArtistNames(track.album_artist_names)
+  const fields = {
+    title: track.title,
+    artist: track.artist,
+    artist_names_json: artistNames.length > 1 ? serializeArtistNames(artistNames) : null,
+    album: track.album,
+    album_artist: track.album_artist,
+    album_artist_names_json: albumArtistNames.length > 1 ? serializeArtistNames(albumArtistNames) : null,
+    duration: track.duration,
+    track_number: track.track_number,
+    track_total: track.track_total ?? null,
+    disc_number: track.disc_number,
+    disc_total: track.disc_total ?? null,
+    year: track.year,
+    genre: genreFields.genre,
+    genre_names_json: genreFields.genreNamesJson,
+    artwork_hash: track.artwork_hash ?? (preserveArtwork ? existing?.artwork_hash ?? null : null),
+    format: track.format,
+    sample_rate: track.sample_rate,
+    bit_depth: track.bit_depth,
+    bitrate: track.bitrate,
+    channels: track.channels,
+    codec: track.codec,
+    codec_profile: track.codec_profile,
+    is_atmos_joc: track.is_atmos_joc,
+    replaygain_track_gain_db: track.replaygain_track_gain_db,
+    replaygain_album_gain_db: track.replaygain_album_gain_db,
+    bpm: track.bpm,
+    musical_key: track.musical_key,
+    source_type: provider,
+    source_id: sourceId,
+    source_track_id: track.source_track_id,
+    source_path: track.source_path,
+    is_available: 1,
+    availability_reason: null,
+    file_created_at: null
+  }
+  return Object.entries(fields).map(([key, value]) => [key, value ?? null] as const)
 }
 
 export async function markMissingJellyfinTracksUnavailable(
@@ -4732,9 +4893,9 @@ export async function markMissingJellyfinTracksUnavailable(
   `
 
   if (seenSourceTrackIds.size > 0) {
-    const placeholders = Array.from(seenSourceTrackIds).map(() => '?').join(', ')
-    sql += ` AND (source_track_id IS NULL OR source_track_id NOT IN (${placeholders}))`
-    params.push(...seenSourceTrackIds)
+    // One JSON parameter. A placeholder per track hits SQLite's 32,766 variable limit.
+    sql += ' AND (source_track_id IS NULL OR source_track_id NOT IN (SELECT value FROM json_each(?)))'
+    params.push(JSON.stringify(Array.from(seenSourceTrackIds)))
   }
 
   const result = db.run(sql, params)
@@ -9961,7 +10122,8 @@ function qualifyListeningSession(track: DbTrack, sourcePlaylistId: number | null
   if (!db) return
   db.run(
     'UPDATE tracks SET play_count = play_count + 1, last_played_at = ? WHERE id = ?',
-    [qualifiedAt, track.id]
+    [qualifiedAt, track.id],
+    { keepsTrackSnapshot: true }
   )
   recordLocalPlayOrigin(track.path, qualifiedAt)
   db.run('INSERT INTO recently_played (track_path, played_at) VALUES (?, ?)', [track.path, qualifiedAt])
@@ -11568,7 +11730,8 @@ export function getRecentlyPlayed(limit: number = 50): DbTrack[] {
 
 export async function markTrackLatestSyncSeen(trackPath: string): Promise<void> {
   if (!db) return
-  db.run('UPDATE tracks SET latest_sync_dismissed_at = ? WHERE path = ?', [Date.now(), trackPath])
+  db.run('UPDATE tracks SET latest_sync_dismissed_at = ? WHERE path = ?', [Date.now(), trackPath],
+    { keepsTrackSnapshot: true })
   await saveDatabase()
 }
 

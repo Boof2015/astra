@@ -99,3 +99,15 @@ test('missing image files are fetched again, and an uncached Subsonic catalog st
   assert.equal(await cache.resolve({ ...f.request, refresh: true, existingOnly: true }), repaired)
   assert.equal(f.reads(), 2)
 })
+
+test('known keys list the saved references, so a sync can skip covers that were never loaded', async t => {
+  const f = await fixture(t)
+  const cache = f.open()
+  assert.deepEqual(await cache.knownKeys(), new Set(), 'nothing saved yet, not even the folder')
+  await cache.resolve(f.request)
+  const key = cache.keyFor(f.request.scope, f.request.id)
+  assert.deepEqual(await cache.knownKeys(), new Set([key]))
+  assert.deepEqual(await f.open().knownKeys(), new Set([key]), 'read from disk after a restart')
+  assert.notEqual(cache.keyFor(f.request.scope, 'another-cover'), key)
+  assert.notEqual(cache.keyFor(['subsonic', 2, 'https://music.test', 'listener'], f.request.id), key, 'another server never shares a reference')
+})

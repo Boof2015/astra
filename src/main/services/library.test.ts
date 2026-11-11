@@ -87,12 +87,24 @@ const TINY_PNG_FIXTURE = Buffer.from(
   'hex'
 )
 
+// Raw connections a test keeps open for its whole body. Windows cannot delete a
+// database file that is still open, so they close before the folder is removed.
+const openRawDatabases = new Set<TestSqliteDatabase>()
+
+function openRawLibraryDb(dir: string): TestSqliteDatabase {
+  const raw = new TestSqliteDatabase(join(dir, 'library.db'))
+  openRawDatabases.add(raw)
+  return raw
+}
+
 async function setupEmptyLibrary(t: test.TestContext): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'astra-library-sqlite-'))
   process.env.ASTRA_TEST_USER_DATA = dir
   await library.initDatabase()
 
   t.after(async () => {
+    for (const raw of openRawDatabases) raw.close()
+    openRawDatabases.clear()
     library.closeDatabase()
     delete process.env.ASTRA_TEST_USER_DATA
     await rm(dir, { recursive: true, force: true })
@@ -6408,8 +6420,7 @@ for (const provider of ['subsonic', 'jellyfin', 'plex'] as const) {
     const source = await createSource()
     const tracks = [track(source.id, 0), track(source.id, 1)]
     await upsert(source.id, tracks, { syncSessionKey: 'first' })
-    const raw = new TestSqliteDatabase(join(dir, 'library.db'))
-    t.after(() => raw.close())
+    const raw = openRawLibraryDb(dir)
     raw.prepare('CREATE TABLE sync_write_audit (kind TEXT, path TEXT)').run()
     raw.prepare(`CREATE TRIGGER audit_track_update AFTER UPDATE ON tracks
       BEGIN INSERT INTO sync_write_audit VALUES ('track', NEW.path); END`).run()
@@ -6474,8 +6485,7 @@ for (const provider of ['subsonic', 'jellyfin', 'plex'] as const) {
     const source = await createSource()
     const row = track(source.id, 0)
     await upsert(source.id, [row])
-    const raw = new TestSqliteDatabase(join(dir, 'library.db'))
-    t.after(() => raw.close())
+    const raw = openRawLibraryDb(dir)
     const markMissing = provider === 'subsonic' ? library.markMissingSubsonicTracksUnavailable
       : provider === 'jellyfin' ? library.markMissingJellyfinTracksUnavailable : library.markMissingPlexTracksUnavailable
     await markMissing(source.id, new Set())
@@ -6497,8 +6507,7 @@ for (const provider of ['subsonic', 'jellyfin', 'plex'] as const) {
     const row = { ...track(source.id, 0), artist_names: ['Artist A', 'Artist B'],
       album_artist_names: ['Artist A', 'Artist B'], genres: ['Rock', 'Pop'], genre: 'Rock' }
     await upsert(source.id, [row], { syncSessionKey: 'first' })
-    const raw = new TestSqliteDatabase(join(dir, 'library.db'))
-    t.after(() => raw.close())
+    const raw = openRawLibraryDb(dir)
     raw.prepare('INSERT INTO track_metadata_overrides (track_path, title, updated_at) VALUES (?, ?, ?)').run(row.path, 'My title', 1)
     raw.prepare('UPDATE tracks SET play_count = 5, last_played_at = 123, replaygain_track_gain_scanned = 1, latest_sync_dismissed_at = 50 WHERE path = ?').run(row.path)
     raw.prepare(`INSERT INTO track_loudness (track_path, loudness_lufs, method, analyzed_at) VALUES (?, -12, 'test', 1)`).run(row.path)
@@ -6542,6 +6551,50 @@ for (const provider of ['subsonic', 'jellyfin', 'plex'] as const) {
       assert.deepEqual(await upsert(source.id, [{ ...row, artwork_hash: null }]), { inserted: 0, updated: 1 })
       assert.equal(library.getTrackByPath(row.path)?.artwork_hash, null, 'explicit non-preserving calls can still clear artwork')
     }
+  })
+
+  test(`${provider}: a catalog past SQLite's variable limit can still mark missing tracks`, async t => {
+    await setupEmptyLibrary(t)
+    const source = await createSource()
+    await upsert(source.id, [track(source.id, 0), track(source.id, 1), track(source.id, 50_000)])
+    const markMissing = provider === 'subsonic' ? library.markMissingSubsonicTracksUnavailable
+      : provider === 'jellyfin' ? library.markMissingJellyfinTracksUnavailable : library.markMissingPlexTracksUnavailable
+    // SQLite allows 32,766 bound variables in one statement.
+    await markMissing(source.id, new Set(Array.from({ length: 40_000 }, (_, index) => String(index))))
+    assert.equal(library.getTrackByPath(`${provider}://${source.id}/track/0`)?.is_available, 1)
+    assert.equal(library.getTrackByPath(`${provider}://${source.id}/track/1`)?.is_available, 1)
+    assert.equal(library.getTrackByPath(`${provider}://${source.id}/track/50000`)?.availability_reason, 'missing_upstream')
+  })
+
+  test(`${provider}: library reads between import batches keep the pre-import snapshot, and one rebuild follows`, async t => {
+    await setupEmptyLibrary(t)
+    const source = await createSource()
+    const before = track(source.id, 0)
+    await upsert(source.id, [before])
+    assert.equal(library.getTrackPage().total, 1)
+    let rebuilds = 0
+    library.setLibraryQueryDiagnosticsReporter(row => { if (row.name === 'rebuildTrackSnapshot') rebuilds += 1 })
+    t.after(() => library.setLibraryQueryDiagnosticsReporter(null))
+
+    let completed = false
+    let reads = 0
+    // What the renderer does while a sync runs: a now-playing lookup and a list page.
+    let pulse = setImmediate(function read() {
+      if (completed) return
+      assert.equal(library.getTrackByPath(before.path)?.title, 'Track 0')
+      library.getTrackPage()
+      reads += 1
+      pulse = setImmediate(read)
+    })
+    try {
+      assert.deepEqual(await upsert(source.id, Array.from({ length: 3_000 }, (_, index) => track(source.id, index + 1))),
+        { inserted: 3_000, updated: 0 })
+    } finally { completed = true; clearImmediate(pulse) }
+    assert.ok(reads > 1, 'the import must have yielded to library reads')
+    assert.equal(rebuilds, 1, 'rebuilding per batch blocks the main thread for the whole import')
+    assert.equal(library.getTrackPage().total, 3_001)
+    assert.equal(library.getAllTracks().length, 3_001)
+    assert.equal(rebuilds, 1)
   })
 
   test(`${provider}: removing a source between import batches cannot bring its tracks back`, async t => {
@@ -6603,6 +6656,61 @@ test('a caller-owned import transaction stays atomic and can still roll back', a
     assert.equal(library.getTrackCount(), 600)
   } finally { library.rollbackLibraryWriteTransaction(); clearImmediate(pulse) }
   assert.equal(library.getTrackCount(), 0)
+})
+
+test('covers loading one at a time share a single snapshot rebuild', async t => {
+  await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({ name: 'Server', base_url: 'https://music.test', username: 'test', secret_encrypted: 'test', enabled: 1 })
+  // Navidrome gives every track its own cover ID, so a view loads one cover per track.
+  const tracks = Array.from({ length: 20 }, (_, index) => createRemoteTrack({
+    path: `subsonic://${source.id}/track/${index}`, source_track_id: String(index), title: `Track ${index}`,
+    artist: 'Artist', album: `Album ${index}`, artwork_hash: `subsonic-artwork:${source.id}:cover-${index}`
+  }))
+  await library.upsertSubsonicTracks(source.id, tracks)
+  library.getTrackPage()
+  let rebuilds = 0
+  library.setLibraryQueryDiagnosticsReporter(row => { if (row.name === 'rebuildTrackSnapshot') rebuilds += 1 })
+  t.after(() => library.setLibraryQueryDiagnosticsReporter(null))
+
+  for (const [index, row] of tracks.entries()) {
+    const cached = `${String(index).padStart(32, '0')}.jpg`
+    assert.equal(await library.replaceSubsonicArtworkHash(source.id, row.artwork_hash!, cached), 1)
+    assert.equal(library.getTrackByPath(row.path)?.artwork_hash, cached, 'the cover itself shows at once')
+    library.getTrackPage()
+  }
+  assert.equal(rebuilds, 0, 'rebuilding per cover froze the app while a view loaded')
+  // Album grouping reads the artwork hash, so one rebuild follows once covers stop arriving.
+  await new Promise(resolve => setTimeout(resolve, 2_200))
+  assert.equal(rebuilds, 1)
+  library.getTrackPage()
+  assert.equal(rebuilds, 1)
+})
+
+test('plays and latest-sync badges do not rebuild the library snapshot', async t => {
+  await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({ name: 'Server', base_url: 'https://music.test', username: 'test', secret_encrypted: 'test', enabled: 1 })
+  const path = `subsonic://${source.id}/track/a`
+  await library.upsertSubsonicTracks(source.id, [createRemoteTrack({ path, source_track_id: 'a', title: 'Song', artist: 'Artist', album: 'Album' })],
+    { syncSessionKey: 'first' })
+  await library.setLatestLibrarySyncSummary({ sessionKey: 'first', completedAt: 100, newAlbumIdentityKeys: [] })
+  assert.equal(library.getTrackByPath(path)?.is_new, true)
+  let rebuilds = 0
+  library.setLibraryQueryDiagnosticsReporter(row => { if (row.name === 'rebuildTrackSnapshot') rebuilds += 1 })
+  t.after(() => library.setLibraryQueryDiagnosticsReporter(null))
+
+  const play = await checkpointHomeSource(path, null, 2_000_000)
+  assert.equal(play.qualifiedNow, true)
+  await library.markTrackLatestSyncSeen(path)
+  const played = library.getTrackByPath(path)
+  assert.equal(played?.play_count, 1)
+  assert.equal(played?.is_new, false)
+  assert.equal(library.getTrackPage().total, 1)
+  assert.equal(rebuilds, 0, 'neither column feeds track order or album identity')
+})
+
+test('the library database uses write-ahead logging', async t => {
+  const dir = await setupEmptyLibrary(t)
+  assert.deepEqual(withDirectLibraryDb(dir, db => db.prepare('PRAGMA journal_mode').get()), { journal_mode: 'wal' })
 })
 
 test('each server counts the tracks it still has and the albums they belong to', async t => {

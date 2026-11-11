@@ -12,7 +12,7 @@ import { buildSubsonicArtworkHash, parseSubsonicArtworkHash } from './subsonic.t
 
 // Execute the real main-process entry points without launching Electron or
 // opening a personal database. Image bytes and reference records use real disk.
-const names = ['resolveSubsonicArtworkHash', 'hydrateJellyfinTrackArtworkHashes']
+const names = ['resolveSubsonicArtworkHash', 'subsonicArtworkScope', 'hydrateJellyfinTrackArtworkHashes']
 const source = ts.createSourceFile('index.ts', readFileSync(new URL('../index.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true)
 const functions = source.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text ?? ''))
 assert.equal(functions.length, names.length)

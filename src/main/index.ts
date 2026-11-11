@@ -20,6 +20,7 @@ import { existsSync, readFileSync } from 'fs'
 import { cpus, tmpdir, hostname, networkInterfaces, setPriority, constants as osConstants } from 'os'
 import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams, type ExecFileOptions } from 'child_process'
 import { createHash, randomBytes, randomUUID } from 'crypto'
+import { monitorEventLoopDelay } from 'perf_hooks'
 import * as library from './services/library'
 import { isAllowedArtworkProtocolHash } from './services/artworkProtocol'
 import type { DynamicPlaylistRules } from '../shared/playlists/dynamicPlaylist'
@@ -3974,6 +3975,34 @@ function broadcastSubsonicStatus(snapshot?: SubsonicStatusSnapshot): void {
   sendToWindow(mainWindow, 'subsonic:status', payload)
 }
 
+// A catalog sync reports progress once per server response, which is thousands of
+// times for a large library. Each broadcast reads the sources and crosses to the
+// renderer, so counts go out at most this often. A new phase goes out at once.
+const SYNC_PROGRESS_BROADCAST_INTERVAL_MS = 150
+
+function createSyncProgressBroadcaster(broadcast: () => void): (immediate: boolean) => void {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let lastSentAt = 0
+  const send = () => {
+    if (timer) clearTimeout(timer)
+    timer = null
+    lastSentAt = Date.now()
+    broadcast()
+  }
+  return (immediate) => {
+    const wait = SYNC_PROGRESS_BROADCAST_INTERVAL_MS - (Date.now() - lastSentAt)
+    if (immediate || wait <= 0) send()
+    else timer ??= setTimeout(send, wait)
+  }
+}
+
+const broadcastSubsonicSyncProgress = createSyncProgressBroadcaster(() => {
+  broadcastSubsonicStatus(refreshSubsonicStatusCache(subsonicSyncInFlight))
+})
+const broadcastJellyfinSyncProgress = createSyncProgressBroadcaster(() => {
+  broadcastJellyfinStatus(refreshJellyfinStatusCache(jellyfinSyncInFlight))
+})
+
 function setSubsonicSyncProgress(
   sourceId: number,
   progress: {
@@ -3984,6 +4013,7 @@ function setSubsonicSyncProgress(
     detail?: string | null
   }
 ): void {
+  const phaseChanged = subsonicSyncProgressBySourceId.get(sourceId)?.phase !== progress.phase
   subsonicSyncProgressBySourceId.set(sourceId, {
     phase: progress.phase,
     activity: progress.activity,
@@ -3992,13 +4022,13 @@ function setSubsonicSyncProgress(
     detail: progress.detail ?? null,
     updatedAt: Date.now()
   })
-  broadcastSubsonicStatus(refreshSubsonicStatusCache(subsonicSyncInFlight))
+  broadcastSubsonicSyncProgress(phaseChanged)
 }
 
 function clearSubsonicSyncProgress(sourceId: number): void {
   if (!subsonicSyncProgressBySourceId.has(sourceId)) return
   subsonicSyncProgressBySourceId.delete(sourceId)
-  broadcastSubsonicStatus(refreshSubsonicStatusCache(subsonicSyncInFlight))
+  broadcastSubsonicSyncProgress(true)
 }
 
 function computeSubsonicStatusSnapshot(isSyncing: boolean): SubsonicStatusSnapshot {
@@ -4040,6 +4070,7 @@ function setJellyfinSyncProgress(
     detail?: string | null
   }
 ): void {
+  const phaseChanged = jellyfinSyncProgressBySourceId.get(sourceId)?.phase !== progress.phase
   jellyfinSyncProgressBySourceId.set(sourceId, {
     phase: progress.phase,
     activity: progress.activity,
@@ -4048,13 +4079,13 @@ function setJellyfinSyncProgress(
     detail: progress.detail ?? null,
     updatedAt: Date.now()
   })
-  broadcastJellyfinStatus(refreshJellyfinStatusCache(jellyfinSyncInFlight))
+  broadcastJellyfinSyncProgress(phaseChanged)
 }
 
 function clearJellyfinSyncProgress(sourceId: number): void {
   if (!jellyfinSyncProgressBySourceId.has(sourceId)) return
   jellyfinSyncProgressBySourceId.delete(sourceId)
-  broadcastJellyfinStatus(refreshJellyfinStatusCache(jellyfinSyncInFlight))
+  broadcastJellyfinSyncProgress(true)
 }
 
 function computeJellyfinStatusSnapshot(isSyncing: boolean): JellyfinStatusSnapshot {
@@ -4461,7 +4492,23 @@ async function setSubsonicSourceDisabledState(sourceId: number): Promise<void> {
   await library.markSubsonicTracksAvailability(sourceId, false, 'source_disabled', { persist: false })
 }
 
-async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): Promise<boolean> {
+/** Wall time per sync phase in milliseconds, for the sync timing log. */
+type SyncPhaseTimings = Record<string, number>
+
+async function timeSyncPhase<T>(timings: SyncPhaseTimings, phase: string, work: () => Promise<T>): Promise<T> {
+  const startedAt = performance.now()
+  try {
+    return await work()
+  } finally {
+    timings[phase] = (timings[phase] ?? 0) + performance.now() - startedAt
+  }
+}
+
+async function syncOneSubsonicSource(
+  sourceId: number,
+  syncSessionKey: string,
+  timings: SyncPhaseTimings = {}
+): Promise<boolean> {
   const source = library.getSubsonicSourceById(sourceId)
   if (!source) return false
 
@@ -4488,12 +4535,15 @@ async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): 
   broadcastSubsonicStatus(refreshSubsonicStatusCache(true))
 
   let credentials: ReturnType<typeof requireSubsonicSourceCredentials> | null = null
+  let openSubsonic = false
   try {
     credentials = requireSubsonicSourceCredentials(sourceId)
-    await testSubsonicConnection(credentials.connection, {
+    const connection = credentials.connection
+    const server = await timeSyncPhase(timings, 'connect', () => testSubsonicConnection(connection, {
       timeoutMs: 12_000,
       retries: 1
-    })
+    }))
+    openSubsonic = server.openSubsonic
   } catch (error) {
     const message = syncFailureMessage(error, 'subsonic', 'connect')
     await library.markSubsonicTracksUnreachable(sourceId, { persist: false })
@@ -4515,9 +4565,12 @@ async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): 
   await library.restoreSubsonicTracksFromSourceUnavailable(sourceId, { persist: false })
 
   try {
-    const result = await syncSubsonicCatalog(sourceId, credentials.connection, {
+    const connection = credentials.connection
+    const result = await timeSyncPhase(timings, 'catalog', () => syncSubsonicCatalog(sourceId, connection, {
       timeoutMs: 12_000,
       retries: 1,
+      openSubsonic,
+      knownTrackCount: library.getSubsonicTrackCountsBySource(sourceId).available,
       onProgress: (progress) => {
         const label = progress.phase === 'artists'
           ? 'Loading artists...'
@@ -4532,32 +4585,47 @@ async function syncOneSubsonicSource(sourceId: number, syncSessionKey: string): 
           detail: progress.detail
         })
       }
-    })
+    }))
 
     setSubsonicSyncProgress(sourceId, {
       phase: 'finalizing',
       activity: 'Applying track metadata...'
     })
-    const artworkHashes = new Map<string, string>()
-    for (const hash of new Set(result.tracks.map(track => track.artwork_hash).filter((hash): hash is string => !!hash))) {
-      const cached = await resolveSubsonicArtworkHash(hash, true, true)
-      if (cached) artworkHashes.set(hash, cached)
-    }
-    await library.upsertSubsonicTracks(sourceId, result.tracks.map(track => ({ ...track,
+    const artworkHashes = await timeSyncPhase(timings, 'artwork', async () => {
+      const hashes = new Map<string, string>()
+      // Only covers that have been viewed have a saved reference. Navidrome gives every
+      // track its own cover ID, so asking the cache about each one was a file read per track.
+      const artworkCache = getRemoteArtworkCache()
+      const knownArtwork = await artworkCache.knownKeys()
+      const artworkScope = subsonicArtworkScope(source)
+      let sliceStartedAt = performance.now()
+      for (const hash of new Set(result.tracks.map(track => track.artwork_hash).filter((hash): hash is string => !!hash))) {
+        if (performance.now() - sliceStartedAt >= 12) {
+          await new Promise<void>(resolve => setImmediate(resolve))
+          sliceStartedAt = performance.now()
+        }
+        const parsed = parseSubsonicArtworkHash(hash)
+        if (parsed?.sourceId === sourceId && !knownArtwork.has(artworkCache.keyFor(artworkScope, parsed.artworkId))) continue
+        const cached = await resolveSubsonicArtworkHash(hash, true, true)
+        if (cached) hashes.set(hash, cached)
+      }
+      return hashes
+    })
+    await timeSyncPhase(timings, 'upsert', () => library.upsertSubsonicTracks(sourceId, result.tracks.map(track => ({ ...track,
       artwork_hash: track.artwork_hash ? artworkHashes.get(track.artwork_hash) ?? track.artwork_hash : null })), {
       persist: false,
       syncSessionKey,
       preserveExistingArtwork: true
-    })
-    await library.markMissingSubsonicTracksUnavailable(
+    }))
+    await timeSyncPhase(timings, 'missing', () => library.markMissingSubsonicTracksUnavailable(
       sourceId,
       new Set(result.tracks.map((track) => track.source_track_id)),
       { persist: false }
-    )
+    ))
     await library.persistLibraryDatabase()
 
     // Playlist import and user-state reconciliation have independent per-server opt-ins.
-    await remotePlaylists.refresh({ provider: 'subsonic', sourceId }).catch(() => {})
+    await timeSyncPhase(timings, 'playlists', () => remotePlaylists.refresh({ provider: 'subsonic', sourceId }).catch(() => {}))
     void providerStateSync.refresh({ provider: 'subsonic', sourceId }).catch(() => {})
     await library.updateSubsonicSourceStatus(
       sourceId,
@@ -4615,12 +4683,21 @@ async function runSubsonicSync(sourceId?: number, requestedSyncSessionKey?: stri
     sourceCount: sources.length
   })
 
+  // Where a sync spends its time, how long it held up the main thread at worst, and how
+  // many library snapshot rebuilds happened while it ran (a sync that changed nothing
+  // should see none). Set ASTRA_SYNC_TIMING=1 to print it.
+  const timings: SyncPhaseTimings = {}
+  const startedAt = performance.now()
+  const rebuildsBefore = library.getLibrarySnapshotRebuildCount()
+  const loopDelay = monitorEventLoopDelay({ resolution: 10 })
+  loopDelay.enable()
+
   let failedSourceCount = 0
   let successfulSourceCount = 0
   try {
     for (const source of sources) {
       try {
-        const didSync = await syncOneSubsonicSource(source.id, syncSessionKey)
+        const didSync = await syncOneSubsonicSource(source.id, syncSessionKey, timings)
         if (didSync) {
           successfulSourceCount += 1
         }
@@ -4636,13 +4713,22 @@ async function runSubsonicSync(sourceId?: number, requestedSyncSessionKey?: stri
   } finally {
     subsonicSyncInFlight = false
     broadcastSubsonicStatus(refreshSubsonicStatusCache(false))
-    await finalizeLatestLibrarySyncSession(syncSessionKey, successfulSourceCount > 0, 'Subsonic sync')
+    await timeSyncPhase(timings, 'finalize', () => finalizeLatestLibrarySyncSession(syncSessionKey, successfulSourceCount > 0, 'Subsonic sync'))
+    loopDelay.disable()
+    const timing = {
+      totalMs: Math.round(performance.now() - startedAt),
+      longestStallMs: Math.round(loopDelay.max / 1e6),
+      snapshotRebuilds: library.getLibrarySnapshotRebuildCount() - rebuildsBefore,
+      phaseMs: Object.fromEntries(Object.entries(timings).map(([phase, ms]) => [phase, Math.round(ms)]))
+    }
     logMemoryDiagnosticsMainEvent('subsonic_sync_finished', {
       requestedSourceId: sourceId ?? null,
       sourceCount: sources.length,
       failedSourceCount,
-      successfulSourceCount
+      successfulSourceCount,
+      ...timing
     })
+    if (process.env.ASTRA_SYNC_TIMING === '1') console.info('[sync-timing] subsonic', JSON.stringify(timing))
   }
 }
 
@@ -5608,6 +5694,11 @@ function getArtworkThumbnailCacheKey(hash: string, maxEdgePx: number): string {
     .digest('hex')
 }
 
+/** What a Subsonic cover reference is saved under: the server and account, never the password. */
+function subsonicArtworkScope(source: { id: number; base_url: string; username: string }): (string | number)[] {
+  return ['subsonic', source.id, source.base_url, source.username]
+}
+
 async function resolveSubsonicArtworkHash(hash: string, refresh = false, existingOnly = false): Promise<string | null> {
   const parsed = parseSubsonicArtworkHash(hash)
   if (!parsed) return hash
@@ -5622,7 +5713,7 @@ async function resolveSubsonicArtworkHash(hash: string, refresh = false, existin
       const source = library.getSubsonicSourceById(parsed.sourceId)
       if (!source) return null
       const cachedHash = await getRemoteArtworkCache().resolve({
-        scope: ['subsonic', source.id, source.base_url, source.username], id: parsed.artworkId, refresh, existingOnly,
+        scope: subsonicArtworkScope(source), id: parsed.artworkId, refresh, existingOnly,
         load: () => playbackNetworkPriority.run(async signal => {
           const credentials = requireSubsonicSourceCredentials(parsed.sourceId)
           const payload = await fetchSubsonicCoverArt(credentials.connection, parsed.artworkId, { timeoutMs: 12_000, retries: 1, signal })

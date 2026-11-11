@@ -100,6 +100,10 @@ export interface SubsonicCatalogSyncProgress {
 
 export interface SubsonicCatalogSyncOptions extends SubsonicRequestOptions {
   onProgress?: (progress: SubsonicCatalogSyncProgress) => void
+  /** The server's ping said it implements OpenSubsonic, so its whole catalog can be paged. */
+  openSubsonic?: boolean
+  /** How many of this server's tracks the library already has, to catch a listing that came back short. */
+  knownTrackCount?: number
 }
 
 interface SubsonicResponseEnvelope {
@@ -133,6 +137,7 @@ interface SubsonicSong {
   artist?: unknown
   artists?: unknown
   album?: unknown
+  albumId?: unknown
   albumArtist?: unknown
   albumArtists?: unknown
   coverArt?: unknown
@@ -144,7 +149,7 @@ interface SubsonicSong {
   suffix?: unknown
   contentType?: unknown
   bitRate?: unknown
-  sampleRate?: unknown
+  samplingRate?: unknown
   bitDepth?: unknown
   channelCount?: unknown
   path?: unknown
@@ -520,9 +525,12 @@ async function runWithConcurrency<T, R>(
 export async function testSubsonicConnection(
   config: SubsonicConnectionConfig,
   options: SubsonicRequestOptions = {}
-): Promise<{ serverType: string | null }> {
+): Promise<{ serverType: string | null; openSubsonic: boolean }> {
   const response = await requestSubsonicJson(config, 'ping', {}, options)
-  return { serverType: typeof response.type === 'string' && response.type.trim() ? response.type.trim().toLowerCase() : null }
+  return {
+    serverType: typeof response.type === 'string' && response.type.trim() ? response.type.trim().toLowerCase() : null,
+    openSubsonic: response.openSubsonic === true
+  }
 }
 
 /** Live status and counted plays are separate Subsonic operations. No write retries. */
@@ -639,7 +647,7 @@ export function mapSongToCatalogTrack(
   const albumArtist = formatArtistNames(albumArtistNames) || toTrimmedText(song.albumArtist)
   const duration = toFiniteNumber(song.duration)
   const bitrate = toFiniteInteger(song.bitRate)
-  const sampleRate = toFiniteInteger(song.sampleRate)
+  const sampleRate = toFiniteInteger(song.samplingRate)
   const bitDepth = toFiniteInteger(song.bitDepth)
   const channels = toFiniteInteger(song.channelCount)
   const trackNumber = toFiniteInteger(song.track)
@@ -686,11 +694,134 @@ export function mapSongToCatalogTrack(
   }
 }
 
+const CATALOG_LISTING_PAGE_SIZE = 500
+const CATALOG_LISTING_MAX_TRACKS = 250_000
+// Tracks missing from a catalog are marked unavailable, so a listing a server cut short
+// must not be trusted. One that falls this far below what's expected is crawled instead.
+const CATALOG_LISTING_MIN_EXPECTED_SHARE = 0.9
+
+type CatalogSongs = Map<string, { song: SubsonicSong; coverArtId: string | null }>
+
+/**
+ * The whole catalog in pages of 500. OpenSubsonic requires servers to return everything
+ * for an empty search so clients can sync, which makes this a few dozen requests where
+ * the artist and album crawl needs one per artist and one per album.
+ * Resolves with null when the server doesn't list this way, so the caller can crawl.
+ */
+async function listSubsonicCatalogSongs(
+  config: SubsonicConnectionConfig,
+  options: SubsonicCatalogSyncOptions
+): Promise<CatalogSongs | null> {
+  const songs = new Map<string, SubsonicSong>()
+  // Albums ride along in the same requests, only as the cover for songs that have none.
+  const coverArtByAlbumId = new Map<string, string | null>()
+  let albumSongTotal = 0
+  let moreSongs = true
+  let moreAlbums = true
+  let songOffset = 0
+  let albumOffset = 0
+  options.onProgress?.({ phase: 'tracks', current: 0, total: 0, detail: null })
+  while (moreSongs || moreAlbums) {
+    options.signal?.throwIfAborted()
+    const response = await requestSubsonicJson(config, 'search3', {
+      query: '',
+      artistCount: 0,
+      songCount: moreSongs ? CATALOG_LISTING_PAGE_SIZE : 0,
+      songOffset,
+      albumCount: moreAlbums ? CATALOG_LISTING_PAGE_SIZE : 0,
+      albumOffset
+    }, options)
+    const container = response.searchResult3 as { song?: unknown; album?: unknown } | undefined
+    if (!container || typeof container !== 'object') return null
+
+    if (moreSongs) {
+      const page = asArray<SubsonicSong>(container.song)
+      const before = songs.size
+      for (const song of page) {
+        const id = toTrimmedText(song.id)
+        if (id) songs.set(id, song)
+      }
+      songOffset += page.length
+      if (page.length === 0) moreSongs = false
+      // A page that adds nothing means the offset isn't being honored.
+      else if (songs.size === before || songs.size > CATALOG_LISTING_MAX_TRACKS) return null
+      options.onProgress?.({ phase: 'tracks', current: songs.size, total: 0, detail: null })
+    }
+    if (moreAlbums) {
+      const page = asArray<Record<string, unknown>>(container.album)
+      const before = coverArtByAlbumId.size
+      for (const album of page) {
+        const id = toTrimmedText(album.id)
+        if (!id || coverArtByAlbumId.has(id)) continue
+        coverArtByAlbumId.set(id, toTrimmedText(album.coverArt))
+        albumSongTotal += toFiniteInteger(album.songCount) ?? 0
+      }
+      albumOffset += page.length
+      if (page.length === 0 || coverArtByAlbumId.size === before) moreAlbums = false
+    }
+  }
+  if (songs.size === 0) return null
+  // The albums say how many songs they hold between them.
+  if (songs.size < albumSongTotal * CATALOG_LISTING_MIN_EXPECTED_SHARE) return null
+
+  const catalog: CatalogSongs = new Map()
+  for (const [id, song] of songs) {
+    const albumId = toTrimmedText(song.albumId)
+    catalog.set(id, { song, coverArtId: albumId ? coverArtByAlbumId.get(albumId) ?? null : null })
+  }
+  return catalog
+}
+
+async function mapCatalogSongs(
+  sourceId: number,
+  songsById: CatalogSongs,
+  options: SubsonicCatalogSyncOptions
+): Promise<SubsonicCatalogTrack[]> {
+  const tracks: SubsonicCatalogTrack[] = []
+  options.onProgress?.({
+    phase: 'tracks',
+    current: 0,
+    total: songsById.size,
+    detail: null
+  })
+  for (const { song, coverArtId } of songsById.values()) {
+    options.signal?.throwIfAborted()
+    const mapped = mapSongToCatalogTrack(sourceId, song, coverArtId)
+    if (mapped) tracks.push(mapped)
+    if (tracks.length % 200 === 0 || tracks.length === songsById.size) {
+      options.onProgress?.({ phase: 'tracks', current: tracks.length, total: songsById.size, detail: null })
+      if (tracks.length < songsById.size) await new Promise<void>(resolve => setImmediate(resolve))
+    }
+  }
+  return tracks
+}
+
 export async function syncSubsonicCatalog(
   sourceId: number,
   config: SubsonicConnectionConfig,
   options: SubsonicCatalogSyncOptions = {}
 ): Promise<SubsonicCatalogSyncResult> {
+  if (options.openSubsonic) {
+    let listed: CatalogSongs | null = null
+    try {
+      listed = await listSubsonicCatalogSongs(config, options)
+    } catch (error) {
+      if (options.signal?.aborted) throw error
+      // Any other failure falls through to the crawl, which reports a real server or
+      // sign-in problem on its first request.
+    }
+    if (listed && listed.size < (options.knownTrackCount ?? 0) * CATALOG_LISTING_MIN_EXPECTED_SHARE) listed = null
+    if (listed) {
+      const tracks = await mapCatalogSongs(sourceId, listed, options)
+      return {
+        artistsScanned: 0,
+        albumsScanned: new Set(Array.from(listed.values(), ({ song }) => toTrimmedText(song.albumId)).filter(Boolean)).size,
+        tracksScanned: tracks.length,
+        tracks
+      }
+    }
+  }
+
   const indexResponse = await requestSubsonicJson(config, 'getArtists', {}, options)
   const artistRefs = toArtistRefs(indexResponse)
   options.onProgress?.({
@@ -771,29 +902,14 @@ export async function syncSubsonicCatalog(
 
   // Albums can share tracks. Count unique songs here, not the number of albums
   // visited, so the tracks phase agrees with what will actually be imported.
-  const songsById = new Map<string, { song: SubsonicSong; coverArtId: string | null }>()
+  const songsById: CatalogSongs = new Map()
   for (const album of albumSongLists) {
     for (const song of album.songs) {
       const id = toTrimmedText(song.id)
       if (id) songsById.set(id, { song, coverArtId: album.coverArtId })
     }
   }
-  const tracks: SubsonicCatalogTrack[] = []
-  options.onProgress?.({
-    phase: 'tracks',
-    current: 0,
-    total: songsById.size,
-    detail: null
-  })
-  for (const { song, coverArtId } of songsById.values()) {
-    options.signal?.throwIfAborted()
-    const mapped = mapSongToCatalogTrack(sourceId, song, coverArtId)
-    if (mapped) tracks.push(mapped)
-    if (tracks.length % 200 === 0 || tracks.length === songsById.size) {
-      options.onProgress?.({ phase: 'tracks', current: tracks.length, total: songsById.size, detail: null })
-      if (tracks.length < songsById.size) await new Promise<void>(resolve => setImmediate(resolve))
-    }
-  }
+  const tracks = await mapCatalogSongs(sourceId, songsById, options)
 
   return {
     artistsScanned: artistRefs.length,
