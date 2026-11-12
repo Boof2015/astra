@@ -6994,8 +6994,12 @@ body:has(.fullscreen-overlay) .controller-hints {
   background: rgba(var(--accent-rgb), 0.12);
 }
 
-body:has(.track-drag-overlay),
-body:has(.track-drag-overlay) * {
+/* The class is set by TrackDragOverlay. Do not express this as
+   body:has(.track-drag-overlay) *: a :has() on body with a universal
+   descendant makes every row mounted in the tracklist restyle the whole
+   document, which was the largest main-thread cost while scrolling. */
+body.track-drag-active,
+body.track-drag-active * {
   cursor: grabbing !important;
 }
 

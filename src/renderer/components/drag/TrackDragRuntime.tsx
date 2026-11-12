@@ -215,6 +215,15 @@ function TrackDragOverlay({ overlayRef }: { overlayRef: React.RefObject<HTMLDivE
   const springTarget = useUIStore((state) => state.trackDrag?.springTarget ?? null)
   const phase = useUIStore((state) => state.trackDrag?.phase ?? null)
   const playlists = usePlaylistStore((state) => state.playlists)
+  const isVisible = Boolean(items && source && phase !== null)
+
+  // Drives the app-wide grabbing cursor; see body.track-drag-active in globals.css.
+  useEffect(() => {
+    if (!isVisible) return
+    document.body.classList.add('track-drag-active')
+    return () => document.body.classList.remove('track-drag-active')
+  }, [isVisible])
+
   if (!items || !source || phase === null) return null
 
   const playlistId = target?.surface === 'playlist' || (target?.surface === 'sidebar' && target.kind === 'playlist')
