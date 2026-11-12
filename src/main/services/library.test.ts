@@ -6658,6 +6658,127 @@ test('a caller-owned import transaction stays atomic and can still roll back', a
   assert.equal(library.getTrackCount(), 0)
 })
 
+test('album and artist lists keep their grouping between calls and still follow every change', async t => {
+  const dir = await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({ name: 'Server', base_url: 'https://music.test', username: 'test', secret_encrypted: 'test', enabled: 1 })
+  const path = (index: number) => `subsonic://${source.id}/track/${index}`
+  const track = (index: number, album: string, artist: string) => createRemoteTrack({
+    path: path(index), source_track_id: String(index), title: `Track ${index}`, artist, album_artist: artist, album, track_number: index % 2 + 1
+  })
+  await library.upsertSubsonicTracks(source.id, [
+    track(0, 'First', 'Artist A'), track(1, 'First', 'Artist A'), track(2, 'Second', 'Artist B'), track(3, 'Second', 'Artist B')
+  ])
+  let regroupings = 0
+  library.setLibraryQueryDiagnosticsReporter(row => { if (row.name === 'groupVisibleAlbums') regroupings += 1 })
+  t.after(() => library.setLibraryQueryDiagnosticsReporter(null))
+  const albums = () => library.getAlbums({ includeSingles: true }).map(album => album.album).sort()
+  const artists = () => library.getArtists().map(artist => [artist.artist, artist.track_count])
+
+  assert.deepEqual(albums(), ['First', 'Second'])
+  assert.deepEqual(artists(), [['Artist A', 2], ['Artist B', 2]])
+  library.getAlbums()
+  library.getHomeDashboard()
+  assert.equal(regroupings, 1, 'albums, artists and Home share one grouping of the library')
+
+  // A play changes what an album reports, not which tracks form it.
+  assert.deepEqual(library.getHomeDashboard().recent_releases, [])
+  await checkpointHomeSource(path(0), { type: 'track', trackPath: path(0) }, 2_000_000)
+  assert.deepEqual(library.getHomeDashboard().recent_releases.map(release => [release.album, release.last_played_at]), [['First', 2_000_000]])
+  assert.equal(regroupings, 1)
+
+  // A write from another connection.
+  withDirectLibraryDb(dir, db => db.prepare("UPDATE tracks SET album = 'Third' WHERE path IN (?, ?)").run(path(2), path(3)))
+  assert.deepEqual(albums(), ['First', 'Third'])
+  assert.equal(regroupings, 2)
+
+  // A write that is rolled back.
+  library.beginLibraryWriteTransaction()
+  await library.upsertSubsonicTracks(source.id, [track(0, 'Fourth', 'Artist C'), track(1, 'Fourth', 'Artist C')])
+  assert.deepEqual(albums(), ['Fourth', 'Third'])
+  assert.deepEqual(artists(), [['Artist B', 2], ['Artist C', 2]])
+  library.rollbackLibraryWriteTransaction()
+  assert.deepEqual(albums(), ['First', 'Third'])
+  assert.deepEqual(artists(), [['Artist A', 2], ['Artist B', 2]])
+
+  // A server that is turned off, then on.
+  await library.updateSubsonicSource(source.id, { enabled: 0 })
+  assert.deepEqual(albums(), [])
+  assert.deepEqual(artists(), [])
+  await library.updateSubsonicSource(source.id, { enabled: 1 })
+  assert.deepEqual(albums(), ['First', 'Third'])
+  assert.deepEqual(artists(), [['Artist A', 2], ['Artist B', 2]])
+})
+
+test('the artist list is kept between calls and follows artist images, tracks and other connections', async t => {
+  const dir = await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({ name: 'Server', base_url: 'https://music.test', username: 'test', secret_encrypted: 'test', enabled: 1 })
+  const path = (index: number) => `subsonic://${source.id}/track/${index}`
+  const track = (index: number, artist: string) => createRemoteTrack({
+    path: path(index), source_track_id: String(index), title: `Track ${index}`, artist, album_artist: artist, album: `Album by ${artist}`
+  })
+  await library.upsertSubsonicTracks(source.id, [track(0, 'Artist A'), track(1, 'Artist A'), track(2, 'Artist B')])
+  const names = (mode?: library.ArtistBrowseMode) => library.getArtists(mode).map(artist => artist.artist)
+  const artistA = () => library.getArtists().find(artist => artist.artist === 'Artist A')
+
+  const first = library.getArtists()
+  assert.deepEqual(names(), ['Artist A', 'Artist B'])
+  first[0].artist = 'Changed by a caller'
+  first.pop()
+  assert.deepEqual(library.getArtists().map(artist => [artist.artist, artist.track_count]), [['Artist A', 2], ['Artist B', 1]],
+    'a caller cannot change what the next one receives')
+
+  const image = join(dir, 'artist.png')
+  await writeFile(image, TINY_PNG_FIXTURE)
+  await library.setArtistImageFromFile('Artist A', 'canonical', image)
+  assert.ok(artistA()?.artwork_hash?.startsWith('ari:'), 'a chosen artist image shows at once')
+  await library.clearArtistImage('Artist A', 'canonical')
+  assert.ok(!artistA()?.artwork_hash?.startsWith('ari:'))
+
+  await library.upsertSubsonicTracks(source.id, [track(3, 'Artist C')])
+  assert.deepEqual(names(), ['Artist A', 'Artist B', 'Artist C'])
+  assert.deepEqual(names('strict'), ['Artist A', 'Artist B', 'Artist C'])
+
+  // A write from another connection: an artist shows its newest track's cover.
+  const artworkOf = (name: string, mode?: library.ArtistBrowseMode) =>
+    library.getArtists(mode).find(artist => artist.artist === name)?.artwork_hash
+  assert.equal(artworkOf('Artist B'), null)
+  withDirectLibraryDb(dir, db => db.prepare("UPDATE tracks SET artwork_hash = 'other-connection.jpg' WHERE path = ?").run(path(2)))
+  assert.equal(artworkOf('Artist B'), 'other-connection.jpg')
+  assert.equal(artworkOf('Artist B', 'strict'), 'other-connection.jpg')
+
+  // A cover that loads later replaces the reference it was listed under.
+  await library.upsertSubsonicTracks(source.id, [{ ...track(3, 'Artist C'), artwork_hash: `subsonic-artwork:${source.id}:cover` }])
+  assert.equal(artworkOf('Artist C'), `subsonic-artwork:${source.id}:cover`)
+  await library.replaceSubsonicArtworkHash(source.id, `subsonic-artwork:${source.id}:cover`, 'loaded-cover.jpg')
+  assert.equal(artworkOf('Artist C'), 'loaded-cover.jpg')
+
+  await library.updateSubsonicSource(source.id, { enabled: 0 })
+  assert.deepEqual(names(), [])
+})
+
+test('an artist card on Home counts the tracks the artist page lists, and leaves when none can play', async t => {
+  await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({ name: 'Server', base_url: 'https://music.test', username: 'test', secret_encrypted: 'test', enabled: 1 })
+  const path = (index: number) => `subsonic://${source.id}/track/${index}`
+  await library.upsertSubsonicTracks(source.id, [
+    createRemoteTrack({ path: path(0), source_track_id: '0', title: 'Solo', artist: 'Artist A', album_artist: 'Artist A', album: 'One' }),
+    createRemoteTrack({ path: path(1), source_track_id: '1', title: 'Guest', artist: 'Artist B', artist_names: ['Artist B', 'Artist A'], album_artist: 'Artist B', album: 'Two' }),
+    createRemoteTrack({ path: path(2), source_track_id: '2', title: 'Other', artist: 'Artist B', album_artist: 'Artist B', album: 'Two' })
+  ])
+  for (const [index, artist] of ['artist a', 'artist b'].entries()) {
+    await checkpointHomeSource(path(index), { type: 'artist', artist }, 2_000_000 + index * 100_000)
+  }
+  const cards = library.getHomeDashboard().recent_sources.filter(entry => entry.source.type === 'artist')
+  assert.deepEqual(cards.map(card => [card.title, card.detail]), [
+    ['Artist B', `${library.getTracksByArtist('Artist B').length} tracks`],
+    ['Artist A', `${library.getTracksByArtist('Artist A').length} tracks`]
+  ])
+  assert.equal(library.getTracksByArtist('Artist A').length, 2, 'a guest credit lists the track under both artists')
+
+  await library.markSubsonicTracksAvailability(source.id, false, 'source_unavailable')
+  assert.deepEqual(library.getHomeDashboard().recent_sources.filter(entry => entry.source.type === 'artist'), [])
+})
+
 test('covers loading one at a time share a single snapshot rebuild', async t => {
   await setupEmptyLibrary(t)
   const source = await library.createSubsonicSource({ name: 'Server', base_url: 'https://music.test', username: 'test', secret_encrypted: 'test', enabled: 1 })

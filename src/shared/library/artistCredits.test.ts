@@ -7,8 +7,10 @@ import {
   canonicalizeArtistDisplay,
   deserializeArtistNames,
   formatArtistNames,
+  normalizeArtistDisplay,
   normalizeArtistKey,
   normalizeArtistNames,
+  normalizeIdentityKey,
   resolveArtistCredit,
   resolveTrackArtistNames,
   serializeArtistNames
@@ -220,4 +222,29 @@ test('does not amplify repeated scalar album-owner boilerplate into compound ide
   assert.equal(index.rawCreditCounts.get(normalizeArtistKey(albumOwner)), 3)
   assert.deepEqual(resolveTrackArtistNames(tracks[0], index), ['Sān-Z', 'HOYO-MiX'])
   assert.deepEqual(resolveTrackArtistNames(tracks[0], index, true), ['Sān-Z', 'HOYO-MiX'])
+})
+
+test('name normalization is the same however often, and among however many other names, a name is seen', () => {
+  const display = (value: string) => value.normalize('NFC').replace(/[​-‍⁠﻿]/g, '').replace(/\s+/g, ' ').trim()
+  const identityKey = (value: string) => display(value).replace(/[‘’ʼ]/g, "'").toLocaleLowerCase()
+  const names = [
+    '  Sigur   Rós ', 'Sigur Rós', 'Beyoncé', 'Guns N’ Roses', 'Zero​Width', 'İstanbul', 'ΣΊΣΥΦΟΣ',
+    '', '   ', '​', `${'Long name '.repeat(40)}  with   spaces `
+  ]
+  const check = () => {
+    for (const name of names) {
+      assert.equal(normalizeArtistDisplay(name), display(name), JSON.stringify(name))
+      assert.equal(normalizeIdentityKey(name), identityKey(name), JSON.stringify(name))
+    }
+  }
+  check()
+  check()
+  // Results are remembered per name, with a limit on how many. Go well past it.
+  for (let index = 0; index < 120_000; index += 1) {
+    assert.equal(normalizeIdentityKey(` Artist  ${index} `), `artist ${index}`)
+  }
+  check()
+  assert.equal(normalizeIdentityKey('Sigur Rós'), normalizeIdentityKey('  sigur   rós '))
+  assert.equal(normalizeArtistDisplay(null), '')
+  assert.equal(normalizeIdentityKey(42), '')
 })

@@ -4504,10 +4504,24 @@ async function timeSyncPhase<T>(timings: SyncPhaseTimings, phase: string, work: 
   }
 }
 
+/**
+ * How many track rows a catalog sync changed. A sync the window didn't ask for
+ * (startup, the timer) tells it to reload the library only when this is above zero,
+ * so a sync that found nothing new stays invisible.
+ */
+interface SyncLibraryChanges {
+  tracks: number
+}
+
+function notifyRemoteCatalogChanged(changes: SyncLibraryChanges): void {
+  if (changes.tracks > 0) sendToWindow(mainWindow, 'library:remoteCatalogChanged')
+}
+
 async function syncOneSubsonicSource(
   sourceId: number,
   syncSessionKey: string,
-  timings: SyncPhaseTimings = {}
+  timings: SyncPhaseTimings = {},
+  changes: SyncLibraryChanges = { tracks: 0 }
 ): Promise<boolean> {
   const source = library.getSubsonicSourceById(sourceId)
   if (!source) return false
@@ -4546,7 +4560,7 @@ async function syncOneSubsonicSource(
     openSubsonic = server.openSubsonic
   } catch (error) {
     const message = syncFailureMessage(error, 'subsonic', 'connect')
-    await library.markSubsonicTracksUnreachable(sourceId, { persist: false })
+    changes.tracks += await library.markSubsonicTracksUnreachable(sourceId, { persist: false })
     await library.updateSubsonicSourceStatus(
       sourceId,
       {
@@ -4562,7 +4576,7 @@ async function syncOneSubsonicSource(
     throw error
   }
 
-  await library.restoreSubsonicTracksFromSourceUnavailable(sourceId, { persist: false })
+  changes.tracks += await library.restoreSubsonicTracksFromSourceUnavailable(sourceId, { persist: false })
 
   try {
     const connection = credentials.connection
@@ -4611,13 +4625,14 @@ async function syncOneSubsonicSource(
       }
       return hashes
     })
-    await timeSyncPhase(timings, 'upsert', () => library.upsertSubsonicTracks(sourceId, result.tracks.map(track => ({ ...track,
+    const written = await timeSyncPhase(timings, 'upsert', () => library.upsertSubsonicTracks(sourceId, result.tracks.map(track => ({ ...track,
       artwork_hash: track.artwork_hash ? artworkHashes.get(track.artwork_hash) ?? track.artwork_hash : null })), {
       persist: false,
       syncSessionKey,
       preserveExistingArtwork: true
     }))
-    await timeSyncPhase(timings, 'missing', () => library.markMissingSubsonicTracksUnavailable(
+    changes.tracks += written.inserted + written.updated
+    changes.tracks += await timeSyncPhase(timings, 'missing', () => library.markMissingSubsonicTracksUnavailable(
       sourceId,
       new Set(result.tracks.map((track) => track.source_track_id)),
       { persist: false }
@@ -4645,7 +4660,7 @@ async function syncOneSubsonicSource(
     const errorKind = classifySourceError(error, 'sync')
     // Like Plex: after the connection check passes, one failing catalog request leaves the
     // tracks playable, but a refused sign-in doesn't.
-    if (errorKind === 'auth') await library.markSubsonicTracksUnreachable(sourceId, { persist: false })
+    if (errorKind === 'auth') changes.tracks += await library.markSubsonicTracksUnreachable(sourceId, { persist: false })
     await library.updateSubsonicSourceStatus(
       sourceId,
       {
@@ -4662,7 +4677,12 @@ async function syncOneSubsonicSource(
   }
 }
 
-async function runSubsonicSync(sourceId?: number, requestedSyncSessionKey?: string | null): Promise<void> {
+async function runSubsonicSync(
+  sourceId?: number,
+  requestedSyncSessionKey?: string | null,
+  // The window reloads the library itself after a sync it asked for.
+  options: { background?: boolean } = {}
+): Promise<void> {
   if (subsonicSyncInFlight) {
     throw new Error('A Subsonic sync is already in progress.')
   }
@@ -4687,6 +4707,7 @@ async function runSubsonicSync(sourceId?: number, requestedSyncSessionKey?: stri
   // many library snapshot rebuilds happened while it ran (a sync that changed nothing
   // should see none). Set ASTRA_SYNC_TIMING=1 to print it.
   const timings: SyncPhaseTimings = {}
+  const changes: SyncLibraryChanges = { tracks: 0 }
   const startedAt = performance.now()
   const rebuildsBefore = library.getLibrarySnapshotRebuildCount()
   const loopDelay = monitorEventLoopDelay({ resolution: 10 })
@@ -4697,7 +4718,7 @@ async function runSubsonicSync(sourceId?: number, requestedSyncSessionKey?: stri
   try {
     for (const source of sources) {
       try {
-        const didSync = await syncOneSubsonicSource(source.id, syncSessionKey, timings)
+        const didSync = await syncOneSubsonicSource(source.id, syncSessionKey, timings, changes)
         if (didSync) {
           successfulSourceCount += 1
         }
@@ -4714,11 +4735,13 @@ async function runSubsonicSync(sourceId?: number, requestedSyncSessionKey?: stri
     subsonicSyncInFlight = false
     broadcastSubsonicStatus(refreshSubsonicStatusCache(false))
     await timeSyncPhase(timings, 'finalize', () => finalizeLatestLibrarySyncSession(syncSessionKey, successfulSourceCount > 0, 'Subsonic sync'))
+    if (options.background) notifyRemoteCatalogChanged(changes)
     loopDelay.disable()
     const timing = {
       totalMs: Math.round(performance.now() - startedAt),
       longestStallMs: Math.round(loopDelay.max / 1e6),
       snapshotRebuilds: library.getLibrarySnapshotRebuildCount() - rebuildsBefore,
+      changedTracks: changes.tracks,
       phaseMs: Object.fromEntries(Object.entries(timings).map(([phase, ms]) => [phase, Math.round(ms)]))
     }
     logMemoryDiagnosticsMainEvent('subsonic_sync_finished', {
@@ -4737,7 +4760,7 @@ function startSubsonicSyncScheduler(): void {
     clearInterval(subsonicSyncTimer)
   }
   subsonicSyncTimer = setInterval(() => {
-    void runSubsonicSync().catch((error) => {
+    void runSubsonicSync(undefined, undefined, { background: true }).catch((error) => {
       if (error instanceof Error && error.message.includes('already in progress')) {
         return
       }
@@ -4802,7 +4825,11 @@ async function hydrateJellyfinTrackArtworkHashes(
   return hashesByArtworkId
 }
 
-async function syncOneJellyfinSource(sourceId: number, syncSessionKey: string): Promise<boolean> {
+async function syncOneJellyfinSource(
+  sourceId: number,
+  syncSessionKey: string,
+  changes: SyncLibraryChanges = { tracks: 0 }
+): Promise<boolean> {
   const source = library.getJellyfinSourceById(sourceId)
   if (!source) return false
 
@@ -4838,7 +4865,7 @@ async function syncOneJellyfinSource(sourceId: number, syncSessionKey: string): 
     })
   } catch (error) {
     const message = syncFailureMessage(error, 'jellyfin', 'connect')
-    await library.markJellyfinTracksUnreachable(sourceId, { persist: false })
+    changes.tracks += await library.markJellyfinTracksUnreachable(sourceId, { persist: false })
     await library.updateJellyfinSourceStatus(
       sourceId,
       {
@@ -4854,7 +4881,7 @@ async function syncOneJellyfinSource(sourceId: number, syncSessionKey: string): 
     throw error
   }
 
-  await library.restoreJellyfinTracksFromSourceUnavailable(sourceId, { persist: false })
+  changes.tracks += await library.restoreJellyfinTracksFromSourceUnavailable(sourceId, { persist: false })
 
   try {
     const authContext = await authenticateJellyfin(credentials.connection, {
@@ -4906,11 +4933,12 @@ async function syncOneJellyfinSource(sourceId: number, syncSessionKey: string): 
       phase: 'finalizing',
       activity: 'Applying library updates...'
     })
-    await library.upsertJellyfinTracks(sourceId, tracksForUpsert, {
+    const written = await library.upsertJellyfinTracks(sourceId, tracksForUpsert, {
       persist: false,
       syncSessionKey
     })
-    await library.markMissingJellyfinTracksUnavailable(
+    changes.tracks += written.inserted + written.updated
+    changes.tracks += await library.markMissingJellyfinTracksUnavailable(
       sourceId,
       new Set(result.tracks.map((track) => track.source_track_id)),
       { persist: false }
@@ -4935,7 +4963,7 @@ async function syncOneJellyfinSource(sourceId: number, syncSessionKey: string): 
     const errorKind = classifySourceError(error, 'sync')
     // Like Plex: after the connection check passes, one failing catalog request leaves the
     // tracks playable, but a refused sign-in doesn't.
-    if (errorKind === 'auth') await library.markJellyfinTracksUnreachable(sourceId, { persist: false })
+    if (errorKind === 'auth') changes.tracks += await library.markJellyfinTracksUnreachable(sourceId, { persist: false })
     await library.updateJellyfinSourceStatus(
       sourceId,
       {
@@ -4952,7 +4980,12 @@ async function syncOneJellyfinSource(sourceId: number, syncSessionKey: string): 
   }
 }
 
-async function runJellyfinSync(sourceId?: number, requestedSyncSessionKey?: string | null): Promise<void> {
+async function runJellyfinSync(
+  sourceId?: number,
+  requestedSyncSessionKey?: string | null,
+  // The window reloads the library itself after a sync it asked for.
+  options: { background?: boolean } = {}
+): Promise<void> {
   if (jellyfinSyncInFlight) {
     throw new Error('A Jellyfin sync is already in progress.')
   }
@@ -4973,12 +5006,13 @@ async function runJellyfinSync(sourceId?: number, requestedSyncSessionKey?: stri
     sourceCount: sources.length
   })
 
+  const changes: SyncLibraryChanges = { tracks: 0 }
   let failedSourceCount = 0
   let successfulSourceCount = 0
   try {
     for (const source of sources) {
       try {
-        const didSync = await syncOneJellyfinSource(source.id, syncSessionKey)
+        const didSync = await syncOneJellyfinSource(source.id, syncSessionKey, changes)
         if (didSync) {
           successfulSourceCount += 1
         }
@@ -4995,6 +5029,7 @@ async function runJellyfinSync(sourceId?: number, requestedSyncSessionKey?: stri
     jellyfinSyncInFlight = false
     broadcastJellyfinStatus(refreshJellyfinStatusCache(false))
     await finalizeLatestLibrarySyncSession(syncSessionKey, successfulSourceCount > 0, 'Jellyfin sync')
+    if (options.background) notifyRemoteCatalogChanged(changes)
     logMemoryDiagnosticsMainEvent('jellyfin_sync_finished', {
       requestedSourceId: sourceId ?? null,
       sourceCount: sources.length,
@@ -5009,7 +5044,7 @@ function startJellyfinSyncScheduler(): void {
     clearInterval(jellyfinSyncTimer)
   }
   jellyfinSyncTimer = setInterval(() => {
-    void runJellyfinSync().catch((error) => {
+    void runJellyfinSync(undefined, undefined, { background: true }).catch((error) => {
       if (error instanceof Error && error.message.includes('already in progress')) {
         return
       }
@@ -6124,13 +6159,13 @@ app.whenReady().then(async () => {
   startJellyfinSyncScheduler()
   plexSyncTimer = setInterval(() => { void plexSources.syncAll() }, SUBSONIC_SYNC_INTERVAL_MS)
   void plexSources.syncAll()
-  void runSubsonicSync().catch((error) => {
+  void runSubsonicSync(undefined, undefined, { background: true }).catch((error) => {
     if (error instanceof Error && error.message.includes('already in progress')) {
       return
     }
     console.warn('Startup Subsonic sync failed:', error)
   })
-  void runJellyfinSync().catch((error) => {
+  void runJellyfinSync(undefined, undefined, { background: true }).catch((error) => {
     if (error instanceof Error && error.message.includes('already in progress')) {
       return
     }

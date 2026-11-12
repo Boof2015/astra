@@ -1622,6 +1622,13 @@ const SNAPSHOT_ALWAYS_INVALIDATE_PATTERN = /^\s*(?:CREATE|DROP|ALTER|ROLLBACK)\b
 // or ordering. Badges read that summary when returning tracks, outside the cache.
 const SNAPSHOT_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|subsonic_sources|jellyfin_sources|plex_sources)\b/i
 const HOME_RELEASE_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|favorites|subsonic_sources|jellyfin_sources|plex_sources)\b/i
+const ARTIST_IMAGE_TABLE_PATTERN = /\bartist_images\b/i
+
+// The artist list is built from every visible track, so it is kept per browse mode until
+// the library changes. Home looks artists up in it on every refresh. Besides the tracks
+// (the write generation, and data_version for other connections) it reads the
+// artist_images table, whose writes clear it.
+const artistListCache = new Map<ArtistBrowseMode, { generation: number; dataVersion: number; artists: ArtistRecord[] }>()
 
 // A rebuild blocks the main thread for about a second on a large library. A remote
 // import commits in small batches and yields between them, so without this every
@@ -1649,6 +1656,9 @@ function noteLibrarySqlMutation(sql: string, keepsTrackSnapshot = false): void {
   if (SNAPSHOT_ALWAYS_INVALIDATE_PATTERN.test(sql)
     || (SNAPSHOT_WRITE_STATEMENT_PATTERN.test(sql) && HOME_RELEASE_SOURCE_TABLE_PATTERN.test(sql))) {
     homeReleaseSummaryCache = null
+  }
+  if (SNAPSHOT_WRITE_STATEMENT_PATTERN.test(sql) && ARTIST_IMAGE_TABLE_PATTERN.test(sql)) {
+    artistListCache.clear()
   }
   if (SNAPSHOT_ALWAYS_INVALIDATE_PATTERN.test(sql)) {
     invalidateLibraryTrackSnapshot()
@@ -2477,6 +2487,74 @@ function addTrackToAlbumSummary(
   }
 }
 
+// Which tracks form which album depends only on the visible tracks and their album,
+// artist, numbering and artwork fields, which is what the library write generation
+// tracks. Every album, artist and Home query needs these groups, and regrouping the
+// whole library was most of the cost of each one, so they are kept until the library
+// changes. The rows themselves are read fresh on every call: play counts, favorites and
+// availability change without changing the grouping.
+interface VisibleAlbumGroup {
+  identity: ResolvedAlbumIdentity
+  tracks: readonly DbTrackRow[]
+}
+let visibleAlbumGrouping: {
+  generation: number
+  dataVersion: number
+  groups: Array<{ identity: ResolvedAlbumIdentity; paths: string[] }>
+  trackCount: number
+} | null = null
+
+function groupVisibleTracksByAlbum(tracks: readonly DbTrackRow[]): VisibleAlbumGroup[] {
+  if (!db || tracks.length === 0) return []
+  // The generation only sees this connection's writes; data_version sees the others.
+  const dataVersion = db.get<{ data_version: number }>('PRAGMA data_version')!.data_version
+  const kept = visibleAlbumGrouping
+  if (kept && kept.generation === libraryWriteGeneration && kept.dataVersion === dataVersion
+    && kept.trackCount === tracks.length) {
+    const rowsByPath = new Map<string, DbTrackRow>()
+    for (const track of tracks) rowsByPath.set(track.path, track)
+    const groups: VisibleAlbumGroup[] = []
+    let sameTracks = true
+    for (const group of kept.groups) {
+      const members: DbTrackRow[] = []
+      for (const path of group.paths) {
+        const row = rowsByPath.get(path)
+        if (!row) {
+          sameTracks = false
+          break
+        }
+        members.push(row)
+      }
+      if (!sameTracks) break
+      groups.push({ identity: group.identity, tracks: members })
+    }
+    if (sameTracks) return groups
+  }
+
+  const groups = measureLibraryQuery('groupVisibleAlbums', () => {
+    const grouped: VisibleAlbumGroup[] = []
+    for (const identityGroup of groupTracksByAlbumIdentity(tracks, (track) => track.path).values()) {
+      grouped.push({
+        identity: {
+          identityKey: identityGroup.identityKey,
+          groupingMode: identityGroup.groupingMode,
+          albumKey: identityGroup.albumKey,
+          displayArtist: identityGroup.displayArtist
+        },
+        tracks: identityGroup.tracks
+      })
+    }
+    return grouped
+  })
+  visibleAlbumGrouping = {
+    generation: libraryWriteGeneration,
+    dataVersion,
+    groups: groups.map((group) => ({ identity: group.identity, paths: group.tracks.map((track) => track.path) })),
+    trackCount: tracks.length
+  }
+  return groups
+}
+
 function collectAlbumSummaryGroups(
   latestSyncSummary: LatestLibrarySyncSummary | null,
   favoritePaths?: ReadonlySet<string>,
@@ -2488,15 +2566,9 @@ function collectAlbumSummaryGroups(
     ${VISIBLE_TRACK_FROM_CLAUSE}
   `)
 
-  for (const identityGroup of groupTracksByAlbumIdentity(tracks, (track) => track.path).values()) {
-    const identity: ResolvedAlbumIdentity = {
-      identityKey: identityGroup.identityKey,
-      groupingMode: identityGroup.groupingMode,
-      albumKey: identityGroup.albumKey,
-      displayArtist: identityGroup.displayArtist
-    }
+  for (const { identity, tracks: members } of groupVisibleTracksByAlbum(tracks)) {
     const group = createAlbumSummaryAccumulator(identity)
-    for (const track of identityGroup.tracks) {
+    for (const track of members) {
       addTrackToAlbumSummary(group, track, latestSyncSummary, favoritePaths)
       onTrack?.(identity.identityKey, track)
     }
@@ -3422,6 +3494,8 @@ export function closeDatabase(): void {
   invalidateLibraryTrackSnapshot()
   heldTrackSnapshot = null
   heldStoredTrackSnapshot = null
+  visibleAlbumGrouping = null
+  artistListCache.clear()
   homeReleaseSummaryCache = null
 }
 
@@ -4532,7 +4606,11 @@ export async function replaceSubsonicArtworkHash(
   // Album grouping reads the artwork hash, so the snapshot does have to be rebuilt. A
   // view loading its covers swaps them one at a time (Navidrome gives every track its
   // own cover ID), and rebuilding per cover froze the app. They share one rebuild.
-  if (count > 0) scheduleDerivedLibraryStateRebuild()
+  if (count > 0) {
+    scheduleDerivedLibraryStateRebuild()
+    // An artist shows its newest track's cover, so the kept artist list is out of date now.
+    artistListCache.clear()
+  }
   if (options.persist !== false && count > 0) {
     await saveDatabase()
   }
@@ -6114,6 +6192,12 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
   return measureLibraryQuery('getArtists', () => {
     if (!db) return []
     const resolvedMode = normalizeArtistBrowseMode(mode)
+    const dataVersion = db.get<{ data_version: number }>('PRAGMA data_version')!.data_version
+    const remembered = artistListCache.get(resolvedMode)
+    if (remembered && remembered.generation === libraryWriteGeneration && remembered.dataVersion === dataVersion) {
+      // Copies, so a caller can't change what the next one gets.
+      return remembered.artists.map((artist) => ({ ...artist }))
+    }
     const artistImageRows = readArtistImageRowsForMode(resolvedMode)
     const albumIdentityKeysByPath = getLibraryTrackSnapshot()?.identityKeysByPath ?? new Map<string, string>()
     const eligibleAlbumIdentityKeys = collectEligibleAlbumIdentityKeys()
@@ -6215,7 +6299,7 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
       }
     }
 
-    return Array.from(artistCounts.values())
+    const artists: ArtistRecord[] = Array.from(artistCounts.values())
       .map(({ artist, track_count, primary_track_count, album_identity_keys, artwork_hash }) => {
         const artistImageRow = artistImageRows.get(getArtistImageKey(artist))
         const resolvedArtwork = resolveArtistArtwork(
@@ -6233,6 +6317,10 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
         }
       })
       .sort((a, b) => compareBaseLocaleText(a.artist, b.artist))
+    // Reading the snapshot above can rebuild it, which moves the generation. Key on the
+    // one the list was finished under.
+    artistListCache.set(resolvedMode, { generation: libraryWriteGeneration, dataVersion, artists })
+    return artists.map((artist) => ({ ...artist }))
   })
 }
 
@@ -6418,6 +6506,7 @@ function moveHomeTrackSource(oldPath: string, newPath: string): void {
 interface HomeSourceLookups {
   artists?: ArtistRecord[]
   genres?: GenreRecord[]
+  visibleTracks?: DbTrackRow[]
 }
 
 function resolveHomePlaybackSource(
@@ -6432,6 +6521,7 @@ function resolveHomePlaybackSource(
   let detail: string
   let artworkHash: string | null = null
   let tracks: DbTrack[] = []
+  let hasAvailableTrack = false
   const trackCount = (count: number) => `${count} ${count === 1 ? 'track' : 'tracks'}`
   switch (source.type) {
     case 'track': {
@@ -6466,10 +6556,26 @@ function resolveHomePlaybackSource(
       const artist = (lookups.artists ??= getArtists(artistMode)).find((entry) => normalizeKey(entry.artist) === normalizeKey(artistName))
       if (!artist) return null
       source = { type: 'artist', artist: artist.artist }
-      tracks = getTracksByArtist(artist.artist, artistMode)
+      // A card shows how many tracks the artist has and needs to know one can play.
+      // Loading each artist's tracks read the whole library once per card, so the cards
+      // share one read and count with the same match getTracksByArtist uses.
+      const artistKey = normalizeKey(artist.artist)
+      let artistTrackCount = 0
+      if (artistKey) {
+        getLibraryTrackSnapshot()
+        lookups.visibleTracks ??= readEffectiveTrackRows(`
+          SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+          ${VISIBLE_TRACK_FROM_CLAUSE}
+        `)
+        for (const track of lookups.visibleTracks) {
+          if (!trackMatchesBrowseArtist(track, artistKey, artistMode)) continue
+          artistTrackCount += 1
+          if (track.is_available !== 0) hasAvailableTrack = true
+        }
+      }
       title = artist.artist
       subtitle = 'Artist'
-      detail = trackCount(tracks.length)
+      detail = trackCount(artistTrackCount)
       artworkHash = artist.artwork_hash
       break
     }
@@ -6494,7 +6600,8 @@ function resolveHomePlaybackSource(
       break
     }
   }
-  if (source.type !== 'track' && source.type !== 'album' && !tracks.some((track) => track.is_available !== 0)) return null
+  if (source.type !== 'track' && source.type !== 'album'
+    && !hasAvailableTrack && !tracks.some((track) => track.is_available !== 0)) return null
   return { key: playbackSourceKey(source), source, title, subtitle, detail, artwork_hash: artworkHash, last_played_at: playedAt }
 }
 

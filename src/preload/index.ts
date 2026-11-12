@@ -1932,6 +1932,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('library:externalLibraryMutation', handler)
       return () => ipcRenderer.removeListener('library:externalLibraryMutation', handler)
     },
+    // Fired after a server sync the window didn't start (launch, the timer) added,
+    // changed or removed tracks; the renderer should reload the library.
+    onRemoteCatalogChanged: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('library:remoteCatalogChanged', handler)
+      return () => ipcRenderer.removeListener('library:remoteCatalogChanged', handler)
+    },
 
     // Favorites
     getFavorites: () => ipcRenderer.invoke('library:getFavorites'),
@@ -2572,6 +2579,7 @@ declare global {
         onAudioMetadataBackfillComplete: (callback: (result: { scanned: number; updated: number; errors: number }) => void) => () => void
         onMetadataEditProgress: (callback: (progress: { current: number; total: number; trackPath: string }) => void) => () => void
         onExternalLibraryMutation: (callback: () => void) => () => void
+        onRemoteCatalogChanged: (callback: () => void) => () => void
 
         // Favorites
         getFavorites: () => Promise<DbTrack[]>

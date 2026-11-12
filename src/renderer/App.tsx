@@ -521,6 +521,12 @@ function App() {
       void useRatingsStore.getState().loadRatings()
       void usePlaylistStore.getState().loadPlaylists().then(() => usePlaylistStore.getState().refreshSelectedPlaylist())
     })
+    // A server sync at launch or on the timer changed the library's tracks.
+    const unsubscribeRemoteCatalogChanged = window.electronAPI.library.onRemoteCatalogChanged(() => {
+      void useLibraryStore.getState().loadLibrary()
+        .then(() => usePlaylistStore.getState().loadPlaylists())
+        .then(() => usePlaylistStore.getState().refreshSelectedPlaylist())
+    })
     void useProviderSyncStore.getState().refreshStatus()
     const unsubscribeProviderSync = window.electronAPI.providerSync.onChanged(() => {
       void useProviderSyncStore.getState().refreshStatus()
@@ -530,6 +536,7 @@ function App() {
       unsubscribeFileCreatedAtBackfill()
       unsubscribeBackfill()
       unsubscribeExternalLibraryMutation()
+      unsubscribeRemoteCatalogChanged()
       unsubscribeProviderSync()
       unsubscribeAssociatedOpenFiles()
       sessionPersistenceCleanup?.()
