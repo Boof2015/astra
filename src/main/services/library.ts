@@ -1,3 +1,7 @@
+import { isAtmosJocStream, parseFfprobeAudioMetadata, type FfprobeAudioMetadata } from '../../shared/audio/ffprobeMetadata'
+import { ATMOS_METADATA_REFRESH_KEY, runAtmosMetadataRefreshOnce, supportsAtmosMetadataRefresh, type AtmosRefreshResult } from './atmosMetadataRefresh'
+import type { RemotePlaylistDestination, RemotePlaylistLink, RemotePlaylistLocal, RemotePlaylistSnapshot } from '../../types/remotePlaylists'
+import type { PlexSource } from '../../types/plex'
 import * as mm from 'music-metadata'
 import { app, powerMonitor } from 'electron'
 import { join, extname, basename, dirname, isAbsolute as isAbsolutePath, normalize as normalizePath, resolve as resolvePath, relative as relativePath, sep as pathSep } from 'path'
@@ -13,7 +17,7 @@ import {
   resolveImportedPlaylistEntryPaths,
   stripPlaylistEntryOuterQuotes
 } from './playlistPathResolver'
-import { getMusicMetadataParseOptions } from '../utils/musicMetadata'
+import { getMusicMetadataParseOptions, musicMetadataFromFfprobe } from '../utils/musicMetadata'
 import { compareBaseLocaleText } from '../../shared/localeSort'
 import { collectIamfStreamStats } from '../../shared/iamf/obuWalker'
 import { mp4HasIamfTrack, readMp4DurationSeconds } from '../../shared/iamf/mp4'
@@ -70,6 +74,7 @@ import {
   type PlaylistKind
 } from '../../shared/playlists/dynamicPlaylist'
 import { normalizeTrackRating, type TrackRatingEntry } from '../../shared/ratings/trackRating'
+import type { ProviderSyncRef, ProviderSyncTrack, ProviderSyncField, ProviderSyncValue } from '../../types/providerSync'
 import {
   LISTENING_STATS_TRANSFER_VERSION,
   createEmptyListeningStatsImportResult,
@@ -109,6 +114,8 @@ import { getLocalDayKey, HOME_SHELF_ITEM_LIMIT, selectHomeRediscovery } from '..
 import type { LyricsFormat, LyricsLine, LyricsProvider } from '../../types/lyrics'
 import type {
   JellyfinSourceLastStatus,
+  RemoteSourceCounts,
+  SourceErrorKind,
   SubsonicSourceLastStatus,
   TrackSourceType
 } from '../../types/subsonic'
@@ -287,6 +294,7 @@ export interface SubsonicSourceRow {
   enabled: number
   last_status: SubsonicSourceLastStatus
   last_error: string | null
+  last_error_kind: SourceErrorKind | null
   last_sync_at: number | null
   last_checked_at: number | null
   created_at: number
@@ -301,6 +309,7 @@ export interface SubsonicSourcePublic {
   enabled: number
   last_status: SubsonicSourceLastStatus
   last_error: string | null
+  last_error_kind: SourceErrorKind | null
   last_sync_at: number | null
   last_checked_at: number | null
   created_at: number
@@ -317,10 +326,153 @@ export interface JellyfinSourceRow {
   enabled: number
   last_status: JellyfinSourceLastStatus
   last_error: string | null
+  last_error_kind: SourceErrorKind | null
   last_sync_at: number | null
   last_checked_at: number | null
   created_at: number
   updated_at: number
+}
+
+export type PlexSourceRow = Omit<PlexSource, 'has_stored_secret'> & { secret_encrypted: string; deleted: number }
+
+function publicPlexSource(row: PlexSourceRow): PlexSource {
+  const { secret_encrypted, deleted: _deleted, ...source } = row
+  return { ...source, last_error_kind: normalizeSourceErrorKind(source.last_error_kind), has_stored_secret: !!secret_encrypted }
+}
+
+function normalizeSourceErrorKind(value: unknown): SourceErrorKind | null {
+  return value === 'auth' || value === 'unreachable' || value === 'sync' ? value : null
+}
+export function listPlexSources(): PlexSource[] {
+  return (db?.all<PlexSourceRow>('SELECT * FROM plex_sources WHERE deleted = 0 ORDER BY created_at, id') ?? []).map(publicPlexSource)
+}
+export function getPlexSourceById(id: number): PlexSourceRow | null {
+  return db?.get<PlexSourceRow>('SELECT * FROM plex_sources WHERE id = ? AND deleted = 0', [id]) ?? null
+}
+export async function savePlexSource(input: Pick<PlexSourceRow, 'name' | 'base_url' | 'username' | 'account_id' | 'server_id' | 'library_id' | 'library_name' | 'secret_encrypted'>): Promise<PlexSource> {
+  if (!db) throw new Error('Database not initialized')
+  const now = Date.now()
+  db.run(`INSERT INTO plex_sources (name, base_url, username, account_id, server_id, library_id, library_name, secret_encrypted, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, server_id, library_id) DO UPDATE SET
+      name = excluded.name, base_url = excluded.base_url, username = excluded.username,
+      library_name = excluded.library_name, secret_encrypted = excluded.secret_encrypted,
+      enabled = 1, deleted = 0, last_status = 'unknown', last_error = NULL, last_error_kind = NULL, updated_at = excluded.updated_at`,
+  [input.name, input.base_url, input.username, input.account_id, input.server_id, input.library_id, input.library_name, input.secret_encrypted, now, now])
+  // A retained lower-ID library may have been reconnected after its playlist
+  // collection moved to another library. Move the existing collection with it.
+  const peers = listPlexSources().filter(source => source.account_id === input.account_id && source.server_id === input.server_id).sort((a, b) => a.id - b.id)
+  for (const peer of peers.slice(1)) {
+    db.run("UPDATE playlists SET remote_source_id = ? WHERE remote_source_type = 'plex' AND remote_source_id = ?", [peers[0].id, peer.id])
+    db.run("UPDATE remote_playlist_sync SET source_id = ? WHERE provider = 'plex' AND source_id = ?", [peers[0].id, peer.id])
+  }
+  await saveDatabase()
+  return publicPlexSource(db.get<PlexSourceRow>('SELECT * FROM plex_sources WHERE account_id = ? AND server_id = ? AND library_id = ?',
+    [input.account_id, input.server_id, input.library_id])!)
+}
+export async function updatePlexSource(id: number, input: Partial<Pick<PlexSourceRow,
+  'name' | 'base_url' | 'secret_encrypted' | 'enabled' | 'last_status' | 'last_error' | 'last_error_kind' | 'last_sync_at' | 'last_checked_at'>>): Promise<PlexSource> {
+  const current = getPlexSourceById(id)
+  if (!db || !current) throw new Error('Plex source not found.')
+  const allowed = ['name', 'base_url', 'secret_encrypted', 'enabled', 'last_status', 'last_error', 'last_error_kind', 'last_sync_at', 'last_checked_at'] as const
+  const keys = allowed.filter(key => input[key] !== undefined)
+  if (keys.length) db.run(`UPDATE plex_sources SET ${keys.map(key => `${key} = ?`).join(', ')}, updated_at = ? WHERE id = ?`,
+    [...keys.map(key => input[key]!), Date.now(), id],
+    // Credential renewal and status don't change the stored library. Visibility does.
+    { affectsLibrary: input.enabled !== undefined && input.enabled !== current.enabled })
+  await saveDatabase()
+  return publicPlexSource(getPlexSourceById(id)!)
+}
+export async function markPlexTracksAvailability(id: number, available: boolean, reason: string | null): Promise<void> {
+  db?.run(`UPDATE tracks SET is_available = ?, availability_reason = ?, modified_at = ? WHERE source_type = 'plex' AND source_id = ?`,
+    [available ? 1 : 0, available ? null : reason, Date.now(), id])
+  await saveDatabase()
+}
+/** An outage hides only playable tracks, keeping other reasons, so recovery can't revive a removed track. */
+export async function markPlexTracksUnreachable(id: number): Promise<void> {
+  const changes = db?.run(`UPDATE tracks SET is_available = 0, availability_reason = 'source_unavailable', modified_at = ?
+    WHERE source_type = 'plex' AND source_id = ? AND is_available = 1`, [Date.now(), id]).changes ?? 0
+  if (changes > 0) await saveDatabase()
+}
+/** Undo an outage once the server answers again. Missing, disabled and deleted tracks stay unavailable. */
+export async function restorePlexTracksFromSourceUnavailable(id: number): Promise<void> {
+  const changes = db?.run(`UPDATE tracks SET is_available = 1, availability_reason = NULL, modified_at = ?
+    WHERE source_type = 'plex' AND source_id = ? AND is_available = 0 AND availability_reason = 'source_unavailable'`,
+  [Date.now(), id]).changes ?? 0
+  if (changes > 0) await saveDatabase()
+}
+export async function markMissingPlexTracksUnavailable(id: number, seen: Set<string>): Promise<void> {
+  if (!db) return
+  const rows = db.all<{ path: string; source_track_id: string }>(`SELECT path, source_track_id FROM tracks
+    WHERE source_type = 'plex' AND source_id = ?
+      AND (is_available IS NOT 0 OR availability_reason IS NOT 'missing_upstream')`, [id])
+  beginLibraryWriteTransaction()
+  try {
+    for (const row of rows) if (!seen.has(row.source_track_id)) db!.run(
+      "UPDATE tracks SET is_available = 0, availability_reason = 'missing_upstream', modified_at = ? WHERE path = ?", [Date.now(), row.path])
+    commitLibraryWriteTransaction()
+  } catch (error) { rollbackLibraryWriteTransaction(); throw error }
+  await saveDatabase()
+}
+/**
+ * The tracks that removing a server with "Delete them" deletes: everything it brought in,
+ * including tracks it no longer has. A Subsonic or Jellyfin source also takes rows under its
+ * path prefix, and the last one of its kind takes tracks from before sources had ids.
+ */
+function purgedTrackScope(provider: RemoteSourceCounts['provider'], sourceId: number): { where: string; params: unknown[] } {
+  if (provider === 'plex') return { where: "source_type = 'plex' AND source_id = ?", params: [sourceId] }
+  const exists = !!(provider === 'subsonic' ? getSubsonicSourceById(sourceId) : getJellyfinSourceById(sourceId))
+  const others = Number(db?.get<{ count?: unknown }>(`SELECT COUNT(*) AS count FROM ${provider}_sources WHERE id <> ?`, [sourceId])?.count ?? 0)
+  const includeUnknownSourceTracks = exists && Number.isFinite(others) && others <= 0
+  return {
+    where: includeUnknownSourceTracks
+      ? `((source_type = '${provider}' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)`
+      : `((source_type = '${provider}' AND source_id = ?) OR path LIKE ?)`,
+    params: [sourceId, `${provider}://${sourceId}/%`]
+  }
+}
+
+/** How many tracks removing this server with "Delete them" would delete, for the Remove window. */
+export function countTracksRemovedWithSource(provider: RemoteSourceCounts['provider'], sourceId: number): number {
+  if (!db) return 0
+  const scope = purgedTrackScope(provider, sourceId)
+  return Number(db.get<{ count?: unknown }>(`SELECT COUNT(*) AS count FROM tracks WHERE ${scope.where}`, scope.params)?.count ?? 0) || 0
+}
+
+export async function deletePlexSource(id: number, purge: boolean): Promise<void> {
+  if (!db) return
+  const group = getPlexPlaylistSources(id)
+  const owner = group[0]
+  const successor = group.find(source => source.id !== id)
+  if (owner?.id === id && successor) {
+    // Playlists belong to the account/server, not the removed Music library.
+    db.run("UPDATE playlists SET remote_source_id = ? WHERE remote_source_type = 'plex' AND remote_source_id = ?", [successor.id, id])
+    db.run("UPDATE remote_playlist_sync SET source_id = ? WHERE provider = 'plex' AND source_id = ?", [successor.id, id])
+  } else if (!successor) {
+    db.run("DELETE FROM playlist_tracks WHERE playlist_id IN (SELECT id FROM playlists WHERE remote_source_type = 'plex' AND remote_source_id = ?)", [id])
+    db.run("DELETE FROM playlists WHERE remote_source_type = 'plex' AND remote_source_id = ?", [id])
+    db.run("DELETE FROM remote_playlist_sync WHERE provider = 'plex' AND source_id = ?", [id])
+  }
+  if (purge) {
+    // Keep full server-owned playlist contents when one of its libraries is
+    // purged locally. Local playlists retain the existing purge behavior.
+    db.run(`UPDATE playlist_tracks SET track_path = 'plex://' ||
+      (SELECT remote_source_id FROM playlists WHERE id = playlist_tracks.playlist_id) || '/unavailable/' ||
+      (SELECT source_track_id FROM tracks WHERE path = playlist_tracks.track_path)
+      WHERE playlist_id IN (SELECT id FROM playlists WHERE remote_source_type = 'plex')
+        AND track_path IN (SELECT path FROM tracks WHERE source_type = 'plex' AND source_id = ?)`, [id])
+    const scope = purgedTrackScope('plex', id)
+    const paths = db.all<{ path: string }>(`SELECT path FROM tracks WHERE ${scope.where}`, scope.params).map(row => row.path)
+    deleteTrackRelatedRows(paths)
+    db.run(`DELETE FROM tracks WHERE ${scope.where}`, scope.params)
+    rebuildDerivedLibraryState()
+    db.run('DELETE FROM plex_sources WHERE id = ?', [id])
+  } else {
+    db.run("UPDATE tracks SET is_available = 0, availability_reason = 'source_deleted', modified_at = ? WHERE source_type = 'plex' AND source_id = ?", [Date.now(), id])
+    // Keep only stable identity so re-adding this library revives its tracks.
+    db.run("UPDATE plex_sources SET deleted = 1, enabled = 0, secret_encrypted = '', last_status = 'disabled' WHERE id = ?", [id])
+  }
+  await saveDatabase()
 }
 
 export interface JellyfinSourcePublic {
@@ -331,6 +483,7 @@ export interface JellyfinSourcePublic {
   enabled: number
   last_status: JellyfinSourceLastStatus
   last_error: string | null
+  last_error_kind: SourceErrorKind | null
   last_sync_at: number | null
   last_checked_at: number | null
   created_at: number
@@ -484,6 +637,7 @@ export interface LyricsTrackManualInput {
 }
 
 export interface Playlist {
+  remote?: RemotePlaylistLink
   id: number
   name: string
   kind: PlaylistKind
@@ -781,6 +935,12 @@ function createLibraryScanIssue(phase: LibraryScanIssuePhase, path: string, erro
   }
 }
 
+interface LibraryWriteOptions {
+  affectsLibrary?: boolean
+  /** For track columns the snapshot never reads (play counts, badges). Other caches still clear. */
+  keepsTrackSnapshot?: boolean
+}
+
 class LibrarySqliteDatabase {
   private readonly database: BetterSqliteDatabase
 
@@ -792,14 +952,32 @@ class LibrarySqliteDatabase {
     return this.database.inTransaction
   }
 
-  run(sql: string, params: unknown[] = []): { changes: number; lastInsertRowid: number | bigint } {
-    noteLibrarySqlMutation(sql)
+  run(sql: string, params: unknown[] = [], options: LibraryWriteOptions = {}): { changes: number; lastInsertRowid: number | bigint } {
     if (params.length > 0) {
-      return this.database.prepare(sql).run(...params)
+      const result = this.database.prepare(sql).run(...params)
+      // A no-op availability check must not discard the full-library caches.
+      if (options.affectsLibrary !== false && (result.changes > 0 || SNAPSHOT_ALWAYS_INVALIDATE_PATTERN.test(sql))) {
+        noteLibrarySqlMutation(sql, options.keepsTrackSnapshot === true)
+      }
+      return result
     }
 
+    // exec can contain several statements; stay conservative if a later one fails.
+    if (options.affectsLibrary !== false) noteLibrarySqlMutation(sql, options.keepsTrackSnapshot === true)
     this.database.exec(sql)
     return { changes: 0, lastInsertRowid: 0 }
+  }
+
+  /** run() for a loop of writes: the statement is compiled once, with the same cache bookkeeping. */
+  prepareRun(sql: string, options: LibraryWriteOptions = {}): (params: unknown[]) => { changes: number; lastInsertRowid: number | bigint } {
+    const statement = this.database.prepare(sql)
+    return (params) => {
+      const result = statement.run(...params)
+      if (options.affectsLibrary !== false && (result.changes > 0 || SNAPSHOT_ALWAYS_INVALIDATE_PATTERN.test(sql))) {
+        noteLibrarySqlMutation(sql, options.keepsTrackSnapshot === true)
+      }
+      return result
+    }
   }
 
   exec(sql: string): void {
@@ -921,6 +1099,21 @@ const EFFECTIVE_TRACK_SELECT_COLUMNS = `
 `
 const EFFECTIVE_TRACK_FROM_CLAUSE = `
   FROM tracks t
+  LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
+`
+
+// Visibility is a source preference, independent of reachability and cached audio.
+// Retained tracks from deleted sources keep their existing unavailable behavior.
+const VISIBLE_TRACK_PREDICATE = `
+  NOT EXISTS (SELECT 1 FROM subsonic_sources s
+    WHERE tracks.source_type = 'subsonic' AND s.id = tracks.source_id AND s.enabled = 0)
+  AND NOT EXISTS (SELECT 1 FROM jellyfin_sources s
+    WHERE tracks.source_type = 'jellyfin' AND s.id = tracks.source_id AND s.enabled = 0)
+  AND NOT EXISTS (SELECT 1 FROM plex_sources s
+    WHERE tracks.source_type = 'plex' AND s.id = tracks.source_id AND s.enabled = 0 AND s.deleted = 0)
+`
+const VISIBLE_TRACK_FROM_CLAUSE = `
+  FROM (SELECT * FROM tracks WHERE ${VISIBLE_TRACK_PREDICATE}) t
   LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
 `
 
@@ -1275,17 +1468,23 @@ function persistDerivedAlbumIdentities(
   if (ownsTransaction) beginLibraryWriteTransaction()
 
   try {
+    // One row per track in the library, so compile the statement once.
+    const upsertIdentity = db.prepareRun(`
+      INSERT INTO track_album_identities (
+        track_path, album_identity_key, album_key, grouping_mode, display_artist
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(track_path) DO UPDATE SET
+        album_identity_key = excluded.album_identity_key,
+        album_key = excluded.album_key,
+        grouping_mode = excluded.grouping_mode,
+        display_artist = excluded.display_artist
+      WHERE album_identity_key IS NOT excluded.album_identity_key
+        OR album_key IS NOT excluded.album_key
+        OR grouping_mode IS NOT excluded.grouping_mode
+        OR display_artist IS NOT excluded.display_artist
+    `)
     for (const identity of identities) {
-      db.run(`
-        INSERT INTO track_album_identities (
-          track_path, album_identity_key, album_key, grouping_mode, display_artist
-        ) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(track_path) DO UPDATE SET
-          album_identity_key = excluded.album_identity_key,
-          album_key = excluded.album_key,
-          grouping_mode = excluded.grouping_mode,
-          display_artist = excluded.display_artist
-      `, [
+      upsertIdentity([
         identity.trackPath,
         identity.albumIdentityKey,
         identity.albumKey,
@@ -1330,20 +1529,26 @@ function persistDerivedAlbumIdentities(
           const key = keysByPath.get(track.path)
           if (key) keys.add(key)
         }
-        const reconciledSummary: LatestLibrarySyncSummary = {
-          ...latestSummary,
-          newAlbumIdentityKeys: Array.from(keys).sort((a, b) => a.localeCompare(b))
+        const newAlbumIdentityKeys = Array.from(keys).sort((a, b) => a.localeCompare(b))
+        // The list holds every new album after a first import (hundreds of KB), so only
+        // write it back when it changed.
+        const previous = latestSummary.newAlbumIdentityKeys
+        if (previous.length !== newAlbumIdentityKeys.length
+          || previous.some((key, index) => key !== newAlbumIdentityKeys[index])) {
+          const reconciledSummary: LatestLibrarySyncSummary = { ...latestSummary, newAlbumIdentityKeys }
+          db.run(
+            `UPDATE app_meta SET value = ?, updated_at = ? WHERE key = ?`,
+            [JSON.stringify(reconciledSummary), Date.now(), LATEST_LIBRARY_SYNC_SUMMARY_META_KEY]
+          )
         }
-        db.run(
-          `UPDATE app_meta SET value = ?, updated_at = ? WHERE key = ?`,
-          [JSON.stringify(reconciledSummary), Date.now(), LATEST_LIBRARY_SYNC_SUMMARY_META_KEY]
-        )
       }
-      db.run(`
-        INSERT INTO app_meta (key, value, updated_at)
-        VALUES (?, ?, ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-      `, [LIBRARY_IDENTITY_ALGORITHM_META_KEY, LIBRARY_IDENTITY_ALGORITHM_VERSION, Date.now()])
+      if (getAppMeta(LIBRARY_IDENTITY_ALGORITHM_META_KEY) !== LIBRARY_IDENTITY_ALGORITHM_VERSION) {
+        db.run(`
+          INSERT INTO app_meta (key, value, updated_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        `, [LIBRARY_IDENTITY_ALGORITHM_META_KEY, LIBRARY_IDENTITY_ALGORITHM_VERSION, Date.now()])
+      }
     }
 
     if (ownsTransaction) commitLibraryWriteTransaction()
@@ -1408,44 +1613,121 @@ interface DerivedAlbumIdentityRow {
 
 let libraryWriteGeneration = 0
 let trackSnapshot: LibraryTrackSnapshot | null = null
+let storedTrackSnapshot: LibraryTrackSnapshot | null = null
 let homeReleaseSummaryCache: { dataVersion: number; releases: HomeReleaseSummary[] } | null = null
 
 const SNAPSHOT_WRITE_STATEMENT_PATTERN = /^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/im
 const SNAPSHOT_ALWAYS_INVALIDATE_PATTERN = /^\s*(?:CREATE|DROP|ALTER|ROLLBACK)\b/im
-const SNAPSHOT_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|app_meta)\b/i
-const HOME_RELEASE_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|favorites)\b/i
+// App settings and the latest-sync badge summary aren't inputs to track identity
+// or ordering. Badges read that summary when returning tracks, outside the cache.
+const SNAPSHOT_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|subsonic_sources|jellyfin_sources|plex_sources)\b/i
+const HOME_RELEASE_SOURCE_TABLE_PATTERN = /\b(?:tracks|track_metadata_overrides|favorites|subsonic_sources|jellyfin_sources|plex_sources)\b/i
+const ARTIST_IMAGE_TABLE_PATTERN = /\bartist_images\b/i
+
+// The artist list is built from every visible track, so it is kept per browse mode until
+// the library changes. Home looks artists up in it on every refresh. Besides the tracks
+// (the write generation, and data_version for other connections) it reads the
+// artist_images table, whose writes clear it.
+const artistListCache = new Map<ArtistBrowseMode, { generation: number; dataVersion: number; artists: ArtistRecord[] }>()
+
+// A rebuild blocks the main thread for about a second on a large library. A remote
+// import commits in small batches and yields between them, so without this every
+// library read landing between two batches paid for a full rebuild. While an import
+// runs, reads keep the snapshot from before it, and one rebuild follows the import.
+let snapshotRebuildDeferrals = 0
+let heldTrackSnapshot: LibraryTrackSnapshot | null = null
+let heldStoredTrackSnapshot: LibraryTrackSnapshot | null = null
+let pendingSnapshotRebuildTimer: ReturnType<typeof setTimeout> | null = null
+let snapshotRebuildCount = 0
+const PENDING_SNAPSHOT_REBUILD_DELAY_MS = 2000
+
+/** How many times the library snapshot has been rebuilt, for sync timing. */
+export function getLibrarySnapshotRebuildCount(): number {
+  return snapshotRebuildCount
+}
 
 function invalidateLibraryTrackSnapshot(): void {
   libraryWriteGeneration += 1
   trackSnapshot = null
+  storedTrackSnapshot = null
 }
 
-function noteLibrarySqlMutation(sql: string): void {
+function noteLibrarySqlMutation(sql: string, keepsTrackSnapshot = false): void {
   if (SNAPSHOT_ALWAYS_INVALIDATE_PATTERN.test(sql)
     || (SNAPSHOT_WRITE_STATEMENT_PATTERN.test(sql) && HOME_RELEASE_SOURCE_TABLE_PATTERN.test(sql))) {
     homeReleaseSummaryCache = null
+  }
+  if (SNAPSHOT_WRITE_STATEMENT_PATTERN.test(sql) && ARTIST_IMAGE_TABLE_PATTERN.test(sql)) {
+    artistListCache.clear()
   }
   if (SNAPSHOT_ALWAYS_INVALIDATE_PATTERN.test(sql)) {
     invalidateLibraryTrackSnapshot()
     return
   }
-  if (SNAPSHOT_WRITE_STATEMENT_PATTERN.test(sql) && SNAPSHOT_SOURCE_TABLE_PATTERN.test(sql)) {
+  if (!keepsTrackSnapshot && SNAPSHOT_WRITE_STATEMENT_PATTERN.test(sql) && SNAPSHOT_SOURCE_TABLE_PATTERN.test(sql)) {
     invalidateLibraryTrackSnapshot()
   }
 }
 
+function beginSnapshotRebuildDeferral(): void {
+  if (snapshotRebuildDeferrals === 0) {
+    heldStoredTrackSnapshot = getLibraryTrackSnapshot(true)
+    const visible = getLibraryTrackSnapshot(false)
+    heldTrackSnapshot = visible === heldStoredTrackSnapshot ? null : visible
+  }
+  snapshotRebuildDeferrals += 1
+}
+
+function endSnapshotRebuildDeferral(): void {
+  snapshotRebuildDeferrals = Math.max(0, snapshotRebuildDeferrals - 1)
+  if (snapshotRebuildDeferrals === 0) {
+    heldTrackSnapshot = null
+    heldStoredTrackSnapshot = null
+  }
+}
+
+/** For writes that arrive one at a time in a burst (covers loading): they share one rebuild once they stop. */
+function scheduleDerivedLibraryStateRebuild(): void {
+  if (pendingSnapshotRebuildTimer) clearTimeout(pendingSnapshotRebuildTimer)
+  pendingSnapshotRebuildTimer = setTimeout(() => {
+    pendingSnapshotRebuildTimer = null
+    if (!db) return
+    // An import rebuilds when it ends, but only if it wrote something, so keep this one queued.
+    if (snapshotRebuildDeferrals > 0 || db.inTransaction) {
+      scheduleDerivedLibraryStateRebuild()
+      return
+    }
+    rebuildDerivedLibraryState()
+  }, PENDING_SNAPSHOT_REBUILD_DELAY_MS)
+  pendingSnapshotRebuildTimer.unref?.()
+}
+
 // The main process is single threaded and all library reads/writes are
 // synchronous, so a rebuild can never interleave with a write.
-function getLibraryTrackSnapshot(): LibraryTrackSnapshot | null {
+function getLibraryTrackSnapshot(includeDisabledSources = false, force = false): LibraryTrackSnapshot | null {
   if (!db) return null
-  if (trackSnapshot && trackSnapshot.generation === libraryWriteGeneration) {
+  const cached = includeDisabledSources ? storedTrackSnapshot : trackSnapshot
+  if (cached && cached.generation === libraryWriteGeneration) {
+    return cached
+  }
+  if (snapshotRebuildDeferrals > 0 && !force) {
+    const held = includeDisabledSources ? heldStoredTrackSnapshot : heldTrackSnapshot
+    if (held) return held
+  }
+  // Share the usual snapshot when nothing is hidden, without retaining two
+  // complete identity maps for the common case.
+  if (!includeDisabledSources && !db.get(`SELECT 1 FROM subsonic_sources WHERE enabled = 0
+    UNION ALL SELECT 1 FROM jellyfin_sources WHERE enabled = 0
+    UNION ALL SELECT 1 FROM plex_sources WHERE enabled = 0 AND deleted = 0 LIMIT 1`)) {
+    trackSnapshot = getLibraryTrackSnapshot(true, force)
     return trackSnapshot
   }
 
   return measureLibraryQuery('rebuildTrackSnapshot', () => {
+    snapshotRebuildCount += 1
     const rows = readEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${includeDisabledSources ? EFFECTIVE_TRACK_FROM_CLAUSE : VISIBLE_TRACK_FROM_CLAUSE}
       ${ALL_TRACKS_ORDER_BY_CLAUSE}
     `)
     const artistIndex = buildArtistIdentityIndex(rows)
@@ -1475,8 +1757,9 @@ function getLibraryTrackSnapshot(): LibraryTrackSnapshot | null {
       artistNamesByPath.set(row.path, resolveTrackArtistNames(row, artistIndex))
       albumArtistNamesByPath.set(row.path, resolveTrackArtistNames(row, artistIndex, true))
     }
-    persistDerivedAlbumIdentities(rows, derivedIdentityRows)
-    trackSnapshot = {
+    // Browsing a subset must not rewrite historical identities or sync metadata.
+    if (includeDisabledSources) persistDerivedAlbumIdentities(rows, derivedIdentityRows)
+    const snapshot: LibraryTrackSnapshot = {
       generation: libraryWriteGeneration,
       sortedPaths,
       identityKeysByPath,
@@ -1484,14 +1767,29 @@ function getLibraryTrackSnapshot(): LibraryTrackSnapshot | null {
       artistNamesByPath,
       albumArtistNamesByPath
     }
-    return trackSnapshot
+    if (includeDisabledSources) storedTrackSnapshot = snapshot
+    else trackSnapshot = snapshot
+    if (snapshotRebuildDeferrals > 0) {
+      // A forced rebuild during an import becomes what reads see until it ends.
+      if (includeDisabledSources) {
+        heldStoredTrackSnapshot = snapshot
+        heldTrackSnapshot = null
+      } else {
+        heldTrackSnapshot = snapshot
+      }
+    }
+    return snapshot
   })
 }
 
 function rebuildDerivedLibraryState(): void {
   if (!db) return
+  if (pendingSnapshotRebuildTimer) {
+    clearTimeout(pendingSnapshotRebuildTimer)
+    pendingSnapshotRebuildTimer = null
+  }
   invalidateLibraryTrackSnapshot()
-  getLibraryTrackSnapshot()
+  getLibraryTrackSnapshot(true, true)
 }
 
 function readEffectiveTrackRowsByPaths(paths: readonly string[]): DbTrackRow[] {
@@ -1608,12 +1906,13 @@ function resolveTrackGenreStorageFields(track: { genre: string | null; genres?: 
 function attachAlbumIdentityKeys(
   tracks: readonly DbTrackRow[],
   libraryTracks?: readonly DbTrackRow[],
-  latestSyncSummary: LatestLibrarySyncSummary | null = getLatestLibrarySyncSummary()
+  latestSyncSummary: LatestLibrarySyncSummary | null = getLatestLibrarySyncSummary(),
+  includeDisabledSources = false
 ): DbTrack[] {
   if (tracks.length === 0) return []
 
   if (!libraryTracks) {
-    const snapshot = getLibraryTrackSnapshot()
+    const snapshot = getLibraryTrackSnapshot(includeDisabledSources)
     if (snapshot) {
       return attachAlbumIdentityKeysWithMap(
         tracks,
@@ -1680,9 +1979,9 @@ function attachAlbumIdentityKeysWithMap(
   })
 }
 
-function readEffectiveTracks(sql: string, libraryTracks?: readonly DbTrackRow[], params: unknown[] = []): DbTrack[] {
+function readEffectiveTracks(sql: string, libraryTracks?: readonly DbTrackRow[], params: unknown[] = [], includeDisabledSources = false): DbTrack[] {
   const tracks = readEffectiveTrackRows(sql, params)
-  return attachAlbumIdentityKeys(tracks, libraryTracks)
+  return attachAlbumIdentityKeys(tracks, libraryTracks, undefined, includeDisabledSources)
 }
 
 function normalizeRequiredTextField(value: string, fieldName: 'title' | 'artist' | 'album'): string {
@@ -2188,26 +2487,90 @@ function addTrackToAlbumSummary(
   }
 }
 
+// Which tracks form which album depends only on the visible tracks and their album,
+// artist, numbering and artwork fields, which is what the library write generation
+// tracks. Every album, artist and Home query needs these groups, and regrouping the
+// whole library was most of the cost of each one, so they are kept until the library
+// changes. The rows themselves are read fresh on every call: play counts, favorites and
+// availability change without changing the grouping.
+interface VisibleAlbumGroup {
+  identity: ResolvedAlbumIdentity
+  tracks: readonly DbTrackRow[]
+}
+let visibleAlbumGrouping: {
+  generation: number
+  dataVersion: number
+  groups: Array<{ identity: ResolvedAlbumIdentity; paths: string[] }>
+  trackCount: number
+} | null = null
+
+function groupVisibleTracksByAlbum(tracks: readonly DbTrackRow[]): VisibleAlbumGroup[] {
+  if (!db || tracks.length === 0) return []
+  // The generation only sees this connection's writes; data_version sees the others.
+  const dataVersion = db.get<{ data_version: number }>('PRAGMA data_version')!.data_version
+  const kept = visibleAlbumGrouping
+  if (kept && kept.generation === libraryWriteGeneration && kept.dataVersion === dataVersion
+    && kept.trackCount === tracks.length) {
+    const rowsByPath = new Map<string, DbTrackRow>()
+    for (const track of tracks) rowsByPath.set(track.path, track)
+    const groups: VisibleAlbumGroup[] = []
+    let sameTracks = true
+    for (const group of kept.groups) {
+      const members: DbTrackRow[] = []
+      for (const path of group.paths) {
+        const row = rowsByPath.get(path)
+        if (!row) {
+          sameTracks = false
+          break
+        }
+        members.push(row)
+      }
+      if (!sameTracks) break
+      groups.push({ identity: group.identity, tracks: members })
+    }
+    if (sameTracks) return groups
+  }
+
+  const groups = measureLibraryQuery('groupVisibleAlbums', () => {
+    const grouped: VisibleAlbumGroup[] = []
+    for (const identityGroup of groupTracksByAlbumIdentity(tracks, (track) => track.path).values()) {
+      grouped.push({
+        identity: {
+          identityKey: identityGroup.identityKey,
+          groupingMode: identityGroup.groupingMode,
+          albumKey: identityGroup.albumKey,
+          displayArtist: identityGroup.displayArtist
+        },
+        tracks: identityGroup.tracks
+      })
+    }
+    return grouped
+  })
+  visibleAlbumGrouping = {
+    generation: libraryWriteGeneration,
+    dataVersion,
+    groups: groups.map((group) => ({ identity: group.identity, paths: group.tracks.map((track) => track.path) })),
+    trackCount: tracks.length
+  }
+  return groups
+}
+
 function collectAlbumSummaryGroups(
   latestSyncSummary: LatestLibrarySyncSummary | null,
-  favoritePaths?: ReadonlySet<string>
+  favoritePaths?: ReadonlySet<string>,
+  onTrack?: (identityKey: string, track: DbTrackRow) => void
 ): Map<string, AlbumSummaryAccumulator> {
   const groups = new Map<string, AlbumSummaryAccumulator>()
   const tracks = readEffectiveTrackRows(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    ${VISIBLE_TRACK_FROM_CLAUSE}
   `)
 
-  for (const identityGroup of groupTracksByAlbumIdentity(tracks, (track) => track.path).values()) {
-    const identity: ResolvedAlbumIdentity = {
-      identityKey: identityGroup.identityKey,
-      groupingMode: identityGroup.groupingMode,
-      albumKey: identityGroup.albumKey,
-      displayArtist: identityGroup.displayArtist
-    }
+  for (const { identity, tracks: members } of groupVisibleTracksByAlbum(tracks)) {
     const group = createAlbumSummaryAccumulator(identity)
-    for (const track of identityGroup.tracks) {
+    for (const track of members) {
       addTrackToAlbumSummary(group, track, latestSyncSummary, favoritePaths)
+      onTrack?.(identity.identityKey, track)
     }
     groups.set(identity.identityKey, group)
   }
@@ -2233,6 +2596,82 @@ function collectEligibleAlbumIdentityKeys(
   return identityKeys
 }
 
+/** Listed tracks that are no longer on their server, or that a removed server left behind. */
+const GONE_FROM_SOURCE_REASONS = ['missing_upstream', 'source_deleted']
+const isRemoteSourceType = (type: string): type is RemoteSourceCounts['provider'] =>
+  type === 'subsonic' || type === 'jellyfin' || type === 'plex'
+let remoteSourceCountsCache: { generation: number; counts: RemoteSourceCounts[] } | null = null
+
+/**
+ * How many tracks and albums each server has in the library, for Settings → Servers.
+ * Tracks the server no longer has don't count; tracks unavailable during an outage do.
+ * Albums are counted as the Albums view shows them (album identity, singles left out),
+ * so a server's albums are those with at least one of its tracks. Grouping albums reads
+ * the whole library, so the result is kept until the library next changes.
+ */
+export function getRemoteSourceCounts(): RemoteSourceCounts[] {
+  if (!db) return []
+  const generation = libraryWriteGeneration
+  if (remoteSourceCountsCache?.generation === generation) return remoteSourceCountsCache.counts
+  return measureLibraryQuery('getRemoteSourceCounts', () => {
+    const gone = GONE_FROM_SOURCE_REASONS.map(() => '?').join(', ')
+    const rows = db!.all<{ source_type: string; source_id: number; tracks: number }>(`
+      SELECT source_type, source_id, COUNT(*) AS tracks
+      FROM tracks
+      WHERE source_type IN ('subsonic', 'jellyfin', 'plex') AND source_id IS NOT NULL
+        AND (availability_reason IS NULL OR availability_reason NOT IN (${gone}))
+      GROUP BY source_type, source_id
+    `, GONE_FROM_SOURCE_REASONS)
+
+    // A Plex server's libraries are one server: each library maps to its server's first library.
+    const plexServerOf = new Map<number, string>()
+    const firstLibrary = new Map<string, number>()
+    for (const source of listPlexSources().sort((a, b) => a.id - b.id)) {
+      const server = JSON.stringify([source.account_id, source.server_id])
+      if (!firstLibrary.has(server)) firstLibrary.set(server, source.id)
+      plexServerOf.set(source.id, `plex:${firstLibrary.get(server)}`)
+    }
+    const serverOf = (key: string, type: string, id: number) => type === 'plex' ? plexServerOf.get(id) ?? key : key
+
+    // Which sources and servers each album has tracks from (only those that are on are listed).
+    const sourcesByAlbum = new Map<string, Set<string>>()
+    const serversByAlbum = new Map<string, Set<string>>()
+    const groups = collectAlbumSummaryGroups(null, undefined, (identityKey, track) => {
+      if (!isRemoteSourceType(track.source_type) || track.source_id == null) return
+      if (track.availability_reason && GONE_FROM_SOURCE_REASONS.includes(track.availability_reason)) return
+      const key = `${track.source_type}:${track.source_id}`
+      let sources = sourcesByAlbum.get(identityKey)
+      if (!sources) sourcesByAlbum.set(identityKey, sources = new Set())
+      sources.add(key)
+      let servers = serversByAlbum.get(identityKey)
+      if (!servers) serversByAlbum.set(identityKey, servers = new Set())
+      servers.add(serverOf(key, track.source_type, track.source_id))
+    })
+    const albums = new Map<string, number>()
+    const serverAlbums = new Map<string, number>()
+    for (const [identityKey, sources] of sourcesByAlbum) {
+      const group = groups.get(identityKey)
+      if (!group || !isAlbumGroupEligible(group, { includeSingles: false })) continue
+      for (const key of sources) albums.set(key, (albums.get(key) ?? 0) + 1)
+      for (const key of serversByAlbum.get(identityKey) ?? []) serverAlbums.set(key, (serverAlbums.get(key) ?? 0) + 1)
+    }
+    const visible = new Set(db!.all<{ key: string }>(`
+      SELECT 'subsonic:' || id AS key FROM subsonic_sources WHERE enabled = 1
+      UNION ALL SELECT 'jellyfin:' || id FROM jellyfin_sources WHERE enabled = 1
+      UNION ALL SELECT 'plex:' || id FROM plex_sources WHERE enabled = 1 AND deleted = 0
+    `).map(row => row.key))
+
+    const counts = rows.filter(row => isRemoteSourceType(row.source_type)).map(row => {
+      const key = `${row.source_type}:${row.source_id}`
+      return { provider: row.source_type as RemoteSourceCounts['provider'], sourceId: Number(row.source_id),
+        tracks: Number(row.tracks) || 0, albums: visible.has(key) ? albums.get(key) ?? 0 : null,
+        serverAlbums: visible.has(key) ? serverAlbums.get(serverOf(key, row.source_type, Number(row.source_id))) ?? 0 : null }
+    })
+    remoteSourceCountsCache = { generation, counts }
+    return counts
+  })
+}
+
 // Initialize database
 export async function initDatabase(): Promise<void> {
   const userDataPath = app.getPath('userData')
@@ -2256,6 +2695,15 @@ export async function initDatabase(): Promise<void> {
   db = new LibrarySqliteDatabase(new BetterSqliteDatabase(dbPath, { timeout: 5000 }))
   db.pragma('foreign_keys = ON')
   db.pragma('busy_timeout = 5000')
+  // The default rollback journal flushes to disk twice on every commit. Every library
+  // write runs on the main thread, and on Windows and Linux each flush waits for the
+  // disk. WAL only flushes at checkpoints. A power cut can lose the last few seconds
+  // of writes but cannot corrupt the database.
+  const journalMode = (db.pragma('journal_mode = WAL') as Array<{ journal_mode?: unknown }> | undefined)?.[0]?.journal_mode
+  // NORMAL is only crash-safe together with WAL, so a database that stayed on the
+  // rollback journal keeps the default.
+  if (journalMode === 'wal') db.pragma('synchronous = NORMAL')
+  else console.warn('Library database could not switch to WAL journaling:', journalMode)
   db.registerFunction('astra_normalize_album_key', { deterministic: true }, normalizeSqliteAlbumKey)
   db.registerFunction('astra_dynamic_text_key', { deterministic: true }, normalizeDynamicPlaylistText)
 
@@ -2682,6 +3130,7 @@ export async function initDatabase(): Promise<void> {
       enabled INTEGER NOT NULL DEFAULT 1,
       last_status TEXT NOT NULL DEFAULT 'unknown',
       last_error TEXT,
+      last_error_kind TEXT,
       last_sync_at INTEGER,
       last_checked_at INTEGER,
       created_at INTEGER NOT NULL,
@@ -2700,6 +3149,7 @@ export async function initDatabase(): Promise<void> {
       enabled INTEGER NOT NULL DEFAULT 1,
       last_status TEXT NOT NULL DEFAULT 'unknown',
       last_error TEXT,
+      last_error_kind TEXT,
       last_sync_at INTEGER,
       last_checked_at INTEGER,
       created_at INTEGER NOT NULL,
@@ -2707,6 +3157,34 @@ export async function initDatabase(): Promise<void> {
     )
   `)
   db.run('CREATE INDEX IF NOT EXISTS idx_jellyfin_sources_enabled ON jellyfin_sources(enabled)')
+
+  db.run(`CREATE TABLE IF NOT EXISTS plex_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, base_url TEXT NOT NULL,
+    username TEXT NOT NULL, account_id TEXT NOT NULL, server_id TEXT NOT NULL,
+    library_id TEXT NOT NULL, library_name TEXT NOT NULL, secret_encrypted TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, last_status TEXT NOT NULL DEFAULT 'unknown',
+    last_error TEXT, last_error_kind TEXT, last_sync_at INTEGER, last_checked_at INTEGER,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    UNIQUE(account_id, server_id, library_id)
+  )`)
+  // Schema migration: why a server last failed (sign-in, unreachable, sync), for existing databases.
+  for (const table of ['subsonic_sources', 'jellyfin_sources', 'plex_sources']) {
+    try { db.run(`ALTER TABLE ${table} ADD COLUMN last_error_kind TEXT`) } catch { /* Column already exists. */ }
+  }
+
+
+  db.run(`CREATE TABLE IF NOT EXISTS remote_playlist_sync (provider TEXT NOT NULL, source_id INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (provider, source_id))`)
+
+  db.run(`CREATE TABLE IF NOT EXISTS provider_state_sync (
+    provider TEXT NOT NULL, source_id INTEGER NOT NULL, fingerprint TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (provider, source_id)
+  )`)
+  db.run(`CREATE TABLE IF NOT EXISTS provider_state_baselines (
+    provider TEXT NOT NULL, source_id INTEGER NOT NULL, track_path TEXT NOT NULL,
+    field TEXT NOT NULL, value_json TEXT NOT NULL,
+    PRIMARY KEY (provider, source_id, track_path, field)
+  )`)
 
   db.run(`UPDATE tracks SET source_type = 'local' WHERE source_type IS NULL OR TRIM(source_type) = ''`)
   db.run('UPDATE tracks SET is_available = 1 WHERE is_available IS NULL')
@@ -2827,6 +3305,8 @@ export async function initDatabase(): Promise<void> {
   } catch {
     // Column already exists.
   }
+  try { db.run('ALTER TABLE playlists ADD COLUMN remote_writable INTEGER NOT NULL DEFAULT 0') } catch { /* Existing column. */ }
+  try { db.run('ALTER TABLE playlists ADD COLUMN remote_deletable INTEGER') } catch { /* Existing column. */ }
   db.run("UPDATE playlists SET kind = 'normal' WHERE kind IS NULL OR kind NOT IN ('normal', 'dynamic')")
   db.run("UPDATE playlists SET dynamic_rules_json = NULL WHERE kind <> 'dynamic'")
   db.run('CREATE INDEX IF NOT EXISTS idx_playlists_last_played ON playlists(last_played_at DESC)')
@@ -2883,6 +3363,7 @@ export async function initDatabase(): Promise<void> {
   } catch {
     // Column already exists.
   }
+  try { db.run('ALTER TABLE playlist_tracks ADD COLUMN remote_entry_id TEXT') } catch { /* Existing column. */ }
   db.run('CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist ON playlist_tracks(playlist_id, position)')
   // Playlist rows are ordered occurrences, not unique memberships. Older
   // databases may still carry the legacy membership constraint, so remove it
@@ -3002,11 +3483,19 @@ export async function initDatabase(): Promise<void> {
 
 // Close database
 export function closeDatabase(): void {
+  if (pendingSnapshotRebuildTimer) {
+    clearTimeout(pendingSnapshotRebuildTimer)
+    pendingSnapshotRebuildTimer = null
+  }
   if (db) {
     db.close()
     db = null
   }
   invalidateLibraryTrackSnapshot()
+  heldTrackSnapshot = null
+  heldStoredTrackSnapshot = null
+  visibleAlbumGrouping = null
+  artistListCache.clear()
   homeReleaseSummaryCache = null
 }
 
@@ -3100,6 +3589,7 @@ function toSubsonicSourcePublic(row: SubsonicSourceRow): SubsonicSourcePublic {
     enabled: row.enabled,
     last_status: normalizeSubsonicLastStatus(row.last_status),
     last_error: row.last_error,
+    last_error_kind: normalizeSourceErrorKind(row.last_error_kind),
     last_sync_at: row.last_sync_at,
     last_checked_at: row.last_checked_at,
     created_at: row.created_at,
@@ -3117,12 +3607,125 @@ function toJellyfinSourcePublic(row: JellyfinSourceRow): JellyfinSourcePublic {
     enabled: row.enabled,
     last_status: normalizeJellyfinLastStatus(row.last_status),
     last_error: row.last_error,
+    last_error_kind: normalizeSourceErrorKind(row.last_error_kind),
     last_sync_at: row.last_sync_at,
     last_checked_at: row.last_checked_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
     has_stored_secret: typeof row.secret_encrypted === 'string' && row.secret_encrypted.trim().length > 0
   }
+}
+
+export function getProviderSyncSetting(ref: ProviderSyncRef): { fingerprint: string; enabled: number } | null {
+  return db?.get<{ fingerprint: string; enabled: number }>(
+    'SELECT fingerprint, enabled FROM provider_state_sync WHERE provider = ? AND source_id = ?',
+    [ref.provider, ref.sourceId]) ?? null
+}
+
+export async function setProviderSyncSetting(ref: ProviderSyncRef, fingerprint: string, enabled: boolean): Promise<void> {
+  if (!db) throw new Error('Database not initialized')
+  const previous = getProviderSyncSetting(ref)
+  if (previous?.fingerprint !== fingerprint || !enabled) {
+    db.run('DELETE FROM provider_state_baselines WHERE provider = ? AND source_id = ?', [ref.provider, ref.sourceId])
+  }
+  db.run(`INSERT INTO provider_state_sync (provider, source_id, fingerprint, enabled) VALUES (?, ?, ?, ?)
+    ON CONFLICT(provider, source_id) DO UPDATE SET fingerprint = excluded.fingerprint, enabled = excluded.enabled`,
+  [ref.provider, ref.sourceId, fingerprint, enabled ? 1 : 0])
+  await saveDatabase()
+}
+
+export function getProviderSyncTracks(ref: ProviderSyncRef, path?: string): ProviderSyncTrack[] {
+  if (!db) return []
+  const links = getProviderFavoriteLinks().localByRemote
+  return db.all<{ path: string; id: string; title: string; artist: string; favorite: number; rating: number | null; baseline: string | null }>(`
+    SELECT t.path, t.source_track_id AS id, COALESCE(t.title, t.path) AS title,
+      COALESCE(t.artist, '') AS artist, CASE WHEN f.track_path IS NULL THEN 0 ELSE 1 END AS favorite, r.rating,
+      b.value_json AS baseline
+    FROM tracks t LEFT JOIN favorites f ON f.track_path = t.path
+    LEFT JOIN track_ratings r ON r.track_path = t.path
+    LEFT JOIN provider_state_baselines b ON b.provider = t.source_type AND b.source_id = t.source_id
+      AND b.track_path = t.path AND b.field = 'favorite'
+    WHERE t.source_type = ? AND t.source_id = ? AND t.source_track_id IS NOT NULL
+      ${path === undefined ? '' : 'AND t.path = ?'}`, path === undefined ? [ref.provider, ref.sourceId] : [ref.provider, ref.sourceId, path])
+    .map(({ baseline, ...row }) => {
+      const localPath = links.get(row.path)
+      const favorite = row.favorite === 1
+      if (!localPath) return { ...row, favorite }
+      const localFavorite = Boolean(db!.get('SELECT 1 FROM favorites WHERE track_path = ?', [localPath]))
+      const favoriteMixed = favorite !== localFavorite
+      // At first connection preserve either Astra copy's favorite. Afterwards,
+      // the value differing from the acknowledged baseline is the newer edit.
+      return { ...row, favoriteMixed, favorite: favoriteMixed ? baseline !== 'true' : favorite }
+    })
+}
+
+interface ProviderFavoriteLink extends ProviderSyncRef { path: string }
+interface ProviderFavoriteLinks {
+  generation: number
+  localByRemote: Map<string, string>
+  remoteByLocal: Map<string, ProviderFavoriteLink[]>
+}
+let providerFavoriteLinks: ProviderFavoriteLinks | null = null
+
+function getProviderFavoriteLinks(): ProviderFavoriteLinks {
+  if (providerFavoriteLinks?.generation === libraryWriteGeneration) return providerFavoriteLinks
+  type Row = { path: string; title: string; artist: string; album: string; duration: number;
+    source_type: string; source_id: number | null }
+  const groups = new Map<string, Row[]>()
+  const rows = db?.all<Row>(`SELECT t.path, COALESCE(o.title, t.title) AS title,
+    COALESCE(o.artist, t.artist) AS artist, COALESCE(o.album, t.album) AS album,
+    t.duration, t.source_type, t.source_id FROM tracks t
+    LEFT JOIN track_metadata_overrides o ON o.track_path = t.path
+    WHERE t.is_available = 1 AND t.source_type IN ('local', 'subsonic', 'jellyfin')`) ?? []
+  for (const row of rows) {
+    if (!(row.duration > 0) || [row.title, row.artist, row.album].some(value =>
+      !value?.trim() || /^\[?unknown(?: artist| album)?\]?$/i.test(value.trim()))) continue
+    const key = buildTrackSyncKey(row.title, row.artist, row.album)
+    const group = groups.get(key) ?? []
+    group.push(row)
+    groups.set(key, group)
+  }
+  const links: ProviderFavoriteLinks = { generation: libraryWriteGeneration, localByRemote: new Map(), remoteByLocal: new Map() }
+  for (const group of groups.values()) {
+    const local = group.filter(row => row.source_type === 'local')
+    const remote = group.filter(row => row.source_type !== 'local')
+    for (const target of remote) {
+      const candidates = local.filter(row => Math.abs(row.duration - target.duration) <= 2)
+      if (candidates.length !== 1) continue
+      const match = candidates[0]
+      if (remote.filter(row => row.source_type === target.source_type && row.source_id === target.source_id
+        && Math.abs(row.duration - match.duration) <= 2).length !== 1) continue
+      links.localByRemote.set(target.path, match.path)
+      const matches = links.remoteByLocal.get(match.path) ?? []
+      matches.push({ provider: target.source_type as ProviderSyncRef['provider'], sourceId: target.source_id!, path: target.path })
+      links.remoteByLocal.set(match.path, matches)
+    }
+  }
+  providerFavoriteLinks = links
+  return links
+}
+
+export function getProviderFavoriteTargets(localPath: string): ProviderFavoriteLink[] {
+  return getProviderFavoriteLinks().remoteByLocal.get(localPath) ?? []
+}
+
+export function getProviderFavoritePaths(remotePath: string): string[] {
+  const localPath = getProviderFavoriteLinks().localByRemote.get(remotePath)
+  return localPath ? [remotePath, localPath] : [remotePath]
+}
+
+export function getProviderSyncBaselines(ref: ProviderSyncRef): Map<string, ProviderSyncValue> {
+  const rows = db?.all<{ track_path: string; field: string; value_json: string }>(
+    'SELECT track_path, field, value_json FROM provider_state_baselines WHERE provider = ? AND source_id = ?',
+    [ref.provider, ref.sourceId]) ?? []
+  return new Map(rows.map(row => [JSON.stringify([row.track_path, row.field]), JSON.parse(row.value_json) as ProviderSyncValue]))
+}
+
+export function saveProviderSyncBaseline(ref: ProviderSyncRef, path: string, field: ProviderSyncField, value: ProviderSyncValue): void {
+  if (!db) throw new Error('Database not initialized')
+  db.run(`INSERT INTO provider_state_baselines (provider, source_id, track_path, field, value_json) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(provider, source_id, track_path, field) DO UPDATE SET value_json = excluded.value_json`,
+  [ref.provider, ref.sourceId, path, field, JSON.stringify(value)])
 }
 
 export function listSubsonicSources(): SubsonicSourcePublic[] {
@@ -3137,6 +3740,7 @@ export function listSubsonicSources(): SubsonicSourcePublic[] {
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
@@ -3158,6 +3762,7 @@ export function getSubsonicSourceById(sourceId: number): SubsonicSourceRow | nul
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
@@ -3192,11 +3797,12 @@ export async function createSubsonicSource(input: {
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
     [
       input.name.trim(),
       input.base_url.trim(),
@@ -3228,6 +3834,7 @@ export async function updateSubsonicSource(
     enabled?: number
     last_status?: SubsonicSourceLastStatus
     last_error?: string | null
+    last_error_kind?: SourceErrorKind | null
     last_sync_at?: number | null
     last_checked_at?: number | null
   },
@@ -3251,6 +3858,7 @@ export async function updateSubsonicSource(
          enabled = ?,
          last_status = ?,
          last_error = ?,
+         last_error_kind = ?,
          last_sync_at = ?,
          last_checked_at = ?,
          updated_at = ?
@@ -3263,11 +3871,13 @@ export async function updateSubsonicSource(
       input.enabled !== undefined ? (input.enabled ? 1 : 0) : current.enabled,
       input.last_status !== undefined ? normalizeSubsonicLastStatus(input.last_status) : normalizeSubsonicLastStatus(current.last_status),
       input.last_error !== undefined ? input.last_error : current.last_error,
+      input.last_error_kind !== undefined ? input.last_error_kind : current.last_error_kind ?? null,
       input.last_sync_at !== undefined ? input.last_sync_at : current.last_sync_at,
       input.last_checked_at !== undefined ? input.last_checked_at : current.last_checked_at,
       now,
       sourceId
-    ]
+    ],
+    { affectsLibrary: input.enabled !== undefined && (input.enabled ? 1 : 0) !== current.enabled }
   )
 
   const next = getSubsonicSourceById(sourceId)
@@ -3294,6 +3904,7 @@ export function listJellyfinSources(): JellyfinSourcePublic[] {
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
@@ -3315,6 +3926,7 @@ export function getJellyfinSourceById(sourceId: number): JellyfinSourceRow | nul
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
@@ -3349,11 +3961,12 @@ export async function createJellyfinSource(input: {
       enabled,
       last_status,
       last_error,
+      last_error_kind,
       last_sync_at,
       last_checked_at,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
     [
       input.name.trim(),
       input.base_url.trim(),
@@ -3385,6 +3998,7 @@ export async function updateJellyfinSource(
     enabled?: number
     last_status?: JellyfinSourceLastStatus
     last_error?: string | null
+    last_error_kind?: SourceErrorKind | null
     last_sync_at?: number | null
     last_checked_at?: number | null
   },
@@ -3408,6 +4022,7 @@ export async function updateJellyfinSource(
          enabled = ?,
          last_status = ?,
          last_error = ?,
+         last_error_kind = ?,
          last_sync_at = ?,
          last_checked_at = ?,
          updated_at = ?
@@ -3420,11 +4035,13 @@ export async function updateJellyfinSource(
       input.enabled !== undefined ? (input.enabled ? 1 : 0) : current.enabled,
       input.last_status !== undefined ? normalizeJellyfinLastStatus(input.last_status) : normalizeJellyfinLastStatus(current.last_status),
       input.last_error !== undefined ? input.last_error : current.last_error,
+      input.last_error_kind !== undefined ? input.last_error_kind : current.last_error_kind ?? null,
       input.last_sync_at !== undefined ? input.last_sync_at : current.last_sync_at,
       input.last_checked_at !== undefined ? input.last_checked_at : current.last_checked_at,
       now,
       sourceId
-    ]
+    ],
+    { affectsLibrary: input.enabled !== undefined && (input.enabled ? 1 : 0) !== current.enabled }
   )
 
   const next = getJellyfinSourceById(sourceId)
@@ -3545,7 +4162,7 @@ function recomputePlayCountsFromOrigins(trackPaths: readonly string[]): number {
             SELECT MAX(o.last_played_at) FROM ${PLAY_ORIGIN_TABLE} o WHERE o.track_path = tracks.path
           )
         )
-    `, chunk)
+    `, chunk, { keepsTrackSnapshot: true })
     updated += Number(db.get<{ changed?: unknown }>('SELECT changes() AS changed')?.changed) || 0
   }
   return updated
@@ -3688,34 +4305,14 @@ export async function deleteSubsonicSource(sourceId: number, purgeTracks: boolea
   const source = getSubsonicSourceById(sourceId)
 
   if (purgeTracks) {
-    const sourcePathPattern = `subsonic://${sourceId}/%`
-    let includeUnknownSourceTracks = false
-    if (source) {
-      const countRow = db.get<{ count?: unknown }>('SELECT COUNT(*) as count FROM subsonic_sources WHERE id <> ?', [sourceId])
-      const otherSourcesCount = Number(countRow?.count ?? 0)
-      includeUnknownSourceTracks = Number.isFinite(otherSourcesCount) && otherSourcesCount <= 0
-    }
-
-    const trackSelectSql = includeUnknownSourceTracks
-      ? "SELECT path FROM tracks WHERE ((source_type = 'subsonic' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)"
-      : "SELECT path FROM tracks WHERE ((source_type = 'subsonic' AND source_id = ?) OR path LIKE ?)"
-    const trackPaths = db.all<{ path?: unknown }>(trackSelectSql, [sourceId, sourcePathPattern])
+    const scope = purgedTrackScope('subsonic', sourceId)
+    const trackPaths = db.all<{ path?: unknown }>(`SELECT path FROM tracks WHERE ${scope.where}`, scope.params)
       .map((row) => (typeof row.path === 'string' && row.path.trim().length > 0 ? row.path : null))
       .filter((path): path is string => path !== null)
 
     deleteTrackRelatedRows(trackPaths)
-    deleteTrackRelatedRowsByPathPattern(sourcePathPattern)
-    if (includeUnknownSourceTracks) {
-      db.run(
-        "DELETE FROM tracks WHERE ((source_type = 'subsonic' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)",
-        [sourceId, sourcePathPattern]
-      )
-    } else {
-      db.run(
-        "DELETE FROM tracks WHERE ((source_type = 'subsonic' AND source_id = ?) OR path LIKE ?)",
-        [sourceId, sourcePathPattern]
-      )
-    }
+    deleteTrackRelatedRowsByPathPattern(`subsonic://${sourceId}/%`)
+    db.run(`DELETE FROM tracks WHERE ${scope.where}`, scope.params)
   } else {
     db.run(
       `UPDATE tracks
@@ -3751,6 +4348,7 @@ export async function updateSubsonicSourceStatus(
   input: {
     status: SubsonicSourceLastStatus
     error?: string | null
+    errorKind?: SourceErrorKind | null
     syncedAt?: number | null
     checkedAt?: number | null
   },
@@ -3764,6 +4362,8 @@ export async function updateSubsonicSourceStatus(
     {
       last_status: normalizeSubsonicLastStatus(input.status),
       last_error: input.error === undefined ? existing.last_error : input.error,
+      // A kind only goes with an error; anything else clears it.
+      last_error_kind: input.status === 'error' ? (input.errorKind ?? existing.last_error_kind ?? 'sync') : null,
       last_sync_at: input.syncedAt === undefined ? existing.last_sync_at : input.syncedAt,
       last_checked_at: input.checkedAt === undefined ? existing.last_checked_at : input.checkedAt
     },
@@ -3785,6 +4385,30 @@ export async function markSubsonicTracksAvailability(
          modified_at = ?
      WHERE source_type = 'subsonic' AND source_id = ?`,
     [isAvailable ? 1 : 0, isAvailable ? null : reason, Date.now(), sourceId]
+  )
+  const count = result.changes
+  if (options.persist !== false && count > 0) {
+    await saveDatabase()
+  }
+  return Number.isFinite(count) ? count : 0
+}
+
+/** An outage hides only playable tracks, keeping other reasons, so recovery can't revive a removed track. */
+export async function markSubsonicTracksUnreachable(
+  sourceId: number,
+  options: { persist?: boolean } = {}
+): Promise<number> {
+  if (!db) return 0
+
+  const result = db.run(
+    `UPDATE tracks
+     SET is_available = 0,
+         availability_reason = 'source_unavailable',
+         modified_at = ?
+     WHERE source_type = 'subsonic'
+       AND source_id = ?
+       AND is_available = 1`,
+    [Date.now(), sourceId]
   )
   const count = result.changes
   if (options.persist !== false && count > 0) {
@@ -3817,208 +4441,52 @@ export async function restoreSubsonicTracksFromSourceUnavailable(
   return Number.isFinite(count) ? count : 0
 }
 
-export async function upsertSubsonicTracks(
+/** Commit bounded batches before yielding: never leave our transaction open while
+ * playback IPC or another library writer runs. An explicit caller transaction
+ * retains its existing synchronous/atomic behavior. */
+async function writeRemoteCatalogBatches<T>(
+  provider: 'subsonic' | 'jellyfin' | 'plex', sourceId: number,
+  tracks: readonly T[], write: (track: T) => void
+): Promise<void> {
+  const database = db
+  if (!database) return
+  const binding = () => database.get<Record<string, unknown>>(`
+    SELECT base_url, username, secret_encrypted, enabled${provider === 'plex' ? ', deleted' : ''}
+    FROM ${provider}_sources WHERE id = ?`, [sourceId])
+  const initialBinding = JSON.stringify(binding())
+  const callerOwnsTransaction = database.inTransaction
+  let offset = 0
+  while (offset < tracks.length) {
+    if (db !== database || JSON.stringify(binding()) !== initialBinding) {
+      throw new Error('The server changed during sync. Sync again to load its current library.')
+    }
+    if (!callerOwnsTransaction) {
+      if (database.inTransaction) throw new Error('Another library update interrupted server sync. Please sync again.')
+      database.run('BEGIN IMMEDIATE TRANSACTION')
+    }
+    try {
+      const started = performance.now()
+      const end = Math.min(tracks.length, offset + 200)
+      do {
+        write(tracks[offset++])
+      } while (offset < end && (callerOwnsTransaction || performance.now() - started < 12))
+      if (!callerOwnsTransaction) database.run('COMMIT')
+    } catch (error) {
+      if (!callerOwnsTransaction && database.inTransaction) database.run('ROLLBACK')
+      throw error
+    }
+    if (!callerOwnsTransaction && offset < tracks.length) {
+      await new Promise<void>(resolve => setImmediate(resolve))
+    }
+  }
+}
+
+export function upsertSubsonicTracks(
   sourceId: number,
   tracks: SubsonicTrackUpsertInput[],
   options: { persist?: boolean; syncSessionKey?: string | null; preserveExistingArtwork?: boolean } = {}
 ): Promise<{ inserted: number; updated: number }> {
-  if (!db || tracks.length === 0) {
-    return { inserted: 0, updated: 0 }
-  }
-
-  const sourceExists = Boolean(db.get('SELECT 1 FROM subsonic_sources WHERE id = ? LIMIT 1', [sourceId]))
-  if (!sourceExists) {
-    return { inserted: 0, updated: 0 }
-  }
-
-  let inserted = 0
-  let updated = 0
-  const now = Date.now()
-
-  for (const track of tracks) {
-    const genreFields = resolveTrackGenreStorageFields(track)
-    const artistNames = normalizeArtistNames(track.artist_names)
-    const albumArtistNames = normalizeArtistNames(track.album_artist_names)
-    const artistNamesJson = artistNames.length > 1 ? serializeArtistNames(artistNames) : null
-    const albumArtistNamesJson = albumArtistNames.length > 1 ? serializeArtistNames(albumArtistNames) : null
-    const existing = db.get<{ id?: unknown; artwork_hash?: unknown }>(
-      'SELECT id, artwork_hash FROM tracks WHERE path = ? LIMIT 1',
-      [track.path]
-    )
-    const exists = Boolean(existing)
-    const artworkHash = track.artwork_hash
-      ?? (
-        options.preserveExistingArtwork && typeof existing?.artwork_hash === 'string'
-          ? existing.artwork_hash
-          : null
-      )
-
-    if (exists) {
-      db.run(
-        `UPDATE tracks
-         SET title = ?,
-             artist = ?,
-             artist_names_json = ?,
-             album = ?,
-             album_artist = ?,
-             album_artist_names_json = ?,
-             duration = ?,
-             track_number = ?,
-             track_total = ?,
-             disc_number = ?,
-             disc_total = ?,
-             year = ?,
-             genre = ?,
-             genre_names_json = ?,
-             artwork_hash = ?,
-             format = ?,
-             sample_rate = ?,
-             bit_depth = ?,
-             bitrate = ?,
-             channels = ?,
-             codec = ?,
-             codec_profile = ?,
-             is_atmos_joc = ?,
-             replaygain_track_gain_db = ?,
-             replaygain_album_gain_db = ?,
-             bpm = ?,
-             musical_key = ?,
-             source_type = 'subsonic',
-             source_id = ?,
-             source_track_id = ?,
-             source_path = ?,
-             is_available = 1,
-             availability_reason = NULL,
-             file_created_at = NULL,
-             modified_at = ?
-         WHERE path = ?`,
-        [
-          track.title,
-          track.artist,
-          artistNamesJson,
-          track.album,
-          track.album_artist,
-          albumArtistNamesJson,
-          track.duration,
-          track.track_number,
-          track.track_total ?? null,
-          track.disc_number,
-          track.disc_total ?? null,
-          track.year,
-          genreFields.genre,
-          genreFields.genreNamesJson,
-          artworkHash,
-          track.format,
-          track.sample_rate,
-          track.bit_depth,
-          track.bitrate,
-          track.channels,
-          track.codec,
-          track.codec_profile,
-          track.is_atmos_joc,
-          track.replaygain_track_gain_db,
-          track.replaygain_album_gain_db,
-          track.bpm,
-          track.musical_key,
-          sourceId,
-          track.source_track_id,
-          track.source_path,
-          now,
-          track.path
-        ]
-      )
-      updated += 1
-      continue
-    }
-
-    db.run(
-      `INSERT INTO tracks (
-        path,
-        title,
-        artist,
-        artist_names_json,
-        album,
-        album_artist,
-        album_artist_names_json,
-        duration,
-        track_number,
-        track_total,
-        disc_number,
-        disc_total,
-        year,
-        genre,
-        genre_names_json,
-        artwork_hash,
-        format,
-        sample_rate,
-        bit_depth,
-        bitrate,
-        channels,
-        codec,
-        codec_profile,
-        is_atmos_joc,
-        replaygain_track_gain_db,
-        replaygain_album_gain_db,
-        bpm,
-        musical_key,
-        source_type,
-        source_id,
-        source_track_id,
-        source_path,
-        is_available,
-        availability_reason,
-        sync_session_key,
-        added_at,
-        modified_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'subsonic', ?, ?, ?, 1, NULL, ?, ?, ?)`,
-      [
-        track.path,
-        track.title,
-        track.artist,
-        artistNamesJson,
-        track.album,
-        track.album_artist,
-        albumArtistNamesJson,
-        track.duration,
-        track.track_number,
-        track.track_total ?? null,
-        track.disc_number,
-        track.disc_total ?? null,
-        track.year,
-        genreFields.genre,
-        genreFields.genreNamesJson,
-        artworkHash,
-        track.format,
-        track.sample_rate,
-        track.bit_depth,
-        track.bitrate,
-        track.channels,
-        track.codec,
-        track.codec_profile,
-        track.is_atmos_joc,
-        track.replaygain_track_gain_db,
-        track.replaygain_album_gain_db,
-        track.bpm,
-        track.musical_key,
-        sourceId,
-        track.source_track_id,
-        track.source_path,
-        options.syncSessionKey ?? null,
-        now,
-        now
-      ]
-    )
-    inserted += 1
-  }
-
-  if (inserted > 0 || updated > 0) {
-    rebuildDerivedLibraryState()
-  }
-  if (options.persist !== false && (inserted > 0 || updated > 0)) {
-    await saveDatabase()
-  }
-
-  return { inserted, updated }
+  return upsertRemoteCatalogTracks('subsonic', sourceId, tracks, options)
 }
 
 export async function markMissingSubsonicTracksUnavailable(
@@ -4036,20 +4504,81 @@ export async function markMissingSubsonicTracksUnavailable(
         modified_at = ?
     WHERE source_type = 'subsonic'
       AND source_id = ?
+      AND (is_available IS NOT 0 OR availability_reason IS NOT 'missing_upstream')
   `
 
   if (seenSourceTrackIds.size > 0) {
-    const placeholders = Array.from(seenSourceTrackIds).map(() => '?').join(', ')
-    sql += ` AND (source_track_id IS NULL OR source_track_id NOT IN (${placeholders}))`
-    params.push(...seenSourceTrackIds)
+    // One JSON parameter. A placeholder per track hits SQLite's 32,766 variable limit.
+    sql += ' AND (source_track_id IS NULL OR source_track_id NOT IN (SELECT value FROM json_each(?)))'
+    params.push(JSON.stringify(Array.from(seenSourceTrackIds)))
   }
 
   const result = db.run(sql, params)
   const count = result.changes
-  if (options.persist !== false && count > 0) {
+  const recovered = reconcileSubsonicTrackIds(sourceId)
+  if (recovered > 0) rebuildDerivedLibraryState()
+  if (options.persist !== false && (count > 0 || recovered > 0)) {
     await saveDatabase()
   }
-  return Number.isFinite(count) ? count : 0
+  return Number.isFinite(count) ? Math.max(0, count - recovered) : 0
+}
+
+/** Recover a server ID change only after a complete catalog identifies missing IDs. */
+function reconcileSubsonicTrackIds(sourceId: number): number {
+  if (!db) return 0
+  type Row = DuplicateTrackRowRef & {
+    source_path: string; title: string; artist: string; album: string;
+    duration: number; format: string; is_available: number; availability_reason: string | null
+  }
+  const tracks = db.all<Row>(`SELECT id, path, source_path, title, artist, album,
+      duration, format, is_available, availability_reason FROM tracks
+    WHERE source_type = 'subsonic' AND source_id = ?
+      AND source_path IS NOT NULL AND TRIM(source_path) <> ''`, [sourceId])
+  const currentByPath = new Map<string, Row[]>()
+  for (const track of tracks) {
+    if (track.is_available !== 1) continue
+    const group = currentByPath.get(track.source_path) ?? []
+    group.push(track)
+    currentByPath.set(track.source_path, group)
+  }
+  const replacements = new Map<Row, Row[]>()
+  for (const stale of tracks) {
+    if (stale.is_available !== 0 || stale.availability_reason !== 'missing_upstream') continue
+    // Subsonic paths may be virtual rather than physical. Require matching
+    // metadata and duration too; never guess between indistinguishable copies.
+    const candidates = (currentByPath.get(stale.source_path) ?? []).filter(current =>
+      current.title === stale.title && current.artist === stale.artist && current.album === stale.album
+      && current.format === stale.format && current.duration > 0 && stale.duration > 0
+      && Math.abs(current.duration - stale.duration) <= 1)
+    if (candidates.length !== 1) continue
+    const target = candidates[0]
+    const group = replacements.get(target) ?? []
+    group.push(stale)
+    replacements.set(target, group)
+  }
+  if (!replacements.size) return 0
+  const ownsTransaction = !db.inTransaction
+  if (ownsTransaction) beginLibraryWriteTransaction()
+  let recovered = 0
+  try {
+    for (const [target, stale] of replacements) {
+      for (const old of stale) {
+        db.run('UPDATE listening_sessions SET track_path = ? WHERE track_id = ? AND track_path = ?', [target.path, old.id, old.path])
+        db.run(`DELETE FROM provider_state_baselines
+          WHERE provider = 'subsonic' AND source_id = ? AND track_path IN (?, ?)`, [sourceId, old.path, target.path])
+      }
+      // Reuse reference-preserving recovery: playlists, favorites, ratings,
+      // listening sessions, play counts, Home, metadata and lyrics all survive.
+      mergeDuplicateTrackRows(target.id, target.path, stale)
+      recovered += stale.length
+    }
+    refreshListeningSessionAlbumIdentities([...replacements.keys()].map(track => track.path))
+    if (ownsTransaction) commitLibraryWriteTransaction()
+  } catch (error) {
+    if (ownsTransaction) rollbackLibraryWriteTransaction()
+    throw error
+  }
+  return recovered
 }
 
 export async function replaceSubsonicArtworkHash(
@@ -4070,9 +4599,18 @@ export async function replaceSubsonicArtworkHash(
      WHERE source_type = 'subsonic'
        AND source_id = ?
        AND artwork_hash = ?`,
-    [next, Date.now(), sourceId, current]
+    [next, Date.now(), sourceId, current],
+    { keepsTrackSnapshot: true }
   )
   const count = result.changes
+  // Album grouping reads the artwork hash, so the snapshot does have to be rebuilt. A
+  // view loading its covers swaps them one at a time (Navidrome gives every track its
+  // own cover ID), and rebuilding per cover froze the app. They share one rebuild.
+  if (count > 0) {
+    scheduleDerivedLibraryStateRebuild()
+    // An artist shows its newest track's cover, so the kept artist list is out of date now.
+    artistListCache.clear()
+  }
   if (options.persist !== false && count > 0) {
     await saveDatabase()
   }
@@ -4087,7 +4625,7 @@ export function getTrackByPath(trackPath: string): DbTrack | null {
     WHERE t.path = ?
     LIMIT 1
   `, [trackPath]) ?? null
-  return row ? attachAlbumIdentityKeys([row])[0] ?? null : null
+  return row ? attachAlbumIdentityKeys([row], undefined, undefined, true)[0] ?? null : null
 }
 
 export function getTrackById(trackId: number): DbTrack | null {
@@ -4098,7 +4636,7 @@ export function getTrackById(trackId: number): DbTrack | null {
     WHERE t.id = ?
     LIMIT 1
   `, [trackId]) ?? null
-  return row ? attachAlbumIdentityKeys([row])[0] ?? null : null
+  return row ? attachAlbumIdentityKeys([row], undefined, undefined, true)[0] ?? null : null
 }
 
 export async function setTrackAvailability(
@@ -4143,34 +4681,14 @@ export async function deleteJellyfinSource(sourceId: number, purgeTracks: boolea
   const source = getJellyfinSourceById(sourceId)
 
   if (purgeTracks) {
-    const sourcePathPattern = `jellyfin://${sourceId}/%`
-    let includeUnknownSourceTracks = false
-    if (source) {
-      const countRow = db.get<{ count?: unknown }>('SELECT COUNT(*) as count FROM jellyfin_sources WHERE id <> ?', [sourceId])
-      const otherSourcesCount = Number(countRow?.count ?? 0)
-      includeUnknownSourceTracks = Number.isFinite(otherSourcesCount) && otherSourcesCount <= 0
-    }
-
-    const trackSelectSql = includeUnknownSourceTracks
-      ? "SELECT path FROM tracks WHERE ((source_type = 'jellyfin' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)"
-      : "SELECT path FROM tracks WHERE ((source_type = 'jellyfin' AND source_id = ?) OR path LIKE ?)"
-    const trackPaths = db.all<{ path?: unknown }>(trackSelectSql, [sourceId, sourcePathPattern])
+    const scope = purgedTrackScope('jellyfin', sourceId)
+    const trackPaths = db.all<{ path?: unknown }>(`SELECT path FROM tracks WHERE ${scope.where}`, scope.params)
       .map((row) => (typeof row.path === 'string' && row.path.trim().length > 0 ? row.path : null))
       .filter((path): path is string => path !== null)
 
     deleteTrackRelatedRows(trackPaths)
-    deleteTrackRelatedRowsByPathPattern(sourcePathPattern)
-    if (includeUnknownSourceTracks) {
-      db.run(
-        "DELETE FROM tracks WHERE ((source_type = 'jellyfin' AND (source_id = ? OR source_id IS NULL)) OR path LIKE ?)",
-        [sourceId, sourcePathPattern]
-      )
-    } else {
-      db.run(
-        "DELETE FROM tracks WHERE ((source_type = 'jellyfin' AND source_id = ?) OR path LIKE ?)",
-        [sourceId, sourcePathPattern]
-      )
-    }
+    deleteTrackRelatedRowsByPathPattern(`jellyfin://${sourceId}/%`)
+    db.run(`DELETE FROM tracks WHERE ${scope.where}`, scope.params)
   } else {
     db.run(
       `UPDATE tracks
@@ -4183,6 +4701,11 @@ export async function deleteJellyfinSource(sourceId: number, purgeTracks: boolea
   }
 
   if (source) {
+    db.run(`DELETE FROM playlist_tracks WHERE playlist_id IN (
+      SELECT id FROM playlists WHERE remote_source_type = 'jellyfin' AND remote_source_id = ?
+    )`, [sourceId])
+    db.run("DELETE FROM playlists WHERE remote_source_type = 'jellyfin' AND remote_source_id = ?", [sourceId])
+    db.run("DELETE FROM remote_playlist_sync WHERE provider = 'jellyfin' AND source_id = ?", [sourceId])
     db.run('DELETE FROM jellyfin_sources WHERE id = ?', [sourceId])
   }
   await saveDatabase()
@@ -4193,6 +4716,7 @@ export async function updateJellyfinSourceStatus(
   input: {
     status: JellyfinSourceLastStatus
     error?: string | null
+    errorKind?: SourceErrorKind | null
     syncedAt?: number | null
     checkedAt?: number | null
   },
@@ -4206,6 +4730,8 @@ export async function updateJellyfinSourceStatus(
     {
       last_status: normalizeJellyfinLastStatus(input.status),
       last_error: input.error === undefined ? existing.last_error : input.error,
+      // A kind only goes with an error; anything else clears it.
+      last_error_kind: input.status === 'error' ? (input.errorKind ?? existing.last_error_kind ?? 'sync') : null,
       last_sync_at: input.syncedAt === undefined ? existing.last_sync_at : input.syncedAt,
       last_checked_at: input.checkedAt === undefined ? existing.last_checked_at : input.checkedAt
     },
@@ -4227,6 +4753,30 @@ export async function markJellyfinTracksAvailability(
          modified_at = ?
      WHERE source_type = 'jellyfin' AND source_id = ?`,
     [isAvailable ? 1 : 0, isAvailable ? null : reason, Date.now(), sourceId]
+  )
+  const count = result.changes
+  if (options.persist !== false && count > 0) {
+    await saveDatabase()
+  }
+  return Number.isFinite(count) ? count : 0
+}
+
+/** An outage hides only playable tracks, keeping other reasons, so recovery can't revive a removed track. */
+export async function markJellyfinTracksUnreachable(
+  sourceId: number,
+  options: { persist?: boolean } = {}
+): Promise<number> {
+  if (!db) return 0
+
+  const result = db.run(
+    `UPDATE tracks
+     SET is_available = 0,
+         availability_reason = 'source_unavailable',
+         modified_at = ?
+     WHERE source_type = 'jellyfin'
+       AND source_id = ?
+       AND is_available = 1`,
+    [Date.now(), sourceId]
   )
   const count = result.changes
   if (options.persist !== false && count > 0) {
@@ -4259,198 +4809,147 @@ export async function restoreJellyfinTracksFromSourceUnavailable(
   return Number.isFinite(count) ? count : 0
 }
 
-export async function upsertJellyfinTracks(
+export function upsertJellyfinTracks(sourceId: number, tracks: JellyfinTrackUpsertInput[],
+  options: { persist?: boolean; syncSessionKey?: string | null } = {}) {
+  return upsertRemoteCatalogTracks('jellyfin', sourceId, tracks, options)
+}
+export function upsertPlexTracks(sourceId: number, tracks: JellyfinTrackUpsertInput[],
+  options: { persist?: boolean; syncSessionKey?: string | null } = {}) {
+  return upsertRemoteCatalogTracks('plex', sourceId, tracks, options)
+}
+
+async function upsertRemoteCatalogTracks(
+  provider: 'subsonic' | 'jellyfin' | 'plex',
   sourceId: number,
-  tracks: JellyfinTrackUpsertInput[],
-  options: { persist?: boolean; syncSessionKey?: string | null } = {}
+  tracks: SubsonicTrackUpsertInput[],
+  options: { persist?: boolean; syncSessionKey?: string | null; preserveExistingArtwork?: boolean } = {}
 ): Promise<{ inserted: number; updated: number }> {
-  if (!db || tracks.length === 0) {
+  if (!db || tracks.length === 0) return { inserted: 0, updated: 0 }
+  const database = db
+  if (!database.get(`SELECT 1 FROM ${provider}_sources WHERE id = ? LIMIT 1`, [sourceId])) {
     return { inserted: 0, updated: 0 }
   }
 
-  const sourceExists = Boolean(db.get('SELECT 1 FROM jellyfin_sources WHERE id = ? LIMIT 1', [sourceId]))
-  if (!sourceExists) {
-    return { inserted: 0, updated: 0 }
+  const preserveArtwork = provider === 'plex' || (provider === 'subsonic' && options.preserveExistingArtwork === true)
+  const matchesStored = (existing: Record<string, unknown>, entries: RemoteCatalogTrackEntries) =>
+    entries.every(([key, value]) => existing[key] === value)
+
+  // One read finds the tracks this sync would change, so an unchanged library costs no
+  // per-track statements or transactions. It only narrows the work: every remaining
+  // row is read again inside its write batch.
+  const callerOwnsTransaction = database.inTransaction
+  const stored = new Map<string, Record<string, unknown>>()
+  for (const row of database.all<Record<string, unknown>>(
+    'SELECT * FROM tracks WHERE source_type = ? AND source_id = ?', [provider, sourceId])) {
+    stored.set(row.path as string, row)
   }
+  const pending: SubsonicTrackUpsertInput[] = []
+  let sliceStarted = performance.now()
+  for (const track of tracks) {
+    const existing = stored.get(track.path)
+    if (!existing || !matchesStored(existing, remoteCatalogTrackEntries(provider, sourceId, track, existing, preserveArtwork))) {
+      pending.push(track)
+    }
+    if (!callerOwnsTransaction && performance.now() - sliceStarted >= 12) {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      sliceStarted = performance.now()
+    }
+  }
+  if (pending.length === 0) return { inserted: 0, updated: 0 }
 
   let inserted = 0
   let updated = 0
   const now = Date.now()
+  let runUpdate: ReturnType<LibrarySqliteDatabase['prepareRun']> | null = null
+  let runInsert: ReturnType<LibrarySqliteDatabase['prepareRun']> | null = null
+  // Each batch below discards the library snapshot. Reads between batches keep the one
+  // from before the import, and the single rebuild after it picks up every change.
+  beginSnapshotRebuildDeferral()
+  try {
+    await writeRemoteCatalogBatches(provider, sourceId, pending, (track) => {
+      // Compare stored server values, not effective values with the user's overrides.
+      // Read inside the batch so earlier yields cannot leave us with stale row state.
+      const existing = database.get<Record<string, unknown>>('SELECT * FROM tracks WHERE path = ?', [track.path])
+      const entries = remoteCatalogTrackEntries(provider, sourceId, track, existing, preserveArtwork)
+      if (existing && matchesStored(existing, entries)) return
 
-  for (const track of tracks) {
-    const genreFields = resolveTrackGenreStorageFields(track)
-    const artistNames = normalizeArtistNames(track.artist_names)
-    const albumArtistNames = normalizeArtistNames(track.album_artist_names)
-    const artistNamesJson = artistNames.length > 1 ? serializeArtistNames(artistNames) : null
-    const albumArtistNamesJson = albumArtistNames.length > 1 ? serializeArtistNames(albumArtistNames) : null
-    const exists = Boolean(db.get('SELECT id FROM tracks WHERE path = ? LIMIT 1', [track.path]))
-
-    if (exists) {
-      db.run(
-        `UPDATE tracks
-         SET title = ?,
-             artist = ?,
-             artist_names_json = ?,
-             album = ?,
-             album_artist = ?,
-             album_artist_names_json = ?,
-             duration = ?,
-             track_number = ?,
-             track_total = ?,
-             disc_number = ?,
-             disc_total = ?,
-             year = ?,
-             genre = ?,
-             genre_names_json = ?,
-             artwork_hash = ?,
-             format = ?,
-             sample_rate = ?,
-             bit_depth = ?,
-             bitrate = ?,
-             channels = ?,
-             codec = ?,
-             codec_profile = ?,
-             is_atmos_joc = ?,
-             replaygain_track_gain_db = ?,
-             replaygain_album_gain_db = ?,
-             bpm = ?,
-             musical_key = ?,
-             source_type = 'jellyfin',
-             source_id = ?,
-             source_track_id = ?,
-             source_path = ?,
-             is_available = 1,
-             availability_reason = NULL,
-             file_created_at = NULL,
-             modified_at = ?
-         WHERE path = ?`,
-        [
-          track.title,
-          track.artist,
-          artistNamesJson,
-          track.album,
-          track.album_artist,
-          albumArtistNamesJson,
-          track.duration,
-          track.track_number,
-          track.track_total ?? null,
-          track.disc_number,
-          track.disc_total ?? null,
-          track.year,
-          genreFields.genre,
-          genreFields.genreNamesJson,
-          track.artwork_hash,
-          track.format,
-          track.sample_rate,
-          track.bit_depth,
-          track.bitrate,
-          track.channels,
-          track.codec,
-          track.codec_profile,
-          track.is_atmos_joc,
-          track.replaygain_track_gain_db,
-          track.replaygain_album_gain_db,
-          track.bpm,
-          track.musical_key,
-          sourceId,
-          track.source_track_id,
-          track.source_path,
-          now,
-          track.path
-        ]
-      )
-      updated += 1
-      continue
-    }
-
-    db.run(
-      `INSERT INTO tracks (
-        path,
-        title,
-        artist,
-        artist_names_json,
-        album,
-        album_artist,
-        album_artist_names_json,
-        duration,
-        track_number,
-        track_total,
-        disc_number,
-        disc_total,
-        year,
-        genre,
-        genre_names_json,
-        artwork_hash,
-        format,
-        sample_rate,
-        bit_depth,
-        bitrate,
-        channels,
-        codec,
-        codec_profile,
-        is_atmos_joc,
-        replaygain_track_gain_db,
-        replaygain_album_gain_db,
-        bpm,
-        musical_key,
-        source_type,
-        source_id,
-        source_track_id,
-        source_path,
-        is_available,
-        availability_reason,
-        sync_session_key,
-        added_at,
-        modified_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'jellyfin', ?, ?, ?, 1, NULL, ?, ?, ?)`,
-      [
-        track.path,
-        track.title,
-        track.artist,
-        artistNamesJson,
-        track.album,
-        track.album_artist,
-        albumArtistNamesJson,
-        track.duration,
-        track.track_number,
-        track.track_total ?? null,
-        track.disc_number,
-        track.disc_total ?? null,
-        track.year,
-        genreFields.genre,
-        genreFields.genreNamesJson,
-        track.artwork_hash,
-        track.format,
-        track.sample_rate,
-        track.bit_depth,
-        track.bitrate,
-        track.channels,
-        track.codec,
-        track.codec_profile,
-        track.is_atmos_joc,
-        track.replaygain_track_gain_db,
-        track.replaygain_album_gain_db,
-        track.bpm,
-        track.musical_key,
-        sourceId,
-        track.source_track_id,
-        track.source_path,
-        options.syncSessionKey ?? null,
-        now,
-        now
-      ]
-    )
-    inserted += 1
+      const columns = entries.map(([key]) => key)
+      const values = entries.map(([, value]) => value)
+      if (existing) {
+        runUpdate ??= database.prepareRun(
+          `UPDATE tracks SET ${columns.map(key => `${key} = ?`).join(', ')}, modified_at = ? WHERE path = ?`)
+        runUpdate([...values, now, track.path])
+        updated += 1
+      } else {
+        runInsert ??= database.prepareRun(`INSERT INTO tracks (path, ${columns.join(', ')}, sync_session_key, added_at, modified_at)
+          VALUES (?, ${columns.map(() => '?').join(', ')}, ?, ?, ?)`)
+        runInsert([track.path, ...values, options.syncSessionKey ?? null, now, now])
+        inserted += 1
+      }
+    })
+  } finally {
+    endSnapshotRebuildDeferral()
   }
 
   if (inserted > 0 || updated > 0) {
     rebuildDerivedLibraryState()
+    if (options.persist !== false) await saveDatabase()
   }
-  if (options.persist !== false && (inserted > 0 || updated > 0)) {
-    await saveDatabase()
-  }
-
   return { inserted, updated }
+}
+
+type RemoteCatalogTrackEntries = Array<readonly [string, unknown]>
+
+/** The server-owned columns of a remote track. Comparison and writes share this set,
+ * including availability. Playback history, local analysis, overrides and the original
+ * import session are deliberately outside it. */
+function remoteCatalogTrackEntries(
+  provider: 'subsonic' | 'jellyfin' | 'plex',
+  sourceId: number,
+  track: SubsonicTrackUpsertInput,
+  existing: Record<string, unknown> | undefined,
+  preserveArtwork: boolean
+): RemoteCatalogTrackEntries {
+  const genreFields = resolveTrackGenreStorageFields(track)
+  const artistNames = normalizeArtistNames(track.artist_names)
+  const albumArtistNames = normalizeArtistNames(track.album_artist_names)
+  const fields = {
+    title: track.title,
+    artist: track.artist,
+    artist_names_json: artistNames.length > 1 ? serializeArtistNames(artistNames) : null,
+    album: track.album,
+    album_artist: track.album_artist,
+    album_artist_names_json: albumArtistNames.length > 1 ? serializeArtistNames(albumArtistNames) : null,
+    duration: track.duration,
+    track_number: track.track_number,
+    track_total: track.track_total ?? null,
+    disc_number: track.disc_number,
+    disc_total: track.disc_total ?? null,
+    year: track.year,
+    genre: genreFields.genre,
+    genre_names_json: genreFields.genreNamesJson,
+    artwork_hash: track.artwork_hash ?? (preserveArtwork ? existing?.artwork_hash ?? null : null),
+    format: track.format,
+    sample_rate: track.sample_rate,
+    bit_depth: track.bit_depth,
+    bitrate: track.bitrate,
+    channels: track.channels,
+    codec: track.codec,
+    codec_profile: track.codec_profile,
+    is_atmos_joc: track.is_atmos_joc,
+    replaygain_track_gain_db: track.replaygain_track_gain_db,
+    replaygain_album_gain_db: track.replaygain_album_gain_db,
+    bpm: track.bpm,
+    musical_key: track.musical_key,
+    source_type: provider,
+    source_id: sourceId,
+    source_track_id: track.source_track_id,
+    source_path: track.source_path,
+    is_available: 1,
+    availability_reason: null,
+    file_created_at: null
+  }
+  return Object.entries(fields).map(([key, value]) => [key, value ?? null] as const)
 }
 
 export async function markMissingJellyfinTracksUnavailable(
@@ -4468,12 +4967,13 @@ export async function markMissingJellyfinTracksUnavailable(
         modified_at = ?
     WHERE source_type = 'jellyfin'
       AND source_id = ?
+      AND (is_available IS NOT 0 OR availability_reason IS NOT 'missing_upstream')
   `
 
   if (seenSourceTrackIds.size > 0) {
-    const placeholders = Array.from(seenSourceTrackIds).map(() => '?').join(', ')
-    sql += ` AND (source_track_id IS NULL OR source_track_id NOT IN (${placeholders}))`
-    params.push(...seenSourceTrackIds)
+    // One JSON parameter. A placeholder per track hits SQLite's 32,766 variable limit.
+    sql += ' AND (source_track_id IS NULL OR source_track_id NOT IN (SELECT value FROM json_each(?)))'
+    params.push(JSON.stringify(Array.from(seenSourceTrackIds)))
   }
 
   const result = db.run(sql, params)
@@ -4514,6 +5014,10 @@ export async function cleanupOrphanedRemoteTracks(options: { persist?: boolean }
     ) OR (
       source_type = 'jellyfin'
       AND (source_id IS NULL OR source_id NOT IN (SELECT id FROM jellyfin_sources))
+      AND COALESCE(availability_reason, '') <> 'source_deleted'
+    ) OR (
+      source_type = 'plex'
+      AND (source_id IS NULL OR source_id NOT IN (SELECT id FROM plex_sources))
       AND COALESCE(availability_reason, '') <> 'source_deleted'
     )
   `)
@@ -5017,7 +5521,7 @@ export function getAllTracks(): DbTrack[] {
   return measureLibraryQuery('getTracks', () => {
     const tracks = readEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
       ${ALL_TRACKS_ORDER_BY_CLAUSE}
     `)
     const snapshot = getLibraryTrackSnapshot()
@@ -5082,7 +5586,7 @@ export function getTracksByPaths(trackPaths: readonly string[] | null | undefine
     if (requestedPaths.length === 0) return []
 
     const rows = readEffectiveTrackRowsByPaths(requestedPaths)
-    const tracksByPath = new Map(attachAlbumIdentityKeys(rows).map((track) => [track.path, track]))
+    const tracksByPath = new Map(attachAlbumIdentityKeys(rows, undefined, undefined, true).map((track) => [track.path, track]))
     const tracks: DbTrack[] = []
     for (const trackPath of requestedPaths) {
       const track = tracksByPath.get(trackPath)
@@ -5125,11 +5629,12 @@ export function getTracksByArtist(artist: string, mode: ArtistBrowseMode = 'cano
     const targetArtistKey = normalizeKey(artist)
     if (!targetArtistKey) return []
     const resolvedMode: ArtistBrowseMode = mode === 'strict' ? 'strict' : 'canonical'
+    getLibraryTrackSnapshot()
 
     const matched: DbTrackRow[] = []
     for (const track of iterateEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
     `)) {
       if (trackMatchesBrowseArtist(track, targetArtistKey, resolvedMode)) {
         matched.push(track)
@@ -5202,7 +5707,7 @@ export function getTracksByGenre(genre: string): DbTrack[] {
     const matched: DbTrackRow[] = []
     for (const track of iterateEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
     `)) {
       if (getGenreNamesForTrack(track).some((name) => normalizeKey(name) === targetGenreKey)) {
         matched.push(track)
@@ -5210,8 +5715,7 @@ export function getTracksByGenre(genre: string): DbTrack[] {
     }
 
     return attachAlbumIdentityKeys(
-      matched.sort(compareTracksByAlbumDiscTrackTitle),
-      readAlbumIdentityRowsForTracks(matched)
+      matched.sort(compareTracksByAlbumDiscTrackTitle)
     )
   })
 }
@@ -5223,7 +5727,7 @@ export function getTracksByYear(year: number | null): DbTrack[] {
 
     const tracks = Array.from(iterateEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
     `))
     const groups = buildAlbumGroups(tracks)
     const matched: DbTrackRow[] = []
@@ -5260,7 +5764,7 @@ export function getGenres(): GenreRecord[] {
 
     for (const track of iterateEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
     `)) {
       const genreNames = getGenreNamesForTrack(track)
       if (genreNames.length === 0) continue
@@ -5688,6 +6192,12 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
   return measureLibraryQuery('getArtists', () => {
     if (!db) return []
     const resolvedMode = normalizeArtistBrowseMode(mode)
+    const dataVersion = db.get<{ data_version: number }>('PRAGMA data_version')!.data_version
+    const remembered = artistListCache.get(resolvedMode)
+    if (remembered && remembered.generation === libraryWriteGeneration && remembered.dataVersion === dataVersion) {
+      // Copies, so a caller can't change what the next one gets.
+      return remembered.artists.map((artist) => ({ ...artist }))
+    }
     const artistImageRows = readArtistImageRowsForMode(resolvedMode)
     const albumIdentityKeysByPath = getLibraryTrackSnapshot()?.identityKeysByPath ?? new Map<string, string>()
     const eligibleAlbumIdentityKeys = collectEligibleAlbumIdentityKeys()
@@ -5765,7 +6275,7 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
 
     for (const track of iterateEffectiveTrackRows(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
     `)) {
       const trackAlbumIdentityKey = albumIdentityKeysByPath.get(track.path)
         ?? buildFallbackAlbumIdentityKeyFromTrack(track)
@@ -5789,7 +6299,7 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
       }
     }
 
-    return Array.from(artistCounts.values())
+    const artists: ArtistRecord[] = Array.from(artistCounts.values())
       .map(({ artist, track_count, primary_track_count, album_identity_keys, artwork_hash }) => {
         const artistImageRow = artistImageRows.get(getArtistImageKey(artist))
         const resolvedArtwork = resolveArtistArtwork(
@@ -5807,12 +6317,16 @@ export function getArtists(mode: ArtistBrowseMode = 'canonical'): ArtistRecord[]
         }
       })
       .sort((a, b) => compareBaseLocaleText(a.artist, b.artist))
+    // Reading the snapshot above can rebuild it, which moves the generation. Key on the
+    // one the list was finished under.
+    artistListCache.set(resolvedMode, { generation: libraryWriteGeneration, dataVersion, artists })
+    return artists.map((artist) => ({ ...artist }))
   })
 }
 
 // Get unique albums
 export function listAlbumIdentityKeys(): string[] {
-  const identityKeys = new Set(getLibraryTrackSnapshot()?.identityKeysByPath.values() ?? [])
+  const identityKeys = new Set(getLibraryTrackSnapshot(true)?.identityKeysByPath.values() ?? [])
   return Array.from(identityKeys).sort((a, b) => a.localeCompare(b))
 }
 
@@ -5910,6 +6424,7 @@ function resolveHomePlaylistSource(
   playedAt: number
 ): HomePlaybackSourceSummary | null {
   if (!db) return null
+  if (source.playlistId !== -1 && !isPlaylistVisible(source.playlistId)) return null
   const playlist = source.playlistId === -1 ? null : db.get<{
     name: string; kind: string; dynamic_rules_json: string | null; custom_cover_hash: string | null
   }>('SELECT name, kind, dynamic_rules_json, custom_cover_hash FROM playlists WHERE id = ?', [source.playlistId])
@@ -5942,7 +6457,7 @@ function resolveHomePlaylistSource(
     SELECT t.is_available, t.artwork_hash AS base_artwork_hash,
       CASE WHEN COALESCE(o.artwork_cleared, 0) = 1 THEN NULL
         ELSE COALESCE(o.artwork_hash, t.artwork_hash) END AS artwork_hash
-    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    ${dynamic || source.playlistId === -1 ? VISIBLE_TRACK_FROM_CLAUSE : EFFECTIVE_TRACK_FROM_CLAUSE}
     ${suffix}
   ) SELECT COUNT(*) AS track_count, MAX(COALESCE(is_available, 1) != 0) AS available,
     (SELECT artwork_hash FROM source_tracks LIMIT 1) AS artwork_hash,
@@ -5991,6 +6506,7 @@ function moveHomeTrackSource(oldPath: string, newPath: string): void {
 interface HomeSourceLookups {
   artists?: ArtistRecord[]
   genres?: GenreRecord[]
+  visibleTracks?: DbTrackRow[]
 }
 
 function resolveHomePlaybackSource(
@@ -6005,11 +6521,13 @@ function resolveHomePlaybackSource(
   let detail: string
   let artworkHash: string | null = null
   let tracks: DbTrack[] = []
+  let hasAvailableTrack = false
   const trackCount = (count: number) => `${count} ${count === 1 ? 'track' : 'tracks'}`
   switch (source.type) {
     case 'track': {
       const track = getTrackByPath(source.trackPath)
       if (!track || track.is_available === 0) return null
+      if (!db?.get(`SELECT 1 FROM tracks WHERE path = ? AND ${VISIBLE_TRACK_PREDICATE}`, [track.path])) return null
       title = track.title
       subtitle = track.artist
       detail = 'Track'
@@ -6038,10 +6556,26 @@ function resolveHomePlaybackSource(
       const artist = (lookups.artists ??= getArtists(artistMode)).find((entry) => normalizeKey(entry.artist) === normalizeKey(artistName))
       if (!artist) return null
       source = { type: 'artist', artist: artist.artist }
-      tracks = getTracksByArtist(artist.artist, artistMode)
+      // A card shows how many tracks the artist has and needs to know one can play.
+      // Loading each artist's tracks read the whole library once per card, so the cards
+      // share one read and count with the same match getTracksByArtist uses.
+      const artistKey = normalizeKey(artist.artist)
+      let artistTrackCount = 0
+      if (artistKey) {
+        getLibraryTrackSnapshot()
+        lookups.visibleTracks ??= readEffectiveTrackRows(`
+          SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
+          ${VISIBLE_TRACK_FROM_CLAUSE}
+        `)
+        for (const track of lookups.visibleTracks) {
+          if (!trackMatchesBrowseArtist(track, artistKey, artistMode)) continue
+          artistTrackCount += 1
+          if (track.is_available !== 0) hasAvailableTrack = true
+        }
+      }
       title = artist.artist
       subtitle = 'Artist'
-      detail = trackCount(tracks.length)
+      detail = trackCount(artistTrackCount)
       artworkHash = artist.artwork_hash
       break
     }
@@ -6066,7 +6600,8 @@ function resolveHomePlaybackSource(
       break
     }
   }
-  if (source.type !== 'track' && source.type !== 'album' && !tracks.some((track) => track.is_available !== 0)) return null
+  if (source.type !== 'track' && source.type !== 'album'
+    && !hasAvailableTrack && !tracks.some((track) => track.is_available !== 0)) return null
   return { key: playbackSourceKey(source), source, title, subtitle, detail, artwork_hash: artworkHash, last_played_at: playedAt }
 }
 
@@ -6172,7 +6707,7 @@ export function getAvailableLibraryTrackPaths(): string[] {
   return db.all<{ path: string }>(`
     SELECT path
     FROM tracks
-    WHERE is_available != 0
+    WHERE is_available != 0 AND ${VISIBLE_TRACK_PREDICATE}
     ORDER BY path COLLATE NOCASE
   `).map((row) => row.path)
 }
@@ -6184,7 +6719,7 @@ export function searchTracks(query: string): DbTrack[] {
     const pattern = `%${query}%`
     const tracks = db.all<DbTrackRow>(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
       WHERE COALESCE(o.title, t.title) LIKE ?
         OR COALESCE(o.artist, t.artist) LIKE ?
         OR (o.artist IS NULL AND t.artist_names_json LIKE ?)
@@ -7642,13 +8177,6 @@ interface ResolvedCodecMetadata {
   isAtmosJoc: boolean
 }
 
-interface FfprobeAudioMetadata {
-  channels: number | null
-  codec: string | null
-  codecProfile: string | null
-  hints: string[]
-}
-
 let resolvedFfprobeBinaryPath: string | null | undefined
 let resolvedFfmpegBinaryPath: string | null | undefined
 
@@ -7682,7 +8210,7 @@ async function resolveFfprobeBinaryPath(): Promise<string | null> {
   const executable = `ffprobe${isWindows ? '.exe' : ''}`
   const staticModulePath = await resolveStaticFfprobeBinaryPath()
   const packagedStaticCandidates = app.isPackaged
-    ? [join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'ffprobe-static', 'bin', process.platform, process.arch, executable)]
+    ? [join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'ffmpeg-ffprobe-static', executable)]
     : []
   const candidates = [
     ...(app.isPackaged
@@ -7773,8 +8301,8 @@ async function resolveFfmpegBinaryPath(): Promise<string | null> {
 
 async function resolveStaticFfprobeBinaryPath(): Promise<string | null> {
   try {
-    const module = await import('ffprobe-static') as { path?: string; default?: { path?: string } }
-    const modulePath = module.path ?? module.default?.path
+    const module = await import('ffmpeg-ffprobe-static')
+    const modulePath = module.ffprobePath ?? module.default?.ffprobePath
     return typeof modulePath === 'string' ? modulePath : null
   } catch {
     return null
@@ -7791,8 +8319,7 @@ async function resolveStaticFfmpegBinaryPath(): Promise<string | null> {
 }
 
 function toAsarUnpackedPath(candidate: string): string {
-  if (!candidate.includes('app.asar')) return candidate
-  return candidate.replace('app.asar', 'app.asar.unpacked')
+  return candidate.replace(/app\.asar(?=[\\/]|$)/, 'app.asar.unpacked')
 }
 
 function looksLikePath(candidate: string): boolean {
@@ -7989,72 +8516,6 @@ function extractMusicalKey(metadata: mm.IAudioMetadata): string | null {
   return extractMusicalKeyFromCommon(metadata) ?? extractMusicalKeyFromNative(metadata)
 }
 
-function collectFfprobeHints(stream: Record<string, unknown>, format?: Record<string, unknown>): string[] {
-  const hints: string[] = []
-  const push = (value: unknown) => {
-    const text = toText(value)
-    if (text) hints.push(text)
-  }
-
-  push(stream.codec_name)
-  push(stream.codec_long_name)
-  push(stream.profile)
-  push(stream.codec_tag_string)
-  push(stream.codec_tag)
-  push(stream.channel_layout)
-
-  const streamTags = stream.tags
-  if (streamTags && typeof streamTags === 'object') {
-    for (const tagValue of Object.values(streamTags)) {
-      push(tagValue)
-    }
-  }
-
-  const sideDataList = stream.side_data_list
-  if (Array.isArray(sideDataList)) {
-    for (const sideData of sideDataList) {
-      if (!sideData || typeof sideData !== 'object') continue
-      for (const sideDataValue of Object.values(sideData)) {
-        push(sideDataValue)
-      }
-    }
-  }
-
-  if (format && typeof format === 'object') {
-    push(format.format_name)
-    push(format.format_long_name)
-    const formatTags = format.tags
-    if (formatTags && typeof formatTags === 'object') {
-      for (const tagValue of Object.values(formatTags)) {
-        push(tagValue)
-      }
-    }
-  }
-
-  return hints
-}
-
-function isAtmosJocStream(codec?: string | null, codecProfile?: string | null, hints: string[] = []): boolean {
-  const codecText = (codec ?? '').toLowerCase()
-  const profileText = (codecProfile ?? '').toLowerCase()
-  const hintText = hints.join(' ').toLowerCase()
-  const combined = `${codecText} ${profileText} ${hintText}`
-  const mentionsAtmos =
-    combined.includes('joc') ||
-    combined.includes('atmos') ||
-    combined.includes('dby1')
-  const isEc3Family =
-    combined.includes('ec-3') ||
-    combined.includes('eac3') ||
-    combined.includes('ec3') ||
-    combined.includes('e-ac-3') ||
-    combined.includes('dolby digital plus') ||
-    combined.includes('dd+')
-
-  if (combined.includes('joc')) return true
-  return mentionsAtmos && isEc3Family
-}
-
 function shouldProbeWithFfprobe(
   filePath: string,
   channels: number | null,
@@ -8062,7 +8523,7 @@ function shouldProbeWithFfprobe(
   codecProfile: string | null
 ): boolean {
   const extension = extname(filePath).toLowerCase()
-  // The bundled ffprobe (6.0) cannot read IAMF; skip the doomed spawn.
+  // The bundled ffprobe (6.1) cannot read IAMF; skip the doomed spawn.
   if (extension === '.iamf') {
     return false
   }
@@ -8073,8 +8534,11 @@ function shouldProbeWithFfprobe(
   return !channels || !codec || !codecProfile
 }
 
-async function probeAudioMetadataWithFfprobe(filePath: string): Promise<FfprobeAudioMetadata | null> {
-  const ffprobePath = await resolveFfprobeBinaryPath()
+async function probeAudioMetadataWithFfprobe(
+  filePath: string,
+  options: { binaryPath?: string; signal?: AbortSignal } = {}
+): Promise<FfprobeAudioMetadata | null> {
+  const ffprobePath = options.binaryPath ?? await resolveFfprobeBinaryPath()
   if (!ffprobePath) return null
 
   try {
@@ -8088,23 +8552,12 @@ async function probeAudioMetadataWithFfprobe(filePath: string): Promise<FfprobeA
         '-select_streams', 'a:0',
         filePath
       ],
-      { timeout: 10000, maxBuffer: 1024 * 1024 }
+      { timeout: 10000, maxBuffer: 1024 * 1024, signal: options.signal }
     )
 
-    const parsed = JSON.parse(stdout) as {
-      streams?: Array<Record<string, unknown>>
-      format?: Record<string, unknown>
-    }
-    const stream = parsed.streams?.find((entry) => entry.codec_type === 'audio') ?? parsed.streams?.[0]
-    if (!stream) return null
-
-    return {
-      channels: toNumber(stream.channels),
-      codec: toText(stream.codec_name) ?? toText(stream.codec_long_name),
-      codecProfile: toText(stream.profile),
-      hints: collectFfprobeHints(stream, parsed.format)
-    }
+    return parseFfprobeAudioMetadata(stdout)
   } catch (error) {
+    throwIfScanCancelled(options.signal)
     console.warn(`ffprobe metadata probe failed for ${filePath}:`, error)
     return null
   }
@@ -8309,6 +8762,33 @@ async function extractIamfMetadata(
   return buildIamfTrackMetadata(filePath, options, { duration, sampleRate, format: 'iamf' })
 }
 
+export async function readAudioFileMetadata(filePath: string, overrides?: mm.IOptions): Promise<mm.IAudioMetadata> {
+  try {
+    return await mm.parseFile(filePath, getMusicMetadataParseOptions(filePath, overrides))
+  } catch (error) {
+    const probe = await probeAudioMetadataWithFfprobe(filePath)
+    if (!probe) throw error
+    const metadata = musicMetadataFromFfprobe(probe)
+    if (!overrides?.skipCovers) {
+      const ffmpeg = await resolveFfmpegBinaryPath()
+      if (ffmpeg) {
+        try {
+          const artwork = await new Promise<Buffer>((resolve, reject) => {
+            execFile(ffmpeg, ['-v', 'error', '-nostdin', '-i', filePath, '-map', '0:v:0',
+              '-frames:v', '1', '-an', '-c:v', 'mjpeg', '-f', 'image2pipe', '-'],
+            { encoding: 'buffer', windowsHide: true, timeout: 10000, maxBuffer: 8 * 1024 * 1024 },
+            (failure, stdout) => failure ? reject(failure) : resolve(stdout))
+          })
+          if (artwork.length > 0) metadata.common.picture = [{ format: 'image/jpeg', data: artwork }]
+        } catch {
+          // An audio file need not contain a picture; folder artwork remains available.
+        }
+      }
+    }
+    return metadata
+  }
+}
+
 async function extractMetadata(
   filePath: string,
   options: ExtractMetadataOptions = {}
@@ -8332,7 +8812,7 @@ async function extractMetadata(
     })
   }
 
-  const metadata = await mm.parseFile(filePath, getMusicMetadataParseOptions(filePath))
+  const metadata = await readAudioFileMetadata(filePath)
   const common = metadata.common
   const format = metadata.format
   const resolvedCodecMetadata = await resolveCodecMetadata(filePath, {
@@ -8675,6 +9155,69 @@ export async function backfillMissingChannelCounts(
   return backfillPaths(paths, undefined, options)
 }
 
+export async function refreshAtmosMetadataOnce(
+  options: ScanControlOptions & { onComplete?: (result: AtmosRefreshResult) => void } = {}
+): Promise<AtmosRefreshResult | null> {
+  const refreshDb = db
+  if (!refreshDb) return null
+  const checkActive = () => {
+    throwIfScanCancelled(options.signal)
+    if (db !== refreshDb) throw new Error('Library closed during Atmos metadata refresh')
+  }
+  return runAtmosMetadataRefreshOnce({
+    signal: options.signal,
+    isComplete: () => getAppMeta(ATMOS_METADATA_REFRESH_KEY) === '1',
+    markComplete: async () => {
+      checkActive()
+      await saveDatabase()
+      checkActive()
+      await setAppMeta(ATMOS_METADATA_REFRESH_KEY, '1')
+    },
+    notify: result => options.onComplete?.(result),
+    refresh: async () => {
+      const binaryPath = await resolveFfprobeBinaryPath()
+      if (!binaryPath) return null
+      // A system fallback may still be too old to recognize E-AC-3 Atmos profiles.
+      const version = await execFileAsync(binaryPath, ['-version'], { timeout: 4000, signal: options.signal })
+      if (!supportsAtmosMetadataRefresh(version)) return null
+      checkActive()
+      const paths = refreshDb.all<{ path: string }>(`
+        SELECT path FROM tracks
+        WHERE source_type = 'local' AND COALESCE(is_available, 1) = 1
+          AND COALESCE(is_iamf, 0) = 0 AND COALESCE(is_atmos_joc, 0) = 0
+          AND (
+            LOWER(REPLACE(COALESCE(codec, ''), '-', '')) IN ('eac3', 'ec3', 'dd+')
+            OR LOWER(COALESCE(codec, '')) LIKE '%dolby digital plus%'
+            OR (LOWER(format) IN ('m4a', 'mp4', 'm4b', 'm4p', 'aac')
+                AND (channels IS NULL OR channels = 0 OR channels > 2))
+          )
+      `).map(row => row.path)
+      const result = { scanned: 0, updated: 0, errors: 0 }
+      await runWithConcurrency(paths, resolveBackfillWorkerCount(paths.length), async filePath => {
+        checkActive()
+        const metadata = await probeAudioMetadataWithFfprobe(filePath, { binaryPath, signal: options.signal })
+        checkActive()
+        result.scanned++
+        if (!metadata) {
+          result.errors++
+          console.warn(`Atmos metadata refresh skipped unreadable audio: ${filePath}`)
+          return
+        }
+        // Never clear useful metadata on an incomplete probe, or touch tags/ratings/play history.
+        refreshDb.run(`
+          UPDATE tracks SET channels = COALESCE(?, channels), codec = COALESCE(?, codec),
+            codec_profile = COALESCE(?, codec_profile), is_atmos_joc = ?
+          WHERE path = ? AND source_type = 'local' AND COALESCE(is_iamf, 0) = 0
+            AND COALESCE(is_atmos_joc, 0) = 0
+        `, [metadata.channels, metadata.codec, metadata.codecProfile, metadata.isAtmosJoc ? 1 : 0, filePath])
+        result.updated++
+      }, { signal: options.signal })
+      checkActive()
+      return result
+    }
+  })
+}
+
 export async function backfillMissingFileCreatedAt(
   options: ScanWriteOptions = {}
 ): Promise<{ scanned: number; updated: number; errors: number }> {
@@ -8978,7 +9521,7 @@ export function getArtworkPath(hash: string): string {
 // Get track count
 export function getTrackCount(): number {
   if (!db) return 0
-  return Number(db.get<{ count?: unknown }>('SELECT COUNT(*) as count FROM tracks')?.count ?? 0)
+  return Number(db.get<{ count?: unknown }>(`SELECT COUNT(*) as count FROM tracks WHERE ${VISIBLE_TRACK_PREDICATE}`)?.count ?? 0)
 }
 
 export function getTrackSourceCounts(): { total: number; local: number; remote: number } {
@@ -8991,7 +9534,7 @@ export function getTrackSourceCounts(): { total: number; local: number; remote: 
 export function getTotalTrackDuration(): number {
   if (!db) return 0
   const total = Number(db.get<{ total?: unknown }>(
-    'SELECT SUM(duration) as total FROM tracks WHERE duration > 0'
+    `SELECT SUM(duration) as total FROM tracks WHERE duration > 0 AND ${VISIBLE_TRACK_PREDICATE}`
   )?.total ?? 0)
   return Number.isFinite(total) && total > 0 ? total : 0
 }
@@ -9371,7 +9914,7 @@ export function getTrackOverrideFields(trackPaths: string[]): Record<string, str
 export function getFavorites(): DbTrack[] {
   return readEffectiveTracks(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    ${VISIBLE_TRACK_FROM_CLAUSE}
     INNER JOIN favorites f ON f.track_path = t.path
     ORDER BY f.added_at DESC
   `)
@@ -9686,7 +10229,8 @@ function qualifyListeningSession(track: DbTrack, sourcePlaylistId: number | null
   if (!db) return
   db.run(
     'UPDATE tracks SET play_count = play_count + 1, last_played_at = ? WHERE id = ?',
-    [qualifiedAt, track.id]
+    [qualifiedAt, track.id],
+    { keepsTrackSnapshot: true }
   )
   recordLocalPlayOrigin(track.path, qualifiedAt)
   db.run('INSERT INTO recently_played (track_path, played_at) VALUES (?, ?)', [track.path, qualifiedAt])
@@ -11284,7 +11828,7 @@ function applyListeningHistorySection(
 export function getRecentlyPlayed(limit: number = 50): DbTrack[] {
   return readEffectiveTracks(`
     SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-    ${EFFECTIVE_TRACK_FROM_CLAUSE}
+    ${VISIBLE_TRACK_FROM_CLAUSE}
     INNER JOIN recently_played r ON r.track_path = t.path
     ORDER BY r.played_at DESC
     LIMIT ${limit}
@@ -11293,7 +11837,8 @@ export function getRecentlyPlayed(limit: number = 50): DbTrack[] {
 
 export async function markTrackLatestSyncSeen(trackPath: string): Promise<void> {
   if (!db) return
-  db.run('UPDATE tracks SET latest_sync_dismissed_at = ? WHERE path = ?', [Date.now(), trackPath])
+  db.run('UPDATE tracks SET latest_sync_dismissed_at = ? WHERE path = ?', [Date.now(), trackPath],
+    { keepsTrackSnapshot: true })
   await saveDatabase()
 }
 
@@ -11563,7 +12108,7 @@ function getDynamicPlaylistTracksForRules(rules: DynamicPlaylistRules): DbTrack[
 
     return readEffectiveTracks(`
       SELECT ${EFFECTIVE_TRACK_SELECT_COLUMNS}
-      ${EFFECTIVE_TRACK_FROM_CLAUSE}
+      ${VISIBLE_TRACK_FROM_CLAUSE}
       ${joins}
       WHERE ${where}
       ORDER BY ${orderBy}${limitSql}
@@ -11597,6 +12142,7 @@ function buildDynamicPlaylistSummary(row: PlaylistSummaryRow): Playlist {
 function buildNormalPlaylistSummary(row: PlaylistSummaryRow): Playlist {
   return {
     id: row.id,
+    ...(getRemotePlaylistLink(row.id) ? { remote: getRemotePlaylistLink(row.id)! } : {}),
     name: row.name,
     kind: 'normal',
     created_at: row.created_at,
@@ -11643,6 +12189,7 @@ export function getPlaylists(): Playlist[] {
           AND t.path IS NULL
       ) as missing_track_count
     FROM playlists p
+    WHERE ${visiblePlaylistsSql('p')}
     ORDER BY
       CASE WHEN p.last_played_at IS NULL THEN 1 ELSE 0 END,
       p.last_played_at DESC,
@@ -11668,14 +12215,14 @@ export function getCompanionApiPlaylistPage(afterId: number, limit: number): {
       SELECT COUNT(*) FROM playlist_tracks pt
       INNER JOIN tracks t ON t.path = pt.track_path WHERE pt.playlist_id = p.id
     ) END AS track_count
-    FROM playlists p WHERE p.id > ? ORDER BY p.id ASC LIMIT ?
+    FROM playlists p WHERE ${visiblePlaylistsSql('p')} AND p.id > ? ORDER BY p.id ASC LIMIT ?
   `, [afterId, limit])
-  const total = db.get<{ count: number }>('SELECT COUNT(*) AS count FROM playlists')?.count ?? 0
+  const total = db.get<{ count: number }>(`SELECT COUNT(*) AS count FROM playlists p WHERE ${visiblePlaylistsSql('p')}`)?.count ?? 0
   return { items, total }
 }
 
 export function getCompanionApiPlaylistTarget(playlistId: number): CompanionApiPlaylistTarget | null {
-  if (!db || !Number.isInteger(playlistId) || playlistId <= 0) return null
+  if (!db || !Number.isInteger(playlistId) || playlistId <= 0 || !isPlaylistVisible(playlistId)) return null
   const row = db.get<{
     id?: unknown
     name?: unknown
@@ -11818,120 +12365,150 @@ export function previewDynamicPlaylist(rules: DynamicPlaylistRules): DynamicPlay
   }
 }
 
-export async function syncSubsonicRemotePlaylists(
-  sourceId: number,
-  playlists: SubsonicRemotePlaylistSyncInput[],
-  options: { persist?: boolean } = {}
-): Promise<{ created: number; updated: number; removed: number }> {
-  if (!db) return { created: 0, updated: 0, removed: 0 }
+/** One playlist collection/opt-in per Plex account and server, across libraries. */
+export function getPlexPlaylistSources(sourceId: number): PlexSource[] {
+  const source = getPlexSourceById(sourceId)
+  return source ? listPlexSources().filter(peer => peer.account_id === source.account_id && peer.server_id === source.server_id)
+    .sort((a, b) => a.id - b.id) : []
+}
+export function normalizeRemotePlaylistRef(ref: ProviderSyncRef): ProviderSyncRef {
+  return ref.provider === 'plex' ? { ...ref, sourceId: getPlexPlaylistSources(ref.sourceId)[0]?.id ?? ref.sourceId } : ref
+}
+export function getRemotePlaylistDestinations(paths: string[]): RemotePlaylistDestination[] {
+  if (!Array.isArray(paths) || paths.length > 250_000 || paths.some(path => typeof path !== 'string' || !path.trim())) throw new Error('Invalid playlist tracks.')
+  const uniquePaths = [...new Set(paths)]
+  const tracks = getTracksByPaths(uniquePaths)
+  const sources = [
+    ...listSubsonicSources().map(source => ({ provider: 'subsonic' as const, source })),
+    ...listJellyfinSources().map(source => ({ provider: 'jellyfin' as const, source })),
+    ...listPlexSources().filter(source => normalizeRemotePlaylistRef({ provider: 'plex', sourceId: source.id }).sourceId === source.id)
+      .map(source => ({ provider: 'plex' as const, source }))
+  ]
+  return sources.map(({ provider, source }) => {
+    const ref = { provider, sourceId: source.id }
+    const enabledSources = provider === 'plex' ? getPlexPlaylistSources(source.id).filter(peer => peer.enabled === 1).map(peer => peer.id)
+      : source.enabled === 1 ? [source.id] : []
+    const reasonKind = !enabledSources.length ? 'not-in-use' as const
+      : !remotePlaylistsEnabled(ref) ? 'sync-off' as const
+        : tracks.length !== uniquePaths.length || tracks.some(track => track.source_type !== provider
+          || !enabledSources.includes(track.source_id!) || track.is_available !== 1) ? 'tracks' as const : null
+    const reason = reasonKind === 'not-in-use' ? 'Connect this server to create playlists.'
+      : reasonKind === 'sync-off' ? 'Enable Sync playlists in this server’s settings.'
+        : reasonKind === 'tracks' ? 'Selected tracks must be available from this server.' : null
+    return { ...ref, name: `${source.name} · ${source.username}`, reason, reasonKind }
+  })
+}
+export function remotePlaylistFingerprint(ref: ProviderSyncRef): string | null {
+  if (ref.provider === 'plex') {
+    const source = getPlexSourceById(ref.sourceId)
+    if (!source || !getPlexPlaylistSources(source.id).some(peer => peer.enabled === 1)) return null
+    return createHash('sha256').update(JSON.stringify([source.account_id, source.server_id])).digest('hex')
+  }
+  const source = ref.provider === 'subsonic' ? getSubsonicSourceById(ref.sourceId) : getJellyfinSourceById(ref.sourceId)
+  if (!source || source.enabled !== 1) return null
+  return createHash('sha256').update(JSON.stringify([source.base_url, source.username, source.secret_encrypted])).digest('hex')
+}
+export function remotePlaylistsEnabled(ref: ProviderSyncRef): boolean {
+  ref = normalizeRemotePlaylistRef(ref)
+  const row = db?.get<{ enabled: number; fingerprint: string }>('SELECT enabled, fingerprint FROM remote_playlist_sync WHERE provider = ? AND source_id = ?', [ref.provider, ref.sourceId])
+  return row?.enabled === 1 && row.fingerprint === remotePlaylistFingerprint(ref)
+}
+export async function setRemotePlaylistsEnabled(ref: ProviderSyncRef, enabled: boolean): Promise<void> {
+  if (!db) throw new Error('Database not initialized')
+  ref = normalizeRemotePlaylistRef(ref)
+  const fingerprint = remotePlaylistFingerprint(ref)
+  if (enabled && !fingerprint) throw new Error('Connect this server before enabling playlist sync.')
+  db.run(`INSERT INTO remote_playlist_sync (provider, source_id, fingerprint, enabled) VALUES (?, ?, ?, ?)
+    ON CONFLICT(provider, source_id) DO UPDATE SET fingerprint = excluded.fingerprint, enabled = excluded.enabled`,
+  [ref.provider, ref.sourceId, fingerprint ?? '', Number(enabled)])
+  await saveDatabase()
+}
+function visiblePlaylistsSql(alias: string): string {
+  const refs = db?.all<ProviderSyncRef>('SELECT provider, source_id AS sourceId FROM remote_playlist_sync WHERE enabled = 1') ?? []
+  const predicates = refs.filter(ref => ['subsonic', 'jellyfin', 'plex'].includes(ref.provider) && Number.isSafeInteger(ref.sourceId) && remotePlaylistsEnabled(ref))
+    .map(ref => `(${alias}.remote_source_type = '${ref.provider}' AND ${alias}.remote_source_id = ${ref.sourceId})`)
+  return `(${alias}.remote_source_id IS NULL${predicates.length ? ` OR ${predicates.join(' OR ')}` : ''})`
+}
+export function getRemotePlaylistLink(id: number): RemotePlaylistLink | null {
+  const row = db?.get<{ remote_source_type: ProviderSyncRef['provider']; remote_source_id: number; remote_playlist_id: string; remote_writable: number; remote_deletable: number | null }>(
+    'SELECT remote_source_type, remote_source_id, remote_playlist_id, remote_writable, remote_deletable FROM playlists WHERE id = ? AND remote_source_id IS NOT NULL', [id])
+  return row ? { provider: row.remote_source_type, sourceId: row.remote_source_id, id: row.remote_playlist_id,
+    writable: row.remote_writable === 1, deletable: (row.remote_deletable ?? row.remote_writable) === 1 } : null
+}
+function isPlaylistVisible(id: number): boolean {
+  const link = getRemotePlaylistLink(id)
+  return !link || remotePlaylistsEnabled(link)
+}
+export function getRemotePlaylistLocal(id: number): RemotePlaylistLocal | null {
+  const ref = getRemotePlaylistLink(id)
+  if (!ref || !db) return null
+  const row = db.get<{ name: string }>('SELECT name FROM playlists WHERE id = ?', [id])!
+  const tracks = db.all<{ entryId: number; path: string; title: string | null; artist: string | null; album: string | null; remoteEntryId: string | null }>(
+    `SELECT id AS entryId, track_path AS path, fallback_title AS title, fallback_artist AS artist, fallback_album AS album, remote_entry_id AS remoteEntryId
+      FROM playlist_tracks WHERE playlist_id = ? ORDER BY position, id`, [id])
+    .map(({ remoteEntryId, ...track }) => ({ ...track, ...(remoteEntryId === null ? {} : { remoteEntryId }) }))
+  return { localId: id, ref: { provider: ref.provider, sourceId: ref.sourceId }, id: ref.id, name: row.name,
+    writable: ref.writable, deletable: ref.deletable, tracks }
+}
 
-  const normalizedPlaylists = playlists
-    .map((playlist) => {
-      const sourcePlaylistId = typeof playlist.source_playlist_id === 'string'
-        ? playlist.source_playlist_id.trim()
-        : ''
-      if (!sourcePlaylistId) return null
-
-      const name = typeof playlist.name === 'string' && playlist.name.trim().length > 0
-        ? playlist.name.trim()
-        : `Playlist ${sourcePlaylistId}`
-
-      const tracks: PlaylistEntryInsertInput[] = []
-      for (const track of playlist.tracks) {
-        const trackPath = typeof track.path === 'string' ? track.path.trim() : ''
-        if (!trackPath) continue
-        tracks.push({
-          trackPath,
-          fallbackTitle: normalizeOptionalTextField(track.title ?? null),
-          fallbackArtist: normalizeOptionalTextField(track.artist ?? null),
-          fallbackAlbum: normalizeOptionalTextField(track.album ?? null)
-        })
+export async function applyRemotePlaylists(ref: ProviderSyncRef, snapshots: RemotePlaylistSnapshot[],
+  options: { prune?: boolean; persist?: boolean } = {}): Promise<{ created: number; updated: number; removed: number }> {
+  if (!db) throw new Error('Database not initialized')
+  if (new Set(snapshots.map(s => s.id)).size !== snapshots.length || snapshots.some(s => !s.id || !s.name || !Array.isArray(s.tracks))) throw new Error('Invalid server playlists.')
+  const existing = new Map(db.all<{ id: number; remote_playlist_id: string }>(
+    'SELECT id, remote_playlist_id FROM playlists WHERE remote_source_type = ? AND remote_source_id = ?', [ref.provider, ref.sourceId])
+    .map(row => [row.remote_playlist_id, row.id]))
+  let created = 0, updated = 0, removed = 0
+  beginLibraryWriteTransaction()
+  try {
+    for (const snapshot of snapshots) {
+      let id = existing.get(snapshot.id)
+      const before = id === undefined ? null : getRemotePlaylistLocal(id)
+      const normalize = (tracks: RemotePlaylistSnapshot['tracks']) => tracks.map(t => [t.path, t.title ?? null, t.artist ?? null, t.album ?? null, t.remoteEntryId ?? null])
+      if (before && before.name === snapshot.name && before.writable === snapshot.writable
+        && before.deletable === (snapshot.deletable ?? snapshot.writable)
+        && JSON.stringify(normalize(before.tracks)) === JSON.stringify(normalize(snapshot.tracks))
+        && snapshot.tracks.every((t, i) => t.entryId === undefined || t.entryId === before.tracks[i].entryId)) continue
+      if (id === undefined) {
+        id = Number(db.run(`INSERT INTO playlists (name, created_at, updated_at, remote_source_type, remote_source_id, remote_playlist_id, remote_writable)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`, [snapshot.name, Date.now(), Date.now(), ref.provider, ref.sourceId, snapshot.id, Number(snapshot.writable)]).lastInsertRowid)
+        created++
+      } else updated++
+      const old = before?.tracks ?? []
+      const used = new Set<number>()
+      const reserved = new Set(snapshot.tracks.flatMap(t => t.entryId === undefined ? [] : [t.entryId]))
+      for (const [position, track] of snapshot.tracks.entries()) {
+        const match = track.entryId !== undefined ? old.find(t => t.entryId === track.entryId && t.path === track.path)
+          : track.remoteEntryId !== undefined ? old.find(t => t.remoteEntryId === track.remoteEntryId)
+            : old.find(t => t.path === track.path && !used.has(t.entryId!) && !reserved.has(t.entryId!))
+        if (match && !used.has(match.entryId!)) {
+          used.add(match.entryId!)
+          db.run('UPDATE playlist_tracks SET track_path = ?, position = ?, fallback_title = ?, fallback_artist = ?, fallback_album = ?, remote_entry_id = ? WHERE id = ?',
+            [track.path, position, track.title ?? null, track.artist ?? null, track.album ?? null, track.remoteEntryId ?? null, match.entryId!])
+        } else {
+          const entry = db.run(`INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album, remote_entry_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [id, track.path, position, Date.now(), track.title ?? null, track.artist ?? null, track.album ?? null, track.remoteEntryId ?? null])
+          used.add(Number(entry.lastInsertRowid))
+        }
       }
-
-      return {
-        sourcePlaylistId,
-        name,
-        tracks
-      }
-    })
-    .filter((playlist): playlist is { sourcePlaylistId: string; name: string; tracks: PlaylistEntryInsertInput[] } => playlist !== null)
-
-  const seenRemotePlaylistIds = new Set(normalizedPlaylists.map((playlist) => playlist.sourcePlaylistId))
-  const existingRows = db.all<{ id?: unknown; remote_playlist_id?: unknown }>(`
-    SELECT id, remote_playlist_id
-    FROM playlists
-    WHERE remote_source_type = 'subsonic'
-      AND remote_source_id = ?
-  `, [sourceId])
-
-  const existingByRemotePlaylistId = new Map<string, number>()
-  for (const row of existingRows) {
-    const id = Number(row.id)
-    const remotePlaylistId = typeof row.remote_playlist_id === 'string' ? row.remote_playlist_id : ''
-    if (Number.isInteger(id) && id > 0 && remotePlaylistId) {
-      existingByRemotePlaylistId.set(remotePlaylistId, id)
+      for (const track of old) if (!used.has(track.entryId!)) db.run('DELETE FROM playlist_tracks WHERE id = ?', [track.entryId!])
+      db.run('UPDATE playlists SET name = ?, remote_writable = ?, remote_deletable = ?, updated_at = ? WHERE id = ?',
+        [snapshot.name, Number(snapshot.writable), Number(snapshot.deletable ?? snapshot.writable), Date.now(), id])
     }
-  }
-
-  const now = Date.now()
-  let created = 0
-  let updated = 0
-
-  for (const playlist of normalizedPlaylists) {
-    let playlistId = existingByRemotePlaylistId.get(playlist.sourcePlaylistId) ?? null
-    if (playlistId === null) {
-      const insertResult = db.run(
-        `INSERT INTO playlists (
-          name,
-          created_at,
-          updated_at,
-          last_played_at,
-          custom_cover_hash,
-          remote_source_type,
-          remote_source_id,
-          remote_playlist_id
-        ) VALUES (?, ?, ?, NULL, NULL, 'subsonic', ?, ?)`,
-        [playlist.name, now, now, sourceId, playlist.sourcePlaylistId]
-      )
-      playlistId = Number(insertResult.lastInsertRowid)
-      existingByRemotePlaylistId.set(playlist.sourcePlaylistId, playlistId)
-      created += 1
-    } else {
-      db.run('UPDATE playlists SET name = ?, updated_at = ? WHERE id = ?', [playlist.name, now, playlistId])
-      db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [playlistId])
-      updated += 1
+    if (options.prune) for (const [remoteId, id] of existing) if (!snapshots.some(s => s.id === remoteId)) {
+      db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [id])
+      db.run('DELETE FROM playlists WHERE id = ?', [id]); removed++
     }
-
-    let position = 0
-    for (const entry of playlist.tracks) {
-      db.run(
-        'INSERT INTO playlist_tracks (playlist_id, track_path, position, added_at, fallback_title, fallback_artist, fallback_album) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [
-          playlistId,
-          entry.trackPath,
-          position++,
-          now,
-          entry.fallbackTitle ?? null,
-          entry.fallbackArtist ?? null,
-          entry.fallbackAlbum ?? null
-        ]
-      )
-    }
-  }
-
-  let removed = 0
-  for (const [remotePlaylistId, playlistId] of existingByRemotePlaylistId.entries()) {
-    if (seenRemotePlaylistIds.has(remotePlaylistId)) continue
-    db.run('DELETE FROM playlist_tracks WHERE playlist_id = ?', [playlistId])
-    const result = db.run('DELETE FROM playlists WHERE id = ?', [playlistId])
-    removed += Number(result.changes) || 0
-  }
-
-  if (options.persist !== false && (created > 0 || updated > 0 || removed > 0)) {
-    await saveDatabase()
-  }
-
+    commitLibraryWriteTransaction()
+  } catch (error) { rollbackLibraryWriteTransaction(); throw error }
+  if (options.persist !== false && (created || updated || removed)) await saveDatabase()
   return { created, updated, removed }
+}
+
+export async function syncSubsonicRemotePlaylists(sourceId: number, playlists: SubsonicRemotePlaylistSyncInput[],
+  options: { persist?: boolean } = {}): Promise<{ created: number; updated: number; removed: number }> {
+  return applyRemotePlaylists({ provider: 'subsonic', sourceId }, playlists.map(p => ({ id: p.source_playlist_id,
+    name: p.name, tracks: p.tracks, writable: false })), { ...options, prune: true })
 }
 
 export async function renamePlaylist(id: number, name: string): Promise<void> {
@@ -11969,6 +12546,7 @@ export async function markPlaylistPlayed(id: number): Promise<void> {
 }
 
 export function getPlaylistTracks(playlistId: number): DbTrack[] {
+  if (!isPlaylistVisible(playlistId)) return []
   if (getPlaylistKindById(playlistId) === 'dynamic') {
     return getDynamicPlaylistTracksForId(playlistId)
   }
@@ -11979,7 +12557,7 @@ export function getPlaylistTracks(playlistId: number): DbTrack[] {
     INNER JOIN playlist_tracks pt ON pt.track_path = t.path
     WHERE pt.playlist_id = ${playlistId}
     ORDER BY pt.position ASC, pt.id ASC
-  `)
+  `, undefined, [], true)
 }
 
 type PlaylistTrackEntryRow = Partial<DbTrackRow> & {
@@ -12007,6 +12585,7 @@ function getDynamicPlaylistTrackEntries(playlistId: number): PlaylistTrackEntry[
 }
 
 export function getPlaylistTrackEntries(playlistId: number): PlaylistTrackEntry[] {
+  if (!isPlaylistVisible(playlistId)) return []
   if (!db) return []
   if (!Number.isInteger(playlistId) || playlistId <= 0) return []
   if (getPlaylistKindById(playlistId) === 'dynamic') {
@@ -12036,7 +12615,7 @@ export function getPlaylistTrackEntries(playlistId: number): PlaylistTrackEntry[
       availableRows.push(row as DbTrackRow)
     }
   }
-  const tracksByPath = new Map(attachAlbumIdentityKeys(availableRows).map((track) => [track.path, track]))
+  const tracksByPath = new Map(attachAlbumIdentityKeys(availableRows, undefined, undefined, true).map((track) => [track.path, track]))
 
   return rows.map((row, index) => {
     const entryId = Number(row.playlist_track_id)
@@ -12501,7 +13080,7 @@ export function getPlaylistsContainingTrack(trackPath: string): number[] {
   const ids: number[] = []
   for (const row of db.iterate<{ playlist_id?: unknown }>('SELECT DISTINCT playlist_id FROM playlist_tracks WHERE track_path = ? ORDER BY playlist_id', [trackPath])) {
     const playlistId = Number(row.playlist_id)
-    if (Number.isFinite(playlistId) && playlistId > 0) {
+    if (Number.isFinite(playlistId) && playlistId > 0 && isPlaylistVisible(playlistId)) {
       ids.push(playlistId)
     }
   }
@@ -12550,6 +13129,7 @@ export function getPlaylistsContainingTracks(trackPaths: string[]): PlaylistTrac
   }
 
   return Array.from(summaryByPlaylistId.entries())
+    .filter(([id]) => isPlaylistVisible(id))
     .sort((left, right) => left[0] - right[0])
     .map(([playlistId, matchedTrackCount]) => ({ playlistId, matchedTrackCount }))
 }

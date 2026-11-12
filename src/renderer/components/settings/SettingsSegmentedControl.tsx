@@ -30,7 +30,8 @@ export default function SettingsSegmentedControl<T extends string | number>({
   options,
   value,
 }: SettingsSegmentedControlProps<T>) {
-  const selectedIndex = Math.max(0, options.findIndex((option) => option.value === value))
+  const matchIndex = options.findIndex((option) => option.value === value)
+  const selectedIndex = Math.max(0, matchIndex)
   const style: SettingsSegmentedStyle = {
     '--segment-count': Math.max(1, options.length),
     '--segment-index': selectedIndex,
@@ -38,7 +39,7 @@ export default function SettingsSegmentedControl<T extends string | number>({
 
   return (
     <div
-      className={`settings-segmented-control${fullWidth ? ' settings-segmented-control-full' : ''}${disabled ? ' is-disabled' : ''}${className ? ` ${className}` : ''}`}
+      className={`settings-segmented-control${fullWidth ? ' settings-segmented-control-full' : ''}${disabled ? ' is-disabled' : ''}${matchIndex < 0 ? ' has-no-choice' : ''}${className ? ` ${className}` : ''}`}
       role="group"
       aria-label={ariaLabel}
       style={style}

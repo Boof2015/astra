@@ -1,4 +1,5 @@
 import type { MultichannelAudioChunk } from './audioAnalysis'
+import type { RemoteAudioLoadProgress } from './remoteStream'
 
 export type PlaybackOutputMode = 'standard' | 'exclusive' | 'bitperfect'
 
@@ -195,6 +196,9 @@ export interface NativeAudioDiagnosticReport {
 }
 
 export interface NativeAudioTrackMetadata {
+  /** Only processed remote output may use a previously completed cache scan. */
+  remoteNormalizationTargetLufs?: number
+  streamingQuality?: import('./streamingQuality').StreamingQualityRequest
   path: string
   title?: string
   artist?: string
@@ -214,6 +218,8 @@ export interface AudioBufferMemoryStats {
 }
 
 export interface NativeAudioPlaybackSnapshot {
+  progressiveSessionId?: number
+  buffering?: boolean
   playbackSequence?: number
   playbackState: NativeAudioPlaybackState
   currentTime: number
@@ -227,6 +233,7 @@ export interface NativeAudioPlaybackSnapshot {
 }
 
 export interface NativeAudioTrackLoadResult {
+  quality?: import('./streamingQuality').RemotePlaybackQuality
   playbackSequence: number
   sampleRate: number
   channels: number
@@ -251,7 +258,19 @@ export interface NativeAudioVisualizerTapDemand {
   vumeter: boolean
 }
 
-export type NativeAudioEvent =
+export type NativeAudioEvent = NativeAudioEventContent & { progressiveSessionId?: number }
+
+type NativeAudioEventContent =
+  | { type: 'prebufferInvalidated'; path: string }
+  | {
+      type: 'remoteProgress'
+      playbackSequence: number
+      bufferCapacitySeconds: number
+      currentTime: number
+      playbackState: NativeAudioPlaybackState
+      buffering: boolean
+      progress: RemoteAudioLoadProgress
+    }
   | {
       type: 'stateChange'
       playbackSequence: number

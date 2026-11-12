@@ -1,6 +1,14 @@
 import { strict as assert } from 'node:assert'
 import test from 'node:test'
-import { resolvePipelineResampler } from './audioPipelineModel.ts'
+import { describeRemotePlaybackQuality, resolvePipelineResampler } from './audioPipelineModel.ts'
+
+test('pipeline separates the requested target from measured or unknown delivery', () => {
+  assert.equal(describeRemotePlaybackQuality({ requested: 128, requestedCodec: 'mp3', delivered: null }), '128 kbps target · format unverified')
+  assert.equal(describeRemotePlaybackQuality({ requested: 128, requestedCodec: 'mp3', delivered: {
+    codec: 'flac', sampleRate: 96000, bitDepth: 24, channels: 2, bitrateKbps: null
+  } }), 'FLAC · 24-bit · 96 kHz (128 kbps target)')
+  assert.equal(describeRemotePlaybackQuality({ requested: 'original', requestedCodec: null, delivered: null }), 'Original requested')
+})
 
 test('Exclusive DSP pipeline follows native negotiated rates', () => {
   assert.deepEqual(resolvePipelineResampler({
@@ -39,4 +47,12 @@ test('Bit-Perfect never displays a resampler', () => {
     nativeTargetSampleRate: 48_000,
     nativeResamplingActive: true,
   }), null)
+})
+
+test('compatibility details distinguish Original selection, conversion request and actual server delivery', () => {
+  const quality = { requested: 'original', requestedCodec: 'flac', compatibility: 'flac', delivered: null } as const
+  assert.equal(describeRemotePlaybackQuality(quality), 'Original selected · compatibility conversion (FLAC requested) · format unverified')
+  assert.equal(describeRemotePlaybackQuality({ ...quality, delivered: {
+    codec: 'mp3', sampleRate: 44100, channels: 2, bitDepth: null, bitrateKbps: 320
+  } }), 'MP3 · 320 kbps · 44.1 kHz (Original selected · compatibility conversion (FLAC requested))')
 })

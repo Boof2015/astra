@@ -8,9 +8,13 @@
     "build": "electron-vite build && node ./scripts/build/writeAppBuildMetadata.cjs",
     "build:icons": "node scripts/build/generate-astra-icons.mjs",
     "preview": "electron-vite preview",
+    "check:media-binaries": "node scripts/electron-builder/validate-media-binaries.cjs",
     "check:packaging-config": "node ./scripts/electron-builder/validate-config.cjs",
     "test": "node ./scripts/node/run-tests.cjs",
     "test:node": "node ./scripts/node/run-tests.cjs --node",
+    "test:stratum-proof": "node --experimental-strip-types --loader ./scripts/node/electron-test-loader.mjs --test scripts/stratum/standardProof.ts",
+    "test:stratum-session": "node --experimental-strip-types --loader ./scripts/node/electron-test-loader.mjs --test scripts/stratum/sessionProof.ts",
+    "test:stratum-exclusive": "node --experimental-strip-types --loader ./scripts/node/electron-test-loader.mjs --test scripts/stratum/exclusiveProof.ts",
     "test:electron": "node ./scripts/node/run-tests.cjs --electron",
     "test:album-eligibility": "node --experimental-strip-types --experimental-default-type=module --test src/shared/library/albumEligibility.test.ts",
     "test:album-grouping": "node --experimental-strip-types --test src/shared/library/albumGrouping.test.ts src/shared/library/albumGrouping.regression.test.ts",
@@ -34,9 +38,10 @@
     "test:activity-indicator": "node --experimental-strip-types --experimental-default-type=module --experimental-specifier-resolution=node --test src/renderer/utils/astraActivity.test.ts",
     "test:audio-loudness": "node --experimental-strip-types --experimental-default-type=module --loader ./scripts/node/resolve-ts-loader.mjs --test src/renderer/audio/loudness.test.ts",
     "test:spectrum-native": "node --test native/test/spectrum-bars.test.mjs",
-    "test:native-dsp": "node --test native/test/spectrum-bars.test.mjs native/test/spectrogram-reassigned.test.mjs native/test/process-memory.test.mjs",
+    "test:native-dsp": "node --expose-gc --test native/test/spectrum-bars.test.mjs native/test/spectrogram-reassigned.test.mjs native/test/process-memory.test.mjs native/test/progressive-input.test.mjs",
     "test:track-waveform": "node ./scripts/node/run-track-waveform-tests.cjs",
     "test:native-playback": "node ./scripts/node/run-native-playback-state-tests.cjs",
+    "test:native-progressive-input": "node ./scripts/node/run-native-progressive-input-prototype.cjs",
     "test:adaptive-upmixer": "c++ -std=c++17 -O3 -fno-fast-math native/src/dsp_utils.cpp native/src/adaptive_upmixer.cpp native/test/adaptive_upmixer_test.cpp -I native/src -o /tmp/astra-adaptive-upmixer-tests && /tmp/astra-adaptive-upmixer-tests",
     "benchmark:adaptive-upmixer": "c++ -std=c++17 -O3 -fno-fast-math native/src/dsp_utils.cpp native/src/adaptive_upmixer.cpp native/test/adaptive_upmixer_benchmark.cpp -I native/src -o /tmp/astra-adaptive-upmixer-benchmark && /tmp/astra-adaptive-upmixer-benchmark",
     "research:upmix": "node ./scripts/research/upmix.cjs",
@@ -54,7 +59,7 @@
     "dist": "npm run build && electron-builder --publish never",
     "dist:win": "npm run build && electron-builder --win --publish never",
     "dist:mac": "npm run build && electron-builder --mac --publish never",
-    "dist:linux": "npm run build && electron-builder --linux --publish never"
+    "dist:linux": "npm run build && node scripts/electron-builder/build-linux.cjs"
   },
   "repository": {
     "type": "git",
@@ -81,7 +86,7 @@
     "better-sqlite3": "^12.10.0",
     "bonjour-service": "^1.4.0",
     "ffmpeg-static": "^5.2.0",
-    "ffprobe-static": "^3.1.0",
+    "ffmpeg-ffprobe-static": "6.1.2-rc.1",
     "music-metadata": "^11.12.3",
     "node-addon-api": "^8.7.0",
     "react": "^19.2.6",
@@ -113,10 +118,10 @@
     "directories": {
       "output": "dist"
     },
-    "afterPack": "./scripts/electron-builder/afterPack-prune-ffprobe.cjs",
+    "afterPack": "./scripts/electron-builder/afterPack-validate-binaries.cjs",
     "asarUnpack": [
       "node_modules/ffmpeg-static/**",
-      "node_modules/ffprobe-static/**",
+      "node_modules/ffmpeg-ffprobe-static/**",
       "node_modules/better-sqlite3/**"
     ],
     "files": [
@@ -124,7 +129,9 @@
       ".env.local",
       "native/build/Release/*.node",
       "node_modules/ffmpeg-static/**/*",
-      "node_modules/ffprobe-static/**/*"
+      "node_modules/ffmpeg-ffprobe-static/**/*",
+      "!node_modules/ffmpeg-ffprobe-static/ffmpeg",
+      "!node_modules/ffmpeg-ffprobe-static/ffmpeg.exe"
     ],
     "extraResources": [
       {

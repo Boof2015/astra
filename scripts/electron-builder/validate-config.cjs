@@ -27,6 +27,21 @@ const packageJsonPath = path.resolve(__dirname, '../../package.json')
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'))
 const buildConfig = packageJson.build ?? {}
 
+if (packageJson.dependencies?.['ffmpeg-ffprobe-static'] !== '6.1.2-rc.1' || packageJson.dependencies?.['ffprobe-static']) {
+  fail('Use the pinned ffmpeg-ffprobe-static metadata binary; remove the obsolete ffprobe-static package.')
+}
+if (buildConfig.afterPack !== './scripts/electron-builder/afterPack-validate-binaries.cjs') {
+  fail('Packaged media binaries and native addons must be validated in afterPack.')
+}
+if (!buildConfig.asarUnpack?.includes('node_modules/ffmpeg-ffprobe-static/**')) {
+  fail('The ffprobe replacement must be unpacked from ASAR.')
+}
+for (const filename of ['ffmpeg', 'ffmpeg.exe']) {
+  if (!buildConfig.files?.includes(`!node_modules/ffmpeg-ffprobe-static/${filename}`)) {
+    fail(`Exclude the unused paired ${filename} executable.`)
+  }
+}
+
 const hrtfResource = Array.isArray(buildConfig.extraResources)
   ? buildConfig.extraResources.find((entry) => entry?.from === 'resources/hrtf/' && entry?.to === 'hrtf/')
   : undefined

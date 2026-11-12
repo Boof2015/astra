@@ -27,8 +27,6 @@ interface SubsonicSettingsStore {
 }
 
 let statusUnsubscribe: (() => void) | null = null
-const metadataReadySourceIds = new Set<number>()
-let metadataReadyRefreshPromise: Promise<void> | null = null
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message
@@ -45,49 +43,26 @@ export const useSubsonicSettingsStore = create<SubsonicSettingsStore>((set, get)
     }
   }
 
-  const scheduleMetadataReadyRefresh = (): void => {
-    if (metadataReadyRefreshPromise) return
-    metadataReadyRefreshPromise = refreshLibraryViews()
-      .catch((error) => {
-        console.error('Failed to refresh library after Subsonic metadata sync.', error)
-      })
-      .finally(() => {
-        metadataReadyRefreshPromise = null
-      })
-  }
-
-  const applySources = async (sources: SubsonicSource[]): Promise<void> => {
-    set({
-      sources,
-      errorMessage: ''
-    })
-    await refreshLibraryViews()
-  }
-
   const ensureSubscription = () => {
     if (statusUnsubscribe) return
     statusUnsubscribe = window.electronAPI.subsonic.onStatus((status) => {
       set({ status })
-      for (const sourceStatus of status.sources) {
-        if (sourceStatus.progress?.phase !== 'playlists') continue
-        if (metadataReadySourceIds.has(sourceStatus.sourceId)) continue
-        metadataReadySourceIds.add(sourceStatus.sourceId)
-        scheduleMetadataReadyRefresh()
-      }
-      if (!status.isSyncing) {
-        metadataReadySourceIds.clear()
-      }
     })
   }
 
-  const fetchAll = async (): Promise<void> => {
+  const fetchSources = async (): Promise<void> => {
     const [sources, status] = await Promise.all([
       window.electronAPI.subsonic.listSources(),
       window.electronAPI.subsonic.getStatus()
     ])
     ensureSubscription()
-    set({ status })
-    await applySources(sources)
+    set({ status, sources, errorMessage: '' })
+  }
+
+  // After a server is added, changed, removed or synced, the library shows different tracks.
+  const fetchAll = async (): Promise<void> => {
+    await fetchSources()
+    await refreshLibraryViews()
   }
 
   return {
@@ -101,7 +76,9 @@ export const useSubsonicSettingsStore = create<SubsonicSettingsStore>((set, get)
       if (get().isInitialized) return
       set({ isLoading: true })
       try {
-        await fetchAll()
+        // Only the server list. The app loads the library itself at startup, and
+        // nothing about the servers has changed yet.
+        await fetchSources()
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
       } finally {
@@ -153,22 +130,16 @@ export const useSubsonicSettingsStore = create<SubsonicSettingsStore>((set, get)
       }
     },
 
+    // A test only answers the caller; server type auto-detect probes both
+    // providers, so a failed probe must not leave a store-wide error behind.
     testSource: async (input) => {
       try {
-        const result = await window.electronAPI.subsonic.testSource(input)
-        if (!result.ok) {
-          set({ errorMessage: result.error ?? result.message })
-        } else {
-          set({ errorMessage: '' })
-        }
-        return result
+        return await window.electronAPI.subsonic.testSource(input)
       } catch (error) {
-        const message = toErrorMessage(error)
-        set({ errorMessage: message })
         return {
           ok: false,
           message: 'Connection failed.',
-          error: message
+          error: toErrorMessage(error)
         }
       }
     },

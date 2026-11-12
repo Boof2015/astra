@@ -412,3 +412,31 @@ test('session restore applies core view state without transient history or overl
     fullscreenLyricsVisible: true
   })
 })
+
+
+test('stream activity shares shelf space without changing the existing lyrics/pipeline combination', () => {
+  const previous = useUIStore.getState()
+  try {
+    useUIStore.setState({ showStreamingShelf: false, showPipelineShelf: true, showLyricsShelf: true, lyricsShelfExpanded: true })
+    useUIStore.getState().toggleStreamingShelf()
+    let state = useUIStore.getState()
+    assert.equal(state.showStreamingShelf, true)
+    assert.equal(state.showPipelineShelf, false)
+    assert.equal(state.showLyricsShelf, false)
+    assert.equal(state.lyricsShelfExpanded, false)
+    state.togglePipelineShelf()
+    state = useUIStore.getState()
+    assert.equal(state.showPipelineShelf, true)
+    assert.equal(state.showStreamingShelf, false)
+    state.toggleLyricsShelf()
+    state = useUIStore.getState()
+    assert.equal(state.showLyricsShelf, true)
+    assert.equal(state.showPipelineShelf, true)
+    state.toggleStreamingShelf()
+    useUIStore.getState().toggleLyricsShelf()
+    assert.equal(useUIStore.getState().showStreamingShelf, false)
+    useUIStore.getState().toggleStreamingShelf()
+    useUIStore.getState().closeStreamingShelf()
+    assert.equal(useUIStore.getState().showStreamingShelf, false)
+  } finally { useUIStore.setState(previous, true) }
+})

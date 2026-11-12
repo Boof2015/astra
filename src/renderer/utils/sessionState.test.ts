@@ -206,7 +206,8 @@ test('session snapshot normalization tolerates corrupt fields and strips artwork
   assert.equal(snapshot.savedAt, 0)
   assert.equal(snapshot.ui?.activeView, 'home')
   assert.equal(snapshot.ui?.fullscreenLyricsVisible, false)
-  assert.deepEqual(snapshot.library?.selectedSourceFilters, ['local'])
+  // The library source filter was removed; snapshots that still carry it restore without it.
+  assert.equal(Object.hasOwn(snapshot.library ?? {}, 'selectedSourceFilters'), false)
   assert.equal(snapshot.library?.selectedGenre, 'Electronic')
   assert.equal(snapshot.library?.selectedYear, 2025)
   assert.equal(snapshot.library?.trackListSortState, null)
@@ -334,7 +335,6 @@ test('session snapshot normalization preserves genre track sort state', () => {
       selectedYear: null,
       trackListSortState: { key: 'genre', direction: 'asc' },
       tracksViewSortState: { key: 'duration', direction: 'desc' },
-      selectedSourceFilters: [],
       albumSortMode: 'title',
       includeSinglesInAlbums: false,
       includeCollabArtists: false,
@@ -371,7 +371,6 @@ test('session snapshot normalization preserves multikey Tracks sorting and Year 
         { key: 'artist', direction: 'desc' },
         { key: 'codec', direction: 'asc' }
       ],
-      selectedSourceFilters: [],
       albumSortState: { key: 'year', direction: 'desc' },
       includeSinglesInAlbums: false,
       includeCollabArtists: false,
@@ -414,7 +413,6 @@ test('session snapshot normalization preserves Stats routing and play count sort
       selectedYear: null,
       trackListSortState: { key: 'play_count', direction: 'desc' },
       tracksViewSortState: { key: 'play_count', direction: 'desc' },
-      selectedSourceFilters: [],
       albumSortMode: 'title',
       includeSinglesInAlbums: true,
       includeCollabArtists: false,
@@ -464,7 +462,6 @@ test('session snapshot normalization preserves Years and Unknown Year selection'
       selectedGenre: null,
       selectedYear: 'unknown',
       trackListSortState: null,
-      selectedSourceFilters: [],
       albumSortMode: 'title',
       includeSinglesInAlbums: true,
       includeCollabArtists: false,

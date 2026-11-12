@@ -408,6 +408,7 @@ function renderConditionValue(
         <option value="local">Local</option>
         <option value="subsonic">Subsonic</option>
         <option value="jellyfin">Jellyfin</option>
+        <option value="plex">Plex</option>
       </select>
     )
   }

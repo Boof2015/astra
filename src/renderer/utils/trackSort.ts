@@ -13,7 +13,7 @@ export interface TrackSortRecord {
   musical_key?: string | null
   format?: string | null
   duration?: number | null
-  source_type: 'local' | 'subsonic' | 'jellyfin'
+  source_type: 'local' | 'subsonic' | 'jellyfin' | 'plex'
   file_created_at: number | null
   added_at: number
   play_count: number

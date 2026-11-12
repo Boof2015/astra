@@ -37,16 +37,37 @@ const GENERIC_ARTIST_KEYS = new Set([
 const STRONG_CREDIT_SEPARATOR_PATTERN = /\s*;\s*|\s+(?:feat\.?|ft\.?|featuring|with|[x×])\s+/gi
 const ANY_CREDIT_SEPARATOR_PATTERN = /[,;&]|\s+(?:feat\.?|ft\.?|featuring|with|[x×])\s+/i
 
+// Library queries normalize the same few thousand artist and album names once per track,
+// several times per query, and Unicode normalization plus locale lower-casing made that
+// most of the cost of listing artists or loading Home. Both functions depend only on
+// the input string, so each result is remembered. Long strings are left out and the
+// maps are emptied when full, which bounds the memory they hold on to.
+const NORMALIZED_NAME_CACHE_LIMIT = 50_000
+const NORMALIZED_NAME_MAX_LENGTH = 256
+const normalizedDisplays = new Map<string, string>()
+const normalizedIdentityKeys = new Map<string, string>()
+
+function rememberNormalizedName(cache: Map<string, string>, value: string, normalized: string): string {
+  if (value.length <= NORMALIZED_NAME_MAX_LENGTH) {
+    if (cache.size >= NORMALIZED_NAME_CACHE_LIMIT) cache.clear()
+    cache.set(value, normalized)
+  }
+  return normalized
+}
+
 export function normalizeArtistDisplay(value: unknown): string {
-  return typeof value === 'string'
-    ? value.normalize('NFC').replace(ZERO_WIDTH_PATTERN, '').replace(/\s+/g, ' ').trim()
-    : ''
+  if (typeof value !== 'string') return ''
+  return normalizedDisplays.get(value) ?? rememberNormalizedName(normalizedDisplays, value,
+    value.normalize('NFC').replace(ZERO_WIDTH_PATTERN, '').replace(/\s+/g, ' ').trim())
 }
 
 export function normalizeIdentityKey(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const remembered = normalizedIdentityKeys.get(value)
+  if (remembered !== undefined) return remembered
   const display = normalizeArtistDisplay(value)
-  if (!display) return ''
-  return display.replace(IDENTITY_APOSTROPHE_PATTERN, "'").toLocaleLowerCase()
+  return rememberNormalizedName(normalizedIdentityKeys, value,
+    display ? display.replace(IDENTITY_APOSTROPHE_PATTERN, "'").toLocaleLowerCase() : '')
 }
 
 export function normalizeArtistKey(value: unknown): string {

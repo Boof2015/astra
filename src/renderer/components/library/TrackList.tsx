@@ -1,3 +1,5 @@
+import type { ProviderSyncRef } from '../../../types/providerSync'
+import { useProviderSyncStore } from '../../stores/providerSyncStore'
 import { CSSProperties, memo, ReactElement, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { List, RowComponentProps, type ListImperativeAPI } from 'react-window'
 import { usePlayerStore, type PlaybackSourceContext, type QueueItem } from '../../stores/playerStore'
@@ -581,7 +583,7 @@ function TrackListRowRenderer({
 
   const isMissingPlaylistEntry = isMissingPlaylistEntryTrack(track)
   const isUnavailable = isUnavailableRemoteTrack(track) || isMissingPlaylistEntry
-  const sourceLabel = track.source_type === 'jellyfin'
+  const sourceLabel = track.source_type === 'plex' ? 'Plex' : track.source_type === 'jellyfin'
     ? 'Jellyfin'
     : track.source_type === 'subsonic'
       ? 'Subsonic'
@@ -1876,6 +1878,8 @@ export default function TrackList({
       }
 
       await refreshPlaylistMembership(trackPaths)
+    } catch (error) {
+      setPlaylistPopupFeedback({ kind: 'error', message: error instanceof Error ? error.message : 'Could not update playlist.' })
     } finally {
       setIsPlaylistMembershipMutating(false)
     }
@@ -1897,6 +1901,8 @@ export default function TrackList({
       closePlaylistPopup()
       setTrackContextMenu(null)
       setSelectedTrackKeys(new Set())
+    } catch (error) {
+      useProviderSyncStore.getState().notifyError(error instanceof Error ? error.message : 'Could not remove tracks from playlist.')
     } finally {
       setIsRemovingFromPlaylist(false)
     }
@@ -1916,6 +1922,8 @@ export default function TrackList({
       closePlaylistPopup()
       setTrackContextMenu(null)
       setSelectedTrackKeys(new Set())
+    } catch (error) {
+      useProviderSyncStore.getState().notifyError(error instanceof Error ? error.message : 'Could not remove tracks from playlist.')
     } finally {
       setIsRemovingFromPlaylist(false)
     }
@@ -1953,12 +1961,12 @@ export default function TrackList({
     setCreatePlaylistTarget(null)
   }, [])
 
-  const handleCreatePlaylistForTrack = useCallback(async (name: string, coverImagePath: string | null) => {
+  const handleCreatePlaylistForTrack = useCallback(async (name: string, coverImagePath: string | null, destination?: ProviderSyncRef) => {
     if (!createPlaylistTarget) {
       throw new Error('No track is selected for playlist creation.')
     }
 
-    const playlist = await createPlaylistWithOptions({
+    const playlist = await createPlaylistWithOptions({ destination,
       name,
       coverImagePath,
       trackPaths: createPlaylistTarget.trackPaths
@@ -2724,6 +2732,7 @@ export default function TrackList({
         onCreate={handleCreatePlaylistForTrack}
         title={createPlaylistTarget?.trackPaths.length === 1 ? 'Create Playlist for Track' : 'Create Playlist from Tracks'}
         pendingTrackCount={createPlaylistTarget?.trackPaths.length}
+        trackPaths={createPlaylistTarget?.trackPaths}
       />
     </div>
   )

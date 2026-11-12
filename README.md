@@ -110,7 +110,16 @@ Opt-in experimental features that may get changed or removed based on feedback:
 
 ## Download
 
-Prebuilt binaries for Windows, macOS, and Linux are available on the [Releases](https://github.com/Boof2015/astra/releases) page.
+Prebuilt binaries are available on the [Releases](https://github.com/Boof2015/astra/releases) page:
+
+| Platform | Architectures | Downloads |
+|----------|---------------|-----------|
+| Windows | x64 | Installer, portable EXE |
+| macOS | Apple Silicon (arm64), Intel (x64) | DMG, ZIP |
+| Linux | x64, ARM64 | AppImage, DEB, RPM, tarball |
+
+The existing `Linux.AppImage` filename is the x64 build; ARM64 downloads use
+`Linux-arm64.AppImage`. macOS downloads include `Mac-arm64` or `Mac-x64` in the name.
 
 Officially available on the [AUR](https://aur.archlinux.org/packages/astra-music-bin) (`astra-music-bin`).
 
@@ -149,7 +158,7 @@ npm run build            # Build application assets
 npm run dist             # Package for current platform
 npm run dist:mac         # macOS (DMG + ZIP)
 npm run dist:win         # Windows (NSIS + Portable)
-npm run dist:linux       # Linux (AppImage + DEB + RPM + tarball)
+npm run dist:linux       # Native Linux x64 or ARM64 (AppImage + DEB + RPM + tarball)
 ```
 
 ## Documentation
@@ -175,3 +184,27 @@ This project is licensed under the [GNU General Public License v3.0](https://www
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Boof2015/astra&type=date&legend=top-left" />
  </picture>
 </a>
+
+### Bundled media tools
+
+Astra retains its `ffmpeg-static` decoder and uses the `ffprobePath` export from
+`ffmpeg-ffprobe-static@6.1.2-rc.1` for metadata. The paired package downloads both
+tools during development, but its unused FFmpeg executable is excluded from the
+app. This release includes a native Apple Silicon ffprobe 6.1.1 that detects
+E-AC-3 Atmos profiles; npm package and binary versions are not interchangeable.
+Existing affected local tracks receive a one-time background metadata refresh.
+Files whose MP4 metadata the primary parser rejects can recover their tags,
+artwork, and audio properties through the bundled tools.
+
+Build each release on its native OS and architecture with a fresh `npm ci`.
+Use `npm run dist:mac -- --x64` on Intel Mac or `--arm64` on Apple Silicon;
+`npm run dist:linux -- --arm64` selects the ARM64 filename on an ARM64 Linux host.
+Cross-architecture packaging is rejected to prevent shipping host binaries.
+`npm run check:media-binaries` verifies executable architecture/version and a
+probe/decode round trip without system tools. Packaging repeats these checks
+against the unpacked app and verifies native addon architectures.
+
+To run the private-file regression locally, set `ASTRA_ATMOS_TEST_FILE` to an
+E-AC-3 Atmos M4A and run `npm run test:library-sqlite`. The test copies it into a
+temporary library, checks import and metadata refresh, and removes the copy.
+The repository stores only sanitized probe metadata, not the reporter's audio.

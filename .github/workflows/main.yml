@@ -20,7 +20,7 @@ env:
 jobs:
   quality-gate:
     name: Quality Gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v6
@@ -37,15 +37,18 @@ jobs:
           path: |
             ~/.cache/electron
             ~/.cache/electron-builder
-          key: ${{ runner.os }}-electron-${{ hashFiles('package-lock.json') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-electron-${{ hashFiles('package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-electron-
+            ${{ runner.os }}-${{ runner.arch }}-electron-
 
       - name: Install Linux native build tools
-        run: sudo apt-get update && sudo apt-get install -y build-essential python3 libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y build-essential python3 libasound2-dev rpm
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Validate media binaries and fallback playback
+        run: npm run check:media-binaries
 
       - name: Build native modules
         run: npm run rebuild:native
@@ -78,16 +81,29 @@ jobs:
         run: npm run build
 
   build-smoke:
-    name: Build Smoke (${{ matrix.os }})
+    name: Build Smoke (${{ matrix.os }}, ${{ matrix.arch }})
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     needs: quality-gate
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # Pin Windows to VS 2022; windows-latest can roll to VS 2026 before
-        # Electron's node-gyp stack recognizes the new Visual Studio version.
-        os: [ubuntu-latest, macos-latest, windows-2022]
+        include:
+          - os: ubuntu-24.04
+            arch: x64
+            dist_cmd: dist:linux
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            dist_cmd: dist:linux
+          - os: macos-15
+            arch: arm64
+            dist_cmd: dist:mac
+          - os: macos-15-intel
+            arch: x64
+            dist_cmd: dist:mac
+          - os: windows-2022
+            arch: x64
+            dist_cmd: dist:win
 
     steps:
       - uses: actions/checkout@v6
@@ -104,16 +120,19 @@ jobs:
           path: |
             ~/.cache/electron
             ~/.cache/electron-builder
-          key: ${{ runner.os }}-electron-${{ hashFiles('package-lock.json') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-electron-${{ hashFiles('package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-electron-
+            ${{ runner.os }}-${{ runner.arch }}-electron-
 
       - name: Install Linux native build tools
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y build-essential python3 libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y build-essential python3 libasound2-dev rpm
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Validate media binaries and fallback playback
+        run: npm run check:media-binaries
 
       - name: Build native modules
         run: npm run rebuild:native
@@ -136,5 +155,5 @@ jobs:
       - name: Validate packaging config
         run: npm run check:packaging-config
 
-      - name: Build project
-        run: npm run build
+      - name: Package smoke build (validates shipped binaries and native addons)
+        run: npm run ${{ matrix.dist_cmd }} -- --${{ matrix.arch }} --dir

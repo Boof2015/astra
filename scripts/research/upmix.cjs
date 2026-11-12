@@ -6,7 +6,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const ffmpegPath = require('ffmpeg-static')
-const ffprobePath = require('ffprobe-static').path
+const ffprobePath = require('ffmpeg-ffprobe-static').ffprobePath
 
 const root = path.resolve(__dirname, '..', '..')
 const validLayouts = new Set(['quad', '5.0', '5.1', '7.1'])

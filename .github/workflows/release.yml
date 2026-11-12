@@ -13,19 +13,26 @@ permissions:
 
 jobs:
   build:
-    name: Build on ${{ matrix.os }}
+    name: Build on ${{ matrix.os }} (${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
+            arch: x64
             dist_cmd: dist:linux
-          - os: macos-latest
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            dist_cmd: dist:linux
+          - os: macos-15
+            arch: arm64
             dist_cmd: dist:mac
-          # Pin Windows to VS 2022; windows-latest can roll to VS 2026 before
-          # Electron's node-gyp stack recognizes the new Visual Studio version.
+          - os: macos-15-intel
+            arch: x64
+            dist_cmd: dist:mac
           - os: windows-2022
+            arch: x64
             dist_cmd: dist:win
 
     steps:
@@ -43,16 +50,19 @@ jobs:
           path: |
             ~/.cache/electron
             ~/.cache/electron-builder
-          key: ${{ runner.os }}-electron-${{ hashFiles('package-lock.json') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-electron-${{ hashFiles('package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-electron-
+            ${{ runner.os }}-${{ runner.arch }}-electron-
+
+      - name: Install Linux native build tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential python3 libasound2-dev rpm
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Linux native build tools
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y build-essential python3 libasound2-dev
+      - name: Validate media binaries and fallback playback
+        run: npm run check:media-binaries
 
       - name: Build native DSP module
         run: npm run rebuild:native
@@ -75,15 +85,15 @@ jobs:
           node -e 'const fs=require("fs"); const key=process.env.LASTFM_API_KEY ?? ""; const secret=process.env.LASTFM_SHARED_SECRET ?? ""; fs.writeFileSync(".env.local", `LASTFM_API_KEY=${key}\nLASTFM_SHARED_SECRET=${secret}\n`, "utf8")'
 
       - name: Build distributable
-        run: npm run ${{ matrix.dist_cmd }}
+        run: npm run ${{ matrix.dist_cmd }} -- --${{ matrix.arch }}
 
       - name: Verify release artifact names
-        run: node scripts/release/verify-release-artifacts.cjs
+        run: node scripts/release/verify-release-artifacts.cjs --arch=${{ matrix.arch }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: astra-${{ runner.os }}${{ inputs.version_tag && format('-{0}', inputs.version_tag) || '' }}
+          name: astra-${{ runner.os }}-${{ matrix.arch }}${{ inputs.version_tag && format('-{0}', inputs.version_tag) || '' }}
           path: |
             dist/*.exe
             dist/*.dmg

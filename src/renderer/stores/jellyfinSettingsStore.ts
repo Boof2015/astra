@@ -34,11 +34,7 @@ function toErrorMessage(error: unknown): string {
 }
 
 export const useJellyfinSettingsStore = create<JellyfinSettingsStore>((set, get) => {
-  const applySources = async (sources: JellyfinSource[]): Promise<void> => {
-    set({
-      sources,
-      errorMessage: ''
-    })
+  const refreshLibraryViews = async (): Promise<void> => {
     await useLibraryStore.getState().loadLibrary()
     await usePlaylistStore.getState().loadPlaylists()
     const selectedPlaylistId = usePlaylistStore.getState().selectedPlaylistId
@@ -54,14 +50,19 @@ export const useJellyfinSettingsStore = create<JellyfinSettingsStore>((set, get)
     })
   }
 
-  const fetchAll = async (): Promise<void> => {
+  const fetchSources = async (): Promise<void> => {
     const [sources, status] = await Promise.all([
       window.electronAPI.jellyfin.listSources(),
       window.electronAPI.jellyfin.getStatus()
     ])
     ensureSubscription()
-    set({ status })
-    await applySources(sources)
+    set({ status, sources, errorMessage: '' })
+  }
+
+  // After a server is added, changed, removed or synced, the library shows different tracks.
+  const fetchAll = async (): Promise<void> => {
+    await fetchSources()
+    await refreshLibraryViews()
   }
 
   return {
@@ -75,7 +76,9 @@ export const useJellyfinSettingsStore = create<JellyfinSettingsStore>((set, get)
       if (get().isInitialized) return
       set({ isLoading: true })
       try {
-        await fetchAll()
+        // Only the server list. The app loads the library itself at startup, and
+        // nothing about the servers has changed yet.
+        await fetchSources()
       } catch (error) {
         set({ errorMessage: toErrorMessage(error) })
       } finally {
@@ -127,22 +130,16 @@ export const useJellyfinSettingsStore = create<JellyfinSettingsStore>((set, get)
       }
     },
 
+    // A test only answers the caller; server type auto-detect probes both
+    // providers, so a failed probe must not leave a store-wide error behind.
     testSource: async (input) => {
       try {
-        const result = await window.electronAPI.jellyfin.testSource(input)
-        if (!result.ok) {
-          set({ errorMessage: result.error ?? result.message })
-        } else {
-          set({ errorMessage: '' })
-        }
-        return result
+        return await window.electronAPI.jellyfin.testSource(input)
       } catch (error) {
-        const message = toErrorMessage(error)
-        set({ errorMessage: message })
         return {
           ok: false,
           message: 'Connection failed.',
-          error: message
+          error: toErrorMessage(error)
         }
       }
     },
