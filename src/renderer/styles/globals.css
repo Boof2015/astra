@@ -6796,6 +6796,17 @@ body:has(.fullscreen-overlay) .controller-hints {
   overflow-x: hidden !important;
 }
 
+/* Every scroller that holds a tracklist paints an opaque background, using the
+   token its host view already paints, so nothing changes visually. Below about
+   1.5x display scaling Chromium keeps subpixel text and only gives a scroller
+   its own compositor layer when its background is opaque; without one the
+   visible list is repainted on the main thread on every scroll frame. */
+.track-list-virtualized,
+.library-artist-detail,
+.library-year-detail {
+  background: var(--bg-primary);
+}
+
 .track-list-item {
   box-sizing: border-box;
   padding: 0 8px;
