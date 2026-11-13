@@ -215,6 +215,10 @@ interface TrackListRatingProps {
 const TRACK_ROW_HEIGHT_FALLBACK_PX = 48
 const TRACK_DISC_HEADER_HEIGHT_FALLBACK_PX = 30
 const TRACK_LIST_OVERSCAN_COUNT = 4
+// How long after the last scroll event rows stay non-interactive. Long enough
+// to bridge the gaps inside one wheel or trackpad gesture, short enough that a
+// click on a row that has just come to rest still lands.
+const TRACK_LIST_SCROLL_IDLE_MS = 100
 // Deliberately its own attribute rather than reusing data-controller-scroll,
 // so moving controller-navigation markers around can never silently break
 // virtualization. Module scope keeps the identity stable for dependency arrays.
@@ -997,6 +1001,7 @@ export default function TrackList({
   const playlistMembershipRequestIdRef = useRef(0)
   const consumedJumpRequestIdRef = useRef<number | null>(null)
   const manualUpcomingQueueCacheRef = useRef<ManualUpcomingQueueCache | null>(null)
+  const scrollIdleTimerRef = useRef<number | null>(null)
 
   useImperativeHandle(viewportRef, () => ({
     get element() {
@@ -1981,10 +1986,33 @@ export default function TrackList({
     return playlist
   }, [createPlaylistTarget, createPlaylistWithOptions, refreshPlaylistMembership])
 
+  // Rows keep passing under a stationary cursor while the list scrolls, and
+  // re-resolving hover (plus its transitions) for each one was a measurable
+  // share of every scroll frame. The flag goes straight onto the DOM so a
+  // scroll never re-renders the list; see [data-scrolling] in globals.css.
+  const markListScrolling = useCallback(() => {
+    // A selection drag hit-tests rows as it moves, including while it scrolls.
+    if (queueInsertPointerStateRef.current) return
+    if (scrollIdleTimerRef.current !== null) {
+      window.clearTimeout(scrollIdleTimerRef.current)
+    } else {
+      listBodyRef.current?.setAttribute('data-scrolling', '')
+    }
+    scrollIdleTimerRef.current = window.setTimeout(() => {
+      scrollIdleTimerRef.current = null
+      listBodyRef.current?.removeAttribute('data-scrolling')
+    }, TRACK_LIST_SCROLL_IDLE_MS)
+  }, [])
+
+  useEffect(() => () => {
+    if (scrollIdleTimerRef.current !== null) window.clearTimeout(scrollIdleTimerRef.current)
+  }, [])
+
   const handleListScroll = useCallback(() => {
+    markListScrolling()
     if (playlistPopup || createPlaylistTarget) closePlaylistPopup()
     if (trackContextMenu) setTrackContextMenu(null)
-  }, [closePlaylistPopup, createPlaylistTarget, playlistPopup, trackContextMenu])
+  }, [closePlaylistPopup, createPlaylistTarget, markListScrolling, playlistPopup, trackContextMenu])
 
   const isCreatePlaylistModalOpen = createPlaylistTarget !== null
 

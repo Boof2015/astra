@@ -6807,6 +6807,25 @@ body:has(.fullscreen-overlay) .controller-hints {
   background: var(--bg-primary);
 }
 
+/* TrackList sets data-scrolling while a scroll is in progress and clears it
+   shortly after the last scroll event. Rows are taken out of hit testing for
+   that time so hover is not re-resolved for every row that passes under the
+   cursor. The rows, not the scroller, so the wheel still lands on the list.
+   A track drag keeps hit testing rows: it auto-scrolls and needs drop targets. */
+body:not(.track-drag-active) .track-list-body[data-scrolling] .track-list-item {
+  pointer-events: none;
+}
+
+/* Chromium only re-resolves hover under a resting cursor after a layout, and
+   restoring pointer-events is not one. This empty box exists while scrolling
+   and goes away with the flag, so clearing the flag lays out the list body and
+   the row under the cursor is hovered again without the mouse moving. */
+.track-list-body[data-scrolling]::after {
+  content: '';
+  display: block;
+  height: 0;
+}
+
 .track-list-item {
   box-sizing: border-box;
   padding: 0 8px;
