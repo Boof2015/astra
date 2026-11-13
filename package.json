@@ -31,6 +31,7 @@
     "test:quick-search": "node ./scripts/research/quick-search.electron.cjs",
     "test:ui-scaling": "node ./scripts/research/ui-scaling.electron.cjs",
     "test:tracklist-scroll": "node ./scripts/research/tracklist-scroll.electron.cjs",
+    "trace:tracklist-scroll": "node ./scripts/research/tracklist-scroll.live.cjs",
     "test:local-api": "node --experimental-strip-types --loader ./scripts/node/resolve-ts-loader.mjs --test src/main/services/localApi.test.ts",
     "test:companion-api": "node --experimental-strip-types --loader ./scripts/node/resolve-ts-loader.mjs --test src/main/services/companionApiRefs.test.ts src/main/services/companionApiContract.test.ts src/renderer/hooks/useCompanionApiBridge.test.ts",
     "test:companion-api-examples": "node --experimental-strip-types --loader ./scripts/node/resolve-ts-loader.mjs --test src/main/services/companionApiExamples.test.ts",

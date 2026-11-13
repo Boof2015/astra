@@ -84,7 +84,33 @@ function mainThreadBuckets(events) {
   return Object.fromEntries(Object.entries(totals).map(([bucket, micros]) => [bucket, round(micros / 1000)]))
 }
 
-function summarizeTrace(tracePath, refreshHz) {
+// Names the JS entry point where the trace records one, so scripting time can be told apart by caller.
+function eventLabel(event) {
+  const data = event.args?.data
+  if (event.name === 'FunctionCall' && data) {
+    const file = String(data.url ?? '').split('/').pop().split('?')[0]
+    return `FunctionCall ${data.functionName || '(anonymous)'} ${file}:${data.lineNumber ?? '?'}`
+  }
+  if (event.name === 'EventDispatch' && data?.type) return `EventDispatch ${data.type}`
+  return event.name
+}
+
+function topSelfTimes(events, limit) {
+  const totals = new Map()
+  const stack = []
+  const close = entry => totals.set(entry.label, (totals.get(entry.label) ?? 0) + Math.max(0, entry.dur - entry.children))
+  for (const event of completeEvents(events)) {
+    while (stack.length > 0 && stack[stack.length - 1].end <= event.ts) close(stack.pop())
+    const parent = stack[stack.length - 1]
+    const dur = parent ? Math.min(event.dur, parent.end - event.ts) : event.dur
+    if (parent) parent.children += dur
+    stack.push({ end: event.ts + dur, dur, children: 0, label: eventLabel(event) })
+  }
+  while (stack.length > 0) close(stack.pop())
+  return [...totals].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([label, micros]) => [label, round(micros / 1000)])
+}
+
+function summarizeTrace(tracePath, refreshHz, { detail = false } = {}) {
   const parsed = JSON.parse(readFileSync(tracePath, 'utf8'))
   const events = Array.isArray(parsed) ? parsed : parsed.traceEvents
   const threadNames = new Map()
@@ -125,8 +151,30 @@ function summarizeTrace(tracePath, refreshHz) {
   const intervals = swaps.slice(1).map((ts, index) => (ts - swaps[index]) / 1000).sort((a, b) => a - b)
   const frameBudgetMs = 1000 / refreshHz
   const spanMs = swaps.length > 1 ? (swaps[swaps.length - 1] - swaps[0]) / 1000 : 0
+  const stamps = events.filter(event => event.ph === 'X' && typeof event.ts === 'number').map(event => event.ts)
+  const durationMs = stamps.length > 0 ? (stamps.reduce((a, b) => Math.max(a, b)) - stamps.reduce((a, b) => Math.min(a, b))) / 1000 : 0
+  // Several loops call requestAnimationFrame; callbacks of one frame run back to back, so a gap starts a new frame.
+  let animationFrames = 0
+  let lastCallbackEnd = -Infinity
+  for (const event of completeEvents(rendererMain ? rendererMain.events.filter(entry => entry.name === 'FireAnimationFrame') : [])) {
+    if (event.ts - lastCallbackEnd > 1000) animationFrames++
+    lastCallbackEnd = event.ts + event.dur
+  }
+  const threadNamed = name => threads.filter(thread => thread.name === name).sort((a, b) => b.events.length - a.events.length)[0]
+  const top = thread => thread ? topSelfTimes(thread.events, 14) : []
 
   return {
+    durationMs: round(durationMs),
+    // Frames in which requestAnimationFrame callbacks ran, per second: what an in-page FPS counter reports.
+    rafFps: durationMs > 0 ? round(animationFrames / (durationMs / 1000)) : 0,
+    browserMainBusyMs: sumBusy([threadNamed('CrBrowserMain')].filter(Boolean)),
+    ...(detail ? { hot: {
+      rendererMain: top(rendererMain),
+      rendererCompositor: top(threads.find(thread => inRenderer(thread) && thread.name === 'Compositor')),
+      gpuMain: top(threadNamed('CrGpuMain')),
+      vizCompositor: top(threadNamed('VizCompositorThread')),
+      browserMain: top(threadNamed('CrBrowserMain'))
+    } } : {}),
     frames: {
       swaps: swaps.length,
       fps: spanMs > 0 ? round((swaps.length - 1) / (spanMs / 1000)) : 0,
