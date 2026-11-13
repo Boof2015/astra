@@ -27,6 +27,9 @@ const TRACE_CATEGORIES = [
 const EXPERIMENTS = {
   'opaque-scroller': { css: '.track-list-virtualized, .library-artist-detail, .library-year-detail { background: var(--bg-primary); }' },
   'no-blur': { css: '.titlebar, .transport-bar { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }' },
+  // Rows pass under a stationary cursor while scrolling, so hover styling and its transitions restart constantly.
+  'no-hover': { css: '.track-list-item { pointer-events: none !important; }' },
+  'no-row-transitions': { css: '.track-row, .track-actions, .track-action-btn { transition: none !important; }' },
   'no-rating-has': { stripRules: '\\.track-list-(body|item):has' },
   'no-has': { stripRules: ':has\\(' }
 }

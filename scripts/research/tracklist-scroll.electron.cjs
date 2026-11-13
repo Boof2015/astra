@@ -17,6 +17,9 @@ const VARIANTS = {
   baseline: {},
   // The rule globals.css used to carry: with it, every row mount/unmount restyles the whole document.
   'old-drag-has': { css: 'body:has(.track-drag-overlay), body:has(.track-drag-overlay) * { cursor: grabbing !important; }' },
+  // Rows pass under a stationary cursor while scrolling, so hover styling and its transitions restart constantly.
+  'no-row-transitions': { css: '.track-row, .track-actions, .track-action-btn { transition: none !important; }' },
+  'no-hover': { css: '.track-list-item { pointer-events: none !important; }' },
   'opaque-scroller': { css: '.track-list-virtualized { background: var(--bg-primary); }' },
   'no-blur': { css: '.titlebar, .transport-bar { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }' },
   // Forces the low-DPI Windows/Linux rule (keep LCD text, only promote opaque scrollers) on any machine.
